@@ -14,6 +14,8 @@ import type {
 } from "../DynamicForm"
 import FieldText from "./FieldText"
 import FieldData from "./FieldData"
+import FieldBoolean from "./FieldBoolean"
+import FieldMultipleChoice from "./FieldMultipleChoice"
 
 interface FieldProps {
   field: DynamicField
@@ -61,6 +63,38 @@ export default function Field({
         disabled={disabled}
         minDate={field.minDate}
         maxDate={field.maxDate}
+        onChange={onChange}
+      />
+    )
+  }
+
+  if (field.type === "multipleChoice" && field.multipleChoice) {
+    return (
+      <FieldMultipleChoice
+        name={field.name}
+        label={field.label}
+        value={typeof value === "boolean" ? "" : value}
+        config={field.multipleChoice}
+        required={field.required}
+        helperText={field.helperText}
+        disabled={disabled}
+        onChange={onChange}
+      />
+    )
+  }
+
+  if (field.type === "boolean") {
+    return (
+      <FieldBoolean
+        name={field.name}
+        label={field.label}
+        value={Boolean(value)}
+        style={field.booleanStyle}
+        trueLabel={field.trueLabel}
+        falseLabel={field.falseLabel}
+        helperText={field.helperText}
+        disabled={disabled}
+        required={field.required}
         onChange={onChange}
       />
     )

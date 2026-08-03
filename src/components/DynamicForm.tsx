@@ -8,6 +8,7 @@ import {
   Typography,
 } from "@mui/material"
 import Field from "./fields/Field"
+import type { MultipleChoiceConfig } from "./fields/FieldMultipleChoice"
 
 export type DynamicFieldType =
   | "text"
@@ -17,6 +18,8 @@ export type DynamicFieldType =
   | "textarea"
   | "select"
   | "switch"
+  | "boolean"
+  | "multipleChoice"
 
 export interface DynamicFieldOption {
   label: string
@@ -38,6 +41,10 @@ export interface DynamicField {
   maxLength?: number
   minDate?: string
   maxDate?: string
+  booleanStyle?: "checkbox" | "radio" | "select"
+  trueLabel?: string
+  falseLabel?: string
+  multipleChoice?: MultipleChoiceConfig
   fullWidth?: boolean
   disabled?: boolean
 }
@@ -73,7 +80,8 @@ export default function DynamicForm({
     () =>
       fields.reduce<DynamicFormValues>((values, field) => {
         values[field.name] =
-          field.defaultValue ?? (field.type === "switch" ? false : "")
+          field.defaultValue ??
+          (field.type === "switch" || field.type === "boolean" ? false : "")
         return values
       }, {}),
     [fields],

@@ -8,6 +8,7 @@ interface Cliente extends EntityRecord {
   nomeFantasia: string
   cnpj: string
   data: string
+  simplesNacional: boolean
   createdAt: string
   updatedAt: string
 }
@@ -45,6 +46,15 @@ const fields: DynamicField[] = [
     type: "date",
     required: true,
   },
+  {
+    name: "simplesNacional",
+    label: "Simples Nacional",
+    type: "boolean",
+    booleanStyle: "select",
+    trueLabel: "Sim",
+    falseLabel: "Não",
+    defaultValue: false,
+  },
 ]
 
 export default function ClientesExample() {
@@ -77,6 +87,10 @@ export default function ClientesExample() {
           type: "date",
           label: "Data",
           dateFormat: "DD/MM/YYYY",
+        },
+        simplesNacional: {
+          type: "boolean",
+          label: "Simples Nacional",
         },
       }}
     />

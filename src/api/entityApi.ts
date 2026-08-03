@@ -50,11 +50,23 @@ const request = async <T>(
 }
 
 export const entityApi = {
-  list<T extends EntityRecord>(entity: string): Promise<T[]> {
+  list<T extends EntityRecord>(
+    entity: string,
+    filters: Record<string, string | number | boolean> = {},
+  ): Promise<T[]> {
     const entityConfig = getEntityConfig(entity)
+    const query = new URLSearchParams()
+
+    Object.entries(filters).forEach(([key, value]) => {
+      query.set(key, String(value))
+    })
+
+    const queryString = query.toString()
 
     return request<T[]>(
-      `${entityConfig.baseUrl}${entityConfig.resource}`,
+      `${entityConfig.baseUrl}${entityConfig.resource}${
+        queryString ? `?${queryString}` : ""
+      }`,
     )
   },
 

@@ -65,6 +65,7 @@ const initializeDatabase = async () => {
       nomeFantasia TEXT NOT NULL,
       cnpj TEXT NOT NULL UNIQUE,
       data TEXT,
+      simplesNacional INTEGER NOT NULL DEFAULT 0,
       createdAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updatedAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
@@ -75,6 +76,23 @@ const initializeDatabase = async () => {
   if (!columns.some((column) => column.name === "data")) {
     await run("ALTER TABLE clientes ADD COLUMN data TEXT")
   }
+
+  if (!columns.some((column) => column.name === "simplesNacional")) {
+    await run(
+      "ALTER TABLE clientes ADD COLUMN simplesNacional INTEGER NOT NULL DEFAULT 0",
+    )
+  }
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS vendas (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      idCliente INTEGER NOT NULL,
+      valor REAL NOT NULL,
+      createdAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updatedAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (idCliente) REFERENCES clientes(id)
+    )
+  `)
 }
 
 const selectCliente = `
@@ -84,6 +102,7 @@ const selectCliente = `
     nomeFantasia,
     cnpj,
     data,
+    simplesNacional,
     createdAt,
     updatedAt
   FROM clientes
@@ -96,12 +115,30 @@ app.get("/health", (_request, response) => {
   })
 })
 
-app.get("/api/clientes", async (_request, response) => {
+app.get("/api/clientes", async (request, response) => {
   try {
-    const clientes = await all(`
-      ${selectCliente}
-      ORDER BY id DESC
-    `)
+    const filters = []
+    const params = []
+
+    for (const field of ["razaoSocial", "nomeFantasia", "cnpj"]) {
+      const value = request.query[field]
+
+      if (typeof value === "string" && value.trim()) {
+        filters.push(`LOWER(${field}) LIKE LOWER(?)`)
+        params.push(`%${value.trim()}%`)
+      }
+    }
+
+    const where = filters.length ? `WHERE ${filters.join(" AND ")}` : ""
+
+    const clientes = await all(
+      `
+        ${selectCliente}
+        ${where}
+        ORDER BY id DESC
+      `,
+      params,
+    )
 
     response.json(clientes)
   } catch (error) {
@@ -139,7 +176,7 @@ app.get("/api/clientes/:id", async (request, response) => {
 })
 
 app.post("/api/clientes", async (request, response) => {
-  const { razaoSocial, nomeFantasia, cnpj, data } = request.body
+  const { razaoSocial, nomeFantasia, cnpj, data, simplesNacional } = request.body
 
   if (!razaoSocial || !nomeFantasia || !cnpj) {
     response.status(400).json({
@@ -155,15 +192,17 @@ app.post("/api/clientes", async (request, response) => {
           razaoSocial,
           nomeFantasia,
           cnpj,
-          data
+          data,
+          simplesNacional
         )
-        VALUES (?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?)
       `,
       [
         razaoSocial.trim(),
         nomeFantasia.trim(),
         cnpj.trim(),
         data || null,
+        simplesNacional ? 1 : 0,
       ],
     )
 
@@ -190,7 +229,7 @@ app.post("/api/clientes", async (request, response) => {
 })
 
 app.put("/api/clientes/:id", async (request, response) => {
-  const { razaoSocial, nomeFantasia, cnpj, data } = request.body
+  const { razaoSocial, nomeFantasia, cnpj, data, simplesNacional } = request.body
 
   if (!razaoSocial || !nomeFantasia || !cnpj) {
     response.status(400).json({
@@ -208,6 +247,7 @@ app.put("/api/clientes/:id", async (request, response) => {
           nomeFantasia = ?,
           cnpj = ?,
           data = ?,
+          simplesNacional = ?,
           updatedAt = CURRENT_TIMESTAMP
         WHERE id = ?
       `,
@@ -216,6 +256,7 @@ app.put("/api/clientes/:id", async (request, response) => {
         nomeFantasia.trim(),
         cnpj.trim(),
         data || null,
+        simplesNacional ? 1 : 0,
         request.params.id,
       ],
     )
@@ -244,6 +285,191 @@ app.put("/api/clientes/:id", async (request, response) => {
         status === 409
           ? "Já existe outro cliente cadastrado com este CNPJ."
           : "Não foi possível atualizar o cliente.",
+      detail: error.message,
+    })
+  }
+})
+
+
+const selectVenda = `
+  SELECT
+    vendas.id,
+    vendas.idCliente,
+    clientes.razaoSocial AS clienteRazaoSocial,
+    vendas.valor,
+    vendas.createdAt,
+    vendas.updatedAt
+  FROM vendas
+  INNER JOIN clientes ON clientes.id = vendas.idCliente
+`
+
+app.get("/api/vendas", async (_request, response) => {
+  try {
+    const vendas = await all(`
+      ${selectVenda}
+      ORDER BY vendas.id DESC
+    `)
+
+    response.json(vendas)
+  } catch (error) {
+    response.status(500).json({
+      message: "Não foi possível listar as vendas.",
+      detail: error.message,
+    })
+  }
+})
+
+app.get("/api/vendas/:id", async (request, response) => {
+  try {
+    const venda = await get(
+      `
+        ${selectVenda}
+        WHERE vendas.id = ?
+      `,
+      [request.params.id],
+    )
+
+    if (!venda) {
+      response.status(404).json({
+        message: "Venda não encontrada.",
+      })
+      return
+    }
+
+    response.json(venda)
+  } catch (error) {
+    response.status(500).json({
+      message: "Não foi possível consultar a venda.",
+      detail: error.message,
+    })
+  }
+})
+
+app.post("/api/vendas", async (request, response) => {
+  const { idCliente, valor } = request.body
+
+  if (!idCliente || valor === undefined || Number(valor) < 0) {
+    response.status(400).json({
+      message: "Cliente e valor são obrigatórios.",
+    })
+    return
+  }
+
+  try {
+    const cliente = await get(
+      "SELECT id FROM clientes WHERE id = ?",
+      [idCliente],
+    )
+
+    if (!cliente) {
+      response.status(400).json({
+        message: "Cliente inválido.",
+      })
+      return
+    }
+
+    const result = await run(
+      `
+        INSERT INTO vendas (idCliente, valor)
+        VALUES (?, ?)
+      `,
+      [idCliente, Number(valor)],
+    )
+
+    const venda = await get(
+      `
+        ${selectVenda}
+        WHERE vendas.id = ?
+      `,
+      [result.id],
+    )
+
+    response.status(201).json(venda)
+  } catch (error) {
+    response.status(500).json({
+      message: "Não foi possível cadastrar a venda.",
+      detail: error.message,
+    })
+  }
+})
+
+app.put("/api/vendas/:id", async (request, response) => {
+  const { idCliente, valor } = request.body
+
+  if (!idCliente || valor === undefined || Number(valor) < 0) {
+    response.status(400).json({
+      message: "Cliente e valor são obrigatórios.",
+    })
+    return
+  }
+
+  try {
+    const cliente = await get(
+      "SELECT id FROM clientes WHERE id = ?",
+      [idCliente],
+    )
+
+    if (!cliente) {
+      response.status(400).json({
+        message: "Cliente inválido.",
+      })
+      return
+    }
+
+    const result = await run(
+      `
+        UPDATE vendas
+        SET
+          idCliente = ?,
+          valor = ?,
+          updatedAt = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `,
+      [idCliente, Number(valor), request.params.id],
+    )
+
+    if (result.changes === 0) {
+      response.status(404).json({
+        message: "Venda não encontrada.",
+      })
+      return
+    }
+
+    const venda = await get(
+      `
+        ${selectVenda}
+        WHERE vendas.id = ?
+      `,
+      [request.params.id],
+    )
+
+    response.json(venda)
+  } catch (error) {
+    response.status(500).json({
+      message: "Não foi possível atualizar a venda.",
+      detail: error.message,
+    })
+  }
+})
+
+app.delete("/api/vendas/:id", async (request, response) => {
+  try {
+    const result = await run(
+      "DELETE FROM vendas WHERE id = ?",
+      [request.params.id],
+    )
+
+    if (result.changes === 0) {
+      response.status(404).json({
+        message: "Venda não encontrada.",
+      })
+      return
+    }
+
+    response.status(204).send()
+  } catch (error) {
+    response.status(500).json({
+      message: "Não foi possível excluir a venda.",
       detail: error.message,
     })
   }

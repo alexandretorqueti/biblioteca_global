@@ -36,10 +36,11 @@ import AuthPanel, {
   type AuthValues,
 } from "./components/AuthPanel"
 import ClientesExample from "./examples/ClientesExample"
+import VendasExample from "./examples/VendasExample"
 
 const drawerWidth = 260
 
-type Library = "grid" | "form" | "auth" | "clientes"
+type Library = "grid" | "form" | "auth" | "multipleChoice" | "clientes" | "vendas"
 
 const exampleData: JsonRecord[] = [
   {
@@ -273,6 +274,45 @@ const authCode = `const authConfig: AuthPanelConfig = {
   onSocialLogin={(provider) => console.log(provider)}
 />`
 
+const multipleChoiceCode = `const fields: DynamicField[] = [
+  {
+    name: "idCliente",
+    label: "Cliente",
+    type: "multipleChoice",
+    required: true,
+    multipleChoice: {
+      entity: "clientes",
+      idField: "id",
+      displayField: "razaoSocial",
+      filterField: "razaoSocial",
+      minimumSearchLength: 0,
+      debounceMs: 300,
+    },
+  },
+]
+
+<DynamicForm
+  fields={fields}
+  onSubmit={(values) => console.log(values)}
+/>
+
+// Também pode receber dados diretamente:
+const clientes = [
+  { id: 1, razaoSocial: "Global Tecnologia" },
+  { id: 2, razaoSocial: "Empresa Exemplo" },
+]
+
+const campo = {
+  name: "idCliente",
+  label: "Cliente",
+  type: "multipleChoice",
+  multipleChoice: {
+    data: clientes,
+    idField: "id",
+    displayField: "razaoSocial",
+  },
+}`
+
 const libraryContent = {
   grid: {
     name: "JsonGrid",
@@ -301,6 +341,15 @@ const libraryContent = {
       "Escolha o identificador de acesso, os provedores sociais, os recursos disponíveis e todos os campos do cadastro.",
     code: authCode,
   },
+  multipleChoice: {
+    name: "FieldMultipleChoice",
+    title: "Seleção pesquisável",
+    subtitle:
+      "O FieldMultipleChoice combina campo de texto e lista de opções, permitindo pesquisar registros remotos ou selecionar itens de um array local.",
+    description:
+      "Configure idField para o identificador, displayField para o texto exibido e filterField para o parâmetro enviado à API durante a pesquisa.",
+    code: multipleChoiceCode,
+  },
   clientes: {
     name: "Cadastro de Clientes",
     title: "Exemplo integrado",
@@ -318,6 +367,38 @@ const libraryContent = {
 }
 
 <Cadastro {...cadastro} />`,
+  },
+  vendas: {
+    name: "Cadastro de Vendas",
+    title: "Vendas com seleção de cliente",
+    subtitle:
+      "CRUD de vendas integrado ao cadastro de clientes, usando pesquisa remota por razão social.",
+    description:
+      "O formulário salva idCliente, enquanto a API retorna clienteRazaoSocial para exibição textual na grid.",
+    code: `const fields = [
+  {
+    name: "idCliente",
+    label: "Cliente",
+    type: "multipleChoice",
+    multipleChoice: {
+      entity: "clientes",
+      idField: "id",
+      displayField: "razaoSocial",
+      filterField: "razaoSocial",
+    },
+  },
+  {
+    name: "valor",
+    label: "Valor da venda",
+    type: "number",
+  },
+]
+
+<Cadastro
+  entity="vendas"
+  title="Cadastro de Vendas"
+  fields={fields}
+/>`,
   },
 }
 
@@ -358,6 +439,12 @@ export default function App() {
       primary: "AuthPanel",
       secondary: "Login e cadastro configuráveis",
     },
+    {
+      id: "multipleChoice" as const,
+      icon: <DynamicFormRounded />,
+      primary: "FieldMultipleChoice",
+      secondary: "Combo pesquisável e remoto",
+    },
   ]
 
   const exampleMenuItems = [
@@ -366,6 +453,12 @@ export default function App() {
       icon: <DynamicFormRounded />,
       primary: "Cadastro de Clientes",
       secondary: "CRUD completo integrado",
+    },
+    {
+      id: "vendas" as const,
+      icon: <DynamicFormRounded />,
+      primary: "Cadastro de Vendas",
+      secondary: "Cliente pesquisável e valor",
     },
   ]
 
@@ -559,7 +652,35 @@ export default function App() {
               </>
             )}
 
+            {library === "multipleChoice" && (
+              <DynamicForm
+                title="Exemplo de seleção de cliente"
+                fields={[
+                  {
+                    name: "idCliente",
+                    label: "Cliente",
+                    type: "multipleChoice",
+                    required: true,
+                    fullWidth: true,
+                    multipleChoice: {
+                      entity: "clientes",
+                      idField: "id",
+                      displayField: "razaoSocial",
+                      filterField: "razaoSocial",
+                      minimumSearchLength: 0,
+                      debounceMs: 300,
+                    },
+                  },
+                ]}
+                columns={1}
+                submitLabel="Selecionar"
+                onSubmit={setFormResult}
+              />
+            )}
+
             {library === "clientes" && <ClientesExample />}
+
+            {library === "vendas" && <VendasExample />}
 
             {library === "auth" && (
               <>
