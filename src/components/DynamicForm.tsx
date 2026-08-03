@@ -1,20 +1,13 @@
-import { FormEvent, useMemo, useState } from "react"
+import { FormEvent, useEffect, useMemo, useState } from "react"
 import {
   Alert,
   Box,
   Button,
-  FormControl,
-  FormControlLabel,
-  FormHelperText,
-  InputLabel,
-  MenuItem,
   Paper,
-  Select,
   Stack,
-  Switch,
-  TextField,
   Typography,
 } from "@mui/material"
+import Field from "./fields/Field"
 
 export type DynamicFieldType =
   | "text"
@@ -41,7 +34,12 @@ export interface DynamicField {
   options?: DynamicFieldOption[]
   min?: number
   max?: number
+  minLength?: number
+  maxLength?: number
+  minDate?: string
+  maxDate?: string
   fullWidth?: boolean
+  disabled?: boolean
 }
 
 export type DynamicFormValues = Record<string, string | number | boolean>
@@ -50,18 +48,28 @@ interface DynamicFormProps {
   fields: DynamicField[]
   title?: string
   submitLabel?: string
+  cancelLabel?: string
   columns?: 1 | 2 | 3
-  onSubmit: (values: DynamicFormValues) => void
+  initialValues?: DynamicFormValues
+  loading?: boolean
+  successMessage?: string
+  onSubmit: (values: DynamicFormValues) => void | Promise<void>
+  onCancel?: () => void
 }
 
 export default function DynamicForm({
   fields,
   title,
   submitLabel = "Enviar",
+  cancelLabel = "Cancelar",
   columns = 2,
+  initialValues,
+  loading = false,
+  successMessage,
   onSubmit,
+  onCancel,
 }: DynamicFormProps) {
-  const initialValues = useMemo(
+  const defaultValues = useMemo(
     () =>
       fields.reduce<DynamicFormValues>((values, field) => {
         values[field.name] =
@@ -71,18 +79,30 @@ export default function DynamicForm({
     [fields],
   )
 
-  const [values, setValues] = useState<DynamicFormValues>(initialValues)
-  const [submitted, setSubmitted] = useState(false)
+  const [values, setValues] = useState<DynamicFormValues>({
+    ...defaultValues,
+    ...initialValues,
+  })
 
-  const updateValue = (name: string, value: string | number | boolean) => {
-    setSubmitted(false)
+  useEffect(() => {
+    setValues({
+      ...defaultValues,
+      ...initialValues,
+    })
+  }, [defaultValues, initialValues])
+
+  const updateValue = (
+    name: string,
+    value: string | number | boolean,
+  ) => {
     setValues((current) => ({ ...current, [name]: value }))
   }
 
-  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (
+    event: FormEvent<HTMLFormElement>,
+  ) => {
     event.preventDefault()
-    onSubmit(values)
-    setSubmitted(true)
+    await onSubmit(values)
   }
 
   return (
@@ -103,10 +123,8 @@ export default function DynamicForm({
           </Typography>
         )}
 
-        {submitted && (
-          <Alert severity="success">
-            Formulário enviado com sucesso.
-          </Alert>
+        {successMessage && (
+          <Alert severity="success">{successMessage}</Alert>
         )}
 
         <Box
@@ -119,96 +137,45 @@ export default function DynamicForm({
             gap: 2,
           }}
         >
-          {fields.map((field) => {
-            const commonGridSx = {
-              gridColumn: field.fullWidth ? "1 / -1" : "auto",
-            }
-
-            if (field.type === "switch") {
-              return (
-                <FormControlLabel
-                  key={field.name}
-                  sx={commonGridSx}
-                  control={
-                    <Switch
-                      checked={Boolean(values[field.name])}
-                      onChange={(event) =>
-                        updateValue(field.name, event.target.checked)
-                      }
-                    />
-                  }
-                  label={field.label}
-                />
-              )
-            }
-
-            if (field.type === "select") {
-              return (
-                <FormControl
-                  key={field.name}
-                  required={field.required}
-                  sx={commonGridSx}
-                >
-                  <InputLabel>{field.label}</InputLabel>
-                  <Select
-                    label={field.label}
-                    value={values[field.name]}
-                    onChange={(event) =>
-                      updateValue(
-                        field.name,
-                        event.target.value as string | number,
-                      )
-                    }
-                  >
-                    {field.options?.map((option) => (
-                      <MenuItem key={option.value} value={option.value}>
-                        {option.label}
-                      </MenuItem>
-                    ))}
-                  </Select>
-                  {field.helperText && (
-                    <FormHelperText>{field.helperText}</FormHelperText>
-                  )}
-                </FormControl>
-              )
-            }
-
-            return (
-              <TextField
-                key={field.name}
-                label={field.label}
-                type={
-                  field.type === "textarea" ? "text" : field.type
-                }
-                value={values[field.name]}
-                required={field.required}
-                placeholder={field.placeholder}
-                helperText={field.helperText}
-                multiline={field.type === "textarea"}
-                minRows={field.type === "textarea" ? 4 : undefined}
-                inputProps={{
-                  min: field.min,
-                  max: field.max,
-                }}
-                onChange={(event) =>
-                  updateValue(
-                    field.name,
-                    field.type === "number"
-                      ? Number(event.target.value)
-                      : event.target.value,
-                  )
-                }
-                sx={commonGridSx}
+          {fields.map((field) => (
+            <Box
+              key={field.name}
+              sx={{
+                gridColumn: field.fullWidth ? "1 / -1" : "auto",
+              }}
+            >
+              <Field
+                field={field}
+                value={values[field.name] ?? ""}
+                loading={loading}
+                onChange={updateValue}
               />
-            )
-          })}
+            </Box>
+          ))}
         </Box>
 
-        <Box>
-          <Button type="submit" variant="contained" size="large">
+        <Stack direction="row" spacing={2}>
+          <Button
+            type="submit"
+            variant="contained"
+            size="large"
+            disabled={loading}
+          >
             {submitLabel}
           </Button>
-        </Box>
+
+          {onCancel && (
+            <Button
+              type="button"
+              variant="outlined"
+              size="large"
+              disabled={loading}
+              onClick={onCancel}
+            >
+              {cancelLabel}
+            </Button>
+          )}
+        </Stack>
       </Stack>
     </Paper>
   )

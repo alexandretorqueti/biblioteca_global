@@ -1,0 +1,7 @@
+{
+  "clientes": {
+    "baseUrl": "http://localhost:3001",
+    "resource": "/api/clientes",
+    "primaryKey": "id"
+  }
+}

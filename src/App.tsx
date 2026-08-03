@@ -10,6 +10,7 @@ import {
   ListItemButton,
   ListItemIcon,
   ListItemText,
+  ListSubheader,
   Paper,
   Stack,
   Toolbar,
@@ -34,10 +35,11 @@ import AuthPanel, {
   type AuthPanelConfig,
   type AuthValues,
 } from "./components/AuthPanel"
+import ClientesExample from "./examples/ClientesExample"
 
 const drawerWidth = 260
 
-type Library = "grid" | "form" | "auth"
+type Library = "grid" | "form" | "auth" | "clientes"
 
 const exampleData: JsonRecord[] = [
   {
@@ -299,6 +301,24 @@ const libraryContent = {
       "Escolha o identificador de acesso, os provedores sociais, os recursos disponíveis e todos os campos do cadastro.",
     code: authCode,
   },
+  clientes: {
+    name: "Cadastro de Clientes",
+    title: "Exemplo integrado",
+    subtitle:
+      "Cadastro completo usando formulário, grid, controller, API configurável, backend Node e banco SQLite.",
+    description:
+      "A entidade clientes é resolvida pelo arquivo de configuração e encaminhada automaticamente ao backend correto.",
+    code: `const cadastro = {
+  entity: "clientes",
+  fields: [
+    { name: "razaoSocial", label: "Razão Social", type: "text" },
+    { name: "nomeFantasia", label: "Nome Fantasia", type: "text" },
+    { name: "cnpj", label: "CNPJ", type: "text" },
+  ],
+}
+
+<Cadastro {...cadastro} />`,
+  },
 }
 
 export default function App() {
@@ -319,7 +339,7 @@ export default function App() {
     setMobileMenuOpen(false)
   }
 
-  const menuItems = [
+  const componentMenuItems = [
     {
       id: "grid" as const,
       icon: <GridViewRounded />,
@@ -340,6 +360,15 @@ export default function App() {
     },
   ]
 
+  const exampleMenuItems = [
+    {
+      id: "clientes" as const,
+      icon: <DynamicFormRounded />,
+      primary: "Cadastro de Clientes",
+      secondary: "CRUD completo integrado",
+    },
+  ]
+
   const menu = (
     <Box sx={{ height: "100%", bgcolor: "background.paper" }}>
       <Toolbar>
@@ -353,8 +382,45 @@ export default function App() {
 
       <Divider />
 
-      <List sx={{ px: 1.5, py: 2 }}>
-        {menuItems.map((item) => (
+      <List
+        sx={{ px: 1.5, py: 2 }}
+        subheader={
+          <ListSubheader
+            disableSticky
+            sx={{ bgcolor: "transparent", px: 1, fontWeight: 800 }}
+          >
+            Componentes
+          </ListSubheader>
+        }
+      >
+        {componentMenuItems.map((item) => (
+          <ListItemButton
+            key={item.id}
+            selected={library === item.id}
+            onClick={() => selectLibrary(item.id)}
+            sx={{ borderRadius: 2, mb: 1 }}
+          >
+            <ListItemIcon>{item.icon}</ListItemIcon>
+            <ListItemText
+              primary={item.primary}
+              secondary={item.secondary}
+            />
+          </ListItemButton>
+        ))}
+
+        <ListSubheader
+          disableSticky
+          sx={{
+            bgcolor: "transparent",
+            px: 1,
+            pt: 2,
+            fontWeight: 800,
+          }}
+        >
+          Exemplos
+        </ListSubheader>
+
+        {exampleMenuItems.map((item) => (
           <ListItemButton
             key={item.id}
             selected={library === item.id}
@@ -492,6 +558,8 @@ export default function App() {
                 )}
               </>
             )}
+
+            {library === "clientes" && <ClientesExample />}
 
             {library === "auth" && (
               <>
