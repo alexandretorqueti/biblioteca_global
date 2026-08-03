@@ -1,0 +1,15 @@
+services:
+  biblioteca-gera:
+    build: .
+    container_name: biblioteca-gera
+    ports:
+      - "5174:5173"
+    volumes:
+      - .:/app
+      - node_modules:/app/node_modules
+    environment:
+      - CHOKIDAR_USEPOLLING=true
+    restart: unless-stopped
+
+volumes:
+  node_modules:
