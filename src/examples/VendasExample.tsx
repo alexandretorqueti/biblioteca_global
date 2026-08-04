@@ -31,9 +31,13 @@ const fields: DynamicField[] = [
   {
     name: "valor",
     label: "Valor da venda",
-    type: "number",
+    type: "money",
     required: true,
     min: 0,
+    currency: "BRL",
+    currencyLocale: "pt-BR",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
   },
 ]
 
@@ -60,8 +64,12 @@ export default function VendasExample() {
           label: "Cliente",
         },
         valor: {
-          type: "text",
+          type: "money",
           label: "Valor",
+          currency: "BRL",
+          currencyLocale: "pt-BR",
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
         },
       }}
     />

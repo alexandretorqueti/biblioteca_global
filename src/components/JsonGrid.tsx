@@ -18,16 +18,21 @@ import FieldGridData, {
   type GridDateFormat,
 } from "./fields/FieldGridData"
 import FieldGridText from "./fields/FieldGridText"
+import FieldGridMoney from "./fields/FieldGridMoney"
 
 type JsonValue = string | number | boolean | null | object | undefined
 
 export type JsonRecord = Record<string, JsonValue>
 
 export interface JsonGridColumnConfig {
-  type?: "text" | "date" | "boolean" | "json"
+  type?: "text" | "date" | "boolean" | "json" | "money"
   label?: string
   dateFormat?: GridDateFormat
   hidden?: boolean
+  currency?: string
+  currencyLocale?: string
+  minimumFractionDigits?: number
+  maximumFractionDigits?: number
 }
 
 interface JsonGridProps<T extends JsonRecord = JsonRecord> {
@@ -58,6 +63,18 @@ const renderValue = (
       <FieldGridData
         value={value}
         format={config.dateFormat ?? "DD/MM/YYYY"}
+      />
+    )
+  }
+
+  if (config?.type === "money") {
+    return (
+      <FieldGridMoney
+        value={value}
+        currency={config.currency}
+        locale={config.currencyLocale}
+        minimumFractionDigits={config.minimumFractionDigits}
+        maximumFractionDigits={config.maximumFractionDigits}
       />
     )
   }

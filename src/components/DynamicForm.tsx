@@ -20,6 +20,8 @@ export type DynamicFieldType =
   | "switch"
   | "boolean"
   | "multipleChoice"
+  | "photo"
+  | "money"
 
 export interface DynamicFieldOption {
   label: string
@@ -45,6 +47,12 @@ export interface DynamicField {
   trueLabel?: string
   falseLabel?: string
   multipleChoice?: MultipleChoiceConfig
+  accept?: string
+  maxFileSizeMb?: number
+  currency?: string
+  currencyLocale?: string
+  minimumFractionDigits?: number
+  maximumFractionDigits?: number
   fullWidth?: boolean
   disabled?: boolean
 }

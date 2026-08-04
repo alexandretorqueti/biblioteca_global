@@ -40,7 +40,7 @@ import VendasExample from "./examples/VendasExample"
 
 const drawerWidth = 260
 
-type Library = "grid" | "form" | "auth" | "multipleChoice" | "clientes" | "vendas"
+type Library = "grid" | "form" | "auth" | "multipleChoice" | "money" | "photo" | "clientes" | "vendas"
 
 const exampleData: JsonRecord[] = [
   {
@@ -313,6 +313,56 @@ const campo = {
   },
 }`
 
+const moneyCode = `const fields: DynamicField[] = [
+  {
+    name: "valor",
+    label: "Valor",
+    type: "money",
+    currency: "BRL",
+    currencyLocale: "pt-BR",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+    min: 0,
+  },
+]
+
+<DynamicForm
+  fields={fields}
+  onSubmit={(values) => console.log(values.valor)}
+/>
+
+// Outras moedas:
+{
+  type: "money",
+  currency: "USD",
+  currencyLocale: "en-US",
+}`
+
+const photoCode = `const fields: DynamicField[] = [
+  {
+    name: "foto",
+    label: "Foto do perfil",
+    type: "photo",
+    required: true,
+    fullWidth: true,
+    accept: "image/png,image/jpeg,image/webp",
+    maxFileSizeMb: 5,
+    helperText:
+      "Arraste uma imagem para a área ou clique para selecionar.",
+  },
+]
+
+<DynamicForm
+  fields={fields}
+  columns={1}
+  onSubmit={(values) => console.log(values.foto)}
+/>
+
+// O valor retornado é uma Data URL:
+{
+  foto: "data:image/jpeg;base64,..."
+}`
+
 const libraryContent = {
   grid: {
     name: "JsonGrid",
@@ -349,6 +399,24 @@ const libraryContent = {
     description:
       "Configure idField para o identificador, displayField para o texto exibido e filterField para o parâmetro enviado à API durante a pesquisa.",
     code: multipleChoiceCode,
+  },
+  money: {
+    name: "FieldMoney",
+    title: "Campo monetário",
+    subtitle:
+      "O FieldMoney é derivado do campo numérico e aplica máscara, símbolo e formatação conforme a moeda e a localidade configuradas.",
+    description:
+      "Use currency para definir a moeda, currencyLocale para a localidade e os limites de casas decimais para controlar a precisão.",
+    code: moneyCode,
+  },
+  photo: {
+    name: "FieldPhoto",
+    title: "Upload de foto",
+    subtitle:
+      "O FieldPhoto permite selecionar, arrastar, pré-visualizar, substituir e remover uma imagem diretamente no formulário.",
+    description:
+      "Configure os formatos aceitos com accept e o tamanho máximo com maxFileSizeMb. O componente retorna a imagem como Data URL.",
+    code: photoCode,
   },
   clientes: {
     name: "Cadastro de Clientes",
@@ -444,6 +512,18 @@ export default function App() {
       icon: <DynamicFormRounded />,
       primary: "FieldMultipleChoice",
       secondary: "Combo pesquisável e remoto",
+    },
+    {
+      id: "money" as const,
+      icon: <DynamicFormRounded />,
+      primary: "FieldMoney",
+      secondary: "Valores monetários configuráveis",
+    },
+    {
+      id: "photo" as const,
+      icon: <DynamicFormRounded />,
+      primary: "FieldPhoto",
+      secondary: "Upload, arraste e pré-visualização",
     },
   ]
 
@@ -674,6 +754,50 @@ export default function App() {
                 ]}
                 columns={1}
                 submitLabel="Selecionar"
+                onSubmit={setFormResult}
+              />
+            )}
+
+            {library === "money" && (
+              <DynamicForm
+                title="Exemplo de campo monetário"
+                fields={[
+                  {
+                    name: "valor",
+                    label: "Valor",
+                    type: "money",
+                    required: true,
+                    currency: "BRL",
+                    currencyLocale: "pt-BR",
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                    min: 0,
+                  },
+                ]}
+                columns={1}
+                submitLabel="Salvar valor"
+                onSubmit={setFormResult}
+              />
+            )}
+
+            {library === "photo" && (
+              <DynamicForm
+                title="Exemplo de upload de foto"
+                fields={[
+                  {
+                    name: "foto",
+                    label: "Foto do perfil",
+                    type: "photo",
+                    required: true,
+                    fullWidth: true,
+                    accept: "image/png,image/jpeg,image/webp",
+                    maxFileSizeMb: 5,
+                    helperText:
+                      "Arraste uma imagem para a área ou clique para selecionar.",
+                  },
+                ]}
+                columns={1}
+                submitLabel="Salvar foto"
                 onSubmit={setFormResult}
               />
             )}

@@ -16,6 +16,8 @@ import FieldText from "./FieldText"
 import FieldData from "./FieldData"
 import FieldBoolean from "./FieldBoolean"
 import FieldMultipleChoice from "./FieldMultipleChoice"
+import FieldPhoto from "./FieldPhoto"
+import FieldMoney from "./FieldMoney"
 
 interface FieldProps {
   field: DynamicField
@@ -63,6 +65,42 @@ export default function Field({
         disabled={disabled}
         minDate={field.minDate}
         maxDate={field.maxDate}
+        onChange={onChange}
+      />
+    )
+  }
+
+  if (field.type === "money") {
+    return (
+      <FieldMoney
+        name={field.name}
+        label={field.label}
+        value={typeof value === "boolean" ? "" : value}
+        required={field.required}
+        helperText={field.helperText}
+        disabled={disabled}
+        currency={field.currency}
+        locale={field.currencyLocale}
+        minimumFractionDigits={field.minimumFractionDigits}
+        maximumFractionDigits={field.maximumFractionDigits}
+        min={field.min}
+        max={field.max}
+        onChange={onChange}
+      />
+    )
+  }
+
+  if (field.type === "photo") {
+    return (
+      <FieldPhoto
+        name={field.name}
+        label={field.label}
+        value={typeof value === "string" ? value : ""}
+        required={field.required}
+        helperText={field.helperText}
+        disabled={disabled}
+        accept={field.accept}
+        maxFileSizeMb={field.maxFileSizeMb}
         onChange={onChange}
       />
     )
