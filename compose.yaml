@@ -14,12 +14,12 @@ services:
     restart: unless-stopped
 
   backend-exemplo:
-    build: ./backend_exemplo
+    build: ./apps/backend-exemplo
     container_name: backend_exemplo
     ports:
       - "3001:3001"
     volumes:
-      - ./backend_exemplo:/app
+      - ./apps/backend-exemplo:/app
       - backend_node_modules:/app/node_modules
       - backend_data:/app/data
     environment:

@@ -1,18 +1,16 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useState } from "react"
 import {
   Autocomplete,
   CircularProgress,
   TextField,
 } from "@mui/material"
-import { createEntityController } from "../../controllers/entityController"
-import type { EntityRecord } from "../../api/entityApi"
+import type { EntityRecord } from "../../types"
 
 export interface MultipleChoiceConfig {
-  entity?: string
   data?: EntityRecord[]
+  loadOptions?: (search: string) => Promise<EntityRecord[]>
   idField: string
   displayField: string
-  filterField?: string
   minimumSearchLength?: number
   debounceMs?: number
   noOptionsText?: string
@@ -39,17 +37,10 @@ export default function FieldMultipleChoice({
   disabled = false,
   onChange,
 }: FieldMultipleChoiceProps) {
-  const controller = useMemo(
-    () =>
-      config.entity
-        ? createEntityController<EntityRecord>(config.entity)
-        : null,
-    [config.entity],
-  )
-
   const [options, setOptions] = useState<EntityRecord[]>(config.data ?? [])
   const [inputValue, setInputValue] = useState("")
   const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState("")
 
   useEffect(() => {
     if (config.data) {
@@ -58,7 +49,7 @@ export default function FieldMultipleChoice({
   }, [config.data])
 
   useEffect(() => {
-    if (!controller) {
+    if (!config.loadOptions) {
       return
     }
 
@@ -71,14 +62,17 @@ export default function FieldMultipleChoice({
 
     const timeout = window.setTimeout(async () => {
       setLoading(true)
+      setLoadError("")
 
       try {
-        const filters =
-          inputValue && config.filterField
-            ? { [config.filterField]: inputValue }
-            : {}
-
-        setOptions(await controller.list(filters))
+        setOptions(await config.loadOptions!(inputValue))
+      } catch (error) {
+        setOptions([])
+        setLoadError(
+          error instanceof Error
+            ? error.message
+            : "Não foi possível carregar as opções.",
+        )
       } finally {
         setLoading(false)
       }
@@ -87,9 +81,8 @@ export default function FieldMultipleChoice({
     return () => window.clearTimeout(timeout)
   }, [
     config.debounceMs,
-    config.filterField,
+    config.loadOptions,
     config.minimumSearchLength,
-    controller,
     inputValue,
   ])
 
@@ -105,8 +98,16 @@ export default function FieldMultipleChoice({
       inputValue={inputValue}
       loading={loading}
       disabled={disabled}
-      noOptionsText={config.noOptionsText ?? "Nenhuma opção encontrada"}
-      filterOptions={(availableOptions) => availableOptions}
+      noOptionsText={
+        loadError ||
+        config.noOptionsText ||
+        "Nenhuma opção encontrada"
+      }
+      filterOptions={
+        config.loadOptions
+          ? (availableOptions) => availableOptions
+          : undefined
+      }
       isOptionEqualToValue={(option, selected) =>
         String(option[config.idField]) ===
         String(selected[config.idField])
@@ -133,7 +134,8 @@ export default function FieldMultipleChoice({
           name={name}
           label={label}
           required={required}
-          helperText={helperText}
+          error={Boolean(loadError)}
+          helperText={loadError || helperText}
           InputProps={{
             ...params.InputProps,
             endAdornment: (

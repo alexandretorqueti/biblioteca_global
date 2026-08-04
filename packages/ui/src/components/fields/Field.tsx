@@ -107,7 +107,7 @@ export default function Field({
         disabled={disabled}
         accept={field.accept}
         maxFileSizeMb={field.maxFileSizeMb}
-        uploadUrl={field.uploadUrl}
+        upload={field.upload}
         onChange={onChange}
       />
     )

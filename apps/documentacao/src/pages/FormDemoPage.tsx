@@ -1,9 +1,10 @@
 import { useState } from "react"
 import { Stack } from "@mui/material"
-import DynamicForm, {
+import {
+  DynamicForm,
   type DynamicField,
   type DynamicFormValues,
-} from "../components/DynamicForm"
+} from "@global/ui"
 import ResultPanel from "../components/ResultPanel"
 
 const fields: DynamicField[] = [

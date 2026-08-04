@@ -1,9 +1,10 @@
 import { useState } from "react"
 import { Stack } from "@mui/material"
-import AuthPanel, {
+import {
+  AuthPanel,
   type AuthPanelConfig,
   type AuthValues,
-} from "../components/AuthPanel"
+} from "@global/ui"
 import ResultPanel from "../components/ResultPanel"
 
 const config: AuthPanelConfig = {

@@ -53,7 +53,7 @@ export interface DynamicField {
   multipleChoice?: MultipleChoiceConfig
   accept?: string
   maxFileSizeMb?: number
-  uploadUrl?: string
+  upload?: (file: File) => Promise<string>
   currency?: string
   currencyLocale?: string
   minimumFractionDigits?: number

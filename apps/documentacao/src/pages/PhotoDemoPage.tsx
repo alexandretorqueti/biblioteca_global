@@ -1,10 +1,12 @@
 import { useState } from "react"
 import { Stack } from "@mui/material"
-import DynamicForm, {
+import {
+  DynamicForm,
   type DynamicField,
   type DynamicFormValues,
-} from "../components/DynamicForm"
+} from "@global/ui"
 import ResultPanel from "../components/ResultPanel"
+import { uploadPhoto } from "../services/dataSources"
 
 const fields: DynamicField[] = [
   {
@@ -15,7 +17,7 @@ const fields: DynamicField[] = [
     fullWidth: true,
     accept: "image/png,image/jpeg,image/webp",
     maxFileSizeMb: 5,
-    uploadUrl: "http://localhost:3001/api/uploads/photos",
+    upload: uploadPhoto,
     helperText:
       "Arraste uma imagem para a área ou clique para selecionar.",
   },

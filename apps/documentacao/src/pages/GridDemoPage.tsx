@@ -1,4 +1,4 @@
-import JsonGrid, { type JsonRecord } from "../components/JsonGrid"
+import { JsonGrid, type JsonRecord } from "@global/ui"
 
 const exampleData: JsonRecord[] = [
   {

@@ -1,15 +1,9 @@
-import Cadastro from "../components/Cadastro"
-import type { DynamicField } from "../components/DynamicForm"
-import type { EntityRecord } from "../api/entityApi"
-
-interface Venda extends EntityRecord {
-  id: number
-  idCliente: number
-  clienteRazaoSocial: string
-  valor: number
-  createdAt: string
-  updatedAt: string
-}
+import { Cadastro, type DynamicField } from "@global/ui"
+import {
+  loadClientes,
+  vendasDataSource,
+  type Venda,
+} from "../services/dataSources"
 
 const fields: DynamicField[] = [
   {
@@ -19,10 +13,9 @@ const fields: DynamicField[] = [
     required: true,
     fullWidth: true,
     multipleChoice: {
-      entity: "clientes",
+      loadOptions: loadClientes,
       idField: "id",
       displayField: "razaoSocial",
-      filterField: "razaoSocial",
       minimumSearchLength: 0,
       debounceMs: 300,
       noOptionsText: "Nenhum cliente encontrado",
@@ -44,7 +37,7 @@ const fields: DynamicField[] = [
 export default function VendasExample() {
   return (
     <Cadastro<Venda>
-      entity="vendas"
+      dataSource={vendasDataSource}
       title="Cadastro de Vendas"
       fields={fields}
       columns={2}

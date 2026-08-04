@@ -25,12 +25,8 @@ interface FieldPhotoProps {
   disabled?: boolean
   accept?: string
   maxFileSizeMb?: number
-  uploadUrl?: string
+  upload?: (file: File) => Promise<string>
   onChange: (name: string, value: string) => void
-}
-
-interface UploadResponse {
-  url: string
 }
 
 export default function FieldPhoto({
@@ -43,7 +39,7 @@ export default function FieldPhoto({
   disabled = false,
   accept = "image/*",
   maxFileSizeMb = 5,
-  uploadUrl = "http://localhost:3001/api/uploads/photos",
+  upload,
   onChange,
 }: FieldPhotoProps) {
   const inputRef = useRef<HTMLInputElement>(null)
@@ -87,29 +83,13 @@ export default function FieldPhoto({
     setUploading(true)
 
     try {
-      const formData = new FormData()
-      formData.append("file", file)
-
-      const response = await fetch(uploadUrl, {
-        method: "POST",
-        body: formData,
-      })
-
-      const body = (await response.json().catch(() => null)) as
-        | UploadResponse
-        | { message?: string }
-        | null
-
-      if (!response.ok || !body || !("url" in body)) {
-        throw new Error(
-          body && "message" in body && body.message
-            ? body.message
-            : "Não foi possível enviar a imagem.",
-        )
+      if (!upload) {
+        throw new Error("A função de upload não foi configurada.")
       }
 
-      onChange(name, body.url)
-      setPreviewUrl(body.url)
+      const uploadedUrl = await upload(file)
+      onChange(name, uploadedUrl)
+      setPreviewUrl(uploadedUrl)
     } catch (uploadError) {
       setPreviewUrl(value)
       setError(

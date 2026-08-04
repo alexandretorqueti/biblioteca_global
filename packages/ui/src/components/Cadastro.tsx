@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import {
   Alert,
   Box,
@@ -11,8 +11,10 @@ import {
   Typography,
 } from "@mui/material"
 import { AddRounded } from "@mui/icons-material"
-import { createEntityController } from "../controllers/entityController"
-import type { EntityRecord } from "../api/entityApi"
+import type {
+  CadastroDataSource,
+  EntityRecord,
+} from "../types"
 import DynamicForm, {
   type DynamicField,
   type DynamicFormValues,
@@ -23,7 +25,7 @@ import JsonGrid, {
 } from "./JsonGrid"
 
 interface CadastroProps<T extends EntityRecord> {
-  entity: string
+  dataSource: CadastroDataSource<T>
   title: string
   fields: DynamicField[]
   columnLabels?: Record<string, string>
@@ -31,11 +33,11 @@ interface CadastroProps<T extends EntityRecord> {
   hiddenColumns?: string[]
   columns?: 1 | 2 | 3
   newLabel?: string
-  getRowId?: (row: T) => string | number
+  description?: string
 }
 
 export default function Cadastro<T extends EntityRecord>({
-  entity,
+  dataSource,
   title,
   fields,
   columnLabels = {},
@@ -43,13 +45,8 @@ export default function Cadastro<T extends EntityRecord>({
   hiddenColumns = [],
   columns = 2,
   newLabel = "Novo registro",
-  getRowId,
+  description = "Inclusão, edição, listagem e exclusão por funções injetadas.",
 }: CadastroProps<T>) {
-  const controller = useMemo(
-    () => createEntityController<T>(entity),
-    [entity],
-  )
-
   const [rows, setRows] = useState<T[]>([])
   const [selectedRow, setSelectedRow] = useState<T | null>(null)
   const [formOpen, setFormOpen] = useState(false)
@@ -64,7 +61,7 @@ export default function Cadastro<T extends EntityRecord>({
     setError("")
 
     try {
-      setRows(await controller.list())
+      setRows(await dataSource.list())
     } catch (loadError) {
       setError(
         loadError instanceof Error
@@ -74,27 +71,11 @@ export default function Cadastro<T extends EntityRecord>({
     } finally {
       setLoading(false)
     }
-  }, [controller])
+  }, [dataSource])
 
   useEffect(() => {
     void loadRows()
   }, [loadRows])
-
-  const resolveId = (row: T): string | number => {
-    if (getRowId) {
-      return getRowId(row)
-    }
-
-    const id = row[controller.primaryKey]
-
-    if (typeof id !== "string" && typeof id !== "number") {
-      throw new Error(
-        `A chave primária "${controller.primaryKey}" não é válida.`,
-      )
-    }
-
-    return id
-  }
 
   const openCreate = () => {
     setSelectedRow(null)
@@ -123,10 +104,10 @@ export default function Cadastro<T extends EntityRecord>({
 
     try {
       if (selectedRow) {
-        await controller.update(resolveId(selectedRow), values as unknown as Partial<T>)
+        await dataSource.update(selectedRow, values)
         setSuccessMessage("Registro atualizado com sucesso.")
       } else {
-        await controller.create(values)
+        await dataSource.create(values)
         setSuccessMessage("Registro cadastrado com sucesso.")
       }
 
@@ -153,7 +134,7 @@ export default function Cadastro<T extends EntityRecord>({
     setError("")
 
     try {
-      await controller.remove(resolveId(deleteTarget))
+      await dataSource.remove(deleteTarget)
       setSuccessMessage("Registro excluído com sucesso.")
       setDeleteTarget(null)
       await loadRows()
@@ -197,8 +178,7 @@ export default function Cadastro<T extends EntityRecord>({
             {title}
           </Typography>
           <Typography color="text.secondary">
-            Inclusão, edição, listagem e exclusão integradas à entidade
-            configurada.
+            {description}
           </Typography>
         </Box>
 
@@ -226,7 +206,7 @@ export default function Cadastro<T extends EntityRecord>({
         columnLabels={columnLabels}
         columns={gridColumns}
         getRowId={(row) =>
-          resolveId(row as unknown as T)
+          dataSource.getRowId(row as unknown as T)
         }
         onEdit={(row) => openEdit(row as unknown as T)}
         onDelete={(row) =>

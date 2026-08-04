@@ -1,17 +1,8 @@
-import Cadastro from "../components/Cadastro"
-import type { DynamicField } from "../components/DynamicForm"
-import type { EntityRecord } from "../api/entityApi"
-
-interface Cliente extends EntityRecord {
-  id: number
-  razaoSocial: string
-  nomeFantasia: string
-  cnpj: string
-  data: string
-  simplesNacional: boolean
-  createdAt: string
-  updatedAt: string
-}
+import { Cadastro, type DynamicField } from "@global/ui"
+import {
+  clientesDataSource,
+  type Cliente,
+} from "../services/dataSources"
 
 const fields: DynamicField[] = [
   {
@@ -62,7 +53,7 @@ const fields: DynamicField[] = [
 export default function ClientesExample() {
   return (
     <Cadastro<Cliente>
-      entity="clientes"
+      dataSource={clientesDataSource}
       title="Cadastro de Clientes"
       fields={fields}
       columns={2}

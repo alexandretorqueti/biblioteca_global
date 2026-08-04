@@ -1,10 +1,12 @@
 import { useState } from "react"
 import { Stack } from "@mui/material"
-import DynamicForm, {
+import {
+  DynamicForm,
   type DynamicField,
   type DynamicFormValues,
-} from "../components/DynamicForm"
+} from "@global/ui"
 import ResultPanel from "../components/ResultPanel"
+import { loadClientes } from "../services/dataSources"
 
 const fields: DynamicField[] = [
   {
@@ -14,10 +16,9 @@ const fields: DynamicField[] = [
     required: true,
     fullWidth: true,
     multipleChoice: {
-      entity: "clientes",
+      loadOptions: loadClientes,
       idField: "id",
       displayField: "razaoSocial",
-      filterField: "razaoSocial",
       minimumSearchLength: 0,
       debounceMs: 300,
     },

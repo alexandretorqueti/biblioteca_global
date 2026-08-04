@@ -176,10 +176,9 @@ export const libraryContent: Record<Library, LibraryContent> = {
   type: "multipleChoice",
   required: true,
   multipleChoice: {
-    entity: "clientes",
+    loadOptions: loadClientes,
     idField: "id",
     displayField: "razaoSocial",
-    filterField: "razaoSocial",
     debounceMs: 300,
   },
 }`,
@@ -215,8 +214,7 @@ export const libraryContent: Record<Library, LibraryContent> = {
   type: "photo",
   accept: "image/png,image/jpeg,image/webp",
   maxFileSizeMb: 5,
-  uploadUrl:
-    "http://localhost:3001/api/uploads/photos",
+  upload: uploadPhoto,
 }`,
   },
   clientes: {
@@ -227,7 +225,7 @@ export const libraryContent: Record<Library, LibraryContent> = {
     description:
       "A entidade é resolvida pelo arquivo de configuração e encaminhada automaticamente ao backend.",
     code: `<Cadastro
-  entity="clientes"
+  dataSource={clientesDataSource}
   title="Cadastro de Clientes"
   fields={fields}
   gridColumns={gridColumns}
@@ -248,7 +246,7 @@ export const libraryContent: Record<Library, LibraryContent> = {
       name: "idCliente",
       type: "multipleChoice",
       multipleChoice: {
-        entity: "clientes",
+        loadOptions: loadClientes,
         idField: "id",
         displayField: "razaoSocial",
       },
