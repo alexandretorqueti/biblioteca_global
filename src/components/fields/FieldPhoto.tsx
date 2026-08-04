@@ -1,8 +1,9 @@
-import { DragEvent, useRef, useState } from "react"
+import { DragEvent, useEffect, useRef, useState } from "react"
 import {
   Alert,
   Box,
   Button,
+  CircularProgress,
   IconButton,
   Paper,
   Stack,
@@ -20,10 +21,16 @@ interface FieldPhotoProps {
   value: string
   required?: boolean
   helperText?: string
+  validationError?: string
   disabled?: boolean
   accept?: string
   maxFileSizeMb?: number
+  uploadUrl?: string
   onChange: (name: string, value: string) => void
+}
+
+interface UploadResponse {
+  url: string
 }
 
 export default function FieldPhoto({
@@ -32,16 +39,33 @@ export default function FieldPhoto({
   value,
   required = false,
   helperText,
+  validationError,
   disabled = false,
   accept = "image/*",
   maxFileSizeMb = 5,
+  uploadUrl = "http://localhost:3001/api/uploads/photos",
   onChange,
 }: FieldPhotoProps) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [dragging, setDragging] = useState(false)
   const [error, setError] = useState("")
+  const [uploading, setUploading] = useState(false)
+  const [previewUrl, setPreviewUrl] = useState(value)
 
-  const processFile = (file?: File) => {
+  useEffect(() => {
+    setPreviewUrl(value)
+  }, [value])
+
+  useEffect(
+    () => () => {
+      if (previewUrl.startsWith("blob:")) {
+        URL.revokeObjectURL(previewUrl)
+      }
+    },
+    [previewUrl],
+  )
+
+  const processFile = async (file?: File) => {
     if (!file) {
       return
     }
@@ -58,29 +82,57 @@ export default function FieldPhoto({
       return
     }
 
-    const reader = new FileReader()
+    const localPreview = URL.createObjectURL(file)
+    setPreviewUrl(localPreview)
+    setUploading(true)
 
-    reader.onload = () => {
-      if (typeof reader.result === "string") {
-        onChange(name, reader.result)
+    try {
+      const formData = new FormData()
+      formData.append("file", file)
+
+      const response = await fetch(uploadUrl, {
+        method: "POST",
+        body: formData,
+      })
+
+      const body = (await response.json().catch(() => null)) as
+        | UploadResponse
+        | { message?: string }
+        | null
+
+      if (!response.ok || !body || !("url" in body)) {
+        throw new Error(
+          body && "message" in body && body.message
+            ? body.message
+            : "Não foi possível enviar a imagem.",
+        )
       }
-    }
 
-    reader.onerror = () => {
-      setError("Não foi possível carregar a imagem.")
+      onChange(name, body.url)
+      setPreviewUrl(body.url)
+    } catch (uploadError) {
+      setPreviewUrl(value)
+      setError(
+        uploadError instanceof Error
+          ? uploadError.message
+          : "Não foi possível enviar a imagem.",
+      )
+    } finally {
+      URL.revokeObjectURL(localPreview)
+      setUploading(false)
     }
-
-    reader.readAsDataURL(file)
   }
 
   const handleDrop = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault()
     setDragging(false)
 
-    if (!disabled) {
-      processFile(event.dataTransfer.files[0])
+    if (!disabled && !uploading) {
+      void processFile(event.dataTransfer.files[0])
     }
   }
+
+  const blocked = disabled || uploading
 
   return (
     <Stack spacing={1.25}>
@@ -93,7 +145,7 @@ export default function FieldPhoto({
         variant="outlined"
         onDragEnter={(event) => {
           event.preventDefault()
-          if (!disabled) {
+          if (!blocked) {
             setDragging(true)
           }
         }}
@@ -103,21 +155,21 @@ export default function FieldPhoto({
           setDragging(false)
         }}
         onDrop={handleDrop}
-        onClick={() => !disabled && inputRef.current?.click()}
+        onClick={() => !blocked && inputRef.current?.click()}
         sx={{
           position: "relative",
           minHeight: 220,
           p: 2,
           display: "grid",
           placeItems: "center",
-          cursor: disabled ? "default" : "pointer",
+          cursor: blocked ? "default" : "pointer",
           overflow: "hidden",
           borderStyle: "dashed",
           borderWidth: 2,
           borderColor: dragging ? "primary.main" : "divider",
           bgcolor: dragging ? "action.hover" : "background.paper",
           transition: "160ms ease",
-          "&:hover": disabled
+          "&:hover": blocked
             ? undefined
             : {
                 borderColor: "primary.main",
@@ -130,49 +182,68 @@ export default function FieldPhoto({
           hidden
           type="file"
           accept={accept}
-          disabled={disabled}
+          disabled={blocked}
           onChange={(event) => {
-            processFile(event.target.files?.[0])
+            void processFile(event.target.files?.[0])
             event.target.value = ""
           }}
         />
 
-        {value ? (
+        {previewUrl ? (
           <>
             <Box
               component="img"
-              src={value}
+              src={previewUrl}
               alt={`Pré-visualização de ${label}`}
               sx={{
                 width: "100%",
                 maxHeight: 320,
                 objectFit: "contain",
                 borderRadius: 1.5,
+                opacity: uploading ? 0.55 : 1,
               }}
             />
 
-            <IconButton
-              aria-label="Remover foto"
-              color="error"
-              disabled={disabled}
-              onClick={(event) => {
-                event.stopPropagation()
-                setError("")
-                onChange(name, "")
-              }}
-              sx={{
-                position: "absolute",
-                top: 10,
-                right: 10,
-                bgcolor: "background.paper",
-                boxShadow: 2,
-                "&:hover": {
+            {uploading && (
+              <Stack
+                spacing={1}
+                alignItems="center"
+                sx={{
+                  position: "absolute",
+                  inset: 0,
+                  justifyContent: "center",
+                }}
+              >
+                <CircularProgress />
+                <Typography fontWeight={700}>Enviando foto...</Typography>
+              </Stack>
+            )}
+
+            {!uploading && (
+              <IconButton
+                aria-label="Remover foto"
+                color="error"
+                disabled={disabled}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  setError("")
+                  setPreviewUrl("")
+                  onChange(name, "")
+                }}
+                sx={{
+                  position: "absolute",
+                  top: 10,
+                  right: 10,
                   bgcolor: "background.paper",
-                },
-              }}
-            >
-              <DeleteRounded />
-            </IconButton>
+                  boxShadow: 2,
+                  "&:hover": {
+                    bgcolor: "background.paper",
+                  },
+                }}
+              >
+                <DeleteRounded />
+              </IconButton>
+            )}
           </>
         ) : (
           <Stack spacing={1.5} alignItems="center" textAlign="center">
@@ -191,7 +262,7 @@ export default function FieldPhoto({
               type="button"
               variant="outlined"
               startIcon={<UploadFileRounded />}
-              disabled={disabled}
+              disabled={blocked}
               onClick={(event) => {
                 event.stopPropagation()
                 inputRef.current?.click()
@@ -213,7 +284,9 @@ export default function FieldPhoto({
         </Typography>
       )}
 
-      {error && <Alert severity="error">{error}</Alert>}
+      {(error || validationError) && (
+        <Alert severity="error">{error || validationError}</Alert>
+      )}
     </Stack>
   )
 }

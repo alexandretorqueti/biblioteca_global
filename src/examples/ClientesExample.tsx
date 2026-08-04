@@ -37,8 +37,10 @@ const fields: DynamicField[] = [
     type: "text",
     required: true,
     placeholder: "00.000.000/0000-00",
-    minLength: 14,
+    minLength: 18,
     maxLength: 18,
+    mask: "cnpj",
+    validator: "cnpj",
   },
   {
     name: "data",

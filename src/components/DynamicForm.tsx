@@ -9,6 +9,10 @@ import {
 } from "@mui/material"
 import Field from "./fields/Field"
 import type { MultipleChoiceConfig } from "./fields/FieldMultipleChoice"
+import {
+  validateDynamicForm,
+  type FormErrors,
+} from "../utils/formValidation"
 
 export type DynamicFieldType =
   | "text"
@@ -49,10 +53,13 @@ export interface DynamicField {
   multipleChoice?: MultipleChoiceConfig
   accept?: string
   maxFileSizeMb?: number
+  uploadUrl?: string
   currency?: string
   currencyLocale?: string
   minimumFractionDigits?: number
   maximumFractionDigits?: number
+  mask?: "cnpj"
+  validator?: "cnpj"
   fullWidth?: boolean
   disabled?: boolean
 }
@@ -99,12 +106,14 @@ export default function DynamicForm({
     ...defaultValues,
     ...initialValues,
   })
+  const [errors, setErrors] = useState<FormErrors>({})
 
   useEffect(() => {
     setValues({
       ...defaultValues,
       ...initialValues,
     })
+    setErrors({})
   }, [defaultValues, initialValues])
 
   const updateValue = (
@@ -112,12 +121,29 @@ export default function DynamicForm({
     value: string | number | boolean,
   ) => {
     setValues((current) => ({ ...current, [name]: value }))
+    setErrors((current) => {
+      if (!current[name]) {
+        return current
+      }
+
+      const next = { ...current }
+      delete next[name]
+      return next
+    })
   }
 
   const handleSubmit = async (
     event: FormEvent<HTMLFormElement>,
   ) => {
     event.preventDefault()
+
+    const validationErrors = validateDynamicForm(fields, values)
+    setErrors(validationErrors)
+
+    if (Object.keys(validationErrors).length > 0) {
+      return
+    }
+
     await onSubmit(values)
   }
 
@@ -125,6 +151,7 @@ export default function DynamicForm({
     <Paper
       component="form"
       onSubmit={handleSubmit}
+      noValidate
       elevation={0}
       sx={{
         p: { xs: 2, md: 3 },
@@ -141,6 +168,12 @@ export default function DynamicForm({
 
         {successMessage && (
           <Alert severity="success">{successMessage}</Alert>
+        )}
+
+        {Object.keys(errors).length > 0 && (
+          <Alert severity="error">
+            Revise os campos destacados antes de continuar.
+          </Alert>
         )}
 
         <Box
@@ -163,6 +196,7 @@ export default function DynamicForm({
               <Field
                 field={field}
                 value={values[field.name] ?? ""}
+                error={errors[field.name]}
                 loading={loading}
                 onChange={updateValue}
               />

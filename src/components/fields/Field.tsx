@@ -22,6 +22,7 @@ import FieldMoney from "./FieldMoney"
 interface FieldProps {
   field: DynamicField
   value: string | number | boolean
+  error?: string
   loading?: boolean
   onChange: (
     name: string,
@@ -32,10 +33,12 @@ interface FieldProps {
 export default function Field({
   field,
   value,
+  error,
   loading = false,
   onChange,
 }: FieldProps) {
   const disabled = field.disabled || loading
+  const helperText = error ?? field.helperText
 
   if (field.type === "text" || field.type === "email") {
     return (
@@ -46,9 +49,11 @@ export default function Field({
         required={field.required}
         placeholder={field.placeholder}
         helperText={field.helperText}
+        error={error}
         disabled={disabled}
         minLength={field.minLength}
         maxLength={field.maxLength}
+        mask={field.mask}
         onChange={onChange}
       />
     )
@@ -61,7 +66,7 @@ export default function Field({
         label={field.label}
         value={typeof value === "string" ? value : ""}
         required={field.required}
-        helperText={field.helperText}
+        helperText={helperText}
         disabled={disabled}
         minDate={field.minDate}
         maxDate={field.maxDate}
@@ -77,7 +82,7 @@ export default function Field({
         label={field.label}
         value={typeof value === "boolean" ? "" : value}
         required={field.required}
-        helperText={field.helperText}
+        helperText={helperText}
         disabled={disabled}
         currency={field.currency}
         locale={field.currencyLocale}
@@ -98,9 +103,11 @@ export default function Field({
         value={typeof value === "string" ? value : ""}
         required={field.required}
         helperText={field.helperText}
+        validationError={error}
         disabled={disabled}
         accept={field.accept}
         maxFileSizeMb={field.maxFileSizeMb}
+        uploadUrl={field.uploadUrl}
         onChange={onChange}
       />
     )
@@ -114,7 +121,7 @@ export default function Field({
         value={typeof value === "boolean" ? "" : value}
         config={field.multipleChoice}
         required={field.required}
-        helperText={field.helperText}
+        helperText={helperText}
         disabled={disabled}
         onChange={onChange}
       />
@@ -130,7 +137,7 @@ export default function Field({
         style={field.booleanStyle}
         trueLabel={field.trueLabel}
         falseLabel={field.falseLabel}
-        helperText={field.helperText}
+        helperText={helperText}
         disabled={disabled}
         required={field.required}
         onChange={onChange}
@@ -140,26 +147,31 @@ export default function Field({
 
   if (field.type === "switch") {
     return (
-      <FormControlLabel
-        control={
-          <Switch
-            checked={Boolean(value)}
-            disabled={disabled}
-            onChange={(event) =>
-              onChange(field.name, event.target.checked)
-            }
-          />
-        }
-        label={field.label}
-      />
+      <FormControl error={Boolean(error)}>
+        <FormControlLabel
+          control={
+            <Switch
+              checked={Boolean(value)}
+              disabled={disabled}
+              onChange={(event) =>
+                onChange(field.name, event.target.checked)
+              }
+            />
+          }
+          label={field.label}
+        />
+        {helperText && <FormHelperText>{helperText}</FormHelperText>}
+      </FormControl>
     )
   }
 
   if (field.type === "select") {
     return (
       <FormControl
+        fullWidth
         required={field.required}
         disabled={disabled}
+        error={Boolean(error)}
       >
         <InputLabel>{field.label}</InputLabel>
         <Select
@@ -173,24 +185,20 @@ export default function Field({
           }
         >
           {field.options?.map((option) => (
-            <MenuItem
-              key={option.value}
-              value={option.value}
-            >
+            <MenuItem key={option.value} value={option.value}>
               {option.label}
             </MenuItem>
           ))}
         </Select>
 
-        {field.helperText && (
-          <FormHelperText>{field.helperText}</FormHelperText>
-        )}
+        {helperText && <FormHelperText>{helperText}</FormHelperText>}
       </FormControl>
     )
   }
 
   return (
     <TextField
+      fullWidth
       name={field.name}
       label={field.label}
       type={field.type === "textarea" ? "text" : field.type}
@@ -198,7 +206,8 @@ export default function Field({
       required={field.required}
       disabled={disabled}
       placeholder={field.placeholder}
-      helperText={field.helperText}
+      helperText={helperText}
+      error={Boolean(error)}
       multiline={field.type === "textarea"}
       minRows={field.type === "textarea" ? 4 : undefined}
       inputProps={{
@@ -209,7 +218,9 @@ export default function Field({
         onChange(
           field.name,
           field.type === "number"
-            ? Number(event.target.value)
+            ? event.target.value === ""
+              ? ""
+              : Number(event.target.value)
             : event.target.value,
         )
       }
