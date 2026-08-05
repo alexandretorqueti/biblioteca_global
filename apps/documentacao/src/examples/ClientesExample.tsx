@@ -1,4 +1,4 @@
-import { Cadastro, type DynamicField } from "@global/ui"
+import { Cadastro, type DynamicField } from "@alexandretorqueti/biblioteca-global-ui"
 import {
   clientesDataSource,
   type Cliente,

@@ -9,10 +9,10 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@global/api-client": "0.1.0",
-    "@global/ui": "0.1.0",
+    "@alexandretorqueti/biblioteca-global-ui": "file:../../packages/ui",
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.0",
+    "@global/api-client": "0.1.0",
     "@mui/icons-material": "^7.2.0",
     "@mui/material": "^7.2.0",
     "@mui/x-date-pickers": "^9.10.1",

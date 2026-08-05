@@ -1,4 +1,4 @@
-import { JsonGrid, type JsonRecord } from "@global/ui"
+import { JsonGrid, type JsonRecord } from "@alexandretorqueti/biblioteca-global-ui"
 
 const exampleData: JsonRecord[] = [
   {

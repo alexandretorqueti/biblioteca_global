@@ -4,7 +4,7 @@ import {
   AuthPanel,
   type AuthPanelConfig,
   type AuthValues,
-} from "@global/ui"
+} from "@alexandretorqueti/biblioteca-global-ui"
 import ResultPanel from "../components/ResultPanel"
 
 const config: AuthPanelConfig = {

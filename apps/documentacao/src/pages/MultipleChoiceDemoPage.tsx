@@ -4,7 +4,7 @@ import {
   DynamicForm,
   type DynamicField,
   type DynamicFormValues,
-} from "@global/ui"
+} from "@alexandretorqueti/biblioteca-global-ui"
 import ResultPanel from "../components/ResultPanel"
 import { loadClientes } from "../services/dataSources"
 
