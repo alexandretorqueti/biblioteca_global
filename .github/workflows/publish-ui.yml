@@ -1,4 +1,4 @@
-name: Publicar biblioteca UI
+name: Publicar pacote UI
 
 on:
   push:
@@ -20,10 +20,10 @@ jobs:
       - name: Configurar Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
-          registry-url: https://npm.pkg.github.com
+          node-version: "22"
+          registry-url: "https://npm.pkg.github.com"
           scope: "@alexandretorqueti"
-          cache: npm
+          cache: "npm"
 
       - name: Instalar dependências
         run: npm ci
@@ -31,7 +31,7 @@ jobs:
       - name: Executar testes
         run: npm test
 
-      - name: Gerar distribuição
+      - name: Compilar pacote
         run: npm run build --workspace @alexandretorqueti/biblioteca-global-ui
 
       - name: Publicar no GitHub Packages
