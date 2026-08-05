@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@alexandretorqueti/biblioteca-global-ui": "file:../../packages/ui",
+    "@alexandretorqueti/biblioteca-global-ui": "0.1.1",
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.0",
     "@global/api-client": "0.1.0",
