@@ -26,7 +26,9 @@ jobs:
           cache: "npm"
 
       - name: Instalar dependências
-        run: npm ci
+        run: |
+          npm ci
+          npm install --no-save @rollup/rollup-linux-x64-gnu
 
       - name: Executar testes
         run: npm test
