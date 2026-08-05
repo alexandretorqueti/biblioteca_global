@@ -1,5 +1,6 @@
 export type Library =
   | "grid"
+  | "layout"
   | "form"
   | "auth"
   | "multipleChoice"
@@ -24,6 +25,12 @@ export interface MenuItemConfig {
 }
 
 export const componentMenuItems: MenuItemConfig[] = [
+  {
+    id: "layout",
+    icon: "grid",
+    primary: "LayoutContainer",
+    secondary: "Grades e colunas responsivas",
+  },
   {
     id: "grid",
     icon: "grid",
@@ -78,6 +85,27 @@ export const exampleMenuItems: MenuItemConfig[] = [
 ]
 
 export const libraryContent: Record<Library, LibraryContent> = {
+  layout: {
+    name: "LayoutContainer",
+    title: "Layouts configuráveis",
+    subtitle:
+      "Organização responsiva de conteúdo em grade ou colunas usando contratos simples e reutilizáveis.",
+    description:
+      "Defina o modo, a quantidade de colunas, os breakpoints e o espaço ocupado por cada item.",
+    code: `<LayoutContainer
+  mode="grid"
+  columns={{ xs: 1, sm: 2, md: 3 }}
+  gap={2}
+>
+  <LayoutItem span={{ xs: 1, md: 2 }}>
+    <ConteudoPrincipal />
+  </LayoutItem>
+
+  <LayoutItem>
+    <ConteudoSecundario />
+  </LayoutItem>
+</LayoutContainer>`,
+  },
   grid: {
     name: "JsonGrid",
     title: "Grade de dados JSON",

@@ -35,6 +35,7 @@ import {
 } from "./library/catalog"
 
 const GridDemoPage = lazy(() => import("./pages/GridDemoPage"))
+const LayoutDemoPage = lazy(() => import("./pages/LayoutDemoPage"))
 const FormDemoPage = lazy(() => import("./pages/FormDemoPage"))
 const AuthDemoPage = lazy(() => import("./pages/AuthDemoPage"))
 const MultipleChoiceDemoPage = lazy(
@@ -63,6 +64,8 @@ const pageFor = (library: Library) => {
   switch (library) {
     case "grid":
       return <GridDemoPage />
+    case "layout":
+      return <LayoutDemoPage />
     case "form":
       return <FormDemoPage />
     case "auth":

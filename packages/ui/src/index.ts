@@ -2,6 +2,8 @@ export { default as AuthPanel } from "./components/AuthPanel"
 export { default as Cadastro } from "./components/Cadastro"
 export { default as DynamicForm } from "./components/DynamicForm"
 export { default as JsonGrid } from "./components/JsonGrid"
+export { default as LayoutContainer } from "./components/LayoutContainer"
+export { default as LayoutItem } from "./components/LayoutItem"
 
 export { default as FieldBoolean } from "./components/fields/FieldBoolean"
 export { default as FieldData } from "./components/fields/FieldData"
@@ -37,3 +39,15 @@ export {
 export {
   validateDynamicForm,
 } from "./utils/formValidation"
+
+export type {
+  LayoutContainerProps,
+  LayoutMode,
+  LayoutSpacing,
+} from "./components/LayoutContainer"
+export type {
+  LayoutItemProps,
+} from "./components/LayoutItem"
+export type {
+  ResponsiveValue,
+} from "./utils/layout"
