@@ -1,6 +1,6 @@
 {
   "name": "@global/documentacao",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "private": false,
   "type": "module",
   "scripts": {
@@ -12,7 +12,7 @@
     "@alexandretorqueti/biblioteca-global-ui": "0.1.1",
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.0",
-    "@global/api-client": "0.1.6",
+    "@global/api-client": "0.1.7",
     "@mui/icons-material": "^7.2.0",
     "@mui/material": "^7.2.0",
     "@mui/x-date-pickers": "^9.10.1",
