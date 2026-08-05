@@ -14,6 +14,7 @@ import {
   ListSubheader,
   Stack,
   Toolbar,
+  Tooltip,
   Typography,
   useMediaQuery,
   useTheme,
@@ -21,10 +22,15 @@ import {
 import {
   DynamicFormRounded,
   GridViewRounded,
+  DarkModeRounded,
+  LightModeRounded,
   LoginRounded,
   MenuBookRounded,
   MenuRounded,
 } from "@mui/icons-material"
+import {
+  useBibliotecaTheme,
+} from "@alexandretorqueti/biblioteca-global-ui"
 import DocumentationPanel from "./components/DocumentationPanel"
 import {
   componentMenuItems,
@@ -85,6 +91,7 @@ const pageFor = (library: Library) => {
 
 export default function App() {
   const theme = useTheme()
+  const { themeName, setThemeName } = useBibliotecaTheme()
   const desktop = useMediaQuery(theme.breakpoints.up("md"))
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [library, setLibrary] = useState<Library>("grid")
@@ -157,7 +164,7 @@ export default function App() {
         position="fixed"
         elevation={0}
         sx={{
-          bgcolor: "rgba(255,255,255,0.88)",
+          bgcolor: "background.paper",
           color: "text.primary",
           backdropFilter: "blur(12px)",
           borderBottom: "1px solid",
@@ -178,12 +185,34 @@ export default function App() {
             </IconButton>
           )}
 
-          <Box>
+          <Box sx={{ flexGrow: 1 }}>
             <Typography fontWeight={800}>{content.name}</Typography>
             <Typography variant="caption" color="text.secondary">
               {content.subtitle}
             </Typography>
           </Box>
+
+          <Tooltip
+            title={
+              themeName === "claro"
+                ? "Ativar tema escuro"
+                : "Ativar tema claro"
+            }
+          >
+            <IconButton
+              color="inherit"
+              aria-label="Alternar tema"
+              onClick={() =>
+                setThemeName(
+                  themeName === "claro" ? "escuro" : "claro",
+                )
+              }
+            >
+              {themeName === "claro"
+                ? <DarkModeRounded />
+                : <LightModeRounded />}
+            </IconButton>
+          </Tooltip>
         </Toolbar>
       </AppBar>
 

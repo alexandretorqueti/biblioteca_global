@@ -51,3 +51,18 @@ export type {
 export type {
   ResponsiveValue,
 } from "./utils/layout"
+export {
+  BibliotecaThemeProvider,
+  useBibliotecaTheme,
+} from "./theme/BibliotecaThemeProvider"
+export {
+  bibliotecaThemes,
+  bibliotecaThemeOptions,
+} from "./theme/themes"
+export type {
+  BibliotecaThemeProviderProps,
+} from "./theme/BibliotecaThemeProvider"
+export type {
+  BibliotecaThemeName,
+  BibliotecaThemeOption,
+} from "./theme/themes"
