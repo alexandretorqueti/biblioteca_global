@@ -10,7 +10,7 @@
   "scripts": {
     "dev": "npm run dev --workspace @global/documentacao --",
     "build": "npm run build --workspaces --if-present",
-    "test": "npm run test --workspace @global/ui",
+    "test": "npm run test --workspace @alexandretorqueti/biblioteca-global-ui",
     "preview": "npm run preview --workspace @global/documentacao"
   }
 }
