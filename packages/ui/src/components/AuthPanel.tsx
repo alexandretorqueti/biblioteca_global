@@ -86,7 +86,8 @@ export type AuthValues = Record<string, string | boolean>
 
 interface AuthPanelProps {
   config: AuthPanelConfig
-  onLogin?: (values: AuthValues) => void
+  onLogin?: (values: AuthValues) => Promise<void> | void
+  onError?: (message: string) => void
   onRegister?: (values: AuthValues) => void
   onForgotPassword?: (identifier: string) => void
   onSocialLogin?: (provider: string) => void
@@ -120,6 +121,7 @@ const providerIcons: Record<string, ReactNode> = {
 export default function AuthPanel({
   config,
   onLogin,
+  onError,
   onRegister,
   onForgotPassword,
   onSocialLogin,
@@ -127,6 +129,7 @@ export default function AuthPanel({
   const [mode, setMode] = useState<"login" | "register" | "forgot">("login")
   const [showPassword, setShowPassword] = useState(false)
   const [successMessage, setSuccessMessage] = useState("")
+  const [errorMessage, setErrorMessage] = useState("")
 
   const identifierLabel =
     config.customIdentifierLabel ??
@@ -155,18 +158,28 @@ export default function AuthPanel({
 
   const updateLogin = (name: string, value: string | boolean) => {
     setSuccessMessage("")
+    setErrorMessage("")
     setLoginValues((current) => ({ ...current, [name]: value }))
   }
 
   const updateRegister = (name: string, value: string | boolean) => {
     setSuccessMessage("")
+    setErrorMessage("")
     setRegisterValues((current) => ({ ...current, [name]: value }))
   }
 
-  const handleLogin = (event: FormEvent<HTMLFormElement>) => {
+  const handleLogin = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    onLogin?.(loginValues)
-    setSuccessMessage("Dados de login enviados.")
+    setErrorMessage("")
+    try {
+      await onLogin?.(loginValues)
+      setSuccessMessage("Dados de login enviados.")
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Erro ao fazer login."
+      setErrorMessage(message)
+      onError?.(message)
+      throw error
+    }
   }
 
   const handleRegister = (event: FormEvent<HTMLFormElement>) => {
@@ -183,6 +196,7 @@ export default function AuthPanel({
 
   const changeMode = (nextMode: "login" | "register" | "forgot") => {
     setSuccessMessage("")
+    setErrorMessage("")
     setMode(nextMode)
   }
 
@@ -232,6 +246,12 @@ export default function AuthPanel({
                   : `Informe seu ${identifierLabel.toLowerCase()}`}
             </Typography>
           </Box>
+
+          {errorMessage && (
+            <Alert severity="error" onClose={() => setErrorMessage("")}>
+              {errorMessage}
+            </Alert>
+          )}
 
           {successMessage && (
             <Alert severity="success">{successMessage}</Alert>
