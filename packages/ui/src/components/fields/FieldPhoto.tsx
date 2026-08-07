@@ -158,6 +158,7 @@ export default function FieldPhoto({
         }}
       >
         <input
+          name={name}
           ref={inputRef}
           hidden
           type="file"

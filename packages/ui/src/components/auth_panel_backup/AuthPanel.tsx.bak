@@ -426,6 +426,7 @@ export default function AuthPanel({
                         <TextField
                           select
                           key={field.name}
+                          name={field.name}
                           label={field.label}
                           required={field.required}
                           helperText={field.helperText}
