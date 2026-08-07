@@ -322,7 +322,7 @@ export default function JsonGrid<T extends JsonRecord>({
       ) : filteredRows.length === 0 ? (
         <Box sx={{ p: 4, textAlign: "center" }}>
           <Typography color="text.secondary">
-            Nenhum registro corresponde ao filtro.
+            Nenhum registro encontrado.
           </Typography>
         </Box>
       ) : (
