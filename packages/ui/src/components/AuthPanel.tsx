@@ -17,6 +17,7 @@ import {
 } from "@mui/material"
 import {
   Apple,
+  Cancel as CancelIcon,
   Facebook,
   GitHub,
   Google,
@@ -127,6 +128,7 @@ export default function AuthPanel({
   const [mode, setMode] = useState<"login" | "register" | "forgot">("login")
   const [showPassword, setShowPassword] = useState(false)
   const [successMessage, setSuccessMessage] = useState("")
+  const [isLoading, setIsLoading] = useState(false)
 
   const identifierLabel =
     config.customIdentifierLabel ??
@@ -165,12 +167,15 @@ export default function AuthPanel({
 
   const handleLogin = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    setIsLoading(true)
     try {
       await onLogin?.(loginValues)
       setSuccessMessage("Dados de login enviados.")
     } catch (error: unknown) {
       // Não exibir alerta no AuthPanel - o App.tsx já mostra o erro
       throw error
+    } finally {
+      setIsLoading(false)
     }
   }
 
@@ -357,8 +362,8 @@ export default function AuthPanel({
                     )}
                   </Stack>
 
-                  <Button type="submit" variant="contained" size="large">
-                    {config.loginButtonLabel ?? "Entrar"}
+                  <Button type="submit" variant="contained" size="large" disabled={isLoading} startIcon={isLoading ? <CancelIcon /> : undefined}>
+                    {isLoading ? "Entrando..." : (config.loginButtonLabel ?? "Entrar")}
                   </Button>
                 </Stack>
               </Box>
