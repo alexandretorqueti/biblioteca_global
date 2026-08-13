@@ -251,7 +251,7 @@ export const libraryContent: Record<Library, LibraryContent> = {
     subtitle:
       "CRUD completo com formulário, validação, máscara de CNPJ, grid, API Node e SQLite.",
     description:
-      "A entidade é resolvida pelo arquivo de configuração e encaminhada automaticamente ao backend.",
+      "A dataSource é injetada explicitamente na prop `dataSource`, que controla list/create/update/remove.",
     code: `<Cadastro
   dataSource={clientesDataSource}
   title="Cadastro de Clientes"
@@ -266,8 +266,8 @@ export const libraryContent: Record<Library, LibraryContent> = {
       "CRUD de vendas com cliente pesquisável e valor monetário formatado no formulário e na grid.",
     description:
       "O formulário persiste idCliente e a API retorna a razão social para apresentação.",
-    code: `<Cadastro
-  entity="vendas"
+    code: `<Cadastro<Cliente>
+  dataSource={vendasDataSource}
   title="Cadastro de Vendas"
   fields={[
     {

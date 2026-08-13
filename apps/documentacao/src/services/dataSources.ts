@@ -25,7 +25,7 @@ export interface Venda extends ApiRecord {
   updatedAt: string
 }
 
-const apiBaseUrl = "http://localhost:3001"
+const apiBaseUrl = "http://localhost:3003"
 
 export const clientesClient = createRestEntityClient<Cliente>({
   baseUrl: apiBaseUrl,
