@@ -4,8 +4,8 @@ import {
   geradorSistemaConfigSchema,
   loginRequestSchema,
   screenConfigSchema,
-} from "../index"
-import type { GeradorSistemaConfig } from "../index"
+} from "../index.js"
+import type { GeradorSistemaConfig } from "../index.js"
 
 /** Config válida no formato do projeto biblioteca-global (PoC §7.3/§9.1). */
 const configValida: GeradorSistemaConfig = {

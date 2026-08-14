@@ -74,16 +74,16 @@ Etapa 13 (manual/publicação) por último
 **Objetivo:** o database `core` existe com as 4 tabelas, migração versionada e seed idempotente.
 
 **Entregas:**
-- [ ] Schema Drizzle do core em `database/schema.ts`: `usuarios` (username/email/telefone/cpf não obrigatórios + UNIQUE por identificador, `password_hash`, `nome`, `ativo`), `projetos` (`nome`, `slug` UNIQUE, `ativo`, `config` JSON), `projetos_usuarios` (PK composta + `perfil` ENUM), `refresh_tokens`
-- [ ] `drizzle.config.ts` do core + migrations SQL geradas em `database/migrations/`
-- [ ] Seeds TS idempotentes (upsert): projeto `biblioteca-global`, projeto `documentacao`, usuário `alexandre` (hash argon2id da senha inicial) + vínculos `admin` nos dois
-- [ ] Scripts: `db:generate`, `db:migrate`, `db:seed` (raiz)
+- [x] Schema Drizzle do core em `database/schema.ts`: `usuarios` (username/email/telefone/cpf não obrigatórios + UNIQUE por identificador, `password_hash`, `nome`, `ativo`), `projetos` (`nome`, `slug` UNIQUE, `ativo`, `config` JSON), `projetos_usuarios` (PK composta + `perfil` ENUM), `refresh_tokens`
+- [x] `drizzle.config.ts` do core + migrations SQL geradas em `database/migrations/`
+- [x] Seeds TS idempotentes (upsert): projeto `biblioteca-global`, projeto `documentacao`, usuário `alexandre` (hash argon2id da senha inicial) + vínculos `admin` nos dois
+- [x] Scripts: `db:generate`, `db:migrate`, `db:seed` (raiz)
 
 **Validação:**
-- [ ] `npm run db:migrate` cria as tabelas no MySQL em container; `db:seed` insere os dados iniciais
-- [ ] Seed roda **duas vezes** sem duplicar (idempotência)
-- [ ] Query manual confirma: alexandre vinculado aos 2 projetos com perfil admin; `password_hash` presente, senha em texto ausente
-- [ ] Commit `etapa-2: core schema + migrations + seeds`
+- [x] `npm run db:migrate` cria as tabelas no MySQL em container; `db:seed` insere os dados iniciais
+- [x] Seed roda **duas vezes** sem duplicar (idempotência)
+- [x] Query manual confirma: alexandre vinculado aos 2 projetos com perfil admin; `password_hash` presente, senha em texto ausente
+- [x] Commit `etapa-2: core schema + migrations + seeds`
 
 ---
 
@@ -345,7 +345,7 @@ Etapa 13 (manual/publicação) por último
 |---|---|---|---|
 | 0 | Fundação do monorepo e ambiente | ✅ concluída | 2026-08-14 |
 | 1 | `packages/shared` | ✅ concluída | 2026-08-14 |
-| 2 | Database `core` (schema/migrations/seeds) | ⬜ não iniciada | — |
+| 2 | Database `core` (schema/migrations/seeds) | ✅ concluída | 2026-08-14 |
 | 3 | API base + Auth (JWT por projeto) | ⬜ não iniciada | — |
 | 4 | Usuários + Projetos (escopo) | ⬜ não iniciada | — |
 | 5 | CRUD genérico por resource | ⬜ não iniciada | — |

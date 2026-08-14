@@ -3,8 +3,8 @@
  * A validação de escrita vem do drizzle-zod (derivado do schema) nas
  * etapas de backend; aqui ficam os contratos de leitura entre front e back.
  */
-import type { GeradorSistemaConfig } from "./config"
-import type { Perfil } from "./auth"
+import type { GeradorSistemaConfig } from "./config.js"
+import type { Perfil } from "./auth.js"
 
 export interface Usuario {
   id: number

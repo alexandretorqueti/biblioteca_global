@@ -10,7 +10,7 @@
  * consistência com a API pública antiga.
  */
 import { z } from "zod"
-import { dynamicFieldConfigSchema } from "./field"
+import { dynamicFieldConfigSchema } from "./field.js"
 
 export const geradorSistemaAppConfigSchema = z
   .object({
