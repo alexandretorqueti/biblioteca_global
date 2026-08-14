@@ -1,0 +1,32 @@
+/**
+ * Tipos internos de requisição autenticada (PoC §5.2/§6.1).
+ * Sem dependência de tipos do express — o mínimo que os guards precisam.
+ */
+import type { ProjetoResumo, UsuarioAutenticado } from "@biblioteca-global/shared"
+
+/** Claims do access token JWT — o escopo vem SEMPRE daqui. */
+export interface AuthClaims {
+  sub: number
+  projetoId: number
+  perfil: string
+}
+
+/** Escopo resolvido pelo ProjectScopeGuard (pivot revalidada). */
+export interface ProjectScope {
+  usuario: UsuarioAutenticado
+  projeto: ProjetoResumo
+}
+
+/** Sessão de refresh (token opaco validado pelo RefreshAuthGuard). */
+export interface RefreshSession {
+  tokenId: number
+  usuarioId: number
+  token: string
+}
+
+export interface ApiRequest {
+  headers: Record<string, string | string[] | undefined>
+  authClaims?: AuthClaims
+  scope?: ProjectScope
+  refreshSession?: RefreshSession
+}

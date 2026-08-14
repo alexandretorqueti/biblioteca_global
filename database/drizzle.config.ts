@@ -1,15 +1,14 @@
 /**
  * Config do drizzle-kit para o database core.
  * Gera/aplica migrations SQL em database/migrations/ a partir de schema.ts.
- * Caminhos absolutos (via import.meta.url) — os scripts rodam da raiz, mas o
- * drizzle-kit resolve schema/out relativos ao CWD, não ao arquivo de config.
+ * Caminhos absolutos — os scripts rodam da raiz, mas o drizzle-kit resolve
+ * schema/out relativos ao CWD, não ao arquivo de config.
  */
-import { dirname, join } from "node:path"
-import { fileURLToPath } from "node:url"
+import { join } from "node:path"
 import { defineConfig } from "drizzle-kit"
 import { loadEnv } from "./env.js"
 
-const aqui = dirname(fileURLToPath(import.meta.url))
+const aqui = __dirname
 const env = loadEnv()
 
 export default defineConfig({

@@ -92,29 +92,29 @@ Etapa 13 (manual/publicação) por último
 **Objetivo:** API NestJS autenticando de verdade, com JWT por projeto e guards de escopo.
 
 **Entregas:**
-- [ ] Scaffold NestJS em `apps/api` (main.ts com validação global, CORS, prefixo `/api`, exception filter padronizado)
-- [ ] `ConfigModule` com env tipado; `DatabaseModule` (pool Drizzle → core)
-- [ ] `AuthModule`: `POST /auth/login`, `POST /auth/select-project`, `POST /auth/refresh`, `POST /auth/logout`, `POST /auth/change-password`, `GET /auth/me`
-- [ ] `AuthService`: busca por coluna do identificador, argon2id, checagem `ativo`, emissão de refresh (persistido em `refresh_tokens`) + access curto com claims `{ sub, projetoId, perfil }`
-- [ ] Guards: `JwtAuthGuard`, `ProjectScopeGuard` (escopo só dos claims; revalida pivot + `usuario.ativo` a cada request), `RolesGuard` (por perfil)
-- [ ] Decorators: `@CurrentUser()`, `@CurrentProject()`, `@Public()`
-- [ ] Rate limiting no login
+- [x] Scaffold NestJS em `apps/api` (main.ts com validação global, CORS, prefixo `/api`, exception filter padronizado)
+- [x] `ConfigModule` com env tipado; `DatabaseModule` (pool Drizzle → core)
+- [x] `AuthModule`: `POST /auth/login`, `POST /auth/select-project`, `POST /auth/refresh`, `POST /auth/logout`, `POST /auth/change-password`, `GET /auth/me`
+- [x] `AuthService`: busca por coluna do identificador, argon2id, checagem `ativo`, emissão de refresh (persistido em `refresh_tokens`) + access curto com claims `{ sub, projetoId, perfil }`
+- [x] Guards: `JwtAuthGuard`, `ProjectScopeGuard` (escopo só dos claims; revalida pivot + `usuario.ativo` a cada request), `RolesGuard` (por perfil)
+- [x] Decorators: `@CurrentUser()`, `@CurrentProject()`, `@Public()`
+- [x] Rate limiting no login
 
 **Testes unitários:**
-- [ ] `AuthService`: credencial válida/inválida, usuário inativo, identificador inexistente, claims corretos por projeto
-- [ ] `ProjectScopeGuard`: token sem claim de projeto rejeitado; vínculo removido → 403
-- [ ] `RolesGuard`: perfil insuficiente → 403
+- [x] `AuthService`: credencial válida/inválida, usuário inativo, identificador inexistente, claims corretos por projeto
+- [x] `ProjectScopeGuard`: token sem claim de projeto rejeitado; vínculo removido → 403
+- [x] `RolesGuard`: perfil insuficiente → 403
 
 **Testes funcionais (API real + MySQL em container):**
-- [ ] Login alexandre → refresh + 2 projetos
-- [ ] select-project → access token; `GET /auth/me` devolve projeto e perfil
-- [ ] Token do projeto A em rota que exige projeto → ok; token inválido/expirado → 401
-- [ ] `change-password` funciona; login com senha nova ok, antiga falha
-- [ ] Logout revoga refresh (refresh posterior → 401)
+- [x] Login alexandre → refresh + 2 projetos
+- [x] select-project → access token; `GET /auth/me` devolve projeto e perfil
+- [x] Token do projeto A em rota que exige projeto → ok; token inválido/expirado → 401
+- [x] `change-password` funciona; login com senha nova ok, antiga falha
+- [x] Logout revoga refresh (refresh posterior → 401)
 
 **Validação:**
-- [ ] Todos os testes passando; `tsc --noEmit`; lint
-- [ ] Commit `etapa-3: api base + auth com jwt por projeto`
+- [x] Todos os testes passando; `tsc --noEmit`; lint
+- [x] Commit `etapa-3: api base + auth com jwt por projeto`
 
 ---
 
@@ -346,7 +346,7 @@ Etapa 13 (manual/publicação) por último
 | 0 | Fundação do monorepo e ambiente | ✅ concluída | 2026-08-14 |
 | 1 | `packages/shared` | ✅ concluída | 2026-08-14 |
 | 2 | Database `core` (schema/migrations/seeds) | ✅ concluída | 2026-08-14 |
-| 3 | API base + Auth (JWT por projeto) | ⬜ não iniciada | — |
+| 3 | API base + Auth (JWT por projeto) | ✅ concluída | 2026-08-14 |
 | 4 | Usuários + Projetos (escopo) | ⬜ não iniciada | — |
 | 5 | CRUD genérico por resource | ⬜ não iniciada | — |
 | 6 | `projects/` + gerador de config | ⬜ não iniciada | — |

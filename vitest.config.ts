@@ -9,5 +9,8 @@ export default defineConfig({
   test: {
     include: ["**/*.{test,spec}.ts"],
     exclude: ["**/node_modules/**", "**/dist/**", "biblioteca_old/**"],
+    // Testes funcionais (etapa 3+) usam MySQL real + argon2.
+    testTimeout: 30_000,
+    hookTimeout: 60_000,
   },
 })

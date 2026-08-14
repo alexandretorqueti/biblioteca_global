@@ -4,8 +4,7 @@
  * MYSQL_HOST=host.docker.internal para rodar migrations de dentro de container).
  */
 import { existsSync, readFileSync } from "node:fs"
-import { dirname, resolve } from "node:path"
-import { fileURLToPath } from "node:url"
+import { resolve } from "node:path"
 
 export const CHAVES_ENV = [
   "MYSQL_HOST",
@@ -19,11 +18,8 @@ export type ChaveEnv = (typeof CHAVES_ENV)[number]
 export type CoreEnv = Record<ChaveEnv, string>
 
 export function loadEnv(): CoreEnv {
-  const envPath = resolve(
-    dirname(fileURLToPath(import.meta.url)),
-    "..",
-    ".env",
-  )
+  // database/ é escopo CommonJS (package.json próprio) — __dirname disponível.
+  const envPath = resolve(__dirname, "..", ".env")
 
   const doArquivo: Record<string, string> = {}
   if (existsSync(envPath)) {

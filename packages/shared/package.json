@@ -2,7 +2,7 @@
   "name": "@biblioteca-global/shared",
   "version": "0.0.0",
   "private": true,
-  "type": "module",
+  "type": "commonjs",
   "description": "Contratos únicos (tipos + Zod) entre front e back da Biblioteca Global",
   "main": "src/index.ts",
   "scripts": {
