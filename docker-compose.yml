@@ -1,0 +1,36 @@
+# Biblioteca Global v2 — ambiente de desenvolvimento.
+# Etapa 0: apenas o MySQL 8. Em etapa 12 entram os serviços api e web.
+name: biblioteca-global
+
+services:
+  mysql:
+    image: mysql:8
+    container_name: biblioteca-global-mysql
+    restart: unless-stopped
+    environment:
+      # Obrigatoriedade via .env (ver .env.example); compose v5 não suporta ${VAR:?msg}.
+      MYSQL_ROOT_PASSWORD: ***
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-core}
+      MYSQL_USER: ${MYSQL_USER:-biblioteca}
+      MYSQL_PASSWORD: ***
+    ports:
+      # Porta do HOST: 3307 já é usada pelo MySQL do Recrescer (ver INFRA.md).
+      - '${MYSQL_PORT:-3308}:3306'
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test:
+        - CMD
+        - mysqladmin
+        - ping
+        - -h
+        - localhost
+        - -uroot
+        - -p${MYSQL_ROOT_PASSWORD}
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+volumes:
+  mysql-data:

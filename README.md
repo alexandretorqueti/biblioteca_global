@@ -1,48 +1,53 @@
-# Biblioteca Global 📚
+# Biblioteca Global (v2)
 
-Sistema de **biblioteca** da Global Tecnologia, organizado como monorepo de componentes/UI + apps.
+Plataforma da **Global Tecnologia** que gera sistemas a partir de configuração:
+autenticação (`AuthPanel`), seleção de projeto e montagem automática do sistema
+(`GeradorSistema`) a partir de uma config JSON derivada do modelo de dados.
 
-## Tecnologia
-- **Monorepo:** npm workspaces (`packages/*`, `apps/*`)
-- **UI:** `@alexandretorqueti/biblioteca-global-ui` (publicado, v0.1.19)
-- **Documentação app:** `@global/documentacao`
-- **Runtime:** `node:22-alpine`
-- **Build:** Rollup (atenção ao glibc/musl do `@rollup/rollup-linux-x64-gnu`)
+> Especificação completa: [`POC_DEFINICOES.md`](./POC_DEFINICOES.md) ·
+> Plano de execução: [`ETAPAS_DESENVOLVIMENTO.md`](./ETAPAS_DESENVOLVIMENTO.md) ·
+> Backup funcional da v1: `biblioteca_old/` (referência — nunca editar).
 
-## Repositório
-- **Remoto:** _sem remote_ (a configurar na org `globaltecnologia`)
-- **Publicação:** workflow `.github/workflows/publish-ui.yml` (pack do pacote UI)
+## Arquitetura
 
-## Portas
-| Serviço | Container | Host |
-|---------|-----------|------|
-| biblioteca-gera (doc UI) | 5173 | 5174 |
-| backend-exemplo | 3001 | 3003 |
+- **100% TypeScript** (zero `.js`, tipagem estrita, `no-explicit-any` = erro).
+- Monorepo npm workspaces:
 
-## Ambientes
-- **Desenvolvimento:** `docker compose up` — 2 serviços:
-  - `biblioteca-gera` (Vite hot-reload, `CHOKIDAR_USEPOLLING=true` para bind mount)
-  - `backend-exemplo` (API exemplo na porta 3001 interna; persistência em volume `backend_data`)
-
-## Tokens e Chaves
-- npm token para publish do pacote (`.github/workflows/publish-ui.yml`) — verificar secret `NPM_TOKEN`
-- Repo de segredos: `/data/workspace/projects/agentes/devops/secrets/`
-
-## Estrutura
 ```
-biblioteca-global/
-├── packages/          # Bibliotecas compartilhadas
-├── apps/
-│   ├── backend-exemplo/  # API exemplo (Dockerfile próprio)
-│   └── documentacao/     # App de documentação da UI
-├── compose.yaml
-├── Dockerfile
-└── .github/workflows/publish-ui.yml
+packages/
+  ui/           @biblioteca-global/ui          — componentes React 19 + MUI 7 (sem HTTP)
+  api-client/   @biblioteca-global/api-client  — única camada que fala HTTP (tipada)
+  shared/       @biblioteca-global/shared      — contratos únicos front ↔ back
+apps/
+  api/          NestJS — auth, usuários, projetos, CRUD genérico por resource
+  web/          React 19 + Vite — login → seleção de projeto → sistema gerado
+projects/
+  <slug>/       schema.ts (fonte da verdade) + migrations + screens + config
+database/
+  migrations/   SQL versionado do database core
 ```
 
-## Subir
+- **Banco:** MySQL 8 — um database `core` (plataforma) + um database
+  `projeto_<id>` por projeto (isolamento físico; o database vem do token,
+  nunca do payload).
+- **Auth:** JWT por projeto — access token curto com `{ sub, projetoId, perfil }`;
+  refresh token global revogável.
+- **Fonte única:** `schema.ts` (Drizzle) → migrations SQL, validação Zod e
+  config JSON do `GeradorSistema`.
+
+## Ambiente de desenvolvimento
+
+Pré-requisitos: Node >= 22, Docker Compose.
+
 ```bash
-docker compose up -d
+npm install --include=dev      # o container roda NODE_ENV=production: SEMPRE --include=dev
+cp .env.example .env           # e ajuste as senhas/segredos
+docker compose up -d mysql     # MySQL 8 na porta 3308 do host (3307 é do Recrescer)
 ```
-- Documentação/UI: http://localhost:5174
-- Backend exemplo: http://localhost:3003
+
+Scripts raiz: `npm run dev|build|test|lint|typecheck`.
+
+## Estado
+
+Reconstrução v2 em andamento — progresso em
+[`ETAPAS_DESENVOLVIMENTO.md`](./ETAPAS_DESENVOLVIMENTO.md) (registro de progresso).

@@ -1,19 +1,30 @@
 {
-  "name": "@alexandretorqueti/biblioteca-global-ui",
-  "private": false,
-  "version": "0.1.19",
+  "name": "biblioteca-global",
+  "version": "2.0.0",
+  "private": true,
   "type": "module",
+  "description": "Plataforma Biblioteca Global — geração de sistemas a partir de configuração (v2)",
   "workspaces": [
     "packages/*",
-    "apps/*"
+    "apps/*",
+    "projects/*"
   ],
   "scripts": {
-    "dev": "npm run dev --workspace @global/documentacao --",
+    "dev": "npm run dev --workspaces --if-present",
     "build": "npm run build --workspaces --if-present",
-    "test": "npm run test --workspace @alexandretorqueti/biblioteca-global-ui",
-    "preview": "npm run preview --workspace @global/documentacao"
+    "test": "vitest run --passWithNoTests",
+    "lint": "eslint .",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=22"
   },
   "devDependencies": {
-    "@rollup/rollup-linux-x64-gnu": "^4.62.4"
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.8.1",
+    "jiti": "^2.7.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.67.0",
+    "vitest": "^4.1.10"
   }
 }

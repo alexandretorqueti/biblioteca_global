@@ -1,6 +1,21 @@
+# Dependências
 node_modules/
+
+# Builds
 dist/
+build/
+*.tsbuildinfo
+
+# Testes
+coverage/
+
+# Ambiente / segredos — nunca commitar
 .env
-.env.*
+.env.*.local
+
+# Logs e SO
 *.log
 .DS_Store
+
+# Backup da v1: versionar o código, nunca node_modules
+biblioteca_old/**/node_modules/

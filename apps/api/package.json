@@ -1,0 +1,10 @@
+{
+  "name": "@biblioteca-global/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Backend NestJS da Biblioteca Global (auth, usuários, projetos, CRUD genérico)",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  }
+}

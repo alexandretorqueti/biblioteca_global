@@ -1,9 +1,9 @@
 {
-  "name": "@biblioteca-global/api-client",
+  "name": "@biblioteca-global/shared",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Camada de transporte tipada da Biblioteca Global — única que fala HTTP",
+  "description": "Contratos únicos (tipos + Zod) entre front e back da Biblioteca Global",
   "main": "src/index.ts",
   "scripts": {
     "typecheck": "tsc --noEmit"
