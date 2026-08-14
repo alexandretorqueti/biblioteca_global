@@ -99,7 +99,9 @@ export const geradorSistemaGroupSchema = z
   .object({
     id: z.string().min(1),
     label: z.string().min(1),
-    items: z.array(geradorSistemaRouteSchema).min(1),
+    // items pode ficar vazio: projeto novo nasce sem telas de negócio;
+    // a tela Usuários é injetada automaticamente pela plataforma (PoC §8).
+    items: z.array(geradorSistemaRouteSchema),
   })
   .strict()
 
@@ -109,7 +111,7 @@ export const geradorSistemaConfigSchema = z
   .object({
     app: geradorSistemaAppConfigSchema,
     drawerWidth: z.number().int().positive().optional(),
-    groups: z.array(geradorSistemaGroupSchema).min(1),
+    groups: z.array(geradorSistemaGroupSchema),
   })
   .strict()
 

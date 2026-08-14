@@ -28,6 +28,11 @@ export class EnvService {
     return this.required("MYSQL_PASSWORD")
   }
 
+  /** Usuário root — somente para DDL do provisionamento de projetos. */
+  get mysqlRootPassword(): string {
+    return this.required("MYSQL_ROOT_PASSWORD")
+  }
+
   get mysqlDatabase(): string {
     return this.required("MYSQL_DATABASE")
   }

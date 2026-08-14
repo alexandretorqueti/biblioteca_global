@@ -157,12 +157,12 @@ describe("geradorSistemaConfigSchema", () => {
     expect(result.success).toBe(false)
   })
 
-  it("rejeita grupos vazios", () => {
+  it("aceita grupos vazios (projeto novo nasce sem telas; Usuários é injetada pela plataforma)", () => {
     const result = geradorSistemaConfigSchema.safeParse({
       app: { name: "X" },
       groups: [],
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBe(true)
   })
 
   it("rejeita chave desconhecida (strict)", () => {

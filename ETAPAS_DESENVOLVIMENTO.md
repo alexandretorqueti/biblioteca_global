@@ -123,24 +123,24 @@ Etapa 13 (manual/publicação) por último
 **Objetivo:** CRUDs do core com escopo por projeto e o ciclo de vida de projetos.
 
 **Entregas:**
-- [ ] `UsuariosModule`: CRUD com filtro automático pela pivot do projeto do token; `POST` cria usuário + vínculo no projeto do token; `DELETE` desvincula; rejeita `projetoId` no body
-- [ ] Endpoints exclusivos do admin global: `GET /usuarios?projetoId=`, `PUT /usuarios/:id/vincular`
-- [ ] `ProjetosModule`: CRUD restrito a admin global; `POST /projetos` executa o ciclo de vida (registro → `CREATE DATABASE projeto_<id>` → migrations da pasta do projeto → config inicial gerada do schema)
-- [ ] `PUT /projetos/:id` valida a config contra o schema do projeto antes de salvar
-- [ ] Serviços + repositórios separados; interfaces no shared
+- [x] `UsuariosModule`: CRUD com filtro automático pela pivot do projeto do token; `POST` cria usuário + vínculo no projeto do token; `DELETE` desvincula; rejeita `projetoId` no body
+- [x] Endpoints exclusivos do admin global: `GET /usuarios?projetoId=`, `PUT /usuarios/:id/vincular`
+- [x] `ProjetosModule`: CRUD restrito a admin global; `POST /projetos` executa o ciclo de vida (registro → `CREATE DATABASE projeto_<id>` → migrations da pasta do projeto → config inicial gerada do schema)
+- [x] `PUT /projetos/:id` valida a config contra o schema do projeto antes de salvar
+- [x] Serviços + repositórios separados; interfaces no shared
 
 **Testes unitários:**
-- [ ] `UsuariosService`: escopo pela pivot (nunca lista fora do projeto); criação vincula corretamente; exclusão desvincula sem apagar usuário global
-- [ ] `ProjetosService`: ciclo de vida (mock do executor de migrations); validação de config (campo inexistente → rejeita)
+- [x] `UsuariosService`: escopo pela pivot (nunca lista fora do projeto); criação vincula corretamente; exclusão desvincula sem apagar usuário global
+- [x] `ProjetosService`: ciclo de vida (mock do executor de migrations); validação de config (campo inexistente → rejeita)
 
 **Testes funcionais:**
-- [ ] Logado no projeto `documentacao`: lista de usuários só contém vinculados ao documentacao
-- [ ] Criar usuário no documentacao → vínculo criado automaticamente; body com `projetoId` → ignorado/rejeitado
-- [ ] Logado no `biblioteca-global`: vê usuários de qualquer projeto; vincula usuário a projeto; cria projeto novo → database criado + migrado
-- [ ] Token de projeto comum tentando `POST /projetos` → 403
+- [x] Logado no projeto `documentacao`: lista de usuários só contém vinculados ao documentacao
+- [x] Criar usuário no documentacao → vínculo criado automaticamente; body com `projetoId` → ignorado/rejeitado
+- [x] Logado no `biblioteca-global`: vê usuários de qualquer projeto; vincula usuário a projeto; cria projeto novo → database criado + migrado
+- [x] Token de projeto comum tentando `POST /projetos` → 403
 
 **Validação:**
-- [ ] Testes passando; commit `etapa-4: usuarios + projetos com escopo`
+- [x] Testes passando; commit `etapa-4: usuarios + projetos com escopo`
 
 ---
 
@@ -347,7 +347,7 @@ Etapa 13 (manual/publicação) por último
 | 1 | `packages/shared` | ✅ concluída | 2026-08-14 |
 | 2 | Database `core` (schema/migrations/seeds) | ✅ concluída | 2026-08-14 |
 | 3 | API base + Auth (JWT por projeto) | ✅ concluída | 2026-08-14 |
-| 4 | Usuários + Projetos (escopo) | ⬜ não iniciada | — |
+| 4 | Usuários + Projetos (escopo) | ✅ concluída | 2026-08-14 |
 | 5 | CRUD genérico por resource | ⬜ não iniciada | — |
 | 6 | `projects/` + gerador de config | ⬜ não iniciada | — |
 | 7 | `packages/api-client` | ⬜ não iniciada | — |

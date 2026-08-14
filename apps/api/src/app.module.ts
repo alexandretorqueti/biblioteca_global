@@ -7,6 +7,8 @@ import { ApiExceptionFilter } from "./common/filters/api-exception.filter"
 import { EnvModule } from "./config/env.module"
 import { DatabaseModule } from "./database/database.module"
 import { AuthModule } from "./modules/auth/auth.module"
+import { ProjetosModule } from "./modules/projetos/projetos.module"
+import { UsuariosModule } from "./modules/usuarios/usuarios.module"
 
 @Module({
   imports: [
@@ -19,6 +21,8 @@ import { AuthModule } from "./modules/auth/auth.module"
     EnvModule,
     DatabaseModule,
     AuthModule,
+    UsuariosModule,
+    ProjetosModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },
