@@ -201,18 +201,18 @@ Etapa 13 (manual/publicação) por último
 **Objetivo:** única camada do front que fala HTTP, com token automático e tipos do shared.
 
 **Entregas:**
-- [ ] `RestEntityClient<T>` genérico (list/get/create/update/remove) com filtros e paginação
-- [ ] Cliente de auth (login/select-project/refresh/logout/change-password/me)
-- [ ] Injeção automática do access token; **nunca** envia `projetoId` no body
-- [ ] Tratamento de erros padronizado (401 → sinaliza relogin/refresh; mapeia erro do back)
-- [ ] `createDataSource<T>(resource)` → devolve `CadastroDataSource<T>` compatível com a UI
+- [x] `RestEntityClient<T>` genérico (list/get/create/update/remove) com filtros e paginação
+- [x] Cliente de auth (login/select-project/refresh/logout/change-password/me)
+- [x] Injeção automática do access token; **nunca** envia `projetoId` no body
+- [x] Tratamento de erros padronizado (401 → sinaliza relogin/refresh; mapeia erro do back)
+- [x] `createDataSource<T>(resource)` → devolve `CadastroDataSource<T>` compatível com a UI
 
 **Testes unitários (fetch mockado):**
-- [ ] Headers corretos (Authorization), montagem de query de filtros, mapeamento de erros, refresh em 401
-- [ ] Nenhum body carrega `projetoId`
+- [x] Headers corretos (Authorization), montagem de query de filtros, mapeamento de erros, refresh em 401
+- [x] Nenhum body carrega `projetoId`
 
 **Validação:**
-- [ ] Commit `etapa-7: api-client tipado`
+- [x] Commit `etapa-7: api-client tipado`
 
 ---
 
@@ -352,7 +352,7 @@ Etapa 13 (manual/publicação) por último
 | 4 | Usuários + Projetos (escopo) | ✅ concluída | 2026-08-14 |
 | 5 | CRUD genérico por resource | ✅ concluída | 2026-08-14 |
 | 6 | `projects/` + gerador de config | ✅ concluída | 2026-08-14 |
-| 7 | `packages/api-client` | ⬜ não iniciada | — |
+| 7 | `packages/api-client` | ✅ concluída | 2026-08-14 |
 | 8 | `packages/ui` reconstruída | ⬜ não iniciada | — |
 | 9 | `apps/web` | ⬜ não iniciada | — |
 | 10 | Projeto `documentacao` | ⬜ não iniciada | — |

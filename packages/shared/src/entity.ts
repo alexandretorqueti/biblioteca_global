@@ -5,6 +5,21 @@
 /** Registro genérico de entidade persistida. */
 export type EntityRecord = Record<string, unknown>
 
+/**
+ * Contrato de dados da tela Cadastro (v1, mantido — PoC §7.4): a UI nunca
+ * fala HTTP; o api-client fornece implementações via createDataSource.
+ */
+export interface CadastroDataSource<T extends EntityRecord> {
+  list(): Promise<T[]>
+  create(values: Record<string, string | number | boolean>): Promise<T>
+  update(
+    row: T,
+    values: Record<string, string | number | boolean>,
+  ): Promise<T>
+  remove(row: T): Promise<void>
+  getRowId(row: T): string | number
+}
+
 /** Valores de formulário aceitos pelos CRUDs gerados. */
 export type FieldValues = Record<
   string,

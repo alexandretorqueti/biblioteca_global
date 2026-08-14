@@ -5,6 +5,7 @@
 
 // Tipos base de entidade/transporte
 export type {
+  CadastroDataSource,
   EntityRecord,
   FieldValues,
   ListParams,
