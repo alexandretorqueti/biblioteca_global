@@ -1933,6 +1933,21 @@ Motivos:
 - publicação por workflow;
 - associação entre tag e pacote.
 
+### ADR-008: Gerador de sistema orientado a configuração
+
+`GeradorSistema` compõe `SistemaMenu`, `SistemaBarraSuperior` e telas
+configuradas. Grupos são títulos de navegação e não possuem rota; cada item
+de grupo possui uma rota lógica e uma tela.
+
+O componente não conhece navegador, URL, autenticação nem transporte. A
+aplicação pode controlar a rota por `activePath` e `onRouteChange`; dados de
+sessão e ações globais são injetados por props.
+
+Telas CRUD usam `kind: "cadastro"` e recebem um `CadastroDataSource` já
+adaptado pelo consumidor. URLs e endpoints permanecem na aplicação ou no
+`api-client`. Telas fora do CRUD usam `kind: "custom"` e recebem conteúdo
+React injetado.
+
 ---
 
 ## 49. Checklist de componente

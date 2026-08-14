@@ -5,7 +5,7 @@ import {
   type Venda,
 } from "../services/dataSources"
 
-const fields: DynamicField[] = [
+export const vendaFields: DynamicField[] = [
   {
     name: "idCliente",
     label: "Cliente",
@@ -39,7 +39,7 @@ export default function VendasExample() {
     <Cadastro<Venda>
       dataSource={vendasDataSource}
       title="Cadastro de Vendas"
-      fields={fields}
+      fields={vendaFields}
       columns={2}
       newLabel="Nova venda"
       hiddenColumns={[

@@ -6,6 +6,9 @@ export type Library =
   | "multipleChoice"
   | "money"
   | "photo"
+  | "sistemaMenu"
+  | "sistemaBarraSuperior"
+  | "geradorSistema"
   | "clientes"
   | "vendas"
 
@@ -19,7 +22,7 @@ export interface LibraryContent {
 
 export interface MenuItemConfig {
   id: Library
-  icon: "grid" | "form" | "auth"
+  icon: "grid" | "form" | "auth" | "system"
   primary: string
   secondary: string
 }
@@ -66,6 +69,24 @@ export const componentMenuItems: MenuItemConfig[] = [
     icon: "form",
     primary: "FieldPhoto",
     secondary: "Upload, arraste e pré-visualização",
+  },
+  {
+    id: "sistemaMenu",
+    icon: "system",
+    primary: "SistemaMenu",
+    secondary: "Grupos e itens de navegação",
+  },
+  {
+    id: "sistemaBarraSuperior",
+    icon: "system",
+    primary: "SistemaBarraSuperior",
+    secondary: "Breadcrumb e ações responsivas",
+  },
+  {
+    id: "geradorSistema",
+    icon: "system",
+    primary: "GeradorSistema",
+    secondary: "Layout e telas por configuração",
   },
 ]
 
@@ -244,6 +265,60 @@ export const libraryContent: Record<Library, LibraryContent> = {
   maxFileSizeMb: 5,
   upload: uploadPhoto,
 }`,
+  },
+  sistemaMenu: {
+    name: "SistemaMenu",
+    title: "Menu de sistema configurável",
+    subtitle: "Renderiza grupos que funcionam como títulos e itens navegáveis com destaque da rota ativa.",
+    description: "Grupos não têm rota. Cada item recebe path, label, ícone opcional e a tela que será renderizada pelo GeradorSistema.",
+    code: `<SistemaMenu
+  groups={groups}
+  activePath={activePath}
+  onNavigate={setActivePath}
+/>`,
+  },
+  sistemaBarraSuperior: {
+    name: "SistemaBarraSuperior",
+    title: "Barra superior responsiva",
+    subtitle: "Exibe breadcrumb automático, ações injetadas e botão de abertura do menu em telas estreitas.",
+    description: "A barra não conhece autenticação. Ações, como perfil, tema ou sair, são conteúdo React injetado pela aplicação.",
+    code: `<SistemaBarraSuperior
+  appName="Meu sistema"
+  breadcrumbs={[
+    { id: "cadastros", label: "Cadastros" },
+    { id: "clientes", label: "Clientes" },
+  ]}
+  desktop={desktop}
+  drawerWidth={280}
+  actions={<AcoesDaSessao />}
+  onOpenMenu={openMenu}
+/>`,
+  },
+  geradorSistema: {
+    name: "GeradorSistema",
+    title: "Gerador de sistemas CRUD",
+    subtitle: "Orquestra menu, barra superior e telas customizadas ou de cadastro a partir de uma configuração tipada.",
+    description: "A aplicação controla a navegação quando necessário e injeta data sources. O GeradorSistema não contém URLs, endpoints ou transporte HTTP.",
+    code: `const config: GeradorSistemaConfig<Cliente> = {
+  app: { name: "Meu sistema", logo: <Logo /> },
+  groups: [{
+    id: "cadastros",
+    label: "Cadastros",
+    items: [{
+      id: "clientes",
+      label: "Clientes",
+      path: "/clientes",
+      screen: {
+        kind: "cadastro",
+        title: "Cadastro de clientes",
+        fields: clienteFields,
+        dataSource: clientesDataSource,
+      },
+    }],
+  }],
+}
+
+<GeradorSistema config={config} />`,
   },
   clientes: {
     name: "Cadastro de Clientes",

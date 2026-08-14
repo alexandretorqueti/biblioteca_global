@@ -4,7 +4,7 @@ import {
   type Cliente,
 } from "../services/dataSources"
 
-const fields: DynamicField[] = [
+export const clienteFields: DynamicField[] = [
   {
     name: "razaoSocial",
     label: "Razão Social",
@@ -55,7 +55,7 @@ export default function ClientesExample() {
     <Cadastro<Cliente>
       dataSource={clientesDataSource}
       title="Cadastro de Clientes"
-      fields={fields}
+      fields={clienteFields}
       columns={2}
       newLabel="Novo cliente"
       hiddenColumns={["createdAt", "updatedAt"]}
