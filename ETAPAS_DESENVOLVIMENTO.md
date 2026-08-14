@@ -34,19 +34,19 @@ Etapa 13 (manual/publicação) por último
 **Objetivo:** estrutura do monorepo funcionando, MySQL 8 em container, ferramentas de qualidade ativas.
 
 **Entregas:**
-- [ ] `package.json` raiz com workspaces (`packages/*`, `apps/*`, `projects/*` se aplicável) e scripts (`dev`, `build`, `test`, `lint`, `typecheck`)
-- [ ] TS configs base (`tsconfig.base.json` com `strict: true`) + configs por workspace
-- [ ] ESLint com `no-explicit-any` = erro, aplicado a todos os workspaces
-- [ ] `docker-compose.yml`: serviço `mysql` (MySQL 8, database inicial, healthcheck)
-- [ ] `.env.example` documentado (`MYSQL_*`, `JWT_SECRET`, portas)
-- [ ] `.gitignore`, README atualizado com a nova arquitetura
-- [ ] Estrutura vazia dos diretórios: `packages/{ui,api-client,shared}`, `apps/{api,web}`, `projects/`, `database/migrations`
+- [x] `package.json` raiz com workspaces (`packages/*`, `apps/*`, `projects/*` se aplicável) e scripts (`dev`, `build`, `test`, `lint`, `typecheck`)
+- [x] TS configs base (`tsconfig.base.json` com `strict: true`) + configs por workspace
+- [x] ESLint com `no-explicit-any` = erro, aplicado a todos os workspaces
+- [x] `docker-compose.yml`: serviço `mysql` (MySQL 8, database inicial, healthcheck)
+- [x] `.env.example` documentado (`MYSQL_*`, `JWT_SECRET`, portas)
+- [x] `.gitignore`, README atualizado com a nova arquitetura
+- [x] Estrutura vazia dos diretórios: `packages/{ui,api-client,shared}`, `apps/{api,web}`, `projects/`, `database/migrations`
 
 **Validação:**
-- [ ] `npm install --include=dev` conclui sem erro
-- [ ] `docker compose up -d mysql` sobe e healthcheck passa; conexão de teste (`mysql -e "SELECT 1"`) funciona
-- [ ] `npm run typecheck` e `npm run lint` passam no estado inicial
-- [ ] Commit `etapa-0: fundação do monorepo`
+- [x] `npm install --include=dev` conclui sem erro
+- [x] `docker compose up -d mysql` sobe e healthcheck passa; conexão de teste (`mysql -e "SELECT 1"`) funciona
+- [x] `npm run typecheck` e `npm run lint` passam no estado inicial
+- [x] Commit `etapa-0: fundação do monorepo`
 
 ---
 
@@ -55,17 +55,17 @@ Etapa 13 (manual/publicação) por último
 **Objetivo:** todos os tipos e contratos compartilhados entre front e back, com validação Zod.
 
 **Entregas:**
-- [ ] `EntityRecord`, tipos base (`ApiRecord`, filtros, paginação)
-- [ ] `GeradorSistemaConfig` **serializável** (app, groups, items, screens: cadastro com `resource` + overrides; custom com `componentId`)
-- [ ] Schemas Zod da config (validação estrutural — a validação contra o schema do projeto vem na Etapa 6)
-- [ ] DTOs/tipos de auth e sessão (`LoginRequest`, `LoginResponse`, `SessionInfo`, claims do token, perfis)
-- [ ] Tipos de `Usuario`, `Projeto`, `ProjetoUsuario` espelhando o core
-- [ ] Testes unitários: validação da config (aceita config válida, rejeita campo obrigatório ausente, rejeita estrutura inválida)
+- [x] `EntityRecord`, tipos base (`ApiRecord`, filtros, paginação)
+- [x] `GeradorSistemaConfig` **serializável** (app, groups, items, screens: cadastro com `resource` + overrides; custom com `componentId`)
+- [x] Schemas Zod da config (validação estrutural — a validação contra o schema do projeto vem na Etapa 6)
+- [x] DTOs/tipos de auth e sessão (`LoginRequest`, `LoginResponse`, `SessionInfo`, claims do token, perfis)
+- [x] Tipos de `Usuario`, `Projeto`, `ProjetoUsuario` espelhando o core
+- [x] Testes unitários: validação da config (aceita config válida, rejeita campo obrigatório ausente, rejeita estrutura inválida)
 
 **Validação:**
-- [ ] `tsc --noEmit` + vitest passando no pacote
-- [ ] Nenhum tipo `any`; exports explícitos
-- [ ] Commit `etapa-1: contratos shared`
+- [x] `tsc --noEmit` + vitest passando no pacote
+- [x] Nenhum tipo `any`; exports explícitos
+- [x] Commit `etapa-1: contratos shared`
 
 ---
 
@@ -343,8 +343,8 @@ Etapa 13 (manual/publicação) por último
 
 | Etapa | Nome | Status | Concluída em |
 |---|---|---|---|
-| 0 | Fundação do monorepo e ambiente | ⬜ não iniciada | — |
-| 1 | `packages/shared` | ⬜ não iniciada | — |
+| 0 | Fundação do monorepo e ambiente | ✅ concluída | 2026-08-14 |
+| 1 | `packages/shared` | ✅ concluída | 2026-08-14 |
 | 2 | Database `core` (schema/migrations/seeds) | ⬜ não iniciada | — |
 | 3 | API base + Auth (JWT por projeto) | ⬜ não iniciada | — |
 | 4 | Usuários + Projetos (escopo) | ⬜ não iniciada | — |

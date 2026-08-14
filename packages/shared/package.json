@@ -6,6 +6,10 @@
   "description": "Contratos únicos (tipos + Zod) entre front e back da Biblioteca Global",
   "main": "src/index.ts",
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
   }
 }
