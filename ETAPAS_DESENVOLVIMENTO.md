@@ -221,21 +221,21 @@ Etapa 13 (manual/publicação) por último
 **Objetivo:** biblioteca refeita sobre o backup, com registry de telas custom e dataSource por resource.
 
 **Entregas:**
-- [ ] Reconstruir do backup: `AuthPanel`, `Cadastro`, `DynamicForm`, `JsonGrid`, `LayoutContainer`, `LayoutItem`, `SistemaMenu`, `SistemaBarraSuperior`, `GeradorSistema`, todos os Fields, tema (`BibliotecaThemeProvider` + temas), utils (masks, formValidation, layout, system)
-- [ ] Remover `auth_panel_backup/` (ficou no backup do backup — não volta)
-- [ ] `GeradorSistema` consumindo **config serializável**: `resource` → dataSource montado fora; `componentId` → registry de telas custom; ícones/logo por string com mapa de resolução
-- [ ] Registry de telas custom exportado (`registerCustomScreens`/`getCustomScreen`)
-- [ ] Suporte à flag `globalAdmin` (campo `projetoId` condicional na tela de usuários — via prop/config)
-- [ ] exports públicos revisados (o que era exportado mantém compatibilidade de nome; novos exports documentados)
+- [x] Reconstruir do backup: `AuthPanel`, `Cadastro`, `DynamicForm`, `JsonGrid`, `LayoutContainer`, `LayoutItem`, `SistemaMenu`, `SistemaBarraSuperior`, `GeradorSistema`, todos os Fields, tema (`BibliotecaThemeProvider` + temas), utils (masks, formValidation, layout, system)
+- [x] Remover `auth_panel_backup/` (ficou no backup do backup — não volta)
+- [x] `GeradorSistema` consumindo **config serializável**: `resource` → dataSource montado fora; `componentId` → registry de telas custom; ícones/logo por string com mapa de resolução
+- [x] Registry de telas custom exportado (`registerCustomScreens`/`getCustomScreen`)
+- [x] Suporte à flag `globalAdmin` (campo `projetoId` condicional na tela de usuários — via prop/config)
+- [x] exports públicos revisados (o que era exportado mantém compatibilidade de nome; novos exports documentados)
 
 **Testes unitários:**
-- [ ] Manter/portar os 12 testes do backup (utils + FieldMultipleChoice) e passar
-- [ ] Novos: gerador de config → render do GeradorSistema (menu, breadcrumb, rota cadastro, rota custom via registry)
-- [ ] AuthPanel: fluxo de login com identificador configurável, estados de loading/erro
-- [ ] Build do pacote gera `dist/` limpo (js + d.ts)
+- [x] Manter/portar os 12 testes do backup (utils + FieldMultipleChoice) e passar
+- [x] Novos: gerador de config → render do GeradorSistema (menu, breadcrumb, rota cadastro, rota custom via registry)
+- [x] AuthPanel: fluxo de login com identificador configurável, estados de loading/erro
+- [x] Build do pacote gera `dist/` limpo (js + d.ts)
 
 **Validação:**
-- [ ] `npm run build` do pacote ok; commit `etapa-8: ui reconstruída`
+- [x] `npm run build` do pacote ok; commit `etapa-8: ui reconstruída`
 
 ---
 
@@ -353,7 +353,7 @@ Etapa 13 (manual/publicação) por último
 | 5 | CRUD genérico por resource | ✅ concluída | 2026-08-14 |
 | 6 | `projects/` + gerador de config | ✅ concluída | 2026-08-14 |
 | 7 | `packages/api-client` | ✅ concluída | 2026-08-14 |
-| 8 | `packages/ui` reconstruída | ⬜ não iniciada | — |
+| 8 | `packages/ui` reconstruída | ✅ concluída | 2026-08-14 |
 | 9 | `apps/web` | ⬜ não iniciada | — |
 | 10 | Projeto `documentacao` | ⬜ não iniciada | — |
 | 11 | Validação ponta a ponta | ⬜ não iniciada | — |
