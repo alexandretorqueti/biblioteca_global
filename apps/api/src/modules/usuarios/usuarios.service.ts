@@ -16,6 +16,7 @@ import {
 } from "@nestjs/common"
 import argon2 from "argon2"
 import type { PaginatedResult, Perfil } from "@biblioteca-global/shared"
+import { ehErroDuplicado } from "../../common/erros"
 import { SLUG_ADMIN_GLOBAL } from "../../common/guards/global-admin.guard"
 import type { ProjectScope } from "../../common/types"
 import type { CreateUsuarioDto } from "./dto/create-usuario.dto"
@@ -61,11 +62,6 @@ function semHash(linha: UsuarioRow): UsuarioPublico {
     createdAt: linha.createdAt,
     updatedAt: linha.updatedAt,
   }
-}
-
-function ehErroDuplicado(erro: unknown): boolean {
-  const codigos = (erro as { code?: string; cause?: { code?: string } })
-  return codigos.code === "ER_DUP_ENTRY" || codigos.cause?.code === "ER_DUP_ENTRY"
 }
 
 @Injectable()

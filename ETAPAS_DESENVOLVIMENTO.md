@@ -149,23 +149,23 @@ Etapa 13 (manual/publicação) por último
 **Objetivo:** as telas geradas têm endpoints REST funcionando contra o database do projeto.
 
 **Entregas:**
-- [ ] `CrudModule`: rotas `GET/POST /api/:resource`, `GET/PUT/DELETE /api/:resource/:id`
-- [ ] Whitelist de resources derivada do `schema.ts` do projeto da sessão (nunca string arbitrária)
-- [ ] Fábrica de conexão por projeto (cache por projetoId; conexão aponta para `projeto_<id>`)
-- [ ] Validação de entrada com Zod derivado do Drizzle (insert/select); filtros e paginação padronizados
-- [ ] Erros padronizados: resource desconhecido → 404; validação → 400; conflito → 409
+- [x] `CrudModule`: rotas `GET/POST /api/:resource`, `GET/PUT/DELETE /api/:resource/:id`
+- [x] Whitelist de resources derivada do `schema.ts` do projeto da sessão (nunca string arbitrária)
+- [x] Fábrica de conexão por projeto (cache por projetoId; conexão aponta para `projeto_<id>`)
+- [x] Validação de entrada com Zod derivado do Drizzle (insert/select); filtros e paginação padronizados
+- [x] Erros padronizados: resource desconhecido → 404; validação → 400; conflito → 409
 
 **Testes unitários:**
-- [ ] Resolução de resource (whitelist), montagem de query de filtro, validação Zod
-- [ ] Fábrica de conexão (cache, nome do database derivado do id — nunca do input)
+- [x] Resolução de resource (whitelist), montagem de query de filtro, validação Zod
+- [x] Fábrica de conexão (cache, nome do database derivado do id — nunca do input)
 
 **Testes funcionais:**
-- [ ] Resource válido no projeto → CRUD completo funciona no database do projeto
-- [ ] Resource inexistente → 404; registro com campo inválido → 400
-- [ ] **Isolamento:** dado criado via token do projeto A não aparece nem é acessível com token do projeto B (tentativa direta de id → 404)
+- [x] Resource válido no projeto → CRUD completo funciona no database do projeto
+- [x] Resource inexistente → 404; registro com campo inválido → 400
+- [x] **Isolamento:** dado criado via token do projeto A não aparece nem é acessível com token do projeto B (tentativa direta de id → 404)
 
 **Validação:**
-- [ ] Testes passando; commit `etapa-5: crud genérico por resource`
+- [x] Testes passando; commit `etapa-5: crud genérico por resource`
 
 ---
 
@@ -348,7 +348,7 @@ Etapa 13 (manual/publicação) por último
 | 2 | Database `core` (schema/migrations/seeds) | ✅ concluída | 2026-08-14 |
 | 3 | API base + Auth (JWT por projeto) | ✅ concluída | 2026-08-14 |
 | 4 | Usuários + Projetos (escopo) | ✅ concluída | 2026-08-14 |
-| 5 | CRUD genérico por resource | ⬜ não iniciada | — |
+| 5 | CRUD genérico por resource | ✅ concluída | 2026-08-14 |
 | 6 | `projects/` + gerador de config | ⬜ não iniciada | — |
 | 7 | `packages/api-client` | ⬜ não iniciada | — |
 | 8 | `packages/ui` reconstruída | ⬜ não iniciada | — |

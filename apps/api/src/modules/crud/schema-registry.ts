@@ -1,0 +1,30 @@
+/**
+ * Registro de schemas por projeto — whitelist de resources do CRUD genérico
+ * (PoC §6.2: resource = nome de tabela no schema.ts do projeto, nunca
+ * string arbitrária). Etapa 6 generalizará o carregamento das pastas
+ * projects/<slug>/.
+ */
+import { Injectable } from "@nestjs/common"
+import type { MySqlTable } from "drizzle-orm/mysql-core"
+import * as documentacaoSchema from "../../../../../projects/documentacao/schema"
+
+export interface SchemaRegistry {
+  /** Tabelas do projeto por nome; undefined = projeto sem schema. */
+  tabelasDoProjeto(slug: string): Record<string, MySqlTable> | undefined
+}
+
+export const SCHEMA_REGISTRY = Symbol("SCHEMA_REGISTRY")
+
+@Injectable()
+export class StaticSchemaRegistry implements SchemaRegistry {
+  private readonly porSlug = new Map<string, Record<string, MySqlTable>>([
+    // Projeto de administração da plataforma — sem tabelas de negócio
+    // (PoC §9.1): os resources daqui são os módulos específicos do core.
+    ["biblioteca-global", {}],
+    ["documentacao", { componentes: documentacaoSchema.componentes }],
+  ])
+
+  tabelasDoProjeto(slug: string): Record<string, MySqlTable> | undefined {
+    return this.porSlug.get(slug)
+  }
+}

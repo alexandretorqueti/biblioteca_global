@@ -2,7 +2,7 @@
   "name": "@biblioteca-global/project-documentacao",
   "version": "0.0.0",
   "private": true,
-  "type": "module",
+  "type": "commonjs",
   "description": "Projeto documentacao — documentação viva da biblioteca de componentes",
   "main": "src/index.ts",
   "scripts": {

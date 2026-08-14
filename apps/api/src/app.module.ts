@@ -7,6 +7,7 @@ import { ApiExceptionFilter } from "./common/filters/api-exception.filter"
 import { EnvModule } from "./config/env.module"
 import { DatabaseModule } from "./database/database.module"
 import { AuthModule } from "./modules/auth/auth.module"
+import { CrudModule } from "./modules/crud/crud.module"
 import { ProjetosModule } from "./modules/projetos/projetos.module"
 import { UsuariosModule } from "./modules/usuarios/usuarios.module"
 
@@ -23,6 +24,9 @@ import { UsuariosModule } from "./modules/usuarios/usuarios.module"
     AuthModule,
     UsuariosModule,
     ProjetosModule,
+    // CrudModule por último: rotas :resource não podem sombrear as
+    // específicas (auth/usuarios/projetos).
+    CrudModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },
