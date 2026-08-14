@@ -11,6 +11,7 @@ export const CHAVES_ENV = [
   "MYSQL_PORT",
   "MYSQL_USER",
   "MYSQL_PASSWORD",
+  "MYSQL_ROOT_PASSWORD",
   "MYSQL_DATABASE",
 ] as const
 

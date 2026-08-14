@@ -1,8 +1,8 @@
 /**
- * Schemas Zod derivados das tabelas Drizzle (uma escrita, validação nunca
- * diverge da tabela — PoC §7.2). Insert: colunas notNull sem default
- * são exigidas; defaults são opcionais; PK autoincrement/geradas ficam de fora. Update: tudo
- * opcional (parcial).
+ * Schemas Zod derivados das tabelas Drizzle (validação nunca diverge da
+ * tabela — PoC §7.2). Insert: colunas notNull sem default são exigidas;
+ * defaults são opcionais; PK autoincrement/geradas ficam de fora.
+ * Update: parcial e strict.
  */
 import { getTableColumns, type Column } from "drizzle-orm"
 import type { MySqlTable } from "drizzle-orm/mysql-core"
@@ -11,7 +11,7 @@ import { z, type ZodTypeAny } from "zod"
 function tipoZodDaColuna(coluna: Column): ZodTypeAny {
   const columnType = coluna.columnType
 
-  if (columnType === "MySqlEnum") {
+  if (columnType.startsWith("MySqlEnum")) {
     const valores = (coluna as unknown as { enumValues?: [string, ...string[]] })
       .enumValues
     if (valores && valores.length > 0) {

@@ -23,7 +23,8 @@
     "mysql2": "^3.11.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "@biblioteca-global/schema-tools": "*"
   },
   "devDependencies": {
     "@nestjs/testing": "^11.0.0",

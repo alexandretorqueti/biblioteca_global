@@ -14,6 +14,14 @@ import {
   geradorSistemaConfigSchema,
   type GeradorSistemaConfig,
 } from "@biblioteca-global/shared"
+import {
+  ConfigInvalidaError,
+  validarConfigContraSchema,
+} from "@biblioteca-global/schema-tools"
+import {
+  SCHEMA_REGISTRY,
+  type SchemaRegistry,
+} from "../crud/schema-registry"
 import type { CreateProjetoDto } from "./dto/create-projeto.dto"
 import type { UpdateProjetoDto } from "./dto/update-projeto.dto"
 import {
@@ -45,6 +53,7 @@ export class ProjetosService {
     @Inject(PROJETOS_REPOSITORY) private readonly repo: ProjetosRepository,
     @Inject(PROJETO_PROVISIONER)
     private readonly provisioner: ProjetoProvisioner,
+    @Inject(SCHEMA_REGISTRY) private readonly registry: SchemaRegistry,
   ) {}
 
   async listar(): Promise<ProjetoRow[]> {
@@ -75,7 +84,7 @@ export class ProjetosService {
 
     // Config inicial: fornecida (validada) ou padrão mínimo.
     const config = dto.config
-      ? this.validarConfig(dto.config)
+      ? this.validarConfig(dto.config, dto.slug)
       : configPadrao(dto.nome)
 
     const projetoId = await this.repo.criar({
@@ -104,8 +113,13 @@ export class ProjetosService {
     }
   }
 
-  /** Valida a config contra o contrato (estrutura + campos conhecidos). */
-  validarConfig(config: unknown): GeradorSistemaConfig {
+  /**
+   * Valida a config em duas camadas:
+   * 1. Estrutural (contrato serializável do shared).
+   * 2. Contra o schema do projeto: resource/campo inexistente → rejeita
+   *    (PoC §7.4 — defesa em profundidade).
+   */
+  validarConfig(config: unknown, slug: string): GeradorSistemaConfig {
     const resultado = geradorSistemaConfigSchema.safeParse(config)
     if (!resultado.success) {
       throw new BadRequestException({
@@ -115,6 +129,20 @@ export class ProjetosService {
           problema: issue.message,
         })),
       })
+    }
+    const tabelas = this.registry.tabelasDoProjeto(slug)
+    if (tabelas) {
+      try {
+        validarConfigContraSchema(resultado.data, tabelas)
+      } catch (erro: unknown) {
+        if (erro instanceof ConfigInvalidaError) {
+          throw new BadRequestException({
+            message: "Config inválida contra o schema do projeto",
+            details: erro.problemas,
+          })
+        }
+        throw erro
+      }
     }
     return resultado.data
   }
@@ -136,7 +164,7 @@ export class ProjetosService {
     }> = {}
     if (dto.nome !== undefined) campos.nome = dto.nome
     if (dto.ativo !== undefined) campos.ativo = dto.ativo
-    if (dto.config !== undefined) campos.config = this.validarConfig(dto.config)
+    if (dto.config !== undefined) campos.config = this.validarConfig(dto.config, projeto.slug)
 
     if (Object.keys(campos).length > 0) {
       await this.repo.atualizar(projeto.id, campos)

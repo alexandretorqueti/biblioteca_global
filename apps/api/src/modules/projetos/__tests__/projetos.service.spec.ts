@@ -12,6 +12,13 @@ import {
 } from "../projetos.service"
 import type { ProjetoProvisioner } from "../provisioner.service"
 import type { ProjetoRow, ProjetosRepository } from "../projetos.repository"
+import type { SchemaRegistry } from "../../crud/schema-registry"
+
+class FakeSchemaRegistry implements SchemaRegistry {
+  tabelasDoProjeto(): undefined {
+    return undefined
+  }
+}
 
 class FakeProjetosRepository implements ProjetosRepository {
   projetos: ProjetoRow[] = []
@@ -96,7 +103,7 @@ describe("ProjetosService", () => {
   beforeEach(() => {
     repo = new FakeProjetosRepository()
     provisioner = new FakeProvisioner()
-    service = new ProjetosService(repo, provisioner)
+    service = new ProjetosService(repo, provisioner, new FakeSchemaRegistry())
   })
 
   describe("criar (ciclo de vida)", () => {

@@ -14,7 +14,7 @@ import {
   type ProjetoDb,
 } from "../project-db.factory"
 import type { SchemaRegistry } from "../schema-registry"
-import { zodParaInsert, zodParaUpdate } from "../tabela-zod"
+import { zodParaInsert, zodParaUpdate } from "@biblioteca-global/schema-tools"
 
 class FakeRegistry implements SchemaRegistry {
   tabelasDoProjeto(slug: string): Record<string, MySqlTable> | undefined {

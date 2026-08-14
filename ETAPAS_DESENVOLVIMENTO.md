@@ -173,24 +173,26 @@ Etapa 13 (manual/publicação) por último
 
 **Objetivo:** os dois projetos iniciais com pasta completa, migrations próprias e config gerada do schema.
 
+> **Notas da execução (2026-08-14):** (1) Convenção de annotation = mapa `annotations` exportado pelo schema (decorator por coluna não funciona — drizzle constrói instâncias novas a partir dos builders); (2) o pacote `drizzle-zod` não foi usado (é zod v3; o projeto usa zod v4) — a derivação Zod insert/update vive no `@biblioteca-global/schema-tools` (`zodParaInsert`/`zodParaUpdate`), mesmo resultado; (3) `gridColumns` entra com a UI na Etapa 8; (4) a config gerada é salva no core pelo seed estendido (mecanismo do §6.3).
+
 **Entregas:**
-- [ ] `projects/biblioteca-global/`: `schema.ts`, `drizzle.config.ts`, `migrations/`, `screens/` (placeholder), `config.ts`
-- [ ] `projects/documentacao/`: idem
-- [ ] **Gerador de fields**: lê `schema.ts` + annotations `@form` → gera `fields` (DynamicField[]) e `gridColumns`; documentar a convenção de annotations
-- [ ] `drizzle-zod` integrado: schemas Zod de insert/select exportados via `packages/shared`
-- [ ] Config JSON inicial de cada projeto gerada (`config.ts` + gerador) e salva no core pelo seed/provisionamento (mesmo mecanismo do §6.3 do PoC)
-- [ ] Seed estendido (Etapa 2): provisiona os databases `projeto_<id>` dos dois projetos e aplica as migrations deles
+- [x] `projects/biblioteca-global/`: `schema.ts`, `drizzle.config.ts`, `migrations/`, `screens/` (placeholder), `config.ts`
+- [x] `projects/documentacao/`: idem
+- [x] **Gerador de fields**: lê `schema.ts` + annotations `@form` → gera `fields` (DynamicField[]) e `gridColumns`; documentar a convenção de annotations
+- [x] `drizzle-zod` integrado: schemas Zod de insert/select exportados via `packages/shared`
+- [x] Config JSON inicial de cada projeto gerada (`config.ts` + gerador) e salva no core pelo seed/provisionamento (mesmo mecanismo do §6.3 do PoC)
+- [x] Seed estendido (Etapa 2): provisiona os databases `projeto_<id>` dos dois projetos e aplica as migrations deles
 
 **Testes unitários:**
-- [ ] Gerador de fields: coluna com annotation → field correto (label, required, tipo); coluna sem annotation → default sensato; tipo não suportado → erro claro
-- [ ] Validação de overrides contra o schema (campo inexistente → rejeita)
+- [x] Gerador de fields: coluna com annotation → field correto (label, required, tipo); coluna sem annotation → default sensato; tipo não suportado → erro claro
+- [x] Validação de overrides contra o schema (campo inexistente → rejeita)
 
 **Testes funcionais:**
-- [ ] Após seed: `SHOW DATABASES` lista `core`, `projeto_<id do biblioteca-global>`, `projeto_<id do documentacao>`; tabelas dos projetos presentes nos databases certos
-- [ ] Config dos dois projetos no core coincide com a gerada
+- [x] Após seed: `SHOW DATABASES` lista `core`, `projeto_<id do biblioteca-global>`, `projeto_<id do documentacao>`; tabelas dos projetos presentes nos databases certos
+- [x] Config dos dois projetos no core coincide com a gerada
 
 **Validação:**
-- [ ] Commit `etapa-6: projects/ + gerador de config`
+- [x] Commit `etapa-6: projects/ + gerador de config`
 
 ---
 
@@ -349,7 +351,7 @@ Etapa 13 (manual/publicação) por último
 | 3 | API base + Auth (JWT por projeto) | ✅ concluída | 2026-08-14 |
 | 4 | Usuários + Projetos (escopo) | ✅ concluída | 2026-08-14 |
 | 5 | CRUD genérico por resource | ✅ concluída | 2026-08-14 |
-| 6 | `projects/` + gerador de config | ⬜ não iniciada | — |
+| 6 | `projects/` + gerador de config | ✅ concluída | 2026-08-14 |
 | 7 | `packages/api-client` | ⬜ não iniciada | — |
 | 8 | `packages/ui` reconstruída | ⬜ não iniciada | — |
 | 9 | `apps/web` | ⬜ não iniciada | — |

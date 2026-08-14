@@ -21,7 +21,7 @@ import {
 } from "../../common/erros"
 import { PROJECT_DB_FACTORY, type ProjectDbFactory } from "./project-db.factory"
 import { SCHEMA_REGISTRY, type SchemaRegistry } from "./schema-registry"
-import { zodParaInsert, zodParaUpdate } from "./tabela-zod"
+import { zodParaInsert, zodParaUpdate } from "@biblioteca-global/schema-tools"
 
 /** Nomes que pertencem ao core/módulos específicos — nunca genéricos. */
 export const RESOURCES_RESERVADOS: ReadonlySet<string> = new Set([
