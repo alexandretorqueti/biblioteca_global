@@ -19,11 +19,13 @@ import {
   Typography,
 } from "@mui/material"
 import { FolderRounded } from "@mui/icons-material"
+import { useNavigate } from "react-router-dom"
 import type { ProjetoResumo } from "@biblioteca-global/shared"
 import { useAuth } from "../auth/AuthContext"
 
 export default function ProjectSelectScreen(): ReactNode {
   const { projetos, usuario, selectProject } = useAuth()
+  const navigate = useNavigate()
   const [erro, setErro] = useState<string | null>(null)
   const [selecionando, setSelecionando] = useState<number | null>(null)
 
@@ -32,6 +34,7 @@ export default function ProjectSelectScreen(): ReactNode {
     setSelecionando(projeto.id)
     try {
       await selectProject(projeto.id)
+      navigate("/app", { replace: true })
     } catch (e: unknown) {
       setErro(
         e instanceof Error ? e.message : "Falha ao selecionar o projeto.",
