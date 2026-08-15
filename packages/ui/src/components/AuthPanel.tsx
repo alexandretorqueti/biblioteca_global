@@ -14,6 +14,7 @@ import {
   Stack,
   TextField,
   Typography,
+  useTheme,
 } from "@mui/material"
 import {
   Apple,
@@ -125,6 +126,7 @@ export default function AuthPanel({
   onForgotPassword,
   onSocialLogin,
 }: AuthPanelProps) {
+  const theme = useTheme()
   const [mode, setMode] = useState<"login" | "register" | "forgot">("login")
   const [showPassword, setShowPassword] = useState(false)
   const [successMessage, setSuccessMessage] = useState("")
@@ -195,6 +197,8 @@ export default function AuthPanel({
 
   return (
     <Box
+      data-testid="auth-panel-root"
+      data-theme-mode={theme.palette.mode}
       sx={{
         minHeight: 620,
         display: "grid",
@@ -202,7 +206,9 @@ export default function AuthPanel({
         p: { xs: 2, md: 4 },
         borderRadius: 4,
         background:
-          "radial-gradient(circle at top left, rgba(99,102,241,.22), transparent 36%), linear-gradient(135deg, #eef2ff 0%, #f8fafc 55%, #ecfeff 100%)",
+          theme.palette.mode === "dark"
+            ? "radial-gradient(circle at top left, rgba(129,140,248,.22), transparent 36%), linear-gradient(135deg, #111827 0%, #0f172a 55%, #172033 100%)"
+            : "radial-gradient(circle at top left, rgba(99,102,241,.22), transparent 36%), linear-gradient(135deg, #eef2ff 0%, #f8fafc 55%, #ecfeff 100%)",
       }}
     >
       <Paper
@@ -214,7 +220,10 @@ export default function AuthPanel({
           border: "1px solid",
           borderColor: "divider",
           borderRadius: 4,
-          boxShadow: "0 24px 70px rgba(15,23,42,.12)",
+          boxShadow:
+            theme.palette.mode === "dark"
+              ? "0 24px 70px rgba(0,0,0,.38)"
+              : "0 24px 70px rgba(15,23,42,.12)",
         }}
       >
         <Stack spacing={3}>

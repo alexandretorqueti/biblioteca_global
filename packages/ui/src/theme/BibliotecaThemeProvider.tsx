@@ -1,6 +1,7 @@
 import {
   createContext,
   useContext,
+  useEffect,
   useMemo,
   useState,
   type ReactNode,
@@ -33,6 +34,13 @@ export function BibliotecaThemeProvider({
 }: BibliotecaThemeProviderProps) {
   const [themeName, setThemeName] =
     useState<BibliotecaThemeName>(initialTheme)
+
+  // `initialTheme` também representa a preferência controlada pelo host.
+  // Sem esta sincronização, mudanças no contexto externo/localStorage
+  // eram ignoradas depois da primeira renderização do provider.
+  useEffect(() => {
+    setThemeName(initialTheme)
+  }, [initialTheme])
 
   const contextValue = useMemo(
     () => ({

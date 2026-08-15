@@ -26,12 +26,29 @@ import type { BibliotecaThemeName } from "@biblioteca-global/ui"
 
 const PREFERENCE_KEY = "bg.themePreference"
 
+// Tema padrão a ser usado quando não houver preferência armazenada ou
+// ocorrer qualquer erro ao ler o `localStorage`. Mantemos como constante
+// para facilitar futuras mudanças de padrão.
+const DEFAULT_THEME: BibliotecaThemeName = "escuro"
+
 function readPersisted(): BibliotecaThemeName {
   try {
+    // Busca a preferência salva no `localStorage`. Se houver um
+    // valor válido (`"claro"` ou `"escuro"`) ele será retornado.
+    // Caso contrário — ausência de chave, valor inesperado ou erro —
+    // o tema padrão definido por `DEFAULT_THEME` será usado. Isso garante que
+    // novos usuários vejam o modo escuro inicialmente, mas ainda respeita
+    // escolhas já armazenadas.
     const valor = localStorage.getItem(PREFERENCE_KEY)
-    return valor === "escuro" ? "escuro" : "claro"
+    if (valor === "claro" || valor === "escuro") {
+      return valor as BibliotecaThemeName
+    }
+    // Valor não reconhecido ou inexistente → tema padrão.
+    return DEFAULT_THEME
   } catch {
-    return "claro"
+    // Qualquer falha ao acessar o storage (por exemplo, modo privado)
+    // também resulta no tema padrão como fallback seguro.
+    return DEFAULT_THEME
   }
 }
 

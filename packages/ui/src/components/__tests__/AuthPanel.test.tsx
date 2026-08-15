@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event"
 import "@testing-library/jest-dom/vitest"
 import AuthPanel from "../AuthPanel"
 import type { AuthPanelConfig } from "../AuthPanel"
+import { BibliotecaThemeProvider } from "../../theme/BibliotecaThemeProvider"
 
 const config: AuthPanelConfig = {
   appName: "Biblioteca Demo",
@@ -14,6 +15,18 @@ const config: AuthPanelConfig = {
 }
 
 describe("AuthPanel", () => {
+  it("respeita o modo escuro do tema", () => {
+    render(
+      <BibliotecaThemeProvider initialTheme="escuro">
+        <AuthPanel config={config} onLogin={() => undefined} />
+      </BibliotecaThemeProvider>,
+    )
+    expect(screen.getByTestId("auth-panel-root")).toHaveAttribute(
+      "data-theme-mode",
+      "dark",
+    )
+  })
+
   it("renderiza o formulário de login com o identificador configurado", () => {
     render(
       <AuthPanel
