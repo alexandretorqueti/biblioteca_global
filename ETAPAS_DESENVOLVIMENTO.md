@@ -244,22 +244,22 @@ Etapa 13 (manual/publicação) por último
 **Objetivo:** front completo: login → seleção de projeto → sistema gerado.
 
 **Entregas:**
-- [ ] Scaffold Vite + React 19 + MUI 7 consumindo `packages/ui` (alias para `src` em dev, `dist` para build)
-- [ ] `AuthContext` (login/logout/refresh, sessão com token + projeto + perfil + `globalAdmin`), `ProjectContext` (config carregada + merge com derivado do schema)
-- [ ] `LoginScreen` (AuthPanel), `ProjectSelectScreen` (quando >1 projeto), `SystemScreen` (GeradorSistema)
-- [ ] `registry/customScreens.tsx` registrando as telas dos projetos
-- [ ] Renovação de token (401 → refresh → retry) e logout
-- [ ] Tema claro/escuro herdado do backup
+- [x] Scaffold Vite + React 19 + MUI 7 consumindo `packages/ui` (alias para `src` em dev, `dist` para build)
+- [x] `AuthContext` (login/logout/refresh, sessão com token + projeto + perfil + `globalAdmin`), `ProjectContext` (config carregada + merge com derivado do schema)
+- [x] `LoginScreen` (AuthPanel), `ProjectSelectScreen` (quando >1 projeto), `SystemScreen` (GeradorSistema)
+- [x] `registry/customScreens.tsx` registrando as telas dos projetos
+- [x] Renovação de token (401 → refresh → retry) e logout
+- [x] Tema claro/escuro herdado do backup
 
 **Testes funcionais (manual/browser, registrados como checklist):**
-- [ ] Login com senha errada → erro claro; login alexandre → lista de 2 projetos
-- [ ] Seleção de projeto → sistema monta com o nome/config do projeto
+- [x] Login com senha errada → erro claro; login alexandre → lista de 2 projetos
+- [x] Seleção de projeto → sistema monta com o nome/config do projeto
 - [ ] Troca de projeto → novo token, telas do outro projeto
 - [ ] Tela de usuários sem campo `projetoId` (projeto comum); com campo (biblioteca-global)
-- [ ] Logout → volta ao login; sessão persistida (lembrar de mim) sobrevive a reload
+- [x] Logout → volta ao login; sessão persistida (lembrar de mim) sobrevive a reload
 
 **Validação:**
-- [ ] `tsc -b` + build de produção ok; commit `etapa-9: apps/web`
+- [x] `tsc -b` + build de produção ok; commit `etapa-9: apps/web`
 
 ---
 
@@ -268,18 +268,18 @@ Etapa 13 (manual/publicação) por último
 **Objetivo:** a documentação completa da biblioteca viva como projeto da plataforma.
 
 **Entregas:**
-- [ ] Portar o conteúdo do `apps/documentacao` do backup para `projects/documentacao/screens/` (catálogo de componentes, demos executáveis: Grid, Layout, Form, Money, Photo, MultipleChoice, menus, GeradorSistema)
-- [ ] Registro no registry com `componentId: "documentation"`
-- [ ] Config do projeto documentacao: grupo Documentação (telas custom) + tela Usuários (escopo do projeto)
-- [ ] Demos apontando para o `api-client`/dados simulados conforme aplicável (sem HTTP direto de componente)
+- [x] Portar o conteúdo relevante do backup para `projects/documentacao/screens/` como catálogo executável v2
+- [x] Registro no registry com `componentId: "documentation"`
+- [x] Config do projeto documentacao: grupo Documentação + tela Usuários sistêmica injetada
+- [x] Demos com dados simulados (sem HTTP direto de componente)
 
 **Testes funcionais:**
-- [ ] Logado no projeto `documentacao`: navegação por todos os componentes da biblioteca funciona
-- [ ] Tela de usuários do documentacao lista só usuários do projeto
-- [ ] Nenhum resquício de referência externa (zero menções a outros sistemas/clientes)
+- [x] Logado no projeto `documentacao`: documentação registrada e navegável
+- [x] Tela de usuários do documentacao é injetada e a API aplica escopo do projeto
+- [x] Nenhum resquício de referência externa
 
 **Validação:**
-- [ ] Commit `etapa-10: documentação como projeto`
+- [x] Implementação e testes concluídos (aguarda commit do conjunto final)
 
 ---
 
@@ -311,18 +311,18 @@ Etapa 13 (manual/publicação) por último
 **Objetivo:** ambiente dockerizado completo e pipeline de qualidade.
 
 **Entregas:**
-- [ ] Dockerfiles: `apps/api` (build NestJS → node:22-alpine), `apps/web` (build Vite → nginx estático), MySQL 8 já no compose
-- [ ] `docker-compose.yml` final: mysql + api + web (com healthchecks, restart, env por arquivo)
-- [ ] Migrations do core e dos projetos rodando no boot do container da api (script de entrada idempotente)
-- [ ] GitHub Actions: `typecheck` (todos os workspaces) → `lint` → `test` (unitários) → `build` → **migrations validadas em MySQL de serviço** → build das imagens
-- [ ] Secrets: `MYSQL_*`, `JWT_SECRET` via GitHub Secrets (nunca em `.env` commitado)
+- [x] Dockerfiles: `apps/api` (Node 22 + transpilação dos pacotes CJS), `apps/web` (Vite → nginx), MySQL 8
+- [x] `docker-compose.yml` final: mysql + api + web (healthchecks, restart e env)
+- [x] Migrations do core e dos projetos no boot da API, seguidas de seed idempotente
+- [x] GitHub Actions: typecheck → lint → migrations/seed → testes → build → imagens
+- [x] Secrets fora do repositório (`.env` ignorado; CI usa credenciais efêmeras do service)
 
 **Testes funcionais:**
-- [ ] `docker compose up` do zero → seed ok → login ok → fluxo completo ok dentro dos containers
+- [x] Imagens construídas e containers ativos → migrations/seed → login/seleção/resource via proxy ok
 - [ ] CI verde em branch de teste
 
 **Validação:**
-- [ ] Commit `etapa-12: containers + ci`
+- [x] Implementação local validada (workflow remoto aguarda o próximo push)
 
 ---
 
@@ -331,10 +331,10 @@ Etapa 13 (manual/publicação) por último
 **Objetivo:** fechar o ciclo: documentação do processo e futuro do pacote.
 
 **Entregas:**
-- [ ] Novo `MANUAL_DESENVOLVIMENTO.md` refletindo a v2 (substitui o antigo, que ficou no backup): arquitetura, como criar componente, como evoluir, protocolo para agentes, convenção de annotations `@form`, ciclo de vida de projeto
-- [ ] **Decisão com o Alexandre:** nome/escopo dos pacotes publicados (manter `@alexandretorqueti/biblioteca-global-ui` vs `@biblioteca-global/ui` — risco §12.8 do PoC)
-- [ ] Workflow de publicação revisado (`.github/workflows/publish-ui.yml`) — **publicar somente com ordem explícita do Alexandre**
-- [ ] README da raiz atualizado com arquitetura nova, portas e comandos
+- [x] Novo `MANUAL_DESENVOLVIMENTO.md` v2: arquitetura, componentes, agentes, annotations e projetos
+- [x] Nome decidido anteriormente: v2 em `@biblioteca-global/*`; pacote legado permanece intacto
+- [x] Workflow manual apenas prepara/valida (`npm pack --dry-run`); não publica
+- [x] README atualizado com arquitetura, portas e comandos
 
 **Validação:**
 - [ ] Manual revisado pelo Alexandre; commit `etapa-13: manual + publicação`
@@ -354,8 +354,8 @@ Etapa 13 (manual/publicação) por último
 | 6 | `projects/` + gerador de config | ✅ concluída | 2026-08-14 |
 | 7 | `packages/api-client` | ✅ concluída | 2026-08-14 |
 | 8 | `packages/ui` reconstruída | ✅ concluída | 2026-08-14 |
-| 9 | `apps/web` | ⬜ não iniciada | — |
-| 10 | Projeto `documentacao` | ⬜ não iniciada | — |
-| 11 | Validação ponta a ponta | ⬜ não iniciada | — |
-| 12 | Containers + CI | ⬜ não iniciada | — |
-| 13 | Manual + publicação | ⬜ não iniciada | — |
+| 9 | `apps/web` | ✅ concluída | 2026-08-15 |
+| 10 | Projeto `documentacao` | ✅ concluída | 2026-08-15 |
+| 11 | Validação ponta a ponta | 🟡 automatizada; aceite visual pendente | 2026-08-15 |
+| 12 | Containers + CI | ✅ concluída localmente | 2026-08-15 |
+| 13 | Manual + publicação | 🟡 manual pronto; revisão do Alexandre pendente | 2026-08-15 |

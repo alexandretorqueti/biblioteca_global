@@ -42,12 +42,18 @@ Pré-requisitos: Node >= 22, Docker Compose.
 ```bash
 npm install --include=dev      # o container roda NODE_ENV=production: SEMPRE --include=dev
 cp .env.example .env           # e ajuste as senhas/segredos
-docker compose up -d mysql     # MySQL 8 na porta 3308 do host (3307 é do Recrescer)
+docker compose up -d --build   # web :5174, API :3003, MySQL :3308
 ```
 
 Scripts raiz: `npm run dev|build|test|lint|typecheck`.
 
-## Estado
+## Acesso local
 
-Reconstrução v2 em andamento — progresso em
-[`ETAPAS_DESENVOLVIMENTO.md`](./ETAPAS_DESENVOLVIMENTO.md) (registro de progresso).
+- Aplicativo: `http://localhost:5174`
+- API: `http://localhost:3003/api`
+- MySQL: `localhost:3308`
+
+O container da API aplica migrations e o seed idempotente antes de iniciar.
+Consulte o [`MANUAL_DESENVOLVIMENTO.md`](./MANUAL_DESENVOLVIMENTO.md) para
+criar/evoluir componentes e projetos. O aceite e o progresso ficam em
+[`ETAPAS_DESENVOLVIMENTO.md`](./ETAPAS_DESENVOLVIMENTO.md).

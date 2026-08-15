@@ -90,6 +90,48 @@ export function montarConfigInicial(
       telaCadastroDaTabela(nome, tabela, annotations[nome] ?? {}),
     )
 
+  // PoC §8: todo projeto recebe a tela sistêmica de usuários. Ela usa o
+  // módulo /api/usuarios (core + pivot), portanto não pertence ao schema de
+  // negócio do projeto e precisa ser injetada explicitamente.
+  if (!referenciados.has("usuarios")) {
+    telasGeradas.unshift({
+      id: "usuarios",
+      label: "Usuários",
+      path: "usuarios",
+      icon: "people",
+      screen: {
+        kind: "cadastro",
+        resource: "usuarios",
+        title: "Usuários",
+        description: "Usuários vinculados ao projeto atual",
+        fields: [
+          { name: "nome", label: "Nome", type: "text", required: true, fullWidth: true },
+          { name: "username", label: "Usuário", type: "text" },
+          { name: "email", label: "E-mail", type: "email" },
+          { name: "telefone", label: "Telefone", type: "text" },
+          { name: "cpf", label: "CPF", type: "text" },
+          { name: "password", label: "Senha inicial", type: "text", required: true },
+          {
+            name: "perfil",
+            label: "Perfil",
+            type: "select",
+            options: [
+              { label: "Administrador", value: "admin" },
+              { label: "Gerente", value: "gerente" },
+              { label: "Operador", value: "operador" },
+              { label: "Visualizador", value: "visualizador" },
+            ],
+          },
+        ],
+        overrides: {
+          columns: 2,
+          hiddenColumns: ["passwordHash", "createdAt", "updatedAt"],
+          newLabel: "Novo usuário",
+        },
+      },
+    })
+  }
+
   if (telasGeradas.length === 0) {
     return base
   }

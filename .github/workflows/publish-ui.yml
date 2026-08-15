@@ -1,0 +1,25 @@
+name: Preparar publicação da UI
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Versão SemVer a preparar (a publicação continua manual)"
+        required: true
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --include=dev
+      - run: npm run test --workspace @biblioteca-global/ui
+      - run: npm run build --workspace @biblioteca-global/ui
+      - run: npm pack --dry-run --workspace @biblioteca-global/ui
+      - run: echo "Pacote validado para ${{ inputs.version }}. Nenhuma publicação foi executada."

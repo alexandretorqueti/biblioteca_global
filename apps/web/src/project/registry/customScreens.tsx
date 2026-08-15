@@ -7,19 +7,7 @@
  * forem implementados (Etapa 10 — documentação), basta importar e registrar.
  */
 import { registerCustomScreens } from "@biblioteca-global/ui"
-import type { ReactNode } from "react"
-
-interface PlaceholderScreenProps {
-  label: string
-}
-
-/** Placeholder enquanto as telas dos projetos não existem (Etapa 10). */
-function PlaceholderScreen({
-  label,
-}: PlaceholderScreenProps): ReactNode {
-  const texto = `Tela custom (${label}) — implemente-a na pasta screens do projeto.`
-  return <p data-testid="custom-screen-placeholder">{texto}</p>
-}
+import DocumentationScreen from "../../../../../projects/documentacao/screens/DocumentationScreen"
 
 /**
  * Registra as telas custom de todos os projetos. Chamar no boot (main.tsx)
@@ -27,6 +15,6 @@ function PlaceholderScreen({
  */
 export function registrarTelasCustom(): void {
   registerCustomScreens({
-    documentation: () => <PlaceholderScreen label="documentation" />,
+    documentation: DocumentationScreen,
   })
 }

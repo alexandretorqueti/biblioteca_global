@@ -128,7 +128,8 @@ describe("montarConfigInicial", () => {
     expect(config.groups).toHaveLength(2)
     const cadastros = config.groups.at(1)
     expect(cadastros?.id).toBe("cadastros")
-    const tela = cadastros?.items.at(0)
+    expect(cadastros?.items.at(0)?.id).toBe("usuarios")
+    const tela = cadastros?.items.find((item) => item.id === "pedidos")
     expect(tela?.screen.kind).toBe("cadastro")
     if (tela?.screen.kind === "cadastro") {
       expect(tela.screen.resource).toBe("pedidos")
@@ -136,7 +137,7 @@ describe("montarConfigInicial", () => {
     }
   })
 
-  it("tabela já referenciada na base não é duplicada", () => {
+  it("tabela já referenciada não é duplicada e usuários é injetada", () => {
     const baseComPedidos: GeradorSistemaConfig = {
       app: { name: "Teste" },
       groups: [
@@ -155,7 +156,30 @@ describe("montarConfigInicial", () => {
       ],
     }
     const config = montarConfigInicial(baseComPedidos, { pedidos }, anotacoes)
-    expect(config).toBe(baseComPedidos)
+    const resources = config.groups
+      .flatMap((grupo) => grupo.items)
+      .filter((item) => item.screen.kind === "cadastro")
+      .map((item) => item.screen.kind === "cadastro" ? item.screen.resource : "")
+    expect(resources.filter((resource) => resource === "pedidos")).toHaveLength(1)
+    expect(resources).toContain("usuarios")
+  })
+
+  it("não duplica usuários quando a base já declara a tela sistêmica", () => {
+    const baseComUsuarios: GeradorSistemaConfig = {
+      app: { name: "Teste" },
+      groups: [{
+        id: "g",
+        label: "G",
+        items: [{
+          id: "usuarios",
+          label: "Usuários",
+          path: "usuarios",
+          screen: { kind: "cadastro", resource: "usuarios" },
+        }],
+      }],
+    }
+    const config = montarConfigInicial(baseComUsuarios, {}, {})
+    expect(config).toBe(baseComUsuarios)
   })
 })
 
