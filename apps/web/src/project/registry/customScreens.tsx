@@ -1,11 +1,13 @@
 /**
- * registry/customScreens.tsx — telas custom dos projetos (Etapa 9).
+ * registry/customScreens.tsx — registro das telas custom dos projetos.
  *
- * A config serializável referencia telas custom por `componentId` (string);
- * aqui registramos os componentes no registry da UI (registerCustomScreens).
- * Os componentes vivem nas pastas `projects/<slug>/screens/`; à medida que
- * forem implementados (Etapa 10 — documentação), basta importar e registrar.
+ * Atualmente o único projeto que possui tela custom é "documentacao". A
+ * implementação anterior registrava um placeholder genérico e, em seguida,
+ * uma chave separada `docScreen`. O manual (§38) especifica que a configuração
+ * do projeto referencia o componentId **"documentation"**; portanto devemos
+ * registrar exatamente esse id com a tela real.
  */
+
 import { registerCustomScreens } from "@biblioteca-global/ui"
 import DocumentationScreen from "../../../../../projects/documentacao/screens/DocumentationScreen"
 

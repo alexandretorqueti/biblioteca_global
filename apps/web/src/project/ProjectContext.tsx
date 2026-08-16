@@ -26,8 +26,8 @@ import type {
 import { geradorSistemaConfigSchema } from "@biblioteca-global/shared"
 import type { GeradorSistemaRuntime } from "@biblioteca-global/ui"
 import { createDataSource } from "@biblioteca-global/api-client"
-import type { ApiClientBundle } from "../api/client"
 import { getProjectConfig } from "./registry/projects"
+import { useAuth } from "../auth/AuthContext"
 
 export interface ProjectContextValue {
   /** Config validada do projeto selecionado (undefined enquanto não houver). */
@@ -40,62 +40,42 @@ export interface ProjectContextValue {
 
 const ProjectContext = createContext<ProjectContextValue | null>(null)
 
-export interface ProjectProviderProps {
-  /** slug do projeto selecionado (de AuthContext.projeto.slug). */
-  projectSlug: string | null
-  bundle: ApiClientBundle
-  children: ReactNode
-}
-
+// O provider obtém o slug do projeto e o bundle de API diretamente do AuthContext.
 function parseConfig(candidato: unknown): GeradorSistemaConfig | undefined {
   if (!candidato) return undefined
   const resultado = geradorSistemaConfigSchema.safeParse(candidato)
   return resultado.success ? resultado.data : undefined
 }
 
-export function ProjectProvider({
-  projectSlug,
-  bundle,
-  children,
-}: ProjectProviderProps) {
+export function ProjectProvider({ children }: { children: ReactNode }) {
+  const auth = useAuth()
+  const projectSlug = auth.projeto?.slug ?? null
+  const bundle = auth.bundle
+
   const [reloadTick, setReloadTick] = useState(0)
 
-  // Fonte: registry estático + possível reload remoto no futuro.
-  // O tick força a releitura após `reload()` (nova config do admin).
+  // Resolve a config usando o slug do projeto autenticado.
   const config = useMemo(
-    () =>
-      projectSlug
-        ? parseConfig(getProjectConfig(projectSlug))
-        : undefined,
+    () => (projectSlug ? parseConfig(getProjectConfig(projectSlug)) : undefined),
     [projectSlug, reloadTick],
   )
 
   const runtime = useMemo<GeradorSistemaRuntime | undefined>(() => {
     if (!config) return undefined
     return {
-      // Resource → CRUD via api-client (o token do projeto define o escopo).
-      getDataSource<T extends EntityRecord>(
-        resource: string,
-      ): CadastroDataSource<T> {
+      getDataSource<T extends EntityRecord>(resource: string): CadastroDataSource<T> {
+        // bundle pode ser undefined se ainda não houver auth; protegemos.
+        if (!bundle) return undefined as any
         return createDataSource<T>(bundle.http, resource)
       },
     }
   }, [config, bundle])
 
-  const reload = useCallback(() => {
-    setReloadTick((t) => t + 1)
-  }, [])
+  const reload = useCallback(() => setReloadTick((t) => t + 1), [])
 
-  const value = useMemo<ProjectContextValue>(
-    () => ({ config, runtime, reload }),
-    [config, runtime, reload],
-  )
+  const value = useMemo<ProjectContextValue>(() => ({ config, runtime, reload }), [config, runtime, reload])
 
-  return (
-    <ProjectContext.Provider value={value}>
-      {children}
-    </ProjectContext.Provider>
-  )
+  return <ProjectContext.Provider value={value}>{children}</ProjectContext.Provider>
 }
 
 export function useProject(): ProjectContextValue {
