@@ -1,32 +1,21 @@
 /**
- * registry/customScreens.tsx — telas custom dos projetos (Etapa 9).
+ * registry/customScreens.tsx — registro das telas custom dos projetos.
  *
- * A config serializável referencia telas custom por `componentId` (string);
- * aqui registramos os componentes no registry da UI (registerCustomScreens).
- * Os componentes vivem nas pastas `projects/<slug>/screens/`; à medida que
- * forem implementados (Etapa 10 — documentação), basta importar e registrar.
+ * Atualmente o único projeto que possui tela custom é "documentacao". A
+ * implementação anterior registrava um placeholder genérico e, em seguida,
+ * uma chave separada `docScreen`. O manual (§38) especifica que a configuração
+ * do projeto referencia o componentId **"documentation"**; portanto devemos
+ * registrar exatamente esse id com a tela real.
  */
+
 import { registerCustomScreens } from "@biblioteca-global/ui"
-import type { ReactNode } from "react"
+// Tela real do projeto "documentacao" (Etapa 10).
+// Caminho correto para a tela de documentação dentro do monorepo.
+import DocumentationScreen from "../../../../../projects/documentacao/screens/DocScreen"
 
-interface PlaceholderScreenProps {
-  label: string
-}
-
-/** Placeholder enquanto as telas dos projetos não existem (Etapa 10). */
-function PlaceholderScreen({
-  label,
-}: PlaceholderScreenProps): ReactNode {
-  const texto = `Tela custom (${label}) — implemente-a na pasta screens do projeto.`
-  return <p data-testid="custom-screen-placeholder">{texto}</p>
-}
-
-/**
- * Registra as telas custom de todos os projetos. Chamar no boot (main.tsx)
- * uma única vez. Re-registrar substitui a tela anterior pelo componentId.
- */
+/** Registra as telas custom. Atualmente apenas a documentação. */
 export function registrarTelasCustom(): void {
   registerCustomScreens({
-    documentation: () => <PlaceholderScreen label="documentation" />,
+    documentation: DocumentationScreen,
   })
 }

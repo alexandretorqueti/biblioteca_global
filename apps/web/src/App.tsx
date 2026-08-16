@@ -8,7 +8,8 @@
 import { useEffect, type ReactNode } from "react"
 import { BrowserRouter } from "react-router-dom"
 import { AuthProvider, useAuth } from "./auth/AuthContext"
-import { ProjectProvider, registrarTelasCustom } from "./project/ProjectContext"
+import { ProjectProvider } from "./project/ProjectContext"
+import { registrarTelasCustom } from "./project/registry/customScreens"
 import { ThemeSettingProvider } from "./theme/ThemeContext"
 import { AppRoutes } from "./routes/AppRoutes"
 
@@ -22,10 +23,7 @@ function ProjectHost({ children }: { children: ReactNode }): ReactNode {
   }, [])
 
   return (
-    <ProjectProvider
-      projectSlug={auth.projeto?.slug ?? null}
-      bundle={auth.bundle}
-    >
+    <ProjectProvider>
       {children}
     </ProjectProvider>
   )
