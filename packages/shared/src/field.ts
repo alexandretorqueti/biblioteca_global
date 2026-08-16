@@ -20,6 +20,7 @@ export const dynamicFieldTypeSchema = z.enum([
   "multipleChoice",
   "photo",
   "money",
+  "json",
 ])
 
 export type DynamicFieldType = z.infer<typeof dynamicFieldTypeSchema>
@@ -87,6 +88,17 @@ export const dynamicFieldConfigSchema = z
     validator: z.enum(["cnpj"]).optional(),
     fullWidth: z.boolean().optional(),
     disabled: z.boolean().optional(),
+    /**
+     * Onde o campo aparece (default: em todos os contextos):
+     * - `insertable`: no formulário de criação (default true)
+     * - `editable`: no formulário de edição (default true)
+     * - `gridVisible`: como coluna na grid (default true)
+     * Ex.: campo `config` (json) de projetos — editável/inserível,
+     * mas não é coluna da grid.
+     */
+    insertable: z.boolean().optional(),
+    editable: z.boolean().optional(),
+    gridVisible: z.boolean().optional(),
   })
   .strict()
 

@@ -77,6 +77,8 @@ export interface AuthPanelConfig {
   socialProviders?: AuthSocialProvider[]
   allowRegistration?: boolean
   allowPasswordRecovery?: boolean
+  /** Habilita "Entrar com código por e-mail" (auth única — default true). */
+  allowCodeLogin?: boolean
   allowRememberMe?: boolean
   requirePasswordConfirmation?: boolean
   registrationColumns?: 1 | 2
@@ -86,12 +88,30 @@ export interface AuthPanelConfig {
 
 export type AuthValues = Record<string, string | boolean>
 
+/** Resposta do onVerifyCode — o painel decide se vai para "defina sua senha". */
+export interface VerifyCodeResult {
+  primeiraVez: boolean
+  verificationToken?: string
+}
+
 interface AuthPanelProps {
   config: AuthPanelConfig
   onLogin?: (values: AuthValues) => Promise<void> | void
   onRegister?: (values: AuthValues) => void
   onForgotPassword?: (identifier: string) => void
   onSocialLogin?: (provider: string) => void
+  /** Pedido de código por e-mail (auth única). */
+  onRequestCode?: (email: string) => Promise<void> | void
+  /** Valida o código; se primeiraVez, o painel abre "Defina sua senha". */
+  onVerifyCode?: (
+    email: string,
+    code: string,
+  ) => Promise<VerifyCodeResult> | void
+  /** Define a senha na 1ª vez (verificationToken do verify-code). */
+  onSetPassword?: (
+    novaSenha: string,
+    verificationToken: string,
+  ) => Promise<void> | void
 }
 
 const identifierLabels: Record<LoginIdentifier, string> = {
@@ -125,9 +145,14 @@ export default function AuthPanel({
   onRegister,
   onForgotPassword,
   onSocialLogin,
+  onRequestCode,
+  onVerifyCode,
+  onSetPassword,
 }: AuthPanelProps) {
   const theme = useTheme()
-  const [mode, setMode] = useState<"login" | "register" | "forgot">("login")
+  const [mode, setMode] = useState<
+    "login" | "register" | "forgot" | "code" | "set-password"
+  >("login")
   const [showPassword, setShowPassword] = useState(false)
   const [successMessage, setSuccessMessage] = useState("")
   const [isLoading, setIsLoading] = useState(false)
@@ -156,6 +181,15 @@ export default function AuthPanel({
     useState<AuthValues>(initialRegisterValues)
 
   const [forgotIdentifier, setForgotIdentifier] = useState("")
+
+  // Estado do fluxo de código (auth única — D4).
+  const [codeEmail, setCodeEmail] = useState("")
+  const [code, setCode] = useState("")
+  const [verificationToken, setVerificationToken] = useState("")
+  const [novaSenha, setNovaSenha] = useState("")
+  const [confirmacaoSenha, setConfirmacaoSenha] = useState("")
+  const [erroCode, setErroCode] = useState("")
+  const [codeEnviado, setCodeEnviado] = useState(false)
 
   const updateLogin = (name: string, value: string | boolean) => {
     setSuccessMessage("")
@@ -190,9 +224,73 @@ export default function AuthPanel({
     setSuccessMessage("Solicitação de recuperação enviada.")
   }
 
-  const changeMode = (nextMode: "login" | "register" | "forgot") => {
+  const changeMode = (nextMode: "login" | "register" | "forgot" | "code" | "set-password") => {
     setSuccessMessage("")
+    setErroCode("")
     setMode(nextMode)
+  }
+
+  // ── Fluxo de código por e-mail (auth única) ──────────────────────────
+
+  const handleRequestCode = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setIsLoading(true)
+    setErroCode("")
+    try {
+      await onRequestCode?.(codeEmail)
+      setCodeEnviado(true)
+      setSuccessMessage("Se o e-mail existir, você receberá um código de acesso.")
+    } catch {
+      setErroCode("Não foi possível enviar o código. Tente novamente.")
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  const handleVerifyCode = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setIsLoading(true)
+    setErroCode("")
+    try {
+      const resultado = await onVerifyCode?.(codeEmail, code)
+      if (resultado?.primeiraVez && resultado.verificationToken) {
+        setVerificationToken(resultado.verificationToken)
+        setSuccessMessage("")
+        changeMode("set-password")
+      } else {
+        setSuccessMessage("Login realizado com sucesso.")
+      }
+    } catch {
+      setErroCode("Código inválido ou expirado.")
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  const handleSetPassword = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (novaSenha.length < 8) {
+      setErroCode("A senha deve ter pelo menos 8 caracteres.")
+      return
+    }
+    if (novaSenha !== confirmacaoSenha) {
+      setErroCode("As senhas não coincidem.")
+      return
+    }
+    setIsLoading(true)
+    setErroCode("")
+    try {
+      await onSetPassword?.(novaSenha, verificationToken)
+      setNovaSenha("")
+      setConfirmacaoSenha("")
+      setCodeEnviado(false)
+      changeMode("login")
+      setSuccessMessage("Senha definida! Entre com sua nova senha ou com o código.")
+    } catch {
+      setErroCode("Não foi possível definir a senha. Tente novamente.")
+    } finally {
+      setIsLoading(false)
+    }
   }
 
   return (
@@ -237,7 +335,11 @@ export default function AuthPanel({
                 ? config.title ?? "Bem-vindo novamente"
                 : mode === "register"
                   ? "Crie sua conta"
-                  : "Recuperar senha"}
+                  : mode === "forgot"
+                    ? "Recuperar senha"
+                    : mode === "code"
+                      ? "Entrar com código"
+                      : "Defina sua senha"}
             </Typography>
 
             <Typography color="text.secondary" mt={1}>
@@ -245,7 +347,11 @@ export default function AuthPanel({
                 ? config.subtitle ?? "Entre para continuar"
                 : mode === "register"
                   ? "Preencha os dados configurados para o cadastro"
-                  : `Informe seu ${identifierLabel.toLowerCase()}`}
+                  : mode === "forgot"
+                    ? `Informe seu ${identifierLabel.toLowerCase()}`
+                    : mode === "code"
+                      ? "Enviaremos um código de 6 dígitos para seu e-mail"
+                      : "Escolha uma senha para seu acesso"}
             </Typography>
           </Box>
 
@@ -387,7 +493,152 @@ export default function AuthPanel({
                   </Link>
                 </Typography>
               )}
+
+              {config.allowCodeLogin !== false && (
+                <Typography textAlign="center" color="text.secondary">
+                  ou{" "}
+                  <Link
+                    component="button"
+                    type="button"
+                    fontWeight={800}
+                    onClick={() => {
+                      setCodeEnviado(false)
+                      changeMode("code")
+                    }}
+                  >
+                    Entrar com código por e-mail
+                  </Link>
+                </Typography>
+              )}
             </>
+          )}
+
+          {mode === "code" && (
+            <Box>
+              {!codeEnviado ? (
+                <Box component="form" onSubmit={handleRequestCode}>
+                  <Stack spacing={2}>
+                    <TextField
+                      label="E-mail"
+                      type="email"
+                      required
+                      value={codeEmail}
+                      onChange={(event) => {
+                        setCodeEmail(event.target.value)
+                        setSuccessMessage("")
+                      }}
+                      autoComplete="email"
+                    />
+                    <Button
+                      type="submit"
+                      variant="contained"
+                      size="large"
+                      disabled={isLoading}
+                    >
+                      {isLoading ? "Enviando..." : "Enviar código"}
+                    </Button>
+                  </Stack>
+                </Box>
+              ) : (
+                <Box component="form" onSubmit={handleVerifyCode}>
+                  <Stack spacing={2}>
+                    <TextField
+                      label="Código de 6 dígitos"
+                      required
+                      inputProps={{
+                        maxLength: 6,
+                        inputMode: "numeric",
+                        pattern: "\\d{6}",
+                        "data-testid": "code-input",
+                      }}
+                      value={code}
+                      onChange={(event) => {
+                        setCode(
+                          event.target.value.replace(/\D/g, "").slice(0, 6),
+                        )
+                        setSuccessMessage("")
+                      }}
+                    />
+                    <Button
+                      type="submit"
+                      variant="contained"
+                      size="large"
+                      disabled={isLoading || code.length !== 6}
+                    >
+                      {isLoading ? "Entrando..." : "Entrar"}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="text"
+                      onClick={() => {
+                        setCode("")
+                        setCodeEnviado(false)
+                      }}
+                    >
+                      Reenviar código para outro e-mail
+                    </Button>
+                  </Stack>
+                </Box>
+              )}
+
+              {erroCode && (
+                <Alert severity="error" sx={{ mt: 2 }}>
+                  {erroCode}
+                </Alert>
+              )}
+
+              <Button
+                type="button"
+                variant="text"
+                fullWidth
+                sx={{ mt: 2 }}
+                onClick={() => changeMode("login")}
+              >
+                Voltar para o login
+              </Button>
+            </Box>
+          )}
+
+          {mode === "set-password" && (
+            <Box component="form" onSubmit={handleSetPassword}>
+              <Stack spacing={2}>
+                <TextField
+                  label="Nova senha"
+                  type={showPassword ? "text" : "password"}
+                  required
+                  value={novaSenha}
+                  onChange={(event) => {
+                    setNovaSenha(event.target.value)
+                    setErroCode("")
+                  }}
+                  autoComplete="new-password"
+                  helperText="Mínimo de 8 caracteres"
+                />
+                <TextField
+                  label="Confirme a senha"
+                  type={showPassword ? "text" : "password"}
+                  required
+                  value={confirmacaoSenha}
+                  onChange={(event) => {
+                    setConfirmacaoSenha(event.target.value)
+                    setErroCode("")
+                  }}
+                  autoComplete="new-password"
+                />
+                <Button
+                  type="submit"
+                  variant="contained"
+                  size="large"
+                  disabled={isLoading}
+                >
+                  {isLoading ? "Definindo..." : "Definir senha"}
+                </Button>
+
+                {erroCode && (
+                  <Alert severity="error">{erroCode}</Alert>
+                )}
+              </Stack>
+            </Box>
           )}
 
           {mode === "register" && (

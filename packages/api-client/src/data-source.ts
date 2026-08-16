@@ -18,8 +18,13 @@ function idDe(row: EntityRecord): string | number {
   throw new Error("registro sem campo id — impossível montar o dataSource")
 }
 
-/** Limite da listagem única da tela Cadastro (paginação fica p/ grid). */
-const LIMITE_LISTAGEM = 500
+/**
+ * Limite da listagem única da tela Cadastro (paginação fica p/ grid).
+ * Teto do back: 100 — mesmo valor em ListUsuariosQueryDto (@Max(100))
+ * e crud.service (pageSize > 100 → BadRequestException). Pedir mais que
+ * isso derruba a tela com 400 Bad Request.
+ */
+const LIMITE_LISTAGEM = 100
 
 export function createDataSource<T extends EntityRecord>(
   http: ApiHttpClient,

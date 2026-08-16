@@ -7,6 +7,7 @@ import {
   DrizzleAuthRepository,
 } from "./auth.repository"
 import { AuthService } from "./auth.service"
+import { EmailService } from "./email.service"
 
 @Module({
   imports: [
@@ -18,8 +19,9 @@ import { AuthService } from "./auth.service"
   controllers: [AuthController],
   providers: [
     AuthService,
+    EmailService,
     { provide: AUTH_REPOSITORY, useClass: DrizzleAuthRepository },
   ],
-  exports: [AuthService, AUTH_REPOSITORY, JwtModule],
+  exports: [AuthService, AUTH_REPOSITORY, JwtModule, EmailService],
 })
 export class AuthModule {}

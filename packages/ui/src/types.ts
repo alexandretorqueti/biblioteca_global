@@ -15,7 +15,7 @@ import type {
   MultipleChoiceFieldConfig,
 } from "@biblioteca-global/shared"
 
-export type { EntityRecord, CadastroDataSource } from "@biblioteca-global/shared"
+export type { EntityRecord, CadastroDataSource, FieldValues } from "@biblioteca-global/shared"
 export type {
   GeradorSistemaAppConfig,
   GeradorSistemaConfig,

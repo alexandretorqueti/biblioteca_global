@@ -47,6 +47,10 @@ function makeRepo(scope: ResolvedScope | undefined): AuthRepository {
     findRefreshTokenByHash: async () => undefined,
     revokeRefreshToken: async () => undefined,
     updatePasswordHash: async () => undefined,
+    createEmailVerification: async () => undefined,
+    getActiveEmailVerification: async () => undefined,
+    incrementVerificationAttempts: async () => undefined,
+    markVerificationUsed: async () => undefined,
   }
 }
 

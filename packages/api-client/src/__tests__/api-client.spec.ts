@@ -260,6 +260,73 @@ describe("AuthClient", () => {
     await auth.selectProject({ projetoId: 2 })
     expect(fake.requests.at(0)?.body).toEqual({ projetoId: 2 })
   })
+
+  it("auth por código: request-code/verify-code/set-password sem token de sessão", async () => {
+    fake.enqueue(
+      { status: 200, body: { ok: true } },
+      { status: 200, body: { primeiraVez: true, verificationToken: "vt-1" } },
+      { status: 200, body: { ok: true } },
+    )
+
+    await auth.requestCode({ email: "cliente@exemplo.com" })
+    const verificado = await auth.verifyCode({
+      email: "cliente@exemplo.com",
+      code: "123456",
+    })
+    await auth.setPassword({ verificationToken: "vt-1", novaSenha: "nova-senha-1" })
+
+    expect(verificado).toEqual({
+      primeiraVez: true,
+      verificationToken: "vt-1",
+    })
+    const chamadas = fake.requests.map((r) => `${r.method} ${r.url}`)
+    expect(chamadas).toEqual([
+      "POST http://api.local/api/auth/request-code",
+      "POST http://api.local/api/auth/verify-code",
+      "POST http://api.local/api/auth/set-password",
+    ])
+    // auth "none": nenhuma das 3 carrega Authorization.
+    for (const req of fake.requests) {
+      expect(req.headers.Authorization).toBeUndefined()
+    }
+    expect(fake.requests.at(1)?.body).toEqual({
+      email: "cliente@exemplo.com",
+      code: "123456",
+    })
+    expect(fake.requests.at(2)?.body).toEqual({
+      verificationToken: "vt-1",
+      novaSenha: "nova-senha-1",
+    })
+  })
+
+  it("provision-project usa o TOKEN DE SERVIÇO explícito, nunca o da sessão", async () => {
+    fake.enqueue({
+      status: 201,
+      body: { usuarioId: 7, projetoId: 9, perfil: "admin", criado: true },
+    })
+
+    const resposta = await auth.provisionProject(
+      { email: "cliente@exemplo.com", projetoNome: "Sistema X" },
+      "token-servico-123",
+    )
+
+    expect(resposta).toEqual({
+      usuarioId: 7,
+      projetoId: 9,
+      perfil: "admin",
+      criado: true,
+    })
+    const chamada = fake.requests.at(0)
+    expect(chamada?.method).toBe("POST")
+    expect(chamada?.url).toBe("http://api.local/api/provision/project")
+    expect(chamada?.headers.Authorization).toBe("Bearer token-servico-123")
+    // Token de acesso da sessão nunca vaza para o provision.
+    expect(chamada?.headers.Authorization).not.toBe("Bearer access-1")
+    expect(chamada?.body).toEqual({
+      email: "cliente@exemplo.com",
+      projetoNome: "Sistema X",
+    })
+  })
 })
 
 describe("RestEntityClient + createDataSource", () => {

@@ -9,6 +9,7 @@ import { DatabaseModule } from "./database/database.module"
 import { AuthModule } from "./modules/auth/auth.module"
 import { CrudModule } from "./modules/crud/crud.module"
 import { ProjetosModule } from "./modules/projetos/projetos.module"
+import { ProvisionModule } from "./modules/provision/provision.module"
 import { UsuariosModule } from "./modules/usuarios/usuarios.module"
 
 @Module({
@@ -24,6 +25,7 @@ import { UsuariosModule } from "./modules/usuarios/usuarios.module"
     AuthModule,
     UsuariosModule,
     ProjetosModule,
+    ProvisionModule,
     // CrudModule por último: rotas :resource não podem sombrear as
     // específicas (auth/usuarios/projetos).
     CrudModule,

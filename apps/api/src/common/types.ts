@@ -26,6 +26,8 @@ export interface RefreshSession {
 
 export interface ApiRequest {
   headers: Record<string, string | string[] | undefined>
+  /** IP de origem (rate-limit do request-code — Express preenche). */
+  ip?: string
   authClaims?: AuthClaims
   scope?: ProjectScope
   refreshSession?: RefreshSession

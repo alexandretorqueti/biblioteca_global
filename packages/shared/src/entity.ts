@@ -11,11 +11,8 @@ export type EntityRecord = Record<string, unknown>
  */
 export interface CadastroDataSource<T extends EntityRecord> {
   list(): Promise<T[]>
-  create(values: Record<string, string | number | boolean>): Promise<T>
-  update(
-    row: T,
-    values: Record<string, string | number | boolean>,
-  ): Promise<T>
+  create(values: FieldValues): Promise<T>
+  update(row: T, values: FieldValues): Promise<T>
   remove(row: T): Promise<void>
   getRowId(row: T): string | number
 }
@@ -23,7 +20,13 @@ export interface CadastroDataSource<T extends EntityRecord> {
 /** Valores de formulário aceitos pelos CRUDs gerados. */
 export type FieldValues = Record<
   string,
-  string | number | boolean | null | undefined
+  | string
+  | number
+  | boolean
+  | null
+  | undefined
+  | Record<string, unknown>
+  | unknown[]
 >
 
 /** Parâmetros padronizados de listagem do CRUD genérico. */

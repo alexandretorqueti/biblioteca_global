@@ -1,4 +1,11 @@
-import { IsDefined, IsNotEmpty, IsOptional, IsString, Matches } from "class-validator"
+import {
+  IsBoolean,
+  IsDefined,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  Matches,
+} from "class-validator"
 import type { GeradorSistemaConfig } from "@biblioteca-global/shared"
 
 export const SLUG_REGEX = /^[a-z][a-z0-9-]*$/
@@ -24,4 +31,9 @@ export class CreateProjetoDto {
   /** Config inicial opcional (validada); padrão mínimo quando ausente. */
   @IsOptional()
   config?: GeradorSistemaConfig
+
+  /** Aceito pelo form compartilhado; padrão true quando ausente. */
+  @IsOptional()
+  @IsBoolean()
+  ativo?: boolean
 }

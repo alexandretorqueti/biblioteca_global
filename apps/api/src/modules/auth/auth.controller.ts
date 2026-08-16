@@ -19,8 +19,11 @@ import type {
   MeResponse,
   ProjetoResumo,
   RefreshResponse,
+  RequestCodeResponse,
   SelectProjectResponse,
+  SetPasswordResponse,
   UsuarioAutenticado,
+  VerifyCodeResponse,
 } from "@biblioteca-global/shared"
 import { CurrentProject, CurrentUser } from "../../common/decorators/current.decorator"
 import { Public } from "../../common/decorators/public.decorator"
@@ -33,7 +36,10 @@ import { AuthService } from "./auth.service"
 // resolve a classe em runtime via metadata de parâmetro.
 import { ChangePasswordDto } from "./dto/change-password.dto"
 import { LoginDto } from "./dto/login.dto"
+import { RequestCodeDto } from "./dto/request-code.dto"
 import { SelectProjectDto } from "./dto/select-project.dto"
+import { SetPasswordDto } from "./dto/set-password.dto"
+import { VerifyCodeDto } from "./dto/verify-code.dto"
 
 function sessaoRefreshDe(req: ApiRequest) {
   if (!req.refreshSession) {
@@ -68,6 +74,30 @@ export class AuthController {
       sessaoRefreshDe(req).usuarioId,
       dto,
     )
+  }
+
+  /** Pedido de código por e-mail — resposta sempre { ok: true } (D4). */
+  @Public()
+  @Post("request-code")
+  requestCode(
+    @Body() dto: RequestCodeDto,
+    @Req() req: ApiRequest,
+  ): Promise<RequestCodeResponse> {
+    return this.authService.requestCode(dto, req.ip ?? "")
+  }
+
+  /** Valida o código — 1ª vez (token efêmero) ou login completo. */
+  @Public()
+  @Post("verify-code")
+  verifyCode(@Body() dto: VerifyCodeDto): Promise<VerifyCodeResponse> {
+    return this.authService.verifyCode(dto)
+  }
+
+  /** Define a senha na 1ª vez (autenticado pelo token efêmero). */
+  @Public()
+  @Post("set-password")
+  setPassword(@Body() dto: SetPasswordDto): Promise<SetPasswordResponse> {
+    return this.authService.setPassword(dto)
   }
 
   @UseGuards(RefreshAuthGuard)

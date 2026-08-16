@@ -2,7 +2,7 @@
  * Repositório de projetos sobre o database core (PoC §4.2/§6.2).
  */
 import { Inject, Injectable } from "@nestjs/common"
-import { eq } from "drizzle-orm"
+import { eq, sql } from "drizzle-orm"
 import type { GeradorSistemaConfig } from "@biblioteca-global/shared"
 import { projetos } from "../../../../../database/schema"
 import { CORE_DB, type CoreDb } from "../../database/database.module"
@@ -18,12 +18,16 @@ export interface ProjetoRow {
 }
 
 export interface ProjetosRepository {
-  listar(): Promise<ProjetoRow[]>
+  listar(filtros: {
+    page: number
+    pageSize: number
+  }): Promise<{ items: ProjetoRow[]; total: number }>
   findById(id: number): Promise<ProjetoRow | undefined>
   findBySlug(slug: string): Promise<ProjetoRow | undefined>
   criar(row: {
     nome: string
     slug: string
+    ativo?: boolean
     config: GeradorSistemaConfig
   }): Promise<number>
   atualizar(
@@ -44,8 +48,25 @@ export const PROJETOS_REPOSITORY = Symbol("PROJETOS_REPOSITORY")
 export class DrizzleProjetosRepository implements ProjetosRepository {
   constructor(@Inject(CORE_DB) private readonly db: CoreDb) {}
 
-  async listar(): Promise<ProjetoRow[]> {
-    return this.db.select().from(projetos).orderBy(projetos.nome)
+  async listar(filtros: {
+    page: number
+    pageSize: number
+  }): Promise<{ items: ProjetoRow[]; total: number }> {
+    const total = await this.db
+      .select({ quantidade: sql<number>`count(*)` })
+      .from(projetos)
+
+    const items = await this.db
+      .select()
+      .from(projetos)
+      .orderBy(projetos.nome)
+      .limit(filtros.pageSize)
+      .offset((filtros.page - 1) * filtros.pageSize)
+
+    return {
+      items,
+      total: Number(total.at(0)?.quantidade ?? 0),
+    }
   }
 
   async findById(id: number): Promise<ProjetoRow | undefined> {
@@ -69,12 +90,13 @@ export class DrizzleProjetosRepository implements ProjetosRepository {
   async criar(row: {
     nome: string
     slug: string
+    ativo?: boolean
     config: GeradorSistemaConfig
   }): Promise<number> {
     const resultado = await this.db.insert(projetos).values({
       nome: row.nome,
       slug: row.slug,
-      ativo: true,
+      ativo: row.ativo ?? true,
       config: row.config,
     })
     return resultado[0].insertId

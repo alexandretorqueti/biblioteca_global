@@ -191,6 +191,7 @@ export class UsuariosService {
       telefone: string | null
       cpf: string | null
       ativo: boolean
+      passwordHash: string
     }> = {}
     if (dto.nome !== undefined) campos.nome = dto.nome
     if (dto.username !== undefined) campos.username = dto.username
@@ -198,6 +199,12 @@ export class UsuariosService {
     if (dto.telefone !== undefined) campos.telefone = dto.telefone
     if (dto.cpf !== undefined) campos.cpf = dto.cpf
     if (dto.ativo !== undefined) campos.ativo = dto.ativo
+    // Redefinição de senha pelo admin (form compartilhado: vazio = manter).
+    if (dto.senhaInicial !== undefined) {
+      campos.passwordHash = await argon2.hash(dto.senhaInicial, {
+        type: argon2.argon2id,
+      })
+    }
 
     try {
       if (Object.keys(campos).length > 0) {

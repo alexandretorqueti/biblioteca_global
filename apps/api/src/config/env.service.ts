@@ -55,6 +55,81 @@ export class EnvService {
     return Number(this.config.get<string>("API_PORT") ?? "3001")
   }
 
+  // ── Auth por código (passwordless) ───────────────────────────────────
+
+  /** Segredo HMAC-SHA256 dos códigos de verificação (D5). */
+  get authCodeSecret(): string {
+    return this.required("AUTH_CODE_SECRET")
+  }
+
+  /** TTL do código em ms (padrão 10 min). */
+  get authCodeTtlMs(): number {
+    return Number(this.config.get<string>("AUTH_CODE_TTL_MS") ?? "600000")
+  }
+
+  /** Máximo de tentativas de verificação por código (estouro invalida). */
+  get authMaxAttempts(): number {
+    return Number(this.config.get<string>("AUTH_MAX_ATTEMPTS") ?? "5")
+  }
+
+  /** Códigos permitidos por janela (rate-limit no request-code). */
+  get authRateLimitMax(): number {
+    return Number(this.config.get<string>("AUTH_RATE_LIMIT_MAX") ?? "3")
+  }
+
+  /** Janela do rate-limit em ms (padrão 15 min). */
+  get authRateLimitWindowMs(): number {
+    return Number(
+      this.config.get<string>("AUTH_RATE_LIMIT_WINDOW_MS") ?? "900000",
+    )
+  }
+
+  /** TTL do token efêmero emitido no verify-code (1ª vez, sem senha). */
+  get authVerifyTokenTtl(): string {
+    return this.config.get<string>("AUTH_VERIFY_TOKEN_TTL") ?? "5m"
+  }
+
+  /**
+   * APENAS DEBUG (default off): loga o código quando o SMTP não está
+   * configurado — usado na validação manual (Etapa 11 do passo a passo).
+   * NUNCA ligar em produção.
+   */
+  get authCodeDebugLog(): boolean {
+    return this.config.get<string>("AUTH_CODE_DEBUG_LOG") === "true"
+  }
+
+  // ── E-mail (SMTP) ────────────────────────────────────────────────────
+
+  get smtpHost(): string {
+    return this.config.get<string>("SMTP_HOST") ?? ""
+  }
+
+  get smtpPort(): number {
+    return Number(this.config.get<string>("SMTP_PORT") ?? "587")
+  }
+
+  get smtpUser(): string {
+    return this.config.get<string>("SMTP_USER") ?? ""
+  }
+
+  get smtpPassword(): string {
+    return this.config.get<string>("SMTP_PASSWORD") ?? ""
+  }
+
+  get smtpFrom(): string {
+    return (
+      this.config.get<string>("SMTP_FROM") ??
+      "noreply@globaltecnologia.com.br"
+    )
+  }
+
+  // ── Provisionamento (token de serviço) ───────────────────────────────
+
+  /** Token de serviço do GerenteAgentes (nunca logar). */
+  get provisionToken(): string {
+    return this.required("PROVISION_TOKEN")
+  }
+
   private required(key: string): string {
     const valor = this.config.get<string>(key)
     if (!valor) {

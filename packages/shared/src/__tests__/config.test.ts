@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
   cadastroScreenConfigSchema,
+  dynamicFieldConfigSchema,
   geradorSistemaConfigSchema,
   loginRequestSchema,
   screenConfigSchema,
@@ -169,6 +170,39 @@ describe("geradorSistemaConfigSchema", () => {
     const result = geradorSistemaConfigSchema.safeParse({
       ...configValida,
       chaveSurpresa: true,
+    })
+    expect(result.success).toBe(false)
+  })
+})
+
+describe("dynamicFieldConfigSchema", () => {
+  it("aceita flags de contexto (insertable/editable/gridVisible) e tipo json", () => {
+    const result = dynamicFieldConfigSchema.safeParse({
+      name: "config",
+      label: "Config (JSON)",
+      type: "json",
+      insertable: true,
+      editable: true,
+      gridVisible: false,
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it("aceita campo sem as flags (default: aparece em todos os contextos)", () => {
+    const result = dynamicFieldConfigSchema.safeParse({
+      name: "nome",
+      label: "Nome",
+      type: "text",
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it("rejeita flag desconhecida (strict)", () => {
+    const result = dynamicFieldConfigSchema.safeParse({
+      name: "nome",
+      label: "Nome",
+      type: "text",
+      visivelNoBanco: true,
     })
     expect(result.success).toBe(false)
   })

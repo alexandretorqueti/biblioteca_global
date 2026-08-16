@@ -14,6 +14,7 @@ import { AddRounded } from "@mui/icons-material"
 import type {
   CadastroDataSource,
   EntityRecord,
+  FieldValues,
 } from "../types"
 import DynamicForm, {
   type DynamicField,
@@ -103,11 +104,28 @@ export default function Cadastro<T extends EntityRecord>({
     setError("")
 
     try {
+      // Campos json chegam como string do form — converte de volta a objeto.
+      const payload: FieldValues = { ...values }
+      for (const field of fields) {
+        if (field.type === "json" && typeof payload[field.name] === "string") {
+          const raw = payload[field.name] as string
+          if (raw.trim() === "") {
+            delete payload[field.name]
+          } else {
+            try {
+              payload[field.name] = JSON.parse(raw)
+            } catch {
+              // Não chega aqui: a validação do form bloqueia JSON inválido.
+            }
+          }
+        }
+      }
+
       if (selectedRow) {
-        await dataSource.update(selectedRow, values)
+        await dataSource.update(selectedRow, payload)
         setSuccessMessage("Registro atualizado com sucesso.")
       } else {
-        await dataSource.create(values)
+        await dataSource.create(payload)
         setSuccessMessage("Registro cadastrado com sucesso.")
       }
 
@@ -159,11 +177,28 @@ export default function Cadastro<T extends EntityRecord>({
           typeof value === "boolean"
         ) {
           values[field.name] = value
+        } else if (
+          field.type === "json" &&
+          typeof value === "object" &&
+          value !== null
+        ) {
+          // Campo json: o form trabalha com string — serializa para edição.
+          values[field.name] = JSON.stringify(value, null, 2)
         }
 
         return values
       }, {})
     : undefined
+
+  // Onde o campo aparece: criação → insertable; edição → editable.
+  const formFields = fields.filter((field) =>
+    selectedRow ? field.editable !== false : field.insertable !== false,
+  )
+
+  // Campos com gridVisible: false não viram coluna da grid.
+  const gridHiddenColumns = fields
+    .filter((field) => field.gridVisible === false)
+    .map((field) => field.name)
 
   return (
     <Stack spacing={3}>
@@ -202,7 +237,7 @@ export default function Cadastro<T extends EntityRecord>({
         title={`Lista de ${title.toLowerCase()}`}
         data={rows as unknown as JsonRecord[]}
         loading={loading}
-        hiddenColumns={hiddenColumns}
+        hiddenColumns={[...hiddenColumns, ...gridHiddenColumns]}
         columnLabels={columnLabels}
         columns={gridColumns}
         getRowId={(row) =>
@@ -227,7 +262,7 @@ export default function Cadastro<T extends EntityRecord>({
         <DialogContent>
           <Box sx={{ pt: 1 }}>
             <DynamicForm
-              fields={fields}
+              fields={formFields}
               columns={columns}
               initialValues={initialValues}
               loading={saving}

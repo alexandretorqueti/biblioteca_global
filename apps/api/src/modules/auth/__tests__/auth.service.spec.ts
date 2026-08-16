@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
   BadRequestException,
   ForbiddenException,
@@ -14,12 +14,15 @@ import type {
 } from "@biblioteca-global/shared"
 import { EnvService } from "../../../config/env.service"
 import type { RefreshTokenRow } from "../auth.repository"
+import { EmailService } from "../email.service"
 import type {
   AuthRepository,
+  EmailVerificationRow,
   ResolvedScope,
   UsuarioRow,
 } from "../auth.repository"
 import { AuthService } from "../auth.service"
+import { hashCode } from "../verification"
 
 /** Repositório em memória para testes unitários rápidos e determinísticos. */
 class FakeAuthRepository implements AuthRepository {
@@ -27,7 +30,9 @@ class FakeAuthRepository implements AuthRepository {
   projetos: { id: number; nome: string; slug: string; ativo: boolean }[] = []
   vinculos: { usuarioId: number; projetoId: number; perfil: Perfil }[] = []
   refreshTokens: (RefreshTokenRow & { tokenHash: string })[] = []
+  emailVerifications: (EmailVerificationRow & { codeHash: string })[] = []
   private proximoTokenId = 1
+  private proximaVerificacaoId = 1
 
   async findUsuarioByIdentifier(
     identifierType: LoginIdentifierType,
@@ -144,6 +149,45 @@ class FakeAuthRepository implements AuthRepository {
     const usuario = this.usuarios.find((u) => u.id === usuarioId)
     if (usuario) usuario.passwordHash = passwordHash
   }
+
+  async createEmailVerification(row: {
+    email: string
+    codeHash: string
+    expiresAt: Date
+  }): Promise<void> {
+    this.emailVerifications.push({
+      id: this.proximaVerificacaoId++,
+      email: row.email.toLowerCase(),
+      codeHash: row.codeHash,
+      expiresAt: row.expiresAt,
+      attempts: 0,
+      usedAt: null,
+      createdAt: new Date(),
+    })
+  }
+
+  async getActiveEmailVerification(
+    email: string,
+  ): Promise<EmailVerificationRow | undefined> {
+    return [...this.emailVerifications]
+      .filter(
+        (v) =>
+          v.email === email.toLowerCase() &&
+          v.usedAt === null &&
+          v.expiresAt.getTime() > Date.now(),
+      )
+      .sort((a, b) => b.id - a.id)[0]
+  }
+
+  async incrementVerificationAttempts(id: number): Promise<void> {
+    const v = this.emailVerifications.find((x) => x.id === id)
+    if (v) v.attempts += 1
+  }
+
+  async markVerificationUsed(id: number): Promise<void> {
+    const v = this.emailVerifications.find((x) => x.id === id)
+    if (v) v.usedAt = new Date()
+  }
 }
 
 function makeUsuario(overrides: Partial<UsuarioRow>): UsuarioRow {
@@ -168,6 +212,7 @@ describe("AuthService", () => {
   let repo: FakeAuthRepository
   let service: AuthService
   let jwt: JwtService
+  let email: { sendVerificationEmail: ReturnType<typeof vi.fn> }
 
   beforeEach(async () => {
     repo = new FakeAuthRepository()
@@ -197,8 +242,20 @@ describe("AuthService", () => {
     const env = {
       jwtAccessTtl: "15m",
       refreshTokenTtlDays: 7,
+      authCodeSecret: "segredo-auth-teste",
+      authCodeTtlMs: 600_000,
+      authMaxAttempts: 5,
+      authRateLimitMax: 3,
+      authRateLimitWindowMs: 900_000,
+      authVerifyTokenTtl: "5m",
     } as unknown as EnvService
-    service = new AuthService(repo, jwt, env)
+    email = { sendVerificationEmail: vi.fn() }
+    service = new AuthService(
+      repo,
+      jwt,
+      env,
+      email as unknown as EmailService,
+    )
   })
 
   describe("login", () => {
@@ -342,6 +399,216 @@ describe("AuthService", () => {
           identifierType: "username",
         }),
       ).rejects.toBeInstanceOf(UnauthorizedException)
+    })
+  })
+
+  describe("auth por código (passwordless)", () => {
+    const EMAIL = "cliente@exemplo.com"
+    const EMAIL_SEM_SENHA = "cliente-novo@exemplo.com"
+    const CODIGO = "123456"
+    const SECRET = "segredo-auth-teste"
+
+    // Usuário com senha — alvo dos fluxos "conta existente".
+    beforeEach(async () => {
+      repo.usuarios.push(
+        makeUsuario({
+          id: 20,
+          email: EMAIL,
+          passwordHash: await argon2.hash(SENHA),
+        }),
+      )
+    })
+
+    /** Cria uma verificação ativa no fake (como o request-code faria). */
+    function criarVerificacao(
+      email: string,
+      codigo: string,
+      ttlMs = 600_000,
+    ): void {
+      void repo.createEmailVerification({
+        email,
+        codeHash: hashCode(codigo, email, SECRET),
+        expiresAt: new Date(Date.now() + ttlMs),
+      })
+    }
+
+    describe("requestCode", () => {
+      it("conta existente: gera verificação e envia o código", async () => {
+        const resposta = await service.requestCode(
+          { email: EMAIL },
+          "127.0.0.1",
+        )
+        expect(resposta).toEqual({ ok: true })
+        expect(email.sendVerificationEmail).toHaveBeenCalledTimes(1)
+        expect(email.sendVerificationEmail).toHaveBeenCalledWith({
+          to: EMAIL,
+          code: expect.stringMatching(/^\d{6}$/) as unknown as string,
+        })
+        expect(repo.emailVerifications).toHaveLength(1)
+        expect(repo.emailVerifications[0]?.email).toBe(EMAIL)
+        // Nunca armazena o código em claro.
+        expect(repo.emailVerifications[0]?.codeHash).not.toBe(CODIGO)
+      })
+
+      it("conta inexistente: mesma resposta { ok: true }, nada enviado", async () => {
+        const resposta = await service.requestCode(
+          { email: "nao-existe@exemplo.com" },
+          "127.0.0.1",
+        )
+        expect(resposta).toEqual({ ok: true })
+        expect(email.sendVerificationEmail).not.toHaveBeenCalled()
+        expect(repo.emailVerifications).toHaveLength(0)
+      })
+
+      it("e-mail inválido: mesma resposta, nada enviado", async () => {
+        const resposta = await service.requestCode(
+          { email: "sem-arroba" },
+          "127.0.0.1",
+        )
+        expect(resposta).toEqual({ ok: true })
+        expect(email.sendVerificationEmail).not.toHaveBeenCalled()
+      })
+
+      it("rate-limit: 4º pedido na janela não gera código (resposta idêntica)", async () => {
+        for (let i = 0; i < 4; i++) {
+          const resposta = await service.requestCode(
+            { email: EMAIL },
+            "127.0.0.1",
+          )
+          expect(resposta).toEqual({ ok: true })
+        }
+        // 3 permitidos; o 4º é bloqueado silenciosamente.
+        expect(email.sendVerificationEmail).toHaveBeenCalledTimes(3)
+        expect(repo.emailVerifications).toHaveLength(3)
+      })
+
+      it("e-mail com case diferente conta como o mesmo (normalização)", async () => {
+        await service.requestCode({ email: "Cliente@Exemplo.com" }, "ip")
+        expect(email.sendVerificationEmail).toHaveBeenCalledWith({
+          to: "cliente@exemplo.com",
+          code: expect.stringMatching(/^\d{6}$/) as unknown as string,
+        })
+      })
+    })
+
+    describe("verifyCode", () => {
+      it("sem senha + código certo → primeiraVez + token efêmero", async () => {
+        repo.usuarios.push(
+          makeUsuario({ id: 10, email: EMAIL_SEM_SENHA, passwordHash: null }),
+        )
+        criarVerificacao(EMAIL_SEM_SENHA, CODIGO)
+
+        const resposta = await service.verifyCode({
+          email: EMAIL_SEM_SENHA,
+          code: CODIGO,
+        })
+        expect(resposta.primeiraVez).toBe(true)
+        if (!resposta.primeiraVez) throw new Error("esperava primeiraVez")
+        const claims = await jwt.verifyAsync<{ sub: number }>(
+          resposta.verificationToken,
+        )
+        expect(claims.sub).toBe(10)
+        // Código marcado como usado.
+        expect(repo.emailVerifications[0]?.usedAt).not.toBeNull()
+      })
+
+      it("com senha + código certo → login completo", async () => {
+        criarVerificacao(EMAIL, CODIGO)
+        const resposta = await service.verifyCode({ email: EMAIL, code: CODIGO })
+        expect(resposta.primeiraVez).toBe(false)
+        if (resposta.primeiraVez) throw new Error("esperava login completo")
+        expect(resposta.refreshToken).toBeTruthy()
+        expect(resposta.usuario.email).toBe(EMAIL)
+        expect(resposta.projetos).toHaveLength(0)
+      })
+
+      it("código errado → 401 e incrementa tentativas", async () => {
+        criarVerificacao(EMAIL, CODIGO)
+        await expect(
+          service.verifyCode({ email: EMAIL, code: "999999" }),
+        ).rejects.toBeInstanceOf(UnauthorizedException)
+        expect(repo.emailVerifications[0]?.attempts).toBe(1)
+        expect(repo.emailVerifications[0]?.usedAt).toBeNull()
+      })
+
+      it("estouro de tentativas (5ª) invalida o código", async () => {
+        criarVerificacao(EMAIL, CODIGO)
+        for (let i = 0; i < 5; i++) {
+          await expect(
+            service.verifyCode({ email: EMAIL, code: "999999" }),
+          ).rejects.toBeInstanceOf(UnauthorizedException)
+        }
+        expect(repo.emailVerifications[0]?.usedAt).not.toBeNull()
+        // Mesmo o código certo não vale mais.
+        await expect(
+          service.verifyCode({ email: EMAIL, code: CODIGO }),
+        ).rejects.toBeInstanceOf(UnauthorizedException)
+      })
+
+      it("código expirado → 401", async () => {
+        criarVerificacao(EMAIL, CODIGO, -60_000)
+        await expect(
+          service.verifyCode({ email: EMAIL, code: CODIGO }),
+        ).rejects.toBeInstanceOf(UnauthorizedException)
+      })
+
+      it("sem verificação ativa → 401", async () => {
+        await expect(
+          service.verifyCode({ email: EMAIL, code: CODIGO }),
+        ).rejects.toBeInstanceOf(UnauthorizedException)
+      })
+    })
+
+    describe("setPassword", () => {
+      async function tokenEfemerro(sub: number): Promise<string> {
+        return jwt.signAsync({ sub }, { expiresIn: "5m" })
+      }
+
+      it("token válido grava a senha (login com a nova senha funciona)", async () => {
+        repo.usuarios.push(
+          makeUsuario({ id: 11, email: EMAIL, passwordHash: null }),
+        )
+        const token = await tokenEfemerro(11)
+
+        const resposta = await service.setPassword({
+          verificationToken: token,
+          novaSenha: "nova-senha-123",
+        })
+        expect(resposta).toEqual({ ok: true })
+        const usuario = repo.usuarios.find((u) => u.id === 11)
+        expect(usuario?.passwordHash).toBeTruthy()
+        expect(usuario?.passwordHash).not.toBe("nova-senha-123")
+      })
+
+      it("token inválido → 401", async () => {
+        await expect(
+          service.setPassword({
+            verificationToken: "token-invalido",
+            novaSenha: "nova-senha-123",
+          }),
+        ).rejects.toBeInstanceOf(UnauthorizedException)
+      })
+
+      it("token assinado com outro segredo (expirado/inválido) → 401", async () => {
+        const outroJwt = new JwtService({ secret: "outro-segredo" })
+        const token = await outroJwt.signAsync({ sub: 1 }, { expiresIn: "5m" })
+        await expect(
+          service.setPassword({
+            verificationToken: token,
+            novaSenha: "nova-senha-123",
+          }),
+        ).rejects.toBeInstanceOf(UnauthorizedException)
+      })
+
+      it("usuário inexistente no token → 401", async () => {
+        const token = await tokenEfemerro(9999)
+        await expect(
+          service.setPassword({
+            verificationToken: token,
+            novaSenha: "nova-senha-123",
+          }),
+        ).rejects.toBeInstanceOf(UnauthorizedException)
+      })
     })
   })
 })

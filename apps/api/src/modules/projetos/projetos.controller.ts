@@ -12,6 +12,7 @@ import {
   ParseIntPipe,
   Post,
   Put,
+  Query,
   UseGuards,
 } from "@nestjs/common"
 import { Roles } from "../../common/decorators/roles.decorator"
@@ -33,8 +34,11 @@ export class ProjetosController {
   ) {}
 
   @Get()
-  listar() {
-    return this.service.listar()
+  listar(@Query() query: Record<string, string>) {
+    const page = query.page !== undefined ? Number(query.page) : undefined
+    const pageSize =
+      query.pageSize !== undefined ? Number(query.pageSize) : undefined
+    return this.service.listar({ page, pageSize })
   }
 
   @Get(":id")

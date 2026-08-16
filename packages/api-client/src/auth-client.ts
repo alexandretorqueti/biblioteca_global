@@ -6,9 +6,17 @@ import type {
   LoginRequest,
   LoginResponse,
   MeResponse,
+  ProvisionProjectRequest,
+  ProvisionProjectResponse,
   RefreshResponse,
+  RequestCodeRequest,
+  RequestCodeResponse,
   SelectProjectRequest,
   SelectProjectResponse,
+  SetPasswordRequest,
+  SetPasswordResponse,
+  VerifyCodeRequest,
+  VerifyCodeResponse,
 } from "@biblioteca-global/shared"
 import type { ApiHttpClient } from "./http"
 
@@ -48,6 +56,45 @@ export class AuthClient {
     return this.http.request<{ ok: boolean }>("POST", "/auth/change-password", {
       body: req,
       auth: "access",
+    })
+  }
+
+  /** Pedido de código por e-mail — resposta sempre { ok: true } (D4). */
+  requestCode(req: RequestCodeRequest): Promise<RequestCodeResponse> {
+    return this.http.request<RequestCodeResponse>("POST", "/auth/request-code", {
+      body: req,
+      auth: "none",
+    })
+  }
+
+  /** Valida o código — 1ª vez (token efêmero) ou login completo. */
+  verifyCode(req: VerifyCodeRequest): Promise<VerifyCodeResponse> {
+    return this.http.request<VerifyCodeResponse>("POST", "/auth/verify-code", {
+      body: req,
+      auth: "none",
+    })
+  }
+
+  /** Define a senha na 1ª vez (token efêmero vai no body). */
+  setPassword(req: SetPasswordRequest): Promise<SetPasswordResponse> {
+    return this.http.request<SetPasswordResponse>("POST", "/auth/set-password", {
+      body: req,
+      auth: "none",
+    })
+  }
+
+  /**
+   * Provisionamento (GerenteAgentes) — bearer com o TOKEN DE SERVIÇO
+   * explícito, nunca o token de sessão do usuário (Etapa 8).
+   */
+  provisionProject(
+    req: ProvisionProjectRequest,
+    provisionToken: string,
+  ): Promise<ProvisionProjectResponse> {
+    return this.http.request<ProvisionProjectResponse>("POST", "/provision/project", {
+      body: req,
+      auth: "none",
+      headers: { Authorization: "Bearer " + provisionToken },
     })
   }
 

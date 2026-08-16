@@ -18,6 +18,7 @@ import FieldBoolean from "./FieldBoolean"
 import FieldMultipleChoice from "./FieldMultipleChoice"
 import FieldPhoto from "./FieldPhoto"
 import FieldMoney from "./FieldMoney"
+import FieldJson from "./FieldJson"
 
 interface FieldProps {
   field: DynamicField
@@ -196,20 +197,65 @@ export default function Field({
     )
   }
 
+  if (field.type === "json") {
+    return (
+      <FieldJson
+        name={field.name}
+        label={field.label}
+        value={typeof value === "string" ? value : ""}
+        required={field.required}
+        helperText={field.helperText}
+        error={error}
+        disabled={disabled}
+        onChange={onChange}
+      />
+    )
+  }
+
+  if (field.type === "textarea") {
+    return (
+      <TextField
+        fullWidth
+        name={field.name}
+        label={field.label}
+        value={value ?? ""}
+        required={field.required}
+        disabled={disabled}
+        placeholder={field.placeholder}
+        helperText={helperText}
+        error={Boolean(error)}
+        multiline
+        minRows={4}
+        inputProps={{
+          min: field.min,
+          max: field.max,
+        }}
+        onChange={(event) =>
+          onChange(
+            field.name,
+            field.type === "number"
+              ? event.target.value === ""
+                ? ""
+                : Number(event.target.value)
+              : event.target.value,
+          )
+        }
+      />
+    )
+  }
+
   return (
     <TextField
       fullWidth
       name={field.name}
       label={field.label}
-      type={field.type === "textarea" ? "text" : field.type}
+      type={field.type}
       value={value ?? ""}
       required={field.required}
       disabled={disabled}
       placeholder={field.placeholder}
       helperText={helperText}
       error={Boolean(error)}
-      multiline={field.type === "textarea"}
-      minRows={field.type === "textarea" ? 4 : undefined}
       inputProps={{
         min: field.min,
         max: field.max,

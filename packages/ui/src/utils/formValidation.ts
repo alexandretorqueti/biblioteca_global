@@ -54,6 +54,15 @@ export const validateDynamicForm = (
       return errors
     }
 
+    if (field.type === "json" && typeof value === "string") {
+      try {
+        JSON.parse(value)
+      } catch {
+        errors[field.name] = "Informe um JSON válido."
+      }
+      return errors
+    }
+
     if (
       field.validator === "cnpj" &&
       typeof value === "string" &&

@@ -16,6 +16,7 @@ export { default as FieldMoney } from "./components/fields/FieldMoney"
 export { default as FieldMultipleChoice } from "./components/fields/FieldMultipleChoice"
 export { default as FieldPhoto } from "./components/fields/FieldPhoto"
 export { default as FieldText } from "./components/fields/FieldText"
+export { default as FieldJson } from "./components/fields/FieldJson"
 
 // Tipos (nomes da v1 preservados; config agora serializável via shared)
 export * from "./types"

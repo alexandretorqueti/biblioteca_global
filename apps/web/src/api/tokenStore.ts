@@ -42,7 +42,19 @@ export class LocalTokenStore implements TokenStore {
   private persistMode = false
 
   constructor(initialPersist = false) {
-    this.setPersist(initialPersist)
+    this.persistMode = initialPersist
+    if (initialPersist) {
+      const stored = readStored(REFRESH_KEY)
+      if (stored) this.refresh = stored
+    }
+    // NOTA: inicializar com persist false NÃO apaga o storage — a sessão
+    // "lembrar de mim" precisa sobreviver ao reload (hidratação). Quem
+    // apaga é setPersist(false) chamado pelo logout/desligar.
+  }
+
+  /** true se há refresh token persistido (hidratação após reload). */
+  temRefreshPersistido(): boolean {
+    return readStored(REFRESH_KEY) !== null
   }
 
   /** Ligar/desligar a persistência (lembrar de mim). */

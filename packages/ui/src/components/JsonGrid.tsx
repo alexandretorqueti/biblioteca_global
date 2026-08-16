@@ -18,6 +18,7 @@ import {
   TextField,
   Typography,
 } from "@mui/material"
+import { useTheme } from "@mui/material/styles"
 import {
   DeleteRounded,
   EditRounded,
@@ -63,6 +64,12 @@ interface JsonGridProps<T extends JsonRecord = JsonRecord> {
   pagination?: boolean
   initialPageSize?: number
   pageSizeOptions?: number[]
+  /**
+   * Exibe colunas de dados JSON (objetos/arrays)?
+   * Padrão: false — colunas JSON ficam ocultas da grid (decisão do
+   * Alexandre 2026-08-15; antes eram renderizadas como JSON.stringify).
+   */
+  showJsonColumns?: boolean
 }
 
 const formatHeader = (key: string) =>
@@ -133,7 +140,8 @@ const renderValue = (
   }
 
   if (value === null || value === undefined) {
-    return <Chip label="Nulo" size="small" variant="outlined" />
+    // Célula vazia — sem o rótulo "Nulo" (decisão do Alexandre 2026-08-15).
+    return null
   }
 
   if (config?.type === "boolean" || typeof value === "boolean") {
@@ -161,6 +169,26 @@ const renderValue = (
   return <FieldGridText value={value} />
 }
 
+/**
+ * True quando a coluna carrega dados JSON: config explícita
+ * `type: "json"` ou valor objeto/array em alguma linha (arrays e
+ * objetos não nulos são tratados como JSON — null não conta).
+ */
+const eColunaJson = (
+  column: string,
+  data: JsonRecord[],
+  columnConfig: Record<string, JsonGridColumnConfig>,
+): boolean => {
+  if (columnConfig[column]?.type === "json") {
+    return true
+  }
+
+  return data.some((row) => {
+    const valor = row[column]
+    return valor !== null && typeof valor === "object"
+  })
+}
+
 export default function JsonGrid<T extends JsonRecord>({
   data,
   title,
@@ -177,7 +205,12 @@ export default function JsonGrid<T extends JsonRecord>({
   pagination = true,
   initialPageSize = 10,
   pageSizeOptions = [5, 10, 25, 50],
+  showJsonColumns = false,
 }: JsonGridProps<T>) {
+  const theme = useTheme()
+  // Cabeçalho derivado do tema: claro → grey.100, escuro → grey.900.
+  const headerBgcolor =
+    theme.palette.mode === "dark" ? "grey.900" : "grey.100"
   const [search, setSearch] = useState("")
   const [sortColumn, setSortColumn] = useState<string | null>(null)
   const [sortDirection, setSortDirection] =
@@ -192,9 +225,12 @@ export default function JsonGrid<T extends JsonRecord>({
       ).filter(
         (column) =>
           !hiddenColumns.includes(column) &&
-          !columnConfig[column]?.hidden,
+          !columnConfig[column]?.hidden &&
+          // Colunas JSON ocultas por padrão (objeto/array em qualquer
+          // linha, ou config explícita type: "json").
+          (showJsonColumns || !eColunaJson(column, data, columnConfig)),
       ),
-    [columnConfig, data, hiddenColumns],
+    [columnConfig, data, hiddenColumns, showJsonColumns],
   )
 
   const filteredRows = useMemo(() => {
@@ -267,6 +303,8 @@ export default function JsonGrid<T extends JsonRecord>({
       sx={{
         border: "1px solid",
         borderColor: "divider",
+
+        bgcolor: "background.paper",
         overflow: "hidden",
       }}
     >
@@ -281,6 +319,8 @@ export default function JsonGrid<T extends JsonRecord>({
             py: 2,
             borderBottom: "1px solid",
             borderColor: "divider",
+
+        bgcolor: "background.paper",
           }}
         >
           {title && (
@@ -329,7 +369,7 @@ export default function JsonGrid<T extends JsonRecord>({
         <>
           <TableContainer sx={{ maxWidth: "100%", overflowX: "auto" }}>
             <Table stickyHeader aria-label={title ?? "Grade de dados"}>
-              <TableHead>
+              <TableHead sx={{ bgcolor: "background.paper" }}>
                 <TableRow>
                   {visibleColumns.map((column) => {
                     const canSort =
@@ -343,7 +383,7 @@ export default function JsonGrid<T extends JsonRecord>({
                           sortColumn === column ? sortDirection : false
                         }
                         sx={{
-                          bgcolor: "grey.100",
+                          bgcolor: headerBgcolor,
                           fontWeight: 700,
                           whiteSpace: "nowrap",
                         }}
@@ -375,7 +415,7 @@ export default function JsonGrid<T extends JsonRecord>({
                     <TableCell
                       align="right"
                       sx={{
-                        bgcolor: "grey.100",
+                        bgcolor: headerBgcolor,
                         fontWeight: 700,
                         whiteSpace: "nowrap",
                       }}

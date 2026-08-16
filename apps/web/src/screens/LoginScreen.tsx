@@ -52,7 +52,7 @@ export function mensagemDeErroAuth(erro: unknown): string {
 }
 
 export default function LoginScreen(): ReactNode {
-  const { login } = useAuth()
+  const { login, requestCode, verifyCode, setPassword } = useAuth()
   const [erro, setErro] = useState<string | null>(null)
 
   const handleLogin = async (
@@ -74,6 +74,42 @@ export default function LoginScreen(): ReactNode {
     }
   }
 
+  const handleRequestCode = async (email: string): Promise<void> => {
+    setErro(null)
+    try {
+      await requestCode(email)
+      // Resposta sempre ok — o painel mostra a mensagem genérica.
+    } catch (e: unknown) {
+      setErro(mensagemDeErroAuth(e))
+    }
+  }
+
+  const handleVerifyCode = async (
+    email: string,
+    code: string,
+  ): Promise<{ primeiraVez: boolean; verificationToken?: string }> => {
+    setErro(null)
+    try {
+      const resultado = await verifyCode(email, code)
+      if (resultado.primeiraVez) {
+        return { primeiraVez: true, verificationToken: resultado.verificationToken }
+      }
+      // Login completo já aplicado pelo AuthContext.
+      return { primeiraVez: false }
+    } catch {
+      // Código inválido/expirado: o próprio AuthPanel exibe o erro no modo código.
+      return { primeiraVez: false }
+    }
+  }
+
+  const handleSetPassword = async (
+    novaSenha: string,
+    verificationToken: string,
+  ): Promise<void> => {
+    setErro(null)
+    await setPassword(novaSenha, verificationToken)
+  }
+
   return (
     <Box>
       {erro && (
@@ -81,7 +117,13 @@ export default function LoginScreen(): ReactNode {
           {erro}
         </Alert>
       )}
-      <AuthPanel config={authPanelConfig} onLogin={handleLogin} />
+      <AuthPanel
+        config={authPanelConfig}
+        onLogin={handleLogin}
+        onRequestCode={handleRequestCode}
+        onVerifyCode={handleVerifyCode}
+        onSetPassword={handleSetPassword}
+      />
       <Typography
         variant="caption"
         color="text.secondary"

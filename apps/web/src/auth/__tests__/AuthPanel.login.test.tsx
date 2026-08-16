@@ -169,6 +169,8 @@ describe("AuthPanel login flow", () => {
         /incorretos/i,
       )
     })
-    expect(sessionState.status).toBe("unknown")
+    // Sem sessão: hidratação encerra o estado "unknown" (corrigido — antes
+    // ficava "unknown" para sempre, travando em "Restaurando sessão…").
+    expect(sessionState.status).toBe("unauthenticated")
   })
 })

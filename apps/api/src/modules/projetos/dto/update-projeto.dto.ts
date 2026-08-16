@@ -1,14 +1,25 @@
+import { Transform } from "class-transformer"
 import {
   IsBoolean,
   IsNotEmpty,
   IsOptional,
   IsString,
+  Matches,
 } from "class-validator"
-import type { GeradorSistemaConfig } from "@biblioteca-global/shared"
+import { SLUG_REGEX } from "./create-projeto.dto"
 
-/** Atualização de projeto — a config é validada antes de salvar. */
+/** Form compartilhado envia string vazia — vira undefined (não altera). */
+const vazioParaUndefined = ({ value }: { value: unknown }): unknown =>
+  value === "" ? undefined : value
+
+/**
+ * Atualização de projeto — a config é validada antes de salvar.
+ * `slug` é aceito apenas para validação (imutável: identifica a pasta
+ * versionada projects/<slug>/ e o database é derivado do id).
+ */
 export class UpdateProjetoDto {
   @IsOptional()
+  @Transform(vazioParaUndefined)
   @IsString()
   @IsNotEmpty()
   nome?: string
@@ -17,6 +28,15 @@ export class UpdateProjetoDto {
   @IsBoolean()
   ativo?: boolean
 
+  /** Imutável — o service rejeita mudança; aceito p/ o form compartilhado. */
   @IsOptional()
-  config?: GeradorSistemaConfig
+  @Transform(vazioParaUndefined)
+  @IsString()
+  @Matches(SLUG_REGEX, {
+    message: "slug deve começar com letra minúscula (a-z0-9 e hífen)",
+  })
+  slug?: string
+
+  @IsOptional()
+  config?: import("@biblioteca-global/shared").GeradorSistemaConfig
 }

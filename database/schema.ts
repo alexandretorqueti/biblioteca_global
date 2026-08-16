@@ -12,6 +12,7 @@ import {
   bigint,
   boolean,
   index,
+  int,
   json,
   mysqlEnum,
   mysqlTable,
@@ -36,8 +37,9 @@ export const usuarios = mysqlTable("usuarios", {
   email: varchar("email", { length: 255 }).unique(),
   telefone: varchar("telefone", { length: 30 }).unique(),
   cpf: varchar("cpf", { length: 14 }).unique(),
-  /** argon2id — nunca logar nem retornar (PoC §11). */
-  passwordHash: varchar("password_hash", { length: 255 }).notNull(),
+  /** argon2id — nunca logar nem retornar (PoC §11).
+   * Nullable: contas provisionadas sem senha entram por código (auth única). */
+  passwordHash: varchar("password_hash", { length: 255 }),
   nome: varchar("nome", { length: 150 }).notNull(),
   ativo: boolean("ativo").notNull().default(true),
   createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -78,6 +80,24 @@ export const projetosUsuarios = mysqlTable(
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (t) => [primaryKey({ columns: [t.projetoId, t.usuarioId] })],
+)
+
+export const emailVerifications = mysqlTable(
+  "email_verifications",
+  {
+    id: bigint("id", { mode: "number", unsigned: true })
+      .primaryKey()
+      .autoincrement(),
+    /** Chave de busca — um e-mail pode ter várias linhas (cada pedido gera uma nova). */
+    email: varchar("email", { length: 255 }).notNull(),
+    /** HMAC-SHA256 do código de 6 dígitos — NUNCA o código em claro (D5). */
+    codeHash: varchar("code_hash", { length: 64 }).notNull(),
+    expiresAt: timestamp("expires_at").notNull(),
+    attempts: int("attempts").notNull().default(0),
+    usedAt: timestamp("used_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [index("idx_email_verifications_email").on(t.email)],
 )
 
 export const refreshTokens = mysqlTable(

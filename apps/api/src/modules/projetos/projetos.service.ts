@@ -13,6 +13,7 @@ import {
 import {
   geradorSistemaConfigSchema,
   type GeradorSistemaConfig,
+  type PaginatedResult,
 } from "@biblioteca-global/shared"
 import {
   ConfigInvalidaError,
@@ -56,8 +57,21 @@ export class ProjetosService {
     @Inject(SCHEMA_REGISTRY) private readonly registry: SchemaRegistry,
   ) {}
 
-  async listar(): Promise<ProjetoRow[]> {
-    return this.repo.listar()
+  async listar(params: {
+    page?: number
+    pageSize?: number
+  }): Promise<PaginatedResult<ProjetoRow>> {
+    const page = params.page ?? 1
+    const pageSize = params.pageSize ?? 20
+    if (page < 1 || pageSize < 1 || pageSize > 100) {
+      throw new BadRequestException("Paginação inválida")
+    }
+    const resultado = await this.repo.listar({ page, pageSize })
+    return { ...resultado, page, pageSize }
+  }
+
+  async detalharPorSlug(slug: string): Promise<ProjetoRow | undefined> {
+    return this.repo.findBySlug(slug)
   }
 
   async detalhar(projetoId: number): Promise<ProjetoRow> {
@@ -90,6 +104,7 @@ export class ProjetosService {
     const projetoId = await this.repo.criar({
       nome: dto.nome,
       slug: dto.slug,
+      ativo: dto.ativo ?? true,
       config,
     })
     const database = nomeDatabaseDoProjeto(projetoId)
@@ -156,6 +171,11 @@ export class ProjetosService {
     dto: UpdateProjetoDto,
   ): Promise<ProjetoRow> {
     const projeto = await this.detalhar(projetoId)
+
+    // slug é imutável: identifica a pasta versionada projects/<slug>/.
+    if (dto.slug !== undefined && dto.slug !== projeto.slug) {
+      throw new BadRequestException("slug não pode ser alterado")
+    }
 
     const campos: Partial<{
       nome: string

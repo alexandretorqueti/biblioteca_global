@@ -4,7 +4,7 @@
  * fica aqui — repositório é só SQL (PoC §6.1).
  */
 import { Inject, Injectable } from "@nestjs/common"
-import { and, eq } from "drizzle-orm"
+import { and, desc, eq, gt, isNull, sql } from "drizzle-orm"
 import type {
   LoginIdentifierType,
   Perfil,
@@ -12,6 +12,7 @@ import type {
   UsuarioAutenticado,
 } from "@biblioteca-global/shared"
 import {
+  emailVerifications,
   projetos,
   projetosUsuarios,
   refreshTokens,
@@ -20,6 +21,8 @@ import {
 import { CORE_DB, type CoreDb } from "../../database/database.module"
 
 export type UsuarioRow = typeof usuarios.$inferSelect
+
+export type EmailVerificationRow = typeof emailVerifications.$inferSelect
 
 export interface RefreshTokenRow {
   id: number
@@ -60,6 +63,17 @@ export interface AuthRepository {
   findRefreshTokenByHash(tokenHash: string): Promise<RefreshTokenRow | undefined>
   revokeRefreshToken(id: number): Promise<void>
   updatePasswordHash(usuarioId: number, passwordHash: string): Promise<void>
+  createEmailVerification(row: {
+    email: string
+    codeHash: string
+    expiresAt: Date
+  }): Promise<void>
+  /** Linha mais recente, não usada e não expirada para o e-mail. */
+  getActiveEmailVerification(
+    email: string,
+  ): Promise<EmailVerificationRow | undefined>
+  incrementVerificationAttempts(id: number): Promise<void>
+  markVerificationUsed(id: number): Promise<void>
 }
 
 export const AUTH_REPOSITORY = Symbol("AUTH_REPOSITORY")
@@ -256,5 +270,50 @@ export class DrizzleAuthRepository implements AuthRepository {
       .update(usuarios)
       .set({ passwordHash })
       .where(eq(usuarios.id, usuarioId))
+  }
+
+  async createEmailVerification(row: {
+    email: string
+    codeHash: string
+    expiresAt: Date
+  }): Promise<void> {
+    await this.db.insert(emailVerifications).values({
+      email: row.email.toLowerCase(),
+      codeHash: row.codeHash,
+      expiresAt: row.expiresAt,
+      attempts: 0,
+    })
+  }
+
+  async getActiveEmailVerification(
+    email: string,
+  ): Promise<EmailVerificationRow | undefined> {
+    const linhas = await this.db
+      .select()
+      .from(emailVerifications)
+      .where(
+        and(
+          eq(emailVerifications.email, email.toLowerCase()),
+          isNull(emailVerifications.usedAt),
+          gt(emailVerifications.expiresAt, new Date()),
+        ),
+      )
+      .orderBy(desc(emailVerifications.id))
+      .limit(1)
+    return linhas.at(0)
+  }
+
+  async incrementVerificationAttempts(id: number): Promise<void> {
+    await this.db
+      .update(emailVerifications)
+      .set({ attempts: sql`${emailVerifications.attempts} + 1` })
+      .where(eq(emailVerifications.id, id))
+  }
+
+  async markVerificationUsed(id: number): Promise<void> {
+    await this.db
+      .update(emailVerifications)
+      .set({ usedAt: new Date() })
+      .where(eq(emailVerifications.id, id))
   }
 }

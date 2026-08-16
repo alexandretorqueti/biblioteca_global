@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from "vitest"
-import { render, screen } from "@testing-library/react"
+import { render, screen, cleanup } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import "@testing-library/jest-dom/vitest"
 import type { GeradorSistemaConfig } from "@biblioteca-global/shared"
@@ -70,7 +70,10 @@ function renderSistema(runtime: Partial<GeradorSistemaRuntime> = {}) {
 }
 
 describe("GeradorSistema (config serializável)", () => {
-  afterEach(() => clearCustomScreens())
+  afterEach(() => {
+    clearCustomScreens()
+    cleanup()
+  })
 
   it("renderiza o menu com os grupos e rotas da config", () => {
     renderSistema()

@@ -22,7 +22,13 @@ describe("registry de telas custom", () => {
     expect(screen.getByTestId("documentation-screen")).toBeInTheDocument()
     expect(screen.getByRole("heading", { name: "Biblioteca Global UI" })).toBeInTheDocument()
 
-    await userEvent.click(screen.getByRole("tab", { name: "Grid" }))
-    expect(screen.getByText("Catálogo")).toBeInTheDocument()
+    // Menu lateral: JsonGrid já é a seção inicial (grade de dados).
+    expect(screen.getByRole("heading", { name: "Grade de dados JSON" })).toBeInTheDocument()
+    expect(screen.getByText("Livros cadastrados")).toBeInTheDocument()
+
+    // Navega pelo menu lateral para outra seção.
+    await userEvent.click(screen.getByRole("button", { name: /DynamicForm/ }))
+    expect(screen.getByRole("heading", { name: "Formulário dinâmico" })).toBeInTheDocument()
+    expect(screen.getByText("Como utilizar")).toBeInTheDocument()
   })
 })

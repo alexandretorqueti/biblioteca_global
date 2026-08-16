@@ -25,8 +25,15 @@ class FakeProjetosRepository implements ProjetosRepository {
   chamadas: string[] = []
   private proximoId = 1
 
-  async listar(): Promise<ProjetoRow[]> {
-    return this.projetos
+  async listar(filtros: {
+    page: number
+    pageSize: number
+  }): Promise<{ items: ProjetoRow[]; total: number }> {
+    const inicio = (filtros.page - 1) * filtros.pageSize
+    return {
+      items: this.projetos.slice(inicio, inicio + filtros.pageSize),
+      total: this.projetos.length,
+    }
   }
 
   async findById(id: number): Promise<ProjetoRow | undefined> {
@@ -40,6 +47,7 @@ class FakeProjetosRepository implements ProjetosRepository {
   async criar(row: {
     nome: string
     slug: string
+    ativo?: boolean
     config: GeradorSistemaConfig
   }): Promise<number> {
     const id = this.proximoId++
@@ -104,6 +112,32 @@ describe("ProjetosService", () => {
     repo = new FakeProjetosRepository()
     provisioner = new FakeProvisioner()
     service = new ProjetosService(repo, provisioner, new FakeSchemaRegistry())
+  })
+
+  describe("listar (paginação padronizada)", () => {
+    it("retorna PaginatedResult com page/pageSize defaults", async () => {
+      await service.criar({ nome: "A", slug: "a", config: configPadrao("A") })
+      await service.criar({ nome: "B", slug: "b", config: configPadrao("B") })
+
+      const resultado = await service.listar({})
+      expect(resultado.items).toHaveLength(2)
+      expect(resultado.total).toBe(2)
+      expect(resultado.page).toBe(1)
+      expect(resultado.pageSize).toBe(20)
+    })
+
+    it("aplica page/pageSize e valida o teto de 100", async () => {
+      const resultado = await service.listar({ page: 1, pageSize: 10 })
+      expect(resultado.page).toBe(1)
+      expect(resultado.pageSize).toBe(10)
+
+      await expect(
+        service.listar({ page: 0, pageSize: 10 }),
+      ).rejects.toBeInstanceOf(BadRequestException)
+      await expect(
+        service.listar({ page: 1, pageSize: 101 }),
+      ).rejects.toBeInstanceOf(BadRequestException)
+    })
   })
 
   describe("criar (ciclo de vida)", () => {
@@ -205,6 +239,15 @@ describe("ProjetosService", () => {
       await expect(service.atualizar(999, { nome: "X" })).rejects.toBeInstanceOf(
         NotFoundException,
       )
+    })
+
+    it("slug é imutável: mudança → 400; mesmo slug → ok", async () => {
+      await service.criar({ nome: "P", slug: "p-imutavel" })
+      await expect(
+        service.atualizar(1, { slug: "outro-slug" }),
+      ).rejects.toBeInstanceOf(BadRequestException)
+      const atualizado = await service.atualizar(1, { slug: "p-imutavel" })
+      expect(atualizado.slug).toBe("p-imutavel")
     })
   })
 

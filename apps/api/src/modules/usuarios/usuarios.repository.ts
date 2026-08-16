@@ -45,7 +45,8 @@ export interface UsuariosRepository {
     email?: string
     telefone?: string
     cpf?: string
-    passwordHash: string
+    /** null = conta provisionada sem senha (entra por código — auth única). */
+    passwordHash: string | null
   }): Promise<number>
   criarVinculo(
     usuarioId: number,
@@ -61,6 +62,7 @@ export interface UsuariosRepository {
       telefone: string | null
       cpf: string | null
       ativo: boolean
+      passwordHash: string
     }>,
   ): Promise<void>
   atualizarPerfilNoProjeto(
@@ -161,7 +163,7 @@ export class DrizzleUsuariosRepository implements UsuariosRepository {
     email?: string
     telefone?: string
     cpf?: string
-    passwordHash: string
+    passwordHash: string | null
   }): Promise<number> {
     const resultado = await this.db.insert(usuarios).values({
       nome: row.nome,
@@ -195,6 +197,7 @@ export class DrizzleUsuariosRepository implements UsuariosRepository {
       telefone: string | null
       cpf: string | null
       ativo: boolean
+      passwordHash: string
     }>,
   ): Promise<void> {
     await this.db.update(usuarios).set(campos).where(eq(usuarios.id, id))

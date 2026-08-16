@@ -54,6 +54,76 @@ export const changePasswordRequestSchema = z
 
 export type ChangePasswordRequest = z.infer<typeof changePasswordRequestSchema>
 
+// ── Auth por código (passwordless — auth única, 2026-08-15) ────────────
+
+/** POST /auth/request-code — pedido de código por e-mail. */
+export const requestCodeRequestSchema = z
+  .object({
+    email: z.string().email(),
+  })
+  .strict()
+
+export type RequestCodeRequest = z.infer<typeof requestCodeRequestSchema>
+
+/** POST /auth/verify-code — valida o código recebido. */
+export const verifyCodeRequestSchema = z
+  .object({
+    email: z.string().email(),
+    code: z.string().length(6),
+  })
+  .strict()
+
+export type VerifyCodeRequest = z.infer<typeof verifyCodeRequestSchema>
+
+/** POST /auth/set-password — define senha na 1ª vez (autenticado pelo token efêmero). */
+export const setPasswordRequestSchema = z
+  .object({
+    verificationToken: z.string().min(1),
+    novaSenha: z.string().min(8),
+  })
+  .strict()
+
+export type SetPasswordRequest = z.infer<typeof setPasswordRequestSchema>
+
+/** Resposta sempre igual do request-code — não revela se a conta existe (D4). */
+export interface RequestCodeResponse {
+  ok: true
+}
+
+/**
+ * Resposta do verify-code:
+ * - 1ª vez (sem senha): token efêmero p/ autorizar o set-password.
+ * - Com senha: login completo (mesmo formato do login por senha).
+ */
+export type VerifyCodeResponse =
+  | { primeiraVez: true; verificationToken: string }
+  | {
+      primeiraVez: false
+      refreshToken: string
+      usuario: UsuarioAutenticado
+      projetos: ProjetoResumo[]
+    }
+
+export interface SetPasswordResponse {
+  ok: true
+}
+
+/** POST /provision/project — chamado pelo GerenteAgentes (token de serviço). */
+export interface ProvisionProjectRequest {
+  email: string
+  nome?: string
+  projetoNome: string
+  projetoSlug?: string
+}
+
+export interface ProvisionProjectResponse {
+  usuarioId: number
+  projetoId: number
+  perfil: "admin"
+  /** true se o usuário foi criado agora (não existia). */
+  criado: boolean
+}
+
 /** Projeto com o perfil do usuário logado (lista entregue no login). */
 export interface ProjetoResumo {
   id: number

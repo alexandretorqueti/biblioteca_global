@@ -4,17 +4,18 @@
  * Caminhos absolutos — os scripts rodam da raiz, mas o drizzle-kit resolve
  * schema/out relativos ao CWD, não ao arquivo de config.
  */
-import { join } from "node:path"
 import { defineConfig } from "drizzle-kit"
 import { loadEnv } from "./env.js"
 
-const aqui = __dirname
+// Caminhos RELATIVOS ao CWD (raiz do repo, onde os scripts npm rodam):
+// o drizzle-kit 0.31.10 faz join(cwd, out/schema) e quebra com caminho
+// absoluto (vira ".//data/..." → ENOENT no snapshot).
 const env = loadEnv()
 
 export default defineConfig({
   dialect: "mysql",
-  schema: join(aqui, "schema.ts"),
-  out: join(aqui, "migrations"),
+  schema: "database/schema.ts",
+  out: "database/migrations",
   dbCredentials: {
     host: env.MYSQL_HOST,
     port: Number(env.MYSQL_PORT),

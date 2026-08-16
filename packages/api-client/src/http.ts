@@ -16,6 +16,8 @@ export interface RequestOptions {
   body?: unknown
   query?: Record<string, string | number | boolean | undefined>
   auth?: AuthMode
+  /** Headers adicionais (ex.: Authorization com token de serviço). */
+  headers?: Record<string, string>
 }
 
 /** Defesa em profundidade: nenhum body pode carregar projetoId. */
@@ -85,6 +87,11 @@ export class ApiHttpClient {
     }
     if (opts.body !== undefined) {
       headers["Content-Type"] = "application/json"
+    }
+    if (opts.headers) {
+      for (const [chave, valor] of Object.entries(opts.headers)) {
+        headers[chave] = valor
+      }
     }
     if (auth === "access") {
       const token = this.options.tokens.getAccessToken()

@@ -30,7 +30,10 @@ import type {
 } from "@biblioteca-global/shared"
 import {
   loginRequestSchema,
+  requestCodeRequestSchema,
   selectProjectRequestSchema,
+  setPasswordRequestSchema,
+  verifyCodeRequestSchema,
 } from "@biblioteca-global/shared"
 import { ApiClientError } from "@biblioteca-global/api-client"
 import { createApiClient, type ApiClientBundle } from "../api/client"
@@ -69,6 +72,16 @@ export interface AuthContextValue extends AuthSession {
   renewSession: () => Promise<boolean>
   /** Bundle api-client para montar dataSources (ProjectProvider). */
   bundle: ApiClientBundle
+  // ── Auth por código (auth única — D4) ────────────────────────────────
+  /** Pede um código por e-mail (resposta sempre ok — não revela conta). */
+  requestCode: (email: string) => Promise<void>
+  /** Valida o código; 1ª vez devolve o token efêmero p/ definir senha. */
+  verifyCode: (email: string, code: string) => Promise<{
+    primeiraVez: boolean
+    verificationToken?: string
+  }>
+  /** Define a senha na 1ª vez (autenticado pelo token efêmero). */
+  setPassword: (novaSenha: string, verificationToken: string) => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
@@ -80,7 +93,14 @@ export function globalAdminDe(projeto: ProjetoResumo | null): boolean {
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const storeRef = useRef<LocalTokenStore | null>(null)
-  if (!storeRef.current) storeRef.current = new LocalTokenStore()
+  if (!storeRef.current) {
+    const store = new LocalTokenStore()
+    // Hidratação: sessão "lembrar de mim" sobrevive ao reload.
+    if (store.temRefreshPersistido()) {
+      store.setPersist(true)
+    }
+    storeRef.current = store
+  }
 
   const bundleRef = useRef<ApiClientBundle | null>(null)
   if (!bundleRef.current) {
@@ -248,6 +268,63 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  // ── Auth por código (auth única — D4) ────────────────────────────────
+
+  const requestCode = useCallback(
+    async (email: string): Promise<void> => {
+      const parsed = requestCodeRequestSchema.safeParse({ email })
+      if (!parsed.success) {
+        throw new ApiClientError(400, "VALIDATION", "E-mail inválido")
+      }
+      await bundle.auth.requestCode(parsed.data)
+    },
+    [],
+  )
+
+  const verifyCode = useCallback(
+    async (email: string, code: string): Promise<{
+      primeiraVez: boolean
+      verificationToken?: string
+    }> => {
+      const parsed = verifyCodeRequestSchema.safeParse({ email, code })
+      if (!parsed.success) {
+        throw new ApiClientError(400, "VALIDATION", "Código inválido")
+      }
+      const res = await bundle.auth.verifyCode(parsed.data)
+      if (res.primeiraVez) {
+        return { primeiraVez: true, verificationToken: res.verificationToken }
+      }
+      // Login completo: mesma aplicação de sessão do login por senha.
+      store.setPersist(false)
+      store.clear()
+      store.setRefreshToken(res.refreshToken)
+      aplicarRespostaAutenticacao(res)
+      if (res.projetos.length === 1 && res.projetos[0]) {
+        await selecionarProjetoResolvido(res.projetos[0].id)
+      }
+      return { primeiraVez: false }
+    },
+    [],
+  )
+
+  const setPassword = useCallback(
+    async (novaSenha: string, verificationToken: string): Promise<void> => {
+      const parsed = setPasswordRequestSchema.safeParse({
+        novaSenha,
+        verificationToken,
+      })
+      if (!parsed.success) {
+        throw new ApiClientError(
+          400,
+          "VALIDATION",
+          "A senha deve ter pelo menos 8 caracteres",
+        )
+      }
+      await bundle.auth.setPassword(parsed.data)
+    },
+    [],
+  )
+
   const renewSession = useCallback((): Promise<boolean> => renew(), [renew])
 
   // ---- Recovery do ApiHttpClient: 401 → renovar → retry ----
@@ -265,14 +342,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // ---- Hydratação: sessão persistida (lembrar de mim) ----
   useEffect(() => {
     const inicial = (): void => {
-      if (store.getRefreshToken() && !store.getAccessToken()) {
+      const refresh = store.getRefreshToken()
+      const access = store.getAccessToken()
+      if (refresh && !access) {
+        // Sessão persistida: renova (access nunca sobrevive ao reload).
         void renew()
-      } else if (authenticatedRef.current) {
+        return
+      }
+      if (refresh && access) {
+        // Access em memória: agenda a renovação proativa.
         reactor.schedule(
           () => lerExpDoAccessStore(store),
           Math.floor(Date.now() / 1000),
         )
+        return
       }
+      // Sem sessão: sai do estado "unknown" e redireciona ao login.
+      // (Antes ficava "Restaurando sessão…" para sempre.)
+      encerrarSessao()
     }
     inicial()
   }, [])
@@ -285,8 +372,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       logout,
       renewSession,
       bundle,
+      requestCode,
+      verifyCode,
+      setPassword,
     }),
-    [session, login, selectProject, logout, renewSession, bundle],
+    [
+      session,
+      login,
+      selectProject,
+      logout,
+      renewSession,
+      bundle,
+      requestCode,
+      verifyCode,
+      setPassword,
+    ],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

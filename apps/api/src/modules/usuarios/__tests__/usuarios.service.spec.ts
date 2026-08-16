@@ -19,6 +19,8 @@ class FakeUsuariosRepository implements UsuariosRepository {
   vinculos: { usuarioId: number; projetoId: number; perfil: Perfil }[] = []
   projetos: { id: number; nome: string; slug: string; ativo: boolean }[] = []
   chamadas: string[] = []
+  /** Últimos campos recebidos em atualizarUsuario (para asserções). */
+  ultimosCamposAtualizados: Record<string, unknown> | null = null
 
   async listarDoProjeto(
     projetoId: number,
@@ -83,8 +85,12 @@ class FakeUsuariosRepository implements UsuariosRepository {
     this.vinculos.push({ usuarioId, projetoId, perfil })
   }
 
-  async atualizarUsuario(): Promise<void> {
+  async atualizarUsuario(
+    _id: number,
+    campos: Record<string, unknown>,
+  ): Promise<void> {
     this.chamadas.push("atualizarUsuario")
+    this.ultimosCamposAtualizados = campos
   }
 
   async atualizarPerfilNoProjeto(): Promise<void> {
@@ -209,6 +215,17 @@ describe("UsuariosService", () => {
           nome: "X",
         }),
       ).rejects.toBeInstanceOf(NotFoundException)
+    })
+
+    it("redefine a senha quando senhaInicial vem preenchida (hash argon2)", async () => {
+      await service.editar(escopo("biblioteca-global", 1, "admin"), 1, {
+        senhaInicial: "nova-senha-123",
+      })
+      expect(repo.chamadas).toContain("atualizarUsuario")
+      const hash = repo.ultimosCamposAtualizados?.passwordHash as string
+      expect(typeof hash).toBe("string")
+      expect(hash.startsWith("$argon2")).toBe(true)
+      expect(hash).not.toBe("nova-senha-123")
     })
   })
 
