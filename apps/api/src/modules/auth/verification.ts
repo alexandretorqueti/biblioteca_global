@@ -13,7 +13,7 @@ import {
   createHmac,
   randomInt,
   timingSafeEqual,
-} from "node:crypto"
+} from "crypto"
 
 /** Quantidade de dígitos do código de verificação. */
 export const CODIGO_LENGTH = 6
