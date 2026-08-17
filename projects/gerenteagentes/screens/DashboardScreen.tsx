@@ -14,7 +14,6 @@ import {
   DashboardRounded,
   SmartToyRounded,
   TaskAltRounded,
-  AssignmentRounded,
   PlayCircleRounded,
   CheckCircleRounded,
   CancelRounded,
@@ -23,8 +22,6 @@ import {
 } from "@mui/icons-material"
 import type { ReactNode } from "react"
 import { ExternalApiClient } from "@biblioteca-global/api-client"
-import { SistemaMenu } from "@biblioteca-global/ui"
-import type { GeradorSistemaGroup } from "@biblioteca-global/ui"
 
 /* ------------------------------------------------------------------ */
 /*  Tipos locais                                                     */
@@ -199,17 +196,13 @@ export default function DashboardScreen(): ReactNode {
     const ext = new ExternalApiClient({ baseUrl: BASE_URL })
 
     try {
-      // 1. Lista de projetos (GET /api/projects → dataPath "projects")
+      // 1. Lista de projetos (GET /api/projects)
       let projetosResp: ProjetoExterno[] = []
-      try {
-        const projRaw = await ext.get("/api/projects") as Record<string, unknown> | undefined
-        if (projRaw && Array.isArray(projRaw.projects)) {
-          projetosResp = projRaw.projects as ProjetoExterno[]
-        } else if (Array.isArray(projRaw)) {
-          projetosResp = projRaw as ProjetoExterno[]
-        }
-      } catch (_e) {
-        // projetos pode falhar; continuar com lista vazia
+      const projRaw = await ext.get("/api/projects") as Record<string, unknown> | undefined
+      if (projRaw && Array.isArray(projRaw.projects)) {
+        projetosResp = projRaw.projects as ProjetoExterno[]
+      } else if (Array.isArray(projRaw)) {
+        projetosResp = projRaw as ProjetoExterno[]
       }
 
       // 2. Tarefas por agente
@@ -217,26 +210,26 @@ export default function DashboardScreen(): ReactNode {
       for (const proj of projetosResp) {
         if (!proj.id) continue
         try {
-          const tasksRaw = await ext.get(`/api/projects/${proj.id}/tasks`) as unknown as unknown[] | undefined
+          const tasksRaw = await ext.get(`/api/projects/${proj.id}/tasks`) as unknown
           if (Array.isArray(tasksRaw)) {
             tarefasPorAgente[proj.id] = tasksRaw as TarefaExterna[]
           } else {
             tarefasPorAgente[proj.id] = []
           }
-        } catch (_e) {
+        } catch {
           tarefasPorAgente[proj.id] = []
         }
       }
 
-      // 3. Ultima atividade (GET /api/projects/:slug/definitions → usamos dataPath genérico)
+      // 3. Ultima atividade (opcional)
       let ultimasAtividades: UltimaAtividade[] = []
       try {
         const defRaw = await ext.get("/api/projects") as Record<string, unknown> | undefined
         if (defRaw && Array.isArray(defRaw.lastActivities)) {
           ultimasAtividades = defRaw.lastActivities as UltimaAtividade[]
         }
-      } catch (_e) {
-        // atividade opcional
+      } catch {
+        // atividade opcional, ignora erro
       }
 
       setProjetos(projetosResp)
@@ -273,32 +266,6 @@ export default function DashboardScreen(): ReactNode {
 
   const totalTarefasEmAndamento = statsAgente.reduce((s, a) => s + a.tarefasEmAndamento, 0)
   const totalTarefas = statsAgente.reduce((s, a) => s + a.totalTarefas, 0)
-
-  /* -- menu lateral (consistente com config do projeto) -- */
-  const groups: GeradorSistemaGroup[] = [
-    {
-      id: "dashboard",
-      label: "Dashboard",
-      items: [
-        { id: "overview", label: "Visao geral", path: "dashboard", icon: <DashboardRounded />, screen: { kind: "custom", content: null } },
-      ],
-    },
-    {
-      id: "agentes",
-      label: "Agentes",
-      items: [
-        { id: "list", label: "Lista de agentes", path: "agentes", icon: <SmartToyRounded />, screen: { kind: "custom", content: null } },
-      ],
-    },
-    {
-      id: "tarefas",
-      label: "Tarefas",
-      items: [
-        { id: "all", label: "Todas as tarefas", path: "tarefas", icon: <TaskAltRounded />, screen: { kind: "custom", content: null } },
-        { id: "nova", label: "Nova tarefa", path: "nova-tarefa", icon: <AssignmentRounded />, screen: { kind: "custom", content: null } },
-      ],
-    },
-  ]
 
   /* -- render -- */
   if (loading) {

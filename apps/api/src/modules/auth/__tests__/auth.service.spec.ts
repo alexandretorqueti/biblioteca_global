@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
   BadRequestException,
@@ -232,10 +233,12 @@ describe("AuthService", () => {
       { id: 1, nome: "Biblioteca Global", slug: "biblioteca-global", ativo: true },
       { id: 2, nome: "Documentação", slug: "documentacao", ativo: true },
       { id: 3, nome: "Desativado", slug: "desativado", ativo: false },
+      { id: 4, nome: "Gerente Agentes (piloto)", slug: "gerenteagentes", ativo: true },
     )
     repo.vinculos.push(
       { usuarioId: 1, projetoId: 1, perfil: "admin" },
       { usuarioId: 1, projetoId: 2, perfil: "visualizador" },
+      { usuarioId: 1, projetoId: 4, perfil: "admin" },
     )
 
     jwt = new JwtService({ secret: "segredo-de-teste" })
@@ -268,9 +271,9 @@ describe("AuthService", () => {
       expect(resposta.refreshToken).toBeTruthy()
       expect(resposta.usuario.nome).toBe("Alexandre")
       expect(resposta.usuario).not.toHaveProperty("passwordHash")
-      expect(resposta.projetos).toHaveLength(2)
+      expect(resposta.projetos).toHaveLength(3)
       expect(resposta.projetos.map((p) => p.slug).sort()).toEqual(
-        ["biblioteca-global", "documentacao"],
+        ["biblioteca-global", "documentacao", "gerenteagentes"],
       )
     })
 
@@ -350,7 +353,7 @@ describe("AuthService", () => {
       })
       const renovado = await service.refresh(login.refreshToken)
       expect(renovado.refreshToken).not.toBe(login.refreshToken)
-      expect(renovado.projetos).toHaveLength(2)
+      expect(renovado.projetos).toHaveLength(3)
 
       await expect(service.refresh(login.refreshToken)).rejects.toBeInstanceOf(
         UnauthorizedException,

@@ -1,15 +1,14 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest"
-import { describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import { render, screen, waitFor, fireEvent, within, cleanup } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { afterEach } from "vitest"
 import Cadastro from "../Cadastro"
 import type { DynamicField } from "../DynamicForm"
-import type { CadastroDataSource } from "@biblioteca-global/shared"
+import type { CadastroDataSource, CustomAction } from "@biblioteca-global/shared"
 
 // vitest roda com globals:false — sem auto-cleanup do RTL.
-afterEach(cleanup)
+beforeEach(cleanup)
 
 type Linha = Record<string, unknown> & { id: number }
 
@@ -196,3 +195,346 @@ describe("Cadastro — flags de contexto do campo", () => {
     expect(colunas).toContain("Nome")
   })
 })
+
+// ============================================================================
+// Master-detail: lista de filhos no Cadastro
+// ============================================================================
+
+describe("Cadastro — master-detail (lista de filhos)", () => {
+  it("exibe seção vazia quando não há filhos", async () => {
+    const dataSource = dataSourceMock([
+      { id: 1, nome: "Projeto A" },
+    ])
+    const filhoDataSource = dataSourceMock([])
+    
+    render(
+      <Cadastro
+        dataSource={dataSource}
+        title="Projetos"
+        fields={camposBase}
+        newLabel="Novo projeto"
+        children={[
+          {
+            childResource: "componentes",
+            fkField: "projetoId",
+            label: "Componentes",
+            dataSource: filhoDataSource,
+          },
+        ]}
+      />,
+    )
+
+    // Grid carrega async — espera o botão Editar da linha 1.
+    const botaoEditar = await screen.findByRole("button", {
+      name: /editar/i,
+    })
+    fireEvent.click(botaoEditar)
+
+    // Seção de filhos aparece (label do primeiro filho).
+    expect(await screen.findByText(/Componentes/)).toBeInTheDocument()
+    
+    // Texto "nenhum registro encontrado" pois a lista de filhos está vazia.
+    expect(screen.getByText("Nenhum registro encontrado.")).toBeInTheDocument()
+  })
+
+  it("carrega e exibe lista de filhos filtrada por fkField", async () => {
+    const paiDataSource = dataSourceMock([
+      { id: 1, nome: "Projeto A" },
+    ])
+    
+    const filhoList = [
+      { id: 10, nome: "JsonGrid", projetoId: 1 },
+      { id: 11, nome: "Cadastro", projetoId: 1 },
+    ]
+    const filhoDataSource = dataSourceMock(filhoList)
+    
+    render(
+      <Cadastro
+        dataSource={paiDataSource}
+        title="Projetos"
+        fields={camposBase}
+        newLabel="Novo projeto"
+        children={[
+          {
+            childResource: "componentes",
+            fkField: "projetoId",
+            label: "Componentes",
+            dataSource: filhoDataSource,
+          },
+        ]}
+      />,
+    )
+
+    // Grid carrega async — espera o botão Editar da linha 1.
+    const botaoEditar = await screen.findByRole("button", {
+      name: /editar/i,
+    })
+    fireEvent.click(botaoEditar)
+
+    // A seção de filhos aparece com a contagem correta.
+    expect(await screen.findByText(/Componentes \(2\)/)).toBeInTheDocument()
+    
+    // O dataSource filho foi chamado com o filtro correto.
+    await waitFor(() => {
+      expect(filhoDataSource.list).toHaveBeenCalledWith({
+        filters: { projetoId: 1 },
+      })
+    })
+
+    // As linhas dos filhos aparecem na tabela.
+    expect(screen.getByText("JsonGrid")).toBeInTheDocument()
+    expect(screen.getByText("Cadastro")).toBeInTheDocument()
+  })
+
+  it("atualiza a lista de filhos ao trocar o registro pai selecionado", async () => {
+    const paiDataSource = dataSourceMock([
+      { id: 1, nome: "Projeto A" },
+      { id: 2, nome: "Projeto B" },
+    ])
+    
+    const filhoDataSource = dataSourceMock([
+      { id: 20, nome: "FieldJson", projetoId: 2 },
+    ])
+    
+    render(
+      <Cadastro
+        dataSource={paiDataSource}
+        title="Projetos"
+        fields={camposBase}
+        newLabel="Novo projeto"
+        children={[
+          {
+            childResource: "componentes",
+            fkField: "projetoId",
+            label: "Componentes",
+            dataSource: filhoDataSource,
+          },
+        ]}
+      />,
+    )
+
+    // Grid carrega async — clica no primeiro botão Editar (Projeto A).
+    const botoesEditar = await screen.findAllByRole("button", {
+      name: /editar/i,
+    })
+    fireEvent.click(botoesEditar[0]!)
+
+    // Filho para Projeto A (id=1) — não há dados mockados.
+    expect(await screen.findByText(/Componentes/)).toBeInTheDocument()
+    
+    // Troca para o segundo registro (Projeto B, id=2).
+    fireEvent.click(botoesEditar[1]!)
+    
+    // O dataSource filho é chamado com o filtro atualizado.
+    await waitFor(() => {
+      expect(filhoDataSource.list).toHaveBeenCalledWith({
+        filters: { projetoId: 2 },
+      })
+    })
+
+    // A contagem se atualiza para os filhos de Projeto B.
+    expect(await screen.findByText(/Componentes \(1\)/)).toBeInTheDocument()
+    expect(screen.getByText("FieldJson")).toBeInTheDocument()
+  })
+
+  it("não tenta carregar filhos quando nenhuma linha está selecionada", async () => {
+    const paiDataSource = dataSourceMock([
+      { id: 1, nome: "Projeto A" },
+    ])
+    
+    const filhoDataSource = dataSourceMock([])
+    
+    render(
+      <Cadastro
+        dataSource={paiDataSource}
+        title="Projetos"
+        fields={camposBase}
+        newLabel="Novo projeto"
+        children={[
+          {
+            childResource: "componentes",
+            fkField: "projetoId",
+            label: "Componentes",
+            dataSource: filhoDataSource,
+          },
+        ]}
+      />,
+    )
+
+    // Só abre o formulário de criação (sem linha selecionada).
+    fireEvent.click(screen.getByText("Novo projeto"))
+
+    // A seção de filhos não deve aparecer (nenhuma linha selecionada).
+    expect(screen.queryByText(/Componentes/)).not.toBeInTheDocument()
+
+    // O dataSource filho nunca foi chamado.
+    expect(filhoDataSource.list).not.toHaveBeenCalled()
+  })
+})
+
+// ============================================================================
+// St-9: Botões de ação com feedback de estado
+// ============================================================================
+
+const acoes: CustomAction[] = [
+  { id: "sincronizar", label: "Sincronizar", method: "POST", path: "/sincronizar" },
+  { id: "exportar", label: "Exportar CSV", method: "GET", path: "/exportar" },
+]
+
+const executeActionMock = vi.fn()
+
+describe("Cadastro — botões de ação com feedback (st-9)", () => {
+  beforeEach(() => {
+    executeActionMock.mockClear()
+  })
+
+  it("renderiza botões de ação e desabilita durante execução", async () => {
+    let resolveAcao!: (v: { message: string }) => void
+    const exMock = vi.fn(
+      () => new Promise<{ message: string }>((resolve) => {
+        resolveAcao = resolve
+      }),
+    )
+
+    render(
+      <Cadastro
+        dataSource={dataSourceMock([{ id: 1, nome: "Projeto A" }])}
+        title="Projetos"
+        fields={camposBase}
+        newLabel="Novo projeto"
+        actions={acoes}
+        executeAction={exMock}
+      />,
+    )
+
+    // Botões devem estar habilitados
+    const botoes = screen.getAllByRole("button")
+    const btnSync = screen.getByText("Sincronizar")
+    expect(btnSync).not.toBeDisabled()
+
+    // Clicar no botão Sincronizar
+    fireEvent.click(btnSync)
+
+    // Durante execução: botão desabilitado e rótulo muda
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Executando Sincronizar..." })).toBeDisabled()
+    })
+
+    // Botão Exportar deve estar desabilitado também (execução em curso)
+    const btnExport = screen.getByText("Exportar CSV")
+    expect(btnExport).toBeDisabled()
+
+    resolveAcao!({ message: "Sincronizado com sucesso." })
+
+    await waitFor(() => {
+      expect(screen.getByText("Sincronizado com sucesso.")).toBeInTheDocument()
+    })
+  })
+
+  it("exibe alerta de erro quando a ação falha", async () => {
+    const exMock = vi.fn(async () => {
+      throw new Error("Endpoint indisponível")
+    })
+
+    render(
+      <Cadastro
+        dataSource={dataSourceMock([{ id: 1, nome: "Projeto A" }])}
+        title="Projetos"
+        fields={camposBase}
+        newLabel="Novo projeto"
+        actions={acoes}
+        executeAction={exMock}
+      />,
+    )
+
+    const btnSync = screen.getByText("Sincronizar")
+    fireEvent.click(btnSync)
+
+    await waitFor(() => {
+      expect(screen.getByText("Endpoint indisponível")).toBeInTheDocument()
+    })
+  })
+
+  it("desabilita botões de ação quando executeAction é ausente", async () => {
+    render(
+      <Cadastro
+        dataSource={dataSourceMock([{ id: 1, nome: "Projeto A" }])}
+        title="Projetos"
+        fields={camposBase}
+        newLabel="Novo projeto"
+        actions={acoes}
+      />,
+    )
+
+    const btnSync = screen.getByText("Sincronizar")
+    expect(btnSync).toBeDisabled()
+  })
+
+  it("desabilita botão 'Novo projeto' durante create", async () => {
+    const dataSource = dataSourceMock([])
+    let resolveCreate: (v: Linha) => void
+    const createMock = vi.fn(
+      () => new Promise<Linha>((resolve) => {
+        resolveCreate = resolve as any
+      }),
+    )
+    dataSource.create = createMock
+
+    render(
+      <Cadastro
+        dataSource={dataSource}
+        title="Projetos"
+        fields={camposBase}
+        newLabel="Novo projeto"
+        actions={acoes}
+        executeAction={executeActionMock}
+      />,
+    )
+
+    const btnNovo = screen.getByText("Novo projeto")
+    expect(btnNovo).not.toBeDisabled()
+
+    fireEvent.click(btnNovo)
+
+    // Preencher campo obrigatório para abrir o form
+    await userEvent.type(screen.getByLabelText(/Nome\b/), "Projeto Teste")
+
+    fireEvent.click(screen.getByText("Cadastrar"))
+
+    // O botão 'Novo projeto' fica desabilitado porque actionState === "create"
+    await waitFor(() => {
+      expect(btnNovo).toBeDisabled()
+    })
+  })
+
+  it("desabilita botão 'Excluir' durante delete", async () => {
+    const dataSource = dataSourceMock([{ id: 1, nome: "Projeto A", config: { app: { name: "Teste" } } }])
+
+    render(
+      <Cadastro
+        dataSource={dataSource}
+        title="Projetos"
+        fields={camposBase}
+        newLabel="Novo projeto"
+        actions={acoes}
+        executeAction={executeActionMock}
+      />,
+    )
+
+    const btnExcluir = await screen.findByRole("button", { name: "Excluir" })
+    expect(btnExcluir).not.toBeDisabled()
+
+    // Clique no botão 'Excluir' da grid (dispara o dialog de confirmação)
+    fireEvent.click(btnExcluir)
+
+    // Confirmar a exclusão no dialog
+    const btnConfirmar = await screen.findByRole("button", { name: "Excluir" })
+    fireEvent.click(btnConfirmar)
+
+    // Após a exclusão, deve aparecer o alerta de sucesso
+    await waitFor(() => {
+      expect(screen.getByText("Registro excluído com sucesso.")).toBeInTheDocument()
+    })
+  })
+})
+

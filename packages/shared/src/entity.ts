@@ -10,7 +10,7 @@ export type EntityRecord = Record<string, unknown>
  * fala HTTP; o api-client fornece implementações via createDataSource.
  */
 export interface CadastroDataSource<T extends EntityRecord> {
-  list(): Promise<T[]>
+  list(params?: ListParams): Promise<T[]>
   create(values: FieldValues): Promise<T>
   update(row: T, values: FieldValues): Promise<T>
   remove(row: T): Promise<void>

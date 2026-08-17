@@ -3,6 +3,7 @@ import {
   Alert,
   Box,
   Button,
+  CircularProgress,
   Paper,
   Stack,
   Typography,
@@ -33,8 +34,17 @@ export interface DynamicFormProps {
   initialValues?: DynamicFormValues
   loading?: boolean
   successMessage?: string
+  /** Identificador de ação atual (create/update/delete) para rótulo dinâmico. */
+  actionState?: "create" | "update" | "delete" | null
   onSubmit: (values: DynamicFormValues) => void | Promise<void>
   onCancel?: () => void
+}
+
+/** Labels usadas no botão de submit durante cada estado de ação. */
+const SUBMIT_LABELS_LOADING: Record<string, string> = {
+  create: "Cadastrando...",
+  update: "Salvando...",
+  delete: "Excluindo...",
 }
 
 export default function DynamicForm({
@@ -46,9 +56,14 @@ export default function DynamicForm({
   initialValues,
   loading = false,
   successMessage,
+  actionState = null,
   onSubmit,
   onCancel,
 }: DynamicFormProps) {
+  const displaySubmitLabel =
+    loading && actionState !== null
+      ? SUBMIT_LABELS_LOADING[actionState] ?? "Executando..."
+      : submitLabel;
   const defaultValues = useMemo(
     () =>
       fields.reduce<DynamicFormValues>((values, field) => {
@@ -168,8 +183,13 @@ export default function DynamicForm({
             variant="contained"
             size="large"
             disabled={loading}
+            startIcon={
+              loading ? (
+                <CircularProgress size={20} color="inherit" />
+              ) : undefined
+            }
           >
-            {submitLabel}
+            {displaySubmitLabel}
           </Button>
 
           {onCancel && (

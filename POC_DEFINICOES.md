@@ -354,7 +354,7 @@ schema.ts (do projeto — ÚNICA escrita)
 - **Viabilidade confirmada:** o `GeradorSistema` suporta telas custom via registry; o JSON só aponta `componentId`; a documentação ganha de brinde autenticação + tela de usuários + isolamento de dados.
 
 ### 9.3 Usuário padrão — `alexandre`
-- `username: alexandre`, `email: alexandre@globaltecnologia.com.br`, senha inicial: **`Bo4MfU29r0GPi1`** (gerada pelo agente, hash argon2id no seed — descartável).
+- `username: alexandre`, `email: alexandre.globaltecnologia@gmail.com`, senha inicial: **`Bo4MfU29r0GPi1`** (gerada pelo agente, hash argon2id no seed — descartável).
 - Vínculos na pivot: `admin` em **biblioteca-global** e **documentacao**.
 - ⚠️ **Trocar a senha após o primeiro login** (fluxo `change-password` já previsto) — o agente passa a "não saber" a nova senha.
 

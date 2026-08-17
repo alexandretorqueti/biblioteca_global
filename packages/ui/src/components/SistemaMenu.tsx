@@ -35,7 +35,7 @@ export default function SistemaMenu({
       <List sx={{ px: 1.5, py: 2 }}>
         {groups.map((group) => (
           <Box component="li" key={group.id} sx={{ listStyle: "none" }}>
-            <ListSubheader
+            <ListSubheader component="div"
               disableSticky
               sx={{ bgcolor: "transparent", px: 1, fontWeight: 800 }}
             >

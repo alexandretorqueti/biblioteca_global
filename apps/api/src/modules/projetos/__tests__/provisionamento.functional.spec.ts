@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Testes funcionais — provisionamento dos projetos iniciais (critérios de
  * saída da Etapa 6): databases projeto_<id> criados, migrations aplicadas,
@@ -73,17 +74,24 @@ describe("provisionamento dos projetos iniciais (Etapa 6)", () => {
 
   it("seed é idempotente (roda de novo sem duplicar)", async () => {
     await seed()
+    // alexandre é o único usuário criado pelo seed; demais podem ser resíduo de outros testes.
+    const [linhasAlex] = await conexaoApp.query(
+      "SELECT COUNT(*) AS n FROM usuarios WHERE username = ?",
+      ["alexandre"],
+    )
+    const alexContagem = (linhasAlex as Array<{ n: number }>).at(0)?.n ?? -1
+    expect(alexContagem).toBe(1)
+    // Projetos e vínculos são exclusivos do seed.
     const contagem = async (tabela: string): Promise<number> => {
       const [linhas] = await conexaoApp.query("SELECT COUNT(*) AS n FROM " + tabela)
       const primeira = (linhas as Array<{ n: number }>).at(0)
       return Number(primeira?.n ?? -1)
     }
-    expect(await contagem("usuarios")).toBe(1)
-    expect(await contagem("projetos")).toBe(2)
-    expect(await contagem("projetos_usuarios")).toBe(2)
+    expect(await contagem("projetos")).toBe(3)
+    expect(await contagem("projetos_usuarios")).toBe(3)
   }, 120_000)
 
-  it("SHOW DATABASES lista core e projeto_<id> dos dois projetos", async () => {
+  it("SHOW DATABASES lista core e projeto_<id> dos projetos do seed", async () => {
     const nomes = await databases()
     expect(nomes).toContain("core")
     expect(nomes).toContain(`projeto_${bibliotecaGlobalId}`)

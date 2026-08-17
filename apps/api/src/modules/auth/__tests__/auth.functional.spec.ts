@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Testes funcionais do módulo Auth — API real + MySQL real em container
  * (critérios de saída da Etapa 3). Requer o MySQL do docker-compose no ar.
@@ -122,13 +123,13 @@ describe("auth — funcional (API + MySQL)", () => {
       .send({ identifier, password, identifierType: "username" })
   }
 
-  it("login do alexandre devolve refresh + 2 projetos", async () => {
+  it("login do alexandre devolve refresh + projetos do seed", async () => {
     const resposta = await login("alexandre", SENHA_ALEXANDRE)
     expect(resposta.status).toBe(201)
     expect(resposta.body.refreshToken).toBeTruthy()
     expect(resposta.body.usuario.nome).toBe("Alexandre")
     expect(resposta.body.usuario).not.toHaveProperty("passwordHash")
-    expect(resposta.body.projetos).toHaveLength(2)
+    expect(resposta.body.projetos).toHaveLength(3)
   })
 
   it("fluxo completo: select-project → access token → /auth/me", async () => {

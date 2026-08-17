@@ -32,6 +32,8 @@ import { config as configBibliotecaGlobal } from "../projects/biblioteca-global/
 import * as schemaBibliotecaGlobal from "../projects/biblioteca-global/schema"
 import { config as configDocumentacao } from "../projects/documentacao/config"
 import * as schemaDocumentacao from "../projects/documentacao/schema"
+import { config as configGerenteAgentes } from "../projects/gerenteagentes/config"
+import * as schemaGerenteAgentes from "../projects/gerenteagentes/schema"
 
 /** POC §9.3 — senha descartável; Alexandre troca no primeiro login. */
 const SENHA_INICIAL_DESCARTAVEL = "Bo4MfU29r0GPi1"
@@ -58,6 +60,13 @@ const PROJETOS_SEED: ProjetoSeed[] = [
     configBase: configDocumentacao,
     tabelas: coletarTabelas(schemaDocumentacao),
     annotations: coletarAnnotations(schemaDocumentacao),
+  },
+  {
+    nome: "Gerente Agentes (piloto)",
+    slug: "gerenteagentes",
+    configBase: configGerenteAgentes,
+    tabelas: coletarTabelas(schemaGerenteAgentes),
+    annotations: coletarAnnotations(schemaGerenteAgentes),
   },
 ]
 
@@ -162,7 +171,7 @@ export async function seed(): Promise<void> {
     .insert(usuarios)
     .values({
       username: "alexandre",
-      email: "alexandre@globaltecnologia.com.br",
+      email: "alexandre.globaltecnologia@gmail.com",
       nome: "Alexandre",
       passwordHash,
       ativo: true,
@@ -170,7 +179,7 @@ export async function seed(): Promise<void> {
     .onDuplicateKeyUpdate({
       set: {
         nome: "Alexandre",
-        email: "alexandre@globaltecnologia.com.br",
+        email: "alexandre.globaltecnologia@gmail.com",
         ativo: true,
       },
     })

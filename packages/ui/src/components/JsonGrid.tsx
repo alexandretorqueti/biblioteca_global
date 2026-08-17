@@ -70,6 +70,10 @@ interface JsonGridProps<T extends JsonRecord = JsonRecord> {
    * Alexandre 2026-08-15; antes eram renderizadas como JSON.stringify).
    */
   showJsonColumns?: boolean
+  /** Torna as linhas clicáveis para master-detail. */
+  clickable?: boolean
+  /** Callback chamado ao clicar numa linha (apenas quando clickable=true). */
+  onRowClick?: (row: T) => void
 }
 
 const formatHeader = (key: string) =>
@@ -206,6 +210,8 @@ export default function JsonGrid<T extends JsonRecord>({
   initialPageSize = 10,
   pageSizeOptions = [5, 10, 25, 50],
   showJsonColumns = false,
+  clickable = false,
+  onRowClick,
 }: JsonGridProps<T>) {
   const theme = useTheme()
   // Cabeçalho derivado do tema: claro → grey.100, escuro → grey.900.
@@ -438,6 +444,12 @@ export default function JsonGrid<T extends JsonRecord>({
                       ) ?? rowIndex
                     }
                     hover
+                    sx={{
+                      cursor: clickable ? "pointer" : "default",
+                      bgcolor: clickable ? (theme.palette.action.hover as string) : undefined,
+                      "&:hover": clickable ? { bgcolor: theme.palette.action.selected } : undefined,
+                    }}
+                    onClick={clickable ? () => onRowClick?.(row) : undefined}
                   >
                     {visibleColumns.map((column) => (
                       <TableCell key={column}>

@@ -10,6 +10,7 @@
 import type { ReactNode } from "react"
 import type {
   CadastroDataSource,
+  CustomAction,
   DynamicFieldConfig,
   EntityRecord,
   MultipleChoiceFieldConfig,
@@ -22,6 +23,7 @@ export type {
   ScreenConfig,
   CadastroScreenConfig,
   CustomScreenConfig,
+  CustomAction,
 } from "@biblioteca-global/shared"
 export type {
   DynamicFieldConfig,
@@ -47,6 +49,25 @@ export type MultipleChoiceConfig = MultipleChoiceFieldConfig & {
 /** Valores de formulário (iguais à v1). */
 export type DynamicFormValues = Record<string, string | number | boolean>
 
+/**
+ * Retorno de uma ação customizada executada pelo runtime.
+ * O front apenas exibe `message`; o back define a estrutura real.
+ */
+export interface CustomActionResult {
+  /** Mensagem legível ao usuário (exibida no alerta de sucesso). */
+  message: string
+}
+
+/**
+ * Executa uma ação customizada definida na config. Injetado pelo runtime
+ * (apps/web usa api-client); a UI nunca fala HTTP diretamente.
+ * Lança Error em caso de falha (exibido no alerta de erro).
+ */
+export type ExecuteAction = (
+  action: CustomAction,
+  context?: { row?: EntityRecord; params?: Record<string, string | number> },
+) => Promise<CustomActionResult>
+
 /** Resolvedores de runtime injetados pelo apps/web (Etapa 9). */
 export interface GeradorSistemaRuntime {
   /** Monta o CRUD do resource — apps/web usa o api-client (nunca HTTP direto). */
@@ -59,6 +80,8 @@ export interface GeradorSistemaRuntime {
   ) => (search: string) => Promise<EntityRecord[]>
   /** Resolve nome do ícone → ReactNode (default: mapa interno). */
   resolveIcon?: (name: string) => ReactNode
+  /** Executa uma ação customizada (actions das telas cadastro/external). */
+  executeAction?: ExecuteAction
 }
 
 export type {

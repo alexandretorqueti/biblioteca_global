@@ -12,7 +12,14 @@ export {
 } from "./http"
 export { AuthClient } from "./auth-client"
 export { RestEntityClient } from "./entity-client"
+export { ActionExecutor } from "./action-executor"
+export type {
+  ActionPayload,
+  ActionResult,
+  ExecuteActionOptions,
+} from "./action-executor"
 export { createDataSource } from "./data-source"
+export { ExternalApiClient } from "./external-client"
 export type {
   ApiClientOptions,
   FetchFn,

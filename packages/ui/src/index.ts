@@ -8,6 +8,7 @@ export { default as LayoutItem } from "./components/LayoutItem"
 export { default as SistemaMenu } from "./components/SistemaMenu"
 export { default as SistemaBarraSuperior } from "./components/SistemaBarraSuperior"
 export { default as GeradorSistema } from "./components/GeradorSistema"
+export { default as TaskChat } from "./components/TaskChat"
 
 // Fields
 export { default as FieldBoolean } from "./components/fields/FieldBoolean"

@@ -15,7 +15,7 @@ export default defineConfig({
     globals: true,
     // O container roda NODE_ENV=production; o build production do React
     // não exporta `act` (exigido pelo @testing-library/react).
-    env: { NODE_ENV: "test" },
+    env: { NODE_ENV: "test", TZ: "UTC" },
     // Environment jsdom para testes de componentes React.
     // Testes de backend (apps/api, database) declaram `// @vitest-environment node`
     // por arquivo: jsdom externaliza builtins Node e o Vitest 4.1.10 quebra com

@@ -6,6 +6,7 @@
 import type {
   CadastroDataSource,
   EntityRecord,
+  ListParams,
 } from "@biblioteca-global/shared"
 import { RestEntityClient } from "./entity-client"
 import type { ApiHttpClient } from "./http"
@@ -32,8 +33,8 @@ export function createDataSource<T extends EntityRecord>(
 ): CadastroDataSource<T> {
   const client = new RestEntityClient<T>(http, resource)
   return {
-    list: async () => {
-      const pagina = await client.list({ pageSize: LIMITE_LISTAGEM })
+    list: async (params?: ListParams) => {
+      const pagina = await client.list(params ?? { pageSize: LIMITE_LISTAGEM })
       return pagina.items
     },
     create: (values) => client.create(values),

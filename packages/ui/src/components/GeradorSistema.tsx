@@ -10,17 +10,22 @@ import {
   useTheme,
 } from "@mui/material"
 import type {
+  CadastroDataSource,
   CadastroScreenConfig,
+  CustomAction,
+  ExternalScreenConfig,
   GeradorSistemaConfig,
 } from "@biblioteca-global/shared"
+import type { EntityRecord } from "@biblioteca-global/shared"
 import Cadastro from "./Cadastro"
+import ExternalScreen from "./ExternalScreen"
 import SistemaBarraSuperior from "./SistemaBarraSuperior"
 import SistemaMenu from "./SistemaMenu"
 import type {
   GeradorSistemaCadastroScreen,
   GeradorSistemaGroup,
 } from "../gerador-screens"
-import type { DynamicField, GeradorSistemaRuntime } from "../types"
+import type { DynamicField, ExecuteAction, GeradorSistemaRuntime } from "../types"
 import { getSistemaBreadcrumb } from "../utils/system"
 import { getCustomScreen } from "../registry"
 import { resolveIcon } from "../icons"
@@ -36,6 +41,36 @@ export interface GeradorSistemaProps {
   initialPath?: string
   actions?: ReactNode
   onRouteChange?: (path: string) => void
+}
+
+/** Tela filha montada com dataSource em runtime. */
+interface MontadaChild {
+  childResource: string
+  label: string
+  fkField: string
+  dataSource: CadastroDataSource<EntityRecord>
+}
+
+/** Tela externa montada em runtime. */
+interface MontadaExternalScreen {
+  kind: "external"
+  baseUrl: string
+  method: string
+  pathTemplate: string
+  actions?: CustomAction[]
+  dataPath?: string
+  query?: Record<string, string | number | boolean>
+  executeAction?: ExecuteAction
+  detailPathTemplate?: string
+  detailDataPath?: string
+}
+
+/** Props injetadas na tela externa via runtime. */
+export interface ExternalScreenRuntime {
+  /** Parâmetros para interpolar no pathTemplate. */
+  params?: Record<string, string | number>
+  /** Token Bearer opcional. */
+  bearerToken?: string
 }
 
 function montarTelaCadastro(
@@ -67,6 +102,14 @@ function montarTelaCadastro(
     return runtimeField
   })
 
+  // Montar dataSources filhos para master-detail.
+  const childrenDataSource: MontadaChild[] = (screen.children ?? []).map(
+    (child) => ({
+      ...child,
+      dataSource: getDataSource(child.childResource),
+    }),
+  )
+
   return {
     kind: "cadastro",
     dataSource: getDataSource(screen.resource),
@@ -76,6 +119,9 @@ function montarTelaCadastro(
     hiddenColumns: screen.overrides?.hiddenColumns,
     columns: screen.overrides?.columns,
     newLabel: screen.overrides?.newLabel,
+    children: childrenDataSource.length > 0 ? childrenDataSource : undefined,
+    actions: screen.actions,
+    executeAction: runtime.executeAction,
   }
 }
 
@@ -92,15 +138,31 @@ function montarGroups(
           ? runtime.resolveIcon?.(item.icon) ?? resolveIcon(item.icon)
           : undefined
 
-      const screen =
+      const screen:
+        | GeradorSistemaCadastroScreen
+        | { kind: "custom"; content: ReactNode }
+        | MontadaExternalScreen =
         item.screen.kind === "cadastro"
           ? montarTelaCadastro(item.screen, runtime)
-          : {
-              kind: "custom" as const,
-              content: renderCustomScreen(item.screen.componentId),
-            }
+          : item.screen.kind === "custom"
+            ? {
+                kind: "custom" as const,
+                content: renderCustomScreen(item.screen.componentId),
+              }
+            : { // external
+                kind: "external" as const,
+                baseUrl: (item.screen as ExternalScreenConfig).baseUrl,
+                method: (item.screen as ExternalScreenConfig).method,
+                pathTemplate: (item.screen as ExternalScreenConfig).pathTemplate,
+                actions: (item.screen as ExternalScreenConfig).actions ?? [],
+                dataPath: (item.screen as ExternalScreenConfig).dataPath,
+                query: (item.screen as ExternalScreenConfig).query,
+                executeAction: runtime.executeAction,
+                detailPathTemplate: (item.screen as ExternalScreenConfig).detailPathTemplate,
+                detailDataPath: (item.screen as ExternalScreenConfig).detailDataPath,
+              }
 
-      return { ...item, icon, screen }
+      return { ...item, icon, screen } as any
     }),
   }))
 }
@@ -205,25 +267,53 @@ export default function GeradorSistema({
       <Box component="main" sx={{ flexGrow: 1, minWidth: 0 }}>
         <Toolbar />
         <Container maxWidth="xl" sx={{ py: { xs: 3, md: 5 } }}>
-          {currentScreen?.kind === "cadastro" ? (
-            <Cadastro
-              dataSource={currentScreen.dataSource}
-              title={currentScreen.title}
-              fields={currentScreen.fields}
-              columnLabels={currentScreen.columnLabels}
-              gridColumns={currentScreen.gridColumns}
-              hiddenColumns={currentScreen.hiddenColumns}
-              columns={currentScreen.columns}
-              newLabel={currentScreen.newLabel}
-              description={currentScreen.description}
-            />
-          ) : currentScreen?.kind === "custom" ? (
-            currentScreen.content
-          ) : (
-            <Typography color="text.secondary">
-              Nenhuma tela foi configurada para esta rota.
-            </Typography>
-          )}
+          {(() => {
+            const screenKind = currentScreen?.kind
+            if (screenKind === "cadastro" && currentScreen) {
+              return (
+                <Cadastro
+                  dataSource={currentScreen.dataSource}
+                  title={currentScreen.title}
+                  fields={currentScreen.fields}
+                  columnLabels={currentScreen.columnLabels}
+                  gridColumns={currentScreen.gridColumns}
+                  hiddenColumns={currentScreen.hiddenColumns}
+                  columns={currentScreen.columns}
+                  newLabel={currentScreen.newLabel}
+                  description={currentScreen.description}
+                  children={currentScreen.children}
+                  actions={currentScreen.actions}
+                  executeAction={currentScreen.executeAction}
+                />
+              )
+            }
+            if (screenKind === "custom" && currentScreen) {
+              return currentScreen.content
+            }
+            if (screenKind === "external" && currentScreen) {
+              return (
+                <ExternalScreen
+                  baseUrl={currentScreen.baseUrl}
+                  method={currentScreen.method}
+                  pathTemplate={currentScreen.pathTemplate}
+                  params={(runtime as any).externalParams ?? undefined}
+                  bearerToken={(runtime as any).bearerToken ?? undefined}
+                  actions={currentScreen.actions}
+                  dataPath={currentScreen.dataPath}
+                  query={currentScreen.query}
+                  executeAction={currentScreen.executeAction}
+                  detailPathTemplate={currentScreen.detailPathTemplate}
+                  detailDataPath={currentScreen.detailDataPath}
+                  onNavigate={(runtime as any).navigate ?? undefined}
+                />
+              )
+            }
+            return (
+              <Typography color="text.secondary">
+                Nenhuma tela foi configurada para esta rota.
+              </Typography>
+            )
+          })()}
         </Container>
       </Box>
     </Box>

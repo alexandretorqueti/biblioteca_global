@@ -99,6 +99,13 @@ export const dynamicFieldConfigSchema = z
     insertable: z.boolean().optional(),
     editable: z.boolean().optional(),
     gridVisible: z.boolean().optional(),
+    /**
+     * Relacionamento master-detail (só para campos FK):
+     * - `childResource`: resource filho que usa este campo como FK
+     * - `fkField`: nome do campo no childResource que referencia o record pai
+     */
+    childResource: z.string().regex(/^[a-z][a-z0-9_]*$/).optional(),
+    fkField: z.string().min(1).optional(),
   })
   .strict()
 
