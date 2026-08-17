@@ -4,7 +4,7 @@
  * - tarefas em execucao por agente
  * - ultima atividade (lista resumida)
  *
- * Usa ExternalApiClient para a API externa do motor (http://192.168.1.16:6283)
+ * Usa ExternalApiClient para a API externa do motor (http://api.tarefas.localhost)
  * e o RestEntityClient interno para dados locais do projeto gerenteagentes.
  * Estados loading/erro/404 sao tratados sem crash.
  */
@@ -178,7 +178,7 @@ function CardAgente({
 /*  Componente principal: DashboardScreen                            */
 /* ------------------------------------------------------------------ */
 
-const BASE_URL = "http://192.168.1.16:6283"
+const BASE_URL = "http://api.tarefas.localhost"
 
 export default function DashboardScreen(): ReactNode {
   /* -- estado -- */

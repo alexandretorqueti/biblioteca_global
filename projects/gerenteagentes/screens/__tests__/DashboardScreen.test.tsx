@@ -48,6 +48,7 @@ describe("DashboardScreen", () => {
   })
 
   it("renderiza dashboard com projetos e tarefas", async () => {
+    const API = "http://api.tarefas.localhost"
     mockOk({ projects: [projetoFactory(1, "Projeto Alpha"), projetoFactory(2, "Projeto Beta")] })
     mockOk([tarefaFactory(1, "Tarefa A", "concluida", 1), tarefaFactory(2, "Tarefa B", "em_andamento", 1), tarefaFactory(3, "Tarefa C", "pendente", 1)])
     mockOk([tarefaFactory(4, "Tarefa D", "pendente", 2)])
@@ -63,6 +64,12 @@ describe("DashboardScreen", () => {
       expect(screen.getByTestId("dashboard-screen")).toBeInTheDocument()
     })
 
+    // Asserts de URL: todas as chamadas devem ir para a BASE_URL correta
+    const callUrls = mockFetch.mock.calls.map((c) => c[0])
+    for (const url of callUrls) {
+      expect(url).toMatch(/^http:\/\/api\.tarefas\.localhost/)
+    }
+
     expect(screen.getByRole("heading", { name: "Dashboard do Gerente de Agentes" })).toBeInTheDocument()
     expect(screen.getByText(/Projetos/)).toBeInTheDocument()
     expect(screen.getByText(/Total de tarefas/)).toBeInTheDocument()
@@ -70,6 +77,7 @@ describe("DashboardScreen", () => {
   })
 
   it("renderiza alert de erro quando a API falha", async () => {
+    const API = "http://api.tarefas.localhost"
     // Todas as chamadas falham — o catch externo capta e exibe o alert
     mockFetch.mockRejectedValue(new Error("Erro simulado na API"))
 
@@ -85,6 +93,7 @@ describe("DashboardScreen", () => {
   })
 
   it("renderiza empty state quando nao ha agentes", async () => {
+    const API = "http://api.tarefas.localhost"
     mockOk({ projects: [] })
     mockOk({ lastActivities: [] })
 
@@ -100,6 +109,7 @@ describe("DashboardScreen", () => {
   })
 
   it("renderiza card de agente com progresso", async () => {
+    const API = "http://api.tarefas.localhost"
     mockOk({ projects: [projetoFactory(1, "Projeto Alpha")] })
     mockOk([tarefaFactory(1, "Tarefa A", "em_andamento", 1), tarefaFactory(2, "Tarefa B", "pendente", 1)])
     mockOk({ lastActivities: [] })
@@ -116,6 +126,7 @@ describe("DashboardScreen", () => {
   })
 
   it("renderiza tarefas em execucao com chips de status", async () => {
+    const API = "http://api.tarefas.localhost"
     mockOk({ projects: [projetoFactory(1, "Alpha")] })
     mockOk([tarefaFactory(1, "Tarefa ativa", "em_andamento", 1)])
     mockOk({ lastActivities: [] })

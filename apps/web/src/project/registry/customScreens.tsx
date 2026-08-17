@@ -11,6 +11,7 @@
 import { registerCustomScreens } from "@biblioteca-global/ui"
 import DocumentationScreen from "../../../../../projects/documentacao/screens/DocumentationScreen"
 import DashboardScreen from "../../../../../projects/gerenteagentes/screens/DashboardScreen"
+import NovaTarefaScreen from "../../../../../projects/gerenteagentes/screens/NovaTarefaScreen"
 
 /**
  * Registra as telas custom de todos os projetos. Chamar no boot (main.tsx)
@@ -20,5 +21,6 @@ export function registrarTelasCustom(): void {
   registerCustomScreens({
     documentation: DocumentationScreen,
     "gerenteagentes-dashboard": DashboardScreen,
+    "gerenteagentes-nova-tarefa": NovaTarefaScreen,
   })
 }

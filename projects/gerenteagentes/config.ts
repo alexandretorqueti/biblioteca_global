@@ -3,7 +3,7 @@
  *
  * Piloto para gerenciamento de agentes de IA:
  * - Cadastro de agentes e tarefas (master-detail com execuções)
- * - Tela externa do motor de execução (http://192.168.1.16:6283)
+ * - Tela externa do motor de execução (http://api.tarefas.localhost)
  * - Tela Projetos externa (GET /api/projects → dataPath "projects")
  * - Tela Tarefas externa (GET /api/projects/:agentId/tasks → detail /task/:id)
  * - Ação "Iniciar tarefa" na tela de tarefas
@@ -76,40 +76,18 @@ export const config: GeradorSistemaConfig = {
           path: "tarefas",
           icon: "task_alt",
           screen: {
-            kind: "cadastro",
-            resource: "tarefas",
-            title: "Tarefas",
-            description: "Gerenciamento de tarefas dos agentes",
-            fields: [
-              { name: "agenteId", label: "Agente (ID)", type: "number", required: true },
-              { name: "titulo", label: "Título", type: "text", required: true, fullWidth: true },
-              { name: "descricao", label: "Descrição", type: "textarea", fullWidth: true },
-              { name: "status", label: "Status", type: "select", defaultValue: "pendente" },
-              { name: "prioridade", label: "Prioridade", type: "number" },
-            ],
-            overrides: {
-              newLabel: "Nova tarefa",
-            },
-            /**
-             * Master-detail: execuções como child de tarefas.
-             * fkField = "tarefaId" — cada execução referencia tarefas.id.
-             */
-            children: [
-              {
-                childResource: "execucoes",
-                fkField: "tarefaId",
-                label: "Execuções",
-              },
-            ],
-            /**
-             * Ação personalizada: iniciar tarefa no motor externo.
-             */
+            kind: "external",
+            baseUrl: "http://api.tarefas.localhost",
+            method: "GET",
+            pathTemplate: "/api/tasks",
+            dataPath: "tasks",
+            detailPathTemplate: "/task/:id",
             actions: [
               {
                 id: "iniciar-tarefa",
                 label: "Iniciar tarefa",
                 method: "POST",
-                path: "/task/:id/start",
+                path: "/api/task/:id/start",
                 confirm: "Deseja iniciar esta tarefa no motor de execução?",
               },
             ],
@@ -128,7 +106,7 @@ export const config: GeradorSistemaConfig = {
           icon: "account_tree",
           screen: {
             kind: "external",
-            baseUrl: "http://192.168.1.16:6283",
+            baseUrl: "http://api.tarefas.localhost",
             method: "GET",
             pathTemplate: "/api/projects",
             dataPath: "projects",
@@ -147,7 +125,7 @@ export const config: GeradorSistemaConfig = {
           icon: "category",
           screen: {
             kind: "external",
-            baseUrl: "http://192.168.1.16:6283",
+            baseUrl: "http://api.tarefas.localhost",
             method: "GET",
             pathTemplate: "/api/projects/:slug/definitions",
             dataPath: "definitions",
@@ -160,7 +138,7 @@ export const config: GeradorSistemaConfig = {
           icon: "contacts",
           screen: {
             kind: "external",
-            baseUrl: "http://192.168.1.16:6283",
+            baseUrl: "http://api.tarefas.localhost",
             method: "GET",
             pathTemplate: "/api/contatos",
             dataPath: "contatos",
