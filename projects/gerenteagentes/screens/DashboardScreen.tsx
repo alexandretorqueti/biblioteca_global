@@ -28,18 +28,20 @@ import { ExternalApiClient } from "@biblioteca-global/api-client"
 /* ------------------------------------------------------------------ */
 
 interface ProjetoExterno {
-  id: number | string
-  nome: string
-  slug: string
-  tarefasCount?: number
+  agentId: number | string
+  title?: string // campo real do motor (nome do projeto)
+  nome?: string // alias legacy para compatibilidade
+  status?: string
 }
 
 interface TarefaExterna {
   id: number | string
-  titulo: string
+  title: string // campo real do motor (nome da tarefa)
+  titulo?: string // alias legacy para compatibilidade
+  agentId: number | string
+  agenteId?: number | string // alias legacy para compatibilidade
   status: string
-  prioridade: number
-  agenteId: number | string
+  prioridade?: number
   iniciadaEm?: string
 }
 
@@ -205,19 +207,26 @@ export default function DashboardScreen(): ReactNode {
         projetosResp = projRaw as ProjetoExterno[]
       }
 
-      // 2. Tarefas por agente
+      // Normalizar campos: motor envia title/nome → garantimos agenteNome derivado
+      const normalizados: ProjetoExterno[] = projetosResp.map((p) => ({
+        agentId: p.agentId,
+        title: p.title ?? p.nome ?? "",
+        status: p.status,
+      }))
+
+      // 2. Tarefas por agente (GET /api/projects/:agentId/tasks)
       const tarefasPorAgente: Record<string, TarefaExterna[]> = {}
-      for (const proj of projetosResp) {
-        if (!proj.id) continue
+      for (const proj of normalizados) {
+        if (!proj.agentId) continue
         try {
-          const tasksRaw = await ext.get(`/api/projects/${proj.id}/tasks`) as unknown
+          const tasksRaw = await ext.get(`/api/projects/${proj.agentId}/tasks`) as unknown
           if (Array.isArray(tasksRaw)) {
-            tarefasPorAgente[proj.id] = tasksRaw as TarefaExterna[]
+            tarefasPorAgente[proj.agentId] = tasksRaw as TarefaExterna[]
           } else {
-            tarefasPorAgente[proj.id] = []
+            tarefasPorAgente[proj.agentId] = []
           }
         } catch {
-          tarefasPorAgente[proj.id] = []
+          tarefasPorAgente[proj.agentId] = []
         }
       }
 
@@ -254,9 +263,12 @@ export default function DashboardScreen(): ReactNode {
     const resultados: Array<{ agenteId: string; agenteNome: string; tarefasEmAndamento: number; totalTarefas: number }> = []
     for (const [agenteId, tarefas] of Object.entries(tarefasPorAgente)) {
       const emAndamento = tarefas.filter((t) => t.status === "em_andamento").length
+      // title é o campo real do motor para tarefa; titulo é alias
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const _task = tarefas[0]
       resultados.push({
         agenteId,
-        agenteNome: String(agenteId), // nome viria de lookup se necessario
+        agenteNome: String(agenteId),
         tarefasEmAndamento: emAndamento,
         totalTarefas: tarefas.length,
       })
@@ -347,7 +359,8 @@ export default function DashboardScreen(): ReactNode {
           for (const tarefas of Object.values(tarefasPorAgente)) {
             for (const t of tarefas) {
               if (t.status === "em_andamento") {
-                todasEmAndamento.push({ ...t, agenteId: t.agenteId })
+                // Mapear title → titulo para compatibilidade (agenteId ↔ agentId)
+          todasEmAndamento.push({ ...t, titulo: t.title ?? t.titulo ?? "", agenteId: t.agentId ?? t.agenteId ?? '' })
               }
             }
           }
@@ -362,10 +375,10 @@ export default function DashboardScreen(): ReactNode {
                 {ICON_FOR_STATUS[tarefa.status] ?? <PendingRounded sx={{ fontSize: 18 }} />}
                 <Stack flex={1} minWidth={0}>
                   <Typography variant="subtitle2" fontWeight={600} noWrap>
-                    {tarefa.titulo}
+                    {tarefa.title ?? tarefa.titulo ?? "Sem título"}
                   </Typography>
                   <Typography variant="caption" color="text.secondary">
-                    Agente ID: {tarefa.agenteId} · Prioridade: {tarefa.prioridade}
+                    Agente ID: {tarefa.agentId ?? tarefa.agenteId ?? "?"} · Prioridade: {tarefa.prioridade ?? "-"}
                   </Typography>
                 </Stack>
                 <Chip

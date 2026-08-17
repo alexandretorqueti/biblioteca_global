@@ -14,7 +14,7 @@ import { ThemeSettingProvider } from "./theme/ThemeContext"
 import { AppRoutes } from "./routes/AppRoutes"
 
 function ProjectHost({ children }: { children: ReactNode }): ReactNode {
-  const auth = useAuth()
+  const _auth = useAuth()
 
   // Registra as telas custom assim que o primeiro projeto for resolvido
   // (slug é estável por sessão — o registro é idempotente).

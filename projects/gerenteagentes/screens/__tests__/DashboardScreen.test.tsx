@@ -2,19 +2,19 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest"
 import { render, screen, waitFor } from "@testing-library/react"
 import "@testing-library/jest-dom/vitest"
-import { BibliotecaThemeProvider, clearCustomScreens } from "@biblioteca-global/ui"
+import { BibliotecaThemeProvider } from "@biblioteca-global/ui"
 
 // Import direto para evitar problema de resolucao de modulo no vitest
 import DashboardScreen from "../DashboardScreen"
 
 const mockFetch = vi.fn()
 
-function projetoFactory(id: number, nome: string) {
-  return { id, nome, slug: `projeto-${id}` }
+function projetoFactory(agentId: number, nome: string) {
+  return { agentId, title: nome } as const
 }
 
 function tarefaFactory(id: number, titulo: string, status: string, agenteId: number) {
-  return { id, titulo, status, prioridade: 0, agenteId }
+  return { id, title: titulo, titulo, status, prioridade: 0, agentId: agenteId, agenteId } as const
 }
 
 function mockOk(data: unknown) {
@@ -48,7 +48,6 @@ describe("DashboardScreen", () => {
   })
 
   it("renderiza dashboard com projetos e tarefas", async () => {
-    const API = "http://api.tarefas.localhost"
     mockOk({ projects: [projetoFactory(1, "Projeto Alpha"), projetoFactory(2, "Projeto Beta")] })
     mockOk([tarefaFactory(1, "Tarefa A", "concluida", 1), tarefaFactory(2, "Tarefa B", "em_andamento", 1), tarefaFactory(3, "Tarefa C", "pendente", 1)])
     mockOk([tarefaFactory(4, "Tarefa D", "pendente", 2)])
@@ -77,7 +76,6 @@ describe("DashboardScreen", () => {
   })
 
   it("renderiza alert de erro quando a API falha", async () => {
-    const API = "http://api.tarefas.localhost"
     // Todas as chamadas falham — o catch externo capta e exibe o alert
     mockFetch.mockRejectedValue(new Error("Erro simulado na API"))
 
@@ -93,7 +91,6 @@ describe("DashboardScreen", () => {
   })
 
   it("renderiza empty state quando nao ha agentes", async () => {
-    const API = "http://api.tarefas.localhost"
     mockOk({ projects: [] })
     mockOk({ lastActivities: [] })
 
@@ -109,7 +106,6 @@ describe("DashboardScreen", () => {
   })
 
   it("renderiza card de agente com progresso", async () => {
-    const API = "http://api.tarefas.localhost"
     mockOk({ projects: [projetoFactory(1, "Projeto Alpha")] })
     mockOk([tarefaFactory(1, "Tarefa A", "em_andamento", 1), tarefaFactory(2, "Tarefa B", "pendente", 1)])
     mockOk({ lastActivities: [] })
@@ -126,7 +122,6 @@ describe("DashboardScreen", () => {
   })
 
   it("renderiza tarefas em execucao com chips de status", async () => {
-    const API = "http://api.tarefas.localhost"
     mockOk({ projects: [projetoFactory(1, "Alpha")] })
     mockOk([tarefaFactory(1, "Tarefa ativa", "em_andamento", 1)])
     mockOk({ lastActivities: [] })

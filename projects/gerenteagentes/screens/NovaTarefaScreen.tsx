@@ -2,7 +2,7 @@
  * NovaTarefaScreen — cria um rascunho de tarefa no motor de execução.
  *
  * Endpoint: POST /api/task (sem path params)
- * Payload: { agenteId, titulo, descricao }
+ * Payload: { task: { agentId, title, description } }
  *
  * Tratamento de erro:
  * - 404 → aviso claro que o motor parece antigo/sinopse (endpoint inexistente)
@@ -72,14 +72,16 @@ export default function NovaTarefaScreen(): ReactNode {
     const ext = new ExternalApiClient({ baseUrl: BASE_URL })
 
     try {
-      // POST /api/task — sem path params, body com dados do form
+      // POST /api/task — body: { task: { agentId, title, description } }
       await ext.post(
         "/api/task",
         {},  // path params (nenhum para este endpoint)
         {
-          agenteId: Number(agenteId),
-          titulo: titulo.trim(),
-          descricao: descricao.trim() || undefined,
+          task: {
+            agentId: agenteId.trim(),
+            title: titulo.trim(),
+            description: descricao.trim() || undefined,
+          },
         }
       )
 
@@ -128,7 +130,8 @@ export default function NovaTarefaScreen(): ReactNode {
               value={agenteId}
               onChange={(e) => setAgenteId(e.target.value)}
               label="Agente (ID)"
-              type="number"
+              type="text"
+              placeholder="ex.: programador-senior"
               data-testid="input-agente-id"
             />
           </FormControl>

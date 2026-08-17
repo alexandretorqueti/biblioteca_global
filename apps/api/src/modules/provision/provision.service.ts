@@ -24,7 +24,6 @@ import {
   type UsuariosRepository,
 } from "../usuarios/usuarios.repository"
 import {
-  configPadrao,
   ProjetosService,
 } from "../projetos/projetos.service"
 import { validarSlug } from "../projetos/provisioner.service"

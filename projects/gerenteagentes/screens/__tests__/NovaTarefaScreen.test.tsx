@@ -59,14 +59,13 @@ describe("NovaTarefaScreen", () => {
   })
 
   it("exibe botão enviar habilitado quando campos obrigatórios estão preenchidos", async () => {
-    const API = "http://api.tarefas.localhost"
     render(
       <BibliotecaThemeProvider>
         <NovaTarefaScreen />
       </BibliotecaThemeProvider>,
     )
 
-    await user.type(screen.getByTestId("input-agente-id"), "1")
+    await user.type(screen.getByTestId("input-agente-id"), "programador-senior")
     expect(screen.getByTestId("btn-enviar")).toBeDisabled() // titulo ainda vazio
 
     await user.type(screen.getByTestId("input-titulo"), "Tarefa de teste")
@@ -82,7 +81,7 @@ describe("NovaTarefaScreen", () => {
       </BibliotecaThemeProvider>,
     )
 
-    await user.type(screen.getByTestId("input-agente-id"), "1")
+    await user.type(screen.getByTestId("input-agente-id"), "programador-senior")
     await user.type(screen.getByTestId("input-titulo"), "Minha tarefa")
     await user.type(screen.getByTestId("input-descricao"), "Descricao testando aqui")
 
@@ -99,9 +98,9 @@ describe("NovaTarefaScreen", () => {
       )
 
       const corpo = JSON.parse(mockFetch.mock.calls[0][1].body as string)
-      expect(corpo.agenteId).toBe(1)
-      expect(corpo.titulo).toBe("Minha tarefa")
-      expect(corpo.descricao).toBe("Descricao testando aqui")
+      expect(corpo.task.agentId).toBe("programador-senior")
+      expect(corpo.task.title).toBe("Minha tarefa")
+      expect(corpo.task.description).toBe("Descricao testando aqui")
     })
 
     await waitFor(() => {
@@ -118,8 +117,8 @@ describe("NovaTarefaScreen", () => {
       </BibliotecaThemeProvider>,
     )
 
-    await user.type(screen.getByTestId("input-agente-id"), "1")
-    await user.type(screen.getByTestId("input-titulo"), "Tarefa 404")
+    await user.type(screen.getByTestId("input-agente-id"), "programador-senior")
+    await user.type(screen.getByTestId("input-titulo"), "Tarefa de teste")
     await user.click(screen.getByTestId("btn-enviar"))
 
     await waitFor(() => {
@@ -139,8 +138,8 @@ describe("NovaTarefaScreen", () => {
       </BibliotecaThemeProvider>,
     )
 
-    await user.type(screen.getByTestId("input-agente-id"), "1")
-    await user.type(screen.getByTestId("input-titulo"), "Tarefa erro")
+    await user.type(screen.getByTestId("input-agente-id"), "programador-senior")
+    await user.type(screen.getByTestId("input-titulo"), "Tarefa de erro")
     await user.click(screen.getByTestId("btn-enviar"))
 
     await waitFor(() => {
@@ -171,7 +170,7 @@ describe("NovaTarefaScreen", () => {
       </BibliotecaThemeProvider>,
     )
 
-    await user.type(screen.getByTestId("input-agente-id"), "5")
+    await user.type(screen.getByTestId("input-agente-id"), "programador-senior")
     await user.type(screen.getByTestId("input-titulo"), "Tarefa para limpar")
     await user.click(screen.getByTestId("btn-enviar"))
 
@@ -179,7 +178,7 @@ describe("NovaTarefaScreen", () => {
       expect(screen.getByTestId("success-alert")).toBeInTheDocument()
     })
 
-    // Botão deve estar habilitado novamente (campos vazios = desabilitado, mas o state foi limpo)
+    // Botão deve estar desabilitado novamente (campos vazios = desabilitado, mas o state foi limpo)
     expect(screen.getByTestId("btn-enviar")).toBeDisabled()
   })
 
@@ -193,7 +192,7 @@ describe("NovaTarefaScreen", () => {
       </BibliotecaThemeProvider>,
     )
 
-    await user.type(screen.getByTestId("input-agente-id"), "1")
+    await user.type(screen.getByTestId("input-agente-id"), "programador-senior")
     await user.type(screen.getByTestId("input-titulo"), "Tarefa longa")
 
     // Botão deve estar desabilitado antes de clicar (nenhum erro de validação)
