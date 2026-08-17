@@ -1,14 +1,15 @@
+// @vitest-environment node
 /**
  * Testes do núcleo determinístico do código de verificação (Etapa 4).
  * Código puro — sem Nest, sem banco.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { randomInt } from "node:crypto"
+import { randomInt } from "crypto"
 
 // Mock do node:crypto com randomInt espiável — preserva o restante.
 // O tipo em runtime vira vi.fn; o cast abaixo expõe a superfície de mock.
-vi.mock("node:crypto", async (importOriginal) => {
-  const original = await importOriginal<typeof import("node:crypto")>()
+vi.mock("crypto", async (importOriginal) => {
+  const original = await importOriginal<typeof import("crypto")>()
   const fn = original.randomInt as unknown as (
     min: number,
     max: number,

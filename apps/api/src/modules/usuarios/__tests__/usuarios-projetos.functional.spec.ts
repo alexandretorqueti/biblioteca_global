@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Testes funcionais — módulos Usuários e Projetos (critérios de saída da
  * Etapa 4). API real + MySQL real. Usuários/projeto de teste são

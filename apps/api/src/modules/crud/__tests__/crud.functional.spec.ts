@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Testes funcionais — CRUD genérico por resource (critérios de saída da
  * Etapa 5). Provisiona o database do projeto documentacao com o
