@@ -10,6 +10,7 @@
 
 import { registerCustomScreens } from "@biblioteca-global/ui"
 import DocumentationScreen from "../../../../../projects/documentacao/screens/DocumentationScreen"
+import DashboardScreen from "../../../../../projects/gerenteagentes/screens/DashboardScreen"
 
 /**
  * Registra as telas custom de todos os projetos. Chamar no boot (main.tsx)
@@ -18,5 +19,6 @@ import DocumentationScreen from "../../../../../projects/documentacao/screens/Do
 export function registrarTelasCustom(): void {
   registerCustomScreens({
     documentation: DocumentationScreen,
+    "gerenteagentes-dashboard": DashboardScreen,
   })
 }
