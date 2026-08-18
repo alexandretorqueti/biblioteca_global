@@ -1,4 +1,14 @@
 // @vitest-environment jsdom
+/**
+ * Testes da NovaTarefaScreen — tela que cria uma tarefa no projeto
+ * gerenteagentes via endpoint interno da plataforma (POST /api/tarefas).
+ *
+ * Histórico: esta tela já foi testada quando fazia fetch direto para a API do
+ * motor (http://api.tarefas.localhost/api/task). O commit ddd99a2 a converteu
+ * para o endpoint interno da plataforma. Estes testes validam o contrato
+ * ATUAL (endpoint interno, campos projetoId/agenteId/título/descrição,
+ * validação local, tratamento de erro e limpeza pós-sucesso).
+ */
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest"
 import { render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
@@ -25,8 +35,18 @@ function mockError(status: number, body?: Record<string, unknown>) {
   mockFetch.mockResolvedValueOnce({
     ok: false,
     status,
-    json: async () => body ?? { code: "ERROR", message: `HTTP ${status}` },
+    json: async () => body ?? { message: `HTTP ${status}` },
   })
+}
+
+async function preencherCampos(
+  user: ReturnType<typeof userEvent.setup>,
+  valor: { projetoId?: string; agenteId?: string; titulo?: string; descricao?: string } = {},
+) {
+  if (valor.projetoId) await user.type(screen.getByTestId("input-projeto-id"), valor.projetoId)
+  if (valor.agenteId) await user.type(screen.getByTestId("input-agente-id"), valor.agenteId)
+  if (valor.titulo) await user.type(screen.getByTestId("input-titulo"), valor.titulo)
+  if (valor.descricao) await user.type(screen.getByTestId("input-descricao"), valor.descricao)
 }
 
 /* ------------------------------------------------------------------ */
@@ -55,25 +75,29 @@ describe("NovaTarefaScreen", () => {
     )
 
     expect(screen.getByTestId("nova-tarefa-screen")).toBeInTheDocument()
+    expect(screen.getByTestId("input-projeto-id")).toBeInTheDocument()
+    expect(screen.getByTestId("input-agente-id")).toBeInTheDocument()
+    expect(screen.getByTestId("input-titulo")).toBeInTheDocument()
+    expect(screen.getByTestId("input-descricao")).toBeInTheDocument()
     expect(screen.getByTestId("btn-enviar")).toBeDisabled()
   })
 
-  it("exibe botão enviar habilitado quando campos obrigatórios estão preenchidos", async () => {
+  it("exibe botão enviar desabilitado enquanto falta campo obrigatório", async () => {
     render(
       <BibliotecaThemeProvider>
         <NovaTarefaScreen />
       </BibliotecaThemeProvider>,
     )
 
-    await user.type(screen.getByTestId("input-agente-id"), "programador-senior")
-    expect(screen.getByTestId("btn-enviar")).toBeDisabled() // titulo ainda vazio
+    await preencherCampos(user, { projetoId: "640", agenteId: "1" })
+    expect(screen.getByTestId("btn-enviar")).toBeDisabled() // título ainda vazio
 
-    await user.type(screen.getByTestId("input-titulo"), "Tarefa de teste")
-    expect(screen.getByTestId("btn-enviar")).toBeEnabled() // ambos preenchidos
+    await preencherCampos(user, { titulo: "Tarefa de teste" })
+    expect(screen.getByTestId("btn-enviar")).toBeEnabled() // todos obrigatórios preenchidos
   })
 
-  it("envia POST ao clicar em criar rascunho e exibe sucesso", async () => {
-    mockOk({ id: 42, status: "rascunho" })
+  it("envia POST para /api/tarefas ao criar e exibe sucesso", async () => {
+    mockOk({ id: 42, status: "draft" })
 
     render(
       <BibliotecaThemeProvider>
@@ -81,15 +105,17 @@ describe("NovaTarefaScreen", () => {
       </BibliotecaThemeProvider>,
     )
 
-    await user.type(screen.getByTestId("input-agente-id"), "programador-senior")
-    await user.type(screen.getByTestId("input-titulo"), "Minha tarefa")
-    await user.type(screen.getByTestId("input-descricao"), "Descricao testando aqui")
-
+    await preencherCampos(user, {
+      projetoId: "640",
+      agenteId: "1",
+      titulo: "Minha tarefa",
+      descricao: "Descricao testando aqui",
+    })
     await user.click(screen.getByTestId("btn-enviar"))
 
     await waitFor(() => {
       expect(mockFetch).toHaveBeenCalledWith(
-        "http://api.tarefas.localhost/api/task",
+        "/api/tarefas",
         expect.objectContaining({
           method: "POST",
           headers: expect.objectContaining({ "Content-Type": "application/json" }),
@@ -98,9 +124,11 @@ describe("NovaTarefaScreen", () => {
       )
 
       const corpo = JSON.parse(mockFetch.mock.calls[0][1].body as string)
-      expect(corpo.task.agentId).toBe("programador-senior")
-      expect(corpo.task.title).toBe("Minha tarefa")
-      expect(corpo.task.description).toBe("Descricao testando aqui")
+      expect(corpo.projetoId).toBe(640)
+      expect(corpo.agenteId).toBe(1)
+      expect(corpo.titulo).toBe("Minha tarefa")
+      expect(corpo.descricao).toBe("Descricao testando aqui")
+      expect(corpo.status).toBe("draft")
     })
 
     await waitFor(() => {
@@ -108,8 +136,8 @@ describe("NovaTarefaScreen", () => {
     })
   })
 
-  it("exibe aviso de 404 quando o motor retorna 404", async () => {
-    mockError(404, { code: "NOT_FOUND", message: "Endpoint não encontrado" })
+  it("exibe erro quando o endpoint interno retorna 404", async () => {
+    mockError(404, { message: "Endpoint não encontrado" })
 
     render(
       <BibliotecaThemeProvider>
@@ -117,20 +145,17 @@ describe("NovaTarefaScreen", () => {
       </BibliotecaThemeProvider>,
     )
 
-    await user.type(screen.getByTestId("input-agente-id"), "programador-senior")
-    await user.type(screen.getByTestId("input-titulo"), "Tarefa de teste")
+    await preencherCampos(user, { projetoId: "640", agenteId: "1", titulo: "Tarefa de teste" })
     await user.click(screen.getByTestId("btn-enviar"))
 
     await waitFor(() => {
       expect(screen.getByTestId("api-error")).toBeInTheDocument()
     })
-
-    // Mensagem menciona motor e /api/task
-    expect(screen.getByTestId("api-error")).toHaveTextContent("/api/task")
+    expect(screen.getByTestId("api-error")).toHaveTextContent("Endpoint não encontrado")
   })
 
   it("exibe erro genérico para outros códigos HTTP", async () => {
-    mockError(500, { code: "INTERNAL_SERVER_ERROR", message: "Erro interno" })
+    mockError(500, { message: "Erro interno" })
 
     render(
       <BibliotecaThemeProvider>
@@ -138,16 +163,16 @@ describe("NovaTarefaScreen", () => {
       </BibliotecaThemeProvider>,
     )
 
-    await user.type(screen.getByTestId("input-agente-id"), "programador-senior")
-    await user.type(screen.getByTestId("input-titulo"), "Tarefa de erro")
+    await preencherCampos(user, { projetoId: "640", agenteId: "1", titulo: "Tarefa de erro" })
     await user.click(screen.getByTestId("btn-enviar"))
 
     await waitFor(() => {
       expect(screen.getByTestId("api-error")).toBeInTheDocument()
     })
+    expect(screen.getByTestId("api-error")).toHaveTextContent("Erro interno")
   })
 
-  it("exibe erro de validação local quando campos obrigatórios estão vazios", async () => {
+  it("mantém botão desabilitado quando um campo obrigatório está vazio", async () => {
     mockOk({})
 
     render(
@@ -156,8 +181,8 @@ describe("NovaTarefaScreen", () => {
       </BibliotecaThemeProvider>,
     )
 
-    // Título preenchido, agente vazio → botão desabilitado
-    await user.type(screen.getByTestId("input-titulo"), "Alguma tarefa")
+    // Projeto e título preenchidos, agente vazio → botão desabilitado
+    await preencherCampos(user, { projetoId: "640", titulo: "Alguma tarefa" })
     expect(screen.getByTestId("btn-enviar")).toBeDisabled()
   })
 
@@ -170,15 +195,15 @@ describe("NovaTarefaScreen", () => {
       </BibliotecaThemeProvider>,
     )
 
-    await user.type(screen.getByTestId("input-agente-id"), "programador-senior")
-    await user.type(screen.getByTestId("input-titulo"), "Tarefa para limpar")
+    await preencherCampos(user, { projetoId: "640", agenteId: "1", titulo: "Tarefa para limpar" })
     await user.click(screen.getByTestId("btn-enviar"))
 
     await waitFor(() => {
       expect(screen.getByTestId("success-alert")).toBeInTheDocument()
     })
 
-    // Botão deve estar desabilitado novamente (campos vazios = desabilitado, mas o state foi limpo)
+    // Estado limpo → campos vazios → botão desabilitado de novo
+    expect(screen.getByTestId("input-titulo").querySelector("input")).toHaveValue("")
     expect(screen.getByTestId("btn-enviar")).toBeDisabled()
   })
 
@@ -192,10 +217,9 @@ describe("NovaTarefaScreen", () => {
       </BibliotecaThemeProvider>,
     )
 
-    await user.type(screen.getByTestId("input-agente-id"), "programador-senior")
-    await user.type(screen.getByTestId("input-titulo"), "Tarefa longa")
+    await preencherCampos(user, { projetoId: "640", agenteId: "1", titulo: "Tarefa longa" })
 
-    // Botão deve estar desabilitado antes de clicar (nenhum erro de validação)
+    // Botão habilitado antes de clicar (nenhum erro de validação)
     expect(screen.getByTestId("btn-enviar")).not.toBeDisabled()
 
     await user.click(screen.getByTestId("btn-enviar"))
@@ -203,8 +227,7 @@ describe("NovaTarefaScreen", () => {
     await waitFor(() => {
       const btn = screen.getByTestId("btn-enviar")
       expect(btn).toBeDisabled()
-      // Texto do botão mudou para "Enviando..."
-      expect(btn).toHaveTextContent(/Enviando/)
+      expect(btn).toHaveTextContent(/Criando/)
     })
   })
 })

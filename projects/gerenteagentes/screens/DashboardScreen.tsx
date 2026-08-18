@@ -1,12 +1,10 @@
 /**
- * DashboardScreen — visao do gerente de agentes:
- * - projetos cadastrados com contagem total de tarefas
- * - tarefas em execucao por agente
- * - ultima atividade (lista resumida)
+ * DashboardScreen — visão do gerente de agentes:
+ * - projetos com contagem de tarefas
+ * - tarefas em execução
+ * - resumo por status
  *
- * Usa ExternalApiClient para a API externa do motor (http://api.tarefas.localhost)
- * e o RestEntityClient interno para dados locais do projeto gerenteagentes.
- * Estados loading/erro/404 sao tratados sem crash.
+ * Usa fetch direto para os endpoints internos da plataforma.
  */
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { Box, Chip, Paper, Stack, Typography, Alert, CircularProgress, Grid } from "@mui/material"
@@ -18,69 +16,68 @@ import {
   CheckCircleRounded,
   CancelRounded,
   PendingRounded,
-  HistoryRounded,
+  AccountTreeRounded,
 } from "@mui/icons-material"
 import type { ReactNode } from "react"
-import { ExternalApiClient } from "@biblioteca-global/api-client"
 
 /* ------------------------------------------------------------------ */
-/*  Tipos locais                                                     */
+/*  Tipos                                                              */
 /* ------------------------------------------------------------------ */
 
-interface ProjetoExterno {
-  agentId: number | string
-  title?: string // campo real do motor (nome do projeto)
-  nome?: string // alias legacy para compatibilidade
-  status?: string
+interface Projeto {
+  id: number
+  nome: string
+  slug: string
+  descricao?: string
+  ativo: boolean
+  agenteId?: number
 }
 
-interface TarefaExterna {
-  id: number | string
-  title: string // campo real do motor (nome da tarefa)
-  titulo?: string // alias legacy para compatibilidade
-  agentId: number | string
-  agenteId?: number | string // alias legacy para compatibilidade
-  status: string
-  prioridade?: number
-  iniciadaEm?: string
-}
-
-interface UltimaAtividade {
-  id: number | string
-  tipo: "tarefa_iniciada" | "tarefa_concluida" | "agente_alterado"
+interface Tarefa {
+  id: number
+  projetoId: number
+  agenteId: number
   titulo: string
-  agenteId: number | string
-  agenteNome: string
-  em: string // ISO timestamp
+  status: string
+  createdAt: string
 }
 
 /* ------------------------------------------------------------------ */
-/*  Mapas de estado / icone                                           */
+/*  Mapas de estado                                                    */
 /* ------------------------------------------------------------------ */
 
 const STATUS_TAREFA_LABEL: Record<string, string> = {
-  pendente: "Pendente",
-  em_andamento: "Em andamento",
-  concluida: "Concluída",
-  cancelada: "Cancelada",
+  draft: "Rascunho",
+  planned: "Planejada",
+  running: "Em execução",
+  paused: "Pausada",
+  completed: "Concluída",
+  failed: "Falhou",
+  cancelled: "Cancelada",
 }
 
 const STATUS_CHIP: Record<string, "default" | "success" | "warning" | "error" | "info"> = {
-  pendente: "default",
-  em_andamento: "warning",
-  concluida: "success",
-  cancelada: "error",
+  draft: "default",
+  planned: "info",
+  running: "warning",
+  paused: "default",
+  completed: "success",
+  failed: "error",
+  cancelled: "error",
 }
 
 const ICON_FOR_STATUS: Record<string, ReactNode> = {
-  pendente: <PendingRounded sx={{ fontSize: 18 }} />,
-  em_andamento: <PlayCircleRounded sx={{ fontSize: 18 }} />,
-  concluida: <CheckCircleRounded sx={{ fontSize: 18 }} />,
-  cancelada: <CancelRounded sx={{ fontSize: 18 }} />,
+  draft: <PendingRounded sx={{ fontSize: 18 }} />,
+  planned: <PendingRounded sx={{ fontSize: 18 }} />,
+  running: <PlayCircleRounded sx={{ fontSize: 18 }} />,
+  paused: <PendingRounded sx={{ fontSize: 18 }} />,
+  completed: <CheckCircleRounded sx={{ fontSize: 18 }} />,
+  failed: <CancelRounded sx={{ fontSize: 18 }} />,
+  cancelled: <CancelRounded sx={{ fontSize: 18 }} />,
 }
 
 /* ------------------------------------------------------------------ */
-/*  Componente: CardResumo                                           */
+/*  Componente: CardResumo                                             */
 /* ------------------------------------------------------------------ */
 
 function CardResumo({
@@ -88,165 +85,73 @@ function CardResumo({
   valor,
   icone,
   cor = "primary",
+  testId,
 }: {
   titulo: string
   valor: number | string
   icone: ReactNode
   cor?: "primary" | "success" | "warning" | "error" | "info"
+  testId?: string
 }): ReactNode {
   return (
     <Paper
       variant="outlined"
-      data-testid="card-resumo"
-      sx={{ p: 2, display: "flex", alignItems: "center", gap: 2 }}
+      data-testid={testId ?? "card-resumo"}
+      sx={{
+        p: 2,
+        display: "flex",
+        alignItems: "center",
+        gap: 2,
+        borderLeft: 4,
+        borderLeftColor: `${cor}.main`,
+      }}
     >
-      <Box
-        sx={{
-          width: 48,
-          height: 48,
-          borderRadius: 2,
-          bgcolor: `${cor}.lighter`,
-          color: `${cor}.main`,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-        }}
-      >
-        {icone}
-      </Box>
-      <Stack>
+      <Box sx={{ color: `${cor}.main`, display: "flex" }}>{icone}</Box>
+      <Box>
         <Typography variant="caption" color="text.secondary">
           {titulo}
         </Typography>
-        <Typography variant="h4" fontWeight={800}>
+        <Typography variant="h5" fontWeight={600}>
           {valor}
         </Typography>
-      </Stack>
-    </Paper>
-  )
-}
-
-/* ------------------------------------------------------------------ */
-/*  Componente: CardAgente                                           */
-/* ------------------------------------------------------------------ */
-
-function CardAgente({
-  agenteNome,
-  tarefasEmAndamento,
-  totalTarefas,
-}: {
-  agenteNome: string
-  tarefasEmAndamento: number
-  totalTarefas: number
-}): ReactNode {
-  return (
-    <Paper variant="outlined" data-testid="card-agente">
-      <Box sx={{ p: 2 }}>
-        <Stack direction="row" spacing={1} alignItems="center" mb={1}>
-          <SmartToyRounded color="primary" />
-          <Typography variant="subtitle1" fontWeight={700}>
-            {agenteNome}
-          </Typography>
-        </Stack>
-
-        <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap", mb: 1 }}>
-          <Chip size="small" label={`${totalTarefas} tarefas`} color="default" />
-          {tarefasEmAndamento > 0 && (
-            <Chip size="small" label={`${tarefasEmAndamento} em andamento`} color="warning" />
-          )}
-        </Box>
-
-        {/* Barras de progresso por status */}
-        {(() => {
-          const pendentes = totalTarefas - tarefasEmAndamento
-          if (pendentes <= 0) return null
-          return (
-            <Stack direction="row" spacing={0.5} height={6} sx={{ borderRadius: 1, overflow: "hidden", bgcolor: "grey.200" }}>
-              {tarefasEmAndamento > 0 && (
-                <Box sx={{ flex: tarefasEmAndamento, bgcolor: "warning.main", height: "100%" }} />
-              )}
-              {pendentes > 0 && (
-                <Box sx={{ flex: pendentes, bgcolor: "grey.400", height: "100%" }} />
-              )}
-            </Stack>
-          )
-        })()}
       </Box>
     </Paper>
   )
 }
 
 /* ------------------------------------------------------------------ */
-/*  Componente principal: DashboardScreen                            */
+/*  Tela principal                                                     */
 /* ------------------------------------------------------------------ */
 
-const BASE_URL = "http://api.tarefas.localhost"
-
 export default function DashboardScreen(): ReactNode {
-  /* -- estado -- */
-  const [projetos, setProjetos] = useState<ProjetoExterno[]>([])
-  const [tarefasPorAgente, setTarefasPorAgente] = useState<Record<string, TarefaExterna[]>>({})
-  const [ultimasAtividades, setUltimasAtividades] = useState<UltimaAtividade[]>([])
+  const [projetos, setProjetos] = useState<Projeto[]>([])
+  const [tarefas, setTarefas] = useState<Tarefa[]>([])
   const [loading, setLoading] = useState(true)
   const [erro, setErro] = useState<string | null>(null)
 
-  /* -- carregar dados -- */
   const carregar = useCallback(async () => {
     setLoading(true)
     setErro(null)
-
-    const ext = new ExternalApiClient({ baseUrl: BASE_URL })
-
     try {
-      // 1. Lista de projetos (GET /api/projects)
-      let projetosResp: ProjetoExterno[] = []
-      const projRaw = await ext.get("/api/projects") as Record<string, unknown> | undefined
-      if (projRaw && Array.isArray(projRaw.projects)) {
-        projetosResp = projRaw.projects as ProjetoExterno[]
-      } else if (Array.isArray(projRaw)) {
-        projetosResp = projRaw as ProjetoExterno[]
+      const token = localStorage.getItem("access_token")
+      const headers: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {}
+
+      const [projsRes, trefsRes] = await Promise.all([
+        fetch("/api/projetos_captados", { headers }),
+        fetch("/api/tarefas", { headers }),
+      ])
+
+      if (!projsRes.ok || !trefsRes.ok) {
+        throw new Error("Falha ao carregar dados")
       }
 
-      // Normalizar campos: motor envia title/nome → garantimos agenteNome derivado
-      const normalizados: ProjetoExterno[] = projetosResp.map((p) => ({
-        agentId: p.agentId,
-        title: p.title ?? p.nome ?? "",
-        status: p.status,
-      }))
+      const projsData = await projsRes.json()
+      const trefsData = await trefsRes.json()
 
-      // 2. Tarefas por agente (GET /api/projects/:agentId/tasks)
-      const tarefasPorAgente: Record<string, TarefaExterna[]> = {}
-      for (const proj of normalizados) {
-        if (!proj.agentId) continue
-        try {
-          const tasksRaw = await ext.get(`/api/projects/${proj.agentId}/tasks`) as unknown
-          if (Array.isArray(tasksRaw)) {
-            tarefasPorAgente[proj.agentId] = tasksRaw as TarefaExterna[]
-          } else {
-            tarefasPorAgente[proj.agentId] = []
-          }
-        } catch {
-          tarefasPorAgente[proj.agentId] = []
-        }
-      }
-
-      // 3. Ultima atividade (opcional)
-      let ultimasAtividades: UltimaAtividade[] = []
-      try {
-        const defRaw = await ext.get("/api/projects") as Record<string, unknown> | undefined
-        if (defRaw && Array.isArray(defRaw.lastActivities)) {
-          ultimasAtividades = defRaw.lastActivities as UltimaAtividade[]
-        }
-      } catch {
-        // atividade opcional, ignora erro
-      }
-
-      setProjetos(projetosResp)
-      setTarefasPorAgente(tarefasPorAgente)
-      setUltimasAtividades(ultimasAtividades)
+      setProjetos(projsData.items || [])
+      setTarefas(trefsData.items || [])
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "Erro ao carregar dashboard"
-      setErro(msg)
+      setErro(e instanceof Error ? e.message : "Erro ao carregar dados")
     } finally {
       setLoading(false)
     }
@@ -256,175 +161,128 @@ export default function DashboardScreen(): ReactNode {
     carregar()
   }, [carregar])
 
-  /* -- dados calculados -- */
-  const totalProjetos = projetos.length
+  const stats = useMemo(() => {
+    const totalProjetos = projetos.length
+    const projetosAtivos = projetos.filter((p) => p.ativo).length
+    const totalTarefas = tarefas.length
+    const tarefasRunning = tarefas.filter((t) => t.status === "running").length
+    const tarefasCompleted = tarefas.filter((t) => t.status === "completed").length
+    const tarefasFailed = tarefas.filter((t) => t.status === "failed").length
 
-  const statsAgente = useMemo(() => {
-    const resultados: Array<{ agenteId: string; agenteNome: string; tarefasEmAndamento: number; totalTarefas: number }> = []
-    for (const [agenteId, tarefas] of Object.entries(tarefasPorAgente)) {
-      const emAndamento = tarefas.filter((t) => t.status === "em_andamento").length
-      // title é o campo real do motor para tarefa; titulo é alias
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      const _task = tarefas[0]
-      resultados.push({
-        agenteId,
-        agenteNome: String(agenteId),
-        tarefasEmAndamento: emAndamento,
-        totalTarefas: tarefas.length,
-      })
+    return {
+      totalProjetos,
+      projetosAtivos,
+      totalTarefas,
+      tarefasRunning,
+      tarefasCompleted,
+      tarefasFailed,
     }
-    return resultados
-  }, [tarefasPorAgente])
+  }, [projetos, tarefas])
 
-  const totalTarefasEmAndamento = statsAgente.reduce((s, a) => s + a.tarefasEmAndamento, 0)
-  const totalTarefas = statsAgente.reduce((s, a) => s + a.totalTarefas, 0)
+  const tarefasRecentes = useMemo(() => {
+    return [...tarefas]
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .slice(0, 10)
+  }, [tarefas])
 
-  /* -- render -- */
   if (loading) {
     return (
-      <Box sx={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100vh" }}>
-        <CircularProgress data-testid="loading-spinner" />
+      <Box sx={{ display: "flex", justifyContent: "center", p: 4 }} data-testid="loading-spinner">
+        <CircularProgress />
       </Box>
     )
   }
 
   if (erro) {
-    return (
-      <Alert severity="error" data-testid="error-alert">
-        Erro ao carregar dashboard: {erro}
-        <Box sx={{ mt: 1 }}>
-          <Chip label="Tentar novamente" size="small" clickable onClick={carregar} />
-        </Box>
-      </Alert>
-    )
+    return <Alert severity="error" data-testid="error-alert">{erro}</Alert>
   }
 
   return (
     <Stack spacing={3} data-testid="dashboard-screen">
-      {/* Cabecalho */}
-      <Box>
-        <Typography variant="h3" component="h1" fontWeight={900}>
-          Dashboard do Gerente de Agentes
-        </Typography>
-        <Typography color="text.secondary" sx={{ mt: 0.5 }}>
-          Visao geral dos projetos, agentes e tarefas em execucao
-        </Typography>
-      </Box>
+      <Typography variant="h4" fontWeight={600}>
+        Dashboard
+      </Typography>
 
       {/* Cards de resumo */}
       <Grid container spacing={2}>
-        <Grid size={{ xs: 6, sm: 3 }}>
-          <CardResumo titulo="Projetos" valor={totalProjetos} icone={<DashboardRounded />} cor="primary" />
+        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+          <CardResumo
+            titulo="Projetos"
+            valor={stats.totalProjetos}
+            icone={<AccountTreeRounded sx={{ fontSize: 32 }} />}
+            cor="primary"
+            testId="resumo-projetos"
+          />
         </Grid>
-        <Grid size={{ xs: 6, sm: 3 }}>
-          <CardResumo titulo="Total de tarefas" valor={totalTarefas} icone={<TaskAltRounded />} cor="info" />
+        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+          <CardResumo
+            titulo="Projetos Ativos"
+            valor={stats.projetosAtivos}
+            icone={<AccountTreeRounded sx={{ fontSize: 32 }} />}
+            cor="success"
+            testId="resumo-projetos-ativos"
+          />
         </Grid>
-        <Grid size={{ xs: 6, sm: 3 }}>
-          <CardResumo titulo="Em execucao" valor={totalTarefasEmAndamento} icone={<PlayCircleRounded />} cor="warning" />
+        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+          <CardResumo
+            titulo="Total de Tarefas"
+            valor={stats.totalTarefas}
+            icone={<TaskAltRounded sx={{ fontSize: 32 }} />}
+            cor="info"
+            testId="resumo-total-tarefas"
+          />
         </Grid>
-        <Grid size={{ xs: 6, sm: 3 }}>
-          <CardResumo titulo="Agentes ativos" valor={statsAgente.length} icone={<SmartToyRounded />} cor="success" />
+        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+          <CardResumo
+            titulo="Em Execução"
+            valor={stats.tarefasRunning}
+            icone={<PlayCircleRounded sx={{ fontSize: 32 }} />}
+            cor="warning"
+            testId="resumo-running"
+          />
         </Grid>
       </Grid>
 
-      {/* Lista de agentes com tarefas */}
-      <Stack spacing={2}>
-        <Typography variant="h5" component="h2" fontWeight={700}>
-          Agentes e tarefas
-        </Typography>
-        {statsAgente.length === 0 ? (
-          <Alert severity="info" data-testid="empty-state">Nenhum agente encontrado.</Alert>
-        ) : (
-          <Grid container spacing={2}>
-            {statsAgente.map((ag) => (
-              <Grid key={ag.agenteId} size={{ xs: 12, sm: 6, md: 4 }}>
-                <CardAgente
-                  agenteNome={ag.agenteNome}
-                  tarefasEmAndamento={ag.tarefasEmAndamento}
-                  totalTarefas={ag.totalTarefas}
-                />
-              </Grid>
-            ))}
-          </Grid>
-        )}
-      </Stack>
+      {/* Tarefas recentes */}
+      <Paper variant="outlined" sx={{ p: 2 }}>
+        <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 2 }}>
+          <DashboardRounded />
+          <Typography variant="h6">Tarefas Recentes</Typography>
+        </Stack>
 
-      {/* Tarefas em execucao detalhadas */}
-      <Stack spacing={2}>
-        <Typography variant="h5" component="h2" fontWeight={700}>
-          Tarefas em execucao
-        </Typography>
-        {(() => {
-          const todasEmAndamento: TarefaExterna[] = []
-          for (const tarefas of Object.values(tarefasPorAgente)) {
-            for (const t of tarefas) {
-              if (t.status === "em_andamento") {
-                // Mapear title → titulo para compatibilidade (agenteId ↔ agentId)
-          todasEmAndamento.push({ ...t, titulo: t.title ?? t.titulo ?? "", agenteId: t.agentId ?? t.agenteId ?? '' })
-              }
-            }
-          }
-
-          if (todasEmAndamento.length === 0) {
-            return <Alert severity="info" data-testid="no-running-tasks">Nenhuma tarefa em execucao no momento.</Alert>
-          }
-
-          return todasEmAndamento.map((tarefa, idx) => (
-            <Paper key={tarefa.id} variant="outlined" data-testid={`running-task-${idx}`}>
-              <Box sx={{ p: 2, display: "flex", alignItems: "center", gap: 2 }}>
-                {ICON_FOR_STATUS[tarefa.status] ?? <PendingRounded sx={{ fontSize: 18 }} />}
-                <Stack flex={1} minWidth={0}>
-                  <Typography variant="subtitle2" fontWeight={600} noWrap>
-                    {tarefa.title ?? tarefa.titulo ?? "Sem título"}
-                  </Typography>
-                  <Typography variant="caption" color="text.secondary">
-                    Agente ID: {tarefa.agentId ?? tarefa.agenteId ?? "?"} · Prioridade: {tarefa.prioridade ?? "-"}
-                  </Typography>
-                </Stack>
-                <Chip
-                  label={STATUS_TAREFA_LABEL[tarefa.status] ?? tarefa.status}
-                  size="small"
-                  color={STATUS_CHIP[tarefa.status] ?? "default"}
-                  data-testid={`task-status-chip-${tarefa.id}`}
-                />
-              </Box>
-            </Paper>
-          ))
-        })()}
-      </Stack>
-
-      {/* Ultima atividade */}
-      <Stack spacing={2}>
-        <Typography variant="h5" component="h2" fontWeight={700}>
-          <HistoryRounded sx={{ verticalAlign: "middle", mr: 0.5, fontSize: 26 }} />
-          Ultima atividade
-        </Typography>
-        {ultimasAtividades.length === 0 ? (
-          <Alert severity="info" data-testid="no-activity">Sem atividades recentes.</Alert>
+        {tarefasRecentes.length === 0 ? (
+          <Typography color="text.secondary" data-testid="empty-state">
+            Nenhuma tarefa encontrada
+          </Typography>
         ) : (
           <Stack spacing={1}>
-            {ultimasAtividades.slice(0, 10).map((atv) => (
-              <Paper key={atv.id} variant="outlined">
-                <Box sx={{ p: 1.5, display: "flex", alignItems: "center", gap: 1.5 }}>
-                  {atv.tipo === "tarefa_concluida" ? (
-                    <CheckCircleRounded color="success" sx={{ fontSize: 20 }} />
-                  ) : atv.tipo === "tarefa_iniciada" ? (
-                    <PlayCircleRounded color="warning" sx={{ fontSize: 20 }} />
-                  ) : (
-                    <HistoryRounded sx={{ fontSize: 20 }} />
-                  )}
-                  <Stack flex={1}>
-                    <Typography variant="body2">{atv.titulo}</Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      Agente: {atv.agenteNome} · {new Date(atv.em).toLocaleString("pt-BR")}
-                    </Typography>
-                  </Stack>
+            {tarefasRecentes.map((tarefa, indice) => (
+              <Paper
+                key={tarefa.id}
+                variant="outlined"
+                data-testid={`running-task-${indice}`}
+                sx={{ p: 1.5, display: "flex", alignItems: "center", gap: 1 }}
+              >
+                <SmartToyRounded sx={{ fontSize: 20, color: "text.secondary" }} />
+                <Box sx={{ flex: 1 }}>
+                  <Typography variant="body2" fontWeight={500}>
+                    {tarefa.titulo}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Tarefa #{tarefa.id} · Projeto #{tarefa.projetoId} · Agente #{tarefa.agenteId}
+                  </Typography>
                 </Box>
+                <Chip
+                  label={STATUS_TAREFA_LABEL[tarefa.status] || tarefa.status}
+                  color={STATUS_CHIP[tarefa.status] || "default"}
+                  size="small"
+                  variant="outlined"
+                />
               </Paper>
             ))}
           </Stack>
         )}
-      </Stack>
+      </Paper>
     </Stack>
   )
 }

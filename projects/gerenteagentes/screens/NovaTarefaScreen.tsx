@@ -1,199 +1,185 @@
 /**
- * NovaTarefaScreen — cria um rascunho de tarefa no motor de execução.
+ * NovaTarefaScreen — cria uma tarefa no projeto gerenteagentes.
  *
- * Endpoint: POST /api/task (sem path params)
- * Payload: { task: { agentId, title, description } }
- *
- * Tratamento de erro:
- * - 404 → aviso claro que o motor parece antigo/sinopse (endpoint inexistente)
- * - outros erros HTTP → exibidos no Alert sem crash
+ * Usa fetch direto para o endpoint interno da plataforma.
  */
 import { useCallback, useMemo, useState, type ReactNode } from "react"
 import {
   Box,
   Button,
-  FormControl,
-  InputLabel,
-  OutlinedInput,
   Stack,
   Typography,
   Alert,
   CircularProgress,
   Paper,
+  TextField,
 } from "@mui/material"
 import { AddTaskRounded } from "@mui/icons-material"
-import { ExternalApiClient } from "@biblioteca-global/api-client"
-
-/* ------------------------------------------------------------------ */
-/*  Constantes                                                         */
-/* ------------------------------------------------------------------ */
-
-const BASE_URL = "http://api.tarefas.localhost"
-
-/* ------------------------------------------------------------------ */
-/*  Tela principal                                                     */
-/* ------------------------------------------------------------------ */
 
 export default function NovaTarefaScreen(): ReactNode {
+  const [projetoId, setProjetoId] = useState("")
   const [agenteId, setAgenteId] = useState("")
   const [titulo, setTitulo] = useState("")
   const [descricao, setDescricao] = useState("")
-  const [erroForm, setErroForm] = useState<string | null>(null)
+  const [repoPath, setRepoPath] = useState("")
+  const [buildCommand, setBuildCommand] = useState("")
+  const [unitTestCommand, setUnitTestCommand] = useState("")
 
-  // Estados de envio
   const [enviando, setEnviando] = useState(false)
   const [sucesso, setSucesso] = useState(false)
-  const [erroAPI, setErroAPI] = useState<string | null>(null)
+  const [erro, setErro] = useState<string | null>(null)
 
-  // Validação local (em tempo real)
   const errosCampos = useMemo(() => {
     const e: string[] = []
+    if (!projetoId.trim()) e.push("Projeto é obrigatório")
     if (!agenteId.trim()) e.push("Agente é obrigatório")
     if (!titulo.trim()) e.push("Título é obrigatório")
     return e
-  }, [agenteId, titulo])
+  }, [projetoId, agenteId, titulo])
 
   const podeEnviar = errosCampos.length === 0 && !enviando
 
-  /* -- envio -- */
   const enviar = useCallback(async () => {
-    setErroForm(null)
+    setErro(null)
     setSucesso(false)
-    setErroAPI(null)
-
-    // Validação final antes de enviar
-    if (!agenteId.trim() || !titulo.trim()) {
-      setErroForm(errosCampos.join(". "))
-      return
-    }
-
     setEnviando(true)
 
-    const ext = new ExternalApiClient({ baseUrl: BASE_URL })
-
     try {
-      // POST /api/task — body: { task: { agentId, title, description } }
-      await ext.post(
-        "/api/task",
-        {},  // path params (nenhum para este endpoint)
-        {
-          task: {
-            agentId: agenteId.trim(),
-            title: titulo.trim(),
-            description: descricao.trim() || undefined,
-          },
-        }
-      )
+      const token = localStorage.getItem("access_token")
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      }
+      if (token) {
+        headers.Authorization = `Bearer ${token}`
+      }
+
+      const response = await fetch("/api/tarefas", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          projetoId: Number(projetoId),
+          agenteId: Number(agenteId),
+          titulo: titulo.trim(),
+          descricao: descricao.trim() || null,
+          repoPath: repoPath.trim() || null,
+          buildCommand: buildCommand.trim() || null,
+          unitTestCommand: unitTestCommand.trim() || null,
+          status: "draft",
+        }),
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}))
+        throw new Error(errorData.message || "Erro ao criar tarefa")
+      }
 
       setSucesso(true)
-      // Limpar formulário após sucesso
+      setProjetoId("")
       setAgenteId("")
       setTitulo("")
       setDescricao("")
+      setRepoPath("")
+      setBuildCommand("")
+      setUnitTestCommand("")
     } catch (e) {
-      if (e instanceof Error && "status" in e && e.status === 404) {
-        setErroAPI(
-          "O endpoint /api/task não foi encontrado. O motor de execução pode estar desatualizado ou configurado para outro caminho. Consulte o administrador."
-        )
-      } else if (e instanceof Error && "code" in e) {
-        setErroAPI(`Erro do motor (${String((e as { code: string }).code)}): ${e.message}`)
-      } else {
-        const msg = e instanceof Error ? e.message : "Erro desconhecido ao criar rascunho"
-        setErroAPI(msg)
-      }
+      setErro(e instanceof Error ? e.message : "Erro ao criar tarefa")
     } finally {
       setEnviando(false)
     }
-  }, [agenteId, titulo, descricao, errosCampos])
+  }, [projetoId, agenteId, titulo, descricao, repoPath, buildCommand, unitTestCommand])
 
-  /* -- render -- */
   return (
     <Stack spacing={3} data-testid="nova-tarefa-screen">
-      {/* Cabeçalho */}
-      <Box>
-        <Typography variant="h4" component="h1" fontWeight={900}>
-          Nova Tarefa
-        </Typography>
-        <Typography color="text.secondary" sx={{ mt: 0.5 }}>
-          Crie um rascunho de tarefa para envio ao motor de execução
-        </Typography>
-      </Box>
+      <Typography variant="h4" fontWeight={600}>
+        Nova Tarefa
+      </Typography>
 
-      {/* Formulário */}
-      <Paper variant="outlined" data-testid="form-card">
-        <Stack spacing={3} sx={{ p: 3 }}>
-          {/* Agente ID */}
-          <FormControl fullWidth required>
-            <InputLabel htmlFor="agenteId-input">Agente (ID)</InputLabel>
-            <OutlinedInput
-              id="agenteId-input"
-              value={agenteId}
-              onChange={(e) => setAgenteId(e.target.value)}
-              label="Agente (ID)"
-              type="text"
-              placeholder="ex.: programador-senior"
-              data-testid="input-agente-id"
-            />
-          </FormControl>
-
-          {/* Título */}
-          <FormControl fullWidth required>
-            <InputLabel htmlFor="titulo-input">Título</InputLabel>
-            <OutlinedInput
-              id="titulo-input"
-              value={titulo}
-              onChange={(e) => setTitulo(e.target.value)}
-              label="Título"
-              data-testid="input-titulo"
-            />
-          </FormControl>
-
-          {/* Descrição */}
-          <FormControl fullWidth>
-            <InputLabel htmlFor="descricao-input">Descrição</InputLabel>
-            <OutlinedInput
-              id="descricao-input"
-              value={descricao}
-              onChange={(e) => setDescricao(e.target.value)}
-              label="Descrição"
-              multiline
-              rows={4}
-              data-testid="input-descricao"
-            />
-          </FormControl>
-
-          {/* Erro de validação local */}
-          {erroForm && (
-            <Alert severity="error" data-testid="form-error">
-              {erroForm}
-            </Alert>
-          )}
-
-          {/* Erro da API / 404 do motor */}
-          {erroAPI && (
-            <Alert severity="error" data-testid="api-error">
-              {erroAPI}
-            </Alert>
-          )}
-
-          {/* Sucesso */}
+      <Paper variant="outlined" sx={{ p: 3 }}>
+        <Stack spacing={2}>
+          {erro && <Alert severity="error" data-testid="api-error">{erro}</Alert>}
           {sucesso && (
             <Alert severity="success" data-testid="success-alert">
-              Rascunho de tarefa criado com sucesso!
+              Tarefa criada com sucesso!
             </Alert>
           )}
 
-          {/* Botão enviar */}
-          <Box sx={{ display: "flex", justifyContent: "flex-end" }}>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
+            <TextField
+              label="Projeto (ID)"
+              type="number"
+              value={projetoId}
+              onChange={(e) => setProjetoId(e.target.value)}
+              required
+              fullWidth
+              error={!projetoId.trim() && projetoId.length > 0}
+              slotProps={{ input: { "data-testid": "input-projeto-id" } }}
+            />
+            <TextField
+              label="Agente (ID)"
+              type="number"
+              value={agenteId}
+              onChange={(e) => setAgenteId(e.target.value)}
+              required
+              fullWidth
+              error={!agenteId.trim() && agenteId.length > 0}
+              slotProps={{ input: { "data-testid": "input-agente-id" } }}
+            />
+          </Stack>
+
+          <TextField
+            label="Título"
+            value={titulo}
+            onChange={(e) => setTitulo(e.target.value)}
+            required
+            fullWidth
+            error={!titulo.trim() && titulo.length > 0}
+            slotProps={{ input: { "data-testid": "input-titulo" } }}
+          />
+
+          <TextField
+            label="Descrição"
+            value={descricao}
+            onChange={(e) => setDescricao(e.target.value)}
+            multiline
+            rows={3}
+            fullWidth
+            slotProps={{ input: { "data-testid": "input-descricao" } }}
+          />
+
+          <TextField
+            label="Repo Path"
+            value={repoPath}
+            onChange={(e) => setRepoPath(e.target.value)}
+            fullWidth
+            placeholder="/data/workspace/projects/..."
+          />
+
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
+            <TextField
+              label="Build Command"
+              value={buildCommand}
+              onChange={(e) => setBuildCommand(e.target.value)}
+              fullWidth
+              placeholder="npm run build"
+            />
+            <TextField
+              label="Test Command"
+              value={unitTestCommand}
+              onChange={(e) => setUnitTestCommand(e.target.value)}
+              fullWidth
+              placeholder="npm run test"
+            />
+          </Stack>
+
+          <Box>
             <Button
               variant="contained"
-              size="large"
+              startIcon={enviando ? <CircularProgress size={20} /> : <AddTaskRounded />}
               onClick={enviar}
               disabled={!podeEnviar}
               data-testid="btn-enviar"
-              startIcon={enviando ? <CircularProgress size={18} /> : <AddTaskRounded />}
             >
-              {enviando ? "Enviando..." : "Criar rascunho"}
+              {enviando ? "Criando..." : "Criar Tarefa"}
             </Button>
           </Box>
         </Stack>
