@@ -33,10 +33,13 @@ ssh_host() {
 }
 
 # Aguenta resposta HTTP qualquer (até 401) = serviço de pé.
+# Obs.: curl imprime "000" E sai não-zero quando não conecta — usar `|| true`
+# (não `|| echo 000`, que concatenava "000000" e passava o healthcheck falso).
 wait_http() {
   local url="$1" tries="$2" label="$3" i code
   for i in $(seq 1 "$tries"); do
-    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$url" || echo 000)
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$url" 2>/dev/null || true)
+    [ -n "$code" ] || code=000
     if [ "$code" != "000" ]; then
       echo "[deploy] $label OK (HTTP $code)"
       return 0
