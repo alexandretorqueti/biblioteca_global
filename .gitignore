@@ -6,6 +6,9 @@ dist/
 build/
 *.tsbuildinfo
 
+# Emitidos por tsc sem noEmit — fonte é o .ts correspondente
+packages/*/src/**/*.js
+
 # Testes
 coverage/
 
