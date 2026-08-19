@@ -24,10 +24,10 @@ export const config: GeradorSistemaConfig = {
             description: "Gerenciamento global de usuários e vínculos",
             fields: [
               { name: "nome", label: "Nome", type: "text", required: true, fullWidth: true },
-              { name: "username", label: "Usuário", type: "text" },
+              { name: "username", label: "Usuário", type: "text", gridVisible: false },
               { name: "email", label: "E-mail", type: "email" },
-              { name: "telefone", label: "Telefone", type: "text" },
-              { name: "cpf", label: "CPF", type: "text" },
+              { name: "telefone", label: "Telefone", type: "text", gridVisible: false },
+              { name: "cpf", label: "CPF", type: "text", gridVisible: false },
               { name: "senhaInicial", label: "Senha inicial", type: "text", minLength: 8, helperText: "Deixe em branco para manter a senha atual", gridVisible: false },
               {
                 name: "perfil",
@@ -39,8 +39,9 @@ export const config: GeradorSistemaConfig = {
                   { label: "Operador", value: "operador" },
                   { label: "Visualizador", value: "visualizador" },
                 ],
+                gridVisible: false,
               },
-              { name: "ativo", label: "Ativo", type: "switch", defaultValue: true },
+              { name: "ativo", label: "Ativo", type: "switch", defaultValue: true, gridVisible: false },
             ],
             overrides: {
               hiddenColumns: ["createdAt", "updatedAt"],
@@ -61,7 +62,7 @@ export const config: GeradorSistemaConfig = {
             description: "CRUD de projetos com editor de config validado",
             fields: [
               { name: "nome", label: "Nome", type: "text", required: true, fullWidth: true },
-              { name: "slug", label: "Slug", type: "text", required: true, helperText: "Minúsculas, sem espaços (identifica a pasta do projeto)" },
+              { name: "slug", label: "Slug", type: "text", required: true, helperText: "Minúsculas, sem espaços (identifica a pasta do projeto)", gridVisible: false },
               {
                 name: "config",
                 label: "Config (JSON)",
@@ -70,7 +71,7 @@ export const config: GeradorSistemaConfig = {
                 gridVisible: false,
                 helperText: "Config serializada do GeradorSistema (validada contra o schema)",
               },
-              { name: "ativo", label: "Ativo", type: "switch", defaultValue: true },
+              { name: "ativo", label: "Ativo", type: "switch", defaultValue: true, gridVisible: false },
             ],
             overrides: {
               hiddenColumns: ["createdAt", "updatedAt"],

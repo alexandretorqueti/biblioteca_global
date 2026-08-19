@@ -20,25 +20,30 @@ import {
 } from "react"
 import type {
   CadastroDataSource,
+  CustomAction,
   EntityRecord,
   GeradorSistemaConfig,
+  PaginatedResult,
 } from "@biblioteca-global/shared"
 import { geradorSistemaConfigSchema } from "@biblioteca-global/shared"
-import type { GeradorSistemaRuntime } from "@biblioteca-global/ui"
+import type { GeradorSistemaRuntime, ExecuteAction } from "@biblioteca-global/ui"
 import { createDataSource } from "@biblioteca-global/api-client"
 import { getProjectConfig } from "./registry/projects"
 import { useAuth } from "../auth/AuthContext"
+import type { ApiClientBundle } from "../api/client"
 
 export interface ProjectContextValue {
   /** Config validada do projeto selecionado (undefined enquanto não houver). */
   config: GeradorSistemaConfig | undefined
   /** Runtime do GeradorSistema, pronto para injetar na UI. */
   runtime: GeradorSistemaRuntime | undefined
+  /** Bundle HTTP autenticado (para telas custom que precisam fazer requisições). */
+  bundle: ApiClientBundle | undefined
   /** Recarrega a config do projeto (após edição do admin, ex.). */
   reload: () => void
 }
 
-const ProjectContext = createContext<ProjectContextValue | null>(null)
+export const ProjectContext = createContext<ProjectContextValue | null>(null)
 
 // O provider obtém o slug do projeto e o bundle de API diretamente do AuthContext.
 function parseConfig(candidato: unknown): GeradorSistemaConfig | undefined {
@@ -60,6 +65,35 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     [projectSlug, reloadTick],
   )
 
+  // Executa uma ação customizada (iniciar tarefa, pausar, retomar, etc.)
+  const executeAction = useCallback<ExecuteAction>(
+    async (action: CustomAction, context?: { row?: EntityRecord }) => {
+      if (!bundle) throw new Error("Bundle HTTP não disponível")
+      
+      // Interpola :id no path com o ID do registro
+      let path = action.path
+      if (context?.row?.id !== undefined) {
+        path = path.replace(/:id/g, String(context.row.id))
+      }
+      
+      // Remove prefixo /api se presente (o bundle já tem baseUrl com /api)
+      if (path.startsWith("/api")) {
+        path = path.substring(4)
+      }
+      
+      const result = await bundle.http.request<{ message?: string }>(
+        action.method,
+        path,
+        { auth: "access" }
+      )
+      
+      return {
+        message: result.message || `Ação "${action.label}" executada com sucesso.`,
+      }
+    },
+    [bundle]
+  )
+
   const runtime = useMemo<GeradorSistemaRuntime | undefined>(() => {
     if (!config) return undefined
     return {
@@ -68,12 +102,33 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
         if (!bundle) return undefined as any
         return createDataSource<T>(bundle.http, resource)
       },
+      getLoadOptions(resource: string) {
+        if (!bundle) return async () => []
+        return async (search: string) => {
+          try {
+            const result = await bundle.http.request<PaginatedResult<EntityRecord>>(
+              "GET",
+              `/${resource}`,
+              {
+                query: search
+                  ? { search, pageSize: 50 }
+                  : { pageSize: 100 },
+                auth: "access",
+              },
+            )
+            return result.items ?? []
+          } catch {
+            return []
+          }
+        }
+      },
+      executeAction,
     }
-  }, [config, bundle])
+  }, [config, bundle, executeAction])
 
   const reload = useCallback(() => setReloadTick((t) => t + 1), [])
 
-  const value = useMemo<ProjectContextValue>(() => ({ config, runtime, reload }), [config, runtime, reload])
+  const value = useMemo<ProjectContextValue>(() => ({ config, runtime, bundle, reload }), [config, runtime, bundle, reload])
 
   return <ProjectContext.Provider value={value}>{children}</ProjectContext.Provider>
 }
