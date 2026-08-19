@@ -16,14 +16,35 @@ import {
 } from "./form"
 import { gerarFields } from "./gerar-fields"
 
-/** Extrai as tabelas Drizzle exportadas por um módulo de schema. */
+/** Símbolo interno do drizzle que guarda o nome REAL da tabela (mysqlTable("nome")). */
+const DRIZZLE_TABLE_NAME = Symbol.for("drizzle:Name")
+
+/** Nome real da tabela no banco (snake_case do mysqlTable), não o da variável exportada. */
+function nomeDaTabela(tabela: MySqlTable): string {
+  const nome = (tabela as unknown as Record<symbol, string>)[DRIZZLE_TABLE_NAME]
+  if (!nome) {
+    throw new Error(`tabela drizzle sem nome real (${DRIZZLE_TABLE_NAME.toString()})`)
+  }
+  return nome
+}
+
+/**
+ * Extrai as tabelas Drizzle exportadas por um módulo de schema, indexadas
+ * pelo nome REAL da tabela (mysqlTable("nome_tabela")).
+ *
+ * O nome da variável exportada pode divergir do nome da tabela
+ * (ex.: `projetosCaptados` vs `projetos_captados`); resources, annotations e
+ * o validar-config usam o snake_case do banco, então a chave precisa ser a
+ * mesma.
+ */
 export function coletarTabelas(
   modulo: Record<string, unknown>,
 ): Record<string, MySqlTable> {
   const tabelas: Record<string, MySqlTable> = {}
-  for (const [nome, valor] of Object.entries(modulo)) {
+  for (const valor of Object.values(modulo)) {
     if (valor instanceof Object && is(valor, Table)) {
-      tabelas[nome] = valor as unknown as MySqlTable
+      const tabela = valor as unknown as MySqlTable
+      tabelas[nomeDaTabela(tabela)] = tabela
     }
   }
   return tabelas

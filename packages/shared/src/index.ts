@@ -11,7 +11,7 @@ export type {
   ListParams,
   PaginatedResult,
   ApiError,
-} from "./entity.js"
+} from "./entity"
 
 // Campos de formulário serializáveis
 export {
@@ -19,13 +19,13 @@ export {
   dynamicFieldOptionSchema,
   multipleChoiceFieldConfigSchema,
   dynamicFieldConfigSchema,
-} from "./field.js"
+} from "./field"
 export type {
   DynamicFieldType,
   DynamicFieldOption,
   MultipleChoiceFieldConfig,
   DynamicFieldConfig,
-} from "./field.js"
+} from "./field"
 
 // Config serializável do GeradorSistema
 export {
@@ -33,29 +33,33 @@ export {
   cadastroOverridesConfigSchema,
   cadastroScreenConfigSchema,
   customScreenConfigSchema,
+  editScreenConfigSchema,
   externalScreenConfigSchema,
   relatedScreenSchema,
   childScreenSchema,
+  childRouteSchema,
   customActionSchema,
   screenConfigSchema,
   geradorSistemaRouteSchema,
   geradorSistemaGroupSchema,
   geradorSistemaConfigSchema,
-} from "./config.js"
+} from "./config"
 export type {
   GeradorSistemaAppConfig,
   CadastroOverridesConfig,
   CadastroScreenConfig,
   CustomScreenConfig,
   ExternalScreenConfig,
+  EditScreenConfig,
   RelatedScreen,
   ChildScreen,
+  ChildRoute,
   CustomAction,
   ScreenConfig,
   GeradorSistemaRoute,
   GeradorSistemaGroup,
   GeradorSistemaConfig,
-} from "./config.js"
+} from "./config"
 
 // Auth e sessão
 export {
@@ -67,7 +71,7 @@ export {
   requestCodeRequestSchema,
   verifyCodeRequestSchema,
   setPasswordRequestSchema,
-} from "./auth.js"
+} from "./auth"
 export type {
   LoginIdentifierType,
   Perfil,
@@ -90,7 +94,7 @@ export type {
   UsuarioAutenticado,
   SessionInfo,
   MeResponse,
-} from "./auth.js"
+} from "./auth"
 
 // Entidades do core
-export type { Usuario, Projeto, ProjetoUsuario } from "./core.js"
+export type { Usuario, Projeto, ProjetoUsuario } from "./core"

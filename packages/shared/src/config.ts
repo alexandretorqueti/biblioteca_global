@@ -10,7 +10,7 @@
  * consistência com a API pública antiga.
  */
 import { z } from "zod"
-import { dynamicFieldConfigSchema } from "./field.js"
+import { dynamicFieldConfigSchema, dynamicFieldTypeSchema } from "./field"
 
 export const geradorSistemaAppConfigSchema = z
   .object({
@@ -79,6 +79,51 @@ export const childScreenSchema = z.object({
 export type ChildScreen = z.infer<typeof childScreenSchema>
 
 /**
+ * Rota filha com contexto: navega para outra tela passando um filtro automático.
+ * Ex.: ao clicar em "Tarefas" do Projeto X, navega para /tarefas com filtro projetoId=X.
+ */
+export const childRouteSchema: z.ZodType<ChildRoute> = z.lazy(() =>
+  z.object({
+    /** Identificador único da rota filha. */
+    id: z.string().min(1),
+    /** Rótulo do botão na grid. */
+    label: z.string().min(1),
+    /** Nome do ícone (opcional). */
+    icon: z.string().min(1).optional(),
+    /** Resource de destino (tabela no schema). */
+    targetResource: z.string().regex(/^[a-z][a-z0-9_]*$/),
+    /** Campo no resource filho que referencia o pai (ex.: "projetoId"). */
+    filterField: z.string().min(1),
+    /** Título da tela filha (opcional). */
+    title: z.string().min(1).optional(),
+    /** Config dos campos da tela filha (opcional — usa a config global se omitido). */
+    fields: z.array(dynamicFieldConfigSchema).optional(),
+    /** Overrides da tela filha (opcional). */
+    overrides: cadastroOverridesConfigSchema.optional(),
+    /** Ações customizadas da tela filha (opcional). */
+    actions: z.array(customActionSchema).optional(),
+    /** Ações por linha da tela filha (opcional). */
+    rowActions: z.array(customActionSchema).optional(),
+    /** Rotas filhas aninhadas (recursivo — opcional). */
+    childRoutes: z.array(z.lazy(() => childRouteSchema)).optional(),
+  }).strict()
+)
+
+export interface ChildRoute {
+  id: string
+  label: string
+  icon?: string
+  targetResource: string
+  filterField: string
+  title?: string
+  fields?: import("./field").DynamicFieldConfig[]
+  overrides?: CadastroOverridesConfig
+  actions?: CustomAction[]
+  rowActions?: CustomAction[]
+  childRoutes?: ChildRoute[]
+}
+
+/**
  * Tela de CRUD gerada: `resource` = nome de tabela no schema.ts do projeto
  * (whitelist no back — PoC §6.2). `fields` carrega a base gerada do schema;
  * `overrides` ajusta apenas apresentação.
@@ -115,6 +160,17 @@ export const cadastroScreenConfigSchema = z
      * Cada action exige method + path; confirm é opcional.
      */
     actions: z.array(customActionSchema).optional(),
+    /**
+     * Ações por linha: botões que aparecem em cada registro da grid.
+     * O path pode conter :id que será substituído pelo ID do registro.
+     */
+    rowActions: z.array(customActionSchema).optional(),
+    /**
+     * Rotas filhas com contexto: botões na grid que navegam para outras telas
+     * passando um filtro automático (ex.: clicar em "Tarefas" do Projeto X
+     * abre a lista de tarefas filtrada por projetoId=X).
+     */
+    childRoutes: z.array(childRouteSchema).optional(),
   })
   .strict()
 
@@ -144,6 +200,36 @@ export type CustomScreenConfig = z.infer<typeof customScreenConfigSchema>
 
 
 /** Tela externa: conecta a um endpoint REST fora do sistema. */
+/** Config de edição da tela externa. */
+export const editScreenConfigSchema = z
+  .object({
+    /** Método HTTP permitido para esta ação de edição. */
+    method: httpMethodSchema,
+    /** Template de caminho — obrigatório, sem default. */
+    pathTemplate: z.string().min(1),
+    /** Config dos campos do formulário de edição. Cada campo exige `name` não vazio. */
+    fields: z
+      .array(
+        z.object({
+          name: z.string().min(1),
+          label: z.string().min(1).optional(),
+          type: dynamicFieldTypeSchema.optional(),
+          multipleChoiceOptions: z
+            .array(z.object({ value: z.any(), label: z.string() }))
+            .optional(),
+          insertable: z.boolean().optional(),
+          editable: z.boolean().optional(),
+          gridVisible: z.boolean().optional(),
+        }),
+      )
+      .optional(),
+    /** Caminho dentro da resposta para extrair o payload JSON. */
+    bodyPath: z.string().min(1).optional(),
+  })
+  .strict()
+
+export type EditScreenConfig = z.infer<typeof editScreenConfigSchema>
+
 export const externalScreenConfigSchema = z
   .object({
     kind: z.literal("external"),
@@ -188,6 +274,22 @@ export const externalScreenConfigSchema = z
      * (TaskChat) junto aos dados do registro.
      */
     chat: z.boolean().optional(),
+    /**
+     * Colunas ocultas na grid/listagem — lista de nomes de campo.
+     * Quando omitido, nenhuma coluna é ocultada por esta config.
+     */
+    hiddenColumns: z.array(z.string().min(1)).optional(),
+    /**
+     * Configuração de edição da tela externa. Torna a tela editável:
+     * permite abrir um formulário para atualizar registros externos.
+     *
+     * - `method`: método HTTP da requisição de edição (PUT/PATCH/POST).
+     * - `pathTemplate`: template de caminho com placeholders (obrigatório quando `edit` presente).
+     * - `fields`: config dos campos do formulário — deriva de `dynamicFieldConfigSchema`.
+     * - `bodyPath`: caminho dentro da resposta para extrair o payload JSON;
+     *   quando omitido, usa a resposta diretamente.
+     */
+    edit: editScreenConfigSchema.optional(),
   })
   .strict()
 

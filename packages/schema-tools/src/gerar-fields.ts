@@ -40,6 +40,8 @@ function derivarTipo(
   if (coluna.dataType === "number" || coluna.dataType === "bigint") {
     return "number"
   }
+  // JSON (MySqlJson): editor de JSON em árvore (FieldJson — 2026-08-16).
+  if (columnType === "MySqlJson" || coluna.dataType === "json") return "json"
   // Fallbacks robustos por dataType (nomes de columnType variam no drizzle).
   if (coluna.dataType === "string") return "text"
   if (coluna.dataType === "boolean") return "switch"

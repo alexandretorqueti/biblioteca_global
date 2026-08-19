@@ -10,7 +10,11 @@ import {
   relatedScreenSchema,
   screenConfigSchema,
 } from "../index.js"
-import type { GeradorSistemaConfig } from "../index.js"
+import type {
+  EditScreenConfig,
+  ExternalScreenConfig,
+  GeradorSistemaConfig,
+} from "../index.js"
 
 /** Config válida no formato do projeto biblioteca-global (PoC §7.3/§9.1). */
 const configValida: GeradorSistemaConfig = {
@@ -630,6 +634,140 @@ describe("externalScreenConfigSchema", () => {
   })
 })
 
+describe("actions em externalScreenConfigSchema", () => {
+  it("aceita external com actions válidas", () => {
+    const result = externalScreenConfigSchema.safeParse({
+      kind: "external",
+      baseUrl: "https://api.exemplo.com",
+      method: "GET",
+      pathTemplate: "/task/:id",
+      actions: [
+        { id: "executar", label: "Executar", method: "POST", path: "/task/:id/executar" },
+      ],
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it("aceita external sem actions (opcional)", () => {
+    const result = externalScreenConfigSchema.safeParse({
+      kind: "external",
+      baseUrl: "https://api.exemplo.com",
+      method: "GET",
+      pathTemplate: "/task/:id",
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it("rejeita action com path vazio", () => {
+    const result = externalScreenConfigSchema.safeParse({
+      kind: "external",
+      baseUrl: "https://api.exemplo.com",
+      method: "GET",
+      pathTemplate: "/task/:id",
+      actions: [
+        { id: "x", label: "X", method: "POST", path: "" },
+      ],
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it("rejeita action com method inválido", () => {
+    const result = externalScreenConfigSchema.safeParse({
+      kind: "external",
+      baseUrl: "https://api.exemplo.com",
+      method: "GET",
+      pathTemplate: "/task/:id",
+      actions: [
+        { id: "x", label: "X", method: "OPTIONS" as any, path: "/test" },
+      ],
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it("rejeita chave desconhecida em action (strict)", () => {
+    const result = externalScreenConfigSchema.safeParse({
+      kind: "external",
+      baseUrl: "https://api.exemplo.com",
+      method: "GET",
+      pathTemplate: "/task/:id",
+      actions: [
+        { id: "x", label: "X", method: "POST", path: "/test", extra: true },
+      ],
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it("aceita external com confirm em action", () => {
+    const result = externalScreenConfigSchema.safeParse({
+      kind: "external",
+      baseUrl: "https://api.exemplo.com",
+      method: "DELETE",
+      pathTemplate: "/task/:id",
+      actions: [
+        { id: "deletar", label: "Deletar", method: "DELETE", path: "/task/:id", confirm: "Confirmar exclusão?" },
+      ],
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it("aceita multiple actions com confirmações diferentes", () => {
+    const result = externalScreenConfigSchema.safeParse({
+      kind: "external",
+      baseUrl: "https://api.exemplo.com",
+      method: "GET",
+      pathTemplate: "/task/:id",
+      actions: [
+        { id: "aprovar", label: "Aprovar", method: "POST", path: "/task/:id/aprovar", confirm: "Aprovar tarefa?" },
+        { id: "rejeitar", label: "Rejeitar", method: "POST", path: "/task/:id/rejeitar", confirm: "Rejeitar tarefa?" },
+      ],
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it("aceita external com actions em config completa (geradorSistemaConfigSchema)", () => {
+    const result = geradorSistemaConfigSchema.safeParse({
+      app: { name: "Gerente de Agentes" },
+      groups: [
+        {
+          id: "negocios",
+          label: "Negócios",
+          items: [
+            {
+              id: "tarefas-externas",
+              label: "Tarefas Externas",
+              path: "tarefas-externas",
+              icon: "link",
+              screen: {
+                kind: "external",
+                baseUrl: "https://api.agente-interno.local",
+                method: "GET",
+                pathTemplate: "/api/task/:id",
+                actions: [
+                  { id: "executar", label: "Executar", method: "POST", path: "/api/task/:id/executar" },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it("aceita external como kind na screenConfigSchema com actions", () => {
+    const result = screenConfigSchema.safeParse({
+      kind: "external",
+      baseUrl: "https://api.exemplo.com",
+      method: "GET",
+      pathTemplate: "/task/:id",
+      actions: [
+        { id: "executar", label: "Executar", method: "POST", path: "/task/:id/executar" },
+      ],
+    })
+    expect(result.success).toBe(true)
+  })
+})
+
 describe("customActionSchema", () => {
   it("aceita action com method e path obrigatórios", () => {
     const result = customActionSchema.safeParse({
@@ -835,6 +973,290 @@ describe("actions em cadastroScreenConfigSchema", () => {
       ],
     })
     expect(result.success).toBe(true)
+  })
+})
+
+describe("hiddenColumns em externalScreenConfigSchema (st-1)", () => {
+  it("aceita hiddenColumns vazio", () => {
+    const result = externalScreenConfigSchema.safeParse({
+      kind: "external",
+      baseUrl: "https://api.exemplo.com",
+      method: "GET",
+      pathTemplate: "/task/:id",
+      hiddenColumns: [],
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it("aceita hiddenColumns com nomes de campo", () => {
+    const result = externalScreenConfigSchema.safeParse({
+      kind: "external",
+      baseUrl: "https://api.exemplo.com",
+      method: "GET",
+      pathTemplate: "/task/:id",
+      hiddenColumns: ["createdAt", "updatedAt", "deletedAt"],
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it("rejeita hiddenColumns com nome vazio", () => {
+    const result = externalScreenConfigSchema.safeParse({
+      kind: "external",
+      baseUrl: "https://api.exemplo.com",
+      method: "GET",
+      pathTemplate: "/task/:id",
+      hiddenColumns: ["createdAt", ""],
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it("hiddenColumns é opcional (comportamento preservado)", () => {
+    const result = externalScreenConfigSchema.safeParse({
+      kind: "external",
+      baseUrl: "https://api.exemplo.com",
+      method: "GET",
+      pathTemplate: "/task/:id",
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it("hiddenColumns aceitado em config completa (geradorSistemaConfigSchema)", () => {
+    const result = geradorSistemaConfigSchema.safeParse({
+      app: { name: "Teste" },
+      groups: [
+        {
+          id: "g",
+          label: "G",
+          items: [
+            {
+              id: "i",
+              label: "I",
+              path: "i",
+              icon: "link",
+              screen: {
+                kind: "external",
+                baseUrl: "https://api.exemplo.com",
+                method: "GET",
+                pathTemplate: "/task/:id",
+                hiddenColumns: ["secretField"],
+              },
+            },
+          ],
+        },
+      ],
+    })
+    expect(result.success).toBe(true)
+  })
+})
+
+describe("edit em externalScreenConfigSchema (st-1)", () => {
+  it("aceita edit com method e pathTemplate obrigatórios", () => {
+    const result = externalScreenConfigSchema.safeParse({
+      kind: "external",
+      baseUrl: "https://api.exemplo.com",
+      method: "GET",
+      pathTemplate: "/task/:id",
+      edit: {
+        method: "PATCH",
+        pathTemplate: "/task/:id",
+      },
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it("aceita todos os methods HTTP válidos em edit", () => {
+    for (const method of ["PUT", "PATCH", "POST"] as const) {
+      const result = externalScreenConfigSchema.safeParse({
+        kind: "external",
+        baseUrl: "https://api.exemplo.com",
+        method: "GET",
+        pathTemplate: "/task/:id",
+        edit: { method, pathTemplate: "/task/:id" },
+      })
+      expect(result.success).toBe(true)
+    }
+  })
+
+  it("rejeita edit sem pathTemplate", () => {
+    const result = externalScreenConfigSchema.safeParse({
+      kind: "external",
+      baseUrl: "https://api.exemplo.com",
+      method: "GET",
+      pathTemplate: "/task/:id",
+      edit: { method: "PATCH" },
+    } as unknown)
+    expect(result.success).toBe(false)
+  })
+
+  it("rejeita edit com method inválido", () => {
+    const result = externalScreenConfigSchema.safeParse({
+      kind: "external",
+      baseUrl: "https://api.exemplo.com",
+      method: "GET",
+      pathTemplate: "/task/:id",
+      edit: { method: "OPTIONS" as any, pathTemplate: "/task/:id" },
+    } as unknown)
+    expect(result.success).toBe(false)
+  })
+
+  it("rejeita edit com pathTemplate vazio", () => {
+    const result = externalScreenConfigSchema.safeParse({
+      kind: "external",
+      baseUrl: "https://api.exemplo.com",
+      method: "GET",
+      pathTemplate: "/task/:id",
+      edit: { method: "PATCH", pathTemplate: "" },
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it("edit com fields válidos", () => {
+    const result = externalScreenConfigSchema.safeParse({
+      kind: "external",
+      baseUrl: "https://api.exemplo.com",
+      method: "GET",
+      pathTemplate: "/task/:id",
+      edit: {
+        method: "PUT",
+        pathTemplate: "/task/:id",
+        fields: [
+          { name: "nome", label: "Nome", type: "text" },
+          { name: "status", label: "Status", type: "multipleChoice", multipleChoiceOptions: [{ value: "ativo", label: "Ativo" }] },
+        ],
+      },
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it("rejeita edit com field sem name", () => {
+    const result = externalScreenConfigSchema.safeParse({
+      kind: "external",
+      baseUrl: "https://api.exemplo.com",
+      method: "GET",
+      pathTemplate: "/task/:id",
+      edit: {
+        method: "PUT",
+        pathTemplate: "/task/:id",
+        fields: [{ label: "Sem name" }],
+      },
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it("rejeita edit com field com name vazio", () => {
+    const result = externalScreenConfigSchema.safeParse({
+      kind: "external",
+      baseUrl: "https://api.exemplo.com",
+      method: "GET",
+      pathTemplate: "/task/:id",
+      edit: {
+        method: "PUT",
+        pathTemplate: "/task/:id",
+        fields: [{ name: "", label: "Nome vazio" }],
+      },
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it("edit aceita bodyPath opcional", () => {
+    const result = externalScreenConfigSchema.safeParse({
+      kind: "external",
+      baseUrl: "https://api.exemplo.com",
+      method: "GET",
+      pathTemplate: "/task/:id",
+      edit: {
+        method: "PUT",
+        pathTemplate: "/task/:id",
+        bodyPath: "result",
+      },
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it("edit aceita fields com flags de contexto", () => {
+    const result = externalScreenConfigSchema.safeParse({
+      kind: "external",
+      baseUrl: "https://api.exemplo.com",
+      method: "GET",
+      pathTemplate: "/task/:id",
+      edit: {
+        method: "PATCH",
+        pathTemplate: "/task/:id",
+        fields: [
+          { name: "nome", editable: false, gridVisible: false },
+          { name: "status", insertable: true, editable: true },
+        ],
+      },
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it("edit é opcional (comportamento preservado)", () => {
+    const result = externalScreenConfigSchema.safeParse({
+      kind: "external",
+      baseUrl: "https://api.exemplo.com",
+      method: "GET",
+      pathTemplate: "/task/:id",
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it("edit rejeita chave desconhecida (strict)", () => {
+    const result = externalScreenConfigSchema.safeParse({
+      kind: "external",
+      baseUrl: "https://api.exemplo.com",
+      method: "GET",
+      pathTemplate: "/task/:id",
+      edit: { method: "PATCH", pathTemplate: "/task/:id", extra: true },
+    } as unknown)
+    expect(result.success).toBe(false)
+  })
+
+  it("edit aceitado em config completa (geradorSistemaConfigSchema)", () => {
+    const result = geradorSistemaConfigSchema.safeParse({
+      app: { name: "Teste" },
+      groups: [
+        {
+          id: "negocios",
+          label: "Negócios",
+          items: [
+            {
+              id: "tarefas-edit",
+              label: "Tarefas Editáveis",
+              path: "tarefas-edit",
+              icon: "edit",
+              screen: {
+                kind: "external",
+                baseUrl: "https://motor.local",
+                method: "GET",
+                pathTemplate: "/api/task/:id",
+                edit: {
+                  method: "PATCH",
+                  pathTemplate: "/api/task/:id",
+                  fields: [
+                    { name: "status", label: "Status" },
+                    { name: "observacao", label: "Observação" },
+                  ],
+                },
+              },
+            },
+          ],
+        },
+      ],
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it("EditScreenConfig é exportado como tipo", () => {
+    // Testa que o tipo existe e é inferível sem erro de compilação.
+    const cfg: EditScreenConfig = {
+      method: "PATCH",
+      pathTemplate: "/task/:id",
+      fields: [{ name: "status" }],
+    }
+    expect(cfg.method).toBe("PATCH")
+    expect(cfg.pathTemplate).toBe("/task/:id")
+    expect(cfg.fields).toHaveLength(1)
   })
 })
 
