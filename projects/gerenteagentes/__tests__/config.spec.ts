@@ -7,35 +7,54 @@
  * Histórico: esta tela já foi validada quando era `kind: "external"` apontando
  * para a API do motor (http://api.tarefas.localhost/api/tasks). O commit
  * ddd99a2 a converteu para `kind: "cadastro"` contra a API interna da
- * plataforma. Este teste valida o contrato ATUAL (cadastro + ações), de forma
- * reproduzível e versionada sob Vitest (transpila TS; `projects/*` é CJS).
+ * plataforma. Com a navegação hierárquica (2026-08-18), a tela "Tarefas" virou
+ * uma childRoute do item "Projetos" — este teste valida o contrato ATUAL
+ * (childRoutes + cadastro + rowActions), de forma reproduzível e versionada
+ * sob Vitest.
  */
 import { describe, expect, it } from "vitest"
-import { config } from "../config"
+import {
+  config,
+} from "../config"
+import type {
+  CadastroScreenConfig,
+  ChildRoute,
+} from "@biblioteca-global/shared"
+
+/** Localiza a ChildRoute "tarefas" do item "Projetos". */
+function localizarTelaTarefas(): CadastroScreenConfig {
+  const grupoProjetos = config.groups.find((g) => g.id === "projetos")
+  expect(grupoProjetos, "grupo projetos deve existir").toBeDefined()
+
+  const item = grupoProjetos!.items.find((i) => i.id === "projetos-list")
+  expect(item, "item projetos-list deve existir").toBeDefined()
+
+  expect(item!.screen.kind).toBe("cadastro")
+  const screen = item!.screen as CadastroScreenConfig
+
+  const rota = (screen.childRoutes ?? []).find((r) => r.id === "tarefas")
+  expect(rota, "childRoute tarefas deve existir").toBeDefined()
+
+  const tela = (rota as ChildRoute)
+  expect(tela.targetResource).toBe("tarefas")
+  return tela as unknown as CadastroScreenConfig
+}
 
 describe("config do projeto gerenteagentes", () => {
-  it("define a tela tarefas-list como cadastro apontando para o resource tarefas", () => {
-    const grupoTarefas = config.groups.find((g) => g.id === "tarefas")
-    expect(grupoTarefas).toBeDefined()
+  it("define a tela tarefas como cadastro apontando para o resource tarefas", () => {
+    const tela = localizarTelaTarefas() as unknown as ChildRoute
 
-    const tela = grupoTarefas!.items.find((i) => i.id === "tarefas-list")
-    expect(tela).toBeDefined()
-
-    const screen = tela!.screen
-    expect(screen.kind).toBe("cadastro")
-    expect(screen.resource).toBe("tarefas")
-    expect(screen.title).toBe("Tarefas")
+    expect(tela.targetResource).toBe("tarefas")
+    expect(tela.title).toBe("Tarefas do Projeto")
   })
 
-  it("define as actions iniciar/pausar/retomar com POST para a API interna", () => {
-    const grupoTarefas = config.groups.find((g) => g.id === "tarefas")
-    const tela = grupoTarefas!.items.find((i) => i.id === "tarefas-list")
-    const screen = tela!.screen
+  it("define as rowActions iniciar/pausar/retomar com POST para a API interna", () => {
+    const tela = localizarTelaTarefas() as unknown as ChildRoute
 
-    expect(screen.actions).toBeDefined()
-    expect(screen.actions!.length).toBe(3)
+    expect(tela.rowActions).toBeDefined()
+    expect(tela.rowActions!.length).toBe(3)
 
-    const iniciar = screen.actions!.find((a) => a.id === "iniciar-tarefa")
+    const iniciar = tela.rowActions!.find((a) => a.id === "iniciar-tarefa")
     expect(iniciar).toEqual({
       id: "iniciar-tarefa",
       label: "Iniciar",
@@ -44,7 +63,7 @@ describe("config do projeto gerenteagentes", () => {
       confirm: "Iniciar execução desta tarefa?",
     })
 
-    const pausar = screen.actions!.find((a) => a.id === "pausar-tarefa")
+    const pausar = tela.rowActions!.find((a) => a.id === "pausar-tarefa")
     expect(pausar).toEqual({
       id: "pausar-tarefa",
       label: "Pausar",
@@ -53,7 +72,7 @@ describe("config do projeto gerenteagentes", () => {
       confirm: "Pausar esta tarefa?",
     })
 
-    const retomar = screen.actions!.find((a) => a.id === "retomar-tarefa")
+    const retomar = tela.rowActions!.find((a) => a.id === "retomar-tarefa")
     expect(retomar).toEqual({
       id: "retomar-tarefa",
       label: "Retomar",
@@ -63,12 +82,10 @@ describe("config do projeto gerenteagentes", () => {
     })
   })
 
-  it("define os campos obrigatórios da tela tarefas-list", () => {
-    const grupoTarefas = config.groups.find((g) => g.id === "tarefas")
-    const tela = grupoTarefas!.items.find((i) => i.id === "tarefas-list")
-    const screen = tela!.screen
+  it("define os campos obrigatórios da tela tarefas", () => {
+    const tela = localizarTelaTarefas() as unknown as ChildRoute
 
-    const fields = screen.fields
+    const fields = tela.fields
     expect(fields).toBeDefined()
 
     const obrigatórios = fields!.filter((f) => f.required).map((f) => f.name)
@@ -86,11 +103,9 @@ describe("config do projeto gerenteagentes", () => {
   })
 
   it("define o status como select com os valores do motor", () => {
-    const grupoTarefas = config.groups.find((g) => g.id === "tarefas")
-    const tela = grupoTarefas!.items.find((i) => i.id === "tarefas-list")
-    const screen = tela!.screen
+    const tela = localizarTelaTarefas() as unknown as ChildRoute
 
-    const status = screen.fields!.find((f) => f.name === "status")
+    const status = tela.fields!.find((f) => f.name === "status")
     expect(status).toBeDefined()
     expect(status!.type).toBe("select")
 
@@ -104,5 +119,17 @@ describe("config do projeto gerenteagentes", () => {
       "failed",
       "cancelled",
     ])
+  })
+
+  it("define as childRoutes das tarefas (subtarefas, chats, bloqueios)", () => {
+    const grupoProjetos = config.groups.find((g) => g.id === "projetos")!
+    const item = grupoProjetos.items.find((i) => i.id === "projetos-list")!
+    const screen = item.screen as CadastroScreenConfig
+
+    const rotaTarefas = (screen.childRoutes ?? []).find((r) => r.id === "tarefas")
+    expect(rotaTarefas).toBeDefined()
+
+    const ids = (rotaTarefas as ChildRoute).childRoutes?.map((r) => r.id) ?? []
+    expect(ids).toEqual(["subtarefas", "tarefa-chats", "bloqueios"])
   })
 })

@@ -3,7 +3,7 @@
  *
  * Usa fetch direto para o endpoint interno da plataforma.
  */
-import { useCallback, useMemo, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
 import {
   Box,
   Button,
@@ -13,10 +13,23 @@ import {
   CircularProgress,
   Paper,
   TextField,
+  MenuItem,
 } from "@mui/material"
 import { AddTaskRounded } from "@mui/icons-material"
 
+interface Projeto {
+  id: number
+  nome: string
+}
+
+interface Agente {
+  id: number
+  nome: string
+}
+
 export default function NovaTarefaScreen(): ReactNode {
+  const [projetos, setProjetos] = useState<Projeto[]>([])
+  const [agentes, setAgentes] = useState<Agente[]>([])
   const [projetoId, setProjetoId] = useState("")
   const [agenteId, setAgenteId] = useState("")
   const [titulo, setTitulo] = useState("")
@@ -28,6 +41,31 @@ export default function NovaTarefaScreen(): ReactNode {
   const [enviando, setEnviando] = useState(false)
   const [sucesso, setSucesso] = useState(false)
   const [erro, setErro] = useState<string | null>(null)
+
+  const carregarOpcoes = useCallback(async () => {
+    const token = localStorage.getItem("access_token")
+    const headers: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {}
+    try {
+      const [projsRes, agentesRes] = await Promise.all([
+        fetch("/api/projetos_captados", { headers }),
+        fetch("/api/agentes", { headers }),
+      ])
+      if (projsRes.ok) {
+        const data = await projsRes.json()
+        setProjetos((data.items ?? data).filter((p: Projeto & { ativo?: boolean }) => p.ativo !== false))
+      }
+      if (agentesRes.ok) {
+        const data = await agentesRes.json()
+        setAgentes((data.items ?? data).filter((a: Agente & { ativo?: boolean }) => a.ativo !== false))
+      }
+    } catch {
+      // silencioso — combos ficam vazios
+    }
+  }, [])
+
+  useEffect(() => {
+    carregarOpcoes()
+  }, [carregarOpcoes])
 
   const errosCampos = useMemo(() => {
     const e: string[] = []
@@ -105,25 +143,33 @@ export default function NovaTarefaScreen(): ReactNode {
 
           <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
             <TextField
-              label="Projeto (ID)"
-              type="number"
+              select
+              label="Projeto"
               value={projetoId}
               onChange={(e) => setProjetoId(e.target.value)}
               required
               fullWidth
-              error={!projetoId.trim() && projetoId.length > 0}
-              slotProps={{ input: { "data-testid": "input-projeto-id" } }}
-            />
+              inputProps={{ "data-testid": "input-projeto-id" }}
+            >
+              <MenuItem value="" disabled>Selecione um projeto</MenuItem>
+              {projetos.map((p) => (
+                <MenuItem key={p.id} value={String(p.id)}>{p.nome}</MenuItem>
+              ))}
+            </TextField>
             <TextField
-              label="Agente (ID)"
-              type="number"
+              select
+              label="Agente"
               value={agenteId}
               onChange={(e) => setAgenteId(e.target.value)}
               required
               fullWidth
-              error={!agenteId.trim() && agenteId.length > 0}
-              slotProps={{ input: { "data-testid": "input-agente-id" } }}
-            />
+              inputProps={{ "data-testid": "input-agente-id" }}
+            >
+              <MenuItem value="" disabled>Selecione um agente</MenuItem>
+              {agentes.map((a) => (
+                <MenuItem key={a.id} value={String(a.id)}>{a.nome}</MenuItem>
+              ))}
+            </TextField>
           </Stack>
 
           <TextField
@@ -133,7 +179,7 @@ export default function NovaTarefaScreen(): ReactNode {
             required
             fullWidth
             error={!titulo.trim() && titulo.length > 0}
-            slotProps={{ input: { "data-testid": "input-titulo" } }}
+            inputProps={{ "data-testid": "input-titulo" }}
           />
 
           <TextField
@@ -143,7 +189,7 @@ export default function NovaTarefaScreen(): ReactNode {
             multiline
             rows={3}
             fullWidth
-            slotProps={{ input: { "data-testid": "input-descricao" } }}
+            inputProps={{ "data-testid": "input-descricao" }}
           />
 
           <TextField

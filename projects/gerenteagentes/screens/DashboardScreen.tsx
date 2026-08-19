@@ -4,7 +4,7 @@
  * - tarefas em execução
  * - resumo por status
  *
- * Usa fetch direto para os endpoints internos da plataforma.
+ * Usa api-client (bundle.http) para requisições autenticadas.
  */
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { Box, Chip, Paper, Stack, Typography, Alert, CircularProgress, Grid } from "@mui/material"
@@ -19,6 +19,8 @@ import {
   AccountTreeRounded,
 } from "@mui/icons-material"
 import type { ReactNode } from "react"
+import type { PaginatedResult } from "@biblioteca-global/shared"
+import { useApi } from "../../../apps/web/src/hooks/useApi"
 
 /* ------------------------------------------------------------------ */
 /*  Tipos                                                              */
@@ -124,38 +126,36 @@ function CardResumo({
 /* ------------------------------------------------------------------ */
 
 export default function DashboardScreen(): ReactNode {
+  const bundle = useApi()
   const [projetos, setProjetos] = useState<Projeto[]>([])
   const [tarefas, setTarefas] = useState<Tarefa[]>([])
   const [loading, setLoading] = useState(true)
   const [erro, setErro] = useState<string | null>(null)
 
   const carregar = useCallback(async () => {
+    if (!bundle) return
     setLoading(true)
     setErro(null)
     try {
-      const token = localStorage.getItem("access_token")
-      const headers: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {}
-
-      const [projsRes, trefsRes] = await Promise.all([
-        fetch("/api/projetos_captados", { headers }),
-        fetch("/api/tarefas", { headers }),
+      const [projsResult, tarefasResult] = await Promise.all([
+        bundle.http.request<PaginatedResult<Projeto>>("GET", "/projetos_captados", {
+          query: { pageSize: 100 },
+          auth: "access",
+        }),
+        bundle.http.request<PaginatedResult<Tarefa>>("GET", "/tarefas", {
+          query: { pageSize: 100 },
+          auth: "access",
+        }),
       ])
 
-      if (!projsRes.ok || !trefsRes.ok) {
-        throw new Error("Falha ao carregar dados")
-      }
-
-      const projsData = await projsRes.json()
-      const trefsData = await trefsRes.json()
-
-      setProjetos(projsData.items || [])
-      setTarefas(trefsData.items || [])
+      setProjetos(projsResult.items || [])
+      setTarefas(tarefasResult.items || [])
     } catch (e) {
       setErro(e instanceof Error ? e.message : "Erro ao carregar dados")
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [bundle])
 
   useEffect(() => {
     carregar()

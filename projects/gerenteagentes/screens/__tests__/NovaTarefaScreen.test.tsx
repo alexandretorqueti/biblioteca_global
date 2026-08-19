@@ -8,6 +8,18 @@
  * para o endpoint interno da plataforma. Estes testes validam o contrato
  * ATUAL (endpoint interno, campos projetoId/agenteId/título/descrição,
  * validação local, tratamento de erro e limpeza pós-sucesso).
+ *
+ * Notas de implementação (2026-08-19):
+ * - MUI 7: `TextField select` nativo renderiza as opções num Popover fechado
+ *   (lista `role=option`), não no `<input type="hidden">` — `user.selectOptions`
+ *   falha com "Value not found in options". A interação é: clicar no combobox
+ *   (abre a lista) → clicar na opção.
+ * - Vitest 4.1.10: `mockResolvedValueOnce`/`mockImplementationOnce` são
+ *   consumidos pela PRIMEIRA chamada do mock (aqui, o GET de opções), mesmo
+ *   após `mockImplementation` persistente — o POST não recebe o mock
+ *   posicionado. Solução: UMA `mockImplementation` única que roteia por URL+
+ *   method, com o resultado do POST controlado por uma variável mutável
+ *   (`postResult`).
  */
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest"
 import { render, screen, waitFor } from "@testing-library/react"
@@ -23,30 +35,98 @@ import NovaTarefaScreen from "../NovaTarefaScreen"
 
 const mockFetch = vi.fn()
 
-function mockOk(data: unknown) {
-  mockFetch.mockResolvedValueOnce({
-    ok: true,
-    status: 200,
-    json: async () => data,
+/**
+ * Resultado do POST /api/tarefas — controlado por teste.
+ * `"pending"` = o fetch nunca resolve (estado de loading).
+ */
+let postResult:
+  | { ok: boolean; status: number; body: unknown }
+  | "pending" = { ok: true, status: 200, body: { id: 42, status: "draft" } }
+
+/**
+ * Mock único do fetch, rotaciondo por URL + method:
+ * - GET /api/projetos_captados → opções de projeto
+ * - GET /api/agentes → opções de agente
+ * - POST /api/tarefas → `postResult` (controlado por teste)
+ *
+ * Uma única `mockImplementation` persistente (sem `Once`): a tela pode refazer
+ * o fetch de opções em qualquer re-render e a ordem dos responses do
+ * `Promise.all` interna não importa.
+ */
+function instalarMockFetch() {
+  mockFetch.mockImplementation(async (url: unknown, opts?: { method?: string }) => {
+    const u = String(url)
+    if (opts?.method === "POST" && u.includes("tarefas")) {
+      if (postResult === "pending") return new Promise(() => {})
+      return { ok: postResult.ok, status: postResult.status, json: async () => postResult.body }
+    }
+    if (u.includes("agentes")) {
+      return { ok: true, status: 200, json: async () => ({ items: [{ id: 1, nome: "Agente de Teste", ativo: true }] }) }
+    }
+    if (u.includes("projetos")) {
+      return { ok: true, status: 200, json: async () => ({ items: [{ id: 640, nome: "Projeto Piloto", ativo: true }] }) }
+    }
+    return { ok: true, status: 200, json: async () => ({ items: [] }) }
   })
 }
 
-function mockError(status: number, body?: Record<string, unknown>) {
-  mockFetch.mockResolvedValueOnce({
-    ok: false,
-    status,
-    json: async () => body ?? { message: `HTTP ${status}` },
-  })
+/* ------------------------------------------------------------------ */
+/*  Helpers de interação                                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Localiza o `div role=combobox` do select MUI identificado por `testId`.
+ * O combobox é a irmã anterior do `<input type="hidden">` no DOM do InputBase
+ * do MUI. Usa o próprio elemento (sem `getByRole("combobox", {name})`) porque
+ * a tela tem DOIS selects e a query por nome fica ambígua com um menu aberto.
+ */
+function comboboxDoCampo(testId: string): HTMLElement {
+  const input = screen.getByTestId(testId)
+  const combobox = input.previousElementSibling as HTMLElement | null
+  if (!combobox) throw new Error("combobox do campo não encontrado: " + testId)
+  return combobox
 }
 
+/** Fecha qualquer Popover de select ainda aberto (animação do MUI). */
+async function fecharMenuAberto(user: ReturnType<typeof userEvent.setup>) {
+  if (screen.queryByRole("listbox")) await user.keyboard("{Escape}")
+}
+
+/**
+ * Preenche os campos do formulário. Os selects MUI são operados por
+ * click-combobox + click-opção (ver nota de implementação no cabeçalho).
+ */
 async function preencherCampos(
   user: ReturnType<typeof userEvent.setup>,
   valor: { projetoId?: string; agenteId?: string; titulo?: string; descricao?: string } = {},
 ) {
-  if (valor.projetoId) await user.type(screen.getByTestId("input-projeto-id"), valor.projetoId)
-  if (valor.agenteId) await user.type(screen.getByTestId("input-agente-id"), valor.agenteId)
+  if (valor.projetoId) {
+    await user.click(comboboxDoCampo("input-projeto-id"))
+    const alvo = screen.queryAllByRole("option").find((o) => o.getAttribute("data-value") === valor.projetoId)
+    await user.click(alvo!)
+  }
+  if (valor.agenteId) {
+    await user.click(comboboxDoCampo("input-agente-id"))
+    const alvo = screen.queryAllByRole("option").find((o) => o.getAttribute("data-value") === valor.agenteId)
+    await user.click(alvo!)
+  }
   if (valor.titulo) await user.type(screen.getByTestId("input-titulo"), valor.titulo)
   if (valor.descricao) await user.type(screen.getByTestId("input-descricao"), valor.descricao)
+  await fecharMenuAberto(user)
+}
+
+/**
+ * Clica no botão de enviar. Se o botão estiver sob o Popover ainda em
+ * animação (`pointer-events: none`), força o clique via `dispatchEvent` —
+ * o handler do React é o que o teste valida.
+ */
+async function clicarEnviar(user: ReturnType<typeof userEvent.setup>) {
+  const btn = screen.getByTestId("btn-enviar")
+  if (getComputedStyle(btn).pointerEvents === "none") {
+    btn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }))
+    return
+  }
+  await user.click(btn)
 }
 
 /* ------------------------------------------------------------------ */
@@ -59,6 +139,8 @@ describe("NovaTarefaScreen", () => {
   beforeEach(() => {
     vi.stubGlobal("fetch", mockFetch)
     mockFetch.mockReset()
+    postResult = { ok: true, status: 200, body: { id: 42, status: "draft" } }
+    instalarMockFetch()
     user = userEvent.setup()
   })
 
@@ -97,7 +179,7 @@ describe("NovaTarefaScreen", () => {
   })
 
   it("envia POST para /api/tarefas ao criar e exibe sucesso", async () => {
-    mockOk({ id: 42, status: "draft" })
+    postResult = { ok: true, status: 200, body: { id: 42, status: "draft" } }
 
     render(
       <BibliotecaThemeProvider>
@@ -111,7 +193,7 @@ describe("NovaTarefaScreen", () => {
       titulo: "Minha tarefa",
       descricao: "Descricao testando aqui",
     })
-    await user.click(screen.getByTestId("btn-enviar"))
+    await clicarEnviar(user)
 
     await waitFor(() => {
       expect(mockFetch).toHaveBeenCalledWith(
@@ -123,7 +205,11 @@ describe("NovaTarefaScreen", () => {
         })
       )
 
-      const corpo = JSON.parse(mockFetch.mock.calls[0][1].body as string)
+      const chamadaPost = mockFetch.mock.calls.find(
+        (c) => String(c[0]) === "/api/tarefas",
+      )
+      expect(chamadaPost).toBeDefined()
+      const corpo = JSON.parse((chamadaPost![1] as { body: string }).body)
       expect(corpo.projetoId).toBe(640)
       expect(corpo.agenteId).toBe(1)
       expect(corpo.titulo).toBe("Minha tarefa")
@@ -137,7 +223,7 @@ describe("NovaTarefaScreen", () => {
   })
 
   it("exibe erro quando o endpoint interno retorna 404", async () => {
-    mockError(404, { message: "Endpoint não encontrado" })
+    postResult = { ok: false, status: 404, body: { message: "Endpoint não encontrado" } }
 
     render(
       <BibliotecaThemeProvider>
@@ -146,7 +232,7 @@ describe("NovaTarefaScreen", () => {
     )
 
     await preencherCampos(user, { projetoId: "640", agenteId: "1", titulo: "Tarefa de teste" })
-    await user.click(screen.getByTestId("btn-enviar"))
+    await clicarEnviar(user)
 
     await waitFor(() => {
       expect(screen.getByTestId("api-error")).toBeInTheDocument()
@@ -155,7 +241,7 @@ describe("NovaTarefaScreen", () => {
   })
 
   it("exibe erro genérico para outros códigos HTTP", async () => {
-    mockError(500, { message: "Erro interno" })
+    postResult = { ok: false, status: 500, body: { message: "Erro interno" } }
 
     render(
       <BibliotecaThemeProvider>
@@ -164,7 +250,7 @@ describe("NovaTarefaScreen", () => {
     )
 
     await preencherCampos(user, { projetoId: "640", agenteId: "1", titulo: "Tarefa de erro" })
-    await user.click(screen.getByTestId("btn-enviar"))
+    await clicarEnviar(user)
 
     await waitFor(() => {
       expect(screen.getByTestId("api-error")).toBeInTheDocument()
@@ -173,8 +259,6 @@ describe("NovaTarefaScreen", () => {
   })
 
   it("mantém botão desabilitado quando um campo obrigatório está vazio", async () => {
-    mockOk({})
-
     render(
       <BibliotecaThemeProvider>
         <NovaTarefaScreen />
@@ -187,7 +271,7 @@ describe("NovaTarefaScreen", () => {
   })
 
   it("limpa o formulário após sucesso", async () => {
-    mockOk({ id: 99 })
+    postResult = { ok: true, status: 200, body: { id: 99 } }
 
     render(
       <BibliotecaThemeProvider>
@@ -195,21 +279,22 @@ describe("NovaTarefaScreen", () => {
       </BibliotecaThemeProvider>,
     )
 
-    await preencherCampos(user, { projetoId: "640", agenteId: "1", titulo: "Tarefa para limpar" })
-    await user.click(screen.getByTestId("btn-enviar"))
+    await preencherCampos(user, { projetoId: "640", agenteId: "1", titulo: "Tarefa para limpar", descricao: "Desc" })
+    await clicarEnviar(user)
 
     await waitFor(() => {
       expect(screen.getByTestId("success-alert")).toBeInTheDocument()
     })
 
-    // Estado limpo → campos vazios → botão desabilitado de novo
-    expect(screen.getByTestId("input-titulo").querySelector("input")).toHaveValue("")
+    // Estado limpo → campos vazios → botão desabilitado de novo.
+    // `input-titulo` está DIRETAMENTE no `<input>` (inputProps do TextField).
+    expect(screen.getByTestId("input-titulo")).toHaveValue("")
     expect(screen.getByTestId("btn-enviar")).toBeDisabled()
   })
 
   it("mostra loading no botão durante envio", async () => {
-    // Promessa nunca resolve — o componente fica em "enviando"
-    mockFetch.mockReturnValue(new Promise(() => {}))
+    // Opções carregam; o POST nunca resolve — o componente fica em "enviando"
+    postResult = "pending"
 
     render(
       <BibliotecaThemeProvider>
@@ -222,7 +307,7 @@ describe("NovaTarefaScreen", () => {
     // Botão habilitado antes de clicar (nenhum erro de validação)
     expect(screen.getByTestId("btn-enviar")).not.toBeDisabled()
 
-    await user.click(screen.getByTestId("btn-enviar"))
+    await clicarEnviar(user)
 
     await waitFor(() => {
       const btn = screen.getByTestId("btn-enviar")

@@ -1,8 +1,8 @@
 {
   "version": "5",
   "dialect": "mysql",
-  "id": "b988a2c5-44fb-4079-bc5e-6e713f568d0a",
-  "prevId": "00000000-0000-0000-0000-000000000000",
+  "id": "eab0db1b-72bc-449d-8cf1-1427535d6c47",
+  "prevId": "157bae8f-d1de-4b21-be40-10f50f48aaca",
   "tables": {
     "agentes": {
       "name": "agentes",
@@ -514,13 +514,6 @@
         "briefing": {
           "name": "briefing",
           "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "tarefas_geradas": {
-          "name": "tarefas_geradas",
-          "type": "json",
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false

@@ -1,8 +1,8 @@
 {
   "version": "5",
   "dialect": "mysql",
-  "id": "b988a2c5-44fb-4079-bc5e-6e713f568d0a",
-  "prevId": "00000000-0000-0000-0000-000000000000",
+  "id": "157bae8f-d1de-4b21-be40-10f50f48aaca",
+  "prevId": "b988a2c5-44fb-4079-bc5e-6e713f568d0a",
   "tables": {
     "agentes": {
       "name": "agentes",
@@ -520,7 +520,7 @@
         },
         "tarefas_geradas": {
           "name": "tarefas_geradas",
-          "type": "json",
+          "type": "text",
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
