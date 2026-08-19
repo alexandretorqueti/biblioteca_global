@@ -7,6 +7,7 @@ import type { ReactNode } from "react"
 import type {
   CadastroDataSource,
   DynamicField,
+  DynamicFieldConfig,
   EntityRecord,
   ExecuteAction,
 } from "./types"
@@ -18,6 +19,27 @@ export interface GeradorSistemaChildScreen {
   childResource: string
   fkField: string
   label: string
+  dataSource: CadastroDataSource<EntityRecord>
+}
+
+/** Rota filha com contexto em runtime (navegação hierárquica). */
+export interface GeradorSistemaChildRoute {
+  id: string
+  label: string
+  icon?: ReactNode
+  targetResource: string
+  filterField: string
+  title?: string
+  fields?: DynamicField[]
+  hiddenColumns?: string[]
+  columns?: 1 | 2 | 3
+  newLabel?: string
+  actions?: CustomAction[]
+  /** Ações por linha (botões em cada registro da grid). */
+  rowActions?: CustomAction[]
+  /** Rotas filhas aninhadas (recursivo). */
+  childRoutes?: GeradorSistemaChildRoute[]
+  /** DataSource montado em runtime. */
   dataSource: CadastroDataSource<EntityRecord>
 }
 
@@ -36,8 +58,12 @@ export interface GeradorSistemaCadastroScreen<T extends EntityRecord = EntityRec
   children?: GeradorSistemaChildScreen[]
   /** Ações customizadas (botões com estado executando/sucesso/erro). */
   actions?: CustomAction[]
+  /** Ações por linha (botões em cada registro da grid). */
+  rowActions?: CustomAction[]
   /** Executa uma ação customizada (injetado pelo runtime; UI não fala HTTP). */
   executeAction?: ExecuteAction
+  /** Rotas filhas com contexto (navegação hierárquica). */
+  childRoutes?: GeradorSistemaChildRoute[]
 }
 
 export interface GeradorSistemaCustomScreen {
@@ -62,6 +88,15 @@ export interface GeradorSistemaExternalScreen {
   detailPathTemplate?: string
   /** Caminho dentro da resposta de detalhe para extrair o objeto de dados. Ex.: 'task'. */
   detailDataPath?: string
+  /** Colunas a ocultar na grid (lista e/ou detalhe). */
+  hiddenColumns?: string[]
+  /** Configuração de edição — quando presente, botões Editar aparecem nas linhas. */
+  edit?: {
+    method: "PUT" | "PATCH" | "POST"
+    pathTemplate: string
+    fields: DynamicFieldConfig[]
+    bodyPath?: string
+  }
 }
 
 export type GeradorSistemaScreen<T extends EntityRecord = EntityRecord> =
@@ -82,4 +117,12 @@ export interface GeradorSistemaGroup<T extends EntityRecord = EntityRecord> {
   id: string
   label: string
   items: GeradorSistemaRoute<T>[]
+}
+
+/** Contexto de navegação hierárquica (filtro aplicado). */
+export interface NavigationContext {
+  filterField: string
+  filterValue: string | number
+  parentLabel?: string
+  parentValue?: string | number
 }

@@ -9,10 +9,23 @@
  */
 import { useEffect, useMemo, useState } from "react"
 import { Alert, Box, Button, IconButton, Paper, Stack, Typography } from "@mui/material"
-import type { CustomAction, EntityRecord } from "../types"
+import type { CustomAction, DynamicFieldConfig, EntityRecord } from "../types"
 import type { JsonRecord } from "./JsonGrid"
 import JsonGrid from "./JsonGrid"
 import TaskChat from "./TaskChat"
+import DynamicForm from "./DynamicForm"
+
+/** Configuração de edição da tela externa. */
+export interface ExternalScreenEditConfig {
+  /** Método HTTP da requisição de edição (PUT/PATCH/POST). */
+  method: "PUT" | "PATCH" | "POST"
+  /** Template de caminho com placeholders :campo. */
+  pathTemplate: string
+  /** Config dos campos do formulário (deriva de DynamicFieldConfig). */
+  fields: DynamicFieldConfig[]
+  /** Caminho dentro da resposta para extrair o payload JSON; omitido → usa a resposta direta. */
+  bodyPath?: string
+}
 
 /** Props da tela externa (derivadas de ExternalScreenConfig + runtime). */
 interface ExternalScreenProps {
@@ -42,6 +55,10 @@ interface ExternalScreenProps {
   chat?: boolean
   /** Callback de navegação para abrir detalhe (injetado pelo runtime). */
   onNavigate?: (path: string) => void
+  /** Colunas a ocultar na grid (lista e/ou detalhe). */
+  hiddenColumns?: string[]
+  /** Configuração de edição — quando presente, botões Editar aparecem nas linhas. */
+  edit?: ExternalScreenEditConfig
 }
 
 export default function ExternalScreen({
@@ -57,6 +74,8 @@ export default function ExternalScreen({
   detailPathTemplate,
   detailDataPath,
   chat,
+  hiddenColumns,
+  edit,
 }: ExternalScreenProps) {
   const [rawData, setRawData] = useState<unknown | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -66,12 +85,17 @@ export default function ExternalScreen({
   const [acaoFeedback, setAcaoFeedback] = useState<
     Record<string, { type: "success" | "error"; message: string }>
   >({})
-  /** Estado de visualização: 'list' (grid) ou 'detail' (detalhe). */
-  const [viewMode, setViewMode] = useState<"list" | "detail">("list")
+  /** Estado de visualização: 'list' (grid), 'detail' (detalhe) ou 'edit' (formulário). */
+  const [viewMode, setViewMode] = useState<"list" | "detail" | "edit">("list")
   /** Dados do registro selecionado para exibição de detalhe. */
   const [selectedDetailData, setSelectedDetailData] = useState<unknown>(null)
   /** Erro da carga de detalhe (se houver). */
   const [detailError, setDetailError] = useState<string | null>(null)
+
+  /** Dados da linha selecionada para edição. */
+  const [editRowData, setEditRowData] = useState<Record<string, unknown> | null>(null)
+  /** Feedback de sucesso/erro do submit de edição. */
+  const [editFeedback, setEditFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null)
 
   // --- carregamento de dados (GET) ------------------------------------------
   useEffect(() => {
@@ -218,6 +242,85 @@ export default function ExternalScreen({
     setViewMode("list")
     setSelectedDetailData(null)
     setDetailError(null)
+    setEditRowData(null)
+  }
+
+  /** Callback: monta URL, envia PUT/PATCH com values e recarrega a grid. */
+  const salvarEdicao = async (values: Record<string, string | number | boolean>) => {
+    if (!edit || !editRowData) return
+
+    // Montar URL: baseUrl + pathTemplate interpolado com o id da linha.
+    let url = (baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl)
+    if (!url.endsWith("/") && !edit.pathTemplate.startsWith("/")) {
+      url += "/"
+    }
+    let interpolatedUrl = edit.pathTemplate.startsWith("/")
+      ? baseUrl.slice(0, -1) + edit.pathTemplate
+      : url + edit.pathTemplate
+    // Interpolar placeholders do template com os dados da linha (não com params da lista).
+    for (const [chave, valor] of Object.entries(editRowData)) {
+      if (!String(valor).startsWith("http")) {
+        interpolatedUrl = interpolatedUrl.replace(`:${chave}`, String(valor))
+      }
+    }
+    url = interpolatedUrl
+
+    // Montar body: se bodyPath existe, { [bodyPath]: values }, senão values direto.
+    const bodyValue = edit.bodyPath ? { [edit.bodyPath]: values } : values
+    const payload = JSON.stringify(bodyValue)
+
+    setEditFeedback({ type: "success", message: "Salvando..." })
+
+    try {
+      const headers: Record<string, string> = { "Content-Type": "application/json" }
+      if (bearerToken) headers["Authorization"] = `Bearer ${bearerToken}`
+
+      const resposta = await fetch(url, {
+        method: edit.method,
+        headers,
+        body: payload,
+      })
+
+      if (!resposta.ok) {
+        let detalhe: string
+        try {
+          const corpo = await resposta.json()
+          detalhe =
+            typeof corpo === "object" && corpo !== null && "message" in corpo
+              ? String((corpo as { message?: string }).message)
+              : `HTTP ${resposta.status}`
+        } catch {
+          detalhe = `HTTP ${resposta.status}`
+        }
+        throw new Error(detalhe)
+      }
+
+      // Sucesso: voltar à lista e recarregar grid.
+      setEditFeedback({ type: "success", message: "Registro salvo com sucesso." })
+      void recarregarDados()
+      setTimeout(() => {
+        voltarLista()
+      }, 1200)
+    } catch (erro: unknown) {
+      setEditFeedback({
+        type: "error",
+        message: erro instanceof Error ? erro.message : "Erro ao salvar o registro.",
+      })
+    }
+  }
+
+  /** Callback: abre viewMode 'edit' preenchido com os valores da linha. */
+  const abrirEdicao = (row: EntityRecord) => {
+    setViewMode("edit")
+    setEditRowData(toPlainObject(row))
+    setEditFeedback(null)
+  }
+
+  /** Callback: volta à lista sem refetch. */
+  const cancelarEdicao = () => {
+    setViewMode("list")
+    setEditRowData(null)
+    setEditFeedback(null)
   }
 
   // --- converter dados → JsonGrid -------------------------------------------
@@ -412,7 +515,12 @@ export default function ExternalScreen({
           <Typography color="text.secondary">Voltar à lista</Typography>
         </Box>
         {detailRows.length > 0 ? (
-          <JsonGrid data={detailRows} getRowId={(row) => String(row._idx)} emptyMessage="Detalhe vazio." />
+          <JsonGrid
+            data={detailRows}
+            getRowId={(row) => String(row._idx)}
+            emptyMessage="Detalhe vazio."
+            hiddenColumns={hiddenColumns}
+          />
         ) : (
           <Paper sx={{ p: 3 }}>
             <Typography color="text.secondary">Sem dados para exibir no detalhe.</Typography>
@@ -423,6 +531,54 @@ export default function ExternalScreen({
             <TaskChat baseUrl="" taskId={String((selectedDetailData as Record<string, unknown>).id ?? "")} />
           </Box>
         ) : null}
+      </Stack>
+    )
+  }
+
+  // Modo edit — renderiza formulário preenchido com os dados da linha
+  if (viewMode === "edit" && edit && editRowData) {
+    const initialValues: Record<string, string | number | boolean> = {}
+    for (const field of edit.fields) {
+      const valor = editRowData[field.name]
+      if (valor !== undefined && valor !== null) {
+        // Converter para tipo compatível com DynamicFormValues
+        if (typeof valor === "boolean") {
+          initialValues[field.name] = valor
+        } else if (typeof valor === "number") {
+          initialValues[field.name] = valor
+        } else {
+          // string ou objeto/array → JSON stringificado
+          initialValues[field.name] = typeof valor === "object" ? JSON.stringify(valor) : String(valor)
+        }
+      } else {
+        initialValues[field.name] = field.defaultValue ?? ""
+      }
+    }
+
+    return (
+      <Stack spacing={2}>
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+          <IconButton onClick={cancelarEdicao} size="small" aria-label="Cancelar e voltar à lista">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M19 12H5M12 19l-7-7 7-7" />
+            </svg>
+          </IconButton>
+          <Typography color="text.secondary">Cancelar e voltar à lista</Typography>
+        </Box>
+        {editFeedback && (
+          <Alert severity={editFeedback.type} sx={{ py: 0 }}>
+            {editFeedback.message}
+          </Alert>
+        )}
+        <DynamicForm
+          fields={edit.fields}
+          title="Editar registro"
+          submitLabel="Salvar"
+          cancelLabel="Cancelar"
+          initialValues={initialValues}
+          onSubmit={salvarEdicao}
+          onCancel={cancelarEdicao}
+        />
       </Stack>
     )
   }
@@ -476,6 +632,9 @@ export default function ExternalScreen({
         emptyMessage="Nenhum registro externo encontrado."
         clickable={hasDetailSupport}
         onRowClick={hasDetailSupport ? (row: JsonRecord) => carregarDetalhe(row as EntityRecord) : undefined}
+        onEdit={edit ? abrirEdicao : undefined}
+        onDelete={undefined}
+        hiddenColumns={hiddenColumns}
       />
     </Stack>
   )

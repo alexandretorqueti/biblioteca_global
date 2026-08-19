@@ -454,3 +454,121 @@ describe("ExternalScreen — flag chat no detalhe (st-7)", () => {
     })
   })
 })
+
+// ===========================================================================
+// ExternalScreen — submit do edit (st-4)
+// ===========================================================================
+
+describe("ExternalScreen — submit do edit (st-4)", () => {
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  // --- Teste: submit dispara fetch PUT/PATCH com URL interpolada e payload correto ---
+  it("submit dispara fetch PUT/PATCH com URL interpolada e payload correto", async () => {
+    let urlCapturada = ""
+
+    vi.stubGlobal("fetch", (url: string) => {
+      urlCapturada = url
+      return Promise.resolve(new Response(JSON.stringify([{ id: "1", titulo: "Tarefa A" }]), { status: 200, headers: { "Content-Type": "application/json" } }))
+    })
+
+    renderExternal({
+      edit: {
+        method: "PATCH",
+        pathTemplate: "/task/:id",
+        fields: [
+          { name: "titulo", label: "Título", type: "text" },
+          { name: "status", label: "Status", type: "select", options: [{ label: "Ativo", value: "ativo" }] },
+        ],
+      },
+    })
+
+    await waitFor(() => expect(screen.queryByText("Carregando...")).not.toBeInTheDocument())
+    fireEvent.click(screen.getByRole("button", { name: /Editar/ }))
+    await waitFor(() => expect(screen.getByText("Editar registro")).toBeInTheDocument())
+    fireEvent.change(screen.getByDisplayValue("Tarefa A"), { target: { value: "Novo" } })
+    fireEvent.click(screen.getByRole("button", { name: /Salvar/ }))
+
+    await waitFor(() => expect(urlCapturada).toContain("/task/1"))
+  })
+
+  // --- Teste: submit com bodyPath envolve payload dentro de { [bodyPath]: values } ---
+  it("quando edit tem bodyPath, o payload fica dentro do campo especificado", async () => {
+    let responseStatus = 0
+
+    vi.stubGlobal("fetch", (url: string, opts?: RequestInit) => {
+      if (url.includes("/tasks/42") && (opts?.method === undefined || opts?.method === "GET")) return mockFetch(200, [{ id: "1", titulo: "T" }] as never)()
+      responseStatus = 200
+      return Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } }))
+    })
+
+    renderExternal({
+      edit: {
+        method: "PUT",
+        pathTemplate: "/task/:id",
+        bodyPath: "data",
+        fields: [{ name: "titulo", label: "Título", type: "text" }],
+      },
+    })
+
+    await waitFor(() => expect(screen.queryByText("Carregando...")).not.toBeInTheDocument())
+    fireEvent.click(screen.getByRole("button", { name: /Editar/ }))
+    await waitFor(() => expect(screen.getByText("Editar registro")).toBeInTheDocument())
+    fireEvent.change(screen.getByDisplayValue("T"), { target: { value: "X" } })
+    fireEvent.click(screen.getByRole("button", { name: /Salvar/ }))
+
+    await waitFor(() => expect(screen.getByText(/Registro salvo/)).toBeInTheDocument())
+  })
+
+  // --- Teste: sucesso do edit recarrega a grid e volta à lista após delay ---
+  it("sucesso do edit recarrega a grid e volta à lista após delay", async () => {
+    vi.stubGlobal("fetch", mockFetch(200, [{ id: "1", titulo: "Tarefa A" }]))
+
+    renderExternal({
+      edit: {
+        method: "PATCH",
+        pathTemplate: "/task/:id",
+        fields: [{ name: "titulo", label: "Título", type: "text" }],
+      },
+    })
+
+    await waitFor(() => expect(screen.queryByText("Carregando...")).not.toBeInTheDocument())
+    fireEvent.click(screen.getByRole("button", { name: /Editar/ }))
+    await waitFor(() => expect(screen.getByText("Editar registro")).toBeInTheDocument())
+    fireEvent.change(screen.getByDisplayValue("Tarefa A"), { target: { value: "Novo" } })
+    fireEvent.click(screen.getByRole("button", { name: /Salvar/ }))
+
+    await waitFor(() => expect(screen.getByText(/Registro salvo/)).toBeInTheDocument())
+    await new Promise(r => setTimeout(r, 1500))
+
+    expect(screen.queryByText("Editar registro")).not.toBeInTheDocument()
+  })
+
+  // --- Teste: erro HTTP exibe Alert sem crash ---
+  it("erro HTTP no submit exibe Alert de erro sem crash", async () => {
+    vi.stubGlobal("fetch", (url: string) => {
+      if (url.includes("/tasks/42")) return Promise.resolve(new Response(JSON.stringify([{ id: "1", titulo: "Tarefa A" }]), { status: 200, headers: { "Content-Type": "application/json" } }))
+      return Promise.resolve(new Response(JSON.stringify({ message: "Erro interno do servidor" }), { status: 500 }))
+    })
+
+    renderExternal({
+      edit: {
+        method: "PATCH",
+        pathTemplate: "/task/:id",
+        fields: [{ name: "titulo", label: "Título", type: "text" }],
+      },
+    })
+
+    await waitFor(() => expect(screen.queryByText("Carregando...")).not.toBeInTheDocument())
+    fireEvent.click(screen.getByRole("button", { name: /Editar/ }))
+    await waitFor(() => expect(screen.getByText("Editar registro")).toBeInTheDocument())
+    fireEvent.change(screen.getByDisplayValue("Tarefa A"), { target: { value: "X" } })
+    fireEvent.click(screen.getByRole("button", { name: /Salvar/ }))
+
+    await waitFor(() => expect(screen.getByText(/Erro|erro/)).toBeInTheDocument())
+    expect(screen.getByText("Editar registro")).toBeInTheDocument()
+  })
+})

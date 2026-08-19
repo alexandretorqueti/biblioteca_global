@@ -32,6 +32,7 @@ import JsonGrid, {
   type JsonGridColumnConfig,
   type JsonRecord,
 } from "./JsonGrid"
+import type { GeradorSistemaChildRoute } from "../gerador-screens"
 
 interface CadastroProps<T extends EntityRecord> {
   dataSource: CadastroDataSource<T>
@@ -52,8 +53,16 @@ interface CadastroProps<T extends EntityRecord> {
   }>
   /** Ações customizadas (botões com estado executando/sucesso/erro). */
   actions?: CustomAction[]
+  /** Ações por linha (botões em cada registro da grid). */
+  rowActions?: CustomAction[]
   /** Executa uma ação customizada (injetado pelo runtime; UI não fala HTTP). */
-  executeAction?: (action: CustomAction) => Promise<{ message: string }>
+  executeAction?: (action: CustomAction, context?: { row?: EntityRecord }) => Promise<{ message: string }>
+  /** Rotas filhas com contexto (navegação hierárquica). */
+  childRoutes?: GeradorSistemaChildRoute[]
+  /** Callback quando usuário clica em botão de rota filha. */
+  onChildRouteClick?: (route: GeradorSistemaChildRoute, parentRow: EntityRecord) => void
+  /** Filtros aplicados ao carregar dados (para navegação hierárquica). */
+  filters?: Record<string, string | number | boolean>
 }
 
 export default function Cadastro<T extends EntityRecord>({
@@ -68,7 +77,11 @@ export default function Cadastro<T extends EntityRecord>({
   description = "Inclusão, edição, listagem e exclusão por funções injetadas.",
   children: childScreens = [],
   actions = [],
+  rowActions = [],
   executeAction,
+  childRoutes = [],
+  onChildRouteClick,
+  filters,
 }: CadastroProps<T>) {
   const [rows, setRows] = useState<T[]>([])
   const [selectedRow, setSelectedRow] = useState<T | null>(null)
@@ -96,11 +109,54 @@ export default function Cadastro<T extends EntityRecord>({
   // Filhos sendo carregados (por chave) para exibir loading.
   const [carregandoFilhosChave, setCarregandoFilhosChave] = useState<string | null>(null)
 
+  // Cache para resolução de FKs (multipleChoice na grid)
+  const [fkCache, setFkCache] = useState<Record<string, Map<string, string>>>({})
+
+  const resolveFks = useCallback(async (rows: T[]): Promise<T[]> => {
+    // Identificar campos multipleChoice que são FKs
+    const fkFields = fields.filter(
+      (f) => f.type === "multipleChoice" && f.multipleChoice?.resource && f.multipleChoice?.loadOptions
+    )
+    if (fkFields.length === 0) return rows
+
+    // Resolver cada FK
+    const resolvedRows = rows.map((row) => ({ ...row })) as T[]
+    for (const field of fkFields) {
+      const { resource, idField, displayField, loadOptions } = field.multipleChoice!
+      if (!loadOptions) continue
+
+      const cacheKey = `${resource}_${idField}_${displayField}`
+
+      let cache = fkCache[cacheKey]
+      if (!cache) {
+        // Carregar opções da resource
+        const options = await loadOptions("")
+        cache = new Map(options.map((o) => [String(o[idField as keyof typeof o]), String(o[displayField as keyof typeof o] ?? "")]))
+        setFkCache((prev) => ({ ...prev, [cacheKey]: cache as Map<string, string> }))
+      }
+
+      // Mapear IDs para labels
+      for (const row of resolvedRows) {
+        const fkValue = row[field.name]
+        if (fkValue !== null && fkValue !== undefined) {
+          const label = cache.get(String(fkValue))
+          if (label) {
+            // @ts-ignore - T é EntityRecord, podemos modificar
+            row[field.name] = label as any
+          }
+        }
+      }
+    }
+    return resolvedRows
+  }, [fields, fkCache])
+
   const loadRows = useCallback(async () => {
     setLoading(true)
 
     try {
-      setRows(await dataSource.list())
+      const rows = await dataSource.list(filters ? { filters } : undefined)
+      const resolvedRows = await resolveFks(rows)
+      setRows(resolvedRows)
     } catch (loadError) {
       setFeedback({
         type: "error",
@@ -112,7 +168,7 @@ export default function Cadastro<T extends EntityRecord>({
     } finally {
       setLoading(false)
     }
-  }, [dataSource])
+  }, [dataSource, filters, resolveFks])
 
   useEffect(() => {
     void loadRows()
@@ -142,7 +198,7 @@ export default function Cadastro<T extends EntityRecord>({
     setFeedback(null)
 
     try {
-      const payload: FieldValues = { ...values }
+      const payload: FieldValues = { ...values, ...filters }
       for (const field of fields) {
         if (field.type === "json" && typeof payload[field.name] === "string") {
           const raw = payload[field.name] as string
@@ -216,7 +272,7 @@ export default function Cadastro<T extends EntityRecord>({
   }
 
   // Executa uma ação customizada com feedback de estado.
-  const executarAcao = async (action: CustomAction) => {
+  const executarAcao = async (action: CustomAction, row?: EntityRecord) => {
     if (!executeAction) return
 
     setExecutandoAcao(action.id)
@@ -227,7 +283,7 @@ export default function Cadastro<T extends EntityRecord>({
     })
 
     try {
-      const resultado = await executeAction(action)
+      const resultado = await executeAction(action, row ? { row } : undefined)
       setAcaoFeedback((prev) => ({
         ...prev,
         [action.id]: {
@@ -236,6 +292,10 @@ export default function Cadastro<T extends EntityRecord>({
             resultado.message || `Ação "${action.label}" executada com sucesso.`,
         },
       }))
+      // Recarregar dados após executar ação por linha
+      if (row) {
+        await loadRows()
+      }
     } catch (acaoError) {
       setAcaoFeedback((prev) => ({
         ...prev,
@@ -389,6 +449,12 @@ export default function Cadastro<T extends EntityRecord>({
         getRowId={(row) => dataSource.getRowId(row as unknown as T)}
         onEdit={(row) => openEdit(row as unknown as T)}
         onDelete={(row) => setDeleteTarget(row as unknown as T)}
+        childRoutes={childRoutes}
+        onChildRouteClick={onChildRouteClick}
+        rowActions={rowActions}
+        onRowAction={(action, row) => void executarAcao(action, row)}
+        executandoAcao={executandoAcao}
+        acaoFeedback={acaoFeedback}
       />
 
       <Dialog

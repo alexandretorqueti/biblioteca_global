@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react"
 import {
+  Alert,
   Box,
   Button,
   Chip,
@@ -23,12 +24,15 @@ import {
   DeleteRounded,
   EditRounded,
   SearchRounded,
+  ArrowForwardRounded,
 } from "@mui/icons-material"
 import FieldGridData, {
   type GridDateFormat,
 } from "./fields/FieldGridData"
 import FieldGridText from "./fields/FieldGridText"
 import FieldGridMoney from "./fields/FieldGridMoney"
+import type { GeradorSistemaChildRoute } from "../gerador-screens"
+import type { CustomAction, EntityRecord } from "../types"
 
 type JsonValue = string | number | boolean | null | object | undefined
 type SortDirection = "asc" | "desc"
@@ -74,6 +78,18 @@ interface JsonGridProps<T extends JsonRecord = JsonRecord> {
   clickable?: boolean
   /** Callback chamado ao clicar numa linha (apenas quando clickable=true). */
   onRowClick?: (row: T) => void
+  /** Rotas filhas com contexto (navegação hierárquica). */
+  childRoutes?: GeradorSistemaChildRoute[]
+  /** Callback quando usuário clica em botão de rota filha. */
+  onChildRouteClick?: (route: GeradorSistemaChildRoute, parentRow: T) => void
+  /** Ações por linha (botões em cada registro da grid). */
+  rowActions?: CustomAction[]
+  /** Callback quando usuário clica em botão de ação por linha. */
+  onRowAction?: (action: CustomAction, row: EntityRecord) => void
+  /** ID da ação em execução (para desabilitar botões). */
+  executandoAcao?: string | null
+  /** Feedback por ação (success/error). */
+  acaoFeedback?: Record<string, { type: "success" | "error"; message: string }>
 }
 
 const formatHeader = (key: string) =>
@@ -148,6 +164,7 @@ const renderValue = (
     return null
   }
 
+
   if (config?.type === "boolean" || typeof value === "boolean") {
     return (
       <Chip
@@ -212,6 +229,12 @@ export default function JsonGrid<T extends JsonRecord>({
   showJsonColumns = false,
   clickable = false,
   onRowClick,
+  childRoutes = [],
+  onChildRouteClick,
+  rowActions = [],
+  onRowAction,
+  executandoAcao,
+  acaoFeedback = {},
 }: JsonGridProps<T>) {
   const theme = useTheme()
   // Cabeçalho derivado do tema: claro → grey.100, escuro → grey.900.
@@ -284,7 +307,7 @@ export default function JsonGrid<T extends JsonRecord>({
     ? sortedRows.slice(page * pageSize, page * pageSize + pageSize)
     : sortedRows
 
-  const hasActions = Boolean(onEdit || onDelete)
+  const hasActions = Boolean(onEdit || onDelete || childRoutes.length > 0 || rowActions.length > 0)
 
   const handleSort = (column: string) => {
     if (!sortable || columnConfig[column]?.sortable === false) {
@@ -466,7 +489,53 @@ export default function JsonGrid<T extends JsonRecord>({
                           direction="row"
                           spacing={1}
                           justifyContent="flex-end"
+                          flexWrap="wrap"
+                          useFlexGap
                         >
+                          {/* Botões de rotas filhas */}
+                          {childRoutes.map((route) => (
+                            <Button
+                              key={route.id}
+                              size="small"
+                              variant="contained"
+                              color="primary"
+                              startIcon={<ArrowForwardRounded />}
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                onChildRouteClick?.(route, row)
+                              }}
+                            >
+                              {route.label}
+                            </Button>
+                          ))}
+
+                          {/* Botões de ações por linha */}
+                          {rowActions.map((action) => {
+                            const estado = acaoFeedback[action.id]
+                            const executando = executandoAcao === action.id
+                            return (
+                              <Stack key={action.id} spacing={0.5} alignItems="flex-end">
+                                <Button
+                                  size="small"
+                                  variant="outlined"
+                                  color="secondary"
+                                  disabled={executandoAcao !== null || !onRowAction}
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    onRowAction?.(action, row as EntityRecord)
+                                  }}
+                                >
+                                  {executando ? `${action.label}...` : action.label}
+                                </Button>
+                                {estado && (
+                                  <Alert severity={estado.type} sx={{ py: 0, px: 1, fontSize: 11 }}>
+                                    {estado.message}
+                                  </Alert>
+                                )}
+                              </Stack>
+                            )
+                          })}
+
                           {onEdit && (
                             <Button
                               size="small"

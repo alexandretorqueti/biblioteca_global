@@ -8,13 +8,17 @@ import {
   Typography,
   useMediaQuery,
   useTheme,
+  Breadcrumbs,
+  Link,
 } from "@mui/material"
+import { NavigateNextRounded, HomeRounded } from "@mui/icons-material"
 import type {
   CadastroDataSource,
   CadastroScreenConfig,
   CustomAction,
   ExternalScreenConfig,
   GeradorSistemaConfig,
+  ChildRoute,
 } from "@biblioteca-global/shared"
 import type { EntityRecord } from "@biblioteca-global/shared"
 import Cadastro from "./Cadastro"
@@ -24,6 +28,7 @@ import SistemaMenu from "./SistemaMenu"
 import type {
   GeradorSistemaCadastroScreen,
   GeradorSistemaGroup,
+  GeradorSistemaChildRoute,
 } from "../gerador-screens"
 import type { DynamicField, ExecuteAction, GeradorSistemaRuntime } from "../types"
 import { getSistemaBreadcrumb } from "../utils/system"
@@ -63,6 +68,13 @@ interface MontadaExternalScreen {
   executeAction?: ExecuteAction
   detailPathTemplate?: string
   detailDataPath?: string
+  hiddenColumns?: string[]
+  edit?: {
+    method: "PUT" | "PATCH" | "POST"
+    pathTemplate: string
+    fields: import("../types").DynamicFieldConfig[]
+    bodyPath?: string
+  }
 }
 
 /** Props injetadas na tela externa via runtime. */
@@ -71,6 +83,50 @@ export interface ExternalScreenRuntime {
   params?: Record<string, string | number>
   /** Token Bearer opcional. */
   bearerToken?: string
+}
+
+/** Nível na pilha de navegação hierárquica. */
+interface NavigationLevel {
+  label: string
+  resource: string
+  filterField?: string
+  filterValue?: string | number
+  parentLabel?: string
+  parentValue?: string | number
+  childRoutes?: GeradorSistemaChildRoute[]
+  fields?: DynamicField[]
+  hiddenColumns?: string[]
+  columns?: 1 | 2 | 3
+  newLabel?: string
+  actions?: CustomAction[]
+  rowActions?: CustomAction[]
+}
+
+function montarChildRoutes(
+  routes: ChildRoute[] | undefined,
+  runtime: Partial<GeradorSistemaRuntime>,
+): GeradorSistemaChildRoute[] | undefined {
+  if (!routes || routes.length === 0) return undefined
+  
+  const getDataSource = runtime.getDataSource
+  if (!getDataSource) return undefined
+
+  return routes.map((route) => ({
+    id: route.id,
+    label: route.label,
+    icon: route.icon ? (runtime.resolveIcon?.(route.icon) ?? resolveIcon(route.icon)) : undefined,
+    targetResource: route.targetResource,
+    filterField: route.filterField,
+    title: route.title,
+    fields: route.fields as DynamicField[] | undefined,
+    hiddenColumns: route.overrides?.hiddenColumns,
+    columns: route.overrides?.columns,
+    newLabel: route.overrides?.newLabel,
+    actions: route.actions,
+    rowActions: route.rowActions,
+    childRoutes: montarChildRoutes(route.childRoutes, runtime),
+    dataSource: getDataSource(route.targetResource),
+  }))
 }
 
 function montarTelaCadastro(
@@ -110,6 +166,9 @@ function montarTelaCadastro(
     }),
   )
 
+  // Montar childRoutes para navegação hierárquica.
+  const childRoutes = montarChildRoutes(screen.childRoutes, runtime)
+
   return {
     kind: "cadastro",
     dataSource: getDataSource(screen.resource),
@@ -121,7 +180,9 @@ function montarTelaCadastro(
     newLabel: screen.overrides?.newLabel,
     children: childrenDataSource.length > 0 ? childrenDataSource : undefined,
     actions: screen.actions,
+    rowActions: screen.rowActions,
     executeAction: runtime.executeAction,
+    childRoutes,
   }
 }
 
@@ -160,6 +221,10 @@ function montarGroups(
                 executeAction: runtime.executeAction,
                 detailPathTemplate: (item.screen as ExternalScreenConfig).detailPathTemplate,
                 detailDataPath: (item.screen as ExternalScreenConfig).detailDataPath,
+                hiddenColumns: (item.screen as ExternalScreenConfig).hiddenColumns,
+                edit: ((item.screen as ExternalScreenConfig).edit
+                  ? { ...((item.screen as ExternalScreenConfig).edit as any) }
+                  : undefined) as MontadaExternalScreen["edit"],
               }
 
       return { ...item, icon, screen } as any
@@ -199,12 +264,48 @@ export default function GeradorSistema({
   const drawerWidth = config.drawerWidth ?? defaultDrawerWidth
   const groups = montarGroups(config, runtime)
 
+  // Pilha de navegação hierárquica
+  const [navigationStack, setNavigationStack] = useState<NavigationLevel[]>([])
+
   const navigate = (path: string) => {
     if (activePath === undefined) {
       setUncontrolledPath(path)
     }
     onRouteChange?.(path)
     setMobileMenuOpen(false)
+    // Limpar pilha de navegação ao mudar de rota principal
+    setNavigationStack([])
+  }
+
+  const handleChildRouteClick = (route: GeradorSistemaChildRoute, parentRow: EntityRecord) => {
+    // O valor do filtro é o ID do registro pai (não o filterField do pai)
+    // filterField é o campo na tabela FILHA que referencia o pai
+    const filterValue = parentRow.id
+    if (filterValue === undefined || filterValue === null) return
+
+    const newLevel: NavigationLevel = {
+      label: route.title ?? route.label,
+      resource: route.targetResource,
+      filterField: route.filterField,
+      filterValue: filterValue as string | number,
+      parentLabel: navigationStack.length > 0 
+        ? navigationStack[navigationStack.length - 1]?.label 
+        : breadcrumbs[breadcrumbs.length - 1]?.label,
+      parentValue: filterValue as string | number,
+      childRoutes: route.childRoutes,
+      fields: route.fields,
+      hiddenColumns: route.hiddenColumns,
+      columns: route.columns,
+      newLabel: route.newLabel,
+      actions: route.actions,
+      rowActions: route.rowActions,
+    }
+
+    setNavigationStack([...navigationStack, newLevel])
+  }
+
+  const navigateBack = (level: number) => {
+    setNavigationStack(navigationStack.slice(0, level))
   }
 
   const logo = config.app.logo
@@ -225,6 +326,133 @@ export default function GeradorSistema({
   const currentScreen = groups
     .flatMap((group) => group.items)
     .find((item) => item.path === currentPath)?.screen
+
+  // Se há navegação hierárquica ativa, renderizar tela filha
+  if (navigationStack.length > 0) {
+    const currentLevel = navigationStack[navigationStack.length - 1]!
+    const dataSource = runtime.getDataSource?.(currentLevel.resource)
+    
+    if (!dataSource) {
+      return (
+        <Box sx={{ p: 4 }}>
+          <Typography color="error">
+            Resource "{currentLevel.resource}" não encontrado.
+          </Typography>
+        </Box>
+      )
+    }
+
+    // Montar fields com loadOptions se necessário
+    const fields: DynamicField[] = (currentLevel.fields ?? []).map((field) => {
+      const runtimeField: DynamicField = { ...field }
+      if (field.multipleChoice?.resource && runtime.getLoadOptions) {
+        runtimeField.multipleChoice = {
+          ...field.multipleChoice,
+          loadOptions: runtime.getLoadOptions(field.multipleChoice.resource),
+        }
+      }
+      return runtimeField
+    })
+
+    return (
+      <Box sx={{ display: "flex", minHeight: "100vh" }}>
+        <SistemaBarraSuperior
+          appName={config.app.name}
+          breadcrumbs={breadcrumbs}
+          desktop={desktop}
+          drawerWidth={drawerWidth}
+          actions={actions}
+          onOpenMenu={() => setMobileMenuOpen(true)}
+        />
+
+        <Box
+          component="nav"
+          aria-label="Navegação principal"
+          sx={{ width: { md: drawerWidth }, flexShrink: 0 }}
+        >
+          <Drawer
+            variant={desktop ? "permanent" : "temporary"}
+            open={desktop || mobileMenuOpen}
+            onClose={() => setMobileMenuOpen(false)}
+            ModalProps={{ keepMounted: true }}
+            sx={{
+              "& .MuiDrawer-paper": {
+                width: drawerWidth,
+                boxSizing: "border-box",
+                borderRightColor: "divider",
+              },
+            }}
+          >
+            <SistemaMenu
+              groups={groups}
+              activePath={currentPath}
+              header={menuHeader}
+              onNavigate={navigate}
+            />
+          </Drawer>
+        </Box>
+
+        <Box component="main" sx={{ flexGrow: 1, minWidth: 0 }}>
+          <Toolbar />
+          <Container maxWidth="xl" sx={{ py: { xs: 3, md: 5 } }}>
+            {/* Breadcrumb de navegação hierárquica */}
+            <Breadcrumbs separator={<NavigateNextRounded fontSize="small" />} sx={{ mb: 2 }}>
+              <Link
+                component="button"
+                underline="hover"
+                color="inherit"
+                onClick={() => navigate(currentPath)}
+                sx={{ display: "flex", alignItems: "center" }}
+              >
+                <HomeRounded sx={{ mr: 0.5 }} fontSize="inherit" />
+                {config.app.name}
+              </Link>
+              {navigationStack.map((level, idx) => {
+                const isLast = idx === navigationStack.length - 1
+                return isLast ? (
+                  <Typography key={idx} color="text.primary" fontWeight={600}>
+                    {level.label}
+                    {level.parentValue !== undefined && (
+                      <Typography component="span" color="text.secondary" fontWeight={400}>
+                        {" "}(#{level.parentValue})
+                      </Typography>
+                    )}
+                  </Typography>
+                ) : (
+                  <Link
+                    key={idx}
+                    component="button"
+                    underline="hover"
+                    color="inherit"
+                    onClick={() => navigateBack(idx)}
+                  >
+                    {level.label}
+                    {level.parentValue !== undefined && ` (#${level.parentValue})`}
+                  </Link>
+                )
+              })}
+            </Breadcrumbs>
+
+            <Cadastro
+              dataSource={dataSource}
+              title={currentLevel.label}
+              fields={fields}
+              hiddenColumns={currentLevel.hiddenColumns}
+              columns={currentLevel.columns}
+              newLabel={currentLevel.newLabel}
+              description={`Registros filtrados por ${currentLevel.filterField} = ${currentLevel.filterValue}`}
+              actions={currentLevel.actions}
+              rowActions={currentLevel.rowActions}
+              executeAction={runtime.executeAction}
+              childRoutes={currentLevel.childRoutes}
+              onChildRouteClick={handleChildRouteClick}
+              filters={currentLevel.filterField && currentLevel.filterValue !== undefined ? { [currentLevel.filterField]: currentLevel.filterValue } : undefined}
+            />
+          </Container>
+        </Box>
+      </Box>
+    )
+  }
 
   return (
     <Box sx={{ display: "flex", minHeight: "100vh" }}>
@@ -283,7 +511,10 @@ export default function GeradorSistema({
                   description={currentScreen.description}
                   children={currentScreen.children}
                   actions={currentScreen.actions}
+                  rowActions={currentScreen.rowActions}
                   executeAction={currentScreen.executeAction}
+                  childRoutes={currentScreen.childRoutes}
+                  onChildRouteClick={handleChildRouteClick}
                 />
               )
             }
@@ -304,6 +535,8 @@ export default function GeradorSistema({
                   executeAction={currentScreen.executeAction}
                   detailPathTemplate={currentScreen.detailPathTemplate}
                   detailDataPath={currentScreen.detailDataPath}
+                  hiddenColumns={currentScreen.hiddenColumns}
+                  edit={currentScreen.edit}
                   onNavigate={(runtime as any).navigate ?? undefined}
                 />
               )
