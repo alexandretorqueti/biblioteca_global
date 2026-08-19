@@ -44,7 +44,7 @@ const colunasInvalidas = (
     symbol,
     Record<string, { columnType: string; dataType: string }>
   >
-)[Symbol.for("drizzle:Columns")]
+)[Symbol.for("drizzle:Columns")]!
 colunasInvalidas.campoEstranho = {
   ...colunasInvalidas.campoEstranho,
   columnType: "MySqlTipoFuturo",
