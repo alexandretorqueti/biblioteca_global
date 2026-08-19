@@ -32,6 +32,25 @@ const pedidos = mysqlTable("pedidos", {
   metadata: json("metadata"),
 })
 
+// Tabela com coluna de tipo NÃO suportado (2026-08-19): com o suporte a `json`
+// no derivarTipo, `pedidos` não lança mais TipoNaoSuportadoError. A garantia de
+// "erro claro" é exercitada com um tipo sintético desconhecido (columnType /
+// dataType fora dos fallbacks do drizzle), simulando um tipo futuro.
+const tabelaComTipoInvalido = mysqlTable("tabela_invalida", {
+  campoEstranho: varchar("campo_estranho", { length: 10 }),
+})
+const colunasInvalidas = (
+  tabelaComTipoInvalido as unknown as Record<
+    symbol,
+    Record<string, { columnType: string; dataType: string }>
+  >
+)[Symbol.for("drizzle:Columns")]
+colunasInvalidas.campoEstranho = {
+  ...colunasInvalidas.campoEstranho,
+  columnType: "MySqlTipoFuturo",
+  dataType: "tipo_desconhecido",
+}
+
 const anotacoes: FormAnnotationsPorTabela = {
   pedidos: {
     cliente: { label: "Cliente", fullWidth: true, maxLength: 120 },
@@ -84,12 +103,12 @@ describe("gerarFields", () => {
   })
 
   it("tipo não suportado → erro claro", () => {
-    expect(() => gerarFields(pedidos, "pedidos", {})).toThrow(
-      TipoNaoSuportadoError,
-    )
-    expect(() => gerarFields(pedidos, "pedidos", {})).toThrow(
-      /metadata.*pedidos/,
-    )
+    expect(() =>
+      gerarFields(tabelaComTipoInvalido, "tabela_invalida", {}),
+    ).toThrow(TipoNaoSuportadoError)
+    expect(() =>
+      gerarFields(tabelaComTipoInvalido, "tabela_invalida", {}),
+    ).toThrow(/campo_estranho.*tabela_invalida/)
   })
 
   it("tipo não suportado com annotation de tipo → gera o field", () => {
