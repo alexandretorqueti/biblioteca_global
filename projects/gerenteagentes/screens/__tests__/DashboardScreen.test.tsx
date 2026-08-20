@@ -34,14 +34,6 @@ function tarefaFactory(id: number, titulo: string, status: string, projetoId: nu
   return { id, titulo, status, projetoId, agenteId, createdAt: "2026-08-18T12:00:00Z" } as const
 }
 
-function mockOk(data: unknown) {
-  mockFetch.mockResolvedValueOnce({
-    ok: true,
-    status: 200,
-    json: async () => data,
-  })
-}
-
 /** Mocka os dois fetches que a tela faz (projetos e tarefas), na ordem. */
 function mockProjetosETarefas(projetos: unknown, tarefas: unknown) {
   mockFetch

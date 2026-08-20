@@ -30,6 +30,16 @@ export const config: GeradorSistemaConfig = {
             componentId: "gerenteagentes-dashboard",
           },
         },
+        {
+          id: "acompanhar-view",
+          label: "Acompanhar Tarefa",
+          path: "acompanhar",
+          icon: "monitor_heart",
+          screen: {
+            kind: "custom",
+            componentId: "gerenteagentes-task-monitor",
+          },
+        },
       ],
     },
     {
@@ -106,6 +116,46 @@ export const config: GeradorSistemaConfig = {
                 targetResource: "tarefas",
                 filterField: "projetoId",
                 title: "Tarefas do Projeto",
+                fields: [
+                  { name: "titulo", label: "Título", type: "text", required: true, fullWidth: true },
+                  {
+                    name: "agenteId",
+                    label: "Agente",
+                    type: "multipleChoice",
+                    multipleChoice: { resource: "agentes", idField: "id", displayField: "nome" },
+                    required: true,
+                  },
+                  { name: "descricao", label: "Descrição", type: "textarea", fullWidth: true },
+                  { name: "repoPath", label: "Repo Path", type: "text", fullWidth: true, placeholder: "/data/workspace/projects/..." },
+                  { name: "buildCommand", label: "Build Command", type: "text", placeholder: "npm run build" },
+                  { name: "unitTestCommand", label: "Test Command", type: "text", placeholder: "npm run test" },
+                ],
+                overrides: {
+                  newLabel: "Nova tarefa",
+                },
+                rowActions: [
+                  {
+                    id: "iniciar-tarefa",
+                    label: "Iniciar",
+                    method: "POST",
+                    path: "/api/gerenteagentes/tarefas/:id/start",
+                    confirm: "Iniciar execução desta tarefa?",
+                  },
+                  {
+                    id: "pausar-tarefa",
+                    label: "Pausar",
+                    method: "POST",
+                    path: "/api/gerenteagentes/tarefas/:id/pause",
+                    confirm: "Pausar esta tarefa?",
+                  },
+                  {
+                    id: "retomar-tarefa",
+                    label: "Retomar",
+                    method: "POST",
+                    path: "/api/gerenteagentes/tarefas/:id/resume",
+                    confirm: "Retomar execução desta tarefa?",
+                  },
+                ],
                 childRoutes: [
                   {
                     id: "subtarefas",

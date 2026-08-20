@@ -89,7 +89,8 @@ describe("config do projeto gerenteagentes", () => {
     expect(fields).toBeDefined()
 
     const obrigatórios = fields!.filter((f) => f.required).map((f) => f.name)
-    expect(obrigatórios).toEqual(["projetoId", "agenteId", "titulo"])
+    // projetoId NÃO é campo de formulário: vem do filtro automático da childRoute
+    expect(obrigatórios).toEqual(["titulo", "agenteId"])
 
     const titulo = fields!.find((f) => f.name === "titulo")
     expect(titulo).toBeDefined()
@@ -102,23 +103,22 @@ describe("config do projeto gerenteagentes", () => {
     expect(descricao!.type).toBe("textarea")
   })
 
-  it("define o status como select com os valores do motor", () => {
+  it("define o agente como combo (multipleChoice) — regra de ouro (sem digitar ID)", () => {
     const tela = localizarTelaTarefas() as unknown as ChildRoute
 
-    const status = tela.fields!.find((f) => f.name === "status")
-    expect(status).toBeDefined()
-    expect(status!.type).toBe("select")
+    const agente = tela.fields!.find((f) => f.name === "agenteId")
+    expect(agente).toBeDefined()
+    expect(agente!.type).toBe("multipleChoice")
+    expect(agente!.multipleChoice).toEqual({
+      resource: "agentes",
+      idField: "id",
+      displayField: "nome",
+    })
 
-    const valores = status!.options!.map((o) => o.value)
-    expect(valores).toEqual([
-      "draft",
-      "planned",
-      "running",
-      "paused",
-      "completed",
-      "failed",
-      "cancelled",
-    ])
+    // Status não é campo do formulário de criação: a tarefa nasce em draft e
+    // evolui pelo motor (start/pause/resume). O grid mostra o status por padrão.
+    const status = tela.fields!.find((f) => f.name === "status")
+    expect(status).toBeUndefined()
   })
 
   it("define as childRoutes das tarefas (subtarefas, chats, bloqueios)", () => {

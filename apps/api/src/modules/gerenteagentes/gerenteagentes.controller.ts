@@ -135,6 +135,14 @@ export class GerenteAgentesController {
     return this.service.listarSubtarefas(projeto, id);
   }
 
+  @Get('tarefas/:id/motor-detail')
+  motorDetailTarefa(
+    @CurrentProject() projeto: ProjetoResumo,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    return this.service.motorDetailTarefa(projeto, id);
+  }
+
   // ============================================================================
   // INICIAR DESENVOLVIMENTO (integração 1:1 com core)
   // ============================================================================

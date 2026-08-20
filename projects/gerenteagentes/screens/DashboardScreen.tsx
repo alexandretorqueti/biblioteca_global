@@ -13,9 +13,6 @@ import {
   SmartToyRounded,
   TaskAltRounded,
   PlayCircleRounded,
-  CheckCircleRounded,
-  CancelRounded,
-  PendingRounded,
   AccountTreeRounded,
 } from "@mui/icons-material"
 import type { ReactNode } from "react"
@@ -66,16 +63,6 @@ const STATUS_CHIP: Record<string, "default" | "success" | "warning" | "error" | 
   completed: "success",
   failed: "error",
   cancelled: "error",
-}
-
-const ICON_FOR_STATUS: Record<string, ReactNode> = {
-  draft: <PendingRounded sx={{ fontSize: 18 }} />,
-  planned: <PendingRounded sx={{ fontSize: 18 }} />,
-  running: <PlayCircleRounded sx={{ fontSize: 18 }} />,
-  paused: <PendingRounded sx={{ fontSize: 18 }} />,
-  completed: <CheckCircleRounded sx={{ fontSize: 18 }} />,
-  failed: <CancelRounded sx={{ fontSize: 18 }} />,
-  cancelled: <CancelRounded sx={{ fontSize: 18 }} />,
 }
 
 /* ------------------------------------------------------------------ */
