@@ -1,6 +1,6 @@
 import { Injectable, Inject, NotFoundException, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, desc } from 'drizzle-orm';
 import { request as httpRequest, type RequestOptions } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import type { ProjetoResumo } from '@biblioteca-global/shared';
@@ -85,7 +85,7 @@ export class GerenteAgentesService {
     const [tarefa] = await db
       .select()
       .from(tarefas)
-      .where(and(eq(tarefas.id, tarefaId), eq(tarefas.projetoId, projeto.id)))
+      .where(eq(tarefas.id, tarefaId))
       .limit(1);
 
     if (!tarefa) {
@@ -137,7 +137,7 @@ export class GerenteAgentesService {
     const [tarefa] = await db
       .select()
       .from(tarefas)
-      .where(and(eq(tarefas.id, tarefaId), eq(tarefas.projetoId, projeto.id)))
+      .where(eq(tarefas.id, tarefaId))
       .limit(1);
 
     if (!tarefa) {
@@ -161,7 +161,7 @@ export class GerenteAgentesService {
     const [tarefa] = await db
       .select()
       .from(tarefas)
-      .where(and(eq(tarefas.id, tarefaId), eq(tarefas.projetoId, projeto.id)))
+      .where(eq(tarefas.id, tarefaId))
       .limit(1);
 
     if (!tarefa) {
@@ -191,7 +191,7 @@ export class GerenteAgentesService {
     const [tarefa] = await db
       .select()
       .from(tarefas)
-      .where(and(eq(tarefas.id, tarefaId), eq(tarefas.projetoId, projeto.id)))
+      .where(eq(tarefas.id, tarefaId))
       .limit(1);
 
     if (!tarefa) {
@@ -219,7 +219,7 @@ export class GerenteAgentesService {
     const [tarefa] = await db
       .select()
       .from(tarefas)
-      .where(and(eq(tarefas.id, tarefaId), eq(tarefas.projetoId, projeto.id)))
+      .where(eq(tarefas.id, tarefaId))
       .limit(1);
 
     if (!tarefa) {
@@ -384,7 +384,7 @@ export class GerenteAgentesService {
     const [tarefa] = await db
       .select()
       .from(tarefas)
-      .where(and(eq(tarefas.id, tarefaId), eq(tarefas.projetoId, projeto.id)))
+      .where(eq(tarefas.id, tarefaId))
       .limit(1);
     if (!tarefa) {
       throw new NotFoundException('Tarefa não encontrada');
@@ -420,7 +420,7 @@ export class GerenteAgentesService {
     const [tarefa] = await db
       .select()
       .from(tarefas)
-      .where(and(eq(tarefas.id, tarefaId), eq(tarefas.projetoId, projeto.id)))
+      .where(eq(tarefas.id, tarefaId))
       .limit(1);
 
     if (!tarefa) {
