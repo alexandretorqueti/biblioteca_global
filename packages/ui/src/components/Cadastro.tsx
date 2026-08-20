@@ -207,6 +207,11 @@ export default function Cadastro<T extends EntityRecord>({
       for (const [chave, valor] of Object.entries(filters ?? {})) {
         payload[chave === "projetoId" ? "projeto_id" : chave] = valor
       }
+      // Campos opcionais vazios ("") viram undefined: o zod de colunas
+      // numéricas rejeita string vazia (ex.: depends_on_task_id, seq).
+      for (const [chave, valor] of Object.entries(payload)) {
+        if (valor === "") payload[chave] = undefined
+      }
       for (const field of fields) {
         if (field.type === "json" && typeof payload[field.name] === "string") {
           const raw = payload[field.name] as string
