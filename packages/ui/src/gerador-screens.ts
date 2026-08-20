@@ -31,6 +31,7 @@ export interface GeradorSistemaChildRoute {
   filterField: string
   title?: string
   fields?: DynamicField[]
+  columnLabels?: Record<string, string>
   hiddenColumns?: string[]
   columns?: 1 | 2 | 3
   newLabel?: string

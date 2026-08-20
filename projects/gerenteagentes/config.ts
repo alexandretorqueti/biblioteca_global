@@ -5,11 +5,17 @@
  * - Captação: contatos, projetos, definições (via Isa ou manual)
  * - Execução: tarefas com subtarefas, chats, start/pause/resume
  * - Geração macro: analista forte gera tarefas a partir de definições
- * 
+ *
  * Navegação hierárquica:
  * - Projetos → Tarefas → Subtarefas / Chats de Tarefa / Bloqueios
  * - Projetos → Definições
  * - Projetos → Chats de Projeto
+ *
+ * Convenções das grids (decisão 2026-08-20):
+ * - Grid enxuta: somente ID + 1-2 campos mais importantes (nome/título/status).
+ * - Campos restantes: `gridVisible: false` (aparecem apenas no formulário).
+ * - Colunas de controle do motor que não são de formulário: `hiddenColumns`.
+ * - `columnLabels` ajusta os títulos dos cabeçalhos da grid.
  */
 import type { GeradorSistemaConfig } from "@biblioteca-global/shared"
 
@@ -64,6 +70,7 @@ export const config: GeradorSistemaConfig = {
             ],
             overrides: {
               hiddenColumns: ["createdAt", "updatedAt"],
+              columnLabels: { id: "ID", nome: "Nome" },
               newLabel: "Novo agente",
             },
           },
@@ -89,13 +96,14 @@ export const config: GeradorSistemaConfig = {
               { name: "slug", label: "Slug", type: "text", required: true, gridVisible: false },
               { name: "descricao", label: "Descrição", type: "textarea", fullWidth: true, gridVisible: false },
               { name: "regras", label: "Regras", type: "textarea", fullWidth: true, gridVisible: false },
-              { name: "contatoId", label: "Contato (ID)", type: "number", gridVisible: false },
-              { name: "agenteId", label: "Agente", type: "multipleChoice", multipleChoice: { resource: "agentes", idField: "id", displayField: "nome" }, gridVisible: true },
+              { name: "contatoId", label: "Contato", type: "number", gridVisible: false },
+              { name: "agenteId", label: "Agente", type: "multipleChoice", multipleChoice: { resource: "agentes", idField: "id", displayField: "nome" }, gridVisible: false },
               { name: "ativo", label: "Ativo", type: "switch", defaultValue: true, gridVisible: false },
-              { name: "plataformaProjetoId", label: "Projeto Plataforma (ID)", type: "number", gridVisible: false },
+              { name: "plataformaProjetoId", label: "Projeto Plataforma", type: "number", gridVisible: false },
             ],
             overrides: {
               hiddenColumns: ["createdAt", "updatedAt"],
+              columnLabels: { id: "ID", nome: "Nome" },
               newLabel: "Novo projeto",
             },
             rowActions: [
@@ -124,14 +132,26 @@ export const config: GeradorSistemaConfig = {
                     type: "multipleChoice",
                     multipleChoice: { resource: "agentes", idField: "id", displayField: "nome" },
                     required: true,
+                    gridVisible: false,
                   },
-                  { name: "descricao", label: "Descrição", type: "textarea", fullWidth: true },
-                  { name: "repoPath", label: "Repo Path", type: "text", fullWidth: true, placeholder: "/data/workspace/projects/..." },
-                  { name: "buildCommand", label: "Build Command", type: "text", placeholder: "npm run build" },
-                  { name: "unitTestCommand", label: "Test Command", type: "text", placeholder: "npm run test" },
+                  { name: "descricao", label: "Descrição", type: "textarea", fullWidth: true, gridVisible: false },
+                  { name: "repoPath", label: "Caminho do Repo", type: "text", fullWidth: true, placeholder: "/data/workspace/projects/...", gridVisible: false },
+                  { name: "buildCommand", label: "Comando de Build", type: "text", placeholder: "npm run build", gridVisible: false },
+                  { name: "unitTestCommand", label: "Comando de Teste", type: "text", placeholder: "npm run test", gridVisible: false },
                 ],
                 overrides: {
                   newLabel: "Nova tarefa",
+                  hiddenColumns: [
+                    "projetoId",
+                    "maxRework",
+                    "hardTimeoutMs",
+                    "dependsOnTaskId",
+                    "autoStart",
+                    "bootRetryCount",
+                    "createdAt",
+                    "updatedAt",
+                  ],
+                  columnLabels: { id: "ID", titulo: "Título", status: "Status" },
                 },
                 rowActions: [
                   {
@@ -163,6 +183,40 @@ export const config: GeradorSistemaConfig = {
                     icon: "subtasks",
                     targetResource: "subtarefas",
                     filterField: "tarefaId",
+                    title: "Subtarefas da Tarefa",
+                    fields: [
+                      { name: "titulo", label: "Título", type: "text", required: true, fullWidth: true },
+                      {
+                        name: "status",
+                        label: "Status",
+                        type: "select",
+                        options: [
+                          { label: "Pendente", value: "pending" },
+                          { label: "Executando", value: "running" },
+                          { label: "Verificada", value: "verified" },
+                          { label: "Falhou", value: "failed" },
+                        ],
+                        defaultValue: "pending",
+                      },
+                      { name: "seq", label: "Ordem", type: "number", defaultValue: 0, gridVisible: false },
+                      { name: "descricao", label: "Descrição", type: "textarea", fullWidth: true, gridVisible: false },
+                      { name: "resultado", label: "Resultado", type: "textarea", fullWidth: true, gridVisible: false },
+                    ],
+                    overrides: {
+                      newLabel: "Nova subtarefa",
+                      hiddenColumns: [
+                        "tarefaId",
+                        "scope",
+                        "acceptanceCriteria",
+                        "deliverCount",
+                        "duracaoSegundos",
+                        "iniciadaEm",
+                        "finalizadaEm",
+                        "createdAt",
+                        "updatedAt",
+                      ],
+                      columnLabels: { id: "ID", titulo: "Título", status: "Status" },
+                    },
                   },
                   {
                     id: "tarefa-chats",
@@ -170,6 +224,27 @@ export const config: GeradorSistemaConfig = {
                     icon: "chat",
                     targetResource: "tarefa_chats",
                     filterField: "tarefaId",
+                    title: "Chats da Tarefa",
+                    fields: [
+                      {
+                        name: "role",
+                        label: "Role",
+                        type: "select",
+                        required: true,
+                        options: [
+                          { label: "User", value: "user" },
+                          { label: "Assistant", value: "assistant" },
+                          { label: "System", value: "system" },
+                          { label: "Analyst", value: "analyst" },
+                        ],
+                      },
+                      { name: "texto", label: "Mensagem", type: "textarea", required: true, fullWidth: true, gridVisible: false },
+                    ],
+                    overrides: {
+                      newLabel: "Nova mensagem",
+                      hiddenColumns: ["tarefaId", "createdAt"],
+                      columnLabels: { id: "ID", role: "Role", texto: "Mensagem" },
+                    },
                   },
                   {
                     id: "bloqueios",
@@ -177,6 +252,19 @@ export const config: GeradorSistemaConfig = {
                     icon: "block",
                     targetResource: "bloqueios",
                     filterField: "tarefaId",
+                    title: "Bloqueios da Tarefa",
+                    fields: [
+                      { name: "blockReason", label: "Razão do bloqueio", type: "textarea", fullWidth: true },
+                      { name: "blockCommand", label: "Comando", type: "textarea", fullWidth: true, gridVisible: false },
+                      { name: "blockExitCode", label: "Exit Code", type: "number", gridVisible: false },
+                      { name: "blockExcerpt", label: "Excerto do erro", type: "textarea", fullWidth: true, gridVisible: false },
+                      { name: "blockedAt", label: "Bloqueado em", type: "date" },
+                    ],
+                    overrides: {
+                      newLabel: "Novo bloqueio",
+                      hiddenColumns: ["tarefaId", "subtarefaId", "createdAt"],
+                      columnLabels: { id: "ID", blockReason: "Razão", blockedAt: "Bloqueado em" },
+                    },
                   },
                 ],
               },
@@ -188,11 +276,13 @@ export const config: GeradorSistemaConfig = {
                 filterField: "projetoId",
                 title: "Definições do Projeto",
                 fields: [
-                  { name: "texto", label: "Texto", type: "textarea", required: true, fullWidth: true },
-                  { name: "seq", label: "Ordem", type: "number", defaultValue: 0 },
+                  { name: "texto", label: "Definição", type: "textarea", required: true, fullWidth: true },
+                  { name: "seq", label: "Ordem", type: "number", defaultValue: 0, gridVisible: false },
                 ],
                 overrides: {
                   newLabel: "Nova definição",
+                  hiddenColumns: ["projetoId", "createdAt", "updatedAt"],
+                  columnLabels: { id: "ID", texto: "Definição", seq: "Ordem" },
                 },
               },
               {
@@ -202,6 +292,26 @@ export const config: GeradorSistemaConfig = {
                 targetResource: "projeto_chats",
                 filterField: "projetoId",
                 title: "Chats do Projeto",
+                fields: [
+                  {
+                    name: "role",
+                    label: "Role",
+                    type: "select",
+                    required: true,
+                    options: [
+                      { label: "User", value: "user" },
+                      { label: "Assistant", value: "assistant" },
+                      { label: "System", value: "system" },
+                      { label: "Analyst", value: "analyst" },
+                    ],
+                  },
+                  { name: "texto", label: "Mensagem", type: "textarea", required: true, fullWidth: true, gridVisible: false },
+                ],
+                overrides: {
+                  newLabel: "Nova mensagem",
+                  hiddenColumns: ["projetoId", "createdAt"],
+                  columnLabels: { id: "ID", role: "Role", texto: "Mensagem" },
+                },
               },
             ],
           },

@@ -95,6 +95,7 @@ interface NavigationLevel {
   parentValue?: string | number
   childRoutes?: GeradorSistemaChildRoute[]
   fields?: DynamicField[]
+  columnLabels?: Record<string, string>
   hiddenColumns?: string[]
   columns?: 1 | 2 | 3
   newLabel?: string
@@ -119,6 +120,7 @@ function montarChildRoutes(
     filterField: route.filterField,
     title: route.title,
     fields: route.fields as DynamicField[] | undefined,
+    columnLabels: route.overrides?.columnLabels,
     hiddenColumns: route.overrides?.hiddenColumns,
     columns: route.overrides?.columns,
     newLabel: route.overrides?.newLabel,
@@ -175,6 +177,7 @@ function montarTelaCadastro(
     title: screen.title ?? screen.resource,
     description: screen.description,
     fields,
+    columnLabels: screen.overrides?.columnLabels,
     hiddenColumns: screen.overrides?.hiddenColumns,
     columns: screen.overrides?.columns,
     newLabel: screen.overrides?.newLabel,
@@ -294,6 +297,7 @@ export default function GeradorSistema({
       parentValue: filterValue as string | number,
       childRoutes: route.childRoutes,
       fields: route.fields,
+      columnLabels: route.columnLabels,
       hiddenColumns: route.hiddenColumns,
       columns: route.columns,
       newLabel: route.newLabel,
@@ -437,6 +441,7 @@ export default function GeradorSistema({
               dataSource={dataSource}
               title={currentLevel.label}
               fields={fields}
+              columnLabels={currentLevel.columnLabels}
               hiddenColumns={currentLevel.hiddenColumns}
               columns={currentLevel.columns}
               newLabel={currentLevel.newLabel}

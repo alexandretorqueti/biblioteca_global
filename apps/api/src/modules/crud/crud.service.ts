@@ -206,6 +206,32 @@ export class CrudService {
     return saida
   }
 
+  /**
+   * Converte chaves camelCase (propriedades TS do schema, contrato do
+   * formulário web) para snake_case (coluna.name, contrato do zod/API).
+   * Chaves que já estão em snake_case (API direta) passam intactas;
+   * chaves inexistentes permanecem e o zod strict rejeita.
+   */
+  private normalizarChaves(
+    tabela: MySqlTable,
+    dados: unknown,
+  ): Record<string, unknown> {
+    // Corpo não-objeto (null, array, primitivo) segue para o zod rejeitar.
+    if (typeof dados !== "object" || dados === null || Array.isArray(dados)) {
+      return dados as Record<string, unknown>
+    }
+    const colunas = getTableColumns(tabela)
+    const porProp = new Map<string, string>()
+    for (const [prop, coluna] of Object.entries(colunas)) {
+      porProp.set(prop, coluna.name)
+    }
+    const saida: Record<string, unknown> = {}
+    for (const [chave, valor] of Object.entries(dados)) {
+      saida[porProp.get(chave) ?? chave] = valor
+    }
+    return saida
+  }
+
   async criar(
     projeto: ProjetoResumo,
     resource: string,
@@ -213,7 +239,7 @@ export class CrudService {
   ): Promise<Record<string, unknown>> {
     const tabela = this.resolverTabela(projeto, resource)
     const { insert } = this.schemasDe(projeto, resource)
-    const parse = insert.safeParse(corpo)
+    const parse = insert.safeParse(this.normalizarChaves(tabela, corpo))
     if (!parse.success) {
       throw new BadRequestException({
         message: "Registro inválido",
@@ -250,7 +276,7 @@ export class CrudService {
   ): Promise<Record<string, unknown>> {
     const tabela = this.resolverTabela(projeto, resource)
     const { update } = this.schemasDe(projeto, resource)
-    const parse = update.safeParse(corpo)
+    const parse = update.safeParse(this.normalizarChaves(tabela, corpo))
     if (!parse.success) {
       throw new BadRequestException({
         message: "Registro inválido",

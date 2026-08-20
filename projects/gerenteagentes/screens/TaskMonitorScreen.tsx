@@ -40,6 +40,25 @@ interface Tarefa {
   createdAt?: string
 }
 
+interface ProjetoCaptado {
+  id: number
+  nome: string
+}
+
+/** Status conhecidos do schema + status finais que o motor pode gravar. */
+const STATUS_OPCOES = [
+  "draft",
+  "planned",
+  "running",
+  "paused",
+  "completed",
+  "failed",
+  "cancelled",
+  "finalizada",
+  "deployada",
+  "aborted",
+] as const
+
 interface SubTaskMotor {
   seq: number
   title: string
@@ -120,6 +139,9 @@ function traduzirEvento(type: string): string {
 export default function TaskMonitorScreen(): ReactNode {
   const bundle = useApi()
   const [tarefas, setTarefas] = useState<Tarefa[]>([])
+  const [projetos, setProjetos] = useState<ProjetoCaptado[]>([])
+  const [projetoFiltro, setProjetoFiltro] = useState<number | "">("")
+  const [statusFiltro, setStatusFiltro] = useState<string>("")
   const [tarefaId, setTarefaId] = useState<number | "">("")
   const [detail, setDetail] = useState<MotorDetail | null>(null)
   const [loading, setLoading] = useState(true)
@@ -127,11 +149,28 @@ export default function TaskMonitorScreen(): ReactNode {
   const [acao, setAcao] = useState<string | null>(null)
   const mounted = useRef(true)
 
+  const carregarProjetos = useCallback(async () => {
+    if (!bundle) return
+    try {
+      const res = await bundle.http.request<{ items: ProjetoCaptado[] }>(
+        "GET",
+        "/projetos_captados",
+        { query: { pageSize: 100 }, auth: "access" },
+      )
+      setProjetos(res.items ?? [])
+    } catch {
+      // silencioso — a combo de projeto fica vazia até a próxima tentativa
+    }
+  }, [bundle])
+
   const carregarTarefas = useCallback(async () => {
     if (!bundle) return
     try {
+      const query: Record<string, string | number> = { pageSize: 100 }
+      if (projetoFiltro !== "") query.projetoId = projetoFiltro
+      if (statusFiltro !== "") query.status = statusFiltro
       const res = await bundle.http.request<{ items: Tarefa[] }>("GET", "/tarefas", {
-        query: { pageSize: 100 },
+        query,
         auth: "access",
       })
       const lista = (res.items ?? []).sort((a, b) =>
@@ -149,7 +188,7 @@ export default function TaskMonitorScreen(): ReactNode {
     } catch {
       // silencioso — o painel fica vazio até a próxima tentativa
     }
-  }, [bundle])
+  }, [bundle, projetoFiltro, statusFiltro])
 
   const carregarDetail = useCallback(async (id: number) => {
     if (!bundle) return
@@ -165,13 +204,16 @@ export default function TaskMonitorScreen(): ReactNode {
 
   useEffect(() => {
     mounted.current = true
+    void carregarProjetos()
     void carregarTarefas()
-    const t1 = setInterval(() => void carregarTarefas(), 30000)
+    const t1 = setInterval(() => {
+      void carregarTarefas()
+    }, 30000)
     return () => {
       mounted.current = false
       clearInterval(t1)
     }
-  }, [carregarTarefas])
+  }, [carregarProjetos, carregarTarefas])
 
   // Polling de 5s no detalhe (tempo real)
   useEffect(() => {
@@ -238,21 +280,62 @@ export default function TaskMonitorScreen(): ReactNode {
 
       {erro && <Alert severity="error" data-testid="error-alert">{erro}</Alert>}
 
-      <FormControl size="small" sx={{ minWidth: 320 }}>
-        <InputLabel>Tarefa</InputLabel>
-        <Select
-          label="Tarefa"
-          value={tarefaId}
-          onChange={(e) => setTarefaId(Number(e.target.value))}
-          data-testid="select-tarefa"
-        >
-          {tarefas.map((t) => (
-            <MenuItem key={t.id} value={t.id}>
-              #{t.id} — {t.titulo} ({t.status})
-            </MenuItem>
-          ))}
-        </Select>
-      </FormControl>
+      <Stack direction={{ xs: "column", sm: "row" }} spacing={2} flexWrap="wrap" useFlexGap>
+        <FormControl size="small" sx={{ minWidth: 240 }}>
+          <InputLabel>Projeto</InputLabel>
+          <Select
+            label="Projeto"
+            value={projetoFiltro}
+            onChange={(e) => setProjetoFiltro(String(e.target.value) === "" ? "" : Number(e.target.value))}
+            data-testid="select-projeto"
+          >
+            <MenuItem value="">Todos os projetos</MenuItem>
+            {projetos.map((p) => (
+              <MenuItem key={p.id} value={p.id}>
+                {p.nome}
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+
+        <FormControl size="small" sx={{ minWidth: 200 }}>
+          <InputLabel>Status</InputLabel>
+          <Select
+            label="Status"
+            value={statusFiltro}
+            onChange={(e) => setStatusFiltro(String(e.target.value))}
+            data-testid="select-status"
+          >
+            <MenuItem value="">Todos</MenuItem>
+            {STATUS_OPCOES.map((s) => (
+              <MenuItem key={s} value={s}>
+                {s}
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+
+        <FormControl size="small" sx={{ minWidth: 320 }}>
+          <InputLabel>Tarefa</InputLabel>
+          <Select
+            label="Tarefa"
+            value={tarefaId}
+            onChange={(e) => setTarefaId(Number(e.target.value))}
+            data-testid="select-tarefa"
+          >
+            {tarefas.length === 0 && (
+              <MenuItem value="" disabled>
+                Nenhuma tarefa com os filtros selecionados
+              </MenuItem>
+            )}
+            {tarefas.map((t) => (
+              <MenuItem key={t.id} value={t.id}>
+                #{t.id} — {t.titulo} ({t.status})
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+      </Stack>
 
       {tarefaSelecionada && (
         <Paper variant="outlined" sx={{ p: 2 }}>

@@ -33,6 +33,8 @@ export const cadastroOverridesConfigSchema = z
   .object({
     fields: z.array(dynamicFieldConfigSchema).optional(),
     hiddenColumns: z.array(z.string().min(1)).optional(),
+    /** Rótulos dos cabeçalhos da grid (chave = nome do campo/propriedade). */
+    columnLabels: z.record(z.string().min(1), z.string().min(1)).optional(),
     columns: z.union([z.literal(1), z.literal(2), z.literal(3)]).optional(),
     newLabel: z.string().min(1).optional(),
   })

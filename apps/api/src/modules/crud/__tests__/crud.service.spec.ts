@@ -7,6 +7,7 @@ import {
 import type { ProjetoResumo } from "@biblioteca-global/shared"
 import type { MySqlTable } from "drizzle-orm/mysql-core"
 import { componentes } from "../../../../../../projects/documentacao/schema"
+import { tarefas as tarefasGerente } from "../../../../../../projects/gerenteagentes/schema"
 import { CrudService, RESOURCES_RESERVADOS } from "../crud.service"
 import {
   ProjectDbFactory,
@@ -20,6 +21,7 @@ import { zodParaInsert, zodParaUpdate } from "@biblioteca-global/schema-tools"
 class FakeRegistry implements SchemaRegistry {
   tabelasDoProjeto(slug: string): Record<string, MySqlTable> | undefined {
     if (slug === "documentacao") return { componentes }
+    if (slug === "gerenteagentes") return { tarefas: tarefasGerente }
     if (slug === "biblioteca-global") return {}
     return undefined
   }
@@ -108,6 +110,32 @@ describe("CrudService — whitelist e validação", () => {
       const { service, factory } = novoService()
       await expect(
         service.atualizar(projeto("documentacao", 2), "componentes", 1, {}),
+      ).rejects.toBeInstanceOf(BadRequestException)
+      expect(factory.chamadas).toBe(0)
+    })
+
+    it("criar com chaves camelCase do formulário (projetoId/agenteId) → mapeadas p/ snake_case e aceitas", async () => {
+      const { service, factory } = novoService()
+      // Se o zod rejeitasse as chaves camelCase, o banco não seria acionado.
+      await expect(
+        service.criar(projeto("gerenteagentes", 3), "tarefas", {
+          projetoId: 1,
+          agenteId: 2,
+          titulo: "Tarefa via formulário",
+        }),
+      ).rejects.toThrow("database não deveria ser acionado neste teste")
+      expect(factory.chamadas).toBe(1)
+    })
+
+    it("criar com chave camelCase inexistente no schema → 400 sem tocar no banco", async () => {
+      const { service, factory } = novoService()
+      await expect(
+        service.criar(projeto("gerenteagentes", 3), "tarefas", {
+          projetoId: 1,
+          agenteId: 2,
+          titulo: "X",
+          campoInexistente: 1,
+        }),
       ).rejects.toBeInstanceOf(BadRequestException)
       expect(factory.chamadas).toBe(0)
     })
