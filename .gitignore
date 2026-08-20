@@ -22,3 +22,4 @@ coverage/
 
 # Backup da v1: versionar o código, nunca node_modules
 biblioteca_old/**/node_modules/
+.env.bak-*
