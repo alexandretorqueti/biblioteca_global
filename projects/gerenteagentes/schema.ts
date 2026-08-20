@@ -204,10 +204,12 @@ export const subtarefas = mysqlTable("subtarefas", {
   // Contador de entregas (uma entrega por vez).
   deliverCount: int("deliver_count").notNull().default(0),
   // Encadeamento: subtarefa depende de outra subtarefa da mesma tarefa.
+  // FK self-reference criada na migration (0002_brief_sue_storm) — mesmo
+  // padrão de tarefas.depends_on_task_id (drizzle exige anotação p/ self-ref).
   dependsOnSubtaskId: bigint("depends_on_subtask_id", {
     mode: "number",
     unsigned: true,
-  }).references(() => subtarefas.id, { onDelete: "set null" }),
+  }),
   resultado: text("resultado"),
   duracaoSegundos: int("duracao_segundos"),
   iniciadaEm: timestamp("iniciada_em"),
