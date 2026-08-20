@@ -17,12 +17,14 @@ import { CurrentProject } from '../../common/decorators/current.decorator';
 import { CurrentUser } from '../../common/decorators/current.decorator';
 import type { ProjetoResumo, UsuarioAutenticado } from '@biblioteca-global/shared';
 import { GerenteAgentesService } from './gerenteagentes.service';
+import { TaskStatusPollerService } from './task-status-poller.service';
 
 @Controller('gerenteagentes')
 @UseGuards(JwtAuthGuard, ProjectScopeGuard, RolesGuard)
 export class GerenteAgentesController {
   constructor(
     @Inject(GerenteAgentesService) private readonly service: GerenteAgentesService,
+    private readonly poller: TaskStatusPollerService,
   ) {}
 
   // ============================================================================
@@ -148,5 +150,22 @@ export class GerenteAgentesController {
       throw new BadRequestException('Usuário não tem email cadastrado');
     }
     return this.service.iniciarDesenvolvimento(projeto, id, usuario.email);
+  }
+
+  // ============================================================================
+  // POLLING DE STATUS (Fase 2 — tempo real)
+  // ============================================================================
+
+  @Get('tasks/by-status')
+  @Roles('admin', 'gerente', 'operador')
+  getTasksByStatus(@CurrentProject() projeto: ProjetoResumo) {
+    // Retorna o cache do poller (tarefas agrupadas por status)
+    const tasks = this.poller.getTasksByStatus();
+    const timestamp = this.poller.getLastTimestamp();
+    return {
+      tasks,
+      timestamp,
+      projetoId: projeto.id,
+    };
   }
 }
