@@ -127,6 +127,13 @@ export const config: GeradorSistemaConfig = {
                 fields: [
                   { name: "titulo", label: "Título", type: "text", required: true, fullWidth: true },
                   {
+                    name: "dependsOnTaskId",
+                    label: "Depende de",
+                    type: "multipleChoice",
+                    multipleChoice: { resource: "tarefas", idField: "id", displayField: "titulo" },
+                    gridVisible: false,
+                  },
+                  {
                     name: "agenteId",
                     label: "Agente",
                     type: "multipleChoice",
@@ -186,6 +193,13 @@ export const config: GeradorSistemaConfig = {
                     title: "Subtarefas da Tarefa",
                     fields: [
                       { name: "titulo", label: "Título", type: "text", required: true, fullWidth: true },
+                      {
+                        name: "dependsOnSubtaskId",
+                        label: "Depende de",
+                        type: "multipleChoice",
+                        multipleChoice: { resource: "subtarefas", idField: "id", displayField: "titulo" },
+                        gridVisible: false,
+                      },
                       {
                         name: "status",
                         label: "Status",

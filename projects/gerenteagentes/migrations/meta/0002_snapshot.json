@@ -1,8 +1,8 @@
 {
   "version": "5",
   "dialect": "mysql",
-  "id": "eab0db1b-72bc-449d-8cf1-1427535d6c47",
-  "prevId": "157bae8f-d1de-4b21-be40-10f50f48aaca",
+  "id": "67747430-b520-4e0d-bde5-801e88f1de2e",
+  "prevId": "eab0db1b-72bc-449d-8cf1-1427535d6c47",
   "tables": {
     "agentes": {
       "name": "agentes",
@@ -98,6 +98,13 @@
           "notNull": true,
           "autoincrement": false
         },
+        "subtarefa_id": {
+          "name": "subtarefa_id",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "block_reason": {
           "name": "block_reason",
           "type": "text",
@@ -156,6 +163,19 @@
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
+        },
+        "bloqueios_subtarefa_id_subtarefas_id_fk": {
+          "name": "bloqueios_subtarefa_id_subtarefas_id_fk",
+          "tableFrom": "bloqueios",
+          "tableTo": "subtarefas",
+          "columnsFrom": [
+            "subtarefa_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {
@@ -198,6 +218,28 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
+          "autoincrement": false
+        },
+        "attachments": {
+          "name": "attachments",
+          "type": "json",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "typing": {
+          "name": "typing",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "seq": {
+          "name": "seq",
+          "type": "int",
+          "primaryKey": false,
+          "notNull": false,
           "autoincrement": false
         },
         "created_at": {
@@ -267,6 +309,69 @@
           "notNull": true,
           "autoincrement": false,
           "default": "'aberto'"
+        },
+        "chat_key": {
+          "name": "chat_key",
+          "type": "varchar(200)",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "session_key": {
+          "name": "session_key",
+          "type": "varchar(200)",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "visitor_name": {
+          "name": "visitor_name",
+          "type": "varchar(150)",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "pending_email": {
+          "name": "pending_email",
+          "type": "varchar(200)",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "merged_into": {
+          "name": "merged_into",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "handoffs": {
+          "name": "handoffs",
+          "type": "json",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "session_keys": {
+          "name": "session_keys",
+          "type": "json",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "email": {
+          "name": "email",
+          "type": "varchar(200)",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "name": {
+          "name": "name",
+          "type": "varchar(150)",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
         },
         "created_at": {
           "name": "created_at",
@@ -514,6 +619,13 @@
         "briefing": {
           "name": "briefing",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "tasks": {
+          "name": "tasks",
+          "type": "json",
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
@@ -800,6 +912,20 @@
           "notNull": true,
           "autoincrement": false
         },
+        "scope": {
+          "name": "scope",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "acceptance_criteria": {
+          "name": "acceptance_criteria",
+          "type": "json",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "descricao": {
           "name": "descricao",
           "type": "text",
@@ -814,6 +940,21 @@
           "notNull": true,
           "autoincrement": false,
           "default": "'pending'"
+        },
+        "deliver_count": {
+          "name": "deliver_count",
+          "type": "int",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "depends_on_subtask_id": {
+          "name": "depends_on_subtask_id",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
         },
         "resultado": {
           "name": "resultado",
@@ -874,6 +1015,19 @@
             "id"
           ],
           "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "subtarefas_depends_on_subtask_id_subtarefas_id_fk": {
+          "name": "subtarefas_depends_on_subtask_id_subtarefas_id_fk",
+          "tableFrom": "subtarefas",
+          "tableTo": "subtarefas",
+          "columnsFrom": [
+            "depends_on_subtask_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },

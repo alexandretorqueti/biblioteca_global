@@ -8,6 +8,7 @@ import {
   DialogContent,
   DialogTitle,
   Divider,
+  IconButton,
   Paper,
   Stack,
   Table,
@@ -17,7 +18,7 @@ import {
   TableRow,
   Typography,
 } from "@mui/material"
-import { AddRounded, PersonRounded } from "@mui/icons-material"
+import { AddRounded, CloseRounded, PersonRounded } from "@mui/icons-material"
 import type {
   CadastroDataSource,
   CustomAction,
@@ -198,7 +199,14 @@ export default function Cadastro<T extends EntityRecord>({
     setFeedback(null)
 
     try {
-      const payload: FieldValues = { ...values, ...filters }
+      // Filtros hierárquicos são FKs de negócio (ex.: tarefa.projeto_id →
+      // projetos_captados.id) — NÃO o escopo da plataforma. O api-client
+      // bloqueia a chave camelCase "projetoId" no body (regra de ouro:
+      // escopo vem do token), então enviamos a coluna snake_case.
+      const payload: FieldValues = { ...values }
+      for (const [chave, valor] of Object.entries(filters ?? {})) {
+        payload[chave === "projetoId" ? "projeto_id" : chave] = valor
+      }
       for (const field of fields) {
         if (field.type === "json" && typeof payload[field.name] === "string") {
           const raw = payload[field.name] as string
@@ -468,8 +476,17 @@ export default function Cadastro<T extends EntityRecord>({
         fullWidth
         maxWidth="md"
       >
-        <DialogTitle>
-          {selectedRow ? "Editar registro" : newLabel}
+        <DialogTitle sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <Box>{selectedRow ? "Editar registro" : newLabel}</Box>
+          <IconButton
+            aria-label="Fechar formulário"
+            size="small"
+            disabled={actionState !== null}
+            onClick={closeForm}
+            data-testid="btn-fechar-form"
+          >
+            <CloseRounded />
+          </IconButton>
         </DialogTitle>
 
         <DialogContent sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
@@ -545,7 +562,18 @@ export default function Cadastro<T extends EntityRecord>({
         fullWidth
         maxWidth="xs"
       >
-        <DialogTitle>Excluir registro</DialogTitle>
+        <DialogTitle sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <Box>Excluir registro</Box>
+          <IconButton
+            aria-label="Fechar diálogo de exclusão"
+            size="small"
+            disabled={actionState !== null}
+            onClick={() => setDeleteTarget(null)}
+            data-testid="btn-fechar-excluir"
+          >
+            <CloseRounded />
+          </IconButton>
+        </DialogTitle>
 
         <DialogContent>
           <Typography>

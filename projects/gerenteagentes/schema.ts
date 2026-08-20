@@ -203,6 +203,11 @@ export const subtarefas = mysqlTable("subtarefas", {
   status: varchar("status", { length: 50 }).notNull().default("pending"), // pending, running, verified, failed
   // Contador de entregas (uma entrega por vez).
   deliverCount: int("deliver_count").notNull().default(0),
+  // Encadeamento: subtarefa depende de outra subtarefa da mesma tarefa.
+  dependsOnSubtaskId: bigint("depends_on_subtask_id", {
+    mode: "number",
+    unsigned: true,
+  }).references(() => subtarefas.id, { onDelete: "set null" }),
   resultado: text("resultado"),
   duracaoSegundos: int("duracao_segundos"),
   iniciadaEm: timestamp("iniciada_em"),
@@ -340,6 +345,7 @@ export const annotations = {
       label: "Status",
       helperText: "pending | running | verified | failed",
     },
+    depends_on_subtask_id: { label: "Depende de" },
     resultado: { label: "Resultado", type: "textarea", fullWidth: true },
     duracao_segundos: { label: "Duração (s)" },
     iniciada_em: { label: "Iniciada em" },
