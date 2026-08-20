@@ -183,6 +183,29 @@ export class CrudService {
     return linha as Record<string, unknown>
   }
 
+  /**
+   * Converte chaves snake_case (coluna.name, contrato do formulário) para as
+   * propriedades TS do schema (camelCase) que o drizzle aceita em values/set.
+   * O zodParaInsert valida pelo nome da coluna; o drizzle espera a propriedade
+   * (chaves não reconhecidas são ignoradas silenciosamente → default → 1364).
+   */
+  private paraChavesDoDrizzle(
+    tabela: MySqlTable,
+    dados: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const colunas = getTableColumns(tabela)
+    const mapa = new Map<string, string>()
+    for (const [prop, coluna] of Object.entries(colunas)) {
+      mapa.set(coluna.name, prop)
+    }
+    const saida: Record<string, unknown> = {}
+    for (const [chave, valor] of Object.entries(dados)) {
+      const prop = mapa.get(chave)
+      saida[prop ?? chave] = valor
+    }
+    return saida
+  }
+
   async criar(
     projeto: ProjetoResumo,
     resource: string,
@@ -205,7 +228,7 @@ export class CrudService {
     try {
       const resultado = await db
         .insert(tabela)
-        .values(parse.data as Record<string, unknown>)
+        .values(this.paraChavesDoDrizzle(tabela, parse.data as Record<string, unknown>))
       const insertId = resultado[0].insertId
       return this.detalhar(projeto, resource, insertId)
     } catch (erro: unknown) {
@@ -237,7 +260,10 @@ export class CrudService {
         })),
       })
     }
-    const campos = parse.data as Record<string, unknown>
+    const campos = this.paraChavesDoDrizzle(
+      tabela,
+      parse.data as Record<string, unknown>,
+    )
     if (Object.keys(campos).length === 0) {
       throw new BadRequestException("Nenhum campo para atualizar")
     }
