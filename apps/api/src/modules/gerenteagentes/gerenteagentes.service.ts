@@ -3,11 +3,15 @@ import { ConfigService } from '@nestjs/config';
 import { eq, desc } from 'drizzle-orm';
 import { request as httpRequest, type RequestOptions } from 'node:http';
 import { request as httpsRequest } from 'node:https';
-import type { ProjetoResumo } from '@biblioteca-global/shared';
+import type {
+  ProjetoResumo,
+  ModelSelectionTipo,
+  ModelSelectionEntry,
+} from '@biblioteca-global/shared';
+import { ProjectModelSelectionSchema } from '@biblioteca-global/shared';
 import { PROJECT_DB_FACTORY, type ProjectDbFactory } from '../crud/project-db.factory';
 import { SCHEMA_REGISTRY, type SchemaRegistry } from '../crud/schema-registry';
 import {
-  agentes,
   tarefas,
   subtarefas,
   tarefaChats,
@@ -21,6 +25,8 @@ import { ProvisionService } from '../provision/provision.service';
 export class GerenteAgentesService {
   private readonly motorUrl: string;
   private readonly motorHostHeader: string;
+  private readonly consoleUrl: string;
+  private readonly consoleToken: string;
 
   constructor(
     @Inject(PROJECT_DB_FACTORY) private readonly factory: ProjectDbFactory,
@@ -31,49 +37,164 @@ export class GerenteAgentesService {
     // Motor de execução (rodando no container openclaw:6283, exposto via proxy NPM)
     this.motorUrl = this.configService.get<string>('MOTOR_DEV_URL') || 'http://192.168.1.16';
     this.motorHostHeader = this.configService.get<string>('MOTOR_URL_HOST') || 'api.tarefas.localhost';
+    // Console OpenClaw (fonte de agentes — st-5)
+    this.consoleUrl = this.configService.get<string>('OPENCLAW_CONSOLE_URL') || 'https://openclaw-api.webconnect.com.br';
+    this.consoleToken = this.configService.get<string>('OPENCLAW_CONSOLE_TOKEN') || '';
   }
 
   /**
-   * HTTP request para o motor (via proxy NPM com Host header quando configurado).
+   * Lista agentes do console OpenClaw (proxy server-side — o token do
+   * console nunca vai para o browser). Resposta: { agents: [...] } com
+   * id string (ex.: "programador-senior") e name.
    */
-  private motorRequest(method: string, path: string, body?: unknown): Promise<{ ok: boolean; status: number; body: string }> {
+  async listarAgentesConsole(): Promise<Array<{ id: string; name: string; model?: string; status?: string }>> {
+    const url = new URL(`${this.consoleUrl}/api/agents`);
+    const isHttps = url.protocol === 'https:';
+    const options: RequestOptions = {
+      hostname: url.hostname,
+      port: url.port || (isHttps ? 443 : 80),
+      path: url.pathname,
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+        ...(this.consoleToken ? { Authorization: `Bearer ${this.consoleToken}` } : {}),
+      },
+      timeout: 10000,
+    };
     return new Promise((resolve, reject) => {
-      const url = new URL(`${this.motorUrl}${path}`);
-      const isHttps = url.protocol === 'https:';
-      const payload = body !== undefined ? JSON.stringify(body) : undefined;
-      const options: RequestOptions = {
-        hostname: url.hostname,
-        port: url.port || (isHttps ? 443 : 80),
-        path: `${url.pathname}${url.search}`,
-        method,
-        headers: {
-          Accept: 'application/json',
-          ...(payload !== undefined ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } : {}),
-          ...(this.motorHostHeader ? { Host: this.motorHostHeader } : {}),
-        },
-        timeout: 10000,
-      };
       const req = (isHttps ? httpsRequest : httpRequest)(options, (res) => {
         let data = '';
         res.setEncoding('utf8');
         res.on('data', (chunk) => (data += chunk));
-        res.on('end', () =>
-          resolve({
-            ok: res.statusCode !== undefined && res.statusCode >= 200 && res.statusCode < 300,
-            status: res.statusCode ?? 0,
-            body: data,
-          }),
-        );
+        res.on('end', () => {
+          const status = res.statusCode ?? 0;
+          if (status < 200 || status >= 300) {
+            reject(new BadRequestException(`Console OpenClaw indisponível (${status})`));
+            return;
+          }
+          try {
+            const json = JSON.parse(data) as { agents?: Array<{ id?: string; name?: string; model?: string; status?: string }> };
+            resolve(
+              (json.agents ?? [])
+                .filter((a) => typeof a.id === "string" && a.id.length > 0)
+                .map((a) => ({
+                  id: a.id!,
+                  name: a.name ?? a.id!,
+                  ...(a.model ? { model: a.model } : {}),
+                  ...(a.status ? { status: a.status } : {}),
+                })),
+            );
+          } catch (e) {
+            reject(new BadRequestException(`Console OpenClaw: resposta inválida (${e instanceof Error ? e.message : String(e)})`));
+          }
+        });
       });
       req.on('timeout', () => req.destroy(new Error('timeout')));
       req.on('error', reject);
-      if (payload !== undefined) req.write(payload);
+      req.end();
+    });
+  }
+  /**
+   * Lista modelos disponíveis no console OpenClaw (proxy server-side, mesmo
+   * padrão de `listarAgentesConsole` — o token do console nunca vai para o
+   * browser). GET `${OPENCLAW_CONSOLE_URL}/api/models` → normaliza cada entrada
+   * para `{ id, name, provider, alias? }`. O console pode responder
+   * `{ models: [...] }` ou um array direto; entradas sem `id` são descartadas.
+   */
+  async listarModelosConsole(): Promise<Array<{ id: string; name: string; provider: string; alias?: string }>> {
+    const url = new URL(`${this.consoleUrl}/api/models`);
+    const isHttps = url.protocol === 'https:';
+    const options: RequestOptions = {
+      hostname: url.hostname,
+      port: url.port || (isHttps ? 443 : 80),
+      path: url.pathname,
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+        ...(this.consoleToken ? { Authorization: `Bearer ${this.consoleToken}` } : {}),
+      },
+      timeout: 10000,
+    };
+    return new Promise((resolve, reject) => {
+      const req = (isHttps ? httpsRequest : httpRequest)(options, (res) => {
+        let data = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk) => (data += chunk));
+        res.on('end', () => {
+          const status = res.statusCode ?? 0;
+          if (status < 200 || status >= 300) {
+            reject(new BadRequestException(`Console OpenClaw indisponível (${status})`));
+            return;
+          }
+          try {
+            const json = JSON.parse(data) as { models?: unknown } | unknown[];
+            const raw = Array.isArray(json) ? json : (json.models ?? []);
+            const lista = Array.isArray(raw) ? raw : [];
+            resolve(
+              lista
+                .filter((m): m is Record<string, unknown> => typeof m === 'object' && m !== null)
+                .map((m) => ({
+                  id: String(m.id ?? ''),
+                  name: String(m.name ?? m.id ?? ''),
+                  provider: String(m.provider ?? ''),
+                  ...(m.alias ? { alias: String(m.alias) } : {}),
+                }))
+                .filter((m) => m.id.length > 0),
+            );
+          } catch (e) {
+            reject(new BadRequestException(`Console OpenClaw: resposta inválida (${e instanceof Error ? e.message : String(e)})`));
+          }
+        });
+      });
+      req.on('timeout', () => req.destroy(new Error('timeout')));
+      req.on('error', reject);
       req.end();
     });
   }
 
   private async dbDoProjeto(projeto: ProjetoResumo) {
     return await this.factory.obter({ id: projeto.id });
+  }
+
+  /**
+   * Faz requisição HTTP para o motor de tarefas (GerenteAgentes).
+   */
+  private motorRequest(
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
+    path: string,
+    body?: unknown,
+  ): Promise<{ ok: boolean; status: number; body: string }> {
+    const url = new URL(`${this.motorUrl}${path}`);
+    const isHttps = url.protocol === 'https:';
+    const options: RequestOptions = {
+      hostname: url.hostname,
+      port: url.port || (isHttps ? 443 : 80),
+      path: url.pathname + (url.search || ''),
+      method,
+      headers: {
+        Accept: 'application/json',
+        ...(body ? { 'Content-Type': 'application/json' } : {}),
+        ...(this.motorHostHeader ? { Host: this.motorHostHeader } : {}),
+      },
+      timeout: 15000,
+    };
+    return new Promise((resolve, reject) => {
+      const req = (isHttps ? httpsRequest : httpRequest)(options, (res) => {
+        let data = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk) => (data += chunk));
+        res.on('end', () => {
+          const status = res.statusCode ?? 0;
+          resolve({ ok: status >= 200 && status < 300, status, body: data });
+        });
+      });
+      req.on('timeout', () => req.destroy(new Error('timeout')));
+      req.on('error', (e) => reject(new BadRequestException(`Motor request failed: ${e.message}`)));
+      if (body) {
+        req.write(JSON.stringify(body));
+      }
+      req.end();
+    });
   }
 
   // ============================================================================
@@ -92,32 +213,17 @@ export class GerenteAgentesService {
       throw new NotFoundException('Tarefa não encontrada');
     }
 
-    if (tarefa.status !== 'draft' && tarefa.status !== 'planned') {
+    // Permite reiniciar tarefas bloqueadas/falhas/pausadas (não apenas draft/planned)
+    const statusPermitidos = ['draft', 'planned', 'blocked', 'failed', 'paused'];
+    if (!statusPermitidos.includes(tarefa.status)) {
       throw new BadRequestException(`Tarefa não pode ser iniciada (status: ${tarefa.status})`);
     }
 
     // ── Ponte com o motor de execução ────────────────────────────────────────
-    // 1) Garante a task no motor (id determinística task-biblioteca-<id>).
-    // 2) Chama POST /api/task/:id/start — o motor enfileira (FIFO) e executa,
-    //    criando e processando subtarefas até a conclusão.
-    const [agente] = await db.select().from(agentes).where(eq(agentes.id, tarefa.agenteId)).limit(1);
-    const motorId = `task-biblioteca-${tarefa.id}`;
-    const motorBody = {
-      id: motorId,
-      agentId: agente?.nome ?? 'programador-senior',
-      title: tarefa.titulo,
-      description: tarefa.descricao ?? '',
-      repoPath: tarefa.repoPath ?? '',
-      buildCommand: tarefa.buildCommand ?? 'npm run build',
-      unitTestCommand: tarefa.unitTestCommand ?? 'npm run test',
-    };
-    const criar = await this.motorRequest('POST', '/api/tasks', motorBody).catch((e) => {
-      throw new BadRequestException(`Motor indisponível ao criar a tarefa: ${e instanceof Error ? e.message : String(e)}`);
-    });
-    if (!criar.ok) {
-      throw new BadRequestException(`Motor rejeitou a criação da tarefa (${criar.status}): ${criar.body.slice(0, 200)}`);
-    }
-    const start = await this.motorRequest('POST', `/api/task/${encodeURIComponent(motorId)}/start`).catch((e) => {
+    // A tarefa já existe no motor com o external_id. Chama apenas
+    // POST /api/task/:id/start — o motor enfileira (FIFO) e executa.
+    const motorId = tarefa.externalId || `task-biblioteca-${tarefa.id}`;
+    const start = await this.motorRequest('POST', `/api/task/${encodeURIComponent(motorId)}/start`).catch((e: unknown) => {
       throw new BadRequestException(`Motor indisponível ao iniciar a tarefa: ${e instanceof Error ? e.message : String(e)}`);
     });
     if (!start.ok) {
@@ -389,7 +495,7 @@ export class GerenteAgentesService {
     if (!tarefa) {
       throw new NotFoundException('Tarefa não encontrada');
     }
-    const motorId = `task-biblioteca-${tarefa.id}`;
+    const motorId = tarefa.externalId || `task-biblioteca-${tarefa.id}`;
     try {
       const resp = await this.motorRequest('GET', `/api/task/${encodeURIComponent(motorId)}/detail`);
       if (resp.status === 404) {
@@ -434,6 +540,69 @@ export class GerenteAgentesService {
       .orderBy(subtarefas.seq);
 
     return subtarefasList;
+  }
+
+  // ============================================================================
+  // SELEÇÃO DE MODELOS (proxy p/ motor — task-54)
+  // ============================================================================
+
+  /**
+   * GET /api/model-selection/:projectKey/:tipo — lista a seleção de modelos do
+   * projeto para o tipo (DEV/ANALYST/MONITOR). `projectKey` = slug do projeto
+   * logado. 404 do motor (ainda não há seleção) → `entries: []`.
+   */
+  async getModelSelection(
+    projeto: ProjetoResumo,
+    tipo: ModelSelectionTipo,
+  ): Promise<{ projectKey: string; tipo: ModelSelectionTipo; entries: ModelSelectionEntry[] }> {
+    const projectKey = projeto.slug;
+    const resp = await this.motorRequest(
+      'GET',
+      `/api/model-selection/${encodeURIComponent(projectKey)}/${encodeURIComponent(tipo)}`,
+    ).catch((e: unknown) => {
+      throw new BadRequestException(`Motor indisponível: ${e instanceof Error ? e.message : String(e)}`);
+    });
+    if (resp.status === 404) {
+      return { projectKey, tipo, entries: [] };
+    }
+    if (!resp.ok) {
+      throw new BadRequestException(`Motor retornou ${resp.status}: ${resp.body.slice(0, 200)}`);
+    }
+    const data = JSON.parse(resp.body) as { projectKey?: string; tipo?: string; entries?: ModelSelectionEntry[] };
+    return { projectKey: data.projectKey ?? projectKey, tipo, entries: data.entries ?? [] };
+  }
+
+  /**
+   * PUT /api/model-selection/:projectKey/:tipo — salva a seleção de modelos do
+   * projeto para o tipo. Body validado com o contrato shared (mesmo schema do
+   * motor); campos extras são rejeitados antes do proxy.
+   */
+  async saveModelSelection(
+    projeto: ProjetoResumo,
+    tipo: ModelSelectionTipo,
+    entries: ModelSelectionEntry[],
+  ): Promise<{ projectKey: string; tipo: ModelSelectionTipo; entries: ModelSelectionEntry[] }> {
+    const projectKey = projeto.slug;
+
+    // Valida localmente contra o contrato shared (strict) antes de enviar ao motor
+    const parsed = ProjectModelSelectionSchema.parse({ projectKey, tipo, entries }) as {
+      projectKey: string;
+      tipo: ModelSelectionTipo;
+      entries: ModelSelectionEntry[];
+    };
+
+    const resp = await this.motorRequest(
+      'PUT',
+      `/api/model-selection/${encodeURIComponent(projectKey)}/${encodeURIComponent(tipo)}`,
+      { entries: parsed.entries },
+    ).catch((e: unknown) => {
+      throw new BadRequestException(`Motor indisponível: ${e instanceof Error ? e.message : String(e)}`);
+    });
+    if (!resp.ok) {
+      throw new BadRequestException(`Motor retornou ${resp.status}: ${resp.body.slice(0, 200)}`);
+    }
+    const data = JSON.parse(resp.body) as { projectKey?: string; tipo?: string; entries?: ModelSelectionEntry[] };
+    return { projectKey: data.projectKey ?? projectKey, tipo, entries: data.entries ?? parsed.entries };
   }
 
   // ============================================================================
