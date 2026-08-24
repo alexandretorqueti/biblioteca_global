@@ -48,6 +48,10 @@ services:
       dockerfile: apps/api/Dockerfile
     container_name: biblioteca-global-api
     restart: unless-stopped
+    extra_hosts:
+      # Permite resolver host.docker.internal (usado por OPENCLAW_CONSOLE_URL
+      # no .env): o console OpenClaw roda em network_mode: host no Bazzite.
+      - "host.docker.internal:host-gateway"
     environment:
       MYSQL_HOST: mysql
       MYSQL_PORT: 3306
