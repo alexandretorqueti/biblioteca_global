@@ -45,6 +45,31 @@ const camposBase: DynamicField[] = [
 ]
 
 describe("Cadastro — flags de contexto do campo", () => {
+  it("mantém os valores preenchidos quando a API rejeita o cadastro", async () => {
+    const dataSource = dataSourceMock()
+    dataSource.create = vi.fn(async () => {
+      throw new Error("Registro inválido")
+    })
+
+    render(
+      <Cadastro
+        dataSource={dataSource}
+        title="Projetos"
+        fields={camposBase}
+        newLabel="Novo projeto"
+      />,
+    )
+
+    fireEvent.click(screen.getByText("Novo projeto"))
+    const nome = screen.getByLabelText(/Nome\b/)
+    await userEvent.type(nome, "Projeto inválido")
+    fireEvent.click(screen.getByText("Cadastrar"))
+
+    await screen.findByText("Registro inválido")
+    expect(nome).toHaveValue("Projeto inválido")
+    expect(screen.getByRole("dialog")).toBeInTheDocument()
+  })
+
   it("criação: campos insertable:false não aparecem; json entra como editor", async () => {
     const dataSource = dataSourceMock()
     render(
@@ -538,3 +563,126 @@ describe("Cadastro — botões de ação com feedback (st-9)", () => {
   })
 })
 
+// ============================================================================
+// task-80 st-1: feedback de rowActions específico por linha
+// ============================================================================
+
+const rowAcoes: CustomAction[] = [
+  { id: "iniciar-tarefa", label: "Iniciar", method: "POST", path: "/tarefas/:id/start" },
+]
+
+describe("Cadastro — feedback de rowActions por linha (task-80 st-1)", () => {
+  beforeEach(() => {
+    executeActionMock.mockClear()
+  })
+
+  it("exibe feedback apenas na linha onde a ação foi executada", async () => {
+    const exMock = vi.fn(async (action: CustomAction, context?: { row?: Record<string, unknown> }) => {
+      expect(action.id).toBe("iniciar-tarefa")
+      // A linha passada é a do registro clicado.
+      expect(context?.row?.id).toBe(1)
+      return { message: "Tarefa 1 iniciada." }
+    })
+
+    render(
+      <Cadastro
+        dataSource={dataSourceMock([
+          { id: 1, nome: "Tarefa A" },
+          { id: 2, nome: "Tarefa B" },
+        ])}
+        title="Tarefas"
+        fields={camposBase}
+        newLabel="Nova tarefa"
+        rowActions={rowAcoes}
+        executeAction={exMock}
+      />,
+    )
+
+    // Duas linhas com o botão Iniciar.
+    const botoesIniciar = await screen.findAllByRole("button", { name: "Iniciar" })
+    expect(botoesIniciar).toHaveLength(2)
+
+    // Executa na primeira linha (Tarefa A, id=1).
+    fireEvent.click(botoesIniciar[0]!)
+
+    // Feedback aparece na primeira linha e NÃO na segunda.
+    const alertas = await screen.findAllByText("Tarefa 1 iniciada.")
+    expect(alertas).toHaveLength(1)
+    const linhaComAlerta = alertas[0]!.closest("tr")
+    expect(linhaComAlerta).toHaveTextContent("Tarefa A")
+    expect(linhaComAlerta).not.toHaveTextContent("Tarefa B")
+    expect(botoesIniciar[1]!.closest("tr")).not.toContainElement(screen.getByText("Tarefa 1 iniciada."))
+
+    // executeAction recebeu o contexto da linha correta.
+    await waitFor(() => {
+      expect(exMock).toHaveBeenCalledWith(
+        rowAcoes[0],
+        expect.objectContaining({ row: expect.objectContaining({ id: 1 }) }),
+      )
+    })
+  })
+
+  it("substitui o feedback anterior da MESMA linha em execuções sucessivas", async () => {
+    let resultado = "Tarefa 1: início aceito."
+    const exMock = vi.fn(async () => ({ message: resultado }))
+
+    render(
+      <Cadastro
+        dataSource={dataSourceMock([
+          { id: 1, nome: "Tarefa A" },
+          { id: 2, nome: "Tarefa B" },
+        ])}
+        title="Tarefas"
+        fields={camposBase}
+        newLabel="Nova tarefa"
+        rowActions={rowAcoes}
+        executeAction={exMock}
+      />,
+    )
+
+    const botoesIniciar = await screen.findAllByRole("button", { name: "Iniciar" })
+
+    // Primeira execução na linha 1.
+    fireEvent.click(botoesIniciar[0]!)
+    await screen.findByText("Tarefa 1: início aceito.")
+
+    // Segunda execução na linha 1 (o feedback antigo some, só um alerta por linha).
+    resultado = "Tarefa 1: retomada."
+    fireEvent.click(botoesIniciar[0]!)
+    await screen.findByText("Tarefa 1: retomada.")
+    expect(screen.queryByText("Tarefa 1: início aceito.")).not.toBeInTheDocument()
+    expect(screen.getAllByText("Tarefa 1: retomada.")).toHaveLength(1)
+
+    // Linha 2 continua sem feedback.
+    expect(botoesIniciar[1]!.closest("tr")).not.toHaveTextContent("retomada")
+  })
+
+  it("exibe feedback de erro apenas na linha onde a ação falhou", async () => {
+    const exMock = vi.fn(async () => {
+      throw new Error("Tarefa já em execução")
+    })
+
+    render(
+      <Cadastro
+        dataSource={dataSourceMock([
+          { id: 1, nome: "Tarefa A" },
+          { id: 2, nome: "Tarefa B" },
+        ])}
+        title="Tarefas"
+        fields={camposBase}
+        newLabel="Nova tarefa"
+        rowActions={rowAcoes}
+        executeAction={exMock}
+      />,
+    )
+
+    const botoesIniciar = await screen.findAllByRole("button", { name: "Iniciar" })
+    fireEvent.click(botoesIniciar[1]!)
+
+    const alertas = await screen.findAllByText("Tarefa já em execução")
+    expect(alertas).toHaveLength(1)
+    const linhaComAlerta = alertas[0]!.closest("tr")
+    expect(linhaComAlerta).toHaveTextContent("Tarefa B")
+    expect(botoesIniciar[0]!.closest("tr")).not.toContainElement(screen.getByText("Tarefa já em execução"))
+  })
+})

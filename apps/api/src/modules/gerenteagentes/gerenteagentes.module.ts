@@ -2,12 +2,11 @@ import { Module, OnModuleInit } from '@nestjs/common';
 import { GerenteAgentesController } from './gerenteagentes.controller';
 import { GerenteAgentesService } from './gerenteagentes.service';
 import { TaskStatusPollerService } from './task-status-poller.service';
-import { CrudModule } from '../crud/crud.module';
 import { AuthModule } from '../auth/auth.module';
 import { ProvisionModule } from '../provision/provision.module';
 
 @Module({
-  imports: [CrudModule, AuthModule, ProvisionModule],
+  imports: [AuthModule, ProvisionModule],
   controllers: [GerenteAgentesController],
   providers: [GerenteAgentesService, TaskStatusPollerService],
   exports: [GerenteAgentesService, TaskStatusPollerService],

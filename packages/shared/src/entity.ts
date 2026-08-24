@@ -29,6 +29,18 @@ export type FieldValues = Record<
   | unknown[]
 >
 
+/** Item de ordenação para listagem CRUD. */
+export interface CrudOrderByItem {
+  campo: string
+  direction: "asc" | "desc"
+  /**
+   * Valores que vão para o final da ordenação (CASE WHEN seguro).
+   * Ex.: valores de status "concluído"/"cancelado" aparecem por último.
+   * Máximo 20 itens; tipos devem ser compatíveis com a coluna.
+   */
+  valuesLast?: (string | number)[]
+}
+
 /** Parâmetros padronizados de listagem do CRUD genérico. */
 export interface ListParams {
   page?: number
@@ -36,6 +48,8 @@ export interface ListParams {
   search?: string
   /** Filtros por coluna — validados contra o schema do projeto no back. */
   filters?: Record<string, string | number | boolean>
+  /** Ordenação por colunas — validada contra o schema no back. */
+  orderBy?: CrudOrderByItem[]
 }
 
 /** Resposta paginada padronizada. */

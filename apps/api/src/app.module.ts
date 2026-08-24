@@ -20,7 +20,7 @@ import { GerenteAgentesModule } from "./modules/gerenteagentes/gerenteagentes.mo
       envFilePath: [".env", resolve(__dirname, "..", "..", "..", ".env")],
     }),
     // Limite global folgado; o login tem limite próprio mais rígido.
-    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),
+    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 1000 }]),
     EnvModule,
     DatabaseModule,
     AuthModule,

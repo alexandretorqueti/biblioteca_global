@@ -67,9 +67,28 @@ export const customActionSchema = z.object({
   path: z.string().min(1),
   /** Texto de confirmação (opcional). Quando presente, o front mostra um dialog antes de executar. */
   confirm: z.string().optional(),
+  /**
+   * Condição (template string) que desabilita a action — avaliada contra o
+   * registro/linha quando se trata de rowAction (task-80 st-2).
+   * Ex.: `"status === running"` desabilita o botão nas linhas com status "running".
+   * Sintaxe suportada: comparação (`===`, `!==`) com strings, números, booleans,
+   * `null`/`undefined`, e/ou campos do registro, combináveis com `&&`/`||`.
+   * Quando o registro não tem o campo referido, a comparação avalia como false
+   * (exceto `=== undefined`/`=== null`, que avaliam como true).
+   * Backward-compatível: quando omitido, a action nunca é desabilitada por condição.
+   */
+  disabledWhen: z.string().min(1).optional(),
 }).strict()
 
 export type CustomAction = z.infer<typeof customActionSchema>
+
+/**
+ * Action por linha (rowAction) em telas cadastro/external: mesma config
+ * serializável de {@link CustomAction} — o tipo `disabledWhen` (task-80 st-2)
+ * é opcional e apenas faz sentido em contexto de linha; ações globais podem
+ * declará-lo, mas o runtime só avalia contra a linha quando existe.
+ */
+export type RowActionConfig = CustomAction
 
 /** Tela filha (master-detail): childResource + fkField de ligação + label. */
 export const childScreenSchema = z.object({
@@ -94,6 +113,13 @@ export const childRouteSchema: z.ZodType<ChildRoute> = z.lazy(() =>
     icon: z.string().min(1).optional(),
     /** Resource de destino (tabela no schema). */
     targetResource: z.string().regex(/^[a-z][a-z0-9_]*$/),
+    /**
+     * ID de tela custom de destino (opcional). Quando presente, a rota filha
+     * abre uma tela custom registrada (registry) em vez de uma grid cadastro.
+     * Adição 2026-08-21 (task-54) — backward-compatível: configs antigas seguem
+     * usando `targetResource` como grid.
+     */
+    componentId: z.string().min(1).optional(),
     /** Campo no resource filho que referencia o pai (ex.: "projetoId"). */
     filterField: z.string().min(1),
     /** Título da tela filha (opcional). */
@@ -108,6 +134,16 @@ export const childRouteSchema: z.ZodType<ChildRoute> = z.lazy(() =>
     rowActions: z.array(customActionSchema).optional(),
     /** Rotas filhas aninhadas (recursivo — opcional). */
     childRoutes: z.array(z.lazy(() => childRouteSchema)).optional(),
+    /**
+     * Ordenação padrão aplicada ao carregar a tela filha (opcional).
+     * Enviada como parâmetro `orderBy` na requisição de listagem.
+     * Ex.: [{campo:'status', direction:'asc', valuesLast:['done']}, {campo:'createdAt', direction:'desc'}]
+     */
+    defaultOrderBy: z.array(z.object({
+      campo: z.string().min(1),
+      direction: z.enum(["asc", "desc"]),
+      valuesLast: z.array(z.union([z.string(), z.number()])).optional(),
+    })).optional(),
   }).strict()
 )
 
@@ -116,6 +152,8 @@ export interface ChildRoute {
   label: string
   icon?: string
   targetResource: string
+  /** Quando presente, abre uma tela custom em vez de uma grid cadastro (task-54). */
+  componentId?: string
   filterField: string
   title?: string
   fields?: import("./field").DynamicFieldConfig[]
@@ -123,6 +161,8 @@ export interface ChildRoute {
   actions?: CustomAction[]
   rowActions?: CustomAction[]
   childRoutes?: ChildRoute[]
+  /** Ordenação padrão ao carregar a tela filha (task-89). */
+  defaultOrderBy?: import("./entity").CrudOrderByItem[]
 }
 
 /**

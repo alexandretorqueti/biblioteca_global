@@ -88,7 +88,7 @@ interface JsonGridProps<T extends JsonRecord = JsonRecord> {
   onRowAction?: (action: CustomAction, row: EntityRecord) => void
   /** ID da ação em execução (para desabilitar botões). */
   executandoAcao?: string | null
-  /** Feedback por ação (success/error). */
+  /** Feedback por ação, chave `${rowId}_${actionId}` (success/error). */
   acaoFeedback?: Record<string, { type: "success" | "error"; message: string }>
 }
 
@@ -456,16 +456,17 @@ export default function JsonGrid<T extends JsonRecord>({
               </TableHead>
 
               <TableBody>
-                {displayedRows.map((row, rowIndex) => (
+                {displayedRows.map((row, rowIndex) => {
+                  const rowKey =
+                    getRowId?.(
+                      row,
+                      pagination
+                        ? page * pageSize + rowIndex
+                        : rowIndex,
+                    ) ?? rowIndex
+                  return (
                   <TableRow
-                    key={
-                      getRowId?.(
-                        row,
-                        pagination
-                          ? page * pageSize + rowIndex
-                          : rowIndex,
-                      ) ?? rowIndex
-                    }
+                    key={rowKey}
                     hover
                     sx={{
                       cursor: clickable ? "pointer" : "default",
@@ -511,7 +512,8 @@ export default function JsonGrid<T extends JsonRecord>({
 
                           {/* Botões de ações por linha */}
                           {rowActions.map((action) => {
-                            const estado = acaoFeedback[action.id]
+                            // Feedback por linha + ação: `${rowId}_${actionId}`.
+                            const estado = acaoFeedback[`${rowKey}_${action.id}`]
                             const executando = executandoAcao === action.id
                             return (
                               <Stack key={action.id} spacing={0.5} alignItems="flex-end">
@@ -562,7 +564,8 @@ export default function JsonGrid<T extends JsonRecord>({
                       </TableCell>
                     )}
                   </TableRow>
-                ))}
+                  )
+                })}
               </TableBody>
             </Table>
           </TableContainer>

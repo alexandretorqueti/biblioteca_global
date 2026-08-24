@@ -304,7 +304,8 @@ export class AuthService {
   }
 
   async signAccessToken(claims: AccessTokenClaims): Promise<string> {
-    const expiresIn = this.env.jwtAccessTtl as JwtSignOptions["expiresIn"]
+    const expiresIn =
+      this.env.jwtAccessExpiration as JwtSignOptions["expiresIn"]
     return this.jwt.signAsync(
       { sub: claims.sub, projetoId: claims.projetoId, perfil: claims.perfil },
       { expiresIn },

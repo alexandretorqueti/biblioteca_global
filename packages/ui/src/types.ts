@@ -14,6 +14,7 @@ import type {
   DynamicFieldConfig,
   EntityRecord,
   MultipleChoiceFieldConfig,
+  RowActionConfig,
 } from "@biblioteca-global/shared"
 
 export type { EntityRecord, CadastroDataSource, FieldValues } from "@biblioteca-global/shared"
@@ -24,6 +25,7 @@ export type {
   CadastroScreenConfig,
   CustomScreenConfig,
   CustomAction,
+  RowActionConfig,
 } from "@biblioteca-global/shared"
 export type {
   DynamicFieldConfig,

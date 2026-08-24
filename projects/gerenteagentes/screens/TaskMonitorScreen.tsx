@@ -15,7 +15,11 @@ import {
   Button,
   Chip,
   CircularProgress,
+  Dialog,
+  DialogContent,
+  DialogTitle,
   FormControl,
+  IconButton,
   InputLabel,
   MenuItem,
   Paper,
@@ -28,12 +32,16 @@ import {
   TableRow,
   Typography,
 } from "@mui/material"
-import { PlayArrowRounded, PauseRounded, ReplayRounded } from "@mui/icons-material"
+import { PlayArrowRounded, PauseRounded, ReplayRounded, EditRounded, CloseRounded } from "@mui/icons-material"
+import { DynamicForm } from "@biblioteca-global/ui"
+import type { DynamicField, DynamicFormValues } from "@biblioteca-global/ui"
 import { useApi } from "../../../apps/web/src/hooks/useApi"
 
 interface Tarefa {
   id: number
   titulo: string
+  descricao?: string | null
+  dependsOnTaskId?: number | null
   status: string
   projetoId: number
   updatedAt?: string
@@ -65,6 +73,18 @@ interface SubTaskMotor {
   status: string
   deliverCount?: number
   blockInfo?: { reason?: string; command?: string; exitCode?: number | null } | null
+}
+
+/** Subtarefa do banco de dados (para edição — o motor só tem seq/title/status). */
+interface SubTarefaDb {
+  id: number
+  tarefaId: number
+  seq: number
+  titulo: string
+  descricao?: string | null
+  status: string
+  resultado?: string | null
+  dependsOnSubtaskId?: number | null
 }
 
 interface MotorEvent {
@@ -147,6 +167,15 @@ export default function TaskMonitorScreen(): ReactNode {
   const [loading, setLoading] = useState(true)
   const [erro, setErro] = useState<string | null>(null)
   const [acao, setAcao] = useState<string | null>(null)
+  const [editOpen, setEditOpen] = useState(false)
+  const [editLoading, setEditLoading] = useState(false)
+  const [editError, setEditError] = useState<string | null>(null)
+  // ST-2: edição de subtarefa
+  const [subtarefasDb, setSubtarefasDb] = useState<SubTarefaDb[]>([])
+  const [editSubOpen, setEditSubOpen] = useState(false)
+  const [editSubLoading, setEditSubLoading] = useState(false)
+  const [editSubError, setEditSubError] = useState<string | null>(null)
+  const [editingSub, setEditingSub] = useState<SubTarefaDb | null>(null)
   const mounted = useRef(true)
 
   const carregarProjetos = useCallback(async () => {
@@ -202,6 +231,21 @@ export default function TaskMonitorScreen(): ReactNode {
     }
   }, [bundle])
 
+  /** ST-2: carrega subtarefas do banco para ter IDs ao editar. */
+  const carregarSubtarefasDb = useCallback(async (id: number) => {
+    if (!bundle) return
+    try {
+      const res = await bundle.http.request<SubTarefaDb[]>(
+        "GET",
+        `/gerenteagentes/tarefas/${id}/subtarefas`,
+        { auth: "access" },
+      )
+      if (mounted.current) setSubtarefasDb(Array.isArray(res) ? res : [])
+    } catch {
+      if (mounted.current) setSubtarefasDb([])
+    }
+  }, [bundle])
+
   useEffect(() => {
     mounted.current = true
     void carregarProjetos()
@@ -215,13 +259,17 @@ export default function TaskMonitorScreen(): ReactNode {
     }
   }, [carregarProjetos, carregarTarefas])
 
-  // Polling de 5s no detalhe (tempo real)
+  // Polling de 60s no detalhe (tempo real)
   useEffect(() => {
     if (tarefaId === "") return
     void carregarDetail(tarefaId)
-    const t2 = setInterval(() => void carregarDetail(tarefaId), 5000)
+    void carregarSubtarefasDb(tarefaId)
+    const t2 = setInterval(() => {
+      void carregarDetail(tarefaId)
+      void carregarSubtarefasDb(tarefaId)
+    }, 60000)
     return () => clearInterval(t2)
-  }, [tarefaId, carregarDetail])
+  }, [tarefaId, carregarDetail, carregarSubtarefasDb])
 
   useEffect(() => {
     setLoading(false)
@@ -247,6 +295,184 @@ export default function TaskMonitorScreen(): ReactNode {
     [bundle, tarefaId, carregarDetail, carregarTarefas],
   )
 
+  const getLoadOptions = useCallback(
+    (resource: string) => async (search: string) => {
+      if (!bundle) return []
+      try {
+        const res = await bundle.http.request<{ items: Array<Record<string, unknown>> }>(
+          "GET",
+          `/${resource}`,
+          {
+            query: search ? { search, pageSize: 50 } : { pageSize: 100 },
+            auth: "access",
+          },
+        )
+        return res.items ?? []
+      } catch {
+        return []
+      }
+    },
+    [bundle],
+  )
+
+  const editFields: DynamicField[] = useMemo(
+    () => [
+      {
+        name: "titulo",
+        label: "Título",
+        type: "text",
+        required: true,
+        maxLength: 200,
+        fullWidth: true,
+      },
+      {
+        name: "descricao",
+        label: "Descrição",
+        type: "textarea",
+        fullWidth: true,
+      },
+      {
+        name: "dependsOnTaskId",
+        label: "Depende da tarefa",
+        type: "multipleChoice",
+        multipleChoice: {
+          resource: "tarefas",
+          idField: "id",
+          displayField: "titulo",
+          loadOptions: getLoadOptions("tarefas"),
+        },
+      },
+    ],
+    [getLoadOptions],
+  )
+
+  const handleEditSubmit = useCallback(
+    async (values: DynamicFormValues) => {
+      if (!bundle || tarefaId === "") return
+      setEditLoading(true)
+      setEditError(null)
+      try {
+        const body: Record<string, unknown> = {
+          titulo: String(values.titulo ?? "").trim(),
+          descricao: values.descricao ? String(values.descricao).trim() : null,
+          dependsOnTaskId:
+            values.dependsOnTaskId !== "" && values.dependsOnTaskId != null
+              ? Number(values.dependsOnTaskId)
+              : null,
+        }
+        await bundle.http.request("PUT", `/tarefas/${tarefaId}`, {
+          body,
+          auth: "access",
+        })
+        setEditOpen(false)
+        await carregarDetail(tarefaId)
+        await carregarTarefas()
+      } catch (e) {
+        setEditError(e instanceof Error ? e.message : "Erro ao atualizar tarefa")
+      } finally {
+        setEditLoading(false)
+      }
+    },
+    [bundle, tarefaId, carregarDetail, carregarTarefas],
+  )
+
+  // ST-2: campos e handler do diálogo de edição de subtarefa
+  const editSubFields: DynamicField[] = useMemo(
+    () => [
+      { name: "titulo", label: "Título", type: "text", required: true, maxLength: 200, fullWidth: true },
+      {
+        name: "status",
+        label: "Status",
+        type: "select",
+        options: [
+          { label: "Pendente", value: "pending" },
+          { label: "Executando", value: "running" },
+          { label: "Verificada", value: "verified" },
+          { label: "Falhou", value: "failed" },
+        ],
+      },
+      { name: "seq", label: "Ordem", type: "number", min: 0 },
+      { name: "descricao", label: "Descrição", type: "textarea", fullWidth: true },
+      { name: "resultado", label: "Resultado", type: "textarea", fullWidth: true },
+      {
+        name: "dependsOnSubtaskId",
+        label: "Depende da subtarefa",
+        type: "multipleChoice",
+        multipleChoice: {
+          resource: "subtarefas",
+          idField: "id",
+          displayField: "titulo",
+          loadOptions: getLoadOptions("subtarefas"),
+        },
+      },
+    ],
+    [getLoadOptions],
+  )
+
+  const editSubInitialValues = useMemo<DynamicFormValues>(() => {
+    if (!editingSub) return { titulo: "", status: "pending", seq: 0, descricao: "", resultado: "", dependsOnSubtaskId: "" }
+    return {
+      titulo: editingSub.titulo,
+      status: editingSub.status,
+      seq: editingSub.seq,
+      descricao: editingSub.descricao ?? "",
+      resultado: editingSub.resultado ?? "",
+      dependsOnSubtaskId: editingSub.dependsOnSubtaskId ?? "",
+    }
+  }, [editingSub])
+
+  const handleEditSubSubmit = useCallback(
+    async (values: DynamicFormValues) => {
+      if (!bundle || !editingSub) return
+      setEditSubLoading(true)
+      setEditSubError(null)
+      try {
+        const body: Record<string, unknown> = {
+          titulo: String(values.titulo ?? "").trim(),
+          status: String(values.status ?? "pending"),
+          seq: Number(values.seq ?? 0),
+          descricao: values.descricao ? String(values.descricao).trim() : null,
+          resultado: values.resultado ? String(values.resultado).trim() : null,
+          dependsOnSubtaskId:
+            values.dependsOnSubtaskId !== "" && values.dependsOnSubtaskId != null
+              ? Number(values.dependsOnSubtaskId)
+              : null,
+        }
+        await bundle.http.request("PUT", `/subtarefas/${editingSub.id}`, {
+          body,
+          auth: "access",
+        })
+        setEditSubOpen(false)
+        setEditingSub(null)
+        if (tarefaId !== "") {
+          await carregarDetail(tarefaId)
+          await carregarSubtarefasDb(tarefaId)
+        }
+      } catch (e) {
+        setEditSubError(e instanceof Error ? e.message : "Erro ao atualizar subtarefa")
+      } finally {
+        setEditSubLoading(false)
+      }
+    },
+    [bundle, editingSub, tarefaId, carregarDetail, carregarSubtarefasDb],
+  )
+
+  /** ST-2: ao clicar em editar numa linha do motor, resolve a subtarefa do banco pelo seq. */
+  const abrirEdicaoSubtarefa = useCallback(
+    (motorSub: SubTaskMotor) => {
+      const dbSub = subtarefasDb.find((s) => s.seq === motorSub.seq)
+      if (!dbSub) {
+        setEditSubError("Subtarefa ainda não sincronizada com o banco de dados.")
+        setEditSubOpen(true)
+        return
+      }
+      setEditSubError(null)
+      setEditingSub(dbSub)
+      setEditSubOpen(true)
+    },
+    [subtarefasDb],
+  )
+
   const stats = useMemo(() => {
     const subs = detail?.subtasks ?? []
     const total = subs.length
@@ -255,6 +481,20 @@ export default function TaskMonitorScreen(): ReactNode {
     return { total, verified, active }
   }, [detail])
 
+  const tarefaSelecionada = tarefas.find((t) => t.id === tarefaId)
+  const statusMotor = detail?.task?.status ?? tarefaSelecionada?.status ?? "—"
+
+  const editInitialValues = useMemo<DynamicFormValues>(() => {
+    if (!tarefaSelecionada) return { titulo: "", descricao: "", dependsOnTaskId: "" }
+    return {
+      titulo: tarefaSelecionada.titulo,
+      descricao: tarefaSelecionada.descricao ?? "",
+      dependsOnTaskId: tarefaSelecionada.dependsOnTaskId ?? "",
+    }
+  }, [tarefaSelecionada])
+
+  const eventos = detail?.events ?? []
+
   if (loading) {
     return (
       <Box sx={{ display: "flex", justifyContent: "center", p: 4 }} data-testid="loading-spinner">
@@ -262,10 +502,6 @@ export default function TaskMonitorScreen(): ReactNode {
       </Box>
     )
   }
-
-  const tarefaSelecionada = tarefas.find((t) => t.id === tarefaId)
-  const statusMotor = detail?.task?.status ?? tarefaSelecionada?.status ?? "—"
-  const eventos = detail?.events ?? []
 
   return (
     <Stack spacing={3} data-testid="task-monitor-screen">
@@ -342,6 +578,17 @@ export default function TaskMonitorScreen(): ReactNode {
           <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems="center" justifyContent="space-between">
             <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
               <Typography variant="h6">{tarefaSelecionada.titulo}</Typography>
+              <IconButton
+                size="small"
+                aria-label="Editar tarefa"
+                onClick={() => {
+                  setEditError(null)
+                  setEditOpen(true)
+                }}
+                data-testid="btn-edit-task"
+              >
+                <EditRounded fontSize="small" />
+              </IconButton>
               <Chip size="small" label={statusMotor} color={corStatus(statusMotor)} data-testid="task-status-pill" />
               {detail?.exists && (
                 <Chip size="small" variant="outlined" label={`Progresso: ${stats.verified} / ${stats.total}`} data-testid="task-progress" />
@@ -404,6 +651,7 @@ export default function TaskMonitorScreen(): ReactNode {
                     <TableCell>Subtarefa</TableCell>
                     <TableCell>Status</TableCell>
                     <TableCell align="right">Entregas</TableCell>
+                    <TableCell align="center" sx={{ width: 48 }}>Ações</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
@@ -430,12 +678,22 @@ export default function TaskMonitorScreen(): ReactNode {
                           <Chip size="small" label={s.status} color={corStatus(s.status)} />
                         </TableCell>
                         <TableCell align="right">{s.deliverCount ?? 0}</TableCell>
+                        <TableCell align="center">
+                          <IconButton
+                            size="small"
+                            aria-label={`Editar subtarefa ${s.seq}`}
+                            onClick={() => abrirEdicaoSubtarefa(s)}
+                            data-testid={`btn-edit-subtask-${s.seq}`}
+                          >
+                            <EditRounded fontSize="small" />
+                          </IconButton>
+                        </TableCell>
                       </TableRow>
                     )
                   })}
                   {(detail.subtasks ?? []).length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={4}>
+                      <TableCell colSpan={5}>
                         <Typography color="text.secondary" data-testid="empty-subtasks">
                           Nenhuma subtarefa ainda — o motor está planejando a execução.
                         </Typography>
@@ -470,6 +728,106 @@ export default function TaskMonitorScreen(): ReactNode {
           )}
         </Paper>
       )}
+
+      <Dialog
+        open={editOpen}
+        onClose={(_ev, reason) => {
+          if (reason === "backdropClick") return
+          if (editLoading) return
+          setEditOpen(false)
+        }}
+        fullWidth
+        maxWidth="md"
+        data-testid="edit-task-dialog"
+      >
+        <DialogTitle sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <Box>Editar tarefa</Box>
+          <IconButton
+            aria-label="Fechar formulário"
+            size="small"
+            disabled={editLoading}
+            onClick={() => setEditOpen(false)}
+            data-testid="btn-close-edit"
+          >
+            <CloseRounded />
+          </IconButton>
+        </DialogTitle>
+        <DialogContent sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          {editError && (
+            <Alert severity="error" data-testid="edit-error-alert">
+              {editError}
+            </Alert>
+          )}
+          {tarefaSelecionada && (
+            <Box sx={{ pt: 1 }}>
+              <DynamicForm
+                key={`edit-${tarefaId}`}
+                fields={editFields}
+                initialValues={editInitialValues}
+                loading={editLoading}
+                actionState="update"
+                submitLabel="Salvar alterações"
+                onSubmit={handleEditSubmit}
+                onCancel={() => setEditOpen(false)}
+              />
+            </Box>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* ST-2: Diálogo de edição de subtarefa */}
+      <Dialog
+        open={editSubOpen}
+        onClose={(_ev, reason) => {
+          if (reason === "backdropClick") return
+          if (editSubLoading) return
+          setEditSubOpen(false)
+          setEditingSub(null)
+        }}
+        fullWidth
+        maxWidth="md"
+        data-testid="edit-subtask-dialog"
+      >
+        <DialogTitle sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <Box>Editar subtarefa{editingSub ? ` #${editingSub.seq}` : ""}</Box>
+          <IconButton
+            aria-label="Fechar formulário de subtarefa"
+            size="small"
+            disabled={editSubLoading}
+            onClick={() => {
+              setEditSubOpen(false)
+              setEditingSub(null)
+            }}
+            data-testid="btn-close-edit-subtask"
+          >
+            <CloseRounded />
+          </IconButton>
+        </DialogTitle>
+        <DialogContent sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          {editSubError && (
+            <Alert severity="error" data-testid="edit-sub-error-alert">
+              {editSubError}
+            </Alert>
+          )}
+          {editingSub && (
+            <Box sx={{ pt: 1 }}>
+              <DynamicForm
+                key={`edit-sub-${editingSub.id}`}
+                fields={editSubFields}
+                initialValues={editSubInitialValues}
+                loading={editSubLoading}
+                actionState="update"
+                submitLabel="Salvar alterações"
+                onSubmit={handleEditSubSubmit}
+                onCancel={() => {
+                  setEditSubOpen(false)
+                  setEditingSub(null)
+                }}
+              />
+            </Box>
+          )}
+        </DialogContent>
+      </Dialog>
     </Stack>
   )
 }

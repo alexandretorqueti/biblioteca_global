@@ -2,6 +2,9 @@
  * NovaTarefaScreen — cria uma tarefa no projeto gerenteagentes.
  *
  * Usa fetch direto para o endpoint interno da plataforma.
+ *
+ * Agente e ambiente de execução (repoPath/buildCommand/unitTestCommand)
+ * vivem em projetos_captados (migration 0003) — a tarefa herda do projeto.
  */
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
 import {
@@ -22,21 +25,11 @@ interface Projeto {
   nome: string
 }
 
-interface Agente {
-  id: number
-  nome: string
-}
-
 export default function NovaTarefaScreen(): ReactNode {
   const [projetos, setProjetos] = useState<Projeto[]>([])
-  const [agentes, setAgentes] = useState<Agente[]>([])
   const [projetoId, setProjetoId] = useState("")
-  const [agenteId, setAgenteId] = useState("")
   const [titulo, setTitulo] = useState("")
   const [descricao, setDescricao] = useState("")
-  const [repoPath, setRepoPath] = useState("")
-  const [buildCommand, setBuildCommand] = useState("")
-  const [unitTestCommand, setUnitTestCommand] = useState("")
 
   const [enviando, setEnviando] = useState(false)
   const [sucesso, setSucesso] = useState(false)
@@ -46,17 +39,10 @@ export default function NovaTarefaScreen(): ReactNode {
     const token = localStorage.getItem("access_token")
     const headers: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {}
     try {
-      const [projsRes, agentesRes] = await Promise.all([
-        fetch("/api/projetos_captados", { headers }),
-        fetch("/api/agentes", { headers }),
-      ])
+      const projsRes = await fetch("/api/projetos_captados", { headers })
       if (projsRes.ok) {
         const data = await projsRes.json()
         setProjetos((data.items ?? data).filter((p: Projeto & { ativo?: boolean }) => p.ativo !== false))
-      }
-      if (agentesRes.ok) {
-        const data = await agentesRes.json()
-        setAgentes((data.items ?? data).filter((a: Agente & { ativo?: boolean }) => a.ativo !== false))
       }
     } catch {
       // silencioso — combos ficam vazios
@@ -70,10 +56,9 @@ export default function NovaTarefaScreen(): ReactNode {
   const errosCampos = useMemo(() => {
     const e: string[] = []
     if (!projetoId.trim()) e.push("Projeto é obrigatório")
-    if (!agenteId.trim()) e.push("Agente é obrigatório")
     if (!titulo.trim()) e.push("Título é obrigatório")
     return e
-  }, [projetoId, agenteId, titulo])
+  }, [projetoId, titulo])
 
   const podeEnviar = errosCampos.length === 0 && !enviando
 
@@ -96,12 +81,8 @@ export default function NovaTarefaScreen(): ReactNode {
         headers,
         body: JSON.stringify({
           projetoId: Number(projetoId),
-          agenteId: Number(agenteId),
           titulo: titulo.trim(),
           descricao: descricao.trim() || null,
-          repoPath: repoPath.trim() || null,
-          buildCommand: buildCommand.trim() || null,
-          unitTestCommand: unitTestCommand.trim() || null,
           status: "draft",
         }),
       })
@@ -113,18 +94,14 @@ export default function NovaTarefaScreen(): ReactNode {
 
       setSucesso(true)
       setProjetoId("")
-      setAgenteId("")
       setTitulo("")
       setDescricao("")
-      setRepoPath("")
-      setBuildCommand("")
-      setUnitTestCommand("")
     } catch (e) {
       setErro(e instanceof Error ? e.message : "Erro ao criar tarefa")
     } finally {
       setEnviando(false)
     }
-  }, [projetoId, agenteId, titulo, descricao, repoPath, buildCommand, unitTestCommand])
+  }, [projetoId, titulo, descricao])
 
   return (
     <Stack spacing={3} data-testid="nova-tarefa-screen">
@@ -156,20 +133,6 @@ export default function NovaTarefaScreen(): ReactNode {
                 <MenuItem key={p.id} value={String(p.id)}>{p.nome}</MenuItem>
               ))}
             </TextField>
-            <TextField
-              select
-              label="Agente"
-              value={agenteId}
-              onChange={(e) => setAgenteId(e.target.value)}
-              required
-              fullWidth
-              inputProps={{ "data-testid": "input-agente-id" }}
-            >
-              <MenuItem value="" disabled>Selecione um agente</MenuItem>
-              {agentes.map((a) => (
-                <MenuItem key={a.id} value={String(a.id)}>{a.nome}</MenuItem>
-              ))}
-            </TextField>
           </Stack>
 
           <TextField
@@ -191,31 +154,6 @@ export default function NovaTarefaScreen(): ReactNode {
             fullWidth
             inputProps={{ "data-testid": "input-descricao" }}
           />
-
-          <TextField
-            label="Repo Path"
-            value={repoPath}
-            onChange={(e) => setRepoPath(e.target.value)}
-            fullWidth
-            placeholder="/data/workspace/projects/..."
-          />
-
-          <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-            <TextField
-              label="Build Command"
-              value={buildCommand}
-              onChange={(e) => setBuildCommand(e.target.value)}
-              fullWidth
-              placeholder="npm run build"
-            />
-            <TextField
-              label="Test Command"
-              value={unitTestCommand}
-              onChange={(e) => setUnitTestCommand(e.target.value)}
-              fullWidth
-              placeholder="npm run test"
-            />
-          </Stack>
 
           <Box>
             <Button

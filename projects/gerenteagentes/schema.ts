@@ -5,12 +5,12 @@
  * - Captação (Isa): contatos, projetos_captados, definicoes, chats, chat_mensagens
  * - Execução (motor): tarefas, subtarefas, tarefa_chats, projeto_chats,
  *   geracoes_projeto, bloqueios
- * - Agentes: agentes (1:1 com projetos_captados)
+ * - Agentes: ids dos agentes mantidos pelo OpenClaw (1:1 com projetos_captados)
  *
  * Relações:
- * - projeto → agente (1:1, agenteId único)
+ * - projeto → agente OpenClaw (1:1, agenteId único)
  * - projeto → definições (1:N)
- * - projeto → tarefas (1:N)
+ * - projeto → tarefas (1:N; agente e ambiente de execução vêm do projeto)
  * - tarefa → subtarefas (1:N)
  * - tarefa → tarefa_chats (1:N)
  * - projeto → projeto_chats (1:N)
@@ -27,26 +27,6 @@ import {
   varchar,
 } from "drizzle-orm/mysql-core"
 import type { FormAnnotationsPorTabela } from "@biblioteca-global/schema-tools"
-
-// ============================================================================
-// AGENTES (declarado primeiro — sem dependências)
-// ============================================================================
-
-//TODO: Adicionar o campo do ID do agente do openclaw (usando a mesma estratégia do projeto Console Openclaw)
-export const agentes = mysqlTable("agentes", {
-  id: bigint("id", { mode: "number", unsigned: true })
-    .primaryKey()
-    .autoincrement(),
-  nome: varchar("nome", { length: 150 }).notNull().unique(),
-  modelo: varchar("modelo", { length: 100 }).notNull(),
-  descricao: text("descricao"),
-  ativo: boolean("ativo").notNull().default(true),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-  updatedAt: timestamp("updated_at")
-    .notNull()
-    .defaultNow()
-    .onUpdateNow(),
-})
 
 // ============================================================================
 // CAPTAÇÃO (Isa)
@@ -77,8 +57,6 @@ export const projetosCaptados = mysqlTable("projetos_captados", {
   regras: text("regras"), // regras do projeto
   contatoId: bigint("contato_id", { mode: "number", unsigned: true })
     .references(() => contatos.id, { onDelete: "set null" }),
-  agenteId: bigint("agente_id", { mode: "number", unsigned: true })
-    .references(() => agentes.id, { onDelete: "set null" }),
   ativo: boolean("ativo").notNull().default(true),
   // Vínculo 1:1 com app da plataforma (preenchido ao iniciar desenvolvimento)
   plataformaProjetoId: bigint("plataforma_projeto_id", {
@@ -162,17 +140,14 @@ export const tarefas = mysqlTable("tarefas", {
   id: bigint("id", { mode: "number", unsigned: true })
     .primaryKey()
     .autoincrement(),
+  externalId: varchar("external_id", { length: 64 }).unique(),
   projetoId: bigint("projeto_id", { mode: "number", unsigned: true })
     .notNull()
     .references(() => projetosCaptados.id, { onDelete: "cascade" }),
-  agenteId: bigint("agente_id", { mode: "number", unsigned: true })
-    .notNull()
-    .references(() => agentes.id, { onDelete: "cascade" }),
+  // Agente e ambiente de execução (repoPath/buildCommand/unitTestCommand)
+  // vivem em projetos_captados — o motor resolve via projeto.
   titulo: varchar("titulo", { length: 200 }).notNull(),
   descricao: text("descricao"),
-  repoPath: text("repo_path"), // caminho do repo no host
-  buildCommand: varchar("build_command", { length: 500 }),
-  unitTestCommand: varchar("unit_test_command", { length: 500 }),
   status: varchar("status", { length: 50 }).notNull().default("draft"), // draft, planned, running, paused, completed, failed, cancelled
   maxRework: int("max_rework").notNull().default(3),
   hardTimeoutMs: bigint("hard_timeout_ms", { mode: "number" }),
@@ -301,7 +276,6 @@ export const annotations = {
     descricao: { label: "Descrição", type: "textarea", fullWidth: true },
     regras: { label: "Regras", type: "textarea", fullWidth: true },
     contato_id: { label: "Contato" },
-    agente_id: { label: "Agente" },
     ativo: { label: "Ativo" },
     plataforma_projeto_id: { label: "Projeto Plataforma" },
   },
@@ -322,12 +296,8 @@ export const annotations = {
   },
   tarefas: {
     projeto_id: { label: "Projeto" },
-    agente_id: { label: "Agente" },
     titulo: { label: "Título", fullWidth: true, maxLength: 200 },
     descricao: { label: "Descrição", type: "textarea", fullWidth: true },
-    repo_path: { label: "Caminho do Repo", fullWidth: true },
-    build_command: { label: "Comando de Build", maxLength: 500 },
-    unit_test_command: { label: "Comando de Teste", maxLength: 500 },
     status: {
       label: "Status",
       helperText: "draft | planned | running | paused | completed | failed | cancelled",
@@ -378,11 +348,5 @@ export const annotations = {
     block_exit_code: { label: "Exit Code" },
     block_excerpt: { label: "Excerto", type: "textarea", fullWidth: true },
     blocked_at: { label: "Bloqueado em" },
-  },
-  agentes: {
-    nome: { label: "Nome", fullWidth: true, maxLength: 150 },
-    modelo: { label: "Modelo" },
-    descricao: { label: "Descrição", type: "textarea", fullWidth: true },
-    ativo: { label: "Ativo" },
   },
 } satisfies FormAnnotationsPorTabela

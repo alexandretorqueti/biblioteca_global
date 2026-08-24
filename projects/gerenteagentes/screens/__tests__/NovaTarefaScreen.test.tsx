@@ -6,7 +6,8 @@
  * Histórico: esta tela já foi testada quando fazia fetch direto para a API do
  * motor (http://api.tarefas.localhost/api/task). O commit ddd99a2 a converteu
  * para o endpoint interno da plataforma. Estes testes validam o contrato
- * ATUAL (endpoint interno, campos projetoId/agenteId/título/descrição,
+ * ATUAL (endpoint interno, campos projetoId/título/descrição — agente e
+ * ambiente de execução migraram para projetos_captados, migration 0003),
  * validação local, tratamento de erro e limpeza pós-sucesso).
  *
  * Notas de implementação (2026-08-19):
@@ -46,7 +47,6 @@ let postResult:
 /**
  * Mock único do fetch, rotaciondo por URL + method:
  * - GET /api/projetos_captados → opções de projeto
- * - GET /api/agentes → opções de agente
  * - POST /api/tarefas → `postResult` (controlado por teste)
  *
  * Uma única `mockImplementation` persistente (sem `Once`): a tela pode refazer
@@ -59,9 +59,6 @@ function instalarMockFetch() {
     if (opts?.method === "POST" && u.includes("tarefas")) {
       if (postResult === "pending") return new Promise(() => {})
       return { ok: postResult.ok, status: postResult.status, json: async () => postResult.body }
-    }
-    if (u.includes("agentes")) {
-      return { ok: true, status: 200, json: async () => ({ items: [{ id: 1, nome: "Agente de Teste", ativo: true }] }) }
     }
     if (u.includes("projetos")) {
       return { ok: true, status: 200, json: async () => ({ items: [{ id: 640, nome: "Projeto Piloto", ativo: true }] }) }
@@ -98,16 +95,11 @@ async function fecharMenuAberto(user: ReturnType<typeof userEvent.setup>) {
  */
 async function preencherCampos(
   user: ReturnType<typeof userEvent.setup>,
-  valor: { projetoId?: string; agenteId?: string; titulo?: string; descricao?: string } = {},
+  valor: { projetoId?: string; titulo?: string; descricao?: string } = {},
 ) {
   if (valor.projetoId) {
     await user.click(comboboxDoCampo("input-projeto-id"))
     const alvo = screen.queryAllByRole("option").find((o) => o.getAttribute("data-value") === valor.projetoId)
-    await user.click(alvo!)
-  }
-  if (valor.agenteId) {
-    await user.click(comboboxDoCampo("input-agente-id"))
-    const alvo = screen.queryAllByRole("option").find((o) => o.getAttribute("data-value") === valor.agenteId)
     await user.click(alvo!)
   }
   if (valor.titulo) await user.type(screen.getByTestId("input-titulo"), valor.titulo)
@@ -158,7 +150,6 @@ describe("NovaTarefaScreen", () => {
 
     expect(screen.getByTestId("nova-tarefa-screen")).toBeInTheDocument()
     expect(screen.getByTestId("input-projeto-id")).toBeInTheDocument()
-    expect(screen.getByTestId("input-agente-id")).toBeInTheDocument()
     expect(screen.getByTestId("input-titulo")).toBeInTheDocument()
     expect(screen.getByTestId("input-descricao")).toBeInTheDocument()
     expect(screen.getByTestId("btn-enviar")).toBeDisabled()
@@ -171,7 +162,7 @@ describe("NovaTarefaScreen", () => {
       </BibliotecaThemeProvider>,
     )
 
-    await preencherCampos(user, { projetoId: "640", agenteId: "1" })
+    await preencherCampos(user, { projetoId: "640" })
     expect(screen.getByTestId("btn-enviar")).toBeDisabled() // título ainda vazio
 
     await preencherCampos(user, { titulo: "Tarefa de teste" })
@@ -189,7 +180,6 @@ describe("NovaTarefaScreen", () => {
 
     await preencherCampos(user, {
       projetoId: "640",
-      agenteId: "1",
       titulo: "Minha tarefa",
       descricao: "Descricao testando aqui",
     })
@@ -211,7 +201,6 @@ describe("NovaTarefaScreen", () => {
       expect(chamadaPost).toBeDefined()
       const corpo = JSON.parse((chamadaPost![1] as { body: string }).body)
       expect(corpo.projetoId).toBe(640)
-      expect(corpo.agenteId).toBe(1)
       expect(corpo.titulo).toBe("Minha tarefa")
       expect(corpo.descricao).toBe("Descricao testando aqui")
       expect(corpo.status).toBe("draft")
@@ -231,7 +220,7 @@ describe("NovaTarefaScreen", () => {
       </BibliotecaThemeProvider>,
     )
 
-    await preencherCampos(user, { projetoId: "640", agenteId: "1", titulo: "Tarefa de teste" })
+    await preencherCampos(user, { projetoId: "640", titulo: "Tarefa de teste" })
     await clicarEnviar(user)
 
     await waitFor(() => {
@@ -249,7 +238,7 @@ describe("NovaTarefaScreen", () => {
       </BibliotecaThemeProvider>,
     )
 
-    await preencherCampos(user, { projetoId: "640", agenteId: "1", titulo: "Tarefa de erro" })
+    await preencherCampos(user, { projetoId: "640", titulo: "Tarefa de erro" })
     await clicarEnviar(user)
 
     await waitFor(() => {
@@ -258,15 +247,21 @@ describe("NovaTarefaScreen", () => {
     expect(screen.getByTestId("api-error")).toHaveTextContent("Erro interno")
   })
 
-  it("mantém botão desabilitado quando um campo obrigatório está vazio", async () => {
+  it("habilita o botão quando projeto e título estão preenchidos", async () => {
     render(
       <BibliotecaThemeProvider>
         <NovaTarefaScreen />
       </BibliotecaThemeProvider>,
     )
 
-    // Projeto e título preenchidos, agente vazio → botão desabilitado
     await preencherCampos(user, { projetoId: "640", titulo: "Alguma tarefa" })
+    expect(screen.getByTestId("btn-enviar")).toBeEnabled()
+
+    // Sem título → desabilitado de novo (limpar + digitar outro título e limpar
+    // para garantir que o estado vazia o campo)
+    await user.clear(screen.getByTestId("input-titulo"))
+    await user.type(screen.getByTestId("input-titulo"), "x")
+    await user.clear(screen.getByTestId("input-titulo"))
     expect(screen.getByTestId("btn-enviar")).toBeDisabled()
   })
 
@@ -279,7 +274,7 @@ describe("NovaTarefaScreen", () => {
       </BibliotecaThemeProvider>,
     )
 
-    await preencherCampos(user, { projetoId: "640", agenteId: "1", titulo: "Tarefa para limpar", descricao: "Desc" })
+    await preencherCampos(user, { projetoId: "640", titulo: "Tarefa para limpar", descricao: "Desc" })
     await clicarEnviar(user)
 
     await waitFor(() => {
@@ -302,7 +297,7 @@ describe("NovaTarefaScreen", () => {
       </BibliotecaThemeProvider>,
     )
 
-    await preencherCampos(user, { projetoId: "640", agenteId: "1", titulo: "Tarefa longa" })
+    await preencherCampos(user, { projetoId: "640", titulo: "Tarefa longa" })
 
     // Botão habilitado antes de clicar (nenhum erro de validação)
     expect(screen.getByTestId("btn-enviar")).not.toBeDisabled()

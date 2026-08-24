@@ -35,12 +35,21 @@ export const dynamicFieldOptionSchema = z
 export type DynamicFieldOption = z.infer<typeof dynamicFieldOptionSchema>
 
 /**
+ * Regex de um resource no CRUD genérico: snake_case minúsculo (tabelas)
+ * OU virtual resource (prefixo `__`, ex.: `__openclaw_agentes__`).
+ * Fonte única: reutilizada pelo schema Zod (shared), pela validação da
+ * config (schema-tools) e pelo CRUD (apps/api).
+ */
+export const RESOURCE_NAME_REGEX = /^([a-z][a-z0-9_]*|__[a-z0-9_]+__)$/
+
+/**
  * Config serializável do campo multipleChoice.
- * `resource` aponta para a tabela de onde o api-client carrega as opções.
+ * `resource` aponta para a tabela (ou virtual resource) de onde o
+ * api-client carrega as opções.
  */
 export const multipleChoiceFieldConfigSchema = z
   .object({
-    resource: z.string().regex(/^[a-z][a-z0-9_]*$/).optional(),
+    resource: z.string().regex(RESOURCE_NAME_REGEX).optional(),
     idField: z.string().min(1),
     displayField: z.string().min(1),
     minimumSearchLength: z.number().int().nonnegative().optional(),

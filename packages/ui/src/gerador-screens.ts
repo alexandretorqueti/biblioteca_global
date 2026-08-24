@@ -28,6 +28,8 @@ export interface GeradorSistemaChildRoute {
   label: string
   icon?: ReactNode
   targetResource: string
+  /** ID de tela custom de destino (task-54) — quando presente, abre a custom em vez da grid. */
+  componentId?: string
   filterField: string
   title?: string
   fields?: DynamicField[]
@@ -40,6 +42,8 @@ export interface GeradorSistemaChildRoute {
   rowActions?: CustomAction[]
   /** Rotas filhas aninhadas (recursivo). */
   childRoutes?: GeradorSistemaChildRoute[]
+  /** Ordenação padrão ao carregar a tela filha (task-89). */
+  defaultOrderBy?: import("@biblioteca-global/shared").CrudOrderByItem[]
   /** DataSource montado em runtime. */
   dataSource: CadastroDataSource<EntityRecord>
 }

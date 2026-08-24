@@ -41,6 +41,16 @@ function localizarTelaTarefas(): CadastroScreenConfig {
 }
 
 describe("config do projeto gerenteagentes", () => {
+  it("define limites locais para o formulário de projetos", () => {
+    const grupo = config.groups.find((g) => g.id === "projetos")!
+    const tela = grupo.items.find((i) => i.id === "projetos-list")!.screen as CadastroScreenConfig
+    const nome = tela.fields!.find((field) => field.name === "nome")!
+    const slug = tela.fields!.find((field) => field.name === "slug")!
+
+    expect(nome).toMatchObject({ required: true, maxLength: 200 })
+    expect(slug).toMatchObject({ required: true, minLength: 2, maxLength: 100 })
+  })
+
   it("define a tela tarefas como cadastro apontando para o resource tarefas", () => {
     const tela = localizarTelaTarefas() as unknown as ChildRoute
 
@@ -89,8 +99,10 @@ describe("config do projeto gerenteagentes", () => {
     expect(fields).toBeDefined()
 
     const obrigatórios = fields!.filter((f) => f.required).map((f) => f.name)
-    // projetoId NÃO é campo de formulário: vem do filtro automático da childRoute
-    expect(obrigatórios).toEqual(["titulo", "agenteId"])
+    // projetoId NÃO é campo de formulário: vem do filtro automático da childRoute.
+    // agenteId migrou para projetos_captados (migration 0003) — o motor resolve
+    // o agente via tarefa.projetoId → projeto.agenteId.
+    expect(obrigatórios).toEqual(["titulo"])
 
     const titulo = fields!.find((f) => f.name === "titulo")
     expect(titulo).toBeDefined()
@@ -103,22 +115,21 @@ describe("config do projeto gerenteagentes", () => {
     expect(descricao!.type).toBe("textarea")
   })
 
-  it("define o agente como combo (multipleChoice) — regra de ouro (sem digitar ID)", () => {
+  it("não define agente e ambiente de execução no projeto (removidos — 2026-08-24)", () => {
+    const grupoProjetos = config.groups.find((g) => g.id === "projetos")!
+    const item = grupoProjetos.items.find((i) => i.id === "projetos-list")!
+    const screen = item.screen as CadastroScreenConfig
+
+    // Campos removidos em 2026-08-24 (agenteId, repoPath, buildCommand, unitTestCommand)
+    for (const nome of ["agenteId", "repoPath", "buildCommand", "unitTestCommand"]) {
+      expect(screen.fields!.find((f) => f.name === nome)).toBeUndefined()
+    }
+
+    // E também não existem na tela de tarefas.
     const tela = localizarTelaTarefas() as unknown as ChildRoute
-
-    const agente = tela.fields!.find((f) => f.name === "agenteId")
-    expect(agente).toBeDefined()
-    expect(agente!.type).toBe("multipleChoice")
-    expect(agente!.multipleChoice).toEqual({
-      resource: "agentes",
-      idField: "id",
-      displayField: "nome",
-    })
-
-    // Status não é campo do formulário de criação: a tarefa nasce em draft e
-    // evolui pelo motor (start/pause/resume). O grid mostra o status por padrão.
-    const status = tela.fields!.find((f) => f.name === "status")
-    expect(status).toBeUndefined()
+    for (const nome of ["agenteId", "repoPath", "buildCommand", "unitTestCommand"]) {
+      expect(tela.fields!.find((f) => f.name === nome)).toBeUndefined()
+    }
   })
 
   it("define as childRoutes das tarefas (subtarefas, chats, bloqueios)", () => {

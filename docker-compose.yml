@@ -57,6 +57,10 @@ services:
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_FROM: ${SMTP_FROM:-noreply@globaltecnologia.com.br}
       PROVISION_TOKEN: ${PROVISION_TOKEN}
+      OPENCLAW_CONSOLE_URL: ${OPENCLAW_CONSOLE_URL}
+      OPENCLAW_CONSOLE_TOKEN: ${OPENCLAW_CONSOLE_TOKEN}
+      MOTOR_DEV_URL: ${MOTOR_DEV_URL:-http://172.20.0.7:6283}
+      MOTOR_URL_HOST: ${MOTOR_URL_HOST:-api.tarefas.localhost}
       API_PORT: 3001
     depends_on:
       mysql:

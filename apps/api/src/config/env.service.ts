@@ -41,18 +41,36 @@ export class EnvService {
     return this.required("JWT_SECRET")
   }
 
-  /** TTL do access token (PoC §5.2 — curto, ~15 min). */
-  get jwtAccessTtl(): string {
-    return this.config.get<string>("JWT_ACCESS_TTL") ?? "15m"
+  /** TTL do access token (padrão seguro: 2 horas). */
+  get jwtAccessExpiration(): string {
+    return (
+      this.config.get<string>("JWT_ACCESS_EXPIRATION") ??
+      this.config.get<string>("JWT_ACCESS_TTL") ??
+      "2h"
+    )
   }
 
-  /** TTL do refresh token em dias (global, revogável). */
+  /** TTL do refresh token (global, revogável; padrão: 7 dias). */
   get refreshTokenTtlDays(): number {
-    return Number(this.config.get<string>("REFRESH_TOKEN_TTL_DAYS") ?? "7")
+    const expiration =
+      this.config.get<string>("JWT_REFRESH_EXPIRATION") ??
+      (this.config.get<string>("REFRESH_TOKEN_TTL_DAYS")
+        ? `${this.config.get<string>("REFRESH_TOKEN_TTL_DAYS")}d`
+        : "7d")
+    const match = /^(\d+(?:\.\d+)?)d$/.exec(expiration.trim())
+    return match ? Number(match[1]) : 7
   }
 
   get apiPort(): number {
     return Number(this.config.get<string>("API_PORT") ?? "3001")
+  }
+
+  /**
+   * APENAS DEBUG: envia mensagem e stack de exceções inesperadas ao cliente.
+   * Deve permanecer desligado em produção para não expor detalhes internos.
+   */
+  get exposeRealErrors(): boolean {
+    return this.config.get<string>("API_EXPOSE_REAL_ERRORS") === "true"
   }
 
   // ── Auth por código (passwordless) ───────────────────────────────────

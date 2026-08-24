@@ -29,13 +29,11 @@ interface Projeto {
   slug: string
   descricao?: string
   ativo: boolean
-  agenteId?: number
 }
 
 interface Tarefa {
   id: number
   projetoId: number
-  agenteId: number
   titulo: string
   status: string
   createdAt: string
@@ -256,7 +254,7 @@ export default function DashboardScreen(): ReactNode {
                     {tarefa.titulo}
                   </Typography>
                   <Typography variant="caption" color="text.secondary">
-                    Tarefa #{tarefa.id} · Projeto #{tarefa.projetoId} · Agente #{tarefa.agenteId}
+                    Tarefa #{tarefa.id} · Projeto #{tarefa.projetoId}
                   </Typography>
                 </Box>
                 <Chip

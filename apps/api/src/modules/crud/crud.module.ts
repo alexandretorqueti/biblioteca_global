@@ -1,4 +1,4 @@
-import { Module } from "@nestjs/common"
+import { Global, Module } from "@nestjs/common"
 import { EnvService } from "../../config/env.service"
 import { AuthModule } from "../auth/auth.module"
 import { CrudController } from "./crud.controller"
@@ -11,6 +11,7 @@ import {
 } from "./project-db.factory"
 import { SCHEMA_REGISTRY, StaticSchemaRegistry } from "./schema-registry"
 
+@Global()
 @Module({
   imports: [AuthModule],
   controllers: [CrudController],

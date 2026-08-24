@@ -13,6 +13,7 @@ import DocumentationScreen from "../../../../../projects/documentacao/screens/Do
 import DashboardScreen from "../../../../../projects/gerenteagentes/screens/DashboardScreen"
 import NovaTarefaScreen from "../../../../../projects/gerenteagentes/screens/NovaTarefaScreen"
 import TaskMonitorScreen from "../../../../../projects/gerenteagentes/screens/TaskMonitorScreen"
+import ModelSelectionScreen from "../../../../../projects/gerenteagentes/screens/ModelSelectionScreen"
 
 /**
  * Registra as telas custom de todos os projetos. Chamar no boot (main.tsx)
@@ -24,5 +25,6 @@ export function registrarTelasCustom(): void {
     "gerenteagentes-dashboard": DashboardScreen,
     "gerenteagentes-nova-tarefa": NovaTarefaScreen,
     "gerenteagentes-task-monitor": TaskMonitorScreen,
+    "gerenteagentes-model-selection": ModelSelectionScreen,
   })
 }

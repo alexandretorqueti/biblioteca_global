@@ -30,8 +30,8 @@ function projetoFactory(id: number, nome: string, ativo = true) {
   return { id, nome, slug: `proj-${id}`, ativo } as const
 }
 
-function tarefaFactory(id: number, titulo: string, status: string, projetoId: number, agenteId: number) {
-  return { id, titulo, status, projetoId, agenteId, createdAt: "2026-08-18T12:00:00Z" } as const
+function tarefaFactory(id: number, titulo: string, status: string, projetoId: number) {
+  return { id, titulo, status, projetoId, createdAt: "2026-08-18T12:00:00Z" } as const
 }
 
 /** Mocka os dois fetches que a tela faz (projetos e tarefas), na ordem. */
@@ -91,9 +91,9 @@ describe("DashboardScreen", () => {
     mockProjetosETarefas(
       [projetoFactory(1, "Projeto Alpha"), projetoFactory(2, "Projeto Beta")],
       [
-        tarefaFactory(1, "Tarefa A", "completed", 1, 1),
-        tarefaFactory(2, "Tarefa B", "running", 1, 1),
-        tarefaFactory(3, "Tarefa C", "planned", 2, 1),
+        tarefaFactory(1, "Tarefa A", "completed", 1),
+        tarefaFactory(2, "Tarefa B", "running", 1),
+        tarefaFactory(3, "Tarefa C", "planned", 2),
       ],
     )
 
@@ -147,7 +147,7 @@ describe("DashboardScreen", () => {
   it("renderiza card de resumo com contagens", async () => {
     mockProjetosETarefas(
       [projetoFactory(1, "Projeto Alpha"), projetoFactory(2, "Projeto Beta", false)],
-      [tarefaFactory(1, "Tarefa A", "running", 1, 1), tarefaFactory(2, "Tarefa B", "completed", 1, 1)],
+      [tarefaFactory(1, "Tarefa A", "running", 1), tarefaFactory(2, "Tarefa B", "completed", 1)],
     )
 
     renderComContext(<DashboardScreen />)
@@ -169,7 +169,7 @@ describe("DashboardScreen", () => {
   it("renderiza tarefas recentes com chips de status", async () => {
     mockProjetosETarefas(
       [projetoFactory(1, "Alpha")],
-      [tarefaFactory(1, "Tarefa ativa", "running", 1, 1), tarefaFactory(2, "Tarefa done", "completed", 1, 1)],
+      [tarefaFactory(1, "Tarefa ativa", "running", 1), tarefaFactory(2, "Tarefa done", "completed", 1)],
     )
 
     renderComContext(<DashboardScreen />)

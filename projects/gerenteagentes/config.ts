@@ -48,35 +48,7 @@ export const config: GeradorSistemaConfig = {
         },
       ],
     },
-    {
-      id: "agentes",
-      label: "Agentes",
-      items: [
-        {
-          id: "agentes-list",
-          label: "Agentes",
-          path: "agentes",
-          icon: "smart_toy",
-          screen: {
-            kind: "cadastro",
-            resource: "agentes",
-            title: "Agentes",
-            description: "Gerenciamento de agentes de IA",
-            fields: [
-              { name: "nome", label: "Nome", type: "text", required: true, fullWidth: true },
-              { name: "modelo", label: "Modelo", type: "text", required: true, gridVisible: false },
-              { name: "descricao", label: "Descrição", type: "textarea", fullWidth: true, gridVisible: false },
-              { name: "ativo", label: "Ativo", type: "switch", defaultValue: true, gridVisible: false },
-            ],
-            overrides: {
-              hiddenColumns: ["createdAt", "updatedAt"],
-              columnLabels: { id: "ID", nome: "Nome" },
-              newLabel: "Novo agente",
-            },
-          },
-        },
-      ],
-    },
+
     {
       id: "projetos",
       label: "Projetos",
@@ -92,12 +64,11 @@ export const config: GeradorSistemaConfig = {
             title: "Projetos",
             description: "Projetos captados pela Isa ou criados manualmente",
             fields: [
-              { name: "nome", label: "Nome", type: "text", required: true, fullWidth: true },
-              { name: "slug", label: "Slug", type: "text", required: true, gridVisible: false },
-              { name: "descricao", label: "Descrição", type: "textarea", fullWidth: true, gridVisible: false },
-              { name: "regras", label: "Regras", type: "textarea", fullWidth: true, gridVisible: false },
+              { name: "nome", label: "Nome", type: "text", required: true, maxLength: 200, fullWidth: true },
+              { name: "slug", label: "Slug", type: "text", required: true, minLength: 2, maxLength: 100, helperText: "Use letras minúsculas, números e hífen.", gridVisible: false },
+              { name: "descricao", label: "Descrição", type: "textarea", maxLength: 65535, fullWidth: true, gridVisible: false },
+              { name: "regras", label: "Regras", type: "textarea", maxLength: 65535, fullWidth: true, gridVisible: false },
               { name: "contatoId", label: "Contato", type: "number", gridVisible: false },
-              { name: "agenteId", label: "Agente", type: "multipleChoice", multipleChoice: { resource: "agentes", idField: "id", displayField: "nome" }, gridVisible: false },
               { name: "ativo", label: "Ativo", type: "switch", defaultValue: true, gridVisible: false },
               { name: "plataformaProjetoId", label: "Projeto Plataforma", type: "number", gridVisible: false },
             ],
@@ -118,12 +89,29 @@ export const config: GeradorSistemaConfig = {
             // Rotas filhas com contexto (navegação hierárquica)
             childRoutes: [
               {
+                id: "modelos",
+                label: "Modelos",
+                icon: "model_training",
+                targetResource: "projetos_captados",
+                componentId: "gerenteagentes-model-selection",
+                filterField: "projetoId",
+                title: "Fila de Modelos",
+              },
+              {
                 id: "tarefas",
                 label: "Tarefas",
                 icon: "task_alt",
                 targetResource: "tarefas",
                 filterField: "projetoId",
                 title: "Tarefas do Projeto",
+                defaultOrderBy: [
+                  {
+                    campo: "status",
+                    direction: "asc",
+                    valuesLast: ["deployada", "completed", "finalizada", "aborted"],
+                  },
+                  { campo: "createdAt", direction: "desc" },
+                ],
                 fields: [
                   { name: "titulo", label: "Título", type: "text", required: true, fullWidth: true },
                   {
@@ -133,18 +121,9 @@ export const config: GeradorSistemaConfig = {
                     multipleChoice: { resource: "tarefas", idField: "id", displayField: "titulo" },
                     gridVisible: false,
                   },
-                  {
-                    name: "agenteId",
-                    label: "Agente",
-                    type: "multipleChoice",
-                    multipleChoice: { resource: "agentes", idField: "id", displayField: "nome" },
-                    required: true,
-                    gridVisible: false,
-                  },
+                  // Agente e ambiente de execução (repoPath/buildCommand/unitTestCommand)
+                  // agora vivem em projetos_captados — o motor resolve via projeto.
                   { name: "descricao", label: "Descrição", type: "textarea", fullWidth: true, gridVisible: false },
-                  { name: "repoPath", label: "Caminho do Repo", type: "text", fullWidth: true, placeholder: "/data/workspace/projects/...", gridVisible: false },
-                  { name: "buildCommand", label: "Comando de Build", type: "text", placeholder: "npm run build", gridVisible: false },
-                  { name: "unitTestCommand", label: "Comando de Teste", type: "text", placeholder: "npm run test", gridVisible: false },
                 ],
                 overrides: {
                   newLabel: "Nova tarefa",

@@ -89,6 +89,8 @@ export interface ExternalScreenRuntime {
 interface NavigationLevel {
   label: string
   resource: string
+  /** ID de tela custom da rota (task-54) — quando presente, a level renderiza a custom em vez da grid. */
+  componentId?: string
   filterField?: string
   filterValue?: string | number
   parentLabel?: string
@@ -117,6 +119,7 @@ function montarChildRoutes(
     label: route.label,
     icon: route.icon ? (runtime.resolveIcon?.(route.icon) ?? resolveIcon(route.icon)) : undefined,
     targetResource: route.targetResource,
+    componentId: route.componentId,
     filterField: route.filterField,
     title: route.title,
     fields: route.fields as DynamicField[] | undefined,
@@ -127,6 +130,7 @@ function montarChildRoutes(
     actions: route.actions,
     rowActions: route.rowActions,
     childRoutes: montarChildRoutes(route.childRoutes, runtime),
+    defaultOrderBy: route.defaultOrderBy,
     dataSource: getDataSource(route.targetResource),
   }))
 }
@@ -289,6 +293,7 @@ export default function GeradorSistema({
     const newLevel: NavigationLevel = {
       label: route.title ?? route.label,
       resource: route.targetResource,
+      componentId: route.componentId,
       filterField: route.filterField,
       filterValue: filterValue as string | number,
       parentLabel: navigationStack.length > 0 
@@ -309,7 +314,7 @@ export default function GeradorSistema({
   }
 
   const navigateBack = (level: number) => {
-    setNavigationStack(navigationStack.slice(0, level))
+    setNavigationStack(navigationStack.slice(0, level + 1))
   }
 
   const logo = config.app.logo
@@ -437,22 +442,26 @@ export default function GeradorSistema({
               })}
             </Breadcrumbs>
 
-            <Cadastro
-              dataSource={dataSource}
-              title={currentLevel.label}
-              fields={fields}
-              columnLabels={currentLevel.columnLabels}
-              hiddenColumns={currentLevel.hiddenColumns}
-              columns={currentLevel.columns}
-              newLabel={currentLevel.newLabel}
-              description={`Registros filtrados por ${currentLevel.filterField} = ${currentLevel.filterValue}`}
-              actions={currentLevel.actions}
-              rowActions={currentLevel.rowActions}
-              executeAction={runtime.executeAction}
-              childRoutes={currentLevel.childRoutes}
-              onChildRouteClick={handleChildRouteClick}
-              filters={currentLevel.filterField && currentLevel.filterValue !== undefined ? { [currentLevel.filterField]: currentLevel.filterValue } : undefined}
-            />
+            {currentLevel.componentId ? (
+              renderCustomScreen(currentLevel.componentId)
+            ) : (
+              <Cadastro
+                dataSource={dataSource}
+                title={currentLevel.label}
+                fields={fields}
+                columnLabels={currentLevel.columnLabels}
+                hiddenColumns={currentLevel.hiddenColumns}
+                columns={currentLevel.columns}
+                newLabel={currentLevel.newLabel}
+                description={`Registros filtrados por ${currentLevel.filterField} = ${currentLevel.filterValue}`}
+                actions={currentLevel.actions}
+                rowActions={currentLevel.rowActions}
+                executeAction={runtime.executeAction}
+                childRoutes={currentLevel.childRoutes}
+                onChildRouteClick={handleChildRouteClick}
+                filters={currentLevel.filterField && currentLevel.filterValue !== undefined ? { [currentLevel.filterField]: currentLevel.filterValue } : undefined}
+              />
+            )}
           </Container>
         </Box>
       </Box>

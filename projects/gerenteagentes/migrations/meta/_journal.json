@@ -22,6 +22,34 @@
       "when": 1787218829318,
       "tag": "0002_brief_sue_storm",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1787240425138,
+      "tag": "0003_ambiguous_true_believers",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "5",
+      "when": 1787266752005,
+      "tag": "0004_openclaw_agent_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "5",
+      "when": 1787272186886,
+      "tag": "0005_right_felicia_hardy",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "5",
+      "when": 1787576340000,
+      "tag": "0006_warm_natasha_romanoff",
+      "breakpoints": true
     }
   ]
 }

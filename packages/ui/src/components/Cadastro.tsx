@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   Alert,
   Box,
@@ -85,6 +85,7 @@ export default function Cadastro<T extends EntityRecord>({
   filters,
 }: CadastroProps<T>) {
   const [rows, setRows] = useState<T[]>([])
+  const [gridRows, setGridRows] = useState<T[]>([])
   const [selectedRow, setSelectedRow] = useState<T | null>(null)
   const [formOpen, setFormOpen] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<T | null>(null)
@@ -100,7 +101,7 @@ export default function Cadastro<T extends EntityRecord>({
   } | null>(null)
   /** Ação customizada em execução (id) — desabilita todos os botões de ação. */
   const [executandoAcao, setExecutandoAcao] = useState<string | null>(null)
-  /** Feedback por ação customizada (success/error). */
+  /** Feedback por ação customizada (success/error), chave `${rowId}_${actionId}` — para ações globais a chave é `${actionId}`. */
   const [acaoFeedback, setAcaoFeedback] = useState<
     Record<string, { type: "success" | "error"; message: string }>
   >({})
@@ -142,8 +143,8 @@ export default function Cadastro<T extends EntityRecord>({
         if (fkValue !== null && fkValue !== undefined) {
           const label = cache.get(String(fkValue))
           if (label) {
-            // @ts-ignore - T é EntityRecord, podemos modificar
-            row[field.name] = label as any
+            const displayRow = row as EntityRecord
+            displayRow[field.name] = label
           }
         }
       }
@@ -157,7 +158,8 @@ export default function Cadastro<T extends EntityRecord>({
     try {
       const rows = await dataSource.list(filters ? { filters } : undefined)
       const resolvedRows = await resolveFks(rows)
-      setRows(resolvedRows)
+      setRows(rows)
+      setGridRows(resolvedRows)
     } catch (loadError) {
       setFeedback({
         type: "error",
@@ -284,14 +286,20 @@ export default function Cadastro<T extends EntityRecord>({
     }
   }
 
-  // Executa uma ação customizada com feedback de estado.
+  // Executa uma ação customizada com feedback de estado. Ações por linha
+  // recebem a linha; o feedback fica vinculado à linha (`${rowId}_${actionId}`).
   const executarAcao = async (action: CustomAction, row?: EntityRecord) => {
     if (!executeAction) return
+
+    // Chave do feedback: linha + ação para rowActions, apenas ação para ações globais.
+    const feedbackKey = row
+      ? `${dataSource.getRowId(row as unknown as T)}_${action.id}`
+      : action.id
 
     setExecutandoAcao(action.id)
     setAcaoFeedback((prev) => {
       const next = { ...prev }
-      delete next[action.id]
+      delete next[feedbackKey]
       return next
     })
 
@@ -299,7 +307,7 @@ export default function Cadastro<T extends EntityRecord>({
       const resultado = await executeAction(action, row ? { row } : undefined)
       setAcaoFeedback((prev) => ({
         ...prev,
-        [action.id]: {
+        [feedbackKey]: {
           type: "success",
           message:
             resultado.message || `Ação "${action.label}" executada com sucesso.`,
@@ -312,7 +320,7 @@ export default function Cadastro<T extends EntityRecord>({
     } catch (acaoError) {
       setAcaoFeedback((prev) => ({
         ...prev,
-        [action.id]: {
+        [feedbackKey]: {
           type: "error",
           message:
             acaoError instanceof Error
@@ -325,20 +333,36 @@ export default function Cadastro<T extends EntityRecord>({
     }
   }
 
-  const initialValues = selectedRow
-    ? fields.reduce<DynamicFormValues>((values, field) => {
-        const value = selectedRow[field.name]
-        if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-          values[field.name] = value
-        } else if (field.type === "json" && typeof value === "object" && value !== null) {
-          values[field.name] = JSON.stringify(value, null, 2)
-        }
-        return values
-      }, {})
-    : undefined
+  const initialValues = useMemo(
+    () =>
+      selectedRow
+        ? fields.reduce<DynamicFormValues>((values, field) => {
+            const value = selectedRow[field.name]
+            if (
+              typeof value === "string" ||
+              typeof value === "number" ||
+              typeof value === "boolean"
+            ) {
+              values[field.name] = value
+            } else if (
+              field.type === "json" &&
+              typeof value === "object" &&
+              value !== null
+            ) {
+              values[field.name] = JSON.stringify(value, null, 2)
+            }
+            return values
+          }, {})
+        : undefined,
+    [fields, selectedRow],
+  )
 
-  const formFields = fields.filter((field) =>
-    selectedRow ? field.editable !== false : field.insertable !== false,
+  const formFields = useMemo(
+    () =>
+      fields.filter((field) =>
+        selectedRow ? field.editable !== false : field.insertable !== false,
+      ),
+    [fields, selectedRow],
   )
 
   const gridHiddenColumns = fields
@@ -454,14 +478,22 @@ export default function Cadastro<T extends EntityRecord>({
 
       <JsonGrid
         title={`Lista de ${title.toLowerCase()}`}
-        data={rows as unknown as JsonRecord[]}
+        data={gridRows as unknown as JsonRecord[]}
         loading={loading}
         hiddenColumns={[...hiddenColumns, ...gridHiddenColumns]}
         columnLabels={columnLabels}
         columns={gridColumns}
         getRowId={(row) => dataSource.getRowId(row as unknown as T)}
-        onEdit={(row) => openEdit(row as unknown as T)}
-        onDelete={(row) => setDeleteTarget(row as unknown as T)}
+        onEdit={(row) => {
+          const id = dataSource.getRowId(row as unknown as T)
+          const raw = rows.find((item) => dataSource.getRowId(item) === id)
+          openEdit(raw ?? (row as unknown as T))
+        }}
+        onDelete={(row) => {
+          const id = dataSource.getRowId(row as unknown as T)
+          const raw = rows.find((item) => dataSource.getRowId(item) === id)
+          setDeleteTarget(raw ?? (row as unknown as T))
+        }}
         childRoutes={childRoutes}
         onChildRouteClick={onChildRouteClick}
         rowActions={rowActions}

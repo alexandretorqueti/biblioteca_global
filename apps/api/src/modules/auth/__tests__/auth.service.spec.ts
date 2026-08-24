@@ -243,7 +243,7 @@ describe("AuthService", () => {
 
     jwt = new JwtService({ secret: "segredo-de-teste" })
     const env = {
-      jwtAccessTtl: "15m",
+      jwtAccessExpiration: "2h",
       refreshTokenTtlDays: 7,
       authCodeSecret: "segredo-auth-teste",
       authCodeTtlMs: 600_000,

@@ -1,3 +1,4 @@
+import { Put } from '@nestjs/common';
 import {
   Controller,
   Get,
@@ -15,7 +16,8 @@ import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentProject } from '../../common/decorators/current.decorator';
 import { CurrentUser } from '../../common/decorators/current.decorator';
-import type { ProjetoResumo, UsuarioAutenticado } from '@biblioteca-global/shared';
+import type { ProjetoResumo, UsuarioAutenticado, ModelSelectionTipo } from '@biblioteca-global/shared';
+import { ModelSelectionTipoSchema } from '@biblioteca-global/shared';
 import { GerenteAgentesService } from './gerenteagentes.service';
 import { TaskStatusPollerService } from './task-status-poller.service';
 
@@ -141,6 +143,53 @@ export class GerenteAgentesController {
     @Param('id', ParseIntPipe) id: number,
   ) {
     return this.service.motorDetailTarefa(projeto, id);
+  }
+
+  // ============================================================================
+  // SELEÇÃO DE MODELOS (proxy p/ motor — task-54)
+  // ============================================================================
+
+  /** Valida o param `tipo` (DEV/ANALYST/MONITOR) — 400 se inválido. */
+  private tipoOuErro(tipo: string): ModelSelectionTipo {
+    const parsed = ModelSelectionTipoSchema.safeParse(tipo.toUpperCase());
+    if (!parsed.success) {
+      throw new BadRequestException(`Tipo inválido: '${tipo}' — esperado DEV, ANALYST ou MONITOR`);
+    }
+    return parsed.data;
+  }
+
+  @Get('model-selection/:projectKey/:tipo')
+  getModelSelection(
+    @CurrentProject() projeto: ProjetoResumo,
+    @Param('projectKey') _projectKey: string,
+    @Param('tipo') tipo: string,
+  ) {
+    return this.service.getModelSelection(projeto, this.tipoOuErro(tipo));
+  }
+
+  @Put('model-selection/:projectKey/:tipo')
+  @Roles('admin', 'gerente', 'operador')
+  saveModelSelection(
+    @CurrentProject() projeto: ProjetoResumo,
+    @Param('projectKey') _projectKey: string,
+    @Param('tipo') tipo: string,
+    @Body() body: { entries: unknown },
+  ) {
+    if (!body || !Array.isArray(body.entries)) {
+      throw new BadRequestException('Body inválido — esperado { entries: [...] }');
+    }
+    return this.service.saveModelSelection(projeto, this.tipoOuErro(tipo), body.entries);
+  }
+
+  /**
+   * Modelos disponíveis no Console OpenClaw (proxy — task-66): alimenta o
+   * combo de escolha de modelos por projeto. Admin/gerente escolhem;
+   * o console nunca é exposto ao browser.
+   */
+  @Get('modelos-console')
+  @Roles('admin', 'gerente')
+  listarModelosConsole() {
+    return this.service.listarModelosConsole();
   }
 
   // ============================================================================
