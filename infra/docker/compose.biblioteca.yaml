@@ -4,8 +4,10 @@
 # Novo local: /run/media/alexandre/12T/codigofonte/biblioteca-global/
 # Uso (no host):
 #   cd /run/media/alexandre/12T/codigofonte/biblioteca-global
-#   docker compose -f infra/docker/compose.biblioteca.yaml --project-directory . up -d --build
-# (--project-directory . e necessario para o compose ler o .env da raiz)
+#   set -a && . ./.env && set +a && docker compose -f infra/docker/compose.biblioteca.yaml up -d --build
+# (o compose nao le o .env da raiz sozinho — carregar no ambiente do shell
+# com `set -a; . ./.env; set +a` antes. NAO usar --project-directory .:
+# quebra a resolucao do contexto de build `../..`.)
 #
 # OBS: o .env fica na RAIZ do projeto e é lido ao rodar o compose a partir da raiz.
 # O volume mysql-data é nomeado (biblioteca-global_mysql-data) — os dados do
