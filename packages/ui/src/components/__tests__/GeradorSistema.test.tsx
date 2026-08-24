@@ -115,6 +115,68 @@ describe("GeradorSistema (config serializável)", () => {
     ).toBeInTheDocument()
   })
 
+  it("childRoute custom recebe a linha pai clicada (parentRow) como props", async () => {
+    const configComChild: GeradorSistemaConfig = {
+      app: { name: "Sistema Demo", logo: "dashboard" },
+      groups: [
+        {
+          id: "cadastros",
+          label: "Cadastros",
+          items: [
+            {
+              id: "projetos",
+              label: "Projetos",
+              path: "/projetos",
+              icon: "account_tree",
+              screen: {
+                kind: "cadastro",
+                resource: "projetos_captados",
+                title: "Projetos",
+                fields: [{ name: "nome", label: "Nome", type: "text" }],
+                childRoutes: [
+                  {
+                    id: "modelos",
+                    label: "Modelos",
+                    targetResource: "projetos_captados",
+                    componentId: "tela-modelos",
+                    filterField: "projetoId",
+                    title: "Fila de Modelos",
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    }
+    registerCustomScreens({
+      "tela-modelos": (props) => (
+        <div data-testid="tela-modelos">
+          pai:{String(props.parentRow?.slug ?? "nenhum")}
+        </div>
+      ),
+    })
+    const dataSource = dataSourceFake([
+      { id: 7, nome: "Biblioteca Global", slug: "biblioteca-global" },
+    ])
+    const user = userEvent.setup()
+    render(
+      <ThemeProvider theme={createTheme()}>
+        <GeradorSistema
+          config={configComChild}
+          runtime={{ getDataSource: () => dataSource }}
+        />
+      </ThemeProvider>,
+    )
+
+    // Grid carregou a linha do projeto
+    expect(await screen.findByText("Biblioteca Global")).toBeInTheDocument()
+    // Clica na childRoute da linha → tela custom montada com o contexto da linha
+    await user.click(screen.getByRole("button", { name: "Modelos" }))
+    const tela = await screen.findByTestId("tela-modelos")
+    expect(tela).toHaveTextContent("pai:biblioteca-global")
+  })
+
   it("runtime.resolveIcon sobrescreve o mapa padrão de ícones", () => {
     renderSistema({
       resolveIcon: (name) => <span data-testid={`icon-${name}`} />,

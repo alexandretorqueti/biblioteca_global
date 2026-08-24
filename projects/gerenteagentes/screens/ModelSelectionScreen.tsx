@@ -13,7 +13,9 @@
  *   continuam editáveis: o valor atual aparece como opção extra no combo.
  * - Botões: adicionar / remover / reordenar (acima / abaixo)
  * - Salvar via api-client → PUT /gerenteagentes/model-selection/:projectKey/:tipo
- *   (proxy p/ motor). O `projectKey` é o slug do projeto logado.
+ *   (proxy p/ motor). O `projectKey` é o slug do projeto da linha pai
+ *   clicada na childRoute (props.parentRow.slug); se a tela for aberta sem
+ *   contexto de linha (menu direto), usa o slug do projeto logado.
  *
  * A UI não fala HTTP diretamente — tudo passa pelo api-client (regra do projeto).
  */
@@ -43,6 +45,7 @@ import {
 } from "@mui/icons-material"
 import { useApi } from "../../../apps/web/src/hooks/useApi"
 import { useAuth } from "../../../apps/web/src/auth/AuthContext"
+import type { CustomScreenProps } from "@biblioteca-global/ui"
 import type { ModelSelectionTipo, ModelSelectionEntry } from "@biblioteca-global/shared"
 
 const TIPOS: ModelSelectionTipo[] = ["DEV", "ANALYST", "MONITOR"]
@@ -74,10 +77,21 @@ function providersDe(lista: ConsoleModelo[]): string[] {
   return ordenados
 }
 
-export default function ModelSelectionScreen(): ReactNode {
+export default function ModelSelectionScreen(props: CustomScreenProps): ReactNode {
   const bundle = useApi()
   const auth = useAuth()
-  const projectKey = auth.projeto?.slug ?? ""
+  // projectKey = slug do projeto da linha clicada (childRoute). Sem contexto
+  // de linha (abertura direta por menu), cai no slug do projeto logado.
+  const linha = props.parentRow
+  const slugDaLinha =
+    linha && typeof linha.slug === "string" && linha.slug.trim() !== ""
+      ? linha.slug.trim()
+      : undefined
+  const projectKey = slugDaLinha ?? auth.projeto?.slug ?? ""
+  const nomeDaLinha =
+    linha && typeof linha.nome === "string" && linha.nome.trim() !== ""
+      ? linha.nome.trim()
+      : undefined
 
   const [tipo, setTipo] = useState<ModelSelectionTipo>("DEV")
   const [entradas, setEntradas] = useState<EntradaEditavel[]>([])
@@ -231,7 +245,7 @@ export default function ModelSelectionScreen(): ReactNode {
           Fila de Modelos
         </Typography>
         <Typography variant="caption" color="text.secondary">
-          Projeto: {projectKey || "—"}
+          Projeto: {nomeDaLinha ? `${nomeDaLinha} (${projectKey})` : projectKey || "—"}
         </Typography>
       </Stack>
 

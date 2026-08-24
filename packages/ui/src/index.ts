@@ -26,6 +26,7 @@ export type { SistemaBreadcrumbItem } from "./utils/system"
 
 // Registry de telas custom + resolução de ícones (novos na v2)
 export { registerCustomScreens, getCustomScreen, clearCustomScreens } from "./registry"
+export type { CustomScreenProps, CustomScreenComponent } from "./registry"
 export { resolveIcon } from "./icons"
 
 export type {

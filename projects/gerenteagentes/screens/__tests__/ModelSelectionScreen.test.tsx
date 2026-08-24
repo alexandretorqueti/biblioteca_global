@@ -323,6 +323,61 @@ describe("ModelSelectionScreen", () => {
     await waitFor(() => expect(screen.getByTestId("success-alert")).toBeInTheDocument())
   })
 
+  it("usa o slug do projeto pai clicado (parentRow) em vez do slug logado", async () => {
+    modelosDoConsole = { models: [] }
+    render(
+      <ModelSelectionScreen
+        parentRow={{ id: 7, nome: "Biblioteca Global", slug: "biblioteca-global" }}
+      />,
+    )
+
+    await waitFor(() => {
+      expect(mockRequest).toHaveBeenCalledWith(
+        "GET",
+        "/gerenteagentes/model-selection/biblioteca-global/DEV",
+        { auth: "access" },
+      )
+    })
+    // Cabeçalho exibe o projeto da linha clicada
+    expect(screen.getByText(/Biblioteca Global \(biblioteca-global\)/)).toBeInTheDocument()
+  })
+
+  it("salvar envia PUT com o slug do projeto pai clicado (parentRow)", async () => {
+    modelosDoConsole = {
+      models: [{ id: "qwen3.8:27b", name: "Qwen 3.8 27B", provider: "ollama" }],
+    }
+    filaSelecao = [{ projectKey: "biblioteca-global", tipo: "DEV", entries: [] }]
+    putSelecao = {
+      projectKey: "biblioteca-global",
+      tipo: "DEV",
+      entries: [{ ordem: 1, provider: "ollama", model: "qwen3.8:27b", enabled: true }],
+    }
+    const user = userEvent.setup()
+    render(
+      <ModelSelectionScreen
+        parentRow={{ id: 7, nome: "Biblioteca Global", slug: "biblioteca-global" }}
+      />,
+    )
+
+    await waitFor(() => expect(screen.getByTestId("empty-state")).toBeInTheDocument())
+    await user.click(screen.getByTestId("btn-add"))
+    await escolherOpcao(user, "entry-provider-1", "ollama")
+    await escolherOpcao(user, "entry-model-1", "qwen3.8:27b")
+    await user.click(screen.getByTestId("btn-save"))
+
+    await waitFor(() => {
+      expect(mockRequest).toHaveBeenCalledWith(
+        "PUT",
+        "/gerenteagentes/model-selection/biblioteca-global/DEV",
+        {
+          auth: "access",
+          body: { entries: [{ ordem: 1, provider: "ollama", model: "qwen3.8:27b", enabled: true }] },
+        },
+      )
+    })
+    await waitFor(() => expect(screen.getByTestId("success-alert")).toBeInTheDocument())
+  })
+
   it("trocar de tipo recarrega a fila (mantendo modelos do console)", async () => {
     modelosDoConsole = { models: [{ id: "m1", name: "Novo", provider: "ollama" }] }
     filaSelecao = [

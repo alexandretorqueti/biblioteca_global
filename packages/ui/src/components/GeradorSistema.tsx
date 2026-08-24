@@ -33,6 +33,7 @@ import type {
 import type { DynamicField, ExecuteAction, GeradorSistemaRuntime } from "../types"
 import { getSistemaBreadcrumb } from "../utils/system"
 import { getCustomScreen } from "../registry"
+import type { CustomScreenProps } from "../registry"
 import { resolveIcon } from "../icons"
 
 const defaultDrawerWidth = 280
@@ -93,6 +94,8 @@ interface NavigationLevel {
   componentId?: string
   filterField?: string
   filterValue?: string | number
+  /** Linha pai clicada — injetada como props na tela custom da childRoute. */
+  parentRow?: EntityRecord
   parentLabel?: string
   parentValue?: string | number
   childRoutes?: GeradorSistemaChildRoute[]
@@ -239,7 +242,10 @@ function montarGroups(
   }))
 }
 
-function renderCustomScreen(componentId: string): ReactNode {
+function renderCustomScreen(
+  componentId: string,
+  props?: CustomScreenProps,
+): ReactNode {
   const component = getCustomScreen(componentId)
   if (!component) {
     return (
@@ -248,7 +254,7 @@ function renderCustomScreen(componentId: string): ReactNode {
       </Typography>
     )
   }
-  return createElement(component)
+  return createElement(component, props)
 }
 
 export default function GeradorSistema({
@@ -300,6 +306,9 @@ export default function GeradorSistema({
         ? navigationStack[navigationStack.length - 1]?.label 
         : breadcrumbs[breadcrumbs.length - 1]?.label,
       parentValue: filterValue as string | number,
+      // Linha pai completa: a tela custom pode ler qualquer campo dela
+      // (ex.: ModelSelectionScreen lê o slug do projeto clicado).
+      parentRow,
       childRoutes: route.childRoutes,
       fields: route.fields,
       columnLabels: route.columnLabels,
@@ -443,7 +452,11 @@ export default function GeradorSistema({
             </Breadcrumbs>
 
             {currentLevel.componentId ? (
-              renderCustomScreen(currentLevel.componentId)
+              renderCustomScreen(currentLevel.componentId, {
+                parentRow: currentLevel.parentRow,
+                filterField: currentLevel.filterField,
+                filterValue: currentLevel.filterValue,
+              })
             ) : (
               <Cadastro
                 dataSource={dataSource}
