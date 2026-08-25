@@ -548,14 +548,15 @@ export class GerenteAgentesService {
 
   /**
    * GET /api/model-selection/:projectKey/:tipo — lista a seleção de modelos do
-   * projeto para o tipo (DEV/ANALYST/MONITOR). `projectKey` = slug do projeto
-   * logado. 404 do motor (ainda não há seleção) → `entries: []`.
+   * projeto captado para o tipo (DEV/ANALYST/MONITOR). `projectKey` vem da
+   * rota (slug do projeto captado, ex.: "biblioteca-global") e é encaminhado
+   * ao motor tal qual — NÃO é o slug do projeto logado.
+   * 404 do motor (ainda não há seleção) → `entries: []`.
    */
   async getModelSelection(
-    projeto: ProjetoResumo,
+    projectKey: string,
     tipo: ModelSelectionTipo,
   ): Promise<{ projectKey: string; tipo: ModelSelectionTipo; entries: ModelSelectionEntry[] }> {
-    const projectKey = projeto.slug;
     const resp = await this.motorRequest(
       'GET',
       `/api/model-selection/${encodeURIComponent(projectKey)}/${encodeURIComponent(tipo)}`,
@@ -574,16 +575,14 @@ export class GerenteAgentesService {
 
   /**
    * PUT /api/model-selection/:projectKey/:tipo — salva a seleção de modelos do
-   * projeto para o tipo. Body validado com o contrato shared (mesmo schema do
-   * motor); campos extras são rejeitados antes do proxy.
+   * projeto captado (slug da rota) para o tipo. Body validado com o contrato
+   * shared (mesmo schema do motor); campos extras são rejeitados antes do proxy.
    */
   async saveModelSelection(
-    projeto: ProjetoResumo,
+    projectKey: string,
     tipo: ModelSelectionTipo,
     entries: ModelSelectionEntry[],
   ): Promise<{ projectKey: string; tipo: ModelSelectionTipo; entries: ModelSelectionEntry[] }> {
-    const projectKey = projeto.slug;
-
     // Valida localmente contra o contrato shared (strict) antes de enviar ao motor
     const parsed = ProjectModelSelectionSchema.parse({ projectKey, tipo, entries }) as {
       projectKey: string;
@@ -593,7 +592,7 @@ export class GerenteAgentesService {
 
     const resp = await this.motorRequest(
       'PUT',
-      `/api/model-selection/${encodeURIComponent(projectKey)}/${encodeURIComponent(tipo)}`,
+      `/api/model-selection/${encodeURIComponent(parsed.projectKey)}/${encodeURIComponent(tipo)}`,
       { entries: parsed.entries },
     ).catch((e: unknown) => {
       throw new BadRequestException(`Motor indisponível: ${e instanceof Error ? e.message : String(e)}`);
@@ -602,7 +601,7 @@ export class GerenteAgentesService {
       throw new BadRequestException(`Motor retornou ${resp.status}: ${resp.body.slice(0, 200)}`);
     }
     const data = JSON.parse(resp.body) as { projectKey?: string; tipo?: string; entries?: ModelSelectionEntry[] };
-    return { projectKey: data.projectKey ?? projectKey, tipo, entries: data.entries ?? parsed.entries };
+    return { projectKey: data.projectKey ?? parsed.projectKey, tipo, entries: data.entries ?? parsed.entries };
   }
 
   // ============================================================================

@@ -158,27 +158,34 @@ export class GerenteAgentesController {
     return parsed.data;
   }
 
+  /** Valida o param `projectKey` (slug do projeto captado) — 400 se vazio/malformado. */
+  private projectKeyOuErro(projectKey: string): string {
+    const chave = (projectKey ?? '').trim();
+    if (chave.length === 0 || /[\s/]/.test(chave)) {
+      throw new BadRequestException(`projectKey inválido: '${projectKey}'`);
+    }
+    return chave;
+  }
+
   @Get('model-selection/:projectKey/:tipo')
   getModelSelection(
-    @CurrentProject() projeto: ProjetoResumo,
-    @Param('projectKey') _projectKey: string,
+    @Param('projectKey') projectKey: string,
     @Param('tipo') tipo: string,
   ) {
-    return this.service.getModelSelection(projeto, this.tipoOuErro(tipo));
+    return this.service.getModelSelection(this.projectKeyOuErro(projectKey), this.tipoOuErro(tipo));
   }
 
   @Put('model-selection/:projectKey/:tipo')
   @Roles('admin', 'gerente', 'operador')
   saveModelSelection(
-    @CurrentProject() projeto: ProjetoResumo,
-    @Param('projectKey') _projectKey: string,
+    @Param('projectKey') projectKey: string,
     @Param('tipo') tipo: string,
     @Body() body: { entries: unknown },
   ) {
     if (!body || !Array.isArray(body.entries)) {
       throw new BadRequestException('Body inválido — esperado { entries: [...] }');
     }
-    return this.service.saveModelSelection(projeto, this.tipoOuErro(tipo), body.entries);
+    return this.service.saveModelSelection(this.projectKeyOuErro(projectKey), this.tipoOuErro(tipo), body.entries);
   }
 
   /**
