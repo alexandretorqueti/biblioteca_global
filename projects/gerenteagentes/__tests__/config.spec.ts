@@ -143,4 +143,16 @@ describe("config do projeto gerenteagentes", () => {
     const ids = (rotaTarefas as ChildRoute).childRoutes?.map((r) => r.id) ?? []
     expect(ids).toEqual(["subtarefas", "tarefa-chats", "bloqueios"])
   })
+
+  it("exponha branchTrabalho no formulário de projetos (st-3)", () => {
+    const grupo = config.groups.find((g) => g.id === "projetos")!
+    const tela = grupo.items.find((i) => i.id === "projetos-list")!.screen as CadastroScreenConfig
+
+    const campo = tela.fields!.find((f) => f.name === "branchTrabalho")
+    expect(campo).toBeDefined()
+    expect(campo!.label).toBe("Branch de Trabalho")
+    expect(campo!.type).toBe("text")
+    expect(campo!.maxLength).toBe(255)
+    expect(campo!.gridVisible).toBe(false)
+  })
 })

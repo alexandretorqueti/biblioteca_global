@@ -71,6 +71,7 @@ export const config: GeradorSistemaConfig = {
               { name: "contatoId", label: "Contato", type: "number", gridVisible: false },
               { name: "ativo", label: "Ativo", type: "switch", defaultValue: true, gridVisible: false },
               { name: "plataformaProjetoId", label: "Projeto Plataforma", type: "number", gridVisible: false },
+              { name: "branchTrabalho", label: "Branch de Trabalho", type: "text", maxLength: 255, gridVisible: false },
             ],
             overrides: {
               hiddenColumns: ["createdAt", "updatedAt"],

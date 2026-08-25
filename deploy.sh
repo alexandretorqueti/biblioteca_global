@@ -9,22 +9,22 @@
 #
 # O que faz:
 #   1. Build das imagens api/web NO HOST bazzite (o código deste repo é
-#      visível lá via /var/mnt/...; no sandbox não há Docker).
-#   2. Recria os containers biblioteca-global-{api,web} preservando as envs
-#      atuais (mesmo padrão do scripts/recriar-api.cjs). NÃO toca no MySQL.
+#      visível lá via /run/media/alexandre/12T/codigofonte; no sandbox não há Docker).
+#   2. Recria os containers biblioteca-global-{api,web} pelo Docker Compose,
+#      preservando a configuração do projeto. NÃO toca no MySQL.
 #   3. Healthcheck (web /health + api respondendo). Se falhar, faz ROLLBACK
 #      para as imagens anteriores e sai ≠ 0.
 # ============================================================================
 set -euo pipefail
 
 # --- Config -----------------------------------------------------------------
-HOST_ADDR="192.168.1.16"
+HOST_ADDR="bazzite.local"
 SSH_USER="alexandre"
 SSH_KEY="/root/.ssh/id_ed25519"
-REPO_HOST="/var/mnt/42798d48-3976-4c4a-a73a-2d3f75b1cd99/home/alexandrebragatorqueti/projetos/agentes/bibliotecaglobal/project/biblioteca-global"
-NET="biblioteca-global_default"
+REPO_HOST="/run/media/alexandre/12T/codigofonte/biblioteca-global"
 API="biblioteca-global-api"; API_HOST_PORT=3003; API_PORT=3001
 WEB="biblioteca-global-web"; WEB_HOST_PORT=5174; WEB_PORT=80
+COMPOSE_FILE="docker-compose.yml"
 TAG="deploy-$(date -u +%Y%m%d-%H%M%S)"
 
 ssh_host() {
@@ -56,44 +56,27 @@ echo "[deploy] $(date -u '+%F %T') UTC — biblioteca-global, tag $TAG"
 ssh_host 'echo ok' >/dev/null
 echo "[deploy] acesso ao host $HOST_ADDR OK"
 
-# --- 2) Build das imagens no host -------------------------------------------
-ssh_host bash -s -- "$TAG" "$REPO_HOST" <<'REMOTE'
+# --- 2) Build e recriação pelo Compose no host -------------------------------
+OLD_API_IMAGE=$(ssh_host "docker inspect $API --format '{{.Image}}'" 2>/dev/null || echo "")
+OLD_WEB_IMAGE=$(ssh_host "docker inspect $WEB --format '{{.Image}}'" 2>/dev/null || echo "")
+
+ssh_host bash -s -- "$REPO_HOST" "$COMPOSE_FILE" <<'REMOTE'
 set -eu
-TAG="$1"; REPO="$2"
+REPO="$1"; COMPOSE_FILE="$2"
 cd "$REPO"
-echo "[deploy][host] build api..."
-docker build -q -t "biblioteca-global-api:$TAG" -f apps/api/Dockerfile .
-echo "[deploy][host] build web..."
-docker build -q -t "biblioteca-global-web:$TAG" -f apps/web/Dockerfile .
+set -a
+. ./.env
+set +a
+echo "[deploy][host] validando configuração do Compose..."
+docker compose -f "$COMPOSE_FILE" config --quiet
+echo "[deploy][host] build das imagens api/web..."
+docker compose -f "$COMPOSE_FILE" build api web
+echo "[deploy][host] recriando api/web pelo Compose..."
+docker compose -f "$COMPOSE_FILE" up -d --force-recreate api web
 REMOTE
-echo "[deploy] imagens buildadas: biblioteca-global-{api,web}:$TAG"
+echo "[deploy] imagens buildadas e containers recriados pelo Compose"
 
-# --- 3) Preserva imagens atuais (rollback) + envs (sem imprimir valores) ----
-OLD_API_IMAGE=$(ssh_host "docker inspect $API --format '{{.Config.Image}}'" 2>/dev/null || echo "")
-OLD_WEB_IMAGE=$(ssh_host "docker inspect $WEB --format '{{.Config.Image}}'" 2>/dev/null || echo "")
-ssh_host bash -s -- "$API" "$WEB" <<'REMOTE'
-set -u
-umask 077
-API="$1"; WEB="$2"
-docker inspect "$API" --format '{{range .Config.Env}}{{println .}}{{end}}' > /tmp/.deploy-env-api 2>/dev/null || : > /tmp/.deploy-env-api
-docker inspect "$WEB" --format '{{range .Config.Env}}{{println .}}{{end}}' > /tmp/.deploy-env-web 2>/dev/null || : > /tmp/.deploy-env-web
-REMOTE
-
-# --- 4) Recria api + web (MySQL intocado) ------------------------------------
-ssh_host bash -s -- "$TAG" "$NET" "$API" "$API_HOST_PORT" "$API_PORT" "$WEB" "$WEB_HOST_PORT" "$WEB_PORT" <<'REMOTE'
-set -eu
-TAG="$1"; NET="$2"; API="$3"; API_HP="$4"; API_P="$5"; WEB="$6"; WEB_HP="$7"; WEB_P="$8"
-docker rm -f "$API" "$WEB" >/dev/null 2>&1 || true
-docker run -d --name "$API" --network "$NET" --network-alias api \
-  --restart unless-stopped -p "$API_HP:$API_P" \
-  --env-file /tmp/.deploy-env-api "biblioteca-global-api:$TAG" >/dev/null
-docker run -d --name "$WEB" --network "$NET" \
-  --restart unless-stopped -p "$WEB_HP:$WEB_P" \
-  --env-file /tmp/.deploy-env-web "biblioteca-global-web:$TAG" >/dev/null
-REMOTE
-echo "[deploy] containers recriados com a tag $TAG"
-
-# --- 5) Healthcheck ----------------------------------------------------------
+# --- 3) Healthcheck ----------------------------------------------------------
 # web: nginx /health; api: qualquer resposta HTTP (entrypoint roda migrations
 # antes de servir — por isso mais tentativas).
 if wait_http "http://$HOST_ADDR:$WEB_HOST_PORT/health" 20 "web" \
@@ -103,21 +86,20 @@ if wait_http "http://$HOST_ADDR:$WEB_HOST_PORT/health" 20 "web" \
   exit 0
 fi
 
-# --- 6) Rollback --------------------------------------------------------------
+# --- 4) Rollback --------------------------------------------------------------
 echo "[deploy] FALHOU — revertendo para ${OLD_API_IMAGE:-?} / ${OLD_WEB_IMAGE:-?}" >&2
 if [ -n "$OLD_API_IMAGE" ] && [ -n "$OLD_WEB_IMAGE" ]; then
-  ssh_host bash -s -- "$OLD_API_IMAGE" "$OLD_WEB_IMAGE" "$NET" "$API" "$API_HOST_PORT" "$API_PORT" "$WEB" "$WEB_HOST_PORT" "$WEB_PORT" <<'REMOTE' || true
+  ssh_host bash -s -- "$OLD_API_IMAGE" "$OLD_WEB_IMAGE" "$REPO_HOST" "$COMPOSE_FILE" <<'REMOTE' || true
 set -eu
-OLD_API="$1"; OLD_WEB="$2"; NET="$3"; API="$4"; API_HP="$5"; API_P="$6"; WEB="$7"; WEB_HP="$8"; WEB_P="$9"
-docker rm -f "$API" "$WEB" >/dev/null 2>&1 || true
-docker run -d --name "$API" --network "$NET" --network-alias api \
-  --restart unless-stopped -p "$API_HP:$API_P" \
-  --env-file /tmp/.deploy-env-api "$OLD_API" >/dev/null
-docker run -d --name "$WEB" --network "$NET" \
-  --restart unless-stopped -p "$WEB_HP:$WEB_P" \
-  --env-file /tmp/.deploy-env-web "$OLD_WEB" >/dev/null
+OLD_API="$1"; OLD_WEB="$2"; REPO="$3"; COMPOSE_FILE="$4"
+cd "$REPO"
+set -a
+. ./.env
+set +a
+docker tag "$OLD_API" biblioteca-global-api:latest
+docker tag "$OLD_WEB" biblioteca-global-web:latest
+docker compose -f "$COMPOSE_FILE" up -d --force-recreate api web
 REMOTE
   echo "[deploy] rollback executado (imagens anteriores restauradas)" >&2
 fi
-ssh_host "rm -f /tmp/.deploy-env-api /tmp/.deploy-env-web" || true
 exit 1

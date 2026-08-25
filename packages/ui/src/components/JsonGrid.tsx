@@ -512,16 +512,17 @@ export default function JsonGrid<T extends JsonRecord>({
 
                           {/* Botões de ações por linha */}
                           {rowActions.map((action) => {
-                            // Feedback por linha + ação: `${rowId}_${actionId}`.
-                            const estado = acaoFeedback[`${rowKey}_${action.id}`]
-                            const executando = executandoAcao === action.id
+                            // Chave composta: `${rowId}_${actionId}` — isola estado por linha.
+                            const acaoKey = `${rowKey}_${action.id}`
+                            const estado = acaoFeedback[acaoKey]
+                            const executando = executandoAcao === acaoKey
                             return (
                               <Stack key={action.id} spacing={0.5} alignItems="flex-end">
                                 <Button
                                   size="small"
                                   variant="outlined"
                                   color="secondary"
-                                  disabled={executandoAcao !== null || !onRowAction}
+                                  disabled={executando || !onRowAction}
                                   onClick={(e) => {
                                     e.stopPropagation()
                                     onRowAction?.(action, row as EntityRecord)

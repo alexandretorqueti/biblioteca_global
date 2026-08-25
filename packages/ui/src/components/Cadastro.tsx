@@ -296,7 +296,7 @@ export default function Cadastro<T extends EntityRecord>({
       ? `${dataSource.getRowId(row as unknown as T)}_${action.id}`
       : action.id
 
-    setExecutandoAcao(action.id)
+    setExecutandoAcao(feedbackKey)
     setAcaoFeedback((prev) => {
       const next = { ...prev }
       delete next[feedbackKey]

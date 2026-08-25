@@ -685,4 +685,52 @@ describe("Cadastro — feedback de rowActions por linha (task-80 st-1)", () => {
     expect(linhaComAlerta).toHaveTextContent("Tarefa B")
     expect(botoesIniciar[0]!.closest("tr")).not.toContainElement(screen.getByText("Tarefa já em execução"))
   })
+
+  it("estado de execução (label 'Iniciar...') aparece apenas na linha clicada; outra linha permanece habilitada", async () => {
+    let resolveAcao!: (v: { message: string }) => void
+    const exMock = vi.fn(
+      () => new Promise<{ message: string }>((resolve) => {
+        resolveAcao = resolve
+      }),
+    )
+
+    render(
+      <Cadastro
+        dataSource={dataSourceMock([
+          { id: 1, nome: "Tarefa A" },
+          { id: 2, nome: "Tarefa B" },
+        ])}
+        title="Tarefas"
+        fields={camposBase}
+        newLabel="Nova tarefa"
+        rowActions={rowAcoes}
+        executeAction={exMock}
+      />,
+    )
+
+    const botoesIniciar = await screen.findAllByRole("button", { name: "Iniciar" })
+    expect(botoesIniciar).toHaveLength(2)
+
+    // Clica em Iniciar na primeira linha (Tarefa A).
+    fireEvent.click(botoesIniciar[0]!)
+
+    // Durante execução: apenas a linha 1 mostra "Iniciar..." (rótulo mutado).
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Iniciar..." })).toBeInTheDocument()
+    })
+
+    // A segunda linha mantém o botão "Iniciar" original (não foi afetada).
+    const botoesAposClique = screen.getAllByRole("button", { name: "Iniciar" })
+    // Deve haver exatamente 1 botão "Iniciar" (o da linha 2 — o da linha 1 virou "Iniciar...").
+    expect(botoesAposClique).toHaveLength(1)
+    const linha2 = botoesAposClique[0]!.closest("tr")
+    expect(linha2).toHaveTextContent("Tarefa B")
+
+    // O botão da linha 2 permanece habilitado (não é afetado pela execução na linha 1).
+    expect(botoesAposClique[0]).not.toBeDisabled()
+
+    // Finaliza a ação.
+    resolveAcao({ message: "Tarefa 1 iniciada." })
+    await screen.findByText("Tarefa 1 iniciada.")
+  })
 })
