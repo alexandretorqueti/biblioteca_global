@@ -9,6 +9,7 @@ const commandOutputSchema = z.object({
 })
 
 const taskExecutionPayloadSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("task.started"), payload: z.record(z.string(), z.unknown()) }),
   z.object({ type: z.literal("task.status.changed"), payload: z.object({ previousStatus: z.string().optional(), status: z.string() }) }),
   z.object({ type: z.literal("task.command.started"), payload: z.object({ commandId: z.string(), command: z.array(z.string()), displayCommand: z.string(), cwd: z.string().optional(), at: z.string().datetime().optional() }) }),
   z.object({ type: z.literal("task.command.output"), payload: commandOutputSchema }),
@@ -20,17 +21,24 @@ const taskExecutionPayloadSchema = z.discriminatedUnion("type", [
 export const taskExecutionEventSchema = taskExecutionPayloadSchema
 export type TaskExecutionEvent = z.infer<typeof taskExecutionEventSchema>
 
-export const taskEventEnvelopeSchema = z.object({
+const taskEventEnvelopeBaseSchema = z.object({
   eventId: z.string(),
-  sequence: z.number().int().positive(),
   occurredAt: z.string().datetime(),
   source: z.string(),
   organizationId: z.string().optional(),
   projectId: z.number().int().positive(),
   taskId: z.number().int().positive(),
-  subtaskId: z.number().int().positive().optional(),
+  sourceTaskId: z.string().optional(),
+  sourceProjectSlug: z.string().optional(),
+  subtaskId: z.union([z.number().int().positive(), z.string().min(1)]).optional(),
   type: z.string(),
   payload: z.record(z.string(), z.unknown()),
+})
+export const realtimeIngressEventSchema = taskEventEnvelopeBaseSchema
+export type RealtimeIngressEvent = z.infer<typeof realtimeIngressEventSchema>
+
+export const taskEventEnvelopeSchema = taskEventEnvelopeBaseSchema.extend({
+  sequence: z.number().int().positive(),
 })
 export type TaskEventEnvelope = z.infer<typeof taskEventEnvelopeSchema>
 

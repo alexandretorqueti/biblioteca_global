@@ -113,12 +113,14 @@ export {
 // Eventos de execução em tempo real
 export {
   taskExecutionEventSchema,
+  realtimeIngressEventSchema,
   taskEventEnvelopeSchema,
   realtimeClientMessageSchema,
   realtimeServerMessageSchema,
 } from "./realtime"
 export type {
   TaskExecutionEvent,
+  RealtimeIngressEvent,
   TaskEventEnvelope,
   RealtimeClientMessage,
   RealtimeServerMessage,

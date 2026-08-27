@@ -148,6 +148,11 @@ export class EnvService {
     return this.required("PROVISION_TOKEN")
   }
 
+  /** Token exclusivo para ingestão de eventos do motor de tarefas. */
+  get libraryRealtimeEventsToken(): string {
+    return this.config.get<string>("LIBRARY_REALTIME_EVENTS_TOKEN") ?? ""
+  }
+
   private required(key: string): string {
     const valor = this.config.get<string>(key)
     if (!valor) {

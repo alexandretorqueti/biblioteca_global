@@ -1,7 +1,7 @@
 import { Injectable } from "@nestjs/common"
 import { randomUUID } from "node:crypto"
 import type { WebSocket } from "ws"
-import { taskEventEnvelopeSchema, type RealtimeServerMessage, type TaskEventEnvelope } from "@biblioteca-global/shared"
+import { realtimeIngressEventSchema, type RealtimeServerMessage, type TaskEventEnvelope, type RealtimeIngressEvent } from "@biblioteca-global/shared"
 
 const LIMITE_EVENTOS_POR_TAREFA = 500
 
@@ -12,13 +12,15 @@ export class RealtimeService {
   private readonly sequencias = new Map<number, number>()
   private readonly eventos = new Map<string, TaskEventEnvelope[]>()
   private readonly inscritos = new Map<string, Map<WebSocket, number>>()
+  private readonly eventosRecebidos = new Set<string>()
 
   publicar(evento: unknown): TaskEventEnvelope {
-    const parsed = taskEventEnvelopeSchema.safeParse(evento)
+    const parsed = realtimeIngressEventSchema.safeParse(evento)
     if (!parsed.success) throw new Error("Evento realtime inválido")
-    const atual = this.sequencias.get(parsed.data.projectId) ?? 0
+    const input: RealtimeIngressEvent = parsed.data
+    const atual = this.sequencias.get(input.projectId) ?? 0
     const envelope: TaskEventEnvelope = {
-      ...parsed.data,
+      ...input,
       sequence: atual + 1,
     }
     this.sequencias.set(envelope.projectId, envelope.sequence)
@@ -29,6 +31,12 @@ export class RealtimeService {
     this.eventos.set(chave, lista)
     this.enviar(chave, { type: "event", event: envelope })
     return envelope
+  }
+
+  aceitarUmaVez(eventId: string): boolean {
+    if (this.eventosRecebidos.has(eventId)) return false
+    this.eventosRecebidos.add(eventId)
+    return true
   }
 
   inscrever(taskId: number, projectId: number, client: WebSocket, lastSequence?: number): { currentSequence: number; replayAvailable: boolean } {
