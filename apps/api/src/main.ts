@@ -7,9 +7,11 @@ import { NestFactory } from "@nestjs/core"
 import { AppModule } from "./app.module"
 import { configureApp } from "./bootstrap"
 import { EnvService } from "./config/env.service"
+import { WsAdapter } from "@nestjs/platform-ws"
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule)
+  app.useWebSocketAdapter(new WsAdapter(app))
   configureApp(app)
   const env = app.get(EnvService)
   await app.listen(env.apiPort)

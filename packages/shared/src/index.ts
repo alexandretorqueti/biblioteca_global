@@ -94,6 +94,7 @@ export type {
   SelectProjectResponse,
   RefreshResponse,
   AccessTokenClaims,
+  AuthTokenClaims,
   UsuarioAutenticado,
   SessionInfo,
   MeResponse,
@@ -108,6 +109,20 @@ export {
   ModelSelectionEntrySchema,
   ProjectModelSelectionSchema,
 } from "./model-selection"
+
+// Eventos de execução em tempo real
+export {
+  taskExecutionEventSchema,
+  taskEventEnvelopeSchema,
+  realtimeClientMessageSchema,
+  realtimeServerMessageSchema,
+} from "./realtime"
+export type {
+  TaskExecutionEvent,
+  TaskEventEnvelope,
+  RealtimeClientMessage,
+  RealtimeServerMessage,
+} from "./realtime"
 export type {
   ModelSelectionTipo,
   ModelSelectionEntry,

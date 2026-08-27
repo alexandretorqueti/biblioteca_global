@@ -158,6 +158,8 @@ export interface AccessTokenClaims {
   perfil: Perfil
 }
 
+export type AuthTokenClaims = AccessTokenClaims
+
 /** Usuário retornado pela API — nunca inclui password_hash. */
 export interface UsuarioAutenticado {
   id: number

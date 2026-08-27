@@ -22,6 +22,11 @@ export function resolveApiBaseUrl(): string {
   return "http://localhost:3001/api"
 }
 
+export function resolveRealtimeUrl(): string {
+  const base = resolveApiBaseUrl().replace(/^http/, "ws")
+  return `${base}/realtime/ws`
+}
+
 export interface ApiClientBundle {
   http: ApiHttpClient
   auth: AuthClient

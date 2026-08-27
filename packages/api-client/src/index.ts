@@ -26,3 +26,6 @@ export type {
   SessionRecovery,
   TokenStore,
 } from "./types"
+export { RealtimeClient } from "./realtime"
+export type { RealtimeServerMessage } from "./realtime"
+export type { RealtimeClientOptions } from "./types"

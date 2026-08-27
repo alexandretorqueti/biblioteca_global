@@ -34,3 +34,13 @@ export interface ApiClientOptions {
   tokens: TokenStore
   fetchImpl?: FetchFn
 }
+
+export interface RealtimeClientOptions {
+  url: string
+  taskId: number
+  lastSequence?: number
+  onMessage(message: import("@biblioteca-global/shared").RealtimeServerMessage): void
+  onError?(error: Event): void
+  onStatusChange?(status: "connecting" | "open" | "closed"): void
+  webSocketFactory?: (url: string) => WebSocket
+}

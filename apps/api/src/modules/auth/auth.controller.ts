@@ -11,6 +11,7 @@ import {
   InternalServerErrorException,
   Post,
   Req,
+  Res,
   UseGuards,
 } from "@nestjs/common"
 import { Throttle } from "@nestjs/throttler"
@@ -69,11 +70,20 @@ export class AuthController {
   selectProject(
     @Req() req: ApiRequest,
     @Body() dto: SelectProjectDto,
+    @Res({ passthrough: true }) response: { setHeader(name: string, value: string): void },
   ): Promise<SelectProjectResponse> {
     return this.authService.selectProject(
       sessaoRefreshDe(req).usuarioId,
       dto,
-    )
+    ).then((result) => {
+      response.setHeader(
+        "Set-Cookie",
+        // TODO(security): adicionar Secure/Domain conforme o domínio final e
+        // limpar este cookie explicitamente no logout (demanda registrada).
+        `bg_access_token=${encodeURIComponent(result.accessToken)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=7200`,
+      )
+      return result
+    })
   }
 
   /** Pedido de código por e-mail — resposta sempre { ok: true } (D4). */

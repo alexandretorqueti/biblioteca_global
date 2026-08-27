@@ -16,6 +16,8 @@
     "@nestjs/core": "^11.0.0",
     "@nestjs/jwt": "^11.0.0",
     "@nestjs/platform-express": "^11.0.0",
+    "@nestjs/platform-ws": "^11.0.0",
+    "@nestjs/websockets": "^11.0.0",
     "@nestjs/throttler": "^6.0.0",
     "argon2": "^0.45.1",
     "class-transformer": "^0.5.1",
@@ -25,7 +27,8 @@
     "nodemailer": "^9.0.5",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "ws": "^8.18.3"
   },
   "devDependencies": {
     "@nestjs/testing": "^11.0.0",
@@ -33,6 +36,7 @@
     "@swc/core": "^1.16.0",
     "@types/nodemailer": "^8.0.1",
     "@types/supertest": "^6.0.0",
+    "@types/ws": "^8.18.1",
     "supertest": "^7.0.0",
     "tsx": "^4.19.0"
   }

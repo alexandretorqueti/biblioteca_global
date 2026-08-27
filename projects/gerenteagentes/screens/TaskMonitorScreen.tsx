@@ -34,8 +34,10 @@ import {
 } from "@mui/material"
 import { PlayArrowRounded, PauseRounded, ReplayRounded, EditRounded, CloseRounded } from "@mui/icons-material"
 import { DynamicForm } from "@biblioteca-global/ui"
+import { RealtimeClient, type RealtimeServerMessage } from "@biblioteca-global/api-client"
 import type { DynamicField, DynamicFormValues } from "@biblioteca-global/ui"
 import { useApi } from "../../../apps/web/src/hooks/useApi"
+import { resolveRealtimeUrl } from "../../../apps/web/src/api/client"
 
 interface Tarefa {
   id: number
@@ -175,6 +177,8 @@ export default function TaskMonitorScreen(): ReactNode {
   const [editSubOpen, setEditSubOpen] = useState(false)
   const [editSubLoading, setEditSubLoading] = useState(false)
   const [editSubError, setEditSubError] = useState<string | null>(null)
+  const [realtimeStatus, setRealtimeStatus] = useState<"connecting" | "open" | "closed">("closed")
+  const [terminalEvents, setTerminalEvents] = useState<RealtimeServerMessage[]>([])
   const [editingSub, setEditingSub] = useState<SubTarefaDb | null>(null)
   const mounted = useRef(true)
 
@@ -270,6 +274,26 @@ export default function TaskMonitorScreen(): ReactNode {
     }, 60000)
     return () => clearInterval(t2)
   }, [tarefaId, carregarDetail, carregarSubtarefasDb])
+
+  useEffect(() => {
+    if (tarefaId === "") return
+    setTerminalEvents([])
+    const realtime = new RealtimeClient({
+      url: resolveRealtimeUrl(),
+      taskId: tarefaId,
+      onStatusChange: setRealtimeStatus,
+      onMessage: (message) => {
+        if (message.type !== "event") return
+        setTerminalEvents((atual) => [...atual, message].slice(-500))
+        if (message.event.type === "task.status.changed") {
+          const status = String(message.event.payload.status ?? "")
+          setTarefas((atual) => atual.map((tarefa) => tarefa.id === tarefaId ? { ...tarefa, status } : tarefa))
+        }
+      },
+    })
+    realtime.connect()
+    return () => realtime.close()
+  }, [tarefaId])
 
   useEffect(() => {
     setLoading(false)
@@ -509,8 +533,8 @@ export default function TaskMonitorScreen(): ReactNode {
         <Typography variant="h4" fontWeight={600}>
           Acompanhar Tarefa
         </Typography>
-        <Typography variant="caption" color="text.secondary">
-          Atualização automática a cada 5s
+          <Typography variant="caption" color={realtimeStatus === "open" ? "success.main" : "text.secondary"}>
+          {realtimeStatus === "open" ? "Tempo real conectado" : "Reconectando ao tempo real…"}
         </Typography>
       </Stack>
 
@@ -723,6 +747,24 @@ export default function TaskMonitorScreen(): ReactNode {
                     )}
                   </Box>
                 ))}
+              </Paper>
+
+              <Typography variant="h6" sx={{ mt: 3 }}>Terminal</Typography>
+              <Paper
+                variant="outlined"
+                sx={{ p: 2, bgcolor: "grey.950", color: "grey.100", fontFamily: "monospace", whiteSpace: "pre-wrap", maxHeight: 320, overflow: "auto" }}
+                data-testid="task-terminal"
+              >
+                {terminalEvents.length === 0 && "Aguardando saída do comando…"}
+                {terminalEvents.map((message, index) => {
+                  if (message.type !== "event") return null
+                  const event = message.event
+                  const payload = event.payload
+                  if (event.type === "task.command.output") return <Box key={`${event.eventId}-${index}`} component="span" sx={{ color: payload.stream === "stderr" ? "error.light" : "inherit" }}>{String(payload.text ?? "")}</Box>
+                  if (event.type === "task.command.started") return <Box key={`${event.eventId}-${index}`} sx={{ color: "info.light", mb: 1 }}>{`$ ${String(payload.displayCommand ?? "")}`}</Box>
+                  if (event.type === "task.command.finished") return <Box key={`${event.eventId}-${index}`} sx={{ color: payload.success ? "success.light" : "error.light", mb: 1 }}>{`[exit ${String(payload.exitCode ?? "null")}] duração ${String(payload.durationMs ?? 0)}ms`}</Box>
+                  return null
+                })}
               </Paper>
             </>
           )}
