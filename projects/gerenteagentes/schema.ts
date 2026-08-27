@@ -64,6 +64,7 @@ export const projetosCaptados = mysqlTable("projetos_captados", {
     unsigned: true,
   }),
   branchTrabalho: varchar("branch_trabalho", { length: 255 }),
+  repoPath: varchar("repo_path", { length: 500 }),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at")
     .notNull()
@@ -280,6 +281,7 @@ export const annotations = {
     ativo: { label: "Ativo" },
     plataforma_projeto_id: { label: "Projeto Plataforma" },
     branch_trabalho: { label: "Branch de Trabalho", maxLength: 255 },
+    repo_path: { label: "Caminho do repositório", maxLength: 500 },
   },
   definicoes: {
     projeto_id: { label: "Projeto" },

@@ -24,6 +24,19 @@ export class RestEntityClient<T extends EntityRecord> {
       search: params.search,
       ...params.filters,
     }
+    // Serializar orderBy: "campo:asc,campo:desc,campo:asc:v1|v2"
+    if (params.orderBy && params.orderBy.length > 0) {
+      const orderByStr = params.orderBy
+        .map((item) => {
+          let str = `${item.campo}:${item.direction}`
+          if (item.valuesLast && item.valuesLast.length > 0) {
+            str += `:${item.valuesLast.join("|")}`
+          }
+          return str
+        })
+        .join(",")
+      query.orderBy = orderByStr
+    }
     return this.http.request<PaginatedResult<T>>(
       "GET",
       `/${this.resource}`,

@@ -64,6 +64,8 @@ interface CadastroProps<T extends EntityRecord> {
   onChildRouteClick?: (route: GeradorSistemaChildRoute, parentRow: EntityRecord) => void
   /** Filtros aplicados ao carregar dados (para navegação hierárquica). */
   filters?: Record<string, string | number | boolean>
+  /** Ordenação padrão ao carregar dados. */
+  defaultOrderBy?: import("@biblioteca-global/shared").CrudOrderByItem[]
 }
 
 export default function Cadastro<T extends EntityRecord>({
@@ -83,6 +85,7 @@ export default function Cadastro<T extends EntityRecord>({
   childRoutes = [],
   onChildRouteClick,
   filters,
+  defaultOrderBy,
 }: CadastroProps<T>) {
   const [rows, setRows] = useState<T[]>([])
   const [gridRows, setGridRows] = useState<T[]>([])
@@ -156,7 +159,11 @@ export default function Cadastro<T extends EntityRecord>({
     setLoading(true)
 
     try {
-      const rows = await dataSource.list(filters ? { filters } : undefined)
+      const params = {
+        ...(filters ? { filters } : {}),
+        ...(defaultOrderBy ? { orderBy: defaultOrderBy } : {}),
+      }
+      const rows = await dataSource.list(Object.keys(params).length > 0 ? params : undefined)
       const resolvedRows = await resolveFks(rows)
       setRows(rows)
       setGridRows(resolvedRows)
@@ -171,7 +178,7 @@ export default function Cadastro<T extends EntityRecord>({
     } finally {
       setLoading(false)
     }
-  }, [dataSource, filters, resolveFks])
+  }, [dataSource, filters, defaultOrderBy, resolveFks])
 
   useEffect(() => {
     void loadRows()

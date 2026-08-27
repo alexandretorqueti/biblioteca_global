@@ -115,21 +115,19 @@ describe("config do projeto gerenteagentes", () => {
     expect(descricao!.type).toBe("textarea")
   })
 
-  it("não define agente e ambiente de execução no projeto (removidos — 2026-08-24)", () => {
+  it("define repoPath editável no formulário de projetos", () => {
     const grupoProjetos = config.groups.find((g) => g.id === "projetos")!
     const item = grupoProjetos.items.find((i) => i.id === "projetos-list")!
     const screen = item.screen as CadastroScreenConfig
 
-    // Campos removidos em 2026-08-24 (agenteId, repoPath, buildCommand, unitTestCommand)
-    for (const nome of ["agenteId", "repoPath", "buildCommand", "unitTestCommand"]) {
-      expect(screen.fields!.find((f) => f.name === nome)).toBeUndefined()
-    }
-
-    // E também não existem na tela de tarefas.
-    const tela = localizarTelaTarefas() as unknown as ChildRoute
-    for (const nome of ["agenteId", "repoPath", "buildCommand", "unitTestCommand"]) {
-      expect(tela.fields!.find((f) => f.name === nome)).toBeUndefined()
-    }
+    const campo = screen.fields!.find((f) => f.name === "repoPath")
+    expect(campo).toMatchObject({
+      label: "Caminho do repositório",
+      type: "text",
+      maxLength: 500,
+      gridVisible: false,
+      fullWidth: true,
+    })
   })
 
   it("define as childRoutes das tarefas (subtarefas, chats, bloqueios)", () => {

@@ -72,6 +72,7 @@ export const config: GeradorSistemaConfig = {
               { name: "ativo", label: "Ativo", type: "switch", defaultValue: true, gridVisible: false },
               { name: "plataformaProjetoId", label: "Projeto Plataforma", type: "number", gridVisible: false },
               { name: "branchTrabalho", label: "Branch de Trabalho", type: "text", maxLength: 255, gridVisible: false },
+              { name: "repoPath", label: "Caminho do repositório", type: "text", maxLength: 500, gridVisible: false, fullWidth: true },
             ],
             overrides: {
               hiddenColumns: ["createdAt", "updatedAt"],
@@ -109,7 +110,7 @@ export const config: GeradorSistemaConfig = {
                   {
                     campo: "status",
                     direction: "asc",
-                    valuesLast: ["deployada", "completed", "finalizada", "aborted"],
+                    valuesLast: ["finalizada", "deployada", "completed", "blocked"],
                   },
                   { campo: "createdAt", direction: "desc" },
                 ],

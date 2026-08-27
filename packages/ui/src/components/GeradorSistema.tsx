@@ -106,6 +106,8 @@ interface NavigationLevel {
   newLabel?: string
   actions?: CustomAction[]
   rowActions?: CustomAction[]
+  /** Ordenação padrão ao carregar a tela filha. */
+  defaultOrderBy?: import("@biblioteca-global/shared").CrudOrderByItem[]
 }
 
 function montarChildRoutes(
@@ -317,6 +319,7 @@ export default function GeradorSistema({
       newLabel: route.newLabel,
       actions: route.actions,
       rowActions: route.rowActions,
+      defaultOrderBy: route.defaultOrderBy,
     }
 
     setNavigationStack([...navigationStack, newLevel])
@@ -473,6 +476,7 @@ export default function GeradorSistema({
                 childRoutes={currentLevel.childRoutes}
                 onChildRouteClick={handleChildRouteClick}
                 filters={currentLevel.filterField && currentLevel.filterValue !== undefined ? { [currentLevel.filterField]: currentLevel.filterValue } : undefined}
+                defaultOrderBy={currentLevel.defaultOrderBy}
               />
             )}
           </Container>

@@ -13,11 +13,13 @@ import {
 
 /** Base url resolvida: protocolo+host atuais + /api (proxy dev / deploy). */
 export function resolveApiBaseUrl(): string {
+  const configuredApiUrl = import.meta.env.VITE_API_URL
+  if (configuredApiUrl) return configuredApiUrl
   if (typeof window !== "undefined") {
     const { protocol, host } = window.location
     return `${protocol}//${host}/api`
   }
-  return `${import.meta.env.VITE_API_URL ?? "http://localhost:3001/api"}`
+  return "http://localhost:3001/api"
 }
 
 export interface ApiClientBundle {

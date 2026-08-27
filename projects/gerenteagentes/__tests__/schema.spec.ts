@@ -11,6 +11,18 @@ import { getTableConfig } from "drizzle-orm/mysql-core"
 import { projetosCaptados, annotations } from "../schema"
 
 describe("projetosCaptados — schema Drizzle", () => {
+  it("possui a coluna repo_path (varchar(500), opcional)", () => {
+    const config = getTableConfig(projetosCaptados)
+    const col = config.columns.find((c) => c.name === "repo_path")
+
+    expect(col).toBeDefined()
+    expect(col!.dataType).toBe("string")
+    const metadados = col as unknown as { length: number; notNull: boolean }
+    expect(metadados.length).toBe(500)
+    expect(metadados.notNull).toBe(false)
+    expect(projetosCaptados.repoPath).toBeDefined()
+  })
+
   it("possui a coluna branch_trabalho (varchar(255), opcional)", () => {
     const config = getTableConfig(projetosCaptados)
     const col = config.columns.find((c) => c.name === "branch_trabalho")
@@ -34,5 +46,10 @@ describe("annotations — projetos_captados", () => {
     expect(ann.branch_trabalho).toBeDefined()
     expect(ann.branch_trabalho.label).toBe("Branch de Trabalho")
     expect(ann.branch_trabalho.maxLength).toBe(255)
+  })
+
+  it("inclui repo_path nas anotações", () => {
+    const ann = annotations.projetos_captados
+    expect(ann.repo_path).toMatchObject({ label: "Caminho do repositório", maxLength: 500 })
   })
 })
