@@ -63,11 +63,11 @@ export class ExpirationReconciler {
 
     // 2. Tarefas órfãs (running sem lock)
     const orphans = await this.db.query(
-      `SELECT t.id FROM projeto_640.tarefas t
+      `SELECT t.id, t.external_id FROM projeto_640.tarefas t
        WHERE t.status = 'running'
          AND NOT EXISTS (
            SELECT 1 FROM projeto_640.execution_resources r
-           WHERE r.execution_id LIKE CONCAT('%', t.id, '%') AND r.expires_at > ?
+           WHERE (r.execution_id LIKE CONCAT('%', t.external_id, '%') OR r.execution_id LIKE CONCAT('%', t.id, '%')) AND r.expires_at > ?
          )`,
       [now]
     )
