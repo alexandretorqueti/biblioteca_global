@@ -1,7 +1,8 @@
 {
-  "name": "@gerente-agentes/motor-v2",
+  "name": "@biblioteca-global/motor-v2",
   "version": "0.1.0",
   "description": "Motor v2 com suporte a paralelismo controlado",
+  "private": true,
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -22,21 +23,14 @@
     "lint": "eslint src test --ext .ts"
   },
   "dependencies": {
-    "@gerente-agentes/application": "0.1.0",
-    "@gerente-agentes/contracts": "0.1.0",
-    "@gerente-agentes/domain": "0.1.0",
-    "@gerente-agentes/persistence": "0.1.0"
+    "mysql2": "^3.23.3"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
-    "@typescript-eslint/eslint-plugin": "^6.19.0",
-    "@typescript-eslint/parser": "^6.19.0",
-    "@vitest/coverage-v8": "^1.2.0",
-    "eslint": "^8.56.0",
     "typescript": "~5.9.3",
-    "vitest": "^1.2.0"
+    "vitest": "^4.1.10"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.0.0"
   }
 }

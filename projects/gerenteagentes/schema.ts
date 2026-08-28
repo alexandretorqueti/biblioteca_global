@@ -243,6 +243,39 @@ export const geracoesProjeto = mysqlTable("geracoes_projeto", {
     .onUpdateNow(),
 })
 
+// ============================================================================
+// PARALELISMO (Motor v2)
+// ============================================================================
+
+export const executionResources = mysqlTable("execution_resources", {
+  id: bigint("id", { mode: "number", unsigned: true })
+    .primaryKey()
+    .autoincrement(),
+  resourceKey: varchar("resource_key", { length: 200 }).notNull().unique(),
+  executionId: varchar("execution_id", { length: 200 }).notNull(),
+  ownerId: varchar("owner_id", { length: 200 }).notNull(),
+  fencingToken: int("fencing_token").notNull().default(1),
+  heartbeatAt: timestamp("heartbeat_at").notNull(),
+  acquiredAt: timestamp("acquired_at").notNull(),
+  expiresAt: timestamp("expires_at").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+})
+
+export const executionResourceQueue = mysqlTable("execution_resource_queue", {
+  id: bigint("id", { mode: "number", unsigned: true })
+    .primaryKey()
+    .autoincrement(),
+  resourceKey: varchar("resource_key", { length: 200 }).notNull(),
+  executionId: varchar("execution_id", { length: 200 }).notNull(),
+  taskId: varchar("task_id", { length: 200 }).notNull(),
+  priority: int("priority").notNull().default(0),
+  requestedAt: timestamp("requested_at").notNull().defaultNow(),
+})
+
+// ============================================================================
+// BLOQUEIOS (Motor v1 - legado)
+// ============================================================================
+
 export const bloqueios = mysqlTable("bloqueios", {
   id: bigint("id", { mode: "number", unsigned: true })
     .primaryKey()

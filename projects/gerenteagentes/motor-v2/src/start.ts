@@ -4,25 +4,20 @@
  */
 
 import { Motor } from './Motor.js'
-import type { Db, TaskRepository, QueryResult, SaveTaskData } from './shared/types/infrastructure.js'
+import { createDbConnection, MysqlTaskRepository } from './database/DrizzleDb.js'
 
 async function main() {
   console.log('🚀 Motor v2 - Iniciando...')
 
-  // Mock db/repository para teste de inicialização
-  const mockDb: Db = {
-    query: async (_sql: string, _params?: unknown[]): Promise<QueryResult> => ({ rows: [], affectedRows: 0, insertId: 0 }),
-    transaction: async <T>(fn: (db: Db) => Promise<T>): Promise<T> => fn(mockDb),
-  }
-
-  const mockRepository: TaskRepository = {
-    saveTask: async (_data: SaveTaskData): Promise<void> => {},
-    getTask: async (_id: string): Promise<SaveTaskData | null> => null,
-  }
+  // Conecta ao banco real
+  console.log('📦 Conectando ao banco de dados...')
+  const { db } = await createDbConnection()
+  const repository = new MysqlTaskRepository(db)
+  console.log('✅ Banco conectado')
 
   const motor = new Motor({
-    db: mockDb,
-    repository: mockRepository,
+    db,
+    repository,
     maxWorkers: 1,
     apiPort: 3010,
     reconcilerIntervalMs: 30000,
