@@ -412,7 +412,7 @@ export class TaskCoordinator {
       seq: Number(row.seq),
       titulo: String(row.titulo ?? ""),
       scope: row.scope ? String(row.scope) : undefined,
-      acceptanceCriteria: row.acceptance_criteria ? JSON.parse(String(row.acceptance_criteria)) : undefined,
+      acceptanceCriteria: Array.isArray(row.acceptance_criteria) ? row.acceptance_criteria : (typeof row.acceptance_criteria === "string" ? JSON.parse(row.acceptance_criteria) : undefined),
       tarefaId: Number(row.tarefa_id),
       taskExternalId: String(row.task_external_id ?? row.tarefa_id),
       taskTitulo: String(row.task_titulo ?? ""),
