@@ -6,11 +6,7 @@ import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { createDbConnection, MysqlTaskRepository } from '../../../../projects/gerenteagentes/motor-v2/src/database/DrizzleDb'
 import { Motor } from '../../../../projects/gerenteagentes/motor-v2/src/Motor'
-import { TaskCoordinator } from '../../../../projects/gerenteagentes/motor-v2/src/coordinator/TaskCoordinator'
-import { ExpirationReconciler } from '../../../../projects/gerenteagentes/motor-v2/src/reconciler/ExpirationReconciler'
-import { MotorAPI } from '../../../../projects/gerenteagentes/motor-v2/src/api/MotorAPI'
-import { WorkerLauncher } from '../../../../projects/gerenteagentes/motor-v2/src/workers/WorkerLauncher'
-import type { Db, TaskRepository } from '../../../../projects/gerenteagentes/motor-v2/src/shared/types'
+import type { Db } from '../../../../projects/gerenteagentes/motor-v2/src/shared/types'
 
 @Injectable()
 export class MotorV2Service implements OnModuleInit, OnModuleDestroy {
@@ -39,46 +35,20 @@ export class MotorV2Service implements OnModuleInit, OnModuleDestroy {
     this.db = db
 
     // Cria repositório
-    const repo: TaskRepository = new MysqlTaskRepository(db)
+    const repo = new MysqlTaskRepository(db)
 
-    // Cria launcher de workers
-    const workerLauncher = new WorkerLauncher({
-      maxWorkers: Number(this.config.get('MOTOR_MAX_WORKERS', 1)),
-      workerScript: require.resolve('../../../../projects/gerenteagentes/motor-v2/src/workers/TaskWorker'),
-    })
-
-    // Cria coordenador
-    const coordinator = new TaskCoordinator({
-      repo,
-      workerLauncher,
-      lockTtlMs: 60_000,
-      heartbeatIntervalMs: 10_000,
-    })
-
-    // Cria reconciliador
-    const reconciler = new ExpirationReconciler({
-      repo,
-      intervalMs: 30_000,
-    })
-
-    // Cria API HTTP
-    const apiPort = Number(this.config.get('MOTOR_API_PORT', 3010))
-    const api = new MotorAPI({
-      port: apiPort,
-      coordinator,
-      reconciler,
-    })
-
-    // Cria motor
+    // Cria motor (ele cria coordinator, reconciler, api, workerLauncher internamente)
     this.motor = new Motor({
-      coordinator,
-      reconciler,
-      api,
+      db,
+      repository: repo,
+      maxWorkers: Number(this.config.get('MOTOR_MAX_WORKERS', 1)),
+      apiPort: Number(this.config.get('MOTOR_API_PORT', 3010)),
+      reconcilerIntervalMs: 30_000,
     })
 
     // Inicia
     await this.motor.start()
-    console.log(`[MotorV2Service] Motor-v2 iniciado na porta ${apiPort}`)
+    console.log(`[MotorV2Service] Motor-v2 iniciado`)
   }
 
   async onModuleDestroy() {
