@@ -1,42 +1,35 @@
 #!/usr/bin/env node
 /**
  * Motor v2 - Script de inicialização
- * 
- * Uso: npm start
- * 
- * Inicializa o motor com configurações padrão
  */
 
 import { Motor } from './Motor.js'
-
-// TODO: Inicializar db e repository reais
-// Por enquanto, usa mocks para teste de inicialização
+import type { Db, TaskRepository, QueryResult, SaveTaskData } from './shared/types/infrastructure.js'
 
 async function main() {
   console.log('🚀 Motor v2 - Iniciando...')
 
-  // Mock db e repository para teste
-  const mockDb = {
-    query: async () => ({ rows: [], affectedRows: 0, insertId: 0 }),
-    transaction: async (fn) => fn(mockDb),
+  // Mock db/repository para teste de inicialização
+  const mockDb: Db = {
+    query: async (_sql: string, _params?: unknown[]): Promise<QueryResult> => ({ rows: [], affectedRows: 0, insertId: 0 }),
+    transaction: async <T>(fn: (db: Db) => Promise<T>): Promise<T> => fn(mockDb),
   }
 
-  const mockRepository = {
-    saveTask: async () => {},
-    getTask: async () => null,
+  const mockRepository: TaskRepository = {
+    saveTask: async (_data: SaveTaskData): Promise<void> => {},
+    getTask: async (_id: string): Promise<SaveTaskData | null> => null,
   }
 
   const motor = new Motor({
-    db: mockDb as any,
-    repository: mockRepository as any,
+    db: mockDb,
+    repository: mockRepository,
     maxWorkers: 1,
     apiPort: 3010,
     reconcilerIntervalMs: 30000,
   })
 
-  // Handler de shutdown gracioso
   const shutdown = async (signal: string) => {
-    console.log(`\n🛑 ${signal} recebido, parando motor...`)
+    console.log(`\n🛑 ${signal}`)
     await motor.stop()
     process.exit(0)
   }
@@ -46,16 +39,17 @@ async function main() {
 
   try {
     await motor.start()
-    console.log('✅ Motor v2 rodando na porta 3010')
-    console.log('📊 Health check: http://localhost:3010/api/motor/health')
-    console.log('📈 Stats: http://localhost:3010/api/motor/stats')
+    console.log('✅ Motor v2 rodando em http://localhost:3010')
+    console.log('   GET /api/motor/health')
+    console.log('   GET /api/motor/stats')
+    console.log('   POST /api/motor/pump')
   } catch (error) {
-    console.error('❌ Erro ao iniciar motor:', error)
+    console.error('❌ Erro:', error)
     process.exit(1)
   }
 }
 
 main().catch((error) => {
-  console.error('❌ Erro fatal:', error)
+  console.error('❌ Fatal:', error)
   process.exit(1)
 })

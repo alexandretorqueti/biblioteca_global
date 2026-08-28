@@ -197,7 +197,7 @@ describe('MotorMonitorStep', () => {
 
       expect(result.kind).toBe('failed')
       if (result.kind === 'failed') {
-        expect(result.reason).toContain('Lease do monitor perdido')
+        expect(result.reason).toContain('Lease perdido')
       }
     })
 

@@ -3,7 +3,7 @@
  */
 
 export interface ResourceLease {
-  resourceKey: string
+  resourceKey: ResourceKey
   executionId: string
   ownerId: string
   fencingToken: number

@@ -1,34 +1,54 @@
 /**
- * Tipos fundamentais do Motor v2
- * Zero `any` - todos os tipos são explícitos
+ * Tipos principais do Motor v2
  */
 
+/** Status possíveis de uma tarefa */
 export type TaskStatus =
-  | 'draft'
   | 'planned'
-  | 'planning'
   | 'running'
   | 'paused'
   | 'completed'
-  | 'finalizada'
-  | 'deployada'
-  | 'blocked'
+  | 'failed'
+  | 'cancelled'
 
+/** Status possíveis de uma subtarefa */
 export type SubTaskStatus =
   | 'pending'
-  | 'in_progress'
+  | 'running'
   | 'completed'
-  | 'blocked'
   | 'failed'
+  | 'skipped'
+  | 'rework'
 
-export type ExecutionPhase =
-  | 'prepare'
-  | 'plan'
-  | 'execute'
-  | 'integrate'
-  | 'deploy'
-  | 'finalize'
+/** Configuração de modelo */
+export interface ModelConfig {
+  id: string
+  provider: string
+  model: string
+  maxTokens: number
+  temperature: number
+  timeoutMs: number
+}
 
+/** Cadeia de modelos (escalada) */
+export interface ModelChain {
+  steps: ModelConfig[]
+  currentStep: number
+}
+
+/** Projeto */
+export interface Project {
+  slug: string
+  name: string
+  repoPath: string
+  agentId: string
+  buildCommand: string
+  testCommand: string
+  maxRework: number
+  hardTimeoutMs: number
+}
+
+/** Tarefa */
 export interface Task {
   id: string
   chatId: string
@@ -39,55 +59,31 @@ export interface Task {
   buildCommand: string
   unitTestCommand: string
   unitTestExclude: string[]
-  baselineMode: 'full' | 'build_only' | 'skip'
+  baselineMode: 'full' | 'incremental'
   status: TaskStatus
   maxRework: number
   hardTimeoutMs: number
   dependsOnTaskId?: string
   projectSlug: string | null
-  analysisCommit?: string
-  executionId?: string
-  fencingToken?: number
   createdAt: string
   updatedAt: string
+  executionId?: string
+  errorMessage?: string
+  startedAt?: string
+  completedAt?: string
 }
 
+/** Subtarefa */
 export interface SubTask {
   id: string
   taskId: string
   title: string
   description: string
   status: SubTaskStatus
-  attempt: number
+  order: number
   maxRework: number
+  reworkCount: number
   skipGate: boolean
-  dependsOnSubtaskIds: string[]
-  workBranch?: string
-  workspacePath?: string
-  lastCommit?: string
   createdAt: string
   updatedAt: string
-}
-
-export interface Project {
-  slug: string
-  repoPath: string
-  workBranch: string
-  remoteName: string
-  agentId: string
-  description?: string
-  ativo: boolean
-}
-
-export interface ModelConfig {
-  tier: string
-  provider: string
-  model: string
-  thinking?: 'low' | 'medium' | 'high'
-}
-
-export interface ModelChain {
-  chain: ModelConfig[]
-  enabled: boolean
-  sessionRotateAfter: number
 }

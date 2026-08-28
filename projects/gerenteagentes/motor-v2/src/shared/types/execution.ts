@@ -1,70 +1,73 @@
 /**
- * Tipos de execução e contexto
+ * Tipos de execução - contexto, input/output do worker, resultados
  */
 
-import type { Task, ExecutionPhase } from './index.js'
+import type { Task } from './index.js'
 
+/** Fases do pipeline de execução */
+export type ExecutionPhase =
+  | 'prepare'
+  | 'analyze'
+  | 'execute'
+  | 'verify'
+  | 'deliver'
+
+/** Contexto de execução isolado (propagado via AsyncLocalStorage) */
 export interface ExecutionContext {
   executionId: string
   taskId: string
-  projectSlug: string
+  projectSlug: string | null
   phase: ExecutionPhase
   fencingToken: number
   startedAt: Date
-  workerId?: string
+  subtaskId?: string
+  reworkCount?: number
+  modelId?: string
 }
 
+/** Resultado de execução */
 export interface ExecutionResult {
-  executionId: string
-  outcome: 'completed' | 'blocked' | 'waiting_resource' | 'failed'
-  phase: ExecutionPhase
-  result?: unknown
-  nextPhase?: ExecutionPhase
-  resourcesToRelease?: string[]
-  error?: string
+  ok: boolean
+  reason?: string
+  subtaskResults?: SubTaskResult[]
 }
 
+/** Resultado de uma subtarefa */
+export interface SubTaskResult {
+  subtaskId: string
+  status: 'completed' | 'failed' | 'skipped'
+  reason?: string
+  durationMs?: number
+}
+
+/** Input enviado ao Worker */
 export interface WorkerInput {
-  executionId: string
-  taskId: string
-  projectSlug: string
-  phase: ExecutionPhase
-  fencingToken: number
-  resources: string[]
+  context: ExecutionContext
   task: Task
+  repoPath: string
+  buildCommand: string
+  testCommand: string
 }
 
+/** Output retornado pelo Worker */
 export interface WorkerOutput {
   executionId: string
-  outcome: 'completed' | 'blocked' | 'waiting_resource' | 'failed'
-  phase: ExecutionPhase
-  result?: unknown
-  nextPhase?: ExecutionPhase
-  resourcesToRelease?: string[]
-  error?: string
+  taskId: string
+  result: ExecutionResult
 }
 
-export type WorkerMessage =
-  | { type: 'start'; input: WorkerInput }
-  | { type: 'cancel'; reason: string }
-  | { type: 'shutdown' }
-
-export type CoordinatorMessage =
-  | { type: 'started'; executionId: string }
-  | { type: 'progress'; executionId: string; phase: ExecutionPhase; message: string }
-  | { type: 'waiting_resource'; executionId: string; resourceKey: string; waitId: number }
-  | { type: 'completed'; executionId: string; result: ExecutionResult }
-  | { type: 'failed'; executionId: string; error: string }
-  | { type: 'heartbeat'; executionId: string }
-
-export function createExecutionContext(task: Task, phase: ExecutionPhase = 'prepare'): ExecutionContext {
-  const executionId = task.executionId ?? `exec-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+/** Cria um novo ExecutionContext */
+export function createExecutionContext(
+  taskId: string,
+  projectSlug: string | null,
+  fencingToken: number
+): ExecutionContext {
   return {
-    executionId,
-    taskId: task.id,
-    projectSlug: task.projectSlug ?? task.agentId,
-    phase,
-    fencingToken: task.fencingToken ?? 0,
+    executionId: `exec-${taskId}-${Date.now()}`,
+    taskId,
+    projectSlug,
+    phase: 'prepare',
+    fencingToken,
     startedAt: new Date(),
   }
 }

@@ -1,10 +1,8 @@
 /**
- * WorkerProtocol - Protocolo de comunicação entre Coordenador e Worker
- * 
- * Mensagens Coordinator → Worker e Worker → Coordinator
+ * WorkerProtocol - Protocolo de comunicação Coordinator ↔ Worker
  */
 
-import type { ExecutionContext, ExecutionPhase, WorkerInput, ExecutionResult } from '../shared/types/execution.js'
+import type { WorkerInput, ExecutionPhase, ExecutionResult } from '../shared/types/execution.js'
 
 // Coordinator → Worker
 export type CoordinatorToWorkerMessage =
@@ -22,13 +20,3 @@ export type WorkerToCoordinatorMessage =
   | { type: 'failed'; executionId: string; error: string }
   | { type: 'heartbeat'; executionId: string; cpuUsage?: number; memUsage?: number }
   | { type: 'log'; executionId: string; level: 'info' | 'warn' | 'error'; message: string }
-
-export function isCoordinatorMessage(msg: unknown): msg is CoordinatorToWorkerMessage {
-  return typeof msg === 'object' && msg !== null && 'type' in msg && 
-    ['start', 'cancel', 'shutdown'].includes(String((msg as Record<string, unknown>).type))
-}
-
-export function isWorkerMessage(msg: unknown): msg is WorkerToCoordinatorMessage {
-  return typeof msg === 'object' && msg !== null && 'type' in msg &&
-    ['ready', 'started', 'progress', 'waiting_resource', 'completed', 'failed', 'heartbeat', 'log'].includes(String((msg as Record<string, unknown>).type))
-}

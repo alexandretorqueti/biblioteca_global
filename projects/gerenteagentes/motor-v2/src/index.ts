@@ -61,6 +61,9 @@ export type {
 
 export { RESOURCE_KEYS } from './shared/types/resources.js'
 
+export type { Db, TaskRepository, QueryResult, SaveTaskData, TaskRow } from './shared/types/infrastructure.js'
+export type { AgentRuntimeDriver, SendMessageResult, RunStatusResult, SendMessageParams } from './shared/types/agent-runtime.js'
+
 // Steps
 export { MotorMonitorStep } from './steps/MotorMonitorStep.js'
 export type { MotorFixInput, MotorFixResult, MotorMonitorStepConfig } from './steps/MotorMonitorStep.js'

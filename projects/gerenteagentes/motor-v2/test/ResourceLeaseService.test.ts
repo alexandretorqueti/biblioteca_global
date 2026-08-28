@@ -2,47 +2,88 @@
  * Testes do ResourceLeaseService
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { ResourceLeaseService } from '../src/resources/ResourceLeaseService.js'
-import type { Db } from '@gerente-agentes/persistence'
+import type { Db, QueryResult } from '../src/shared/types/infrastructure.js'
 import type { ResourceKey } from '../src/shared/types/resources.js'
 
+function createMockDb(): Db {
+  const db: Db = {
+    query: vi.fn().mockResolvedValue({ rows: [], affectedRows: 0, insertId: 0 } satisfies QueryResult),
+    transaction: vi.fn().mockImplementation(async (fn: (db: Db) => Promise<unknown>) => fn(db)),
+  }
+  return db
+}
+
 describe('ResourceLeaseService', () => {
+  let db: Db
   let service: ResourceLeaseService
-  let mockDb: Db
+  const resourceKey: ResourceKey = 'project:test:execution'
+  const executionId = 'exec-123'
+  const ownerId = 'task-456'
 
   beforeEach(() => {
-    // Mock do Db
-    mockDb = {
-      query: vi.fn(),
-      transaction: vi.fn(),
-    } as unknown as Db
-
-    service = new ResourceLeaseService(mockDb, {
-      leaseExpirationMs: 60000,
-      maxWaitSeconds: 300,
-    })
-  })
-
-  afterEach(() => {
-    vi.clearAllMocks()
+    db = createMockDb()
+    service = new ResourceLeaseService({ db })
   })
 
   describe('acquire', () => {
     it('deve adquirir recurso quando disponível', async () => {
-      const resourceKey = 'project:test:execution' as ResourceKey
-      const executionId = 'exec-123'
-      const ownerId = 'task-456'
+      // db.query dentro da transaction retorna rows vazio (recurso livre)
+      vi.mocked(db.query).mockResolvedValueOnce({ rows: [], affectedRows: 0, insertId: 0 })
+      // INSERT retorna insertId
+      vi.mocked(db.query).mockResolvedValueOnce({ rows: [], affectedRows: 1, insertId: 1 })
 
-      // Mock: recurso disponível
-      vi.mocked(mockDb.query).mockResolvedValueOnce({
-        rows: [],
-        affectedRows: 1,
+      const result = await service.acquire(resourceKey, executionId, ownerId)
+
+      expect(result.kind).toBe('acquired')
+      if (result.kind === 'acquired') {
+        expect(result.lease.resourceKey).toBe(resourceKey)
+        expect(result.lease.executionId).toBe(executionId)
+        expect(result.lease.fencingToken).toBe(1)
+      }
+    })
+
+    it('deve entrar na fila quando recurso está ocupado', async () => {
+      const futureDate = new Date(Date.now() + 60000)
+      // Recurso ocupado
+      vi.mocked(db.query).mockResolvedValueOnce({
+        rows: [{ resource_key: resourceKey, execution_id: 'other-exec', fencing_token: 5, expires_at: futureDate.toISOString() }],
+        affectedRows: 0,
         insertId: 0,
       })
+      // INSERT na fila
+      vi.mocked(db.query).mockResolvedValueOnce({ rows: [], affectedRows: 1, insertId: 42 })
+      // COUNT da fila
+      vi.mocked(db.query).mockResolvedValueOnce({ rows: [{ position: 2 }], affectedRows: 0, insertId: 0 })
 
-      // Mock: getLease
-      vi.mocked(mockDb.query).mockResolvedValueOnce({
+      const result = await service.acquire(resourceKey, executionId, ownerId)
+
+      expect(result.kind).toBe('waiting')
+      if (result.kind === 'waiting') {
+        expect(result.waitId).toBe(42)
+        expect(result.position).toBe(2)
+      }
+    })
+
+    it('deve retornar denied em caso de erro', async () => {
+      vi.mocked(db.transaction).mockRejectedValueOnce(new Error('Database error'))
+
+      const result = await service.acquire(resourceKey, executionId, ownerId)
+
+      expect(result.kind).toBe('denied')
+      if (result.kind === 'denied') {
+        expect(result.reason).toContain('Database error')
+      }
+    })
+  })
+
+  describe('renew', () => {
+    it('deve renovar lease válido', async () => {
+      // UPDATE bem-sucedido
+      vi.mocked(db.query).mockResolvedValueOnce({ rows: [], affectedRows: 1, insertId: 0 })
+      // SELECT para retornar dados
+      vi.mocked(db.query).mockResolvedValueOnce({
         rows: [{
           resource_key: resourceKey,
           execution_id: executionId,
@@ -56,187 +97,50 @@ describe('ResourceLeaseService', () => {
         insertId: 0,
       })
 
-      const result = await service.acquire(resourceKey, executionId, ownerId)
-
-      expect(result.kind).toBe('acquired')
-      if (result.kind === 'acquired') {
-        expect(result.lease.resourceKey).toBe(resourceKey)
-        expect(result.lease.executionId).toBe(executionId)
-        expect(result.lease.fencingToken).toBe(1)
-      }
-    })
-
-    it('deve entrar na fila quando recurso está ocupado', async () => {
-      const resourceKey = 'project:test:execution' as ResourceKey
-      const executionId = 'exec-123'
-      const ownerId = 'task-456'
-
-      // Mock: recurso ocupado (INSERT falha)
-      vi.mocked(mockDb.query).mockResolvedValueOnce({
-        rows: [],
-        affectedRows: 0,
-        insertId: 0,
-      })
-
-      // Mock: enqueueWait - INSERT na fila
-      vi.mocked(mockDb.query).mockResolvedValueOnce({
-        rows: [],
-        affectedRows: 1,
-        insertId: 42,
-      })
-
-      // Mock: enqueueWait - SELECT posição
-      vi.mocked(mockDb.query).mockResolvedValueOnce({
-        rows: [{ position: 2 }],
-        affectedRows: 0,
-        insertId: 0,
-      })
-
-      const result = await service.acquire(resourceKey, executionId, ownerId)
-
-      expect(result.kind).toBe('waiting')
-      if (result.kind === 'waiting') {
-        expect(result.waitId).toBe(42)
-        expect(result.position).toBe(2)
-      }
-    })
-
-    it('deve retornar denied em caso de erro', async () => {
-      const resourceKey = 'project:test:execution' as ResourceKey
-      const executionId = 'exec-123'
-      const ownerId = 'task-456'
-
-      vi.mocked(mockDb.query).mockRejectedValueOnce(new Error('Database error'))
-
-      const result = await service.acquire(resourceKey, executionId, ownerId)
-
-      expect(result.kind).toBe('denied')
-      if (result.kind === 'denied') {
-        expect(result.reason).toContain('Database error')
-      }
-    })
-  })
-
-  describe('renew', () => {
-    it('deve renovar lease válido', async () => {
-      const resourceKey = 'project:test:execution' as ResourceKey
-      const executionId = 'exec-123'
-      const fencingToken = 1
-
-      // Mock: UPDATE bem-sucedido
-      vi.mocked(mockDb.query).mockResolvedValueOnce({
-        rows: [],
-        affectedRows: 1,
-        insertId: 0,
-      })
-
-      // Mock: getLease
-      vi.mocked(mockDb.query).mockResolvedValueOnce({
-        rows: [{
-          resource_key: resourceKey,
-          execution_id: executionId,
-          owner_id: 'task-456',
-          fencing_token: fencingToken,
-          heartbeat_at: new Date().toISOString(),
-          acquired_at: new Date().toISOString(),
-          expires_at: new Date(Date.now() + 60000).toISOString(),
-        }],
-        affectedRows: 0,
-        insertId: 0,
-      })
-
-      const result = await service.renew(resourceKey, executionId, fencingToken)
-
+      const result = await service.renew(resourceKey, executionId, 1)
       expect(result.kind).toBe('renewed')
     })
 
     it('deve retornar lost quando lease expirou', async () => {
-      const resourceKey = 'project:test:execution' as ResourceKey
-      const executionId = 'exec-123'
-      const fencingToken = 1
+      vi.mocked(db.query).mockResolvedValueOnce({ rows: [], affectedRows: 0, insertId: 0 })
 
-      // Mock: UPDATE não afeta nenhuma linha
-      vi.mocked(mockDb.query).mockResolvedValueOnce({
-        rows: [],
-        affectedRows: 0,
-        insertId: 0,
-      })
-
-      const result = await service.renew(resourceKey, executionId, fencingToken)
-
+      const result = await service.renew(resourceKey, executionId, 1)
       expect(result.kind).toBe('lost')
     })
   })
 
   describe('release', () => {
     it('deve liberar recurso', async () => {
-      const resourceKey = 'project:test:execution' as ResourceKey
-      const executionId = 'exec-123'
-      const fencingToken = 1
+      vi.mocked(db.query).mockResolvedValueOnce({ rows: [], affectedRows: 1, insertId: 0 })
 
-      // Mock: DELETE bem-sucedido
-      vi.mocked(mockDb.query).mockResolvedValueOnce({
-        rows: [],
-        affectedRows: 1,
-        insertId: 0,
-      })
-
-      // Mock: notifyNextInQueue
-      vi.mocked(mockDb.query).mockResolvedValueOnce({
-        rows: [],
-        affectedRows: 1,
-        insertId: 0,
-      })
-
-      const result = await service.release(resourceKey, executionId, fencingToken)
-
+      const result = await service.release(resourceKey, executionId, 1)
       expect(result.kind).toBe('released')
     })
 
-    it('deve retornar not_owner quando não é o proprietário', async () => {
-      const resourceKey = 'project:test:execution' as ResourceKey
-      const executionId = 'exec-123'
-      const fencingToken = 1
+    it('deve retornar not_found quando não existe', async () => {
+      vi.mocked(db.query).mockResolvedValueOnce({ rows: [], affectedRows: 0, insertId: 0 })
 
-      // Mock: DELETE não afeta nenhuma linha
-      vi.mocked(mockDb.query).mockResolvedValueOnce({
-        rows: [],
-        affectedRows: 0,
-        insertId: 0,
-      })
-
-      const result = await service.release(resourceKey, executionId, fencingToken)
-
-      expect(result.kind).toBe('not_owner')
+      const result = await service.release(resourceKey, executionId, 1)
+      expect(result.kind).toBe('not_found')
     })
   })
 
   describe('isAvailable', () => {
     it('deve retornar true quando recurso está livre', async () => {
-      const resourceKey = 'project:test:execution' as ResourceKey
-
-      vi.mocked(mockDb.query).mockResolvedValueOnce({
-        rows: [],
-        affectedRows: 0,
-        insertId: 0,
-      })
+      vi.mocked(db.query).mockResolvedValueOnce({ rows: [], affectedRows: 0, insertId: 0 })
 
       const result = await service.isAvailable(resourceKey)
-
       expect(result).toBe(true)
     })
 
     it('deve retornar false quando recurso está ocupado', async () => {
-      const resourceKey = 'project:test:execution' as ResourceKey
-
-      vi.mocked(mockDb.query).mockResolvedValueOnce({
-        rows: [{ 1: 1 }],
+      vi.mocked(db.query).mockResolvedValueOnce({
+        rows: [{ expires_at: new Date(Date.now() + 60000).toISOString() }],
         affectedRows: 0,
         insertId: 0,
       })
 
       const result = await service.isAvailable(resourceKey)
-
       expect(result).toBe(false)
     })
   })
