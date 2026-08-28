@@ -156,9 +156,13 @@ export class TaskCoordinator {
     if (!worker) return
 
     console.log(`[TaskCoordinator] Tarefa completada: ${worker.taskId}`)
-    const task = await this.repository.getTask(worker.taskId)
+    // Busca pelo execution_id (o external_id foi atualizado no startTask)
+    const task = await this.repository.getTask(executionId)
     if (task) {
       await this.repository.saveTask({ ...task, status: 'completed', completedAt: new Date().toISOString(), updatedAt: new Date().toISOString() })
+      console.log(`[TaskCoordinator] Status atualizado para completed: ${executionId}`)
+    } else {
+      console.warn(`[TaskCoordinator] Tarefa não encontrada para marcar como completed: ${executionId}`)
     }
 
     if (worker.resourceKey) {
@@ -174,9 +178,12 @@ export class TaskCoordinator {
     if (!worker) return
 
     console.error(`[TaskCoordinator] Tarefa falhou: ${worker.taskId}`, error)
-    const task = await this.repository.getTask(worker.taskId)
+    // Busca pelo execution_id (o external_id foi atualizado no startTask)
+    const task = await this.repository.getTask(executionId)
     if (task) {
       await this.repository.saveTask({ ...task, status: 'failed', errorMessage: error, updatedAt: new Date().toISOString() })
+    } else {
+      console.warn(`[TaskCoordinator] Tarefa não encontrada para marcar como failed: ${executionId}`)
     }
 
     if (worker.resourceKey) {
