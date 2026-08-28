@@ -4,13 +4,13 @@
  */
 import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
-import { createDbConnection, MysqlTaskRepository } from '@biblioteca-global/motor-v2/database'
-import { Motor } from '@biblioteca-global/motor-v2/Motor'
-import { TaskCoordinator } from '@biblioteca-global/motor-v2/coordinator/TaskCoordinator'
-import { ExpirationReconciler } from '@biblioteca-global/motor-v2/reconciler/ExpirationReconciler'
-import { MotorAPI } from '@biblioteca-global/motor-v2/api/MotorAPI'
-import { WorkerLauncher } from '@biblioteca-global/motor-v2/workers/WorkerLauncher'
-import type { Db, TaskRepository } from '@biblioteca-global/motor-v2/shared/types'
+import { createDbConnection, MysqlTaskRepository } from '../../../projects/gerenteagentes/motor-v2/src/database/DrizzleDb'
+import { Motor } from '../../../projects/gerenteagentes/motor-v2/src/Motor'
+import { TaskCoordinator } from '../../../projects/gerenteagentes/motor-v2/src/coordinator/TaskCoordinator'
+import { ExpirationReconciler } from '../../../projects/gerenteagentes/motor-v2/src/reconciler/ExpirationReconciler'
+import { MotorAPI } from '../../../projects/gerenteagentes/motor-v2/src/api/MotorAPI'
+import { WorkerLauncher } from '../../../projects/gerenteagentes/motor-v2/src/workers/WorkerLauncher'
+import type { Db, TaskRepository } from '../../../projects/gerenteagentes/motor-v2/src/shared/types'
 
 @Injectable()
 export class MotorV2Service implements OnModuleInit, OnModuleDestroy {
@@ -44,7 +44,7 @@ export class MotorV2Service implements OnModuleInit, OnModuleDestroy {
     // Cria launcher de workers
     const workerLauncher = new WorkerLauncher({
       maxWorkers: Number(this.config.get('MOTOR_MAX_WORKERS', 1)),
-      workerScript: require.resolve('@biblioteca-global/motor-v2/workers/TaskWorker'),
+      workerScript: require.resolve('../../../projects/gerenteagentes/motor-v2/src/workers/TaskWorker'),
     })
 
     // Cria coordenador
