@@ -1,0 +1,40 @@
+{
+  "name": "@gerente-agentes/motor-v2",
+  "version": "0.1.0",
+  "description": "Motor v2 com suporte a paralelismo controlado",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "npx tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "npx tsc --noEmit",
+    "lint": "eslint src test --ext .ts"
+  },
+  "dependencies": {
+    "@gerente-agentes/application": "0.1.0",
+    "@gerente-agentes/contracts": "0.1.0",
+    "@gerente-agentes/domain": "0.1.0",
+    "@gerente-agentes/persistence": "0.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@typescript-eslint/eslint-plugin": "^6.19.0",
+    "@typescript-eslint/parser": "^6.19.0",
+    "@vitest/coverage-v8": "^1.2.0",
+    "eslint": "^8.56.0",
+    "typescript": "~5.9.3",
+    "vitest": "^1.2.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
