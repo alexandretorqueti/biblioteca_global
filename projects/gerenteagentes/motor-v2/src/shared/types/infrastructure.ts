@@ -63,10 +63,10 @@ export interface SaveTaskData {
   projectSlug?: string | null
   executionId?: string
   errorMessage?: string
+  createdAt?: string
   startedAt?: string
   completedAt?: string
   updatedAt?: string
-  [key: string]: unknown
 }
 
 /** Repositório de tarefas */

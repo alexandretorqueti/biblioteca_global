@@ -210,6 +210,136 @@ export class TaskCoordinator {
     }
   }
 
+  /**
+   * Busca tarefa por ID
+   */
+  async getTask(taskId: string): Promise<Task | null> {
+    const data = await this.repository.getTask(taskId)
+    if (!data) return null
+    return this.mapSaveDataToTask(data)
+  }
+
+  private mapSaveDataToTask(data: import('../shared/types/infrastructure.js').SaveTaskData): Task {
+    return {
+      id: data.id,
+      chatId: data.chatId ?? '',
+      agentId: data.agentId ?? '',
+      title: data.title,
+      description: data.description ?? '',
+      repoPath: data.repoPath ?? '',
+      buildCommand: data.buildCommand ?? 'npm run build',
+      unitTestCommand: data.unitTestCommand ?? 'npm run test',
+      unitTestExclude: [],
+      baselineMode: 'full',
+      status: data.status as Task['status'],
+      maxRework: data.maxRework,
+      hardTimeoutMs: data.hardTimeoutMs,
+      dependsOnTaskId: data.dependsOnTaskId,
+      projectSlug: data.projectSlug ?? null,
+      createdAt: data.createdAt ?? new Date().toISOString(),
+      updatedAt: data.updatedAt ?? new Date().toISOString(),
+    }
+  }
+
+  /**
+   * Enfileira tarefa para execução (cria com status=planned se não existir)
+   */
+  async enqueueTask(taskId: string): Promise<{ executionId: string }> {
+    const task = await this.repository.getTask(taskId)
+    if (!task) {
+      throw new Error(`Tarefa ${taskId} não encontrada`)
+    }
+
+    if (task.status !== 'planned' && task.status !== 'paused') {
+      throw new Error(`Tarefa ${taskId} está em status ${task.status}, não pode ser enfileirada`)
+    }
+
+    // Garante que está como planned
+    if (task.status !== 'planned') {
+      await this.repository.saveTask({ ...task, status: 'planned', updatedAt: new Date().toISOString() })
+    }
+
+    // Força pump
+    await this.pump()
+
+    const executionId = `exec-${task.id}-${Date.now()}`
+    return { executionId }
+  }
+
+  /**
+   * Pausa tarefa em execução
+   */
+  async pauseTask(taskId: string): Promise<void> {
+    const task = await this.repository.getTask(taskId)
+    if (!task) {
+      throw new Error(`Tarefa ${taskId} não encontrada`)
+    }
+
+    if (task.status !== 'running') {
+      throw new Error(`Tarefa ${taskId} não está em execução (status: ${task.status})`)
+    }
+
+    // Busca worker ativo
+    for (const [executionId, worker] of this.activeWorkers.entries()) {
+      if (worker.taskId === taskId) {
+        // Mata worker
+        this.workerLauncher.killWorker(executionId)
+        await this.onTaskPaused(executionId, 'Pausada via API')
+        return
+      }
+    }
+
+    throw new Error(`Worker ativo não encontrado para tarefa ${taskId}`)
+  }
+
+  /**
+   * Retoma tarefa pausada
+   */
+  async resumeTask(taskId: string): Promise<void> {
+    const task = await this.repository.getTask(taskId)
+    if (!task) {
+      throw new Error(`Tarefa ${taskId} não encontrada`)
+    }
+
+    if (task.status !== 'paused') {
+      throw new Error(`Tarefa ${taskId} não está pausada (status: ${task.status})`)
+    }
+
+    await this.repository.saveTask({ ...task, status: 'planned', updatedAt: new Date().toISOString() })
+    await this.pump()
+  }
+
+  /**
+   * Cancela tarefa
+   */
+  async cancelTask(taskId: string): Promise<void> {
+    const task = await this.repository.getTask(taskId)
+    if (!task) {
+      throw new Error(`Tarefa ${taskId} não encontrada`)
+    }
+
+    if (task.status === 'completed' || task.status === 'cancelled') {
+      throw new Error(`Tarefa ${taskId} já está ${task.status}`)
+    }
+
+    // Se está rodando, mata worker
+    for (const [executionId, worker] of this.activeWorkers.entries()) {
+      if (worker.taskId === taskId) {
+        this.workerLauncher.killWorker(executionId)
+        this.activeWorkers.delete(executionId)
+
+        if (worker.resourceKey) {
+          await this.resourceLease.release(worker.resourceKey, executionId, worker.fencingToken)
+        }
+
+        break
+      }
+    }
+
+    await this.repository.saveTask({ ...task, status: 'cancelled', updatedAt: new Date().toISOString() })
+    await this.pump()
+  }
+
   private setupEventHandlers(): void {
     this.workerLauncher.on('completed', async (msg: { executionId: string }) => {
       await this.onTaskCompleted(msg.executionId)
