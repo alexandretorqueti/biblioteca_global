@@ -13,6 +13,8 @@
   },
   "scripts": {
     "build": "npx tsc",
+    "start": "node dist/start.js",
+    "dev": "npx tsc --watch",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",

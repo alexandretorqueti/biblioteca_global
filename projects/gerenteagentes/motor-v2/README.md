@@ -1,150 +1,215 @@
-# Motor v2 - Sistema de Paralelismo Controlado
+# Motor v2 - Paralelismo Controlado
 
-## Visão Geral
+Motor de execução de tarefas com suporte a paralelismo controlado e gerenciamento de recursos.
 
-Motor v2 é uma reescrita do sistema de execução de tarefas do GerenteAgentes, projetado desde o início para suportar paralelismo controlado.
+## 🎯 Objetivo
 
-## Arquitetura
+Evoluir o motor de tarefas para suportar:
+- ✅ Execução paralela de até 2 tarefas simultâneas (Etapa 8)
+- ✅ Locks por projeto para evitar conflitos (Etapa 7)
+- ✅ Espera orientada a eventos (Etapa 9)
+- ✅ Subtarefas paralelas dentro de uma tarefa (Etapa 12)
 
-### Componentes Principais
-
-1. **TaskCoordinator** (`coordinator/TaskCoordinator.ts`)
-   - Seleciona tarefas elegíveis
-   - Gerencia workers (até MAX_WORKERS simultâneos)
-   - Coordena aquisição de recursos
-   - Retoma tarefas pausadas
-
-2. **ResourceLeaseService** (`resources/ResourceLeaseService.ts`)
-   - Gerenciamento de leases de recursos
-   - Aquisição transacional
-   - Heartbeat e renovação
-   - Fencing token para segurança
-
-3. **WorkerLauncher** (`workers/WorkerLauncher.ts`)
-   - Gerenciador de workers (placeholder)
-   - Será implementado na Etapa 5
-
-4. **Tipos e Contratos** (`shared/types/`)
-   - Zero `any` - todos os tipos são explícitos
-   - Contratos claros entre componentes
-   - Tipos de execução, recursos e workflow
-
-## Estrutura de Diretórios
+## 📐 Arquitetura
 
 ```
-packages/motor-v2/
+┌─────────────────────────────────────────────────────────────┐
+│                    TaskCoordinator                          │
+│  - Seleciona tarefas elegíveis                              │
+│  - Gerencia workers (até MAX_WORKERS)                       │
+│  - Coordena aquisição de recursos                           │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│                  ResourceLeaseService                       │
+│  - Gerencia locks persistentes no banco                     │
+│  - Heartbeat e expiração automática                         │
+│  - Fila de espera por recursos                              │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│                     WorkerLauncher                          │
+│  - Spawna processos filhos isolados                         │
+│  - Comunicação via IPC                                      │
+│  - Monitora health dos workers                              │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│                      TaskWorker                             │
+│  - Executa pipeline de subtarefas                           │
+│  - Isolamento por processo                                  │
+│  - Reporta progresso via eventos                            │
+└─────────────────────────────────────────────────────────────┘
+```
+
+## 🏗️ Estrutura
+
+```
+motor-v2/
 ├── src/
-│   ├── coordinator/          # TaskCoordinator
-│   ├── workers/              # WorkerLauncher, TaskWorker
-│   ├── resources/            # ResourceLease, schema SQL
-│   ├── execution/            # ExecutionContext (futuro)
-│   ├── api/                  # API Fastify (futuro)
-│   └── shared/
-│       ├── types/            # Tipos e interfaces
-│       └── utils/            # Utilitários
-├── test/                     # Testes
-└── package.json
+│   ├── coordinator/
+│   │   └── TaskCoordinator.ts       # Scheduler principal
+│   ├── workers/
+│   │   ├── WorkerLauncher.ts        # Gerenciador de workers
+│   │   ├── TaskWorker.ts            # Script do worker
+│   │   └── WorkerProtocol.ts        # Protocolo de mensagens
+│   ├── resources/
+│   │   ├── ResourceLeaseService.ts  # Gerenciamento de locks
+│   │   ├── ResourceEventBus.ts      # Barramento de eventos
+│   │   ├── ResourceWaitManager.ts   # Fila de espera
+│   │   └── schema.sql               # DDL do banco
+│   ├── execution/
+│   │   └── ExecutionContextManager.ts # Contexto isolado
+│   ├── reconciler/
+│   │   └── ExpirationReconciler.ts  # Reconciliação de locks
+│   ├── api/
+│   │   └── MotorAPI.ts              # Endpoints REST
+│   ├── steps/
+│   │   └── MotorMonitorStep.ts      # Lock do monitor
+│   ├── shared/
+│   │   └── types/
+│   │       ├── index.ts             # Tipos principais
+│   │       ├── execution.ts         # Contexto de execução
+│   │       └── resources.ts         # Recursos e locks
+│   ├── Motor.ts                     # Entry point principal
+│   ├── start.ts                     # Script de inicialização
+│   └── index.ts                     # Exports públicos
+└── test/
+    ├── ResourceLeaseService.test.ts
+    ├── TaskCoordinator.test.ts
+    └── MotorMonitorStep.test.ts
 ```
 
-## Recursos Gerenciados
+## 🚀 Uso
 
-O sistema gerencia locks para os seguintes recursos:
+```bash
+# Iniciar motor
+npm start
 
-| Resource Key | Capacidade | Escopo | Uso |
-|--------------|------------|--------|-----|
-| `project:<slug>:execution` | 1 | Projeto | Execução de tarefas |
-| `project:<slug>:integration` | 1 | Projeto | Merge de branches |
-| `project:<slug>:deploy` | 1 | Projeto | Deploy |
-| `gpu:local-model` | 1 | Global | Modelos locais (evita estouro VRAM) |
-| `motor:monitor` | 1 | Global | Monitor do motor |
-| `infra:mysql:3308` | 1 | Global | MySQL compartilhado |
-| `infra:port:3003` | 1 | Global | Porta da API |
-| `infra:port:5174` | 1 | Global | Porta do front |
+# Health check
+curl http://localhost:3010/api/motor/health
 
-## Etapas de Implementação
+# Estatísticas
+curl http://localhost:3010/api/motor/stats
 
-### ✅ Etapa 0-3: Fundação (ATUAL)
-- [x] Estrutura de diretórios
-- [x] Tipos e interfaces (zero `any`)
-- [x] ResourceLeaseService
-- [x] TaskCoordinator (básico)
-- [x] Schema SQL
-- [ ] Testes completos
-- [ ] Integração com banco
+# Forçar pump manual
+curl -X POST http://localhost:3010/api/motor/pump
+```
 
-### ⏳ Etapa 4: Monitor Motor Exclusivo
-- [ ] Migrar MotorFixStep para usar ResourceLease
-- [ ] Testes de lock exclusivo
+## 📊 Fluxo de Execução
 
-### ⏳ Etapa 5: Worker Isolado
-- [ ] Implementar WorkerLauncher com child_process
-- [ ] Protocolo de comunicação
-- [ ] Heartbeat
+1. **TaskCoordinator.pump()** é chamado periodicamente (30s)
+2. Seleciona próxima tarefa elegível (status `planned`)
+3. Tenta adquirir lock do projeto via `ResourceLeaseService`
+4. Se lock disponível → spawna `TaskWorker` em processo filho
+5. Se lock ocupado → tarefa vai para fila de espera
+6. Worker executa pipeline completo e reporta resultado
+7. Coordinator libera lock e tenta próxima tarefa
+8. `ExpirationReconciler` detecta locks expirados e retoma tarefas
 
-### ⏳ Etapa 6: Espera Orientada a Eventos
-- [ ] ResourceEventBus
-- [ ] ResourceWaitManager
-- [ ] ResourceReconciler
+## 🔒 Locks e Recursos
 
-### ⏳ Etapa 7: Locks por Projeto
-- [ ] Substituir lock global por locks por projeto
-- [ ] Integração Git com lock específico
-- [ ] Deploy com lock específico
+### Tipos de Recursos
 
-### ⏳ Etapa 8: Paralelismo Controlado
-- [ ] MAX_WORKERS=2
-- [ ] Semáforo de modelos locais
-- [ ] Testes de paralelismo
+- `project:{slug}:execution` - Lock por projeto (evita 2 tarefas do mesmo projeto simultâneas)
+- `motor:monitor` - Lock do monitor (apenas 1 correção por vez)
 
-### ⏳ Etapa 9: Subtarefas Paralelas
-- [ ] SubtaskDependencyGraph
-- [ ] SubtaskExecutor
-- [ ] Merge sequencial
+### Fencing Token
 
-## Princípios de Design
+Cada lock tem um `fencingToken` incremental para garantir que:
+- Locks antigos não possam sobrescrever locks novos
+- Operações stale sejam rejeitadas
+- Condição de corrida seja evitada
 
-1. **Zero `any`**: Todos os tipos são explícitos
-2. **Contratos claros**: Interfaces bem definidas entre componentes
-3. **Segurança first**: Fencing token, heartbeat, expiração
-4. **Incremental**: Cada etapa é validável isoladamente
-5. **Testável**: Testes unitários e de integração
+### Heartbeat
 
-## Configuração
+Workers renovam locks a cada 10s:
+```sql
+UPDATE execution_resources 
+SET heartbeat_at = NOW(), expires_at = NOW() + INTERVAL 60 SECOND
+WHERE resource_key = ? AND execution_id = ? AND fencing_token = ?
+```
+
+### Expiração
+
+`ExpirationReconciler` roda a cada 30s e detecta:
+- Locks expirados (sem heartbeat)
+- Tarefas órfãs (running sem lock)
+- Tarefas pausadas há muito tempo
+
+## 🧪 Testes
+
+```bash
+# Rodar todos os testes
+npm test
+
+# Rodar com coverage
+npm run test:coverage
+```
+
+## 📈 Roadmap
+
+### ✅ Implementado
+
+- [x] **Etapa 0-3**: Fundação (tipos, ResourceLease, EventBus)
+- [x] **Etapa 4**: Motor Monitor com lock exclusivo
+- [x] **Etapa 5**: Worker isolado via child_process
+- [x] **Etapa 6**: Espera orientada a eventos (EventBus + WaitManager)
+- [x] **Etapa 7**: Locks por projeto
+- [x] **Etapa 8**: Paralelismo controlado (MAX_WORKERS=2)
+- [x] **Etapa 9**: Reconciliador de expiração
+- [x] **Etapa 10**: API REST
+
+### ⏳ Próximos Passos
+
+- [ ] **Etapa 11**: Integração real com banco de dados
+- [ ] **Etapa 12**: Subtarefas paralelas (paralelizar steps dentro de uma tarefa)
+- [ ] **Etapa 13**: Deploy em produção e migração gradual
+
+## 🔧 Configuração
 
 ```typescript
-const coordinator = new TaskCoordinator(db, repository, resourceLease, {
-  maxWorkers: 1,           // Será 2 na Etapa 8
-  maxWorkersPerProject: 1, // Sempre 1
+const motor = new Motor({
+  db: databaseInstance,
+  repository: taskRepository,
+  maxWorkers: 2,                    // Máximo de workers simultâneos
+  apiPort: 3010,                    // Porta da API REST
+  reconcilerIntervalMs: 30000,      // Intervalo do reconciliador
 })
 ```
 
-## Schema do Banco
+## 🐛 Troubleshooting
 
-Execute `src/resources/schema.sql` no banco `projeto_640` para criar as tabelas necessárias.
+### Lock não é liberado
 
-## Desenvolvimento
-
+Verifique se `ExpirationReconciler` está rodando:
 ```bash
-# Instalar dependências
-npm install
+# Logs devem mostrar:
+[ExpirationReconciler] Iniciando (intervalo: 30000ms)
+```
 
-# Typecheck
-npm run typecheck
+### Worker não inicia
 
-# Testes
-npm test
-
-# Build
+Verifique se `TaskWorker.js` foi compilado:
+```bash
 npm run build
 ```
 
-## Status
+### API não responde
 
-🚧 **Em desenvolvimento** - Etapa 0-3 (Fundação)
+Verifique se a porta 3010 está disponível:
+```bash
+netstat -tuln | grep 3010
+```
 
-## Próximos Passos
+## 📚 Referências
 
-1. Completar testes do ResourceLeaseService
-2. Implementar integração real com banco
-3. Testar TaskCoordinator com tarefas reais
-4. Iniciar Etapa 4 (Monitor Motor)
+- [Documentação de Paralelismo](../../../../../docs/architecture/paralelismo/)
+- [ADR-0004: Arquitetura do Motor](../../../../../docs/architecture/decisions/0004-motor-architecture.md)
+
+## 📄 Licença
+
+Proprietário - Global Tecnologia
