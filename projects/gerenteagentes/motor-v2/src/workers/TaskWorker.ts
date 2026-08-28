@@ -99,7 +99,7 @@ class TaskWorker {
     const sessionKey = "motor-v2-analyze-" + input.task.id + "-" + Date.now()
 
     const session = await driver.createSession({
-      agentId: "analista-senior",
+      agentId: "programador-senior",
       key: sessionKey,
       label: "motor-v2-analyze-" + input.task.id,
     })
