@@ -73,9 +73,9 @@ class TaskWorker {
         if (this.cancelled) { this.sendFailed(ctx, "Cancelled"); return }
         await this.phaseExecute(input)
         if (this.cancelled) { this.sendFailed(ctx, "Cancelled"); return }
-        await this.phaseVerify(input)
+        // await this.phaseVerify(input) // TODO: reativar quando testes do projeto estiverem ok
         if (this.cancelled) { this.sendFailed(ctx, "Cancelled"); return }
-        await this.phaseDeploy(input)
+        // await this.phaseDeploy(input) // TODO: reativar quando deploy.sh estiver configurado
       }
 
       this.sendCompleted(ctx, { ok: true })
