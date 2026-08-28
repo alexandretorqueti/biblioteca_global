@@ -86,5 +86,24 @@ services:
     ports:
       - "${WEB_HOST_PORT:-5174}:80"
 
+  motor-v2:
+    build:
+      context: .
+      dockerfile: projects/gerenteagentes/motor-v2/Dockerfile
+    container_name: biblioteca-global-motor-v2
+    restart: unless-stopped
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: ${MYSQL_USER:-biblioteca}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_DATABASE: projeto_640
+      MOTOR_API_PORT: "3010"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    ports:
+      - "${MOTOR_V2_HOST_PORT:-3010}:3010"
+
 volumes:
   mysql-data:
