@@ -77,7 +77,6 @@ export class MysqlTaskRepository implements TaskRepository {
         values.push(data.errorMessage)
       }
       if (data.completedAt) {
-        updates.push("completed_at = ?")
         values.push(data.completedAt)
       }
       updates.push("updated_at = NOW()")

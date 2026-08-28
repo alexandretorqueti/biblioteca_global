@@ -240,7 +240,7 @@ export class TaskCoordinator {
           console.log("[TaskCoordinator] Todas subtarefas completas! Marcando tarefa como completed")
           const task = await this.repository.getTask(worker.taskId)
           if (task) {
-            await this.repository.saveTask({ ...task, status: "completed", completedAt: new Date().toISOString(), updatedAt: new Date().toISOString() })
+            await this.repository.saveTask({ ...task, status: "completed", updatedAt: new Date().toISOString() })
           }
         }
       }
