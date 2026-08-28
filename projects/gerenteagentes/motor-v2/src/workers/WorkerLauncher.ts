@@ -42,6 +42,16 @@ export class WorkerLauncher extends EventEmitter {
 
     this.workers.set(executionId, worker)
 
+    // Captura stdout/stderr do worker para debug
+    worker.stdout?.on('data', (d: Buffer) => {
+      const text = d.toString().trim()
+      if (text) console.log('[Worker ' + executionId + ' stdout]', text)
+    })
+    worker.stderr?.on('data', (d: Buffer) => {
+      const text = d.toString().trim()
+      if (text) console.error('[Worker ' + executionId + ' stderr]', text)
+    })
+
     worker.on('message', (msg: unknown) => {
       this.handleWorkerMessage(executionId, msg)
     })
@@ -52,6 +62,7 @@ export class WorkerLauncher extends EventEmitter {
     })
 
     worker.on('exit', (code: number | null, signal: string | null) => {
+      console.log('[WorkerLauncher] Worker ' + executionId + ' exited code=' + code + ' signal=' + signal)
       this.emit('worker_exit', { executionId, code, signal })
       this.cleanupWorker(executionId)
     })
