@@ -176,7 +176,7 @@ export class ConsoleAgentRuntimeDriver {
       })
 
       if (!response.ok) {
-        const errorBody = await response.json().catch(() => ({ error: { code: 'UNKNOWN', message: response.statusText } }))
+        const errorBody = await response.json().catch(() => ({ error: { code: 'UNKNOWN', message: response.statusText } })) as { error?: { code?: string; message?: string } }
         throw new ConsoleRequestError(
           response.status,
           errorBody.error?.code ?? 'UNKNOWN',
