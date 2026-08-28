@@ -97,7 +97,7 @@ export class TaskCoordinator {
       "FROM projeto_640.tarefas t " +
       "LEFT JOIN projeto_640.projetos_captados pc ON t.projeto_id = pc.id " +
       "LEFT JOIN projeto_640.agentes a ON pc.agente_id = a.id " +
-      "WHERE t.status = planned ORDER BY t.created_at ASC LIMIT 1"
+      "WHERE t.status = 'planned' ORDER BY t.created_at ASC LIMIT 1"
     )
     if (rows.length === 0) return null
     return this.mapTask(rows[0]!)
@@ -111,7 +111,7 @@ export class TaskCoordinator {
       "INNER JOIN projeto_640.tarefas t ON s.tarefa_id = t.id " +
       "LEFT JOIN projeto_640.projetos_captados pc ON t.projeto_id = pc.id " +
       "LEFT JOIN projeto_640.agentes a ON pc.agente_id = a.id " +
-      "WHERE s.status = pending AND t.status = ready " +
+      "WHERE s.status = 'pending' AND t.status = 'ready' " +
       "ORDER BY s.seq ASC LIMIT 1"
     )
     if (rows.length === 0) return null
@@ -178,7 +178,7 @@ export class TaskCoordinator {
 
     try {
       // Marca subtarefa como running
-      await this.db.query("UPDATE projeto_640.subtarefas SET status = running, iniciada_em = NOW() WHERE id = ?", [subtask.id])
+      await this.db.query("UPDATE projeto_640.subtarefas SET status = 'running', iniciada_em = NOW() WHERE id = ?", [subtask.id])
 
       const subtaskInfo: SubtaskInfo = {
         id: subtask.id, seq: subtask.seq, titulo: subtask.titulo,
@@ -265,7 +265,7 @@ export class TaskCoordinator {
     } else {
       // Marcar subtarefa como failed
       if (worker.subtaskId) {
-        await this.db.query("UPDATE projeto_640.subtarefas SET status = failed, resultado = ? WHERE id = ?", [error.substring(0, 500), worker.subtaskId])
+        await this.db.query("UPDATE projeto_640.subtarefas SET status = 'failed', resultado = ? WHERE id = ?", [error.substring(0, 500), worker.subtaskId])
       }
       // Marcar tarefa como failed
       const task = await this.repository.getTask(worker.taskId)
