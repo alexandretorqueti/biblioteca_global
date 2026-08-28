@@ -1,7 +1,11 @@
 /**
  * TaskWorker - Script que roda em child_process isolado
+ * Pipeline completo: git → OpenClaw Console → commit → push
  */
 
+import { writeFileSync, readFileSync, existsSync } from 'node:fs'
+import { execSync } from 'node:child_process'
+import { ConsoleAgentRuntimeDriver } from '../runtime/ConsoleAgentRuntimeDriver.js'
 import type { WorkerInput, ExecutionContext, ExecutionResult } from '../shared/types/execution.js'
 import type { CoordinatorToWorkerMessage, WorkerToCoordinatorMessage } from './WorkerProtocol.js'
 
@@ -46,39 +50,81 @@ class TaskWorker {
 
   private async execute(input: WorkerInput): Promise<void> {
     const context = input.context
+    const repoPath = input.repoPath
 
     try {
       this.send({ type: 'started', executionId: context.executionId })
 
-      // FASE 1: PREPARAÇÃO
+      // FASE 1: PREPARAÇÃO — git pull
       this.send({ type: 'progress', executionId: context.executionId, phase: 'prepare', message: 'Preparando workspace' })
-      this.log('info', `Workspace: ${input.repoPath}`)
+      this.log('info', `Workspace: ${repoPath}`)
+      
+      if (!existsSync(repoPath)) {
+        throw new Error(`Repo não encontrado: ${repoPath}`)
+      }
+      
+      this.exec('git status', repoPath)
+      this.exec('git pull', repoPath)
       if (this.cancelled) { this.sendFailed(context, 'Cancelled during preparation'); return }
 
-      // FASE 2: ANÁLISE
+      // FASE 2: ANÁLISE — ler tarefa
       this.send({ type: 'progress', executionId: context.executionId, phase: 'analyze', message: 'Analisando tarefa' })
       this.log('info', `Tarefa: ${input.task.title}`)
+      this.log('info', `Descrição: ${input.task.description}`)
       if (this.cancelled) { this.sendFailed(context, 'Cancelled during analysis'); return }
 
-      // FASE 3: EXECUÇÃO - criar arquivo de teste em /tmp
-      this.send({ type: 'progress', executionId: context.executionId, phase: 'execute', message: 'Executando mudança' })
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
-      const testFile = `motor-v2-test-${timestamp}.txt`
-      const testPath = `/tmp/${testFile}`
-      await this.writeFile(testPath, `Teste do motor-v2\nTarefa: ${input.task.id}\nTimestamp: ${timestamp}\nRepo: ${input.repoPath}\n`)
-      this.log('info', `Arquivo criado: ${testPath}`)
+      // FASE 3: EXECUÇÃO — criar sessão no agente e enviar prompt
+      this.send({ type: 'progress', executionId: context.executionId, phase: 'execute', message: 'Executando via OpenClaw Console' })
+      
+      const consoleUrl = process.env.OPENCLAW_CONSOLE_URL
+      const consoleToken = process.env.OPENCLAW_CONSOLE_TOKEN
+      
+      if (!consoleUrl || !consoleToken) {
+        throw new Error('OPENCLAW_CONSOLE_URL e OPENCLAW_CONSOLE_TOKEN são obrigatórios')
+      }
+      
+      const driver = new ConsoleAgentRuntimeDriver({ baseUrl: consoleUrl, token: consoleToken })
+      
+      // Cria sessão para o agente do projeto
+      const session = await driver.createSession({
+        agentId: input.task.projectSlug || 'programador-senior',
+        label: `motor-v2-task-${input.task.id}`,
+      })
+      this.log('info', `Sessão criada: ${session.key}`)
+      
+      // Envia prompt para o agente
+      const prompt = this.buildPrompt(input.task)
+      const result = await driver.sendMessage({
+        sessionKey: session.key,
+        agentId: session.agentId,
+        prompt,
+      }, { timeoutMs: 600_000 }) // 10 min timeout
+      
+      if (!result.ok) {
+        throw new Error(`Agente falhou: ${result.errorMessage || result.stopReason}`)
+      }
+      this.log('info', 'Agente completou a tarefa')
       if (this.cancelled) { this.sendFailed(context, 'Cancelled during execution'); return }
 
-      // FASE 4: VERIFICAÇÃO
+      // FASE 4: VERIFICAÇÃO — git add/commit/push
       this.send({ type: 'progress', executionId: context.executionId, phase: 'verify', message: 'Verificando resultados' })
-      const content = await this.readFile(testPath)
-      this.log('info', `Arquivo verificado: ${content.length} bytes`)
+      
+      this.exec('git add -A', repoPath)
+      
+      // Verifica se há mudanças
+      const status = this.exec('git status --porcelain', repoPath)
+      if (!status.trim()) {
+        this.log('warn', 'Nenhuma mudança detectada')
+      } else {
+        this.exec(`git commit -m "feat: ${input.task.title}"`, repoPath)
+        this.exec('git push', repoPath)
+        this.log('info', 'Commit e push realizados')
+      }
       if (this.cancelled) { this.sendFailed(context, 'Cancelled during verification'); return }
 
       // FASE 5: ENTREGA
-      this.send({ type: 'progress', executionId: context.executionId, phase: 'deliver', message: 'Entregando resultados' })
+      this.send({ type: 'progress', executionId: context.executionId, phase: 'deliver', message: 'Tarefa concluída' })
       this.log('info', `Tarefa ${input.task.id} concluída com sucesso`)
-
 
       this.sendCompleted(context, { ok: true })
     } catch (error) {
@@ -88,14 +134,33 @@ class TaskWorker {
     }
   }
 
-  private async writeFile(path: string, content: string): Promise<void> {
-    const { writeFileSync } = await import('fs')
-    writeFileSync(path, content)
+  private buildPrompt(task: any): string {
+    return `## Tarefa
+
+**Título:** ${task.title}
+
+**Descrição:**
+${task.description}
+
+**Instruções:**
+- Implemente a mudança descrita acima
+- Siga as boas práticas do projeto
+- Teste localmente antes de finalizar
+- Responda "concluído" quando terminar`
   }
 
-  private async readFile(path: string): Promise<string> {
-    const { readFileSync } = await import('fs')
-    return readFileSync(path, 'utf-8')
+  private exec(command: string, cwd: string): string {
+    this.log('info', `$ ${command}`)
+    try {
+      const output = execSync(command, { cwd, encoding: 'utf-8', timeout: 30_000 })
+      if (output.trim()) {
+        this.log('info', output.substring(0, 200))
+      }
+      return output
+    } catch (error: any) {
+      this.log('error', `Command failed: ${error.message}`)
+      throw error
+    }
   }
 
   private sendCompleted(context: ExecutionContext, result: ExecutionResult): void {

@@ -1,6 +1,10 @@
 #!/bin/sh
 set -eu
 
+# Configura git (necessário para o motor-v2 fazer commits)
+git config --global user.email "motor-v2@globaltecnologia.local"
+git config --global user.name "Motor v2"
+
 attempt=0
 until npm run db:migrate; do
   attempt=$((attempt + 1))

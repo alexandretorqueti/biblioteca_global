@@ -15,11 +15,12 @@ async function main() {
   const repository = new MysqlTaskRepository(db)
   console.log('✅ Banco conectado')
 
+  const apiPort = Number(process.env.MOTOR_API_PORT ?? 3010)
   const motor = new Motor({
     db,
     repository,
     maxWorkers: 1,
-    apiPort: 3010,
+    apiPort,
     reconcilerIntervalMs: 30000,
   })
 
@@ -34,7 +35,7 @@ async function main() {
 
   try {
     await motor.start()
-    console.log('✅ Motor v2 rodando em http://localhost:3010')
+    console.log(`✅ Motor v2 rodando em http://localhost:${apiPort}`)
     console.log('   GET /api/motor/health')
     console.log('   GET /api/motor/stats')
     console.log('   POST /api/motor/pump')

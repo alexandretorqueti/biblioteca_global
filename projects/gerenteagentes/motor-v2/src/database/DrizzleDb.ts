@@ -17,7 +17,7 @@ export async function createDbConnection(): Promise<{ db: Db; connection: mysql.
     port: Number(process.env.MYSQL_PORT ?? 3308),
     user: process.env.MYSQL_USER ?? "root",
     password: process.env.MYSQL_PASSWORD ?? "",
-    database: "projeto_640",
+    database: process.env.MYSQL_DATABASE ?? "projeto_640",
   })
 
   const db: Db = {
