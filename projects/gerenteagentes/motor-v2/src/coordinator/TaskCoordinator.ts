@@ -66,9 +66,16 @@ export class TaskCoordinator {
 
   private async selectNextTask(): Promise<Task | null> {
     const { rows } = await this.db.query(
-      `SELECT * FROM projeto_640.tarefas
-       WHERE status = 'planned'
-       ORDER BY created_at ASC
+      `SELECT 
+         t.*,
+         pc.slug as project_slug,
+         pc.repo_path,
+         a.id as agent_id
+       FROM projeto_640.tarefas t
+       LEFT JOIN projeto_640.projetos_captados pc ON t.projeto_id = pc.id
+       LEFT JOIN projeto_640.agentes a ON pc.agente_id = a.id
+       WHERE t.status = 'planned'
+       ORDER BY t.created_at ASC
        LIMIT 1`
     )
 
