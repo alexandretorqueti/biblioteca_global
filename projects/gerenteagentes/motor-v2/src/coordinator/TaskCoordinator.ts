@@ -232,7 +232,7 @@ export class TaskCoordinator {
       // Verificar se todas subtarefas da tarefa estao completas
       if (worker.subtaskId) {
         const { rows } = await this.db.query(
-          "SELECT COUNT(*) as pending FROM projeto_640.subtarefas WHERE tarefa_id = (SELECT tarefa_id FROM projeto_640.subtarefas WHERE id = ?) AND status != verified",
+          "SELECT COUNT(*) as pending FROM projeto_640.subtarefas WHERE tarefa_id = (SELECT tarefa_id FROM projeto_640.subtarefas WHERE id = ?) AND status != 'verified'",
           [worker.subtaskId]
         )
         const pending = (rows[0] as Record<string, unknown>)?.pending as number
