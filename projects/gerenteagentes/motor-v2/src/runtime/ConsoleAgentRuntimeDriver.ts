@@ -102,7 +102,7 @@ export class ConsoleAgentRuntimeDriver {
   }
 
   async sendMessage(input: AgentExecutionInput, options?: AgentExecutionOptions): Promise<AgentRunCompletion> {
-    const response = await this.request<{ ok: boolean; stopReason?: string; errorMessage?: string }>({
+    const response = await this.request<{ ok?: boolean; runId?: string; status?: string; stopReason?: string; errorMessage?: string }>({
       method: 'POST',
       path: '/api/chat/send',
       body: {
@@ -115,9 +115,10 @@ export class ConsoleAgentRuntimeDriver {
       timeoutMs: options?.timeoutMs,
     })
 
+    // Console retorna { runId, status: "started" } — aceitar como sucesso
     return {
-      ok: response.ok,
-      stopReason: response.stopReason,
+      ok: response.ok === true || !!response.runId,
+      stopReason: response.stopReason ?? response.status,
       errorMessage: response.errorMessage,
     }
   }
