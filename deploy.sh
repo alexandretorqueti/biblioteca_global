@@ -10,8 +10,8 @@
 # O que faz:
 #   1. Build das imagens api/web NO HOST bazzite (o código deste repo é
 #      visível lá via /run/media/alexandre/12T/codigofonte; no sandbox não há Docker).
-#   2. Recria os containers biblioteca-global-{api,web} pelo Docker Compose,
-#      preservando a configuração do projeto. NÃO toca no MySQL.
+#   2. Recria somente biblioteca-global-{api,web} pelo Docker Compose, sempre
+#      com --no-deps. O MySQL também atende ao motor e é intocável neste fluxo.
 #   3. Healthcheck (web /health + api respondendo). Se falhar, faz ROLLBACK
 #      para as imagens anteriores e sai ≠ 0.
 # ============================================================================
@@ -69,10 +69,21 @@ set -a
 set +a
 echo "[deploy][host] validando configuração do Compose..."
 docker compose -f "$COMPOSE_FILE" config --quiet
+MYSQL_ID_BEFORE=$(docker inspect -f '{{.Id}}' biblioteca-global-mysql)
+MYSQL_HEALTH=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' biblioteca-global-mysql)
+if [ "$MYSQL_HEALTH" != "healthy" ] && [ "$MYSQL_HEALTH" != "running" ]; then
+  echo "[deploy][host] MySQL indisponível antes do deploy: $MYSQL_HEALTH" >&2
+  exit 1
+fi
 echo "[deploy][host] build das imagens api/web..."
 docker compose -f "$COMPOSE_FILE" build api web
-echo "[deploy][host] recriando api/web pelo Compose..."
-docker compose -f "$COMPOSE_FILE" up -d --force-recreate api web
+echo "[deploy][host] recriando somente api/web pelo Compose (--no-deps)..."
+docker compose -f "$COMPOSE_FILE" up -d --no-deps --force-recreate api web
+MYSQL_ID_AFTER=$(docker inspect -f '{{.Id}}' biblioteca-global-mysql)
+[ "$MYSQL_ID_BEFORE" = "$MYSQL_ID_AFTER" ] || {
+  echo "[deploy][host] identidade do MySQL mudou durante o deploy" >&2
+  exit 1
+}
 REMOTE
 echo "[deploy] imagens buildadas e containers recriados pelo Compose"
 
@@ -98,7 +109,7 @@ set -a
 set +a
 docker tag "$OLD_API" biblioteca-global-api:latest
 docker tag "$OLD_WEB" biblioteca-global-web:latest
-docker compose -f "$COMPOSE_FILE" up -d --force-recreate api web
+docker compose -f "$COMPOSE_FILE" up -d --no-deps --force-recreate api web
 REMOTE
   echo "[deploy] rollback executado (imagens anteriores restauradas)" >&2
 fi
