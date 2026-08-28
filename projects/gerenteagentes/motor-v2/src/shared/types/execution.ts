@@ -1,18 +1,28 @@
 /**
- * Tipos de execução - contexto, input/output do worker, resultados
+ * Tipos de execucao - contexto, input/output do worker, resultados
  */
 
-import type { Task } from './index.js'
+import type { Task } from "./index.js"
 
-/** Fases do pipeline de execução */
+/** Fases do pipeline de execucao */
 export type ExecutionPhase =
-  | 'prepare'
-  | 'analyze'
-  | 'execute'
-  | 'verify'
-  | 'deliver'
+  | "prepare"
+  | "analyze"
+  | "execute"
+  | "verify"
+  | "deploy"
+  | "deliver"
 
-/** Contexto de execução isolado (propagado via AsyncLocalStorage) */
+/** Informacoes de subtarefa */
+export interface SubtaskInfo {
+  id: number
+  seq: number
+  titulo: string
+  scope?: string
+  acceptanceCriteria?: string[]
+}
+
+/** Contexto de execucao isolado */
 export interface ExecutionContext {
   executionId: string
   taskId: string
@@ -25,7 +35,7 @@ export interface ExecutionContext {
   modelId?: string
 }
 
-/** Resultado de execução */
+/** Resultado de execucao */
 export interface ExecutionResult {
   ok: boolean
   reason?: string
@@ -35,7 +45,7 @@ export interface ExecutionResult {
 /** Resultado de uma subtarefa */
 export interface SubTaskResult {
   subtaskId: string
-  status: 'completed' | 'failed' | 'skipped'
+  status: "completed" | "failed" | "skipped"
   reason?: string
   durationMs?: number
 }
@@ -47,6 +57,8 @@ export interface WorkerInput {
   repoPath: string
   buildCommand: string
   testCommand: string
+  subtask?: SubtaskInfo
+  workBranch?: string
 }
 
 /** Output retornado pelo Worker */
@@ -54,20 +66,4 @@ export interface WorkerOutput {
   executionId: string
   taskId: string
   result: ExecutionResult
-}
-
-/** Cria um novo ExecutionContext */
-export function createExecutionContext(
-  taskId: string,
-  projectSlug: string | null,
-  fencingToken: number
-): ExecutionContext {
-  return {
-    executionId: `exec-${taskId}-${Date.now()}`,
-    taskId,
-    projectSlug,
-    phase: 'prepare',
-    fencingToken,
-    startedAt: new Date(),
-  }
 }

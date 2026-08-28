@@ -1,193 +1,184 @@
 /**
- * Driver do motor-v2 que fala HTTP com o OpenClaw Console (porta 6280).
- * Baseado no ConsoleAgentRuntimeDriver do motor antigo.
- *
- * Contrato:
- * - Auth: Authorization: Bearer <token>
- * - POST /api/sessions: cria sessão
- * - POST /api/chat/send: envia mensagem
- * - GET /api/chat/history: busca histórico
- * - SSE /api/events: stream de eventos
+ * ConsoleAgentRuntimeDriver - Comunicacao HTTP/SSE com OpenClaw Console
+ * Adaptado do motor antigo
  */
 
-export interface RuntimeSession {
-  key: string
-  agentId: string
-  label?: string
-  model?: string
+export interface ConsoleTransportOptions {
+  baseUrl: string
+  token: string
 }
 
-export interface AgentExecutionInput {
-  sessionKey: string
-  agentId: string
-  prompt: string
-  model?: string
-}
-
-export interface AgentExecutionOptions {
-  timeoutMs?: number
-  signal?: AbortSignal
-}
-
-export interface AgentRunCompletion {
-  ok: boolean
-  stopReason?: string
-  errorMessage?: string
-}
-
-export interface CreateRuntimeSessionInput {
+export interface CreateSessionInput {
   agentId: string
   key?: string
   label?: string
   model?: string
 }
 
-export interface SessionActivity {
-  lastActivityAt?: string
-  status?: string
+export interface RuntimeSession {
+  key: string
+  agentId: string
+  sessionId?: string
 }
 
-export interface SessionHistoryMessage {
-  role: 'user' | 'assistant' | 'system'
-  content: string
-  timestamp?: string
+export interface SendMessageInput {
+  session: RuntimeSession
+  message: string
+  idempotencyKey?: string
 }
 
-export interface ConsoleTransportOptions {
-  baseUrl: string
-  token: string
-  fetchImpl?: typeof fetch
+export interface AgentRunCompletion {
+  state: "final" | "aborted" | "error"
+  runId: string
+  content?: string
+  stopReason?: string
+  errorMessage?: string
 }
 
 class ConsoleRequestError extends Error {
-  constructor(
-    public status: number,
-    public code: string,
-    message: string,
-  ) {
+  constructor(public status: number, public code: string, message: string) {
     super(message)
-    this.name = 'ConsoleRequestError'
+    this.name = "ConsoleRequestError"
   }
 }
 
 export class ConsoleAgentRuntimeDriver {
   private baseUrl: string
   private token: string
-  private fetchImpl: typeof fetch
 
   constructor(options: ConsoleTransportOptions) {
-    this.baseUrl = options.baseUrl.replace(/\/$/, '')
+    this.baseUrl = options.baseUrl.replace(/\/$/, "")
     this.token = options.token
-    this.fetchImpl = options.fetchImpl ?? fetch
   }
 
-  async createSession(input: CreateRuntimeSessionInput): Promise<RuntimeSession> {
-    const response = await this.request<{ key: string; agentId: string; label?: string; model?: string }>({
-      method: 'POST',
-      path: '/api/sessions',
-      body: {
-        agentId: input.agentId,
-        key: input.key,
-        label: input.label,
-        model: input.model,
-      },
+  async createSession(input: CreateSessionInput): Promise<RuntimeSession> {
+    const response = await this.request<{ key: string; sessionId?: string }>({
+      method: "POST",
+      path: "/api/sessions",
+      body: { agentId: input.agentId, key: input.key, label: input.label, model: input.model },
     })
+    await this.request({
+      method: "PATCH",
+      path: "/api/sessions",
+      body: { key: response.key, agentId: input.agentId, archived: false },
+    })
+    return { key: response.key, agentId: input.agentId, sessionId: response.sessionId }
+  }
 
-    return {
-      key: response.key,
-      agentId: response.agentId,
-      label: response.label,
-      model: response.model,
+  async sendMessage(input: SendMessageInput): Promise<{ runId: string }> {
+    const response = await this.request<{ runId: string }>({
+      method: "POST",
+      path: "/api/chat/send",
+      body: {
+        sessionKey: input.session.key,
+        agentId: input.session.agentId,
+        message: input.message,
+        ...(input.session.sessionId ? { sessionId: input.session.sessionId } : {}),
+      },
+      timeoutMs: 600_000,
+    })
+    return { runId: response.runId }
+  }
+
+  async waitForRunCompletion(session: RuntimeSession, runId: string, timeoutMs = 600_000): Promise<AgentRunCompletion> {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), timeoutMs)
+    try {
+      for await (const frame of this.openEventStream(controller.signal)) {
+        if (frame.event !== "chat") continue
+        let payload: Record<string, unknown>
+        try { payload = JSON.parse(frame.data) } catch { continue }
+        if (payload.sessionKey !== session.key || payload.runId !== runId) continue
+        const state = payload.state
+        if (state !== "final" && state !== "aborted" && state !== "error") continue
+        const message = payload.message as Record<string, unknown> | undefined
+        return {
+          state: state as AgentRunCompletion["state"],
+          runId,
+          content: typeof message?.content === "string" ? message.content : undefined,
+          stopReason: typeof payload.stopReason === "string" ? payload.stopReason : undefined,
+          errorMessage: typeof payload.errorMessage === "string" ? payload.errorMessage : undefined,
+        }
+      }
+      throw new Error("Event stream closed before completion")
+    } finally {
+      clearTimeout(timeout)
+      controller.abort()
     }
   }
 
-  async sendMessage(input: AgentExecutionInput, options?: AgentExecutionOptions): Promise<AgentRunCompletion> {
-    const response = await this.request<{ ok?: boolean; runId?: string; status?: string; stopReason?: string; errorMessage?: string }>({
-      method: 'POST',
-      path: '/api/chat/send',
-      body: {
-        sessionKey: input.sessionKey,
-        agentId: input.agentId,
-        message: input.prompt,
-        model: input.model,
-      },
-      signal: options?.signal,
-      timeoutMs: options?.timeoutMs,
+  async closeSession(session: RuntimeSession): Promise<void> {
+    await this.request({
+      method: "PATCH",
+      path: "/api/sessions",
+      body: { key: session.key, agentId: session.agentId, archived: true },
     })
-
-    // Console retorna { runId, status: "started" } — aceitar como sucesso
-    return {
-      ok: response.ok === true || !!response.runId,
-      stopReason: response.stopReason ?? response.status,
-      errorMessage: response.errorMessage,
-    }
-  }
-
-  async getHistory(sessionKey: string, limit = 50): Promise<SessionHistoryMessage[]> {
-    const response = await this.request<{ messages: SessionHistoryMessage[] }>({
-      method: 'GET',
-      path: '/api/chat/history',
-      query: { sessionKey, limit },
-    })
-
-    return response.messages
-  }
-
-  async getSessionActivity(sessionKey: string): Promise<SessionActivity> {
-    const response = await this.request<SessionActivity>({
-      method: 'GET',
-      path: `/api/sessions/${encodeURIComponent(sessionKey)}/activity`,
-    })
-
-    return response
   }
 
   private async request<T>(options: {
-    method: 'GET' | 'POST' | 'PATCH'
+    method: "GET" | "POST" | "PATCH"
     path: string
     body?: unknown
     query?: Record<string, string | number>
-    signal?: AbortSignal
     timeoutMs?: number
+    signal?: AbortSignal
   }): Promise<T> {
     const url = new URL(options.path, this.baseUrl)
     if (options.query) {
-      for (const [key, value] of Object.entries(options.query)) {
-        url.searchParams.set(key, String(value))
-      }
+      for (const [key, value] of Object.entries(options.query)) url.searchParams.set(key, String(value))
     }
+    const signals: AbortSignal[] = []
+    if (options.signal) signals.push(options.signal)
+    if (options.timeoutMs) signals.push(AbortSignal.timeout(options.timeoutMs))
+    const signal = signals.length > 0 ? AbortSignal.any(signals) : undefined
 
-    const controller = new AbortController()
-    const timeout = options.timeoutMs ?? 30_000
-    const timeoutId = setTimeout(() => controller.abort(), timeout)
-
-    if (options.signal) {
-      options.signal.addEventListener('abort', () => controller.abort())
+    const response = await fetch(url.toString(), {
+      method: options.method,
+      headers: {
+        Authorization: "Bearer " + this.token,
+        ...(options.body ? { "Content-Type": "application/json" } : {}),
+      },
+      ...(options.body ? { body: JSON.stringify(options.body) } : {}),
+      ...(signal ? { signal } : {}),
+    })
+    if (!response.ok) {
+      const payload = await response.json().catch(() => undefined) as Record<string, unknown> | undefined
+      const error = (payload?.error as Record<string, unknown>) || {}
+      throw new ConsoleRequestError(
+        response.status,
+        typeof error.code === "string" ? error.code : "HTTP_" + response.status,
+        typeof error.message === "string" ? error.message : "Console returned HTTP " + response.status,
+      )
     }
+    return response.json() as Promise<T>
+  }
 
+  private async *openEventStream(signal?: AbortSignal): AsyncIterable<{ event?: string; data: string }> {
+    const response = await fetch(this.baseUrl + "/api/events", {
+      headers: { Authorization: "Bearer " + this.token, Accept: "text/event-stream" },
+      ...(signal ? { signal } : {}),
+    })
+    if (!response.ok || !response.body) throw new ConsoleRequestError(response.status, "HTTP_" + response.status, "SSE stream failed")
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ""
     try {
-      const response = await this.fetchImpl(url.toString(), {
-        method: options.method,
-        headers: {
-          'Authorization': `Bearer ${this.token}`,
-          'Content-Type': 'application/json',
-        },
-        body: options.body ? JSON.stringify(options.body) : undefined,
-        signal: controller.signal,
-      })
-
-      if (!response.ok) {
-        const errorBody = await response.json().catch(() => ({ error: { code: 'UNKNOWN', message: response.statusText } })) as { error?: { code?: string; message?: string } }
-        throw new ConsoleRequestError(
-          response.status,
-          errorBody.error?.code ?? 'UNKNOWN',
-          errorBody.error?.message ?? response.statusText,
-        )
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split("\n")
+        buffer = lines.pop() || ""
+        let eventType: string | undefined
+        let data = ""
+        for (const line of lines) {
+          if (line.startsWith("event:")) eventType = line.slice(6).trim()
+          else if (line.startsWith("data:")) data = line.slice(5).trim()
+          else if (line === "" && data) { yield { event: eventType, data }; eventType = undefined; data = "" }
+        }
       }
-
-      return await response.json() as T
     } finally {
-      clearTimeout(timeoutId)
+      reader.releaseLock()
     }
   }
 }
