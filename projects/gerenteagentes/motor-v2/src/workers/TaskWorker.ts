@@ -141,7 +141,7 @@ class TaskWorker {
 
     this.exec("git status --porcelain", repoPath)
     this.exec("git checkout " + baseBranch, repoPath)
-    this.exec("git pull origin " + baseBranch, repoPath)
+    // this.exec("git pull origin " + baseBranch, repoPath) // TODO: habilitar quando SSH key configurada
 
     try {
       this.exec("git checkout -b " + workBranch, repoPath)
@@ -244,7 +244,7 @@ class TaskWorker {
 
     this.exec("git checkout " + baseBranch, repoPath)
     this.exec("git merge " + workBranch + " --no-edit", repoPath)
-    this.exec("git push origin " + baseBranch, repoPath)
+    // this.exec("git push origin " + baseBranch, repoPath) // TODO: habilitar quando SSH key configurada
 
     this.log("info", "Deploy concluido: merge + push")
   }

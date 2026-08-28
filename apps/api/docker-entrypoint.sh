@@ -6,6 +6,7 @@ git config --global user.email "motor-v2@globaltecnologia.local"
 git config --global user.name "Motor v2"
 git config --global --add safe.directory /run/media/alexandre/12T/codigofonte/biblioteca-global
 git config --global --add safe.directory /run/media/alexandre/12T/codigofonte/GerenteAgentes
+mkdir -p /root/.ssh && ssh-keyscan github.com >> /root/.ssh/known_hosts 2>/dev/null || true
 
 attempt=0
 until npm run db:migrate; do
