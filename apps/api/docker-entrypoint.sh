@@ -4,6 +4,8 @@ set -eu
 # Configura git (necessário para o motor-v2 fazer commits)
 git config --global user.email "motor-v2@globaltecnologia.local"
 git config --global user.name "Motor v2"
+git config --global --add safe.directory /run/media/alexandre/12T/codigofonte/biblioteca-global
+git config --global --add safe.directory /run/media/alexandre/12T/codigofonte/GerenteAgentes
 
 attempt=0
 until npm run db:migrate; do
