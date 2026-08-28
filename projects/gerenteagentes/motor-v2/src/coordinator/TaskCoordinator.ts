@@ -358,7 +358,7 @@ export class TaskCoordinator {
 
   private mapTask(row: Record<string, unknown>): Task {
     return {
-      id: String(row.id ?? row.external_id ?? ''),
+      id: String(row.external_id ?? row.id ?? ''),
       chatId: String(row.chat_id ?? ''),
       agentId: String(row.agent_id ?? row.agentId ?? ''),
       title: String(row.title ?? row.titulo ?? ''),

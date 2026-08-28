@@ -76,14 +76,14 @@ export class ExpirationReconciler {
       const taskId = String(row.id!)
       console.log(`[ExpirationReconciler] Tarefa órfã: ${taskId}`)
       await this.db.query(
-        `UPDATE projeto_640.tarefas SET status = 'failed', error_message = 'Lock expirado', updated_at = NOW() WHERE id = ?`,
+        `UPDATE projeto_640.tarefas SET status = 'failed', updated_at = NOW() WHERE id = ?`,
         [taskId]
       )
     }
 
     // 3. Tarefas pausadas há muito tempo
     const stalePaused = await this.db.query(
-      `SELECT id FROM projeto_640.tarefas WHERE status = 'paused' AND paused_at < ?`,
+      `SELECT id FROM projeto_640.tarefas WHERE status = 'paused' AND updated_at < ?`,
       [staleThreshold]
     )
 
@@ -91,7 +91,7 @@ export class ExpirationReconciler {
       const taskId = String(row.id!)
       console.log(`[ExpirationReconciler] Tarefa pausada stale: ${taskId}`)
       await this.db.query(
-        `UPDATE projeto_640.tarefas SET status = 'planned', resource_wait_key = NULL, resource_wait_position = NULL, paused_at = NULL, updated_at = NOW() WHERE id = ?`,
+        `UPDATE projeto_640.tarefas SET status = 'planned', updated_at = NOW() WHERE id = ?`,
         [taskId]
       )
     }

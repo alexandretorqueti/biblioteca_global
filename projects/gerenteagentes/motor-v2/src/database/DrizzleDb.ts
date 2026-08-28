@@ -63,6 +63,13 @@ export class MysqlTaskRepository implements TaskRepository {
   constructor(private db: Db) {}
 
   async getTask(id: string): Promise<SaveTaskData | null> {
+    // Verifica se o ID é numérico para buscar por id ou external_id
+    const isNumericId = /^\d+$/.test(id)
+    const whereClause = isNumericId 
+      ? 'WHERE t.external_id = ? OR t.id = ?' 
+      : 'WHERE t.external_id = ?'
+    const params = isNumericId ? [id, id] : [id]
+
     const { rows } = await this.db.query(
       `SELECT 
          t.id,
@@ -77,13 +84,13 @@ export class MysqlTaskRepository implements TaskRepository {
          t.updated_at,
          pc.slug as project_slug,
          pc.repo_path,
-         a.external_id as agent_id
+         a.id as agent_id
        FROM projeto_640.tarefas t
        LEFT JOIN projeto_640.projetos_captados pc ON t.projeto_id = pc.id
        LEFT JOIN projeto_640.agentes a ON pc.agente_id = a.id
-       WHERE t.external_id = ?
+       ${whereClause}
        LIMIT 1`,
-      [id]
+      params
     )
 
     if (rows.length === 0) return null
@@ -111,11 +118,17 @@ export class MysqlTaskRepository implements TaskRepository {
       }
 
       updates.push("updated_at = NOW()")
-      values.push(data.id)
+      
+      // Verifica se o ID é numérico para buscar por id ou external_id
+      const isNumericId = /^\d+$/.test(data.id)
+      const whereClause = isNumericId 
+        ? 'WHERE external_id = ? OR id = ?' 
+        : 'WHERE external_id = ?'
+      const whereParams = isNumericId ? [data.id, data.id] : [data.id]
 
       await this.db.query(
-        `UPDATE projeto_640.tarefas SET ${updates.join(", ")} WHERE external_id = ?`,
-        values
+        `UPDATE projeto_640.tarefas SET ${updates.join(", ")} ${whereClause}`,
+        [...values, ...whereParams]
       )
     } else {
       // INSERT
