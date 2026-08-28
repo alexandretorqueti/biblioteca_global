@@ -80,31 +80,51 @@ export class ConsoleAgentRuntimeDriver {
     return { runId: response.runId }
   }
 
+  /**
+   * Aguarda conclusao do run via polling (describe + history)
+   * Fallback robusto quando SSE nao captura o evento final
+   */
   async waitForRunCompletion(session: RuntimeSession, runId: string, timeoutMs = 600_000): Promise<AgentRunCompletion> {
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), timeoutMs)
-    try {
-      for await (const frame of this.openEventStream(controller.signal)) {
-        if (frame.event !== "chat") continue
-        let payload: Record<string, unknown>
-        try { payload = JSON.parse(frame.data) } catch { continue }
-        if (payload.sessionKey !== session.key || payload.runId !== runId) continue
-        const state = payload.state
-        if (state !== "final" && state !== "aborted" && state !== "error") continue
-        const message = payload.message as Record<string, unknown> | undefined
-        return {
-          state: state as AgentRunCompletion["state"],
-          runId,
-          content: typeof message?.content === "string" ? message.content : undefined,
-          stopReason: typeof payload.stopReason === "string" ? payload.stopReason : undefined,
-          errorMessage: typeof payload.errorMessage === "string" ? payload.errorMessage : undefined,
+    const startMs = Date.now()
+    const pollInterval = 5000
+
+    while (Date.now() - startMs < timeoutMs) {
+      await new Promise((resolve) => setTimeout(resolve, pollInterval))
+
+      try {
+        const desc = await this.request<{ status?: string; endedAt?: number }>({
+          method: "GET",
+          path: "/api/sessions/describe",
+          query: { key: session.key, agentId: session.agentId },
+        })
+
+        if (desc.status === "done" || desc.status === "idle") {
+          // Sessao terminou, buscar historico
+          const history = await this.request<{ messages: Array<{ role: string; content: unknown }> }>({
+            method: "GET",
+            path: "/api/chat/history",
+            query: { sessionKey: session.key, agentId: session.agentId, limit: 10, offset: 0 },
+          })
+
+          const msgs = history.messages || []
+          const lastAssistant = msgs.filter((m) => m.role === "assistant").pop()
+          const content = lastAssistant
+            ? (typeof lastAssistant.content === "string" ? lastAssistant.content : JSON.stringify(lastAssistant.content))
+            : undefined
+
+          return { state: "final", runId, content, stopReason: "done" }
         }
+
+        if (desc.status === "error") {
+          return { state: "error", runId, errorMessage: "Session ended with error" }
+        }
+      } catch (error) {
+        // Continua polling se erro de rede
+        console.warn("[ConsoleDriver] Polling error:", error instanceof Error ? error.message : String(error))
       }
-      throw new Error("Event stream closed before completion")
-    } finally {
-      clearTimeout(timeout)
-      controller.abort()
     }
+
+    throw new Error("Timeout waiting for run completion")
   }
 
   async closeSession(session: RuntimeSession): Promise<void> {
@@ -113,6 +133,21 @@ export class ConsoleAgentRuntimeDriver {
       path: "/api/sessions",
       body: { key: session.key, agentId: session.agentId, archived: true },
     })
+  }
+
+  async readSessionHistory(session: RuntimeSession, limit = 50): Promise<Array<{ role: string; content: string }>> {
+    const response = await this.request<{ messages: Array<{ role: string; content: unknown }> }>({
+      method: "GET",
+      path: "/api/chat/history",
+      query: { sessionKey: session.key, agentId: session.agentId, limit, offset: 0 },
+    })
+
+    return (response.messages || [])
+      .map((msg) => ({
+        role: msg.role,
+        content: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content),
+      }))
+      .filter((msg) => msg.content.trim().length > 0)
   }
 
   private async request<T>(options: {
@@ -151,34 +186,5 @@ export class ConsoleAgentRuntimeDriver {
       )
     }
     return response.json() as Promise<T>
-  }
-
-  private async *openEventStream(signal?: AbortSignal): AsyncIterable<{ event?: string; data: string }> {
-    const response = await fetch(this.baseUrl + "/api/events", {
-      headers: { Authorization: "Bearer " + this.token, Accept: "text/event-stream" },
-      ...(signal ? { signal } : {}),
-    })
-    if (!response.ok || !response.body) throw new ConsoleRequestError(response.status, "HTTP_" + response.status, "SSE stream failed")
-    const reader = response.body.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ""
-    try {
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split("\n")
-        buffer = lines.pop() || ""
-        let eventType: string | undefined
-        let data = ""
-        for (const line of lines) {
-          if (line.startsWith("event:")) eventType = line.slice(6).trim()
-          else if (line.startsWith("data:")) data = line.slice(5).trim()
-          else if (line === "" && data) { yield { event: eventType, data }; eventType = undefined; data = "" }
-        }
-      }
-    } finally {
-      reader.releaseLock()
-    }
   }
 }
