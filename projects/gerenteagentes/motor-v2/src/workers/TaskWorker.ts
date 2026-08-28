@@ -91,14 +91,18 @@ class TaskWorker {
       
       // Envia prompt para o agente
       const prompt = this.buildPrompt(input.task)
+      this.log('info', `Enviando prompt para agente ${session.agentId}...`)
+      
       const result = await driver.sendMessage({
         sessionKey: session.key,
         agentId: session.agentId,
         prompt,
       }, { timeoutMs: 600_000 }) // 10 min timeout
       
+      this.log('info', `Resposta do Console: ${JSON.stringify(result)}`)
+      
       if (!result.ok) {
-        throw new Error(`Agente falhou: ${result.errorMessage || result.stopReason}`)
+        throw new Error(`Agente falhou: ${result.errorMessage || result.stopReason || 'sem detalhes'}`)
       }
       this.log('info', 'Agente completou a tarefa')
       if (this.cancelled) { this.sendFailed(context, 'Cancelled during execution'); return }
