@@ -21,5 +21,7 @@ RUN npm run typecheck --workspace @biblioteca-global/api
 RUN npx tsc -p packages/shared --noEmit false --module Node16 --moduleResolution Node16 \
  && npx tsc -p packages/schema-tools --noEmit false \
  && npx tsc -p database --noEmit false
-EXPOSE 3001
+# Compila motor-v2 (TypeScript → JavaScript)
+RUN cd projects/gerenteagentes/motor-v2 && npx tsc
+EXPOSE 3001 3010
 CMD ["sh", "apps/api/docker-entrypoint.sh"]
