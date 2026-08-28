@@ -50,9 +50,11 @@ class TaskWorker {
     try {
       this.send({ type: 'started', executionId: context.executionId })
 
-      // FASE 1: PREPARAÇÃO
+      // FASE 1: PREPARAÇÃO - git pull
       this.send({ type: 'progress', executionId: context.executionId, phase: 'prepare', message: 'Preparando workspace' })
       this.log('info', `Workspace: ${input.repoPath}`)
+      await this.exec('git status', input.repoPath)
+      await this.exec('git pull', input.repoPath)
       if (this.cancelled) { this.sendFailed(context, 'Cancelled during preparation'); return }
 
       // FASE 2: ANÁLISE
@@ -60,19 +62,26 @@ class TaskWorker {
       this.log('info', `Tarefa: ${input.task.title}`)
       if (this.cancelled) { this.sendFailed(context, 'Cancelled during analysis'); return }
 
-      // FASE 3: EXECUÇÃO
-      this.send({ type: 'progress', executionId: context.executionId, phase: 'execute', message: 'Executando subtarefas' })
-      await this.sleep(2000)
+      // FASE 3: EXECUÇÃO - criar arquivo de teste
+      this.send({ type: 'progress', executionId: context.executionId, phase: 'execute', message: 'Executando mudança' })
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+      const testFile = `motor-v2-test-${timestamp}.txt`
+      const testPath = `${input.repoPath}/${testFile}`
+      await this.writeFile(testPath, `Teste do motor-v2\nTarefa: ${input.task.id}\nTimestamp: ${timestamp}\n`)
+      this.log('info', `Arquivo criado: ${testFile}`)
       if (this.cancelled) { this.sendFailed(context, 'Cancelled during execution'); return }
 
-      // FASE 4: VERIFICAÇÃO
+      // FASE 4: VERIFICAÇÃO - git add/commit
       this.send({ type: 'progress', executionId: context.executionId, phase: 'verify', message: 'Verificando resultados' })
-      await this.sleep(1000)
+      await this.exec('git add -A', input.repoPath)
+      await this.exec(`git commit -m "test(motor-v2): arquivo de teste da tarefa ${input.task.id}"`, input.repoPath)
+      this.log('info', 'Commit criado')
       if (this.cancelled) { this.sendFailed(context, 'Cancelled during verification'); return }
 
-      // FASE 5: ENTREGA
+      // FASE 5: ENTREGA - git push
       this.send({ type: 'progress', executionId: context.executionId, phase: 'deliver', message: 'Entregando resultados' })
-      await this.sleep(500)
+      await this.exec('git push', input.repoPath)
+      this.log('info', 'Push realizado')
 
       this.sendCompleted(context, { ok: true })
     } catch (error) {
@@ -80,6 +89,24 @@ class TaskWorker {
       this.log('error', `Erro: ${reason}`)
       this.sendFailed(context, reason)
     }
+  }
+
+  private async exec(command: string, cwd: string): Promise<string> {
+    const { execSync } = await import('child_process')
+    this.log('info', `$ ${command}`)
+    try {
+      const output = execSync(command, { cwd, encoding: 'utf-8', timeout: 30000 })
+      this.log('info', output.substring(0, 200))
+      return output
+    } catch (error: any) {
+      this.log('error', `Command failed: ${error.message}`)
+      throw error
+    }
+  }
+
+  private async writeFile(path: string, content: string): Promise<void> {
+    const { writeFileSync } = await import('fs')
+    writeFileSync(path, content)
   }
 
   private sendCompleted(context: ExecutionContext, result: ExecutionResult): void {
