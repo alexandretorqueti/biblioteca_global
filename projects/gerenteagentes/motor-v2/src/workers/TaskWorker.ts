@@ -55,16 +55,13 @@ class TaskWorker {
     try {
       this.send({ type: 'started', executionId: context.executionId })
 
-      // FASE 1: PREPARAÇÃO — git pull
+      // FASE 1: PREPARAÇÃO
       this.send({ type: 'progress', executionId: context.executionId, phase: 'prepare', message: 'Preparando workspace' })
       this.log('info', `Workspace: ${repoPath}`)
       
       if (!existsSync(repoPath)) {
         throw new Error(`Repo não encontrado: ${repoPath}`)
       }
-      
-      this.exec('git status', repoPath)
-      this.exec('git pull', repoPath)
       if (this.cancelled) { this.sendFailed(context, 'Cancelled during preparation'); return }
 
       // FASE 2: ANÁLISE — ler tarefa
@@ -106,20 +103,9 @@ class TaskWorker {
       this.log('info', 'Agente completou a tarefa')
       if (this.cancelled) { this.sendFailed(context, 'Cancelled during execution'); return }
 
-      // FASE 4: VERIFICAÇÃO — git add/commit/push
+      // FASE 4: VERIFICAÇÃO (sem git por enquanto — SSH key pendente)
       this.send({ type: 'progress', executionId: context.executionId, phase: 'verify', message: 'Verificando resultados' })
-      
-      this.exec('git add -A', repoPath)
-      
-      // Verifica se há mudanças
-      const status = this.exec('git status --porcelain', repoPath)
-      if (!status.trim()) {
-        this.log('warn', 'Nenhuma mudança detectada')
-      } else {
-        this.exec(`git commit -m "feat: ${input.task.title}"`, repoPath)
-        this.exec('git push', repoPath)
-        this.log('info', 'Commit e push realizados')
-      }
+      this.log('info', 'Agente completou a execução')
       if (this.cancelled) { this.sendFailed(context, 'Cancelled during verification'); return }
 
       // FASE 5: ENTREGA
