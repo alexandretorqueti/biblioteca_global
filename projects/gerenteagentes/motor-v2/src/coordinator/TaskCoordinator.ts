@@ -115,7 +115,7 @@ export class TaskCoordinator {
 
   private async selectNextTask(): Promise<Task | null> {
     const { rows } = await this.db.query(
-      "SELECT t.*, pc.slug as project_slug, a.openclaw_agent_id as agent_id, " +
+      "SELECT t.*, pc.slug as project_slug, a.nome as agent_id, " +
       "pmc.repo_path, pmc.branch_trabalho, pmc.build_command, pmc.unit_test_command, pmc.unit_test_exclude, " +
       "pmc.default_max_rework, pmc.default_hard_timeout_ms " +
       "FROM projeto_640.tarefas t " +
@@ -130,7 +130,7 @@ export class TaskCoordinator {
   private async selectNextSubtask(): Promise<SubtaskWithTask | null> {
     const { rows } = await this.db.query(
       "SELECT s.*, t.external_id as task_external_id, t.titulo as task_titulo, t.descricao as task_descricao, " +
-      "pc.slug as project_slug, a.openclaw_agent_id as agent_id, " +
+      "pc.slug as project_slug, a.nome as agent_id, " +
       "pmc.repo_path, pmc.branch_trabalho, pmc.build_command, pmc.unit_test_command, pmc.unit_test_exclude, " +
       "pmc.default_max_rework, pmc.default_hard_timeout_ms " +
       "FROM projeto_640.subtarefas s " +
@@ -218,7 +218,7 @@ export class TaskCoordinator {
     })
 
     try {
-      if (!subtask.agentId) throw new Error("Projeto sem openclaw_agent_id configurado")
+      if (!subtask.agentId) throw new Error("Projeto sem agente configurado")
       this.assertExecutionConfig(subtask)
       // Marca subtarefa como running
       await this.db.query("UPDATE projeto_640.subtarefas SET status = 'running', iniciada_em = NOW() WHERE id = ?", [subtask.id])

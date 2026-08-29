@@ -124,6 +124,13 @@ describe('TaskCoordinator', () => {
   })
 
   describe('configuração operacional do projeto', () => {
+    it('resolve o identificador do agente pela chave existente na Biblioteca', async () => {
+      await coordinator.pump()
+      const firstQuery = vi.mocked(db.query).mock.calls[0]?.[0]
+      expect(firstQuery).toContain('a.nome as agent_id')
+      expect(firstQuery).not.toContain('openclaw_agent_id')
+    })
+
     it('usa configuração persistida e recusa execução sem os campos críticos', () => {
       const internal = coordinator as unknown as {
         mapSubtask: (row: Record<string, unknown>) => {
