@@ -29,3 +29,10 @@ export type {
 export { RealtimeClient } from "./realtime"
 export type { RealtimeServerMessage } from "./realtime"
 export type { RealtimeClientOptions } from "./types"
+export { createAgentChatClient } from "./agent-chat-client"
+export type {
+  AgentChatClientOptions,
+  AgentChatDriver,
+  AgentChatEndpointConfig,
+  AgentChatOutboxEntry,
+} from "./agent-chat-client"

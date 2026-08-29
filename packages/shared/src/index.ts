@@ -130,3 +130,34 @@ export type {
   ModelSelectionEntry,
   ProjectModelSelection,
 } from "./model-selection"
+
+// Chat genérico com agentes
+export {
+  agentInfoSchema,
+  chatMessageRoleSchema,
+  chatAttachmentSchema,
+  chatMessageSchema,
+  chatSessionSchema,
+  startChatSessionInputSchema,
+  sendChatMessageInputSchema,
+  chatHistorySchema,
+  sendChatMessageSuccessSchema,
+  chatSendFailureReasonSchema,
+  sendChatMessageFailureSchema,
+  sendChatMessageResultSchema,
+} from "./chat"
+export type {
+  AgentInfo,
+  ChatMessageRole,
+  ChatAttachment,
+  ChatMessage,
+  ChatSession,
+  StartChatSessionInput,
+  SendChatMessageInput,
+  ChatHistory,
+  AgentChatDataSource,
+  SendChatMessageSuccess,
+  ChatSendFailureReason,
+  SendChatMessageFailure,
+  SendChatMessageResult,
+} from "./chat"

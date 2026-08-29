@@ -46,6 +46,16 @@ export const config: GeradorSistemaConfig = {
             componentId: "gerenteagentes-task-monitor",
           },
         },
+        {
+          id: "isa-chat-view",
+          label: "Conversar com a Isa",
+          path: "isa-chat",
+          icon: "smart_toy",
+          screen: {
+            kind: "custom",
+            componentId: "gerenteagentes-isa-chat",
+          },
+        },
       ],
     },
 
