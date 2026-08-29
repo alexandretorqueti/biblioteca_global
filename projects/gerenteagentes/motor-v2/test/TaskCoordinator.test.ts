@@ -228,6 +228,20 @@ describe('TaskCoordinator', () => {
     })
   })
 
+  describe('execução sequencial de subtarefas', () => {
+    it('só seleciona uma subtarefa quando todas as anteriores estão verificadas', async () => {
+      await coordinator.pump()
+
+      const selectionQuery = vi.mocked(db.query).mock.calls
+        .map(([query]) => String(query))
+        .find((query) => query.includes('FROM projeto_640.subtarefas s'))
+
+      expect(selectionQuery).toContain('anterior.tarefa_id = s.tarefa_id')
+      expect(selectionQuery).toContain('anterior.seq < s.seq')
+      expect(selectionQuery).toContain("anterior.status != 'verified'")
+    })
+  })
+
   describe('onTaskCompleted', () => {
     it('deve lidar com execução desconhecida sem erro', async () => {
       await coordinator.onTaskCompleted('exec-inexistente')

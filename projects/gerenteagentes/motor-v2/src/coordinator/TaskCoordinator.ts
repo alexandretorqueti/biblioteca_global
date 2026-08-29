@@ -139,6 +139,10 @@ export class TaskCoordinator {
       "LEFT JOIN projeto_640.agentes a ON pc.agente_id = a.id " +
       "LEFT JOIN projeto_640.projeto_motor_config pmc ON pmc.projeto_id = pc.id " +
       "WHERE s.status = 'pending' AND t.status = 'ready' " +
+      "AND NOT EXISTS (" +
+      "SELECT 1 FROM projeto_640.subtarefas anterior " +
+      "WHERE anterior.tarefa_id = s.tarefa_id AND anterior.seq < s.seq AND anterior.status != 'verified'" +
+      ") " +
       "ORDER BY s.seq ASC LIMIT 25"
     )
     return rows.map((row) => this.mapSubtask(row)).find((subtask) => this.canStartProject(subtask.projectSlug)) ?? null
