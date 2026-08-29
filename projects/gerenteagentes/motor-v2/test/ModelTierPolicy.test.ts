@@ -7,7 +7,7 @@ describe("ModelTierPolicy", () => {
     expect(defaultChain("development").length).toBeGreaterThan(0)
   })
 
-  it("formata SessionKey determinística por modelo e geração", () => {
+  it("formata a SessionKey do desenvolvimento no padrão operacional", () => {
     expect(formatSessionKey({
       agentId: "programador-senior",
       taskId: "701",
@@ -15,7 +15,18 @@ describe("ModelTierPolicy", () => {
       model: "alibaba/qwen3.7-max",
       modelIndex: 0,
       generation: 2,
-    })).toBe("agent:programador-senior:task:701:m0:g2:qwen3.7-max")
+    })).toBe("dev-qwen3.7-max-701")
+  })
+
+  it("formata a SessionKey da análise no padrão operacional", () => {
+    expect(formatSessionKey({
+      agentId: "programador-senior",
+      taskId: "701",
+      phase: "analysis",
+      model: "alibaba/qwen3.8-max",
+      modelIndex: 0,
+      generation: 0,
+    })).toBe("analysis-qwen3.8-max-701")
   })
 
   it("reconhece indisponibilidade de modelo sem confundir erro operacional genérico", () => {

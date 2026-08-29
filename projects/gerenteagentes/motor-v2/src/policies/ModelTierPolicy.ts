@@ -41,6 +41,6 @@ export function formatSessionKey(input: {
   generation: number
 }): string {
   const slug = input.model.split("/").at(-1)?.replace(/[^a-zA-Z0-9.-]/g, "_") || "unknown"
-  if (input.phase === "analysis") return `agent:${input.agentId}:task:${input.taskId}:analysis:m${input.modelIndex}:${slug}`
-  return `agent:${input.agentId}:task:${input.taskId}:m${input.modelIndex}:g${input.generation}:${slug}`
+  const phase = input.phase === "analysis" ? "analysis" : input.phase === "development" ? "dev" : "monitor"
+  return `${phase}-${slug}-${input.taskId}`
 }
