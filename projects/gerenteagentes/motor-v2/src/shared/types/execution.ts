@@ -12,6 +12,7 @@ export type ExecutionPhase =
   | "execute"
   | "verify"
   | "commit"
+  | "publish"
   | "deploy"
   | "deliver"
 

@@ -2,7 +2,7 @@
  * Testes do TaskCoordinator
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { Db, TaskRepository, QueryResult } from '../src/shared/types/infrastructure.js'
 import { ResourceLeaseService } from '../src/resources/ResourceLeaseService.js'
 import { TaskCoordinator } from '../src/coordinator/TaskCoordinator.js'
@@ -104,6 +104,60 @@ describe('TaskCoordinator', () => {
     it('deve retornar estatísticas', () => {
       const stats = coordinator.getStats()
       expect(stats).toEqual({ activeWorkers: 0, maxWorkers: 1 })
+    })
+  })
+
+  describe('recuperação de workers', () => {
+    afterEach(() => vi.useRealTimers())
+
+    function registerWorker(coordinatorUnderTest: TaskCoordinator, executionId: string): void {
+      const internal = coordinatorUnderTest as unknown as {
+        activeWorkers: Map<string, unknown>
+      }
+      internal.activeWorkers.set(executionId, {
+        taskId: 'task-123', executionId, resourceKey: null, fencingToken: 0,
+        startedAt: new Date(), phase: 'execute', subtaskId: 77,
+      })
+    }
+
+    function completedTaskRepository(): void {
+      vi.mocked(repository.getTask).mockResolvedValue({
+        id: 'task-123', chatId: '', agentId: 'agent', title: 'task', description: '',
+        repoPath: '/repo', buildCommand: 'npm run build', unitTestCommand: 'npm test',
+        status: 'running', maxRework: 1, hardTimeoutMs: 1000, projectSlug: null,
+      })
+    }
+
+    it('marca falha quando o worker encerra sem completed e finaliza apenas uma vez', async () => {
+      const launcher = new WorkerLauncher()
+      const stopWorker = vi.spyOn(launcher, 'stopWorker').mockResolvedValue()
+      completedTaskRepository()
+      const coordinatorUnderTest = new TaskCoordinator(db, repository, resourceLease, { maxWorkers: 1 }, launcher)
+      registerWorker(coordinatorUnderTest, 'exec-exit-1')
+
+      launcher.emit('worker_exit', { executionId: 'exec-exit-1', code: 0, signal: null })
+      launcher.emit('worker_exit', { executionId: 'exec-exit-1', code: 0, signal: null })
+
+      await vi.waitFor(() => expect(repository.saveTask).toHaveBeenCalled())
+      expect(stopWorker).not.toHaveBeenCalled()
+      expect(repository.saveTask).toHaveBeenCalledTimes(1)
+      expect(repository.saveTask.mock.calls[0]?.[0].errorMessage).toContain('[worker_exit]')
+    })
+
+    it('encerra e bloqueia worker que excede o timeout', async () => {
+      vi.useFakeTimers()
+      const launcher = new WorkerLauncher()
+      const stopWorker = vi.spyOn(launcher, 'stopWorker').mockResolvedValue()
+      completedTaskRepository()
+      const coordinatorUnderTest = new TaskCoordinator(db, repository, resourceLease, { maxWorkers: 1, workerTimeoutMs: 10 }, launcher)
+      registerWorker(coordinatorUnderTest, 'exec-timeout-1')
+      const internal = coordinatorUnderTest as unknown as { armWorkerTimeout: (id: string, timeout: number) => void }
+      internal.armWorkerTimeout('exec-timeout-1', 10)
+
+      await vi.advanceTimersByTimeAsync(10)
+      await vi.waitFor(() => expect(repository.saveTask).toHaveBeenCalled())
+      expect(stopWorker).toHaveBeenCalledWith('exec-timeout-1', 5000)
+      expect(repository.saveTask.mock.calls[0]?.[0].errorMessage).toContain('[timeout]')
     })
   })
 

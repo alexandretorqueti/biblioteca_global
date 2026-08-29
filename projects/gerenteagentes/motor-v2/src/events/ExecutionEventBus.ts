@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import type { ExecutionPhase } from '../shared/types/execution.js'
 
-export type ExecutionActivityType = 'started' | 'progress' | 'log' | 'heartbeat' | 'completed' | 'failed' | 'model_unavailable'
+export type ExecutionActivityType = 'started' | 'progress' | 'log' | 'heartbeat' | 'completed' | 'failed' | 'model_unavailable' | 'developer_branch_integrated'
 
 export interface ExecutionActivityEvent {
   type: ExecutionActivityType

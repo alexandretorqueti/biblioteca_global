@@ -24,6 +24,18 @@ export interface WorkspacePreparation {
   baseCommit: string
 }
 
+export interface WorkspaceIntegrationInput {
+  repoPath: string
+  baseBranch: string
+  workBranch: string
+  expectedCommit: string
+}
+
+export interface WorkspaceCleanupInput {
+  repoPath: string
+  workspacePath: string
+}
+
 export interface PrepareWorkspaceInput {
   repoPath: string
   baseBranch: string
@@ -44,6 +56,10 @@ function safeBranch(branch: string): string {
     throw new Error("branch inválida")
   }
   return branch
+}
+
+function validCommit(commit: string): boolean {
+  return /^[a-f0-9]{7,40}$/i.test(commit)
 }
 
 function inside(root: string, target: string): boolean {
@@ -98,5 +114,51 @@ export class GitWorkspaceManager {
     }
     const result = await this.runner.run(["git", "diff", "--name-only", `${baseCommit}..${commitSha}`], workspacePath)
     return result.stdout.split("\n").map((path) => path.trim()).filter(Boolean)
+  }
+
+  /**
+   * Integra uma branch aprovada na branch-base no repositório principal.
+   * O chamador deve manter o lease do projeto durante toda a operação.
+   */
+  async integrate(input: WorkspaceIntegrationInput): Promise<{ mergeCommit: string }> {
+    if (!isAbsolute(input.repoPath) || !validCommit(input.expectedCommit)) {
+      throw new Error("pré-condição inválida para integração Git")
+    }
+    const baseBranch = safeBranch(input.baseBranch)
+    const workBranch = safeBranch(input.workBranch)
+    const status = await this.runner.run(["git", "status", "--porcelain", "--untracked-files=all"], input.repoPath)
+    if (status.stdout.trim()) throw new Error("repositório principal não está limpo para integração")
+
+    const workCommit = (await this.runner.run(["git", "rev-parse", "--verify", `${workBranch}^{commit}`], input.repoPath)).stdout.trim()
+    if (!validCommit(workCommit) || workCommit.toLowerCase() !== input.expectedCommit.toLowerCase()) {
+      throw new Error("commit da branch de trabalho não corresponde ao commit aprovado")
+    }
+
+    const originalBranch = (await this.runner.run(["git", "symbolic-ref", "--quiet", "--short", "HEAD"], input.repoPath)).stdout.trim()
+    try {
+      await this.runner.run(["git", "switch", baseBranch], input.repoPath)
+      await this.runner.run(["git", "merge", "--no-ff", "--no-edit", workBranch], input.repoPath)
+      const mergeCommit = (await this.runner.run(["git", "rev-parse", "--verify", "HEAD"], input.repoPath)).stdout.trim()
+      if (!validCommit(mergeCommit)) throw new Error("commit de merge inválido")
+      return { mergeCommit }
+    } catch (error) {
+      await this.runner.run(["git", "merge", "--abort"], input.repoPath).catch(() => {})
+      if (originalBranch && originalBranch !== baseBranch) {
+        await this.runner.run(["git", "switch", originalBranch], input.repoPath).catch(() => {})
+      }
+      const reason = error instanceof Error ? error.message : String(error)
+      throw new Error("Integração Git falhou: " + reason, { cause: error })
+    }
+  }
+
+  /** Remove o worktree temporário sem tocar em outros diretórios do projeto. */
+  async cleanup(input: WorkspaceCleanupInput): Promise<void> {
+    if (!isAbsolute(input.repoPath) || !isAbsolute(input.workspacePath)) {
+      throw new Error("pré-condição inválida para limpeza do workspace")
+    }
+    const workspacePath = resolve(input.workspacePath)
+    if (!inside(this.root, workspacePath)) throw new Error("workspace fora da raiz segura")
+    await this.runner.run(["git", "worktree", "remove", "--force", workspacePath], input.repoPath)
+    await rm(workspacePath, { recursive: true, force: true })
   }
 }

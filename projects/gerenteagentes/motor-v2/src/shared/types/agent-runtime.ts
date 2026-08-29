@@ -21,6 +21,7 @@ export interface RunStatusResult {
 export interface SendMessageParams {
   agentId: string
   sessionKey: string
+  model?: string
   message: string
 }
 

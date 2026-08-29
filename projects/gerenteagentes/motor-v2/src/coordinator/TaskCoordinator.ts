@@ -18,6 +18,7 @@ import { GitWorkspaceManager } from "../workspaces/GitWorkspaceManager.js"
 import { ResourceWaitManager } from "../resources/ResourceWaitManager.js"
 import { executionEventBus, type ExecutionEventBus } from "../events/ExecutionEventBus.js"
 import { correctionOnlyChangesTests } from "../policies/CorrectionDiffPolicy.js"
+import { transitionTask, type TaskTransition } from "../policies/TaskStateMachine.js"
 
 interface ActiveWorker {
   taskId: string
@@ -28,11 +29,16 @@ interface ActiveWorker {
   phase: "analyze" | "execute"
   subtaskId?: number
   workspace?: { path: string; branch: string; baseCommit: string }
+  repoPath?: string
+  baseBranch?: string
+  timeoutHandle?: ReturnType<typeof setTimeout>
 }
 
 export interface TaskCoordinatorConfig {
   maxWorkers: number
   maxWorkersPerProject: number
+  /** Timeout máximo de um worker; quando omitido usa hard_timeout_ms da tarefa. */
+  workerTimeoutMs?: number
 }
 
 const DEFAULT_CONFIG: TaskCoordinatorConfig = {
@@ -72,6 +78,7 @@ export class TaskCoordinator {
   private workspaceManager: GitWorkspaceManager
   private waitManager?: ResourceWaitManager
   private eventBus: ExecutionEventBus
+  private finalizingExecutions = new Set<string>()
 
   constructor(
     db: Db,
@@ -180,7 +187,7 @@ export class TaskCoordinator {
     })
 
     try {
-      await this.repository.saveTask({ ...task, status: "analyzing", executionId, updatedAt: new Date().toISOString() })
+      await this.saveTaskTransition(task, "start_analysis", { executionId })
 
       await this.workerLauncher.spawn({
         context: {
@@ -192,6 +199,7 @@ export class TaskCoordinator {
         modelPhase: "analysis",
         modelChain: await this.getProjectModelChain(task.projectSlug, "analysis"),
       })
+      this.armWorkerTimeout(executionId, task.hardTimeoutMs)
 
       console.log("[TaskCoordinator] Worker de analise iniciado: " + task.id + " (" + executionId + ")")
     } catch (error) {
@@ -220,6 +228,7 @@ export class TaskCoordinator {
     this.activeWorkers.set(executionId, {
       taskId: subtask.taskExternalId, executionId, resourceKey, fencingToken,
       startedAt: new Date(), phase: "execute", subtaskId: subtask.id,
+      repoPath: subtask.repoPath,
     })
 
     try {
@@ -229,9 +238,11 @@ export class TaskCoordinator {
       await this.db.query("UPDATE projeto_640.subtarefas SET status = 'running', iniciada_em = NOW() WHERE id = ?", [subtask.id])
       const parentTask = await this.repository.getTask(subtask.taskExternalId)
       if (parentTask) {
-        await this.repository.saveTask({ ...parentTask, status: "running", updatedAt: new Date().toISOString() })
+        await this.saveTaskTransition(parentTask, "start_execution")
       }
       const baseBranch = subtask.branchTrabalho || "base-desenvolvimento"
+      const activeWorkerForBranch = this.activeWorkers.get(executionId)
+      if (activeWorkerForBranch) activeWorkerForBranch.baseBranch = baseBranch
       const workspace = await this.workspaceManager.prepare({
         repoPath: subtask.repoPath,
         baseBranch,
@@ -277,35 +288,79 @@ export class TaskCoordinator {
         modelPhase: "development",
         modelChain: await this.getProjectModelChain(subtask.projectSlug, "development"),
       })
+      this.armWorkerTimeout(executionId, subtask.hardTimeoutMs ?? 3600000)
 
       console.log("[TaskCoordinator] Worker de execucao iniciado: subtarefa #" + subtask.seq + " (" + executionId + ")")
     } catch (error) {
       console.error("[TaskCoordinator] Erro ao iniciar execucao:", error)
-      if (resourceKey) await this.resourceLease.release(resourceKey, executionId, fencingToken)
-      this.activeWorkers.delete(executionId)
+      const activeWorker = this.activeWorkers.get(executionId)
+      if (activeWorker && this.beginFinalization(executionId, activeWorker)) {
+        await this.finishWorker(executionId, activeWorker)
+      } else if (resourceKey) {
+        await this.resourceLease.release(resourceKey, executionId, fencingToken)
+      }
     }
   }
 
   async onTaskCompleted(executionId: string, result?: ExecutionResult): Promise<void> {
     const worker = this.activeWorkers.get(executionId)
-    if (!worker) return
-    this.publishActivity(worker, { type: "completed" })
+    if (!worker || !this.beginFinalization(executionId, worker)) return
 
+    try {
     if (worker.phase === "analyze") {
+      this.publishActivity(worker, { type: "completed" })
       console.log("[TaskCoordinator] Analise completada: " + worker.taskId)
       const task = await this.repository.getTask(worker.taskId)
       if (task) {
-        await this.repository.saveTask({ ...task, status: "ready", updatedAt: new Date().toISOString() })
+        await this.saveTaskTransition(task, "analysis_completed")
       }
     } else {
       console.log("[TaskCoordinator] Execucao completada: subtarefa " + worker.subtaskId)
       if (worker.subtaskId && worker.workspace) {
-        await this.db.query(
-          "UPDATE projeto_640.subtarefas SET workspace_commit_sha = ?, workspace_status = 'approved' WHERE id = ?",
-          [result?.gitCommitSha ?? null, worker.subtaskId],
-        )
+        try {
+          let mergeCommit: string | undefined
+          if (result?.gitCommitSha) {
+            if (!worker.repoPath || !worker.baseBranch) {
+              throw new Error("entrega aprovada sem repositório ou branch-base para integração")
+            }
+            const integration = await this.workspaceManager.integrate({
+              repoPath: worker.repoPath,
+              baseBranch: worker.baseBranch,
+              workBranch: worker.workspace.branch,
+              expectedCommit: result.gitCommitSha,
+            })
+            mergeCommit = integration.mergeCommit
+          }
+          await this.db.query(
+            "UPDATE projeto_640.subtarefas SET workspace_commit_sha = ?, workspace_status = ? WHERE id = ?",
+            [result?.gitCommitSha ?? null, mergeCommit ? "integrated" : "approved", worker.subtaskId],
+          )
+          if (mergeCommit) {
+            this.publishActivity(worker, {
+              type: "developer_branch_integrated",
+              executionPhase: "publish",
+              level: "info",
+              message: `Branch ${worker.workspace.branch} integrada em ${worker.baseBranch} (${mergeCommit})`,
+            })
+          }
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error)
+          await this.db.query(
+            "UPDATE projeto_640.subtarefas SET workspace_status = 'integration_failed', resultado = ? WHERE id = ?",
+            [reason.substring(0, 500), worker.subtaskId],
+          )
+          const task = await this.repository.getTask(worker.taskId)
+          if (task) {
+            await this.saveTaskTransition(task, "fail", { errorMessage: reason.substring(0, 500) })
+          }
+          this.publishActivity(worker, { type: "failed", level: "error", message: reason })
+          await this.finishWorker(executionId, worker)
+          return
+        }
         await this.promoteOriginalAfterTestOnlyCorrection(worker.subtaskId, worker.workspace, result?.gitCommitSha)
       }
+
+      this.publishActivity(worker, { type: "completed" })
       
       // Verificar se todas subtarefas da tarefa estao completas
       if (worker.subtaskId) {
@@ -318,60 +373,60 @@ export class TaskCoordinator {
           console.log("[TaskCoordinator] Todas subtarefas completas! Marcando tarefa como completed")
           const task = await this.repository.getTask(worker.taskId)
           if (task) {
-            await this.repository.saveTask({ ...task, status: "completed", updatedAt: new Date().toISOString() })
+            await this.saveTaskTransition(task, "execution_completed")
           }
         } else {
           const task = await this.repository.getTask(worker.taskId)
           if (task) {
-            await this.repository.saveTask({ ...task, status: "ready", updatedAt: new Date().toISOString() })
+            await this.saveTaskTransition(task, "subtasks_pending")
           }
         }
       }
     }
 
-    if (worker.resourceKey) await this.resourceLease.release(worker.resourceKey, executionId, worker.fencingToken)
-    this.activeWorkers.delete(executionId)
-    await this.pump()
+    await this.finishWorker(executionId, worker)
+    } catch (error) {
+      console.error("[TaskCoordinator] Falha ao finalizar sucesso da execução " + executionId + ":", error)
+      await this.finishWorker(executionId, worker)
+      throw error
+    }
   }
 
-  async onTaskFailed(executionId: string, error: string): Promise<void> {
+  async onTaskFailed(executionId: string, error: string, kind = "error"): Promise<void> {
     const worker = this.activeWorkers.get(executionId)
-    if (!worker) return
-    this.publishActivity(worker, { type: "failed", level: "error", message: error })
+    if (!worker || !this.beginFinalization(executionId, worker)) return
+    const failure = `[${kind}] ${error}`
+    this.publishActivity(worker, { type: "failed", level: "error", message: failure })
 
-    console.error("[TaskCoordinator] Falha: " + worker.taskId, error)
+    console.error("[TaskCoordinator] Falha: " + worker.taskId, failure)
 
-    if (worker.phase === "analyze") {
-      const task = await this.repository.getTask(worker.taskId)
-      if (task) {
-        await this.repository.saveTask({ ...task, status: "blocked", errorMessage: "Analise falhou: " + error, updatedAt: new Date().toISOString() })
+    try {
+      if (worker.phase === "analyze") {
+        const task = await this.repository.getTask(worker.taskId)
+        if (task) {
+          await this.saveTaskTransition(task, "fail", { errorMessage: "Analise falhou: " + failure })
+        }
+      } else {
+        if (worker.subtaskId) {
+          await this.db.query("UPDATE projeto_640.subtarefas SET status = 'blocked', resultado = ? WHERE id = ?", [failure.substring(0, 500), worker.subtaskId])
+        }
+        const task = await this.repository.getTask(worker.taskId)
+        if (task) {
+          await this.saveTaskTransition(task, "fail", { errorMessage: failure.substring(0, 500) })
+        }
       }
-    } else {
-      // Marcar subtarefa como failed
-      if (worker.subtaskId) {
-        await this.db.query("UPDATE projeto_640.subtarefas SET status = 'blocked', resultado = ? WHERE id = ?", [error.substring(0, 500), worker.subtaskId])
-      }
-      // Marcar tarefa como failed
-      const task = await this.repository.getTask(worker.taskId)
-      if (task) {
-        await this.repository.saveTask({ ...task, status: "blocked", errorMessage: error.substring(0, 500), updatedAt: new Date().toISOString() })
-      }
+    } finally {
+      await this.finishWorker(executionId, worker)
     }
-
-    if (worker.resourceKey) await this.resourceLease.release(worker.resourceKey, executionId, worker.fencingToken)
-    this.activeWorkers.delete(executionId)
-    await this.pump()
   }
 
   async onTaskPaused(executionId: string, reason: string): Promise<void> {
     const worker = this.activeWorkers.get(executionId)
-    if (!worker) return
+    if (!worker || !this.beginFinalization(executionId, worker)) return
     console.log("[TaskCoordinator] Tarefa pausada: " + worker.taskId + " - " + reason)
     const task = await this.repository.getTask(worker.taskId)
-    if (task) await this.repository.saveTask({ ...task, status: "paused", updatedAt: new Date().toISOString() })
-    if (worker.resourceKey) await this.resourceLease.release(worker.resourceKey, executionId, worker.fencingToken)
-    this.activeWorkers.delete(executionId)
-    await this.pump()
+    if (task) await this.saveTaskTransition(task, "pause")
+    await this.finishWorker(executionId, worker)
   }
 
   async onResourceReleased(resourceKey: ResourceKey): Promise<void> {
@@ -411,7 +466,7 @@ export class TaskCoordinator {
       throw new Error("Tarefa " + taskId + " esta em status " + task.status)
     }
     if (task.status !== "planned") {
-      await this.repository.saveTask({ ...task, status: "planned", updatedAt: new Date().toISOString() })
+      await this.saveTaskTransition(task, "queue")
     }
     await this.pump()
     return { executionId: "exec-" + task.id + "-" + Date.now() }
@@ -438,7 +493,7 @@ export class TaskCoordinator {
     if (!task) throw new Error("Tarefa " + taskId + " nao encontrada")
     if (task.status !== "paused") throw new Error("Tarefa " + taskId + " nao esta pausada")
     const hasPlan = await this.taskHasPersistedPlan(taskId)
-    await this.repository.saveTask({ ...task, status: hasPlan ? "ready" : "planned", updatedAt: new Date().toISOString() })
+    await this.saveTaskTransition(task, hasPlan ? "resume" : "resume_without_plan")
     await this.pump()
   }
 
@@ -451,13 +506,83 @@ export class TaskCoordinator {
     for (const [executionId, worker] of this.activeWorkers.entries()) {
       if (worker.taskId === taskId) {
         await this.workerLauncher.stopWorker(executionId)
-        this.activeWorkers.delete(executionId)
-        if (worker.resourceKey) await this.resourceLease.release(worker.resourceKey, executionId, worker.fencingToken)
+        if (this.beginFinalization(executionId, worker)) await this.finishWorker(executionId, worker)
         break
       }
     }
-    await this.repository.saveTask({ ...task, status: "cancelled", updatedAt: new Date().toISOString() })
+    await this.saveTaskTransition(task, "cancel")
     await this.pump()
+  }
+
+  private beginFinalization(executionId: string, worker: ActiveWorker): boolean {
+    if (this.finalizingExecutions.has(executionId)) return false
+    this.finalizingExecutions.add(executionId)
+    if (worker.timeoutHandle) {
+      clearTimeout(worker.timeoutHandle)
+      worker.timeoutHandle = undefined
+    }
+    return true
+  }
+
+  private armWorkerTimeout(executionId: string, taskTimeoutMs: number): void {
+    const worker = this.activeWorkers.get(executionId)
+    if (!worker) return
+    const timeoutMs = this.config.workerTimeoutMs ?? taskTimeoutMs
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return
+
+    worker.timeoutHandle = setTimeout(() => {
+      void this.handleWorkerFailure(
+        executionId,
+        `Worker excedeu o timeout de ${timeoutMs}ms`,
+        "timeout",
+      )
+    }, timeoutMs)
+  }
+
+  private async handleWorkerFailure(executionId: string, reason: string, kind = "worker_failure"): Promise<void> {
+    const worker = this.activeWorkers.get(executionId)
+    if (!worker || this.finalizingExecutions.has(executionId)) return
+
+    console.warn("[TaskCoordinator] Encerrando worker: " + executionId + " - " + reason)
+    try {
+      await this.workerLauncher.stopWorker(executionId, 5000)
+    } catch (error) {
+      console.error("[TaskCoordinator] Falha ao encerrar worker " + executionId + ":", error)
+      this.workerLauncher.killWorker(executionId)
+    }
+    await this.onTaskFailed(executionId, reason, kind)
+  }
+
+  private async finishWorker(executionId: string, worker: ActiveWorker): Promise<void> {
+    if (worker.timeoutHandle) {
+      clearTimeout(worker.timeoutHandle)
+      worker.timeoutHandle = undefined
+    }
+    try {
+      if (worker.workspace && worker.repoPath) {
+        await this.workspaceManager.cleanup({ repoPath: worker.repoPath, workspacePath: worker.workspace.path })
+        await this.db.query(
+          "UPDATE projeto_640.subtarefas SET workspace_cleaned_at = NOW() WHERE id = ?",
+          [worker.subtaskId],
+        )
+      }
+    } catch (error) {
+      console.error("[TaskCoordinator] Falha ao limpar workspace " + executionId + ":", error)
+      if (worker.subtaskId) {
+        await this.db.query(
+          "UPDATE projeto_640.subtarefas SET workspace_status = 'cleanup_failed', resultado = ? WHERE id = ?",
+          [String(error).substring(0, 500), worker.subtaskId],
+        ).catch((dbError: unknown) => console.error("[TaskCoordinator] Falha ao registrar limpeza:", dbError))
+      }
+    } finally {
+      try {
+        if (worker.resourceKey) await this.resourceLease.release(worker.resourceKey, executionId, worker.fencingToken)
+      } finally {
+        this.activeWorkers.delete(executionId)
+        this.finalizingExecutions.delete(executionId)
+        await this.pump()
+      }
+    }
   }
 
   private setupEventHandlers(): void {
@@ -475,16 +600,19 @@ export class TaskCoordinator {
       void this.resourceLease.renew(worker.resourceKey, msg.executionId, worker.fencingToken).then((result) => {
         if (result.kind === "lost") {
           console.warn("[TaskCoordinator] Lease perdido: " + msg.executionId + " - " + result.reason)
+          void this.handleWorkerFailure(msg.executionId, "Lease perdido: " + result.reason, "lease_lost")
         }
       }).catch((error: unknown) => {
         console.error("[TaskCoordinator] Falha ao renovar lease: " + msg.executionId, error)
       })
     })
     this.workerLauncher.on("worker_exit", (event: { executionId: string; code: number | null }) => {
-      if (event.code !== 0) {
-        const reason = "Worker encerrado inesperadamente (codigo " + String(event.code) + ")"
+      if (this.activeWorkers.has(event.executionId)) {
+        const reason = event.code === 0
+          ? "Worker encerrou sem enviar o evento completed"
+          : "Worker encerrado inesperadamente (codigo " + String(event.code) + ")"
         console.error("[TaskCoordinator] " + reason + ": " + event.executionId)
-        void this.onTaskFailed(event.executionId, reason).catch((error: unknown) => {
+        void this.onTaskFailed(event.executionId, reason, "worker_exit").catch((error: unknown) => {
           console.error("[TaskCoordinator] Falha ao persistir encerramento do worker:", error)
         })
       }
@@ -590,6 +718,15 @@ export class TaskCoordinator {
       isNumeric ? [taskId, taskId] : [taskId],
     )
     return Number(rows[0]?.has_plan ?? 0) === 1
+  }
+
+  private async saveTaskTransition(
+    task: import("../shared/types/infrastructure.js").SaveTaskData,
+    transition: TaskTransition,
+    patch: Partial<import("../shared/types/infrastructure.js").SaveTaskData> = {},
+  ): Promise<void> {
+    const status = transitionTask(task.status as Task["status"], transition)
+    await this.repository.saveTask({ ...task, ...patch, status, updatedAt: new Date().toISOString() })
   }
 
   private publishActivity(worker: ActiveWorker, event: Omit<import("../events/ExecutionEventBus.js").ExecutionActivityEvent, "executionId" | "taskId" | "subtaskId" | "phase" | "timestamp">): void {

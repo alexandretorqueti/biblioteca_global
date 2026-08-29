@@ -7,6 +7,7 @@ import { ResourceLeaseService } from '../resources/ResourceLeaseService.js'
 import type { ResourceKey } from '../shared/types/resources.js'
 import { RESOURCE_KEYS } from '../shared/types/resources.js'
 import type { ExecutionContext } from '../shared/types/execution.js'
+import type { Db } from '../shared/types/infrastructure.js'
 
 export interface MotorFixInput {
   taskId: string
@@ -23,14 +24,23 @@ export type MotorFixResult =
 
 export interface MotorMonitorStepConfig {
   monitorAgentId: string
+  monitorModel: string
   monitorSessionKey: string
   maxWaitSeconds: number
   maxAttempts: number
   heartbeatIntervalMs: number
+  db?: Db
+}
+
+export interface MonitorSelection {
+  agentId: string
+  model: string
+  sessionKey: string
 }
 
 const DEFAULT_CONFIG: MotorMonitorStepConfig = {
   monitorAgentId: 'programador-senior',
+  monitorModel: 'openai/gpt-5.6-terra',
   monitorSessionKey: 'agent:programador-senior:monitor',
   maxWaitSeconds: 600,
   maxAttempts: 60,
@@ -70,10 +80,12 @@ export class MotorMonitorStep {
     const lease = acquireResult.lease
 
     try {
+      const selection = await this.resolveSelection(context.projectSlug)
       const mission = this.buildMission(input, context)
       const sendResult = await this.driver.sendMessage({
-        agentId: this.config.monitorAgentId,
-        sessionKey: this.config.monitorSessionKey,
+        agentId: selection.agentId,
+        sessionKey: selection.sessionKey,
+        model: selection.model,
         message: mission,
       })
 
@@ -86,6 +98,37 @@ export class MotorMonitorStep {
     } finally {
       await this.resourceLease.release(lease.resourceKey, context.executionId, lease.fencingToken)
     }
+  }
+
+  private async resolveSelection(projectSlug: string | null): Promise<MonitorSelection> {
+    if (!projectSlug || !this.config.db) {
+      return {
+        agentId: this.config.monitorAgentId,
+        model: this.config.monitorModel,
+        sessionKey: this.config.monitorSessionKey,
+      }
+    }
+
+    const { rows } = await this.config.db.query(
+      `SELECT COALESCE(a.openclaw_agent_id, a.nome) AS agent_id,
+              pmc.modelo
+       FROM projeto_640.projetos_captados pc
+       LEFT JOIN projeto_640.agentes a ON a.id = pc.agente_id
+       LEFT JOIN projeto_640.projeto_model_chain pmc
+         ON pmc.projeto_id = pc.id AND pmc.fase = 'monitor' AND pmc.ativo = 1
+       WHERE pc.slug = ?
+       ORDER BY pmc.posicao ASC
+       LIMIT 1`,
+      [projectSlug],
+    )
+    const row = rows[0]
+    if (!row?.agent_id || !row?.modelo) {
+      throw new Error(`Configuração de monitor ausente para o projeto ${projectSlug}`)
+    }
+    const agentId = String(row.agent_id)
+    const model = String(row.modelo)
+    const modelSlug = model.split('/').at(-1)?.replace(/[^a-zA-Z0-9.-]/g, '_') ?? 'monitor'
+    return { agentId, model, sessionKey: `agent:${agentId}:project:${projectSlug}:monitor:${modelSlug}` }
   }
 
   private async waitForCompletion(

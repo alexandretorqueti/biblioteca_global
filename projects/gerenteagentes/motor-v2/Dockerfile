@@ -29,6 +29,9 @@ RUN npx tsc
 FROM node:22-alpine
 WORKDIR /app
 
+# O worker executa build/teste no workspace e publica a branch aprovada.
+RUN apk add --no-cache git openssh-client
+
 # Copia package.json e instala apenas deps de produção
 COPY projects/gerenteagentes/motor-v2/package.json ./
 RUN npm install --omit=dev

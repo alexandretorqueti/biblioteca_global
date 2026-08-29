@@ -182,9 +182,25 @@ npm run test:coverage
 
 ### ⏳ Próximos Passos
 
-- [ ] **Etapa 11**: Integração real com banco de dados
+- [x] **Etapa 11**: Integração real com banco de dados (`DrizzleDb`/`mysql2`)
 - [x] **Etapa 12 (decisão revisada)**: Subtarefas sequenciais dentro de uma tarefa; o paralelismo ocorre entre tarefas/projetos
 - [ ] **Etapa 13**: Deploy em produção e migração gradual
+- [ ] **Etapa 14**: Recuperação de worker travado e lease perdido
+
+### Próxima implementação — recuperação de workers
+
+O coordenador controla o ciclo de vida do worker com duas proteções:
+
+- timeout máximo por execução, usando `workerTimeoutMs` quando configurado e,
+  na ausência dele, `hard_timeout_ms` da tarefa;
+- reação imediata à perda do lease: o worker é encerrado, a subtarefa e a
+  tarefa são marcadas como bloqueadas com o motivo, o recurso é liberado e o
+  `pump()` pode selecionar a próxima execução.
+
+O encerramento é idempotente para evitar que timeout, heartbeat e o evento de
+saída do processo finalizem a mesma execução duas vezes. A validação deve
+simular um worker suspenso, confirmar a liberação do lock e garantir que não
+reste worker órfão nem tarefa em `running`.
 
 ### Evoluções de 2026-08-29
 

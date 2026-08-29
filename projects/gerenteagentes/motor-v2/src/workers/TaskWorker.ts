@@ -6,7 +6,8 @@
  * 2. PREPARE: Confere branch base, cria branch de trabalho, checkout
  * 3. EXECUTE: Chama Programador com subtarefa
  * 4. VERIFY: npm run build + npm run test
- * 5. DEPLOY: Checkout base, merge, push, deploy.sh
+ * 5. ENTREGA: Registra o commit aprovado; a integração na branch-base é
+ *    responsabilidade do TaskCoordinator
  */
 
 import { execFileSync, execSync } from "node:child_process"
@@ -21,6 +22,20 @@ import { failureFingerprint } from "../policies/SystemFailurePolicy.js"
 import { hasPersistedPlan, persistPlan } from "../planning/PlanPersistence.js"
 import type { Db, QueryResult } from "../shared/types/infrastructure.js"
 import mysql from "mysql2/promise"
+
+function isSafeBranchName(branch: string): boolean {
+  return Boolean(
+    branch &&
+      branch.length <= 240 &&
+      /^[a-zA-Z0-9._/-]+$/.test(branch) &&
+      !branch.includes("..") &&
+      !branch.includes("@{") &&
+      !branch.startsWith("/") &&
+      !branch.endsWith("/") &&
+      !branch.endsWith(".") &&
+      !branch.endsWith(".lock"),
+  )
+}
 
 class TaskWorker {
   private executionId: string
@@ -80,7 +95,7 @@ class TaskWorker {
         if (this.cancelled) { this.sendFailed(ctx, "Cancelled"); return }
         gitCommitSha = await this.phaseExecute(input)
         if (this.cancelled) { this.sendFailed(ctx, "Cancelled"); return }
-        // await this.phaseDeploy(input) // TODO: reativar quando deploy.sh estiver configurado
+        if (gitCommitSha) await this.phasePublish(input, gitCommitSha)
       }
 
       this.sendCompleted(ctx, { ok: true, gitCommitSha })
@@ -321,28 +336,42 @@ class TaskWorker {
   }
 
   /**
-   * FASE 5: DEPLOY - Checkout base, merge, push
+   * FASE 5: PUBLISH - Publica somente o commit aprovado na branch de trabalho.
+   * Merge, deploy e limpeza do workspace permanecem fora desta etapa.
    */
-  private async phaseDeploy(input: WorkerInput): Promise<void> {
-    this.send({ type: "progress", executionId: input.context.executionId, phase: "deploy", message: "Deploy: merge e push" })
-    this.log("info", "Fase DEPLOY")
-
-    const repoPath = input.repoPath
+  private async phasePublish(input: WorkerInput, commitSha: string): Promise<void> {
     const workBranch = input.workBranch || "motor-v2/task-" + input.task.id
-    const baseBranch = "base-desenvolvimento"
-
-    const status = this.exec("git status --porcelain", repoPath)
-    if (status.trim()) {
-      this.exec("git add -A", repoPath)
-      const commitMsg = "motor-v2: tarefa " + input.task.id
-      this.exec('git commit -m "' + commitMsg + '"', repoPath)
+    if (!isSafeBranchName(workBranch)) {
+      throw new Error("Branch de trabalho inválida para publicação")
+    }
+    if (!/^[a-f0-9]{7,40}$/i.test(commitSha)) {
+      throw new Error("Commit inválido para publicação")
     }
 
-    this.exec("git checkout " + baseBranch, repoPath)
-    this.exec("git merge " + workBranch + " --no-edit", repoPath)
-    // this.exec("git push origin " + baseBranch, repoPath) // TODO: habilitar quando SSH key configurada
+    this.send({
+      type: "progress",
+      executionId: input.context.executionId,
+      phase: "publish",
+      message: `Publicando branch ${workBranch}`,
+    })
 
-    this.log("info", "Deploy concluido: merge + push")
+    try {
+      execFileSync("git", ["push", "--set-upstream", "origin", `${commitSha}:refs/heads/${workBranch}`], {
+        cwd: input.repoPath,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+        timeout: 120_000,
+      })
+    } catch (error) {
+      const details = error as { stderr?: Buffer; message?: string }
+      throw new Error(
+        "Publicação da branch falhou: " +
+          (details.stderr?.toString() || details.message || String(error)).substring(0, 500),
+        { cause: error },
+      )
+    }
+
+    this.log("info", `Branch ${workBranch} publicada com sucesso`)
   }
 
   // === HELPERS ===
