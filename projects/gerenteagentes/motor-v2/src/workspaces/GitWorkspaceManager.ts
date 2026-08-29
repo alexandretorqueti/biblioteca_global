@@ -89,6 +89,7 @@ export class GitWorkspaceManager {
     const target = resolve(join(this.root, task, subtask, `a${input.attempt}`))
     if (!inside(this.root, target)) throw new Error("workspace fora da raiz segura")
 
+    await this.markSafeDirectory(input.repoPath)
     const status = await this.runner.run(["git", "status", "--porcelain"], input.repoPath)
     if (status.stdout.trim()) throw new Error("repositório principal não está limpo")
     const baseCommit = (await this.runner.run(["git", "rev-parse", "--verify", `${baseBranch}^{commit}`], input.repoPath)).stdout.trim()
@@ -99,6 +100,7 @@ export class GitWorkspaceManager {
     try {
       await this.runner.run(["git", "worktree", "add", "--detach", target, baseCommit], input.repoPath)
       await this.runner.run(["git", "switch", "-c", branch, baseCommit], target)
+      await this.markSafeDirectory(target)
       return { path: target, branch, baseCommit }
     } catch (error) {
       // O alvo foi criado exclusivamente por esta tentativa, sempre dentro da
@@ -160,5 +162,9 @@ export class GitWorkspaceManager {
     if (!inside(this.root, workspacePath)) throw new Error("workspace fora da raiz segura")
     await this.runner.run(["git", "worktree", "remove", "--force", workspacePath], input.repoPath)
     await rm(workspacePath, { recursive: true, force: true })
+  }
+
+  private async markSafeDirectory(path: string): Promise<void> {
+    await this.runner.run(["git", "config", "--global", "--add", "safe.directory", resolve(path)], process.cwd())
   }
 }
