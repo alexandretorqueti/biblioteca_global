@@ -85,6 +85,22 @@ motor-v2/
 
 ## 🚀 Uso
 
+### Projeto de teste configurado
+
+O alvo de teste do Motor-v2 é o projeto captado `biblioteca-global` no
+database `projeto_640` (registro `projetos_captados.id = 1`). Ele usa o agente
+`biblioteca-global`, a branch `base-desenvolvimento` e o repositório
+`/run/media/alexandre/12T/codigofonte/biblioteca-global`, que é montado no
+container da API pela variável `REPO_PATH` do `.env` local. O volume deve
+apontar diretamente para esse diretório, e não para o diretório-pai.
+
+A tarefa de aceite registrada para esse alvo é
+`task-v2-bib-1787962293` (`status = ready`; subtarefa de preparação em
+execução). O motor usa as credenciais de
+MySQL e do Console OpenClaw exclusivamente pelas variáveis de ambiente
+`MYSQL_*`, `OPENCLAW_CONSOLE_URL` e `OPENCLAW_CONSOLE_TOKEN`; nenhum segredo
+faz parte desta configuração versionada.
+
 ```bash
 # Iniciar motor
 npm start

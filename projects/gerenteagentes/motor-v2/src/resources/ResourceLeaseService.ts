@@ -10,6 +10,7 @@
 
 import type { Db } from '../shared/types/infrastructure.js'
 import type { ResourceKey, ResourceLease, AcquireResult } from '../shared/types/resources.js'
+import { resourceEventBus } from './ResourceEventBus.js'
 
 export interface ResourceLeaseServiceConfig {
   db: Db
@@ -43,6 +44,7 @@ export class ResourceLeaseService {
     maxWaitSeconds: number = 60
   ): Promise<AcquireResult> {
     const now = new Date()
+    void maxWaitSeconds // reservado para o reconciliador da fila
     const expiresAt = new Date(now.getTime() + this.defaultLeaseMs)
 
     try {
@@ -58,7 +60,7 @@ export class ResourceLeaseService {
 
         if (rows.length === 0) {
           // Recurso livre, adquire
-          const insertResult = await tx.query(
+          await tx.query(
             `INSERT INTO projeto_640.execution_resources
              (resource_key, execution_id, owner_id, fencing_token, heartbeat_at, acquired_at, expires_at)
              VALUES (?, ?, ?, 1, NOW(), NOW(), ?)`,
@@ -206,6 +208,13 @@ export class ResourceLeaseService {
     if (affectedRows === 0) {
       return { kind: 'not_found' }
     }
+
+    resourceEventBus.publish({
+      type: 'released',
+      resourceKey,
+      executionId,
+      timestamp: new Date(),
+    })
 
     return { kind: 'released' }
   }

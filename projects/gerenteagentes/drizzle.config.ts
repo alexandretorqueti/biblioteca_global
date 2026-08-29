@@ -7,9 +7,19 @@
  * (ENOENT). Mesma correção já aplicada em database/drizzle.config.ts.
  */
 import { defineConfig } from "drizzle-kit"
+import { loadEnv } from "../../database/env.js"
+
+const env = loadEnv()
 
 export default defineConfig({
   dialect: "mysql",
   schema: "projects/gerenteagentes/schema.ts",
   out: "projects/gerenteagentes/migrations",
+  dbCredentials: {
+    host: env.MYSQL_HOST,
+    port: Number(env.MYSQL_PORT),
+    user: env.MYSQL_USER,
+    password: env.MYSQL_PASSWORD,
+    database: env.MYSQL_DATABASE,
+  },
 })

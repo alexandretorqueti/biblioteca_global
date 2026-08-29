@@ -84,7 +84,7 @@ export class ConsoleAgentRuntimeDriver {
    * Aguarda conclusao do run via polling (describe + history)
    * Fallback robusto quando SSE nao captura o evento final
    */
-  async waitForRunCompletion(session: RuntimeSession, runId: string, timeoutMs = 600_000): Promise<AgentRunCompletion> {
+  async waitForRunCompletion(session: RuntimeSession, runId: string, timeoutMs = 1_800_000): Promise<AgentRunCompletion> {
     const startMs = Date.now()
     const pollInterval = 5000
 
@@ -92,13 +92,25 @@ export class ConsoleAgentRuntimeDriver {
       await new Promise((resolve) => setTimeout(resolve, pollInterval))
 
       try {
-        const desc = await this.request<{ status?: string; endedAt?: number }>({
+        const desc = await this.request<{
+          status?: string
+          state?: string
+          endedAt?: number
+          hasActiveRun?: boolean
+        }>({
           method: "GET",
           path: "/api/sessions/describe",
           query: { key: session.key, agentId: session.agentId },
         })
 
-        if (desc.status === "done" || desc.status === "idle") {
+        // O Console atual expõe `state`/`hasActiveRun` na listagem normalizada;
+        // versões anteriores usavam `status`. Aceitar ambos os contratos evita
+        // esperar até timeout quando a execução já terminou.
+        if (
+          desc.status === "done" || desc.status === "idle" ||
+          desc.state === "done" || desc.state === "idle" ||
+          desc.hasActiveRun === false || desc.endedAt !== undefined
+        ) {
           // Sessao terminou, buscar historico
           const history = await this.request<{ messages: Array<{ role: string; content: unknown }> }>({
             method: "GET",
@@ -115,7 +127,7 @@ export class ConsoleAgentRuntimeDriver {
           return { state: "final", runId, content, stopReason: "done" }
         }
 
-        if (desc.status === "error") {
+        if (desc.status === "error" || desc.state === "error") {
           return { state: "error", runId, errorMessage: "Session ended with error" }
         }
       } catch (error) {

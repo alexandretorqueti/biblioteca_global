@@ -22,6 +22,8 @@ export type { ResourceLeaseServiceConfig } from './resources/ResourceLeaseServic
 export { ResourceEventBus, resourceEventBus } from './resources/ResourceEventBus.js'
 export type { ResourceEvent, ResourceEventHandler, ResourceEventType } from './resources/ResourceEventBus.js'
 export { ResourceWaitManager } from './resources/ResourceWaitManager.js'
+export { ExecutionEventBus, executionEventBus } from './events/ExecutionEventBus.js'
+export type { ExecutionActivityEvent, ExecutionActivityBroadcaster } from './events/ExecutionEventBus.js'
 
 // Execution
 export { executionContextManager, getCurrentContext, requireCurrentContext } from './execution/ExecutionContextManager.js'

@@ -40,8 +40,6 @@ export class ExpirationReconciler {
 
   async reconcile(): Promise<void> {
     const now = new Date()
-    const staleThreshold = new Date(now.getTime() - this.maxStalenessMs)
-
     // 1. Locks expirados
     const expired = await this.db.query(
       `SELECT resource_key, execution_id FROM projeto_640.execution_resources WHERE expires_at < ?`,
@@ -61,10 +59,13 @@ export class ExpirationReconciler {
       resourceEventBus.publish({ type: 'expired', resourceKey: key, executionId: execId, timestamp: now })
     }
 
-    // 2. Tarefas órfãs (running sem lock)
+    // 2. Tarefas órfãs: o plano é preservado e a primeira subtarefa não
+    // verificada volta à fila. Uma análise sem plano volta a `planned`.
     const orphans = await this.db.query(
-      `SELECT t.id, t.external_id FROM projeto_640.tarefas t
-       WHERE t.status = 'running'
+      `SELECT t.id, t.external_id, t.status,
+              EXISTS(SELECT 1 FROM projeto_640.subtarefas s WHERE s.tarefa_id = t.id) AS has_subtasks
+       FROM projeto_640.tarefas t
+       WHERE t.status IN ('analyzing', 'running')
          AND NOT EXISTS (
            SELECT 1 FROM projeto_640.execution_resources r
            WHERE (r.execution_id LIKE CONCAT('%', t.external_id, '%') OR r.execution_id LIKE CONCAT('%', t.id, '%')) AND r.expires_at > ?
@@ -75,24 +76,17 @@ export class ExpirationReconciler {
     for (const row of orphans.rows) {
       const taskId = String(row.id!)
       console.log(`[ExpirationReconciler] Tarefa órfã: ${taskId}`)
+      const hasSubtasks = Number(row.has_subtasks ?? 0) === 1
+      if (hasSubtasks) {
+        await this.db.query(
+          `UPDATE projeto_640.subtarefas SET status = 'pending', updated_at = NOW()
+           WHERE tarefa_id = ? AND status IN ('running', 'delivered', 'verifying', 'rejected')`,
+          [taskId],
+        )
+      }
       await this.db.query(
-        `UPDATE projeto_640.tarefas SET status = 'failed', updated_at = NOW() WHERE id = ?`,
-        [taskId]
-      )
-    }
-
-    // 3. Tarefas pausadas há muito tempo
-    const stalePaused = await this.db.query(
-      `SELECT id FROM projeto_640.tarefas WHERE status = 'paused' AND updated_at < ?`,
-      [staleThreshold]
-    )
-
-    for (const row of stalePaused.rows) {
-      const taskId = String(row.id!)
-      console.log(`[ExpirationReconciler] Tarefa pausada stale: ${taskId}`)
-      await this.db.query(
-        `UPDATE projeto_640.tarefas SET status = 'planned', updated_at = NOW() WHERE id = ?`,
-        [taskId]
+        `UPDATE projeto_640.tarefas SET status = ?, updated_at = NOW() WHERE id = ?`,
+        [hasSubtasks ? 'ready' : 'planned', taskId],
       )
     }
   }

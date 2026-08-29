@@ -9,11 +9,15 @@
  * 5. DEPLOY: Checkout base, merge, push, deploy.sh
  */
 
-import { execSync } from "node:child_process"
+import { execFileSync, execSync } from "node:child_process"
 import { existsSync } from "node:fs"
 import { ConsoleAgentRuntimeDriver } from "../runtime/ConsoleAgentRuntimeDriver.js"
 import type { WorkerInput, ExecutionContext, ExecutionResult, SubtaskInfo } from "../shared/types/execution.js"
 import type { CoordinatorToWorkerMessage, WorkerToCoordinatorMessage } from "./WorkerProtocol.js"
+import { defaultChain, formatSessionKey, type ModelSelection } from "../policies/ModelTierPolicy.js"
+import { isSystemicFailure } from "../policies/SystemFailurePolicy.js"
+import { blockerEvidence, type BlockerKind } from "../policies/BlockerPolicy.js"
+import { failureFingerprint } from "../policies/SystemFailurePolicy.js"
 import mysql from "mysql2/promise"
 
 class TaskWorker {
@@ -65,20 +69,19 @@ class TaskWorker {
     const ctx = input.context
     try {
       this.send({ type: "started", executionId: ctx.executionId })
+      let gitCommitSha: string | undefined
 
       if (ctx.phase === "analyze") {
         await this.phaseAnalyze(input)
       } else if (ctx.phase === "execute") {
         await this.phasePrepare(input)
         if (this.cancelled) { this.sendFailed(ctx, "Cancelled"); return }
-        await this.phaseExecute(input)
-        if (this.cancelled) { this.sendFailed(ctx, "Cancelled"); return }
-        // await this.phaseVerify(input) // TODO: reativar quando testes do projeto estiverem ok
+        gitCommitSha = await this.phaseExecute(input)
         if (this.cancelled) { this.sendFailed(ctx, "Cancelled"); return }
         // await this.phaseDeploy(input) // TODO: reativar quando deploy.sh estiver configurado
       }
 
-      this.sendCompleted(ctx, { ok: true })
+      this.sendCompleted(ctx, { ok: true, gitCommitSha })
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error)
       this.log("error", "Erro: " + reason)
@@ -96,12 +99,14 @@ class TaskWorker {
     this.log("info", "Fase ANALYZE: " + input.task.title)
 
     const driver = this.createDriver()
-    const sessionKey = "motor-v2-analyze-" + input.task.id + "-" + Date.now()
+    const model = this.chainFor(input, "analysis")[0]!
+    const sessionKey = formatSessionKey({ agentId: input.task.agentId, taskId: input.task.id, phase: "analysis", model: model.model, modelIndex: 0, generation: 0 })
 
     const session = await driver.createSession({
-      agentId: "programador-senior",
+      agentId: input.task.agentId,
       key: sessionKey,
       label: "motor-v2-analyze-" + input.task.id,
+      model: model.model,
     })
 
     const prompt = this.buildAnalystPrompt(input.task)
@@ -110,7 +115,7 @@ class TaskWorker {
     const { runId } = await driver.sendMessage({ session, message: prompt })
     this.log("info", "Analista respondendo... runId=" + runId)
 
-    const result = await driver.waitForRunCompletion(session, runId, 300_000)
+    const result = await driver.waitForRunCompletion(session, runId, 1_800_000)
 
     if (result.state !== "final" || !result.content) {
       throw new Error("Analista falhou: " + (result.errorMessage || result.state))
@@ -125,7 +130,7 @@ class TaskWorker {
   }
 
   /**
-   * FASE 2: PREPARE - Confere branch base, cria branch de trabalho, checkout
+   * FASE 2: PREPARE - Valida o worktree exclusivo criado pelo coordenador
    */
   private async phasePrepare(input: WorkerInput): Promise<void> {
     this.send({ type: "progress", executionId: input.context.executionId, phase: "prepare", message: "Preparando workspace" })
@@ -136,27 +141,18 @@ class TaskWorker {
       throw new Error("Repositorio nao encontrado: " + repoPath)
     }
 
-    const workBranch = input.workBranch || "motor-v2/task-" + input.task.id
-    const baseBranch = "base-desenvolvimento"
+    const workBranch = input.workBranch
+    if (!workBranch) throw new Error("Worktree isolado não fornecido")
+    const currentBranch = this.exec("git branch --show-current", repoPath).trim()
+    if (currentBranch !== workBranch) throw new Error("Worktree não está na branch exclusiva esperada")
 
-    this.exec("git status --porcelain", repoPath)
-    this.exec("git checkout " + baseBranch, repoPath)
-    // this.exec("git pull origin " + baseBranch, repoPath) // TODO: habilitar quando SSH key configurada
-
-    try {
-      this.exec("git checkout -b " + workBranch, repoPath)
-    } catch {
-      this.exec("git checkout " + workBranch, repoPath)
-      this.exec("git merge " + baseBranch + " --no-edit", repoPath)
-    }
-
-    this.log("info", "Workspace preparado: branch " + workBranch)
+    this.log("info", "Workspace isolado validado: branch " + workBranch)
   }
 
   /**
    * FASE 3: EXECUTE - Chama o Programador com a subtarefa
    */
-  private async phaseExecute(input: WorkerInput): Promise<void> {
+  private async phaseExecute(input: WorkerInput): Promise<string | undefined> {
     this.send({ type: "progress", executionId: input.context.executionId, phase: "execute", message: "Executando subtarefa" })
 
     const subtask = input.subtask
@@ -166,36 +162,84 @@ class TaskWorker {
 
     this.log("info", "Fase EXECUTE: " + subtask.titulo)
 
-    const driver = this.createDriver()
-    const sessionKey = "motor-v2-exec-" + subtask.id + "-" + Date.now()
+    const chain = this.chainFor(input, "development")
+    // Uma retomada não pode apagar as entregas já registradas no banco.
+    let deliverCount = subtask.deliverCount
+    let lastFailure = ""
+    const modelFailures: string[] = []
 
-    const session = await driver.createSession({
-      agentId: input.task.projectSlug || "biblioteca-global",
-      key: sessionKey,
-      label: "motor-v2-subtask-" + subtask.id,
-    })
+    for (let modelIndex = 0; modelIndex < chain.length; modelIndex += 1) {
+      const model = chain[modelIndex]!
+      for (let attempt = 1; attempt <= input.task.maxRework; attempt += 1) {
+        deliverCount += 1
+        await this.db!.query(
+          "UPDATE projeto_640.subtarefas SET status = 'running', deliver_count = ?, resultado = NULL, updated_at = NOW() WHERE id = ?",
+          [deliverCount, subtask.id],
+        )
+        this.send({ type: "progress", executionId: input.context.executionId, phase: "execute", message: `Entrega ${deliverCount}, modelo ${model.model}` })
 
-    const prompt = this.buildProgrammerPrompt(input.task, subtask, input.repoPath)
-    this.log("info", "Enviando prompt para programador...")
+        const driver = this.createDriver()
+        const sessionKey = formatSessionKey({ agentId: input.task.agentId, taskId: input.task.id, phase: "development", model: model.model, modelIndex, generation: attempt - 1 })
+        const session = await driver.createSession({ agentId: input.task.agentId, key: sessionKey, label: `motor-v2-subtask-${subtask.id}`, model: model.model })
+        try {
+          const prompt = this.buildProgrammerPrompt(input.task, subtask, input.repoPath, lastFailure || undefined)
+          const { runId } = await driver.sendMessage({ session, message: prompt })
+          const result = await driver.waitForRunCompletion(session, runId, 1_800_000)
+          if (result.state !== "final") {
+            lastFailure = "Programador falhou: " + (result.errorMessage || result.state)
+            break
+          }
+          const outcome = this.classifyAgentOutcome(result.content)
+          if (outcome.kind === "blocked_environment") {
+            const reason = "Ambiente bloqueado: " + outcome.reason
+            await this.recordBlocker(subtask, "blocked_environment", reason)
+            throw new Error(reason)
+          }
+          if (outcome.kind === "need_help") {
+            lastFailure = outcome.reason
+            break
+          }
 
-    const { runId } = await driver.sendMessage({ session, message: prompt })
-    this.log("info", "Programador respondendo... runId=" + runId)
+          let gitCommitSha: string | undefined
+          try {
+            await this.db!.query(
+              "UPDATE projeto_640.subtarefas SET status = 'verifying', updated_at = NOW() WHERE id = ?",
+              [subtask.id],
+            )
+            await this.phaseVerify(input)
+            gitCommitSha = await this.phaseCommit(input)
+          } catch (error) {
+            lastFailure = error instanceof Error ? error.message : String(error)
+            await this.db!.query(
+              "UPDATE projeto_640.subtarefas SET status = 'rejected', resultado = ?, updated_at = NOW() WHERE id = ?",
+              [lastFailure.substring(0, 500), subtask.id],
+            )
+            this.log("warn", `Gate vermelho (${model.model}, tentativa ${attempt}): ${lastFailure}`)
+            if (await this.createCorrectionOnRepeatedGateFailure(input, subtask, model.model, lastFailure)) return undefined
+            continue
+          }
 
-    const result = await driver.waitForRunCompletion(session, runId, 600_000)
-
-    if (result.state !== "final") {
-      await driver.closeSession(session).catch(() => {})
-      throw new Error("Programador falhou: " + (result.errorMessage || result.state))
+          await this.db!.query(
+            "UPDATE projeto_640.subtarefas SET status = 'verified', deliver_count = ?, resultado = ?, finalizada_em = NOW(), updated_at = NOW() WHERE id = ?",
+            [deliverCount, result.content?.substring(0, 500) || "OK", subtask.id],
+          )
+          this.log("info", "Subtarefa verificada: " + subtask.titulo)
+          return gitCommitSha
+        } finally {
+          await driver.closeSession(session).catch(() => {})
+        }
+      }
+      modelFailures.push(lastFailure || `Modelo ${model.model} não entregou resultado verificável`)
+      if (isSystemicFailure(modelFailures)) {
+        const reason = "Falha sistêmica repetida entre modelos: " + lastFailure
+        await this.recordBlocker(subtask, "systemic_failure", reason)
+        throw new Error(reason)
+      }
+      this.log("warn", `Escalando modelo após falha: ${model.model}`)
     }
-
-    this.log("info", "Programador concluiu: " + subtask.titulo)
-
-    await this.db!.query(
-      "UPDATE projeto_640.subtarefas SET status = 'verified', resultado = ?, finalizada_em = NOW() WHERE id = ?",
-      [result.content?.substring(0, 500) || "OK", subtask.id]
-    )
-
-    await driver.closeSession(session).catch(() => {})
+    const reason = "Escada de modelos esgotada: " + (lastFailure || "subtarefa não aprovada")
+    await this.recordBlocker(subtask, "model_chain_exhausted", reason)
+    throw new Error(reason)
   }
 
   /**
@@ -211,7 +255,7 @@ class TaskWorker {
       this.log("info", "Build OK")
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
-      throw new Error("Build falhou: " + msg.substring(0, 500))
+      throw new Error("Build falhou: " + msg.substring(0, 500), { cause: error })
     }
 
     this.log("info", "Executando: " + input.testCommand)
@@ -220,8 +264,40 @@ class TaskWorker {
       this.log("info", "Testes OK")
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
-      throw new Error("Testes falharam: " + msg.substring(0, 500))
+      throw new Error("Testes falharam: " + msg.substring(0, 500), { cause: error })
     }
+  }
+
+  /**
+   * Cria o commit técnico somente depois do gate verde. O commit ocorre no
+   * worktree exclusivo; o repositório principal nunca sofre checkout, merge
+   * ou escrita nesta etapa.
+   */
+  private async phaseCommit(input: WorkerInput): Promise<string | undefined> {
+    this.send({ type: "progress", executionId: input.context.executionId, phase: "commit", message: "Registrando entrega aprovada" })
+    const status = this.exec("git status --porcelain", input.repoPath).trim()
+    if (!status) {
+      this.log("info", "Gate verde sem alterações pendentes; commit não necessário")
+      return undefined
+    }
+
+    this.exec("git add -A", input.repoPath)
+    const subtask = input.subtask
+    const message = `motor-v2: tarefa ${input.task.id}, subtarefa ${subtask?.id ?? "n/a"}`
+    try {
+      execFileSync("git", ["commit", "--no-verify", "-m", message], {
+        cwd: input.repoPath,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+        timeout: 120_000,
+      })
+    } catch (error) {
+      const details = error as { stderr?: Buffer; message?: string }
+      throw new Error("Commit técnico falhou: " + (details.stderr?.toString() || details.message || String(error)).substring(0, 500), { cause: error })
+    }
+    const commit = this.exec("git rev-parse --verify HEAD", input.repoPath).trim()
+    this.log("info", "Entrega aprovada registrada no commit " + commit)
+    return commit
   }
 
   /**
@@ -281,7 +357,7 @@ class TaskWorker {
     ].join("\n")
   }
 
-  private buildProgrammerPrompt(task: { title: string }, subtask: SubtaskInfo, repoPath: string): string {
+  private buildProgrammerPrompt(task: { title: string }, subtask: SubtaskInfo, repoPath: string, reworkNote?: string): string {
     return [
       "Voce e um programador senior. Execute a subtarefa abaixo.",
       "",
@@ -294,8 +370,26 @@ class TaskWorker {
       "Instrucoes:",
       "1. Faca as alteracoes necessarias nos arquivos",
       "2. Nao faca commit (o motor faz depois)",
-      "3. Responda com um resumo do que foi feito",
+      "3. Responda APENAS com JSON: {\"status\":\"done\"|\"need_help\"|\"blocked_environment\",\"summary\":\"...\",\"reason\":\"...\"}",
+      ...(reworkNote ? ["", "Feedback do gate anterior:", reworkNote] : []),
     ].join("\n")
+  }
+
+  private chainFor(input: WorkerInput, phase: "analysis" | "development"): readonly ModelSelection[] {
+    return input.modelChain && input.modelChain.length > 0 ? input.modelChain : defaultChain(phase)
+  }
+
+  private classifyAgentOutcome(content?: string): { kind: "done" } | { kind: "need_help" | "blocked_environment"; reason: string } {
+    if (!content) return { kind: "done" }
+    const match = content.match(/\{[\s\S]*\}/)
+    if (!match) return { kind: "done" }
+    try {
+      const parsed = JSON.parse(match[0]) as { status?: string; reason?: string; summary?: string }
+      if (parsed.status === "need_help" || parsed.status === "blocked_environment") {
+        return { kind: parsed.status, reason: parsed.reason || parsed.summary || parsed.status }
+      }
+    } catch { /* resposta legada em texto continua compatível */ }
+    return { kind: "done" }
   }
 
   private parseAnalystResponse(content: string): Array<{ seq: number; titulo: string; scope?: string; acceptanceCriteria?: string[] }> {
@@ -340,12 +434,52 @@ class TaskWorker {
     }
   }
 
+  private async recordBlocker(subtask: SubtaskInfo, kind: BlockerKind, reason: string): Promise<void> {
+    if (!this.db) throw new Error("DB não conectado para registrar bloqueio")
+    const evidence = blockerEvidence(kind, reason)
+    await this.db.query(
+      "INSERT INTO projeto_640.bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at) " +
+      "SELECT tarefa_id, ?, ?, ?, ?, NOW() FROM projeto_640.subtarefas WHERE id = ?",
+      [subtask.id, evidence.kind, "motor-v2:" + evidence.fingerprint, evidence.excerpt, subtask.id],
+    )
+    this.log("warn", "Bloqueio persistido: " + evidence.kind + " (" + evidence.fingerprint + ")")
+  }
+
+  private async createCorrectionOnRepeatedGateFailure(input: WorkerInput, subtask: SubtaskInfo, model: string, reason: string): Promise<boolean> {
+    if (!this.db) throw new Error("DB não conectado para registrar falha de gate")
+    const fingerprint = failureFingerprint(reason)
+    await this.db.query(
+      "INSERT INTO projeto_640.subtask_gate_failures (subtarefa_id, fingerprint, reason, model) VALUES (?, ?, ?, ?)",
+      [subtask.id, fingerprint, reason.slice(0, 4000), model],
+    )
+    const [rows] = await this.db.query(
+      "SELECT COUNT(*) AS total FROM projeto_640.subtask_gate_failures WHERE subtarefa_id = ? AND fingerprint = ?",
+      [subtask.id, fingerprint],
+    ) as unknown as [Array<{ total: number | string }>]
+    if (Number(rows[0]?.total ?? 0) !== 2) return false
+
+    const [claimed] = await this.db.query(
+      "UPDATE projeto_640.subtarefas SET correction_created_at = NOW(), correction_fingerprint = ? WHERE id = ? AND correction_created_at IS NULL",
+      [fingerprint, subtask.id],
+    ) as unknown as [{ affectedRows: number }]
+    if (claimed.affectedRows !== 1) return false
+    await this.db.query("UPDATE projeto_640.subtarefas SET seq = seq + 10000 WHERE tarefa_id = (SELECT tarefa_id FROM (SELECT tarefa_id FROM projeto_640.subtarefas WHERE id = ?) AS source) AND seq > ?", [subtask.id, subtask.seq])
+    await this.db.query("UPDATE projeto_640.subtarefas SET seq = seq - 9999 WHERE tarefa_id = (SELECT tarefa_id FROM (SELECT tarefa_id FROM projeto_640.subtarefas WHERE id = ?) AS source) AND seq > ?", [subtask.id, subtask.seq + 10000])
+    await this.db.query(
+      "INSERT INTO projeto_640.subtarefas (tarefa_id, seq, titulo, scope, acceptance_criteria, status, correction_for_subtask_id, correction_fingerprint, created_at, updated_at) " +
+      "SELECT tarefa_id, ?, ?, ?, acceptance_criteria, 'pending', id, ?, NOW(), NOW() FROM projeto_640.subtarefas WHERE id = ?",
+      [subtask.seq + 1, "Correção: " + subtask.titulo, "Corrigir gate repetido: " + reason.slice(0, 1000), fingerprint, subtask.id],
+    )
+    this.log("warn", "Subtarefa de correção criada para falha repetida " + fingerprint)
+    return true
+  }
+
   private exec(command: string, cwd: string, timeoutMs = 30000): string {
     try {
       return execSync(command, { cwd, timeout: timeoutMs, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] })
     } catch (error) {
       const e = error as { stderr?: Buffer; message: string }
-      throw new Error((e.stderr?.toString() || e.message).substring(0, 500))
+      throw new Error((e.stderr?.toString() || e.message).substring(0, 500), { cause: error })
     }
   }
 

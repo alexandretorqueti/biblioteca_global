@@ -72,6 +72,39 @@ export const projetosCaptados = mysqlTable("projetos_captados", {
     .onUpdateNow(),
 })
 
+/** Cadeia operacional de modelos por projeto e fase do motor. */
+export const projetoModelChain = mysqlTable("projeto_model_chain", {
+  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+  projetoId: bigint("projeto_id", { mode: "number", unsigned: true })
+    .notNull()
+    .references(() => projetosCaptados.id, { onDelete: "cascade" }),
+  fase: varchar("fase", { length: 30 }).notNull(),
+  modelo: varchar("modelo", { length: 150 }).notNull(),
+  posicao: int("posicao").notNull(),
+  ativo: boolean("ativo").notNull().default(true),
+  isLocal: boolean("is_local").notNull().default(false),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+})
+
+/** Configuração operacional explícita usada pelo Motor-v2. */
+export const projetoMotorConfig = mysqlTable("projeto_motor_config", {
+  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+  projetoId: bigint("projeto_id", { mode: "number", unsigned: true })
+    .notNull()
+    .references(() => projetosCaptados.id, { onDelete: "cascade" })
+    .unique(),
+  repoPath: varchar("repo_path", { length: 500 }).notNull(),
+  branchTrabalho: varchar("branch_trabalho", { length: 255 }).notNull(),
+  buildCommand: varchar("build_command", { length: 500 }).notNull(),
+  unitTestCommand: varchar("unit_test_command", { length: 500 }).notNull(),
+  unitTestExclude: json("unit_test_exclude"),
+  defaultMaxRework: int("default_max_rework").notNull().default(3),
+  defaultHardTimeoutMs: bigint("default_hard_timeout_ms", { mode: "number" }).notNull().default(3600000),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+})
+
 export const definicoes = mysqlTable("definicoes", {
   id: bigint("id", { mode: "number", unsigned: true })
     .primaryKey()
@@ -188,6 +221,18 @@ export const subtarefas = mysqlTable("subtarefas", {
     unsigned: true,
   }),
   resultado: text("resultado"),
+  correctionForSubtaskId: bigint("correction_for_subtask_id", { mode: "number", unsigned: true }),
+  correctionFingerprint: varchar("correction_fingerprint", { length: 500 }),
+  correctionCreatedAt: timestamp("correction_created_at"),
+  // Metadados do worktree exclusivo (migration 0011). Permanecem até a
+  // integração e limpeza recuperável para permitir auditoria/retomada.
+  workspacePath: varchar("workspace_path", { length: 1000 }),
+  workspaceBranch: varchar("workspace_branch", { length: 255 }),
+  workspaceBaseCommit: varchar("workspace_base_commit", { length: 64 }),
+  workspaceCommitSha: varchar("workspace_commit_sha", { length: 64 }),
+  workspaceStatus: varchar("workspace_status", { length: 32 }),
+  workspaceCreatedAt: timestamp("workspace_created_at"),
+  workspaceCleanedAt: timestamp("workspace_cleaned_at"),
   duracaoSegundos: int("duracao_segundos"),
   iniciadaEm: timestamp("iniciada_em"),
   finalizadaEm: timestamp("finalizada_em"),
@@ -315,6 +360,16 @@ export const annotations = {
     plataforma_projeto_id: { label: "Projeto Plataforma" },
     branch_trabalho: { label: "Branch de Trabalho", maxLength: 255 },
     repo_path: { label: "Caminho do repositório", maxLength: 500 },
+  },
+  projeto_motor_config: {
+    projeto_id: { label: "Projeto" },
+    repo_path: { label: "Caminho do repositório", fullWidth: true, maxLength: 500 },
+    branch_trabalho: { label: "Branch de trabalho", maxLength: 255 },
+    build_command: { label: "Comando de build", fullWidth: true, maxLength: 500 },
+    unit_test_command: { label: "Comando de testes", fullWidth: true, maxLength: 500 },
+    unit_test_exclude: { label: "Exclusões de testes", type: "textarea", fullWidth: true },
+    default_max_rework: { label: "Máx. de retrabalho padrão" },
+    default_hard_timeout_ms: { label: "Timeout padrão (ms)" },
   },
   definicoes: {
     projeto_id: { label: "Projeto" },

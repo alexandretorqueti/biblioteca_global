@@ -19,7 +19,7 @@ async function main() {
   const motor = new Motor({
     db,
     repository,
-    maxWorkers: 1,
+    maxWorkers: Number(process.env.MOTOR_MAX_WORKERS ?? 1),
     apiPort,
     reconcilerIntervalMs: 30000,
   })

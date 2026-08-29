@@ -97,12 +97,27 @@ export class WorkerLauncher extends EventEmitter {
     }
   }
 
-  shutdownAll(): void {
+  async shutdownAll(timeoutMs = 10_000): Promise<void> {
+    const pending: Promise<void>[] = []
     for (const [, worker] of this.workers) {
       if (worker.connected) {
         worker.send({ type: 'shutdown' })
       }
     }
+    for (const [executionId, worker] of this.workers) {
+      pending.push(new Promise((resolve) => {
+        const timeout = setTimeout(() => {
+          worker.kill('SIGKILL')
+          this.cleanupWorker(executionId)
+          resolve()
+        }, timeoutMs)
+        worker.once('exit', () => {
+          clearTimeout(timeout)
+          resolve()
+        })
+      }))
+    }
+    await Promise.all(pending)
   }
 
   killWorker(executionId: string): void {
@@ -111,6 +126,23 @@ export class WorkerLauncher extends EventEmitter {
       worker.kill('SIGKILL')
       this.cleanupWorker(executionId)
     }
+  }
+
+  async stopWorker(executionId: string, timeoutMs = 10_000): Promise<void> {
+    const worker = this.workers.get(executionId)
+    if (!worker) return
+    if (worker.connected) worker.send({ type: 'shutdown' })
+    await new Promise<void>((resolve) => {
+      const timeout = setTimeout(() => {
+        worker.kill('SIGKILL')
+        this.cleanupWorker(executionId)
+        resolve()
+      }, timeoutMs)
+      worker.once('exit', () => {
+        clearTimeout(timeout)
+        resolve()
+      })
+    })
   }
 
   getActiveCount(): number {

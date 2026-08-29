@@ -3,6 +3,7 @@
  */
 
 import type { Task } from "./index.js"
+import type { ModelPhase, ModelSelection } from "../../policies/ModelTierPolicy.js"
 
 /** Fases do pipeline de execucao */
 export type ExecutionPhase =
@@ -10,6 +11,7 @@ export type ExecutionPhase =
   | "analyze"
   | "execute"
   | "verify"
+  | "commit"
   | "deploy"
   | "deliver"
 
@@ -20,6 +22,8 @@ export interface SubtaskInfo {
   titulo: string
   scope?: string
   acceptanceCriteria?: string[]
+  /** Entregas já persistidas antes desta execução ou retomada. */
+  deliverCount: number
 }
 
 /** Contexto de execucao isolado */
@@ -39,6 +43,7 @@ export interface ExecutionContext {
 export interface ExecutionResult {
   ok: boolean
   reason?: string
+  gitCommitSha?: string
   subtaskResults?: SubTaskResult[]
 }
 
@@ -59,6 +64,9 @@ export interface WorkerInput {
   testCommand: string
   subtask?: SubtaskInfo
   workBranch?: string
+  baseBranch?: string
+  modelChain?: readonly ModelSelection[]
+  modelPhase?: ModelPhase
 }
 
 /** Output retornado pelo Worker */

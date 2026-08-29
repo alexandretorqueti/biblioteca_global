@@ -78,14 +78,33 @@ services:
       OPENCLAW_CONSOLE_TOKEN: ${OPENCLAW_CONSOLE_TOKEN}
       MOTOR_DEV_URL: ${MOTOR_DEV_URL:-http://192.168.64.1:6282}
       MOTOR_URL_HOST: ${MOTOR_URL_HOST:-api.tarefas.localhost}
+      # Motor-v2 executa as tarefas do projeto captado em background.
+      MOTOR_VERSION: ${MOTOR_VERSION:-v2}
+      MOTOR_MAX_WORKERS: ${MOTOR_MAX_WORKERS:-1}
+      MOTOR_API_PORT: ${MOTOR_API_PORT:-3010}
       API_PORT: 3001
     depends_on:
       mysql:
         condition: service_healthy
     ports:
       - "${API_HOST_PORT:-3003}:3001"
+      - "${MOTOR_V2_HOST_PORT:-3010}:3010"
+    volumes:
+      # O motor executa o pipeline no workspace do repositório.
+      # REPO_PATH é um caminho do host e deve ser configurado no .env local.
+      - ${REPO_PATH:-/run/media/alexandre/12T/codigofonte}:${REPO_PATH:-/run/media/alexandre/12T/codigofonte}
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://localhost:3001/api/auth/me').then(()=>process.exit(0)).catch(()=>process.exit(1))"]
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          Promise.all([
+          fetch('http://localhost:3001/api/auth/me'),
+          fetch('http://localhost:3010/api/motor/health')
+          ]).then(([api, motor]) =>
+          api.status < 500 && motor.ok ? process.exit(0) : process.exit(1)
+          ).catch(() => process.exit(1))
       interval: 10s
       timeout: 5s
       retries: 12

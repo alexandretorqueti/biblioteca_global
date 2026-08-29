@@ -3,8 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import type { Db, TaskRepository, QueryResult, SaveTaskData } from '../src/shared/types/infrastructure.js'
-import type { Task } from '../src/shared/types/index.js'
+import type { Db, TaskRepository, QueryResult } from '../src/shared/types/infrastructure.js'
 import { ResourceLeaseService } from '../src/resources/ResourceLeaseService.js'
 import { TaskCoordinator } from '../src/coordinator/TaskCoordinator.js'
 
@@ -74,7 +73,7 @@ describe('TaskCoordinator', () => {
       vi.mocked(db.query).mockResolvedValueOnce({ rows: [], affectedRows: 1, insertId: 1 })
 
       // Inicia pump mas não espera completar (worker spawn demora 30s para timeout)
-      const pumpPromise = coordinator.pump()
+      void coordinator.pump()
 
       // Aguarda queries de lock serem executadas (até 2s)
       await new Promise<void>((resolve) => {
@@ -103,6 +102,60 @@ describe('TaskCoordinator', () => {
     it('deve retornar estatísticas', () => {
       const stats = coordinator.getStats()
       expect(stats).toEqual({ activeWorkers: 0, maxWorkers: 1 })
+    })
+  })
+
+  describe('limites por projeto', () => {
+    it('não inicia segundo worker no mesmo projeto acima do limite', () => {
+      const coordinatorWithLimit = new TaskCoordinator(db, repository, resourceLease, {
+        maxWorkers: 2,
+        maxWorkersPerProject: 1,
+      })
+      const internal = coordinatorWithLimit as unknown as {
+        activeWorkers: Map<string, { resourceKey: string | null }>
+        canStartProject: (slug: string | null) => boolean
+      }
+      internal.activeWorkers.set('exec-a', { resourceKey: 'project:test-project:execution' })
+
+      expect(internal.canStartProject('test-project')).toBe(false)
+      expect(internal.canStartProject('other-project')).toBe(true)
+      expect(internal.canStartProject(null)).toBe(true)
+    })
+  })
+
+  describe('configuração operacional do projeto', () => {
+    it('usa configuração persistida e recusa execução sem os campos críticos', () => {
+      const internal = coordinator as unknown as {
+        mapSubtask: (row: Record<string, unknown>) => {
+          repoPath: string
+          branchTrabalho: string | null
+          buildCommand: string | null
+          unitTestCommand: string | null
+          unitTestExclude: string[]
+          maxRework: number | null
+          hardTimeoutMs: number | null
+          deliverCount: number
+        }
+        assertExecutionConfig: (subtask: unknown) => void
+      }
+      const configured = internal.mapSubtask({
+        id: 7, seq: 1, tarefa_id: 3, task_external_id: 'task-3',
+        repo_path: '/repos/app', branch_trabalho: 'develop',
+        build_command: 'pnpm build', unit_test_command: 'pnpm test',
+        unit_test_exclude: '["e2e"]', default_max_rework: 5,
+        default_hard_timeout_ms: 120000, deliver_count: 2,
+      })
+
+      expect(configured).toMatchObject({
+        repoPath: '/repos/app', branchTrabalho: 'develop',
+        buildCommand: 'pnpm build', unitTestCommand: 'pnpm test',
+        unitTestExclude: ['e2e'], maxRework: 5, hardTimeoutMs: 120000,
+        deliverCount: 2,
+      })
+      expect(() => internal.assertExecutionConfig(configured)).not.toThrow()
+
+      const missing = internal.mapSubtask({ id: 8, seq: 1, tarefa_id: 3, task_external_id: 'task-3' })
+      expect(() => internal.assertExecutionConfig(missing)).toThrow('configuração operacional')
     })
   })
 

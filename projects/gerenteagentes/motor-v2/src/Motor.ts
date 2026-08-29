@@ -9,13 +9,17 @@ import { ResourceWaitManager } from './resources/ResourceWaitManager.js'
 import { WorkerLauncher } from './workers/WorkerLauncher.js'
 import { ExpirationReconciler } from './reconciler/ExpirationReconciler.js'
 import { MotorAPI } from './api/MotorAPI.js'
+import { resourceEventBus } from './resources/ResourceEventBus.js'
+import { executionEventBus, type ExecutionActivityBroadcaster } from './events/ExecutionEventBus.js'
 
 export interface MotorConfig {
   db: Db
   repository: TaskRepository
   maxWorkers?: number
+  maxWorkersPerProject?: number
   apiPort?: number
   reconcilerIntervalMs?: number
+  activityBroadcaster?: ExecutionActivityBroadcaster
 }
 
 export class Motor {
@@ -35,10 +39,16 @@ export class Motor {
     this._waitManager = new ResourceWaitManager(config.db, config.repository)
     this.workerLauncher = new WorkerLauncher()
     this.reconciler = new ExpirationReconciler({ db: config.db, intervalMs: config.reconcilerIntervalMs })
-    this.coordinator = new TaskCoordinator(config.db, config.repository, this.resourceLease, { maxWorkers })
+    this.coordinator = new TaskCoordinator(config.db, config.repository, this.resourceLease, {
+      maxWorkers,
+      maxWorkersPerProject: config.maxWorkersPerProject ?? 1,
+    }, this.workerLauncher, undefined, this._waitManager)
     this.api = new MotorAPI({ port: apiPort, coordinator: this.coordinator })
 
     this.setupEventHandlers()
+    if (config.activityBroadcaster) {
+      executionEventBus.on((event) => void config.activityBroadcaster!.publish(event))
+    }
   }
 
   async start(): Promise<void> {
@@ -58,20 +68,17 @@ export class Motor {
     console.log('[Motor] Parando...')
     if (this.pumpInterval) { clearInterval(this.pumpInterval); this.pumpInterval = null }
     this.reconciler.stop()
-    this.workerLauncher.shutdownAll()
+    await this.workerLauncher.shutdownAll()
     await this.api.stop()
     console.log('[Motor] Parado')
   }
 
   private setupEventHandlers(): void {
-    this.workerLauncher.on('completed', async (msg: { executionId: string }) => {
-      await this.coordinator.onTaskCompleted(msg.executionId)
-    })
-    this.workerLauncher.on('failed', async (msg: { executionId: string; error: string }) => {
-      await this.coordinator.onTaskFailed(msg.executionId, msg.error)
-    })
     this.workerLauncher.on('worker_exit', (event: { executionId: string; code: number | null }) => {
       console.log(`[Motor] Worker exit: ${event.executionId} (code: ${event.code})`)
+    })
+    resourceEventBus.on('released', (event) => {
+      void this.coordinator.onResourceReleased(event.resourceKey)
     })
   }
 

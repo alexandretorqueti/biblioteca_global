@@ -33,10 +33,11 @@ export class ResourceWaitManager {
       `UPDATE projeto_640.tarefas 
        SET status = 'paused',
            resource_wait_key = ?,
+           resource_wait_id = ?,
            resource_wait_position = ?,
            paused_at = NOW()
        WHERE id = ?`,
-      [resourceKey, position, taskId]
+      [resourceKey, waitId, position, taskId]
     )
 
     console.log(`[ResourceWaitManager] Tarefa ${taskId} aguardando ${resourceKey} (posição ${position})`)
@@ -44,9 +45,16 @@ export class ResourceWaitManager {
 
   async cancelWait(taskId: string): Promise<void> {
     await this.db.query(
+      `DELETE q FROM projeto_640.execution_resource_queue q
+       INNER JOIN projeto_640.tarefas t ON t.resource_wait_id = q.id
+       WHERE t.id = ? AND q.status = 'waiting'`,
+      [taskId]
+    )
+    await this.db.query(
       `UPDATE projeto_640.tarefas 
        SET status = 'planned',
            resource_wait_key = NULL,
+           resource_wait_id = NULL,
            resource_wait_position = NULL,
            paused_at = NULL
        WHERE id = ?`,
@@ -70,17 +78,34 @@ export class ResourceWaitManager {
     const row = rows[0]!
     const taskId = String(row.id ?? '')
 
-    await this.db.query(
+    const { rows: subtaskRows } = await this.db.query(
+      `SELECT 1 FROM projeto_640.subtarefas
+       WHERE tarefa_id = ? AND status IN ('pending', 'running', 'rejected')
+       LIMIT 1`,
+      [taskId]
+    )
+    const resumeStatus = subtaskRows.length > 0 ? 'ready' : 'planned'
+
+    await this.db.transaction(async (tx) => {
+      await tx.query(
       `UPDATE projeto_640.tarefas 
-       SET status = 'planned',
+       SET status = ?,
            resource_wait_key = NULL,
+           resource_wait_id = NULL,
            resource_wait_position = NULL,
            paused_at = NULL
        WHERE id = ?`,
-      [taskId]
-    )
+        [resumeStatus, taskId]
+      )
+      await tx.query(
+        `UPDATE projeto_640.execution_resource_queue
+         SET status = 'granted'
+         WHERE id = ? AND status = 'waiting'`,
+        [row.resource_wait_id]
+      )
+    })
 
-    console.log(`[ResourceWaitManager] Tarefa ${taskId} retomada`)
+    console.log(`[ResourceWaitManager] Tarefa ${taskId} retomada como ${resumeStatus}`)
   }
 
   async getWaitingTasks(resourceKey: ResourceKey): Promise<Task[]> {

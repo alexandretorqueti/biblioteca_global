@@ -5,16 +5,25 @@
 /** Status possíveis de uma tarefa */
 export type TaskStatus =
   | 'planned'
+  | 'analyzing'
+  | 'ready'
   | 'running'
   | 'paused'
   | 'completed'
+  | 'blocked'
+  | 'motor_fix'
   | 'failed'
   | 'cancelled'
 
 /** Status possíveis de uma subtarefa */
 export type SubTaskStatus =
   | 'pending'
+  | 'delivered'
   | 'running'
+  | 'verifying'
+  | 'verified'
+  | 'rejected'
+  | 'blocked'
   | 'completed'
   | 'failed'
   | 'skipped'
