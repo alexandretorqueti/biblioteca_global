@@ -506,6 +506,10 @@ export class TaskCoordinator {
       if (worker) this.publishActivity(worker, { type: "progress", executionPhase: event.phase as import("../shared/types/execution.js").ExecutionPhase, message: event.message })
       console.log("[MotorExecution " + event.executionId + "] [PROGRESS " + event.phase + "] " + event.message)
     })
+    this.workerLauncher.on("model_unavailable", (event: { executionId: string; model: string; message: string }) => {
+      const worker = this.activeWorkers.get(event.executionId)
+      if (worker) this.publishActivity(worker, { type: "model_unavailable", level: "warn", model: event.model, message: event.message })
+    })
     this.workerLauncher.on("started", (event: { executionId: string }) => {
       const worker = this.activeWorkers.get(event.executionId)
       if (worker) this.publishActivity(worker, { type: "started" })

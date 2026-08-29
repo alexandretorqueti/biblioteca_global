@@ -188,7 +188,7 @@ npm run test:coverage
 
 ### Evoluções de 2026-08-29
 
-- **Escada de modelos — indisponibilidade:** a abertura de sessão agora reconhece modelo ausente/indisponível e avança imediatamente ao próximo degrau. Foram alterados `ModelTierPolicy.ts`, `TaskWorker.ts` e `ModelTierPolicy.test.ts`. Validações: testes do Motor-v2, build TypeScript e lint. Estado: regra implementada e coberta por regressão; emissão do evento estruturado `model_unavailable` permanece pendente junto da integração do feed.
+- **Escada de modelos — indisponibilidade:** a abertura de sessão reconhece modelo ausente/indisponível, emite `model_unavailable` com correlação da execução e o modelo afetado, e avança imediatamente ao próximo degrau. Foram alterados `ExecutionEventBus.ts`, `WorkerProtocol.ts`, `TaskWorker.ts`, `TaskCoordinator.ts`, `ExecutionEventBus.test.ts` e `TaskCoordinator.test.ts`. Validações: 50 testes do Motor-v2, build TypeScript e lint. Estado: detecção, salto e emissão no bus local implementados; permanece pendente apenas a integração do broadcaster com o feed da Biblioteca.
 
 ## 🔧 Configuração
 

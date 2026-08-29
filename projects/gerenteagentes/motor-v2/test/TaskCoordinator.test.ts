@@ -6,6 +6,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import type { Db, TaskRepository, QueryResult } from '../src/shared/types/infrastructure.js'
 import { ResourceLeaseService } from '../src/resources/ResourceLeaseService.js'
 import { TaskCoordinator } from '../src/coordinator/TaskCoordinator.js'
+import { ExecutionEventBus } from '../src/events/ExecutionEventBus.js'
+import { WorkerLauncher } from '../src/workers/WorkerLauncher.js'
 
 function createMockDb(): Db {
   const db: Db = {
@@ -102,6 +104,50 @@ describe('TaskCoordinator', () => {
     it('deve retornar estatísticas', () => {
       const stats = coordinator.getStats()
       expect(stats).toEqual({ activeWorkers: 0, maxWorkers: 1 })
+    })
+  })
+
+  describe('eventos de modelo', () => {
+    it('publica model_unavailable com correlação da execução', () => {
+      const launcher = new WorkerLauncher()
+      const eventBus = new ExecutionEventBus()
+      const handler = vi.fn()
+      eventBus.on(handler)
+      const coordinatorWithEvents = new TaskCoordinator(
+        db,
+        repository,
+        resourceLease,
+        { maxWorkers: 1 },
+        launcher,
+        undefined,
+        undefined,
+        eventBus,
+      )
+      const internal = coordinatorWithEvents as unknown as {
+        activeWorkers: Map<string, {
+          taskId: string
+          executionId: string
+          resourceKey: null
+          fencingToken: number
+          startedAt: Date
+          phase: 'execute'
+          subtaskId: number
+        }>
+      }
+      internal.activeWorkers.set('exec-model', {
+        taskId: 'task-model', executionId: 'exec-model', resourceKey: null,
+        fencingToken: 0, startedAt: new Date(), phase: 'execute', subtaskId: 42,
+      })
+
+      launcher.emit('model_unavailable', {
+        type: 'model_unavailable', executionId: 'exec-model',
+        model: 'provider/model-a', message: 'Modelo indisponível: provider/model-a',
+      })
+
+      expect(handler).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'model_unavailable', executionId: 'exec-model', taskId: 'task-model',
+        subtaskId: 42, phase: 'execute', level: 'warn', model: 'provider/model-a',
+      }))
     })
   })
 

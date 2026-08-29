@@ -240,6 +240,7 @@ class TaskWorker {
         } catch (error) {
           if (isModelUnavailableError(error)) {
             lastFailure = `Modelo indisponível: ${model.model}`
+            this.send({ type: "model_unavailable", executionId: input.context.executionId, model: model.model, message: lastFailure })
             this.log("warn", lastFailure)
             continue modelLoop
           }

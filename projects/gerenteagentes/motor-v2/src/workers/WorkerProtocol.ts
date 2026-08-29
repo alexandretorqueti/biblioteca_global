@@ -19,4 +19,5 @@ export type WorkerToCoordinatorMessage =
   | { type: 'completed'; executionId: string; result: ExecutionResult }
   | { type: 'failed'; executionId: string; error: string }
   | { type: 'heartbeat'; executionId: string; cpuUsage?: number; memUsage?: number }
+  | { type: 'model_unavailable'; executionId: string; model: string; message: string }
   | { type: 'log'; executionId: string; level: 'info' | 'warn' | 'error'; message: string }

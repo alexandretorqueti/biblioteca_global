@@ -21,4 +21,25 @@ describe('ExecutionEventBus', () => {
 
     expect(handler).toHaveBeenCalledWith(event)
   })
+
+  it('propaga indisponibilidade com o modelo afetado', () => {
+    const bus = new ExecutionEventBus()
+    const handler = vi.fn()
+    bus.on(handler)
+    const event = {
+      type: 'model_unavailable' as const,
+      executionId: 'exec-2',
+      taskId: 'task-2',
+      subtaskId: 10,
+      phase: 'execute' as const,
+      level: 'warn' as const,
+      model: 'provider/model-a',
+      message: 'Modelo indisponível: provider/model-a',
+      timestamp: new Date(),
+    }
+
+    bus.publish(event)
+
+    expect(handler).toHaveBeenCalledWith(event)
+  })
 })
