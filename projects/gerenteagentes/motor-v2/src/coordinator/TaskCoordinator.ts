@@ -122,7 +122,7 @@ export class TaskCoordinator {
       "LEFT JOIN projeto_640.projetos_captados pc ON t.projeto_id = pc.id " +
       "LEFT JOIN projeto_640.agentes a ON pc.agente_id = a.id " +
       "LEFT JOIN projeto_640.projeto_motor_config pmc ON pmc.projeto_id = pc.id " +
-      "WHERE t.status = 'planned' ORDER BY t.created_at ASC LIMIT 25"
+      "WHERE t.status = 'planned' AND NOT EXISTS (SELECT 1 FROM projeto_640.subtarefas s WHERE s.tarefa_id = t.id) ORDER BY t.created_at ASC LIMIT 25"
     )
     return rows.map((row) => this.mapTask(row)).find((task) => this.canStartProject(task.projectSlug)) ?? null
   }
@@ -432,7 +432,8 @@ export class TaskCoordinator {
     const task = await this.repository.getTask(taskId)
     if (!task) throw new Error("Tarefa " + taskId + " nao encontrada")
     if (task.status !== "paused") throw new Error("Tarefa " + taskId + " nao esta pausada")
-    await this.repository.saveTask({ ...task, status: "planned", updatedAt: new Date().toISOString() })
+    const hasPlan = await this.taskHasPersistedPlan(taskId)
+    await this.repository.saveTask({ ...task, status: hasPlan ? "ready" : "planned", updatedAt: new Date().toISOString() })
     await this.pump()
   }
 
@@ -569,6 +570,17 @@ export class TaskCoordinator {
     } catch {
       return []
     }
+  }
+
+  private async taskHasPersistedPlan(taskId: string): Promise<boolean> {
+    const isNumeric = /^\d+$/.test(taskId)
+    const { rows } = await this.db.query(
+      isNumeric
+        ? "SELECT EXISTS(SELECT 1 FROM projeto_640.subtarefas s INNER JOIN projeto_640.tarefas t ON t.id = s.tarefa_id WHERE t.external_id = ? OR t.id = ?) AS has_plan"
+        : "SELECT EXISTS(SELECT 1 FROM projeto_640.subtarefas s INNER JOIN projeto_640.tarefas t ON t.id = s.tarefa_id WHERE t.external_id = ?) AS has_plan",
+      isNumeric ? [taskId, taskId] : [taskId],
+    )
+    return Number(rows[0]?.has_plan ?? 0) === 1
   }
 
   private publishActivity(worker: ActiveWorker, event: Omit<import("../events/ExecutionEventBus.js").ExecutionActivityEvent, "executionId" | "taskId" | "subtaskId" | "phase" | "timestamp">): void {

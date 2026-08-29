@@ -18,6 +18,8 @@ import { defaultChain, formatSessionKey, type ModelSelection } from "../policies
 import { isSystemicFailure } from "../policies/SystemFailurePolicy.js"
 import { blockerEvidence, type BlockerKind } from "../policies/BlockerPolicy.js"
 import { failureFingerprint } from "../policies/SystemFailurePolicy.js"
+import { hasPersistedPlan, persistPlan } from "../planning/PlanPersistence.js"
+import type { Db, QueryResult } from "../shared/types/infrastructure.js"
 import mysql from "mysql2/promise"
 
 class TaskWorker {
@@ -98,6 +100,12 @@ class TaskWorker {
     this.send({ type: "progress", executionId: input.context.executionId, phase: "analyze", message: "Iniciando analise" })
     this.log("info", "Fase ANALYZE: " + input.task.title)
 
+    const planningDb = this.planningDb()
+    if (await hasPersistedPlan(planningDb, input.task.id)) {
+      this.log("info", "Plano persistido encontrado; análise não será repetida")
+      return
+    }
+
     const driver = this.createDriver()
     const model = this.chainFor(input, "analysis")[0]!
     const sessionKey = formatSessionKey({ agentId: input.task.agentId, taskId: input.task.id, phase: "analysis", model: model.model, modelIndex: 0, generation: 0 })
@@ -124,7 +132,10 @@ class TaskWorker {
     const subtarefas = this.parseAnalystResponse(result.content)
     this.log("info", "Analista criou " + subtarefas.length + " subtarefas")
 
-    await this.saveSubtasks(input.task, subtarefas)
+    const persisted = await persistPlan(planningDb, input.task.id, subtarefas)
+    if (persisted === "already_persisted") {
+      this.log("info", "Plano foi persistido por outra execução; preservando-o")
+    }
     await driver.closeSession(session).catch(() => {})
     this.log("info", "Fase ANALYZE concluida: " + subtarefas.length + " subtarefas criadas")
   }
@@ -334,6 +345,33 @@ class TaskWorker {
     return new ConsoleAgentRuntimeDriver({ baseUrl, token })
   }
 
+  /** Adapta a conexão exclusiva do worker à transação atômica do plano. */
+  private planningDb(): Db {
+    const connection = this.db
+    if (!connection) throw new Error("DB não conectado para persistir plano")
+
+    const db: Db = {
+      query: async (sql: string, params?: unknown[]): Promise<QueryResult> => {
+        const [rows] = await connection.execute(sql, params as mysql.ExecuteValues | undefined)
+        if (Array.isArray(rows)) return { rows: rows as Record<string, unknown>[], affectedRows: 0, insertId: 0 }
+        const result = rows as { affectedRows?: number; insertId?: number }
+        return { rows: [], affectedRows: result.affectedRows ?? 0, insertId: result.insertId ?? 0 }
+      },
+      transaction: async <T>(fn: (tx: Db) => Promise<T>): Promise<T> => {
+        await connection.beginTransaction()
+        try {
+          const result = await fn(db)
+          await connection.commit()
+          return result
+        } catch (error) {
+          await connection.rollback()
+          throw error
+        }
+      },
+    }
+    return db
+  }
+
   private buildAnalystPrompt(task: { title: string; description?: string }): string {
     return [
       "Voce e um analista de requisitos. Recebe uma tarefa e deve quebra-la em subtarefas (2 a 4 no maximo).",
@@ -408,30 +446,6 @@ class TaskWorker {
       scope: s.scope ? String(s.scope) : undefined,
       acceptanceCriteria: Array.isArray(s.acceptance_criteria) ? s.acceptance_criteria.map(String) : undefined,
     }))
-  }
-
-  private async saveSubtasks(task: { id: string }, subtarefas: Array<{ seq: number; titulo: string; scope?: string; acceptanceCriteria?: string[] }>): Promise<void> {
-    if (!this.db) throw new Error("DB not connected")
-
-    const isNumeric = /^\d+$/.test(task.id)
-    const [rows] = await this.db.query(
-      isNumeric
-        ? "SELECT id FROM projeto_640.tarefas WHERE external_id = ? OR id = ?"
-        : "SELECT id FROM projeto_640.tarefas WHERE external_id = ?",
-      isNumeric ? [task.id, task.id] : [task.id]
-    )
-
-    const taskId = (rows as Array<Record<string, unknown>>)[0]?.id as number
-    if (!taskId) throw new Error("Tarefa nao encontrada: " + task.id)
-
-    await this.db.query("DELETE FROM projeto_640.subtarefas WHERE tarefa_id = ?", [taskId])
-
-    for (const st of subtarefas) {
-      await this.db.query(
-        "INSERT INTO projeto_640.subtarefas (tarefa_id, seq, titulo, scope, acceptance_criteria, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'pending', NOW(), NOW())",
-        [taskId, st.seq, st.titulo, st.scope || null, st.acceptanceCriteria ? JSON.stringify(st.acceptanceCriteria) : null]
-      )
-    }
   }
 
   private async recordBlocker(subtask: SubtaskInfo, kind: BlockerKind, reason: string): Promise<void> {

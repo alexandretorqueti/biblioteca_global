@@ -189,6 +189,45 @@ describe('TaskCoordinator', () => {
     })
   })
 
+  describe('retomada', () => {
+    it('retoma tarefa pausada com plano como ready, sem replanejar', async () => {
+      vi.mocked(repository.getTask).mockResolvedValue({
+        id: 'task-81', chatId: '', agentId: 'agent', title: 'Retomar', description: '',
+        repoPath: '/repo', buildCommand: 'npm run build', unitTestCommand: 'npm run test',
+        status: 'paused', maxRework: 3, hardTimeoutMs: 1000, projectSlug: 'project',
+      })
+      vi.mocked(db.query).mockResolvedValueOnce({ rows: [{ has_plan: 1 }], affectedRows: 0, insertId: 0 })
+      vi.spyOn(coordinator, 'pump').mockResolvedValue()
+
+      await coordinator.resumeTask('task-81')
+
+      expect(repository.saveTask).toHaveBeenCalledWith(expect.objectContaining({ id: 'task-81', status: 'ready' }))
+    })
+
+    it('retoma tarefa pausada sem plano como planned, para análise inicial', async () => {
+      vi.mocked(repository.getTask).mockResolvedValue({
+        id: 'task-82', chatId: '', agentId: 'agent', title: 'Planejar', description: '',
+        repoPath: '/repo', buildCommand: 'npm run build', unitTestCommand: 'npm run test',
+        status: 'paused', maxRework: 3, hardTimeoutMs: 1000, projectSlug: 'project',
+      })
+      vi.mocked(db.query).mockResolvedValue({ rows: [{ has_plan: 0 }], affectedRows: 0, insertId: 0 })
+      vi.spyOn(coordinator, 'pump').mockResolvedValue()
+
+      await coordinator.resumeTask('task-82')
+
+      expect(repository.saveTask).toHaveBeenCalledWith(expect.objectContaining({ id: 'task-82', status: 'planned' }))
+    })
+
+    it('nunca seleciona para análise uma tarefa que já possui subtarefas', async () => {
+      await coordinator.pump()
+
+      const analysisQuery = vi.mocked(db.query).mock.calls
+        .map(([query]) => String(query))
+        .find((query) => query.includes("FROM projeto_640.tarefas t"))
+      expect(analysisQuery).toContain('NOT EXISTS (SELECT 1 FROM projeto_640.subtarefas')
+    })
+  })
+
   describe('onTaskCompleted', () => {
     it('deve lidar com execução desconhecida sem erro', async () => {
       await coordinator.onTaskCompleted('exec-inexistente')
