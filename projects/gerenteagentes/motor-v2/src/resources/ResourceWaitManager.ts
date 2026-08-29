@@ -60,39 +60,43 @@ export class ResourceWaitManager {
    * este método antes de voltar a bombear a fila.
    */
   async resumeNext(resourceKey: ResourceKey): Promise<void> {
-    const { rows } = await this.db.query(
-      `SELECT t.* 
-       FROM projeto_640.tarefas t
-       WHERE t.status = 'paused'
-         AND t.resource_wait_key = ?
-       ORDER BY t.resource_wait_position ASC
-       LIMIT 1`,
-      [resourceKey]
-    )
+    const resumedTask = await this.db.transaction(async (tx) => {
+      // FOR UPDATE faz com que duas liberações concorrentes não concedam a
+      // mesma posição. A seleção e a troca de estado precisam ser uma única
+      // transação, pois o event bus pode entregar releases quase simultâneos.
+      const { rows } = await tx.query(
+        `SELECT t.id, t.resource_wait_id
+         FROM projeto_640.tarefas t
+         INNER JOIN projeto_640.execution_resource_queue q ON q.id = t.resource_wait_id
+         WHERE t.status = 'paused'
+           AND t.resource_wait_key = ?
+           AND q.status = 'waiting'
+         ORDER BY t.resource_wait_position ASC, q.requested_at ASC
+         LIMIT 1
+         FOR UPDATE`,
+        [resourceKey],
+      )
+      if (rows.length === 0) return null
 
-    if (rows.length === 0) return
+      const row = rows[0]!
+      const taskId = String(row.id ?? '')
+      const { rows: subtaskRows } = await tx.query(
+        `SELECT 1 FROM projeto_640.subtarefas
+         WHERE tarefa_id = ? AND status IN ('pending', 'running', 'rejected')
+         LIMIT 1`,
+        [taskId],
+      )
+      const resumeStatus = subtaskRows.length > 0 ? 'ready' : 'planned'
 
-    const row = rows[0]!
-    const taskId = String(row.id ?? '')
-
-    const { rows: subtaskRows } = await this.db.query(
-      `SELECT 1 FROM projeto_640.subtarefas
-       WHERE tarefa_id = ? AND status IN ('pending', 'running', 'rejected')
-       LIMIT 1`,
-      [taskId]
-    )
-    const resumeStatus = subtaskRows.length > 0 ? 'ready' : 'planned'
-
-    await this.db.transaction(async (tx) => {
       await tx.query(
-      `UPDATE projeto_640.tarefas 
-       SET status = ?,
-           resource_wait_key = NULL,
-           resource_wait_id = NULL,
-           resource_wait_position = NULL,
-           paused_at = NULL
-       WHERE id = ?`,
-        [resumeStatus, taskId]
+        `UPDATE projeto_640.tarefas
+         SET status = ?,
+             resource_wait_key = NULL,
+             resource_wait_id = NULL,
+             resource_wait_position = NULL,
+             paused_at = NULL
+         WHERE id = ? AND status = 'paused' AND resource_wait_id = ?`,
+        [resumeStatus, taskId, row.resource_wait_id],
       )
       await tx.query(
         `UPDATE projeto_640.execution_resource_queue
@@ -100,9 +104,11 @@ export class ResourceWaitManager {
          WHERE id = ? AND status = 'waiting'`,
         [row.resource_wait_id]
       )
+      return { taskId, resumeStatus }
     })
-
-    console.log(`[ResourceWaitManager] Tarefa ${taskId} retomada como ${resumeStatus}`)
+    if (resumedTask) {
+      console.log(`[ResourceWaitManager] Tarefa ${resumedTask.taskId} retomada como ${resumedTask.resumeStatus}`)
+    }
   }
 
   async getWaitingTasks(resourceKey: ResourceKey): Promise<Task[]> {

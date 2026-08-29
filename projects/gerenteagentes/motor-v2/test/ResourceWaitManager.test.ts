@@ -33,7 +33,22 @@ describe('ResourceWaitManager', () => {
 
     await manager.resumeNext('project:demo:execution')
 
-    expect(query).toHaveBeenCalledWith(expect.stringContaining("SET status = ?"), ['ready', '42'])
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('FOR UPDATE'), ['project:demo:execution'])
+    expect(query).toHaveBeenCalledWith(expect.stringContaining("SET status = ?"), ['ready', '42', 7])
     expect(query).toHaveBeenCalledWith(expect.stringContaining("SET status = 'granted'"), [7])
+  })
+
+  it('não concede uma segunda espera quando a transação não encontra fila pendente', async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [], affectedRows: 0, insertId: 0 })
+    const db: Db = {
+      query,
+      transaction: vi.fn().mockImplementation(async (callback: (tx: Db) => Promise<unknown>) => callback(db)),
+    }
+    const manager = new ResourceWaitManager(db, repository())
+
+    await manager.resumeNext('project:demo:execution')
+
+    expect(query).toHaveBeenCalledTimes(1)
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('FOR UPDATE'), ['project:demo:execution'])
   })
 })
