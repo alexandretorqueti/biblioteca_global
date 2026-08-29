@@ -7,4 +7,6 @@ ALTER TABLE `subtarefas`
   ADD COLUMN `workspace_created_at` timestamp NULL,
   ADD COLUMN `workspace_cleaned_at` timestamp NULL;
 
+--> statement-breakpoint
+
 CREATE INDEX `idx_subtarefas_workspace_status` ON `subtarefas` (`workspace_status`);

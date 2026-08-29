@@ -10,6 +10,9 @@ import { defineConfig } from "drizzle-kit"
 import { loadEnv } from "../../database/env.js"
 
 const env = loadEnv()
+// O Motor persiste no schema isolado do projeto, não no schema core da
+// Biblioteca. Permite override explícito apenas para homologação isolada.
+const gerenteAgentesDatabase = process.env.GERENTE_AGENTES_DATABASE ?? "projeto_640"
 
 export default defineConfig({
   dialect: "mysql",
@@ -20,6 +23,6 @@ export default defineConfig({
     port: Number(env.MYSQL_PORT),
     user: env.MYSQL_USER,
     password: env.MYSQL_PASSWORD,
-    database: env.MYSQL_DATABASE,
+    database: gerenteAgentesDatabase,
   },
 })

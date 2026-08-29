@@ -3,9 +3,13 @@ ALTER TABLE `subtarefas`
   ADD COLUMN `correction_fingerprint` varchar(500),
   ADD COLUMN `correction_created_at` timestamp NULL;
 
+--> statement-breakpoint
+
 ALTER TABLE `subtarefas`
   ADD CONSTRAINT `subtarefas_correction_for_subtask_id_fk`
   FOREIGN KEY (`correction_for_subtask_id`) REFERENCES `subtarefas`(`id`) ON DELETE CASCADE;
+
+--> statement-breakpoint
 
 CREATE TABLE `subtask_gate_failures` (
   `id` bigint unsigned AUTO_INCREMENT NOT NULL,
