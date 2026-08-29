@@ -179,18 +179,41 @@ export class ConsoleAgentRuntimeDriver {
     if (options.timeoutMs) signals.push(AbortSignal.timeout(options.timeoutMs))
     const signal = signals.length > 0 ? AbortSignal.any(signals) : undefined
 
-    const response = await fetch(url.toString(), {
-      method: options.method,
-      headers: {
-        Authorization: "Bearer " + this.token,
-        ...(options.body ? { "Content-Type": "application/json" } : {}),
-      },
-      ...(options.body ? { body: JSON.stringify(options.body) } : {}),
-      ...(signal ? { signal } : {}),
-    })
+    let response: Response
+    try {
+      response = await fetch(url.toString(), {
+        method: options.method,
+        headers: {
+          Authorization: "Bearer " + this.token,
+          ...(options.body ? { "Content-Type": "application/json" } : {}),
+        },
+        ...(options.body ? { body: JSON.stringify(options.body) } : {}),
+        ...(signal ? { signal } : {}),
+      })
+    } catch (error) {
+      const context = options.body as Record<string, unknown> | undefined
+      const query = options.query ?? {}
+      console.error("[ConsoleDriver] request_failed", {
+        method: options.method,
+        path: options.path,
+        host: url.host,
+        agentId: typeof context?.agentId === "string" ? context.agentId : undefined,
+        sessionKey: typeof context?.sessionKey === "string" ? context.sessionKey :
+          typeof query.key === "string" ? query.key : undefined,
+        cause: this.describeError(error),
+      })
+      throw error
+    }
     if (!response.ok) {
       const payload = await response.json().catch(() => undefined) as Record<string, unknown> | undefined
       const error = (payload?.error as Record<string, unknown>) || {}
+      console.error("[ConsoleDriver] request_rejected", {
+        method: options.method,
+        path: options.path,
+        host: url.host,
+        status: response.status,
+        code: typeof error.code === "string" ? error.code : "HTTP_" + response.status,
+      })
       throw new ConsoleRequestError(
         response.status,
         typeof error.code === "string" ? error.code : "HTTP_" + response.status,
@@ -198,5 +221,13 @@ export class ConsoleAgentRuntimeDriver {
       )
     }
     return response.json() as Promise<T>
+  }
+
+  private describeError(error: unknown): string {
+    if (!(error instanceof Error)) return String(error)
+    const cause = error.cause
+    if (cause instanceof Error) return `${error.name}: ${error.message}; cause=${cause.name}: ${cause.message}`
+    if (cause !== undefined) return `${error.name}: ${error.message}; cause=${String(cause)}`
+    return `${error.name}: ${error.message}`
   }
 }
