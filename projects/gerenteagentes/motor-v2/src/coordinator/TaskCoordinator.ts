@@ -32,6 +32,8 @@ interface ActiveWorker {
   repoPath?: string
   baseBranch?: string
   timeoutHandle?: ReturnType<typeof setTimeout>
+  lastHeartbeatAt?: Date
+  silenceHandle?: ReturnType<typeof setTimeout>
 }
 
 export interface TaskCoordinatorConfig {
@@ -396,6 +398,7 @@ export class TaskCoordinator {
     const worker = this.activeWorkers.get(executionId)
     if (!worker || !this.beginFinalization(executionId, worker)) return
     const failure = `[${kind}] ${error}`
+    const transient = kind === "timeout" || kind === "lease_lost" || kind === "lease_expired" || kind === "lost"
     this.publishActivity(worker, { type: "failed", level: "error", message: failure })
 
     console.error("[TaskCoordinator] Falha: " + worker.taskId, failure)
@@ -404,15 +407,18 @@ export class TaskCoordinator {
       if (worker.phase === "analyze") {
         const task = await this.repository.getTask(worker.taskId)
         if (task) {
-          await this.saveTaskTransition(task, "fail", { errorMessage: "Analise falhou: " + failure })
+          await this.saveTaskTransition(task, transient ? "recover" : "fail", { errorMessage: "Analise falhou: " + failure })
         }
       } else {
         if (worker.subtaskId) {
-          await this.db.query("UPDATE projeto_640.subtarefas SET status = 'blocked', resultado = ? WHERE id = ?", [failure.substring(0, 500), worker.subtaskId])
+          await this.db.query(
+            "UPDATE projeto_640.subtarefas SET status = ?, resultado = ? WHERE id = ?",
+            [transient ? "pending" : "blocked", failure.substring(0, 500), worker.subtaskId],
+          )
         }
         const task = await this.repository.getTask(worker.taskId)
         if (task) {
-          await this.saveTaskTransition(task, "fail", { errorMessage: failure.substring(0, 500) })
+          await this.saveTaskTransition(task, transient ? "recover" : "fail", { errorMessage: failure.substring(0, 500) })
         }
       }
     } finally {
@@ -433,6 +439,12 @@ export class TaskCoordinator {
     console.log("[TaskCoordinator] Recurso liberado: " + resourceKey)
     await this.waitManager?.resumeNext(resourceKey)
     await this.pump()
+  }
+
+  async onLeaseExpired(resourceKey: ResourceKey, executionId: string): Promise<void> {
+    const worker = this.activeWorkers.get(executionId)
+    if (!worker || worker.resourceKey !== resourceKey) return
+    await this.handleWorkerFailure(executionId, `Lease expirado para ${resourceKey}`, "lease_expired")
   }
 
   getStats() {
@@ -521,6 +533,10 @@ export class TaskCoordinator {
       clearTimeout(worker.timeoutHandle)
       worker.timeoutHandle = undefined
     }
+    if (worker.silenceHandle) {
+      clearTimeout(worker.silenceHandle)
+      worker.silenceHandle = undefined
+    }
     return true
   }
 
@@ -537,6 +553,18 @@ export class TaskCoordinator {
         "timeout",
       )
     }, timeoutMs)
+    this.armSilenceWatchdog(executionId)
+  }
+
+  private armSilenceWatchdog(executionId: string): void {
+    const worker = this.activeWorkers.get(executionId)
+    if (!worker) return
+    const silenceMs = 90_000
+    worker.lastHeartbeatAt = new Date()
+    if (worker.silenceHandle) clearTimeout(worker.silenceHandle)
+    worker.silenceHandle = setTimeout(() => {
+      void this.handleWorkerFailure(executionId, "Worker sem heartbeat por 90000ms", "lost")
+    }, silenceMs)
   }
 
   private async handleWorkerFailure(executionId: string, reason: string, kind = "worker_failure"): Promise<void> {
@@ -595,6 +623,8 @@ export class TaskCoordinator {
     this.workerLauncher.on("heartbeat", (msg: { executionId: string }) => {
       const worker = this.activeWorkers.get(msg.executionId)
       if (!worker) return
+      worker.lastHeartbeatAt = new Date()
+      this.armSilenceWatchdog(msg.executionId)
       this.publishActivity(worker, { type: "heartbeat" })
       if (!worker.resourceKey) return
       void this.resourceLease.renew(worker.resourceKey, msg.executionId, worker.fencingToken).then((result) => {

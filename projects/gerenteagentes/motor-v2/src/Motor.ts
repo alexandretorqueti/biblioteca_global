@@ -38,7 +38,11 @@ export class Motor {
     this.resourceLease = new ResourceLeaseService({ db: config.db })
     this._waitManager = new ResourceWaitManager(config.db, config.repository)
     this.workerLauncher = new WorkerLauncher()
-    this.reconciler = new ExpirationReconciler({ db: config.db, intervalMs: config.reconcilerIntervalMs })
+    this.reconciler = new ExpirationReconciler({
+      db: config.db,
+      intervalMs: config.reconcilerIntervalMs,
+      onLeaseExpired: (resourceKey, executionId) => this.coordinator.onLeaseExpired(resourceKey, executionId),
+    })
     this.coordinator = new TaskCoordinator(config.db, config.repository, this.resourceLease, {
       maxWorkers,
       maxWorkersPerProject: config.maxWorkersPerProject ?? 1,

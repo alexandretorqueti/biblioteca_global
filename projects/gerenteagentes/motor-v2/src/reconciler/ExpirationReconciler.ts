@@ -10,6 +10,7 @@ export interface ExpirationReconcilerConfig {
   db: Db
   intervalMs?: number
   maxStalenessMs?: number
+  onLeaseExpired?: (resourceKey: ResourceKey, executionId: string) => void | Promise<void>
 }
 
 export class ExpirationReconciler {
@@ -17,11 +18,13 @@ export class ExpirationReconciler {
   private intervalMs: number
   private maxStalenessMs: number
   private timer: ReturnType<typeof setInterval> | null = null
+  private onLeaseExpired?: ExpirationReconcilerConfig['onLeaseExpired']
 
   constructor(config: ExpirationReconcilerConfig) {
     this.db = config.db
     this.intervalMs = config.intervalMs ?? 30000
     this.maxStalenessMs = config.maxStalenessMs ?? 120000
+    this.onLeaseExpired = config.onLeaseExpired
   }
 
   start(): void {
@@ -57,6 +60,7 @@ export class ExpirationReconciler {
       )
 
       resourceEventBus.publish({ type: 'expired', resourceKey: key, executionId: execId, timestamp: now })
+      await this.onLeaseExpired?.(key, execId)
     }
 
     // 2. Tarefas órfãs: o plano é preservado e a primeira subtarefa não

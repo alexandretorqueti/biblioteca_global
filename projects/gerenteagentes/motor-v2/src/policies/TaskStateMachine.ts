@@ -3,7 +3,7 @@ import type { TaskStatus, SubTaskStatus } from "../shared/types/index.js"
 export type TaskTransition =
   | "start_analysis" | "analysis_completed" | "start_execution"
   | "execution_completed" | "subtasks_pending" | "pause" | "resume"
-  | "resume_without_plan" | "queue" | "fail" | "cancel"
+  | "resume_without_plan" | "queue" | "recover" | "fail" | "cancel"
 
 const taskTransitions: Record<TaskTransition, readonly TaskStatus[]> = {
   start_analysis: ["planned"],
@@ -15,6 +15,7 @@ const taskTransitions: Record<TaskTransition, readonly TaskStatus[]> = {
   resume: ["paused"],
   resume_without_plan: ["paused"],
   queue: ["paused", "planned"],
+  recover: ["analyzing", "running"],
   fail: ["analyzing", "running"],
   cancel: ["planned", "analyzing", "ready", "running", "paused", "blocked", "failed"],
 }
@@ -47,6 +48,7 @@ export function transitionTask(current: TaskStatus, transition: TaskTransition):
     resume: "ready",
     resume_without_plan: "planned",
     queue: "planned",
+    recover: "paused",
     fail: "blocked",
     cancel: "cancelled",
   }
