@@ -14,7 +14,7 @@ import { existsSync } from "node:fs"
 import { ConsoleAgentRuntimeDriver } from "../runtime/ConsoleAgentRuntimeDriver.js"
 import type { WorkerInput, ExecutionContext, ExecutionResult, SubtaskInfo } from "../shared/types/execution.js"
 import type { CoordinatorToWorkerMessage, WorkerToCoordinatorMessage } from "./WorkerProtocol.js"
-import { defaultChain, formatSessionKey, type ModelSelection } from "../policies/ModelTierPolicy.js"
+import { defaultChain, formatSessionKey, isModelUnavailableError, type ModelSelection } from "../policies/ModelTierPolicy.js"
 import { isSystemicFailure } from "../policies/SystemFailurePolicy.js"
 import { blockerEvidence, type BlockerKind } from "../policies/BlockerPolicy.js"
 import { failureFingerprint } from "../policies/SystemFailurePolicy.js"
@@ -179,7 +179,7 @@ class TaskWorker {
     let lastFailure = ""
     const modelFailures: string[] = []
 
-    for (let modelIndex = 0; modelIndex < chain.length; modelIndex += 1) {
+    modelLoop: for (let modelIndex = 0; modelIndex < chain.length; modelIndex += 1) {
       const model = chain[modelIndex]!
       for (let attempt = 1; attempt <= input.task.maxRework; attempt += 1) {
         deliverCount += 1
@@ -191,8 +191,9 @@ class TaskWorker {
 
         const driver = this.createDriver()
         const sessionKey = formatSessionKey({ agentId: input.task.agentId, taskId: input.task.id, phase: "development", model: model.model, modelIndex, generation: attempt - 1 })
-        const session = await driver.createSession({ agentId: input.task.agentId, key: sessionKey, label: `motor-v2-subtask-${subtask.id}`, model: model.model })
+        let session
         try {
+          session = await driver.createSession({ agentId: input.task.agentId, key: sessionKey, label: `motor-v2-subtask-${subtask.id}`, model: model.model })
           const prompt = this.buildProgrammerPrompt(input.task, subtask, input.repoPath, lastFailure || undefined)
           const { runId } = await driver.sendMessage({ session, message: prompt })
           const result = await driver.waitForRunCompletion(session, runId, 1_800_000)
@@ -236,8 +237,15 @@ class TaskWorker {
           )
           this.log("info", "Subtarefa verificada: " + subtask.titulo)
           return gitCommitSha
+        } catch (error) {
+          if (isModelUnavailableError(error)) {
+            lastFailure = `Modelo indisponível: ${model.model}`
+            this.log("warn", lastFailure)
+            continue modelLoop
+          }
+          throw error
         } finally {
-          await driver.closeSession(session).catch(() => {})
+          if (session) await driver.closeSession(session).catch(() => {})
         }
       }
       modelFailures.push(lastFailure || `Modelo ${model.model} não entregou resultado verificável`)

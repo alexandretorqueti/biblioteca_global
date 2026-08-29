@@ -21,6 +21,17 @@ export function defaultChain(phase: ModelPhase): readonly ModelSelection[] {
   return phase === "analysis" ? DEFAULT_ANALYSIS_CHAIN : DEFAULT_DEVELOPMENT_CHAIN
 }
 
+export function isModelUnavailableError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  const candidate = error as Error & { status?: number; code?: string }
+  const code = candidate.code?.toLowerCase() ?? ""
+  const message = candidate.message.toLowerCase()
+  return candidate.status === 404 || candidate.status === 422 ||
+    code.includes("model_not_found") || code.includes("model_unavailable") ||
+    message.includes("model not found") || message.includes("modelo indisponível") ||
+    message.includes("model unavailable")
+}
+
 export function formatSessionKey(input: {
   agentId: string
   taskId: string

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { defaultChain, formatSessionKey } from "../src/policies/ModelTierPolicy.js"
+import { defaultChain, formatSessionKey, isModelUnavailableError } from "../src/policies/ModelTierPolicy.js"
 
 describe("ModelTierPolicy", () => {
   it("mantém cadeias distintas para análise e desenvolvimento", () => {
@@ -16,5 +16,11 @@ describe("ModelTierPolicy", () => {
       modelIndex: 0,
       generation: 2,
     })).toBe("agent:programador-senior:task:701:m0:g2:qwen3.7-max")
+  })
+
+  it("reconhece indisponibilidade de modelo sem confundir erro operacional genérico", () => {
+    const unavailable = Object.assign(new Error("Model not found"), { status: 404, code: "MODEL_NOT_FOUND" })
+    expect(isModelUnavailableError(unavailable)).toBe(true)
+    expect(isModelUnavailableError(new Error("ECONNREFUSED"))).toBe(false)
   })
 })

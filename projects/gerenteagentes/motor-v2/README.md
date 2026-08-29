@@ -186,6 +186,10 @@ npm run test:coverage
 - [x] **Etapa 12 (decisão revisada)**: Subtarefas sequenciais dentro de uma tarefa; o paralelismo ocorre entre tarefas/projetos
 - [ ] **Etapa 13**: Deploy em produção e migração gradual
 
+### Evoluções de 2026-08-29
+
+- **Escada de modelos — indisponibilidade:** a abertura de sessão agora reconhece modelo ausente/indisponível e avança imediatamente ao próximo degrau. Foram alterados `ModelTierPolicy.ts`, `TaskWorker.ts` e `ModelTierPolicy.test.ts`. Validações: testes do Motor-v2, build TypeScript e lint. Estado: regra implementada e coberta por regressão; emissão do evento estruturado `model_unavailable` permanece pendente junto da integração do feed.
+
 ## 🔧 Configuração
 
 ```typescript
