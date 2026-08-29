@@ -141,7 +141,8 @@ export class TaskCoordinator {
       "WHERE s.status = 'pending' AND t.status = 'ready' " +
       "AND NOT EXISTS (" +
       "SELECT 1 FROM projeto_640.subtarefas anterior " +
-      "WHERE anterior.tarefa_id = s.tarefa_id AND anterior.seq < s.seq AND anterior.status != 'verified'" +
+      "WHERE anterior.tarefa_id = s.tarefa_id AND anterior.seq < s.seq AND anterior.status != 'verified' " +
+      "AND anterior.id != COALESCE(s.correction_for_subtask_id, -1)" +
       ") " +
       "ORDER BY s.seq ASC LIMIT 25"
     )
