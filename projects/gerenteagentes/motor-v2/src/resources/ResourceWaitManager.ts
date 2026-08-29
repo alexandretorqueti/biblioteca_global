@@ -5,7 +5,6 @@
 import type { Db, TaskRepository } from '../shared/types/infrastructure.js'
 import type { ResourceKey } from '../shared/types/resources.js'
 import type { Task } from '../shared/types/index.js'
-import { resourceEventBus } from './ResourceEventBus.js'
 
 export class ResourceWaitManager {
   private db: Db
@@ -14,13 +13,6 @@ export class ResourceWaitManager {
   constructor(db: Db, repository: TaskRepository) {
     this.db = db
     this.repository = repository
-    this.setupEventHandlers()
-  }
-
-  private setupEventHandlers(): void {
-    resourceEventBus.on('released', async (event) => {
-      await this.onResourceReleased(event.resourceKey)
-    })
   }
 
   async waitForResource(
@@ -62,7 +54,12 @@ export class ResourceWaitManager {
     )
   }
 
-  private async onResourceReleased(resourceKey: ResourceKey): Promise<void> {
+  /**
+   * Libera, de forma idempotente, somente a próxima tarefa que aguarda este
+   * recurso. O coordenador é o único consumidor do evento de release e chama
+   * este método antes de voltar a bombear a fila.
+   */
+  async resumeNext(resourceKey: ResourceKey): Promise<void> {
     const { rows } = await this.db.query(
       `SELECT t.* 
        FROM projeto_640.tarefas t

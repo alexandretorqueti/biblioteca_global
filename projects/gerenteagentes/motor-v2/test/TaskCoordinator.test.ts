@@ -105,6 +105,29 @@ describe('TaskCoordinator', () => {
     })
   })
 
+  describe('liberação de recurso', () => {
+    it('retoma a primeira espera antes de bombear novos workers', async () => {
+      const order: string[] = []
+      const waitManager = { resumeNext: vi.fn().mockImplementation(async () => { order.push('resume') }) }
+      const coordinatorWithQueue = new TaskCoordinator(
+        db,
+        repository,
+        resourceLease,
+        { maxWorkers: 1 },
+        undefined,
+        undefined,
+        waitManager as never,
+      )
+      const internal = coordinatorWithQueue as unknown as { pump: () => Promise<void> }
+      vi.spyOn(internal, 'pump').mockImplementation(async () => { order.push('pump') })
+
+      await coordinatorWithQueue.onResourceReleased('project:test-project:execution')
+
+      expect(waitManager.resumeNext).toHaveBeenCalledWith('project:test-project:execution')
+      expect(order).toEqual(['resume', 'pump'])
+    })
+  })
+
   describe('limites por projeto', () => {
     it('não inicia segundo worker no mesmo projeto acima do limite', () => {
       const coordinatorWithLimit = new TaskCoordinator(db, repository, resourceLease, {

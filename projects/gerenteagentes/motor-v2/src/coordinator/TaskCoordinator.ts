@@ -371,6 +371,7 @@ export class TaskCoordinator {
 
   async onResourceReleased(resourceKey: ResourceKey): Promise<void> {
     console.log("[TaskCoordinator] Recurso liberado: " + resourceKey)
+    await this.waitManager?.resumeNext(resourceKey)
     await this.pump()
   }
 

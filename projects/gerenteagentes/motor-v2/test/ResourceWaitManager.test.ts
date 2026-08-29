@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { ResourceWaitManager } from '../src/resources/ResourceWaitManager.js'
 import type { Db, QueryResult, TaskRepository } from '../src/shared/types/infrastructure.js'
-import { resourceEventBus } from '../src/resources/ResourceEventBus.js'
 
 function repository(): TaskRepository {
   return { getTask: vi.fn(), saveTask: vi.fn() }
@@ -30,10 +29,9 @@ describe('ResourceWaitManager', () => {
       query,
       transaction: vi.fn().mockImplementation(async (callback: (tx: Db) => Promise<unknown>) => callback(db)),
     }
-    new ResourceWaitManager(db, repository())
+    const manager = new ResourceWaitManager(db, repository())
 
-    resourceEventBus.publish({ type: 'released', resourceKey: 'project:demo:execution', executionId: 'old', timestamp: new Date() })
-    await new Promise((resolve) => setTimeout(resolve, 0))
+    await manager.resumeNext('project:demo:execution')
 
     expect(query).toHaveBeenCalledWith(expect.stringContaining("SET status = ?"), ['ready', '42'])
     expect(query).toHaveBeenCalledWith(expect.stringContaining("SET status = 'granted'"), [7])
