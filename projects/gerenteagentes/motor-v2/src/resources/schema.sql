@@ -3,14 +3,14 @@
 
 -- Tabela de recursos e leases
 CREATE TABLE IF NOT EXISTS execution_resources (
-  resource_key VARCHAR(255) PRIMARY KEY,
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  resource_key VARCHAR(255) NOT NULL UNIQUE,
   execution_id VARCHAR(100) NOT NULL,
   owner_id VARCHAR(100) NOT NULL,
   fencing_token BIGINT NOT NULL DEFAULT 1,
   heartbeat_at DATETIME(6) NOT NULL,
   acquired_at DATETIME(6) NOT NULL,
   expires_at DATETIME(6) NOT NULL,
-  max_wait_seconds INT NOT NULL DEFAULT 300,
   INDEX idx_expires (expires_at),
   INDEX idx_execution (execution_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -20,12 +20,12 @@ CREATE TABLE IF NOT EXISTS execution_resource_queue (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   resource_key VARCHAR(255) NOT NULL,
   execution_id VARCHAR(100) NOT NULL,
-  owner_id VARCHAR(100) NOT NULL,
+  task_id VARCHAR(200) NOT NULL,
+  priority INT NOT NULL DEFAULT 0,
   requested_at DATETIME(6) NOT NULL,
-  status ENUM('waiting', 'granted', 'expired') NOT NULL DEFAULT 'waiting',
+  status ENUM('waiting', 'granted', 'expired', 'cancelled') NOT NULL DEFAULT 'waiting',
   INDEX idx_resource_status (resource_key, status),
-  INDEX idx_requested (requested_at),
-  FOREIGN KEY (resource_key) REFERENCES execution_resources(resource_key) ON DELETE CASCADE
+  INDEX idx_requested (requested_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Adiciona colunas de execução à tabela tarefas (se não existirem)

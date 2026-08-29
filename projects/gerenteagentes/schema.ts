@@ -315,6 +315,7 @@ export const executionResourceQueue = mysqlTable("execution_resource_queue", {
   taskId: varchar("task_id", { length: 200 }).notNull(),
   priority: int("priority").notNull().default(0),
   requestedAt: timestamp("requested_at").notNull().defaultNow(),
+  status: varchar("status", { length: 20 }).notNull().default("waiting"),
 })
 
 // ============================================================================
