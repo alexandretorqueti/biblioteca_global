@@ -8,7 +8,8 @@ Evoluir o motor de tarefas para suportar:
 - ✅ Execução paralela de até 2 tarefas simultâneas (Etapa 8)
 - ✅ Locks por projeto para evitar conflitos (Etapa 7)
 - ✅ Espera orientada a eventos (Etapa 9)
-- ✅ Subtarefas paralelas dentro de uma tarefa (Etapa 12)
+- ✅ Tarefas de projetos diferentes em paralelo, com limite configurável
+- ✅ Subtarefas da mesma tarefa em sequência estrita
 
 ## 📐 Arquitetura
 
@@ -182,7 +183,7 @@ npm run test:coverage
 ### ⏳ Próximos Passos
 
 - [ ] **Etapa 11**: Integração real com banco de dados
-- [ ] **Etapa 12**: Subtarefas paralelas (paralelizar steps dentro de uma tarefa)
+- [x] **Etapa 12 (decisão revisada)**: Subtarefas sequenciais dentro de uma tarefa; o paralelismo ocorre entre tarefas/projetos
 - [ ] **Etapa 13**: Deploy em produção e migração gradual
 
 ## 🔧 Configuração

@@ -241,6 +241,39 @@ describe('TaskCoordinator', () => {
       expect(selectionQuery).toContain("anterior.status != 'verified'")
       expect(selectionQuery).toContain('anterior.id != COALESCE(s.correction_for_subtask_id, -1)')
     })
+
+    it('mantém a tarefa pronta entre subtarefas e só conclui após a última verificada', async () => {
+      const task = {
+        id: 'task-sequencial', chatId: '', agentId: 'agent', title: 'Sequencial', description: '',
+        repoPath: '/repo', buildCommand: 'npm run build', unitTestCommand: 'npm test',
+        status: 'running' as const, maxRework: 3, hardTimeoutMs: 1000, projectSlug: 'project',
+      }
+      vi.mocked(repository.getTask).mockResolvedValue(task)
+      vi.spyOn(coordinator, 'pump').mockResolvedValue()
+      const internal = coordinator as unknown as {
+        activeWorkers: Map<string, {
+          taskId: string; executionId: string; resourceKey: null; fencingToken: number
+          startedAt: Date; phase: 'execute'; subtaskId: number
+        }>
+      }
+
+      internal.activeWorkers.set('exec-1', {
+        taskId: task.id, executionId: 'exec-1', resourceKey: null, fencingToken: 0,
+        startedAt: new Date(), phase: 'execute', subtaskId: 101,
+      })
+      vi.mocked(db.query).mockResolvedValueOnce({ rows: [{ pending: 1 }], affectedRows: 0, insertId: 0 })
+      await coordinator.onTaskCompleted('exec-1')
+
+      internal.activeWorkers.set('exec-2', {
+        taskId: task.id, executionId: 'exec-2', resourceKey: null, fencingToken: 0,
+        startedAt: new Date(), phase: 'execute', subtaskId: 102,
+      })
+      vi.mocked(db.query).mockResolvedValueOnce({ rows: [{ pending: 0 }], affectedRows: 0, insertId: 0 })
+      await coordinator.onTaskCompleted('exec-2')
+
+      expect(repository.saveTask).toHaveBeenNthCalledWith(1, expect.objectContaining({ status: 'ready' }))
+      expect(repository.saveTask).toHaveBeenNthCalledWith(2, expect.objectContaining({ status: 'completed' }))
+    })
   })
 
   describe('onTaskCompleted', () => {
