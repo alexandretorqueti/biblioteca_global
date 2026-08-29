@@ -47,7 +47,11 @@ export class Motor {
 
     this.setupEventHandlers()
     if (config.activityBroadcaster) {
-      executionEventBus.on((event) => void config.activityBroadcaster!.publish(event))
+      executionEventBus.on((event) => {
+        void Promise.resolve(config.activityBroadcaster!.publish(event)).catch((error: unknown) => {
+          console.error('[Motor] Falha ao publicar atividade realtime:', error instanceof Error ? error.message : error)
+        })
+      })
     }
   }
 

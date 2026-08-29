@@ -188,7 +188,7 @@ npm run test:coverage
 
 ### Evoluções de 2026-08-29
 
-- **Escada de modelos — indisponibilidade:** a abertura de sessão reconhece modelo ausente/indisponível, emite `model_unavailable` com correlação da execução e o modelo afetado, e avança imediatamente ao próximo degrau. Foram alterados `ExecutionEventBus.ts`, `WorkerProtocol.ts`, `TaskWorker.ts`, `TaskCoordinator.ts`, `ExecutionEventBus.test.ts` e `TaskCoordinator.test.ts`. Validações: 50 testes do Motor-v2, build TypeScript e lint. Estado: detecção, salto e emissão no bus local implementados; permanece pendente apenas a integração do broadcaster com o feed da Biblioteca.
+- **Escada de modelos — indisponibilidade:** a abertura de sessão reconhece modelo ausente/indisponível, emite `model_unavailable` com correlação da execução e o modelo afetado, e avança imediatamente ao próximo degrau. O `LibraryRealtimeBroadcaster` converte `tarefas.external_id` no `tarefas.id` numérico, obtém o projeto vinculado em `projetos_captados` e publica o envelope autenticado em `POST /internal/realtime/events`; se o mapeamento não existir, o evento não é enviado e a falha é registrada pelo Motor. Foram alterados `ExecutionEventBus.ts`, `WorkerProtocol.ts`, `TaskWorker.ts`, `TaskCoordinator.ts`, `Motor.ts`, `start.ts`, `index.ts`, `LibraryRealtimeBroadcaster.ts` e os testes correspondentes. Validações mais recentes: 53 testes do Motor-v2, typecheck e lint. Estado: detecção, salto, emissão no bus e adaptador do feed implementados; validação E2E com API, banco e cliente WebSocket reais permanece pendente.
 
 ## 🔧 Configuração
 
@@ -201,6 +201,8 @@ const motor = new Motor({
   reconcilerIntervalMs: 30000,      // Intervalo do reconciliador
 })
 ```
+
+Para habilitar a publicação no feed ao iniciar pelo `start.ts`, configure `LIBRARY_REALTIME_EVENTS_TOKEN`. O endpoint pode ser sobrescrito por `LIBRARY_REALTIME_EVENTS_URL`; o padrão é `http://localhost:3001/internal/realtime/events`. O token deve permanecer somente em `.env`/secrets.
 
 ## 🐛 Troubleshooting
 

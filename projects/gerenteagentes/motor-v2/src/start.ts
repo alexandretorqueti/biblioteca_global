@@ -5,6 +5,7 @@
 
 import { Motor } from './Motor.js'
 import { createDbConnection, MysqlTaskRepository } from './database/DrizzleDb.js'
+import { LibraryRealtimeBroadcaster } from './events/LibraryRealtimeBroadcaster.js'
 
 async function main() {
   console.log('🚀 Motor v2 - Iniciando...')
@@ -15,6 +16,15 @@ async function main() {
   const repository = new MysqlTaskRepository(db)
   console.log('✅ Banco conectado')
 
+  const realtimeToken = process.env.LIBRARY_REALTIME_EVENTS_TOKEN
+  const activityBroadcaster = realtimeToken
+    ? new LibraryRealtimeBroadcaster({
+        db,
+        token: realtimeToken,
+        endpoint: process.env.LIBRARY_REALTIME_EVENTS_URL ?? 'http://localhost:3001/internal/realtime/events',
+      })
+    : undefined
+
   const apiPort = Number(process.env.MOTOR_API_PORT ?? 3010)
   const motor = new Motor({
     db,
@@ -22,6 +32,7 @@ async function main() {
     maxWorkers: Number(process.env.MOTOR_MAX_WORKERS ?? 1),
     apiPort,
     reconcilerIntervalMs: 30000,
+    activityBroadcaster,
   })
 
   const shutdown = async (signal: string) => {

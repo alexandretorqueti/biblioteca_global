@@ -24,6 +24,7 @@ export type { ResourceEvent, ResourceEventHandler, ResourceEventType } from './r
 export { ResourceWaitManager } from './resources/ResourceWaitManager.js'
 export { ExecutionEventBus, executionEventBus } from './events/ExecutionEventBus.js'
 export type { ExecutionActivityEvent, ExecutionActivityBroadcaster } from './events/ExecutionEventBus.js'
+export { LibraryRealtimeBroadcaster } from './events/LibraryRealtimeBroadcaster.js'
 
 // Execution
 export { executionContextManager, getCurrentContext, requireCurrentContext } from './execution/ExecutionContextManager.js'
