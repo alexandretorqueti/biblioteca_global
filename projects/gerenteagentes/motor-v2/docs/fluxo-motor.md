@@ -1,6 +1,6 @@
 # Fluxo do Motor v2
 
-**Atualizado em:** 2026-08-30
+**Atualizado em:** 2026-08-30 16:30 UTC
 
 **Referência:** `docs/fluxo-motor.md` do Motor v1 (pasta `GerenteAgentes` — somente leitura).
 
@@ -8,13 +8,18 @@
 
 ## Situação atual
 
-O Motor-v2 está **deployado no container real** (`biblioteca-global-api`, porta 3010, health OK). O código foi reorganizado:
+O Motor-v2 está **deployado no container real** (`biblioteca-global-api`, porta 3010, health OK). O código foi reorganizado e corrigido:
 
 - Módulo `gerenteagentes` movido de `apps/api/src/modules/` para `projects/gerenteagentes/api/`
 - Novos projetos de chat adicionados: `isa-chat`, `alpha-chat`, `chat-proxy`
 - Novo pacote `file-extract` para extração de conteúdo
 - Migração 0014 (paralelismo) aplicada
-- Branch: `base-desenvolvimento`, commit `0defb7c`
+- **Correções aplicadas (2026-08-30):**
+  - Timeout do watchdog: 90s → 10 minutos (`TaskCoordinator.ts`)
+  - Lease do recurso: 60s → 10 minutos (`Motor.ts`)
+  - Endpoint `/motor-detail`: usa `/api/motor/task/:id` (motor-v2) em `gerenteagentes.service.ts`
+  - Workspace do agente: `MOTOR_WORKSPACE_ROOT=/data/workspace/projects/agentes/gerenteagentes/worktrees` + volume mount
+- Branch: `base-desenvolvimento`, commits `0defb7c`, `e522283`, `43489ae`, `78f5df5`, `338baca`
 
 ---
 

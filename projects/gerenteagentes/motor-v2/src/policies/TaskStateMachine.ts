@@ -20,7 +20,9 @@ const taskTransitions: Record<TaskTransition, readonly TaskStatus[]> = {
   // interrupção concorrente do worker (por exemplo, o gate termina enquanto
   // o evento de saída do processo é tratado). Nesse caso a falha precisa ser
   // persistida, e não derrubar o coordenador por uma transição inválida.
-  fail: ["analyzing", "running", "paused"],
+  // Falhas ambientais podem ocorrer antes de a análise conseguir iniciar
+  // (por exemplo, workspace inacessível em uma tarefa `planned`).
+  fail: ["planned", "analyzing", "running", "paused"],
   cancel: ["planned", "analyzing", "ready", "running", "paused", "blocked", "failed"],
 }
 
