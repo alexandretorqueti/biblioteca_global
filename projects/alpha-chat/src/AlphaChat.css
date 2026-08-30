@@ -407,6 +407,31 @@ body {
   text-decoration: underline;
 }
 
+.alpha-footer-credit {
+  font-size: 0.7rem;
+  opacity: 0.6;
+  margin-top: 0.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  font-family: 'Lato', sans-serif;
+}
+
+.alpha-footer-credit a {
+  color: var(--alpha-gold);
+  text-decoration: none;
+}
+
+.alpha-footer-credit a:hover {
+  text-decoration: underline;
+  opacity: 1;
+}
+
+.alpha-footer-logo {
+  opacity: 0.7;
+}
+
 /* Responsivo */
 @media (max-width: 1024px) {
   .alpha-main {

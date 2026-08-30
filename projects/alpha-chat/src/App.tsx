@@ -277,7 +277,7 @@ export function App() {
           <div className="alpha-header-text">
             <h1>Alpha</h1>
             <p className="alpha-header-tagline">Plataforma Inteligente de Atendimento e Serviços ao Morador</p>
-            <p className="alpha-header-subtitle">Assistente virtual — Grupo Alphaville</p>
+            <p className="alpha-header-subtitle">Assistente virtual — Alphaville Rio Costa do Sol</p>
           </div>
         </div>
         <div className="alpha-header-badge">Alto Padrão</div>
@@ -290,7 +290,7 @@ export function App() {
             <AgentChat
               agent={{ id: "alpha", name: "Alpha", domain: "alpha.globaltecnologia.net" }}
               client={client}
-              welcomeMessage="Olá! 👋 Sou a Alpha, assistente virtual do Grupo Alphaville. Estou aqui para ajudar você a descobrir o empreendimento ideal para seu perfil, apresentar nossos projetos de alto padrão e tirar todas as suas dúvidas sobre segurança, lazer e qualidade de vida. Como posso ajudar você hoje?"
+              welcomeMessage="Olá! 👋 Sou a Alpha, assistente virtual do Alphaville Rio Costa do Sol. Estou aqui para ajudar você a descobrir o empreendimento ideal para seu perfil, apresentar nossos projetos de alto padrão e tirar todas as suas dúvidas sobre segurança, lazer e qualidade de vida. Como posso ajudar você hoje?"
               placeholder="Digite sua mensagem..."
               historyRefreshIntervalMs={5_000}
               allowAttachments
@@ -304,11 +304,17 @@ export function App() {
       {/* Footer Alphaville */}
       <footer className="alpha-footer">
         <div className="alpha-footer-content">
-          <p>© 2026 Grupo Alphaville. Todos os direitos reservados.</p>
+          <p>© 2026 Alphaville Rio Costa do Sol. Todos os direitos reservados.</p>
           <p>
             <a href="https://www.alphaville.com.br" target="_blank" rel="noopener noreferrer">
               www.alphaville.com.br
             </a>
+          </p>
+          <p className="alpha-footer-credit">
+            <svg className="alpha-footer-logo" viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+              <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+            </svg>
+            Desenvolvido por <a href="https://www.globaltecnologia.net" target="_blank" rel="noopener noreferrer">Global Tecnologia</a>
           </p>
         </div>
       </footer>
