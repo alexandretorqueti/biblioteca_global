@@ -54,7 +54,7 @@ O Motor-v2 está **deployado no container real** (`biblioteca-global-api`, porta
 | Worktree/commit/merge | ✅ Validado | Commit, publicação e merge reais na #727 (branch `motor-v2/727/717/a3` → `base-desenvolvimento`, merge `0cecbd5`) |
 | Bloqueio ambiental | ✅ Validado | Tarefa 728: repo inexistente → `bloqueios` persistido + tarefa `blocked`, sem loop de retry |
 | Pausa/cancel/retomada | ✅ Validado | Pausa na #727 durante gate (worker SIGKILL, tarefa `paused`), resume retomou; cancel validado na #730 |
-| Concorrência/fencing | ⚠️ Parcial | `MOTOR_MAX_WORKERS=1`: exclusão por projeto e fila observadas; 2+ workers simultâneos exige mudança de env (P1) |
+| Concorrência/fencing | ⚠️ Parcial | `MOTOR_MAX_WORKERS=1` em produção; pump multi-worker implementado e testado (preenchimento, limite por projeto, isolamento de falha) — ativar 2+ workers é decisão de rollout (P1) |
 | Subtarefa de correção | ✅ Validada | Tarefa 730: gate falhou 2x com mesmo fingerprint → correção criada automaticamente em banco/git reais |
 | Realtime/Broadcaster | ⚠️ Parcial | Código deployado (`38a0686`); validação ponta a ponta do feed pendente com a sessão dona da feature |
 

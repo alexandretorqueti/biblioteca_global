@@ -162,6 +162,29 @@ Validado também: bloqueio ambiental persistido sem loop (#728), pausa/cancel/re
 (#727/730), subtarefa de correção automática por fingerprint repetido (#730). Detalhes em
 `docs/fluxo-motor.md` e no workspace do agente (`teste-fluxo-real.md`, `PENDENCIAS.md`).
 
+## 🛠️ P1 — observabilidade, recuperação, rollback e concorrência (2026-08-30, noite)
+
+- **Log estruturado** (`docs/observabilidade.md`): timestamp ISO, nível, componente e
+  correlação `taskId`/`subtaskId`/`executionId`/`phase`; envs `MOTOR_LOG_LEVEL`,
+  `MOTOR_LOG_FORMAT=text|json`, `MOTOR_LOG_FILE`. `GET /api/motor/stats` agora detalha
+  workers ativos (fase, projeto, idade, último heartbeat).
+- **Recuperação** (`docs/runbook-recuperacao.md`): `npm run recover` —
+  `status`, `unblock --tarefa`, `integrate --subtarefa` (re-executa o merge da
+  integração), `mark-integrated --subtarefa`; tudo idempotente e com `--dry-run`.
+  Qualquer falha de início de execução agora persiste bloqueio em `bloqueios`.
+- **Rollback do rollout** (`docs/rollback-rollout.md`): reversão v2→v1 via
+  `MOTOR_VERSION`, com normalização de estados e verificação pós-rollback.
+- **Concorrência multi-worker:** o `pump` preenche todas as vagas de
+  `MOTOR_MAX_WORKERS` em uma única chamada (laço com guarda), respeitando
+  `maxWorkersPerProject`; testes cobrem preenchimento, limite por projeto, espera
+  por recurso e isolamento de falha entre workers. Ativar `MOTOR_MAX_WORKERS=2`
+  em produção é decisão de rollout (padrão permanece 1).
+- **Matriz de homologação** (`docs/homologacao-e2e.md` + `scripts/run-e2e.sh`):
+  `smoke` sem efeitos colaterais e `matriz` dos 6 cenários (exige `--autorizo`).
+  Smoke executado em 2026-08-30: health/pump OK no motor vivo; stats detalhado
+  aguarda deploy do build novo.
+- Testes: 16 arquivos, 78 testes verdes (`npm run test`).
+
 ## 📊 Fluxo de Execução
 
 1. **TaskCoordinator.pump()** é chamado periodicamente (30s)

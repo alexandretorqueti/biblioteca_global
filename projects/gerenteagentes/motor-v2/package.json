@@ -19,6 +19,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "recover": "node dist/scripts/recover.js",
     "typecheck": "npx tsc --noEmit",
     "lint": "eslint src test --ext .ts"
   },
