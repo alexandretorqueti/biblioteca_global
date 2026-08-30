@@ -38,4 +38,4 @@ jobs:
       - name: Deploy no Cloudflare Pages (producao)
         run: npx wrangler pages deploy apps/web/dist --project-name biblioteca-global --branch master
         env:
-          CLOUDFLARE_API_TOKEN: *** secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
