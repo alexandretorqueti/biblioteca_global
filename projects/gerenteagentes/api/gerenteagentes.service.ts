@@ -495,24 +495,65 @@ export class GerenteAgentesService {
     if (!tarefa) {
       throw new NotFoundException('Tarefa não encontrada');
     }
-    const motorId = tarefa.externalId || `task-biblioteca-${tarefa.id}`;
+    const motorId = tarefa.externalId || String(tarefa.id);
     try {
-      const resp = await this.motorRequest('GET', `/api/task/${encodeURIComponent(motorId)}/detail`);
+      // Motor-v2 usa /api/motor/task/:id (retorna dados básicos da tarefa)
+      const resp = await this.motorRequest('GET', `/api/motor/task/${encodeURIComponent(motorId)}`);
       if (resp.status === 404) {
         return { motorId, exists: false, message: 'Tarefa ainda não foi enviada ao motor (clique em Iniciar).' };
       }
       if (!resp.ok) {
         throw new BadRequestException(`Motor retornou ${resp.status}: ${resp.body.slice(0, 200)}`);
       }
-      const data = JSON.parse(resp.body) as {
-        task?: unknown;
-        subtasks?: unknown[];
-        currentSubTask?: unknown;
-        events?: unknown[];
-        errors?: unknown[];
-        models?: unknown[];
+      const motorTask = JSON.parse(resp.body) as {
+        id?: string;
+        title?: string;
+        status?: string;
+        description?: string;
       };
-      return { motorId, exists: true, ...data };
+      
+      // Busca subtarefas do banco de dados (motor-v2 não retorna subtarefas no endpoint)
+      const subtarefasList = await db
+        .select({
+          id: subtarefas.id,
+          seq: subtarefas.seq,
+          titulo: subtarefas.titulo,
+          status: subtarefas.status,
+          deliverCount: subtarefas.deliverCount,
+          resultado: subtarefas.resultado,
+        })
+        .from(subtarefas)
+        .where(eq(subtarefas.tarefaId, tarefaId))
+        .orderBy(subtarefas.seq);
+      
+      // Converte para o formato esperado pelo front-end
+      const subtasks = subtarefasList.map(s => ({
+        seq: s.seq,
+        title: s.titulo,
+        status: s.status,
+        deliverCount: s.deliverCount,
+        blockInfo: s.resultado ? { reason: s.resultado } : null,
+      }));
+      
+      // Encontra subtarefa atual (running, verifying, etc)
+      const currentSubTask = subtasks.find(s => 
+        ['running', 'verifying', 'delivered', 'planning'].includes(s.status)
+      ) || null;
+      
+      return { 
+        motorId, 
+        exists: true, 
+        task: {
+          id: motorTask.id || String(tarefaId),
+          title: motorTask.title || tarefa.titulo,
+          status: motorTask.status || tarefa.status,
+        },
+        subtasks,
+        currentSubTask,
+        events: [], // Motor-v2 não tem eventos detalhados ainda
+        errors: [],
+        models: [],
+      };
     } catch (e) {
       if (e instanceof BadRequestException) throw e;
       throw new BadRequestException(`Motor indisponível: ${e instanceof Error ? e.message : String(e)}`);
