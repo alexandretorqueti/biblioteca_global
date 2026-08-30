@@ -36,6 +36,19 @@ describe("GitWorkspaceManager", () => {
     })).rejects.toThrow("repositório principal não está limpo")
   })
 
+  it("classifica repositório ausente (ENOENT) como bloqueio ambiental", async () => {
+    const enoent = Object.assign(new Error("spawn git ENOENT"), { code: "ENOENT" })
+    const runner: GitCommandRunner = {
+      run: vi.fn().mockImplementation(async (command: readonly string[]) => {
+        if (command[1] === "status") throw enoent
+        return { stdout: "", stderr: "" }
+      }),
+    }
+    await expect(new GitWorkspaceManager({ root: "/tmp/motor-v2-workspaces", runner }).prepare({
+      repoPath: "/repo/inexistente", baseBranch: "base", taskId: "7", subtaskId: "8", attempt: 1,
+    })).rejects.toThrow("Ambiente bloqueado: repositório não encontrado: /repo/inexistente")
+  })
+
   it("lista os arquivos alterados entre base e commit da correção", async () => {
     const runner: GitCommandRunner = { run: vi.fn().mockResolvedValue({ stdout: "src/a.test.ts\ntests/b.ts\n", stderr: "" }) }
     const manager = new GitWorkspaceManager({ root: "/tmp/motor-v2-workspaces", runner })

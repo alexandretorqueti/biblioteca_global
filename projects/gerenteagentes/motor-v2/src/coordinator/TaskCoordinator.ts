@@ -18,6 +18,7 @@ import { GitWorkspaceManager } from "../workspaces/GitWorkspaceManager.js"
 import { ResourceWaitManager } from "../resources/ResourceWaitManager.js"
 import { executionEventBus, type ExecutionEventBus } from "../events/ExecutionEventBus.js"
 import { correctionOnlyChangesTests } from "../policies/CorrectionDiffPolicy.js"
+import { blockerEvidence } from "../policies/BlockerPolicy.js"
 import { transitionTask, type TaskTransition } from "../policies/TaskStateMachine.js"
 
 interface ActiveWorker {
@@ -307,6 +308,26 @@ export class TaskCoordinator {
       console.log("[TaskCoordinator] Worker de execucao iniciado: subtarefa #" + subtask.seq + " (" + executionId + ")")
     } catch (error) {
       console.error("[TaskCoordinator] Erro ao iniciar execucao:", error)
+      // Falha ambiental no preparo (repo ausente, git indisponível) não pode
+      // entrar em loop de retry: persistir bloqueio e marcar tarefa bloqueada.
+      const reason = error instanceof Error ? (error.message || String(error)) : String(error)
+      const environmental = reason.startsWith("Ambiente bloqueado") || reason.includes("ENOENT")
+      if (environmental) {
+        try {
+          const evidence = blockerEvidence("blocked_environment", reason)
+          await this.db.query(
+            "INSERT INTO projeto_640.bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at) " +
+            "SELECT tarefa_id, ?, ?, ?, ?, NOW() FROM projeto_640.subtarefas WHERE id = ?",
+            [subtask.id, evidence.kind, "motor-v2:" + evidence.fingerprint, evidence.excerpt, subtask.id],
+          )
+          await this.db.query("UPDATE projeto_640.subtarefas SET status = 'blocked', updated_at = NOW() WHERE id = ?", [subtask.id])
+          const parentTask = await this.repository.getTask(subtask.taskExternalId)
+          if (parentTask) await this.saveTaskTransition(parentTask, "fail")
+          console.warn("[TaskCoordinator] Bloqueio ambiental persistido (subtarefa " + subtask.id + "): " + reason)
+        } catch (persistError) {
+          console.error("[TaskCoordinator] Falha ao persistir bloqueio ambiental:", persistError)
+        }
+      }
       const activeWorker = this.activeWorkers.get(executionId)
       if (activeWorker && this.beginFinalization(executionId, activeWorker)) {
         await this.finishWorker(executionId, activeWorker)

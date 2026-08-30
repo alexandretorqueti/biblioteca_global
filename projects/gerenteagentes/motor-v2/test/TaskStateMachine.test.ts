@@ -6,6 +6,10 @@ describe("TaskStateMachine", () => {
     expect(transitionTask("planned", "fail")).toBe("blocked")
   })
 
+  it("persiste falha ambiental com a tarefa pronta aguardando subtarefa (ready)", () => {
+    expect(transitionTask("ready", "fail")).toBe("blocked")
+  })
+
   it("persiste falha que chega após a tarefa ser pausada", () => {
     expect(transitionTask("paused", "fail")).toBe("blocked")
   })

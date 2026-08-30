@@ -67,6 +67,8 @@ services:
       MOTOR_MAX_WORKERS: ${MOTOR_MAX_WORKERS:-1}
       MOTOR_API_PORT: ${MOTOR_API_PORT:-3010}
       MOTOR_WORKSPACE_ROOT: ${MOTOR_WORKSPACE_ROOT:-/data/workspace/projects/agentes/gerenteagentes/worktrees}
+      # Push do motor-v2 para o GitHub (fase PUBLISH) — chave montada como volume
+      GIT_SSH_COMMAND: ${GIT_SSH_COMMAND:-ssh -i /root/.ssh/github_id_ed25519 -o StrictHostKeyChecking=accept-new}
       # Isa Chat
       ISA_PROJECT_ID: ${ISA_PROJECT_ID:-640}
       ISA_AGENT_ID: ${ISA_AGENT_ID:-isa}
@@ -84,6 +86,8 @@ services:
       - ${REPO_PATH:-/run/media/alexandre/12T/codigofonte}:${REPO_PATH:-/run/media/alexandre/12T/codigofonte}
       # Workspace do agente (para worktrees do motor-v2)
       - /home/alexandre/projetos/agentes:/data/workspace/projects/agentes:rw
+      # Chave SSH do GitHub para a fase PUBLISH do motor-v2 (somente leitura)
+      - ${GITHUB_SSH_KEY_HOST:-/home/alexandre/secrets/biblioteca-global-api/github_id_ed25519}:/root/.ssh/github_id_ed25519:ro
     networks:
       - default
       - openclaw_default

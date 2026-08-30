@@ -21,8 +21,9 @@ const taskTransitions: Record<TaskTransition, readonly TaskStatus[]> = {
   // o evento de saída do processo é tratado). Nesse caso a falha precisa ser
   // persistida, e não derrubar o coordenador por uma transição inválida.
   // Falhas ambientais podem ocorrer antes de a análise conseguir iniciar
-  // (por exemplo, workspace inacessível em uma tarefa `planned`).
-  fail: ["planned", "analyzing", "running", "paused"],
+  // (por exemplo, workspace inacessível em uma tarefa `planned`) ou durante a
+  // execução com a tarefa ainda `ready`/`running` (repo removido, git ausente).
+  fail: ["planned", "analyzing", "ready", "running", "paused"],
   cancel: ["planned", "analyzing", "ready", "running", "paused", "blocked", "failed"],
 }
 

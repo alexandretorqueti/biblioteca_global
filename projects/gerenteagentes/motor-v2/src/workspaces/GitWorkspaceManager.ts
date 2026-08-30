@@ -90,7 +90,15 @@ export class GitWorkspaceManager {
     if (!inside(this.root, target)) throw new Error("workspace fora da raiz segura")
 
     await this.markSafeDirectory(input.repoPath)
-    const status = await this.runner.run(["git", "status", "--porcelain"], input.repoPath)
+    // Falha ambiental clara: repo ausente causa "spawn git ENOENT" e entraria
+    // em loop de retries no coordenador. Classificar como bloqueio ambiental.
+    const status = await this.runner.run(["git", "status", "--porcelain"], input.repoPath).catch((error: unknown) => {
+      const code = (error as NodeJS.ErrnoException | undefined)?.code
+      if (code === "ENOENT") {
+        throw new Error("Ambiente bloqueado: repositório não encontrado: " + input.repoPath)
+      }
+      throw error
+    })
     if (status.stdout.trim()) throw new Error("repositório principal não está limpo")
     const baseCommit = (await this.runner.run(["git", "rev-parse", "--verify", `${baseBranch}^{commit}`], input.repoPath)).stdout.trim()
     if (!/^[a-f0-9]{7,}$/i.test(baseCommit)) throw new Error("commit-base inválido")
