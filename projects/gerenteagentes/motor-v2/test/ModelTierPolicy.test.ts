@@ -34,4 +34,8 @@ describe("ModelTierPolicy", () => {
     expect(isModelUnavailableError(unavailable)).toBe(true)
     expect(isModelUnavailableError(new Error("ECONNREFUSED"))).toBe(false)
   })
+
+  it("reconhece modelo recusado pelo runtime como indisponível para a cadeia", () => {
+    expect(isModelUnavailableError(new Error("model not allowed: provider/indisponivel"))).toBe(true)
+  })
 })

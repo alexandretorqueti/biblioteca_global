@@ -29,7 +29,7 @@ export function isModelUnavailableError(error: unknown): boolean {
   return candidate.status === 404 || candidate.status === 422 ||
     code.includes("model_not_found") || code.includes("model_unavailable") ||
     message.includes("model not found") || message.includes("modelo indisponível") ||
-    message.includes("model unavailable")
+    message.includes("model unavailable") || message.includes("model not allowed")
 }
 
 export function formatSessionKey(input: {
