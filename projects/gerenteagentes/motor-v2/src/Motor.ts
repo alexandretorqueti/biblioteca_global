@@ -35,7 +35,11 @@ export class Motor {
     const maxWorkers = config.maxWorkers ?? 1
     const apiPort = config.apiPort ?? 3010
 
-    this.resourceLease = new ResourceLeaseService({ db: config.db })
+    this.resourceLease = new ResourceLeaseService({ 
+      db: config.db,
+      defaultLeaseMs: 600_000, // 10 minutos - tempo suficiente para chamadas LLM e testes
+      heartbeatIntervalMs: 30_000, // 30 segundos
+    })
     this._waitManager = new ResourceWaitManager(config.db, config.repository)
     this.workerLauncher = new WorkerLauncher()
     this.reconciler = new ExpirationReconciler({
