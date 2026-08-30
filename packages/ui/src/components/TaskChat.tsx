@@ -5,7 +5,7 @@
  * POST /task/:id/chat { role: 'admin', text } → envia mensagem
  * Após envio, reenvia (refresh) a lista completa.
  */
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import {
   Alert,
   Box,
@@ -53,9 +53,22 @@ export default function TaskChat({
   const [inputText, setInputText] = useState("")
   const [error, setError] = useState<string | null>(null)
   const [sending, setSending] = useState(false)
+  const [userScrolledUp, setUserScrolledUp] = useState(false)
 
   // Ref para scroll automático ao final da lista.
   const scrollRef = useRef<HTMLDivElement>(null)
+
+  const isNearBottom = () => {
+    if (!scrollRef.current) return true
+    const { scrollTop, scrollHeight, clientHeight } = scrollRef.current
+    return scrollHeight - scrollTop - clientHeight < 100
+  }
+
+  const handleScroll = () => {
+    if (!scrollRef.current) return
+    const nearBottom = isNearBottom()
+    setUserScrolledUp(!nearBottom)
+  }
 
   // --- carregar lista inicial -----------------------------------------------
   useEffect(() => {
@@ -94,12 +107,19 @@ export default function TaskChat({
     return () => { cancelled = true }
   }, [baseUrl, taskId])
 
-  // scroll automático para o fim
+  // scroll automático para o fim (só se o usuário não fez scroll para cima)
   useEffect(() => {
-    if (scrollRef.current) {
+    if (scrollRef.current && !userScrolledUp) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
-  }, [messages])
+  }, [messages, userScrolledUp])
+
+  // Resetar userScrolledUp quando o usuário envia uma mensagem
+  useEffect(() => {
+    if (sending) {
+      setUserScrolledUp(false)
+    }
+  }, [sending])
 
   // --- enviar mensagem -------------------------------------------------------
   const handleMessageSend = async () => {
@@ -199,6 +219,7 @@ export default function TaskChat({
       {/* Lista de mensagens */}
       <Box
         ref={scrollRef}
+        onScroll={handleScroll}
         sx={{
           flexGrow: 1,
           overflow: "auto",

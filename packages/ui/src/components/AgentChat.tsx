@@ -116,12 +116,27 @@ export default function AgentChat({
   const fileRef = useRef<HTMLInputElement>(null)
   const waitingAgentRef = useRef(false)
   const agentReplyCountRef = useRef(0)
+  const [userScrolledUp, setUserScrolledUp] = useState(false)
+
+  const isNearBottom = useCallback(() => {
+    if (!chatRef.current) return true
+    const { scrollTop, scrollHeight, clientHeight } = chatRef.current
+    return scrollHeight - scrollTop - clientHeight < 100
+  }, [])
 
   const scrollDown = useCallback(() => {
     requestAnimationFrame(() => {
-      if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight
+      if (chatRef.current && !userScrolledUp) {
+        chatRef.current.scrollTop = chatRef.current.scrollHeight
+      }
     })
-  }, [])
+  }, [userScrolledUp])
+
+  const handleScroll = useCallback(() => {
+    if (!chatRef.current) return
+    const nearBottom = isNearBottom()
+    setUserScrolledUp(!nearBottom)
+  }, [isNearBottom])
 
   const load = useCallback(async () => {
     const history = await client.loadHistory()
@@ -175,7 +190,19 @@ export default function AgentChat({
     return () => window.clearInterval(intervalId)
   }, [historyRefreshIntervalMs, load, sessionReady])
 
-  useEffect(() => { scrollDown() }, [messages, scrollDown])
+  useEffect(() => {
+    // Só faz scroll automático se o usuário não fez scroll para cima
+    if (!userScrolledUp) {
+      scrollDown()
+    }
+  }, [messages, scrollDown, userScrolledUp])
+
+  // Resetar userScrolledUp quando o usuário envia uma mensagem
+  useEffect(() => {
+    if (sending) {
+      setUserScrolledUp(false)
+    }
+  }, [sending])
 
   const send = async (event?: FormEvent) => {
     event?.preventDefault()
@@ -237,7 +264,7 @@ export default function AgentChat({
       )}
 
       {error && <Alert severity="warning" onClose={() => setError(null)}>{error}</Alert>}
-      <Box ref={chatRef} sx={{ flex: 1, minHeight: 0, overflow: "auto", p: 2, position: "relative" }}>
+      <Box ref={chatRef} onScroll={handleScroll} sx={{ flex: 1, minHeight: 0, overflow: "auto", p: 2, position: "relative" }}>
         {loading ? (
           <Stack alignItems="center" sx={{ py: 4 }}><CircularProgress size={24} aria-label="Carregando conversa" /></Stack>
         ) : messages.length === 0 ? (
