@@ -86,35 +86,18 @@ motor-v2/
 
 ## 🚀 Uso
 
-### Ambiente E2E isolado
+### Validação em homologação
 
-Os testes integrados não usam a fila nem os dados do projeto Biblioteca Global.
-O ambiente dedicado contém um MySQL `motor-v2-e2e-mysql`, o Motor
-`motor-v2-e2e-test` na porta `3011`, e o projeto fixture `motor-v2-e2e` no
-schema `projeto_640`. O fixture Git está em
-`.motor-v2-e2e-fixture`, tem remoto bare local e workspaces temporários em
-`.motor-v2-e2e-workspaces`.
+O ambiente E2E isolado (containers dedicados + fixtures Git locais) foi
+**descontinuado** depois da matriz de homologação de 2026-08-30 — os fixtures
+e o script `e2e-testbed.sh` foram removidos para não deixar código de
+simulação no projeto. O registro histórico da matriz está em
+[`docs/homologacao-e2e.md`](docs/homologacao-e2e.md).
 
-O runtime/Console continua sendo real; as credenciais ficam exclusivamente nas
-variáveis `MYSQL_*`, `OPENCLAW_CONSOLE_URL` e `OPENCLAW_CONSOLE_TOKEN`. Não há
-credenciais versionadas. A evidência e os cenários pendentes estão em
-[`PENDENCIAS.md`](../../../../../agentes/gerenteagentes/PENDENCIAS.md).
-
-O runner reproduzível está em `motor-v2/scripts/e2e-testbed.sh`. Ele não cria
-containers nem altera configuração do OpenClaw; valida os containers dedicados,
-prepara a fixture Git local e imprime evidência sanitizada:
-
-```bash
-motor-v2/scripts/e2e-testbed.sh check
-motor-v2/scripts/e2e-testbed.sh fixture
-motor-v2/scripts/e2e-testbed.sh evidence
-```
-
-Os nomes dos containers, a URL do Motor e os diretórios da fixture podem ser
-sobrescritos por `MOTOR_E2E_CONTAINER`, `MYSQL_E2E_CONTAINER`,
-`MOTOR_E2E_URL`, `MOTOR_E2E_FIXTURE_DIR`, `MOTOR_E2E_REMOTE_DIR` e
-`MOTOR_E2E_WORKSPACES_DIR`. Tokens devem ser fornecidos somente pelo ambiente
-do container ou por arquivo local fora do repositório.
+Hoje a validação pós-deploy é feita direto no motor de homologação com o
+script local `scripts/run-e2e.sh smoke` (não versionado): health, stats com
+`workers[]`, pump e diagnóstico de bloqueios/integrações/leases. Nenhuma
+tarefa é disparada nessa checagem.
 
 ```bash
 # Iniciar motor
