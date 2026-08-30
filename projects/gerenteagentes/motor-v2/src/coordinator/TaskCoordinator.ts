@@ -571,11 +571,11 @@ export class TaskCoordinator {
   private armSilenceWatchdog(executionId: string): void {
     const worker = this.activeWorkers.get(executionId)
     if (!worker) return
-    const silenceMs = 90_000
+    const silenceMs = 600_000 // 10 minutos - tempo suficiente para chamadas LLM demoradas
     worker.lastHeartbeatAt = new Date()
     if (worker.silenceHandle) clearTimeout(worker.silenceHandle)
     worker.silenceHandle = setTimeout(() => {
-      void this.handleWorkerFailure(executionId, "Worker sem heartbeat por 90000ms", "lost")
+      void this.handleWorkerFailure(executionId, "Worker sem heartbeat por 600000ms", "lost")
     }, silenceMs)
   }
 
