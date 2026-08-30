@@ -75,6 +75,8 @@ services:
       ISA_BFF_UPSTREAM: ${ISA_BFF_UPSTREAM:-}
       ISA_BFF_TOKEN: ${ISA_BFF_TOKEN:-}
       ISA_VERIFICATION_SECRET: ${ISA_VERIFICATION_SECRET:-}
+      # Provisionamento: usuário vinculado como admin em todos os projetos novos
+      PLATAFORMA_OWNER_USER_ID: ${PLATAFORMA_OWNER_USER_ID:-1}
     depends_on:
       mysql:
         condition: service_healthy

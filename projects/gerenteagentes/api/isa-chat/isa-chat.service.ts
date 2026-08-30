@@ -7,7 +7,7 @@
 import { Injectable, Inject, Logger, BadRequestException } from "@nestjs/common"
 import { ConfigService } from "@nestjs/config"
 import { createHash } from "node:crypto"
-import { eq, and, desc } from "drizzle-orm"
+import { eq, and, desc, isNull } from "drizzle-orm"
 import type { MySql2Database } from "drizzle-orm/mysql2"
 import * as nodemailer from "nodemailer"
 import { PROJECT_DB_FACTORY, type ProjectDbFactory } from "../../../../apps/api/src/modules/crud/project-db.factory"
@@ -30,6 +30,9 @@ import type {
   ChatHistoryResult,
   OnboardingState,
   SiteVisitInput,
+  DefinitionResult,
+  ProjectNameResult,
+  FinalizeResult,
 } from "./isa-chat.types"
 
 /** Saudação estática do primeiro acesso (agente não é chamado). */
@@ -79,6 +82,21 @@ function hashCode(code: string, email: string, secret: string): string {
   return createHash("sha256")
     .update(`${code.trim()}::${email.trim().toLowerCase()}::${secret}`)
     .digest("hex")
+}
+
+/** Slug do nome do projeto (a-z0-9 e hífen, sem acentos — padrão legado). */
+function slugDoNomeProjeto(value: string): string {
+  const normalized = value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+  const result = normalized.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 80)
+  return result
+}
+
+/** Descrição fallback: definições numeradas (padrão do provisioner legado). */
+function descricaoDasDefinicoes(defs: Array<{ texto: string }>): string {
+  return defs.map((d, i) => `${i + 1}. ${d.texto}`).join("\n")
 }
 
 @Injectable()
@@ -484,7 +502,7 @@ export class IsaChatService {
       .where(eq(chatMensagens.chatId, chat.id))
       .orderBy(chatMensagens.createdAt)
 
-    // Busca definições do projeto vinculado
+    // Busca definições: do projeto vinculado OU do buffer do chat (pré-fechamento)
     let projectDefs: Array<{ id: string; definition: string; createdAt: string }> = []
     let projectName: string | null = null
 
@@ -503,6 +521,21 @@ export class IsaChatService {
         .orderBy(definicoes.seq)
 
       projectDefs = defs.map((d) => ({
+        id: String(d.id),
+        definition: d.texto,
+        createdAt: d.createdAt.toISOString(),
+      }))
+    } else {
+      projectName = chat.nomeProjeto ?? null
+
+      const buffered = await db
+        .select()
+        .from(definicoes)
+        .where(and(eq(definicoes.chatId, chat.id), isNull(definicoes.projetoId)))
+        .orderBy(definicoes.seq)
+        .limit(10000)
+
+      projectDefs = buffered.map((d) => ({
         id: String(d.id),
         definition: d.texto,
         createdAt: d.createdAt.toISOString(),
@@ -703,12 +736,186 @@ export class IsaChatService {
     return { ok: true, chatId: String(chat.id) }
   }
 
-  async finalizeOnboarding(chatId: string): Promise<{ ok: boolean; chatId: string }> {
+  async finalizeOnboarding(chatId: string, descricao?: string): Promise<FinalizeResult> {
     const db = await this.getDb()
     const chat = await this.findChat(db, chatId)
-    if (!chat) throw new BadRequestException("Chat não encontrado")
+    if (!chat) return { ok: false, chatId, reason: "chat_not_found" }
 
-    await db.update(chats).set({ status: "finalizado" }).where(eq(chats.id, chat.id))
+    // Fechamento exige identidade verificada (contato criado).
+    if (!chat.contatoId) {
+      return { ok: false, chatId: String(chat.id), reason: "not_verified" }
+    }
+
+    // Idempotência: chat já fechado — apenas atualiza a descrição se vier.
+    if (chat.projetoId) {
+      if (descricao?.trim()) {
+        await db
+          .update(projetosCaptados)
+          .set({ descricao: descricao.trim() })
+          .where(eq(projetosCaptados.id, chat.projetoId))
+      }
+      await db.update(chats).set({ status: "finalizado" }).where(eq(chats.id, chat.id))
+      return { ok: true, chatId: String(chat.id), projetoId: String(chat.projetoId) }
+    }
+
+    // Nome do projeto é obrigatório (aprovado pelo cliente, sugerido pela Isa).
+    const nomeProjeto = chat.nomeProjeto?.trim()
+    if (!nomeProjeto) {
+      return { ok: false, chatId: String(chat.id), reason: "project_name_required" }
+    }
+
+    // Definições coletadas no chat.
+    const buffered = await db
+      .select()
+      .from(definicoes)
+      .where(and(eq(definicoes.chatId, chat.id), isNull(definicoes.projetoId)))
+      .orderBy(definicoes.seq)
+      .limit(10000)
+
+    if (buffered.length === 0) {
+      return { ok: false, chatId: String(chat.id), reason: "no_definitions" }
+    }
+
+    // Slug único derivado do nome (sufixo -2, -3... em colisão).
+    const base = slugDoNomeProjeto(nomeProjeto)
+    if (!base) {
+      return { ok: false, chatId: String(chat.id), reason: "project_name_required" }
+    }
+    let slug = base
+    for (let i = 2; ; i += 1) {
+      const exists = await db
+        .select({ id: projetosCaptados.id })
+        .from(projetosCaptados)
+        .where(eq(projetosCaptados.slug, slug))
+        .limit(1)
+      if (exists.length === 0) break
+      slug = `${base}-${i}`
+    }
+
+    // Descrição: redigida pela Isa; fallback determinístico (definições numeradas).
+    const descricaoFinal = descricao?.trim() || descricaoDasDefinicoes(buffered)
+
+    const [projeto] = await db
+      .insert(projetosCaptados)
+      .values({
+        nome: nomeProjeto,
+        slug,
+        descricao: descricaoFinal,
+        contatoId: chat.contatoId,
+        ativo: true,
+      })
+      .$returningId()
+
+    if (!projeto) {
+      throw new Error("Falha ao criar projeto captado")
+    }
+
+    // Vincula as definições do buffer ao projeto recém-criado.
+    await db
+      .update(definicoes)
+      .set({ projetoId: projeto.id, chatId: null })
+      .where(and(eq(definicoes.chatId, chat.id), isNull(definicoes.projetoId)))
+
+    await db
+      .update(chats)
+      .set({ projetoId: projeto.id, status: "finalizado" })
+      .where(eq(chats.id, chat.id))
+
+    this.logger.log(
+      `Captação finalizada: chat ${chat.id} → projeto "${nomeProjeto}" (id ${projeto.id}, slug ${slug}, ${buffered.length} definições)`,
+    )
+
+    return { ok: true, chatId: String(chat.id), projetoId: String(projeto.id), slug }
+  }
+
+  // ===========================================================================
+  // DEFINIÇÕES E PROJETO (fase de levantamento)
+  // ===========================================================================
+
+  /** Registra uma definição confirmada (buffer do chat ou projeto já criado). */
+  async addDefinition(chatId: string, texto: string): Promise<DefinitionResult> {
+    const db = await this.getDb()
+    const chat = await this.findChat(db, chatId)
+    if (!chat) return { ok: false, reason: "chat_not_found" }
+
+    // Só registra com identidade verificada (cadastro completo).
+    if (!chat.contatoId) return { ok: false, reason: "not_verified" }
+
+    const definition = texto.trim()
+    if (!definition) return { ok: false, reason: "definition_not_found" }
+
+    // Seq estável: próxima posição no buffer do chat ou no projeto.
+    const rows = chat.projetoId
+      ? await db
+          .select({ seq: definicoes.seq })
+          .from(definicoes)
+          .where(eq(definicoes.projetoId, chat.projetoId))
+          .limit(10000)
+      : await db
+          .select({ seq: definicoes.seq })
+          .from(definicoes)
+          .where(eq(definicoes.chatId, chat.id))
+          .limit(10000)
+    const seq = rows.reduce((max, r) => Math.max(max, r.seq), 0) + 1
+
+    const [inserted] = await db
+      .insert(definicoes)
+      .values({
+        projetoId: chat.projetoId ?? null,
+        chatId: chat.projetoId ? null : chat.id,
+        texto: definition,
+        seq,
+      })
+      .$returningId()
+
+    if (!inserted) throw new Error("Falha ao inserir definição")
+    this.logger.log(`Definição registrada no chat ${chat.id}: "${definition.slice(0, 80)}"`)
+    return { ok: true, id: String(inserted.id) }
+  }
+
+  /** Corrige uma definição já registrada (cliente mudou algo definido). */
+  async updateDefinition(chatId: string, id: string, texto: string): Promise<DefinitionResult> {
+    const db = await this.getDb()
+    const chat = await this.findChat(db, chatId)
+    if (!chat) return { ok: false, reason: "chat_not_found" }
+    if (!chat.contatoId) return { ok: false, reason: "not_verified" }
+
+    const definition = texto.trim()
+    if (!definition) return { ok: false, reason: "definition_not_found" }
+
+    const defId = Number(id)
+    if (!Number.isInteger(defId)) return { ok: false, reason: "definition_not_found" }
+
+    // A definição precisa pertencer ao chat (buffer) ou ao projeto do chat.
+    const [existing] = await db.select().from(definicoes).where(eq(definicoes.id, defId)).limit(1)
+    const belongsToChat = existing?.chatId === chat.id
+    const belongsToProject =
+      chat.projetoId !== null && existing?.projetoId === chat.projetoId
+    if (!existing || (!belongsToChat && !belongsToProject)) {
+      return { ok: false, reason: "definition_not_found" }
+    }
+
+    await db.update(definicoes).set({ texto: definition }).where(eq(definicoes.id, defId))
+    return { ok: true, id }
+  }
+
+  /** Define o nome do projeto (aprovado pelo cliente, sugerido pela Isa). */
+  async setProjectName(chatId: string, nome: string): Promise<ProjectNameResult> {
+    const db = await this.getDb()
+    const chat = await this.findChat(db, chatId)
+    if (!chat) return { ok: false, reason: "chat_not_found" }
+
+    const nomeProjeto = nome.trim().slice(0, 200)
+    await db.update(chats).set({ nomeProjeto }).where(eq(chats.id, chat.id))
+
+    // Se o projeto já existe (cliente voltou), atualiza o nome também.
+    if (chat.projetoId && nomeProjeto) {
+      await db
+        .update(projetosCaptados)
+        .set({ nome: nomeProjeto })
+        .where(eq(projetosCaptados.id, chat.projetoId))
+    }
+
     return { ok: true, chatId: String(chat.id) }
   }
 

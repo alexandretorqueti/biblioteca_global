@@ -190,13 +190,75 @@ export class IsaChatController {
 
   @Post("onboarding/finalize")
   @HttpCode(HttpStatus.OK)
-  async finalizeOnboarding(@Body() body: { chatId?: string }) {
+  async finalizeOnboarding(@Body() body: { chatId?: string; descricao?: string }) {
     const chatId = typeof body.chatId === "string" ? body.chatId.trim() : ""
+    const descricao = typeof body.descricao === "string" ? body.descricao : undefined
 
     if (!chatId) {
       throw new BadRequestException("chatId é obrigatório")
     }
 
-    return this.service.finalizeOnboarding(chatId)
+    return this.service.finalizeOnboarding(chatId, descricao)
+  }
+
+  // ===========================================================================
+  // DEFINIÇÕES E PROJETO (fase de levantamento)
+  // ===========================================================================
+
+  @Post("definition")
+  @HttpCode(HttpStatus.OK)
+  async addDefinition(@Body() body: { chatId?: string; definition?: string; texto?: string }) {
+    const chatId = typeof body.chatId === "string" ? body.chatId.trim() : ""
+    const texto =
+      typeof body.definition === "string" && body.definition.trim()
+        ? body.definition
+        : typeof body.texto === "string"
+          ? body.texto
+          : ""
+
+    if (!chatId || !texto.trim()) {
+      throw new BadRequestException("chatId e definition são obrigatórios")
+    }
+
+    return this.service.addDefinition(chatId, texto)
+  }
+
+  @Post("definition/update")
+  @HttpCode(HttpStatus.OK)
+  async updateDefinition(
+    @Body() body: { chatId?: string; id?: string | number; definition?: string; texto?: string },
+  ) {
+    const chatId = typeof body.chatId === "string" ? body.chatId.trim() : ""
+    const id = body.id !== undefined && body.id !== null ? String(body.id) : ""
+    const texto =
+      typeof body.definition === "string" && body.definition.trim()
+        ? body.definition
+        : typeof body.texto === "string"
+          ? body.texto
+          : ""
+
+    if (!chatId || !id || !texto.trim()) {
+      throw new BadRequestException("chatId, id e definition são obrigatórios")
+    }
+
+    return this.service.updateDefinition(chatId, id, texto)
+  }
+
+  @Post("project/name")
+  @HttpCode(HttpStatus.OK)
+  async setProjectName(@Body() body: { chatId?: string; projectName?: string; nome?: string }) {
+    const chatId = typeof body.chatId === "string" ? body.chatId.trim() : ""
+    const nome =
+      typeof body.projectName === "string" && body.projectName.trim()
+        ? body.projectName
+        : typeof body.nome === "string"
+          ? body.nome
+          : ""
+
+    if (!chatId || !nome.trim()) {
+      throw new BadRequestException("chatId e projectName são obrigatórios")
+    }
+
+    return this.service.setProjectName(chatId, nome)
   }
 }

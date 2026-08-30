@@ -109,9 +109,12 @@ export const definicoes = mysqlTable("definicoes", {
   id: bigint("id", { mode: "number", unsigned: true })
     .primaryKey()
     .autoincrement(),
+  // Durante a captação (antes do fechamento) a definição fica vinculada ao
+  // chat (buffer); após o fechamento é vinculada ao projetos_captados criado.
   projetoId: bigint("projeto_id", { mode: "number", unsigned: true })
-    .notNull()
     .references(() => projetosCaptados.id, { onDelete: "cascade" }),
+  chatId: bigint("chat_id", { mode: "number", unsigned: true })
+    .references(() => chats.id, { onDelete: "cascade" }),
   texto: text("texto").notNull(),
   seq: int("seq").notNull().default(0), // ordem da definição
   createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -144,6 +147,8 @@ export const chats = mysqlTable("chats", {
   // Email/nome definitivos (usados por setChatEmail/mergeChatInto no motor).
   email: varchar("email", { length: 200 }),
   name: varchar("name", { length: 150 }),
+  // Nome do projeto aprovado pelo cliente durante a captação (sugerido pela Isa).
+  nomeProjeto: varchar("nome_projeto", { length: 200 }),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at")
     .notNull()

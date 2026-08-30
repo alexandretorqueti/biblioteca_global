@@ -134,3 +134,22 @@ export interface SiteVisitInput {
   userAgent?: string
   remoteIp?: string
 }
+
+/** Resultado do registro/atualização de definição. */
+export type DefinitionResult =
+  | { ok: true; id: string }
+  | { ok: false; reason: "chat_not_found" | "not_verified" | "definition_not_found" }
+
+/** Resultado do nome do projeto. */
+export type ProjectNameResult =
+  | { ok: true; chatId: string }
+  | { ok: false; reason: "chat_not_found" }
+
+/** Resultado do fechamento da captação. */
+export type FinalizeResult =
+  | { ok: true; chatId: string; projetoId?: string; slug?: string }
+  | {
+      ok: false
+      chatId: string
+      reason: "chat_not_found" | "not_verified" | "project_name_required" | "no_definitions"
+    }

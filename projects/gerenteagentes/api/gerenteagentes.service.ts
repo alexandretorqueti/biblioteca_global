@@ -1,4 +1,4 @@
-import { Injectable, Inject, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, Inject, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { eq, desc } from 'drizzle-orm';
 import { request as httpRequest, type RequestOptions } from 'node:http';
@@ -18,11 +18,13 @@ import {
   projetoChats,
   projetosCaptados,
   geracoesProjeto,
+  contatos,
 } from '../schema';
 import { ProvisionService } from '../../../apps/api/src/modules/provision/provision.service';
 
 @Injectable()
 export class GerenteAgentesService {
+  private readonly logger = new Logger(GerenteAgentesService.name);
   private readonly motorUrl: string;
   private readonly motorHostHeader: string;
   private readonly motorVersao: string;
@@ -713,7 +715,7 @@ export class GerenteAgentesService {
   async iniciarDesenvolvimento(
     projeto: ProjetoResumo,
     projetoCaptadoId: number,
-    email: string,
+    emailUsuarioLogado: string,
   ) {
     const db = await this.dbDoProjeto(projeto);
     
@@ -728,6 +730,22 @@ export class GerenteAgentesService {
       throw new NotFoundException('Projeto não encontrado');
     }
 
+    // Email do CLIENTE (contato da captação) — dono do projeto na plataforma.
+    // Fallback: email do usuário logado (projeto criado manualmente sem contato).
+    let emailCliente = emailUsuarioLogado;
+    let nomeCliente: string | undefined;
+    if (projetoCaptado.contatoId) {
+      const [contato] = await db
+        .select()
+        .from(contatos)
+        .where(eq(contatos.id, projetoCaptado.contatoId))
+        .limit(1);
+      if (contato?.email) {
+        emailCliente = contato.email;
+        nomeCliente = contato.nome ?? undefined;
+      }
+    }
+
     // Se já tem plataformaProjetoId, retornar (idempotente)
     if (projetoCaptado.plataformaProjetoId) {
       return {
@@ -738,10 +756,14 @@ export class GerenteAgentesService {
     }
 
     // Chamar ProvisionService para criar o projeto no core
+    // (cliente dono + dono da plataforma como admin em todos os projetos)
+    const ownerUserId = Number(this.configService.get<string>('PLATAFORMA_OWNER_USER_ID') ?? '1')
     const provisionResult = await this.provisionService.provisionProject({
-      email,
+      email: emailCliente,
+      nome: nomeCliente,
       projetoNome: projetoCaptado.nome,
       projetoSlug: projetoCaptado.slug,
+      extraAdminUserIds: Number.isInteger(ownerUserId) && ownerUserId > 0 ? [ownerUserId] : [],
     });
 
     // Atualizar o projeto_captado com o plataformaProjetoId
@@ -753,13 +775,142 @@ export class GerenteAgentesService {
       })
       .where(eq(projetosCaptados.id, projetoCaptadoId));
 
+    // Disparar a missão de setup no agente biblioteca-global (idempotente).
+    const missao = await this.dispararMissaoSetup(db, projetoCaptado, provisionResult.projetoId);
+
     return {
       projetoId: projetoCaptado.id,
       plataformaProjetoId: provisionResult.projetoId,
       usuarioId: provisionResult.usuarioId,
       perfil: provisionResult.perfil,
       criado: provisionResult.criado,
+      ...(missao ? { missao } : {}),
       message: 'Desenvolvimento iniciado - projeto provisionado na plataforma',
     };
+  }
+
+  /**
+   * Cria e enfileira a tarefa de setup do projeto no agente biblioteca-global.
+   * A missão roda no monorepo: pasta do projeto, config.json, banco, schema,
+   * migration, push — e o gate de agente dedicado para telas além do CRUD.
+   * Idempotente por externalId.
+   */
+  private async dispararMissaoSetup(
+    db: Awaited<ReturnType<GerenteAgentesService['dbDoProjeto']>>,
+    projetoCaptado: typeof projetosCaptados.$inferSelect,
+    plataformaProjetoId: number,
+  ): Promise<{ tarefaId: number; motorId: string; nova: boolean } | null> {
+    // Projeto executor: o próprio biblioteca-global (monorepo).
+    const [executor] = await db
+      .select()
+      .from(projetosCaptados)
+      .where(eq(projetosCaptados.slug, 'biblioteca-global'))
+      .limit(1);
+
+    if (!executor) {
+      this.logger.warn('Projeto executor biblioteca-global não encontrado — missão de setup não disparada');
+      return null;
+    }
+
+    const motorId = `setup-${projetoCaptado.slug}`;
+
+    // Idempotência: missão já criada anteriormente.
+    const [existente] = await db
+      .select()
+      .from(tarefas)
+      .where(eq(tarefas.externalId, motorId))
+      .limit(1);
+
+    let tarefaId: number;
+    let nova = false;
+
+    if (existente) {
+      tarefaId = existente.id;
+    } else {
+      const descricao = this.montarMissaoSetup(projetoCaptado, plataformaProjetoId);
+      const [inserida] = await db
+        .insert(tarefas)
+        .values({
+          externalId: motorId,
+          projetoId: executor.id,
+          titulo: `Setup do projeto: ${projetoCaptado.nome}`,
+          descricao,
+          status: 'planned',
+        })
+        .$returningId();
+      if (!inserida) {
+        this.logger.warn('Falha ao inserir tarefa de setup — missão não disparada');
+        return null;
+      }
+      tarefaId = inserida.id;
+      nova = true;
+    }
+
+    // Enfileira no motor (v2: /api/motor/task/:id/enqueue).
+    const usarV2 = this.motorVersao === 'v2';
+    const enqueuePath = usarV2
+      ? `/api/motor/task/${encodeURIComponent(motorId)}/enqueue`
+      : `/api/task/${encodeURIComponent(motorId)}/start`;
+    const resp = await this
+      .motorRequest('POST', enqueuePath, undefined, usarV2 ? this.motorV2Url : undefined)
+      .catch((e: unknown) => {
+        this.logger.warn(`Motor indisponível ao enfileirar setup: ${e instanceof Error ? e.message : String(e)}`);
+        return null;
+      });
+
+    if (resp && !resp.ok) {
+      this.logger.warn(`Motor rejeitou o setup (${resp.status}): ${resp.body.slice(0, 200)}`);
+    }
+
+    return { tarefaId, motorId, nova };
+  }
+
+  /** Texto da missão de setup entregue ao agente biblioteca-global. */
+  private montarMissaoSetup(
+    projetoCaptado: typeof projetosCaptados.$inferSelect,
+    plataformaProjetoId: number,
+  ): string {
+    const slug = projetoCaptado.slug;
+    const linhas = [
+      `MISSÃO — Setup do projeto "${projetoCaptado.nome}" (slug: ${slug})`,
+      '',
+      'O projeto já foi provisionado na plataforma: core.projetos criado e usuários',
+      `(cliente e dono da plataforma) vinculados como admin. plataformaProjetoId = ${plataformaProjetoId}.`,
+      '',
+      'Descrição do projeto (redigida pela Isa na captação):',
+      '---',
+      projetoCaptado.descricao ?? '(sem descrição)',
+      '---',
+      '',
+      'Execute os passos abaixo, nesta ordem:',
+      `1. Crie a pasta do projeto em projects/${slug} neste monorepo.`,
+      '2. Crie o config.json do projeto com menus, telas e campos, seguindo',
+      '   docs/MANUAL_CONFIG_PROJETOS.md e a descrição acima.',
+      '3. GATE DE AGENTE DEDICADO — analise o config.json: o projeto tem telas ALÉM do CRUD?',
+      '   - SE SIM:',
+      `     (a) Crie o agente do projeto no OpenClaw com id = "${slug}" e workspace`,
+      `         /data/workspace/projects/agentes/${slug} (pasta com AGENTS.md, SOUL.md,`,
+      '         IDENTITY.md, USER.md, TOOLS.md);',
+      '     (b) Delegue a configuração desses arquivos ao agente definicaopersonalidadeagentes',
+      '         (Forjador), passando a descrição do projeto, e AGUARDE ele terminar;',
+      '     (c) Registre o agente na tabela projeto_640.agentes (espelho do OpenClaw):',
+      `         nome, modelo e openclaw_agent_id = "${slug}" (o motor resolve o agente por`,
+      '         COALESCE(openclaw_agent_id, nome));',
+      '     (d) Vincule o projeto ao agente: UPDATE projeto_640.projetos_captados SET',
+      `         agente_id = <id da linha de agentes> WHERE slug = "${slug}" — é esse vínculo`,
+      '         que faz o motor executar as tarefas do projeto com o agente novo;',
+      '     (e) Para cada funcionalidade NÃO compatível com o CRUD da biblioteca, crie UMA',
+      '         tarefa no motor ligada ao projeto novo (tarefas.projeto_id = id de',
+      '         projetos_captados do projeto novo), com auto_start para execução automática',
+      '         em sequência até finalizar ou travar.',
+      '   - SE NÃO (só CRUD): nenhum agente dedicado é criado.',
+      `4. Crie o banco projeto_${plataformaProjetoId} (convenção projeto_<id do core>).`,
+      '5. Crie o schema necessário para o funcionamento dos CRUDs do projeto.',
+      '6. Execute as migrations, faça commit e push. NÃO publique nada por projeto:',
+      '   apenas a própria biblioteca é publicada (ela já seleciona o projeto do usuário logado).',
+      '',
+      'Ao final, registre no resultado o que foi criado e qualquer bloqueio.',
+    ];
+    return linhas.join('\n');
   }
 }

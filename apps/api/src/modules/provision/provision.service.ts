@@ -95,8 +95,12 @@ export class ProvisionService {
       projeto = criadoProjeto
     }
 
-    // 3. Vínculo admin (upsert).
+    // 3. Vínculo admin (upsert) — dono do projeto + admins extras (ex.: dono da plataforma).
     await this.usuariosRepo.criarVinculo(usuario.id, projeto.id, "admin")
+    for (const adminId of dto.extraAdminUserIds ?? []) {
+      if (!Number.isInteger(adminId) || adminId <= 0) continue
+      await this.usuariosRepo.criarVinculo(adminId, projeto.id, "admin")
+    }
 
     return {
       usuarioId: usuario.id,

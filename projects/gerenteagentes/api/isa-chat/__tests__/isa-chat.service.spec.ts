@@ -6,7 +6,7 @@
  * Não depende de banco real, BFF real ou OpenClaw real.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest"
-import { IsaChatService, WELCOME_MESSAGE, isValidEmail, isValidBrPhone } from "../isa-chat.service"
+import { IsaChatService, getWelcomeMessage, isValidEmail, isValidBrPhone } from "../isa-chat.service"
 
 // Mock do file-extract
 vi.mock("@biblioteca-global/file-extract", () => ({
@@ -27,7 +27,7 @@ describe("IsaChatService", () => {
 
   // Mock chainable query builder simplificado
   const createMockQueryBuilder = () => {
-    const chain = {
+    const chain: Record<string, unknown> = {
       select: vi.fn(),
       from: vi.fn(),
       where: vi.fn(),
@@ -46,11 +46,11 @@ describe("IsaChatService", () => {
       }),
     }
     // Encadeamento
-    chain.select.mockReturnValue(chain)
-    chain.from.mockReturnValue(chain)
-    chain.where.mockReturnValue(chain)
-    chain.innerJoin.mockReturnValue(chain)
-    chain.orderBy.mockReturnValue(chain)
+    ;(chain.select as ReturnType<typeof vi.fn>).mockReturnValue(chain)
+    ;(chain.from as ReturnType<typeof vi.fn>).mockReturnValue(chain)
+    ;(chain.where as ReturnType<typeof vi.fn>).mockReturnValue(chain)
+    ;(chain.innerJoin as ReturnType<typeof vi.fn>).mockReturnValue(chain)
+    ;(chain.orderBy as ReturnType<typeof vi.fn>).mockReturnValue(chain)
     return chain
   }
 
@@ -157,10 +157,168 @@ describe("IsaChatService", () => {
     })
   })
 
-  describe("WELCOME_MESSAGE", () => {
-    it("deve ser definida", () => {
-      expect(WELCOME_MESSAGE).toBeDefined()
-      expect(WELCOME_MESSAGE).toContain("Isa")
+  describe("getWelcomeMessage", () => {
+    it("deve retornar saudação da Isa por padrão", () => {
+      const msg = getWelcomeMessage("isa")
+      expect(msg).toBeDefined()
+      expect(msg).toContain("Isa")
+    })
+
+    it("deve retornar saudação da Alpha para o agente alpha", () => {
+      const msg = getWelcomeMessage("alpha")
+      expect(msg).toContain("Alpha")
+    })
+  })
+
+  // ===========================================================================
+  // DEFINIÇÕES E FECHAMENTO DA CAPTAÇÃO
+  // ===========================================================================
+
+  const chatVerificado = {
+    id: 42,
+    contatoId: 5,
+    projetoId: null,
+    nomeProjeto: "Meu Sistema",
+    chatKey: "nav-abc",
+    sessionKey: null,
+    status: "verificado",
+  }
+
+  describe("addDefinition", () => {
+    it("deve registrar definição no buffer do chat", async () => {
+      ;(mockDb.limit as ReturnType<typeof vi.fn>).mockResolvedValueOnce([chatVerificado])
+
+      const result = await service.addDefinition("42", "O sistema terá login por email")
+
+      expect(result.ok).toBe(true)
+      expect(mockDb.insert).toHaveBeenCalled()
+    })
+
+    it("deve recusar definição sem identidade verificada", async () => {
+      ;(mockDb.limit as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+        { ...chatVerificado, contatoId: null },
+      ])
+
+      const result = await service.addDefinition("42", "definição qualquer")
+      expect(result.ok).toBe(false)
+      if (!result.ok) expect(result.reason).toBe("not_verified")
+    })
+
+    it("deve recusar chat inexistente", async () => {
+      const result = await service.addDefinition("999", "definição")
+
+      expect(result.ok).toBe(false)
+      if (!result.ok) expect(result.reason).toBe("chat_not_found")
+    })
+  })
+
+  describe("updateDefinition", () => {
+    it("deve atualizar definição do buffer do chat", async () => {
+      ;(mockDb.limit as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce([chatVerificado]) // findChat
+        .mockResolvedValueOnce([{ id: 10, chatId: 42, projetoId: null }]) // definição (findDef)
+
+      const result = await service.updateDefinition("42", "10", "texto novo")
+
+      expect(result.ok).toBe(true)
+    })
+
+    it("deve recusar definição de outro chat", async () => {
+      ;(mockDb.limit as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce([chatVerificado])
+        .mockResolvedValueOnce([{ id: 10, chatId: 999, projetoId: null }])
+
+      const result = await service.updateDefinition("42", "10", "texto novo")
+
+      expect(result.ok).toBe(false)
+      if (!result.ok) expect(result.reason).toBe("definition_not_found")
+    })
+  })
+
+  describe("setProjectName", () => {
+    it("deve gravar nome do projeto no chat", async () => {
+      ;(mockDb.limit as ReturnType<typeof vi.fn>).mockResolvedValueOnce([chatVerificado])
+
+      const result = await service.setProjectName("42", "Meu Sistema")
+
+      expect(result.ok).toBe(true)
+      expect(mockDb.update).toHaveBeenCalled()
+    })
+  })
+
+  describe("finalizeOnboarding", () => {
+    it("deve criar projeto com descrição da Isa e vincular definições", async () => {
+      ;(mockDb.limit as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce([chatVerificado]) // findChat
+        .mockResolvedValueOnce([{ texto: "Definição 1" }, { texto: "Definição 2" }]) // buffer
+        .mockResolvedValueOnce([]) // checagem de slug (sem colisão)
+
+      const result = await service.finalizeOnboarding("42", "Descrição completa redigida pela Isa")
+
+      expect(result.ok).toBe(true)
+      if (result.ok) {
+        expect(result.slug).toBe("meu-sistema")
+        expect(result.projetoId).toBe("1")
+      }
+      expect(mockDb.insert).toHaveBeenCalled()
+    })
+
+    it("deve usar fallback numerado quando a Isa não envia descrição", async () => {
+      ;(mockDb.limit as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce([chatVerificado]) // findChat
+        .mockResolvedValueOnce([{ texto: "Definição 1" }]) // buffer
+        .mockResolvedValueOnce([]) // checagem de slug
+
+      const result = await service.finalizeOnboarding("42")
+
+      expect(result.ok).toBe(true)
+      expect(mockDb.insert).toHaveBeenCalled()
+    })
+
+    it("deve recusar sem identidade verificada", async () => {
+      ;(mockDb.limit as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+        { ...chatVerificado, contatoId: null },
+      ])
+
+      const result = await service.finalizeOnboarding("42")
+
+      expect(result.ok).toBe(false)
+      if (!result.ok) expect(result.reason).toBe("not_verified")
+    })
+
+    it("deve exigir nome do projeto aprovado", async () => {
+      ;(mockDb.limit as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+        { ...chatVerificado, nomeProjeto: null },
+      ])
+
+      const result = await service.finalizeOnboarding("42")
+
+      expect(result.ok).toBe(false)
+      if (!result.ok) expect(result.reason).toBe("project_name_required")
+    })
+
+    it("deve exigir ao menos uma definição", async () => {
+      ;(mockDb.limit as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce([chatVerificado]) // findChat
+        .mockResolvedValueOnce([]) // buffer vazio
+
+      const result = await service.finalizeOnboarding("42")
+
+      expect(result.ok).toBe(false)
+      if (!result.ok) expect(result.reason).toBe("no_definitions")
+    })
+
+    it("deve ser idempotente quando o projeto já existe", async () => {
+      ;(mockDb.limit as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+        { ...chatVerificado, projetoId: 7 },
+      ])
+
+      const result = await service.finalizeOnboarding("42", "nova descrição")
+
+      expect(result.ok).toBe(true)
+      if (result.ok) expect(result.projetoId).toBe("7")
+      // Não deve criar outro projeto.
+      expect(mockDb.insert).not.toHaveBeenCalled()
     })
   })
 })

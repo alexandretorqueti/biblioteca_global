@@ -114,6 +114,8 @@ export interface ProvisionProjectRequest {
   nome?: string
   projetoNome: string
   projetoSlug?: string
+  /** Usuários adicionais vinculados como admin ao projeto (ex.: dono da plataforma). */
+  extraAdminUserIds?: number[]
 }
 
 export interface ProvisionProjectResponse {
