@@ -1,6 +1,6 @@
 # Fluxo do Motor v2
 
-**Atualizado em:** 2026-08-30 16:30 UTC
+**Atualizado em:** 2026-08-30 18:05 UTC
 
 **Referência:** `docs/fluxo-motor.md` do Motor v1 (pasta `GerenteAgentes` — somente leitura).
 
@@ -17,9 +17,11 @@ O Motor-v2 está **deployado no container real** (`biblioteca-global-api`, porta
 - **Correções aplicadas (2026-08-30):**
   - Timeout do watchdog: 90s → 10 minutos (`TaskCoordinator.ts`)
   - Lease do recurso: 60s → 10 minutos (`Motor.ts`)
-  - Endpoint `/motor-detail`: usa `/api/motor/task/:id` (motor-v2) em `gerenteagentes.service.ts`
+  - Roteamento da Biblioteca para o Motor-v2 (`gerenteagentes.service.ts`): quando `MOTOR_VERSION=v2`, motor-detail/start(enqueue)/pause/resume chamam `http://127.0.0.1:3010/api/motor/*` (sem Host header de proxy); v1 permanece para dev
+  - Tela Acompanhar Tarefa: subtarefas do banco como fallback + botão Iniciar desabilitado quando a tarefa já existe no motor
+  - Máquina de estados: `planned -> fail` aceito (falha ambiental antes da análise)
   - Workspace do agente: `MOTOR_WORKSPACE_ROOT=/data/workspace/projects/agentes/gerenteagentes/worktrees` + volume mount
-- Branch: `base-desenvolvimento`, commits `0defb7c`, `e522283`, `43489ae`, `78f5df5`, `338baca`
+- Branch: `base-desenvolvimento`, commits `0defb7c`, `e522283`, `43489ae`, `78f5df5`, `338baca`, `c4d2da0`, `0731be1`, `7464754`
 
 ---
 

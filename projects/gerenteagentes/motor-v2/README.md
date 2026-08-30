@@ -128,7 +128,23 @@ curl http://localhost:3010/api/motor/stats
 
 # Forçar pump manual
 curl -X POST http://localhost:3010/api/motor/pump
+
+# Consultar tarefa
+curl http://localhost:3010/api/motor/task/727
+
+# Ações sobre tarefa (enqueue = enfileirar/executar)
+curl -X POST http://localhost:3010/api/motor/task/727/enqueue
+curl -X POST http://localhost:3010/api/motor/task/727/pause
+curl -X POST http://localhost:3010/api/motor/task/727/resume
+curl -X POST http://localhost:3010/api/motor/task/727/cancel
 ```
+
+### Integração com a Biblioteca
+
+O serviço `gerenteagentes.service.ts` roteia por versão: com `MOTOR_VERSION=v2`,
+motor-detail/start(enqueue)/pause/resume chamam `http://127.0.0.1:${MOTOR_API_PORT}/api/motor/*`
+(o motor roda no mesmo container, sem proxy/Host header). Sem `MOTOR_VERSION=v2`,
+permanece o roteamento v1 via `MOTOR_DEV_URL`.
 
 ## 📊 Fluxo de Execução
 
