@@ -288,6 +288,7 @@ export function App() {
                 client={client}
                 welcomeMessage="Olá! 👋 Sou a Isa, da Global Tecnologia. Envie sua mensagem para eu te ajudar a construir o sistema que você precisa."
                 placeholder="Digite sua mensagem..."
+                historyRefreshIntervalMs={5_000}
                 allowAttachments
                 acceptedFileTypes=".pdf,.doc,.docx,.txt,.md,.png,.jpg,.jpeg,.zip"
                 renderSidebar={() => <IsaSidebar metadata={metadata} onLogout={handleLogout} />}
