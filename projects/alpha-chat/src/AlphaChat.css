@@ -3,11 +3,12 @@
 :root {
   --alpha-blue-dark: #1a3a5c;
   --alpha-blue-medium: #2c5282;
+  --alpha-blue-soft: #e8edf4;
   --alpha-gold: #c9a961;
   --alpha-gold-light: #d4b87a;
   --alpha-white: #ffffff;
-  --alpha-gray-light: #f7f7f7;
-  --alpha-gray-medium: #e0e0e0;
+  --alpha-gray-light: #f0f2f5;
+  --alpha-gray-medium: #d8dce3;
   --alpha-text: #2d3748;
 }
 
@@ -19,8 +20,29 @@
 
 body {
   font-family: 'Playfair Display', 'Georgia', serif;
-  background: var(--alpha-gray-light);
+  background: linear-gradient(180deg, var(--alpha-blue-soft) 0%, var(--alpha-gray-light) 100%);
   color: var(--alpha-text);
+  font-size: 18px;
+  line-height: 1.65;
+}
+
+/* Fonte confortável para o chat (MUI) */
+.alpha-chat-container [data-testid="agent-chat-root"] .MuiTypography-body2 {
+  font-size: 1.125rem !important;
+  line-height: 1.75 !important;
+}
+
+.alpha-chat-container [data-testid="agent-chat-root"] .MuiTypography-body1 {
+  font-size: 1.15rem !important;
+  line-height: 1.75 !important;
+}
+
+.alpha-chat-container [data-testid="agent-chat-root"] .MuiInputBase-input {
+  font-size: 1.1rem !important;
+}
+
+.alpha-chat-container [data-testid="agent-chat-root"] .MuiTypography-caption {
+  font-size: 0.875rem !important;
 }
 
 /* Header Alphaville */
@@ -50,15 +72,24 @@ body {
 }
 
 .alpha-header-text h1 {
-  font-size: 1.8rem;
+  font-size: 2.2rem;
   font-weight: 600;
   letter-spacing: 0.5px;
-  margin-bottom: 0.25rem;
+  margin-bottom: 0.4rem;
 }
 
-.alpha-header-text p {
-  font-size: 0.95rem;
-  opacity: 0.9;
+.alpha-header-tagline {
+  font-size: 1.2rem;
+  opacity: 0.95;
+  font-family: 'Lato', 'Helvetica', sans-serif;
+  font-weight: 400;
+  margin-bottom: 0.25rem;
+  letter-spacing: 0.3px;
+}
+
+.alpha-header-subtitle {
+  font-size: 0.9rem;
+  opacity: 0.75;
   font-family: 'Lato', 'Helvetica', sans-serif;
   font-weight: 300;
 }
@@ -76,9 +107,9 @@ body {
 
 /* Container principal */
 .alpha-main {
-  max-width: 1400px;
+  max-width: 1200px;
   margin: 0 auto;
-  padding: 2rem;
+  padding: 2.5rem 2rem;
   min-height: calc(100vh - 200px);
 }
 
@@ -86,19 +117,23 @@ body {
   display: grid;
   grid-template-columns: 1fr;
   gap: 2rem;
+  max-width: 900px;
+  margin: 0 auto;
 }
 
 .alpha-layout.alpha-authed {
   grid-template-columns: 320px 1fr;
+  max-width: 1100px;
 }
 
 /* Chat container */
 .alpha-chat-container {
   background: white;
   border-radius: 12px;
-  box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+  box-shadow: 0 4px 24px rgba(26, 58, 92, 0.1);
   overflow: hidden;
   min-height: 600px;
+  max-width: 100%;
 }
 
 /* Sidebar (quando autenticado) */
@@ -181,7 +216,7 @@ body {
 }
 
 .alpha-side-value {
-  font-size: 1rem;
+  font-size: 1.05rem;
   color: var(--alpha-text);
   font-weight: 500;
 }
@@ -258,8 +293,8 @@ body {
   counter-increment: def-counter;
   padding: 0.75rem 0;
   border-bottom: 1px solid var(--alpha-gray-medium);
-  font-size: 0.9rem;
-  line-height: 1.5;
+  font-size: 1rem;
+  line-height: 1.6;
 }
 
 .alpha-side-definition::before {
@@ -334,6 +369,21 @@ body {
 }
 
 /* Responsivo */
+@media (max-width: 1024px) {
+  .alpha-main {
+    max-width: 100%;
+    padding: 2rem 1.5rem;
+  }
+  
+  .alpha-layout {
+    max-width: 100%;
+  }
+  
+  .alpha-layout.alpha-authed {
+    max-width: 100%;
+  }
+}
+
 @media (max-width: 768px) {
   .alpha-layout.alpha-authed {
     grid-template-columns: 1fr;
@@ -343,13 +393,65 @@ body {
     flex-direction: column;
     text-align: center;
     gap: 1rem;
+    padding: 1.25rem 1.5rem;
   }
   
   .alpha-header-content {
     flex-direction: column;
+    gap: 1rem;
+  }
+  
+  .alpha-header-text h1 {
+    font-size: 1.75rem;
+  }
+  
+  .alpha-header-tagline {
+    font-size: 1.05rem;
+  }
+  
+  .alpha-header-badge {
+    font-size: 0.75rem;
+    padding: 0.4rem 1rem;
   }
   
   .alpha-main {
     padding: 1rem;
+  }
+  
+  .alpha-chat-container {
+    min-height: 500px;
+    border-radius: 10px;
+  }
+}
+
+@media (max-width: 480px) {
+  .alpha-header {
+    padding: 1rem;
+  }
+  
+  .alpha-logo {
+    width: 50px;
+    height: 50px;
+  }
+  
+  .alpha-header-text h1 {
+    font-size: 1.5rem;
+  }
+  
+  .alpha-header-tagline {
+    font-size: 0.95rem;
+  }
+  
+  /* Em mobile, manter legível */
+  .alpha-chat-container [data-testid="agent-chat-root"] .MuiTypography-body2 {
+    font-size: 1.05rem !important;
+  }
+  
+  .alpha-chat-container [data-testid="agent-chat-root"] .MuiInputBase-input {
+    font-size: 1rem !important;
+  }
+  
+  .alpha-main {
+    padding: 0.75rem;
   }
 }

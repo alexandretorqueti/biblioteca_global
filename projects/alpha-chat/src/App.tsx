@@ -276,7 +276,8 @@ export function App() {
           <img src={alphaAvatar} alt="Alpha" className="alpha-logo" />
           <div className="alpha-header-text">
             <h1>Alpha</h1>
-            <p>Assistente virtual — Grupo Alphaville</p>
+            <p className="alpha-header-tagline">Plataforma Inteligente de Atendimento e Serviços ao Morador</p>
+            <p className="alpha-header-subtitle">Assistente virtual — Grupo Alphaville</p>
           </div>
         </div>
         <div className="alpha-header-badge">Alto Padrão</div>
