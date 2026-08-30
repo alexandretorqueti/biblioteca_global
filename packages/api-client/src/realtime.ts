@@ -6,19 +6,44 @@ export class RealtimeClient {
   private stopped = false
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private readonly factory: (url: string) => WebSocket
+  private readonly fetchImpl: typeof fetch
   private lastSequence: number | undefined
 
   constructor(private readonly options: RealtimeClientOptions) {
     this.factory = options.webSocketFactory ?? ((url) => new WebSocket(url))
+    this.fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis)
     this.lastSequence = options.lastSequence
   }
 
-  connect(): void {
+  async connect(): Promise<void> {
     this.stopped = false
     this.options.onStatusChange?.("connecting")
-    const query = new URLSearchParams({ taskId: String(this.options.taskId) })
-    if (this.lastSequence !== undefined) query.set("lastSequence", String(this.lastSequence))
-    const socket = this.factory(`${this.options.url}?${query.toString()}`)
+    try {
+      // Solicitar ticket temporário via HTTP (cross-origin: cookie HttpOnly não chega no WS)
+      const ticket = await this.solicitarTicket()
+      const query = new URLSearchParams({ ticket, taskId: String(this.options.taskId) })
+      if (this.lastSequence !== undefined) query.set("lastSequence", String(this.lastSequence))
+      const socket = this.factory(`${this.options.url}?${query.toString()}`)
+      this.conectarSocket(socket)
+    } catch {
+      this.options.onStatusChange?.("closed")
+      if (!this.stopped) this.reconnectTimer = setTimeout(() => { void this.connect() }, 5000)
+    }
+  }
+
+  private async solicitarTicket(): Promise<string> {
+    const token = this.options.getAccessToken()
+    if (!token) throw new Error("access token ausente")
+    const res = await this.fetchImpl(`${this.options.baseUrl}/realtime/ticket`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!res.ok) throw new Error(`ticket: HTTP ${res.status}`)
+    const body = await res.json() as { ticket: string }
+    return body.ticket
+  }
+
+  private conectarSocket(socket: WebSocket): void {
     this.socket = socket
     socket.onopen = () => {
       this.options.onStatusChange?.("open")

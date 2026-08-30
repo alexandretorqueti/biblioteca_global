@@ -3,7 +3,7 @@ import { JwtService } from "@nestjs/jwt"
 import { WebSocketGateway, SubscribeMessage, MessageBody, ConnectedSocket } from "@nestjs/websockets"
 import type { IncomingMessage } from "node:http"
 import type { WebSocket } from "ws"
-import { realtimeClientMessageSchema, type AuthTokenClaims, type RealtimeClientMessage } from "@biblioteca-global/shared"
+import { realtimeClientMessageSchema, type RealtimeClientMessage } from "@biblioteca-global/shared"
 import { AUTH_REPOSITORY, type AuthRepository } from "../auth/auth.repository"
 import { RealtimeService } from "./realtime.service"
 
@@ -23,13 +23,21 @@ export class RealtimeGateway {
 
   async handleConnection(client: WebSocket, request: IncomingMessage): Promise<void> {
     try {
-      const token = this.cookie(request.headers.cookie, "bg_access_token")
-      if (!token) throw new Error("cookie ausente")
-      const claims = await this.jwt.verifyAsync<AuthTokenClaims>(token)
+      const url = new URL(request.url ?? "/", "http://localhost")
+      const ticket = url.searchParams.get("ticket")
+      const cookieToken = this.cookie(request.headers.cookie, "bg_access_token")
+      const token = ticket ?? cookieToken
+      if (!token) throw new Error("ticket ou cookie ausente")
+      const claims = await this.jwt.verifyAsync<Record<string, unknown>>(token)
       if (typeof claims.sub !== "number" || typeof claims.projetoId !== "number") throw new Error("claims inválidos")
-      const scope = await this.authRepository.resolveScope(claims.sub, claims.projetoId)
+      // Ticket WebSocket: exige kind="ws-ticket" (rejeita access tokens normais).
+      // Access token normal: não tem kind, aceita via cookie (dev local).
+      const temTicket = ticket != null
+      const kindOk = temTicket ? claims.kind === "ws-ticket" : claims.kind == null
+      if (!kindOk) throw new Error("tipo de token incorreto")
+      const scope = await this.authRepository.resolveScope(claims.sub as number, claims.projetoId as number)
       if (!scope) throw new Error("escopo inválido")
-      this.sessoes.set(client, { projetoId: claims.projetoId })
+      this.sessoes.set(client, { projetoId: claims.projetoId as number })
     } catch {
       this.logger.warn("Conexão realtime rejeitada")
       client.close(1008, "Não autorizado")

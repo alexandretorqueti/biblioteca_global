@@ -37,7 +37,7 @@ import { DynamicForm } from "@biblioteca-global/ui"
 import { RealtimeClient, type RealtimeServerMessage } from "@biblioteca-global/api-client"
 import type { DynamicField, DynamicFormValues } from "@biblioteca-global/ui"
 import { useApi } from "../../../apps/web/src/hooks/useApi"
-import { resolveRealtimeUrl } from "../../../apps/web/src/api/client"
+import { resolveRealtimeUrl, resolveApiBaseUrl } from "../../../apps/web/src/api/client"
 
 interface Tarefa {
   id: number
@@ -276,11 +276,13 @@ export default function TaskMonitorScreen(): ReactNode {
   }, [tarefaId, carregarDetail, carregarSubtarefasDb])
 
   useEffect(() => {
-    if (tarefaId === "") return
+    if (tarefaId === "" || !bundle) return
     setTerminalEvents([])
     const realtime = new RealtimeClient({
       url: resolveRealtimeUrl(),
+      baseUrl: resolveApiBaseUrl(),
       taskId: tarefaId,
+      getAccessToken: () => bundle.getAccessToken(),
       onStatusChange: setRealtimeStatus,
       onMessage: (message) => {
         if (message.type !== "event") return
@@ -291,9 +293,9 @@ export default function TaskMonitorScreen(): ReactNode {
         }
       },
     })
-    realtime.connect()
+    void realtime.connect()
     return () => realtime.close()
-  }, [tarefaId])
+  }, [tarefaId, bundle])
 
   useEffect(() => {
     setLoading(false)

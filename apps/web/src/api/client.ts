@@ -30,6 +30,8 @@ export function resolveRealtimeUrl(): string {
 export interface ApiClientBundle {
   http: ApiHttpClient
   auth: AuthClient
+  /** Retorna o access token atual (para WebSocket ticket). */
+  getAccessToken(): string | null
 }
 
 /** Builda o bundle a partir de um TokenStore (o AuthContext fornece o store). */
@@ -43,5 +45,5 @@ export function createApiClient(tokens: {
     baseUrl: resolveApiBaseUrl(),
     tokens,
   })
-  return { http, auth: new AuthClient(http) }
+  return { http, auth: new AuthClient(http), getAccessToken: () => tokens.getAccessToken() }
 }
