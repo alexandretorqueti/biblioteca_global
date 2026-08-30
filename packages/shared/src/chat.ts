@@ -86,6 +86,8 @@ export const chatHistorySchema = z
   .object({
     chatId: z.string().trim().min(1),
     messages: z.array(chatMessageSchema),
+    /** Metadados específicos do agente, sem regras de negócio na UI genérica. */
+    metadata: z.record(z.string(), z.unknown()).optional(),
   })
   .strict()
 

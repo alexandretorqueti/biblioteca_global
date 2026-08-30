@@ -37,6 +37,7 @@ describe("createAgentChatClient", () => {
         visitPath: "/site-visit",
         buildSessionBody: ({ visitorKey }) => ({ chatKey: visitorKey }),
         buildSendBody: ({ chatId, text, attachments }) => ({ chatId, text, attachments }),
+        historyMetadata: (data) => ({ project: data.project, onboarding: data.onboarding }),
       },
     })
   }
@@ -44,11 +45,15 @@ describe("createAgentChatClient", () => {
   it("adapta a sessão e o histórico para as rotas da Isa", async () => {
     fake.responses.push(
       { status: 201, body: { chatId: "chat-1", existing: false } },
-      { status: 200, body: { chatId: "chat-1", messages: [{ id: "m1", role: "agent", text: "Olá!" }] } },
+      { status: 200, body: { chatId: "chat-1", messages: [{ id: "m1", role: "agent", text: "Olá!" }], project: { name: "Site" }, onboarding: { verified: true } } },
     )
     const client = create()
     await expect(client.startSession()).resolves.toEqual({ chatId: "chat-1", existing: false })
-    await expect(client.loadHistory()).resolves.toMatchObject({ chatId: "chat-1", messages: [{ text: "Olá!" }] })
+    await expect(client.loadHistory()).resolves.toMatchObject({
+      chatId: "chat-1",
+      messages: [{ text: "Olá!" }],
+      metadata: { project: { name: "Site" }, onboarding: { verified: true } },
+    })
     expect(fake.requests.map((request) => `${request.method} ${request.url}`)).toEqual([
       "POST http://api.local/api/session",
       "GET http://api.local/api/chat/chat-1/history",

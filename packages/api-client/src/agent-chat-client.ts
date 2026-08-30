@@ -26,6 +26,8 @@ export interface AgentChatEndpointConfig {
   buildSessionBody?: (input: StartChatSessionInput) => Record<string, unknown>
   buildSendBody?: (input: SendChatMessageInput) => Record<string, unknown>
   buildVisitBody?: (visitorKey: string, pageUrl: string) => Record<string, unknown>
+  /** Converte extensões do histórico legado em metadados neutros para a UI. */
+  historyMetadata?: (data: Record<string, unknown>) => Record<string, unknown> | undefined
 }
 
 export interface AgentChatClientOptions {
@@ -104,9 +106,11 @@ export function createAgentChatClient(options: AgentChatClientOptions): AgentCha
     const path = endpoints.historyPath?.(activeChatId) ?? `/agent-chat/${encodeURIComponent(activeChatId)}/history`
     const data = await options.http.request<unknown>("GET", path, { auth: "none" })
     const result = data as { chatId?: unknown; messages?: unknown }
+    const metadata = endpoints.historyMetadata?.(result as Record<string, unknown>)
     const parsed = chatHistorySchema.safeParse({
       chatId: typeof result.chatId === "string" ? result.chatId : activeChatId,
       messages: result.messages,
+      ...(metadata ? { metadata } : {}),
     })
     if (!parsed.success) throw erroRespostaInvalida("O histórico do agente não segue o contrato esperado", parsed.error)
     if (parsed.data.chatId !== activeChatId) activeChatId = parsed.data.chatId

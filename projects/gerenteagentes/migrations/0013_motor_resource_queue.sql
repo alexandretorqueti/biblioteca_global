@@ -17,7 +17,40 @@ CREATE TABLE IF NOT EXISTS `execution_resources` (
 
 --> statement-breakpoint
 
-CREATE INDEX `idx_execution_resources_expires_at` ON `execution_resources` (`expires_at`);
+-- A estrutura do Motor v2 foi criada manualmente em alguns ambientes antes
+-- desta migration. MySQL não suporta CREATE INDEX IF NOT EXISTS; o helper
+-- abaixo permite reconciliar esses ambientes sem perder dados.
+DROP PROCEDURE IF EXISTS `__bg_ensure_index`;
+
+CREATE PROCEDURE `__bg_ensure_index`(
+  IN p_table VARCHAR(64),
+  IN p_index VARCHAR(64),
+  IN p_columns VARCHAR(255)
+)
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM information_schema.statistics
+    WHERE table_schema = DATABASE()
+      AND table_name = p_table
+      AND index_name = p_index
+  ) THEN
+    SET @bg_index_sql = CONCAT(
+      'CREATE INDEX `', p_index, '` ON `', p_table, '` (', p_columns, ')'
+    );
+    PREPARE bg_index_stmt FROM @bg_index_sql;
+    EXECUTE bg_index_stmt;
+    DEALLOCATE PREPARE bg_index_stmt;
+  END IF;
+END;
+
+--> statement-breakpoint
+
+CALL `__bg_ensure_index`(
+  'execution_resources',
+  'idx_execution_resources_expires_at',
+  '`expires_at`'
+);
 
 --> statement-breakpoint
 
@@ -34,18 +67,80 @@ CREATE TABLE IF NOT EXISTS `execution_resource_queue` (
 
 --> statement-breakpoint
 
-CREATE INDEX `idx_execution_resource_queue_resource_status` ON `execution_resource_queue` (`resource_key`, `status`);
+DROP PROCEDURE IF EXISTS `__bg_ensure_column`;
+
+CREATE PROCEDURE `__bg_ensure_column`(
+  IN p_table VARCHAR(64),
+  IN p_column VARCHAR(64),
+  IN p_definition VARCHAR(255)
+)
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE()
+      AND table_name = p_table
+      AND column_name = p_column
+  ) THEN
+    SET @bg_column_sql = CONCAT(
+      'ALTER TABLE `', p_table, '` ADD COLUMN `', p_column, '` ', p_definition
+    );
+    PREPARE bg_column_stmt FROM @bg_column_sql;
+    EXECUTE bg_column_stmt;
+    DEALLOCATE PREPARE bg_column_stmt;
+  END IF;
+END;
 
 --> statement-breakpoint
 
-ALTER TABLE `tarefas`
-  ADD COLUMN `execution_id` varchar(100),
-  ADD COLUMN `fencing_token` bigint,
-  ADD COLUMN `resource_wait_key` varchar(255),
-  ADD COLUMN `resource_wait_id` bigint,
-  ADD COLUMN `resource_wait_position` int,
-  ADD COLUMN `paused_at` timestamp NULL;
+CALL `__bg_ensure_column`(
+  'execution_resource_queue',
+  'status',
+  "varchar(20) NOT NULL DEFAULT 'waiting'"
+);
 
 --> statement-breakpoint
 
-CREATE INDEX `idx_tarefas_resource_wait` ON `tarefas` (`status`, `resource_wait_key`);
+CALL `__bg_ensure_index`(
+  'execution_resource_queue',
+  'idx_execution_resource_queue_resource_status',
+  '`resource_key`, `status`'
+);
+
+--> statement-breakpoint
+
+CALL `__bg_ensure_column`('tarefas', 'execution_id', 'varchar(100)');
+
+--> statement-breakpoint
+
+CALL `__bg_ensure_column`('tarefas', 'fencing_token', 'bigint');
+
+--> statement-breakpoint
+
+CALL `__bg_ensure_column`('tarefas', 'resource_wait_key', 'varchar(255)');
+
+--> statement-breakpoint
+
+CALL `__bg_ensure_column`('tarefas', 'resource_wait_id', 'bigint');
+
+--> statement-breakpoint
+
+CALL `__bg_ensure_column`('tarefas', 'resource_wait_position', 'int');
+
+--> statement-breakpoint
+
+CALL `__bg_ensure_column`('tarefas', 'paused_at', 'timestamp NULL');
+
+--> statement-breakpoint
+
+CALL `__bg_ensure_index`(
+  'tarefas',
+  'idx_tarefas_resource_wait',
+  '`status`, `resource_wait_key`'
+);
+
+DROP PROCEDURE `__bg_ensure_index`;
+
+--> statement-breakpoint
+
+DROP PROCEDURE `__bg_ensure_column`;

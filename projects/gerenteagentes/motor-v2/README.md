@@ -100,6 +100,22 @@ variáveis `MYSQL_*`, `OPENCLAW_CONSOLE_URL` e `OPENCLAW_CONSOLE_TOKEN`. Não h�
 credenciais versionadas. A evidência e os cenários pendentes estão em
 [`PENDENCIAS.md`](../../../../../agentes/gerenteagentes/PENDENCIAS.md).
 
+O runner reproduzível está em `motor-v2/scripts/e2e-testbed.sh`. Ele não cria
+containers nem altera configuração do OpenClaw; valida os containers dedicados,
+prepara a fixture Git local e imprime evidência sanitizada:
+
+```bash
+motor-v2/scripts/e2e-testbed.sh check
+motor-v2/scripts/e2e-testbed.sh fixture
+motor-v2/scripts/e2e-testbed.sh evidence
+```
+
+Os nomes dos containers, a URL do Motor e os diretórios da fixture podem ser
+sobrescritos por `MOTOR_E2E_CONTAINER`, `MYSQL_E2E_CONTAINER`,
+`MOTOR_E2E_URL`, `MOTOR_E2E_FIXTURE_DIR`, `MOTOR_E2E_REMOTE_DIR` e
+`MOTOR_E2E_WORKSPACES_DIR`. Tokens devem ser fornecidos somente pelo ambiente
+do container ou por arquivo local fora do repositório.
+
 ```bash
 # Iniciar motor
 npm start

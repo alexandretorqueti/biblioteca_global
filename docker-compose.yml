@@ -66,6 +66,12 @@ services:
       MOTOR_VERSION: ${MOTOR_VERSION:-v2}
       MOTOR_MAX_WORKERS: ${MOTOR_MAX_WORKERS:-1}
       MOTOR_API_PORT: ${MOTOR_API_PORT:-3010}
+      # Isa Chat
+      ISA_PROJECT_ID: ${ISA_PROJECT_ID:-640}
+      ISA_AGENT_ID: ${ISA_AGENT_ID:-isa}
+      ISA_BFF_UPSTREAM: ${ISA_BFF_UPSTREAM:-}
+      ISA_BFF_TOKEN: ${ISA_BFF_TOKEN:-}
+      ISA_VERIFICATION_SECRET: ${ISA_VERIFICATION_SECRET:-}
     depends_on:
       mysql:
         condition: service_healthy
@@ -75,6 +81,9 @@ services:
     volumes:
       # Volume do repositório (para o motor-v2 acessar o código)
       - ${REPO_PATH:-/run/media/alexandre/12T/codigofonte}:${REPO_PATH:-/run/media/alexandre/12T/codigofonte}
+    networks:
+      - default
+      - openclaw_default
     healthcheck:
       test:
         - CMD
@@ -104,5 +113,46 @@ services:
     ports:
       - "${WEB_HOST_PORT:-5174}:80"
 
+  isa-chat:
+    build:
+      context: .
+      dockerfile: projects/isa-chat/Dockerfile
+    container_name: biblioteca-global-isa-chat
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${ISA_CHAT_HOST_PORT:-8082}:80"
+
+  alpha-chat:
+    build:
+      context: .
+      dockerfile: projects/alpha-chat/Dockerfile
+    container_name: biblioteca-global-alpha-chat
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${ALPHA_CHAT_HOST_PORT:-8083}:80"
+
+  chat-proxy:
+    build:
+      context: .
+      dockerfile: projects/chat-proxy/Dockerfile
+    container_name: biblioteca-global-chat-proxy
+    restart: unless-stopped
+    depends_on:
+      - isa-chat
+      - alpha-chat
+    ports:
+      - "8080:80"
+    # Usa a rede Docker padrão para resolver nomes dos containers
+
 volumes:
   mysql-data:
+
+networks:
+  openclaw_default:
+    external: true

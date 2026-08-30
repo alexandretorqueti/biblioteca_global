@@ -172,3 +172,4 @@ export class TaskStatusPollerService {
     return this.lastTimestamp;
   }
 }
+

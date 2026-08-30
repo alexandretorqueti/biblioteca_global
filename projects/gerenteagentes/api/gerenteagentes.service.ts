@@ -9,8 +9,8 @@ import type {
   ModelSelectionEntry,
 } from '@biblioteca-global/shared';
 import { ProjectModelSelectionSchema } from '@biblioteca-global/shared';
-import { PROJECT_DB_FACTORY, type ProjectDbFactory } from '../crud/project-db.factory';
-import { SCHEMA_REGISTRY, type SchemaRegistry } from '../crud/schema-registry';
+import { PROJECT_DB_FACTORY, type ProjectDbFactory } from '../../../apps/api/src/modules/crud/project-db.factory';
+import { SCHEMA_REGISTRY, type SchemaRegistry } from '../../../apps/api/src/modules/crud/schema-registry';
 import {
   tarefas,
   subtarefas,
@@ -18,8 +18,8 @@ import {
   projetoChats,
   projetosCaptados,
   geracoesProjeto,
-} from '../../../../../projects/gerenteagentes/schema';
-import { ProvisionService } from '../provision/provision.service';
+} from '../schema';
+import { ProvisionService } from '../../../apps/api/src/modules/provision/provision.service';
 
 @Injectable()
 export class GerenteAgentesService {

@@ -167,6 +167,35 @@ export const chatMensagens = mysqlTable("chat_mensagens", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 })
 
+/** Registro de visitas ao site (anonimizado — IP como hash SHA-256). */
+export const visitasSite = mysqlTable("visitas_site", {
+  id: bigint("id", { mode: "number", unsigned: true })
+    .primaryKey()
+    .autoincrement(),
+  visitorKey: varchar("visitor_key", { length: 255 }), // identificador anônimo do navegador
+  pageUrl: varchar("page_url", { length: 4000 }),
+  referrer: varchar("referrer", { length: 4000 }),
+  userAgent: varchar("user_agent", { length: 2000 }),
+  ipHash: varchar("ip_hash", { length: 64 }), // SHA-256 do IP (nunca IP em claro)
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+})
+
+/** Verificação de email do onboarding (código de 6 dígitos, HMAC-SHA256). */
+export const emailVerifications = mysqlTable("email_verifications", {
+  id: bigint("id", { mode: "number", unsigned: true })
+    .primaryKey()
+    .autoincrement(),
+  chatId: bigint("chat_id", { mode: "number", unsigned: true })
+    .notNull()
+    .references(() => chats.id, { onDelete: "cascade" }),
+  email: varchar("email", { length: 200 }).notNull(),
+  codeHash: varchar("code_hash", { length: 64 }).notNull(), // HMAC-SHA256(code, secret + email)
+  expiresAt: timestamp("expires_at").notNull(),
+  attempts: int("attempts").notNull().default(0),
+  used: boolean("used").notNull().default(false),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+})
+
 // ============================================================================
 // EXECUÇÃO (Motor)
 // ============================================================================
@@ -386,6 +415,21 @@ export const annotations = {
     chat_id: { label: "Chat" },
     role: { label: "Role", helperText: "user | assistant | system" },
     texto: { label: "Mensagem", type: "textarea", fullWidth: true },
+  },
+  visitas_site: {
+    visitor_key: { label: "Visitante", maxLength: 255 },
+    page_url: { label: "Página", maxLength: 4000 },
+    referrer: { label: "Referer", maxLength: 4000 },
+    user_agent: { label: "User-Agent", maxLength: 2000 },
+    ip_hash: { label: "IP (hash)", maxLength: 64 },
+  },
+  email_verifications: {
+    chat_id: { label: "Chat" },
+    email: { label: "Email", maxLength: 200 },
+    code_hash: { label: "Código (hash)", maxLength: 64 },
+    expires_at: { label: "Expira em" },
+    attempts: { label: "Tentativas" },
+    used: { label: "Usado" },
   },
   tarefas: {
     projeto_id: { label: "Projeto" },

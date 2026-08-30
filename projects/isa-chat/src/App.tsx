@@ -1,9 +1,11 @@
-import { useCallback, useMemo, useState, type ReactNode } from "react"
-import { Alert, Box } from "@mui/material"
+import { useMemo, useState, useCallback, type ReactNode } from "react"
+import { ThemeProvider, createTheme, CssBaseline, Box } from "@mui/material"
 import { AgentChat } from "@biblioteca-global/ui"
-import { createAgentChatClient } from "@biblioteca-global/api-client"
-import { useApi } from "../../../apps/web/src/hooks/useApi"
+import { createAgentChatClient, ApiHttpClient } from "@biblioteca-global/api-client"
 import "./IsaChat.css"
+
+// URL da API (túnel Cloudflare)
+const API_BASE_URL = import.meta.env.VITE_API_URL || "https://biblioteca-api.webconnect.com.br"
 
 function getVisitorKey(): string {
   const storageKey = "isa.chatId"
@@ -39,7 +41,6 @@ function isaMetadata(value: Record<string, unknown> | undefined): IsaMetadata {
   return (value ?? {}) as IsaMetadata
 }
 
-/** Rótulos de exibição para o estado do onboarding */
 const STATE_LABEL: Record<string, string> = {
   novo: "Iniciando conversa",
   conversando: "Conversando",
@@ -48,7 +49,6 @@ const STATE_LABEL: Record<string, string> = {
   finalizado: "Conversa finalizada",
 }
 
-/** Sidebar completa da Isa (estilo legado com glassmorphism) */
 function IsaSidebar({
   metadata,
   onLogout,
@@ -90,7 +90,6 @@ function IsaSidebar({
     setEditingName(false)
   }, [nameDraft])
 
-  // Só mostra a sidebar quando autenticado
   if (!isAuthed) return null
 
   return (
@@ -185,24 +184,45 @@ function IsaSidebar({
   )
 }
 
-/** Tela do subsistema Gerente Agentes que configura o chat compartilhado para a Isa. */
-export default function IsaChatScreen(): ReactNode {
-  const bundle = useApi()
+export function App() {
   const visitorKey = useMemo(() => getVisitorKey(), [])
-
   const [metadata, setMetadata] = useState<Record<string, unknown> | undefined>()
 
+  const theme = useMemo(() => createTheme({
+    palette: {
+      mode: "light",
+      primary: { main: "#003366", dark: "#00264d", contrastText: "#ffffff" },
+      secondary: { main: "#2e8bc0" },
+      background: { default: "#f5f7fa", paper: "#ffffff" },
+      text: { primary: "#243447", secondary: "#5f6f82" },
+    },
+    typography: { fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' },
+  }), [])
+
+  const http = useMemo(
+    () =>
+      new ApiHttpClient({
+        baseUrl: API_BASE_URL,
+        tokens: {
+          getAccessToken: () => null,
+          getRefreshToken: () => null,
+          setAccessToken: () => {},
+          setRefreshToken: () => {},
+        },
+      }),
+    [],
+  )
+
   const client = useMemo(() => {
-    if (!bundle) return undefined
-    return createAgentChatClient({
-      http: bundle.http,
+    const baseClient = createAgentChatClient({
+      http,
       agentId: "isa",
       visitorKey,
       endpoints: {
-        sessionPath: "/session",
-        sendPath: "/chat/send",
-        historyPath: (chatId) => `/chat/${encodeURIComponent(chatId)}/history`,
-        visitPath: "/site-visit",
+        sessionPath: "/api/session",
+        sendPath: "/api/chat/send",
+        historyPath: (chatId) => `/api/chat/${encodeURIComponent(chatId)}/history`,
+        visitPath: "/api/site-visit",
         buildSessionBody: ({ visitorKey: key }) => ({ chatKey: key }),
         buildSendBody: ({ chatId, text, attachments }) => ({
           chatId,
@@ -217,51 +237,67 @@ export default function IsaChatScreen(): ReactNode {
         },
       },
     })
-  }, [bundle, visitorKey])
+
+    // Sobrescreve loadHistory para capturar metadata
+    return {
+      ...baseClient,
+      loadHistory: async () => {
+        const history = await baseClient.loadHistory()
+        setMetadata(history.metadata)
+        return history
+      },
+    }
+  }, [http, visitorKey])
 
   const handleLogout = useCallback(() => {
     try {
       window.localStorage.removeItem("isa.chatId")
+      window.localStorage.removeItem("isa.loginEmail")
     } catch {
       /* localStorage indisponível */
     }
     window.location.reload()
   }, [])
 
-  // Atualiza metadata quando o histórico é carregado
-  const handleMetadataChange = useCallback((newMetadata?: Record<string, unknown>) => {
-    setMetadata(newMetadata)
-  }, [])
-
-  if (!client) {
-    return <Alert severity="info">A conexão com a API ainda não está disponível.</Alert>
-  }
-
-  // Verifica se está autenticado para aplicar layout de duas colunas
   const onboarding = isaMetadata(metadata).onboarding
   const isAuthed = Boolean(onboarding?.verified)
 
   return (
-    <Box className={`isa-layout ${isAuthed ? "isa-authed" : ""}`}>
-      <Box className="isa-chat-container">
-        <AgentChat
-          agent={{ id: "isa", name: "Isa", domain: "isa.globaltecnologia.net" }}
-          client={{
-            ...client,
-            loadHistory: async () => {
-              const history = await client.loadHistory()
-              handleMetadataChange(history.metadata)
-              return history
-            },
-          }}
-          welcomeMessage="Olá! 👋 Sou a Isa, da Global Tecnologia. Envie sua mensagem para eu te ajudar a construir o sistema que você precisa."
-          placeholder="Digite sua mensagem..."
-          allowAttachments
-          acceptedFileTypes=".pdf,.doc,.docx,.txt,.md,.png,.jpg,.jpeg,.zip"
-          onNewConversation={handleLogout}
-          renderSidebar={() => <IsaSidebar metadata={metadata} onLogout={handleLogout} />}
-        />
-      </Box>
-    </Box>
+    <ThemeProvider theme={theme}>
+      <CssBaseline />
+      <div className="isa-page">
+        <header className="isa-site-header">
+          <div className="isa-brand" aria-label="Global Tecnologia">
+            <span className="isa-brand-mark" aria-hidden="true">G</span>
+            <span>GLOBAL <strong>TECNOLOGIA</strong></span>
+          </div>
+          <span className="isa-header-label">Assistente virtual</span>
+        </header>
+
+        <main className="isa-page-main">
+          <section className="isa-intro" aria-labelledby="isa-title">
+            <span className="isa-eyebrow">Transformação digital</span>
+            <h1 id="isa-title">Como podemos apoiar sua operação?</h1>
+            <p>Converse com a Isa sobre desenvolvimento, sustentação e modernização de sistemas.</p>
+          </section>
+
+          <Box className={`isa-layout ${isAuthed ? "isa-authed" : ""}`}>
+            <Box className="isa-chat-container">
+              <AgentChat
+                agent={{ id: "isa", name: "Isa", domain: "isa.globaltecnologia.net" }}
+                client={client}
+                welcomeMessage="Olá! 👋 Sou a Isa, da Global Tecnologia. Envie sua mensagem para eu te ajudar a construir o sistema que você precisa."
+                placeholder="Digite sua mensagem..."
+                allowAttachments
+                acceptedFileTypes=".pdf,.doc,.docx,.txt,.md,.png,.jpg,.jpeg,.zip"
+                renderSidebar={() => <IsaSidebar metadata={metadata} onLogout={handleLogout} />}
+              />
+            </Box>
+          </Box>
+        </main>
+
+        <footer className="isa-site-footer">© 2026 Global Tecnologia · Soluções corporativas em TI</footer>
+      </div>
+    </ThemeProvider>
   )
 }

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest"
 import { render, screen, waitFor } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { describe, expect, it } from "vitest"
 import AgentChat from "../AgentChat"
 import type { AgentChatDataSource } from "@biblioteca-global/shared"
@@ -44,5 +45,13 @@ describe("AgentChat", () => {
     await waitFor(() => expect(screen.getByTestId("custom-message")).toBeInTheDocument())
     expect(screen.getByText("Header de Isa")).toBeInTheDocument()
     expect(screen.getByText("Contexto de Isa")).toBeInTheDocument()
+  })
+
+  it("oferece iniciar nova conversa quando configurado", async () => {
+    const onNewConversation = vi.fn()
+    render(<AgentChat agent={{ id: "isa", name: "Isa" }} client={createClient()} onNewConversation={onNewConversation} />)
+    await waitFor(() => expect(screen.getByText("Olá! Eu sou Isa. Como posso ajudar?")).toBeInTheDocument())
+    await userEvent.click(screen.getByRole("button", { name: "Nova conversa" }))
+    expect(onNewConversation).toHaveBeenCalledOnce()
   })
 })

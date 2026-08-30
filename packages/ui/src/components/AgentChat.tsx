@@ -7,6 +7,7 @@ import {
   Alert,
   Avatar,
   Box,
+  Button,
   Chip,
   CircularProgress,
   IconButton,
@@ -31,11 +32,15 @@ export interface AgentChatProps {
   offlineMessage?: string
   allowAttachments?: boolean
   acceptedFileTypes?: string
+  /** Intervalo para atualizar respostas assíncronas do agente; 0 desativa. */
+  historyRefreshIntervalMs?: number
   maxHeight?: number | string
+  onNewConversation?: () => void
+  newConversationLabel?: string
   status?: ReactNode
   renderHeader?: (agent: AgentInfo) => ReactNode
   renderMessage?: (message: ChatMessage) => ReactNode
-  renderSidebar?: (context: { agent: AgentInfo; messages: ChatMessage[] }) => ReactNode
+  renderSidebar?: (context: { agent: AgentInfo; messages: ChatMessage[]; metadata?: Record<string, unknown> }) => ReactNode
 }
 
 interface LocalAttachment extends ChatAttachment {
@@ -89,7 +94,10 @@ export default function AgentChat({
   offlineMessage = "Não foi possível conectar ao agente. Tente novamente em instantes.",
   allowAttachments = false,
   acceptedFileTypes,
+  historyRefreshIntervalMs = 0,
   maxHeight = 640,
+  onNewConversation,
+  newConversationLabel = "Nova conversa",
   status,
   renderHeader,
   renderMessage,
@@ -99,10 +107,15 @@ export default function AgentChat({
   const [attachments, setAttachments] = useState<LocalAttachment[]>([])
   const [draft, setDraft] = useState("")
   const [loading, setLoading] = useState(true)
+  const [sessionReady, setSessionReady] = useState(false)
   const [sending, setSending] = useState(false)
+  const [waitingAgent, setWaitingAgent] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [metadata, setMetadata] = useState<Record<string, unknown> | undefined>()
   const chatRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  const waitingAgentRef = useRef(false)
+  const agentReplyCountRef = useRef(0)
 
   const scrollDown = useCallback(() => {
     requestAnimationFrame(() => {
@@ -112,7 +125,19 @@ export default function AgentChat({
 
   const load = useCallback(async () => {
     const history = await client.loadHistory()
-    setMessages((current) => mergeHistory(history.messages, current))
+    setMessages((current) => {
+      const merged = mergeHistory(history.messages, current)
+      // Conta quantas mensagens do agente existem
+      const currentAgentCount = merged.filter((m) => m.role === "agent").length
+      // Se aumentou a contagem de mensagens do agente, chegou resposta
+      if (waitingAgentRef.current && currentAgentCount > agentReplyCountRef.current) {
+        waitingAgentRef.current = false
+        agentReplyCountRef.current = currentAgentCount
+        setWaitingAgent(false)
+      }
+      return merged
+    })
+    setMetadata(history.metadata)
     scrollDown()
     return history
   }, [client, scrollDown])
@@ -125,6 +150,7 @@ export default function AgentChat({
         await client.startSession()
         const history = await client.loadHistory()
         if (cancelled) return
+        setMetadata(history.metadata)
         setMessages(history.messages.length > 0 ? history.messages : [{ id: `local-${++localSequence}`, role: "agent", text: welcomeMessage }])
       } catch {
         if (!cancelled) {
@@ -132,11 +158,22 @@ export default function AgentChat({
           setMessages([{ id: `local-${++localSequence}`, role: "agent", text: welcomeMessage }])
         }
       } finally {
-        if (!cancelled) setLoading(false)
+        if (!cancelled) {
+          setSessionReady(true)
+          setLoading(false)
+        }
       }
     })()
     return () => { cancelled = true }
   }, [client, offlineMessage, welcomeMessage])
+
+  useEffect(() => {
+    if (!sessionReady || historyRefreshIntervalMs <= 0) return
+    const intervalId = window.setInterval(() => {
+      void load().catch(() => undefined)
+    }, historyRefreshIntervalMs)
+    return () => window.clearInterval(intervalId)
+  }, [historyRefreshIntervalMs, load, sessionReady])
 
   useEffect(() => { scrollDown() }, [messages, scrollDown])
 
@@ -156,12 +193,19 @@ export default function AgentChat({
     setAttachments([])
     setSending(true)
     setError(null)
+    waitingAgentRef.current = true
+    setWaitingAgent(true)
+    // Conta quantas mensagens do agente existem antes do envio
+    const currentAgentCount = messages.filter((m) => m.role === "agent").length
+    agentReplyCountRef.current = currentAgentCount
     try {
       const result = await client.sendMessage(text, validAttachments)
       if (!result.ok) {
         setError(result.reason === "offline" ? offlineMessage : "Não foi possível enviar a mensagem.")
-        return
+        waitingAgentRef.current = false
+        setWaitingAgent(false)
       }
+      // Recarrega o histórico sempre (a mensagem pode ter sido persistida mesmo com erro)
       await load().catch(() => undefined)
     } finally {
       setSending(false)
@@ -188,11 +232,12 @@ export default function AgentChat({
             {agent.domain && <Typography variant="caption" color="text.secondary">{agent.domain}</Typography>}
           </Box>
           {status}
+          {onNewConversation && <Button size="small" onClick={onNewConversation}>{newConversationLabel}</Button>}
         </Stack>
       )}
 
       {error && <Alert severity="warning" onClose={() => setError(null)}>{error}</Alert>}
-      <Box ref={chatRef} sx={{ flex: 1, minHeight: 0, overflow: "auto", p: 2 }}>
+      <Box ref={chatRef} sx={{ flex: 1, minHeight: 0, overflow: "auto", p: 2, position: "relative" }}>
         {loading ? (
           <Stack alignItems="center" sx={{ py: 4 }}><CircularProgress size={24} aria-label="Carregando conversa" /></Stack>
         ) : messages.length === 0 ? (
@@ -205,7 +250,18 @@ export default function AgentChat({
               return (
                 <Stack key={message.id} direction="row" justifyContent={isAgent ? "flex-start" : "flex-end"}>
                   <Box sx={{ maxWidth: "78%" }}>
-                    <Paper sx={{ px: 2, py: 1, bgcolor: isAgent ? "grey.100" : "primary.main", color: isAgent ? "text.primary" : "primary.contrastText", whiteSpace: "pre-wrap" }}>
+                    <Paper
+                      elevation={0}
+                      sx={{
+                        px: 2,
+                        py: 1,
+                        bgcolor: isAgent ? "background.paper" : "primary.main",
+                        color: isAgent ? "text.primary" : "primary.contrastText",
+                        border: isAgent ? 1 : 0,
+                        borderColor: "divider",
+                        whiteSpace: "pre-wrap",
+                      }}
+                    >
                       <Typography variant="body2">{message.text}</Typography>
                       {message.attachments?.map((attachment) => <Chip key={attachment.name} size="small" label={attachment.name} sx={{ mt: 1 }} />)}
                     </Paper>
@@ -214,7 +270,12 @@ export default function AgentChat({
                 </Stack>
               )
             })}
-            {sending && <CircularProgress size={18} aria-label="Agente respondendo" />}
+            {waitingAgent && (
+              <Stack direction="row" spacing={1} alignItems="center" sx={{ py: 1 }}>
+                <CircularProgress size={18} aria-label="Agente respondendo" />
+                <Typography variant="body2" color="text.secondary">Digitando…</Typography>
+              </Stack>
+            )}
           </Stack>
         )}
       </Box>
@@ -230,7 +291,7 @@ export default function AgentChat({
       </Box>
       {renderSidebar && (
         <Box component="aside" sx={{ borderTop: 1, borderColor: "divider", p: 2 }}>
-          {renderSidebar({ agent, messages })}
+          {renderSidebar({ agent, messages, metadata })}
         </Box>
       )}
     </Paper>

@@ -10,12 +10,12 @@ import {
   Inject,
   BadRequestException,
 } from '@nestjs/common';
-import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { ProjectScopeGuard } from '../../common/guards/project-scope.guard';
-import { RolesGuard } from '../../common/guards/roles.guard';
-import { Roles } from '../../common/decorators/roles.decorator';
-import { CurrentProject } from '../../common/decorators/current.decorator';
-import { CurrentUser } from '../../common/decorators/current.decorator';
+import { JwtAuthGuard } from '../../../apps/api/src/common/guards/jwt-auth.guard';
+import { ProjectScopeGuard } from '../../../apps/api/src/common/guards/project-scope.guard';
+import { RolesGuard } from '../../../apps/api/src/common/guards/roles.guard';
+import { Roles } from '../../../apps/api/src/common/decorators/roles.decorator';
+import { CurrentProject } from '../../../apps/api/src/common/decorators/current.decorator';
+import { CurrentUser } from '../../../apps/api/src/common/decorators/current.decorator';
 import type { ProjetoResumo, UsuarioAutenticado, ModelSelectionTipo } from '@biblioteca-global/shared';
 import { ModelSelectionTipoSchema } from '@biblioteca-global/shared';
 import { GerenteAgentesService } from './gerenteagentes.service';

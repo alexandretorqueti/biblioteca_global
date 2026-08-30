@@ -11,7 +11,7 @@ import { CrudModule } from "./modules/crud/crud.module"
 import { ProjetosModule } from "./modules/projetos/projetos.module"
 import { ProvisionModule } from "./modules/provision/provision.module"
 import { UsuariosModule } from "./modules/usuarios/usuarios.module"
-import { GerenteAgentesModule } from "./modules/gerenteagentes/gerenteagentes.module"
+import { GerenteAgentesModule } from "../../../projects/gerenteagentes/api/gerenteagentes.module"
 import { RealtimeModule } from "./modules/realtime/realtime.module"
 
 @Module({
