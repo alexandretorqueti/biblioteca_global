@@ -23,3 +23,7 @@ coverage/
 # Backup da v1: versionar o código, nunca node_modules
 biblioteca_old/**/node_modules/
 .env.bak-*
+
+# Testbed E2E (descontinuado)
+.motor-v2-e2e-*
+projects/gerenteagentes/motor-v2/scripts/
