@@ -97,12 +97,16 @@ export class GitWorkspaceManager {
 
     const branch = `motor-v2/${task}/${subtask}/a${input.attempt}`
     await mkdir(join(this.root, task, subtask), { recursive: true })
+    console.log(`[GitWorkspaceManager] Criando worktree: target=${target}, baseCommit=${baseCommit}, repoPath=${input.repoPath}`)
     try {
-      await this.runner.run(["git", "worktree", "add", "--detach", target, baseCommit], input.repoPath)
+      const worktreeResult = await this.runner.run(["git", "worktree", "add", "--detach", target, baseCommit], input.repoPath)
+      console.log(`[GitWorkspaceManager] Worktree criado: stdout=${worktreeResult.stdout.trim()}, stderr=${worktreeResult.stderr.trim()}`)
       await this.runner.run(["git", "switch", "-c", branch, baseCommit], target)
       await this.markSafeDirectory(target)
+      console.log(`[GitWorkspaceManager] Worktree validado com sucesso: path=${target}, branch=${branch}`)
       return { path: target, branch, baseCommit }
     } catch (error) {
+      console.error(`[GitWorkspaceManager] Erro ao criar worktree:`, error)
       // O alvo foi criado exclusivamente por esta tentativa, sempre dentro da
       // raiz dedicada; removê-lo evita worktree parcial sem tocar no repositório.
       await rm(target, { recursive: true, force: true }).catch(() => {})
