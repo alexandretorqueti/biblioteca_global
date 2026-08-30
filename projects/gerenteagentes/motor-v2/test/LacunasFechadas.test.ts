@@ -154,7 +154,7 @@ describe('lacuna 3 — tarefa vem com subtarefas na resposta', () => {
     })
     const querySql = String(vi.mocked(db.query).mock.calls[0]?.[0])
     expect(querySql).toContain('ORDER BY s.seq ASC')
-    expect(querySql).toContain('WHERE t.external_id = ? OR t.id = ?')
+    expect(querySql).toContain('WHERE (t.external_id = ? OR t.id = ?)')
   })
 
   it('tarefa inexistente continua retornando null', async () => {

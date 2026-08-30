@@ -51,6 +51,13 @@ const DEFAULT_CONFIG: TaskCoordinatorConfig = {
   maxWorkersPerProject: 1,
 }
 
+interface UltimoBloqueio {
+  kind: string
+  excerpt: string
+  blockedAt: string
+  subtaskId: number | null
+}
+
 interface SubtaskView {
   id: number
   seq: number
@@ -585,21 +592,26 @@ export class TaskCoordinator {
   }
 
   /**
-   * Tarefa completa com as subtarefas na resposta — remove a dependência do
-   * fallback direto no banco pela tela de acompanhamento.
+   * Tarefa completa com subtarefas e motivo de bloqueio na resposta —
+   * remove a dependência do fallback direto no banco pela tela de
+   * acompanhamento e dá visibilidade ao motivo de bloqueio.
    */
-  async getTaskWithSubtasks(taskId: string): Promise<(Task & { subtasks: SubtaskView[] }) | null> {
-    const task = await this.getTask(taskId)
-    if (!task) return null
+  async getTaskWithSubtasks(taskId: string): Promise<(Task & { subtasks: SubtaskView[]; errorMessage?: string; ultimoBloqueio: UltimoBloqueio | null }) | null> {
+    const data = await this.repository.getTask(taskId)
+    if (!data) return null
+    const task = this.mapSaveDataToTask(data)
     const isNumeric = /^\d+$/.test(taskId)
+    const whereTask = isNumeric ? "WHERE (t.external_id = ? OR t.id = ?) " : "WHERE t.external_id = ? "
+    const taskParams = isNumeric ? [taskId, taskId] : [taskId]
+
     const { rows } = await this.db.query(
       "SELECT s.id, s.seq, s.titulo, s.status, s.resultado, s.deliver_count, " +
       "s.workspace_status, s.workspace_branch, s.workspace_commit_sha, s.correction_for_subtask_id " +
       "FROM projeto_640.subtarefas s " +
       "INNER JOIN projeto_640.tarefas t ON t.id = s.tarefa_id " +
-      (isNumeric ? "WHERE t.external_id = ? OR t.id = ? " : "WHERE t.external_id = ? ") +
+      whereTask +
       "ORDER BY s.seq ASC, s.id ASC",
-      isNumeric ? [taskId, taskId] : [taskId],
+      taskParams,
     )
     const subtasks: SubtaskView[] = rows.map((row) => ({
       id: Number(row.id),
@@ -613,7 +625,23 @@ export class TaskCoordinator {
       workspaceCommitSha: row.workspace_commit_sha ? String(row.workspace_commit_sha) : null,
       correctionForSubtaskId: row.correction_for_subtask_id ? Number(row.correction_for_subtask_id) : null,
     }))
-    return { ...task, subtasks }
+
+    const { rows: blockRows } = await this.db.query(
+      "SELECT b.block_reason, b.block_excerpt, b.blocked_at, b.subtarefa_id " +
+      "FROM projeto_640.bloqueios b " +
+      "INNER JOIN projeto_640.tarefas t ON t.id = b.tarefa_id " +
+      whereTask +
+      "ORDER BY b.blocked_at DESC LIMIT 1",
+      taskParams,
+    )
+    const ultimoBloqueio: UltimoBloqueio | null = blockRows.length > 0 ? {
+      kind: String(blockRows[0]!.block_reason ?? ""),
+      excerpt: String(blockRows[0]!.block_excerpt ?? ""),
+      blockedAt: String(blockRows[0]!.blocked_at ?? ""),
+      subtaskId: blockRows[0]!.subtarefa_id ? Number(blockRows[0]!.subtarefa_id) : null,
+    } : null
+
+    return { ...task, subtasks, errorMessage: data.errorMessage, ultimoBloqueio }
   }
 
   private mapSaveDataToTask(data: import("../shared/types/infrastructure.js").SaveTaskData): Task {

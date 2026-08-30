@@ -99,7 +99,18 @@ interface MotorDetail {
   motorId: string
   exists: boolean
   message?: string
-  task?: { id: string; status: string; title: string }
+  task?: {
+    id: string
+    status: string
+    title: string
+    errorMessage?: string
+    blockInfo?: {
+      kind?: string
+      excerpt?: string
+      blockedAt?: string
+      subtaskId?: number | null
+    } | null
+  }
   subtasks?: SubTaskMotor[]
   currentSubTask?: SubTaskMotor | null
   events?: MotorEvent[]
@@ -674,6 +685,30 @@ export default function TaskMonitorScreen(): ReactNode {
           {detail && !detail.exists && (
             <Alert severity="info" sx={{ mt: 2 }} data-testid="not-on-motor">
               {detail.message ?? "Tarefa ainda não enviada ao motor."} Clique em <b>Iniciar</b> para começar o desenvolvimento.
+            </Alert>
+          )}
+
+          {detail?.exists && detail.task?.blockInfo && (
+            <Alert severity="error" sx={{ mt: 2 }} data-testid="task-block-banner">
+              <Typography variant="body2">
+                <b>⛔ Tarefa bloqueada:</b>{" "}
+                {detail.task.blockInfo.excerpt || detail.task.errorMessage || "Falha não especificada."}
+              </Typography>
+              <Typography variant="caption" component="div" sx={{ color: "text.secondary" }}>
+                Motivo: {detail.task.blockInfo.kind || "desconhecido"}
+                {detail.task.blockInfo.blockedAt
+                  ? ` · ${new Date(detail.task.blockInfo.blockedAt).toLocaleString("pt-BR")}`
+                  : ""}
+                {detail.task.blockInfo.subtaskId ? ` · Subtarefa #${detail.task.blockInfo.subtaskId}` : ""}
+              </Typography>
+            </Alert>
+          )}
+
+          {detail?.exists && !detail.task?.blockInfo && statusMotor === "blocked" && detail.task?.errorMessage && (
+            <Alert severity="warning" sx={{ mt: 2 }} data-testid="task-block-warning">
+              <Typography variant="body2">
+                <b>⚠ Tarefa bloqueada:</b> {detail.task.errorMessage}
+              </Typography>
             </Alert>
           )}
 

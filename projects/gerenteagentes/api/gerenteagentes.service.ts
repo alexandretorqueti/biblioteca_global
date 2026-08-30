@@ -561,9 +561,17 @@ export class GerenteAgentesService {
         title?: string;
         status?: string;
         description?: string;
+        errorMessage?: string;
+        ultimoBloqueio?: {
+          kind?: string;
+          excerpt?: string;
+          blockedAt?: string;
+          subtaskId?: number | null;
+        } | null;
       };
       
-      // Busca subtarefas do banco de dados (motor-v2 não retorna subtarefas no endpoint)
+      // Busca subtarefas do banco de dados (mesma tabela projeto_640.subtarefas
+      // que o motor usa; mantém IDs reais para edição na tela)
       const subtarefasList = await db
         .select({
           id: subtarefas.id,
@@ -598,6 +606,8 @@ export class GerenteAgentesService {
           id: motorTask.id || String(tarefaId),
           title: motorTask.title || tarefa.titulo,
           status: motorTask.status || tarefa.status,
+          errorMessage: motorTask.errorMessage ?? undefined,
+          blockInfo: motorTask.ultimoBloqueio ?? null,
         },
         subtasks,
         currentSubTask,

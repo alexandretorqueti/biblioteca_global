@@ -12,6 +12,7 @@
 
 import { execFileSync, execSync } from "node:child_process"
 import { existsSync } from "node:fs"
+import { pathToFileURL } from "node:url"
 import { ConsoleAgentRuntimeDriver } from "../runtime/ConsoleAgentRuntimeDriver.js"
 import type { WorkerInput, ExecutionContext, ExecutionResult, SubtaskInfo } from "../shared/types/execution.js"
 import type { CoordinatorToWorkerMessage, WorkerToCoordinatorMessage } from "./WorkerProtocol.js"
@@ -533,6 +534,20 @@ class TaskWorker {
     ) as unknown as [Array<{ total: number | string }>]
     if (Number(rows[0]?.total ?? 0) !== 2) return false
 
+    // Correção que falha repetidamente NÃO gera outra correção (sem corrente
+    // infinita): bloqueia a tarefa inteira para intervenção humana.
+    const [parentRows] = await this.db.query(
+      "SELECT correction_for_subtask_id FROM projeto_640.subtarefas WHERE id = ?",
+      [subtask.id],
+    ) as unknown as [Array<{ correction_for_subtask_id: number | null }>]
+    const correctionParentId = Number(parentRows[0]?.correction_for_subtask_id ?? 0)
+    if (correctionParentId !== 0) {
+      const blockReason = "Subtarefa de correção " + subtask.id + " falhou repetidamente (corrige a subtarefa " + correctionParentId + "): " + reason
+      await this.recordBlocker(subtask, "correction_failed", blockReason)
+      this.log("error", "Correção falhou — bloqueando a tarefa inteira: " + blockReason)
+      throw new Error(blockReason)
+    }
+
     const [claimed] = await this.db.query(
       "UPDATE projeto_640.subtarefas SET correction_created_at = NOW(), correction_fingerprint = ? WHERE id = ? AND correction_created_at IS NULL",
       [fingerprint, subtask.id],
@@ -545,7 +560,7 @@ class TaskWorker {
       "SELECT tarefa_id, ?, ?, ?, acceptance_criteria, 'pending', id, ?, NOW(), NOW() FROM projeto_640.subtarefas WHERE id = ?",
       [subtask.seq + 1, "Correção: " + subtask.titulo, "Corrigir gate repetido: " + reason.slice(0, 1000), fingerprint, subtask.id],
     )
-    this.log("warn", "Subtarefa de correção criada para falha repetida " + fingerprint)
+    this.log("warn", "Subtarefa de correção criada para falha repetida " + fingerprint + " (subtarefa " + subtask.id + ", corrige a original; tarefa bloqueia se a correção também falhar)")
     return true
   }
 
@@ -601,10 +616,16 @@ class TaskWorker {
   }
 }
 
-const worker = new TaskWorker()
-worker.start().catch((error) => {
-  console.error("[TaskWorker] Fatal:", error)
-  process.exit(1)
-})
+// Auto-start somente quando este arquivo É o processo principal (o
+// WorkerLauncher o executa via `node TaskWorker.js`). Em imports (testes,
+// re-export do index) o worker não pode disparar sozinho.
+const isMainModule = process.argv[1] ? import.meta.url === pathToFileURL(process.argv[1]).href : false
+if (isMainModule) {
+  const worker = new TaskWorker()
+  worker.start().catch((error) => {
+    console.error("[TaskWorker] Fatal:", error)
+    process.exit(1)
+  })
+}
 
 export { TaskWorker }
