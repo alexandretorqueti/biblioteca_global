@@ -1,4 +1,5 @@
 <!-- Teste motor-v2 -->
+<!-- Comentário de teste: o fluxo real de execução foi testado. -->
 
 # Biblioteca Global (v2)
 
