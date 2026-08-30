@@ -6,7 +6,7 @@
  * → PUT /tarefas/:id → sucesso fecha diálogo + recarrega; erro exibe Alert.
  */
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest"
-import { render, screen, waitFor, within, fireEvent } from "@testing-library/react"
+import { render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import "@testing-library/jest-dom/vitest"
 import { BibliotecaThemeProvider } from "@biblioteca-global/ui"
@@ -62,7 +62,7 @@ function bundleFalso(opts?: {
 
   return {
     http: {
-      request: async (method: string, path: string, reqOpts?: { query?: Record<string, unknown>; body?: unknown }) => {
+      request: async (method: string, path: string) => {
         if (method === "GET" && path === "/projetos_captados") {
           return { items: projetos }
         }
@@ -165,7 +165,7 @@ describe("TaskMonitorScreen — ST-1 (botão editar + diálogo)", () => {
 
     const bundle = {
       http: {
-        request: async (method: string, path: string, reqOpts?: { query?: Record<string, unknown>; body?: unknown }) => {
+        request: async (method: string, path: string, reqOpts?: { body?: unknown }) => {
           if (method === "GET" && path === "/projetos_captados") return { items: [projetoFactory(1, "P1")] }
           if (method === "GET" && path === "/tarefas") return { items: tarefas }
           if (method === "GET" && path.startsWith("/gerenteagentes/tarefas/")) {
@@ -223,7 +223,7 @@ describe("TaskMonitorScreen — ST-1 (botão editar + diálogo)", () => {
 
     const bundle = {
       http: {
-        request: async (method: string, path: string, reqOpts?: { query?: Record<string, unknown>; body?: unknown }) => {
+        request: async (method: string, path: string) => {
           if (method === "GET" && path === "/projetos_captados") return { items: [projetoFactory(1, "P1")] }
           if (method === "GET" && path === "/tarefas") return { items: tarefas }
           if (method === "GET" && path.startsWith("/gerenteagentes/tarefas/")) {
@@ -632,5 +632,61 @@ describe("TaskMonitorScreen — ST-2 (editar subtarefa)", () => {
     await waitFor(() => {
       expect(screen.queryByTestId("edit-subtask-dialog")).not.toBeInTheDocument()
     })
+  })
+})
+
+describe("TaskMonitorScreen — compatibilidade Motor-v2", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", mockFetch)
+    mockFetch.mockReset()
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    delete globalThis.__bundleFalso
+  })
+
+  it("exibe as subtarefas persistidas quando o detalhe do Motor-v2 ainda vem sem elas", async () => {
+    const tarefas = [tarefaFactory(727, "Teste fluxo real", "ready", 2)]
+    const subtarefas = [
+      { id: 711, tarefaId: 727, seq: 1, titulo: "Localizar o README correto", status: "rejected", descricao: null, resultado: null, dependsOnSubtaskId: null },
+      { id: 714, tarefaId: 727, seq: 2, titulo: "Correção: Localizar o README correto", status: "rejected", descricao: null, resultado: null, dependsOnSubtaskId: null },
+      { id: 715, tarefaId: 727, seq: 3, titulo: "Correção pendente", status: "pending", descricao: null, resultado: null, dependsOnSubtaskId: null },
+    ]
+    globalThis.__bundleFalso = {
+      http: {
+        request: async (method: string, path: string) => {
+          if (method === "GET" && path === "/projetos_captados") return { items: [projetoFactory(2, "GerenteAgentes")] }
+          if (method === "GET" && path === "/tarefas") return { items: tarefas }
+          if (method === "GET" && path.endsWith("/motor-detail")) {
+            return {
+              motorId: "727",
+              exists: true,
+              task: { id: "727", status: "ready", title: "Teste fluxo real" },
+              subtasks: [],
+              currentSubTask: null,
+              events: [],
+            }
+          }
+          if (method === "GET" && path.endsWith("/subtarefas")) return subtarefas
+          return {}
+        },
+      },
+    } as never
+
+    render(
+      <BibliotecaThemeProvider>
+        <TaskMonitorScreen />
+      </BibliotecaThemeProvider>,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByTestId("subtask-row-1")).toBeInTheDocument()
+      expect(screen.getByTestId("subtask-row-3")).toBeInTheDocument()
+    })
+    expect(screen.getByTestId("task-progress")).toHaveTextContent("Progresso: 0 / 3")
+    expect(screen.getByTestId("btn-start")).toBeDisabled()
   })
 })

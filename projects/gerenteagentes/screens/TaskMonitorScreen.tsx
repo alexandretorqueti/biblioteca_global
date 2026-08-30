@@ -497,13 +497,30 @@ export default function TaskMonitorScreen(): ReactNode {
     [subtarefasDb],
   )
 
+  /**
+   * O Motor-v2 expõe os dados da tarefa, mas subtarefas podem chegar vazias
+   * durante uma atualização gradual do proxy. A tabela do projeto é a fonte
+   * persistida para elas e já é carregada para permitir a edição; usá-la como
+   * fallback mantém o acompanhamento consistente nesse intervalo.
+   */
+  const subtasks = useMemo<SubTaskMotor[]>(() => {
+    const motorSubtasks = detail?.subtasks ?? []
+    if (motorSubtasks.length > 0) return motorSubtasks
+    return subtarefasDb.map((subtarefa) => ({
+      seq: subtarefa.seq,
+      title: subtarefa.titulo,
+      status: subtarefa.status,
+      blockInfo: subtarefa.resultado ? { reason: subtarefa.resultado } : null,
+    }))
+  }, [detail?.subtasks, subtarefasDb])
+
   const stats = useMemo(() => {
-    const subs = detail?.subtasks ?? []
+    const subs = subtasks
     const total = subs.length
     const verified = subs.filter((s) => s.status === "verified" || s.status === "completed").length
     const active = detail?.currentSubTask ?? subs.find((s) => ["running", "delivered", "verifying", "planning"].includes(s.status)) ?? null
     return { total, verified, active }
-  }, [detail])
+  }, [detail?.currentSubTask, subtasks])
 
   const tarefaSelecionada = tarefas.find((t) => t.id === tarefaId)
   const statusMotor = detail?.task?.status ?? tarefaSelecionada?.status ?? "—"
@@ -623,7 +640,7 @@ export default function TaskMonitorScreen(): ReactNode {
                 size="small"
                 variant="contained"
                 startIcon={<PlayArrowRounded />}
-                disabled={acao !== null || ["running", "planning"].includes(statusMotor)}
+                disabled={acao !== null || detail?.exists === true || ["running", "planning"].includes(statusMotor)}
                 onClick={() => void executarAcao("start")}
                 data-testid="btn-start"
               >
@@ -679,7 +696,7 @@ export default function TaskMonitorScreen(): ReactNode {
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {(detail.subtasks ?? []).map((s) => {
+                  {subtasks.map((s) => {
                     const ativa = stats.active && s.seq === stats.active.seq
                     return (
                       <TableRow
@@ -715,7 +732,7 @@ export default function TaskMonitorScreen(): ReactNode {
                       </TableRow>
                     )
                   })}
-                  {(detail.subtasks ?? []).length === 0 && (
+                  {subtasks.length === 0 && (
                     <TableRow>
                       <TableCell colSpan={5}>
                         <Typography color="text.secondary" data-testid="empty-subtasks">
