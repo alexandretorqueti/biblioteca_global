@@ -25,6 +25,8 @@ import { ProvisionService } from '../../../apps/api/src/modules/provision/provis
 export class GerenteAgentesService {
   private readonly motorUrl: string;
   private readonly motorHostHeader: string;
+  private readonly motorVersao: string;
+  private readonly motorV2Url: string;
   private readonly consoleUrl: string;
   private readonly consoleToken: string;
 
@@ -37,6 +39,12 @@ export class GerenteAgentesService {
     // Motor de execução (rodando no container openclaw:6283, exposto via proxy NPM)
     this.motorUrl = this.configService.get<string>('MOTOR_DEV_URL') || 'http://192.168.1.16';
     this.motorHostHeader = this.configService.get<string>('MOTOR_URL_HOST') || 'api.tarefas.localhost';
+    // Motor-v2: roda junto da API no mesmo container (entrypoint), habilitado
+    // por MOTOR_VERSION=v2. Os endpoints v2 ficam em /api/motor/* na porta
+    // MOTOR_API_PORT — sem proxy, sem Host header.
+    this.motorVersao = this.configService.get<string>('MOTOR_VERSION') || 'v1';
+    const motorV2Porta = this.configService.get<string>('MOTOR_API_PORT') || '3010';
+    this.motorV2Url = `http://127.0.0.1:${motorV2Porta}`;
     // Console OpenClaw (fonte de agentes — st-5)
     this.consoleUrl = this.configService.get<string>('OPENCLAW_CONSOLE_URL') || 'https://openclaw-api.webconnect.com.br';
     this.consoleToken = this.configService.get<string>('OPENCLAW_CONSOLE_TOKEN') || '';
@@ -163,8 +171,11 @@ export class GerenteAgentesService {
     method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     path: string,
     body?: unknown,
+    baseUrl?: string,
   ): Promise<{ ok: boolean; status: number; body: string }> {
-    const url = new URL(`${this.motorUrl}${path}`);
+    // baseUrl explícito (ex.: motor-v2 local) ignora o Host header de proxy.
+    const base = baseUrl ?? this.motorUrl;
+    const url = new URL(`${base}${path}`);
     const isHttps = url.protocol === 'https:';
     const options: RequestOptions = {
       hostname: url.hostname,
@@ -174,7 +185,7 @@ export class GerenteAgentesService {
       headers: {
         Accept: 'application/json',
         ...(body ? { 'Content-Type': 'application/json' } : {}),
-        ...(this.motorHostHeader ? { Host: this.motorHostHeader } : {}),
+        ...(!baseUrl && this.motorHostHeader ? { Host: this.motorHostHeader } : {}),
       },
       timeout: 15000,
     };
@@ -220,10 +231,15 @@ export class GerenteAgentesService {
     }
 
     // ── Ponte com o motor de execução ────────────────────────────────────────
-    // A tarefa já existe no motor com o external_id. Chama apenas
-    // POST /api/task/:id/start — o motor enfileira (FIFO) e executa.
+    // A tarefa já existe no motor com o external_id. Chama apenas o endpoint
+    // de enfileirar — o motor enfileira (FIFO) e executa.
+    // v1: POST /api/task/:id/start · v2: POST /api/motor/task/:id/enqueue.
     const motorId = tarefa.externalId || `task-biblioteca-${tarefa.id}`;
-    const start = await this.motorRequest('POST', `/api/task/${encodeURIComponent(motorId)}/start`).catch((e: unknown) => {
+    const usarV2 = this.motorVersao === 'v2';
+    const startPath = usarV2
+      ? `/api/motor/task/${encodeURIComponent(motorId)}/enqueue`
+      : `/api/task/${encodeURIComponent(motorId)}/start`;
+    const start = await this.motorRequest('POST', startPath, undefined, usarV2 ? this.motorV2Url : undefined).catch((e: unknown) => {
       throw new BadRequestException(`Motor indisponível ao iniciar a tarefa: ${e instanceof Error ? e.message : String(e)}`);
     });
     if (!start.ok) {
@@ -254,6 +270,21 @@ export class GerenteAgentesService {
       throw new BadRequestException(`Tarefa não pode ser pausada (status: ${tarefa.status})`);
     }
 
+    if (this.motorVersao === 'v2') {
+      const motorId = tarefa.externalId || String(tarefa.id);
+      const resp = await this.motorRequest(
+        'POST',
+        `/api/motor/task/${encodeURIComponent(motorId)}/pause`,
+        undefined,
+        this.motorV2Url,
+      ).catch((e: unknown) => {
+        throw new BadRequestException(`Motor indisponível ao pausar a tarefa: ${e instanceof Error ? e.message : String(e)}`);
+      });
+      if (!resp.ok) {
+        throw new BadRequestException(`Motor rejeitou a pausa (${resp.status}): ${resp.body.slice(0, 200)}`);
+      }
+    }
+
     await db
       .update(tarefas)
       .set({ status: 'paused', updatedAt: new Date() })
@@ -276,6 +307,21 @@ export class GerenteAgentesService {
 
     if (tarefa.status !== 'paused') {
       throw new BadRequestException(`Tarefa não pode ser retomada (status: ${tarefa.status})`);
+    }
+
+    if (this.motorVersao === 'v2') {
+      const motorId = tarefa.externalId || String(tarefa.id);
+      const resp = await this.motorRequest(
+        'POST',
+        `/api/motor/task/${encodeURIComponent(motorId)}/resume`,
+        undefined,
+        this.motorV2Url,
+      ).catch((e: unknown) => {
+        throw new BadRequestException(`Motor indisponível ao retomar a tarefa: ${e instanceof Error ? e.message : String(e)}`);
+      });
+      if (!resp.ok) {
+        throw new BadRequestException(`Motor rejeitou a retomada (${resp.status}): ${resp.body.slice(0, 200)}`);
+      }
     }
 
     await db
@@ -498,7 +544,12 @@ export class GerenteAgentesService {
     const motorId = tarefa.externalId || String(tarefa.id);
     try {
       // Motor-v2 usa /api/motor/task/:id (retorna dados básicos da tarefa)
-      const resp = await this.motorRequest('GET', `/api/motor/task/${encodeURIComponent(motorId)}`);
+      const resp = await this.motorRequest(
+        'GET',
+        `/api/motor/task/${encodeURIComponent(motorId)}`,
+        undefined,
+        this.motorVersao === 'v2' ? this.motorV2Url : undefined,
+      );
       if (resp.status === 404) {
         return { motorId, exists: false, message: 'Tarefa ainda não foi enviada ao motor (clique em Iniciar).' };
       }
