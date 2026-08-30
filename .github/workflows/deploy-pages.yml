@@ -39,3 +39,12 @@ jobs:
         run: npx wrangler pages deploy apps/web/dist --project-name biblioteca-global --branch master
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+      # ===== Alpha Chat =====
+      - name: Build Alpha Chat
+        run: npm run build --workspace @biblioteca-global/alpha-chat
+
+      - name: Deploy Alpha no siteglobal
+        run: npx wrangler pages deploy projects/alpha-chat/dist --project-name siteglobal
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
