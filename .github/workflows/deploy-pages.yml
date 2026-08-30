@@ -44,7 +44,7 @@ jobs:
       - name: Build Alpha Chat
         run: npm run build --workspace @biblioteca-global/alpha-chat
 
-      - name: Deploy Alpha no siteglobal
-        run: npx wrangler pages deploy projects/alpha-chat/dist --project-name siteglobal
+      - name: Deploy Alpha no siteglobal (producao)
+        run: npx wrangler pages deploy projects/alpha-chat/dist --project-name siteglobal --branch main
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
