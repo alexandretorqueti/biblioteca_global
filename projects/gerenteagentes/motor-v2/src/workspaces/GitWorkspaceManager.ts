@@ -92,7 +92,9 @@ export class GitWorkspaceManager {
     await this.markSafeDirectory(input.repoPath)
     // Falha ambiental clara: repo ausente causa "spawn git ENOENT" e entraria
     // em loop de retries no coordenador. Classificar como bloqueio ambiental.
-    const status = await this.runner.run(["git", "status", "--porcelain"], input.repoPath).catch((error: unknown) => {
+    // Untracked files não afetam worktree/merge e não podem travar o motor
+    // enquanto outra sessão mantém arquivos novos no repositório.
+    const status = await this.runner.run(["git", "status", "--porcelain", "--untracked-files=no"], input.repoPath).catch((error: unknown) => {
       const code = (error as NodeJS.ErrnoException | undefined)?.code
       if (code === "ENOENT") {
         throw new Error("Ambiente bloqueado: repositório não encontrado: " + input.repoPath)
