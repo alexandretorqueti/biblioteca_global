@@ -463,6 +463,14 @@ export class TaskCoordinator {
     const worker = this.activeWorkers.get(executionId)
     if (!worker || !this.beginFinalization(executionId, worker)) return
     console.log("[TaskCoordinator] Tarefa pausada: " + worker.taskId + " - " + reason)
+    // Subtarefa interrompida volta a pendente para o pump retomá-la depois do
+    // resume; sem isso ela ficaria órfã em running/verifying para sempre.
+    if (worker.subtaskId) {
+      await this.db.query(
+        "UPDATE projeto_640.subtarefas SET status = 'pending', updated_at = NOW() WHERE id = ? AND status IN ('running', 'verifying', 'delivered', 'rework')",
+        [worker.subtaskId],
+      ).catch((error: unknown) => console.error("[TaskCoordinator] Falha ao resetar subtarefa pausada:", error))
+    }
     const task = await this.repository.getTask(worker.taskId)
     if (task) await this.saveTaskTransition(task, "pause")
     await this.finishWorker(executionId, worker)

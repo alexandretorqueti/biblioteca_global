@@ -31,7 +31,7 @@ const subtaskTransitions: Record<SubTaskStatus, readonly SubTaskStatus[]> = {
   pending: ["pending", "running", "blocked"],
   delivered: ["delivered", "running", "verifying", "rejected", "blocked"],
   running: ["running", "verifying", "rejected", "blocked"],
-  verifying: ["verifying", "verified", "rejected", "blocked"],
+  verifying: ["verifying", "verified", "rejected", "blocked", "pending"],
   verified: ["verified"],
   rejected: ["rejected", "pending", "verified", "blocked"],
   blocked: ["blocked", "pending"],
