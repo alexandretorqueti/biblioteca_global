@@ -141,9 +141,9 @@ export class ConsoleAgentRuntimeDriver {
 
   async closeSession(session: RuntimeSession): Promise<void> {
     await this.request({
-      method: "PATCH",
+      method: "DELETE",
       path: "/api/sessions",
-      body: { key: session.key, agentId: session.agentId, archived: true },
+      body: { key: session.key, agentId: session.agentId },
     })
   }
 
@@ -163,7 +163,7 @@ export class ConsoleAgentRuntimeDriver {
   }
 
   private async request<T>(options: {
-    method: "GET" | "POST" | "PATCH"
+    method: "GET" | "POST" | "PATCH" | "DELETE"
     path: string
     body?: unknown
     query?: Record<string, string | number>

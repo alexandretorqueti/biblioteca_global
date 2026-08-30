@@ -86,21 +86,19 @@ motor-v2/
 
 ## 🚀 Uso
 
-### Projeto de teste configurado
+### Ambiente E2E isolado
 
-O alvo de teste do Motor-v2 é o projeto captado `biblioteca-global` no
-database `projeto_640` (registro `projetos_captados.id = 1`). Ele usa o agente
-`biblioteca-global`, a branch `base-desenvolvimento` e o repositório
-`/run/media/alexandre/12T/codigofonte/biblioteca-global`, que é montado no
-container da API pela variável `REPO_PATH` do `.env` local. O volume deve
-apontar diretamente para esse diretório, e não para o diretório-pai.
+Os testes integrados não usam a fila nem os dados do projeto Biblioteca Global.
+O ambiente dedicado contém um MySQL `motor-v2-e2e-mysql`, o Motor
+`motor-v2-e2e-test` na porta `3011`, e o projeto fixture `motor-v2-e2e` no
+schema `projeto_640`. O fixture Git está em
+`.motor-v2-e2e-fixture`, tem remoto bare local e workspaces temporários em
+`.motor-v2-e2e-workspaces`.
 
-A tarefa de aceite registrada para esse alvo é
-`task-v2-bib-1787962293` (`status = ready`; subtarefa de preparação em
-execução). O motor usa as credenciais de
-MySQL e do Console OpenClaw exclusivamente pelas variáveis de ambiente
-`MYSQL_*`, `OPENCLAW_CONSOLE_URL` e `OPENCLAW_CONSOLE_TOKEN`; nenhum segredo
-faz parte desta configuração versionada.
+O runtime/Console continua sendo real; as credenciais ficam exclusivamente nas
+variáveis `MYSQL_*`, `OPENCLAW_CONSOLE_URL` e `OPENCLAW_CONSOLE_TOKEN`. Não há
+credenciais versionadas. A evidência e os cenários pendentes estão em
+[`PENDENCIAS.md`](../../../../../agentes/gerenteagentes/PENDENCIAS.md).
 
 ```bash
 # Iniciar motor
@@ -185,9 +183,9 @@ npm run test:coverage
 - [x] **Etapa 11**: Integração real com banco de dados (`DrizzleDb`/`mysql2`)
 - [x] **Etapa 12 (decisão revisada)**: Subtarefas sequenciais dentro de uma tarefa; o paralelismo ocorre entre tarefas/projetos
 - [ ] **Etapa 13**: Deploy em produção e migração gradual
-- [ ] **Etapa 14**: Recuperação de worker travado e lease perdido
+- [x] **Etapa 14**: Recuperação de worker travado e lease perdido
 
-### Próxima implementação — recuperação de workers
+### Recuperação de workers
 
 O coordenador controla o ciclo de vida do worker com duas proteções:
 
@@ -198,13 +196,25 @@ O coordenador controla o ciclo de vida do worker com duas proteções:
   `pump()` pode selecionar a próxima execução.
 
 O encerramento é idempotente para evitar que timeout, heartbeat e o evento de
-saída do processo finalizem a mesma execução duas vezes. A validação deve
-simular um worker suspenso, confirmar a liberação do lock e garantir que não
-reste worker órfão nem tarefa em `running`.
+saída do processo finalizem a mesma execução duas vezes. A implementação e os
+testes unitários estão concluídos; a simulação E2E de worker suspenso/lease
+expirado permanece no inventário de validação.
 
-### Evoluções de 2026-08-29
+### Evoluções de 2026-08-30
 
-- **Escada de modelos — indisponibilidade:** a abertura de sessão reconhece modelo ausente/indisponível, emite `model_unavailable` com correlação da execução e o modelo afetado, e avança imediatamente ao próximo degrau. O `LibraryRealtimeBroadcaster` converte `tarefas.external_id` no `tarefas.id` numérico, obtém o projeto vinculado em `projetos_captados` e publica o envelope autenticado em `POST /internal/realtime/events`; se o mapeamento não existir, o evento não é enviado e a falha é registrada pelo Motor. Foram alterados `ExecutionEventBus.ts`, `WorkerProtocol.ts`, `TaskWorker.ts`, `TaskCoordinator.ts`, `Motor.ts`, `start.ts`, `index.ts`, `LibraryRealtimeBroadcaster.ts` e os testes correspondentes. Validações mais recentes: 53 testes do Motor-v2, typecheck e lint. Estado: detecção, salto, emissão no bus e adaptador do feed implementados; validação E2E com API, banco e cliente WebSocket reais permanece pendente.
+- **Pipeline Git validado:** o cenário isolado confirmou worktree, gate,
+  commit, publicação de branch, merge e limpeza recuperável; o caminho sem
+  alterações também conclui sem commit desnecessário.
+- **Rework validado:** um gate controlado falhou uma vez e passou na segunda
+  entrega, com `deliver_count=2`. A seleção de subtarefa passou a carregar
+  `max_rework` e `hard_timeout_ms` da tarefa, antes dos defaults do projeto.
+- **Sessões:** labels e chaves usam `analysis-<modelo>-<codigo-tarefa>` e
+  `dev-<modelo>-<codigo-tarefa>`. O fechamento usa `DELETE /api/sessions` para
+  remover o transcript; uma execução E2E completa confirmou que não sobra
+  sessão do teste no Console.
+- **Validação atual:** 15 arquivos de teste e 65 testes aprovados, além de
+  typecheck e lint. O inventário completo de cenários e pendências está no
+  `PENDENCIAS.md` do workspace.
 
 ## 🔧 Configuração
 

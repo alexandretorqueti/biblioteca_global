@@ -72,7 +72,8 @@ export class ExpirationReconciler {
        WHERE t.status IN ('analyzing', 'running')
          AND NOT EXISTS (
            SELECT 1 FROM projeto_640.execution_resources r
-           WHERE (r.execution_id LIKE CONCAT('%', t.external_id, '%') OR r.execution_id LIKE CONCAT('%', t.id, '%')) AND r.expires_at > ?
+           WHERE (r.owner_id = CAST(t.id AS CHAR) OR r.owner_id = t.external_id)
+             AND r.expires_at > ?
          )`,
       [now]
     )

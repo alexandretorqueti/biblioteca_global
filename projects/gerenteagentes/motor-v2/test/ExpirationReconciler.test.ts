@@ -10,6 +10,20 @@ function mockDb(responses: QueryResult[]): Db {
 }
 
 describe("ExpirationReconciler", () => {
+  it("reconhece lease ativo pelo owner_id da tarefa, sem depender do formato do execution_id", async () => {
+    const db = mockDb([
+      { rows: [], affectedRows: 0, insertId: 0 },
+      { rows: [], affectedRows: 0, insertId: 0 },
+    ])
+
+    await new ExpirationReconciler({ db }).reconcile()
+
+    const orphanQuery = String(vi.mocked(db.query).mock.calls[1]?.[0])
+    expect(orphanQuery).toContain("r.owner_id = CAST(t.id AS CHAR)")
+    expect(orphanQuery).toContain("r.owner_id = t.external_id")
+    expect(orphanQuery).not.toContain("r.execution_id LIKE")
+  })
+
   it("retoma tarefa órfã com plano sem alterar subtarefas verificadas", async () => {
     const db = mockDb([
       { rows: [], affectedRows: 0, insertId: 0 },

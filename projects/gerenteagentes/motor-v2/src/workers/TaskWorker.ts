@@ -128,7 +128,7 @@ class TaskWorker {
     const session = await driver.createSession({
       agentId: input.task.agentId,
       key: sessionKey,
-      label: "motor-v2-analyze-" + input.task.id,
+      label: sessionKey,
       model: model.model,
     })
 
@@ -208,7 +208,7 @@ class TaskWorker {
         const sessionKey = formatSessionKey({ agentId: input.task.agentId, taskId: input.task.id, phase: "development", model: model.model, modelIndex, generation: attempt - 1 })
         let session
         try {
-          session = await driver.createSession({ agentId: input.task.agentId, key: sessionKey, label: `motor-v2-subtask-${subtask.id}`, model: model.model })
+          session = await driver.createSession({ agentId: input.task.agentId, key: sessionKey, label: sessionKey, model: model.model })
           const prompt = this.buildProgrammerPrompt(input.task, subtask, input.repoPath, lastFailure || undefined)
           const { runId } = await driver.sendMessage({ session, message: prompt })
           const result = await driver.waitForRunCompletion(session, runId, 1_800_000)

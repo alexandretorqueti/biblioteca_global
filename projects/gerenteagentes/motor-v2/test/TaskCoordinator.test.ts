@@ -38,6 +38,30 @@ describe('TaskCoordinator', () => {
   })
 
   describe('pump', () => {
+    it('serializa chamadas concorrentes para não selecionar a mesma tarefa duas vezes', async () => {
+      const task = {
+        id: 'task-concorrente', chatId: '', agentId: 'agent', title: 'Concorrente', description: '',
+        repoPath: '/repo', buildCommand: 'npm run build', unitTestCommand: 'npm run test',
+        status: 'planned' as const, maxRework: 3, hardTimeoutMs: 1000, projectSlug: 'project',
+        createdAt: '', updatedAt: '',
+      }
+      type CoordinatorInternals = {
+        selectNextSubtask: () => Promise<null>
+        selectNextTask: () => Promise<typeof task | null>
+        startTaskAnalysis: (input: typeof task) => Promise<void>
+      }
+      const internals = coordinator as unknown as CoordinatorInternals
+      const selectSubtask = vi.spyOn(internals, 'selectNextSubtask').mockResolvedValue(null)
+      const selectTask = vi.spyOn(internals, 'selectNextTask').mockResolvedValue(task)
+      const startAnalysis = vi.spyOn(internals, 'startTaskAnalysis').mockResolvedValue(undefined)
+
+      await Promise.all([coordinator.pump(), coordinator.pump()])
+
+      expect(selectSubtask).toHaveBeenCalledTimes(1)
+      expect(selectTask).toHaveBeenCalledTimes(1)
+      expect(startAnalysis).toHaveBeenCalledTimes(1)
+    })
+
     it('não deve iniciar tarefa quando maxWorkers atingido', async () => {
       // Sem tarefas no banco
       vi.mocked(db.query).mockResolvedValue({ rows: [], affectedRows: 0, insertId: 0 })
@@ -104,6 +128,28 @@ describe('TaskCoordinator', () => {
     it('deve retornar estatísticas', () => {
       const stats = coordinator.getStats()
       expect(stats).toEqual({ activeWorkers: 0, maxWorkers: 1 })
+    })
+  })
+
+  describe('configuração efetiva da subtarefa', () => {
+    it('prioriza max_rework e timeout da tarefa sobre os defaults do projeto', () => {
+      const internals = coordinator as unknown as {
+        mapSubtask: (row: Record<string, unknown>) => { maxRework: number | null; hardTimeoutMs: number | null }
+      }
+
+      const subtask = internals.mapSubtask({
+        id: 1,
+        seq: 1,
+        tarefa_id: 10,
+        task_external_id: 'task-10',
+        task_max_rework: 2,
+        task_hard_timeout_ms: 120_000,
+        default_max_rework: 1,
+        default_hard_timeout_ms: 60_000,
+      })
+
+      expect(subtask.maxRework).toBe(2)
+      expect(subtask.hardTimeoutMs).toBe(120_000)
     })
   })
 

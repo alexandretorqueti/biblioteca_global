@@ -81,6 +81,7 @@ export class TaskCoordinator {
   private waitManager?: ResourceWaitManager
   private eventBus: ExecutionEventBus
   private finalizingExecutions = new Set<string>()
+  private pumping = false
 
   constructor(
     db: Db,
@@ -104,21 +105,31 @@ export class TaskCoordinator {
   }
 
   async pump(): Promise<void> {
-    if (this.activeWorkers.size >= this.config.maxWorkers) return
+    // Releases de lease e chamadas HTTP podem disparar o pump ao mesmo tempo.
+    // Sem essa trava, duas chamadas selecionam a mesma subtarefa antes de ela
+    // ser persistida como running: uma inicia o worker e a outra a coloca na
+    // fila, sobrescrevendo indevidamente o status da tarefa para paused.
+    if (this.pumping) return
+    this.pumping = true
+    try {
+      if (this.activeWorkers.size >= this.config.maxWorkers) return
 
-    // 1. Tenta pegar subtarefa pendente (execucao)
-    const subtask = await this.selectNextSubtask()
-    if (subtask) {
-      console.log("[TaskCoordinator] Subtarefa selecionada: #" + subtask.seq + " " + subtask.titulo)
-      await this.startSubtaskExecution(subtask)
-      return
-    }
+      // 1. Tenta pegar subtarefa pendente (execucao)
+      const subtask = await this.selectNextSubtask()
+      if (subtask) {
+        console.log("[TaskCoordinator] Subtarefa selecionada: #" + subtask.seq + " " + subtask.titulo)
+        await this.startSubtaskExecution(subtask)
+        return
+      }
 
-    // 2. Se nao tem subtarefa, pega tarefa planejada (analise)
-    const task = await this.selectNextTask()
-    if (task) {
-      console.log("[TaskCoordinator] Tarefa selecionada para analise: " + task.id + " (" + task.title + ")")
-      await this.startTaskAnalysis(task)
+      // 2. Se nao tem subtarefa, pega tarefa planejada (analise)
+      const task = await this.selectNextTask()
+      if (task) {
+        console.log("[TaskCoordinator] Tarefa selecionada para analise: " + task.id + " (" + task.title + ")")
+        await this.startTaskAnalysis(task)
+      }
+    } finally {
+      this.pumping = false
     }
   }
 
@@ -139,6 +150,7 @@ export class TaskCoordinator {
   private async selectNextSubtask(): Promise<SubtaskWithTask | null> {
     const { rows } = await this.db.query(
       "SELECT s.*, t.external_id as task_external_id, t.titulo as task_titulo, t.descricao as task_descricao, " +
+      "t.max_rework AS task_max_rework, t.hard_timeout_ms AS task_hard_timeout_ms, " +
       "pc.slug as project_slug, a.nome as agent_id, " +
       "pmc.repo_path, pmc.branch_trabalho, pmc.build_command, pmc.unit_test_command, pmc.unit_test_exclude, " +
       "pmc.default_max_rework, pmc.default_hard_timeout_ms " +
@@ -712,8 +724,8 @@ export class TaskCoordinator {
       buildCommand: row.build_command ? String(row.build_command) : null,
       unitTestCommand: row.unit_test_command ? String(row.unit_test_command) : null,
       unitTestExclude: this.parseStringArray(row.unit_test_exclude),
-      maxRework: row.max_rework === null || row.max_rework === undefined ? (row.default_max_rework === null || row.default_max_rework === undefined ? null : Number(row.default_max_rework)) : Number(row.max_rework),
-      hardTimeoutMs: row.hard_timeout_ms === null || row.hard_timeout_ms === undefined ? (row.default_hard_timeout_ms === null || row.default_hard_timeout_ms === undefined ? null : Number(row.default_hard_timeout_ms)) : Number(row.hard_timeout_ms),
+      maxRework: row.task_max_rework === null || row.task_max_rework === undefined ? (row.default_max_rework === null || row.default_max_rework === undefined ? null : Number(row.default_max_rework)) : Number(row.task_max_rework),
+      hardTimeoutMs: row.task_hard_timeout_ms === null || row.task_hard_timeout_ms === undefined ? (row.default_hard_timeout_ms === null || row.default_hard_timeout_ms === undefined ? null : Number(row.default_hard_timeout_ms)) : Number(row.task_hard_timeout_ms),
       deliverCount: Number(row.deliver_count ?? 0),
     }
   }
