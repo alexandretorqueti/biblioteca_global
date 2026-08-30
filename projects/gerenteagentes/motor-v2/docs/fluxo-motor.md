@@ -21,7 +21,12 @@ O Motor-v2 está **deployado no container real** (`biblioteca-global-api`, porta
   - Tela Acompanhar Tarefa: subtarefas do banco como fallback + botão Iniciar desabilitado quando a tarefa já existe no motor
   - Máquina de estados: `planned -> fail` aceito (falha ambiental antes da análise)
   - Workspace do agente: `MOTOR_WORKSPACE_ROOT=/data/workspace/projects/agentes/gerenteagentes/worktrees` + volume mount
-- Branch: `base-desenvolvimento`, commits `0defb7c`, `e522283`, `43489ae`, `78f5df5`, `338baca`, `c4d2da0`, `0731be1`, `7464754`
+- **Correções da sessão noturna (2026-08-30, validação P0):**
+  - Repo inexistente não entra mais em loop de retry: `prepare` classifica ENOENT como bloqueio ambiental e o coordenador persiste `bloqueios` + subtarefa/tarefa `blocked` (novo `ready -> fail -> blocked`)
+  - `prepare`/`integrate` ignoram arquivos untracked (`--untracked-files=no`) — untracked de outra sessão não trava mais o motor
+  - Pausa devolve a subtarefa interrompida para `pending` (antes ficava órfã em `verifying` e o resume não retomava)
+  - Push do GitHub: chave SSH montada read-only no container (`GIT_SSH_COMMAND` + volume no compose); fase PUBLISH funciona em produção
+- Branch: `base-desenvolvimento`, commits `0defb7c`, `e522283`, `43489ae`, `78f5df5`, `338baca`, `c4d2da0`, `0731be1`, `7464754`, `a2a9772`, `b3f7ebb`, `3efac68`, `856b8b8`
 
 ---
 
@@ -42,26 +47,30 @@ O Motor-v2 está **deployado no container real** (`biblioteca-global-api`, porta
 |------------|--------|------------|
 | Planejamento persistido | ✅ Validado | Persistência transacional, retomada sem replanejar |
 | Execução sequencial | ✅ Validada | Coordinator single-flight, 2 subtarefas em sequência |
-| Gate independente | ✅ Validado | Build+teste antes de `verified` |
+| Gate independente | ✅ Validado | Build+teste antes de `verified`; gate verde real na #727 (`tsc` + vitest 67/67) |
 | Rework com feedback | ✅ Validado | `deliver_count=2`, correção de `max_rework`/`hard_timeout_ms` |
-| Escada de modelos | ✅ Validada | Fase ANALYZE itera pela cadeia, `status: "failed"` tratado |
+| Escada de modelos | ✅ Validada | Fase ANALYZE itera pela cadeia; na #727 fallback `ollama/qwen3.7-plus` indisponível → `openai/gpt-5.6-luna` |
 | Sessão identificável | ✅ Validada | Labels padronizados, encerramento correto |
-| Worktree/commit/merge | ✅ Validado | Commit, publicação, merge e limpeza |
-| Bloqueio ambiental | ⏳ Implementado | Validação em produção pendente |
-| Pausa/retomada | ⏳ Implementado | Validação em produção pendente |
-| Concorrência/fencing | ⏳ Implementado | Migração 0014 aplicada, validação pendente |
-| Subtarefa de correção | ⏳ Implementado | Validação em produção pendente |
-| Realtime/Broadcaster | ⏳ Adaptador pronto | Integração WebSocket pendente |
+| Worktree/commit/merge | ✅ Validado | Commit, publicação e merge reais na #727 (branch `motor-v2/727/717/a3` → `base-desenvolvimento`, merge `0cecbd5`) |
+| Bloqueio ambiental | ✅ Validado | Tarefa 728: repo inexistente → `bloqueios` persistido + tarefa `blocked`, sem loop de retry |
+| Pausa/cancel/retomada | ✅ Validado | Pausa na #727 durante gate (worker SIGKILL, tarefa `paused`), resume retomou; cancel validado na #730 |
+| Concorrência/fencing | ⚠️ Parcial | `MOTOR_MAX_WORKERS=1`: exclusão por projeto e fila observadas; 2+ workers simultâneos exige mudança de env (P1) |
+| Subtarefa de correção | ✅ Validada | Tarefa 730: gate falhou 2x com mesmo fingerprint → correção criada automaticamente em banco/git reais |
+| Realtime/Broadcaster | ⚠️ Parcial | Código deployado (`38a0686`); validação ponta a ponta do feed pendente com a sessão dona da feature |
 
 ---
 
-## Próximas validações (no ambiente real)
+## Validações no ambiente real (concluídas em 2026-08-30)
 
-1. **Bloqueios:** `blocked_environment`, falha sistêmica, falha transitória
-2. **Pausa/retomada:** interromper entre subtarefas, conservar plano
-3. **Concorrência:** duas tarefas em projetos distintos e no mesmo projeto
-4. **Subtarefa de correção:** fingerprint + diff em Git/MySQL reais
-5. **Realtime:** broadcaster → API → WebSocket → feed
+1. **Bloqueios ✅** — `blocked_environment` ao vivo (tarefa 728), persistido em `bloqueios`; falhas sistêmica/transitória cobertas pelos testes isolados
+2. **Pausa/cancel/retomada ✅** — pausa na #727 durante o gate, retomada após resume; cancel na #730
+3. **Concorrência ⚠️ parcial** — limite global 1 worker; exclusão por projeto observada; fencing só em teste isolado
+4. **Subtarefa de correção ✅** — tarefa 730, fingerprint repetido em banco/git reais
+5. **Realtime ⚠️ parcial** — deployado; feed ponta a ponta pendente
+
+**Caminho feliz #727 ✅ COMPLETED:** análise → worktree → dev → gate verde → commit → publish SSH no GitHub → merge → validação → `completed`.
+
+**Pendências conhecidas:** `saveTask` grava `errorMessage` na coluna `descricao`; falha de integração não gera linha em `bloqueios`; `GET /api/motor/task/:id` não inclui subtarefas.
 
 ---
 

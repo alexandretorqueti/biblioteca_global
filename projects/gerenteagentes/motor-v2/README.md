@@ -146,6 +146,22 @@ motor-detail/start(enqueue)/pause/resume chamam `http://127.0.0.1:${MOTOR_API_PO
 (o motor roda no mesmo container, sem proxy/Host header). Sem `MOTOR_VERSION=v2`,
 permanece o roteamento v1 via `MOTOR_DEV_URL`.
 
+### Push para o GitHub (fase PUBLISH)
+
+O worker publica a branch de trabalho no remoto via SSH. No container real, a chave
+é montada read-only (host `/home/alexandre/secrets/biblioteca-global-api/github_id_ed25519`
+→ container `/root/.ssh/github_id_ed25519`), com `GIT_SSH_COMMAND` definido no compose.
+
+## ✅ Validação em ambiente real (2026-08-30)
+
+Caminho feliz da tarefa #727 concluído ponta a ponta: análise → worktree → dev →
+gate verde (`npx tsc` + `vitest` 67/67) → commit → publish SSH → merge em `base-desenvolvimento`
+(`0cecbd5`) → subtarefa de validação → tarefa `completed`.
+
+Validado também: bloqueio ambiental persistido sem loop (#728), pausa/cancel/retomada
+(#727/730), subtarefa de correção automática por fingerprint repetido (#730). Detalhes em
+`docs/fluxo-motor.md` e no workspace do agente (`teste-fluxo-real.md`, `PENDENCIAS.md`).
+
 ## 📊 Fluxo de Execução
 
 1. **TaskCoordinator.pump()** é chamado periodicamente (30s)
