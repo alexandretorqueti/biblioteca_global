@@ -122,37 +122,60 @@ class TaskWorker {
     }
 
     const driver = this.createDriver()
-    const model = this.chainFor(input, "analysis")[0]!
-    const sessionKey = formatSessionKey({ agentId: input.task.agentId, taskId: input.task.id, phase: "analysis", model: model.model, modelIndex: 0, generation: 0 })
-
-    const session = await driver.createSession({
-      agentId: input.task.agentId,
-      key: sessionKey,
-      label: sessionKey,
-      model: model.model,
-    })
-
+    const chain = this.chainFor(input, "analysis")
     const prompt = this.buildAnalystPrompt(input.task)
-    this.log("info", "Enviando prompt para analista...")
 
-    const { runId } = await driver.sendMessage({ session, message: prompt })
-    this.log("info", "Analista respondendo... runId=" + runId)
+    let lastFailure: string | undefined
+    for (let modelIndex = 0; modelIndex < chain.length; modelIndex++) {
+      const model = chain[modelIndex]!
+      const sessionKey = formatSessionKey({ agentId: input.task.agentId, taskId: input.task.id, phase: "analysis", model: model.model, modelIndex, generation: 0 })
+      let session
 
-    const result = await driver.waitForRunCompletion(session, runId, 1_800_000)
+      try {
+        session = await driver.createSession({
+          agentId: input.task.agentId,
+          key: sessionKey,
+          label: sessionKey,
+          model: model.model,
+        })
 
-    if (result.state !== "final" || !result.content) {
-      throw new Error("Analista falhou: " + (result.errorMessage || result.state))
+        this.log("info", "Enviando prompt para analista (modelo " + model.model + ")...")
+        const { runId } = await driver.sendMessage({ session, message: prompt })
+        this.log("info", "Analista respondendo... runId=" + runId)
+
+        const result = await driver.waitForRunCompletion(session, runId, 1_800_000)
+        this.log("info", "Resultado do analista: state=" + result.state + ", contentLength=" + (result.content?.length || 0))
+
+        if (result.state !== "final" || !result.content) {
+          lastFailure = "Analista falhou: " + (result.errorMessage || result.state)
+          this.log("warn", lastFailure)
+          continue
+        }
+
+        const subtarefas = this.parseAnalystResponse(result.content)
+        this.log("info", "Analista criou " + subtarefas.length + " subtarefas")
+
+        const persisted = await persistPlan(planningDb, input.task.id, subtarefas)
+        if (persisted === "already_persisted") {
+          this.log("info", "Plano foi persistido por outra execução; preservando-o")
+        }
+        this.log("info", "Fase ANALYZE concluida: " + subtarefas.length + " subtarefas criadas")
+        return
+      } catch (error) {
+        if (isModelUnavailableError(error)) {
+          lastFailure = `Modelo indisponível: ${model.model}`
+          this.send({ type: "model_unavailable", executionId: input.context.executionId, model: model.model, message: lastFailure })
+          this.log("warn", lastFailure)
+          continue
+        }
+        throw error
+      } finally {
+        if (session) await driver.closeSession(session).catch(() => {})
+      }
     }
 
-    const subtarefas = this.parseAnalystResponse(result.content)
-    this.log("info", "Analista criou " + subtarefas.length + " subtarefas")
-
-    const persisted = await persistPlan(planningDb, input.task.id, subtarefas)
-    if (persisted === "already_persisted") {
-      this.log("info", "Plano foi persistido por outra execução; preservando-o")
-    }
-    await driver.closeSession(session).catch(() => {})
-    this.log("info", "Fase ANALYZE concluida: " + subtarefas.length + " subtarefas criadas")
+    const reason = "Escada de modelos esgotada na análise: " + (lastFailure || "nenhum modelo disponível")
+    throw new Error(reason)
   }
 
   /**

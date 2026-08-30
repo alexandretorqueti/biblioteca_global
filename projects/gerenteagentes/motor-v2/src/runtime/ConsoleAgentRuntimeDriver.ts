@@ -88,6 +88,9 @@ export class ConsoleAgentRuntimeDriver {
     const startMs = Date.now()
     const pollInterval = 5000
 
+    // Aguarda inicial para o run começar
+    await new Promise((resolve) => setTimeout(resolve, 3000))
+
     while (Date.now() - startMs < timeoutMs) {
       await new Promise((resolve) => setTimeout(resolve, pollInterval))
 
@@ -103,6 +106,13 @@ export class ConsoleAgentRuntimeDriver {
           query: { key: session.key, agentId: session.agentId },
         })
 
+        console.log("[ConsoleDriver] Polling describe:", { state: desc.state, status: desc.status, hasActiveRun: desc.hasActiveRun, endedAt: desc.endedAt })
+
+        // Tratar falhas como erro
+        if (desc.status === "failed" || desc.state === "failed") {
+          return { state: "error", runId, errorMessage: "Session failed" }
+        }
+
         // O Console atual expõe `state`/`hasActiveRun` na listagem normalizada;
         // versões anteriores usavam `status`. Aceitar ambos os contratos evita
         // esperar até timeout quando a execução já terminou.
@@ -117,6 +127,8 @@ export class ConsoleAgentRuntimeDriver {
             path: "/api/chat/history",
             query: { sessionKey: session.key, agentId: session.agentId, limit: 10, offset: 0 },
           })
+
+          console.log("[ConsoleDriver] History:", { messageCount: history.messages?.length || 0, messages: history.messages?.map(m => ({ role: m.role, hasContent: !!m.content })) })
 
           const msgs = history.messages || []
           const lastAssistant = msgs.filter((m) => m.role === "assistant").pop()
