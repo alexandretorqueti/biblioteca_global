@@ -142,7 +142,9 @@ export class GitWorkspaceManager {
     }
     const baseBranch = safeBranch(input.baseBranch)
     const workBranch = safeBranch(input.workBranch)
-    const status = await this.runner.run(["git", "status", "--porcelain", "--untracked-files=all"], input.repoPath)
+    // Untracked files não conflitam com merge; não podem travar a integração
+    // enquanto outra sessão mantém arquivos novos no repositório.
+    const status = await this.runner.run(["git", "status", "--porcelain", "--untracked-files=no"], input.repoPath)
     if (status.stdout.trim()) throw new Error("repositório principal não está limpo para integração")
 
     const workCommit = (await this.runner.run(["git", "rev-parse", "--verify", `${workBranch}^{commit}`], input.repoPath)).stdout.trim()
