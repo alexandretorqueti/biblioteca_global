@@ -1,0 +1,1 @@
+ALTER TABLE `tarefas` ADD `ultima_mensagem_erro` text;

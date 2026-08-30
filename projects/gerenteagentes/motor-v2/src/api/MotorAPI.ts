@@ -82,7 +82,7 @@ export class MotorAPI {
   }
 
   private async handleGetTask(res: ServerResponse, taskId: string): Promise<void> {
-    const task = await this.coordinator.getTask(taskId)
+    const task = await this.coordinator.getTaskWithSubtasks(taskId)
     if (!task) {
       this.json(res, 404, { ok: false, error: 'Task not found' })
       return

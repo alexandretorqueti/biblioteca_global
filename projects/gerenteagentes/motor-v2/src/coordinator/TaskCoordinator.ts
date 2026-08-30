@@ -51,6 +51,19 @@ const DEFAULT_CONFIG: TaskCoordinatorConfig = {
   maxWorkersPerProject: 1,
 }
 
+interface SubtaskView {
+  id: number
+  seq: number
+  titulo: string
+  status: string
+  resultado: string | null
+  deliverCount: number
+  workspaceStatus: string | null
+  workspaceBranch: string | null
+  workspaceCommitSha: string | null
+  correctionForSubtaskId: number | null
+}
+
 interface SubtaskWithTask {
   id: number
   seq: number
@@ -427,6 +440,21 @@ export class TaskCoordinator {
             "UPDATE projeto_640.subtarefas SET workspace_status = 'integration_failed', resultado = ? WHERE id = ?",
             [reason.substring(0, 500), worker.subtaskId],
           )
+          // Falha de integração também deixa trilha em bloqueios — sem isso só
+          // o errorMessage registrava o ocorrido.
+          try {
+            const evidence = blockerEvidence("systemic_failure", "Integração falhou: " + reason)
+            await this.db.query(
+              "INSERT INTO projeto_640.bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at) " +
+              "SELECT tarefa_id, ?, ?, ?, ?, NOW() FROM projeto_640.subtarefas WHERE id = ?",
+              [worker.subtaskId, evidence.kind, "motor-v2:" + evidence.fingerprint, evidence.excerpt, worker.subtaskId],
+            )
+          } catch (persistError) {
+            this.logger.error("Falha ao persistir bloqueio de integracao: " + describeError(persistError), {
+              taskId: worker.taskId, subtaskId: worker.subtaskId, executionId,
+            })
+          }
+          this.logger.error("Integracao falhou: " + reason, { taskId: worker.taskId, subtaskId: worker.subtaskId, executionId })
           const task = await this.repository.getTask(worker.taskId)
           if (task) {
             await this.saveTaskTransition(task, "fail", { errorMessage: reason.substring(0, 500) })
@@ -554,6 +582,38 @@ export class TaskCoordinator {
     const data = await this.repository.getTask(taskId)
     if (!data) return null
     return this.mapSaveDataToTask(data)
+  }
+
+  /**
+   * Tarefa completa com as subtarefas na resposta — remove a dependência do
+   * fallback direto no banco pela tela de acompanhamento.
+   */
+  async getTaskWithSubtasks(taskId: string): Promise<(Task & { subtasks: SubtaskView[] }) | null> {
+    const task = await this.getTask(taskId)
+    if (!task) return null
+    const isNumeric = /^\d+$/.test(taskId)
+    const { rows } = await this.db.query(
+      "SELECT s.id, s.seq, s.titulo, s.status, s.resultado, s.deliver_count, " +
+      "s.workspace_status, s.workspace_branch, s.workspace_commit_sha, s.correction_for_subtask_id " +
+      "FROM projeto_640.subtarefas s " +
+      "INNER JOIN projeto_640.tarefas t ON t.id = s.tarefa_id " +
+      (isNumeric ? "WHERE t.external_id = ? OR t.id = ? " : "WHERE t.external_id = ? ") +
+      "ORDER BY s.seq ASC, s.id ASC",
+      isNumeric ? [taskId, taskId] : [taskId],
+    )
+    const subtasks: SubtaskView[] = rows.map((row) => ({
+      id: Number(row.id),
+      seq: Number(row.seq),
+      titulo: String(row.titulo ?? ""),
+      status: String(row.status ?? "pending"),
+      resultado: row.resultado ? String(row.resultado) : null,
+      deliverCount: Number(row.deliver_count ?? 0),
+      workspaceStatus: row.workspace_status ? String(row.workspace_status) : null,
+      workspaceBranch: row.workspace_branch ? String(row.workspace_branch) : null,
+      workspaceCommitSha: row.workspace_commit_sha ? String(row.workspace_commit_sha) : null,
+      correctionForSubtaskId: row.correction_for_subtask_id ? Number(row.correction_for_subtask_id) : null,
+    }))
+    return { ...task, subtasks }
   }
 
   private mapSaveDataToTask(data: import("../shared/types/infrastructure.js").SaveTaskData): Task {

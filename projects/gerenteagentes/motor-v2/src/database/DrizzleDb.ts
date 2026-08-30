@@ -50,7 +50,7 @@ export class MysqlTaskRepository implements TaskRepository {
     const params = isNumericId ? [id, id] : [id]
 
     const { rows } = await this.db.query(
-      `SELECT t.id, t.external_id, t.titulo, t.descricao, t.status,
+      `SELECT t.id, t.external_id, t.titulo, t.descricao, t.ultima_mensagem_erro, t.status,
               t.max_rework, t.hard_timeout_ms, t.depends_on_task_id,
               t.created_at, t.updated_at,
               pc.slug as project_slug, pc.repo_path, a.id as agent_id
@@ -73,11 +73,10 @@ export class MysqlTaskRepository implements TaskRepository {
       const values: unknown[] = [data.status]
 
       if (data.errorMessage) {
-        updates.push("descricao = ?")
+        // Erro vai para a coluna dedicada; a descrição original da tarefa
+        // nunca é sobrescrevida por falhas de execução.
+        updates.push("ultima_mensagem_erro = ?")
         values.push(data.errorMessage)
-      }
-      if (data.completedAt) {
-        values.push(data.completedAt)
       }
       updates.push("updated_at = NOW()")
 
@@ -107,6 +106,7 @@ export class MysqlTaskRepository implements TaskRepository {
       chatId: "",
       title: String(row.titulo ?? ""),
       description: String(row.descricao ?? ""),
+      errorMessage: row.ultima_mensagem_erro ? String(row.ultima_mensagem_erro) : undefined,
       status: String(row.status ?? "planned"),
       repoPath: String(row.repo_path ?? ""),
       agentId: String(row.agent_id ?? ""),

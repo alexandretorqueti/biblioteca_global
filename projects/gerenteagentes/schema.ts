@@ -212,6 +212,9 @@ export const tarefas = mysqlTable("tarefas", {
   // vivem em projetos_captados — o motor resolve via projeto.
   titulo: varchar("titulo", { length: 200 }).notNull(),
   descricao: text("descricao"),
+  // Última mensagem de erro da execução — separada da descrição para que
+  // falhas não sobrescrevam o texto original da tarefa (lacuna do saveTask).
+  ultimaMensagemErro: text("ultima_mensagem_erro"),
   status: varchar("status", { length: 50 }).notNull().default("draft"), // draft, planned, running, paused, completed, failed, cancelled
   maxRework: int("max_rework").notNull().default(3),
   hardTimeoutMs: bigint("hard_timeout_ms", { mode: "number" }),
