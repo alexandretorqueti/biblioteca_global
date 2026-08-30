@@ -4,6 +4,7 @@
 
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http'
 import type { TaskCoordinator } from '../coordinator/TaskCoordinator.js'
+import { createLogger } from '../shared/logger.js'
 
 export interface MotorAPIConfig {
   port: number
@@ -11,6 +12,7 @@ export interface MotorAPIConfig {
 }
 
 export class MotorAPI {
+  private logger = createLogger('MotorAPI')
   private server: Server | null = null
   private coordinator: TaskCoordinator
   private port: number
@@ -24,7 +26,7 @@ export class MotorAPI {
   async start(): Promise<void> {
     return new Promise((resolve) => {
       this.server?.listen(this.port, () => {
-        console.log(`[MotorAPI] Porta ${this.port}`)
+        this.logger.info(`Porta ${this.port}`)
         resolve()
       })
     })

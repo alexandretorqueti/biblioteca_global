@@ -11,6 +11,7 @@ import { ExpirationReconciler } from './reconciler/ExpirationReconciler.js'
 import { MotorAPI } from './api/MotorAPI.js'
 import { resourceEventBus } from './resources/ResourceEventBus.js'
 import { executionEventBus, type ExecutionActivityBroadcaster } from './events/ExecutionEventBus.js'
+import { createLogger, describeError } from './shared/logger.js'
 
 export interface MotorConfig {
   db: Db
@@ -23,6 +24,7 @@ export interface MotorConfig {
 }
 
 export class Motor {
+  private logger = createLogger('Motor')
   private coordinator: TaskCoordinator
   private resourceLease: ResourceLeaseService
   private _waitManager: ResourceWaitManager
@@ -57,37 +59,37 @@ export class Motor {
     if (config.activityBroadcaster) {
       executionEventBus.on((event) => {
         void Promise.resolve(config.activityBroadcaster!.publish(event)).catch((error: unknown) => {
-          console.error('[Motor] Falha ao publicar atividade realtime:', error instanceof Error ? error.message : error)
+          this.logger.error('Falha ao publicar atividade realtime: ' + describeError(error))
         })
       })
     }
   }
 
   async start(): Promise<void> {
-    console.log('[Motor] Iniciando motor-v2...')
+    this.logger.info('Iniciando motor-v2...')
     this.reconciler.start()
     await this.api.start()
 
     this.pumpInterval = setInterval(() => {
-      this.coordinator.pump().catch((err: Error) => console.error('[Motor] Erro no pump:', err))
+      this.coordinator.pump().catch((err: Error) => this.logger.error('Erro no pump: ' + describeError(err)))
     }, 30000)
 
     await this.coordinator.pump()
-    console.log('[Motor] Motor-v2 iniciado')
+    this.logger.info('Motor-v2 iniciado')
   }
 
   async stop(): Promise<void> {
-    console.log('[Motor] Parando...')
+    this.logger.info('Parando...')
     if (this.pumpInterval) { clearInterval(this.pumpInterval); this.pumpInterval = null }
     this.reconciler.stop()
     await this.workerLauncher.shutdownAll()
     await this.api.stop()
-    console.log('[Motor] Parado')
+    this.logger.info('Parado')
   }
 
   private setupEventHandlers(): void {
     this.workerLauncher.on('worker_exit', (event: { executionId: string; code: number | null }) => {
-      console.log(`[Motor] Worker exit: ${event.executionId} (code: ${event.code})`)
+      this.logger.info(`Worker exit: ${event.executionId} (code: ${event.code})`, { executionId: event.executionId })
     })
     resourceEventBus.on('released', (event) => {
       void this.coordinator.onResourceReleased(event.resourceKey)

@@ -2,6 +2,9 @@ import { execFile } from "node:child_process"
 import { mkdir, rm } from "node:fs/promises"
 import { isAbsolute, relative, resolve, join } from "node:path"
 import { promisify } from "node:util"
+import { createLogger } from "../shared/logger.js"
+
+const logger = createLogger("GitWorkspaceManager")
 
 const execFileAsync = promisify(execFile)
 
@@ -107,16 +110,16 @@ export class GitWorkspaceManager {
 
     const branch = `motor-v2/${task}/${subtask}/a${input.attempt}`
     await mkdir(join(this.root, task, subtask), { recursive: true })
-    console.log(`[GitWorkspaceManager] Criando worktree: target=${target}, baseCommit=${baseCommit}, repoPath=${input.repoPath}`)
+    logger.info(`Criando worktree: target=${target}, baseCommit=${baseCommit}, repoPath=${input.repoPath}`, { taskId: input.taskId, subtaskId: input.subtaskId })
     try {
       const worktreeResult = await this.runner.run(["git", "worktree", "add", "--detach", target, baseCommit], input.repoPath)
-      console.log(`[GitWorkspaceManager] Worktree criado: stdout=${worktreeResult.stdout.trim()}, stderr=${worktreeResult.stderr.trim()}`)
+      logger.debug(`Worktree criado: stdout=${worktreeResult.stdout.trim()}, stderr=${worktreeResult.stderr.trim()}`)
       await this.runner.run(["git", "switch", "-c", branch, baseCommit], target)
       await this.markSafeDirectory(target)
-      console.log(`[GitWorkspaceManager] Worktree validado com sucesso: path=${target}, branch=${branch}`)
+      logger.info(`Worktree validado com sucesso: path=${target}, branch=${branch}`, { taskId: input.taskId, subtaskId: input.subtaskId })
       return { path: target, branch, baseCommit }
     } catch (error) {
-      console.error(`[GitWorkspaceManager] Erro ao criar worktree:`, error)
+      logger.error(`Erro ao criar worktree: ${error instanceof Error ? error.message : String(error)}`, { taskId: input.taskId, subtaskId: input.subtaskId })
       // O alvo foi criado exclusivamente por esta tentativa, sempre dentro da
       // raiz dedicada; removê-lo evita worktree parcial sem tocar no repositório.
       await rm(target, { recursive: true, force: true }).catch(() => {})

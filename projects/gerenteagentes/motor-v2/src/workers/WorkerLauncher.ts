@@ -8,10 +8,12 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { WorkerInput } from '../shared/types/execution.js'
 import type { WorkerToCoordinatorMessage } from './WorkerProtocol.js'
+import { createLogger } from '../shared/logger.js'
 
 export type WorkerEvent = WorkerToCoordinatorMessage
 
 export class WorkerLauncher extends EventEmitter {
+  private logger = createLogger('WorkerLauncher')
   private workers = new Map<string, ChildProcess>()
   private workerScript: string
 
@@ -45,11 +47,11 @@ export class WorkerLauncher extends EventEmitter {
     // Captura stdout/stderr do worker para debug
     worker.stdout?.on('data', (d: Buffer) => {
       const text = d.toString().trim()
-      if (text) console.log('[Worker ' + executionId + ' stdout]', text)
+      if (text) this.logger.info(text, { executionId })
     })
     worker.stderr?.on('data', (d: Buffer) => {
       const text = d.toString().trim()
-      if (text) console.error('[Worker ' + executionId + ' stderr]', text)
+      if (text) this.logger.error(text, { executionId })
     })
 
     worker.on('message', (msg: unknown) => {
@@ -62,7 +64,7 @@ export class WorkerLauncher extends EventEmitter {
     })
 
     worker.on('exit', (code: number | null, signal: string | null) => {
-      console.log('[WorkerLauncher] Worker ' + executionId + ' exited code=' + code + ' signal=' + signal)
+      this.logger.info('Worker ' + executionId + ' exited code=' + code + ' signal=' + signal, { executionId })
       this.emit('worker_exit', { executionId, code, signal })
       this.cleanupWorker(executionId)
     })
@@ -159,7 +161,7 @@ export class WorkerLauncher extends EventEmitter {
 
   private handleWorkerMessage(executionId: string, msg: unknown): void {
     if (!this.isWorkerMessage(msg)) {
-      console.warn(`[WorkerLauncher] Mensagem inválida de ${executionId}:`, msg)
+      this.logger.warn(`Mensagem inválida de ${executionId}: ${JSON.stringify(msg)}`, { executionId })
       return
     }
     this.emit(msg.type, msg)

@@ -5,8 +5,10 @@
 import type { Db, TaskRepository } from '../shared/types/infrastructure.js'
 import type { ResourceKey } from '../shared/types/resources.js'
 import type { Task } from '../shared/types/index.js'
+import { createLogger } from '../shared/logger.js'
 
 export class ResourceWaitManager {
+  private logger = createLogger('ResourceWaitManager')
   private db: Db
   private repository: TaskRepository
 
@@ -32,7 +34,7 @@ export class ResourceWaitManager {
       [resourceKey, waitId, position, taskId]
     )
 
-    console.log(`[ResourceWaitManager] Tarefa ${taskId} aguardando ${resourceKey} (posição ${position})`)
+    this.logger.info(`Tarefa ${taskId} aguardando ${resourceKey} (posição ${position})`, { taskId })
   }
 
   async cancelWait(taskId: string): Promise<void> {
@@ -107,7 +109,7 @@ export class ResourceWaitManager {
       return { taskId, resumeStatus }
     })
     if (resumedTask) {
-      console.log(`[ResourceWaitManager] Tarefa ${resumedTask.taskId} retomada como ${resumedTask.resumeStatus}`)
+      this.logger.info(`Tarefa ${resumedTask.taskId} retomada como ${resumedTask.resumeStatus}`, { taskId: resumedTask.taskId })
     }
   }
 

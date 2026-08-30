@@ -6,15 +6,18 @@
 import { Motor } from './Motor.js'
 import { createDbConnection, MysqlTaskRepository } from './database/DrizzleDb.js'
 import { LibraryRealtimeBroadcaster } from './events/LibraryRealtimeBroadcaster.js'
+import { createLogger } from './shared/logger.js'
+
+const logger = createLogger('MotorStart')
 
 async function main() {
-  console.log('🚀 Motor v2 - Iniciando...')
+  logger.info('🚀 Motor v2 - Iniciando...')
 
   // Conecta ao banco real
-  console.log('📦 Conectando ao banco de dados...')
+  logger.info('📦 Conectando ao banco de dados...')
   const { db } = await createDbConnection()
   const repository = new MysqlTaskRepository(db)
-  console.log('✅ Banco conectado')
+  logger.info('✅ Banco conectado')
 
   const realtimeToken = process.env.LIBRARY_REALTIME_EVENTS_TOKEN
   const activityBroadcaster = realtimeToken
@@ -36,7 +39,7 @@ async function main() {
   })
 
   const shutdown = async (signal: string) => {
-    console.log(`\n🛑 ${signal}`)
+    logger.info(`🛑 ${signal}`)
     await motor.stop()
     process.exit(0)
   }
@@ -46,17 +49,17 @@ async function main() {
 
   try {
     await motor.start()
-    console.log(`✅ Motor v2 rodando em http://localhost:${apiPort}`)
-    console.log('   GET /api/motor/health')
-    console.log('   GET /api/motor/stats')
-    console.log('   POST /api/motor/pump')
+    logger.info(`✅ Motor v2 rodando em http://localhost:${apiPort}`)
+    logger.info('   GET /api/motor/health')
+    logger.info('   GET /api/motor/stats')
+    logger.info('   POST /api/motor/pump')
   } catch (error) {
-    console.error('❌ Erro:', error)
+    logger.error('❌ Erro: ' + (error instanceof Error ? error.stack ?? error.message : String(error)))
     process.exit(1)
   }
 }
 
 main().catch((error) => {
-  console.error('❌ Fatal:', error)
+  logger.error('❌ Fatal: ' + (error instanceof Error ? error.stack ?? error.message : String(error)))
   process.exit(1)
 })

@@ -5,6 +5,7 @@
 import type { Db } from '../shared/types/infrastructure.js'
 import type { ResourceKey } from '../shared/types/resources.js'
 import { resourceEventBus } from '../resources/ResourceEventBus.js'
+import { createLogger, describeError } from '../shared/logger.js'
 
 export interface ExpirationReconcilerConfig {
   db: Db
@@ -14,6 +15,7 @@ export interface ExpirationReconcilerConfig {
 }
 
 export class ExpirationReconciler {
+  private logger = createLogger('ExpirationReconciler')
   private db: Db
   private intervalMs: number
   private maxStalenessMs: number
@@ -29,9 +31,9 @@ export class ExpirationReconciler {
 
   start(): void {
     if (this.timer) return
-    console.log(`[ExpirationReconciler] Iniciando (${this.intervalMs}ms)`)
-    this.timer = setInterval(() => { this.reconcile().catch(console.error) }, this.intervalMs)
-    this.reconcile().catch(console.error)
+    this.logger.info(`Iniciando (${this.intervalMs}ms)`)
+    this.timer = setInterval(() => { this.reconcile().catch((error) => this.logger.error('Erro no reconcile: ' + describeError(error))) }, this.intervalMs)
+    this.reconcile().catch((error) => this.logger.error('Erro no reconcile: ' + describeError(error)))
   }
 
   stop(): void {
@@ -52,7 +54,7 @@ export class ExpirationReconciler {
     for (const row of expired.rows) {
       const key = String(row.resource_key!) as ResourceKey
       const execId = String(row.execution_id!)
-      console.log(`[ExpirationReconciler] Lock expirado: ${key}`)
+      this.logger.info(`Lock expirado: ${key}`, { executionId: execId })
 
       await this.db.query(
         `DELETE FROM projeto_640.execution_resources WHERE resource_key = ? AND execution_id = ?`,
@@ -80,7 +82,7 @@ export class ExpirationReconciler {
 
     for (const row of orphans.rows) {
       const taskId = String(row.id!)
-      console.log(`[ExpirationReconciler] Tarefa órfã: ${taskId}`)
+      this.logger.info(`Tarefa órfã: ${taskId}`, { taskId })
       const hasSubtasks = Number(row.has_subtasks ?? 0) === 1
       if (hasSubtasks) {
         await this.db.query(

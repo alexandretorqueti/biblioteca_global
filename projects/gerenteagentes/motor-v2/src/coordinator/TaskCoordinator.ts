@@ -20,6 +20,7 @@ import { executionEventBus, type ExecutionEventBus } from "../events/ExecutionEv
 import { correctionOnlyChangesTests } from "../policies/CorrectionDiffPolicy.js"
 import { blockerEvidence } from "../policies/BlockerPolicy.js"
 import { transitionTask, type TaskTransition } from "../policies/TaskStateMachine.js"
+import { createLogger, describeError } from "../shared/logger.js"
 
 interface ActiveWorker {
   taskId: string
@@ -31,6 +32,7 @@ interface ActiveWorker {
   subtaskId?: number
   workspace?: { path: string; branch: string; baseCommit: string }
   repoPath?: string
+  projectSlug?: string
   baseBranch?: string
   timeoutHandle?: ReturnType<typeof setTimeout>
   lastHeartbeatAt?: Date
@@ -83,6 +85,7 @@ export class TaskCoordinator {
   private eventBus: ExecutionEventBus
   private finalizingExecutions = new Set<string>()
   private pumping = false
+  private logger = createLogger("TaskCoordinator")
 
   constructor(
     db: Db,
@@ -113,21 +116,36 @@ export class TaskCoordinator {
     if (this.pumping) return
     this.pumping = true
     try {
-      if (this.activeWorkers.size >= this.config.maxWorkers) return
+      // Com maxWorkers > 1 um único pump precisa preencher todas as vagas;
+      // cada iteração inicia no máximo um worker e reconsulta a fila. O laço
+      // para quando não há trabalho elegível ou quando o trabalho selecionado
+      // não pôde iniciar (recurso em espera, falha de início).
+      let guard = 0
+      while (this.activeWorkers.size < this.config.maxWorkers && guard <= this.config.maxWorkers) {
+        guard += 1
 
-      // 1. Tenta pegar subtarefa pendente (execucao)
-      const subtask = await this.selectNextSubtask()
-      if (subtask) {
-        console.log("[TaskCoordinator] Subtarefa selecionada: #" + subtask.seq + " " + subtask.titulo)
-        await this.startSubtaskExecution(subtask)
-        return
-      }
+        // 1. Tenta pegar subtarefa pendente (execucao)
+        const subtask = await this.selectNextSubtask()
+        if (subtask) {
+          this.logger.info("Subtarefa selecionada: #" + subtask.seq + " " + subtask.titulo, {
+            taskId: subtask.taskExternalId, subtaskId: subtask.id, projectSlug: subtask.projectSlug ?? undefined,
+          })
+          const started = await this.startSubtaskExecution(subtask)
+          if (!started) break
+          continue
+        }
 
-      // 2. Se nao tem subtarefa, pega tarefa planejada (analise)
-      const task = await this.selectNextTask()
-      if (task) {
-        console.log("[TaskCoordinator] Tarefa selecionada para analise: " + task.id + " (" + task.title + ")")
-        await this.startTaskAnalysis(task)
+        // 2. Se nao tem subtarefa, pega tarefa planejada (analise)
+        const task = await this.selectNextTask()
+        if (task) {
+          this.logger.info("Tarefa selecionada para analise: " + task.id + " (" + task.title + ")", {
+            taskId: task.id, projectSlug: task.projectSlug ?? undefined,
+          })
+          const started = await this.startTaskAnalysis(task)
+          if (!started) break
+          continue
+        }
+        break
       }
     } finally {
       this.pumping = false
@@ -180,7 +198,8 @@ export class TaskCoordinator {
     return runningForProject < this.config.maxWorkersPerProject
   }
 
-  private async startTaskAnalysis(task: Task): Promise<void> {
+  /** Retorna true quando o worker foi iniciado; false quando o trabalho não começou (espera/falha). */
+  private async startTaskAnalysis(task: Task): Promise<boolean> {
     const executionId = "exec-analyze-" + task.id + "-" + Date.now()
     const resourceKey = task.projectSlug ? RESOURCE_KEYS.projectExecution(task.projectSlug) : null
     let fencingToken = 0
@@ -189,8 +208,8 @@ export class TaskCoordinator {
       const result = await this.resourceLease.acquire(resourceKey, executionId, task.id, 60)
       if (result.kind === "waiting") {
         await this.waitManager?.waitForResource(task.id, resourceKey, result.waitId, result.position)
-        console.log("[TaskCoordinator] Tarefa " + task.id + " aguardando recurso")
-        return
+        this.logger.info("Tarefa " + task.id + " aguardando recurso", { taskId: task.id, projectSlug: task.projectSlug ?? undefined })
+        return false
       }
       if (result.kind !== "acquired") throw new Error("Falha ao adquirir recurso: " + result.reason)
       fencingToken = result.lease.fencingToken
@@ -199,6 +218,7 @@ export class TaskCoordinator {
     this.activeWorkers.set(executionId, {
       taskId: task.id, executionId, resourceKey, fencingToken,
       startedAt: new Date(), phase: "analyze",
+      projectSlug: task.projectSlug ?? undefined,
     })
 
     try {
@@ -216,15 +236,20 @@ export class TaskCoordinator {
       })
       this.armWorkerTimeout(executionId, task.hardTimeoutMs)
 
-      console.log("[TaskCoordinator] Worker de analise iniciado: " + task.id + " (" + executionId + ")")
+      this.logger.info("Worker de analise iniciado: " + task.id + " (" + executionId + ")", {
+        taskId: task.id, executionId, phase: "analyze",
+      })
+      return true
     } catch (error) {
-      console.error("[TaskCoordinator] Erro ao iniciar analise:", error)
+      this.logger.error("Erro ao iniciar analise: " + describeError(error), { taskId: task.id, executionId, phase: "analyze" })
       if (resourceKey) await this.resourceLease.release(resourceKey, executionId, fencingToken)
       this.activeWorkers.delete(executionId)
+      return false
     }
   }
 
-  private async startSubtaskExecution(subtask: SubtaskWithTask): Promise<void> {
+  /** Retorna true quando o worker foi iniciado; false quando o trabalho não começou (espera/falha). */
+  private async startSubtaskExecution(subtask: SubtaskWithTask): Promise<boolean> {
     const executionId = "exec-execute-" + subtask.id + "-" + Date.now()
     const resourceKey = subtask.projectSlug ? RESOURCE_KEYS.projectExecution(subtask.projectSlug) : null
     let fencingToken = 0
@@ -233,8 +258,10 @@ export class TaskCoordinator {
       const result = await this.resourceLease.acquire(resourceKey, executionId, String(subtask.tarefaId), 120)
       if (result.kind === "waiting") {
         await this.waitManager?.waitForResource(String(subtask.tarefaId), resourceKey, result.waitId, result.position)
-        console.log("[TaskCoordinator] Subtarefa #" + subtask.seq + " aguardando recurso")
-        return
+        this.logger.info("Subtarefa #" + subtask.seq + " aguardando recurso", {
+          taskId: subtask.taskExternalId, subtaskId: subtask.id, projectSlug: subtask.projectSlug ?? undefined,
+        })
+        return false
       }
       if (result.kind !== "acquired") throw new Error("Falha ao adquirir recurso: " + result.reason)
       fencingToken = result.lease.fencingToken
@@ -244,6 +271,7 @@ export class TaskCoordinator {
       taskId: subtask.taskExternalId, executionId, resourceKey, fencingToken,
       startedAt: new Date(), phase: "execute", subtaskId: subtask.id,
       repoPath: subtask.repoPath,
+      projectSlug: subtask.projectSlug ?? undefined,
     })
 
     try {
@@ -305,16 +333,22 @@ export class TaskCoordinator {
       })
       this.armWorkerTimeout(executionId, subtask.hardTimeoutMs ?? 3600000)
 
-      console.log("[TaskCoordinator] Worker de execucao iniciado: subtarefa #" + subtask.seq + " (" + executionId + ")")
+      this.logger.info("Worker de execucao iniciado: subtarefa #" + subtask.seq + " (" + executionId + ")", {
+        taskId: subtask.taskExternalId, subtaskId: subtask.id, executionId, phase: "execute",
+        projectSlug: subtask.projectSlug ?? undefined,
+      })
+      return true
     } catch (error) {
-      console.error("[TaskCoordinator] Erro ao iniciar execucao:", error)
-      // Falha ambiental no preparo (repo ausente, git indisponível) não pode
-      // entrar em loop de retry: persistir bloqueio e marcar tarefa bloqueada.
       const reason = error instanceof Error ? (error.message || String(error)) : String(error)
-      const environmental = reason.startsWith("Ambiente bloqueado") || reason.includes("ENOENT")
-      if (environmental) {
+      const transientDb = /ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|PROTOCOL_CONNECTION_LOST|Connection lost/i.test(reason)
+      // Qualquer falha no preparo/início (repo ausente, configuração ausente,
+      // git indisponível) não pode entrar em loop de retry: persistir bloqueio
+      // e marcar subtarefa/tarefa como bloqueadas. Falhas transientes de banco
+      // ficam pendentes para o próximo pump.
+      if (!transientDb) {
         try {
-          const evidence = blockerEvidence("blocked_environment", reason)
+          const environmental = reason.startsWith("Ambiente bloqueado") || reason.includes("ENOENT")
+          const evidence = blockerEvidence(environmental ? "blocked_environment" : "systemic_failure", reason)
           await this.db.query(
             "INSERT INTO projeto_640.bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at) " +
             "SELECT tarefa_id, ?, ?, ?, ?, NOW() FROM projeto_640.subtarefas WHERE id = ?",
@@ -323,10 +357,18 @@ export class TaskCoordinator {
           await this.db.query("UPDATE projeto_640.subtarefas SET status = 'blocked', updated_at = NOW() WHERE id = ?", [subtask.id])
           const parentTask = await this.repository.getTask(subtask.taskExternalId)
           if (parentTask) await this.saveTaskTransition(parentTask, "fail")
-          console.warn("[TaskCoordinator] Bloqueio ambiental persistido (subtarefa " + subtask.id + "): " + reason)
+          this.logger.warn("Bloqueio persistido no inicio da execucao (subtarefa " + subtask.id + "): " + reason, {
+            taskId: subtask.taskExternalId, subtaskId: subtask.id, executionId,
+          })
         } catch (persistError) {
-          console.error("[TaskCoordinator] Falha ao persistir bloqueio ambiental:", persistError)
+          this.logger.error("Falha ao persistir bloqueio de inicio: " + describeError(persistError), {
+            taskId: subtask.taskExternalId, subtaskId: subtask.id, executionId,
+          })
         }
+      } else {
+        this.logger.warn("Falha transiente ao iniciar execucao (subtarefa permanece pending): " + reason, {
+          taskId: subtask.taskExternalId, subtaskId: subtask.id, executionId,
+        })
       }
       const activeWorker = this.activeWorkers.get(executionId)
       if (activeWorker && this.beginFinalization(executionId, activeWorker)) {
@@ -334,6 +376,7 @@ export class TaskCoordinator {
       } else if (resourceKey) {
         await this.resourceLease.release(resourceKey, executionId, fencingToken)
       }
+      return false
     }
   }
 
@@ -344,13 +387,13 @@ export class TaskCoordinator {
     try {
     if (worker.phase === "analyze") {
       this.publishActivity(worker, { type: "completed" })
-      console.log("[TaskCoordinator] Analise completada: " + worker.taskId)
+      this.logger.info("Analise completada: " + worker.taskId, { taskId: worker.taskId, executionId, phase: "analyze" })
       const task = await this.repository.getTask(worker.taskId)
       if (task) {
         await this.saveTaskTransition(task, "analysis_completed")
       }
     } else {
-      console.log("[TaskCoordinator] Execucao completada: subtarefa " + worker.subtaskId)
+      this.logger.info("Execucao completada: subtarefa " + worker.subtaskId, { taskId: worker.taskId, subtaskId: worker.subtaskId, executionId, phase: "execute" })
       if (worker.subtaskId && worker.workspace) {
         try {
           let mergeCommit: string | undefined
@@ -405,7 +448,7 @@ export class TaskCoordinator {
         )
         const pending = (rows[0] as Record<string, unknown>)?.pending as number
         if (pending === 0) {
-          console.log("[TaskCoordinator] Todas subtarefas completas! Marcando tarefa como completed")
+          this.logger.info("Todas subtarefas completas! Marcando tarefa como completed", { taskId: worker.taskId, executionId })
           const task = await this.repository.getTask(worker.taskId)
           if (task) {
             await this.saveTaskTransition(task, "execution_completed")
@@ -421,7 +464,7 @@ export class TaskCoordinator {
 
     await this.finishWorker(executionId, worker)
     } catch (error) {
-      console.error("[TaskCoordinator] Falha ao finalizar sucesso da execução " + executionId + ":", error)
+      this.logger.error("Falha ao finalizar sucesso da execução " + executionId + ": " + describeError(error), { taskId: worker.taskId, executionId })
       await this.finishWorker(executionId, worker)
       throw error
     }
@@ -434,7 +477,7 @@ export class TaskCoordinator {
     const transient = kind === "timeout" || kind === "lease_lost" || kind === "lease_expired" || kind === "lost"
     this.publishActivity(worker, { type: "failed", level: "error", message: failure })
 
-    console.error("[TaskCoordinator] Falha: " + worker.taskId, failure)
+    this.logger.error("Falha: " + failure, { taskId: worker.taskId, subtaskId: worker.subtaskId, executionId, phase: worker.phase })
 
     try {
       if (worker.phase === "analyze") {
@@ -462,14 +505,14 @@ export class TaskCoordinator {
   async onTaskPaused(executionId: string, reason: string): Promise<void> {
     const worker = this.activeWorkers.get(executionId)
     if (!worker || !this.beginFinalization(executionId, worker)) return
-    console.log("[TaskCoordinator] Tarefa pausada: " + worker.taskId + " - " + reason)
+    this.logger.info("Tarefa pausada: " + worker.taskId + " - " + reason, { taskId: worker.taskId, executionId })
     // Subtarefa interrompida volta a pendente para o pump retomá-la depois do
     // resume; sem isso ela ficaria órfã em running/verifying para sempre.
     if (worker.subtaskId) {
       await this.db.query(
         "UPDATE projeto_640.subtarefas SET status = 'pending', updated_at = NOW() WHERE id = ? AND status IN ('running', 'verifying', 'delivered', 'rework')",
         [worker.subtaskId],
-      ).catch((error: unknown) => console.error("[TaskCoordinator] Falha ao resetar subtarefa pausada:", error))
+      ).catch((error: unknown) => this.logger.error("Falha ao resetar subtarefa pausada: " + describeError(error), { taskId: worker.taskId, subtaskId: worker.subtaskId, executionId }))
     }
     const task = await this.repository.getTask(worker.taskId)
     if (task) await this.saveTaskTransition(task, "pause")
@@ -477,7 +520,7 @@ export class TaskCoordinator {
   }
 
   async onResourceReleased(resourceKey: ResourceKey): Promise<void> {
-    console.log("[TaskCoordinator] Recurso liberado: " + resourceKey)
+    this.logger.info("Recurso liberado: " + resourceKey)
     await this.waitManager?.resumeNext(resourceKey)
     await this.pump()
   }
@@ -489,7 +532,22 @@ export class TaskCoordinator {
   }
 
   getStats() {
-    return { activeWorkers: this.activeWorkers.size, maxWorkers: this.config.maxWorkers }
+    const workers = Array.from(this.activeWorkers.values()).map((worker) => ({
+      executionId: worker.executionId,
+      taskId: worker.taskId,
+      subtaskId: worker.subtaskId ?? null,
+      phase: worker.phase,
+      projectSlug: worker.projectSlug ?? null,
+      startedAt: worker.startedAt.toISOString(),
+      ageMs: Date.now() - worker.startedAt.getTime(),
+      lastHeartbeatAt: worker.lastHeartbeatAt?.toISOString() ?? null,
+    }))
+    return {
+      activeWorkers: this.activeWorkers.size,
+      maxWorkers: this.config.maxWorkers,
+      maxWorkersPerProject: this.config.maxWorkersPerProject,
+      workers,
+    }
   }
 
   async getTask(taskId: string): Promise<Task | null> {
@@ -612,11 +670,11 @@ export class TaskCoordinator {
     const worker = this.activeWorkers.get(executionId)
     if (!worker || this.finalizingExecutions.has(executionId)) return
 
-    console.warn("[TaskCoordinator] Encerrando worker: " + executionId + " - " + reason)
+    this.logger.warn("Encerrando worker: " + executionId + " - " + reason, { executionId })
     try {
       await this.workerLauncher.stopWorker(executionId, 5000)
     } catch (error) {
-      console.error("[TaskCoordinator] Falha ao encerrar worker " + executionId + ":", error)
+      this.logger.error("Falha ao encerrar worker " + executionId + ": " + describeError(error), { executionId })
       this.workerLauncher.killWorker(executionId)
     }
     await this.onTaskFailed(executionId, reason, kind)
@@ -636,12 +694,12 @@ export class TaskCoordinator {
         )
       }
     } catch (error) {
-      console.error("[TaskCoordinator] Falha ao limpar workspace " + executionId + ":", error)
+      this.logger.error("Falha ao limpar workspace " + executionId + ": " + describeError(error), { executionId, subtaskId: worker.subtaskId })
       if (worker.subtaskId) {
         await this.db.query(
           "UPDATE projeto_640.subtarefas SET workspace_status = 'cleanup_failed', resultado = ? WHERE id = ?",
           [String(error).substring(0, 500), worker.subtaskId],
-        ).catch((dbError: unknown) => console.error("[TaskCoordinator] Falha ao registrar limpeza:", dbError))
+        ).catch((dbError: unknown) => this.logger.error("Falha ao registrar limpeza: " + describeError(dbError), { executionId, subtaskId: worker.subtaskId }))
       }
     } finally {
       try {
@@ -670,11 +728,11 @@ export class TaskCoordinator {
       if (!worker.resourceKey) return
       void this.resourceLease.renew(worker.resourceKey, msg.executionId, worker.fencingToken).then((result) => {
         if (result.kind === "lost") {
-          console.warn("[TaskCoordinator] Lease perdido: " + msg.executionId + " - " + result.reason)
+          this.logger.warn("Lease perdido: " + msg.executionId + " - " + result.reason, { executionId: msg.executionId })
           void this.handleWorkerFailure(msg.executionId, "Lease perdido: " + result.reason, "lease_lost")
         }
       }).catch((error: unknown) => {
-        console.error("[TaskCoordinator] Falha ao renovar lease: " + msg.executionId, error)
+        this.logger.error("Falha ao renovar lease: " + msg.executionId + ": " + describeError(error), { executionId: msg.executionId })
       })
     })
     this.workerLauncher.on("worker_exit", (event: { executionId: string; code: number | null }) => {
@@ -682,28 +740,28 @@ export class TaskCoordinator {
         const reason = event.code === 0
           ? "Worker encerrou sem enviar o evento completed"
           : "Worker encerrado inesperadamente (codigo " + String(event.code) + ")"
-        console.error("[TaskCoordinator] " + reason + ": " + event.executionId)
+        this.logger.error(reason + ": " + event.executionId, { executionId: event.executionId })
         void this.onTaskFailed(event.executionId, reason, "worker_exit").catch((error: unknown) => {
-          console.error("[TaskCoordinator] Falha ao persistir encerramento do worker:", error)
+          this.logger.error("Falha ao persistir encerramento do worker: " + describeError(error), { executionId: event.executionId })
         })
       }
     })
     this.workerLauncher.on("worker_error", (event: { executionId: string; error: Error }) => {
       const reason = "Erro no worker: " + event.error.message
-      console.error("[TaskCoordinator] " + reason + ": " + event.executionId)
+      this.logger.error(reason + ": " + event.executionId, { executionId: event.executionId })
       void this.onTaskFailed(event.executionId, reason).catch((error: unknown) => {
-        console.error("[TaskCoordinator] Falha ao persistir erro do worker:", error)
+        this.logger.error("Falha ao persistir erro do worker: " + describeError(error), { executionId: event.executionId })
       })
     })
     this.workerLauncher.on("log", (event: { executionId: string; level: string; message: string }) => {
       const worker = this.activeWorkers.get(event.executionId)
       if (worker) this.publishActivity(worker, { type: "log", level: event.level as "info" | "warn" | "error", message: event.message })
-      console.log("[MotorExecution " + event.executionId + "] [" + event.level.toUpperCase() + "] " + event.message)
+      this.logger.info("[" + event.level.toUpperCase() + "] " + event.message, { executionId: event.executionId })
     })
     this.workerLauncher.on("progress", (event: { executionId: string; phase: string; message: string }) => {
       const worker = this.activeWorkers.get(event.executionId)
       if (worker) this.publishActivity(worker, { type: "progress", executionPhase: event.phase as import("../shared/types/execution.js").ExecutionPhase, message: event.message })
-      console.log("[MotorExecution " + event.executionId + "] [PROGRESS " + event.phase + "] " + event.message)
+      this.logger.info("[PROGRESS " + event.phase + "] " + event.message, { executionId: event.executionId })
     })
     this.workerLauncher.on("model_unavailable", (event: { executionId: string; model: string; message: string }) => {
       const worker = this.activeWorkers.get(event.executionId)

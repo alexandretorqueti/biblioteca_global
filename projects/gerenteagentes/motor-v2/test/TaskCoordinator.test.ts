@@ -127,7 +127,33 @@ describe('TaskCoordinator', () => {
   describe('getStats', () => {
     it('deve retornar estatísticas', () => {
       const stats = coordinator.getStats()
-      expect(stats).toEqual({ activeWorkers: 0, maxWorkers: 1 })
+      expect(stats).toEqual({ activeWorkers: 0, maxWorkers: 1, maxWorkersPerProject: 1, workers: [] })
+    })
+
+    it('detalha workers ativos com correlação e idade', () => {
+      const internal = coordinator as unknown as {
+        activeWorkers: Map<string, {
+          taskId: string; executionId: string; resourceKey: null; fencingToken: number
+          startedAt: Date; phase: 'execute'; subtaskId: number; projectSlug?: string
+          lastHeartbeatAt?: Date
+        }>
+      }
+      const startedAt = new Date(Date.now() - 5000)
+      internal.activeWorkers.set('exec-stats', {
+        taskId: 'task-stats', executionId: 'exec-stats', resourceKey: null,
+        fencingToken: 0, startedAt, phase: 'execute', subtaskId: 9, projectSlug: 'proj-a',
+      })
+
+      const stats = coordinator.getStats()
+
+      expect(stats.activeWorkers).toBe(1)
+      expect(stats.workers).toHaveLength(1)
+      expect(stats.workers[0]).toMatchObject({
+        executionId: 'exec-stats', taskId: 'task-stats', subtaskId: 9,
+        phase: 'execute', projectSlug: 'proj-a', startedAt: startedAt.toISOString(),
+        lastHeartbeatAt: null,
+      })
+      expect(stats.workers[0]!.ageMs).toBeGreaterThanOrEqual(5000)
     })
   })
 
@@ -432,6 +458,103 @@ describe('TaskCoordinator', () => {
   describe('onTaskFailed', () => {
     it('deve lidar com execução desconhecida sem erro', async () => {
       await coordinator.onTaskFailed('exec-inexistente', 'erro qualquer')
+    })
+  })
+
+  describe('concorrência com múltiplos workers', () => {
+    type CoordinatorInternals = {
+      activeWorkers: Map<string, {
+        taskId: string; executionId: string; resourceKey: string | null; fencingToken: number
+        startedAt: Date; phase: 'execute' | 'analyze'; subtaskId?: number; projectSlug?: string
+      }>
+      selectNextSubtask: () => Promise<unknown>
+      selectNextTask: () => Promise<unknown>
+      startSubtaskExecution: (subtask: { id: number; projectSlug: string | null }) => Promise<boolean>
+      startTaskAnalysis: (task: unknown) => Promise<boolean>
+    }
+
+    function subtaskRow(id: number, projectSlug: string): Record<string, unknown> {
+      return {
+        id, seq: 1, titulo: 'Sub ' + id, tarefa_id: 10 + id,
+        task_external_id: 'task-' + (10 + id), project_slug: projectSlug, agent_id: 'agent',
+      }
+    }
+
+    it('um único pump preenche todas as vagas com subtarefas de projetos diferentes', async () => {
+      const coordinatorMulti = new TaskCoordinator(db, repository, resourceLease, { maxWorkers: 2, maxWorkersPerProject: 1 })
+      const internals = coordinatorMulti as unknown as CoordinatorInternals
+      const selectSubtask = vi.spyOn(internals, 'selectNextSubtask')
+        .mockResolvedValueOnce(subtaskRow(1, 'proj-a'))
+        .mockResolvedValueOnce(subtaskRow(2, 'proj-b'))
+        .mockResolvedValue(null)
+      const startSpy = vi.spyOn(internals, 'startSubtaskExecution').mockResolvedValue(true)
+
+      await coordinatorMulti.pump()
+
+      expect(startSpy).toHaveBeenCalledTimes(2)
+      expect(selectSubtask).toHaveBeenCalledTimes(3)
+    })
+
+    it('respeita o limite por projeto ao preencher vagas', async () => {
+      const coordinatorMulti = new TaskCoordinator(db, repository, resourceLease, { maxWorkers: 2, maxWorkersPerProject: 1 })
+      const internals = coordinatorMulti as unknown as CoordinatorInternals
+      // Duas subtarefas do mesmo projeto + uma de outro: a segunda do mesmo
+      // projeto não pode ocupar a segunda vaga. A seleção real vem do db mock.
+      vi.mocked(db.query).mockResolvedValue({
+        rows: [subtaskRow(1, 'proj-a'), subtaskRow(2, 'proj-a'), subtaskRow(3, 'proj-b')],
+        affectedRows: 0, insertId: 0,
+      })
+      const startSpy = vi.spyOn(internals, 'startSubtaskExecution').mockImplementation(async (subtask) => {
+        internals.activeWorkers.set('exec-' + subtask.id, {
+          taskId: 'task-x', executionId: 'exec-' + subtask.id,
+          resourceKey: subtask.projectSlug ? 'project:' + subtask.projectSlug + ':execution' : null,
+          fencingToken: 0, startedAt: new Date(), phase: 'execute', subtaskId: subtask.id,
+          projectSlug: subtask.projectSlug ?? undefined,
+        })
+        return true
+      })
+
+      await coordinatorMulti.pump()
+
+      const startedIds = startSpy.mock.calls.map(([subtask]) => subtask.id)
+      expect(startedIds).toContain(1)
+      expect(startedIds).toContain(3)
+      expect(startedIds).not.toContain(2)
+      expect(startSpy).toHaveBeenCalledTimes(2)
+    })
+
+    it('espera por recurso interrompe o preenchimento sem laço infinito', async () => {
+      const coordinatorMulti = new TaskCoordinator(db, repository, resourceLease, { maxWorkers: 2 })
+      const internals = coordinatorMulti as unknown as CoordinatorInternals
+      const selectSubtask = vi.spyOn(internals, 'selectNextSubtask').mockResolvedValue(subtaskRow(1, 'proj-a'))
+      const startSpy = vi.spyOn(internals, 'startSubtaskExecution').mockResolvedValue(false)
+
+      await coordinatorMulti.pump()
+
+      expect(startSpy).toHaveBeenCalledTimes(1)
+      expect(selectSubtask).toHaveBeenCalledTimes(1)
+    })
+
+    it('falha de um worker não derruba o outro worker ativo', async () => {
+      vi.mocked(repository.getTask).mockResolvedValue({
+        id: 'task-a', chatId: '', agentId: 'agent', title: 'A', description: '',
+        repoPath: '/repo', buildCommand: 'npm run build', unitTestCommand: 'npm run test',
+        status: 'running', maxRework: 1, hardTimeoutMs: 1000, projectSlug: null,
+      })
+      const internals = coordinator as unknown as CoordinatorInternals
+      internals.activeWorkers.set('exec-a', {
+        taskId: 'task-a', executionId: 'exec-a', resourceKey: null, fencingToken: 0,
+        startedAt: new Date(), phase: 'execute', subtaskId: 1,
+      })
+      internals.activeWorkers.set('exec-b', {
+        taskId: 'task-b', executionId: 'exec-b', resourceKey: null, fencingToken: 0,
+        startedAt: new Date(), phase: 'execute', subtaskId: 2,
+      })
+
+      await coordinator.onTaskFailed('exec-a', 'falha isolada')
+
+      expect(internals.activeWorkers.has('exec-a')).toBe(false)
+      expect(internals.activeWorkers.has('exec-b')).toBe(true)
     })
   })
 })
