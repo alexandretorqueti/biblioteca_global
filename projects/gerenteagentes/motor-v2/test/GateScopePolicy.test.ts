@@ -31,9 +31,28 @@ describe('GateScopePolicy', () => {
     expect(decision.kind).toBe('full')
   })
 
-  it('alteração em vitest.config.ts → suíte cheia', () => {
-    const decision = decideGateScope(['projects/gerenteagentes/motor-v2/vitest.config.ts'], allTests)
+  it('alteração em vitest.config.ts da RAIZ → suíte cheia', () => {
+    const decision = decideGateScope(['vitest.config.ts'], allTests)
     expect(decision.kind).toBe('full')
+  })
+
+  it('B10: vitest.config.ts de um projeto → escopo do projeto, não suíte cheia', () => {
+    const decision = decideGateScope(['projects/gerenteagentes/motor-v2/vitest.config.ts'], allTests)
+    expect(decision.kind).toBe('scoped')
+    if (decision.kind === 'scoped') {
+      expect(decision.files).toContain('projects/gerenteagentes/motor-v2/test/TaskCoordinator.test.ts')
+      expect(decision.files).not.toContain('apps/api/src/modules/auth/__tests__/auth.service.spec.ts')
+    }
+  })
+
+  it('B10: drizzle.config.ts da RAIZ → suíte cheia', () => {
+    const decision = decideGateScope(['drizzle.config.ts'], allTests)
+    expect(decision.kind).toBe('full')
+  })
+
+  it('B10: drizzle.config.ts de projeto sem testes → pula (caso subtarefa 731)', () => {
+    const decision = decideGateScope(['projects/sistema-adm-global/drizzle.config.ts'], allTests)
+    expect(decision.kind).toBe('skip')
   })
 
   it('alteração em componente com testes sob __tests__ do mesmo diretório → escopo direcionado', () => {
@@ -77,9 +96,13 @@ describe('GateScopePolicy', () => {
     expect(isTestPath('a/x.ts')).toBe(false)
   })
 
-  it('isRiskyChange cobre lock/config transversais', () => {
+  it('isRiskyChange cobre lock/config transversais da RAIZ', () => {
     expect(isRiskyChange('package-lock.json')).toBe(true)
-    expect(isRiskyChange('apps/web/tsconfig.json')).toBe(true)
+    expect(isRiskyChange('tsconfig.base.json')).toBe(true)
+    expect(isRiskyChange('drizzle.config.ts')).toBe(true)
+    // B10: config aninhada (de projeto/app) não é transversal
+    expect(isRiskyChange('apps/web/tsconfig.json')).toBe(false)
+    expect(isRiskyChange('projects/sistema-adm-global/drizzle.config.ts')).toBe(false)
     expect(isRiskyChange('apps/web/src/main.tsx')).toBe(false)
   })
 
