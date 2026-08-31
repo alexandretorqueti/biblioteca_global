@@ -413,6 +413,17 @@ export class TaskCoordinator {
       this.logger.info("Analise completada: " + worker.taskId, { taskId: worker.taskId, executionId, phase: "analyze" })
       const task = await this.repository.getTask(worker.taskId)
       if (task) {
+        // Uma análise concluída precisa passar por `analyzing`. Se uma
+        // persistência concorrente/deploy deixou o registro em `planned`,
+        // recupera a etapa intermediária antes de aplicar a transição final;
+        // caso contrário, a exceção derruba o processo inteiro do Motor.
+        if (task.status === "planned") {
+          this.logger.warn("Tarefa ainda planned ao concluir análise; normalizando para analyzing", {
+            taskId: worker.taskId, executionId, phase: "analyze",
+          })
+          await this.repository.saveTask({ ...task, status: "analyzing", updatedAt: new Date().toISOString() })
+          task.status = "analyzing"
+        }
         await this.saveTaskTransition(task, "analysis_completed")
       }
     } else {

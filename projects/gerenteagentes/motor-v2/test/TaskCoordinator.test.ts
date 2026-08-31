@@ -456,6 +456,30 @@ describe('TaskCoordinator', () => {
       await coordinator.onTaskCompleted('exec-inexistente')
       // Não deve lançar erro
     })
+
+    it('normaliza planned para analyzing antes de concluir uma análise', async () => {
+      const task = {
+        id: 'task-analysis-status', chatId: '', agentId: 'agent', title: 'Análise', description: '',
+        repoPath: '/repo', buildCommand: 'npm run build', unitTestCommand: 'npm test',
+        status: 'planned' as const, maxRework: 3, hardTimeoutMs: 1000, projectSlug: null,
+      }
+      vi.mocked(repository.getTask).mockResolvedValue(task)
+      const internal = coordinator as unknown as {
+        activeWorkers: Map<string, {
+          taskId: string; executionId: string; resourceKey: null; fencingToken: number
+          startedAt: Date; phase: 'analyze'
+        }>
+      }
+      internal.activeWorkers.set('exec-analysis-status', {
+        taskId: task.id, executionId: 'exec-analysis-status', resourceKey: null,
+        fencingToken: 0, startedAt: new Date(), phase: 'analyze',
+      })
+
+      await coordinator.onTaskCompleted('exec-analysis-status')
+
+      expect(repository.saveTask).toHaveBeenNthCalledWith(1, expect.objectContaining({ status: 'analyzing' }))
+      expect(repository.saveTask).toHaveBeenNthCalledWith(2, expect.objectContaining({ status: 'ready' }))
+    })
   })
 
   describe('onTaskFailed', () => {
