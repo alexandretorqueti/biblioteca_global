@@ -2,17 +2,17 @@
  * Config BASE versionada do projeto `sistema-adm-global` — Administrador Global.
  *
  * Plataforma da Global Tecnologia para gestão administrativa:
- * - Dashboard com saudação e circulares
+ * - Dashboard com saudação e circulares (custom)
+ * - Hubs de navegação: Administrativo, RH e Painel Admin (custom)
  * - Clientes (cadastro completo com endereço e contato)
  * - Contatos do site (mensagens recebidas)
  * - Circulares (comunicados internos)
  * - Configurações: Usuários, Empresa, Departamentos
  *
  * Menus: Início | Administrativo | RH | Configurações Admin | Sair
- * Telas: 15 (1 dashboard custom + 14 CRUD cadastro)
+ * Telas: 4 custom (dashboard + 3 hubs de navegação) + CRUDs cadastro
  *
- * A tela Usuários é injetada automaticamente pela plataforma (PoC §8)
- * quando o recurso `usuarios` do core está disponível.
+ * A tela Usuários é CRUD local (tabela usuarios no database do projeto).
  */
 import type { GeradorSistemaConfig } from "@biblioteca-global/shared"
 
@@ -40,12 +40,22 @@ export const config: GeradorSistemaConfig = {
     },
 
     // ========================================================================
-    // MENU: Administrativo (5 telas: clientes list/create/details + contatos list/details)
+    // MENU: Administrativo (hub + clientes + contatos)
     // ========================================================================
     {
       id: "administrativo",
       label: "Administrativo",
       items: [
+        {
+          id: "hub-administrativo",
+          label: "Hub Administrativo",
+          path: "hub-administrativo",
+          icon: "dashboard",
+          screen: {
+            kind: "custom",
+            componentId: "sistema-adm-global-hub-administrativo",
+          },
+        },
         {
           id: "clientes-list",
           label: "Clientes",
@@ -75,7 +85,7 @@ export const config: GeradorSistemaConfig = {
               { name: "ativo", label: "Cliente Ativo", type: "switch", defaultValue: true, gridVisible: false },
             ],
             overrides: {
-              hiddenColumns: ["createdAt", "updatedAt", "inscricaoMunicipal", "inscricaoEstadual", "ramal", "complemento"],
+              hiddenColumns: ["createdAt", "updatedAt", "inscricaoMunicipal", "inscricaoEstadual", "ramal", "complemento", "administradorId"],
               columnLabels: {
                 id: "ID",
                 nomeFantasia: "Nome Fantasia",
@@ -147,14 +157,14 @@ export const config: GeradorSistemaConfig = {
               { name: "mensagem", label: "Mensagem", type: "textarea", required: true, fullWidth: true, gridVisible: false },
             ],
             overrides: {
-              hiddenColumns: ["createdAt"],
+              hiddenColumns: [],
               columnLabels: {
                 id: "ID",
                 nome: "Nome",
                 email: "E-mail",
                 telefone: "Telefone",
                 assunto: "Assunto",
-                createdAt: "Data",
+                dataEnvio: "Data",
               },
               newLabel: "Novo Contato",
             },
@@ -164,12 +174,22 @@ export const config: GeradorSistemaConfig = {
     },
 
     // ========================================================================
-    // MENU: RH (3 telas: circulares list/create/details)
+    // MENU: RH (hub + circulares)
     // ========================================================================
     {
       id: "rh",
       label: "RH",
       items: [
+        {
+          id: "hub-rh",
+          label: "Hub RH",
+          path: "hub-rh",
+          icon: "dashboard",
+          screen: {
+            kind: "custom",
+            componentId: "sistema-adm-global-hub-rh",
+          },
+        },
         {
           id: "circulares-list",
           label: "Circulares",
@@ -186,11 +206,11 @@ export const config: GeradorSistemaConfig = {
               { name: "conteudo", label: "Conteúdo", type: "textarea", required: true, maxLength: 5000, fullWidth: true, gridVisible: false },
             ],
             overrides: {
-              hiddenColumns: ["updatedAt", "imageUrl"],
+              hiddenColumns: ["updatedAt", "imageUrl", "createdAt"],
               columnLabels: {
                 id: "ID",
                 titulo: "Título",
-                createdAt: "Data",
+                publicadoEm: "Data",
               },
               newLabel: "Nova Circular",
             },
@@ -200,12 +220,51 @@ export const config: GeradorSistemaConfig = {
     },
 
     // ========================================================================
-    // MENU: Configurações Admin (5 telas: usuarios, config empresa, departamentos)
+    // MENU: Configurações Admin (hub + usuarios + config empresa + departamentos)
     // ========================================================================
     {
       id: "config-admin",
       label: "Configurações Admin",
       items: [
+        {
+          id: "hub-admin",
+          label: "Painel Admin",
+          path: "hub-admin",
+          icon: "settings",
+          screen: {
+            kind: "custom",
+            componentId: "sistema-adm-global-hub-admin",
+          },
+        },
+        {
+          id: "usuarios-list",
+          label: "Usuários",
+          path: "usuarios",
+          icon: "manage_accounts",
+          screen: {
+            kind: "cadastro",
+            resource: "usuarios",
+            title: "Usuários do Sistema",
+            description: "Gerenciamento de usuários e permissões",
+            fields: [
+              { name: "nome", label: "Nome", type: "text", required: true, maxLength: 200, fullWidth: true },
+              { name: "email", label: "E-mail", type: "email", required: true, maxLength: 200, fullWidth: true },
+              { name: "papel", label: "Papel", type: "select", required: true, options: [{ value: "admin", label: "Administrador" }, { value: "usuario", label: "Usuário" }] },
+              { name: "ativo", label: "Ativo", type: "switch", defaultValue: true },
+            ],
+            overrides: {
+              hiddenColumns: ["createdAt", "updatedAt"],
+              columnLabels: {
+                id: "ID",
+                nome: "Nome",
+                email: "E-mail",
+                papel: "Papel",
+                ativo: "Status",
+              },
+              newLabel: "Novo Usuário",
+            },
+          },
+        },
         {
           id: "config-empresa",
           label: "Empresa",

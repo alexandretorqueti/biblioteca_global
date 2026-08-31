@@ -3,25 +3,45 @@
  *
  * Tabelas:
  * - Clientes: cadastro de empresas clientes
+ * - Responsáveis: responsáveis vinculados a clientes
+ * - Contratos: contratos vinculados a clientes
  * - Contatos do site: mensagens recebidas pelo site
  * - Circulares: comunicados internos
  * - Departamentos: departamentos da empresa
+ * - Usuários: admin/usuario do projeto (escopo local)
  * - Config empresa: configurações da empresa (singleton)
- * - Responsáveis: responsáveis vinculados a clientes
- * - Contratos: contratos vinculados a clientes
  *
- * Usuários e autenticação são reutilizados do core (PoC §8 — tela Usuários
- * é injetada automaticamente pela plataforma).
+ * Database: projeto_6241 (convenção projeto_<id do core>).
  */
 import {
   bigint,
   boolean,
+  mysqlEnum,
   mysqlTable,
   text,
   timestamp,
   varchar,
 } from "drizzle-orm/mysql-core"
 import type { FormAnnotationsPorTabela } from "@biblioteca-global/schema-tools"
+
+// ============================================================================
+// USUÁRIOS (escopo do projeto — admin/usuario)
+// ============================================================================
+
+export const usuarios = mysqlTable("usuarios", {
+  id: bigint("id", { mode: "number", unsigned: true })
+    .primaryKey()
+    .autoincrement(),
+  nome: varchar("nome", { length: 200 }).notNull(),
+  email: varchar("email", { length: 200 }).notNull().unique(),
+  papel: mysqlEnum("papel", ["admin", "usuario"]).notNull().default("usuario"),
+  ativo: boolean("ativo").notNull().default(true),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at")
+    .notNull()
+    .defaultNow()
+    .onUpdateNow(),
+})
 
 // ============================================================================
 // CLIENTES
@@ -47,6 +67,8 @@ export const clientes = mysqlTable("clientes", {
   ramal: varchar("ramal", { length: 10 }),
   email: varchar("email", { length: 200 }).notNull(),
   ativo: boolean("ativo").notNull().default(true),
+  administradorId: bigint("administrador_id", { mode: "number", unsigned: true })
+    .references(() => usuarios.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at")
     .notNull()
@@ -113,7 +135,7 @@ export const contatosSite = mysqlTable("contatos_site", {
   telefone: varchar("telefone", { length: 30 }),
   assunto: varchar("assunto", { length: 200 }).notNull(),
   mensagem: text("mensagem").notNull(),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
+  dataEnvio: timestamp("data_envio").notNull().defaultNow(),
 })
 
 // ============================================================================
@@ -127,6 +149,7 @@ export const circulares = mysqlTable("circulares", {
   titulo: varchar("titulo", { length: 200 }).notNull(),
   imageUrl: varchar("image_url", { length: 500 }),
   conteudo: text("conteudo").notNull(),
+  publicadoEm: timestamp("publicado_em").notNull().defaultNow(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at")
     .notNull()
@@ -192,6 +215,7 @@ export const annotations = {
     ramal: { label: "Ramal", maxLength: 10 },
     email: { label: "E-mail", type: "email", fullWidth: true, maxLength: 200 },
     ativo: { label: "Cliente Ativo" },
+    administrador_id: { label: "Administrador Vinculado" },
   },
   contatos_site: {
     nome: { label: "Nome", fullWidth: true, maxLength: 200 },
@@ -199,11 +223,13 @@ export const annotations = {
     telefone: { label: "Telefone", maxLength: 30 },
     assunto: { label: "Assunto", fullWidth: true, maxLength: 200 },
     mensagem: { label: "Mensagem", type: "textarea", fullWidth: true },
+    data_envio: { label: "Data de Entrada" },
   },
   circulares: {
     titulo: { label: "Título", fullWidth: true, maxLength: 200 },
     imageUrl: { label: "URL da Imagem", fullWidth: true, maxLength: 500 },
     conteudo: { label: "Conteúdo", type: "textarea", fullWidth: true, maxLength: 5000 },
+    publicadoEm: { label: "Publicado Em" },
   },
   departamentos: {
     nome: { label: "Nome do Departamento", fullWidth: true, maxLength: 50 },
@@ -227,6 +253,12 @@ export const annotations = {
     valor: { label: "Valor", maxLength: 30 },
     inicio: { label: "Início", maxLength: 10 },
     fim: { label: "Fim", maxLength: 10 },
+    ativo: { label: "Ativo" },
+  },
+  usuarios: {
+    nome: { label: "Nome", fullWidth: true, maxLength: 200 },
+    email: { label: "E-mail", type: "email", fullWidth: true, maxLength: 200 },
+    papel: { label: "Papel", helperText: "admin | usuario" },
     ativo: { label: "Ativo" },
   },
 } satisfies FormAnnotationsPorTabela
