@@ -23,6 +23,7 @@
  *   (`postResult`).
  */
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest"
+import { act } from "react"
 import { render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import "@testing-library/jest-dom/vitest"
@@ -141,12 +142,17 @@ describe("NovaTarefaScreen", () => {
     clearCustomScreens()
   })
 
-  it("renderiza formulário com campos vazios e botão desabilitado", () => {
+  it("renderiza formulário com campos vazios e botão desabilitado", async () => {
     render(
       <BibliotecaThemeProvider>
         <NovaTarefaScreen />
       </BibliotecaThemeProvider>,
     )
+
+    // Espera o fetch de opções do useEffect assentar antes de afirmar — sem
+    // isso o setState da resposta chega fora de act() (warning/flake sob carga).
+    await waitFor(() => expect(mockFetch).toHaveBeenCalled())
+    await act(async () => {})
 
     expect(screen.getByTestId("nova-tarefa-screen")).toBeInTheDocument()
     expect(screen.getByTestId("input-projeto-id")).toBeInTheDocument()
