@@ -542,10 +542,21 @@ export class CrudService {
 
     const db = await this.dbDoProjeto(projeto)
     try {
-      const resultado = await db
-        .insert(tabela)
-        .values(this.paraChavesDoDrizzle(tabela, parse.data as Record<string, unknown>))
+      const valores = this.paraChavesDoDrizzle(tabela, parse.data as Record<string, unknown>)
+      const resultado = await db.insert(tabela).values(valores)
       const insertId = resultado[0].insertId
+
+      // Pós-processamento: preencher external_id automaticamente para tarefas
+      // O motor-v2 busca tarefas por external_id; se o CRUD não preenche, o botão
+      // Start falha com "Tarefa nao encontrada". Gera task-biblioteca-{id} se não
+      // foi fornecido explicitamente.
+      if (resource === "tarefas" && !valores.external_id) {
+        const externalId = `task-biblioteca-${insertId}`
+        await db.execute(
+          sql`UPDATE tarefas SET external_id = ${externalId} WHERE id = ${insertId}`
+        )
+      }
+
       return this.detalhar(projeto, resource, insertId)
     } catch (erro: unknown) {
       if (ehErroDuplicado(erro)) {
