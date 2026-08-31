@@ -20,6 +20,14 @@ import { defaultChain, formatSessionKey, isModelUnavailableError, type ModelSele
 import { isSystemicFailure } from "../policies/SystemFailurePolicy.js"
 import { blockerEvidence, type BlockerKind } from "../policies/BlockerPolicy.js"
 import { failureFingerprint } from "../policies/SystemFailurePolicy.js"
+import { decideGateScope, isTestPath } from "../policies/GateScopePolicy.js"
+import {
+  BASELINE_CORRECTION_CRITERION,
+  BASELINE_CORRECTION_TITLE,
+  BASELINE_FINGERPRINT_PREFIX,
+  baselineCorrectionScope,
+  isBaselineCorrection,
+} from "../policies/BaselinePolicy.js"
 import { hasPersistedPlan, persistPlan } from "../planning/PlanPersistence.js"
 import type { Db, QueryResult } from "../shared/types/infrastructure.js"
 import mysql from "mysql2/promise"
@@ -212,6 +220,12 @@ class TaskWorker {
 
     this.log("info", "Fase EXECUTE: " + subtask.titulo)
 
+    const baselineOutcome = await this.runBaselineCheck(input, subtask)
+    if (baselineOutcome === "correction_created") {
+      this.log("warn", "Baseline vermelho: subtarefa de correção criada; execução da subtarefa adiada")
+      return undefined
+    }
+
     const chain = this.chainFor(input, "development")
     // Uma retomada não pode apagar as entregas já registradas no banco.
     let deliverCount = subtask.deliverCount
@@ -302,7 +316,13 @@ class TaskWorker {
   }
 
   /**
-   * FASE 4: VERIFY - npm run build + npm run test
+   * FASE 4: VERIFY - build + gate de testes.
+   *
+   * Gate escopado por subtarefa (2026-08-31): a suíte completa do monorepo
+   * só roda quando a alteração toca configuração transversal ou quando a
+   * subtarefa é uma correção de baseline; caso contrário rodam apenas os
+   * testes afetados pelos caminhos alterados (ou nenhum, se não houver teste
+   * afetado). Isso evita que testes flaky/alheios reprovem entregas simples.
    */
   private async phaseVerify(input: WorkerInput): Promise<void> {
     this.send({ type: "progress", executionId: input.context.executionId, phase: "verify", message: "Verificando build e teste" })
@@ -310,21 +330,124 @@ class TaskWorker {
 
     this.log("info", "Executando: " + input.buildCommand)
     try {
-      this.exec(input.buildCommand, input.repoPath, 120_000)
+      this.exec(input.buildCommand, input.repoPath, 300_000)
       this.log("info", "Build OK")
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
       throw new Error("Build falhou: " + msg.substring(0, 500), { cause: error })
     }
 
-    this.log("info", "Executando: " + input.testCommand)
+    const correctionFingerprint = input.subtask?.correctionFingerprint
+    const isBaselineFix = isBaselineCorrection(correctionFingerprint)
+    let command = input.testCommand
+    let scopeLabel = "suíte completa"
+
+    if (!isBaselineFix) {
+      try {
+        const changed = this.listChangedPaths(input.repoPath)
+        const decision = decideGateScope(changed, this.listTestFiles(input.repoPath))
+        if (decision.kind === "skip") {
+          this.log("info", "Gate escopado: " + decision.reason)
+          return
+        }
+        if (decision.kind === "scoped") {
+          if (input.testCommand.startsWith("npm run test")) {
+            const quoted = decision.files.map((file) => `"${file}"`).join(" ")
+            command = input.testCommand + " -- " + quoted
+            scopeLabel = decision.reason
+          } else {
+            this.log("warn", "Comando de teste não suporta filtro de arquivos; rodando suíte completa")
+          }
+        } else {
+          this.log("info", "Gate escopado: " + decision.reason)
+        }
+      } catch (error) {
+        this.log("warn", "Falha ao escopar o gate (" + (error instanceof Error ? error.message : String(error)) + "); rodando suíte completa")
+      }
+    }
+
+    this.log("info", `Executando testes (${scopeLabel}): ` + command)
     try {
-      this.exec(input.testCommand, input.repoPath, 120_000)
+      this.exec(command, input.repoPath, 300_000)
       this.log("info", "Testes OK")
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
       throw new Error("Testes falharam: " + msg.substring(0, 500), { cause: error })
     }
+  }
+
+  /** Caminhos alterados no workspace (git status --porcelain, incluindo não rastreados). */
+  private listChangedPaths(repoPath: string): string[] {
+    const status = this.exec("git status --porcelain", repoPath, 60_000).trim()
+    if (!status) return []
+    return status
+      .split("\n")
+      .map((line) => {
+        const raw = line.slice(3).trim()
+        const arrow = raw.indexOf(" -> ")
+        const path = arrow === -1 ? raw : raw.slice(arrow + 4)
+        return path.replace(/^"|"$/g, "").trim()
+      })
+      .filter((path) => path.length > 0 && !path.includes("\"") && !path.includes("'"))
+  }
+
+  /** Todos os arquivos de teste conhecidos do repositório + testes novos não rastreados. */
+  private listTestFiles(repoPath: string): string[] {
+    const listed = this.exec("git ls-files", repoPath, 60_000)
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((path) => path.length > 0 && isTestPath(path))
+    const changedTests = this.listChangedPaths(repoPath).filter((path) => isTestPath(path))
+    return [...new Set([...listed, ...changedTests])]
+  }
+
+  /**
+   * Baseline (2026-08-31): antes da primeira subtarefa de uma tarefa (nenhuma
+   * verificada ainda), roda build + suíte completa na branch-base LIMPA. Se
+   * estiver vermelha, cria subtarefa de correção de baseline na mesma posição
+   * e adia a subtarefa original — em vez de queimar tentativas num gate
+   * impossível.
+   */
+  private async runBaselineCheck(input: WorkerInput, subtask: SubtaskInfo): Promise<"ok" | "correction_created"> {
+    if (!this.db) return "ok"
+    if (isBaselineCorrection(subtask.correctionFingerprint)) return "ok"
+    const [rows] = await this.db.query(
+      "SELECT COUNT(*) AS total FROM projeto_640.subtarefas WHERE tarefa_id = (SELECT tarefa_id FROM projeto_640.subtarefas WHERE id = ?) AND status = 'verified'",
+      [subtask.id],
+    ) as unknown as [Array<{ total: number | string }>]
+    if (Number(rows[0]?.total ?? 0) > 0) return "ok"
+
+    this.send({ type: "progress", executionId: input.context.executionId, phase: "execute", message: "Baseline: validando suíte na branch-base" })
+    this.log("info", "Baseline: rodando build + suíte completa na branch-base antes da primeira subtarefa")
+    try {
+      this.exec(input.buildCommand, input.repoPath, 300_000)
+      this.exec(input.testCommand, input.repoPath, 300_000)
+    } catch (error) {
+      const reason = (error instanceof Error ? error.message : String(error)).substring(0, 2000)
+      await this.createBaselineCorrection(subtask, reason)
+      return "correction_created"
+    }
+    this.log("info", "Baseline verde")
+    return "ok"
+  }
+
+  /** Cria a subtarefa de correção de baseline na posição da subtarefa original. */
+  private async createBaselineCorrection(subtask: SubtaskInfo, reason: string): Promise<void> {
+    if (!this.db) throw new Error("DB não conectado para criar correção de baseline")
+    const fingerprint = BASELINE_FINGERPRINT_PREFIX + failureFingerprint(reason)
+    // Abre espaço na posição exata da subtarefa atual (seq -> seq+1 para >= seq).
+    await this.db.query("UPDATE projeto_640.subtarefas SET seq = seq + 10000 WHERE tarefa_id = (SELECT tarefa_id FROM (SELECT tarefa_id FROM projeto_640.subtarefas WHERE id = ?) AS source) AND seq >= ?", [subtask.id, subtask.seq])
+    await this.db.query("UPDATE projeto_640.subtarefas SET seq = seq - 9999 WHERE tarefa_id = (SELECT tarefa_id FROM (SELECT tarefa_id FROM projeto_640.subtarefas WHERE id = ?) AS source) AND seq >= ?", [subtask.id, subtask.seq + 10000])
+    await this.db.query(
+      "UPDATE projeto_640.subtarefas SET status = 'rejected', resultado = ?, updated_at = NOW() WHERE id = ?",
+      [("Baseline vermelho — correção automática criada: " + reason).substring(0, 500), subtask.id],
+    )
+    await this.db.query(
+      "INSERT INTO projeto_640.subtarefas (tarefa_id, seq, titulo, scope, acceptance_criteria, status, correction_for_subtask_id, correction_fingerprint, created_at, updated_at) " +
+      "SELECT tarefa_id, ?, ?, ?, JSON_ARRAY(?), 'pending', id, ?, NOW(), NOW() FROM projeto_640.subtarefas WHERE id = ?",
+      [subtask.seq, BASELINE_CORRECTION_TITLE, baselineCorrectionScope(reason, subtask.scope, subtask.titulo), BASELINE_CORRECTION_CRITERION, fingerprint, subtask.id],
+    )
+    this.log("warn", "Baseline vermelho: subtarefa de correção criada na posição da subtarefa " + subtask.id)
   }
 
   /**
@@ -457,11 +580,13 @@ class TaskWorker {
     ].join("\n")
   }
 
-  private buildProgrammerPrompt(task: { title: string }, subtask: SubtaskInfo, repoPath: string, reworkNote?: string): string {
+  private buildProgrammerPrompt(task: { title: string; description?: string }, subtask: SubtaskInfo, repoPath: string, reworkNote?: string): string {
+    const description = (task.description || "N/A").substring(0, 20000)
     return [
       "Voce e um programador senior. Execute a subtarefa abaixo.",
       "",
       "Tarefa pai: " + task.title,
+      "Descrição da missão: " + description,
       "Subtarefa #" + subtask.seq + ": " + subtask.titulo,
       "Escopo: " + (subtask.scope || subtask.titulo),
       "Criterios de aceite: " + JSON.stringify(subtask.acceptanceCriteria || []),
@@ -557,7 +682,7 @@ class TaskWorker {
     await this.db.query("UPDATE projeto_640.subtarefas SET seq = seq - 9999 WHERE tarefa_id = (SELECT tarefa_id FROM (SELECT tarefa_id FROM projeto_640.subtarefas WHERE id = ?) AS source) AND seq > ?", [subtask.id, subtask.seq + 10000])
     await this.db.query(
       "INSERT INTO projeto_640.subtarefas (tarefa_id, seq, titulo, scope, acceptance_criteria, status, correction_for_subtask_id, correction_fingerprint, created_at, updated_at) " +
-      "SELECT tarefa_id, ?, ?, ?, acceptance_criteria, 'pending', id, ?, NOW(), NOW() FROM projeto_640.subtarefas WHERE id = ?",
+      "SELECT tarefa_id, ?, ?, CONCAT(?, CHAR(10), CHAR(10), 'Escopo original da subtarefa corrigida:', CHAR(10), IFNULL(scope, titulo)), acceptance_criteria, 'pending', id, ?, NOW(), NOW() FROM projeto_640.subtarefas WHERE id = ?",
       [subtask.seq + 1, "Correção: " + subtask.titulo, "Corrigir gate repetido: " + reason.slice(0, 1000), fingerprint, subtask.id],
     )
     this.log("warn", "Subtarefa de correção criada para falha repetida " + fingerprint + " (subtarefa " + subtask.id + ", corrige a original; tarefa bloqueia se a correção também falhar)")

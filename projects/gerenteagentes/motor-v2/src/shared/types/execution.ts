@@ -23,6 +23,8 @@ export interface SubtaskInfo {
   titulo: string
   scope?: string
   acceptanceCriteria?: string[]
+  /** Fingerprint de correção (ex.: "baseline:..." marca correção de baseline). */
+  correctionFingerprint?: string | null
   /** Entregas já persistidas antes desta execução ou retomada. */
   deliverCount: number
 }

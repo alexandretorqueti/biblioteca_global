@@ -18,6 +18,7 @@ import { GitWorkspaceManager } from "../workspaces/GitWorkspaceManager.js"
 import { ResourceWaitManager } from "../resources/ResourceWaitManager.js"
 import { executionEventBus, type ExecutionEventBus } from "../events/ExecutionEventBus.js"
 import { correctionOnlyChangesTests } from "../policies/CorrectionDiffPolicy.js"
+import { isBaselineCorrection } from "../policies/BaselinePolicy.js"
 import { blockerEvidence } from "../policies/BlockerPolicy.js"
 import { transitionTask, type TaskTransition } from "../policies/TaskStateMachine.js"
 import { createLogger, describeError } from "../shared/logger.js"
@@ -91,6 +92,7 @@ interface SubtaskWithTask {
   maxRework: number | null
   hardTimeoutMs: number | null
   deliverCount: number
+  correctionFingerprint?: string | null
 }
 
 export class TaskCoordinator {
@@ -323,6 +325,7 @@ export class TaskCoordinator {
       const subtaskInfo: SubtaskInfo = {
         id: subtask.id, seq: subtask.seq, titulo: subtask.titulo,
         scope: subtask.scope, acceptanceCriteria: subtask.acceptanceCriteria,
+        correctionFingerprint: subtask.correctionFingerprint,
         deliverCount: subtask.deliverCount,
       }
 
@@ -902,6 +905,7 @@ export class TaskCoordinator {
       maxRework: row.task_max_rework === null || row.task_max_rework === undefined ? (row.default_max_rework === null || row.default_max_rework === undefined ? null : Number(row.default_max_rework)) : Number(row.task_max_rework),
       hardTimeoutMs: row.task_hard_timeout_ms === null || row.task_hard_timeout_ms === undefined ? (row.default_hard_timeout_ms === null || row.default_hard_timeout_ms === undefined ? null : Number(row.default_hard_timeout_ms)) : Number(row.task_hard_timeout_ms),
       deliverCount: Number(row.deliver_count ?? 0),
+      correctionFingerprint: row.correction_fingerprint ? String(row.correction_fingerprint) : null,
     }
   }
 
@@ -960,11 +964,21 @@ export class TaskCoordinator {
   private async promoteOriginalAfterTestOnlyCorrection(subtaskId: number, workspace: { path: string; branch: string; baseCommit: string }, commitSha?: string): Promise<void> {
     if (!commitSha) return
     const { rows } = await this.db.query(
-      "SELECT correction_for_subtask_id FROM projeto_640.subtarefas WHERE id = ?",
+      "SELECT correction_for_subtask_id, correction_fingerprint FROM projeto_640.subtarefas WHERE id = ?",
       [subtaskId],
     )
     const originalId = Number(rows[0]?.correction_for_subtask_id ?? 0)
     if (!originalId) return
+    // Correção de baseline (2026-08-31): a original não foi executada — ela
+    // volta a pending para rodar depois que a suíte ficar verde. Promovê-la a
+    // verified pularia o trabalho real.
+    if (isBaselineCorrection(rows[0]?.correction_fingerprint ? String(rows[0].correction_fingerprint) : null)) {
+      await this.db.query(
+        "UPDATE projeto_640.subtarefas SET status = 'pending', resultado = CONCAT(COALESCE(resultado, ''), '\\nBaseline verde via subtarefa ', ?), updated_at = NOW() WHERE id = ? AND status = 'rejected'",
+        [subtaskId, originalId],
+      )
+      return
+    }
     const paths = await this.workspaceManager.changedPaths(workspace.path, workspace.baseCommit, commitSha)
     if (!correctionOnlyChangesTests(paths)) return
     await this.db.query(
