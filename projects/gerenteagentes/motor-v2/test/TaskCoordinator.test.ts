@@ -101,8 +101,9 @@ describe('TaskCoordinator', () => {
       // Inicia pump mas não espera completar (worker spawn demora 30s para timeout)
       void coordinator.pump()
 
-      // Aguarda queries de lock serem executadas (até 8s — margem para
-      // ambientes sob carga; antes 2s causava flake em gate concorrido)
+      // Aguarda queries de lock serem executadas (até 15s — margem para
+      // ambientes sob carga: antes 2s causava flake em gate concorrido, e 8s
+      // ainda reprovava na suíte cheia do container — B11, caso subtarefa 731)
       await new Promise<void>((resolve) => {
         const check = setInterval(() => {
           const calls = vi.mocked(db.query).mock.calls
@@ -112,7 +113,7 @@ describe('TaskCoordinator', () => {
             resolve()
           }
         }, 50)
-        setTimeout(() => { clearInterval(check); resolve() }, 8000)
+        setTimeout(() => { clearInterval(check); resolve() }, 15000)
       })
 
       // Verifica que o INSERT do lock foi feito
@@ -122,7 +123,7 @@ describe('TaskCoordinator', () => {
 
       // Limpa: não esperamos o pump completar
       // (O worker spawn vai timeout em 30s, mas o teste já validou o que precisava)
-    }, 20000)
+    }, 40000)
   })
 
   describe('getStats', () => {

@@ -25,15 +25,22 @@ export type GateScopeDecision =
 const TEST_DIR_PATTERN = /(^|\/)(test|tests|__tests__)\//
 const TEST_FILE_PATTERN = /\.(test|spec)\.[^/]+$/
 
-/** Arquivos cuja alteração pode afetar qualquer teste (configuração transversal). */
+/**
+ * Arquivos cuja alteração pode afetar qualquer teste (configuração transversal).
+ * B10 (2026-08-31): só valem os da RAIZ do monorepo. Config dentro de
+ * projects/<slug>/ ou apps/<app>/ é local — tratá-la como transversal fazia a
+ * suíte do monorepo inteiro reprovar subtarefas por testes que elas não tocavam
+ * (caso: drizzle.config.ts do sistema-adm-global reprovando teste do motor-v2).
+ */
 const RISKY_PATTERNS: readonly RegExp[] = [
-  /(^|\/)package\.json$/,
-  /(^|\/)package-lock\.json$/,
-  /(^|\/)vitest\.config\.[^/]+$/,
-  /(^|\/)tsconfig[^/]*\.json$/,
-  /(^|\/)\.swcrc$/,
-  /(^|\/)drizzle\.config\.[^/]+$/,
-  /(^|\/)eslint\.config\.[^/]+$/,
+  /^package\.json$/,
+  /^package-lock\.json$/,
+  /^vitest\.config\.[^/]+$/,
+  /^vitest\.workspace\.[^/]+$/,
+  /^tsconfig[^/]*\.json$/,
+  /^\.swcrc$/,
+  /^drizzle\.config\.[^/]+$/,
+  /^eslint\.config\.[^/]+$/,
 ]
 
 export function isTestPath(path: string): boolean {
@@ -41,7 +48,9 @@ export function isTestPath(path: string): boolean {
 }
 
 export function isRiskyChange(path: string): boolean {
-  return RISKY_PATTERNS.some((pattern) => pattern.test(path))
+  const rootPath = normalize(path)
+  if (rootPath.includes("/")) return false // B10: risco transversal só na raiz
+  return RISKY_PATTERNS.some((pattern) => pattern.test(rootPath))
 }
 
 function normalize(path: string): string {

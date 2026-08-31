@@ -42,7 +42,63 @@ describe('exclusões do baseline', () => {
   })
 })
 
+describe('B8 — corretiva verificada promove a original', () => {
+  function coordinatorWithChangedPaths(paths: string[]) {
+    const db = createMockDb()
+    const repository: TaskRepository = {
+      saveTask: vi.fn().mockResolvedValue(undefined),
+      getTask: vi.fn().mockResolvedValue(null),
+    }
+    const workspaceManager = { changedPaths: vi.fn().mockResolvedValue(paths) }
+    const coordinator = new TaskCoordinator(
+      db, repository, new ResourceLeaseService({ db }), { maxWorkers: 1 },
+      undefined as never, workspaceManager as never,
+    )
+    return { db, coordinator }
+  }
+
+  async function promote(coordinator: TaskCoordinator) {
+    const fn = (coordinator as unknown as {
+      promoteOriginalAfterTestOnlyCorrection: (subtaskId: number, workspace: { path: string; branch: string; baseCommit: string }, commitSha?: string) => Promise<void>
+    }).promoteOriginalAfterTestOnlyCorrection
+    await fn.call(coordinator, 733, { path: '/wt', branch: 'b', baseCommit: 'abc12345' }, 'deadbeef123')
+  }
+
+  it('corretiva com código + testes → original promovida com nota de escopo entregue', async () => {
+    const { db, coordinator } = coordinatorWithChangedPaths([
+      'projects/sistema-adm-global/config.json',
+      'projects/gerenteagentes/screens/__tests__/NovaTarefaScreen.test.tsx',
+    ])
+    vi.mocked(db.query)
+      .mockResolvedValueOnce({ rows: [{ correction_for_subtask_id: 729, correction_fingerprint: 'testes falharam: x' }], affectedRows: 0, insertId: 0 })
+      .mockResolvedValueOnce({ rows: [], affectedRows: 1, insertId: 0 })
+
+    await promote(coordinator)
+
+    const update = vi.mocked(db.query).mock.calls.find(([sql]) => String(sql).includes("status = 'verified'"))
+    expect(update).toBeDefined()
+    expect(String(update?.[1]?.[0])).toContain('Escopo entregue pela subtarefa corretiva 733')
+    expect(update?.[1]?.[1]).toBe(729)
+  })
+
+  it('corretiva só de testes → original promovida com nota de gate corrigido', async () => {
+    const { db, coordinator } = coordinatorWithChangedPaths([
+      'projects/gerenteagentes/screens/__tests__/NovaTarefaScreen.test.tsx',
+    ])
+    vi.mocked(db.query)
+      .mockResolvedValueOnce({ rows: [{ correction_for_subtask_id: 729, correction_fingerprint: 'testes falharam: x' }], affectedRows: 0, insertId: 0 })
+      .mockResolvedValueOnce({ rows: [], affectedRows: 1, insertId: 0 })
+
+    await promote(coordinator)
+
+    const update = vi.mocked(db.query).mock.calls.find(([sql]) => String(sql).includes("status = 'verified'"))
+    expect(update).toBeDefined()
+    expect(String(update?.[1]?.[0])).toContain('somente testes alterados')
+  })
+})
+
 describe('correção de gate herdando escopo original (B1)', () => {
+
   it('INSERT da correção concatena motivo do gate + escopo original via SQL', async () => {
     const query = vi.fn()
       .mockResolvedValueOnce([{ affectedRows: 1 }])                    // INSERT gate failure

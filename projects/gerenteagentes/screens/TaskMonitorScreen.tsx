@@ -688,7 +688,7 @@ export default function TaskMonitorScreen(): ReactNode {
             </Alert>
           )}
 
-          {detail?.exists && detail.task?.blockInfo && (
+          {detail?.exists && statusMotor === "blocked" && detail.task?.blockInfo && (
             <Alert severity="error" sx={{ mt: 2 }} data-testid="task-block-banner">
               <Typography variant="body2">
                 <b>⛔ Tarefa bloqueada:</b>{" "}
