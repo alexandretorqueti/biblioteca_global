@@ -15,7 +15,7 @@ import { ResourceLeaseService } from '../src/resources/ResourceLeaseService.js'
 import { TaskCoordinator } from '../src/coordinator/TaskCoordinator.js'
 import { TaskWorker } from '../src/workers/TaskWorker.js'
 import type { SubtaskInfo, WorkerInput } from '../src/shared/types/execution.js'
-import { BASELINE_CORRECTION_TITLE, BASELINE_FINGERPRINT_PREFIX } from '../src/policies/BaselinePolicy.js'
+import { BASELINE_CORRECTION_TITLE, BASELINE_FINGERPRINT_PREFIX, withBaselineExcludes } from '../src/policies/BaselinePolicy.js'
 
 function workerWithRawDb(query: ReturnType<typeof vi.fn>): TaskWorker {
   const worker = new TaskWorker()
@@ -33,6 +33,14 @@ function createMockDb(): Db {
     transaction: vi.fn().mockImplementation(async (fn: (db: Db) => Promise<unknown>) => fn(null as never)),
   }
 }
+
+describe('exclusões do baseline', () => {
+  it('withBaselineExcludes anexa exclusões em comandos vitest e preserva os demais', () => {
+    expect(withBaselineExcludes('npm run test')).toBe('npm run test --exclude "**/*.functional.spec.ts"')
+    expect(withBaselineExcludes('npx vitest run')).toBe('npx vitest run --exclude "**/*.functional.spec.ts"')
+    expect(withBaselineExcludes('make test')).toBe('make test')
+  })
+})
 
 describe('correção de gate herdando escopo original (B1)', () => {
   it('INSERT da correção concatena motivo do gate + escopo original via SQL', async () => {

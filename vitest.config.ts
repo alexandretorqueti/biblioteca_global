@@ -6,11 +6,13 @@ import { defineConfig } from "vitest/config"
  * packages/ui na Etapa 8 (utils + componentes com jsdom).
  * e2e/ contém specs Playwright (rodados via playwright.config.ts do root),
  * que não pertencem ao vitest — excluídos daqui.
+ * wt-deploy/ é cópia de worktree de deploy commitada — testes duplicados,
+ * excluídos para não rodar (nem quebrar) a suíte em dobro (2026-08-31).
  */
 export default defineConfig({
   test: {
     include: ["**/*.{test,spec}.{ts,tsx}"],
-    exclude: ["**/node_modules/**", "**/dist/**", "biblioteca_old/**", "**/e2e/**"],
+    exclude: ["**/node_modules/**", "**/dist/**", "biblioteca_old/**", "**/e2e/**", "wt-deploy/**"],
     // Cleanup automático do @testing-library/react entre testes.
     globals: true,
     // O container roda NODE_ENV=production; o build production do React

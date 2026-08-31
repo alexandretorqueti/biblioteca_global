@@ -27,6 +27,7 @@ import {
   BASELINE_FINGERPRINT_PREFIX,
   baselineCorrectionScope,
   isBaselineCorrection,
+  withBaselineExcludes,
 } from "../policies/BaselinePolicy.js"
 import { hasPersistedPlan, persistPlan } from "../planning/PlanPersistence.js"
 import type { Db, QueryResult } from "../shared/types/infrastructure.js"
@@ -422,10 +423,11 @@ class TaskWorker {
     if (Number(rows[0]?.total ?? 0) > 0) return "ok"
 
     this.send({ type: "progress", executionId: input.context.executionId, phase: "execute", message: "Baseline: validando suíte na branch-base" })
-    this.log("info", "Baseline: rodando build + suíte completa na branch-base antes da primeira subtarefa")
+    const baselineTestCommand = withBaselineExcludes(input.testCommand)
+    this.log("info", "Baseline: rodando build + suíte na branch-base antes da primeira subtarefa: " + baselineTestCommand)
     try {
       this.exec(input.buildCommand, input.repoPath, 300_000)
-      this.exec(input.testCommand, input.repoPath, 300_000)
+      this.exec(baselineTestCommand, input.repoPath, 300_000)
     } catch (error) {
       const reason = (error instanceof Error ? error.message : String(error)).substring(0, 2000)
       await this.createBaselineCorrection(subtask, reason)
