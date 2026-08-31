@@ -42,6 +42,22 @@ class ConsoleRequestError extends Error {
   }
 }
 
+export interface WaitForRunOptions {
+  /** Teto absoluto de espera (padrão 4h). Segurança contra runs zumbi. */
+  absoluteTimeoutMs?: number
+  /**
+   * Timeout de INATIVIDADE (padrão 10min): só falha se a sessão ficar esse
+   * tempo sem sinal de progresso (estados-limbo nem ativos nem terminais, ou
+   * console inalcançável). Enquanto o run reporta atividade (hasActiveRun /
+   * estados busy/running/streaming), o prazo é renovado continuamente —
+   * modelo trabalhando não é mais interrompido por relógio (2026-08-31).
+   */
+  idleTimeoutMs?: number
+  pollIntervalMs?: number
+  /** Chamado a cada polling que enxerga o run ativo (ex.: heartbeat ao coordenador). */
+  onActivity?: () => void
+}
+
 export class ConsoleAgentRuntimeDriver {
   private baseUrl: string
   private token: string
@@ -81,18 +97,29 @@ export class ConsoleAgentRuntimeDriver {
   }
 
   /**
-   * Aguarda conclusao do run via polling (describe + history)
-   * Fallback robusto quando SSE nao captura o evento final
+   * Aguarda conclusao do run via polling (describe + history).
+   * Fallback robusto quando SSE nao captura o evento final.
+   *
+   * B7 (2026-08-31): timeout absoluto de 30min substituído por timeout de
+   * inatividade — run ativo renova o prazo; só falha por inatividade
+   * (sem progresso por idleTimeoutMs) ou pelo teto absoluto (4h).
    */
-  async waitForRunCompletion(session: RuntimeSession, runId: string, timeoutMs = 1_800_000): Promise<AgentRunCompletion> {
+  async waitForRunCompletion(session: RuntimeSession, runId: string, options: WaitForRunOptions = {}): Promise<AgentRunCompletion> {
+    const absoluteTimeoutMs = options.absoluteTimeoutMs ?? 14_400_000
+    const idleTimeoutMs = options.idleTimeoutMs ?? 600_000
+    const pollInterval = options.pollIntervalMs ?? 5000
     const startMs = Date.now()
-    const pollInterval = 5000
+    let lastActivityMs = Date.now()
 
     // Aguarda inicial para o run começar
-    await new Promise((resolve) => setTimeout(resolve, 3000))
+    await new Promise((resolve) => setTimeout(resolve, Math.min(3000, pollInterval)))
 
-    while (Date.now() - startMs < timeoutMs) {
+    while (true) {
       await new Promise((resolve) => setTimeout(resolve, pollInterval))
+
+      if (Date.now() - startMs > absoluteTimeoutMs) {
+        throw new Error(`Timeout absoluto (${absoluteTimeoutMs}ms) aguardando conclusao do run`)
+      }
 
       try {
         const desc = await this.request<{
@@ -111,6 +138,17 @@ export class ConsoleAgentRuntimeDriver {
         // Tratar falhas como erro
         if (desc.status === "failed" || desc.state === "failed") {
           return { state: "error", runId, errorMessage: "Session failed" }
+        }
+
+        // Run ATIVO: renova o prazo de inatividade e avisa o interessado.
+        // Modelo trabalhando não é interrompido por relógio.
+        const active =
+          desc.hasActiveRun === true ||
+          desc.state === "busy" || desc.state === "running" || desc.state === "streaming" ||
+          desc.status === "busy" || desc.status === "running" || desc.status === "streaming"
+        if (active) {
+          lastActivityMs = Date.now()
+          options.onActivity?.()
         }
 
         // O Console atual expõe `state`/`hasActiveRun` na listagem normalizada;
@@ -142,13 +180,17 @@ export class ConsoleAgentRuntimeDriver {
         if (desc.status === "error" || desc.state === "error") {
           return { state: "error", runId, errorMessage: "Session ended with error" }
         }
+
+        // Estado-limbo (nem ativo, nem terminal): não renova atividade.
       } catch (error) {
-        // Continua polling se erro de rede
+        // Continua polling se erro de rede — mas não conta como atividade.
         console.warn("[ConsoleDriver] Polling error:", error instanceof Error ? error.message : String(error))
       }
-    }
 
-    throw new Error("Timeout waiting for run completion")
+      if (Date.now() - lastActivityMs > idleTimeoutMs) {
+        throw new Error(`Timeout por inatividade (${idleTimeoutMs}ms sem progresso) aguardando conclusao do run`)
+      }
+    }
   }
 
   async closeSession(session: RuntimeSession): Promise<void> {

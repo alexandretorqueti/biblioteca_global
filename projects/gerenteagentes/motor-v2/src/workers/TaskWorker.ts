@@ -152,7 +152,9 @@ class TaskWorker {
         const { runId } = await driver.sendMessage({ session, message: prompt })
         this.log("info", "Analista respondendo... runId=" + runId)
 
-        const result = await driver.waitForRunCompletion(session, runId, 1_800_000)
+        const result = await driver.waitForRunCompletion(session, runId, {
+          onActivity: () => this.sendHeartbeat(),
+        })
         this.log("info", "Resultado do analista: state=" + result.state + ", contentLength=" + (result.content?.length || 0))
 
         if (result.state !== "final" || !result.content) {
@@ -249,7 +251,9 @@ class TaskWorker {
           session = await driver.createSession({ agentId: input.task.agentId, key: sessionKey, label: sessionKey, model: model.model })
           const prompt = this.buildProgrammerPrompt(input.task, subtask, input.repoPath, lastFailure || undefined)
           const { runId } = await driver.sendMessage({ session, message: prompt })
-          const result = await driver.waitForRunCompletion(session, runId, 1_800_000)
+          const result = await driver.waitForRunCompletion(session, runId, {
+            onActivity: () => this.sendHeartbeat(),
+          })
           if (result.state !== "final") {
             lastFailure = "Programador falhou: " + (result.errorMessage || result.state)
             break
