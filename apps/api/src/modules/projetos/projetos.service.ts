@@ -201,4 +201,29 @@ export class ProjetosService {
     const projeto = await this.detalhar(projetoId)
     await this.repo.atualizar(projeto.id, { ativo: false })
   }
+
+  /**
+   * Garante que o database do projeto existe e tem as migrations aplicadas
+   * (idempotente — pode rodar 2x sem quebrar). Usado quando o projeto já
+   * existe na tabela core mas o database não foi provisionado (ex.: projeto
+   * inserido manualmente ou provisioning anterior falhou).
+   */
+  async garantirDatabaseProvisionado(
+    projetoId: number,
+    slug: string,
+  ): Promise<{ database: string; migrationsAplicadas: number }> {
+    validarSlug(slug)
+    const database = nomeDatabaseDoProjeto(projetoId)
+
+    // CREATE DATABASE IF NOT EXISTS — idempotente.
+    await this.provisioner.prepararDatabase(database)
+
+    // Aplica migrations pendentes (drizzle migrate também é idempotente).
+    const migrationsAplicadas = await this.provisioner.aplicarMigrations(
+      slug,
+      database,
+    )
+
+    return { database, migrationsAplicadas }
+  }
 }
