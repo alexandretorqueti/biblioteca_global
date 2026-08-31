@@ -335,7 +335,7 @@ export class TaskCoordinator {
         repoPath: subtask.repoPath, buildCommand: subtask.buildCommand!,
         unitTestCommand: subtask.unitTestCommand!, unitTestExclude: subtask.unitTestExclude,
         baselineMode: "full", status: "running",
-        maxRework: subtask.maxRework ?? 3, hardTimeoutMs: subtask.hardTimeoutMs ?? 3600000,
+        maxRework: subtask.maxRework ?? 3, hardTimeoutMs: subtask.hardTimeoutMs ?? 14_400_000,
         projectSlug: subtask.projectSlug,
         createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
       }
@@ -354,7 +354,7 @@ export class TaskCoordinator {
         modelPhase: "development",
         modelChain: await this.getProjectModelChain(subtask.projectSlug, "development"),
       })
-      this.armWorkerTimeout(executionId, subtask.hardTimeoutMs ?? 3600000)
+      this.armWorkerTimeout(executionId, subtask.hardTimeoutMs ?? 14_400_000)
 
       this.logger.info("Worker de execucao iniciado: subtarefa #" + subtask.seq + " (" + executionId + ")", {
         taskId: subtask.taskExternalId, subtaskId: subtask.id, executionId, phase: "execute",
@@ -876,7 +876,7 @@ export class TaskCoordinator {
       unitTestExclude: [], baselineMode: "full",
       status: String(row.status ?? "planned") as Task["status"],
       maxRework: Number(row.max_rework ?? row.default_max_rework ?? 3),
-      hardTimeoutMs: Number(row.hard_timeout_ms ?? row.default_hard_timeout_ms ?? 3600000),
+      hardTimeoutMs: Number(row.hard_timeout_ms ?? row.default_hard_timeout_ms ?? 14_400_000),
       dependsOnTaskId: row.depends_on_task_id ? String(row.depends_on_task_id) : undefined,
       projectSlug: row.project_slug ? String(row.project_slug) : null,
       createdAt: String(row.created_at ?? new Date().toISOString()),
