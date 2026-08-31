@@ -147,4 +147,23 @@ describe('detalhe da tarefa expõe errorMessage e ultimoBloqueio', () => {
     expect(detail?.ultimoBloqueio).toBeNull()
     expect(detail?.errorMessage).toBeUndefined()
   })
+
+  it('B9: bloqueio histórico não vaza para tarefa já retomada', async () => {
+    const db = createMockDb()
+    const repository: TaskRepository = {
+      saveTask: vi.fn().mockResolvedValue(undefined),
+      getTask: vi.fn().mockResolvedValue({
+        id: '731', chatId: '', agentId: 'agent', title: 'Retomada', description: '',
+        repoPath: '/repo', buildCommand: 'npm run build', unitTestCommand: 'npm run test',
+        status: 'running', maxRework: 3, hardTimeoutMs: 1000, projectSlug: 'p',
+      }),
+    }
+    const coordinator = new TaskCoordinator(db, repository, new ResourceLeaseService({ db }), { maxWorkers: 1 })
+
+    const detail = await coordinator.getTaskWithSubtasks('731')
+
+    expect(detail?.ultimoBloqueio).toBeNull()
+    const calls = vi.mocked(db.query).mock.calls
+    expect(calls.some(([sql]) => String(sql).includes('bloqueios'))).toBe(false)
+  })
 })

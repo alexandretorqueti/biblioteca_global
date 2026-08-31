@@ -629,20 +629,29 @@ export class TaskCoordinator {
       correctionForSubtaskId: row.correction_for_subtask_id ? Number(row.correction_for_subtask_id) : null,
     }))
 
-    const { rows: blockRows } = await this.db.query(
-      "SELECT b.block_reason, b.block_excerpt, b.blocked_at, b.subtarefa_id " +
-      "FROM projeto_640.bloqueios b " +
-      "INNER JOIN projeto_640.tarefas t ON t.id = b.tarefa_id " +
-      whereTask +
-      "ORDER BY b.blocked_at DESC LIMIT 1",
-      taskParams,
-    )
-    const ultimoBloqueio: UltimoBloqueio | null = blockRows.length > 0 ? {
-      kind: String(blockRows[0]!.block_reason ?? ""),
-      excerpt: String(blockRows[0]!.block_excerpt ?? ""),
-      blockedAt: String(blockRows[0]!.blocked_at ?? ""),
-      subtaskId: blockRows[0]!.subtarefa_id ? Number(blockRows[0]!.subtarefa_id) : null,
-    } : null
+    // B9 (2026-08-31): o último bloqueio só é exposto enquanto a tarefa ESTÁ
+    // bloqueada. Antes o histórico ficava visível para sempre — a tela
+    // "Acompanhar Tarefa" mostrava banner ⛔ de bloqueio já resolvido (caso
+    // 731, Alexandre). O histórico permanece na tabela para auditoria.
+    let ultimoBloqueio: UltimoBloqueio | null = null
+    if (task.status === "blocked") {
+      const { rows: blockRows } = await this.db.query(
+        "SELECT b.block_reason, b.block_excerpt, b.blocked_at, b.subtarefa_id " +
+        "FROM projeto_640.bloqueios b " +
+        "INNER JOIN projeto_640.tarefas t ON t.id = b.tarefa_id " +
+        whereTask +
+        "ORDER BY b.blocked_at DESC LIMIT 1",
+        taskParams,
+      )
+      if (blockRows.length > 0) {
+        ultimoBloqueio = {
+          kind: String(blockRows[0]!.block_reason ?? ""),
+          excerpt: String(blockRows[0]!.block_excerpt ?? ""),
+          blockedAt: String(blockRows[0]!.blocked_at ?? ""),
+          subtaskId: blockRows[0]!.subtarefa_id ? Number(blockRows[0]!.subtarefa_id) : null,
+        }
+      }
+    }
 
     return { ...task, subtasks, errorMessage: data.errorMessage, ultimoBloqueio }
   }
