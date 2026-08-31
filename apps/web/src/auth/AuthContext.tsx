@@ -117,6 +117,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     globalAdmin: false,
     accessToken: null,
   })
+  const projetoAtualRef = useRef<ProjetoResumo | null>(null)
 
   const reactor = useMemo(
     () =>
@@ -161,6 +162,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   function encerrarSessao(): void {
     reactor.cancel()
     authenticatedRef.current = false
+    projetoAtualRef.current = null
     setSession({
       status: "unauthenticated",
       usuario: null,
@@ -175,6 +177,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   async function selecionarProjetoResolvido(projetoId: number): Promise<void> {
     const res = await bundle.auth.selectProject({ projetoId })
     store.setAccessToken(res.accessToken)
+    projetoAtualRef.current = res.projeto
     setSession((prev) => ({
       ...prev,
       status: "authenticated",
@@ -246,6 +249,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const res = await bundle.auth.refresh()
       store.setRefreshToken(res.refreshToken)
       aplicarRespostaAutenticacao(res)
+      const projetoAtualId = projetoAtualRef.current?.id
+      const projetoId = res.projetos.some(
+        (projeto) => projeto.id === projetoAtualId,
+      )
+        ? projetoAtualId
+        : res.projetos.length === 1
+          ? res.projetos[0]?.id
+          : undefined
+
+      if (projetoId !== undefined) {
+        // O refresh global não emite access token; é necessário selecionar
+        // novamente o projeto para concluir a restauração/renovação.
+        await selecionarProjetoResolvido(projetoId)
+      } else {
+        store.setAccessToken(null)
+        projetoAtualRef.current = null
+        setSession((prev) => ({
+          ...prev,
+          projeto: null,
+          globalAdmin: false,
+          accessToken: null,
+        }))
+      }
       return true
     } catch {
       store.clear()

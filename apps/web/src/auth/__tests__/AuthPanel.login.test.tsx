@@ -173,4 +173,60 @@ describe("AuthPanel login flow", () => {
     // ficava "unknown" para sempre, travando em "Restaurando sessão…").
     expect(sessionState.status).toBe("unauthenticated")
   })
+
+  it("restaura automaticamente o único projeto após reload", async () => {
+    localStorage.setItem("bg.refreshToken", "refresh-persistido")
+    const routes: RouteHandler[] = [
+      {
+        predicate: (c) => c.url.endsWith("/api/auth/refresh"),
+        respond: () => ({
+          status: 200,
+          body: {
+            refreshToken: "refresh-renovado",
+            projetos: [
+              {
+                id: 7,
+                nome: "Projeto único",
+                slug: "projeto-unico",
+                perfil: "operador",
+              },
+            ],
+          },
+        }),
+      },
+      {
+        predicate: (c) => c.url.endsWith("/api/auth/select-project"),
+        respond: () => ({
+          status: 200,
+          body: {
+            accessToken:
+              "eyJhbGciOiJIUzI1NiJ9." +
+              btoa(
+                JSON.stringify({
+                  sub: 1,
+                  projetoId: 7,
+                  perfil: "operador",
+                  exp: 1_900_000,
+                }),
+              ) +
+              ".sig",
+            projeto: {
+              id: 7,
+              nome: "Projeto único",
+              slug: "projeto-unico",
+              perfil: "operador",
+            },
+          },
+        }),
+      },
+    ]
+
+    renderLogin(routes)
+
+    await waitFor(() => {
+      expect(sessionState.status).toBe("authenticated")
+      expect(sessionState.projetoSlug).toBe("projeto-unico")
+    })
+    localStorage.removeItem("bg.refreshToken")
+  })
 })

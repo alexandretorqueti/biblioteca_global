@@ -23,6 +23,7 @@ export class ResourceWaitManager {
     waitId: number,
     position: number
   ): Promise<void> {
+    const taskWhere = this.taskWhere(taskId)
     await this.db.query(
       `UPDATE projeto_640.tarefas 
        SET status = 'paused',
@@ -30,19 +31,20 @@ export class ResourceWaitManager {
            resource_wait_id = ?,
            resource_wait_position = ?,
            paused_at = NOW()
-       WHERE id = ?`,
-      [resourceKey, waitId, position, taskId]
+       WHERE ${taskWhere.clause}`,
+      [resourceKey, waitId, position, ...taskWhere.params]
     )
 
     this.logger.info(`Tarefa ${taskId} aguardando ${resourceKey} (posição ${position})`, { taskId })
   }
 
   async cancelWait(taskId: string): Promise<void> {
+    const taskWhere = this.taskWhere(taskId)
     await this.db.query(
       `DELETE q FROM projeto_640.execution_resource_queue q
        INNER JOIN projeto_640.tarefas t ON t.resource_wait_id = q.id
-       WHERE t.id = ? AND q.status = 'waiting'`,
-      [taskId]
+       WHERE ${taskWhere.clause === 'id = ?' ? 't.id = ?' : 't.external_id = ?'} AND q.status = 'waiting'`,
+      taskWhere.params
     )
     await this.db.query(
       `UPDATE projeto_640.tarefas 
@@ -51,8 +53,8 @@ export class ResourceWaitManager {
            resource_wait_id = NULL,
            resource_wait_position = NULL,
            paused_at = NULL
-       WHERE id = ?`,
-      [taskId]
+       WHERE ${taskWhere.clause}`,
+      taskWhere.params
     )
   }
 
@@ -146,5 +148,17 @@ export class ResourceWaitManager {
       createdAt: String(row.created_at ?? new Date().toISOString()),
       updatedAt: String(row.updated_at ?? new Date().toISOString()),
     }
+  }
+
+  /**
+   * A API do motor usa external_id (ex.: task-biblioteca-740), enquanto as
+   * colunas de relacionamento da fila usam o id numérico interno. Escolher a
+   * coluna antes de bindar o parâmetro evita que o MySQL tente converter um
+   * external_id textual para DOUBLE.
+   */
+  private taskWhere(taskId: string): { clause: 'id = ?' | 'external_id = ?'; params: [string] } {
+    return /^\d+$/.test(taskId)
+      ? { clause: 'id = ?', params: [taskId] }
+      : { clause: 'external_id = ?', params: [taskId] }
   }
 }

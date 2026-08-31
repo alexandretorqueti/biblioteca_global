@@ -21,6 +21,31 @@ describe('ResourceWaitManager', () => {
     ])
   })
 
+  it('usa external_id para tarefas com identificador textual', async () => {
+    const db: Db = {
+      query: vi.fn().mockResolvedValue({ rows: [], affectedRows: 1, insertId: 0 } satisfies QueryResult),
+      transaction: vi.fn(),
+    }
+    const manager = new ResourceWaitManager(db, repository())
+
+    await manager.waitForResource('task-biblioteca-740', 'project:demo:execution', 7, 2)
+
+    expect(db.query).toHaveBeenCalledWith(expect.stringContaining('WHERE external_id = ?'), [
+      'project:demo:execution', 7, 2, 'task-biblioteca-740',
+    ])
+  })
+
+  it('cancela a espera usando external_id para tarefas com identificador textual', async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [], affectedRows: 1, insertId: 0 } satisfies QueryResult)
+    const db: Db = { query, transaction: vi.fn() }
+    const manager = new ResourceWaitManager(db, repository())
+
+    await manager.cancelWait('task-biblioteca-740')
+
+    expect(query).toHaveBeenNthCalledWith(1, expect.stringContaining('t.external_id = ?'), ['task-biblioteca-740'])
+    expect(query).toHaveBeenNthCalledWith(2, expect.stringContaining('WHERE external_id = ?'), ['task-biblioteca-740'])
+  })
+
   it('retoma uma tarefa de execucao como ready e consome a entrada da fila', async () => {
     const query = vi.fn()
       .mockResolvedValueOnce({ rows: [{ id: '42', resource_wait_id: 7 }], affectedRows: 0, insertId: 0 })
