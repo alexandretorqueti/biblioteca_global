@@ -217,12 +217,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       store.clear()
       const res = await bundle.auth.login(parsed.data)
       store.setRefreshToken(res.refreshToken)
-      aplicarRespostaAutenticacao(res)
       // Com exatamente 1 projeto, seleciona direto (fluxo do Estudo);
       // com vários, a tela de seleção decide.
       if (res.projetos.length === 1 && res.projetos[0]) {
         await selecionarProjetoResolvido(res.projetos[0].id)
       }
+      // Publica a sessão parcial somente depois da seleção automática. Isso
+      // evita que o roteador veja authenticated + projeto null e envie o
+      // usuário para /select antes do select-project terminar.
+      aplicarRespostaAutenticacao(res)
     },
     // store e bundle são estáveis (refs); aplicarRespostaAutenticacao é
     // redefinida por referência estável via closure acima.
@@ -324,10 +327,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       store.setPersist(false)
       store.clear()
       store.setRefreshToken(res.refreshToken)
-      aplicarRespostaAutenticacao(res)
       if (res.projetos.length === 1 && res.projetos[0]) {
         await selecionarProjetoResolvido(res.projetos[0].id)
       }
+      aplicarRespostaAutenticacao(res)
       return { primeiraVez: false }
     },
     [],
