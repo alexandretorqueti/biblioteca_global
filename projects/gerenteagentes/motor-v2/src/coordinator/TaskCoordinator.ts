@@ -979,11 +979,23 @@ export class TaskCoordinator {
       )
       return
     }
-    const paths = await this.workspaceManager.changedPaths(workspace.path, workspace.baseCommit, commitSha)
-    if (!correctionOnlyChangesTests(paths)) return
+    // B8 (2026-08-31): desde o B1 a corretiva herda o escopo COMPLETO da
+    // original — verificada a corretiva, o escopo original foi entregue (só
+    // testes, ou refeito por inteiro). Deixar a original como rejected para
+    // sempre confundia a tela e o histórico (caso tarefa 731, Alexandre).
+    let paths: readonly string[] = []
+    try {
+      paths = await this.workspaceManager.changedPaths(workspace.path, workspace.baseCommit, commitSha)
+    } catch (error) {
+      this.logger.warn("B8: falha ao comparar diff da corretiva (" + (error instanceof Error ? error.message : String(error)) + "); promovendo original mesmo assim")
+    }
+    const testOnly = paths.length > 0 && correctionOnlyChangesTests(paths)
+    const note = testOnly
+      ? "\nGate corrigido pela subtarefa " + subtaskId + " (somente testes alterados); trabalho original mantido."
+      : "\nEscopo entregue pela subtarefa corretiva " + subtaskId + " (correção herdou o escopo original)."
     await this.db.query(
-      "UPDATE projeto_640.subtarefas SET status = 'verified', resultado = CONCAT(COALESCE(resultado, ''), '\\nCorrigida por subtarefa ', ?), finalizada_em = NOW(), updated_at = NOW() WHERE id = ? AND status = 'rejected'",
-      [subtaskId, originalId],
+      "UPDATE projeto_640.subtarefas SET status = 'verified', resultado = CONCAT(COALESCE(resultado, ''), ?), finalizada_em = NOW(), updated_at = NOW() WHERE id = ? AND status = 'rejected'",
+      [note, originalId],
     )
   }
 
