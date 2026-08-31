@@ -987,6 +987,9 @@ export class TaskCoordinator {
   ): Promise<void> {
     const status = transitionTask(task.status as Task["status"], transition)
     await this.repository.saveTask({ ...task, ...patch, status, updatedAt: new Date().toISOString() })
+    // Atualiza o objeto task em memória para manter consistência
+    task.status = status
+    if (patch.updatedAt) task.updatedAt = patch.updatedAt
   }
 
   private publishActivity(worker: ActiveWorker, event: Omit<import("../events/ExecutionEventBus.js").ExecutionActivityEvent, "executionId" | "taskId" | "subtaskId" | "phase" | "timestamp">): void {
