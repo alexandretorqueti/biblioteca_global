@@ -93,6 +93,10 @@ export class ProvisionService {
         slug,
       })
       projeto = criadoProjeto
+    } else {
+      // Projeto já existe — garante que o database está provisionado
+      // (idempotente: CREATE DATABASE IF NOT EXISTS + migrations aplicadas).
+      await this.projetosService.garantirDatabaseProvisionado(projeto.id, slug)
     }
 
     // 3. Vínculo admin (upsert) — dono do projeto + admins extras (ex.: dono da plataforma).
