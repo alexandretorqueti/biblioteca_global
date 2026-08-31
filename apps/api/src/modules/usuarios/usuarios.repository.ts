@@ -38,6 +38,7 @@ export interface UsuariosRepository {
     filtros: ListarUsuariosFiltros,
   ): Promise<{ items: UsuarioListItem[]; total: number }>
   findById(id: number): Promise<UsuarioRow | undefined>
+  findByEmail(email: string): Promise<UsuarioRow | undefined>
   findVinculo(usuarioId: number, projetoId: number): Promise<Perfil | undefined>
   criarUsuario(row: {
     nome: string
@@ -136,6 +137,15 @@ export class DrizzleUsuariosRepository implements UsuariosRepository {
       .select()
       .from(usuarios)
       .where(eq(usuarios.id, id))
+      .limit(1)
+    return linhas.at(0)
+  }
+
+  async findByEmail(email: string): Promise<UsuarioRow | undefined> {
+    const linhas = await this.db
+      .select()
+      .from(usuarios)
+      .where(eq(usuarios.email, email))
       .limit(1)
     return linhas.at(0)
   }

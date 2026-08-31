@@ -20,6 +20,7 @@ class FakeUsuariosRepository implements UsuariosRepository {
   vinculos: { usuarioId: number; projetoId: number; perfil: Perfil }[] = []
   projetos: { id: number; nome: string; slug: string; ativo: boolean }[] = []
   chamadas: string[] = []
+  usuarioExistentePorEmail: UsuarioRow | undefined
   /** Últimos campos recebidos em atualizarUsuario (para asserções). */
   ultimosCamposAtualizados: Record<string, unknown> | null = null
 
@@ -62,6 +63,11 @@ class FakeUsuariosRepository implements UsuariosRepository {
       createdAt: new Date(),
       updatedAt: new Date(),
     }
+  }
+
+  async findByEmail(email: string): Promise<UsuarioRow | undefined> {
+    if (email !== this.usuarioExistentePorEmail?.email) return undefined
+    return this.usuarioExistentePorEmail
   }
 
   async findVinculo(
@@ -197,6 +203,31 @@ describe("UsuariosService", () => {
       })
       expect(repo.chamadas).toContain("criarVinculo:42:2:operador")
       expect(criado.perfil).toBe("operador")
+    })
+
+    it("encontra o e-mail existente e apenas cria o vínculo no projeto", async () => {
+      repo.usuarioExistentePorEmail = {
+        id: 7,
+        username: "usuario-global",
+        email: DTO_CRIAR.email,
+        telefone: null,
+        cpf: null,
+        nome: "Usuário Global",
+        ativo: true,
+        passwordHash: "$argon2id$hash-existente",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }
+
+      const resultado = await service.criar(
+        escopo("documentacao", 2, "admin"),
+        { ...DTO_CRIAR, nome: "Nome ignorado", senhaInicial: "senha-nova-123" },
+      )
+
+      expect(resultado.id).toBe(7)
+      expect(resultado.nome).toBe("Usuário Global")
+      expect(repo.chamadas).toContain("criarVinculo:7:2:operador")
+      expect(repo.chamadas).not.toContain("atualizarUsuario")
     })
 
     it("rejeita criação sem identificador", async () => {

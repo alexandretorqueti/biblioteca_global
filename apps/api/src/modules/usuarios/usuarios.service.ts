@@ -132,6 +132,23 @@ export class UsuariosService {
     }
 
     const perfil: Perfil = dto.perfil ?? "operador"
+
+    const vincularUsuarioExistente = async (
+      usuario: UsuarioRow,
+    ): Promise<UsuarioPublico & { perfil: Perfil }> => {
+      // Usuários são globais: ao reencontrar o e-mail, não alteramos seus
+      // dados nem sua senha; apenas garantimos o vínculo neste projeto.
+      await this.repo.criarVinculo(usuario.id, scope.projeto.id, perfil)
+      return { ...semHash(usuario), perfil }
+    }
+
+    if (dto.email !== undefined) {
+      const usuarioExistente = await this.repo.findByEmail(dto.email)
+      if (usuarioExistente) {
+        return vincularUsuarioExistente(usuarioExistente)
+      }
+    }
+
     const passwordHash = await argon2.hash(dto.senhaInicial, {
       type: argon2.argon2id,
     })
@@ -148,6 +165,14 @@ export class UsuariosService {
       })
     } catch (erro: unknown) {
       if (ehErroDuplicado(erro)) {
+        // Evita corrida entre a busca acima e o INSERT. Se o e-mail passou a
+        // existir nesse intervalo, o resultado correto ainda é vinculá-lo.
+        if (dto.email !== undefined) {
+          const usuarioExistente = await this.repo.findByEmail(dto.email)
+          if (usuarioExistente) {
+            return vincularUsuarioExistente(usuarioExistente)
+          }
+        }
         throw new ConflictException("Identificador já cadastrado")
       }
       throw erro
