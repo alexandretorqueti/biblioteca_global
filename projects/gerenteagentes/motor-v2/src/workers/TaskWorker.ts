@@ -438,7 +438,9 @@ class TaskWorker {
   /** Cria a subtarefa de correção de baseline na posição da subtarefa original. */
   private async createBaselineCorrection(subtask: SubtaskInfo, reason: string): Promise<void> {
     if (!this.db) throw new Error("DB não conectado para criar correção de baseline")
-    const fingerprint = BASELINE_FINGERPRINT_PREFIX + failureFingerprint(reason)
+    // A coluna correction_fingerprint é varchar(500). O prefixo + o fingerprint
+    // normalizado precisam caber juntos — senão o INSERT falha com "Data too long".
+    const fingerprint = (BASELINE_FINGERPRINT_PREFIX + failureFingerprint(reason)).slice(0, 500)
     // Abre espaço na posição exata da subtarefa atual (seq -> seq+1 para >= seq).
     await this.db.query("UPDATE projeto_640.subtarefas SET seq = seq + 10000 WHERE tarefa_id = (SELECT tarefa_id FROM (SELECT tarefa_id FROM projeto_640.subtarefas WHERE id = ?) AS source) AND seq >= ?", [subtask.id, subtask.seq])
     await this.db.query("UPDATE projeto_640.subtarefas SET seq = seq - 9999 WHERE tarefa_id = (SELECT tarefa_id FROM (SELECT tarefa_id FROM projeto_640.subtarefas WHERE id = ?) AS source) AND seq >= ?", [subtask.id, subtask.seq + 10000])

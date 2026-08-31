@@ -110,7 +110,31 @@ describe('baseline antes da primeira subtarefa (B4)', () => {
     expect(String(params?.[2])).toContain('suite vermelha')
     expect(String(params?.[2])).toContain('Escopo original completo')
     expect(String(params?.[4])).toMatch(new RegExp('^' + BASELINE_FINGERPRINT_PREFIX))
+    expect(String(params?.[4]).length).toBeLessThanOrEqual(500) // coluna varchar(500)
     expect(params?.[5]).toBe(750) // correction_for_subtask_id = original
+  })
+
+  it('fingerprint com motivo gigante não estoura o varchar(500)', async () => {
+    const query = vi.fn()
+      .mockResolvedValueOnce([[{ total: 0 }]])
+      .mockResolvedValueOnce([{ affectedRows: 1 }])
+      .mockResolvedValueOnce([{ affectedRows: 1 }])
+      .mockResolvedValueOnce([{ affectedRows: 1 }])
+      .mockResolvedValueOnce([{ affectedRows: 1 }])
+    const worker = workerWithRawDb(query)
+    const exec = vi.fn().mockImplementation((command: string) => {
+      if (command.includes('test')) throw new Error('Testes falharam: ' + 'x'.repeat(2000))
+      return ''
+    })
+    ;(worker as unknown as { exec: unknown }).exec = exec
+
+    const fn = callPrivate<(input: WorkerInput, subtask: SubtaskInfo) => Promise<string>>(worker, 'runBaselineCheck')
+    await fn.call(worker, makeInput(), { id: 750, seq: 1, titulo: 'x', scope: 's', deliverCount: 0 })
+
+    const insert = query.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO projeto_640.subtarefas'))
+    const fp = String((insert?.[1] as unknown[])?.[4])
+    expect(fp.startsWith(BASELINE_FINGERPRINT_PREFIX)).toBe(true)
+    expect(fp.length).toBeLessThanOrEqual(500)
   })
 
   it('suíte verde → segue sem criar correção', async () => {
