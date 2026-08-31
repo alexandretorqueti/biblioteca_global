@@ -34,6 +34,8 @@ import { config as configDocumentacao } from "../projects/documentacao/config"
 import * as schemaDocumentacao from "../projects/documentacao/schema"
 import { config as configGerenteAgentes } from "../projects/gerenteagentes/config"
 import * as schemaGerenteAgentes from "../projects/gerenteagentes/schema"
+import { config as configSistemaAdmGlobal } from "../projects/sistema-adm-global/config"
+import * as schemaSistemaAdmGlobal from "../projects/sistema-adm-global/schema"
 
 /** POC §9.3 — senha descartável; Alexandre troca no primeiro login. */
 const SENHA_INICIAL_DESCARTAVEL = "Bo4MfU29r0GPi1"
@@ -67,6 +69,13 @@ const PROJETOS_SEED: ProjetoSeed[] = [
     configBase: configGerenteAgentes,
     tabelas: coletarTabelas(schemaGerenteAgentes),
     annotations: coletarAnnotations(schemaGerenteAgentes),
+  },
+  {
+    nome: "Administrador Global",
+    slug: "sistema-adm-global",
+    configBase: configSistemaAdmGlobal,
+    tabelas: coletarTabelas(schemaSistemaAdmGlobal),
+    annotations: coletarAnnotations(schemaSistemaAdmGlobal),
   },
 ]
 

@@ -10,6 +10,7 @@ import { coletarTabelas } from "@biblioteca-global/schema-tools"
 import * as bibliotecaGlobalSchema from "../../../../../projects/biblioteca-global/schema"
 import * as documentacaoSchema from "../../../../../projects/documentacao/schema"
 import * as gerenteagentesSchema from "../../../../../projects/gerenteagentes/schema"
+import * as sistemaAdmGlobalSchema from "../../../../../projects/sistema-adm-global/schema"
 
 export interface SchemaRegistry {
   /** Tabelas do projeto por nome; undefined = projeto sem schema. */
@@ -26,6 +27,7 @@ export class StaticSchemaRegistry implements SchemaRegistry {
     ["biblioteca-global", coletarTabelas(bibliotecaGlobalSchema)],
     ["documentacao", coletarTabelas(documentacaoSchema)],
     ["gerenteagentes", coletarTabelas(gerenteagentesSchema)],
+    ["sistema-adm-global", coletarTabelas(sistemaAdmGlobalSchema)],
   ])
 
   tabelasDoProjeto(slug: string): Record<string, MySqlTable> | undefined {

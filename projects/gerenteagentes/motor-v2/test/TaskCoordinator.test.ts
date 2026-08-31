@@ -1,5 +1,6 @@
 /**
  * Testes do TaskCoordinator
+ * @vitest-environment node
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
@@ -80,6 +81,7 @@ describe('TaskCoordinator', () => {
         title: 'Test Task',
         description: 'Test desc',
         repo_path: '/test/repo',
+        branch_trabalho: 'main',
         build_command: 'npm run build',
         unit_test_command: 'npm run test',
         status: 'planned',
