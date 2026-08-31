@@ -33,6 +33,56 @@ import { hasPersistedPlan, persistPlan } from "../planning/PlanPersistence.js"
 import type { Db, QueryResult } from "../shared/types/infrastructure.js"
 import mysql from "mysql2/promise"
 
+const COMMAND_FAILURE_LIMIT = 12_000
+const ANSI_ESCAPE_PATTERN = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g
+
+type CommandFailure = {
+  stdout?: string | Buffer
+  stderr?: string | Buffer
+  message?: string
+  status?: number | null
+  signal?: NodeJS.Signals | null
+}
+
+function cleanCommandOutput(value: string | Buffer | undefined): string {
+  return (typeof value === "string" ? value : value?.toString() ?? "")
+    .replace(ANSI_ESCAPE_PATTERN, "")
+    .replace(/\r/g, "")
+    .trim()
+}
+
+/**
+ * Mantém stdout e stderr: Vitest escreve avisos React em stderr, mas a
+ * asserção e o resumo da falha em stdout. O final é mais relevante que o
+ * início porque os runners imprimem o resumo depois da execução da suíte.
+ */
+export function formatCommandFailure(error: CommandFailure, limit = COMMAND_FAILURE_LIMIT): string {
+  const stdout = cleanCommandOutput(error.stdout)
+  const stderr = cleanCommandOutput(error.stderr)
+  const metadata = [
+    error.status != null ? `exit=${error.status}` : "",
+    error.signal ? `signal=${error.signal}` : "",
+  ].filter(Boolean).join(" ")
+  const sections = [
+    metadata,
+    stdout ? `[stdout]\n${stdout}` : "",
+    stderr ? `[stderr]\n${stderr}` : "",
+    !stdout && !stderr ? cleanCommandOutput(error.message) : "",
+  ].filter(Boolean)
+  const combined = sections.join("\n\n") || "Comando encerrou sem saída diagnóstica"
+  return combined.length <= limit ? combined : "[saída truncada; exibindo o final]\n" + combined.slice(-limit)
+}
+
+export function confirmationTestCommand(originalCommand: string, failure: string): string {
+  if (!originalCommand.trim().startsWith("npm run test")) return originalCommand
+  const files = [...failure.matchAll(/(?:^|\s)((?:[\w@.-]+\/)*[\w@.-]+\.(?:test|spec)\.[cm]?[jt]sx?)/gm)]
+    .map((match) => match[1])
+    .filter((file, index, all) => all.indexOf(file) === index)
+    .slice(0, 10)
+  if (files.length === 0) return originalCommand
+  return "npm run test -- " + files.map((file) => `\"${file}\"`).join(" ")
+}
+
 function isSafeBranchName(branch: string): boolean {
   return Boolean(
     branch &&
@@ -380,8 +430,24 @@ class TaskWorker {
       this.exec(command, input.repoPath, 300_000)
       this.log("info", "Testes OK")
     } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error)
-      throw new Error("Testes falharam: " + msg.substring(0, 500), { cause: error })
+      const firstFailure = error instanceof Error ? error.message : String(error)
+      // Confirma a falha no workspace intocado. Flake não consome uma entrega
+      // nem envia o programador para "corrigir" um teste que já voltou a passar.
+      const confirmationCommand = confirmationTestCommand(command, firstFailure)
+      this.log("warn", "Gate vermelho; confirmando falha no workspace intocado: " + confirmationCommand)
+      try {
+        this.exec(confirmationCommand, input.repoPath, 300_000)
+        this.log("warn", "Teste passou na repetição sem alteração do workspace; falha classificada como flaky")
+        return
+      } catch (confirmationError) {
+        const confirmedFailure = confirmationError instanceof Error ? confirmationError.message : String(confirmationError)
+        throw new Error(
+          "Testes falharam em duas execuções consecutivas.\n" +
+          "--- primeira execução ---\n" + firstFailure + "\n" +
+          "--- confirmação ---\n" + confirmedFailure,
+          { cause: confirmationError },
+        )
+      }
     }
   }
 
@@ -726,8 +792,7 @@ class TaskWorker {
     try {
       return execSync(command, { cwd, timeout: timeoutMs, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] })
     } catch (error) {
-      const e = error as { stderr?: Buffer; message: string }
-      throw new Error((e.stderr?.toString() || e.message).substring(0, 500), { cause: error })
+      throw new Error(formatCommandFailure(error as CommandFailure), { cause: error })
     }
   }
 
