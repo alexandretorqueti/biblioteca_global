@@ -684,9 +684,10 @@ export class TaskCoordinator {
     if (task.status !== "planned" && task.status !== "paused" && task.status !== "draft") {
       throw new Error("Tarefa " + taskId + " esta em status " + task.status)
     }
-    // Se está em draft, transiciona para planned antes de enfileirar
+    // Se está em draft, transiciona diretamente para planned (atualiza o banco)
     if (task.status === "draft") {
-      await this.saveTaskTransition(task, "plan")
+      await this.repository.saveTask({ ...task, status: "planned", updatedAt: new Date().toISOString() })
+      task.status = "planned"
     }
     if (task.status !== "planned") {
       await this.saveTaskTransition(task, "queue")
