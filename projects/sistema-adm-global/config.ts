@@ -9,7 +9,7 @@
  * - Circulares (comunicados internos)
  * - Configurações: Usuários, Empresa, Departamentos
  *
- * Menus: Início | Administrativo | RH | Configurações Admin | Sair
+ * Menus: Início | Administrativo | RH | Configurações Admin
  * Telas: 4 custom (dashboard + 3 hubs de navegação) + CRUDs cadastro
  *
  * A tela Usuários é CRUD local (tabela usuarios no database do projeto).
@@ -313,13 +313,6 @@ export const config: GeradorSistemaConfig = {
       ],
     },
 
-    // ========================================================================
-    // MENU: Sair (nenhuma tela — logout é ação da plataforma)
-    // ========================================================================
-    {
-      id: "sair",
-      label: "Sair",
-      items: [],
-    },
+
   ],
 }
