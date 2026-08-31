@@ -542,9 +542,11 @@ describe("ExternalScreen — submit do edit (st-4)", () => {
     fireEvent.click(screen.getByRole("button", { name: /Salvar/ }))
 
     await waitFor(() => expect(screen.getByText(/Registro salvo/)).toBeInTheDocument())
-    await new Promise(r => setTimeout(r, 1500))
-
-    expect(screen.queryByText("Editar registro")).not.toBeInTheDocument()
+    // Aguarda o delay de 1200ms + margem para o estado atualizar (act automático do waitFor)
+    await waitFor(
+      () => expect(screen.queryByText("Editar registro")).not.toBeInTheDocument(),
+      { timeout: 2000 }
+    )
   })
 
   // --- Teste: erro HTTP exibe Alert sem crash ---
