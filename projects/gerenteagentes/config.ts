@@ -76,7 +76,11 @@ export const config: GeradorSistemaConfig = {
             fields: [
               { name: "nome", label: "Nome", type: "text", required: true, maxLength: 200, fullWidth: true },
               { name: "slug", label: "Slug", type: "text", required: true, minLength: 2, maxLength: 100, helperText: "Use letras minúsculas, números e hífen.", gridVisible: false },
-              { name: "agenteId", label: "Agente vinculado", type: "number", helperText: "ID do agente em projeto_640.agentes. O motor usa COALESCE(openclaw_agent_id, nome) para abrir a sessão.", gridVisible: true },
+              { name: "agenteId", label: "Agente vinculado", type: "select", gridVisible: true, helperText: "Agente que executará as tarefas deste projeto. O motor usa COALESCE(openclaw_agent_id, nome) para abrir a sessão.", options: [
+                { label: "biblioteca-global", value: 1 },
+                { label: "programador-senior", value: 2 },
+                { label: "sistema-adm-global (Administrador Global)", value: 5 },
+              ] },
               { name: "descricao", label: "Descrição / Regras do projeto", type: "textarea", maxLength: 65535, fullWidth: true, gridVisible: false, rows: 4 },
               { name: "regras", label: "Regras extras (complementam a descrição)", type: "textarea", maxLength: 65535, fullWidth: true, gridVisible: false, rows: 4 },
               { name: "contatoId", label: "Contato responsável", type: "number", gridVisible: false, helperText: "ID do contato em projeto_640.contatos." },
