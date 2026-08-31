@@ -679,8 +679,14 @@ export class TaskCoordinator {
   async enqueueTask(taskId: string): Promise<{ executionId: string }> {
     const task = await this.repository.getTask(taskId)
     if (!task) throw new Error("Tarefa " + taskId + " nao encontrada")
-    if (task.status !== "planned" && task.status !== "paused") {
+    // Permite iniciar de draft (recém-criada), planned (pronta para executar)
+    // ou paused (retomando). Draft é tratado como planned para o motor.
+    if (task.status !== "planned" && task.status !== "paused" && task.status !== "draft") {
       throw new Error("Tarefa " + taskId + " esta em status " + task.status)
+    }
+    // Se está em draft, transiciona para planned antes de enfileirar
+    if (task.status === "draft") {
+      await this.saveTaskTransition(task, "plan")
     }
     if (task.status !== "planned") {
       await this.saveTaskTransition(task, "queue")

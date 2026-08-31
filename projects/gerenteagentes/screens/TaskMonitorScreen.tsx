@@ -369,6 +369,21 @@ export default function TaskMonitorScreen(): ReactNode {
         fullWidth: true,
       },
       {
+        name: "status",
+        label: "Status",
+        type: "select",
+        options: [
+          { label: "Rascunho (draft)", value: "draft" },
+          { label: "Planejada (planned)", value: "planned" },
+          { label: "Executando (running)", value: "running" },
+          { label: "Pausada (paused)", value: "paused" },
+          { label: "Concluída (completed)", value: "completed" },
+          { label: "Falhou (failed)", value: "failed" },
+          { label: "Cancelada (cancelled)", value: "cancelled" },
+          { label: "Bloqueada (blocked)", value: "blocked" },
+        ],
+      },
+      {
         name: "dependsOnTaskId",
         label: "Depende da tarefa",
         type: "multipleChoice",
@@ -392,6 +407,7 @@ export default function TaskMonitorScreen(): ReactNode {
         const body: Record<string, unknown> = {
           titulo: String(values.titulo ?? "").trim(),
           descricao: values.descricao ? String(values.descricao).trim() : null,
+          status: values.status ? String(values.status) : undefined,
           dependsOnTaskId:
             values.dependsOnTaskId !== "" && values.dependsOnTaskId != null
               ? Number(values.dependsOnTaskId)
@@ -539,10 +555,11 @@ export default function TaskMonitorScreen(): ReactNode {
   const statusMotor = detail?.task?.status ?? tarefaSelecionada?.status ?? "—"
 
   const editInitialValues = useMemo<DynamicFormValues>(() => {
-    if (!tarefaSelecionada) return { titulo: "", descricao: "", dependsOnTaskId: "" }
+    if (!tarefaSelecionada) return { titulo: "", descricao: "", status: "draft", dependsOnTaskId: "" }
     return {
       titulo: tarefaSelecionada.titulo,
       descricao: tarefaSelecionada.descricao ?? "",
+      status: tarefaSelecionada.status ?? "draft",
       dependsOnTaskId: tarefaSelecionada.dependsOnTaskId ?? "",
     }
   }, [tarefaSelecionada])
