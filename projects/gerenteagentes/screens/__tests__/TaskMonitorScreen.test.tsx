@@ -689,4 +689,41 @@ describe("TaskMonitorScreen — compatibilidade Motor-v2", () => {
     expect(screen.getByTestId("task-progress")).toHaveTextContent("Progresso: 0 / 3")
     expect(screen.getByTestId("btn-start")).toBeDisabled()
   })
+
+  it("permite iniciar tarefa planejada que já existe no motor", async () => {
+    const tarefas = [tarefaFactory(727, "Tarefa planejada", "planned", 2)]
+    globalThis.__bundleFalso = {
+      http: {
+        request: async (method: string, path: string) => {
+          if (method === "GET" && path === "/projetos_captados") return { items: [projetoFactory(2, "GerenteAgentes")] }
+          if (method === "GET" && path === "/tarefas") return { items: tarefas }
+          if (method === "GET" && path.endsWith("/motor-detail")) {
+            return {
+              motorId: "727",
+              exists: true,
+              task: { id: "727", status: "planned", title: "Tarefa planejada" },
+              subtasks: [],
+              currentSubTask: null,
+              events: [],
+            }
+          }
+          if (method === "GET" && path.endsWith("/subtarefas")) return []
+          return {}
+        },
+      },
+    } as never
+
+    render(
+      <BibliotecaThemeProvider>
+        <TaskMonitorScreen />
+      </BibliotecaThemeProvider>,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByTestId("btn-start")).toBeInTheDocument()
+    })
+    expect(screen.getByTestId("btn-start")).not.toBeDisabled()
+    expect(screen.getByTestId("btn-pause")).toBeDisabled()
+    expect(screen.getByTestId("btn-resume")).toBeDisabled()
+  })
 })

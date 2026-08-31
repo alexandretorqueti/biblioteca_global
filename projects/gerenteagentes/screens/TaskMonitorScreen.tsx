@@ -119,6 +119,8 @@ interface MotorDetail {
 }
 
 const STATUS_FINAIS = new Set(["completed", "finalizada", "deployada", "aborted"])
+const STATUS_INICIO_PERMITIDO = new Set(["draft", "planned", "blocked", "failed"])
+const STATUS_EXECUCAO = new Set(["running", "planning", "analyzing"])
 
 function corStatus(status: string): "default" | "primary" | "secondary" | "error" | "info" | "success" | "warning" {
   switch (status) {
@@ -553,6 +555,9 @@ export default function TaskMonitorScreen(): ReactNode {
 
   const tarefaSelecionada = tarefas.find((t) => t.id === tarefaId)
   const statusMotor = detail?.task?.status ?? tarefaSelecionada?.status ?? "—"
+  const podeIniciar = STATUS_INICIO_PERMITIDO.has(statusMotor)
+  const podePausar = STATUS_EXECUCAO.has(statusMotor)
+  const podeRetomar = statusMotor === "paused"
 
   const editInitialValues = useMemo<DynamicFormValues>(() => {
     if (!tarefaSelecionada) return { titulo: "", descricao: "", status: "draft", dependsOnTaskId: "" }
@@ -670,7 +675,7 @@ export default function TaskMonitorScreen(): ReactNode {
                 size="small"
                 variant="contained"
                 startIcon={<PlayArrowRounded />}
-                disabled={acao !== null || detail?.exists === true || ["running", "planning"].includes(statusMotor)}
+                disabled={acao !== null || !podeIniciar}
                 onClick={() => void executarAcao("start")}
                 data-testid="btn-start"
               >
@@ -680,7 +685,7 @@ export default function TaskMonitorScreen(): ReactNode {
                 size="small"
                 variant="outlined"
                 startIcon={<PauseRounded />}
-                disabled={acao !== null || !["running", "planning"].includes(statusMotor)}
+                disabled={acao !== null || !podePausar}
                 onClick={() => void executarAcao("pause")}
                 data-testid="btn-pause"
               >
@@ -690,7 +695,7 @@ export default function TaskMonitorScreen(): ReactNode {
                 size="small"
                 variant="outlined"
                 startIcon={<ReplayRounded />}
-                disabled={acao !== null || !["paused"].includes(statusMotor)}
+                disabled={acao !== null || !podeRetomar}
                 onClick={() => void executarAcao("resume")}
                 data-testid="btn-resume"
               >
