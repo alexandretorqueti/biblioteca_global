@@ -42,6 +42,16 @@ function tipoZodDaColuna(coluna: Column): ZodTypeAny {
   }
 }
 
+/**
+ * O Drizzle marca em `notNull` se uma coluna aceita `NULL`. A ausência do
+ * campo no payload é diferente de enviar `null`: em atualizações parciais,
+ * `null` é usado para limpar uma coluna nullable.
+ */
+function tipoZodParaEntrada(coluna: Column): ZodTypeAny {
+  const tipo = tipoZodDaColuna(coluna)
+  return coluna.notNull ? tipo : tipo.nullable()
+}
+
 function ehExcluidaDoInsert(coluna: Column): boolean {
   const meta = coluna as unknown as {
     primary?: boolean
@@ -56,7 +66,7 @@ export function zodParaInsert(tabela: MySqlTable): ZodTypeAny {
   const shape: Record<string, ZodTypeAny> = {}
   for (const coluna of Object.values(getTableColumns(tabela))) {
     if (ehExcluidaDoInsert(coluna)) continue
-    const tipo = tipoZodDaColuna(coluna)
+    const tipo = tipoZodParaEntrada(coluna)
     const requerida = coluna.notNull && !coluna.hasDefault
     shape[coluna.name] = requerida ? tipo : tipo.optional()
   }
@@ -68,7 +78,7 @@ export function zodParaUpdate(tabela: MySqlTable): ZodTypeAny {
   const shape: Record<string, ZodTypeAny> = {}
   for (const coluna of Object.values(getTableColumns(tabela))) {
     if (ehExcluidaDoInsert(coluna)) continue
-    shape[coluna.name] = tipoZodDaColuna(coluna).optional()
+    shape[coluna.name] = tipoZodParaEntrada(coluna).optional()
   }
   return z.object(shape).strict()
 }

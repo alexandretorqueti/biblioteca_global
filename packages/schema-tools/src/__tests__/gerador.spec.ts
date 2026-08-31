@@ -183,6 +183,19 @@ describe("montarConfigInicial", () => {
     expect(resources).toContain("usuarios")
   })
 
+  it("a tela sistêmica de usuários usa os campos do contrato da API", () => {
+    const config = montarConfigInicial(base, {}, {})
+    const tela = config.groups
+      .flatMap((grupo) => grupo.items)
+      .find((item) => item.screen.kind === "cadastro" && item.screen.resource === "usuarios")
+    expect(tela?.screen.kind).toBe("cadastro")
+    if (tela?.screen.kind === "cadastro") {
+      expect(tela.screen.fields?.map((field) => field.name)).toContain("senhaInicial")
+      expect(tela.screen.fields?.map((field) => field.name)).toContain("perfil")
+      expect(tela.screen.fields?.map((field) => field.name)).not.toContain("password")
+    }
+  })
+
   it("não duplica usuários quando a base já declara a tela sistêmica", () => {
     const baseComUsuarios: GeradorSistemaConfig = {
       app: { name: "Teste" },

@@ -249,7 +249,8 @@ export const config: GeradorSistemaConfig = {
             fields: [
               { name: "nome", label: "Nome", type: "text", required: true, maxLength: 200, fullWidth: true },
               { name: "email", label: "E-mail", type: "email", required: true, maxLength: 200, fullWidth: true },
-              { name: "papel", label: "Papel", type: "select", required: true, options: [{ value: "admin", label: "Administrador" }, { value: "usuario", label: "Usuário" }] },
+              { name: "senhaInicial", label: "Senha inicial", type: "text", required: true, minLength: 8, fullWidth: true },
+              { name: "perfil", label: "Perfil", type: "select", required: true, options: [{ value: "admin", label: "Administrador" }, { value: "gerente", label: "Gerente" }, { value: "operador", label: "Operador" }, { value: "visualizador", label: "Visualizador" }] },
               { name: "ativo", label: "Ativo", type: "switch", defaultValue: true },
             ],
             overrides: {
@@ -258,7 +259,7 @@ export const config: GeradorSistemaConfig = {
                 id: "ID",
                 nome: "Nome",
                 email: "E-mail",
-                papel: "Papel",
+                perfil: "Perfil",
                 ativo: "Status",
               },
               newLabel: "Novo Usuário",

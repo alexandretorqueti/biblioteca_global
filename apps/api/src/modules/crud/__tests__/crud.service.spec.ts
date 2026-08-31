@@ -201,6 +201,11 @@ describe("CrudService — whitelist e validação", () => {
       expect(schema.safeParse({}).success).toBe(true)
       expect(schema.safeParse({ campoSurpresa: 1 }).success).toBe(false)
     })
+
+    it("aceita null para limpar uma FK nullable", () => {
+      const schema = zodParaUpdate(tarefasGerente)
+      expect(schema.safeParse({ depends_on_task_id: null }).success).toBe(true)
+    })
   })
 })
 

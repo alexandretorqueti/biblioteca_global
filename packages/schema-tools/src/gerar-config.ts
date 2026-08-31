@@ -131,7 +131,7 @@ export function montarConfigInicial(
           { name: "email", label: "E-mail", type: "email" },
           { name: "telefone", label: "Telefone", type: "text" },
           { name: "cpf", label: "CPF", type: "text" },
-          { name: "password", label: "Senha inicial", type: "text", required: true },
+          { name: "senhaInicial", label: "Senha inicial", type: "text", required: true },
           {
             name: "perfil",
             label: "Perfil",
