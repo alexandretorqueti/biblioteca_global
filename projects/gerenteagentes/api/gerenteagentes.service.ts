@@ -167,6 +167,16 @@ export class GerenteAgentesService {
   }
 
   /**
+   * Banco do motor (projeto_640 — GerenteAgentes).
+   * O motor-v2 busca tarefas diretamente em projeto_640.tarefas (hardcoded).
+   * Para manter consistência, todas as operações do motor (tarefas, subtarefas,
+   * chats) devem usar este banco, independente do projetoId do token.
+   */
+  private async dbDoMotor() {
+    return await this.factory.obter({ id: 640 });
+  }
+
+  /**
    * Faz requisição HTTP para o motor de tarefas (GerenteAgentes).
    */
   private motorRequest(
@@ -215,7 +225,7 @@ export class GerenteAgentesService {
   // ============================================================================
 
   async iniciarTarefa(projeto: ProjetoResumo, tarefaId: number) {
-    const db = await this.dbDoProjeto(projeto);
+    const db = await this.dbDoMotor();
     const [tarefa] = await db
       .select()
       .from(tarefas)
@@ -257,7 +267,7 @@ export class GerenteAgentesService {
   }
 
   async pausarTarefa(projeto: ProjetoResumo, tarefaId: number) {
-    const db = await this.dbDoProjeto(projeto);
+    const db = await this.dbDoMotor();
     const [tarefa] = await db
       .select()
       .from(tarefas)
@@ -296,7 +306,7 @@ export class GerenteAgentesService {
   }
 
   async retomarTarefa(projeto: ProjetoResumo, tarefaId: number) {
-    const db = await this.dbDoProjeto(projeto);
+    const db = await this.dbDoMotor();
     const [tarefa] = await db
       .select()
       .from(tarefas)
@@ -339,7 +349,7 @@ export class GerenteAgentesService {
   // ============================================================================
 
   async listarChatTarefa(projeto: ProjetoResumo, tarefaId: number) {
-    const db = await this.dbDoProjeto(projeto);
+    const db = await this.dbDoMotor();
     
     // Verificar se a tarefa pertence ao projeto
     const [tarefa] = await db
@@ -367,7 +377,7 @@ export class GerenteAgentesService {
     role: string,
     texto: string,
   ) {
-    const db = await this.dbDoProjeto(projeto);
+    const db = await this.dbDoMotor();
     
     // Verificar se a tarefa pertence ao projeto
     const [tarefa] = await db
@@ -534,7 +544,7 @@ export class GerenteAgentesService {
    * separada da tabela `subtarefas` da biblioteca (Fase 3 ainda não sincroniza).
    */
   async motorDetailTarefa(projeto: ProjetoResumo, tarefaId: number) {
-    const db = await this.dbDoProjeto(projeto);
+    const db = await this.dbDoMotor();
     const [tarefa] = await db
       .select()
       .from(tarefas)
@@ -624,7 +634,7 @@ export class GerenteAgentesService {
   }
 
   async listarSubtarefas(projeto: ProjetoResumo, tarefaId: number) {
-    const db = await this.dbDoProjeto(projeto);
+    const db = await this.dbDoMotor();
     
     // Verificar se a tarefa pertence ao projeto
     const [tarefa] = await db
