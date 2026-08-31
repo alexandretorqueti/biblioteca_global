@@ -791,7 +791,7 @@ export class GerenteAgentesService {
 
   /**
    * Cria e enfileira a tarefa de setup do projeto no agente biblioteca-global.
-   * A missão roda no monorepo: pasta do projeto, config.json, banco, schema,
+   * A missão roda no monorepo: pasta do projeto, config.ts, banco, schema,
    * migration, push — e o gate de agente dedicado para telas além do CRUD.
    * Idempotente por externalId.
    */
@@ -884,9 +884,9 @@ export class GerenteAgentesService {
       '',
       'Execute os passos abaixo, nesta ordem:',
       `1. Crie a pasta do projeto em projects/${slug} neste monorepo.`,
-      '2. Crie o config.json do projeto com menus, telas e campos, seguindo',
+      '2. Crie o config.ts do projeto com menus, telas e campos, seguindo',
       '   docs/MANUAL_CONFIG_PROJETOS.md e a descrição acima.',
-      '3. GATE DE AGENTE DEDICADO — analise o config.json: o projeto tem telas ALÉM do CRUD?',
+      '3. GATE DE AGENTE DEDICADO — analise o config.ts: o projeto tem telas ALÉM do CRUD?',
       '   - SE SIM:',
       `     (a) Crie o agente do projeto no OpenClaw com id = "${slug}" e workspace`,
       `         /data/workspace/projects/agentes/${slug} (pasta com AGENTS.md, SOUL.md,`,
