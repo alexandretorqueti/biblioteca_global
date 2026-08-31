@@ -250,8 +250,12 @@ class TaskWorker {
         let session
         try {
           session = await driver.createSession({ agentId: input.task.agentId, key: sessionKey, label: sessionKey, model: model.model })
-          const prompt = this.buildProgrammerPrompt(input.task, subtask, input.repoPath, lastFailure || undefined)
-          const { runId } = await driver.sendMessage({ session, message: prompt })
+          const { header, context } = this.buildProgrammerPrompt(input.task, subtask, input.repoPath, lastFailure || undefined)
+          // Envia contexto separado se a missao for longa (evita truncamento no viewer)
+          if (context) {
+            await driver.sendMessage({ session, message: context })
+          }
+          const { runId } = await driver.sendMessage({ session, message: header })
           const result = await driver.waitForRunCompletion(session, runId, {
             onActivity: () => this.sendHeartbeat(),
           })
@@ -584,17 +588,27 @@ class TaskWorker {
       "  ]",
       "}",
       "",
-      "Regras: crie no maximo 4 subtarefas. Seja especifico no scope. Nao inclua explicacao fora do JSON.",
+      "Regras:",
+      "- Crie no maximo 4 subtarefas.",
+      "- Seja especifico no scope.",
+      "- Nao inclua explicacao fora do JSON.",
+      "- NUNCA crie subtarefas para passos operacionais que o motor executa automaticamente: commit, push, merge, build, testes unitarios, deploy, validacao de build.",
+      "- Subtarefas devem conter apenas trabalho de codigo ou documentacao (ex.: criar schema, criar tela, escrever endpoint).",
+      "- Se o escopo incluir criacao de tabelas/schema, o proprio dev deve gerar as migrations (drizzle-kit generate) como parte do trabalho — mas NAO crie subtarefa separada para isso.",
     ].join("\n")
   }
 
-  private buildProgrammerPrompt(task: { title: string; description?: string }, subtask: SubtaskInfo, repoPath: string, reworkNote?: string): string {
-    const description = (task.description || "N/A").substring(0, 20000)
-    return [
+  /**
+   * Monta a missão do programador. Se o briefing ultrapassar 12k chars,
+   * retorna em duas partes (header + contexto) para evitar truncamento
+   * no viewer da sessão do agente.
+   */
+  private buildProgrammerPrompt(task: { title: string; description?: string }, subtask: SubtaskInfo, repoPath: string, reworkNote?: string): { header: string; context: string | null } {
+    const description = task.description || "N/A"
+    const header = [
       "Voce e um programador senior. Execute a subtarefa abaixo.",
       "",
       "Tarefa pai: " + task.title,
-      "Descrição da missão: " + description,
       "Subtarefa #" + subtask.seq + ": " + subtask.titulo,
       "Escopo: " + (subtask.scope || subtask.titulo),
       "Criterios de aceite: " + JSON.stringify(subtask.acceptanceCriteria || []),
@@ -606,6 +620,17 @@ class TaskWorker {
       "3. Responda APENAS com JSON: {\"status\":\"done\"|\"need_help\"|\"blocked_environment\",\"summary\":\"...\",\"reason\":\"...\"}",
       ...(reworkNote ? ["", "Feedback do gate anterior:", reworkNote] : []),
     ].join("\n")
+
+    // Descrição longa → mensagem separada para evitar truncamento no viewer
+    if (description.length > 12000) {
+      return { header, context: "Descrição completa da missão:\n\n" + description.substring(0, 30000) }
+    }
+    // Descrição curta → incluir no header
+    const fullHeader = header.replace(
+      "Voce e um programador senior. Execute a subtarefa abaixo.",
+      "Voce e um programador senior. Execute a subtarefa abaixo.\n\nDescrição da missão: " + description.substring(0, 12000),
+    )
+    return { header: fullHeader, context: null }
   }
 
   private chainFor(input: WorkerInput, phase: "analysis" | "development"): readonly ModelSelection[] {

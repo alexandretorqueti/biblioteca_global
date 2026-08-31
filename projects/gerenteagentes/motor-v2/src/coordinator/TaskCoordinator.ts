@@ -176,7 +176,7 @@ export class TaskCoordinator {
 
   private async selectNextTask(): Promise<Task | null> {
     const { rows } = await this.db.query(
-      "SELECT t.*, pc.slug as project_slug, a.nome as agent_id, " +
+      "SELECT t.*, pc.slug as project_slug, COALESCE(a.openclaw_agent_id, a.nome) as agent_id, " +
       "pmc.repo_path, pmc.branch_trabalho, pmc.build_command, pmc.unit_test_command, pmc.unit_test_exclude, " +
       "pmc.default_max_rework, pmc.default_hard_timeout_ms " +
       "FROM projeto_640.tarefas t " +
@@ -192,7 +192,7 @@ export class TaskCoordinator {
     const { rows } = await this.db.query(
       "SELECT s.*, t.external_id as task_external_id, t.titulo as task_titulo, t.descricao as task_descricao, " +
       "t.max_rework AS task_max_rework, t.hard_timeout_ms AS task_hard_timeout_ms, " +
-      "pc.slug as project_slug, a.nome as agent_id, " +
+      "pc.slug as project_slug, COALESCE(a.openclaw_agent_id, a.nome) as agent_id, " +
       "pmc.repo_path, pmc.branch_trabalho, pmc.build_command, pmc.unit_test_command, pmc.unit_test_exclude, " +
       "pmc.default_max_rework, pmc.default_hard_timeout_ms " +
       "FROM projeto_640.subtarefas s " +
@@ -490,6 +490,8 @@ export class TaskCoordinator {
           const task = await this.repository.getTask(worker.taskId)
           if (task) {
             await this.saveTaskTransition(task, "execution_completed")
+            // Tarefa concluída: purgar worktrees/branches residuais (a1..aN)
+            if (worker.repoPath) this.purgeTaskArtifactsFireAndForget(worker.taskId, worker.repoPath)
           }
         } else {
           const task = await this.repository.getTask(worker.taskId)
@@ -522,6 +524,7 @@ export class TaskCoordinator {
         const task = await this.repository.getTask(worker.taskId)
         if (task) {
           await this.saveTaskTransition(task, transient ? "recover" : "fail", { errorMessage: "Analise falhou: " + failure })
+          if (!transient && worker.repoPath) this.purgeTaskArtifactsFireAndForget(worker.taskId, worker.repoPath)
         }
       } else {
         if (worker.subtaskId) {
@@ -533,6 +536,7 @@ export class TaskCoordinator {
         const task = await this.repository.getTask(worker.taskId)
         if (task) {
           await this.saveTaskTransition(task, transient ? "recover" : "fail", { errorMessage: failure.substring(0, 500) })
+          if (!transient && worker.repoPath) this.purgeTaskArtifactsFireAndForget(worker.taskId, worker.repoPath)
         }
       }
     } finally {
@@ -554,7 +558,9 @@ export class TaskCoordinator {
     }
     const task = await this.repository.getTask(worker.taskId)
     if (task) await this.saveTaskTransition(task, "pause")
-    await this.finishWorker(executionId, worker)
+    // Preservar o worktree no pause: trabalho não commitado do dev pode estar lá;
+    // limpar destruiria progresso e queimaria tokens no rework.
+    await this.finishWorker(executionId, worker, { preserveWorkspace: true })
   }
 
   async onResourceReleased(resourceKey: ResourceKey): Promise<void> {
@@ -722,7 +728,23 @@ export class TaskCoordinator {
       }
     }
     await this.saveTaskTransition(task, "cancel")
+    // Tarefa cancelada: purgar worktrees/branches residuais
+    if (task.repoPath) this.purgeTaskArtifactsFireAndForget(taskId, task.repoPath)
     await this.pump()
+  }
+
+  /**
+   * Purga worktrees/branches de tarefa terminal sem bloquear o fluxo.
+   * Acumulo de a1/a2/a3... consome disco; limpar após completion/cancel.
+   */
+  private purgeTaskArtifactsFireAndForget(taskId: string, repoPath: string): void {
+    void this.workspaceManager.purgeTaskArtifacts({ repoPath, taskId }).then((result) => {
+      if (result.worktreesRemoved > 0 || result.branchesRemoved > 0) {
+        this.logger.info(`Purga de artefatos: taskId=${taskId}, worktrees=${result.worktreesRemoved}, branches=${result.branchesRemoved}`)
+      }
+    }).catch((error: unknown) => {
+      this.logger.warn("Falha ao purgar artefatos da tarefa " + taskId + ": " + describeError(error))
+    })
   }
 
   private beginFinalization(executionId: string, worker: ActiveWorker): boolean {
@@ -780,13 +802,14 @@ export class TaskCoordinator {
     await this.onTaskFailed(executionId, reason, kind)
   }
 
-  private async finishWorker(executionId: string, worker: ActiveWorker): Promise<void> {
+  private async finishWorker(executionId: string, worker: ActiveWorker, options?: { preserveWorkspace?: boolean }): Promise<void> {
     if (worker.timeoutHandle) {
       clearTimeout(worker.timeoutHandle)
       worker.timeoutHandle = undefined
     }
+    const preserveWorkspace = options?.preserveWorkspace === true
     try {
-      if (worker.workspace && worker.repoPath) {
+      if (worker.workspace && worker.repoPath && !preserveWorkspace) {
         await this.workspaceManager.cleanup({ repoPath: worker.repoPath, workspacePath: worker.workspace.path })
         await this.db.query(
           "UPDATE projeto_640.subtarefas SET workspace_cleaned_at = NOW() WHERE id = ?",

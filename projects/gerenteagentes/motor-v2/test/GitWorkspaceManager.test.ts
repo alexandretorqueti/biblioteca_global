@@ -40,7 +40,8 @@ describe("GitWorkspaceManager", () => {
     const enoent = Object.assign(new Error("spawn git ENOENT"), { code: "ENOENT" })
     const runner: GitCommandRunner = {
       run: vi.fn().mockImplementation(async (command: readonly string[]) => {
-        if (command[1] === "status") throw enoent
+        // ENOENT ocorre no spawn do git (binário ausente) — qualquer comando falha
+        if (command[1] === "status" || command[1] === "diff") throw enoent
         return { stdout: "", stderr: "" }
       }),
     }
@@ -120,5 +121,66 @@ describe("GitWorkspaceManager", () => {
       workspacePath: "/tmp/outro-workspace",
     })).rejects.toThrow("workspace fora da raiz segura")
     expect(runner.run).not.toHaveBeenCalled()
+  })
+
+  it("purgeTaskArtifacts remove worktrees e branches residuais de tarefa finalizada", async () => {
+    const root = await mkdtemp(join(tmpdir(), "motor-v2-workspaces-"))
+    const wt1 = join(root, "task-99", "1", "a1")
+    const wt2 = join(root, "task-99", "1", "a2")
+    const wtOutro = join(root, "task-50", "2", "a1")
+    const branchesRemoved: string[] = []
+    const runner: GitCommandRunner = {
+      run: vi.fn().mockImplementation(async (command: readonly string[]) => {
+        if (command[1] === "worktree" && command[2] === "list") {
+          return {
+            stdout: [
+              `worktree /repo/principal`,
+              `HEAD abc123`,
+              ``,
+              `worktree ${wt1}`,
+              `HEAD def456`,
+              ``,
+              `worktree ${wt2}`,
+              `HEAD ghi789`,
+              ``,
+              `worktree ${wtOutro}`,
+              `HEAD jkl012`,
+              ``,
+            ].join("\n"),
+            stderr: "",
+          }
+        }
+        if (command[1] === "worktree" && command[2] === "remove") return { stdout: "", stderr: "" }
+        if (command[1] === "branch" && command[2] === "--list") {
+          return { stdout: "  motor-v2/task-99/1/a1\n  motor-v2/task-99/1/a2\n", stderr: "" }
+        }
+        if (command[1] === "branch" && command[2] === "-D") {
+          branchesRemoved.push(command[3] as string)
+          return { stdout: "", stderr: "" }
+        }
+        return { stdout: "", stderr: "" }
+      }),
+    }
+    try {
+      const { mkdir } = await import("node:fs/promises")
+      await mkdir(wt1, { recursive: true })
+      await mkdir(wt2, { recursive: true })
+      await mkdir(wtOutro, { recursive: true })
+
+      const result = await new GitWorkspaceManager({ root, runner }).purgeTaskArtifacts({
+        repoPath: "/repo/principal",
+        taskId: "task-99",
+      })
+      expect(result.worktreesRemoved).toBe(2)
+      expect(result.branchesRemoved).toBe(2)
+      expect(branchesRemoved).toContain("motor-v2/task-99/1/a1")
+      expect(branchesRemoved).toContain("motor-v2/task-99/1/a2")
+      // Worktree de outra tarefa NÃO deve ser removido
+      const calls = vi.mocked(runner.run).mock.calls
+      const removedPaths = calls.filter(([c]) => c[1] === "worktree" && c[2] === "remove").map(([c]) => c[4])
+      expect(removedPaths).not.toContain(wtOutro)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 })

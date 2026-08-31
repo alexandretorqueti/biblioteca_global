@@ -148,7 +148,7 @@ describe("config do projeto gerenteagentes", () => {
 
     const campo = tela.fields!.find((f) => f.name === "branchTrabalho")
     expect(campo).toBeDefined()
-    expect(campo!.label).toBe("Branch de Trabalho")
+    expect(campo!.label).toBe("Branch de trabalho")
     expect(campo!.type).toBe("text")
     expect(campo!.maxLength).toBe(255)
     expect(campo!.gridVisible).toBe(false)

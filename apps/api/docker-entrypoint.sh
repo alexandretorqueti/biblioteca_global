@@ -1,6 +1,17 @@
 #!/bin/sh
 set -eu
 
+# Usa o bind-mount do host (código-fonte vivo) em vez do /app da imagem Docker.
+# Sem isso, alterações no motor-v2 ou na API só entram em produção após rebuild da imagem.
+# O caminho é o mesmo usado no safe.directory abaixo e nos binds do compose.
+SOURCE_DIR="/run/media/alexandre/12T/codigofonte/biblioteca-global"
+if [ -d "$SOURCE_DIR" ]; then
+  cd "$SOURCE_DIR"
+  echo "[entrypoint] Working directory: $SOURCE_DIR (bind-mount)"
+else
+  echo "[entrypoint] Bind-mount não encontrado, usando /app (imagem Docker)"
+fi
+
 # Configura git (necessário para o motor-v2 fazer commits)
 git config --global user.email "motor-v2@globaltecnologia.local"
 git config --global user.name "Motor v2"

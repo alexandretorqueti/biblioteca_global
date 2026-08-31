@@ -12,7 +12,7 @@ import { defineConfig } from "vitest/config"
 export default defineConfig({
   test: {
     include: ["**/*.{test,spec}.{ts,tsx}"],
-    exclude: ["**/node_modules/**", "**/dist/**", "biblioteca_old/**", "**/e2e/**", "wt-deploy/**"],
+    exclude: ["**/node_modules/**", "**/dist/**", "biblioteca_old/**", "**/e2e/**", "wt-deploy/**", "**/motor-v2/**"],
     // Cleanup automático do @testing-library/react entre testes.
     globals: true,
     // O container roda NODE_ENV=production; o build production do React

@@ -97,14 +97,19 @@ export class GitWorkspaceManager {
     // em loop de retries no coordenador. Classificar como bloqueio ambiental.
     // Untracked files não afetam worktree/merge e não podem travar o motor
     // enquanto outra sessão mantém arquivos novos no repositório.
-    const status = await this.runner.run(["git", "status", "--porcelain", "--untracked-files=no"], input.repoPath).catch((error: unknown) => {
+    // Verifica se o repo tem alterações reais (ignora whitespace-at-eol para
+    // não bloquear por artefatos de db:migrate em _journal.json — só newline no fim).
+    const diff = await this.runner.run(["git", "diff", "--name-only", "--ignore-space-at-eol", "HEAD"], input.repoPath).catch((error: unknown) => {
       const code = (error as NodeJS.ErrnoException | undefined)?.code
       if (code === "ENOENT") {
         throw new Error("Ambiente bloqueado: repositório não encontrado: " + input.repoPath)
       }
       throw error
     })
-    if (status.stdout.trim()) throw new Error("repositório principal não está limpo")
+    // staged files also need checking (git diff HEAD misses index-only changes if working tree matches index)
+    const staged = await this.runner.run(["git", "diff", "--name-only", "--cached", "--ignore-space-at-eol"], input.repoPath)
+    const dirtyFiles = [...new Set([...diff.stdout.split("\n"), ...staged.stdout.split("\n")].map((s) => s.trim()).filter(Boolean))]
+    if (dirtyFiles.length > 0) throw new Error("repositório principal não está limpo: " + dirtyFiles.join(", "))
     const baseCommit = (await this.runner.run(["git", "rev-parse", "--verify", `${baseBranch}^{commit}`], input.repoPath)).stdout.trim()
     if (!/^[a-f0-9]{7,}$/i.test(baseCommit)) throw new Error("commit-base inválido")
 
@@ -147,8 +152,9 @@ export class GitWorkspaceManager {
     const workBranch = safeBranch(input.workBranch)
     // Untracked files não conflitam com merge; não podem travar a integração
     // enquanto outra sessão mantém arquivos novos no repositório.
-    const status = await this.runner.run(["git", "status", "--porcelain", "--untracked-files=no"], input.repoPath)
-    if (status.stdout.trim()) throw new Error("repositório principal não está limpo para integração")
+    // Ignora whitespace-at-eol (artefato de db:migrate em _journal.json).
+    const diffIntegrate = await this.runner.run(["git", "diff", "--name-only", "--ignore-space-at-eol", "HEAD"], input.repoPath)
+    if (diffIntegrate.stdout.trim()) throw new Error("repositório principal não está limpo para integração: " + diffIntegrate.stdout.trim())
 
     const workCommit = (await this.runner.run(["git", "rev-parse", "--verify", `${workBranch}^{commit}`], input.repoPath)).stdout.trim()
     if (!validCommit(workCommit) || workCommit.toLowerCase() !== input.expectedCommit.toLowerCase()) {
@@ -181,6 +187,61 @@ export class GitWorkspaceManager {
     if (!inside(this.root, workspacePath)) throw new Error("workspace fora da raiz segura")
     await this.runner.run(["git", "worktree", "remove", "--force", workspacePath], input.repoPath)
     await rm(workspacePath, { recursive: true, force: true })
+  }
+
+  /**
+   * Limpa TODOS os worktrees e branches residuais de uma tarefa finalizada.
+   * Tarefas com múltiplas tentativas acumulam worktrees (a1, a2, a3...) que
+   * ocupam disco. Após completion/failure/cancel, varre e remove tudo.
+   */
+  async purgeTaskArtifacts(input: { repoPath: string; taskId: string }): Promise<{ worktreesRemoved: number; branchesRemoved: number }> {
+    if (!isAbsolute(input.repoPath)) throw new Error("repoPath inválido para purge")
+    const taskId = safeSegment(input.taskId, "taskId")
+    let worktreesRemoved = 0
+    let branchesRemoved = 0
+
+    // Listar worktrees do repositório e filtrar os que pertencem à tarefa
+    const worktreeList = await this.runner.run(["git", "worktree", "list", "--porcelain"], input.repoPath).catch(() => ({ stdout: "", stderr: "" }))
+    const worktreePaths: string[] = []
+    for (const line of worktreeList.stdout.split("\n")) {
+      if (line.startsWith("worktree ")) {
+        const wtPath = line.slice("worktree ".length).trim()
+        // Worktrees do motor seguem padrão: <root>/<taskId>/<subtaskId>/a<N>
+        if (wtPath.includes(`/${taskId}/`) && inside(this.root, resolve(wtPath))) {
+          worktreePaths.push(wtPath)
+        }
+      }
+    }
+
+    for (const wtPath of worktreePaths) {
+      try {
+        await this.runner.run(["git", "worktree", "remove", "--force", wtPath], input.repoPath)
+        await rm(wtPath, { recursive: true, force: true })
+        worktreesRemoved++
+      } catch {
+        // Se worktree já foi removido manualmente, apenas ignore
+        await rm(wtPath, { recursive: true, force: true }).catch(() => {})
+      }
+    }
+
+    // Listar branches do motor-v2 para esta tarefa e removê-las
+    const branchList = await this.runner.run(["git", "branch", "--list", `motor-v2/${taskId}/*`], input.repoPath).catch(() => ({ stdout: "", stderr: "" }))
+    for (const line of branchList.stdout.split("\n")) {
+      const branch = line.replace(/^[*\s]+/, "").trim()
+      if (!branch) continue
+      try {
+        await this.runner.run(["git", "branch", "-D", branch], input.repoPath)
+        branchesRemoved++
+      } catch {
+        // Branch pode já ter sido deletada; ignorar
+      }
+    }
+
+    // Limpar diretórios vazios da tarefa
+    const taskDir = resolve(join(this.root, taskId))
+    await rm(taskDir, { recursive: true, force: true }).catch(() => {})
+
+    return { worktreesRemoved, branchesRemoved }
   }
 
   private async markSafeDirectory(path: string): Promise<void> {
