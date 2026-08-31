@@ -27,6 +27,7 @@ import {
   BASELINE_FINGERPRINT_PREFIX,
   baselineCorrectionScope,
   isBaselineCorrection,
+  withBaselineExcludes,
 } from "../policies/BaselinePolicy.js"
 import { hasPersistedPlan, persistPlan } from "../planning/PlanPersistence.js"
 import type { Db, QueryResult } from "../shared/types/infrastructure.js"
@@ -422,10 +423,11 @@ class TaskWorker {
     if (Number(rows[0]?.total ?? 0) > 0) return "ok"
 
     this.send({ type: "progress", executionId: input.context.executionId, phase: "execute", message: "Baseline: validando suíte na branch-base" })
-    this.log("info", "Baseline: rodando build + suíte completa na branch-base antes da primeira subtarefa")
+    const baselineTestCommand = withBaselineExcludes(input.testCommand)
+    this.log("info", "Baseline: rodando build + suíte na branch-base antes da primeira subtarefa: " + baselineTestCommand)
     try {
       this.exec(input.buildCommand, input.repoPath, 300_000)
-      this.exec(input.testCommand, input.repoPath, 300_000)
+      this.exec(baselineTestCommand, input.repoPath, 300_000)
     } catch (error) {
       const reason = (error instanceof Error ? error.message : String(error)).substring(0, 2000)
       await this.createBaselineCorrection(subtask, reason)
@@ -438,7 +440,9 @@ class TaskWorker {
   /** Cria a subtarefa de correção de baseline na posição da subtarefa original. */
   private async createBaselineCorrection(subtask: SubtaskInfo, reason: string): Promise<void> {
     if (!this.db) throw new Error("DB não conectado para criar correção de baseline")
-    const fingerprint = BASELINE_FINGERPRINT_PREFIX + failureFingerprint(reason)
+    // A coluna correction_fingerprint é varchar(500). O prefixo + o fingerprint
+    // normalizado precisam caber juntos — senão o INSERT falha com "Data too long".
+    const fingerprint = (BASELINE_FINGERPRINT_PREFIX + failureFingerprint(reason)).slice(0, 500)
     // Abre espaço na posição exata da subtarefa atual (seq -> seq+1 para >= seq).
     await this.db.query("UPDATE projeto_640.subtarefas SET seq = seq + 10000 WHERE tarefa_id = (SELECT tarefa_id FROM (SELECT tarefa_id FROM projeto_640.subtarefas WHERE id = ?) AS source) AND seq >= ?", [subtask.id, subtask.seq])
     await this.db.query("UPDATE projeto_640.subtarefas SET seq = seq - 9999 WHERE tarefa_id = (SELECT tarefa_id FROM (SELECT tarefa_id FROM projeto_640.subtarefas WHERE id = ?) AS source) AND seq >= ?", [subtask.id, subtask.seq + 10000])

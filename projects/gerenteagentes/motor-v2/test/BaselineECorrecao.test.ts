@@ -15,7 +15,7 @@ import { ResourceLeaseService } from '../src/resources/ResourceLeaseService.js'
 import { TaskCoordinator } from '../src/coordinator/TaskCoordinator.js'
 import { TaskWorker } from '../src/workers/TaskWorker.js'
 import type { SubtaskInfo, WorkerInput } from '../src/shared/types/execution.js'
-import { BASELINE_CORRECTION_TITLE, BASELINE_FINGERPRINT_PREFIX } from '../src/policies/BaselinePolicy.js'
+import { BASELINE_CORRECTION_TITLE, BASELINE_FINGERPRINT_PREFIX, withBaselineExcludes } from '../src/policies/BaselinePolicy.js'
 
 function workerWithRawDb(query: ReturnType<typeof vi.fn>): TaskWorker {
   const worker = new TaskWorker()
@@ -33,6 +33,14 @@ function createMockDb(): Db {
     transaction: vi.fn().mockImplementation(async (fn: (db: Db) => Promise<unknown>) => fn(null as never)),
   }
 }
+
+describe('exclusões do baseline', () => {
+  it('withBaselineExcludes anexa exclusões em comandos vitest e preserva os demais', () => {
+    expect(withBaselineExcludes('npm run test')).toBe('npm run test --exclude "**/*.functional.spec.ts"')
+    expect(withBaselineExcludes('npx vitest run')).toBe('npx vitest run --exclude "**/*.functional.spec.ts"')
+    expect(withBaselineExcludes('make test')).toBe('make test')
+  })
+})
 
 describe('correção de gate herdando escopo original (B1)', () => {
   it('INSERT da correção concatena motivo do gate + escopo original via SQL', async () => {
@@ -110,7 +118,31 @@ describe('baseline antes da primeira subtarefa (B4)', () => {
     expect(String(params?.[2])).toContain('suite vermelha')
     expect(String(params?.[2])).toContain('Escopo original completo')
     expect(String(params?.[4])).toMatch(new RegExp('^' + BASELINE_FINGERPRINT_PREFIX))
+    expect(String(params?.[4]).length).toBeLessThanOrEqual(500) // coluna varchar(500)
     expect(params?.[5]).toBe(750) // correction_for_subtask_id = original
+  })
+
+  it('fingerprint com motivo gigante não estoura o varchar(500)', async () => {
+    const query = vi.fn()
+      .mockResolvedValueOnce([[{ total: 0 }]])
+      .mockResolvedValueOnce([{ affectedRows: 1 }])
+      .mockResolvedValueOnce([{ affectedRows: 1 }])
+      .mockResolvedValueOnce([{ affectedRows: 1 }])
+      .mockResolvedValueOnce([{ affectedRows: 1 }])
+    const worker = workerWithRawDb(query)
+    const exec = vi.fn().mockImplementation((command: string) => {
+      if (command.includes('test')) throw new Error('Testes falharam: ' + 'x'.repeat(2000))
+      return ''
+    })
+    ;(worker as unknown as { exec: unknown }).exec = exec
+
+    const fn = callPrivate<(input: WorkerInput, subtask: SubtaskInfo) => Promise<string>>(worker, 'runBaselineCheck')
+    await fn.call(worker, makeInput(), { id: 750, seq: 1, titulo: 'x', scope: 's', deliverCount: 0 })
+
+    const insert = query.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO projeto_640.subtarefas'))
+    const fp = String((insert?.[1] as unknown[])?.[4])
+    expect(fp.startsWith(BASELINE_FINGERPRINT_PREFIX)).toBe(true)
+    expect(fp.length).toBeLessThanOrEqual(500)
   })
 
   it('suíte verde → segue sem criar correção', async () => {
