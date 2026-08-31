@@ -1,0 +1,17 @@
+{
+  "name": "@biblioteca-global/schema-tools",
+  "version": "0.0.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "Fonte única do schema: annotations @form, gerador de fields/config e Zod derivado do Drizzle (PoC §7.2)",
+  "main": "src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.2",
+    "zod": "^4.0.0",
+    "@biblioteca-global/shared": "*"
+  }
+}

@@ -1,0 +1,8 @@
+node_modules
+**/node_modules
+**/dist
+.git
+.env
+biblioteca_old
+coverage
+tmp_test.txt

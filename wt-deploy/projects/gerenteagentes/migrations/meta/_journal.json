@@ -1,0 +1,118 @@
+{
+  "version": "7",
+  "dialect": "mysql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "5",
+      "when": 1787064681606,
+      "tag": "0000_mysterious_phil_sheldon",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1787068659940,
+      "tag": "0002_oval_iron_fist",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1787218829318,
+      "tag": "0002_brief_sue_storm",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1787240425138,
+      "tag": "0003_ambiguous_true_believers",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "5",
+      "when": 1787266752005,
+      "tag": "0004_openclaw_agent_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "5",
+      "when": 1787272186886,
+      "tag": "0005_right_felicia_hardy",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "5",
+      "when": 1787576340000,
+      "tag": "0006_warm_natasha_romanoff",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "5",
+      "when": 1787678128920,
+      "tag": "0007_luxuriant_mesmero",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "5",
+      "when": 1787757650772,
+      "tag": "0008_lowly_puck",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "5",
+      "when": 1787817600000,
+      "tag": "0009_motor_model_chain",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "5",
+      "when": 1787817600001,
+      "tag": "0010_motor_execution_config",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "5",
+      "when": 1787817600002,
+      "tag": "0011_motor_workspace_metadata",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "5",
+      "when": 1787817600003,
+      "tag": "0012_motor_correction_subtasks",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "5",
+      "when": 1787817600004,
+      "tag": "0013_motor_resource_queue",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "5",
+      "when": 1788027895569,
+      "tag": "0014_parallel_trauma",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "5",
+      "when": 1788120815596,
+      "tag": "0015_natural_ted_forrester",
+      "breakpoints": true
+    }
+  ]
+}

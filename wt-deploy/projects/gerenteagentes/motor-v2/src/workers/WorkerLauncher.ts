@@ -1,0 +1,182 @@
+/**
+ * WorkerLauncher - Gerenciador de workers usando child_process
+ */
+
+import { fork, type ChildProcess } from 'node:child_process'
+import { EventEmitter } from 'node:events'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import type { WorkerInput } from '../shared/types/execution.js'
+import type { WorkerToCoordinatorMessage } from './WorkerProtocol.js'
+import { createLogger } from '../shared/logger.js'
+
+export type WorkerEvent = WorkerToCoordinatorMessage
+
+export class WorkerLauncher extends EventEmitter {
+  private logger = createLogger('WorkerLauncher')
+  private workers = new Map<string, ChildProcess>()
+  private workerScript: string
+
+  constructor(workerScript?: string) {
+    super()
+    const __filename = fileURLToPath(import.meta.url)
+    const __dirname = dirname(__filename)
+    this.workerScript = workerScript ?? join(__dirname, 'TaskWorker.js')
+  }
+
+  /**
+   * Spawna um novo worker para executar uma tarefa
+   */
+  async spawn(input: WorkerInput): Promise<string> {
+    const { executionId } = input.context
+
+    if (this.workers.has(executionId)) {
+      throw new Error(`Worker para execução ${executionId} já existe`)
+    }
+
+    const worker = fork(this.workerScript, [], {
+      env: {
+        ...process.env,
+        EXECUTION_ID: executionId,
+      },
+      stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
+    })
+
+    this.workers.set(executionId, worker)
+
+    // Captura stdout/stderr do worker para debug
+    worker.stdout?.on('data', (d: Buffer) => {
+      const text = d.toString().trim()
+      if (text) this.logger.info(text, { executionId })
+    })
+    worker.stderr?.on('data', (d: Buffer) => {
+      const text = d.toString().trim()
+      if (text) this.logger.error(text, { executionId })
+    })
+
+    worker.on('message', (msg: unknown) => {
+      this.handleWorkerMessage(executionId, msg)
+    })
+
+    worker.on('error', (error: Error) => {
+      this.emit('worker_error', { executionId, error })
+      this.cleanupWorker(executionId)
+    })
+
+    worker.on('exit', (code: number | null, signal: string | null) => {
+      this.logger.info('Worker ' + executionId + ' exited code=' + code + ' signal=' + signal, { executionId })
+      this.emit('worker_exit', { executionId, code, signal })
+      this.cleanupWorker(executionId)
+    })
+
+    // Aguarda mensagem 'ready'
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error(`Worker ${executionId} não ficou pronto em 30s`))
+        this.killWorker(executionId)
+      }, 30000)
+
+      worker.once('message', (msg: unknown) => {
+        if (this.isReadyMessage(msg)) {
+          clearTimeout(timeout)
+          worker.send({ type: 'start', input })
+          resolve()
+        } else {
+          clearTimeout(timeout)
+          reject(new Error(`Mensagem inesperada: ${JSON.stringify(msg)}`))
+          this.killWorker(executionId)
+        }
+      })
+    })
+
+    return executionId
+  }
+
+  cancel(executionId: string, reason: string): void {
+    const worker = this.workers.get(executionId)
+    if (worker?.connected) {
+      worker.send({ type: 'cancel', reason })
+    }
+  }
+
+  async shutdownAll(timeoutMs = 10_000): Promise<void> {
+    const pending: Promise<void>[] = []
+    for (const [, worker] of this.workers) {
+      if (worker.connected) {
+        worker.send({ type: 'shutdown' })
+      }
+    }
+    for (const [executionId, worker] of this.workers) {
+      pending.push(new Promise((resolve) => {
+        const timeout = setTimeout(() => {
+          worker.kill('SIGKILL')
+          this.cleanupWorker(executionId)
+          resolve()
+        }, timeoutMs)
+        worker.once('exit', () => {
+          clearTimeout(timeout)
+          resolve()
+        })
+      }))
+    }
+    await Promise.all(pending)
+  }
+
+  killWorker(executionId: string): void {
+    const worker = this.workers.get(executionId)
+    if (worker) {
+      worker.kill('SIGKILL')
+      this.cleanupWorker(executionId)
+    }
+  }
+
+  async stopWorker(executionId: string, timeoutMs = 10_000): Promise<void> {
+    const worker = this.workers.get(executionId)
+    if (!worker) return
+    if (worker.connected) worker.send({ type: 'shutdown' })
+    await new Promise<void>((resolve) => {
+      const timeout = setTimeout(() => {
+        worker.kill('SIGKILL')
+        this.cleanupWorker(executionId)
+        resolve()
+      }, timeoutMs)
+      worker.once('exit', () => {
+        clearTimeout(timeout)
+        resolve()
+      })
+    })
+  }
+
+  getActiveCount(): number {
+    return this.workers.size
+  }
+
+  getActiveExecutions(): string[] {
+    return Array.from(this.workers.keys())
+  }
+
+  isActive(executionId: string): boolean {
+    return this.workers.has(executionId)
+  }
+
+  private handleWorkerMessage(executionId: string, msg: unknown): void {
+    if (!this.isWorkerMessage(msg)) {
+      this.logger.warn(`Mensagem inválida de ${executionId}: ${JSON.stringify(msg)}`, { executionId })
+      return
+    }
+    this.emit(msg.type, msg)
+    this.emit('message', msg)
+  }
+
+  private cleanupWorker(executionId: string): void {
+    this.workers.delete(executionId)
+  }
+
+  private isReadyMessage(msg: unknown): msg is { type: 'ready' } {
+    return typeof msg === 'object' && msg !== null && (msg as { type: string }).type === 'ready'
+  }
+
+  private isWorkerMessage(msg: unknown): msg is WorkerToCoordinatorMessage {
+    return typeof msg === 'object' && msg !== null && 'type' in msg
+  }
+}

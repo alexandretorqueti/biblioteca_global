@@ -1,0 +1,293 @@
+/* IsaChat.css - Estilos da sidebar com glassmorphism (estilo legado) */
+
+/* Layout de duas colunas */
+.isa-layout {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 20px;
+  height: calc(100vh - 160px);
+  min-height: 480px;
+}
+
+.isa-layout.isa-authed {
+  max-width: 1180px;
+  width: 100%;
+}
+
+.isa-chat-container {
+  flex: 1;
+  max-width: 860px;
+  height: 100%;
+}
+
+/* Sidebar com glassmorphism */
+.isa-side {
+  flex: 0 0 300px;
+  height: 100%;
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 20px;
+  padding: 20px;
+  overflow-y: auto;
+  backdrop-filter: blur(12px);
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.isa-side-title {
+  font-size: 13px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #93c5fd;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.isa-side-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.isa-side-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #93c5fd;
+}
+
+.isa-side-value {
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+  word-break: break-word;
+}
+
+.isa-side-value.isa-placeholder {
+  color: rgba(255, 255, 255, 0.45);
+  font-weight: 400;
+}
+
+/* Perfil do cliente */
+.isa-side-profile {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.isa-side-grow {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Avatar com upload */
+.isa-avatar-btn {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  background: linear-gradient(135deg, #2563eb, #7c3aed);
+  color: #fff;
+  font-weight: 800;
+  font-size: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  overflow: hidden;
+  transition: transform 0.15s ease;
+}
+
+.isa-avatar-btn:hover {
+  transform: scale(1.05);
+}
+
+.isa-avatar-btn img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.isa-avatar-cam {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Nome editável */
+.isa-side-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  border-radius: 6px;
+  padding: 2px 4px;
+}
+
+.isa-side-name:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.isa-edit-pencil {
+  font-size: 12px;
+  opacity: 0.6;
+}
+
+.isa-mail-note {
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, 0.4);
+  font-style: italic;
+}
+
+/* Edição inline do nome */
+.isa-name-edit {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.isa-name-edit input {
+  flex: 1;
+  min-width: 0;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  color: #fff;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 13px;
+  outline: none;
+}
+
+.isa-name-edit input:focus {
+  border-color: #93c5fd;
+}
+
+.isa-mini-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+  font-size: 12px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.isa-mini-btn-ok {
+  background: #16a34a;
+}
+
+/* Botão sair */
+.isa-logout-mini {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.isa-logout-mini:hover {
+  color: #fca5a5;
+  border-color: #fca5a5;
+  background: rgba(220, 38, 38, 0.15);
+}
+
+/* Definições do projeto */
+.isa-side-summary-block {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.isa-side-definitions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.isa-side-definition {
+  position: relative;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #e2e8f0;
+  background: rgba(255, 255, 255, 0.04);
+  border-left: 3px solid #34d399;
+  border-radius: 6px;
+  padding: 7px 10px;
+  word-break: break-word;
+}
+
+/* Badge de status */
+.isa-side-status {
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.isa-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #ecfdf5;
+  color: #16a34a;
+  border: 1px solid #bbf7d0;
+}
+
+.isa-badge-onboarding {
+  background: #fffbeb;
+  color: #d97706;
+  border-color: #fde68a;
+}
+
+/* Responsivo */
+@media (max-width: 900px) {
+  .isa-layout.isa-authed {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .isa-chat-container {
+    max-width: 100%;
+  }
+
+  .isa-side {
+    flex: 1 1 auto;
+    width: 100%;
+    max-width: 100%;
+    height: auto;
+    max-height: 40vh;
+    order: -1;
+  }
+}
