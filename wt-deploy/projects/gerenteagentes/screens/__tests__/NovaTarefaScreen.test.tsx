@@ -23,7 +23,7 @@
  *   (`postResult`).
  */
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest"
-import { render, screen, waitFor } from "@testing-library/react"
+import { act, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import "@testing-library/jest-dom/vitest"
 import { BibliotecaThemeProvider, clearCustomScreens } from "@biblioteca-global/ui"
@@ -141,12 +141,22 @@ describe("NovaTarefaScreen", () => {
     clearCustomScreens()
   })
 
-  it("renderiza formulário com campos vazios e botão desabilitado", () => {
-    render(
-      <BibliotecaThemeProvider>
-        <NovaTarefaScreen />
-      </BibliotecaThemeProvider>,
-    )
+  it("renderiza formulário com campos vazios e botão desabilitado", async () => {
+    await act(async () => {
+      render(
+        <BibliotecaThemeProvider>
+          <NovaTarefaScreen />
+        </BibliotecaThemeProvider>,
+      )
+    })
+
+    // Aguarda o useEffect/carregarOpcoes resolver para evitar act() warning.
+    await waitFor(() => {
+      expect(mockFetch).toHaveBeenCalledWith(
+        "/api/projetos_captados",
+        expect.any(Object),
+      )
+    })
 
     expect(screen.getByTestId("nova-tarefa-screen")).toBeInTheDocument()
     expect(screen.getByTestId("input-projeto-id")).toBeInTheDocument()
@@ -156,11 +166,13 @@ describe("NovaTarefaScreen", () => {
   })
 
   it("exibe botão enviar desabilitado enquanto falta campo obrigatório", async () => {
-    render(
-      <BibliotecaThemeProvider>
-        <NovaTarefaScreen />
-      </BibliotecaThemeProvider>,
-    )
+    await act(async () => {
+      render(
+        <BibliotecaThemeProvider>
+          <NovaTarefaScreen />
+        </BibliotecaThemeProvider>,
+      )
+    })
 
     await preencherCampos(user, { projetoId: "640" })
     expect(screen.getByTestId("btn-enviar")).toBeDisabled() // título ainda vazio
@@ -172,11 +184,13 @@ describe("NovaTarefaScreen", () => {
   it("envia POST para /api/tarefas ao criar e exibe sucesso", async () => {
     postResult = { ok: true, status: 200, body: { id: 42, status: "draft" } }
 
-    render(
-      <BibliotecaThemeProvider>
-        <NovaTarefaScreen />
-      </BibliotecaThemeProvider>,
-    )
+    await act(async () => {
+      render(
+        <BibliotecaThemeProvider>
+          <NovaTarefaScreen />
+        </BibliotecaThemeProvider>,
+      )
+    })
 
     await preencherCampos(user, {
       projetoId: "640",
@@ -214,11 +228,13 @@ describe("NovaTarefaScreen", () => {
   it("exibe erro quando o endpoint interno retorna 404", async () => {
     postResult = { ok: false, status: 404, body: { message: "Endpoint não encontrado" } }
 
-    render(
-      <BibliotecaThemeProvider>
-        <NovaTarefaScreen />
-      </BibliotecaThemeProvider>,
-    )
+    await act(async () => {
+      render(
+        <BibliotecaThemeProvider>
+          <NovaTarefaScreen />
+        </BibliotecaThemeProvider>,
+      )
+    })
 
     await preencherCampos(user, { projetoId: "640", titulo: "Tarefa de teste" })
     await clicarEnviar(user)
@@ -232,11 +248,13 @@ describe("NovaTarefaScreen", () => {
   it("exibe erro genérico para outros códigos HTTP", async () => {
     postResult = { ok: false, status: 500, body: { message: "Erro interno" } }
 
-    render(
-      <BibliotecaThemeProvider>
-        <NovaTarefaScreen />
-      </BibliotecaThemeProvider>,
-    )
+    await act(async () => {
+      render(
+        <BibliotecaThemeProvider>
+          <NovaTarefaScreen />
+        </BibliotecaThemeProvider>,
+      )
+    })
 
     await preencherCampos(user, { projetoId: "640", titulo: "Tarefa de erro" })
     await clicarEnviar(user)
@@ -248,11 +266,13 @@ describe("NovaTarefaScreen", () => {
   })
 
   it("habilita o botão quando projeto e título estão preenchidos", async () => {
-    render(
-      <BibliotecaThemeProvider>
-        <NovaTarefaScreen />
-      </BibliotecaThemeProvider>,
-    )
+    await act(async () => {
+      render(
+        <BibliotecaThemeProvider>
+          <NovaTarefaScreen />
+        </BibliotecaThemeProvider>,
+      )
+    })
 
     await preencherCampos(user, { projetoId: "640", titulo: "Alguma tarefa" })
     expect(screen.getByTestId("btn-enviar")).toBeEnabled()
@@ -268,11 +288,13 @@ describe("NovaTarefaScreen", () => {
   it("limpa o formulário após sucesso", async () => {
     postResult = { ok: true, status: 200, body: { id: 99 } }
 
-    render(
-      <BibliotecaThemeProvider>
-        <NovaTarefaScreen />
-      </BibliotecaThemeProvider>,
-    )
+    await act(async () => {
+      render(
+        <BibliotecaThemeProvider>
+          <NovaTarefaScreen />
+        </BibliotecaThemeProvider>,
+      )
+    })
 
     await preencherCampos(user, { projetoId: "640", titulo: "Tarefa para limpar", descricao: "Desc" })
     await clicarEnviar(user)
@@ -291,11 +313,13 @@ describe("NovaTarefaScreen", () => {
     // Opções carregam; o POST nunca resolve — o componente fica em "enviando"
     postResult = "pending"
 
-    render(
-      <BibliotecaThemeProvider>
-        <NovaTarefaScreen />
-      </BibliotecaThemeProvider>,
-    )
+    await act(async () => {
+      render(
+        <BibliotecaThemeProvider>
+          <NovaTarefaScreen />
+        </BibliotecaThemeProvider>,
+      )
+    })
 
     await preencherCampos(user, { projetoId: "640", titulo: "Tarefa longa" })
 
