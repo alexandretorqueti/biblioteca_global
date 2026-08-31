@@ -291,3 +291,69 @@
     order: -1;
   }
 }
+
+/* Mobile: topo e rodapé fininhos, fontes menores */
+@media (max-width: 600px) {
+  /* Header: reduzir padding para ~25% do original (16px → 4px) */
+  .isa-chat-container .MuiStack-root:first-of-type {
+    padding: 4px 8px !important;
+  }
+
+  /* Header: nome do agente menor */
+  .isa-chat-container .MuiStack-root:first-of-type .MuiTypography-subtitle1 {
+    font-size: 0.85rem !important;
+  }
+
+  /* Header: domínio menor */
+  .isa-chat-container .MuiStack-root:first-of-type .MuiTypography-caption {
+    font-size: 0.65rem !important;
+  }
+
+  /* Footer: reduzir padding */
+  .isa-chat-container form.MuiBox-root {
+    padding: 4px 8px !important;
+  }
+
+  /* Footer: input menor */
+  .isa-chat-container form .MuiInputBase-root {
+    font-size: 0.8rem !important;
+  }
+
+  /* Mensagens: fonte menor */
+  .isa-chat-container .MuiTypography-body2 {
+    font-size: 0.8rem !important;
+  }
+
+  /* Timestamp das mensagens */
+  .isa-chat-container .MuiTypography-caption {
+    font-size: 0.6rem !important;
+  }
+
+  /* Avatar do header menor */
+  .isa-chat-container .MuiStack-root:first-of-type .MuiAvatar-root {
+    width: 28px !important;
+    height: 28px !important;
+    font-size: 0.85rem !important;
+  }
+
+  /* Botão "Nova conversa" menor */
+  .isa-chat-container .MuiStack-root:first-of-type .MuiButton-root {
+    font-size: 0.7rem !important;
+    padding: 2px 8px !important;
+  }
+
+  /* Ícones do footer menores */
+  .isa-chat-container form .MuiIconButton-root {
+    padding: 4px !important;
+  }
+
+  .isa-chat-container form .MuiIconButton-root svg {
+    font-size: 1.1rem !important;
+  }
+
+  /* Chips de anexo menores */
+  .isa-chat-container form .MuiChip-root {
+    font-size: 0.65rem !important;
+    height: 20px !important;
+  }
+}
