@@ -676,7 +676,10 @@ export class IsaChatService {
       expiresAt,
     })
 
-    await db.update(chats).set({ pendingEmail: email.toLowerCase() }).where(eq(chats.id, chat.id))
+    await db.update(chats).set({ 
+      pendingEmail: email.toLowerCase(),
+      status: "aguardando_codigo"
+    }).where(eq(chats.id, chat.id))
 
     // Envia email com código de verificação
     const sent = await this.sendVerificationEmail(email.toLowerCase(), code)
