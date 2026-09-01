@@ -17,6 +17,7 @@ export type WorkerToCoordinatorMessage =
   | { type: 'progress'; executionId: string; phase: ExecutionPhase; message: string }
   | { type: 'waiting_resource'; executionId: string; resourceKey: string; waitId: number; position: number }
   | { type: 'completed'; executionId: string; result: ExecutionResult }
+  | { type: 'clarifying'; executionId: string; questionCount: number; summary?: string }
   | { type: 'failed'; executionId: string; error: string }
   | { type: 'heartbeat'; executionId: string; cpuUsage?: number; memUsage?: number }
   | { type: 'model_unavailable'; executionId: string; model: string; message: string }

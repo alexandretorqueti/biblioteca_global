@@ -73,6 +73,8 @@ export class MotorAPI {
         this.handleResumeTask(res, taskId)
       } else if (req.method === 'POST' && taskId && taskAction === 'cancel') {
         this.handleCancelTask(res, taskId)
+      } else if (req.method === 'POST' && taskId && taskAction === 'clarification') {
+        this.handleClarification(req, res, taskId)
       } else {
         this.json(res, 404, { ok: false, error: 'Not found' })
       }
@@ -124,6 +126,41 @@ export class MotorAPI {
     } catch (error) {
       this.json(res, 400, { ok: false, error: error instanceof Error ? error.message : 'Cancel failed' })
     }
+  }
+
+  /**
+   * Resposta de clarificação: grava no chat da tarefa e devolve a tarefa
+   * para análise. Body: { texto: string, jaPersistida?: boolean } —
+   * `jaPersistida=true` quando o chamador (ex.: chat da biblioteca) já gravou
+   * a mensagem e quer apenas retomar a análise.
+   */
+  private handleClarification(req: IncomingMessage, res: ServerResponse, taskId: string): void {
+    this.readBody(req)
+      .then((body) => {
+        const texto = typeof body?.texto === 'string' ? body.texto : ''
+        const jaPersistida = body?.jaPersistida === true
+        return this.coordinator.answerClarification(taskId, texto, { jaPersistida })
+      })
+      .then(() => this.json(res, 200, { ok: true }))
+      .catch((error) => {
+        this.json(res, 400, { ok: false, error: error instanceof Error ? error.message : 'Clarification failed' })
+      })
+  }
+
+  private readBody(req: IncomingMessage): Promise<Record<string, unknown> | null> {
+    return new Promise((resolve, reject) => {
+      let data = ''
+      req.on('data', (chunk) => { data += chunk })
+      req.on('end', () => {
+        if (!data.trim()) { resolve(null); return }
+        try {
+          resolve(JSON.parse(data) as Record<string, unknown>)
+        } catch (error) {
+          reject(new Error('Body JSON inválido'))
+        }
+      })
+      req.on('error', reject)
+    })
   }
 
   private json(res: ServerResponse, status: number, data: unknown): void {

@@ -224,6 +224,31 @@ export class GerenteAgentesService {
   // AÇÕES DE TAREFA
   // ============================================================================
 
+  /**
+   * Notifica o motor-v2 de que a resposta de clarificação chegou (a mensagem
+   * já foi gravada no chat da tarefa aqui). O motor devolve a tarefa para
+   * `planned` e reexecuta a análise com o histórico de perguntas/respostas.
+   * Com MOTOR_VERSION v1 o fluxo de clarificação não existe — ignora.
+   */
+  private async encaminharRespostaClarificacao(
+    tarefa: { id: number; externalId?: string | null },
+    texto: string,
+  ): Promise<void> {
+    if (this.motorVersao !== 'v2') return;
+    const motorId = tarefa.externalId || String(tarefa.id);
+    const resp = await this.motorRequest(
+      'POST',
+      `/api/motor/task/${encodeURIComponent(motorId)}/clarification`,
+      { texto, jaPersistida: true },
+      this.motorV2Url,
+    );
+    if (!resp.ok) {
+      throw new BadRequestException(
+        `Mensagem salva, mas o motor não retomou a análise (${resp.status}): ${resp.body.slice(0, 200)}`,
+      );
+    }
+  }
+
   async iniciarTarefa(projeto: ProjetoResumo, tarefaId: number) {
     const db = await this.dbDoMotor();
     const [tarefa] = await db
@@ -404,6 +429,13 @@ export class GerenteAgentesService {
       throw new BadRequestException('Falha ao criar mensagem');
     }
 
+    // Clarificação interativa: se a tarefa está aguardando esclarecimento e a
+    // mensagem é uma resposta (role user), notifica o motor para gravar a
+    // retomada da análise com o histórico. A mensagem já foi persistida aqui.
+    if (role === 'user' && tarefa.status === 'awaiting_clarification') {
+      await this.encaminharRespostaClarificacao(tarefa, texto);
+    }
+
     return { id: mensagem.id, tarefaId, role, texto, createdAt: new Date() };
   }
 
@@ -467,7 +499,86 @@ export class GerenteAgentesService {
       throw new BadRequestException('Falha ao criar mensagem');
     }
 
+    // Clarificação interativa por projeto: resposta do dono/agente devolve a
+    // geração mais recente para `pending`, de onde o fluxo de geração retoma.
+    if (role === 'user') {
+      const [geracao] = await db
+        .select()
+        .from(geracoesProjeto)
+        .where(eq(geracoesProjeto.projetoId, projetoCaptadoId))
+        .orderBy(desc(geracoesProjeto.createdAt))
+        .limit(1);
+      if (geracao && geracao.status === 'awaiting_clarification') {
+        await db
+          .update(geracoesProjeto)
+          .set({ status: 'pending', updatedAt: new Date() })
+          .where(eq(geracoesProjeto.id, geracao.id));
+      }
+    }
+
     return { id: mensagem.id, projetoId: projetoCaptadoId, role, texto, createdAt: new Date() };
+  }
+
+  /**
+   * Clarificação interativa por projeto: registra as perguntas do analista no
+   * chat do projeto e marca a geração mais recente como
+   * `awaiting_clarification`. Quando a resposta chegar via chat (role user),
+   * a geração volta para `pending` (ver adicionarMensagemChatProjeto).
+   */
+  async registrarClarificacaoProjeto(
+    projeto: ProjetoResumo,
+    projetoCaptadoId: number,
+    resumo: string,
+    perguntas: string[],
+  ) {
+    const db = await this.dbDoProjeto(projeto);
+
+    const [projetoCaptado] = await db
+      .select()
+      .from(projetosCaptados)
+      .where(eq(projetosCaptados.id, projetoCaptadoId))
+      .limit(1);
+
+    if (!projetoCaptado) {
+      throw new NotFoundException('Projeto não encontrado');
+    }
+
+    const [geracao] = await db
+      .select()
+      .from(geracoesProjeto)
+      .where(eq(geracoesProjeto.projetoId, projetoCaptadoId))
+      .orderBy(desc(geracoesProjeto.createdAt))
+      .limit(1);
+
+    if (!geracao) {
+      throw new NotFoundException('Nenhuma geração em andamento para este projeto');
+    }
+
+    const limpas = perguntas.map((p) => String(p).trim()).filter(Boolean);
+    if (limpas.length === 0) {
+      throw new BadRequestException('Lista de perguntas vazia');
+    }
+
+    const linhas: string[] = ['🤔 O analista precisa de esclarecimentos antes de gerar as tarefas.', ''];
+    if (resumo && resumo.trim()) {
+      linhas.push('Entendimento atual: ' + resumo.trim(), '');
+    }
+    limpas.forEach((pergunta, indice) => linhas.push(`${indice + 1}) ${pergunta}`));
+    linhas.push('', 'Responda neste chat para continuar (ex.: "1: resposta; 2: resposta").');
+
+    await db.insert(projetoChats).values({
+      projetoId: projetoCaptadoId,
+      role: 'analyst',
+      texto: linhas.join('\n'),
+      createdAt: new Date(),
+    });
+
+    await db
+      .update(geracoesProjeto)
+      .set({ status: 'awaiting_clarification', updatedAt: new Date() })
+      .where(eq(geracoesProjeto.id, geracao.id));
+
+    return { ok: true, geracaoId: geracao.id, status: 'awaiting_clarification', perguntas: limpas };
   }
 
   // ============================================================================

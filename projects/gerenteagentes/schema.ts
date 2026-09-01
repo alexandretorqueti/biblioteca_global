@@ -311,7 +311,7 @@ export const geracoesProjeto = mysqlTable("geracoes_projeto", {
   projetoId: bigint("projeto_id", { mode: "number", unsigned: true })
     .notNull()
     .references(() => projetosCaptados.id, { onDelete: "cascade" }),
-  status: varchar("status", { length: 50 }).notNull().default("pending"), // pending, running, completed, failed
+  status: varchar("status", { length: 50 }).notNull().default("pending"), // pending, running, completed, failed, awaiting_clarification
   sessionKey: varchar("session_key", { length: 200 }),
   modelo: varchar("modelo", { length: 100 }),
   briefing: text("briefing"),

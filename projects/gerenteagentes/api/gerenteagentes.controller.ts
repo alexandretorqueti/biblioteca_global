@@ -104,6 +104,21 @@ export class GerenteAgentesController {
     return this.service.adicionarMensagemChatProjeto(projeto, id, body.role, body.texto);
   }
 
+  /**
+   * Clarificação interativa por projeto: o analista registra perguntas no
+   * chat do projeto e a geração corrente fica `awaiting_clarification` até a
+   * resposta chegar pelo próprio chat (POST .../chat com role user).
+   */
+  @Post('projetos-captados/:id/clarificacao')
+  @Roles('admin', 'gerente', 'operador')
+  registrarClarificacaoProjeto(
+    @CurrentProject() projeto: ProjetoResumo,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { resumo: string; perguntas: string[] },
+  ) {
+    return this.service.registrarClarificacaoProjeto(projeto, id, body.resumo, body.perguntas);
+  }
+
   // ============================================================================
   // GERAÇÃO MACRO (START DO PROJETO)
   // ============================================================================

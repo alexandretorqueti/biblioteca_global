@@ -30,6 +30,12 @@ import {
   withBaselineExcludes,
 } from "../policies/BaselinePolicy.js"
 import { hasPersistedPlan, persistPlan } from "../planning/PlanPersistence.js"
+import { parseAnalystReply } from "../planning/AnalystReply.js"
+import {
+  fetchTaskClarificationHistory,
+  formatHistoryForPrompt,
+  persistTaskClarification,
+} from "../planning/ClarificationStore.js"
 import type { Db, QueryResult } from "../shared/types/infrastructure.js"
 import mysql from "mysql2/promise"
 
@@ -149,7 +155,11 @@ class TaskWorker {
       let gitCommitSha: string | undefined
 
       if (ctx.phase === "analyze") {
-        await this.phaseAnalyze(input)
+        const outcome = await this.phaseAnalyze(input)
+        if (outcome.kind === "clarifying") {
+          this.sendClarifying(ctx, outcome)
+          return
+        }
       } else if (ctx.phase === "execute") {
         await this.phasePrepare(input)
         if (this.cancelled) { this.sendFailed(ctx, "Cancelled"); return }
@@ -169,21 +179,32 @@ class TaskWorker {
   }
 
   /**
-   * FASE 1: ANALYZE - Chama o Analista para criar subtarefas
+   * FASE 1: ANALYZE - Chama o Analista para criar subtarefas (ou perguntar)
    */
-  private async phaseAnalyze(input: WorkerInput): Promise<void> {
+  private async phaseAnalyze(input: WorkerInput): Promise<{ kind: "done" } | { kind: "clarifying"; questionCount: number; summary?: string }> {
     this.send({ type: "progress", executionId: input.context.executionId, phase: "analyze", message: "Iniciando analise" })
     this.log("info", "Fase ANALYZE: " + input.task.title)
 
     const planningDb = this.planningDb()
     if (await hasPersistedPlan(planningDb, input.task.id)) {
       this.log("info", "Plano persistido encontrado; análise não será repetida")
-      return
+      return { kind: "done" }
+    }
+
+    // Rodada de retomada após resposta de clarificação: reinjeta o histórico
+    // (perguntas + respostas) no prompt, pois cada análise roda em sessão nova.
+    let clarificationHistory = ""
+    try {
+      const history = await fetchTaskClarificationHistory(planningDb, input.task.id)
+      clarificationHistory = formatHistoryForPrompt(history)
+      if (clarificationHistory) this.log("info", "Retomando análise com histórico de clarificação (" + history.length + " mensagens)")
+    } catch (error) {
+      this.log("warn", "Falha ao carregar histórico de clarificação: " + (error instanceof Error ? error.message : String(error)))
     }
 
     const driver = this.createDriver()
     const chain = this.chainFor(input, "analysis")
-    const prompt = this.buildAnalystPrompt(input.task)
+    const prompt = this.buildAnalystPrompt(input.task, clarificationHistory)
 
     let lastFailure: string | undefined
     for (let modelIndex = 0; modelIndex < chain.length; modelIndex++) {
@@ -214,7 +235,21 @@ class TaskWorker {
           continue
         }
 
-        const subtarefas = this.parseAnalystResponse(result.content)
+        const reply = parseAnalystReply(result.content)
+
+        if (reply.kind === "perguntas") {
+          // Ambiguidade: persiste as perguntas no chat da tarefa e para.
+          // A tarefa fica aguardando a resposta do dono/agente do projeto;
+          // quando ela chegar, o motor reexecuta a análise com o histórico.
+          await persistTaskClarification(planningDb, input.task.id, {
+            summary: reply.resumo,
+            questions: reply.perguntas,
+          })
+          this.log("info", "Analista pediu esclarecimentos (" + reply.perguntas.length + " perguntas); tarefa aguardando resposta")
+          return { kind: "clarifying", questionCount: reply.perguntas.length, summary: reply.resumo || undefined }
+        }
+
+        const subtarefas = reply.subtarefas
         this.log("info", "Analista criou " + subtarefas.length + " subtarefas")
 
         const persisted = await persistPlan(planningDb, input.task.id, subtarefas)
@@ -222,7 +257,7 @@ class TaskWorker {
           this.log("info", "Plano foi persistido por outra execução; preservando-o")
         }
         this.log("info", "Fase ANALYZE concluida: " + subtarefas.length + " subtarefas criadas")
-        return
+        return { kind: "done" }
       } catch (error) {
         if (isModelUnavailableError(error)) {
           lastFailure = `Modelo indisponível: ${model.model}`
@@ -644,14 +679,16 @@ class TaskWorker {
     return db
   }
 
-  private buildAnalystPrompt(task: { title: string; description?: string }): string {
-    return [
+  private buildAnalystPrompt(task: { title: string; description?: string }, clarificationHistory?: string): string {
+    const lines = [
       "Voce e um analista de requisitos. Recebe uma tarefa e deve quebra-la em subtarefas (2 a 4 no maximo).",
       "",
       "Tarefa: " + task.title,
       "Descricao: " + (task.description || "N/A"),
       "",
-      "Responda APENAS com JSON valido:",
+      "Responda APENAS com JSON valido, em UMA das duas formas abaixo.",
+      "",
+      "Forma 1 — quando a definicao estiver clara o suficiente, o plano:",
       "{",
       '  "subtarefas": [',
       "    {",
@@ -663,6 +700,13 @@ class TaskWorker {
       "  ]",
       "}",
       "",
+      "Forma 2 — quando houver ambiguidade que impeca um plano correto (escopo, objetivo, criterios, conflito de requisitos, decisao de arquitetura), NAO invente e NAO gere um plano ruim; pergunte:",
+      "{",
+      '  "kind": "perguntas",',
+      '  "resumo": "o que voce JA entendeu da tarefa",',
+      '  "perguntas": ["pergunta 1", "pergunta 2"]',
+      "}",
+      "",
       "Regras:",
       "- Crie no maximo 4 subtarefas.",
       "- Seja especifico no scope.",
@@ -670,7 +714,24 @@ class TaskWorker {
       "- NUNCA crie subtarefas para passos operacionais que o motor executa automaticamente: commit, push, merge, build, testes unitarios, deploy, validacao de build.",
       "- Subtarefas devem conter apenas trabalho de codigo ou documentacao (ex.: criar schema, criar tela, escrever endpoint).",
       "- Se o escopo incluir criacao de tabelas/schema, o proprio dev deve gerar as migrations (drizzle-kit generate) como parte do trabalho — mas NAO crie subtarefa separada para isso.",
-    ].join("\n")
+      "",
+      "Regras da clarificacao (Forma 2):",
+      "- O campo \"resumo\" e obrigatorio: descreva o que voce ja entendeu.",
+      "- Prefira perguntas decisorias (ex.: \"prefere A ou B?\"), mas perguntas abertas sao permitidas quando necessario.",
+      "- No maximo 8 perguntas por turno; cada uma direta e especifica.",
+      "- Nao pergunte o que ja esta respondido no historico abaixo.",
+      "- Sem limite de turnos: se a resposta recebida ainda deixar ambiguidade relevante, pergunte de novo; so gere o plano quando a definicao estiver clara.",
+    ]
+    if (clarificationHistory) {
+      lines.push(
+        "",
+        "HISTORICO DE CLARIFICACAO (perguntas anteriores e respostas recebidas):",
+        clarificationHistory,
+        "",
+        "Considere este historico: nao repita perguntas ja respondidas. Se as respostas tornaram a definicao clara, responda com o plano (Forma 1).",
+      )
+    }
+    return lines.join("\n")
   }
 
   /**
@@ -723,24 +784,6 @@ class TaskWorker {
       }
     } catch { /* resposta legada em texto continua compatível */ }
     return { kind: "done" }
-  }
-
-  private parseAnalystResponse(content: string): Array<{ seq: number; titulo: string; scope?: string; acceptanceCriteria?: string[] }> {
-    const jsonMatch = content.match(/\{[\s\S]*\}/)
-    if (!jsonMatch) throw new Error("Resposta do analista nao contem JSON")
-
-    const parsed = JSON.parse(jsonMatch[0])
-    const subtarefas = parsed.subtarefas
-    if (!Array.isArray(subtarefas) || subtarefas.length === 0) {
-      throw new Error("Analista nao retornou subtarefas")
-    }
-
-    return subtarefas.map((s: Record<string, unknown>, i: number) => ({
-      seq: Number(s.seq ?? (i + 1)),
-      titulo: String(s.titulo || "Subtarefa " + (i + 1)),
-      scope: s.scope ? String(s.scope) : undefined,
-      acceptanceCriteria: Array.isArray(s.acceptance_criteria) ? s.acceptance_criteria.map(String) : undefined,
-    }))
   }
 
   private async recordBlocker(subtask: SubtaskInfo, kind: BlockerKind, reason: string): Promise<void> {
@@ -807,6 +850,13 @@ class TaskWorker {
 
   private sendCompleted(context: ExecutionContext, result: ExecutionResult): void {
     this.send({ type: "completed", executionId: context.executionId, result })
+    this.cleanup()
+    setTimeout(() => process.exit(0), 1000)
+  }
+
+  /** Analista pediu esclarecimentos: encerra o worker sem falha. */
+  private sendClarifying(context: ExecutionContext, info: { questionCount: number; summary?: string }): void {
+    this.send({ type: "clarifying", executionId: context.executionId, questionCount: info.questionCount, summary: info.summary })
     this.cleanup()
     setTimeout(() => process.exit(0), 1000)
   }

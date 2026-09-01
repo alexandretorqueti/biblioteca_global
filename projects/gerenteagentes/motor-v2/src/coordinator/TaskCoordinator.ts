@@ -21,6 +21,7 @@ import { correctionOnlyChangesTests } from "../policies/CorrectionDiffPolicy.js"
 import { isBaselineCorrection } from "../policies/BaselinePolicy.js"
 import { blockerEvidence } from "../policies/BlockerPolicy.js"
 import { transitionTask, type TaskTransition } from "../policies/TaskStateMachine.js"
+import { persistTaskClarificationAnswer, fetchPendingTaskClarification } from "../planning/ClarificationStore.js"
 import { createLogger, describeError } from "../shared/logger.js"
 import { ConsoleAgentRuntimeDriver } from "../runtime/ConsoleAgentRuntimeDriver.js"
 import { execSync } from "node:child_process"
@@ -60,6 +61,11 @@ interface UltimoBloqueio {
   excerpt: string
   blockedAt: string
   subtaskId: number | null
+}
+
+interface ClarificacaoPendente {
+  message: string
+  askedAt: string
 }
 
 interface SubtaskView {
@@ -608,6 +614,66 @@ export class TaskCoordinator {
     await this.finishWorker(executionId, worker, { preserveWorkspace: true })
   }
 
+  /**
+   * Analista pediu esclarecimentos: a tarefa entra em `awaiting_clarification`
+   * e fica parada aguardando resposta no chat da tarefa. O relógio de timeout
+   * deixa de contar naturalmente porque o worker encerrou; o reconciliador de
+   * órfãos só toca tarefas `analyzing`/`running`, então este estado sobrevive
+   * a boot/reconciliação intacto (quantos dias forem necessários).
+   */
+  async onTaskClarifying(executionId: string, questionCount: number, summary?: string): Promise<void> {
+    const worker = this.activeWorkers.get(executionId)
+    if (!worker || !this.beginFinalization(executionId, worker)) return
+    try {
+      this.publishActivity(worker, {
+        type: "clarifying",
+        level: "info",
+        message: `Analista aguardando esclarecimento (${questionCount} perguntas)`,
+      })
+      this.logger.info("Análise pausada para clarificação: " + worker.taskId + " (" + questionCount + " perguntas)", {
+        taskId: worker.taskId, executionId, phase: "analyze", summary: summary ?? undefined,
+      })
+      const task = await this.repository.getTask(worker.taskId)
+      if (task) {
+        if (task.status === "planned") {
+          await this.repository.saveTask({ ...task, status: "analyzing", updatedAt: new Date().toISOString() })
+          task.status = "analyzing"
+        }
+        if (task.status === "analyzing") {
+          await this.saveTaskTransition(task, "await_clarification")
+        } else {
+          this.logger.warn("Tarefa em status inesperado ao pedir clarificação: " + task.status, { taskId: worker.taskId, executionId })
+        }
+      }
+    } catch (error) {
+      this.logger.error("Falha ao registrar clarificação da tarefa " + worker.taskId + ": " + describeError(error), { taskId: worker.taskId, executionId })
+    } finally {
+      await this.finishWorker(executionId, worker)
+    }
+  }
+
+  /**
+   * Resposta de clarificação recebida (via API do motor ou via chat da
+   * biblioteca). Grava a resposta no chat da tarefa (salvo quando o chamador
+   * já a gravou), devolve a tarefa para `planned` e aciona o pump: sem
+   * subtarefas persistidas, a tarefa é reenviada para análise com o histórico.
+   */
+  async answerClarification(taskId: string, texto: string, options?: { jaPersistida?: boolean }): Promise<void> {
+    const task = await this.repository.getTask(taskId)
+    if (!task) throw new Error("Tarefa " + taskId + " nao encontrada")
+    if (task.status !== "awaiting_clarification") {
+      throw new Error("Tarefa " + taskId + " nao esta aguardando esclarecimento (status: " + task.status + ")")
+    }
+    const trimmed = texto.trim()
+    if (!trimmed) throw new Error("Resposta de esclarecimento vazia")
+    if (!options?.jaPersistida) {
+      await persistTaskClarificationAnswer(this.db, taskId, trimmed)
+    }
+    await this.saveTaskTransition(task, "clarification_answered")
+    this.logger.info("Resposta de clarificação recebida; tarefa " + taskId + " volta para análise", { taskId })
+    await this.pump()
+  }
+
   async onResourceReleased(resourceKey: ResourceKey): Promise<void> {
     this.logger.info("Recurso liberado: " + resourceKey)
     await this.waitManager?.resumeNext(resourceKey)
@@ -650,7 +716,7 @@ export class TaskCoordinator {
    * remove a dependência do fallback direto no banco pela tela de
    * acompanhamento e dá visibilidade ao motivo de bloqueio.
    */
-  async getTaskWithSubtasks(taskId: string): Promise<(Task & { subtasks: SubtaskView[]; errorMessage?: string; ultimoBloqueio: UltimoBloqueio | null }) | null> {
+  async getTaskWithSubtasks(taskId: string): Promise<(Task & { subtasks: SubtaskView[]; errorMessage?: string; ultimoBloqueio: UltimoBloqueio | null; clarificacaoPendente: ClarificacaoPendente | null }) | null> {
     const data = await this.repository.getTask(taskId)
     if (!data) return null
     const task = this.mapSaveDataToTask(data)
@@ -704,7 +770,19 @@ export class TaskCoordinator {
       }
     }
 
-    return { ...task, subtasks, errorMessage: data.errorMessage, ultimoBloqueio }
+    // Clarificação pendente (analista perguntou e ninguém respondeu ainda):
+    // expõe a pergunta e desde quando, para a tela mostrar o que está travando.
+    let clarificacaoPendente: ClarificacaoPendente | null = null
+    if (task.status === "awaiting_clarification") {
+      try {
+        const pending = await fetchPendingTaskClarification(this.db, taskId)
+        if (pending) clarificacaoPendente = pending
+      } catch (error) {
+        this.logger.warn("Falha ao buscar clarificação pendente da tarefa " + taskId + ": " + describeError(error), { taskId })
+      }
+    }
+
+    return { ...task, subtasks, errorMessage: data.errorMessage, ultimoBloqueio, clarificacaoPendente }
   }
 
   private mapSaveDataToTask(data: import("../shared/types/infrastructure.js").SaveTaskData): Task {
@@ -923,6 +1001,9 @@ export class TaskCoordinator {
     })
     this.workerLauncher.on("failed", async (msg: { executionId: string; error: string }) => {
       await this.onTaskFailed(msg.executionId, msg.error)
+    })
+    this.workerLauncher.on("clarifying", async (msg: { executionId: string; questionCount: number; summary?: string }) => {
+      await this.onTaskClarifying(msg.executionId, msg.questionCount, msg.summary)
     })
     this.workerLauncher.on("heartbeat", (msg: { executionId: string }) => {
       const worker = this.activeWorkers.get(msg.executionId)

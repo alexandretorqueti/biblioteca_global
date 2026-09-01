@@ -6,6 +6,7 @@
 export type TaskStatus =
   | 'planned'
   | 'analyzing'
+  | 'awaiting_clarification'
   | 'ready'
   | 'running'
   | 'paused'
