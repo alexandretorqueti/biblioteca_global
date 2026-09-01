@@ -592,6 +592,10 @@ export class GerenteAgentesService {
           status: subtarefas.status,
           deliverCount: subtarefas.deliverCount,
           resultado: subtarefas.resultado,
+          scope: subtarefas.scope,
+          acceptanceCriteria: subtarefas.acceptanceCriteria,
+          workspaceStatus: subtarefas.workspaceStatus,
+          correctionForSubtaskId: subtarefas.correctionForSubtaskId,
         })
         .from(subtarefas)
         .where(eq(subtarefas.tarefaId, tarefaId))
@@ -604,6 +608,10 @@ export class GerenteAgentesService {
         status: s.status,
         deliverCount: s.deliverCount,
         blockInfo: s.resultado ? { reason: s.resultado } : null,
+        scope: s.scope ?? null,
+        acceptanceCriteria: s.acceptanceCriteria ?? null,
+        workspaceStatus: s.workspaceStatus ?? null,
+        correctionForSubtaskId: s.correctionForSubtaskId ?? null,
       }));
       
       // Encontra subtarefa atual (running, verifying, etc)

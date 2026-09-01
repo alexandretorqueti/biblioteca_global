@@ -30,6 +30,7 @@ import {
   TableCell,
   TableHead,
   TableRow,
+  Tooltip,
   Typography,
 } from "@mui/material"
 import { PlayArrowRounded, PauseRounded, ReplayRounded, EditRounded, CloseRounded } from "@mui/icons-material"
@@ -75,6 +76,10 @@ interface SubTaskMotor {
   status: string
   deliverCount?: number
   blockInfo?: { reason?: string; command?: string; exitCode?: number | null } | null
+  scope?: string | null
+  acceptanceCriteria?: unknown
+  workspaceStatus?: string | null
+  correctionForSubtaskId?: number | null
 }
 
 /** Subtarefa do banco de dados (para edição — o motor só tem seq/title/status). */
@@ -84,9 +89,13 @@ interface SubTarefaDb {
   seq: number
   titulo: string
   descricao?: string | null
+  scope?: string | null
+  acceptanceCriteria?: unknown
   status: string
   resultado?: string | null
   dependsOnSubtaskId?: number | null
+  workspaceStatus?: string | null
+  correctionForSubtaskId?: number | null
 }
 
 interface MotorEvent {
@@ -169,6 +178,24 @@ function traduzirEvento(type: string): string {
     motor_fix: "Correção do motor",
   }
   return mapa[type] ?? type
+}
+
+/**
+ * Conta critérios de aceite com segurança: aceita array de strings,
+ * string JSON válida com array, ou retorna 0 para null/undefined/inválido.
+ */
+function contarCriterios(raw: unknown): number {
+  if (raw == null) return 0
+  if (Array.isArray(raw)) return raw.length
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw)
+      return Array.isArray(parsed) ? parsed.length : 0
+    } catch {
+      return 0
+    }
+  }
+  return 0
 }
 
 export default function TaskMonitorScreen(): ReactNode {
@@ -542,8 +569,21 @@ export default function TaskMonitorScreen(): ReactNode {
       title: subtarefa.titulo,
       status: subtarefa.status,
       blockInfo: subtarefa.resultado ? { reason: subtarefa.resultado } : null,
+      scope: subtarefa.scope ?? null,
+      acceptanceCriteria: subtarefa.acceptanceCriteria ?? null,
+      workspaceStatus: subtarefa.workspaceStatus ?? null,
+      correctionForSubtaskId: subtarefa.correctionForSubtaskId ?? null,
     }))
   }, [detail?.subtasks, subtarefasDb])
+
+  /** Mapa id → seq para resolver subtarefa corrigida (correção de #X). */
+  const subtaskIdToSeq = useMemo<Record<number, number>>(() => {
+    const map: Record<number, number> = {}
+    for (const s of subtarefasDb) {
+      map[s.id] = s.seq
+    }
+    return map
+  }, [subtarefasDb])
 
   const stats = useMemo(() => {
     const subs = subtasks
@@ -749,7 +789,10 @@ export default function TaskMonitorScreen(): ReactNode {
                   <TableRow>
                     <TableCell>#</TableCell>
                     <TableCell>Subtarefa</TableCell>
+                    <TableCell sx={{ maxWidth: 240 }}>Escopo</TableCell>
+                    <TableCell align="center">Critérios</TableCell>
                     <TableCell>Status</TableCell>
+                    <TableCell>Workspace</TableCell>
                     <TableCell align="right">Entregas</TableCell>
                     <TableCell align="center" sx={{ width: 48 }}>Ações</TableCell>
                   </TableRow>
@@ -757,6 +800,8 @@ export default function TaskMonitorScreen(): ReactNode {
                 <TableBody>
                   {subtasks.map((s) => {
                     const ativa = stats.active && s.seq === stats.active.seq
+                    const criterioCount = contarCriterios(s.acceptanceCriteria)
+                    const correctedSeq = s.correctionForSubtaskId != null ? subtaskIdToSeq[s.correctionForSubtaskId] : undefined
                     return (
                       <TableRow
                         key={s.seq}
@@ -765,7 +810,18 @@ export default function TaskMonitorScreen(): ReactNode {
                       >
                         <TableCell>{ativa ? "▶ " : ""}{s.seq}</TableCell>
                         <TableCell>
-                          {s.title}
+                          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+                            <Typography component="span" variant="body2">{s.title}</Typography>
+                            {s.correctionForSubtaskId != null && (
+                              <Chip
+                                size="small"
+                                color="warning"
+                                variant="outlined"
+                                label={correctedSeq != null ? `Correção de #${correctedSeq}` : "Correção"}
+                                data-testid={`correction-badge-${s.seq}`}
+                              />
+                            )}
+                          </Stack>
                           {s.blockInfo?.reason && (
                             <Typography variant="caption" display="block" color="text.secondary">
                               🚫 {s.blockInfo.reason}
@@ -774,8 +830,46 @@ export default function TaskMonitorScreen(): ReactNode {
                             </Typography>
                           )}
                         </TableCell>
+                        <TableCell sx={{ maxWidth: 240 }}>
+                          {s.scope ? (
+                            <Tooltip title={s.scope} arrow placement="top">
+                              <Typography
+                                variant="caption"
+                                sx={{
+                                  display: "-webkit-box",
+                                  WebkitLineClamp: 2,
+                                  WebkitBoxOrient: "vertical",
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                  wordBreak: "break-word",
+                                }}
+                                data-testid={`scope-text-${s.seq}`}
+                              >
+                                {s.scope}
+                              </Typography>
+                            </Tooltip>
+                          ) : (
+                            <Typography variant="caption" color="text.secondary">—</Typography>
+                          )}
+                        </TableCell>
+                        <TableCell align="center">
+                          <Chip
+                            size="small"
+                            variant="outlined"
+                            label={criterioCount}
+                            color={criterioCount > 0 ? "primary" : "default"}
+                            data-testid={`criteria-count-${s.seq}`}
+                          />
+                        </TableCell>
                         <TableCell>
                           <Chip size="small" label={s.status} color={corStatus(s.status)} />
+                        </TableCell>
+                        <TableCell>
+                          {s.workspaceStatus ? (
+                            <Chip size="small" variant="outlined" label={s.workspaceStatus} data-testid={`workspace-status-${s.seq}`} />
+                          ) : (
+                            <Typography variant="caption" color="text.secondary">—</Typography>
+                          )}
                         </TableCell>
                         <TableCell align="right">{s.deliverCount ?? 0}</TableCell>
                         <TableCell align="center">
@@ -793,7 +887,7 @@ export default function TaskMonitorScreen(): ReactNode {
                   })}
                   {subtasks.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={5}>
+                      <TableCell colSpan={8}>
                         <Typography color="text.secondary" data-testid="empty-subtasks">
                           Nenhuma subtarefa ainda — o motor está planejando a execução.
                         </Typography>
