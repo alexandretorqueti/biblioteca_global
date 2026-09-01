@@ -61,6 +61,8 @@ function erroRespostaInvalida(message: string, details?: unknown): ApiClientErro
 export function createAgentChatClient(options: AgentChatClientOptions): AgentChatDriver {
   const endpoints = options.endpoints ?? {}
   let activeChatId = options.visitorKey
+  let sessionStarted = false
+  let sessionPromise: Promise<ChatSession> | undefined
   let pending: AgentChatOutboxEntry[] = []
   let sequence = 0
 
@@ -69,22 +71,35 @@ export function createAgentChatClient(options: AgentChatClientOptions): AgentCha
   const buildVisitBody = endpoints.buildVisitBody ?? ((visitorKey: string, pageUrl: string) => ({ visitorKey, pageUrl }))
 
   async function startSession(): Promise<ChatSession> {
+    if (sessionStarted) {
+      return { chatId: activeChatId, existing: true }
+    }
+    if (sessionPromise) return sessionPromise
+
     const input: StartChatSessionInput = {
       visitorKey: options.visitorKey,
       agentId: options.agentId,
     }
-    const data = await options.http.request<unknown>("POST", endpoints.sessionPath ?? DEFAULT_SESSION_PATH, {
-      body: buildSessionBody(input),
-      auth: "none",
-    })
-    const result = data as { chatId?: unknown; existing?: unknown } | null
-    if (!result || typeof result.chatId !== "string" || result.chatId.trim() === "") {
-      throw erroRespostaInvalida("A sessão do agente não retornou um chatId")
-    }
-    activeChatId = result.chatId
-    return {
-      chatId: result.chatId,
-      ...(typeof result.existing === "boolean" ? { existing: result.existing } : {}),
+    sessionPromise = (async () => {
+      const data = await options.http.request<unknown>("POST", endpoints.sessionPath ?? DEFAULT_SESSION_PATH, {
+        body: buildSessionBody(input),
+        auth: "none",
+      })
+      const result = data as { chatId?: unknown; existing?: unknown } | null
+      if (!result || typeof result.chatId !== "string" || result.chatId.trim() === "") {
+        throw erroRespostaInvalida("A sessão do agente não retornou um chatId")
+      }
+      activeChatId = result.chatId
+      sessionStarted = true
+      return {
+        chatId: result.chatId,
+        ...(typeof result.existing === "boolean" ? { existing: result.existing } : {}),
+      }
+    })()
+    try {
+      return await sessionPromise
+    } finally {
+      sessionPromise = undefined
     }
   }
 
@@ -103,6 +118,12 @@ export function createAgentChatClient(options: AgentChatClientOptions): AgentCha
   }
 
   async function loadHistory(): Promise<ChatHistory> {
+    // Ler o histórico não pode materializar uma sessão. Isso permite que a
+    // página seja visitada sem registrar um lead; a sessão só nasce no
+    // primeiro contato válido (startSession/sendMessage).
+    if (!sessionStarted) {
+      return { chatId: activeChatId, messages: [] }
+    }
     const path = endpoints.historyPath?.(activeChatId) ?? `/agent-chat/${encodeURIComponent(activeChatId)}/history`
     const data = await options.http.request<unknown>("GET", path, { auth: "none" })
     const result = data as { chatId?: unknown; messages?: unknown }
@@ -155,6 +176,18 @@ export function createAgentChatClient(options: AgentChatClientOptions): AgentCha
   }
 
   async function sendMessage(text: string, attachments: ChatAttachment[] = []): Promise<SendChatMessageResult> {
+    // O envio é o primeiro ponto que representa contato real do visitante.
+    // A promessa compartilhada também evita duas sessões em envios rápidos.
+    if (!sessionStarted) {
+      try {
+        await startSession()
+      } catch (error: unknown) {
+        if (error instanceof ApiClientError) {
+          return { ok: false, reason: "http_error", retryable: error.status >= 500 }
+        }
+        return { ok: false, reason: "offline", retryable: true }
+      }
+    }
     const input: SendChatMessageInput = {
       chatId: activeChatId,
       text,

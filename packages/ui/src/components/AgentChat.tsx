@@ -162,11 +162,10 @@ export default function AgentChat({
     void (async () => {
       try {
         await client.recordVisit?.()
-        await client.startSession()
-        const history = await client.loadHistory()
+        // A visita inicial é apenas analítica. Não inicia uma sessão da Isa;
+        // isso acontece no primeiro envio válido, dentro de sendMessage.
         if (cancelled) return
-        setMetadata(history.metadata)
-        setMessages(history.messages.length > 0 ? history.messages : [{ id: `local-${++localSequence}`, role: "agent", text: welcomeMessage }])
+        setMessages([{ id: `local-${++localSequence}`, role: "agent", text: welcomeMessage }])
       } catch {
         if (!cancelled) {
           setError(offlineMessage)
@@ -174,7 +173,6 @@ export default function AgentChat({
         }
       } finally {
         if (!cancelled) {
-          setSessionReady(true)
           setLoading(false)
         }
       }
@@ -227,6 +225,9 @@ export default function AgentChat({
     agentReplyCountRef.current = currentAgentCount
     try {
       const result = await client.sendMessage(text, validAttachments)
+      // A sessão é criada pelo cliente durante o primeiro envio. Só então
+      // habilitamos a atualização periódica do histórico.
+      setSessionReady(true)
       if (!result.ok) {
         setError(result.reason === "offline" ? offlineMessage : "Não foi possível enviar a mensagem.")
         waitingAgentRef.current = false

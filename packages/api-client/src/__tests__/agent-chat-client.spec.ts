@@ -61,6 +61,33 @@ describe("createAgentChatClient", () => {
     expect(fake.requests[0]?.body).toEqual({ chatKey: "visitor-1" })
   })
 
+  it("não cria sessão nem consulta histórico ao carregar a página", async () => {
+    const client = create()
+
+    await expect(client.loadHistory()).resolves.toEqual({ chatId: "visitor-1", messages: [] })
+    expect(fake.requests).toHaveLength(0)
+  })
+
+  it("cria uma única sessão no primeiro contato e reutiliza-a", async () => {
+    fake.responses.push(
+      { status: 200, body: { chatId: "chat-1", existing: false } },
+      { status: 200, body: { ok: true, messageId: "message-1" } },
+      { status: 200, body: { ok: true, messageId: "message-2" } },
+    )
+    const client = create()
+
+    await expect(client.sendMessage("Primeiro contato")).resolves.toMatchObject({ ok: true })
+    await expect(client.sendMessage("Segundo contato")).resolves.toMatchObject({ ok: true })
+
+    expect(fake.requests.map((request) => `${request.method} ${request.url}`)).toEqual([
+      "POST http://api.local/api/session",
+      "POST http://api.local/api/chat/send",
+      "POST http://api.local/api/chat/send",
+    ])
+    expect(fake.requests[1]?.body).toMatchObject({ chatId: "chat-1", text: "Primeiro contato" })
+    expect(fake.requests[2]?.body).toMatchObject({ chatId: "chat-1", text: "Segundo contato" })
+  })
+
   it("enfileira falha de rede e envia a fila quando o backend volta", async () => {
     fake.responses.push({ status: 503, body: { code: "UNAVAILABLE" } }, { status: 201, body: { ok: true } })
     const client = create()
