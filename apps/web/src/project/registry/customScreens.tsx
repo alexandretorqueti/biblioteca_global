@@ -9,7 +9,7 @@
  */
 
 import { registerCustomScreens } from "@biblioteca-global/ui"
-import { SistemaAdmGlobalDashboard, SistemaAdmGlobalHubAdministrativo, SistemaAdmGlobalHubRh } from "../../screens/custom"
+import { SistemaAdmGlobalDashboard, SistemaAdmGlobalHubAdmin, SistemaAdmGlobalHubAdministrativo, SistemaAdmGlobalHubRh } from "../../screens/custom"
 import DocumentationScreen from "../../../../../projects/documentacao/screens/DocumentationScreen"
 import DashboardScreen from "../../../../../projects/gerenteagentes/screens/DashboardScreen"
 import NovaTarefaScreen from "../../../../../projects/gerenteagentes/screens/NovaTarefaScreen"
@@ -30,6 +30,7 @@ export function registrarTelasCustom(): void {
     "gerenteagentes-model-selection": ModelSelectionScreen,
     "gerenteagentes-isa-chat": IsaChatScreen,
     "sistema-adm-global-dashboard": SistemaAdmGlobalDashboard,
+    "sistema-adm-global-hub-admin": SistemaAdmGlobalHubAdmin,
     "sistema-adm-global-hub-administrativo": SistemaAdmGlobalHubAdministrativo,
     "sistema-adm-global-hub-rh": SistemaAdmGlobalHubRh,
   })
