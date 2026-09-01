@@ -47,6 +47,22 @@ export const contatos = mysqlTable("contatos", {
     .onUpdateNow(),
 })
 
+/** Agentes do OpenClaw (espelho local — fonte de verdade é o console). */
+export const agentes = mysqlTable("agentes", {
+  id: bigint("id", { mode: "number", unsigned: true })
+    .primaryKey()
+    .autoincrement(),
+  nome: varchar("nome", { length: 150 }).notNull().unique(),
+  modelo: varchar("modelo", { length: 100 }).notNull(),
+  descricao: text("descricao"),
+  ativo: boolean("ativo").notNull().default(true),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at")
+    .notNull()
+    .defaultNow()
+    .onUpdateNow(),
+})
+
 export const projetosCaptados = mysqlTable("projetos_captados", {
   id: bigint("id", { mode: "number", unsigned: true })
     .primaryKey()
@@ -57,6 +73,8 @@ export const projetosCaptados = mysqlTable("projetos_captados", {
   regras: text("regras"), // regras do projeto
   contatoId: bigint("contato_id", { mode: "number", unsigned: true })
     .references(() => contatos.id, { onDelete: "set null" }),
+  agenteId: bigint("agente_id", { mode: "number", unsigned: true })
+    .references(() => agentes.id, { onDelete: "set null" }),
   ativo: boolean("ativo").notNull().default(true),
   // Vínculo 1:1 com app da plataforma (preenchido ao iniciar desenvolvimento)
   plataformaProjetoId: bigint("plataforma_projeto_id", {
@@ -388,12 +406,19 @@ export const annotations = {
     telefone: { label: "Telefone", maxLength: 50 },
     origem: { label: "Origem", maxLength: 100 },
   },
+  agentes: {
+    nome: { label: "Nome", fullWidth: true, maxLength: 150 },
+    modelo: { label: "Modelo", maxLength: 100 },
+    descricao: { label: "Descrição", type: "textarea", fullWidth: true },
+    ativo: { label: "Ativo" },
+  },
   projetos_captados: {
     nome: { label: "Nome", fullWidth: true, maxLength: 200 },
     slug: { label: "Slug", maxLength: 100 },
     descricao: { label: "Descrição", type: "textarea", fullWidth: true },
     regras: { label: "Regras", type: "textarea", fullWidth: true },
     contato_id: { label: "Contato" },
+    agente_id: { label: "Agente" },
     ativo: { label: "Ativo" },
     plataforma_projeto_id: { label: "Projeto Plataforma" },
     branch_trabalho: { label: "Branch de Trabalho", maxLength: 255 },
