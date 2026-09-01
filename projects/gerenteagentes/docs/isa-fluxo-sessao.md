@@ -1,49 +1,55 @@
-# Isa — gatilho de criação da sessão
+# Isa — fluxo esperado de sessões
 
-## Fluxo observado no carregamento
+## Regra principal
 
-O `AgentChat` executa seu `useEffect` de montagem em
-`packages/ui/src/components/AgentChat.tsx` nesta ordem:
+O acesso inicial ao site, o carregamento do widget e a leitura do histórico
+**não criam uma sessão da Isa no OpenClaw**. Uma visita pode ser registrada em
+`visitas_site` para telemetria e o frontend pode manter um `visitorKey`, mas
+isso não é contato do cliente e não deve chamar `POST /api/sessions` no BFF.
 
-1. `client.recordVisit()` envia `POST /site-visit` (no app standalone,
-   `POST /api/site-visit`). `IsaChatService.recordVisit` apenas grava os
-   dados anônimos em `visitas_site`.
-2. `client.startSession()` envia `POST /session` (ou `/api/session` no app
-   standalone), com `{ chatKey: visitorKey }`. O controller delega para
-   `IsaChatService.createSession`, que cria o registro em `chats` e grava uma
-   saudação estática, mesmo sem mensagem do visitante.
-3. `client.loadHistory()` envia `GET /chat/:id/history` (ou
-   `/api/chat/:id/history`). Em `IsaChatService.getHistory`, o bloco
-   `Garante session_key...` chama `this.bridge.resolveSession(...)` quando o
-   chat ainda não tem `sessionKey`.
-4. `IsaChatBridgeService.resolveSession` chama `POST /api/sessions` no BFF do
-   OpenClaw. Esse é o gatilho que cria/materializa a sessão da Isa durante o
-   acesso inicial à página.
+Essa regra vale também quando o visitante abre o widget e não envia nada:
+nenhuma sessão de agente deve ser materializada apenas porque a página foi
+acessada.
 
-O fluxo é configurado tanto em `projects/gerenteagentes/screens/IsaChatScreen.tsx`
-quanto em `projects/isa-chat/src/App.tsx`, usando o cliente compartilhado de
-`packages/api-client/src/agent-chat-client.ts`.
+## Evento que cria a sessão
+
+Contato do cliente é o primeiro envio válido de **texto ou anexo** pelo
+endpoint `POST /chat/send` (ou a rota equivalente `/api/chat/send`). O
+controller exige `chatId` e pelo menos um texto não vazio ou anexo. Depois dessa
+validação, `IsaChatService.sendMessage` deve:
+
+1. persistir a mensagem do cliente;
+2. criar/materializar a sessão no OpenClaw com `bridge.resolveSession(...)`, se
+   o chat ainda não tiver `sessionKey`;
+3. enviar a mensagem para essa sessão com `bridge.send(...)`;
+4. persistir no chat o `sessionKey` retornado.
+
+O `POST /session` usado para materializar o chat local é permitido como parte
+desse primeiro envio, mas, no modo anônimo, não deve resolver uma sessão no
+OpenClaw nem chamar a Isa antes de existir uma mensagem do cliente.
+
+## Reutilização durante a conversa
+
+O `sessionKey` pertence ao chat e é a referência da conversa com a Isa. Após a
+primeira mensagem, cada novo `POST /chat/send` deve reutilizar esse valor e
+enviar a mensagem à mesma sessão. Não se deve criar uma sessão nova por
+visita, abertura do widget, `GET /chat/:id/history` ou mensagem subsequente.
+
+Uma nova resolução só é válida quando o chat ainda não possui `sessionKey` ou
+quando há uma troca explícita de agente (`agentId`) que exija uma sessão
+compatível. Nessa situação, o novo valor deve substituir o anterior no chat e
+ser usado para os envios seguintes.
 
 ## Classificação dos eventos
 
-| Evento | Endpoint | Deve criar sessão OpenClaw? |
+| Evento | Endpoint | Comportamento esperado |
 | --- | --- | --- |
-| Acesso/carregamento da página | `POST /site-visit` | Não. É somente telemetria da visita. |
-| Abertura do widget sem mensagem | `POST /session` e `GET /chat/:id/history` | Não. Pode criar/recuperar o identificador local do chat, mas não uma sessão de agente. |
-| Primeiro texto ou anexo enviado pelo cliente | `POST /chat/send` | Sim. É o início de contato efetivo. |
-| Mensagens seguintes | `POST /chat/send` | Reutilizar a sessão já associada ao chat. |
+| Acesso/carregamento da página | `POST /site-visit` | Registrar visita; não criar sessão OpenClaw. |
+| Abertura do widget sem mensagem | `POST /session` e/ou `GET /chat/:id/history` | Criar/recuperar apenas o chat local; não criar sessão da Isa. |
+| Primeiro texto ou anexo válido | `POST /chat/send` | Criar a sessão OpenClaw, associar `sessionKey` e enviar a mensagem. |
+| Mensagens seguintes | `POST /chat/send` | Reutilizar o `sessionKey` associado ao chat. |
 
-O controller rejeita `POST /chat/send` sem `chatId` ou sem texto/anexo. No
-serviço, o caminho de `sendMessage` persiste a mensagem e, no bloco
-`Garante sessão no OpenClaw`, resolve a sessão antes de chamar
-`this.bridge.send(...)`. Esse é o ponto correto para a primeira criação da
-sessão após o contato.
-
-## Correção indicada
-
-O `getHistory` deve poder retornar o histórico de um chat sem
-`sessionKey` e não deve chamar `resolveSession`. A resolução na ponte deve
-ficar exclusivamente no envio de uma mensagem válida (ou em outro evento
-explícito de contato), mantendo `recordVisit` e a abertura da página como
-eventos sem sessão OpenClaw.
-
+O cliente compartilhado em `packages/api-client/src/agent-chat-client.ts` deve
+manter o histórico inicial sem materializar sessão e iniciar o chat somente no
+primeiro envio. O serviço de histórico deve ser somente leitura em relação à
+sessão: não deve chamar `resolveSession` para chats sem `sessionKey`.
