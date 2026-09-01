@@ -99,7 +99,8 @@ export class GitWorkspaceManager {
       ? resolve(input.agentWorkspacePath)
       : resolve(join(this.root, agentId))
     const target = resolve(join(workspaceRoot, "worktrees", task, subtask, `a${input.attempt}`))
-    if (!inside(this.root, target)) throw new Error("workspace fora da raiz segura")
+    // Verifica contra o workspaceRoot usado (workspace do agente OU root padrão)
+    if (!inside(workspaceRoot, target)) throw new Error("workspace fora da raiz segura")
 
     await this.markSafeDirectory(input.repoPath)
     // Falha ambiental clara: repo ausente causa "spawn git ENOENT" e entraria
@@ -231,7 +232,17 @@ export class GitWorkspaceManager {
       throw new Error("pré-condição inválida para limpeza do workspace")
     }
     const workspacePath = resolve(input.workspacePath)
-    if (!inside(this.root, workspacePath)) throw new Error("workspace fora da raiz segura")
+    // Verifica se está dentro de um workspace válido:
+    // - Se contém /worktrees/, extrai a raiz do próprio caminho
+    // - Senão, verifica contra this.root (comportamento original)
+    const marker = `/worktrees/`
+    const markerIndex = workspacePath.indexOf(marker)
+    if (markerIndex !== -1) {
+      const workspaceRoot = workspacePath.substring(0, markerIndex)
+      if (!inside(workspaceRoot, workspacePath)) throw new Error("workspace fora da raiz segura")
+    } else if (!inside(this.root, workspacePath)) {
+      throw new Error("workspace fora da raiz segura")
+    }
     await this.runner.run(["git", "worktree", "remove", "--force", workspacePath], input.repoPath)
     await rm(workspacePath, { recursive: true, force: true })
   }
@@ -254,8 +265,8 @@ export class GitWorkspaceManager {
     for (const line of worktreeList.stdout.split("\n")) {
       if (line.startsWith("worktree ")) {
         const wtPath = line.slice("worktree ".length).trim()
-        // Worktrees do motor seguem padrão: <root>/<agentId>/worktrees/<taskId>/<subtaskId>/a<N>
-        if (wtPath.includes(`/${taskId}/`) && inside(this.root, resolve(wtPath))) {
+        // Worktrees do motor seguem padrão: <workspaceRoot>/worktrees/<taskId>/<subtaskId>/a<N>
+        if (wtPath.includes(`/${taskId}/`) && this.isInsideValidWorkspace(wtPath)) {
           worktreePaths.push(wtPath)
           taskDirectories.add(resolve(dirname(dirname(wtPath))))
         }
@@ -288,10 +299,27 @@ export class GitWorkspaceManager {
 
     // Limpar diretórios da tarefa dentro dos workspaces dos agentes.
     for (const taskDir of taskDirectories) {
-      if (inside(this.root, taskDir)) await rm(taskDir, { recursive: true, force: true }).catch(() => {})
+      if (this.isInsideValidWorkspace(taskDir)) await rm(taskDir, { recursive: true, force: true }).catch(() => {})
     }
 
     return { worktreesRemoved, branchesRemoved }
+  }
+
+  /**
+   * Verifica se um caminho está dentro de um workspace válido.
+   * Workspaces válidos: MOTOR_WORKSPACE_ROOT OU workspace de agente (padrão <root>/worktrees/...).
+   */
+  private isInsideValidWorkspace(path: string): boolean {
+    const resolved = resolve(path)
+    // Padrão de worktree: <workspaceRoot>/worktrees/<taskId>/<subtaskId>/a<N>
+    const marker = "/worktrees/"
+    const markerIndex = resolved.indexOf(marker)
+    if (markerIndex !== -1) {
+      const workspaceRoot = resolved.substring(0, markerIndex)
+      return inside(workspaceRoot, resolved)
+    }
+    // Fallback: verifica contra this.root (comportamento original)
+    return inside(this.root, resolved)
   }
 
   private async markSafeDirectory(path: string): Promise<void> {
