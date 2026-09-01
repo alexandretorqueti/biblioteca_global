@@ -198,6 +198,37 @@ function contarCriterios(raw: unknown): number {
   return 0
 }
 
+/**
+ * ST-3: converte o valor bruto de acceptance_criteria (array, string JSON ou null)
+ * em um array de strings utilizável no formulário e no payload.
+ */
+function parseCriterios(raw: unknown): string[] {
+  if (raw == null) return []
+  if (Array.isArray(raw)) return raw.filter((v): v is string => typeof v === "string")
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed)) return parsed.filter((v): v is string => typeof v === "string")
+    } catch {
+      // não é JSON válido — tratar como texto simples de uma linha
+      return raw.trim() ? [raw.trim()] : []
+    }
+  }
+  return []
+}
+
+/**
+ * ST-3: converte o texto do textarea (um critério por linha) em array de strings.
+ * Linhas vazias ou só com espaços são descartadas.
+ */
+function parseCriteriosTexto(texto: string): string[] {
+  if (!texto || !texto.trim()) return []
+  return texto
+    .split("\n")
+    .map((linha) => linha.trim())
+    .filter((linha) => linha.length > 0)
+}
+
 export default function TaskMonitorScreen(): ReactNode {
   const bundle = useApi()
   const [tarefas, setTarefas] = useState<Tarefa[]>([])
@@ -459,6 +490,8 @@ export default function TaskMonitorScreen(): ReactNode {
   )
 
   // ST-2: campos e handler do diálogo de edição de subtarefa
+  // ST-3: descricao removida (coluna legada); scope + acceptance_criteria são os campos canônicos do motor-v2.
+  // Status expandido para os 9 valores reais do sistema.
   const editSubFields: DynamicField[] = useMemo(
     () => [
       { name: "titulo", label: "Título", type: "text", required: true, maxLength: 200, fullWidth: true },
@@ -467,14 +500,26 @@ export default function TaskMonitorScreen(): ReactNode {
         label: "Status",
         type: "select",
         options: [
-          { label: "Pendente", value: "pending" },
-          { label: "Executando", value: "running" },
-          { label: "Verificada", value: "verified" },
-          { label: "Falhou", value: "failed" },
+          { label: "Pendente (pending)", value: "pending" },
+          { label: "Executando (running)", value: "running" },
+          { label: "Verificada (verified)", value: "verified" },
+          { label: "Rejeitada (rejected)", value: "rejected" },
+          { label: "Bloqueada (blocked)", value: "blocked" },
+          { label: "Concluída (completed)", value: "completed" },
+          { label: "Pausada (paused)", value: "paused" },
+          { label: "Falhou (failed)", value: "failed" },
+          { label: "Cancelada (cancelled)", value: "cancelled" },
         ],
       },
       { name: "seq", label: "Ordem", type: "number", min: 0 },
-      { name: "descricao", label: "Descrição", type: "textarea", fullWidth: true },
+      { name: "scope", label: "Escopo", type: "textarea", fullWidth: true, required: true },
+      {
+        name: "acceptance_criteria",
+        label: "Critérios de aceite (um por linha)",
+        type: "textarea",
+        fullWidth: true,
+        helperText: "Cada linha não vazia será enviada como um critério. Deixe vazio para nenhum critério.",
+      },
       { name: "resultado", label: "Resultado", type: "textarea", fullWidth: true },
       {
         name: "dependsOnSubtaskId",
@@ -492,12 +537,24 @@ export default function TaskMonitorScreen(): ReactNode {
   )
 
   const editSubInitialValues = useMemo<DynamicFormValues>(() => {
-    if (!editingSub) return { titulo: "", status: "pending", seq: 0, descricao: "", resultado: "", dependsOnSubtaskId: "" }
+    if (!editingSub) {
+      return {
+        titulo: "",
+        status: "pending",
+        seq: 0,
+        scope: "",
+        acceptance_criteria: "",
+        resultado: "",
+        dependsOnSubtaskId: "",
+      }
+    }
+    const criterios = parseCriterios(editingSub.acceptanceCriteria)
     return {
       titulo: editingSub.titulo,
       status: editingSub.status,
       seq: editingSub.seq,
-      descricao: editingSub.descricao ?? "",
+      scope: editingSub.scope ?? "",
+      acceptance_criteria: criterios.join("\n"),
       resultado: editingSub.resultado ?? "",
       dependsOnSubtaskId: editingSub.dependsOnSubtaskId ?? "",
     }
@@ -509,11 +566,49 @@ export default function TaskMonitorScreen(): ReactNode {
       setEditSubLoading(true)
       setEditSubError(null)
       try {
+        // ST-3: converter linhas do textarea em array JSON de strings
+        const criteriosRaw = String(values.acceptance_criteria ?? "")
+        const criteriosArray = parseCriteriosTexto(criteriosRaw)
+
+        // Validação: se havia critérios antes e agora ficaria vazio, avisar
+        const criteriosAnteriores = parseCriterios(editingSub.acceptanceCriteria)
+        if (criteriosAnteriores.length > 0 && criteriosArray.length === 0) {
+          setEditSubError(
+            "Os critérios de aceite não podem ser removidos completamente. " +
+            "Mantenha ao menos um critério ou confirme a remoção deixando o campo vazio antes de salvar.",
+          )
+          setEditSubLoading(false)
+          return
+        }
+
+        // Validação de tamanho razoável (max 50 critérios, 500 chars cada)
+        if (criteriosArray.length > 50) {
+          setEditSubError("Limite máximo de 50 critérios de aceite excedido.")
+          setEditSubLoading(false)
+          return
+        }
+        for (const c of criteriosArray) {
+          if (c.length > 500) {
+            setEditSubError("Cada critério de aceite pode ter no máximo 500 caracteres.")
+            setEditSubLoading(false)
+            return
+          }
+        }
+
+        const scopeValor = String(values.scope ?? "").trim()
+        if (!scopeValor) {
+          setEditSubError("O escopo é obrigatório.")
+          setEditSubLoading(false)
+          return
+        }
+
+        // ST-3: descricao omitida do payload (coluna legada, não usada pelo motor-v2)
         const body: Record<string, unknown> = {
           titulo: String(values.titulo ?? "").trim(),
           status: String(values.status ?? "pending"),
           seq: Number(values.seq ?? 0),
-          descricao: values.descricao ? String(values.descricao).trim() : null,
+          scope: scopeValor,
+          acceptance_criteria: criteriosArray.length > 0 ? criteriosArray : null,
           resultado: values.resultado ? String(values.resultado).trim() : null,
           dependsOnSubtaskId:
             values.dependsOnSubtaskId !== "" && values.dependsOnSubtaskId != null

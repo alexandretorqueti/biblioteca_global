@@ -30,6 +30,7 @@ import {
   TableCell,
   TableHead,
   TableRow,
+  Tooltip,
   Typography,
 } from "@mui/material"
 import { PlayArrowRounded, PauseRounded, ReplayRounded, EditRounded, CloseRounded } from "@mui/icons-material"
@@ -75,6 +76,10 @@ interface SubTaskMotor {
   status: string
   deliverCount?: number
   blockInfo?: { reason?: string; command?: string; exitCode?: number | null } | null
+  scope?: string | null
+  acceptanceCriteria?: unknown
+  workspaceStatus?: string | null
+  correctionForSubtaskId?: number | null
 }
 
 /** Subtarefa do banco de dados (para edição — o motor só tem seq/title/status). */
@@ -84,9 +89,13 @@ interface SubTarefaDb {
   seq: number
   titulo: string
   descricao?: string | null
+  scope?: string | null
+  acceptanceCriteria?: unknown
   status: string
   resultado?: string | null
   dependsOnSubtaskId?: number | null
+  workspaceStatus?: string | null
+  correctionForSubtaskId?: number | null
 }
 
 interface MotorEvent {
@@ -119,6 +128,8 @@ interface MotorDetail {
 }
 
 const STATUS_FINAIS = new Set(["completed", "finalizada", "deployada", "aborted"])
+const STATUS_INICIO_PERMITIDO = new Set(["draft", "planned", "blocked", "failed"])
+const STATUS_EXECUCAO = new Set(["running", "planning", "analyzing"])
 
 function corStatus(status: string): "default" | "primary" | "secondary" | "error" | "info" | "success" | "warning" {
   switch (status) {
@@ -167,6 +178,55 @@ function traduzirEvento(type: string): string {
     motor_fix: "Correção do motor",
   }
   return mapa[type] ?? type
+}
+
+/**
+ * Conta critérios de aceite com segurança: aceita array de strings,
+ * string JSON válida com array, ou retorna 0 para null/undefined/inválido.
+ */
+function contarCriterios(raw: unknown): number {
+  if (raw == null) return 0
+  if (Array.isArray(raw)) return raw.length
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw)
+      return Array.isArray(parsed) ? parsed.length : 0
+    } catch {
+      return 0
+    }
+  }
+  return 0
+}
+
+/**
+ * ST-3: converte o valor bruto de acceptance_criteria (array, string JSON ou null)
+ * em um array de strings utilizável no formulário e no payload.
+ */
+function parseCriterios(raw: unknown): string[] {
+  if (raw == null) return []
+  if (Array.isArray(raw)) return raw.filter((v): v is string => typeof v === "string")
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed)) return parsed.filter((v): v is string => typeof v === "string")
+    } catch {
+      // não é JSON válido — tratar como texto simples de uma linha
+      return raw.trim() ? [raw.trim()] : []
+    }
+  }
+  return []
+}
+
+/**
+ * ST-3: converte o texto do textarea (um critério por linha) em array de strings.
+ * Linhas vazias ou só com espaços são descartadas.
+ */
+function parseCriteriosTexto(texto: string): string[] {
+  if (!texto || !texto.trim()) return []
+  return texto
+    .split("\n")
+    .map((linha) => linha.trim())
+    .filter((linha) => linha.length > 0)
 }
 
 export default function TaskMonitorScreen(): ReactNode {
@@ -369,6 +429,21 @@ export default function TaskMonitorScreen(): ReactNode {
         fullWidth: true,
       },
       {
+        name: "status",
+        label: "Status",
+        type: "select",
+        options: [
+          { label: "Rascunho (draft)", value: "draft" },
+          { label: "Planejada (planned)", value: "planned" },
+          { label: "Executando (running)", value: "running" },
+          { label: "Pausada (paused)", value: "paused" },
+          { label: "Concluída (completed)", value: "completed" },
+          { label: "Falhou (failed)", value: "failed" },
+          { label: "Cancelada (cancelled)", value: "cancelled" },
+          { label: "Bloqueada (blocked)", value: "blocked" },
+        ],
+      },
+      {
         name: "dependsOnTaskId",
         label: "Depende da tarefa",
         type: "multipleChoice",
@@ -392,6 +467,7 @@ export default function TaskMonitorScreen(): ReactNode {
         const body: Record<string, unknown> = {
           titulo: String(values.titulo ?? "").trim(),
           descricao: values.descricao ? String(values.descricao).trim() : null,
+          status: values.status ? String(values.status) : undefined,
           dependsOnTaskId:
             values.dependsOnTaskId !== "" && values.dependsOnTaskId != null
               ? Number(values.dependsOnTaskId)
@@ -414,6 +490,8 @@ export default function TaskMonitorScreen(): ReactNode {
   )
 
   // ST-2: campos e handler do diálogo de edição de subtarefa
+  // ST-3: descricao removida (coluna legada); scope + acceptance_criteria são os campos canônicos do motor-v2.
+  // Status expandido para os 9 valores reais do sistema.
   const editSubFields: DynamicField[] = useMemo(
     () => [
       { name: "titulo", label: "Título", type: "text", required: true, maxLength: 200, fullWidth: true },
@@ -422,14 +500,26 @@ export default function TaskMonitorScreen(): ReactNode {
         label: "Status",
         type: "select",
         options: [
-          { label: "Pendente", value: "pending" },
-          { label: "Executando", value: "running" },
-          { label: "Verificada", value: "verified" },
-          { label: "Falhou", value: "failed" },
+          { label: "Pendente (pending)", value: "pending" },
+          { label: "Executando (running)", value: "running" },
+          { label: "Verificada (verified)", value: "verified" },
+          { label: "Rejeitada (rejected)", value: "rejected" },
+          { label: "Bloqueada (blocked)", value: "blocked" },
+          { label: "Concluída (completed)", value: "completed" },
+          { label: "Pausada (paused)", value: "paused" },
+          { label: "Falhou (failed)", value: "failed" },
+          { label: "Cancelada (cancelled)", value: "cancelled" },
         ],
       },
       { name: "seq", label: "Ordem", type: "number", min: 0 },
-      { name: "descricao", label: "Descrição", type: "textarea", fullWidth: true },
+      { name: "scope", label: "Escopo", type: "textarea", fullWidth: true, required: true },
+      {
+        name: "acceptance_criteria",
+        label: "Critérios de aceite (um por linha)",
+        type: "textarea",
+        fullWidth: true,
+        helperText: "Cada linha não vazia será enviada como um critério. Deixe vazio para nenhum critério.",
+      },
       { name: "resultado", label: "Resultado", type: "textarea", fullWidth: true },
       {
         name: "dependsOnSubtaskId",
@@ -447,12 +537,24 @@ export default function TaskMonitorScreen(): ReactNode {
   )
 
   const editSubInitialValues = useMemo<DynamicFormValues>(() => {
-    if (!editingSub) return { titulo: "", status: "pending", seq: 0, descricao: "", resultado: "", dependsOnSubtaskId: "" }
+    if (!editingSub) {
+      return {
+        titulo: "",
+        status: "pending",
+        seq: 0,
+        scope: "",
+        acceptance_criteria: "",
+        resultado: "",
+        dependsOnSubtaskId: "",
+      }
+    }
+    const criterios = parseCriterios(editingSub.acceptanceCriteria)
     return {
       titulo: editingSub.titulo,
       status: editingSub.status,
       seq: editingSub.seq,
-      descricao: editingSub.descricao ?? "",
+      scope: editingSub.scope ?? "",
+      acceptance_criteria: criterios.join("\n"),
       resultado: editingSub.resultado ?? "",
       dependsOnSubtaskId: editingSub.dependsOnSubtaskId ?? "",
     }
@@ -464,11 +566,49 @@ export default function TaskMonitorScreen(): ReactNode {
       setEditSubLoading(true)
       setEditSubError(null)
       try {
+        // ST-3: converter linhas do textarea em array JSON de strings
+        const criteriosRaw = String(values.acceptance_criteria ?? "")
+        const criteriosArray = parseCriteriosTexto(criteriosRaw)
+
+        // Validação: se havia critérios antes e agora ficaria vazio, avisar
+        const criteriosAnteriores = parseCriterios(editingSub.acceptanceCriteria)
+        if (criteriosAnteriores.length > 0 && criteriosArray.length === 0) {
+          setEditSubError(
+            "Os critérios de aceite não podem ser removidos completamente. " +
+            "Mantenha ao menos um critério ou confirme a remoção deixando o campo vazio antes de salvar.",
+          )
+          setEditSubLoading(false)
+          return
+        }
+
+        // Validação de tamanho razoável (max 50 critérios, 500 chars cada)
+        if (criteriosArray.length > 50) {
+          setEditSubError("Limite máximo de 50 critérios de aceite excedido.")
+          setEditSubLoading(false)
+          return
+        }
+        for (const c of criteriosArray) {
+          if (c.length > 500) {
+            setEditSubError("Cada critério de aceite pode ter no máximo 500 caracteres.")
+            setEditSubLoading(false)
+            return
+          }
+        }
+
+        const scopeValor = String(values.scope ?? "").trim()
+        if (!scopeValor) {
+          setEditSubError("O escopo é obrigatório.")
+          setEditSubLoading(false)
+          return
+        }
+
+        // ST-3: descricao omitida do payload (coluna legada, não usada pelo motor-v2)
         const body: Record<string, unknown> = {
           titulo: String(values.titulo ?? "").trim(),
           status: String(values.status ?? "pending"),
           seq: Number(values.seq ?? 0),
-          descricao: values.descricao ? String(values.descricao).trim() : null,
+          scope: scopeValor,
+          acceptance_criteria: criteriosArray.length > 0 ? criteriosArray : null,
           resultado: values.resultado ? String(values.resultado).trim() : null,
           dependsOnSubtaskId:
             values.dependsOnSubtaskId !== "" && values.dependsOnSubtaskId != null
@@ -524,8 +664,21 @@ export default function TaskMonitorScreen(): ReactNode {
       title: subtarefa.titulo,
       status: subtarefa.status,
       blockInfo: subtarefa.resultado ? { reason: subtarefa.resultado } : null,
+      scope: subtarefa.scope ?? null,
+      acceptanceCriteria: subtarefa.acceptanceCriteria ?? null,
+      workspaceStatus: subtarefa.workspaceStatus ?? null,
+      correctionForSubtaskId: subtarefa.correctionForSubtaskId ?? null,
     }))
   }, [detail?.subtasks, subtarefasDb])
+
+  /** Mapa id → seq para resolver subtarefa corrigida (correção de #X). */
+  const subtaskIdToSeq = useMemo<Record<number, number>>(() => {
+    const map: Record<number, number> = {}
+    for (const s of subtarefasDb) {
+      map[s.id] = s.seq
+    }
+    return map
+  }, [subtarefasDb])
 
   const stats = useMemo(() => {
     const subs = subtasks
@@ -537,12 +690,16 @@ export default function TaskMonitorScreen(): ReactNode {
 
   const tarefaSelecionada = tarefas.find((t) => t.id === tarefaId)
   const statusMotor = detail?.task?.status ?? tarefaSelecionada?.status ?? "—"
+  const podeIniciar = STATUS_INICIO_PERMITIDO.has(statusMotor)
+  const podePausar = STATUS_EXECUCAO.has(statusMotor)
+  const podeRetomar = statusMotor === "paused"
 
   const editInitialValues = useMemo<DynamicFormValues>(() => {
-    if (!tarefaSelecionada) return { titulo: "", descricao: "", dependsOnTaskId: "" }
+    if (!tarefaSelecionada) return { titulo: "", descricao: "", status: "draft", dependsOnTaskId: "" }
     return {
       titulo: tarefaSelecionada.titulo,
       descricao: tarefaSelecionada.descricao ?? "",
+      status: tarefaSelecionada.status ?? "draft",
       dependsOnTaskId: tarefaSelecionada.dependsOnTaskId ?? "",
     }
   }, [tarefaSelecionada])
@@ -653,7 +810,7 @@ export default function TaskMonitorScreen(): ReactNode {
                 size="small"
                 variant="contained"
                 startIcon={<PlayArrowRounded />}
-                disabled={acao !== null || detail?.exists === true || ["running", "planning"].includes(statusMotor)}
+                disabled={acao !== null || !podeIniciar}
                 onClick={() => void executarAcao("start")}
                 data-testid="btn-start"
               >
@@ -663,7 +820,7 @@ export default function TaskMonitorScreen(): ReactNode {
                 size="small"
                 variant="outlined"
                 startIcon={<PauseRounded />}
-                disabled={acao !== null || !["running", "planning"].includes(statusMotor)}
+                disabled={acao !== null || !podePausar}
                 onClick={() => void executarAcao("pause")}
                 data-testid="btn-pause"
               >
@@ -673,7 +830,7 @@ export default function TaskMonitorScreen(): ReactNode {
                 size="small"
                 variant="outlined"
                 startIcon={<ReplayRounded />}
-                disabled={acao !== null || !["paused"].includes(statusMotor)}
+                disabled={acao !== null || !podeRetomar}
                 onClick={() => void executarAcao("resume")}
                 data-testid="btn-resume"
               >
@@ -688,7 +845,7 @@ export default function TaskMonitorScreen(): ReactNode {
             </Alert>
           )}
 
-          {detail?.exists && detail.task?.blockInfo && (
+          {detail?.exists && statusMotor === "blocked" && detail.task?.blockInfo && (
             <Alert severity="error" sx={{ mt: 2 }} data-testid="task-block-banner">
               <Typography variant="body2">
                 <b>⛔ Tarefa bloqueada:</b>{" "}
@@ -727,7 +884,10 @@ export default function TaskMonitorScreen(): ReactNode {
                   <TableRow>
                     <TableCell>#</TableCell>
                     <TableCell>Subtarefa</TableCell>
+                    <TableCell sx={{ maxWidth: 240 }}>Escopo</TableCell>
+                    <TableCell align="center">Critérios</TableCell>
                     <TableCell>Status</TableCell>
+                    <TableCell>Workspace</TableCell>
                     <TableCell align="right">Entregas</TableCell>
                     <TableCell align="center" sx={{ width: 48 }}>Ações</TableCell>
                   </TableRow>
@@ -735,6 +895,8 @@ export default function TaskMonitorScreen(): ReactNode {
                 <TableBody>
                   {subtasks.map((s) => {
                     const ativa = stats.active && s.seq === stats.active.seq
+                    const criterioCount = contarCriterios(s.acceptanceCriteria)
+                    const correctedSeq = s.correctionForSubtaskId != null ? subtaskIdToSeq[s.correctionForSubtaskId] : undefined
                     return (
                       <TableRow
                         key={s.seq}
@@ -743,7 +905,18 @@ export default function TaskMonitorScreen(): ReactNode {
                       >
                         <TableCell>{ativa ? "▶ " : ""}{s.seq}</TableCell>
                         <TableCell>
-                          {s.title}
+                          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+                            <Typography component="span" variant="body2">{s.title}</Typography>
+                            {s.correctionForSubtaskId != null && (
+                              <Chip
+                                size="small"
+                                color="warning"
+                                variant="outlined"
+                                label={correctedSeq != null ? `Correção de #${correctedSeq}` : "Correção"}
+                                data-testid={`correction-badge-${s.seq}`}
+                              />
+                            )}
+                          </Stack>
                           {s.blockInfo?.reason && (
                             <Typography variant="caption" display="block" color="text.secondary">
                               🚫 {s.blockInfo.reason}
@@ -752,8 +925,46 @@ export default function TaskMonitorScreen(): ReactNode {
                             </Typography>
                           )}
                         </TableCell>
+                        <TableCell sx={{ maxWidth: 240 }}>
+                          {s.scope ? (
+                            <Tooltip title={s.scope} arrow placement="top">
+                              <Typography
+                                variant="caption"
+                                sx={{
+                                  display: "-webkit-box",
+                                  WebkitLineClamp: 2,
+                                  WebkitBoxOrient: "vertical",
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                  wordBreak: "break-word",
+                                }}
+                                data-testid={`scope-text-${s.seq}`}
+                              >
+                                {s.scope}
+                              </Typography>
+                            </Tooltip>
+                          ) : (
+                            <Typography variant="caption" color="text.secondary">—</Typography>
+                          )}
+                        </TableCell>
+                        <TableCell align="center">
+                          <Chip
+                            size="small"
+                            variant="outlined"
+                            label={criterioCount}
+                            color={criterioCount > 0 ? "primary" : "default"}
+                            data-testid={`criteria-count-${s.seq}`}
+                          />
+                        </TableCell>
                         <TableCell>
                           <Chip size="small" label={s.status} color={corStatus(s.status)} />
+                        </TableCell>
+                        <TableCell>
+                          {s.workspaceStatus ? (
+                            <Chip size="small" variant="outlined" label={s.workspaceStatus} data-testid={`workspace-status-${s.seq}`} />
+                          ) : (
+                            <Typography variant="caption" color="text.secondary">—</Typography>
+                          )}
                         </TableCell>
                         <TableCell align="right">{s.deliverCount ?? 0}</TableCell>
                         <TableCell align="center">
@@ -771,7 +982,7 @@ export default function TaskMonitorScreen(): ReactNode {
                   })}
                   {subtasks.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={5}>
+                      <TableCell colSpan={8}>
                         <Typography color="text.secondary" data-testid="empty-subtasks">
                           Nenhuma subtarefa ainda — o motor está planejando a execução.
                         </Typography>
