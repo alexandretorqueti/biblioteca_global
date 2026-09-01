@@ -727,3 +727,316 @@ describe("TaskMonitorScreen — compatibilidade Motor-v2", () => {
     expect(screen.getByTestId("btn-resume")).toBeDisabled()
   })
 })
+
+describe("TaskMonitorScreen — Lista de subtarefas (scope, critérios, workspace, correção)", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", mockFetch)
+    mockFetch.mockReset()
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    delete globalThis.__bundleFalso
+  })
+
+  function renderScreen() {
+    return render(
+      <BibliotecaThemeProvider>
+        <TaskMonitorScreen />
+      </BibliotecaThemeProvider>,
+    )
+  }
+
+  function subTarefaDbFactory(
+    id: number,
+    tarefaId: number,
+    seq: number,
+    titulo: string,
+    status = "pending",
+    extra?: {
+      scope?: string | null
+      acceptanceCriteria?: unknown
+      workspaceStatus?: string | null
+      correctionForSubtaskId?: number | null
+    },
+  ) {
+    return {
+      id,
+      tarefaId,
+      seq,
+      titulo,
+      status,
+      descricao: null,
+      scope: extra?.scope ?? null,
+      acceptanceCriteria: extra?.acceptanceCriteria ?? null,
+      resultado: null,
+      dependsOnSubtaskId: null,
+      workspaceStatus: extra?.workspaceStatus ?? null,
+      correctionForSubtaskId: extra?.correctionForSubtaskId ?? null,
+    } as const
+  }
+
+  it("exibe scope truncado na lista e contador de critérios de aceite", async () => {
+    const tarefas = [tarefaFactory(1, "Tarefa", "running", 1)]
+    const motorDetail = {
+      motorId: "m1",
+      exists: true,
+      task: { id: "task-1", status: "running", title: "Tarefa" },
+      subtasks: [
+        {
+          seq: 1,
+          title: "Implementar login",
+          status: "verified",
+          scope: "Criar tela de login com validação de e-mail e senha, incluindo recuperação de senha e autenticação de dois fatores",
+          acceptanceCriteria: ["Campo e-mail validado", "Senha com argon2id", "2FA via TOTP"],
+          workspaceStatus: null,
+          correctionForSubtaskId: null,
+        },
+        {
+          seq: 2,
+          title: "Sem scope",
+          status: "pending",
+          scope: null,
+          acceptanceCriteria: null,
+          workspaceStatus: null,
+          correctionForSubtaskId: null,
+        },
+      ],
+      currentSubTask: null,
+      events: [],
+    }
+    const dbSubs = [
+      subTarefaDbFactory(10, 1, 1, "Implementar login", "verified", {
+        scope: "Criar tela de login com validação de e-mail e senha, incluindo recuperação de senha e autenticação de dois fatores",
+        acceptanceCriteria: ["Campo e-mail validado", "Senha com argon2id", "2FA via TOTP"],
+      }),
+      subTarefaDbFactory(11, 1, 2, "Sem scope", "pending"),
+    ]
+
+    const bundle = {
+      http: {
+        request: async (method: string, path: string) => {
+          if (method === "GET" && path === "/projetos_captados") return { items: [projetoFactory(1, "P1")] }
+          if (method === "GET" && path === "/tarefas") return { items: tarefas }
+          if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
+          if (method === "GET" && path.endsWith("/subtarefas")) return dbSubs
+          return {}
+        },
+      },
+    } as never
+
+    globalThis.__bundleFalso = bundle
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("subtask-table")).toBeInTheDocument()
+    })
+
+    // Scope da sub 1 deve estar visível (truncado)
+    const scopeText = screen.getByTestId("scope-text-1")
+    expect(scopeText).toBeInTheDocument()
+    expect(scopeText).toHaveTextContent("Criar tela de login")
+
+    // Sub 2 sem scope exibe "—"
+    expect(screen.getByTestId("subtask-row-2")).toBeInTheDocument()
+
+    // Contador de critérios: sub 1 tem 3, sub 2 tem 0
+    expect(screen.getByTestId("criteria-count-1")).toHaveTextContent("3")
+    expect(screen.getByTestId("criteria-count-2")).toHaveTextContent("0")
+  })
+
+  it("acceptance_criteria ausente/null/string inválida não quebra a renderização", async () => {
+    const tarefas = [tarefaFactory(1, "Tarefa", "running", 1)]
+    const motorDetail = {
+      motorId: "m1",
+      exists: true,
+      task: { id: "task-1", status: "running", title: "Tarefa" },
+      subtasks: [
+        { seq: 1, title: "Null criteria", status: "pending", scope: null, acceptanceCriteria: null, workspaceStatus: null, correctionForSubtaskId: null },
+        { seq: 2, title: "Undefined criteria", status: "pending", scope: null, acceptanceCriteria: undefined, workspaceStatus: null, correctionForSubtaskId: null },
+        { seq: 3, title: "Invalid string", status: "pending", scope: null, acceptanceCriteria: "not-json", workspaceStatus: null, correctionForSubtaskId: null },
+        { seq: 4, title: "Valid JSON array", status: "pending", scope: null, acceptanceCriteria: ["crit1", "crit2"], workspaceStatus: null, correctionForSubtaskId: null },
+      ],
+      currentSubTask: null,
+      events: [],
+    }
+    const dbSubs = [
+      subTarefaDbFactory(10, 1, 1, "Null criteria", "pending"),
+      subTarefaDbFactory(11, 1, 2, "Undefined criteria", "pending"),
+      subTarefaDbFactory(12, 1, 3, "Invalid string", "pending", { acceptanceCriteria: "not-json" }),
+      subTarefaDbFactory(13, 1, 4, "Valid JSON array", "pending", { acceptanceCriteria: ["crit1", "crit2"] }),
+    ]
+
+    const bundle = {
+      http: {
+        request: async (method: string, path: string) => {
+          if (method === "GET" && path === "/projetos_captados") return { items: [projetoFactory(1, "P1")] }
+          if (method === "GET" && path === "/tarefas") return { items: tarefas }
+          if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
+          if (method === "GET" && path.endsWith("/subtarefas")) return dbSubs
+          return {}
+        },
+      },
+    } as never
+
+    globalThis.__bundleFalso = bundle
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("subtask-table")).toBeInTheDocument()
+    })
+
+    // Todos renderizam sem quebrar
+    expect(screen.getByTestId("criteria-count-1")).toHaveTextContent("0")
+    expect(screen.getByTestId("criteria-count-2")).toHaveTextContent("0")
+    expect(screen.getByTestId("criteria-count-3")).toHaveTextContent("0")
+    expect(screen.getByTestId("criteria-count-4")).toHaveTextContent("2")
+  })
+
+  it("exibe workspace_status como chip somente leitura quando presente", async () => {
+    const tarefas = [tarefaFactory(1, "Tarefa", "running", 1)]
+    const motorDetail = {
+      motorId: "m1",
+      exists: true,
+      task: { id: "task-1", status: "running", title: "Tarefa" },
+      subtasks: [
+        { seq: 1, title: "Com workspace", status: "running", scope: null, acceptanceCriteria: null, workspaceStatus: "dirty", correctionForSubtaskId: null },
+        { seq: 2, title: "Sem workspace", status: "pending", scope: null, acceptanceCriteria: null, workspaceStatus: null, correctionForSubtaskId: null },
+      ],
+      currentSubTask: null,
+      events: [],
+    }
+    const dbSubs = [
+      subTarefaDbFactory(10, 1, 1, "Com workspace", "running", { workspaceStatus: "dirty" }),
+      subTarefaDbFactory(11, 1, 2, "Sem workspace", "pending"),
+    ]
+
+    const bundle = {
+      http: {
+        request: async (method: string, path: string) => {
+          if (method === "GET" && path === "/projetos_captados") return { items: [projetoFactory(1, "P1")] }
+          if (method === "GET" && path === "/tarefas") return { items: tarefas }
+          if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
+          if (method === "GET" && path.endsWith("/subtarefas")) return dbSubs
+          return {}
+        },
+      },
+    } as never
+
+    globalThis.__bundleFalso = bundle
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("subtask-table")).toBeInTheDocument()
+    })
+
+    // Sub 1 tem workspace_status "dirty"
+    expect(screen.getByTestId("workspace-status-1")).toBeInTheDocument()
+    expect(screen.getByTestId("workspace-status-1")).toHaveTextContent("dirty")
+
+    // Sub 2 não tem workspace_status — exibe "—"
+    expect(screen.queryByTestId("workspace-status-2")).not.toBeInTheDocument()
+  })
+
+  it("subtarefa corretiva exibe badge com vínculo para a subtarefa corrigida", async () => {
+    const tarefas = [tarefaFactory(1, "Tarefa", "running", 1)]
+    // A subtarefa 2 é correção da subtarefa 1 (correctionForSubtaskId = 10, que é o id da sub 1 no banco)
+    const motorDetail = {
+      motorId: "m1",
+      exists: true,
+      task: { id: "task-1", status: "running", title: "Tarefa" },
+      subtasks: [
+        { seq: 1, title: "Original", status: "rejected", scope: "Fazer X", acceptanceCriteria: ["crit1"], workspaceStatus: null, correctionForSubtaskId: null },
+        { seq: 2, title: "Correção: Fazer X", status: "pending", scope: "Motivo: gate falhou por lint", acceptanceCriteria: ["crit1", "lint limpo"], workspaceStatus: null, correctionForSubtaskId: 10 },
+      ],
+      currentSubTask: null,
+      events: [],
+    }
+    const dbSubs = [
+      subTarefaDbFactory(10, 1, 1, "Original", "rejected", { scope: "Fazer X", acceptanceCriteria: ["crit1"] }),
+      subTarefaDbFactory(11, 1, 2, "Correção: Fazer X", "pending", {
+        scope: "Motivo: gate falhou por lint",
+        acceptanceCriteria: ["crit1", "lint limpo"],
+        correctionForSubtaskId: 10,
+      }),
+    ]
+
+    const bundle = {
+      http: {
+        request: async (method: string, path: string) => {
+          if (method === "GET" && path === "/projetos_captados") return { items: [projetoFactory(1, "P1")] }
+          if (method === "GET" && path === "/tarefas") return { items: tarefas }
+          if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
+          if (method === "GET" && path.endsWith("/subtarefas")) return dbSubs
+          return {}
+        },
+      },
+    } as never
+
+    globalThis.__bundleFalso = bundle
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("subtask-table")).toBeInTheDocument()
+    })
+
+    // Badge de correção na sub 2 aponta para sub 1
+    expect(screen.getByTestId("correction-badge-2")).toBeInTheDocument()
+    expect(screen.getByTestId("correction-badge-2")).toHaveTextContent("Correção de #1")
+
+    // Sub 1 não tem badge de correção
+    expect(screen.queryByTestId("correction-badge-1")).not.toBeInTheDocument()
+  })
+
+  it("fallback do banco também exibe scope e critérios (motor-detail sem subtasks)", async () => {
+    const tarefas = [tarefaFactory(1, "Tarefa", "running", 1)]
+    const motorDetail = {
+      motorId: "m1",
+      exists: true,
+      task: { id: "task-1", status: "running", title: "Tarefa" },
+      subtasks: [], // motor sem subtarefas → fallback do banco
+      currentSubTask: null,
+      events: [],
+    }
+    const dbSubs = [
+      subTarefaDbFactory(10, 1, 1, "Sub do banco", "pending", {
+        scope: "Escopo via banco",
+        acceptanceCriteria: ["critério A", "critério B"],
+        workspaceStatus: "clean",
+      }),
+    ]
+
+    const bundle = {
+      http: {
+        request: async (method: string, path: string) => {
+          if (method === "GET" && path === "/projetos_captados") return { items: [projetoFactory(1, "P1")] }
+          if (method === "GET" && path === "/tarefas") return { items: tarefas }
+          if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
+          if (method === "GET" && path.endsWith("/subtarefas")) return dbSubs
+          return {}
+        },
+      },
+    } as never
+
+    globalThis.__bundleFalso = bundle
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("subtask-row-1")).toBeInTheDocument()
+    })
+
+    // Scope visível via fallback
+    expect(screen.getByTestId("scope-text-1")).toHaveTextContent("Escopo via banco")
+    // Critérios via fallback
+    expect(screen.getByTestId("criteria-count-1")).toHaveTextContent("2")
+    // Workspace via fallback
+    expect(screen.getByTestId("workspace-status-1")).toHaveTextContent("clean")
+  })
+})
