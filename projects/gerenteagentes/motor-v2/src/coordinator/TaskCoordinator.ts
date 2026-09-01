@@ -22,6 +22,7 @@ import { isBaselineCorrection } from "../policies/BaselinePolicy.js"
 import { blockerEvidence } from "../policies/BlockerPolicy.js"
 import { transitionTask, type TaskTransition } from "../policies/TaskStateMachine.js"
 import { createLogger, describeError } from "../shared/logger.js"
+import { ConsoleAgentRuntimeDriver } from "../runtime/ConsoleAgentRuntimeDriver.js"
 
 interface ActiveWorker {
   taskId: string
@@ -315,12 +316,18 @@ export class TaskCoordinator {
       const baseBranch = subtask.branchTrabalho || "base-desenvolvimento"
       const activeWorkerForBranch = this.activeWorkers.get(executionId)
       if (activeWorkerForBranch) activeWorkerForBranch.baseBranch = baseBranch
+      
+      // Busca workspace real do agente no Console
+      const agentWorkspacePath = await this.getAgentWorkspacePath(subtask.agentId)
+      
       const workspace = await this.workspaceManager.prepare({
         repoPath: subtask.repoPath,
+        agentId: subtask.agentId,
         baseBranch,
         taskId: subtask.taskExternalId,
         subtaskId: String(subtask.id),
         attempt: Math.max(1, subtask.deliverCount + 1),
+        ...(agentWorkspacePath ? { agentWorkspacePath } : {}),
       })
       const activeWorker = this.activeWorkers.get(executionId)
       if (activeWorker) activeWorker.workspace = workspace
@@ -1077,5 +1084,30 @@ export class TaskCoordinator {
       position: Number(row.ordem) - 1,
       isLocal: String(row.provider).toLowerCase() === "ollama",
     }))
+  }
+
+  /**
+   * Busca o workspace real do agente no Console.
+   * Retorna null se não conseguir buscar ou se o agente não tiver workspace configurado.
+   */
+  private async getAgentWorkspacePath(agentId: string): Promise<string | null> {
+    const baseUrl = process.env.OPENCLAW_CONSOLE_URL
+    const token = process.env.OPENCLAW_CONSOLE_TOKEN
+    if (!baseUrl || !token) {
+      this.logger.warn("OPENCLAW_CONSOLE_URL ou OPENCLAW_CONSOLE_TOKEN não configurados; usando workspace padrão")
+      return null
+    }
+    
+    try {
+      const driver = new ConsoleAgentRuntimeDriver({ baseUrl, token })
+      const workspace = await driver.getAgentWorkspace(agentId)
+      if (workspace) {
+        this.logger.info(`Workspace do agente ${agentId}: ${workspace}`)
+      }
+      return workspace
+    } catch (error) {
+      this.logger.warn(`Falha ao buscar workspace do agente ${agentId}: ${error instanceof Error ? error.message : String(error)}`)
+      return null
+    }
   }
 }

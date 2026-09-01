@@ -299,7 +299,13 @@ class TaskWorker {
         const sessionKey = formatSessionKey({ agentId: input.task.agentId, taskId: input.task.id, phase: "development", model: model.model, modelIndex, generation: attempt - 1 })
         let session
         try {
-          session = await driver.createSession({ agentId: input.task.agentId, key: sessionKey, label: sessionKey, model: model.model })
+          session = await driver.createSession({
+            agentId: input.task.agentId,
+            key: sessionKey,
+            label: sessionKey,
+            model: model.model,
+            workspacePath: input.repoPath,
+          })
           const { header, context } = this.buildProgrammerPrompt(input.task, subtask, input.repoPath, lastFailure || undefined)
           // Envia contexto separado se a missao for longa (evita truncamento no viewer)
           if (context) {

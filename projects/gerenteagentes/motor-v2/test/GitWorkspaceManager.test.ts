@@ -17,10 +17,10 @@ describe("GitWorkspaceManager", () => {
     }
     try {
       const result = await new GitWorkspaceManager({ root, runner }).prepare({
-        repoPath: "/repo/principal", baseBranch: "base-desenvolvimento", taskId: "task-7", subtaskId: "13", attempt: 1,
+        repoPath: "/repo/principal", agentId: "test-agent", baseBranch: "base-desenvolvimento", taskId: "task-7", subtaskId: "13", attempt: 1,
       })
       expect(result.branch).toBe("motor-v2/task-7/13/a1")
-      expect(result.path).toBe(join(root, "task-7", "13", "a1"))
+      expect(result.path).toBe(join(root, "test-agent", "worktrees", "task-7", "13", "a1"))
       const calls = vi.mocked(runner.run).mock.calls.map(([command, cwd]) => ({ command, cwd }))
       expect(calls).toContainEqual({ command: ["git", "worktree", "add", "--detach", result.path, "a".repeat(40)], cwd: "/repo/principal" })
       expect(calls).toContainEqual({ command: ["git", "switch", "-c", result.branch, "a".repeat(40)], cwd: result.path })
@@ -43,7 +43,7 @@ describe("GitWorkspaceManager", () => {
     }
     try {
       const result = await new GitWorkspaceManager({ root, runner }).prepare({
-        repoPath: "/repo/principal", baseBranch: "base-desenvolvimento", taskId: "task-7", subtaskId: "13", attempt: 1,
+        repoPath: "/repo/principal", agentId: "test-agent", baseBranch: "base-desenvolvimento", taskId: "task-7", subtaskId: "13", attempt: 1,
       })
       expect(result.branch).toBe(branch)
       const commands = vi.mocked(runner.run).mock.calls.map(([command]) => command)
@@ -57,7 +57,7 @@ describe("GitWorkspaceManager", () => {
   it("recusa repositório principal sujo antes de criar worktree", async () => {
     const runner: GitCommandRunner = { run: vi.fn().mockResolvedValue({ stdout: " M arquivo.ts\n", stderr: "" }) }
     await expect(new GitWorkspaceManager({ root: "/tmp/motor-v2-workspaces", runner }).prepare({
-      repoPath: "/repo/principal", baseBranch: "base", taskId: "7", subtaskId: "8", attempt: 1,
+      repoPath: "/repo/principal", agentId: "test-agent", baseBranch: "base", taskId: "7", subtaskId: "8", attempt: 1,
     })).rejects.toThrow("repositório principal não está limpo")
   })
 
@@ -71,7 +71,7 @@ describe("GitWorkspaceManager", () => {
       }),
     }
     await expect(new GitWorkspaceManager({ root: "/tmp/motor-v2-workspaces", runner }).prepare({
-      repoPath: "/repo/inexistente", baseBranch: "base", taskId: "7", subtaskId: "8", attempt: 1,
+      repoPath: "/repo/inexistente", agentId: "test-agent", baseBranch: "base", taskId: "7", subtaskId: "8", attempt: 1,
     })).rejects.toThrow("Ambiente bloqueado: repositório não encontrado: /repo/inexistente")
   })
 

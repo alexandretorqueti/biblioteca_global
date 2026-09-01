@@ -13,6 +13,8 @@ export interface CreateSessionInput {
   key?: string
   label?: string
   model?: string
+  /** Diretório de trabalho efetivo da sessão no Console. */
+  workspacePath?: string
 }
 
 export interface RuntimeSession {
@@ -71,7 +73,13 @@ export class ConsoleAgentRuntimeDriver {
     const response = await this.request<{ key: string; sessionId?: string }>({
       method: "POST",
       path: "/api/sessions",
-      body: { agentId: input.agentId, key: input.key, label: input.label, model: input.model },
+      body: {
+        agentId: input.agentId,
+        key: input.key,
+        label: input.label,
+        model: input.model,
+        ...(input.workspacePath ? { workspacePath: input.workspacePath } : {}),
+      },
     })
     await this.request({
       method: "PATCH",
@@ -199,6 +207,19 @@ export class ConsoleAgentRuntimeDriver {
       path: "/api/sessions",
       body: { key: session.key, agentId: session.agentId },
     })
+  }
+
+  async getAgentWorkspace(agentId: string): Promise<string | null> {
+    try {
+      const response = await this.request<{ agents: Array<{ id: string; workspace?: string }> }>({
+        method: "GET",
+        path: "/api/agents",
+      })
+      const agent = response.agents.find((a) => a.id === agentId)
+      return agent?.workspace ?? null
+    } catch {
+      return null
+    }
   }
 
   async readSessionHistory(session: RuntimeSession, limit = 50): Promise<Array<{ role: string; content: string }>> {

@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process"
 import { mkdir, rm } from "node:fs/promises"
-import { isAbsolute, relative, resolve, join } from "node:path"
+import { dirname, isAbsolute, relative, resolve, join } from "node:path"
 import { promisify } from "node:util"
 import { createLogger } from "../shared/logger.js"
 
@@ -41,10 +41,13 @@ export interface WorkspaceCleanupInput {
 
 export interface PrepareWorkspaceInput {
   repoPath: string
+  agentId: string
   baseBranch: string
   taskId: string
   subtaskId: string
   attempt: number
+  /** Workspace real do agente (do Console). Se informado, worktree é criado dentro dele. */
+  agentWorkspacePath?: string
 }
 
 function safeSegment(value: string, label: string): string {
@@ -86,10 +89,16 @@ export class GitWorkspaceManager {
 
   async prepare(input: PrepareWorkspaceInput): Promise<WorkspacePreparation> {
     if (!isAbsolute(input.repoPath) || !Number.isInteger(input.attempt) || input.attempt < 1) throw new Error("pré-condição inválida para workspace")
+    const agentId = safeSegment(input.agentId, "agentId")
     const task = safeSegment(input.taskId, "taskId")
     const subtask = safeSegment(input.subtaskId, "subtaskId")
     const baseBranch = safeBranch(input.baseBranch)
-    const target = resolve(join(this.root, task, subtask, `a${input.attempt}`))
+    
+    // Usa workspace do agente (do Console) se disponível; senão usa root padrão
+    const workspaceRoot = input.agentWorkspacePath && isAbsolute(input.agentWorkspacePath)
+      ? resolve(input.agentWorkspacePath)
+      : resolve(join(this.root, agentId))
+    const target = resolve(join(workspaceRoot, "worktrees", task, subtask, `a${input.attempt}`))
     if (!inside(this.root, target)) throw new Error("workspace fora da raiz segura")
 
     await this.markSafeDirectory(input.repoPath)
@@ -216,12 +225,14 @@ export class GitWorkspaceManager {
     // Listar worktrees do repositório e filtrar os que pertencem à tarefa
     const worktreeList = await this.runner.run(["git", "worktree", "list", "--porcelain"], input.repoPath).catch(() => ({ stdout: "", stderr: "" }))
     const worktreePaths: string[] = []
+    const taskDirectories = new Set<string>()
     for (const line of worktreeList.stdout.split("\n")) {
       if (line.startsWith("worktree ")) {
         const wtPath = line.slice("worktree ".length).trim()
-        // Worktrees do motor seguem padrão: <root>/<taskId>/<subtaskId>/a<N>
+        // Worktrees do motor seguem padrão: <root>/<agentId>/worktrees/<taskId>/<subtaskId>/a<N>
         if (wtPath.includes(`/${taskId}/`) && inside(this.root, resolve(wtPath))) {
           worktreePaths.push(wtPath)
+          taskDirectories.add(resolve(dirname(dirname(wtPath))))
         }
       }
     }
@@ -250,9 +261,10 @@ export class GitWorkspaceManager {
       }
     }
 
-    // Limpar diretórios vazios da tarefa
-    const taskDir = resolve(join(this.root, taskId))
-    await rm(taskDir, { recursive: true, force: true }).catch(() => {})
+    // Limpar diretórios da tarefa dentro dos workspaces dos agentes.
+    for (const taskDir of taskDirectories) {
+      if (inside(this.root, taskDir)) await rm(taskDir, { recursive: true, force: true }).catch(() => {})
+    }
 
     return { worktreesRemoved, branchesRemoved }
   }
