@@ -200,7 +200,10 @@ export class TaskCoordinator {
       "LEFT JOIN projeto_640.projetos_captados pc ON t.projeto_id = pc.id " +
       "LEFT JOIN projeto_640.agentes a ON pc.agente_id = a.id " +
       "LEFT JOIN projeto_640.projeto_motor_config pmc ON pmc.projeto_id = pc.id " +
-      "WHERE s.status = 'pending' AND t.status = 'ready' " +
+      // Uma análise pode ter criado as subtarefas e a tarefa ter sido
+      // devolvida manualmente para planned. Nesse caso, o plano já existe e
+      // ela deve seguir para execução, não ser analisada novamente.
+      "WHERE s.status = 'pending' AND t.status IN ('ready', 'planned') " +
       "AND NOT EXISTS (" +
       "SELECT 1 FROM projeto_640.subtarefas anterior " +
       "WHERE anterior.tarefa_id = s.tarefa_id AND anterior.seq < s.seq AND anterior.status != 'verified' " +
@@ -303,6 +306,10 @@ export class TaskCoordinator {
       await this.db.query("UPDATE projeto_640.subtarefas SET status = 'running', iniciada_em = NOW() WHERE id = ?", [subtask.id])
       const parentTask = await this.repository.getTask(subtask.taskExternalId)
       if (parentTask) {
+        if (parentTask.status === "planned") {
+          await this.repository.saveTask({ ...parentTask, status: "ready", updatedAt: new Date().toISOString() })
+          parentTask.status = "ready"
+        }
         await this.saveTaskTransition(parentTask, "start_execution")
       }
       const baseBranch = subtask.branchTrabalho || "base-desenvolvimento"
