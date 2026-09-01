@@ -11,6 +11,7 @@ describe("GitWorkspaceManager", () => {
       run: vi.fn().mockImplementation(async (command: readonly string[]) => {
         if (command[1] === "status") return { stdout: "", stderr: "" }
         if (command[1] === "rev-parse") return { stdout: "a".repeat(40) + "\n", stderr: "" }
+        if (command[1] === "show-ref") throw new Error("branch inexistente")
         return { stdout: "", stderr: "" }
       }),
     }
@@ -24,6 +25,30 @@ describe("GitWorkspaceManager", () => {
       expect(calls).toContainEqual({ command: ["git", "worktree", "add", "--detach", result.path, "a".repeat(40)], cwd: "/repo/principal" })
       expect(calls).toContainEqual({ command: ["git", "switch", "-c", result.branch, "a".repeat(40)], cwd: result.path })
       expect(calls.filter((call) => call.cwd === "/repo/principal").some((call) => call.command[1] === "checkout" || call.command[1] === "switch")).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it("reutiliza branch existente após worktree prunable, sem switch -c", async () => {
+    const root = await mkdtemp(join(tmpdir(), "motor-v2-workspaces-"))
+    const branch = "motor-v2/task-7/13/a1"
+    const runner: GitCommandRunner = {
+      run: vi.fn().mockImplementation(async (command: readonly string[]) => {
+        if (command[1] === "rev-parse") return { stdout: "a".repeat(40) + "\n", stderr: "" }
+        if (command[1] === "show-ref") return { stdout: "", stderr: "" }
+        if (command[1] === "worktree" && command[2] === "list") return { stdout: "worktree /repo/principal\n", stderr: "" }
+        return { stdout: "", stderr: "" }
+      }),
+    }
+    try {
+      const result = await new GitWorkspaceManager({ root, runner }).prepare({
+        repoPath: "/repo/principal", baseBranch: "base-desenvolvimento", taskId: "task-7", subtaskId: "13", attempt: 1,
+      })
+      expect(result.branch).toBe(branch)
+      const commands = vi.mocked(runner.run).mock.calls.map(([command]) => command)
+      expect(commands).toContainEqual(["git", "worktree", "add", result.path, branch])
+      expect(commands).not.toContainEqual(["git", "switch", "-c", branch, "a".repeat(40)])
     } finally {
       await rm(root, { recursive: true, force: true })
     }

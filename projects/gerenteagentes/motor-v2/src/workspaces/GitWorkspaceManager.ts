@@ -115,11 +115,24 @@ export class GitWorkspaceManager {
 
     const branch = `motor-v2/${task}/${subtask}/a${input.attempt}`
     await mkdir(join(this.root, task, subtask), { recursive: true })
+    // Uma tentativa anterior pode ter deixado um worktree prunable e a
+    // branch ainda registrada. Elimina somente o registro obsoleto; se o
+    // worktree continuar ativo, não toca nele e deixa o Git explicar o
+    // conflito real.
+    await this.runner.run(["git", "worktree", "prune"], input.repoPath)
+    const worktrees = await this.runner.run(["git", "worktree", "list", "--porcelain"], input.repoPath)
+    const targetIsActive = worktrees.stdout.split("\n").some((line) => line === `worktree ${target}`)
+    if (!targetIsActive) await rm(target, { recursive: true, force: true })
+    const branchExists = await this.runner.run(["git", "show-ref", "--verify", "--quiet", `refs/heads/${branch}`], input.repoPath)
+      .then(() => true)
+      .catch(() => false)
     logger.info(`Criando worktree: target=${target}, baseCommit=${baseCommit}, repoPath=${input.repoPath}`, { taskId: input.taskId, subtaskId: input.subtaskId })
     try {
-      const worktreeResult = await this.runner.run(["git", "worktree", "add", "--detach", target, baseCommit], input.repoPath)
+      const worktreeResult = branchExists
+        ? await this.runner.run(["git", "worktree", "add", target, branch], input.repoPath)
+        : await this.runner.run(["git", "worktree", "add", "--detach", target, baseCommit], input.repoPath)
       logger.debug(`Worktree criado: stdout=${worktreeResult.stdout.trim()}, stderr=${worktreeResult.stderr.trim()}`)
-      await this.runner.run(["git", "switch", "-c", branch, baseCommit], target)
+      if (!branchExists) await this.runner.run(["git", "switch", "-c", branch, baseCommit], target)
       await this.markSafeDirectory(target)
       logger.info(`Worktree validado com sucesso: path=${target}, branch=${branch}`, { taskId: input.taskId, subtaskId: input.subtaskId })
       return { path: target, branch, baseCommit }
