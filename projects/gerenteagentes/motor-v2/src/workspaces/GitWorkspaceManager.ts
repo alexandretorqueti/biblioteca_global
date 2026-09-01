@@ -128,20 +128,45 @@ export class GitWorkspaceManager {
     // branch ainda registrada. Elimina somente o registro obsoleto; se o
     // worktree continuar ativo, não toca nele e deixa o Git explicar o
     // conflito real.
-    await this.runner.run(["git", "worktree", "prune"], input.repoPath)
+    await this.runner.run(["git", "worktree", "prune"], input.repoPath).catch(() => {})
+    // Força limpeza adicional: remove entrada stale que prune não conseguiu
+    // apagar (permissão negada no container, paths diferentes, etc.)
+    await this.runner.run(["git", "worktree", "remove", "--force", target], input.repoPath).catch(() => {})
     const worktrees = await this.runner.run(["git", "worktree", "list", "--porcelain"], input.repoPath)
     const targetIsActive = worktrees.stdout.split("\n").some((line) => line === `worktree ${target}`)
     if (!targetIsActive) await rm(target, { recursive: true, force: true })
+    // Branch órfã: existe mas nenhum worktree ativo aponta para ela.
+    // Típico quando tentativa anterior criou a branch mas falhou antes do merge.
     const branchExists = await this.runner.run(["git", "show-ref", "--verify", "--quiet", `refs/heads/${branch}`], input.repoPath)
+      .then(() => true)
+      .catch(() => false)
+    const branchHasActiveWorktree = branchExists && worktrees.stdout.includes(branch)
+    if (branchExists && !branchHasActiveWorktree && !targetIsActive) {
+      logger.info(`Branch órfã detectada (sem worktree ativo): deletando ${branch}`, { taskId: input.taskId, subtaskId: input.subtaskId })
+      await this.runner.run(["git", "branch", "-D", branch], input.repoPath).catch(() => {})
+    }
+    const finalBranchExists = await this.runner.run(["git", "show-ref", "--verify", "--quiet", `refs/heads/${branch}`], input.repoPath)
       .then(() => true)
       .catch(() => false)
     logger.info(`Criando worktree: target=${target}, baseCommit=${baseCommit}, repoPath=${input.repoPath}`, { taskId: input.taskId, subtaskId: input.subtaskId })
     try {
-      const worktreeResult = branchExists
+      const worktreeResult = finalBranchExists
         ? await this.runner.run(["git", "worktree", "add", target, branch], input.repoPath)
         : await this.runner.run(["git", "worktree", "add", "--detach", target, baseCommit], input.repoPath)
       logger.debug(`Worktree criado: stdout=${worktreeResult.stdout.trim()}, stderr=${worktreeResult.stderr.trim()}`)
-      if (!branchExists) await this.runner.run(["git", "switch", "-c", branch, baseCommit], target)
+      if (!finalBranchExists) {
+        try {
+          await this.runner.run(["git", "switch", "-c", branch, baseCommit], target)
+        } catch (switchError) {
+          // Branch pode ter sido criada entre o check e o switch (race condition).
+          // Faz checkout na branch existente ao invés de falhar.
+          if (String(switchError).includes("already exists")) {
+            await this.runner.run(["git", "switch", branch], target)
+          } else {
+            throw switchError
+          }
+        }
+      }
       await this.markSafeDirectory(target)
       logger.info(`Worktree validado com sucesso: path=${target}, branch=${branch}`, { taskId: input.taskId, subtaskId: input.subtaskId })
       return { path: target, branch, baseCommit }
