@@ -2,7 +2,7 @@ import type { TaskStatus, SubTaskStatus } from "../shared/types/index.js"
 
 export type TaskTransition =
   | "start_analysis" | "analysis_completed" | "start_execution"
-  | "execution_completed" | "subtasks_pending" | "pause" | "resume"
+  | "execution_completed" | "deploy_completed" | "subtasks_pending" | "pause" | "resume"
   | "resume_without_plan" | "queue" | "recover" | "fail" | "cancel"
 
 const taskTransitions: Record<TaskTransition, readonly TaskStatus[]> = {
@@ -13,6 +13,7 @@ const taskTransitions: Record<TaskTransition, readonly TaskStatus[]> = {
   // possa selecionar a próxima. A última subtarefa pode, portanto, concluir
   // a tarefa tanto a partir de `running` quanto de `ready`.
   execution_completed: ["running", "ready"],
+  deploy_completed: ["completed"],
   subtasks_pending: ["running"],
   pause: ["analyzing", "running"],
   resume: ["paused"],
@@ -53,6 +54,7 @@ export function transitionTask(current: TaskStatus, transition: TaskTransition):
     analysis_completed: "ready",
     start_execution: "running",
     execution_completed: "completed",
+    deploy_completed: "deployed",
     subtasks_pending: "ready",
     pause: "paused",
     resume: "ready",

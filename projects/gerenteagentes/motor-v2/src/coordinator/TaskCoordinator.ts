@@ -23,6 +23,8 @@ import { blockerEvidence } from "../policies/BlockerPolicy.js"
 import { transitionTask, type TaskTransition } from "../policies/TaskStateMachine.js"
 import { createLogger, describeError } from "../shared/logger.js"
 import { ConsoleAgentRuntimeDriver } from "../runtime/ConsoleAgentRuntimeDriver.js"
+import { execSync } from "node:child_process"
+import { existsSync } from "node:fs"
 
 interface ActiveWorker {
   taskId: string
@@ -511,12 +513,30 @@ export class TaskCoordinator {
         )
         const pending = (rows[0] as Record<string, unknown>)?.pending as number
         if (pending === 0) {
-          this.logger.info("Todas subtarefas completas! Marcando tarefa como completed", { taskId: worker.taskId, executionId })
+          this.logger.info("Todas subtarefas completas! Executando deploy...", { taskId: worker.taskId, executionId })
           const task = await this.repository.getTask(worker.taskId)
           if (task) {
+            // Primeiro marca como completed (trabalho integrado)
             await this.saveTaskTransition(task, "execution_completed")
-            // Tarefa concluída: purgar worktrees/branches residuais (a1..aN)
-            if (worker.repoPath) this.purgeTaskArtifactsFireAndForget(worker.taskId, worker.repoPath)
+            
+            // Depois tenta deploy
+            if (worker.repoPath) {
+              const deployResult = this.executeDeployScript(worker.repoPath, worker.taskId)
+              if (deployResult.success) {
+                this.logger.info("Deploy concluído com sucesso", { taskId: worker.taskId, executionId })
+                await this.saveTaskTransition(task, "deploy_completed")
+                this.publishActivity(worker, { type: "deployed", level: "info", message: "Deploy realizado com sucesso" })
+              } else {
+                this.logger.warn("Deploy falhou, mantendo tarefa como completed", { taskId: worker.taskId, executionId, error: deployResult.error })
+                await this.db.query(
+                  "UPDATE projeto_640.tarefas SET ultima_mensagem_erro = ?, updated_at = NOW() WHERE external_id = ?",
+                  ["Deploy falhou: " + (deployResult.error || "erro desconhecido").substring(0, 500), worker.taskId]
+                )
+                this.publishActivity(worker, { type: "completed", level: "warn", message: "Deploy falhou: " + (deployResult.error || "erro desconhecido") })
+              }
+              // Tarefa concluída: purgar worktrees/branches residuais (a1..aN)
+              this.purgeTaskArtifactsFireAndForget(worker.taskId, worker.repoPath)
+            }
           }
         } else {
           const task = await this.repository.getTask(worker.taskId)
@@ -777,6 +797,36 @@ export class TaskCoordinator {
     }).catch((error: unknown) => {
       this.logger.warn("Falha ao purgar artefatos da tarefa " + taskId + ": " + describeError(error))
     })
+  }
+
+  /**
+   * Executa o script deploy.sh na raiz do repositório do projeto.
+   * Retorna sucesso/falha sem bloquear o fluxo principal.
+   * Timeout: 15 minutos (900s) conforme especificado no deploy.sh.
+   */
+  private executeDeployScript(repoPath: string, taskId: string): { success: boolean; error?: string } {
+    const deployScript = repoPath + "/deploy.sh"
+    
+    if (!existsSync(deployScript)) {
+      return { success: false, error: "deploy.sh não encontrado em " + repoPath }
+    }
+    
+    this.logger.info("Executando deploy.sh: " + deployScript, { taskId })
+    
+    try {
+      // Timeout: 15 min (900000ms) conforme deploy.sh
+      execSync("bash " + deployScript, {
+        cwd: repoPath,
+        timeout: 900000,
+        stdio: "pipe",
+        env: { ...process.env }
+      })
+      return { success: true }
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      this.logger.error("Deploy falhou: " + errorMessage, { taskId })
+      return { success: false, error: errorMessage.substring(0, 500) }
+    }
   }
 
   private beginFinalization(executionId: string, worker: ActiveWorker): boolean {

@@ -10,6 +10,7 @@ export type TaskStatus =
   | 'running'
   | 'paused'
   | 'completed'
+  | 'deployed'
   | 'blocked'
   | 'motor_fix'
   | 'failed'
