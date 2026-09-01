@@ -13,7 +13,7 @@ import type { ExecutionResult, SubtaskInfo } from "../shared/types/execution.js"
 import { ResourceLeaseService } from "../resources/ResourceLeaseService.js"
 import { RESOURCE_KEYS } from "../shared/types/resources.js"
 import { WorkerLauncher } from "../workers/WorkerLauncher.js"
-import { defaultChain, type ModelPhase, type ModelSelection } from "../policies/ModelTierPolicy.js"
+import { type ModelPhase, type ModelSelection } from "../policies/ModelTierPolicy.js"
 import { GitWorkspaceManager } from "../workspaces/GitWorkspaceManager.js"
 import { ResourceWaitManager } from "../resources/ResourceWaitManager.js"
 import { executionEventBus, type ExecutionEventBus } from "../events/ExecutionEventBus.js"
@@ -1060,14 +1060,22 @@ export class TaskCoordinator {
   }
 
   private async getProjectModelChain(projectSlug: string | null, phase: ModelPhase): Promise<readonly ModelSelection[]> {
-    if (!projectSlug) return defaultChain(phase)
+    if (!projectSlug) {
+      throw new Error(`Configuração de modelos ausente: tarefa sem projeto para a fase ${phase}`)
+    }
+    const tipo = phase === "analysis" ? "ANALYST" : phase === "development" ? "DEV" : "MONITOR"
     const { rows } = await this.db.query(
-      "SELECT pmc.modelo, pmc.posicao, pmc.is_local FROM projeto_640.projeto_model_chain pmc " +
-      "INNER JOIN projeto_640.projetos_captados pc ON pc.id = pmc.projeto_id " +
-      "WHERE pc.slug = ? AND pmc.fase = ? AND pmc.ativo = 1 ORDER BY pmc.posicao ASC",
-      [projectSlug, phase],
+      "SELECT provider, model, ordem FROM projeto_640.project_model_selection " +
+      "WHERE project_slug = ? AND tipo = ? AND enabled = 1 ORDER BY ordem ASC",
+      [projectSlug, tipo],
     )
-    if (rows.length === 0) return defaultChain(phase)
-    return rows.map((row) => ({ model: String(row.modelo), position: Number(row.posicao), isLocal: Boolean(row.is_local) }))
+    if (rows.length === 0) {
+      throw new Error(`Configuração de modelos ausente para o projeto ${projectSlug} na fase ${tipo}`)
+    }
+    return rows.map((row) => ({
+      model: `${String(row.provider)}/${String(row.model)}`,
+      position: Number(row.ordem) - 1,
+      isLocal: String(row.provider).toLowerCase() === "ollama",
+    }))
   }
 }

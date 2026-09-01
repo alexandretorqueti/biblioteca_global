@@ -362,12 +362,15 @@ class TaskWorker {
         }
       }
       modelFailures.push(lastFailure || `Modelo ${model.model} não entregou resultado verificável`)
-      if (isSystemicFailure(modelFailures)) {
-        const reason = "Falha sistêmica repetida entre modelos: " + lastFailure
-        await this.recordBlocker(subtask, "systemic_failure", reason)
-        throw new Error(reason)
-      }
       this.log("warn", `Escalando modelo após falha: ${model.model}`)
+    }
+    // Uma falha idêntica em dois modelos não encerra a escada: ainda pode
+    // haver um terceiro (ou mais) modelo capaz de concluir a subtarefa.
+    // Só classifica como sistêmica depois que todos os modelos foram tentados.
+    if (isSystemicFailure(modelFailures)) {
+      const reason = "Falha sistêmica repetida entre modelos: " + lastFailure
+      await this.recordBlocker(subtask, "systemic_failure", reason)
+      throw new Error(reason)
     }
     const reason = "Escada de modelos esgotada: " + (lastFailure || "subtarefa não aprovada")
     await this.recordBlocker(subtask, "model_chain_exhausted", reason)
