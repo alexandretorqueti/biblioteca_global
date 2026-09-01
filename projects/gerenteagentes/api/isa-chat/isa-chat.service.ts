@@ -99,6 +99,36 @@ function descricaoDasDefinicoes(defs: Array<{ texto: string }>): string {
   return defs.map((d, i) => `${i + 1}. ${d.texto}`).join("\n")
 }
 
+/** Monta o bloco de estado injetado no contexto da Isa a cada turno. */
+export function describeOnboardingState(chat: {
+  id: number
+  status: string
+  visitorName: string | null
+  pendingEmail: string | null
+  contatoNome?: string | null
+  contatoEmail?: string | null
+  contatoTelefone?: string | null
+}): string {
+  const lines: string[] = ["[Estado do onboarding]", `chatId técnico (use nas ferramentas): ${chat.id}`]
+  if (chat.contatoEmail) {
+    lines.push(`Identidade verificada: ${chat.contatoNome ? `${chat.contatoNome} <${chat.contatoEmail}>` : chat.contatoEmail}. NÃO peça nome ou email novamente.`)
+    if (chat.contatoTelefone) {
+      lines.push(`Telefone registrado: ${chat.contatoTelefone}. NÃO peça o telefone novamente.`)
+    } else {
+      lines.push("Telefone: (não coletado). Quando for o momento natural da conversa, peça o telefone do cliente (com DDD) e registre com a ferramenta registrar_telefone.")
+    }
+  } else if (chat.status === "aguardando_codigo" && chat.pendingEmail) {
+    lines.push(`Nome coletado: ${chat.visitorName || "(ainda não informado)"}.`)
+    lines.push(`Email informado, aguardando o código de confirmação enviado para ${chat.pendingEmail}.`)
+    lines.push("Quando o cliente disser o código, chame a ferramenta de verificação. Se disser que não recebeu, chame a ferramenta de reenvio. Nunca invente ou exiba o código.")
+  } else {
+    lines.push(`Visitante ainda não verificado. Nome: ${chat.visitorName || "(não coletado)"}. Email: ${chat.pendingEmail || "(não coletado)"}.`)
+    lines.push("Objetivo: conduza a conversa naturalmente e, quando for o momento, colete nome e email usando as ferramentas de registro.")
+  }
+  lines.push(TRANSPARENCY_REMINDER)
+  return lines.join("\n")
+}
+
 @Injectable()
 export class IsaChatService {
   private readonly logger = new Logger(IsaChatService.name)
@@ -440,10 +470,41 @@ export class IsaChatService {
       await db.update(chats).set({ sessionKey }).where(eq(chats.id, chat.id))
     }
 
+    // Injeta contexto de identidade + estado do onboarding no turno
+    // (redesenho 2026-08-12): a Isa sempre sabe quem está falando e o
+    // que já foi coletado — nunca pede nome/email de novo.
+    let agentText = finalText
+    try {
+      if (chat.contatoId) {
+        const contatoResult = await db.select().from(contatos).where(eq(contatos.id, chat.contatoId)).limit(1)
+        if (contatoResult.length > 0) {
+          const contato = contatoResult[0]!
+          agentText = `${describeOnboardingState({
+            id: chat.id,
+            status: chat.status,
+            visitorName: chat.visitorName,
+            pendingEmail: chat.pendingEmail,
+            contatoNome: contato.nome,
+            contatoEmail: contato.email,
+            contatoTelefone: contato.telefone,
+          })}\n\n${agentText}`
+        }
+      } else {
+        agentText = `${describeOnboardingState({
+          id: chat.id,
+          status: chat.status,
+          visitorName: chat.visitorName,
+          pendingEmail: chat.pendingEmail,
+        })}\n\n${agentText}`
+      }
+    } catch {
+      // Sem dados do contato → envia sem prefixo (best-effort).
+    }
+
     // Envia para o agente
     const sendResult = await this.bridge.send({
       sessionKey,
-      text: finalText,
+      text: agentText,
       attachments: (input.attachments ?? []).map((a) => ({ name: a.name, size: a.size })),
     })
 
