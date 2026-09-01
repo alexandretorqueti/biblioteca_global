@@ -67,7 +67,7 @@ function IsaSidebar({
   const [panelPhoto, setPanelPhoto] = useState<string | null>(null)
 
   const isAuthed = Boolean(onboarding?.verified)
-  const stateLabel = onboarding ? STATE_LABEL[onboarding.state] ?? onboarding.state : null
+  const stateLabel = onboarding?.state ? STATE_LABEL[onboarding.state] ?? onboarding.state : null
 
   const handlePhotoUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -102,7 +102,7 @@ function IsaSidebar({
           {panelPhoto ? (
             <img src={panelPhoto} alt="Sua foto" />
           ) : (
-            <span>{(panelName || "?")[0].toUpperCase()}</span>
+            <span>{(panelName || "?").charAt(0).toUpperCase()}</span>
           )}
           <span className="isa-avatar-cam">📷</span>
           <input
