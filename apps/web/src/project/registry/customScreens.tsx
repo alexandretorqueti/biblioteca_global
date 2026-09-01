@@ -9,6 +9,7 @@
  */
 
 import { registerCustomScreens } from "@biblioteca-global/ui"
+import { SistemaAdmGlobalDashboard } from "../../screens/custom"
 import DocumentationScreen from "../../../../../projects/documentacao/screens/DocumentationScreen"
 import DashboardScreen from "../../../../../projects/gerenteagentes/screens/DashboardScreen"
 import NovaTarefaScreen from "../../../../../projects/gerenteagentes/screens/NovaTarefaScreen"
@@ -28,5 +29,6 @@ export function registrarTelasCustom(): void {
     "gerenteagentes-task-monitor": TaskMonitorScreen,
     "gerenteagentes-model-selection": ModelSelectionScreen,
     "gerenteagentes-isa-chat": IsaChatScreen,
+    "sistema-adm-global-dashboard": SistemaAdmGlobalDashboard,
   })
 }
