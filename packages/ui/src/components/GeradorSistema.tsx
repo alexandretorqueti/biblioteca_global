@@ -1,4 +1,4 @@
-import { createElement, useState, type ReactNode } from "react"
+import { createElement, useEffect, useState, type ReactNode } from "react"
 import {
   Box,
   Container,
@@ -291,6 +291,17 @@ export default function GeradorSistema({
     // Limpar pilha de navegação ao mudar de rota principal
     setNavigationStack([])
   }
+
+  // Ouvir evento custom:bg:navigate — telas custom podem disparar navegação
+  // entre itens do menu sem acoplar ao react-router.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ path: string }>).detail
+      if (detail?.path) navigate(detail.path)
+    }
+    window.addEventListener("bg:navigate", handler)
+    return () => window.removeEventListener("bg:navigate", handler)
+  }, [activePath, onRouteChange])
 
   const handleChildRouteClick = (route: GeradorSistemaChildRoute, parentRow: EntityRecord) => {
     // O valor do filtro é o ID do registro pai (não o filterField do pai)
