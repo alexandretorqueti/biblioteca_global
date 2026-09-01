@@ -318,6 +318,7 @@ describe("TaskMonitorScreen — ST-2 (editar subtarefa)", () => {
     seq: number,
     titulo: string,
     status = "pending",
+    extra?: { scope?: string | null; acceptanceCriteria?: unknown; descricao?: string | null },
   ) {
     return {
       id,
@@ -325,7 +326,9 @@ describe("TaskMonitorScreen — ST-2 (editar subtarefa)", () => {
       seq,
       titulo,
       status,
-      descricao: null,
+      descricao: extra?.descricao ?? null,
+      scope: extra?.scope ?? null,
+      acceptanceCriteria: extra?.acceptanceCriteria ?? null,
       resultado: null,
       dependsOnSubtaskId: null,
     } as const
@@ -435,7 +438,7 @@ describe("TaskMonitorScreen — ST-2 (editar subtarefa)", () => {
       currentSubTask: null,
       events: [],
     }
-    const dbSub = subTarefaDbFactory(10, 1, 1, "Sub 1", "pending")
+    const dbSub = subTarefaDbFactory(10, 1, 1, "Sub 1", "pending", { scope: "Escopo inicial" })
     const putSpy = vi.fn().mockResolvedValue({ ok: true })
 
     const bundle = {
@@ -485,7 +488,12 @@ describe("TaskMonitorScreen — ST-2 (editar subtarefa)", () => {
         titulo: "Sub 1 Atualizada",
         status: "pending",
         seq: 1,
+        scope: "Escopo inicial",
       }),
+    )
+    // ST-3: descricao NÃO deve ser enviado no payload
+    expect(putSpy).not.toHaveBeenCalledWith(
+      expect.objectContaining({ descricao: expect.anything() }),
     )
   })
 
@@ -500,7 +508,7 @@ describe("TaskMonitorScreen — ST-2 (editar subtarefa)", () => {
       currentSubTask: null,
       events: [],
     }
-    const dbSub = subTarefaDbFactory(10, 1, 1, "Sub 1", "pending")
+    const dbSub = subTarefaDbFactory(10, 1, 1, "Sub 1", "pending", { scope: "Escopo teste" })
 
     const bundle = {
       http: {
@@ -632,6 +640,244 @@ describe("TaskMonitorScreen — ST-2 (editar subtarefa)", () => {
     await waitFor(() => {
       expect(screen.queryByTestId("edit-subtask-dialog")).not.toBeInTheDocument()
     })
+  })
+})
+
+describe("TaskMonitorScreen — ST-3 (diálogo: scope + acceptance_criteria, status completos, sem descricao)", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", mockFetch)
+    mockFetch.mockReset()
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    delete globalThis.__bundleFalso
+  })
+
+  function renderScreen() {
+    return render(
+      <BibliotecaThemeProvider>
+        <TaskMonitorScreen />
+      </BibliotecaThemeProvider>,
+    )
+  }
+
+  function subTarefaDbFactory(
+    id: number,
+    tarefaId: number,
+    seq: number,
+    titulo: string,
+    status = "pending",
+    extra?: { scope?: string | null; acceptanceCriteria?: unknown; descricao?: string | null },
+  ) {
+    return {
+      id,
+      tarefaId,
+      seq,
+      titulo,
+      status,
+      descricao: extra?.descricao ?? null,
+      scope: extra?.scope ?? null,
+      acceptanceCriteria: extra?.acceptanceCriteria ?? null,
+      resultado: null,
+      dependsOnSubtaskId: null,
+    } as const
+  }
+
+  function makeBundle(dbSub: ReturnType<typeof subTarefaDbFactory>, putSpy: ReturnType<typeof vi.fn>) {
+    const tarefas = [tarefaFactory(1, "Tarefa", "running", 1)]
+    const motorDetail = {
+      motorId: "m1",
+      exists: true,
+      task: { id: "task-1", status: "running", title: "Tarefa" },
+      subtasks: [{ seq: dbSub.seq, title: dbSub.titulo, status: dbSub.status }],
+      currentSubTask: null,
+      events: [],
+    }
+    return {
+      http: {
+        request: async (method: string, path: string, reqOpts?: { query?: Record<string, unknown>; body?: unknown }) => {
+          if (method === "GET" && path === "/projetos_captados") return { items: [projetoFactory(1, "P1")] }
+          if (method === "GET" && path === "/tarefas") return { items: tarefas }
+          if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
+          if (method === "GET" && path.endsWith("/subtarefas")) return [dbSub]
+          if (method === "PUT" && path === `/subtarefas/${dbSub.id}`) {
+            putSpy(reqOpts?.body)
+            return { ok: true }
+          }
+          return {}
+        },
+      },
+    } as never
+  }
+
+  it("não possui campo 'descricao' e exibe scope + acceptance_criteria no diálogo", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const dbSub = subTarefaDbFactory(10, 1, 1, "Sub 1", "pending", {
+      scope: "Implementar feature X",
+      acceptanceCriteria: ["Critério A", "Critério B"],
+    })
+    const putSpy = vi.fn().mockResolvedValue({ ok: true })
+    globalThis.__bundleFalso = makeBundle(dbSub, putSpy)
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("btn-edit-subtask-1")).toBeInTheDocument()
+    })
+
+    await user.click(screen.getByTestId("btn-edit-subtask-1"))
+
+    await waitFor(() => {
+      expect(screen.getByTestId("edit-subtask-dialog")).toBeInTheDocument()
+    })
+
+    const dialog = screen.getByTestId("edit-subtask-dialog")
+
+    // Campo Escopo deve estar presente e preenchido
+    const scopeInput = within(dialog).getByLabelText(/Escopo/)
+    expect(scopeInput).toBeInTheDocument()
+    expect(scopeInput).toHaveValue("Implementar feature X")
+
+    // Campo Critérios de aceite deve estar presente e preenchido (um por linha)
+    const criteriosInput = within(dialog).getByLabelText(/Critérios de aceite/)
+    expect(criteriosInput).toBeInTheDocument()
+    expect(criteriosInput).toHaveValue("Critério A\nCritério B")
+
+    // Campo Descrição NÃO deve existir
+    expect(within(dialog).queryByLabelText(/Descrição/)).not.toBeInTheDocument()
+  })
+
+  it("salva scope e acceptance_criteria como array JSON; entrada vazia → null", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const dbSub = subTarefaDbFactory(10, 1, 1, "Sub 1", "pending", {
+      scope: "Escopo velho",
+      acceptanceCriteria: null, // sem critérios iniciais
+    })
+    const putSpy = vi.fn().mockResolvedValue({ ok: true })
+    globalThis.__bundleFalso = makeBundle(dbSub, putSpy)
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("btn-edit-subtask-1")).toBeInTheDocument()
+    })
+
+    await user.click(screen.getByTestId("btn-edit-subtask-1"))
+
+    await waitFor(() => {
+      expect(screen.getByTestId("edit-subtask-dialog")).toBeInTheDocument()
+    })
+
+    const dialog = screen.getByTestId("edit-subtask-dialog")
+
+    // Altera o escopo
+    const scopeInput = within(dialog).getByLabelText(/Escopo/)
+    await user.clear(scopeInput)
+    await user.type(scopeInput, "Novo escopo detalhado")
+
+    // Adiciona critérios
+    const criteriosInput = within(dialog).getByLabelText(/Critérios de aceite/)
+    await user.type(criteriosInput, "Critério 1{enter}Critério 2{enter}Critério 3")
+
+    const submitBtn = within(dialog).getByRole("button", { name: /Salvar alterações/i })
+    await user.click(submitBtn)
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("edit-subtask-dialog")).not.toBeInTheDocument()
+    })
+
+    expect(putSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: "Novo escopo detalhado",
+        acceptance_criteria: ["Critério 1", "Critério 2", "Critério 3"],
+      }),
+    )
+    // descricao NÃO deve estar no payload
+    const payload = putSpy.mock.calls[0][0] as Record<string, unknown>
+    expect(payload).not.toHaveProperty("descricao")
+  })
+
+  it("select de status contém os 9 valores reais", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const dbSub = subTarefaDbFactory(10, 1, 1, "Sub 1", "pending", { scope: "Escopo X" })
+    const putSpy = vi.fn().mockResolvedValue({ ok: true })
+    globalThis.__bundleFalso = makeBundle(dbSub, putSpy)
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("btn-edit-subtask-1")).toBeInTheDocument()
+    })
+
+    await user.click(screen.getByTestId("btn-edit-subtask-1"))
+
+    await waitFor(() => {
+      expect(screen.getByTestId("edit-subtask-dialog")).toBeInTheDocument()
+    })
+
+    const dialog = screen.getByTestId("edit-subtask-dialog")
+
+    // Abrir o select clicando no div role="combobox" (MUI Select)
+    const comboboxes = within(dialog).getAllByRole("combobox")
+    // O select de status é o primeiro combobox no formulário
+    expect(comboboxes.length).toBeGreaterThanOrEqual(1)
+    await user.click(comboboxes[0])
+
+    // Verificar que todos os 9 labels estão renderizados na página (MenuItems no portal)
+    const statusLabels = [
+      "Pendente (pending)",
+      "Executando (running)",
+      "Verificada (verified)",
+      "Rejeitada (rejected)",
+      "Bloqueada (blocked)",
+      "Concluída (completed)",
+      "Pausada (paused)",
+      "Falhou (failed)",
+      "Cancelada (cancelled)",
+    ]
+
+    for (const label of statusLabels) {
+      const matches = screen.getAllByText(label)
+      expect(matches.length).toBeGreaterThanOrEqual(1)
+    }
+  })
+
+  it("scope vazio bloqueia o salvamento (validação required do DynamicForm)", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const dbSub = subTarefaDbFactory(10, 1, 1, "Sub 1", "pending", { scope: "Escopo X" })
+    const putSpy = vi.fn().mockResolvedValue({ ok: true })
+    globalThis.__bundleFalso = makeBundle(dbSub, putSpy)
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("btn-edit-subtask-1")).toBeInTheDocument()
+    })
+
+    await user.click(screen.getByTestId("btn-edit-subtask-1"))
+
+    await waitFor(() => {
+      expect(screen.getByTestId("edit-subtask-dialog")).toBeInTheDocument()
+    })
+
+    const dialog = screen.getByTestId("edit-subtask-dialog")
+
+    // Limpa o scope (campo required)
+    const scopeInput = within(dialog).getByLabelText(/Escopo/)
+    await user.clear(scopeInput)
+
+    const submitBtn = within(dialog).getByRole("button", { name: /Salvar alterações/i })
+    await user.click(submitBtn)
+
+    // O DynamicForm exibe o alerta genérico de validação e não chama onSubmit
+    await waitFor(() => {
+      expect(within(dialog).getByText(/Revise os campos destacados/)).toBeInTheDocument()
+    })
+    expect(screen.getByTestId("edit-subtask-dialog")).toBeInTheDocument()
+    expect(putSpy).not.toHaveBeenCalled()
   })
 })
 
