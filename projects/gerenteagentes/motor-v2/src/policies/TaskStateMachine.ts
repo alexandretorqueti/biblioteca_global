@@ -9,7 +9,10 @@ const taskTransitions: Record<TaskTransition, readonly TaskStatus[]> = {
   start_analysis: ["planned"],
   analysis_completed: ["analyzing"],
   start_execution: ["ready"],
-  execution_completed: ["running"],
+  // Entre subtarefas, a tarefa volta para `ready` para que o coordenador
+  // possa selecionar a próxima. A última subtarefa pode, portanto, concluir
+  // a tarefa tanto a partir de `running` quanto de `ready`.
+  execution_completed: ["running", "ready"],
   subtasks_pending: ["running"],
   pause: ["analyzing", "running"],
   resume: ["paused"],
