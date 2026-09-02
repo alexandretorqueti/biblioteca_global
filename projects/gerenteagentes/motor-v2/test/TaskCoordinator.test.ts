@@ -584,4 +584,18 @@ describe('TaskCoordinator', () => {
       expect(internals.activeWorkers.has('exec-b')).toBe(true)
     })
   })
+
+  describe('preflight de manifesto', () => {
+    it('runManifestPreflight retorna ok=true quando projectSlug é nulo (pula preflight)', async () => {
+      const internals = coordinator as unknown as { runManifestPreflight: (repoPath: string, projectSlug: string | null) => Promise<{ ok: true } | { ok: false; reason: string }> }
+      const result = await internals.runManifestPreflight('/any/path', null)
+      expect(result.ok).toBe(true)
+    })
+
+    it('runManifestPreflight retorna ok=true quando repoPath não existe', async () => {
+      const internals = coordinator as unknown as { runManifestPreflight: (repoPath: string, projectSlug: string | null) => Promise<{ ok: true } | { ok: false; reason: string }> }
+      const result = await internals.runManifestPreflight('/nonexistent/path/xyz', 'test-project')
+      expect(result.ok).toBe(true)
+    })
+  })
 })
