@@ -26,6 +26,7 @@ import { createLogger, describeError } from "../shared/logger.js"
 import { ConsoleAgentRuntimeDriver } from "../runtime/ConsoleAgentRuntimeDriver.js"
 import { execSync } from "node:child_process"
 import { existsSync } from "node:fs"
+import { SecretProfileManager, resolveGitTopLevel } from "../workspaces/SecretProfileManager.js"
 
 interface ActiveWorker {
   taskId: string
@@ -247,6 +248,29 @@ export class TaskCoordinator {
       }
       if (result.kind !== "acquired") throw new Error("Falha ao adquirir recurso: " + result.reason)
       fencingToken = result.lease.fencingToken
+    }
+
+    // Preflight de manifesto ANTES de consumir modelo (operação leve, sem materializar)
+    const preflightResult = await this.runManifestPreflight(task.repoPath, task.projectSlug)
+    if (!preflightResult.ok) {
+      this.logger.warn("Preflight de manifesto bloqueou análise: " + preflightResult.reason, {
+        taskId: task.id, projectSlug: task.projectSlug ?? undefined,
+      })
+      // Persiste bloqueio ambiental sem consumir modelo
+      try {
+        const evidence = blockerEvidence("blocked_environment", preflightResult.reason)
+        await this.db.query(
+          "INSERT INTO projeto_640.bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at) " +
+          "VALUES (?, NULL, ?, ?, ?, NOW())",
+          [task.id, evidence.kind, "motor-v2:" + evidence.fingerprint, evidence.excerpt],
+        )
+        await this.repository.saveTask({ ...task, status: "blocked", updatedAt: new Date().toISOString() })
+        this.logger.info("Tarefa bloqueada no preflight de manifesto: " + task.id, { taskId: task.id })
+      } catch (persistError) {
+        this.logger.error("Falha ao persistir bloqueio de preflight: " + describeError(persistError), { taskId: task.id })
+      }
+      if (resourceKey) await this.resourceLease.release(resourceKey, executionId, fencingToken)
+      return false
     }
 
     this.activeWorkers.set(executionId, {
@@ -1215,6 +1239,42 @@ export class TaskCoordinator {
       position: Number(row.ordem) - 1,
       isLocal: String(row.provider).toLowerCase() === "ollama",
     }))
+  }
+
+  /**
+   * Preflight de manifesto — valida o task-environment.json antes de consumir modelo.
+   * Resolve o toplevel git real (pois repo_path pode ser subdiretório de monorepo).
+   * Retorna { ok: true } se o manifesto é válido/ausente-sem-obrigatórios;
+   * retorna { ok: false, reason } se há bloqueio de ambiente.
+   */
+  private async runManifestPreflight(
+    repoPath: string,
+    projectSlug: string | null,
+  ): Promise<{ ok: true } | { ok: false; reason: string }> {
+    // Sem projectSlug não há como interpolar o manifesto; pula o preflight
+    if (!projectSlug) return { ok: true }
+    if (!existsSync(repoPath)) return { ok: true }
+
+    let gitTopLevel: string
+    try {
+      gitTopLevel = await resolveGitTopLevel(repoPath)
+    } catch (error) {
+      this.logger.warn("Preflight: falha ao resolver git toplevel (manifesto será ignorado): " + (error instanceof Error ? error.message : String(error)), {
+        repoPath,
+      })
+      return { ok: true }
+    }
+
+    const manager = new SecretProfileManager()
+    const result = await manager.inspectManifest({
+      repoPath: gitTopLevel,
+      root: process.env.TASK_SECRETS_ROOT,
+      environment: process.env.TASK_ENVIRONMENT ?? "development",
+      projectSlug,
+    })
+
+    if (result.ok) return { ok: true }
+    return { ok: false, reason: result.reason + (result.requiredAction ? " — " + result.requiredAction : "") }
   }
 
   /**
