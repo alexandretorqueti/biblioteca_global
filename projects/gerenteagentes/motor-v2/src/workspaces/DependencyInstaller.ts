@@ -7,6 +7,10 @@
  * - Falha se o npm ci alterar qualquer arquivo rastreado
  * - Timeout configurável via TASK_DEPENDENCY_INSTALL_TIMEOUT_MS (default 15min)
  * - Sem package-lock.json → pula silenciosamente
+ * - **Auto-recovery de lockfile desatualizado**: se npm ci falhar com EUSAGE
+ *   (pacote workspace ausente do lockfile), roda npm install automaticamente
+ *   e tenta npm ci novamente. Isso resolve o caso em que o agente cria um
+ *   novo pacote workspace sem sincronizar o package-lock.json.
  *
  * O runner de comandos é injetável para testes unitários.
  */
@@ -33,6 +37,8 @@ export interface DependencyInstallResult {
   ok: true
   skipped: boolean
   reason?: string
+  /** Indica que o lockfile foi regenerado automaticamente (npm install fallback). */
+  lockfileRegenerated?: boolean
 }
 
 export interface DependencyInstallError {
@@ -137,17 +143,39 @@ export class DependencyInstaller {
     })
 
     // Executa npm ci
+    let lockfileRegenerated = false
     try {
       await this.runner.run("npm ci", input.worktreePath, timeoutMs)
       logger.info("npm ci concluído com sucesso")
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
-      // Trunca a saída para não poluir logs/eventos, mas mantém diagnóstico suficiente
-      const excerpt = msg.substring(0, 1000)
-      logger.error("npm ci falhou: " + excerpt)
-      return {
-        ok: false,
-        reason: "npm ci falhou — " + excerpt,
+      
+      // Auto-recovery: se o erro for EUSAGE (lockfile desatualizado), tenta npm install
+      if (isLockfileOutOfSync(msg)) {
+        logger.warn("npm ci falhou com lockfile desatualizado (EUSAGE); tentando npm install para regenerar...")
+        try {
+          await this.runner.run("npm install", input.worktreePath, timeoutMs)
+          logger.info("npm install concluído; tentando npm ci novamente...")
+          await this.runner.run("npm ci", input.worktreePath, timeoutMs)
+          logger.info("npm ci concluído com sucesso após regeneração do lockfile")
+          lockfileRegenerated = true
+        } catch (recoveryError) {
+          const recoveryMsg = recoveryError instanceof Error ? recoveryError.message : String(recoveryError)
+          const excerpt = recoveryMsg.substring(0, 1000)
+          logger.error("Auto-recovery falhou: " + excerpt)
+          return {
+            ok: false,
+            reason: "npm ci falhou (mesmo após npm install) — " + excerpt,
+          }
+        }
+      } else {
+        // Trunca a saída para não poluir logs/eventos, mas mantém diagnóstico suficiente
+        const excerpt = msg.substring(0, 1000)
+        logger.error("npm ci falhou: " + excerpt)
+        return {
+          ok: false,
+          reason: "npm ci falhou — " + excerpt,
+        }
       }
     }
 
@@ -181,8 +209,24 @@ export class DependencyInstaller {
       }
     }
 
-    return { ok: true, skipped: false }
+    return { ok: true, skipped: false, lockfileRegenerated }
   }
+}
+
+/**
+ * Detecta se o erro do npm ci é por lockfile desatualizado (EUSAGE).
+ * Padrões conhecidos:
+ * - "npm error code EUSAGE"
+ * - "Missing: <package> from lock file"
+ * - "npm ci can only install packages when your package.json and package-lock.json"
+ */
+export function isLockfileOutOfSync(errorMessage: string): boolean {
+  const lower = errorMessage.toLowerCase()
+  return (
+    lower.includes("eusage") ||
+    (lower.includes("missing:") && lower.includes("from lock file")) ||
+    (lower.includes("npm ci") && lower.includes("package-lock.json") && lower.includes("in sync"))
+  )
 }
 
 /**

@@ -441,6 +441,8 @@ class TaskWorker {
 
     if (result.skipped) {
       this.log("info", "npm ci pulado: " + (result.reason ?? "package-lock.json ausente"))
+    } else if (result.lockfileRegenerated) {
+      this.log("warn", "Lockfile regenerado automaticamente (npm install fallback) — o agente criou pacote workspace sem sincronizar package-lock.json")
     }
   }
 
