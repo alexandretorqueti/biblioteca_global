@@ -8,9 +8,13 @@
  * Referência de comportamento: GerenteAgentes/docs/SEGREDOS-E-WORKSPACES.md
  */
 
+import { execFile } from "node:child_process"
 import { chmod, readFile, writeFile } from "node:fs/promises"
 import { isAbsolute, join, relative, resolve } from "node:path"
+import { promisify } from "node:util"
 import { createLogger } from "../shared/logger.js"
+
+const execFileAsync = promisify(execFile)
 
 const logger = createLogger("SecretProfileManager")
 
@@ -168,6 +172,78 @@ export interface MaterializeManifestInput {
  * - materializeManifest(): escreve os arquivos .env no worktree com modo 0600,
  *   mesclando chaves de entradas com o mesmo target (posterior sobrescreve).
  */
+/**
+ * Resolve o toplevel git real de um repositório/worktree.
+ * Necessário porque repo_path pode apontar para um subdiretório de um monorepo;
+ * o manifesto task-environment.json fica na raiz git, não no repo_path registrado.
+ */
+export async function resolveGitTopLevel(repoPath: string): Promise<string> {
+  const { stdout } = await execFileAsync("git", ["rev-parse", "--show-toplevel"], {
+    cwd: repoPath,
+    timeout: 10_000,
+  })
+  const topLevel = stdout.trim()
+  if (!topLevel) throw new Error("git_top_level_vazio")
+  return topLevel
+}
+
+/**
+ * Verifica segurança git do alvo materializado:
+ * 1. O alvo DEVE ser ignorado pelo git (git check-ignore) — .env nunca pode ser versionado.
+ * 2. O alvo NÃO pode estar já rastreado (git ls-files) — proteção contra commit acidental.
+ * Lança erro se qualquer verificação falhar.
+ * Em diretórios que não são repositórios git, o check é pulado (com log de aviso).
+ */
+export async function checkGitSecurity(
+  worktreePath: string,
+  target: string,
+): Promise<void> {
+  // Verifica se é um repositório git; se não for, pula (ambientes de teste, etc.)
+  try {
+    await execFileAsync("git", ["rev-parse", "--git-dir"], {
+      cwd: worktreePath,
+      timeout: 5_000,
+    })
+  } catch {
+    // Não é um repo git — segurança git não se aplica
+    return
+  }
+
+  // Verifica se o alvo já está rastreado (ordem importa: tracked override ignore)
+  try {
+    await execFileAsync("git", ["ls-files", "--error-unmatch", "--", target], {
+      cwd: worktreePath,
+      timeout: 10_000,
+    })
+    // Se chegou aqui, o arquivo está rastreado — isso é um erro
+    throw new Error(
+      `segurança_git: alvo '${target}' já está rastreado pelo git — remova do versionamento antes de materializar segredos`,
+    )
+  } catch (error: unknown) {
+    // git ls-files --error-unmatch retorna exit code 1 quando o arquivo NÃO está rastreado (ok)
+    if (
+      error instanceof Error &&
+      error.message.startsWith("segurança_git:")
+    ) {
+      throw error
+    }
+    // Arquivo não rastreado — prossegue para o próximo check
+  }
+
+  // Verifica se o alvo é ignorado pelo git
+  try {
+    await execFileAsync("git", ["check-ignore", "-q", "--", target], {
+      cwd: worktreePath,
+      timeout: 10_000,
+    })
+  } catch {
+    // git check-ignore retorna exit code 1 quando o arquivo NÃO é ignorado
+    throw new Error(
+      `segurança_git: alvo '${target}' não é ignorado pelo git — adicione ao .gitignore antes de materializar segredos`,
+    )
+  }
+}
+
 export class SecretProfileManager {
   async inspectManifest(
     input: InspectManifestInput,
@@ -284,6 +360,8 @@ export class SecretProfileManager {
         if (relative(resolve(input.repoPath), targetPath).startsWith("..")) {
           throw new Error("target_fora_do_clone")
         }
+        // Segurança git: verifica ANTES de escrever se o alvo é ignorado e não rastreado
+        await checkGitSecurity(input.repoPath, target)
         const content =
           [...values.entries()]
             .map(([key, value]) => `${key}=${quote(value)}`)

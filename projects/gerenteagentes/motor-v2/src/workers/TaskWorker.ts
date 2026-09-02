@@ -12,7 +12,9 @@
 
 import { execFileSync, execSync } from "node:child_process"
 import { existsSync } from "node:fs"
+import { join } from "node:path"
 import { pathToFileURL } from "node:url"
+import { SecretProfileManager, resolveGitTopLevel } from "../workspaces/SecretProfileManager.js"
 import { ConsoleAgentRuntimeDriver } from "../runtime/ConsoleAgentRuntimeDriver.js"
 import type { WorkerInput, ExecutionContext, ExecutionResult, SubtaskInfo } from "../shared/types/execution.js"
 import type { CoordinatorToWorkerMessage, WorkerToCoordinatorMessage } from "./WorkerProtocol.js"
@@ -276,7 +278,7 @@ class TaskWorker {
   }
 
   /**
-   * FASE 2: PREPARE - Valida o worktree exclusivo criado pelo coordenador
+   * FASE 2: PREPARE - Valida o worktree exclusivo, materializa segredos e instala dependências
    */
   private async phasePrepare(input: WorkerInput): Promise<void> {
     this.send({ type: "progress", executionId: input.context.executionId, phase: "prepare", message: "Preparando workspace" })
@@ -293,6 +295,99 @@ class TaskWorker {
     if (currentBranch !== workBranch) throw new Error("Worktree não está na branch exclusiva esperada")
 
     this.log("info", "Workspace isolado validado: branch " + workBranch)
+
+    // Materializa segredos do manifesto (task-environment.json)
+    await this.materializeSecrets(input)
+
+    // Instala dependências (npm ci) se houver package-lock.json
+    await this.installDependencies(repoPath)
+  }
+
+  /**
+   * Materializa arquivos .env no worktree a partir do manifesto task-environment.json.
+   * Resolve o toplevel git real (monorepo) para ler o manifesto.
+   * Segurança git (check-ignore + ls-files) é verificada pelo SecretProfileManager.
+   */
+  private async materializeSecrets(input: WorkerInput): Promise<void> {
+    const projectSlug = input.context.projectSlug
+    if (!projectSlug) {
+      this.log("info", "Materialização de segredos pulada: tarefa sem projectSlug")
+      return
+    }
+
+    const secretsRoot = process.env.TASK_SECRETS_ROOT
+    const environment = process.env.TASK_ENVIRONMENT ?? "development"
+
+    let gitTopLevel: string
+    try {
+      gitTopLevel = await resolveGitTopLevel(input.repoPath)
+    } catch (error) {
+      this.log("warn", "Falha ao resolver git toplevel para materialização de segredos: " + (error instanceof Error ? error.message : String(error)))
+      return
+    }
+
+    const manager = new SecretProfileManager()
+    const result = await manager.materializeManifest({
+      repoPath: input.repoPath,
+      manifestRepoPath: gitTopLevel,
+      root: secretsRoot,
+      environment,
+      projectSlug,
+    })
+
+    if (!result.ok) {
+      throw new Error("Ambiente bloqueado: falha ao materializar segredos — " + result.reason)
+    }
+
+    if (result.ok && result.keys.length > 0) {
+      this.log("info", "Segredos materializados: " + result.keys.length + " chaves (alvos: .env)")
+    } else {
+      this.log("info", "Materialização de segredos: nenhum arquivo materializado (manifesto opcional ou root ausente)")
+    }
+  }
+
+  /**
+   * Instala dependências via npm ci se houver package-lock.json na raiz do worktree.
+   * Salvaguarda: captura git status antes/depois; se npm ci alterar arquivo rastreado, falha.
+   * Timeout configurável via TASK_DEPENDENCY_INSTALL_TIMEOUT_MS (default 15min).
+   */
+  private async installDependencies(worktreePath: string): Promise<void> {
+    const lockFile = join(worktreePath, "package-lock.json")
+    if (!existsSync(lockFile)) {
+      this.log("info", "npm ci pulado: package-lock.json não encontrado")
+      return
+    }
+
+    const timeoutMs = Number(process.env.TASK_DEPENDENCY_INSTALL_TIMEOUT_MS) || 15 * 60 * 1000
+
+    // Captura git status antes
+    const statusBefore = this.exec("git status --porcelain", worktreePath).trim()
+
+    this.log("info", "Executando npm ci (timeout: " + Math.round(timeoutMs / 1000) + "s)...")
+    this.send({ type: "progress", executionId: this.executionId, phase: "prepare", message: "Instalando dependencias (npm ci)" })
+
+    try {
+      this.exec("npm ci", worktreePath, timeoutMs)
+      this.log("info", "npm ci concluído com sucesso")
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error)
+      throw new Error("Ambiente bloqueado: npm ci falhou — " + msg.substring(0, 1000))
+    }
+
+    // Captura git status depois e compara
+    const statusAfter = this.exec("git status --porcelain", worktreePath).trim()
+    if (statusBefore !== statusAfter) {
+      // Identifica quais arquivos rastreados foram alterados
+      const newLines = statusAfter.split("\n").filter(l => l && !statusBefore.includes(l))
+      const trackedChanges = newLines.filter(l => !l.startsWith("??"))
+      if (trackedChanges.length > 0) {
+        throw new Error(
+          "Ambiente bloqueado: npm ci modificou arquivos rastreados: " +
+          trackedChanges.slice(0, 10).join(", ") +
+          " — verifique se o package-lock.json está consistente com package.json"
+        )
+      }
+    }
   }
 
   /**
