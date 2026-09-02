@@ -16,6 +16,7 @@ import { existsSync } from "node:fs"
 import { pathToFileURL } from "node:url"
 import { SecretProfileManager, resolveGitTopLevel } from "../workspaces/SecretProfileManager.js"
 import { DependencyInstaller, isLockfileOutOfSync, resolveInstallTimeoutMs } from "../workspaces/DependencyInstaller.js"
+import { GateFailureClassifier, type GateFailureVerdict } from "../policies/GateFailureClassifier.js"
 import { ConsoleAgentRuntimeDriver } from "../runtime/ConsoleAgentRuntimeDriver.js"
 import type { WorkerInput, ExecutionContext, ExecutionResult, SubtaskInfo } from "../shared/types/execution.js"
 import type { CoordinatorToWorkerMessage, WorkerToCoordinatorMessage } from "./WorkerProtocol.js"
@@ -532,6 +533,29 @@ class TaskWorker {
               [lastFailure.substring(0, 500), subtask.id],
             )
             this.log("warn", `Gate vermelho (${model.model}, tentativa ${attempt}): ${lastFailure}`)
+            
+            // MONITORAMENTO MOTOR: classificar causa raiz antes de decidir fluxo
+            const verdict = await this.classifyGateFailure(input, subtask, model.model, modelIndex, lastFailure)
+            if (verdict) {
+              this.log("info", `Veredito do monitor: ${verdict.verdict} — ${verdict.analysis.substring(0, 200)}`)
+              
+              // Decidir fluxo baseado no veredito
+              if (verdict.verdict === "motor_issue") {
+                // Problema no motor: bloquear tarefa para intervenção
+                const blockReason = `motor_issue: ${verdict.analysis}${verdict.solution ? ` — Solução proposta: ${verdict.solution}` : ""}`
+                await this.recordBlocker(subtask, "systemic_failure", blockReason)
+                throw new Error(blockReason)
+              }
+              
+              if (verdict.verdict === "test_files_issue") {
+                // Problema nos testes: criar subtarefa de correção de testes
+                this.log("warn", `Problema em arquivos de teste detectado pelo monitor: ${verdict.analysis.substring(0, 200)}`)
+                // Continua para createCorrectionOnRepeatedGateFailure que criará subtarefa de correção
+              }
+              
+              // agent_can_solve e code_files_issue: fluxo normal (rework/escala)
+            }
+            
             if (await this.createCorrectionOnRepeatedGateFailure(input, subtask, model.model, lastFailure)) return undefined
             continue
           }
@@ -954,6 +978,59 @@ class TaskWorker {
       }
     } catch { /* resposta legada em texto continua compatível */ }
     return { kind: "done" }
+  }
+
+  /**
+   * MONITORAMENTO MOTOR: classifica a causa raiz da falha de gate consultando
+   * a sessão fixa "Monitoramento Motor". Fail-open: se o classificador falhar,
+   * retorna null e o fluxo normal continua.
+   */
+  private async classifyGateFailure(
+    input: WorkerInput,
+    subtask: SubtaskInfo,
+    model: string,
+    modelIndex: number,
+    errorMessage: string
+  ): Promise<GateFailureVerdict | null> {
+    if (!this.db) return null
+
+    try {
+      // Contar ocorrências deste erro na subtarefa
+      const [countRows] = await this.db.query(
+        "SELECT COUNT(*) AS total FROM projeto_640.subtask_gate_failures WHERE subtarefa_id = ? AND fingerprint = ?",
+        [subtask.id, failureFingerprint(errorMessage)]
+      ) as unknown as [Array<{ total: number | string }>]
+      const occurrence = Number(countRows[0]?.total ?? 0) + 1
+
+      const driver = this.createDriver()
+      const classifier = new GateFailureClassifier(driver, this.db)
+
+      const result = await classifier.classify({
+        taskId: input.task.id,
+        subtaskId: subtask.id,
+        subtaskTitle: subtask.titulo,
+        subtaskScope: subtask.scope,
+        acceptanceCriteria: subtask.acceptanceCriteria,
+        taskTitle: input.task.title,
+        agentId: input.task.agentId,
+        repoPath: input.repoPath,
+        model,
+        modelIndex,
+        occurrence,
+        errorMessage,
+        command: input.buildCommand, // Comando que falhou (build ou teste)
+      })
+
+      if (result.kind === "verdict") {
+        return result.verdict
+      }
+
+      this.log("warn", `Classificador indisponível: ${result.error}`)
+      return null
+    } catch (error) {
+      this.log("warn", `Falha ao classificar falha de gate: ${error instanceof Error ? error.message : String(error)}`)
+      return null
+    }
   }
 
   private async recordBlocker(subtask: SubtaskInfo, kind: BlockerKind, reason: string): Promise<void> {
