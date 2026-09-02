@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { parseAnalystReply } from "../src/planning/AnalystReply.js"
+import { classifyAnalystParseFailure, parseAnalystReply, safeParseAnalystReply } from "../src/planning/AnalystReply.js"
 
 describe("parseAnalystReply", () => {
   it("aceita o formato histórico de plano (sem kind)", () => {
@@ -51,5 +51,56 @@ describe("parseAnalystReply", () => {
 
   it("rejeita resposta sem JSON", () => {
     expect(() => parseAnalystReply("nao tenho duvidas")).toThrow(/nao contem JSON/)
+  })
+})
+
+describe("safeParseAnalystReply", () => {
+  it("retorna o reply em caso valido (sem lançar)", () => {
+    const parsed = safeParseAnalystReply('{"subtarefas":[{"seq":1,"titulo":"A"}]}')
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) throw new Error("inesperado")
+    expect(parsed.reply.kind).toBe("plano")
+  })
+
+  it("classifica JSON cortado no meio de string como truncado", () => {
+    // Caso real de 2026-09-01: geração estourou o teto de saída no meio do scope.
+    const content = '{"subtarefas":[{"seq":1,"titulo":"A","scope":"implementar o fluxo completo de validacao'
+    const parsed = safeParseAnalystReply(content)
+    expect(parsed.ok).toBe(false)
+    if (parsed.ok) throw new Error("inesperado")
+    expect(parsed.failure.kind).toBe("truncated")
+  })
+
+  it("classifica JSON interrompido entre tokens como truncado", () => {
+    const parsed = safeParseAnalystReply('{"subtarefas":[{"seq":1')
+    expect(parsed.ok).toBe(false)
+    if (parsed.ok) throw new Error("inesperado")
+    expect(parsed.failure.kind).toBe("truncated")
+  })
+
+  it("classifica texto sem JSON como invalido (nao truncado)", () => {
+    const parsed = safeParseAnalystReply("nao tenho duvidas, pode seguir")
+    expect(parsed.ok).toBe(false)
+    if (parsed.ok) throw new Error("inesperado")
+    expect(parsed.failure.kind).toBe("invalid")
+  })
+
+  it("classifica plano sem subtarefas como invalido", () => {
+    const parsed = safeParseAnalystReply('{"kind":"plano","subtarefas":[]}')
+    expect(parsed.ok).toBe(false)
+    if (parsed.ok) throw new Error("inesperado")
+    expect(parsed.failure.kind).toBe("invalid")
+  })
+})
+
+describe("classifyAnalystParseFailure", () => {
+  it("detecta truncamento por formato quando nao ha chave de fechamento", () => {
+    const failure = classifyAnalystParseFailure('{"subtarefas": [', new Error("qualquer outro erro"))
+    expect(failure.kind).toBe("truncated")
+  })
+
+  it("mantem erro semantico como invalido quando o JSON fecha", () => {
+    const failure = classifyAnalystParseFailure('{"kind":"perguntas","perguntas":["  "]}', new Error("Clarificação sem perguntas válidas"))
+    expect(failure.kind).toBe("invalid")
   })
 })

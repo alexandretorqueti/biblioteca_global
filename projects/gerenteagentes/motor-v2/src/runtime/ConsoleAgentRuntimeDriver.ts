@@ -135,6 +135,7 @@ export class ConsoleAgentRuntimeDriver {
           state?: string
           endedAt?: number
           hasActiveRun?: boolean
+          stopReason?: string
         }>({
           method: "GET",
           path: "/api/sessions/describe",
@@ -182,7 +183,13 @@ export class ConsoleAgentRuntimeDriver {
             ? (typeof lastAssistant.content === "string" ? lastAssistant.content : JSON.stringify(lastAssistant.content))
             : undefined
 
-          return { state: "final", runId, content, stopReason: "done" }
+          // stopReason real quando o Console/Gateway expuser (ex.: "length"
+          // = teto de saida do modelo); ausente => "done" (comportamento
+          // historico). Permite ao motor distinguir fim normal de truncamento.
+          const rawStopReason = (lastAssistant as { stopReason?: unknown } | undefined)?.stopReason
+          const stopReason = typeof rawStopReason === "string" && rawStopReason.length > 0 ? rawStopReason : "done"
+
+          return { state: "final", runId, content, stopReason }
         }
 
         if (desc.status === "error" || desc.state === "error") {

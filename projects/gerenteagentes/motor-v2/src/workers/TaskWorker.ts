@@ -33,7 +33,7 @@ import {
   withBaselineExcludes,
 } from "../policies/BaselinePolicy.js"
 import { hasPersistedPlan, persistPlan } from "../planning/PlanPersistence.js"
-import { parseAnalystReply } from "../planning/AnalystReply.js"
+import { safeParseAnalystReply, type AnalystReply } from "../planning/AnalystReply.js"
 import {
   fetchTaskClarificationHistory,
   formatHistoryForPrompt,
@@ -44,6 +44,42 @@ import mysql from "mysql2/promise"
 
 const COMMAND_FAILURE_LIMIT = 12_000
 const ANSI_ESCAPE_PATTERN = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g
+
+/**
+ * Limite da descrição enviada AO ANALISTA. Ele só precisa de contexto
+ * suficiente para quebrar a tarefa; a descrição integral continua chegando
+ * ao programador na fase EXECUTE (buildProgrammerPrompt injeta até 12KB).
+ * Descrições gigantes (ex.: 7KB+) faziam o analista refletir a especificação
+ * nos scopes e estourar o teto de saída do modelo no meio do JSON (2026-09-01).
+ */
+const ANALYST_DESCRIPTION_LIMIT = 4000
+
+export function truncateDescriptionForAnalyst(description?: string): string {
+  const full = (description || "N/A").trim() || "N/A"
+  if (full.length <= ANALYST_DESCRIPTION_LIMIT) return full
+  return (
+    full.substring(0, ANALYST_DESCRIPTION_LIMIT) +
+    "\n[descricao truncada para a analise; o programador recebe a descricao completa na execucao]"
+  )
+}
+
+/**
+ * Feedback corretivo enviado ao analista quando a resposta veio truncada ou
+ * inválida: uma única nova chance no mesmo modelo antes de escalar a escada.
+ */
+export function analystCorrectiveFeedback(kind: "truncated" | "invalid"): string {
+  if (kind === "truncated") {
+    return [
+      "Sua resposta anterior foi cortada no meio do JSON (provavelmente atingiu o limite de saida do modelo).",
+      "Responda de novo com o MESMO formato JSON, porem mais curto: menos subtarefas, scopes de ate 500 caracteres, criterios de aceite curtos.",
+      "Nao repita a descricao da tarefa. Responda APENAS com o JSON.",
+    ].join(" ")
+  }
+  return [
+    "Sua resposta anterior nao continha JSON valido no formato esperado.",
+    "Responda APENAS com o JSON esperado (plano com subtarefas ou perguntas), sem texto ao redor.",
+  ].join(" ")
+}
 
 type CommandFailure = {
   stdout?: string | Buffer
@@ -230,7 +266,8 @@ class TaskWorker {
         const result = await driver.waitForRunCompletion(session, runId, {
           onActivity: () => this.sendHeartbeat(),
         })
-        this.log("info", "Resultado do analista: state=" + result.state + ", contentLength=" + (result.content?.length || 0))
+        const stopInfo = result.stopReason && result.stopReason !== "done" ? `, stopReason=${result.stopReason}` : ""
+        this.log("info", "Resultado do analista: state=" + result.state + ", contentLength=" + (result.content?.length || 0) + stopInfo)
 
         if (result.state !== "final" || !result.content) {
           lastFailure = "Analista falhou: " + (result.errorMessage || result.state)
@@ -238,7 +275,43 @@ class TaskWorker {
           continue
         }
 
-        const reply = parseAnalystReply(result.content)
+        let parsed = safeParseAnalystReply(result.content)
+
+        if (!parsed.ok) {
+          // Resposta truncada (teto de saida do modelo) ou invalida: falha
+          // retryavel, nao terminal. Da UMA chance extra ao mesmo modelo com
+          // feedback corretivo; se persistir, escala para o proximo modelo da
+          // escada (antes qualquer erro de parse bloqueava a tarefa).
+          this.log("warn", `Resposta do analista invalida (${parsed.failure.kind}${stopInfo}): ${parsed.failure.message}`)
+          try {
+            const { runId: retryRunId } = await driver.sendMessage({
+              session,
+              message: analystCorrectiveFeedback(parsed.failure.kind),
+            })
+            this.log("info", "Retry corretivo enviado ao analista (" + model.model + ")... runId=" + retryRunId)
+            const retryResult = await driver.waitForRunCompletion(session, retryRunId, {
+              onActivity: () => this.sendHeartbeat(),
+            })
+            if (retryResult.state === "final" && retryResult.content) {
+              parsed = safeParseAnalystReply(retryResult.content)
+              if (!parsed.ok) {
+                this.log("warn", "Retry corretivo tambem retornou resposta invalida (" + parsed.failure.kind + "): " + parsed.failure.message)
+              }
+            } else {
+              this.log("warn", "Retry corretivo nao retornou resultado final: " + (retryResult.errorMessage || retryResult.state))
+            }
+          } catch (retryError) {
+            this.log("warn", "Retry corretivo falhou: " + (retryError instanceof Error ? retryError.message : String(retryError)))
+          }
+        }
+
+        if (!parsed.ok) {
+          lastFailure = `Analista retornou resposta invalida (${parsed.failure.kind}): ${parsed.failure.message}`
+          this.log("warn", lastFailure + "; escalando para o proximo modelo da escada")
+          continue
+        }
+
+        const reply: AnalystReply = parsed.reply
 
         if (reply.kind === "perguntas") {
           // Ambiguidade: persiste as perguntas no chat da tarefa e para.
@@ -758,10 +831,10 @@ class TaskWorker {
 
   private buildAnalystPrompt(task: { title: string; description?: string }, clarificationHistory?: string): string {
     const lines = [
-      "Voce e um analista de requisitos. Recebe uma tarefa e deve quebra-la em subtarefas (2 a 4 no maximo).",
+      "Voce e um analista de requisitos. Recebe uma tarefa e deve quebra-la em subtarefas.",
       "",
       "Tarefa: " + task.title,
-      "Descricao: " + (task.description || "N/A"),
+      "Descricao: " + truncateDescriptionForAnalyst(task.description),
       "",
       "Responda APENAS com JSON valido, em UMA das duas formas abaixo.",
       "",
@@ -785,9 +858,11 @@ class TaskWorker {
       "}",
       "",
       "Regras:",
-      "- Crie no maximo 4 subtarefas.",
-      "- Seja especifico no scope.",
-      "- Nao inclua explicacao fora do JSON.",
+      "- Quebre a tarefa no MINIMO de subtarefas possivel (a partir de 2). Crie mais somente quando a complexidade exigir de fato (ex.: muitas telas, modulos independentes), sem passar de 10. Prefira sempre menos subtarefas bem definidas a muitas picotadas.",
+      "- titulo: curto, ate ~80 caracteres.",
+      "- scope: objetivo, ate ~500 caracteres. O programador ja recebe a descricao completa da tarefa na execucao; NAO repita a especificacao nem a descricao da tarefa no scope.",
+      "- acceptance_criteria: 2 a 4 itens curtos.",
+      "- Mantenha a resposta curta: responda APENAS o JSON, sem explicacao fora dele.",
       "- NUNCA crie subtarefas para passos operacionais que o motor executa automaticamente: commit, push, merge, build, testes unitarios, deploy, validacao de build.",
       "- Subtarefas devem conter apenas trabalho de codigo ou documentacao (ex.: criar schema, criar tela, escrever endpoint).",
       "- Se o escopo incluir criacao de tabelas/schema, o proprio dev deve gerar as migrations (drizzle-kit generate) como parte do trabalho — mas NAO crie subtarefa separada para isso.",

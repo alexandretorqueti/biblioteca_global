@@ -69,3 +69,48 @@ export function parseAnalystReply(content: string): AnalystReply {
 
   return { kind: "plano", subtarefas: mapSubtarefas(parsed.subtarefas) }
 }
+
+/**
+ * Classificação de falha de parse da resposta do analista.
+ *
+ * - `truncated`: a geração foi cortada no meio (teto de saída do modelo).
+ *   Sintomas: erro de sintaxe "string não terminada"/"fim inesperado do JSON",
+ *   ou conteúdo sem nenhuma chave de fechamento.
+ * - `invalid`: qualquer outra resposta fora do contrato (sem JSON, sem
+ *   subtarefas, clarificação sem perguntas etc.).
+ *
+ * Ambas são falhas RETRYÁVEIS: o motor tenta 1 retry corretivo no mesmo
+ * modelo e depois escala para o próximo da escada — nunca bloqueia a tarefa.
+ */
+export type AnalystParseFailure =
+  | { kind: "truncated"; message: string }
+  | { kind: "invalid"; message: string }
+
+const TRUNCATED_JSON_ERROR_PATTERN = /unterminated string|unexpected end of json|end of json input/i
+
+export function classifyAnalystParseFailure(content: string, error: unknown): AnalystParseFailure {
+  const message = error instanceof Error ? error.message : String(error)
+  const truncatedByError = TRUNCATED_JSON_ERROR_PATTERN.test(message)
+  const trimmed = content.trim()
+  // Abriu um objeto JSON mas nao ha nenhuma chave de fechamento: a geração
+  // parou antes de fechar. Texto sem "{" sequer nao e truncamento — e
+  // resposta fora do contrato (invalid).
+  const truncatedByShape = trimmed.includes("{") && !trimmed.includes("}")
+  if (truncatedByError || truncatedByShape) {
+    return { kind: "truncated", message }
+  }
+  return { kind: "invalid", message }
+}
+
+export type SafeAnalystParse =
+  | { ok: true; reply: AnalystReply }
+  | { ok: false; failure: AnalystParseFailure }
+
+/** Versão que nunca lança: classifica a falha para o motor decidir retry/escala. */
+export function safeParseAnalystReply(content: string): SafeAnalystParse {
+  try {
+    return { ok: true, reply: parseAnalystReply(content) }
+  } catch (error) {
+    return { ok: false, failure: classifyAnalystParseFailure(content, error) }
+  }
+}
