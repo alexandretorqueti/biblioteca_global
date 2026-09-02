@@ -15,7 +15,7 @@ import { existsSync } from "node:fs"
 
 import { pathToFileURL } from "node:url"
 import { SecretProfileManager, resolveGitTopLevel } from "../workspaces/SecretProfileManager.js"
-import { DependencyInstaller, resolveInstallTimeoutMs } from "../workspaces/DependencyInstaller.js"
+import { DependencyInstaller, isLockfileOutOfSync, resolveInstallTimeoutMs } from "../workspaces/DependencyInstaller.js"
 import { ConsoleAgentRuntimeDriver } from "../runtime/ConsoleAgentRuntimeDriver.js"
 import type { WorkerInput, ExecutionContext, ExecutionResult, SubtaskInfo } from "../shared/types/execution.js"
 import type { CoordinatorToWorkerMessage, WorkerToCoordinatorMessage } from "./WorkerProtocol.js"
@@ -441,6 +441,8 @@ class TaskWorker {
 
     if (result.skipped) {
       this.log("info", "npm ci pulado: " + (result.reason ?? "package-lock.json ausente"))
+    } else if (result.lockfileRegenerated) {
+      this.log("warn", "Lockfile regenerado automaticamente (npm install fallback) — o agente criou pacote workspace sem sincronizar package-lock.json")
     }
   }
 
@@ -587,7 +589,23 @@ class TaskWorker {
       this.log("info", "Build OK")
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
-      throw new Error("Build falhou: " + msg.substring(0, 500), { cause: error })
+      // Auto-recovery: se o build falhou por lockfile desatualizado (agente
+      // alterou package.json sem rodar npm install), tenta npm install e
+      // roda o build novamente. Isso evita consumir tentativa do agente por
+      // problema de infraestrutura.
+      if (isLockfileOutOfSync(msg)) {
+        this.log("warn", "Build falhou com lockfile desatualizado; tentando npm install + rebuild...")
+        try {
+          this.exec("npm install", input.repoPath, 300_000)
+          this.exec(input.buildCommand, input.repoPath, 300_000)
+          this.log("info", "Build OK após npm install (lockfile regenerado)")
+        } catch (recoveryError) {
+          const recoveryMsg = recoveryError instanceof Error ? recoveryError.message : String(recoveryError)
+          throw new Error("Build falhou (mesmo após npm install): " + recoveryMsg.substring(0, 500), { cause: recoveryError })
+        }
+      } else {
+        throw new Error("Build falhou: " + msg.substring(0, 500), { cause: error })
+      }
     }
 
     const correctionFingerprint = input.subtask?.correctionFingerprint

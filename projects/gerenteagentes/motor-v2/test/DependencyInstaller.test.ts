@@ -14,7 +14,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { DependencyInstaller, resolveInstallTimeoutMs, type CommandRunner } from "../src/workspaces/DependencyInstaller.js"
+import { DependencyInstaller, isLockfileOutOfSync, resolveInstallTimeoutMs, type CommandRunner } from "../src/workspaces/DependencyInstaller.js"
 
 let tempDir: string
 
@@ -295,6 +295,130 @@ describe("resolveInstallTimeoutMs", () => {
 
     process.env.TASK_DEPENDENCY_INSTALL_TIMEOUT_MS = "-100"
     expect(resolveInstallTimeoutMs()).toBe(15 * 60 * 1000)
+  })
+})
+
+describe("DependencyInstaller — auto-recovery de lockfile desatualizado", () => {
+  it("detecta erro EUSAGE e roda npm install automaticamente", async () => {
+    await writeFile(join(tempDir, "package-lock.json"), "{}")
+
+    const runner = createMockRunner({
+      run: vi.fn().mockImplementation(async (cmd: string) => {
+        if (cmd === "git status --porcelain") return { stdout: "", stderr: "" }
+        if (cmd === "npm ci") {
+          // Primeira chamada: falha com EUSAGE (lockfile desatualizado)
+          throw new Error(
+            "npm error code EUSAGE\nnpm error\nnpm error `npm ci` can only install packages when your package.json and package-lock.json are in sync.\nnpm error Missing: @biblioteca-global/project-taqui@0.0.0 from lock file"
+          )
+        }
+        if (cmd === "npm install") return { stdout: "added 50 packages\n", stderr: "" }
+        return { stdout: "", stderr: "" }
+      }),
+    })
+    const installer = new DependencyInstaller(runner)
+
+    // Simula o cenário: primeira chamada npm ci falha, npm install roda, segunda npm ci succeeds
+    let npmCiCallCount = 0
+    vi.mocked(runner.run).mockImplementation(async (cmd: string) => {
+      if (cmd === "git status --porcelain") return { stdout: "", stderr: "" }
+      if (cmd === "npm ci") {
+        npmCiCallCount++
+        if (npmCiCallCount === 1) {
+          throw new Error(
+            "npm error code EUSAGE\nnpm error Missing: @biblioteca-global/project-taqui@0.0.0 from lock file"
+          )
+        }
+        return { stdout: "added 100 packages\n", stderr: "" }
+      }
+      if (cmd === "npm install") return { stdout: "added 50 packages\n", stderr: "" }
+      return { stdout: "", stderr: "" }
+    })
+
+    const result = await installer.install({ worktreePath: tempDir })
+
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.lockfileRegenerated).toBe(true)
+    }
+    // Verifica que npm install foi chamado
+    const calls = vi.mocked(runner.run).mock.calls
+    const npmInstallCall = calls.find(([cmd]) => cmd === "npm install")
+    expect(npmInstallCall).toBeTruthy()
+    // Verifica que npm ci foi chamado 2 vezes
+    const npmCiCalls = calls.filter(([cmd]) => cmd === "npm ci")
+    expect(npmCiCalls.length).toBe(2)
+  })
+
+  it("falha se npm install também falhar", async () => {
+    await writeFile(join(tempDir, "package-lock.json"), "{}")
+
+    let npmCiCallCount = 0
+    const runner = createMockRunner({
+      run: vi.fn().mockImplementation(async (cmd: string) => {
+        if (cmd === "git status --porcelain") return { stdout: "", stderr: "" }
+        if (cmd === "npm ci") {
+          npmCiCallCount++
+          throw new Error("npm error code EUSAGE\nnpm error Missing: @pkg from lock file")
+        }
+        if (cmd === "npm install") throw new Error("npm error ECONNREFUSED")
+        return { stdout: "", stderr: "" }
+      }),
+    })
+    const installer = new DependencyInstaller(runner)
+
+    const result = await installer.install({ worktreePath: tempDir })
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.reason).toContain("mesmo após npm install")
+    }
+  })
+
+  it("não tenta auto-recovery para erros que não são EUSAGE", async () => {
+    await writeFile(join(tempDir, "package-lock.json"), "{}")
+
+    const runner = createMockRunner({
+      run: vi.fn().mockImplementation(async (cmd: string) => {
+        if (cmd === "git status --porcelain") return { stdout: "", stderr: "" }
+        if (cmd === "npm ci") throw new Error("npm error ERESOLVE could not resolve dependency tree")
+        return { stdout: "", stderr: "" }
+      }),
+    })
+    const installer = new DependencyInstaller(runner)
+
+    const result = await installer.install({ worktreePath: tempDir })
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.reason).toContain("npm ci falhou")
+      expect(result.reason).not.toContain("mesmo após npm install")
+    }
+    // npm install NÃO deve ter sido chamado
+    const calls = vi.mocked(runner.run).mock.calls
+    const npmInstallCall = calls.find(([cmd]) => cmd === "npm install")
+    expect(npmInstallCall).toBeFalsy()
+  })
+})
+
+describe("isLockfileOutOfSync", () => {
+  it("detecta erro EUSAGE", () => {
+    expect(isLockfileOutOfSync("npm error code EUSAGE")).toBe(true)
+  })
+
+  it("detecta 'Missing: <pkg> from lock file'", () => {
+    expect(isLockfileOutOfSync("npm error Missing: @biblioteca-global/project-taqui@0.0.0 from lock file")).toBe(true)
+  })
+
+  it("detecta mensagem completa de lockfile desatualizado", () => {
+    const msg =
+      "npm error `npm ci` can only install packages when your package.json and package-lock.json are in sync."
+    expect(isLockfileOutOfSync(msg)).toBe(true)
+  })
+
+  it("não detecta erros unrelated", () => {
+    expect(isLockfileOutOfSync("npm error ERESOLVE could not resolve")).toBe(false)
+    expect(isLockfileOutOfSync("npm error ENOENT no such file")).toBe(false)
+    expect(isLockfileOutOfSync("")).toBe(false)
   })
 })
 
