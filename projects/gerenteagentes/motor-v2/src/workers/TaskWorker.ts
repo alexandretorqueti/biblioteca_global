@@ -12,9 +12,10 @@
 
 import { execFileSync, execSync } from "node:child_process"
 import { existsSync } from "node:fs"
-import { join } from "node:path"
+
 import { pathToFileURL } from "node:url"
 import { SecretProfileManager, resolveGitTopLevel } from "../workspaces/SecretProfileManager.js"
+import { DependencyInstaller, resolveInstallTimeoutMs } from "../workspaces/DependencyInstaller.js"
 import { ConsoleAgentRuntimeDriver } from "../runtime/ConsoleAgentRuntimeDriver.js"
 import type { WorkerInput, ExecutionContext, ExecutionResult, SubtaskInfo } from "../shared/types/execution.js"
 import type { CoordinatorToWorkerMessage, WorkerToCoordinatorMessage } from "./WorkerProtocol.js"
@@ -348,45 +349,25 @@ class TaskWorker {
 
   /**
    * Instala dependências via npm ci se houver package-lock.json na raiz do worktree.
+   * Delega ao DependencyInstaller (módulo testável com runner injetável).
    * Salvaguarda: captura git status antes/depois; se npm ci alterar arquivo rastreado, falha.
    * Timeout configurável via TASK_DEPENDENCY_INSTALL_TIMEOUT_MS (default 15min).
    */
   private async installDependencies(worktreePath: string): Promise<void> {
-    const lockFile = join(worktreePath, "package-lock.json")
-    if (!existsSync(lockFile)) {
-      this.log("info", "npm ci pulado: package-lock.json não encontrado")
-      return
-    }
-
-    const timeoutMs = Number(process.env.TASK_DEPENDENCY_INSTALL_TIMEOUT_MS) || 15 * 60 * 1000
-
-    // Captura git status antes
-    const statusBefore = this.exec("git status --porcelain", worktreePath).trim()
-
-    this.log("info", "Executando npm ci (timeout: " + Math.round(timeoutMs / 1000) + "s)...")
     this.send({ type: "progress", executionId: this.executionId, phase: "prepare", message: "Instalando dependencias (npm ci)" })
 
-    try {
-      this.exec("npm ci", worktreePath, timeoutMs)
-      this.log("info", "npm ci concluído com sucesso")
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error)
-      throw new Error("Ambiente bloqueado: npm ci falhou — " + msg.substring(0, 1000))
+    const installer = new DependencyInstaller()
+    const result = await installer.install({
+      worktreePath,
+      timeoutMs: resolveInstallTimeoutMs(),
+    })
+
+    if (!result.ok) {
+      throw new Error("Ambiente bloqueado: " + result.reason)
     }
 
-    // Captura git status depois e compara
-    const statusAfter = this.exec("git status --porcelain", worktreePath).trim()
-    if (statusBefore !== statusAfter) {
-      // Identifica quais arquivos rastreados foram alterados
-      const newLines = statusAfter.split("\n").filter(l => l && !statusBefore.includes(l))
-      const trackedChanges = newLines.filter(l => !l.startsWith("??"))
-      if (trackedChanges.length > 0) {
-        throw new Error(
-          "Ambiente bloqueado: npm ci modificou arquivos rastreados: " +
-          trackedChanges.slice(0, 10).join(", ") +
-          " — verifique se o package-lock.json está consistente com package.json"
-        )
-      }
+    if (result.skipped) {
+      this.log("info", "npm ci pulado: " + (result.reason ?? "package-lock.json ausente"))
     }
   }
 
