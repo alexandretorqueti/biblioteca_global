@@ -217,7 +217,7 @@ export const config: GeradorSistemaConfig = {
             title: "Unidades",
             description: "Apartamentos e casas de todos os condomínios",
             fields: [
-              { name: "condominioId", label: "Condomínio", type: "number", required: true },
+              { name: "condominioId", label: "Condomínio", type: "multipleChoice", multipleChoice: { resource: "condominios", idField: "id", displayField: "nome" }, required: true },
               { name: "tipo", label: "Tipo", type: "select", required: true, options: [
                 { label: "Apartamento", value: "apartamento" },
                 { label: "Casa", value: "casa" },
@@ -255,7 +255,7 @@ export const config: GeradorSistemaConfig = {
                 filterField: "unidadeId",
                 title: "Proprietários da Unidade",
                 fields: [
-                  { name: "proprietarioId", label: "Proprietário", type: "number", required: true },
+                  { name: "proprietarioId", label: "Proprietário", type: "multipleChoice", multipleChoice: { resource: "proprietarios", idField: "id", displayField: "nome" }, required: true },
                 ],
                 overrides: {
                   hiddenColumns: ["unidadeId", "createdAt"],
@@ -277,7 +277,7 @@ export const config: GeradorSistemaConfig = {
             title: "Moradores",
             description: "Todos os moradores de todos os condomínios",
             fields: [
-              { name: "unidadeId", label: "Unidade", type: "number", required: true },
+              { name: "unidadeId", label: "Unidade", type: "multipleChoice", multipleChoice: { resource: "unidades", idField: "id", displayField: "label" }, required: true },
               { name: "nome", label: "Nome", type: "text", required: true, maxLength: 200, fullWidth: true },
               { name: "email", label: "E-mail", type: "text", maxLength: 200, fullWidth: true },
               { name: "telefone", label: "Telefone", type: "text", maxLength: 50 },
@@ -326,7 +326,7 @@ export const config: GeradorSistemaConfig = {
             title: "Funcionários",
             description: "Funcionários de triagem e portaria de todos os condomínios",
             fields: [
-              { name: "condominioId", label: "Condomínio", type: "number", required: true },
+              { name: "condominioId", label: "Condomínio", type: "multipleChoice", multipleChoice: { resource: "condominios", idField: "id", displayField: "nome" }, required: true },
               { name: "nome", label: "Nome", type: "text", required: true, maxLength: 200, fullWidth: true },
               { name: "funcao", label: "Função", type: "select", required: true, options: [
                 { label: "Triagem", value: "triagem" },
@@ -388,10 +388,10 @@ export const config: GeradorSistemaConfig = {
             title: "Encomendas",
             description: "Todas as encomendas registradas no sistema",
             fields: [
-              { name: "condominioId", label: "Condomínio", type: "number", required: true },
-              { name: "unidadeId", label: "Unidade", type: "number", required: true },
-              { name: "transportadoraId", label: "Transportadora / Loja", type: "number" },
-              { name: "registradoPorId", label: "Registrado por (funcionário)", type: "number", required: true },
+              { name: "condominioId", label: "Condomínio", type: "multipleChoice", multipleChoice: { resource: "condominios", idField: "id", displayField: "nome" }, required: true },
+              { name: "unidadeId", label: "Unidade", type: "multipleChoice", multipleChoice: { resource: "unidades", idField: "id", displayField: "label" }, required: true },
+              { name: "transportadoraId", label: "Transportadora / Loja", type: "multipleChoice", multipleChoice: { resource: "transportadoras", idField: "id", displayField: "nome" } },
+              { name: "registradoPorId", label: "Registrado por (funcionário)", type: "multipleChoice", multipleChoice: { resource: "funcionarios", idField: "id", displayField: "nome" }, required: true },
               { name: "codigoRastreamento", label: "Código de Rastreamento", type: "text", maxLength: 100, fullWidth: true },
               { name: "fotoUrl", label: "URL da Foto", type: "text", maxLength: 1000, fullWidth: true, gridVisible: false },
               { name: "observacoes", label: "Observações", type: "textarea", fullWidth: true, gridVisible: false },
@@ -407,9 +407,9 @@ export const config: GeradorSistemaConfig = {
                   { label: "Cancelada", value: "cancelada" },
                 ],
               },
-              { name: "confirmadoPorId", label: "Confirmado por (morador)", type: "number", gridVisible: false },
+              { name: "confirmadoPorId", label: "Confirmado por (morador)", type: "multipleChoice", multipleChoice: { resource: "moradores", idField: "id", displayField: "nome" }, gridVisible: false },
               { name: "confirmadoEm", label: "Confirmado em", type: "date", gridVisible: false },
-              { name: "entreguePorId", label: "Entregue por (funcionário)", type: "number", gridVisible: false },
+              { name: "entreguePorId", label: "Entregue por (funcionário)", type: "multipleChoice", multipleChoice: { resource: "funcionarios", idField: "id", displayField: "nome" }, gridVisible: false },
               { name: "entregueEm", label: "Entregue em", type: "date", gridVisible: false },
             ],
             overrides: {
@@ -464,8 +464,8 @@ export const config: GeradorSistemaConfig = {
             title: "Notificações",
             description: "Histórico de notificações enviadas aos moradores",
             fields: [
-              { name: "moradorId", label: "Morador", type: "number", required: true },
-              { name: "encomendaId", label: "Encomenda", type: "number", required: true },
+              { name: "moradorId", label: "Morador", type: "multipleChoice", multipleChoice: { resource: "moradores", idField: "id", displayField: "nome" }, required: true },
+              { name: "encomendaId", label: "Encomenda", type: "multipleChoice", multipleChoice: { resource: "encomendas", idField: "id", displayField: "codigoRastreamento" }, required: true },
               {
                 name: "tipo",
                 label: "Tipo",
