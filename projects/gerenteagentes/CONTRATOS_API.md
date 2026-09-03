@@ -422,12 +422,72 @@ fonte da verdade da execução; a tabela `subtarefas` local é secundária
   "motorId": "task-biblioteca-1",
   "exists": true,
   "task": { "id": "task-biblioteca-1", "status": "running", "...": "..." },
-  "subtasks": [ { "id": 1, "titulo": "...", "status": "running" } ],
+  "subtasks": [
+    {
+      "id": 1,
+      "titulo": "Criar schema",
+      "status": "verified",
+      "deliverCount": 2,
+      "deliveryHistory": [
+        {
+          "id": 1,
+          "deliverNumber": 1,
+          "model": "openai/gpt-5.6-sol",
+          "eventType": "delivery_started",
+          "reason": null,
+          "createdAt": "2026-09-03T14:00:00Z"
+        },
+        {
+          "id": 2,
+          "deliverNumber": 1,
+          "model": "openai/gpt-5.6-sol",
+          "eventType": "gate_rejected",
+          "reason": "Build failed: TypeScript error in schema.ts",
+          "createdAt": "2026-09-03T14:05:00Z"
+        },
+        {
+          "id": 3,
+          "deliverNumber": 2,
+          "model": "openai/gpt-5.6-sol",
+          "eventType": "delivery_started",
+          "reason": null,
+          "createdAt": "2026-09-03T14:10:00Z"
+        },
+        {
+          "id": 4,
+          "deliverNumber": 2,
+          "model": "openai/gpt-5.6-sol",
+          "eventType": "completed",
+          "reason": null,
+          "createdAt": "2026-09-03T14:15:00Z"
+        }
+      ]
+    }
+  ],
   "currentSubTask": { "id": 2 },
   "events": [ { "type": "subtask_started", "at": "2026-08-18T14:30:00Z" } ],
   "errors": [],
   "models": []
 }
+```
+
+**Campos de `deliveryHistory` por subtarefa:**
+
+| Campo | Tipo | Descrição |
+|-------|------|-----------|
+| `id` | number | ID do registro no histórico |
+| `deliverNumber` | number | Número da entrega (1, 2, 3...) — incrementa a cada tentativa |
+| `model` | string \| null | Modelo usado nesta entrega |
+| `eventType` | string | Tipo do evento: `delivery_started`, `gate_rejected`, `return_for_rework`, `blocked`, `completed` |
+| `reason` | string \| null | Motivo/erro (presente em `gate_rejected`, `return_for_rework`, `blocked`) |
+| `createdAt` | string | Timestamp ISO do evento |
+
+**Tipos de evento:**
+- `delivery_started`: Entrega iniciada (programador chamado)
+- `gate_rejected`: Gate vermelho (build/test falhou)
+- `return_for_rework`: Retorno para rework (correção criada após falha repetida)
+- `blocked`: Tarefa/subtarefa bloqueada (ambiente, sistema, etc.)
+- `completed`: Entrega bem-sucedida (gate verde, subtarefa verificada)
 
 // Response 200 (tarefa nunca enviada ao motor)
 {

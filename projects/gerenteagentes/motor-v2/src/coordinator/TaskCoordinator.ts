@@ -83,6 +83,22 @@ interface SubtaskView {
   workspaceBranch: string | null
   workspaceCommitSha: string | null
   correctionForSubtaskId: number | null
+  deliveryHistory: DeliveryHistoryEntry[]
+}
+
+/**
+ * Registro do histórico de entregas de uma subtarefa.
+ * Cada evento (entrega iniciada, gate rejeitado, retorno para rework, bloqueio, conclusão)
+ * é uma linha separada — permite auditar quantas vezes a subtarefa foi entregue,
+ * quais modelos foram usados, e os motivos de cada rejeição/retorno.
+ */
+interface DeliveryHistoryEntry {
+  id: number
+  deliverNumber: number
+  model: string | null
+  eventType: "delivery_started" | "gate_rejected" | "return_for_rework" | "blocked" | "completed"
+  reason: string | null
+  createdAt: string
 }
 
 interface SubtaskWithTask {
@@ -842,7 +858,39 @@ export class TaskCoordinator {
       workspaceBranch: row.workspace_branch ? String(row.workspace_branch) : null,
       workspaceCommitSha: row.workspace_commit_sha ? String(row.workspace_commit_sha) : null,
       correctionForSubtaskId: row.correction_for_subtask_id ? Number(row.correction_for_subtask_id) : null,
+      deliveryHistory: [], // será preenchido abaixo
     }))
+
+    // Busca o histórico de entregas para todas as subtarefas da tarefa
+    if (subtasks.length > 0) {
+      const subtaskIds = subtasks.map((s) => s.id)
+      const placeholders = subtaskIds.map(() => "?").join(", ")
+      const { rows: historyRows } = await this.db.query(
+        "SELECT id, subtarefa_id, deliver_number, model, event_type, reason, created_at " +
+        "FROM subtarefas_entregas " +
+        "WHERE subtarefa_id IN (" + placeholders + ") " +
+        "ORDER BY subtarefa_id ASC, deliver_number ASC, created_at ASC",
+        subtaskIds,
+      )
+      const historyBySubtaskId = new Map<number, DeliveryHistoryEntry[]>()
+      for (const row of historyRows) {
+        const subtaskId = Number(row.subtarefa_id)
+        if (!historyBySubtaskId.has(subtaskId)) {
+          historyBySubtaskId.set(subtaskId, [])
+        }
+        historyBySubtaskId.get(subtaskId)!.push({
+          id: Number(row.id),
+          deliverNumber: Number(row.deliver_number),
+          model: row.model ? String(row.model) : null,
+          eventType: String(row.event_type) as DeliveryHistoryEntry["eventType"],
+          reason: row.reason ? String(row.reason) : null,
+          createdAt: String(row.created_at),
+        })
+      }
+      for (const subtask of subtasks) {
+        subtask.deliveryHistory = historyBySubtaskId.get(subtask.id) ?? []
+      }
+    }
 
     // B9 (2026-08-31): o último bloqueio só é exposto enquanto a tarefa ESTÁ
     // bloqueada. Antes o histórico ficava visível para sempre — a tela

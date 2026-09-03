@@ -54,7 +54,8 @@ describe('correção que falha repetidamente bloqueia a tarefa inteira', () => {
 
     const calls = query.mock.calls.map(([sql]) => String(sql))
     expect(calls.some((sql) => sql.includes('INSERT INTO bloqueios'))).toBe(true)
-    expect(calls.some((sql) => sql.includes('INSERT INTO subtarefas'))).toBe(false)
+    // Verifica que NÃO criou nova subtarefa de correção (mas pode ter gravado histórico em subtarefas_entregas)
+    expect(calls.some((sql) => sql.includes('INSERT INTO subtarefas ') && !sql.includes('subtarefas_entregas'))).toBe(false)
     const bloqueioParams = query.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO bloqueios'))?.[1]
     expect(bloqueioParams).toContain('correction_failed')
     expect(String(bloqueioParams?.[3])).toContain('corrige a subtarefa 721')

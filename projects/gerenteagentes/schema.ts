@@ -299,6 +299,27 @@ export const subtarefas = mysqlTable("subtarefas", {
     .onUpdateNow(),
 })
 
+/**
+ * Histórico de entregas/erros/retornos por subtarefa.
+ * Cada evento relevante (entrega iniciada, gate rejeitado, retorno para rework,
+ * bloqueio, conclusão) grava uma linha nova — nunca sobrescreve o histórico anterior.
+ * Permite auditar quantas vezes a subtarefa foi entregue, quais modelos foram usados,
+ * e os motivos de cada rejeição/retorno.
+ */
+export const subtarefasEntregas = mysqlTable("subtarefas_entregas", {
+  id: bigint("id", { mode: "number", unsigned: true })
+    .primaryKey()
+    .autoincrement(),
+  subtarefaId: bigint("subtarefa_id", { mode: "number", unsigned: true })
+    .notNull()
+    .references(() => subtarefas.id, { onDelete: "cascade" }),
+  deliverNumber: int("deliver_number").notNull(), // número da entrega (1, 2, 3...)
+  model: varchar("model", { length: 100 }), // modelo usado nesta entrega
+  eventType: varchar("event_type", { length: 50 }).notNull(), // delivery_started, gate_rejected, return_for_rework, blocked, completed
+  reason: text("reason"), // motivo/erro (pode ser longo)
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+})
+
 export const tarefaChats = mysqlTable("tarefa_chats", {
   id: bigint("id", { mode: "number", unsigned: true })
     .primaryKey()
@@ -493,6 +514,14 @@ export const annotations = {
     duracao_segundos: { label: "Duração (s)" },
     iniciada_em: { label: "Iniciada em" },
     finalizada_em: { label: "Finalizada em" },
+  },
+  subtarefas_entregas: {
+    subtarefa_id: { label: "Subtarefa" },
+    deliver_number: { label: "Nº da Entrega" },
+    model: { label: "Modelo", maxLength: 100 },
+    event_type: { label: "Tipo de Evento", helperText: "delivery_started | gate_rejected | return_for_rework | blocked | completed" },
+    reason: { label: "Motivo/Erro", type: "textarea", fullWidth: true },
+    created_at: { label: "Registrado em" },
   },
   tarefa_chats: {
     tarefa_id: { label: "Tarefa" },
