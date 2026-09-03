@@ -29,6 +29,7 @@ import {
 import { PROJECT_DB_FACTORY, type ProjectDbFactory } from "./project-db.factory"
 import { SCHEMA_REGISTRY, type SchemaRegistry } from "./schema-registry"
 import { zodParaInsert, zodParaUpdate } from "@biblioteca-global/schema-tools"
+import { projetosCaptados } from "../../../../../projects/gerenteagentes/schema"
 
 /** Nomes que pertencem ao core/módulos específicos — nunca genéricos. */
 export const RESOURCES_RESERVADOS: ReadonlySet<string> = new Set([
@@ -543,6 +544,35 @@ export class CrudService {
     const db = await this.dbDoProjeto(projeto)
     try {
       const valores = this.paraChavesDoDrizzle(tabela, parse.data as Record<string, unknown>)
+
+      // Tarefas são executadas pelo agente do projeto captado, não pelo
+      // projeto da plataforma cujo banco está sendo usado. Conferir apenas a
+      // FK do banco permite apontar para a linha da biblioteca-global (ou para
+      // qualquer outro projeto) e reproduz a falha do TaQui.
+      if (resource === "tarefas") {
+        const projetoId = Number(valores.projeto_id)
+        if (!Number.isSafeInteger(projetoId) || projetoId <= 0) {
+          throw new BadRequestException(
+            "projeto_id inválido: informe o id numérico de projetos_captados do projeto da tarefa",
+          )
+        }
+        const [projetoCaptado] = await db
+          .select({ id: projetosCaptados.id, slug: projetosCaptados.slug })
+          .from(projetosCaptados)
+          .where(eq(projetosCaptados.id, projetoId))
+          .limit(1)
+        if (!projetoCaptado) {
+          throw new BadRequestException(
+            `projeto_id=${projetoId} não encontrado em projetos_captados. Verifique o projeto da tarefa.`,
+          )
+        }
+        if (projetoCaptado.slug !== projeto.slug) {
+          throw new BadRequestException(
+            `projeto_id=${projetoId} aponta para "${projetoCaptado.slug}", ` +
+            `mas o escopo atual é "${projeto.slug}". Use o projeto_id correto de projetos_captados.`,
+          )
+        }
+      }
       const resultado = await db.insert(tabela).values(valores)
       const insertId = resultado[0].insertId
 
