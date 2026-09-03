@@ -106,6 +106,37 @@ export const annotations = {
 Se um tipo de coluna não for suportado, defina `type` na annotation e corrija
 o modelo/validação; não duplique validação manualmente.
 
+### Inferência automática de FK (displayField)
+
+Campos terminados em `Id` com `reference` no schema Drizzle são automaticamente
+convertidos em combos de relacionamento (`type: "multipleChoice"`) pelo
+`schema-tools` durante a geração da config. A coluna "legível" da tabela
+referenciada é resolvida por heurística, na seguinte ordem de prioridade:
+
+1. **Candidatos nomeados** (primeiro que existir): `nome`, `name`, `titulo`,
+   `title`, `label`, `descricao`, `description`
+2. **Primeira coluna string** (varchar/text/char) da tabela referenciada
+3. **Fallback para `id`** com warning logado no console
+
+O resultado aparece na config gerada como:
+
+```ts
+{
+  name: "condominioId",
+  type: "multipleChoice",
+  multipleChoice: { resource: "condominios", idField: "id", displayField: "nome" }
+}
+```
+
+**Override manual sempre vence:** se o `config.ts` do projeto declara
+explicitamente um field com `type: "multipleChoice"` e `multipleChoice.displayField`,
+a heurística não é aplicada — o valor manual é preservado. Da mesma forma,
+qualquer annotation com `type` explícito (ex.: `{ type: "text" }`) impede a
+inferência.
+
+A função `inferirFk(tabela, coluna)` em `packages/schema-tools/src/inferir-fk.ts`
+é exportada publicamente para uso em ferramentas de build e validação.
+
 ## 5. Migrations, registries e provisionamento
 
 Depois de alterar o schema, gere e revise SQL e `migrations/meta`:

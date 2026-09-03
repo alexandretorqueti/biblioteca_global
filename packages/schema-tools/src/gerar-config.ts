@@ -71,6 +71,7 @@ export function telaCadastroDaTabela(
   nomeTabela: string,
   tabela: MySqlTable,
   anotacoes: Record<string, import("./form").FormAnnotation> = {},
+  tabelas?: Record<string, MySqlTable>,
 ): GeradorSistemaRoute {
   const label = humanizarNome(nomeTabela)
   return {
@@ -82,7 +83,7 @@ export function telaCadastroDaTabela(
       kind: "cadastro",
       resource: nomeTabela,
       title: label,
-      fields: gerarFields(tabela, nomeTabela, anotacoes),
+      fields: gerarFields(tabela, nomeTabela, anotacoes, tabelas),
     },
   }
 }
@@ -108,7 +109,7 @@ export function montarConfigInicial(
   const telasGeradas = Object.entries(tabelas)
     .filter(([nome]) => !referenciados.has(nome))
     .map(([nome, tabela]) =>
-      telaCadastroDaTabela(nome, tabela, annotations[nome] ?? {}),
+      telaCadastroDaTabela(nome, tabela, annotations[nome] ?? {}, tabelas),
     )
 
   // PoC §8: todo projeto recebe a tela sistêmica de usuários. Ela usa o

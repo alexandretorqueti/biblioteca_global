@@ -6,6 +6,7 @@ import { getTableColumns, type Column } from "drizzle-orm"
 import type { MySqlTable } from "drizzle-orm/mysql-core"
 import type { DynamicFieldConfig } from "@biblioteca-global/shared"
 import { humanizarNome, type FormAnnotation } from "./form"
+import { inferirFk } from "./inferir-fk"
 
 export class TipoNaoSuportadoError extends Error {
   constructor(tabela: string, coluna: string, columnType: string) {
@@ -66,11 +67,15 @@ function enumDaColuna(coluna: Column): string[] | undefined {
 /**
  * Gera os DynamicFieldConfig de uma tabela.
  * `anotacoes` = metadata por coluna (mapa `annotations` do schema).
+ * `tabelas` = mapa de todas as tabelas do schema (opcional); quando fornecido,
+ * campos FK (com `reference` no Drizzle) ganham type "multipleChoice" com
+ * resource/displayField inferidos automaticamente (subtarefa #3).
  */
 export function gerarFields(
   tabela: MySqlTable,
   tabelaNome: string,
   anotacoes: Record<string, FormAnnotation> = {},
+  tabelas?: Record<string, MySqlTable>,
 ): DynamicFieldConfig[] {
   const fields: DynamicFieldConfig[] = []
 
@@ -87,6 +92,21 @@ export function gerarFields(
       label: anotacao?.label ?? humanizarNome(coluna.name),
       type: tipo,
       required,
+    }
+
+    // Inferência automática de FK (subtarefa #3): campo com `reference` no
+    // schema Drizzle vira combo de relacionamento. A annotation pode sobrescrever
+    // o tipo (ex.: annotation.type = "text" mantém text, não vira multipleChoice).
+    if (tabelas && !anotacao?.type) {
+      const fk = inferirFk(tabela, coluna)
+      if (fk) {
+        field.type = "multipleChoice"
+        field.multipleChoice = {
+          resource: fk.resource,
+          idField: "id",
+          displayField: fk.displayField,
+        }
+      }
     }
 
     if (anotacao?.placeholder !== undefined) field.placeholder = anotacao.placeholder
