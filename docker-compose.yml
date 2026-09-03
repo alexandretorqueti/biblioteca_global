@@ -1,6 +1,5 @@
 # Biblioteca Global v2 — ambiente de desenvolvimento.
 # Etapa 0: apenas o MySQL 8. Em etapa 12 entram os serviços api e web.
-name: biblioteca-global
 
 services:
   mysql:
@@ -62,7 +61,7 @@ services:
       PROVISION_TOKEN: ${PROVISION_TOKEN}
       OPENCLAW_CONSOLE_URL: ${OPENCLAW_CONSOLE_URL:-}
       OPENCLAW_CONSOLE_TOKEN: ${OPENCLAW_CONSOLE_TOKEN:-}
-      MOTOR_DEV_URL: ${MOTOR_DEV_URL:-http://172.20.0.7:6283}
+      MOTOR_DEV_URL: ${MOTOR_DEV_URL:-http://localhost:3010}
       MOTOR_URL_HOST: ${MOTOR_URL_HOST:-api.tarefas.localhost}
       API_PORT: 3001
       # Motor-v2 (integrado na API)
