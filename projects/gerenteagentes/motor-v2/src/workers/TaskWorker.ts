@@ -26,6 +26,13 @@ import { blockerEvidence, type BlockerKind } from "../policies/BlockerPolicy.js"
 import { failureFingerprint } from "../policies/SystemFailurePolicy.js"
 import { decideGateScope, isTestPath } from "../policies/GateScopePolicy.js"
 import {
+  isSetupTask,
+  isSmokeTestSubtask,
+  validateSmokeTestGate,
+  generateSmokeTestSubtask,
+  planHasSmokeTest,
+} from "../policies/SetupSmokeTest.js"
+import {
   BASELINE_CORRECTION_CRITERION,
   BASELINE_CORRECTION_TITLE,
   BASELINE_FINGERPRINT_PREFIX,
@@ -330,6 +337,15 @@ class TaskWorker {
         const subtarefas = reply.subtarefas
         this.log("info", "Analista criou " + subtarefas.length + " subtarefas")
 
+        // Smoke test obrigatório em setup de projeto novo (controle de código).
+        // Se a tarefa é de setup e o analista não incluiu a subtarefa de smoke
+        // test, o motor injeta automaticamente como última subtarefa do plano.
+        if (isSetupTask(input.task.title, input.task.description) && !planHasSmokeTest(subtarefas)) {
+          const smokeTestSeq = subtarefas.length + 1
+          subtarefas.push(generateSmokeTestSubtask(smokeTestSeq))
+          this.log("info", "Setup detectado: subtarefa de smoke test injetada (seq=" + smokeTestSeq + ")")
+        }
+
         const persisted = await persistPlan(planningDb, input.task.id, subtarefas)
         if (persisted === "already_persisted") {
           this.log("info", "Plano foi persistido por outra execução; preservando-o")
@@ -559,6 +575,29 @@ class TaskWorker {
             
             if (await this.createCorrectionOnRepeatedGateFailure(input, subtask, model.model, lastFailure)) return undefined
             continue
+          }
+
+          // Smoke test: se a subtarefa é de smoke test, validar evidência
+          // funcional antes de marcar como verified. Controle de código —
+          // sem evidência de chamada HTTP bem-sucedida, o gate reprova.
+          if (isSmokeTestSubtask(subtask.titulo)) {
+            const smokeValidation = validateSmokeTestGate(
+              subtask.titulo,
+              result.content,
+              input.context.projectSlug,
+            )
+            if (!smokeValidation.ok) {
+              const reason = "Smoke test sem evidência funcional: " + smokeValidation.reason
+              this.log("warn", reason)
+              await this.db!.query(
+                "UPDATE subtarefas SET status = 'rejected', resultado = ?, updated_at = NOW() WHERE id = ?",
+                [reason.substring(0, 500), subtask.id],
+              )
+              lastFailure = reason
+              if (await this.createCorrectionOnRepeatedGateFailure(input, subtask, model.model, lastFailure)) return undefined
+              continue
+            }
+            this.log("info", "Smoke test validado: " + smokeValidation.evidence.url + " (status " + smokeValidation.evidence.status + ")")
           }
 
           await this.db!.query(
@@ -915,6 +954,7 @@ class TaskWorker {
       "- O setup do projeto deve APENAS: criar estrutura, config, schema, migrations, registros obrigatorios (schema-registry, front registry, seed, Dockerfiles, lockfile), e agente no gateway. NAO inclua implementacao de telas custom nas subtarefas do setup.",
       "- Se a descricao mencionar telas personalizadas, telas custom, dashboards custom, ou funcionalidades alem do CRUD padrao, IGNORE-as no plano de subtarefas do setup — elas serao tratadas como tarefas separadas pelo motor.",
       "- Subtarefas do setup devem focar em: estrutura de pastas, config.ts, schema.ts, migrations, registros nos Dockerfiles e registries, seed de dados iniciais, e registro do agente no gateway.",
+      "- SMOKE TEST OBRIGATORIO: a ULTIMA subtarefa do setup DEVE ser 'Smoke test funcional do projeto novo'. Ela executa uma chamada HTTP real (curl) a um endpoint CRUD do projeto novo (GET /api/<slug>/...) e grava a evidencia no resultado: {\"smoke_test\":{\"url\":\"...\",\"method\":\"GET\",\"status\":200,\"response_body\":\"...\",\"timestamp\":\"...\"}}. O gate do motor REPROVA sem essa evidencia.",
       "",
       "Regras da clarificacao (Forma 2):",
       "- O campo \"resumo\" e obrigatorio: descreva o que voce ja entendeu.",
