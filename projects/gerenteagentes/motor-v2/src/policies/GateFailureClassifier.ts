@@ -111,7 +111,7 @@ export class GateFailureClassifier {
     const chain = await this.resolveChain(input)
 
     for (let tierIndex = 0; tierIndex < chain.length; tierIndex += 1) {
-      const model = chain[tierIndex]
+      const model = String(chain[tierIndex] ?? "")
       if (!model) continue
 
       try {
@@ -121,7 +121,7 @@ export class GateFailureClassifier {
           occurrence: input.occurrence,
         })
 
-        const sessionKey = this.buildSessionKey(input.agentId, model)
+        const sessionKey = this.buildSessionKey(model)
         const session = await this.driver.createSession({
           agentId: this.config.monitorAgentId,
           key: sessionKey,
@@ -195,9 +195,15 @@ export class GateFailureClassifier {
     return [this.config.monitorModel]
   }
 
-  private buildSessionKey(agentId: string, model: string): string {
+  /**
+   * Chave da sessão do monitor. O prefixo de agente da chave PRECISA ser o
+   * agente do monitor (config.monitorAgentId) — o gateway recusa createSession
+   * quando o agente da chave difere do agentId (erro visto em produção em
+   * 2026-09-03: chave montada com o agente da tarefa, ex. biblioteca-global).
+   */
+  private buildSessionKey(model: string): string {
     const modelSlug = model.split("/").at(-1)?.replace(/[^a-zA-Z0-9.-]/g, "_") ?? "monitor"
-    return `agent:${agentId}:monitor:${modelSlug}`
+    return `agent:${this.config.monitorAgentId}:monitor:${modelSlug}`
   }
 }
 

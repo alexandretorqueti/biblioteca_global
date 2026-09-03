@@ -172,3 +172,35 @@ describe("GateFailureClassifier — fail-open", () => {
     expect(verdict.verdict).toBe("code_files_issue")
   })
 })
+
+describe("GateFailureClassifier — sessão do monitor", () => {
+  it("cria a sessão com a chave do agente do monitor, não do agente da tarefa", async () => {
+    const { GateFailureClassifier } = await import("../src/policies/GateFailureClassifier.js")
+    const calls: Array<{ agentId: string; key: string }> = []
+    const driver = {
+      createSession: vi.fn(async (input: { agentId: string; key: string }) => {
+        calls.push({ agentId: input.agentId, key: input.key })
+        return { key: input.key, agentId: input.agentId, sessionId: "sess-1" }
+      }),
+      sendMessage: vi.fn(async () => ({ runId: "run-1" })),
+      waitForRunCompletion: vi.fn(async () => ({
+        state: "final",
+        content: '{"verdict":"agent_can_solve","analysis":"causa no código da tarefa"}',
+      })),
+    }
+    const classifier = new GateFailureClassifier(driver as never, null)
+
+    const result = await classifier.classify({
+      taskId: 749, subtaskId: 767, subtaskTitle: "Sub", taskTitle: "Task",
+      agentId: "biblioteca-global", repoPath: "/repo", model: "ollama/qwen3.7-plus",
+      modelIndex: 0, occurrence: 1, errorMessage: "teste falhou", command: "npm run test",
+    })
+
+    expect(result.kind).toBe("verdict")
+    // Regressão 2026-09-03: a chave da sessão usava o agente da tarefa
+    // (agent:biblioteca-global:...) com agentId do monitor (programador-senior)
+    // e o gateway recusava: "key agent does not match agentId".
+    expect(calls[0]?.agentId).toBe("programador-senior")
+    expect(calls[0]?.key.startsWith("agent:programador-senior:monitor:")).toBe(true)
+  })
+})
