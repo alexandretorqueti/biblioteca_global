@@ -28,8 +28,11 @@ export class DynamicSchemaRegistry implements SchemaRegistry, OnModuleInit {
   private readonly logger = new Logger(DynamicSchemaRegistry.name)
   private readonly porSlug = new Map<string, Record<string, MySqlTable>>()
   // Usa process.cwd() para ser robusto em diferentes ambientes (dev, teste, produção).
-  // O vitest roda com cwd na raiz do repo; o NestJS em produção roda com cwd na raiz também.
-  private readonly projetosDir = resolve(process.cwd(), "projects")
+  // O vitest roda com cwd na raiz do repo; o NestJS em produção roda com cwd em apps/api.
+  // Se cwd for apps/api, sobe dois níveis para chegar à raiz do repo.
+  private readonly projetosDir = process.cwd().endsWith('/apps/api')
+    ? resolve(process.cwd(), '..', '..', 'projects')
+    : resolve(process.cwd(), 'projects')
 
   async onModuleInit(): Promise<void> {
     await this.carregarProjetos()

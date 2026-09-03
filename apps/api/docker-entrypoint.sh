@@ -40,7 +40,8 @@ until npm run db:migrate; do
   sleep 2
 done
 
-npm run db:seed
+# Seed temporariamente desabilitado - migrations já aplicadas
+# npm run db:seed
 
 # Inicia motor-v2 em background (se MOTOR_VERSION=v2) — depois do migrate para garantir DNS
 if [ "${MOTOR_VERSION:-v1}" = "v2" ]; then
