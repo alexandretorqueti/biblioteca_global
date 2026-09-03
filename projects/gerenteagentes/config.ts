@@ -80,18 +80,17 @@ export const config: GeradorSistemaConfig = {
             fields: [
               { name: "nome", label: "Nome", type: "text", required: true, maxLength: 200, fullWidth: true },
               { name: "slug", label: "Slug", type: "text", required: true, minLength: 2, maxLength: 100, helperText: "Use letras minúsculas, números e hífen.", gridVisible: false },
-              { name: "agenteId", label: "Agente vinculado", type: "select", gridVisible: true, helperText: "Agente que executará as tarefas deste projeto. O motor usa COALESCE(openclaw_agent_id, nome) para abrir a sessão.", options: [
-                { label: "biblioteca-global", value: 1 },
-                { label: "programador-senior", value: 2 },
-                { label: "sistema-adm-global (Administrador Global)", value: 5 },
-              ] },
+              { name: "agenteId", label: "Agente vinculado", type: "select", gridVisible: true, helperText: "Agente que executará as tarefas deste projeto. O motor usa COALESCE(openclaw_agent_id, nome) para abrir a sessão.", optionsResource: { resource: "agentes", idField: "id", displayField: "nome" } },
               { name: "descricao", label: "Descrição / Regras do projeto", type: "textarea", maxLength: 65535, fullWidth: true, gridVisible: false },
               { name: "regras", label: "Regras extras (complementam a descrição)", type: "textarea", maxLength: 65535, fullWidth: true, gridVisible: false },
               { name: "contatoId", label: "Contato responsável", type: "number", gridVisible: false, helperText: "ID do contato em projeto_640.contatos." },
               { name: "ativo", label: "Ativo", type: "switch", defaultValue: true, gridVisible: true },
               { name: "plataformaProjetoId", label: "ID na plataforma (core.projetos)", type: "number", gridVisible: false, helperText: "Vínculo com core.projetos.id. Usado pela biblioteca para rotear API." },
-              { name: "branchTrabalho", label: "Branch de trabalho", type: "text", maxLength: 255, gridVisible: false, helperText: "Branch base para worktrees do motor (ex.: base-desenvolvimento)." },
+              // Campos do projeto_motor_config (configuração operacional do motor)
               { name: "repoPath", label: "Caminho do repositório", type: "text", maxLength: 500, gridVisible: false, fullWidth: true, helperText: "Caminho absoluto no host (ex.: /data/workspace/projects/codigofonte/biblioteca-global)." },
+              { name: "branchTrabalho", label: "Branch de trabalho", type: "text", maxLength: 255, gridVisible: false, helperText: "Branch base para worktrees do motor (ex.: base-desenvolvimento)." },
+              { name: "buildCommand", label: "Comando de build", type: "text", maxLength: 500, gridVisible: false, fullWidth: true, helperText: "Comando para build do projeto (ex.: npm run build)." },
+              { name: "unitTestCommand", label: "Comando de testes", type: "text", maxLength: 500, gridVisible: false, fullWidth: true, helperText: "Comando para testes (ex.: npm run test)." },
             ],
             overrides: {
               hiddenColumns: ["createdAt", "updatedAt"],

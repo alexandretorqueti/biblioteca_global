@@ -82,8 +82,7 @@ export const projetosCaptados = mysqlTable("projetos_captados", {
     mode: "number",
     unsigned: true,
   }),
-  branchTrabalho: varchar("branch_trabalho", { length: 255 }),
-  repoPath: varchar("repo_path", { length: 500 }),
+  // repo_path e branch_trabalho movidos para projeto_motor_config (evitar duplicação)
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at")
     .notNull()

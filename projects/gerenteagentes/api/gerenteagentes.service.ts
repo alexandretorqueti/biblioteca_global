@@ -163,6 +163,74 @@ export class GerenteAgentesService {
     });
   }
 
+  /**
+   * Sincroniza agentes do OpenClaw com a tabela local.
+   * Cria/atualiza registros na tabela agentes baseado nos agentes do OpenClaw.
+   * Retorna estatísticas da sincronização (criados, atualizados, total).
+   */
+  async sincronizarAgentesOpenClaw(): Promise<{ criados: number; atualizados: number; total: number }> {
+    const agentesOpenClaw = await this.listarAgentesConsole();
+    const db = await this.dbDoMotor();
+    const { agentes } = await import('../schema');
+
+    // Busca agentes existentes no banco
+    const agentesExistentes = await db.select().from(agentes);
+    const mapaExistentes = new Map(agentesExistentes.map(a => [a.nome, a]));
+
+    let criados = 0;
+    let atualizados = 0;
+
+    for (const agenteOpenClaw of agentesOpenClaw) {
+      const existente = mapaExistentes.get(agenteOpenClaw.id);
+      if (!existente) {
+        // Cria novo agente
+        await db.insert(agentes).values({
+          nome: agenteOpenClaw.id,
+          modelo: agenteOpenClaw.model || 'unknown',
+          descricao: agenteOpenClaw.name !== agenteOpenClaw.id ? agenteOpenClaw.name : null,
+          ativo: true,
+        });
+        criados++;
+      } else {
+        // Atualiza agente existente (modelo e descrição)
+        await db.update(agentes)
+          .set({
+            modelo: agenteOpenClaw.model || existente.modelo,
+            descricao: agenteOpenClaw.name !== agenteOpenClaw.id ? agenteOpenClaw.name : existente.descricao,
+          })
+          .where(eq(agentes.id, existente.id));
+        atualizados++;
+      }
+    }
+
+    this.logger.log(`Sincronização de agentes: ${criados} criados, ${atualizados} atualizados, ${agentesOpenClaw.length} total`);
+    return { criados, atualizados, total: agentesOpenClaw.length };
+  }
+
+  /**
+   * Cria ou atualiza agente local baseado no ID do OpenClaw.
+   * Chamado pelo motor quando cria um novo agente no OpenClaw.
+   */
+  async criarOuAtualizarAgenteLocal(openclawAgentId: string, modelo?: string): Promise<void> {
+    const db = await this.dbDoMotor();
+    const { agentes } = await import('../schema');
+
+    const existente = await db.select().from(agentes).where(eq(agentes.nome, openclawAgentId)).limit(1);
+    if (existente.length === 0) {
+      await db.insert(agentes).values({
+        nome: openclawAgentId,
+        modelo: modelo || 'unknown',
+        ativo: true,
+      });
+      this.logger.log(`Agente local criado: ${openclawAgentId}`);
+    } else {
+      await db.update(agentes)
+        .set({ modelo: modelo || existente[0].modelo })
+        .where(eq(agentes.id, existente[0].id));
+      this.logger.log(`Agente local atualizado: ${openclawAgentId}`);
+    }
+  }
+
   private async dbDoProjeto(projeto: ProjetoResumo) {
     return await this.factory.obter({ id: projeto.id });
   }

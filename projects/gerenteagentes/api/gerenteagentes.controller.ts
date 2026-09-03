@@ -161,6 +161,30 @@ export class GerenteAgentesController {
   }
 
   // ============================================================================
+  // AGENTES (sincronização com OpenClaw)
+  // ============================================================================
+
+  /**
+   * Lista agentes do console OpenClaw (proxy server-side).
+   * Retorna agentes registrados no OpenClaw para sincronização com a tabela local.
+   */
+  @Get('agentes/openclaw')
+  @Roles('admin', 'gerente')
+  listarAgentesOpenClaw() {
+    return this.service.listarAgentesConsole();
+  }
+
+  /**
+   * Sincroniza agentes do OpenClaw com a tabela local.
+   * Cria/atualiza registros na tabela agentes baseado nos agentes do OpenClaw.
+   */
+  @Post('agentes/sincronizar')
+  @Roles('admin', 'gerente')
+  async sincronizarAgentes() {
+    return this.service.sincronizarAgentesOpenClaw();
+  }
+
+  // ============================================================================
   // SELEÇÃO DE MODELOS (proxy p/ motor — task-54)
   // ============================================================================
 
