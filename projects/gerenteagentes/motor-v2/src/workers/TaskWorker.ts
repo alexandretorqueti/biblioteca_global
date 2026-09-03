@@ -497,6 +497,8 @@ class TaskWorker {
           "UPDATE subtarefas SET status = 'running', deliver_count = ?, resultado = NULL, updated_at = NOW() WHERE id = ?",
           [deliverCount, subtask.id],
         )
+        // Registra início da entrega no histórico
+        await this.recordDeliveryEvent(subtask.id, deliverCount, model.model, "delivery_started", null)
         this.send({ type: "progress", executionId: input.context.executionId, phase: "execute", message: `Entrega ${deliverCount}, modelo ${model.model}` })
 
         const driver = this.createDriver()
@@ -527,7 +529,7 @@ class TaskWorker {
           const outcome = this.classifyAgentOutcome(result.content)
           if (outcome.kind === "blocked_environment") {
             const reason = "Ambiente bloqueado: " + outcome.reason
-            await this.recordBlocker(subtask, "blocked_environment", reason)
+            await this.recordBlocker(subtask, "blocked_environment", reason, model.model)
             throw new Error(reason)
           }
           if (outcome.kind === "need_help") {
@@ -549,6 +551,8 @@ class TaskWorker {
               "UPDATE subtarefas SET status = 'rejected', resultado = ?, updated_at = NOW() WHERE id = ?",
               [lastFailure.substring(0, 500), subtask.id],
             )
+            // Registra rejeição do gate no histórico
+            await this.recordDeliveryEvent(subtask.id, deliverCount, model.model, "gate_rejected", lastFailure.substring(0, 2000))
             this.log("warn", `Gate vermelho (${model.model}, tentativa ${attempt}): ${lastFailure}`)
             
             // MONITORAMENTO MOTOR: classificar causa raiz antes de decidir fluxo
@@ -560,7 +564,7 @@ class TaskWorker {
               if (verdict.verdict === "motor_issue") {
                 // Problema no motor: bloquear tarefa para intervenção
                 const blockReason = `motor_issue: ${verdict.analysis}${verdict.solution ? ` — Solução proposta: ${verdict.solution}` : ""}`
-                await this.recordBlocker(subtask, "systemic_failure", blockReason)
+                await this.recordBlocker(subtask, "systemic_failure", blockReason, model.model)
                 throw new Error(blockReason)
               }
               
@@ -604,6 +608,8 @@ class TaskWorker {
             "UPDATE subtarefas SET status = 'verified', deliver_count = ?, resultado = ?, finalizada_em = NOW(), updated_at = NOW() WHERE id = ?",
             [deliverCount, result.content?.substring(0, 500) || "OK", subtask.id],
           )
+          // Registra conclusão bem-sucedida no histórico
+          await this.recordDeliveryEvent(subtask.id, deliverCount, model.model, "completed", null)
           this.log("info", "Subtarefa verificada: " + subtask.titulo)
           return gitCommitSha
         } catch (error) {
@@ -1080,7 +1086,7 @@ class TaskWorker {
     }
   }
 
-  private async recordBlocker(subtask: SubtaskInfo, kind: BlockerKind, reason: string): Promise<void> {
+  private async recordBlocker(subtask: SubtaskInfo, kind: BlockerKind, reason: string, model?: string): Promise<void> {
     if (!this.db) throw new Error("DB não conectado para registrar bloqueio")
     const evidence = blockerEvidence(kind, reason)
     await this.db.query(
@@ -1089,6 +1095,31 @@ class TaskWorker {
       [subtask.id, evidence.kind, "motor-v2:" + evidence.fingerprint, evidence.excerpt, subtask.id],
     )
     this.log("warn", "Bloqueio persistido: " + evidence.kind + " (" + evidence.fingerprint + ")")
+    // Registra evento de bloqueio no histórico de entregas
+    await this.recordDeliveryEvent(subtask.id, subtask.deliverCount, model, "blocked", reason)
+  }
+
+  /**
+   * Registra um evento no histórico de entregas da subtarefa.
+   * Cada evento (entrega iniciada, gate rejeitado, retorno para rework, bloqueio, conclusão)
+   * grava uma linha nova — nunca sobrescreve o histórico anterior.
+   */
+  private async recordDeliveryEvent(
+    subtaskId: number,
+    deliverNumber: number,
+    model: string | undefined,
+    eventType: "delivery_started" | "gate_rejected" | "return_for_rework" | "blocked" | "completed",
+    reason: string | null,
+  ): Promise<void> {
+    if (!this.db) return
+    try {
+      await this.db.query(
+        "INSERT INTO subtarefas_entregas (subtarefa_id, deliver_number, model, event_type, reason, created_at) VALUES (?, ?, ?, ?, ?, NOW())",
+        [subtaskId, deliverNumber, model ?? null, eventType, reason],
+      )
+    } catch (error) {
+      this.log("warn", "Falha ao registrar evento de entrega: " + (error instanceof Error ? error.message : String(error)))
+    }
   }
 
   private async createCorrectionOnRepeatedGateFailure(input: WorkerInput, subtask: SubtaskInfo, model: string, reason: string): Promise<boolean> {
@@ -1113,7 +1144,7 @@ class TaskWorker {
     const correctionParentId = Number(parentRows[0]?.correction_for_subtask_id ?? 0)
     if (correctionParentId !== 0) {
       const blockReason = "Subtarefa de correção " + subtask.id + " falhou repetidamente (corrige a subtarefa " + correctionParentId + "): " + reason
-      await this.recordBlocker(subtask, "correction_failed", blockReason)
+      await this.recordBlocker(subtask, "correction_failed", blockReason, model)
       this.log("error", "Correção falhou — bloqueando a tarefa inteira: " + blockReason)
       throw new Error(blockReason)
     }
@@ -1130,6 +1161,8 @@ class TaskWorker {
       "SELECT tarefa_id, ?, ?, CONCAT(?, CHAR(10), CHAR(10), 'Escopo original da subtarefa corrigida:', CHAR(10), IFNULL(scope, titulo)), acceptance_criteria, 'pending', id, ?, NOW(), NOW() FROM subtarefas WHERE id = ?",
       [subtask.seq + 1, "Correção: " + subtask.titulo, "Corrigir gate repetido: " + reason.slice(0, 1000), fingerprint, subtask.id],
     )
+    // Registra retorno para rework no histórico da subtarefa original
+    await this.recordDeliveryEvent(subtask.id, subtask.deliverCount, model, "return_for_rework", "Falha repetida no gate: " + reason.slice(0, 1000))
     this.log("warn", "Subtarefa de correção criada para falha repetida " + fingerprint + " (subtarefa " + subtask.id + ", corrige a original; tarefa bloqueia se a correção também falhar)")
     return true
   }
