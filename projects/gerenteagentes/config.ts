@@ -86,11 +86,6 @@ export const config: GeradorSistemaConfig = {
               { name: "contatoId", label: "Contato responsável", type: "number", gridVisible: false, helperText: "ID do contato em projeto_640.contatos." },
               { name: "ativo", label: "Ativo", type: "switch", defaultValue: true, gridVisible: true },
               { name: "plataformaProjetoId", label: "ID na plataforma (core.projetos)", type: "number", gridVisible: false, helperText: "Vínculo com core.projetos.id. Usado pela biblioteca para rotear API." },
-              // Campos do projeto_motor_config (configuração operacional do motor)
-              { name: "repoPath", label: "Caminho do repositório", type: "text", maxLength: 500, gridVisible: false, fullWidth: true, helperText: "Caminho absoluto no host (ex.: /data/workspace/projects/codigofonte/biblioteca-global)." },
-              { name: "branchTrabalho", label: "Branch de trabalho", type: "text", maxLength: 255, gridVisible: false, helperText: "Branch base para worktrees do motor (ex.: base-desenvolvimento)." },
-              { name: "buildCommand", label: "Comando de build", type: "text", maxLength: 500, gridVisible: false, fullWidth: true, helperText: "Comando para build do projeto (ex.: npm run build)." },
-              { name: "unitTestCommand", label: "Comando de testes", type: "text", maxLength: 500, gridVisible: false, fullWidth: true, helperText: "Comando para testes (ex.: npm run test)." },
             ],
             overrides: {
               hiddenColumns: ["createdAt", "updatedAt"],
@@ -120,6 +115,33 @@ export const config: GeradorSistemaConfig = {
             ],
             // Rotas filhas com contexto (navegação hierárquica)
             childRoutes: [
+              {
+                id: "config-motor",
+                label: "Configuração do Motor",
+                icon: "settings",
+                targetResource: "projeto_motor_config",
+                filterField: "projetoId",
+                title: "Configuração Operacional do Motor",
+                fields: [
+                  { name: "repoPath", label: "Caminho do repositório", type: "text", required: true, maxLength: 500, fullWidth: true, helperText: "Caminho absoluto no host (ex.: /data/workspace/projects/codigofonte/biblioteca-global)." },
+                  { name: "branchTrabalho", label: "Branch de trabalho", type: "text", required: true, maxLength: 255, helperText: "Branch base para worktrees do motor (ex.: base-desenvolvimento)." },
+                  { name: "buildCommand", label: "Comando de build", type: "text", required: true, maxLength: 500, fullWidth: true, helperText: "Comando para build do projeto (ex.: npm run build)." },
+                  { name: "unitTestCommand", label: "Comando de testes", type: "text", required: true, maxLength: 500, fullWidth: true, helperText: "Comando para testes (ex.: npm run test)." },
+                  { name: "defaultMaxRework", label: "Máx. retrabalho", type: "number", defaultValue: 3, gridVisible: false },
+                  { name: "defaultHardTimeoutMs", label: "Timeout padrão (ms)", type: "number", defaultValue: 3600000, gridVisible: false },
+                ],
+                overrides: {
+                  hiddenColumns: ["createdAt", "updatedAt", "unitTestExclude", "projetoId"],
+                  columnLabels: {
+                    id: "ID",
+                    repoPath: "Repositório",
+                    branchTrabalho: "Branch",
+                    buildCommand: "Build",
+                    unitTestCommand: "Testes",
+                  },
+                  newLabel: "Nova configuração",
+                },
+              },
               {
                 id: "modelos",
                 label: "Modelos",

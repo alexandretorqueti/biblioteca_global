@@ -442,8 +442,6 @@ export const annotations = {
     agente_id: { label: "Agente" },
     ativo: { label: "Ativo" },
     plataforma_projeto_id: { label: "Projeto Plataforma" },
-    branch_trabalho: { label: "Branch de Trabalho", maxLength: 255 },
-    repo_path: { label: "Caminho do repositório", maxLength: 500 },
   },
   projeto_motor_config: {
     projeto_id: { label: "Projeto" },

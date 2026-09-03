@@ -115,17 +115,20 @@ describe("config do projeto gerenteagentes", () => {
     expect(descricao!.type).toBe("textarea")
   })
 
-  it("define repoPath editável no formulário de projetos", () => {
+  it("define repoPath editável na childRoute config-motor (projeto_motor_config)", () => {
     const grupoProjetos = config.groups.find((g) => g.id === "projetos")!
     const item = grupoProjetos.items.find((i) => i.id === "projetos-list")!
     const screen = item.screen as CadastroScreenConfig
 
-    const campo = screen.fields!.find((f) => f.name === "repoPath")
+    const rotaConfigMotor = (screen.childRoutes ?? []).find((r) => r.id === "config-motor")
+    expect(rotaConfigMotor).toBeDefined()
+    expect((rotaConfigMotor as ChildRoute).targetResource).toBe("projeto_motor_config")
+
+    const campo = (rotaConfigMotor as ChildRoute).fields!.find((f) => f.name === "repoPath")
     expect(campo).toMatchObject({
       label: "Caminho do repositório",
       type: "text",
       maxLength: 500,
-      gridVisible: false,
       fullWidth: true,
     })
   })
@@ -142,15 +145,17 @@ describe("config do projeto gerenteagentes", () => {
     expect(ids).toEqual(["subtarefas", "tarefa-chats", "bloqueios"])
   })
 
-  it("exponha branchTrabalho no formulário de projetos (st-3)", () => {
+  it("exponha branchTrabalho na childRoute config-motor (st-3)", () => {
     const grupo = config.groups.find((g) => g.id === "projetos")!
     const tela = grupo.items.find((i) => i.id === "projetos-list")!.screen as CadastroScreenConfig
 
-    const campo = tela.fields!.find((f) => f.name === "branchTrabalho")
+    const rotaConfigMotor = (tela.childRoutes ?? []).find((r) => r.id === "config-motor")
+    expect(rotaConfigMotor).toBeDefined()
+
+    const campo = (rotaConfigMotor as ChildRoute).fields!.find((f) => f.name === "branchTrabalho")
     expect(campo).toBeDefined()
     expect(campo!.label).toBe("Branch de trabalho")
     expect(campo!.type).toBe("text")
     expect(campo!.maxLength).toBe(255)
-    expect(campo!.gridVisible).toBe(false)
   })
 })
