@@ -10,6 +10,8 @@
  * - funcionarios: triagem/portaria do condomínio
  * - transportadoras: lojas/transportadoras que enviam encomendas
  * - encomendas: registro com foto, loja, unidade; status pendente→confirmada→entregue
+ * - notificacoes: sininho para morador
+ * - entregas: registro de entrega efetiva com trilha auditável
  *
  * Relações:
  * - condomínio → unidades (1:N)
@@ -17,10 +19,12 @@
  * - unidade ↔ proprietários (N:N via unidades_proprietarios)
  * - condomínio → funcionários (1:N)
  * - encomenda → condomínio, unidade, transportadora, funcionário (registrante), morador (confirmou)
+ * - entrega → encomenda, funcionário
  */
 import {
   bigint,
   boolean,
+  index,
   int,
   mysqlEnum,
   mysqlTable,
@@ -264,6 +268,38 @@ export const notificacoes = mysqlTable("notificacoes", {
 })
 
 // ============================================================================
+// ENTREGAS (registro de entrega efetiva)
+// ============================================================================
+
+export const entregas = mysqlTable(
+  "entregas",
+  {
+    id: bigint("id", { mode: "number", unsigned: true })
+      .primaryKey()
+      .autoincrement(),
+    encomendaId: bigint("encomenda_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => encomendas.id, { onDelete: "restrict" }),
+    funcionarioId: bigint("funcionario_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => funcionarios.id, { onDelete: "restrict" }),
+    /** Data/hora da entrega efetiva. */
+    dataHoraEntrega: timestamp("data_hora_entrega").notNull().defaultNow(),
+    /** Evidência de quem retirou a encomenda (nome, documento, assinatura, etc.). */
+    evidenciaQuemRetirou: text("evidencia_quem_retirou"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at")
+      .notNull()
+      .defaultNow()
+      .onUpdateNow(),
+  },
+  (table) => [
+    index("idx_entregas_encomenda_id").on(table.encomendaId),
+    index("idx_entregas_funcionario_id").on(table.funcionarioId),
+  ],
+)
+
+// ============================================================================
 // ANNOTATIONS (metadata de formulário)
 // ============================================================================
 
@@ -339,5 +375,11 @@ export const annotations = {
     tipo: { label: "Tipo" },
     mensagem: { label: "Mensagem", fullWidth: true, maxLength: 500 },
     lida: { label: "Lida" },
+  },
+  entregas: {
+    encomenda_id: { label: "Encomenda" },
+    funcionario_id: { label: "Funcionário" },
+    data_hora_entrega: { label: "Data/Hora da Entrega" },
+    evidencia_quem_retirou: { label: "Evidência de Quem Retirou", type: "textarea", fullWidth: true },
   },
 } satisfies FormAnnotationsPorTabela
