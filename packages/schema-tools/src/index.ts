@@ -20,3 +20,8 @@ export {
   RESOURCES_DO_CORE,
   validarConfigContraSchema,
 } from "./validar-config"
+export {
+  inferirFk,
+  resolverDisplayField,
+  type FkInferencia,
+} from "./inferir-fk"
