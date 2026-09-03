@@ -39,6 +39,7 @@ import { RealtimeClient, type RealtimeServerMessage } from "@biblioteca-global/a
 import type { DynamicField, DynamicFormValues } from "@biblioteca-global/ui"
 import { useApi } from "../../../apps/web/src/hooks/useApi"
 import { resolveRealtimeUrl, resolveApiBaseUrl } from "../../../apps/web/src/api/client"
+export const componentId = "gerenteagentes-task-monitor"
 
 interface Tarefa {
   id: number

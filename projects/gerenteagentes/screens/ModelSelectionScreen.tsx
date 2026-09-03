@@ -47,6 +47,7 @@ import { useApi } from "../../../apps/web/src/hooks/useApi"
 import { useAuth } from "../../../apps/web/src/auth/AuthContext"
 import type { CustomScreenProps } from "@biblioteca-global/ui"
 import type { ModelSelectionTipo, ModelSelectionEntry } from "@biblioteca-global/shared"
+export const componentId = "gerenteagentes-model-selection"
 
 const TIPOS: ModelSelectionTipo[] = ["DEV", "ANALYST", "MONITOR"]
 

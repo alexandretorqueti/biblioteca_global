@@ -18,8 +18,9 @@ import {
 } from "@mui/material"
 import CampaignRounded from "@mui/icons-material/CampaignRounded"
 import type { PaginatedResult } from "@biblioteca-global/shared"
-import { useApi } from "../../hooks/useApi"
-import { useAuth } from "../../auth/AuthContext"
+import { useApi } from "../../../apps/web/src/hooks/useApi"
+import { useAuth } from "../../../apps/web/src/auth/AuthContext"
+export const componentId = "sistema-adm-global-dashboard"
 
 interface Circular {
   id: number

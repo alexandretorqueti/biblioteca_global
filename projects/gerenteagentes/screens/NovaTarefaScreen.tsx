@@ -19,6 +19,7 @@ import {
   MenuItem,
 } from "@mui/material"
 import { AddTaskRounded } from "@mui/icons-material"
+export const componentId = "gerenteagentes-nova-tarefa"
 
 interface Projeto {
   id: number

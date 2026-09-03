@@ -18,6 +18,7 @@ import {
 import type { ReactNode } from "react"
 import type { PaginatedResult } from "@biblioteca-global/shared"
 import { useApi } from "../../../apps/web/src/hooks/useApi"
+export const componentId = "gerenteagentes-dashboard"
 
 /* ------------------------------------------------------------------ */
 /*  Tipos                                                              */

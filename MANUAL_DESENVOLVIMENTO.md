@@ -76,7 +76,7 @@ Chaves de tabela e campo devem corresponder ao export e à coluna do schema. Tip
 6. A tela Usuários é sistêmica e injetada automaticamente; não a replique na config comum.
 7. Teste isolamento com tokens de dois projetos.
 
-Telas custom são React versionado e referenciadas na config apenas por `componentId`. Registre-as em `apps/web/src/project/registry/customScreens.tsx`. Componentes de tela podem consumir data sources recebidos ou criados pelo api-client; nunca chamam `fetch` diretamente.
+Telas custom são React versionado e referenciadas na config apenas por `componentId`. Crie-as em `projects/<slug>/screens/` exportando `componentId` e `default`; a autodescoberta em build time (via `import.meta.glob`) registra automaticamente. Componentes de tela podem consumir data sources recebidos ou criados pelo api-client; nunca chamam `fetch` diretamente.
 
 ## 7. Autenticação e autorização
 

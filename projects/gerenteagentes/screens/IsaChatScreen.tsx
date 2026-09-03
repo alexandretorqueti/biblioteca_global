@@ -4,6 +4,7 @@ import { AgentChat } from "@biblioteca-global/ui"
 import { createAgentChatClient } from "@biblioteca-global/api-client"
 import { useApi } from "../../../apps/web/src/hooks/useApi"
 import "./IsaChat.css"
+export const componentId = "gerenteagentes-isa-chat"
 
 function getVisitorKey(): string {
   const storageKey = "isa.chatId"
