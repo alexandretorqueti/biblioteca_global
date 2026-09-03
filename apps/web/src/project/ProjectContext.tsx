@@ -68,7 +68,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   // Executa uma ação customizada (iniciar tarefa, pausar, retomar, etc.)
   const executeAction = useCallback<ExecuteAction>(
     async (action: CustomAction, context?: { row?: EntityRecord }) => {
-      if (!bundle) throw new Error("Bundle HTTP não disponível")
+      if (!bundle || !projectSlug) throw new Error("Bundle HTTP ou projeto não disponível")
       
       // Interpola :id no path com o ID do registro
       let path = action.path
@@ -81,9 +81,14 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
         path = path.substring(4)
       }
       
+      // Remove prefixo /:slug se presente (vamos adicionar o slug correto)
+      if (path.startsWith("/")) {
+        path = path.substring(1)
+      }
+      
       const result = await bundle.http.request<{ message?: string }>(
         action.method,
-        path,
+        `/${projectSlug}/${path}`,
         { auth: "access" }
       )
       
@@ -91,7 +96,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
         message: result.message || `Ação "${action.label}" executada com sucesso.`,
       }
     },
-    [bundle]
+    [bundle, projectSlug]
   )
 
   const runtime = useMemo<GeradorSistemaRuntime | undefined>(() => {
@@ -99,16 +104,16 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     return {
       getDataSource<T extends EntityRecord>(resource: string): CadastroDataSource<T> {
         // bundle pode ser undefined se ainda não houver auth; protegemos.
-        if (!bundle) return undefined as any
-        return createDataSource<T>(bundle.http, resource)
+        if (!bundle || !projectSlug) return undefined as any
+        return createDataSource<T>(bundle.http, projectSlug, resource)
       },
       getLoadOptions(resource: string) {
-        if (!bundle) return async () => []
+        if (!bundle || !projectSlug) return async () => []
         return async (search: string) => {
           try {
             const result = await bundle.http.request<PaginatedResult<EntityRecord>>(
               "GET",
-              `/${resource}`,
+              `/${projectSlug}/${resource}`,
               {
                 query: search
                   ? { search, pageSize: 50 }

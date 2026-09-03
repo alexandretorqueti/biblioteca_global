@@ -29,9 +29,10 @@ const LIMITE_LISTAGEM = 100
 
 export function createDataSource<T extends EntityRecord>(
   http: ApiHttpClient,
+  slug: string,
   resource: string,
 ): CadastroDataSource<T> {
-  const client = new RestEntityClient<T>(http, resource)
+  const client = new RestEntityClient<T>(http, slug, resource)
   return {
     list: async (params?: ListParams) => {
       const pagina = await client.list(params ?? { pageSize: LIMITE_LISTAGEM })

@@ -46,7 +46,7 @@ function saudacao(hora: number): string {
 
 export default function SistemaAdmGlobalDashboard(): ReactNode {
   const bundle = useApi()
-  const { usuario } = useAuth()
+  const { usuario, projeto } = useAuth()
   const [circulares, setCirculares] = useState<Circular[]>([])
   const [circularAberta, setCircularAberta] = useState<Circular | null>(null)
   const [agora, setAgora] = useState(() => new Date())
@@ -54,13 +54,13 @@ export default function SistemaAdmGlobalDashboard(): ReactNode {
   const [erro, setErro] = useState<string | null>(null)
 
   const carregarCirculares = useCallback(async () => {
-    if (!bundle) return
+    if (!bundle || !projeto) return
     setCarregando(true)
     setErro(null)
     try {
       const resultado = await bundle.http.request<PaginatedResult<Circular>>(
         "GET",
-        "/circulares",
+        `/${projeto.slug}/circulares`,
         { query: { pageSize: 100 }, auth: "access" },
       )
       setCirculares(resultado.items ?? [])
@@ -69,7 +69,7 @@ export default function SistemaAdmGlobalDashboard(): ReactNode {
     } finally {
       setCarregando(false)
     }
-  }, [bundle])
+  }, [bundle, projeto])
 
   useEffect(() => {
     void carregarCirculares()

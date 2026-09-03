@@ -342,7 +342,7 @@ describe("RestEntityClient + createDataSource", () => {
       tokens,
       fetchImpl: fake.handler,
     })
-    client = new RestEntityClient<EntityRecord>(http, "componentes")
+    client = new RestEntityClient<EntityRecord>(http, "biblioteca-global", "componentes")
   })
 
   it("CRUD completo: métodos, caminhos e filtros", async () => {
@@ -367,7 +367,7 @@ describe("RestEntityClient + createDataSource", () => {
     })
     expect(listagem.items).toHaveLength(1)
     expect(fake.requests.at(0)?.url).toBe(
-      "http://api.local/api/componentes?page=1&pageSize=20&categoria=layout",
+      "http://api.local/api/biblioteca-global/componentes?page=1&pageSize=20&categoria=layout",
     )
 
     await client.get(1)
@@ -377,10 +377,10 @@ describe("RestEntityClient + createDataSource", () => {
 
     const chamadas = fake.requests.map((r) => `${r.method} ${r.url}`)
     expect(chamadas.slice(1)).toEqual([
-      "GET http://api.local/api/componentes/1",
-      "POST http://api.local/api/componentes",
-      "PUT http://api.local/api/componentes/1",
-      "DELETE http://api.local/api/componentes/1",
+      "GET http://api.local/api/biblioteca-global/componentes/1",
+      "POST http://api.local/api/biblioteca-global/componentes",
+      "PUT http://api.local/api/biblioteca-global/componentes/1",
+      "DELETE http://api.local/api/biblioteca-global/componentes/1",
     ])
     expect(fake.requests.at(2)?.body).toEqual({
       nome: "Form",
@@ -412,7 +412,7 @@ describe("RestEntityClient + createDataSource", () => {
       tokens,
       fetchImpl: fake.handler,
     })
-    const dataSource = createDataSource(http, "componentes")
+    const dataSource = createDataSource(http, "biblioteca-global", "componentes")
 
     const itens = await dataSource.list()
     expect(itens).toHaveLength(2)
