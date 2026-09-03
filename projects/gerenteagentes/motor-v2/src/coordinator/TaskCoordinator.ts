@@ -27,6 +27,8 @@ import { ConsoleAgentRuntimeDriver } from "../runtime/ConsoleAgentRuntimeDriver.
 import { execSync } from "node:child_process"
 import { existsSync } from "node:fs"
 import { SecretProfileManager, resolveGitTopLevel } from "../workspaces/SecretProfileManager.js"
+import { validateTaskCompletion, formatPromotionValidationReport } from "../policies/PromotionValidationPolicy.js"
+import { validateProjectId, formatProjectIdValidationReport } from "../policies/ProjectIdValidationPolicy.js"
 
 interface ActiveWorker {
   taskId: string
@@ -549,6 +551,48 @@ export class TaskCoordinator {
         )
         const pending = (rows[0] as Record<string, unknown>)?.pending as number
         if (pending === 0) {
+          // Validação de promoção: todas as subtarefas devem ter workspaceCommitSha
+          // (evidência de código) antes de a tarefa pai ser marcada como completed.
+          // Regra: promoção manual sem código não fecha tarefa.
+          const { rows: subtasksForValidation } = await this.db.query(
+            "SELECT id, seq, workspace_commit_sha, status FROM subtarefas WHERE tarefa_id = (SELECT tarefa_id FROM subtarefas WHERE id = ?)",
+            [worker.subtaskId]
+          )
+          const promotionValidation = validateTaskCompletion(
+            subtasksForValidation.map((st: Record<string, unknown>) => ({
+              id: Number(st.id),
+              seq: Number(st.seq),
+              workspaceCommitSha: st.workspace_commit_sha ? String(st.workspace_commit_sha) : null,
+              status: String(st.status),
+            }))
+          )
+          if (!promotionValidation.ok) {
+            const promotionReason = promotionValidation.reason ?? "Motivo de bloqueio de promoção não informado"
+            this.logger.warn("Validação de promoção bloqueou conclusão da tarefa: " + promotionReason, {
+              taskId: worker.taskId, executionId,
+            })
+            const task = await this.repository.getTask(worker.taskId)
+            if (task) {
+              // Persiste bloqueio com motivo auditável
+              try {
+                const evidence = blockerEvidence("blocked_environment", promotionReason)
+                await this.db.query(
+                  "INSERT INTO bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at) " +
+                  "VALUES (?, NULL, ?, ?, ?, NOW())",
+                  [task.id, evidence.kind, "motor-v2:" + evidence.fingerprint, evidence.excerpt],
+                )
+                await this.saveTaskTransition(task, "fail", { errorMessage: promotionReason.substring(0, 500) })
+                this.publishActivity(worker, { type: "failed", level: "error", message: "Validação de promoção falhou" })
+              } catch (persistError) {
+                this.logger.error("Falha ao persistir bloqueio de promoção: " + describeError(persistError), {
+                  taskId: worker.taskId, executionId,
+                })
+              }
+            }
+            await this.finishWorker(executionId, worker)
+            return
+          }
+
           this.logger.info("Todas subtarefas completas! Executando deploy...", { taskId: worker.taskId, executionId })
           const task = await this.repository.getTask(worker.taskId)
           if (task) {
@@ -860,6 +904,52 @@ export class TaskCoordinator {
     if (task.status !== "planned" && task.status !== "paused" && task.status !== "draft") {
       throw new Error("Tarefa " + taskId + " esta em status " + task.status)
     }
+
+    // Validação de projeto_id: tarefas de execução devem referenciar a linha
+    // correta de projetos_captados (nunca a da biblioteca, exceto para setup).
+    // Regra: projeto_id inválido rejeitado com erro claro na entrada do motor.
+    const { rows: taskRows } = await this.db.query(
+      "SELECT t.projeto_id, pc.slug as project_slug, pc.agente_id " +
+      "FROM tarefas t " +
+      "LEFT JOIN projetos_captados pc ON t.projeto_id = pc.id " +
+      "WHERE t.external_id = ? LIMIT 1",
+      [taskId]
+    )
+    const taskRow = taskRows[0] as Record<string, unknown> | undefined
+    const projetoId = taskRow?.projeto_id == null ? NaN : Number(taskRow.projeto_id)
+    const projectSlug = taskRow?.project_slug ? String(taskRow.project_slug) : undefined
+    const isSetupTask = taskId.startsWith("setup-")
+    const taskType = isSetupTask ? "setup" as const : "execution" as const
+
+    // A ausência da linha também é erro: não deixar o motor prosseguir com
+    // joins nulos e só falhar depois como "Unknown agent id".
+    const validation = await validateProjectId(
+      projetoId,
+      { taskType, expectedSlug: task.projectSlug ?? undefined },
+      async (id) => {
+        const { rows } = await this.db!.query(
+          "SELECT pc.id, pc.slug, pc.agente_id AS agenteId, " +
+          "a.openclaw_agent_id AS agenteOpenclawId, a.nome AS agenteNome " +
+          "FROM projetos_captados pc LEFT JOIN agentes a ON a.id = pc.agente_id " +
+          "WHERE pc.id = ? LIMIT 1",
+          [id],
+        )
+        const row = rows[0] as Record<string, unknown> | undefined
+        return row ? {
+          id: Number(row.id), slug: String(row.slug),
+          agenteId: row.agenteId == null ? null : Number(row.agenteId),
+          agenteOpenclawId: row.agenteOpenclawId ? String(row.agenteOpenclawId) : null,
+          agenteNome: row.agenteNome ? String(row.agenteNome) : null,
+        } : null
+      },
+    )
+    if (!validation.ok) {
+      throw new Error(formatProjectIdValidationReport(validation))
+    }
+    this.logger.info("Validação de projeto_id OK: " + formatProjectIdValidationReport(validation), {
+      taskId, projetoId, projectSlug: validation.projectSlug,
+    })
+
     // Se está em draft, transiciona diretamente para planned (atualiza o banco)
     if (task.status === "draft") {
       await this.repository.saveTask({ ...task, status: "planned", updatedAt: new Date().toISOString() })

@@ -19,6 +19,7 @@
 import { createDbConnection } from "../database/DrizzleDb.js"
 import { GitWorkspaceManager } from "../workspaces/GitWorkspaceManager.js"
 import type { Db } from "../shared/types/infrastructure.js"
+import { validateSubtaskPromotion, formatPromotionValidationReport } from "../policies/PromotionValidationPolicy.js"
 
 interface CliOptions {
   tarefaId?: string
@@ -224,6 +225,18 @@ async function integrateSubtask(db: Db, options: CliOptions): Promise<void> {
 async function markIntegrated(db: Db, options: CliOptions): Promise<void> {
   if (!options.subtaskId) throw new Error("--subtarefa <id> é obrigatório")
   const context = await loadIntegrationContext(db, options.subtaskId)
+
+  const validation = validateSubtaskPromotion({
+    id: context.subtaskId,
+    workspaceCommitSha: context.workspaceCommitSha,
+    workspaceStatus: context.workspaceStatus,
+    status: context.subtaskStatus,
+    promotionManual: true,
+    promotionJustification: "Merge manual presumido via recover",
+  })
+  if (!validation.ok) {
+    throw new Error(formatPromotionValidationReport(validation))
+  }
 
   if (context.workspaceStatus === "integrated") {
     console.log(`Subtarefa #${context.subtaskId} já está integrada; nada a fazer.`)
