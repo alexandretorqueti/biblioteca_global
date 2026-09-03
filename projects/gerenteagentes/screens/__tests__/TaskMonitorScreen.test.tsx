@@ -10,6 +10,7 @@ import { render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import "@testing-library/jest-dom/vitest"
 import { BibliotecaThemeProvider } from "@biblioteca-global/ui"
+import { SUBTASK_STATUS_OPTIONS } from "../../motor-v2/src/shared/task-statuses"
 
 import TaskMonitorScreen from "../TaskMonitorScreen"
 
@@ -826,18 +827,8 @@ describe("TaskMonitorScreen — ST-3 (diálogo: scope + acceptance_criteria, sta
     expect(comboboxes.length).toBeGreaterThanOrEqual(1)
     await user.click(comboboxes[0])
 
-    // Verificar que todos os 9 labels estão renderizados na página (MenuItems no portal)
-    const statusLabels = [
-      "Pendente (pending)",
-      "Executando (running)",
-      "Verificada (verified)",
-      "Rejeitada (rejected)",
-      "Bloqueada (blocked)",
-      "Concluída (completed)",
-      "Pausada (paused)",
-      "Falhou (failed)",
-      "Cancelada (cancelled)",
-    ]
+    // Verificar que todos os labels da fonte central estão renderizados (MenuItems no portal)
+    const statusLabels = SUBTASK_STATUS_OPTIONS.map((o) => o.label)
 
     for (const label of statusLabels) {
       const matches = screen.getAllByText(label)

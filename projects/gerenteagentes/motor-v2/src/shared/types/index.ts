@@ -1,35 +1,16 @@
 /**
  * Tipos principais do Motor v2
+ *
+ * Status de tarefa e subtarefa são definidos em ./task-statuses.ts
+ * (fonte única de verdade) e re-exportados aqui como types para uso no motor.
  */
+import type { TaskStatusValue, SubTaskStatusValue } from "../task-statuses.js"
 
-/** Status possíveis de uma tarefa */
-export type TaskStatus =
-  | 'planned'
-  | 'analyzing'
-  | 'awaiting_clarification'
-  | 'ready'
-  | 'running'
-  | 'paused'
-  | 'completed'
-  | 'deployed'
-  | 'blocked'
-  | 'motor_fix'
-  | 'failed'
-  | 'cancelled'
+/** Status possíveis de uma tarefa (fonte: shared/task-statuses.ts) */
+export type TaskStatus = TaskStatusValue
 
-/** Status possíveis de uma subtarefa */
-export type SubTaskStatus =
-  | 'pending'
-  | 'delivered'
-  | 'running'
-  | 'verifying'
-  | 'verified'
-  | 'rejected'
-  | 'blocked'
-  | 'completed'
-  | 'failed'
-  | 'skipped'
-  | 'rework'
+/** Status possíveis de uma subtarefa (fonte: shared/task-statuses.ts) */
+export type SubTaskStatus = SubTaskStatusValue
 
 /** Configuração de modelo */
 export interface ModelConfig {

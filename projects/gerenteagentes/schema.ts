@@ -27,6 +27,7 @@ import {
   varchar,
 } from "drizzle-orm/mysql-core"
 import type { FormAnnotationsPorTabela } from "@biblioteca-global/schema-tools"
+import { taskStatusesHelperText, subtaskStatusesHelperText } from "./motor-v2/src/shared/task-statuses"
 
 // ============================================================================
 // CAPTAÇÃO (Isa)
@@ -238,7 +239,7 @@ export const tarefas = mysqlTable("tarefas", {
   // Última mensagem de erro da execução — separada da descrição para que
   // falhas não sobrescrevam o texto original da tarefa (lacuna do saveTask).
   ultimaMensagemErro: text("ultima_mensagem_erro"),
-  status: varchar("status", { length: 50 }).notNull().default("draft"), // draft, planned, running, paused, completed, failed, cancelled
+  status: varchar("status", { length: 50 }).notNull().default("draft"), // Ver motor-v2/src/shared/task-statuses.ts para lista completa
   maxRework: int("max_rework").notNull().default(3),
   hardTimeoutMs: bigint("hard_timeout_ms", { mode: "number" }),
   dependsOnTaskId: bigint("depends_on_task_id", { mode: "number", unsigned: true }),
@@ -470,7 +471,7 @@ export const annotations = {
     descricao: { label: "Descrição", type: "textarea", fullWidth: true },
     status: {
       label: "Status",
-      helperText: "draft | planned | running | paused | completed | failed | cancelled",
+      helperText: taskStatusesHelperText(),
     },
     max_rework: { label: "Máx. Retrabalho" },
     hard_timeout_ms: { label: "Timeout (ms)" },
@@ -485,7 +486,7 @@ export const annotations = {
     descricao: { label: "Descrição", type: "textarea", fullWidth: true },
     status: {
       label: "Status",
-      helperText: "pending | running | verified | failed",
+      helperText: subtaskStatusesHelperText(),
     },
     depends_on_subtask_id: { label: "Depende de" },
     resultado: { label: "Resultado", type: "textarea", fullWidth: true },
