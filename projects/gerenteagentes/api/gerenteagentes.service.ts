@@ -21,6 +21,7 @@ import {
   contatos,
 } from '../schema';
 import { ProvisionService } from '../../../apps/api/src/modules/provision/provision.service';
+import { TASK_STATUS_STARTABLE } from '../motor-v2/src/shared/task-statuses';
 
 @Injectable()
 export class GerenteAgentesService {
@@ -262,7 +263,7 @@ export class GerenteAgentesService {
     }
 
     // Permite reiniciar tarefas bloqueadas/falhas/pausadas (não apenas draft/planned)
-    const statusPermitidos = ['draft', 'planned', 'blocked', 'failed', 'paused'];
+    const statusPermitidos = [...TASK_STATUS_STARTABLE];
     if (!statusPermitidos.includes(tarefa.status)) {
       throw new BadRequestException(`Tarefa não pode ser iniciada (status: ${tarefa.status})`);
     }

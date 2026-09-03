@@ -39,6 +39,16 @@ import { RealtimeClient, type RealtimeServerMessage } from "@biblioteca-global/a
 import type { DynamicField, DynamicFormValues } from "@biblioteca-global/ui"
 import { useApi } from "../../../apps/web/src/hooks/useApi"
 import { resolveRealtimeUrl, resolveApiBaseUrl } from "../../../apps/web/src/api/client"
+import {
+  ALL_TASK_STATUSES,
+  TASK_STATUS_FINAIS as _TASK_STATUS_FINAIS,
+  TASK_STATUS_STARTABLE as _TASK_STATUS_STARTABLE,
+  TASK_STATUS_EXECUTING as _TASK_STATUS_EXECUTING,
+  TASK_STATUS_OPTIONS,
+  SUBTASK_STATUS_OPTIONS,
+  taskStatusColor,
+  taskStatusLabel,
+} from "../motor-v2/src/shared/task-statuses"
 
 interface Tarefa {
   id: number
@@ -56,19 +66,7 @@ interface ProjetoCaptado {
   nome: string
 }
 
-/** Status conhecidos do schema + status finais que o motor pode gravar. */
-const STATUS_OPCOES = [
-  "draft",
-  "planned",
-  "running",
-  "paused",
-  "completed",
-  "failed",
-  "cancelled",
-  "finalizada",
-  "deployada",
-  "aborted",
-] as const
+/** Status conhecidos — fonte única em ../motor-v2/src/shared/task-statuses */
 
 interface SubTaskMotor {
   seq: number
@@ -127,32 +125,12 @@ interface MotorDetail {
   models?: Array<{ model: string; tierIndex?: number; reason?: string; occurredAt?: string }>
 }
 
-const STATUS_FINAIS = new Set(["completed", "finalizada", "deployada", "aborted"])
-const STATUS_INICIO_PERMITIDO = new Set(["draft", "planned", "blocked", "failed"])
-const STATUS_EXECUCAO = new Set(["running", "planning", "analyzing"])
+const STATUS_FINAIS = _TASK_STATUS_FINAIS
+const STATUS_INICIO_PERMITIDO = _TASK_STATUS_STARTABLE
+const STATUS_EXECUCAO = _TASK_STATUS_EXECUTING
 
 function corStatus(status: string): "default" | "primary" | "secondary" | "error" | "info" | "success" | "warning" {
-  switch (status) {
-    case "verified":
-    case "completed":
-    case "finalizada":
-    case "deployada":
-      return "success"
-    case "delivered":
-    case "running":
-    case "planning":
-      return "info"
-    case "verifying":
-    case "paused":
-      return "warning"
-    case "rejected":
-    case "blocked":
-    case "failed":
-    case "aborted":
-      return "error"
-    default:
-      return "default"
-  }
+  return taskStatusColor(status)
 }
 
 function traduzirEvento(type: string): string {
@@ -432,16 +410,7 @@ export default function TaskMonitorScreen(): ReactNode {
         name: "status",
         label: "Status",
         type: "select",
-        options: [
-          { label: "Rascunho (draft)", value: "draft" },
-          { label: "Planejada (planned)", value: "planned" },
-          { label: "Executando (running)", value: "running" },
-          { label: "Pausada (paused)", value: "paused" },
-          { label: "Concluída (completed)", value: "completed" },
-          { label: "Falhou (failed)", value: "failed" },
-          { label: "Cancelada (cancelled)", value: "cancelled" },
-          { label: "Bloqueada (blocked)", value: "blocked" },
-        ],
+        options: TASK_STATUS_OPTIONS,
       },
       {
         name: "dependsOnTaskId",
@@ -499,17 +468,7 @@ export default function TaskMonitorScreen(): ReactNode {
         name: "status",
         label: "Status",
         type: "select",
-        options: [
-          { label: "Pendente (pending)", value: "pending" },
-          { label: "Executando (running)", value: "running" },
-          { label: "Verificada (verified)", value: "verified" },
-          { label: "Rejeitada (rejected)", value: "rejected" },
-          { label: "Bloqueada (blocked)", value: "blocked" },
-          { label: "Concluída (completed)", value: "completed" },
-          { label: "Pausada (paused)", value: "paused" },
-          { label: "Falhou (failed)", value: "failed" },
-          { label: "Cancelada (cancelled)", value: "cancelled" },
-        ],
+        options: SUBTASK_STATUS_OPTIONS,
       },
       { name: "seq", label: "Ordem", type: "number", min: 0 },
       { name: "scope", label: "Escopo", type: "textarea", fullWidth: true, required: true },
@@ -745,7 +704,7 @@ export default function TaskMonitorScreen(): ReactNode {
           </Select>
         </FormControl>
 
-        <FormControl size="small" sx={{ minWidth: 200 }}>
+        <FormControl size="small" sx={{ minWidth: 240 }}>
           <InputLabel>Status</InputLabel>
           <Select
             label="Status"
@@ -754,9 +713,9 @@ export default function TaskMonitorScreen(): ReactNode {
             data-testid="select-status"
           >
             <MenuItem value="">Todos</MenuItem>
-            {STATUS_OPCOES.map((s) => (
+            {ALL_TASK_STATUSES.map((s) => (
               <MenuItem key={s} value={s}>
-                {s}
+                {taskStatusLabel(s)}
               </MenuItem>
             ))}
           </Select>

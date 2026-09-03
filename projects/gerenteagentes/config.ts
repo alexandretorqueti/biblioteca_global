@@ -18,6 +18,10 @@
  * - `columnLabels` ajusta os títulos dos cabeçalhos da grid.
  */
 import type { GeradorSistemaConfig } from "@biblioteca-global/shared"
+import {
+  TASK_STATUS_FINAIS,
+  SUBTASK_STATUS_OPTIONS,
+} from "./motor-v2/src/shared/task-statuses"
 
 export const config: GeradorSistemaConfig = {
   app: { name: "Gerente Agentes", logo: "smart_toy" },
@@ -137,7 +141,9 @@ export const config: GeradorSistemaConfig = {
                   {
                     campo: "status",
                     direction: "asc",
-                    valuesLast: ["finalizada", "deployada", "completed", "blocked"],
+                    valuesLast: [...TASK_STATUS_FINAIS].filter((s) =>
+                      ["completed", "deployed", "cancelled", "failed", "blocked"].includes(s),
+                    ),
                   },
                   { campo: "createdAt", direction: "desc" },
                 ],
@@ -212,17 +218,10 @@ export const config: GeradorSistemaConfig = {
                         name: "status",
                         label: "Status",
                         type: "select",
-                        options: [
-                          { label: "Pendente", value: "pending" },
-                          { label: "Executando", value: "running" },
-                          { label: "Verificada", value: "verified" },
-                          { label: "Rejeitada", value: "rejected" },
-                          { label: "Bloqueada", value: "blocked" },
-                          { label: "Concluída", value: "completed" },
-                          { label: "Pausada", value: "paused" },
-                          { label: "Falhou", value: "failed" },
-                          { label: "Cancelada", value: "cancelled" },
-                        ],
+                        options: SUBTASK_STATUS_OPTIONS.map((o) => ({
+                          label: o.label.replace(/ \(.*\)$/, ""),
+                          value: o.value,
+                        })),
                         defaultValue: "pending",
                       },
                       { name: "seq", label: "Ordem", type: "number", defaultValue: 0, gridVisible: false },
