@@ -36,6 +36,9 @@ services:
       dockerfile: apps/api/Dockerfile
     container_name: biblioteca-global-api
     restart: unless-stopped
+    extra_hosts:
+      # Permite resolver host.docker.internal (usado por OPENCLAW_CONSOLE_URL)
+      - "host.docker.internal:host-gateway"
     environment:
       MYSQL_HOST: mysql
       MYSQL_PORT: 3306
@@ -85,9 +88,9 @@ services:
       - "${MOTOR_V2_HOST_PORT:-3010}:3010"
     volumes:
       # Volume do repositório (para o motor-v2 acessar o código)
-      - ${REPO_PATH:-/run/media/alexandre/12T/codigofonte}:${REPO_PATH:-/run/media/alexandre/12T/codigofonte}
+      - ${REPO_PATH:-/home/alexandre/codigofonte}:${REPO_PATH:-/run/media/alexandre/12T/codigofonte}
       # Workspace do agente (para worktrees do motor-v2)
-      - /home/alexandre/projetos/agentes:/data/workspace/projects/agentes:rw
+      - /home/alexandre/agentes:/data/workspace/projects/agentes:rw
       # Chave SSH do GitHub para a fase PUBLISH do motor-v2 (somente leitura)
       - ${GITHUB_SSH_KEY_HOST:-/home/alexandre/secrets/biblioteca-global-api/github_id_ed25519}:/root/.ssh/github_id_ed25519:ro
     networks:
