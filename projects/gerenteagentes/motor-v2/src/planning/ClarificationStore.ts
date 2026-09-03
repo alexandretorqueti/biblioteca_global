@@ -60,12 +60,12 @@ export function formatHistoryForPrompt(entries: readonly ChatHistoryEntry[]): st
 function taskWhereClause(taskId: string): { sql: string; params: unknown[] } {
   if (/^\d+$/.test(taskId)) {
     return {
-      sql: "SELECT id FROM projeto_640.tarefas WHERE external_id = ? OR id = ? LIMIT 1",
+      sql: "SELECT id FROM tarefas WHERE external_id = ? OR id = ? LIMIT 1",
       params: [taskId, taskId],
     }
   }
   return {
-    sql: "SELECT id FROM projeto_640.tarefas WHERE external_id = ? LIMIT 1",
+    sql: "SELECT id FROM tarefas WHERE external_id = ? LIMIT 1",
     params: [taskId],
   }
 }
@@ -90,7 +90,7 @@ export async function persistTaskClarification(
 ): Promise<void> {
   const databaseTaskId = await resolveTaskDatabaseId(db, taskId)
   await db.query(
-    "INSERT INTO projeto_640.tarefa_chats (tarefa_id, role, texto, created_at) VALUES (?, ?, ?, NOW())",
+    "INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) VALUES (?, ?, ?, NOW())",
     [databaseTaskId, CLARIFICATION_ROLE, formatClarificationMessage(input)],
   )
 }
@@ -103,7 +103,7 @@ export async function persistTaskClarificationAnswer(
 ): Promise<void> {
   const databaseTaskId = await resolveTaskDatabaseId(db, taskId)
   await db.query(
-    "INSERT INTO projeto_640.tarefa_chats (tarefa_id, role, texto, created_at) VALUES (?, ?, ?, NOW())",
+    "INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) VALUES (?, ?, ?, NOW())",
     [databaseTaskId, ANSWER_ROLE, text],
   )
 }
@@ -118,7 +118,7 @@ export async function fetchTaskClarificationHistory(
 ): Promise<ChatHistoryEntry[]> {
   const databaseTaskId = await resolveTaskDatabaseId(db, taskId)
   const { rows } = await db.query(
-    "SELECT role, texto, created_at FROM projeto_640.tarefa_chats " +
+    "SELECT role, texto, created_at FROM tarefa_chats " +
     "WHERE tarefa_id = ? AND role IN (?, ?) ORDER BY id ASC",
     [databaseTaskId, CLARIFICATION_ROLE, ANSWER_ROLE],
   )
@@ -136,7 +136,7 @@ export async function fetchPendingTaskClarification(
 ): Promise<{ message: string; askedAt: string } | null> {
   const databaseTaskId = await resolveTaskDatabaseId(db, taskId)
   const { rows } = await db.query(
-    "SELECT texto, created_at FROM projeto_640.tarefa_chats " +
+    "SELECT texto, created_at FROM tarefa_chats " +
     "WHERE tarefa_id = ? AND role = ? ORDER BY id DESC LIMIT 1",
     [databaseTaskId, CLARIFICATION_ROLE],
   )
@@ -156,7 +156,7 @@ export async function persistProjectClarification(
   input: ClarificationQuestions,
 ): Promise<void> {
   await db.query(
-    "INSERT INTO projeto_640.projeto_chats (projeto_id, role, texto, created_at) VALUES (?, ?, ?, NOW())",
+    "INSERT INTO projeto_chats (projeto_id, role, texto, created_at) VALUES (?, ?, ?, NOW())",
     [projetoId, CLARIFICATION_ROLE, formatClarificationMessage(input)],
   )
 }
@@ -168,7 +168,7 @@ export async function persistProjectClarificationAnswer(
   text: string,
 ): Promise<void> {
   await db.query(
-    "INSERT INTO projeto_640.projeto_chats (projeto_id, role, texto, created_at) VALUES (?, ?, ?, NOW())",
+    "INSERT INTO projeto_chats (projeto_id, role, texto, created_at) VALUES (?, ?, ?, NOW())",
     [projetoId, ANSWER_ROLE, text],
   )
 }
@@ -179,7 +179,7 @@ export async function fetchProjectClarificationHistory(
   projetoId: number,
 ): Promise<ChatHistoryEntry[]> {
   const { rows } = await db.query(
-    "SELECT role, texto, created_at FROM projeto_640.projeto_chats " +
+    "SELECT role, texto, created_at FROM projeto_chats " +
     "WHERE projeto_id = ? AND role IN (?, ?) ORDER BY id ASC",
     [projetoId, CLARIFICATION_ROLE, ANSWER_ROLE],
   )

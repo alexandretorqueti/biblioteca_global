@@ -53,9 +53,9 @@ describe('correção que falha repetidamente bloqueia a tarefa inteira', () => {
       .rejects.toThrow(/Subtarefa de correção 728 falhou repetidamente/)
 
     const calls = query.mock.calls.map(([sql]) => String(sql))
-    expect(calls.some((sql) => sql.includes('INSERT INTO projeto_640.bloqueios'))).toBe(true)
-    expect(calls.some((sql) => sql.includes('INSERT INTO projeto_640.subtarefas'))).toBe(false)
-    const bloqueioParams = query.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO projeto_640.bloqueios'))?.[1]
+    expect(calls.some((sql) => sql.includes('INSERT INTO bloqueios'))).toBe(true)
+    expect(calls.some((sql) => sql.includes('INSERT INTO subtarefas'))).toBe(false)
+    const bloqueioParams = query.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO bloqueios'))?.[1]
     expect(bloqueioParams).toContain('correction_failed')
     expect(String(bloqueioParams?.[3])).toContain('corrige a subtarefa 721')
   })
@@ -75,7 +75,7 @@ describe('correção que falha repetidamente bloqueia a tarefa inteira', () => {
     const created = await callCorrectionGate(worker, subtask, 'Testes falharam: Command failed: false')
 
     expect(created).toBe(true)
-    const insert = query.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO projeto_640.subtarefas'))
+    const insert = query.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO subtarefas'))
     expect(insert).toBeDefined()
     expect(insert?.[1]).toContain('Correção: Arrumar README')
   })

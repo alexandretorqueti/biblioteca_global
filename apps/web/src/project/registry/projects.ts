@@ -17,6 +17,7 @@ import { config as bibliotecaGlobalConfig } from "../../../../../projects/biblio
 import { config as documentacaoConfig } from "../../../../../projects/documentacao/config"
 import { config as gerenteAgentesConfig } from "../../../../../projects/gerenteagentes/config"
 import { config as sistemaAdmGlobalConfig } from "../../../../../projects/sistema-adm-global/config"
+import { config as taquiConfig } from "../../../../../projects/taqui/config"
 
 export type ProjectConfigSource = (slug: string) => GeradorSistemaConfig | undefined
 
@@ -25,6 +26,7 @@ export const projectConfigs: Record<string, GeradorSistemaConfig> = {
   documentacao: documentacaoConfig,
   gerenteagentes: gerenteAgentesConfig,
   "sistema-adm-global": sistemaAdmGlobalConfig,
+  taqui: taquiConfig,
 }
 
 /** Resolve a config de um projeto pelo slug; undefined se não conhecido. */

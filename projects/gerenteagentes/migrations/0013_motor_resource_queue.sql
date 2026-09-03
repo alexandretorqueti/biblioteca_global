@@ -17,10 +17,9 @@ CREATE TABLE IF NOT EXISTS `execution_resources` (
 
 --> statement-breakpoint
 
--- A estrutura do Motor v2 foi criada manualmente em alguns ambientes antes
--- desta migration. MySQL não suporta CREATE INDEX IF NOT EXISTS; o helper
--- abaixo permite reconciliar esses ambientes sem perder dados.
 DROP PROCEDURE IF EXISTS `__bg_ensure_index`;
+
+--> statement-breakpoint
 
 CREATE PROCEDURE `__bg_ensure_index`(
   IN p_table VARCHAR(64),
@@ -68,6 +67,8 @@ CREATE TABLE IF NOT EXISTS `execution_resource_queue` (
 --> statement-breakpoint
 
 DROP PROCEDURE IF EXISTS `__bg_ensure_column`;
+
+--> statement-breakpoint
 
 CREATE PROCEDURE `__bg_ensure_column`(
   IN p_table VARCHAR(64),
@@ -138,6 +139,8 @@ CALL `__bg_ensure_index`(
   'idx_tarefas_resource_wait',
   '`status`, `resource_wait_key`'
 );
+
+--> statement-breakpoint
 
 DROP PROCEDURE `__bg_ensure_index`;
 

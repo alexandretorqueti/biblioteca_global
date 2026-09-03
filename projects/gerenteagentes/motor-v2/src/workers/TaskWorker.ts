@@ -41,6 +41,7 @@ import {
   persistTaskClarification,
 } from "../planning/ClarificationStore.js"
 import type { Db, QueryResult } from "../shared/types/infrastructure.js"
+import { resolveProjectDatabase } from "../database/DrizzleDb.js"
 import mysql from "mysql2/promise"
 
 const COMMAND_FAILURE_LIMIT = 12_000
@@ -161,7 +162,7 @@ class TaskWorker {
       port: Number(process.env.MYSQL_PORT ?? 3306),
       user: process.env.MYSQL_USER ?? "root",
       password: process.env.MYSQL_PASSWORD ?? "",
-      database: "projeto_640",
+      database: resolveProjectDatabase(),
     })
 
     process.on("message", async (msg: unknown) => {
@@ -477,7 +478,7 @@ class TaskWorker {
       for (let attempt = 1; attempt <= input.task.maxRework; attempt += 1) {
         deliverCount += 1
         await this.db!.query(
-          "UPDATE projeto_640.subtarefas SET status = 'running', deliver_count = ?, resultado = NULL, updated_at = NOW() WHERE id = ?",
+          "UPDATE subtarefas SET status = 'running', deliver_count = ?, resultado = NULL, updated_at = NOW() WHERE id = ?",
           [deliverCount, subtask.id],
         )
         this.send({ type: "progress", executionId: input.context.executionId, phase: "execute", message: `Entrega ${deliverCount}, modelo ${model.model}` })
@@ -521,7 +522,7 @@ class TaskWorker {
           let gitCommitSha: string | undefined
           try {
             await this.db!.query(
-              "UPDATE projeto_640.subtarefas SET status = 'verifying', updated_at = NOW() WHERE id = ?",
+              "UPDATE subtarefas SET status = 'verifying', updated_at = NOW() WHERE id = ?",
               [subtask.id],
             )
             await this.phaseVerify(input)
@@ -529,7 +530,7 @@ class TaskWorker {
           } catch (error) {
             lastFailure = error instanceof Error ? error.message : String(error)
             await this.db!.query(
-              "UPDATE projeto_640.subtarefas SET status = 'rejected', resultado = ?, updated_at = NOW() WHERE id = ?",
+              "UPDATE subtarefas SET status = 'rejected', resultado = ?, updated_at = NOW() WHERE id = ?",
               [lastFailure.substring(0, 500), subtask.id],
             )
             this.log("warn", `Gate vermelho (${model.model}, tentativa ${attempt}): ${lastFailure}`)
@@ -561,7 +562,7 @@ class TaskWorker {
           }
 
           await this.db!.query(
-            "UPDATE projeto_640.subtarefas SET status = 'verified', deliver_count = ?, resultado = ?, finalizada_em = NOW(), updated_at = NOW() WHERE id = ?",
+            "UPDATE subtarefas SET status = 'verified', deliver_count = ?, resultado = ?, finalizada_em = NOW(), updated_at = NOW() WHERE id = ?",
             [deliverCount, result.content?.substring(0, 500) || "OK", subtask.id],
           )
           this.log("info", "Subtarefa verificada: " + subtask.titulo)
@@ -723,7 +724,7 @@ class TaskWorker {
     if (!this.db) return "ok"
     if (isBaselineCorrection(subtask.correctionFingerprint)) return "ok"
     const [rows] = await this.db.query(
-      "SELECT COUNT(*) AS total FROM projeto_640.subtarefas WHERE tarefa_id = (SELECT tarefa_id FROM projeto_640.subtarefas WHERE id = ?) AND status = 'verified'",
+      "SELECT COUNT(*) AS total FROM subtarefas WHERE tarefa_id = (SELECT tarefa_id FROM subtarefas WHERE id = ?) AND status = 'verified'",
       [subtask.id],
     ) as unknown as [Array<{ total: number | string }>]
     if (Number(rows[0]?.total ?? 0) > 0) return "ok"
@@ -750,15 +751,15 @@ class TaskWorker {
     // normalizado precisam caber juntos — senão o INSERT falha com "Data too long".
     const fingerprint = (BASELINE_FINGERPRINT_PREFIX + failureFingerprint(reason)).slice(0, 500)
     // Abre espaço na posição exata da subtarefa atual (seq -> seq+1 para >= seq).
-    await this.db.query("UPDATE projeto_640.subtarefas SET seq = seq + 10000 WHERE tarefa_id = (SELECT tarefa_id FROM (SELECT tarefa_id FROM projeto_640.subtarefas WHERE id = ?) AS source) AND seq >= ?", [subtask.id, subtask.seq])
-    await this.db.query("UPDATE projeto_640.subtarefas SET seq = seq - 9999 WHERE tarefa_id = (SELECT tarefa_id FROM (SELECT tarefa_id FROM projeto_640.subtarefas WHERE id = ?) AS source) AND seq >= ?", [subtask.id, subtask.seq + 10000])
+    await this.db.query("UPDATE subtarefas SET seq = seq + 10000 WHERE tarefa_id = (SELECT tarefa_id FROM (SELECT tarefa_id FROM subtarefas WHERE id = ?) AS source) AND seq >= ?", [subtask.id, subtask.seq])
+    await this.db.query("UPDATE subtarefas SET seq = seq - 9999 WHERE tarefa_id = (SELECT tarefa_id FROM (SELECT tarefa_id FROM subtarefas WHERE id = ?) AS source) AND seq >= ?", [subtask.id, subtask.seq + 10000])
     await this.db.query(
-      "UPDATE projeto_640.subtarefas SET status = 'rejected', resultado = ?, updated_at = NOW() WHERE id = ?",
+      "UPDATE subtarefas SET status = 'rejected', resultado = ?, updated_at = NOW() WHERE id = ?",
       [("Baseline vermelho — correção automática criada: " + reason).substring(0, 500), subtask.id],
     )
     await this.db.query(
-      "INSERT INTO projeto_640.subtarefas (tarefa_id, seq, titulo, scope, acceptance_criteria, status, correction_for_subtask_id, correction_fingerprint, created_at, updated_at) " +
-      "SELECT tarefa_id, ?, ?, ?, JSON_ARRAY(?), 'pending', id, ?, NOW(), NOW() FROM projeto_640.subtarefas WHERE id = ?",
+      "INSERT INTO subtarefas (tarefa_id, seq, titulo, scope, acceptance_criteria, status, correction_for_subtask_id, correction_fingerprint, created_at, updated_at) " +
+      "SELECT tarefa_id, ?, ?, ?, JSON_ARRAY(?), 'pending', id, ?, NOW(), NOW() FROM subtarefas WHERE id = ?",
       [subtask.seq, BASELINE_CORRECTION_TITLE, baselineCorrectionScope(reason, subtask.scope, subtask.titulo), BASELINE_CORRECTION_CRITERION, fingerprint, subtask.id],
     )
     this.log("warn", "Baseline vermelho: subtarefa de correção criada na posição da subtarefa " + subtask.id)
@@ -997,7 +998,7 @@ class TaskWorker {
     try {
       // Contar ocorrências deste erro na subtarefa
       const [countRows] = await this.db.query(
-        "SELECT COUNT(*) AS total FROM projeto_640.subtask_gate_failures WHERE subtarefa_id = ? AND fingerprint = ?",
+        "SELECT COUNT(*) AS total FROM subtask_gate_failures WHERE subtarefa_id = ? AND fingerprint = ?",
         [subtask.id, failureFingerprint(errorMessage)]
       ) as unknown as [Array<{ total: number | string }>]
       const occurrence = Number(countRows[0]?.total ?? 0) + 1
@@ -1037,8 +1038,8 @@ class TaskWorker {
     if (!this.db) throw new Error("DB não conectado para registrar bloqueio")
     const evidence = blockerEvidence(kind, reason)
     await this.db.query(
-      "INSERT INTO projeto_640.bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at) " +
-      "SELECT tarefa_id, ?, ?, ?, ?, NOW() FROM projeto_640.subtarefas WHERE id = ?",
+      "INSERT INTO bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at) " +
+      "SELECT tarefa_id, ?, ?, ?, ?, NOW() FROM subtarefas WHERE id = ?",
       [subtask.id, evidence.kind, "motor-v2:" + evidence.fingerprint, evidence.excerpt, subtask.id],
     )
     this.log("warn", "Bloqueio persistido: " + evidence.kind + " (" + evidence.fingerprint + ")")
@@ -1048,11 +1049,11 @@ class TaskWorker {
     if (!this.db) throw new Error("DB não conectado para registrar falha de gate")
     const fingerprint = failureFingerprint(reason)
     await this.db.query(
-      "INSERT INTO projeto_640.subtask_gate_failures (subtarefa_id, fingerprint, reason, model) VALUES (?, ?, ?, ?)",
+      "INSERT INTO subtask_gate_failures (subtarefa_id, fingerprint, reason, model) VALUES (?, ?, ?, ?)",
       [subtask.id, fingerprint, reason.slice(0, 4000), model],
     )
     const [rows] = await this.db.query(
-      "SELECT COUNT(*) AS total FROM projeto_640.subtask_gate_failures WHERE subtarefa_id = ? AND fingerprint = ?",
+      "SELECT COUNT(*) AS total FROM subtask_gate_failures WHERE subtarefa_id = ? AND fingerprint = ?",
       [subtask.id, fingerprint],
     ) as unknown as [Array<{ total: number | string }>]
     if (Number(rows[0]?.total ?? 0) !== 2) return false
@@ -1060,7 +1061,7 @@ class TaskWorker {
     // Correção que falha repetidamente NÃO gera outra correção (sem corrente
     // infinita): bloqueia a tarefa inteira para intervenção humana.
     const [parentRows] = await this.db.query(
-      "SELECT correction_for_subtask_id FROM projeto_640.subtarefas WHERE id = ?",
+      "SELECT correction_for_subtask_id FROM subtarefas WHERE id = ?",
       [subtask.id],
     ) as unknown as [Array<{ correction_for_subtask_id: number | null }>]
     const correctionParentId = Number(parentRows[0]?.correction_for_subtask_id ?? 0)
@@ -1072,15 +1073,15 @@ class TaskWorker {
     }
 
     const [claimed] = await this.db.query(
-      "UPDATE projeto_640.subtarefas SET correction_created_at = NOW(), correction_fingerprint = ? WHERE id = ? AND correction_created_at IS NULL",
+      "UPDATE subtarefas SET correction_created_at = NOW(), correction_fingerprint = ? WHERE id = ? AND correction_created_at IS NULL",
       [fingerprint, subtask.id],
     ) as unknown as [{ affectedRows: number }]
     if (claimed.affectedRows !== 1) return false
-    await this.db.query("UPDATE projeto_640.subtarefas SET seq = seq + 10000 WHERE tarefa_id = (SELECT tarefa_id FROM (SELECT tarefa_id FROM projeto_640.subtarefas WHERE id = ?) AS source) AND seq > ?", [subtask.id, subtask.seq])
-    await this.db.query("UPDATE projeto_640.subtarefas SET seq = seq - 9999 WHERE tarefa_id = (SELECT tarefa_id FROM (SELECT tarefa_id FROM projeto_640.subtarefas WHERE id = ?) AS source) AND seq > ?", [subtask.id, subtask.seq + 10000])
+    await this.db.query("UPDATE subtarefas SET seq = seq + 10000 WHERE tarefa_id = (SELECT tarefa_id FROM (SELECT tarefa_id FROM subtarefas WHERE id = ?) AS source) AND seq > ?", [subtask.id, subtask.seq])
+    await this.db.query("UPDATE subtarefas SET seq = seq - 9999 WHERE tarefa_id = (SELECT tarefa_id FROM (SELECT tarefa_id FROM subtarefas WHERE id = ?) AS source) AND seq > ?", [subtask.id, subtask.seq + 10000])
     await this.db.query(
-      "INSERT INTO projeto_640.subtarefas (tarefa_id, seq, titulo, scope, acceptance_criteria, status, correction_for_subtask_id, correction_fingerprint, created_at, updated_at) " +
-      "SELECT tarefa_id, ?, ?, CONCAT(?, CHAR(10), CHAR(10), 'Escopo original da subtarefa corrigida:', CHAR(10), IFNULL(scope, titulo)), acceptance_criteria, 'pending', id, ?, NOW(), NOW() FROM projeto_640.subtarefas WHERE id = ?",
+      "INSERT INTO subtarefas (tarefa_id, seq, titulo, scope, acceptance_criteria, status, correction_for_subtask_id, correction_fingerprint, created_at, updated_at) " +
+      "SELECT tarefa_id, ?, ?, CONCAT(?, CHAR(10), CHAR(10), 'Escopo original da subtarefa corrigida:', CHAR(10), IFNULL(scope, titulo)), acceptance_criteria, 'pending', id, ?, NOW(), NOW() FROM subtarefas WHERE id = ?",
       [subtask.seq + 1, "Correção: " + subtask.titulo, "Corrigir gate repetido: " + reason.slice(0, 1000), fingerprint, subtask.id],
     )
     this.log("warn", "Subtarefa de correção criada para falha repetida " + fingerprint + " (subtarefa " + subtask.id + ", corrige a original; tarefa bloqueia se a correção também falhar)")

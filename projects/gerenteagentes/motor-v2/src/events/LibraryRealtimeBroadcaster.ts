@@ -59,8 +59,8 @@ export class LibraryRealtimeBroadcaster implements ExecutionActivityBroadcaster 
     const numeric = /^\d+$/.test(taskId)
     const { rows } = await this.config.db.query(
       `SELECT t.id AS task_id, pc.id AS project_id, pc.slug AS project_slug
-       FROM projeto_640.tarefas t
-       INNER JOIN projeto_640.projetos_captados pc ON pc.id = t.projeto_id
+       FROM tarefas t
+       INNER JOIN projetos_captados pc ON pc.id = t.projeto_id
        WHERE ${numeric ? '(t.external_id = ? OR t.id = ?)' : 't.external_id = ?'}
        LIMIT 1`,
       numeric ? [taskId, taskId] : [taskId],

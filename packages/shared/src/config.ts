@@ -213,6 +213,15 @@ export const cadastroScreenConfigSchema = z
      * abre a lista de tarefas filtrada por projetoId=X).
      */
     childRoutes: z.array(childRouteSchema).optional(),
+    /**
+     * Ordenação padrão aplicada ao carregar a tela (opcional).
+     * Enviada como parâmetro `orderBy` na requisição de listagem.
+     */
+    defaultOrderBy: z.array(z.object({
+      campo: z.string().min(1),
+      direction: z.enum(["asc", "desc"]),
+      valuesLast: z.array(z.union([z.string(), z.number()])).optional(),
+    })).optional(),
   })
   .strict()
 

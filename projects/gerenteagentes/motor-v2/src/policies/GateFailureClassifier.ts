@@ -171,8 +171,8 @@ export class GateFailureClassifier {
       try {
         const result = await this.db.query(
           `SELECT pmc.modelo
-           FROM projeto_640.projetos_captados pc
-           LEFT JOIN projeto_640.projeto_model_chain pmc
+           FROM projetos_captados pc
+           LEFT JOIN projeto_model_chain pmc
              ON pmc.projeto_id = pc.id AND pmc.fase = 'monitor' AND pmc.ativo = 1
            WHERE pc.slug = ?
            ORDER BY pmc.posicao ASC`,

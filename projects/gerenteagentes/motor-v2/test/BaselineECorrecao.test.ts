@@ -119,7 +119,7 @@ describe('correção de gate herdando escopo original (B1)', () => {
     const created = await fn.call(worker, {} as never, subtask, 'alibaba/qwen3.7-max', 'Testes falharam: timeout no lock')
 
     expect(created).toBe(true)
-    const insert = query.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO projeto_640.subtarefas'))
+    const insert = query.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO subtarefas'))
     expect(insert).toBeDefined()
     const sql = String(insert?.[0])
     expect(sql).toContain('CONCAT')
@@ -166,7 +166,7 @@ describe('baseline antes da primeira subtarefa (B4)', () => {
     expect(outcome).toBe('correction_created')
     const rejected = query.mock.calls.find(([sql]) => String(sql).includes("status = 'rejected'"))
     expect(String(rejected?.[1]?.[0])).toContain('Baseline vermelho')
-    const insert = query.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO projeto_640.subtarefas'))
+    const insert = query.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO subtarefas'))
     const params = insert?.[1] as unknown[]
     // ordem dos parâmetros: [seq, titulo, scope, critério, fingerprint, correction_for]
     expect(params?.[0]).toBe(1)   // assume a posição (seq) da original
@@ -195,7 +195,7 @@ describe('baseline antes da primeira subtarefa (B4)', () => {
     const fn = callPrivate<(input: WorkerInput, subtask: SubtaskInfo) => Promise<string>>(worker, 'runBaselineCheck')
     await fn.call(worker, makeInput(), { id: 750, seq: 1, titulo: 'x', scope: 's', deliverCount: 0 })
 
-    const insert = query.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO projeto_640.subtarefas'))
+    const insert = query.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO subtarefas'))
     const fp = String((insert?.[1] as unknown[])?.[4])
     expect(fp.startsWith(BASELINE_FINGERPRINT_PREFIX)).toBe(true)
     expect(fp.length).toBeLessThanOrEqual(500)

@@ -12,12 +12,12 @@ export type PersistPlanResult = "created" | "already_persisted"
 function taskLookup(taskId: string): { sql: string; params: unknown[] } {
   if (/^\d+$/.test(taskId)) {
     return {
-      sql: "SELECT id FROM projeto_640.tarefas WHERE external_id = ? OR id = ? LIMIT 1 FOR UPDATE",
+      sql: "SELECT id FROM tarefas WHERE external_id = ? OR id = ? LIMIT 1 FOR UPDATE",
       params: [taskId, taskId],
     }
   }
   return {
-    sql: "SELECT id FROM projeto_640.tarefas WHERE external_id = ? LIMIT 1 FOR UPDATE",
+    sql: "SELECT id FROM tarefas WHERE external_id = ? LIMIT 1 FOR UPDATE",
     params: [taskId],
   }
 }
@@ -40,14 +40,14 @@ export async function persistPlan(
     if (!databaseTaskId) throw new Error("Tarefa não encontrada: " + taskId)
 
     const { rows: existing } = await tx.query(
-      "SELECT id FROM projeto_640.subtarefas WHERE tarefa_id = ? LIMIT 1 FOR UPDATE",
+      "SELECT id FROM subtarefas WHERE tarefa_id = ? LIMIT 1 FOR UPDATE",
       [databaseTaskId],
     )
     if (existing.length > 0) return "already_persisted"
 
     for (const subtask of subtasks) {
       await tx.query(
-        "INSERT INTO projeto_640.subtarefas (tarefa_id, seq, titulo, scope, acceptance_criteria, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'pending', NOW(), NOW())",
+        "INSERT INTO subtarefas (tarefa_id, seq, titulo, scope, acceptance_criteria, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'pending', NOW(), NOW())",
         [databaseTaskId, subtask.seq, subtask.titulo, subtask.scope || null, subtask.acceptanceCriteria ? JSON.stringify(subtask.acceptanceCriteria) : null],
       )
     }
@@ -60,8 +60,8 @@ export async function hasPersistedPlan(db: Db, taskId: string): Promise<boolean>
   const isNumeric = /^\d+$/.test(taskId)
   const { rows } = await db.query(
     isNumeric
-      ? "SELECT EXISTS(SELECT 1 FROM projeto_640.subtarefas s INNER JOIN projeto_640.tarefas t ON t.id = s.tarefa_id WHERE t.external_id = ? OR t.id = ?) AS has_plan"
-      : "SELECT EXISTS(SELECT 1 FROM projeto_640.subtarefas s INNER JOIN projeto_640.tarefas t ON t.id = s.tarefa_id WHERE t.external_id = ?) AS has_plan",
+      ? "SELECT EXISTS(SELECT 1 FROM subtarefas s INNER JOIN tarefas t ON t.id = s.tarefa_id WHERE t.external_id = ? OR t.id = ?) AS has_plan"
+      : "SELECT EXISTS(SELECT 1 FROM subtarefas s INNER JOIN tarefas t ON t.id = s.tarefa_id WHERE t.external_id = ?) AS has_plan",
     isNumeric ? [taskId, taskId] : [taskId],
   )
   return Number(rows[0]?.has_plan ?? 0) === 1

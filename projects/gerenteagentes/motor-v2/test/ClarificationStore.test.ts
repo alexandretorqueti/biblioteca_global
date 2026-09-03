@@ -54,9 +54,9 @@ describe("persistTaskClarification", () => {
     ])
     await persistTaskClarification(db, "task-9", { summary: "s", questions: ["p?"] })
     const calls = vi.mocked(db.query).mock.calls
-    expect(String(calls[0]![0])).toContain("FROM projeto_640.tarefas")
+    expect(String(calls[0]![0])).toContain("FROM tarefas")
     const [insertSql, params] = calls[1]!
-    expect(String(insertSql)).toContain("INSERT INTO projeto_640.tarefa_chats")
+    expect(String(insertSql)).toContain("INSERT INTO tarefa_chats")
     expect(params).toEqual([42, "analyst", expect.stringContaining("1) p?")])
   })
 })
@@ -69,7 +69,7 @@ describe("persistTaskClarificationAnswer", () => {
     ])
     await persistTaskClarificationAnswer(db, "42", "1: MySQL")
     const [insertSql, params] = vi.mocked(db.query).mock.calls[1]!
-    expect(String(insertSql)).toContain("INSERT INTO projeto_640.tarefa_chats")
+    expect(String(insertSql)).toContain("INSERT INTO tarefa_chats")
     expect(params).toEqual([42, "user", "1: MySQL"])
   })
 })

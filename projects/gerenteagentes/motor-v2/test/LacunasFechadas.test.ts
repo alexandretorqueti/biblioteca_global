@@ -106,7 +106,7 @@ describe('lacuna 2 — falha de integração persiste bloqueio', () => {
     await coordinator.onTaskCompleted('exec-int', { gitCommitSha: 'deadbeef77' } as never)
 
     const calls = vi.mocked(db.query).mock.calls
-    const bloqueioInsert = calls.find(([sql]) => String(sql).includes('INSERT INTO projeto_640.bloqueios'))
+    const bloqueioInsert = calls.find(([sql]) => String(sql).includes('INSERT INTO bloqueios'))
     expect(bloqueioInsert).toBeDefined()
     expect(bloqueioInsert?.[1]).toContain('systemic_failure')
     expect(String(bloqueioInsert?.[1]?.[3])).toContain('conflito no merge')

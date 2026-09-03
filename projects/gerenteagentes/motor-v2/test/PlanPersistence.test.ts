@@ -27,8 +27,8 @@ describe("persistPlan", () => {
     expect(result).toBe("created")
     expect(db.transaction).toHaveBeenCalledOnce()
     const sql = vi.mocked(db.query).mock.calls.map(([query]) => String(query))
-    expect(sql.some((query) => query.includes("DELETE FROM projeto_640.subtarefas"))).toBe(false)
-    expect(sql.filter((query) => query.includes("INSERT INTO projeto_640.subtarefas"))).toHaveLength(2)
+    expect(sql.some((query) => query.includes("DELETE FROM subtarefas"))).toBe(false)
+    expect(sql.filter((query) => query.includes("INSERT INTO subtarefas"))).toHaveLength(2)
   })
 
   it("preserva plano já persistido sem inserir ou apagar subtarefas", async () => {
@@ -40,8 +40,8 @@ describe("persistPlan", () => {
     await expect(persistPlan(db, "task-71", [{ seq: 1, titulo: "Ignorar" }])).resolves.toBe("already_persisted")
 
     const sql = vi.mocked(db.query).mock.calls.map(([query]) => String(query))
-    expect(sql.some((query) => query.includes("INSERT INTO projeto_640.subtarefas"))).toBe(false)
-    expect(sql.some((query) => query.includes("DELETE FROM projeto_640.subtarefas"))).toBe(false)
+    expect(sql.some((query) => query.includes("INSERT INTO subtarefas"))).toBe(false)
+    expect(sql.some((query) => query.includes("DELETE FROM subtarefas"))).toBe(false)
   })
 })
 

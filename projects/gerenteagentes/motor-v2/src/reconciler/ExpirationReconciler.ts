@@ -47,7 +47,7 @@ export class ExpirationReconciler {
     const now = new Date()
     // 1. Locks expirados
     const expired = await this.db.query(
-      `SELECT resource_key, execution_id FROM projeto_640.execution_resources WHERE expires_at < ?`,
+      `SELECT resource_key, execution_id FROM execution_resources WHERE expires_at < ?`,
       [now]
     )
 
@@ -57,7 +57,7 @@ export class ExpirationReconciler {
       this.logger.info(`Lock expirado: ${key}`, { executionId: execId })
 
       await this.db.query(
-        `DELETE FROM projeto_640.execution_resources WHERE resource_key = ? AND execution_id = ?`,
+        `DELETE FROM execution_resources WHERE resource_key = ? AND execution_id = ?`,
         [key, execId]
       )
 
@@ -69,11 +69,11 @@ export class ExpirationReconciler {
     // verificada volta à fila. Uma análise sem plano volta a `planned`.
     const orphans = await this.db.query(
       `SELECT t.id, t.external_id, t.status,
-              EXISTS(SELECT 1 FROM projeto_640.subtarefas s WHERE s.tarefa_id = t.id) AS has_subtasks
-       FROM projeto_640.tarefas t
+              EXISTS(SELECT 1 FROM subtarefas s WHERE s.tarefa_id = t.id) AS has_subtasks
+       FROM tarefas t
        WHERE t.status IN ('analyzing', 'running')
          AND NOT EXISTS (
-           SELECT 1 FROM projeto_640.execution_resources r
+           SELECT 1 FROM execution_resources r
            WHERE (r.owner_id = CAST(t.id AS CHAR) OR r.owner_id = t.external_id)
              AND r.expires_at > ?
          )`,
@@ -86,13 +86,13 @@ export class ExpirationReconciler {
       const hasSubtasks = Number(row.has_subtasks ?? 0) === 1
       if (hasSubtasks) {
         await this.db.query(
-          `UPDATE projeto_640.subtarefas SET status = 'pending', updated_at = NOW()
+          `UPDATE subtarefas SET status = 'pending', updated_at = NOW()
            WHERE tarefa_id = ? AND status IN ('running', 'delivered', 'verifying', 'rejected')`,
           [taskId],
         )
       }
       await this.db.query(
-        `UPDATE projeto_640.tarefas SET status = ?, updated_at = NOW() WHERE id = ?`,
+        `UPDATE tarefas SET status = ?, updated_at = NOW() WHERE id = ?`,
         [hasSubtasks ? 'ready' : 'planned', taskId],
       )
     }

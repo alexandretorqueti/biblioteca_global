@@ -5,18 +5,33 @@
 import mysql from "mysql2/promise"
 import type { Db, QueryResult, TaskRepository, SaveTaskData } from "../shared/types/infrastructure.js"
 
+/** O motor trabalha no database físico do projeto configurado para esta instância. */
+export function resolveProjectDatabase(): string {
+  const rawProjectId = process.env.MOTOR_PROJECT_ID ?? "640"
+  if (!/^\d+$/.test(rawProjectId) || Number(rawProjectId) <= 0) {
+    throw new Error(`MOTOR_PROJECT_ID inválido: ${rawProjectId}`)
+  }
+  return `projeto_${rawProjectId}`
+}
+
+const projectDatabase = resolveProjectDatabase()
+
 export async function createDbConnection(): Promise<{ db: Db; connection: mysql.Connection }> {
   const connection = await mysql.createConnection({
     host: process.env.MYSQL_HOST ?? "localhost",
     port: Number(process.env.MYSQL_PORT ?? 3308),
     user: process.env.MYSQL_USER ?? "root",
     password: process.env.MYSQL_PASSWORD ?? "",
-    database: process.env.MYSQL_DATABASE ?? "projeto_640",
+    database: projectDatabase,
   })
 
   const db: Db = {
     async query(sql: string, params?: unknown[]): Promise<QueryResult> {
-      const [rows] = await connection.execute(sql, params as mysql.ExecuteValues | undefined)
+      // Identificadores SQL não aceitam placeholders. O código do projeto é
+      // validado acima e somente então usado para substituir referências
+      // legadas como `tarefas`.
+      const projectSql = sql.replace(/\bprojeto_\d+\b/g, projectDatabase)
+      const [rows] = await connection.execute(projectSql, params as mysql.ExecuteValues | undefined)
       if (Array.isArray(rows)) {
         return { rows: rows as Record<string, unknown>[], affectedRows: 0, insertId: 0 }
       } else {
@@ -53,10 +68,9 @@ export class MysqlTaskRepository implements TaskRepository {
       `SELECT t.id, t.external_id, t.titulo, t.descricao, t.ultima_mensagem_erro, t.status,
               t.max_rework, t.hard_timeout_ms, t.depends_on_task_id,
               t.created_at, t.updated_at,
-              pc.slug as project_slug, pc.repo_path, a.id as agent_id
-       FROM projeto_640.tarefas t
-       LEFT JOIN projeto_640.projetos_captados pc ON t.projeto_id = pc.id
-       LEFT JOIN projeto_640.agentes a ON pc.agente_id = a.id
+              pc.slug as project_slug, pc.repo_path, pc.slug as agent_id
+       FROM tarefas t
+       LEFT JOIN projetos_captados pc ON t.projeto_id = pc.id
        ${whereClause} LIMIT 1`,
       params
     )
@@ -87,12 +101,12 @@ export class MysqlTaskRepository implements TaskRepository {
       const whereParams = isNumericId ? [data.id, data.id] : [data.id]
 
       await this.db.query(
-        `UPDATE projeto_640.tarefas SET ${updates.join(", ")} ${whereClause}`,
+        `UPDATE tarefas SET ${updates.join(", ")} ${whereClause}`,
         [...values, ...whereParams]
       )
     } else {
       await this.db.query(
-        `INSERT INTO projeto_640.tarefas
+        `INSERT INTO tarefas
          (external_id, projeto_id, titulo, descricao, status, max_rework, hard_timeout_ms, created_at, updated_at)
          VALUES (?, 1, ?, ?, ?, ?, ?, NOW(), NOW())`,
         [data.id, data.title, data.description ?? "", data.status, data.maxRework ?? 3, data.hardTimeoutMs ?? 3600000]

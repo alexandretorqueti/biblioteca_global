@@ -186,14 +186,13 @@ export class TaskCoordinator {
 
   private async selectNextTask(): Promise<Task | null> {
     const { rows } = await this.db.query(
-      "SELECT t.*, pc.slug as project_slug, COALESCE(a.openclaw_agent_id, a.nome) as agent_id, " +
+      "SELECT t.*, pc.slug as project_slug, pc.slug as agent_id, " +
       "pmc.repo_path, pmc.branch_trabalho, pmc.build_command, pmc.unit_test_command, pmc.unit_test_exclude, " +
       "pmc.default_max_rework, pmc.default_hard_timeout_ms " +
-      "FROM projeto_640.tarefas t " +
-      "LEFT JOIN projeto_640.projetos_captados pc ON t.projeto_id = pc.id " +
-      "LEFT JOIN projeto_640.agentes a ON pc.agente_id = a.id " +
-      "LEFT JOIN projeto_640.projeto_motor_config pmc ON pmc.projeto_id = pc.id " +
-      "WHERE t.status = 'planned' AND NOT EXISTS (SELECT 1 FROM projeto_640.subtarefas s WHERE s.tarefa_id = t.id) ORDER BY t.created_at ASC LIMIT 25"
+      "FROM tarefas t " +
+      "LEFT JOIN projetos_captados pc ON t.projeto_id = pc.id " +
+      "LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id = pc.id " +
+      "WHERE t.status = 'planned' AND NOT EXISTS (SELECT 1 FROM subtarefas s WHERE s.tarefa_id = t.id) ORDER BY t.created_at ASC LIMIT 25"
     )
     return rows.map((row) => this.mapTask(row)).find((task) => this.canStartProject(task.projectSlug)) ?? null
   }
@@ -202,20 +201,19 @@ export class TaskCoordinator {
     const { rows } = await this.db.query(
       "SELECT s.*, t.external_id as task_external_id, t.titulo as task_titulo, t.descricao as task_descricao, " +
       "t.max_rework AS task_max_rework, t.hard_timeout_ms AS task_hard_timeout_ms, " +
-      "pc.slug as project_slug, COALESCE(a.openclaw_agent_id, a.nome) as agent_id, " +
+      "pc.slug as project_slug, pc.slug as agent_id, " +
       "pmc.repo_path, pmc.branch_trabalho, pmc.build_command, pmc.unit_test_command, pmc.unit_test_exclude, " +
       "pmc.default_max_rework, pmc.default_hard_timeout_ms " +
-      "FROM projeto_640.subtarefas s " +
-      "INNER JOIN projeto_640.tarefas t ON s.tarefa_id = t.id " +
-      "LEFT JOIN projeto_640.projetos_captados pc ON t.projeto_id = pc.id " +
-      "LEFT JOIN projeto_640.agentes a ON pc.agente_id = a.id " +
-      "LEFT JOIN projeto_640.projeto_motor_config pmc ON pmc.projeto_id = pc.id " +
+      "FROM subtarefas s " +
+      "INNER JOIN tarefas t ON s.tarefa_id = t.id " +
+      "LEFT JOIN projetos_captados pc ON t.projeto_id = pc.id " +
+      "LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id = pc.id " +
       // Uma análise pode ter criado as subtarefas e a tarefa ter sido
       // devolvida manualmente para planned. Nesse caso, o plano já existe e
       // ela deve seguir para execução, não ser analisada novamente.
       "WHERE s.status = 'pending' AND t.status IN ('ready', 'planned') " +
       "AND NOT EXISTS (" +
-      "SELECT 1 FROM projeto_640.subtarefas anterior " +
+      "SELECT 1 FROM subtarefas anterior " +
       "WHERE anterior.tarefa_id = s.tarefa_id AND anterior.seq < s.seq AND anterior.status != 'verified' " +
       "AND anterior.id != COALESCE(s.correction_for_subtask_id, -1)" +
       ") " +
@@ -260,7 +258,7 @@ export class TaskCoordinator {
       try {
         const evidence = blockerEvidence("blocked_environment", preflightResult.reason)
         await this.db.query(
-          "INSERT INTO projeto_640.bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at) " +
+          "INSERT INTO bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at) " +
           "VALUES (?, NULL, ?, ?, ?, NOW())",
           [task.id, evidence.kind, "motor-v2:" + evidence.fingerprint, evidence.excerpt],
         )
@@ -336,7 +334,7 @@ export class TaskCoordinator {
       if (!subtask.agentId) throw new Error("Projeto sem agente configurado")
       this.assertExecutionConfig(subtask)
       // Marca subtarefa como running
-      await this.db.query("UPDATE projeto_640.subtarefas SET status = 'running', iniciada_em = NOW() WHERE id = ?", [subtask.id])
+      await this.db.query("UPDATE subtarefas SET status = 'running', iniciada_em = NOW() WHERE id = ?", [subtask.id])
       const parentTask = await this.repository.getTask(subtask.taskExternalId)
       if (parentTask) {
         if (parentTask.status === "planned") {
@@ -364,7 +362,7 @@ export class TaskCoordinator {
       const activeWorker = this.activeWorkers.get(executionId)
       if (activeWorker) activeWorker.workspace = workspace
       await this.db.query(
-        "UPDATE projeto_640.subtarefas SET workspace_path = ?, workspace_branch = ?, workspace_base_commit = ?, workspace_status = 'active', workspace_created_at = NOW(), workspace_cleaned_at = NULL WHERE id = ?",
+        "UPDATE subtarefas SET workspace_path = ?, workspace_branch = ?, workspace_base_commit = ?, workspace_status = 'active', workspace_created_at = NOW(), workspace_cleaned_at = NULL WHERE id = ?",
         [workspace.path, workspace.branch, workspace.baseCommit, subtask.id],
       )
 
@@ -419,11 +417,11 @@ export class TaskCoordinator {
           const environmental = reason.startsWith("Ambiente bloqueado") || reason.includes("ENOENT")
           const evidence = blockerEvidence(environmental ? "blocked_environment" : "systemic_failure", reason)
           await this.db.query(
-            "INSERT INTO projeto_640.bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at) " +
-            "SELECT tarefa_id, ?, ?, ?, ?, NOW() FROM projeto_640.subtarefas WHERE id = ?",
+            "INSERT INTO bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at) " +
+            "SELECT tarefa_id, ?, ?, ?, ?, NOW() FROM subtarefas WHERE id = ?",
             [subtask.id, evidence.kind, "motor-v2:" + evidence.fingerprint, evidence.excerpt, subtask.id],
           )
-          await this.db.query("UPDATE projeto_640.subtarefas SET status = 'blocked', updated_at = NOW() WHERE id = ?", [subtask.id])
+          await this.db.query("UPDATE subtarefas SET status = 'blocked', updated_at = NOW() WHERE id = ?", [subtask.id])
           const parentTask = await this.repository.getTask(subtask.taskExternalId)
           if (parentTask) await this.saveTaskTransition(parentTask, "fail")
           this.logger.warn("Bloqueio persistido no inicio da execucao (subtarefa " + subtask.id + "): " + reason, {
@@ -490,7 +488,7 @@ export class TaskCoordinator {
             mergeCommit = integration.mergeCommit
           }
           await this.db.query(
-            "UPDATE projeto_640.subtarefas SET workspace_commit_sha = ?, workspace_status = ? WHERE id = ?",
+            "UPDATE subtarefas SET workspace_commit_sha = ?, workspace_status = ? WHERE id = ?",
             [result?.gitCommitSha ?? null, mergeCommit ? "integrated" : "approved", worker.subtaskId],
           )
           if (mergeCommit) {
@@ -504,7 +502,7 @@ export class TaskCoordinator {
         } catch (error) {
           const reason = error instanceof Error ? error.message : String(error)
           await this.db.query(
-            "UPDATE projeto_640.subtarefas SET workspace_status = 'integration_failed', resultado = ? WHERE id = ?",
+            "UPDATE subtarefas SET workspace_status = 'integration_failed', resultado = ? WHERE id = ?",
             [reason.substring(0, 500), worker.subtaskId],
           )
           // Falha de integração também deixa trilha em bloqueios — sem isso só
@@ -512,8 +510,8 @@ export class TaskCoordinator {
           try {
             const evidence = blockerEvidence("systemic_failure", "Integração falhou: " + reason)
             await this.db.query(
-              "INSERT INTO projeto_640.bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at) " +
-              "SELECT tarefa_id, ?, ?, ?, ?, NOW() FROM projeto_640.subtarefas WHERE id = ?",
+              "INSERT INTO bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at) " +
+              "SELECT tarefa_id, ?, ?, ?, ?, NOW() FROM subtarefas WHERE id = ?",
               [worker.subtaskId, evidence.kind, "motor-v2:" + evidence.fingerprint, evidence.excerpt, worker.subtaskId],
             )
           } catch (persistError) {
@@ -538,7 +536,7 @@ export class TaskCoordinator {
       // Verificar se todas subtarefas da tarefa estao completas
       if (worker.subtaskId) {
         const { rows } = await this.db.query(
-          "SELECT COUNT(*) as pending FROM projeto_640.subtarefas WHERE tarefa_id = (SELECT tarefa_id FROM projeto_640.subtarefas WHERE id = ?) AND status != 'verified'",
+          "SELECT COUNT(*) as pending FROM subtarefas WHERE tarefa_id = (SELECT tarefa_id FROM subtarefas WHERE id = ?) AND status != 'verified'",
           [worker.subtaskId]
         )
         const pending = (rows[0] as Record<string, unknown>)?.pending as number
@@ -559,7 +557,7 @@ export class TaskCoordinator {
               } else {
                 this.logger.warn("Deploy falhou, mantendo tarefa como completed", { taskId: worker.taskId, executionId, error: deployResult.error })
                 await this.db.query(
-                  "UPDATE projeto_640.tarefas SET ultima_mensagem_erro = ?, updated_at = NOW() WHERE external_id = ?",
+                  "UPDATE tarefas SET ultima_mensagem_erro = ?, updated_at = NOW() WHERE external_id = ?",
                   ["Deploy falhou: " + (deployResult.error || "erro desconhecido").substring(0, 500), worker.taskId]
                 )
                 this.publishActivity(worker, { type: "completed", level: "warn", message: "Deploy falhou: " + (deployResult.error || "erro desconhecido") })
@@ -604,7 +602,7 @@ export class TaskCoordinator {
       } else {
         if (worker.subtaskId) {
           await this.db.query(
-            "UPDATE projeto_640.subtarefas SET status = ?, resultado = ? WHERE id = ?",
+            "UPDATE subtarefas SET status = ?, resultado = ? WHERE id = ?",
             [transient ? "pending" : "blocked", failure.substring(0, 500), worker.subtaskId],
           )
         }
@@ -627,7 +625,7 @@ export class TaskCoordinator {
     // resume; sem isso ela ficaria órfã em running/verifying para sempre.
     if (worker.subtaskId) {
       await this.db.query(
-        "UPDATE projeto_640.subtarefas SET status = 'pending', updated_at = NOW() WHERE id = ? AND status IN ('running', 'verifying', 'delivered', 'rework')",
+        "UPDATE subtarefas SET status = 'pending', updated_at = NOW() WHERE id = ? AND status IN ('running', 'verifying', 'delivered', 'rework')",
         [worker.subtaskId],
       ).catch((error: unknown) => this.logger.error("Falha ao resetar subtarefa pausada: " + describeError(error), { taskId: worker.taskId, subtaskId: worker.subtaskId, executionId }))
     }
@@ -751,8 +749,8 @@ export class TaskCoordinator {
     const { rows } = await this.db.query(
       "SELECT s.id, s.seq, s.titulo, s.status, s.resultado, s.deliver_count, " +
       "s.workspace_status, s.workspace_branch, s.workspace_commit_sha, s.correction_for_subtask_id " +
-      "FROM projeto_640.subtarefas s " +
-      "INNER JOIN projeto_640.tarefas t ON t.id = s.tarefa_id " +
+      "FROM subtarefas s " +
+      "INNER JOIN tarefas t ON t.id = s.tarefa_id " +
       whereTask +
       "ORDER BY s.seq ASC, s.id ASC",
       taskParams,
@@ -778,8 +776,8 @@ export class TaskCoordinator {
     if (task.status === "blocked") {
       const { rows: blockRows } = await this.db.query(
         "SELECT b.block_reason, b.block_excerpt, b.blocked_at, b.subtarefa_id " +
-        "FROM projeto_640.bloqueios b " +
-        "INNER JOIN projeto_640.tarefas t ON t.id = b.tarefa_id " +
+        "FROM bloqueios b " +
+        "INNER JOIN tarefas t ON t.id = b.tarefa_id " +
         whereTask +
         "ORDER BY b.blocked_at DESC LIMIT 1",
         taskParams,
@@ -996,7 +994,7 @@ export class TaskCoordinator {
       if (worker.workspace && worker.repoPath && !preserveWorkspace) {
         await this.workspaceManager.cleanup({ repoPath: worker.repoPath, workspacePath: worker.workspace.path })
         await this.db.query(
-          "UPDATE projeto_640.subtarefas SET workspace_cleaned_at = NOW() WHERE id = ?",
+          "UPDATE subtarefas SET workspace_cleaned_at = NOW() WHERE id = ?",
           [worker.subtaskId],
         )
       }
@@ -1004,7 +1002,7 @@ export class TaskCoordinator {
       this.logger.error("Falha ao limpar workspace " + executionId + ": " + describeError(error), { executionId, subtaskId: worker.subtaskId })
       if (worker.subtaskId) {
         await this.db.query(
-          "UPDATE projeto_640.subtarefas SET workspace_status = 'cleanup_failed', resultado = ? WHERE id = ?",
+          "UPDATE subtarefas SET workspace_status = 'cleanup_failed', resultado = ? WHERE id = ?",
           [String(error).substring(0, 500), worker.subtaskId],
         ).catch((dbError: unknown) => this.logger.error("Falha ao registrar limpeza: " + describeError(dbError), { executionId, subtaskId: worker.subtaskId }))
       }
@@ -1153,8 +1151,8 @@ export class TaskCoordinator {
     const isNumeric = /^\d+$/.test(taskId)
     const { rows } = await this.db.query(
       isNumeric
-        ? "SELECT EXISTS(SELECT 1 FROM projeto_640.subtarefas s INNER JOIN projeto_640.tarefas t ON t.id = s.tarefa_id WHERE t.external_id = ? OR t.id = ?) AS has_plan"
-        : "SELECT EXISTS(SELECT 1 FROM projeto_640.subtarefas s INNER JOIN projeto_640.tarefas t ON t.id = s.tarefa_id WHERE t.external_id = ?) AS has_plan",
+        ? "SELECT EXISTS(SELECT 1 FROM subtarefas s INNER JOIN tarefas t ON t.id = s.tarefa_id WHERE t.external_id = ? OR t.id = ?) AS has_plan"
+        : "SELECT EXISTS(SELECT 1 FROM subtarefas s INNER JOIN tarefas t ON t.id = s.tarefa_id WHERE t.external_id = ?) AS has_plan",
       isNumeric ? [taskId, taskId] : [taskId],
     )
     return Number(rows[0]?.has_plan ?? 0) === 1
@@ -1186,7 +1184,7 @@ export class TaskCoordinator {
   private async promoteOriginalAfterTestOnlyCorrection(subtaskId: number, workspace: { path: string; branch: string; baseCommit: string }, commitSha?: string): Promise<void> {
     if (!commitSha) return
     const { rows } = await this.db.query(
-      "SELECT correction_for_subtask_id, correction_fingerprint FROM projeto_640.subtarefas WHERE id = ?",
+      "SELECT correction_for_subtask_id, correction_fingerprint FROM subtarefas WHERE id = ?",
       [subtaskId],
     )
     const originalId = Number(rows[0]?.correction_for_subtask_id ?? 0)
@@ -1196,7 +1194,7 @@ export class TaskCoordinator {
     // verified pularia o trabalho real.
     if (isBaselineCorrection(rows[0]?.correction_fingerprint ? String(rows[0].correction_fingerprint) : null)) {
       await this.db.query(
-        "UPDATE projeto_640.subtarefas SET status = 'pending', resultado = CONCAT(COALESCE(resultado, ''), '\\nBaseline verde via subtarefa ', ?), updated_at = NOW() WHERE id = ? AND status = 'rejected'",
+        "UPDATE subtarefas SET status = 'pending', resultado = CONCAT(COALESCE(resultado, ''), '\\nBaseline verde via subtarefa ', ?), updated_at = NOW() WHERE id = ? AND status = 'rejected'",
         [subtaskId, originalId],
       )
       return
@@ -1216,7 +1214,7 @@ export class TaskCoordinator {
       ? "\nGate corrigido pela subtarefa " + subtaskId + " (somente testes alterados); trabalho original mantido."
       : "\nEscopo entregue pela subtarefa corretiva " + subtaskId + " (correção herdou o escopo original)."
     await this.db.query(
-      "UPDATE projeto_640.subtarefas SET status = 'verified', resultado = CONCAT(COALESCE(resultado, ''), ?), finalizada_em = NOW(), updated_at = NOW() WHERE id = ? AND status = 'rejected'",
+      "UPDATE subtarefas SET status = 'verified', resultado = CONCAT(COALESCE(resultado, ''), ?), finalizada_em = NOW(), updated_at = NOW() WHERE id = ? AND status = 'rejected'",
       [note, originalId],
     )
   }
@@ -1227,7 +1225,7 @@ export class TaskCoordinator {
     }
     const tipo = phase === "analysis" ? "ANALYST" : phase === "development" ? "DEV" : "MONITOR"
     const { rows } = await this.db.query(
-      "SELECT provider, model, ordem FROM projeto_640.project_model_selection " +
+      "SELECT provider, model, ordem FROM project_model_selection " +
       "WHERE project_slug = ? AND tipo = ? AND enabled = 1 ORDER BY ordem ASC",
       [projectSlug, tipo],
     )

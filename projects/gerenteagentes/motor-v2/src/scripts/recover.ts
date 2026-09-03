@@ -41,19 +41,19 @@ function parseArgs(argv: string[]): { command: string; options: CliOptions } {
 
 async function printStatus(db: Db): Promise<void> {
   const blockedTasks = await db.query(
-    "SELECT t.id, t.external_id, t.titulo, t.status, t.updated_at FROM projeto_640.tarefas t WHERE t.status = 'blocked' ORDER BY t.id",
+    "SELECT t.id, t.external_id, t.titulo, t.status, t.updated_at FROM tarefas t WHERE t.status = 'blocked' ORDER BY t.id",
   )
   const blockedSubtasks = await db.query(
-    "SELECT s.id, s.seq, s.titulo, s.tarefa_id, s.status, s.workspace_status, s.updated_at FROM projeto_640.subtarefas s WHERE s.status = 'blocked' ORDER BY s.id",
+    "SELECT s.id, s.seq, s.titulo, s.tarefa_id, s.status, s.workspace_status, s.updated_at FROM subtarefas s WHERE s.status = 'blocked' ORDER BY s.id",
   )
   const integrationFailed = await db.query(
-    "SELECT s.id, s.seq, s.tarefa_id, s.workspace_branch, s.workspace_commit_sha, s.resultado FROM projeto_640.subtarefas s WHERE s.workspace_status = 'integration_failed' ORDER BY s.id",
+    "SELECT s.id, s.seq, s.tarefa_id, s.workspace_branch, s.workspace_commit_sha, s.resultado FROM subtarefas s WHERE s.workspace_status = 'integration_failed' ORDER BY s.id",
   )
   const bloqueios = await db.query(
-    "SELECT b.tarefa_id, b.subtarefa_id, b.block_reason, LEFT(b.block_excerpt, 120) AS excerpt, b.blocked_at FROM projeto_640.bloqueios b ORDER BY b.blocked_at DESC LIMIT 15",
+    "SELECT b.tarefa_id, b.subtarefa_id, b.block_reason, LEFT(b.block_excerpt, 120) AS excerpt, b.blocked_at FROM bloqueios b ORDER BY b.blocked_at DESC LIMIT 15",
   )
   const leases = await db.query(
-    "SELECT resource_key, execution_id, owner_id, expires_at FROM projeto_640.execution_resources ORDER BY expires_at",
+    "SELECT resource_key, execution_id, owner_id, expires_at FROM execution_resources ORDER BY expires_at",
   )
 
   console.log("== Tarefas bloqueadas ==")
@@ -92,8 +92,8 @@ async function findTaskId(db: Db, externalId: string): Promise<number | null> {
   const isNumeric = /^\d+$/.test(externalId)
   const { rows } = await db.query(
     isNumeric
-      ? "SELECT id FROM projeto_640.tarefas WHERE external_id = ? OR id = ? LIMIT 1"
-      : "SELECT id FROM projeto_640.tarefas WHERE external_id = ? LIMIT 1",
+      ? "SELECT id FROM tarefas WHERE external_id = ? OR id = ? LIMIT 1"
+      : "SELECT id FROM tarefas WHERE external_id = ? LIMIT 1",
     isNumeric ? [externalId, externalId] : [externalId],
   )
   return rows.length > 0 ? Number(rows[0]!.id) : null
@@ -104,10 +104,10 @@ async function unblockTask(db: Db, options: CliOptions): Promise<void> {
   const taskId = await findTaskId(db, options.tarefaId)
   if (taskId === null) throw new Error("tarefa não encontrada: " + options.tarefaId)
 
-  const task = await db.query("SELECT status FROM projeto_640.tarefas WHERE id = ?", [taskId])
+  const task = await db.query("SELECT status FROM tarefas WHERE id = ?", [taskId])
   const taskStatus = String(task.rows[0]?.status ?? "")
   const subtasks = await db.query(
-    "SELECT status, COUNT(*) AS total FROM projeto_640.subtarefas WHERE tarefa_id = ? GROUP BY status",
+    "SELECT status, COUNT(*) AS total FROM subtarefas WHERE tarefa_id = ? GROUP BY status",
     [taskId],
   )
   const hasPlan = subtasks.rows.length > 0
@@ -132,12 +132,12 @@ async function unblockTask(db: Db, options: CliOptions): Promise<void> {
 
   if (taskStatus === "blocked") {
     await db.query(
-      "UPDATE projeto_640.tarefas SET status = ?, updated_at = NOW() WHERE id = ? AND status = 'blocked'",
+      "UPDATE tarefas SET status = ?, updated_at = NOW() WHERE id = ? AND status = 'blocked'",
       [hasPlan ? "ready" : "planned", taskId],
     )
   }
   await db.query(
-    "UPDATE projeto_640.subtarefas SET status = 'pending', updated_at = NOW() WHERE tarefa_id = ? AND status = 'blocked'",
+    "UPDATE subtarefas SET status = 'pending', updated_at = NOW() WHERE tarefa_id = ? AND status = 'blocked'",
     [taskId],
   )
   console.log("Desbloqueio aplicado. O próximo pump do motor retoma o trabalho.")
@@ -158,10 +158,10 @@ async function loadIntegrationContext(db: Db, subtaskId: number): Promise<Integr
   const { rows } = await db.query(
     "SELECT s.id, s.tarefa_id, s.status AS subtask_status, s.workspace_status, s.workspace_branch, s.workspace_commit_sha, " +
     "pmc.repo_path, pmc.branch_trabalho " +
-    "FROM projeto_640.subtarefas s " +
-    "INNER JOIN projeto_640.tarefas t ON t.id = s.tarefa_id " +
-    "LEFT JOIN projeto_640.projetos_captados pc ON pc.id = t.projeto_id " +
-    "LEFT JOIN projeto_640.projeto_motor_config pmc ON pmc.projeto_id = pc.id " +
+    "FROM subtarefas s " +
+    "INNER JOIN tarefas t ON t.id = s.tarefa_id " +
+    "LEFT JOIN projetos_captados pc ON pc.id = t.projeto_id " +
+    "LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id = pc.id " +
     "WHERE s.id = ?",
     [subtaskId],
   )
@@ -211,11 +211,11 @@ async function integrateSubtask(db: Db, options: CliOptions): Promise<void> {
     expectedCommit: context.workspaceCommitSha,
   })
   await db.query(
-    "UPDATE projeto_640.subtarefas SET workspace_status = 'integrated', resultado = CONCAT(COALESCE(resultado, ''), ?) WHERE id = ?",
+    "UPDATE subtarefas SET workspace_status = 'integrated', resultado = CONCAT(COALESCE(resultado, ''), ?) WHERE id = ?",
     [`\nIntegrado via recover em ${new Date().toISOString()} (merge ${mergeCommit})`, context.subtaskId],
   )
   await db.query(
-    "UPDATE projeto_640.tarefas SET status = 'ready', updated_at = NOW() WHERE id = ? AND status = 'blocked'",
+    "UPDATE tarefas SET status = 'ready', updated_at = NOW() WHERE id = ? AND status = 'blocked'",
     [context.tarefaId],
   )
   console.log(`Integração concluída: merge ${mergeCommit}. Tarefa #${context.tarefaId} devolvida para ready (se estava bloqueada).`)
@@ -234,11 +234,11 @@ async function markIntegrated(db: Db, options: CliOptions): Promise<void> {
   if (options.dryRun) return
 
   await db.query(
-    "UPDATE projeto_640.subtarefas SET workspace_status = 'integrated', resultado = CONCAT(COALESCE(resultado, ''), ?) WHERE id = ?",
+    "UPDATE subtarefas SET workspace_status = 'integrated', resultado = CONCAT(COALESCE(resultado, ''), ?) WHERE id = ?",
     [`\nMarcado como integrado manualmente via recover em ${new Date().toISOString()}`, context.subtaskId],
   )
   await db.query(
-    "UPDATE projeto_640.tarefas SET status = 'ready', updated_at = NOW() WHERE id = ? AND status = 'blocked'",
+    "UPDATE tarefas SET status = 'ready', updated_at = NOW() WHERE id = ? AND status = 'blocked'",
     [context.tarefaId],
   )
   console.log("Marcado como integrado. Confira o merge no repositório antes de retomar a tarefa.")

@@ -80,6 +80,7 @@ services:
       MOTOR_URL_HOST: ${MOTOR_URL_HOST:-api.tarefas.localhost}
       # Motor-v2 executa as tarefas do projeto captado em background.
       MOTOR_VERSION: ${MOTOR_VERSION:-v2}
+      MOTOR_PROJECT_ID: ${MOTOR_PROJECT_ID:-640}
       MOTOR_MAX_WORKERS: ${MOTOR_MAX_WORKERS:-1}
       MOTOR_API_PORT: ${MOTOR_API_PORT:-3010}
       API_PORT: 3001

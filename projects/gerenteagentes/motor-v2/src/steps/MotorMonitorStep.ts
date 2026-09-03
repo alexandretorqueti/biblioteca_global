@@ -112,9 +112,8 @@ export class MotorMonitorStep {
     const { rows } = await this.config.db.query(
       `SELECT COALESCE(a.openclaw_agent_id, a.nome) AS agent_id,
               pmc.modelo
-       FROM projeto_640.projetos_captados pc
-       LEFT JOIN projeto_640.agentes a ON a.id = pc.agente_id
-       LEFT JOIN projeto_640.projeto_model_chain pmc
+       FROM projetos_captados pc
+       LEFT JOIN projeto_model_chain pmc
          ON pmc.projeto_id = pc.id AND pmc.fase = 'monitor' AND pmc.ativo = 1
        WHERE pc.slug = ?
        ORDER BY pmc.posicao ASC

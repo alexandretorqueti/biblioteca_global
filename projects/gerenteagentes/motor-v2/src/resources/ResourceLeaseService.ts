@@ -53,7 +53,7 @@ export class ResourceLeaseService {
         // Verifica se recurso está livre
         const { rows } = await tx.query(
           `SELECT resource_key, execution_id, fencing_token, expires_at
-           FROM projeto_640.execution_resources
+           FROM execution_resources
            WHERE resource_key = ?`,
           [resourceKey]
         )
@@ -61,7 +61,7 @@ export class ResourceLeaseService {
         if (rows.length === 0) {
           // Recurso livre, adquire
           await tx.query(
-            `INSERT INTO projeto_640.execution_resources
+            `INSERT INTO execution_resources
              (resource_key, execution_id, owner_id, fencing_token, heartbeat_at, acquired_at, expires_at)
              VALUES (?, ?, ?, 1, NOW(), NOW(), ?)`,
             [resourceKey, executionId, ownerId, expiresAt]
@@ -89,7 +89,7 @@ export class ResourceLeaseService {
           const newToken = Number(existing.fencing_token) + 1
 
           await tx.query(
-            `UPDATE projeto_640.execution_resources
+            `UPDATE execution_resources
              SET execution_id = ?, owner_id = ?, fencing_token = ?,
                  heartbeat_at = NOW(), acquired_at = NOW(), expires_at = ?
              WHERE resource_key = ?`,
@@ -111,7 +111,7 @@ export class ResourceLeaseService {
 
         // Recurso ocupado e válido, adiciona à fila
         const queueResult = await tx.query(
-          `INSERT INTO projeto_640.execution_resource_queue
+          `INSERT INTO execution_resource_queue
            (resource_key, execution_id, task_id, priority, requested_at)
            VALUES (?, ?, ?, 0, NOW())`,
           [resourceKey, executionId, ownerId]
@@ -120,7 +120,7 @@ export class ResourceLeaseService {
         const waitId = queueResult.insertId
         const { rows: queueRows } = await tx.query(
           `SELECT COUNT(*) as position
-           FROM projeto_640.execution_resource_queue
+           FROM execution_resource_queue
            WHERE resource_key = ? AND requested_at <= NOW()`,
           [resourceKey]
         )
@@ -151,7 +151,7 @@ export class ResourceLeaseService {
 
     try {
       const { affectedRows } = await this.db.query(
-        `UPDATE projeto_640.execution_resources
+        `UPDATE execution_resources
          SET heartbeat_at = NOW(), expires_at = ?
          WHERE resource_key = ? AND execution_id = ? AND fencing_token = ?`,
         [expiresAt, resourceKey, executionId, fencingToken]
@@ -162,7 +162,7 @@ export class ResourceLeaseService {
       }
 
       const { rows } = await this.db.query(
-        `SELECT * FROM projeto_640.execution_resources
+        `SELECT * FROM execution_resources
          WHERE resource_key = ? AND execution_id = ?`,
         [resourceKey, executionId]
       )
@@ -200,7 +200,7 @@ export class ResourceLeaseService {
     fencingToken: number
   ): Promise<{ kind: 'released' } | { kind: 'not_found' }> {
     const { affectedRows } = await this.db.query(
-      `DELETE FROM projeto_640.execution_resources
+      `DELETE FROM execution_resources
        WHERE resource_key = ? AND execution_id = ? AND fencing_token = ?`,
       [resourceKey, executionId, fencingToken]
     )
@@ -224,7 +224,7 @@ export class ResourceLeaseService {
    */
   async isAvailable(resourceKey: ResourceKey): Promise<boolean> {
     const { rows } = await this.db.query(
-      `SELECT expires_at FROM projeto_640.execution_resources
+      `SELECT expires_at FROM execution_resources
        WHERE resource_key = ? AND expires_at > NOW()`,
       [resourceKey]
     )
@@ -237,7 +237,7 @@ export class ResourceLeaseService {
    */
   async getOwner(resourceKey: ResourceKey): Promise<{ executionId: string; ownerId: string } | null> {
     const { rows } = await this.db.query(
-      `SELECT execution_id, owner_id FROM projeto_640.execution_resources
+      `SELECT execution_id, owner_id FROM execution_resources
        WHERE resource_key = ? AND expires_at > NOW()`,
       [resourceKey]
     )

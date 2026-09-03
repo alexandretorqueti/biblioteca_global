@@ -109,7 +109,7 @@ describe('TaskCoordinator', () => {
       await new Promise<void>((resolve) => {
         const check = setInterval(() => {
           const calls = vi.mocked(db.query).mock.calls
-          const lockInsert = calls.find(c => typeof c[0] === 'string' && String(c[0]).includes('INSERT INTO projeto_640.execution_resources'))
+          const lockInsert = calls.find(c => typeof c[0] === 'string' && String(c[0]).includes('INSERT INTO execution_resources'))
           if (lockInsert) {
             clearInterval(check)
             resolve()
@@ -120,7 +120,7 @@ describe('TaskCoordinator', () => {
 
       // Verifica que o INSERT do lock foi feito
       const calls = vi.mocked(db.query).mock.calls
-      const lockInsertCall = calls.find(c => typeof c[0] === 'string' && String(c[0]).includes('INSERT INTO projeto_640.execution_resources'))
+      const lockInsertCall = calls.find(c => typeof c[0] === 'string' && String(c[0]).includes('INSERT INTO execution_resources'))
       expect(lockInsertCall).toBeDefined()
 
       // Limpa: não esperamos o pump completar
@@ -326,7 +326,7 @@ describe('TaskCoordinator', () => {
     it('resolve o identificador do agente pela chave existente na Biblioteca', async () => {
       await coordinator.pump()
       const firstQuery = vi.mocked(db.query).mock.calls[0]?.[0]
-      expect(firstQuery).toContain('COALESCE(a.openclaw_agent_id, a.nome) as agent_id')
+      expect(firstQuery).toContain('pc.slug as agent_id')
     })
 
     it('usa configuração persistida e recusa execução sem os campos críticos', () => {
@@ -398,8 +398,8 @@ describe('TaskCoordinator', () => {
 
       const analysisQuery = vi.mocked(db.query).mock.calls
         .map(([query]) => String(query))
-        .find((query) => query.includes("FROM projeto_640.tarefas t"))
-      expect(analysisQuery).toContain('NOT EXISTS (SELECT 1 FROM projeto_640.subtarefas')
+        .find((query) => query.includes("FROM tarefas t"))
+      expect(analysisQuery).toContain('NOT EXISTS (SELECT 1 FROM subtarefas')
     })
   })
 
@@ -409,7 +409,7 @@ describe('TaskCoordinator', () => {
 
       const selectionQuery = vi.mocked(db.query).mock.calls
         .map(([query]) => String(query))
-        .find((query) => query.includes('FROM projeto_640.subtarefas s'))
+        .find((query) => query.includes('FROM subtarefas s'))
 
       expect(selectionQuery).toContain('anterior.tarefa_id = s.tarefa_id')
       expect(selectionQuery).toContain('anterior.seq < s.seq')
