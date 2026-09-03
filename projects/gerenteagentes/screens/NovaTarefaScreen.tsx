@@ -39,7 +39,7 @@ export default function NovaTarefaScreen(): ReactNode {
     const token = localStorage.getItem("access_token")
     const headers: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {}
     try {
-      const projsRes = await fetch("/api/projetos_captados", { headers })
+      const projsRes = await fetch("/api/gerenteagentes/projetos_captados", { headers })
       if (projsRes.ok) {
         const data = await projsRes.json()
         setProjetos((data.items ?? data).filter((p: Projeto & { ativo?: boolean }) => p.ativo !== false))
@@ -76,7 +76,7 @@ export default function NovaTarefaScreen(): ReactNode {
         headers.Authorization = `Bearer ${token}`
       }
 
-      const response = await fetch("/api/tarefas", {
+      const response = await fetch("/api/gerenteagentes/tarefas", {
         method: "POST",
         headers,
         body: JSON.stringify({

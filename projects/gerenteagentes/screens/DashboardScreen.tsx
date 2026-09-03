@@ -123,11 +123,11 @@ export default function DashboardScreen(): ReactNode {
     setErro(null)
     try {
       const [projsResult, tarefasResult] = await Promise.all([
-        bundle.http.request<PaginatedResult<Projeto>>("GET", "/projetos_captados", {
+        bundle.http.request<PaginatedResult<Projeto>>("GET", "/gerenteagentes/projetos_captados", {
           query: { pageSize: 100 },
           auth: "access",
         }),
-        bundle.http.request<PaginatedResult<Tarefa>>("GET", "/tarefas", {
+        bundle.http.request<PaginatedResult<Tarefa>>("GET", "/gerenteagentes/tarefas", {
           query: { pageSize: 100 },
           auth: "access",
         }),

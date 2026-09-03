@@ -247,7 +247,7 @@ export default function TaskMonitorScreen(): ReactNode {
     try {
       const res = await bundle.http.request<{ items: ProjetoCaptado[] }>(
         "GET",
-        "/projetos_captados",
+        "/gerenteagentes/projetos_captados",
         { query: { pageSize: 100 }, auth: "access" },
       )
       setProjetos(res.items ?? [])
@@ -262,7 +262,7 @@ export default function TaskMonitorScreen(): ReactNode {
       const query: Record<string, string | number> = { pageSize: 100 }
       if (projetoFiltro !== "") query.projetoId = projetoFiltro
       if (statusFiltro !== "") query.status = statusFiltro
-      const res = await bundle.http.request<{ items: Tarefa[] }>("GET", "/tarefas", {
+      const res = await bundle.http.request<{ items: Tarefa[] }>("GET", "/gerenteagentes/tarefas", {
         query,
         auth: "access",
       })
@@ -453,7 +453,7 @@ export default function TaskMonitorScreen(): ReactNode {
               ? Number(values.dependsOnTaskId)
               : null,
         }
-        await bundle.http.request("PUT", `/tarefas/${tarefaId}`, {
+        await bundle.http.request("PUT", `/gerenteagentes/tarefas/${tarefaId}`, {
           body,
           auth: "access",
         })
