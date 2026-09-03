@@ -500,6 +500,14 @@ export class TaskCoordinator {
     } else {
       this.logger.info("Execucao completada: subtarefa " + worker.subtaskId, { taskId: worker.taskId, subtaskId: worker.subtaskId, executionId, phase: "execute" })
       if (worker.subtaskId && worker.workspace) {
+        // Persiste a evidência antes de integrar. Se o merge falhar, o
+        // recuperador ainda consegue validar e repetir a integração.
+        if (result?.gitCommitSha) {
+          await this.db.query(
+            "UPDATE subtarefas SET workspace_commit_sha = ? WHERE id = ?",
+            [result.gitCommitSha, worker.subtaskId],
+          )
+        }
         try {
           let mergeCommit: string | undefined
           if (result?.gitCommitSha) {
