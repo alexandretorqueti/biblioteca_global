@@ -53,7 +53,7 @@ export class Motor {
       maxWorkers,
       maxWorkersPerProject: config.maxWorkersPerProject ?? 1,
     }, this.workerLauncher, undefined, this._waitManager)
-    this.api = new MotorAPI({ port: apiPort, coordinator: this.coordinator })
+    this.api = new MotorAPI({ port: apiPort, coordinator: this.coordinator, db: config.db })
 
     this.setupEventHandlers()
     if (config.activityBroadcaster) {
