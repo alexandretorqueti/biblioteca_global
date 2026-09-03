@@ -124,7 +124,7 @@ describe("crud genérico — funcional (API + MySQL)", () => {
   it("CRUD completo no database do projeto (create/read/update/delete)", async () => {
     // CREATE
     const criar = await request(app.getHttpServer())
-      .post("/api/componentes")
+      .post("/api/documentacao/componentes")
       .set("Authorization", `Bearer ${tokenDocumentacao}`)
       .send({
         nome: "Grid",
@@ -139,7 +139,7 @@ describe("crud genérico — funcional (API + MySQL)", () => {
 
     // READ (lista paginada)
     const listar = await request(app.getHttpServer())
-      .get("/api/componentes")
+      .get("/api/documentacao/componentes")
       .set("Authorization", `Bearer ${tokenDocumentacao}`)
     expect(listar.status).toBe(200)
     expect(listar.body.total).toBeGreaterThanOrEqual(1)
@@ -149,14 +149,14 @@ describe("crud genérico — funcional (API + MySQL)", () => {
 
     // READ (por id)
     const detalhe = await request(app.getHttpServer())
-      .get(`/api/componentes/${id}`)
+      .get(`/api/documentacao/componentes/${id}`)
       .set("Authorization", `Bearer ${tokenDocumentacao}`)
     expect(detalhe.status).toBe(200)
     expect(detalhe.body.nome).toBe("Grid")
 
     // UPDATE parcial
     const atualizar = await request(app.getHttpServer())
-      .put(`/api/componentes/${id}`)
+      .put(`/api/documentacao/componentes/${id}`)
       .set("Authorization", `Bearer ${tokenDocumentacao}`)
       .send({ nome: "JsonGrid", ordem: 2 })
     expect(atualizar.status).toBe(200)
@@ -165,19 +165,19 @@ describe("crud genérico — funcional (API + MySQL)", () => {
 
     // Filtro por coluna
     const filtrado = await request(app.getHttpServer())
-      .get("/api/componentes?categoria=layout")
+      .get("/api/documentacao/componentes?categoria=layout")
       .set("Authorization", `Bearer ${tokenDocumentacao}`)
     expect(filtrado.status).toBe(200)
     expect(filtrado.body.total).toBeGreaterThanOrEqual(1)
 
     // DELETE
     const remover = await request(app.getHttpServer())
-      .delete(`/api/componentes/${id}`)
+      .delete(`/api/documentacao/componentes/${id}`)
       .set("Authorization", `Bearer ${tokenDocumentacao}`)
     expect(remover.status).toBe(200)
 
     const depois = await request(app.getHttpServer())
-      .get(`/api/componentes/${id}`)
+      .get(`/api/documentacao/componentes/${id}`)
       .set("Authorization", `Bearer ${tokenDocumentacao}`)
     expect(depois.status).toBe(404)
   })
@@ -185,7 +185,7 @@ describe("crud genérico — funcional (API + MySQL)", () => {
   it("busca textual (search) → 200 com LIKE em colunas de texto", async () => {
     // Cria um registro com nome/distintivo para a busca.
     const criar = await request(app.getHttpServer())
-      .post("/api/componentes")
+      .post("/api/documentacao/componentes")
       .set("Authorization", `Bearer ${tokenDocumentacao}`)
       .send({
         nome: "SearchAlvoUnico",
@@ -197,7 +197,7 @@ describe("crud genérico — funcional (API + MySQL)", () => {
 
     // GET ?search=termo → 200 e o registro aparece (LIKE em nome/descricao)
     const busca = await request(app.getHttpServer())
-      .get("/api/componentes?search=SearchAlvo")
+      .get("/api/documentacao/componentes?search=SearchAlvo")
       .set("Authorization", `Bearer ${tokenDocumentacao}`)
     expect(busca.status).toBe(200)
     const idsBusca = (busca.body.items as Array<{ id: number }>).map((i) => i.id)
@@ -205,7 +205,7 @@ describe("crud genérico — funcional (API + MySQL)", () => {
 
     // Busca case-insensitive: termo em maiúsculas encontra o registro
     const buscaMaius = await request(app.getHttpServer())
-      .get("/api/componentes?search=searchalvo")
+      .get("/api/documentacao/componentes?search=searchalvo")
       .set("Authorization", `Bearer ${tokenDocumentacao}`)
     expect(buscaMaius.status).toBe(200)
     const idsMaius = (buscaMaius.body.items as Array<{ id: number }>).map((i) => i.id)
@@ -213,7 +213,7 @@ describe("crud genérico — funcional (API + MySQL)", () => {
 
     // Busca por termo na descricao (outra coluna de texto)
     const buscaDesc = await request(app.getHttpServer())
-      .get("/api/componentes?search=busca")
+      .get("/api/documentacao/componentes?search=busca")
       .set("Authorization", `Bearer ${tokenDocumentacao}`)
     expect(buscaDesc.status).toBe(200)
     const idsDesc = (buscaDesc.body.items as Array<{ id: number }>).map((i) => i.id)
@@ -221,7 +221,7 @@ describe("crud genérico — funcional (API + MySQL)", () => {
 
     // Busca por termo inexistente → 200 com zero itens
     const buscaVazia = await request(app.getHttpServer())
-      .get("/api/componentes?search=nao_existe_xyz_123")
+      .get("/api/documentacao/componentes?search=nao_existe_xyz_123")
       .set("Authorization", `Bearer ${tokenDocumentacao}`)
     expect(buscaVazia.status).toBe(200)
     expect(buscaVazia.body.total).toBe(0)
@@ -229,7 +229,7 @@ describe("crud genérico — funcional (API + MySQL)", () => {
 
     // search + filtro por coluna (ativo=true) → ambos aplicados
     const buscaFiltrada = await request(app.getHttpServer())
-      .get("/api/componentes?search=SearchAlvo&ativo=true")
+      .get("/api/documentacao/componentes?search=SearchAlvo&ativo=true")
       .set("Authorization", `Bearer ${tokenDocumentacao}`)
     expect(buscaFiltrada.status).toBe(200)
     const idsFiltrados = (buscaFiltrada.body.items as Array<{ id: number }>).map((i) => i.id)
@@ -237,31 +237,31 @@ describe("crud genérico — funcional (API + MySQL)", () => {
 
     // Limpa o registro criado.
     const remover = await request(app.getHttpServer())
-      .delete(`/api/componentes/${id}`)
+      .delete(`/api/documentacao/componentes/${id}`)
       .set("Authorization", `Bearer ${tokenDocumentacao}`)
     expect(remover.status).toBe(200)
   })
 
   it("registro com campo inválido → 400; duplicado → 409", async () => {
     const invalido = await request(app.getHttpServer())
-      .post("/api/componentes")
+      .post("/api/documentacao/componentes")
       .set("Authorization", `Bearer ${tokenDocumentacao}`)
       .send({ nome: "Sem Categoria" }) // categoria obrigatória ausente
     expect(invalido.status).toBe(400)
     expect(invalido.body.code).toBe("VALIDATION_ERROR")
 
     const campoExtra = await request(app.getHttpServer())
-      .post("/api/componentes")
+      .post("/api/documentacao/componentes")
       .set("Authorization", `Bearer ${tokenDocumentacao}`)
       .send({ nome: "Extra", categoria: "x", naoExiste: true })
     expect(campoExtra.status).toBe(400)
 
     await request(app.getHttpServer())
-      .post("/api/componentes")
+      .post("/api/documentacao/componentes")
       .set("Authorization", `Bearer ${tokenDocumentacao}`)
       .send({ nome: "Duplicado", categoria: "teste" })
     const duplicado = await request(app.getHttpServer())
-      .post("/api/componentes")
+      .post("/api/documentacao/componentes")
       .set("Authorization", `Bearer ${tokenDocumentacao}`)
       .send({ nome: "Duplicado", categoria: "teste" })
     expect(duplicado.status).toBe(409)
@@ -269,7 +269,7 @@ describe("crud genérico — funcional (API + MySQL)", () => {
 
   it("resource inexistente → 404", async () => {
     const resposta = await request(app.getHttpServer())
-      .get("/api/tabela_que_nao_existe")
+      .get("/api/documentacao/tabela_que_nao_existe")
       .set("Authorization", `Bearer ${tokenDocumentacao}`)
     expect(resposta.status).toBe(404)
   })
@@ -277,7 +277,7 @@ describe("crud genérico — funcional (API + MySQL)", () => {
   it("ISOLAMENTO: token do biblioteca-global não acessa dados do documentacao", async () => {
     // Cria um registro com o token do documentacao.
     const criar = await request(app.getHttpServer())
-      .post("/api/componentes")
+      .post("/api/documentacao/componentes")
       .set("Authorization", `Bearer ${tokenDocumentacao}`)
       .send({ nome: "Isolado", categoria: "teste" })
     expect(criar.status).toBe(201)
@@ -286,26 +286,26 @@ describe("crud genérico — funcional (API + MySQL)", () => {
     // Lista com o token do biblioteca-global → resource fora da whitelist
     // daquele projeto → 404 (nem chega ao database).
     const listar = await request(app.getHttpServer())
-      .get("/api/componentes")
+      .get("/api/documentacao/componentes")
       .set("Authorization", `Bearer ${tokenBibliotecaGlobal}`)
     expect(listar.status).toBe(404)
 
     // Tentativa direta pelo id conhecido → 404.
     const direto = await request(app.getHttpServer())
-      .get(`/api/componentes/${id}`)
+      .get(`/api/documentacao/componentes/${id}`)
       .set("Authorization", `Bearer ${tokenBibliotecaGlobal}`)
     expect(direto.status).toBe(404)
 
     // Escrita também bloqueada.
     const escrita = await request(app.getHttpServer())
-      .put(`/api/componentes/${id}`)
+      .put(`/api/documentacao/componentes/${id}`)
       .set("Authorization", `Bearer ${tokenBibliotecaGlobal}`)
       .send({ nome: "Invadido" })
     expect(escrita.status).toBe(404)
 
     // Limpa o registro criado.
     const remover = await request(app.getHttpServer())
-      .delete(`/api/componentes/${id}`)
+      .delete(`/api/documentacao/componentes/${id}`)
       .set("Authorization", `Bearer ${tokenDocumentacao}`)
     expect(remover.status).toBe(200)
   })
@@ -316,7 +316,7 @@ describe("crud genérico — funcional (API + MySQL)", () => {
     }
     // GET lista os agentes diretamente do Console OpenClaw.
     const listar = await request(app.getHttpServer())
-      .get("/api/__openclaw_agentes__?pageSize=100")
+      .get("/api/gerenteagentes/__openclaw_agentes__?pageSize=100")
       .set("Authorization", `Bearer ${tokenGerenteagentes}`)
     expect(listar.status).toBe(200)
     expect(Array.isArray(listar.body.items)).toBe(true)
@@ -329,7 +329,7 @@ describe("crud genérico — funcional (API + MySQL)", () => {
 
     // Id estável: a 2ª chamada devolve o mesmo id para o mesmo agente.
     const listar2 = await request(app.getHttpServer())
-      .get("/api/__openclaw_agentes__?pageSize=100")
+      .get("/api/gerenteagentes/__openclaw_agentes__?pageSize=100")
       .set("Authorization", `Bearer ${tokenGerenteagentes}`)
     expect(listar2.status).toBe(200)
     const segundo: Record<string, unknown> = listar2.body.items[0]
@@ -337,7 +337,7 @@ describe("crud genérico — funcional (API + MySQL)", () => {
 
     // Busca textual no virtual resource (nome do agente).
     const busca = await request(app.getHttpServer())
-      .get(`/api/__openclaw_agentes__?search=${encodeURIComponent(String(primeiro.name))}`)
+      .get(`/api/gerenteagentes/__openclaw_agentes__?search=${encodeURIComponent(String(primeiro.name))}`)
       .set("Authorization", `Bearer ${tokenGerenteagentes}`)
     expect(busca.status).toBe(200)
     expect(busca.body.items.length).toBeGreaterThan(0)
@@ -345,7 +345,7 @@ describe("crud genérico — funcional (API + MySQL)", () => {
 
     // Detalhar pelo id sintético.
     const detalhar = await request(app.getHttpServer())
-      .get(`/api/__openclaw_agentes__/${primeiro.id}`)
+      .get(`/api/gerenteagentes/__openclaw_agentes__/${primeiro.id}`)
       .set("Authorization", `Bearer ${tokenGerenteagentes}`)
     expect(detalhar.status).toBe(200)
     expect(detalhar.body.id).toBe(primeiro.id)
@@ -357,13 +357,13 @@ describe("crud genérico — funcional (API + MySQL)", () => {
       .send({ id: String(primeiro.id), name: "X" })
     expect(criar.status).toBe(404)
     const remover = await request(app.getHttpServer())
-      .delete(`/api/__openclaw_agentes__/${primeiro.id}`)
+      .delete(`/api/gerenteagentes/__openclaw_agentes__/${primeiro.id}`)
       .set("Authorization", `Bearer ${tokenGerenteagentes}`)
     expect(remover.status).toBe(404)
 
     // Agentes são somente leitura: não há vínculo local para atualizar.
     const atualizar = await request(app.getHttpServer())
-      .put(`/api/__openclaw_agentes__/${primeiro.id}`)
+      .put(`/api/gerenteagentes/__openclaw_agentes__/${primeiro.id}`)
       .set("Authorization", `Bearer ${tokenGerenteagentes}`)
       .send({ name: "X" })
     expect(atualizar.status).toBe(404)

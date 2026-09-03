@@ -19,6 +19,9 @@ class FakeSchemaRegistry implements SchemaRegistry {
   tabelasDoProjeto(): undefined {
     return undefined
   }
+  projetosCarregados(): string[] {
+    return []
+  }
 }
 
 class FakeProjetosRepository implements ProjetosRepository {

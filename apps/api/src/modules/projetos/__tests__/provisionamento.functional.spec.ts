@@ -76,19 +76,27 @@ describe("provisionamento dos projetos iniciais (Etapa 6)", () => {
     await seed()
     // alexandre é o único usuário criado pelo seed; demais podem ser resíduo de outros testes.
     const [linhasAlex] = await conexaoApp.query(
-      "SELECT COUNT(*) AS n FROM usuarios WHERE username = ?",
+      "SELECT id, COUNT(*) AS n FROM usuarios WHERE username = ?",
       ["alexandre"],
     )
-    const alexContagem = (linhasAlex as Array<{ n: number }>).at(0)?.n ?? -1
+    const alexLinha = (linhasAlex as Array<{ id: number; n: number }>).at(0)
+    const alexContagem = alexLinha?.n ?? -1
+    const alexId = alexLinha?.id ?? -1
     expect(alexContagem).toBe(1)
-    // Projetos e vínculos são exclusivos do seed.
+    // Projetos são exclusivos do seed (slug único).
     const contagem = async (tabela: string): Promise<number> => {
       const [linhas] = await conexaoApp.query("SELECT COUNT(*) AS n FROM " + tabela)
       const primeira = (linhas as Array<{ n: number }>).at(0)
       return Number(primeira?.n ?? -1)
     }
-    expect(await contagem("projetos")).toBe(3)
-    expect(await contagem("projetos_usuarios")).toBe(3)
+    // Vínculos: contar apenas os do alexandre (outros testes podem criar vínculos temporários).
+    const [linhasVinculos] = await conexaoApp.query(
+      "SELECT COUNT(*) AS n FROM projetos_usuarios WHERE usuario_id = ?",
+      [alexId],
+    )
+    const vinculosContagem = (linhasVinculos as Array<{ n: number }>).at(0)?.n ?? -1
+    expect(await contagem("projetos")).toBe(5)
+    expect(vinculosContagem).toBe(5)
   }, 120_000)
 
   it("SHOW DATABASES lista core e projeto_<id> dos projetos do seed", async () => {
