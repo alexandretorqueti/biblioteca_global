@@ -8,7 +8,7 @@
  * - Activity feed com os eventos do motor
  * - Ações: iniciar / pausar / retomar
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
+import React, { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import {
   Alert,
   Box,
@@ -33,7 +33,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material"
-import { PlayArrowRounded, PauseRounded, ReplayRounded, EditRounded, CloseRounded } from "@mui/icons-material"
+import { PlayArrowRounded, PauseRounded, ReplayRounded, EditRounded, CloseRounded, ExpandMoreRounded, ExpandLessRounded } from "@mui/icons-material"
 import { DynamicForm } from "@biblioteca-global/ui"
 import { RealtimeClient, type RealtimeServerMessage } from "@biblioteca-global/api-client"
 import type { DynamicField, DynamicFormValues } from "@biblioteca-global/ui"
@@ -68,6 +68,15 @@ interface ProjetoCaptado {
 
 /** Status conhecidos — fonte única em ../motor-v2/src/shared/task-statuses */
 
+interface DeliveryHistoryEntry {
+  id: number
+  deliverNumber: number
+  model: string | null
+  eventType: "delivery_started" | "gate_rejected" | "return_for_rework" | "blocked" | "completed"
+  reason: string | null
+  createdAt: string
+}
+
 interface SubTaskMotor {
   seq: number
   title: string
@@ -78,6 +87,7 @@ interface SubTaskMotor {
   acceptanceCriteria?: unknown
   workspaceStatus?: string | null
   correctionForSubtaskId?: number | null
+  deliveryHistory?: DeliveryHistoryEntry[]
 }
 
 /** Subtarefa do banco de dados (para edição — o motor só tem seq/title/status). */
@@ -229,6 +239,7 @@ export default function TaskMonitorScreen(): ReactNode {
   const [realtimeStatus, setRealtimeStatus] = useState<"connecting" | "open" | "closed">("closed")
   const [terminalEvents, setTerminalEvents] = useState<RealtimeServerMessage[]>([])
   const [editingSub, setEditingSub] = useState<SubTarefaDb | null>(null)
+  const [expandedSubtasks, setExpandedSubtasks] = useState<Set<number>>(new Set())
   const mounted = useRef(true)
 
   const carregarProjetos = useCallback(async () => {
@@ -593,6 +604,63 @@ export default function TaskMonitorScreen(): ReactNode {
     [bundle, editingSub, tarefaId, carregarDetail, carregarSubtarefasDb],
   )
 
+  /** Toggle da expansão do histórico de entregas de uma subtarefa. */
+  const toggleSubtaskHistory = useCallback((seq: number) => {
+    setExpandedSubtasks((prev) => {
+      const next = new Set(prev)
+      if (next.has(seq)) next.delete(seq)
+      else next.add(seq)
+      return next
+    })
+  }, [])
+
+  /** Retorna o motivo do último retorno/erro da subtarefa (para exibição direta na linha). */
+  const ultimoMotivoRetorno = useCallback((sub: SubTaskMotor): string | null => {
+    const history = sub.deliveryHistory ?? []
+    // Busca o último evento que indica retorno/rejeição (gate_rejected, return_for_rework, blocked)
+    for (let i = history.length - 1; i >= 0; i--) {
+      const entry = history[i]
+      if (entry.eventType === "gate_rejected" || entry.eventType === "return_for_rework" || entry.eventType === "blocked") {
+        return entry.reason ?? `Retorno (${entry.eventType}) na entrega #${entry.deliverNumber}`
+      }
+    }
+    return null
+  }, [])
+
+  /** Label legível para o tipo de evento do histórico. */
+  const labelEventType = useCallback((eventType: string): string => {
+    const mapa: Record<string, string> = {
+      delivery_started: "Entrega iniciada",
+      gate_rejected: "Gate rejeitou",
+      return_for_rework: "Retorno para rework",
+      blocked: "Bloqueada",
+      completed: "Concluída",
+    }
+    return mapa[eventType] ?? eventType
+  }, [])
+
+  /** Cor do chip por tipo de evento. */
+  const corEventType = useCallback((eventType: string): "default" | "primary" | "secondary" | "error" | "info" | "success" | "warning" => {
+    switch (eventType) {
+      case "completed": return "success"
+      case "gate_rejected": return "error"
+      case "return_for_rework": return "warning"
+      case "blocked": return "error"
+      case "delivery_started": return "info"
+      default: return "default"
+    }
+  }, [])
+
+  /** Formata data/hora para exibição compacta. */
+  const formatarDataHora = useCallback((iso: string): string => {
+    try {
+      const d = new Date(iso)
+      return d.toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })
+    } catch {
+      return iso
+    }
+  }, [])
+
   /** ST-2: ao clicar em editar numa linha do motor, resolve a subtarefa do banco pelo seq. */
   const abrirEdicaoSubtarefa = useCallback(
     (motorSub: SubTaskMotor) => {
@@ -856,9 +924,12 @@ export default function TaskMonitorScreen(): ReactNode {
                     const ativa = stats.active && s.seq === stats.active.seq
                     const criterioCount = contarCriterios(s.acceptanceCriteria)
                     const correctedSeq = s.correctionForSubtaskId != null ? subtaskIdToSeq[s.correctionForSubtaskId] : undefined
+                    const history = s.deliveryHistory ?? []
+                    const isExpanded = expandedSubtasks.has(s.seq)
+                    const motivoRetorno = ultimoMotivoRetorno(s)
                     return (
+                      <React.Fragment key={s.seq}>
                       <TableRow
-                        key={s.seq}
                         sx={ativa ? { bgcolor: "action.hover", boxShadow: "inset 3px 0 0 currentColor" } : undefined}
                         data-testid={`subtask-row-${s.seq}`}
                       >
@@ -881,6 +952,16 @@ export default function TaskMonitorScreen(): ReactNode {
                               🚫 {s.blockInfo.reason}
                               {s.blockInfo.command ? ` · ${s.blockInfo.command}` : ""}
                               {s.blockInfo.exitCode != null ? ` · exit ${s.blockInfo.exitCode}` : ""}
+                            </Typography>
+                          )}
+                          {motivoRetorno && (
+                            <Typography
+                              variant="caption"
+                              display="block"
+                              sx={{ color: "warning.light", fontStyle: "italic", mt: 0.25 }}
+                              data-testid={`subtask-return-reason-${s.seq}`}
+                            >
+                              ↩ {motivoRetorno}
                             </Typography>
                           )}
                         </TableCell>
@@ -927,16 +1008,87 @@ export default function TaskMonitorScreen(): ReactNode {
                         </TableCell>
                         <TableCell align="right">{s.deliverCount ?? 0}</TableCell>
                         <TableCell align="center">
-                          <IconButton
-                            size="small"
-                            aria-label={`Editar subtarefa ${s.seq}`}
-                            onClick={() => abrirEdicaoSubtarefa(s)}
-                            data-testid={`btn-edit-subtask-${s.seq}`}
-                          >
-                            <EditRounded fontSize="small" />
-                          </IconButton>
+                          <Stack direction="row" spacing={0.5} alignItems="center" justifyContent="center">
+                            <IconButton
+                              size="small"
+                              aria-label={`Editar subtarefa ${s.seq}`}
+                              onClick={() => abrirEdicaoSubtarefa(s)}
+                              data-testid={`btn-edit-subtask-${s.seq}`}
+                            >
+                              <EditRounded fontSize="small" />
+                            </IconButton>
+                            {history.length > 0 && (
+                              <Tooltip title={isExpanded ? "Recolher histórico" : "Ver histórico de entregas"}>
+                                <IconButton
+                                  size="small"
+                                  onClick={() => toggleSubtaskHistory(s.seq)}
+                                  data-testid={`btn-toggle-history-${s.seq}`}
+                                >
+                                  {isExpanded
+                                    ? <ExpandLessRounded fontSize="small" />
+                                    : <ExpandMoreRounded fontSize="small" />}
+                                </IconButton>
+                              </Tooltip>
+                            )}
+                          </Stack>
                         </TableCell>
                       </TableRow>
+                      {isExpanded && history.length > 0 && (
+                        <TableRow>
+                          <TableCell colSpan={8} sx={{ py: 1, px: 2, backgroundColor: "action.hover" }}>
+                            <Box sx={{ pl: 4 }}>
+                              <Typography variant="caption" sx={{ fontWeight: 600, mb: 0.5, display: "block" }}>
+                                Histórico de entregas ({history.length} evento{history.length !== 1 ? "s" : ""})
+                              </Typography>
+                              <Table size="small" data-testid={`delivery-history-${s.seq}`}>
+                                <TableHead>
+                                  <TableRow>
+                                    <TableCell sx={{ fontWeight: 600, py: 0.5 }}>#</TableCell>
+                                    <TableCell sx={{ fontWeight: 600, py: 0.5 }}>Evento</TableCell>
+                                    <TableCell sx={{ fontWeight: 600, py: 0.5 }}>Modelo</TableCell>
+                                    <TableCell sx={{ fontWeight: 600, py: 0.5 }}>Data/Hora</TableCell>
+                                    <TableCell sx={{ fontWeight: 600, py: 0.5 }}>Motivo</TableCell>
+                                  </TableRow>
+                                </TableHead>
+                                <TableBody>
+                                  {history.map((entry) => (
+                                    <TableRow key={entry.id}>
+                                      <TableCell sx={{ fontFamily: "monospace", py: 0.5 }}>{entry.deliverNumber}</TableCell>
+                                      <TableCell sx={{ py: 0.5 }}>
+                                        <Chip
+                                          label={labelEventType(entry.eventType)}
+                                          size="small"
+                                          color={corEventType(entry.eventType)}
+                                          variant="outlined"
+                                          sx={{ height: 20, fontSize: "0.7rem" }}
+                                        />
+                                      </TableCell>
+                                      <TableCell sx={{ fontFamily: "monospace", fontSize: "0.75rem", py: 0.5 }}>
+                                        {entry.model ?? "—"}
+                                      </TableCell>
+                                      <TableCell sx={{ fontFamily: "monospace", fontSize: "0.75rem", py: 0.5 }}>
+                                        {formatarDataHora(entry.createdAt)}
+                                      </TableCell>
+                                      <TableCell sx={{ py: 0.5, maxWidth: 300 }}>
+                                        <Typography
+                                          variant="caption"
+                                          sx={{
+                                            wordBreak: "break-word",
+                                            color: (entry.eventType === "gate_rejected" || entry.eventType === "blocked") ? "error.light" : "text.secondary",
+                                          }}
+                                        >
+                                          {entry.reason ?? "—"}
+                                        </Typography>
+                                      </TableCell>
+                                    </TableRow>
+                                  ))}
+                                </TableBody>
+                              </Table>
+                            </Box>
+                          </TableCell>
+                        </TableRow>
+                      )}
+                      </React.Fragment>
                     )
                   })}
                   {subtasks.length === 0 && (

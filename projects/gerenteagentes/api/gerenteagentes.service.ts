@@ -686,6 +686,17 @@ export class GerenteAgentesService {
         status?: string;
         description?: string;
         errorMessage?: string;
+        subtasks?: Array<{
+          seq?: number;
+          deliveryHistory?: Array<{
+            id: number;
+            deliverNumber: number;
+            model: string | null;
+            eventType: string;
+            reason: string | null;
+            createdAt: string;
+          }>;
+        }>;
         ultimoBloqueio?: {
           kind?: string;
           excerpt?: string;
@@ -713,6 +724,21 @@ export class GerenteAgentesService {
         .where(eq(subtarefas.tarefaId, tarefaId))
         .orderBy(subtarefas.seq);
       
+      // Monta mapa de deliveryHistory vindo do motor (pass-through por seq)
+      const motorHistoryBySeq = new Map<number, Array<{
+        id: number;
+        deliverNumber: number;
+        model: string | null;
+        eventType: string;
+        reason: string | null;
+        createdAt: string;
+      }>>();
+      for (const ms of motorTask.subtasks ?? []) {
+        if (ms.seq != null && Array.isArray(ms.deliveryHistory)) {
+          motorHistoryBySeq.set(ms.seq, ms.deliveryHistory);
+        }
+      }
+
       // Converte para o formato esperado pelo front-end
       const subtasks = subtarefasList.map(s => ({
         seq: s.seq,
@@ -724,6 +750,7 @@ export class GerenteAgentesService {
         acceptanceCriteria: s.acceptanceCriteria ?? null,
         workspaceStatus: s.workspaceStatus ?? null,
         correctionForSubtaskId: s.correctionForSubtaskId ?? null,
+        deliveryHistory: motorHistoryBySeq.get(s.seq) ?? [],
       }));
       
       // Encontra subtarefa atual (running, verifying, etc)
