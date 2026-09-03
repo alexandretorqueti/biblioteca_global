@@ -68,11 +68,12 @@ export class MysqlTaskRepository implements TaskRepository {
       `SELECT t.id, t.external_id, t.titulo, t.descricao, t.ultima_mensagem_erro, t.status,
               t.max_rework, t.hard_timeout_ms, t.depends_on_task_id,
               t.created_at, t.updated_at,
-              pc.slug as project_slug, pc.repo_path,
+              pc.slug as project_slug, pmc.repo_path,
               COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), pc.slug) as agent_id
        FROM tarefas t
        LEFT JOIN projetos_captados pc ON t.projeto_id = pc.id
        LEFT JOIN agentes a ON pc.agente_id = a.id
+       LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id = pc.id
        ${whereClause} LIMIT 1`,
       params
     )
