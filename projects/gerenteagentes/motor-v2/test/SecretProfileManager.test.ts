@@ -146,15 +146,15 @@ describe("SecretProfileManager — parsing de manifesto", () => {
     }
   })
 
-  it("rejeita manifesto ausente", async () => {
+  it("aceita manifesto ausente como perfil sem segredos", async () => {
     const result = await manager.inspectManifest({
       repoPath: tempDir,
       environment: "development",
       projectSlug: "test-project",
     })
-    expect(result.ok).toBe(false)
-    if (!result.ok) {
-      expect(result.actual).toBe("arquivo ausente")
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.manifest.files).toEqual([])
     }
   })
 

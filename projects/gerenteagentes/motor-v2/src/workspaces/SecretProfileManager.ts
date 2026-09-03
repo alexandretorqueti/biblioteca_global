@@ -254,7 +254,23 @@ export class SecretProfileManager {
       validateSegment(input.environment, "environment")
       validateSegment(input.projectSlug, "project")
 
-      const parsed = JSON.parse(await readFile(manifestPath, "utf8")) as unknown
+      let text: string
+      try {
+        text = await readFile(manifestPath, "utf8")
+      } catch (error: unknown) {
+        if (
+          error instanceof Error &&
+          "code" in error &&
+          (error as NodeJS.ErrnoException).code === "ENOENT"
+        ) {
+          // O manifesto só é necessário para projetos que precisam materializar
+          // segredos. Sua ausência não deve impedir tarefas sem esse requisito.
+          return { ok: true, manifest: { version: 1, files: [] }, manifestPath }
+        }
+        throw error
+      }
+
+      const parsed = JSON.parse(text) as unknown
       const manifest = parseManifest(parsed)
 
       for (const entry of manifest.files) {
