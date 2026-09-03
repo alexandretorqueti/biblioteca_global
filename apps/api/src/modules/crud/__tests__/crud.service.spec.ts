@@ -29,6 +29,9 @@ class FakeRegistry implements SchemaRegistry {
     if (slug === "biblioteca-global") return {}
     return undefined
   }
+  projetosCarregados(): string[] {
+    return ["documentacao", "gerenteagentes", "biblioteca-global"]
+  }
 }
 
 /** Fábrica que falha se chamada — prova que a validação acontece antes. */

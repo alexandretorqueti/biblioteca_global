@@ -129,7 +129,7 @@ describe("auth — funcional (API + MySQL)", () => {
     expect(resposta.body.refreshToken).toBeTruthy()
     expect(resposta.body.usuario.nome).toBe("Alexandre")
     expect(resposta.body.usuario).not.toHaveProperty("passwordHash")
-    expect(resposta.body.projetos).toHaveLength(3)
+    expect(resposta.body.projetos).toHaveLength(5)
   })
 
   it("fluxo completo: select-project → access token → /auth/me", async () => {

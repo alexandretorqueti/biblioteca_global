@@ -9,7 +9,7 @@ import {
   PROJECT_DB_FACTORY,
   ProjectDbFactory,
 } from "./project-db.factory"
-import { SCHEMA_REGISTRY, StaticSchemaRegistry } from "./schema-registry"
+import { DynamicSchemaRegistry, SCHEMA_REGISTRY } from "./schema-registry"
 
 @Global()
 @Module({
@@ -17,7 +17,7 @@ import { SCHEMA_REGISTRY, StaticSchemaRegistry } from "./schema-registry"
   controllers: [CrudController],
   providers: [
     CrudService,
-    { provide: SCHEMA_REGISTRY, useClass: StaticSchemaRegistry },
+    { provide: SCHEMA_REGISTRY, useClass: DynamicSchemaRegistry },
     {
       provide: CONECTOR_PROJETO,
       inject: [EnvService],
