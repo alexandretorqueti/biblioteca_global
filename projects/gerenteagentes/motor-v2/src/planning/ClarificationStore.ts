@@ -145,6 +145,40 @@ export async function fetchPendingTaskClarification(
   return { message: String(row.texto ?? ""), askedAt: String(row.created_at ?? "") }
 }
 
+export interface AnsweredTaskClarification {
+  /** external_id da tarefa (ou id numérico como string quando ausente). */
+  taskId: string
+  /** Texto da resposta do usuário ainda não processada. */
+  texto: string
+}
+
+/**
+ * Conciliação de clarificações respondidas: tarefas em `awaiting_clarification`
+ * cuja última mensagem de clarificação no chat (analyst/user) é do usuário.
+ *
+ * Cobre o caso em que a resposta foi gravada no chat por um caminho que não
+ * notificou o motor (ex.: insert direto no banco por agente/sessão, ou rota
+ * sem o passo de encaminhamento). O pump do motor chama esta função e retoma
+ * a análise sozinho — a retomada não depende mais de o chamador avisar.
+ */
+export async function fetchAnsweredTaskClarifications(db: Db): Promise<AnsweredTaskClarification[]> {
+  const { rows } = await db.query(
+    "SELECT t.id AS db_id, t.external_id AS external_id, c.texto AS texto " +
+    "FROM tarefas t " +
+    "JOIN tarefa_chats c ON c.tarefa_id = t.id " +
+    "WHERE t.status = ? AND c.role = ? " +
+    "AND c.id = (" +
+    "  SELECT MAX(c2.id) FROM tarefa_chats c2 " +
+    "  WHERE c2.tarefa_id = t.id AND c2.role IN (?, ?)" +
+    ")",
+    ["awaiting_clarification", ANSWER_ROLE, CLARIFICATION_ROLE, ANSWER_ROLE],
+  )
+  return rows.map((row) => ({
+    taskId: row.external_id != null && String(row.external_id) !== "" ? String(row.external_id) : String(row.db_id),
+    texto: String(row.texto ?? ""),
+  }))
+}
+
 // ============================================================================
 // CHAT DO PROJETO (projeto_chats)
 // ============================================================================

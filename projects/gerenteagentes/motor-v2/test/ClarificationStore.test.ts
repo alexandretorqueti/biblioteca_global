@@ -95,3 +95,34 @@ describe("fetchTaskClarificationHistory", () => {
     expect(params).toEqual([42, "analyst", "user"])
   })
 })
+
+describe("fetchAnsweredTaskClarifications", () => {
+  it("retorna tarefas aguardando clarificação cuja última mensagem é do usuário", async () => {
+    const { fetchAnsweredTaskClarifications } = await import("../src/planning/ClarificationStore.js")
+    const db = mockDb([
+      {
+        rows: [
+          { db_id: 749, external_id: "task-plataforma", texto: "1: resposta" },
+          { db_id: 750, external_id: null, texto: "pode seguir" },
+        ],
+        affectedRows: 0,
+        insertId: 0,
+      },
+    ])
+    const answered = await fetchAnsweredTaskClarifications(db)
+    expect(answered).toHaveLength(2)
+    expect(answered[0]).toEqual({ taskId: "task-plataforma", texto: "1: resposta" })
+    // Sem external_id: usa o id numérico como referência
+    expect(answered[1]).toEqual({ taskId: "750", texto: "pode seguir" })
+    const [sql, params] = vi.mocked(db.query).mock.calls[0]!
+    expect(String(sql)).toContain("t.status = ?")
+    expect(String(sql)).toContain("c.role = ?")
+    expect(params).toEqual(["awaiting_clarification", "user", "analyst", "user"])
+  })
+
+  it("retorna lista vazia quando nenhuma resposta está pendente", async () => {
+    const { fetchAnsweredTaskClarifications } = await import("../src/planning/ClarificationStore.js")
+    const db = mockDb([{ rows: [], affectedRows: 0, insertId: 0 }])
+    expect(await fetchAnsweredTaskClarifications(db)).toEqual([])
+  })
+})

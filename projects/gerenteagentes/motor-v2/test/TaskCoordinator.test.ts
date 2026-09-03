@@ -73,6 +73,29 @@ describe('TaskCoordinator', () => {
       expect(repository.saveTask).not.toHaveBeenCalled()
     })
 
+    it('retoma clarificação respondida detectada no chat durante o pump', async () => {
+      // 1ª query do pump: fetchAnsweredTaskClarifications acha resposta não processada
+      vi.mocked(db.query).mockResolvedValueOnce({
+        rows: [{ db_id: 749, external_id: 'task-respondida', texto: '1: resposta do dono' }],
+        affectedRows: 0,
+        insertId: 0,
+      })
+      vi.mocked(repository.getTask).mockResolvedValue({
+        id: 'task-respondida', chatId: '', agentId: 'agent', title: 'Respondida', description: '',
+        repoPath: '/repo', buildCommand: 'npm run build', unitTestCommand: 'npm run test',
+        status: 'awaiting_clarification' as const, maxRework: 3, hardTimeoutMs: 1000,
+        projectSlug: 'project', createdAt: '', updatedAt: '',
+      })
+
+      await coordinator.pump()
+
+      // Resposta já persistida no chat: motor não grava de novo, só transiciona
+      const saved = vi.mocked(repository.saveTask).mock.calls[0]?.[0]
+      expect(saved).toBeDefined()
+      expect(saved?.status).toBe('planned')
+      expect(vi.mocked(repository.getTask)).toHaveBeenCalledWith('task-respondida')
+    })
+
     it('deve adquirir lock quando seleciona tarefa', async () => {
       const taskRow = {
         id: 'task-123',
@@ -91,6 +114,9 @@ describe('TaskCoordinator', () => {
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       }
+
+      // Conciliação de clarificações (1ª query do pump): nada pendente
+      vi.mocked(db.query).mockResolvedValueOnce({ rows: [], affectedRows: 0, insertId: 0 })
 
       // selectNextTask retorna a tarefa
       vi.mocked(db.query).mockResolvedValueOnce({ rows: [taskRow], affectedRows: 0, insertId: 0 })
@@ -325,9 +351,11 @@ describe('TaskCoordinator', () => {
   describe('configuração operacional do projeto', () => {
     it('resolve o identificador do agente por COALESCE(openclaw_agent_id, nome, slug) na Biblioteca', async () => {
       await coordinator.pump()
-      const firstQuery = vi.mocked(db.query).mock.calls[0]?.[0]
-      expect(firstQuery).toContain("COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), pc.slug) as agent_id")
-      expect(firstQuery).toContain('LEFT JOIN agentes a ON pc.agente_id = a.id')
+      const agentQuery = vi.mocked(db.query).mock.calls
+        .map(([query]) => String(query))
+        .find((query) => query.includes('COALESCE(NULLIF(a.openclaw_agent_id'))
+      expect(agentQuery).toContain("COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), pc.slug) as agent_id")
+      expect(agentQuery).toContain('LEFT JOIN agentes a ON pc.agente_id = a.id')
     })
 
     it('usa configuração persistida e recusa execução sem os campos críticos', () => {
@@ -399,7 +427,7 @@ describe('TaskCoordinator', () => {
 
       const analysisQuery = vi.mocked(db.query).mock.calls
         .map(([query]) => String(query))
-        .find((query) => query.includes("FROM tarefas t"))
+        .find((query) => query.includes("WHERE t.status = 'planned'"))
       expect(analysisQuery).toContain('NOT EXISTS (SELECT 1 FROM subtarefas')
     })
   })

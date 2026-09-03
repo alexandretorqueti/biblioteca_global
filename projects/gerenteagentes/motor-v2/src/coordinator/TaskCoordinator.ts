@@ -21,7 +21,7 @@ import { correctionOnlyChangesTests } from "../policies/CorrectionDiffPolicy.js"
 import { isBaselineCorrection } from "../policies/BaselinePolicy.js"
 import { blockerEvidence } from "../policies/BlockerPolicy.js"
 import { transitionTask, type TaskTransition } from "../policies/TaskStateMachine.js"
-import { persistTaskClarificationAnswer, fetchPendingTaskClarification } from "../planning/ClarificationStore.js"
+import { persistTaskClarificationAnswer, fetchPendingTaskClarification, fetchAnsweredTaskClarifications } from "../planning/ClarificationStore.js"
 import { createLogger, describeError } from "../shared/logger.js"
 import { ConsoleAgentRuntimeDriver } from "../runtime/ConsoleAgentRuntimeDriver.js"
 import { execSync } from "node:child_process"
@@ -148,6 +148,10 @@ export class TaskCoordinator {
     if (this.pumping) return
     this.pumping = true
     try {
+      // Conciliação de clarificações: respostas gravadas no chat da tarefa por
+      // caminhos que não notificaram o motor (ex.: insert direto por agente/sessão)
+      // são detectadas aqui e retomam a análise sem depender de aviso externo.
+      await this.resumeAnsweredClarifications()
       // Com maxWorkers > 1 um único pump precisa preencher todas as vagas;
       // cada iteração inicia no máximo um worker e reconsulta a fila. O laço
       // para quando não há trabalho elegível ou quando o trabalho selecionado
@@ -698,6 +702,29 @@ export class TaskCoordinator {
     await this.saveTaskTransition(task, "clarification_answered")
     this.logger.info("Resposta de clarificação recebida; tarefa " + taskId + " volta para análise", { taskId })
     await this.pump()
+  }
+
+  /**
+   * Conciliação de clarificações respondidas (chamada no pump): se a resposta
+   * do usuário foi gravada no chat por um caminho que não notificou o motor,
+   * detecta aqui e retoma a análise — a retomada não depende de aviso externo.
+   */
+  private async resumeAnsweredClarifications(): Promise<void> {
+    let answered: { taskId: string; texto: string }[] = []
+    try {
+      answered = await fetchAnsweredTaskClarifications(this.db)
+    } catch (error) {
+      this.logger.warn("Falha ao conciliar clarificações respondidas: " + describeError(error))
+      return
+    }
+    for (const item of answered) {
+      try {
+        this.logger.info("Resposta de clarificação detectada no chat da tarefa " + item.taskId + "; retomando análise", { taskId: item.taskId })
+        await this.answerClarification(item.taskId, item.texto, { jaPersistida: true })
+      } catch (error) {
+        this.logger.warn("Falha ao retomar clarificação detectada no chat (" + item.taskId + "): " + describeError(error))
+      }
+    }
   }
 
   async onResourceReleased(resourceKey: ResourceKey): Promise<void> {
