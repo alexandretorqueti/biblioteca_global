@@ -186,11 +186,13 @@ export class TaskCoordinator {
 
   private async selectNextTask(): Promise<Task | null> {
     const { rows } = await this.db.query(
-      "SELECT t.*, pc.slug as project_slug, pc.slug as agent_id, " +
+      "SELECT t.*, pc.slug as project_slug, " +
+      "COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), pc.slug) as agent_id, " +
       "pmc.repo_path, pmc.branch_trabalho, pmc.build_command, pmc.unit_test_command, pmc.unit_test_exclude, " +
       "pmc.default_max_rework, pmc.default_hard_timeout_ms " +
       "FROM tarefas t " +
       "LEFT JOIN projetos_captados pc ON t.projeto_id = pc.id " +
+      "LEFT JOIN agentes a ON pc.agente_id = a.id " +
       "LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id = pc.id " +
       "WHERE t.status = 'planned' AND NOT EXISTS (SELECT 1 FROM subtarefas s WHERE s.tarefa_id = t.id) ORDER BY t.created_at ASC LIMIT 25"
     )
@@ -201,12 +203,14 @@ export class TaskCoordinator {
     const { rows } = await this.db.query(
       "SELECT s.*, t.external_id as task_external_id, t.titulo as task_titulo, t.descricao as task_descricao, " +
       "t.max_rework AS task_max_rework, t.hard_timeout_ms AS task_hard_timeout_ms, " +
-      "pc.slug as project_slug, pc.slug as agent_id, " +
+      "pc.slug as project_slug, " +
+      "COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), pc.slug) as agent_id, " +
       "pmc.repo_path, pmc.branch_trabalho, pmc.build_command, pmc.unit_test_command, pmc.unit_test_exclude, " +
       "pmc.default_max_rework, pmc.default_hard_timeout_ms " +
       "FROM subtarefas s " +
       "INNER JOIN tarefas t ON s.tarefa_id = t.id " +
       "LEFT JOIN projetos_captados pc ON t.projeto_id = pc.id " +
+      "LEFT JOIN agentes a ON pc.agente_id = a.id " +
       "LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id = pc.id " +
       // Uma análise pode ter criado as subtarefas e a tarefa ter sido
       // devolvida manualmente para planned. Nesse caso, o plano já existe e

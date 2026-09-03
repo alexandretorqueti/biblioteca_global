@@ -323,10 +323,11 @@ describe('TaskCoordinator', () => {
   })
 
   describe('configuração operacional do projeto', () => {
-    it('resolve o identificador do agente pela chave existente na Biblioteca', async () => {
+    it('resolve o identificador do agente por COALESCE(openclaw_agent_id, nome, slug) na Biblioteca', async () => {
       await coordinator.pump()
       const firstQuery = vi.mocked(db.query).mock.calls[0]?.[0]
-      expect(firstQuery).toContain('pc.slug as agent_id')
+      expect(firstQuery).toContain("COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), pc.slug) as agent_id")
+      expect(firstQuery).toContain('LEFT JOIN agentes a ON pc.agente_id = a.id')
     })
 
     it('usa configuração persistida e recusa execução sem os campos críticos', () => {
