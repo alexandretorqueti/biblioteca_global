@@ -10,6 +10,7 @@ COPY packages/ui/package.json packages/ui/package.json
 COPY projects/biblioteca-global/package.json projects/biblioteca-global/package.json
 COPY projects/documentacao/package.json projects/documentacao/package.json
 COPY projects/gerenteagentes/package.json projects/gerenteagentes/package.json
+COPY projects/taqui/package.json projects/taqui/package.json
 RUN npm ci --include=dev
 COPY . .
 RUN npm run build --workspace @biblioteca-global/web

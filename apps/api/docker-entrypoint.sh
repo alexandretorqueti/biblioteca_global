@@ -3,18 +3,29 @@ set -eu
 
 # Usa o bind-mount do host (código-fonte vivo) em vez do /app da imagem Docker.
 # Sem isso, alterações no motor-v2 ou na API só entram em produção após rebuild da imagem.
-# O caminho é o mesmo usado no safe.directory abaixo e nos binds do compose.
-SOURCE_DIR="/run/media/alexandre/12T/codigofonte/biblioteca-global"
-if [ -d "$SOURCE_DIR" ]; then
+# Ordem de preferência: $REPO_PATH (compose), bind atual (/home/alexandre/codigofonte),
+# bind antigo (12T) e, por último, /app (imagem Docker).
+SOURCE_DIR=""
+for candidato in "${REPO_PATH:-}" \
+  "/home/alexandre/codigofonte/biblioteca-global" \
+  "/run/media/alexandre/12T/codigofonte/biblioteca-global"; do
+  if [ -n "$candidato" ] && [ -f "$candidato/package.json" ]; then
+    SOURCE_DIR="$candidato"
+    break
+  fi
+done
+if [ -n "$SOURCE_DIR" ]; then
   cd "$SOURCE_DIR"
   echo "[entrypoint] Working directory: $SOURCE_DIR (bind-mount)"
 else
+  SOURCE_DIR="/app"
   echo "[entrypoint] Bind-mount não encontrado, usando /app (imagem Docker)"
 fi
 
 # Configura git (necessário para o motor-v2 fazer commits)
 git config --global user.email "motor-v2@globaltecnologia.local"
 git config --global user.name "Motor v2"
+git config --global --add safe.directory "$SOURCE_DIR"
 git config --global --add safe.directory /run/media/alexandre/12T/codigofonte/biblioteca-global
 git config --global --add safe.directory /run/media/alexandre/12T/codigofonte/GerenteAgentes
 mkdir -p /root/.ssh && ssh-keyscan github.com >> /root/.ssh/known_hosts 2>/dev/null || true
