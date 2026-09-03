@@ -387,7 +387,7 @@ export default function TaskMonitorScreen(): ReactNode {
       try {
         const res = await bundle.http.request<{ items: Array<Record<string, unknown>> }>(
           "GET",
-          `/${resource}`,
+          `/gerenteagentes/${resource}`,
           {
             query: search ? { search, pageSize: 50 } : { pageSize: 100 },
             auth: "access",
@@ -585,7 +585,7 @@ export default function TaskMonitorScreen(): ReactNode {
               ? Number(values.dependsOnSubtaskId)
               : null,
         }
-        await bundle.http.request("PUT", `/subtarefas/${editingSub.id}`, {
+        await bundle.http.request("PUT", `/gerenteagentes/subtarefas/${editingSub.id}`, {
           body,
           auth: "access",
         })
