@@ -29,6 +29,7 @@ import { existsSync } from "node:fs"
 import { SecretProfileManager, resolveGitTopLevel } from "../workspaces/SecretProfileManager.js"
 import { validateTaskCompletion, formatPromotionValidationReport } from "../policies/PromotionValidationPolicy.js"
 import { validateProjectId, formatProjectIdValidationReport } from "../policies/ProjectIdValidationPolicy.js"
+import { verifyAgentInGateway, formatAgentVerificationReport, shouldBlockEnqueue } from "../policies/GatewayAgentVerificationPolicy.js"
 
 interface ActiveWorker {
   taskId: string
@@ -950,6 +951,38 @@ export class TaskCoordinator {
       taskId, projetoId, projectSlug: validation.projectSlug,
     })
 
+    // Verificação do agente no gateway antes de enfileirar (item 6 do plano de controles).
+    // Tarefa de projeto novo só é enfileirada com agente confirmado no gateway.
+    // Tarefas de setup (executadas pela biblioteca) não precisam dessa verificação.
+    if (taskType === 'execution') {
+      const agentId = task.agentId || (validation.agentId ?? null)
+      const agentVerification = await this.verifyAgentBeforeEnqueue(agentId)
+      if (shouldBlockEnqueue(agentVerification)) {
+        const report = formatAgentVerificationReport(agentVerification)
+        this.logger.warn("Enqueue bloqueado: agente não confirmado no gateway", {
+          taskId,
+          agentId,
+          projectSlug: task.projectSlug ?? undefined,
+          failureKind: agentVerification.failureKind,
+        })
+        // Persiste bloqueio auditável
+        try {
+          await this.db.query(
+            "INSERT INTO bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at) " +
+            "VALUES (?, NULL, 'agent_not_in_gateway', ?, ?, NOW())",
+            [task.id, 'motor-v2:gateway-agent-verification', agentVerification.reason ?? report],
+          )
+        } catch (persistError) {
+          this.logger.error("Falha ao persistir bloqueio de verificação de agente: " + describeError(persistError), { taskId })
+        }
+        throw new Error(report)
+      }
+      this.logger.info("Verificação de agente OK: " + formatAgentVerificationReport(agentVerification), {
+        taskId,
+        agentId,
+      })
+    }
+
     // Se está em draft, transiciona diretamente para planned (atualiza o banco)
     if (task.status === "draft") {
       await this.repository.saveTask({ ...task, status: "planned", updatedAt: new Date().toISOString() })
@@ -1419,5 +1452,42 @@ export class TaskCoordinator {
       this.logger.warn(`Falha ao buscar workspace do agente ${agentId}: ${error instanceof Error ? error.message : String(error)}`)
       return null
     }
+  }
+
+  /**
+   * Verifica se o agente existe no gateway antes de enfileirar a tarefa.
+   * Usa o ConsoleAgentRuntimeDriver para consultar a lista de agentes registrados.
+   * Retorna o resultado da verificação para o chamador decidir se bloqueia ou não.
+   *
+   * Se OPENCLAW_CONSOLE_URL/TOKEN não estiverem configurados, a verificação é
+   * pulada com aviso (modo desenvolvimento sem Console). Em produção, a ausência
+   * dessas variáveis deve ser tratada como erro de configuração.
+   */
+  private async verifyAgentBeforeEnqueue(
+    agentId: string | null | undefined,
+  ): Promise<import("../policies/GatewayAgentVerificationPolicy.js").AgentVerificationResult> {
+    const baseUrl = process.env.OPENCLAW_CONSOLE_URL
+    const token = process.env.OPENCLAW_CONSOLE_TOKEN
+    if (!baseUrl || !token) {
+      this.logger.warn(
+        "OPENCLAW_CONSOLE_URL ou OPENCLAW_CONSOLE_TOKEN não configurados; " +
+        "verificação de agente no gateway pulada (modo desenvolvimento)",
+      )
+      // Sem Console configurado, não podemos verificar — retorna ok=true
+      // para não bloquear desenvolvimento local. Em produção, essas vars
+      // devem estar configuradas e a verificação é obrigatória.
+      return {
+        ok: true,
+        agentId: agentId ?? '',
+        workspace: undefined,
+      }
+    }
+
+    const driver = new ConsoleAgentRuntimeDriver({ baseUrl, token })
+    // Adapter: ConsoleAgentRuntimeDriver.listAgents() -> AgentLookupDriver
+    const adapter: import("../policies/GatewayAgentVerificationPolicy.js").AgentLookupDriver = {
+      listAgents: () => driver.listAgents(),
+    }
+    return verifyAgentInGateway(agentId, adapter)
   }
 }

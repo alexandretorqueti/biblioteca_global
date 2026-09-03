@@ -229,6 +229,20 @@ export class ConsoleAgentRuntimeDriver {
     }
   }
 
+  /**
+   * Lista todos os agentes registrados no gateway.
+   * Diferente de getAgentWorkspace, este método PROPAGA erros (não os engole),
+   * permitindo que o chamador (ex.: GatewayAgentVerificationPolicy) trate
+   * falhas de rede/HTTP com diagnóstico claro.
+   */
+  async listAgents(): Promise<Array<{ id: string; workspace?: string }>> {
+    const response = await this.request<{ agents: Array<{ id: string; workspace?: string }> }>({
+      method: "GET",
+      path: "/api/agents",
+    })
+    return response.agents ?? []
+  }
+
   async readSessionHistory(session: RuntimeSession, limit = 50): Promise<Array<{ role: string; content: string }>> {
     const response = await this.request<{ messages: Array<{ role: string; content: unknown }> }>({
       method: "GET",
