@@ -8,6 +8,7 @@ export class RealtimeClient {
   private readonly factory: (url: string) => WebSocket
   private readonly fetchImpl: typeof fetch
   private lastSequence: number | undefined
+  private connectionGeneration = 0
 
   constructor(private readonly options: RealtimeClientOptions) {
     this.factory = options.webSocketFactory ?? ((url) => new WebSocket(url))
@@ -16,11 +17,15 @@ export class RealtimeClient {
   }
 
   async connect(): Promise<void> {
+    const generation = this.connectionGeneration
     this.stopped = false
     this.options.onStatusChange?.("connecting")
     try {
       // Solicitar ticket temporário via HTTP (cross-origin: cookie HttpOnly não chega no WS)
       const ticket = await this.solicitarTicket()
+      // A troca de tarefa pode fechar o cliente enquanto o ticket ainda está
+      // sendo obtido. Não crie um socket órfão quando essa chamada terminar.
+      if (this.stopped || generation !== this.connectionGeneration) return
       const query = new URLSearchParams({ ticket, taskId: String(this.options.taskId) })
       if (this.lastSequence !== undefined) query.set("lastSequence", String(this.lastSequence))
       const socket = this.factory(`${this.options.url}?${query.toString()}`)
@@ -61,12 +66,14 @@ export class RealtimeClient {
     }
     socket.onerror = (event) => this.options.onError?.(event)
     socket.onclose = () => {
+      if (this.socket !== socket) return
       this.options.onStatusChange?.("closed")
       if (!this.stopped) this.reconnectTimer = setTimeout(() => this.connect(), 1000)
     }
   }
 
   close(): void {
+    this.connectionGeneration += 1
     this.stopped = true
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
     this.reconnectTimer = null
