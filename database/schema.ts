@@ -123,3 +123,47 @@ export const refreshTokens = mysqlTable(
   },
   (t) => [index("idx_refresh_tokens_usuario").on(t.usuarioId)],
 )
+
+/** Sessões do HelpDesk iniciadas por um usuário em um projeto. */
+export const helpdeskSessoes = mysqlTable(
+  "helpdesk_sessoes",
+  {
+    id: bigint("id", { mode: "number", unsigned: true })
+      .primaryKey()
+      .autoincrement(),
+    usuarioId: bigint("usuario_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => usuarios.id, { onDelete: "cascade" }),
+    projetoId: bigint("projeto_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => projetos.id, { onDelete: "cascade" }),
+    agenteId: varchar("agente_id", { length: 100 }).notNull(),
+    status: mysqlEnum("status", ["active", "closed"]).notNull().default("active"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at")
+      .notNull()
+      .defaultNow()
+      .onUpdateNow(),
+  },
+  (t) => [
+    index("idx_helpdesk_sessoes_usuario").on(t.usuarioId),
+    index("idx_helpdesk_sessoes_projeto").on(t.projetoId),
+  ],
+)
+
+/** Mensagens persistidas de uma sessão do HelpDesk. */
+export const helpdeskMensagens = mysqlTable(
+  "helpdesk_mensagens",
+  {
+    id: bigint("id", { mode: "number", unsigned: true })
+      .primaryKey()
+      .autoincrement(),
+    sessaoId: bigint("sessao_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => helpdeskSessoes.id, { onDelete: "cascade" }),
+    role: mysqlEnum("role", ["agent", "user", "system"]).notNull(),
+    text: varchar("text", { length: 10000 }).notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [index("idx_helpdesk_mensagens_sessao").on(t.sessaoId)],
+)

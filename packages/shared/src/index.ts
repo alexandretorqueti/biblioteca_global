@@ -146,6 +146,21 @@ export {
   sendChatMessageFailureSchema,
   sendChatMessageResultSchema,
 } from "./chat"
+
+// HelpDesk persistido no core
+export {
+  helpDeskSessionStatusSchema,
+  helpDeskSessionSchema,
+  helpDeskMessageSchema,
+  helpDeskSendMessageInputSchema,
+  helpDeskHistorySchema,
+} from "./helpdesk"
+export type {
+  HelpDeskSession,
+  HelpDeskMessage,
+  HelpDeskSendMessageInput,
+  HelpDeskHistory,
+} from "./helpdesk"
 export type {
   AgentInfo,
   ChatMessageRole,
