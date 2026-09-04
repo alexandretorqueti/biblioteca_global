@@ -15,6 +15,13 @@
       "when": 1788477125069,
       "tag": "0001_dark_bullseye",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1788490503970,
+      "tag": "0002_gifted_wild_pack",
+      "breakpoints": true
     }
   ]
 }

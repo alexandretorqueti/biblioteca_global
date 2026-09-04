@@ -9,17 +9,20 @@
  * - unidades_proprietarios: vínculo N:N entre unidades e proprietários
  * - funcionarios: triagem/portaria do condomínio
  * - transportadoras: lojas/transportadoras que enviam encomendas
- * - encomendas: registro com foto, loja, unidade; status pendente→confirmada→entregue
+ * - encomendas: registro com foto, loja, unidade; status pendente→confirmada→entregue→cancelada
+ *   (campos de cancelamento: canceladoPorId, canceladoEm, motivoCancelamento)
  * - notificacoes: sininho para morador
- * - entregas: registro de entrega efetiva com trilha auditável
+ * - entregas: registro de entrega efetiva com trilha auditável e evidência estruturada (JSON)
+ * - ocorrencias: registro de desvios/devoluções com motivo, tipo, evidência e rastreabilidade
  *
  * Relações:
  * - condomínio → unidades (1:N)
  * - unidade → moradores (1:N)
  * - unidade ↔ proprietários (N:N via unidades_proprietarios)
  * - condomínio → funcionários (1:N)
- * - encomenda → condomínio, unidade, transportadora, funcionário (registrante), morador (confirmou)
- * - entrega → encomenda, funcionário
+ * - encomenda → condomínio, unidade, transportadora, funcionário (registrante), morador (confirmou), funcionário (cancelou)
+ * - entrega → encomenda, condomínio, funcionário
+ * - ocorrência → encomenda, condomínio, funcionário (registrante)
  */
 import {
   bigint,
@@ -237,6 +240,13 @@ export const encomendas = mysqlTable("encomendas", {
     .references(() => funcionarios.id, { onDelete: "set null" }),
   /** Data/hora da entrega efetiva. */
   entregueEm: timestamp("entregue_em"),
+  /** Funcionário que cancelou a encomenda (via ocorrência/devolução). */
+  canceladoPorId: bigint("cancelado_por_id", { mode: "number", unsigned: true })
+    .references(() => funcionarios.id, { onDelete: "set null" }),
+  /** Data/hora do cancelamento. */
+  canceladoEm: timestamp("cancelado_em"),
+  /** Motivo resumido do cancelamento (detalhe na tabela ocorrencias). */
+  motivoCancelamento: varchar("motivo_cancelamento", { length: 500 }),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at")
     .notNull()
@@ -280,12 +290,19 @@ export const entregas = mysqlTable(
     encomendaId: bigint("encomenda_id", { mode: "number", unsigned: true })
       .notNull()
       .references(() => encomendas.id, { onDelete: "restrict" }),
+    condominioId: bigint("condominio_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => condominios.id, { onDelete: "cascade" }),
     funcionarioId: bigint("funcionario_id", { mode: "number", unsigned: true })
       .notNull()
       .references(() => funcionarios.id, { onDelete: "restrict" }),
     /** Data/hora da entrega efetiva. */
     dataHoraEntrega: timestamp("data_hora_entrega").notNull().defaultNow(),
-    /** Evidência de quem retirou a encomenda (nome, documento, assinatura, etc.). */
+    /**
+     * Evidência estruturada de quem retirou a encomenda (JSON).
+     * Contém: recebedorNome, recebedorDocumento, recebedorVinculo,
+     * fotoComprovanteUrl, pinRetirada, funcionarioNome, dataHora.
+     */
     evidenciaQuemRetirou: text("evidencia_quem_retirou"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at")
@@ -295,6 +312,7 @@ export const entregas = mysqlTable(
   },
   (table) => [
     index("idx_entregas_encomenda_id").on(table.encomendaId),
+    index("idx_entregas_condominio_id").on(table.condominioId),
     index("idx_entregas_funcionario_id").on(table.funcionarioId),
   ],
 )
@@ -312,46 +330,41 @@ export const ocorrencias = mysqlTable(
     encomendaId: bigint("encomenda_id", { mode: "number", unsigned: true })
       .notNull()
       .references(() => encomendas.id, { onDelete: "restrict" }),
+    /** Condomínio da ocorrência — isolamento multi-tenant. */
+    condominioId: bigint("condominio_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => condominios.id, { onDelete: "cascade" }),
     /** Funcionário que registrou a ocorrência. */
     registradoPorId: bigint("registrado_por_id", { mode: "number", unsigned: true })
       .notNull()
       .references(() => funcionarios.id, { onDelete: "restrict" }),
     /**
-     * Motivo padronizado da ocorrência:
-     * - unidade_destinatario_incorreto: endereço/destinatário errado
-     * - avariada: embalagem ou conteúdo danificado
+     * Tipo padronizado da ocorrência:
+     * - devolucao_transportadora: transportadora veio buscar a encomenda
+     * - extravio: encomenda perdida/danificada sem recuperação
      * - recusada: morador recusou o recebimento
-     * - devolvida_transportadora: devolvida à transportadora
-     * - nao_retirada_prazo: não retirada dentro do prazo
-     * - outro: motivo não padronizado (exige descricaoComplementar)
+     * - endereco_incorreto: unidade/destinatário errado
+     * - outro: tipo não padronizado (exige descricao)
      */
-    motivo: mysqlEnum("motivo", [
-      "unidade_destinatario_incorreto",
-      "avariada",
+    tipo: mysqlEnum("tipo", [
+      "devolucao_transportadora",
+      "extravio",
       "recusada",
-      "devolvida_transportadora",
-      "nao_retirada_prazo",
+      "endereco_incorreto",
       "outro",
     ]).notNull(),
-    /** Observação obrigatória detalhando o ocorrido. */
-    observacao: text("observacao").notNull(),
-    /** Descrição complementar obrigatória quando motivo = 'outro'. */
-    descricaoComplementar: text("descricao_complementar"),
-    /** URL da foto/evidência da ocorrência (obrigatória para certos motivos). */
+    /** Motivo detalhado da ocorrência — obrigatório, mínimo 10 caracteres. */
+    motivo: varchar("motivo", { length: 2000 }).notNull(),
+    /** Descrição livre adicional (obrigatória quando tipo = 'outro'). */
+    descricao: text("descricao"),
+    /** URL da foto/evidência da ocorrência. */
     fotoEvidenciaUrl: varchar("foto_evidencia_url", { length: 1000 }),
-    /**
-     * Resultado da ocorrência:
-     * - corrigir_destino: destinatário/unidade corrigido, encomenda segue
-     * - manter_em_analise: aguardando decisão/ação
-     * - cancelar_devolver: encomenda cancelada/devolvida
-     */
-    resultado: mysqlEnum("resultado", [
-      "corrigir_destino",
-      "manter_em_analise",
-      "cancelar_devolver",
-    ]).notNull(),
-    /** Data/hora do registro da ocorrência. */
-    dataHoraRegistro: timestamp("data_hora_registro").notNull().defaultNow(),
+    /** Observações sobre a ocorrência. */
+    observacoes: text("observacoes"),
+    /** Se a encomenda foi devolvida à transportadora. */
+    devolvidaTransportadora: boolean("devolvida_transportadora").notNull().default(false),
+    /** Data/hora da ocorrência. */
+    dataOcorrencia: timestamp("data_ocorrencia").notNull().defaultNow(),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at")
       .notNull()
@@ -360,6 +373,7 @@ export const ocorrencias = mysqlTable(
   },
   (table) => [
     index("idx_ocorrencias_encomenda_id").on(table.encomendaId),
+    index("idx_ocorrencias_condominio_id").on(table.condominioId),
     index("idx_ocorrencias_registrado_por_id").on(table.registradoPorId),
   ],
 )
@@ -433,6 +447,9 @@ export const annotations = {
     confirmado_em: { label: "Confirmado em" },
     entregue_por_id: { label: "Entregue por" },
     entregue_em: { label: "Entregue em" },
+    cancelado_por_id: { label: "Cancelado por" },
+    cancelado_em: { label: "Cancelado em" },
+    motivo_cancelamento: { label: "Motivo do Cancelamento", fullWidth: true, maxLength: 500 },
   },
   notificacoes: {
     morador_id: { label: "Morador" },
@@ -443,18 +460,21 @@ export const annotations = {
   },
   entregas: {
     encomenda_id: { label: "Encomenda" },
+    condominio_id: { label: "Condomínio" },
     funcionario_id: { label: "Funcionário" },
     data_hora_entrega: { label: "Data/Hora da Entrega" },
-    evidencia_quem_retirou: { label: "Evidência de Quem Retirou", type: "textarea", fullWidth: true },
+    evidencia_quem_retirou: { label: "Evidência de Quem Retirou", type: "textarea", fullWidth: true, helperText: "JSON estruturado com recebedorNome, recebedorDocumento, fotoComprovanteUrl, etc." },
   },
   ocorrencias: {
     encomenda_id: { label: "Encomenda" },
+    condominio_id: { label: "Condomínio" },
     registrado_por_id: { label: "Registrado por" },
-    motivo: { label: "Motivo" },
-    observacao: { label: "Observação", type: "textarea", fullWidth: true },
-    descricao_complementar: { label: "Descrição Complementar", type: "textarea", fullWidth: true, helperText: "Obrigatória quando motivo for 'Outro'" },
+    tipo: { label: "Tipo de Ocorrência" },
+    motivo: { label: "Motivo", fullWidth: true, maxLength: 2000, helperText: "Obrigatório, mínimo 10 caracteres" },
+    descricao: { label: "Descrição", type: "textarea", fullWidth: true, helperText: "Obrigatória quando tipo for 'Outro'" },
     foto_evidencia_url: { label: "Foto/Evidência", fullWidth: true, maxLength: 1000 },
-    resultado: { label: "Resultado" },
-    data_hora_registro: { label: "Data/Hora do Registro" },
+    observacoes: { label: "Observações", type: "textarea", fullWidth: true },
+    devolvida_transportadora: { label: "Devolvida à Transportadora" },
+    data_ocorrencia: { label: "Data/Hora da Ocorrência" },
   },
 } satisfies FormAnnotationsPorTabela
