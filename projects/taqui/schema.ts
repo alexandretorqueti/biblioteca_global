@@ -300,6 +300,71 @@ export const entregas = mysqlTable(
 )
 
 // ============================================================================
+// OCORRÊNCIAS (registro de desvios/devoluções com auditoria)
+// ============================================================================
+
+export const ocorrencias = mysqlTable(
+  "ocorrencias",
+  {
+    id: bigint("id", { mode: "number", unsigned: true })
+      .primaryKey()
+      .autoincrement(),
+    encomendaId: bigint("encomenda_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => encomendas.id, { onDelete: "restrict" }),
+    /** Funcionário que registrou a ocorrência. */
+    registradoPorId: bigint("registrado_por_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => funcionarios.id, { onDelete: "restrict" }),
+    /**
+     * Motivo padronizado da ocorrência:
+     * - unidade_destinatario_incorreto: endereço/destinatário errado
+     * - avariada: embalagem ou conteúdo danificado
+     * - recusada: morador recusou o recebimento
+     * - devolvida_transportadora: devolvida à transportadora
+     * - nao_retirada_prazo: não retirada dentro do prazo
+     * - outro: motivo não padronizado (exige descricaoComplementar)
+     */
+    motivo: mysqlEnum("motivo", [
+      "unidade_destinatario_incorreto",
+      "avariada",
+      "recusada",
+      "devolvida_transportadora",
+      "nao_retirada_prazo",
+      "outro",
+    ]).notNull(),
+    /** Observação obrigatória detalhando o ocorrido. */
+    observacao: text("observacao").notNull(),
+    /** Descrição complementar obrigatória quando motivo = 'outro'. */
+    descricaoComplementar: text("descricao_complementar"),
+    /** URL da foto/evidência da ocorrência (obrigatória para certos motivos). */
+    fotoEvidenciaUrl: varchar("foto_evidencia_url", { length: 1000 }),
+    /**
+     * Resultado da ocorrência:
+     * - corrigir_destino: destinatário/unidade corrigido, encomenda segue
+     * - manter_em_analise: aguardando decisão/ação
+     * - cancelar_devolver: encomenda cancelada/devolvida
+     */
+    resultado: mysqlEnum("resultado", [
+      "corrigir_destino",
+      "manter_em_analise",
+      "cancelar_devolver",
+    ]).notNull(),
+    /** Data/hora do registro da ocorrência. */
+    dataHoraRegistro: timestamp("data_hora_registro").notNull().defaultNow(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at")
+      .notNull()
+      .defaultNow()
+      .onUpdateNow(),
+  },
+  (table) => [
+    index("idx_ocorrencias_encomenda_id").on(table.encomendaId),
+    index("idx_ocorrencias_registrado_por_id").on(table.registradoPorId),
+  ],
+)
+
+// ============================================================================
 // ANNOTATIONS (metadata de formulário)
 // ============================================================================
 
@@ -381,5 +446,15 @@ export const annotations = {
     funcionario_id: { label: "Funcionário" },
     data_hora_entrega: { label: "Data/Hora da Entrega" },
     evidencia_quem_retirou: { label: "Evidência de Quem Retirou", type: "textarea", fullWidth: true },
+  },
+  ocorrencias: {
+    encomenda_id: { label: "Encomenda" },
+    registrado_por_id: { label: "Registrado por" },
+    motivo: { label: "Motivo" },
+    observacao: { label: "Observação", type: "textarea", fullWidth: true },
+    descricao_complementar: { label: "Descrição Complementar", type: "textarea", fullWidth: true, helperText: "Obrigatória quando motivo for 'Outro'" },
+    foto_evidencia_url: { label: "Foto/Evidência", fullWidth: true, maxLength: 1000 },
+    resultado: { label: "Resultado" },
+    data_hora_registro: { label: "Data/Hora do Registro" },
   },
 } satisfies FormAnnotationsPorTabela
