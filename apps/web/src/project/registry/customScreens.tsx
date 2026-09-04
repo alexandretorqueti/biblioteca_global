@@ -18,6 +18,7 @@ import ModelSelectionScreen from "../../../../../projects/gerenteagentes/screens
 import IsaChatScreen from "../../../../../projects/gerenteagentes/screens/IsaChatScreen"
 import PainelPortariaScreen from "../../../../../projects/taqui/screens/PainelPortariaScreen"
 import NotificacoesMoradorScreen from "../../../../../projects/taqui/screens/NotificacoesMoradorScreen"
+import RegistroEncomendaScreen from "../../../../../projects/taqui/screens/RegistroEncomendaScreen"
 
 /**
  * Registra as telas custom de todos os projetos. Chamar no boot (main.tsx)
@@ -37,5 +38,6 @@ export function registrarTelasCustom(): void {
     "sistema-adm-global-hub-rh": SistemaAdmGlobalHubRh,
     "taqui-painel-portaria": PainelPortariaScreen,
     "taqui-notificacoes-morador": NotificacoesMoradorScreen,
+    "taqui-registro-encomenda": RegistroEncomendaScreen,
   })
 }
