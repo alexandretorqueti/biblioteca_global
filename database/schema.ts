@@ -18,6 +18,7 @@ import {
   mysqlTable,
   primaryKey,
   timestamp,
+  text,
   varchar,
 } from "drizzle-orm/mysql-core"
 import type { GeradorSistemaConfig } from "@biblioteca-global/shared"
@@ -122,4 +123,50 @@ export const refreshTokens = mysqlTable(
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (t) => [index("idx_refresh_tokens_usuario").on(t.usuarioId)],
+)
+
+/** Sessões de atendimento do HelpDesk no database core. */
+export const helpdeskSessoes = mysqlTable(
+  "helpdesk_sessoes",
+  {
+    id: bigint("id", { mode: "number", unsigned: true })
+      .primaryKey()
+      .autoincrement(),
+    usuarioId: bigint("usuario_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => usuarios.id, { onDelete: "cascade" }),
+    projetoId: bigint("projeto_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => projetos.id, { onDelete: "cascade" }),
+    agenteId: varchar("agente_id", { length: 100 }).notNull(),
+    status: mysqlEnum("status", ["open", "closed"])
+      .notNull()
+      .default("open"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at")
+      .notNull()
+      .defaultNow()
+      .onUpdateNow(),
+  },
+  (t) => [
+    index("idx_helpdesk_sessoes_usuario").on(t.usuarioId),
+    index("idx_helpdesk_sessoes_projeto").on(t.projetoId),
+  ],
+)
+
+/** Mensagens persistidas de uma sessão de atendimento do HelpDesk. */
+export const helpdeskMensagens = mysqlTable(
+  "helpdesk_mensagens",
+  {
+    id: bigint("id", { mode: "number", unsigned: true })
+      .primaryKey()
+      .autoincrement(),
+    sessaoId: bigint("sessao_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => helpdeskSessoes.id, { onDelete: "cascade" }),
+    role: mysqlEnum("role", ["agent", "user", "system"]).notNull(),
+    text: text("text").notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [index("idx_helpdesk_mensagens_sessao").on(t.sessaoId)],
 )

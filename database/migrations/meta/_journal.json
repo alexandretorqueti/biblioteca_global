@@ -15,6 +15,13 @@
       "when": 1786826047999,
       "tag": "0001_long_quentin_quire",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1788518151067,
+      "tag": "0002_flowery_jasper_sitwell",
+      "breakpoints": true
     }
   ]
 }
