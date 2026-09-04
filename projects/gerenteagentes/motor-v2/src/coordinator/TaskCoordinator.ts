@@ -38,6 +38,7 @@ interface ActiveWorker {
   fencingToken: number
   startedAt: Date
   phase: "analyze" | "execute"
+  taskTipo?: Task["tipo"]
   subtaskId?: number
   workspace?: { path: string; branch: string; baseCommit: string }
   repoPath?: string
@@ -74,6 +75,10 @@ interface ClarificacaoPendente {
 
 function isTaskTipo(value: unknown): value is NonNullable<Task["tipo"]> {
   return value === "desenvolvimento" || value === "automacao" || value === "verificacao"
+}
+
+function isLightweightTask(tipo: Task["tipo"] | undefined): boolean {
+  return tipo === "automacao" || tipo === "verificacao"
 }
 
 interface SubtaskView {
@@ -115,6 +120,7 @@ interface SubtaskWithTask {
   taskExternalId: string
   taskTitulo: string
   taskDescricao: string
+  taskTipo: Task["tipo"]
   repoPath: string
   projectSlug: string | null
   branchTrabalho: string | null
@@ -229,6 +235,7 @@ export class TaskCoordinator {
   private async selectNextSubtask(): Promise<SubtaskWithTask | null> {
     const { rows } = await this.db.query(
       "SELECT s.*, t.external_id as task_external_id, t.titulo as task_titulo, t.descricao as task_descricao, " +
+      "t.tipo as task_tipo, " +
       "t.max_rework AS task_max_rework, t.hard_timeout_ms AS task_hard_timeout_ms, " +
       "pc.slug as project_slug, " +
       "COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), pc.slug) as agent_id, " +
@@ -280,7 +287,9 @@ export class TaskCoordinator {
     }
 
     // Preflight de manifesto ANTES de consumir modelo (operação leve, sem materializar)
-    const preflightResult = await this.runManifestPreflight(task.repoPath, task.projectSlug)
+    const preflightResult = isLightweightTask(task.tipo)
+      ? { ok: true as const }
+      : await this.runManifestPreflight(task.repoPath, task.projectSlug)
     if (!preflightResult.ok) {
       this.logger.warn("Preflight de manifesto bloqueou análise: " + preflightResult.reason, {
         taskId: task.id, projectSlug: task.projectSlug ?? undefined,
@@ -304,7 +313,7 @@ export class TaskCoordinator {
 
     this.activeWorkers.set(executionId, {
       taskId: task.id, executionId, resourceKey, fencingToken,
-      startedAt: new Date(), phase: "analyze",
+      startedAt: new Date(), phase: "analyze", taskTipo: task.tipo,
       projectSlug: task.projectSlug ?? undefined,
     })
 
@@ -356,14 +365,14 @@ export class TaskCoordinator {
 
     this.activeWorkers.set(executionId, {
       taskId: subtask.taskExternalId, executionId, resourceKey, fencingToken,
-      startedAt: new Date(), phase: "execute", subtaskId: subtask.id,
+      startedAt: new Date(), phase: "execute", subtaskId: subtask.id, taskTipo: subtask.taskTipo,
       repoPath: subtask.repoPath,
       projectSlug: subtask.projectSlug ?? undefined,
     })
 
     try {
       if (!subtask.agentId) throw new Error("Projeto sem agente configurado")
-      this.assertExecutionConfig(subtask)
+      if (!isLightweightTask(subtask.taskTipo)) this.assertExecutionConfig(subtask)
       // Marca subtarefa como running
       await this.db.query("UPDATE subtarefas SET status = 'running', iniciada_em = NOW() WHERE id = ?", [subtask.id])
       const parentTask = await this.repository.getTask(subtask.taskExternalId)
@@ -374,14 +383,13 @@ export class TaskCoordinator {
         }
         await this.saveTaskTransition(parentTask, "start_execution")
       }
+      let workspace: Awaited<ReturnType<GitWorkspaceManager["prepare"]>> | undefined
       const baseBranch = subtask.branchTrabalho || "base-desenvolvimento"
-      const activeWorkerForBranch = this.activeWorkers.get(executionId)
-      if (activeWorkerForBranch) activeWorkerForBranch.baseBranch = baseBranch
-      
-      // Busca workspace real do agente no Console
-      const agentWorkspacePath = await this.getAgentWorkspacePath(subtask.agentId)
-      
-      const workspace = await this.workspaceManager.prepare({
+      if (!isLightweightTask(subtask.taskTipo)) {
+        const activeWorkerForBranch = this.activeWorkers.get(executionId)
+        if (activeWorkerForBranch) activeWorkerForBranch.baseBranch = baseBranch
+        const agentWorkspacePath = await this.getAgentWorkspacePath(subtask.agentId)
+        workspace = await this.workspaceManager.prepare({
         repoPath: subtask.repoPath,
         agentId: subtask.agentId,
         baseBranch,
@@ -389,13 +397,14 @@ export class TaskCoordinator {
         subtaskId: String(subtask.id),
         attempt: Math.max(1, subtask.deliverCount + 1),
         ...(agentWorkspacePath ? { agentWorkspacePath } : {}),
-      })
-      const activeWorker = this.activeWorkers.get(executionId)
-      if (activeWorker) activeWorker.workspace = workspace
-      await this.db.query(
+        })
+        const activeWorker = this.activeWorkers.get(executionId)
+        if (activeWorker) activeWorker.workspace = workspace
+        await this.db.query(
         "UPDATE subtarefas SET workspace_path = ?, workspace_branch = ?, workspace_base_commit = ?, workspace_status = 'active', workspace_created_at = NOW(), workspace_cleaned_at = NULL WHERE id = ?",
-        [workspace.path, workspace.branch, workspace.baseCommit, subtask.id],
-      )
+          [workspace.path, workspace.branch, workspace.baseCommit, subtask.id],
+        )
+      }
 
       const subtaskInfo: SubtaskInfo = {
         id: subtask.id, seq: subtask.seq, titulo: subtask.titulo,
@@ -406,9 +415,9 @@ export class TaskCoordinator {
 
       const task: Task = {
         id: subtask.taskExternalId, chatId: "", agentId: subtask.agentId,
-        title: subtask.taskTitulo, description: subtask.taskDescricao,
-        repoPath: subtask.repoPath, buildCommand: subtask.buildCommand!,
-        unitTestCommand: subtask.unitTestCommand!, unitTestExclude: subtask.unitTestExclude,
+        title: subtask.taskTitulo, description: subtask.taskDescricao, tipo: subtask.taskTipo,
+        repoPath: subtask.repoPath, buildCommand: subtask.buildCommand ?? "",
+        unitTestCommand: subtask.unitTestCommand ?? "", unitTestExclude: subtask.unitTestExclude,
         baselineMode: "full", status: "running",
         maxRework: subtask.maxRework ?? 3, hardTimeoutMs: subtask.hardTimeoutMs ?? 14_400_000,
         projectSlug: subtask.projectSlug,
@@ -421,11 +430,11 @@ export class TaskCoordinator {
           phase: "execute", fencingToken, startedAt: new Date(),
           subtaskId: String(subtask.id),
         },
-        task, repoPath: workspace.projectPath,
-        buildCommand: subtask.buildCommand!, testCommand: subtask.unitTestCommand!,
+        task, repoPath: workspace?.projectPath ?? subtask.repoPath,
+        buildCommand: subtask.buildCommand ?? "", testCommand: subtask.unitTestCommand ?? "",
         subtask: subtaskInfo,
-        workBranch: workspace.branch,
-        baseBranch,
+        ...(workspace ? { workBranch: workspace.branch } : {}),
+        ...(workspace ? { baseBranch } : {}),
         modelPhase: "development",
         modelChain: await this.getProjectModelChain(subtask.projectSlug, "development"),
       })
@@ -573,7 +582,17 @@ export class TaskCoordinator {
       this.publishActivity(worker, { type: "completed" })
       
       // Verificar se todas subtarefas da tarefa estao completas
-      if (worker.subtaskId) {
+      if (worker.subtaskId && isLightweightTask(worker.taskTipo)) {
+        const { rows } = await this.db.query(
+          "SELECT COUNT(*) as pending FROM subtarefas WHERE tarefa_id = (SELECT tarefa_id FROM subtarefas WHERE id = ?) AND status != 'verified'",
+          [worker.subtaskId],
+        )
+        const task = await this.repository.getTask(worker.taskId)
+        if (task) {
+          const pending = Number((rows[0] as Record<string, unknown>)?.pending ?? 0)
+          await this.saveTaskTransition(task, pending === 0 ? "execution_completed" : "subtasks_pending")
+        }
+      } else if (worker.subtaskId) {
         const { rows } = await this.db.query(
           "SELECT COUNT(*) as pending FROM subtarefas WHERE tarefa_id = (SELECT tarefa_id FROM subtarefas WHERE id = ?) AND status != 'verified'",
           [worker.subtaskId]
@@ -1328,6 +1347,7 @@ export class TaskCoordinator {
       taskExternalId: String(row.task_external_id ?? row.tarefa_id),
       taskTitulo: String(row.task_titulo ?? ""),
       taskDescricao: row.task_descricao ? String(row.task_descricao) : "",
+      taskTipo: isTaskTipo(row.task_tipo) ? row.task_tipo : "desenvolvimento",
       repoPath: String(row.repo_path ?? ""),
       projectSlug: row.project_slug ? String(row.project_slug) : null,
       branchTrabalho: row.branch_trabalho ? String(row.branch_trabalho) : null,
