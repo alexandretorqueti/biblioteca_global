@@ -1,16 +1,25 @@
 // @vitest-environment node
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import {
   BadRequestException,
+  ConflictException,
   NotFoundException,
 } from "@nestjs/common"
-import { getTableColumns } from "drizzle-orm"
+import { getTableColumns, getTableName } from "drizzle-orm"
 import { MySqlDialect } from "drizzle-orm/mysql-core"
 import type { ConfigService } from "@nestjs/config"
-import type { ProjetoResumo } from "@biblioteca-global/shared"
+import {
+  realtimeIngressEventSchema,
+  taskEventEnvelopeSchema,
+  type ProjetoResumo,
+} from "@biblioteca-global/shared"
 import type { MySqlTable } from "drizzle-orm/mysql-core"
 import { componentes } from "../../../../../../projects/documentacao/schema"
-import { tarefas as tarefasGerente } from "../../../../../../projects/gerenteagentes/schema"
+import {
+  subtarefas as subtarefasGerente,
+  tarefas as tarefasGerente,
+} from "../../../../../../projects/gerenteagentes/schema"
+import { RealtimeService } from "../../realtime/realtime.service"
 import { CrudService, RESOURCES_RESERVADOS, VIRTUAL_RESOURCE_OPENCLAW_AGENTES } from "../crud.service"
 import { createHash } from "node:crypto"
 import {
@@ -562,5 +571,418 @@ describe("CrudService — virtual resource __openclaw_agentes__", () => {
     await expect(
       service.detalharVirtual(projeto("gerenteagentes", 640), "agentes", "1"),
     ).rejects.toBeInstanceOf(NotFoundException)
+  })
+})
+
+describe("CrudService — eventos realtime no CRUD de tarefas/subtarefas", () => {
+  class FakeRegistryComSubtarefas implements SchemaRegistry {
+    tabelasDoProjeto(slug: string): Record<string, MySqlTable> | undefined {
+      if (slug === "gerenteagentes") {
+        return { tarefas: tarefasGerente, subtarefas: subtarefasGerente }
+      }
+      return undefined
+    }
+
+    projetosCarregados(): string[] {
+      return ["gerenteagentes"]
+    }
+  }
+
+  interface OpcoesDbFake {
+    /** Linhas devolvidas pelos SELECTs, por nome de tabela (getTableName). */
+    linhasPorTabela?: Record<string, Array<Record<string, unknown>>>
+    insertId?: number
+    insertErro?: Error
+    updateErro?: Error
+    deleteAfetadas?: number
+  }
+
+  /** Db fake encadeável no formato que o CrudService usa (drizzle). */
+  function dbFake(opcoes: OpcoesDbFake = {}) {
+    const linhas = opcoes.linhasPorTabela ?? {}
+    return {
+      select: () => ({
+        from: (tabela: MySqlTable) => ({
+          where: () => ({
+            limit: async () => linhas[getTableName(tabela)] ?? [],
+          }),
+        }),
+      }),
+      insert: () => ({
+        values: async () => {
+          if (opcoes.insertErro) throw opcoes.insertErro
+          return [{ insertId: opcoes.insertId ?? 1 }]
+        },
+      }),
+      update: () => ({
+        set: () => ({
+          where: async () => {
+            if (opcoes.updateErro) throw opcoes.updateErro
+          },
+        }),
+      }),
+      delete: () => ({
+        where: async () => [{ affectedRows: opcoes.deleteAfetadas ?? 1 }],
+      }),
+      execute: async () => [],
+    }
+  }
+
+  function montar(opcoes: OpcoesDbFake = {}) {
+    const registry = new FakeRegistryComSubtarefas()
+    const db = dbFake(opcoes)
+    const factory = { obter: async () => db } as unknown as ProjectDbFactory
+    const configService = { get: () => undefined } as unknown as ConfigService
+    // RealtimeService real: publicar valida o envelope contra o schema do
+    // shared e numera a sequência — evento inválido derruba o teste.
+    const realtime = new RealtimeService()
+    const publicar = vi.spyOn(realtime, "publicar")
+    const service = new CrudService(registry, factory, configService, realtime)
+    return { service, publicar }
+  }
+
+  /** Devolve o ingresso validado e o envelope da única chamada de publicar. */
+  function unicoEvento(publicar: {
+    mock: { calls: unknown[][]; results: Array<{ value: unknown }> }
+  }): { ingress: unknown; envelope: unknown } {
+    const chamada = publicar.mock.calls[0]
+    const resultado = publicar.mock.results[0]
+    if (!chamada || !resultado) {
+      throw new Error("publicar não foi chamado")
+    }
+    return {
+      ingress: realtimeIngressEventSchema.parse(chamada[0]),
+      envelope: taskEventEnvelopeSchema.parse(resultado.value),
+    }
+  }
+
+  function publicarEvento(
+    service: CrudService,
+  ): (
+    projeto: ProjetoResumo,
+    resource: string,
+    operacao: "created" | "updated" | "deleted",
+    linha: Record<string, unknown>,
+  ) => Promise<void> {
+    const metodo = (service as unknown as {
+      publicarEventoCrud: (
+        projeto: ProjetoResumo,
+        resource: string,
+        operacao: "created" | "updated" | "deleted",
+        linha: Record<string, unknown>,
+      ) => Promise<void>
+    }).publicarEventoCrud
+    // Método de protótipo: invocar com .call para preservar o `this`.
+    return (projeto, resource, operacao, linha) =>
+      metodo.call(service, projeto, resource, operacao, linha)
+  }
+
+  const projetoGerente = projeto("gerenteagentes", 640)
+  const updatedAt = new Date("2026-09-04T13:00:00.000Z")
+
+  describe("tarefas", () => {
+    it("criar publica task.created com payload de reconciliação", async () => {
+      const linhaTarefa = {
+        id: 55,
+        titulo: "Nova tarefa",
+        status: "draft",
+        projetoId: 1,
+        updatedAt,
+      }
+      const { service, publicar } = montar({
+        linhasPorTabela: {
+          projetos_captados: [{ id: 1, slug: "gerenteagentes" }],
+          tarefas: [linhaTarefa],
+        },
+        insertId: 55,
+      })
+
+      await service.criar(projetoGerente, "tarefas", {
+        projetoId: 1,
+        titulo: "Nova tarefa",
+      })
+
+      expect(publicar).toHaveBeenCalledTimes(1)
+      const { ingress, envelope } = unicoEvento(publicar)
+      expect(ingress).toMatchObject({
+        type: "task.created",
+        source: "crud",
+        projectId: 1,
+        taskId: 55,
+      })
+      expect(ingress).toHaveProperty("eventId", expect.any(String))
+      expect(ingress).toHaveProperty("occurredAt", expect.any(String))
+      expect(ingress).toHaveProperty("payload", {
+        id: 55,
+        titulo: "Nova tarefa",
+        status: "draft",
+        projetoId: 1,
+        updatedAt: "2026-09-04T13:00:00.000Z",
+      })
+      expect(envelope).toHaveProperty("sequence", 1)
+    })
+
+    it("atualizar publica task.updated com o estado pós-edição", async () => {
+      const linhaAtualizada = {
+        id: 55,
+        titulo: "Nova tarefa",
+        status: "running",
+        projetoId: 1,
+        updatedAt,
+      }
+      const { service, publicar } = montar({
+        linhasPorTabela: { tarefas: [linhaAtualizada] },
+      })
+
+      await service.atualizar(projetoGerente, "tarefas", 55, {
+        status: "running",
+      })
+
+      expect(publicar).toHaveBeenCalledTimes(1)
+      const { ingress } = unicoEvento(publicar)
+      expect(ingress).toMatchObject({
+        type: "task.updated",
+        projectId: 1,
+        taskId: 55,
+      })
+      expect(ingress).toHaveProperty("payload.status", "running")
+    })
+
+    it("remover publica task.deleted com os dados do registro removido", async () => {
+      const linhaRemovida = {
+        id: 55,
+        titulo: "Nova tarefa",
+        status: "canceled",
+        projetoId: 1,
+        updatedAt,
+      }
+      const { service, publicar } = montar({
+        linhasPorTabela: { tarefas: [linhaRemovida] },
+      })
+
+      await service.remover(projetoGerente, "tarefas", 55)
+
+      expect(publicar).toHaveBeenCalledTimes(1)
+      const { ingress } = unicoEvento(publicar)
+      expect(ingress).toMatchObject({
+        type: "task.deleted",
+        projectId: 1,
+        taskId: 55,
+      })
+      expect(ingress).toHaveProperty("payload.id", 55)
+    })
+  })
+
+  describe("subtarefas", () => {
+    it("criar publica subtask.created com projetoId/taskId da tarefa pai", async () => {
+      const linhaSub = {
+        id: 42,
+        tarefaId: 7,
+        seq: 1,
+        titulo: "Sub X",
+        status: "pending",
+        // resultado ausente no insert → null no payload
+      }
+      const { service, publicar } = montar({
+        linhasPorTabela: {
+          subtarefas: [linhaSub],
+          tarefas: [{ projetoId: 3 }], // tarefa pai
+        },
+        insertId: 42,
+      })
+
+      await service.criar(projetoGerente, "subtarefas", {
+        tarefaId: 7,
+        seq: 1,
+        titulo: "Sub X",
+      })
+
+      expect(publicar).toHaveBeenCalledTimes(1)
+      const { ingress, envelope } = unicoEvento(publicar)
+      expect(ingress).toMatchObject({
+        type: "subtask.created",
+        source: "crud",
+        projectId: 3,
+        taskId: 7,
+      })
+      expect(ingress).toHaveProperty("payload", {
+        id: 42,
+        tarefaId: 7,
+        seq: 1,
+        titulo: "Sub X",
+        status: "pending",
+        resultado: null,
+      })
+      expect(envelope).toHaveProperty("sequence", 1)
+    })
+
+    it("atualizar publica subtask.updated", async () => {
+      const linhaAtualizada = {
+        id: 42,
+        tarefaId: 7,
+        seq: 1,
+        titulo: "Sub X",
+        status: "verified",
+        resultado: "entregue",
+      }
+      const { service, publicar } = montar({
+        linhasPorTabela: {
+          subtarefas: [linhaAtualizada],
+          tarefas: [{ projetoId: 3 }],
+        },
+      })
+
+      await service.atualizar(projetoGerente, "subtarefas", 42, {
+        status: "verified",
+        resultado: "entregue",
+      })
+
+      expect(publicar).toHaveBeenCalledTimes(1)
+      const { ingress } = unicoEvento(publicar)
+      expect(ingress).toMatchObject({
+        type: "subtask.updated",
+        projectId: 3,
+        taskId: 7,
+      })
+      expect(ingress).toHaveProperty("payload", {
+        id: 42,
+        tarefaId: 7,
+        seq: 1,
+        titulo: "Sub X",
+        status: "verified",
+        resultado: "entregue",
+      })
+    })
+
+    it("remover publica subtask.deleted", async () => {
+      const linhaRemovida = {
+        id: 42,
+        tarefaId: 7,
+        seq: 1,
+        titulo: "Sub X",
+        status: "failed",
+        resultado: null,
+      }
+      const { service, publicar } = montar({
+        linhasPorTabela: {
+          subtarefas: [linhaRemovida],
+          tarefas: [{ projetoId: 3 }],
+        },
+      })
+
+      await service.remover(projetoGerente, "subtarefas", 42)
+
+      expect(publicar).toHaveBeenCalledTimes(1)
+      const { ingress } = unicoEvento(publicar)
+      expect(ingress).toMatchObject({
+        type: "subtask.deleted",
+        projectId: 3,
+        taskId: 7,
+      })
+      expect(ingress).toHaveProperty("payload.id", 42)
+    })
+  })
+
+  describe("garantias", () => {
+    it("resources fora de tarefas/subtarefas não publicam evento", async () => {
+      const { service, publicar } = montar()
+      await publicarEvento(service)(projeto("documentacao", 2), "componentes", "created", {
+        id: 1,
+        nome: "Grid",
+      })
+      expect(publicar).not.toHaveBeenCalled()
+    })
+
+    it("sem RealtimeService (DI ausente) não lança e não publica", async () => {
+      const registry = new FakeRegistryComSubtarefas()
+      const factory = { obter: async () => dbFake() } as unknown as ProjectDbFactory
+      const configService = { get: () => undefined } as unknown as ConfigService
+      const service = new CrudService(registry, factory, configService)
+
+      await expect(
+        publicarEvento(service)(projetoGerente, "tarefas", "created", {
+          id: 1,
+          titulo: "X",
+          status: "draft",
+          projetoId: 1,
+        }),
+      ).resolves.toBeUndefined()
+    })
+
+    it("linha sem id ou projetoId válidos não publica", async () => {
+      const { service, publicar } = montar()
+      await publicarEvento(service)(projetoGerente, "tarefas", "created", {
+        id: 0,
+        titulo: "X",
+        status: "draft",
+        projetoId: 1,
+      })
+      await publicarEvento(service)(projetoGerente, "tarefas", "created", {
+        id: 1,
+        titulo: "X",
+        status: "draft",
+        // projetoId ausente
+      })
+      expect(publicar).not.toHaveBeenCalled()
+    })
+
+    it("subtarefa sem tarefa pai resolvível não publica", async () => {
+      const { service, publicar } = montar({
+        linhasPorTabela: { tarefas: [] },
+      })
+      await publicarEvento(service)(projetoGerente, "subtarefas", "created", {
+        id: 42,
+        tarefaId: 7,
+        seq: 1,
+        titulo: "Sub X",
+        status: "pending",
+      })
+      expect(publicar).not.toHaveBeenCalled()
+    })
+
+    it("insert duplicado → 409 e nenhum evento (publica só após commit)", async () => {
+      const { service, publicar } = montar({
+        linhasPorTabela: {
+          projetos_captados: [{ id: 1, slug: "gerenteagentes" }],
+        },
+        insertErro: Object.assign(new Error("duplicado"), { code: "ER_DUP_ENTRY" }),
+      })
+
+      await expect(
+        service.criar(projetoGerente, "tarefas", {
+          projetoId: 1,
+          titulo: "Nova tarefa",
+        }),
+      ).rejects.toBeInstanceOf(ConflictException)
+      expect(publicar).not.toHaveBeenCalled()
+    })
+
+    it("falha no update → rejeita e nenhum evento", async () => {
+      const { service, publicar } = montar({
+        linhasPorTabela: {
+          tarefas: [{ id: 55, titulo: "X", status: "draft", projetoId: 1 }],
+        },
+        updateErro: new Error("falha no update"),
+      })
+
+      await expect(
+        service.atualizar(projetoGerente, "tarefas", 55, { status: "running" }),
+      ).rejects.toThrow("falha no update")
+      expect(publicar).not.toHaveBeenCalled()
+    })
+
+    it("remover sem linhas afetadas → 404 e nenhum evento", async () => {
+      const { service, publicar } = montar({
+        linhasPorTabela: {
+          tarefas: [{ id: 55, titulo: "X", status: "draft", projetoId: 1 }],
+        },
+        deleteAfetadas: 0,
+      })
+
+      await expect(service.remover(projetoGerente, "tarefas", 55)).rejects.toBeInstanceOf(
+        NotFoundException,
+      )
+      expect(publicar).not.toHaveBeenCalled()
+    })
   })
 })

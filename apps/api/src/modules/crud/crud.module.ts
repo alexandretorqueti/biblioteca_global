@@ -1,6 +1,7 @@
 import { Global, Module } from "@nestjs/common"
 import { EnvService } from "../../config/env.service"
 import { AuthModule } from "../auth/auth.module"
+import { RealtimeModule } from "../realtime/realtime.module"
 import { CrudController } from "./crud.controller"
 import { CrudService } from "./crud.service"
 import {
@@ -13,7 +14,7 @@ import { DynamicSchemaRegistry, SCHEMA_REGISTRY } from "./schema-registry"
 
 @Global()
 @Module({
-  imports: [AuthModule],
+  imports: [AuthModule, RealtimeModule],
   controllers: [CrudController],
   providers: [
     CrudService,
