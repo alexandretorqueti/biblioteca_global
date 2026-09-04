@@ -7,9 +7,14 @@ import {
   Catch,
   ExceptionFilter,
   HttpException,
+  Optional,
+  Inject,
 } from "@nestjs/common"
 import type { ApiError } from "@biblioteca-global/shared"
 import { EnvService } from "../../config/env.service"
+import { GESTAO_GLOBAL_TASKS_REPOSITORY } from "../types"
+import type { ApiRequest } from "../types"
+import type { GestaoGlobalTasksRepository } from "../../modules/crud/gestao-global-tasks.repository"
 
 interface HttpResponse {
   status(code: number): HttpResponse
@@ -27,10 +32,18 @@ const CODIGOS_POR_STATUS: Record<number, string> = {
 
 @Catch()
 export class ApiExceptionFilter implements ExceptionFilter {
-  constructor(private readonly env: EnvService) {}
+  constructor(
+    private readonly env: EnvService,
+    @Optional() @Inject(GESTAO_GLOBAL_TASKS_REPOSITORY)
+    private readonly tasksRepository?: GestaoGlobalTasksRepository,
+  ) {}
 
   catch(exception: unknown, host: ArgumentsHost): void {
-    const response = host.switchToHttp().getResponse<HttpResponse>()
+    const http = host.switchToHttp()
+    const response = http.getResponse<HttpResponse>()
+    const request = "getRequest" in http
+      ? http.getRequest<ApiRequest>()
+      : ({} as ApiRequest)
 
     if (exception instanceof HttpException) {
       const status = exception.getStatus()
@@ -63,6 +76,7 @@ export class ApiExceptionFilter implements ExceptionFilter {
           : details,
       }
       response.status(status).json(erro)
+      this.registrarTarefa(request, status, erro.message, erro.details)
       return
     }
 
@@ -80,5 +94,22 @@ export class ApiExceptionFilter implements ExceptionFilter {
       details: this.env.exposeRealErrors ? detalhesReais : undefined,
     }
     response.status(500).json(erro)
+    this.registrarTarefa(request, 500, erro.message, erro.details)
+  }
+
+  private registrarTarefa(request: ApiRequest, status: number, message: string, details: unknown): void {
+    const projetoId = request.scope?.projeto.id
+    const endpoint = request.route?.path ?? request.originalUrl ?? request.url
+    if (!this.tasksRepository || projetoId === undefined || !endpoint) return
+    void this.tasksRepository.criarTarefaErro({
+      projetoId,
+      endpoint,
+      method: request.method ?? "HTTP",
+      status,
+      message,
+      details,
+    }).catch((erro: unknown) => {
+      console.error("Falha ao registrar tarefa de erro da API:", erro)
+    })
   }
 }
