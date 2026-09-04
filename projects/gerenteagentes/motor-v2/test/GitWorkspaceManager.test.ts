@@ -10,6 +10,7 @@ describe("GitWorkspaceManager", () => {
     const runner: GitCommandRunner = {
       run: vi.fn().mockImplementation(async (command: readonly string[]) => {
         if (command[1] === "status") return { stdout: "", stderr: "" }
+        if (command[1] === "rev-parse" && command[2] === "--show-toplevel") return { stdout: "/repo/principal\n", stderr: "" }
         if (command[1] === "rev-parse") return { stdout: "a".repeat(40) + "\n", stderr: "" }
         if (command[1] === "show-ref") throw new Error("branch inexistente")
         return { stdout: "", stderr: "" }
@@ -21,6 +22,7 @@ describe("GitWorkspaceManager", () => {
       })
       expect(result.branch).toBe("motor-v2/task-7/13/a1")
       expect(result.path).toBe(join(root, "test-agent", "worktrees", "task-7", "13", "a1"))
+      expect(result.projectPath).toBe(result.path)
       const calls = vi.mocked(runner.run).mock.calls.map(([command, cwd]) => ({ command, cwd }))
       expect(calls).toContainEqual({ command: ["git", "worktree", "add", "--detach", result.path, "a".repeat(40)], cwd: "/repo/principal" })
       expect(calls).toContainEqual({ command: ["git", "switch", "-c", result.branch, "a".repeat(40)], cwd: result.path })
@@ -35,6 +37,7 @@ describe("GitWorkspaceManager", () => {
     const branch = "motor-v2/task-7/13/a1"
     const runner: GitCommandRunner = {
       run: vi.fn().mockImplementation(async (command: readonly string[]) => {
+        if (command[1] === "rev-parse" && command[2] === "--show-toplevel") return { stdout: "/repo/principal\n", stderr: "" }
         if (command[1] === "rev-parse") return { stdout: "a".repeat(40) + "\n", stderr: "" }
         if (command[1] === "show-ref") return { stdout: "", stderr: "" }
         if (command[1] === "worktree" && command[2] === "list") return { stdout: "worktree /repo/principal\n", stderr: "" }
@@ -49,6 +52,26 @@ describe("GitWorkspaceManager", () => {
       const commands = vi.mocked(runner.run).mock.calls.map(([command]) => command)
       expect(commands).toContainEqual(["git", "worktree", "add", result.path, branch])
       expect(commands).not.toContainEqual(["git", "switch", "-c", branch, "a".repeat(40)])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it("preserva o subdiretório do projeto para executar gates em worktree de monorepo", async () => {
+    const root = await mkdtemp(join(tmpdir(), "motor-v2-workspaces-"))
+    const runner: GitCommandRunner = {
+      run: vi.fn().mockImplementation(async (command: readonly string[]) => {
+        if (command[1] === "rev-parse" && command[2] === "--show-toplevel") return { stdout: "/repo\n", stderr: "" }
+        if (command[1] === "rev-parse") return { stdout: "a".repeat(40) + "\n", stderr: "" }
+        if (command[1] === "show-ref") throw new Error("branch inexistente")
+        return { stdout: "", stderr: "" }
+      }),
+    }
+    try {
+      const result = await new GitWorkspaceManager({ root, runner }).prepare({
+        repoPath: "/repo/projects/gerenteagentes", agentId: "test-agent", baseBranch: "base-desenvolvimento", taskId: "task-7", subtaskId: "13", attempt: 1,
+      })
+      expect(result.projectPath).toBe(join(result.path, "projects", "gerenteagentes"))
     } finally {
       await rm(root, { recursive: true, force: true })
     }

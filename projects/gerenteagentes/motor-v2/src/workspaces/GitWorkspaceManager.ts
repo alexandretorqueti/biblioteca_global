@@ -22,7 +22,10 @@ class NodeGitCommandRunner implements GitCommandRunner {
 }
 
 export interface WorkspacePreparation {
+  /** Raiz do worktree Git, usada para diff, commit e limpeza. */
   path: string
+  /** Diretório do projeto dentro do worktree, usado pelo agente e pelos gates. */
+  projectPath: string
   branch: string
   baseCommit: string
 }
@@ -89,6 +92,7 @@ export class GitWorkspaceManager {
 
   async prepare(input: PrepareWorkspaceInput): Promise<WorkspacePreparation> {
     if (!isAbsolute(input.repoPath) || !Number.isInteger(input.attempt) || input.attempt < 1) throw new Error("pré-condição inválida para workspace")
+    const repoPath = resolve(input.repoPath)
     const agentId = safeSegment(input.agentId, "agentId")
     const task = safeSegment(input.taskId, "taskId")
     const subtask = safeSegment(input.subtaskId, "subtaskId")
@@ -102,14 +106,14 @@ export class GitWorkspaceManager {
     // Verifica contra o workspaceRoot usado (workspace do agente OU root padrão)
     if (!inside(workspaceRoot, target)) throw new Error("workspace fora da raiz segura")
 
-    await this.markSafeDirectory(input.repoPath)
+    await this.markSafeDirectory(repoPath)
     // Falha ambiental clara: repo ausente causa "spawn git ENOENT" e entraria
     // em loop de retries no coordenador. Classificar como bloqueio ambiental.
     // Untracked files não afetam worktree/merge e não podem travar o motor
     // enquanto outra sessão mantém arquivos novos no repositório.
     // Verifica se o repo tem alterações reais (ignora whitespace-at-eol para
     // não bloquear por artefatos de db:migrate em _journal.json — só newline no fim).
-    const diff = await this.runner.run(["git", "diff", "--name-only", "--ignore-space-at-eol", "HEAD"], input.repoPath).catch((error: unknown) => {
+    const diff = await this.runner.run(["git", "diff", "--name-only", "--ignore-space-at-eol", "HEAD"], repoPath).catch((error: unknown) => {
       const code = (error as NodeJS.ErrnoException | undefined)?.code
       if (code === "ENOENT") {
         throw new Error("Ambiente bloqueado: repositório não encontrado: " + input.repoPath)
@@ -117,10 +121,15 @@ export class GitWorkspaceManager {
       throw error
     })
     // staged files also need checking (git diff HEAD misses index-only changes if working tree matches index)
-    const staged = await this.runner.run(["git", "diff", "--name-only", "--cached", "--ignore-space-at-eol"], input.repoPath)
+    const staged = await this.runner.run(["git", "diff", "--name-only", "--cached", "--ignore-space-at-eol"], repoPath)
     const dirtyFiles = [...new Set([...diff.stdout.split("\n"), ...staged.stdout.split("\n")].map((s) => s.trim()).filter(Boolean))]
     if (dirtyFiles.length > 0) throw new Error("repositório principal não está limpo: " + dirtyFiles.join(", "))
-    const baseCommit = (await this.runner.run(["git", "rev-parse", "--verify", `${baseBranch}^{commit}`], input.repoPath)).stdout.trim()
+    const repositoryRoot = resolve((await this.runner.run(["git", "rev-parse", "--show-toplevel"], repoPath)).stdout.trim())
+    const projectRelativePath = relative(repositoryRoot, repoPath)
+    if (projectRelativePath === ".." || projectRelativePath.startsWith(`..${"/"}`) || isAbsolute(projectRelativePath)) {
+      throw new Error("repo_path fora da raiz do repositório Git")
+    }
+    const baseCommit = (await this.runner.run(["git", "rev-parse", "--verify", `${baseBranch}^{commit}`], repoPath)).stdout.trim()
     if (!/^[a-f0-9]{7,}$/i.test(baseCommit)) throw new Error("commit-base inválido")
 
     const branch = `motor-v2/${task}/${subtask}/a${input.attempt}`
@@ -129,31 +138,31 @@ export class GitWorkspaceManager {
     // branch ainda registrada. Elimina somente o registro obsoleto; se o
     // worktree continuar ativo, não toca nele e deixa o Git explicar o
     // conflito real.
-    await this.runner.run(["git", "worktree", "prune"], input.repoPath).catch(() => {})
+    await this.runner.run(["git", "worktree", "prune"], repoPath).catch(() => {})
     // Força limpeza adicional: remove entrada stale que prune não conseguiu
     // apagar (permissão negada no container, paths diferentes, etc.)
-    await this.runner.run(["git", "worktree", "remove", "--force", target], input.repoPath).catch(() => {})
-    const worktrees = await this.runner.run(["git", "worktree", "list", "--porcelain"], input.repoPath)
+    await this.runner.run(["git", "worktree", "remove", "--force", target], repoPath).catch(() => {})
+    const worktrees = await this.runner.run(["git", "worktree", "list", "--porcelain"], repoPath)
     const targetIsActive = worktrees.stdout.split("\n").some((line) => line === `worktree ${target}`)
     if (!targetIsActive) await rm(target, { recursive: true, force: true })
     // Branch órfã: existe mas nenhum worktree ativo aponta para ela.
     // Típico quando tentativa anterior criou a branch mas falhou antes do merge.
-    const branchExists = await this.runner.run(["git", "show-ref", "--verify", "--quiet", `refs/heads/${branch}`], input.repoPath)
+    const branchExists = await this.runner.run(["git", "show-ref", "--verify", "--quiet", `refs/heads/${branch}`], repoPath)
       .then(() => true)
       .catch(() => false)
     const branchHasActiveWorktree = branchExists && worktrees.stdout.includes(branch)
     if (branchExists && !branchHasActiveWorktree && !targetIsActive) {
       logger.info(`Branch órfã detectada (sem worktree ativo): deletando ${branch}`, { taskId: input.taskId, subtaskId: input.subtaskId })
-      await this.runner.run(["git", "branch", "-D", branch], input.repoPath).catch(() => {})
+      await this.runner.run(["git", "branch", "-D", branch], repoPath).catch(() => {})
     }
-    const finalBranchExists = await this.runner.run(["git", "show-ref", "--verify", "--quiet", `refs/heads/${branch}`], input.repoPath)
+    const finalBranchExists = await this.runner.run(["git", "show-ref", "--verify", "--quiet", `refs/heads/${branch}`], repoPath)
       .then(() => true)
       .catch(() => false)
     logger.info(`Criando worktree: target=${target}, baseCommit=${baseCommit}, repoPath=${input.repoPath}`, { taskId: input.taskId, subtaskId: input.subtaskId })
     try {
       const worktreeResult = finalBranchExists
-        ? await this.runner.run(["git", "worktree", "add", target, branch], input.repoPath)
-        : await this.runner.run(["git", "worktree", "add", "--detach", target, baseCommit], input.repoPath)
+        ? await this.runner.run(["git", "worktree", "add", target, branch], repoPath)
+        : await this.runner.run(["git", "worktree", "add", "--detach", target, baseCommit], repoPath)
       logger.debug(`Worktree criado: stdout=${worktreeResult.stdout.trim()}, stderr=${worktreeResult.stderr.trim()}`)
       if (!finalBranchExists) {
         try {
@@ -170,7 +179,7 @@ export class GitWorkspaceManager {
       }
       await this.markSafeDirectory(target)
       logger.info(`Worktree validado com sucesso: path=${target}, branch=${branch}`, { taskId: input.taskId, subtaskId: input.subtaskId })
-      return { path: target, branch, baseCommit }
+      return { path: target, projectPath: resolve(join(target, projectRelativePath)), branch, baseCommit }
     } catch (error) {
       logger.error(`Erro ao criar worktree: ${error instanceof Error ? error.message : String(error)}`, { taskId: input.taskId, subtaskId: input.subtaskId })
       // O alvo foi criado exclusivamente por esta tentativa, sempre dentro da

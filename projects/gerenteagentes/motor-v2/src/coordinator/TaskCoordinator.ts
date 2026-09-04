@@ -417,7 +417,7 @@ export class TaskCoordinator {
           phase: "execute", fencingToken, startedAt: new Date(),
           subtaskId: String(subtask.id),
         },
-        task, repoPath: workspace.path,
+        task, repoPath: workspace.projectPath,
         buildCommand: subtask.buildCommand!, testCommand: subtask.unitTestCommand!,
         subtask: subtaskInfo,
         workBranch: workspace.branch,
