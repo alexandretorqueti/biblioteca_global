@@ -1,6 +1,6 @@
 # Runbook Pós-Reinstalação — Motor v2 / Biblioteca Global
 
-A reinstalação do host (Bazzite) muda binds, permissões e caminhos. O motor
+A reinstalação do host (ServerIA) muda binds, permissões e caminhos. O motor
 depende de vários deles; quando um quebra, a falha aparece depois, mascarada
 (ex.: subtarefa bloqueada com "repositório não encontrado"). Este runbook
 existe para validar o ambiente **antes** de lançar tarefas.
