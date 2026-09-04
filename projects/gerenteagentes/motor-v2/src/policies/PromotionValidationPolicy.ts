@@ -8,6 +8,8 @@
  * e a tarefa pai fechou como concluída sem trabalho real entregue.
  */
 
+import { isAgentRunFailureWithoutReply } from './NoReplyFailurePolicy.js'
+
 export interface PromotionValidationResult {
   ok: boolean
   reason?: string
@@ -32,7 +34,18 @@ export function validateSubtaskPromotion(subtask: {
   status: string
   promotionManual?: boolean
   promotionJustification?: string | null
+  resultado?: string | null
 }): PromotionValidationResult {
+  // Um runtime pode finalizar sem produzir resposta. Isso não é evidência de
+  // entrega e não pode ser promovido, mesmo que exista um commit associado.
+  if (subtask.resultado !== undefined && isAgentRunFailureWithoutReply(subtask.resultado)) {
+    return {
+      ok: false,
+      reason: `Subtarefa #${subtask.id} sem resposta verificável do agente. Falha de execução não pode ser promovida para verified.`,
+      blockedAt: new Date().toISOString(),
+    }
+  }
+
   // Regra 1: workspaceCommitSha é obrigatório
   if (!subtask.workspaceCommitSha || subtask.workspaceCommitSha.trim() === '') {
     return {
@@ -80,17 +93,19 @@ export function validateTaskCompletion(subtasks: Array<{
   seq: number
   workspaceCommitSha: string | null
   status: string
+  resultado?: string | null
 }>): PromotionValidationResult {
   const invalidSubtasks = subtasks.filter(
-    (st) => !st.workspaceCommitSha || st.workspaceCommitSha.trim() === ''
+    (st) => !st.workspaceCommitSha || st.workspaceCommitSha.trim() === '' ||
+      (st.resultado !== undefined && isAgentRunFailureWithoutReply(st.resultado))
   )
 
   if (invalidSubtasks.length > 0) {
     const ids = invalidSubtasks.map((st) => `#${st.seq} (id=${st.id})`).join(', ')
     return {
       ok: false,
-      reason: `Tarefa não pode ser concluída: ${invalidSubtasks.length} subtarefa(s) sem workspaceCommitSha: ${ids}. ` +
-              `Promoção manual sem código não fecha tarefa.`,
+      reason: `Tarefa não pode ser concluída: ${invalidSubtasks.length} subtarefa(s) sem evidência válida: ${ids}. ` +
+              `Promoção manual sem código ou resposta do agente não fecha tarefa.`,
       blockedAt: new Date().toISOString(),
     }
   }
