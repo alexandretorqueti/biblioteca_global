@@ -14,8 +14,7 @@
  *
  * Telas custom (kind: "custom") — exigem implementação React específica:
  * - taqui-registro-encomenda: registro com foto (câmera) e leitura de código de barras/QR code
- * - taqui-confirmacao-recebimento: morador confirma recebimento pelo sistema
- * - taqui-notificacoes-morador: sininho — encomendas pendentes + histórico
+ * - taqui-notificacoes-morador: sininho — encomendas pendentes + histórico (inclui confirmação de reconhecimento pelo morador)
  * - taqui-painel-portaria: visão da portaria/triagem com encomendas do dia
  *
  * Navegação hierárquica:
@@ -535,16 +534,6 @@ export const config: GeradorSistemaConfig = {
           screen: {
             kind: "custom",
             componentId: "taqui-notificacoes-morador",
-          },
-        },
-        {
-          id: "confirmar-recebimento",
-          label: "Confirmar Recebimento",
-          path: "confirmar",
-          icon: "task_alt",
-          screen: {
-            kind: "custom",
-            componentId: "taqui-confirmacao-recebimento",
           },
         },
       ],
