@@ -14,7 +14,17 @@ import type { ApiError } from "@biblioteca-global/shared"
 import { EnvService } from "../../config/env.service"
 import { GESTAO_GLOBAL_TASKS_REPOSITORY } from "../types"
 import type { ApiRequest } from "../types"
-import type { GestaoGlobalTasksRepository } from "../../modules/crud/gestao-global-tasks.repository"
+
+interface ErrorTaskRegistrar {
+  criarTarefaErro(input: {
+    projetoId: number
+    endpoint: string
+    method?: string
+    status?: number
+    message: string
+    details?: unknown
+  }): Promise<unknown>
+}
 
 interface HttpResponse {
   status(code: number): HttpResponse
@@ -35,15 +45,13 @@ export class ApiExceptionFilter implements ExceptionFilter {
   constructor(
     private readonly env: EnvService,
     @Optional() @Inject(GESTAO_GLOBAL_TASKS_REPOSITORY)
-    private readonly tasksRepository?: GestaoGlobalTasksRepository,
+    private readonly tasksRepository?: ErrorTaskRegistrar,
   ) {}
 
   catch(exception: unknown, host: ArgumentsHost): void {
     const http = host.switchToHttp()
     const response = http.getResponse<HttpResponse>()
-    const request = "getRequest" in http
-      ? http.getRequest<ApiRequest>()
-      : ({} as ApiRequest)
+    const request = http.getRequest<ApiRequest>()
 
     if (exception instanceof HttpException) {
       const status = exception.getStatus()
@@ -98,18 +106,26 @@ export class ApiExceptionFilter implements ExceptionFilter {
   }
 
   private registrarTarefa(request: ApiRequest, status: number, message: string, details: unknown): void {
-    const projetoId = request.scope?.projeto.id
+    // O scope só é preenchido pelo ProjectScopeGuard. Em erros lançados por
+    // guards anteriores, o claim já validado ainda identifica o projeto.
+    const projetoId = request.scope?.projeto.id ?? request.authClaims?.projetoId
     const endpoint = request.route?.path ?? request.originalUrl ?? request.url
     if (!this.tasksRepository || projetoId === undefined || !endpoint) return
-    void this.tasksRepository.criarTarefaErro({
-      projetoId,
-      endpoint,
-      method: request.method ?? "HTTP",
-      status,
-      message,
-      details,
-    }).catch((erro: unknown) => {
-      console.error("Falha ao registrar tarefa de erro da API:", erro)
-    })
+
+    // Promise.resolve().then também captura uma exceção síncrona de um mock ou
+    // implementação defeituosa do repositório. O registro é deliberadamente
+    // assíncrono e nunca pode alterar a resposta já enviada ao cliente.
+    void Promise.resolve()
+      .then(() => this.tasksRepository?.criarTarefaErro({
+        projetoId,
+        endpoint,
+        method: request.method ?? "HTTP",
+        status,
+        message,
+        details,
+      }))
+      .catch((erro: unknown) => {
+        console.error("Falha ao registrar tarefa de erro da API:", erro)
+      })
   }
 }
