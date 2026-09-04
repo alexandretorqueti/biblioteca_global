@@ -15,6 +15,7 @@ import { GerenteAgentesModule } from "../../../projects/gerenteagentes/api/geren
 import { RealtimeModule } from "./modules/realtime/realtime.module"
 import { EncomendasRegistroModule } from "./modules/encomendas-registro/encomendas-registro.module"
 import { PainelPortariaModule } from "./modules/painel-portaria/painel-portaria.module"
+import { OcorrenciasModule } from "./modules/ocorrencias/ocorrencias.module"
 
 @Module({
   imports: [
@@ -34,8 +35,9 @@ import { PainelPortariaModule } from "./modules/painel-portaria/painel-portaria.
     RealtimeModule,
     EncomendasRegistroModule,
     PainelPortariaModule,
+    OcorrenciasModule,
     // CrudModule por último: rotas :resource não podem sombrear as
-    // específicas (auth/usuarios/projetos/gerenteagentes/encomendas-registro/painel-portaria).
+    // específicas (auth/usuarios/projetos/gerenteagentes/encomendas-registro/painel-portaria/ocorrencias).
     CrudModule,
   ],
   providers: [
