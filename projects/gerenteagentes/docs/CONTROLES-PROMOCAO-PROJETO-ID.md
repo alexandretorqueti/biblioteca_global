@@ -24,3 +24,7 @@ portanto, `undefined` mesmo quando a requisição contém um ID válido.
 A correção pertence à API da Biblioteca Global: a validação deve ler
 `valores.projetoId` (ou executar antes da conversão), preservando a checagem de
 existência e de escopo em `projetos_captados`.
+
+Tarefa operacional criada em 2026-09-03: `tarefas.id = 760`,
+`external_id = task-biblioteca-760`, em estado `draft` e vinculada ao
+`projetos_captados.id = 1` (`biblioteca-global`).
