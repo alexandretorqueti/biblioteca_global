@@ -529,6 +529,7 @@ class TaskWorker {
             lastFailure = "Programador falhou: " + (result.errorMessage || result.state)
             break
           }
+
           // O gateway pode usar state=final mesmo sem produzir uma resposta.
           // Essa mensagem nunca pode atravessar o gate como entrega válida.
           const replyFailureReason = getAgentReplyFailureReason(result.content)
@@ -540,6 +541,16 @@ class TaskWorker {
             this.log("warn", "Agente não produziu resposta verificável; subtarefa reenfileirada: " + subtask.id)
             return undefined
           }
+
+          // Tarefas operacionais não têm artefato de código como entrega. A
+          // resposta do agente é a própria evidência e deve ser registrada no
+          // chat assim que o run termina, antes de interpretar o status dela.
+          // Isso também preserva respostas de `need_help` e
+          // `blocked_environment`, que não chegam ao bloco de sucesso abaixo.
+          if (!this.isDevelopmentTask(input)) {
+            await this.persistLightweightDelivery(input, result.content || "")
+          }
+
           const outcome = this.classifyAgentOutcome(result.content)
           if (outcome.kind === "blocked_environment") {
             const reason = "Ambiente bloqueado: " + outcome.reason
@@ -561,9 +572,8 @@ class TaskWorker {
               await this.phaseVerify(input)
               gitCommitSha = await this.phaseCommit(input)
             } else {
-              // Automação/verificação é uma entrega operacional: o texto final
-              // do agente é a evidência, não há workspace nem gates de código.
-              await this.persistLightweightDelivery(input, result.content || "")
+              // Automação/verificação é uma entrega operacional: a resposta já
+              // foi gravada no chat acima. Não há workspace nem gates de código.
             }
           } catch (error) {
             lastFailure = error instanceof Error ? error.message : String(error)
@@ -624,10 +634,19 @@ class TaskWorker {
             this.log("info", "Smoke test validado: " + smokeValidation.evidence.url + " (status " + smokeValidation.evidence.status + ")")
           }
 
-          await this.db!.query(
-            "UPDATE subtarefas SET status = 'verified', deliver_count = ?, resultado = ?, finalizada_em = NOW(), updated_at = NOW() WHERE id = ?",
-            [deliverCount, result.content?.substring(0, 500) || "OK", subtask.id],
-          )
+          if (this.isDevelopmentTask(input)) {
+            await this.db!.query(
+              "UPDATE subtarefas SET status = 'verified', deliver_count = ?, resultado = ?, finalizada_em = NOW(), updated_at = NOW() WHERE id = ?",
+              [deliverCount, result.content?.substring(0, 500) || "OK", subtask.id],
+            )
+          } else {
+            // O chat é a entrega das tarefas operacionais; não duplique a
+            // resposta em um campo estruturado de resultado.
+            await this.db!.query(
+              "UPDATE subtarefas SET status = 'verified', deliver_count = ?, resultado = NULL, finalizada_em = NOW(), updated_at = NOW() WHERE id = ?",
+              [deliverCount, subtask.id],
+            )
+          }
           // Registra conclusão bem-sucedida no histórico
           await this.recordDeliveryEvent(subtask.id, deliverCount, model.model, "completed", null)
           this.log("info", "Subtarefa verificada: " + subtask.titulo)
