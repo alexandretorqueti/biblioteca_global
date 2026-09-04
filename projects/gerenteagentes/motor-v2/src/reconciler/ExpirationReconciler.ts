@@ -107,14 +107,14 @@ export class ExpirationReconciler {
     await this.db.transaction(async (tx) => {
       const affected = await tx.query(
         `SELECT DISTINCT s.tarefa_id FROM subtarefas s
-         WHERE s.status = 'verified' AND s.resultado = ?`,
+         WHERE s.status = 'verified' AND TRIM(COALESCE(s.resultado, '')) = ?`,
         [AGENT_RUN_FAILED_WITHOUT_REPLY],
       )
       if (affected.rows.length === 0) return
 
       await tx.query(
         `UPDATE subtarefas SET status = 'pending', finalizada_em = NULL, updated_at = NOW()
-         WHERE status = 'verified' AND resultado = ?`,
+         WHERE status = 'verified' AND TRIM(COALESCE(resultado, '')) = ?`,
         [AGENT_RUN_FAILED_WITHOUT_REPLY],
       )
       for (const row of affected.rows) {

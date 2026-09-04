@@ -50,7 +50,7 @@ import {
 import type { Db, QueryResult } from "../shared/types/infrastructure.js"
 import { resolveProjectDatabase } from "../database/DrizzleDb.js"
 import mysql from "mysql2/promise"
-import { isAgentRunFailureWithoutReply } from "../policies/NoReplyFailurePolicy.js"
+import { getAgentReplyFailureReason } from "../policies/NoReplyFailurePolicy.js"
 
 const COMMAND_FAILURE_LIMIT = 12_000
 const ANSI_ESCAPE_PATTERN = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g
@@ -531,12 +531,13 @@ class TaskWorker {
           }
           // O gateway pode usar state=final mesmo sem produzir uma resposta.
           // Essa mensagem nunca pode atravessar o gate como entrega válida.
-          if (isAgentRunFailureWithoutReply(result.content)) {
+          const replyFailureReason = getAgentReplyFailureReason(result.content)
+          if (replyFailureReason) {
             await this.db!.query(
               "UPDATE subtarefas SET status = 'pending', resultado = ?, finalizada_em = NULL, updated_at = NOW() WHERE id = ?",
-              [result.content!.trim(), subtask.id],
+              [replyFailureReason, subtask.id],
             )
-            this.log("warn", "Agente falhou antes de responder; subtarefa reenfileirada: " + subtask.id)
+            this.log("warn", "Agente não produziu resposta verificável; subtarefa reenfileirada: " + subtask.id)
             return undefined
           }
           const outcome = this.classifyAgentOutcome(result.content)

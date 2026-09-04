@@ -13,6 +13,25 @@ import {
   validateTaskCompletion,
   formatPromotionValidationReport,
 } from '../src/policies/PromotionValidationPolicy.js'
+import {
+  AGENT_RUN_FAILED_WITHOUT_REPLY,
+  getAgentReplyFailureReason,
+  isAgentRunFailureWithoutReply,
+} from '../src/policies/NoReplyFailurePolicy.js'
+
+describe('NoReplyFailurePolicy', () => {
+  it('reconhece sentinel, resposta ausente, vazia ou malformada', () => {
+    for (const content of [AGENT_RUN_FAILED_WITHOUT_REPLY, undefined, null, '', '   ', { unexpected: true }]) {
+      expect(isAgentRunFailureWithoutReply(content)).toBe(true)
+      expect(getAgentReplyFailureReason(content)).toBe(AGENT_RUN_FAILED_WITHOUT_REPLY)
+    }
+  })
+
+  it('não rejeita uma resposta textual não vazia', () => {
+    expect(isAgentRunFailureWithoutReply('Entrega concluída com evidências')).toBe(false)
+    expect(getAgentReplyFailureReason('Entrega concluída com evidências')).toBeNull()
+  })
+})
 
 // ─── validateSubtaskPromotion ───────────────────────────────────────────────
 
@@ -39,6 +58,15 @@ describe('validateSubtaskPromotion', () => {
     })
     expect(result.ok).toBe(false)
     expect(result.reason).toContain('workspaceCommitSha')
+  })
+
+  it('reprova subtarefa com falha sem resposta mesmo com commit', () => {
+    const result = validateSubtaskPromotion({
+      id: 10, workspaceCommitSha: 'abc123', workspaceStatus: 'approved', status: 'delivered',
+      resultado: '  The agent run failed before producing a reply.  ',
+    })
+    expect(result.ok).toBe(false)
+    expect(result.reason).toContain('sem resposta verificável')
   })
 
   it('reprova subtarefa com workspaceCommitSha apenas espaços', () => {
@@ -174,6 +202,14 @@ describe('validateTaskCompletion', () => {
     const result = validateTaskCompletion(subtasks)
     expect(result.ok).toBe(false)
     expect(result.reason).toContain('1 subtarefa(s)')
+  })
+
+  it('reprova tarefa com subtarefa verificada por falha sem resposta', () => {
+    const result = validateTaskCompletion([
+      { id: 1, seq: 1, workspaceCommitSha: 'abc123', status: 'verified', resultado: AGENT_RUN_FAILED_WITHOUT_REPLY },
+    ])
+    expect(result.ok).toBe(false)
+    expect(result.reason).toContain('evidência válida')
   })
 
   it('aprova tarefa vazia (sem subtarefas)', () => {
