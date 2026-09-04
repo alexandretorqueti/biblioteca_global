@@ -22,6 +22,7 @@ import {
   int,
   json,
   mysqlTable,
+  mysqlEnum,
   text,
   timestamp,
   varchar,
@@ -235,6 +236,9 @@ export const tarefas = mysqlTable("tarefas", {
   // vivem em projetos_captados — o motor resolve via projeto.
   titulo: varchar("titulo", { length: 200 }).notNull(),
   descricao: text("descricao"),
+  tipo: mysqlEnum("tipo", ["desenvolvimento", "automacao", "verificacao"])
+    .notNull()
+    .default("desenvolvimento"),
   // Última mensagem de erro da execução — separada da descrição para que
   // falhas não sobrescrevam o texto original da tarefa (lacuna do saveTask).
   ultimaMensagemErro: text("ultima_mensagem_erro"),

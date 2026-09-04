@@ -27,6 +27,7 @@ export interface TaskRow {
   agent_id: string
   title: string
   description: string
+  tipo?: TaskTipo
   repo_path: string
   build_command: string
   unit_test_command: string
@@ -53,6 +54,8 @@ export interface SaveTaskData {
   agentId: string
   title: string
   description: string
+  /** Tipo do fluxo da tarefa; ausente somente em dados legados/internos. */
+  tipo?: TaskTipo
   repoPath: string
   buildCommand: string
   unitTestCommand: string
@@ -68,6 +71,8 @@ export interface SaveTaskData {
   completedAt?: string
   updatedAt?: string
 }
+
+export type TaskTipo = "desenvolvimento" | "automacao" | "verificacao"
 
 /** Repositório de tarefas */
 export interface TaskRepository {

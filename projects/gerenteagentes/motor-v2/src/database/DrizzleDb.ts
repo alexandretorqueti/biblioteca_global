@@ -65,7 +65,7 @@ export class MysqlTaskRepository implements TaskRepository {
     const params = isNumericId ? [id, id] : [id]
 
     const { rows } = await this.db.query(
-      `SELECT t.id, t.external_id, t.titulo, t.descricao, t.ultima_mensagem_erro, t.status,
+      `SELECT t.id, t.external_id, t.titulo, t.descricao, t.tipo, t.ultima_mensagem_erro, t.status,
               t.max_rework, t.hard_timeout_ms, t.depends_on_task_id,
               t.created_at, t.updated_at,
               pc.slug as project_slug, pmc.repo_path,
@@ -110,9 +110,9 @@ export class MysqlTaskRepository implements TaskRepository {
     } else {
       await this.db.query(
         `INSERT INTO tarefas
-         (external_id, projeto_id, titulo, descricao, status, max_rework, hard_timeout_ms, created_at, updated_at)
-         VALUES (?, 1, ?, ?, ?, ?, ?, NOW(), NOW())`,
-        [data.id, data.title, data.description ?? "", data.status, data.maxRework ?? 3, data.hardTimeoutMs ?? 3600000]
+         (external_id, projeto_id, titulo, descricao, tipo, status, max_rework, hard_timeout_ms, created_at, updated_at)
+         VALUES (?, 1, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+        [data.id, data.title, data.description ?? "", data.tipo ?? "desenvolvimento", data.status, data.maxRework ?? 3, data.hardTimeoutMs ?? 3600000]
       )
     }
   }
@@ -123,6 +123,7 @@ export class MysqlTaskRepository implements TaskRepository {
       chatId: "",
       title: String(row.titulo ?? ""),
       description: String(row.descricao ?? ""),
+      tipo: isTaskTipo(row.tipo) ? row.tipo : "desenvolvimento",
       errorMessage: row.ultima_mensagem_erro ? String(row.ultima_mensagem_erro) : undefined,
       status: String(row.status ?? "planned"),
       repoPath: String(row.repo_path ?? ""),
@@ -137,4 +138,8 @@ export class MysqlTaskRepository implements TaskRepository {
       updatedAt: String(row.updated_at ?? ""),
     }
   }
+}
+
+function isTaskTipo(value: unknown): value is SaveTaskData["tipo"] {
+  return value === "desenvolvimento" || value === "automacao" || value === "verificacao"
 }
