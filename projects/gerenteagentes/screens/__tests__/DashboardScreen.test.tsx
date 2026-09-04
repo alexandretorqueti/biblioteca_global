@@ -105,10 +105,10 @@ describe("DashboardScreen", () => {
 
     // Asserts de URL: todas as chamadas devem ir para os endpoints internos
     const callUrls = mockFetch.mock.calls.map((c) => String(c[0]))
-    expect(callUrls.some((u) => u.includes("/api/projetos_captados"))).toBe(true)
-    expect(callUrls.some((u) => u.includes("/api/tarefas"))).toBe(true)
+    expect(callUrls.some((u) => u.includes("/api/gerenteagentes/projetos_captados"))).toBe(true)
+    expect(callUrls.some((u) => u.includes("/api/gerenteagentes/tarefas"))).toBe(true)
     for (const url of callUrls) {
-      expect(url).toMatch(/\/api\/(projetos_captados|tarefas)\??/)
+      expect(url).toMatch(/\/api\/gerenteagentes\/(projetos_captados|tarefas)\??/)
     }
 
     expect(screen.getByRole("heading", { name: "Dashboard" })).toBeInTheDocument()

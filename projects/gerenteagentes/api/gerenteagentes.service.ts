@@ -1,8 +1,9 @@
-import { Injectable, Inject, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, Inject, Logger, NotFoundException, BadRequestException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { eq, desc } from 'drizzle-orm';
 import { request as httpRequest, type RequestOptions } from 'node:http';
 import { request as httpsRequest } from 'node:https';
+import { randomUUID } from 'node:crypto';
 import type {
   ProjetoResumo,
   ModelSelectionTipo,
@@ -22,6 +23,7 @@ import {
 } from '../schema';
 import { ProvisionService } from '../../../apps/api/src/modules/provision/provision.service';
 import { TASK_STATUS_STARTABLE } from '../motor-v2/src/shared/task-statuses';
+import { RealtimeService } from '../../../apps/api/src/modules/realtime/realtime.service';
 
 @Injectable()
 export class GerenteAgentesService {
@@ -38,6 +40,7 @@ export class GerenteAgentesService {
     @Inject(SCHEMA_REGISTRY) private readonly registry: SchemaRegistry,
     @Inject(ProvisionService) private readonly provisionService: ProvisionService,
     private readonly configService: ConfigService,
+    @Optional() private readonly realtime?: RealtimeService,
   ) {
     // Motor de execução (rodando no container openclaw:6283, exposto via proxy NPM)
     this.motorUrl = this.configService.get<string>('MOTOR_DEV_URL') || 'http://192.168.1.16';
@@ -224,9 +227,11 @@ export class GerenteAgentesService {
       });
       this.logger.log(`Agente local criado: ${openclawAgentId}`);
     } else {
+      const agenteExistente = existente[0];
+      if (!agenteExistente) return;
       await db.update(agentes)
-        .set({ modelo: modelo || existente[0].modelo })
-        .where(eq(agentes.id, existente[0].id));
+        .set({ modelo: modelo || agenteExistente.modelo })
+        .where(eq(agentes.id, agenteExistente.id));
       this.logger.log(`Agente local atualizado: ${openclawAgentId}`);
     }
   }
@@ -505,7 +510,24 @@ export class GerenteAgentesService {
       await this.encaminharRespostaClarificacao(tarefa, texto);
     }
 
-    return { id: mensagem.id, tarefaId, role, texto, createdAt: new Date() };
+    const createdAt = new Date();
+    this.realtime?.publicar({
+      eventId: randomUUID(),
+      occurredAt: createdAt.toISOString(),
+      source: 'gerenteagentes.chat',
+      projectId: Number(tarefa.projetoId),
+      taskId: tarefaId,
+      type: 'task.chat.message.created',
+      payload: {
+        id: mensagem.id,
+        tarefaId,
+        role,
+        texto,
+        createdAt: createdAt.toISOString(),
+      },
+    });
+
+    return { id: mensagem.id, tarefaId, role, texto, createdAt };
   }
 
   // ============================================================================

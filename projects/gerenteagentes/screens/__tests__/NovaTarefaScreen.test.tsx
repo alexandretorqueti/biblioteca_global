@@ -153,7 +153,7 @@ describe("NovaTarefaScreen", () => {
     // Aguarda o useEffect/carregarOpcoes resolver para evitar act() warning.
     await waitFor(() => {
       expect(mockFetch).toHaveBeenCalledWith(
-        "/api/projetos_captados",
+        "/api/gerenteagentes/projetos_captados",
         expect.any(Object),
       )
     })
@@ -201,7 +201,7 @@ describe("NovaTarefaScreen", () => {
 
     await waitFor(() => {
       expect(mockFetch).toHaveBeenCalledWith(
-        "/api/tarefas",
+        "/api/gerenteagentes/tarefas",
         expect.objectContaining({
           method: "POST",
           headers: expect.objectContaining({ "Content-Type": "application/json" }),
@@ -210,7 +210,7 @@ describe("NovaTarefaScreen", () => {
       )
 
       const chamadaPost = mockFetch.mock.calls.find(
-        (c) => String(c[0]) === "/api/tarefas",
+        (c) => String(c[0]) === "/api/gerenteagentes/tarefas",
       )
       expect(chamadaPost).toBeDefined()
       const corpo = JSON.parse((chamadaPost![1] as { body: string }).body)

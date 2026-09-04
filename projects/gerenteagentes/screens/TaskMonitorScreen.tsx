@@ -243,8 +243,10 @@ export default function TaskMonitorScreen(): ReactNode {
   const [tarefaId, setTarefaId] = useState<number | "">("")
   const [detail, setDetail] = useState<MotorDetail | null>(null)
   const [chat, setChat] = useState<TarefaChatMessage[]>([])
+  const [chatLoading, setChatLoading] = useState(false)
   const [chatInput, setChatInput] = useState("")
   const [chatSending, setChatSending] = useState(false)
+  const [chatWaitingResponse, setChatWaitingResponse] = useState(false)
   const [chatError, setChatError] = useState<string | null>(null)
   const chatRequestId = useRef(0)
   const [loading, setLoading] = useState(true)
@@ -266,6 +268,7 @@ export default function TaskMonitorScreen(): ReactNode {
   const [editingSub, setEditingSub] = useState<SubTarefaDb | null>(null)
   const [expandedSubtasks, setExpandedSubtasks] = useState<Set<number>>(new Set())
   const mounted = useRef(true)
+  const activeRealtimeTask = useRef<number | "">("")
 
   const carregarProjetos = useCallback(async () => {
     if (!bundle) return
@@ -287,7 +290,9 @@ export default function TaskMonitorScreen(): ReactNode {
       const query: Record<string, string | number> = { pageSize: 100 }
       if (projetoFiltro !== "") query.projetoId = projetoFiltro
       if (statusFiltro !== "") query.status = statusFiltro
-      const res = await bundle.http.request<{ items: Tarefa[] }>("GET", "/gerenteagentes/tarefas", {
+      // A listagem é fornecida pelo CRUD do projeto; as rotas específicas do
+      // acompanhamento (detalhe, chat e subtarefas) ficam no proxy customizado.
+      const res = await bundle.http.request<{ items: Tarefa[] }>("GET", "/tarefas", {
         query,
         auth: "access",
       })
@@ -324,18 +329,35 @@ export default function TaskMonitorScreen(): ReactNode {
     if (!bundle) return
     const requestId = ++chatRequestId.current
     setChatError(null)
+    setChatLoading(true)
     try {
       const res = await bundle.http.request<TarefaChatMessage[] | { items?: TarefaChatMessage[] }>(
         "GET", `/gerenteagentes/tarefas/${id}/chat`, { auth: "access" },
       )
       if (mounted.current && requestId === chatRequestId.current) {
-        setChat(Array.isArray(res) ? res : (res.items ?? []))
+        const historico = Array.isArray(res) ? res : (res.items ?? [])
+        // Não perder uma mensagem recebida enquanto o GET estava em voo.
+        setChat((atual) => {
+          const porId = new Map(historico.map((mensagem) => [mensagem.id, mensagem]))
+          for (const mensagem of atual) {
+            if (!porId.has(mensagem.id)) porId.set(mensagem.id, mensagem)
+          }
+          return [...porId.values()].sort((a, b) =>
+            new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+          )
+        })
+        const ultima = historico.at(-1)
+        if (ultima && (ultima.role === "assistant" || ultima.role === "agent" || ultima.role === "analyst")) {
+          setChatWaitingResponse(false)
+        }
       }
     } catch (e) {
       if (mounted.current && requestId === chatRequestId.current) {
         setChat([])
         setChatError(e instanceof Error ? e.message : "Não foi possível carregar o histórico do chat.")
       }
+    } finally {
+      if (mounted.current && requestId === chatRequestId.current) setChatLoading(false)
     }
   }, [bundle])
 
@@ -345,6 +367,7 @@ export default function TaskMonitorScreen(): ReactNode {
 
     const tarefaAtual = tarefaId
     setChatSending(true)
+    setChatWaitingResponse(true)
     setChatError(null)
     try {
       await bundle.http.request("POST", `/gerenteagentes/tarefas/${tarefaAtual}/chat`, {
@@ -355,10 +378,13 @@ export default function TaskMonitorScreen(): ReactNode {
       // tarefa durante a chamada não apaga o rascunho da nova conversa.
       if (tarefaId === tarefaAtual) {
         setChatInput("")
+        // A resposta do agente chega pelo WebSocket. A recarga continua como
+        // fallback para APIs antigas que ainda não emitem o evento de chat.
         await carregarChat(tarefaAtual)
       }
     } catch (e) {
       if (tarefaId === tarefaAtual) {
+        setChatWaitingResponse(false)
         setChatError(e instanceof Error ? e.message : "Não foi possível enviar a mensagem.")
       }
     } finally {
@@ -397,16 +423,22 @@ export default function TaskMonitorScreen(): ReactNode {
   // Polling de 60s no detalhe (tempo real)
   useEffect(() => {
     if (tarefaId === "") {
+      activeRealtimeTask.current = ""
+      setRealtimeStatus("closed")
       setDetail(null)
       setChat([])
       setChatInput("")
       setChatError(null)
+      setChatLoading(false)
+      setChatWaitingResponse(false)
       return
     }
     setDetail(null)
     setChat([])
     setChatInput("")
     setChatError(null)
+    setChatLoading(true)
+    setChatWaitingResponse(false)
     void carregarDetail(tarefaId)
     void carregarSubtarefasDb(tarefaId)
     void carregarChat(tarefaId)
@@ -420,17 +452,54 @@ export default function TaskMonitorScreen(): ReactNode {
 
   useEffect(() => {
     if (tarefaId === "" || !bundle) return
+    activeRealtimeTask.current = tarefaId
     setTerminalEvents([])
     const realtime = new RealtimeClient({
       url: resolveRealtimeUrl(),
       baseUrl: resolveApiBaseUrl(),
       taskId: tarefaId,
       getAccessToken: () => bundle.getAccessToken(),
-      onStatusChange: setRealtimeStatus,
+      onStatusChange: (status) => {
+        if (activeRealtimeTask.current === tarefaId) setRealtimeStatus(status)
+      },
       onMessage: (message) => {
+        // O socket anterior pode entregar um evento já enfileirado depois da
+        // troca de tarefa. Nunca deixe esse evento contaminar a conversa nova.
+        if (activeRealtimeTask.current !== tarefaId) return
+        if (message.type === "replay_unavailable") {
+          // O buffer do servidor expirou; recupera a fonte persistida antes de
+          // continuar ouvindo a conexão recém-reaberta.
+          void carregarDetail(tarefaId)
+          void carregarChat(tarefaId)
+          return
+        }
+        if (message.type === "error") {
+          setChatError(message.message)
+          return
+        }
         if (message.type !== "event") return
         setTerminalEvents((atual) => [...atual, message].slice(-500))
-        if (message.event.type.includes("chat")) void carregarChat(tarefaId)
+        if (message.event.type.includes("chat")) {
+          const payload = message.event.payload
+          const id = Number(payload.id)
+          const texto = typeof payload.texto === "string" ? payload.texto : null
+          const role = typeof payload.role === "string" ? payload.role : null
+          if (id > 0 && texto && role) {
+            setChat((atual) => {
+              if (atual.some((item) => item.id === id)) return atual
+              return [...atual, {
+                id,
+                tarefaId,
+                role,
+                texto,
+                createdAt: typeof payload.createdAt === "string" ? payload.createdAt : message.event.occurredAt,
+              }].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+            })
+            if (role === "assistant" || role === "agent" || role === "analyst") setChatWaitingResponse(false)
+          } else {
+            void carregarChat(tarefaId)
+          }
+        }
         if (message.event.type === "task.status.changed") {
           const status = String(message.event.payload.status ?? "")
           setTarefas((atual) => atual.map((tarefa) => tarefa.id === tarefaId ? { ...tarefa, status } : tarefa))
@@ -438,7 +507,10 @@ export default function TaskMonitorScreen(): ReactNode {
       },
     })
     void realtime.connect()
-    return () => realtime.close()
+    return () => {
+      if (activeRealtimeTask.current === tarefaId) activeRealtimeTask.current = ""
+      realtime.close()
+    }
   }, [tarefaId, bundle, carregarChat])
 
   useEffect(() => {
@@ -572,7 +644,7 @@ export default function TaskMonitorScreen(): ReactNode {
               ? Number(values.dependsOnTaskId)
               : null,
         }
-        await bundle.http.request("PUT", `/gerenteagentes/tarefas/${tarefaId}`, {
+        await bundle.http.request("PUT", `/tarefas/${tarefaId}`, {
           body,
           auth: "access",
         })
@@ -659,17 +731,6 @@ export default function TaskMonitorScreen(): ReactNode {
         const criteriosRaw = String(values.acceptance_criteria ?? "")
         const criteriosArray = parseCriteriosTexto(criteriosRaw)
 
-        // Validação: se havia critérios antes e agora ficaria vazio, avisar
-        const criteriosAnteriores = parseCriterios(editingSub.acceptanceCriteria)
-        if (criteriosAnteriores.length > 0 && criteriosArray.length === 0) {
-          setEditSubError(
-            "Os critérios de aceite não podem ser removidos completamente. " +
-            "Mantenha ao menos um critério ou confirme a remoção deixando o campo vazio antes de salvar.",
-          )
-          setEditSubLoading(false)
-          return
-        }
-
         // Validação de tamanho razoável (max 50 critérios, 500 chars cada)
         if (criteriosArray.length > 50) {
           setEditSubError("Limite máximo de 50 critérios de aceite excedido.")
@@ -704,7 +765,7 @@ export default function TaskMonitorScreen(): ReactNode {
               ? Number(values.dependsOnSubtaskId)
               : null,
         }
-        await bundle.http.request("PUT", `/gerenteagentes/subtarefas/${editingSub.id}`, {
+        await bundle.http.request("PUT", `/subtarefas/${editingSub.id}`, {
           body,
           auth: "access",
         })
@@ -739,6 +800,7 @@ export default function TaskMonitorScreen(): ReactNode {
     // Busca o último evento que indica retorno/rejeição (gate_rejected, return_for_rework, blocked)
     for (let i = history.length - 1; i >= 0; i--) {
       const entry = history[i]
+      if (!entry) continue
       if (entry.eventType === "gate_rejected" || entry.eventType === "return_for_rework" || entry.eventType === "blocked") {
         return entry.reason ?? `Retorno (${entry.eventType}) na entrega #${entry.deliverNumber}`
       }
@@ -872,14 +934,20 @@ export default function TaskMonitorScreen(): ReactNode {
           borderRadius: 1,
         }}
       >
+        {chatLoading && (
+          <Stack alignItems="center" spacing={1} sx={{ py: 3 }} data-testid="task-chat-loading">
+            <CircularProgress size={24} />
+            <Typography color="text.secondary" variant="body2">Carregando histórico…</Typography>
+          </Stack>
+        )}
         {chatError && <Alert severity="error" sx={{ py: 0 }} data-testid="task-chat-error">{chatError}</Alert>}
-        {chat.length === 0 && !chatError && (
+        {!chatLoading && chat.length === 0 && !chatError && (
           <Typography color="text.secondary" variant="body2" align="center" sx={{ py: 3 }} data-testid="empty-task-chat">
             Nenhuma mensagem ainda. Inicie a conversa!
           </Typography>
         )}
         {chat.map((mensagem) => {
-          const fromAgent = mensagem.role === "assistant" || mensagem.role === "agent"
+          const fromAgent = mensagem.role === "assistant" || mensagem.role === "agent" || mensagem.role === "analyst"
           return (
             <Box
               key={mensagem.id}
@@ -903,6 +971,21 @@ export default function TaskMonitorScreen(): ReactNode {
           )
         })}
       </Box>
+      {chatWaitingResponse && !chatSending && (
+        <Typography variant="caption" color="text.secondary" sx={{ mt: 1 }} data-testid="task-chat-typing">
+          Agente está respondendo…
+        </Typography>
+      )}
+      {realtimeStatus === "connecting" && (
+        <Typography variant="caption" color="warning.main" sx={{ mt: 1 }} data-testid="task-chat-reconnecting">
+          Reconectando ao tempo real…
+        </Typography>
+      )}
+      {realtimeStatus === "closed" && (
+        <Typography variant="caption" color="error.main" sx={{ mt: 1 }} data-testid="task-chat-connection-error">
+          Conexão em tempo real indisponível. Tentando reconectar…
+        </Typography>
+      )}
       <Stack direction="row" spacing={1} sx={{ mt: 1.5 }}>
         <TextField
           fullWidth
@@ -1318,8 +1401,6 @@ export default function TaskMonitorScreen(): ReactNode {
                 </TableBody>
               </Table>
 
-              {taskChatPanel}
-
               <Typography variant="h6" sx={{ mt: 3 }}>Atividade</Typography>
               <Paper variant="outlined" sx={{ p: 2, maxHeight: 260, overflow: "auto" }} data-testid="activity-feed">
                 {eventos.length === 0 && (
@@ -1362,7 +1443,7 @@ export default function TaskMonitorScreen(): ReactNode {
             </>
           )}
 
-          {!isDesenvolvimento && taskChatPanel}
+          {taskChatPanel}
         </Paper>
       )}
 

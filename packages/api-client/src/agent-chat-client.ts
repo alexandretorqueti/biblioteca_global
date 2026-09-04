@@ -182,9 +182,16 @@ export function createAgentChatClient(options: AgentChatClientOptions): AgentCha
       try {
         await startSession()
       } catch (error: unknown) {
+        // Erro de transporte na sessão: enfileira a mensagem para reenvio posterior
+        const input: SendChatMessageInput = {
+          chatId: activeChatId,
+          text,
+          ...(attachments.length > 0 ? { attachments } : {}),
+        }
         if (error instanceof ApiClientError) {
           return { ok: false, reason: "http_error", retryable: error.status >= 500 }
         }
+        enqueue(input)
         return { ok: false, reason: "offline", retryable: true }
       }
     }

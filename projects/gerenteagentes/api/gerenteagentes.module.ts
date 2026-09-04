@@ -5,9 +5,10 @@ import { TaskStatusPollerService } from './task-status-poller.service';
 import { AuthModule } from '../../../apps/api/src/modules/auth/auth.module';
 import { ProvisionModule } from '../../../apps/api/src/modules/provision/provision.module';
 import { IsaChatController, IsaChatService, IsaChatBridgeService } from './isa-chat';
+import { RealtimeModule } from '../../../apps/api/src/modules/realtime/realtime.module';
 
 @Module({
-  imports: [AuthModule, ProvisionModule],
+  imports: [AuthModule, ProvisionModule, RealtimeModule],
   controllers: [GerenteAgentesController, IsaChatController],
   providers: [
     GerenteAgentesService,
