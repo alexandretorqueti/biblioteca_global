@@ -15,13 +15,15 @@ import {
   Inject,
   Injectable,
   NotFoundException,
+  Optional,
 } from "@nestjs/common"
 import { ConfigService } from "@nestjs/config"
 import { and, asc, desc, eq, getTableColumns, like, or, sql, type Column } from "drizzle-orm"
-import type { MySqlTable } from "drizzle-orm/mysql-core"
+import type { MySqlColumn, MySqlTable } from "drizzle-orm/mysql-core"
 import type { CrudOrderByItem, PaginatedResult, ProjetoResumo } from "@biblioteca-global/shared"
 import { request as httpNodeRequest } from "node:http"
 import { request as httpsNodeRequest } from "node:https"
+import { randomUUID } from "node:crypto"
 import {
   ehErroDatabaseAusente,
   ehErroDuplicado,
@@ -30,6 +32,7 @@ import { PROJECT_DB_FACTORY, type ProjectDbFactory } from "./project-db.factory"
 import { SCHEMA_REGISTRY, type SchemaRegistry } from "./schema-registry"
 import { zodParaInsert, zodParaUpdate } from "@biblioteca-global/schema-tools"
 import { projetosCaptados } from "../../../../../projects/gerenteagentes/schema"
+import { RealtimeService } from "../realtime/realtime.service"
 
 /** Nomes que pertencem ao core/módulos específicos — nunca genéricos. */
 export const RESOURCES_RESERVADOS: ReadonlySet<string> = new Set([
@@ -77,6 +80,7 @@ export class CrudService {
     @Inject(SCHEMA_REGISTRY) private readonly registry: SchemaRegistry,
     @Inject(PROJECT_DB_FACTORY) private readonly factory: ProjectDbFactory,
     @Inject(ConfigService) private readonly configService: ConfigService,
+    @Optional() @Inject(RealtimeService) private readonly realtime?: RealtimeService,
   ) {
     this.consoleUrl =
       this.configService.get<string>("OPENCLAW_CONSOLE_URL") ||
@@ -523,6 +527,77 @@ export class CrudService {
     return saida
   }
 
+  /** Publica o evento somente depois que a operação do CRUD terminou com sucesso. */
+  private async publicarEventoCrud(
+    projeto: ProjetoResumo,
+    resource: string,
+    operacao: "created" | "updated" | "deleted",
+    linha: Record<string, unknown>,
+  ): Promise<void> {
+    if (!this.realtime || (resource !== "tarefas" && resource !== "subtarefas")) return
+
+    const id = Number(linha.id)
+    if (!Number.isSafeInteger(id) || id <= 0) return
+
+    if (resource === "tarefas") {
+      const projetoId = Number(linha.projetoId ?? linha.projeto_id)
+      if (!Number.isSafeInteger(projetoId) || projetoId <= 0) return
+      this.realtime.publicar({
+        eventId: randomUUID(),
+        occurredAt: new Date().toISOString(),
+        source: "crud",
+        projectId: projetoId,
+        taskId: id,
+        type: `task.${operacao}`,
+        payload: {
+          id,
+          titulo: String(linha.titulo ?? ""),
+          status: String(linha.status ?? ""),
+          projetoId,
+          updatedAt: this.dataParaEvento(linha.updatedAt ?? linha.updated_at),
+        },
+      })
+      return
+    }
+
+    const tarefaId = Number(linha.tarefaId ?? linha.tarefa_id)
+    if (!Number.isSafeInteger(tarefaId) || tarefaId <= 0) return
+    // Subtarefas não carregam projetoId: o escopo realtime é o projeto da
+    // tarefa pai, que é resolvido no banco do projeto da sessão.
+    const tarefa = this.registry.tabelasDoProjeto(projeto.slug)?.tarefas
+    if (!tarefa) return
+    const colunasTarefa = getTableColumns(tarefa) as Record<string, Column>
+    if (!colunasTarefa.projetoId) return
+    const db = await this.dbDoProjeto(projeto)
+    const pai = await db
+      .select({ projetoId: colunasTarefa.projetoId as MySqlColumn })
+      .from(tarefa)
+      .where(eq(this.colunaId(tarefa) as never, tarefaId as never))
+      .limit(1)
+    const projetoId = Number(pai.at(0)?.projetoId)
+    if (!Number.isSafeInteger(projetoId) || projetoId <= 0) return
+    this.realtime.publicar({
+      eventId: randomUUID(),
+      occurredAt: new Date().toISOString(),
+      source: "crud",
+      projectId: projetoId,
+      taskId: tarefaId,
+      type: `subtask.${operacao}`,
+      payload: {
+        id,
+        tarefaId,
+        seq: Number(linha.seq),
+        titulo: String(linha.titulo ?? ""),
+        status: String(linha.status ?? ""),
+        resultado: linha.resultado ?? null,
+      },
+    })
+  }
+
+  private dataParaEvento(valor: unknown): unknown {
+    return valor instanceof Date ? valor.toISOString() : valor
+  }
+
   async criar(
     projeto: ProjetoResumo,
     resource: string,
@@ -550,7 +625,12 @@ export class CrudService {
       // FK do banco permite apontar para a linha da biblioteca-global (ou para
       // qualquer outro projeto) e reproduz a falha do TaQui.
       if (resource === "tarefas") {
-        const projetoId = Number(valores.projeto_id)
+        // O corpo validado (parse.data) usa chaves snake_case (coluna.name);
+        // valores (paraChavesDoDrizzle) usa as props TS do drizzle (camelCase)
+        // e não contém projeto_id — ler a FK de valores quebraria todo create.
+        const projetoId = Number(
+          (parse.data as Record<string, unknown>).projeto_id,
+        )
         if (!Number.isSafeInteger(projetoId) || projetoId <= 0) {
           throw new BadRequestException(
             "projeto_id inválido: informe o id numérico de projetos_captados do projeto da tarefa",
@@ -587,7 +667,9 @@ export class CrudService {
         )
       }
 
-      return this.detalhar(projeto, resource, insertId)
+      const linha = await this.detalhar(projeto, resource, insertId)
+      await this.publicarEventoCrud(projeto, resource, "created", linha)
+      return linha
     } catch (erro: unknown) {
       if (ehErroDuplicado(erro)) {
         throw new ConflictException("Registro duplicado")
@@ -634,7 +716,9 @@ export class CrudService {
         .update(tabela)
         .set(campos)
         .where(eq(this.colunaId(tabela) as never, id as never))
-      return this.detalhar(projeto, resource, id)
+      const linha = await this.detalhar(projeto, resource, id)
+      await this.publicarEventoCrud(projeto, resource, "updated", linha)
+      return linha
     } catch (erro: unknown) {
       if (ehErroDuplicado(erro)) {
         throw new ConflictException("Registro duplicado")
@@ -650,11 +734,15 @@ export class CrudService {
   ): Promise<void> {
     const tabela = this.resolverTabela(projeto, resource)
     const db = await this.dbDoProjeto(projeto)
+    // O registro é necessário para determinar o projeto/pai do evento de
+    // exclusão. A publicação permanece depois do DELETE bem-sucedido.
+    const linha = await this.detalhar(projeto, resource, id)
     const resultado = await db
       .delete(tabela)
       .where(eq(this.colunaId(tabela) as never, id as never))
     if (resultado[0].affectedRows === 0) {
       throw new NotFoundException("Registro não encontrado")
     }
+    await this.publicarEventoCrud(projeto, resource, "deleted", linha)
   }
 }
