@@ -36,4 +36,19 @@ export class CreateProjetoDto {
   @IsOptional()
   @IsBoolean()
   ativo?: boolean
+
+  /** Branch de trabalho do projeto (padrão: 'base-desenvolvimento'). */
+  @IsOptional()
+  @IsString()
+  branchTrabalho?: string
+
+  /** Caminho do repositório do projeto (padrão: '/data/workspace/projects/codigofonte/biblioteca-global'). */
+  @IsOptional()
+  @IsString()
+  repoPath?: string
+
+  /** ID do agente vinculado ao projeto (padrão: 'biblioteca-global'). */
+  @IsOptional()
+  @IsString()
+  agenteId?: string
 }
