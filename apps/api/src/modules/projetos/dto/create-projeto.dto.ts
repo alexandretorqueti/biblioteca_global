@@ -42,13 +42,28 @@ export class CreateProjetoDto {
   @IsString()
   branchTrabalho?: string
 
+  /** Alias compatível com payloads que usam o nome físico da coluna. */
+  @IsOptional()
+  @IsString()
+  branch_trabalho?: string
+
   /** Caminho do repositório do projeto (padrão: '/data/workspace/projects/codigofonte/biblioteca-global'). */
   @IsOptional()
   @IsString()
   repoPath?: string
 
+  /** Alias compatível com payloads que usam o nome físico da coluna. */
+  @IsOptional()
+  @IsString()
+  repo_path?: string
+
   /** ID do agente vinculado ao projeto (padrão: 'biblioteca-global'). */
   @IsOptional()
   @IsString()
   agenteId?: string
+
+  /** Alias compatível com payloads que usam o nome físico da coluna. */
+  @IsOptional()
+  @IsString()
+  agente_id?: string
 }
