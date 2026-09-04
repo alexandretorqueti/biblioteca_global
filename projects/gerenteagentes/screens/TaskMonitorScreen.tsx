@@ -3,7 +3,7 @@
  * no motor GerenteAgentes (reproduz o dashboard-standalone.html do motor
  * dentro da biblioteca).
  *
- * - Polling de 5s no endpoint proxy /gerenteagentes/tarefas/:id/motor-detail
+ * - Carga inicial HTTP e atualizações posteriores pelo WebSocket realtime
  * - Subtarefas com status, progresso (verified/total), banner da subtarefa atual
  * - Activity feed com os eventos do motor
  * - Ações: iniciar / pausar / retomar
@@ -342,31 +342,104 @@ export default function TaskMonitorScreen(): ReactNode {
     mounted.current = true
     void carregarProjetos()
     void carregarTarefas()
-    const t1 = setInterval(() => {
-      void carregarTarefas()
-    }, 30000)
     return () => {
       mounted.current = false
-      clearInterval(t1)
     }
   }, [carregarProjetos, carregarTarefas])
 
-  // Polling de 60s no detalhe (tempo real)
   useEffect(() => {
     if (tarefaId === "") {
       setChat([])
+      setDetail(null)
+      setSubtarefasDb([])
       return
     }
     void carregarDetail(tarefaId)
     void carregarSubtarefasDb(tarefaId)
     void carregarChat(tarefaId)
-    const t2 = setInterval(() => {
-      void carregarDetail(tarefaId)
-      void carregarSubtarefasDb(tarefaId)
-      void carregarChat(tarefaId)
-    }, 60000)
-    return () => clearInterval(t2)
   }, [tarefaId, carregarDetail, carregarSubtarefasDb, carregarChat])
+
+  const eventoTarefaParaEstado = useCallback((payload: Record<string, unknown>, taskId: number): Tarefa => ({
+    id: Number(payload.id ?? taskId),
+    titulo: String(payload.titulo ?? payload.title ?? ""),
+    descricao: typeof payload.descricao === "string" ? payload.descricao : null,
+    tipo: typeof payload.tipo === "string" ? payload.tipo : null,
+    dependsOnTaskId: typeof payload.dependsOnTaskId === "number" ? payload.dependsOnTaskId : null,
+    status: String(payload.status ?? "draft"),
+    projetoId: Number(payload.projetoId ?? payload.projectId ?? 0),
+    updatedAt: typeof payload.updatedAt === "string" ? payload.updatedAt : undefined,
+    createdAt: typeof payload.createdAt === "string" ? payload.createdAt : undefined,
+  }), [])
+
+  const atendeFiltros = useCallback((tarefa: Tarefa): boolean => {
+    return (projetoFiltro === "" || tarefa.projetoId === projetoFiltro) &&
+      (statusFiltro === "" || tarefa.status === statusFiltro)
+  }, [projetoFiltro, statusFiltro])
+
+  const reconciliarSubtarefa = useCallback((type: string, payload: Record<string, unknown>, taskId: number) => {
+    const id = Number(payload.id ?? 0)
+    const seq = typeof payload.seq === "number" ? payload.seq : undefined
+    const isSame = (sub: SubTarefaDb) => (id > 0 && sub.id === id) || (seq !== undefined && sub.seq === seq)
+    if (type === "subtask.deleted") {
+      setSubtarefasDb((atual) => atual.filter((sub) => !isSame(sub)))
+      setDetail((atual) => atual ? {
+        ...atual,
+        subtasks: atual.subtasks?.filter((sub) => !(seq !== undefined && sub.seq === seq)),
+      } : atual)
+      return
+    }
+    const sub = {
+      id,
+      tarefaId: Number(payload.tarefaId ?? taskId),
+      seq: Number(payload.seq ?? 0),
+      titulo: String(payload.titulo ?? payload.title ?? ""),
+      descricao: typeof payload.descricao === "string" ? payload.descricao : null,
+      scope: typeof payload.scope === "string" ? payload.scope : null,
+      acceptanceCriteria: payload.acceptanceCriteria ?? payload.acceptance_criteria ?? null,
+      status: String(payload.status ?? "pending"),
+      resultado: typeof payload.resultado === "string" ? payload.resultado : null,
+      dependsOnSubtaskId: typeof payload.dependsOnSubtaskId === "number" ? payload.dependsOnSubtaskId : null,
+      workspaceStatus: typeof payload.workspaceStatus === "string" ? payload.workspaceStatus : null,
+      correctionForSubtaskId: typeof payload.correctionForSubtaskId === "number" ? payload.correctionForSubtaskId : null,
+    } satisfies SubTarefaDb
+    setSubtarefasDb((atual) => {
+      const index = atual.findIndex(isSame)
+      if (index < 0) return [...atual, sub].sort((a, b) => a.seq - b.seq)
+      const next = [...atual]
+      const anterior = next[index]
+      next[index] = {
+        ...anterior,
+        ...sub,
+        ...(payload.descricao === undefined ? { descricao: anterior.descricao } : {}),
+        ...(payload.scope === undefined ? { scope: anterior.scope } : {}),
+        ...(payload.acceptanceCriteria === undefined && payload.acceptance_criteria === undefined
+          ? { acceptanceCriteria: anterior.acceptanceCriteria }
+          : {}),
+        ...(payload.dependsOnSubtaskId === undefined ? { dependsOnSubtaskId: anterior.dependsOnSubtaskId } : {}),
+        ...(payload.workspaceStatus === undefined ? { workspaceStatus: anterior.workspaceStatus } : {}),
+        ...(payload.correctionForSubtaskId === undefined ? { correctionForSubtaskId: anterior.correctionForSubtaskId } : {}),
+      }
+      return next
+    })
+    setDetail((atual) => {
+      if (!atual) return atual
+      const motorSub: SubTaskMotor = {
+        seq: sub.seq,
+        title: sub.titulo,
+        status: sub.status,
+        scope: sub.scope,
+        acceptanceCriteria: sub.acceptanceCriteria,
+        workspaceStatus: sub.workspaceStatus,
+        correctionForSubtaskId: sub.correctionForSubtaskId,
+        blockInfo: sub.resultado ? { reason: sub.resultado } : null,
+      }
+      const subtasks = [...(atual.subtasks ?? [])]
+      const index = subtasks.findIndex((item) => item.seq === sub.seq)
+      if (index < 0) subtasks.push(motorSub)
+      else subtasks[index] = { ...subtasks[index], ...motorSub }
+      return { ...atual, subtasks: subtasks.sort((a, b) => a.seq - b.seq) }
+    })
+  }, [])
 
   useEffect(() => {
     if (tarefaId === "" || !bundle) return
@@ -380,15 +453,46 @@ export default function TaskMonitorScreen(): ReactNode {
       onMessage: (message) => {
         if (message.type !== "event") return
         setTerminalEvents((atual) => [...atual, message].slice(-500))
-        if (message.event.type === "task.status.changed") {
-          const status = String(message.event.payload.status ?? "")
-          setTarefas((atual) => atual.map((tarefa) => tarefa.id === tarefaId ? { ...tarefa, status } : tarefa))
+        const { type, payload, taskId: eventTaskId } = message.event
+        if (type === "task.created" || type === "task.updated") {
+          const tarefa = eventoTarefaParaEstado(payload, eventTaskId)
+          if (!atendeFiltros(tarefa)) {
+            setTarefas((atual) => atual.filter((item) => item.id !== tarefa.id))
+            return
+          }
+          setTarefas((atual) => {
+            const index = atual.findIndex((item) => item.id === tarefa.id)
+            if (index < 0) return [tarefa, ...atual]
+            const next = [...atual]
+            const anterior = next[index]
+            next[index] = {
+              ...anterior,
+              ...tarefa,
+              ...(payload.descricao === undefined ? { descricao: anterior.descricao } : {}),
+              ...(payload.tipo === undefined ? { tipo: anterior.tipo } : {}),
+              ...(payload.dependsOnTaskId === undefined ? { dependsOnTaskId: anterior.dependsOnTaskId } : {}),
+              ...(payload.createdAt === undefined ? { createdAt: anterior.createdAt } : {}),
+            }
+            return next.sort((a, b) => new Date(b.updatedAt ?? b.createdAt ?? 0).getTime() - new Date(a.updatedAt ?? a.createdAt ?? 0).getTime())
+          })
+          if (eventTaskId === tarefaId) {
+            setDetail((atual) => atual?.task ? { ...atual, task: { ...atual.task, title: tarefa.titulo, status: tarefa.status } } : atual)
+          }
+        } else if (type === "task.deleted") {
+          setTarefas((atual) => atual.filter((item) => item.id !== eventTaskId))
+          setTarefaId((atual) => atual === eventTaskId ? "" : atual)
+        } else if (type === "task.status.changed") {
+          const status = String(payload.status ?? "")
+          setTarefas((atual) => atual.map((tarefa) => tarefa.id === eventTaskId ? { ...tarefa, status } : tarefa))
+          if (eventTaskId === tarefaId) setDetail((atual) => atual?.task ? { ...atual, task: { ...atual.task, status } } : atual)
+        } else if (type === "subtask.created" || type === "subtask.updated" || type === "subtask.deleted") {
+          reconciliarSubtarefa(type, payload, eventTaskId)
         }
       },
     })
     void realtime.connect()
     return () => realtime.close()
-  }, [tarefaId, bundle])
+  }, [tarefaId, bundle, atendeFiltros, eventoTarefaParaEstado, reconciliarSubtarefa])
 
   useEffect(() => {
     setLoading(false)
@@ -794,10 +898,24 @@ export default function TaskMonitorScreen(): ReactNode {
         <Typography variant="h4" fontWeight={600}>
           Acompanhar Tarefa
         </Typography>
-          <Typography variant="caption" color={realtimeStatus === "open" ? "success.main" : "text.secondary"}>
-          {realtimeStatus === "open" ? "Tempo real conectado" : "Reconectando ao tempo real…"}
+        <Typography
+          variant="caption"
+          color={realtimeStatus === "open" ? "success.main" : realtimeStatus === "connecting" ? "info.main" : "warning.main"}
+          data-testid="realtime-status"
+        >
+          {realtimeStatus === "open"
+            ? "Tempo real conectado"
+            : realtimeStatus === "connecting"
+              ? "Conectando ao tempo real…"
+              : "Desconectado — tentando reconectar automaticamente…"}
         </Typography>
       </Stack>
+
+      {realtimeStatus === "closed" && tarefaId !== "" && (
+        <Alert severity="warning" data-testid="realtime-disconnected-alert">
+          A conexão em tempo real foi interrompida. Tentando reconectar automaticamente; os dados serão atualizados assim que a conexão voltar.
+        </Alert>
+      )}
 
       {erro && <Alert severity="error" data-testid="error-alert">{erro}</Alert>}
 
