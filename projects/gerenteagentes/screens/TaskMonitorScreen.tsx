@@ -30,10 +30,11 @@ import {
   TableCell,
   TableHead,
   TableRow,
+  TextField,
   Tooltip,
   Typography,
 } from "@mui/material"
-import { PlayArrowRounded, PauseRounded, ReplayRounded, EditRounded, CloseRounded, ExpandMoreRounded, ExpandLessRounded, AddTaskRounded } from "@mui/icons-material"
+import { PlayArrowRounded, PauseRounded, ReplayRounded, EditRounded, CloseRounded, ExpandMoreRounded, ExpandLessRounded, AddTaskRounded, SendRounded } from "@mui/icons-material"
 import { DynamicForm } from "@biblioteca-global/ui"
 import { RealtimeClient, type RealtimeServerMessage } from "@biblioteca-global/api-client"
 import type { DynamicField, DynamicFormValues } from "@biblioteca-global/ui"
@@ -242,6 +243,10 @@ export default function TaskMonitorScreen(): ReactNode {
   const [tarefaId, setTarefaId] = useState<number | "">("")
   const [detail, setDetail] = useState<MotorDetail | null>(null)
   const [chat, setChat] = useState<TarefaChatMessage[]>([])
+  const [chatInput, setChatInput] = useState("")
+  const [chatSending, setChatSending] = useState(false)
+  const [chatError, setChatError] = useState<string | null>(null)
+  const chatRequestId = useRef(0)
   const [loading, setLoading] = useState(true)
   const [erro, setErro] = useState<string | null>(null)
   const [acao, setAcao] = useState<string | null>(null)
@@ -317,15 +322,49 @@ export default function TaskMonitorScreen(): ReactNode {
 
   const carregarChat = useCallback(async (id: number) => {
     if (!bundle) return
+    const requestId = ++chatRequestId.current
+    setChatError(null)
     try {
       const res = await bundle.http.request<TarefaChatMessage[] | { items?: TarefaChatMessage[] }>(
         "GET", `/gerenteagentes/tarefas/${id}/chat`, { auth: "access" },
       )
-      if (mounted.current) setChat(Array.isArray(res) ? res : (res.items ?? []))
-    } catch {
-      if (mounted.current) setChat([])
+      if (mounted.current && requestId === chatRequestId.current) {
+        setChat(Array.isArray(res) ? res : (res.items ?? []))
+      }
+    } catch (e) {
+      if (mounted.current && requestId === chatRequestId.current) {
+        setChat([])
+        setChatError(e instanceof Error ? e.message : "Não foi possível carregar o histórico do chat.")
+      }
     }
   }, [bundle])
+
+  const enviarMensagemChat = useCallback(async () => {
+    const texto = chatInput.trim()
+    if (!bundle || tarefaId === "" || !texto || chatSending) return
+
+    const tarefaAtual = tarefaId
+    setChatSending(true)
+    setChatError(null)
+    try {
+      await bundle.http.request("POST", `/gerenteagentes/tarefas/${tarefaAtual}/chat`, {
+        body: { role: "user", texto },
+        auth: "access",
+      })
+      // Só limpa o campo se a tarefa ainda for a mesma; assim uma troca de
+      // tarefa durante a chamada não apaga o rascunho da nova conversa.
+      if (tarefaId === tarefaAtual) {
+        setChatInput("")
+        await carregarChat(tarefaAtual)
+      }
+    } catch (e) {
+      if (tarefaId === tarefaAtual) {
+        setChatError(e instanceof Error ? e.message : "Não foi possível enviar a mensagem.")
+      }
+    } finally {
+      setChatSending(false)
+    }
+  }, [bundle, tarefaId, chatInput, chatSending, carregarChat])
 
   /** ST-2: carrega subtarefas do banco para ter IDs ao editar. */
   const carregarSubtarefasDb = useCallback(async (id: number) => {
@@ -358,9 +397,16 @@ export default function TaskMonitorScreen(): ReactNode {
   // Polling de 60s no detalhe (tempo real)
   useEffect(() => {
     if (tarefaId === "") {
+      setDetail(null)
       setChat([])
+      setChatInput("")
+      setChatError(null)
       return
     }
+    setDetail(null)
+    setChat([])
+    setChatInput("")
+    setChatError(null)
     void carregarDetail(tarefaId)
     void carregarSubtarefasDb(tarefaId)
     void carregarChat(tarefaId)
@@ -384,6 +430,7 @@ export default function TaskMonitorScreen(): ReactNode {
       onMessage: (message) => {
         if (message.type !== "event") return
         setTerminalEvents((atual) => [...atual, message].slice(-500))
+        if (message.event.type.includes("chat")) void carregarChat(tarefaId)
         if (message.event.type === "task.status.changed") {
           const status = String(message.event.payload.status ?? "")
           setTarefas((atual) => atual.map((tarefa) => tarefa.id === tarefaId ? { ...tarefa, status } : tarefa))
@@ -392,7 +439,7 @@ export default function TaskMonitorScreen(): ReactNode {
     })
     void realtime.connect()
     return () => realtime.close()
-  }, [tarefaId, bundle])
+  }, [tarefaId, bundle, carregarChat])
 
   useEffect(() => {
     setLoading(false)
@@ -809,6 +856,87 @@ export default function TaskMonitorScreen(): ReactNode {
   const tipoTarefa = tarefaSelecionada?.tipo ?? "desenvolvimento"
   const isDesenvolvimento = tipoTarefa === "desenvolvimento"
 
+  const taskChatPanel = tarefaId !== "" ? (
+    <Paper variant="outlined" sx={{ mt: 2, p: 2 }} data-testid="task-chat">
+      <Typography variant="h6" sx={{ mb: 1 }}>Chat da tarefa</Typography>
+      <Box
+        data-testid="task-chat-history"
+        sx={{
+          minHeight: 96,
+          maxHeight: 360,
+          overflowY: "auto",
+          p: 1,
+          display: "flex",
+          flexDirection: "column",
+          gap: 1,
+          bgcolor: "background.default",
+          borderRadius: 1,
+        }}
+      >
+        {chatError && <Alert severity="error" sx={{ py: 0 }} data-testid="task-chat-error">{chatError}</Alert>}
+        {chat.length === 0 && !chatError && (
+          <Typography color="text.secondary" variant="body2" align="center" sx={{ py: 3 }} data-testid="empty-task-chat">
+            Nenhuma mensagem ainda. Inicie a conversa!
+          </Typography>
+        )}
+        {chat.map((mensagem) => {
+          const fromAgent = mensagem.role === "assistant" || mensagem.role === "agent"
+          return (
+            <Box
+              key={mensagem.id}
+              sx={{
+                alignSelf: fromAgent ? "flex-start" : "flex-end",
+                maxWidth: { xs: "90%", sm: "75%" },
+                px: 1.5,
+                py: 1,
+                borderRadius: 2,
+                bgcolor: fromAgent ? "action.hover" : "primary.main",
+                color: fromAgent ? "text.primary" : "primary.contrastText",
+              }}
+              data-testid={`task-chat-message-${mensagem.id}`}
+            >
+              <Typography variant="caption" sx={{ opacity: 0.75, display: "block" }}>
+                {fromAgent ? "Agente" : "Você"}
+                {mensagem.createdAt ? ` · ${new Date(mensagem.createdAt).toLocaleString("pt-BR")}` : ""}
+              </Typography>
+              <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{mensagem.texto}</Typography>
+            </Box>
+          )
+        })}
+      </Box>
+      <Stack direction="row" spacing={1} sx={{ mt: 1.5 }}>
+        <TextField
+          fullWidth
+          size="small"
+          multiline
+          maxRows={4}
+          placeholder="Escreva uma mensagem para a tarefa…"
+          value={chatInput}
+          disabled={chatSending}
+          onChange={(event) => setChatInput(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault()
+              void enviarMensagemChat()
+            }
+          }}
+          inputProps={{ "data-testid": "task-chat-input" }}
+        />
+        <Button
+          variant="contained"
+          onClick={() => void enviarMensagemChat()}
+          disabled={!chatInput.trim() || chatSending}
+          startIcon={chatSending ? <CircularProgress size={16} color="inherit" /> : <SendRounded />}
+          aria-label="Enviar mensagem do chat da tarefa"
+          data-testid="task-chat-send-button"
+          sx={{ alignSelf: "flex-end", minWidth: 110 }}
+        >
+          Enviar
+        </Button>
+      </Stack>
+    </Paper>
+  ) : null
+
   if (loading) {
     return (
       <Box sx={{ display: "flex", justifyContent: "center", p: 4 }} data-testid="loading-spinner">
@@ -990,33 +1118,6 @@ export default function TaskMonitorScreen(): ReactNode {
                 <b>▶ Executando:</b> {stats.active.title} <Chip size="small" label={stats.active.status} color={corStatus(stats.active.status)} sx={{ ml: 1 }} />
               </Typography>
             </Alert>
-          )}
-
-          {!isDesenvolvimento && (
-            <Paper variant="outlined" sx={{ mt: 2, p: 2 }} data-testid="task-chat">
-              <Typography variant="h6" sx={{ mb: 1 }}>Entrega pelo chat</Typography>
-              {chat.length === 0 ? (
-                <Typography color="text.secondary" variant="body2" data-testid="empty-task-chat">
-                  Aguardando a resposta do agente…
-                </Typography>
-              ) : (
-                <Stack spacing={1.5}>
-                  {chat.map((mensagem) => (
-                    <Box
-                      key={mensagem.id}
-                      sx={{ p: 1.5, borderRadius: 1, bgcolor: mensagem.role === "assistant" || mensagem.role === "agent" ? "action.hover" : "background.default" }}
-                      data-testid={`task-chat-message-${mensagem.id}`}
-                    >
-                      <Typography variant="caption" color="text.secondary">
-                        {mensagem.role === "assistant" || mensagem.role === "agent" ? "Agente" : mensagem.role}
-                        {mensagem.createdAt ? ` · ${new Date(mensagem.createdAt).toLocaleString("pt-BR")}` : ""}
-                      </Typography>
-                      <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", mt: 0.5 }}>{mensagem.texto}</Typography>
-                    </Box>
-                  ))}
-                </Stack>
-              )}
-            </Paper>
           )}
 
           {detail?.exists && isDesenvolvimento && (
@@ -1218,6 +1319,8 @@ export default function TaskMonitorScreen(): ReactNode {
                 </TableBody>
               </Table>
 
+              {taskChatPanel}
+
               <Typography variant="h6" sx={{ mt: 3 }}>Atividade</Typography>
               <Paper variant="outlined" sx={{ p: 2, maxHeight: 260, overflow: "auto" }} data-testid="activity-feed">
                 {eventos.length === 0 && (
@@ -1259,6 +1362,8 @@ export default function TaskMonitorScreen(): ReactNode {
               </Paper>
             </>
           )}
+
+          {!isDesenvolvimento && taskChatPanel}
         </Paper>
       )}
 
