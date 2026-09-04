@@ -16,6 +16,7 @@ import NovaTarefaScreen from "../../../../../projects/gerenteagentes/screens/Nov
 import TaskMonitorScreen from "../../../../../projects/gerenteagentes/screens/TaskMonitorScreen"
 import ModelSelectionScreen from "../../../../../projects/gerenteagentes/screens/ModelSelectionScreen"
 import IsaChatScreen from "../../../../../projects/gerenteagentes/screens/IsaChatScreen"
+import PainelPortariaScreen from "../../../../../projects/taqui/screens/PainelPortariaScreen"
 
 /**
  * Registra as telas custom de todos os projetos. Chamar no boot (main.tsx)
@@ -33,5 +34,6 @@ export function registrarTelasCustom(): void {
     "sistema-adm-global-hub-admin": SistemaAdmGlobalHubAdmin,
     "sistema-adm-global-hub-administrativo": SistemaAdmGlobalHubAdministrativo,
     "sistema-adm-global-hub-rh": SistemaAdmGlobalHubRh,
+    "taqui-painel-portaria": PainelPortariaScreen,
   })
 }
