@@ -54,11 +54,26 @@ interface Tarefa {
   id: number
   titulo: string
   descricao?: string | null
+  tipo?: "desenvolvimento" | "automacao" | "verificacao" | string | null
   dependsOnTaskId?: number | null
   status: string
   projetoId: number
   updatedAt?: string
   createdAt?: string
+}
+
+interface TarefaChatMessage {
+  id: number
+  tarefaId: number
+  role: string
+  texto: string
+  createdAt: string | Date
+}
+
+const TIPO_TAREFA_LABEL: Record<string, string> = {
+  desenvolvimento: "Desenvolvimento",
+  automacao: "Automação",
+  verificacao: "Verificação",
 }
 
 interface ProjetoCaptado {
@@ -225,6 +240,7 @@ export default function TaskMonitorScreen(): ReactNode {
   const [statusFiltro, setStatusFiltro] = useState<string>("")
   const [tarefaId, setTarefaId] = useState<number | "">("")
   const [detail, setDetail] = useState<MotorDetail | null>(null)
+  const [chat, setChat] = useState<TarefaChatMessage[]>([])
   const [loading, setLoading] = useState(true)
   const [erro, setErro] = useState<string | null>(null)
   const [acao, setAcao] = useState<string | null>(null)
@@ -295,6 +311,18 @@ export default function TaskMonitorScreen(): ReactNode {
     }
   }, [bundle])
 
+  const carregarChat = useCallback(async (id: number) => {
+    if (!bundle) return
+    try {
+      const res = await bundle.http.request<TarefaChatMessage[] | { items?: TarefaChatMessage[] }>(
+        "GET", `/gerenteagentes/tarefas/${id}/chat`, { auth: "access" },
+      )
+      if (mounted.current) setChat(Array.isArray(res) ? res : (res.items ?? []))
+    } catch {
+      if (mounted.current) setChat([])
+    }
+  }, [bundle])
+
   /** ST-2: carrega subtarefas do banco para ter IDs ao editar. */
   const carregarSubtarefasDb = useCallback(async (id: number) => {
     if (!bundle) return
@@ -325,15 +353,20 @@ export default function TaskMonitorScreen(): ReactNode {
 
   // Polling de 60s no detalhe (tempo real)
   useEffect(() => {
-    if (tarefaId === "") return
+    if (tarefaId === "") {
+      setChat([])
+      return
+    }
     void carregarDetail(tarefaId)
     void carregarSubtarefasDb(tarefaId)
+    void carregarChat(tarefaId)
     const t2 = setInterval(() => {
       void carregarDetail(tarefaId)
       void carregarSubtarefasDb(tarefaId)
+      void carregarChat(tarefaId)
     }, 60000)
     return () => clearInterval(t2)
-  }, [tarefaId, carregarDetail, carregarSubtarefasDb])
+  }, [tarefaId, carregarDetail, carregarSubtarefasDb, carregarChat])
 
   useEffect(() => {
     if (tarefaId === "" || !bundle) return
@@ -418,6 +451,16 @@ export default function TaskMonitorScreen(): ReactNode {
         fullWidth: true,
       },
       {
+        name: "tipo",
+        label: "Tipo de tarefa",
+        type: "select",
+        options: [
+          { value: "desenvolvimento", label: "Desenvolvimento" },
+          { value: "automacao", label: "Automação" },
+          { value: "verificacao", label: "Verificação" },
+        ],
+      },
+      {
         name: "status",
         label: "Status",
         type: "select",
@@ -447,6 +490,7 @@ export default function TaskMonitorScreen(): ReactNode {
         const body: Record<string, unknown> = {
           titulo: String(values.titulo ?? "").trim(),
           descricao: values.descricao ? String(values.descricao).trim() : null,
+          tipo: values.tipo ? String(values.tipo) : "desenvolvimento",
           status: values.status ? String(values.status) : undefined,
           dependsOnTaskId:
             values.dependsOnTaskId !== "" && values.dependsOnTaskId != null
@@ -722,16 +766,19 @@ export default function TaskMonitorScreen(): ReactNode {
   const podeRetomar = statusMotor === "paused"
 
   const editInitialValues = useMemo<DynamicFormValues>(() => {
-    if (!tarefaSelecionada) return { titulo: "", descricao: "", status: "draft", dependsOnTaskId: "" }
+    if (!tarefaSelecionada) return { titulo: "", descricao: "", tipo: "desenvolvimento", status: "draft", dependsOnTaskId: "" }
     return {
       titulo: tarefaSelecionada.titulo,
       descricao: tarefaSelecionada.descricao ?? "",
+      tipo: tarefaSelecionada.tipo ?? "desenvolvimento",
       status: tarefaSelecionada.status ?? "draft",
       dependsOnTaskId: tarefaSelecionada.dependsOnTaskId ?? "",
     }
   }, [tarefaSelecionada])
 
   const eventos = detail?.events ?? []
+  const tipoTarefa = tarefaSelecionada?.tipo ?? "desenvolvimento"
+  const isDesenvolvimento = tipoTarefa === "desenvolvimento"
 
   if (loading) {
     return (
@@ -828,7 +875,13 @@ export default function TaskMonitorScreen(): ReactNode {
                 <EditRounded fontSize="small" />
               </IconButton>
               <Chip size="small" label={statusMotor} color={corStatus(statusMotor)} data-testid="task-status-pill" />
-              {detail?.exists && (
+              <Chip
+                size="small"
+                variant="outlined"
+                label={TIPO_TAREFA_LABEL[tipoTarefa] ?? tipoTarefa}
+                data-testid="task-type-pill"
+              />
+              {isDesenvolvimento && detail?.exists && (
                 <Chip size="small" variant="outlined" label={`Progresso: ${stats.verified} / ${stats.total}`} data-testid="task-progress" />
               )}
             </Stack>
@@ -868,7 +921,7 @@ export default function TaskMonitorScreen(): ReactNode {
 
           {detail && !detail.exists && (
             <Alert severity="info" sx={{ mt: 2 }} data-testid="not-on-motor">
-              {detail.message ?? "Tarefa ainda não enviada ao motor."} Clique em <b>Iniciar</b> para começar o desenvolvimento.
+              {detail.message ?? "Tarefa ainda não enviada ao motor."} Clique em <b>Iniciar</b> para começar.
             </Alert>
           )}
 
@@ -904,7 +957,34 @@ export default function TaskMonitorScreen(): ReactNode {
             </Alert>
           )}
 
-          {detail?.exists && (
+          {!isDesenvolvimento && (
+            <Paper variant="outlined" sx={{ mt: 2, p: 2 }} data-testid="task-chat">
+              <Typography variant="h6" sx={{ mb: 1 }}>Entrega pelo chat</Typography>
+              {chat.length === 0 ? (
+                <Typography color="text.secondary" variant="body2" data-testid="empty-task-chat">
+                  Aguardando a resposta do agente…
+                </Typography>
+              ) : (
+                <Stack spacing={1.5}>
+                  {chat.map((mensagem) => (
+                    <Box
+                      key={mensagem.id}
+                      sx={{ p: 1.5, borderRadius: 1, bgcolor: mensagem.role === "assistant" || mensagem.role === "agent" ? "action.hover" : "background.default" }}
+                      data-testid={`task-chat-message-${mensagem.id}`}
+                    >
+                      <Typography variant="caption" color="text.secondary">
+                        {mensagem.role === "assistant" || mensagem.role === "agent" ? "Agente" : mensagem.role}
+                        {mensagem.createdAt ? ` · ${new Date(mensagem.createdAt).toLocaleString("pt-BR")}` : ""}
+                      </Typography>
+                      <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", mt: 0.5 }}>{mensagem.texto}</Typography>
+                    </Box>
+                  ))}
+                </Stack>
+              )}
+            </Paper>
+          )}
+
+          {detail?.exists && isDesenvolvimento && (
             <>
               <Table size="small" sx={{ mt: 2 }} data-testid="subtask-table">
                 <TableHead>

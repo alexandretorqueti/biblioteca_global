@@ -25,11 +25,18 @@ interface Projeto {
   nome: string
 }
 
+const TIPOS_TAREFA = [
+  { value: "desenvolvimento", label: "Desenvolvimento" },
+  { value: "automacao", label: "Automação" },
+  { value: "verificacao", label: "Verificação" },
+] as const
+
 export default function NovaTarefaScreen(): ReactNode {
   const [projetos, setProjetos] = useState<Projeto[]>([])
   const [projetoId, setProjetoId] = useState("")
   const [titulo, setTitulo] = useState("")
   const [descricao, setDescricao] = useState("")
+  const [tipo, setTipo] = useState<(typeof TIPOS_TAREFA)[number]["value"]>("desenvolvimento")
 
   const [enviando, setEnviando] = useState(false)
   const [sucesso, setSucesso] = useState(false)
@@ -83,6 +90,7 @@ export default function NovaTarefaScreen(): ReactNode {
           projetoId: Number(projetoId),
           titulo: titulo.trim(),
           descricao: descricao.trim() || null,
+          tipo,
           status: "draft",
         }),
       })
@@ -96,12 +104,13 @@ export default function NovaTarefaScreen(): ReactNode {
       setProjetoId("")
       setTitulo("")
       setDescricao("")
+      setTipo("desenvolvimento")
     } catch (e) {
       setErro(e instanceof Error ? e.message : "Erro ao criar tarefa")
     } finally {
       setEnviando(false)
     }
-  }, [projetoId, titulo, descricao])
+  }, [projetoId, titulo, descricao, tipo])
 
   return (
     <Stack spacing={3} data-testid="nova-tarefa-screen">
@@ -131,6 +140,20 @@ export default function NovaTarefaScreen(): ReactNode {
               <MenuItem value="" disabled>Selecione um projeto</MenuItem>
               {projetos.map((p) => (
                 <MenuItem key={p.id} value={String(p.id)}>{p.nome}</MenuItem>
+              ))}
+            </TextField>
+
+            <TextField
+              select
+              label="Tipo de tarefa"
+              value={tipo}
+              onChange={(e) => setTipo(e.target.value as (typeof TIPOS_TAREFA)[number]["value"])}
+              required
+              fullWidth
+              inputProps={{ "data-testid": "input-tipo" }}
+            >
+              {TIPOS_TAREFA.map((opcao) => (
+                <MenuItem key={opcao.value} value={opcao.value}>{opcao.label}</MenuItem>
               ))}
             </TextField>
           </Stack>
