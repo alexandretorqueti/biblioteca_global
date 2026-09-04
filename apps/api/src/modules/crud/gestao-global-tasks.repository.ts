@@ -1,5 +1,5 @@
 import { Inject, Injectable } from "@nestjs/common"
-import { eq } from "drizzle-orm"
+import { and, eq, notInArray } from "drizzle-orm"
 import { tarefas } from "../../../../../projects/gerenteagentes/schema"
 import {
   PROJECT_DB_FACTORY,
@@ -26,6 +26,19 @@ export interface ApiErrorTask {
   descricao: string | null
 }
 
+/**
+ * Estes estados encerram a ocorrência. Uma nova falha do mesmo endpoint pode
+ * abrir outra tarefa depois que a tarefa anterior chegou a um deles.
+ * `deployada` e `finalizada` são valores legados ainda presentes na base.
+ */
+const STATUS_QUE_PERMITEM_NOVA_OCORRENCIA = [
+  "ready",
+  "completed",
+  "deployed",
+  "finalizada",
+  "deployada",
+] as const
+
 /** Persistência das tarefas de erro no schema do GestaoGlobal. */
 @Injectable()
 export class GestaoGlobalTasksRepository {
@@ -38,28 +51,42 @@ export class GestaoGlobalTasksRepository {
     return this.factory.obter({ id: GESTAO_GLOBAL_PROJECT_ID })
   }
 
-  private tituloDoErro(endpoint: string, method = "HTTP"): string {
-    return `Erro de API: ${method.toUpperCase()} ${endpoint}`
+  private tituloDoErro(endpoint: string): string {
+    return `Erro de API: ${endpoint}`
   }
 
-  async encontrarPorEndpoint(endpoint: string, method = "HTTP") {
-    const titulo = this.tituloDoErro(endpoint, method)
+  /** Consulta somente uma ocorrência ainda ativa no projeto informado. */
+  async encontrarPorEndpoint(endpoint: string, projetoId: number) {
+    const titulo = this.tituloDoErro(endpoint)
     const resultado = await (await this.db())
-      .select({ id: tarefas.id, projetoId: tarefas.projetoId, titulo: tarefas.titulo, descricao: tarefas.descricao })
+      .select({
+        id: tarefas.id,
+        projetoId: tarefas.projetoId,
+        titulo: tarefas.titulo,
+        descricao: tarefas.descricao,
+      })
       .from(tarefas)
-      .where(eq(tarefas.titulo, titulo))
+      .where(and(
+        eq(tarefas.projetoId, projetoId),
+        eq(tarefas.titulo, titulo),
+        notInArray(tarefas.status, [...STATUS_QUE_PERMITEM_NOVA_OCORRENCIA]),
+      ))
       .limit(1)
     return resultado[0]
   }
 
-  /** Cria uma única tarefa para o endpoint; chamadas repetidas são idempotentes. */
+  /**
+   * Cria uma tarefa para a ocorrência, mantendo uma única ocorrência ativa por
+   * endpoint e projeto. Ocorrências concluídas não bloqueiam novas criações.
+   */
   async criarTarefaErro(input: ApiErrorTaskInput): Promise<ApiErrorTask | undefined> {
     const method = input.method ?? "HTTP"
-    const existente = await this.encontrarPorEndpoint(input.endpoint, method)
+    const existente = await this.encontrarPorEndpoint(input.endpoint, input.projetoId)
     if (existente) return existente
 
     const descricao = [
       `Projeto ativo: ${input.projetoId}`,
+      `Endpoint: ${method.toUpperCase()} ${input.endpoint}`,
       input.status === undefined ? undefined : `Status HTTP: ${input.status}`,
       `Mensagem: ${input.message}`,
       input.details === undefined ? undefined : `Detalhes: ${JSON.stringify(input.details)}`,
@@ -69,7 +96,7 @@ export class GestaoGlobalTasksRepository {
       .insert(tarefas)
       .values({
         projetoId: input.projetoId,
-        titulo: this.tituloDoErro(input.endpoint, method),
+        titulo: this.tituloDoErro(input.endpoint),
         descricao,
         tipo: "verificacao",
         status: "planned",
@@ -80,7 +107,7 @@ export class GestaoGlobalTasksRepository {
     return {
       id,
       projetoId: input.projetoId,
-      titulo: this.tituloDoErro(input.endpoint, method),
+      titulo: this.tituloDoErro(input.endpoint),
       descricao,
     }
   }
