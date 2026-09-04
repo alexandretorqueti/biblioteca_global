@@ -355,7 +355,7 @@ export const config: GeradorSistemaConfig = {
             description: "Lojas e transportadoras que enviam encomendas",
             fields: [
               { name: "nome", label: "Nome", type: "text", required: true, maxLength: 200, fullWidth: true },
-              { name: "cnpj", label: "CNPJ", type: "text", maxLength: 18 },
+              { name: "cnpj", label: "CNPJ", type: "text", maxLength: 18, mask: "cnpj", validator: "cnpj" },
               { name: "telefone", label: "Telefone", type: "text", maxLength: 50 },
               { name: "ativo", label: "Ativo", type: "switch", defaultValue: true },
             ],
@@ -503,6 +503,39 @@ export const config: GeradorSistemaConfig = {
           },
         },
         {
+          id: "entregas-list",
+          label: "Entregas",
+          path: "entregas",
+          icon: "how_to_reg",
+          screen: {
+            kind: "cadastro",
+            resource: "entregas",
+            title: "Entregas",
+            description: "Histórico auditável das entregas liberadas pela portaria",
+            fields: [
+              { name: "encomendaId", label: "Encomenda", type: "multipleChoice", multipleChoice: { resource: "encomendas", idField: "id", displayField: "codigoRastreamento" }, required: true },
+              { name: "condominioId", label: "Condomínio", type: "multipleChoice", multipleChoice: { resource: "condominios", idField: "id", displayField: "nome" }, required: true },
+              { name: "funcionarioId", label: "Funcionário", type: "multipleChoice", multipleChoice: { resource: "funcionarios", idField: "id", displayField: "nome" }, required: true },
+              { name: "dataHoraEntrega", label: "Data/Hora da Entrega", type: "date", required: true },
+              { name: "evidenciaQuemRetirou", label: "Evidência de Quem Retirou", type: "json", fullWidth: true, helperText: "Registro estruturado do recebedor e da retirada" },
+            ],
+            overrides: {
+              hiddenColumns: ["createdAt", "updatedAt", "evidenciaQuemRetirou"],
+              columnLabels: {
+                id: "ID",
+                encomendaId: "Encomenda",
+                condominioId: "Condomínio",
+                funcionarioId: "Funcionário",
+                dataHoraEntrega: "Data/Hora",
+              },
+              newLabel: "Nova entrega",
+            },
+            defaultOrderBy: [
+              { campo: "dataHoraEntrega", direction: "desc" },
+            ],
+          },
+        },
+        {
           id: "ocorrencias-list",
           label: "Ocorrências / Devoluções",
           path: "ocorrencias",
@@ -529,7 +562,7 @@ export const config: GeradorSistemaConfig = {
                   { label: "Outro", value: "outro" },
                 ],
               },
-              { name: "motivo", label: "Motivo", type: "textarea", required: true, maxLength: 2000, fullWidth: true, helperText: "Obrigatório, mínimo 10 caracteres" },
+              { name: "motivo", label: "Motivo", type: "textarea", required: true, minLength: 10, maxLength: 2000, fullWidth: true, helperText: "Obrigatório, mínimo 10 caracteres" },
               { name: "descricao", label: "Descrição", type: "textarea", fullWidth: true, helperText: "Obrigatória quando tipo for 'Outro'" },
               { name: "fotoEvidenciaUrl", label: "URL da Foto/Evidência", type: "text", maxLength: 1000, fullWidth: true },
               { name: "observacoes", label: "Observações", type: "textarea", fullWidth: true },
