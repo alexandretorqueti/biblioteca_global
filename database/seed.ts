@@ -13,8 +13,9 @@ import argon2 from "argon2"
 import { eq, inArray } from "drizzle-orm"
 import { drizzle } from "drizzle-orm/mysql2"
 import { migrate } from "drizzle-orm/mysql2/migrator"
-import { existsSync } from "node:fs"
+import { existsSync, readdirSync } from "node:fs"
 import { resolve } from "node:path"
+import { pathToFileURL } from "node:url"
 import mysql from "mysql2/promise"
 import {
   coletarAnnotations,
@@ -28,21 +29,10 @@ import {
 import { loadEnv, type CoreEnv } from "./env"
 import { projetos, projetosUsuarios, usuarios } from "./schema"
 
-import { config as configBibliotecaGlobal } from "../projects/biblioteca-global/config"
-import * as schemaBibliotecaGlobal from "../projects/biblioteca-global/schema"
-import { config as configDocumentacao } from "../projects/documentacao/config"
-import * as schemaDocumentacao from "../projects/documentacao/schema"
-import { config as configGerenteAgentes } from "../projects/gerenteagentes/config"
-import * as schemaGerenteAgentes from "../projects/gerenteagentes/schema"
-import { config as configSistemaAdmGlobal } from "../projects/sistema-adm-global/config"
-import * as schemaSistemaAdmGlobal from "../projects/sistema-adm-global/schema"
-import { config as configTaqui } from "../projects/taqui/config"
-import * as schemaTaqui from "../projects/taqui/schema"
-
 /** POC §9.3 — senha descartável; Alexandre troca no primeiro login. */
 const SENHA_INICIAL_DESCARTAVEL = "Bo4MfU29r0GPi1"
 
-interface ProjetoSeed {
+export interface ProjetoSeed {
   nome: string
   slug: string
   configBase: GeradorSistemaConfig
@@ -50,43 +40,56 @@ interface ProjetoSeed {
   annotations: ReturnType<typeof coletarAnnotations>
 }
 
-const PROJETOS_SEED: ProjetoSeed[] = [
-  {
-    nome: "Biblioteca Global",
-    slug: "biblioteca-global",
-    configBase: configBibliotecaGlobal,
-    tabelas: coletarTabelas(schemaBibliotecaGlobal),
-    annotations: coletarAnnotations(schemaBibliotecaGlobal),
-  },
-  {
-    nome: "Documentação",
-    slug: "documentacao",
-    configBase: configDocumentacao,
-    tabelas: coletarTabelas(schemaDocumentacao),
-    annotations: coletarAnnotations(schemaDocumentacao),
-  },
-  {
-    nome: "Gerente Agentes (piloto)",
-    slug: "gerenteagentes",
-    configBase: configGerenteAgentes,
-    tabelas: coletarTabelas(schemaGerenteAgentes),
-    annotations: coletarAnnotations(schemaGerenteAgentes),
-  },
-  {
-    nome: "Administrador Global",
-    slug: "sistema-adm-global",
-    configBase: configSistemaAdmGlobal,
-    tabelas: coletarTabelas(schemaSistemaAdmGlobal),
-    annotations: coletarAnnotations(schemaSistemaAdmGlobal),
-  },
-  {
-    nome: "TaQui",
-    slug: "taqui",
-    configBase: configTaqui,
-    tabelas: coletarTabelas(schemaTaqui),
-    annotations: coletarAnnotations(schemaTaqui),
-  },
-]
+interface ProjetoConfigModule {
+  config?: unknown
+}
+
+/**
+ * Descobre os projetos da plataforma por convenção.
+ *
+ * Projetos auxiliares podem existir em `projects/` sem participar da
+ * plataforma; somente diretórios que possuem config.ts entram no seed.
+ * Cada projeto é isolado em seu próprio try/catch para que uma configuração
+ * inválida não impeça os demais de serem provisionados.
+ */
+export async function descobrirProjetosSeed(
+  pastaProjects = resolve(__dirname, "..", "projects"),
+): Promise<ProjetoSeed[]> {
+  const projetosDescobertos: ProjetoSeed[] = []
+  const entradas = readdirSync(pastaProjects, { withFileTypes: true }).sort(
+    (a, b) => a.name.localeCompare(b.name),
+  )
+
+  for (const entrada of entradas) {
+    if (!entrada.isDirectory()) continue
+    const slug = entrada.name
+    const pasta = resolve(pastaProjects, slug)
+    const caminhoConfig = resolve(pasta, "config.ts")
+    const caminhoSchema = resolve(pasta, "schema.ts")
+    if (!existsSync(caminhoConfig)) continue
+
+    try {
+      if (!existsSync(caminhoSchema)) {
+        throw new Error("schema.ts ausente")
+      }
+      const moduloConfig = (await import(pathToFileURL(caminhoConfig).href)) as ProjetoConfigModule
+      const configBase = geradorSistemaConfigSchema.parse(moduloConfig.config)
+      const moduloSchema = (await import(pathToFileURL(caminhoSchema).href)) as Record<string, unknown>
+      projetosDescobertos.push({
+        nome: configBase.app.name,
+        slug,
+        configBase,
+        tabelas: coletarTabelas(moduloSchema),
+        annotations: coletarAnnotations(moduloSchema),
+      })
+    } catch (erro: unknown) {
+      const detalhe = erro instanceof Error ? erro.message : String(erro)
+      console.error(`Seed: projeto "${slug}" ignorado; config inválida ou não carregável: ${detalhe}`)
+    }
+  }
+
+  return projetosDescobertos
+}
 
 /** Config inicial gerada (base versionada + telas do schema). */
 export function configInicialDoProjeto(semente: ProjetoSeed): GeradorSistemaConfig {
@@ -156,6 +159,7 @@ async function aplicarMigrationsDoProjeto(
 
 export async function seed(): Promise<void> {
   const env = loadEnv()
+  const projetosSeed = await descobrirProjetosSeed()
   const connection = await mysql.createConnection({
     host: env.MYSQL_HOST,
     port: Number(env.MYSQL_PORT),
@@ -166,7 +170,7 @@ export async function seed(): Promise<void> {
   const db = drizzle(connection)
 
   // 1) Projetos — upsert por slug, com a config inicial GERADA.
-  for (const semente of PROJETOS_SEED) {
+  for (const semente of projetosSeed) {
     const config = configInicialDoProjeto(semente)
     await db
       .insert(projetos)
@@ -216,7 +220,7 @@ export async function seed(): Promise<void> {
   const projetosCriados = await db
     .select({ id: projetos.id, slug: projetos.slug })
     .from(projetos)
-    .where(inArray(projetos.slug, PROJETOS_SEED.map((p) => p.slug)))
+    .where(inArray(projetos.slug, projetosSeed.map((p) => p.slug)))
 
   for (const projeto of projetosCriados) {
     await db
