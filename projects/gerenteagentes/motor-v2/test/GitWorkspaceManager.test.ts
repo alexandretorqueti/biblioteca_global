@@ -103,6 +103,9 @@ describe("GitWorkspaceManager", () => {
     expect(vi.mocked(runner.run).mock.calls.map(([command]) => command)).toContainEqual([
       "git", "merge", "--no-ff", "--no-edit", "motor-v2/task-7/13/a1",
     ])
+    expect(vi.mocked(runner.run).mock.calls.map(([command]) => command)).toContainEqual([
+      "git", "push", "origin", "base-desenvolvimento",
+    ])
   })
 
   it("aborta o merge quando há conflito", async () => {

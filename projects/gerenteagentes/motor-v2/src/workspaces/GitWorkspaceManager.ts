@@ -215,6 +215,11 @@ export class GitWorkspaceManager {
       await this.runner.run(["git", "merge", "--no-ff", "--no-edit", workBranch], input.repoPath)
       const mergeCommit = (await this.runner.run(["git", "rev-parse", "--verify", "HEAD"], input.repoPath)).stdout.trim()
       if (!validCommit(mergeCommit)) throw new Error("commit de merge inválido")
+      // A publicação da subtarefa envia apenas a branch temporária. Depois da
+      // integração, a branch-base também precisa ser publicada antes do deploy;
+      // caso contrário o host fica correto localmente, mas origin permanece
+      // atrasado e a próxima execução pode partir de uma base divergente.
+      await this.runner.run(["git", "push", "origin", baseBranch], input.repoPath)
       return { mergeCommit }
     } catch (error) {
       await this.runner.run(["git", "merge", "--abort"], input.repoPath).catch(() => {})
