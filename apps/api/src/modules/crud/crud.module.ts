@@ -11,6 +11,7 @@ import {
   ProjectDbFactory,
 } from "./project-db.factory"
 import { DynamicSchemaRegistry, SCHEMA_REGISTRY } from "./schema-registry"
+import { GestaoGlobalTasksRepository, GESTAO_GLOBAL_TASKS_REPOSITORY } from "./gestao-global-tasks.repository"
 
 @Global()
 @Module({
@@ -18,6 +19,8 @@ import { DynamicSchemaRegistry, SCHEMA_REGISTRY } from "./schema-registry"
   controllers: [CrudController],
   providers: [
     CrudService,
+    GestaoGlobalTasksRepository,
+    { provide: GESTAO_GLOBAL_TASKS_REPOSITORY, useExisting: GestaoGlobalTasksRepository },
     { provide: SCHEMA_REGISTRY, useClass: DynamicSchemaRegistry },
     {
       provide: CONECTOR_PROJETO,
@@ -26,6 +29,6 @@ import { DynamicSchemaRegistry, SCHEMA_REGISTRY } from "./schema-registry"
     },
     { provide: PROJECT_DB_FACTORY, useClass: ProjectDbFactory },
   ],
-  exports: [CrudService, PROJECT_DB_FACTORY, SCHEMA_REGISTRY],
+  exports: [CrudService, PROJECT_DB_FACTORY, SCHEMA_REGISTRY, GestaoGlobalTasksRepository],
 })
 export class CrudModule {}

@@ -4,6 +4,9 @@
  */
 import type { ProjetoResumo, UsuarioAutenticado } from "@biblioteca-global/shared"
 
+/** Token para injetar o registrador de tarefas sem carregar o schema no filtro. */
+export const GESTAO_GLOBAL_TASKS_REPOSITORY = Symbol("GESTAO_GLOBAL_TASKS_REPOSITORY")
+
 /** Claims do access token JWT — o escopo vem SEMPRE daqui. */
 export interface AuthClaims {
   sub: number
@@ -30,5 +33,9 @@ export interface ApiRequest {
   ip?: string
   authClaims?: AuthClaims
   scope?: ProjectScope
+  method?: string
+  originalUrl?: string
+  url?: string
+  route?: { path?: string }
   refreshSession?: RefreshSession
 }
