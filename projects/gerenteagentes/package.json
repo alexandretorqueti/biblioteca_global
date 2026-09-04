@@ -6,6 +6,7 @@
   "description": "Projeto gerenteagentes — piloto para gerenciamento de agentes de IA",
   "main": "src/index.ts",
   "scripts": {
+    "test": "npm --prefix motor-v2 test",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
