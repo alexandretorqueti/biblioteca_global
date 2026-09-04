@@ -135,6 +135,7 @@ export class ResourceWaitManager {
       agentId: String(row.agent_id ?? row.agentId ?? ''),
       title: String(row.title ?? row.titulo ?? ''),
       description: String(row.description ?? row.descricao ?? ''),
+      tipo: isTaskTipo(row.tipo) ? row.tipo : 'desenvolvimento',
       repoPath: String(row.repo_path ?? row.repoPath ?? ''),
       buildCommand: String(row.build_command ?? row.buildCommand ?? 'npm run build'),
       unitTestCommand: String(row.unit_test_command ?? row.unitTestCommand ?? 'npm run test'),
@@ -161,4 +162,8 @@ export class ResourceWaitManager {
       ? { clause: 'id = ?', params: [taskId] }
       : { clause: 'external_id = ?', params: [taskId] }
   }
+}
+
+function isTaskTipo(value: unknown): value is NonNullable<Task['tipo']> {
+  return value === 'desenvolvimento' || value === 'automacao' || value === 'verificacao'
 }

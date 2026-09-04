@@ -72,6 +72,10 @@ interface ClarificacaoPendente {
   askedAt: string
 }
 
+function isTaskTipo(value: unknown): value is NonNullable<Task["tipo"]> {
+  return value === "desenvolvimento" || value === "automacao" || value === "verificacao"
+}
+
 interface SubtaskView {
   id: number
   seq: number
@@ -943,6 +947,7 @@ export class TaskCoordinator {
     return {
       id: data.id, chatId: data.chatId ?? "", agentId: data.agentId ?? "",
       title: data.title, description: data.description ?? "",
+      tipo: data.tipo ?? "desenvolvimento",
       repoPath: data.repoPath ?? "", buildCommand: data.buildCommand ?? "npm run build",
       unitTestCommand: data.unitTestCommand ?? "npm run test", unitTestExclude: [],
       baselineMode: "full", status: data.status as Task["status"],
@@ -1298,6 +1303,7 @@ export class TaskCoordinator {
       agentId: String(row.agent_id ?? ""),
       title: String(row.titulo ?? row.title ?? ""),
       description: String(row.descricao ?? row.description ?? ""),
+      tipo: isTaskTipo(row.tipo) ? row.tipo : "desenvolvimento",
       repoPath: String(row.repo_path ?? ""),
       buildCommand: String(row.build_command ?? ""), unitTestCommand: String(row.unit_test_command ?? ""),
       unitTestExclude: [], baselineMode: "full",

@@ -46,6 +46,7 @@ export type {
   ModelChain,
   TaskStatus,
   SubTaskStatus,
+  TaskTipo,
 } from './shared/types/index.js'
 
 export type {
@@ -64,7 +65,7 @@ export type {
 
 export { RESOURCE_KEYS } from './shared/types/resources.js'
 
-export type { Db, TaskRepository, QueryResult, SaveTaskData, TaskRow } from './shared/types/infrastructure.js'
+export type { Db, TaskRepository, QueryResult, SaveTaskData, TaskRow, TaskTipo as InfrastructureTaskTipo } from './shared/types/infrastructure.js'
 export type { AgentRuntimeDriver, SendMessageResult, RunStatusResult, SendMessageParams } from './shared/types/agent-runtime.js'
 
 // Steps

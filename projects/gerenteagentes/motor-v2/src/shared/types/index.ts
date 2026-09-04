@@ -12,6 +12,9 @@ export type TaskStatus = TaskStatusValue
 /** Status possíveis de uma subtarefa (fonte: shared/task-statuses.ts) */
 export type SubTaskStatus = SubTaskStatusValue
 
+/** Fluxo operacional da tarefa. Tarefas antigas são tratadas como desenvolvimento. */
+export type TaskTipo = "desenvolvimento" | "automacao" | "verificacao"
+
 /** Configuração de modelo */
 export interface ModelConfig {
   id: string
@@ -47,6 +50,7 @@ export interface Task {
   agentId: string
   title: string
   description: string
+  tipo?: TaskTipo
   repoPath: string
   buildCommand: string
   unitTestCommand: string
