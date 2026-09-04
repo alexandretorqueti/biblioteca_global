@@ -13,6 +13,9 @@ export interface ProjetoRow {
   slug: string
   ativo: boolean
   config: GeradorSistemaConfig
+  branchTrabalho?: string | null
+  repoPath?: string | null
+  agenteId?: string | null
   createdAt: Date
   updatedAt: Date
 }
@@ -29,6 +32,9 @@ export interface ProjetosRepository {
     slug: string
     ativo?: boolean
     config: GeradorSistemaConfig
+    branchTrabalho?: string
+    repoPath?: string
+    agenteId?: string
   }): Promise<number>
   atualizar(
     id: number,
@@ -92,12 +98,18 @@ export class DrizzleProjetosRepository implements ProjetosRepository {
     slug: string
     ativo?: boolean
     config: GeradorSistemaConfig
+    branchTrabalho?: string
+    repoPath?: string
+    agenteId?: string
   }): Promise<number> {
     const resultado = await this.db.insert(projetos).values({
       nome: row.nome,
       slug: row.slug,
       ativo: row.ativo ?? true,
       config: row.config,
+      branchTrabalho: row.branchTrabalho,
+      repoPath: row.repoPath,
+      agenteId: row.agenteId,
     })
     return resultado[0].insertId
   }

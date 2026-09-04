@@ -48,6 +48,13 @@ export function nomeDatabaseDoProjeto(projetoId: number): string {
   return `projeto_${projetoId}`
 }
 
+/** Valores operacionais usados quando a criação não informa a configuração. */
+export const PROJETO_DEFAULTS = {
+  branchTrabalho: "base-desenvolvimento",
+  repoPath: "/data/workspace/projects/codigofonte/biblioteca-global",
+  agenteId: "biblioteca-global",
+} as const
+
 @Injectable()
 export class ProjetosService {
   constructor(
@@ -106,6 +113,9 @@ export class ProjetosService {
       slug: dto.slug,
       ativo: dto.ativo ?? true,
       config,
+      branchTrabalho: dto.branchTrabalho ?? dto.branch_trabalho ?? PROJETO_DEFAULTS.branchTrabalho,
+      repoPath: dto.repoPath ?? dto.repo_path ?? PROJETO_DEFAULTS.repoPath,
+      agenteId: dto.agenteId ?? dto.agente_id ?? PROJETO_DEFAULTS.agenteId,
     })
     const database = nomeDatabaseDoProjeto(projetoId)
 
