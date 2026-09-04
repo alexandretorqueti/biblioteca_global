@@ -269,7 +269,7 @@ export const notificacoes = mysqlTable("notificacoes", {
     .notNull()
     .references(() => encomendas.id, { onDelete: "cascade" }),
   /** Tipo de notificação. */
-  tipo: mysqlEnum("tipo", ["encomenda_pendente", "encomenda_confirmada", "encomenda_entregue"]).notNull(),
+  tipo: mysqlEnum("tipo", ["encomenda_pendente", "encomenda_confirmada", "encomenda_entregue", "ocorrencia_registrada"]).notNull(),
   /** Mensagem da notificação. */
   mensagem: varchar("mensagem", { length: 500 }).notNull(),
   /** Se já foi lida pelo morador. */
