@@ -10,10 +10,9 @@ COPY packages/file-extract/package.json packages/file-extract/package.json
 COPY packages/schema-tools/package.json packages/schema-tools/package.json
 COPY packages/shared/package.json packages/shared/package.json
 COPY packages/ui/package.json packages/ui/package.json
-COPY projects/biblioteca-global/package.json projects/biblioteca-global/package.json
-COPY projects/documentacao/package.json projects/documentacao/package.json
-COPY projects/gerenteagentes/package.json projects/gerenteagentes/package.json
-COPY projects/taqui/package.json projects/taqui/package.json
+# Todos os projetos entram automaticamente no contexto de instalação. Assim,
+# adicionar projects/<slug>/package.json não exige alterar este Dockerfile.
+COPY projects ./projects
 RUN npm ci --include=dev
 
 FROM dependencies AS runtime
