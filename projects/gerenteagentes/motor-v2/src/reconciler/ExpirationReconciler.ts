@@ -6,6 +6,7 @@ import type { Db } from '../shared/types/infrastructure.js'
 import type { ResourceKey } from '../shared/types/resources.js'
 import { resourceEventBus } from '../resources/ResourceEventBus.js'
 import { createLogger, describeError } from '../shared/logger.js'
+import { AGENT_RUN_FAILED_WITHOUT_REPLY } from '../policies/NoReplyFailurePolicy.js'
 
 export interface ExpirationReconcilerConfig {
   db: Db
@@ -65,6 +66,10 @@ export class ExpirationReconciler {
       await this.onLeaseExpired?.(key, execId)
     }
 
+    // Corrige registros legados onde a falha sem resposta foi persistida como
+    // verified. Subtarefa e tarefa pai são alteradas atomicamente.
+    await this.repairVerifiedNoReplySubtasks()
+
     // 2. Tarefas órfãs: o plano é preservado e a primeira subtarefa não
     // verificada volta à fila. Uma análise sem plano volta a `planned`.
     const orphans = await this.db.query(
@@ -96,5 +101,30 @@ export class ExpirationReconciler {
         [hasSubtasks ? 'ready' : 'planned', taskId],
       )
     }
+  }
+
+  private async repairVerifiedNoReplySubtasks(): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      const affected = await tx.query(
+        `SELECT DISTINCT s.tarefa_id FROM subtarefas s
+         WHERE s.status = 'verified' AND s.resultado = ?`,
+        [AGENT_RUN_FAILED_WITHOUT_REPLY],
+      )
+      if (affected.rows.length === 0) return
+
+      await tx.query(
+        `UPDATE subtarefas SET status = 'pending', finalizada_em = NULL, updated_at = NOW()
+         WHERE status = 'verified' AND resultado = ?`,
+        [AGENT_RUN_FAILED_WITHOUT_REPLY],
+      )
+      for (const row of affected.rows) {
+        await tx.query(
+          `UPDATE tarefas SET status = 'ready', updated_at = NOW()
+           WHERE id = ? AND status <> 'cancelled'`,
+          [row.tarefa_id],
+        )
+      }
+      this.logger.warn(`Reparadas ${affected.rows.length} tarefa(s) com subtarefa verified sem resposta`)
+    })
   }
 }
