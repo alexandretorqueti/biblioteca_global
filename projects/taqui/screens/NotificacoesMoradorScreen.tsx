@@ -21,16 +21,15 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import {
   Alert,
   Avatar,
+  Button,
   Badge,
   Box,
   Chip,
   CircularProgress,
   Collapse,
   Divider,
-  Grid,
   IconButton,
   List,
-  ListItem,
   ListItemAvatar,
   ListItemButton,
   ListItemText,
@@ -321,7 +320,7 @@ function ItemOcorrencia({ ocorrencia }: { ocorrencia: Ocorrencia }): ReactNode {
 // COMPONENTE: ItemEncomenda
 // ============================================================================
 
-function ItemEncomenda({ encomenda }: { encomenda: Encomenda }): ReactNode {
+function ItemEncomenda({ encomenda, onConfirmar }: { encomenda: Encomenda; onConfirmar: (id: number) => void }): ReactNode {
   const [expandido, setExpandido] = useState(false)
   const temOcorrencias = encomenda.ocorrencias.length > 0
 
@@ -386,6 +385,19 @@ function ItemEncomenda({ encomenda }: { encomenda: Encomenda }): ReactNode {
           <Typography variant="caption" color="text.disabled" sx={{ mt: 0.5, display: "block" }}>
             Registrada em {formatarData(encomenda.createdAt)}
           </Typography>
+
+          {encomenda.status === "pendente" && (
+            <Button
+              variant="contained"
+              size="small"
+              startIcon={<CheckCircleRounded />}
+              onClick={() => onConfirmar(encomenda.id)}
+              data-testid="botao-confirmar-recebimento"
+              sx={{ mt: 1.5 }}
+            >
+              Confirmar recebimento
+            </Button>
+          )}
 
           {encomenda.status === "cancelada" && encomenda.motivoCancelamento && (
             <Alert severity="warning" sx={{ mt: 1, py: 0 }}>
@@ -577,6 +589,28 @@ export default function NotificacoesMoradorScreen(): ReactNode {
     [bundle, projeto],
   )
 
+  const confirmarRecebimento = useCallback(async (encomendaId: number) => {
+    if (!bundle || !projeto || !morador) return
+    try {
+      await bundle.http.request("PUT", `/${projeto.slug}/encomendas/${encomendaId}`, {
+        body: {
+          status: "confirmada",
+          confirmadoPorId: morador.id,
+          confirmadoEm: new Date().toISOString(),
+        },
+        auth: "access",
+      })
+      setEncomendas((prev) => prev.map((item) => item.id === encomendaId
+        ? { ...item, status: "confirmada", confirmadoEm: new Date().toISOString() }
+        : item))
+      setNotificacoes((prev) => prev.map((item) => item.encomendaId === encomendaId
+        ? { ...item, tipo: "encomenda_confirmada", lida: true }
+        : item))
+    } catch (error) {
+      setErro(error instanceof Error ? error.message : "Não foi possível confirmar o recebimento.")
+    }
+  }, [bundle, projeto, morador])
+
   // =========================================================================
   // EFFECTS
   // =========================================================================
@@ -719,8 +753,8 @@ export default function NotificacoesMoradorScreen(): ReactNode {
         </Paper>
       ) : (
         <Stack spacing={2} data-testid="lista-encomendas">
-          {encomendas.map((encomenda) => (
-            <ItemEncomenda key={encomenda.id} encomenda={encomenda} />
+              {encomendas.map((encomenda) => (
+            <ItemEncomenda key={encomenda.id} encomenda={encomenda} onConfirmar={(id) => void confirmarRecebimento(id)} />
           ))}
         </Stack>
       )}
