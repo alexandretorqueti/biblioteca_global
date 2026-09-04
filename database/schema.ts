@@ -59,6 +59,12 @@ export const projetos = mysqlTable("projetos", {
   ativo: boolean("ativo").notNull().default(true),
   /** Config corrente do GeradorSistema (iniciada igual à base versionada). */
   config: json("config").$type<GeradorSistemaConfig>().notNull(),
+  /** Branch de trabalho do projeto (ex.: base-desenvolvimento). */
+  branchTrabalho: varchar("branch_trabalho", { length: 255 }),
+  /** Caminho do repositório do projeto no host. */
+  repoPath: varchar("repo_path", { length: 500 }),
+  /** ID do agente vinculado ao projeto (ex.: biblioteca-global). */
+  agenteId: varchar("agente_id", { length: 100 }),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at")
     .notNull()
