@@ -6,38 +6,21 @@
  * Agente e ambiente de execução (repoPath/buildCommand/unitTestCommand)
  * vivem em projetos_captados (migration 0003) — a tarefa herda do projeto.
  */
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useState, type ReactNode } from "react"
 import {
-  Box,
-  Button,
   Stack,
   Typography,
-  Alert,
-  CircularProgress,
   Paper,
-  TextField,
-  MenuItem,
 } from "@mui/material"
-import { AddTaskRounded } from "@mui/icons-material"
+import TarefaForm, { type TarefaFormValues } from "./TarefaForm"
 
 interface Projeto {
   id: number
   nome: string
 }
 
-const TIPOS_TAREFA = [
-  { value: "desenvolvimento", label: "Desenvolvimento" },
-  { value: "automacao", label: "Automação" },
-  { value: "verificacao", label: "Verificação" },
-] as const
-
 export default function NovaTarefaScreen(): ReactNode {
   const [projetos, setProjetos] = useState<Projeto[]>([])
-  const [projetoId, setProjetoId] = useState("")
-  const [titulo, setTitulo] = useState("")
-  const [descricao, setDescricao] = useState("")
-  const [tipo, setTipo] = useState<(typeof TIPOS_TAREFA)[number]["value"]>("desenvolvimento")
-
   const [enviando, setEnviando] = useState(false)
   const [sucesso, setSucesso] = useState(false)
   const [erro, setErro] = useState<string | null>(null)
@@ -60,16 +43,7 @@ export default function NovaTarefaScreen(): ReactNode {
     carregarOpcoes()
   }, [carregarOpcoes])
 
-  const errosCampos = useMemo(() => {
-    const e: string[] = []
-    if (!projetoId.trim()) e.push("Projeto é obrigatório")
-    if (!titulo.trim()) e.push("Título é obrigatório")
-    return e
-  }, [projetoId, titulo])
-
-  const podeEnviar = errosCampos.length === 0 && !enviando
-
-  const enviar = useCallback(async () => {
+  const enviar = useCallback(async (values: TarefaFormValues): Promise<boolean> => {
     setErro(null)
     setSucesso(false)
     setEnviando(true)
@@ -87,11 +61,11 @@ export default function NovaTarefaScreen(): ReactNode {
         method: "POST",
         headers,
         body: JSON.stringify({
-          projetoId: Number(projetoId),
-          titulo: titulo.trim(),
-          descricao: descricao.trim() || null,
-          tipo,
-          status: "draft",
+          projetoId: Number(values.projetoId),
+          titulo: values.titulo,
+          descricao: values.descricao || null,
+          tipo: values.tipo,
+          status: values.status,
         }),
       })
 
@@ -101,16 +75,14 @@ export default function NovaTarefaScreen(): ReactNode {
       }
 
       setSucesso(true)
-      setProjetoId("")
-      setTitulo("")
-      setDescricao("")
-      setTipo("desenvolvimento")
+      return true
     } catch (e) {
       setErro(e instanceof Error ? e.message : "Erro ao criar tarefa")
+      return false
     } finally {
       setEnviando(false)
     }
-  }, [projetoId, titulo, descricao, tipo])
+  }, [])
 
   return (
     <Stack spacing={3} data-testid="nova-tarefa-screen">
@@ -120,75 +92,7 @@ export default function NovaTarefaScreen(): ReactNode {
 
       <Paper variant="outlined" sx={{ p: 3 }}>
         <Stack spacing={2}>
-          {erro && <Alert severity="error" data-testid="api-error">{erro}</Alert>}
-          {sucesso && (
-            <Alert severity="success" data-testid="success-alert">
-              Tarefa criada com sucesso!
-            </Alert>
-          )}
-
-          <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-            <TextField
-              select
-              label="Projeto"
-              value={projetoId}
-              onChange={(e) => setProjetoId(e.target.value)}
-              required
-              fullWidth
-              inputProps={{ "data-testid": "input-projeto-id" }}
-            >
-              <MenuItem value="" disabled>Selecione um projeto</MenuItem>
-              {projetos.map((p) => (
-                <MenuItem key={p.id} value={String(p.id)}>{p.nome}</MenuItem>
-              ))}
-            </TextField>
-
-            <TextField
-              select
-              label="Tipo de tarefa"
-              value={tipo}
-              onChange={(e) => setTipo(e.target.value as (typeof TIPOS_TAREFA)[number]["value"])}
-              required
-              fullWidth
-              inputProps={{ "data-testid": "input-tipo" }}
-            >
-              {TIPOS_TAREFA.map((opcao) => (
-                <MenuItem key={opcao.value} value={opcao.value}>{opcao.label}</MenuItem>
-              ))}
-            </TextField>
-          </Stack>
-
-          <TextField
-            label="Título"
-            value={titulo}
-            onChange={(e) => setTitulo(e.target.value)}
-            required
-            fullWidth
-            error={!titulo.trim() && titulo.length > 0}
-            inputProps={{ "data-testid": "input-titulo" }}
-          />
-
-          <TextField
-            label="Descrição"
-            value={descricao}
-            onChange={(e) => setDescricao(e.target.value)}
-            multiline
-            rows={3}
-            fullWidth
-            inputProps={{ "data-testid": "input-descricao" }}
-          />
-
-          <Box>
-            <Button
-              variant="contained"
-              startIcon={enviando ? <CircularProgress size={20} /> : <AddTaskRounded />}
-              onClick={enviar}
-              disabled={!podeEnviar}
-              data-testid="btn-enviar"
-            >
-              {enviando ? "Criando..." : "Criar Tarefa"}
-            </Button>
-          </Box>
+          <TarefaForm projetos={projetos} loading={enviando} error={erro} success={sucesso ? "Tarefa criada com sucesso!" : null} onSubmit={enviar} />
         </Stack>
       </Paper>
     </Stack>

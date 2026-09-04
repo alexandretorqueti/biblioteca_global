@@ -33,11 +33,12 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material"
-import { PlayArrowRounded, PauseRounded, ReplayRounded, EditRounded, CloseRounded, ExpandMoreRounded, ExpandLessRounded } from "@mui/icons-material"
+import { PlayArrowRounded, PauseRounded, ReplayRounded, EditRounded, CloseRounded, ExpandMoreRounded, ExpandLessRounded, AddTaskRounded } from "@mui/icons-material"
 import { DynamicForm } from "@biblioteca-global/ui"
 import { RealtimeClient, type RealtimeServerMessage } from "@biblioteca-global/api-client"
 import type { DynamicField, DynamicFormValues } from "@biblioteca-global/ui"
 import { useApi } from "../../../apps/web/src/hooks/useApi"
+import TarefaForm, { type TarefaFormValues } from "./TarefaForm"
 import { resolveRealtimeUrl, resolveApiBaseUrl } from "../../../apps/web/src/api/client"
 import {
   ALL_TASK_STATUSES,
@@ -245,6 +246,9 @@ export default function TaskMonitorScreen(): ReactNode {
   const [erro, setErro] = useState<string | null>(null)
   const [acao, setAcao] = useState<string | null>(null)
   const [editOpen, setEditOpen] = useState(false)
+  const [newTaskOpen, setNewTaskOpen] = useState(false)
+  const [newTaskLoading, setNewTaskLoading] = useState(false)
+  const [newTaskError, setNewTaskError] = useState<string | null>(null)
   const [editLoading, setEditLoading] = useState(false)
   const [editError, setEditError] = useState<string | null>(null)
   // ST-2: edição de subtarefa
@@ -413,6 +417,31 @@ export default function TaskMonitorScreen(): ReactNode {
     },
     [bundle, tarefaId, carregarDetail, carregarTarefas],
   )
+
+  const handleNewTaskSubmit = useCallback(async (values: TarefaFormValues) => {
+    if (!bundle) return
+    setNewTaskLoading(true)
+    setNewTaskError(null)
+    try {
+      await bundle.http.request("POST", "/gerenteagentes/tarefas", {
+        body: {
+          projetoId: Number(values.projetoId),
+          titulo: values.titulo,
+          descricao: values.descricao || null,
+          tipo: values.tipo,
+          status: values.status,
+        },
+        auth: "access",
+      })
+      setNewTaskOpen(false)
+      await carregarTarefas()
+    } catch (e) {
+      setNewTaskError(e instanceof Error ? e.message : "Erro ao criar tarefa")
+      throw e
+    } finally {
+      setNewTaskLoading(false)
+    }
+  }, [bundle, carregarTarefas])
 
   const getLoadOptions = useCallback(
     (resource: string) => async (search: string) => {
@@ -791,9 +820,15 @@ export default function TaskMonitorScreen(): ReactNode {
   return (
     <Stack spacing={3} data-testid="task-monitor-screen">
       <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" alignItems="center">
-        <Typography variant="h4" fontWeight={600}>
-          Acompanhar Tarefa
-        </Typography>
+        <Typography variant="h4" fontWeight={600}>Acompanhar Tarefa</Typography>
+        <Button
+          variant="contained" startIcon={<AddTaskRounded />} onClick={() => {
+            setNewTaskError(null)
+            setNewTaskOpen(true)
+          }} data-testid="btn-new-task"
+        >
+          Nova Tarefa
+        </Button>
           <Typography variant="caption" color={realtimeStatus === "open" ? "success.main" : "text.secondary"}>
           {realtimeStatus === "open" ? "Tempo real conectado" : "Reconectando ao tempo real…"}
         </Typography>
@@ -1226,6 +1261,35 @@ export default function TaskMonitorScreen(): ReactNode {
           )}
         </Paper>
       )}
+
+      <Dialog
+        open={newTaskOpen}
+        onClose={(_ev, reason) => {
+          if (reason === "backdropClick" || newTaskLoading) return
+          setNewTaskOpen(false)
+        }}
+        fullWidth
+        maxWidth="md"
+        data-testid="new-task-dialog"
+      >
+        <DialogTitle sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <Box>Nova tarefa</Box>
+          <IconButton
+            aria-label="Fechar formulário de nova tarefa" size="small" disabled={newTaskLoading}
+            onClick={() => setNewTaskOpen(false)} data-testid="btn-close-new-task"
+          >
+            <CloseRounded />
+          </IconButton>
+        </DialogTitle>
+        <DialogContent>
+          <TarefaForm
+            projetos={projetos}
+            loading={newTaskLoading}
+            error={newTaskError}
+            onSubmit={handleNewTaskSubmit}
+          />
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={editOpen}
