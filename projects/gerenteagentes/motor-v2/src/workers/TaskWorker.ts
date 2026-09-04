@@ -209,11 +209,11 @@ class TaskWorker {
           return
         }
       } else if (ctx.phase === "execute") {
-        await this.phasePrepare(input)
+        if (this.isDevelopmentTask(input)) await this.phasePrepare(input)
         if (this.cancelled) { this.sendFailed(ctx, "Cancelled"); return }
         gitCommitSha = await this.phaseExecute(input)
         if (this.cancelled) { this.sendFailed(ctx, "Cancelled"); return }
-        if (gitCommitSha) await this.phasePublish(input, gitCommitSha)
+        if (gitCommitSha && this.isDevelopmentTask(input)) await this.phasePublish(input, gitCommitSha)
       }
 
       this.sendCompleted(ctx, { ok: true, gitCommitSha })
@@ -477,10 +477,12 @@ class TaskWorker {
 
     this.log("info", "Fase EXECUTE: " + subtask.titulo)
 
-    const baselineOutcome = await this.runBaselineCheck(input, subtask)
-    if (baselineOutcome === "correction_created") {
-      this.log("warn", "Baseline vermelho: subtarefa de correção criada; execução da subtarefa adiada")
-      return undefined
+    if (this.isDevelopmentTask(input)) {
+      const baselineOutcome = await this.runBaselineCheck(input, subtask)
+      if (baselineOutcome === "correction_created") {
+        this.log("warn", "Baseline vermelho: subtarefa de correção criada; execução da subtarefa adiada")
+        return undefined
+      }
     }
 
     const chain = this.chainFor(input, "development")
@@ -539,12 +541,18 @@ class TaskWorker {
 
           let gitCommitSha: string | undefined
           try {
-            await this.db!.query(
-              "UPDATE subtarefas SET status = 'verifying', updated_at = NOW() WHERE id = ?",
-              [subtask.id],
-            )
-            await this.phaseVerify(input)
-            gitCommitSha = await this.phaseCommit(input)
+            if (this.isDevelopmentTask(input)) {
+              await this.db!.query(
+                "UPDATE subtarefas SET status = 'verifying', updated_at = NOW() WHERE id = ?",
+                [subtask.id],
+              )
+              await this.phaseVerify(input)
+              gitCommitSha = await this.phaseCommit(input)
+            } else {
+              // Automação/verificação é uma entrega operacional: o texto final
+              // do agente é a evidência, não há workspace nem gates de código.
+              await this.persistLightweightDelivery(input, result.content || "")
+            }
           } catch (error) {
             lastFailure = error instanceof Error ? error.message : String(error)
             await this.db!.query(
@@ -638,6 +646,21 @@ class TaskWorker {
     const reason = "Escada de modelos esgotada: " + (lastFailure || "subtarefa não aprovada")
     await this.recordBlocker(subtask, "model_chain_exhausted", reason)
     throw new Error(reason)
+  }
+
+  private isDevelopmentTask(input: WorkerInput): boolean {
+    return (input.task.tipo ?? "desenvolvimento") === "desenvolvimento"
+  }
+
+  /** Registra a resposta operacional no chat da tarefa para automações e verificações. */
+  private async persistLightweightDelivery(input: WorkerInput, content: string): Promise<void> {
+    if (!this.db) throw new Error("DB não conectado para registrar entrega")
+    const text = content.trim() || "Agente finalizou sem mensagem de resposta."
+    await this.db.query(
+      "INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) " +
+      "SELECT id, 'assistant', ?, NOW() FROM tarefas WHERE external_id = ? OR id = ? LIMIT 1",
+      [text.substring(0, 30_000), input.task.id, input.task.id],
+    )
   }
 
   /**
@@ -917,9 +940,12 @@ class TaskWorker {
     return db
   }
 
-  private buildAnalystPrompt(task: { title: string; description?: string }, clarificationHistory?: string): string {
+  private buildAnalystPrompt(task: { title: string; description?: string; tipo?: string }, clarificationHistory?: string): string {
+    const lightweight = task.tipo === "automacao" || task.tipo === "verificacao"
     const lines = [
-      "Voce e um analista de requisitos. Recebe uma tarefa e deve quebra-la em subtarefas.",
+      lightweight
+        ? "Voce e um analista de requisitos. Recebe uma tarefa operacional e deve quebra-la em subtarefas executaveis pelo agente."
+        : "Voce e um analista de requisitos. Recebe uma tarefa e deve quebra-la em subtarefas.",
       "",
       "Tarefa: " + task.title,
       "Descricao: " + truncateDescriptionForAnalyst(task.description),
@@ -946,13 +972,17 @@ class TaskWorker {
       "}",
       "",
       "Regras:",
-      "- Quebre a tarefa no MINIMO de subtarefas possivel (a partir de 2). Crie mais somente quando a complexidade exigir de fato (ex.: muitas telas, modulos independentes), sem passar de 10. Prefira sempre menos subtarefas bem definidas a muitas picotadas.",
+      lightweight
+        ? "- Gere no MINIMO 1 subtarefa. Para tarefas simples, gere exatamente 1; divida somente se a complexidade exigir, sem passar de 10. Reescreva o pedido de forma precisa e executavel."
+        : "- Quebre a tarefa no MINIMO de subtarefas possivel (a partir de 2). Crie mais somente quando a complexidade exigir de fato (ex.: muitas telas, modulos independentes), sem passar de 10. Prefira sempre menos subtarefas bem definidas a muitas picotadas.",
       "- titulo: curto, ate ~80 caracteres.",
       "- scope: objetivo, ate ~500 caracteres. O programador ja recebe a descricao completa da tarefa na execucao; NAO repita a especificacao nem a descricao da tarefa no scope.",
       "- acceptance_criteria: 2 a 4 itens curtos.",
       "- Mantenha a resposta curta: responda APENAS o JSON, sem explicacao fora dele.",
       "- NUNCA crie subtarefas para passos operacionais que o motor executa automaticamente: commit, push, merge, build, testes unitarios, deploy, validacao de build.",
-      "- Subtarefas devem conter apenas trabalho de codigo ou documentacao (ex.: criar schema, criar tela, escrever endpoint).",
+      lightweight
+        ? "- Em automacao/verificacao, a subtarefa deve descrever a acao ou verificacao concreta, os dados/recursos a usar e o formato da resposta. Nao crie trabalho de codigo, workspace, branch, build ou testes."
+        : "- Subtarefas devem conter apenas trabalho de codigo ou documentacao (ex.: criar schema, criar tela, escrever endpoint).",
       "- Se o escopo incluir criacao de tabelas/schema, o proprio dev deve gerar as migrations (drizzle-kit generate) como parte do trabalho — mas NAO crie subtarefa separada para isso.",
       "",
       "Regras para SETUP DE PROJETO NOVO (quando a tarefa for setup de um projeto novo na plataforma):",
@@ -986,21 +1016,26 @@ class TaskWorker {
    * retorna em duas partes (header + contexto) para evitar truncamento
    * no viewer da sessão do agente.
    */
-  private buildProgrammerPrompt(task: { title: string; description?: string }, subtask: SubtaskInfo, repoPath: string, reworkNote?: string): { header: string; context: string | null } {
+  private buildProgrammerPrompt(task: { title: string; description?: string; tipo?: string }, subtask: SubtaskInfo, repoPath: string, reworkNote?: string): { header: string; context: string | null } {
     const description = task.description || "N/A"
+    const lightweight = task.tipo === "automacao" || task.tipo === "verificacao"
     const header = [
-      "Voce e um programador senior. Execute a subtarefa abaixo.",
+      lightweight
+        ? "Voce e um agente operacional senior. Execute a subtarefa abaixo usando suas proprias ferramentas e recursos disponiveis."
+        : "Voce e um programador senior. Execute a subtarefa abaixo.",
       "",
       "Tarefa pai: " + task.title,
       "Subtarefa #" + subtask.seq + ": " + subtask.titulo,
       "Escopo: " + (subtask.scope || subtask.titulo),
       "Criterios de aceite: " + JSON.stringify(subtask.acceptanceCriteria || []),
-      "Workspace: " + repoPath,
+      ...(lightweight ? ["Fluxo: " + task.tipo + " (sem workspace, branch, clone, build ou testes)"] : ["Workspace: " + repoPath]),
       "",
       "Instrucoes:",
-      "1. Faca as alteracoes necessarias nos arquivos",
+      lightweight ? "1. Execute a acao/verificacao solicitada e produza uma resposta clara com as evidencias encontradas" : "1. Faca as alteracoes necessarias nos arquivos",
       "2. Nao faca commit (o motor faz depois)",
-      "3. Responda APENAS com JSON: {\"status\":\"done\"|\"need_help\"|\"blocked_environment\",\"summary\":\"...\",\"reason\":\"...\"}",
+      lightweight
+        ? "3. Responda APENAS com JSON: {\"status\":\"done\"|\"need_help\"|\"blocked_environment\",\"summary\":\"resposta final detalhada\",\"reason\":\"...\"}"
+        : "3. Responda APENAS com JSON: {\"status\":\"done\"|\"need_help\"|\"blocked_environment\",\"summary\":\"...\",\"reason\":\"...\"}",
       ...(reworkNote ? ["", "Feedback do gate anterior:", reworkNote] : []),
     ].join("\n")
 
