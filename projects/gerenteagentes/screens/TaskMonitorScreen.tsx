@@ -434,14 +434,13 @@ export default function TaskMonitorScreen(): ReactNode {
         auth: "access",
       })
       setNewTaskOpen(false)
-      await carregarTarefas()
     } catch (e) {
       setNewTaskError(e instanceof Error ? e.message : "Erro ao criar tarefa")
       throw e
     } finally {
       setNewTaskLoading(false)
     }
-  }, [bundle, carregarTarefas])
+  }, [bundle])
 
   const getLoadOptions = useCallback(
     (resource: string) => async (search: string) => {
