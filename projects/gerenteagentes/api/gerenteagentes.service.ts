@@ -274,6 +274,10 @@ export class GerenteAgentesService {
           titulo: entry.key,
           descricao: `Compositor embarcado: ${entry.source}`,
           status: 'draft',
+          conteudo: entry.prompt,
+          origem: entry.source,
+          marcadores: entry.markers,
+          ativo: true,
         });
         if (entry.prompt.trim()) {
           await db.insert(promptsVersoes).values({

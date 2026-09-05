@@ -81,6 +81,10 @@ export const promptsAgentes = mysqlTable(
     origem: varchar("origem", { length: 255 }).notNull(),
     marcadores: json("marcadores").notNull(),
     ativo: boolean("ativo").notNull().default(true),
+    titulo: varchar("titulo", { length: 200 }).notNull(),
+    descricao: text("descricao"),
+    status: mysqlEnum("status", ["draft", "active", "inactive"]).notNull().default("draft"),
+    versaoAtivaId: bigint("versao_ativa_id", { mode: "number", unsigned: true }),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at")
       .notNull()
@@ -356,19 +360,6 @@ export const subtarefasEntregas = mysqlTable("subtarefas_entregas", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 })
 
-export const promptsAgentes = mysqlTable("prompts_agentes", {
-  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
-  chave: varchar("chave", { length: 160 }).notNull().unique(),
-  tipoAgente: varchar("tipo_agente", { length: 50 }).notNull(),
-  situacao: varchar("situacao", { length: 100 }).notNull(),
-  titulo: varchar("titulo", { length: 200 }).notNull(),
-  descricao: text("descricao"),
-  status: mysqlEnum("status", ["draft", "active", "inactive"]).notNull().default("draft"),
-  versaoAtivaId: bigint("versao_ativa_id", { mode: "number", unsigned: true }),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-  updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
-})
-
 export const promptsMascaras = mysqlTable("prompts_mascaras", {
   id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
   nome: varchar("nome", { length: 100 }).notNull().unique(),
@@ -614,14 +605,6 @@ export const annotations = {
     event_type: { label: "Tipo de Evento", helperText: "delivery_started | gate_rejected | return_for_rework | blocked | completed | baseline_red | integration_conflict | integration_gate_failed" },
     reason: { label: "Motivo/Erro", type: "textarea", fullWidth: true },
     created_at: { label: "Registrado em" },
-  },
-  prompts_agentes: {
-    chave: { label: "Chave", maxLength: 160 },
-    tipo_agente: { label: "Tipo de agente", maxLength: 50 },
-    situacao: { label: "Situação", maxLength: 100 },
-    titulo: { label: "Título", maxLength: 200 },
-    descricao: { label: "Descrição", type: "textarea", fullWidth: true },
-    status: { label: "Status", helperText: "draft | active | inactive" },
   },
   prompts_mascaras: {
     nome: { label: "Máscara", maxLength: 100 },
