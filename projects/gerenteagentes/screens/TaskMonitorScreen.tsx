@@ -644,7 +644,7 @@ export default function TaskMonitorScreen(): ReactNode {
               ? Number(values.dependsOnTaskId)
               : null,
         }
-        await bundle.http.request("PUT", `/tarefas/${tarefaId}`, {
+        await bundle.http.request("PUT", `/gerenteagentes/tarefas/${tarefaId}`, {
           body,
           auth: "access",
         })
@@ -765,7 +765,7 @@ export default function TaskMonitorScreen(): ReactNode {
               ? Number(values.dependsOnSubtaskId)
               : null,
         }
-        await bundle.http.request("PUT", `/subtarefas/${editingSub.id}`, {
+        await bundle.http.request("PUT", `/gerenteagentes/subtarefas/${editingSub.id}`, {
           body,
           auth: "access",
         })
