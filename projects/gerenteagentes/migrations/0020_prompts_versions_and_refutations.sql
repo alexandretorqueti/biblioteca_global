@@ -5,6 +5,7 @@ ALTER TABLE `subtarefas`
   ADD COLUMN `rebrief_count` int NOT NULL DEFAULT 0,
   ADD COLUMN `premise_fingerprint` varchar(500) NULL,
   ADD COLUMN `premise_evidence` json NULL;
+--> statement-breakpoint
 
 ALTER TABLE `prompts_agentes`
   MODIFY COLUMN `chave` varchar(160) NOT NULL,
@@ -12,8 +13,11 @@ ALTER TABLE `prompts_agentes`
   ADD COLUMN `descricao` text NULL,
   ADD COLUMN `status` enum('draft','active','inactive') NOT NULL DEFAULT 'draft',
   ADD COLUMN `versao_ativa_id` bigint unsigned NULL;
+--> statement-breakpoint
 UPDATE `prompts_agentes` SET `titulo` = `chave` WHERE `titulo` IS NULL;
+--> statement-breakpoint
 ALTER TABLE `prompts_agentes` MODIFY COLUMN `titulo` varchar(200) NOT NULL;
+--> statement-breakpoint
 
 CREATE TABLE `prompts_mascaras` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT, `nome` varchar(100) NOT NULL,
@@ -24,6 +28,7 @@ CREATE TABLE `prompts_mascaras` (
   `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`), UNIQUE KEY `prompts_mascaras_nome_unique` (`nome`)
 );
+--> statement-breakpoint
 
 CREATE TABLE `prompts_versoes` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT, `prompt_id` bigint unsigned NOT NULL,
@@ -33,7 +38,9 @@ CREATE TABLE `prompts_versoes` (
   PRIMARY KEY (`id`), UNIQUE KEY `prompts_versoes_prompt_versao_unique` (`prompt_id`,`versao`),
   CONSTRAINT `prompts_versoes_prompt_fk` FOREIGN KEY (`prompt_id`) REFERENCES `prompts_agentes` (`id`) ON DELETE CASCADE
 );
+--> statement-breakpoint
 ALTER TABLE `prompts_agentes` ADD CONSTRAINT `prompts_agentes_versao_ativa_fk` FOREIGN KEY (`versao_ativa_id`) REFERENCES `prompts_versoes` (`id`) ON DELETE SET NULL;
+--> statement-breakpoint
 
 CREATE TABLE `prompts_execucoes` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT, `prompt_id` bigint unsigned NULL,
