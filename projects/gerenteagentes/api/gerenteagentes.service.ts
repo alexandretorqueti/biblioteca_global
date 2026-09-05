@@ -1070,6 +1070,8 @@ export class GerenteAgentesService {
     const resp = await this.motorRequest(
       'GET',
       `/api/model-selection/${encodeURIComponent(projectKey)}/${encodeURIComponent(tipo)}`,
+      undefined,
+      this.motorVersao === 'v2' ? this.motorV2Url : undefined,
     ).catch((e: unknown) => {
       throw new BadRequestException(`Motor indisponível: ${e instanceof Error ? e.message : String(e)}`);
     });
@@ -1104,6 +1106,7 @@ export class GerenteAgentesService {
       'PUT',
       `/api/model-selection/${encodeURIComponent(parsed.projectKey)}/${encodeURIComponent(tipo)}`,
       { entries: parsed.entries },
+      this.motorVersao === 'v2' ? this.motorV2Url : undefined,
     ).catch((e: unknown) => {
       throw new BadRequestException(`Motor indisponível: ${e instanceof Error ? e.message : String(e)}`);
     });

@@ -249,6 +249,42 @@ export class TaskCoordinator {
     return rows.map((row) => this.mapTask(row)).find((task) => this.canStartProject(task.projectSlug)) ?? null
   }
 
+  async getTasksByStatus(since?: string): Promise<{
+    tasks: Record<string, Array<{ id: string; agentId: string; title: string; status: string; projectSlug: string | null }>>
+    timestamp: string
+    count: number
+  }> {
+    const where = since ? "WHERE t.updated_at > ?" : ""
+    const params = since ? [since] : []
+    const { rows } = await this.db.query(
+      "SELECT t.*, pc.slug as project_slug, " +
+      "COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), pc.slug) as agent_id, " +
+      "pmc.repo_path, pmc.branch_trabalho, pmc.build_command, pmc.unit_test_command, pmc.unit_test_exclude, " +
+      "pmc.default_max_rework, pmc.default_hard_timeout_ms " +
+      "FROM tarefas t " +
+      "LEFT JOIN projetos_captados pc ON t.projeto_id = pc.id " +
+      "LEFT JOIN agentes a ON pc.agente_id = a.id " +
+      "LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id = pc.id " +
+      where +
+      " ORDER BY t.updated_at ASC",
+      params,
+    )
+    const tasks: Record<string, Array<{ id: string; agentId: string; title: string; status: string; projectSlug: string | null }>> = {}
+    for (const row of rows) {
+      const task = this.mapTask(row)
+      const status = task.status
+      const list = tasks[status] ?? (tasks[status] = [])
+      list.push({
+        id: task.id,
+        agentId: task.agentId,
+        title: task.title,
+        status,
+        projectSlug: task.projectSlug,
+      })
+    }
+    return { tasks, timestamp: new Date().toISOString(), count: rows.length }
+  }
+
   private async selectNextSubtask(): Promise<SubtaskWithTask | null> {
     const { rows } = await this.db.query(
       "SELECT s.*, t.external_id as task_external_id, t.titulo as task_titulo, t.descricao as task_descricao, " +

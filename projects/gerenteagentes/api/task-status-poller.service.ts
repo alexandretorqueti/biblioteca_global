@@ -20,13 +20,12 @@ interface ByStatusResponse {
 }
 
 /**
- * TaskStatusPoller — consulta o endpoint /api/tasks/by-status do motor
+ * TaskStatusPoller — consulta o endpoint de status do motor
  * para detectar mudanças de status em tempo real.
  *
- * O motor roda no container `openclaw` (porta 6283) e é exposto via proxy
- * NPM em `api.tarefas.localhost`. A API da biblioteca roda com network_mode
- * host e alcança o proxy pelo IP do host (192.168.1.16), enviando o Host
- * header para o roteamento virtual do Nginx Proxy Manager.
+ * No v1, o motor roda no container `openclaw` e é exposto via proxy NPM.
+ * No v2, o motor roda junto da API na porta MOTOR_API_PORT e deve ser
+ * acessado diretamente por loopback, sem Host header de proxy.
  *
  * Configuração (env):
  *   MOTOR_DEV_URL   — base URL do motor (default: http://192.168.1.16, via proxy NPM)
@@ -38,6 +37,8 @@ export class TaskStatusPollerService {
   private readonly logger = new Logger(TaskStatusPollerService.name);
   private readonly motorUrl: string;
   private readonly motorHostHeader: string;
+  private readonly motorVersao: string;
+  private readonly motorV2Url: string;
   private lastTimestamp: string | null = null;
   private cache: Record<string, MotorTask[]> = {};
   private pollInterval: NodeJS.Timeout | null = null;
@@ -48,8 +49,11 @@ export class TaskStatusPollerService {
       this.configService.get<string>('MOTOR_DEV_URL') || 'http://192.168.1.16';
     this.motorHostHeader =
       this.configService.get<string>('MOTOR_URL_HOST') || 'api.tarefas.localhost';
+    this.motorVersao = this.configService.get<string>('MOTOR_VERSION') || 'v1';
+    const motorV2Porta = this.configService.get<string>('MOTOR_API_PORT') || '3010';
+    this.motorV2Url = `http://127.0.0.1:${motorV2Porta}`;
     this.logger.log(
-      `TaskStatusPoller inicializado → motor: ${this.motorUrl} (Host: ${this.motorHostHeader || '—'})`,
+      `TaskStatusPoller inicializado → motor: ${this.motorVersao === 'v2' ? this.motorV2Url : this.motorUrl} (versão: ${this.motorVersao})`,
     );
   }
 
@@ -83,7 +87,8 @@ export class TaskStatusPollerService {
    */
   private motorGet(path: string): Promise<{ ok: boolean; status: number; body: string }> {
     return new Promise((resolve, reject) => {
-      const url = new URL(`${this.motorUrl}${path}`);
+      const usarV2 = this.motorVersao === 'v2';
+      const url = new URL(`${usarV2 ? this.motorV2Url : this.motorUrl}${path}`);
       const isHttps = url.protocol === 'https:';
       const options: RequestOptions = {
         hostname: url.hostname,
@@ -92,7 +97,7 @@ export class TaskStatusPollerService {
         method: 'GET',
         headers: {
           Accept: 'application/json',
-          ...(this.motorHostHeader ? { Host: this.motorHostHeader } : {}),
+          ...(!usarV2 && this.motorHostHeader ? { Host: this.motorHostHeader } : {}),
         },
         timeout: 5000,
       };
@@ -115,9 +120,10 @@ export class TaskStatusPollerService {
    */
   async poll(): Promise<void> {
     try {
+      const prefixo = this.motorVersao === 'v2' ? '/api/motor/tasks/by-status' : '/api/tasks/by-status';
       const path = this.lastTimestamp
-        ? `/api/tasks/by-status?since=${encodeURIComponent(this.lastTimestamp)}`
-        : '/api/tasks/by-status';
+        ? `${prefixo}?since=${encodeURIComponent(this.lastTimestamp)}`
+        : prefixo;
 
       const response = await this.motorGet(path);
       if (!response.ok) {
@@ -172,4 +178,3 @@ export class TaskStatusPollerService {
     return this.lastTimestamp;
   }
 }
-

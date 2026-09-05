@@ -80,6 +80,8 @@ export class MotorAPI {
         this.handleSaveModelSelection(req, res, projectKey, tipo)
       } else if (req.method === 'GET' && path === '/api/modelos-console') {
         this.handleListModelsConsole(res)
+      } else if (req.method === 'GET' && path === '/api/motor/tasks/by-status') {
+        this.handleGetTasksByStatus(res, url.searchParams.get('since'))
       }
       // Task endpoints
       else if (req.method === 'GET' && taskId && !taskAction) {
@@ -112,6 +114,16 @@ export class MotorAPI {
       this.json(res, 200, task)
     } catch (error) {
       this.logger.error('Failed to get task', { error, taskId })
+      this.json(res, 500, { ok: false, error: error instanceof Error ? error.message : 'Internal error' })
+    }
+  }
+
+  private async handleGetTasksByStatus(res: ServerResponse, since: string | null): Promise<void> {
+    try {
+      const result = await this.coordinator.getTasksByStatus(since ?? undefined)
+      this.json(res, 200, result)
+    } catch (error) {
+      this.logger.error('Failed to get tasks by status', { error })
       this.json(res, 500, { ok: false, error: error instanceof Error ? error.message : 'Internal error' })
     }
   }
