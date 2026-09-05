@@ -148,6 +148,13 @@
       "when": 1788560000001,
       "tag": "0020_prompts_versions_and_refutations",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "5",
+      "when": 1788560000002,
+      "tag": "0021_versioned_output_contracts",
+      "breakpoints": true
     }
   ]
 }

@@ -374,11 +374,35 @@ export const promptsMascaras = mysqlTable("prompts_mascaras", {
   updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
 })
 
+export const promptsContratos = mysqlTable("prompts_contratos", {
+  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+  chave: varchar("chave", { length: 160 }).notNull().unique(),
+  titulo: varchar("titulo", { length: 200 }).notNull(),
+  descricao: text("descricao"),
+  status: mysqlEnum("status", ["draft", "active", "inactive"]).notNull().default("draft"),
+  versaoAtivaId: bigint("versao_ativa_id", { mode: "number", unsigned: true }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+})
+
+export const promptsContratosVersoes = mysqlTable("prompts_contratos_versoes", {
+  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+  contratoId: bigint("contrato_id", { mode: "number", unsigned: true }).notNull().references(() => promptsContratos.id, { onDelete: "cascade" }),
+  versao: int("versao").notNull(),
+  schemaJson: json("schema_json").notNull(),
+  exemploJson: json("exemplo_json").notNull(),
+  instrucoes: text("instrucoes").notNull(),
+  motivo: text("motivo"),
+  autor: varchar("autor", { length: 200 }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+})
+
 export const promptsVersoes = mysqlTable("prompts_versoes", {
   id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
   promptId: bigint("prompt_id", { mode: "number", unsigned: true }).notNull().references(() => promptsAgentes.id, { onDelete: "cascade" }),
   versao: int("versao").notNull(),
   texto: text("texto").notNull(),
+  contratoVersaoId: bigint("contrato_versao_id", { mode: "number", unsigned: true }).references(() => promptsContratosVersoes.id, { onDelete: "restrict" }),
   motivo: text("motivo"),
   autor: varchar("autor", { length: 200 }),
   validacao: json("validacao"),
@@ -389,6 +413,7 @@ export const promptsExecucoes = mysqlTable("prompts_execucoes", {
   id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
   promptId: bigint("prompt_id", { mode: "number", unsigned: true }).references(() => promptsAgentes.id, { onDelete: "set null" }),
   versaoId: bigint("versao_id", { mode: "number", unsigned: true }).references(() => promptsVersoes.id, { onDelete: "set null" }),
+  contratoVersaoId: bigint("contrato_versao_id", { mode: "number", unsigned: true }).references(() => promptsContratosVersoes.id, { onDelete: "set null" }),
   chave: varchar("chave", { length: 160 }).notNull(),
   tarefaId: varchar("tarefa_id", { length: 64 }),
   subtarefaId: bigint("subtarefa_id", { mode: "number", unsigned: true }),

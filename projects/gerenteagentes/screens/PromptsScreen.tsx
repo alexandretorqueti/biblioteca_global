@@ -1,23 +1,25 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
 import {
   Alert, Box, Button, Chip, CircularProgress, Divider, List, ListItemButton,
-  ListItemText, Paper, Stack, TextField, Typography,
+  ListItemText, MenuItem, Paper, Stack, TextField, Typography,
 } from "@mui/material"
 import { PreviewRounded, PublishRounded, SaveRounded, RestoreRounded } from "@mui/icons-material"
 import { useApi } from "../../../apps/web/src/hooks/useApi"
 
-type PromptVersion = { id: number; versao: number; texto: string; motivo?: string | null; autor?: string | null; createdAt: string }
+type PromptVersion = { id: number; versao: number; texto: string; contratoVersaoId?: number | null; motivo?: string | null; autor?: string | null; createdAt: string }
 type Prompt = {
   id: number; chave: string; tipoAgente: string; situacao: string; titulo: string;
   descricao?: string | null; status: "draft" | "active" | "inactive";
   versaoAtivaId?: number | null; allowedMarkers: string[]; versions: PromptVersion[]
 }
 type Mask = { id: number; nome: string; descricao: string; origem: string; exemplo?: string | null; obrigatoria: boolean }
-type Catalog = { prompts: Prompt[]; masks: Mask[] }
+type ContractVersion = { id: number; versao: number; schemaJson: unknown; exemploJson: unknown; instrucoes: string; autor?: string | null; createdAt: string }
+type Contract = { id: number; chave: string; titulo: string; status: string; versaoAtivaId?: number | null; versions: ContractVersion[] }
+type Catalog = { prompts: Prompt[]; masks: Mask[]; contracts: Contract[] }
 
 export default function PromptsScreen(): ReactNode {
   const api = useApi()
-  const [catalog, setCatalog] = useState<Catalog>({ prompts: [], masks: [] })
+  const [catalog, setCatalog] = useState<Catalog>({ prompts: [], masks: [], contracts: [] })
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [text, setText] = useState("")
   const [reason, setReason] = useState("")
@@ -26,6 +28,11 @@ export default function PromptsScreen(): ReactNode {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [contractVersionId, setContractVersionId] = useState<number | "">("")
+  const [selectedContractId, setSelectedContractId] = useState<number | null>(null)
+  const [contractSchema, setContractSchema] = useState("")
+  const [contractExample, setContractExample] = useState("")
+  const [contractInstructions, setContractInstructions] = useState("")
 
   const selected = useMemo(() => catalog.prompts.find((prompt) => prompt.id === selectedId) ?? null, [catalog, selectedId])
   const masks = useMemo(() => catalog.masks.filter((mask) => selected?.allowedMarkers.includes(mask.nome)), [catalog, selected])
@@ -41,6 +48,7 @@ export default function PromptsScreen(): ReactNode {
       const prompt = data.prompts.find((item) => item.id === id)
       const current = prompt?.versions.find((version) => version.id === prompt.versaoAtivaId) ?? prompt?.versions[0]
       setText(current?.texto ?? "")
+      setContractVersionId(current?.contratoVersaoId ?? "")
     } catch (e) {
       setError(e instanceof Error ? e.message : "Falha ao carregar prompts")
     } finally { setLoading(false) }
@@ -52,6 +60,7 @@ export default function PromptsScreen(): ReactNode {
     setSelectedId(prompt.id)
     const current = prompt.versions.find((version) => version.id === prompt.versaoAtivaId) ?? prompt.versions[0]
     setText(current?.texto ?? "")
+    setContractVersionId(current?.contratoVersaoId ?? "")
     setPreview(null); setError(null); setNotice(null)
   }
 
@@ -60,12 +69,27 @@ export default function PromptsScreen(): ReactNode {
     setBusy(true); setError(null)
     try {
       const created = await api.http.request<{ id: number; versao: number }>("POST", `/gerenteagentes/prompts/${selected.id}/versions`, {
-        auth: "access", body: { texto: text, motivo: reason || "Ajuste administrativo" },
+        auth: "access", body: { texto: text, motivo: reason || "Ajuste administrativo", contratoVersaoId: contractVersionId || undefined },
       })
       setNotice(`Rascunho v${created.versao} salvo. Revise a prévia antes de publicar.`)
       await load(selected.id)
       setText(text)
     } catch (e) { setError(e instanceof Error ? e.message : "Falha ao salvar") } finally { setBusy(false) }
+  }
+
+  const chooseContract = (contract: Contract) => {
+    setSelectedContractId(contract.id)
+    const version = contract.versions.find((item) => item.id === contract.versaoAtivaId) ?? contract.versions[0]
+    setContractSchema(JSON.stringify(version?.schemaJson ?? {}, null, 2)); setContractExample(JSON.stringify(version?.exemploJson ?? {}, null, 2)); setContractInstructions(version?.instrucoes ?? "")
+  }
+
+  const saveContract = async () => {
+    if (!api || !selectedContractId) return
+    setBusy(true); setError(null)
+    try {
+      await api.http.request("POST", `/gerenteagentes/prompt-contracts/${selectedContractId}/versions`, { auth: "access", body: { schemaJson: JSON.parse(contractSchema), exemploJson: JSON.parse(contractExample), instrucoes: contractInstructions, motivo: reason || "Ajuste administrativo" } })
+      setNotice("Nova versão do contrato salva."); await load(selectedId ?? undefined)
+    } catch (e) { setError(e instanceof Error ? e.message : "Falha ao salvar contrato") } finally { setBusy(false) }
   }
 
   const publish = async (versionId: number, restore = false) => {
@@ -101,6 +125,7 @@ export default function PromptsScreen(): ReactNode {
         <Paper variant="outlined" sx={{ p: 2 }}><Stack spacing={2}>
           <Typography variant="h6">{selected?.chave ?? "Selecione um prompt"}</Typography>
           <TextField multiline minRows={18} fullWidth label="Texto do prompt" value={text} onChange={(e) => setText(e.target.value)} />
+          <TextField select fullWidth label="Versão do contrato de saída" value={contractVersionId} onChange={(e) => setContractVersionId(Number(e.target.value) || "")}><MenuItem value="">Sem contrato</MenuItem>{catalog.contracts.flatMap((contract) => contract.versions.map((version) => <MenuItem key={version.id} value={version.id}>{contract.titulo} · v{version.versao}{version.id === contract.versaoAtivaId ? " (ativa)" : ""}</MenuItem>))}</TextField>
           <TextField fullWidth label="Motivo da alteração" value={reason} onChange={(e) => setReason(e.target.value)} />
           <Stack direction="row" spacing={1}><Button variant="contained" startIcon={<SaveRounded />} disabled={busy || !text.trim()} onClick={() => void save()}>Salvar rascunho</Button><Button startIcon={<PreviewRounded />} disabled={busy || !text.trim()} onClick={() => void renderPreview()}>Pré-visualizar</Button></Stack>
         </Stack></Paper>
@@ -109,5 +134,6 @@ export default function PromptsScreen(): ReactNode {
       </Stack>
       <Paper variant="outlined" sx={{ p: 2 }}><Typography variant="h6">Máscaras disponíveis</Typography><Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>Clique para inserir no cursor.</Typography><Stack spacing={1}>{masks.map((mask) => <Box key={mask.id}><Button size="small" variant="outlined" onClick={() => setText((current) => current + mask.nome)}>{mask.nome}</Button><Typography variant="caption" display="block">{mask.descricao}</Typography></Box>)}</Stack></Paper>
     </Box>
+    <Paper variant="outlined" sx={{ p: 2 }}><Typography variant="h5" fontWeight={700}>Contratos de saída versionados</Typography><Stack direction={{ xs: "column", md: "row" }} spacing={1} sx={{ my: 2 }}>{catalog.contracts.map((contract) => <Button key={contract.id} variant={selectedContractId === contract.id ? "contained" : "outlined"} onClick={() => chooseContract(contract)}>{contract.titulo}</Button>)}</Stack>{selectedContractId && <Stack spacing={2}><TextField multiline minRows={8} label="JSON Schema" value={contractSchema} onChange={(e) => setContractSchema(e.target.value)} /><TextField multiline minRows={4} label="Exemplo JSON" value={contractExample} onChange={(e) => setContractExample(e.target.value)} /><TextField multiline minRows={4} label="Instruções injetadas no prompt" value={contractInstructions} onChange={(e) => setContractInstructions(e.target.value)} /><Button variant="contained" disabled={busy} onClick={() => void saveContract()}>Salvar nova versão do contrato</Button><Stack direction="row" spacing={1}>{catalog.contracts.find((item) => item.id === selectedContractId)?.versions.map((version) => <Button key={version.id} size="small" onClick={() => void api?.http.request("POST", `/gerenteagentes/prompt-contracts/${selectedContractId}/publish/${version.id}`, { auth: "access" }).then(() => load(selectedId ?? undefined))}>Publicar v{version.versao}</Button>)}</Stack></Stack>}</Paper>
   </Stack>
 }

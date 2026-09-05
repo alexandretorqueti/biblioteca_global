@@ -30,6 +30,7 @@ export interface AgentPromptCatalogEntry {
   markers: readonly string[]
   /** Preenchido pela etapa posterior de migração; não é validado neste catálogo. */
   prompt: string
+  contractKey?: string
 }
 
 export const AGENT_PROMPT_CATALOG: readonly AgentPromptCatalogEntry[] = [
@@ -47,7 +48,8 @@ export const AGENT_PROMPT_CATALOG: readonly AgentPromptCatalogEntry[] = [
     situation: "primeira_rodada_tarefa",
     source: "motor-v2/src/workers/TaskWorker.ts#buildAnalystPrompt",
     markers: ["**TITULOTAREFA**", "**DESCRICAOTAREFA**", "**TIPOTAREFA**"],
-    prompt: "Você é o analista. Planeje a tarefa **TITULOTAREFA**. Tipo: **TIPOTAREFA**. Descrição: **DESCRICAOTAREFA**. Responda somente com JSON no contrato do Motor, usando o mínimo de subtarefas executáveis.",
+    prompt: "Você é o analista. Planeje a tarefa **TITULOTAREFA**. Tipo: **TIPOTAREFA**. Descrição: **DESCRICAOTAREFA**. Use o mínimo de subtarefas executáveis.\n\n**CONTRATOSAIDA**",
+    contractKey: "analista.plano_ou_perguntas",
   },
   {
     key: "analista.retomada_apos_clarificacao",
@@ -55,7 +57,8 @@ export const AGENT_PROMPT_CATALOG: readonly AgentPromptCatalogEntry[] = [
     situation: "retomada_apos_clarificacao",
     source: "motor-v2/src/workers/TaskWorker.ts#buildAnalystPrompt",
     markers: ["**TITULOTAREFA**", "**DESCRICAOTAREFA**", "**HISTORICOCLARIFICACAO**"],
-    prompt: "Reanalise **TITULOTAREFA**. Descrição: **DESCRICAOTAREFA**. Histórico já respondido: **HISTORICOCLARIFICACAO**. Não repita perguntas respondidas; devolva perguntas novas ou o plano em JSON.",
+    prompt: "Reanalise **TITULOTAREFA**. Descrição: **DESCRICAOTAREFA**. Histórico já respondido: **HISTORICOCLARIFICACAO**. Não repita perguntas respondidas.\n\n**CONTRATOSAIDA**",
+    contractKey: "analista.plano_ou_perguntas",
   },
   {
     key: "analista.retry_resposta_invalida",
@@ -72,6 +75,7 @@ export const AGENT_PROMPT_CATALOG: readonly AgentPromptCatalogEntry[] = [
     source: "motor-v2/src/workers/TaskWorker.ts#buildProgrammerPrompt",
     markers: ["**TITULOTAREFA**", "**DESCRICAOTAREFA**", "**TIPOTAREFA**", "**NUMSUBTAREFA**", "**TITULOSUBTAREFA**", "**ESCOPO**", "**CRITERIOSACEITE**", "**WORKSPACE**"],
     prompt: "Você é o desenvolvedor. Execute a subtarefa **NUMSUBTAREFA** — **TITULOSUBTAREFA** da tarefa **TITULOTAREFA**. Descrição: **DESCRICAOTAREFA**. Tipo: **TIPOTAREFA**. Escopo: **ESCOPO**. Critérios: **CRITERIOSACEITE**. Workspace: **WORKSPACE**. Não faça commit. Responda em JSON com status done, need_help, blocked_environment ou premise_incorrect.",
+    contractKey: "dev.resultado_execucao",
   },
   {
     key: "dev.retorno_por_falha_de_gate",
@@ -80,6 +84,7 @@ export const AGENT_PROMPT_CATALOG: readonly AgentPromptCatalogEntry[] = [
     source: "motor-v2/src/workers/TaskWorker.ts#buildProgrammerPrompt",
     markers: ["**TITULOTAREFA**", "**TITULOSUBTAREFA**", "**ERROGATEANTERIOR**", "**WORKSPACE**"],
     prompt: "Retome a subtarefa **TITULOSUBTAREFA** da tarefa **TITULOTAREFA** no workspace **WORKSPACE**. O gate anterior falhou: **ERROGATEANTERIOR**. Corrija a causa raiz, preserve o que já funciona, não faça commit e responda no contrato JSON do Motor.",
+    contractKey: "dev.resultado_execucao",
   },
   {
     key: "monitor.classificacao_falha_de_gate",
@@ -88,6 +93,7 @@ export const AGENT_PROMPT_CATALOG: readonly AgentPromptCatalogEntry[] = [
     source: "motor-v2/src/policies/GateFailureClassifier.ts#buildGateFailurePrompt",
     markers: ["**IDTAREFA**", "**IDSUBTAREFA**", "**OCORRENCIAGATE**", "**TITULOTAREFA**", "**AGENTEEXECUTOR**", "**REPOSITORIO**", "**TITULOSUBTAREFA**", "**ESCOPO**", "**CRITERIOSACEITE**", "**MODELOEXECUTOR**", "**INDICEESCADA**", "**COMANDOFALHO**", "**ERROTAREFAANTERIOR**"],
     prompt: "Classifique a falha da tarefa **IDTAREFA**, subtarefa **IDSUBTAREFA**, ocorrência **OCORRENCIAGATE**. Tarefa: **TITULOTAREFA**. Executor: **AGENTEEXECUTOR**. Repo: **REPOSITORIO**. Subtarefa: **TITULOSUBTAREFA**. Escopo: **ESCOPO**. Critérios: **CRITERIOSACEITE**. Modelo: **MODELOEXECUTOR** (**INDICEESCADA**). Comando: **COMANDOFALHO**. Erro: **ERROTAREFAANTERIOR**. Responda somente no JSON de veredito esperado.",
+    contractKey: "monitor.veredito_gate",
   },
   {
     key: "monitor.correcao_motor",

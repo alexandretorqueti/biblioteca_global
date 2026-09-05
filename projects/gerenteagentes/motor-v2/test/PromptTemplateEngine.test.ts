@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { markersIn, renderPromptTemplate, validatePromptTemplate } from "../src/prompts/PromptTemplateEngine.js"
+import { ManagedPromptResolver, markersIn, renderPromptTemplate, validatePromptTemplate } from "../src/prompts/PromptTemplateEngine.js"
 
 describe("PromptTemplateEngine", () => {
   it("descobre, valida e renderiza máscaras canônicas", () => {
@@ -17,5 +17,17 @@ describe("PromptTemplateEngine", () => {
     expect(result.ok).toBe(false)
     expect(result.unknown).toEqual(["**DESCONHECIDA**"])
     expect(result.missing).toEqual(["**TEXTOTAREFA**"])
+  })
+
+  it("injeta o contrato embarcado no fallback mesmo se o texto legado não tiver a máscara", async () => {
+    const db = { query: async (sql: string) => sql.startsWith("SELECT") ? [[], []] : [[], []] }
+    const output = await new ManagedPromptResolver(db).resolve({
+      key: "analista.primeira_rodada_tarefa",
+      values: {},
+      fallback: "Planeje a tarefa.",
+    })
+    expect(output).toContain("CONTRATO DE SAÍDA OBRIGATÓRIO")
+    expect(output).toContain('"subtarefas"')
+    expect(output).toContain('"kind":"perguntas"')
   })
 })

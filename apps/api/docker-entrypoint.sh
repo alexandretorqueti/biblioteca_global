@@ -40,6 +40,11 @@ until npm run db:migrate; do
   sleep 2
 done
 
+# O catálogo do Motor vive em projeto_640. Migra e popula defaults canônicos
+# antes de iniciar o Motor/API; não depende de alguém abrir a tela Prompts.
+npm run db:migrate:gerenteagentes
+npm run db:bootstrap:gerenteagentes
+
 # Seed temporariamente desabilitado - migrations já aplicadas
 # npm run db:seed
 

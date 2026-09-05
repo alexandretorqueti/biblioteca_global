@@ -21,6 +21,8 @@
     "db:generate:documentacao": "drizzle-kit generate --config projects/documentacao/drizzle.config.ts",
     "db:generate:gerenteagentes": "drizzle-kit generate --config projects/gerenteagentes/drizzle.config.ts",
     "db:migrate:gerenteagentes": "drizzle-kit migrate --config projects/gerenteagentes/drizzle.config.ts"
+    ,"db:bootstrap:gerenteagentes": "tsx projects/gerenteagentes/motor-v2/src/scripts/prompt-defaults.ts"
+    ,"prompts:export-defaults": "tsx projects/gerenteagentes/motor-v2/src/scripts/prompt-defaults.ts --export"
   },
   "engines": {
     "node": ">=22"

@@ -283,10 +283,10 @@ export class GerenteAgentesController {
   salvarRascunhoPrompt(
     @CurrentUser() usuario: UsuarioAutenticado,
     @Param('id', ParseIntPipe) id: number,
-    @Body() body: { texto?: string; motivo?: string },
+    @Body() body: { texto?: string; motivo?: string; contratoVersaoId?: number },
   ) {
     if (!body?.texto?.trim()) throw new BadRequestException('Texto do prompt é obrigatório');
-    return this.service.salvarRascunhoPrompt(id, body.texto, body.motivo, usuario.email ?? undefined);
+    return this.service.salvarRascunhoPrompt(id, body.texto, body.motivo, usuario.email ?? undefined, body.contratoVersaoId);
   }
 
   @Post('prompts/:id/publish/:versionId')
@@ -300,5 +300,18 @@ export class GerenteAgentesController {
   preverPrompt(@Param('id', ParseIntPipe) id: number, @Body() body: { texto?: string; values?: Record<string, unknown> }) {
     if (!body?.texto) throw new BadRequestException('Texto do prompt é obrigatório');
     return this.service.preverPrompt(id, body.texto, body.values ?? {});
+  }
+
+  @Post('prompt-contracts/:id/versions')
+  @Roles('admin', 'gerente')
+  salvarRascunhoContrato(@CurrentUser() usuario: UsuarioAutenticado, @Param('id', ParseIntPipe) id: number, @Body() body: { schemaJson?: unknown; exemploJson?: unknown; instrucoes?: string; motivo?: string }) {
+    if (!body?.instrucoes?.trim()) throw new BadRequestException('Instruções do contrato são obrigatórias');
+    return this.service.salvarRascunhoContrato(id, body.schemaJson, body.exemploJson, body.instrucoes, body.motivo, usuario.email ?? undefined);
+  }
+
+  @Post('prompt-contracts/:id/publish/:versionId')
+  @Roles('admin', 'gerente')
+  publicarContrato(@Param('id', ParseIntPipe) id: number, @Param('versionId', ParseIntPipe) versionId: number) {
+    return this.service.publicarVersaoContrato(id, versionId);
   }
 }
