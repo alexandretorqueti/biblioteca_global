@@ -44,8 +44,19 @@ async function main() {
     process.exit(0)
   }
 
-  process.on('SIGINT', () => shutdown('SIGINT'))
-  process.on('SIGTERM', () => shutdown('SIGTERM'))
+  process.on('SIGINT', () => { void shutdown('SIGINT').catch((err) => logger.error('Erro no shutdown SIGINT: ' + (err instanceof Error ? err.stack ?? err.message : String(err)))) })
+  process.on('SIGTERM', () => { void shutdown('SIGTERM').catch((err) => logger.error('Erro no shutdown SIGTERM: ' + (err instanceof Error ? err.stack ?? err.message : String(err)))) })
+
+  // Última linha de defesa contra unhandled rejections.
+  // Sem isso, Node.js ≥15 mata o processo silenciosamente em qualquer promise
+  // rejeitada sem catch — incluindo event handlers async do EventEmitter.
+  process.on('unhandledRejection', (reason: unknown) => {
+    logger.error('⚠️ Unhandled Rejection: ' + (reason instanceof Error ? reason.stack ?? reason.message : String(reason)))
+  })
+  process.on('uncaughtException', (error: Error) => {
+    logger.error('💥 Uncaught Exception: ' + (error.stack ?? error.message))
+    process.exit(1)
+  })
 
   try {
     await motor.start()
@@ -63,3 +74,4 @@ main().catch((error) => {
   logger.error('❌ Fatal: ' + (error instanceof Error ? error.stack ?? error.message : String(error)))
   process.exit(1)
 })
+

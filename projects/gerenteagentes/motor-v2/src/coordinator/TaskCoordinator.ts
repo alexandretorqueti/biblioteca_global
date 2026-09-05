@@ -1305,11 +1305,13 @@ export class TaskCoordinator {
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return
 
     worker.timeoutHandle = setTimeout(() => {
-      void this.handleWorkerFailure(
+      this.handleWorkerFailure(
         executionId,
         `Worker excedeu o timeout de ${timeoutMs}ms`,
         "timeout",
-      )
+      ).catch((error: unknown) => {
+        this.logger.error("Falha ao processar timeout do worker: " + describeError(error), { executionId })
+      })
     }, timeoutMs)
     this.armSilenceWatchdog(executionId)
   }
@@ -1321,7 +1323,9 @@ export class TaskCoordinator {
     worker.lastHeartbeatAt = new Date()
     if (worker.silenceHandle) clearTimeout(worker.silenceHandle)
     worker.silenceHandle = setTimeout(() => {
-      void this.handleWorkerFailure(executionId, "Worker sem heartbeat por 600000ms", "lost")
+      this.handleWorkerFailure(executionId, "Worker sem heartbeat por 600000ms", "lost").catch((error: unknown) => {
+        this.logger.error("Falha ao processar silence watchdog: " + describeError(error), { executionId })
+      })
     }, silenceMs)
   }
 
@@ -1374,13 +1378,25 @@ export class TaskCoordinator {
 
   private setupEventHandlers(): void {
     this.workerLauncher.on("completed", async (msg: { executionId: string; result: ExecutionResult }) => {
-      await this.onTaskCompleted(msg.executionId, msg.result)
+      try {
+        await this.onTaskCompleted(msg.executionId, msg.result)
+      } catch (error) {
+        this.logger.error("Falha ao processar completed: " + describeError(error), { executionId: msg.executionId })
+      }
     })
     this.workerLauncher.on("failed", async (msg: { executionId: string; error: string }) => {
-      await this.onTaskFailed(msg.executionId, msg.error)
+      try {
+        await this.onTaskFailed(msg.executionId, msg.error)
+      } catch (error) {
+        this.logger.error("Falha ao processar failed: " + describeError(error), { executionId: msg.executionId })
+      }
     })
     this.workerLauncher.on("clarifying", async (msg: { executionId: string; questionCount: number; summary?: string }) => {
-      await this.onTaskClarifying(msg.executionId, msg.questionCount, msg.summary)
+      try {
+        await this.onTaskClarifying(msg.executionId, msg.questionCount, msg.summary)
+      } catch (error) {
+        this.logger.error("Falha ao processar clarifying: " + describeError(error), { executionId: msg.executionId })
+      }
     })
     this.workerLauncher.on("heartbeat", (msg: { executionId: string }) => {
       const worker = this.activeWorkers.get(msg.executionId)
@@ -1392,7 +1408,9 @@ export class TaskCoordinator {
       void this.resourceLease.renew(worker.resourceKey, msg.executionId, worker.fencingToken).then((result) => {
         if (result.kind === "lost") {
           this.logger.warn("Lease perdido: " + msg.executionId + " - " + result.reason, { executionId: msg.executionId })
-          void this.handleWorkerFailure(msg.executionId, "Lease perdido: " + result.reason, "lease_lost")
+          this.handleWorkerFailure(msg.executionId, "Lease perdido: " + result.reason, "lease_lost").catch((err: unknown) => {
+            this.logger.error("Falha ao processar lease perdido: " + describeError(err), { executionId: msg.executionId })
+          })
         }
       }).catch((error: unknown) => {
         this.logger.error("Falha ao renovar lease: " + msg.executionId + ": " + describeError(error), { executionId: msg.executionId })

@@ -179,7 +179,15 @@ class TaskWorker {
     })
 
     process.on("message", async (msg: unknown) => {
-      await this.handleMessage(msg as CoordinatorToWorkerMessage)
+      try {
+        await this.handleMessage(msg as CoordinatorToWorkerMessage)
+      } catch (error) {
+        this.log("error", "Erro no handler de mensagem: " + (error instanceof Error ? error.message : String(error)))
+        // Envia failed para o coordenador saber que o worker travou
+        this.send({ type: "failed", executionId: this.executionId, error: error instanceof Error ? error.message : String(error) })
+        this.cleanup()
+        setTimeout(() => process.exit(1), 1000)
+      }
     })
 
     this.heartbeatInterval = setInterval(() => this.sendHeartbeat(), 10000)

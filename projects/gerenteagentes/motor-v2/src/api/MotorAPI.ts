@@ -69,7 +69,9 @@ export class MotorAPI {
       } else if (req.method === 'GET' && path === '/api/motor/stats') {
         this.json(res, 200, this.coordinator.getStats())
       } else if (req.method === 'POST' && path === '/api/motor/pump') {
-        this.coordinator.pump().then(() => this.json(res, 200, { ok: true }))
+        this.coordinator.pump()
+          .then(() => this.json(res, 200, { ok: true }))
+          .catch((error: unknown) => this.json(res, 500, { ok: false, error: error instanceof Error ? error.message : 'Pump failed' }))
       }
       // Model selection endpoints
       else if (req.method === 'GET' && projectKey && tipo) {
@@ -101,12 +103,17 @@ export class MotorAPI {
   }
 
   private async handleGetTask(res: ServerResponse, taskId: string): Promise<void> {
-    const task = await this.coordinator.getTaskWithSubtasks(taskId)
-    if (!task) {
-      this.json(res, 404, { ok: false, error: 'Task not found' })
-      return
+    try {
+      const task = await this.coordinator.getTaskWithSubtasks(taskId)
+      if (!task) {
+        this.json(res, 404, { ok: false, error: 'Task not found' })
+        return
+      }
+      this.json(res, 200, task)
+    } catch (error) {
+      this.logger.error('Failed to get task', { error, taskId })
+      this.json(res, 500, { ok: false, error: error instanceof Error ? error.message : 'Internal error' })
     }
-    this.json(res, 200, task)
   }
 
   private async handleEnqueueTask(res: ServerResponse, taskId: string): Promise<void> {

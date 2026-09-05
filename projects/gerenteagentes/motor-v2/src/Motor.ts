@@ -92,7 +92,9 @@ export class Motor {
       this.logger.info(`Worker exit: ${event.executionId} (code: ${event.code})`, { executionId: event.executionId })
     })
     resourceEventBus.on('released', (event) => {
-      void this.coordinator.onResourceReleased(event.resourceKey)
+      this.coordinator.onResourceReleased(event.resourceKey).catch((err: unknown) => {
+        this.logger.error('Erro ao processar resource released: ' + describeError(err), { resourceKey: event.resourceKey })
+      })
     })
   }
 
