@@ -23,6 +23,7 @@ import {
   json,
   mysqlTable,
   mysqlEnum,
+  uniqueIndex,
   text,
   timestamp,
   varchar,
@@ -64,6 +65,32 @@ export const agentes = mysqlTable("agentes", {
     .defaultNow()
     .onUpdateNow(),
 })
+
+/** Catálogo persistente dos prompts usados nas chamadas aos agentes. */
+export const promptsAgentes = mysqlTable(
+  "prompts_agentes",
+  {
+    id: bigint("id", { mode: "number", unsigned: true })
+      .primaryKey()
+      .autoincrement(),
+    /** Chave estável no formato agente.situacao, usada pelo motor. */
+    chave: varchar("chave", { length: 150 }).notNull(),
+    tipoAgente: varchar("tipo_agente", { length: 80 }).notNull(),
+    situacao: varchar("situacao", { length: 100 }).notNull(),
+    conteudo: text("conteudo").notNull(),
+    origem: varchar("origem", { length: 255 }).notNull(),
+    marcadores: json("marcadores").notNull(),
+    ativo: boolean("ativo").notNull().default(true),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at")
+      .notNull()
+      .defaultNow()
+      .onUpdateNow(),
+  },
+  (table) => ({
+    chaveIdx: uniqueIndex("prompts_agentes_chave_unique").on(table.chave),
+  }),
+)
 
 export const projetosCaptados = mysqlTable("projetos_captados", {
   id: bigint("id", { mode: "number", unsigned: true })
@@ -435,6 +462,15 @@ export const annotations = {
     nome: { label: "Nome", fullWidth: true, maxLength: 150 },
     modelo: { label: "Modelo", maxLength: 100 },
     descricao: { label: "Descrição", type: "textarea", fullWidth: true },
+    ativo: { label: "Ativo" },
+  },
+  prompts_agentes: {
+    chave: { label: "Chave", maxLength: 150 },
+    tipo_agente: { label: "Tipo de agente", maxLength: 80 },
+    situacao: { label: "Situação", maxLength: 100 },
+    conteudo: { label: "Prompt", type: "textarea", fullWidth: true },
+    origem: { label: "Origem", maxLength: 255 },
+    marcadores: { label: "Marcadores", type: "textarea", fullWidth: true },
     ativo: { label: "Ativo" },
   },
   projetos_captados: {
