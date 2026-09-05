@@ -1,9 +1,12 @@
 import { writeFile } from "node:fs/promises"
 import { resolve } from "node:path"
+import { config as loadEnv } from "dotenv"
 import mysql from "mysql2/promise"
 import { AGENT_PROMPT_CATALOG } from "../prompts/prompt-catalog.js"
 import { OUTPUT_CONTRACT_CATALOG } from "../prompts/output-contract-catalog.js"
 import { BUNDLED_PROMPT_DEFAULTS } from "../prompts/prompt-defaults.generated.js"
+
+loadEnv({ path: resolve(process.cwd(), ".env"), quiet: true })
 
 const database = process.env.GERENTE_AGENTES_DATABASE ?? "projeto_640"
 const connection = await mysql.createConnection({ host: process.env.MYSQL_HOST ?? "localhost", port: Number(process.env.MYSQL_PORT ?? 3306), user: process.env.MYSQL_USER ?? "root", password: process.env.MYSQL_PASSWORD ?? process.env.MYSQL_ROOT_PASSWORD ?? "", database })

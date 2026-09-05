@@ -29,7 +29,13 @@ import {
   varchar,
 } from "drizzle-orm/mysql-core"
 import type { FormAnnotationsPorTabela } from "@biblioteca-global/schema-tools"
-import { taskStatusesHelperText, subtaskStatusesHelperText } from "./motor-v2/src/shared/task-statuses"
+
+// Helper text espelhando motor-v2/src/shared/task-statuses.ts (fonte canônica).
+// Não importar de motor-v2 aqui: aquele pacote é ESM e este schema é CJS.
+const taskStatusesHelperText = (): string =>
+  "draft | planned | analyzing | awaiting_clarification | ready | running | paused | completed | deployed | blocked | motor_fix | failed | cancelled"
+const subtaskStatusesHelperText = (): string =>
+  "pending | delivered | running | verifying | verified | rejected | blocked | completed | failed | skipped | rework | superseded"
 
 // ============================================================================
 // CAPTAÇÃO (Isa)

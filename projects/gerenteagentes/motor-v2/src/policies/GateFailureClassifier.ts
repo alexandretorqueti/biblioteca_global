@@ -20,7 +20,7 @@
 
 import type { ConsoleAgentRuntimeDriver } from "../runtime/ConsoleAgentRuntimeDriver.js"
 import { createLogger } from "../shared/logger.js"
-import { ManagedPromptResolver } from "../prompts/PromptTemplateEngine.js"
+import { ManagedPromptResolver } from "../prompts/ManagedPromptResolver.js"
 
 /** Interface mínima para consultas SQL (compatível com mysql2 Connection e Db). */
 interface Queryable {

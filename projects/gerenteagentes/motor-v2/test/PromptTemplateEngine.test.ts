@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { ManagedPromptResolver, markersIn, renderPromptTemplate, validatePromptTemplate } from "../src/prompts/PromptTemplateEngine.js"
+import { markersIn, renderPromptTemplate, validatePromptTemplate } from "../src/prompts/PromptTemplateEngine.js"
+import { ManagedPromptResolver } from "../src/prompts/ManagedPromptResolver.js"
 
 describe("PromptTemplateEngine", () => {
   it("descobre, valida e renderiza máscaras canônicas", () => {
@@ -23,11 +24,16 @@ describe("PromptTemplateEngine", () => {
     const db = { query: async (sql: string) => sql.startsWith("SELECT") ? [[], []] : [[], []] }
     const output = await new ManagedPromptResolver(db).resolve({
       key: "analista.primeira_rodada_tarefa",
-      values: {},
-      fallback: "Planeje a tarefa.",
+      values: {
+        "**TITULOTAREFA**": "Corrigir API",
+        "**TIPOTAREFA**": "desenvolvimento",
+        "**DESCRICAOTAREFA**": "Ajustar endpoint",
+      },
+      fallback: "Planeje a tarefa **TITULOTAREFA** (**TIPOTAREFA**): **DESCRICAOTAREFA**",
     })
     expect(output).toContain("CONTRATO DE SAÍDA OBRIGATÓRIO")
     expect(output).toContain('"subtarefas"')
     expect(output).toContain('"kind":"perguntas"')
+    expect(output).toContain("Corrigir API")
   })
 })
