@@ -540,7 +540,8 @@ class TaskWorker {
             key: sessionKey,
             label: sessionKey,
             model: model.model,
-            workspacePath: input.repoPath,
+            // workspacePath não é suportado para sessões normais do Console
+            // (apenas subagent:* ou acp:*). O caminho vai no prompt.
           })
           const { header: embeddedHeader, context } = this.buildProgrammerPrompt(
             input.task,
