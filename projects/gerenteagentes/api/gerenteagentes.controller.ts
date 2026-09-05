@@ -233,7 +233,9 @@ export class GerenteAgentesController {
    * o console nunca é exposto ao browser.
    */
   @Get('modelos-console')
-  @Roles('admin', 'gerente')
+  // A tela de seleção permite edição para operador (assim como o PUT abaixo),
+  // portanto a leitura dos providers/modelos precisa usar a mesma permissão.
+  @Roles('admin', 'gerente', 'operador')
   listarModelosConsole() {
     return this.service.listarModelosConsole();
   }
