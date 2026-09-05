@@ -269,7 +269,7 @@ export class TaskCoordinator {
       "WHERE s.status = 'pending' AND t.status IN ('ready', 'planned') " +
       "AND NOT EXISTS (" +
       "SELECT 1 FROM subtarefas anterior " +
-      "WHERE anterior.tarefa_id = s.tarefa_id AND anterior.seq < s.seq AND anterior.status != 'verified' " +
+      "WHERE anterior.tarefa_id = s.tarefa_id AND anterior.seq < s.seq AND anterior.status NOT IN ('verified', 'superseded') " +
       "AND anterior.id != COALESCE(s.correction_for_subtask_id, -1)" +
       ") " +
       "ORDER BY s.seq ASC LIMIT 25"
@@ -642,7 +642,7 @@ export class TaskCoordinator {
       // Verificar se todas subtarefas da tarefa estao completas
       if (worker.subtaskId && isLightweightTask(worker.taskTipo)) {
         const { rows } = await this.db.query(
-          "SELECT COUNT(*) as pending FROM subtarefas WHERE tarefa_id = (SELECT tarefa_id FROM subtarefas WHERE id = ?) AND status != 'verified'",
+          "SELECT COUNT(*) as pending FROM subtarefas WHERE tarefa_id = (SELECT tarefa_id FROM subtarefas WHERE id = ?) AND status NOT IN ('verified', 'superseded')",
           [worker.subtaskId],
         )
         const task = await this.repository.getTask(worker.taskId)
@@ -652,7 +652,7 @@ export class TaskCoordinator {
         }
       } else if (worker.subtaskId) {
         const { rows } = await this.db.query(
-          "SELECT COUNT(*) as pending FROM subtarefas WHERE tarefa_id = (SELECT tarefa_id FROM subtarefas WHERE id = ?) AND status != 'verified'",
+          "SELECT COUNT(*) as pending FROM subtarefas WHERE tarefa_id = (SELECT tarefa_id FROM subtarefas WHERE id = ?) AND status NOT IN ('verified', 'superseded')",
           [worker.subtaskId]
         )
         const pending = (rows[0] as Record<string, unknown>)?.pending as number
@@ -661,7 +661,7 @@ export class TaskCoordinator {
           // (evidência de código) antes de a tarefa pai ser marcada como completed.
           // Regra: promoção manual sem código não fecha tarefa.
           const { rows: subtasksForValidation } = await this.db.query(
-            "SELECT id, seq, workspace_commit_sha, status FROM subtarefas WHERE tarefa_id = (SELECT tarefa_id FROM subtarefas WHERE id = ?)",
+            "SELECT id, seq, workspace_commit_sha, status FROM subtarefas WHERE tarefa_id = (SELECT tarefa_id FROM subtarefas WHERE id = ?) AND status != 'superseded'",
             [worker.subtaskId]
           )
           const promotionValidation = validateTaskCompletion(

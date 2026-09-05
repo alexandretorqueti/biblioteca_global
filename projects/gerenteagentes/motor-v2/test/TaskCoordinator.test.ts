@@ -442,7 +442,7 @@ describe('TaskCoordinator', () => {
 
       expect(selectionQuery).toContain('anterior.tarefa_id = s.tarefa_id')
       expect(selectionQuery).toContain('anterior.seq < s.seq')
-      expect(selectionQuery).toContain("anterior.status != 'verified'")
+      expect(selectionQuery).toContain("anterior.status NOT IN ('verified', 'superseded')")
       expect(selectionQuery).toContain('anterior.id != COALESCE(s.correction_for_subtask_id, -1)')
     })
 

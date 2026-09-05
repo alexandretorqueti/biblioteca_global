@@ -16,6 +16,7 @@ import NovaTarefaScreen from "../../../../../projects/gerenteagentes/screens/Nov
 import TaskMonitorScreen from "../../../../../projects/gerenteagentes/screens/TaskMonitorScreen"
 import ModelSelectionScreen from "../../../../../projects/gerenteagentes/screens/ModelSelectionScreen"
 import IsaChatScreen from "../../../../../projects/gerenteagentes/screens/IsaChatScreen"
+import PromptsScreen from "../../../../../projects/gerenteagentes/screens/PromptsScreen"
 import PainelPortariaScreen from "../../../../../projects/taqui/screens/PainelPortariaScreen"
 import NotificacoesMoradorScreen from "../../../../../projects/taqui/screens/NotificacoesMoradorScreen"
 import RegistroEncomendaScreen from "../../../../../projects/taqui/screens/RegistroEncomendaScreen"
@@ -32,6 +33,7 @@ export function registrarTelasCustom(): void {
     "gerenteagentes-task-monitor": TaskMonitorScreen,
     "gerenteagentes-model-selection": ModelSelectionScreen,
     "gerenteagentes-isa-chat": IsaChatScreen,
+    "gerenteagentes-prompts": PromptsScreen,
     "sistema-adm-global-dashboard": SistemaAdmGlobalDashboard,
     "sistema-adm-global-hub-admin": SistemaAdmGlobalHubAdmin,
     "sistema-adm-global-hub-administrativo": SistemaAdmGlobalHubAdministrativo,

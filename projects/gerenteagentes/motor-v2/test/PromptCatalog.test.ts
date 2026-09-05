@@ -12,6 +12,8 @@ describe("catálogo de prompts dos agentes", () => {
       "dev.retorno_por_falha_de_gate",
       "monitor.classificacao_falha_de_gate",
       "monitor.correcao_motor",
+      "analista.revisao_premissa_incorreta",
+      "auditor.auditoria_premissa_incorreta",
     ])
   })
 
@@ -25,4 +27,3 @@ describe("catálogo de prompts dos agentes", () => {
     }
   })
 })
-

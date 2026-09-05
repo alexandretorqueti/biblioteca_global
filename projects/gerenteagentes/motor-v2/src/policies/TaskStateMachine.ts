@@ -49,6 +49,7 @@ const subtaskTransitions: Record<SubTaskStatus, readonly SubTaskStatus[]> = {
   failed: ["failed", "pending"],
   skipped: ["skipped"],
   rework: ["rework", "pending", "running", "blocked"],
+  superseded: ["superseded"],
 }
 
 export function transitionTask(current: TaskStatus, transition: TaskTransition): TaskStatus {

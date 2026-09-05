@@ -165,6 +165,7 @@ export const SUBTASK_STATUSES = [
   "failed",
   "skipped",
   "rework",
+  "superseded",
 ] as const
 
 export type SubTaskStatusValue = (typeof SUBTASK_STATUSES)[number]
@@ -182,6 +183,7 @@ export const SUBTASK_STATUS_LABELS: Record<string, string> = {
   failed: "Falhou",
   skipped: "Ignorada",
   rework: "Retrabalho",
+  superseded: "Substituída por revisão",
 }
 
 /** Cor do Chip MUI para cada status de subtarefa. */
@@ -200,6 +202,7 @@ export const SUBTASK_STATUS_COLORS: Record<
   blocked: "error",
   failed: "error",
   skipped: "default",
+  superseded: "default",
 }
 
 /**

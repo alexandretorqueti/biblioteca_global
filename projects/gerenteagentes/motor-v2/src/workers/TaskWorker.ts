@@ -52,6 +52,8 @@ import type { Db, QueryResult } from "../shared/types/infrastructure.js"
 import { resolveProjectDatabase } from "../database/DrizzleDb.js"
 import mysql from "mysql2/promise"
 import { getAgentReplyFailureReason } from "../policies/NoReplyFailurePolicy.js"
+import { validatePremiseRefutation, type PremiseRefutation } from "../policies/PremiseRefutationPolicy.js"
+import { ManagedPromptResolver } from "../prompts/PromptTemplateEngine.js"
 import { confirmBaselineIndependentFailure } from "../policies/BaselineConfirmation.js"
 import { digestGateFailure, formatCarryOver, type CarryOverEvent } from "../policies/CarryOverPolicy.js"
 
@@ -256,7 +258,14 @@ class TaskWorker {
 
     const driver = this.createDriver()
     const chain = this.chainFor(input, "analysis")
-    const prompt = this.buildAnalystPrompt(input.task, clarificationHistory)
+    const embeddedPrompt = this.buildAnalystPrompt(input.task, clarificationHistory)
+    const promptKey = clarificationHistory ? "analista.retomada_apos_clarificacao" : "analista.primeira_rodada_tarefa"
+    const prompt = await this.resolveManagedPrompt(promptKey, {
+      "**TITULOTAREFA**": input.task.title,
+      "**DESCRICAOTAREFA**": truncateDescriptionForAnalyst(input.task.description),
+      "**TIPOTAREFA**": input.task.tipo ?? "desenvolvimento",
+      "**HISTORICOCLARIFICACAO**": clarificationHistory ?? "",
+    }, embeddedPrompt, input.task.id)
 
     let lastFailure: string | undefined
     for (let modelIndex = 0; modelIndex < chain.length; modelIndex++) {
@@ -526,13 +535,25 @@ class TaskWorker {
             // workspacePath não é suportado para sessões normais do Console
             // (apenas subagent:* ou acp:*). O caminho vai no prompt.
           })
-          const { header, context } = this.buildProgrammerPrompt(
+          const { header: embeddedHeader, context } = this.buildProgrammerPrompt(
             input.task,
             subtask,
             input.repoPath,
             lastFailure || undefined,
             [carryOver, agentSummary && "Relato do agente na entrega anterior: " + agentSummary].filter(Boolean).join("\n\n") || undefined,
           )
+          const promptKey = lastFailure ? "dev.retorno_por_falha_de_gate" : "dev.primeira_rodada_tarefa"
+          const header = await this.resolveManagedPrompt(promptKey, {
+            "**TITULOTAREFA**": input.task.title,
+            "**DESCRICAOTAREFA**": input.task.description ?? "",
+            "**TIPOTAREFA**": input.task.tipo ?? "desenvolvimento",
+            "**NUMSUBTAREFA**": subtask.seq,
+            "**TITULOSUBTAREFA**": subtask.titulo,
+            "**ESCOPO**": subtask.scope ?? subtask.titulo,
+            "**CRITERIOSACEITE**": subtask.acceptanceCriteria ?? [],
+            "**WORKSPACE**": input.repoPath,
+            "**ERROGATEANTERIOR**": lastFailure,
+          }, embeddedHeader, input.task.id, subtask.id)
           // Envia contexto separado se a missao for longa (evita truncamento no viewer)
           if (context) {
             await driver.sendMessage({ session, message: context })
@@ -577,6 +598,16 @@ class TaskWorker {
           if (outcome.kind === "need_help") {
             lastFailure = outcome.reason
             break
+          }
+          if (outcome.kind === "premise_incorrect") {
+            const validation = validatePremiseRefutation(outcome.payload, input.repoPath)
+            if (!validation.ok) {
+              lastFailure = `Refutação inválida: ${validation.reason}. Continue a execução ou apresente evidências verificáveis.`
+              continue
+            }
+            const revised = await this.rebriefRefutedSubtask(input, subtask, validation.refutation)
+            await this.replaceRefutedSubtask(subtask, validation.refutation, validation.fingerprint, model.model, revised)
+            return undefined
           }
 
           let gitCommitSha: string | undefined
@@ -1061,6 +1092,11 @@ class TaskWorker {
     return new ConsoleAgentRuntimeDriver({ baseUrl, token })
   }
 
+  private async resolveManagedPrompt(key: string, values: Record<string, unknown>, fallback: string, taskId?: string, subtaskId?: number): Promise<string> {
+    if (!this.db) return fallback
+    return new ManagedPromptResolver(this.db).resolve({ key, values, fallback, taskId, subtaskId })
+  }
+
   /** Adapta a conexão exclusiva do worker à transação atômica do plano. */
   private planningDb(): Db {
     const connection = this.db
@@ -1183,7 +1219,8 @@ class TaskWorker {
       "2. Nao faca commit (o motor faz depois)",
       lightweight
         ? "3. Responda APENAS com JSON: {\"status\":\"done\"|\"need_help\"|\"blocked_environment\",\"summary\":\"resposta final detalhada\",\"reason\":\"...\"}"
-        : "3. Responda APENAS com JSON: {\"status\":\"done\"|\"need_help\"|\"blocked_environment\",\"summary\":\"...\",\"reason\":\"...\"}",
+        : "3. Responda APENAS com JSON: {\"status\":\"done\"|\"need_help\"|\"blocked_environment\"|\"premise_incorrect\",\"summary\":\"...\",\"reason\":\"...\"}",
+      ...(lightweight ? [] : ["4. Use premise_incorrect somente se a missão contradizer o repositório. Inclua claim, conflict_type, evidence:[{path,observation}] e suggested_revision; caminhos devem existir no workspace."]),
       ...(carryOver ? ["", carryOver] : []),
       ...(reworkNote ? ["", "Feedback do gate anterior:", digestGateFailure(reworkNote, { maxLines: 50, maxChars: 7000 })] : []),
     ].join("\n")
@@ -1241,7 +1278,7 @@ class TaskWorker {
     return input.modelChain && input.modelChain.length > 0 ? input.modelChain : defaultChain(phase)
   }
 
-  private classifyAgentOutcome(content?: string): { kind: "done" } | { kind: "need_help" | "blocked_environment"; reason: string } {
+  private classifyAgentOutcome(content?: string): { kind: "done" } | { kind: "need_help" | "blocked_environment"; reason: string } | { kind: "premise_incorrect"; payload: unknown } {
     if (!content) return { kind: "done" }
     const match = content.match(/\{[\s\S]*\}/)
     if (!match) return { kind: "done" }
@@ -1250,8 +1287,70 @@ class TaskWorker {
       if (parsed.status === "need_help" || parsed.status === "blocked_environment") {
         return { kind: parsed.status, reason: parsed.reason || parsed.summary || parsed.status }
       }
+      if (parsed.status === "premise_incorrect") return { kind: "premise_incorrect", payload: parsed }
     } catch { /* resposta legada em texto continua compatível */ }
     return { kind: "done" }
+  }
+
+  private async rebriefRefutedSubtask(input: WorkerInput, subtask: SubtaskInfo, refutation: PremiseRefutation): Promise<{ title: string; scope: string; criteria: string[] }> {
+    const fallback = { title: `${subtask.titulo} (revisão)`, scope: refutation.suggestedRevision, criteria: subtask.acceptanceCriteria ?? [] }
+    for (const selection of defaultChain("analysis")) {
+      const driver = this.createDriver()
+      let session
+      try {
+        session = await driver.createSession({ agentId: input.task.agentId, key: formatSessionKey({ agentId: input.task.agentId, taskId: input.task.id, phase: "analysis", model: selection.model, modelIndex: 0, generation: 1 }), label: `rebrief:${input.task.id}:${subtask.id}`, model: selection.model })
+        const embedded = [
+          "Você é o analista. A premissa de uma subtarefa foi refutada com evidência validada.",
+          `Tarefa: ${input.task.title}`,
+          `Subtarefa original: ${subtask.titulo}\n${subtask.scope ?? ""}`,
+          `Refutação: ${refutation.claim}`,
+          `Evidências: ${JSON.stringify(refutation.evidence)}`,
+          `Sugestão do executor: ${refutation.suggestedRevision}`,
+          'Responda APENAS com JSON: {"titulo":"...","scope":"...","acceptance_criteria":["..."]}',
+        ].join("\n\n")
+        const prompt = await this.resolveManagedPrompt("analista.revisao_premissa_incorreta", {
+          "**TEXTOTAREFA**": input.task.title,
+          "**TEXTOSUBTAREFAORIGINAL**": `${subtask.titulo}\n${subtask.scope ?? ""}`,
+          "**ERROREPORTADOPELOAGENTEDEV**": refutation.claim,
+          "**EVIDENCIASREFUTACAO**": refutation.evidence,
+        }, embedded, input.task.id, subtask.id)
+        const sent = await driver.sendMessage({ session, message: prompt })
+        const result = await driver.waitForRunCompletion(session, sent.runId, { onActivity: () => this.sendHeartbeat() })
+        const match = result.content?.match(/\{[\s\S]*\}/)
+        if (!match) continue
+        const parsed = JSON.parse(match[0]) as { titulo?: unknown; scope?: unknown; acceptance_criteria?: unknown }
+        if (typeof parsed.titulo === "string" && typeof parsed.scope === "string" && Array.isArray(parsed.acceptance_criteria)) {
+          return { title: parsed.titulo.slice(0, 200), scope: parsed.scope, criteria: parsed.acceptance_criteria.filter((item): item is string => typeof item === "string").slice(0, 6) }
+        }
+      } catch (error) {
+        this.log("warn", "Rebriefing pelo analista indisponível; usando revisão sugerida e auditada: " + (error instanceof Error ? error.message : String(error)))
+      } finally { if (session) await driver.closeSession(session).catch(() => {}) }
+    }
+    return fallback
+  }
+
+  private async replaceRefutedSubtask(subtask: SubtaskInfo, refutation: PremiseRefutation, fingerprint: string, model: string, revised: { title: string; scope: string; criteria: string[] }): Promise<void> {
+    if (!this.db) throw new Error("DB não conectado para revisar subtarefa")
+    const [rows] = await this.db.query("SELECT tarefa_id, revision, rebrief_count, premise_fingerprint, acceptance_criteria FROM subtarefas WHERE id = ?", [subtask.id]) as unknown as [Array<Record<string, unknown>>]
+    const row = rows[0]
+    if (!row) throw new Error("Subtarefa refutada não encontrada")
+    const rebriefCount = Number(row.rebrief_count ?? 0)
+    if (rebriefCount >= 2 || row.premise_fingerprint === fingerprint) {
+      const reason = "Limite de revisões automáticas ou refutação repetida; decisão humana necessária"
+      await this.recordBlocker(subtask, "systemic_failure", reason, model)
+      throw new Error(reason)
+    }
+    await this.db.beginTransaction()
+    try {
+      const [insert] = await this.db.query(
+        "INSERT INTO subtarefas (tarefa_id, seq, titulo, scope, acceptance_criteria, status, revision, replaces_subtask_id, rebrief_count, premise_fingerprint, premise_evidence, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, NOW(), NOW())",
+        [Number(row.tarefa_id), subtask.seq, revised.title, revised.scope, JSON.stringify(revised.criteria), Number(row.revision ?? 0) + 1, subtask.id, rebriefCount + 1, fingerprint, JSON.stringify(refutation)],
+      ) as unknown as [{ insertId: number }]
+      const replacementId = Number(insert.insertId)
+      await this.db.query("UPDATE subtarefas SET status = 'superseded', superseded_by_subtask_id = ?, rebrief_count = ?, premise_fingerprint = ?, premise_evidence = ?, resultado = ?, finalizada_em = NOW(), updated_at = NOW() WHERE id = ?", [replacementId, rebriefCount + 1, fingerprint, JSON.stringify(refutation), `Premissa refutada: ${refutation.claim}`, subtask.id])
+      await this.db.query("INSERT INTO subtarefas_entregas (subtarefa_id, deliver_number, model, event_type, reason, created_at) VALUES (?, ?, ?, 'premise_refuted', ?, NOW())", [subtask.id, subtask.deliverCount, model, JSON.stringify(refutation)])
+      await this.db.commit()
+    } catch (error) { await this.db.rollback(); throw error }
   }
 
   /**

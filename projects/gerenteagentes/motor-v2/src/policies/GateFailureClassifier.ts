@@ -20,6 +20,7 @@
 
 import type { ConsoleAgentRuntimeDriver } from "../runtime/ConsoleAgentRuntimeDriver.js"
 import { createLogger } from "../shared/logger.js"
+import { ManagedPromptResolver } from "../prompts/PromptTemplateEngine.js"
 
 /** Interface mínima para consultas SQL (compatível com mysql2 Connection e Db). */
 interface Queryable {
@@ -137,7 +138,22 @@ export class GateFailureClassifier {
           model,
         })
 
-        const prompt = buildGateFailurePrompt(input)
+        const embeddedPrompt = buildGateFailurePrompt(input)
+        const prompt = this.db ? await new ManagedPromptResolver(this.db).resolve({
+          key: "monitor.classificacao_falha_de_gate",
+          fallback: embeddedPrompt,
+          taskId: String(input.taskId),
+          subtaskId: Number(input.subtaskId),
+          values: {
+            "**IDTAREFA**": input.taskId, "**IDSUBTAREFA**": input.subtaskId,
+            "**OCORRENCIAGATE**": input.occurrence, "**TITULOTAREFA**": input.taskTitle,
+            "**AGENTEEXECUTOR**": input.agentId, "**REPOSITORIO**": input.repoPath,
+            "**TITULOSUBTAREFA**": input.subtaskTitle, "**ESCOPO**": input.subtaskScope ?? input.subtaskTitle,
+            "**CRITERIOSACEITE**": input.acceptanceCriteria ?? [], "**MODELOEXECUTOR**": input.model,
+            "**INDICEESCADA**": input.modelIndex, "**COMANDOFALHO**": input.command,
+            "**ERROTAREFAANTERIOR**": input.errorMessage,
+          },
+        }) : embeddedPrompt
         const { runId } = await this.driver.sendMessage({ session, message: prompt })
         const result = await this.driver.waitForRunCompletion(session, runId, {
           absoluteTimeoutMs: this.config.timeoutMs,

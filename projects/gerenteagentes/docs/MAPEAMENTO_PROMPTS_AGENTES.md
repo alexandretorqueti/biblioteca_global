@@ -17,6 +17,8 @@ da futura tabela editável de prompts.
 | `dev.retorno_por_falha_de_gate` | dev | rework após build/teste rejeitado ou escala de modelo | `TaskWorker#buildProgrammerPrompt` | contexto da subtarefa e erro/feedback do gate anterior |
 | `monitor.classificacao_falha_de_gate` | monitor | classificação de causa raiz de falha de gate | `GateFailureClassifier#buildGateFailurePrompt` | tarefa, subtarefa, ocorrência, agente, repo, modelo, comando e erro |
 | `monitor.correcao_motor` | monitor | missão de correção operacional do motor | `MotorMonitorStep#buildMission` | tarefa, subtarefa, motivo, comando e evidência |
+| `analista.revisao_premissa_incorreta` | analista | rebriefing após refutação validada | `TaskWorker#rebriefRefutedSubtask` | tarefa, subtarefa original, alegação e evidências |
+| `auditor.auditoria_premissa_incorreta` | monitor/auditor | contrato de auditoria da refutação | `PremiseRefutationPolicy#validatePremiseRefutation` | tarefa, subtarefa, alegação e evidências |
 
 ## Marcadores canônicos
 
@@ -35,6 +37,8 @@ substituídos antes do envio ao runtime; não devem aparecer no prompt final.
 | `**AGENTEEXECUTOR**` / `**MODELOEXECUTOR**` / `**INDICEESCADA**` | executor e posição do modelo |
 | `**COMANDOFALHO**` / `**COMANDO**` / `**EVIDENCIA**` / `**MOTIVOBLOQUEIO**` | diagnóstico operacional do gate/monitor |
 | `**NOMEPROJETO**` / `**SLUGPROJETO**` / `**DESCRICAOPROJETO**` / `**IDPROJETOPLATAFORMA**` | dados do setup do projeto |
+| `**TEXTOTAREFA**` / `**TEXTOSUBTAREFAORIGINAL**` | textos usados no rebriefing |
+| `**ERROREPORTADOPELOAGENTEDEV**` / `**EVIDENCIASREFUTACAO**` | alegação e evidências verificadas da refutação |
 
 ## Observações de cobertura
 
@@ -51,4 +55,3 @@ substituídos antes do envio ao runtime; não devem aparecer no prompt final.
 - `MotorMonitorStep` é um fluxo exportado/legado de correção operacional,
   diferente da classificação de gate feita por `GateFailureClassifier`, por
   isso os dois registros de monitoramento são mantidos separadamente.
-
