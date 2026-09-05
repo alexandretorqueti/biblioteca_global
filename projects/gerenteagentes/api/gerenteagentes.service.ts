@@ -1,6 +1,6 @@
 import { Injectable, Inject, Logger, NotFoundException, BadRequestException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { eq, desc, and } from 'drizzle-orm';
+import { eq, desc } from 'drizzle-orm';
 import { request as httpRequest, type RequestOptions } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { randomUUID } from 'node:crypto';
@@ -20,18 +20,21 @@ import {
   projetosCaptados,
   geracoesProjeto,
   contatos,
-  promptsAgentes,
-  promptsMascaras,
-  promptsVersoes,
-  promptsContratos,
-  promptsContratosVersoes,
 } from '../schema';
-import { AGENT_PROMPT_CATALOG } from '../motor-v2/src/prompts/prompt-catalog';
-import { OUTPUT_CONTRACT_CATALOG } from '../motor-v2/src/prompts/output-contract-catalog';
-import { markersIn, renderPromptTemplate, validatePromptTemplate } from '../motor-v2/src/prompts/PromptTemplateEngine';
 import { ProvisionService } from '../../../apps/api/src/modules/provision/provision.service';
-import { TASK_STATUS_STARTABLE } from '../motor-v2/src/shared/task-statuses';
 import { RealtimeService } from '../../../apps/api/src/modules/realtime/realtime.service';
+
+/**
+ * Status que permitem iniciar/enfileirar uma tarefa.
+ * Definição local para evitar import de módulo ESM (motor-v2) em contexto CJS.
+ */
+const TASK_STATUS_STARTABLE = new Set<string>([
+  'draft',
+  'planned',
+  'blocked',
+  'failed',
+  'paused',
+]);
 
 @Injectable()
 export class GerenteAgentesService {
@@ -182,7 +185,7 @@ export class GerenteAgentesService {
   async sincronizarAgentesOpenClaw(): Promise<{ criados: number; atualizados: number; total: number }> {
     const agentesOpenClaw = await this.listarAgentesConsole();
     const db = await this.dbDoMotor();
-    const { agentes } = await import('../schema');
+    const { agentes } = await import('../schema.js');
 
     // Busca agentes existentes no banco
     const agentesExistentes = await db.select().from(agentes);
@@ -224,7 +227,7 @@ export class GerenteAgentesService {
    */
   async criarOuAtualizarAgenteLocal(openclawAgentId: string, modelo?: string): Promise<void> {
     const db = await this.dbDoMotor();
-    const { agentes } = await import('../schema');
+    const { agentes } = await import('../schema.js');
 
     const existente = await db.select().from(agentes).where(eq(agentes.nome, openclawAgentId)).limit(1);
     if (existente.length === 0) {
@@ -256,157 +259,6 @@ export class GerenteAgentesService {
    */
   private async dbDoMotor() {
     return await this.factory.obter({ id: 640 });
-  }
-
-  private catalogEntry(chave: string) {
-    const entry = AGENT_PROMPT_CATALOG.find((item) => item.key === chave);
-    if (!entry) throw new BadRequestException(`Prompt desconhecido: ${chave}`);
-    return entry;
-  }
-
-  /** Sincroniza metadados canônicos sem sobrescrever textos editados. */
-  private async sincronizarCatalogoPrompts() {
-    const db = await this.dbDoMotor();
-    const activeContracts = new Map<string, number>();
-    for (const entry of OUTPUT_CONTRACT_CATALOG) {
-      let [contract] = await db.select().from(promptsContratos).where(eq(promptsContratos.chave, entry.key)).limit(1);
-      if (!contract) {
-        const inserted = await db.insert(promptsContratos).values({ chave: entry.key, titulo: entry.title, descricao: entry.description, status: 'draft' });
-        [contract] = await db.select().from(promptsContratos).where(eq(promptsContratos.id, Number(inserted[0].insertId))).limit(1);
-      }
-      if (!contract) continue;
-      let activeVersionId = contract.versaoAtivaId;
-      if (!activeVersionId) {
-        const existingVersion = await db.select().from(promptsContratosVersoes).where(eq(promptsContratosVersoes.contratoId, contract.id)).orderBy(desc(promptsContratosVersoes.versao)).limit(1);
-        if (existingVersion[0]) activeVersionId = existingVersion[0].id;
-        else {
-          const insertedVersion = await db.insert(promptsContratosVersoes).values({ contratoId: contract.id, versao: 1, schemaJson: entry.schema, exemploJson: entry.example, instrucoes: entry.instructions, motivo: 'Versão inicial do catálogo embarcado', autor: 'sistema' });
-          activeVersionId = Number(insertedVersion[0].insertId);
-        }
-        await db.update(promptsContratos).set({ versaoAtivaId: activeVersionId, status: 'active' }).where(eq(promptsContratos.id, contract.id));
-      }
-      activeContracts.set(entry.key, Number(activeVersionId));
-    }
-    for (const entry of AGENT_PROMPT_CATALOG) {
-      const existing = await db.select().from(promptsAgentes).where(eq(promptsAgentes.chave, entry.key)).limit(1);
-      if (existing.length === 0) {
-        const inserted = await db.insert(promptsAgentes).values({
-          chave: entry.key,
-          tipoAgente: entry.agentType,
-          situacao: entry.situation,
-          titulo: entry.key,
-          descricao: `Compositor embarcado: ${entry.source}`,
-          status: 'draft',
-          conteudo: entry.prompt,
-          origem: entry.source,
-          marcadores: entry.markers,
-          ativo: true,
-        });
-        if (entry.prompt.trim()) {
-          const versionInsert = await db.insert(promptsVersoes).values({
-            promptId: Number(inserted[0].insertId), versao: 1, texto: entry.prompt,
-            contratoVersaoId: entry.contractKey ? activeContracts.get(entry.contractKey) : null,
-            motivo: 'Versão inicial do catálogo embarcado', autor: 'sistema',
-            validacao: validatePromptTemplate(entry.prompt, [...entry.markers, '**CONTRATOSAIDA**'], entry.contractKey ? ['**CONTRATOSAIDA**'] : []),
-          });
-          await db.update(promptsAgentes).set({ versaoAtivaId: Number(versionInsert[0].insertId), status: 'active' }).where(eq(promptsAgentes.id, Number(inserted[0].insertId)));
-        }
-      }
-      for (const marker of entry.markers) {
-        const found = await db.select().from(promptsMascaras).where(eq(promptsMascaras.nome, marker)).limit(1);
-        if (found.length === 0) {
-          await db.insert(promptsMascaras).values({
-            nome: marker,
-            descricao: `Valor dinâmico utilizado por ${entry.key}`,
-            origem: entry.source,
-            obrigatoria: false,
-          });
-        }
-      }
-      if (entry.contractKey) {
-        const contractMarker = '**CONTRATOSAIDA**';
-        const found = await db.select().from(promptsMascaras).where(eq(promptsMascaras.nome, contractMarker)).limit(1);
-        if (found.length === 0) await db.insert(promptsMascaras).values({ nome: contractMarker, descricao: 'Instruções da versão do contrato vinculada ao prompt', origem: 'Motor: contrato de saída versionado', obrigatoria: true });
-      }
-    }
-  }
-
-  async listarPrompts() {
-    await this.sincronizarCatalogoPrompts();
-    const db = await this.dbDoMotor();
-    const prompts = await db.select().from(promptsAgentes).orderBy(promptsAgentes.tipoAgente, promptsAgentes.situacao);
-    const masks = await db.select().from(promptsMascaras).where(eq(promptsMascaras.ativa, true)).orderBy(promptsMascaras.nome);
-    const versions = await db.select().from(promptsVersoes).orderBy(desc(promptsVersoes.createdAt));
-    const contracts = await db.select().from(promptsContratos).orderBy(promptsContratos.chave);
-    const contractVersions = await db.select().from(promptsContratosVersoes).orderBy(desc(promptsContratosVersoes.createdAt));
-    return {
-      prompts: prompts.map((prompt) => ({
-        ...prompt,
-        allowedMarkers: [...this.catalogEntry(prompt.chave).markers, ...(this.catalogEntry(prompt.chave).contractKey ? ['**CONTRATOSAIDA**'] : [])],
-        versions: versions.filter((version) => version.promptId === prompt.id),
-      })),
-      masks,
-      contracts: contracts.map((contract) => ({ ...contract, versions: contractVersions.filter((version) => version.contratoId === contract.id) })),
-    };
-  }
-
-  async salvarRascunhoPrompt(id: number, texto: string, motivo: string | undefined, autor: string | undefined, contratoVersaoId?: number) {
-    const db = await this.dbDoMotor();
-    const [prompt] = await db.select().from(promptsAgentes).where(eq(promptsAgentes.id, id)).limit(1);
-    if (!prompt) throw new NotFoundException('Prompt não encontrado');
-    const entry = this.catalogEntry(prompt.chave);
-    const allowed = [...entry.markers, ...(entry.contractKey ? ['**CONTRATOSAIDA**'] : [])];
-    const validation = validatePromptTemplate(texto, allowed, entry.contractKey ? ['**CONTRATOSAIDA**'] : []);
-    if (!validation.ok) throw new BadRequestException({ message: 'Máscaras inválidas', validation });
-    const previous = await db.select().from(promptsVersoes).where(eq(promptsVersoes.promptId, id)).orderBy(desc(promptsVersoes.versao)).limit(1);
-    const versao = (previous[0]?.versao ?? 0) + 1;
-    const result = await db.insert(promptsVersoes).values({ promptId: id, versao, texto, motivo, autor, contratoVersaoId: contratoVersaoId ?? null, validacao: validation });
-    await db.update(promptsAgentes).set({ status: prompt.versaoAtivaId ? 'active' : 'draft' }).where(eq(promptsAgentes.id, id));
-    return { id: Number(result[0].insertId), versao, validation };
-  }
-
-  async publicarVersaoPrompt(promptId: number, versionId: number) {
-    const db = await this.dbDoMotor();
-    const [version] = await db.select().from(promptsVersoes).where(and(eq(promptsVersoes.id, versionId), eq(promptsVersoes.promptId, promptId))).limit(1);
-    if (!version) throw new NotFoundException('Versão não encontrada para este prompt');
-    const [prompt] = await db.select().from(promptsAgentes).where(eq(promptsAgentes.id, promptId)).limit(1);
-    if (!prompt) throw new NotFoundException('Prompt não encontrado');
-    const entry = this.catalogEntry(prompt.chave);
-    const validation = validatePromptTemplate(version.texto, [...entry.markers, ...(entry.contractKey ? ['**CONTRATOSAIDA**'] : [])], entry.contractKey ? ['**CONTRATOSAIDA**'] : []);
-    if (entry.contractKey && !version.contratoVersaoId) throw new BadRequestException('Selecione uma versão de contrato para publicar este prompt');
-    if (!validation.ok) throw new BadRequestException({ message: 'Versão inválida', validation });
-    await db.update(promptsAgentes).set({ versaoAtivaId: versionId, status: 'active' }).where(eq(promptsAgentes.id, promptId));
-    return { ok: true, promptId, versionId };
-  }
-
-  async salvarRascunhoContrato(id: number, schemaJson: unknown, exemploJson: unknown, instrucoes: string, motivo: string | undefined, autor: string | undefined) {
-    const db = await this.dbDoMotor();
-    const [contract] = await db.select().from(promptsContratos).where(eq(promptsContratos.id, id)).limit(1);
-    if (!contract) throw new NotFoundException('Contrato não encontrado');
-    if (!schemaJson || typeof schemaJson !== 'object' || !instrucoes.trim()) throw new BadRequestException('Schema JSON e instruções são obrigatórios');
-    const previous = await db.select().from(promptsContratosVersoes).where(eq(promptsContratosVersoes.contratoId, id)).orderBy(desc(promptsContratosVersoes.versao)).limit(1);
-    const versao = (previous[0]?.versao ?? 0) + 1;
-    const result = await db.insert(promptsContratosVersoes).values({ contratoId: id, versao, schemaJson, exemploJson, instrucoes, motivo, autor });
-    return { id: Number(result[0].insertId), versao };
-  }
-
-  async publicarVersaoContrato(contratoId: number, versionId: number) {
-    const db = await this.dbDoMotor();
-    const [version] = await db.select().from(promptsContratosVersoes).where(and(eq(promptsContratosVersoes.id, versionId), eq(promptsContratosVersoes.contratoId, contratoId))).limit(1);
-    if (!version) throw new NotFoundException('Versão não encontrada para este contrato');
-    await db.update(promptsContratos).set({ versaoAtivaId: versionId, status: 'active' }).where(eq(promptsContratos.id, contratoId));
-    return { ok: true, contratoId, versionId };
-  }
-
-  async preverPrompt(id: number, texto: string, values: Record<string, unknown>) {
-    const db = await this.dbDoMotor();
-    const [prompt] = await db.select().from(promptsAgentes).where(eq(promptsAgentes.id, id)).limit(1);
-    if (!prompt) throw new NotFoundException('Prompt não encontrado');
-    const entry = this.catalogEntry(prompt.chave);
-    const validation = validatePromptTemplate(texto, [...entry.markers, ...(entry.contractKey ? ['**CONTRATOSAIDA**'] : [])], entry.contractKey ? ['**CONTRATOSAIDA**'] : []);
-    if (!validation.ok) return { validation, rendered: null };
-    const completeValues = Object.fromEntries(entry.markers.map((marker) => [marker, values[marker] ?? `<${marker.slice(2, -2)}>`]));
-    return { validation, rendered: renderPromptTemplate(texto, completeValues), used: markersIn(texto) };
   }
 
   /**

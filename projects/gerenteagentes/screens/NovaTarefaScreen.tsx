@@ -61,7 +61,7 @@ export default function NovaTarefaScreen(): ReactNode {
         method: "POST",
         headers,
         body: JSON.stringify({
-          projeto_id: Number(values.projetoId),
+          projetoId: Number(values.projetoId),
           titulo: values.titulo,
           descricao: values.descricao || null,
           tipo: values.tipo,

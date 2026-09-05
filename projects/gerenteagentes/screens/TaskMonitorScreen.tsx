@@ -292,7 +292,7 @@ export default function TaskMonitorScreen(): ReactNode {
       if (statusFiltro !== "") query.status = statusFiltro
       // A listagem é fornecida pelo CRUD do projeto; as rotas específicas do
       // acompanhamento (detalhe, chat e subtarefas) ficam no proxy customizado.
-      const res = await bundle.http.request<{ items: Tarefa[] }>("GET", "/gerenteagentes/tarefas", {
+      const res = await bundle.http.request<{ items: Tarefa[] }>("GET", "/tarefas", {
         query,
         auth: "access",
       })
@@ -544,7 +544,7 @@ export default function TaskMonitorScreen(): ReactNode {
     try {
       await bundle.http.request("POST", "/gerenteagentes/tarefas", {
         body: {
-          projeto_id: Number(values.projetoId),
+          projetoId: Number(values.projetoId),
           titulo: values.titulo,
           descricao: values.descricao || null,
           tipo: values.tipo,

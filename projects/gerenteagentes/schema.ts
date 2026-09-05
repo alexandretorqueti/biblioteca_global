@@ -23,19 +23,12 @@ import {
   json,
   mysqlTable,
   mysqlEnum,
-  uniqueIndex,
   text,
   timestamp,
   varchar,
 } from "drizzle-orm/mysql-core"
 import type { FormAnnotationsPorTabela } from "@biblioteca-global/schema-tools"
-
-// Helper text espelhando motor-v2/src/shared/task-statuses.ts (fonte canônica).
-// Não importar de motor-v2 aqui: aquele pacote é ESM e este schema é CJS.
-const taskStatusesHelperText = (): string =>
-  "draft | planned | analyzing | awaiting_clarification | ready | running | paused | completed | deployed | blocked | motor_fix | failed | cancelled"
-const subtaskStatusesHelperText = (): string =>
-  "pending | delivered | running | verifying | verified | rejected | blocked | completed | failed | skipped | rework | superseded"
+import { taskStatusesHelperText, subtaskStatusesHelperText } from "./motor-v2/src/shared/task-statuses"
 
 // ============================================================================
 // CAPTAÇÃO (Isa)
@@ -71,36 +64,6 @@ export const agentes = mysqlTable("agentes", {
     .defaultNow()
     .onUpdateNow(),
 })
-
-/** Catálogo persistente dos prompts usados nas chamadas aos agentes. */
-export const promptsAgentes = mysqlTable(
-  "prompts_agentes",
-  {
-    id: bigint("id", { mode: "number", unsigned: true })
-      .primaryKey()
-      .autoincrement(),
-    /** Chave estável no formato agente.situacao, usada pelo motor. */
-    chave: varchar("chave", { length: 150 }).notNull(),
-    tipoAgente: varchar("tipo_agente", { length: 80 }).notNull(),
-    situacao: varchar("situacao", { length: 100 }).notNull(),
-    conteudo: text("conteudo").notNull(),
-    origem: varchar("origem", { length: 255 }).notNull(),
-    marcadores: json("marcadores").notNull(),
-    ativo: boolean("ativo").notNull().default(true),
-    titulo: varchar("titulo", { length: 200 }).notNull(),
-    descricao: text("descricao"),
-    status: mysqlEnum("status", ["draft", "active", "inactive"]).notNull().default("draft"),
-    versaoAtivaId: bigint("versao_ativa_id", { mode: "number", unsigned: true }),
-    createdAt: timestamp("created_at").notNull().defaultNow(),
-    updatedAt: timestamp("updated_at")
-      .notNull()
-      .defaultNow()
-      .onUpdateNow(),
-  },
-  (table) => ({
-    chaveIdx: uniqueIndex("prompts_agentes_chave_unique").on(table.chave),
-  }),
-)
 
 export const projetosCaptados = mysqlTable("projetos_captados", {
   id: bigint("id", { mode: "number", unsigned: true })
@@ -320,12 +283,6 @@ export const subtarefas = mysqlTable("subtarefas", {
   correctionForSubtaskId: bigint("correction_for_subtask_id", { mode: "number", unsigned: true }),
   correctionFingerprint: varchar("correction_fingerprint", { length: 500 }),
   correctionCreatedAt: timestamp("correction_created_at"),
-  revision: int("revision").notNull().default(0),
-  replacesSubtaskId: bigint("replaces_subtask_id", { mode: "number", unsigned: true }),
-  supersededBySubtaskId: bigint("superseded_by_subtask_id", { mode: "number", unsigned: true }),
-  rebriefCount: int("rebrief_count").notNull().default(0),
-  premiseFingerprint: varchar("premise_fingerprint", { length: 500 }),
-  premiseEvidence: json("premise_evidence"),
   // Metadados do worktree exclusivo (migration 0011). Permanecem até a
   // integração e limpeza recuperável para permitir auditoria/retomada.
   workspacePath: varchar("workspace_path", { length: 1000 }),
@@ -361,69 +318,8 @@ export const subtarefasEntregas = mysqlTable("subtarefas_entregas", {
     .references(() => subtarefas.id, { onDelete: "cascade" }),
   deliverNumber: int("deliver_number").notNull(), // número da entrega (1, 2, 3...)
   model: varchar("model", { length: 100 }), // modelo usado nesta entrega
-  eventType: varchar("event_type", { length: 50 }).notNull(), // delivery_started, gate_rejected, return_for_rework, blocked, completed, baseline_red, integration_conflict, integration_gate_failed
+  eventType: varchar("event_type", { length: 50 }).notNull(), // delivery_started, gate_rejected, return_for_rework, blocked, completed
   reason: text("reason"), // motivo/erro (pode ser longo)
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-})
-
-export const promptsMascaras = mysqlTable("prompts_mascaras", {
-  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
-  nome: varchar("nome", { length: 100 }).notNull().unique(),
-  descricao: text("descricao").notNull(),
-  tipoValor: varchar("tipo_valor", { length: 30 }).notNull().default("texto"),
-  exemplo: text("exemplo"),
-  origem: varchar("origem", { length: 300 }).notNull(),
-  obrigatoria: boolean("obrigatoria").notNull().default(false),
-  sensivel: boolean("sensivel").notNull().default(false),
-  ativa: boolean("ativa").notNull().default(true),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-  updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
-})
-
-export const promptsContratos = mysqlTable("prompts_contratos", {
-  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
-  chave: varchar("chave", { length: 160 }).notNull().unique(),
-  titulo: varchar("titulo", { length: 200 }).notNull(),
-  descricao: text("descricao"),
-  status: mysqlEnum("status", ["draft", "active", "inactive"]).notNull().default("draft"),
-  versaoAtivaId: bigint("versao_ativa_id", { mode: "number", unsigned: true }),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-  updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
-})
-
-export const promptsContratosVersoes = mysqlTable("prompts_contratos_versoes", {
-  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
-  contratoId: bigint("contrato_id", { mode: "number", unsigned: true }).notNull().references(() => promptsContratos.id, { onDelete: "cascade" }),
-  versao: int("versao").notNull(),
-  schemaJson: json("schema_json").notNull(),
-  exemploJson: json("exemplo_json").notNull(),
-  instrucoes: text("instrucoes").notNull(),
-  motivo: text("motivo"),
-  autor: varchar("autor", { length: 200 }),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-})
-
-export const promptsVersoes = mysqlTable("prompts_versoes", {
-  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
-  promptId: bigint("prompt_id", { mode: "number", unsigned: true }).notNull().references(() => promptsAgentes.id, { onDelete: "cascade" }),
-  versao: int("versao").notNull(),
-  texto: text("texto").notNull(),
-  contratoVersaoId: bigint("contrato_versao_id", { mode: "number", unsigned: true }).references(() => promptsContratosVersoes.id, { onDelete: "restrict" }),
-  motivo: text("motivo"),
-  autor: varchar("autor", { length: 200 }),
-  validacao: json("validacao"),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-})
-
-export const promptsExecucoes = mysqlTable("prompts_execucoes", {
-  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
-  promptId: bigint("prompt_id", { mode: "number", unsigned: true }).references(() => promptsAgentes.id, { onDelete: "set null" }),
-  versaoId: bigint("versao_id", { mode: "number", unsigned: true }).references(() => promptsVersoes.id, { onDelete: "set null" }),
-  contratoVersaoId: bigint("contrato_versao_id", { mode: "number", unsigned: true }).references(() => promptsContratosVersoes.id, { onDelete: "set null" }),
-  chave: varchar("chave", { length: 160 }).notNull(),
-  tarefaId: varchar("tarefa_id", { length: 64 }),
-  subtarefaId: bigint("subtarefa_id", { mode: "number", unsigned: true }),
-  fallbackUsado: boolean("fallback_usado").notNull().default(false),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 })
 
@@ -541,15 +437,6 @@ export const annotations = {
     descricao: { label: "Descrição", type: "textarea", fullWidth: true },
     ativo: { label: "Ativo" },
   },
-  prompts_agentes: {
-    chave: { label: "Chave", maxLength: 150 },
-    tipo_agente: { label: "Tipo de agente", maxLength: 80 },
-    situacao: { label: "Situação", maxLength: 100 },
-    conteudo: { label: "Prompt", type: "textarea", fullWidth: true },
-    origem: { label: "Origem", maxLength: 255 },
-    marcadores: { label: "Marcadores", type: "textarea", fullWidth: true },
-    ativo: { label: "Ativo" },
-  },
   projetos_captados: {
     nome: { label: "Nome", fullWidth: true, maxLength: 200 },
     slug: { label: "Slug", maxLength: 100 },
@@ -633,32 +520,9 @@ export const annotations = {
     subtarefa_id: { label: "Subtarefa" },
     deliver_number: { label: "Nº da Entrega" },
     model: { label: "Modelo", maxLength: 100 },
-    event_type: { label: "Tipo de Evento", helperText: "delivery_started | gate_rejected | return_for_rework | blocked | completed | baseline_red | integration_conflict | integration_gate_failed" },
+    event_type: { label: "Tipo de Evento", helperText: "delivery_started | gate_rejected | return_for_rework | blocked | completed" },
     reason: { label: "Motivo/Erro", type: "textarea", fullWidth: true },
     created_at: { label: "Registrado em" },
-  },
-  prompts_mascaras: {
-    nome: { label: "Máscara", maxLength: 100 },
-    descricao: { label: "Descrição", type: "textarea", fullWidth: true },
-    tipo_valor: { label: "Tipo do valor", maxLength: 30 },
-    exemplo: { label: "Exemplo", type: "textarea", fullWidth: true },
-    origem: { label: "Origem", maxLength: 300 },
-    obrigatoria: { label: "Obrigatória" },
-    sensivel: { label: "Sensível" },
-    ativa: { label: "Ativa" },
-  },
-  prompts_versoes: {
-    prompt_id: { label: "Prompt" },
-    versao: { label: "Versão" },
-    texto: { label: "Texto", type: "textarea", fullWidth: true },
-    motivo: { label: "Motivo", type: "textarea", fullWidth: true },
-    autor: { label: "Autor", maxLength: 200 },
-  },
-  prompts_execucoes: {
-    chave: { label: "Chave", maxLength: 160 },
-    tarefa_id: { label: "Tarefa", maxLength: 64 },
-    subtarefa_id: { label: "Subtarefa" },
-    fallback_usado: { label: "Fallback usado" },
   },
   tarefa_chats: {
     tarefa_id: { label: "Tarefa" },

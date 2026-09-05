@@ -375,19 +375,5 @@ export const config: GeradorSistemaConfig = {
         },
       ],
     },
-
-    {
-      id: "prompts",
-      label: "Prompts",
-      items: [
-        {
-          id: "prompts-list",
-          label: "Prompts",
-          path: "prompts",
-          icon: "edit_note",
-          screen: { kind: "custom", componentId: "gerenteagentes-prompts" },
-        },
-      ],
-    },
   ],
 }
