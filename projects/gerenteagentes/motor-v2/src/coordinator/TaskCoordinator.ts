@@ -14,7 +14,7 @@ import { ResourceLeaseService } from "../resources/ResourceLeaseService.js"
 import { RESOURCE_KEYS } from "../shared/types/resources.js"
 import { WorkerLauncher } from "../workers/WorkerLauncher.js"
 import { type ModelPhase, type ModelSelection } from "../policies/ModelTierPolicy.js"
-import { GitWorkspaceManager } from "../workspaces/GitWorkspaceManager.js"
+import { GitWorkspaceManager, type TaskPromotionResult } from "../workspaces/GitWorkspaceManager.js"
 import { DependencyInstaller, resolveInstallTimeoutMs } from "../workspaces/DependencyInstaller.js"
 import { ResourceWaitManager } from "../resources/ResourceWaitManager.js"
 import { executionEventBus, type ExecutionEventBus } from "../events/ExecutionEventBus.js"
@@ -708,11 +708,32 @@ export class TaskCoordinator {
             // bloqueada, worktree/branch da tarefa preservados para o
             // Alexandre resolver. Sem rebase automático.
             if (worker.taskWorkspace && worker.repoPath && worker.rootBaseBranch) {
-              const promotion = await this.workspaceManager.promoteTaskBranch({
-                repoPath: worker.repoPath,
-                baseBranch: worker.rootBaseBranch,
-                taskBranch: worker.taskWorkspace.branch,
-              })
+              let promotion: TaskPromotionResult | null = null
+              try {
+                promotion = await this.workspaceManager.promoteTaskBranch({
+                  repoPath: worker.repoPath,
+                  baseBranch: worker.rootBaseBranch,
+                  taskBranch: worker.taskWorkspace.branch,
+                })
+              } catch (promotionError) {
+                const reason = promotionError instanceof Error ? promotionError.message : String(promotionError)
+                const blockReason = "Falha na promoção da branch da tarefa: " + reason + ". Branch preservada: " + worker.taskWorkspace.branch
+                this.logger.error(blockReason, { taskId: worker.taskId, executionId })
+                try {
+                  const evidence = blockerEvidence("blocked_environment", blockReason)
+                  await this.db.query(
+                    "INSERT INTO bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at) " +
+                    "SELECT tarefa_id, NULL, ?, ?, ?, NOW() FROM subtarefas WHERE id = ?",
+                    [evidence.kind, "motor-v2:" + evidence.fingerprint, evidence.excerpt, worker.subtaskId],
+                  )
+                } catch (persistError) {
+                  this.logger.error("Falha ao persistir bloqueio de promoção: " + describeError(persistError), { taskId: worker.taskId, executionId })
+                }
+                await this.saveTaskTransition(task, "fail", { errorMessage: blockReason.substring(0, 500) })
+                this.publishActivity(worker, { type: "failed", level: "error", message: "Promoção da tarefa para a base falhou — resolução humana necessária" })
+                await this.finishWorker(executionId, worker)
+                return
+              }
               if (promotion.kind === "conflict") {
                 const files = promotion.conflictFiles.length > 0 ? promotion.conflictFiles.join(", ") : "(arquivos não listados)"
                 const blockReason = "Conflito no merge da branch da tarefa para a base (" + worker.rootBaseBranch + ") — resolução humana necessária. Merge cancelado; nada parcial aplicado. Arquivos em conflito: " + files + ". Branch preservada: " + worker.taskWorkspace.branch
