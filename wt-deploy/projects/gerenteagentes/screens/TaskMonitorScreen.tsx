@@ -273,7 +273,7 @@ export default function TaskMonitorScreen(): ReactNode {
       const query: Record<string, string | number> = { pageSize: 100 }
       if (projetoFiltro !== "") query.projetoId = projetoFiltro
       if (statusFiltro !== "") query.status = statusFiltro
-      const res = await bundle.http.request<{ items: Tarefa[] }>("GET", "/tarefas", {
+      const res = await bundle.http.request<{ items: Tarefa[] }>("GET", "/gerenteagentes/tarefas", {
         query,
         auth: "access",
       })
