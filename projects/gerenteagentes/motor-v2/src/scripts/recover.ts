@@ -147,6 +147,8 @@ async function unblockTask(db: Db, options: CliOptions): Promise<void> {
 interface IntegrationContext {
   subtaskId: number
   tarefaId: number
+  taskExternalId: string
+  agentId: string
   workspaceStatus: string | null
   workspaceBranch: string | null
   workspaceCommitSha: string | null
@@ -158,10 +160,13 @@ interface IntegrationContext {
 async function loadIntegrationContext(db: Db, subtaskId: number): Promise<IntegrationContext> {
   const { rows } = await db.query(
     "SELECT s.id, s.tarefa_id, s.status AS subtask_status, s.workspace_status, s.workspace_branch, s.workspace_commit_sha, " +
+    "t.external_id AS task_external_id, " +
+    "COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), pc.slug) AS agent_id, " +
     "pmc.repo_path, pmc.branch_trabalho " +
     "FROM subtarefas s " +
     "INNER JOIN tarefas t ON t.id = s.tarefa_id " +
     "LEFT JOIN projetos_captados pc ON pc.id = t.projeto_id " +
+    "LEFT JOIN agentes a ON pc.agente_id = a.id " +
     "LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id = pc.id " +
     "WHERE s.id = ?",
     [subtaskId],
@@ -174,6 +179,8 @@ async function loadIntegrationContext(db: Db, subtaskId: number): Promise<Integr
   return {
     subtaskId,
     tarefaId: Number(row.tarefa_id),
+    taskExternalId: String(row.task_external_id ?? row.tarefa_id),
+    agentId: String(row.agent_id ?? ""),
     workspaceStatus: row.workspace_status ? String(row.workspace_status) : null,
     workspaceBranch: row.workspace_branch ? String(row.workspace_branch) : null,
     workspaceCommitSha: row.workspace_commit_sha ? String(row.workspace_commit_sha) : null,
@@ -200,17 +207,32 @@ async function integrateSubtask(db: Db, options: CliOptions): Promise<void> {
 
   console.log(
     (options.dryRun ? "[dry-run] " : "") +
-    `integrar ${context.workspaceBranch} (${context.workspaceCommitSha}) em ${context.branchTrabalho} @ ${context.repoPath}`,
+    `integrar ${context.workspaceBranch} (${context.workspaceCommitSha}) na branch da tarefa motor-v2/${context.taskExternalId}/integracao @ ${context.repoPath}`,
   )
   if (options.dryRun) return
 
+  // P1 (2026-09-05): a integração manual segue a arquitetura de branch de
+  // integração por tarefa — o merge vai para a branch da tarefa, nunca direto
+  // para a base. O gate de integração e a promoção para a base continuam
+  // sendo responsabilidade do motor (ou manuais).
   const workspaceManager = new GitWorkspaceManager({ root: process.env.MOTOR_WORKSPACE_ROOT ?? "/tmp/motor-v2-workspaces" })
-  const { mergeCommit } = await workspaceManager.integrate({
+  const taskWorkspace = await workspaceManager.ensureTaskIntegration({
     repoPath: context.repoPath,
-    baseBranch: context.branchTrabalho,
+    agentId: context.agentId || "recover",
+    rootBaseBranch: context.branchTrabalho,
+    taskId: context.taskExternalId,
+  })
+  const integration = await workspaceManager.integrateIntoTaskBranch({
+    repoPath: context.repoPath,
+    taskWorktreePath: taskWorkspace.path,
     workBranch: context.workspaceBranch,
     expectedCommit: context.workspaceCommitSha,
   })
+  if (integration.kind === "conflict") {
+    const files = integration.conflictFiles.length > 0 ? integration.conflictFiles.join(", ") : "(não listados)"
+    throw new Error("conflito no merge para a branch da tarefa (merge abortado, nada aplicado): " + files + " — " + integration.reason)
+  }
+  const mergeCommit = integration.mergeCommit
   await db.query(
     "UPDATE subtarefas SET workspace_status = 'integrated', resultado = CONCAT(COALESCE(resultado, ''), ?) WHERE id = ?",
     [`\nIntegrado via recover em ${new Date().toISOString()} (merge ${mergeCommit})`, context.subtaskId],

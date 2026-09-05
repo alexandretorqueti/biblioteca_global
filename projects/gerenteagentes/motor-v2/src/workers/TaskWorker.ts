@@ -52,6 +52,8 @@ import type { Db, QueryResult } from "../shared/types/infrastructure.js"
 import { resolveProjectDatabase } from "../database/DrizzleDb.js"
 import mysql from "mysql2/promise"
 import { getAgentReplyFailureReason } from "../policies/NoReplyFailurePolicy.js"
+import { confirmBaselineIndependentFailure } from "../policies/BaselineConfirmation.js"
+import { digestGateFailure, formatCarryOver, type CarryOverEvent } from "../policies/CarryOverPolicy.js"
 
 const COMMAND_FAILURE_LIMIT = 12_000
 const ANSI_ESCAPE_PATTERN = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g
@@ -493,6 +495,12 @@ class TaskWorker {
     let lastFailure = ""
     const modelFailures: string[] = []
 
+    // P1 (Alexandre 2026-09-05): carry-over de aprendizado entre execuções.
+    // Se a subtarefa já teve entregas persistidas (rework pós-rejeição,
+    // retomada), o histórico estruturado vai no prompt do programador para
+    // que ele não repita abordagens que já falharam.
+    const carryOver = await this.buildCarryOver(subtask)
+
     modelLoop: for (let modelIndex = 0; modelIndex < chain.length; modelIndex += 1) {
       const model = chain[modelIndex]!
       for (let attempt = 1; attempt <= input.task.maxRework; attempt += 1) {
@@ -508,6 +516,7 @@ class TaskWorker {
         const driver = this.createDriver()
         const sessionKey = formatSessionKey({ agentId: input.task.agentId, taskId: input.task.id, phase: "development", model: model.model, modelIndex, generation: attempt - 1 })
         let session
+        let agentSummary: string | null = null
         try {
           session = await driver.createSession({
             agentId: input.task.agentId,
@@ -517,7 +526,13 @@ class TaskWorker {
             // workspacePath não é suportado para sessões normais do Console
             // (apenas subagent:* ou acp:*). O caminho vai no prompt.
           })
-          const { header, context } = this.buildProgrammerPrompt(input.task, subtask, input.repoPath, lastFailure || undefined)
+          const { header, context } = this.buildProgrammerPrompt(
+            input.task,
+            subtask,
+            input.repoPath,
+            lastFailure || undefined,
+            [carryOver, agentSummary && "Relato do agente na entrega anterior: " + agentSummary].filter(Boolean).join("\n\n") || undefined,
+          )
           // Envia contexto separado se a missao for longa (evita truncamento no viewer)
           if (context) {
             await driver.sendMessage({ session, message: context })
@@ -530,6 +545,7 @@ class TaskWorker {
             lastFailure = "Programador falhou: " + (result.errorMessage || result.state)
             break
           }
+          agentSummary = this.extractAgentSummary(result.content)
 
           // O gateway pode usar state=final mesmo sem produzir uma resposta.
           // Essa mensagem nunca pode atravessar o gate como entrega válida.
@@ -570,7 +586,15 @@ class TaskWorker {
                 "UPDATE subtarefas SET status = 'verifying', updated_at = NOW() WHERE id = ?",
                 [subtask.id],
               )
-              await this.phaseVerify(input)
+              const verification = await this.phaseVerify(input)
+              if (verification.kind === "baseline_correction_created") {
+                // Falha independente das alterações confirmada via stash: a
+                // subtarefa original foi rejeitada e uma correção de baseline
+                // foi criada na posição dela. Adia a execução (o pump pega a
+                // correção); não conta como falha do agente.
+                this.log("warn", "Baseline vermelho confirmado via stash: correção criada; subtarefa original adiada")
+                return undefined
+              }
               gitCommitSha = await this.phaseCommit(input)
             } else {
               // Automação/verificação é uma entrega operacional: a resposta já
@@ -582,8 +606,11 @@ class TaskWorker {
               "UPDATE subtarefas SET status = 'rejected', resultado = ?, updated_at = NOW() WHERE id = ?",
               [lastFailure.substring(0, 500), subtask.id],
             )
-            // Registra rejeição do gate no histórico
-            await this.recordDeliveryEvent(subtask.id, deliverCount, model.model, "gate_rejected", lastFailure.substring(0, 2000))
+            // Registra rejeição do gate no histórico — em formato digest para o
+            // carry-over das próximas entregas não receber ruído (HTML de
+            // componente, stack de biblioteca) no lugar da asserção real.
+            const gateDigest = digestGateFailure(lastFailure, { maxLines: 30, maxChars: 1800 })
+            await this.recordDeliveryEvent(subtask.id, deliverCount, model.model, "gate_rejected", gateDigest)
             this.log("warn", `Gate vermelho (${model.model}, tentativa ${attempt}): ${lastFailure}`)
             
             // MONITORAMENTO MOTOR: classificar causa raiz antes de decidir fluxo
@@ -704,7 +731,7 @@ class TaskWorker {
    * testes afetados pelos caminhos alterados (ou nenhum, se não houver teste
    * afetado). Isso evita que testes flaky/alheios reprovem entregas simples.
    */
-  private async phaseVerify(input: WorkerInput): Promise<void> {
+  private async phaseVerify(input: WorkerInput): Promise<{ kind: "verified" } | { kind: "baseline_correction_created" }> {
     this.send({ type: "progress", executionId: input.context.executionId, phase: "verify", message: "Verificando build e teste" })
     this.log("info", "Fase VERIFY: build + test")
 
@@ -726,9 +753,20 @@ class TaskWorker {
           this.log("info", "Build OK após npm install (lockfile regenerado)")
         } catch (recoveryError) {
           const recoveryMsg = recoveryError instanceof Error ? recoveryError.message : String(recoveryError)
+          // P1: build continua vermelho mesmo após recuperação de lockfile —
+          // confirmar via stash se a falha independe das alterações do agente.
+          if (input.subtask && (await this.handleIndependentGateFailure(input, input.subtask, input.buildCommand, recoveryMsg, "Build vermelho após npm install"))) {
+            return { kind: "baseline_correction_created" }
+          }
           throw new Error("Build falhou (mesmo após npm install): " + recoveryMsg.substring(0, 500), { cause: recoveryError })
         }
       } else {
+        // P1 (Alexandre 2026-09-05): confirmar via git stash se o build falha
+        // MESMO SEM as alterações do agente (baseline vermelho). Se sim, não é
+        // culpa do agente: cria correção de baseline (alta confiança) ou bloqueia.
+        if (input.subtask && (await this.handleIndependentGateFailure(input, input.subtask, input.buildCommand, msg, "Build vermelho independente das alterações do agente"))) {
+          return { kind: "baseline_correction_created" }
+        }
         throw new Error("Build falhou: " + msg.substring(0, 500), { cause: error })
       }
     }
@@ -748,14 +786,14 @@ class TaskWorker {
         const decision = decideGateScope(changed, this.listTestFiles(input.repoPath))
         if (decision.kind === "skip") {
           this.log("info", "Gate escopado: " + decision.reason)
-          return
+          return { kind: "verified" }
         }
         if (decision.kind === "scoped") {
           const gateFiles = decision.files.filter((file) => !isFunctionalSpec(file))
           const excluded = decision.files.length - gateFiles.length
           if (gateFiles.length === 0) {
             this.log("info", `Gate escopado: apenas specs funcionais afetadas (${excluded}); testes pulados — gate automático não cobre testes de ambiente real`)
-            return
+            return { kind: "verified" }
           }
           if (input.testCommand.startsWith("npm run test")) {
             const quoted = gateFiles.map((file) => `"${file}"`).join(" ")
@@ -776,6 +814,7 @@ class TaskWorker {
     try {
       this.exec(command, input.repoPath, 300_000)
       this.log("info", "Testes OK")
+      return { kind: "verified" }
     } catch (error) {
       const firstFailure = error instanceof Error ? error.message : String(error)
       // Confirma a falha no workspace intocado. Flake não consome uma entrega
@@ -785,9 +824,18 @@ class TaskWorker {
       try {
         this.exec(confirmationCommand, input.repoPath, 300_000)
         this.log("warn", "Teste passou na repetição sem alteração do workspace; falha classificada como flaky")
-        return
+        return { kind: "verified" }
       } catch (confirmationError) {
         const confirmedFailure = confirmationError instanceof Error ? confirmationError.message : String(confirmationError)
+        // P1 (Alexandre 2026-09-05): a "confirmação" acima ainda roda COM as
+        // alterações do agente aplicadas. Aqui o motor faz git stash das
+        // alterações e re-executa: se a falha persiste SEM o código do agente,
+        // é baseline vermelho/ambiente — cria correção de baseline (caso de
+        // alta confiança) ou bloqueia (ambiente/correção já em curso), em vez
+        // de queimar entregas num gate impossível.
+        if (input.subtask && (await this.handleIndependentGateFailure(input, input.subtask, confirmationCommand, firstFailure + "\n--- confirmação ---\n" + confirmedFailure, "Teste vermelho independente das alterações do agente"))) {
+          return { kind: "baseline_correction_created" }
+        }
         throw new Error(
           "Testes falharam em duas execuções consecutivas.\n" +
           "--- primeira execução ---\n" + firstFailure + "\n" +
@@ -796,6 +844,64 @@ class TaskWorker {
         )
       }
     }
+  }
+
+  /**
+   * P1 (decisão Alexandre 2026-09-05 — correção híbrida, opção c): confirma
+   * via git stash se a falha do gate existe MESMO SEM as alterações do agente.
+   *
+   * - Falha ambiental (conexão, binário ausente...) → bloqueio `blocked_environment`.
+   * - Baseline vermelho durante a própria correção de baseline → bloqueio
+   *   `correction_failed` (anti-loop: nunca gera correção de correção).
+   * - Baseline vermelho de alta confiança (falha provada sem o código do
+   *   agente) → subtarefa de correção automática (reaproveita o mecanismo do
+   *   runBaselineCheck); retorna true para o caller adiar a subtarefa original.
+   * - Falha depende das alterações → retorna false (rejeição normal do agente).
+   */
+  private async handleIndependentGateFailure(
+    input: WorkerInput,
+    subtask: SubtaskInfo,
+    confirmationCommand: string,
+    failureText: string,
+    where: string,
+  ): Promise<boolean> {
+    if (!this.db) return false
+    let confirmation
+    try {
+      confirmation = confirmBaselineIndependentFailure({
+        repoPath: input.repoPath,
+        confirmationCommand,
+        runner: (command, cwd, timeoutMs) => this.exec(command, cwd, timeoutMs),
+        timeoutMs: 300_000,
+      })
+    } catch (error) {
+      // Worktree inconsistente (stash pop falhou): bloqueio ambiental — nunca
+      // atribuir ao agente.
+      const reason = error instanceof Error ? error.message : String(error)
+      await this.recordBlocker(subtask, "blocked_environment", reason)
+      throw new Error(reason)
+    }
+    if (!confirmation.baselineRed) {
+      this.log("info", "Confirmação via stash: " + confirmation.evidence)
+      return false
+    }
+    const evidence = where + ": " + confirmation.evidence + "\n" + digestGateFailure(failureText, { maxLines: 30, maxChars: 3500 })
+    if (confirmation.kind === "environment") {
+      const reason = "Ambiente bloqueado (gate falha mesmo sem alterações do agente; causa ambiental): " + evidence
+      this.log("error", reason.substring(0, 500))
+      await this.recordBlocker(subtask, "blocked_environment", reason)
+      throw new Error(reason)
+    }
+    if (isBaselineCorrection(subtask.correctionFingerprint)) {
+      const reason = "Baseline continua vermelho durante a subtarefa de correção de baseline — intervenção humana necessária: " + evidence
+      this.log("error", reason.substring(0, 500))
+      await this.recordBlocker(subtask, "correction_failed", reason)
+      throw new Error(reason)
+    }
+    this.log("warn", "Baseline vermelho confirmado via stash (alta confiança): criando correção automática — " + where)
+    await this.recordDeliveryEvent(subtask.id, subtask.deliverCount, undefined, "baseline_red", evidence.substring(0, 2000))
+    await this.createBaselineCorrection(subtask, evidence.substring(0, 2000))
+    return true
   }
 
   /** Caminhos alterados no workspace (git status --porcelain, incluindo não rastreados). */
@@ -1058,7 +1164,7 @@ class TaskWorker {
    * retorna em duas partes (header + contexto) para evitar truncamento
    * no viewer da sessão do agente.
    */
-  private buildProgrammerPrompt(task: { title: string; description?: string; tipo?: string }, subtask: SubtaskInfo, repoPath: string, reworkNote?: string): { header: string; context: string | null } {
+  private buildProgrammerPrompt(task: { title: string; description?: string; tipo?: string }, subtask: SubtaskInfo, repoPath: string, reworkNote?: string, carryOver?: string): { header: string; context: string | null } {
     const description = task.description || "N/A"
     const lightweight = task.tipo === "automacao" || task.tipo === "verificacao"
     const header = [
@@ -1078,7 +1184,8 @@ class TaskWorker {
       lightweight
         ? "3. Responda APENAS com JSON: {\"status\":\"done\"|\"need_help\"|\"blocked_environment\",\"summary\":\"resposta final detalhada\",\"reason\":\"...\"}"
         : "3. Responda APENAS com JSON: {\"status\":\"done\"|\"need_help\"|\"blocked_environment\",\"summary\":\"...\",\"reason\":\"...\"}",
-      ...(reworkNote ? ["", "Feedback do gate anterior:", reworkNote] : []),
+      ...(carryOver ? ["", carryOver] : []),
+      ...(reworkNote ? ["", "Feedback do gate anterior:", digestGateFailure(reworkNote, { maxLines: 50, maxChars: 7000 })] : []),
     ].join("\n")
 
     // Descrição longa → mensagem separada para evitar truncamento no viewer
@@ -1091,6 +1198,43 @@ class TaskWorker {
       "Voce e um programador senior. Execute a subtarefa abaixo.\n\nDescrição da missão: " + description.substring(0, 12000),
     )
     return { header: fullHeader, context: null }
+  }
+
+  /**
+   * P1: histórico estruturado de entregas anteriores da subtarefa (carry-over
+   * de aprendizado). Fail-open: sem histórico ou com erro de consulta, o
+   * prompt segue sem a seção.
+   */
+  private async buildCarryOver(subtask: SubtaskInfo): Promise<string> {
+    if (!this.db || subtask.deliverCount <= 0) return ""
+    try {
+      const [rows] = await this.db.query(
+        "SELECT deliver_number, model, event_type, reason FROM subtarefas_entregas WHERE subtarefa_id = ? ORDER BY id ASC LIMIT 60",
+        [subtask.id],
+      ) as unknown as [Array<{ deliver_number: number | string; model: string | null; event_type: string; reason: string | null }>]
+      const events: CarryOverEvent[] = rows.map((row) => ({
+        deliverNumber: Number(row.deliver_number ?? 0),
+        model: row.model == null ? null : String(row.model),
+        eventType: String(row.event_type ?? ""),
+        reason: row.reason == null ? null : String(row.reason),
+      }))
+      return formatCarryOver(events)
+    } catch (error) {
+      this.log("warn", "Falha ao carregar histórico de entregas (carry-over ignorado): " + (error instanceof Error ? error.message : String(error)))
+      return ""
+    }
+  }
+
+  /** Resumo estruturado da resposta do agente (campo `summary` do JSON). */
+  private extractAgentSummary(content?: string): string | null {
+    if (!content) return null
+    const match = content.match(/\{[\s\S]*\}/)
+    if (!match) return null
+    try {
+      const parsed = JSON.parse(match[0]) as { summary?: unknown }
+      if (typeof parsed.summary === "string" && parsed.summary.trim()) return parsed.summary.trim().substring(0, 800)
+    } catch { /* resposta em texto livre não tem summary estruturado */ }
+    return null
   }
 
   private chainFor(input: WorkerInput, phase: "analysis" | "development"): readonly ModelSelection[] {
@@ -1186,7 +1330,7 @@ class TaskWorker {
     subtaskId: number,
     deliverNumber: number,
     model: string | undefined,
-    eventType: "delivery_started" | "gate_rejected" | "return_for_rework" | "blocked" | "completed",
+    eventType: "delivery_started" | "gate_rejected" | "return_for_rework" | "blocked" | "completed" | "baseline_red",
     reason: string | null,
   ): Promise<void> {
     if (!this.db) return

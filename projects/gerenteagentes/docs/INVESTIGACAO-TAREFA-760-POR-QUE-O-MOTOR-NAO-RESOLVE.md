@@ -119,3 +119,52 @@ Cada entrega cria sessão nova (`formatSessionKey(..., generation)`). O único c
 - Logs `biblioteca-global-api`: `Gate vermelho; confirmando falha no workspace intocado`, `GateFailureClassifier ... model not allowed: alibaba/[object Object]`.
 - Código: `TaskWorker.ts` (buildProgrammerPrompt L1050, phaseVerify L706, runBaselineCheck L820), `BaselinePolicy.ts` (BASELINE_TEST_EXCLUDES), `GateScopePolicy.ts` (regra b de diretório), `GateFailureClassifier.ts` (resolveChain), `packages/api-client/src/http.ts` (assertSemProjetoId).
 - Correções já aplicadas em 2026-09-04: teste funcional removido + front enviando `projeto_id` (commit `8c4cfe9`); listagem de tarefas com slug (commit `120ed06`).
+
+## Decisões (2026-09-05, Alexandre)
+
+- **P1 #3 (detecção de baseline vermelho) — estratégia de correção: HÍBRIDA (opção c).**
+  - Casos classificados com ALTA confiança (ex.: spec funcional obsoleta — decisão 04/09: nunca é gate automático): o motor cria e executa automaticamente a subtarefa de correção de baseline.
+  - Casos AMBÍGUOS (dúvida entre "teste certo, código errado" vs. "teste obsoleto"): o motor NÃO corrige sozinho — bloqueia e escala para o Alexandre decidir.
+- **Notificação:** toda ocorrência de `baseline_red`/`environment` deve ser comunicada ao Alexandre em DOIS canais:
+  1. **Chat da tarefa** (tela Acompanhar Tarefa) — diagnóstico estruturado: fingerprint da falha, evidência (teste falha sem as alterações do agente, via stash), classificação e ação tomada (correção automática criada OU escala para decisão humana).
+  2. **Notificação proativa** — mensagem ativa ao Alexandre quando houver escala de caso ambíguo (ele não deve precisar vigiar as telas para descobrir). Canal/meio exato a definir na implementação do P1.
+
+### Atualização (2026-09-05 07:31, Alexandre)
+
+- **Notificação proativa: ADIADA.** Por enquanto basta bloquear a tarefa; o Alexandre acompanha pelo chat/tela. (Item 2 da decisão anterior fica postergado.)
+- **NOVA ARQUITETURA — branch de integração por tarefa (aprovada em conceito):**
+  1. No START da tarefa, o motor cria uma **pasta (worktree) e uma branch DA TAREFA** (ex.: `motor-v2/<tarefa_id>`), saindo da base.
+  2. As subtarefas são criadas **da branch da tarefa**, não da base.
+  3. Quando TODAS as subtarefas estiverem mergeadas na branch da tarefa e ela estiver verde (gate completo), o motor faz o merge para a base.
+  4. **Havendo qualquer conflito** (entre subtarefas ou no merge final com a base): a tarefa fica **bloqueada** pedindo resolução humana (Alexandre) e o **merge é cancelado** — nada parcial.
+  - Refinamentos propostos pelo agente (pendentes de confirmação): gate de integração na branch da tarefa após CADA merge de subtarefa; sem rebase automático no drift da base (conflito → bloqueio pela mesma regra).
+- **P1 autorizado para implementação** ("Vamos fazer o P1") com escopo: stash na confirmação de falha (baseline vs. alterações), carry-over de aprendizado entre entregas, correção de baseline híbrida (opção c) e a branch de integração por tarefa.
+
+### DESENHO FINAL — branch de integração por tarefa (confirmado 2026-09-05 07:35)
+
+Correção importante: a regra "conflito → bloqueia + Alexandre resolve + cancela merge" vale para o merge **tarefa → base** (drift externo), NÃO para subtarefa → tarefa.
+
+1. **START da tarefa:** motor cria worktree + branch da tarefa (`motor-v2/<tarefa_id>`) a partir da base.
+2. **Subtarefas:** branqueiam da branch da tarefa; gate roda no worktree da subtarefa.
+3. **Merge subtarefa → branch da tarefa:** após cada merge, **gate de integração na branch da tarefa** (pega quebra de integração na subtarefa culpada, não só no final).
+4. **Conflito subtarefa → tarefa:** resolve o **agente da subtarefa** (integra a branch da tarefa no próprio worktree, resolve o conflito, re-roda o gate). Só escala para humano se o agente falhar em resolver.
+5. **Merge tarefa → base:** somente quando TODAS as subtarefas estiverem mergeadas na branch da tarefa e o gate completo estiver verde.
+6. **Conflito tarefa → base:** **SEMPRE humano** — bloqueia a tarefa, cancela o merge (nada parcial), pede o Alexandre para resolver. Sem rebase automático.
+
+### P1 — IMPLEMENTADO (2026-09-05, branch `feature/motor-p1-baseline-integracao`)
+
+Itens 3 e 4 implementados + arquitetura de branch de integração por tarefa (desenho final
+acima). Detalhes completos: `docs/MOTOR-BRANCH-INTEGRACAO-POR-TAREFA.md`.
+
+- **Stash na confirmação de falha** (`BaselineConfirmation.ts`): falha sem as alterações do
+  agente → `baseline_red` (correção automática — híbrido opção c) ou `environment`
+  (bloqueio); passa sem as alterações → rejeição normal. Anti-loop: baseline vermelho
+  durante a própria correção → `correction_failed` + bloqueio humano.
+- **Carry-over de aprendizado** (`CarryOverPolicy.ts`): digest das falhas de gate (remove
+  ruído HTML, mantém asserções), histórico estruturado de entregas no prompt e relato do
+  agente da entrega anterior.
+- **Branch de integração por tarefa**: `motor-v2/<tarefa>/integracao`; subtarefas derivam
+  dela; gate de integração após cada merge; promoção para a base só no fim, com conflito →
+  bloqueio humano (merge cancelado, artefatos preservados).
+- Validação: typecheck limpo, build OK, **396 testes passando** (38 arquivos; 4 arquivos de
+  teste novos). P2 (itens 5 e 6) segue aberta.

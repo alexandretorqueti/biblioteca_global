@@ -318,7 +318,7 @@ export const subtarefasEntregas = mysqlTable("subtarefas_entregas", {
     .references(() => subtarefas.id, { onDelete: "cascade" }),
   deliverNumber: int("deliver_number").notNull(), // número da entrega (1, 2, 3...)
   model: varchar("model", { length: 100 }), // modelo usado nesta entrega
-  eventType: varchar("event_type", { length: 50 }).notNull(), // delivery_started, gate_rejected, return_for_rework, blocked, completed
+  eventType: varchar("event_type", { length: 50 }).notNull(), // delivery_started, gate_rejected, return_for_rework, blocked, completed, baseline_red, integration_conflict, integration_gate_failed
   reason: text("reason"), // motivo/erro (pode ser longo)
   createdAt: timestamp("created_at").notNull().defaultNow(),
 })
@@ -520,7 +520,7 @@ export const annotations = {
     subtarefa_id: { label: "Subtarefa" },
     deliver_number: { label: "Nº da Entrega" },
     model: { label: "Modelo", maxLength: 100 },
-    event_type: { label: "Tipo de Evento", helperText: "delivery_started | gate_rejected | return_for_rework | blocked | completed" },
+    event_type: { label: "Tipo de Evento", helperText: "delivery_started | gate_rejected | return_for_rework | blocked | completed | baseline_red | integration_conflict | integration_gate_failed" },
     reason: { label: "Motivo/Erro", type: "textarea", fullWidth: true },
     created_at: { label: "Registrado em" },
   },
