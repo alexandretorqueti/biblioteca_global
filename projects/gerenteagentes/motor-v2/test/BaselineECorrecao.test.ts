@@ -15,7 +15,7 @@ import { ResourceLeaseService } from '../src/resources/ResourceLeaseService.js'
 import { TaskCoordinator } from '../src/coordinator/TaskCoordinator.js'
 import { TaskWorker } from '../src/workers/TaskWorker.js'
 import type { SubtaskInfo, WorkerInput } from '../src/shared/types/execution.js'
-import { BASELINE_CORRECTION_TITLE, BASELINE_FINGERPRINT_PREFIX, withBaselineExcludes } from '../src/policies/BaselinePolicy.js'
+import { BASELINE_CORRECTION_TITLE, BASELINE_FINGERPRINT_PREFIX, isFunctionalSpec, withBaselineExcludes } from '../src/policies/BaselinePolicy.js'
 
 function workerWithRawDb(query: ReturnType<typeof vi.fn>): TaskWorker {
   const worker = new TaskWorker()
@@ -39,6 +39,14 @@ describe('exclusões do baseline', () => {
     expect(withBaselineExcludes('npm run test')).toBe('npm run test --exclude "**/*.functional.spec.ts"')
     expect(withBaselineExcludes('npx vitest run')).toBe('npx vitest run --exclude "**/*.functional.spec.ts"')
     expect(withBaselineExcludes('make test')).toBe('make test')
+  })
+
+  it('isFunctionalSpec identifica specs funcionais e preserva testes comuns (decisão 2026-09-04)', () => {
+    expect(isFunctionalSpec('apps/api/src/modules/crud/__tests__/crud.functional.spec.ts')).toBe(true)
+    expect(isFunctionalSpec('src/foo.functional.spec.js')).toBe(true)
+    expect(isFunctionalSpec('apps/api/src/modules/crud/__tests__/crud.service.spec.ts')).toBe(false)
+    expect(isFunctionalSpec('packages/x/src/y.test.ts')).toBe(false)
+    expect(isFunctionalSpec('src/functional.spec.helper.ts')).toBe(false)
   })
 })
 

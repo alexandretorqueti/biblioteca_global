@@ -174,6 +174,12 @@ describe("GateFailureClassifier — fail-open", () => {
 })
 
 describe("GateFailureClassifier — sessão do monitor", () => {
+  function dbComCadeiaMonitor(rows: Array<Record<string, unknown>>) {
+    return {
+      query: vi.fn(async () => ({ rows, affectedRows: 0, insertId: 0 })),
+    }
+  }
+
   it("cria a sessão com a chave do agente do monitor, não do agente da tarefa", async () => {
     const { GateFailureClassifier } = await import("../src/policies/GateFailureClassifier.js")
     const calls: Array<{ agentId: string; key: string }> = []
@@ -188,12 +194,17 @@ describe("GateFailureClassifier — sessão do monitor", () => {
         content: '{"verdict":"agent_can_solve","analysis":"causa no código da tarefa"}',
       })),
     }
-    const classifier = new GateFailureClassifier(driver as never, null)
+    const db = dbComCadeiaMonitor([
+      { provider: "openai", model: "gpt-5.6-sol" },
+      { provider: "alibaba", model: "qwen3.8-max" },
+    ])
+    const classifier = new GateFailureClassifier(driver as never, db as never)
 
     const result = await classifier.classify({
       taskId: 749, subtaskId: 767, subtaskTitle: "Sub", taskTitle: "Task",
-      agentId: "biblioteca-global", repoPath: "/repo", model: "ollama/qwen3.7-plus",
-      modelIndex: 0, occurrence: 1, errorMessage: "teste falhou", command: "npm run test",
+      agentId: "biblioteca-global", projectSlug: "biblioteca-global", repoPath: "/repo",
+      model: "ollama/qwen3.7-plus", modelIndex: 0, occurrence: 1,
+      errorMessage: "teste falhou", command: "npm run test",
     })
 
     expect(result.kind).toBe("verdict")
@@ -202,5 +213,99 @@ describe("GateFailureClassifier — sessão do monitor", () => {
     // e o gateway recusava: "key agent does not match agentId".
     expect(calls[0]?.agentId).toBe("programador-senior")
     expect(calls[0]?.key.startsWith("agent:programador-senior:monitor:")).toBe(true)
+  })
+
+  it("resolve a cadeia MONITOR de project_model_selection (provider/model, na ordem)", async () => {
+    const { GateFailureClassifier } = await import("../src/policies/GateFailureClassifier.js")
+    const modelosUsados: string[] = []
+    const driver = {
+      createSession: vi.fn(async (input: { model: string }) => {
+        modelosUsados.push(input.model)
+        return { key: "k", agentId: "a", sessionId: "sess-1" }
+      }),
+      sendMessage: vi.fn(async () => ({ runId: "run-1" })),
+      waitForRunCompletion: vi.fn(async () => ({
+        state: "final",
+        content: '{"verdict":"agent_can_solve","analysis":"ok"}',
+      })),
+    }
+    const db = dbComCadeiaMonitor([
+      { provider: "openai", model: "gpt-5.6-sol" },
+      { provider: "alibaba", model: "qwen3.8-max" },
+    ])
+    const classifier = new GateFailureClassifier(driver as never, db as never)
+
+    const result = await classifier.classify({
+      taskId: 1, subtaskId: 1, subtaskTitle: "Sub", taskTitle: "Task",
+      agentId: "biblioteca-global", projectSlug: "biblioteca-global", repoPath: "/repo",
+      model: "m", modelIndex: 0, occurrence: 1, errorMessage: "e", command: "npm run test",
+    })
+
+    expect(result.kind).toBe("verdict")
+    expect(modelosUsados[0]).toBe("openai/gpt-5.6-sol")
+    // Consulta usa a tabela da tela de seleção de modelos, não o legado projeto_model_chain
+    expect(String(db.query.mock.calls[0]?.[0])).toContain("project_model_selection")
+    expect(String(db.query.mock.calls[0]?.[0])).not.toContain("projeto_model_chain")
+    expect(db.query.mock.calls[0]?.[1]).toEqual(["biblioteca-global"])
+  })
+
+  it("sem modelos MONITOR cadastrados: indisponível, SEM cadeia padrão (decisão 2026-09-04)", async () => {
+    const { GateFailureClassifier } = await import("../src/policies/GateFailureClassifier.js")
+    const driver = {
+      createSession: vi.fn(),
+      sendMessage: vi.fn(),
+      waitForRunCompletion: vi.fn(),
+    }
+    const db = dbComCadeiaMonitor([])
+    const classifier = new GateFailureClassifier(driver as never, db as never)
+
+    const result = await classifier.classify({
+      taskId: 760, subtaskId: 796, subtaskTitle: "Sub", taskTitle: "Task",
+      agentId: "biblioteca-global", projectSlug: "biblioteca-global", repoPath: "/repo",
+      model: "m", modelIndex: 0, occurrence: 1, errorMessage: "e", command: "npm run test",
+    })
+
+    // Regressão 2026-09-04: antes caía no default openai/gpt-5.6-terra ou
+    // gerava "[object Object]" via LEFT JOIN legado; agora é fail-open explícito.
+    expect(result.kind).toBe("unavailable")
+    expect(driver.createSession).not.toHaveBeenCalled()
+  })
+
+  it("linhas com provider/model vazios são descartadas (regressão [object Object])", async () => {
+    const { GateFailureClassifier } = await import("../src/policies/GateFailureClassifier.js")
+    const driver = {
+      createSession: vi.fn(),
+      sendMessage: vi.fn(),
+      waitForRunCompletion: vi.fn(),
+    }
+    // Simula o LEFT JOIN legado que devolvia modelo NULL
+    const db = dbComCadeiaMonitor([
+      { provider: null, model: null },
+      { provider: "", model: "" },
+    ])
+    const classifier = new GateFailureClassifier(driver as never, db as never)
+
+    const result = await classifier.classify({
+      taskId: 1, subtaskId: 1, subtaskTitle: "Sub", taskTitle: "Task",
+      agentId: "x", projectSlug: "x", repoPath: "/repo",
+      model: "m", modelIndex: 0, occurrence: 1, errorMessage: "e", command: "npm run test",
+    })
+
+    expect(result.kind).toBe("unavailable")
+    expect(String(result.kind === "unavailable" ? result.error : "")).not.toContain("[object Object]")
+  })
+
+  it("sem projectSlug: indisponível", async () => {
+    const { GateFailureClassifier } = await import("../src/policies/GateFailureClassifier.js")
+    const driver = { createSession: vi.fn(), sendMessage: vi.fn(), waitForRunCompletion: vi.fn() }
+    const classifier = new GateFailureClassifier(driver as never, dbComCadeiaMonitor([]) as never)
+
+    const result = await classifier.classify({
+      taskId: 1, subtaskId: 1, subtaskTitle: "Sub", taskTitle: "Task",
+      agentId: "x", projectSlug: null, repoPath: "/repo",
+      model: "m", modelIndex: 0, occurrence: 1, errorMessage: "e", command: "npm run test",
+    })
+
+    expect(result.kind).toBe("unavailable")
   })
 })

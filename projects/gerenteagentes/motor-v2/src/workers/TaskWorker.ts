@@ -38,6 +38,7 @@ import {
   BASELINE_FINGERPRINT_PREFIX,
   baselineCorrectionScope,
   isBaselineCorrection,
+  isFunctionalSpec,
   withBaselineExcludes,
 } from "../policies/BaselinePolicy.js"
 import { hasPersistedPlan, persistPlan } from "../planning/PlanPersistence.js"
@@ -734,8 +735,12 @@ class TaskWorker {
 
     const correctionFingerprint = input.subtask?.correctionFingerprint
     const isBaselineFix = isBaselineCorrection(correctionFingerprint)
-    let command = input.testCommand
-    let scopeLabel = "suíte completa"
+    // Decisão 2026-09-04 (Alexandre): specs funcionais (*.functional.spec.ts)
+    // usam MySQL real + seed e não são gate automático — nem no baseline,
+    // nem no gate escopado, nem na correção de baseline. Ficam para
+    // humanos/CI via `npm run test` completo.
+    let command = withBaselineExcludes(input.testCommand)
+    let scopeLabel = "suíte completa (sem specs funcionais)"
 
     if (!isBaselineFix) {
       try {
@@ -746,18 +751,24 @@ class TaskWorker {
           return
         }
         if (decision.kind === "scoped") {
+          const gateFiles = decision.files.filter((file) => !isFunctionalSpec(file))
+          const excluded = decision.files.length - gateFiles.length
+          if (gateFiles.length === 0) {
+            this.log("info", `Gate escopado: apenas specs funcionais afetadas (${excluded}); testes pulados — gate automático não cobre testes de ambiente real`)
+            return
+          }
           if (input.testCommand.startsWith("npm run test")) {
-            const quoted = decision.files.map((file) => `"${file}"`).join(" ")
+            const quoted = gateFiles.map((file) => `"${file}"`).join(" ")
             command = input.testCommand + " -- " + quoted
-            scopeLabel = decision.reason
+            scopeLabel = decision.reason + (excluded > 0 ? ` (${excluded} spec funcional excluída do gate automático)` : "")
           } else {
-            this.log("warn", "Comando de teste não suporta filtro de arquivos; rodando suíte completa")
+            this.log("warn", "Comando de teste não suporta filtro de arquivos; rodando suíte completa (sem specs funcionais)")
           }
         } else {
           this.log("info", "Gate escopado: " + decision.reason)
         }
       } catch (error) {
-        this.log("warn", "Falha ao escopar o gate (" + (error instanceof Error ? error.message : String(error)) + "); rodando suíte completa")
+        this.log("warn", "Falha ao escopar o gate (" + (error instanceof Error ? error.message : String(error)) + "); rodando suíte completa (sem specs funcionais)")
       }
     }
 
@@ -1132,6 +1143,7 @@ class TaskWorker {
         acceptanceCriteria: subtask.acceptanceCriteria,
         taskTitle: input.task.title,
         agentId: input.task.agentId,
+        projectSlug: input.context.projectSlug,
         repoPath: input.repoPath,
         model,
         modelIndex,

@@ -10,6 +10,12 @@
  *
  * Se o classificador falhar (timeout/resposta ilegível), fail-open: fluxo
  * normal continua (o monitor nunca trava a execução).
+ *
+ * Cadeia de modelos (2026-09-04, Alexandre): vem da tabela
+ * `project_model_selection` (tipo MONITOR) — a MESMA tabela que a tela de
+ * seleção de modelos usa. Sem cadeia padrão/default: projeto sem modelos
+ * MONITOR cadastrados → classificador indisponível (fail-open). A tabela
+ * antiga `projeto_model_chain` é legado e NÃO deve mais ser consultada.
  */
 
 import type { ConsoleAgentRuntimeDriver } from "../runtime/ConsoleAgentRuntimeDriver.js"
@@ -46,6 +52,8 @@ export interface GateFailureInput {
   acceptanceCriteria?: string[]
   taskTitle: string
   agentId: string
+  /** Slug do projeto captado — chave da seleção de modelos MONITOR. */
+  projectSlug?: string | null
   repoPath: string
   /** Modelo dev que estava executando a subtarefa. */
   model: string
@@ -67,19 +75,14 @@ export type GateFailureOutcome =
 export interface GateFailureClassifierConfig {
   /** Agente da sessão fixa "Monitoramento Motor". */
   monitorAgentId: string
-  /** Modelo default do monitor (usado se não houver cadeia por projeto). */
-  monitorModel: string
   /** Chave da sessão fixa "Monitoramento Motor". */
   monitorSessionKey: string
   /** Timeout por tentativa de modelo (ms). */
   timeoutMs: number
-  /** Cadeia de modelos do monitor (fallback se não houver por projeto). */
-  monitorChain?: Array<{ model: string }>
 }
 
 const DEFAULT_CONFIG: GateFailureClassifierConfig = {
   monitorAgentId: "programador-senior",
-  monitorModel: "openai/gpt-5.6-terra",
   monitorSessionKey: "agent:programador-senior:monitor",
   timeoutMs: 240_000, // 4 minutos
 }
@@ -109,6 +112,11 @@ export class GateFailureClassifier {
   async classify(input: GateFailureInput): Promise<GateFailureOutcome> {
     let lastError = "cadeia de monitoramento vazia"
     const chain = await this.resolveChain(input)
+    if (chain.length === 0) {
+      const erro = `Sem modelos MONITOR configurados para o projeto ${input.projectSlug || "(sem projeto)"} — classificador indisponível (fail-open)`
+      logger.warn(erro)
+      return { kind: "unavailable", error: erro }
+    }
 
     for (let tierIndex = 0; tierIndex < chain.length; tierIndex += 1) {
       const model = String(chain[tierIndex] ?? "")
@@ -166,33 +174,41 @@ export class GateFailureClassifier {
   }
 
   private async resolveChain(input: GateFailureInput): Promise<string[]> {
-    // Tentar cadeia por projeto (se DB disponível)
-    if (this.db) {
-      try {
-        const result = await this.db.query(
-          `SELECT pmc.modelo
-           FROM projetos_captados pc
-           LEFT JOIN projeto_model_chain pmc
-             ON pmc.projeto_id = pc.id AND pmc.fase = 'monitor' AND pmc.ativo = 1
-           WHERE pc.slug = ?
-           ORDER BY pmc.posicao ASC`,
-          [input.agentId] // agentId é usado como projectSlug no contexto do monitor
-        )
-        // mysql2 retorna [rows, fields], Db retorna { rows }
-        const rows = Array.isArray(result) ? (result[0] as Record<string, unknown>[]) : (result.rows ?? [])
-        if (rows.length > 0) {
-          return rows.map((r) => String(r.modelo ?? r))
-        }
-      } catch (error) {
-        logger.warn("Falha ao consultar cadeia de monitor por projeto: " + (error instanceof Error ? error.message : String(error)))
-      }
+    const projectSlug = typeof input.projectSlug === "string" ? input.projectSlug.trim() : ""
+    if (!projectSlug) {
+      logger.warn("Classificador sem projectSlug; impossível resolver a cadeia MONITOR")
+      return []
     }
+    if (!this.db) return []
 
-    // Fallback: cadeia configurada ou modelo default
-    if (this.config.monitorChain && this.config.monitorChain.length > 0) {
-      return this.config.monitorChain.map((m) => m.model)
+    try {
+      // Fonte oficial: project_model_selection (mesma tabela da tela de
+      // seleção de modelos). Decisão 2026-09-04: SEM cadeia padrão — sem
+      // MONITOR cadastrado, o classificador fica indisponível (fail-open).
+      const result = await this.db.query(
+        `SELECT provider, model
+         FROM project_model_selection
+         WHERE project_slug = ? AND tipo = 'MONITOR' AND enabled = 1
+         ORDER BY ordem ASC`,
+        [projectSlug]
+      )
+      // mysql2 retorna [rows, fields], Db retorna { rows }
+      const rows = Array.isArray(result) ? (result[0] as Record<string, unknown>[]) : (result.rows ?? [])
+      const chain = rows
+        .map((row) => {
+          const provider = typeof row.provider === "string" ? row.provider.trim() : ""
+          const model = typeof row.model === "string" ? row.model.trim() : ""
+          return provider && model ? `${provider}/${model}` : ""
+        })
+        .filter((model) => model.length > 0)
+      if (chain.length === 0) {
+        logger.warn(`Nenhum modelo MONITOR habilitado para o projeto ${projectSlug} em project_model_selection`)
+      }
+      return chain
+    } catch (error) {
+      logger.warn("Falha ao consultar modelos MONITOR do projeto: " + (error instanceof Error ? error.message : String(error)))
+      return []
     }
-    return [this.config.monitorModel]
   }
 
   /**
