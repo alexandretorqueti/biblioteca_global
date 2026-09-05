@@ -1520,10 +1520,33 @@ export class TaskCoordinator {
     transition: TaskTransition,
     patch: Partial<import("../shared/types/infrastructure.js").SaveTaskData> = {},
   ): Promise<void> {
-    const status = transitionTask(task.status as Task["status"], transition)
+    let status: string
+    try {
+      status = transitionTask(task.status as Task["status"], transition)
+    } catch (error) {
+      // Transição inválida não deve matar o motor (unhandled rejection).
+      // Log + persistir em bloqueios para trilha de auditoria.
+      const reason = error instanceof Error ? error.message : String(error)
+      this.logger.error(`Transição de tarefa inválida (não fatal): ${task.status} → ${transition} — ${reason}`, {
+        taskId: task.id,
+        currentStatus: task.status,
+        requestedTransition: transition,
+      })
+      try {
+        const evidence = blockerEvidence("systemic_failure", `Transição inválida: ${task.status} → ${transition} — ${reason}`)
+        await this.db.query(
+          "INSERT INTO bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at) " +
+          "VALUES (?, NULL, ?, ?, ?, NOW())",
+          [task.id, evidence.kind, "motor-v2:" + evidence.fingerprint, evidence.excerpt],
+        )
+      } catch (persistError) {
+        this.logger.error("Falha ao persistir bloqueio de transição inválida: " + describeError(persistError), { taskId: task.id })
+      }
+      return
+    }
     await this.repository.saveTask({ ...task, ...patch, status, updatedAt: new Date().toISOString() })
     // Atualiza o objeto task em memória para manter consistência
-    task.status = status
+    task.status = status as Task["status"]
     if (patch.updatedAt) task.updatedAt = patch.updatedAt
   }
 
