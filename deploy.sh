@@ -8,8 +8,8 @@
 # exit ≠ 0 → tarefa `finalizada` (o trabalho validado não é desfeito).
 #
 # O que faz:
-#   1. Build das imagens api/web NO HOST bazzite (o código deste repo é
-#      visível lá via /run/media/alexandre/12T/codigofonte; no sandbox não há Docker).
+#   1. Build das imagens api/web no ServerIA (o Docker roda no host, não no
+#      container do agente).
 #   2. Recria somente biblioteca-global-{api,web} pelo Docker Compose, sempre
 #      com --no-deps. O MySQL também atende ao motor e é intocável neste fluxo.
 #   3. Healthcheck (web /health + api respondendo). Se falhar, faz ROLLBACK
@@ -18,10 +18,10 @@
 set -euo pipefail
 
 # --- Config -----------------------------------------------------------------
-HOST_ADDR="bazzite.local"
+HOST_ADDR="${DEPLOY_HOST_ADDR:-192.168.1.8}"
 SSH_USER="alexandre"
 SSH_KEY="/root/.ssh/id_ed25519"
-REPO_HOST="/run/media/alexandre/12T/codigofonte/biblioteca-global"
+REPO_HOST="${DEPLOY_REPO_HOST:-/home/alexandre/codigofonte/biblioteca-global}"
 API="biblioteca-global-api"; API_HOST_PORT=3003; API_PORT=3001
 WEB="biblioteca-global-web"; WEB_HOST_PORT=5174; WEB_PORT=80
 COMPOSE_FILE="docker-compose.yml"
