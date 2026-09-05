@@ -271,4 +271,34 @@ export class GerenteAgentesController {
       projetoId: projeto.id,
     };
   }
+
+  @Get('prompts')
+  @Roles('admin', 'gerente')
+  listarPrompts() {
+    return this.service.listarPrompts();
+  }
+
+  @Post('prompts/:id/versions')
+  @Roles('admin', 'gerente')
+  salvarRascunhoPrompt(
+    @CurrentUser() usuario: UsuarioAutenticado,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { texto?: string; motivo?: string },
+  ) {
+    if (!body?.texto?.trim()) throw new BadRequestException('Texto do prompt é obrigatório');
+    return this.service.salvarRascunhoPrompt(id, body.texto, body.motivo, usuario.email ?? undefined);
+  }
+
+  @Post('prompts/:id/publish/:versionId')
+  @Roles('admin', 'gerente')
+  publicarPrompt(@Param('id', ParseIntPipe) id: number, @Param('versionId', ParseIntPipe) versionId: number) {
+    return this.service.publicarVersaoPrompt(id, versionId);
+  }
+
+  @Post('prompts/:id/preview')
+  @Roles('admin', 'gerente')
+  preverPrompt(@Param('id', ParseIntPipe) id: number, @Body() body: { texto?: string; values?: Record<string, unknown> }) {
+    if (!body?.texto) throw new BadRequestException('Texto do prompt é obrigatório');
+    return this.service.preverPrompt(id, body.texto, body.values ?? {});
+  }
 }

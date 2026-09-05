@@ -15,10 +15,12 @@ import { RESOURCE_KEYS } from "../shared/types/resources.js"
 import { WorkerLauncher } from "../workers/WorkerLauncher.js"
 import { type ModelPhase, type ModelSelection } from "../policies/ModelTierPolicy.js"
 import { GitWorkspaceManager } from "../workspaces/GitWorkspaceManager.js"
+import { DependencyInstaller, resolveInstallTimeoutMs } from "../workspaces/DependencyInstaller.js"
 import { ResourceWaitManager } from "../resources/ResourceWaitManager.js"
 import { executionEventBus, type ExecutionEventBus } from "../events/ExecutionEventBus.js"
 import { correctionOnlyChangesTests } from "../policies/CorrectionDiffPolicy.js"
-import { isBaselineCorrection } from "../policies/BaselinePolicy.js"
+import { isBaselineCorrection, withBaselineExcludes } from "../policies/BaselinePolicy.js"
+import { digestGateFailure } from "../policies/CarryOverPolicy.js"
 import { blockerEvidence } from "../policies/BlockerPolicy.js"
 import { transitionTask, type TaskTransition } from "../policies/TaskStateMachine.js"
 import { persistTaskClarificationAnswer, fetchPendingTaskClarification, fetchAnsweredTaskClarifications } from "../planning/ClarificationStore.js"
@@ -26,6 +28,7 @@ import { createLogger, describeError } from "../shared/logger.js"
 import { ConsoleAgentRuntimeDriver } from "../runtime/ConsoleAgentRuntimeDriver.js"
 import { execSync } from "node:child_process"
 import { existsSync } from "node:fs"
+import { join } from "node:path"
 import { SecretProfileManager, resolveGitTopLevel } from "../workspaces/SecretProfileManager.js"
 import { validateTaskCompletion, formatPromotionValidationReport } from "../policies/PromotionValidationPolicy.js"
 import { validateProjectId, formatProjectIdValidationReport } from "../policies/ProjectIdValidationPolicy.js"
@@ -41,6 +44,12 @@ interface ActiveWorker {
   taskTipo?: Task["tipo"]
   subtaskId?: number
   workspace?: { path: string; branch: string; baseCommit: string }
+  /** P1 (2026-09-05): worktree/branch de integração da TAREFA (subtarefas mergeiam aqui). */
+  taskWorkspace?: { path: string; projectPath: string; branch: string; baseCommit: string }
+  /** Branch raiz do projeto (ex.: base-desenvolvimento) — destino da promoção final. */
+  rootBaseBranch?: string
+  buildCommand?: string
+  testCommand?: string
   repoPath?: string
   projectSlug?: string
   baseBranch?: string
@@ -105,7 +114,15 @@ interface DeliveryHistoryEntry {
   id: number
   deliverNumber: number
   model: string | null
-  eventType: "delivery_started" | "gate_rejected" | "return_for_rework" | "blocked" | "completed"
+  eventType:
+    | "delivery_started"
+    | "gate_rejected"
+    | "return_for_rework"
+    | "blocked"
+    | "completed"
+    | "baseline_red"
+    | "integration_conflict"
+    | "integration_gate_failed"
   reason: string | null
   createdAt: string
 }
@@ -252,7 +269,7 @@ export class TaskCoordinator {
       "WHERE s.status = 'pending' AND t.status IN ('ready', 'planned') " +
       "AND NOT EXISTS (" +
       "SELECT 1 FROM subtarefas anterior " +
-      "WHERE anterior.tarefa_id = s.tarefa_id AND anterior.seq < s.seq AND anterior.status != 'verified' " +
+      "WHERE anterior.tarefa_id = s.tarefa_id AND anterior.seq < s.seq AND anterior.status NOT IN ('verified', 'superseded') " +
       "AND anterior.id != COALESCE(s.correction_for_subtask_id, -1)" +
       ") " +
       "ORDER BY s.seq ASC LIMIT 25"
@@ -384,21 +401,41 @@ export class TaskCoordinator {
         await this.saveTaskTransition(parentTask, "start_execution")
       }
       let workspace: Awaited<ReturnType<GitWorkspaceManager["prepare"]>> | undefined
+      let integrationBranch: string | undefined
       const baseBranch = subtask.branchTrabalho || "base-desenvolvimento"
       if (!isLightweightTask(subtask.taskTipo)) {
         const activeWorkerForBranch = this.activeWorkers.get(executionId)
         if (activeWorkerForBranch) activeWorkerForBranch.baseBranch = baseBranch
         const agentWorkspacePath = await this.getAgentWorkspacePath(subtask.agentId)
-        workspace = await this.workspaceManager.prepare({
-        repoPath: subtask.repoPath,
-        agentId: subtask.agentId,
-        baseBranch,
-        taskId: subtask.taskExternalId,
-        subtaskId: String(subtask.id),
-        attempt: Math.max(1, subtask.deliverCount + 1),
-        ...(agentWorkspacePath ? { agentWorkspacePath } : {}),
+        // P1 (Alexandre 2026-09-05): branch de integração por TAREFA. A tarefa
+        // ganha worktree + branch próprios (criados da branch raiz do projeto);
+        // as subtarefas são derivadas da branch da tarefa (não da base) e
+        // mergeiam nela. A base só recebe o merge no fim, com todas as
+        // subtarefas integradas e o gate de integração verde.
+        const taskWorkspace = await this.workspaceManager.ensureTaskIntegration({
+          repoPath: subtask.repoPath,
+          agentId: subtask.agentId,
+          rootBaseBranch: baseBranch,
+          taskId: subtask.taskExternalId,
+          ...(agentWorkspacePath ? { agentWorkspacePath } : {}),
         })
         const activeWorker = this.activeWorkers.get(executionId)
+        if (activeWorker) {
+          activeWorker.taskWorkspace = taskWorkspace
+          activeWorker.rootBaseBranch = baseBranch
+          activeWorker.buildCommand = subtask.buildCommand ?? undefined
+          activeWorker.testCommand = subtask.unitTestCommand ?? undefined
+        }
+        integrationBranch = taskWorkspace.branch
+        workspace = await this.workspaceManager.prepare({
+          repoPath: subtask.repoPath,
+          agentId: subtask.agentId,
+          baseBranch: taskWorkspace.branch,
+          taskId: subtask.taskExternalId,
+          subtaskId: String(subtask.id),
+          attempt: Math.max(1, subtask.deliverCount + 1),
+          ...(agentWorkspacePath ? { agentWorkspacePath } : {}),
+        })
         if (activeWorker) activeWorker.workspace = workspace
         await this.db.query(
         "UPDATE subtarefas SET workspace_path = ?, workspace_branch = ?, workspace_base_commit = ?, workspace_status = 'active', workspace_created_at = NOW(), workspace_cleaned_at = NULL WHERE id = ?",
@@ -434,7 +471,7 @@ export class TaskCoordinator {
         buildCommand: subtask.buildCommand ?? "", testCommand: subtask.unitTestCommand ?? "",
         subtask: subtaskInfo,
         ...(workspace ? { workBranch: workspace.branch } : {}),
-        ...(workspace ? { baseBranch } : {}),
+        ...(workspace ? { baseBranch: integrationBranch ?? baseBranch } : {}),
         modelPhase: "development",
         modelChain: await this.getProjectModelChain(subtask.projectSlug, "development"),
       })
@@ -524,14 +561,35 @@ export class TaskCoordinator {
         try {
           let mergeCommit: string | undefined
           if (result?.gitCommitSha) {
-            if (!worker.repoPath || !worker.baseBranch) {
-              throw new Error("entrega aprovada sem repositório ou branch-base para integração")
+            if (!worker.repoPath || !worker.taskWorkspace) {
+              throw new Error("entrega aprovada sem repositório ou worktree de integração da tarefa")
             }
-            const integration = await this.workspaceManager.integrate({
+            // P1 (Alexandre 2026-09-05): a subtarefa mergeia na BRANCH DA
+            // TAREFA, nunca direto na base. Conflito aqui é resolvido pelo
+            // agente da subtarefa (re-enfileira); só escala para humano se
+            // o conflito se repetir.
+            const integration = await this.workspaceManager.integrateIntoTaskBranch({
               repoPath: worker.repoPath,
-              baseBranch: worker.baseBranch,
+              taskWorktreePath: worker.taskWorkspace.path,
               workBranch: worker.workspace.branch,
               expectedCommit: result.gitCommitSha,
+            })
+            if (integration.kind === "conflict") {
+              await this.handleSubtaskIntegrationConflict(worker, executionId, integration.conflictFiles, integration.reason)
+              return
+            }
+            // Gate de integração (decisão Alexandre 2026-09-05): build +
+            // testes na branch da tarefa após CADA merge de subtarefa.
+            // Vermelho → reverte o merge e devolve a subtarefa para rework.
+            const gate = await this.runTaskIntegrationGate(worker)
+            if (!gate.ok) {
+              await this.handleTaskIntegrationGateFailure(worker, executionId, integration.preMergeHead, gate.output)
+              return
+            }
+            // Publica a branch da tarefa a cada merge (durabilidade do estado
+            // integrado + visibilidade remota do progresso da tarefa).
+            await this.workspaceManager.publishBranch(worker.repoPath, worker.taskWorkspace.branch).catch((publishError: unknown) => {
+              this.logger.warn("Falha ao publicar branch da tarefa: " + describeError(publishError), { taskId: worker.taskId })
             })
             mergeCommit = integration.mergeCommit
           }
@@ -544,7 +602,7 @@ export class TaskCoordinator {
               type: "developer_branch_integrated",
               executionPhase: "publish",
               level: "info",
-              message: `Branch ${worker.workspace.branch} integrada em ${worker.baseBranch} (${mergeCommit})`,
+              message: `Branch ${worker.workspace.branch} integrada na branch da tarefa ${worker.taskWorkspace?.branch} (${mergeCommit}) — gate de integração verde`,
             })
           }
         } catch (error) {
@@ -584,7 +642,7 @@ export class TaskCoordinator {
       // Verificar se todas subtarefas da tarefa estao completas
       if (worker.subtaskId && isLightweightTask(worker.taskTipo)) {
         const { rows } = await this.db.query(
-          "SELECT COUNT(*) as pending FROM subtarefas WHERE tarefa_id = (SELECT tarefa_id FROM subtarefas WHERE id = ?) AND status != 'verified'",
+          "SELECT COUNT(*) as pending FROM subtarefas WHERE tarefa_id = (SELECT tarefa_id FROM subtarefas WHERE id = ?) AND status NOT IN ('verified', 'superseded')",
           [worker.subtaskId],
         )
         const task = await this.repository.getTask(worker.taskId)
@@ -594,7 +652,7 @@ export class TaskCoordinator {
         }
       } else if (worker.subtaskId) {
         const { rows } = await this.db.query(
-          "SELECT COUNT(*) as pending FROM subtarefas WHERE tarefa_id = (SELECT tarefa_id FROM subtarefas WHERE id = ?) AND status != 'verified'",
+          "SELECT COUNT(*) as pending FROM subtarefas WHERE tarefa_id = (SELECT tarefa_id FROM subtarefas WHERE id = ?) AND status NOT IN ('verified', 'superseded')",
           [worker.subtaskId]
         )
         const pending = (rows[0] as Record<string, unknown>)?.pending as number
@@ -603,7 +661,7 @@ export class TaskCoordinator {
           // (evidência de código) antes de a tarefa pai ser marcada como completed.
           // Regra: promoção manual sem código não fecha tarefa.
           const { rows: subtasksForValidation } = await this.db.query(
-            "SELECT id, seq, workspace_commit_sha, status FROM subtarefas WHERE tarefa_id = (SELECT tarefa_id FROM subtarefas WHERE id = ?)",
+            "SELECT id, seq, workspace_commit_sha, status FROM subtarefas WHERE tarefa_id = (SELECT tarefa_id FROM subtarefas WHERE id = ?) AND status != 'superseded'",
             [worker.subtaskId]
           )
           const promotionValidation = validateTaskCompletion(
@@ -641,10 +699,48 @@ export class TaskCoordinator {
             return
           }
 
-          this.logger.info("Todas subtarefas completas! Executando deploy...", { taskId: worker.taskId, executionId })
+          this.logger.info("Todas subtarefas completas!", { taskId: worker.taskId, executionId })
           const task = await this.repository.getTask(worker.taskId)
           if (task) {
-            // Primeiro marca como completed (trabalho integrado)
+            // P1 (Alexandre 2026-09-05): promoção da branch da tarefa para a
+            // base. Conflito com a base (drift externo) é SEMPRE resolução
+            // humana: merge cancelado (nada parcial aplicado), tarefa
+            // bloqueada, worktree/branch da tarefa preservados para o
+            // Alexandre resolver. Sem rebase automático.
+            if (worker.taskWorkspace && worker.repoPath && worker.rootBaseBranch) {
+              const promotion = await this.workspaceManager.promoteTaskBranch({
+                repoPath: worker.repoPath,
+                baseBranch: worker.rootBaseBranch,
+                taskBranch: worker.taskWorkspace.branch,
+              })
+              if (promotion.kind === "conflict") {
+                const files = promotion.conflictFiles.length > 0 ? promotion.conflictFiles.join(", ") : "(arquivos não listados)"
+                const blockReason = "Conflito no merge da branch da tarefa para a base (" + worker.rootBaseBranch + ") — resolução humana necessária. Merge cancelado; nada parcial aplicado. Arquivos em conflito: " + files + ". Branch preservada: " + worker.taskWorkspace.branch
+                this.logger.error(blockReason, { taskId: worker.taskId, executionId })
+                try {
+                  const evidence = blockerEvidence("blocked_environment", blockReason)
+                  await this.db.query(
+                    "INSERT INTO bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at) " +
+                    "SELECT tarefa_id, NULL, ?, ?, ?, NOW() FROM subtarefas WHERE id = ?",
+                    [evidence.kind, "motor-v2:" + evidence.fingerprint, evidence.excerpt, worker.subtaskId],
+                  )
+                } catch (persistError) {
+                  this.logger.error("Falha ao persistir bloqueio de promoção: " + describeError(persistError), { taskId: worker.taskId, executionId })
+                }
+                await this.saveTaskTransition(task, "fail", { errorMessage: blockReason.substring(0, 500) })
+                this.publishActivity(worker, { type: "failed", level: "error", message: "Conflito no merge da tarefa para a base — resolução humana necessária. Arquivos: " + files })
+                // NÃO purga: worktree e branch da tarefa ficam preservados para resolução manual.
+                await this.finishWorker(executionId, worker)
+                return
+              }
+              this.publishActivity(worker, {
+                type: "developer_branch_integrated",
+                executionPhase: "publish",
+                level: "info",
+                message: `Branch da tarefa ${worker.taskWorkspace.branch} promovida para ${worker.rootBaseBranch} (${promotion.mergeCommit})`,
+              })
+            }
+            // Trabalho promovido para a base: marca como completed
             await this.saveTaskTransition(task, "execution_completed")
             
             // Depois tenta deploy
@@ -709,7 +805,11 @@ export class TaskCoordinator {
         const task = await this.repository.getTask(worker.taskId)
         if (task) {
           await this.saveTaskTransition(task, transient ? "recover" : "fail", { errorMessage: failure.substring(0, 500) })
-          if (!transient && worker.repoPath) this.purgeTaskArtifactsFireAndForget(worker.taskId, worker.repoPath)
+          // P1: com branch de integração por tarefa, a falha definitiva
+          // PRESERVA worktrees/branches da tarefa (evidência para investigação
+          // humana; a branch da tarefa também está publicada no origin). A
+          // purga só acontece na conclusão com sucesso.
+          if (!transient && worker.repoPath && !worker.taskWorkspace) this.purgeTaskArtifactsFireAndForget(worker.taskId, worker.repoPath)
         }
       }
     } finally {
@@ -1415,6 +1515,197 @@ export class TaskCoordinator {
       phase: worker.phase,
       timestamp: new Date(),
     })
+  }
+
+  /**
+   * P1: conflito no merge subtarefa → branch da tarefa. Decisão Alexandre
+   * 2026-09-05: quem resolve é o AGENTE da subtarefa — ela volta a pending e
+   * a próxima tentativa deriva do tip da branch da tarefa (que já contém as
+   * subtarefas anteriores), permitindo ver e resolver o conflito. O merge é
+   * cancelado (nada parcial). Só escala para humano se o conflito se repetir.
+   */
+  private async handleSubtaskIntegrationConflict(
+    worker: ActiveWorker,
+    executionId: string,
+    conflictFiles: string[],
+    reason: string,
+  ): Promise<void> {
+    const subtaskId = worker.subtaskId!
+    const files = conflictFiles.length > 0 ? conflictFiles.join(", ") : "(arquivos não listados)"
+    const note = ("Conflito ao integrar na branch da tarefa " + (worker.taskWorkspace?.branch ?? "?") + ": " + files + ". " + reason).substring(0, 500)
+    const { rows } = await this.db.query(
+      "SELECT COUNT(*) AS total FROM subtarefas_entregas WHERE subtarefa_id = ? AND event_type = 'integration_conflict'",
+      [subtaskId],
+    )
+    const previousConflicts = Number((rows[0] as Record<string, unknown>)?.total ?? 0)
+    await this.recordSubtaskDeliveryEvent(subtaskId, "integration_conflict", note)
+
+    if (previousConflicts >= 1) {
+      const blockReason = "Conflito de integração repetido na branch da tarefa — intervenção humana necessária. " + note
+      this.logger.error(blockReason, { taskId: worker.taskId, subtaskId, executionId })
+      try {
+        const evidence = blockerEvidence("systemic_failure", blockReason)
+        await this.db.query(
+          "INSERT INTO bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at) " +
+          "SELECT tarefa_id, ?, ?, ?, ?, NOW() FROM subtarefas WHERE id = ?",
+          [subtaskId, evidence.kind, "motor-v2:" + evidence.fingerprint, evidence.excerpt, subtaskId],
+        )
+      } catch (persistError) {
+        this.logger.error("Falha ao persistir bloqueio de conflito repetido: " + describeError(persistError), { taskId: worker.taskId, subtaskId })
+      }
+      await this.db.query(
+        "UPDATE subtarefas SET status = 'blocked', workspace_status = 'integration_failed', resultado = ?, updated_at = NOW() WHERE id = ?",
+        [blockReason.substring(0, 500), subtaskId],
+      )
+      const task = await this.repository.getTask(worker.taskId)
+      if (task) await this.saveTaskTransition(task, "fail", { errorMessage: blockReason.substring(0, 500) })
+      this.publishActivity(worker, { type: "failed", level: "error", message: blockReason })
+      await this.finishWorker(executionId, worker)
+      return
+    }
+
+    await this.db.query(
+      "UPDATE subtarefas SET status = 'pending', workspace_status = 'integration_conflict', resultado = ?, finalizada_em = NULL, updated_at = NOW() WHERE id = ?",
+      [note, subtaskId],
+    )
+    this.logger.warn("Conflito na integração com a branch da tarefa; subtarefa re-enfileirada para o agente resolver: " + note, { taskId: worker.taskId, subtaskId, executionId })
+    this.publishActivity(worker, {
+      type: "progress",
+      executionPhase: "publish",
+      level: "warn",
+      message: "Conflito ao integrar a subtarefa na branch da tarefa (" + files + "). Merge cancelado; a subtarefa volta para o agente resolver na próxima entrega.",
+    })
+    const task = await this.repository.getTask(worker.taskId)
+    if (task) await this.saveTaskTransition(task, "subtasks_pending")
+    await this.finishWorker(executionId, worker)
+  }
+
+  /**
+   * P1: gate de integração (build + testes) na branch da tarefa após cada
+   * merge de subtarefa (decisão Alexandre 2026-09-05). Garante que a branch
+   * da tarefa só avança verde — a base nunca recebe combinação quebrada de
+   * subtarefas. Specs funcionais ficam fora do gate automático (decisão
+   * 2026-09-04), igual aos gates de subtarefa.
+   */
+  private async runTaskIntegrationGate(worker: ActiveWorker): Promise<{ ok: true } | { ok: false; output: string }> {
+    const taskWorkspace = worker.taskWorkspace
+    if (!taskWorkspace) return { ok: true }
+    const buildCommand = worker.buildCommand?.trim()
+    const testCommand = worker.testCommand?.trim()
+    if (!buildCommand && !testCommand) return { ok: true }
+
+    // Dependências: instala quando ainda não existem no worktree da tarefa ou
+    // quando o merge tocou manifesto/lockfile de dependências.
+    try {
+      const needsInstall = !existsSync(join(taskWorkspace.projectPath, "node_modules")) || this.mergeTouchedDependencyManifests(taskWorkspace.path)
+      if (needsInstall) {
+        const installer = new DependencyInstaller()
+        const outcome = await installer.install({ worktreePath: taskWorkspace.projectPath, timeoutMs: resolveInstallTimeoutMs() })
+        if (!outcome.ok) return { ok: false, output: "npm ci falhou no worktree da tarefa: " + (outcome.reason ?? "motivo não informado") }
+      }
+    } catch (error) {
+      return { ok: false, output: "Falha ao preparar dependências no worktree da tarefa: " + describeError(error) }
+    }
+
+    const commands = [buildCommand, testCommand ? withBaselineExcludes(testCommand) : undefined].filter((command): command is string => Boolean(command))
+    for (const command of commands) {
+      this.logger.info("Gate de integração na branch da tarefa: " + command, { taskId: worker.taskId, branch: taskWorkspace.branch })
+      try {
+        execSync(command, { cwd: taskWorkspace.projectPath, timeout: 900_000, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] })
+      } catch (error) {
+        const details = error as { stdout?: string; stderr?: string; message?: string }
+        const output = [details.stdout, details.stderr].filter(Boolean).join("\n").slice(-6000) || details.message || "sem saída diagnóstica"
+        return { ok: false, output: "Comando falhou na branch da tarefa (" + command + "):\n" + output }
+      }
+    }
+    return { ok: true }
+  }
+
+  /** True quando o último commit da branch da tarefa tocou package.json/package-lock.json. */
+  private mergeTouchedDependencyManifests(taskWorktreePath: string): boolean {
+    try {
+      const out = execSync("git diff --name-only HEAD~1 HEAD", { cwd: taskWorktreePath, encoding: "utf-8", timeout: 30_000, stdio: ["pipe", "pipe", "pipe"] })
+      return out.split("\n").some((line) => /(^|\/)package(-lock)?\.json$/.test(line.trim()))
+    } catch {
+      return true // Na dúvida, reinstala.
+    }
+  }
+
+  /**
+   * P1: gate de integração vermelho → reverte o merge na branch da tarefa e
+   * devolve a subtarefa para rework com o diagnóstico (carry-over leva o
+   * motivo na próxima entrega). Segunda falha de integração da mesma
+   * subtarefa → bloqueio para intervenção humana (anti-loop).
+   */
+  private async handleTaskIntegrationGateFailure(
+    worker: ActiveWorker,
+    executionId: string,
+    preMergeHead: string,
+    output: string,
+  ): Promise<void> {
+    const subtaskId = worker.subtaskId!
+    await this.workspaceManager.revertTaskBranchMerge(worker.taskWorkspace!.path, preMergeHead)
+    const digest = digestGateFailure(output, { maxLines: 30, maxChars: 1800 })
+    await this.recordSubtaskDeliveryEvent(subtaskId, "integration_gate_failed", digest)
+    const { rows } = await this.db.query(
+      "SELECT COUNT(*) AS total FROM subtarefas_entregas WHERE subtarefa_id = ? AND event_type = 'integration_gate_failed'",
+      [subtaskId],
+    )
+    const failures = Number((rows[0] as Record<string, unknown>)?.total ?? 0)
+    const note = ("Gate de integração vermelho na branch da tarefa; merge revertido. " + digest).substring(0, 500)
+
+    if (failures >= 2) {
+      const blockReason = "Gate de integração falhou repetidamente após merge desta subtarefa — intervenção humana necessária. " + note
+      this.logger.error(blockReason, { taskId: worker.taskId, subtaskId, executionId })
+      try {
+        const evidence = blockerEvidence("systemic_failure", blockReason)
+        await this.db.query(
+          "INSERT INTO bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at) " +
+          "SELECT tarefa_id, ?, ?, ?, ?, NOW() FROM subtarefas WHERE id = ?",
+          [subtaskId, evidence.kind, "motor-v2:" + evidence.fingerprint, evidence.excerpt, subtaskId],
+        )
+      } catch (persistError) {
+        this.logger.error("Falha ao persistir bloqueio de gate de integração repetido: " + describeError(persistError), { taskId: worker.taskId, subtaskId })
+      }
+      await this.db.query(
+        "UPDATE subtarefas SET status = 'blocked', workspace_status = 'integration_failed', resultado = ?, updated_at = NOW() WHERE id = ?",
+        [blockReason.substring(0, 500), subtaskId],
+      )
+      const task = await this.repository.getTask(worker.taskId)
+      if (task) await this.saveTaskTransition(task, "fail", { errorMessage: blockReason.substring(0, 500) })
+      this.publishActivity(worker, { type: "failed", level: "error", message: blockReason })
+      await this.finishWorker(executionId, worker)
+      return
+    }
+
+    await this.db.query(
+      "UPDATE subtarefas SET status = 'pending', workspace_status = 'integration_reverted', resultado = ?, finalizada_em = NULL, updated_at = NOW() WHERE id = ?",
+      [note, subtaskId],
+    )
+    this.logger.warn("Gate de integração vermelho; merge revertido e subtarefa re-enfileirada: " + note.substring(0, 200), { taskId: worker.taskId, subtaskId, executionId })
+    this.publishActivity(worker, {
+      type: "progress",
+      executionPhase: "publish",
+      level: "warn",
+      message: "Gate de integração vermelho na branch da tarefa: merge revertido; a subtarefa volta para rework com o diagnóstico.",
+    })
+    const task = await this.repository.getTask(worker.taskId)
+    if (task) await this.saveTaskTransition(task, "subtasks_pending")
+    await this.finishWorker(executionId, worker)
+  }
+
+  /** Registra evento no histórico de entregas da subtarefa (lado coordenador). */
+  private async recordSubtaskDeliveryEvent(subtaskId: number, eventType: string, reason: string | null): Promise<void> {
+    try {
+      const { rows } = await this.db.query("SELECT deliver_count FROM subtarefas WHERE id = ?", [subtaskId])
+      const deliverNumber = Number((rows[0] as Record<string, unknown>)?.deliver_count ?? 0)
+      await this.db.query(
+        "INSERT INTO subtarefas_entregas (subtarefa_id, deliver_number, model, event_type, reason, created_at) VALUES (?, ?, NULL, ?, ?, NOW())",
+        [subtaskId, deliverNumber, eventType, reason ? reason.substring(0, 2000) : null],
+      )
+    } catch (error) {
+      this.logger.warn("Falha ao registrar evento de entrega (coordenador): " + describeError(error), { subtaskId })
+    }
   }
 
   private async promoteOriginalAfterTestOnlyCorrection(subtaskId: number, workspace: { path: string; branch: string; baseCommit: string }, commitSha?: string): Promise<void> {

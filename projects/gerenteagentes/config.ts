@@ -60,6 +60,13 @@ export const config: GeradorSistemaConfig = {
             componentId: "gerenteagentes-isa-chat",
           },
         },
+        {
+          id: "prompts-view",
+          label: "Prompts",
+          path: "prompts",
+          icon: "edit_note",
+          screen: { kind: "custom", componentId: "gerenteagentes-prompts" },
+        },
       ],
     },
 

@@ -85,6 +85,7 @@ describe('lacuna 2 — falha de integração persiste bloqueio', () => {
     }
     const failingWorkspace = {
       integrate: vi.fn().mockRejectedValue(new Error('conflito no merge')),
+      integrateIntoTaskBranch: vi.fn().mockRejectedValue(new Error('conflito no merge')),
       cleanup: vi.fn().mockResolvedValue(undefined),
       prepare: vi.fn(),
       changedPaths: vi.fn().mockResolvedValue([]),
@@ -95,12 +96,16 @@ describe('lacuna 2 — falha de integração persiste bloqueio', () => {
         taskId: string; executionId: string; resourceKey: null; fencingToken: number
         startedAt: Date; phase: 'execute'; subtaskId: number; repoPath: string
         baseBranch: string; workspace: { path: string; branch: string; baseCommit: string }
+        taskWorkspace: { path: string; projectPath: string; branch: string; baseCommit: string }
+        rootBaseBranch: string; buildCommand: string; testCommand: string
       }>
     }
     internal.activeWorkers.set('exec-int', {
       taskId: 'task-int', executionId: 'exec-int', resourceKey: null, fencingToken: 0,
       startedAt: new Date(), phase: 'execute', subtaskId: 55, repoPath: '/repo',
       baseBranch: 'main', workspace: { path: '/tmp/ws', branch: 'motor-v2/x/55/a1', baseCommit: 'abc1234' },
+      taskWorkspace: { path: '/tmp/ws-task', projectPath: '/tmp/ws-task', branch: 'motor-v2/task-int/integracao', baseCommit: 'abc1234' },
+      rootBaseBranch: 'main', buildCommand: 'npm run build', testCommand: 'npm run test',
     })
 
     await coordinator.onTaskCompleted('exec-int', { gitCommitSha: 'deadbeef77' } as never)

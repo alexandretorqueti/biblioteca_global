@@ -31,4 +31,10 @@ describe("registry de telas custom", () => {
     expect(screen.getByRole("heading", { name: "Formulário dinâmico" })).toBeInTheDocument()
     expect(screen.getByText("Como utilizar")).toBeInTheDocument()
   })
+
+  it("registra a tela administrativa de prompts do GerenteAgentes", () => {
+    clearCustomScreens()
+    registrarTelasCustom()
+    expect(getCustomScreen("gerenteagentes-prompts")).toBeDefined()
+  })
 })

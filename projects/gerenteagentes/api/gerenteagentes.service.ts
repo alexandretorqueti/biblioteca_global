@@ -1,6 +1,6 @@
 import { Injectable, Inject, Logger, NotFoundException, BadRequestException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { eq, desc } from 'drizzle-orm';
+import { eq, desc, and } from 'drizzle-orm';
 import { request as httpRequest, type RequestOptions } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { randomUUID } from 'node:crypto';
@@ -20,7 +20,12 @@ import {
   projetosCaptados,
   geracoesProjeto,
   contatos,
+  promptsAgentes,
+  promptsMascaras,
+  promptsVersoes,
 } from '../schema';
+import { AGENT_PROMPT_CATALOG } from '../motor-v2/src/prompts/prompt-catalog';
+import { markersIn, renderPromptTemplate, validatePromptTemplate } from '../motor-v2/src/prompts/PromptTemplateEngine';
 import { ProvisionService } from '../../../apps/api/src/modules/provision/provision.service';
 import { TASK_STATUS_STARTABLE } from '../motor-v2/src/shared/task-statuses';
 import { RealtimeService } from '../../../apps/api/src/modules/realtime/realtime.service';
@@ -248,6 +253,101 @@ export class GerenteAgentesService {
    */
   private async dbDoMotor() {
     return await this.factory.obter({ id: 640 });
+  }
+
+  private catalogEntry(chave: string) {
+    const entry = AGENT_PROMPT_CATALOG.find((item) => item.key === chave);
+    if (!entry) throw new BadRequestException(`Prompt desconhecido: ${chave}`);
+    return entry;
+  }
+
+  /** Sincroniza metadados canônicos sem sobrescrever textos editados. */
+  private async sincronizarCatalogoPrompts() {
+    const db = await this.dbDoMotor();
+    for (const entry of AGENT_PROMPT_CATALOG) {
+      const existing = await db.select().from(promptsAgentes).where(eq(promptsAgentes.chave, entry.key)).limit(1);
+      if (existing.length === 0) {
+        const inserted = await db.insert(promptsAgentes).values({
+          chave: entry.key,
+          tipoAgente: entry.agentType,
+          situacao: entry.situation,
+          titulo: entry.key,
+          descricao: `Compositor embarcado: ${entry.source}`,
+          status: 'draft',
+        });
+        if (entry.prompt.trim()) {
+          await db.insert(promptsVersoes).values({
+            promptId: Number(inserted[0].insertId), versao: 1, texto: entry.prompt,
+            motivo: 'Versão inicial do catálogo embarcado', autor: 'sistema',
+            validacao: validatePromptTemplate(entry.prompt, entry.markers),
+          });
+        }
+      }
+      for (const marker of entry.markers) {
+        const found = await db.select().from(promptsMascaras).where(eq(promptsMascaras.nome, marker)).limit(1);
+        if (found.length === 0) {
+          await db.insert(promptsMascaras).values({
+            nome: marker,
+            descricao: `Valor dinâmico utilizado por ${entry.key}`,
+            origem: entry.source,
+            obrigatoria: false,
+          });
+        }
+      }
+    }
+  }
+
+  async listarPrompts() {
+    await this.sincronizarCatalogoPrompts();
+    const db = await this.dbDoMotor();
+    const prompts = await db.select().from(promptsAgentes).orderBy(promptsAgentes.tipoAgente, promptsAgentes.situacao);
+    const masks = await db.select().from(promptsMascaras).where(eq(promptsMascaras.ativa, true)).orderBy(promptsMascaras.nome);
+    const versions = await db.select().from(promptsVersoes).orderBy(desc(promptsVersoes.createdAt));
+    return {
+      prompts: prompts.map((prompt) => ({
+        ...prompt,
+        allowedMarkers: this.catalogEntry(prompt.chave).markers,
+        versions: versions.filter((version) => version.promptId === prompt.id),
+      })),
+      masks,
+    };
+  }
+
+  async salvarRascunhoPrompt(id: number, texto: string, motivo: string | undefined, autor: string | undefined) {
+    const db = await this.dbDoMotor();
+    const [prompt] = await db.select().from(promptsAgentes).where(eq(promptsAgentes.id, id)).limit(1);
+    if (!prompt) throw new NotFoundException('Prompt não encontrado');
+    const entry = this.catalogEntry(prompt.chave);
+    const validation = validatePromptTemplate(texto, entry.markers);
+    if (!validation.ok) throw new BadRequestException({ message: 'Máscaras inválidas', validation });
+    const previous = await db.select().from(promptsVersoes).where(eq(promptsVersoes.promptId, id)).orderBy(desc(promptsVersoes.versao)).limit(1);
+    const versao = (previous[0]?.versao ?? 0) + 1;
+    const result = await db.insert(promptsVersoes).values({ promptId: id, versao, texto, motivo, autor, validacao: validation });
+    await db.update(promptsAgentes).set({ status: prompt.versaoAtivaId ? 'active' : 'draft' }).where(eq(promptsAgentes.id, id));
+    return { id: Number(result[0].insertId), versao, validation };
+  }
+
+  async publicarVersaoPrompt(promptId: number, versionId: number) {
+    const db = await this.dbDoMotor();
+    const [version] = await db.select().from(promptsVersoes).where(and(eq(promptsVersoes.id, versionId), eq(promptsVersoes.promptId, promptId))).limit(1);
+    if (!version) throw new NotFoundException('Versão não encontrada para este prompt');
+    const [prompt] = await db.select().from(promptsAgentes).where(eq(promptsAgentes.id, promptId)).limit(1);
+    if (!prompt) throw new NotFoundException('Prompt não encontrado');
+    const validation = validatePromptTemplate(version.texto, this.catalogEntry(prompt.chave).markers);
+    if (!validation.ok) throw new BadRequestException({ message: 'Versão inválida', validation });
+    await db.update(promptsAgentes).set({ versaoAtivaId: versionId, status: 'active' }).where(eq(promptsAgentes.id, promptId));
+    return { ok: true, promptId, versionId };
+  }
+
+  async preverPrompt(id: number, texto: string, values: Record<string, unknown>) {
+    const db = await this.dbDoMotor();
+    const [prompt] = await db.select().from(promptsAgentes).where(eq(promptsAgentes.id, id)).limit(1);
+    if (!prompt) throw new NotFoundException('Prompt não encontrado');
+    const entry = this.catalogEntry(prompt.chave);
+    const validation = validatePromptTemplate(texto, entry.markers);
+    if (!validation.ok) return { validation, rendered: null };
+    const completeValues = Object.fromEntries(entry.markers.map((marker) => [marker, values[marker] ?? `<${marker.slice(2, -2)}>`]));
+    return { validation, rendered: renderPromptTemplate(texto, completeValues), used: markersIn(texto) };
   }
 
   /**

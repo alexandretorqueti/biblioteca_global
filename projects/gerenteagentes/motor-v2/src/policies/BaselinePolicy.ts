@@ -37,13 +37,23 @@ export function baselineCorrectionScope(
 export const BASELINE_CORRECTION_CRITERION = "A suíte completa de testes do repositório passa sem erros (comando de teste do projeto)"
 
 /**
- * Exclusões do baseline (2026-08-31): specs funcionais usam MySQL real +
- * estado de seed e não são confiáveis como gate automático por subtarefa —
- * a suíte funcional vermelha no container bloqueou o baseline da tarefa 731.
- * Elas continuam no `npm run test` normal (humanos/CI) e no gate escopado
- * quando a subtarefa toca o código que cobrem.
+ * Exclusões de teste do gate automático (2026-08-31, estendido 2026-09-04):
+ * specs funcionais usam MySQL real + estado de seed e não são confiáveis como
+ * gate automático — a suíte funcional vermelha no container bloqueou o
+ * baseline da tarefa 731, e o gate escopado voltou a incluir uma spec
+ * funcional obsoleta na tarefa 760 (7 entregas queimadas num gate
+ * impossível). Decisão 2026-09-04 (Alexandre): specs funcionais NÃO são
+ * gate automático em hipótese alguma (baseline, gate escopado ou correção
+ * de baseline). Elas continuam no `npm run test` completo (humanos/CI).
  */
 export const BASELINE_TEST_EXCLUDES: readonly string[] = ["**/*.functional.spec.ts"]
+
+const FUNCTIONAL_SPEC_PATTERN = /\.functional\.spec\.[^/]+$/
+
+/** True para specs funcionais (exclusão do gate automático — ver BASELINE_TEST_EXCLUDES). */
+export function isFunctionalSpec(path: string): boolean {
+  return FUNCTIONAL_SPEC_PATTERN.test(path.replace(/\\/g, "/"))
+}
 
 /** Anexa as exclusões do baseline a um comando de teste vitest/npm. */
 export function withBaselineExcludes(testCommand: string): string {
