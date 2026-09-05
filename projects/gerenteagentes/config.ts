@@ -375,5 +375,54 @@ export const config: GeradorSistemaConfig = {
         },
       ],
     },
+
+    {
+      id: "prompts",
+      label: "Prompts",
+      items: [
+        {
+          id: "prompts-list",
+          label: "Prompts",
+          path: "prompts",
+          icon: "edit_note",
+          screen: {
+            kind: "cadastro",
+            resource: "prompts_agentes",
+            title: "Prompts dos Agentes",
+            description: "Consulte e altere os prompts utilizados pelo motor de agentes.",
+            fields: [
+              { name: "chave", label: "Chave", type: "text", required: true, maxLength: 150 },
+              { name: "tipoAgente", label: "Tipo de agente", type: "text", required: true, maxLength: 80 },
+              { name: "situacao", label: "Situação", type: "text", required: true, maxLength: 100 },
+              {
+                name: "conteudo",
+                label: "Prompt",
+                type: "textarea",
+                required: true,
+                fullWidth: true,
+                helperText: "Use os marcadores definidos no registro para os dados preenchidos em tempo de execução.",
+              },
+              { name: "origem", label: "Origem", type: "text", required: true, maxLength: 255, gridVisible: false },
+              { name: "marcadores", label: "Marcadores (JSON)", type: "textarea", required: true, fullWidth: true, gridVisible: false },
+              { name: "ativo", label: "Ativo", type: "switch", defaultValue: true, gridVisible: true },
+            ],
+            overrides: {
+              hiddenColumns: ["createdAt", "updatedAt"],
+              columnLabels: {
+                id: "ID",
+                chave: "Chave",
+                tipoAgente: "Agente",
+                situacao: "Situação",
+                conteudo: "Prompt",
+                origem: "Origem",
+                marcadores: "Marcadores",
+                ativo: "Ativo",
+              },
+              newLabel: "Novo prompt",
+            },
+          },
+        },
+      ],
+    },
   ],
 }

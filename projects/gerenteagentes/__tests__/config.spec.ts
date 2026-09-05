@@ -41,6 +41,32 @@ function localizarTelaTarefas(): CadastroScreenConfig {
 }
 
 describe("config do projeto gerenteagentes", () => {
+  it("expõe o menu Prompts abaixo de Projetos com cadastro editável", () => {
+    const indiceProjetos = config.groups.findIndex((grupo) => grupo.id === "projetos")
+    const indicePrompts = config.groups.findIndex((grupo) => grupo.id === "prompts")
+    expect(indiceProjetos).toBeGreaterThanOrEqual(0)
+    expect(indicePrompts).toBe(indiceProjetos + 1)
+
+    const grupoPrompts = config.groups.find((grupo) => grupo.id === "prompts")
+    expect(grupoPrompts).toBeDefined()
+    const item = grupoPrompts!.items.find((i) => i.id === "prompts-list")!
+    expect(item.label).toBe("Prompts")
+    expect(item.path).toBe("prompts")
+    expect(item.screen).toMatchObject({ kind: "cadastro", resource: "prompts_agentes" })
+
+    const tela = item.screen as CadastroScreenConfig
+    expect(tela.fields).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "tipoAgente", label: "Tipo de agente" }),
+      expect.objectContaining({ name: "situacao", label: "Situação" }),
+      expect.objectContaining({ name: "conteudo", label: "Prompt", type: "textarea", fullWidth: true }),
+    ]))
+    expect(tela.overrides?.columnLabels).toMatchObject({
+      tipoAgente: "Agente",
+      situacao: "Situação",
+      conteudo: "Prompt",
+    })
+  })
+
   it("define limites locais para o formulário de projetos", () => {
     const grupo = config.groups.find((g) => g.id === "projetos")!
     const tela = grupo.items.find((i) => i.id === "projetos-list")!.screen as CadastroScreenConfig
