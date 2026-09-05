@@ -4,8 +4,10 @@
  * Renderiza o `<GeradorSistema>` da UI com a config + runtime do
  * ProjectContext. Oferece, na barra superior, troca de tema e logout.
  * Sem projeto selecionado, envia o usuário à seleção.
+ * Exibe o <HelpDeskWidget> para suporte ao sistema.
  */
-import { useMemo, type ReactNode } from "react"
+import { useMemo } from "react"
+import type { ReactNode } from "react"
 import {
   Box,
   IconButton,
@@ -19,12 +21,14 @@ import {
   LogoutRounded,
 } from "@mui/icons-material"
 import { GeradorSistema } from "@biblioteca-global/ui"
+import { HelpDeskWidget } from "@biblioteca-global/ui"
+import { createHelpDeskClient } from "@biblioteca-global/api-client"
 import { useAuth } from "../auth/AuthContext"
 import { useProject } from "../project/ProjectContext"
 import { useThemeSetting } from "../theme/ThemeContext"
 
 export default function SystemScreen(): ReactNode {
-  const { logout, projeto } = useAuth()
+  const { logout, projeto, usuario, bundle } = useAuth()
   const { config, runtime } = useProject()
   const { toggle, themeName } = useThemeSetting()
 
@@ -61,6 +65,16 @@ export default function SystemScreen(): ReactNode {
     [toggle, themeName, logout, projeto],
   )
 
+  // HelpDesk: driver injetado quando há autenticação + projeto.
+  const helpDeskClient = useMemo(() => {
+    if (!usuario?.id || !projeto?.id) return null
+    return createHelpDeskClient({
+      http: bundle.http,
+      usuarioId: usuario.id,
+      projetoId: projeto.id,
+    })
+  }, [bundle.http, usuario?.id, projeto?.id])
+
   if (!config) {
     return (
       <Box sx={{ p: 4 }} data-testid="no-project-config">
@@ -72,10 +86,15 @@ export default function SystemScreen(): ReactNode {
   }
 
   return (
-    <GeradorSistema
-      config={config}
-      runtime={runtime}
-      actions={actions}
-    />
+    <>
+      <GeradorSistema
+        config={config}
+        runtime={runtime}
+        actions={actions}
+      />
+      {helpDeskClient && (
+        <HelpDeskWidget client={helpDeskClient} />
+      )}
+    </>
   )
 }

@@ -11,10 +11,16 @@ import {
   HttpStatus,
   HttpCode,
   BadRequestException,
+  Request,
+  UseGuards,
 } from "@nestjs/common"
 import { HelpDeskService } from "./helpdesk.service"
+import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard"
+import { ProjectScopeGuard } from "../../common/guards/project-scope.guard"
+import type { ApiRequest } from "../../common/types"
 
 @Controller("helpdesk")
+@UseGuards(JwtAuthGuard, ProjectScopeGuard)
 export class HelpDeskController {
   private readonly logger = new Logger(HelpDeskController.name)
 
@@ -23,10 +29,10 @@ export class HelpDeskController {
   @Post("session")
   @HttpCode(HttpStatus.OK)
   async criarSessao(
-    @Body() body: { usuarioId: number; projetoId: number },
+    @Request() req: ApiRequest,
   ) {
-    const usuarioId = typeof body?.usuarioId === "number" ? body.usuarioId : 0
-    const projetoId = typeof body?.projetoId === "number" ? body.projetoId : 0
+    const usuarioId = req.authClaims?.sub ?? 0
+    const projetoId = req.authClaims?.projetoId ?? 0
 
     if (!usuarioId || !projetoId) {
       throw new BadRequestException("usuarioId e projetoId são obrigatórios")
@@ -38,7 +44,8 @@ export class HelpDeskController {
   @Post("send")
   @HttpCode(HttpStatus.OK)
   async enviar(
-    @Body() body: { sessaoId: number; text: string; usuarioId?: number },
+    @Request() req: ApiRequest,
+    @Body() body: { sessaoId: number; text: string },
   ) {
     const sessaoId = typeof body?.sessaoId === "number" ? body.sessaoId : 0
     const text = typeof body?.text === "string" ? body.text.trim() : ""
@@ -47,15 +54,22 @@ export class HelpDeskController {
       throw new BadRequestException("sessaoId e text são obrigatórios")
     }
 
-    return this.service.enviarMensagem({ sessaoId, text, usuarioId: 0 })
+    const usuarioId = req.authClaims?.sub ?? 0
+    if (!usuarioId) throw new BadRequestException("Usuário autenticado ausente")
+    return this.service.enviarMensagem({ sessaoId, text, usuarioId })
   }
 
   @Get(":sessaoId/history")
-  async obterHistorico(@Param("sessaoId") sessaoIdParam: string) {
+  async obterHistorico(
+    @Request() req: ApiRequest,
+    @Param("sessaoId") sessaoIdParam: string,
+  ) {
     const sessaoId = Number(sessaoIdParam)
     if (!Number.isInteger(sessaoId) || sessaoId <= 0) {
       throw new BadRequestException("sessaoId deve ser um número inteiro positivo")
     }
-    return this.service.obterHistorico(sessaoId)
+    const usuarioId = req.authClaims?.sub ?? 0
+    if (!usuarioId) throw new BadRequestException("Usuário autenticado ausente")
+    return this.service.obterHistorico(sessaoId, usuarioId)
   }
 }

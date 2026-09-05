@@ -10,6 +10,7 @@ export { default as SistemaBarraSuperior } from "./components/SistemaBarraSuperi
 export { default as GeradorSistema } from "./components/GeradorSistema"
 export { default as TaskChat } from "./components/TaskChat"
 export { default as AgentChat } from "./components/AgentChat"
+export { default as HelpDeskWidget } from "./components/HelpDeskWidget"
 export type { AgentChatProps } from "./components/AgentChat"
 
 // Fields

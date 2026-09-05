@@ -7,7 +7,7 @@
  */
 import { Injectable, Inject, Logger } from "@nestjs/common"
 import { ConfigService } from "@nestjs/config"
-import { eq, desc, asc } from "drizzle-orm"
+import { eq, desc, asc, and } from "drizzle-orm"
 import type { MySql2Database } from "drizzle-orm/mysql2"
 import { sql } from "drizzle-orm"
 import { PROJECT_DB_FACTORY, type ProjectDbFactory } from "../crud/project-db.factory"
@@ -49,7 +49,10 @@ export class HelpDeskService {
     const [existing] = await db
       .select()
       .from(helpDeskSessionTable)
-      .where(eq(helpDeskSessionTable.usuarioId, input.usuarioId))
+      .where(and(
+        eq(helpDeskSessionTable.usuarioId, input.usuarioId),
+        eq(helpDeskSessionTable.projetoId, input.projetoId),
+      ))
       .orderBy(desc(helpDeskSessionTable.updatedAt))
       .limit(1)
 
@@ -122,6 +125,10 @@ export class HelpDeskService {
       return { ok: false, reason: "session_not_found" }
     }
 
+    if (sessao.usuarioId !== input.usuarioId) {
+      return { ok: false, reason: "session_not_found" }
+    }
+
     // Persiste mensagem do usuário ANTES de enviar ao agente
     await db.insert(helpDeskMessageTable).values({
       sessaoId: input.sessaoId,
@@ -174,7 +181,7 @@ export class HelpDeskService {
   // HISTÓRICO
   // ===========================================================================
 
-  async obterHistorico(sessaoId: number): Promise<{
+  async obterHistorico(sessaoId: number, usuarioId: number): Promise<{
     sessao: {
       id: number
       usuarioId: number
@@ -200,7 +207,7 @@ export class HelpDeskService {
       .where(eq(helpDeskSessionTable.id, sessaoId))
       .limit(1)
 
-    if (!sessao) {
+    if (!sessao || sessao.usuarioId !== usuarioId) {
       return {
         sessao: { id: sessaoId, usuarioId: 0, projetoId: 0, agenteId: "", status: "closed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
         mensagens: [],

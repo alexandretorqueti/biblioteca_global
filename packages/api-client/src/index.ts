@@ -36,3 +36,10 @@ export type {
   AgentChatEndpointConfig,
   AgentChatOutboxEntry,
 } from "./agent-chat-client"
+export { createHelpDeskClient } from "./helpdesk-client"
+export type {
+  HelpDeskClientOptions,
+  HelpDeskDriver,
+  HelpDeskSendResult,
+  HelpDeskSessionInfo,
+} from "./helpdesk-client"
