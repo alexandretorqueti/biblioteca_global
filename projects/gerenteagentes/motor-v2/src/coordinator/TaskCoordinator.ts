@@ -229,8 +229,20 @@ export class TaskCoordinator {
         }
         break
       }
+      await this.reconcileOrphanedReadyTasks()
     } finally {
       this.pumping = false
+    }
+  }
+
+  private async reconcileOrphanedReadyTasks(): Promise<void> {
+    const { rows } = await this.db.query("SELECT t.* FROM tarefas t WHERE t.status = 'ready' AND EXISTS (SELECT 1 FROM subtarefas s WHERE s.tarefa_id = t.id) AND NOT EXISTS (SELECT 1 FROM subtarefas s WHERE s.tarefa_id = t.id AND s.status NOT IN ('verified', 'superseded'))")
+    for (const row of rows) {
+      const task = this.mapTask(row)
+      const { rows: subtasks } = await this.db.query("SELECT id, seq, workspace_commit_sha, workspace_status, completion_kind, status, resultado FROM subtarefas WHERE tarefa_id = ? AND status != 'superseded'", [task.id])
+      const validation = validateTaskCompletion(subtasks.map((st: Record<string, unknown>) => ({ id: Number(st.id), seq: Number(st.seq), workspaceCommitSha: st.workspace_commit_sha ? String(st.workspace_commit_sha) : null, workspaceStatus: st.workspace_status ? String(st.workspace_status) : null, completionKind: st.completion_kind ? String(st.completion_kind) : null, status: String(st.status), resultado: st.resultado ? String(st.resultado) : null })))
+      if (!validation.ok) await this.saveTaskTransition(task, "fail", { errorMessage: validation.reason })
+      else await this.saveTaskTransition(task, "execution_completed")
     }
   }
 
@@ -701,6 +713,8 @@ export class TaskCoordinator {
               id: Number(st.id),
               seq: Number(st.seq),
               workspaceCommitSha: st.workspace_commit_sha ? String(st.workspace_commit_sha) : null,
+              workspaceStatus: st.workspace_status ? String(st.workspace_status) : null,
+              completionKind: st.completion_kind ? String(st.completion_kind) : null,
               status: String(st.status),
             }))
           )
