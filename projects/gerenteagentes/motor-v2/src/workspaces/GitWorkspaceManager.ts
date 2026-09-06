@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process"
-import { mkdir, rm } from "node:fs/promises"
+import { cp, mkdir, rm, writeFile } from "node:fs/promises"
 import { dirname, isAbsolute, relative, resolve, join } from "node:path"
 import { promisify } from "node:util"
 import { createLogger } from "../shared/logger.js"
@@ -283,8 +283,10 @@ export class GitWorkspaceManager {
       return { path: target, projectPath: resolve(join(target, projectRelativePath)), branch, baseCommit }
     }
 
-    // Criação nova: exige repositório principal limpo (mesma regra do prepare
-    // de subtarefa) e parte do tip da branch raiz do projeto.
+    // Criação nova: a base pode conter trabalho não commitado justamente
+    // quando a subtarefa existe para corrigir a baseline. O conteúdo é
+    // capturado e levado para o worktree da tarefa; a pasta original nunca é
+    // editada, resetada ou usada pelo agente.
     const diff = await this.runner.run(["git", "diff", "--name-only", "--ignore-space-at-eol", "HEAD"], repoPath).catch((error: unknown) => {
       const code = (error as NodeJS.ErrnoException | undefined)?.code
       if (code === "ENOENT") throw new Error("Ambiente bloqueado: repositório não encontrado: " + input.repoPath)
@@ -292,7 +294,6 @@ export class GitWorkspaceManager {
     })
     const staged = await this.runner.run(["git", "diff", "--name-only", "--cached", "--ignore-space-at-eol"], repoPath)
     const dirtyFiles = [...new Set([...diff.stdout.split("\n"), ...staged.stdout.split("\n")].map((s) => s.trim()).filter(Boolean))]
-    if (dirtyFiles.length > 0) throw new Error("repositório principal não está limpo: " + dirtyFiles.join(", "))
     const baseCommit = (await this.runner.run(["git", "rev-parse", "--verify", `${rootBaseBranch}^{commit}`], repoPath)).stdout.trim()
     if (!validCommit(baseCommit)) throw new Error("commit-base inválido para branch da tarefa")
 
@@ -325,6 +326,10 @@ export class GitWorkspaceManager {
           throw switchError
         }
       }
+      if (dirtyFiles.length > 0) {
+        await this.importDirtyBaseIntoTaskWorktree(repoPath, target)
+        logger.warn(`Alterações não commitadas da base capturadas na branch da tarefa: ${dirtyFiles.join(", ")}`, { taskId: input.taskId })
+      }
       await this.markSafeDirectory(target)
       logger.info(`Branch de integração da tarefa criada: ${branch} a partir de ${rootBaseBranch} (${baseCommit})`, { taskId: input.taskId })
       return { path: target, projectPath: resolve(join(target, projectRelativePath)), branch, baseCommit }
@@ -332,6 +337,31 @@ export class GitWorkspaceManager {
       await rm(target, { recursive: true, force: true }).catch(() => {})
       throw error
     }
+  }
+
+  /**
+   * Transporta alterações rastreadas e não rastreadas da base para o
+   * worktree isolado. O commit técnico torna o snapshot visível às branches
+   * de subtarefa, sem alterar a base original.
+   */
+  private async importDirtyBaseIntoTaskWorktree(repoPath: string, target: string): Promise<void> {
+    const patch = (await this.runner.run(["git", "diff", "--binary", "HEAD"], repoPath)).stdout
+    if (patch) {
+      const patchFile = join(target, ".motor-baseline.patch")
+      await writeFile(patchFile, patch, "utf8")
+      await this.runner.run(["git", "apply", "--whitespace=nowarn", patchFile], target)
+      await rm(patchFile, { force: true })
+    }
+    const untracked = (await this.runner.run(["git", "ls-files", "--others", "--exclude-standard", "-z"], repoPath)).stdout
+    for (const sourceRelative of untracked.split("\0").filter(Boolean)) {
+      const source = resolve(repoPath, sourceRelative)
+      const destination = resolve(target, sourceRelative)
+      if (!inside(target, destination)) throw new Error("arquivo não rastreado fora do worktree permitido")
+      await mkdir(dirname(destination), { recursive: true })
+      await cp(source, destination, { recursive: true, errorOnExist: false })
+    }
+    await this.runner.run(["git", "add", "-A"], target)
+    await this.runner.run(["git", "commit", "--no-verify", "-m", "motor-v2: snapshot da baseline para correção"], target)
   }
 
   /**
