@@ -613,6 +613,16 @@ export const config: GeradorSistemaConfig = {
           },
         },
         {
+          id: "ocorrencia-devolucao",
+          label: "Ocorrência / Devolução",
+          path: "ocorrencia",
+          icon: "warning_amber",
+          screen: {
+            kind: "custom",
+            componentId: "taqui-ocorrencia-devolucao",
+          },
+        },
+        {
           id: "minhas-encomendas",
           label: "Minhas Encomendas",
           path: "minhas-encomendas",
