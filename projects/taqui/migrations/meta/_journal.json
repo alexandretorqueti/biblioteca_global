@@ -22,6 +22,13 @@
       "when": 1788490503970,
       "tag": "0002_gifted_wild_pack",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1788659001758,
+      "tag": "0003_high_green_goblin",
+      "breakpoints": true
     }
   ]
 }
