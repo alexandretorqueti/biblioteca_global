@@ -4,12 +4,12 @@
  * Ao abrir:
  * - Busca detalhe completo da encomenda (foto, destino, transportadora).
  * - Valida status:
- *   - confirmada: exibe formulário de entrega (funcionário, evidência).
+ *   - pronta_retirada: exibe formulário de entrega (funcionário, evidência).
  *   - pendente: bloqueia entrega, exibe mensagem clara e opção de reenviar aviso.
  *   - cancelada: bloqueia entrega, exibe motivo do cancelamento.
  *   - entregue: exibe dados da entrega já realizada.
  *
- * Para encomendas confirmadas:
+ * Para encomendas prontas para retirada:
  * - Exibe foto da encomenda e destino (unidade + moradores).
  * - Formulário com: funcionário (select), nome de quem retirou, documento,
  *   vínculo, foto de comprovante, observações.
@@ -58,7 +58,7 @@ import { useAuth } from "../../../apps/web/src/auth/AuthContext"
 // TIPOS
 // ============================================================================
 
-type StatusEncomenda = "pendente" | "confirmada" | "entregue" | "cancelada"
+type StatusEncomenda = "pendente" | "pronta_retirada" | "entregue" | "cancelada"
 
 type RecebedorVinculo =
   | "proprio_morador"
@@ -180,8 +180,8 @@ function BlocoEntrega({
           Entrega bloqueada — aguardando confirmação do morador
         </Typography>
         <Typography variant="body2">
-          Esta encomenda ainda não foi confirmada pelo morador. A entrega física
-          só pode ser realizada após a confirmação de recebimento.
+          Esta encomenda ainda não foi reconhecida pelo morador. A entrega física
+          só pode ser realizada após o morador confirmar que reconhece a encomenda.
         </Typography>
         <Box mt={2}>
           <Button
@@ -533,7 +533,7 @@ export function EntregaModal({
   // RENDER
   // =========================================================================
 
-  const podeEntregar = detalhe?.status === "confirmada"
+  const podeEntregar = detalhe?.status === "pronta_retirada"
   const formularioValido = funcionarioId !== "" && recebedorNome.trim().length >= 3
 
   return (
@@ -555,7 +555,7 @@ export function EntregaModal({
               label={
                 detalhe.status === "pendente"
                   ? "Aguardando confirmação"
-                  : detalhe.status === "confirmada"
+                  : detalhe.status === "pronta_retirada"
                     ? "Pronta para retirada"
                     : detalhe.status === "entregue"
                       ? "Entregue"
@@ -564,7 +564,7 @@ export function EntregaModal({
               color={
                 detalhe.status === "pendente"
                   ? "warning"
-                  : detalhe.status === "confirmada"
+                  : detalhe.status === "pronta_retirada"
                     ? "success"
                     : detalhe.status === "entregue"
                       ? "default"
@@ -688,7 +688,7 @@ export function EntregaModal({
               <EntregaRealizada entrega={detalhe.entrega} />
             )}
 
-            {/* Formulário de entrega (somente para confirmada) */}
+            {/* Formulário de entrega (somente para pronta_retirada) */}
             {podeEntregar && !mostrarConfirmacao && (
               <Box>
                 <Typography variant="subtitle1" fontWeight={600} gutterBottom>

@@ -57,7 +57,7 @@ type EstadoOperacional =
   | "excecao"
   | "entregue"
 
-type StatusEncomenda = "pendente" | "confirmada" | "entregue" | "cancelada"
+type StatusEncomenda = "pendente" | "pronta_retirada" | "entregue" | "cancelada"
 
 interface EncomendaPainelItem {
   id: number
@@ -117,7 +117,7 @@ function formatarTempoDecorrido(minutos: number): string {
 function statusLabel(status: StatusEncomenda): string {
   const map: Record<StatusEncomenda, string> = {
     pendente: "Aguardando confirmação",
-    confirmada: "Pronta para retirada",
+    pronta_retirada: "Pronta para retirada",
     entregue: "Entregue",
     cancelada: "Cancelada",
   }
@@ -129,7 +129,7 @@ function statusColor(
 ): "warning" | "success" | "default" | "error" {
   const map: Record<StatusEncomenda, "warning" | "success" | "default" | "error"> = {
     pendente: "warning",
-    confirmada: "success",
+    pronta_retirada: "success",
     entregue: "default",
     cancelada: "error",
   }
@@ -209,7 +209,7 @@ function ItemEncomenda({
         borderLeft: 4,
         borderLeftColor: isPendenciaAntiga
           ? "error.main"
-          : item.status === "confirmada"
+          : item.status === "pronta_retirada"
             ? "success.main"
             : "warning.main",
       }}

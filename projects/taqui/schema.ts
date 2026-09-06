@@ -9,7 +9,7 @@
  * - unidades_proprietarios: vínculo N:N entre unidades e proprietários
  * - funcionarios: triagem/portaria do condomínio
  * - transportadoras: lojas/transportadoras que enviam encomendas
- * - encomendas: registro com foto, loja, unidade; status pendente→confirmada→entregue→cancelada
+ * - encomendas: registro com foto, loja, unidade; status pendente→pronta_retirada→entregue→cancelada
  *   (campos de cancelamento: canceladoPorId, canceladoEm, motivoCancelamento)
  * - notificacoes: sininho para morador
  * - entregas: registro de entrega efetiva com trilha auditável e evidência estruturada (JSON)
