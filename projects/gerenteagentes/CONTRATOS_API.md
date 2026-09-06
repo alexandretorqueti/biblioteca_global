@@ -312,8 +312,11 @@ Idempotente: se já houver `plataformaProjetoId`, retorna o vínculo existente.
 
 ### 3.1 CRUD de Tarefas
 
-**POST /api/gerenteagentes/projetos-captados/:projetoId/tarefas**
-Cria uma nova tarefa (draft).
+**POST /api/gerenteagentes/tarefas**
+Cria uma nova tarefa (draft) pela rota específica do Gerente de Agentes.
+`managedProjectId` é `projetos_captados.id`; ele não é o
+`core.projetos.id` presente no token. A rota também aceita `projeto_id` como
+compatibilidade temporária com o cadastro hierárquico.
 
 > **Mudança v1.1:** a tarefa **não** carrega `agenteId`, `repoPath`,
 > `buildCommand` nem `unitTestCommand`. Esses dados vivem em
@@ -323,6 +326,7 @@ Cria uma nova tarefa (draft).
 ```json
 // Request
 {
+  "managedProjectId": 2,
   "titulo": "Implementar autenticação",
   "descricao": "Criar sistema de login com email/senha",
   "dependsOnTaskId": null,
@@ -346,8 +350,8 @@ Cria uma nova tarefa (draft).
 }
 ```
 
-**GET /api/gerenteagentes/projetos-captados/:projetoId/tarefas**
-Lista tarefas do projeto.
+**GET /api/gerenteagentes/tarefas?projetoId=:managedProjectId**
+Lista tarefas do projeto gerenciado.
 
 **GET /api/gerenteagentes/tarefas/:id**
 Retorna tarefa específica com subtarefas e bloqueios.
@@ -663,7 +667,7 @@ UI (web) ──► API NestJS (/api/gerenteagentes) ──► motor (container O
 
 ### Fluxo de Execução
 
-1. Admin cria tarefa (draft) → `POST /api/gerenteagentes/projetos-captados/:projetoId/tarefas`
+1. Admin cria tarefa (draft) → `POST /api/gerenteagentes/tarefas` com `managedProjectId`
 2. Admin inicia tarefa → `POST /api/gerenteagentes/tarefas/:id/start`
    (API resolve agente + ambiente do projeto e encaminha ao motor)
 3. Motor enfileira (FIFO) e executa as subtarefas

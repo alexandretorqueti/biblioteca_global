@@ -33,6 +33,37 @@ export class GerenteAgentesController {
   // AÇÕES DE TAREFA
   // ============================================================================
 
+  /**
+   * Criação específica do domínio. `projeto_id` é o ID do projeto gerenciado
+   * em projetos_captados, não o ID do projeto da plataforma presente no token.
+   * Esta rota precede o CRUD genérico e evita misturar os dois namespaces.
+   */
+  @Post('tarefas')
+  @Roles('admin', 'gerente', 'operador')
+  criarTarefa(
+    @CurrentProject() projeto: ProjetoResumo,
+    @Body() body: {
+      projeto_id?: number;
+      managedProjectId?: number;
+      titulo?: string;
+      descricao?: string | null;
+      tipo?: 'desenvolvimento' | 'automacao' | 'verificacao';
+      status?: string;
+      dependsOnTaskId?: number | null;
+      autoStart?: boolean;
+    },
+  ) {
+    return this.service.criarTarefa(projeto, {
+      managedProjectId: body.managedProjectId ?? body.projeto_id,
+      titulo: body.titulo,
+      descricao: body.descricao,
+      tipo: body.tipo,
+      status: body.status,
+      dependsOnTaskId: body.dependsOnTaskId,
+      autoStart: body.autoStart,
+    });
+  }
+
   @Post('tarefas/:id/start')
   @Roles('admin', 'gerente', 'operador')
   iniciarTarefa(

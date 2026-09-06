@@ -457,6 +457,100 @@ export class GerenteAgentesService {
   // AÇÕES DE TAREFA
   // ============================================================================
 
+  async criarTarefa(
+    projeto: ProjetoResumo,
+    input: {
+      managedProjectId?: number;
+      titulo?: string;
+      descricao?: string | null;
+      tipo?: 'desenvolvimento' | 'automacao' | 'verificacao';
+      status?: string;
+      dependsOnTaskId?: number | null;
+      autoStart?: boolean;
+    },
+  ) {
+    // O token seleciona o banco/tenant. A FK abaixo seleciona um projeto
+    // administrado dentro desse tenant; os IDs pertencem a namespaces distintos.
+    const db = await this.dbDoProjeto(projeto);
+    const managedProjectId = Number(input.managedProjectId);
+    if (!Number.isSafeInteger(managedProjectId) || managedProjectId <= 0) {
+      throw new BadRequestException(
+        'managedProjectId inválido: informe o id de projetos_captados',
+      );
+    }
+    const titulo = input.titulo?.trim() ?? '';
+    if (!titulo) throw new BadRequestException('Título da tarefa é obrigatório');
+
+    const [managedProject] = await db
+      .select({
+        id: projetosCaptados.id,
+        slug: projetosCaptados.slug,
+        ativo: projetosCaptados.ativo,
+        agenteId: projetosCaptados.agenteId,
+      })
+      .from(projetosCaptados)
+      .where(eq(projetosCaptados.id, managedProjectId))
+      .limit(1);
+    if (!managedProject) {
+      throw new BadRequestException(
+        `managedProjectId=${managedProjectId} não encontrado em projetos_captados`,
+      );
+    }
+    if (!managedProject.ativo) {
+      throw new BadRequestException(
+        `Projeto gerenciado "${managedProject.slug}" está inativo`,
+      );
+    }
+    if (!managedProject.agenteId) {
+      throw new BadRequestException(
+        `Projeto gerenciado "${managedProject.slug}" não tem agente vinculado`,
+      );
+    }
+
+    const status = input.status ?? 'draft';
+    if (!['draft', 'planned'].includes(status)) {
+      throw new BadRequestException('Status inicial deve ser draft ou planned');
+    }
+    if (input.dependsOnTaskId != null) {
+      const [dependency] = await db
+        .select({ id: tarefas.id, projetoId: tarefas.projetoId })
+        .from(tarefas)
+        .where(eq(tarefas.id, input.dependsOnTaskId))
+        .limit(1);
+      if (!dependency || Number(dependency.projetoId) !== managedProjectId) {
+        throw new BadRequestException(
+          'A tarefa de dependência deve pertencer ao mesmo projeto gerenciado',
+        );
+      }
+    }
+
+    const result = await db.insert(tarefas).values({
+      projetoId: managedProjectId,
+      titulo,
+      descricao: input.descricao?.trim() || null,
+      tipo: input.tipo ?? 'desenvolvimento',
+      status,
+      dependsOnTaskId: input.dependsOnTaskId ?? null,
+      autoStart: input.autoStart ?? false,
+    });
+    const tarefaId = Number(result[0].insertId);
+    // IDs numéricos mantêm o external_id dentro do limite de 64 caracteres e
+    // deixam explícito que ambos pertencem ao namespace operacional.
+    const externalId = `task-p${managedProjectId}-${tarefaId}`;
+    await db
+      .update(tarefas)
+      .set({ externalId, updatedAt: new Date() })
+      .where(eq(tarefas.id, tarefaId));
+
+    const [created] = await db
+      .select()
+      .from(tarefas)
+      .where(eq(tarefas.id, tarefaId))
+      .limit(1);
+    if (!created) throw new BadRequestException('Falha ao criar tarefa');
+    return created;
+  }
+
   /**
    * Notifica o motor-v2 de que a resposta de clarificação chegou (a mensagem
    * já foi gravada no chat da tarefa aqui). O motor devolve a tarefa para

@@ -1135,19 +1135,14 @@ export class TaskCoordinator {
       throw new Error("Tarefa " + taskId + " esta em status " + task.status)
     }
 
-    // Validação de projeto_id: tarefas de execução devem referenciar a linha
-    // correta de projetos_captados (nunca a da biblioteca, exceto para setup).
-    // Regra: projeto_id inválido rejeitado com erro claro na entrada do motor.
+    // A FK persistida identifica o projeto operacional. O projeto/tenant do
+    // token da Biblioteca pertence a outro namespace e não participa do gate.
     const { rows: taskRows } = await this.db.query(
-      "SELECT t.projeto_id, pc.slug as project_slug, pc.agente_id " +
-      "FROM tarefas t " +
-      "LEFT JOIN projetos_captados pc ON t.projeto_id = pc.id " +
-      "WHERE t.external_id = ? LIMIT 1",
+      "SELECT t.projeto_id FROM tarefas t WHERE t.external_id = ? LIMIT 1",
       [taskId]
     )
     const taskRow = taskRows[0] as Record<string, unknown> | undefined
     const projetoId = taskRow?.projeto_id == null ? NaN : Number(taskRow.projeto_id)
-    const projectSlug = taskRow?.project_slug ? String(taskRow.project_slug) : undefined
     const isSetupTask = taskId.startsWith("setup-")
     const taskType = isSetupTask ? "setup" as const : "execution" as const
 
@@ -1155,7 +1150,7 @@ export class TaskCoordinator {
     // joins nulos e só falhar depois como "Unknown agent id".
     const validation = await validateProjectId(
       projetoId,
-      { taskType, expectedSlug: task.projectSlug ?? undefined },
+      { taskType },
       async (id) => {
         const { rows } = await this.db!.query(
           "SELECT pc.id, pc.slug, pc.agente_id AS agenteId, " +

@@ -544,7 +544,7 @@ export default function TaskMonitorScreen(): ReactNode {
     try {
       await bundle.http.request("POST", "/gerenteagentes/tarefas", {
         body: {
-          projeto_id: Number(values.projetoId),
+          managedProjectId: Number(values.projetoId),
           titulo: values.titulo,
           descricao: values.descricao || null,
           tipo: values.tipo,

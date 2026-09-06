@@ -61,7 +61,7 @@ function instalarMockFetch() {
       return { ok: postResult.ok, status: postResult.status, json: async () => postResult.body }
     }
     if (u.includes("projetos")) {
-      return { ok: true, status: 200, json: async () => ({ items: [{ id: 640, nome: "Projeto Piloto", ativo: true }] }) }
+      return { ok: true, status: 200, json: async () => ({ items: [{ id: 2, nome: "Gerente Agentes", ativo: true }] }) }
     }
     return { ok: true, status: 200, json: async () => ({ items: [] }) }
   })
@@ -174,7 +174,7 @@ describe("NovaTarefaScreen", () => {
       )
     })
 
-    await preencherCampos(user, { projetoId: "640" })
+    await preencherCampos(user, { projetoId: "2" })
     expect(screen.getByTestId("btn-enviar")).toBeDisabled() // título ainda vazio
 
     await preencherCampos(user, { titulo: "Tarefa de teste" })
@@ -193,7 +193,7 @@ describe("NovaTarefaScreen", () => {
     })
 
     await preencherCampos(user, {
-      projetoId: "640",
+      projetoId: "2",
       titulo: "Minha tarefa",
       descricao: "Descricao testando aqui",
     })
@@ -214,7 +214,7 @@ describe("NovaTarefaScreen", () => {
       )
       expect(chamadaPost).toBeDefined()
       const corpo = JSON.parse((chamadaPost![1] as { body: string }).body)
-      expect(corpo.projeto_id).toBe(640)
+      expect(corpo.managedProjectId).toBe(2)
       expect(corpo.titulo).toBe("Minha tarefa")
       expect(corpo.descricao).toBe("Descricao testando aqui")
       expect(corpo.status).toBe("draft")
@@ -236,7 +236,7 @@ describe("NovaTarefaScreen", () => {
       )
     })
 
-    await preencherCampos(user, { projetoId: "640", titulo: "Tarefa de teste" })
+    await preencherCampos(user, { projetoId: "2", titulo: "Tarefa de teste" })
     await clicarEnviar(user)
 
     await waitFor(() => {
@@ -256,7 +256,7 @@ describe("NovaTarefaScreen", () => {
       )
     })
 
-    await preencherCampos(user, { projetoId: "640", titulo: "Tarefa de erro" })
+    await preencherCampos(user, { projetoId: "2", titulo: "Tarefa de erro" })
     await clicarEnviar(user)
 
     await waitFor(() => {
@@ -274,7 +274,7 @@ describe("NovaTarefaScreen", () => {
       )
     })
 
-    await preencherCampos(user, { projetoId: "640", titulo: "Alguma tarefa" })
+    await preencherCampos(user, { projetoId: "2", titulo: "Alguma tarefa" })
     expect(screen.getByTestId("btn-enviar")).toBeEnabled()
 
     // Sem título → desabilitado de novo (limpar + digitar outro título e limpar
@@ -296,7 +296,7 @@ describe("NovaTarefaScreen", () => {
       )
     })
 
-    await preencherCampos(user, { projetoId: "640", titulo: "Tarefa para limpar", descricao: "Desc" })
+    await preencherCampos(user, { projetoId: "2", titulo: "Tarefa para limpar", descricao: "Desc" })
     await clicarEnviar(user)
 
     await waitFor(() => {
@@ -321,7 +321,7 @@ describe("NovaTarefaScreen", () => {
       )
     })
 
-    await preencherCampos(user, { projetoId: "640", titulo: "Tarefa longa" })
+    await preencherCampos(user, { projetoId: "2", titulo: "Tarefa longa" })
 
     // Botão habilitado antes de clicar (nenhum erro de validação)
     expect(screen.getByTestId("btn-enviar")).not.toBeDisabled()

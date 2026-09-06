@@ -50,7 +50,7 @@ describe('validateProjectId', () => {
     expect(result.ok).toBe(false)
     expect(result.reason).toContain('biblioteca-global')
     expect(result.reason).toContain('taqui')
-    expect(result.reason).toContain('projeto_id correto')
+    expect(result.reason).toContain('projeto_id incorreto')
   })
 
   it('aprova tarefa de setup apontando para biblioteca-global', async () => {
@@ -141,16 +141,15 @@ describe('validateProjectIdSync', () => {
     expect(result.reason).toContain('1, 2, 3')
   })
 
-  it('reprova tarefa de execução apontando para biblioteca quando expectedSlug é diferente', () => {
+  it('aprova projeto conhecido sem inferir tenant pelo id da biblioteca', () => {
     const result = validateProjectIdSync(
       1, // biblioteca
       knownProjectIds,
       bibliotecaProjectId,
       { taskType: 'execution', expectedSlug: 'taqui' },
     )
-    expect(result.ok).toBe(false)
-    expect(result.reason).toContain('biblioteca-global')
-    expect(result.reason).toContain('taqui')
+    expect(result.ok).toBe(true)
+    expect(result.projetoCaptadoId).toBe(1)
   })
 
   it('aprova projeto_id válido para tarefa de execução', () => {

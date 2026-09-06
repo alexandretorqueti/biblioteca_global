@@ -1,11 +1,11 @@
 /**
  * ProjectIdValidationPolicy - Validação de projeto_id na criação de tarefas
  * 
- * Regra: tarefas criadas para projeto novo devem referenciar a linha correta de
- * projetos_captados (nunca a da biblioteca), rejeitando com erro claro.
+ * Regra: toda tarefa deve referenciar uma linha existente de
+ * projetos_captados e, para execução, essa linha deve ter agente vinculado.
  * 
- * Motivo: no TaQui, tarefas foram criadas com projeto_id apontando para a biblioteca
- * em vez do projeto novo — o motor executava com o agente errado.
+ * O projeto do token da Biblioteca e o projeto gerenciado são namespaces
+ * distintos. No Motor, a FK persistida é a fonte canônica do projeto a executar.
  */
 
 export interface ProjectIdValidationResult {
@@ -24,7 +24,6 @@ export interface ProjectIdValidationResult {
  * 
  * Regras:
  * - projeto_id deve existir em projetos_captados
- * - projeto_id NÃO pode ser o id da biblioteca-global (exceto para tarefas do setup)
  * - projeto_captado deve ter agente_id vinculado (para tarefas de execução)
  * 
  * @param projetoId - ID numérico a validar
@@ -64,22 +63,9 @@ export async function validateProjectId(
     }
   }
 
-  // Regra 2: para tarefas de execução, projeto não pode ser a biblioteca-global
-  // (exceto quando a tarefa É da biblioteca — nesse caso o slug bate)
-  if (context.taskType === 'execution' && projeto.slug === 'biblioteca-global') {
-    // Se o expectedSlug é diferente de 'biblioteca-global', então a tarefa deveria
-    // ser de outro projeto mas está apontando para a biblioteca — erro.
-    if (context.expectedSlug && context.expectedSlug !== 'biblioteca-global') {
-      return {
-        ok: false,
-        reason: `projeto_id=${projetoId} aponta para projetos_captados da biblioteca-global (slug="biblioteca-global"), ` +
-                `mas a tarefa espera o projeto "${context.expectedSlug}". ` +
-                `Use o projeto_id correto de projetos_captados (não o da biblioteca).`,
-      }
-    }
-  }
-
-  // Regra 3: validação cruzada com slug esperado
+  // Comparação opcional somente quando o chamador possui uma fonte realmente
+  // independente para o slug esperado. O TaskCoordinator não passa o slug
+  // obtido do mesmo JOIN, pois isso seria uma validação circular.
   if (context.expectedSlug && context.expectedSlug !== projeto.slug) {
     return {
       ok: false,
@@ -89,7 +75,7 @@ export async function validateProjectId(
     }
   }
 
-  // Regra 4: para tarefas de execução, projeto deve ter agente vinculado
+  // Para tarefas de execução, projeto deve ter agente vinculado.
   if (context.taskType === 'execution' && !projeto.agenteId) {
     return {
       ok: false,
@@ -112,18 +98,20 @@ export async function validateProjectId(
  * 
  * @param projetoId - ID numérico a validar
  * @param knownProjectIds - Lista de IDs válidos conhecidos
- * @param bibliotecaProjectId - ID da biblioteca-global (para exclusão)
+ * @param bibliotecaProjectId - Mantido por compatibilidade; não define o tenant
  * @param context - Contexto da validação
  */
 export function validateProjectIdSync(
   projetoId: number,
   knownProjectIds: number[],
-  bibliotecaProjectId: number,
-  context: {
+  _bibliotecaProjectId: number,
+  _context: {
     taskType: 'setup' | 'execution'
     expectedSlug?: string
   },
 ): ProjectIdValidationResult {
+  void _bibliotecaProjectId
+  void _context
   if (!Number.isSafeInteger(projetoId) || projetoId <= 0) {
     return {
       ok: false,
@@ -136,17 +124,6 @@ export function validateProjectIdSync(
       ok: false,
       reason: `projeto_id=${projetoId} não encontrado entre os projetos conhecidos. ` +
               `Projetos válidos: ${knownProjectIds.join(', ')}.`,
-    }
-  }
-
-  // Regra 2: para tarefas de execução, não pode ser a biblioteca
-  if (context.taskType === 'execution' && projetoId === bibliotecaProjectId) {
-    if (context.expectedSlug && context.expectedSlug !== 'biblioteca-global') {
-      return {
-        ok: false,
-        reason: `projeto_id=${projetoId} aponta para a biblioteca-global, ` +
-                `mas a tarefa espera o projeto "${context.expectedSlug}".`,
-      }
     }
   }
 
