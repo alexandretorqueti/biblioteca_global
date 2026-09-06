@@ -92,11 +92,15 @@ export function validateTaskCompletion(subtasks: Array<{
   id: number
   seq: number
   workspaceCommitSha: string | null
+  workspaceStatus?: string | null
+  completionKind?: string | null
   status: string
   resultado?: string | null
 }>): PromotionValidationResult {
+  const hasNonCodeEvidence = (st: { completionKind?: string | null; workspaceStatus?: string | null; resultado?: string | null }) =>
+    ["analysis", "external_operation", "no_code_change"].includes(st.completionKind ?? "") && st.workspaceStatus === "approved" && Boolean(st.resultado?.trim())
   const invalidSubtasks = subtasks.filter(
-    (st) => !st.workspaceCommitSha || st.workspaceCommitSha.trim() === '' ||
+    (st) => ((!st.workspaceCommitSha || st.workspaceCommitSha.trim() === '') && !hasNonCodeEvidence(st)) || st.workspaceStatus === "integration_failed" ||
       (st.resultado !== undefined && isAgentRunFailureWithoutReply(st.resultado))
   )
 
