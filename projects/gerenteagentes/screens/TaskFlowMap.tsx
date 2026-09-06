@@ -156,11 +156,27 @@ export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", onSe
       {movements.map((movement) => <Chip key={movement.id} color="info" sx={{ mb: 1.5, mr: 1 }} label={`#${movement.id} · ${taskStatusLabel(movement.from)} → ${taskStatusLabel(movement.to)}`} data-testid={`flow-movement-${movement.id}`} />)}
 
       <Box sx={{ overflowX: "auto", pb: 1 }}>
-        <Stack direction="row" alignItems="center" spacing={0.75} sx={{ minWidth: 1320 }}>
+        <Stack
+          direction="row"
+          alignItems="center"
+          justifyContent="center"
+          flexWrap="wrap"
+          useFlexGap
+          spacing={0.75}
+          sx={{ width: "100%" }}
+        >
           {MAIN_FLOW.map((station, index) => <React.Fragment key={station.id}><Station station={station} tarefas={tarefas} selectedTaskId={selectedTaskId} search={search} movingIds={movingIds} onSelectTask={onSelectTask} />{index < MAIN_FLOW.length - 1 && <ArrowForwardRounded color="action" aria-hidden="true" />}</React.Fragment>)}
         </Stack>
-        <Stack alignItems="center" sx={{ minWidth: 1320, my: 0.5 }}><ArrowDownwardRounded color="action" /></Stack>
-        <Stack direction="row" justifyContent="center" alignItems="center" spacing={1} sx={{ minWidth: 900 }}>
+        <Stack alignItems="center" sx={{ width: "100%", my: 0.5 }}><ArrowDownwardRounded color="action" /></Stack>
+        <Stack
+          direction="row"
+          justifyContent="center"
+          alignItems="center"
+          flexWrap="wrap"
+          useFlexGap
+          spacing={1}
+          sx={{ width: "100%" }}
+        >
           {SIDE_FLOW.map((station, index) => <React.Fragment key={station.id}><Station station={station} tarefas={tarefas} selectedTaskId={selectedTaskId} search={search} movingIds={movingIds} onSelectTask={onSelectTask} />{index < SIDE_FLOW.length - 1 && <ArrowForwardRounded color="action" aria-hidden="true" />}</React.Fragment>)}
         </Stack>
       </Box>
