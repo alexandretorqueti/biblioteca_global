@@ -18,3 +18,20 @@ abaixo da grade de subtarefas. A interface deve ter histórico rolável, campo d
 mensagem, envio e respostas em tempo real, com experiência de chat de IA. A
 sessão deve permanecer aberta enquanto viável para sustentar conversa
 sequencial; troca de tarefa, reconexão, histórico e erros precisam ser tratados.
+
+## Mapa vivo do fluxo de tarefas
+
+Requisito aprovado em 2026-09-06: substituir a busca manual status por status
+por um **Mapa Vivo da Operação** como experiência principal do acompanhamento.
+
+- Cada estação representa uma etapa operacional e exibe sua quantidade de tarefas.
+- As fichas das tarefas ficam visíveis dentro da estação e abrem o detalhe ao clique.
+- Setas comunicam os caminhos possíveis do fluxo.
+- Mudanças de status destacam o deslocamento e a chegada da tarefa.
+- Uma engrenagem animada identifica estados em que a IA está trabalhando.
+- Bloqueios, falhas, espera humana e correções possuem estações distintas.
+- A busca por número/ID ou título destaca a tarefa em sua posição atual.
+
+Primeira versão implementada em `screens/TaskFlowMap.tsx`, integrada à tela
+`screens/TaskMonitorScreen.tsx`. Evoluções funcionais serão adicionadas depois
+da validação desta base visual.

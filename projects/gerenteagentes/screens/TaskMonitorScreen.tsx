@@ -40,6 +40,7 @@ import { RealtimeClient, type RealtimeServerMessage } from "@biblioteca-global/a
 import type { DynamicField, DynamicFormValues } from "@biblioteca-global/ui"
 import { useApi } from "../../../apps/web/src/hooks/useApi"
 import TarefaForm, { type TarefaFormValues } from "./TarefaForm"
+import TaskFlowMap from "./TaskFlowMap"
 import { resolveRealtimeUrl, resolveApiBaseUrl } from "../../../apps/web/src/api/client"
 import {
   ALL_TASK_STATUSES,
@@ -240,6 +241,7 @@ export default function TaskMonitorScreen(): ReactNode {
   const [projetos, setProjetos] = useState<ProjetoCaptado[]>([])
   const [projetoFiltro, setProjetoFiltro] = useState<number | "">("")
   const [statusFiltro, setStatusFiltro] = useState<string>("")
+  const [buscaTarefa, setBuscaTarefa] = useState("")
   const [tarefaId, setTarefaId] = useState<number | "">("")
   const [detail, setDetail] = useState<MotorDetail | null>(null)
   const [chat, setChat] = useState<TarefaChatMessage[]>([])
@@ -289,7 +291,6 @@ export default function TaskMonitorScreen(): ReactNode {
     try {
       const query: Record<string, string | number> = { pageSize: 100 }
       if (projetoFiltro !== "") query.projetoId = projetoFiltro
-      if (statusFiltro !== "") query.status = statusFiltro
       // A listagem é fornecida pelo CRUD do projeto; as rotas específicas do
       // acompanhamento (detalhe, chat e subtarefas) ficam no proxy customizado.
       const res = await bundle.http.request<{ items: Tarefa[] }>("GET", "/gerenteagentes/tarefas", {
@@ -311,7 +312,7 @@ export default function TaskMonitorScreen(): ReactNode {
     } catch {
       // silencioso — o painel fica vazio até a próxima tentativa
     }
-  }, [bundle, projetoFiltro, statusFiltro])
+  }, [bundle, projetoFiltro])
 
   const carregarDetail = useCallback(async (id: number) => {
     if (!bundle) return
@@ -897,6 +898,13 @@ export default function TaskMonitorScreen(): ReactNode {
   }, [detail?.currentSubTask, subtasks])
 
   const tarefaSelecionada = tarefas.find((t) => t.id === tarefaId)
+  const tarefasVisiveis = useMemo(() => {
+    const busca = buscaTarefa.trim().toLocaleLowerCase("pt-BR")
+    return tarefas.filter((tarefa) => {
+      if (statusFiltro && tarefa.status !== statusFiltro) return false
+      return !busca || `#${tarefa.id} ${tarefa.titulo}`.toLocaleLowerCase("pt-BR").includes(busca)
+    })
+  }, [tarefas, statusFiltro, buscaTarefa])
   const statusMotor = detail?.task?.status ?? tarefaSelecionada?.status ?? "—"
   const podeIniciar = STATUS_INICIO_PERMITIDO.has(statusMotor)
   const podePausar = STATUS_EXECUCAO.has(statusMotor)
@@ -1046,7 +1054,23 @@ export default function TaskMonitorScreen(): ReactNode {
 
       {erro && <Alert severity="error" data-testid="error-alert">{erro}</Alert>}
 
+      <TaskFlowMap
+        tarefas={tarefas}
+        selectedTaskId={tarefaId}
+        search={buscaTarefa}
+        onSelectTask={setTarefaId}
+      />
+
       <Stack direction={{ xs: "column", sm: "row" }} spacing={2} flexWrap="wrap" useFlexGap>
+        <TextField
+          size="small"
+          label="Buscar tarefa"
+          placeholder="#766 ou título"
+          value={buscaTarefa}
+          onChange={(event) => setBuscaTarefa(event.target.value)}
+          inputProps={{ "data-testid": "input-task-search" }}
+          sx={{ minWidth: 260 }}
+        />
         <FormControl size="small" sx={{ minWidth: 240 }}>
           <InputLabel>Projeto</InputLabel>
           <Select
@@ -1089,12 +1113,12 @@ export default function TaskMonitorScreen(): ReactNode {
             onChange={(e) => setTarefaId(Number(e.target.value))}
             data-testid="select-tarefa"
           >
-            {tarefas.length === 0 && (
+            {tarefasVisiveis.length === 0 && (
               <MenuItem value="" disabled>
                 Nenhuma tarefa com os filtros selecionados
               </MenuItem>
             )}
-            {tarefas.map((t) => (
+            {tarefasVisiveis.map((t) => (
               <MenuItem key={t.id} value={t.id}>
                 #{t.id} — {t.titulo} ({t.status})
               </MenuItem>
