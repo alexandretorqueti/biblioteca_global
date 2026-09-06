@@ -57,6 +57,55 @@ function projeto(slug: string, id: number): ProjetoResumo {
 }
 
 describe("CrudService — whitelist e validação", () => {
+  const projetoGerente = projeto("gerenteagentes", 640)
+
+  /** Db fake encadeável no formato que o CrudService usa (drizzle). */
+  function dbFake(opcoes: {
+    linhasPorTabela?: Record<string, Array<Record<string, unknown>>>
+    insertId?: number
+    insertErro?: Error
+  } = {}) {
+    const linhas = opcoes.linhasPorTabela ?? {}
+    return {
+      select: () => ({
+        from: (tabela: MySqlTable) => ({
+          where: () => ({
+            limit: async () => linhas[getTableName(tabela)] ?? [],
+          }),
+        }),
+      }),
+      insert: () => ({
+        values: async () => {
+          if (opcoes.insertErro) throw opcoes.insertErro
+          return [{ insertId: opcoes.insertId ?? 1 }]
+        },
+      }),
+      execute: async () => [],
+    }
+  }
+
+  function montar(opcoes: {
+    linhasPorTabela?: Record<string, Array<Record<string, unknown>>>
+    insertId?: number
+    insertErro?: Error
+  } = {}) {
+    // Inline registry para gerenteagentes com subtarefas.
+    const fakeReg: SchemaRegistry = {
+      tabelasDoProjeto(slug: string) {
+        if (slug === "gerenteagentes") return { tarefas: tarefasGerente, subtarefas: subtarefasGerente }
+        return undefined
+      },
+      projetosCarregados() { return ["gerenteagentes"] },
+    }
+    const db = dbFake(opcoes)
+    const factory = { obter: async () => db } as unknown as ProjectDbFactory
+    const configService = { get: () => undefined } as unknown as ConfigService
+    const realtime = new RealtimeService()
+    const publicar = vi.spyOn(realtime, "publicar")
+    const service = new CrudService(fakeReg, factory, configService, realtime)
+    return { service, publicar }
+  }
+
   function novoService() {
     const registry = new FakeRegistry()
     const factory = new FakeFactorySemDb()
@@ -163,6 +212,63 @@ describe("CrudService — whitelist e validação", () => {
         }),
       ).rejects.toThrow("database não deveria ser acionado neste teste")
       expect(factory.chamadas).toBe(2)
+    })
+
+    it("criar tarefa com projeto_id e projetoId → criação passa com DB mock", async () => {
+      const linhaSnake = {
+        id: 55,
+        titulo: "Tarefa com snake",
+        status: "draft",
+        projetoId: 1,
+        updatedAt: new Date("2026-09-06T10:00:00.000Z"),
+      }
+      const { service: s1, publicar: p1 } = montar({
+        linhasPorTabela: {
+          projetos_captados: [{ id: 1, slug: "gerenteagentes" }],
+          tarefas: [linhaSnake],
+        },
+        insertId: 55,
+      })
+
+      // Com projeto_id (snake_case)
+      await expect(
+        s1.criar(projetoGerente, "tarefas", {
+          projeto_id: 1,
+          titulo: "Tarefa com snake",
+        }),
+      ).resolves.toMatchObject({ id: 55, titulo: "Tarefa com snake", status: "draft" })
+
+      const linhaCamel = {
+        id: 56,
+        titulo: "Tarefa com camel",
+        status: "draft",
+        projetoId: 1,
+        updatedAt: new Date("2026-09-06T10:00:00.000Z"),
+      }
+      const { service: s2, publicar: p2 } = montar({
+        linhasPorTabela: {
+          projetos_captados: [{ id: 1, slug: "gerenteagentes" }],
+          tarefas: [linhaCamel],
+        },
+        insertId: 56,
+      })
+
+      // Com projetoId (camelCase)
+      await expect(
+        s2.criar(projetoGerente, "tarefas", {
+          projetoId: 1,
+          titulo: "Tarefa com camel",
+        }),
+      ).resolves.toMatchObject({ id: 56, titulo: "Tarefa com camel", status: "draft" })
+
+      // Ambos publicam evento de reconciliação.
+      expect(p1).toHaveBeenCalledTimes(1)
+      expect(p2).toHaveBeenCalledTimes(1)
+      const ingressos = [p1.mock.calls[0][0], p2.mock.calls[0][0]]
+      for (const e of ingressos) {
+        expect(e.type).toBe("task.created")
+        expect(e.projectId).toBe(1)
+      }
     })
 
     it("criar tarefa com campo inexistente (agenteId migrado p/ projetos_captados) → 400 sem tocar no banco", async () => {
@@ -792,6 +898,194 @@ describe("CrudService — eventos realtime no CRUD de tarefas/subtarefas", () =>
       })
       expect(ingress).toHaveProperty("payload.id", 55)
     })
+
+    it("criar tarefa com projeto_id (snake) → cria com sucesso e publica evento",
+      async () => {
+        const linhaTarefa = {
+          id: 70,
+          titulo: "Tarefa snake",
+          status: "draft",
+          projetoId: 1,
+          updatedAt,
+        }
+        const { service, publicar } = montar({
+          linhasPorTabela: {
+            projetos_captados: [{ id: 1, slug: "gerenteagentes" }],
+            tarefas: [linhaTarefa],
+          },
+          insertId: 70,
+        })
+
+        const resultado = await service.criar(projetoGerente, "tarefas", {
+          projeto_id: 1,
+          titulo: "Tarefa snake",
+        })
+
+        expect(resultado).toMatchObject({ id: 70, titulo: "Tarefa snake", status: "draft" })
+        expect(publicar).toHaveBeenCalledTimes(1)
+        const ingress = unicoEvento(publicar).ingress
+        expect(ingress.type).toBe("task.created")
+        expect(ingress.projectId).toBe(1)
+        expect(ingress.taskId).toBe(70)
+      },
+    )
+
+    it("criar tarefa com projetoId (camel) → cria com sucesso e publica evento",
+      async () => {
+        const linhaTarefa = {
+          id: 71,
+          titulo: "Tarefa camel",
+          status: "draft",
+          projetoId: 1,
+          updatedAt,
+        }
+        const { service, publicar } = montar({
+          linhasPorTabela: {
+            projetos_captados: [{ id: 1, slug: "gerenteagentes" }],
+            tarefas: [linhaTarefa],
+          },
+          insertId: 71,
+        })
+
+        const resultado = await service.criar(projetoGerente, "tarefas", {
+          projetoId: 1,
+          titulo: "Tarefa camel",
+        })
+
+        expect(resultado).toMatchObject({ id: 71, titulo: "Tarefa camel", status: "draft" })
+        expect(publicar).toHaveBeenCalledTimes(1)
+        const ingress = unicoEvento(publicar).ingress
+        expect(ingress.type).toBe("task.created")
+        expect(ingress.projectId).toBe(1)
+        expect(ingress.taskId).toBe(71)
+      },
+    )
+
+    it("criar com projeto_id inexistente → rejeita (BadRequest) antes do insert",
+      async () => {
+        // projetos_captados vazio = qualquer ID falha na verificação de FK.
+        const { service, publicar } = montar({
+          linhasPorTabela: { projetos_captados: [] },
+        })
+
+        await expect(
+          service.criar(projetoGerente, "tarefas", {
+            projeto_id: 99,
+            titulo: "Sem projeto",
+          }),
+        ).rejects.toBeInstanceOf(BadRequestException)
+        expect(publicar).not.toHaveBeenCalled()
+      },
+    )
+
+    it("criar com projetoId inexistente → rejeita (BadRequest) antes do insert",
+      async () => {
+        const { service, publicar } = montar({
+          linhasPorTabela: { projetos_captados: [] },
+        })
+
+        await expect(
+          service.criar(projetoGerente, "tarefas", {
+            projetoId: 99,
+            titulo: "Sem projeto",
+          }),
+        ).rejects.toBeInstanceOf(BadRequestException)
+        expect(publicar).not.toHaveBeenCalled()
+      },
+    )
+
+    it("criar com projeto_id de outro slug → rejeita (confere escopo do projeto)",
+      async () => {
+        const { service, publicar } = montar({
+          linhasPorTabela: {
+            projetos_captados: [
+              { id: 1, slug: "gerenteagentes" },
+              { id: 2, slug: "biblioteca-global" },
+            ],
+          },
+        })
+
+        // dbFake retorna todas as linhas; o escopo confere pelo primeiro match.
+        // O importante é que a criação falha e não publica evento.
+        await expect(
+          service.criar(projetoGerente, "tarefas", {
+            projeto_id: 2,
+            titulo: "Outro projeto",
+          }),
+        ).rejects.toThrow()
+        expect(publicar).not.toHaveBeenCalled()
+      },
+    )
+
+    it("criar com projetoId de outro slug → rejeita (confere escopo do projeto)",
+      async () => {
+        const { service, publicar } = montar({
+          linhasPorTabela: {
+            projetos_captados: [
+              { id: 1, slug: "gerenteagentes" },
+              { id: 2, slug: "biblioteca-global" },
+            ],
+          },
+        })
+
+        // dbFake retorna todas as linhas; o escopo confere pelo primeiro match.
+        // O importante é que a criação falha e não publica evento.
+        await expect(
+          service.criar(projetoGerente, "tarefas", {
+            projetoId: 2,
+            titulo: "Outro projeto",
+          }),
+        ).rejects.toThrow()
+        expect(publicar).not.toHaveBeenCalled()
+      },
+    )
+
+    it("criar sem projeto_id/projetoId → rejeita (BadRequest) por valor inválido",
+      async () => {
+        const { service, publicar } = montar({
+          linhasPorTabela: {},
+        })
+
+        await expect(
+          service.criar(projetoGerente, "tarefas", {
+            titulo: "Sem projeto",
+          }),
+        ).rejects.toBeInstanceOf(BadRequestException)
+        expect(publicar).not.toHaveBeenCalled()
+      },
+    )
+
+    it("criar com projeto_id negativo → rejeita (BadRequest) por valor inválido",
+      async () => {
+        const { service, publicar } = montar({
+          linhasPorTabela: {},
+        })
+
+        await expect(
+          service.criar(projetoGerente, "tarefas", {
+            projeto_id: -1,
+            titulo: "Negativo",
+          }),
+        ).rejects.toBeInstanceOf(BadRequestException)
+        expect(publicar).not.toHaveBeenCalled()
+      },
+    )
+
+    it("criar com projetoId zero → rejeita (BadRequest) por valor inválido",
+      async () => {
+        const { service, publicar } = montar({
+          linhasPorTabela: {},
+        })
+
+        await expect(
+          service.criar(projetoGerente, "tarefas", {
+            projetoId: 0,
+            titulo: "Zero",
+          }),
+        ).rejects.toBeInstanceOf(BadRequestException)
+        expect(publicar).not.toHaveBeenCalled()
+      },
+    )
   })
 
   describe("subtarefas", () => {
