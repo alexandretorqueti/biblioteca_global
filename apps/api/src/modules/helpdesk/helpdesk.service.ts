@@ -160,7 +160,7 @@ export class HelpDeskService {
     })
 
     if (sendResult.ok) {
-      const respostaAgente = sendResult.messageId ?? ""
+      const respostaAgente = sendResult.responseText ?? ""
       await db.insert(helpDeskMessageTable).values({
         sessaoId: input.sessaoId,
         role: "agent",
@@ -170,7 +170,7 @@ export class HelpDeskService {
       // Detecta solicitação de mudança e cria tarefa draft no projeto
       this.detectarECriarTarefa(sessao.projetoId, input.text.trim()).catch(() => {})
 
-      return { ok: true, messageId: sendResult.messageId }
+      return { ok: true, messageId: sendResult.runId }
     }
 
     return { ok: false, reason: "offline", retryable: false }

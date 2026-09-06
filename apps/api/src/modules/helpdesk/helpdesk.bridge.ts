@@ -67,7 +67,8 @@ function bffFetch(
 
 export interface BridgeSendResult {
   ok: boolean
-  messageId?: string
+  runId?: string
+  responseText?: string
   retryable?: boolean
 }
 
@@ -160,16 +161,17 @@ export class HelpDeskBridgeService {
 
         if (res.ok) {
           const data = await res.json() as Record<string, unknown>
-          const id =
-            typeof data.runId === "string"
-              ? data.runId
-              : typeof data.messageId === "string"
-                ? data.messageId
-                : undefined
+          const runId = typeof data.runId === "string" ? data.runId : undefined
+          const responseText = await this.aguardarResposta(input.sessionKey, input.text)
+          if (!responseText) {
+            this.logger.warn(`Execução ${runId ?? "sem-id"} terminou sem resposta textual`)
+            return { ok: false, runId, retryable: true }
+          }
           this.logger.log(`Resposta de ${entry.modelo}: ok=true`)
           return {
             ok: true,
-            messageId: id,
+            runId,
+            responseText,
             retryable: false,
           }
         }
@@ -184,6 +186,35 @@ export class HelpDeskBridgeService {
 
     this.logger.error(`Todos os modelos da cadeia falharam para ${input.sessionKey}`)
     return { ok: false, retryable: false }
+  }
+
+  /**
+   * `chat.send` retorna somente o runId. A resposta textual chega depois no
+   * histórico da sessão, portanto aguardamos o assistant após a mensagem atual.
+   */
+  private async aguardarResposta(sessionKey: string, userText: string): Promise<string | undefined> {
+    const deadline = Date.now() + 30_000
+
+    while (Date.now() < deadline) {
+      const history = await this.getHistory({ sessionKey, limit: 100 })
+      let userIndex = -1
+      for (let i = history.length - 1; i >= 0; i -= 1) {
+        if (history[i]?.role === "user" && history[i]?.text?.trim() === userText.trim()) {
+          userIndex = i
+          break
+        }
+      }
+
+      const inicio = userIndex >= 0 ? userIndex + 1 : Math.max(0, history.length - 1)
+      for (let i = history.length - 1; i >= inicio; i -= 1) {
+        const message = history[i]
+        if (message?.role === "agent" && message.text?.trim()) return message.text.trim()
+      }
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 500))
+    }
+
+    return undefined
   }
 
   /** Busca histórico de mensagens via BFF. */
