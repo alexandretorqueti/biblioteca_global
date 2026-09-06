@@ -101,6 +101,47 @@ export class ExpirationReconciler {
         [hasSubtasks ? 'ready' : 'planned', taskId],
       )
     }
+
+    await this.repairOrphanedRunningSubtasks(now)
+  }
+
+  /**
+   * Cobre a inconsistência em que o worker/lease some, mas apenas a subtarefa
+   * fica `running` enquanto a tarefa-pai foi devolvida a `planned`/`ready`.
+   * A consulta de tarefas órfãs acima não encontra esse formato.
+   */
+  private async repairOrphanedRunningSubtasks(now: Date): Promise<void> {
+    const stale = await this.db.query(
+      `SELECT s.id AS subtask_id, s.tarefa_id, t.external_id
+       FROM subtarefas s
+       INNER JOIN tarefas t ON t.id = s.tarefa_id
+       WHERE s.status = 'running'
+         AND t.status NOT IN ('completed', 'deployed', 'cancelled', 'failed')
+         AND NOT EXISTS (
+           SELECT 1 FROM execution_resources r
+           WHERE (r.owner_id = CAST(t.id AS CHAR) OR r.owner_id = t.external_id)
+             AND r.expires_at > ?
+         )`,
+      [now],
+    )
+    for (const row of stale.rows) {
+      const subtaskId = Number(row.subtask_id)
+      const taskId = Number(row.tarefa_id)
+      await this.db.transaction(async (tx) => {
+        await tx.query(
+          `UPDATE subtarefas SET status = 'pending', updated_at = NOW(),
+             resultado = CONCAT(COALESCE(resultado, ''), '\n[reconciliado] Worker/lease expirado; subtarefa devolvida à fila.')
+           WHERE id = ? AND status = 'running'`,
+          [subtaskId],
+        )
+        await tx.query(
+          `UPDATE tarefas SET status = 'ready', updated_at = NOW()
+           WHERE id = ? AND status NOT IN ('completed', 'deployed', 'cancelled', 'failed')`,
+          [taskId],
+        )
+      })
+      this.logger.warn(`Subtarefa órfã reconciliada: ${subtaskId}`, { taskId: String(row.external_id) })
+    }
   }
 
   private async repairVerifiedNoReplySubtasks(): Promise<void> {
