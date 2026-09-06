@@ -13,8 +13,9 @@ usada no provisionamento. O core guarda a configuração CORRENTE em
 ela começa como a base acrescida das telas derivadas do schema. Alterar uma não
 substitui automaticamente a outra: mantenha a decisão registrada nas duas.
 
-Não existe GET público de configuração. A web resolve o slug em
-`apps/web/src/project/registry/projects.ts`, valida com
+Não existe GET público de configuração. A web resolve o slug por autodescoberta
+em `apps/web/src/project/registry/projects.ts` (via `import.meta.glob` do Vite,
+varrendo `projects/*/config.ts` em build time), valida com
 `geradorSistemaConfigSchema` e monta o runtime em
 `apps/web/src/project/ProjectContext.tsx`. Não crie endpoint HTTP para config
 nem coloque HTTP em componentes; uma futura fonte corrente pode ser trocada
@@ -58,7 +59,8 @@ Cada group é uma seção e cada item é uma rota. IDs e paths devem ser estáve
   como `projetos_captados`, mesmo quando a variável é `projetosCaptados`.
   `fields`/`overrides` são opcionais e o schema-tools deriva a base.
 - `custom`: tela React específica, identificada apenas por `componentId`, que
-  deve existir em `apps/web/src/project/registry/customScreens.tsx`.
+  deve existir em `projects/<slug>/screens/` e exportar `componentId` (autodescoberta
+  em build time via `import.meta.glob`).
 - `external`: REST fora do schema, com `baseUrl`, `method` e `pathTemplate`;
   pode ter `dataPath`, `query`, detalhe, edição e `actions`. Não use external
   para um CRUD que o schema interno atende.
@@ -156,18 +158,16 @@ projetoNome, projetoSlug? }`; cria/reutiliza usuário, cria/reutiliza projeto e
 vincula o usuário como admin. Exige `Authorization: Bearer <PROVISION_TOKEN>`;
 é token de serviço, não endpoint público de navegador.
 
-Em `apps/web/src/project/registry/projects.ts`, importe a config:
+A config é autodescoberta em build time: basta existir `projects/<slug>/config.ts`
+exportando `config: GeradorSistemaConfig` — o `import.meta.glob` do Vite em
+`apps/web/src/project/registry/projects.ts` varre todos os `projects/*/config.ts`
+e monta o mapa slug → config automaticamente.
 
-```ts
-import { config as clientesConfig } from "../../../../../projects/clientes/config"
-export const projectConfigs = { clientes: clientesConfig }
-```
-
-Para tela custom, importe o componente de `projects/<slug>/screens/` e registre
-exatamente o mesmo `componentId` em
-`apps/web/src/project/registry/customScreens.tsx`. Registre as telas no boot
-com `registrarTelasCustom()`; config e registry mudam juntos. Referências reais:
-`projects/documentacao/screens/DocumentationScreen.tsx` e
+Para tela custom, crie o componente em `projects/<slug>/screens/` e exporte
+`componentId` (string) e `default` (componente React). O registry
+`apps/web/src/project/registry/customScreens.tsx` varre todos os
+`projects/*/screens/*.tsx` em build time e registra cada tela pelo `componentId`.
+Referências reais: `projects/documentacao/screens/DocumentationScreen.tsx` e
 `projects/gerenteagentes/screens/`.
 
 ## 6. API, auth e escopo por token
@@ -223,11 +223,11 @@ export const config: GeradorSistemaConfig = {
 ```
 
 Crie `projects/clientes/migrations/` via Drizzle; registre o schema em
-`apps/api/src/modules/crud/schema-registry.ts`, a config em
-`apps/web/src/project/registry/projects.ts` e `clientes-manual` em
-`apps/web/src/project/registry/customScreens.tsx`. Se `enderecos` existir no
-schema, o `targetResource` é validado pela whitelist e o filtro é automático.
-Sem necessidade de UX específica, remova o item manual e seu registro.
+`apps/api/src/modules/crud/schema-registry.ts`. A config e as telas custom
+são autodescobertas em build time (basta existir `projects/<slug>/config.ts`
+e `projects/<slug>/screens/*.tsx` com `componentId` exportado). Se `enderecos`
+existir no schema, o `targetResource` é validado pela whitelist e o filtro é
+automático. Sem necessidade de UX específica, remova o item manual e seu registro.
 
 ## 8. Regras explícitas de reutilização
 

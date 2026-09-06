@@ -26,6 +26,7 @@ import {
   GroupsRounded,
   SchoolRounded,
 } from "@mui/icons-material"
+export const componentId = "sistema-adm-global-hub-administrativo"
 
 interface HubCard {
   label: string
