@@ -28,7 +28,7 @@ import { useProject } from "../project/ProjectContext"
 import { useThemeSetting } from "../theme/ThemeContext"
 
 export default function SystemScreen(): ReactNode {
-  const { logout, projeto, usuario, bundle } = useAuth()
+  const { logout, projeto, bundle } = useAuth()
   const { config, runtime } = useProject()
   const { toggle, themeName } = useThemeSetting()
 
@@ -67,13 +67,11 @@ export default function SystemScreen(): ReactNode {
 
   // HelpDesk: driver injetado quando há autenticação + projeto.
   const helpDeskClient = useMemo(() => {
-    if (!usuario?.id || !projeto?.id) return null
+    if (!projeto?.id) return null
     return createHelpDeskClient({
       http: bundle.http,
-      usuarioId: usuario.id,
-      projetoId: projeto.id,
     })
-  }, [bundle.http, usuario?.id, projeto?.id])
+  }, [bundle.http, projeto?.id])
 
   if (!config) {
     return (

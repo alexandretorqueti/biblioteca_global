@@ -41,8 +41,6 @@ export interface HelpDeskDriver {
 
 export interface HelpDeskClientOptions {
   http: ApiHttpClient
-  usuarioId: number
-  projetoId: number
   /** Rota base; padrão `/helpdesk`. */
   basePath?: string
 }
