@@ -23,12 +23,12 @@ export const BUNDLED_PROMPT_DEFAULTS: Readonly<Record<string, { text: string; co
     "text": "Crie o projeto **NOMEPROJETO** (**SLUGPROJETO**) na plataforma. Descrição: **DESCRICAOPROJETO**. ID: **IDPROJETOPLATAFORMA**. Respeite as convenções e valide build e testes."
   },
   "dev.primeira_rodada_tarefa": {
-    "text": "Você é o desenvolvedor. Execute a subtarefa **NUMSUBTAREFA** — **TITULOSUBTAREFA** da tarefa **TITULOTAREFA**. Descrição: **DESCRICAOTAREFA**. Tipo: **TIPOTAREFA**. Escopo: **ESCOPO**. Critérios: **CRITERIOSACEITE**. Workspace: **WORKSPACE**. Não faça commit. Responda em JSON com status done, need_help, blocked_environment ou premise_incorrect.",
+    "text": "Você é o desenvolvedor. Antes de qualquer leitura ou edição, execute `cd **WORKSPACE**`, `pwd`, `git rev-parse --show-toplevel` e `git branch --show-current`; confirme que pwd é exatamente **WORKSPACE**. Execute a subtarefa **NUMSUBTAREFA** — **TITULOSUBTAREFA** da tarefa **TITULOTAREFA**. Descrição: **DESCRICAOTAREFA**. Tipo: **TIPOTAREFA**. Escopo: **ESCOPO**. Critérios: **CRITERIOSACEITE**. Trabalhe somente em **WORKSPACE**; não use a pasta base, outro worktree ou integração. Antes de responder, repita `cd **WORKSPACE**`, `pwd`, `git rev-parse --show-toplevel` e `git status --short`. Se pwd ou Git não corresponderem ao workspace, pare e responda blocked_environment. Não faça commit. Responda em JSON com status done, need_help, blocked_environment ou premise_incorrect.",
     "contractKey": "dev.resultado_execucao",
     "contractInstructions": "Responda somente com JSON: {\"status\":\"done|need_help|blocked_environment|premise_incorrect\",\"summary\":\"...\",\"reason\":\"...\"}. Para premise_incorrect, inclua claim, conflict_type, evidence e suggested_revision."
   },
   "dev.retorno_por_falha_de_gate": {
-    "text": "Retome a subtarefa **TITULOSUBTAREFA** da tarefa **TITULOTAREFA** no workspace **WORKSPACE**. O gate anterior falhou: **ERROGATEANTERIOR**. Corrija a causa raiz, preserve o que já funciona, não faça commit e responda no contrato JSON do Motor.",
+    "text": "Retome a subtarefa **TITULOSUBTAREFA** da tarefa **TITULOTAREFA** exclusivamente no workspace **WORKSPACE**. Antes de qualquer ação, execute `cd **WORKSPACE**`, `pwd`, `git rev-parse --show-toplevel` e `git branch --show-current`; se falhar, pare e responda blocked_environment. O gate anterior falhou: **ERROGATEANTERIOR**. Corrija a causa raiz somente nessa pasta, preserve o que já funciona, não use a base ou outro worktree, não faça commit e, antes da resposta, repita `pwd`, `git rev-parse --show-toplevel` e `git status --short`. Responda no contrato JSON do Motor.",
     "contractKey": "dev.resultado_execucao",
     "contractInstructions": "Responda somente com JSON: {\"status\":\"done|need_help|blocked_environment|premise_incorrect\",\"summary\":\"...\",\"reason\":\"...\"}. Para premise_incorrect, inclua claim, conflict_type, evidence e suggested_revision."
   },

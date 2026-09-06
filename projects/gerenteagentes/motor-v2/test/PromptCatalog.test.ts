@@ -26,4 +26,12 @@ describe("catálogo de prompts dos agentes", () => {
       expect(typeof entry.prompt).toBe("string")
     }
   })
+
+  it("obriga o dev a confirmar o workspace no início e no fim", () => {
+    const prompts = AGENT_PROMPT_CATALOG.filter((entry) => entry.agentType === "dev").map((entry) => entry.prompt).join("\n")
+    expect(prompts).toContain("pwd")
+    expect(prompts).toContain("git rev-parse --show-toplevel")
+    expect(prompts).toContain("somente em **WORKSPACE**")
+    expect(prompts).toContain("Antes de responder")
+  })
 })

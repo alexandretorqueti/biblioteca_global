@@ -12,6 +12,7 @@
 
 import { execFileSync, execSync } from "node:child_process"
 import { existsSync } from "node:fs"
+import { isAbsolute, relative, resolve } from "node:path"
 
 import { pathToFileURL } from "node:url"
 import { SecretProfileManager, resolveGitTopLevel } from "../workspaces/SecretProfileManager.js"
@@ -59,6 +60,44 @@ import { digestGateFailure, formatCarryOver, type CarryOverEvent } from "../poli
 
 const COMMAND_FAILURE_LIMIT = 12_000
 const ANSI_ESCAPE_PATTERN = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g
+
+type IntegrationWorkspaceBaseline = {
+  path: string
+  head: string
+  status: string
+}
+
+class WrongWorkspaceError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "WrongWorkspaceError"
+  }
+}
+
+function workspaceGuard(repoPath: string): string {
+  return [
+    "CONTROLE OBRIGATÓRIO DE WORKSPACE — execute imediatamente, antes de ler ou editar qualquer arquivo:",
+    `cd ${repoPath}`,
+    "pwd",
+    "git rev-parse --show-toplevel",
+    "git branch --show-current",
+    `O resultado de pwd deve ser exatamente: ${repoPath}`,
+    "O resultado de git rev-parse --show-toplevel deve ser a raiz Git que contém esse workspace e a branch deve ser a branch exclusiva informada pelo Motor.",
+    "Se qualquer verificação falhar, PARE e responda blocked_environment com a saída exata. Não procure outra pasta, não use a pasta base e não use outro worktree.",
+  ].join("\n")
+}
+
+function workspaceGuardClosing(repoPath: string): string {
+  return [
+    "VERIFICAÇÃO OBRIGATÓRIA ANTES DA RESPOSTA FINAL:",
+    `cd ${repoPath}`,
+    "pwd",
+    "git rev-parse --show-toplevel",
+    "git status --short",
+    `Confirme que pwd continua exatamente ${repoPath} e que todas as alterações foram feitas nesse workspace.`,
+    "Não faça commit; o Motor fará o commit depois da validação.",
+  ].join("\n")
+}
 
 /**
  * Limite da descrição enviada AO ANALISTA. Ele só precisa de contexto
@@ -162,6 +201,7 @@ class TaskWorker {
   private cancelled = false
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null
   private db: mysql.Connection | null = null
+  private integrationBaseline: IntegrationWorkspaceBaseline | null = null
 
   constructor() {
     this.executionId = process.env.EXECUTION_ID ?? "unknown"
@@ -408,6 +448,7 @@ class TaskWorker {
     if (currentBranch !== workBranch) throw new Error("Worktree não está na branch exclusiva esperada")
 
     this.log("info", "Workspace isolado validado: branch " + workBranch)
+    this.integrationBaseline = this.captureIntegrationBaseline(repoPath)
 
     // Materializa segredos do manifesto (task-environment.json)
     await this.materializeSecrets(input)
@@ -551,7 +592,7 @@ class TaskWorker {
             [carryOver, agentSummary && "Relato do agente na entrega anterior: " + agentSummary].filter(Boolean).join("\n\n") || undefined,
           )
           const promptKey = lastFailure ? "dev.retorno_por_falha_de_gate" : "dev.primeira_rodada_tarefa"
-          const header = await this.resolveManagedPrompt(promptKey, {
+          const resolvedHeader = await this.resolveManagedPrompt(promptKey, {
             "**TITULOTAREFA**": input.task.title,
             "**DESCRICAOTAREFA**": input.task.description ?? "",
             "**TIPOTAREFA**": input.task.tipo ?? "desenvolvimento",
@@ -562,6 +603,9 @@ class TaskWorker {
             "**WORKSPACE**": input.repoPath,
             "**ERROGATEANTERIOR**": lastFailure,
           }, embeddedHeader, input.task.id, subtask.id)
+          const header = this.isDevelopmentTask(input)
+            ? [workspaceGuard(input.repoPath), resolvedHeader, workspaceGuardClosing(input.repoPath)].join("\n\n")
+            : resolvedHeader
           // Envia contexto separado se a missao for longa (evita truncamento no viewer)
           if (context) {
             await driver.sendMessage({ session, message: context })
@@ -570,6 +614,19 @@ class TaskWorker {
           const result = await driver.waitForRunCompletion(session, runId, {
             onActivity: () => this.sendHeartbeat(),
           })
+          const workspaceErrorAfterRun = this.isDevelopmentTask(input)
+            ? this.validateAndRepairAgentWorkspace(input)
+            : null
+          if (workspaceErrorAfterRun) {
+            lastFailure = workspaceErrorAfterRun
+            await this.db!.query(
+              "UPDATE subtarefas SET status = 'rejected', resultado = ?, finalizada_em = NULL, updated_at = NOW() WHERE id = ?",
+              [workspaceErrorAfterRun.substring(0, 2000), subtask.id],
+            )
+            await this.recordDeliveryEvent(subtask.id, deliverCount, model.model, "gate_rejected", workspaceErrorAfterRun)
+            this.log("warn", workspaceErrorAfterRun + " Entrega desfeita; reenviando ao dev.")
+            continue
+          }
           if (result.state !== "final") {
             lastFailure = "Programador falhou: " + (result.errorMessage || result.state)
             break
@@ -972,6 +1029,84 @@ class TaskWorker {
         return path.replace(/^"|"$/g, "").trim()
       })
       .filter((path) => path.length > 0 && !path.includes("\"") && !path.includes("'"))
+  }
+
+  /**
+   * Registra o estado da branch de integração antes de o dev começar. A
+   * integração é um worktree irmão e nunca pode ser usado pelo agente.
+   */
+  private captureIntegrationBaseline(repoPath: string): IntegrationWorkspaceBaseline | null {
+    const worktreeRoot = resolve(this.exec("git rev-parse --show-toplevel", repoPath).trim())
+    const marker = "/worktrees/"
+    const markerIndex = worktreeRoot.indexOf(marker)
+    if (markerIndex < 0) return null
+
+    const suffix = worktreeRoot.slice(markerIndex + marker.length).split("/")
+    const taskSegment = suffix[0]
+    if (!taskSegment || suffix[1] === "integracao") return null
+
+    const integrationRoot = resolve(worktreeRoot.slice(0, markerIndex), "worktrees", taskSegment, "integracao")
+    if (!existsSync(integrationRoot)) return null
+    const integrationTop = resolve(this.exec("git rev-parse --show-toplevel", integrationRoot).trim())
+    const status = this.exec("git status --porcelain --untracked-files=all", integrationTop).trim()
+    if (status) {
+      throw new WrongWorkspaceError(
+        `A branch de integração já estava alterada antes do dev começar (${integrationTop}): ${status.split("\\n")[0]}. ` +
+        "O Motor não apagará trabalho preexistente; a integração precisa ser limpa antes da retomada.",
+      )
+    }
+    const head = this.exec("git rev-parse --verify HEAD", integrationTop).trim()
+    return { path: integrationTop, head, status }
+  }
+
+  /**
+   * Confirma que a entrega ocorreu no worktree/projeto correto e que a branch
+   * de integração permaneceu intacta. Em violação, restaura apenas os
+   * worktrees dedicados desta tarefa e devolve a subtarefa ao dev.
+   */
+  private validateAndRepairAgentWorkspace(input: WorkerInput): string | null {
+    const repoPath = resolve(input.repoPath)
+    const worktreeRoot = resolve(this.exec("git rev-parse --show-toplevel", repoPath).trim())
+    const expectedBranch = input.workBranch
+    const actualBranch = this.exec("git branch --show-current", repoPath).trim()
+    if (!expectedBranch || actualBranch !== expectedBranch) {
+      return `Workspace incorreto: esperado ${repoPath} na branch ${expectedBranch ?? "não informada"}, encontrado ${actualBranch || "sem branch"}.`
+    }
+
+    const projectRelativePath = relative(worktreeRoot, repoPath)
+    if (!isAbsolute(repoPath) || projectRelativePath === ".." || projectRelativePath.startsWith("../") || isAbsolute(projectRelativePath)) {
+      return `Workspace incorreto: o caminho do projeto ${repoPath} não está dentro do worktree exclusivo ${worktreeRoot}.`
+    }
+
+    if (this.integrationBaseline) {
+      const currentStatus = this.exec("git status --porcelain --untracked-files=all", this.integrationBaseline.path).trim()
+      const currentHead = this.exec("git rev-parse --verify HEAD", this.integrationBaseline.path).trim()
+      if (currentStatus !== this.integrationBaseline.status || currentHead !== this.integrationBaseline.head) {
+        const reason = `Branch base/integração alterada durante o trabalho do dev em ${this.integrationBaseline.path}. ` +
+          "As alterações foram revertidas; a subtarefa será devolvida ao dev para refazer somente no workspace correto."
+        this.resetDedicatedWorktree(this.integrationBaseline.path, this.integrationBaseline.head)
+        this.resetDedicatedWorktree(repoPath)
+        return reason
+      }
+    }
+
+    const changed = this.listChangedPaths(repoPath)
+    const outOfProject = projectRelativePath === ""
+      ? []
+      : changed.filter((path) => path !== projectRelativePath && !path.startsWith(projectRelativePath + "/"))
+    if (outOfProject.length > 0) {
+      const reason = `Workspace incorreto: o dev alterou arquivos fora de ${repoPath}: ${outOfProject.join(", ")}.`
+      this.resetDedicatedWorktree(repoPath)
+      return reason
+    }
+    return null
+  }
+
+  private resetDedicatedWorktree(worktreePath: string, resetTo?: string): void {
+    this.exec(`git reset --hard ${resetTo ?? "HEAD"}`, worktreePath, 120_000)
+    // Não usa -x: dependências e arquivos ignorados não fazem parte da
+    // entrega e não devem ser apagados durante a recuperação.
+    this.exec("git clean -fd", worktreePath, 120_000)
   }
 
   /** Todos os arquivos de teste conhecidos do repositório + testes novos não rastreados. */
