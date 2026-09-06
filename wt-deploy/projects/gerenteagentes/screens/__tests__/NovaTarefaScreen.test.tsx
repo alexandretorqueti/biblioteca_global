@@ -214,7 +214,7 @@ describe("NovaTarefaScreen", () => {
       )
       expect(chamadaPost).toBeDefined()
       const corpo = JSON.parse((chamadaPost![1] as { body: string }).body)
-      expect(corpo.projetoId).toBe(640)
+      expect(corpo.projeto_id).toBe(640)
       expect(corpo.titulo).toBe("Minha tarefa")
       expect(corpo.descricao).toBe("Descricao testando aqui")
       expect(corpo.status).toBe("draft")
