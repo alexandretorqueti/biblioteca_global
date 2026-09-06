@@ -24,8 +24,10 @@ import {
 } from "@nestjs/common"
 import type { ProjetoResumo, UsuarioAutenticado } from "@biblioteca-global/shared"
 import { CurrentProject, CurrentUser } from "../../common/decorators/current.decorator"
+import { Roles } from "../../common/decorators/roles.decorator"
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard"
 import { ProjectScopeGuard } from "../../common/guards/project-scope.guard"
+import { RolesGuard } from "../../common/guards/roles.guard"
 import { EncomendasMoradorService } from "./encomendas-morador.service"
 import {
   encomendasMoradorQuerySchema,
@@ -87,7 +89,8 @@ export class EncomendasMoradorController {
    * IMPORTANTE: Esta ação NÃO marca entrega.
    * A entrega física continua sendo ato exclusivo da portaria.
    */
-  @Patch(":slug/encomendas/:id/confirmar-reconhecimento")
+  @UseGuards(RolesGuard)
+  @Roles("admin", "gerente", "operador", "visualizador")
   async confirmarReconhecimento(
     @CurrentProject() projeto: ProjetoResumo,
     @CurrentUser() usuario: UsuarioAutenticado,
