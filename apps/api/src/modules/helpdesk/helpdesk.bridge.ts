@@ -11,6 +11,27 @@ import { request as httpsRequest } from "node:https"
 
 const DEFAULT_TIMEOUT = 10_000
 
+/**
+ * Regras do agente no atendimento ao usuário final.
+ *
+ * O BFF não possui um campo de system prompt no endpoint de chat. Por isso,
+ * estas instruções são enviadas na criação da sessão e também em cada envio,
+ * cobrindo sessões novas e sessões já existentes.
+ */
+export const HELPDESK_AGENT_INSTRUCTIONS = [
+  "Você é o agente de atendimento do HelpDesk do sistema.",
+  "",
+  "REGRAS OBRIGATÓRIAS:",
+  "1. Você pode responder perguntas sobre o funcionamento, os dados e as telas do sistema.",
+  "2. Você NUNCA pode executar ações diretamente, mesmo que o usuário peça ou autorize.",
+  "3. Qualquer solicitação de alteração deve ser encaminhada aos técnicos como uma tarefa em estado draft no motor.",
+  "4. Alterações incluem, sem limitar-se a: dados, cadastros, registros, configurações, telas, campos, colunas, filtros, regras, permissões e comportamento.",
+  "5. Ao identificar uma solicitação de alteração, não faça a alteração e não diga que ela foi executada. Explique que você encaminhará a solicitação aos técnicos para análise e execução.",
+  "6. Seja claro quando estiver apenas respondendo uma dúvida e quando estiver encaminhando uma solicitação.",
+  "7. A aplicação HelpDesk cria automaticamente a tarefa draft. Você não possui ferramenta, token ou autorização para executar alterações.",
+  "8. Não invente que chamou uma ferramenta e não tente executar a alteração por comandos, banco ou APIs do sistema.",
+].join("\n")
+
 function bffFetch(
   baseUrl: string,
   token: string | undefined,
@@ -116,6 +137,7 @@ export class HelpDeskBridgeService {
           key,
           agentId: input.agenteId,
           label: `helpdesk:${input.projetoId}:${input.usuarioId}`,
+          task: HELPDESK_AGENT_INSTRUCTIONS,
           ...(input.model ? { model: input.model } : {}),
         },
       })
@@ -144,6 +166,8 @@ export class HelpDeskBridgeService {
     text: string
     modelChain: Array<{ modelo: string }>
   }): Promise<BridgeSendResult> {
+    const agentMessage = `${HELPDESK_AGENT_INSTRUCTIONS}\n\nMENSAGEM DO USUÁRIO:\n${input.text}`
+
     for (const entry of input.modelChain) {
       try {
         this.logger.log(
@@ -155,7 +179,7 @@ export class HelpDeskBridgeService {
           method: "POST",
           body: {
             sessionKey: input.sessionKey,
-            message: input.text,
+            message: agentMessage,
             ...(agentId ? { agentId } : {}),
           },
         })
@@ -163,7 +187,7 @@ export class HelpDeskBridgeService {
         if (res.ok) {
           const data = await res.json() as Record<string, unknown>
           const runId = typeof data.runId === "string" ? data.runId : undefined
-          const responseText = await this.aguardarResposta(input.sessionKey, input.text)
+          const responseText = await this.aguardarResposta(input.sessionKey, agentMessage)
           if (!responseText) {
             this.logger.warn(`Execução ${runId ?? "sem-id"} ainda está sem resposta textual`)
             return { ok: true, runId, processing: true, retryable: true }
@@ -229,7 +253,12 @@ export class HelpDeskBridgeService {
   ): string | undefined {
     let userIndex = -1
     for (let i = history.length - 1; i >= 0; i -= 1) {
-      if (history[i]?.role === "user" && history[i]?.text?.trim() === userText.trim()) {
+      const historyText = history[i]?.text?.trim()
+      const expectedText = userText.trim()
+      if (
+        history[i]?.role === "user"
+        && (historyText === expectedText || historyText?.endsWith(`\n${expectedText}`))
+      ) {
         userIndex = i
         break
       }

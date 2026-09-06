@@ -134,6 +134,10 @@ export class HelpDeskService {
       text: input.text.trim(),
     })
 
+    // Registra a solicitação antes de chamar o agente. O agente nunca deve
+    // executar alterações diretamente; o motor recebe a solicitação em draft.
+    this.detectarECriarTarefa(sessao.projetoId, input.text.trim()).catch(() => {})
+
     if (!this.bridge.isConfigured()) {
       return { ok: false, reason: "offline" }
     }
@@ -169,9 +173,6 @@ export class HelpDeskService {
         role: "agent",
         text: respostaAgente,
       })
-
-      // Detecta solicitação de mudança e cria tarefa draft no projeto
-      this.detectarECriarTarefa(sessao.projetoId, input.text.trim()).catch(() => {})
 
       return { ok: true, messageId: sendResult.runId }
     }
@@ -374,8 +375,6 @@ export class HelpDeskService {
   // ===========================================================================
 
   private async detectarECriarTarefa(projetoId: number, textoUsuario: string): Promise<void> {
-    if (textoUsuario.length < 10) return
-
     const solicitacoes = this.detectarSolicitacao(textoUsuario)
     if (solicitacoes.length === 0) return
 
@@ -384,28 +383,33 @@ export class HelpDeskService {
 
   private detectarSolicitacao(texto: string): string[] {
     const t = texto.toLowerCase()
-    const chaves = [
-      "não deve aparecer", "remova", "esconda", "oculte", "não mostre",
-      "remover campo", "excluir campo", "apagar campo", "não quero", "não preciso",
-      "tire o ", "coloque ", "adicionar ", "inclua ", "crie um ",
-      "preciso de ", "quero que ", "deve aparecer", "aparecer na lista",
-      "apenas na edição", "só na tela", "mude o ", "altere o ", "renomeie",
-    ]
-    const resultado: string[] = []
-    for (const ch of chaves) {
-      if (t.includes(ch) && !resultado.includes(texto.trim())) {
-        resultado.push(texto.trim())
-      }
+    const perguntaInformativa = /^(como|qual|quais|o que|por que|porque|onde|quando|quem|posso|é possível|e possível|você pode|voce pode)\b/.test(t)
+      || t.endsWith("?")
+    if (perguntaInformativa) return []
+
+    // Saudações e confirmações não são solicitações do motor.
+    if (/^(oi|olá|ola|bom dia|boa tarde|boa noite|obrigado|obrigada|valeu|ok|certo|entendi)\b/.test(t)) {
+      return []
     }
-    return resultado
+
+    // Fora de uma pergunta informativa, qualquer mensagem não trivial é
+    // tratada como solicitação e registrada como tarefa draft. Isso evita
+    // depender de uma lista incompleta de verbos para proteger alterações.
+    return texto.trim() ? [texto.trim()] : []
   }
 
   private async criarTarefaDraft(projetoId: number, textoOriginal: string, solicitacao: string): Promise<void> {
     try {
+      const projetoCaptado = await this.obterProjetoCaptado(projetoId)
+      if (!projetoCaptado) {
+        this.logger.warn(`Não foi possível criar tarefa draft: projeto ${projetoId} não está cadastrado em projetos_captados`)
+        return
+      }
+
       const db = await this.factory.obter({ id: projetoId })
       const titulo = `[HelpDesk] ${solicitacao.substring(0, 100)}`
       await db.execute(
-        sql`INSERT INTO tarefas (projeto_id, titulo, descricao, status, created_at, updated_at) VALUES (${projetoId}, ${titulo}, ${textoOriginal}, 'draft', NOW(), NOW())`,
+        sql`INSERT INTO tarefas (projeto_id, titulo, descricao, status, tipo, auto_start, created_at, updated_at) VALUES (${projetoCaptado.id}, ${titulo}, ${textoOriginal}, 'draft', 'desenvolvimento', false, NOW(), NOW())`,
       )
       this.logger.log(`Tarefa draft criada no projeto ${projetoId}: "${solicitacao.substring(0, 80)}..."`)
     } catch (err: unknown) {
