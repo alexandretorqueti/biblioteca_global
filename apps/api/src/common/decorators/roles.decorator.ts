@@ -1,7 +1,7 @@
 import { SetMetadata } from "@nestjs/common"
 import type { Perfil } from "@biblioteca-global/shared"
 
-export const ROLES_KEY = "***"
+export const ROLES_KEY = "roles"
 
 /** Restringe a rota aos perfis informados (checado pelo RolesGuard). */
 export const Roles = (...perfis: Perfil[]): ReturnType<typeof SetMetadata> =>
