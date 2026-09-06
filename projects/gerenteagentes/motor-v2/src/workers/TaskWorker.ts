@@ -635,6 +635,22 @@ class TaskWorker {
                 return undefined
               }
               gitCommitSha = await this.phaseCommit(input)
+              // Uma subtarefa de desenvolvimento só pode ser verificada quando
+              // há um artefato de código rastreável. Sem mudanças no worktree,
+              // o build verde apenas prova que a base já estava verde; não é
+              // uma entrega. Trate como rejeição de gate aqui, ainda dentro da
+              // escada de modelos, para que o próximo modelo possa assumir.
+              if (!gitCommitSha) {
+                const reason = "Entrega sem evidência de código: o agente finalizou, mas não deixou alterações para commit."
+                lastFailure = reason
+                await this.db!.query(
+                  "UPDATE subtarefas SET status = 'rejected', resultado = ?, finalizada_em = NULL, updated_at = NOW() WHERE id = ?",
+                  [reason, subtask.id],
+                )
+                await this.recordDeliveryEvent(subtask.id, deliverCount, model.model, "gate_rejected", reason)
+                this.log("warn", `${reason} Reenviando pela escada de modelos.`)
+                continue
+              }
             } else {
               // Automação/verificação é uma entrega operacional: a resposta já
               // foi gravada no chat acima. Não há workspace nem gates de código.
