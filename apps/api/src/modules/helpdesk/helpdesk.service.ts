@@ -15,6 +15,8 @@ import { projetosCaptados, projetoModelChain } from "../../../../../projects/ger
 import { HelpDeskBridgeService } from "./helpdesk.bridge"
 
 const { helpdeskSessoes: helpDeskSessionTable, helpdeskMensagens: helpDeskMessageTable } = coreSchema
+/** O catálogo de agentes/modelos do GerenteAgentes vive em projeto_640. */
+const GERENTE_AGENTES_PROJECT_ID = 640
 
 @Injectable()
 export class HelpDeskService {
@@ -240,14 +242,18 @@ export class HelpDeskService {
   // RESOLUÇÃO DE AGENTE (projetosCaptados + projetoModelChain)
   // ===========================================================================
 
-  private async resolverAgenteDoProjeto(projetoId: number): Promise<string> {
-    const db = await this.getCoreDb()
-
-    const [projeto] = await db
-      .select({ agenteId: projetosCaptados.agenteId })
+  private async obterProjetoCaptado(projetoId: number) {
+    const catalogoDb = await this.factory.obter({ id: GERENTE_AGENTES_PROJECT_ID })
+    const [projeto] = await catalogoDb
+      .select({ id: projetosCaptados.id, agenteId: projetosCaptados.agenteId })
       .from(projetosCaptados)
-      .where(eq(projetosCaptados.id, projetoId))
+      .where(eq(projetosCaptados.plataformaProjetoId, projetoId))
       .limit(1)
+    return projeto
+  }
+
+  private async resolverAgenteDoProjeto(projetoId: number): Promise<string> {
+    const projeto = await this.obterProjetoCaptado(projetoId)
 
     if (projeto?.agenteId) {
       return String(projeto.agenteId)
@@ -258,12 +264,19 @@ export class HelpDeskService {
   }
 
   private async obterCadeiaModelos(projetoId: number, fase: string): Promise<Array<{ modelo: string }>> {
-    const db = await this.getCoreDb()
+    const catalogoDb = await this.factory.obter({ id: GERENTE_AGENTES_PROJECT_ID })
+    const projeto = await this.obterProjetoCaptado(projetoId)
 
-    const rows = await db
+    if (!projeto) return [{ modelo: "biblioteca-global" }]
+
+    const rows = await catalogoDb
       .select({ modelo: projetoModelChain.modelo })
       .from(projetoModelChain)
-      .where(eq(projetoModelChain.projetoId, projetoId))
+      .where(and(
+        eq(projetoModelChain.projetoId, projeto.id),
+        eq(projetoModelChain.fase, fase),
+        eq(projetoModelChain.ativo, true),
+      ))
       .orderBy(asc(projetoModelChain.posicao))
 
     if (rows.length > 0) {
