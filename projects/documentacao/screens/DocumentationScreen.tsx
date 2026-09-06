@@ -27,6 +27,7 @@ import {
   type Library,
   type MenuItemConfig,
 } from "./catalog"
+export const componentId = "documentation"
 
 const iconFor = (item: MenuItemConfig): ReactNode => {
   if (item.icon === "grid") {
