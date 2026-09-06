@@ -102,6 +102,7 @@ export class HelpDeskBridgeService {
     agenteId: string
     usuarioId: number
     projetoId: number
+    model?: string
   }): Promise<{ sessionKey: string; existing: boolean }> {
     const chatKey = `${input.projetoId}_${input.usuarioId}`
     const key = `agent:${input.agenteId}:${chatKey}`
@@ -113,6 +114,7 @@ export class HelpDeskBridgeService {
           key,
           agentId: input.agenteId,
           label: `helpdesk:${input.projetoId}:${input.usuarioId}`,
+          ...(input.model ? { model: input.model } : {}),
         },
       })
 
@@ -153,7 +155,6 @@ export class HelpDeskBridgeService {
             sessionKey: input.sessionKey,
             message: input.text,
             ...(agentId ? { agentId } : {}),
-            model: entry.modelo,
           },
         })
 

@@ -11,7 +11,7 @@ import { sql } from "drizzle-orm"
 import { PROJECT_DB_FACTORY, type ProjectDbFactory } from "../crud/project-db.factory"
 import { CORE_DB, type CoreDb } from "../../database/database.module"
 import * as coreSchema from "../../../../../database/schema"
-import { projetosCaptados, projetoModelChain } from "../../../../../projects/gerenteagentes/schema"
+import { agentes, projetosCaptados, projetoModelChain } from "../../../../../projects/gerenteagentes/schema"
 import { HelpDeskBridgeService } from "./helpdesk.bridge"
 
 const { helpdeskSessoes: helpDeskSessionTable, helpdeskMensagens: helpDeskMessageTable } = coreSchema
@@ -138,8 +138,8 @@ export class HelpDeskService {
       return { ok: false, reason: "offline" }
     }
 
-    const agenteId = sessao.agenteId
-    const modelChain = await this.obterCadeiaModelos(sessao.projetoId, "analista")
+    const agenteId = await this.resolverIdentificadorOpenClaw(sessao.agenteId)
+    const modelChain = await this.obterCadeiaModelos(sessao.projetoId, "analysis")
     if (modelChain.length === 0) {
       return { ok: false, reason: "offline" }
     }
@@ -149,6 +149,7 @@ export class HelpDeskService {
       agenteId,
       usuarioId: input.usuarioId,
       projetoId: sessao.projetoId,
+      model: modelChain[0]?.modelo,
     })
 
     // Fallback em cadeia de modelos
@@ -256,11 +257,25 @@ export class HelpDeskService {
     const projeto = await this.obterProjetoCaptado(projetoId)
 
     if (projeto?.agenteId) {
-      return String(projeto.agenteId)
+      return this.resolverIdentificadorOpenClaw(String(projeto.agenteId))
     }
 
     this.logger.log(`Projeto ${projetoId} sem agente configurado → default: ${this.defaultAgentId}`)
     return this.defaultAgentId
+  }
+
+  /** O catálogo usa o ID numérico; o console usa o identificador OpenClaw. */
+  private async resolverIdentificadorOpenClaw(agenteId: string): Promise<string> {
+    if (!/^\d+$/.test(agenteId)) return agenteId
+
+    const catalogoDb = await this.factory.obter({ id: GERENTE_AGENTES_PROJECT_ID })
+    const [agente] = await catalogoDb
+      .select({ nome: agentes.nome })
+      .from(agentes)
+      .where(eq(agentes.id, Number(agenteId)))
+      .limit(1)
+
+    return agente?.nome ?? this.defaultAgentId
   }
 
   private async obterCadeiaModelos(projetoId: number, fase: string): Promise<Array<{ modelo: string }>> {
