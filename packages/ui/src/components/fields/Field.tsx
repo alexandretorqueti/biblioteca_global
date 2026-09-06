@@ -225,7 +225,7 @@ export default function Field({
         helperText={helperText}
         error={Boolean(error)}
         multiline
-        minRows={4}
+        rows={4}
         inputProps={{
           min: field.min,
           max: field.max,
