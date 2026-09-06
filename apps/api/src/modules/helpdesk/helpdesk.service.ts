@@ -6,11 +6,10 @@
  * BFF OpenClaw (HelpDeskBridgeService).
  */
 import { Injectable, Inject, Logger } from "@nestjs/common"
-import { ConfigService } from "@nestjs/config"
 import { eq, desc, asc, and } from "drizzle-orm"
-import type { MySql2Database } from "drizzle-orm/mysql2"
 import { sql } from "drizzle-orm"
 import { PROJECT_DB_FACTORY, type ProjectDbFactory } from "../crud/project-db.factory"
+import { CORE_DB, type CoreDb } from "../../database/database.module"
 import * as coreSchema from "../../../../../database/schema"
 import { projetosCaptados, projetoModelChain } from "../../../../../projects/gerenteagentes/schema"
 import { HelpDeskBridgeService } from "./helpdesk.bridge"
@@ -21,18 +20,15 @@ const { helpdeskSessoes: helpDeskSessionTable, helpdeskMensagens: helpDeskMessag
 export class HelpDeskService {
   private readonly logger = new Logger(HelpDeskService.name)
   private readonly defaultAgentId = "biblioteca-global"
-  private coreProjId: number
 
   constructor(
     @Inject(PROJECT_DB_FACTORY) private readonly factory: ProjectDbFactory,
+    @Inject(CORE_DB) private readonly coreDb: CoreDb,
     private readonly bridge: HelpDeskBridgeService,
-    private readonly configService: ConfigService,
-  ) {
-    this.coreProjId = Number(this.configService.get<string>("HELPDESK_CORE_PROJECT_ID")) || 1
-  }
+  ) {}
 
-  private async getCoreDb(): Promise<MySql2Database> {
-    return this.factory.obter({ id: this.coreProjId })
+  private async getCoreDb(): Promise<CoreDb> {
+    return this.coreDb
   }
 
   // ===========================================================================
