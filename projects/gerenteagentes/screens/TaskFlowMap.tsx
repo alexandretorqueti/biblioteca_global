@@ -32,8 +32,9 @@ interface FlowStation {
 
 const MAIN_FLOW: FlowStation[] = [
   { id: "draft", label: "Rascunhos", subtitle: "em preparação", statuses: ["draft"], tone: "neutral" },
-  { id: "planning", label: "Planejamento", subtitle: "análise da IA", statuses: ["planned", "analyzing"], tone: "active" },
-  { id: "ready", label: "Prontas", subtitle: "aguardando execução", statuses: ["ready"], tone: "neutral" },
+  { id: "planning", label: "Planejadas", subtitle: "aguardando análise", statuses: ["planned"], tone: "neutral" },
+  { id: "analyzing", label: "Em análise", subtitle: "IA analisando", statuses: ["analyzing"], tone: "active" },
+  { id: "ready", label: "Prontas / na fila", subtitle: "próxima subtarefa", statuses: ["ready"], tone: "neutral" },
   { id: "running", label: "Em execução", subtitle: "IA trabalhando", statuses: ["running"], tone: "active" },
   { id: "completed", label: "Concluídas", subtitle: "entregues", statuses: ["completed", "finalizada"], tone: "success" },
   { id: "deployed", label: "Deployadas", subtitle: "em produção", statuses: ["deployed", "deployada"], tone: "success" },
@@ -143,12 +144,13 @@ export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", onSe
   }, [tarefas])
 
   const movingIds = useMemo(() => new Set(movements.map((movement) => movement.id)), [movements])
+  const activeAiCount = useMemo(() => tarefas.filter((task) => ACTIVE_AI_STATUSES.has(task.status)).length, [tarefas])
 
   return (
     <Paper variant="outlined" sx={{ p: { xs: 1.5, md: 2 }, overflow: "hidden" }} data-testid="task-flow-map">
       <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" spacing={1} sx={{ mb: 2 }}>
         <Box><Typography variant="h6" fontWeight={750}>Mapa Vivo da Operação</Typography><Typography variant="body2" color="text.secondary">Acompanhe as tarefas percorrendo o fluxo em tempo real.</Typography></Box>
-        <Stack direction="row" spacing={1} alignItems="center"><SettingsRounded sx={{ color: "warning.main", animation: "legend-spin 2s linear infinite", "@keyframes legend-spin": { to: { transform: "rotate(360deg)" } } }} /><Typography variant="caption" color="text.secondary">IA trabalhando</Typography></Stack>
+        <Stack direction="row" spacing={1} alignItems="center" data-testid="flow-ai-activity"><SettingsRounded sx={{ color: activeAiCount ? "warning.main" : "text.disabled", animation: activeAiCount ? "legend-spin 2s linear infinite" : "none", "@keyframes legend-spin": { to: { transform: "rotate(360deg)" } } }} /><Typography variant="caption" color="text.secondary">{activeAiCount ? `IA trabalhando (${activeAiCount})` : "Nenhuma IA trabalhando"}</Typography></Stack>
       </Stack>
 
       {movements.map((movement) => <Chip key={movement.id} color="info" sx={{ mb: 1.5, mr: 1 }} label={`#${movement.id} · ${taskStatusLabel(movement.from)} → ${taskStatusLabel(movement.to)}`} data-testid={`flow-movement-${movement.id}`} />)}

@@ -87,6 +87,8 @@ export class OcorrenciasController {
    * Lista ocorrências do condomínio com paginação e filtros opcionais.
    */
   @Get(":slug/ocorrencias")
+  @UseGuards(RolesGuard)
+  @Roles("admin", "gerente", "operador")
   async listar(
     @CurrentProject() projeto: ProjetoResumo,
     @Param("slug") slug: string,
@@ -127,6 +129,8 @@ export class OcorrenciasController {
    * Respeita isolamento multi-tenant.
    */
   @Get(":slug/ocorrencias/encomenda/:encomendaId")
+  @UseGuards(RolesGuard)
+  @Roles("admin", "gerente", "operador")
   async listarPorEncomenda(
     @CurrentProject() projeto: ProjetoResumo,
     @Param("slug") slug: string,

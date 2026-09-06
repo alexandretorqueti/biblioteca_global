@@ -57,6 +57,8 @@ export class EncomendasRegistroController {
    * (sem IDs técnicos) e moradores ativos para confirmação visual.
    */
   @Get(":slug/encomendas-registro/unidades")
+  @UseGuards(RolesGuard)
+  @Roles("admin", "gerente", "operador")
   async buscarUnidades(
     @CurrentProject() projeto: ProjetoResumo,
     @Param("slug") slug: string,
@@ -86,6 +88,8 @@ export class EncomendasRegistroController {
    * portaria — transportadoras mais usadas aparecem primeiro.
    */
   @Get(":slug/encomendas-registro/transportadoras")
+  @UseGuards(RolesGuard)
+  @Roles("admin", "gerente", "operador")
   async buscarTransportadoras(
     @CurrentProject() projeto: ProjetoResumo,
     @Param("slug") slug: string,
