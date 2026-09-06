@@ -75,6 +75,7 @@ export default function HelpDeskWidget({
   const [messages, setMessages] = useState<UIMessage[]>([])
   const [draft, setDraft] = useState("")
   const [sending, setSending] = useState(false)
+  const [waitingForAgent, setWaitingForAgent] = useState(false)
   const [offlineMessage, setOfflineMessage] = useState<string | null>(null)
   const [agentName, setAgentName] = useState<string>("")
   const chatBottomRef = useRef<HTMLDivElement>(null)
@@ -139,6 +140,7 @@ export default function HelpDeskWidget({
       setMessages((prev) => [...prev, optimistic])
       setDraft("")
       setSending(true)
+      setWaitingForAgent(false)
       setOfflineMessage(null)
 
       const sessaoId = client.sessaoId
@@ -158,6 +160,18 @@ export default function HelpDeskWidget({
           setOfflineMessage("Falha ao enviar a mensagem.")
         }
       } else {
+        if (result.processing) {
+          setWaitingForAgent(true)
+          setOfflineMessage(null)
+          let status = await client.consultarStatus(sessaoId)
+          while (status.processing) {
+            await new Promise<void>((resolve) => setTimeout(resolve, 2_000))
+            status = await client.consultarStatus(sessaoId)
+          }
+          if (!status.responded) {
+            setOfflineMessage("O agente encerrou a execução sem enviar uma resposta.")
+          }
+        }
         // Busca a resposta do agente.
         try {
           const history = await client.obterHistorico(sessaoId)
@@ -179,6 +193,7 @@ export default function HelpDeskWidget({
       }
 
       setSending(false)
+      setWaitingForAgent(false)
     },
     [draft, sending, chatState, client],
   )
@@ -267,16 +282,23 @@ export default function HelpDeskWidget({
             <Box sx={{ py: 6, textAlign: "center" }}>
               <CircularProgress size={24} />
             </Box>
-          ) : offlineMessage ? (
-            <Alert severity="error" sx={{ mt: 1 }} onClose={() => setOfflineMessage(null)}>
-              {offlineMessage}
-            </Alert>
-          ) : messages.length === 0 ? (
-            <Typography variant="body2" color="text.secondary" align="center" sx={{ mt: 4 }}>
-              Olá! Sou o assistente do sistema. Como posso ajudar?
-            </Typography>
           ) : (
             <>
+              {waitingForAgent && (
+                <Alert severity="info" sx={{ mt: 1 }}>
+                  Aguardando a resposta do agente… o envio está bloqueado.
+                </Alert>
+              )}
+              {offlineMessage ? (
+                <Alert severity="error" sx={{ mt: 1 }} onClose={() => setOfflineMessage(null)}>
+                  {offlineMessage}
+                </Alert>
+              ) : messages.length === 0 ? (
+                <Typography variant="body2" color="text.secondary" align="center" sx={{ mt: 4 }}>
+                  Olá! Sou o assistente do sistema. Como posso ajudar?
+                </Typography>
+              ) : (
+                <>
               {messages.map((msg) => {
                 const isUser = msg.role === "user"
                 return (
@@ -313,6 +335,8 @@ export default function HelpDeskWidget({
                 )
               })}
               <div ref={chatBottomRef} />
+                </>
+              )}
             </>
           )}
         </Box>

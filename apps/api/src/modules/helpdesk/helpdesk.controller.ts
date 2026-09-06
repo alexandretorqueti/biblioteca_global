@@ -72,4 +72,17 @@ export class HelpDeskController {
     if (!usuarioId) throw new BadRequestException("Usuário autenticado ausente")
     return this.service.obterHistorico(sessaoId, usuarioId)
   }
+
+  @Get(":sessaoId/status")
+  async consultarStatus(
+    @Request() req: ApiRequest,
+    @Param("sessaoId") sessaoIdParam: string,
+  ) {
+    const sessaoId = Number(sessaoIdParam)
+    const usuarioId = req.authClaims?.sub ?? 0
+    if (!Number.isInteger(sessaoId) || sessaoId <= 0 || !usuarioId) {
+      throw new BadRequestException("sessaoId e usuário autenticado são obrigatórios")
+    }
+    return this.service.consultarProcessamento({ sessaoId, usuarioId })
+  }
 }

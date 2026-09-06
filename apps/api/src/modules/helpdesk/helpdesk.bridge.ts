@@ -69,6 +69,7 @@ export interface BridgeSendResult {
   ok: boolean
   runId?: string
   responseText?: string
+  processing?: boolean
   retryable?: boolean
 }
 
@@ -164,8 +165,8 @@ export class HelpDeskBridgeService {
           const runId = typeof data.runId === "string" ? data.runId : undefined
           const responseText = await this.aguardarResposta(input.sessionKey, input.text)
           if (!responseText) {
-            this.logger.warn(`Execução ${runId ?? "sem-id"} terminou sem resposta textual`)
-            return { ok: false, runId, retryable: true }
+            this.logger.warn(`Execução ${runId ?? "sem-id"} ainda está sem resposta textual`)
+            return { ok: true, runId, processing: true, retryable: true }
           }
           this.logger.log(`Resposta de ${entry.modelo}: ok=true`)
           return {
@@ -188,6 +189,23 @@ export class HelpDeskBridgeService {
     return { ok: false, retryable: false }
   }
 
+  async obterResposta(sessionKey: string, userText: string): Promise<string | undefined> {
+    const history = await this.getHistory({ sessionKey, limit: 100 })
+    return this.encontrarResposta(history, userText)
+  }
+
+  async sessaoEmProcessamento(sessionKey: string): Promise<boolean> {
+    try {
+      const query = new URLSearchParams({ key: sessionKey })
+      const res = await bffFetch(this.baseUrl, this.token, `/api/sessions/describe?${query.toString()}`)
+      if (!res.ok) return false
+      const data = await res.json() as Record<string, unknown>
+      return data.status === "running" || data.status === "processing"
+    } catch {
+      return true
+    }
+  }
+
   /**
    * `chat.send` retorna somente o runId. A resposta textual chega depois no
    * histórico da sessão, portanto aguardamos o assistant após a mensagem atual.
@@ -196,24 +214,32 @@ export class HelpDeskBridgeService {
     const deadline = Date.now() + 30_000
 
     while (Date.now() < deadline) {
-      const history = await this.getHistory({ sessionKey, limit: 100 })
-      let userIndex = -1
-      for (let i = history.length - 1; i >= 0; i -= 1) {
-        if (history[i]?.role === "user" && history[i]?.text?.trim() === userText.trim()) {
-          userIndex = i
-          break
-        }
-      }
-
-      const inicio = userIndex >= 0 ? userIndex + 1 : Math.max(0, history.length - 1)
-      for (let i = history.length - 1; i >= inicio; i -= 1) {
-        const message = history[i]
-        if (message?.role === "agent" && message.text?.trim()) return message.text.trim()
-      }
+      const response = await this.obterResposta(sessionKey, userText)
+      if (response) return response
 
       await new Promise<void>((resolve) => setTimeout(resolve, 500))
     }
 
+    return undefined
+  }
+
+  private encontrarResposta(
+    history: Array<{ role: "agent" | "user" | "system"; text: string | null }>,
+    userText: string,
+  ): string | undefined {
+    let userIndex = -1
+    for (let i = history.length - 1; i >= 0; i -= 1) {
+      if (history[i]?.role === "user" && history[i]?.text?.trim() === userText.trim()) {
+        userIndex = i
+        break
+      }
+    }
+
+    const inicio = userIndex >= 0 ? userIndex + 1 : Math.max(0, history.length - 1)
+    for (let i = history.length - 1; i >= inicio; i -= 1) {
+      const message = history[i]
+      if (message?.role === "agent" && message.text?.trim()) return message.text.trim()
+    }
     return undefined
   }
 

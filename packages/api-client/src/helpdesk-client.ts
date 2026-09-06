@@ -24,8 +24,14 @@ export interface HelpDeskSessionInfo {
 export interface HelpDeskSendResult {
   ok: boolean
   messageId?: string
+  processing?: boolean
   reason?: "offline" | "session_not_found" | "chat_closed" | "http_error"
   retryable?: boolean
+}
+
+export interface HelpDeskProcessingStatus {
+  processing: boolean
+  responded: boolean
 }
 
 export interface HelpDeskDriver {
@@ -34,6 +40,7 @@ export interface HelpDeskDriver {
   obterSessao(): Promise<HelpDeskSessionInfo | null>
   criarSessao(usuarioId: number, projetoId: number): Promise<HelpDeskSessionInfo>
   enviarMensagem(input: HelpDeskSendMessageInput): Promise<HelpDeskSendResult>
+  consultarStatus(sessaoId: number): Promise<HelpDeskProcessingStatus>
   obterHistorico(sessaoId: number): Promise<HelpDeskHistory>
 }
 
@@ -104,6 +111,7 @@ export function createHelpDeskClient(options: HelpDeskClientOptions): HelpDeskDr
       return {
         ok: true,
         messageId: typeof result?.messageId === "string" ? result.messageId : undefined,
+        processing: result?.processing === true,
       }
     } catch (error) {
       if (error instanceof ApiClientError) {
@@ -115,6 +123,15 @@ export function createHelpDeskClient(options: HelpDeskClientOptions): HelpDeskDr
         return { ok: false, reason: "session_not_found" }
       }
       return { ok: false, reason: "offline", retryable: true }
+    }
+  }
+
+  async function consultarStatus(sessaoId: number): Promise<HelpDeskProcessingStatus> {
+    const data = await options.http.request<unknown>("GET", `${base}/${sessaoId}/status`)
+    const result = data as { processing?: unknown; responded?: unknown } | null
+    return {
+      processing: result?.processing === true,
+      responded: result?.responded === true,
     }
   }
 
@@ -148,6 +165,7 @@ export function createHelpDeskClient(options: HelpDeskClientOptions): HelpDeskDr
     obterSessao,
     criarSessao,
     enviarMensagem,
+    consultarStatus,
     obterHistorico,
   }
 }

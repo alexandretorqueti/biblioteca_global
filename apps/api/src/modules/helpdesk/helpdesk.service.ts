@@ -110,7 +110,7 @@ export class HelpDeskService {
     sessaoId: number
     text: string
     usuarioId: number
-  }): Promise<{ ok: boolean; messageId?: string; reason?: "offline" | "session_not_found"; retryable?: boolean }> {
+  }): Promise<{ ok: boolean; messageId?: string; processing?: boolean; reason?: "offline" | "session_not_found"; retryable?: boolean }> {
     const db = await this.getCoreDb()
 
     const [sessao] = await db
@@ -160,6 +160,9 @@ export class HelpDeskService {
     })
 
     if (sendResult.ok) {
+      if (sendResult.processing) {
+        return { ok: true, messageId: sendResult.runId, processing: true }
+      }
       const respostaAgente = sendResult.responseText ?? ""
       await db.insert(helpDeskMessageTable).values({
         sessaoId: input.sessaoId,
@@ -174,6 +177,70 @@ export class HelpDeskService {
     }
 
     return { ok: false, reason: "offline", retryable: false }
+  }
+
+  async consultarProcessamento(input: { sessaoId: number; usuarioId: number }): Promise<{
+    ok: true
+    processing: boolean
+    responded: boolean
+  } | { ok: false; reason: "session_not_found" }> {
+    const db = await this.getCoreDb()
+    const [sessao] = await db
+      .select()
+      .from(helpDeskSessionTable)
+      .where(eq(helpDeskSessionTable.id, input.sessaoId))
+      .limit(1)
+
+    if (!sessao || sessao.usuarioId !== input.usuarioId) {
+      return { ok: false, reason: "session_not_found" }
+    }
+
+    const [ultimaMensagem] = await db
+      .select({ id: helpDeskMessageTable.id, text: helpDeskMessageTable.text })
+      .from(helpDeskMessageTable)
+      .where(and(
+        eq(helpDeskMessageTable.sessaoId, input.sessaoId),
+        eq(helpDeskMessageTable.role, "user"),
+      ))
+      .orderBy(desc(helpDeskMessageTable.id))
+      .limit(1)
+
+    if (!ultimaMensagem) return { ok: true, processing: false, responded: false }
+
+    const agenteId = await this.resolverIdentificadorOpenClaw(sessao.agenteId)
+    const resolved = await this.bridge.resolveSession({
+      agenteId,
+      usuarioId: input.usuarioId,
+      projetoId: sessao.projetoId,
+    })
+    const resposta = await this.bridge.obterResposta(resolved.sessionKey, ultimaMensagem.text)
+
+    if (resposta) {
+      const [jaPersistida] = await db
+        .select({ id: helpDeskMessageTable.id })
+        .from(helpDeskMessageTable)
+        .where(and(
+          eq(helpDeskMessageTable.sessaoId, input.sessaoId),
+          eq(helpDeskMessageTable.role, "agent"),
+          eq(helpDeskMessageTable.text, resposta),
+        ))
+        .limit(1)
+
+      if (!jaPersistida) {
+        await db.insert(helpDeskMessageTable).values({
+          sessaoId: input.sessaoId,
+          role: "agent",
+          text: resposta,
+        })
+      }
+      return { ok: true, processing: false, responded: true }
+    }
+
+    return {
+      ok: true,
+      processing: await this.bridge.sessaoEmProcessamento(resolved.sessionKey),
+      responded: false,
+    }
   }
 
   // ===========================================================================
