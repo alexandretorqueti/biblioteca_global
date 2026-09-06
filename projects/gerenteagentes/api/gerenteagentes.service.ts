@@ -1114,6 +1114,7 @@ export class GerenteAgentesService {
           id: motorTask.id || String(tarefaId),
           title: motorTask.title || tarefa.titulo,
           status: motorTask.status || tarefa.status,
+          integrationBranch: `motor-v2/${motorId}/integracao`,
           errorMessage: motorTask.errorMessage ?? undefined,
           blockInfo: motorTask.ultimoBloqueio ?? null,
         },

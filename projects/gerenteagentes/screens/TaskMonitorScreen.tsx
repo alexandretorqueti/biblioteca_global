@@ -142,6 +142,7 @@ interface MotorDetail {
     id: string
     status: string
     title: string
+    integrationBranch?: string
     errorMessage?: string
     blockInfo?: {
       kind?: string
@@ -1219,10 +1220,15 @@ export default function TaskMonitorScreen(): ReactNode {
                 {detail.task.blockInfo.subtaskId ? ` · Subtarefa #${detail.task.blockInfo.subtaskId}` : ""}
               </Typography>
               {integrationFailure?.workspaceBranch && (
-                <Typography variant="caption" component="div" sx={{ mt: 0.75, wordBreak: "break-all" }} data-testid="integration-branch">
-                  <b>Branch para merge manual:</b> <code>{integrationFailure.workspaceBranch}</code>
-                  {integrationFailure.workspaceCommitSha ? <> · commit <code>{integrationFailure.workspaceCommitSha}</code></> : null}
-                </Typography>
+                <Stack spacing={0.25} sx={{ mt: 0.75 }} data-testid="integration-branches">
+                  <Typography variant="caption" component="div" sx={{ wordBreak: "break-all" }}>
+                    <b>Origem (branch da subtarefa):</b> <code>{integrationFailure.workspaceBranch}</code>
+                    {integrationFailure.workspaceCommitSha ? <> · commit <code>{integrationFailure.workspaceCommitSha}</code></> : null}
+                  </Typography>
+                  <Typography variant="caption" component="div" sx={{ wordBreak: "break-all" }}>
+                    <b>Destino (branch para o merge):</b> <code>{detail.task.integrationBranch ?? "não informado"}</code>
+                  </Typography>
+                </Stack>
               )}
             </Alert>
           )}
