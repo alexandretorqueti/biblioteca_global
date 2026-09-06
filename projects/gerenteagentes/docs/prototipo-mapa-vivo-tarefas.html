@@ -1,0 +1,44 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Mapa Vivo da Operação</title>
+<style>
+  :root { color-scheme: dark; --bg:#0b1020; --panel:#151d31; --fg:#edf2ff; --muted:#9eabc4; --line:#60708f; --blue:#263e70; --active:#473b8d; --ok:#174f47; --warn:#64491d; --risk:#642d3c; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.4 ui-sans-serif,system-ui,sans-serif; }
+  main { max-width:1240px; margin:28px auto; padding:0 20px; }
+  h1 { margin:0; font-size:24px; } p { color:var(--muted); margin:6px 0 20px; }
+  svg { width:100%; height:auto; display:block; border:1px solid #27334c; border-radius:16px; background:var(--panel); }
+  .edge { stroke:var(--line); stroke-width:2; fill:none; marker-end:url(#arrow); }
+  .back { stroke:#ad7f42; stroke-dasharray:7 6; }
+  .node { stroke:#72809b; stroke-width:1.5; rx:14; }
+  .label { fill:var(--fg); font-size:16px; font-weight:700; }
+  .count { fill:var(--fg); font-size:22px; font-weight:750; }
+  .small { fill:var(--muted); font-size:12px; }
+  .task { fill:#202a42; stroke:#8593ad; stroke-width:1; rx:7; }
+  .tasktext { fill:var(--fg); font-size:11px; font-weight:650; }
+  .gear { fill:#f7c85e; font-size:20px; transform-box:fill-box; transform-origin:center; animation:spin 2s linear infinite; }
+  .moving { animation:pulse 1.4s ease-in-out infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  @keyframes pulse { 50% { opacity:.45; } }
+</style>
+<main>
+  <h1>Mapa Vivo da Operação</h1>
+  <p>Os números mostram o volume; as fichas são tarefas; a engrenagem indica a IA trabalhando.</p>
+  <svg viewBox="0 0 1200 620" role="img" aria-label="Fluxo visual de tarefas entre os status">
+    <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#60708f" /></marker></defs>
+
+    <path class="edge" d="M210 205 H270"/><path class="edge" d="M460 205 H520"/><path class="edge" d="M710 205 H770"/><path class="edge" d="M960 205 H1020"/>
+    <path class="edge" d="M865 300 V390"/><path class="edge back" d="M770 470 H460 Q365 470 365 300"/>
+    <path class="edge" d="M615 300 V390"/><path class="edge back" d="M520 470 H445 Q365 470 365 300"/>
+
+    <g><rect class="node" x="20" y="110" width="190" height="190" fill="var(--blue)"/><text class="label" x="40" y="140">Prontas</text><text class="count" x="170" y="142">8</text><text class="small" x="40" y="163">aguardando execução</text><rect class="task" x="40" y="185" width="150" height="30"/><text class="tasktext" x="52" y="205">#771 Login SSO</text><rect class="task" x="40" y="226" width="150" height="30"/><text class="tasktext" x="52" y="246">#773 Relatórios</text><text class="small" x="68" y="280">+ 6 tarefas</text></g>
+    <g><rect class="node" x="270" y="110" width="190" height="190" fill="var(--active)"/><text class="label" x="290" y="140">Em execução</text><text class="count" x="420" y="142">3</text><text class="small" x="290" y="163">IA trabalhando agora</text><rect class="task" x="290" y="185" width="150" height="36"/><text class="gear" x="300" y="211">⚙</text><text class="tasktext" x="328" y="207">#766 Registry</text><rect class="task" x="290" y="232" width="150" height="36"/><text class="gear" x="300" y="258">⚙</text><text class="tasktext" x="328" y="254">#769 Auditoria</text></g>
+    <g><rect class="node" x="520" y="110" width="190" height="190" fill="var(--warn)"/><text class="label" x="540" y="140">Validando</text><text class="count" x="670" y="142">2</text><text class="small" x="540" y="163">testes e revisão</text><rect class="task moving" x="540" y="185" width="150" height="30"/><text class="tasktext" x="552" y="205">#764 API Motor</text><text class="small" x="560" y="247">movida há 12 s</text></g>
+    <g><rect class="node" x="770" y="110" width="190" height="190" fill="var(--risk)"/><text class="label" x="790" y="140">Atenção</text><text class="count" x="920" y="142">1</text><text class="small" x="790" y="163">bloqueada ou rejeitada</text><rect class="task" x="790" y="185" width="150" height="30"/><text class="tasktext" x="802" y="205">! #760 Deploy</text><text class="small" x="790" y="249">clique para ver o motivo</text></g>
+    <g><rect class="node" x="1020" y="110" width="160" height="190" fill="var(--ok)"/><text class="label" x="1040" y="140">Concluídas</text><text class="count" x="1140" y="142">24</text><text class="small" x="1040" y="163">entregues</text><rect class="task" x="1040" y="185" width="120" height="30"/><text class="tasktext" x="1052" y="205">✓ #759 Chat</text><text class="small" x="1061" y="247">+ 23 tarefas</text></g>
+
+    <g><rect class="node" x="520" y="390" width="190" height="160" fill="#493721"/><text class="label" x="540" y="423">Correção</text><text class="count" x="670" y="425">2</text><text class="small" x="540" y="447">retorna ao fluxo</text><rect class="task" x="540" y="470" width="150" height="30"/><text class="gear" x="550" y="495">⚙</text><text class="tasktext" x="578" y="491">#768 Testes</text></g>
+    <g><rect class="node" x="770" y="390" width="190" height="160" fill="#3b304f"/><text class="label" x="790" y="423">Intervenção</text><text class="count" x="920" y="425">1</text><text class="small" x="790" y="447">aguarda decisão humana</text><rect class="task" x="790" y="470" width="150" height="30"/><text class="tasktext" x="802" y="490">? #755 Escopo</text></g>
+  </svg>
+</main>
