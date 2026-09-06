@@ -92,6 +92,8 @@ services:
       - /home/alexandre/agentes:/data/workspace/projects/agentes:rw
       # Chave SSH do GitHub para a fase PUBLISH do motor-v2 (somente leitura)
       - ${GITHUB_SSH_KEY_HOST:-/home/alexandre/secrets/biblioteca-global-api/github_id_ed25519}:/root/.ssh/github_id_ed25519:ro
+      # Chave SSH do host para o deploy.sh recriar os containers no ServerIA
+      - /home/alexandre/.ssh/id_ed25519:/root/.ssh/id_ed25519:ro
     networks:
       - default
       - openclaw_default
