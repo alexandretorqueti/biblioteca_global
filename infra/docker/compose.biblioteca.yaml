@@ -94,6 +94,7 @@ services:
       # O motor executa o pipeline no workspace do repositório.
       # REPO_PATH é um caminho do host e deve ser configurado no .env local.
       - ${REPO_PATH:-/run/media/alexandre/12T/codigofonte}:${REPO_PATH:-/run/media/alexandre/12T/codigofonte}
+      - /home/alexandre/agentes:/data/workspace/projects/agentes:rw,z
     healthcheck:
       test:
         - CMD
