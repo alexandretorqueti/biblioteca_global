@@ -123,6 +123,15 @@ describe("IsaChatService", () => {
     })
   })
 
+  describe("criação do chat antes do primeiro envio", () => {
+    it("não deve criar sessão OpenClaw ao abrir um chat anônimo", async () => {
+      const result = await service.createSession({ chatKey: "visitor-abc" })
+
+      expect(result.ok).toBe(true)
+      expect(mockBridge.resolveSession).not.toHaveBeenCalled()
+    })
+  })
+
   describe("recordVisit", () => {
     it("deve registrar visita com IP como hash", async () => {
       const result = await service.recordVisit({

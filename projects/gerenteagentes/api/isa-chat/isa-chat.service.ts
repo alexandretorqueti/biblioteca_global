@@ -320,7 +320,6 @@ export class IsaChatService {
       .limit(1)
 
     let chatId: number
-    let chatSessionKey: string | null
     let chatState: string
 
     if (chatResult.length === 0) {
@@ -332,7 +331,6 @@ export class IsaChatService {
         })
         .$returningId()
       chatId = inserted!.id
-      chatSessionKey = null
       chatState = "autenticado"
 
       // Grava saudação inicial
@@ -343,18 +341,7 @@ export class IsaChatService {
       })
     } else {
       chatId = chatResult[0]!.chats.id
-      chatSessionKey = chatResult[0]!.chats.sessionKey
       chatState = chatResult[0]!.chats.status
-    }
-
-    // Resolve sessão no OpenClaw
-    const resolved = await this.bridge.resolveSession({
-      agentId: this.configService.get<string>("ISA_AGENT_ID") || "isa",
-      chatKey: email,
-    })
-
-    if (chatSessionKey !== resolved.sessionKey) {
-      await db.update(chats).set({ sessionKey: resolved.sessionKey }).where(eq(chats.id, chatId))
     }
 
     return {
@@ -540,20 +527,11 @@ export class IsaChatService {
       }
     }
 
-    // Garante session_key para chats que não têm (criados antes da ponte estar configurada)
-    let sessionKey = chat.sessionKey
-    if (!sessionKey && this.bridge.isConfigured() && chat.chatKey) {
-      const resolved = await this.bridge.resolveSession({
-        agentId: this.configService.get<string>("ISA_AGENT_ID") || "isa",
-        chatKey: chat.chatKey,
-      })
-      sessionKey = resolved.sessionKey
-      await db.update(chats).set({ sessionKey }).where(eq(chats.id, chat.id))
-    }
-
     // Sync lazy das mensagens do agente
-    if (sessionKey && this.bridge.isConfigured()) {
-      await this.syncAgentMessages(db, chat.id, sessionKey)
+    // O histórico é somente leitura em relação à sessão. Se o chat ainda não
+    // tem sessionKey, a sessão será criada no primeiro envio válido.
+    if (chat.sessionKey && this.bridge.isConfigured()) {
+      await this.syncAgentMessages(db, chat.id, chat.sessionKey)
     }
 
     // Busca mensagens
