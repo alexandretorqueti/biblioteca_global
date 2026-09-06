@@ -388,6 +388,40 @@ describe("RestEntityClient + createDataSource", () => {
     })
   })
 
+  it("resources reservados (usuarios, projetos) usam endpoint dedicado sem slug", async () => {
+    const pagina: PaginatedResult<EntityRecord> = {
+      items: [{ id: 1, nome: "Alexandre" }],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+    }
+    fake.enqueue(
+      { status: 200, body: pagina },
+      { status: 200, body: { id: 1, nome: "Alexandre" } },
+      { status: 201, body: { id: 2, nome: "Novo" } },
+    )
+
+    const clientUsuarios = new RestEntityClient<EntityRecord>(
+      client["http"],
+      "biblioteca-global",
+      "usuarios",
+    )
+    await clientUsuarios.list({ page: 1, pageSize: 20 })
+    await clientUsuarios.get(1)
+    await clientUsuarios.create({ nome: "Novo" })
+
+    // URLs sem o slug do projeto — endpoint dedicado /api/usuarios
+    expect(fake.requests.at(0)?.url).toBe(
+      "http://api.local/api/usuarios?page=1&pageSize=20",
+    )
+    expect(fake.requests.at(1)?.url).toBe(
+      "http://api.local/api/usuarios/1",
+    )
+    expect(fake.requests.at(2)?.url).toBe(
+      "http://api.local/api/usuarios",
+    )
+  })
+
   it("createDataSource implementa o contrato da tela Cadastro", async () => {
     fake.enqueue(
       {

@@ -11,7 +11,7 @@ export {
   type RequestOptions,
 } from "./http"
 export { AuthClient } from "./auth-client"
-export { RestEntityClient } from "./entity-client"
+export { RestEntityClient, resolverPrefixoResource } from "./entity-client"
 export { ActionExecutor } from "./action-executor"
 export type {
   ActionPayload,

@@ -27,7 +27,7 @@ import type {
 } from "@biblioteca-global/shared"
 import { geradorSistemaConfigSchema } from "@biblioteca-global/shared"
 import type { GeradorSistemaRuntime, ExecuteAction } from "@biblioteca-global/ui"
-import { createDataSource } from "@biblioteca-global/api-client"
+import { createDataSource, resolverPrefixoResource } from "@biblioteca-global/api-client"
 import { getProjectConfig } from "./registry/projects"
 import { useAuth } from "../auth/AuthContext"
 import type { ApiClientBundle } from "../api/client"
@@ -109,11 +109,12 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       },
       getLoadOptions(resource: string) {
         if (!bundle || !projectSlug) return async () => []
+        const prefixo = resolverPrefixoResource(projectSlug, resource)
         return async (search: string) => {
           try {
             const result = await bundle.http.request<PaginatedResult<EntityRecord>>(
               "GET",
-              `/${projectSlug}/${resource}`,
+              `${prefixo}/${resource}`,
               {
                 query: search
                   ? { search, pageSize: 50 }
