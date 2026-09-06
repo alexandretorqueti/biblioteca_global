@@ -31,6 +31,7 @@ import { existsSync } from "node:fs"
 import { join } from "node:path"
 import { SecretProfileManager, resolveGitTopLevel } from "../workspaces/SecretProfileManager.js"
 import { validateTaskCompletion, formatPromotionValidationReport } from "../policies/PromotionValidationPolicy.js"
+import { isAgentRunFailureWithoutReply } from "../policies/NoReplyFailurePolicy.js"
 import { validateProjectId, formatProjectIdValidationReport } from "../policies/ProjectIdValidationPolicy.js"
 import { verifyAgentInGateway, formatAgentVerificationReport, shouldBlockEnqueue } from "../policies/GatewayAgentVerificationPolicy.js"
 
@@ -705,7 +706,7 @@ export class TaskCoordinator {
           // (evidência de código) antes de a tarefa pai ser marcada como completed.
           // Regra: promoção manual sem código não fecha tarefa.
           const { rows: subtasksForValidation } = await this.db.query(
-            "SELECT id, seq, workspace_commit_sha, status FROM subtarefas WHERE tarefa_id = (SELECT tarefa_id FROM subtarefas WHERE id = ?) AND status != 'superseded'",
+            "SELECT id, seq, workspace_commit_sha, workspace_status, completion_kind, status, resultado FROM subtarefas WHERE tarefa_id = (SELECT tarefa_id FROM subtarefas WHERE id = ?) AND status != 'superseded'",
             [worker.subtaskId]
           )
           const promotionValidation = validateTaskCompletion(
@@ -716,6 +717,7 @@ export class TaskCoordinator {
               workspaceStatus: st.workspace_status ? String(st.workspace_status) : null,
               completionKind: st.completion_kind ? String(st.completion_kind) : null,
               status: String(st.status),
+              resultado: st.resultado ? String(st.resultado) : null,
             }))
           )
           if (!promotionValidation.ok) {
@@ -723,7 +725,40 @@ export class TaskCoordinator {
             this.logger.warn("Validação de promoção bloqueou conclusão da tarefa: " + promotionReason, {
               taskId: worker.taskId, executionId,
             })
+            // Salvaguarda para dados legados: antes desta validação existir no
+            // worker, uma entrega sem commit podia chegar a `verified`. Isso é
+            // recuperável e deve voltar para a escada de modelos — não bloquear
+            // a tarefa-pai. Falhas de integração continuam bloqueantes porque
+            // exigem resolução humana do merge.
+            const retryableSubtaskIds = subtasksForValidation
+              .filter((st: Record<string, unknown>) => {
+                const status = st.workspace_status ? String(st.workspace_status) : null
+                const commit = st.workspace_commit_sha ? String(st.workspace_commit_sha).trim() : ""
+                const result = st.resultado ? String(st.resultado) : null
+                return status !== "integration_failed" && (!commit || isAgentRunFailureWithoutReply(result))
+              })
+              .map((st: Record<string, unknown>) => Number(st.id))
+
             const task = await this.repository.getTask(worker.taskId)
+            if (task && retryableSubtaskIds.length > 0) {
+              const placeholders = retryableSubtaskIds.map(() => "?").join(", ")
+              const retryReason = ("Evidência da entrega inválida; reenfileirada para nova execução pela escada de modelos. " + promotionReason).substring(0, 500)
+              await this.db.query(
+                `UPDATE subtarefas SET status = 'pending', workspace_status = 'evidence_rejected', workspace_commit_sha = NULL, resultado = ?, finalizada_em = NULL, updated_at = NOW() WHERE id IN (${placeholders})`,
+                [retryReason, ...retryableSubtaskIds],
+              )
+              await this.saveTaskTransition(task, "subtasks_pending")
+              this.logger.warn("Entrega sem evidência reenfileirada para recuperação automática: " + retryableSubtaskIds.join(", "), {
+                taskId: worker.taskId, executionId,
+              })
+              this.publishActivity(worker, {
+                type: "progress",
+                level: "warn",
+                message: "Entrega sem evidência válida reenfileirada para nova tentativa por outro modelo.",
+              })
+              await this.finishWorker(executionId, worker)
+              return
+            }
             if (task) {
               // Persiste bloqueio com motivo auditável
               try {
