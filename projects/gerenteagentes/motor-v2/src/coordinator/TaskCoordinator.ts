@@ -350,11 +350,7 @@ export class TaskCoordinator {
       // Persiste bloqueio ambiental sem consumir modelo
       try {
         const evidence = blockerEvidence("blocked_environment", preflightResult.reason)
-        await this.db.query(
-          "INSERT INTO bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at) " +
-          "VALUES (?, NULL, ?, ?, ?, NOW())",
-          [task.id, evidence.kind, "motor-v2:" + evidence.fingerprint, evidence.excerpt],
-        )
+        await this.persistTaskBlock(task.id, null, evidence.kind, "motor-v2:" + evidence.fingerprint, evidence.excerpt)
         await this.repository.saveTask({ ...task, status: "blocked", updatedAt: new Date().toISOString() })
         this.logger.info("Tarefa bloqueada no preflight de manifesto: " + task.id, { taskId: task.id })
       } catch (persistError) {
@@ -718,11 +714,7 @@ export class TaskCoordinator {
               // Persiste bloqueio com motivo auditável
               try {
                 const evidence = blockerEvidence("blocked_environment", promotionReason)
-                await this.db.query(
-                  "INSERT INTO bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at) " +
-                  "VALUES (?, NULL, ?, ?, ?, NOW())",
-                  [task.id, evidence.kind, "motor-v2:" + evidence.fingerprint, evidence.excerpt],
-                )
+                await this.persistTaskBlock(task.id, null, evidence.kind, "motor-v2:" + evidence.fingerprint, evidence.excerpt)
                 await this.saveTaskTransition(task, "fail", { errorMessage: promotionReason.substring(0, 500) })
                 this.publishActivity(worker, { type: "failed", level: "error", message: "Validação de promoção falhou" })
               } catch (persistError) {
@@ -1204,10 +1196,12 @@ export class TaskCoordinator {
         })
         // Persiste bloqueio auditável
         try {
-          await this.db.query(
-            "INSERT INTO bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at) " +
-            "VALUES (?, NULL, 'agent_not_in_gateway', ?, ?, NOW())",
-            [task.id, 'motor-v2:gateway-agent-verification', agentVerification.reason ?? report],
+          await this.persistTaskBlock(
+            task.id,
+            null,
+            "agent_not_in_gateway",
+            "motor-v2:gateway-agent-verification",
+            agentVerification.reason ?? report,
           )
         } catch (persistError) {
           this.logger.error("Falha ao persistir bloqueio de verificação de agente: " + describeError(persistError), { taskId })
@@ -1569,6 +1563,34 @@ export class TaskCoordinator {
     return Number(rows[0]?.has_plan ?? 0) === 1
   }
 
+  /**
+   * Persiste um bloqueio usando o ID interno de tarefas.
+   *
+   * O identificador exposto pelo motor é normalmente tarefas.external_id
+   * (slug), enquanto bloqueios.tarefa_id é uma FK inteira para tarefas.id.
+   * Nunca enviar o slug diretamente para essa coluna: além de falhar em modo
+   * strict do MySQL, isso pode transformar o erro original em falha de
+   * persistência do bloqueio.
+   */
+  private async persistTaskBlock(
+    taskExternalId: string,
+    subtaskId: number | null,
+    blockReason: string,
+    blockCommand: string,
+    blockExcerpt: string,
+  ): Promise<void> {
+    const subtaskSql = subtaskId === null ? "NULL" : "?"
+    const params: unknown[] = subtaskId === null
+      ? [blockReason, blockCommand, blockExcerpt, taskExternalId, taskExternalId]
+      : [subtaskId, blockReason, blockCommand, blockExcerpt, taskExternalId, taskExternalId]
+    await this.db.query(
+      "INSERT INTO bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at) " +
+      `SELECT t.id, ${subtaskSql}, ?, ?, ?, NOW() FROM tarefas t ` +
+      "WHERE t.external_id = ? OR t.id = CAST(? AS UNSIGNED) LIMIT 1",
+      params,
+    )
+  }
+
   private async saveTaskTransition(
     task: import("../shared/types/infrastructure.js").SaveTaskData,
     transition: TaskTransition,
@@ -1588,11 +1610,7 @@ export class TaskCoordinator {
       })
       try {
         const evidence = blockerEvidence("systemic_failure", `Transição inválida: ${task.status} → ${transition} — ${reason}`)
-        await this.db.query(
-          "INSERT INTO bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at) " +
-          "VALUES (?, NULL, ?, ?, ?, NOW())",
-          [task.id, evidence.kind, "motor-v2:" + evidence.fingerprint, evidence.excerpt],
-        )
+        await this.persistTaskBlock(task.id, null, evidence.kind, "motor-v2:" + evidence.fingerprint, evidence.excerpt)
       } catch (persistError) {
         this.logger.error("Falha ao persistir bloqueio de transição inválida: " + describeError(persistError), { taskId: task.id })
       }

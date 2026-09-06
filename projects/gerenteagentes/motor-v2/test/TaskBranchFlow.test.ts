@@ -221,4 +221,19 @@ describe("promoção da branch da tarefa para a base", () => {
     expect(wm.purgeTaskArtifacts).not.toHaveBeenCalled()
     expect(repository.saveTask).not.toHaveBeenCalledWith(expect.objectContaining({ status: "completed" }))
   })
+
+  it("persiste bloqueio resolvendo o external_id para a FK interna da tarefa", async () => {
+    const db = createDispatchDb([])
+    const coordinator = createCoordinator(db, createRepository(), createWorkspaceManager())
+    const internal = coordinator as unknown as {
+      persistTaskBlock: (taskId: string, subtaskId: number | null, reason: string, command: string, excerpt: string) => Promise<void>
+    }
+
+    await internal.persistTaskBlock("taqui-quick-actions-20260903-04", null, "blocked_environment", "motor-v2:test", "excerpt")
+
+    const [sql, params] = vi.mocked(db.query).mock.calls[0]!
+    expect(String(sql)).toContain("SELECT t.id")
+    expect(String(sql)).toContain("t.external_id = ?")
+    expect(params).toEqual(["blocked_environment", "motor-v2:test", "excerpt", "taqui-quick-actions-20260903-04", "taqui-quick-actions-20260903-04"])
+  })
 })
