@@ -24,6 +24,7 @@
     "lint": "eslint src test --ext .ts"
   },
   "dependencies": {
+    "dotenv": "^17.4.2",
     "mysql2": "^3.23.3"
   },
   "devDependencies": {
