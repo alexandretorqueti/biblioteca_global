@@ -625,11 +625,13 @@ export class CrudService {
       // FK do banco permite apontar para a linha da biblioteca-global (ou para
       // qualquer outro projeto) e reproduz a falha do TaQui.
       if (resource === "tarefas") {
-        // O corpo validado (parse.data) usa chaves snake_case (coluna.name);
-        // valores (paraChavesDoDrizzle) usa as props TS do drizzle (camelCase)
-        // e não contém projeto_id — ler a FK de valores quebraria todo create.
+        // parse.data mantém o corpo validado pelo zod — pode usar
+        // projeto_id (snake, direto da coluna) ou projetoId (camel,
+        // do formulário). Ler ambos evita a falha de criar tarefa pela
+        // tela de Projetos quando o payload só envia uma das chaves.
         const projetoId = Number(
-          (parse.data as Record<string, unknown>).projeto_id,
+          (parse.data as Record<string, unknown>).projeto_id ??
+          (parse.data as Record<string, unknown>).projetoId,
         )
         if (!Number.isSafeInteger(projetoId) || projetoId <= 0) {
           throw new BadRequestException(

@@ -144,6 +144,27 @@ describe("CrudService — whitelist e validação", () => {
       expect(factory.chamadas).toBe(1)
     })
 
+    it("criar tarefa com projeto_id (snake) e projetoId (camel) → validação de escopo passa", async () => {
+      const { service, factory } = novoService()
+      // Com projeto_id:
+      await expect(
+        service.criar(projeto("gerenteagentes", 3), "tarefas", {
+          projeto_id: 1,
+          titulo: "Tarefa com snake",
+        }),
+      ).rejects.toThrow("database não deveria ser acionado neste teste")
+      expect(factory.chamadas).toBe(1)
+
+      // Com projetoId (camelCase):
+      await expect(
+        service.criar(projeto("gerenteagentes", 3), "tarefas", {
+          projetoId: 1,
+          titulo: "Tarefa com camel",
+        }),
+      ).rejects.toThrow("database não deveria ser acionado neste teste")
+      expect(factory.chamadas).toBe(2)
+    })
+
     it("criar tarefa com campo inexistente (agenteId migrado p/ projetos_captados) → 400 sem tocar no banco", async () => {
       const { service, factory } = novoService()
       await expect(
