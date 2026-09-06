@@ -14,6 +14,8 @@ import { UsuariosModule } from "./modules/usuarios/usuarios.module"
 import { GerenteAgentesModule } from "../../../projects/gerenteagentes/api/gerenteagentes.module"
 import { RealtimeModule } from "./modules/realtime/realtime.module"
 import { EncomendasRegistroModule } from "./modules/encomendas-registro/encomendas-registro.module"
+import { EncomendasMoradorModule } from "./modules/encomendas-morador/encomendas-morador.module"
+import { NotificacoesMoradorModule } from "./modules/notificacoes-morador/notificacoes-morador.module"
 import { PainelPortariaModule } from "./modules/painel-portaria/painel-portaria.module"
 import { OcorrenciasModule } from "./modules/ocorrencias/ocorrencias.module"
 import { HelpDeskModule } from "./modules/helpdesk/helpdesk.module"
@@ -35,6 +37,8 @@ import { HelpDeskModule } from "./modules/helpdesk/helpdesk.module"
     GerenteAgentesModule,
     RealtimeModule,
     EncomendasRegistroModule,
+    EncomendasMoradorModule,
+    NotificacoesMoradorModule,
     PainelPortariaModule,
     OcorrenciasModule,
     HelpDeskModule,

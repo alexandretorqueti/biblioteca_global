@@ -10,7 +10,7 @@
  * - registrarEntrega: valida status=confirmada, cria registro na tabela
  *   entregas com evidência completa, atualiza encomenda para status=entregue.
  * - reenviarAviso: reenvia notificação ao morador para encomendas pendentes
- *   ou confirmadas. Bloqueia entregues/canceladas com mensagem clara.
+ *   ou prontas para retirada. Bloqueia entregues/canceladas com mensagem clara.
  * - obterIndicadores: contadores de chegadas hoje, aguardando confirmação,
  *   prontas para retirada, entregues hoje e pendências antigas.
  *
@@ -62,7 +62,7 @@ export interface IndicadoresPainel {
   chegadasHoje: number
   /** Status = pendente (aguardando confirmação do morador). */
   aguardandoConfirmacao: number
-  /** Status = confirmada (prontas para retirada física). */
+  /** Status = pronta_retirada (prontas para retirada física). */
   prontasParaRetirada: number
   /** Status = entregue, entreguesEm = hoje. */
   entreguesHoje: number
@@ -73,7 +73,7 @@ export interface IndicadoresPainel {
 /** Item da lista de encomendas no painel. */
 export interface EncomendaPainelItem {
   id: number
-  status: "pendente" | "confirmada" | "entregue" | "cancelada"
+  status: "pendente" | "pronta_retirada" | "entregue" | "cancelada"
   estadoOperacional: EstadoOperacional
   fotoUrl: string | null
   codigoRastreamento: string | null
@@ -97,7 +97,7 @@ export interface EncomendaPainelItem {
 /** Detalhe completo da encomenda (foto + destino). */
 export interface EncomendaDetalhe {
   id: number
-  status: "pendente" | "confirmada" | "entregue" | "cancelada"
+  status: "pendente" | "pronta_retirada" | "entregue" | "cancelada"
   estadoOperacional: EstadoOperacional
   fotoUrl: string | null
   codigoRastreamento: string | null
@@ -226,7 +226,7 @@ export class PainelPortariaService {
    * Classifica o status da encomenda em estado operacional legível.
    */
   private classificarEstado(
-    status: "pendente" | "confirmada" | "entregue" | "cancelada",
+    status: "pendente" | "pronta_retirada" | "entregue" | "cancelada",
     createdAt: Date,
   ): EstadoOperacional {
     if (status === "pendente") {
@@ -236,7 +236,7 @@ export class PainelPortariaService {
         ? "excecao"
         : "aguardando_confirmacao"
     }
-    if (status === "confirmada") return "pronta_retirada"
+    if (status === "pronta_retirada") return "pronta_retirada"
     if (status === "entregue") return "entregue"
     // cancelada
     return "excecao"
@@ -294,7 +294,7 @@ export class PainelPortariaService {
         if (enc.createdAt < limitePendenciasAntigas) {
           pendenciasAntigas++
         }
-      } else if (enc.status === "confirmada") {
+      } else if (enc.status === "pronta_retirada") {
         prontasParaRetirada++
       } else if (enc.status === "entregue") {
         if (enc.entregueEm && enc.entregueEm >= inicioHoje) {
@@ -353,7 +353,7 @@ export class PainelPortariaService {
         )!,
       )
     } else if (query.estado === "pronta_retirada") {
-      condicoes.push(eq(encomendas.status, "confirmada"))
+      condicoes.push(eq(encomendas.status, "pronta_retirada"))
     } else if (query.estado === "excecoes") {
       // Pendências antigas (pendente > 3 dias) OU canceladas
       condicoes.push(
@@ -370,7 +370,7 @@ export class PainelPortariaService {
       // que o período esteja definido
       if (!query.periodoInicio && !query.periodoFim) {
         condicoes.push(
-          inArray(encomendas.status, ["pendente", "confirmada"]),
+          inArray(encomendas.status, ["pendente", "pronta_retirada"]),
         )
       }
     }
@@ -432,7 +432,7 @@ export class PainelPortariaService {
           sql`CASE
             WHEN ${encomendas.status} = 'pendente' AND ${encomendas.createdAt} < ${limitePendenciasAntigas} THEN 0
             WHEN ${encomendas.status} = 'pendente' THEN 1
-            WHEN ${encomendas.status} = 'confirmada' THEN 2
+            WHEN ${encomendas.status} = 'pronta_retirada' THEN 2
             WHEN ${encomendas.status} = 'entregue' THEN 3
             WHEN ${encomendas.status} = 'cancelada' THEN 4
             ELSE 5
@@ -616,7 +616,7 @@ export class PainelPortariaService {
       unidade: {
         id: row.unidadeId,
         label: row.unidadeLabel,
-        tipo: row.unidadeTipo,
+        tipo: row.unidadeTipo ?? "apartamento",
         rua: row.unidadeRua,
         bloco: row.unidadeBloco,
         andar: row.unidadeAndar,
@@ -660,7 +660,7 @@ export class PainelPortariaService {
   /**
    * Registra entrega de encomenda. Validações:
    * - Encomenda existe e pertence ao condomínio do token
-   * - Status = confirmada (único estado que permite entrega)
+   * - Status = pronta_retirada (único estado que permite entrega)
    * - FuncionarioId pertence ao condomínio e está ativo
    * - RecebedorNome é obrigatório (evidência mínima)
    *
@@ -716,9 +716,9 @@ export class PainelPortariaService {
         "Encomenda está cancelada. Não é possível entregar encomenda cancelada.",
       )
     }
-    if (encomenda.status !== "confirmada") {
+    if (encomenda.status !== "pronta_retirada") {
       throw new ConflictException(
-        `Status atual '${encomenda.status}' não permite entrega. Somente encomendas confirmadas podem ser entregues.`,
+        `Status atual '${encomenda.status}' não permite entrega. Somente encomendas prontas para retirada podem ser entregues.`,
       )
     }
 
@@ -755,11 +755,16 @@ export class PainelPortariaService {
     // 5. Cria registro na tabela entregas
     const entregaResult = await db.insert(entregas).values({
       encomendaId,
+      condominioId: encomenda.condominioId,
       funcionarioId: body.funcionarioId,
       dataHoraEntrega: agora,
       evidenciaQuemRetirou: evidencia,
     })
-    const entregaId = Number(entregaResult[0].insertId)
+    const [entregaCriada] = await db
+      .select()
+      .from(entregas)
+      .where(eq(entregas.id, Number(entregaResult[0].insertId)))
+      .limit(1)
 
     // 6. Atualiza encomenda: status=entregue, entreguePorId, entregueEm
     await db
@@ -800,12 +805,10 @@ export class PainelPortariaService {
       )
     }
 
-    // 8. Busca entrega criada para retornar
-    const [entregaCriada] = await db
-      .select()
-      .from(entregas)
-      .where(eq(entregas.id, entregaId))
-      .limit(1)
+    // 8. Verifica se a entrega foi criada corretamente
+    if (!entregaCriada) {
+      throw new NotFoundException("Entrega não foi criada corretamente")
+    }
 
     return {
       encomenda: {
@@ -882,9 +885,9 @@ export class PainelPortariaService {
         "Encomenda está cancelada. Não é possível reenviar aviso para encomenda cancelada.",
       )
     }
-    if (encomenda.status !== "pendente" && encomenda.status !== "confirmada") {
+    if (encomenda.status !== "pendente" && encomenda.status !== "pronta_retirada") {
       throw new ConflictException(
-        `Status atual '${encomenda.status}' não permite reenvio de aviso. Somente encomendas pendentes ou confirmadas.`,
+        `Status atual '${encomenda.status}' não permite reenvio de aviso. Somente encomendas pendentes ou prontas para retirada.`,
       )
     }
 
@@ -911,7 +914,7 @@ export class PainelPortariaService {
     const tipoNotificacao =
       encomenda.status === "pendente"
         ? "encomenda_pendente"
-        : "encomenda_confirmada"
+        : "encomenda_pronta_retirada"
 
     const mensagemPadrao =
       encomenda.status === "pendente"
@@ -924,7 +927,7 @@ export class PainelPortariaService {
     const notificacoesValues = moradoresAtivos.map((m) => ({
       moradorId: m.id,
       encomendaId,
-      tipo: tipoNotificacao as "encomenda_pendente" | "encomenda_confirmada",
+      tipo: tipoNotificacao as "encomenda_pendente" | "encomenda_pronta_retirada",
       mensagem,
       lida: false,
     }))
