@@ -1031,6 +1031,8 @@ export class GerenteAgentesService {
         errorMessage?: string;
         subtasks?: Array<{
           seq?: number;
+          workspaceBranch?: string | null;
+          workspaceCommitSha?: string | null;
           deliveryHistory?: Array<{
             id: number;
             deliverNumber: number;
@@ -1061,6 +1063,8 @@ export class GerenteAgentesService {
           scope: subtarefas.scope,
           acceptanceCriteria: subtarefas.acceptanceCriteria,
           workspaceStatus: subtarefas.workspaceStatus,
+          workspaceBranch: subtarefas.workspaceBranch,
+          workspaceCommitSha: subtarefas.workspaceCommitSha,
           correctionForSubtaskId: subtarefas.correctionForSubtaskId,
         })
         .from(subtarefas)
@@ -1092,6 +1096,8 @@ export class GerenteAgentesService {
         scope: s.scope ?? null,
         acceptanceCriteria: s.acceptanceCriteria ?? null,
         workspaceStatus: s.workspaceStatus ?? null,
+        workspaceBranch: s.workspaceBranch ?? null,
+        workspaceCommitSha: s.workspaceCommitSha ?? null,
         correctionForSubtaskId: s.correctionForSubtaskId ?? null,
         deliveryHistory: motorHistoryBySeq.get(s.seq) ?? [],
       }));

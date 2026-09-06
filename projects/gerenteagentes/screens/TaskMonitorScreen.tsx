@@ -104,6 +104,8 @@ interface SubTaskMotor {
   scope?: string | null
   acceptanceCriteria?: unknown
   workspaceStatus?: string | null
+  workspaceBranch?: string | null
+  workspaceCommitSha?: string | null
   correctionForSubtaskId?: number | null
   deliveryHistory?: DeliveryHistoryEntry[]
 }
@@ -121,6 +123,8 @@ interface SubTarefaDb {
   resultado?: string | null
   dependsOnSubtaskId?: number | null
   workspaceStatus?: string | null
+  workspaceBranch?: string | null
+  workspaceCommitSha?: string | null
   correctionForSubtaskId?: number | null
 }
 
@@ -876,6 +880,8 @@ export default function TaskMonitorScreen(): ReactNode {
       scope: subtarefa.scope ?? null,
       acceptanceCriteria: subtarefa.acceptanceCriteria ?? null,
       workspaceStatus: subtarefa.workspaceStatus ?? null,
+      workspaceBranch: subtarefa.workspaceBranch ?? null,
+      workspaceCommitSha: subtarefa.workspaceCommitSha ?? null,
       correctionForSubtaskId: subtarefa.correctionForSubtaskId ?? null,
     }))
   }, [detail?.subtasks, subtarefasDb])
@@ -896,6 +902,11 @@ export default function TaskMonitorScreen(): ReactNode {
     const active = detail?.currentSubTask ?? subs.find((s) => ["running", "delivered", "verifying", "planning"].includes(s.status)) ?? null
     return { total, verified, active }
   }, [detail?.currentSubTask, subtasks])
+
+  const integrationFailure = useMemo(
+    () => subtasks.find((s) => s.workspaceStatus === "integration_failed" && s.workspaceBranch),
+    [subtasks],
+  )
 
   const tarefaSelecionada = tarefas.find((t) => t.id === tarefaId)
   const tarefasVisiveis = useMemo(() => {
@@ -1207,6 +1218,12 @@ export default function TaskMonitorScreen(): ReactNode {
                   : ""}
                 {detail.task.blockInfo.subtaskId ? ` · Subtarefa #${detail.task.blockInfo.subtaskId}` : ""}
               </Typography>
+              {integrationFailure?.workspaceBranch && (
+                <Typography variant="caption" component="div" sx={{ mt: 0.75, wordBreak: "break-all" }} data-testid="integration-branch">
+                  <b>Branch para merge manual:</b> <code>{integrationFailure.workspaceBranch}</code>
+                  {integrationFailure.workspaceCommitSha ? <> · commit <code>{integrationFailure.workspaceCommitSha}</code></> : null}
+                </Typography>
+              )}
             </Alert>
           )}
 
@@ -1323,7 +1340,9 @@ export default function TaskMonitorScreen(): ReactNode {
                         </TableCell>
                         <TableCell>
                           {s.workspaceStatus ? (
-                            <Chip size="small" variant="outlined" label={s.workspaceStatus} data-testid={`workspace-status-${s.seq}`} />
+                            <Tooltip title={s.workspaceBranch ? `Branch: ${s.workspaceBranch}${s.workspaceCommitSha ? ` · commit: ${s.workspaceCommitSha}` : ""}` : s.workspaceStatus}>
+                              <Chip size="small" variant="outlined" label={s.workspaceStatus} data-testid={`workspace-status-${s.seq}`} />
+                            </Tooltip>
                           ) : (
                             <Typography variant="caption" color="text.secondary">—</Typography>
                           )}
