@@ -1220,7 +1220,15 @@ class TaskWorker {
       "Subtarefa #" + subtask.seq + ": " + subtask.titulo,
       "Escopo: " + (subtask.scope || subtask.titulo),
       "Criterios de aceite: " + JSON.stringify(subtask.acceptanceCriteria || []),
-      ...(lightweight ? ["Fluxo: " + task.tipo + " (sem workspace, branch, clone, build ou testes)"] : ["Workspace: " + repoPath]),
+      ...(lightweight
+        ? ["Fluxo: " + task.tipo + " (sem workspace, branch, clone, build ou testes)"]
+        : [
+            "Workspace: " + repoPath,
+            "RESTRICAO ABSOLUTA DE CAMINHO: todo o trabalho (leitura, edicao, git, build, testes) deve acontecer SOMENTE dentro do Workspace acima. " +
+              "Nunca leia, modifique, commite ou execute git em qualquer outro caminho do repositorio (pasta base, outro worktree, outra copia). " +
+              "Se um comando git falhar dentro do Workspace (ex.: 'not a git repository', 'dubious ownership'), NAO improvise em outro caminho: " +
+              "responda blocked_environment com o erro exato.",
+          ]),
       "",
       "Instrucoes:",
       lightweight ? "1. Execute a acao/verificacao solicitada e produza uma resposta clara com as evidencias encontradas" : "1. Faca as alteracoes necessarias nos arquivos",
