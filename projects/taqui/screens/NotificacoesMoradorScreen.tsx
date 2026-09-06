@@ -1,53 +1,56 @@
 /**
- * NotificacoesMoradorScreen — tela do morador para notificações e histórico.
+ * NotificacoesMoradorScreen — tela "Minhas Encomendas" do morador.
  *
- * Exibe:
- * - Notificações não lidas (sininho) com badge de contagem
- * - Histórico de encomendas da unidade do morador
- * - Histórico de ocorrências das encomendas da unidade
+ * Layout com três seções agrupadas:
+ * 1. Aguardando sua confirmação (status: pendente)
+ * 2. Prontas para retirada (status: pronta_retirada)
+ * 3. Histórico (status: entregue / cancelada)
+ *
+ * Cada card exibe: foto, transportadora, identificação, data de chegada,
+ * unidade e instrução contextual ao status.
+ *
+ * A ação "Confirmar que reconheço esta encomenda" abre modal de confirmação
+ * explícita, chama PATCH de reconhecimento e move o card para "Prontas para
+ * retirada". Marcar notificação como lida NÃO altera status da encomenda.
+ *
+ * Sininho no cabeçalho com badge de não-lidas; ao clicar, painel de
+ * notificações recentes com link direto para a encomenda.
  *
  * Permissões:
- * - Morador vê apenas notificações e encomendas de sua unidade
- * - Ocorrências são exibidas de forma compreensível (tipo, motivo, data, resultado)
- * - Dados sensíveis (foto de evidência interna) podem ser ocultados conforme config
- *
- * Fluxo:
- * 1. Carrega morador autenticado via contexto
- * 2. Busca unidade vinculada ao morador
- * 3. Carrega notificações não lidas da unidade
- * 4. Carrega encomendas da unidade com histórico de ocorrências
+ * - Morador vê apenas encomendas de suas unidades autorizadas.
+ * - Entrega continua sendo ato exclusivo da portaria.
  */
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import {
   Alert,
   Avatar,
-  Button,
   Badge,
   Box,
+  Button,
   Chip,
   CircularProgress,
   Collapse,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   Divider,
   IconButton,
-  List,
-  ListItemAvatar,
-  ListItemButton,
-  ListItemText,
   Paper,
+  Popover,
   Stack,
-  Tab,
-  Tabs,
+  Tooltip,
   Typography,
 } from "@mui/material"
 import {
   NotificationsRounded,
   NotificationsActiveRounded,
   Inventory2Rounded,
-  WarningAmberRounded,
   CheckCircleRounded,
-  ExpandMoreRounded,
   LocalShippingRounded,
   EventRounded,
+  HourglassEmptyRounded,
+  VisibilityRounded,
 } from "@mui/icons-material"
 import { useApi } from "../../../apps/web/src/hooks/useApi"
 import { useAuth } from "../../../apps/web/src/auth/AuthContext"
@@ -56,28 +59,22 @@ import { useAuth } from "../../../apps/web/src/auth/AuthContext"
 // TIPOS
 // ============================================================================
 
-type StatusEncomenda = "pendente" | "confirmada" | "entregue" | "cancelada"
+type StatusEncomenda = "pendente" | "pronta_retirada" | "entregue" | "cancelada"
+
+type TipoNotificacao =
+  | "encomenda_pendente"
+  | "encomenda_pronta_retirada"
+  | "encomenda_entregue"
+  | "ocorrencia_registrada"
 
 interface Notificacao {
   id: number
   encomendaId: number
-  tipo: "encomenda_pendente" | "encomenda_confirmada" | "encomenda_entregue" | "ocorrencia_registrada"
+  tipo: TipoNotificacao
   mensagem: string
   lida: boolean
+  lidaEm: string | null
   createdAt: string
-}
-
-interface Ocorrencia {
-  id: number
-  tipo: string
-  tipoLabel: string
-  motivo: string
-  descricao: string | null
-  fotoEvidenciaUrl: string | null
-  observacoes: string | null
-  devolvidaTransportadora: boolean
-  dataOcorrencia: string
-  registradoPorNome: string
 }
 
 interface Encomenda {
@@ -86,12 +83,12 @@ interface Encomenda {
   codigoRastreamento: string | null
   transportadoraNome: string | null
   fotoUrl: string | null
+  unidadeLabel: string | null
   createdAt: string
   confirmadoEm: string | null
   entregueEm: string | null
   canceladoEm: string | null
   motivoCancelamento: string | null
-  ocorrencias: Ocorrencia[]
 }
 
 interface MoradorInfo {
@@ -105,39 +102,36 @@ interface MoradorInfo {
 // CONSTANTES
 // ============================================================================
 
-const TABS = [
-  { value: "notificacoes", label: "Notificações" },
-  { value: "encomendas", label: "Minhas Encomendas" },
-] as const
-
-type TabValue = (typeof TABS)[number]["value"]
-
-const TIPO_NOTIFICACAO_LABEL: Record<Notificacao["tipo"], string> = {
-  encomenda_pendente: "Nova encomenda",
-  encomenda_confirmada: "Confirmação recebida",
-  encomenda_entregue: "Encomenda entregue",
-  ocorrencia_registrada: "Ocorrência registrada",
-}
-
-const TIPO_NOTIFICACAO_ICONE: Record<Notificacao["tipo"], ReactNode> = {
-  encomenda_pendente: <Inventory2Rounded color="primary" />,
-  encomenda_confirmada: <CheckCircleRounded color="success" />,
-  encomenda_entregue: <CheckCircleRounded color="action" />,
-  ocorrencia_registrada: <WarningAmberRounded color="warning" />,
-}
-
 const STATUS_LABEL: Record<StatusEncomenda, string> = {
-  pendente: "Aguardando confirmação",
-  confirmada: "Pronta para retirada",
+  pendente: "Aguardando sua confirmação",
+  pronta_retirada: "Pronta para retirada",
   entregue: "Entregue",
   cancelada: "Cancelada",
 }
 
 const STATUS_COLOR: Record<StatusEncomenda, "warning" | "success" | "default" | "error"> = {
   pendente: "warning",
-  confirmada: "success",
+  pronta_retirada: "success",
   entregue: "default",
   cancelada: "error",
+}
+
+const STATUS_INSTRUCAO: Record<StatusEncomenda, string> = {
+  pendente:
+    "Confirme que você reconhece esta encomenda. Isso NÃO significa que você já a retirou — apenas que está ciente da chegada.",
+  pronta_retirada:
+    "Encomenda reconhecida. Dirija-se à portaria/triagem para retirá-la fisicamente.",
+  entregue:
+    "Encomenda retirada fisicamente. Se houve algum problema, procure a portaria.",
+  cancelada:
+    "Esta encomenda foi cancelada e não está mais disponível para retirada.",
+}
+
+const TIPO_NOTIFICACAO_LABEL: Record<TipoNotificacao, string> = {
+  encomenda_pendente: "Nova encomenda",
+  encomenda_pronta_retirada: "Confirmação recebida",
+  encomenda_entregue: "Encomenda entregue",
+  ocorrencia_registrada: "Ocorrência registrada",
 }
 
 // ============================================================================
@@ -171,274 +165,459 @@ function formatarDataRelativa(iso: string): string {
 }
 
 // ============================================================================
-// COMPONENTE: ItemNotificacao
+// COMPONENTE: CardEncomenda
 // ============================================================================
 
-function ItemNotificacao({
-  notificacao,
-  onMarcarLida,
+function CardEncomenda({
+  encomenda,
+  onConfirmar,
+  confirmandoId,
 }: {
-  notificacao: Notificacao
-  onMarcarLida: (id: number) => void
+  encomenda: Encomenda
+  onConfirmar: (id: number) => void
+  confirmandoId: number | null
 }): ReactNode {
-  return (
-    <ListItemButton
-      data-testid="item-notificacao"
-      onClick={() => !notificacao.lida && onMarcarLida(notificacao.id)}
-      sx={{
-        bgcolor: notificacao.lida ? "transparent" : "action.hover",
-        borderLeft: notificacao.lida ? "none" : "3px solid",
-        borderLeftColor: notificacao.tipo === "ocorrencia_registrada" ? "warning.main" : "primary.main",
-      }}
-    >
-      <ListItemAvatar>
-        <Avatar sx={{ bgcolor: "transparent" }}>
-          {TIPO_NOTIFICACAO_ICONE[notificacao.tipo]}
-        </Avatar>
-      </ListItemAvatar>
-      <ListItemText
-        primary={
-          <Stack direction="row" alignItems="center" spacing={1}>
-            <Typography variant="subtitle2" fontWeight={notificacao.lida ? 400 : 600}>
-              {TIPO_NOTIFICACAO_LABEL[notificacao.tipo]}
-            </Typography>
-            {!notificacao.lida && (
-              <Chip label="Nova" size="small" color="primary" />
-            )}
-          </Stack>
-        }
-        secondary={
-          <Stack spacing={0.5}>
-            <Typography variant="body2" color="text.secondary">
-              {notificacao.mensagem}
-            </Typography>
-            <Typography variant="caption" color="text.disabled">
-              {formatarDataRelativa(notificacao.createdAt)}
-            </Typography>
-          </Stack>
-        }
-      />
-    </ListItemButton>
-  )
-}
-
-// ============================================================================
-// COMPONENTE: ItemOcorrencia
-// ============================================================================
-
-function ItemOcorrencia({ ocorrencia }: { ocorrencia: Ocorrencia }): ReactNode {
-  const [expandido, setExpandido] = useState(false)
+  const isPendente = encomenda.status === "pendente"
+  const confirmando = confirmandoId === encomenda.id
 
   return (
     <Paper
       variant="outlined"
-      data-testid="item-ocorrencia"
-      sx={{
-        p: 2,
-        borderLeft: 4,
-        borderLeftColor: "warning.main",
-      }}
-    >
-      <Stack direction="row" alignItems="flex-start" spacing={2}>
-        <WarningAmberRounded color="warning" sx={{ mt: 0.5 }} />
-        <Box flex={1}>
-          <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap">
-            <Chip
-              label={ocorrencia.tipoLabel}
-              size="small"
-              color="warning"
-              variant="outlined"
-            />
-            {ocorrencia.devolvidaTransportadora && (
-              <Chip
-                label="Devolvida"
-                size="small"
-                color="error"
-                variant="outlined"
-              />
-            )}
-            <Typography variant="caption" color="text.secondary">
-              <EventRounded sx={{ fontSize: 12, mr: 0.5, verticalAlign: "text-bottom" }} />
-              {formatarData(ocorrencia.dataOcorrencia)}
-            </Typography>
-          </Stack>
-
-          <Typography variant="body2" sx={{ mt: 1 }}>
-            <strong>Motivo:</strong> {ocorrencia.motivo}
-          </Typography>
-
-          {ocorrencia.descricao && (
-            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-              <strong>Descrição:</strong> {ocorrencia.descricao}
-            </Typography>
-          )}
-
-          <Typography variant="caption" color="text.disabled" sx={{ mt: 1, display: "block" }}>
-            Registrado por: {ocorrencia.registradoPorNome}
-          </Typography>
-
-          {(ocorrencia.observacoes || ocorrencia.fotoEvidenciaUrl) && (
-            <>
-              <IconButton
-                size="small"
-                onClick={() => setExpandido(!expandido)}
-                sx={{ mt: 1 }}
-                data-testid="btn-expandir-ocorrencia"
-              >
-                <ExpandMoreRounded
-                  sx={{
-                    transform: expandido ? "rotate(180deg)" : "rotate(0deg)",
-                    transition: "transform 0.2s",
-                  }}
-                />
-              </IconButton>
-              <Collapse in={expandido}>
-                <Stack spacing={1} sx={{ mt: 1 }}>
-                  {ocorrencia.observacoes && (
-                    <Typography variant="body2" color="text.secondary">
-                      <strong>Observações:</strong> {ocorrencia.observacoes}
-                    </Typography>
-                  )}
-                  {ocorrencia.fotoEvidenciaUrl && (
-                    <Box>
-                      <Typography variant="caption" color="text.secondary">
-                        Foto de evidência disponível
-                      </Typography>
-                    </Box>
-                  )}
-                </Stack>
-              </Collapse>
-            </>
-          )}
-        </Box>
-      </Stack>
-    </Paper>
-  )
-}
-
-// ============================================================================
-// COMPONENTE: ItemEncomenda
-// ============================================================================
-
-function ItemEncomenda({ encomenda, onConfirmar }: { encomenda: Encomenda; onConfirmar: (id: number) => void }): ReactNode {
-  const [expandido, setExpandido] = useState(false)
-  const temOcorrencias = encomenda.ocorrencias.length > 0
-
-  return (
-    <Paper
-      variant="outlined"
-      data-testid="item-encomenda"
+      data-testid="card-encomenda"
+      data-status={encomenda.status}
       sx={{
         p: 2,
         borderLeft: 4,
         borderLeftColor:
-          encomenda.status === "entregue"
+          encomenda.status === "pronta_retirada"
             ? "success.main"
-            : encomenda.status === "cancelada"
-              ? "error.main"
-              : "warning.main",
+            : encomenda.status === "entregue"
+              ? "action.disabled"
+              : encomenda.status === "cancelada"
+                ? "error.main"
+                : "warning.main",
       }}
     >
       <Stack direction="row" spacing={2} alignItems="flex-start">
+        {/* Foto */}
         <Avatar
           variant="rounded"
           src={encomenda.fotoUrl ?? undefined}
           sx={{
-            width: 56,
-            height: 56,
+            width: 64,
+            height: 64,
             bgcolor: "grey.200",
+            flexShrink: 0,
           }}
         >
           {!encomenda.fotoUrl && <Inventory2Rounded color="disabled" />}
         </Avatar>
 
-        <Box flex={1}>
+        {/* Conteúdo */}
+        <Box flex={1} minWidth={0}>
+          {/* Status + identificação */}
           <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap">
             <Chip
               label={STATUS_LABEL[encomenda.status]}
               color={STATUS_COLOR[encomenda.status]}
               size="small"
             />
-            {temOcorrencias && (
-              <Chip
-                icon={<WarningAmberRounded />}
-                label={`${encomenda.ocorrencias.length} ocorrência(s)`}
-                size="small"
-                color="warning"
-                variant="outlined"
-              />
-            )}
             {encomenda.codigoRastreamento && (
-              <Typography variant="caption" color="text.secondary">
+              <Typography variant="caption" color="text.secondary" noWrap>
                 #{encomenda.codigoRastreamento}
               </Typography>
             )}
           </Stack>
 
+          {/* Transportadora */}
           {encomenda.transportadoraNome && (
-            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-              <LocalShippingRounded sx={{ fontSize: 14, mr: 0.5, verticalAlign: "text-bottom" }} />
+            <Typography
+              variant="body2"
+              color="text.secondary"
+              sx={{ mt: 0.5 }}
+              noWrap
+            >
+              <LocalShippingRounded
+                sx={{ fontSize: 14, mr: 0.5, verticalAlign: "text-bottom" }}
+              />
               {encomenda.transportadoraNome}
             </Typography>
           )}
 
-          <Typography variant="caption" color="text.disabled" sx={{ mt: 0.5, display: "block" }}>
-            Registrada em {formatarData(encomenda.createdAt)}
+          {/* Unidade + chegada */}
+          <Stack
+            direction="row"
+            spacing={2}
+            flexWrap="wrap"
+            useFlexGap
+            sx={{ mt: 0.5 }}
+          >
+            {encomenda.unidadeLabel && (
+              <Typography variant="caption" color="text.secondary">
+                <EventRounded
+                  sx={{ fontSize: 12, mr: 0.5, verticalAlign: "text-bottom" }}
+                />
+                {encomenda.unidadeLabel}
+              </Typography>
+            )}
+            <Typography variant="caption" color="text.disabled">
+              Chegou em {formatarData(encomenda.createdAt)}
+            </Typography>
+          </Stack>
+
+          {/* Instrução contextual */}
+          <Typography
+            variant="body2"
+            color="text.secondary"
+            sx={{
+              mt: 1,
+              fontStyle: "italic",
+              fontSize: "0.8rem",
+            }}
+          >
+            {STATUS_INSTRUCAO[encomenda.status]}
           </Typography>
 
-          {encomenda.status === "pendente" && (
-            <Button
-              variant="contained"
-              size="small"
-              startIcon={<CheckCircleRounded />}
-              onClick={() => onConfirmar(encomenda.id)}
-              data-testid="botao-confirmar-recebimento"
-              sx={{ mt: 1.5 }}
-            >
-              Confirmar recebimento
-            </Button>
+          {/* Datas relevantes */}
+          {encomenda.status === "pronta_retirada" && encomenda.confirmadoEm && (
+            <Typography variant="caption" color="success.dark" sx={{ mt: 0.5, display: "block" }}>
+              Reconhecida em {formatarData(encomenda.confirmadoEm)}
+            </Typography>
           )}
-
+          {encomenda.status === "entregue" && encomenda.entregueEm && (
+            <Typography variant="caption" color="text.disabled" sx={{ mt: 0.5, display: "block" }}>
+              Retirada em {formatarData(encomenda.entregueEm)}
+            </Typography>
+          )}
           {encomenda.status === "cancelada" && encomenda.motivoCancelamento && (
             <Alert severity="warning" sx={{ mt: 1, py: 0 }}>
               <Typography variant="body2">
-                <strong>Motivo do cancelamento:</strong> {encomenda.motivoCancelamento}
+                <strong>Motivo:</strong> {encomenda.motivoCancelamento}
               </Typography>
             </Alert>
           )}
 
-          {/* Botão para expandir ocorrências */}
-          {temOcorrencias && (
-            <>
-              <IconButton
-                size="small"
-                onClick={() => setExpandido(!expandido)}
-                sx={{ mt: 1 }}
-                data-testid="btn-expandir-encomenda"
-              >
-                <ExpandMoreRounded
-                  sx={{
-                    transform: expandido ? "rotate(180deg)" : "rotate(0deg)",
-                    transition: "transform 0.2s",
-                  }}
-                />
-              </IconButton>
-              <Collapse in={expandido}>
-                <Stack spacing={2} sx={{ mt: 2 }}>
-                  <Divider />
-                  <Typography variant="subtitle2" color="text.secondary">
-                    Histórico de Ocorrências
-                  </Typography>
-                  {encomenda.ocorrencias.map((ocorrencia) => (
-                    <ItemOcorrencia key={ocorrencia.id} ocorrencia={ocorrencia} />
-                  ))}
-                </Stack>
-              </Collapse>
-            </>
+          {/* Botão de confirmação (apenas pendentes) */}
+          {isPendente && (
+            <Button
+              variant="contained"
+              size="small"
+              startIcon={
+                confirmando ? (
+                  <CircularProgress size={16} color="inherit" />
+                ) : (
+                  <CheckCircleRounded />
+                )
+              }
+              onClick={() => onConfirmar(encomenda.id)}
+              disabled={confirmandoId !== null}
+              data-testid="botao-confirmar-reconhecimento"
+              sx={{ mt: 1.5 }}
+            >
+              Confirmar que reconheço esta encomenda
+            </Button>
           )}
         </Box>
       </Stack>
     </Paper>
+  )
+}
+
+// ============================================================================
+// COMPONENTE: SecaoGroup
+// ============================================================================
+
+function SecaoGroup({
+  titulo,
+  icone,
+  cor,
+  count,
+  children,
+  testId,
+  defaultExpanded,
+}: {
+  titulo: string
+  icone: ReactNode
+  cor: "warning" | "success" | "default" | "error"
+  count: number
+  children: ReactNode
+  testId: string
+  defaultExpanded?: boolean
+}): ReactNode {
+  const [expandida, setExpandida] = useState(defaultExpanded ?? count > 0)
+
+  return (
+    <Box data-testid={testId} sx={{ mb: 3 }}>
+      {/* Cabeçalho da seção */}
+      <Stack
+        direction="row"
+        alignItems="center"
+        spacing={1}
+        sx={{
+          cursor: "pointer",
+          py: 1,
+          px: 1,
+          borderRadius: 1,
+          "&:hover": { bgcolor: "action.hover" },
+        }}
+        onClick={() => setExpandida(!expandida)}
+        data-testid={`${testId}-header`}
+      >
+        <Box sx={{ color: `${cor}.main`, display: "flex" }}>{icone}</Box>
+        <Typography variant="subtitle1" fontWeight={600} flex={1}>
+          {titulo}
+        </Typography>
+        <Chip
+          label={count}
+          size="small"
+          color={cor === "default" ? undefined : cor}
+          variant={count > 0 ? "filled" : "outlined"}
+        />
+      </Stack>
+
+      {/* Conteúdo */}
+      <Collapse in={expandida}>
+        {count === 0 ? (
+          <Typography
+            variant="body2"
+            color="text.disabled"
+            sx={{ py: 2, px: 1, textAlign: "center" }}
+          >
+            Nenhuma encomenda nesta categoria.
+          </Typography>
+        ) : (
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            {children}
+          </Stack>
+        )}
+      </Collapse>
+    </Box>
+  )
+}
+
+// ============================================================================
+// COMPONENTE: DialogConfirmacaoReconhecimento
+// ============================================================================
+
+function DialogConfirmacaoReconhecimento({
+  open,
+  encomenda,
+  onConfirmar,
+  onCancelar,
+  confirmando,
+}: {
+  open: boolean
+  encomenda: Encomenda | null
+  onConfirmar: () => void
+  onCancelar: () => void
+  confirmando: boolean
+}): ReactNode {
+  if (!encomenda) return null
+
+  return (
+    <Dialog
+      open={open}
+      onClose={onCancelar}
+      maxWidth="sm"
+      fullWidth
+      data-testid="dialog-confirmacao-reconhecimento"
+    >
+      <DialogTitle>
+        <Stack direction="row" alignItems="center" spacing={1}>
+          <CheckCircleRounded color="primary" />
+          <Typography variant="h6" fontWeight={600}>
+            Confirmar reconhecimento
+          </Typography>
+        </Stack>
+      </DialogTitle>
+      <DialogContent>
+        <Stack spacing={2}>
+          <Typography variant="body1">
+            Você está confirmando que <strong>reconhece</strong> a seguinte encomenda:
+          </Typography>
+
+          <Paper variant="outlined" sx={{ p: 2 }}>
+            <Stack direction="row" spacing={2} alignItems="center">
+              <Avatar
+                variant="rounded"
+                src={encomenda.fotoUrl ?? undefined}
+                sx={{ width: 48, height: 48, bgcolor: "grey.200" }}
+              >
+                {!encomenda.fotoUrl && <Inventory2Rounded color="disabled" />}
+              </Avatar>
+              <Box>
+                {encomenda.transportadoraNome && (
+                  <Typography variant="body2" fontWeight={600}>
+                    {encomenda.transportadoraNome}
+                  </Typography>
+                )}
+                {encomenda.codigoRastreamento && (
+                  <Typography variant="caption" color="text.secondary">
+                    #{encomenda.codigoRastreamento}
+                  </Typography>
+                )}
+                {encomenda.unidadeLabel && (
+                  <Typography variant="caption" color="text.secondary" display="block">
+                    {encomenda.unidadeLabel}
+                  </Typography>
+                )}
+              </Box>
+            </Stack>
+          </Paper>
+
+          <Alert severity="info" icon={<VisibilityRounded />}>
+            <Typography variant="body2">
+              <strong>O que isso significa:</strong> você está avisando a portaria
+              que sabe que esta encomenda chegou. A encomenda continuará na
+              portaria até que você vá retirá-la fisicamente.
+            </Typography>
+          </Alert>
+
+          <Alert severity="warning">
+            <Typography variant="body2">
+              <strong>Atenção:</strong> confirmar o reconhecimento{" "}
+              <strong>NÃO</strong> significa que você já retirou a encomenda. A
+              retirada física continua sendo feita na portaria/triagem.
+            </Typography>
+          </Alert>
+        </Stack>
+      </DialogContent>
+      <DialogActions sx={{ px: 3, pb: 2 }}>
+        <Button onClick={onCancelar} disabled={confirmando}>
+          Cancelar
+        </Button>
+        <Button
+          variant="contained"
+          onClick={onConfirmar}
+          disabled={confirmando}
+          startIcon={
+            confirmando ? (
+              <CircularProgress size={16} color="inherit" />
+            ) : (
+              <CheckCircleRounded />
+            )
+          }
+          data-testid="botao-confirmar-dialog"
+        >
+          {confirmando ? "Confirmando..." : "Sim, reconheço esta encomenda"}
+        </Button>
+      </DialogActions>
+    </Dialog>
+  )
+}
+
+// ============================================================================
+// COMPONENTE: PainelNotificacoes (sininho dropdown)
+// ============================================================================
+
+function PainelNotificacoes({
+  notificacoes,
+  naoLidas,
+  onMarcarLida,
+  onIrParaEncomenda,
+  open,
+  anchorEl,
+  onClose,
+}: {
+  notificacoes: Notificacao[]
+  naoLidas: number
+  onMarcarLida: (id: number) => void
+  onIrParaEncomenda: (encomendaId: number) => void
+  open: boolean
+  anchorEl: HTMLElement | null
+  onClose: () => void
+}): ReactNode {
+  return (
+    <Popover
+      open={open}
+      anchorEl={anchorEl}
+      onClose={onClose}
+      anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+      transformOrigin={{ vertical: "top", horizontal: "right" }}
+      data-testid="painel-notificacoes"
+      slotProps={{
+        paper: {
+          sx: {
+            width: { xs: "calc(100vw - 32px)", sm: 380 },
+            maxHeight: 480,
+          },
+        },
+      }}
+    >
+      {/* Cabeçalho */}
+      <Stack
+        direction="row"
+        alignItems="center"
+        spacing={1}
+        sx={{ px: 2, py: 1.5, borderBottom: 1, borderColor: "divider" }}
+      >
+        <NotificationsRounded color="primary" />
+        <Typography variant="subtitle1" fontWeight={600} flex={1}>
+          Notificações
+        </Typography>
+        {naoLidas > 0 && (
+          <Chip label={`${naoLidas} não lida(s)`} size="small" color="warning" />
+        )}
+      </Stack>
+
+      {/* Lista */}
+      <Box sx={{ maxHeight: 380, overflowY: "auto" }}>
+        {notificacoes.length === 0 ? (
+          <Box sx={{ p: 3, textAlign: "center" }}>
+            <NotificationsRounded
+              sx={{ fontSize: 40, color: "text.disabled", mb: 1 }}
+            />
+            <Typography variant="body2" color="text.secondary">
+              Nenhuma notificação.
+            </Typography>
+          </Box>
+        ) : (
+          notificacoes.map((notif) => (
+            <Box
+              key={notif.id}
+              data-testid="item-notificacao"
+              sx={{
+                px: 2,
+                py: 1.5,
+                bgcolor: notif.lida ? "transparent" : "action.hover",
+                borderLeft: notif.lida ? "none" : "3px solid",
+                borderLeftColor: "primary.main",
+                cursor: "pointer",
+                "&:hover": { bgcolor: "action.selected" },
+                borderBottom: 1,
+                borderColor: "divider",
+              }}
+              onClick={() => {
+                if (!notif.lida) {
+                  onMarcarLida(notif.id)
+                }
+                onIrParaEncomenda(notif.encomendaId)
+                onClose()
+              }}
+            >
+              <Stack direction="row" alignItems="center" spacing={1}>
+                <Typography
+                  variant="body2"
+                  fontWeight={notif.lida ? 400 : 600}
+                  flex={1}
+                >
+                  {TIPO_NOTIFICACAO_LABEL[notif.tipo]}
+                </Typography>
+                {!notif.lida && (
+                  <Chip label="Nova" size="small" color="primary" />
+                )}
+              </Stack>
+              <Typography variant="caption" color="text.secondary" display="block">
+                {notif.mensagem}
+              </Typography>
+              <Typography variant="caption" color="text.disabled">
+                {formatarDataRelativa(notif.createdAt)}
+              </Typography>
+            </Box>
+          ))
+        )}
+      </Box>
+    </Popover>
   )
 }
 
@@ -450,13 +629,41 @@ export default function NotificacoesMoradorScreen(): ReactNode {
   const bundle = useApi()
   const { projeto, usuario } = useAuth()
 
-  const [tab, setTab] = useState<TabValue>("notificacoes")
   const [carregando, setCarregando] = useState(true)
   const [erro, setErro] = useState<string | null>(null)
 
   const [morador, setMorador] = useState<MoradorInfo | null>(null)
   const [notificacoes, setNotificacoes] = useState<Notificacao[]>([])
   const [encomendas, setEncomendas] = useState<Encomenda[]>([])
+
+  // Sininho
+  const [sininhoAberto, setSininhoAberto] = useState(false)
+  const sininhoRef = useRef<HTMLButtonElement | null>(null)
+
+  // Dialog de confirmação
+  const [encomendaParaConfirmar, setEncomendaParaConfirmar] = useState<Encomenda | null>(null)
+  const [confirmandoId, setConfirmandoId] = useState<number | null>(null)
+
+  // =========================================================================
+  // ENCOMENDAS AGRUPADAS
+  // =========================================================================
+
+  const encomendasAguardando = useMemo(
+    () => encomendas.filter((e) => e.status === "pendente"),
+    [encomendas],
+  )
+  const encomendasProntas = useMemo(
+    () => encomendas.filter((e) => e.status === "pronta_retirada"),
+    [encomendas],
+  )
+  const encomendasHistorico = useMemo(
+    () => encomendas.filter((e) => e.status === "entregue" || e.status === "cancelada"),
+    [encomendas],
+  )
+  const notificacoesNaoLidas = useMemo(
+    () => notificacoes.filter((n) => !n.lida).length,
+    [notificacoes],
+  )
 
   // =========================================================================
   // CARREGAR DADOS DO MORADOR
@@ -465,7 +672,6 @@ export default function NotificacoesMoradorScreen(): ReactNode {
   const carregarMorador = useCallback(async () => {
     if (!bundle || !projeto || !usuario) return
     try {
-      // Busca morador pelo userId (vínculo via email ou tabela auxiliar)
       const result = await bundle.http.request<{ items: MoradorInfo[] }>(
         "GET",
         `/${projeto.slug}/moradores`,
@@ -489,9 +695,6 @@ export default function NotificacoesMoradorScreen(): ReactNode {
 
   const carregarNotificacoes = useCallback(async () => {
     if (!bundle || !projeto || !morador) return
-    setCarregando(true)
-    setErro(null)
-
     try {
       const result = await bundle.http.request<{ items: Notificacao[] }>(
         "GET",
@@ -502,19 +705,13 @@ export default function NotificacoesMoradorScreen(): ReactNode {
         },
       )
       setNotificacoes(result.items ?? [])
-    } catch (error) {
-      setErro(
-        error instanceof Error
-          ? error.message
-          : "Não foi possível carregar as notificações.",
-      )
-    } finally {
-      setCarregando(false)
+    } catch {
+      // Silencioso
     }
   }, [bundle, projeto, morador])
 
   // =========================================================================
-  // CARREGAR ENCOMENDAS COM OCORRÊNCIAS
+  // CARREGAR ENCOMENDAS
   // =========================================================================
 
   const carregarEncomendas = useCallback(async () => {
@@ -523,35 +720,15 @@ export default function NotificacoesMoradorScreen(): ReactNode {
     setErro(null)
 
     try {
-      // Busca encomendas da unidade do morador
       const result = await bundle.http.request<{ items: Encomenda[] }>(
         "GET",
         `/${projeto.slug}/encomendas`,
         {
-          query: { unidadeId: String(morador.unidadeId), pageSize: 50 },
+          query: { unidadeId: String(morador.unidadeId), pageSize: 100 },
           auth: "access",
         },
       )
-
-      const encomendasList = result.items ?? []
-
-      // Para cada encomenda, busca ocorrências
-      const encomendasComOcorrencias = await Promise.all(
-        encomendasList.map(async (enc) => {
-          try {
-            const ocorrenciasResult = await bundle.http.request<Ocorrencia[]>(
-              "GET",
-              `/${projeto.slug}/ocorrencias/encomenda/${enc.id}`,
-              { auth: "access" },
-            )
-            return { ...enc, ocorrencias: ocorrenciasResult ?? [] }
-          } catch {
-            return { ...enc, ocorrencias: [] }
-          }
-        }),
-      )
-
-      setEncomendas(encomendasComOcorrencias)
+      setEncomendas(result.items ?? [])
     } catch (error) {
       setErro(
         error instanceof Error
@@ -564,7 +741,7 @@ export default function NotificacoesMoradorScreen(): ReactNode {
   }, [bundle, projeto, morador])
 
   // =========================================================================
-  // MARCAR NOTIFICAÇÃO COMO LIDA
+  // MARCAR NOTIFICAÇÃO COMO LIDA (NÃO altera status da encomenda)
   // =========================================================================
 
   const marcarNotificacaoLida = useCallback(
@@ -580,36 +757,117 @@ export default function NotificacoesMoradorScreen(): ReactNode {
           },
         )
         setNotificacoes((prev) =>
-          prev.map((n) => (n.id === notificacaoId ? { ...n, lida: true } : n)),
+          prev.map((n) =>
+            n.id === notificacaoId
+              ? { ...n, lida: true, lidaEm: new Date().toISOString() }
+              : n,
+          ),
         )
       } catch {
-        // Silencioso — falha ao marcar como lida
+        // Silencioso
       }
     },
     [bundle, projeto],
   )
 
-  const confirmarRecebimento = useCallback(async (encomendaId: number) => {
-    if (!bundle || !projeto || !morador) return
+  // =========================================================================
+  // CONFIRMAR RECONHECIMENTO (PATCH — move para pronta_retirada)
+  // =========================================================================
+
+  const abrirDialogConfirmacao = useCallback(
+    (encomendaId: number) => {
+      const enc = encomendas.find((e) => e.id === encomendaId)
+      if (enc) {
+        setEncomendaParaConfirmar(enc)
+      }
+    },
+    [encomendas],
+  )
+
+  const confirmarReconhecimento = useCallback(async () => {
+    if (!bundle || !projeto || !morador || !encomendaParaConfirmar) return
+    const encomendaId = encomendaParaConfirmar.id
+    setConfirmandoId(encomendaId)
+
     try {
-      await bundle.http.request("PUT", `/${projeto.slug}/encomendas/${encomendaId}`, {
-        body: {
-          status: "confirmada",
-          confirmadoPorId: morador.id,
-          confirmadoEm: new Date().toISOString(),
+      await bundle.http.request(
+        "PATCH",
+        `/${projeto.slug}/encomendas/${encomendaId}/reconhecer`,
+        {
+          body: {
+            moradorId: morador.id,
+          },
+          auth: "access",
         },
-        auth: "access",
-      })
-      setEncomendas((prev) => prev.map((item) => item.id === encomendaId
-        ? { ...item, status: "confirmada", confirmadoEm: new Date().toISOString() }
-        : item))
-      setNotificacoes((prev) => prev.map((item) => item.encomendaId === encomendaId
-        ? { ...item, tipo: "encomenda_confirmada", lida: true }
-        : item))
+      )
+
+      // Atualiza card localmente: move para "pronta_retirada"
+      setEncomendas((prev) =>
+        prev.map((item) =>
+          item.id === encomendaId
+            ? {
+                ...item,
+                status: "pronta_retirada" as StatusEncomenda,
+                confirmadoEm: new Date().toISOString(),
+              }
+            : item,
+        ),
+      )
+
+      // Atualiza notificações relacionadas
+      setNotificacoes((prev) =>
+        prev.map((item) =>
+          item.encomendaId === encomendaId
+            ? {
+                ...item,
+                tipo: "encomenda_pronta_retirada" as TipoNotificacao,
+                lida: true,
+                lidaEm: new Date().toISOString(),
+              }
+            : item,
+        ),
+      )
+
+      setEncomendaParaConfirmar(null)
     } catch (error) {
-      setErro(error instanceof Error ? error.message : "Não foi possível confirmar o recebimento.")
+      setErro(
+        error instanceof Error
+          ? error.message
+          : "Não foi possível confirmar o reconhecimento.",
+      )
+    } finally {
+      setConfirmandoId(null)
     }
-  }, [bundle, projeto, morador])
+  }, [bundle, projeto, morador, encomendaParaConfirmar])
+
+  const fecharDialogConfirmacao = useCallback(() => {
+    setEncomendaParaConfirmar(null)
+  }, [])
+
+  // =========================================================================
+  // SININHO
+  // =========================================================================
+
+  const abrirSininho = useCallback(() => {
+    setSininhoAberto(true)
+  }, [])
+
+  const fecharSininho = useCallback(() => {
+    setSininhoAberto(false)
+  }, [])
+
+  const irParaEncomenda = useCallback((encomendaId: number) => {
+    // Scroll to the card by finding it in the DOM
+    const cards = document.querySelectorAll("[data-testid='card-encomenda']")
+    for (const card of cards) {
+      const text = card.textContent ?? ""
+      // Simple heuristic: scroll to first card that matches
+      if (text.includes(`#${encomendaId}`) || card.querySelector(`[data-encomenda-id="${encomendaId}"]`)) {
+        card.scrollIntoView({ behavior: "smooth", block: "center" })
+        return
+      }
+    }
+  }, [])
 
   // =========================================================================
   // EFFECTS
@@ -627,75 +885,83 @@ export default function NotificacoesMoradorScreen(): ReactNode {
   }, [morador, carregarNotificacoes, carregarEncomendas])
 
   // =========================================================================
-  // COMPUTED
+  // RENDER: morador não encontrado
   // =========================================================================
 
-  const notificacoesNaoLidas = useMemo(
-    () => notificacoes.filter((n) => !n.lida).length,
-    [notificacoes],
-  )
-
-  // =========================================================================
-  // RENDER
-  // =========================================================================
-
-  if (!morador) {
+  if (!morador && !carregando) {
     return (
       <Box sx={{ p: 3, maxWidth: 800, mx: "auto" }}>
-        <Alert severity="info" data-testid="alerta-sem-vinculo">
-          <Typography variant="body1">
-            <strong>Vínculo não encontrado</strong>
+        <Alert severity="info" data-testid="alerta-morador-nao-vinculado">
+          <Typography variant="subtitle2" gutterBottom>
+            Vínculo não encontrado
           </Typography>
-          <Typography variant="body2" sx={{ mt: 1 }}>
-            Não foi possível localizar seu cadastro de morador. Entre em contato
-            com a portaria para vincular sua conta ao seu apartamento/casa.
+          <Typography variant="body2">
+            Não encontramos um morador vinculado à sua conta. Procure a portaria
+            para vincular sua conta ao seu apartamento/casa.
           </Typography>
         </Alert>
       </Box>
     )
   }
 
+  if (!morador) {
+    return (
+      <Box sx={{ p: 3, maxWidth: 800, mx: "auto" }}>
+        <Alert severity="info">
+          <Typography variant="subtitle2" gutterBottom>
+            Carregando...
+          </Typography>
+        </Alert>
+      </Box>
+    )
+  }
+
+  // =========================================================================
+  // RENDER
+  // =========================================================================
+
   return (
-    <Box sx={{ p: 3, maxWidth: 800, mx: "auto" }}>
-      {/* Cabeçalho */}
+    <Box sx={{ p: { xs: 2, sm: 3 }, maxWidth: 800, mx: "auto" }}>
+      {/* Cabeçalho com sininho */}
       <Stack direction="row" alignItems="center" spacing={2} mb={3}>
-        {notificacoesNaoLidas > 0 ? (
-          <NotificationsActiveRounded sx={{ fontSize: 32, color: "warning.main" }} />
-        ) : (
-          <NotificationsRounded sx={{ fontSize: 32, color: "primary.main" }} />
-        )}
         <Box flex={1}>
           <Typography variant="h4" fontWeight={700}>
-            Minhas Notificações
+            Minhas Encomendas
           </Typography>
           <Typography variant="body2" color="text.secondary">
             {morador.nome} — {morador.unidadeLabel ?? `Unidade #${morador.unidadeId}`}
           </Typography>
         </Box>
-        {notificacoesNaoLidas > 0 && (
-          <Badge badgeContent={notificacoesNaoLidas} color="warning">
-            <Chip label="Não lidas" variant="outlined" />
-          </Badge>
-        )}
+
+        {/* Sininho com badge */}
+        <Tooltip title="Notificações">
+          <IconButton
+            ref={sininhoRef}
+            onClick={abrirSininho}
+            data-testid="botao-sininho"
+            color={notificacoesNaoLidas > 0 ? "warning" : "default"}
+          >
+            <Badge badgeContent={notificacoesNaoLidas} color="warning">
+              {notificacoesNaoLidas > 0 ? (
+                <NotificationsActiveRounded />
+              ) : (
+                <NotificationsRounded />
+              )}
+            </Badge>
+          </IconButton>
+        </Tooltip>
       </Stack>
 
-      {/* Tabs */}
-      <Box sx={{ borderBottom: 1, borderColor: "divider", mb: 2 }}>
-        <Tabs value={tab} onChange={(_, v) => setTab(v)} data-testid="tabs-notificacoes">
-          {TABS.map((t) => (
-            <Tab
-              key={t.value}
-              value={t.value}
-              label={
-                t.value === "notificacoes" && notificacoesNaoLidas > 0
-                  ? `${t.label} (${notificacoesNaoLidas})`
-                  : t.label
-              }
-              data-testid={`tab-${t.value}`}
-            />
-          ))}
-        </Tabs>
-      </Box>
+      {/* Painel de notificações (popover do sininho) */}
+      <PainelNotificacoes
+        notificacoes={notificacoes.slice(0, 20)}
+        naoLidas={notificacoesNaoLidas}
+        onMarcarLida={(id) => void marcarNotificacaoLida(id)}
+        onIrParaEncomenda={irParaEncomenda}
+        open={sininhoAberto}
+        anchorEl={sininhoRef.current}
+        onClose={fecharSininho}
+      />
 
       {/* Conteúdo */}
       {carregando ? (
@@ -706,58 +972,78 @@ export default function NotificacoesMoradorScreen(): ReactNode {
         <Alert severity="error" data-testid="alerta-erro">
           {erro}
         </Alert>
-      ) : tab === "notificacoes" ? (
-        notificacoes.length === 0 ? (
-          <Paper
-            variant="outlined"
-            sx={{ p: 4, textAlign: "center" }}
-            data-testid="estado-vazio-notificacoes"
-          >
-            <NotificationsRounded sx={{ fontSize: 48, color: "text.disabled", mb: 2 }} />
-            <Typography variant="h6" color="text.secondary">
-              Nenhuma notificação
-            </Typography>
-            <Typography variant="body2" color="text.secondary" mt={1}>
-              Você receberá notificações quando novas encomendas forem registradas
-              para sua unidade.
-            </Typography>
-          </Paper>
-        ) : (
-          <Paper variant="outlined">
-            <List disablePadding>
-              {notificacoes.map((notificacao, index) => (
-                <Box key={notificacao.id}>
-                  {index > 0 && <Divider />}
-                  <ItemNotificacao
-                    notificacao={notificacao}
-                    onMarcarLida={marcarNotificacaoLida}
-                  />
-                </Box>
-              ))}
-            </List>
-          </Paper>
-        )
-      ) : encomendas.length === 0 ? (
-        <Paper
-          variant="outlined"
-          sx={{ p: 4, textAlign: "center" }}
-          data-testid="estado-vazio-encomendas"
-        >
-          <Inventory2Rounded sx={{ fontSize: 48, color: "text.disabled", mb: 2 }} />
-          <Typography variant="h6" color="text.secondary">
-            Nenhuma encomenda
-          </Typography>
-          <Typography variant="body2" color="text.secondary" mt={1}>
-            Não há encomendas registradas para sua unidade no momento.
-          </Typography>
-        </Paper>
       ) : (
-        <Stack spacing={2} data-testid="lista-encomendas">
-              {encomendas.map((encomenda) => (
-            <ItemEncomenda key={encomenda.id} encomenda={encomenda} onConfirmar={(id) => void confirmarRecebimento(id)} />
-          ))}
-        </Stack>
+        <>
+          {/* Seção 1: Aguardando sua confirmação */}
+          <SecaoGroup
+            titulo="Aguardando sua confirmação"
+            icone={<HourglassEmptyRounded />}
+            cor="warning"
+            count={encomendasAguardando.length}
+            testId="secao-aguardando"
+            defaultExpanded
+          >
+            {encomendasAguardando.map((enc) => (
+              <CardEncomenda
+                key={enc.id}
+                encomenda={enc}
+                onConfirmar={abrirDialogConfirmacao}
+                confirmandoId={confirmandoId}
+              />
+            ))}
+          </SecaoGroup>
+
+          <Divider sx={{ my: 2 }} />
+
+          {/* Seção 2: Prontas para retirada */}
+          <SecaoGroup
+            titulo="Prontas para retirada"
+            icone={<CheckCircleRounded />}
+            cor="success"
+            count={encomendasProntas.length}
+            testId="secao-prontas"
+          >
+            {encomendasProntas.map((enc) => (
+              <CardEncomenda
+                key={enc.id}
+                encomenda={enc}
+                onConfirmar={abrirDialogConfirmacao}
+                confirmandoId={confirmandoId}
+              />
+            ))}
+          </SecaoGroup>
+
+          <Divider sx={{ my: 2 }} />
+
+          {/* Seção 3: Histórico */}
+          <SecaoGroup
+            titulo="Histórico"
+            icone={<EventRounded />}
+            cor="default"
+            count={encomendasHistorico.length}
+            testId="secao-historico"
+            defaultExpanded={false}
+          >
+            {encomendasHistorico.map((enc) => (
+              <CardEncomenda
+                key={enc.id}
+                encomenda={enc}
+                onConfirmar={abrirDialogConfirmacao}
+                confirmandoId={confirmandoId}
+              />
+            ))}
+          </SecaoGroup>
+        </>
       )}
+
+      {/* Dialog de confirmação de reconhecimento */}
+      <DialogConfirmacaoReconhecimento
+        open={encomendaParaConfirmar !== null}
+        encomenda={encomendaParaConfirmar}
+        onConfirmar={() => void confirmarReconhecimento()}
+        onCancelar={fecharDialogConfirmacao}
+        confirmando={confirmandoId !== null}
+      />
     </Box>
   )
 }

@@ -9,7 +9,7 @@
  * - unidades_proprietarios: vínculo N:N entre unidades e proprietários
  * - funcionarios: triagem/portaria do condomínio
  * - transportadoras: lojas/transportadoras que enviam encomendas
- * - encomendas: registro com foto, loja, unidade; status pendente→confirmada→entregue→cancelada
+ * - encomendas: registro com foto, loja, unidade; status pendente→pronta_retirada→entregue→cancelada
  *   (campos de cancelamento: canceladoPorId, canceladoEm, motivoCancelamento)
  * - notificacoes: sininho para morador
  * - entregas: registro de entrega efetiva com trilha auditável e evidência estruturada (JSON)
@@ -223,11 +223,11 @@ export const encomendas = mysqlTable("encomendas", {
   /**
    * Status do fluxo:
    * - pendente: registrada, aguardando confirmação do morador
-   * - confirmada: morador confirmou o recebimento
-   * - entregue: triagem liberou a encomenda após confirmação
+   * - pronta_retirada: morador reconheceu a encomenda, aguardando retirada física
+   * - entregue: triagem liberou a encomenda após retirada
    * - cancelada: encomenda cancelada (devolução, erro, etc.)
    */
-  status: mysqlEnum("status", ["pendente", "confirmada", "entregue", "cancelada"])
+  status: mysqlEnum("status", ["pendente", "pronta_retirada", "entregue", "cancelada"])
     .notNull()
     .default("pendente"),
   /** Morador que confirmou o recebimento. */
@@ -258,24 +258,34 @@ export const encomendas = mysqlTable("encomendas", {
 // NOTIFICAÇÕES (sininho)
 // ============================================================================
 
-export const notificacoes = mysqlTable("notificacoes", {
-  id: bigint("id", { mode: "number", unsigned: true })
-    .primaryKey()
-    .autoincrement(),
-  moradorId: bigint("morador_id", { mode: "number", unsigned: true })
-    .notNull()
-    .references(() => moradores.id, { onDelete: "cascade" }),
-  encomendaId: bigint("encomenda_id", { mode: "number", unsigned: true })
-    .notNull()
-    .references(() => encomendas.id, { onDelete: "cascade" }),
-  /** Tipo de notificação. */
-  tipo: mysqlEnum("tipo", ["encomenda_pendente", "encomenda_confirmada", "encomenda_entregue", "ocorrencia_registrada"]).notNull(),
-  /** Mensagem da notificação. */
-  mensagem: varchar("mensagem", { length: 500 }).notNull(),
-  /** Se já foi lida pelo morador. */
-  lida: boolean("lida").notNull().default(false),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-})
+export const notificacoes = mysqlTable(
+  "notificacoes",
+  {
+    id: bigint("id", { mode: "number", unsigned: true })
+      .primaryKey()
+      .autoincrement(),
+    moradorId: bigint("morador_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => moradores.id, { onDelete: "cascade" }),
+    encomendaId: bigint("encomenda_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => encomendas.id, { onDelete: "cascade" }),
+    /** Tipo de notificação. */
+    tipo: mysqlEnum("tipo", ["encomenda_pendente", "encomenda_pronta_retirada", "encomenda_entregue", "ocorrencia_registrada"]).notNull(),
+    /** Mensagem da notificação. */
+    mensagem: varchar("mensagem", { length: 500 }).notNull(),
+    /** Se já foi lida pelo morador (campo boolean legado, manter para compat). */
+    lida: boolean("lida").notNull().default(false),
+    /** Data/hora em que o morador marcou como lida. */
+    lidaEm: timestamp("lida_em"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("idx_notificacoes_morador_id").on(table.moradorId),
+    index("idx_notificacoes_encomenda_id").on(table.encomendaId),
+    index("idx_notificacoes_lida").on(table.lida),
+  ],
+)
 
 // ============================================================================
 // ENTREGAS (registro de entrega efetiva)
@@ -457,6 +467,7 @@ export const annotations = {
     tipo: { label: "Tipo" },
     mensagem: { label: "Mensagem", fullWidth: true, maxLength: 500 },
     lida: { label: "Lida" },
+    lida_em: { label: "Lida em" },
   },
   entregas: {
     encomenda_id: { label: "Encomenda" },

@@ -401,7 +401,7 @@ export const config: GeradorSistemaConfig = {
                 defaultValue: "pendente",
                 options: [
                   { label: "Pendente", value: "pendente" },
-                  { label: "Confirmada", value: "confirmada" },
+                  { label: "Pronta para retirada", value: "pronta_retirada" },
                   { label: "Entregue", value: "entregue" },
                   { label: "Cancelada", value: "cancelada" },
                 ],
@@ -440,20 +440,12 @@ export const config: GeradorSistemaConfig = {
             ],
             rowActions: [
               {
-                id: "confirmar-recebimento",
-                label: "Confirmar Recebimento",
-                method: "PUT",
-                path: "/api/encomendas/:id/confirmar",
-                confirm: "Confirmar que o morador recebeu esta encomenda?",
-                disabledWhen: "status === entregue || status === cancelada",
-              },
-              {
                 id: "registrar-entrega",
                 label: "Registrar Entrega",
                 method: "PUT",
                 path: "/api/encomendas/:id/entregar",
                 confirm: "Registrar entrega efetiva desta encomenda?",
-                disabledWhen: "status !== confirmada",
+                disabledWhen: "status !== pronta_retirada",
               },
             ],
           },
@@ -478,7 +470,7 @@ export const config: GeradorSistemaConfig = {
                 required: true,
                 options: [
                   { label: "Encomenda Pendente", value: "encomenda_pendente" },
-                  { label: "Encomenda Confirmada", value: "encomenda_confirmada" },
+                  { label: "Encomenda Pronta para Retirada", value: "encomenda_pronta_retirada" },
                   { label: "Encomenda Entregue", value: "encomenda_entregue" },
                 ],
               },
