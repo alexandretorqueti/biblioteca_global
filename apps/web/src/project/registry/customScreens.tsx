@@ -21,9 +21,37 @@ import type { CustomScreenComponent } from "@biblioteca-global/ui"
  * Cada projeto é responsável por seu próprio `screens/registry.ts`. O glob
  * importa apenas esses registries e não conhece telas ou slugs concretos.
  */
-const registryModules = import.meta.glob<{
-  customScreens: Record<string, CustomScreenComponent>
-}>("../../../../../projects/*/screens/registry.ts", { eager: true })
+interface CustomScreensRegistryModule {
+  customScreens?: Record<string, CustomScreenComponent>
+}
+
+const registryModules = import.meta.glob<CustomScreensRegistryModule>(
+  "../../../../../projects/*/screens/registry.ts",
+  { eager: true },
+)
+
+/**
+ * Agrega registries na ordem dos caminhos, e não na ordem incidental do
+ * bundler/filesystem. Assim, o bundle e os testes produzem sempre o mesmo
+ * resultado. Em caso de componentId repetido, o caminho lexicalmente maior
+ * tem precedência (a mesma semântica de substituição do registry da UI).
+ */
+export function agregarRegistriesCustom(
+  modules: Readonly<Record<string, CustomScreensRegistryModule>>,
+): Record<string, CustomScreenComponent> {
+  const aggregated: Record<string, CustomScreenComponent> = {}
+
+  for (const path of Object.keys(modules).sort()) {
+    const screens = modules[path]?.customScreens
+    if (!screens) {
+      console.warn(`[registry/customScreens] registry inválido: ${path}`)
+      continue
+    }
+    Object.assign(aggregated, screens)
+  }
+
+  return aggregated
+}
 
 /**
  * Registra as telas custom de todos os projetos. Chamar no boot (App.tsx)
@@ -33,11 +61,5 @@ const registryModules = import.meta.glob<{
  * se exportam `componentId`.
  */
 export function registrarTelasCustom(): void {
-  for (const [path, mod] of Object.entries(registryModules)) {
-    if (!mod?.customScreens) {
-      console.warn(`[registry/customScreens] registry inválido: ${path}`)
-      continue
-    }
-    registerCustomScreens(mod.customScreens)
-  }
+  registerCustomScreens(agregarRegistriesCustom(registryModules))
 }
