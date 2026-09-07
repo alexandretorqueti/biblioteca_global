@@ -26,7 +26,8 @@ import { transitionTask, type TaskTransition } from "../policies/TaskStateMachin
 import { persistTaskClarificationAnswer, fetchPendingTaskClarification, fetchAnsweredTaskClarifications } from "../planning/ClarificationStore.js"
 import { createLogger, describeError } from "../shared/logger.js"
 import { ConsoleAgentRuntimeDriver } from "../runtime/ConsoleAgentRuntimeDriver.js"
-import { execSync } from "node:child_process"
+import { execFile, execFileSync, execSync } from "node:child_process"
+import { promisify } from "node:util"
 import { existsSync } from "node:fs"
 import { join } from "node:path"
 import { SecretProfileManager, resolveGitTopLevel } from "../workspaces/SecretProfileManager.js"
@@ -42,6 +43,7 @@ interface ActiveWorker {
   fencingToken: number
   startedAt: Date
   phase: "analyze" | "execute"
+  executionPhase?: import("../shared/types/execution.js").ExecutionPhase
   taskTipo?: Task["tipo"]
   subtaskId?: number
   workspace?: { path: string; branch: string; baseCommit: string }
@@ -163,6 +165,9 @@ export class TaskCoordinator {
   private waitManager?: ResourceWaitManager
   private eventBus: ExecutionEventBus
   private finalizingExecutions = new Set<string>()
+  /** Deploys não pertencem a um worker; mantê-los separados evita esconder a
+   * atividade do Motor enquanto o script externo está em execução. */
+  private activeDeployments = new Map<string, { taskId: string; phase: "verify" | "deploy"; startedAt: Date }>()
   private pumping = false
   private logger = createLogger("TaskCoordinator")
 
@@ -843,7 +848,7 @@ export class TaskCoordinator {
             
             // Depois tenta deploy
             if (worker.repoPath) {
-              const deployResult = this.executeDeployScript(worker.repoPath, worker.taskId)
+              const deployResult = await this.executeDeployScript(worker.repoPath, worker.taskId)
               if (deployResult.success) {
                 this.logger.info("Deploy concluído com sucesso", { taskId: worker.taskId, executionId })
                 await this.saveTaskTransition(task, "deploy_completed")
@@ -1035,17 +1040,50 @@ export class TaskCoordinator {
       taskId: worker.taskId,
       subtaskId: worker.subtaskId ?? null,
       phase: worker.phase,
+      executionPhase: worker.executionPhase ?? null,
       projectSlug: worker.projectSlug ?? null,
       startedAt: worker.startedAt.toISOString(),
       ageMs: Date.now() - worker.startedAt.getTime(),
       lastHeartbeatAt: worker.lastHeartbeatAt?.toISOString() ?? null,
     }))
+    const deployments = Array.from(this.activeDeployments.values()).map((deployment) => ({
+      taskId: deployment.taskId,
+      phase: deployment.phase,
+      startedAt: deployment.startedAt.toISOString(),
+      ageMs: Date.now() - deployment.startedAt.getTime(),
+    }))
+    const activities = [
+      ...workers.filter((worker) => worker.executionPhase === "verify").map((worker) => ({ taskId: worker.taskId, phase: "verify" as const })),
+      ...deployments.map((deployment) => ({ taskId: deployment.taskId, phase: deployment.phase })),
+    ]
     return {
       activeWorkers: this.activeWorkers.size,
       maxWorkers: this.config.maxWorkers,
       maxWorkersPerProject: this.config.maxWorkersPerProject,
       workers,
+      deployments,
+      activities,
     }
+  }
+
+  /** Dispara novamente o deploy de uma tarefa já concluída, sem reabrir o fluxo. */
+  async deployTask(taskId: string): Promise<void> {
+    if (this.activeDeployments.has(taskId)) throw new Error("Deploy já está em andamento para a tarefa " + taskId)
+    const task = await this.repository.getTask(taskId)
+    if (!task) throw new Error("Tarefa " + taskId + " não encontrada")
+    if (task.tipo !== "desenvolvimento") throw new Error("Deploy manual é permitido apenas para tarefas de desenvolvimento")
+    if (task.status !== "completed") throw new Error("Deploy manual exige tarefa concluída (status atual: " + task.status + ")")
+    void this.executeDeployScript(task.repoPath, taskId).then(async (result) => {
+      if (result.success) {
+        await this.repository.saveTask({ ...task, status: "deployed", updatedAt: new Date().toISOString() })
+        this.logger.info("Deploy manual concluído com sucesso", { taskId })
+      } else {
+        await this.db.query(
+          "UPDATE tarefas SET ultima_mensagem_erro = ?, updated_at = NOW() WHERE external_id = ?",
+          ["Deploy falhou: " + (result.error || "erro desconhecido").substring(0, 500), taskId],
+        )
+      }
+    }).catch((error: unknown) => this.logger.error("Falha inesperada no deploy manual: " + describeError(error), { taskId }))
   }
 
   async getTask(taskId: string): Promise<Task | null> {
@@ -1329,32 +1367,29 @@ export class TaskCoordinator {
   }
 
   /**
-   * Executa o script deploy.sh na raiz do repositório do projeto.
+   * Executa o script deploy.sh na raiz Git do monorepo. `repoPath` aponta ao
+   * projeto gerenciado (por exemplo projects/gerenteagentes), não ao topo Git.
    * Retorna sucesso/falha sem bloquear o fluxo principal.
    * Timeout: 15 minutos (900s) conforme especificado no deploy.sh.
    */
-  private executeDeployScript(repoPath: string, taskId: string): { success: boolean; error?: string } {
-    const deployScript = repoPath + "/deploy.sh"
-    
-    if (!existsSync(deployScript)) {
-      return { success: false, error: "deploy.sh não encontrado em " + repoPath }
-    }
-    
-    this.logger.info("Executando deploy.sh: " + deployScript, { taskId })
-    
+  private async executeDeployScript(repoPath: string, taskId: string): Promise<{ success: boolean; error?: string }> {
+    if (this.activeDeployments.has(taskId)) return { success: false, error: "Deploy já está em andamento" }
+    const deployment: { taskId: string; phase: "verify" | "deploy"; startedAt: Date } = { taskId, phase: "verify", startedAt: new Date() }
+    this.activeDeployments.set(taskId, deployment)
     try {
-      // Timeout: 15 min (900000ms) conforme deploy.sh
-      execSync("bash " + deployScript, {
-        cwd: repoPath,
-        timeout: 900000,
-        stdio: "pipe",
-        env: { ...process.env }
-      })
+      const repoRoot = execFileSync("git", ["-C", repoPath, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim()
+      const deployScript = join(repoRoot, "deploy.sh")
+      if (!existsSync(deployScript)) return { success: false, error: "deploy.sh não encontrado na raiz Git " + repoRoot }
+      deployment.phase = "deploy"
+      this.logger.info("Executando deploy.sh: " + deployScript, { taskId, repoPath, repoRoot })
+      await promisify(execFile)("bash", [deployScript], { cwd: repoRoot, timeout: 900000, env: { ...process.env }, maxBuffer: 1024 * 1024 })
       return { success: true }
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : String(error)
       this.logger.error("Deploy falhou: " + errorMessage, { taskId })
       return { success: false, error: errorMessage.substring(0, 500) }
+    } finally {
+      this.activeDeployments.delete(taskId)
     }
   }
 
@@ -1515,7 +1550,10 @@ export class TaskCoordinator {
     })
     this.workerLauncher.on("progress", (event: { executionId: string; phase: string; message: string }) => {
       const worker = this.activeWorkers.get(event.executionId)
-      if (worker) this.publishActivity(worker, { type: "progress", executionPhase: event.phase as import("../shared/types/execution.js").ExecutionPhase, message: event.message })
+      if (worker) {
+        worker.executionPhase = event.phase as import("../shared/types/execution.js").ExecutionPhase
+        this.publishActivity(worker, { type: "progress", executionPhase: worker.executionPhase, message: event.message })
+      }
       this.logger.info("[PROGRESS " + event.phase + "] " + event.message, { executionId: event.executionId })
     })
     this.workerLauncher.on("model_unavailable", (event: { executionId: string; model: string; message: string }) => {

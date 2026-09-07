@@ -100,6 +100,17 @@ export class GerenteAgentesController {
     return this.service.desbloquearTarefa(projeto, id);
   }
 
+  @Post('tarefas/:id/deploy')
+  @Roles('admin', 'gerente', 'operador')
+  fazerDeployTarefa(@CurrentProject() projeto: ProjetoResumo, @Param('id', ParseIntPipe) id: number) {
+    return this.service.fazerDeployTarefa(projeto, id);
+  }
+
+  @Get('motor-activity')
+  atividadeMotor(@CurrentProject() projeto: ProjetoResumo) {
+    return this.service.atividadeMotor(projeto);
+  }
+
   // ============================================================================
   // CHAT DA TAREFA
   // ============================================================================

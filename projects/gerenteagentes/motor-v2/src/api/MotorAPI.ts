@@ -94,6 +94,8 @@ export class MotorAPI {
         this.handleResumeTask(res, taskId)
       } else if (req.method === 'POST' && taskId && taskAction === 'cancel') {
         this.handleCancelTask(res, taskId)
+      } else if (req.method === 'POST' && taskId && taskAction === 'deploy') {
+        this.handleDeployTask(res, taskId)
       } else if (req.method === 'POST' && taskId && taskAction === 'clarification') {
         this.handleClarification(req, res, taskId)
       } else {
@@ -161,6 +163,15 @@ export class MotorAPI {
       this.json(res, 200, { ok: true })
     } catch (error) {
       this.json(res, 400, { ok: false, error: error instanceof Error ? error.message : 'Cancel failed' })
+    }
+  }
+
+  private async handleDeployTask(res: ServerResponse, taskId: string): Promise<void> {
+    try {
+      await this.coordinator.deployTask(taskId)
+      this.json(res, 202, { ok: true, message: 'Deploy iniciado' })
+    } catch (error) {
+      this.json(res, 400, { ok: false, error: error instanceof Error ? error.message : 'Deploy failed' })
     }
   }
 

@@ -756,6 +756,25 @@ export class GerenteAgentesService {
     };
   }
 
+  async fazerDeployTarefa(projeto: ProjetoResumo, tarefaId: number) {
+    const db = await this.dbDoMotor();
+    const [tarefa] = await db.select().from(tarefas).where(eq(tarefas.id, tarefaId)).limit(1);
+    if (!tarefa) throw new NotFoundException('Tarefa não encontrada');
+    if (tarefa.tipo !== 'desenvolvimento' || tarefa.status !== 'completed') {
+      throw new BadRequestException('Deploy manual disponível somente para tarefas de desenvolvimento concluídas');
+    }
+    const motorId = tarefa.externalId || String(tarefa.id);
+    const resp = await this.motorRequest('POST', `/api/motor/task/${encodeURIComponent(motorId)}/deploy`, undefined, this.motorV2Url);
+    if (!resp.ok) throw new BadRequestException(`Motor rejeitou o deploy (${resp.status}): ${resp.body.slice(0, 200)}`);
+    return { id: tarefaId, status: 'deploying', message: 'Deploy iniciado' };
+  }
+
+  async atividadeMotor(projeto: ProjetoResumo) {
+    const resp = await this.motorRequest('GET', '/api/motor/stats', undefined, this.motorV2Url);
+    if (!resp.ok) throw new BadRequestException(`Motor indisponível (${resp.status}): ${resp.body.slice(0, 200)}`);
+    return JSON.parse(resp.body) as unknown;
+  }
+
   // ============================================================================
   // CHAT DA TAREFA
   // ============================================================================

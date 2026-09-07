@@ -34,13 +34,13 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material"
-import { PlayArrowRounded, PauseRounded, ReplayRounded, LockOpenRounded, EditRounded, CloseRounded, ExpandMoreRounded, ExpandLessRounded, AddTaskRounded, SendRounded } from "@mui/icons-material"
+import { PlayArrowRounded, PauseRounded, ReplayRounded, LockOpenRounded, EditRounded, CloseRounded, ExpandMoreRounded, ExpandLessRounded, AddTaskRounded, SendRounded, RocketLaunchRounded } from "@mui/icons-material"
 import { DynamicForm } from "@biblioteca-global/ui"
 import { RealtimeClient, type RealtimeServerMessage } from "@biblioteca-global/api-client"
 import type { DynamicField, DynamicFormValues } from "@biblioteca-global/ui"
 import { useApi } from "../../../apps/web/src/hooks/useApi"
 import TarefaForm, { type TarefaFormValues } from "./TarefaForm"
-import TaskFlowMap from "./TaskFlowMap"
+import TaskFlowMap, { type MotorActivity } from "./TaskFlowMap"
 import { resolveRealtimeUrl, resolveApiBaseUrl } from "../../../apps/web/src/api/client"
 import {
   ALL_TASK_STATUSES,
@@ -159,6 +159,10 @@ interface MotorDetail {
   models?: Array<{ model: string; tierIndex?: number; reason?: string; occurredAt?: string }>
 }
 
+interface MotorStats {
+  activities?: MotorActivity[]
+}
+
 const STATUS_FINAIS = _TASK_STATUS_FINAIS
 const STATUS_INICIO_PERMITIDO = _TASK_STATUS_STARTABLE
 const STATUS_EXECUCAO = _TASK_STATUS_EXECUTING
@@ -250,6 +254,7 @@ export default function TaskMonitorScreen(): ReactNode {
   const [buscaTarefa, setBuscaTarefa] = useState("")
   const [tarefaId, setTarefaId] = useState<number | "">("")
   const [detail, setDetail] = useState<MotorDetail | null>(null)
+  const [motorActivities, setMotorActivities] = useState<MotorActivity[]>([])
   const [chat, setChat] = useState<TarefaChatMessage[]>([])
   const [chatLoading, setChatLoading] = useState(false)
   const [chatInput, setChatInput] = useState("")
@@ -329,6 +334,16 @@ export default function TaskMonitorScreen(): ReactNode {
       if (mounted.current) setDetail(res)
     } catch (e) {
       if (mounted.current) setErro(e instanceof Error ? e.message : "Erro ao carregar detalhes da tarefa")
+    }
+  }, [bundle])
+
+  const carregarAtividadeMotor = useCallback(async () => {
+    if (!bundle) return
+    try {
+      const res = await bundle.http.request<MotorStats>("GET", "/gerenteagentes/motor-activity", { auth: "access" })
+      if (mounted.current) setMotorActivities(res.activities ?? [])
+    } catch {
+      // Atividade é complementar; não interrompe o acompanhamento se o Motor reiniciar.
     }
   }, [bundle])
 
@@ -418,14 +433,16 @@ export default function TaskMonitorScreen(): ReactNode {
     mounted.current = true
     void carregarProjetos()
     void carregarTarefas()
+    void carregarAtividadeMotor()
     const t1 = setInterval(() => {
       void carregarTarefas()
+      void carregarAtividadeMotor()
     }, 30000)
     return () => {
       mounted.current = false
       clearInterval(t1)
     }
-  }, [carregarProjetos, carregarTarefas])
+  }, [carregarProjetos, carregarTarefas, carregarAtividadeMotor])
 
   // Polling de 60s no detalhe (tempo real)
   useEffect(() => {
@@ -561,6 +578,20 @@ export default function TaskMonitorScreen(): ReactNode {
       setAcao(null)
     }
   }, [bundle, tarefaId, carregarDetail, carregarSubtarefasDb, carregarTarefas])
+
+  const fazerDeployTarefa = useCallback(async () => {
+    if (!bundle || tarefaId === "") return
+    setAcao("deploy")
+    setErro(null)
+    try {
+      await bundle.http.request("POST", `/gerenteagentes/tarefas/${tarefaId}/deploy`, { auth: "access" })
+      await carregarAtividadeMotor()
+    } catch (e) {
+      setErro(e instanceof Error ? e.message : "Erro ao iniciar deploy")
+    } finally {
+      setAcao(null)
+    }
+  }, [bundle, tarefaId, carregarAtividadeMotor])
 
   const handleNewTaskSubmit = useCallback(async (values: TarefaFormValues) => {
     if (!bundle) return
@@ -955,6 +986,7 @@ export default function TaskMonitorScreen(): ReactNode {
   const eventos = detail?.events ?? []
   const tipoTarefa = tarefaSelecionada?.tipo ?? "desenvolvimento"
   const isDesenvolvimento = tipoTarefa === "desenvolvimento"
+  const podeFazerDeploy = isDesenvolvimento && statusMotor === "completed"
 
   const taskChatPanel = tarefaId !== "" ? (
     <Paper variant="outlined" sx={{ mt: 2, p: 2 }} data-testid="task-chat">
@@ -1089,6 +1121,7 @@ export default function TaskMonitorScreen(): ReactNode {
         tarefas={tarefas}
         selectedTaskId={tarefaId}
         search={buscaTarefa}
+        motorActivities={motorActivities}
         onSelectTask={setTarefaId}
       />
 
@@ -1227,6 +1260,19 @@ export default function TaskMonitorScreen(): ReactNode {
               >
                 Retomar
               </Button>
+              {podeFazerDeploy && (
+                <Button
+                  size="small"
+                  variant="contained"
+                  color="success"
+                  startIcon={<RocketLaunchRounded />}
+                  disabled={acao !== null}
+                  onClick={() => void fazerDeployTarefa()}
+                  data-testid="btn-deploy-task"
+                >
+                  Fazer deploy
+                </Button>
+              )}
             </Stack>
           </Stack>
 

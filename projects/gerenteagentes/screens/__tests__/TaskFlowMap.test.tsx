@@ -38,4 +38,13 @@ describe("TaskFlowMap", () => {
     rendered.rerender(<BibliotecaThemeProvider><TaskFlowMap tarefas={[{ id: 766, titulo: "Registry", status: "running", projetoId: 1 }]} selectedTaskId="" onSelectTask={vi.fn()} /></BibliotecaThemeProvider>)
     expect(screen.getByTestId("flow-movement-766")).toHaveTextContent("Pronta → Em execução")
   })
+
+  it("mostra a atividade do Motor durante verificação e deploy", () => {
+    render(<BibliotecaThemeProvider><TaskFlowMap tarefas={tarefas} selectedTaskId="" onSelectTask={vi.fn()} motorActivities={[
+      { taskId: "task-p2-770", phase: "verify" },
+      { taskId: "task-p2-771", phase: "deploy" },
+    ]} /></BibliotecaThemeProvider>)
+    expect(screen.getByTestId("flow-motor-activity")).toHaveTextContent("verificando task-p2-770")
+    expect(screen.getByTestId("flow-motor-activity")).toHaveTextContent("deployando task-p2-771")
+  })
 })

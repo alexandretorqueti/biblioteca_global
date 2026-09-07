@@ -15,10 +15,16 @@ export interface FlowTask {
   projetoId: number
 }
 
+export interface MotorActivity {
+  taskId: string
+  phase: "verify" | "deploy"
+}
+
 interface TaskFlowMapProps {
   tarefas: FlowTask[]
   selectedTaskId: number | ""
   search?: string
+  motorActivities?: MotorActivity[]
   onSelectTask: (id: number) => void
 }
 
@@ -126,7 +132,7 @@ function Station({ station, tarefas, selectedTaskId, search, movingIds, onSelect
   )
 }
 
-export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", onSelectTask }: TaskFlowMapProps) {
+export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", motorActivities = [], onSelectTask }: TaskFlowMapProps) {
   const previousStatuses = useRef(new Map<number, string>())
   const [movements, setMovements] = useState<Array<{ id: number; from: string; to: string }>>([])
 
@@ -151,6 +157,14 @@ export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", onSe
       <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" spacing={1} sx={{ mb: 2 }}>
         <Box><Typography variant="h6" fontWeight={750}>Mapa Vivo da Operação</Typography><Typography variant="body2" color="text.secondary">Acompanhe as tarefas percorrendo o fluxo em tempo real.</Typography></Box>
         <Stack direction="row" spacing={1} alignItems="center" data-testid="flow-ai-activity"><SettingsRounded sx={{ color: activeAiCount ? "warning.main" : "text.disabled", animation: activeAiCount ? "legend-spin 2s linear infinite" : "none", "@keyframes legend-spin": { to: { transform: "rotate(360deg)" } } }} /><Typography variant="caption" color="text.secondary">{activeAiCount ? `IA trabalhando (${activeAiCount})` : "Nenhuma IA trabalhando"}</Typography></Stack>
+      </Stack>
+      <Stack direction="row" spacing={1} alignItems="center" data-testid="flow-motor-activity" sx={{ mb: 2 }}>
+        <SettingsRounded sx={{ color: motorActivities.length ? "info.main" : "text.disabled", animation: motorActivities.length ? "motor-gear-spin 2s linear infinite" : "none", "@keyframes motor-gear-spin": { to: { transform: "rotate(360deg)" } } }} />
+        <Typography variant="caption" color="text.secondary">
+          {motorActivities.length
+            ? motorActivities.map((activity) => `${activity.phase === "verify" ? "verificando" : "deployando"} ${activity.taskId}`).join(" · ")
+            : "Motor sem verificações ou deploys"}
+        </Typography>
       </Stack>
 
       {movements.map((movement) => <Chip key={movement.id} color="info" sx={{ mb: 1.5, mr: 1 }} label={`#${movement.id} · ${taskStatusLabel(movement.from)} → ${taskStatusLabel(movement.to)}`} data-testid={`flow-movement-${movement.id}`} />)}

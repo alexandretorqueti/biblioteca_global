@@ -157,7 +157,7 @@ describe('TaskCoordinator', () => {
   describe('getStats', () => {
     it('deve retornar estatísticas', () => {
       const stats = coordinator.getStats()
-      expect(stats).toEqual({ activeWorkers: 0, maxWorkers: 1, maxWorkersPerProject: 1, workers: [] })
+      expect(stats).toEqual({ activeWorkers: 0, maxWorkers: 1, maxWorkersPerProject: 1, workers: [], deployments: [], activities: [] })
     })
 
     it('detalha workers ativos com correlação e idade', () => {
