@@ -796,7 +796,7 @@ export class GerenteAgentesService {
     const motorId = tarefa.externalId || String(tarefa.id);
     const resp = await this.motorRequest('POST', `/api/motor/task/${encodeURIComponent(motorId)}/deploy`, undefined, this.motorV2Url);
     if (!resp.ok) throw new BadRequestException(`Motor rejeitou o deploy (${resp.status}): ${resp.body.slice(0, 200)}`);
-    return { id: tarefaId, status: 'deploying', message: 'Deploy iniciado' };
+    return { id: tarefaId, status: 'deploy_pending', message: 'Deploy agendado para quando o Motor ficar ocioso' };
   }
 
   async atividadeMotor(projeto: ProjetoResumo) {
