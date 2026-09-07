@@ -415,9 +415,11 @@ export default function GeradorSistema({
             ModalProps={{ keepMounted: true }}
             sx={{
               "& .MuiDrawer-paper": {
-                width: drawerWidth,
+                width: desktop && !menuCollapsed ? drawerWidth : 0,
                 boxSizing: "border-box",
                 borderRightColor: "divider",
+                overflowX: "hidden",
+                visibility: desktop && menuCollapsed ? "hidden" : "visible",
               },
             }}
           >
@@ -530,9 +532,11 @@ export default function GeradorSistema({
           ModalProps={{ keepMounted: true }}
           sx={{
             "& .MuiDrawer-paper": {
-              width: drawerWidth,
+              width: desktop && !menuCollapsed ? drawerWidth : 0,
               boxSizing: "border-box",
               borderRightColor: "divider",
+              overflowX: "hidden",
+              visibility: desktop && menuCollapsed ? "hidden" : "visible",
             },
           }}
         >
