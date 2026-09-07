@@ -6,6 +6,8 @@ import {
 import { PreviewRounded, PublishRounded, SaveRounded, RestoreRounded } from "@mui/icons-material"
 import { useApi } from "../../../apps/web/src/hooks/useApi"
 
+export const componentId = "gerenteagentes-prompts"
+
 type PromptVersion = { id: number; versao: number; texto: string; contratoVersaoId?: number | null; motivo?: string | null; autor?: string | null; createdAt: string }
 type Prompt = {
   id: number; chave: string; tipoAgente: string; situacao: string; titulo: string;

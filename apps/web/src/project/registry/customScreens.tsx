@@ -12,30 +12,18 @@
  * com `componentId` exportado — sem edição manual deste arquivo.
  */
 
-import type { ComponentType } from "react"
 import { registerCustomScreens } from "@biblioteca-global/ui"
-import DocumentationScreen from "../../../../../projects/documentacao/screens/DocumentationScreen"
-import DashboardScreen from "../../../../../projects/gerenteagentes/screens/DashboardScreen"
-import NovaTarefaScreen from "../../../../../projects/gerenteagentes/screens/NovaTarefaScreen"
-import TaskMonitorScreen from "../../../../../projects/gerenteagentes/screens/TaskMonitorScreen"
-import ModelSelectionScreen from "../../../../../projects/gerenteagentes/screens/ModelSelectionScreen"
-import IsaChatScreen from "../../../../../projects/gerenteagentes/screens/IsaChatScreen"
-import PromptsScreen from "../../../../../projects/gerenteagentes/screens/PromptsScreen"
-import PainelPortariaScreen from "../../../../../projects/taqui/screens/PainelPortariaScreen"
-import NotificacoesMoradorScreen from "../../../../../projects/taqui/screens/NotificacoesMoradorScreen"
-import RegistroEncomendaScreen from "../../../../../projects/taqui/screens/RegistroEncomendaScreen"
+import type { CustomScreenComponent } from "@biblioteca-global/ui"
 
 /**
  * Autodescoberta de telas custom em build time.
  *
- * `import.meta.glob` com `eager: true` importa todos os módulos no bundle
- * final (sem fetch runtime). O Vite resolve os paths em tempo de build.
- * Cada módulo deve exportar `componentId` (string) e `default` (componente).
+ * Cada projeto é responsável por seu próprio `screens/registry.ts`. O glob
+ * importa apenas esses registries e não conhece telas ou slugs concretos.
  */
-const screenModules = import.meta.glob<{
-  componentId: string
-  default: ComponentType
-}>("../../../../../projects/*/screens/*.tsx", { eager: true })
+const registryModules = import.meta.glob<{
+  customScreens: Record<string, CustomScreenComponent>
+}>("../../../../../projects/*/screens/registry.ts", { eager: true })
 
 /**
  * Registra as telas custom de todos os projetos. Chamar no boot (App.tsx)
@@ -45,29 +33,11 @@ const screenModules = import.meta.glob<{
  * se exportam `componentId`.
  */
 export function registrarTelasCustom(): void {
-  registerCustomScreens({
-    documentation: DocumentationScreen,
-    "gerenteagentes-dashboard": DashboardScreen,
-    "gerenteagentes-nova-tarefa": NovaTarefaScreen,
-    "gerenteagentes-task-monitor": TaskMonitorScreen,
-    "gerenteagentes-model-selection": ModelSelectionScreen,
-    "gerenteagentes-isa-chat": IsaChatScreen,
-    "gerenteagentes-prompts": PromptsScreen,
-    "taqui-painel-portaria": PainelPortariaScreen,
-    "taqui-notificacoes-morador": NotificacoesMoradorScreen,
-    "taqui-registro-encomenda": RegistroEncomendaScreen,
-  })
-  const screens: Record<string, ComponentType> = {}
-
-  for (const mod of Object.values(screenModules)) {
-    if (!mod?.componentId || !mod?.default) {
-      // Arquivo sem componentId ou sem default export — não é uma tela registrável
+  for (const [path, mod] of Object.entries(registryModules)) {
+    if (!mod?.customScreens) {
+      console.warn(`[registry/customScreens] registry inválido: ${path}`)
       continue
     }
-    screens[mod.componentId] = mod.default
-  }
-
-  if (Object.keys(screens).length > 0) {
-    registerCustomScreens(screens)
+    registerCustomScreens(mod.customScreens)
   }
 }
