@@ -17,6 +17,12 @@ function renderWithContract(text: string, values: Record<string, unknown>, instr
   return instructions && !text.includes("**CONTRATOSAIDA**") ? `${rendered}\n\nCONTRATO DE SAÍDA OBRIGATÓRIO:\n${instructions}` : rendered
 }
 
+export type ResolvedOutputContract = {
+  instructions: string
+  schema: unknown | null
+  example: unknown | null
+}
+
 export class ManagedPromptResolver {
   constructor(private readonly db: PromptQueryable) {}
 
@@ -26,22 +32,24 @@ export class ManagedPromptResolver {
     fallback: string
     taskId?: string
     subtaskId?: number
-  }): Promise<{ text: string; executionId: number; contractInstructions: string }> {
+  }): Promise<{ text: string; executionId: number; contractInstructions: string; outputContract: ResolvedOutputContract }> {
     let promptId: number | null = null
     let versionId: number | null = null
     let contractVersionId: number | null = null
     let contractInstructions = ""
+    let contractSchema: unknown | null = null
+    let contractExample: unknown | null = null
     let output = ""
     try {
       const loadRow = async () => {
         const rawResult = await this.db.query(
-        "SELECT p.id AS prompt_id, v.id AS version_id, v.texto, cv.id AS contract_version_id, cv.instrucoes FROM prompts_agentes p " +
+        "SELECT p.id AS prompt_id, v.id AS version_id, v.texto, cv.id AS contract_version_id, cv.instrucoes, cv.schema_json, cv.exemplo_json FROM prompts_agentes p " +
         "INNER JOIN prompts_versoes v ON v.id = p.versao_ativa_id " +
         "LEFT JOIN prompts_contratos_versoes cv ON cv.id = v.contrato_versao_id " +
         "WHERE p.chave = ? AND p.status = 'active' LIMIT 1",
         [input.key],
         )
-        return (Array.isArray(rawResult) ? rawResult[0] : (rawResult as { rows?: unknown[] }).rows ?? []) as Array<{ prompt_id: number; version_id: number; texto: string; contract_version_id: number | null; instrucoes: string | null }>
+        return (Array.isArray(rawResult) ? rawResult[0] : (rawResult as { rows?: unknown[] }).rows ?? []) as Array<{ prompt_id: number; version_id: number; texto: string; contract_version_id: number | null; instrucoes: string | null; schema_json: unknown; exemplo_json: unknown }>
       }
       let rows = await loadRow()
       if (!rows[0]) {
@@ -57,6 +65,8 @@ export class ManagedPromptResolver {
         contractVersionId = row.contract_version_id == null ? null : Number(row.contract_version_id)
         if (!row.texto) throw new Error(`prompt_configuration_missing: prompt ativo sem texto: ${input.key}`)
         contractInstructions = row.instrucoes ?? ""
+        contractSchema = parseJsonColumn(row.schema_json)
+        contractExample = parseJsonColumn(row.exemplo_json)
         output = renderWithContract(String(row.texto), input.values, contractInstructions)
       }
       if (!row) throw new Error(`prompt_configuration_missing: prompt ativo não encontrado: ${input.key}`)
@@ -69,7 +79,7 @@ export class ManagedPromptResolver {
     )
     const result = Array.isArray(executionResult) ? executionResult[0] : executionResult
     const executionId = Number((result as { insertId?: number }).insertId ?? 0)
-    return { text: output, executionId, contractInstructions }
+    return { text: output, executionId, contractInstructions, outputContract: { instructions: contractInstructions, schema: contractSchema, example: contractExample } }
   }
 
   async resolve(input: {
@@ -89,4 +99,10 @@ export class ManagedPromptResolver {
       [finalText, JSON.stringify(composition), executionId],
     )
   }
+}
+
+function parseJsonColumn(value: unknown): unknown | null {
+  if (value == null || value === "") return null
+  if (typeof value !== "string") return value
+  try { return JSON.parse(value) } catch { return value }
 }

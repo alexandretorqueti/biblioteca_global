@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { TaskWorker, analystCorrectiveFeedback, truncateDescriptionForAnalyst } from "../src/workers/TaskWorker.js"
+import { TaskWorker, analystCorrectiveFeedback, formatAnalystOutputContract, splitAnalystDescription, truncateDescriptionForAnalyst } from "../src/workers/TaskWorker.js"
 
 type PromptBuilder = {
   buildAnalystPrompt: (task: { title: string; description?: string }, clarificationHistory?: string) => string
@@ -61,16 +61,44 @@ describe("buildAnalystPrompt (limites anti-truncamento)", () => {
 })
 
 describe("analystCorrectiveFeedback", () => {
+  const contract = formatAnalystOutputContract({
+    instructions: "Use subtarefas.",
+    schema: { required: ["subtarefas"] },
+    example: { subtarefas: [] },
+  })
+
   it("truncado pede JSON mais curto", () => {
-    const feedback = analystCorrectiveFeedback("truncated")
+    const feedback = analystCorrectiveFeedback("truncated", "fim inesperado", contract)
     expect(feedback).toContain("cortada no meio do JSON")
     expect(feedback).toContain("reduzindo redundancias")
+    expect(feedback).toContain("fim inesperado")
+    expect(feedback).toContain('"subtarefas"')
     expect(feedback).toContain("APENAS com o JSON")
   })
 
   it("invalido pede JSON válido no formato esperado", () => {
-    const feedback = analystCorrectiveFeedback("invalid")
-    expect(feedback).toContain("nao continha JSON valido")
+    const feedback = analystCorrectiveFeedback("invalid", "campo subtarefas ausente", contract)
+    expect(feedback).toContain("nao foi reconhecida")
+    expect(feedback).toContain("campo subtarefas ausente")
+    expect(feedback).toContain("JSON Schema")
+    expect(feedback).toContain("Exemplo valido")
     expect(feedback).toContain("APENAS com o JSON")
+  })
+})
+
+describe("contexto completo do analista", () => {
+  it("divide a descrição sem perda e preserva início e fim", () => {
+    const description = "A".repeat(6000) + "B".repeat(6000) + "FIM"
+    const chunks = splitAnalystDescription(description)
+    expect(chunks).toHaveLength(3)
+    expect(chunks.join("")).toBe(description)
+    expect(chunks.at(-1)).toBe("FIM")
+  })
+
+  it("formata instruções, schema e exemplo completos", () => {
+    const contract = formatAnalystOutputContract({ instructions: "Instrução", schema: { type: "object" }, example: { subtarefas: [] } })
+    expect(contract).toContain("CONTRATO DE SAIDA OBRIGATORIO")
+    expect(contract).toContain("JSON Schema")
+    expect(contract).toContain("Exemplo valido")
   })
 })

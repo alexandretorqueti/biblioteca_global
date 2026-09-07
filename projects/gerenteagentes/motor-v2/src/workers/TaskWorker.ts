@@ -92,18 +92,39 @@ export function truncateDescriptionForAnalyst(description?: string): string {
  * Feedback corretivo enviado ao analista quando a resposta veio truncada ou
  * inválida: uma única nova chance no mesmo modelo antes de escalar a escada.
  */
-export function analystCorrectiveFeedback(kind: "truncated" | "invalid"): string {
+export function formatAnalystOutputContract(contract: { instructions: string; schema: unknown | null; example: unknown | null }): string {
+  return [
+    "CONTRATO DE SAIDA OBRIGATORIO (use exatamente os nomes de campos abaixo):",
+    contract.instructions,
+    contract.schema == null ? "" : "JSON Schema:\n" + JSON.stringify(contract.schema, null, 2),
+    contract.example == null ? "" : "Exemplo valido:\n" + JSON.stringify(contract.example, null, 2),
+  ].filter(Boolean).join("\n\n")
+}
+
+export function splitAnalystDescription(description?: string, chunkSize = 6_000): string[] {
+  const full = (description || "N/A").trim() || "N/A"
+  const chunks: string[] = []
+  for (let offset = 0; offset < full.length; offset += chunkSize) chunks.push(full.slice(offset, offset + chunkSize))
+  return chunks
+}
+
+export function analystCorrectiveFeedback(kind: "truncated" | "invalid", parserError: string, contract: string): string {
   if (kind === "truncated") {
     return [
       "Sua resposta anterior foi cortada no meio do JSON (provavelmente atingiu o limite de saida do modelo).",
       "Responda de novo com o MESMO formato JSON, preservando todas as subtarefas, requisitos e cobertura; torne apenas o texto mais curto, reduzindo redundancias.",
+      "Erro do parser: " + parserError,
       "Nao omita requisitos nem etapas da descricao. Responda APENAS com o JSON.",
+      contract,
     ].join(" ")
   }
   return [
-    "Sua resposta anterior nao continha JSON valido no formato esperado.",
-    "Responda APENAS com o JSON esperado (plano com subtarefas ou perguntas), sem texto ao redor.",
-  ].join(" ")
+    "Sua resposta anterior nao foi reconhecida pelo Motor.",
+    "Erro do parser: " + parserError,
+    "Corrija somente o formato e os nomes dos campos. Preserve o conteudo util da resposta anterior.",
+    contract,
+    "Responda APENAS com o JSON esperado, sem texto ao redor.",
+  ].join("\n\n")
 }
 
 type CommandFailure = {
@@ -280,15 +301,22 @@ class TaskWorker {
     const embeddedPrompt = this.buildAnalystPrompt(input.task, clarificationHistory)
     const promptKey = clarificationHistory ? "analista.retomada_apos_clarificacao" : "analista.primeira_rodada_tarefa"
     const promptResolver = new ManagedPromptResolver(planningDb)
+    const descriptionChunks = splitAnalystDescription(input.task.description)
+    const descriptionReference = `A descricao integral foi enviada anteriormente nesta sessao em ${descriptionChunks.length} bloco(s). Use todos os blocos, do INICIO ao FIM, sem omitir secoes.`
     const resolvedPrompt = await promptResolver.resolveDetailed({ key: promptKey, values: {
       "**TITULOTAREFA**": input.task.title,
-      "**DESCRICAOTAREFA**": input.task.description?.trim() || "N/A",
+      "**DESCRICAOTAREFA**": descriptionReference,
       "**TIPOTAREFA**": input.task.tipo ?? "desenvolvimento",
       "**HISTORICOCLARIFICACAO**": clarificationHistory ?? "",
     }, fallback: embeddedPrompt, taskId: input.task.id })
-    const prompt = resolvedPrompt.text
+    const fullContract = formatAnalystOutputContract(resolvedPrompt.outputContract)
+    const prompt = `${resolvedPrompt.text}\n\n${fullContract}\n\nCONFIRMACAO DE CONTEXTO: a descricao possui ${(input.task.description?.trim() || "N/A").length} caracteres e terminou no marcador FIM DA DESCRICAO. Se algum bloco ou marcador estiver ausente, responda pela forma de perguntas informando exatamente o bloco ausente.`
     await promptResolver.recordFinalComposition(resolvedPrompt.executionId, prompt, {
-      parts: [{ source: "table", key: promptKey }, { source: "runtime", name: "task_context", descriptionLength: input.task.description?.length ?? 0 }],
+      parts: [
+        { source: "table", key: promptKey },
+        { source: "runtime", name: "task_context", descriptionLength: input.task.description?.length ?? 0, chunks: descriptionChunks.length },
+        { source: "contract", name: "full_output_contract", schemaIncluded: resolvedPrompt.outputContract.schema != null, exampleIncluded: resolvedPrompt.outputContract.example != null },
+      ],
     })
 
     let lastFailure: string | undefined
@@ -304,6 +332,20 @@ class TaskWorker {
           label: sessionKey,
           model: model.model,
         })
+
+        for (let chunkIndex = 0; chunkIndex < descriptionChunks.length; chunkIndex++) {
+          const chunkNumber = chunkIndex + 1
+          const contextMessage = [
+            `CONTEXTO DA TAREFA — BLOCO ${chunkNumber}/${descriptionChunks.length}`,
+            chunkNumber === 1 ? "INICIO DA DESCRICAO" : "CONTINUACAO DA DESCRICAO",
+            descriptionChunks[chunkIndex],
+            chunkNumber === descriptionChunks.length ? "FIM DA DESCRICAO" : `FIM DO BLOCO ${chunkNumber}/${descriptionChunks.length}`,
+            "Armazene este contexto. Responda somente CONTEXTO_RECEBIDO; o pedido de analise e o contrato serao enviados depois.",
+          ].join("\n\n")
+          const { runId: contextRunId } = await driver.sendMessage({ session, message: contextMessage })
+          const contextResult = await driver.waitForRunCompletion(session, contextRunId, { onActivity: () => this.sendHeartbeat() })
+          if (contextResult.state !== "final") throw new Error(`Analista nao confirmou o bloco ${chunkNumber}/${descriptionChunks.length}: ${contextResult.errorMessage || contextResult.state}`)
+        }
 
         this.log("info", "Enviando prompt para analista (modelo " + model.model + ")...")
         const { runId } = await driver.sendMessage({ session, message: prompt })
@@ -332,7 +374,7 @@ class TaskWorker {
           try {
             const { runId: retryRunId } = await driver.sendMessage({
               session,
-              message: analystCorrectiveFeedback(parsed.failure.kind),
+              message: analystCorrectiveFeedback(parsed.failure.kind, parsed.failure.message, fullContract),
             })
             this.log("info", "Retry corretivo enviado ao analista (" + model.model + ")... runId=" + retryRunId)
             const retryResult = await driver.waitForRunCompletion(session, retryRunId, {
