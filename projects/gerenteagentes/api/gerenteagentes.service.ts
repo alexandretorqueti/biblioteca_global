@@ -18,6 +18,7 @@ import {
   tarefaChats,
   projetoChats,
   projetosCaptados,
+  agentes,
   geracoesProjeto,
   contatos,
   promptsAgentes,
@@ -183,11 +184,19 @@ export class GerenteAgentesService {
   async sincronizarAgentesOpenClaw(): Promise<{ criados: number; atualizados: number; total: number }> {
     const agentesOpenClaw = await this.listarAgentesConsole();
     const db = await this.dbDoMotor();
-    const { agentes } = await import('../schema');
+    const ids = new Set<string>();
+    for (const agente of agentesOpenClaw) {
+      if (ids.has(agente.id)) throw new BadRequestException(`Console OpenClaw retornou identificador duplicado: ${agente.id}`);
+      ids.add(agente.id);
+    }
 
     // Busca agentes existentes no banco
     const agentesExistentes = await db.select().from(agentes);
-    const mapaExistentes = new Map(agentesExistentes.map(a => [a.nome, a]));
+    const mapaExistentes = new Map<string, typeof agentesExistentes[number]>();
+    for (const agente of agentesExistentes) {
+      mapaExistentes.set(agente.nome, agente);
+      if (agente.openclawAgentId) mapaExistentes.set(agente.openclawAgentId, agente);
+    }
 
     let criados = 0;
     let atualizados = 0;
@@ -198,6 +207,7 @@ export class GerenteAgentesService {
         // Cria novo agente
         await db.insert(agentes).values({
           nome: agenteOpenClaw.id,
+          openclawAgentId: agenteOpenClaw.id,
           modelo: agenteOpenClaw.model || 'unknown',
           descricao: agenteOpenClaw.name !== agenteOpenClaw.id ? agenteOpenClaw.name : null,
           ativo: true,
@@ -208,6 +218,7 @@ export class GerenteAgentesService {
         await db.update(agentes)
           .set({
             modelo: agenteOpenClaw.model || existente.modelo,
+            openclawAgentId: agenteOpenClaw.id,
             descricao: agenteOpenClaw.name !== agenteOpenClaw.id ? agenteOpenClaw.name : existente.descricao,
           })
           .where(eq(agentes.id, existente.id));
@@ -217,6 +228,25 @@ export class GerenteAgentesService {
 
     this.logger.log(`Sincronização de agentes: ${criados} criados, ${atualizados} atualizados, ${agentesOpenClaw.length} total`);
     return { criados, atualizados, total: agentesOpenClaw.length };
+  }
+
+  /** Confere o vínculo de uma linha local com o catálogo atual do OpenClaw. */
+  async diagnosticarVinculoAgente(id: number) {
+    const db = await this.dbDoMotor();
+    const [local] = await db.select().from(agentes).where(eq(agentes.id, id)).limit(1);
+    if (!local) throw new NotFoundException(`Agente local ${id} não encontrado`);
+    const openclawId = local.openclawAgentId || local.nome;
+    let remotos: Array<{ id: string; name: string; model?: string; status?: string }>;
+    try {
+      remotos = await this.listarAgentesConsole();
+    } catch (error) {
+      return { agenteId: id, openclawAgentId: openclawId, estado: 'indisponivel', inconsistencia: 'Não foi possível consultar o Console OpenClaw.', detalhe: error instanceof Error ? error.message : String(error) };
+    }
+    const remoto = remotos.find((agente) => agente.id === openclawId);
+    if (!remoto) return { agenteId: id, openclawAgentId: openclawId, estado: 'nao_encontrado', inconsistencia: 'Identificador não encontrado no OpenClaw.' };
+    const estado = remoto.status || 'desconhecido';
+    const indisponivel = ['offline', 'unavailable', 'error', 'stopped'].includes(estado.toLowerCase());
+    return { agenteId: id, openclawAgentId: openclawId, estado: indisponivel ? 'indisponivel' : estado, inconsistencia: indisponivel ? `Agente registrado, mas indisponível (${estado}).` : null, agenteOpenClaw: remoto };
   }
 
   /**
