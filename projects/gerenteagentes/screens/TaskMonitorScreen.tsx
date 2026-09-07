@@ -411,16 +411,11 @@ export default function TaskMonitorScreen(): ReactNode {
     mounted.current = true
     void carregarProjetos()
     void carregarTarefas()
-    const t1 = setInterval(() => {
-      void carregarTarefas()
-    }, 30000)
     return () => {
       mounted.current = false
-      clearInterval(t1)
     }
   }, [carregarProjetos, carregarTarefas])
 
-  // Polling de 60s no detalhe (tempo real)
   useEffect(() => {
     if (tarefaId === "") {
       activeRealtimeTask.current = ""
@@ -442,12 +437,6 @@ export default function TaskMonitorScreen(): ReactNode {
     void carregarDetail(tarefaId)
     void carregarSubtarefasDb(tarefaId)
     void carregarChat(tarefaId)
-    const t2 = setInterval(() => {
-      void carregarDetail(tarefaId)
-      void carregarSubtarefasDb(tarefaId)
-      void carregarChat(tarefaId)
-    }, 60000)
-    return () => clearInterval(t2)
   }, [tarefaId, carregarDetail, carregarSubtarefasDb, carregarChat])
 
   useEffect(() => {
@@ -470,6 +459,7 @@ export default function TaskMonitorScreen(): ReactNode {
           // O buffer do servidor expirou; recupera a fonte persistida antes de
           // continuar ouvindo a conexão recém-reaberta.
           void carregarDetail(tarefaId)
+          void carregarSubtarefasDb(tarefaId)
           void carregarChat(tarefaId)
           return
         }
@@ -504,6 +494,18 @@ export default function TaskMonitorScreen(): ReactNode {
           const status = String(message.event.payload.status ?? "")
           setTarefas((atual) => atual.map((tarefa) => tarefa.id === tarefaId ? { ...tarefa, status } : tarefa))
         }
+        if (message.event.type === "task.created" || message.event.type === "task.updated" || message.event.type === "task.deleted") {
+          // A inscrição é por tarefa. Reconsultar somente após um evento mantém
+          // a lista consistente para criação/edição/exclusão sem voltar ao
+          // polling periódico.
+          void carregarTarefas()
+        }
+        if (message.event.type.startsWith("subtask.")) {
+          // O evento contém a alteração incremental, mas o detalhe do motor e
+          // a tabela persistida continuam sendo as fontes de verdade.
+          void carregarDetail(tarefaId)
+          void carregarSubtarefasDb(tarefaId)
+        }
       },
     })
     void realtime.connect()
@@ -511,7 +513,7 @@ export default function TaskMonitorScreen(): ReactNode {
       if (activeRealtimeTask.current === tarefaId) activeRealtimeTask.current = ""
       realtime.close()
     }
-  }, [tarefaId, bundle, carregarChat])
+  }, [tarefaId, bundle, carregarChat, carregarDetail, carregarSubtarefasDb, carregarTarefas])
 
   useEffect(() => {
     setLoading(false)
