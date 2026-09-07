@@ -39,6 +39,7 @@ export type ResourceKey =
   | `project:${string}:integration`
   | `project:${string}:deploy`
   | `subtask:${string}`
+  | 'motor:analysis'
   | 'gpu:local-model'
   | 'motor:monitor'
   | 'infra:mysql:3308'
@@ -50,6 +51,7 @@ export const RESOURCE_KEYS = {
   projectIntegration: (slug: string): ResourceKey => `project:${slug}:integration`,
   projectDeploy: (slug: string): ResourceKey => `project:${slug}:deploy`,
   subtask: (id: string): ResourceKey => `subtask:${id}`,
+  motorAnalysis: (): ResourceKey => 'motor:analysis',
   gpuLocalModel: (): ResourceKey => 'gpu:local-model',
   motorMonitor: (): ResourceKey => 'motor:monitor',
   infraMysql3308: (): ResourceKey => 'infra:mysql:3308',
