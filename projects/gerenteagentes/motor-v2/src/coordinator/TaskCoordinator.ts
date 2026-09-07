@@ -213,7 +213,9 @@ export class TaskCoordinator {
       // para quando não há trabalho elegível ou quando o trabalho selecionado
       // não pôde iniciar (recurso em espera, falha de início).
       let guard = 0
-      while (this.activeWorkers.size < this.config.maxWorkers && guard <= this.config.maxWorkers) {
+      // `maxWorkers` limita somente desenvolvimento. A análise tem uma vaga
+      // própria (global), para não ficar bloqueada por workers de projetos.
+      while (this.activeWorkers.size < this.config.maxWorkers + 1 && guard <= this.config.maxWorkers + 1) {
         guard += 1
 
         // 1. Tenta pegar subtarefa pendente (execucao)
@@ -268,7 +270,7 @@ export class TaskCoordinator {
       "LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id = pc.id " +
       "WHERE t.status = 'planned' AND NOT EXISTS (SELECT 1 FROM subtarefas s WHERE s.tarefa_id = t.id) ORDER BY t.created_at ASC LIMIT 25"
     )
-    return rows.map((row) => this.mapTask(row)).find((task) => this.canStartProject(task.projectSlug)) ?? null
+    return rows.map((row) => this.mapTask(row)).find(() => this.canStartAnalysis()) ?? null
   }
 
   async getTasksByStatus(since?: string): Promise<{
@@ -332,7 +334,19 @@ export class TaskCoordinator {
       ") " +
       "ORDER BY s.seq ASC LIMIT 25"
     )
-    return rows.map((row) => this.mapSubtask(row)).find((subtask) => this.canStartProject(subtask.projectSlug)) ?? null
+    return rows.map((row) => this.mapSubtask(row)).find((subtask) => this.canStartExecution(subtask.projectSlug)) ?? null
+  }
+
+  /** Limite de desenvolvimento: máximo global e, por padrão, um por projeto. */
+  private canStartExecution(projectSlug: string | null): boolean {
+    const runningExecutions = [...this.activeWorkers.values()].filter((worker) => worker.phase === "execute")
+    if (runningExecutions.length >= this.config.maxWorkers) return false
+    return this.canStartProject(projectSlug)
+  }
+
+  /** Há uma única análise em todo o motor, independente dos workers de dev. */
+  private canStartAnalysis(): boolean {
+    return ![...this.activeWorkers.values()].some((worker) => worker.phase === "analyze")
   }
 
   private canStartProject(projectSlug: string | null): boolean {
@@ -347,7 +361,10 @@ export class TaskCoordinator {
   /** Retorna true quando o worker foi iniciado; false quando o trabalho não começou (espera/falha). */
   private async startTaskAnalysis(task: Task): Promise<boolean> {
     const executionId = "exec-analyze-" + task.id + "-" + Date.now()
-    const resourceKey = task.projectSlug ? RESOURCE_KEYS.projectExecution(task.projectSlug) : null
+    // Análise é um recurso global e separado do lock de execução do projeto.
+    // Assim, uma análise pode rodar enquanto há desenvolvimento em qualquer
+    // projeto, mas duas análises continuam mutuamente exclusivas.
+    const resourceKey = RESOURCE_KEYS.motorAnalysis()
     let fencingToken = 0
 
     if (resourceKey) {
