@@ -88,6 +88,15 @@ export const config: GeradorSistemaConfig = {
               columnLabels: { id: "ID", nome: "Nome", modelo: "Modelo", descricao: "Descrição", ativo: "Ativo" },
               newLabel: "Novo agente",
             },
+            rowActions: [
+              {
+                id: "sincronizar-openclaw",
+                label: "Sincronizar com OpenClaw",
+                method: "POST",
+                path: "/api/gerenteagentes/agentes/sincronizar",
+                confirm: "Sincronizar os agentes registrados no OpenClaw?",
+              },
+            ],
           },
         },
         {

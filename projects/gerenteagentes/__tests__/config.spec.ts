@@ -59,6 +59,14 @@ describe("config do projeto gerenteagentes", () => {
       expect.objectContaining({ name: "modelo", required: true }),
       expect.objectContaining({ name: "ativo", type: "switch" }),
     ]))
+
+    expect(tela.rowActions).toContainEqual({
+      id: "sincronizar-openclaw",
+      label: "Sincronizar com OpenClaw",
+      method: "POST",
+      path: "/api/gerenteagentes/agentes/sincronizar",
+      confirm: "Sincronizar os agentes registrados no OpenClaw?",
+    })
   })
 
   it("expõe o menu Prompts abaixo de Projetos com cadastro editável", () => {
