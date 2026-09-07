@@ -1,6 +1,6 @@
 # Mapeamento da Tela de Agentes
 
-Subtarefa 1 da tarefa **Tela de Agentes**. Este documento registra a arquitetura
+Subtarefas 1 e 5 da tarefa **Tela de Agentes**. Este documento registra a arquitetura
 existente e o contrato recomendado para a tela/menu de agentes, sem implementar
 a tela.
 
@@ -103,3 +103,20 @@ Implementar no projeto apenas: item de menu em `config.ts`, cadastro/tela
 conforme a decisão acima, testes correspondentes e, se necessário, a
 formalização do contrato CRUD. Não alterar configurações do OpenClaw nem
 projetos externos ao `gerenteagentes`.
+
+## Validação da entrega — subtarefa 5
+
+Validação executada em 2026-09-07, a partir do diretório do projeto:
+
+| Verificação | Resultado |
+| --- | --- |
+| Lint | Não aplicável: `package.json` não define script `lint` |
+| `npm test` | Bloqueado: dependência `vitest` ausente (`sh: vitest: not found`) |
+| `npm run typecheck` | Bloqueado: dependência `tsc` ausente (`sh: tsc: not found`) |
+| Build | Não aplicável: `package.json` não define script `build` |
+| Inspeção de escopo | OK: `git status --short` aponta somente esta atualização documental |
+
+As validações automatizadas permanecem pendentes até a instalação das dependências
+do projeto. A integração funcional registrada acima permanece: o menu **Agentes**
+fica na categoria **Projetos**, usa o resource local `agentes` para CRUD e oferece
+sincronização server-side com o OpenClaw, sem expor credenciais ao navegador.
