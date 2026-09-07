@@ -19,6 +19,7 @@
 import {
   bigint,
   boolean,
+  decimal,
   int,
   json,
   mysqlTable,
@@ -288,6 +289,13 @@ export const tarefas = mysqlTable("tarefas", {
   // FK self-reference criada na migration (tarefas.depends_on_task_id → tarefas.id)
   autoStart: boolean("auto_start").notNull().default(false),
   bootRetryCount: int("boot_retry_count").notNull().default(0),
+  weight: decimal("weight", { precision: 10, scale: 2 }),
+  plannedStart: timestamp("planned_start"),
+  plannedEnd: timestamp("planned_end"),
+  estimatedEffortMinutes: int("estimated_effort_minutes"),
+  priority: int("priority"),
+  criticalPath: boolean("critical_path").notNull().default(false),
+  baselineVersion: varchar("baseline_version", { length: 64 }),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at")
     .notNull()
@@ -361,6 +369,20 @@ export const subtarefas = mysqlTable("subtarefas", {
   duracaoSegundos: int("duracao_segundos"),
   iniciadaEm: timestamp("iniciada_em"),
   finalizadaEm: timestamp("finalizada_em"),
+  weight: decimal("weight", { precision: 10, scale: 2 }),
+  plannedStart: timestamp("planned_start"),
+  plannedEnd: timestamp("planned_end"),
+  estimatedEffortMinutes: int("estimated_effort_minutes"),
+  priority: int("priority"),
+  criticalPath: boolean("critical_path").notNull().default(false),
+  baselineVersion: varchar("baseline_version", { length: 64 }),
+  verifiedAt: timestamp("verified_at"),
+  deployedAt: timestamp("deployed_at"),
+  smokeTestAt: timestamp("smoke_test_at"),
+  smokeTestOk: boolean("smoke_test_ok"),
+  rollbackAt: timestamp("rollback_at"),
+  incidentId: varchar("incident_id", { length: 128 }),
+  customerImpact: boolean("customer_impact"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at")
     .notNull()
@@ -546,7 +568,67 @@ export const bloqueios = mysqlTable("bloqueios", {
   blockExitCode: int("block_exit_code"),
   blockExcerpt: text("block_excerpt"),
   blockedAt: timestamp("blocked_at"),
+  status: mysqlEnum("status", ["open", "resolved", "cancelled"]).notNull().default("open"),
+  category: varchar("category", { length: 64 }),
+  severity: varchar("severity", { length: 32 }),
+  ownerId: varchar("owner_id", { length: 150 }),
+  rootCause: text("root_cause"),
+  resolution: text("resolution"),
+  resolvedAt: timestamp("resolved_at"),
+  recurrenceFingerprint: varchar("recurrence_fingerprint", { length: 128 }),
   createdAt: timestamp("created_at").notNull().defaultNow(),
+})
+
+export const executionAttempts = mysqlTable("execution_attempts", {
+  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+  subtaskId: bigint("subtask_id", { mode: "number", unsigned: true }).notNull().references(() => subtarefas.id, { onDelete: "cascade" }),
+  attemptNumber: int("attempt_number").notNull(),
+  startedAt: timestamp("started_at").notNull().defaultNow(),
+  finishedAt: timestamp("finished_at"),
+  outcome: varchar("outcome", { length: 32 }),
+  reworkReason: text("rework_reason"),
+  agentId: varchar("agent_id", { length: 150 }),
+  model: varchar("model", { length: 150 }),
+  executionId: varchar("execution_id", { length: 200 }),
+  workspacePath: varchar("workspace_path", { length: 1000 }),
+  baseCommit: varchar("base_commit", { length: 64 }),
+  resultCommit: varchar("result_commit", { length: 64 }),
+  tokenInput: bigint("token_input", { mode: "number", unsigned: true }),
+  tokenOutput: bigint("token_output", { mode: "number", unsigned: true }),
+  costUsd: decimal("cost_usd", { precision: 12, scale: 6 }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+})
+
+export const executionEvents = mysqlTable("execution_events", {
+  eventId: varchar("event_id", { length: 36 }).primaryKey(),
+  occurredAt: timestamp("occurred_at").notNull().defaultNow(),
+  taskId: bigint("task_id", { mode: "number", unsigned: true }).references(() => tarefas.id, { onDelete: "set null" }),
+  subtaskId: bigint("subtask_id", { mode: "number", unsigned: true }).references(() => subtarefas.id, { onDelete: "set null" }),
+  attemptId: bigint("attempt_id", { mode: "number", unsigned: true }).references(() => executionAttempts.id, { onDelete: "set null" }),
+  eventType: varchar("event_type", { length: 64 }).notNull(),
+  fromStatus: varchar("from_status", { length: 50 }),
+  toStatus: varchar("to_status", { length: 50 }),
+  actorType: varchar("actor_type", { length: 32 }).notNull(),
+  agentId: varchar("agent_id", { length: 150 }),
+  model: varchar("model", { length: 150 }),
+  executionId: varchar("execution_id", { length: 200 }),
+  workspaceCommit: varchar("workspace_commit", { length: 64 }),
+  reasonCode: varchar("reason_code", { length: 64 }),
+  correlationId: varchar("correlation_id", { length: 128 }).notNull(),
+})
+
+export const gateRuns = mysqlTable("gate_runs", {
+  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+  attemptId: bigint("attempt_id", { mode: "number", unsigned: true }).notNull().references(() => executionAttempts.id, { onDelete: "cascade" }),
+  gateType: varchar("gate_type", { length: 32 }).notNull(),
+  command: varchar("command", { length: 1000 }),
+  startedAt: timestamp("started_at").notNull().defaultNow(),
+  finishedAt: timestamp("finished_at"),
+  durationMs: bigint("duration_ms", { mode: "number", unsigned: true }),
+  exitCode: int("exit_code"),
+  status: mysqlEnum("status", ["passed", "failed", "skipped", "error"]).notNull(),
+  failureFingerprint: varchar("failure_fingerprint", { length: 128 }),
+  evidenceJson: json("evidence_json"),
 })
 
 // ============================================================================
