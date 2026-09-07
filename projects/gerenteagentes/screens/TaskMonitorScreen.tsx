@@ -435,13 +435,8 @@ export default function TaskMonitorScreen(): ReactNode {
     void carregarProjetos()
     void carregarTarefas()
     void carregarAtividadeMotor()
-    const t1 = setInterval(() => {
-      void carregarTarefas()
-      void carregarAtividadeMotor()
-    }, 30000)
     return () => {
       mounted.current = false
-      clearInterval(t1)
     }
   }, [carregarProjetos, carregarTarefas, carregarAtividadeMotor])
 
