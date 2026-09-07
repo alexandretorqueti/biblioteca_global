@@ -26,8 +26,7 @@ import { transitionTask, type TaskTransition } from "../policies/TaskStateMachin
 import { persistTaskClarificationAnswer, fetchPendingTaskClarification, fetchAnsweredTaskClarifications } from "../planning/ClarificationStore.js"
 import { createLogger, describeError } from "../shared/logger.js"
 import { ConsoleAgentRuntimeDriver } from "../runtime/ConsoleAgentRuntimeDriver.js"
-import { execFile, execFileSync, execSync } from "node:child_process"
-import { promisify } from "node:util"
+import { execFileSync, execSync } from "node:child_process"
 import { existsSync } from "node:fs"
 import { join } from "node:path"
 import { SecretProfileManager, resolveGitTopLevel } from "../workspaces/SecretProfileManager.js"
@@ -91,6 +90,11 @@ function isTaskTipo(value: unknown): value is NonNullable<Task["tipo"]> {
 
 function isLightweightTask(tipo: Task["tipo"] | undefined): boolean {
   return tipo === "automacao" || tipo === "verificacao"
+}
+
+/** Citação POSIX de argumento enviado como um único parâmetro ao shell remoto. */
+function shellQuote(value: string): string {
+  return "'" + value.replace(/'/g, "'\\\"'\\\"'") + "'"
 }
 
 interface SubtaskView {
@@ -1367,10 +1371,8 @@ export class TaskCoordinator {
   }
 
   /**
-   * Executa o script deploy.sh na raiz Git do monorepo. `repoPath` aponta ao
-   * projeto gerenciado (por exemplo projects/gerenteagentes), não ao topo Git.
-   * Retorna sucesso/falha sem bloquear o fluxo principal.
-   * Timeout: 15 minutos (900s) conforme especificado no deploy.sh.
+   * Dispara o deploy no ServerIA via SSH destacado. O processo remoto continua
+   * vivo quando o Compose recria este próprio container da API/Motor.
    */
   private async executeDeployScript(repoPath: string, taskId: string): Promise<{ success: boolean; error?: string }> {
     if (this.activeDeployments.has(taskId)) return { success: false, error: "Deploy já está em andamento" }
@@ -1378,11 +1380,19 @@ export class TaskCoordinator {
     this.activeDeployments.set(taskId, deployment)
     try {
       const repoRoot = execFileSync("git", ["-C", repoPath, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim()
-      const deployScript = join(repoRoot, "deploy.sh")
-      if (!existsSync(deployScript)) return { success: false, error: "deploy.sh não encontrado na raiz Git " + repoRoot }
+      const hostRepoRoot = process.env.DEPLOY_REPO_HOST ?? "/home/alexandre/codigofonte/biblioteca-global"
+      const hostDeployScript = hostRepoRoot + "/projects/gerenteagentes/motor-v2/scripts/deploy-host.sh"
+      if (!existsSync(join(repoRoot, "projects/gerenteagentes/motor-v2/scripts/deploy-host.sh"))) {
+        return { success: false, error: "deploy-host.sh não encontrado na raiz Git " + repoRoot }
+      }
       deployment.phase = "deploy"
-      this.logger.info("Executando deploy.sh: " + deployScript, { taskId, repoPath, repoRoot })
-      await promisify(execFile)("bash", [deployScript], { cwd: repoRoot, timeout: 900000, env: { ...process.env }, maxBuffer: 1024 * 1024 })
+      const safeTaskId = taskId.replace(/[^a-zA-Z0-9_-]/g, "_")
+      const logFile = "/tmp/biblioteca-global-deploy-" + safeTaskId + ".log"
+      const remoteCommand = "nohup bash " + shellQuote(hostDeployScript) + " " + shellQuote(hostRepoRoot) +
+        " > " + shellQuote(logFile) + " 2>&1 < /dev/null & echo $!"
+      const output = execFileSync("ssh", ["-i", "/root/.ssh/id_ed25519", "-o", "BatchMode=yes", "alexandre@192.168.1.8", remoteCommand], { encoding: "utf8", timeout: 15_000 }).trim()
+      if (!/^\\d+$/.test(output)) return { success: false, error: "SSH não confirmou o PID do deploy destacado: " + output }
+      this.logger.info("Deploy destacado no ServerIA", { taskId, repoPath, repoRoot, hostRepoRoot, remotePid: output, logFile })
       return { success: true }
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : String(error)

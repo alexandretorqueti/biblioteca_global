@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Executado no ServerIA por SSH destacado. Não depende do container da API,
+# que é recriado pelo próprio deploy.
+set -euo pipefail
+
+REPO_ROOT="${1:?informe a raiz do repositório}"
+API="biblioteca-global-api"
+WEB="biblioteca-global-web"
+
+cd "$REPO_ROOT"
+set -a
+. ./.env
+set +a
+
+OLD_API_IMAGE=$(docker inspect "$API" --format '{{.Image}}' 2>/dev/null || true)
+OLD_WEB_IMAGE=$(docker inspect "$WEB" --format '{{.Image}}' 2>/dev/null || true)
+
+rollback() {
+  echo "[deploy-host] falhou; restaurando imagens anteriores" >&2
+  if [[ -n "$OLD_API_IMAGE" && -n "$OLD_WEB_IMAGE" ]]; then
+    docker tag "$OLD_API_IMAGE" biblioteca-global-api:latest
+    docker tag "$OLD_WEB_IMAGE" biblioteca-global-web:latest
+    docker compose -f docker-compose.yml up -d --no-deps --force-recreate api web || true
+  fi
+}
+trap rollback ERR
+
+docker compose -f docker-compose.yml config --quiet
+docker compose -f docker-compose.yml build api web
+docker compose -f docker-compose.yml up -d --no-deps --force-recreate api web
+
+for _ in $(seq 1 30); do
+  curl -fsS --max-time 5 http://127.0.0.1:5174/health >/dev/null && \
+    curl -sS --max-time 5 -o /dev/null http://127.0.0.1:3003/api/auth/me && exit 0
+  sleep 3
+done
+
+echo "[deploy-host] API ou Web não responderam após o deploy" >&2
+exit 1
