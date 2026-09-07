@@ -79,12 +79,6 @@ fi
 git fetch origin "$BASE_BRANCH"
 git checkout "$BASE_BRANCH"
 git reset --hard "origin/$BASE_BRANCH"
-# O Motor é executado a partir do volume do host. Remova somente o artefato
-# compilado dele e gere-o a partir do commit agora sincronizado; a imagem Docker
-# sozinha não basta porque o bind mount sobrepõe /app no container da API.
-rm -rf projects/gerenteagentes/motor-v2/dist
-echo "[deploy][host] compilando motor-v2 a partir de origin/$BASE_BRANCH..."
-npx tsc --build --force projects/gerenteagentes/motor-v2/tsconfig.json
 echo "[deploy][host] validando configuração do Compose..."
 docker compose -f "$COMPOSE_FILE" config --quiet
 MYSQL_ID_BEFORE=$(docker inspect -f '{{.Id}}' biblioteca-global-mysql)
@@ -95,6 +89,15 @@ if [ "$MYSQL_HEALTH" != "healthy" ] && [ "$MYSQL_HEALTH" != "running" ]; then
 fi
 echo "[deploy][host] build das imagens api/web..."
 docker compose -f "$COMPOSE_FILE" build api web
+# O entrypoint usa o código montado do host e executa o dist desse volume.
+# A imagem já compilou o Motor com o mesmo checkout; copie esse artefato pronto
+# para o volume somente depois do build, sem depender de Node/npm no host.
+MOTOR_DIST_CONTAINER="biblioteca-global-motor-dist-$$"
+docker create --name "$MOTOR_DIST_CONTAINER" biblioteca-global-api:latest >/dev/null
+rm -rf projects/gerenteagentes/motor-v2/dist
+docker cp "$MOTOR_DIST_CONTAINER:/app/projects/gerenteagentes/motor-v2/dist" projects/gerenteagentes/motor-v2/
+docker rm "$MOTOR_DIST_CONTAINER" >/dev/null
+echo "[deploy][host] dist do motor-v2 atualizado a partir da imagem compilada"
 echo "[deploy][host] recriando somente api/web pelo Compose (--no-deps)..."
 docker compose -f "$COMPOSE_FILE" up -d --no-deps --force-recreate api web
 MYSQL_ID_AFTER=$(docker inspect -f '{{.Id}}' biblioteca-global-mysql)
