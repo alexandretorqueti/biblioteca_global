@@ -41,6 +41,26 @@ function localizarTelaTarefas(): CadastroScreenConfig {
 }
 
 describe("config do projeto gerenteagentes", () => {
+  it("expõe o menu Agentes na categoria Projetos com cadastro protegido pelo padrão da plataforma", () => {
+    const grupoProjetos = config.groups.find((grupo) => grupo.id === "projetos")
+    expect(grupoProjetos).toBeDefined()
+
+    const item = grupoProjetos!.items.find((i) => i.id === "agentes-list")
+    expect(item).toMatchObject({
+      label: "Agentes",
+      path: "agentes",
+      icon: "smart_toy",
+      screen: { kind: "cadastro", resource: "agentes" },
+    })
+
+    const tela = item!.screen as CadastroScreenConfig
+    expect(tela.fields).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "nome", required: true }),
+      expect.objectContaining({ name: "modelo", required: true }),
+      expect.objectContaining({ name: "ativo", type: "switch" }),
+    ]))
+  })
+
   it("expõe o menu Prompts abaixo de Projetos com cadastro editável", () => {
     const indiceProjetos = config.groups.findIndex((grupo) => grupo.id === "projetos")
     const indicePrompts = config.groups.findIndex((grupo) => grupo.id === "prompts")
