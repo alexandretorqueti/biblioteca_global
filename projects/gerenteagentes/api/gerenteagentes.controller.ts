@@ -235,6 +235,12 @@ export class GerenteAgentesController {
     return this.service.sincronizarAgentesOpenClaw();
   }
 
+  @Get('agentes/:id/vinculo')
+  @Roles('admin', 'gerente')
+  diagnosticarVinculoAgente(@Param('id', ParseIntPipe) id: number) {
+    return this.service.diagnosticarVinculoAgente(id);
+  }
+
   // ============================================================================
   // SELEÇÃO DE MODELOS (proxy p/ motor — task-54)
   // ============================================================================
