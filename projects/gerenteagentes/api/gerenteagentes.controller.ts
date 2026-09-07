@@ -1,4 +1,4 @@
-import { Put } from '@nestjs/common';
+import { Patch, Put } from '@nestjs/common';
 import {
   Controller,
   Get,
@@ -62,6 +62,17 @@ export class GerenteAgentesController {
       dependsOnTaskId: body.dependsOnTaskId,
       autoStart: body.autoStart,
     });
+  }
+
+  /** Atualização usada pelo mapa para mover uma tarefa entre estações. */
+  @Patch('tarefas/:id/status')
+  @Roles('admin', 'gerente', 'operador')
+  atualizarStatusTarefa(
+    @CurrentProject() projeto: ProjetoResumo,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { status?: string },
+  ) {
+    return this.service.atualizarStatusTarefa(projeto, id, body?.status);
   }
 
   @Post('tarefas/:id/start')

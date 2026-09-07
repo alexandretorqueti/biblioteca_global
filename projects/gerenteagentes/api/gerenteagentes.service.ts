@@ -32,7 +32,7 @@ import { OUTPUT_CONTRACT_CATALOG } from '../motor-v2/src/prompts/output-contract
 import { markersIn, renderPromptTemplate, validatePromptTemplate } from '../motor-v2/src/prompts/PromptTemplateEngine';
 import { composeDevelopmentPrompt, type PromptPart } from '../motor-v2/src/prompts/PromptComposition';
 import { ProvisionService } from '../../../apps/api/src/modules/provision/provision.service';
-import { TASK_STATUS_STARTABLE } from '../motor-v2/src/shared/task-statuses';
+import { ALL_TASK_STATUSES, TASK_STATUS_STARTABLE } from '../motor-v2/src/shared/task-statuses';
 import { RealtimeService } from '../../../apps/api/src/modules/realtime/realtime.service';
 
 @Injectable()
@@ -594,6 +594,23 @@ export class GerenteAgentesService {
       .limit(1);
     if (!created) throw new BadRequestException('Falha ao criar tarefa');
     return created;
+  }
+
+  async atualizarStatusTarefa(_projeto: ProjetoResumo, tarefaId: number, status?: string) {
+    const db = await this.dbDoMotor();
+    if (!status || !ALL_TASK_STATUSES.includes(status as (typeof ALL_TASK_STATUSES)[number])) {
+      throw new BadRequestException(`Status inválido: ${status ?? ''}`);
+    }
+
+    const [tarefa] = await db
+      .select({ id: tarefas.id })
+      .from(tarefas)
+      .where(eq(tarefas.id, tarefaId))
+      .limit(1);
+    if (!tarefa) throw new NotFoundException('Tarefa não encontrada');
+
+    await db.update(tarefas).set({ status, updatedAt: new Date() }).where(eq(tarefas.id, tarefaId));
+    return { id: tarefaId, status };
   }
 
   /**
