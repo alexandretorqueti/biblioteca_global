@@ -3,16 +3,16 @@ import { classifyAnalystParseFailure, parseAnalystReply, safeParseAnalystReply }
 
 describe("parseAnalystReply", () => {
   it("aceita o formato histórico de plano (sem kind)", () => {
-    const reply = parseAnalystReply('{"subtarefas":[{"seq":1,"titulo":"A","scope":"fazer A","acceptance_criteria":["ok"]}]}')
+    const reply = parseAnalystReply('{"subtarefas":[{"seq":1,"titulo":"A","scope":"fazer A com detalhes verificaveis","acceptance_criteria":["ok 1","ok 2"],"deliverables":["codigo"],"requirements_covered":["REQ-1"],"depends_on":[]}],"requirements":[{"id":"REQ-1","description":"fazer A"}],"coverage":[{"requirement":"REQ-1","covered_by":[1]}]}')
     expect(reply.kind).toBe("plano")
     if (reply.kind !== "plano") throw new Error("inesperado")
     expect(reply.subtarefas).toHaveLength(1)
     expect(reply.subtarefas[0]!.titulo).toBe("A")
-    expect(reply.subtarefas[0]!.acceptanceCriteria).toEqual(["ok"])
+    expect(reply.subtarefas[0]!.acceptanceCriteria).toEqual(["ok 1", "ok 2"])
   })
 
   it("aceita plano com kind explícito", () => {
-    const reply = parseAnalystReply('{"kind":"plano","subtarefas":[{"seq":1,"titulo":"A"}]}')
+    const reply = parseAnalystReply('{"kind":"plano","subtarefas":[{"seq":1,"titulo":"A","scope":"fazer A com detalhes verificaveis","acceptance_criteria":["ok 1","ok 2"],"deliverables":["codigo"],"requirements_covered":["REQ-1"],"depends_on":[]}],"requirements":[{"id":"REQ-1","description":"fazer A"}],"coverage":[{"requirement":"REQ-1","covered_by":[1]}]}')
     expect(reply.kind).toBe("plano")
   })
 
@@ -56,7 +56,7 @@ describe("parseAnalystReply", () => {
 
 describe("safeParseAnalystReply", () => {
   it("retorna o reply em caso valido (sem lançar)", () => {
-    const parsed = safeParseAnalystReply('{"subtarefas":[{"seq":1,"titulo":"A"}]}')
+    const parsed = safeParseAnalystReply('{"subtarefas":[{"seq":1,"titulo":"A","scope":"fazer A com detalhes verificaveis","acceptance_criteria":["ok 1","ok 2"],"deliverables":["codigo"],"requirements_covered":["REQ-1"],"depends_on":[]}],"requirements":[{"id":"REQ-1","description":"fazer A"}],"coverage":[{"requirement":"REQ-1","covered_by":[1]}]}')
     expect(parsed.ok).toBe(true)
     if (!parsed.ok) throw new Error("inesperado")
     expect(parsed.reply.kind).toBe("plano")

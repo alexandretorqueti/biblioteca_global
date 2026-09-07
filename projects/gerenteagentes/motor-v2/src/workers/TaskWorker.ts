@@ -42,8 +42,9 @@ import {
   isFunctionalSpec,
   withBaselineExcludes,
 } from "../policies/BaselinePolicy.js"
-import { hasPersistedPlan, persistPlan } from "../planning/PlanPersistence.js"
+import { hasPersistedPlan, persistPlan, type PlanCoverage } from "../planning/PlanPersistence.js"
 import { safeParseAnalystReply, type AnalystReply } from "../planning/AnalystReply.js"
+import { validatePlanQuality } from "../planning/PlanQualityPolicy.js"
 import {
   fetchTaskClarificationHistory,
   formatHistoryForPrompt,
@@ -82,15 +83,9 @@ class WrongWorkspaceError extends Error {
  * Descrições gigantes (ex.: 7KB+) faziam o analista refletir a especificação
  * nos scopes e estourar o teto de saída do modelo no meio do JSON (2026-09-01).
  */
-const ANALYST_DESCRIPTION_LIMIT = 4000
-
 export function truncateDescriptionForAnalyst(description?: string): string {
   const full = (description || "N/A").trim() || "N/A"
-  if (full.length <= ANALYST_DESCRIPTION_LIMIT) return full
-  return (
-    full.substring(0, ANALYST_DESCRIPTION_LIMIT) +
-    "\n[descricao truncada para a analise; o programador recebe a descricao completa na execucao]"
-  )
+  return full
 }
 
 /**
@@ -101,8 +96,8 @@ export function analystCorrectiveFeedback(kind: "truncated" | "invalid"): string
   if (kind === "truncated") {
     return [
       "Sua resposta anterior foi cortada no meio do JSON (provavelmente atingiu o limite de saida do modelo).",
-      "Responda de novo com o MESMO formato JSON, porem mais curto: menos subtarefas, scopes de ate 500 caracteres, criterios de aceite curtos.",
-      "Nao repita a descricao da tarefa. Responda APENAS com o JSON.",
+      "Responda de novo com o MESMO formato JSON, preservando todas as subtarefas, requisitos e cobertura; torne apenas o texto mais curto, reduzindo redundancias.",
+      "Nao omita requisitos nem etapas da descricao. Responda APENAS com o JSON.",
     ].join(" ")
   }
   return [
@@ -284,12 +279,17 @@ class TaskWorker {
     const chain = this.chainFor(input, "analysis")
     const embeddedPrompt = this.buildAnalystPrompt(input.task, clarificationHistory)
     const promptKey = clarificationHistory ? "analista.retomada_apos_clarificacao" : "analista.primeira_rodada_tarefa"
-    const prompt = await this.resolveManagedPrompt(promptKey, {
+    const promptResolver = new ManagedPromptResolver(planningDb)
+    const resolvedPrompt = await promptResolver.resolveDetailed({ key: promptKey, values: {
       "**TITULOTAREFA**": input.task.title,
-      "**DESCRICAOTAREFA**": truncateDescriptionForAnalyst(input.task.description),
+      "**DESCRICAOTAREFA**": input.task.description?.trim() || "N/A",
       "**TIPOTAREFA**": input.task.tipo ?? "desenvolvimento",
       "**HISTORICOCLARIFICACAO**": clarificationHistory ?? "",
-    }, embeddedPrompt, input.task.id)
+    }, fallback: embeddedPrompt, taskId: input.task.id })
+    const prompt = resolvedPrompt.text
+    await promptResolver.recordFinalComposition(resolvedPrompt.executionId, prompt, {
+      parts: [{ source: "table", key: promptKey }, { source: "runtime", name: "task_context", descriptionLength: input.task.description?.length ?? 0 }],
+    })
 
     let lastFailure: string | undefined
     for (let modelIndex = 0; modelIndex < chain.length; modelIndex++) {
@@ -372,6 +372,10 @@ class TaskWorker {
         }
 
         const subtarefas = reply.subtarefas
+        const coverage: PlanCoverage = {
+          requirements: [...reply.coverage.requirements],
+          coverage: reply.coverage.coverage.map((item) => ({ requirement: item.requirement, coveredBy: [...item.coveredBy] })),
+        }
         this.log("info", "Analista criou " + subtarefas.length + " subtarefas")
 
         // Smoke test obrigatório em setup de projeto novo (controle de código).
@@ -379,11 +383,21 @@ class TaskWorker {
         // test, o motor injeta automaticamente como última subtarefa do plano.
         if (isSetupTask(input.task.title, input.task.description) && !planHasSmokeTest(subtarefas)) {
           const smokeTestSeq = subtarefas.length + 1
-          subtarefas.push(generateSmokeTestSubtask(smokeTestSeq))
+          const smoke = generateSmokeTestSubtask(smokeTestSeq)
+          subtarefas.push({ seq: smoke.seq, titulo: smoke.titulo, scope: smoke.scope, acceptanceCriteria: smoke.acceptance_criteria, deliverables: smoke.deliverables, requirementsCovered: smoke.requirements_covered, dependsOn: smoke.depends_on })
+          coverage.requirements.push({ id: "REQ-SMOKE", description: "Executar smoke test funcional obrigatório do setup." })
+          coverage.coverage.push({ requirement: "REQ-SMOKE", coveredBy: [smokeTestSeq] })
           this.log("info", "Setup detectado: subtarefa de smoke test injetada (seq=" + smokeTestSeq + ")")
         }
 
-        const persisted = await persistPlan(planningDb, input.task.id, subtarefas)
+        const quality = validatePlanQuality(subtarefas, coverage, input.task.description)
+        if (!quality.ok) {
+          lastFailure = `Plano do analista rejeitado: ${quality.reason}`
+          this.log("warn", lastFailure)
+          continue
+        }
+
+        const persisted = await persistPlan(planningDb, input.task.id, subtarefas, coverage)
         if (persisted === "already_persisted") {
           this.log("info", "Plano foi persistido por outra execução; preservando-o")
         }
@@ -1283,7 +1297,7 @@ class TaskWorker {
         : "Voce e um analista de requisitos. Recebe uma tarefa e deve quebra-la em subtarefas.",
       "",
       "Tarefa: " + task.title,
-      "Descricao: " + truncateDescriptionForAnalyst(task.description),
+      "Descricao integral (nao truncar nem omitir secoes): " + (task.description?.trim() || "N/A"),
       "",
       "Responda APENAS com JSON valido, em UMA das duas formas abaixo.",
       "",
@@ -1294,9 +1308,14 @@ class TaskWorker {
       '      "seq": 1,',
       '      "titulo": "Nome da subtarefa",',
       '      "scope": "O que deve ser feito em detalhes",',
-      '      "acceptance_criteria": ["criterio 1", "criterio 2"]',
+      '      "acceptance_criteria": ["criterio verificavel 1", "criterio verificavel 2"],',
+      '      "deliverables": ["arquivo, endpoint, migration ou documento entregue"],',
+      '      "requirements_covered": ["REQ-1"],',
+      '      "depends_on": []',
       "    }",
-      "  ]",
+      "  ],",
+      '  "requirements": [{"id":"REQ-1","description":"Requisito identificado na descricao"}],',
+      '  "coverage": [{"requirement":"REQ-1","covered_by":[1]}]',
       "}",
       "",
       "Forma 2 — quando houver ambiguidade que impeca um plano correto (escopo, objetivo, criterios, conflito de requisitos, decisao de arquitetura), NAO invente e NAO gere um plano ruim; pergunte:",
@@ -1307,13 +1326,17 @@ class TaskWorker {
       "}",
       "",
       "Regras:",
-      lightweight
-        ? "- Gere no MINIMO 1 subtarefa. Para tarefas simples, gere exatamente 1; divida somente se a complexidade exigir, sem passar de 10. Reescreva o pedido de forma precisa e executavel."
-        : "- Quebre a tarefa no MINIMO de subtarefas possivel (a partir de 2). Crie mais somente quando a complexidade exigir de fato (ex.: muitas telas, modulos independentes), sem passar de 10. Prefira sempre menos subtarefas bem definidas a muitas picotadas.",
+      "- Use tantas subtarefas quantas forem necessarias para cobrir integralmente o escopo; nao minimize artificialmente nem una etapas independentes. Preserve etapas, sequencias e subtarefas explicitamente pedidas, sem passar de 10.",
       "- titulo: curto, ate ~80 caracteres.",
-      "- scope: objetivo, ate ~500 caracteres. O programador ja recebe a descricao completa da tarefa na execucao; NAO repita a especificacao nem a descricao da tarefa no scope.",
-      "- acceptance_criteria: 2 a 4 itens curtos.",
-      "- Mantenha a resposta curta: responda APENAS o JSON, sem explicacao fora dele.",
+      "- scope: responsabilidade principal detalhada e executavel; nao esconda requisitos no texto generico.",
+      "- acceptance_criteria: 2 a 8 itens objetivos, verificaveis e especificos.",
+      "- deliverables: liste as entregas concretas de cada subtarefa.",
+      "- requirements_covered: referencie os IDs REQ-* cobertos pela subtarefa.",
+      "- depends_on: liste os seqs que precisam terminar antes; use [] quando nao houver dependencia.",
+      "- requirements/coverage: identifique todos os requisitos da descricao e mapeie cada REQ-* para uma ou mais subtarefas.",
+      "- Leia a descricao inteira antes de planejar. Se ela estiver incompleta, truncada ou ambigua, use a Forma 2 e explique o que falta; nunca invente nem descarte secoes.",
+      "- Antes de responder, audite: cada requisito tem cobertura, cada subtarefa tem uma responsabilidade principal, entregavel e criterio verificavel, e nenhuma etapa explicita foi unida indevidamente.",
+      "- Mantenha somente o JSON na resposta, mas nao sacrifique cobertura ou detalhe para encurta-la.",
       "- NUNCA crie subtarefas para passos operacionais que o motor executa automaticamente: commit, push, merge, build, testes unitarios, deploy, validacao de build.",
       lightweight
         ? "- Em automacao/verificacao, a subtarefa deve descrever a acao ou verificacao concreta, os dados/recursos a usar e o formato da resposta. Nao crie trabalho de codigo, workspace, branch, build ou testes."

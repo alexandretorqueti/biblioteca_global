@@ -1,14 +1,14 @@
 /** Gerado por `npm run prompts:export-defaults`. Deve ser versionado no Git. */
 export const BUNDLED_PROMPT_DEFAULTS: Readonly<Record<string, { text: string; contractKey?: string; contractInstructions?: string }>> = {
   "analista.primeira_rodada_tarefa": {
-    "text": "Você é o analista. Planeje a tarefa **TITULOTAREFA**. Tipo: **TIPOTAREFA**. Descrição: **DESCRICAOTAREFA**. Responda somente com JSON no contrato do Motor, usando o mínimo de subtarefas executáveis.",
+    "text": "Você é o analista responsável por transformar a tarefa **TITULOTAREFA** em um plano completo, executável e verificável. Tipo: **TIPOTAREFA**. Leia integralmente a descrição abaixo, preserve todos os requisitos, etapas numeradas, sequência e definição de pronto. Não minimize artificialmente a quantidade de subtarefas nem una etapas independentes. Cada subtarefa deve ter uma responsabilidade principal, escopo detalhado, entregáveis concretos, critérios objetivos e requisitos cobertos. Identifique todos os requisitos como REQ-* e forneça a matriz de cobertura. Se a descrição estiver truncada, incompleta ou ambígua, não invente um plano: peça esclarecimentos. Descrição integral: **DESCRICAOTAREFA**\n\n**CONTRATOSAIDA**",
     "contractKey": "analista.plano_ou_perguntas",
-    "contractInstructions": "Responda somente com JSON. Quando estiver claro, use {\"subtarefas\":[{\"seq\":1,\"titulo\":\"...\",\"scope\":\"...\",\"acceptance_criteria\":[\"...\"]}]}. Quando faltar decisão, use {\"kind\":\"perguntas\",\"resumo\":\"...\",\"perguntas\":[\"...\"]}."
+    "contractInstructions": "Responda somente com JSON. Um plano exige subtarefas detalhadas e os campos requirements e coverage. Cada subtarefa exige seq, titulo, scope, acceptance_criteria, deliverables, requirements_covered e depends_on. Identifique todos os requisitos como REQ-* e cubra cada um na matriz. Quando faltar decisão, use {\"kind\":\"perguntas\",\"resumo\":\"...\",\"perguntas\":[\"...\"]}."
   },
   "analista.retomada_apos_clarificacao": {
-    "text": "Reanalise **TITULOTAREFA**. Descrição: **DESCRICAOTAREFA**. Histórico já respondido: **HISTORICOCLARIFICACAO**. Não repita perguntas respondidas; devolva perguntas novas ou o plano em JSON.",
+    "text": "Reanalise **TITULOTAREFA** usando a descrição integral: **DESCRICAOTAREFA**. Histórico já respondido: **HISTORICOCLARIFICACAO**. Preserve todos os requisitos e etapas, não una responsabilidades independentes, e não repita perguntas respondidas. Quando estiver claro, devolva plano completo com requisitos e matriz de cobertura; caso contrário, faça perguntas objetivas.\n\n**CONTRATOSAIDA**",
     "contractKey": "analista.plano_ou_perguntas",
-    "contractInstructions": "Responda somente com JSON. Quando estiver claro, use {\"subtarefas\":[{\"seq\":1,\"titulo\":\"...\",\"scope\":\"...\",\"acceptance_criteria\":[\"...\"]}]}. Quando faltar decisão, use {\"kind\":\"perguntas\",\"resumo\":\"...\",\"perguntas\":[\"...\"]}."
+    "contractInstructions": "Responda somente com JSON. Um plano exige subtarefas detalhadas e os campos requirements e coverage. Cada subtarefa exige seq, titulo, scope, acceptance_criteria, deliverables, requirements_covered e depends_on. Identifique todos os requisitos como REQ-* e cubra cada um na matriz. Quando faltar decisão, use {\"kind\":\"perguntas\",\"resumo\":\"...\",\"perguntas\":[\"...\"]}."
   },
   "analista.retry_resposta_invalida": {
     "text": "A resposta anterior falhou por **TIPOFALHAANALISTA**. Responda novamente apenas com JSON válido, curto e completo, sem texto ao redor."

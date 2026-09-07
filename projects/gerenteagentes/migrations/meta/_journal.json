@@ -169,6 +169,13 @@
       "when": 1788782400000,
       "tag": "0023_deploy_queue",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "5",
+      "when": 1788786000000,
+      "tag": "0024_analyst_plan_quality",
+      "breakpoints": true
     }
   ]
 }

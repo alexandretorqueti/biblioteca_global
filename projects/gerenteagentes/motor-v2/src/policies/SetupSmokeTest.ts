@@ -319,12 +319,18 @@ export function generateSmokeTestSubtask(seq: number): {
   titulo: string
   scope: string
   acceptance_criteria: string[]
+  deliverables: string[]
+  requirements_covered: string[]
+  depends_on: number[]
 } {
   return {
     seq,
     titulo: SMOKE_TEST_SUBTASK_TITLE,
     scope: SMOKE_TEST_SUBTASK_SCOPE,
     acceptance_criteria: SMOKE_TEST_ACCEPTANCE_CRITERIA,
+    deliverables: ["evidência JSON do smoke test funcional"],
+    requirements_covered: ["REQ-SMOKE"],
+    depends_on: [],
   }
 }
 
