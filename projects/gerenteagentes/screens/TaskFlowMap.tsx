@@ -26,6 +26,7 @@ interface TaskFlowMapProps {
   search?: string
   motorActivities?: MotorActivity[]
   onSelectTask: (id: number) => void
+  onMoveTask?: (id: number, status: string) => void | Promise<void>
 }
 
 interface FlowStation {
@@ -63,14 +64,19 @@ const TONE_STYLE = {
   danger: { borderColor: "error.main", bgcolor: "error.dark", color: "error.contrastText" },
 } as const
 
-function Station({ station, tarefas, selectedTaskId, search, movingIds, onSelectTask }: {
+function Station({ station, tarefas, selectedTaskId, search, movingIds, draggingTaskId, onSelectTask, onMoveTask, onDragStart, onDragEnd }: {
   station: FlowStation
   tarefas: FlowTask[]
   selectedTaskId: number | ""
   search: string
   movingIds: Set<number>
+  draggingTaskId: number | null
   onSelectTask: (id: number) => void
+  onMoveTask?: (id: number, status: string) => void | Promise<void>
+  onDragStart: (id: number) => void
+  onDragEnd: () => void
 }) {
+  const [dragOver, setDragOver] = useState(false)
   const stationTasks = tarefas.filter((task) => station.statuses.includes(task.status))
   const normalizedSearch = search.trim().toLocaleLowerCase("pt-BR")
   const visibleTasks = stationTasks
@@ -81,7 +87,20 @@ function Station({ station, tarefas, selectedTaskId, search, movingIds, onSelect
     <Paper
       variant="outlined"
       data-testid={`flow-station-${station.id}`}
-      sx={{ ...TONE_STYLE[station.tone], p: 1.5, minWidth: 190, minHeight: 196, borderWidth: 1.5, borderRadius: 3 }}
+      onDragOver={(event) => {
+        if (draggingTaskId !== null) {
+          event.preventDefault()
+          setDragOver(true)
+        }
+      }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(event) => {
+        event.preventDefault()
+        setDragOver(false)
+        const taskId = Number(event.dataTransfer?.getData("text/plain")) || draggingTaskId
+        if (taskId && onMoveTask) void onMoveTask(taskId, station.statuses[0])
+      }}
+      sx={{ ...TONE_STYLE[station.tone], p: 1.5, minWidth: 190, minHeight: 196, borderWidth: 1.5, borderRadius: 3, transition: "box-shadow 120ms ease, transform 120ms ease", ...(dragOver ? { boxShadow: 6, transform: "scale(1.02)", outline: "2px dashed", outlineColor: "primary.main" } : {}) }}
     >
       <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
         <Box>
@@ -106,6 +125,13 @@ function Station({ station, tarefas, selectedTaskId, search, movingIds, onSelect
               component="button"
               type="button"
               onClick={() => onSelectTask(task.id)}
+              draggable={Boolean(onMoveTask)}
+              onDragStart={(event) => {
+                event.dataTransfer.setData("text/plain", String(task.id))
+                event.dataTransfer.effectAllowed = "move"
+                onDragStart(task.id)
+              }}
+              onDragEnd={onDragEnd}
               data-testid={`flow-task-${task.id}`}
               aria-label={`Abrir tarefa ${task.id}: ${task.titulo}`}
               elevation={task.id === selectedTaskId ? 5 : 0}
@@ -132,9 +158,10 @@ function Station({ station, tarefas, selectedTaskId, search, movingIds, onSelect
   )
 }
 
-export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", motorActivities = [], onSelectTask }: TaskFlowMapProps) {
+export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", motorActivities = [], onSelectTask, onMoveTask }: TaskFlowMapProps) {
   const previousStatuses = useRef(new Map<number, string>())
   const [movements, setMovements] = useState<Array<{ id: number; from: string; to: string }>>([])
+  const [draggingTaskId, setDraggingTaskId] = useState<number | null>(null)
 
   useEffect(() => {
     const next = new Map(tarefas.map((task) => [task.id, task.status]))
@@ -179,7 +206,7 @@ export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", moto
           spacing={0.75}
           sx={{ width: "100%" }}
         >
-          {MAIN_FLOW.map((station, index) => <React.Fragment key={station.id}><Station station={station} tarefas={tarefas} selectedTaskId={selectedTaskId} search={search} movingIds={movingIds} onSelectTask={onSelectTask} />{index < MAIN_FLOW.length - 1 && <ArrowForwardRounded color="action" aria-hidden="true" />}</React.Fragment>)}
+          {MAIN_FLOW.map((station, index) => <React.Fragment key={station.id}><Station station={station} tarefas={tarefas} selectedTaskId={selectedTaskId} search={search} movingIds={movingIds} draggingTaskId={draggingTaskId} onSelectTask={onSelectTask} onMoveTask={onMoveTask} onDragStart={setDraggingTaskId} onDragEnd={() => setDraggingTaskId(null)} />{index < MAIN_FLOW.length - 1 && <ArrowForwardRounded color="action" aria-hidden="true" />}</React.Fragment>)}
         </Stack>
         <Stack alignItems="center" sx={{ width: "100%", my: 0.5 }}><ArrowDownwardRounded color="action" /></Stack>
         <Stack
@@ -191,7 +218,7 @@ export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", moto
           spacing={1}
           sx={{ width: "100%" }}
         >
-          {SIDE_FLOW.map((station, index) => <React.Fragment key={station.id}><Station station={station} tarefas={tarefas} selectedTaskId={selectedTaskId} search={search} movingIds={movingIds} onSelectTask={onSelectTask} />{index < SIDE_FLOW.length - 1 && <ArrowForwardRounded color="action" aria-hidden="true" />}</React.Fragment>)}
+          {SIDE_FLOW.map((station, index) => <React.Fragment key={station.id}><Station station={station} tarefas={tarefas} selectedTaskId={selectedTaskId} search={search} movingIds={movingIds} draggingTaskId={draggingTaskId} onSelectTask={onSelectTask} onMoveTask={onMoveTask} onDragStart={setDraggingTaskId} onDragEnd={() => setDraggingTaskId(null)} />{index < SIDE_FLOW.length - 1 && <ArrowForwardRounded color="action" aria-hidden="true" />}</React.Fragment>)}
         </Stack>
       </Box>
     </Paper>
