@@ -161,12 +161,16 @@ export const SUBTASK_STATUSES = [
   "verified",
   "rejected",
   "blocked",
+  "deployed",
   "completed",
   "failed",
   "skipped",
   "rework",
   "superseded",
 ] as const
+
+/** Status legado preservado apenas para leitura/relatórios compatíveis. */
+export const SUBTASK_STATUSES_LEGACY = ["deployada"] as const
 
 export type SubTaskStatusValue = (typeof SUBTASK_STATUSES)[number]
 
@@ -179,6 +183,7 @@ export const SUBTASK_STATUS_LABELS: Record<string, string> = {
   verified: "Verificada",
   rejected: "Rejeitada",
   blocked: "Bloqueada",
+  deployed: "Deployada",
   completed: "Concluída",
   failed: "Falhou",
   skipped: "Ignorada",
@@ -200,6 +205,7 @@ export const SUBTASK_STATUS_COLORS: Record<
   rework: "warning",
   rejected: "error",
   blocked: "error",
+  deployed: "success",
   failed: "error",
   skipped: "default",
   superseded: "default",
@@ -219,36 +225,48 @@ export const SUBTASK_STATUS_OPTIONS = SUBTASK_STATUSES.map((value) => ({
 
 /** Retorna o label amigável de um status de tarefa. */
 export function taskStatusLabel(status: string): string {
-  return TASK_STATUS_LABELS[status] ?? status
+  const canonical = normalizeTaskStatus(status)
+  return TASK_STATUS_LABELS[canonical] ?? canonical
 }
 
 /** Retorna a cor do Chip para um status de tarefa. */
 export function taskStatusColor(
   status: string,
 ): "default" | "primary" | "secondary" | "error" | "info" | "success" | "warning" {
-  return TASK_STATUS_COLORS[status] ?? "default"
+  return TASK_STATUS_COLORS[normalizeTaskStatus(status)] ?? "default"
 }
 
 /** Retorna o label amigável de um status de subtarefa. */
 export function subtaskStatusLabel(status: string): string {
-  return SUBTASK_STATUS_LABELS[status] ?? status
+  const canonical = normalizeSubtaskStatus(status)
+  return SUBTASK_STATUS_LABELS[canonical] ?? canonical
 }
 
 /** Retorna a cor do Chip para um status de subtarefa. */
 export function subtaskStatusColor(
   status: string,
 ): "default" | "primary" | "secondary" | "error" | "info" | "success" | "warning" {
-  return SUBTASK_STATUS_COLORS[status] ?? "default"
+  return SUBTASK_STATUS_COLORS[normalizeSubtaskStatus(status)] ?? "default"
+}
+
+/** Converte somente o alias histórico; nenhum dado legado é apagado. */
+export function normalizeTaskStatus(status: string): string {
+  return status === "deployada" ? "deployed" : status
+}
+
+/** Converte somente o alias histórico; novas escritas devem usar o retorno. */
+export function normalizeSubtaskStatus(status: string): string {
+  return status === "deployada" ? "deployed" : status
 }
 
 /** Verifica se o status de tarefa é final. */
 export function isTaskFinal(status: string): boolean {
-  return TASK_STATUS_FINAIS.has(status)
+  return TASK_STATUS_FINAIS.has(normalizeTaskStatus(status))
 }
 
 /** Verifica se a tarefa pode ser iniciada. */
 export function isTaskStartable(status: string): boolean {
-  return TASK_STATUS_STARTABLE.has(status)
+  return TASK_STATUS_STARTABLE.has(normalizeTaskStatus(status))
 }
 
 /**
