@@ -210,38 +210,31 @@ export class TaskCoordinator {
       // caminhos que não notificaram o motor (ex.: insert direto por agente/sessão)
       // são detectadas aqui e retomam a análise sem depender de aviso externo.
       await this.resumeAnsweredClarifications()
-      // Com maxWorkers > 1 um único pump precisa preencher todas as vagas;
-      // cada iteração inicia no máximo um worker e reconsulta a fila. O laço
-      // para quando não há trabalho elegível ou quando o trabalho selecionado
-      // não pôde iniciar (recurso em espera, falha de início).
-      let guard = 0
-      // `maxWorkers` limita somente desenvolvimento. A análise tem uma vaga
-      // própria (global), para não ficar bloqueada por workers de projetos.
-      while (this.activeWorkers.size < this.config.maxWorkers + 1 && guard <= this.config.maxWorkers + 1) {
-        guard += 1
-
-        // 1. Tenta pegar subtarefa pendente (execucao)
+      // Desenvolvimento e análise são pistas independentes. Uma subtarefa
+      // aguardando recurso não pode interromper a seleção do analista.
+      let developmentGuard = 0
+      while (this.activeDevelopmentCount() < this.config.maxWorkers && developmentGuard < this.config.maxWorkers) {
+        developmentGuard += 1
         const subtask = await this.selectNextSubtask()
-        if (subtask) {
-          this.logger.info("Subtarefa selecionada: #" + subtask.seq + " " + subtask.titulo, {
-            taskId: subtask.taskExternalId, subtaskId: subtask.id, projectSlug: subtask.projectSlug ?? undefined,
-          })
-          const started = await this.startSubtaskExecution(subtask)
-          if (!started) break
-          continue
-        }
+        if (!subtask) break
+        this.logger.info("Subtarefa selecionada: #" + subtask.seq + " " + subtask.titulo, {
+          taskId: subtask.taskExternalId, subtaskId: subtask.id, projectSlug: subtask.projectSlug ?? undefined,
+        })
+        const started = await this.startSubtaskExecution(subtask)
+        if (!started) break
+      }
 
-        // 2. Se nao tem subtarefa, pega tarefa planejada (analise)
+      // A análise possui exatamente uma vaga global, além de maxWorkers.
+      // Esta etapa sempre é avaliada, mesmo com todas as vagas DEV ocupadas
+      // ou quando o início de uma subtarefa falhou/entrou em espera.
+      if (this.canStartAnalysis()) {
         const task = await this.selectNextTask()
         if (task) {
           this.logger.info("Tarefa selecionada para analise: " + task.id + " (" + task.title + ")", {
             taskId: task.id, projectSlug: task.projectSlug ?? undefined,
           })
-          const started = await this.startTaskAnalysis(task)
-          if (!started) break
-          continue
+          await this.startTaskAnalysis(task)
         }
-        break
       }
       await this.reconcileOrphanedReadyTasks()
     } finally {
@@ -342,9 +335,12 @@ export class TaskCoordinator {
 
   /** Limite de desenvolvimento: máximo global e, por padrão, um por projeto. */
   private canStartExecution(projectSlug: string | null): boolean {
-    const runningExecutions = [...this.activeWorkers.values()].filter((worker) => worker.phase === "execute")
-    if (runningExecutions.length >= this.config.maxWorkers) return false
+    if (this.activeDevelopmentCount() >= this.config.maxWorkers) return false
     return this.canStartProject(projectSlug)
+  }
+
+  private activeDevelopmentCount(): number {
+    return [...this.activeWorkers.values()].filter((worker) => worker.phase === "execute").length
   }
 
   /** Há uma única análise em todo o motor, independente dos workers de dev. */

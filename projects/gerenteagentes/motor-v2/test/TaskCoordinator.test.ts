@@ -39,6 +39,93 @@ describe('TaskCoordinator', () => {
   })
 
   describe('pump', () => {
+    it('inicia uma análise quando as duas vagas de desenvolvimento estão ocupadas', async () => {
+      const coordinatorWithTwoDevelopers = new TaskCoordinator(db, repository, resourceLease, {
+        maxWorkers: 2,
+        maxWorkersPerProject: 1,
+      })
+      const task = {
+        id: 'task-analysis-slot', chatId: '', agentId: 'analyst', title: 'Analisar agora', description: '',
+        repoPath: '/repo', buildCommand: 'npm run build', unitTestCommand: 'npm test',
+        status: 'planned' as const, maxRework: 3, hardTimeoutMs: 1000, projectSlug: 'project-c',
+        createdAt: '', updatedAt: '',
+      }
+      const internal = coordinatorWithTwoDevelopers as unknown as {
+        activeWorkers: Map<string, unknown>
+        selectNextSubtask(): Promise<null>
+        selectNextTask(): Promise<typeof task | null>
+        startTaskAnalysis(input: typeof task): Promise<boolean>
+        reconcileOrphanedReadyTasks(): Promise<void>
+        processDeployQueue(): Promise<void>
+      }
+      internal.activeWorkers.set('dev-a', { phase: 'execute', resourceKey: 'project:a:execution' })
+      internal.activeWorkers.set('dev-b', { phase: 'execute', resourceKey: 'project:b:execution' })
+      const selectSubtask = vi.spyOn(internal, 'selectNextSubtask').mockResolvedValue(null)
+      vi.spyOn(internal, 'selectNextTask').mockResolvedValue(task)
+      const startAnalysis = vi.spyOn(internal, 'startTaskAnalysis').mockResolvedValue(true)
+      vi.spyOn(internal, 'reconcileOrphanedReadyTasks').mockResolvedValue()
+      vi.spyOn(internal, 'processDeployQueue').mockResolvedValue()
+
+      await coordinatorWithTwoDevelopers.pump()
+
+      expect(selectSubtask).not.toHaveBeenCalled()
+      expect(startAnalysis).toHaveBeenCalledOnce()
+      expect(startAnalysis).toHaveBeenCalledWith(task)
+    })
+
+    it('a espera de uma subtarefa não impede a pista independente de análise', async () => {
+      const task = {
+        id: 'task-analysis-after-wait', chatId: '', agentId: 'analyst', title: 'Analisar após espera', description: '',
+        repoPath: '/repo', buildCommand: 'npm run build', unitTestCommand: 'npm test',
+        status: 'planned' as const, maxRework: 3, hardTimeoutMs: 1000, projectSlug: 'project-b',
+        createdAt: '', updatedAt: '',
+      }
+      const subtask = { id: 10, seq: 1, titulo: 'Dev aguardando', taskExternalId: 'task-dev', projectSlug: 'project-a' }
+      const internal = coordinator as unknown as {
+        selectNextSubtask(): Promise<typeof subtask | null>
+        selectNextTask(): Promise<typeof task | null>
+        startSubtaskExecution(input: typeof subtask): Promise<boolean>
+        startTaskAnalysis(input: typeof task): Promise<boolean>
+        reconcileOrphanedReadyTasks(): Promise<void>
+        processDeployQueue(): Promise<void>
+      }
+      vi.spyOn(internal, 'selectNextSubtask').mockResolvedValue(subtask)
+      vi.spyOn(internal, 'startSubtaskExecution').mockResolvedValue(false)
+      vi.spyOn(internal, 'selectNextTask').mockResolvedValue(task)
+      const startAnalysis = vi.spyOn(internal, 'startTaskAnalysis').mockResolvedValue(true)
+      vi.spyOn(internal, 'reconcileOrphanedReadyTasks').mockResolvedValue()
+      vi.spyOn(internal, 'processDeployQueue').mockResolvedValue()
+
+      await coordinator.pump()
+
+      expect(startAnalysis).toHaveBeenCalledOnce()
+    })
+
+    it('não seleciona uma segunda análise quando a vaga global já está ocupada', async () => {
+      const coordinatorWithAnalysis = new TaskCoordinator(db, repository, resourceLease, {
+        maxWorkers: 2,
+        maxWorkersPerProject: 1,
+      })
+      const internal = coordinatorWithAnalysis as unknown as {
+        activeWorkers: Map<string, unknown>
+        selectNextSubtask(): Promise<null>
+        selectNextTask(): Promise<null>
+        reconcileOrphanedReadyTasks(): Promise<void>
+        processDeployQueue(): Promise<void>
+      }
+      internal.activeWorkers.set('dev-a', { phase: 'execute', resourceKey: 'project:a:execution' })
+      internal.activeWorkers.set('dev-b', { phase: 'execute', resourceKey: 'project:b:execution' })
+      internal.activeWorkers.set('analysis-a', { phase: 'analyze', resourceKey: 'motor:analysis' })
+      vi.spyOn(internal, 'selectNextSubtask').mockResolvedValue(null)
+      const selectTask = vi.spyOn(internal, 'selectNextTask').mockResolvedValue(null)
+      vi.spyOn(internal, 'reconcileOrphanedReadyTasks').mockResolvedValue()
+      vi.spyOn(internal, 'processDeployQueue').mockResolvedValue()
+
+      await coordinatorWithAnalysis.pump()
+
+      expect(selectTask).not.toHaveBeenCalled()
+    })
+
     it('serializa chamadas concorrentes para não selecionar a mesma tarefa duas vezes', async () => {
       const task = {
         id: 'task-concorrente', chatId: '', agentId: 'agent', title: 'Concorrente', description: '',
@@ -568,7 +655,9 @@ describe('TaskCoordinator', () => {
       await coordinatorMulti.pump()
 
       expect(startSpy).toHaveBeenCalledTimes(2)
-      expect(selectSubtask).toHaveBeenCalledTimes(3)
+      // Ao preencher as duas vagas DEV, a pista encerra sem uma consulta
+      // excedente; a seleção de análise é avaliada separadamente.
+      expect(selectSubtask).toHaveBeenCalledTimes(2)
     })
 
     it('respeita o limite por projeto ao preencher vagas', async () => {
