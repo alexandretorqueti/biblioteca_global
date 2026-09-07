@@ -62,6 +62,7 @@ export const agentes = mysqlTable("agentes", {
     .primaryKey()
     .autoincrement(),
   nome: varchar("nome", { length: 150 }).notNull().unique(),
+  openclawAgentId: varchar("openclaw_agent_id", { length: 150 }).unique(),
   modelo: varchar("modelo", { length: 100 }).notNull(),
   descricao: text("descricao"),
   ativo: boolean("ativo").notNull().default(true),

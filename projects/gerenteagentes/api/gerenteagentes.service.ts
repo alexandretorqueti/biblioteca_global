@@ -25,6 +25,8 @@ import {
   promptsVersoes,
   promptsContratos,
   promptsContratosVersoes,
+  agentes,
+  projetoModelChain,
 } from '../schema';
 import { AGENT_PROMPT_CATALOG } from '../motor-v2/src/prompts/prompt-catalog';
 import { OUTPUT_CONTRACT_CATALOG } from '../motor-v2/src/prompts/output-contract-catalog';
@@ -32,6 +34,7 @@ import { markersIn, renderPromptTemplate, validatePromptTemplate } from '../moto
 import { ProvisionService } from '../../../apps/api/src/modules/provision/provision.service';
 import { TASK_STATUS_STARTABLE } from '../motor-v2/src/shared/task-statuses';
 import { RealtimeService } from '../../../apps/api/src/modules/realtime/realtime.service';
+import { IsaChatBridgeService } from './isa-chat/isa-chat.bridge';
 
 @Injectable()
 export class GerenteAgentesService {
@@ -49,6 +52,7 @@ export class GerenteAgentesService {
     @Inject(ProvisionService) private readonly provisionService: ProvisionService,
     private readonly configService: ConfigService,
     @Optional() private readonly realtime?: RealtimeService,
+    @Optional() private readonly sessionBridge?: IsaChatBridgeService,
   ) {
     // Motor de execução (rodando no container openclaw:6283, exposto via proxy NPM)
     this.motorUrl = this.configService.get<string>('MOTOR_DEV_URL') || 'http://192.168.1.16';
@@ -62,6 +66,67 @@ export class GerenteAgentesService {
     // Console OpenClaw (fonte de agentes — st-5)
     this.consoleUrl = this.configService.get<string>('OPENCLAW_CONSOLE_URL') || 'https://openclaw-api.webconnect.com.br';
     this.consoleToken = this.configService.get<string>('OPENCLAW_CONSOLE_TOKEN') || '';
+  }
+
+  /**
+   * Consulta a sessão criada pelo worker para uma subtarefa. O Motor-v2 usa
+   * uma chave estável por tarefa/modelo; cada tentativa/rework reutiliza essa
+   * chave, então o histórico retornado representa a sessão do agente.
+   */
+  async sessaoSubtarefa(projeto: ProjetoResumo, tarefaId: number, seq: number) {
+    const db = await this.dbDoMotor();
+    const [tarefa] = await db
+      .select({
+        externalId: tarefas.externalId,
+        projetoId: tarefas.projetoId,
+        agentId: agentes.openclawAgentId,
+        agentName: agentes.nome,
+      })
+      .from(tarefas)
+      .leftJoin(projetosCaptados, eq(projetosCaptados.id, tarefas.projetoId))
+      .leftJoin(agentes, eq(agentes.id, projetosCaptados.agenteId))
+      .where(eq(tarefas.id, tarefaId))
+      .limit(1);
+
+    if (!tarefa) throw new NotFoundException('Tarefa não encontrada');
+    const [subtarefa] = await db
+      .select({ id: subtarefas.id })
+      .from(subtarefas)
+      .where(and(eq(subtarefas.tarefaId, tarefaId), eq(subtarefas.seq, seq)))
+      .limit(1);
+    if (!subtarefa) return { available: false, messages: [], text: '' };
+    if (!tarefa.agentId && !tarefa.agentName) {
+      return { available: false, messages: [], text: '' };
+    }
+
+    const configuredModels = await db
+      .select({ model: projetoModelChain.modelo })
+      .from(projetoModelChain)
+      .where(and(eq(projetoModelChain.projetoId, tarefa.projetoId), eq(projetoModelChain.fase, 'development'), eq(projetoModelChain.ativo, true)));
+    const models = configuredModels.length > 0
+      ? configuredModels.map((item) => item.model)
+      : ['alibaba/qwen3.7-max', 'alibaba/qwen3.8-max', 'openai/gpt-5.6-terra'];
+    const taskKey = tarefa.externalId || String(tarefaId);
+    if (!this.sessionBridge?.isConfigured()) {
+      return { available: false, messages: [], text: '' };
+    }
+
+    for (const model of models) {
+      const slug = model.split('/').at(-1)?.replace(/[^a-zA-Z0-9.-]/g, '_') || 'unknown';
+      const sessionKey = `dev-${slug}-${taskKey}`;
+      const messages = await this.sessionBridge.history({ sessionKey, limit: 500 });
+      if (messages.length > 0) {
+        const normalized = messages.map((message) => ({ role: message.role, text: message.text ?? '' }));
+        return {
+          available: true,
+          sessionKey,
+          messages: normalized,
+          text: normalized.map((message) => `[${message.role}]\n${message.text}`).join('\n\n'),
+        };
+      }
+    }
+
+    return { available: false, messages: [], text: '' };
   }
 
   /**

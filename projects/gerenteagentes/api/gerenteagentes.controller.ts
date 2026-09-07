@@ -183,6 +183,15 @@ export class GerenteAgentesController {
     return this.service.listarSubtarefas(projeto, id);
   }
 
+  @Get('tarefas/:id/subtarefas/:seq/sessao')
+  visualizarSessaoSubtarefa(
+    @CurrentProject() projeto: ProjetoResumo,
+    @Param('id', ParseIntPipe) id: number,
+    @Param('seq', ParseIntPipe) seq: number,
+  ) {
+    return this.service.sessaoSubtarefa(projeto, id, seq);
+  }
+
   @Get('tarefas/:id/motor-detail')
   motorDetailTarefa(
     @CurrentProject() projeto: ProjetoResumo,
