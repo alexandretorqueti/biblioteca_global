@@ -550,6 +550,16 @@ export class PainelPortariaService {
       )
     }
 
+    // A encomenda sempre referencia uma unidade, mas o JOIN é externo para
+    // preservar o detalhe mesmo durante uma inconsistência referencial.
+    // O contrato público do painel, porém, exige um tipo de unidade válido.
+    const unidadeTipo = row.unidadeTipo
+    if (!unidadeTipo) {
+      throw new NotFoundException(
+        "Unidade da encomenda não encontrada ou não pertence a este condomínio",
+      )
+    }
+
     // Busca moradores ativos da unidade
     const moradoresAtivos = await db
       .select({
@@ -616,7 +626,7 @@ export class PainelPortariaService {
       unidade: {
         id: row.unidadeId,
         label: row.unidadeLabel,
-        tipo: row.unidadeTipo,
+        tipo: unidadeTipo,
         rua: row.unidadeRua,
         bloco: row.unidadeBloco,
         andar: row.unidadeAndar,
@@ -755,6 +765,7 @@ export class PainelPortariaService {
     // 5. Cria registro na tabela entregas
     const entregaResult = await db.insert(entregas).values({
       encomendaId,
+      condominioId,
       funcionarioId: body.funcionarioId,
       dataHoraEntrega: agora,
       evidenciaQuemRetirou: evidencia,
@@ -806,6 +817,12 @@ export class PainelPortariaService {
       .from(entregas)
       .where(eq(entregas.id, entregaId))
       .limit(1)
+
+    if (!entregaCriada) {
+      throw new NotFoundException(
+        "Entrega registrada, mas o comprovante não pôde ser localizado",
+      )
+    }
 
     return {
       encomenda: {
