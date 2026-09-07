@@ -68,6 +68,29 @@ export const config: GeradorSistemaConfig = {
       label: "Projetos",
       items: [
         {
+          id: "agentes-list",
+          label: "Agentes",
+          path: "agentes",
+          icon: "smart_toy",
+          screen: {
+            kind: "cadastro",
+            resource: "agentes",
+            title: "Agentes",
+            description: "Agentes vinculados ao OpenClaw",
+            fields: [
+              { name: "nome", label: "Nome", type: "text", required: true, maxLength: 150 },
+              { name: "modelo", label: "Modelo", type: "text", required: true, maxLength: 100 },
+              { name: "descricao", label: "Descrição", type: "textarea", maxLength: 65535, fullWidth: true, gridVisible: false },
+              { name: "ativo", label: "Ativo", type: "switch", defaultValue: true, gridVisible: true },
+            ],
+            overrides: {
+              hiddenColumns: ["createdAt", "updatedAt"],
+              columnLabels: { id: "ID", nome: "Nome", modelo: "Modelo", descricao: "Descrição", ativo: "Ativo" },
+              newLabel: "Novo agente",
+            },
+          },
+        },
+        {
           id: "projetos-list",
           label: "Projetos",
           path: "projetos",
