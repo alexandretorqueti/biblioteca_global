@@ -270,6 +270,7 @@ export default function GeradorSistema({
   const theme = useTheme()
   const desktop = useMediaQuery(theme.breakpoints.up("md"))
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const [menuCollapsed, setMenuCollapsed] = useState(false)
   const firstPath = config.groups[0]?.items[0]?.path ?? ""
   const [uncontrolledPath, setUncontrolledPath] = useState(
     initialPath ?? firstPath,
@@ -395,16 +396,21 @@ export default function GeradorSistema({
           drawerWidth={drawerWidth}
           actions={actions}
           onOpenMenu={() => setMobileMenuOpen(true)}
+          menuCollapsed={menuCollapsed}
+          onToggleMenu={() => setMenuCollapsed((collapsed) => !collapsed)}
         />
 
         <Box
           component="nav"
           aria-label="Navegação principal"
-          sx={{ width: { md: drawerWidth }, flexShrink: 0 }}
+          sx={{
+            width: desktop && !menuCollapsed ? drawerWidth : 0,
+            flexShrink: 0,
+          }}
         >
           <Drawer
             variant={desktop ? "permanent" : "temporary"}
-            open={desktop || mobileMenuOpen}
+            open={(desktop && !menuCollapsed) || mobileMenuOpen}
             onClose={() => setMobileMenuOpen(false)}
             ModalProps={{ keepMounted: true }}
             sx={{
@@ -505,16 +511,21 @@ export default function GeradorSistema({
         drawerWidth={drawerWidth}
         actions={actions}
         onOpenMenu={() => setMobileMenuOpen(true)}
+        menuCollapsed={menuCollapsed}
+        onToggleMenu={() => setMenuCollapsed((collapsed) => !collapsed)}
       />
 
       <Box
         component="nav"
         aria-label="Navegação principal"
-        sx={{ width: { md: drawerWidth }, flexShrink: 0 }}
+        sx={{
+          width: desktop && !menuCollapsed ? drawerWidth : 0,
+          flexShrink: 0,
+        }}
       >
         <Drawer
           variant={desktop ? "permanent" : "temporary"}
-          open={desktop || mobileMenuOpen}
+          open={(desktop && !menuCollapsed) || mobileMenuOpen}
           onClose={() => setMobileMenuOpen(false)}
           ModalProps={{ keepMounted: true }}
           sx={{
