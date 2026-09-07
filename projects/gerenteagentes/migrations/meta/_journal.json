@@ -169,6 +169,13 @@
       "when": 1788782400000,
       "tag": "0023_deploy_queue",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "5",
+      "when": 1788782400001,
+      "tag": "0024_motor_execution_observability",
+      "breakpoints": true
     }
   ]
 }
