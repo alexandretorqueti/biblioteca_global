@@ -91,6 +91,15 @@ export class GerenteAgentesController {
     return this.service.retomarTarefa(projeto, id);
   }
 
+  @Post('tarefas/:id/unlock')
+  @Roles('admin', 'gerente', 'operador')
+  desbloquearTarefa(
+    @CurrentProject() projeto: ProjetoResumo,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    return this.service.desbloquearTarefa(projeto, id);
+  }
+
   // ============================================================================
   // CHAT DA TAREFA
   // ============================================================================

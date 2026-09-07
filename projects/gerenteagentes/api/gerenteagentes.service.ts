@@ -711,6 +711,51 @@ export class GerenteAgentesService {
     return { id: tarefaId, status: 'running', message: 'Tarefa retomada' };
   }
 
+  /**
+   * Remove o bloqueio operacional de uma tarefa sem reabrir subtarefas que já
+   * avançaram no fluxo. Somente subtarefas efetivamente bloqueadas voltam a
+   * `pending`; a tarefa fica pronta quando há subtarefas e em rascunho quando
+   * não há nenhuma.
+   */
+  async desbloquearTarefa(projeto: ProjetoResumo, tarefaId: number) {
+    const db = await this.dbDoMotor();
+    const [tarefa] = await db
+      .select({ id: tarefas.id })
+      .from(tarefas)
+      .where(eq(tarefas.id, tarefaId))
+      .limit(1);
+
+    if (!tarefa) {
+      throw new NotFoundException('Tarefa não encontrada');
+    }
+
+    const existentes = await db
+      .select({ id: subtarefas.id, status: subtarefas.status })
+      .from(subtarefas)
+      .where(eq(subtarefas.tarefaId, tarefaId));
+    const bloqueadas = existentes.filter((subtarefa) => subtarefa.status === 'blocked').length;
+
+    if (existentes.length > 0) {
+      await db
+        .update(subtarefas)
+        .set({ status: 'pending', updatedAt: new Date() })
+        .where(and(eq(subtarefas.tarefaId, tarefaId), eq(subtarefas.status, 'blocked')));
+    }
+
+    const status = existentes.length > 0 ? 'ready' : 'draft';
+    await db
+      .update(tarefas)
+      .set({ status, updatedAt: new Date() })
+      .where(eq(tarefas.id, tarefaId));
+
+    return {
+      id: tarefaId,
+      status,
+      subtarefasDesbloqueadas: bloqueadas,
+      message: existentes.length > 0 ? 'Tarefa desbloqueada' : 'Tarefa devolvida para rascunho',
+    };
+  }
+
   // ============================================================================
   // CHAT DA TAREFA
   // ============================================================================
@@ -1128,10 +1173,12 @@ export class GerenteAgentesService {
         task: {
           id: motorTask.id || String(tarefaId),
           title: motorTask.title || tarefa.titulo,
-          status: motorTask.status || tarefa.status,
+          // O estado persistido é atualizado pela ação de desbloqueio antes
+          // de o motor processar uma nova execução; ele deve prevalecer na UI.
+          status: tarefa.status,
           integrationBranch: `motor-v2/${motorId}/integracao`,
           errorMessage: motorTask.errorMessage ?? undefined,
-          blockInfo: motorTask.ultimoBloqueio ?? null,
+          blockInfo: tarefa.status === 'blocked' ? (motorTask.ultimoBloqueio ?? null) : null,
         },
         subtasks,
         currentSubTask,
