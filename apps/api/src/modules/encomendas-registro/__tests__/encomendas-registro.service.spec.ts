@@ -96,10 +96,9 @@ describe("EncomendasRegistroService — validações de contexto", () => {
       from: () => fakeChain,
       where: () => fakeChain,
       limit: () => chainPromise,
-      then: chainPromise.then.bind(chainPromise),
     }
     const factory = {
-      obter: vi.fn().mockResolvedValue(fakeChain),
+      obter: vi.fn().mockResolvedValue({ select: () => fakeChain }),
     } as unknown as ProjectDbFactory
 
     const service = new EncomendasRegistroService(factory)
@@ -131,7 +130,7 @@ describe("EncomendasRegistroService — validações de contexto", () => {
         fakeChain.limit().then(resolve, reject),
     }
     const factory = {
-      obter: vi.fn().mockResolvedValue(fakeChain),
+      obter: vi.fn().mockResolvedValue({ select: () => fakeChain }),
     } as unknown as ProjectDbFactory
 
     const service = new EncomendasRegistroService(factory)
@@ -169,7 +168,7 @@ describe("EncomendasRegistroService — validações de contexto", () => {
         fakeChain.limit().then(resolve, reject),
     }
     const factory = {
-      obter: vi.fn().mockResolvedValue(fakeChain),
+      obter: vi.fn().mockResolvedValue({ select: () => fakeChain }),
     } as unknown as ProjectDbFactory
 
     const service = new EncomendasRegistroService(factory)
@@ -204,8 +203,6 @@ describe("EncomendasRegistroService — validações de contexto", () => {
         }
         return Promise.resolve([])
       },
-      then: (resolve: (v: unknown) => void, reject?: (e: unknown) => void) =>
-        fakeChain.limit().then(resolve, reject),
     }
     const factory = {
       obter: vi.fn().mockResolvedValue(fakeChain),
@@ -380,7 +377,7 @@ describe("EncomendasRegistroService — busca de unidades", () => {
     }
 
     const factory = {
-      obter: vi.fn().mockResolvedValue(fakeChain),
+      obter: vi.fn().mockResolvedValue({ select: () => fakeChain }),
     } as unknown as ProjectDbFactory
 
     const service = new EncomendasRegistroService(factory)
@@ -416,7 +413,7 @@ describe("EncomendasRegistroService — busca de unidades", () => {
     }
 
     const factory = {
-      obter: vi.fn().mockResolvedValue(fakeChain),
+      obter: vi.fn().mockResolvedValue({ select: () => fakeChain }),
     } as unknown as ProjectDbFactory
 
     const service = new EncomendasRegistroService(factory)
@@ -459,7 +456,7 @@ describe("EncomendasRegistroService — busca de transportadoras", () => {
     }
 
     const factory = {
-      obter: vi.fn().mockResolvedValue(fakeChain),
+      obter: vi.fn().mockResolvedValue({ select: () => fakeChain }),
     } as unknown as ProjectDbFactory
 
     const service = new EncomendasRegistroService(factory)
