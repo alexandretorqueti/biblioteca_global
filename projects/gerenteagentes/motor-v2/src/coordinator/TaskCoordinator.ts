@@ -1404,7 +1404,10 @@ export class TaskCoordinator {
       }
       deployment.phase = "deploy"
       const safeTaskId = taskId.replace(/[^a-zA-Z0-9_-]/g, "_")
-      const logFile = "/tmp/biblioteca-global-deploy-" + safeTaskId + ".log"
+      // Cada disparo tem seu próprio log. O lock no host serializa a execução
+      // real; o sufixo evita que uma segunda tentativa esconda o diagnóstico
+      // da primeira durante uma corrida ou após a recriação da API.
+      const logFile = "/tmp/biblioteca-global-deploy-" + safeTaskId + "-" + Date.now() + ".log"
       const remoteCommand = "nohup bash " + shellQuote(hostDeployScript) + " " + shellQuote(hostRepoRoot) +
         " > " + shellQuote(logFile) + " 2>&1 < /dev/null & echo $!"
       const output = execFileSync("ssh", ["-i", "/root/.ssh/id_ed25519", "-o", "BatchMode=yes", "alexandre@192.168.1.8", remoteCommand], { encoding: "utf8", timeout: 15_000 }).trim()
