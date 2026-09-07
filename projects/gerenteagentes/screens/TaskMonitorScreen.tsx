@@ -3,7 +3,7 @@
  * no motor GerenteAgentes (reproduz o dashboard-standalone.html do motor
  * dentro da biblioteca).
  *
- * - Polling de 5s no endpoint proxy /gerenteagentes/tarefas/:id/motor-detail
+ * - Carga inicial HTTP e atualizações posteriores pelo WebSocket realtime
  * - Subtarefas com status, progresso (verified/total), banner da subtarefa atual
  * - Activity feed com os eventos do motor
  * - Ações: iniciar / pausar / retomar
@@ -439,6 +439,54 @@ export default function TaskMonitorScreen(): ReactNode {
     void carregarChat(tarefaId)
   }, [tarefaId, carregarDetail, carregarSubtarefasDb, carregarChat])
 
+  const aplicarEventoTarefa = useCallback((type: string, payload: Record<string, unknown>, eventTaskId: number) => {
+    if (type === "task.deleted") {
+      setTarefas((atual) => atual.filter((tarefa) => tarefa.id !== eventTaskId))
+      setTarefaId((atual) => atual === eventTaskId ? "" : atual)
+      return
+    }
+    if (type === "task.status.changed") {
+      const status = typeof payload.status === "string" ? payload.status : null
+      if (!status) return
+      setTarefas((atual) => atual.map((tarefa) => tarefa.id === eventTaskId ? { ...tarefa, status } : tarefa))
+      setDetail((atual) => atual?.task && eventTaskId === tarefaId
+        ? { ...atual, task: { ...atual.task, status } }
+        : atual)
+      return
+    }
+    if (type !== "task.created" && type !== "task.updated") return
+    const tarefa: Tarefa = {
+      id: Number(payload.id ?? eventTaskId),
+      titulo: String(payload.titulo ?? payload.title ?? ""),
+      descricao: typeof payload.descricao === "string" ? payload.descricao : null,
+      tipo: typeof payload.tipo === "string" ? payload.tipo : null,
+      dependsOnTaskId: typeof payload.dependsOnTaskId === "number" ? payload.dependsOnTaskId : null,
+      status: String(payload.status ?? "draft"),
+      projetoId: Number(payload.projetoId ?? payload.projectId ?? 0),
+      updatedAt: typeof payload.updatedAt === "string" ? payload.updatedAt : undefined,
+      createdAt: typeof payload.createdAt === "string" ? payload.createdAt : undefined,
+    }
+    setTarefas((atual) => {
+      const index = atual.findIndex((item) => item.id === tarefa.id)
+      if (index < 0) return [tarefa, ...atual]
+      const anterior = atual[index]
+      if (!anterior) return atual
+      const proxima = [...atual]
+      proxima[index] = {
+        ...anterior,
+        ...tarefa,
+        ...(payload.descricao === undefined ? { descricao: anterior.descricao } : {}),
+        ...(payload.tipo === undefined ? { tipo: anterior.tipo } : {}),
+        ...(payload.dependsOnTaskId === undefined ? { dependsOnTaskId: anterior.dependsOnTaskId } : {}),
+        ...(payload.createdAt === undefined ? { createdAt: anterior.createdAt } : {}),
+      }
+      return proxima.sort((a, b) => new Date(b.updatedAt ?? b.createdAt ?? 0).getTime() - new Date(a.updatedAt ?? a.createdAt ?? 0).getTime())
+    })
+    if (eventTaskId === tarefaId) {
+      setDetail((atual) => atual?.task ? { ...atual, task: { ...atual.task, title: tarefa.titulo, status: tarefa.status } } : atual)
+    }
+  }, [tarefaId])
+
   useEffect(() => {
     if (tarefaId === "" || !bundle) return
     activeRealtimeTask.current = tarefaId
@@ -491,18 +539,14 @@ export default function TaskMonitorScreen(): ReactNode {
           }
         }
         if (message.event.type === "task.status.changed") {
-          const status = String(message.event.payload.status ?? "")
-          setTarefas((atual) => atual.map((tarefa) => tarefa.id === tarefaId ? { ...tarefa, status } : tarefa))
+          aplicarEventoTarefa(message.event.type, message.event.payload, message.event.taskId)
         }
         if (message.event.type === "task.created" || message.event.type === "task.updated" || message.event.type === "task.deleted") {
-          // A inscrição é por tarefa. Reconsultar somente após um evento mantém
-          // a lista consistente para criação/edição/exclusão sem voltar ao
-          // polling periódico.
-          void carregarTarefas()
+          aplicarEventoTarefa(message.event.type, message.event.payload, message.event.taskId)
         }
         if (message.event.type.startsWith("subtask.")) {
-          // O evento contém a alteração incremental, mas o detalhe do motor e
-          // a tabela persistida continuam sendo as fontes de verdade.
+          // O protocolo de subtarefa não carrega todos os campos do detalhe;
+          // reconcilia o snapshot somente após o evento, sem polling.
           void carregarDetail(tarefaId)
           void carregarSubtarefasDb(tarefaId)
         }
@@ -513,7 +557,7 @@ export default function TaskMonitorScreen(): ReactNode {
       if (activeRealtimeTask.current === tarefaId) activeRealtimeTask.current = ""
       realtime.close()
     }
-  }, [tarefaId, bundle, carregarChat, carregarDetail, carregarSubtarefasDb, carregarTarefas])
+  }, [tarefaId, bundle, carregarChat, carregarDetail, carregarSubtarefasDb, aplicarEventoTarefa])
 
   useEffect(() => {
     setLoading(false)
