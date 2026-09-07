@@ -6,6 +6,16 @@ set -euo pipefail
 REPO_ROOT="${1:?informe a raiz do repositório}"
 API="biblioteca-global-api"
 WEB="biblioteca-global-web"
+LOCK_FILE="${DEPLOY_LOCK_FILE:-/tmp/biblioteca-global-deploy.lock}"
+
+# O deploy recria o container que contém o Motor. O lock precisa estar no
+# host, fora do container, para sobreviver à recriação e serializar também
+# disparos vindos de instâncias diferentes do Motor.
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  echo "[deploy-host] outro deploy já está em andamento (lock: $LOCK_FILE)" >&2
+  exit 75
+fi
 
 cd "$REPO_ROOT"
 set -a
