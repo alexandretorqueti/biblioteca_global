@@ -28,6 +28,7 @@ import {
   Table,
   TableBody,
   TableCell,
+  TableContainer,
   TableHead,
   TableRow,
   TextField,
@@ -1327,7 +1328,16 @@ export default function TaskMonitorScreen(): ReactNode {
 
           {detail?.exists && isDesenvolvimento && (
             <>
-              <Table size="small" sx={{ mt: 2 }} data-testid="subtask-table">
+              <TableContainer
+                sx={{
+                  mt: 2,
+                  width: "100%",
+                  maxWidth: "100%",
+                  overflowX: "auto",
+                  WebkitOverflowScrolling: "touch",
+                }}
+              >
+              <Table size="small" sx={{ minWidth: 760 }} data-testid="subtask-table">
                 <TableHead>
                   <TableRow>
                     <TableCell>#</TableCell>
@@ -1525,6 +1535,7 @@ export default function TaskMonitorScreen(): ReactNode {
                   )}
                 </TableBody>
               </Table>
+              </TableContainer>
 
               <Typography variant="h6" sx={{ mt: 3 }}>Atividade</Typography>
               <Paper variant="outlined" sx={{ p: 2, maxHeight: 260, overflow: "auto" }} data-testid="activity-feed">
