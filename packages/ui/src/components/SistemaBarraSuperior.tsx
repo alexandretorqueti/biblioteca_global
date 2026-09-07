@@ -8,7 +8,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material"
-import { MenuRounded } from "@mui/icons-material"
+import { MenuRounded, MenuOpenRounded } from "@mui/icons-material"
 import type { SistemaBreadcrumbItem } from "../utils/system"
 
 export interface SistemaBarraSuperiorProps {
@@ -18,6 +18,10 @@ export interface SistemaBarraSuperiorProps {
   drawerWidth: number
   actions?: ReactNode
   onOpenMenu: () => void
+  /** Estado recolhido da navegação desktop; opcional para compatibilidade. */
+  menuCollapsed?: boolean
+  /** Alterna a navegação desktop; opcional para consumidores antigos. */
+  onToggleMenu?: () => void
 }
 
 export default function SistemaBarraSuperior({
@@ -27,6 +31,8 @@ export default function SistemaBarraSuperior({
   drawerWidth,
   actions,
   onOpenMenu,
+  menuCollapsed = false,
+  onToggleMenu = () => undefined,
 }: SistemaBarraSuperiorProps) {
   const currentPage = breadcrumbs.at(-1)?.label
 
@@ -39,12 +45,23 @@ export default function SistemaBarraSuperior({
         color: "text.primary",
         borderBottom: "1px solid",
         borderColor: "divider",
-        width: desktop ? `calc(100% - ${drawerWidth}px)` : "100%",
-        ml: desktop ? `${drawerWidth}px` : 0,
+        width: desktop && !menuCollapsed ? `calc(100% - ${drawerWidth}px)` : "100%",
+        ml: desktop && !menuCollapsed ? `${drawerWidth}px` : 0,
       }}
     >
       <Toolbar>
-        {!desktop && (
+        {desktop ? (
+          <Tooltip title={menuCollapsed ? "Mostrar menu" : "Ocultar menu"}>
+            <IconButton
+              edge="start"
+              onClick={onToggleMenu}
+              sx={{ mr: 1 }}
+              aria-label={menuCollapsed ? "Mostrar menu" : "Ocultar menu"}
+            >
+              {menuCollapsed ? <MenuRounded /> : <MenuOpenRounded />}
+            </IconButton>
+          </Tooltip>
+        ) : (
           <Tooltip title="Abrir menu">
             <IconButton edge="start" onClick={onOpenMenu} sx={{ mr: 1 }} aria-label="Abrir menu">
               <MenuRounded />
