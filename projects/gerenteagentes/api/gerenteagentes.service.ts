@@ -418,7 +418,7 @@ export class GerenteAgentesService {
       : tableRendered;
     const workspace = String(completeValues['**WORKSPACE**'] ?? '<WORKSPACE>');
     const composition = entry.agentType === 'dev'
-      ? composeDevelopmentPrompt(workspace, renderedWithContract)
+      ? composeDevelopmentPrompt(workspace, '<RAIZ_GIT_DO_WORKTREE>', renderedWithContract)
       : { finalText: renderedWithContract, parts: [{ source: 'table', label: 'Prompt publicado na tabela', text: renderedWithContract }] as PromptPart[] };
     if (contractInstructions) composition.parts.push({ source: 'contract', label: 'Contrato de saída vinculado', text: contractInstructions });
     return { validation, rendered: composition.finalText, parts: composition.parts, used: markersIn(texto) };

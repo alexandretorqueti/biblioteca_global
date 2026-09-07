@@ -19,6 +19,12 @@ Cada uso fica registrado em `prompts_execucoes`, incluindo `prompt_final` e
 `composicao_json`. Assim é possível auditar separadamente o conteúdo vindo da
 tabela e as proteções acrescentadas pelo sistema.
 
+O bloco de segurança distingue dois caminhos que podem ser diferentes em um
+monorepo: o diretório obrigatório do projeto, que deve corresponder a `pwd`, e a
+raiz do worktree Git, que deve corresponder a `git rev-parse --show-toplevel`.
+O agente compara cada comando com seu respectivo valor; a raiz Git ser o diretório
+pai do projeto é um estado válido e não caracteriza bloqueio ambiental.
+
 ## Ambiente novo
 
 O entrypoint executa, antes do Motor:

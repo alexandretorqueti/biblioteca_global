@@ -524,6 +524,9 @@ class TaskWorker {
     }
 
     const chain = this.chainFor(input, "development")
+    const developmentGitRoot = this.isDevelopmentTask(input)
+      ? await resolveGitTopLevel(input.repoPath)
+      : input.repoPath
     // Uma retomada não pode apagar as entregas já registradas no banco.
     let deliverCount = subtask.deliverCount
     let lastFailure = ""
@@ -581,7 +584,7 @@ class TaskWorker {
             "**ERROGATEANTERIOR**": lastFailure,
           }, fallback: embeddedHeader, taskId: input.task.id, subtaskId: subtask.id })
           const composition = this.isDevelopmentTask(input)
-            ? composeDevelopmentPrompt(input.repoPath, resolved.text)
+            ? composeDevelopmentPrompt(input.repoPath, developmentGitRoot, resolved.text)
             : { finalText: resolved.text, parts: [{ source: "table" as const, label: "Prompt publicado na tabela", text: resolved.text }] }
           if (resolved.contractInstructions) {
             composition.parts.push({ source: "contract", label: "Contrato de saída vinculado", text: resolved.contractInstructions })
