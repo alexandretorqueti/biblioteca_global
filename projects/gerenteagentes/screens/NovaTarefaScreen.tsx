@@ -62,6 +62,9 @@ export default function NovaTarefaScreen(): ReactNode {
         headers,
         body: JSON.stringify({
           projeto_id: Number(values.projetoId),
+          // Compatibilidade com consumidores do endpoint que ainda leem o
+          // contrato camelCase; a API canônica continua usando projeto_id.
+          projetoId: Number(values.projetoId),
           titulo: values.titulo,
           descricao: values.descricao || null,
           tipo: values.tipo,
