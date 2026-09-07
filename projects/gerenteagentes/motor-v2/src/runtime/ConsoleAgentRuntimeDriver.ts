@@ -169,7 +169,7 @@ export class ConsoleAgentRuntimeDriver {
           desc.hasActiveRun === false || desc.endedAt !== undefined
         ) {
           // Sessao terminou, buscar historico
-          const history = await this.request<{ messages: Array<{ role: string; content: unknown }> }>({
+          const history = await this.request<{ messages: Array<{ id?: string; role: string; content: unknown }> }>({
             method: "GET",
             path: "/api/chat/history",
             query: { sessionKey: session.key, agentId: session.agentId, limit: 10, offset: 0 },
@@ -179,9 +179,11 @@ export class ConsoleAgentRuntimeDriver {
 
           const msgs = history.messages || []
           const lastAssistant = msgs.filter((m) => m.role === "assistant").pop()
-          const content = lastAssistant
+          let content = lastAssistant
             ? (typeof lastAssistant.content === "string" ? lastAssistant.content : JSON.stringify(lastAssistant.content))
             : undefined
+
+          if (lastAssistant?.id && content?.includes("...(truncated)...")) content = await this.readFullAssistantMessage(session, lastAssistant.id)
 
           // stopReason real quando o Console/Gateway expuser (ex.: "length"
           // = teto de saida do modelo); ausente => "done" (comportamento
@@ -256,6 +258,20 @@ export class ConsoleAgentRuntimeDriver {
         content: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content),
       }))
       .filter((msg) => msg.content.trim().length > 0)
+  }
+
+  async readFullAssistantMessage(session: RuntimeSession, messageId: string): Promise<string> {
+    const full = await this.request<{ ok: boolean; message?: { role?: string; content?: unknown }; unavailableReason?: string }>({
+      method: "GET",
+      path: "/api/chat/message",
+      query: { sessionKey: session.key, agentId: session.agentId, messageId, maxChars: 500_000 },
+    })
+    if (!full.ok || !full.message || full.message.role !== "assistant") {
+      throw new Error(`Mensagem integral do analista indisponivel: ${full.unavailableReason || "resposta invalida"}`)
+    }
+    const content = typeof full.message.content === "string" ? full.message.content : JSON.stringify(full.message.content)
+    if (content.length > 500_000) throw new Error("Mensagem integral do analista excede 500000 caracteres")
+    return content
   }
 
   private async request<T>(options: {
