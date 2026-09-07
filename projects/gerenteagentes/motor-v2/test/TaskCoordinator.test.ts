@@ -346,6 +346,26 @@ describe('TaskCoordinator', () => {
       expect(internal.canStartProject('other-project')).toBe(true)
       expect(internal.canStartProject(null)).toBe(true)
     })
+
+    it('permite análise com workers de desenvolvimento e bloqueia a segunda análise', () => {
+      const coordinatorWithLimit = new TaskCoordinator(db, repository, resourceLease, {
+        maxWorkers: 2,
+        maxWorkersPerProject: 1,
+      })
+      const internal = coordinatorWithLimit as unknown as {
+        activeWorkers: Map<string, { resourceKey: string | null; phase: 'execute' | 'analyze' }>
+        canStartExecution: (slug: string | null) => boolean
+        canStartAnalysis: () => boolean
+      }
+
+      internal.activeWorkers.set('dev-a', { resourceKey: 'project:proj-a:execution', phase: 'execute' })
+      internal.activeWorkers.set('dev-b', { resourceKey: 'project:proj-b:execution', phase: 'execute' })
+      expect(internal.canStartAnalysis()).toBe(true)
+      expect(internal.canStartExecution('proj-c')).toBe(false)
+
+      internal.activeWorkers.set('analysis-a', { resourceKey: 'motor:analysis', phase: 'analyze' })
+      expect(internal.canStartAnalysis()).toBe(false)
+    })
   })
 
   describe('configuração operacional do projeto', () => {
