@@ -26,6 +26,7 @@ API="biblioteca-global-api"; API_HOST_PORT=3003; API_PORT=3001
 MOTOR_HOST_PORT=3010
 WEB="biblioteca-global-web"; WEB_HOST_PORT=5174; WEB_PORT=80
 COMPOSE_FILE="docker-compose.yml"
+BASE_BRANCH="${DEPLOY_BASE_BRANCH:-base-desenvolvimento}"
 TAG="deploy-$(date -u +%Y%m%d-%H%M%S)"
 
 ssh_host() {
@@ -62,13 +63,28 @@ OLD_API_IMAGE=$(ssh_host "docker inspect $API --format '{{.Image}}'" 2>/dev/null
 OLD_WEB_IMAGE=$(ssh_host "docker inspect $WEB --format '{{.Image}}'" 2>/dev/null || echo "")
 
 DEPLOY_RECREATE_OK=1
-if ! ssh_host bash -s -- "$REPO_HOST" "$COMPOSE_FILE" <<'REMOTE'
+if ! ssh_host bash -s -- "$REPO_HOST" "$COMPOSE_FILE" "$BASE_BRANCH" <<'REMOTE'
 set -eu
-REPO="$1"; COMPOSE_FILE="$2"
+REPO="$1"; COMPOSE_FILE="$2"; BASE_BRANCH="$3"
 cd "$REPO"
 set -a
 . ./.env
 set +a
+echo "[deploy][host] sincronizando checkout com origin/$BASE_BRANCH..."
+if [ -n "$(git status --porcelain --untracked-files=normal)" ]; then
+  echo "[deploy][host] checkout possui alterações locais; deploy abortado para não sobrescrevê-las" >&2
+  git status --short >&2
+  exit 1
+fi
+git fetch origin "$BASE_BRANCH"
+git checkout "$BASE_BRANCH"
+git reset --hard "origin/$BASE_BRANCH"
+# O Motor é executado a partir do volume do host. Remova somente o artefato
+# compilado dele e gere-o a partir do commit agora sincronizado; a imagem Docker
+# sozinha não basta porque o bind mount sobrepõe /app no container da API.
+rm -rf projects/gerenteagentes/motor-v2/dist
+echo "[deploy][host] compilando motor-v2 a partir de origin/$BASE_BRANCH..."
+npx tsc --build --force projects/gerenteagentes/motor-v2/tsconfig.json
 echo "[deploy][host] validando configuração do Compose..."
 docker compose -f "$COMPOSE_FILE" config --quiet
 MYSQL_ID_BEFORE=$(docker inspect -f '{{.Id}}' biblioteca-global-mysql)
