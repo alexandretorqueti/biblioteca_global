@@ -47,6 +47,8 @@ import { useApi } from "../../../apps/web/src/hooks/useApi"
 import { useAuth } from "../../../apps/web/src/auth/AuthContext"
 import { EntregaModal } from "./EntregaModal"
 
+export const componentId = "taqui-painel-portaria"
+
 // ============================================================================
 // TIPOS
 // ============================================================================

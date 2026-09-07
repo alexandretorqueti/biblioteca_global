@@ -6,6 +6,23 @@ import "@testing-library/jest-dom/vitest"
 import { createElement } from "react"
 import { BibliotecaThemeProvider, clearCustomScreens, getCustomScreen } from "@biblioteca-global/ui"
 import { registrarTelasCustom } from "../customScreens"
+import { projectConfigs } from "../projects"
+
+function encontrarComponentIdsCustom(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.flatMap(encontrarComponentIdsCustom)
+  }
+  if (value === null || typeof value !== "object") return []
+
+  const registro = value as Record<string, unknown>
+  // A childRoute stores componentId beside targetResource instead of using
+  // screen.kind, so coverage must inspect both config shapes.
+  const ids = typeof registro.componentId === "string" ? [registro.componentId] : []
+
+  return ids.concat(
+    Object.values(registro).flatMap(encontrarComponentIdsCustom),
+  )
+}
 
 describe("registry de telas custom", () => {
   it("registra e navega pela documentação executável", async () => {
@@ -36,5 +53,34 @@ describe("registry de telas custom", () => {
     clearCustomScreens()
     registrarTelasCustom()
     expect(getCustomScreen("gerenteagentes-prompts")).toBeDefined()
+  })
+
+  it("cobre todas as telas custom declaradas pelos projetos atuais", () => {
+    clearCustomScreens()
+    registrarTelasCustom()
+
+    const ids = [
+      ...new Set(Object.values(projectConfigs).flatMap(encontrarComponentIdsCustom)),
+    ]
+
+    expect(ids).toEqual([
+      "documentation",
+      "gerenteagentes-dashboard",
+      "gerenteagentes-task-monitor",
+      "gerenteagentes-isa-chat",
+      "gerenteagentes-model-selection",
+      "gerenteagentes-prompts",
+      "sistema-adm-global-dashboard",
+      "sistema-adm-global-hub-administrativo",
+      "sistema-adm-global-hub-rh",
+      "sistema-adm-global-hub-admin",
+      "taqui-registro-encomenda",
+      "taqui-painel-portaria",
+      "taqui-notificacoes-morador",
+    ])
+
+    for (const id of ids) {
+      expect(getCustomScreen(id), `tela custom não registrada: ${id}`).toBeDefined()
+    }
   })
 })
