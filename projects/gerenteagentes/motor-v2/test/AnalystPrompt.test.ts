@@ -19,19 +19,17 @@ describe("truncateDescriptionForAnalyst", () => {
     expect(truncateDescriptionForAnalyst(undefined)).toBe("N/A")
   })
 
-  it("trunca descrição gigante em 4000 chars com marcador", () => {
+  it("preserva descrição gigante integralmente", () => {
     const huge = "x".repeat(7300)
     const result = truncateDescriptionForAnalyst(huge)
-    expect(result.startsWith("x".repeat(4000))).toBe(true)
-    expect(result.length).toBeLessThan(7300)
-    expect(result).toContain("[descricao truncada para a analise")
+    expect(result).toBe(huge)
   })
 })
 
 describe("buildAnalystPrompt (limites anti-truncamento)", () => {
-  it("regra de quantidade: mínimo 2, teto 10 conforme complexidade", () => {
+  it("exige cobertura integral sem minimizar subtarefas", () => {
     const prompt = buildPrompt({ title: "Tarefa exemplo", description: "descricao" })
-    expect(prompt).toContain("MINIMO de subtarefas possivel")
+    expect(prompt).toContain("cobrir integralmente o escopo")
     expect(prompt).toContain("sem passar de 10")
     expect(prompt).not.toContain("2 a 4 no maximo")
     expect(prompt).not.toContain("Crie no maximo 4 subtarefas")
@@ -40,19 +38,19 @@ describe("buildAnalystPrompt (limites anti-truncamento)", () => {
   it("limites de tamanho por campo", () => {
     const prompt = buildPrompt({ title: "Tarefa exemplo", description: "descricao" })
     expect(prompt).toContain("titulo: curto, ate ~80 caracteres")
-    expect(prompt).toContain("scope: objetivo, ate ~500 caracteres")
-    expect(prompt).toContain("acceptance_criteria: 2 a 4 itens curtos")
+    expect(prompt).toContain("scope: responsabilidade principal detalhada")
+    expect(prompt).toContain("acceptance_criteria: 2 a 8 itens objetivos")
+    expect(prompt).toContain("requirements/coverage")
   })
 
-  it("instrui a não repetir a descrição da tarefa", () => {
+  it("instrui a não omitir requisitos da descrição da tarefa", () => {
     const prompt = buildPrompt({ title: "Tarefa exemplo", description: "descricao" })
-    expect(prompt).toContain("NAO repita a especificacao nem a descricao da tarefa")
+    expect(prompt).toContain("nao esconda requisitos")
   })
 
-  it("descrição gigante chega truncada ao analista", () => {
+  it("descrição gigante chega integral ao analista", () => {
     const prompt = buildPrompt({ title: "Tarefa exemplo", description: "y".repeat(9000) })
-    expect(prompt).toContain("[descricao truncada para a analise")
-    expect(prompt).not.toContain("y".repeat(9000))
+    expect(prompt).toContain("y".repeat(9000))
   })
 
   it("mantém as duas formas de resposta (plano e perguntas)", () => {
@@ -66,7 +64,7 @@ describe("analystCorrectiveFeedback", () => {
   it("truncado pede JSON mais curto", () => {
     const feedback = analystCorrectiveFeedback("truncated")
     expect(feedback).toContain("cortada no meio do JSON")
-    expect(feedback).toContain("mais curto")
+    expect(feedback).toContain("reduzindo redundancias")
     expect(feedback).toContain("APENAS com o JSON")
   })
 

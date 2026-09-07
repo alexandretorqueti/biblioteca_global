@@ -287,6 +287,7 @@ export const tarefas = mysqlTable("tarefas", {
   dependsOnTaskId: bigint("depends_on_task_id", { mode: "number", unsigned: true }),
   // FK self-reference criada na migration (tarefas.depends_on_task_id → tarefas.id)
   autoStart: boolean("auto_start").notNull().default(false),
+  planCoverage: json("plan_coverage"), // requisitos identificados e matriz de cobertura do analista
   bootRetryCount: int("boot_retry_count").notNull().default(0),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at")
@@ -328,6 +329,8 @@ export const subtarefas = mysqlTable("subtarefas", {
   // Escopo e critérios de aceite da subtarefa (migração Postgres→MySQL §3.2/§4.7).
   scope: text("scope"), // escopo da subtarefa
   acceptanceCriteria: json("acceptance_criteria"), // critérios de aceite (lista)
+  deliverables: json("deliverables"), // entregáveis concretos da subtarefa
+  requirementsCovered: json("requirements_covered"), // IDs REQ-* cobertos
   descricao: text("descricao"),
   status: varchar("status", { length: 50 }).notNull().default("pending"), // pending, running, verified, failed
   // Contador de entregas (uma entrega por vez).

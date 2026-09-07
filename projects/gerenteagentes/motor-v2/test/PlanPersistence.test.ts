@@ -20,9 +20,9 @@ describe("persistPlan", () => {
     ])
 
     const result = await persistPlan(db, "task-71", [
-      { seq: 1, titulo: "Preparar" },
-      { seq: 2, titulo: "Executar", acceptanceCriteria: ["verde"] },
-    ])
+      { seq: 1, titulo: "Preparar", scope: "Preparar a base necessária para executar a tarefa.", acceptanceCriteria: ["base pronta", "sem erro"], deliverables: ["configuração"], requirementsCovered: ["REQ-1"], dependsOn: [] },
+      { seq: 2, titulo: "Executar", scope: "Executar a alteração principal e validar o resultado.", acceptanceCriteria: ["resultado verde", "fluxo validado"], deliverables: ["implementação"], requirementsCovered: ["REQ-1"], dependsOn: [1] },
+    ], { requirements: [{ id: "REQ-1", description: "entrega" }], coverage: [{ requirement: "REQ-1", coveredBy: [1, 2] }] })
 
     expect(result).toBe("created")
     expect(db.transaction).toHaveBeenCalledOnce()
@@ -37,7 +37,7 @@ describe("persistPlan", () => {
       { rows: [{ id: 99 }], affectedRows: 0, insertId: 0 },
     ])
 
-    await expect(persistPlan(db, "task-71", [{ seq: 1, titulo: "Ignorar" }])).resolves.toBe("already_persisted")
+    await expect(persistPlan(db, "task-71", [{ seq: 1, titulo: "Ignorar", scope: "Plano já persistido e não deve ser substituído.", acceptanceCriteria: ["preserva", "não insere"], deliverables: ["nenhum"], requirementsCovered: ["REQ-1"], dependsOn: [] }], { requirements: [{ id: "REQ-1", description: "preservar" }], coverage: [{ requirement: "REQ-1", coveredBy: [1] }] })).resolves.toBe("already_persisted")
 
     const sql = vi.mocked(db.query).mock.calls.map(([query]) => String(query))
     expect(sql.some((query) => query.includes("INSERT INTO subtarefas"))).toBe(false)
