@@ -14,7 +14,12 @@ de desenvolvimento concluídas criam registros persistentes em
 - Antes de recriar a API, o lote fica `running` no banco.
 - O processo no host grava um marcador de sucesso ou falha em `/tmp`.
 - Após reiniciar, o Motor reconcilia o marcador. Somente o sucesso muda as
-  tarefas do lote para `deployed`; falhas mantêm as tarefas em `completed`.
+  tarefas do lote para `deployed`.
+- No boot e em cada ciclo, tarefas de desenvolvimento `completed` que ainda
+  não possuem solicitação são recuperadas para a fila.
+- Falha definitiva muda as tarefas do lote para `blocked`, registra o motivo
+  em `ultima_mensagem_erro` e cria uma ocorrência em `bloqueios`. Uma tarefa
+  bloqueada não entra novamente na fila automaticamente.
 - Um lote sem marcador por 30 minutos é encerrado como falha, evitando estado
   `running` permanente caso o processo remoto seja interrompido.
 

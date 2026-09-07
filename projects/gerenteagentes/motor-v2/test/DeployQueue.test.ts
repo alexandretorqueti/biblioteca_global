@@ -25,6 +25,7 @@ type Internals = {
   activeDeployments: Map<string, unknown>
   processDeployQueue(): Promise<void>
   reconcileRunningDeploys(): Promise<void>
+  recoverCompletedTasksWithoutDeploy(): Promise<void>
   dispatchDeployBatch(repoPath: string, batchId: string, taskIds: string[]): void
   readRemoteDeployStatus(batchId: string): string | null
 }
@@ -40,20 +41,23 @@ describe("fila de deploy", () => {
     await internal.processDeployQueue()
 
     expect(dispatch).not.toHaveBeenCalled()
-    expect(db.query).not.toHaveBeenCalled()
+    expect(db.query).toHaveBeenCalledTimes(1)
+    expect(String(vi.mocked(db.query).mock.calls[0]?.[0])).toContain("t.status = 'completed'")
   })
 
   it("não inicia deploy quando o banco ainda registra trabalho ativo após reinício", async () => {
     const { db, coordinator } = setup()
     const internal = coordinator as unknown as Internals
     vi.spyOn(internal, "reconcileRunningDeploys").mockResolvedValue()
-    vi.mocked(db.query).mockResolvedValueOnce({ rows: [{ busy: 1 }], affectedRows: 0, insertId: 0 })
+    vi.mocked(db.query)
+      .mockResolvedValueOnce({ rows: [], affectedRows: 0, insertId: 0 })
+      .mockResolvedValueOnce({ rows: [{ busy: 1 }], affectedRows: 0, insertId: 0 })
     const dispatch = vi.spyOn(internal, "dispatchDeployBatch").mockImplementation(() => undefined)
 
     await internal.processDeployQueue()
 
     expect(dispatch).not.toHaveBeenCalled()
-    expect(db.query).toHaveBeenCalledTimes(1)
+    expect(db.query).toHaveBeenCalledTimes(2)
   })
 
   it("agrupa tarefas pendentes do mesmo repositório em um único deploy", async () => {
@@ -61,6 +65,7 @@ describe("fila de deploy", () => {
     const internal = coordinator as unknown as Internals
     vi.spyOn(internal, "reconcileRunningDeploys").mockResolvedValue()
     vi.mocked(db.query)
+      .mockResolvedValueOnce({ rows: [], affectedRows: 0, insertId: 0 })
       .mockResolvedValueOnce({ rows: [{ busy: 0 }], affectedRows: 0, insertId: 0 })
       .mockResolvedValueOnce({
         rows: [
@@ -97,5 +102,33 @@ describe("fila de deploy", () => {
     expect(sql).toContain("status = 'succeeded'")
     expect(sql).toContain("t.status = 'deployed'")
     expect(internal.activeDeployments.size).toBe(0)
+  })
+
+  it("recupera desenvolvimento concluído que nunca entrou na fila", async () => {
+    const { db, coordinator } = setup()
+    const internal = coordinator as unknown as Internals
+    vi.mocked(db.query).mockResolvedValueOnce({ rows: [], affectedRows: 2, insertId: 0 })
+
+    await internal.recoverCompletedTasksWithoutDeploy()
+
+    const sql = String(vi.mocked(db.query).mock.calls[0]?.[0])
+    expect(sql).toContain("t.tipo = 'desenvolvimento'")
+    expect(sql).toContain("t.status = 'completed'")
+    expect(sql).toContain("dr.id IS NULL")
+  })
+
+  it("bloqueia as tarefas e registra o motivo quando o deploy falha", async () => {
+    const { db, coordinator } = setup()
+    const internal = coordinator as unknown as Internals & {
+      failDeployBatch(batchId: string, error: string, taskIds: string[]): Promise<void>
+    }
+
+    await internal.failDeployBatch("deploy-falhou", "healthcheck da API falhou", ["task-770"])
+
+    const calls = vi.mocked(db.query).mock.calls
+    const sql = calls.map(([query]) => String(query)).join("\n")
+    expect(sql).toContain("INSERT INTO bloqueios")
+    expect(sql).toContain("t.status = 'blocked'")
+    expect(calls.some(([, params]) => Array.isArray(params) && params.includes("healthcheck da API falhou"))).toBe(true)
   })
 })

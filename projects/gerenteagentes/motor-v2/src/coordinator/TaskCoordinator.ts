@@ -1391,6 +1391,7 @@ export class TaskCoordinator {
    * totalmente ocioso, inicia no máximo um lote por repositório. */
   private async processDeployQueue(): Promise<void> {
     await this.reconcileRunningDeploys()
+    await this.recoverCompletedTasksWithoutDeploy()
     if (this.activeWorkers.size > 0 || this.finalizingExecutions.size > 0 || this.activeMaintenance > 0 || this.activeDeployments.size > 0) return
     const { rows: busyRows } = await this.db.query(
       "SELECT EXISTS(SELECT 1 FROM tarefas WHERE status IN ('analyzing','running','motor_fix')) " +
@@ -1425,6 +1426,23 @@ export class TaskCoordinator {
       const message = describeError(error).substring(0, 500)
       await this.failDeployBatch(batchId, message, taskIds)
       this.logger.error("Falha ao disparar lote de deploy: " + message, { batchId, taskIds })
+    }
+  }
+
+  /** Recuperação de boot/pump: uma queda entre a conclusão da tarefa e a
+   * criação da solicitação não pode deixar desenvolvimento sem publicação. */
+  private async recoverCompletedTasksWithoutDeploy(): Promise<void> {
+    const result = await this.db.query(
+      "INSERT INTO deploy_requests (tarefa_id, repo_path, status, requested_at, updated_at) " +
+      "SELECT t.id, pmc.repo_path, 'pending', NOW(), NOW() FROM tarefas t " +
+      "INNER JOIN projetos_captados pc ON pc.id = t.projeto_id " +
+      "INNER JOIN projeto_motor_config pmc ON pmc.projeto_id = pc.id " +
+      "LEFT JOIN deploy_requests dr ON dr.tarefa_id = t.id " +
+      "WHERE t.tipo = 'desenvolvimento' AND t.status = 'completed' " +
+      "AND pmc.repo_path IS NOT NULL AND pmc.repo_path <> '' AND dr.id IS NULL",
+    )
+    if ((result.affectedRows ?? 0) > 0) {
+      this.logger.info("Deploys ausentes recuperados para tarefas concluídas", { count: result.affectedRows })
     }
   }
 
@@ -1493,7 +1511,13 @@ export class TaskCoordinator {
   private async failDeployBatch(batchId: string, error: string, taskIds: string[]): Promise<void> {
     await this.db.query("UPDATE deploy_requests SET status = 'failed', last_error = ?, finished_at = NOW(), updated_at = NOW() WHERE batch_id = ? AND status = 'running'", [error, batchId])
     await this.db.query(
-      "UPDATE tarefas t INNER JOIN deploy_requests dr ON dr.tarefa_id = t.id SET t.ultima_mensagem_erro = ?, t.updated_at = NOW() WHERE dr.batch_id = ?",
+      "INSERT INTO bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at) " +
+      "SELECT dr.tarefa_id, NULL, 'deploy_failed', ?, ?, NOW() FROM deploy_requests dr WHERE dr.batch_id = ?",
+      ["motor-v2:deploy:" + batchId, error.substring(0, 500), batchId],
+    )
+    await this.db.query(
+      "UPDATE tarefas t INNER JOIN deploy_requests dr ON dr.tarefa_id = t.id " +
+      "SET t.status = 'blocked', t.ultima_mensagem_erro = ?, t.updated_at = NOW() WHERE dr.batch_id = ?",
       ["Deploy falhou: " + error.substring(0, 500), batchId],
     )
     for (const taskId of taskIds) this.activeDeployments.delete(taskId)
