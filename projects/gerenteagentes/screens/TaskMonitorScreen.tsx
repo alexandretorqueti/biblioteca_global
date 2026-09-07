@@ -34,7 +34,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material"
-import { PlayArrowRounded, PauseRounded, ReplayRounded, EditRounded, CloseRounded, ExpandMoreRounded, ExpandLessRounded, AddTaskRounded, SendRounded } from "@mui/icons-material"
+import { PlayArrowRounded, PauseRounded, ReplayRounded, EditRounded, CloseRounded, ExpandMoreRounded, ExpandLessRounded, AddTaskRounded, SendRounded, VisibilityRounded } from "@mui/icons-material"
 import { DynamicForm } from "@biblioteca-global/ui"
 import { RealtimeClient, type RealtimeServerMessage } from "@biblioteca-global/api-client"
 import type { DynamicField, DynamicFormValues } from "@biblioteca-global/ui"
@@ -127,6 +127,18 @@ interface SubTarefaDb {
   workspaceBranch?: string | null
   workspaceCommitSha?: string | null
   correctionForSubtaskId?: number | null
+}
+
+interface SessionMessage {
+  role: "agent" | "user" | "system"
+  text: string
+}
+
+interface SubtaskSession {
+  available: boolean
+  sessionKey?: string
+  text: string
+  messages: SessionMessage[]
 }
 
 interface MotorEvent {
@@ -275,6 +287,11 @@ export default function TaskMonitorScreen(): ReactNode {
   const [terminalEvents, setTerminalEvents] = useState<RealtimeServerMessage[]>([])
   const [editingSub, setEditingSub] = useState<SubTarefaDb | null>(null)
   const [expandedSubtasks, setExpandedSubtasks] = useState<Set<number>>(new Set())
+  const [sessionOpen, setSessionOpen] = useState(false)
+  const [sessionSubtask, setSessionSubtask] = useState<SubTaskMotor | null>(null)
+  const [sessionLoading, setSessionLoading] = useState(false)
+  const [sessionError, setSessionError] = useState<string | null>(null)
+  const [sessionData, setSessionData] = useState<SubtaskSession | null>(null)
   const mounted = useRef(true)
   const activeRealtimeTask = useRef<number | "">("")
 
@@ -865,6 +882,27 @@ export default function TaskMonitorScreen(): ReactNode {
     [subtarefasDb],
   )
 
+  const abrirSessaoSubtarefa = useCallback(async (subtask: SubTaskMotor) => {
+    if (!bundle || tarefaId === "") return
+    setSessionSubtask(subtask)
+    setSessionOpen(true)
+    setSessionLoading(true)
+    setSessionError(null)
+    setSessionData(null)
+    try {
+      const data = await bundle.http.request<SubtaskSession>(
+        "GET",
+        `/gerenteagentes/tarefas/${tarefaId}/subtarefas/${subtask.seq}/sessao`,
+        { auth: "access" },
+      )
+      if (mounted.current) setSessionData(data)
+    } catch (e) {
+      if (mounted.current) setSessionError(e instanceof Error ? e.message : "Não foi possível carregar a sessão.")
+    } finally {
+      if (mounted.current) setSessionLoading(false)
+    }
+  }, [bundle, tarefaId])
+
   /**
    * O Motor-v2 expõe os dados da tarefa, mas subtarefas podem chegar vazias
    * durante uma atualização gradual do proxy. A tabela do projeto é a fonte
@@ -1365,6 +1403,16 @@ export default function TaskMonitorScreen(): ReactNode {
                             >
                               <EditRounded fontSize="small" />
                             </IconButton>
+                            <Tooltip title="Visualizar sessão do agente">
+                              <IconButton
+                                size="small"
+                                aria-label={`Visualizar sessão da subtarefa ${s.seq}`}
+                                onClick={() => void abrirSessaoSubtarefa(s)}
+                                data-testid={`btn-view-session-${s.seq}`}
+                              >
+                                <VisibilityRounded fontSize="small" />
+                              </IconButton>
+                            </Tooltip>
                             {history.length > 0 && (
                               <Tooltip title={isExpanded ? "Recolher histórico" : "Ver histórico de entregas"}>
                                 <IconButton
@@ -1496,6 +1544,35 @@ export default function TaskMonitorScreen(): ReactNode {
           {taskChatPanel}
         </Paper>
       )}
+
+      <Dialog
+        open={sessionOpen}
+        onClose={() => {
+          if (!sessionLoading) setSessionOpen(false)
+        }}
+        fullWidth
+        maxWidth="lg"
+        data-testid="session-dialog"
+      >
+        <DialogTitle sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <Box>Sessão do agente{sessionSubtask ? ` — subtarefa #${sessionSubtask.seq}` : ""}</Box>
+          <IconButton aria-label="Fechar sessão" size="small" onClick={() => setSessionOpen(false)} disabled={sessionLoading}>
+            <CloseRounded />
+          </IconButton>
+        </DialogTitle>
+        <DialogContent>
+          {sessionLoading && <Stack direction="row" spacing={1} alignItems="center" data-testid="session-loading"><CircularProgress size={20} /><Typography>Carregando sessão…</Typography></Stack>}
+          {sessionError && <Alert severity="error" data-testid="session-error">{sessionError}</Alert>}
+          {!sessionLoading && !sessionError && sessionData && !sessionData.available && (
+            <Typography color="text.secondary" data-testid="session-unavailable">Nenhuma sessão disponível para esta subtarefa.</Typography>
+          )}
+          {!sessionLoading && !sessionError && sessionData?.available && (
+            <Box component="pre" data-testid="session-content" sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: "65vh", overflow: "auto", m: 0, p: 2, bgcolor: "action.hover", borderRadius: 1, fontFamily: "monospace", fontSize: "0.85rem" }}>
+              {sessionData.text}
+            </Box>
+          )}
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={newTaskOpen}
