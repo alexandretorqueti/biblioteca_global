@@ -55,6 +55,7 @@ import mysql from "mysql2/promise"
 import { getAgentReplyFailureReason } from "../policies/NoReplyFailurePolicy.js"
 import { validatePremiseRefutation, type PremiseRefutation } from "../policies/PremiseRefutationPolicy.js"
 import { ManagedPromptResolver } from "../prompts/ManagedPromptResolver.js"
+import { composeDevelopmentPrompt } from "../prompts/PromptComposition.js"
 import { confirmBaselineIndependentFailure } from "../policies/BaselineConfirmation.js"
 import { digestGateFailure, formatCarryOver, type CarryOverEvent } from "../policies/CarryOverPolicy.js"
 
@@ -72,31 +73,6 @@ class WrongWorkspaceError extends Error {
     super(message)
     this.name = "WrongWorkspaceError"
   }
-}
-
-function workspaceGuard(repoPath: string): string {
-  return [
-    "CONTROLE OBRIGATÓRIO DE WORKSPACE — execute imediatamente, antes de ler ou editar qualquer arquivo:",
-    `cd ${repoPath}`,
-    "pwd",
-    "git rev-parse --show-toplevel",
-    "git branch --show-current",
-    `O resultado de pwd deve ser exatamente: ${repoPath}`,
-    "O resultado de git rev-parse --show-toplevel deve ser a raiz Git que contém esse workspace e a branch deve ser a branch exclusiva informada pelo Motor.",
-    "Se qualquer verificação falhar, PARE e responda blocked_environment com a saída exata. Não procure outra pasta, não use a pasta base e não use outro worktree.",
-  ].join("\n")
-}
-
-function workspaceGuardClosing(repoPath: string): string {
-  return [
-    "VERIFICAÇÃO OBRIGATÓRIA ANTES DA RESPOSTA FINAL:",
-    `cd ${repoPath}`,
-    "pwd",
-    "git rev-parse --show-toplevel",
-    "git status --short",
-    `Confirme que pwd continua exatamente ${repoPath} e que todas as alterações foram feitas nesse workspace.`,
-    "Não faça commit; o Motor fará o commit depois da validação.",
-  ].join("\n")
 }
 
 /**
@@ -592,7 +568,8 @@ class TaskWorker {
             [carryOver, agentSummary && "Relato do agente na entrega anterior: " + agentSummary].filter(Boolean).join("\n\n") || undefined,
           )
           const promptKey = lastFailure ? "dev.retorno_por_falha_de_gate" : "dev.primeira_rodada_tarefa"
-          const resolvedHeader = await this.resolveManagedPrompt(promptKey, {
+          const promptResolver = new ManagedPromptResolver(this.db!)
+          const resolved = await promptResolver.resolveDetailed({ key: promptKey, values: {
             "**TITULOTAREFA**": input.task.title,
             "**DESCRICAOTAREFA**": input.task.description ?? "",
             "**TIPOTAREFA**": input.task.tipo ?? "desenvolvimento",
@@ -602,10 +579,18 @@ class TaskWorker {
             "**CRITERIOSACEITE**": subtask.acceptanceCriteria ?? [],
             "**WORKSPACE**": input.repoPath,
             "**ERROGATEANTERIOR**": lastFailure,
-          }, embeddedHeader, input.task.id, subtask.id)
-          const header = this.isDevelopmentTask(input)
-            ? [workspaceGuard(input.repoPath), resolvedHeader, workspaceGuardClosing(input.repoPath)].join("\n\n")
-            : resolvedHeader
+          }, fallback: embeddedHeader, taskId: input.task.id, subtaskId: subtask.id })
+          const composition = this.isDevelopmentTask(input)
+            ? composeDevelopmentPrompt(input.repoPath, resolved.text)
+            : { finalText: resolved.text, parts: [{ source: "table" as const, label: "Prompt publicado na tabela", text: resolved.text }] }
+          if (resolved.contractInstructions) {
+            composition.parts.push({ source: "contract", label: "Contrato de saída vinculado", text: resolved.contractInstructions })
+          }
+          if (context) {
+            composition.parts.push({ source: "context", label: "Contexto enviado em mensagem separada", text: context })
+          }
+          const header = composition.finalText
+          await promptResolver.recordFinalComposition(resolved.executionId, header, composition.parts)
           // Envia contexto separado se a missao for longa (evita truncamento no viewer)
           if (context) {
             await driver.sendMessage({ session, message: context })
@@ -1018,7 +1003,11 @@ class TaskWorker {
 
   /** Caminhos alterados no workspace (git status --porcelain, incluindo não rastreados). */
   private listChangedPaths(repoPath: string): string[] {
-    const status = this.exec("git status --porcelain", repoPath, 60_000).trim()
+    // Preserve os espaços de status da primeira linha. `trim()` remove o
+    // espaço separador de `git status --porcelain` e faz `line.slice(3)`
+    // cortar o primeiro caractere do primeiro caminho (ex.: `projects` →
+    // `rojects`), causando falso positivo de workspace incorreto.
+    const status = this.exec("git status --porcelain", repoPath, 60_000).trimEnd()
     if (!status) return []
     return status
       .split("\n")

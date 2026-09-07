@@ -330,9 +330,9 @@ export class GerenteAgentesController {
 
   @Post('prompts/:id/preview')
   @Roles('admin', 'gerente')
-  preverPrompt(@Param('id', ParseIntPipe) id: number, @Body() body: { texto?: string; values?: Record<string, unknown> }) {
+  preverPrompt(@Param('id', ParseIntPipe) id: number, @Body() body: { texto?: string; values?: Record<string, unknown>; contratoVersaoId?: number }) {
     if (!body?.texto) throw new BadRequestException('Texto do prompt é obrigatório');
-    return this.service.preverPrompt(id, body.texto, body.values ?? {});
+    return this.service.preverPrompt(id, body.texto, body.values ?? {}, body.contratoVersaoId);
   }
 
   @Post('prompt-contracts/:id/versions')

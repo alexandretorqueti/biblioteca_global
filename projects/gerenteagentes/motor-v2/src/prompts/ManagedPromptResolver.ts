@@ -20,16 +20,17 @@ function renderWithContract(text: string, values: Record<string, unknown>, instr
 export class ManagedPromptResolver {
   constructor(private readonly db: PromptQueryable) {}
 
-  async resolve(input: {
+  async resolveDetailed(input: {
     key: string
     values: Record<string, unknown>
     fallback: string
     taskId?: string
     subtaskId?: number
-  }): Promise<string> {
+  }): Promise<{ text: string; executionId: number; contractInstructions: string }> {
     let promptId: number | null = null
     let versionId: number | null = null
     let contractVersionId: number | null = null
+    let contractInstructions = ""
     let output = ""
     try {
       const loadRow = async () => {
@@ -55,17 +56,37 @@ export class ManagedPromptResolver {
         versionId = Number(row.version_id)
         contractVersionId = row.contract_version_id == null ? null : Number(row.contract_version_id)
         if (!row.texto) throw new Error(`prompt_configuration_missing: prompt ativo sem texto: ${input.key}`)
-        const contractInstructions = row.instrucoes ?? ""
+        contractInstructions = row.instrucoes ?? ""
         output = renderWithContract(String(row.texto), input.values, contractInstructions)
       }
       if (!row) throw new Error(`prompt_configuration_missing: prompt ativo não encontrado: ${input.key}`)
     } catch (error) {
       throw new Error("prompt_configuration_missing: " + (error instanceof Error ? error.message : String(error)), { cause: error })
     }
-    await this.db.query(
+    const executionResult = await this.db.query(
       "INSERT INTO prompts_execucoes (prompt_id, versao_id, contrato_versao_id, chave, tarefa_id, subtarefa_id, fallback_usado, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())",
       [promptId, versionId, contractVersionId, input.key, input.taskId ?? null, input.subtaskId ?? null, 0],
     )
-    return output
+    const result = Array.isArray(executionResult) ? executionResult[0] : executionResult
+    const executionId = Number((result as { insertId?: number }).insertId ?? 0)
+    return { text: output, executionId, contractInstructions }
+  }
+
+  async resolve(input: {
+    key: string
+    values: Record<string, unknown>
+    fallback: string
+    taskId?: string
+    subtaskId?: number
+  }): Promise<string> {
+    return (await this.resolveDetailed(input)).text
+  }
+
+  async recordFinalComposition(executionId: number, finalText: string, composition: unknown): Promise<void> {
+    if (!executionId) return
+    await this.db.query(
+      "UPDATE prompts_execucoes SET prompt_final = ?, composicao_json = ? WHERE id = ?",
+      [finalText, JSON.stringify(composition), executionId],
+    )
   }
 }

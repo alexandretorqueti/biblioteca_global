@@ -29,6 +29,7 @@ import {
 import { AGENT_PROMPT_CATALOG } from '../motor-v2/src/prompts/prompt-catalog';
 import { OUTPUT_CONTRACT_CATALOG } from '../motor-v2/src/prompts/output-contract-catalog';
 import { markersIn, renderPromptTemplate, validatePromptTemplate } from '../motor-v2/src/prompts/PromptTemplateEngine';
+import { composeDevelopmentPrompt, type PromptPart } from '../motor-v2/src/prompts/PromptComposition';
 import { ProvisionService } from '../../../apps/api/src/modules/provision/provision.service';
 import { TASK_STATUS_STARTABLE } from '../motor-v2/src/shared/task-statuses';
 import { RealtimeService } from '../../../apps/api/src/modules/realtime/realtime.service';
@@ -398,15 +399,29 @@ export class GerenteAgentesService {
     return { ok: true, contratoId, versionId };
   }
 
-  async preverPrompt(id: number, texto: string, values: Record<string, unknown>) {
+  async preverPrompt(id: number, texto: string, values: Record<string, unknown>, contratoVersaoId?: number) {
     const db = await this.dbDoMotor();
     const [prompt] = await db.select().from(promptsAgentes).where(eq(promptsAgentes.id, id)).limit(1);
     if (!prompt) throw new NotFoundException('Prompt não encontrado');
     const entry = this.catalogEntry(prompt.chave);
     const validation = validatePromptTemplate(texto, [...entry.markers, ...(entry.contractKey ? ['**CONTRATOSAIDA**'] : [])], entry.contractKey ? ['**CONTRATOSAIDA**'] : []);
     if (!validation.ok) return { validation, rendered: null };
+    let contractInstructions = '';
+    if (contratoVersaoId) {
+      const [contractVersion] = await db.select().from(promptsContratosVersoes).where(eq(promptsContratosVersoes.id, contratoVersaoId)).limit(1);
+      contractInstructions = contractVersion?.instrucoes ?? '';
+    }
     const completeValues = Object.fromEntries(entry.markers.map((marker) => [marker, values[marker] ?? `<${marker.slice(2, -2)}>`]));
-    return { validation, rendered: renderPromptTemplate(texto, completeValues), used: markersIn(texto) };
+    const tableRendered = renderPromptTemplate(texto, { ...completeValues, '**CONTRATOSAIDA**': contractInstructions });
+    const renderedWithContract = contractInstructions && !texto.includes('**CONTRATOSAIDA**')
+      ? `${tableRendered}\n\nCONTRATO DE SAÍDA OBRIGATÓRIO:\n${contractInstructions}`
+      : tableRendered;
+    const workspace = String(completeValues['**WORKSPACE**'] ?? '<WORKSPACE>');
+    const composition = entry.agentType === 'dev'
+      ? composeDevelopmentPrompt(workspace, renderedWithContract)
+      : { finalText: renderedWithContract, parts: [{ source: 'table', label: 'Prompt publicado na tabela', text: renderedWithContract }] as PromptPart[] };
+    if (contractInstructions) composition.parts.push({ source: 'contract', label: 'Contrato de saída vinculado', text: contractInstructions });
+    return { validation, rendered: composition.finalText, parts: composition.parts, used: markersIn(texto) };
   }
 
   /**

@@ -27,11 +27,10 @@ describe("catálogo de prompts dos agentes", () => {
     }
   })
 
-  it("obriga o dev a confirmar o workspace no início e no fim", () => {
+  it("mantém o texto administrável sem duplicar a proteção sistêmica de workspace", () => {
     const prompts = AGENT_PROMPT_CATALOG.filter((entry) => entry.agentType === "dev").map((entry) => entry.prompt).join("\n")
-    expect(prompts).toContain("pwd")
-    expect(prompts).toContain("git rev-parse --show-toplevel")
-    expect(prompts).toContain("somente em **WORKSPACE**")
-    expect(prompts).toContain("Antes de responder")
+    expect(prompts).toContain("Workspace: **WORKSPACE**")
+    expect(prompts).toContain("**CONTRATOSAIDA**")
+    expect(prompts).not.toContain("git rev-parse --show-toplevel")
   })
 })

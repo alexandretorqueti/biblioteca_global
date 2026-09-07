@@ -424,6 +424,8 @@ export const promptsExecucoes = mysqlTable("prompts_execucoes", {
   tarefaId: varchar("tarefa_id", { length: 64 }),
   subtarefaId: bigint("subtarefa_id", { mode: "number", unsigned: true }),
   fallbackUsado: boolean("fallback_usado").notNull().default(false),
+  promptFinal: text("prompt_final"),
+  composicaoJson: json("composicao_json"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 })
 

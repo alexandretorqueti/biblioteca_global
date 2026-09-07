@@ -8,6 +8,17 @@
 
 O contrato é injetado por `**CONTRATOSAIDA**`. Textos legados sem essa máscara recebem as instruções ao final automaticamente.
 
+## Composição e auditoria
+
+O texto editável da tabela não é a mensagem inteira enviada ao agente de desenvolvimento.
+O Motor acrescenta um bloco curto e não editável de segurança antes e depois do
+texto publicado. A tela de Prompts identifica cada parte pela origem e mostra a
+prévia do prompt final efetivo.
+
+Cada uso fica registrado em `prompts_execucoes`, incluindo `prompt_final` e
+`composicao_json`. Assim é possível auditar separadamente o conteúdo vindo da
+tabela e as proteções acrescentadas pelo sistema.
+
 ## Ambiente novo
 
 O entrypoint executa, antes do Motor:
