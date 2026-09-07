@@ -412,7 +412,12 @@ class TaskWorker {
         }
         throw error
       } finally {
-        if (session) await driver.closeSession(session).catch(() => {})
+        // Sessões de análise permanecem abertas para auditoria: o histórico
+        // contém o prompt e a resposta do analista, inclusive quando a
+        // análise falha. A próxima tentativa reutiliza a mesma sessão/chave,
+        // permitindo comparar as respostas. Sessões de execução continuam
+        // sendo encerradas nos respectivos finally abaixo.
+        if (session) this.log("info", "Sessão do analista preservada para auditoria: " + session.key)
       }
     }
 
