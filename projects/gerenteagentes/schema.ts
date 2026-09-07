@@ -295,6 +295,27 @@ export const tarefas = mysqlTable("tarefas", {
     .onUpdateNow(),
 })
 
+/** Fila persistente de deploy. Um único deploy pode publicar várias tarefas
+ * concluídas do mesmo repositório quando o Motor ficar ocioso. */
+export const deployRequests = mysqlTable("deploy_requests", {
+  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+  tarefaId: bigint("tarefa_id", { mode: "number", unsigned: true })
+    .notNull()
+    .references(() => tarefas.id, { onDelete: "cascade" }),
+  repoPath: varchar("repo_path", { length: 1000 }).notNull(),
+  status: mysqlEnum("status", ["pending", "running", "succeeded", "failed"])
+    .notNull()
+    .default("pending"),
+  batchId: varchar("batch_id", { length: 100 }),
+  lastError: text("last_error"),
+  requestedAt: timestamp("requested_at").notNull().defaultNow(),
+  startedAt: timestamp("started_at"),
+  finishedAt: timestamp("finished_at"),
+  updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+}, (table) => ({
+  tarefaIdx: uniqueIndex("deploy_requests_tarefa_unique").on(table.tarefaId),
+}))
+
 export const subtarefas = mysqlTable("subtarefas", {
   id: bigint("id", { mode: "number", unsigned: true })
     .primaryKey()

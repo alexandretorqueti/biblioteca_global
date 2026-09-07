@@ -27,6 +27,7 @@ import { persistTaskClarificationAnswer, fetchPendingTaskClarification, fetchAns
 import { createLogger, describeError } from "../shared/logger.js"
 import { ConsoleAgentRuntimeDriver } from "../runtime/ConsoleAgentRuntimeDriver.js"
 import { execFileSync, execSync } from "node:child_process"
+import { randomUUID } from "node:crypto"
 import { existsSync } from "node:fs"
 import { join } from "node:path"
 import { SecretProfileManager, resolveGitTopLevel } from "../workspaces/SecretProfileManager.js"
@@ -169,6 +170,7 @@ export class TaskCoordinator {
   private waitManager?: ResourceWaitManager
   private eventBus: ExecutionEventBus
   private finalizingExecutions = new Set<string>()
+  private activeMaintenance = 0
   /** Deploys não pertencem a um worker; mantê-los separados evita esconder a
    * atividade do Motor enquanto o script externo está em execução. */
   private activeDeployments = new Map<string, { taskId: string; phase: "verify" | "deploy"; startedAt: Date }>()
@@ -245,6 +247,7 @@ export class TaskCoordinator {
     } finally {
       this.pumping = false
     }
+    await this.processDeployQueue()
   }
 
   private async reconcileOrphanedReadyTasks(): Promise<void> {
@@ -867,21 +870,11 @@ export class TaskCoordinator {
             // Trabalho promovido para a base: marca como completed
             await this.saveTaskTransition(task, "execution_completed")
             
-            // Depois tenta deploy
+            // Publicação é agrupada e só começa quando todos os workers
+            // terminarem. A tarefa permanece completed enquanto aguarda.
             if (worker.repoPath) {
-              const deployResult = await this.executeDeployScript(worker.repoPath, worker.taskId)
-              if (deployResult.success) {
-                this.logger.info("Deploy concluído com sucesso", { taskId: worker.taskId, executionId })
-                await this.saveTaskTransition(task, "deploy_completed")
-                this.publishActivity(worker, { type: "deployed", level: "info", message: "Deploy realizado com sucesso" })
-              } else {
-                this.logger.warn("Deploy falhou, mantendo tarefa como completed", { taskId: worker.taskId, executionId, error: deployResult.error })
-                await this.db.query(
-                  "UPDATE tarefas SET ultima_mensagem_erro = ?, updated_at = NOW() WHERE external_id = ?",
-                  ["Deploy falhou: " + (deployResult.error || "erro desconhecido").substring(0, 500), worker.taskId]
-                )
-                this.publishActivity(worker, { type: "completed", level: "warn", message: "Deploy falhou: " + (deployResult.error || "erro desconhecido") })
-              }
+              await this.enqueueDeploy(worker.taskId, worker.repoPath)
+              this.publishActivity(worker, { type: "completed", level: "info", message: "Deploy agendado para quando o Motor ficar ocioso" })
               // Tarefa concluída: purgar worktrees/branches residuais (a1..aN)
               this.purgeTaskArtifactsFireAndForget(worker.taskId, worker.repoPath)
             }
@@ -1084,27 +1077,19 @@ export class TaskCoordinator {
       workers,
       deployments,
       activities,
+      maintenanceOperations: this.activeMaintenance,
     }
   }
 
-  /** Dispara novamente o deploy de uma tarefa já concluída, sem reabrir o fluxo. */
+  /** Agenda o deploy de uma tarefa concluída. O botão nunca recria a API
+   * enquanto há workers ativos. */
   async deployTask(taskId: string): Promise<void> {
-    if (this.activeDeployments.has(taskId)) throw new Error("Deploy já está em andamento para a tarefa " + taskId)
     const task = await this.repository.getTask(taskId)
     if (!task) throw new Error("Tarefa " + taskId + " não encontrada")
     if (task.tipo !== "desenvolvimento") throw new Error("Deploy manual é permitido apenas para tarefas de desenvolvimento")
     if (task.status !== "completed") throw new Error("Deploy manual exige tarefa concluída (status atual: " + task.status + ")")
-    void this.executeDeployScript(task.repoPath, taskId).then(async (result) => {
-      if (result.success) {
-        await this.repository.saveTask({ ...task, status: "deployed", updatedAt: new Date().toISOString() })
-        this.logger.info("Deploy manual concluído com sucesso", { taskId })
-      } else {
-        await this.db.query(
-          "UPDATE tarefas SET ultima_mensagem_erro = ?, updated_at = NOW() WHERE external_id = ?",
-          ["Deploy falhou: " + (result.error || "erro desconhecido").substring(0, 500), taskId],
-        )
-      }
-    }).catch((error: unknown) => this.logger.error("Falha inesperada no deploy manual: " + describeError(error), { taskId }))
+    await this.enqueueDeploy(taskId, task.repoPath)
+    void this.pump().catch((error: unknown) => this.logger.error("Falha ao avaliar fila de deploy: " + describeError(error), { taskId }))
   }
 
   async getTask(taskId: string): Promise<Task | null> {
@@ -1378,49 +1363,140 @@ export class TaskCoordinator {
    * Acumulo de a1/a2/a3... consome disco; limpar após completion/cancel.
    */
   private purgeTaskArtifactsFireAndForget(taskId: string, repoPath: string): void {
+    this.activeMaintenance += 1
     void this.workspaceManager.purgeTaskArtifacts({ repoPath, taskId }).then((result) => {
       if (result.worktreesRemoved > 0 || result.branchesRemoved > 0) {
         this.logger.info(`Purga de artefatos: taskId=${taskId}, worktrees=${result.worktreesRemoved}, branches=${result.branchesRemoved}`)
       }
     }).catch((error: unknown) => {
       this.logger.warn("Falha ao purgar artefatos da tarefa " + taskId + ": " + describeError(error))
+    }).finally(() => {
+      this.activeMaintenance = Math.max(0, this.activeMaintenance - 1)
+      void this.pump().catch((error: unknown) => this.logger.error("Falha ao avaliar fila após manutenção: " + describeError(error), { taskId }))
     })
   }
 
-  /**
-   * Dispara o deploy no ServerIA via SSH destacado. O processo remoto continua
-   * vivo quando o Compose recria este próprio container da API/Motor.
-   */
-  private async executeDeployScript(repoPath: string, taskId: string): Promise<{ success: boolean; error?: string }> {
-    if (this.activeDeployments.has(taskId)) return { success: false, error: "Deploy já está em andamento" }
-    const deployment: { taskId: string; phase: "verify" | "deploy"; startedAt: Date } = { taskId, phase: "verify", startedAt: new Date() }
-    this.activeDeployments.set(taskId, deployment)
+  private async enqueueDeploy(taskId: string, repoPath: string): Promise<void> {
+    await this.db.query(
+      "INSERT INTO deploy_requests (tarefa_id, repo_path, status, requested_at, updated_at) " +
+      "SELECT id, ?, 'pending', NOW(), NOW() FROM tarefas WHERE external_id = ? OR CAST(id AS CHAR) = ? " +
+      "ON DUPLICATE KEY UPDATE repo_path = VALUES(repo_path), status = IF(status = 'running', status, 'pending'), " +
+      "batch_id = IF(status = 'running', batch_id, NULL), last_error = NULL, requested_at = NOW(), updated_at = NOW()",
+      [repoPath, taskId, taskId],
+    )
+    this.logger.info("Deploy agendado", { taskId, repoPath })
+  }
+
+  /** Concilia um lote que sobreviveu à recriação da API e, quando o Motor está
+   * totalmente ocioso, inicia no máximo um lote por repositório. */
+  private async processDeployQueue(): Promise<void> {
+    await this.reconcileRunningDeploys()
+    if (this.activeWorkers.size > 0 || this.finalizingExecutions.size > 0 || this.activeMaintenance > 0 || this.activeDeployments.size > 0) return
+    const { rows: busyRows } = await this.db.query(
+      "SELECT EXISTS(SELECT 1 FROM tarefas WHERE status IN ('analyzing','running','motor_fix')) " +
+      "OR EXISTS(SELECT 1 FROM subtarefas WHERE status IN ('running','delivered','verifying')) AS busy",
+    )
+    if (Number(busyRows[0]?.busy ?? 0) !== 0) return
+
+    const { rows } = await this.db.query(
+      "SELECT dr.id, dr.repo_path, COALESCE(t.external_id, CAST(t.id AS CHAR)) AS task_id FROM deploy_requests dr " +
+      "INNER JOIN tarefas t ON t.id = dr.tarefa_id WHERE dr.status = 'pending' ORDER BY dr.requested_at ASC",
+    )
+    if (rows.length === 0) return
+    const repoPath = String(rows[0]!.repo_path)
+    const batchRows = rows.filter((row) => String(row.repo_path) === repoPath)
+    const taskIds = batchRows.map((row) => String(row.task_id))
+    const requestIds = batchRows.map((row) => Number(row.id))
+    const batchId = "deploy-" + randomUUID()
+    const placeholders = requestIds.map(() => "?").join(",")
+    await this.db.query(
+      `UPDATE deploy_requests SET status = 'running', batch_id = ?, started_at = NOW(), finished_at = NULL, last_error = NULL, updated_at = NOW() WHERE status = 'pending' AND id IN (${placeholders})`,
+      [batchId, ...requestIds],
+    )
+    const startedAt = new Date()
+    for (const taskId of taskIds) this.activeDeployments.set(taskId, { taskId, phase: "verify", startedAt })
     try {
-      const repoRoot = execFileSync("git", ["-C", repoPath, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim()
-      const hostRepoRoot = process.env.DEPLOY_REPO_HOST ?? "/home/alexandre/codigofonte/biblioteca-global"
-      const hostDeployScript = hostRepoRoot + "/projects/gerenteagentes/motor-v2/scripts/deploy-host.sh"
-      if (!existsSync(join(repoRoot, "projects/gerenteagentes/motor-v2/scripts/deploy-host.sh"))) {
-        return { success: false, error: "deploy-host.sh não encontrado na raiz Git " + repoRoot }
+      this.dispatchDeployBatch(repoPath, batchId, taskIds)
+      for (const taskId of taskIds) {
+        const deployment = this.activeDeployments.get(taskId)
+        if (deployment) deployment.phase = "deploy"
       }
-      deployment.phase = "deploy"
-      const safeTaskId = taskId.replace(/[^a-zA-Z0-9_-]/g, "_")
-      // Cada disparo tem seu próprio log. O lock no host serializa a execução
-      // real; o sufixo evita que uma segunda tentativa esconda o diagnóstico
-      // da primeira durante uma corrida ou após a recriação da API.
-      const logFile = "/tmp/biblioteca-global-deploy-" + safeTaskId + "-" + Date.now() + ".log"
-      const remoteCommand = "nohup bash " + shellQuote(hostDeployScript) + " " + shellQuote(hostRepoRoot) +
-        " > " + shellQuote(logFile) + " 2>&1 < /dev/null & echo $!"
-      const output = execFileSync("ssh", ["-i", "/root/.ssh/id_ed25519", "-o", "BatchMode=yes", "alexandre@192.168.1.8", remoteCommand], { encoding: "utf8", timeout: 15_000 }).trim()
-      if (!/^\\d+$/.test(output)) return { success: false, error: "SSH não confirmou o PID do deploy destacado: " + output }
-      this.logger.info("Deploy destacado no ServerIA", { taskId, repoPath, repoRoot, hostRepoRoot, remotePid: output, logFile })
-      return { success: true }
     } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : String(error)
-      this.logger.error("Deploy falhou: " + errorMessage, { taskId })
-      return { success: false, error: errorMessage.substring(0, 500) }
-    } finally {
-      this.activeDeployments.delete(taskId)
+      const message = describeError(error).substring(0, 500)
+      await this.failDeployBatch(batchId, message, taskIds)
+      this.logger.error("Falha ao disparar lote de deploy: " + message, { batchId, taskIds })
     }
+  }
+
+  private dispatchDeployBatch(repoPath: string, batchId: string, taskIds: string[]): void {
+    const repoRoot = execFileSync("git", ["-C", repoPath, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim()
+    const relativeScript = "projects/gerenteagentes/motor-v2/scripts/deploy-host.sh"
+    if (!existsSync(join(repoRoot, relativeScript))) throw new Error("deploy-host.sh não encontrado na raiz Git " + repoRoot)
+    const hostRepoRoot = process.env.DEPLOY_REPO_HOST ?? "/home/alexandre/codigofonte/biblioteca-global"
+    const hostDeployScript = hostRepoRoot + "/" + relativeScript
+    const safeBatchId = batchId.replace(/[^a-zA-Z0-9_-]/g, "_")
+    const logFile = "/tmp/biblioteca-global-" + safeBatchId + ".log"
+    const statusFile = "/tmp/biblioteca-global-" + safeBatchId + ".status"
+    const run = "bash " + shellQuote(hostDeployScript) + " " + shellQuote(hostRepoRoot)
+    const wrapped = "(" + run + "; code=$?; if [ $code -eq 0 ]; then printf success; else printf 'failed:%s' $code; fi > " + shellQuote(statusFile) + ")"
+    const remoteCommand = "nohup bash -lc " + shellQuote(wrapped) + " > " + shellQuote(logFile) + " 2>&1 < /dev/null & echo $!"
+    const output = execFileSync("ssh", ["-i", "/root/.ssh/id_ed25519", "-o", "BatchMode=yes", "alexandre@192.168.1.8", remoteCommand], { encoding: "utf8", timeout: 15_000 }).trim()
+    if (!/^\\d+$/.test(output)) throw new Error("SSH não confirmou o PID do deploy destacado: " + output)
+    this.logger.info("Lote de deploy destacado no ServerIA", { batchId, taskIds, remotePid: output, logFile, statusFile })
+  }
+
+  private async reconcileRunningDeploys(): Promise<void> {
+    const { rows } = await this.db.query(
+      "SELECT dr.batch_id, dr.started_at, COALESCE(t.external_id, CAST(t.id AS CHAR)) AS task_id FROM deploy_requests dr " +
+      "INNER JOIN tarefas t ON t.id = dr.tarefa_id WHERE dr.status = 'running' ORDER BY dr.started_at ASC",
+    )
+    const batches = new Map<string, { taskIds: string[]; startedAt: Date }>()
+    for (const row of rows) {
+      const batchId = String(row.batch_id || "")
+      if (!batchId) continue
+      const batch = batches.get(batchId) ?? { taskIds: [], startedAt: new Date(String(row.started_at)) }
+      batch.taskIds.push(String(row.task_id))
+      batches.set(batchId, batch)
+    }
+    for (const [batchId, batch] of batches) {
+      for (const taskId of batch.taskIds) this.activeDeployments.set(taskId, { taskId, phase: "deploy", startedAt: batch.startedAt })
+      const status = this.readRemoteDeployStatus(batchId)
+      if (!status) {
+        if (Date.now() - batch.startedAt.getTime() > 30 * 60_000) {
+          await this.failDeployBatch(batchId, "processo remoto não produziu resultado em 30 minutos", batch.taskIds)
+          for (const taskId of batch.taskIds) this.activeDeployments.delete(taskId)
+        }
+        continue
+      }
+      if (status === "success") {
+        await this.db.query("UPDATE deploy_requests SET status = 'succeeded', finished_at = NOW(), updated_at = NOW() WHERE batch_id = ? AND status = 'running'", [batchId])
+        await this.db.query(
+          "UPDATE tarefas t INNER JOIN deploy_requests dr ON dr.tarefa_id = t.id SET t.status = 'deployed', t.ultima_mensagem_erro = NULL, t.updated_at = NOW() WHERE dr.batch_id = ? AND dr.status = 'succeeded' AND t.status = 'completed'",
+          [batchId],
+        )
+        this.logger.info("Lote de deploy confirmado", { batchId, taskIds: batch.taskIds })
+      } else {
+        await this.failDeployBatch(batchId, status, batch.taskIds)
+      }
+      for (const taskId of batch.taskIds) this.activeDeployments.delete(taskId)
+    }
+  }
+
+  private readRemoteDeployStatus(batchId: string): string | null {
+    const safeBatchId = batchId.replace(/[^a-zA-Z0-9_-]/g, "_")
+    const statusFile = "/tmp/biblioteca-global-" + safeBatchId + ".status"
+    const command = "if [ -f " + shellQuote(statusFile) + " ]; then cat " + shellQuote(statusFile) + "; fi"
+    const output = execFileSync("ssh", ["-i", "/root/.ssh/id_ed25519", "-o", "BatchMode=yes", "alexandre@192.168.1.8", command], { encoding: "utf8", timeout: 15_000 }).trim()
+    return output || null
+  }
+
+  private async failDeployBatch(batchId: string, error: string, taskIds: string[]): Promise<void> {
+    await this.db.query("UPDATE deploy_requests SET status = 'failed', last_error = ?, finished_at = NOW(), updated_at = NOW() WHERE batch_id = ? AND status = 'running'", [error, batchId])
+    await this.db.query(
+      "UPDATE tarefas t INNER JOIN deploy_requests dr ON dr.tarefa_id = t.id SET t.ultima_mensagem_erro = ?, t.updated_at = NOW() WHERE dr.batch_id = ?",
+      ["Deploy falhou: " + error.substring(0, 500), batchId],
+    )
+    for (const taskId of taskIds) this.activeDeployments.delete(taskId)
   }
 
   private beginFinalization(executionId: string, worker: ActiveWorker): boolean {
