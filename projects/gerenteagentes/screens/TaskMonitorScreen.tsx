@@ -289,7 +289,7 @@ export default function TaskMonitorScreen(): ReactNode {
     try {
       const res = await bundle.http.request<{ items: ProjetoCaptado[] }>(
         "GET",
-        "/gerenteagentes/projetos_captados",
+        "/projetos_captados",
         { query: { pageSize: 100 }, auth: "access" },
       )
       setProjetos(res.items ?? [])
@@ -305,7 +305,7 @@ export default function TaskMonitorScreen(): ReactNode {
       if (projetoFiltro !== "") query.projetoId = projetoFiltro
       // A listagem é fornecida pelo CRUD do projeto; as rotas específicas do
       // acompanhamento (detalhe, chat e subtarefas) ficam no proxy customizado.
-      const res = await bundle.http.request<{ items: Tarefa[] }>("GET", "/gerenteagentes/tarefas", {
+      const res = await bundle.http.request<{ items: Tarefa[] }>("GET", "/tarefas", {
         query,
         auth: "access",
       })
@@ -615,7 +615,7 @@ export default function TaskMonitorScreen(): ReactNode {
     setNewTaskLoading(true)
     setNewTaskError(null)
     try {
-      await bundle.http.request("POST", "/gerenteagentes/tarefas", {
+      await bundle.http.request("POST", "/tarefas", {
         body: {
           managedProjectId: Number(values.projetoId),
           titulo: values.titulo,
@@ -640,7 +640,7 @@ export default function TaskMonitorScreen(): ReactNode {
       try {
         const res = await bundle.http.request<{ items: Array<Record<string, unknown>> }>(
           "GET",
-          `/gerenteagentes/${resource}`,
+          `/${resource}`,
           {
             query: search ? { search, pageSize: 50 } : { pageSize: 100 },
             auth: "access",
@@ -717,7 +717,7 @@ export default function TaskMonitorScreen(): ReactNode {
               ? Number(values.dependsOnTaskId)
               : null,
         }
-        await bundle.http.request("PUT", `/gerenteagentes/tarefas/${tarefaId}`, {
+        await bundle.http.request("PUT", `/tarefas/${tarefaId}`, {
           body,
           auth: "access",
         })
@@ -838,7 +838,7 @@ export default function TaskMonitorScreen(): ReactNode {
               ? Number(values.dependsOnSubtaskId)
               : null,
         }
-        await bundle.http.request("PUT", `/gerenteagentes/subtarefas/${editingSub.id}`, {
+        await bundle.http.request("PUT", `/subtarefas/${editingSub.id}`, {
           body,
           auth: "access",
         })
