@@ -20,7 +20,7 @@ import type { GeradorSistemaConfig } from "@biblioteca-global/shared"
 export type ProjectConfigSource = (slug: string) => GeradorSistemaConfig | undefined
 
 interface ConfigModule {
-  config: GeradorSistemaConfig
+  config?: GeradorSistemaConfig
 }
 
 /**
@@ -43,7 +43,8 @@ const configModules = import.meta.glob<ConfigModule>(
  */
 function montarMapaConfigs(): Record<string, GeradorSistemaConfig> {
   const mapa: Record<string, GeradorSistemaConfig> = {}
-  for (const [path, mod] of Object.entries(configModules)) {
+  for (const path of Object.keys(configModules).sort()) {
+    const mod = configModules[path]
     // Extrai o slug do path: ".../projects/<slug>/config.ts"
     const match = path.match(/\/projects\/([^/]+)\/config\.ts$/)
     if (!match) {
