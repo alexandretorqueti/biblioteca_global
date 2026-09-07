@@ -35,6 +35,7 @@ import { validateTaskCompletion, formatPromotionValidationReport } from "../poli
 import { isAgentRunFailureWithoutReply } from "../policies/NoReplyFailurePolicy.js"
 import { validateProjectId, formatProjectIdValidationReport } from "../policies/ProjectIdValidationPolicy.js"
 import { verifyAgentInGateway, formatAgentVerificationReport, shouldBlockEnqueue } from "../policies/GatewayAgentVerificationPolicy.js"
+import { normalizeTaskStatus } from "../shared/task-statuses.js"
 
 interface ActiveWorker {
   taskId: string
@@ -1703,7 +1704,7 @@ export class TaskCoordinator {
       repoPath: String(row.repo_path ?? ""),
       buildCommand: String(row.build_command ?? ""), unitTestCommand: String(row.unit_test_command ?? ""),
       unitTestExclude: [], baselineMode: "full",
-      status: String(row.status ?? "planned") as Task["status"],
+      status: normalizeTaskStatus(String(row.status ?? "planned")) as Task["status"],
       maxRework: Number(row.max_rework ?? row.default_max_rework ?? 3),
       hardTimeoutMs: Number(row.hard_timeout_ms ?? row.default_hard_timeout_ms ?? 14_400_000),
       dependsOnTaskId: row.depends_on_task_id ? String(row.depends_on_task_id) : undefined,
