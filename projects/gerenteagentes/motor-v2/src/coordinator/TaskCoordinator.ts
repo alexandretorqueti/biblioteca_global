@@ -24,6 +24,8 @@ import { digestGateFailure } from "../policies/CarryOverPolicy.js"
 import { blockerEvidence } from "../policies/BlockerPolicy.js"
 import { transitionTask, type TaskTransition } from "../policies/TaskStateMachine.js"
 import { persistTaskClarificationAnswer, fetchPendingTaskClarification, fetchAnsweredTaskClarifications } from "../planning/ClarificationStore.js"
+import { approvePlanProposal, rejectPlanProposal, fetchApprovedPlanProposal, fetchPendingPlanProposal } from "../planning/PlanProposalStore.js"
+import { persistPlan } from "../planning/PlanPersistence.js"
 import { createLogger, describeError } from "../shared/logger.js"
 import { ConsoleAgentRuntimeDriver, type RemoteSessionFailure } from "../runtime/ConsoleAgentRuntimeDriver.js"
 import { execFileSync, execSync } from "node:child_process"
@@ -1073,6 +1075,42 @@ export class TaskCoordinator {
   }
 
   /**
+   * Analista apresentou proposta de plano. Transita a tarefa para
+   * `awaiting_approval` — a materialização de subtarefas só ocorre após
+   * aprovação explícita do dono (via endpoint approve).
+   */
+  async onTaskPlanProposal(executionId: string, proposalId: number, subtaskCount: number): Promise<void> {
+    const worker = this.activeWorkers.get(executionId)
+    if (!worker || !this.beginFinalization(executionId, worker)) return
+    try {
+      this.publishActivity(worker, {
+        type: "plan_proposal",
+        level: "info",
+        message: `Proposta de plano apresentada (${subtaskCount} subtarefas) — aguardando aprovação`,
+      })
+      this.logger.info("Proposta de plano para tarefa " + worker.taskId + ": " + subtaskCount + " subtarefas (proposalId=" + proposalId + ")", {
+        taskId: worker.taskId, executionId, phase: "analyze", proposalId, subtaskCount,
+      })
+      const task = await this.repository.getTask(worker.taskId)
+      if (task) {
+        if (task.status === "planned") {
+          await this.repository.saveTask({ ...task, status: "analyzing", updatedAt: new Date().toISOString() })
+          task.status = "analyzing"
+        }
+        if (task.status === "analyzing") {
+          await this.saveTaskTransition(task, "propose_plan")
+        } else {
+          this.logger.warn("Tarefa em status inesperado ao apresentar proposta: " + task.status, { taskId: worker.taskId, executionId })
+        }
+      }
+    } catch (error) {
+      this.logger.error("Falha ao registrar proposta de plano da tarefa " + worker.taskId + ": " + describeError(error), { taskId: worker.taskId, executionId })
+    } finally {
+      await this.finishWorker(executionId, worker)
+    }
+  }
+
+  /**
    * Resposta de clarificação recebida (via API do motor ou via chat da
    * biblioteca). Grava a resposta no chat da tarefa (salvo quando o chamador
    * já a gravou), devolve a tarefa para `planned` e aciona o pump: sem
@@ -1092,6 +1130,54 @@ export class TaskCoordinator {
     await this.saveTaskTransition(task, "clarification_answered")
     this.logger.info("Resposta de clarificação recebida; tarefa " + taskId + " volta para análise", { taskId })
     await this.pump()
+  }
+
+  /**
+   * Aprova a proposta de plano pendente. Materializa as subtarefas no banco
+   * (via persistPlan) e transita a tarefa para `ready`, de onde o pump a
+   * seleciona para execução.
+   */
+  async approvePlan(taskId: string, approvedBy: string = "user"): Promise<{ subtaskCount: number }> {
+    const task = await this.repository.getTask(taskId)
+    if (!task) throw new Error("Tarefa " + taskId + " nao encontrada")
+    if (task.status !== "awaiting_approval") {
+      throw new Error("Tarefa " + taskId + " nao esta aguardando aprovação (status: " + task.status + ")")
+    }
+    const proposal = await approvePlanProposal(this.db, taskId, approvedBy)
+    if (!proposal) throw new Error("Nenhuma proposta pendente para a tarefa " + taskId)
+    // Materializa as subtarefas a partir da proposta aprovada
+    await persistPlan(this.db, taskId, proposal.subtasks, proposal.coverage)
+    await this.saveTaskTransition(task, "approve_plan")
+    this.logger.info("Plano aprovado para tarefa " + taskId + ": " + proposal.subtasks.length + " subtarefas materializadas", { taskId })
+    // Pump para iniciar a execução das subtarefas
+    await this.pump()
+    return { subtaskCount: proposal.subtasks.length }
+  }
+
+  /**
+   * Rejeita a proposta de plano e solicita ajustes. Transita a tarefa de
+   * volta para `planned`; o pump a reenvia para análise na mesma sessão do
+   * analista (contexto preservado).
+   */
+  async requestPlanAdjustments(taskId: string, reason: string, requestedBy: string = "user"): Promise<void> {
+    const task = await this.repository.getTask(taskId)
+    if (!task) throw new Error("Tarefa " + taskId + " nao encontrada")
+    if (task.status !== "awaiting_approval") {
+      throw new Error("Tarefa " + taskId + " nao esta aguardando aprovação (status: " + task.status + ")")
+    }
+    await rejectPlanProposal(this.db, taskId, requestedBy, reason)
+    // Persiste o motivo como mensagem do usuário no chat para o analista ver
+    await persistTaskClarificationAnswer(this.db, taskId, "[Pedido de ajustes do plano] " + reason)
+    await this.saveTaskTransition(task, "request_adjustments")
+    this.logger.info("Ajustes solicitados para o plano da tarefa " + taskId + ": " + reason, { taskId })
+    await this.pump()
+  }
+
+  /**
+   * Consulta a proposta de plano pendente (para a tela de acompanhamento).
+   */
+  async getPendingPlanProposal(taskId: string): Promise<import("../planning/PlanProposalStore.js").PlanProposal | null> {
+    return fetchPendingPlanProposal(this.db, taskId)
   }
 
   /**
@@ -1777,6 +1863,13 @@ export class TaskCoordinator {
         await this.onTaskClarifying(msg.executionId, msg.questionCount, msg.summary)
       } catch (error) {
         this.logger.error("Falha ao processar clarifying: " + describeError(error), { executionId: msg.executionId })
+      }
+    })
+    this.workerLauncher.on("plan_proposal", async (msg: { executionId: string; proposalId: number; subtaskCount: number }) => {
+      try {
+        await this.onTaskPlanProposal(msg.executionId, msg.proposalId, msg.subtaskCount)
+      } catch (error) {
+        this.logger.error("Falha ao processar plan_proposal: " + describeError(error), { executionId: msg.executionId })
       }
     })
     this.workerLauncher.on("heartbeat", (msg: { executionId: string }) => {

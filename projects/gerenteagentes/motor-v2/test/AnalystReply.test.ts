@@ -103,6 +103,32 @@ describe("parseAnalystConversationReply", () => {
     const reply = parseAnalystConversationReply('Segue a proposta para aprovação. {"subtarefas":[{"seq":1,"titulo":"A","scope":"fazer A com detalhes verificaveis","acceptance_criteria":["ok 1","ok 2"],"deliverables":["codigo"],"requirements_covered":["REQ-1"],"depends_on":[]}],"requirements":[{"id":"REQ-1","description":"fazer A"}],"coverage":[{"requirement":"REQ-1","covered_by":[1]}]}')
     expect(reply.kind).toBe("plano")
   })
+
+  it("aceita pergunta livre do usuário sem exigir JSON", () => {
+    const reply = parseAnalystConversationReply("O que você quer dizer com a pergunta 2?")
+    expect(reply.kind).toBe("mensagem")
+    if (reply.kind !== "mensagem") throw new Error("inesperado")
+    expect(reply.mensagem).toContain("O que você quer dizer")
+  })
+
+  it("aceita explicação em texto natural como resposta válida", () => {
+    const reply = parseAnalystConversationReply("Entendi. A autenticação será passwordless via código por e-mail, com refresh rotativo.")
+    expect(reply.kind).toBe("mensagem")
+    if (reply.kind !== "mensagem") throw new Error("inesperado")
+    expect(reply.mensagem).toContain("passwordless")
+  })
+
+  it("não rejeita mensagens que contenham texto misturado com números", () => {
+    const reply = parseAnalystConversationReply("Sobre a pergunta 1: prefiro a opção A. Sobre a 3: pode usar PostgreSQL.")
+    expect(reply.kind).toBe("mensagem")
+    if (reply.kind !== "mensagem") throw new Error("inesperado")
+    expect(reply.mensagem).toContain("opção A")
+  })
+
+  it("rejeita resposta vazia", () => {
+    expect(() => parseAnalystConversationReply("")).toThrow(/vazia/)
+    expect(() => parseAnalystConversationReply("   ")).toThrow(/vazia/)
+  })
 })
 
 describe("classifyAnalystParseFailure", () => {
