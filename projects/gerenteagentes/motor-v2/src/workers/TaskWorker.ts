@@ -60,6 +60,9 @@ import { outputContractDefault } from "../prompts/output-contract-catalog.js"
 import { composeDevelopmentPrompt } from "../prompts/PromptComposition.js"
 import { confirmBaselineIndependentFailure } from "../policies/BaselineConfirmation.js"
 import { digestGateFailure, formatCarryOver, type CarryOverEvent } from "../policies/CarryOverPolicy.js"
+import { ObservabilityRepository } from "../database/ObservabilityRepository.js"
+import type { ExecutionEventType, ExecutionReasonCode, ExecutionStatus } from "../shared/types/execution-event.js"
+import { randomUUID } from "node:crypto"
 
 const COMMAND_FAILURE_LIMIT = 12_000
 const ANSI_ESCAPE_PATTERN = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g
@@ -212,6 +215,12 @@ class TaskWorker {
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null
   private db: mysql.Connection | null = null
   private integrationBaseline: IntegrationWorkspaceBaseline | null = null
+  private observability: ObservabilityRepository | null = null
+  private observabilityTaskId: number | null = null
+  private observabilityAttemptId: number | null = null
+  private observabilityAttemptStartedAt: Date | null = null
+  private observabilityModel: string | null = null
+  private observabilityInput: WorkerInput | null = null
 
   constructor() {
     this.executionId = process.env.EXECUTION_ID ?? "unknown"
@@ -227,6 +236,7 @@ class TaskWorker {
       password: process.env.MYSQL_PASSWORD ?? "",
       database: resolveProjectDatabase(),
     })
+    this.observability = new ObservabilityRepository(this.db as unknown as Db)
 
     process.on("message", async (msg: unknown) => {
       try {
@@ -628,6 +638,7 @@ class TaskWorker {
    * FASE 3: EXECUTE - Chama o Programador com a subtarefa
    */
   private async phaseExecute(input: WorkerInput): Promise<string | undefined> {
+    this.observabilityInput = input
     this.send({ type: "progress", executionId: input.context.executionId, phase: "execute", message: "Executando subtarefa" })
 
     const subtask = input.subtask
@@ -664,12 +675,17 @@ class TaskWorker {
       const model = chain[modelIndex]!
       for (let attempt = 1; attempt <= input.task.maxRework; attempt += 1) {
         deliverCount += 1
+        const attemptStartedAt = new Date()
+        const attemptId = await this.startObservabilityAttempt(input, subtask, deliverCount, model.model, attemptStartedAt)
+        let attemptOutcome = "error"
+        let attemptResultCommit: string | null = null
         await this.db!.query(
           "UPDATE subtarefas SET status = 'running', deliver_count = ?, resultado = NULL, updated_at = NOW() WHERE id = ?",
           [deliverCount, subtask.id],
         )
         // Registra início da entrega no histórico
         await this.recordDeliveryEvent(subtask.id, deliverCount, model.model, "delivery_started", null)
+        await this.recordLifecycleEvent(input, subtask, attemptId, "subtask_started", "pending", "running", "worker_started", model.model)
         this.send({ type: "progress", executionId: input.context.executionId, phase: "execute", message: `Entrega ${deliverCount}, modelo ${model.model}` })
 
         const driver = this.createDriver()
@@ -768,6 +784,7 @@ class TaskWorker {
           if (outcome.kind === "blocked_environment") {
             const reason = "Ambiente bloqueado: " + outcome.reason
             await this.recordBlocker(subtask, "blocked_environment", reason, model.model)
+            attemptOutcome = "blocked"
             throw new Error(reason)
           }
           if (outcome.kind === "need_help") {
@@ -792,6 +809,7 @@ class TaskWorker {
                 "UPDATE subtarefas SET status = 'verifying', updated_at = NOW() WHERE id = ?",
                 [subtask.id],
               )
+              await this.recordLifecycleEvent(input, subtask, attemptId, "gate_started", "running", "verifying", "manual", model.model)
               const verification = await this.phaseVerify(input)
               if (verification.kind === "baseline_correction_created") {
                 // Falha independente das alterações confirmada via stash: a
@@ -828,6 +846,8 @@ class TaskWorker {
               "UPDATE subtarefas SET status = 'rejected', resultado = ?, updated_at = NOW() WHERE id = ?",
               [lastFailure.substring(0, 500), subtask.id],
             )
+            attemptOutcome = "rejected"
+            await this.recordLifecycleEvent(input, subtask, attemptId, "subtask_rejected", "verifying", "rejected", "gate_failed", model.model)
             // Registra rejeição do gate no histórico — em formato digest para o
             // carry-over das próximas entregas não receber ruído (HTML de
             // componente, stack de biblioteca) no lugar da asserção real.
@@ -877,6 +897,8 @@ class TaskWorker {
                 "UPDATE subtarefas SET status = 'rejected', resultado = ?, updated_at = NOW() WHERE id = ?",
                 [reason.substring(0, 500), subtask.id],
               )
+              attemptOutcome = "rejected"
+              await this.recordLifecycleEvent(input, subtask, attemptId, "subtask_rejected", "verifying", "rejected", "smoke_test_failed", model.model)
               lastFailure = reason
               if (await this.createCorrectionOnRepeatedGateFailure(input, subtask, model.model, lastFailure)) return undefined
               continue
@@ -886,19 +908,22 @@ class TaskWorker {
 
           if (this.isDevelopmentTask(input)) {
             await this.db!.query(
-              "UPDATE subtarefas SET status = 'verified', deliver_count = ?, resultado = ?, finalizada_em = NOW(), updated_at = NOW() WHERE id = ?",
+              "UPDATE subtarefas SET status = 'verified', deliver_count = ?, resultado = ?, finalizada_em = NOW(), verified_at = NOW(), duracao_segundos = TIMESTAMPDIFF(SECOND, COALESCE(iniciada_em, created_at), NOW()), updated_at = NOW() WHERE id = ?",
               [deliverCount, result.content?.substring(0, 500) || "OK", subtask.id],
             )
           } else {
             // O chat é a entrega das tarefas operacionais; não duplique a
             // resposta em um campo estruturado de resultado.
             await this.db!.query(
-              "UPDATE subtarefas SET status = 'verified', deliver_count = ?, resultado = NULL, finalizada_em = NOW(), updated_at = NOW() WHERE id = ?",
+              "UPDATE subtarefas SET status = 'verified', deliver_count = ?, resultado = NULL, finalizada_em = NOW(), verified_at = NOW(), duracao_segundos = TIMESTAMPDIFF(SECOND, COALESCE(iniciada_em, created_at), NOW()), updated_at = NOW() WHERE id = ?",
               [deliverCount, subtask.id],
             )
           }
           // Registra conclusão bem-sucedida no histórico
           await this.recordDeliveryEvent(subtask.id, deliverCount, model.model, "completed", null)
+          attemptOutcome = "success"
+          attemptResultCommit = gitCommitSha ?? null
+          await this.recordLifecycleEvent(input, subtask, attemptId, "subtask_verified", "verifying", "verified", "gate_passed", model.model, attemptResultCommit)
           this.log("info", "Subtarefa verificada: " + subtask.titulo)
           return gitCommitSha
         } catch (error) {
@@ -911,6 +936,7 @@ class TaskWorker {
           throw error
         } finally {
           if (session) await driver.closeSession(session).catch(() => {})
+          await this.finishObservabilityAttempt(attemptId, attemptOutcome, attemptStartedAt, attemptResultCommit, lastFailure || null)
         }
       }
       modelFailures.push(lastFailure || `Modelo ${model.model} não entregou resultado verificável`)
@@ -959,7 +985,7 @@ class TaskWorker {
 
     this.log("info", "Executando: " + input.buildCommand)
     try {
-      this.exec(input.buildCommand, input.repoPath, 300_000)
+      await this.execObservedGate(input.buildCommand, input.repoPath, 300_000, "build")
       this.log("info", "Build OK")
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
@@ -970,8 +996,8 @@ class TaskWorker {
       if (isLockfileOutOfSync(msg)) {
         this.log("warn", "Build falhou com lockfile desatualizado; tentando npm install + rebuild...")
         try {
-          this.exec("npm install", input.repoPath, 300_000)
-          this.exec(input.buildCommand, input.repoPath, 300_000)
+          await this.execObservedGate("npm install", input.repoPath, 300_000, "dependency_install")
+          await this.execObservedGate(input.buildCommand, input.repoPath, 300_000, "build")
           this.log("info", "Build OK após npm install (lockfile regenerado)")
         } catch (recoveryError) {
           const recoveryMsg = recoveryError instanceof Error ? recoveryError.message : String(recoveryError)
@@ -1034,7 +1060,7 @@ class TaskWorker {
 
     this.log("info", `Executando testes (${scopeLabel}): ` + command)
     try {
-      this.exec(command, input.repoPath, 300_000)
+      await this.execObservedGate(command, input.repoPath, 300_000, "test")
       this.log("info", "Testes OK")
       return { kind: "verified" }
     } catch (error) {
@@ -1044,7 +1070,7 @@ class TaskWorker {
       const confirmationCommand = confirmationTestCommand(command, firstFailure)
       this.log("warn", "Gate vermelho; confirmando falha no workspace intocado: " + confirmationCommand)
       try {
-        this.exec(confirmationCommand, input.repoPath, 300_000)
+        await this.execObservedGate(confirmationCommand, input.repoPath, 300_000, "test_confirmation")
         this.log("warn", "Teste passou na repetição sem alteração do workspace; falha classificada como flaky")
         return { kind: "verified" }
       } catch (confirmationError) {
@@ -1697,6 +1723,144 @@ class TaskWorker {
     }
   }
 
+  private async startObservabilityAttempt(
+    input: WorkerInput,
+    subtask: SubtaskInfo,
+    attemptNumber: number,
+    model: string,
+    startedAt: Date,
+  ): Promise<number | null> {
+    if (!this.db || !this.observability) return null
+    try {
+      if (this.observabilityTaskId === null) {
+        const [rows] = await this.db.query(
+          "SELECT id FROM tarefas WHERE external_id = ? OR id = ? LIMIT 1",
+          [input.task.id, input.task.id],
+        )
+        const taskId = Number((rows as Array<Record<string, unknown>>)[0]?.id)
+        if (!Number.isFinite(taskId) || taskId <= 0) return null
+        this.observabilityTaskId = taskId
+      }
+      const id = await this.observability.createAttempt({
+        subtaskId: subtask.id,
+        attemptNumber,
+        startedAt,
+        agentId: input.task.agentId,
+        model,
+        executionId: input.context.executionId,
+        workspacePath: input.repoPath,
+      })
+      this.observabilityAttemptId = id
+      this.observabilityAttemptStartedAt = startedAt
+      this.observabilityModel = model
+      return id
+    } catch (error) {
+      this.log("warn", "Falha ao criar tentativa de observabilidade: " + (error instanceof Error ? error.message : String(error)))
+      return null
+    }
+  }
+
+  private async finishObservabilityAttempt(
+    attemptId: number | null,
+    outcome: string,
+    startedAt: Date,
+    resultCommit: string | null,
+    reason: string | null,
+  ): Promise<void> {
+    if (!attemptId || !this.observability) return
+    try {
+      await this.observability.finishAttempt({
+        id: attemptId,
+        finishedAt: new Date(),
+        outcome,
+        reworkReason: reason,
+        resultCommit,
+      })
+    } catch (error) {
+      this.log("warn", "Falha ao encerrar tentativa de observabilidade: " + (error instanceof Error ? error.message : String(error)))
+    } finally {
+      if (this.observabilityAttemptId === attemptId) {
+        this.observabilityAttemptId = null
+        this.observabilityAttemptStartedAt = null
+        this.observabilityModel = null
+      }
+    }
+  }
+
+  private async recordLifecycleEvent(
+    input: WorkerInput,
+    subtask: SubtaskInfo,
+    attemptId: number | null,
+    eventType: ExecutionEventType,
+    fromStatus: ExecutionStatus | null,
+    toStatus: ExecutionStatus | null,
+    reasonCode: ExecutionReasonCode | null,
+    model?: string | null,
+    workspaceCommit?: string | null,
+  ): Promise<void> {
+    if (!this.observability || this.observabilityTaskId === null) return
+    try {
+      await this.observability.recordEvent({
+        event_id: randomUUID(),
+        occurred_at: new Date(),
+        task_id: this.observabilityTaskId,
+        subtask_id: subtask.id,
+        attempt_id: attemptId,
+        event_type: eventType,
+        from_status: fromStatus,
+        to_status: toStatus,
+        actor_type: "motor",
+        agent_id: input.task.agentId || null,
+        model: model ?? this.observabilityModel,
+        execution_id: input.context.executionId,
+        workspace_commit: workspaceCommit ?? null,
+        reason_code: reasonCode,
+        correlation_id: input.context.executionId,
+      })
+    } catch (error) {
+      this.log("warn", "Falha ao registrar evento de observabilidade: " + (error instanceof Error ? error.message : String(error)))
+    }
+  }
+
+  private async recordGateRun(
+    gateType: string,
+    command: string,
+    startedAt: Date,
+    status: "passed" | "failed",
+    error?: unknown,
+  ): Promise<void> {
+    if (!this.observability || !this.observabilityAttemptId) return
+    const finishedAt = new Date()
+    try {
+      await this.observability.recordGate({
+        attemptId: this.observabilityAttemptId,
+        gateType,
+        command,
+        startedAt,
+        finishedAt,
+        durationMs: finishedAt.getTime() - startedAt.getTime(),
+        exitCode: status === "passed" ? 0 : 1,
+        status,
+        failureFingerprint: status === "failed" ? failureFingerprint(error instanceof Error ? error.message : String(error)) : null,
+        evidence: status === "failed" ? { message: String(error).slice(0, 2000) } : undefined,
+      })
+    } catch (persistError) {
+      this.log("warn", "Falha ao registrar gate de observabilidade: " + (persistError instanceof Error ? persistError.message : String(persistError)))
+    }
+  }
+
+  private async execObservedGate(command: string, cwd: string, timeoutMs: number, gateType: string): Promise<string> {
+    const startedAt = new Date()
+    try {
+      const output = this.exec(command, cwd, timeoutMs)
+      await this.recordGateRun(gateType, command, startedAt, "passed")
+      return output
+    } catch (error) {
+      await this.recordGateRun(gateType, command, startedAt, "failed", error)
+      throw error
+    }
+  }
+
   private async recordBlocker(subtask: SubtaskInfo, kind: BlockerKind, reason: string, model?: string): Promise<void> {
     if (!this.db) throw new Error("DB não conectado para registrar bloqueio")
     const evidence = blockerEvidence(kind, reason)
@@ -1706,6 +1870,18 @@ class TaskWorker {
       [subtask.id, evidence.kind, "motor-v2:" + evidence.fingerprint, evidence.excerpt, subtask.id],
     )
     this.log("warn", "Bloqueio persistido: " + evidence.kind + " (" + evidence.fingerprint + ")")
+    if (this.observabilityInput) {
+      await this.recordLifecycleEvent(
+        this.observabilityInput,
+        subtask,
+        this.observabilityAttemptId,
+        "subtask_blocked",
+        "running",
+        "blocked",
+        kind,
+        model,
+      )
+    }
     // Registra evento de bloqueio no histórico de entregas
     await this.recordDeliveryEvent(subtask.id, subtask.deliverCount, model, "blocked", reason)
   }
