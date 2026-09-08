@@ -183,6 +183,13 @@
       "when": 1788840000000,
       "tag": "0025_complete_analyst_output_contract",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "5",
+      "when": 1788950400000,
+      "tag": "0026_execution_observability",
+      "breakpoints": true
     }
   ]
 }
