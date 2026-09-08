@@ -1,6 +1,6 @@
 import { Injectable, Inject, Logger, NotFoundException, BadRequestException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { eq, desc, and } from 'drizzle-orm';
+import { eq, desc, and, asc } from 'drizzle-orm';
 import { request as httpRequest, type RequestOptions } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { randomUUID } from 'node:crypto';
@@ -26,6 +26,8 @@ import {
   promptsVersoes,
   promptsContratos,
   promptsContratosVersoes,
+  motorAgentSessions,
+  motorAgentSessionMessages,
 } from '../schema';
 import { AGENT_PROMPT_CATALOG } from '../motor-v2/src/prompts/prompt-catalog';
 import { OUTPUT_CONTRACT_CATALOG } from '../motor-v2/src/prompts/output-contract-catalog';
@@ -64,6 +66,50 @@ export class GerenteAgentesService {
     // Console OpenClaw (fonte de agentes — st-5)
     this.consoleUrl = this.configService.get<string>('OPENCLAW_CONSOLE_URL') || 'https://openclaw-api.webconnect.com.br';
     this.consoleToken = this.configService.get<string>('OPENCLAW_CONSOLE_TOKEN') || '';
+  }
+
+  /**
+   * Consulta o histórico persistido da sessão da subtarefa. A consulta não
+   * depende da sessão remota ainda existir após a aprovação.
+   */
+  async sessaoSubtarefa(projeto: ProjetoResumo, tarefaId: number, seq: number) {
+    const db = await this.dbDoMotor();
+    const [tarefa] = await db
+      .select({
+        projetoId: tarefas.projetoId,
+      })
+      .from(tarefas)
+      .where(eq(tarefas.id, tarefaId))
+      .limit(1);
+
+    if (!tarefa) throw new NotFoundException('Tarefa não encontrada');
+    if (tarefa.projetoId !== projeto.id) throw new NotFoundException('Tarefa não encontrada');
+    const [subtarefa] = await db
+      .select({ id: subtarefas.id })
+      .from(subtarefas)
+      .where(and(eq(subtarefas.tarefaId, tarefaId), eq(subtarefas.seq, seq)))
+      .limit(1);
+    if (!subtarefa) return { available: false, messages: [], text: '' };
+    const [session] = await db
+      .select({ id: motorAgentSessions.id, sessionKey: motorAgentSessions.sessionKey })
+      .from(motorAgentSessions)
+      .where(eq(motorAgentSessions.subtarefaId, subtarefa.id))
+      .orderBy(desc(motorAgentSessions.lastActivityAt))
+      .limit(1);
+    if (!session) return { available: false, messages: [], text: '' };
+
+    const messages = await db
+      .select({ role: motorAgentSessionMessages.role, text: motorAgentSessionMessages.content })
+      .from(motorAgentSessionMessages)
+      .where(eq(motorAgentSessionMessages.sessionId, session.id))
+      .orderBy(asc(motorAgentSessionMessages.sequenceNumber));
+    const normalized = messages.map((message) => ({ role: message.role, text: message.text }));
+    return {
+      available: normalized.length > 0,
+      sessionKey: session.sessionKey,
+      messages: normalized,
+      text: normalized.map((message) => `[${message.role}]\n${message.text}`).join('\n\n'),
+    };
   }
 
   /**

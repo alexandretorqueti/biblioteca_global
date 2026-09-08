@@ -391,6 +391,37 @@ export const motorAgentSessionFailures = mysqlTable("motor_agent_session_failure
   createdAt: timestamp("created_at").notNull().defaultNow(),
 })
 
+/** Sessões de execução por subtarefa, preservadas para rework e auditoria. */
+export const motorAgentSessions = mysqlTable("motor_agent_sessions", {
+  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+  subtarefaId: bigint("subtarefa_id", { mode: "number", unsigned: true }).notNull().references(() => subtarefas.id, { onDelete: "cascade" }),
+  agentId: varchar("agent_id", { length: 100 }).notNull(),
+  modelo: varchar("model", { length: 200 }).notNull(),
+  sessionKey: varchar("session_key", { length: 300 }).notNull().unique(),
+  runtimeSessionId: varchar("runtime_session_id", { length: 300 }),
+  status: varchar("status", { length: 30 }).notNull(),
+  openedAt: timestamp("opened_at").notNull(),
+  lastActivityAt: timestamp("last_activity_at").notNull(),
+  approvedAt: timestamp("approved_at"),
+  closedAt: timestamp("closed_at"),
+  closeReason: varchar("close_reason", { length: 100 }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+})
+
+/** Histórico persistido das mensagens de uma sessão de execução. */
+export const motorAgentSessionMessages = mysqlTable("motor_agent_session_messages", {
+  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+  sessionId: bigint("session_id", { mode: "number", unsigned: true }).notNull().references(() => motorAgentSessions.id, { onDelete: "cascade" }),
+  messageKey: varchar("message_key", { length: 300 }).notNull(),
+  sequenceNumber: int("sequence_number").notNull(),
+  role: varchar("role", { length: 30 }).notNull(),
+  content: text("content").notNull(),
+  contentSha256: varchar("content_sha256", { length: 64 }).notNull(),
+  occurredAt: timestamp("occurred_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+})
+
 /**
  * Histórico de entregas/erros/retornos por subtarefa.
  * Cada evento relevante (entrega iniciada, gate rejeitado, retorno para rework,
