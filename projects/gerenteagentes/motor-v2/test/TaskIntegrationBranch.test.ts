@@ -86,17 +86,17 @@ describe("ensureTaskIntegration", () => {
     }
   })
 
-  it("captura alterações da base no worktree isolado da tarefa", async () => {
+  it("ignora alterações externas ao projeto ao criar o worktree isolado", async () => {
     const runner: GitCommandRunner = {
-      run: baseRunner({ "diff --name-only --ignore-space-at-eol HEAD": { stdout: " M arquivo.ts\n" } }),
+      run: baseRunner({ "diff --name-only --ignore-space-at-eol HEAD": { stdout: "projects/taqui/src/arquivo.ts\n" } }),
     }
     const result = await new GitWorkspaceManager({ root: "/tmp/motor-v2-taskint", runner }).ensureTaskIntegration({
-      repoPath: "/repo", agentId: "test-agent", rootBaseBranch: "base-desenvolvimento", taskId: "task-9",
+      repoPath: "/repo/projects/gerenteagentes", agentId: "test-agent", rootBaseBranch: "base-desenvolvimento", taskId: "task-9",
     })
     expect(result.branch).toBe("motor-v2/task-9/integracao")
     const commands = vi.mocked(runner.run).mock.calls.map(([command]) => command.join(" "))
-    expect(commands.some((command) => command.includes("diff --binary HEAD"))).toBe(true)
-    expect(commands.some((command) => command.includes("commit --no-verify"))).toBe(true)
+    expect(commands.some((command) => command.includes("diff --binary HEAD"))).toBe(false)
+    expect(commands.some((command) => command.includes("commit --no-verify"))).toBe(false)
   })
 })
 
