@@ -103,6 +103,11 @@ export class ResourceWaitManager {
         [resumeStatus, taskId, row.resource_wait_id],
       )
       await tx.query(
+        `INSERT INTO tarefas_status_historico (tarefa_id, status_anterior, status_novo, origem, motivo)
+         VALUES (?, 'paused', ?, 'motor-v2:resource_resume', ?)`,
+        [taskId, resumeStatus, `Recurso ${resourceKey} liberado`],
+      )
+      await tx.query(
         `UPDATE execution_resource_queue
          SET status = 'granted'
          WHERE id = ? AND status = 'waiting'`,

@@ -37,6 +37,13 @@ export interface AgentRunCompletion {
   errorMessage?: string
 }
 
+export interface RuntimeSessionMessage {
+  id?: string
+  role: string
+  content: unknown
+  createdAt?: string
+}
+
 class ConsoleRequestError extends Error {
   constructor(public status: number, public code: string, message: string) {
     super(message)
@@ -216,6 +223,20 @@ export class ConsoleAgentRuntimeDriver {
       path: "/api/sessions",
       body: { key: session.key, agentId: session.agentId },
     })
+  }
+
+  /**
+   * Obtém o transcript canônico antes de arquivar ou reutilizar a sessão.
+   * O Motor persiste essa cópia para que o Console não seja a única fonte de
+   * recuperação de contexto em um retorno por gate reprovado.
+   */
+  async getSessionHistory(session: RuntimeSession): Promise<RuntimeSessionMessage[]> {
+    const history = await this.request<{ messages: RuntimeSessionMessage[] }>({
+      method: "GET",
+      path: "/api/chat/history",
+      query: { sessionKey: session.key, agentId: session.agentId, limit: 500, offset: 0 },
+    })
+    return Array.isArray(history.messages) ? history.messages : []
   }
 
   async getAgentWorkspace(agentId: string): Promise<string | null> {

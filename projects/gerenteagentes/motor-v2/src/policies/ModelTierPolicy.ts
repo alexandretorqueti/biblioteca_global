@@ -39,8 +39,10 @@ export function formatSessionKey(input: {
   model: string
   modelIndex: number
   generation: number
+  /** Sessões de desenvolvimento não podem vazar contexto entre subtarefas. */
+  subtaskId?: string
 }): string {
   const slug = input.model.split("/").at(-1)?.replace(/[^a-zA-Z0-9.-]/g, "_") || "unknown"
   const phase = input.phase === "analysis" ? "analysis" : input.phase === "development" ? "dev" : "monitor"
-  return `${phase}-${slug}-${input.taskId}`
+  return `${phase}-${slug}-${input.taskId}${input.subtaskId ? `-s${input.subtaskId}` : ""}`
 }

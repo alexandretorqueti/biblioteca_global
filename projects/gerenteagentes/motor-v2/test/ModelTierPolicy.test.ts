@@ -29,6 +29,22 @@ describe("ModelTierPolicy", () => {
     })).toBe("analysis-qwen3.8-max-701")
   })
 
+  it("mantém a sessão de desenvolvimento estável no rework e isolada por subtarefa", () => {
+    const common = {
+      agentId: "programador-senior",
+      taskId: "701",
+      phase: "development" as const,
+      model: "openai/gpt-5.6-terra",
+      modelIndex: 0,
+    }
+    const firstAttempt = formatSessionKey({ ...common, subtaskId: "810", generation: 0 })
+    const rework = formatSessionKey({ ...common, subtaskId: "810", generation: 2 })
+    const anotherSubtask = formatSessionKey({ ...common, subtaskId: "811", generation: 0 })
+
+    expect(rework).toBe(firstAttempt)
+    expect(anotherSubtask).not.toBe(firstAttempt)
+  })
+
   it("reconhece indisponibilidade de modelo sem confundir erro operacional genérico", () => {
     const unavailable = Object.assign(new Error("Model not found"), { status: 404, code: "MODEL_NOT_FOUND" })
     expect(isModelUnavailableError(unavailable)).toBe(true)

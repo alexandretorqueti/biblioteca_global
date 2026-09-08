@@ -11,6 +11,7 @@
  */
 
 import { execFileSync, execSync } from "node:child_process"
+import { createHash } from "node:crypto"
 import { existsSync } from "node:fs"
 import { isAbsolute, relative, resolve } from "node:path"
 
@@ -18,7 +19,7 @@ import { pathToFileURL } from "node:url"
 import { SecretProfileManager, resolveGitTopLevel } from "../workspaces/SecretProfileManager.js"
 import { DependencyInstaller, isLockfileOutOfSync, resolveInstallTimeoutMs } from "../workspaces/DependencyInstaller.js"
 import { GateFailureClassifier, type GateFailureVerdict } from "../policies/GateFailureClassifier.js"
-import { ConsoleAgentRuntimeDriver } from "../runtime/ConsoleAgentRuntimeDriver.js"
+import { ConsoleAgentRuntimeDriver, type RuntimeSession, type RuntimeSessionMessage } from "../runtime/ConsoleAgentRuntimeDriver.js"
 import type { WorkerInput, ExecutionContext, ExecutionResult, SubtaskInfo } from "../shared/types/execution.js"
 import type { CoordinatorToWorkerMessage, WorkerToCoordinatorMessage } from "./WorkerProtocol.js"
 import { defaultChain, formatSessionKey, isModelUnavailableError, type ModelSelection } from "../policies/ModelTierPolicy.js"
@@ -673,8 +674,11 @@ class TaskWorker {
         this.send({ type: "progress", executionId: input.context.executionId, phase: "execute", message: `Entrega ${deliverCount}, modelo ${model.model}` })
 
         const driver = this.createDriver()
-        const sessionKey = formatSessionKey({ agentId: input.task.agentId, taskId: input.task.id, phase: "development", model: model.model, modelIndex, generation: attempt - 1 })
-        let session
+        // A chave é estável por subtarefa+modelo. Assim um rework retorna ao
+        // mesmo contexto; uma troca de modelo abre uma sessão distinta.
+        const sessionKey = formatSessionKey({ agentId: input.task.agentId, taskId: input.task.id, subtaskId: String(subtask.id), phase: "development", model: model.model, modelIndex, generation: 0 })
+        let session: RuntimeSession | undefined
+        let sessionApproved = false
         let agentSummary: string | null = null
         try {
           session = await driver.createSession({
@@ -685,6 +689,7 @@ class TaskWorker {
             // workspacePath não é suportado para sessões normais do Console
             // (apenas subagent:* ou acp:*). O caminho vai no prompt.
           })
+          if (this.isDevelopmentTask(input)) await this.openDeveloperSession(subtask.id, model.model, session)
           const { header: embeddedHeader, context } = this.buildProgrammerPrompt(
             input.task,
             subtask,
@@ -900,6 +905,7 @@ class TaskWorker {
           // Registra conclusão bem-sucedida no histórico
           await this.recordDeliveryEvent(subtask.id, deliverCount, model.model, "completed", null)
           this.log("info", "Subtarefa verificada: " + subtask.titulo)
+          sessionApproved = this.isDevelopmentTask(input)
           return gitCommitSha
         } catch (error) {
           if (isModelUnavailableError(error)) {
@@ -910,7 +916,20 @@ class TaskWorker {
           }
           throw error
         } finally {
-          if (session) await driver.closeSession(session).catch(() => {})
+          if (session && this.isDevelopmentTask(input)) {
+            await this.persistDeveloperSessionHistory(subtask.id, session, driver, sessionApproved ? "approved" : "returnable").catch((error: unknown) => {
+              this.log("warn", "Falha ao persistir histórico da sessão do desenvolvedor: " + (error instanceof Error ? error.message : String(error)))
+            })
+            // Só a aprovação técnica permite apagar a sessão remota. Em
+            // reprovação, bloqueio ou retorno o Console conserva o contexto.
+            if (sessionApproved) {
+              await driver.closeSession(session).catch(() => {})
+              await this.markDeveloperSessionClosed(session.key, "approved").catch(() => {})
+            }
+          } else if (session) {
+            // Tarefas leves não retornam ao mesmo contexto de desenvolvimento.
+            await driver.closeSession(session).catch(() => {})
+          }
         }
       }
       modelFailures.push(lastFailure || `Modelo ${model.model} não entregou resultado verificável`)
@@ -927,6 +946,68 @@ class TaskWorker {
     const reason = "Escada de modelos esgotada: " + (lastFailure || "subtarefa não aprovada")
     await this.recordBlocker(subtask, "model_chain_exhausted", reason)
     throw new Error(reason)
+  }
+
+  private async openDeveloperSession(subtaskId: number, model: string, session: RuntimeSession): Promise<void> {
+    if (!this.db) return
+    await this.db.query(
+      "INSERT INTO motor_agent_sessions (subtarefa_id, agent_id, model, session_key, runtime_session_id, status, opened_at, last_activity_at) " +
+      "VALUES (?, ?, ?, ?, ?, 'active', NOW(), NOW()) " +
+      "ON DUPLICATE KEY UPDATE runtime_session_id = VALUES(runtime_session_id), status = 'active', last_activity_at = NOW(), closed_at = NULL, close_reason = NULL",
+      [subtaskId, session.agentId, model, session.key, session.sessionId ?? null],
+    )
+  }
+
+  private async persistDeveloperSessionHistory(
+    subtaskId: number,
+    session: RuntimeSession,
+    driver: ConsoleAgentRuntimeDriver,
+    status: "approved" | "returnable",
+  ): Promise<void> {
+    if (!this.db) return
+    const messages = await driver.getSessionHistory(session)
+    await this.openDeveloperSession(subtaskId, "unknown", session)
+    const [rows] = await this.db.query(
+      "SELECT id FROM motor_agent_sessions WHERE session_key = ? LIMIT 1",
+      [session.key],
+    ) as unknown as [Array<Record<string, unknown>>]
+    const sessionId = Number((rows[0] as Record<string, unknown> | undefined)?.id)
+    if (!Number.isInteger(sessionId) || sessionId <= 0) throw new Error("sessão persistida sem identificador")
+    for (let index = 0; index < messages.length; index += 1) {
+      const message = messages[index]!
+      const content = this.stringifySessionContent(message.content)
+      const hash = createHash("sha256").update(content).digest("hex")
+      const messageKey = String(message.id ?? `${index}:${message.role}:${hash}`)
+      await this.db.query(
+        "INSERT INTO motor_agent_session_messages (session_id, message_key, sequence_number, role, content, content_sha256, occurred_at) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?) " +
+        "ON DUPLICATE KEY UPDATE sequence_number = VALUES(sequence_number), role = VALUES(role), content = VALUES(content), content_sha256 = VALUES(content_sha256), occurred_at = VALUES(occurred_at)",
+        [sessionId, messageKey, index, String(message.role).slice(0, 30), content, hash, this.parseSessionTimestamp(message)],
+      )
+    }
+    await this.db.query(
+      "UPDATE motor_agent_sessions SET status = ?, last_activity_at = NOW(), approved_at = CASE WHEN ? = 'approved' THEN NOW() ELSE approved_at END WHERE id = ?",
+      [status, status, sessionId],
+    )
+  }
+
+  private async markDeveloperSessionClosed(sessionKey: string, reason: string): Promise<void> {
+    if (!this.db) return
+    await this.db.query(
+      "UPDATE motor_agent_sessions SET status = 'closed', closed_at = NOW(), close_reason = ?, last_activity_at = NOW() WHERE session_key = ?",
+      [reason, sessionKey],
+    )
+  }
+
+  private stringifySessionContent(content: unknown): string {
+    if (typeof content === "string") return content
+    try { return JSON.stringify(content) } catch { return String(content) }
+  }
+
+  private parseSessionTimestamp(message: RuntimeSessionMessage): string | null {
+    if (!message.createdAt) return null
+    const date = new Date(message.createdAt)
+    return Number.isNaN(date.getTime()) ? null : date.toISOString().slice(0, 19).replace("T", " ")
   }
 
   private isDevelopmentTask(input: WorkerInput): boolean {

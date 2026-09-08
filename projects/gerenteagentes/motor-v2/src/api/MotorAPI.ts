@@ -86,6 +86,8 @@ export class MotorAPI {
       // Task endpoints
       else if (req.method === 'GET' && taskId && !taskAction) {
         this.handleGetTask(res, taskId)
+      } else if (req.method === 'GET' && taskId && taskAction === 'status-history') {
+        this.handleGetTaskStatusHistory(res, taskId)
       } else if (req.method === 'POST' && taskId && taskAction === 'enqueue') {
         this.handleEnqueueTask(res, taskId)
       } else if (req.method === 'POST' && taskId && taskAction === 'pause') {
@@ -116,6 +118,15 @@ export class MotorAPI {
       this.json(res, 200, task)
     } catch (error) {
       this.logger.error('Failed to get task', { error, taskId })
+      this.json(res, 500, { ok: false, error: error instanceof Error ? error.message : 'Internal error' })
+    }
+  }
+
+  private async handleGetTaskStatusHistory(res: ServerResponse, taskId: string): Promise<void> {
+    try {
+      this.json(res, 200, { items: await this.coordinator.getTaskStatusHistory(taskId) })
+    } catch (error) {
+      this.logger.error('Failed to get task status history', { error, taskId })
       this.json(res, 500, { ok: false, error: error instanceof Error ? error.message : 'Internal error' })
     }
   }
