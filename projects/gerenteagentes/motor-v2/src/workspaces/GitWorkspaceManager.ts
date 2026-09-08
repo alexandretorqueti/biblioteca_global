@@ -113,6 +113,25 @@ export interface DirtyFilesReport {
   taskProject: string[]
   relevantShared: string[]
   external: string[]
+  /** Arquivos que efetivamente determinam a decisão do preflight. */
+  blocking: string[]
+  /** Decisão auditável: sujeira externa permite prosseguir. */
+  decision: "blocked" | "proceeded"
+}
+
+/**
+ * Erro de preflight com a classificação preservada para o chamador.
+ * O texto continua legível para logs/legado, mas o relatório não precisa ser
+ * reconstituído a partir da mensagem para persistência ou telemetria.
+ */
+export class DirtyFilesError extends Error {
+  readonly report: DirtyFilesReport
+
+  constructor(report: DirtyFilesReport) {
+    super(formatDirtyFilesReport(report))
+    this.name = "DirtyFilesError"
+    this.report = report
+  }
 }
 
 function safeSegment(value: string, label: string): string {
@@ -167,21 +186,28 @@ export function classifyDirtyFiles(input: {
     all.push({ path, classification })
   }
 
+  const taskProject = all.filter((item) => item.classification === "task-project").map((item) => item.path)
+  const relevantShared = all.filter((item) => item.classification === "relevant-shared").map((item) => item.path)
+  const external = all.filter((item) => item.classification === "external").map((item) => item.path)
+  const blocking = [...taskProject, ...relevantShared]
   return {
     all,
-    taskProject: all.filter((item) => item.classification === "task-project").map((item) => item.path),
-    relevantShared: all.filter((item) => item.classification === "relevant-shared").map((item) => item.path),
-    external: all.filter((item) => item.classification === "external").map((item) => item.path),
+    taskProject,
+    relevantShared,
+    external,
+    blocking,
+    decision: blocking.length > 0 ? "blocked" : "proceeded",
   }
 }
 
 function formatDirtyFilesReport(report: DirtyFilesReport): string {
   const format = (paths: readonly string[]) => paths.length > 0 ? paths.join(", ") : "(nenhum)"
   return [
-    "repositório principal possui alterações fora do escopo global",
+    `preflight Git: ${report.decision}`,
     `projeto da tarefa: ${format(report.taskProject)}`,
     `compartilhados relevantes: ${format(report.relevantShared)}`,
     `externos: ${format(report.external)}`,
+    `causas do bloqueio: ${format(report.blocking)}`,
   ].join("; ")
 }
 
@@ -285,9 +311,10 @@ export class GitWorkspaceManager {
       const staged = await this.runner.run(["git", "diff", "--name-only", "--cached", "--ignore-space-at-eol"], repositoryRoot)
       const dirtyFiles = [...new Set([...diff.stdout.split("\n"), ...staged.stdout.split("\n")].map((s) => s.trim()).filter(Boolean))]
       const dirtyReport = classifyDirtyFiles({ repositoryRoot, taskProjectPath: repoPath, dirtyFiles, sharedPaths: input.sharedPaths })
-      if (dirtyReport.taskProject.length > 0 || dirtyReport.relevantShared.length > 0) {
-        throw new Error(formatDirtyFilesReport(dirtyReport))
+      if (dirtyReport.decision === "blocked") {
+        throw new DirtyFilesError(dirtyReport)
       }
+      logger.info(`Preflight Git prosseguiu: ${formatDirtyFilesReport(dirtyReport)}`)
       logger.info(`Worktree validado com sucesso: path=${target}, branch=${branch}`, { taskId: input.taskId, subtaskId: input.subtaskId })
       return { path: target, projectPath: resolve(join(target, projectRelativePath)), branch, baseCommit }
     } catch (error) {
@@ -399,9 +426,10 @@ export class GitWorkspaceManager {
       const staged = await this.runner.run(["git", "diff", "--name-only", "--cached", "--ignore-space-at-eol"], repositoryRoot)
       const dirtyFiles = [...new Set([...diff.stdout.split("\n"), ...staged.stdout.split("\n")].map((s) => s.trim()).filter(Boolean))]
       const dirtyReport = classifyDirtyFiles({ repositoryRoot, taskProjectPath: repoPath, dirtyFiles, sharedPaths: input.sharedPaths })
-      if (dirtyReport.taskProject.length > 0 || dirtyReport.relevantShared.length > 0) {
-        throw new Error(formatDirtyFilesReport(dirtyReport))
+      if (dirtyReport.decision === "blocked") {
+        throw new DirtyFilesError(dirtyReport)
       }
+      logger.info(`Preflight Git prosseguiu: ${formatDirtyFilesReport(dirtyReport)}`, { taskId: input.taskId })
       logger.info(`Branch de integração da tarefa criada: ${branch} a partir de ${rootBaseBranch} (${baseCommit})`, { taskId: input.taskId })
       return { path: target, projectPath: resolve(join(target, projectRelativePath)), branch, baseCommit }
     } catch (error) {

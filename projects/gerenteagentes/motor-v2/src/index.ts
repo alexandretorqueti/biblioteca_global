@@ -27,7 +27,7 @@ export type { ExecutionActivityEvent, ExecutionActivityBroadcaster } from './eve
 export { LibraryRealtimeBroadcaster } from './events/LibraryRealtimeBroadcaster.js'
 
 // Workspaces / escopo Git
-export { GitWorkspaceManager, classifyDirtyFiles } from './workspaces/GitWorkspaceManager.js'
+export { DirtyFilesError, GitWorkspaceManager, classifyDirtyFiles } from './workspaces/GitWorkspaceManager.js'
 export type {
   ClassifiedDirtyFile,
   DirtyFileClassification,
