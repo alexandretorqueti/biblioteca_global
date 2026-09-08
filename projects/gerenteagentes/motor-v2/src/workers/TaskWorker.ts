@@ -48,8 +48,10 @@ import { safeParseAnalystReply, type AnalystReply } from "../planning/AnalystRep
 import { validatePlanQuality } from "../planning/PlanQualityPolicy.js"
 import {
   fetchTaskClarificationHistory,
+  fetchLatestTaskClarificationAnswer,
   formatHistoryForPrompt,
   persistTaskClarification,
+  persistTaskAnalystMessage,
 } from "../planning/ClarificationStore.js"
 import type { Db, QueryResult } from "../shared/types/infrastructure.js"
 import { resolveProjectDatabase } from "../database/DrizzleDb.js"
@@ -338,13 +340,20 @@ class TaskWorker {
       return { kind: "done" }
     }
 
-    // Rodada de retomada após resposta de clarificação: reinjeta o histórico
-    // (perguntas + respostas) no prompt, pois cada análise roda em sessão nova.
+    // Retomadas são novos turnos da mesma conversa. O histórico continua
+    // persistido para auditoria/recuperação, mas a mensagem atual é enviada
+    // diretamente à sessão reservada da tarefa.
     let clarificationHistory = ""
+    let clarificationAnswer: string | null = null
+    let clarificationEntries = 0
     try {
       const history = await fetchTaskClarificationHistory(planningDb, input.task.id)
+      clarificationEntries = history.length
       clarificationHistory = formatHistoryForPrompt(history)
-      if (clarificationHistory) this.log("info", "Retomando análise com histórico de clarificação (" + history.length + " mensagens)")
+      if (clarificationHistory) {
+        clarificationAnswer = await fetchLatestTaskClarificationAnswer(planningDb, input.task.id)
+        this.log("info", "Retomando conversa do analista na sessão persistida (" + history.length + " mensagens)")
+      }
     } catch (error) {
       this.log("warn", "Falha ao carregar histórico de clarificação: " + (error instanceof Error ? error.message : String(error)))
     }
@@ -393,7 +402,10 @@ class TaskWorker {
         })
         await touchTaskAnalystSession(planningDb, analystSession.id, session.sessionId)
 
-        for (let chunkIndex = 0; chunkIndex < descriptionChunks.length; chunkIndex++) {
+        // Na primeira rodada, os blocos de contexto são enviados uma vez. Em
+        // turnos seguintes isso seria uma nova rodada artificial e poderia
+        // apagar a conversa natural; a sessão já contém esses blocos.
+        for (let chunkIndex = 0; clarificationEntries === 0 && chunkIndex < descriptionChunks.length; chunkIndex++) {
           const chunkNumber = chunkIndex + 1
           const contextMessage = [
             `CONTEXTO DA TAREFA — BLOCO ${chunkNumber}/${descriptionChunks.length}`,
@@ -411,8 +423,17 @@ class TaskWorker {
           }
         }
 
-        this.log("info", "Enviando prompt para analista (modelo " + model.model + ")...")
-        const { runId } = await driver.sendMessage({ session, message: prompt })
+        const continuationMessage = clarificationAnswer
+          ? [
+              "Continue a conversa de análise desta tarefa na mesma sessão.",
+              "Responda a mensagem do usuário em linguagem natural, explicando e refinando o entendimento.",
+              "Não use perguntas numeradas por obrigação. Quando houver informação suficiente, apresente a proposta de plano em texto para aprovação e, internamente, inclua também o JSON técnico completo do plano.",
+              "Ainda não inicie execução nem crie subtarefas.",
+              `Mensagem do usuário: ${clarificationAnswer}`,
+            ].join("\n\n")
+          : prompt
+        this.log("info", "Enviando turno do analista (modelo " + model.model + ")...")
+        const { runId } = await driver.sendMessage({ session, message: continuationMessage })
         this.log("info", "Analista respondendo... runId=" + runId)
 
         const result = await driver.waitForRunCompletion(session, runId, {
@@ -430,6 +451,14 @@ class TaskWorker {
         }
 
         let parsed = safeParseAnalystReply(result.content)
+
+        // Durante a conversa, texto livre é uma resposta válida. Só o plano
+        // precisa obedecer ao contrato técnico; perguntas/respostas naturais
+        // permanecem no histórico e aguardam o próximo turno do usuário.
+        if (!parsed.ok && clarificationAnswer) {
+          await persistTaskAnalystMessage(planningDb, input.task.id, result.content.trim())
+          return { kind: "clarifying", questionCount: 0, summary: result.content.trim() }
+        }
 
         if (!parsed.ok) {
           // Resposta truncada (teto de saida do modelo) ou invalida: falha
