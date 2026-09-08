@@ -56,6 +56,7 @@ import mysql from "mysql2/promise"
 import { getAgentReplyFailureReason } from "../policies/NoReplyFailurePolicy.js"
 import { validatePremiseRefutation, type PremiseRefutation } from "../policies/PremiseRefutationPolicy.js"
 import { ManagedPromptResolver } from "../prompts/ManagedPromptResolver.js"
+import { outputContractDefault } from "../prompts/output-contract-catalog.js"
 import { composeDevelopmentPrompt } from "../prompts/PromptComposition.js"
 import { confirmBaselineIndependentFailure } from "../policies/BaselineConfirmation.js"
 import { digestGateFailure, formatCarryOver, type CarryOverEvent } from "../policies/CarryOverPolicy.js"
@@ -93,11 +94,17 @@ export function truncateDescriptionForAnalyst(description?: string): string {
  * inválida: uma única nova chance no mesmo modelo antes de escalar a escada.
  */
 export function formatAnalystOutputContract(contract: { instructions: string; schema: unknown | null; example: unknown | null }): string {
+  // O schema e o exemplo do plano são um protocolo do Motor, não conteúdo
+  // livre do prompt. A versão armazenada no banco continua fornecendo as
+  // instruções editáveis, mas nunca pode degradar o contrato estrutural que
+  // será enviado ao agente (incidente task-p2-780: arrays vazios no exemplo).
+  const canonical = outputContractDefault("analista.plano_ou_perguntas")
+  if (!canonical) throw new Error("Contrato canônico do analista não encontrado")
   return [
     "CONTRATO DE SAIDA OBRIGATORIO (use exatamente os nomes de campos abaixo):",
     contract.instructions,
-    contract.schema == null ? "" : "JSON Schema:\n" + JSON.stringify(contract.schema, null, 2),
-    contract.example == null ? "" : "Exemplo valido:\n" + JSON.stringify(contract.example, null, 2),
+    "JSON Schema completo:\n" + JSON.stringify(canonical.schema, null, 2),
+    "Exemplo completo valido:\n" + JSON.stringify(canonical.example, null, 2),
   ].filter(Boolean).join("\n\n")
 }
 
@@ -124,6 +131,17 @@ export function analystCorrectiveFeedback(kind: "truncated" | "invalid", parserE
     "Corrija somente o formato e os nomes dos campos. Preserve o conteudo util da resposta anterior.",
     contract,
     "Responda APENAS com o JSON esperado, sem texto ao redor.",
+  ].join("\n\n")
+}
+
+/** Feedback para um plano que é JSON válido, mas viola o contrato semântico. */
+export function analystPlanRejectionFeedback(reason: string, contract: string): string {
+  return [
+    "Seu plano anterior foi rejeitado pelo validador do Motor.",
+    "Erro de validação: " + reason,
+    "Corrija somente os campos, a cobertura ou a estrutura apontados pelo erro. Preserve o conteúdo útil e responda na MESMA sessão.",
+    contract,
+    "Responda APENAS com JSON válido, sem texto ao redor.",
   ].join("\n\n")
 }
 
@@ -413,12 +431,62 @@ class TaskWorker {
           return { kind: "clarifying", questionCount: reply.perguntas.length, summary: reply.resumo || undefined }
         }
 
-        const subtarefas = reply.subtarefas
-        const coverage: PlanCoverage = {
+        let subtarefas = reply.subtarefas
+        let coverage: PlanCoverage = {
           requirements: [...reply.coverage.requirements],
           coverage: reply.coverage.coverage.map((item) => ({ requirement: item.requirement, coveredBy: [...item.coveredBy] })),
         }
         this.log("info", "Analista criou " + subtarefas.length + " subtarefas")
+
+        let quality = validatePlanQuality(subtarefas, coverage, input.task.description)
+        if (!quality.ok) {
+          lastFailure = `Plano do analista rejeitado: ${quality.reason}`
+          this.log("warn", lastFailure)
+          try {
+            const { runId: retryRunId } = await driver.sendMessage({
+              session,
+              message: analystPlanRejectionFeedback(quality.reason, fullContract),
+            })
+            this.log("info", "Retry corretivo de qualidade enviado ao analista (" + model.model + ")... runId=" + retryRunId)
+            const retryResult = await driver.waitForRunCompletion(session, retryRunId, {
+              onActivity: () => this.sendHeartbeat(),
+            })
+            if (retryResult.state !== "final" || !retryResult.content) {
+              lastFailure = "Retry corretivo de qualidade nao retornou resultado final: " + (retryResult.errorMessage || retryResult.state)
+              this.log("warn", lastFailure)
+              continue
+            }
+            const retryParsed = safeParseAnalystReply(retryResult.content)
+            if (!retryParsed.ok) {
+              lastFailure = `Retry corretivo de qualidade retornou resposta invalida (${retryParsed.failure.kind}): ${retryParsed.failure.message}`
+              this.log("warn", lastFailure)
+              continue
+            }
+            if (retryParsed.reply.kind === "perguntas") {
+              await persistTaskClarification(planningDb, input.task.id, {
+                summary: retryParsed.reply.resumo,
+                questions: retryParsed.reply.perguntas,
+              })
+              this.log("info", "Analista pediu esclarecimentos no retry de qualidade (" + retryParsed.reply.perguntas.length + " perguntas)")
+              return { kind: "clarifying", questionCount: retryParsed.reply.perguntas.length, summary: retryParsed.reply.resumo || undefined }
+            }
+            subtarefas = retryParsed.reply.subtarefas
+            coverage = {
+              requirements: [...retryParsed.reply.coverage.requirements],
+              coverage: retryParsed.reply.coverage.coverage.map((item) => ({ requirement: item.requirement, coveredBy: [...item.coveredBy] })),
+            }
+            quality = validatePlanQuality(subtarefas, coverage, input.task.description)
+            if (!quality.ok) {
+              lastFailure = `Plano do analista rejeitado após retry corretivo: ${quality.reason}`
+              this.log("warn", lastFailure)
+              continue
+            }
+          } catch (retryError) {
+            lastFailure = "Retry corretivo de qualidade falhou: " + (retryError instanceof Error ? retryError.message : String(retryError))
+            this.log("warn", lastFailure)
+            continue
+          }
+        }
 
         // Smoke test obrigatório em setup de projeto novo (controle de código).
         // Se a tarefa é de setup e o analista não incluiu a subtarefa de smoke
@@ -430,13 +498,6 @@ class TaskWorker {
           coverage.requirements.push({ id: "REQ-SMOKE", description: "Executar smoke test funcional obrigatório do setup." })
           coverage.coverage.push({ requirement: "REQ-SMOKE", coveredBy: [smokeTestSeq] })
           this.log("info", "Setup detectado: subtarefa de smoke test injetada (seq=" + smokeTestSeq + ")")
-        }
-
-        const quality = validatePlanQuality(subtarefas, coverage, input.task.description)
-        if (!quality.ok) {
-          lastFailure = `Plano do analista rejeitado: ${quality.reason}`
-          this.log("warn", lastFailure)
-          continue
         }
 
         const persisted = await persistPlan(planningDb, input.task.id, subtarefas, coverage)

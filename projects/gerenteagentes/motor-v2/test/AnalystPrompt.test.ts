@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { TaskWorker, analystCorrectiveFeedback, formatAnalystOutputContract, splitAnalystDescription, truncateDescriptionForAnalyst } from "../src/workers/TaskWorker.js"
+import { TaskWorker, analystCorrectiveFeedback, analystPlanRejectionFeedback, formatAnalystOutputContract, splitAnalystDescription, truncateDescriptionForAnalyst } from "../src/workers/TaskWorker.js"
 
 type PromptBuilder = {
   buildAnalystPrompt: (task: { title: string; description?: string }, clarificationHistory?: string) => string
@@ -81,7 +81,7 @@ describe("analystCorrectiveFeedback", () => {
     expect(feedback).toContain("nao foi reconhecida")
     expect(feedback).toContain("campo subtarefas ausente")
     expect(feedback).toContain("JSON Schema")
-    expect(feedback).toContain("Exemplo valido")
+    expect(feedback).toContain("Exemplo completo valido")
     expect(feedback).toContain("APENAS com o JSON")
   })
 })
@@ -98,7 +98,26 @@ describe("contexto completo do analista", () => {
   it("formata instruções, schema e exemplo completos", () => {
     const contract = formatAnalystOutputContract({ instructions: "Instrução", schema: { type: "object" }, example: { subtarefas: [] } })
     expect(contract).toContain("CONTRATO DE SAIDA OBRIGATORIO")
-    expect(contract).toContain("JSON Schema")
-    expect(contract).toContain("Exemplo valido")
+    expect(contract).toContain("JSON Schema completo")
+    expect(contract).toContain("Exemplo completo valido")
+    // Mesmo se a tabela estiver com schema/exemplo degradados, o agente recebe
+    // o protocolo estrutural completo que o parser do Motor exige.
+    expect(contract).toContain('"requirements_covered"')
+    expect(contract).toContain('"depends_on"')
+    expect(contract).toContain('"requirement"')
+    expect(contract).toContain('"covered_by"')
+    expect(contract).toContain('"REQ-1"')
+    expect(contract).not.toContain('"subtarefas": []')
+  })
+
+  it("reenvia o contrato completo quando a qualidade semântica rejeita o plano", () => {
+    const contract = formatAnalystOutputContract({ instructions: "Instrução", schema: null, example: null })
+    const feedback = analystPlanRejectionFeedback("Requisito REQ-01 não possui cobertura.", contract)
+    expect(feedback).toContain("Requisito REQ-01 não possui cobertura.")
+    expect(feedback).toContain("JSON Schema completo")
+    expect(feedback).toContain("Exemplo completo valido")
+    expect(feedback).toContain('"requirement"')
+    expect(feedback).toContain('"covered_by"')
+    expect(feedback).toContain('"requirements_covered"')
   })
 })

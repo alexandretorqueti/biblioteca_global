@@ -176,6 +176,13 @@
       "when": 1788786000000,
       "tag": "0024_analyst_plan_quality",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "5",
+      "when": 1788840000000,
+      "tag": "0025_complete_analyst_output_contract",
+      "breakpoints": true
     }
   ]
 }
