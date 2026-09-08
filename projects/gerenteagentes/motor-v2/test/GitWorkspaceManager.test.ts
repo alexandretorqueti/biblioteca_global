@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it, vi } from "vitest"
-import { classifyDirtyFiles, GitWorkspaceManager, type GitCommandRunner } from "../src/workspaces/GitWorkspaceManager.js"
+import { classifyDirtyFiles, DirtyFilesError, GitWorkspaceManager, type GitCommandRunner } from "../src/workspaces/GitWorkspaceManager.js"
 
 describe("GitWorkspaceManager", () => {
   it("classifica projeto, compartilhado explicitamente e externo por caminho verificável", () => {
@@ -159,6 +159,52 @@ describe("GitWorkspaceManager", () => {
       repoPath: "/repo/projects/gerenteagentes", agentId: "test-agent", baseBranch: "base", taskId: "7", subtaskId: "8", attempt: 1,
       sharedPaths: ["package-lock.json"],
     })).rejects.toThrow("projeto da tarefa: (nenhum); compartilhados relevantes: package-lock.json; externos: projects/taqui/src/b.ts")
+  })
+
+  it("fecha o fluxo: cria isolamento antes do preflight e separa todas as categorias", async () => {
+    const root = await mkdtemp(join(tmpdir(), "motor-v2-workspaces-"))
+    const runner: GitCommandRunner = {
+      run: vi.fn().mockImplementation(async (command: readonly string[]) => {
+        if (command[1] === "rev-parse" && command[2] === "--show-toplevel") return { stdout: "/repo\n", stderr: "" }
+        if (command[1] === "rev-parse") return { stdout: "a".repeat(40) + "\n", stderr: "" }
+        if (command[1] === "diff" && command.includes("HEAD")) {
+          return { stdout: "projects/gerenteagentes/src/tarefa.ts\npackage-lock.json\nprojects/taqui/src/externo.ts\n", stderr: "" }
+        }
+        if (command[1] === "show-ref") throw new Error("branch inexistente")
+        return { stdout: "", stderr: "" }
+      }),
+    }
+
+    try {
+      const manager = new GitWorkspaceManager({ root, runner })
+      const result = await manager.prepare({
+        repoPath: "/repo/projects/gerenteagentes",
+        agentId: "test-agent",
+        baseBranch: "base",
+        taskId: "task-e2e",
+        subtaskId: "5",
+        attempt: 1,
+        sharedPaths: ["package-lock.json"],
+      }).catch((error: unknown) => error)
+
+      expect(result).toBeInstanceOf(DirtyFilesError)
+      if (result instanceof DirtyFilesError) {
+        expect(result.report.taskProject).toEqual(["projects/gerenteagentes/src/tarefa.ts"])
+        expect(result.report.relevantShared).toEqual(["package-lock.json"])
+        expect(result.report.external).toEqual(["projects/taqui/src/externo.ts"])
+        expect(result.report.blocking).toEqual(["projects/gerenteagentes/src/tarefa.ts", "package-lock.json"])
+        expect(result.report.decision).toBe("blocked")
+      }
+
+      const calls = vi.mocked(runner.run).mock.calls.map(([command, cwd]) => ({ command, cwd }))
+      const worktreeAddIndex = calls.findIndex(({ command }) => command[1] === "worktree" && command[2] === "add")
+      const preflightIndex = calls.findIndex(({ command }) => command[1] === "diff" && command.includes("--name-only"))
+      expect(worktreeAddIndex).toBeGreaterThanOrEqual(0)
+      expect(preflightIndex).toBeGreaterThan(worktreeAddIndex)
+      expect(calls[preflightIndex]?.cwd).toBe("/repo")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 
   it("classifica repositório ausente (ENOENT) como bloqueio ambiental", async () => {
