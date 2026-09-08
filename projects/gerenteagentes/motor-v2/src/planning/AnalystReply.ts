@@ -13,6 +13,7 @@ import type { PlanCoverage, PlanRequirement, PlannedSubtask } from "./PlanPersis
 export type AnalystReply =
   | { kind: "plano"; subtarefas: PlannedSubtask[]; coverage: PlanCoverage }
   | { kind: "perguntas"; resumo: string; perguntas: string[] }
+  | { kind: "mensagem"; mensagem: string }
 
 /** Extrai o primeiro objeto JSON de uma resposta de modelo. */
 export function extractJson(content: string): Record<string, unknown> {
@@ -92,6 +93,22 @@ export function parseAnalystReply(content: string): AnalystReply {
   }
 
   return { kind: "plano", subtarefas: mapSubtarefas(parsed.subtarefas), coverage: mapCoverage(parsed) }
+}
+
+/**
+ * Interpreta um turno da conversa. Durante a clarificação o analista pode
+ * responder normalmente; somente uma resposta que contenha um plano precisa
+ * passar pelo contrato técnico. JSON inválido ou ausente é, portanto, texto
+ * conversacional válido neste ponto do fluxo.
+ */
+export function parseAnalystConversationReply(content: string): AnalystReply {
+  const text = content.trim()
+  if (!text) throw new Error("Resposta do analista vazia")
+  try {
+    return parseAnalystReply(text)
+  } catch {
+    return { kind: "mensagem", mensagem: text }
+  }
 }
 
 /**

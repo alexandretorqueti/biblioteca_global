@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { classifyAnalystParseFailure, parseAnalystReply, safeParseAnalystReply } from "../src/planning/AnalystReply.js"
+import { classifyAnalystParseFailure, parseAnalystConversationReply, parseAnalystReply, safeParseAnalystReply } from "../src/planning/AnalystReply.js"
 
 describe("parseAnalystReply", () => {
   it("aceita o formato histórico de plano (sem kind)", () => {
@@ -90,6 +90,18 @@ describe("safeParseAnalystReply", () => {
     expect(parsed.ok).toBe(false)
     if (parsed.ok) throw new Error("inesperado")
     expect(parsed.failure.kind).toBe("invalid")
+  })
+})
+
+describe("parseAnalystConversationReply", () => {
+  it("aceita resposta natural sem JSON durante a clarificação", () => {
+    const reply = parseAnalystConversationReply("A pergunta 2 trata do comportamento após o reinício. Posso explicar melhor: o histórico deve continuar disponível.")
+    expect(reply).toEqual({ kind: "mensagem", mensagem: "A pergunta 2 trata do comportamento após o reinício. Posso explicar melhor: o histórico deve continuar disponível." })
+  })
+
+  it("mantém o plano técnico quando ele vem acompanhado de proposta textual", () => {
+    const reply = parseAnalystConversationReply('Segue a proposta para aprovação. {"subtarefas":[{"seq":1,"titulo":"A","scope":"fazer A com detalhes verificaveis","acceptance_criteria":["ok 1","ok 2"],"deliverables":["codigo"],"requirements_covered":["REQ-1"],"depends_on":[]}],"requirements":[{"id":"REQ-1","description":"fazer A"}],"coverage":[{"requirement":"REQ-1","covered_by":[1]}]}')
+    expect(reply.kind).toBe("plano")
   })
 })
 
