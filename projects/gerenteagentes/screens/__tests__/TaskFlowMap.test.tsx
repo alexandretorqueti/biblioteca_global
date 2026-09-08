@@ -47,10 +47,32 @@ describe("TaskFlowMap", () => {
   })
 
   it("usa um fallback seguro quando a tarefa não tem descrição", async () => {
-    view([{ id: 772, titulo: "Sem descrição", descricao: null, status: "ready", projetoId: 1 }])
+    view([
+      { id: 772, titulo: "Sem descrição", descricao: null, status: "ready", projetoId: 1 },
+      { id: 773, titulo: "Descrição em branco", descricao: "   ", status: "running", projetoId: 1 },
+    ])
 
     await userEvent.hover(screen.getByTestId("flow-task-description-772"))
     expect(await screen.findByRole("tooltip")).toHaveTextContent("Tarefa sem descrição")
+    await userEvent.unhover(screen.getByTestId("flow-task-description-772"))
+    await userEvent.hover(screen.getByTestId("flow-task-description-773"))
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Tarefa sem descrição")
+  })
+
+  it("mantém um ícone de descrição em cada cartão visível de estações diferentes", () => {
+    view([
+      { id: 774, titulo: "Na fila", descricao: "Detalhes da fila", status: "ready", projetoId: 1 },
+      { id: 775, titulo: "Em execução", descricao: "Detalhes da execução", status: "running", projetoId: 1 },
+      { id: 776, titulo: "Concluída", descricao: "Detalhes da entrega", status: "completed", projetoId: 1 },
+    ])
+
+    expect(screen.getAllByTestId(/^flow-task-description-/)).toHaveLength(3)
+    expect(screen.getByTestId("flow-task-774")).toBeInTheDocument()
+    expect(screen.getByTestId("flow-task-775")).toBeInTheDocument()
+    expect(screen.getByTestId("flow-task-776")).toBeInTheDocument()
+    expect(screen.getByTestId("flow-station-ready")).toBeInTheDocument()
+    expect(screen.getByTestId("flow-station-running")).toBeInTheDocument()
+    expect(screen.getByTestId("flow-station-completed")).toBeInTheDocument()
   })
 
   it("destaca uma transição quando o status muda", () => {
