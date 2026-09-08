@@ -351,19 +351,6 @@ export class GitWorkspaceManager {
       return { path: target, projectPath: resolve(join(target, projectRelativePath)), branch, baseCommit }
     }
 
-    // Criação nova: alterações externas no monorepo não pertencem ao
-    // preflight; somente o projeto e compartilhamentos declarados contam.
-    const diff = await this.runner.run(["git", "diff", "--name-only", "--ignore-space-at-eol", "HEAD"], repositoryRoot).catch((error: unknown) => {
-      const code = (error as NodeJS.ErrnoException | undefined)?.code
-      if (code === "ENOENT") throw new Error("Ambiente bloqueado: repositório não encontrado: " + input.repoPath)
-      throw error
-    })
-    const staged = await this.runner.run(["git", "diff", "--name-only", "--cached", "--ignore-space-at-eol"], repositoryRoot)
-    const dirtyFiles = [...new Set([...diff.stdout.split("\n"), ...staged.stdout.split("\n")].map((s) => s.trim()).filter(Boolean))]
-    const dirtyReport = classifyDirtyFiles({ repositoryRoot, taskProjectPath: repoPath, dirtyFiles, sharedPaths: input.sharedPaths })
-    if (dirtyReport.taskProject.length > 0 || dirtyReport.relevantShared.length > 0) {
-      throw new Error(formatDirtyFilesReport(dirtyReport))
-    }
     const baseCommit = (await this.runner.run(["git", "rev-parse", "--verify", `${rootBaseBranch}^{commit}`], repoPath)).stdout.trim()
     if (!validCommit(baseCommit)) throw new Error("commit-base inválido para branch da tarefa")
 
@@ -397,6 +384,24 @@ export class GitWorkspaceManager {
         }
       }
       await this.markSafeDirectory(target)
+
+      // O worktree isolado precisa existir antes do preflight. Assim, a
+      // execução já tem um contexto selecionado e um erro de criação/seleção
+      // interrompe o fluxo com o diagnóstico do Git, sem validar a tarefa no
+      // checkout compartilhado. O estado sujo é lido da raiz original para
+      // preservar a evidência das alterações existentes antes do isolamento;
+      // alterações externas continuam fora do escopo salvo declaração explícita.
+      const diff = await this.runner.run(["git", "diff", "--name-only", "--ignore-space-at-eol", "HEAD"], repositoryRoot).catch((error: unknown) => {
+        const code = (error as NodeJS.ErrnoException | undefined)?.code
+        if (code === "ENOENT") throw new Error("Ambiente bloqueado: repositório não encontrado: " + input.repoPath)
+        throw error
+      })
+      const staged = await this.runner.run(["git", "diff", "--name-only", "--cached", "--ignore-space-at-eol"], repositoryRoot)
+      const dirtyFiles = [...new Set([...diff.stdout.split("\n"), ...staged.stdout.split("\n")].map((s) => s.trim()).filter(Boolean))]
+      const dirtyReport = classifyDirtyFiles({ repositoryRoot, taskProjectPath: repoPath, dirtyFiles, sharedPaths: input.sharedPaths })
+      if (dirtyReport.taskProject.length > 0 || dirtyReport.relevantShared.length > 0) {
+        throw new Error(formatDirtyFilesReport(dirtyReport))
+      }
       logger.info(`Branch de integração da tarefa criada: ${branch} a partir de ${rootBaseBranch} (${baseCommit})`, { taskId: input.taskId })
       return { path: target, projectPath: resolve(join(target, projectRelativePath)), branch, baseCommit }
     } catch (error) {
