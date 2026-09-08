@@ -44,7 +44,7 @@ import {
   withBaselineExcludes,
 } from "../policies/BaselinePolicy.js"
 import { hasPersistedPlan, persistPlan, type PlanCoverage } from "../planning/PlanPersistence.js"
-import { safeParseAnalystReply, type AnalystReply } from "../planning/AnalystReply.js"
+import { parseAnalystConversationReply, safeParseAnalystReply, type AnalystReply } from "../planning/AnalystReply.js"
 import { validatePlanQuality } from "../planning/PlanQualityPolicy.js"
 import {
   fetchTaskClarificationHistory,
@@ -394,12 +394,17 @@ class TaskWorker {
       let session
 
       try {
-        session = await driver.createSession({
-          agentId: input.task.agentId,
-          key: sessionKey,
-          label: sessionKey,
-          model: analystSession.model,
-        })
+        // O identificador remoto persistido é a sessão da conversa, não só
+        // uma pista. Após uma retomada ou reinício, reutilize-o diretamente;
+        // criar outra sessão perderia o contexto natural já acumulado.
+        session = analystSession.runtimeSessionId
+          ? { key: sessionKey, agentId: input.task.agentId, sessionId: analystSession.runtimeSessionId }
+          : await driver.createSession({
+              agentId: input.task.agentId,
+              key: sessionKey,
+              label: sessionKey,
+              model: analystSession.model,
+            })
         await touchTaskAnalystSession(planningDb, analystSession.id, session.sessionId)
 
         // Na primeira rodada, os blocos de contexto são enviados uma vez. Em
@@ -455,9 +460,12 @@ class TaskWorker {
         // Durante a conversa, texto livre é uma resposta válida. Só o plano
         // precisa obedecer ao contrato técnico; perguntas/respostas naturais
         // permanecem no histórico e aguardam o próximo turno do usuário.
-        if (!parsed.ok && clarificationAnswer) {
-          await persistTaskAnalystMessage(planningDb, input.task.id, result.content.trim())
-          return { kind: "clarifying", questionCount: 0, summary: result.content.trim() }
+        if (!parsed.ok) {
+          const conversationalReply = parseAnalystConversationReply(result.content)
+          if (conversationalReply.kind === "mensagem") {
+            await persistTaskAnalystMessage(planningDb, input.task.id, conversationalReply.mensagem)
+            return { kind: "clarifying", questionCount: 0, summary: conversationalReply.mensagem }
+          }
         }
 
         if (!parsed.ok) {
@@ -495,6 +503,11 @@ class TaskWorker {
         }
 
         const reply: AnalystReply = parsed.reply
+
+        if (reply.kind === "mensagem") {
+          await persistTaskAnalystMessage(planningDb, input.task.id, reply.mensagem)
+          return { kind: "clarifying", questionCount: 0, summary: reply.mensagem }
+        }
 
         if (reply.kind === "perguntas") {
           // Ambiguidade: persiste as perguntas no chat da tarefa e para.
@@ -547,6 +560,10 @@ class TaskWorker {
               })
               this.log("info", "Analista pediu esclarecimentos no retry de qualidade (" + retryParsed.reply.perguntas.length + " perguntas)")
               return { kind: "clarifying", questionCount: retryParsed.reply.perguntas.length, summary: retryParsed.reply.resumo || undefined }
+            }
+            if (retryParsed.reply.kind === "mensagem") {
+              await persistTaskAnalystMessage(planningDb, input.task.id, retryParsed.reply.mensagem)
+              return { kind: "clarifying", questionCount: 0, summary: retryParsed.reply.mensagem }
             }
             subtarefas = retryParsed.reply.subtarefas
             coverage = {
@@ -1607,7 +1624,7 @@ class TaskWorker {
       "Tarefa: " + task.title,
       "Descricao integral (nao truncar nem omitir secoes): " + (task.description?.trim() || "N/A"),
       "",
-      "Responda APENAS com JSON valido, em UMA das duas formas abaixo.",
+      "Converse naturalmente durante a clarificacao: texto livre e explicacoes sao respostas validas. Quando a definicao estiver pronta, apresente a proposta em texto e inclua o JSON tecnico completo do plano para validacao interna do Motor.",
       "",
       "Forma 1 — quando a definicao estiver clara o suficiente, o plano:",
       "{",
@@ -1644,7 +1661,7 @@ class TaskWorker {
       "- requirements/coverage: identifique todos os requisitos da descricao e mapeie cada REQ-* para uma ou mais subtarefas.",
       "- Leia a descricao inteira antes de planejar. Se ela estiver incompleta, truncada ou ambigua, use a Forma 2 e explique o que falta; nunca invente nem descarte secoes.",
       "- Antes de responder, audite: cada requisito tem cobertura, cada subtarefa tem uma responsabilidade principal, entregavel e criterio verificavel, e nenhuma etapa explicita foi unida indevidamente.",
-      "- Mantenha somente o JSON na resposta, mas nao sacrifique cobertura ou detalhe para encurta-la.",
+      "- Nao exija JSON, perguntas numeradas ou formulario durante a conversa; responda perguntas livres com explicacoes claras. Quando entregar um plano, inclua o JSON tecnico completo junto da proposta textual.",
       "- NUNCA crie subtarefas para passos operacionais que o motor executa automaticamente: commit, push, merge, build, testes unitarios, deploy, validacao de build.",
       lightweight
         ? "- Em automacao/verificacao, a subtarefa deve descrever a acao ou verificacao concreta, os dados/recursos a usar e o formato da resposta. Nao crie trabalho de codigo, workspace, branch, build ou testes."

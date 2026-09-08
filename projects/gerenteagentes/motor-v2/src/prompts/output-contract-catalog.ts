@@ -34,7 +34,7 @@ export const OUTPUT_CONTRACT_CATALOG: readonly OutputContractDefault[] = [
       ],
     },
     example: { subtarefas: [{ seq: 1, titulo: "Persistir dados e validar migração", scope: "Criar a persistência necessária e validar a migração no banco do projeto.", acceptance_criteria: ["Migration aplicada sem erro", "Dados persistidos podem ser lidos"], deliverables: ["migration", "teste de persistência"], requirements_covered: ["REQ-1"], depends_on: [] }], requirements: [{ id: "REQ-1", description: "Persistência do recurso" }], coverage: [{ requirement: "REQ-1", covered_by: [1] }] },
-    instructions: 'Responda somente com JSON. Um plano exige subtarefas detalhadas e os campos requirements e coverage. Cada subtarefa exige seq, titulo, scope, acceptance_criteria, deliverables, requirements_covered e depends_on. Identifique todos os requisitos como REQ-* e cubra cada um na matriz. Quando faltar decisão, use {"kind":"perguntas","resumo":"...","perguntas":["..."]}.',
+    instructions: 'Durante a clarificação, converse naturalmente: responda dúvidas e explique o entendimento em texto claro, sem JSON obrigatório e sem perguntas numeradas obrigatórias. Quando houver informação suficiente, apresente a proposta de plano em texto e inclua também o JSON técnico completo para o Motor validar; não inicie execução. Quando faltar decisão, continue a conversa ou use perguntas objetivas. O JSON técnico do plano exige subtarefas detalhadas, requirements e coverage; cada subtarefa exige seq, titulo, scope, acceptance_criteria, deliverables, requirements_covered e depends_on.',
   },
   {
     key: "dev.resultado_execucao",
