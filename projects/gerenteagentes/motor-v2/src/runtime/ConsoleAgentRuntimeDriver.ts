@@ -72,8 +72,17 @@ type SessionDescription = {
   errorCode?: string
   errorMessage?: string
   message?: string
-  error?: { code?: string; message?: string; occurredAt?: number | string } | string
-  failure?: { code?: string; message?: string; occurredAt?: number | string } | string
+  error?: SessionFailureDetail | string
+  failure?: SessionFailureDetail | string
+  details?: SessionFailureDetail
+}
+
+type SessionFailureDetail = {
+  code?: unknown
+  message?: unknown
+  occurredAt?: unknown
+  failedAt?: unknown
+  endedAt?: unknown
 }
 
 class ConsoleRequestError extends Error {
@@ -93,7 +102,7 @@ export function normalizeRemoteTimestamp(value: number | string | undefined): st
 export function classifyRemoteFailure(code: string, message: string): RemoteFailureClassification {
   const normalized = `${code} ${message}`.toUpperCase()
   if (/^(HTTP_)?(408|409|425|429|500|502|503|504)$/.test(code.toUpperCase()) || /TIMEOUT|TEMPORARY|RATE_LIMITED|SESSION_BUSY|GATEWAY_UNAVAILABLE|UPSTREAM_RESET|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|ABORT/i.test(normalized)) return "transient"
-  if (/INVALID_REQUEST|INVALID_SESSION|AUTH_FAILED|FORBIDDEN|AGENT_NOT_FOUND|MODEL_NOT_FOUND|WORKSPACE_INVALID|PROMPT_INVALID|PERMISSION_DENIED/i.test(normalized)) return "definitive"
+  if (/^(HTTP_)?(400|401|403|404|422)$/.test(code.toUpperCase()) || /INVALID_REQUEST|INVALID_SESSION|AUTH_FAILED|FORBIDDEN|AGENT_NOT_FOUND|MODEL_NOT_FOUND|WORKSPACE_INVALID|PROMPT_INVALID|PERMISSION_DENIED/i.test(normalized)) return "definitive"
   return "transient"
 }
 
@@ -324,11 +333,14 @@ export class ConsoleAgentRuntimeDriver {
   }
 
   private describeRemoteFailure(session: RuntimeSession, runId: string, desc: SessionDescription, scope: "session" | "run"): RemoteSessionFailure {
-    const detail = typeof desc.error === "object" && desc.error ? desc.error : typeof desc.failure === "object" && desc.failure ? desc.failure : undefined
+    // O endpoint de describe é a consulta detalhada do Console. Algumas
+    // versões devolvem o detalhe em `error`, outras em `failure`/`details`;
+    // nunca deixamos um payload parcial apagar o estado genérico observado.
+    const detail = this.extractFailureDetail(desc)
     const state = desc.state || desc.status || "failed"
-    const code = detail?.code || desc.errorCode || `SESSION_${state.toUpperCase()}`
-    const message = String(detail?.message || desc.errorMessage || desc.message || (state === "error" ? "Session ended with error" : "Session failed")).slice(0, 500)
-    const occurredAt = normalizeRemoteTimestamp(detail?.occurredAt ?? desc.failedAt ?? desc.endedAt) ?? new Date().toISOString()
+    const code = this.stringValue(detail?.code) || desc.errorCode || `SESSION_${state.toUpperCase()}`
+    const message = (this.stringValue(detail?.message) || desc.errorMessage || desc.message || (state === "error" ? "Session ended with error" : "Session failed")).slice(0, 500)
+    const occurredAt = normalizeRemoteTimestamp(this.firstTimestamp(detail?.occurredAt, detail?.failedAt, detail?.endedAt, desc.failedAt, desc.endedAt)) ?? new Date().toISOString()
     const classification = classifyRemoteFailure(code, message)
     return {
       code: String(code).slice(0, 120), message, sessionKey: session.key,
@@ -337,6 +349,21 @@ export class ConsoleAgentRuntimeDriver {
       classificationReason: classification === "transient" ? "remote_code_or_message_indicates_retryable_failure" : "remote_failure_default_classification",
       fingerprint: `${code}:${message}`.slice(0, 600),
     }
+  }
+
+  private extractFailureDetail(desc: SessionDescription): SessionFailureDetail | undefined {
+    for (const candidate of [desc.error, desc.failure, desc.details]) {
+      if (candidate && typeof candidate === "object") return candidate
+    }
+    return undefined
+  }
+
+  private stringValue(value: unknown): string | undefined {
+    return typeof value === "string" && value.trim() ? value.trim() : undefined
+  }
+
+  private firstTimestamp(...values: unknown[]): number | string | undefined {
+    return values.find((value): value is number | string => typeof value === "number" || typeof value === "string")
   }
 
   async readFullAssistantMessage(session: RuntimeSession, messageId: string): Promise<string> {

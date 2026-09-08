@@ -48,6 +48,25 @@ describe('B7 — timeout de inatividade', () => {
     })
   })
 
+  it('usa fallback legível quando a sessão falha sem detalhe remoto', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ state: 'failed', endedAt: 1_757_333_200_000 })))
+
+    const driver = makeDriver()
+    const result = await driver.waitForRunCompletion(session, 'run-sem-detalhe', { pollIntervalMs: 10 })
+
+    expect(result).toMatchObject({
+      state: 'error',
+      runId: 'run-sem-detalhe',
+      errorMessage: 'Session failed',
+      failure: {
+        code: 'SESSION_FAILED',
+        classification: 'transient',
+        sessionKey: 's1',
+      },
+    })
+    expect(result.failure?.occurredAt).toBe('2025-09-08T12:06:40.000Z')
+  })
+
   it('run ativo por vários polls não é interrompido; conclui quando termina', async () => {
     const responses: unknown[] = [
       { state: 'busy', hasActiveRun: true },
