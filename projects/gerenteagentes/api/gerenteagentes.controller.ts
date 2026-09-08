@@ -1,4 +1,4 @@
-import { Put } from '@nestjs/common';
+import { Patch, Put } from '@nestjs/common';
 import {
   Controller,
   Get,
@@ -64,6 +64,17 @@ export class GerenteAgentesController {
     });
   }
 
+  /** Atualização usada pelo mapa para mover uma tarefa entre estações. */
+  @Patch('tarefas/:id/status')
+  @Roles('admin', 'gerente', 'operador')
+  atualizarStatusTarefa(
+    @CurrentProject() projeto: ProjetoResumo,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { status?: string },
+  ) {
+    return this.service.atualizarStatusTarefa(projeto, id, body?.status);
+  }
+
   @Post('tarefas/:id/start')
   @Roles('admin', 'gerente', 'operador')
   iniciarTarefa(
@@ -89,6 +100,26 @@ export class GerenteAgentesController {
     @Param('id', ParseIntPipe) id: number,
   ) {
     return this.service.retomarTarefa(projeto, id);
+  }
+
+  @Post('tarefas/:id/unlock')
+  @Roles('admin', 'gerente', 'operador')
+  desbloquearTarefa(
+    @CurrentProject() projeto: ProjetoResumo,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    return this.service.desbloquearTarefa(projeto, id);
+  }
+
+  @Post('tarefas/:id/deploy')
+  @Roles('admin', 'gerente', 'operador')
+  fazerDeployTarefa(@CurrentProject() projeto: ProjetoResumo, @Param('id', ParseIntPipe) id: number) {
+    return this.service.fazerDeployTarefa(projeto, id);
+  }
+
+  @Get('motor-activity')
+  atividadeMotor(@CurrentProject() projeto: ProjetoResumo) {
+    return this.service.atividadeMotor(projeto);
   }
 
   // ============================================================================
@@ -183,6 +214,15 @@ export class GerenteAgentesController {
     return this.service.listarSubtarefas(projeto, id);
   }
 
+  @Get('tarefas/:id/subtarefas/:seq/sessao')
+  visualizarSessaoSubtarefa(
+    @CurrentProject() projeto: ProjetoResumo,
+    @Param('id', ParseIntPipe) id: number,
+    @Param('seq', ParseIntPipe) seq: number,
+  ) {
+    return this.service.sessaoSubtarefa(projeto, id, seq);
+  }
+
   @Get('tarefas/:id/motor-detail')
   motorDetailTarefa(
     @CurrentProject() projeto: ProjetoResumo,
@@ -213,6 +253,12 @@ export class GerenteAgentesController {
   @Roles('admin', 'gerente')
   async sincronizarAgentes() {
     return this.service.sincronizarAgentesOpenClaw();
+  }
+
+  @Get('agentes/:id/vinculo')
+  @Roles('admin', 'gerente')
+  diagnosticarVinculoAgente(@Param('id', ParseIntPipe) id: number) {
+    return this.service.diagnosticarVinculoAgente(id);
   }
 
   // ============================================================================
@@ -330,9 +376,9 @@ export class GerenteAgentesController {
 
   @Post('prompts/:id/preview')
   @Roles('admin', 'gerente')
-  preverPrompt(@Param('id', ParseIntPipe) id: number, @Body() body: { texto?: string; values?: Record<string, unknown> }) {
+  preverPrompt(@Param('id', ParseIntPipe) id: number, @Body() body: { texto?: string; values?: Record<string, unknown>; contratoVersaoId?: number }) {
     if (!body?.texto) throw new BadRequestException('Texto do prompt é obrigatório');
-    return this.service.preverPrompt(id, body.texto, body.values ?? {});
+    return this.service.preverPrompt(id, body.texto, body.values ?? {}, body.contratoVersaoId);
   }
 
   @Post('prompt-contracts/:id/versions')

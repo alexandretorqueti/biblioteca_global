@@ -47,6 +47,8 @@ import { useApi } from "../../../apps/web/src/hooks/useApi"
 import { useAuth } from "../../../apps/web/src/auth/AuthContext"
 import { EntregaModal } from "./EntregaModal"
 
+export const componentId = "taqui-painel-portaria"
+
 // ============================================================================
 // TIPOS
 // ============================================================================
@@ -364,7 +366,7 @@ export default function PainelPortariaScreen(): ReactNode {
       })
 
       setItens(result.itens ?? [])
-      setIndicadores(result.indicadores ?? indicadores)
+      setIndicadores((atuais) => result.indicadores ?? atuais)
     } catch (error) {
       setErro(
         error instanceof Error
@@ -374,7 +376,7 @@ export default function PainelPortariaScreen(): ReactNode {
     } finally {
       setCarregando(false)
     }
-  }, [bundle, projeto, tabEstado, busca, transportadoraId, localizacao, indicadores])
+  }, [bundle, projeto, tabEstado, busca, transportadoraId, localizacao])
 
   // =========================================================================
   // EFFECTS

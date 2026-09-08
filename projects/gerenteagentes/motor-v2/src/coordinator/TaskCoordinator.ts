@@ -25,12 +25,14 @@ import { blockerEvidence } from "../policies/BlockerPolicy.js"
 import { transitionTask, type TaskTransition } from "../policies/TaskStateMachine.js"
 import { persistTaskClarificationAnswer, fetchPendingTaskClarification, fetchAnsweredTaskClarifications } from "../planning/ClarificationStore.js"
 import { createLogger, describeError } from "../shared/logger.js"
-import { ConsoleAgentRuntimeDriver } from "../runtime/ConsoleAgentRuntimeDriver.js"
-import { execSync } from "node:child_process"
+import { ConsoleAgentRuntimeDriver, type RemoteSessionFailure } from "../runtime/ConsoleAgentRuntimeDriver.js"
+import { execFileSync, execSync } from "node:child_process"
+import { randomUUID } from "node:crypto"
 import { existsSync } from "node:fs"
 import { join } from "node:path"
 import { SecretProfileManager, resolveGitTopLevel } from "../workspaces/SecretProfileManager.js"
 import { validateTaskCompletion, formatPromotionValidationReport } from "../policies/PromotionValidationPolicy.js"
+import { isAgentRunFailureWithoutReply } from "../policies/NoReplyFailurePolicy.js"
 import { validateProjectId, formatProjectIdValidationReport } from "../policies/ProjectIdValidationPolicy.js"
 import { verifyAgentInGateway, formatAgentVerificationReport, shouldBlockEnqueue } from "../policies/GatewayAgentVerificationPolicy.js"
 
@@ -41,6 +43,7 @@ interface ActiveWorker {
   fencingToken: number
   startedAt: Date
   phase: "analyze" | "execute"
+  executionPhase?: import("../shared/types/execution.js").ExecutionPhase
   taskTipo?: Task["tipo"]
   subtaskId?: number
   workspace?: { path: string; branch: string; baseCommit: string }
@@ -52,6 +55,7 @@ interface ActiveWorker {
   testCommand?: string
   repoPath?: string
   projectSlug?: string
+  agentId?: string
   baseBranch?: string
   timeoutHandle?: ReturnType<typeof setTimeout>
   lastHeartbeatAt?: Date
@@ -88,6 +92,11 @@ function isTaskTipo(value: unknown): value is NonNullable<Task["tipo"]> {
 
 function isLightweightTask(tipo: Task["tipo"] | undefined): boolean {
   return tipo === "automacao" || tipo === "verificacao"
+}
+
+/** Citação POSIX de argumento enviado como um único parâmetro ao shell remoto. */
+function shellQuote(value: string): string {
+  return "'" + value.replace(/'/g, "'\\\"'\\\"'") + "'"
 }
 
 interface SubtaskView {
@@ -162,7 +171,13 @@ export class TaskCoordinator {
   private waitManager?: ResourceWaitManager
   private eventBus: ExecutionEventBus
   private finalizingExecutions = new Set<string>()
+  private activeMaintenance = 0
+  /** Deploys não pertencem a um worker; mantê-los separados evita esconder a
+   * atividade do Motor enquanto o script externo está em execução. */
+  private activeDeployments = new Map<string, { taskId: string; phase: "verify" | "deploy"; startedAt: Date }>()
   private pumping = false
+  /** Incidentes ativos por agente. Um incidente gera exatamente um alerta. */
+  private consoleIncidents = new Map<string, { id: string; fingerprint: string; openedAt: string; taskIds: Set<string>; taskId: string; subtaskId?: number; phase: "analyze" | "execute" }>()
   private logger = createLogger("TaskCoordinator")
 
   constructor(
@@ -198,41 +213,37 @@ export class TaskCoordinator {
       // caminhos que não notificaram o motor (ex.: insert direto por agente/sessão)
       // são detectadas aqui e retomam a análise sem depender de aviso externo.
       await this.resumeAnsweredClarifications()
-      // Com maxWorkers > 1 um único pump precisa preencher todas as vagas;
-      // cada iteração inicia no máximo um worker e reconsulta a fila. O laço
-      // para quando não há trabalho elegível ou quando o trabalho selecionado
-      // não pôde iniciar (recurso em espera, falha de início).
-      let guard = 0
-      while (this.activeWorkers.size < this.config.maxWorkers && guard <= this.config.maxWorkers) {
-        guard += 1
-
-        // 1. Tenta pegar subtarefa pendente (execucao)
+      // Desenvolvimento e análise são pistas independentes. Uma subtarefa
+      // aguardando recurso não pode interromper a seleção do analista.
+      let developmentGuard = 0
+      while (this.activeDevelopmentCount() < this.config.maxWorkers && developmentGuard < this.config.maxWorkers) {
+        developmentGuard += 1
         const subtask = await this.selectNextSubtask()
-        if (subtask) {
-          this.logger.info("Subtarefa selecionada: #" + subtask.seq + " " + subtask.titulo, {
-            taskId: subtask.taskExternalId, subtaskId: subtask.id, projectSlug: subtask.projectSlug ?? undefined,
-          })
-          const started = await this.startSubtaskExecution(subtask)
-          if (!started) break
-          continue
-        }
+        if (!subtask) break
+        this.logger.info("Subtarefa selecionada: #" + subtask.seq + " " + subtask.titulo, {
+          taskId: subtask.taskExternalId, subtaskId: subtask.id, projectSlug: subtask.projectSlug ?? undefined,
+        })
+        const started = await this.startSubtaskExecution(subtask)
+        if (!started) break
+      }
 
-        // 2. Se nao tem subtarefa, pega tarefa planejada (analise)
+      // A análise possui exatamente uma vaga global, além de maxWorkers.
+      // Esta etapa sempre é avaliada, mesmo com todas as vagas DEV ocupadas
+      // ou quando o início de uma subtarefa falhou/entrou em espera.
+      if (this.canStartAnalysis()) {
         const task = await this.selectNextTask()
         if (task) {
           this.logger.info("Tarefa selecionada para analise: " + task.id + " (" + task.title + ")", {
             taskId: task.id, projectSlug: task.projectSlug ?? undefined,
           })
-          const started = await this.startTaskAnalysis(task)
-          if (!started) break
-          continue
+          await this.startTaskAnalysis(task)
         }
-        break
       }
       await this.reconcileOrphanedReadyTasks()
     } finally {
       this.pumping = false
     }
+    await this.processDeployQueue()
   }
 
   private async reconcileOrphanedReadyTasks(): Promise<void> {
@@ -258,7 +269,7 @@ export class TaskCoordinator {
       "LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id = pc.id " +
       "WHERE t.status = 'planned' AND NOT EXISTS (SELECT 1 FROM subtarefas s WHERE s.tarefa_id = t.id) ORDER BY t.created_at ASC LIMIT 25"
     )
-    return rows.map((row) => this.mapTask(row)).find((task) => this.canStartProject(task.projectSlug)) ?? null
+    return rows.map((row) => this.mapTask(row)).find((task) => !this.consoleIncidents.has(task.agentId) && this.canStartAnalysis()) ?? null
   }
 
   async getTasksByStatus(since?: string): Promise<{
@@ -320,9 +331,30 @@ export class TaskCoordinator {
       "WHERE anterior.tarefa_id = s.tarefa_id AND anterior.seq < s.seq AND anterior.status NOT IN ('verified', 'superseded') " +
       "AND anterior.id != COALESCE(s.correction_for_subtask_id, -1)" +
       ") " +
+      "AND NOT EXISTS (" +
+      "SELECT 1 FROM subtarefas dependencia WHERE JSON_CONTAINS(COALESCE(s.depends_on_subtask_ids, JSON_ARRAY()), CAST(dependencia.id AS JSON)) " +
+      "AND dependencia.status NOT IN ('verified', 'superseded')" +
+      ") " +
       "ORDER BY s.seq ASC LIMIT 25"
     )
-    return rows.map((row) => this.mapSubtask(row)).find((subtask) => this.canStartProject(subtask.projectSlug)) ?? null
+    return rows
+      .map((row) => this.mapSubtask(row))
+      .find((subtask) => !this.consoleIncidents.has(subtask.agentId) && this.canStartExecution(subtask.projectSlug)) ?? null
+  }
+
+  /** Limite de desenvolvimento: máximo global e, por padrão, um por projeto. */
+  private canStartExecution(projectSlug: string | null): boolean {
+    if (this.activeDevelopmentCount() >= this.config.maxWorkers) return false
+    return this.canStartProject(projectSlug)
+  }
+
+  private activeDevelopmentCount(): number {
+    return [...this.activeWorkers.values()].filter((worker) => worker.phase === "execute").length
+  }
+
+  /** Há uma única análise em todo o motor, independente dos workers de dev. */
+  private canStartAnalysis(): boolean {
+    return ![...this.activeWorkers.values()].some((worker) => worker.phase === "analyze")
   }
 
   private canStartProject(projectSlug: string | null): boolean {
@@ -337,7 +369,10 @@ export class TaskCoordinator {
   /** Retorna true quando o worker foi iniciado; false quando o trabalho não começou (espera/falha). */
   private async startTaskAnalysis(task: Task): Promise<boolean> {
     const executionId = "exec-analyze-" + task.id + "-" + Date.now()
-    const resourceKey = task.projectSlug ? RESOURCE_KEYS.projectExecution(task.projectSlug) : null
+    // Análise é um recurso global e separado do lock de execução do projeto.
+    // Assim, uma análise pode rodar enquanto há desenvolvimento em qualquer
+    // projeto, mas duas análises continuam mutuamente exclusivas.
+    const resourceKey = RESOURCE_KEYS.motorAnalysis()
     let fencingToken = 0
 
     if (resourceKey) {
@@ -376,6 +411,7 @@ export class TaskCoordinator {
       taskId: task.id, executionId, resourceKey, fencingToken,
       startedAt: new Date(), phase: "analyze", taskTipo: task.tipo,
       projectSlug: task.projectSlug ?? undefined,
+      agentId: task.agentId,
     })
 
     try {
@@ -429,6 +465,7 @@ export class TaskCoordinator {
       startedAt: new Date(), phase: "execute", subtaskId: subtask.id, taskTipo: subtask.taskTipo,
       repoPath: subtask.repoPath,
       projectSlug: subtask.projectSlug ?? undefined,
+      agentId: subtask.agentId,
     })
 
     try {
@@ -573,6 +610,9 @@ export class TaskCoordinator {
     if (!worker || !this.beginFinalization(executionId, worker)) return
 
     try {
+    // Uma execução concluída pelo agente é a evidência explícita de que o
+    // Console voltou. A retomada só afeta a fila desse agente.
+    if (worker.agentId) await this.markConsoleRecovered(worker.agentId, worker)
     if (worker.phase === "analyze") {
       this.publishActivity(worker, { type: "completed" })
       this.logger.info("Analise completada: " + worker.taskId, { taskId: worker.taskId, executionId, phase: "analyze" })
@@ -705,7 +745,7 @@ export class TaskCoordinator {
           // (evidência de código) antes de a tarefa pai ser marcada como completed.
           // Regra: promoção manual sem código não fecha tarefa.
           const { rows: subtasksForValidation } = await this.db.query(
-            "SELECT id, seq, workspace_commit_sha, status FROM subtarefas WHERE tarefa_id = (SELECT tarefa_id FROM subtarefas WHERE id = ?) AND status != 'superseded'",
+            "SELECT id, seq, workspace_commit_sha, workspace_status, completion_kind, status, resultado FROM subtarefas WHERE tarefa_id = (SELECT tarefa_id FROM subtarefas WHERE id = ?) AND status != 'superseded'",
             [worker.subtaskId]
           )
           const promotionValidation = validateTaskCompletion(
@@ -716,6 +756,7 @@ export class TaskCoordinator {
               workspaceStatus: st.workspace_status ? String(st.workspace_status) : null,
               completionKind: st.completion_kind ? String(st.completion_kind) : null,
               status: String(st.status),
+              resultado: st.resultado ? String(st.resultado) : null,
             }))
           )
           if (!promotionValidation.ok) {
@@ -723,7 +764,40 @@ export class TaskCoordinator {
             this.logger.warn("Validação de promoção bloqueou conclusão da tarefa: " + promotionReason, {
               taskId: worker.taskId, executionId,
             })
+            // Salvaguarda para dados legados: antes desta validação existir no
+            // worker, uma entrega sem commit podia chegar a `verified`. Isso é
+            // recuperável e deve voltar para a escada de modelos — não bloquear
+            // a tarefa-pai. Falhas de integração continuam bloqueantes porque
+            // exigem resolução humana do merge.
+            const retryableSubtaskIds = subtasksForValidation
+              .filter((st: Record<string, unknown>) => {
+                const status = st.workspace_status ? String(st.workspace_status) : null
+                const commit = st.workspace_commit_sha ? String(st.workspace_commit_sha).trim() : ""
+                const result = st.resultado ? String(st.resultado) : null
+                return status !== "integration_failed" && (!commit || isAgentRunFailureWithoutReply(result))
+              })
+              .map((st: Record<string, unknown>) => Number(st.id))
+
             const task = await this.repository.getTask(worker.taskId)
+            if (task && retryableSubtaskIds.length > 0) {
+              const placeholders = retryableSubtaskIds.map(() => "?").join(", ")
+              const retryReason = ("Evidência da entrega inválida; reenfileirada para nova execução pela escada de modelos. " + promotionReason).substring(0, 500)
+              await this.db.query(
+                `UPDATE subtarefas SET status = 'pending', workspace_status = 'evidence_rejected', workspace_commit_sha = NULL, resultado = ?, finalizada_em = NULL, updated_at = NOW() WHERE id IN (${placeholders})`,
+                [retryReason, ...retryableSubtaskIds],
+              )
+              await this.saveTaskTransition(task, "subtasks_pending")
+              this.logger.warn("Entrega sem evidência reenfileirada para recuperação automática: " + retryableSubtaskIds.join(", "), {
+                taskId: worker.taskId, executionId,
+              })
+              this.publishActivity(worker, {
+                type: "progress",
+                level: "warn",
+                message: "Entrega sem evidência válida reenfileirada para nova tentativa por outro modelo.",
+              })
+              await this.finishWorker(executionId, worker)
+              return
+            }
             if (task) {
               // Persiste bloqueio com motivo auditável
               try {
@@ -806,21 +880,11 @@ export class TaskCoordinator {
             // Trabalho promovido para a base: marca como completed
             await this.saveTaskTransition(task, "execution_completed")
             
-            // Depois tenta deploy
+            // Publicação é agrupada e só começa quando todos os workers
+            // terminarem. A tarefa permanece completed enquanto aguarda.
             if (worker.repoPath) {
-              const deployResult = this.executeDeployScript(worker.repoPath, worker.taskId)
-              if (deployResult.success) {
-                this.logger.info("Deploy concluído com sucesso", { taskId: worker.taskId, executionId })
-                await this.saveTaskTransition(task, "deploy_completed")
-                this.publishActivity(worker, { type: "deployed", level: "info", message: "Deploy realizado com sucesso" })
-              } else {
-                this.logger.warn("Deploy falhou, mantendo tarefa como completed", { taskId: worker.taskId, executionId, error: deployResult.error })
-                await this.db.query(
-                  "UPDATE tarefas SET ultima_mensagem_erro = ?, updated_at = NOW() WHERE external_id = ?",
-                  ["Deploy falhou: " + (deployResult.error || "erro desconhecido").substring(0, 500), worker.taskId]
-                )
-                this.publishActivity(worker, { type: "completed", level: "warn", message: "Deploy falhou: " + (deployResult.error || "erro desconhecido") })
-              }
+              await this.enqueueDeploy(worker.taskId, worker.repoPath)
+              this.publishActivity(worker, { type: "completed", level: "info", message: "Deploy agendado para quando o Motor ficar ocioso" })
               // Tarefa concluída: purgar worktrees/branches residuais (a1..aN)
               this.purgeTaskArtifactsFireAndForget(worker.taskId, worker.repoPath)
             }
@@ -842,14 +906,17 @@ export class TaskCoordinator {
     }
   }
 
-  async onTaskFailed(executionId: string, error: string, kind = "error"): Promise<void> {
+  async onTaskFailed(executionId: string, error: string, kind = "error", sessionFailure?: RemoteSessionFailure): Promise<void> {
     const worker = this.activeWorkers.get(executionId)
     if (!worker || !this.beginFinalization(executionId, worker)) return
     const failure = `[${kind}] ${error}`
-    const transient = kind === "timeout" || kind === "lease_lost" || kind === "lease_expired" || kind === "lost"
+    const systemic = sessionFailure?.classification === "systemic"
+    const transient = systemic || sessionFailure?.classification === "transient" || kind === "timeout" || kind === "lease_lost" || kind === "lease_expired" || kind === "lost"
     this.publishActivity(worker, { type: "failed", level: "error", message: failure })
 
     this.logger.error("Falha: " + failure, { taskId: worker.taskId, subtaskId: worker.subtaskId, executionId, phase: worker.phase })
+
+    if (systemic && worker.agentId) this.pauseAgentQueue(worker, sessionFailure)
 
     try {
       if (worker.phase === "analyze") {
@@ -878,6 +945,78 @@ export class TaskCoordinator {
     } finally {
       await this.finishWorker(executionId, worker)
     }
+  }
+
+  /**
+   * Pausa somente novas execuções do agente afetado. Tarefas já pendentes
+   * continuam pendentes; não são convertidas em bloqueios individuais.
+   */
+  private pauseAgentQueue(worker: ActiveWorker, failure?: RemoteSessionFailure): void {
+    const agentId = worker.agentId!
+    const active = this.consoleIncidents.get(agentId)
+    if (active) {
+      active.taskIds.add(worker.taskId)
+      return
+    }
+    const incidentId = randomUUID()
+    const incident = {
+      id: incidentId,
+      fingerprint: failure?.fingerprint ?? "console-unavailable",
+      openedAt: failure?.occurredAt ?? new Date().toISOString(),
+      taskIds: new Set([worker.taskId]),
+      taskId: worker.taskId,
+      subtaskId: worker.subtaskId,
+      phase: worker.phase,
+    }
+    this.consoleIncidents.set(agentId, incident)
+    this.logger.error("Fila do agente pausada após falha sistêmica do Console", {
+      agentId, incidentId, code: failure?.code, message: failure?.message,
+    })
+    // O evento é emitido uma única vez por incidente ativo. Repetições de
+    // falha enquanto a fila está pausada não geram spam.
+    this.eventBus.publish({
+      type: "system_alert",
+      executionId: worker.executionId,
+      taskId: worker.taskId,
+      subtaskId: worker.subtaskId,
+      phase: worker.phase,
+      level: "error",
+      agentId,
+      incidentId,
+      message: `Fila do agente ${agentId} pausada: Console indisponível${failure?.message ? ` — ${failure.message}` : ""}`,
+      timestamp: new Date(),
+    })
+  }
+
+  /** Retomada explícita da fila após uma verificação de saúde do Console. */
+  async markConsoleRecovered(agentId: string, source?: ActiveWorker): Promise<boolean> {
+    const incident = this.consoleIncidents.get(agentId)
+    if (!incident) return false
+    this.consoleIncidents.delete(agentId)
+    for (const taskId of incident.taskIds) {
+      const task = await this.repository.getTask(taskId)
+      if (!task || task.status !== "paused") continue
+      const hasPlan = await this.taskHasPersistedPlan(taskId)
+      await this.saveTaskTransition(task, hasPlan ? "resume" : "resume_without_plan")
+    }
+    this.eventBus.publish({
+      type: "system_recovered",
+      executionId: source?.executionId ?? "system-" + incident.id,
+      taskId: source?.taskId ?? incident.taskId,
+      subtaskId: source?.subtaskId ?? incident.subtaskId,
+      phase: source?.phase ?? incident.phase,
+      level: "info",
+      agentId,
+      incidentId: incident.id,
+      message: `Console recuperado; fila do agente ${agentId} retomada`,
+      timestamp: new Date(),
+    })
+    await this.pump()
+    return true
+  }
+
+  isAgentQueuePaused(agentId: string): boolean {
+    return this.consoleIncidents.has(agentId)
   }
 
   async onTaskPaused(executionId: string, reason: string): Promise<void> {
@@ -1000,23 +1139,73 @@ export class TaskCoordinator {
       taskId: worker.taskId,
       subtaskId: worker.subtaskId ?? null,
       phase: worker.phase,
+      executionPhase: worker.executionPhase ?? null,
       projectSlug: worker.projectSlug ?? null,
       startedAt: worker.startedAt.toISOString(),
       ageMs: Date.now() - worker.startedAt.getTime(),
       lastHeartbeatAt: worker.lastHeartbeatAt?.toISOString() ?? null,
     }))
+    const deployments = Array.from(this.activeDeployments.values()).map((deployment) => ({
+      taskId: deployment.taskId,
+      phase: deployment.phase,
+      startedAt: deployment.startedAt.toISOString(),
+      ageMs: Date.now() - deployment.startedAt.getTime(),
+    }))
+    const activities = [
+      ...workers.filter((worker) => worker.executionPhase === "verify").map((worker) => ({ taskId: worker.taskId, phase: "verify" as const })),
+      ...deployments.map((deployment) => ({ taskId: deployment.taskId, phase: deployment.phase })),
+    ]
     return {
       activeWorkers: this.activeWorkers.size,
       maxWorkers: this.config.maxWorkers,
       maxWorkersPerProject: this.config.maxWorkersPerProject,
       workers,
+      deployments,
+      activities,
+      maintenanceOperations: this.activeMaintenance,
     }
+  }
+
+  /** Agenda o deploy de uma tarefa concluída. O botão nunca recria a API
+   * enquanto há workers ativos. */
+  async deployTask(taskId: string): Promise<void> {
+    const task = await this.repository.getTask(taskId)
+    if (!task) throw new Error("Tarefa " + taskId + " não encontrada")
+    if (task.tipo !== "desenvolvimento") throw new Error("Deploy manual é permitido apenas para tarefas de desenvolvimento")
+    if (task.status !== "completed") throw new Error("Deploy manual exige tarefa concluída (status atual: " + task.status + ")")
+    await this.enqueueDeploy(taskId, task.repoPath)
+    void this.pump().catch((error: unknown) => this.logger.error("Falha ao avaliar fila de deploy: " + describeError(error), { taskId }))
   }
 
   async getTask(taskId: string): Promise<Task | null> {
     const data = await this.repository.getTask(taskId)
     if (!data) return null
     return this.mapSaveDataToTask(data)
+  }
+
+  async getTaskStatusHistory(taskId: string): Promise<Array<{
+    previousStatus: string
+    nextStatus: string
+    source: string
+    reason: string | null
+    createdAt: string
+  }>> {
+    const { rows } = await this.db.query(
+      "SELECT h.status_anterior, h.status_novo, h.origem, h.motivo, h.created_at " +
+      "FROM tarefas_status_historico h INNER JOIN tarefas t ON t.id = h.tarefa_id " +
+      "WHERE t.external_id = ? OR t.id = CAST(? AS UNSIGNED) ORDER BY h.id DESC LIMIT 200",
+      [taskId, taskId],
+    )
+    return rows.map((row) => {
+      const data = row as Record<string, unknown>
+      return {
+        previousStatus: String(data.status_anterior),
+        nextStatus: String(data.status_novo),
+        source: String(data.origem),
+        reason: data.motivo ? String(data.motivo) : null,
+        createdAt: String(data.created_at),
+      }
+    })
   }
 
   /**
@@ -1284,43 +1473,200 @@ export class TaskCoordinator {
    * Acumulo de a1/a2/a3... consome disco; limpar após completion/cancel.
    */
   private purgeTaskArtifactsFireAndForget(taskId: string, repoPath: string): void {
+    this.activeMaintenance += 1
     void this.workspaceManager.purgeTaskArtifacts({ repoPath, taskId }).then((result) => {
       if (result.worktreesRemoved > 0 || result.branchesRemoved > 0) {
         this.logger.info(`Purga de artefatos: taskId=${taskId}, worktrees=${result.worktreesRemoved}, branches=${result.branchesRemoved}`)
       }
     }).catch((error: unknown) => {
       this.logger.warn("Falha ao purgar artefatos da tarefa " + taskId + ": " + describeError(error))
+    }).finally(() => {
+      this.activeMaintenance = Math.max(0, this.activeMaintenance - 1)
+      void this.pump().catch((error: unknown) => this.logger.error("Falha ao avaliar fila após manutenção: " + describeError(error), { taskId }))
     })
   }
 
-  /**
-   * Executa o script deploy.sh na raiz do repositório do projeto.
-   * Retorna sucesso/falha sem bloquear o fluxo principal.
-   * Timeout: 15 minutos (900s) conforme especificado no deploy.sh.
-   */
-  private executeDeployScript(repoPath: string, taskId: string): { success: boolean; error?: string } {
-    const deployScript = repoPath + "/deploy.sh"
-    
-    if (!existsSync(deployScript)) {
-      return { success: false, error: "deploy.sh não encontrado em " + repoPath }
-    }
-    
-    this.logger.info("Executando deploy.sh: " + deployScript, { taskId })
-    
+  private async enqueueDeploy(taskId: string, repoPath: string): Promise<void> {
+    await this.db.query(
+      "INSERT INTO deploy_requests (tarefa_id, repo_path, status, requested_at, updated_at) " +
+      "SELECT id, ?, 'pending', NOW(), NOW() FROM tarefas WHERE external_id = ? OR CAST(id AS CHAR) = ? " +
+      "ON DUPLICATE KEY UPDATE repo_path = VALUES(repo_path), status = IF(status = 'running', status, 'pending'), " +
+      "batch_id = IF(status = 'running', batch_id, NULL), last_error = NULL, requested_at = NOW(), updated_at = NOW()",
+      [repoPath, taskId, taskId],
+    )
+    this.logger.info("Deploy agendado", { taskId, repoPath })
+  }
+
+  /** Concilia um lote que sobreviveu à recriação da API e, quando o Motor está
+   * totalmente ocioso, inicia no máximo um lote por repositório. */
+  private async processDeployQueue(): Promise<void> {
+    await this.reconcileRunningDeploys()
+    await this.recoverCompletedTasksWithoutDeploy()
+    if (this.activeWorkers.size > 0 || this.finalizingExecutions.size > 0 || this.activeMaintenance > 0 || this.activeDeployments.size > 0) return
+    const { rows: busyRows } = await this.db.query(
+      "SELECT EXISTS(SELECT 1 FROM tarefas WHERE status IN ('analyzing','running','motor_fix')) " +
+      "OR EXISTS(SELECT 1 FROM subtarefas WHERE status IN ('running','delivered','verifying')) AS busy",
+    )
+    if (Number(busyRows[0]?.busy ?? 0) !== 0) return
+
+    const { rows } = await this.db.query(
+      "SELECT dr.id, dr.repo_path, COALESCE(t.external_id, CAST(t.id AS CHAR)) AS task_id FROM deploy_requests dr " +
+      "INNER JOIN tarefas t ON t.id = dr.tarefa_id WHERE dr.status = 'pending' ORDER BY dr.requested_at ASC",
+    )
+    if (rows.length === 0) return
+    const repoPath = String(rows[0]!.repo_path)
+    const batchRows = rows.filter((row) => String(row.repo_path) === repoPath)
+    const taskIds = batchRows.map((row) => String(row.task_id))
+    const requestIds = batchRows.map((row) => Number(row.id))
+    // Confirma a identidade do ServerIA ANTES de marcar as solicitações como
+    // running. Assim uma chave SSH alterada não bloqueia em massa tarefas que
+    // já concluíram o desenvolvimento e só aguardam publicação.
     try {
-      // Timeout: 15 min (900000ms) conforme deploy.sh
-      execSync("bash " + deployScript, {
-        cwd: repoPath,
-        timeout: 900000,
-        stdio: "pipe",
-        env: { ...process.env }
-      })
-      return { success: true }
+      this.assertDeploySshReady()
     } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : String(error)
-      this.logger.error("Deploy falhou: " + errorMessage, { taskId })
-      return { success: false, error: errorMessage.substring(0, 500) }
+      const message = describeError(error).substring(0, 500)
+      const placeholders = requestIds.map(() => "?").join(",")
+      await this.db.query(
+        `UPDATE deploy_requests SET last_error = ?, updated_at = NOW() WHERE status = 'pending' AND id IN (${placeholders})`,
+        [message, ...requestIds],
+      )
+      this.logger.warn("Preflight de deploy falhou; lote mantido pendente: " + message, { taskIds })
+      return
     }
+    const batchId = "deploy-" + randomUUID()
+    const placeholders = requestIds.map(() => "?").join(",")
+    await this.db.query(
+      `UPDATE deploy_requests SET status = 'running', batch_id = ?, started_at = NOW(), finished_at = NULL, last_error = NULL, updated_at = NOW() WHERE status = 'pending' AND id IN (${placeholders})`,
+      [batchId, ...requestIds],
+    )
+    const startedAt = new Date()
+    for (const taskId of taskIds) this.activeDeployments.set(taskId, { taskId, phase: "verify", startedAt })
+    try {
+      this.dispatchDeployBatch(repoPath, batchId, taskIds)
+      for (const taskId of taskIds) {
+        const deployment = this.activeDeployments.get(taskId)
+        if (deployment) deployment.phase = "deploy"
+      }
+    } catch (error: unknown) {
+      const message = describeError(error).substring(0, 500)
+      await this.failDeployBatch(batchId, message, taskIds)
+      this.logger.error("Falha ao disparar lote de deploy: " + message, { batchId, taskIds })
+    }
+  }
+
+  /** Recuperação de boot/pump: uma queda entre a conclusão da tarefa e a
+   * criação da solicitação não pode deixar desenvolvimento sem publicação. */
+  private async recoverCompletedTasksWithoutDeploy(): Promise<void> {
+    const result = await this.db.query(
+      "INSERT INTO deploy_requests (tarefa_id, repo_path, status, requested_at, updated_at) " +
+      "SELECT t.id, pmc.repo_path, 'pending', NOW(), NOW() FROM tarefas t " +
+      "INNER JOIN projetos_captados pc ON pc.id = t.projeto_id " +
+      "INNER JOIN projeto_motor_config pmc ON pmc.projeto_id = pc.id " +
+      "LEFT JOIN deploy_requests dr ON dr.tarefa_id = t.id " +
+      "WHERE t.tipo = 'desenvolvimento' AND t.status = 'completed' " +
+      "AND pmc.repo_path IS NOT NULL AND pmc.repo_path <> '' AND dr.id IS NULL",
+    )
+    if ((result.affectedRows ?? 0) > 0) {
+      this.logger.info("Deploys ausentes recuperados para tarefas concluídas", { count: result.affectedRows })
+    }
+  }
+
+  private dispatchDeployBatch(repoPath: string, batchId: string, taskIds: string[]): void {
+    const repoRoot = execFileSync("git", ["-C", repoPath, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim()
+    const relativeScript = "projects/gerenteagentes/motor-v2/scripts/deploy-host.sh"
+    if (!existsSync(join(repoRoot, relativeScript))) throw new Error("deploy-host.sh não encontrado na raiz Git " + repoRoot)
+    const hostRepoRoot = process.env.DEPLOY_REPO_HOST ?? "/home/alexandre/codigofonte/biblioteca-global"
+    const hostDeployScript = hostRepoRoot + "/" + relativeScript
+    const safeBatchId = batchId.replace(/[^a-zA-Z0-9_-]/g, "_")
+    const logFile = "/tmp/biblioteca-global-" + safeBatchId + ".log"
+    const statusFile = "/tmp/biblioteca-global-" + safeBatchId + ".status"
+    const run = "bash " + shellQuote(hostDeployScript) + " " + shellQuote(hostRepoRoot)
+    const wrapped = "(" + run + "; code=$?; if [ $code -eq 0 ]; then printf success; else printf 'failed:%s' $code; fi > " + shellQuote(statusFile) + ")"
+    const remoteCommand = "nohup bash -lc " + shellQuote(wrapped) + " > " + shellQuote(logFile) + " 2>&1 < /dev/null & echo $!"
+    const output = execFileSync("ssh", this.deploySshArguments(remoteCommand), { encoding: "utf8", timeout: 15_000 }).trim()
+    if (!/^\d+$/.test(output)) throw new Error("SSH não confirmou o PID do deploy destacado: " + output)
+    this.logger.info("Lote de deploy destacado no ServerIA", { batchId, taskIds, remotePid: output, logFile, statusFile })
+  }
+
+  private async reconcileRunningDeploys(): Promise<void> {
+    const { rows } = await this.db.query(
+      "SELECT dr.batch_id, dr.started_at, COALESCE(t.external_id, CAST(t.id AS CHAR)) AS task_id FROM deploy_requests dr " +
+      "INNER JOIN tarefas t ON t.id = dr.tarefa_id WHERE dr.status = 'running' ORDER BY dr.started_at ASC",
+    )
+    const batches = new Map<string, { taskIds: string[]; startedAt: Date }>()
+    for (const row of rows) {
+      const batchId = String(row.batch_id || "")
+      if (!batchId) continue
+      const batch = batches.get(batchId) ?? { taskIds: [], startedAt: new Date(String(row.started_at)) }
+      batch.taskIds.push(String(row.task_id))
+      batches.set(batchId, batch)
+    }
+    for (const [batchId, batch] of batches) {
+      for (const taskId of batch.taskIds) this.activeDeployments.set(taskId, { taskId, phase: "deploy", startedAt: batch.startedAt })
+      const status = this.readRemoteDeployStatus(batchId)
+      if (!status) {
+        if (Date.now() - batch.startedAt.getTime() > 30 * 60_000) {
+          await this.failDeployBatch(batchId, "processo remoto não produziu resultado em 30 minutos", batch.taskIds)
+          for (const taskId of batch.taskIds) this.activeDeployments.delete(taskId)
+        }
+        continue
+      }
+      if (status === "success") {
+        await this.db.query("UPDATE deploy_requests SET status = 'succeeded', finished_at = NOW(), updated_at = NOW() WHERE batch_id = ? AND status = 'running'", [batchId])
+        await this.db.query(
+          "UPDATE tarefas t INNER JOIN deploy_requests dr ON dr.tarefa_id = t.id SET t.status = 'deployed', t.ultima_mensagem_erro = NULL, t.updated_at = NOW() WHERE dr.batch_id = ? AND dr.status = 'succeeded' AND t.status = 'completed'",
+          [batchId],
+        )
+        this.logger.info("Lote de deploy confirmado", { batchId, taskIds: batch.taskIds })
+      } else {
+        await this.failDeployBatch(batchId, status, batch.taskIds)
+      }
+      for (const taskId of batch.taskIds) this.activeDeployments.delete(taskId)
+    }
+  }
+
+  private readRemoteDeployStatus(batchId: string): string | null {
+    const safeBatchId = batchId.replace(/[^a-zA-Z0-9_-]/g, "_")
+    const statusFile = "/tmp/biblioteca-global-" + safeBatchId + ".status"
+    const command = "if [ -f " + shellQuote(statusFile) + " ]; then cat " + shellQuote(statusFile) + "; fi"
+    const output = execFileSync("ssh", this.deploySshArguments(command), { encoding: "utf8", timeout: 15_000 }).trim()
+    return output || null
+  }
+
+  /** Falha cedo e sem alterar tarefas quando o SSH do deploy não é confiável. */
+  private assertDeploySshReady(): void {
+    try {
+      execFileSync("ssh", this.deploySshArguments("true"), { encoding: "utf8", timeout: 15_000, stdio: "pipe" })
+    } catch {
+      throw new Error("SSH do deploy não confiável ou indisponível; atualize a identidade do ServerIA antes de iniciar o lote")
+    }
+  }
+
+  private deploySshArguments(remoteCommand: string): string[] {
+    return [
+      "-i", "/root/.ssh/id_ed25519",
+      "-o", "BatchMode=yes",
+      "-o", "StrictHostKeyChecking=yes",
+      "-o", "UserKnownHostsFile=/root/.ssh/known_hosts",
+      "-o", "ConnectTimeout=10",
+      "alexandre@192.168.1.8",
+      remoteCommand,
+    ]
+  }
+
+  private async failDeployBatch(batchId: string, error: string, taskIds: string[]): Promise<void> {
+    await this.db.query("UPDATE deploy_requests SET status = 'failed', last_error = ?, finished_at = NOW(), updated_at = NOW() WHERE batch_id = ? AND status = 'running'", [error, batchId])
+    await this.db.query(
+      "INSERT INTO bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at) " +
+      "SELECT dr.tarefa_id, NULL, 'deploy_failed', ?, ?, NOW() FROM deploy_requests dr WHERE dr.batch_id = ?",
+      ["motor-v2:deploy:" + batchId, error.substring(0, 500), batchId],
+    )
+    await this.db.query(
+      "UPDATE tarefas t INNER JOIN deploy_requests dr ON dr.tarefa_id = t.id " +
+      "SET t.status = 'blocked', t.ultima_mensagem_erro = ?, t.updated_at = NOW() WHERE dr.batch_id = ?",
+      ["Deploy falhou: " + error.substring(0, 500), batchId],
+    )
+    for (const taskId of taskIds) this.activeDeployments.delete(taskId)
   }
 
   private beginFinalization(executionId: string, worker: ActiveWorker): boolean {
@@ -1423,9 +1769,9 @@ export class TaskCoordinator {
         this.logger.error("Falha ao processar completed: " + describeError(error), { executionId: msg.executionId })
       }
     })
-    this.workerLauncher.on("failed", async (msg: { executionId: string; error: string }) => {
+    this.workerLauncher.on("failed", async (msg: { executionId: string; error: string; sessionFailure?: RemoteSessionFailure }) => {
       try {
-        await this.onTaskFailed(msg.executionId, msg.error)
+        await this.onTaskFailed(msg.executionId, msg.error, "error", msg.sessionFailure)
       } catch (error) {
         this.logger.error("Falha ao processar failed: " + describeError(error), { executionId: msg.executionId })
       }
@@ -1480,7 +1826,10 @@ export class TaskCoordinator {
     })
     this.workerLauncher.on("progress", (event: { executionId: string; phase: string; message: string }) => {
       const worker = this.activeWorkers.get(event.executionId)
-      if (worker) this.publishActivity(worker, { type: "progress", executionPhase: event.phase as import("../shared/types/execution.js").ExecutionPhase, message: event.message })
+      if (worker) {
+        worker.executionPhase = event.phase as import("../shared/types/execution.js").ExecutionPhase
+        this.publishActivity(worker, { type: "progress", executionPhase: worker.executionPhase, message: event.message })
+      }
       this.logger.info("[PROGRESS " + event.phase + "] " + event.message, { executionId: event.executionId })
     })
     this.workerLauncher.on("model_unavailable", (event: { executionId: string; model: string; message: string }) => {
@@ -1626,6 +1975,13 @@ export class TaskCoordinator {
       return
     }
     await this.repository.saveTask({ ...task, ...patch, status, updatedAt: new Date().toISOString() })
+    // Auditoria persistente: `ready` é um estado operacional legítimo entre
+    // subtarefas, mas sem essa trilha ele parece uma regressão na interface.
+    await this.db.query(
+      "INSERT INTO tarefas_status_historico (tarefa_id, status_anterior, status_novo, origem, motivo) " +
+      "SELECT id, ?, ?, ?, ? FROM tarefas WHERE external_id = ? OR id = CAST(? AS UNSIGNED) LIMIT 1",
+      [task.status, status, `motor-v2:${transition}`, patch.errorMessage?.substring(0, 500) ?? null, task.id, task.id],
+    ).catch((error: unknown) => this.logger.warn("Falha ao auditar transição de tarefa: " + describeError(error), { taskId: task.id }))
     // Atualiza o objeto task em memória para manter consistência
     task.status = status as Task["status"]
     if (patch.updatedAt) task.updatedAt = patch.updatedAt

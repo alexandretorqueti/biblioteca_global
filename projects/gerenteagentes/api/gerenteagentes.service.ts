@@ -1,6 +1,6 @@
 import { Injectable, Inject, Logger, NotFoundException, BadRequestException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { eq, desc, and } from 'drizzle-orm';
+import { eq, desc, and, asc } from 'drizzle-orm';
 import { request as httpRequest, type RequestOptions } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { randomUUID } from 'node:crypto';
@@ -18,6 +18,7 @@ import {
   tarefaChats,
   projetoChats,
   projetosCaptados,
+  agentes,
   geracoesProjeto,
   contatos,
   promptsAgentes,
@@ -25,12 +26,15 @@ import {
   promptsVersoes,
   promptsContratos,
   promptsContratosVersoes,
+  motorAgentSessions,
+  motorAgentSessionMessages,
 } from '../schema';
 import { AGENT_PROMPT_CATALOG } from '../motor-v2/src/prompts/prompt-catalog';
 import { OUTPUT_CONTRACT_CATALOG } from '../motor-v2/src/prompts/output-contract-catalog';
 import { markersIn, renderPromptTemplate, validatePromptTemplate } from '../motor-v2/src/prompts/PromptTemplateEngine';
+import { composeDevelopmentPrompt, type PromptPart } from '../motor-v2/src/prompts/PromptComposition';
 import { ProvisionService } from '../../../apps/api/src/modules/provision/provision.service';
-import { TASK_STATUS_STARTABLE } from '../motor-v2/src/shared/task-statuses';
+import { ALL_TASK_STATUSES, TASK_STATUS_STARTABLE } from '../motor-v2/src/shared/task-statuses';
 import { RealtimeService } from '../../../apps/api/src/modules/realtime/realtime.service';
 
 @Injectable()
@@ -62,6 +66,50 @@ export class GerenteAgentesService {
     // Console OpenClaw (fonte de agentes — st-5)
     this.consoleUrl = this.configService.get<string>('OPENCLAW_CONSOLE_URL') || 'https://openclaw-api.webconnect.com.br';
     this.consoleToken = this.configService.get<string>('OPENCLAW_CONSOLE_TOKEN') || '';
+  }
+
+  /**
+   * Consulta o histórico persistido da sessão da subtarefa. A consulta não
+   * depende da sessão remota ainda existir após a aprovação.
+   */
+  async sessaoSubtarefa(projeto: ProjetoResumo, tarefaId: number, seq: number) {
+    const db = await this.dbDoMotor();
+    const [tarefa] = await db
+      .select({
+        projetoId: tarefas.projetoId,
+      })
+      .from(tarefas)
+      .where(eq(tarefas.id, tarefaId))
+      .limit(1);
+
+    if (!tarefa) throw new NotFoundException('Tarefa não encontrada');
+    if (tarefa.projetoId !== projeto.id) throw new NotFoundException('Tarefa não encontrada');
+    const [subtarefa] = await db
+      .select({ id: subtarefas.id })
+      .from(subtarefas)
+      .where(and(eq(subtarefas.tarefaId, tarefaId), eq(subtarefas.seq, seq)))
+      .limit(1);
+    if (!subtarefa) return { available: false, messages: [], text: '' };
+    const [session] = await db
+      .select({ id: motorAgentSessions.id, sessionKey: motorAgentSessions.sessionKey })
+      .from(motorAgentSessions)
+      .where(eq(motorAgentSessions.subtarefaId, subtarefa.id))
+      .orderBy(desc(motorAgentSessions.lastActivityAt))
+      .limit(1);
+    if (!session) return { available: false, messages: [], text: '' };
+
+    const messages = await db
+      .select({ role: motorAgentSessionMessages.role, text: motorAgentSessionMessages.content })
+      .from(motorAgentSessionMessages)
+      .where(eq(motorAgentSessionMessages.sessionId, session.id))
+      .orderBy(asc(motorAgentSessionMessages.sequenceNumber));
+    const normalized = messages.map((message) => ({ role: message.role, text: message.text }));
+    return {
+      available: normalized.length > 0,
+      sessionKey: session.sessionKey,
+      messages: normalized,
+      text: normalized.map((message) => `[${message.role}]\n${message.text}`).join('\n\n'),
+    };
   }
 
   /**
@@ -182,11 +230,19 @@ export class GerenteAgentesService {
   async sincronizarAgentesOpenClaw(): Promise<{ criados: number; atualizados: number; total: number }> {
     const agentesOpenClaw = await this.listarAgentesConsole();
     const db = await this.dbDoMotor();
-    const { agentes } = await import('../schema');
+    const ids = new Set<string>();
+    for (const agente of agentesOpenClaw) {
+      if (ids.has(agente.id)) throw new BadRequestException(`Console OpenClaw retornou identificador duplicado: ${agente.id}`);
+      ids.add(agente.id);
+    }
 
     // Busca agentes existentes no banco
     const agentesExistentes = await db.select().from(agentes);
-    const mapaExistentes = new Map(agentesExistentes.map(a => [a.nome, a]));
+    const mapaExistentes = new Map<string, typeof agentesExistentes[number]>();
+    for (const agente of agentesExistentes) {
+      mapaExistentes.set(agente.nome, agente);
+      if (agente.openclawAgentId) mapaExistentes.set(agente.openclawAgentId, agente);
+    }
 
     let criados = 0;
     let atualizados = 0;
@@ -197,6 +253,7 @@ export class GerenteAgentesService {
         // Cria novo agente
         await db.insert(agentes).values({
           nome: agenteOpenClaw.id,
+          openclawAgentId: agenteOpenClaw.id,
           modelo: agenteOpenClaw.model || 'unknown',
           descricao: agenteOpenClaw.name !== agenteOpenClaw.id ? agenteOpenClaw.name : null,
           ativo: true,
@@ -207,6 +264,7 @@ export class GerenteAgentesService {
         await db.update(agentes)
           .set({
             modelo: agenteOpenClaw.model || existente.modelo,
+            openclawAgentId: agenteOpenClaw.id,
             descricao: agenteOpenClaw.name !== agenteOpenClaw.id ? agenteOpenClaw.name : existente.descricao,
           })
           .where(eq(agentes.id, existente.id));
@@ -216,6 +274,25 @@ export class GerenteAgentesService {
 
     this.logger.log(`Sincronização de agentes: ${criados} criados, ${atualizados} atualizados, ${agentesOpenClaw.length} total`);
     return { criados, atualizados, total: agentesOpenClaw.length };
+  }
+
+  /** Confere o vínculo de uma linha local com o catálogo atual do OpenClaw. */
+  async diagnosticarVinculoAgente(id: number) {
+    const db = await this.dbDoMotor();
+    const [local] = await db.select().from(agentes).where(eq(agentes.id, id)).limit(1);
+    if (!local) throw new NotFoundException(`Agente local ${id} não encontrado`);
+    const openclawId = local.openclawAgentId || local.nome;
+    let remotos: Array<{ id: string; name: string; model?: string; status?: string }>;
+    try {
+      remotos = await this.listarAgentesConsole();
+    } catch (error) {
+      return { agenteId: id, openclawAgentId: openclawId, estado: 'indisponivel', inconsistencia: 'Não foi possível consultar o Console OpenClaw.', detalhe: error instanceof Error ? error.message : String(error) };
+    }
+    const remoto = remotos.find((agente) => agente.id === openclawId);
+    if (!remoto) return { agenteId: id, openclawAgentId: openclawId, estado: 'nao_encontrado', inconsistencia: 'Identificador não encontrado no OpenClaw.' };
+    const estado = remoto.status || 'desconhecido';
+    const indisponivel = ['offline', 'unavailable', 'error', 'stopped'].includes(estado.toLowerCase());
+    return { agenteId: id, openclawAgentId: openclawId, estado: indisponivel ? 'indisponivel' : estado, inconsistencia: indisponivel ? `Agente registrado, mas indisponível (${estado}).` : null, agenteOpenClaw: remoto };
   }
 
   /**
@@ -398,15 +475,29 @@ export class GerenteAgentesService {
     return { ok: true, contratoId, versionId };
   }
 
-  async preverPrompt(id: number, texto: string, values: Record<string, unknown>) {
+  async preverPrompt(id: number, texto: string, values: Record<string, unknown>, contratoVersaoId?: number) {
     const db = await this.dbDoMotor();
     const [prompt] = await db.select().from(promptsAgentes).where(eq(promptsAgentes.id, id)).limit(1);
     if (!prompt) throw new NotFoundException('Prompt não encontrado');
     const entry = this.catalogEntry(prompt.chave);
     const validation = validatePromptTemplate(texto, [...entry.markers, ...(entry.contractKey ? ['**CONTRATOSAIDA**'] : [])], entry.contractKey ? ['**CONTRATOSAIDA**'] : []);
     if (!validation.ok) return { validation, rendered: null };
+    let contractInstructions = '';
+    if (contratoVersaoId) {
+      const [contractVersion] = await db.select().from(promptsContratosVersoes).where(eq(promptsContratosVersoes.id, contratoVersaoId)).limit(1);
+      contractInstructions = contractVersion?.instrucoes ?? '';
+    }
     const completeValues = Object.fromEntries(entry.markers.map((marker) => [marker, values[marker] ?? `<${marker.slice(2, -2)}>`]));
-    return { validation, rendered: renderPromptTemplate(texto, completeValues), used: markersIn(texto) };
+    const tableRendered = renderPromptTemplate(texto, { ...completeValues, '**CONTRATOSAIDA**': contractInstructions });
+    const renderedWithContract = contractInstructions && !texto.includes('**CONTRATOSAIDA**')
+      ? `${tableRendered}\n\nCONTRATO DE SAÍDA OBRIGATÓRIO:\n${contractInstructions}`
+      : tableRendered;
+    const workspace = String(completeValues['**WORKSPACE**'] ?? '<WORKSPACE>');
+    const composition = entry.agentType === 'dev'
+      ? composeDevelopmentPrompt(workspace, '<RAIZ_GIT_DO_WORKTREE>', renderedWithContract)
+      : { finalText: renderedWithContract, parts: [{ source: 'table', label: 'Prompt publicado na tabela', text: renderedWithContract }] as PromptPart[] };
+    if (contractInstructions) composition.parts.push({ source: 'contract', label: 'Contrato de saída vinculado', text: contractInstructions });
+    return { validation, rendered: composition.finalText, parts: composition.parts, used: markersIn(texto) };
   }
 
   /**
@@ -549,6 +640,23 @@ export class GerenteAgentesService {
       .limit(1);
     if (!created) throw new BadRequestException('Falha ao criar tarefa');
     return created;
+  }
+
+  async atualizarStatusTarefa(_projeto: ProjetoResumo, tarefaId: number, status?: string) {
+    const db = await this.dbDoMotor();
+    if (!status || !ALL_TASK_STATUSES.includes(status as (typeof ALL_TASK_STATUSES)[number])) {
+      throw new BadRequestException(`Status inválido: ${status ?? ''}`);
+    }
+
+    const [tarefa] = await db
+      .select({ id: tarefas.id })
+      .from(tarefas)
+      .where(eq(tarefas.id, tarefaId))
+      .limit(1);
+    if (!tarefa) throw new NotFoundException('Tarefa não encontrada');
+
+    await db.update(tarefas).set({ status, updatedAt: new Date() }).where(eq(tarefas.id, tarefaId));
+    return { id: tarefaId, status };
   }
 
   /**
@@ -694,6 +802,70 @@ export class GerenteAgentesService {
       .where(eq(tarefas.id, tarefaId));
 
     return { id: tarefaId, status: 'running', message: 'Tarefa retomada' };
+  }
+
+  /**
+   * Remove o bloqueio operacional de uma tarefa sem reabrir subtarefas que já
+   * avançaram no fluxo. Somente subtarefas efetivamente bloqueadas voltam a
+   * `pending`; a tarefa fica pronta quando há subtarefas e em rascunho quando
+   * não há nenhuma.
+   */
+  async desbloquearTarefa(projeto: ProjetoResumo, tarefaId: number) {
+    const db = await this.dbDoMotor();
+    const [tarefa] = await db
+      .select({ id: tarefas.id })
+      .from(tarefas)
+      .where(eq(tarefas.id, tarefaId))
+      .limit(1);
+
+    if (!tarefa) {
+      throw new NotFoundException('Tarefa não encontrada');
+    }
+
+    const existentes = await db
+      .select({ id: subtarefas.id, status: subtarefas.status })
+      .from(subtarefas)
+      .where(eq(subtarefas.tarefaId, tarefaId));
+    const bloqueadas = existentes.filter((subtarefa) => subtarefa.status === 'blocked').length;
+
+    if (existentes.length > 0) {
+      await db
+        .update(subtarefas)
+        .set({ status: 'pending', updatedAt: new Date() })
+        .where(and(eq(subtarefas.tarefaId, tarefaId), eq(subtarefas.status, 'blocked')));
+    }
+
+    const status = existentes.length > 0 ? 'ready' : 'draft';
+    await db
+      .update(tarefas)
+      .set({ status, updatedAt: new Date() })
+      .where(eq(tarefas.id, tarefaId));
+
+    return {
+      id: tarefaId,
+      status,
+      subtarefasDesbloqueadas: bloqueadas,
+      message: existentes.length > 0 ? 'Tarefa desbloqueada' : 'Tarefa devolvida para rascunho',
+    };
+  }
+
+  async fazerDeployTarefa(projeto: ProjetoResumo, tarefaId: number) {
+    const db = await this.dbDoMotor();
+    const [tarefa] = await db.select().from(tarefas).where(eq(tarefas.id, tarefaId)).limit(1);
+    if (!tarefa) throw new NotFoundException('Tarefa não encontrada');
+    if (tarefa.tipo !== 'desenvolvimento' || tarefa.status !== 'completed') {
+      throw new BadRequestException('Deploy manual disponível somente para tarefas de desenvolvimento concluídas');
+    }
+    const motorId = tarefa.externalId || String(tarefa.id);
+    const resp = await this.motorRequest('POST', `/api/motor/task/${encodeURIComponent(motorId)}/deploy`, undefined, this.motorV2Url);
+    if (!resp.ok) throw new BadRequestException(`Motor rejeitou o deploy (${resp.status}): ${resp.body.slice(0, 200)}`);
+    return { id: tarefaId, status: 'deploy_pending', message: 'Deploy agendado para quando o Motor ficar ocioso' };
+  }
+
+  async atividadeMotor(projeto: ProjetoResumo) {
+    const resp = await this.motorRequest('GET', '/api/motor/stats', undefined, this.motorV2Url);
+    if (!resp.ok) throw new BadRequestException(`Motor indisponível (${resp.status}): ${resp.body.slice(0, 200)}`);
+    return JSON.parse(resp.body) as unknown;
   }
 
   // ============================================================================
@@ -1031,6 +1203,8 @@ export class GerenteAgentesService {
         errorMessage?: string;
         subtasks?: Array<{
           seq?: number;
+          workspaceBranch?: string | null;
+          workspaceCommitSha?: string | null;
           deliveryHistory?: Array<{
             id: number;
             deliverNumber: number;
@@ -1061,6 +1235,8 @@ export class GerenteAgentesService {
           scope: subtarefas.scope,
           acceptanceCriteria: subtarefas.acceptanceCriteria,
           workspaceStatus: subtarefas.workspaceStatus,
+          workspaceBranch: subtarefas.workspaceBranch,
+          workspaceCommitSha: subtarefas.workspaceCommitSha,
           correctionForSubtaskId: subtarefas.correctionForSubtaskId,
         })
         .from(subtarefas)
@@ -1092,6 +1268,8 @@ export class GerenteAgentesService {
         scope: s.scope ?? null,
         acceptanceCriteria: s.acceptanceCriteria ?? null,
         workspaceStatus: s.workspaceStatus ?? null,
+        workspaceBranch: s.workspaceBranch ?? null,
+        workspaceCommitSha: s.workspaceCommitSha ?? null,
         correctionForSubtaskId: s.correctionForSubtaskId ?? null,
         deliveryHistory: motorHistoryBySeq.get(s.seq) ?? [],
       }));
@@ -1107,9 +1285,12 @@ export class GerenteAgentesService {
         task: {
           id: motorTask.id || String(tarefaId),
           title: motorTask.title || tarefa.titulo,
-          status: motorTask.status || tarefa.status,
+          // O estado persistido é atualizado pela ação de desbloqueio antes
+          // de o motor processar uma nova execução; ele deve prevalecer na UI.
+          status: tarefa.status,
+          integrationBranch: `motor-v2/${motorId}/integracao`,
           errorMessage: motorTask.errorMessage ?? undefined,
-          blockInfo: motorTask.ultimoBloqueio ?? null,
+          blockInfo: tarefa.status === 'blocked' ? (motorTask.ultimoBloqueio ?? null) : null,
         },
         subtasks,
         currentSubTask,

@@ -55,6 +55,8 @@ import {
 import { useApi } from "../../../apps/web/src/hooks/useApi"
 import { useAuth } from "../../../apps/web/src/auth/AuthContext"
 
+export const componentId = "taqui-notificacoes-morador"
+
 // ============================================================================
 // TIPOS
 // ============================================================================

@@ -287,6 +287,7 @@ export default function GeradorSistema({
   const theme = useTheme()
   const desktop = useMediaQuery(theme.breakpoints.up("md"))
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const [menuCollapsed, setMenuCollapsed] = useState(false)
   const groups = montarGroups(config, runtime, perfil)
   const firstPath = groups[0]?.items[0]?.path ?? ""
   const [uncontrolledPath, setUncontrolledPath] = useState(
@@ -412,23 +413,30 @@ export default function GeradorSistema({
           drawerWidth={drawerWidth}
           actions={actions}
           onOpenMenu={() => setMobileMenuOpen(true)}
+          menuCollapsed={menuCollapsed}
+          onToggleMenu={() => setMenuCollapsed((collapsed) => !collapsed)}
         />
 
         <Box
           component="nav"
           aria-label="Navegação principal"
-          sx={{ width: { md: drawerWidth }, flexShrink: 0 }}
+          sx={{
+            width: desktop && !menuCollapsed ? drawerWidth : 0,
+            flexShrink: 0,
+          }}
         >
           <Drawer
             variant={desktop ? "permanent" : "temporary"}
-            open={desktop || mobileMenuOpen}
+            open={(desktop && !menuCollapsed) || mobileMenuOpen}
             onClose={() => setMobileMenuOpen(false)}
             ModalProps={{ keepMounted: true }}
             sx={{
               "& .MuiDrawer-paper": {
-                width: drawerWidth,
+                width: desktop && !menuCollapsed ? drawerWidth : 0,
                 boxSizing: "border-box",
                 borderRightColor: "divider",
+                overflowX: "hidden",
+                visibility: desktop && menuCollapsed ? "hidden" : "visible",
               },
             }}
           >
@@ -522,23 +530,30 @@ export default function GeradorSistema({
         drawerWidth={drawerWidth}
         actions={actions}
         onOpenMenu={() => setMobileMenuOpen(true)}
+        menuCollapsed={menuCollapsed}
+        onToggleMenu={() => setMenuCollapsed((collapsed) => !collapsed)}
       />
 
       <Box
         component="nav"
         aria-label="Navegação principal"
-        sx={{ width: { md: drawerWidth }, flexShrink: 0 }}
+        sx={{
+          width: desktop && !menuCollapsed ? drawerWidth : 0,
+          flexShrink: 0,
+        }}
       >
         <Drawer
           variant={desktop ? "permanent" : "temporary"}
-          open={desktop || mobileMenuOpen}
+          open={(desktop && !menuCollapsed) || mobileMenuOpen}
           onClose={() => setMobileMenuOpen(false)}
           ModalProps={{ keepMounted: true }}
           sx={{
             "& .MuiDrawer-paper": {
-              width: drawerWidth,
+              width: desktop && !menuCollapsed ? drawerWidth : 0,
               boxSizing: "border-box",
               borderRightColor: "divider",
+              overflowX: "hidden",
+              visibility: desktop && menuCollapsed ? "hidden" : "visible",
             },
           }}
         >

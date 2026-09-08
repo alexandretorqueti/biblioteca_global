@@ -86,9 +86,14 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
         path = path.substring(1)
       }
       
+      // Se o path já começa com o slug do projeto, não adicionar novamente
+      const finalPath = path.startsWith(`${projectSlug}/`)
+        ? `/${path}`
+        : `/${projectSlug}/${path}`
+      
       const result = await bundle.http.request<{ message?: string }>(
         action.method,
-        `/${projectSlug}/${path}`,
+        finalPath,
         { auth: "access" }
       )
       

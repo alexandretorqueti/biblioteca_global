@@ -48,7 +48,7 @@ export const AGENT_PROMPT_CATALOG: readonly AgentPromptCatalogEntry[] = [
     situation: "primeira_rodada_tarefa",
     source: "motor-v2/src/workers/TaskWorker.ts#buildAnalystPrompt",
     markers: ["**TITULOTAREFA**", "**DESCRICAOTAREFA**", "**TIPOTAREFA**"],
-    prompt: "Você é o analista. Planeje a tarefa **TITULOTAREFA**. Tipo: **TIPOTAREFA**. Descrição: **DESCRICAOTAREFA**. Use o mínimo de subtarefas executáveis.\n\n**CONTRATOSAIDA**",
+    prompt: "Você é o analista responsável por transformar a tarefa **TITULOTAREFA** em um plano completo, executável e verificável. Tipo: **TIPOTAREFA**. Leia integralmente a descrição abaixo, preserve todos os requisitos, etapas numeradas, sequência e definição de pronto. Não minimize artificialmente a quantidade de subtarefas nem una etapas independentes. Cada subtarefa deve ter uma responsabilidade principal, escopo detalhado, entregáveis concretos, critérios objetivos e requisitos cobertos. Identifique todos os requisitos como REQ-* e forneça a matriz de cobertura. Se a descrição estiver truncada, incompleta ou ambígua, não invente um plano: peça esclarecimentos. Descrição integral: **DESCRICAOTAREFA**\n\n**CONTRATOSAIDA**",
     contractKey: "analista.plano_ou_perguntas",
   },
   {
@@ -57,7 +57,7 @@ export const AGENT_PROMPT_CATALOG: readonly AgentPromptCatalogEntry[] = [
     situation: "retomada_apos_clarificacao",
     source: "motor-v2/src/workers/TaskWorker.ts#buildAnalystPrompt",
     markers: ["**TITULOTAREFA**", "**DESCRICAOTAREFA**", "**HISTORICOCLARIFICACAO**"],
-    prompt: "Reanalise **TITULOTAREFA**. Descrição: **DESCRICAOTAREFA**. Histórico já respondido: **HISTORICOCLARIFICACAO**. Não repita perguntas respondidas.\n\n**CONTRATOSAIDA**",
+    prompt: "Reanalise **TITULOTAREFA** usando a descrição integral: **DESCRICAOTAREFA**. Histórico já respondido: **HISTORICOCLARIFICACAO**. Preserve todos os requisitos e etapas, não una responsabilidades independentes, e não repita perguntas respondidas. Quando estiver claro, devolva plano completo com requisitos e matriz de cobertura; caso contrário, faça perguntas objetivas.\n\n**CONTRATOSAIDA**",
     contractKey: "analista.plano_ou_perguntas",
   },
   {
@@ -74,7 +74,7 @@ export const AGENT_PROMPT_CATALOG: readonly AgentPromptCatalogEntry[] = [
     situation: "primeira_rodada_tarefa",
     source: "motor-v2/src/workers/TaskWorker.ts#buildProgrammerPrompt",
     markers: ["**TITULOTAREFA**", "**DESCRICAOTAREFA**", "**TIPOTAREFA**", "**NUMSUBTAREFA**", "**TITULOSUBTAREFA**", "**ESCOPO**", "**CRITERIOSACEITE**", "**WORKSPACE**"],
-    prompt: "Você é o desenvolvedor. Execute a subtarefa **NUMSUBTAREFA** — **TITULOSUBTAREFA** da tarefa **TITULOTAREFA**. Descrição: **DESCRICAOTAREFA**. Tipo: **TIPOTAREFA**. Escopo: **ESCOPO**. Critérios: **CRITERIOSACEITE**. Workspace: **WORKSPACE**. Não faça commit. Responda em JSON com status done, need_help, blocked_environment ou premise_incorrect.",
+    prompt: "Você é o desenvolvedor. Execute a subtarefa **NUMSUBTAREFA** — **TITULOSUBTAREFA** da tarefa **TITULOTAREFA**. Descrição: **DESCRICAOTAREFA**. Tipo: **TIPOTAREFA**. Escopo: **ESCOPO**. Critérios: **CRITERIOSACEITE**. Workspace: **WORKSPACE**. Não faça commit. Responda em JSON com status done, need_help, blocked_environment ou premise_incorrect.\n\n**CONTRATOSAIDA**",
     contractKey: "dev.resultado_execucao",
   },
   {
@@ -83,7 +83,7 @@ export const AGENT_PROMPT_CATALOG: readonly AgentPromptCatalogEntry[] = [
     situation: "retorno_por_falha_de_gate",
     source: "motor-v2/src/workers/TaskWorker.ts#buildProgrammerPrompt",
     markers: ["**TITULOTAREFA**", "**TITULOSUBTAREFA**", "**ERROGATEANTERIOR**", "**WORKSPACE**"],
-    prompt: "Retome a subtarefa **TITULOSUBTAREFA** da tarefa **TITULOTAREFA** no workspace **WORKSPACE**. O gate anterior falhou: **ERROGATEANTERIOR**. Corrija a causa raiz, preserve o que já funciona, não faça commit e responda no contrato JSON do Motor.",
+    prompt: "Retome a subtarefa **TITULOSUBTAREFA** da tarefa **TITULOTAREFA**. Workspace: **WORKSPACE**. O gate anterior falhou: **ERROGATEANTERIOR**. Corrija a causa raiz, preserve o que já funciona, não faça commit e responda no contrato JSON do Motor.\n\n**CONTRATOSAIDA**",
     contractKey: "dev.resultado_execucao",
   },
   {

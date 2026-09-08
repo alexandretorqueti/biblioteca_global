@@ -13,6 +13,8 @@ import {
   Paper,
 } from "@mui/material"
 import TarefaForm, { type TarefaFormValues } from "./TarefaForm"
+import { AddTaskRounded } from "@mui/icons-material"
+export const componentId = "gerenteagentes-nova-tarefa"
 
 interface Projeto {
   id: number

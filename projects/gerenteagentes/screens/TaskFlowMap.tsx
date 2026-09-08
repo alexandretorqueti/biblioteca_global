@@ -4,22 +4,31 @@ import {
   ArrowForwardRounded,
   ErrorOutlineRounded,
   SettingsRounded,
+  VisibilityRounded,
 } from "@mui/icons-material"
-import { Box, Chip, Paper, Stack, Typography } from "@mui/material"
+import { Box, Chip, Paper, Stack, Tooltip, Typography } from "@mui/material"
 import { taskStatusLabel } from "../motor-v2/src/shared/task-statuses"
 
 export interface FlowTask {
   id: number
   titulo: string
+  descricao?: string | null
   status: string
   projetoId: number
+}
+
+export interface MotorActivity {
+  taskId: string
+  phase: "verify" | "deploy"
 }
 
 interface TaskFlowMapProps {
   tarefas: FlowTask[]
   selectedTaskId: number | ""
   search?: string
+  motorActivities?: MotorActivity[]
   onSelectTask: (id: number) => void
+  onMoveTask?: (id: number, status: string) => void | Promise<void>
 }
 
 interface FlowStation {
@@ -32,8 +41,9 @@ interface FlowStation {
 
 const MAIN_FLOW: FlowStation[] = [
   { id: "draft", label: "Rascunhos", subtitle: "em preparação", statuses: ["draft"], tone: "neutral" },
-  { id: "planning", label: "Planejamento", subtitle: "análise da IA", statuses: ["planned", "analyzing"], tone: "active" },
-  { id: "ready", label: "Prontas", subtitle: "aguardando execução", statuses: ["ready"], tone: "neutral" },
+  { id: "planning", label: "Planejadas", subtitle: "aguardando análise", statuses: ["planned"], tone: "neutral" },
+  { id: "analyzing", label: "Em análise", subtitle: "IA analisando", statuses: ["analyzing"], tone: "active" },
+  { id: "ready", label: "Prontas / na fila", subtitle: "próxima subtarefa", statuses: ["ready"], tone: "neutral" },
   { id: "running", label: "Em execução", subtitle: "IA trabalhando", statuses: ["running"], tone: "active" },
   { id: "completed", label: "Concluídas", subtitle: "entregues", statuses: ["completed", "finalizada"], tone: "success" },
   { id: "deployed", label: "Deployadas", subtitle: "em produção", statuses: ["deployed", "deployada"], tone: "success" },
@@ -48,6 +58,12 @@ const SIDE_FLOW: FlowStation[] = [
 
 const ACTIVE_AI_STATUSES = new Set(["analyzing", "running", "motor_fix"])
 
+function taskDescription(task: FlowTask): string {
+  return typeof task.descricao === "string" && task.descricao.trim()
+    ? task.descricao.trim()
+    : "Tarefa sem descrição"
+}
+
 const TONE_STYLE = {
   neutral: { borderColor: "divider", bgcolor: "action.hover" },
   active: { borderColor: "primary.main", bgcolor: "primary.main", color: "primary.contrastText" },
@@ -56,14 +72,19 @@ const TONE_STYLE = {
   danger: { borderColor: "error.main", bgcolor: "error.dark", color: "error.contrastText" },
 } as const
 
-function Station({ station, tarefas, selectedTaskId, search, movingIds, onSelectTask }: {
+function Station({ station, tarefas, selectedTaskId, search, movingIds, draggingTaskId, onSelectTask, onMoveTask, onDragStart, onDragEnd }: {
   station: FlowStation
   tarefas: FlowTask[]
   selectedTaskId: number | ""
   search: string
   movingIds: Set<number>
+  draggingTaskId: number | null
   onSelectTask: (id: number) => void
+  onMoveTask?: (id: number, status: string) => void | Promise<void>
+  onDragStart: (id: number) => void
+  onDragEnd: () => void
 }) {
+  const [dragOver, setDragOver] = useState(false)
   const stationTasks = tarefas.filter((task) => station.statuses.includes(task.status))
   const normalizedSearch = search.trim().toLocaleLowerCase("pt-BR")
   const visibleTasks = stationTasks
@@ -74,7 +95,20 @@ function Station({ station, tarefas, selectedTaskId, search, movingIds, onSelect
     <Paper
       variant="outlined"
       data-testid={`flow-station-${station.id}`}
-      sx={{ ...TONE_STYLE[station.tone], p: 1.5, minWidth: 190, minHeight: 196, borderWidth: 1.5, borderRadius: 3 }}
+      onDragOver={(event) => {
+        if (draggingTaskId !== null) {
+          event.preventDefault()
+          setDragOver(true)
+        }
+      }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(event) => {
+        event.preventDefault()
+        setDragOver(false)
+        const taskId = Number(event.dataTransfer?.getData("text/plain")) || draggingTaskId
+        if (taskId && onMoveTask) void onMoveTask(taskId, station.statuses[0])
+      }}
+      sx={{ ...TONE_STYLE[station.tone], p: 1.5, minWidth: 190, minHeight: 196, borderWidth: 1.5, borderRadius: 3, transition: "box-shadow 120ms ease, transform 120ms ease", ...(dragOver ? { boxShadow: 6, transform: "scale(1.02)", outline: "2px dashed", outlineColor: "primary.main" } : {}) }}
     >
       <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
         <Box>
@@ -99,6 +133,13 @@ function Station({ station, tarefas, selectedTaskId, search, movingIds, onSelect
               component="button"
               type="button"
               onClick={() => onSelectTask(task.id)}
+              draggable={Boolean(onMoveTask)}
+              onDragStart={(event) => {
+                event.dataTransfer.setData("text/plain", String(task.id))
+                event.dataTransfer.effectAllowed = "move"
+                onDragStart(task.id)
+              }}
+              onDragEnd={onDragEnd}
               data-testid={`flow-task-${task.id}`}
               aria-label={`Abrir tarefa ${task.id}: ${task.titulo}`}
               elevation={task.id === selectedTaskId ? 5 : 0}
@@ -110,10 +151,20 @@ function Station({ station, tarefas, selectedTaskId, search, movingIds, onSelect
                 "@keyframes task-arrived": { "0%, 100%": { opacity: 1 }, "50%": { opacity: 0.45 } },
               }}
             >
-              <Stack direction="row" spacing={0.7} alignItems="center">
-                {aiActive && <SettingsRounded aria-label="IA trabalhando" sx={{ fontSize: 18, color: "warning.main", animation: "gear-spin 2s linear infinite", "@keyframes gear-spin": { to: { transform: "rotate(360deg)" } } }} />}
-                {station.tone === "danger" && <ErrorOutlineRounded sx={{ fontSize: 17, color: "error.main" }} />}
-                <Typography variant="caption" fontWeight={700} noWrap>#{task.id} {task.titulo}</Typography>
+              <Stack direction="row" spacing={0.7} alignItems="center" sx={{ minWidth: 0 }}>
+                {aiActive && <SettingsRounded aria-label="IA trabalhando" sx={{ flexShrink: 0, fontSize: 18, color: "warning.main", animation: "gear-spin 2s linear infinite", "@keyframes gear-spin": { to: { transform: "rotate(360deg)" } } }} />}
+                {station.tone === "danger" && <ErrorOutlineRounded sx={{ flexShrink: 0, fontSize: 17, color: "error.main" }} />}
+                <Typography variant="caption" fontWeight={700} noWrap sx={{ minWidth: 0, flex: 1 }}>#{task.id} {task.titulo}</Typography>
+                <Tooltip title={taskDescription(task)} arrow placement="top">
+                  <Box
+                    component="span"
+                    aria-label={`Descrição da tarefa ${task.id}`}
+                    data-testid={`flow-task-description-${task.id}`}
+                    sx={{ display: "inline-flex", flexShrink: 0, color: "action.active", cursor: "help" }}
+                  >
+                    <VisibilityRounded sx={{ fontSize: 16 }} />
+                  </Box>
+                </Tooltip>
               </Stack>
             </Paper>
           )
@@ -125,9 +176,10 @@ function Station({ station, tarefas, selectedTaskId, search, movingIds, onSelect
   )
 }
 
-export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", onSelectTask }: TaskFlowMapProps) {
+export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", motorActivities = [], onSelectTask, onMoveTask }: TaskFlowMapProps) {
   const previousStatuses = useRef(new Map<number, string>())
   const [movements, setMovements] = useState<Array<{ id: number; from: string; to: string }>>([])
+  const [draggingTaskId, setDraggingTaskId] = useState<number | null>(null)
 
   useEffect(() => {
     const next = new Map(tarefas.map((task) => [task.id, task.status]))
@@ -143,23 +195,48 @@ export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", onSe
   }, [tarefas])
 
   const movingIds = useMemo(() => new Set(movements.map((movement) => movement.id)), [movements])
+  const activeAiCount = useMemo(() => tarefas.filter((task) => ACTIVE_AI_STATUSES.has(task.status)).length, [tarefas])
 
   return (
     <Paper variant="outlined" sx={{ p: { xs: 1.5, md: 2 }, overflow: "hidden" }} data-testid="task-flow-map">
       <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" spacing={1} sx={{ mb: 2 }}>
         <Box><Typography variant="h6" fontWeight={750}>Mapa Vivo da Operação</Typography><Typography variant="body2" color="text.secondary">Acompanhe as tarefas percorrendo o fluxo em tempo real.</Typography></Box>
-        <Stack direction="row" spacing={1} alignItems="center"><SettingsRounded sx={{ color: "warning.main", animation: "legend-spin 2s linear infinite", "@keyframes legend-spin": { to: { transform: "rotate(360deg)" } } }} /><Typography variant="caption" color="text.secondary">IA trabalhando</Typography></Stack>
+        <Stack direction="row" spacing={1} alignItems="center" data-testid="flow-ai-activity"><SettingsRounded sx={{ color: activeAiCount ? "warning.main" : "text.disabled", animation: activeAiCount ? "legend-spin 2s linear infinite" : "none", "@keyframes legend-spin": { to: { transform: "rotate(360deg)" } } }} /><Typography variant="caption" color="text.secondary">{activeAiCount ? `IA trabalhando (${activeAiCount})` : "Nenhuma IA trabalhando"}</Typography></Stack>
+      </Stack>
+      <Stack direction="row" spacing={1} alignItems="center" data-testid="flow-motor-activity" sx={{ mb: 2 }}>
+        <SettingsRounded sx={{ color: motorActivities.length ? "info.main" : "text.disabled", animation: motorActivities.length ? "motor-gear-spin 2s linear infinite" : "none", "@keyframes motor-gear-spin": { to: { transform: "rotate(360deg)" } } }} />
+        <Typography variant="caption" color="text.secondary">
+          {motorActivities.length
+            ? motorActivities.map((activity) => `${activity.phase === "verify" ? "verificando" : "deployando"} ${activity.taskId}`).join(" · ")
+            : "Motor sem verificações ou deploys"}
+        </Typography>
       </Stack>
 
       {movements.map((movement) => <Chip key={movement.id} color="info" sx={{ mb: 1.5, mr: 1 }} label={`#${movement.id} · ${taskStatusLabel(movement.from)} → ${taskStatusLabel(movement.to)}`} data-testid={`flow-movement-${movement.id}`} />)}
 
       <Box sx={{ overflowX: "auto", pb: 1 }}>
-        <Stack direction="row" alignItems="center" spacing={0.75} sx={{ minWidth: 1320 }}>
-          {MAIN_FLOW.map((station, index) => <React.Fragment key={station.id}><Station station={station} tarefas={tarefas} selectedTaskId={selectedTaskId} search={search} movingIds={movingIds} onSelectTask={onSelectTask} />{index < MAIN_FLOW.length - 1 && <ArrowForwardRounded color="action" aria-hidden="true" />}</React.Fragment>)}
+        <Stack
+          direction="row"
+          alignItems="center"
+          justifyContent="center"
+          flexWrap="wrap"
+          useFlexGap
+          spacing={0.75}
+          sx={{ width: "100%" }}
+        >
+          {MAIN_FLOW.map((station, index) => <React.Fragment key={station.id}><Station station={station} tarefas={tarefas} selectedTaskId={selectedTaskId} search={search} movingIds={movingIds} draggingTaskId={draggingTaskId} onSelectTask={onSelectTask} onMoveTask={onMoveTask} onDragStart={setDraggingTaskId} onDragEnd={() => setDraggingTaskId(null)} />{index < MAIN_FLOW.length - 1 && <ArrowForwardRounded color="action" aria-hidden="true" />}</React.Fragment>)}
         </Stack>
-        <Stack alignItems="center" sx={{ minWidth: 1320, my: 0.5 }}><ArrowDownwardRounded color="action" /></Stack>
-        <Stack direction="row" justifyContent="center" alignItems="center" spacing={1} sx={{ minWidth: 900 }}>
-          {SIDE_FLOW.map((station, index) => <React.Fragment key={station.id}><Station station={station} tarefas={tarefas} selectedTaskId={selectedTaskId} search={search} movingIds={movingIds} onSelectTask={onSelectTask} />{index < SIDE_FLOW.length - 1 && <ArrowForwardRounded color="action" aria-hidden="true" />}</React.Fragment>)}
+        <Stack alignItems="center" sx={{ width: "100%", my: 0.5 }}><ArrowDownwardRounded color="action" /></Stack>
+        <Stack
+          direction="row"
+          justifyContent="center"
+          alignItems="center"
+          flexWrap="wrap"
+          useFlexGap
+          spacing={1}
+          sx={{ width: "100%" }}
+        >
+          {SIDE_FLOW.map((station, index) => <React.Fragment key={station.id}><Station station={station} tarefas={tarefas} selectedTaskId={selectedTaskId} search={search} movingIds={movingIds} draggingTaskId={draggingTaskId} onSelectTask={onSelectTask} onMoveTask={onMoveTask} onDragStart={setDraggingTaskId} onDragEnd={() => setDraggingTaskId(null)} />{index < SIDE_FLOW.length - 1 && <ArrowForwardRounded color="action" aria-hidden="true" />}</React.Fragment>)}
         </Stack>
       </Box>
     </Paper>

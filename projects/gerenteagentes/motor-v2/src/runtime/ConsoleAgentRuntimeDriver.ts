@@ -35,6 +35,54 @@ export interface AgentRunCompletion {
   content?: string
   stopReason?: string
   errorMessage?: string
+  failure?: RemoteSessionFailure
+}
+
+export type RemoteFailureClassification = "transient" | "definitive" | "systemic"
+
+export interface RemoteSessionFailure {
+  code: string
+  message: string
+  sessionKey: string
+  remoteSessionId?: string
+  runId: string
+  occurredAt: string
+  scope: "session" | "run" | "console"
+  classification: RemoteFailureClassification
+  classificationReason: string
+  fingerprint: string
+}
+
+export interface RuntimeSessionMessage {
+  id?: string
+  role: string
+  content: unknown
+  createdAt?: string
+}
+
+type SessionDescription = {
+  status?: string
+  state?: string
+  endedAt?: number | string
+  failedAt?: number | string
+  hasActiveRun?: boolean
+  stopReason?: string
+  sessionId?: string
+  id?: string
+  errorCode?: string
+  errorMessage?: string
+  message?: string
+  error?: SessionFailureDetail | string
+  failure?: SessionFailureDetail | string
+  details?: SessionFailureDetail
+}
+
+type SessionFailureDetail = {
+  code?: unknown
+  message?: unknown
+  occurredAt?: unknown
+  failedAt?: unknown
+  endedAt?: unknown
 }
 
 class ConsoleRequestError extends Error {
@@ -42,6 +90,24 @@ class ConsoleRequestError extends Error {
     super(message)
     this.name = "ConsoleRequestError"
   }
+}
+
+export function normalizeRemoteTimestamp(value: number | string | undefined): string | undefined {
+  if (value === undefined || value === "") return undefined
+  const numeric = typeof value === "number" ? value : /^\d+(?:\.\d+)?$/.test(value) ? Number(value) : NaN
+  const date = Number.isFinite(numeric) ? new Date(numeric < 10_000_000_000 ? numeric * 1000 : numeric) : new Date(String(value))
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString()
+}
+
+export function classifyRemoteFailure(code: string, message: string): RemoteFailureClassification {
+  const normalized = `${code} ${message}`.toUpperCase()
+  // Indisponibilidade do gateway/Console é compartilhada por todas as
+  // tarefas do agente. O coordenador pausa a fila e emite um único alerta,
+  // em vez de bloquear cada tarefa como se fosse um erro de entrada.
+  if (/CONSOLE_UNAVAILABLE|GATEWAY_UNAVAILABLE|GATEWAY_DOWN/i.test(normalized)) return "systemic"
+  if (/^(HTTP_)?(408|409|425|429|500|502|503|504)$/.test(code.toUpperCase()) || /TIMEOUT|TEMPORARY|RATE_LIMITED|SESSION_BUSY|GATEWAY_UNAVAILABLE|UPSTREAM_RESET|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|ABORT/i.test(normalized)) return "transient"
+  if (/^(HTTP_)?(400|401|403|404|422)$/.test(code.toUpperCase()) || /INVALID_REQUEST|INVALID_SESSION|AUTH_FAILED|FORBIDDEN|AGENT_NOT_FOUND|MODEL_NOT_FOUND|WORKSPACE_INVALID|PROMPT_INVALID|PERMISSION_DENIED/i.test(normalized)) return "definitive"
+  return "transient"
 }
 
 export interface WaitForRunOptions {
@@ -130,13 +196,7 @@ export class ConsoleAgentRuntimeDriver {
       }
 
       try {
-        const desc = await this.request<{
-          status?: string
-          state?: string
-          endedAt?: number
-          hasActiveRun?: boolean
-          stopReason?: string
-        }>({
+        const desc = await this.request<SessionDescription>({
           method: "GET",
           path: "/api/sessions/describe",
           query: { key: session.key, agentId: session.agentId },
@@ -146,7 +206,8 @@ export class ConsoleAgentRuntimeDriver {
 
         // Tratar falhas como erro
         if (desc.status === "failed" || desc.state === "failed") {
-          return { state: "error", runId, errorMessage: "Session failed" }
+          const failure = this.describeRemoteFailure(session, runId, desc, "session")
+          return { state: "error", runId, errorMessage: failure.message, failure }
         }
 
         // Run ATIVO: renova o prazo de inatividade e avisa o interessado.
@@ -169,7 +230,7 @@ export class ConsoleAgentRuntimeDriver {
           desc.hasActiveRun === false || desc.endedAt !== undefined
         ) {
           // Sessao terminou, buscar historico
-          const history = await this.request<{ messages: Array<{ role: string; content: unknown }> }>({
+          const history = await this.request<{ messages: Array<{ id?: string; role: string; content: unknown }> }>({
             method: "GET",
             path: "/api/chat/history",
             query: { sessionKey: session.key, agentId: session.agentId, limit: 10, offset: 0 },
@@ -179,9 +240,11 @@ export class ConsoleAgentRuntimeDriver {
 
           const msgs = history.messages || []
           const lastAssistant = msgs.filter((m) => m.role === "assistant").pop()
-          const content = lastAssistant
+          let content = lastAssistant
             ? (typeof lastAssistant.content === "string" ? lastAssistant.content : JSON.stringify(lastAssistant.content))
             : undefined
+
+          if (lastAssistant?.id && content?.includes("...(truncated)...")) content = await this.readFullAssistantMessage(session, lastAssistant.id)
 
           // stopReason real quando o Console/Gateway expuser (ex.: "length"
           // = teto de saida do modelo); ausente => "done" (comportamento
@@ -193,7 +256,8 @@ export class ConsoleAgentRuntimeDriver {
         }
 
         if (desc.status === "error" || desc.state === "error") {
-          return { state: "error", runId, errorMessage: "Session ended with error" }
+          const failure = this.describeRemoteFailure(session, runId, desc, "run")
+          return { state: "error", runId, errorMessage: failure.message, failure }
         }
 
         // Estado-limbo (nem ativo, nem terminal): não renova atividade.
@@ -214,6 +278,20 @@ export class ConsoleAgentRuntimeDriver {
       path: "/api/sessions",
       body: { key: session.key, agentId: session.agentId },
     })
+  }
+
+  /**
+   * Obtém o transcript canônico antes de arquivar ou reutilizar a sessão.
+   * O Motor persiste essa cópia para que o Console não seja a única fonte de
+   * recuperação de contexto em um retorno por gate reprovado.
+   */
+  async getSessionHistory(session: RuntimeSession): Promise<RuntimeSessionMessage[]> {
+    const history = await this.request<{ messages: RuntimeSessionMessage[] }>({
+      method: "GET",
+      path: "/api/chat/history",
+      query: { sessionKey: session.key, agentId: session.agentId, limit: 500, offset: 0 },
+    })
+    return Array.isArray(history.messages) ? history.messages : []
   }
 
   async getAgentWorkspace(agentId: string): Promise<string | null> {
@@ -256,6 +334,56 @@ export class ConsoleAgentRuntimeDriver {
         content: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content),
       }))
       .filter((msg) => msg.content.trim().length > 0)
+  }
+
+  private describeRemoteFailure(session: RuntimeSession, runId: string, desc: SessionDescription, scope: "session" | "run"): RemoteSessionFailure {
+    // O endpoint de describe é a consulta detalhada do Console. Algumas
+    // versões devolvem o detalhe em `error`, outras em `failure`/`details`;
+    // nunca deixamos um payload parcial apagar o estado genérico observado.
+    const detail = this.extractFailureDetail(desc)
+    const state = desc.state || desc.status || "failed"
+    const code = this.stringValue(detail?.code) || desc.errorCode || `SESSION_${state.toUpperCase()}`
+    const message = (this.stringValue(detail?.message) || desc.errorMessage || desc.message || (state === "error" ? "Session ended with error" : "Session failed")).slice(0, 500)
+    const occurredAt = normalizeRemoteTimestamp(this.firstTimestamp(detail?.occurredAt, detail?.failedAt, detail?.endedAt, desc.failedAt, desc.endedAt)) ?? new Date().toISOString()
+    const classification = classifyRemoteFailure(code, message)
+    return {
+      code: String(code).slice(0, 120), message, sessionKey: session.key,
+      ...(desc.sessionId || desc.id || session.sessionId ? { remoteSessionId: desc.sessionId || desc.id || session.sessionId } : {}),
+      runId, occurredAt, scope, classification,
+      classificationReason: classification === "systemic"
+        ? "remote_code_or_message_indicates_shared_console_failure"
+        : classification === "transient" ? "remote_code_or_message_indicates_retryable_failure" : "remote_failure_default_classification",
+      fingerprint: `${code}:${message}`.slice(0, 600),
+    }
+  }
+
+  private extractFailureDetail(desc: SessionDescription): SessionFailureDetail | undefined {
+    for (const candidate of [desc.error, desc.failure, desc.details]) {
+      if (candidate && typeof candidate === "object") return candidate
+    }
+    return undefined
+  }
+
+  private stringValue(value: unknown): string | undefined {
+    return typeof value === "string" && value.trim() ? value.trim() : undefined
+  }
+
+  private firstTimestamp(...values: unknown[]): number | string | undefined {
+    return values.find((value): value is number | string => typeof value === "number" || typeof value === "string")
+  }
+
+  async readFullAssistantMessage(session: RuntimeSession, messageId: string): Promise<string> {
+    const full = await this.request<{ ok: boolean; message?: { role?: string; content?: unknown }; unavailableReason?: string }>({
+      method: "GET",
+      path: "/api/chat/message",
+      query: { sessionKey: session.key, agentId: session.agentId, messageId, maxChars: 500_000 },
+    })
+    if (!full.ok || !full.message || full.message.role !== "assistant") {
+      throw new Error(`Mensagem integral do analista indisponivel: ${full.unavailableReason || "resposta invalida"}`)
+    }
+    const content = typeof full.message.content === "string" ? full.message.content : JSON.stringify(full.message.content)
+    if (content.length > 500_000) throw new Error("Mensagem integral do analista excede 500000 caracteres")
+    return content
   }
 
   private async request<T>(options: {

@@ -23,8 +23,10 @@ SSH_USER="alexandre"
 SSH_KEY="/root/.ssh/id_ed25519"
 REPO_HOST="${DEPLOY_REPO_HOST:-/home/alexandre/codigofonte/biblioteca-global}"
 API="biblioteca-global-api"; API_HOST_PORT=3003; API_PORT=3001
+MOTOR_HOST_PORT=3010
 WEB="biblioteca-global-web"; WEB_HOST_PORT=5174; WEB_PORT=80
 COMPOSE_FILE="docker-compose.yml"
+BASE_BRANCH="${DEPLOY_BASE_BRANCH:-base-desenvolvimento}"
 TAG="deploy-$(date -u +%Y%m%d-%H%M%S)"
 
 ssh_host() {
@@ -60,13 +62,23 @@ echo "[deploy] acesso ao host $HOST_ADDR OK"
 OLD_API_IMAGE=$(ssh_host "docker inspect $API --format '{{.Image}}'" 2>/dev/null || echo "")
 OLD_WEB_IMAGE=$(ssh_host "docker inspect $WEB --format '{{.Image}}'" 2>/dev/null || echo "")
 
-ssh_host bash -s -- "$REPO_HOST" "$COMPOSE_FILE" <<'REMOTE'
+DEPLOY_RECREATE_OK=1
+if ! ssh_host bash -s -- "$REPO_HOST" "$COMPOSE_FILE" "$BASE_BRANCH" <<'REMOTE'
 set -eu
-REPO="$1"; COMPOSE_FILE="$2"
+REPO="$1"; COMPOSE_FILE="$2"; BASE_BRANCH="$3"
 cd "$REPO"
 set -a
 . ./.env
 set +a
+echo "[deploy][host] sincronizando checkout com origin/$BASE_BRANCH..."
+if [ -n "$(git status --porcelain --untracked-files=normal)" ]; then
+  echo "[deploy][host] checkout possui alterações locais; deploy abortado para não sobrescrevê-las" >&2
+  git status --short >&2
+  exit 1
+fi
+git fetch origin "$BASE_BRANCH"
+git checkout "$BASE_BRANCH"
+git reset --hard "origin/$BASE_BRANCH"
 echo "[deploy][host] validando configuração do Compose..."
 docker compose -f "$COMPOSE_FILE" config --quiet
 MYSQL_ID_BEFORE=$(docker inspect -f '{{.Id}}' biblioteca-global-mysql)
@@ -77,6 +89,15 @@ if [ "$MYSQL_HEALTH" != "healthy" ] && [ "$MYSQL_HEALTH" != "running" ]; then
 fi
 echo "[deploy][host] build das imagens api/web..."
 docker compose -f "$COMPOSE_FILE" build api web
+# O entrypoint usa o código montado do host e executa o dist desse volume.
+# A imagem já compilou o Motor com o mesmo checkout; copie esse artefato pronto
+# para o volume somente depois do build, sem depender de Node/npm no host.
+MOTOR_DIST_CONTAINER="biblioteca-global-motor-dist-$$"
+docker create --name "$MOTOR_DIST_CONTAINER" biblioteca-global-api:latest >/dev/null
+rm -rf projects/gerenteagentes/motor-v2/dist
+docker cp "$MOTOR_DIST_CONTAINER:/app/projects/gerenteagentes/motor-v2/dist" projects/gerenteagentes/motor-v2/
+docker rm "$MOTOR_DIST_CONTAINER" >/dev/null
+echo "[deploy][host] dist do motor-v2 atualizado a partir da imagem compilada"
 echo "[deploy][host] recriando somente api/web pelo Compose (--no-deps)..."
 docker compose -f "$COMPOSE_FILE" up -d --no-deps --force-recreate api web
 MYSQL_ID_AFTER=$(docker inspect -f '{{.Id}}' biblioteca-global-mysql)
@@ -85,13 +106,20 @@ MYSQL_ID_AFTER=$(docker inspect -f '{{.Id}}' biblioteca-global-mysql)
   exit 1
 }
 REMOTE
-echo "[deploy] imagens buildadas e containers recriados pelo Compose"
+then
+  DEPLOY_RECREATE_OK=0
+  echo "[deploy] falha durante build/recriação dos containers" >&2
+else
+  echo "[deploy] imagens buildadas e containers recriados pelo Compose"
+fi
 
 # --- 3) Healthcheck ----------------------------------------------------------
-# web: nginx /health; api: qualquer resposta HTTP (entrypoint roda migrations
-# antes de servir — por isso mais tentativas).
-if wait_http "http://$HOST_ADDR:$WEB_HOST_PORT/health" 20 "web" \
-   && wait_http "http://$HOST_ADDR:$API_HOST_PORT/api/auth/me" 30 "api"; then
+# web: nginx /health; api: qualquer resposta HTTP; motor: health próprio.
+# O entrypoint roda migrations antes de servir — por isso mais tentativas.
+if [ "$DEPLOY_RECREATE_OK" -eq 1 ] \
+   && wait_http "http://$HOST_ADDR:$WEB_HOST_PORT/health" 20 "web" \
+   && wait_http "http://$HOST_ADDR:$API_HOST_PORT/api/auth/me" 30 "api" \
+   && wait_http "http://$HOST_ADDR:$MOTOR_HOST_PORT/api/motor/health" 30 "motor"; then
   ssh_host "rm -f /tmp/.deploy-env-api /tmp/.deploy-env-web" || true
   echo "[deploy] SUCESSO — biblioteca-global $TAG no ar (api :$API_HOST_PORT, web :$WEB_HOST_PORT)"
   exit 0

@@ -54,6 +54,8 @@ import {
   useMediaQuery,
   type SelectChangeEvent,
 } from "@mui/material"
+
+export const componentId = "taqui-registro-encomenda"
 import { useTheme } from "@mui/material/styles"
 import {
   CameraAltRounded,

@@ -20,9 +20,9 @@ describe("PromptTemplateEngine", () => {
     expect(result.missing).toEqual(["**TEXTOTAREFA**"])
   })
 
-  it("injeta o contrato embarcado no fallback mesmo se o texto legado não tiver a máscara", async () => {
-    const db = { query: async (sql: string) => sql.startsWith("SELECT") ? [[], []] : [[], []] }
-    const output = await new ManagedPromptResolver(db).resolve({
+  it("bloqueia quando o prompt não está configurado e o banco não suporta bootstrap", async () => {
+    const db = { query: async () => ({ rows: [] }) }
+    await expect(new ManagedPromptResolver(db).resolve({
       key: "analista.primeira_rodada_tarefa",
       values: {
         "**TITULOTAREFA**": "Corrigir API",
@@ -30,10 +30,6 @@ describe("PromptTemplateEngine", () => {
         "**DESCRICAOTAREFA**": "Ajustar endpoint",
       },
       fallback: "Planeje a tarefa **TITULOTAREFA** (**TIPOTAREFA**): **DESCRICAOTAREFA**",
-    })
-    expect(output).toContain("CONTRATO DE SAÍDA OBRIGATÓRIO")
-    expect(output).toContain('"subtarefas"')
-    expect(output).toContain('"kind":"perguntas"')
-    expect(output).toContain("Corrigir API")
+    })).rejects.toThrow("prompt_configuration_missing")
   })
 })

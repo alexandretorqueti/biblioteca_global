@@ -25,8 +25,10 @@ import {
 } from "@nestjs/common"
 import type { ProjetoResumo, UsuarioAutenticado } from "@biblioteca-global/shared"
 import { CurrentProject, CurrentUser } from "../../common/decorators/current.decorator"
+import { Roles } from "../../common/decorators/roles.decorator"
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard"
 import { ProjectScopeGuard } from "../../common/guards/project-scope.guard"
+import { RolesGuard } from "../../common/guards/roles.guard"
 import { NotificacoesMoradorService } from "./notificacoes-morador.service"
 import {
   notificacoesMoradorQuerySchema,
@@ -51,7 +53,9 @@ export class NotificacoesMoradorController {
    *
    * Retorna também contagem total e de não lidas para o badge do sininho.
    */
-  @Get(":slug/notificacoes/minhas")
+  @Get(":slug/notificacoes/morador")
+  @UseGuards(RolesGuard)
+  @Roles("admin", "gerente", "operador", "visualizador")
   async listarNotificacoes(
     @CurrentProject() projeto: ProjetoResumo,
     @CurrentUser() usuario: UsuarioAutenticado,
@@ -88,7 +92,9 @@ export class NotificacoesMoradorController {
    * IMPORTANTE: Esta ação NÃO afeta o status da encomenda.
    * A confirmação de reconhecimento é uma ação separada.
    */
-  @Put(":slug/notificacoes/:id/lida")
+  @Patch(":slug/notificacoes/:id/marcar-lida")
+  @UseGuards(RolesGuard)
+  @Roles("admin", "gerente", "operador", "visualizador")
   async marcarComoLida(
     @CurrentProject() projeto: ProjetoResumo,
     @CurrentUser() usuario: UsuarioAutenticado,

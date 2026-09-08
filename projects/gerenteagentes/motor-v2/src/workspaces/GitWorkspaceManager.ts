@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process"
 import { mkdir, rm } from "node:fs/promises"
-import { dirname, isAbsolute, relative, resolve, join } from "node:path"
+import { isAbsolute, relative, resolve, join } from "node:path"
 import { promisify } from "node:util"
 import { createLogger } from "../shared/logger.js"
 
@@ -50,6 +50,8 @@ export interface TaskIntegrationInput {
   taskId: string
   /** Workspace real do agente (do Console). Se informado, worktree é criado dentro dele. */
   agentWorkspacePath?: string
+  /** Arquivos compartilhados que fazem parte explicitamente do escopo da tarefa. */
+  sharedPaths?: readonly string[]
 }
 
 export interface TaskBranchMergeInput {
@@ -95,6 +97,41 @@ export interface PrepareWorkspaceInput {
   attempt: number
   /** Workspace real do agente (do Console). Se informado, worktree é criado dentro dele. */
   agentWorkspacePath?: string
+  /** Arquivos compartilhados que fazem parte explicitamente do escopo da tarefa. */
+  sharedPaths?: readonly string[]
+}
+
+export type DirtyFileClassification = "task-project" | "relevant-shared" | "external"
+
+export interface ClassifiedDirtyFile {
+  path: string
+  classification: DirtyFileClassification
+}
+
+export interface DirtyFilesReport {
+  all: ClassifiedDirtyFile[]
+  taskProject: string[]
+  relevantShared: string[]
+  external: string[]
+  /** Arquivos que efetivamente determinam a decisão do preflight. */
+  blocking: string[]
+  /** Decisão auditável: sujeira externa permite prosseguir. */
+  decision: "blocked" | "proceeded"
+}
+
+/**
+ * Erro de preflight com a classificação preservada para o chamador.
+ * O texto continua legível para logs/legado, mas o relatório não precisa ser
+ * reconstituído a partir da mensagem para persistência ou telemetria.
+ */
+export class DirtyFilesError extends Error {
+  readonly report: DirtyFilesReport
+
+  constructor(report: DirtyFilesReport) {
+    super(formatDirtyFilesReport(report))
+    this.name = "DirtyFilesError"
+    this.report = report
+  }
 }
 
 function safeSegment(value: string, label: string): string {
@@ -118,6 +155,60 @@ function validCommit(commit: string): boolean {
 function inside(root: string, target: string): boolean {
   const path = relative(root, target)
   return path !== "" && path !== ".." && !path.startsWith(`..${"/"}`) && !isAbsolute(path)
+}
+
+function pathInsideOrEqual(root: string, target: string): boolean {
+  const path = relative(root, target)
+  return path === "" || (path !== ".." && !path.startsWith(`..${"/"}`) && !isAbsolute(path))
+}
+
+/** Classifica alterações do Git contra o projeto e compartilhamentos declarados. */
+export function classifyDirtyFiles(input: {
+  repositoryRoot: string
+  taskProjectPath: string
+  dirtyFiles: readonly string[]
+  sharedPaths?: readonly string[]
+}): DirtyFilesReport {
+  const repositoryRoot = resolve(input.repositoryRoot)
+  const taskProjectPath = resolve(input.taskProjectPath)
+  const shared = new Set((input.sharedPaths ?? []).map((path) => resolve(repositoryRoot, path)))
+  const all: ClassifiedDirtyFile[] = []
+
+  for (const rawPath of input.dirtyFiles) {
+    const path = rawPath.trim()
+    if (!path) continue
+    const absolutePath = resolve(repositoryRoot, path)
+    const classification: DirtyFileClassification = pathInsideOrEqual(taskProjectPath, absolutePath)
+      ? "task-project"
+      : shared.has(absolutePath)
+        ? "relevant-shared"
+        : "external"
+    all.push({ path, classification })
+  }
+
+  const taskProject = all.filter((item) => item.classification === "task-project").map((item) => item.path)
+  const relevantShared = all.filter((item) => item.classification === "relevant-shared").map((item) => item.path)
+  const external = all.filter((item) => item.classification === "external").map((item) => item.path)
+  const blocking = [...taskProject, ...relevantShared]
+  return {
+    all,
+    taskProject,
+    relevantShared,
+    external,
+    blocking,
+    decision: blocking.length > 0 ? "blocked" : "proceeded",
+  }
+}
+
+function formatDirtyFilesReport(report: DirtyFilesReport): string {
+  const format = (paths: readonly string[]) => paths.length > 0 ? paths.join(", ") : "(nenhum)"
+  return [
+    `preflight Git: ${report.decision}`,
+    `projeto da tarefa: ${format(report.taskProject)}`,
+    `compartilhados relevantes: ${format(report.relevantShared)}`,
+    `externos: ${format(report.external)}`,
+    `causas do bloqueio: ${format(report.blocking)}`,
+  ].join("; ")
 }
 
 /**
@@ -151,24 +242,14 @@ export class GitWorkspaceManager {
     if (!inside(workspaceRoot, target)) throw new Error("workspace fora da raiz segura")
 
     await this.markSafeDirectory(repoPath)
-    // Falha ambiental clara: repo ausente causa "spawn git ENOENT" e entraria
-    // em loop de retries no coordenador. Classificar como bloqueio ambiental.
-    // Untracked files não afetam worktree/merge e não podem travar o motor
-    // enquanto outra sessão mantém arquivos novos no repositório.
-    // Verifica se o repo tem alterações reais (ignora whitespace-at-eol para
-    // não bloquear por artefatos de db:migrate em _journal.json — só newline no fim).
-    const diff = await this.runner.run(["git", "diff", "--name-only", "--ignore-space-at-eol", "HEAD"], repoPath).catch((error: unknown) => {
+    let repositoryRoot: string
+    try {
+      repositoryRoot = resolve((await this.runner.run(["git", "rev-parse", "--show-toplevel"], repoPath)).stdout.trim())
+    } catch (error) {
       const code = (error as NodeJS.ErrnoException | undefined)?.code
-      if (code === "ENOENT") {
-        throw new Error("Ambiente bloqueado: repositório não encontrado: " + input.repoPath)
-      }
+      if (code === "ENOENT") throw new Error("Ambiente bloqueado: repositório não encontrado: " + input.repoPath)
       throw error
-    })
-    // staged files also need checking (git diff HEAD misses index-only changes if working tree matches index)
-    const staged = await this.runner.run(["git", "diff", "--name-only", "--cached", "--ignore-space-at-eol"], repoPath)
-    const dirtyFiles = [...new Set([...diff.stdout.split("\n"), ...staged.stdout.split("\n")].map((s) => s.trim()).filter(Boolean))]
-    if (dirtyFiles.length > 0) throw new Error("repositório principal não está limpo: " + dirtyFiles.join(", "))
-    const repositoryRoot = resolve((await this.runner.run(["git", "rev-parse", "--show-toplevel"], repoPath)).stdout.trim())
+    }
     const projectRelativePath = relative(repositoryRoot, repoPath)
     if (projectRelativePath === ".." || projectRelativePath.startsWith(`..${"/"}`) || isAbsolute(projectRelativePath)) {
       throw new Error("repo_path fora da raiz do repositório Git")
@@ -222,12 +303,26 @@ export class GitWorkspaceManager {
         }
       }
       await this.markSafeDirectory(target)
+
+      // O isolamento precisa existir antes do preflight: alterações externas
+      // no monorepo não podem contaminar o workspace da tarefa. O estado da
+      // base é classificado somente depois que o worktree exclusivo foi criado.
+      const diff = await this.runner.run(["git", "diff", "--name-only", "--ignore-space-at-eol", "HEAD"], repositoryRoot)
+      const staged = await this.runner.run(["git", "diff", "--name-only", "--cached", "--ignore-space-at-eol"], repositoryRoot)
+      const dirtyFiles = [...new Set([...diff.stdout.split("\n"), ...staged.stdout.split("\n")].map((s) => s.trim()).filter(Boolean))]
+      const dirtyReport = classifyDirtyFiles({ repositoryRoot, taskProjectPath: repoPath, dirtyFiles, sharedPaths: input.sharedPaths })
+      if (dirtyReport.decision === "blocked") {
+        throw new DirtyFilesError(dirtyReport)
+      }
+      logger.info(`Preflight Git prosseguiu: ${formatDirtyFilesReport(dirtyReport)}`)
       logger.info(`Worktree validado com sucesso: path=${target}, branch=${branch}`, { taskId: input.taskId, subtaskId: input.subtaskId })
       return { path: target, projectPath: resolve(join(target, projectRelativePath)), branch, baseCommit }
     } catch (error) {
       logger.error(`Erro ao criar worktree: ${error instanceof Error ? error.message : String(error)}`, { taskId: input.taskId, subtaskId: input.subtaskId })
       // O alvo foi criado exclusivamente por esta tentativa, sempre dentro da
       // raiz dedicada; removê-lo evita worktree parcial sem tocar no repositório.
+      await this.runner.run(["git", "worktree", "remove", "--force", target], repoPath).catch(() => {})
+      if (!finalBranchExists) await this.runner.run(["git", "branch", "-D", branch], repoPath).catch(() => {})
       await rm(target, { recursive: true, force: true }).catch(() => {})
       throw error
     }
@@ -283,16 +378,6 @@ export class GitWorkspaceManager {
       return { path: target, projectPath: resolve(join(target, projectRelativePath)), branch, baseCommit }
     }
 
-    // Criação nova: exige repositório principal limpo (mesma regra do prepare
-    // de subtarefa) e parte do tip da branch raiz do projeto.
-    const diff = await this.runner.run(["git", "diff", "--name-only", "--ignore-space-at-eol", "HEAD"], repoPath).catch((error: unknown) => {
-      const code = (error as NodeJS.ErrnoException | undefined)?.code
-      if (code === "ENOENT") throw new Error("Ambiente bloqueado: repositório não encontrado: " + input.repoPath)
-      throw error
-    })
-    const staged = await this.runner.run(["git", "diff", "--name-only", "--cached", "--ignore-space-at-eol"], repoPath)
-    const dirtyFiles = [...new Set([...diff.stdout.split("\n"), ...staged.stdout.split("\n")].map((s) => s.trim()).filter(Boolean))]
-    if (dirtyFiles.length > 0) throw new Error("repositório principal não está limpo: " + dirtyFiles.join(", "))
     const baseCommit = (await this.runner.run(["git", "rev-parse", "--verify", `${rootBaseBranch}^{commit}`], repoPath)).stdout.trim()
     if (!validCommit(baseCommit)) throw new Error("commit-base inválido para branch da tarefa")
 
@@ -326,9 +411,29 @@ export class GitWorkspaceManager {
         }
       }
       await this.markSafeDirectory(target)
+
+      // O worktree isolado precisa existir antes do preflight. Assim, a
+      // execução já tem um contexto selecionado e um erro de criação/seleção
+      // interrompe o fluxo com o diagnóstico do Git, sem validar a tarefa no
+      // checkout compartilhado. O estado sujo é lido da raiz original para
+      // preservar a evidência das alterações existentes antes do isolamento;
+      // alterações externas continuam fora do escopo salvo declaração explícita.
+      const diff = await this.runner.run(["git", "diff", "--name-only", "--ignore-space-at-eol", "HEAD"], repositoryRoot).catch((error: unknown) => {
+        const code = (error as NodeJS.ErrnoException | undefined)?.code
+        if (code === "ENOENT") throw new Error("Ambiente bloqueado: repositório não encontrado: " + input.repoPath)
+        throw error
+      })
+      const staged = await this.runner.run(["git", "diff", "--name-only", "--cached", "--ignore-space-at-eol"], repositoryRoot)
+      const dirtyFiles = [...new Set([...diff.stdout.split("\n"), ...staged.stdout.split("\n")].map((s) => s.trim()).filter(Boolean))]
+      const dirtyReport = classifyDirtyFiles({ repositoryRoot, taskProjectPath: repoPath, dirtyFiles, sharedPaths: input.sharedPaths })
+      if (dirtyReport.decision === "blocked") {
+        throw new DirtyFilesError(dirtyReport)
+      }
+      logger.info(`Preflight Git prosseguiu: ${formatDirtyFilesReport(dirtyReport)}`, { taskId: input.taskId })
       logger.info(`Branch de integração da tarefa criada: ${branch} a partir de ${rootBaseBranch} (${baseCommit})`, { taskId: input.taskId })
       return { path: target, projectPath: resolve(join(target, projectRelativePath)), branch, baseCommit }
     } catch (error) {
+      await this.runner.run(["git", "worktree", "remove", "--force", target], repoPath).catch(() => {})
       await rm(target, { recursive: true, force: true }).catch(() => {})
       throw error
     }

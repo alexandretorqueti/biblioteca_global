@@ -65,4 +65,29 @@ describe("ConsoleAgentRuntimeDriver", () => {
       await expect(driver.listAgents()).rejects.toThrow("ECONNREFUSED")
     })
   })
+
+  it("recupera mensagem integral pelo id, vinculada à sessão e ao agente", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ ok: true, message: { role: "assistant", content: "{\"subtarefas\":[]}" } }), { status: 200 }),
+    )
+    const driver = new ConsoleAgentRuntimeDriver({ baseUrl: "http://console.test", token: "test-token" })
+
+    const content = await driver.readFullAssistantMessage({ key: "analysis-task-780", agentId: "programador-senior" }, "msg-123")
+
+    expect(content).toBe('{"subtarefas":[]}')
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://console.test/api/chat/message?sessionKey=analysis-task-780&agentId=programador-senior&messageId=msg-123&maxChars=500000",
+      expect.objectContaining({ method: "GET" }),
+    )
+  })
+
+  it("rejeita recuperação que não retorna mensagem do assistente", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ ok: true, message: { role: "user", content: "conteudo" } }), { status: 200 }),
+    )
+    const driver = new ConsoleAgentRuntimeDriver({ baseUrl: "http://console.test", token: "test-token" })
+
+    await expect(driver.readFullAssistantMessage({ key: "analysis-task-780", agentId: "programador-senior" }, "msg-123"))
+      .rejects.toThrow("resposta invalida")
+  })
 })

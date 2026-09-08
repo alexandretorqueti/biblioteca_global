@@ -1,49 +1,65 @@
 /**
- * registry/customScreens.tsx — registro das telas custom dos projetos.
+ * registry/customScreens.tsx — autodescoberta de telas custom dos projetos.
  *
- * Atualmente o único projeto que possui tela custom é "documentacao". A
- * implementação anterior registrava um placeholder genérico e, em seguida,
- * uma chave separada `docScreen`. O manual (§38) especifica que a configuração
- * do projeto referencia o componentId **"documentation"**; portanto devemos
- * registrar exatamente esse id com a tela real.
+ * Autodescoberta em build time via `import.meta.glob` do Vite: varre todos
+ * os arquivos `.tsx` em `projects/<slug>/screens/` e registra cada tela pelo
+ * `componentId` exportado. Cada tela deve exportar:
+ *
+ *   export const componentId = "slug-nome-tela"
+ *   export default function TelaCustom() { ... }
+ *
+ * Novas telas custom funcionam apenas por existir em `projects/<slug>/screens/`
+ * com `componentId` exportado — sem edição manual deste arquivo.
  */
 
 import { registerCustomScreens } from "@biblioteca-global/ui"
-import { SistemaAdmGlobalDashboard, SistemaAdmGlobalHubAdmin, SistemaAdmGlobalHubAdministrativo, SistemaAdmGlobalHubRh } from "../../screens/custom"
-import DocumentationScreen from "../../../../../projects/documentacao/screens/DocumentationScreen"
-import DashboardScreen from "../../../../../projects/gerenteagentes/screens/DashboardScreen"
-import NovaTarefaScreen from "../../../../../projects/gerenteagentes/screens/NovaTarefaScreen"
-import TaskMonitorScreen from "../../../../../projects/gerenteagentes/screens/TaskMonitorScreen"
-import ModelSelectionScreen from "../../../../../projects/gerenteagentes/screens/ModelSelectionScreen"
-import IsaChatScreen from "../../../../../projects/gerenteagentes/screens/IsaChatScreen"
-import PromptsScreen from "../../../../../projects/gerenteagentes/screens/PromptsScreen"
-import PainelPortariaScreen from "../../../../../projects/taqui/screens/PainelPortariaScreen"
-import NotificacoesMoradorScreen from "../../../../../projects/taqui/screens/NotificacoesMoradorScreen"
-import RegistroEncomendaScreen from "../../../../../projects/taqui/screens/RegistroEncomendaScreen"
-import EntregaEncomendaScreen from "../../../../../projects/taqui/screens/EntregaEncomendaScreen"
-import OcorrenciaScreen from "../../../../../projects/taqui/screens/OcorrenciaScreen"
+import type { CustomScreenComponent } from "@biblioteca-global/ui"
 
 /**
- * Registra as telas custom de todos os projetos. Chamar no boot (main.tsx)
+ * Autodescoberta de telas custom em build time.
+ *
+ * Cada projeto é responsável por seu próprio `screens/registry.ts`. O glob
+ * importa apenas esses registries e não conhece telas ou slugs concretos.
+ */
+interface CustomScreensRegistryModule {
+  customScreens?: Record<string, CustomScreenComponent>
+}
+
+const registryModules = import.meta.glob<CustomScreensRegistryModule>(
+  "../../../../../projects/*/screens/registry.ts",
+  { eager: true },
+)
+
+/**
+ * Agrega registries na ordem dos caminhos, e não na ordem incidental do
+ * bundler/filesystem. Assim, o bundle e os testes produzem sempre o mesmo
+ * resultado. Em caso de componentId repetido, o caminho lexicalmente maior
+ * tem precedência (a mesma semântica de substituição do registry da UI).
+ */
+export function agregarRegistriesCustom(
+  modules: Readonly<Record<string, CustomScreensRegistryModule>>,
+): Record<string, CustomScreenComponent> {
+  const aggregated: Record<string, CustomScreenComponent> = {}
+
+  for (const path of Object.keys(modules).sort()) {
+    const screens = modules[path]?.customScreens
+    if (!screens) {
+      console.warn(`[registry/customScreens] registry inválido: ${path}`)
+      continue
+    }
+    Object.assign(aggregated, screens)
+  }
+
+  return aggregated
+}
+
+/**
+ * Registra as telas custom de todos os projetos. Chamar no boot (App.tsx)
  * uma única vez. Re-registrar substitui a tela anterior pelo componentId.
+ *
+ * Filtra arquivos que não são telas (ex: painéis auxiliares, demos) verificando
+ * se exportam `componentId`.
  */
 export function registrarTelasCustom(): void {
-  registerCustomScreens({
-    documentation: DocumentationScreen,
-    "gerenteagentes-dashboard": DashboardScreen,
-    "gerenteagentes-nova-tarefa": NovaTarefaScreen,
-    "gerenteagentes-task-monitor": TaskMonitorScreen,
-    "gerenteagentes-model-selection": ModelSelectionScreen,
-    "gerenteagentes-isa-chat": IsaChatScreen,
-    "gerenteagentes-prompts": PromptsScreen,
-    "sistema-adm-global-dashboard": SistemaAdmGlobalDashboard,
-    "sistema-adm-global-hub-admin": SistemaAdmGlobalHubAdmin,
-    "sistema-adm-global-hub-administrativo": SistemaAdmGlobalHubAdministrativo,
-    "sistema-adm-global-hub-rh": SistemaAdmGlobalHubRh,
-    "taqui-painel-portaria": PainelPortariaScreen,
-    "taqui-notificacoes-morador": NotificacoesMoradorScreen,
-    "taqui-registro-encomenda": RegistroEncomendaScreen,
-    "taqui-entrega-encomenda": EntregaEncomendaScreen,
-    "taqui-ocorrencia-devolucao": OcorrenciaScreen,
-  })
+  registerCustomScreens(agregarRegistriesCustom(registryModules))
 }

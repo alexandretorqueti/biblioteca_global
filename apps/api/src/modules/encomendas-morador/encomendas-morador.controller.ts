@@ -52,6 +52,8 @@ export class EncomendasMoradorController {
    * - offset: offset para paginação (default 0)
    */
   @Get(":slug/encomendas/morador")
+  @UseGuards(RolesGuard)
+  @Roles("admin", "gerente", "operador", "visualizador")
   async listarEncomendas(
     @CurrentProject() projeto: ProjetoResumo,
     @CurrentUser() usuario: UsuarioAutenticado,
@@ -89,6 +91,7 @@ export class EncomendasMoradorController {
    * IMPORTANTE: Esta ação NÃO marca entrega.
    * A entrega física continua sendo ato exclusivo da portaria.
    */
+  @Patch(":slug/encomendas/:id/confirmar-reconhecimento")
   @UseGuards(RolesGuard)
   @Roles("admin", "gerente", "operador", "visualizador")
   async confirmarReconhecimento(

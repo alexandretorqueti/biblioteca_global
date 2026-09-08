@@ -54,8 +54,25 @@ describe("ExpirationReconciler", () => {
     await new ExpirationReconciler({ db }).reconcile()
 
     const calls = vi.mocked(db.query).mock.calls
-    expect(calls).toHaveLength(4)
+    expect(calls).toHaveLength(5)
     expect(calls[3]?.[1]).toEqual(["planned", "42"])
+  })
+
+  it("recupera subtarefa running órfã mesmo quando a tarefa pai está planned", async () => {
+    const db = mockDb([
+      { rows: [], affectedRows: 0, insertId: 0 },
+      { rows: [], affectedRows: 0, insertId: 0 },
+      { rows: [], affectedRows: 0, insertId: 0 },
+      { rows: [{ subtask_id: 829, tarefa_id: 758, external_id: "task-758" }], affectedRows: 0, insertId: 0 },
+      { rows: [], affectedRows: 1, insertId: 0 },
+      { rows: [], affectedRows: 1, insertId: 0 },
+    ])
+    await new ExpirationReconciler({ db }).reconcile()
+    const calls = vi.mocked(db.query).mock.calls
+    expect(String(calls[3]?.[0])).toContain("s.status = 'running'")
+    expect(String(calls[4]?.[0])).toContain("status = 'pending'")
+    expect(calls[4]?.[1]).toEqual([829])
+    expect(calls[5]?.[1]).toEqual([758])
   })
 
   it("repara verified com retorno exato sem resposta e deixa a tarefa pai pronta", async () => {

@@ -33,9 +33,60 @@ describe("TaskFlowMap", () => {
     expect(onSelectTask).toHaveBeenCalledWith(767)
   })
 
+  it("exibe a descrição correta ao passar o mouse no ícone da tarefa", async () => {
+    view([
+      { id: 770, titulo: "Primeira tarefa", descricao: "Descrição da primeira tarefa", status: "ready", projetoId: 1 },
+      { id: 771, titulo: "Segunda tarefa", descricao: "Descrição da segunda tarefa", status: "running", projetoId: 1 },
+    ])
+
+    await userEvent.hover(screen.getByTestId("flow-task-description-770"))
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Descrição da primeira tarefa")
+    await userEvent.unhover(screen.getByTestId("flow-task-description-770"))
+    await userEvent.hover(screen.getByTestId("flow-task-description-771"))
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Descrição da segunda tarefa")
+  })
+
+  it("usa um fallback seguro quando a tarefa não tem descrição", async () => {
+    view([
+      { id: 772, titulo: "Sem descrição", descricao: null, status: "ready", projetoId: 1 },
+      { id: 773, titulo: "Descrição em branco", descricao: "   ", status: "running", projetoId: 1 },
+    ])
+
+    await userEvent.hover(screen.getByTestId("flow-task-description-772"))
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Tarefa sem descrição")
+    await userEvent.unhover(screen.getByTestId("flow-task-description-772"))
+    await userEvent.hover(screen.getByTestId("flow-task-description-773"))
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Tarefa sem descrição")
+  })
+
+  it("mantém um ícone de descrição em cada cartão visível de estações diferentes", () => {
+    view([
+      { id: 774, titulo: "Na fila", descricao: "Detalhes da fila", status: "ready", projetoId: 1 },
+      { id: 775, titulo: "Em execução", descricao: "Detalhes da execução", status: "running", projetoId: 1 },
+      { id: 776, titulo: "Concluída", descricao: "Detalhes da entrega", status: "completed", projetoId: 1 },
+    ])
+
+    expect(screen.getAllByTestId(/^flow-task-description-/)).toHaveLength(3)
+    expect(screen.getByTestId("flow-task-774")).toBeInTheDocument()
+    expect(screen.getByTestId("flow-task-775")).toBeInTheDocument()
+    expect(screen.getByTestId("flow-task-776")).toBeInTheDocument()
+    expect(screen.getByTestId("flow-station-ready")).toBeInTheDocument()
+    expect(screen.getByTestId("flow-station-running")).toBeInTheDocument()
+    expect(screen.getByTestId("flow-station-completed")).toBeInTheDocument()
+  })
+
   it("destaca uma transição quando o status muda", () => {
     const rendered = view([{ id: 766, titulo: "Registry", status: "ready", projetoId: 1 }])
     rendered.rerender(<BibliotecaThemeProvider><TaskFlowMap tarefas={[{ id: 766, titulo: "Registry", status: "running", projetoId: 1 }]} selectedTaskId="" onSelectTask={vi.fn()} /></BibliotecaThemeProvider>)
     expect(screen.getByTestId("flow-movement-766")).toHaveTextContent("Pronta → Em execução")
+  })
+
+  it("mostra a atividade do Motor durante verificação e deploy", () => {
+    render(<BibliotecaThemeProvider><TaskFlowMap tarefas={tarefas} selectedTaskId="" onSelectTask={vi.fn()} motorActivities={[
+      { taskId: "task-p2-770", phase: "verify" },
+      { taskId: "task-p2-771", phase: "deploy" },
+    ]} /></BibliotecaThemeProvider>)
+    expect(screen.getByTestId("flow-motor-activity")).toHaveTextContent("verificando task-p2-770")
+    expect(screen.getByTestId("flow-motor-activity")).toHaveTextContent("deployando task-p2-771")
   })
 })

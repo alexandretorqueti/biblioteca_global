@@ -26,4 +26,11 @@ describe("catálogo de prompts dos agentes", () => {
       expect(typeof entry.prompt).toBe("string")
     }
   })
+
+  it("mantém o texto administrável sem duplicar a proteção sistêmica de workspace", () => {
+    const prompts = AGENT_PROMPT_CATALOG.filter((entry) => entry.agentType === "dev").map((entry) => entry.prompt).join("\n")
+    expect(prompts).toContain("Workspace: **WORKSPACE**")
+    expect(prompts).toContain("**CONTRATOSAIDA**")
+    expect(prompts).not.toContain("git rev-parse --show-toplevel")
+  })
 })

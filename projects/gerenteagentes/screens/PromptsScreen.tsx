@@ -6,6 +6,8 @@ import {
 import { PreviewRounded, PublishRounded, SaveRounded, RestoreRounded } from "@mui/icons-material"
 import { useApi } from "../../../apps/web/src/hooks/useApi"
 
+export const componentId = "gerenteagentes-prompts"
+
 type PromptVersion = { id: number; versao: number; texto: string; contratoVersaoId?: number | null; motivo?: string | null; autor?: string | null; createdAt: string }
 type Prompt = {
   id: number; chave: string; tipoAgente: string; situacao: string; titulo: string;
@@ -16,6 +18,7 @@ type Mask = { id: number; nome: string; descricao: string; origem: string; exemp
 type ContractVersion = { id: number; versao: number; schemaJson: unknown; exemploJson: unknown; instrucoes: string; autor?: string | null; createdAt: string }
 type Contract = { id: number; chave: string; titulo: string; status: string; versaoAtivaId?: number | null; versions: ContractVersion[] }
 type Catalog = { prompts: Prompt[]; masks: Mask[]; contracts: Contract[] }
+type PreviewPart = { source: "system" | "table" | "contract" | "context"; label: string; text: string }
 
 export default function PromptsScreen(): ReactNode {
   const api = useApi()
@@ -24,6 +27,7 @@ export default function PromptsScreen(): ReactNode {
   const [text, setText] = useState("")
   const [reason, setReason] = useState("")
   const [preview, setPreview] = useState<string | null>(null)
+  const [previewParts, setPreviewParts] = useState<PreviewPart[]>([])
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -61,7 +65,7 @@ export default function PromptsScreen(): ReactNode {
     const current = prompt.versions.find((version) => version.id === prompt.versaoAtivaId) ?? prompt.versions[0]
     setText(current?.texto ?? "")
     setContractVersionId(current?.contratoVersaoId ?? "")
-    setPreview(null); setError(null); setNotice(null)
+    setPreview(null); setPreviewParts([]); setError(null); setNotice(null)
   }
 
   const save = async () => {
@@ -106,11 +110,12 @@ export default function PromptsScreen(): ReactNode {
     if (!api || !selected) return
     setBusy(true); setError(null)
     try {
-      const result = await api.http.request<{ rendered: string | null; validation: { ok: boolean; unknown: string[]; missing: string[] } }>(
-        "POST", `/gerenteagentes/prompts/${selected.id}/preview`, { auth: "access", body: { texto: text } },
+      const result = await api.http.request<{ rendered: string | null; parts: PreviewPart[]; validation: { ok: boolean; unknown: string[]; missing: string[] } }>(
+        "POST", `/gerenteagentes/prompts/${selected.id}/preview`, { auth: "access", body: { texto: text, contratoVersaoId: contractVersionId || undefined } },
       )
       if (!result.validation.ok) throw new Error(`Máscaras inválidas: ${[...result.validation.unknown, ...result.validation.missing].join(", ")}`)
       setPreview(result.rendered)
+      setPreviewParts(result.parts ?? [])
     } catch (e) { setError(e instanceof Error ? e.message : "Falha na prévia") } finally { setBusy(false) }
   }
 
@@ -129,7 +134,7 @@ export default function PromptsScreen(): ReactNode {
           <TextField fullWidth label="Motivo da alteração" value={reason} onChange={(e) => setReason(e.target.value)} />
           <Stack direction="row" spacing={1}><Button variant="contained" startIcon={<SaveRounded />} disabled={busy || !text.trim()} onClick={() => void save()}>Salvar rascunho</Button><Button startIcon={<PreviewRounded />} disabled={busy || !text.trim()} onClick={() => void renderPreview()}>Pré-visualizar</Button></Stack>
         </Stack></Paper>
-        {preview && <Paper variant="outlined" sx={{ p: 2 }}><Typography variant="subtitle1" fontWeight={700}>Prévia renderizada</Typography><Box component="pre" sx={{ whiteSpace: "pre-wrap", overflow: "auto" }}>{preview}</Box></Paper>}
+        {preview && <Paper variant="outlined" sx={{ p: 2 }}><Stack spacing={2}><Box><Typography variant="subtitle1" fontWeight={700}>Prompt final efetivamente enviado</Typography><Typography variant="body2" color="text.secondary">Inclui as regras fixas do Motor, o texto da tabela e o contrato de saída selecionado.</Typography></Box>{previewParts.map((part, index) => <Box key={`${part.source}-${index}`} sx={{ border: 1, borderColor: "divider", borderRadius: 1, p: 1.5 }}><Chip size="small" label={`${part.source.toUpperCase()} · ${part.label}`} color={part.source === "system" ? "warning" : part.source === "table" ? "primary" : "default"} sx={{ mb: 1 }} /><Box component="pre" sx={{ m: 0, whiteSpace: "pre-wrap", overflow: "auto" }}>{part.text}</Box></Box>)}</Stack></Paper>}
         <Paper variant="outlined" sx={{ p: 2 }}><Typography variant="h6">Histórico de versões</Typography><Stack divider={<Divider />} spacing={1}>{selected?.versions.map((version) => <Box key={version.id} sx={{ py: 1 }}><Stack direction="row" justifyContent="space-between" alignItems="center"><Box><Typography fontWeight={600}>Versão {version.versao}{version.id === selected.versaoAtivaId ? " · ativa" : ""}</Typography><Typography variant="caption">{version.autor || "sistema"} · {new Date(version.createdAt).toLocaleString("pt-BR")}</Typography></Box><Stack direction="row"><Button size="small" onClick={() => setText(version.texto)}>Carregar</Button>{version.id === selected.versaoAtivaId ? null : <Button size="small" startIcon={selected.versaoAtivaId ? <RestoreRounded /> : <PublishRounded />} onClick={() => void publish(version.id, Boolean(selected.versaoAtivaId))}>{selected.versaoAtivaId ? "Restaurar" : "Publicar"}</Button>}</Stack></Stack></Box>)}</Stack></Paper>
       </Stack>
       <Paper variant="outlined" sx={{ p: 2 }}><Typography variant="h6">Máscaras disponíveis</Typography><Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>Clique para inserir no cursor.</Typography><Stack spacing={1}>{masks.map((mask) => <Box key={mask.id}><Button size="small" variant="outlined" onClick={() => setText((current) => current + mask.nome)}>{mask.nome}</Button><Typography variant="caption" display="block">{mask.descricao}</Typography></Box>)}</Stack></Paper>

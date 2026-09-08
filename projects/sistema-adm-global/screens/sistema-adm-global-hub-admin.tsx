@@ -26,6 +26,7 @@ import {
   BusinessRounded,
   ApartmentRounded,
 } from "@mui/icons-material"
+export const componentId = "sistema-adm-global-hub-admin"
 
 interface HubCard {
   label: string

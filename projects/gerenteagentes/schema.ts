@@ -62,6 +62,8 @@ export const agentes = mysqlTable("agentes", {
     .primaryKey()
     .autoincrement(),
   nome: varchar("nome", { length: 150 }).notNull().unique(),
+  // Identificador canônico do agente no OpenClaw; `nome` mantém compatibilidade.
+  openclawAgentId: varchar("openclaw_agent_id", { length: 150 }).unique(),
   modelo: varchar("modelo", { length: 100 }).notNull(),
   descricao: text("descricao"),
   ativo: boolean("ativo").notNull().default(true),
@@ -285,6 +287,7 @@ export const tarefas = mysqlTable("tarefas", {
   dependsOnTaskId: bigint("depends_on_task_id", { mode: "number", unsigned: true }),
   // FK self-reference criada na migration (tarefas.depends_on_task_id → tarefas.id)
   autoStart: boolean("auto_start").notNull().default(false),
+  planCoverage: json("plan_coverage"), // requisitos identificados e matriz de cobertura do analista
   bootRetryCount: int("boot_retry_count").notNull().default(0),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at")
@@ -292,6 +295,27 @@ export const tarefas = mysqlTable("tarefas", {
     .defaultNow()
     .onUpdateNow(),
 })
+
+/** Fila persistente de deploy. Um único deploy pode publicar várias tarefas
+ * concluídas do mesmo repositório quando o Motor ficar ocioso. */
+export const deployRequests = mysqlTable("deploy_requests", {
+  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+  tarefaId: bigint("tarefa_id", { mode: "number", unsigned: true })
+    .notNull()
+    .references(() => tarefas.id, { onDelete: "cascade" }),
+  repoPath: varchar("repo_path", { length: 1000 }).notNull(),
+  status: mysqlEnum("status", ["pending", "running", "succeeded", "failed"])
+    .notNull()
+    .default("pending"),
+  batchId: varchar("batch_id", { length: 100 }),
+  lastError: text("last_error"),
+  requestedAt: timestamp("requested_at").notNull().defaultNow(),
+  startedAt: timestamp("started_at"),
+  finishedAt: timestamp("finished_at"),
+  updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+}, (table) => ({
+  tarefaIdx: uniqueIndex("deploy_requests_tarefa_unique").on(table.tarefaId),
+}))
 
 export const subtarefas = mysqlTable("subtarefas", {
   id: bigint("id", { mode: "number", unsigned: true })
@@ -305,6 +329,8 @@ export const subtarefas = mysqlTable("subtarefas", {
   // Escopo e critérios de aceite da subtarefa (migração Postgres→MySQL §3.2/§4.7).
   scope: text("scope"), // escopo da subtarefa
   acceptanceCriteria: json("acceptance_criteria"), // critérios de aceite (lista)
+  deliverables: json("deliverables"), // entregáveis concretos da subtarefa
+  requirementsCovered: json("requirements_covered"), // IDs REQ-* cobertos
   descricao: text("descricao"),
   status: varchar("status", { length: 50 }).notNull().default("pending"), // pending, running, verified, failed
   // Contador de entregas (uma entrega por vez).
@@ -316,6 +342,8 @@ export const subtarefas = mysqlTable("subtarefas", {
     mode: "number",
     unsigned: true,
   }),
+  // Lista canônica de dependências; o campo singular acima permanece para compatibilidade.
+  dependsOnSubtaskIds: json("depends_on_subtask_ids"),
   resultado: text("resultado"),
   correctionForSubtaskId: bigint("correction_for_subtask_id", { mode: "number", unsigned: true }),
   correctionFingerprint: varchar("correction_fingerprint", { length: 500 }),
@@ -343,6 +371,57 @@ export const subtarefas = mysqlTable("subtarefas", {
     .notNull()
     .defaultNow()
     .onUpdateNow(),
+})
+
+/** Diagnóstico imutável de falhas devolvidas pelo Console/OpenClaw. */
+export const motorAgentSessionFailures = mysqlTable("motor_agent_session_failures", {
+  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+  tarefaId: bigint("tarefa_id", { mode: "number", unsigned: true }).notNull().references(() => tarefas.id, { onDelete: "cascade" }),
+  subtarefaId: bigint("subtarefa_id", { mode: "number", unsigned: true }).references(() => subtarefas.id, { onDelete: "set null" }),
+  agentId: varchar("agent_id", { length: 100 }).notNull(),
+  sessionKey: varchar("session_key", { length: 300 }).notNull(),
+  runtimeSessionId: varchar("runtime_session_id", { length: 300 }),
+  runId: varchar("run_id", { length: 300 }).notNull(),
+  code: varchar("code", { length: 120 }).notNull(),
+  message: varchar("message", { length: 500 }).notNull(),
+  occurredAt: timestamp("occurred_at").notNull(),
+  observedAt: timestamp("observed_at").notNull().defaultNow(),
+  scope: varchar("scope", { length: 20 }).notNull().default("session"),
+  classification: varchar("classification", { length: 20 }).notNull(),
+  classificationReason: varchar("classification_reason", { length: 160 }).notNull(),
+  fingerprint: varchar("fingerprint", { length: 600 }).notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+})
+
+/** Sessões de execução por subtarefa, preservadas para rework e auditoria. */
+export const motorAgentSessions = mysqlTable("motor_agent_sessions", {
+  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+  subtarefaId: bigint("subtarefa_id", { mode: "number", unsigned: true }).notNull().references(() => subtarefas.id, { onDelete: "cascade" }),
+  agentId: varchar("agent_id", { length: 100 }).notNull(),
+  modelo: varchar("model", { length: 200 }).notNull(),
+  sessionKey: varchar("session_key", { length: 300 }).notNull().unique(),
+  runtimeSessionId: varchar("runtime_session_id", { length: 300 }),
+  status: varchar("status", { length: 30 }).notNull(),
+  openedAt: timestamp("opened_at").notNull(),
+  lastActivityAt: timestamp("last_activity_at").notNull(),
+  approvedAt: timestamp("approved_at"),
+  closedAt: timestamp("closed_at"),
+  closeReason: varchar("close_reason", { length: 100 }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+})
+
+/** Histórico persistido das mensagens de uma sessão de execução. */
+export const motorAgentSessionMessages = mysqlTable("motor_agent_session_messages", {
+  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+  sessionId: bigint("session_id", { mode: "number", unsigned: true }).notNull().references(() => motorAgentSessions.id, { onDelete: "cascade" }),
+  messageKey: varchar("message_key", { length: 300 }).notNull(),
+  sequenceNumber: int("sequence_number").notNull(),
+  role: varchar("role", { length: 30 }).notNull(),
+  content: text("content").notNull(),
+  contentSha256: varchar("content_sha256", { length: 64 }).notNull(),
+  occurredAt: timestamp("occurred_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
 })
 
 /**
@@ -424,6 +503,8 @@ export const promptsExecucoes = mysqlTable("prompts_execucoes", {
   tarefaId: varchar("tarefa_id", { length: 64 }),
   subtarefaId: bigint("subtarefa_id", { mode: "number", unsigned: true }),
   fallbackUsado: boolean("fallback_usado").notNull().default(false),
+  promptFinal: text("prompt_final"),
+  composicaoJson: json("composicao_json"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 })
 

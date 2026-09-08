@@ -68,6 +68,40 @@ export const config: GeradorSistemaConfig = {
       label: "Projetos",
       items: [
         {
+          id: "agentes-list",
+          label: "Agentes",
+          path: "agentes",
+          icon: "smart_toy",
+          screen: {
+            kind: "cadastro",
+            resource: "agentes",
+            title: "Agentes",
+            description: "Agentes vinculados ao OpenClaw",
+            fields: [
+              { name: "nome", label: "Nome", type: "text", required: true, maxLength: 150 },
+              { name: "openclawAgentId", label: "Identificador OpenClaw", type: "text", maxLength: 150, gridVisible: true, helperText: "ID usado pelo gateway OpenClaw; não use o nome amigável." },
+              { name: "modelo", label: "Modelo", type: "text", required: true, maxLength: 100 },
+              { name: "descricao", label: "Descrição", type: "textarea", maxLength: 65535, fullWidth: true, gridVisible: false },
+              { name: "ativo", label: "Ativo", type: "switch", defaultValue: true, gridVisible: true },
+            ],
+            overrides: {
+              hiddenColumns: ["createdAt", "updatedAt"],
+              columnLabels: { id: "ID", nome: "Nome", openclawAgentId: "Identificador OpenClaw", modelo: "Modelo", descricao: "Descrição", ativo: "Ativo" },
+              newLabel: "Novo agente",
+            },
+            rowActions: [
+              {
+                id: "sincronizar-openclaw",
+                label: "Sincronizar com OpenClaw",
+                method: "POST",
+                path: "/api/gerenteagentes/agentes/sincronizar",
+                confirm: "Sincronizar os agentes registrados no OpenClaw?",
+              },
+              { id: "verificar-vinculo-openclaw", label: "Verificar vínculo", method: "GET", path: "/api/gerenteagentes/agentes/:id/vinculo" },
+            ],
+          },
+        },
+        {
           id: "projetos-list",
           label: "Projetos",
           path: "projetos",

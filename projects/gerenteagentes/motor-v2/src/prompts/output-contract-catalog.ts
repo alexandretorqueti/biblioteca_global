@@ -10,12 +10,15 @@ export interface OutputContractDefault {
 const subtask = {
   type: "object",
   additionalProperties: false,
-  required: ["seq", "titulo", "scope", "acceptance_criteria"],
+  required: ["seq", "titulo", "scope", "acceptance_criteria", "deliverables", "requirements_covered", "depends_on"],
   properties: {
     seq: { type: "integer", minimum: 1 },
     titulo: { type: "string", minLength: 1 },
     scope: { type: "string", minLength: 1 },
     acceptance_criteria: { type: "array", minItems: 1, items: { type: "string" } },
+    deliverables: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
+    requirements_covered: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
+    depends_on: { type: "array", items: { type: "integer", minimum: 1 } },
   },
 }
 
@@ -26,12 +29,12 @@ export const OUTPUT_CONTRACT_CATALOG: readonly OutputContractDefault[] = [
     description: "Resposta da análise inicial e da retomada após esclarecimentos.",
     schema: {
       oneOf: [
-        { type: "object", additionalProperties: false, required: ["subtarefas"], properties: { subtarefas: { type: "array", minItems: 1, maxItems: 10, items: subtask } } },
+        { type: "object", additionalProperties: false, required: ["subtarefas", "requirements", "coverage"], properties: { subtarefas: { type: "array", minItems: 1, maxItems: 10, items: subtask }, requirements: { type: "array", minItems: 1, items: { type: "object", additionalProperties: false, required: ["id", "description"], properties: { id: { type: "string", pattern: "^REQ-[A-Z0-9_-]+$" }, description: { type: "string", minLength: 1 } } } }, coverage: { type: "array", minItems: 1, items: { type: "object", additionalProperties: false, required: ["requirement", "covered_by"], properties: { requirement: { type: "string" }, covered_by: { type: "array", minItems: 1, items: { type: "integer", minimum: 1 } } } } } } },
         { type: "object", additionalProperties: false, required: ["kind", "resumo", "perguntas"], properties: { kind: { const: "perguntas" }, resumo: { type: "string" }, perguntas: { type: "array", minItems: 1, maxItems: 8, items: { type: "string" } } } },
       ],
     },
-    example: { subtarefas: [{ seq: 1, titulo: "Implementar alteração", scope: "Alterar o componente necessário.", acceptance_criteria: ["Comportamento validado"] }] },
-    instructions: 'Responda somente com JSON. Quando estiver claro, use {"subtarefas":[{"seq":1,"titulo":"...","scope":"...","acceptance_criteria":["..."]}]}. Quando faltar decisão, use {"kind":"perguntas","resumo":"...","perguntas":["..."]}.',
+    example: { subtarefas: [{ seq: 1, titulo: "Persistir dados e validar migração", scope: "Criar a persistência necessária e validar a migração no banco do projeto.", acceptance_criteria: ["Migration aplicada sem erro", "Dados persistidos podem ser lidos"], deliverables: ["migration", "teste de persistência"], requirements_covered: ["REQ-1"], depends_on: [] }], requirements: [{ id: "REQ-1", description: "Persistência do recurso" }], coverage: [{ requirement: "REQ-1", covered_by: [1] }] },
+    instructions: 'Responda somente com JSON. Um plano exige subtarefas detalhadas e os campos requirements e coverage. Cada subtarefa exige seq, titulo, scope, acceptance_criteria, deliverables, requirements_covered e depends_on. Identifique todos os requisitos como REQ-* e cubra cada um na matriz. Quando faltar decisão, use {"kind":"perguntas","resumo":"...","perguntas":["..."]}.',
   },
   {
     key: "dev.resultado_execucao",

@@ -58,6 +58,8 @@ export class PainelPortariaController {
    * indicadores (contadores) do painel.
    */
   @Get(":slug/painel-portaria/encomendas")
+  @UseGuards(RolesGuard)
+  @Roles("admin", "gerente", "operador")
   async listarEncomendas(
     @CurrentProject() projeto: ProjetoResumo,
     @Param("slug") slug: string,
@@ -86,6 +88,8 @@ export class PainelPortariaController {
    * transportadora, funcionário que registrou e dados de entrega/confirmação.
    */
   @Get(":slug/painel-portaria/encomendas/:id")
+  @UseGuards(RolesGuard)
+  @Roles("admin", "gerente", "operador")
   async obterDetalhe(
     @CurrentProject() projeto: ProjetoResumo,
     @Param("slug") slug: string,

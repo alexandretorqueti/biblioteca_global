@@ -176,7 +176,9 @@ describe("GateFailureClassifier — fail-open", () => {
 describe("GateFailureClassifier — sessão do monitor", () => {
   function dbComCadeiaMonitor(rows: Array<Record<string, unknown>>) {
     return {
-      query: vi.fn(async () => ({ rows, affectedRows: 0, insertId: 0 })),
+      query: vi.fn(async (sql: string) => sql.includes("prompts_agentes")
+        ? { rows: [{ prompt_id: 1, version_id: 1, texto: "Classifique a falha **ERROTAREFAANTERIOR**", contract_version_id: null, instrucoes: null }] }
+        : { rows, affectedRows: 0, insertId: 0 }),
     }
   }
 

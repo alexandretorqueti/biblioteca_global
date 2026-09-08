@@ -8,10 +8,10 @@
  * Tolerante a modelos que embrulham o JSON em cercas de código ou texto.
  */
 
-import type { PlannedSubtask } from "./PlanPersistence.js"
+import type { PlanCoverage, PlanRequirement, PlannedSubtask } from "./PlanPersistence.js"
 
 export type AnalystReply =
-  | { kind: "plano"; subtarefas: PlannedSubtask[] }
+  | { kind: "plano"; subtarefas: PlannedSubtask[]; coverage: PlanCoverage }
   | { kind: "perguntas"; resumo: string; perguntas: string[] }
 
 /** Extrai o primeiro objeto JSON de uma resposta de modelo. */
@@ -30,16 +30,50 @@ function mapSubtarefas(value: unknown): PlannedSubtask[] {
     throw new Error("Analista nao retornou subtarefas")
   }
   return value.map((item, index) => {
+    if (typeof item !== "object" || item === null || Array.isArray(item)) throw new Error(`Subtarefa ${index + 1} inválida`)
     const record = item as Record<string, unknown>
+    const scope = typeof record.scope === "string" ? record.scope.trim() : ""
+    const acceptanceCriteria = Array.isArray(record.acceptance_criteria) ? record.acceptance_criteria.map(String).map((item) => item.trim()).filter(Boolean) : []
+    const deliverables = Array.isArray(record.deliverables) ? record.deliverables.map(String).map((item) => item.trim()).filter(Boolean) : []
+    const requirementsCovered = Array.isArray(record.requirements_covered) ? record.requirements_covered.map(String).map((item) => item.trim()).filter(Boolean) : []
+    const dependsOn = Array.isArray(record.depends_on) ? record.depends_on.map(Number).filter(Number.isInteger) : []
     return {
       seq: Number(record.seq ?? index + 1),
-      titulo: String(record.titulo || "Subtarefa " + (index + 1)),
-      scope: record.scope ? String(record.scope) : undefined,
-      acceptanceCriteria: Array.isArray(record.acceptance_criteria)
-        ? record.acceptance_criteria.map(String)
-        : undefined,
+      titulo: typeof record.titulo === "string" ? record.titulo.trim() : "",
+      scope,
+      acceptanceCriteria,
+      deliverables,
+      requirementsCovered,
+      dependsOn,
     }
   })
+}
+
+function mapCoverage(value: unknown): PlanCoverage {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("Plano sem coverage")
+  const record = value as Record<string, unknown>
+  if (!Array.isArray(record.requirements) || !Array.isArray(record.coverage)) throw new Error("Plano sem requirements ou coverage")
+  const requirements: PlanRequirement[] = record.requirements.map((item) => {
+    if (typeof item !== "object" || item === null) throw new Error("Requisito inválido")
+    const requirement = item as Record<string, unknown>
+    return { id: String(requirement.id ?? "").trim(), description: String(requirement.description ?? "").trim() }
+  })
+  const coverage = record.coverage.map((item) => {
+    if (typeof item !== "object" || item === null) throw new Error("Cobertura inválida")
+    const entry = item as Record<string, unknown>
+    return { requirement: String(entry.requirement ?? "").trim(), coveredBy: Array.isArray(entry.covered_by) ? entry.covered_by.map(Number).filter(Number.isInteger) : [] }
+  })
+  const strategy = record.estrategia
+  if (strategy !== undefined) {
+    if (typeof strategy !== "object" || strategy === null || Array.isArray(strategy)) throw new Error("Estratégia inválida")
+    const item = strategy as Record<string, unknown>
+    const invariants = Array.isArray(item.invariantes) ? item.invariantes.map(String).map((value) => value.trim()).filter(Boolean) : []
+    const sharedArtifacts = Array.isArray(item.artefatos_compartilhados) ? item.artefatos_compartilhados.map(String).map((value) => value.trim()).filter(Boolean) : []
+    const executionOrder = Array.isArray(item.ordem_de_execucao) ? item.ordem_de_execucao.map(Number).filter(Number.isInteger) : []
+    if (invariants.length === 0 || executionOrder.length === 0) throw new Error("Plano sem estratégia coesa")
+    return { requirements, coverage, strategy: { invariants, sharedArtifacts, executionOrder } }
+  }
+  return { requirements, coverage }
 }
 
 function mapPerguntas(value: unknown): string[] {
@@ -67,7 +101,7 @@ export function parseAnalystReply(content: string): AnalystReply {
     }
   }
 
-  return { kind: "plano", subtarefas: mapSubtarefas(parsed.subtarefas) }
+  return { kind: "plano", subtarefas: mapSubtarefas(parsed.subtarefas), coverage: mapCoverage(parsed) }
 }
 
 /**

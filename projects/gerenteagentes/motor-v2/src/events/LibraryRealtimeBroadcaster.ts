@@ -49,6 +49,8 @@ export class LibraryRealtimeBroadcaster implements ExecutionActivityBroadcaster 
           ...(event.level ? { level: event.level } : {}),
           ...(event.message ? { message: event.message } : {}),
           ...(event.model ? { model: event.model } : {}),
+          ...(event.agentId ? { agentId: event.agentId } : {}),
+          ...(event.incidentId ? { incidentId: event.incidentId } : {}),
         },
       }),
     })
