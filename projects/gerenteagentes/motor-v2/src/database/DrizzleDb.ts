@@ -3,7 +3,7 @@
  */
 
 import mysql from "mysql2/promise"
-import type { Db, QueryResult, TaskRepository, SaveTaskData } from "../shared/types/infrastructure.js"
+import type { Db, QueryResult, TaskRepository, SaveTaskData, TaskFinalResult } from "../shared/types/infrastructure.js"
 
 /** O motor trabalha no database físico do projeto configurado para esta instância. */
 export function resolveProjectDatabase(): string {
@@ -65,7 +65,7 @@ export class MysqlTaskRepository implements TaskRepository {
     const params = isNumericId ? [id, id] : [id]
 
     const { rows } = await this.db.query(
-      `SELECT t.id, t.external_id, t.titulo, t.descricao, t.tipo, t.ultima_mensagem_erro, t.status,
+      `SELECT t.id, t.external_id, t.titulo, t.descricao, t.tipo, t.ultima_mensagem_erro, t.resultado_final, t.status,
               t.max_rework, t.hard_timeout_ms, t.depends_on_task_id,
               t.created_at, t.updated_at,
               pc.slug as project_slug, pmc.repo_path,
@@ -94,6 +94,10 @@ export class MysqlTaskRepository implements TaskRepository {
         // nunca é sobrescrevida por falhas de execução.
         updates.push("ultima_mensagem_erro = ?")
         values.push(data.errorMessage)
+      }
+      if (data.finalResult !== undefined) {
+        updates.push("resultado_final = ?")
+        values.push(data.finalResult === null ? null : JSON.stringify(data.finalResult))
       }
       updates.push("updated_at = NOW()")
 
@@ -125,6 +129,7 @@ export class MysqlTaskRepository implements TaskRepository {
       description: String(row.descricao ?? ""),
       tipo: isTaskTipo(row.tipo) ? row.tipo : "desenvolvimento",
       errorMessage: row.ultima_mensagem_erro ? String(row.ultima_mensagem_erro) : undefined,
+      finalResult: parseFinalResult(row.resultado_final),
       status: String(row.status ?? "planned"),
       repoPath: String(row.repo_path ?? ""),
       agentId: String(row.agent_id ?? ""),
@@ -138,6 +143,23 @@ export class MysqlTaskRepository implements TaskRepository {
       updatedAt: String(row.updated_at ?? ""),
     }
   }
+}
+
+function parseFinalResult(value: unknown): SaveTaskData["finalResult"] {
+  if (value == null) return null
+  try {
+    const parsed = typeof value === "string" ? JSON.parse(value) : value
+    if (!parsed || typeof parsed !== "object") return null
+    const result = parsed as Record<string, unknown>
+    if (!isFinalResultStatus(result.status) || typeof result.summary !== "string" || typeof result.reason !== "string") return null
+    return { status: result.status, summary: result.summary, reason: result.reason }
+  } catch {
+    return null
+  }
+}
+
+function isFinalResultStatus(value: unknown): value is TaskFinalResult["status"] {
+  return value === "done" || value === "need_help" || value === "blocked_environment"
 }
 
 function isTaskTipo(value: unknown): value is SaveTaskData["tipo"] {

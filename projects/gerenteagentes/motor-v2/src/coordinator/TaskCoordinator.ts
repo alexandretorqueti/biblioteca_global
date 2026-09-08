@@ -1210,6 +1210,7 @@ export class TaskCoordinator {
       baselineMode: "full", status: data.status as Task["status"],
       maxRework: data.maxRework, hardTimeoutMs: data.hardTimeoutMs,
       dependsOnTaskId: data.dependsOnTaskId, projectSlug: data.projectSlug ?? null,
+      finalResult: data.finalResult ?? null,
       createdAt: data.createdAt ?? new Date().toISOString(),
       updatedAt: data.updatedAt ?? new Date().toISOString(),
     }

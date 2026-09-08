@@ -1244,6 +1244,7 @@ export class GerenteAgentesService {
           status: tarefa.status,
           integrationBranch: `motor-v2/${motorId}/integracao`,
           errorMessage: motorTask.errorMessage ?? undefined,
+          finalResult: (tarefa.tipo === 'automacao' || tarefa.tipo === 'verificacao') ? tarefa.resultadoFinal ?? null : null,
           blockInfo: tarefa.status === 'blocked' ? (motorTask.ultimoBloqueio ?? null) : null,
         },
         subtasks,

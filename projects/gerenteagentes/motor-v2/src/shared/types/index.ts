@@ -65,6 +65,11 @@ export interface Task {
   updatedAt: string
   executionId?: string
   errorMessage?: string
+  finalResult?: {
+    status: "done" | "need_help" | "blocked_environment"
+    summary: string
+    reason: string
+  } | null
   startedAt?: string
   completedAt?: string
 }

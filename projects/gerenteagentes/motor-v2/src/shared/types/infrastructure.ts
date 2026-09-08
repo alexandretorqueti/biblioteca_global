@@ -66,10 +66,18 @@ export interface SaveTaskData {
   projectSlug?: string | null
   executionId?: string
   errorMessage?: string
+  /** Resultado final consolidado, exclusivo dos fluxos automacao/verificacao. */
+  finalResult?: TaskFinalResult | null
   createdAt?: string
   startedAt?: string
   completedAt?: string
   updatedAt?: string
+}
+
+export interface TaskFinalResult {
+  status: "done" | "need_help" | "blocked_environment"
+  summary: string
+  reason: string
 }
 
 export type TaskTipo = "desenvolvimento" | "automacao" | "verificacao"
