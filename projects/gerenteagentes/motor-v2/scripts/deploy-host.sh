@@ -26,7 +26,13 @@ set +a
 # pelo entrypoint lê `motor-v2/dist`, não o artefato produzido dentro da imagem.
 # Gere o JavaScript antes de recriar o container para que alterações no `src`
 # sejam efetivamente publicadas.
-./node_modules/.bin/tsc --build projects/gerenteagentes/motor-v2/tsconfig.json --force
+if docker inspect "$API" >/dev/null 2>&1; then
+  docker exec "$API" sh -lc \
+    "cd '$REPO_ROOT' && ./node_modules/.bin/tsc --build projects/gerenteagentes/motor-v2/tsconfig.json --force"
+else
+  echo "[deploy-host] não há container da API para compilar o Motor" >&2
+  exit 1
+fi
 
 OLD_API_IMAGE=$(docker inspect "$API" --format '{{.Image}}' 2>/dev/null || true)
 OLD_WEB_IMAGE=$(docker inspect "$WEB" --format '{{.Image}}' 2>/dev/null || true)
