@@ -13,4 +13,14 @@ describe("TaskFinalResult", () => {
     expect(result.reason).toContain("Credencial ausente")
   })
   it("ignora desenvolvimento", () => expect(consolidateTaskFinalResult("desenvolvimento", [])).toBeNull())
+
+  it("mantém chat e persistência com o mesmo texto consolidado", () => {
+    const result = consolidateTaskFinalResult("verificacao", [
+      { seq: 1, titulo: "Verificar limite", resultado: JSON.stringify({ status: "done", summary: "x".repeat(40_000), reason: "y".repeat(20_000) }) },
+    ])!
+    const chat = finalResultChatText(result)
+    expect(chat).toBe(`${result.summary}\n\nMotivo: ${result.reason}`)
+    expect(result.summary).toContain("[texto consolidado truncado]")
+    expect(result.reason).toContain("[texto consolidado truncado]")
+  })
 })

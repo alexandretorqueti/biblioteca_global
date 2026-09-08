@@ -146,6 +146,11 @@ interface MotorDetail {
     title: string
     integrationBranch?: string
     errorMessage?: string
+    finalResult?: {
+      status: "done" | "need_help" | "blocked_environment"
+      summary: string
+      reason: string
+    } | null
     blockInfo?: {
       kind?: string
       excerpt?: string
@@ -1009,6 +1014,7 @@ export default function TaskMonitorScreen(): ReactNode {
   const tipoTarefa = tarefaSelecionada?.tipo ?? "desenvolvimento"
   const isDesenvolvimento = tipoTarefa === "desenvolvimento"
   const podeFazerDeploy = isDesenvolvimento && statusMotor === "completed"
+  const resultadoFinal = detail?.task?.finalResult ?? null
 
   const taskChatPanel = tarefaId !== "" ? (
     <Paper variant="outlined" sx={{ mt: 2, p: 2 }} data-testid="task-chat">
@@ -1345,6 +1351,20 @@ export default function TaskMonitorScreen(): ReactNode {
               <Typography variant="body2">
                 <b>▶ Executando:</b> {stats.active.title} <Chip size="small" label={stats.active.status} color={corStatus(stats.active.status)} sx={{ ml: 1 }} />
               </Typography>
+            </Alert>
+          )}
+
+          {detail?.exists && resultadoFinal && !isDesenvolvimento && (
+            <Alert
+              severity={resultadoFinal.status === "done" ? "success" : resultadoFinal.status === "need_help" ? "warning" : "error"}
+              sx={{ mt: 2, whiteSpace: "pre-wrap" }}
+              data-testid="task-final-result"
+            >
+              <Typography variant="subtitle2">Resultado final consolidado</Typography>
+              <Typography variant="body2">{resultadoFinal.summary}</Typography>
+              {resultadoFinal.reason && (
+                <Typography variant="body2" sx={{ mt: 0.75 }}>Motivo: {resultadoFinal.reason}</Typography>
+              )}
             </Alert>
           )}
 
