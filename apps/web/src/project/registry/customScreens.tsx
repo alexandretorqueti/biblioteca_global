@@ -20,6 +20,7 @@ import PromptsScreen from "../../../../../projects/gerenteagentes/screens/Prompt
 import PainelPortariaScreen from "../../../../../projects/taqui/screens/PainelPortariaScreen"
 import NotificacoesMoradorScreen from "../../../../../projects/taqui/screens/NotificacoesMoradorScreen"
 import RegistroEncomendaScreen from "../../../../../projects/taqui/screens/RegistroEncomendaScreen"
+import EntregaEncomendaScreen from "../../../../../projects/taqui/screens/EntregaEncomendaScreen"
 
 /**
  * Registra as telas custom de todos os projetos. Chamar no boot (main.tsx)
@@ -41,5 +42,6 @@ export function registrarTelasCustom(): void {
     "taqui-painel-portaria": PainelPortariaScreen,
     "taqui-notificacoes-morador": NotificacoesMoradorScreen,
     "taqui-registro-encomenda": RegistroEncomendaScreen,
+    "taqui-entrega-encomenda": EntregaEncomendaScreen,
   })
 }

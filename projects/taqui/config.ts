@@ -603,6 +603,16 @@ export const config: GeradorSistemaConfig = {
           },
         },
         {
+          id: "entrega-encomenda",
+          label: "Entregar Encomenda",
+          path: "entregar",
+          icon: "handyman",
+          screen: {
+            kind: "custom",
+            componentId: "taqui-entrega-encomenda",
+          },
+        },
+        {
           id: "painel-portaria",
           label: "Painel da Portaria",
           path: "portaria",
