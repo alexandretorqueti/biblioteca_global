@@ -12,6 +12,8 @@ import { MotorAPI } from './api/MotorAPI.js'
 import { resourceEventBus } from './resources/ResourceEventBus.js'
 import { executionEventBus, type ExecutionActivityBroadcaster } from './events/ExecutionEventBus.js'
 import { createLogger, describeError } from './shared/logger.js'
+import { MotorConfigService, setGlobalConfigService, getGlobalConfigService } from './shared/MotorConfigService.js'
+import { GitWorkspaceManager } from './workspaces/GitWorkspaceManager.js'
 
 export interface MotorConfig {
   db: Db
@@ -21,6 +23,7 @@ export interface MotorConfig {
   apiPort?: number
   reconcilerIntervalMs?: number
   activityBroadcaster?: ExecutionActivityBroadcaster
+  configService?: MotorConfigService
 }
 
 export class Motor {
@@ -34,25 +37,39 @@ export class Motor {
   private pumpInterval: ReturnType<typeof setInterval> | null = null
 
   constructor(config: MotorConfig) {
-    const maxWorkers = config.maxWorkers ?? 1
+    // Inicializa o serviço de configurações se fornecido
+    if (config.configService) {
+      setGlobalConfigService(config.configService)
+    }
+
+    // Lê configurações do serviço ou usa valores fornecidos/defaults
+    const configService = config.configService
+    const maxWorkers = config.maxWorkers ?? configService?.getNumber('motor.max_workers', 1) ?? 1
+    const maxWorkersPerProject = config.maxWorkersPerProject ?? configService?.getNumber('motor.max_workers_per_project', 1) ?? 1
     const apiPort = config.apiPort ?? 3010
+    const reconcilerIntervalMs = config.reconcilerIntervalMs ?? configService?.getNumber('motor.reconciler_interval_ms', 30000) ?? 30000
+
+    // Configurações de recursos
+    const resourceLeaseMs = configService?.getNumber('motor.resource_lease_ms', 600000) ?? 600000
+    const resourceHeartbeatIntervalMs = configService?.getNumber('motor.resource_heartbeat_interval_ms', 30000) ?? 30000
 
     this.resourceLease = new ResourceLeaseService({ 
       db: config.db,
-      defaultLeaseMs: 600_000, // 10 minutos - tempo suficiente para chamadas LLM e testes
-      heartbeatIntervalMs: 30_000, // 30 segundos
+      defaultLeaseMs: resourceLeaseMs,
+      heartbeatIntervalMs: resourceHeartbeatIntervalMs,
     })
     this._waitManager = new ResourceWaitManager(config.db, config.repository)
-    this.workerLauncher = new WorkerLauncher()
+    this.workerLauncher = new WorkerLauncher(configService)
     this.reconciler = new ExpirationReconciler({
       db: config.db,
-      intervalMs: config.reconcilerIntervalMs,
+      intervalMs: reconcilerIntervalMs,
       onLeaseExpired: (resourceKey, executionId) => this.coordinator.onLeaseExpired(resourceKey, executionId),
     })
+    const workspaceManager = new GitWorkspaceManager({ root: process.env.MOTOR_WORKSPACE_ROOT ?? "/tmp/motor-v2-workspaces" })
     this.coordinator = new TaskCoordinator(config.db, config.repository, this.resourceLease, {
       maxWorkers,
-      maxWorkersPerProject: config.maxWorkersPerProject ?? 1,
-    }, this.workerLauncher, undefined, this._waitManager)
+      maxWorkersPerProject,
+    }, this.workerLauncher, configService, workspaceManager, this._waitManager)
     this.api = new MotorAPI({ port: apiPort, coordinator: this.coordinator, db: config.db })
 
     this.setupEventHandlers()
@@ -70,9 +87,11 @@ export class Motor {
     this.reconciler.start()
     await this.api.start()
 
+    // Lê o intervalo de pump do serviço de configurações
+    const pumpIntervalMs = getGlobalConfigService()?.getNumber('motor.pump_interval_ms', 30000) ?? 30000
     this.pumpInterval = setInterval(() => {
       this.coordinator.pump().catch((err: Error) => this.logger.error('Erro no pump: ' + describeError(err)))
-    }, 30000)
+    }, pumpIntervalMs)
 
     await this.coordinator.pump()
     this.logger.info('Motor-v2 iniciado')

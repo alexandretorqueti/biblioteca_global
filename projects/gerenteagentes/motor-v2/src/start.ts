@@ -7,6 +7,7 @@ import { Motor } from './Motor.js'
 import { createDbConnection, MysqlTaskRepository } from './database/DrizzleDb.js'
 import { LibraryRealtimeBroadcaster } from './events/LibraryRealtimeBroadcaster.js'
 import { createLogger } from './shared/logger.js'
+import { MotorConfigService } from './shared/MotorConfigService.js'
 
 const logger = createLogger('MotorStart')
 
@@ -18,6 +19,12 @@ async function main() {
   const { db } = await createDbConnection()
   const repository = new MysqlTaskRepository(db)
   logger.info('✅ Banco conectado')
+
+  // Inicializa o serviço de configurações
+  logger.info('⚙️ Inicializando serviço de configurações...')
+  const configService = new MotorConfigService({ db })
+  await configService.initialize()
+  logger.info('✅ Serviço de configurações inicializado')
 
   const realtimeToken = process.env.LIBRARY_REALTIME_EVENTS_TOKEN
   const activityBroadcaster = realtimeToken
@@ -36,6 +43,7 @@ async function main() {
     apiPort,
     reconcilerIntervalMs: 30000,
     activityBroadcaster,
+    configService,
   })
 
   const shutdown = async (signal: string) => {

@@ -16,6 +16,8 @@
  * O runner é injetável (forma de TaskWorker.exec: lança erro em exit != 0).
  */
 
+import { getGlobalConfigService } from "../shared/MotorConfigService.js"
+
 export type SyncCommandRunner = (command: string, cwd: string, timeoutMs: number) => string
 
 export interface BaselineConfirmationInput {
@@ -59,7 +61,8 @@ const STASH_MESSAGE = "motor-baseline-confirmation"
  * ambiental, nunca como falha do agente.
  */
 export function confirmBaselineIndependentFailure(input: BaselineConfirmationInput): BaselineConfirmationResult {
-  const timeoutMs = input.timeoutMs ?? 300_000
+  const configService = getGlobalConfigService()
+  const timeoutMs = input.timeoutMs ?? configService?.getNumber('motor.baseline_confirmation_timeout_ms', 300000) ?? 300000
   const status = input.runner("git status --porcelain", input.repoPath, 60_000).trim()
 
   if (!status) {

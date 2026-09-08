@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 import type { WorkerInput } from '../shared/types/execution.js'
 import type { WorkerToCoordinatorMessage } from './WorkerProtocol.js'
 import { createLogger } from '../shared/logger.js'
+import type { MotorConfigService } from '../shared/MotorConfigService.js'
 
 export type WorkerEvent = WorkerToCoordinatorMessage
 
@@ -16,9 +17,11 @@ export class WorkerLauncher extends EventEmitter {
   private logger = createLogger('WorkerLauncher')
   private workers = new Map<string, ChildProcess>()
   private workerScript: string
+  private configService?: MotorConfigService
 
-  constructor(workerScript?: string) {
+  constructor(configService?: MotorConfigService, workerScript?: string) {
     super()
+    this.configService = configService
     const __filename = fileURLToPath(import.meta.url)
     const __dirname = dirname(__filename)
     this.workerScript = workerScript ?? join(__dirname, 'TaskWorker.js')
@@ -99,7 +102,8 @@ export class WorkerLauncher extends EventEmitter {
     }
   }
 
-  async shutdownAll(timeoutMs = 10_000): Promise<void> {
+  async shutdownAll(timeoutMs?: number): Promise<void> {
+    const effectiveTimeout = timeoutMs ?? this.configService?.getNumber('motor.worker_shutdown_timeout_ms', 10000) ?? 10000
     const pending: Promise<void>[] = []
     for (const [, worker] of this.workers) {
       if (worker.connected) {
@@ -112,7 +116,7 @@ export class WorkerLauncher extends EventEmitter {
           worker.kill('SIGKILL')
           this.cleanupWorker(executionId)
           resolve()
-        }, timeoutMs)
+        }, effectiveTimeout)
         worker.once('exit', () => {
           clearTimeout(timeout)
           resolve()
@@ -130,16 +134,17 @@ export class WorkerLauncher extends EventEmitter {
     }
   }
 
-  async stopWorker(executionId: string, timeoutMs = 10_000): Promise<void> {
+  async stopWorker(executionId: string, timeoutMs?: number): Promise<void> {
     const worker = this.workers.get(executionId)
     if (!worker) return
     if (worker.connected) worker.send({ type: 'shutdown' })
+    const effectiveTimeout = timeoutMs ?? this.configService?.getNumber('motor.worker_shutdown_timeout_ms', 10000) ?? 10000
     await new Promise<void>((resolve) => {
       const timeout = setTimeout(() => {
         worker.kill('SIGKILL')
         this.cleanupWorker(executionId)
         resolve()
-      }, timeoutMs)
+      }, effectiveTimeout)
       worker.once('exit', () => {
         clearTimeout(timeout)
         resolve()

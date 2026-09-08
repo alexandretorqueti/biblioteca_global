@@ -3,6 +3,8 @@
  * Adaptado do motor antigo
  */
 
+import { getGlobalConfigService } from "../shared/MotorConfigService.js"
+
 export interface ConsoleTransportOptions {
   baseUrl: string
   token: string
@@ -97,6 +99,8 @@ export class ConsoleAgentRuntimeDriver {
   }
 
   async sendMessage(input: SendMessageInput): Promise<{ runId: string }> {
+    const configService = getGlobalConfigService()
+    const sendTimeoutMs = configService?.getNumber('motor.console_send_timeout_ms', 600000) ?? 600000
     const response = await this.request<{ runId: string }>({
       method: "POST",
       path: "/api/chat/send",
@@ -106,7 +110,7 @@ export class ConsoleAgentRuntimeDriver {
         message: input.message,
         ...(input.session.sessionId ? { sessionId: input.session.sessionId } : {}),
       },
-      timeoutMs: 600_000,
+      timeoutMs: sendTimeoutMs,
     })
     return { runId: response.runId }
   }
@@ -120,9 +124,10 @@ export class ConsoleAgentRuntimeDriver {
    * (sem progresso por idleTimeoutMs) ou pelo teto absoluto (4h).
    */
   async waitForRunCompletion(session: RuntimeSession, runId: string, options: WaitForRunOptions = {}): Promise<AgentRunCompletion> {
-    const absoluteTimeoutMs = options.absoluteTimeoutMs ?? 14_400_000
-    const idleTimeoutMs = options.idleTimeoutMs ?? 600_000
-    const pollInterval = options.pollIntervalMs ?? 5000
+    const configService = getGlobalConfigService()
+    const absoluteTimeoutMs = options.absoluteTimeoutMs ?? configService?.getNumber('motor.console_run_absolute_timeout_ms', 14400000) ?? 14400000
+    const idleTimeoutMs = options.idleTimeoutMs ?? configService?.getNumber('motor.console_run_idle_timeout_ms', 600000) ?? 600000
+    const pollInterval = options.pollIntervalMs ?? configService?.getNumber('motor.console_poll_interval_ms', 5000) ?? 5000
     const startMs = Date.now()
     let lastActivityMs = Date.now()
 

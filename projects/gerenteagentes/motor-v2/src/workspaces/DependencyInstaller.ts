@@ -5,7 +5,7 @@
  * - Detecta package-lock.json na raiz do worktree
  * - Captura git status --porcelain antes/depois do npm ci
  * - Falha se o npm ci alterar qualquer arquivo rastreado
- * - Timeout configurável via TASK_DEPENDENCY_INSTALL_TIMEOUT_MS (default 15min)
+ * - Timeout configurável via TASK_DEPENDENCY_INSTALL_TIMEOUT_MS ou motor.dependency_install_timeout_ms (default 15min)
  * - Sem package-lock.json → pula silenciosamente
  * - **Auto-recovery de lockfile desatualizado**: se npm ci falhar com EUSAGE
  *   (pacote workspace ausente do lockfile), roda npm install automaticamente
@@ -19,6 +19,7 @@ import { execSync } from "node:child_process"
 import { existsSync } from "node:fs"
 import { join } from "node:path"
 import { createLogger } from "../shared/logger.js"
+import { getGlobalConfigService } from "../shared/MotorConfigService.js"
 
 const logger = createLogger("DependencyInstaller")
 
@@ -230,14 +231,20 @@ export function isLockfileOutOfSync(errorMessage: string): boolean {
 }
 
 /**
- * Resolve o timeout de instalação de dependências a partir da variável de ambiente.
+ * Resolve o timeout de instalação de dependências a partir da variável de ambiente
+ * ou do serviço de configurações.
  * Exportado para testes e para uso direto no TaskWorker.
  */
 export function resolveInstallTimeoutMs(): number {
+  // Prioridade: variável de ambiente > serviço de configurações > padrão
   const envValue = process.env.TASK_DEPENDENCY_INSTALL_TIMEOUT_MS
   if (envValue) {
     const parsed = Number(envValue)
     if (Number.isFinite(parsed) && parsed > 0) return parsed
+  }
+  const configService = getGlobalConfigService()
+  if (configService) {
+    return configService.getNumber('motor.dependency_install_timeout_ms', DEFAULT_TIMEOUT_MS)
   }
   return DEFAULT_TIMEOUT_MS
 }

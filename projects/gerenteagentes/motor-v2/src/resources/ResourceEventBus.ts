@@ -4,6 +4,7 @@
 
 import { EventEmitter } from 'node:events'
 import type { ResourceKey } from '../shared/types/resources.js'
+import { getGlobalConfigService } from '../shared/MotorConfigService.js'
 
 export type ResourceEventType = 'acquired' | 'released' | 'expired'
 
@@ -45,12 +46,14 @@ export class ResourceEventBus {
     this.emitter.once(type, handler)
   }
 
-  waitFor(type: ResourceEventType, resourceKey: ResourceKey, timeoutMs = 30000): Promise<ResourceEvent> {
+  waitFor(type: ResourceEventType, resourceKey: ResourceKey, timeoutMs?: number): Promise<ResourceEvent> {
+    const configService = getGlobalConfigService()
+    const effectiveTimeout = timeoutMs ?? configService?.getNumber('motor.resource_event_wait_timeout_ms', 30000) ?? 30000
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.emitter.off(type, handler)
         reject(new Error(`Timeout: ${type} para ${resourceKey}`))
-      }, timeoutMs)
+      }, effectiveTimeout)
 
       const handler = (event: ResourceEvent) => {
         if (event.resourceKey === resourceKey) {

@@ -35,6 +35,7 @@ import { validateTaskCompletion, formatPromotionValidationReport } from "../poli
 import { isAgentRunFailureWithoutReply } from "../policies/NoReplyFailurePolicy.js"
 import { validateProjectId, formatProjectIdValidationReport } from "../policies/ProjectIdValidationPolicy.js"
 import { verifyAgentInGateway, formatAgentVerificationReport, shouldBlockEnqueue } from "../policies/GatewayAgentVerificationPolicy.js"
+import type { MotorConfigService } from "../shared/MotorConfigService.js"
 
 interface ActiveWorker {
   taskId: string
@@ -164,6 +165,7 @@ export class TaskCoordinator {
   private activeWorkers = new Map<string, ActiveWorker>()
   private resourceLease: ResourceLeaseService
   private workerLauncher: WorkerLauncher
+  private configService?: MotorConfigService
   private db: Db
   private repository: TaskRepository
   private workspaceManager: GitWorkspaceManager
@@ -183,6 +185,7 @@ export class TaskCoordinator {
     resourceLease: ResourceLeaseService,
     config: Partial<TaskCoordinatorConfig> = {},
     workerLauncher = new WorkerLauncher(),
+    configService?: MotorConfigService,
     workspaceManager = new GitWorkspaceManager({ root: process.env.MOTOR_WORKSPACE_ROOT ?? "/tmp/motor-v2-workspaces" }),
     waitManager?: ResourceWaitManager,
     eventBus = executionEventBus,
@@ -192,6 +195,7 @@ export class TaskCoordinator {
     this.config = { ...DEFAULT_CONFIG, ...config }
     this.resourceLease = resourceLease
     this.workerLauncher = workerLauncher
+    this.configService = configService
     this.workspaceManager = workspaceManager
     this.waitManager = waitManager
     this.eventBus = eventBus
@@ -1561,7 +1565,7 @@ export class TaskCoordinator {
   private armWorkerTimeout(executionId: string, taskTimeoutMs: number): void {
     const worker = this.activeWorkers.get(executionId)
     if (!worker) return
-    const timeoutMs = this.config.workerTimeoutMs ?? taskTimeoutMs
+    const timeoutMs = this.config.workerTimeoutMs ?? this.configService?.getNumber('motor.worker_timeout_ms', 14400000) ?? taskTimeoutMs
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return
 
     worker.timeoutHandle = setTimeout(() => {
@@ -1579,11 +1583,11 @@ export class TaskCoordinator {
   private armSilenceWatchdog(executionId: string): void {
     const worker = this.activeWorkers.get(executionId)
     if (!worker) return
-    const silenceMs = 600_000 // 10 minutos - tempo suficiente para chamadas LLM demoradas
+    const silenceMs = this.configService?.getNumber('motor.worker_silence_timeout_ms', 600000) ?? 600000
     worker.lastHeartbeatAt = new Date()
     if (worker.silenceHandle) clearTimeout(worker.silenceHandle)
     worker.silenceHandle = setTimeout(() => {
-      this.handleWorkerFailure(executionId, "Worker sem heartbeat por 600000ms", "lost").catch((error: unknown) => {
+      this.handleWorkerFailure(executionId, `Worker sem heartbeat por ${silenceMs}ms`, "lost").catch((error: unknown) => {
         this.logger.error("Falha ao processar silence watchdog: " + describeError(error), { executionId })
       })
     }, silenceMs)
@@ -1595,7 +1599,8 @@ export class TaskCoordinator {
 
     this.logger.warn("Encerrando worker: " + executionId + " - " + reason, { executionId })
     try {
-      await this.workerLauncher.stopWorker(executionId, 5000)
+      const shutdownTimeoutMs = this.configService?.getNumber('motor.worker_shutdown_timeout_ms', 10000) ?? 10000
+      await this.workerLauncher.stopWorker(executionId, shutdownTimeoutMs)
     } catch (error) {
       this.logger.error("Falha ao encerrar worker " + executionId + ": " + describeError(error), { executionId })
       this.workerLauncher.killWorker(executionId)
