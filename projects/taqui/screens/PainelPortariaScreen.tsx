@@ -366,7 +366,7 @@ export default function PainelPortariaScreen(): ReactNode {
       })
 
       setItens(result.itens ?? [])
-      setIndicadores(result.indicadores ?? indicadores)
+      setIndicadores((atuais) => result.indicadores ?? atuais)
     } catch (error) {
       setErro(
         error instanceof Error
@@ -376,7 +376,7 @@ export default function PainelPortariaScreen(): ReactNode {
     } finally {
       setCarregando(false)
     }
-  }, [bundle, projeto, tabEstado, busca, transportadoraId, localizacao, indicadores])
+  }, [bundle, projeto, tabEstado, busca, transportadoraId, localizacao])
 
   // =========================================================================
   // EFFECTS
