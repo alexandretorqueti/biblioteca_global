@@ -371,6 +371,26 @@ export const subtarefas = mysqlTable("subtarefas", {
     .onUpdateNow(),
 })
 
+/** Diagnóstico imutável de falhas devolvidas pelo Console/OpenClaw. */
+export const motorAgentSessionFailures = mysqlTable("motor_agent_session_failures", {
+  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+  tarefaId: bigint("tarefa_id", { mode: "number", unsigned: true }).notNull().references(() => tarefas.id, { onDelete: "cascade" }),
+  subtarefaId: bigint("subtarefa_id", { mode: "number", unsigned: true }).references(() => subtarefas.id, { onDelete: "set null" }),
+  agentId: varchar("agent_id", { length: 100 }).notNull(),
+  sessionKey: varchar("session_key", { length: 300 }).notNull(),
+  runtimeSessionId: varchar("runtime_session_id", { length: 300 }),
+  runId: varchar("run_id", { length: 300 }).notNull(),
+  code: varchar("code", { length: 120 }).notNull(),
+  message: varchar("message", { length: 500 }).notNull(),
+  occurredAt: timestamp("occurred_at").notNull(),
+  observedAt: timestamp("observed_at").notNull().defaultNow(),
+  scope: varchar("scope", { length: 20 }).notNull().default("session"),
+  classification: varchar("classification", { length: 20 }).notNull(),
+  classificationReason: varchar("classification_reason", { length: 160 }).notNull(),
+  fingerprint: varchar("fingerprint", { length: 600 }).notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+})
+
 /**
  * Histórico de entregas/erros/retornos por subtarefa.
  * Cada evento relevante (entrega iniciada, gate rejeitado, retorno para rework,

@@ -19,7 +19,7 @@ import { pathToFileURL } from "node:url"
 import { SecretProfileManager, resolveGitTopLevel } from "../workspaces/SecretProfileManager.js"
 import { DependencyInstaller, isLockfileOutOfSync, resolveInstallTimeoutMs } from "../workspaces/DependencyInstaller.js"
 import { GateFailureClassifier, type GateFailureVerdict } from "../policies/GateFailureClassifier.js"
-import { ConsoleAgentRuntimeDriver, type RuntimeSession, type RuntimeSessionMessage } from "../runtime/ConsoleAgentRuntimeDriver.js"
+import { ConsoleAgentRuntimeDriver, type RemoteSessionFailure, type RuntimeSession, type RuntimeSessionMessage } from "../runtime/ConsoleAgentRuntimeDriver.js"
 import type { WorkerInput, ExecutionContext, ExecutionResult, SubtaskInfo } from "../shared/types/execution.js"
 import type { CoordinatorToWorkerMessage, WorkerToCoordinatorMessage } from "./WorkerProtocol.js"
 import { defaultChain, formatSessionKey, isModelUnavailableError, type ModelSelection } from "../policies/ModelTierPolicy.js"
@@ -64,6 +64,23 @@ import { digestGateFailure, formatCarryOver, type CarryOverEvent } from "../poli
 
 const COMMAND_FAILURE_LIMIT = 12_000
 const ANSI_ESCAPE_PATTERN = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g
+
+export interface SessionFailurePersistenceDb {
+  query(sql: string, params?: unknown[]): Promise<unknown>
+}
+
+export async function persistRemoteSessionFailure(
+  db: SessionFailurePersistenceDb,
+  taskId: string,
+  agentId: string,
+  subtaskId: number | undefined,
+  failure: RemoteSessionFailure,
+): Promise<void> {
+  await db.query(
+    "INSERT INTO motor_agent_session_failures (tarefa_id, subtarefa_id, agent_id, session_key, runtime_session_id, run_id, code, message, occurred_at, scope, classification, classification_reason, fingerprint) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    [taskId, subtaskId ?? null, agentId, failure.sessionKey, failure.remoteSessionId ?? null, failure.runId, failure.code, failure.message, failure.occurredAt, failure.scope, failure.classification, failure.classificationReason, failure.fingerprint],
+  )
+}
 
 type IntegrationWorkspaceBaseline = {
   path: string
@@ -363,7 +380,10 @@ class TaskWorker {
           ].join("\n\n")
           const { runId: contextRunId } = await driver.sendMessage({ session, message: contextMessage })
           const contextResult = await driver.waitForRunCompletion(session, contextRunId, { onActivity: () => this.sendHeartbeat() })
-          if (contextResult.state !== "final") throw new Error(`Analista nao confirmou o bloco ${chunkNumber}/${descriptionChunks.length}: ${contextResult.errorMessage || contextResult.state}`)
+          if (contextResult.state !== "final") {
+            await this.persistRemoteSessionFailure(input, undefined, contextResult.failure)
+            throw new Error(`Analista nao confirmou o bloco ${chunkNumber}/${descriptionChunks.length}: ${contextResult.errorMessage || contextResult.state}`)
+          }
         }
 
         this.log("info", "Enviando prompt para analista (modelo " + model.model + ")...")
@@ -377,6 +397,7 @@ class TaskWorker {
         this.log("info", "Resultado do analista: state=" + result.state + ", contentLength=" + (result.content?.length || 0) + stopInfo)
 
         if (result.state !== "final" || !result.content) {
+          await this.persistRemoteSessionFailure(input, undefined, result.failure)
           lastFailure = "Analista falhou: " + (result.errorMessage || result.state)
           this.log("warn", lastFailure)
           continue
@@ -453,6 +474,7 @@ class TaskWorker {
               onActivity: () => this.sendHeartbeat(),
             })
             if (retryResult.state !== "final" || !retryResult.content) {
+              await this.persistRemoteSessionFailure(input, undefined, retryResult.failure)
               lastFailure = "Retry corretivo de qualidade nao retornou resultado final: " + (retryResult.errorMessage || retryResult.state)
               this.log("warn", lastFailure)
               continue
@@ -743,6 +765,7 @@ class TaskWorker {
             continue
           }
           if (result.state !== "final") {
+            await this.persistRemoteSessionFailure(input, subtask, result.failure)
             lastFailure = "Programador falhou: " + (result.errorMessage || result.state)
             break
           }
@@ -946,6 +969,15 @@ class TaskWorker {
     const reason = "Escada de modelos esgotada: " + (lastFailure || "subtarefa não aprovada")
     await this.recordBlocker(subtask, "model_chain_exhausted", reason)
     throw new Error(reason)
+  }
+
+  private async persistRemoteSessionFailure(
+    input: WorkerInput,
+    subtask: SubtaskInfo | undefined,
+    failure: RemoteSessionFailure | undefined,
+  ): Promise<void> {
+    if (!this.db || !failure) return
+    await persistRemoteSessionFailure(this.db, input.task.id, input.task.agentId, subtask?.id, failure)
   }
 
   private async openDeveloperSession(subtaskId: number, model: string, session: RuntimeSession): Promise<void> {

@@ -26,6 +26,28 @@ afterEach(() => {
 })
 
 describe('B7 — timeout de inatividade', () => {
+  it('preserva o diagnóstico remoto estruturado de uma sessão falha', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
+      state: 'failed',
+      sessionId: 'remote-42',
+      error: { code: 'UPSTREAM_RESET', message: 'Gateway reiniciou durante a execução', occurredAt: '2026-09-08T12:00:00Z' },
+    })))
+
+    const driver = makeDriver()
+    const result = await driver.waitForRunCompletion({ ...session, sessionId: 'known-remote' }, 'run-42', { pollIntervalMs: 10 })
+
+    expect(result.state).toBe('error')
+    expect(result.failure).toMatchObject({
+      code: 'UPSTREAM_RESET',
+      message: 'Gateway reiniciou durante a execução',
+      sessionKey: 's1',
+      remoteSessionId: 'remote-42',
+      runId: 'run-42',
+      occurredAt: '2026-09-08T12:00:00.000Z',
+      classification: 'transient',
+    })
+  })
+
   it('run ativo por vários polls não é interrompido; conclui quando termina', async () => {
     const responses: unknown[] = [
       { state: 'busy', hasActiveRun: true },
