@@ -1580,7 +1580,7 @@ export class TaskCoordinator {
     const wrapped = "(" + run + "; code=$?; if [ $code -eq 0 ]; then printf success; else printf 'failed:%s' $code; fi > " + shellQuote(statusFile) + ")"
     const remoteCommand = "nohup bash -lc " + shellQuote(wrapped) + " > " + shellQuote(logFile) + " 2>&1 < /dev/null & echo $!"
     const output = execFileSync("ssh", this.deploySshArguments(remoteCommand), { encoding: "utf8", timeout: 15_000 }).trim()
-    if (!/^\\d+$/.test(output)) throw new Error("SSH não confirmou o PID do deploy destacado: " + output)
+    if (!/^\d+$/.test(output)) throw new Error("SSH não confirmou o PID do deploy destacado: " + output)
     this.logger.info("Lote de deploy destacado no ServerIA", { batchId, taskIds, remotePid: output, logFile, statusFile })
   }
 
