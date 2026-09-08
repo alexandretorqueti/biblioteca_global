@@ -2,9 +2,41 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it, vi } from "vitest"
-import { GitWorkspaceManager, type GitCommandRunner } from "../src/workspaces/GitWorkspaceManager.js"
+import { classifyDirtyFiles, GitWorkspaceManager, type GitCommandRunner } from "../src/workspaces/GitWorkspaceManager.js"
 
 describe("GitWorkspaceManager", () => {
+  it("classifica projeto, compartilhado explicitamente e externo por caminho verificável", () => {
+    const report = classifyDirtyFiles({
+      repositoryRoot: "/repo",
+      taskProjectPath: "/repo/projects/gerenteagentes",
+      dirtyFiles: [
+        "projects/gerenteagentes/src/a.ts",
+        "package-lock.json",
+        "projects/taqui/src/b.ts",
+      ],
+      sharedPaths: ["package-lock.json"],
+    })
+
+    expect(report.all).toEqual([
+      { path: "projects/gerenteagentes/src/a.ts", classification: "task-project" },
+      { path: "package-lock.json", classification: "relevant-shared" },
+      { path: "projects/taqui/src/b.ts", classification: "external" },
+    ])
+    expect(report.taskProject).toEqual(["projects/gerenteagentes/src/a.ts"])
+    expect(report.relevantShared).toEqual(["package-lock.json"])
+    expect(report.external).toEqual(["projects/taqui/src/b.ts"])
+  })
+
+  it("não promove arquivo externo a compartilhado sem declaração explícita", () => {
+    const report = classifyDirtyFiles({
+      repositoryRoot: "/repo",
+      taskProjectPath: "/repo/projects/gerenteagentes",
+      dirtyFiles: ["package.json"],
+    })
+    expect(report.external).toEqual(["package.json"])
+    expect(report.relevantShared).toEqual([])
+  })
+
   it("cria worktree e branch exclusivos sem checkout no repositório principal", async () => {
     const root = await mkdtemp(join(tmpdir(), "motor-v2-workspaces-"))
     const runner: GitCommandRunner = {
@@ -78,10 +110,16 @@ describe("GitWorkspaceManager", () => {
   })
 
   it("recusa repositório principal sujo antes de criar worktree", async () => {
-    const runner: GitCommandRunner = { run: vi.fn().mockResolvedValue({ stdout: " M arquivo.ts\n", stderr: "" }) }
+    const runner: GitCommandRunner = {
+      run: vi.fn().mockImplementation(async (command: readonly string[]) => {
+        if (command[1] === "rev-parse" && command[2] === "--show-toplevel") return { stdout: "/repo/principal\n", stderr: "" }
+        if (command[1] === "rev-parse") return { stdout: "a".repeat(40) + "\n", stderr: "" }
+        return { stdout: " M arquivo.ts\n", stderr: "" }
+      }),
+    }
     await expect(new GitWorkspaceManager({ root: "/tmp/motor-v2-workspaces", runner }).prepare({
       repoPath: "/repo/principal", agentId: "test-agent", baseBranch: "base", taskId: "7", subtaskId: "8", attempt: 1,
-    })).rejects.toThrow("repositório principal não está limpo")
+    })).rejects.toThrow("projeto da tarefa: M arquivo.ts")
   })
 
   it("classifica repositório ausente (ENOENT) como bloqueio ambiental", async () => {
@@ -89,7 +127,7 @@ describe("GitWorkspaceManager", () => {
     const runner: GitCommandRunner = {
       run: vi.fn().mockImplementation(async (command: readonly string[]) => {
         // ENOENT ocorre no spawn do git (binário ausente) — qualquer comando falha
-        if (command[1] === "status" || command[1] === "diff") throw enoent
+        if (command[1] === "rev-parse" || command[1] === "status" || command[1] === "diff") throw enoent
         return { stdout: "", stderr: "" }
       }),
     }

@@ -95,6 +95,22 @@ export interface PrepareWorkspaceInput {
   attempt: number
   /** Workspace real do agente (do Console). Se informado, worktree é criado dentro dele. */
   agentWorkspacePath?: string
+  /** Arquivos compartilhados que fazem parte explicitamente do escopo da tarefa. */
+  sharedPaths?: readonly string[]
+}
+
+export type DirtyFileClassification = "task-project" | "relevant-shared" | "external"
+
+export interface ClassifiedDirtyFile {
+  path: string
+  classification: DirtyFileClassification
+}
+
+export interface DirtyFilesReport {
+  all: ClassifiedDirtyFile[]
+  taskProject: string[]
+  relevantShared: string[]
+  external: string[]
 }
 
 function safeSegment(value: string, label: string): string {
@@ -118,6 +134,53 @@ function validCommit(commit: string): boolean {
 function inside(root: string, target: string): boolean {
   const path = relative(root, target)
   return path !== "" && path !== ".." && !path.startsWith(`..${"/"}`) && !isAbsolute(path)
+}
+
+function pathInsideOrEqual(root: string, target: string): boolean {
+  const path = relative(root, target)
+  return path === "" || (path !== ".." && !path.startsWith(`..${"/"}`) && !isAbsolute(path))
+}
+
+/** Classifica alterações do Git contra o projeto e compartilhamentos declarados. */
+export function classifyDirtyFiles(input: {
+  repositoryRoot: string
+  taskProjectPath: string
+  dirtyFiles: readonly string[]
+  sharedPaths?: readonly string[]
+}): DirtyFilesReport {
+  const repositoryRoot = resolve(input.repositoryRoot)
+  const taskProjectPath = resolve(input.taskProjectPath)
+  const shared = new Set((input.sharedPaths ?? []).map((path) => resolve(repositoryRoot, path)))
+  const all: ClassifiedDirtyFile[] = []
+
+  for (const rawPath of input.dirtyFiles) {
+    const path = rawPath.trim()
+    if (!path) continue
+    const absolutePath = resolve(repositoryRoot, path)
+    const classification: DirtyFileClassification = pathInsideOrEqual(taskProjectPath, absolutePath)
+      ? "task-project"
+      : shared.has(absolutePath)
+        ? "relevant-shared"
+        : "external"
+    all.push({ path, classification })
+  }
+
+  return {
+    all,
+    taskProject: all.filter((item) => item.classification === "task-project").map((item) => item.path),
+    relevantShared: all.filter((item) => item.classification === "relevant-shared").map((item) => item.path),
+    external: all.filter((item) => item.classification === "external").map((item) => item.path),
+  }
+}
+
+function formatDirtyFilesReport(report: DirtyFilesReport): string {
+  const format = (paths: readonly string[]) => paths.length > 0 ? paths.join(", ") : "(nenhum)"
+  return [
+    "repositório principal possui alterações fora do escopo global",
+    `projeto da tarefa: ${format(report.taskProject)}`,
+    `compartilhados relevantes: ${format(report.relevantShared)}`,
+    `externos: ${format(report.external)}`,
+  ].join("; ")
 }
 
 /**
@@ -151,13 +214,25 @@ export class GitWorkspaceManager {
     if (!inside(workspaceRoot, target)) throw new Error("workspace fora da raiz segura")
 
     await this.markSafeDirectory(repoPath)
+    let repositoryRoot: string
+    try {
+      repositoryRoot = resolve((await this.runner.run(["git", "rev-parse", "--show-toplevel"], repoPath)).stdout.trim())
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException | undefined)?.code
+      if (code === "ENOENT") throw new Error("Ambiente bloqueado: repositório não encontrado: " + input.repoPath)
+      throw error
+    }
+    const projectRelativePath = relative(repositoryRoot, repoPath)
+    if (projectRelativePath === ".." || projectRelativePath.startsWith(`..${"/"}`) || isAbsolute(projectRelativePath)) {
+      throw new Error("repo_path fora da raiz do repositório Git")
+    }
     // Falha ambiental clara: repo ausente causa "spawn git ENOENT" e entraria
     // em loop de retries no coordenador. Classificar como bloqueio ambiental.
     // Untracked files não afetam worktree/merge e não podem travar o motor
     // enquanto outra sessão mantém arquivos novos no repositório.
     // Verifica se o repo tem alterações reais (ignora whitespace-at-eol para
     // não bloquear por artefatos de db:migrate em _journal.json — só newline no fim).
-    const diff = await this.runner.run(["git", "diff", "--name-only", "--ignore-space-at-eol", "HEAD"], repoPath).catch((error: unknown) => {
+    const diff = await this.runner.run(["git", "diff", "--name-only", "--ignore-space-at-eol", "HEAD"], repositoryRoot).catch((error: unknown) => {
       const code = (error as NodeJS.ErrnoException | undefined)?.code
       if (code === "ENOENT") {
         throw new Error("Ambiente bloqueado: repositório não encontrado: " + input.repoPath)
@@ -165,13 +240,16 @@ export class GitWorkspaceManager {
       throw error
     })
     // staged files also need checking (git diff HEAD misses index-only changes if working tree matches index)
-    const staged = await this.runner.run(["git", "diff", "--name-only", "--cached", "--ignore-space-at-eol"], repoPath)
+    const staged = await this.runner.run(["git", "diff", "--name-only", "--cached", "--ignore-space-at-eol"], repositoryRoot)
     const dirtyFiles = [...new Set([...diff.stdout.split("\n"), ...staged.stdout.split("\n")].map((s) => s.trim()).filter(Boolean))]
-    if (dirtyFiles.length > 0) throw new Error("repositório principal não está limpo: " + dirtyFiles.join(", "))
-    const repositoryRoot = resolve((await this.runner.run(["git", "rev-parse", "--show-toplevel"], repoPath)).stdout.trim())
-    const projectRelativePath = relative(repositoryRoot, repoPath)
-    if (projectRelativePath === ".." || projectRelativePath.startsWith(`..${"/"}`) || isAbsolute(projectRelativePath)) {
-      throw new Error("repo_path fora da raiz do repositório Git")
+    const dirtyReport = classifyDirtyFiles({
+      repositoryRoot,
+      taskProjectPath: repoPath,
+      dirtyFiles,
+      sharedPaths: input.sharedPaths,
+    })
+    if (dirtyReport.taskProject.length > 0 || dirtyReport.relevantShared.length > 0) {
+      throw new Error(formatDirtyFilesReport(dirtyReport))
     }
     const baseCommit = (await this.runner.run(["git", "rev-parse", "--verify", `${baseBranch}^{commit}`], repoPath)).stdout.trim()
     if (!/^[a-f0-9]{7,}$/i.test(baseCommit)) throw new Error("commit-base inválido")
