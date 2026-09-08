@@ -19,15 +19,14 @@ import {
   NotFoundException,
   Param,
   Patch,
+  Put,
   Query,
   UseGuards,
 } from "@nestjs/common"
 import type { ProjetoResumo, UsuarioAutenticado } from "@biblioteca-global/shared"
 import { CurrentProject, CurrentUser } from "../../common/decorators/current.decorator"
-import { Roles } from "../../common/decorators/roles.decorator"
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard"
 import { ProjectScopeGuard } from "../../common/guards/project-scope.guard"
-import { RolesGuard } from "../../common/guards/roles.guard"
 import { NotificacoesMoradorService } from "./notificacoes-morador.service"
 import {
   notificacoesMoradorQuerySchema,
@@ -52,7 +51,7 @@ export class NotificacoesMoradorController {
    *
    * Retorna também contagem total e de não lidas para o badge do sininho.
    */
-  @Get(":slug/notificacoes/morador")
+  @Get(":slug/notificacoes/minhas")
   async listarNotificacoes(
     @CurrentProject() projeto: ProjetoResumo,
     @CurrentUser() usuario: UsuarioAutenticado,
@@ -89,8 +88,7 @@ export class NotificacoesMoradorController {
    * IMPORTANTE: Esta ação NÃO afeta o status da encomenda.
    * A confirmação de reconhecimento é uma ação separada.
    */
-  @UseGuards(RolesGuard)
-  @Roles("admin", "gerente", "operador", "visualizador")
+  @Put(":slug/notificacoes/:id/lida")
   async marcarComoLida(
     @CurrentProject() projeto: ProjetoResumo,
     @CurrentUser() usuario: UsuarioAutenticado,
@@ -107,5 +105,29 @@ export class NotificacoesMoradorController {
     }
 
     return this.service.marcarComoLida(projeto, usuario, notificacaoId)
+  }
+
+  /** Aliases legados preservados para clientes já publicados. */
+  @Get(":slug/notificacoes/morador")
+  async listarNotificacoesLegado(
+    @CurrentProject() projeto: ProjetoResumo,
+    @CurrentUser() usuario: UsuarioAutenticado,
+    @Param("slug") slug: string,
+    @Query() query: Record<string, string>,
+  ) {
+    if (slug !== projeto.slug) throw new NotFoundException("Projeto não encontrado")
+    const parsed = notificacoesMoradorQuerySchema.safeParse(query)
+    if (!parsed.success) throw new BadRequestException("Parâmetros de consulta inválidos")
+    return this.service.listarNotificacoes(projeto, usuario, parsed.data as NotificacoesMoradorQuery)
+  }
+
+  @Patch(":slug/notificacoes/:id/marcar-lida")
+  async marcarComoLidaLegado(
+    @CurrentProject() projeto: ProjetoResumo,
+    @CurrentUser() usuario: UsuarioAutenticado,
+    @Param("slug") slug: string,
+    @Param("id") idParam: string,
+  ) {
+    return this.marcarComoLida(projeto, usuario, slug, idParam)
   }
 }
