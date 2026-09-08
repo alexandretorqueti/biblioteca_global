@@ -52,6 +52,8 @@ import {
   taskStatusLabel,
 } from "../motor-v2/src/shared/task-statuses"
 
+export const componentId = "gerenteagentes-task-monitor"
+
 interface Tarefa {
   id: number
   titulo: string
