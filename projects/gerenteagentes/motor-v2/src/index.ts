@@ -66,6 +66,7 @@ export type {
 export { RESOURCE_KEYS } from './shared/types/resources.js'
 
 export type { Db, TaskRepository, QueryResult, SaveTaskData, TaskRow, TaskTipo as InfrastructureTaskTipo } from './shared/types/infrastructure.js'
+export { consolidateTaskFinalResult, finalResultChatText } from './policies/TaskFinalResult.js'
 export type { AgentRuntimeDriver, SendMessageResult, RunStatusResult, SendMessageParams } from './shared/types/agent-runtime.js'
 
 // Steps

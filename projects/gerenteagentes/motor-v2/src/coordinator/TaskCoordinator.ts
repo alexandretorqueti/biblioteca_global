@@ -35,6 +35,7 @@ import { validateTaskCompletion, formatPromotionValidationReport } from "../poli
 import { isAgentRunFailureWithoutReply } from "../policies/NoReplyFailurePolicy.js"
 import { validateProjectId, formatProjectIdValidationReport } from "../policies/ProjectIdValidationPolicy.js"
 import { verifyAgentInGateway, formatAgentVerificationReport, shouldBlockEnqueue } from "../policies/GatewayAgentVerificationPolicy.js"
+import { consolidateTaskFinalResult, finalResultChatText } from "../policies/TaskFinalResult.js"
 
 interface ActiveWorker {
   taskId: string
@@ -250,7 +251,10 @@ export class TaskCoordinator {
       const { rows: subtasks } = await this.db.query("SELECT id, seq, workspace_commit_sha, workspace_status, completion_kind, status, resultado FROM subtarefas WHERE tarefa_id = ? AND status != 'superseded'", [task.id])
       const validation = validateTaskCompletion(subtasks.map((st: Record<string, unknown>) => ({ id: Number(st.id), seq: Number(st.seq), workspaceCommitSha: st.workspace_commit_sha ? String(st.workspace_commit_sha) : null, workspaceStatus: st.workspace_status ? String(st.workspace_status) : null, completionKind: st.completion_kind ? String(st.completion_kind) : null, status: String(st.status), resultado: st.resultado ? String(st.resultado) : null })))
       if (!validation.ok) await this.saveTaskTransition(task, "fail", { errorMessage: validation.reason })
-      else await this.saveTaskTransition(task, "execution_completed")
+      else {
+        await this.persistFinalLightweightResult(task, subtasks)
+        await this.saveTaskTransition(task, "execution_completed")
+      }
     }
   }
 
@@ -718,6 +722,7 @@ export class TaskCoordinator {
         const task = await this.repository.getTask(worker.taskId)
         if (task) {
           const pending = Number((rows[0] as Record<string, unknown>)?.pending ?? 0)
+          if (pending === 0) await this.persistFinalLightweightResult(task)
           await this.saveTaskTransition(task, pending === 0 ? "execution_completed" : "subtasks_pending")
         }
       } else if (worker.subtaskId) {
@@ -1214,6 +1219,24 @@ export class TaskCoordinator {
       createdAt: data.createdAt ?? new Date().toISOString(),
       updatedAt: data.updatedAt ?? new Date().toISOString(),
     }
+  }
+
+  private async persistFinalLightweightResult(
+    task: import("../shared/types/infrastructure.js").SaveTaskData,
+    knownRows?: Record<string, unknown>[],
+  ): Promise<void> {
+    if (task.tipo !== "automacao" && task.tipo !== "verificacao") return
+    const rows = knownRows ?? (await this.db.query(
+      "SELECT seq, titulo, resultado FROM subtarefas WHERE tarefa_id = (SELECT id FROM tarefas WHERE external_id = ? OR id = CAST(? AS UNSIGNED) LIMIT 1) AND status IN ('verified', 'superseded') ORDER BY seq ASC, id ASC",
+      [task.id, task.id],
+    )).rows
+    const result = consolidateTaskFinalResult(task.tipo, rows.map((row) => ({ seq: Number(row.seq), titulo: String(row.titulo ?? ""), resultado: row.resultado ? String(row.resultado) : null })))
+    if (!result) return
+    const chatText = finalResultChatText(result).substring(0, 30_000)
+    await this.db.transaction(async (tx) => {
+      await tx.query("UPDATE tarefas SET resultado_final = ?, updated_at = NOW() WHERE (external_id = ? OR id = CAST(? AS UNSIGNED)) AND tipo IN ('automacao', 'verificacao')", [JSON.stringify(result), task.id, task.id])
+      await tx.query("INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) SELECT id, 'assistant', ?, NOW() FROM tarefas WHERE (external_id = ? OR id = CAST(? AS UNSIGNED)) AND tipo IN ('automacao', 'verificacao') AND NOT EXISTS (SELECT 1 FROM tarefa_chats c WHERE c.tarefa_id = tarefas.id AND c.role = 'assistant' AND c.texto = ?) LIMIT 1", [chatText, task.id, task.id, chatText])
+    })
   }
 
   async enqueueTask(taskId: string): Promise<{ executionId: string }> {
