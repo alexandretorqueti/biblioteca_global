@@ -423,5 +423,18 @@ export const config: GeradorSistemaConfig = {
         },
       ],
     },
+    {
+      id: "configuracoes",
+      label: "CONFIGURAÇÕES",
+      items: [
+        {
+          id: "configuracoes-list",
+          label: "CONFIGURAÇÕES",
+          path: "configuracoes",
+          icon: "settings",
+          screen: { kind: "custom", componentId: "gerenteagentes-configuracoes" },
+        },
+      ],
+    },
   ],
 }

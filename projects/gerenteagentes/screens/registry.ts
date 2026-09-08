@@ -4,6 +4,7 @@ import ModelSelectionScreen, { componentId as modelSelectionId } from "./ModelSe
 import NovaTarefaScreen, { componentId as novaTarefaId } from "./NovaTarefaScreen"
 import PromptsScreen, { componentId as promptsId } from "./PromptsScreen"
 import TaskMonitorScreen, { componentId as taskMonitorId } from "./TaskMonitorScreen"
+import ConfiguracoesScreen, { componentId as configuracoesId } from "./ConfiguracoesScreen"
 
 /** Registry exclusivo das telas customizadas do projeto gerenteagentes. */
 export const customScreens = {
@@ -13,4 +14,5 @@ export const customScreens = {
   [novaTarefaId]: NovaTarefaScreen,
   [promptsId]: PromptsScreen,
   [taskMonitorId]: TaskMonitorScreen,
+  [configuracoesId]: ConfiguracoesScreen,
 }
