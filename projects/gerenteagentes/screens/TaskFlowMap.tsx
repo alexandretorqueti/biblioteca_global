@@ -58,6 +58,12 @@ const SIDE_FLOW: FlowStation[] = [
 
 const ACTIVE_AI_STATUSES = new Set(["analyzing", "running", "motor_fix"])
 
+function taskDescription(task: FlowTask): string {
+  return typeof task.descricao === "string" && task.descricao.trim()
+    ? task.descricao.trim()
+    : "Tarefa sem descrição"
+}
+
 const TONE_STYLE = {
   neutral: { borderColor: "divider", bgcolor: "action.hover" },
   active: { borderColor: "primary.main", bgcolor: "primary.main", color: "primary.contrastText" },
@@ -149,7 +155,7 @@ function Station({ station, tarefas, selectedTaskId, search, movingIds, dragging
                 {aiActive && <SettingsRounded aria-label="IA trabalhando" sx={{ flexShrink: 0, fontSize: 18, color: "warning.main", animation: "gear-spin 2s linear infinite", "@keyframes gear-spin": { to: { transform: "rotate(360deg)" } } }} />}
                 {station.tone === "danger" && <ErrorOutlineRounded sx={{ flexShrink: 0, fontSize: 17, color: "error.main" }} />}
                 <Typography variant="caption" fontWeight={700} noWrap sx={{ minWidth: 0, flex: 1 }}>#{task.id} {task.titulo}</Typography>
-                <Tooltip title={task.descricao?.trim() || "Tarefa sem descrição"} arrow placement="top">
+                <Tooltip title={taskDescription(task)} arrow placement="top">
                   <Box
                     component="span"
                     aria-label={`Descrição da tarefa ${task.id}`}

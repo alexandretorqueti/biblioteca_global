@@ -33,6 +33,26 @@ describe("TaskFlowMap", () => {
     expect(onSelectTask).toHaveBeenCalledWith(767)
   })
 
+  it("exibe a descrição correta ao passar o mouse no ícone da tarefa", async () => {
+    view([
+      { id: 770, titulo: "Primeira tarefa", descricao: "Descrição da primeira tarefa", status: "ready", projetoId: 1 },
+      { id: 771, titulo: "Segunda tarefa", descricao: "Descrição da segunda tarefa", status: "running", projetoId: 1 },
+    ])
+
+    await userEvent.hover(screen.getByTestId("flow-task-description-770"))
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Descrição da primeira tarefa")
+    await userEvent.unhover(screen.getByTestId("flow-task-description-770"))
+    await userEvent.hover(screen.getByTestId("flow-task-description-771"))
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Descrição da segunda tarefa")
+  })
+
+  it("usa um fallback seguro quando a tarefa não tem descrição", async () => {
+    view([{ id: 772, titulo: "Sem descrição", descricao: null, status: "ready", projetoId: 1 }])
+
+    await userEvent.hover(screen.getByTestId("flow-task-description-772"))
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Tarefa sem descrição")
+  })
+
   it("destaca uma transição quando o status muda", () => {
     const rendered = view([{ id: 766, titulo: "Registry", status: "ready", projetoId: 1 }])
     rendered.rerender(<BibliotecaThemeProvider><TaskFlowMap tarefas={[{ id: 766, titulo: "Registry", status: "running", projetoId: 1 }]} selectedTaskId="" onSelectTask={vi.fn()} /></BibliotecaThemeProvider>)
