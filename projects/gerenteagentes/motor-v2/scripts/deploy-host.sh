@@ -26,7 +26,7 @@ set +a
 # pelo entrypoint lê `motor-v2/dist`, não o artefato produzido dentro da imagem.
 # Gere o JavaScript antes de recriar o container para que alterações no `src`
 # sejam efetivamente publicadas.
-npx tsc --build projects/gerenteagentes/motor-v2/tsconfig.json --force
+./node_modules/.bin/tsc --build projects/gerenteagentes/motor-v2/tsconfig.json --force
 
 OLD_API_IMAGE=$(docker inspect "$API" --format '{{.Image}}' 2>/dev/null || true)
 OLD_WEB_IMAGE=$(docker inspect "$WEB" --format '{{.Image}}' 2>/dev/null || true)
