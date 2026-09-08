@@ -2,6 +2,13 @@ import type { TaskFinalResult, TaskTipo } from "../shared/types/infrastructure.j
 
 export interface FinalResultSubtask { seq: number; titulo: string; resultado?: string | null }
 const STATUSES = ["done", "need_help", "blocked_environment"] as const
+const MAX_SUMMARY_LENGTH = 30_000
+const MAX_REASON_LENGTH = 10_000
+
+function limitText(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value
+  return value.slice(0, maxLength - 32) + "\n[texto consolidado truncado]"
+}
 
 function parseResult(text: string | null | undefined): TaskFinalResult {
   if (!text?.trim()) return { status: "done", summary: "Execução concluída sem detalhes adicionais.", reason: "" }
@@ -24,9 +31,9 @@ export function consolidateTaskFinalResult(tipo: TaskTipo | undefined, subtasks:
   const results = subtasks.map((subtask) => ({ subtask, result: parseResult(subtask.resultado) }))
   const status = results.some(({ result }) => result.status === "blocked_environment") ? "blocked_environment"
     : results.some(({ result }) => result.status === "need_help") ? "need_help" : "done"
-  const summary = results.map(({ subtask, result }) => `Subtarefa ${subtask.seq} — ${subtask.titulo}: ${result.summary || "Sem resumo informado."}`).join("\n")
-    || "Tarefa concluída sem subtarefas com resposta."
-  const reason = results.map(({ subtask, result }) => result.reason ? `Subtarefa ${subtask.seq}: ${result.reason}` : "").filter(Boolean).join("\n")
+  const summary = limitText(results.map(({ subtask, result }) => `Subtarefa ${subtask.seq} — ${subtask.titulo}: ${result.summary || "Sem resumo informado."}`).join("\n")
+    || "Tarefa concluída sem subtarefas com resposta.", MAX_SUMMARY_LENGTH)
+  const reason = limitText(results.map(({ subtask, result }) => result.reason ? `Subtarefa ${subtask.seq}: ${result.reason}` : "").filter(Boolean).join("\n"), MAX_REASON_LENGTH)
   return { status, summary, reason }
 }
 

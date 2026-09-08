@@ -1232,7 +1232,9 @@ export class TaskCoordinator {
     )).rows
     const result = consolidateTaskFinalResult(task.tipo, rows.map((row) => ({ seq: Number(row.seq), titulo: String(row.titulo ?? ""), resultado: row.resultado ? String(row.resultado) : null })))
     if (!result) return
-    const chatText = finalResultChatText(result).substring(0, 30_000)
+    // O limite é aplicado na regra de domínio antes de persistir. Assim, a
+    // mensagem do chat é exatamente a representação do resultado salvo.
+    const chatText = finalResultChatText(result)
     await this.db.transaction(async (tx) => {
       await tx.query("UPDATE tarefas SET resultado_final = ?, updated_at = NOW() WHERE (external_id = ? OR id = CAST(? AS UNSIGNED)) AND tipo IN ('automacao', 'verificacao')", [JSON.stringify(result), task.id, task.id])
       await tx.query("INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) SELECT id, 'assistant', ?, NOW() FROM tarefas WHERE (external_id = ? OR id = CAST(? AS UNSIGNED)) AND tipo IN ('automacao', 'verificacao') AND NOT EXISTS (SELECT 1 FROM tarefa_chats c WHERE c.tarefa_id = tarefas.id AND c.role = 'assistant' AND c.texto = ?) LIMIT 1", [chatText, task.id, task.id, chatText])
