@@ -61,6 +61,7 @@ import { outputContractDefault } from "../prompts/output-contract-catalog.js"
 import { composeDevelopmentPrompt } from "../prompts/PromptComposition.js"
 import { confirmBaselineIndependentFailure } from "../policies/BaselineConfirmation.js"
 import { digestGateFailure, formatCarryOver, type CarryOverEvent } from "../policies/CarryOverPolicy.js"
+import { formatPriorSubtaskHandoff, parseGitNameStatus, type PriorSubtaskHandoff } from "../policies/SubtaskHandoffPolicy.js"
 
 const COMMAND_FAILURE_LIMIT = 12_000
 const ANSI_ESCAPE_PATTERN = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g
@@ -660,6 +661,9 @@ class TaskWorker {
     // retomada), o histórico estruturado vai no prompt do programador para
     // que ele não repita abordagens que já falharam.
     const carryOver = await this.buildCarryOver(subtask)
+    const priorHandoff = this.isDevelopmentTask(input)
+      ? await this.buildPriorSubtaskHandoff(subtask, developmentGitRoot)
+      : ""
 
     modelLoop: for (let modelIndex = 0; modelIndex < chain.length; modelIndex += 1) {
       const model = chain[modelIndex]!
@@ -695,7 +699,7 @@ class TaskWorker {
             subtask,
             input.repoPath,
             lastFailure || undefined,
-            [carryOver, agentSummary && "Relato do agente na entrega anterior: " + agentSummary].filter(Boolean).join("\n\n") || undefined,
+            [priorHandoff, carryOver, agentSummary && "Relato do agente na entrega anterior: " + agentSummary].filter(Boolean).join("\n\n") || undefined,
           )
           const promptKey = lastFailure ? "dev.retorno_por_falha_de_gate" : "dev.primeira_rodada_tarefa"
           const promptResolver = new ManagedPromptResolver(this.db!)
@@ -1629,6 +1633,27 @@ class TaskWorker {
       return formatCarryOver(events)
     } catch (error) {
       this.log("warn", "Falha ao carregar histórico de entregas (carry-over ignorado): " + (error instanceof Error ? error.message : String(error)))
+      return ""
+    }
+  }
+
+  /** Passagem de bastão: lê commits das subtarefas anteriores, nunca texto livre. */
+  private async buildPriorSubtaskHandoff(subtask: SubtaskInfo, gitRoot: string): Promise<string> {
+    if (!this.db) return ""
+    try {
+      const [rows] = await this.db.query(
+        "SELECT anterior.seq, anterior.titulo, anterior.workspace_commit_sha, anterior.resultado FROM subtarefas anterior INNER JOIN subtarefas atual ON atual.tarefa_id = anterior.tarefa_id WHERE atual.id = ? AND anterior.seq < atual.seq AND anterior.status = 'verified' AND anterior.workspace_commit_sha IS NOT NULL ORDER BY anterior.seq ASC",
+        [subtask.id],
+      ) as unknown as [Array<{ seq: number | string; titulo: string; workspace_commit_sha: string; resultado: string | null }>]
+      const handoffs: PriorSubtaskHandoff[] = []
+      for (const row of rows) {
+        if (!/^[a-f0-9]{7,40}$/i.test(row.workspace_commit_sha)) continue
+        const output = this.exec(`git diff-tree --no-commit-id --name-status -r ${row.workspace_commit_sha}`, gitRoot, 30_000)
+        handoffs.push({ seq: Number(row.seq), title: String(row.titulo), commit: row.workspace_commit_sha, files: parseGitNameStatus(output), summary: this.extractAgentSummary(row.resultado ?? undefined) })
+      }
+      return formatPriorSubtaskHandoff(handoffs)
+    } catch (error) {
+      this.log("warn", "Falha ao montar passagem de bastão; seguindo sem contexto: " + (error instanceof Error ? error.message : String(error)))
       return ""
     }
   }
