@@ -1222,7 +1222,9 @@ export default function TaskMonitorScreen(): ReactNode {
               <Typography
                 variant="body2"
                 color="text.secondary"
+                fontWeight={600}
                 aria-label={`ID da tarefa ${tarefaSelecionada.id}`}
+                title={`ID da tarefa ${tarefaSelecionada.id}`}
                 data-testid="selected-task-id"
               >
                 #{tarefaSelecionada.id}

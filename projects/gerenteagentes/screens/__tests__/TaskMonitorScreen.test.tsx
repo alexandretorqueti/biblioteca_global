@@ -125,6 +125,7 @@ describe("TaskMonitorScreen — ST-1 (botão editar + diálogo)", () => {
     // O ID da tarefa selecionada aparece ao lado do título
     expect(screen.getByTestId("selected-task-id")).toHaveTextContent("#1")
     expect(screen.getByTestId("selected-task-id")).toHaveAttribute("aria-label", "ID da tarefa 1")
+    expect(screen.getByTestId("selected-task-id")).toHaveAttribute("title", "ID da tarefa 1")
 
     // O botão de editar está visível
     const editBtn = screen.getByTestId("btn-edit-task")
