@@ -21,6 +21,7 @@ import PainelPortariaScreen from "../../../../../projects/taqui/screens/PainelPo
 import NotificacoesMoradorScreen from "../../../../../projects/taqui/screens/NotificacoesMoradorScreen"
 import RegistroEncomendaScreen from "../../../../../projects/taqui/screens/RegistroEncomendaScreen"
 import EntregaEncomendaScreen from "../../../../../projects/taqui/screens/EntregaEncomendaScreen"
+import OcorrenciaScreen from "../../../../../projects/taqui/screens/OcorrenciaScreen"
 
 /**
  * Registra as telas custom de todos os projetos. Chamar no boot (main.tsx)
@@ -43,5 +44,6 @@ export function registrarTelasCustom(): void {
     "taqui-notificacoes-morador": NotificacoesMoradorScreen,
     "taqui-registro-encomenda": RegistroEncomendaScreen,
     "taqui-entrega-encomenda": EntregaEncomendaScreen,
+    "taqui-ocorrencia-devolucao": OcorrenciaScreen,
   })
 }
