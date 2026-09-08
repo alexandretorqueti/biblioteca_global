@@ -2,9 +2,41 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it, vi } from "vitest"
-import { GitWorkspaceManager, type GitCommandRunner } from "../src/workspaces/GitWorkspaceManager.js"
+import { classifyDirtyFiles, DirtyFilesError, GitWorkspaceManager, type GitCommandRunner } from "../src/workspaces/GitWorkspaceManager.js"
 
 describe("GitWorkspaceManager", () => {
+  it("classifica projeto, compartilhado explicitamente e externo por caminho verificável", () => {
+    const report = classifyDirtyFiles({
+      repositoryRoot: "/repo",
+      taskProjectPath: "/repo/projects/gerenteagentes",
+      dirtyFiles: [
+        "projects/gerenteagentes/src/a.ts",
+        "package-lock.json",
+        "projects/taqui/src/b.ts",
+      ],
+      sharedPaths: ["package-lock.json"],
+    })
+
+    expect(report.all).toEqual([
+      { path: "projects/gerenteagentes/src/a.ts", classification: "task-project" },
+      { path: "package-lock.json", classification: "relevant-shared" },
+      { path: "projects/taqui/src/b.ts", classification: "external" },
+    ])
+    expect(report.taskProject).toEqual(["projects/gerenteagentes/src/a.ts"])
+    expect(report.relevantShared).toEqual(["package-lock.json"])
+    expect(report.external).toEqual(["projects/taqui/src/b.ts"])
+  })
+
+  it("não promove arquivo externo a compartilhado sem declaração explícita", () => {
+    const report = classifyDirtyFiles({
+      repositoryRoot: "/repo",
+      taskProjectPath: "/repo/projects/gerenteagentes",
+      dirtyFiles: ["package.json"],
+    })
+    expect(report.external).toEqual(["package.json"])
+    expect(report.relevantShared).toEqual([])
+  })
+
   it("cria worktree e branch exclusivos sem checkout no repositório principal", async () => {
     const root = await mkdtemp(join(tmpdir(), "motor-v2-workspaces-"))
     const runner: GitCommandRunner = {
@@ -78,10 +110,101 @@ describe("GitWorkspaceManager", () => {
   })
 
   it("recusa repositório principal sujo antes de criar worktree", async () => {
-    const runner: GitCommandRunner = { run: vi.fn().mockResolvedValue({ stdout: " M arquivo.ts\n", stderr: "" }) }
+    const runner: GitCommandRunner = {
+      run: vi.fn().mockImplementation(async (command: readonly string[]) => {
+        if (command[1] === "rev-parse" && command[2] === "--show-toplevel") return { stdout: "/repo/principal\n", stderr: "" }
+        if (command[1] === "rev-parse") return { stdout: "a".repeat(40) + "\n", stderr: "" }
+        return { stdout: " M arquivo.ts\n", stderr: "" }
+      }),
+    }
     await expect(new GitWorkspaceManager({ root: "/tmp/motor-v2-workspaces", runner }).prepare({
       repoPath: "/repo/principal", agentId: "test-agent", baseBranch: "base", taskId: "7", subtaskId: "8", attempt: 1,
-    })).rejects.toThrow("repositório principal não está limpo")
+    })).rejects.toThrow("projeto da tarefa: M arquivo.ts")
+  })
+
+  it("ignora sujeira exclusiva de outro projeto depois de criar o worktree", async () => {
+    const root = await mkdtemp(join(tmpdir(), "motor-v2-workspaces-"))
+    const runner: GitCommandRunner = {
+      run: vi.fn().mockImplementation(async (command: readonly string[]) => {
+        if (command[1] === "rev-parse" && command[2] === "--show-toplevel") return { stdout: "/repo\n", stderr: "" }
+        if (command[1] === "rev-parse") return { stdout: "a".repeat(40) + "\n", stderr: "" }
+        if (command[1] === "diff" && command.includes("HEAD")) return { stdout: "projects/taqui/src/b.ts\n", stderr: "" }
+        if (command[1] === "show-ref") throw new Error("branch inexistente")
+        return { stdout: "", stderr: "" }
+      }),
+    }
+    try {
+      const result = await new GitWorkspaceManager({ root, runner }).prepare({
+        repoPath: "/repo/projects/gerenteagentes", agentId: "test-agent", baseBranch: "base", taskId: "7", subtaskId: "8", attempt: 1,
+      })
+      expect(result.projectPath).toBe(join(result.path, "projects", "gerenteagentes"))
+      const commands = vi.mocked(runner.run).mock.calls.map(([command]) => command)
+      expect(commands.some((command) => command[1] === "worktree" && command[2] === "add")).toBe(true)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it("bloqueia compartilhado explicitamente declarado e registra projeto e externos", async () => {
+    const runner: GitCommandRunner = {
+      run: vi.fn().mockImplementation(async (command: readonly string[]) => {
+        if (command[1] === "rev-parse" && command[2] === "--show-toplevel") return { stdout: "/repo\n", stderr: "" }
+        if (command[1] === "rev-parse") return { stdout: "a".repeat(40) + "\n", stderr: "" }
+        if (command[1] === "diff" && command.includes("HEAD")) return { stdout: "package-lock.json\nprojects/taqui/src/b.ts\n", stderr: "" }
+        if (command[1] === "show-ref") throw new Error("branch inexistente")
+        return { stdout: "", stderr: "" }
+      }),
+    }
+    await expect(new GitWorkspaceManager({ root: "/tmp/motor-v2-workspaces", runner }).prepare({
+      repoPath: "/repo/projects/gerenteagentes", agentId: "test-agent", baseBranch: "base", taskId: "7", subtaskId: "8", attempt: 1,
+      sharedPaths: ["package-lock.json"],
+    })).rejects.toThrow("projeto da tarefa: (nenhum); compartilhados relevantes: package-lock.json; externos: projects/taqui/src/b.ts")
+  })
+
+  it("fecha o fluxo: cria isolamento antes do preflight e separa todas as categorias", async () => {
+    const root = await mkdtemp(join(tmpdir(), "motor-v2-workspaces-"))
+    const runner: GitCommandRunner = {
+      run: vi.fn().mockImplementation(async (command: readonly string[]) => {
+        if (command[1] === "rev-parse" && command[2] === "--show-toplevel") return { stdout: "/repo\n", stderr: "" }
+        if (command[1] === "rev-parse") return { stdout: "a".repeat(40) + "\n", stderr: "" }
+        if (command[1] === "diff" && command.includes("HEAD")) {
+          return { stdout: "projects/gerenteagentes/src/tarefa.ts\npackage-lock.json\nprojects/taqui/src/externo.ts\n", stderr: "" }
+        }
+        if (command[1] === "show-ref") throw new Error("branch inexistente")
+        return { stdout: "", stderr: "" }
+      }),
+    }
+
+    try {
+      const manager = new GitWorkspaceManager({ root, runner })
+      const result = await manager.prepare({
+        repoPath: "/repo/projects/gerenteagentes",
+        agentId: "test-agent",
+        baseBranch: "base",
+        taskId: "task-e2e",
+        subtaskId: "5",
+        attempt: 1,
+        sharedPaths: ["package-lock.json"],
+      }).catch((error: unknown) => error)
+
+      expect(result).toBeInstanceOf(DirtyFilesError)
+      if (result instanceof DirtyFilesError) {
+        expect(result.report.taskProject).toEqual(["projects/gerenteagentes/src/tarefa.ts"])
+        expect(result.report.relevantShared).toEqual(["package-lock.json"])
+        expect(result.report.external).toEqual(["projects/taqui/src/externo.ts"])
+        expect(result.report.blocking).toEqual(["projects/gerenteagentes/src/tarefa.ts", "package-lock.json"])
+        expect(result.report.decision).toBe("blocked")
+      }
+
+      const calls = vi.mocked(runner.run).mock.calls.map(([command, cwd]) => ({ command, cwd }))
+      const worktreeAddIndex = calls.findIndex(({ command }) => command[1] === "worktree" && command[2] === "add")
+      const preflightIndex = calls.findIndex(({ command }) => command[1] === "diff" && command.includes("--name-only"))
+      expect(worktreeAddIndex).toBeGreaterThanOrEqual(0)
+      expect(preflightIndex).toBeGreaterThan(worktreeAddIndex)
+      expect(calls[preflightIndex]?.cwd).toBe("/repo")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 
   it("classifica repositório ausente (ENOENT) como bloqueio ambiental", async () => {
@@ -89,7 +212,7 @@ describe("GitWorkspaceManager", () => {
     const runner: GitCommandRunner = {
       run: vi.fn().mockImplementation(async (command: readonly string[]) => {
         // ENOENT ocorre no spawn do git (binário ausente) — qualquer comando falha
-        if (command[1] === "status" || command[1] === "diff") throw enoent
+        if (command[1] === "rev-parse" || command[1] === "status" || command[1] === "diff") throw enoent
         return { stdout: "", stderr: "" }
       }),
     }
