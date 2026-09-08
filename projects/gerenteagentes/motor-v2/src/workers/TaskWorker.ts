@@ -53,6 +53,7 @@ import {
   formatHistoryForPrompt,
   persistTaskClarification,
   persistTaskAnalystMessage,
+  persistTaskPlanProposal,
 } from "../planning/ClarificationStore.js"
 import type { Db, QueryResult } from "../shared/types/infrastructure.js"
 import { resolveProjectDatabase } from "../database/DrizzleDb.js"
@@ -603,6 +604,8 @@ class TaskWorker {
         // Persiste como PROPOSTA de plano (não materializa subtarefas ainda).
         // A materialização só ocorre após aprovação explícita do dono.
         const proposal = await persistPlanProposal(planningDb, input.task.id, subtarefas, coverage)
+        // Exibe a proposta no chat da tarefa para o dono ver e aprovar
+        await persistTaskPlanProposal(planningDb, input.task.id, { version: proposal.version, subtasks: subtarefas })
         this.log("info", "Fase ANALYZE concluida: proposta de plano persistida (versão " + proposal.version + ", " + subtarefas.length + " subtarefas)")
         return { kind: "proposing", proposalId: proposal.id, subtaskCount: subtarefas.length }
       } catch (error) {

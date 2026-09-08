@@ -6,6 +6,8 @@ import {
   persistTaskClarificationAnswer,
   fetchTaskClarificationHistory,
   fetchLatestTaskClarificationAnswer,
+  formatPlanProposalMessage,
+  persistTaskPlanProposal,
 } from "../src/planning/ClarificationStore.js"
 import type { Db, QueryResult } from "../src/shared/types/infrastructure.js"
 
@@ -138,5 +140,93 @@ describe("fetchAnsweredTaskClarifications", () => {
     const { fetchAnsweredTaskClarifications } = await import("../src/planning/ClarificationStore.js")
     const db = mockDb([{ rows: [], affectedRows: 0, insertId: 0 }])
     expect(await fetchAnsweredTaskClarifications(db)).toEqual([])
+  })
+})
+
+describe("formatPlanProposalMessage", () => {
+  it("formata proposta de plano com subtarefas e ações disponíveis", () => {
+    const message = formatPlanProposalMessage({
+      version: 1,
+      subtasks: [
+        {
+          seq: 1,
+          titulo: "Configurar banco de dados",
+          scope: "Criar migration e validar schema",
+          acceptanceCriteria: ["Migration aplicada", "Schema válido"],
+          deliverables: ["migration.sql", "teste de schema"],
+          requirementsCovered: ["REQ-1"],
+          dependsOn: [],
+        },
+        {
+          seq: 2,
+          titulo: "Implementar API",
+          scope: "Criar endpoints CRUD",
+          acceptanceCriteria: ["Endpoints funcionando"],
+          deliverables: ["controller.ts", "routes.ts"],
+          requirementsCovered: ["REQ-2"],
+          dependsOn: [1],
+        },
+      ],
+    })
+    expect(message).toContain("Proposta de Plano (versão 1)")
+    expect(message).toContain("1. Configurar banco de dados")
+    expect(message).toContain("2. Implementar API")
+    expect(message).toContain("Escopo: Criar migration e validar schema")
+    expect(message).toContain("Entregáveis: migration.sql, teste de schema")
+    expect(message).toContain("Depende de: seq 1")
+    expect(message).toContain("Aprovar e iniciar")
+    expect(message).toContain("Solicitar ajustes")
+    expect(message).toContain("Continuar conversando")
+  })
+
+  it("omite campos vazios da formatação", () => {
+    const message = formatPlanProposalMessage({
+      version: 2,
+      subtasks: [
+        {
+          seq: 1,
+          titulo: "Tarefa simples",
+          scope: "",
+          acceptanceCriteria: [],
+          deliverables: [],
+          requirementsCovered: ["REQ-1"],
+          dependsOn: [],
+        },
+      ],
+    })
+    expect(message).toContain("Proposta de Plano (versão 2)")
+    expect(message).toContain("1. Tarefa simples")
+    expect(message).not.toContain("Escopo:")
+    expect(message).not.toContain("Entregáveis:")
+    expect(message).not.toContain("Depende de:")
+  })
+})
+
+describe("persistTaskPlanProposal", () => {
+  it("persiste proposta de plano no chat da tarefa como mensagem analyst", async () => {
+    const db = mockDb([
+      { rows: [{ id: 42 }], affectedRows: 0, insertId: 0 },
+      { rows: [], affectedRows: 1, insertId: 1 },
+    ])
+    await persistTaskPlanProposal(db, "task-9", {
+      version: 1,
+      subtasks: [
+        {
+          seq: 1,
+          titulo: "Teste",
+          scope: "Escopo",
+          acceptanceCriteria: ["critério"],
+          deliverables: ["entregável"],
+          requirementsCovered: ["REQ-1"],
+          dependsOn: [],
+        },
+      ],
+    })
+    const calls = vi.mocked(db.query).mock.calls
+    expect(String(calls[0]![0])).toContain("FROM tarefas")
+    const [insertSql, params] = calls[1]!
+    expect(String(insertSql)).toContain("INSERT INTO tarefa_chats")
+    expect(params).toEqual([42, "analyst", expect.stringContaining("Proposta de Plano")])
+    expect(params).toEqual([42, "analyst", expect.stringContaining("1. Teste")])
   })
 })

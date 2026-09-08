@@ -108,6 +108,63 @@ export async function persistTaskAnalystMessage(
   )
 }
 
+/**
+ * Formata a proposta de plano para exibição no chat da tarefa.
+ * Apresenta as subtarefas de forma legível, com título, escopo e entregáveis.
+ */
+export function formatPlanProposalMessage(
+  proposal: { version: number; subtasks: readonly import("./PlanPersistence.js").PlannedSubtask[] },
+): string {
+  const lines: string[] = [
+    "📋 **Proposta de Plano (versão " + proposal.version + ")**",
+    "",
+    "O analista considera que há informação suficiente e apresenta a seguinte proposta de plano:",
+    "",
+  ]
+
+  proposal.subtasks.forEach((subtask, index) => {
+    lines.push(`**${index + 1}. ${subtask.titulo}** (seq ${subtask.seq})`)
+    if (subtask.scope) lines.push(`   Escopo: ${subtask.scope}`)
+    if (subtask.deliverables.length > 0) {
+      lines.push(`   Entregáveis: ${subtask.deliverables.join(", ")}`)
+    }
+    if (subtask.acceptanceCriteria.length > 0) {
+      lines.push(`   Critérios: ${subtask.acceptanceCriteria.join("; ")}`)
+    }
+    if (subtask.dependsOn.length > 0) {
+      lines.push(`   Depende de: seq ${subtask.dependsOn.join(", ")}`)
+    }
+    lines.push("")
+  })
+
+  lines.push("---")
+  lines.push("**Ações disponíveis:**")
+  lines.push("- ✅ **Aprovar e iniciar** — materializa as subtarefas e inicia a execução")
+  lines.push("- ✏️ **Solicitar ajustes** — retorna ao analista com suas observações")
+  lines.push("- 💬 **Continuar conversando** — faz mais perguntas ao analista")
+  lines.push("")
+  lines.push("Aguardando sua decisão.")
+
+  return lines.join("\n")
+}
+
+/**
+ * Persiste a proposta de plano no chat da tarefa como mensagem do analista.
+ * Permite que o dono veja a proposta diretamente no chat e tome uma decisão.
+ */
+export async function persistTaskPlanProposal(
+  db: Db,
+  taskId: string,
+  proposal: { version: number; subtasks: readonly import("./PlanPersistence.js").PlannedSubtask[] },
+): Promise<void> {
+  const databaseTaskId = await resolveTaskDatabaseId(db, taskId)
+  const message = formatPlanProposalMessage(proposal)
+  await db.query(
+    "INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) VALUES (?, ?, ?, NOW())",
+    [databaseTaskId, CLARIFICATION_ROLE, message],
+  )
+}
+
 /** Persiste a resposta do dono/agente do projeto como mensagem `user`. */
 export async function persistTaskClarificationAnswer(
   db: Db,
