@@ -1084,6 +1084,7 @@ export default function TaskMonitorScreen(): ReactNode {
           fullWidth
           size="small"
           multiline
+          minRows={2}
           maxRows={4}
           placeholder="Escreva uma mensagem para a tarefa…"
           value={chatInput}
