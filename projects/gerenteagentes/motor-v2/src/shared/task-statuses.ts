@@ -55,6 +55,29 @@ export const ALL_TASK_STATUSES = [
 
 export type AnyTaskStatus = TaskStatusValue | TaskStatusLegacy
 
+/**
+ * Destinos que o usuário pode escolher pelo arrastar e soltar do mapa.
+ *
+ * Estados de processamento e seus resultados continuam sob autoridade do
+ * Motor (por exemplo, draft -> running e ready -> running). Operações que
+ * possuem botão próprio também não são substituídas por um drop arbitrário.
+ */
+export const TASK_STATUS_USER_DROP_DESTINATIONS: Partial<Record<AnyTaskStatus, readonly AnyTaskStatus[]>> = {
+  planned: ["blocked", "cancelled"],
+  analyzing: ["awaiting_clarification", "paused", "blocked", "cancelled"],
+  awaiting_clarification: ["blocked", "cancelled"],
+  ready: ["blocked", "cancelled"],
+  running: ["paused", "blocked", "cancelled"],
+  paused: ["planned", "blocked", "cancelled"],
+  blocked: ["cancelled"],
+  failed: ["cancelled"],
+}
+
+export function isTaskStatusUserDropAllowed(from: string, to: string): boolean {
+  if (from === to) return true
+  return (TASK_STATUS_USER_DROP_DESTINATIONS[from as AnyTaskStatus]?.includes(to as AnyTaskStatus) ?? false)
+}
+
 /** Labels amigáveis para cada status de tarefa. */
 export const TASK_STATUS_LABELS: Record<string, string> = {
   draft: "Rascunho",

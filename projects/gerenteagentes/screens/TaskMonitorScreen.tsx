@@ -52,6 +52,7 @@ import {
   SUBTASK_STATUS_OPTIONS,
   taskStatusColor,
   taskStatusLabel,
+  isTaskStatusUserDropAllowed,
 } from "../motor-v2/src/shared/task-statuses"
 export const componentId = "gerenteagentes-task-monitor"
 
@@ -566,6 +567,10 @@ export default function TaskMonitorScreen(): ReactNode {
     if (!bundle) return
     const anterior = tarefas.find((tarefa) => tarefa.id === id)
     if (!anterior || anterior.status === status) return
+    if (!isTaskStatusUserDropAllowed(anterior.status, status)) {
+      setErro(`Movimentação não permitida: ${taskStatusLabel(anterior.status)} → ${taskStatusLabel(status)}.`)
+      return
+    }
 
     // Atualização otimista mantém o mapa responsivo; em caso de erro o estado
     // local volta ao valor anterior e a mensagem permite nova tentativa.
@@ -1146,6 +1151,7 @@ export default function TaskMonitorScreen(): ReactNode {
         motorActivities={motorActivities}
         onSelectTask={setTarefaId}
         onMoveTask={moverTarefaNoFluxo}
+        onMoveRejected={setErro}
       />
 
       <Stack direction={{ xs: "column", sm: "row" }} spacing={2} flexWrap="wrap" useFlexGap>
