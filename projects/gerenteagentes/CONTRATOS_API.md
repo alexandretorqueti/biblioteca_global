@@ -638,7 +638,10 @@ UI (web) ──► API NestJS (/api/gerenteagentes) ──► motor (container O
 ```
 
 - A UI só conhece a API da plataforma.
-- A API fala com o motor via `motorRequest`/`motorGet` (timeout 10 s / 5 s).
+- A API fala com o motor via `motorRequest`/`motorGet` (timeout padrão 60 s / 5 s).
+  O timeout das requisições de `motorRequest` pode ser ajustado por
+  `MOTOR_REQUEST_TIMEOUT_MS` quando o motor precisar de mais tempo para
+  responder.
 - IDs de tarefa no motor são determinísticos (`task-biblioteca-<id>`), o que
   torna create/start/proxy idempotentes por ID.
 - O ID do agente do OpenClaw é armazenado diretamente em
