@@ -757,9 +757,8 @@ class TaskWorker {
 
           // Tarefas operacionais não têm artefato de código como entrega. A
           // resposta do agente é a própria evidência e deve ser registrada no
-          // chat assim que o run termina, antes de interpretar o status dela.
-          // Isso também preserva respostas de `need_help` e
-          // `blocked_environment`, que não chegam ao bloco de sucesso abaixo.
+          // A resposta bruta fica na subtarefa como evidência técnica; o chat
+          // recebe uma única resposta consolidada quando a tarefa termina.
           if (!this.isDevelopmentTask(input)) {
             await this.persistLightweightDelivery(input, result.content || "")
           }
@@ -890,11 +889,11 @@ class TaskWorker {
               [deliverCount, result.content?.substring(0, 500) || "OK", subtask.id],
             )
           } else {
-            // O chat é a entrega das tarefas operacionais; não duplique a
-            // resposta em um campo estruturado de resultado.
+            // Preserva a resposta completa da execução para a consolidação e
+            // para a auditoria técnica da subtarefa.
             await this.db!.query(
-              "UPDATE subtarefas SET status = 'verified', deliver_count = ?, resultado = NULL, finalizada_em = NOW(), updated_at = NOW() WHERE id = ?",
-              [deliverCount, subtask.id],
+              "UPDATE subtarefas SET status = 'verified', deliver_count = ?, resultado = ?, finalizada_em = NOW(), updated_at = NOW() WHERE id = ?",
+              [deliverCount, (result.content || "").substring(0, 30_000), subtask.id],
             )
           }
           // Registra conclusão bem-sucedida no histórico
@@ -933,20 +932,11 @@ class TaskWorker {
     return (input.task.tipo ?? "desenvolvimento") === "desenvolvimento"
   }
 
-  /** Registra a resposta operacional no chat da tarefa para automações e verificações. */
+  /** Mantém a resposta operacional na subtarefa para consolidação posterior. */
   private async persistLightweightDelivery(input: WorkerInput, content: string): Promise<void> {
     if (!this.db) throw new Error("DB não conectado para registrar entrega")
     const text = content.trim() || "Agente finalizou sem mensagem de resposta."
-    const finalResult = this.parseLightweightResult(text)
-    await this.db.query(
-      "INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) " +
-      "SELECT id, 'assistant', ?, NOW() FROM tarefas WHERE (external_id = ? OR id = ?) AND tipo IN ('automacao', 'verificacao') LIMIT 1",
-      [text.substring(0, 30_000), input.task.id, input.task.id],
-    )
-    await this.db.query(
-      "UPDATE tarefas SET resultado_final = ?, updated_at = NOW() WHERE (external_id = ? OR id = ?) AND tipo IN ('automacao', 'verificacao')",
-      [JSON.stringify(finalResult), input.task.id, input.task.id],
-    )
+    await this.db.query("UPDATE subtarefas SET resultado = ?, updated_at = NOW() WHERE id = ?", [text.substring(0, 30_000), input.subtask?.id])
   }
 
   private parseLightweightResult(content: string): { status: "done" | "need_help" | "blocked_environment"; summary: string; reason: string } {
