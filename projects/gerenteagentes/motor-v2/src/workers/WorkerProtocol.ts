@@ -3,6 +3,7 @@
  */
 
 import type { WorkerInput, ExecutionPhase, ExecutionResult } from '../shared/types/execution.js'
+import type { RemoteSessionFailure } from '../runtime/ConsoleAgentRuntimeDriver.js'
 
 // Coordinator → Worker
 export type CoordinatorToWorkerMessage =
@@ -18,7 +19,7 @@ export type WorkerToCoordinatorMessage =
   | { type: 'waiting_resource'; executionId: string; resourceKey: string; waitId: number; position: number }
   | { type: 'completed'; executionId: string; result: ExecutionResult }
   | { type: 'clarifying'; executionId: string; questionCount: number; summary?: string }
-  | { type: 'failed'; executionId: string; error: string }
+  | { type: 'failed'; executionId: string; error: string; sessionFailure?: RemoteSessionFailure }
   | { type: 'heartbeat'; executionId: string; cpuUsage?: number; memUsage?: number }
   | { type: 'model_unavailable'; executionId: string; model: string; message: string }
   | { type: 'log'; executionId: string; level: 'info' | 'warn' | 'error'; message: string }

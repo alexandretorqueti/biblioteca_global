@@ -25,7 +25,7 @@ import { blockerEvidence } from "../policies/BlockerPolicy.js"
 import { transitionTask, type TaskTransition } from "../policies/TaskStateMachine.js"
 import { persistTaskClarificationAnswer, fetchPendingTaskClarification, fetchAnsweredTaskClarifications } from "../planning/ClarificationStore.js"
 import { createLogger, describeError } from "../shared/logger.js"
-import { ConsoleAgentRuntimeDriver } from "../runtime/ConsoleAgentRuntimeDriver.js"
+import { ConsoleAgentRuntimeDriver, type RemoteSessionFailure } from "../runtime/ConsoleAgentRuntimeDriver.js"
 import { execFileSync, execSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { existsSync } from "node:fs"
@@ -55,6 +55,7 @@ interface ActiveWorker {
   testCommand?: string
   repoPath?: string
   projectSlug?: string
+  agentId?: string
   baseBranch?: string
   timeoutHandle?: ReturnType<typeof setTimeout>
   lastHeartbeatAt?: Date
@@ -175,6 +176,8 @@ export class TaskCoordinator {
    * atividade do Motor enquanto o script externo está em execução. */
   private activeDeployments = new Map<string, { taskId: string; phase: "verify" | "deploy"; startedAt: Date }>()
   private pumping = false
+  /** Agentes pausados por falha sistêmica do Console; alerta é emitido uma vez. */
+  private pausedAgents = new Set<string>()
   private logger = createLogger("TaskCoordinator")
 
   constructor(
@@ -330,7 +333,9 @@ export class TaskCoordinator {
       ") " +
       "ORDER BY s.seq ASC LIMIT 25"
     )
-    return rows.map((row) => this.mapSubtask(row)).find((subtask) => this.canStartExecution(subtask.projectSlug)) ?? null
+    return rows
+      .map((row) => this.mapSubtask(row))
+      .find((subtask) => !this.pausedAgents.has(subtask.agentId) && this.canStartExecution(subtask.projectSlug)) ?? null
   }
 
   /** Limite de desenvolvimento: máximo global e, por padrão, um por projeto. */
@@ -402,6 +407,7 @@ export class TaskCoordinator {
       taskId: task.id, executionId, resourceKey, fencingToken,
       startedAt: new Date(), phase: "analyze", taskTipo: task.tipo,
       projectSlug: task.projectSlug ?? undefined,
+      agentId: task.agentId,
     })
 
     try {
@@ -455,6 +461,7 @@ export class TaskCoordinator {
       startedAt: new Date(), phase: "execute", subtaskId: subtask.id, taskTipo: subtask.taskTipo,
       repoPath: subtask.repoPath,
       projectSlug: subtask.projectSlug ?? undefined,
+      agentId: subtask.agentId,
     })
 
     try {
@@ -892,14 +899,26 @@ export class TaskCoordinator {
     }
   }
 
-  async onTaskFailed(executionId: string, error: string, kind = "error"): Promise<void> {
+  async onTaskFailed(executionId: string, error: string, kind = "error", sessionFailure?: RemoteSessionFailure): Promise<void> {
     const worker = this.activeWorkers.get(executionId)
     if (!worker || !this.beginFinalization(executionId, worker)) return
     const failure = `[${kind}] ${error}`
-    const transient = kind === "timeout" || kind === "lease_lost" || kind === "lease_expired" || kind === "lost"
+    const systemic = sessionFailure?.classification === "systemic"
+    const transient = systemic || sessionFailure?.classification === "transient" || kind === "timeout" || kind === "lease_lost" || kind === "lease_expired" || kind === "lost"
     this.publishActivity(worker, { type: "failed", level: "error", message: failure })
 
     this.logger.error("Falha: " + failure, { taskId: worker.taskId, subtaskId: worker.subtaskId, executionId, phase: worker.phase })
+
+    if (systemic && worker.agentId) {
+      if (!this.pausedAgents.has(worker.agentId)) {
+        this.pausedAgents.add(worker.agentId)
+        this.logger.error("Fila do agente pausada após falha sistêmica do Console", {
+          agentId: worker.agentId,
+          code: sessionFailure?.code,
+          message: sessionFailure?.message,
+        })
+      }
+    }
 
     try {
       if (worker.phase === "analyze") {
@@ -1644,9 +1663,9 @@ export class TaskCoordinator {
         this.logger.error("Falha ao processar completed: " + describeError(error), { executionId: msg.executionId })
       }
     })
-    this.workerLauncher.on("failed", async (msg: { executionId: string; error: string }) => {
+    this.workerLauncher.on("failed", async (msg: { executionId: string; error: string; sessionFailure?: RemoteSessionFailure }) => {
       try {
-        await this.onTaskFailed(msg.executionId, msg.error)
+        await this.onTaskFailed(msg.executionId, msg.error, "error", msg.sessionFailure)
       } catch (error) {
         this.logger.error("Falha ao processar failed: " + describeError(error), { executionId: msg.executionId })
       }

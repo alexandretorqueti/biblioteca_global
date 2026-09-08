@@ -101,6 +101,10 @@ export function normalizeRemoteTimestamp(value: number | string | undefined): st
 
 export function classifyRemoteFailure(code: string, message: string): RemoteFailureClassification {
   const normalized = `${code} ${message}`.toUpperCase()
+  // Indisponibilidade do gateway/Console é compartilhada por todas as
+  // tarefas do agente. O coordenador pausa a fila e emite um único alerta,
+  // em vez de bloquear cada tarefa como se fosse um erro de entrada.
+  if (/CONSOLE_UNAVAILABLE|GATEWAY_UNAVAILABLE|GATEWAY_DOWN/i.test(normalized)) return "systemic"
   if (/^(HTTP_)?(408|409|425|429|500|502|503|504)$/.test(code.toUpperCase()) || /TIMEOUT|TEMPORARY|RATE_LIMITED|SESSION_BUSY|GATEWAY_UNAVAILABLE|UPSTREAM_RESET|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|ABORT/i.test(normalized)) return "transient"
   if (/^(HTTP_)?(400|401|403|404|422)$/.test(code.toUpperCase()) || /INVALID_REQUEST|INVALID_SESSION|AUTH_FAILED|FORBIDDEN|AGENT_NOT_FOUND|MODEL_NOT_FOUND|WORKSPACE_INVALID|PROMPT_INVALID|PERMISSION_DENIED/i.test(normalized)) return "definitive"
   return "transient"

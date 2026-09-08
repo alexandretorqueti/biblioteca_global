@@ -64,6 +64,18 @@ import { digestGateFailure, formatCarryOver, type CarryOverEvent } from "../poli
 
 const COMMAND_FAILURE_LIMIT = 12_000
 const ANSI_ESCAPE_PATTERN = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g
+const DEFAULT_SESSION_RECOVERY_LIMIT = 1
+
+export function resolveSessionRecoveryLimit(env: NodeJS.ProcessEnv = process.env): number {
+  const configured = Number(env.MOTOR_SESSION_RECOVERY_MAX_ATTEMPTS ?? DEFAULT_SESSION_RECOVERY_LIMIT)
+  return Number.isInteger(configured) && configured >= 0 && configured <= 5
+    ? configured
+    : DEFAULT_SESSION_RECOVERY_LIMIT
+}
+
+export function formatRemoteSessionFailure(failure: RemoteSessionFailure): string {
+  return `[${failure.code}] ${failure.message} (sessão=${failure.sessionKey}, run=${failure.runId}, ocorrido_em=${failure.occurredAt})`
+}
 
 export interface SessionFailurePersistenceDb {
   query(sql: string, params?: unknown[]): Promise<unknown>
@@ -230,6 +242,8 @@ class TaskWorker {
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null
   private db: mysql.Connection | null = null
   private integrationBaseline: IntegrationWorkspaceBaseline | null = null
+  /** Diagnóstico remoto que causou a falha terminal desta execução. */
+  private sessionFailure: RemoteSessionFailure | undefined
 
   constructor() {
     this.executionId = process.env.EXECUTION_ID ?? "unknown"
@@ -676,6 +690,7 @@ class TaskWorker {
     let deliverCount = subtask.deliverCount
     let lastFailure = ""
     const modelFailures: string[] = []
+    const sessionRecoveryLimit = resolveSessionRecoveryLimit()
 
     // P1 (Alexandre 2026-09-05): carry-over de aprendizado entre execuções.
     // Se a subtarefa já teve entregas persistidas (rework pós-rejeição,
@@ -685,7 +700,10 @@ class TaskWorker {
 
     modelLoop: for (let modelIndex = 0; modelIndex < chain.length; modelIndex += 1) {
       const model = chain[modelIndex]!
-      for (let attempt = 1; attempt <= input.task.maxRework; attempt += 1) {
+      // A recuperação de sessão é uma tentativa adicional, explicitamente
+      // limitada, e não deve ser confundida com o rework do gate.
+      let sessionRecoveryAttempts = 0
+      for (let attempt = 1; attempt <= input.task.maxRework + sessionRecoveryLimit; attempt += 1) {
         deliverCount += 1
         await this.db!.query(
           "UPDATE subtarefas SET status = 'running', deliver_count = ?, resultado = NULL, updated_at = NOW() WHERE id = ?",
@@ -766,6 +784,27 @@ class TaskWorker {
           }
           if (result.state !== "final") {
             await this.persistRemoteSessionFailure(input, subtask, result.failure)
+            if (result.failure) {
+              this.sessionFailure = result.failure
+              const remoteReason = formatRemoteSessionFailure(result.failure)
+              if (result.failure.classification === "definitive") {
+                throw new Error("Falha definitiva da sessão remota: " + remoteReason)
+              }
+              if (result.failure.classification === "systemic") {
+                throw new Error("Falha sistêmica do Console: " + remoteReason)
+              }
+              if (result.failure.classification === "transient" && sessionRecoveryAttempts < sessionRecoveryLimit) {
+                sessionRecoveryAttempts += 1
+                lastFailure = "Recuperação de sessão " + sessionRecoveryAttempts + "/" + sessionRecoveryLimit + ": " + remoteReason
+                await this.db!.query(
+                  "UPDATE subtarefas SET status = 'pending', resultado = ?, finalizada_em = NULL, updated_at = NOW() WHERE id = ?",
+                  [lastFailure.substring(0, 500), subtask.id],
+                )
+                this.log("warn", lastFailure + "; criando/retomando a sessão para nova tentativa")
+                continue
+              }
+              throw new Error("Falha transitória da sessão remota após " + sessionRecoveryAttempts + " recuperação(ões): " + remoteReason)
+            }
             lastFailure = "Programador falhou: " + (result.errorMessage || result.state)
             break
           }
@@ -1913,7 +1952,7 @@ class TaskWorker {
   }
 
   private sendFailed(context: ExecutionContext, error: string): void {
-    this.send({ type: "failed", executionId: context.executionId, error })
+    this.send({ type: "failed", executionId: context.executionId, error, sessionFailure: this.sessionFailure })
     this.cleanup()
     setTimeout(() => process.exit(1), 1000)
   }
