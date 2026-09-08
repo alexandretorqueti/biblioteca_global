@@ -40,6 +40,7 @@ import { RealtimeClient, type RealtimeServerMessage } from "@biblioteca-global/a
 import type { DynamicField, DynamicFormValues } from "@biblioteca-global/ui"
 import { useApi } from "../../../apps/web/src/hooks/useApi"
 import TarefaForm, { type TarefaFormValues } from "./TarefaForm"
+import TaskFlowMap, { type MotorActivity } from "./TaskFlowMap"
 import { resolveRealtimeUrl, resolveApiBaseUrl } from "../../../apps/web/src/api/client"
 import {
   ALL_TASK_STATUSES,
@@ -166,6 +167,11 @@ interface MotorDetail {
   models?: Array<{ model: string; tierIndex?: number; reason?: string; occurredAt?: string }>
 }
 
+
+interface MotorStats {
+  activities?: MotorActivity[]
+}
+
 const STATUS_FINAIS = _TASK_STATUS_FINAIS
 const STATUS_INICIO_PERMITIDO = _TASK_STATUS_STARTABLE
 const STATUS_EXECUCAO = _TASK_STATUS_EXECUTING
@@ -254,6 +260,8 @@ export default function TaskMonitorScreen(): ReactNode {
   const [projetos, setProjetos] = useState<ProjetoCaptado[]>([])
   const [projetoFiltro, setProjetoFiltro] = useState<number | "">("")
   const [statusFiltro, setStatusFiltro] = useState<string>("")
+  const [buscaTarefa, setBuscaTarefa] = useState("")
+  const [motorActivities, setMotorActivities] = useState<MotorActivity[]>([])
   const [tarefaId, setTarefaId] = useState<number | "">("")
   const [detail, setDetail] = useState<MotorDetail | null>(null)
   const [chat, setChat] = useState<TarefaChatMessage[]>([])
@@ -344,6 +352,17 @@ export default function TaskMonitorScreen(): ReactNode {
     }
   }, [bundle])
 
+
+  const carregarAtividadeMotor = useCallback(async () => {
+    if (!bundle) return
+    try {
+      const res = await bundle.http.request<MotorStats>("GET", "/gerenteagentes/motor-activity", { auth: "access" })
+      if (mounted.current) setMotorActivities(res.activities ?? [])
+    } catch {
+      // Atividade é complementar; não interrompe o acompanhamento se o Motor reiniciar.
+    }
+  }, [bundle])
+
   const carregarChat = useCallback(async (id: number) => {
     if (!bundle) return
     const requestId = ++chatRequestId.current
@@ -430,6 +449,7 @@ export default function TaskMonitorScreen(): ReactNode {
     mounted.current = true
     void carregarProjetos()
     void carregarTarefas()
+    void carregarAtividadeMotor()
     return () => {
       mounted.current = false
     }
@@ -601,6 +621,28 @@ export default function TaskMonitorScreen(): ReactNode {
     },
     [bundle, tarefaId, carregarDetail, carregarTarefas],
   )
+
+
+  const moverTarefaNoFluxo = useCallback(async (id: number, status: string) => {
+    if (!bundle) return
+    const anterior = tarefas.find((tarefa) => tarefa.id === id)
+    if (!anterior || anterior.status === status) return
+
+    // Atualização otimista mantém o mapa responsivo; em caso de erro o estado
+    // local volta ao valor anterior e a mensagem permite nova tentativa.
+    setTarefas((atual) => atual.map((tarefa) => tarefa.id === id ? { ...tarefa, status } : tarefa))
+    setErro(null)
+    try {
+      await bundle.http.request("PATCH", `/gerenteagentes/tarefas/${id}/status`, {
+        body: { status },
+        auth: "access",
+      })
+      await carregarTarefas()
+    } catch (e) {
+      setTarefas((atual) => atual.map((tarefa) => tarefa.id === id ? { ...tarefa, status: anterior.status } : tarefa))
+      setErro(e instanceof Error ? e.message : "Não foi possível alterar o status da tarefa.")
+    }
+  }, [bundle, tarefas, carregarTarefas])
 
   const handleNewTaskSubmit = useCallback(async (values: TarefaFormValues) => {
     if (!bundle) return
@@ -983,6 +1025,13 @@ export default function TaskMonitorScreen(): ReactNode {
   }, [detail?.currentSubTask, subtasks])
 
   const tarefaSelecionada = tarefas.find((t) => t.id === tarefaId)
+  const tarefasVisiveis = useMemo(() => {
+    const busca = buscaTarefa.trim().toLocaleLowerCase("pt-BR")
+    return tarefas.filter((tarefa) => {
+      if (statusFiltro && tarefa.status !== statusFiltro) return false
+      return !busca || `#${tarefa.id} ${tarefa.titulo}`.toLocaleLowerCase("pt-BR").includes(busca)
+    })
+  }, [tarefas, statusFiltro, buscaTarefa])
   const statusMotor = detail?.task?.status ?? tarefaSelecionada?.status ?? "—"
   const podeIniciar = STATUS_INICIO_PERMITIDO.has(statusMotor)
   const podePausar = STATUS_EXECUCAO.has(statusMotor)
@@ -1132,7 +1181,25 @@ export default function TaskMonitorScreen(): ReactNode {
 
       {erro && <Alert severity="error" data-testid="error-alert">{erro}</Alert>}
 
+      <TaskFlowMap
+        tarefas={tarefas}
+        selectedTaskId={tarefaId}
+        search={buscaTarefa}
+        motorActivities={motorActivities}
+        onSelectTask={setTarefaId}
+        onMoveTask={moverTarefaNoFluxo}
+      />
+
       <Stack direction={{ xs: "column", sm: "row" }} spacing={2} flexWrap="wrap" useFlexGap>
+        <TextField
+          size="small"
+          label="Buscar tarefa"
+          placeholder="#766 ou título"
+          value={buscaTarefa}
+          onChange={(event) => setBuscaTarefa(event.target.value)}
+          inputProps={{ "data-testid": "input-task-search" }}
+          sx={{ minWidth: 260 }}
+        />
         <FormControl size="small" sx={{ minWidth: 240 }}>
           <InputLabel>Projeto</InputLabel>
           <Select
