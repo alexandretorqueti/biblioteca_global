@@ -47,6 +47,11 @@ export interface GeradorSistemaProps {
   initialPath?: string
   actions?: ReactNode
   onRouteChange?: (path: string) => void
+  /**
+   * Perfil do usuário no projeto (admin, gerente, operador, visualizador).
+   * Usado para filtrar rotas com roleFilter na config.
+   */
+  perfil?: "admin" | "gerente" | "operador" | "visualizador"
 }
 
 /** Tela filha montada com dataSource em runtime. */
@@ -201,47 +206,58 @@ function montarTelaCadastro(
 function montarGroups(
   config: GeradorSistemaConfig,
   runtime: Partial<GeradorSistemaRuntime>,
+  perfil?: "admin" | "gerente" | "operador" | "visualizador",
 ): GeradorSistemaGroup[] {
-  return config.groups.map((group) => ({
-    id: group.id,
-    label: group.label,
-    items: group.items.map((item) => {
-      const icon =
-        item.icon !== undefined
-          ? runtime.resolveIcon?.(item.icon) ?? resolveIcon(item.icon)
-          : undefined
+  return config.groups
+    .map((group) => ({
+      id: group.id,
+      label: group.label,
+      items: group.items
+        .filter((item) => {
+          // Filtrar por roleFilter: se definido, o perfil deve estar na lista
+          if (item.roleFilter && item.roleFilter.length > 0) {
+            return perfil ? item.roleFilter.includes(perfil) : false
+          }
+          return true
+        })
+        .map((item) => {
+          const icon =
+            item.icon !== undefined
+              ? runtime.resolveIcon?.(item.icon) ?? resolveIcon(item.icon)
+              : undefined
 
-      const screen:
-        | GeradorSistemaCadastroScreen
-        | { kind: "custom"; content: ReactNode }
-        | MontadaExternalScreen =
-        item.screen.kind === "cadastro"
-          ? montarTelaCadastro(item.screen, runtime)
-          : item.screen.kind === "custom"
-            ? {
-                kind: "custom" as const,
-                content: renderCustomScreen(item.screen.componentId),
-              }
-            : { // external
-                kind: "external" as const,
-                baseUrl: (item.screen as ExternalScreenConfig).baseUrl,
-                method: (item.screen as ExternalScreenConfig).method,
-                pathTemplate: (item.screen as ExternalScreenConfig).pathTemplate,
-                actions: (item.screen as ExternalScreenConfig).actions ?? [],
-                dataPath: (item.screen as ExternalScreenConfig).dataPath,
-                query: (item.screen as ExternalScreenConfig).query,
-                executeAction: runtime.executeAction,
-                detailPathTemplate: (item.screen as ExternalScreenConfig).detailPathTemplate,
-                detailDataPath: (item.screen as ExternalScreenConfig).detailDataPath,
-                hiddenColumns: (item.screen as ExternalScreenConfig).hiddenColumns,
-                edit: ((item.screen as ExternalScreenConfig).edit
-                  ? { ...((item.screen as ExternalScreenConfig).edit as any) }
-                  : undefined) as MontadaExternalScreen["edit"],
-              }
+          const screen:
+            | GeradorSistemaCadastroScreen
+            | { kind: "custom"; content: ReactNode }
+            | MontadaExternalScreen =
+            item.screen.kind === "cadastro"
+              ? montarTelaCadastro(item.screen, runtime)
+              : item.screen.kind === "custom"
+                ? {
+                    kind: "custom" as const,
+                    content: renderCustomScreen(item.screen.componentId),
+                  }
+                : { // external
+                    kind: "external" as const,
+                    baseUrl: (item.screen as ExternalScreenConfig).baseUrl,
+                    method: (item.screen as ExternalScreenConfig).method,
+                    pathTemplate: (item.screen as ExternalScreenConfig).pathTemplate,
+                    actions: (item.screen as ExternalScreenConfig).actions ?? [],
+                    dataPath: (item.screen as ExternalScreenConfig).dataPath,
+                    query: (item.screen as ExternalScreenConfig).query,
+                    executeAction: runtime.executeAction,
+                    detailPathTemplate: (item.screen as ExternalScreenConfig).detailPathTemplate,
+                    detailDataPath: (item.screen as ExternalScreenConfig).detailDataPath,
+                    hiddenColumns: (item.screen as ExternalScreenConfig).hiddenColumns,
+                    edit: ((item.screen as ExternalScreenConfig).edit
+                      ? { ...((item.screen as ExternalScreenConfig).edit as any) }
+                      : undefined) as MontadaExternalScreen["edit"],
+                  }
 
-      return { ...item, icon, screen } as any
-    }),
-  }))
+          return { ...item, icon, screen } as any
+        }),
+    }))
+    .filter((group) => group.items.length > 0) // Remover grupos vazios após filtragem
 }
 
 function renderCustomScreen(
@@ -266,18 +282,19 @@ export default function GeradorSistema({
   initialPath,
   actions,
   onRouteChange,
+  perfil,
 }: GeradorSistemaProps) {
   const theme = useTheme()
   const desktop = useMediaQuery(theme.breakpoints.up("md"))
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
-  const firstPath = config.groups[0]?.items[0]?.path ?? ""
+  const groups = montarGroups(config, runtime, perfil)
+  const firstPath = groups[0]?.items[0]?.path ?? ""
   const [uncontrolledPath, setUncontrolledPath] = useState(
     initialPath ?? firstPath,
   )
   const currentPath = activePath ?? uncontrolledPath
   const breadcrumbs = getSistemaBreadcrumb(config, currentPath)
   const drawerWidth = config.drawerWidth ?? defaultDrawerWidth
-  const groups = montarGroups(config, runtime)
 
   // Pilha de navegação hierárquica
   const [navigationStack, setNavigationStack] = useState<NavigationLevel[]>([])
