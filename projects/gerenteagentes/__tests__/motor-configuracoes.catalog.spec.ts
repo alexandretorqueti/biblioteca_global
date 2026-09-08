@@ -18,4 +18,11 @@ describe("catálogo de configurações do motor", () => {
     expect(config.validar(101)).toBe(false)
     expect(config.validar("2")).toBe(false)
   })
+
+  it("expõe metadados suficientes para a tela editar cada valor", () => {
+    expect(MOTOR_CONFIGURACOES.every((config) =>
+      config.chave.startsWith("motor.") &&
+      ["number", "string", "boolean"].includes(config.tipo),
+    )).toBe(true)
+  })
 })

@@ -1,9 +1,22 @@
 export type MotorConfiguracaoTipo = "number" | "string" | "boolean"
 
+export type MotorConfiguracaoValor = number | string | boolean
+
+export type MotorConfiguracaoResposta = {
+  chave: string
+  tipo: MotorConfiguracaoTipo
+  valor: MotorConfiguracaoValor
+  valorPadrao: MotorConfiguracaoValor
+  regraValidacao: string
+  descricao: string
+  editavel: true
+  atualizadoEm: Date | null
+}
+
 export type MotorConfiguracaoDefinicao = {
   chave: string
   tipo: MotorConfiguracaoTipo
-  valorPadrao: number | string | boolean
+  valorPadrao: MotorConfiguracaoValor
   regraValidacao: string
   descricao: string
   validar: (valor: unknown) => boolean

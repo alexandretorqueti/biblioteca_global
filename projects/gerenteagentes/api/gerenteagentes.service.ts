@@ -28,7 +28,11 @@ import {
   promptsContratosVersoes,
   motorConfiguracoes,
 } from '../schema';
-import { MOTOR_CONFIGURACOES, configuracaoPorChave } from './motor-configuracoes.catalog';
+import {
+  MOTOR_CONFIGURACOES,
+  configuracaoPorChave,
+  type MotorConfiguracaoResposta,
+} from './motor-configuracoes.catalog';
 import { AGENT_PROMPT_CATALOG } from '../motor-v2/src/prompts/prompt-catalog';
 import { OUTPUT_CONTRACT_CATALOG } from '../motor-v2/src/prompts/output-contract-catalog';
 import { markersIn, renderPromptTemplate, validatePromptTemplate } from '../motor-v2/src/prompts/PromptTemplateEngine';
@@ -310,7 +314,7 @@ export class GerenteAgentesService {
     return db;
   }
 
-  async listarConfiguracoesMotor() {
+  async listarConfiguracoesMotor(): Promise<MotorConfiguracaoResposta[]> {
     const db = await this.garantirConfiguracoesMotor();
     const linhas = await db.select().from(motorConfiguracoes);
     return MOTOR_CONFIGURACOES.map((definicao) => {
@@ -318,10 +322,11 @@ export class GerenteAgentesService {
       return {
         chave: definicao.chave,
         tipo: definicao.tipo,
-        valor: linha?.valor ?? definicao.valorPadrao,
+        valor: (linha?.valor as typeof definicao.valorPadrao | undefined) ?? definicao.valorPadrao,
         valorPadrao: definicao.valorPadrao,
         regraValidacao: definicao.regraValidacao,
         descricao: definicao.descricao,
+        editavel: true as const,
         atualizadoEm: linha?.updatedAt ?? null,
       };
     });
@@ -333,13 +338,20 @@ export class GerenteAgentesService {
     }
     const entradas = Object.entries(valores as Record<string, unknown>);
     if (entradas.length === 0) throw new BadRequestException('Informe ao menos uma configuração');
-    const db = await this.garantirConfiguracoesMotor();
+
+    // Valida o lote inteiro antes de tocar no banco para evitar alterações parciais.
+    const erros: Array<{ chave: string; mensagem: string; regraValidacao?: string }> = [];
     for (const [chave, valor] of entradas) {
       const definicao = configuracaoPorChave(chave);
-      if (!definicao) throw new BadRequestException(`Configuração não editável ou desconhecida: '${chave}'`);
-      if (!definicao.validar(valor)) {
-        throw new BadRequestException(`Valor inválido para '${chave}': esperado ${definicao.regraValidacao}`);
-      }
+      if (!definicao) erros.push({ chave, mensagem: 'Configuração não editável ou desconhecida' });
+      else if (!definicao.validar(valor)) erros.push({ chave, mensagem: 'Valor inválido', regraValidacao: definicao.regraValidacao });
+    }
+    if (erros.length > 0) {
+      throw new BadRequestException({ message: 'Uma ou mais configurações são inválidas', erros });
+    }
+
+    const db = await this.garantirConfiguracoesMotor();
+    for (const [chave, valor] of entradas) {
       await db.update(motorConfiguracoes).set({ valor }).where(eq(motorConfiguracoes.chave, chave));
     }
     return this.listarConfiguracoesMotor();
