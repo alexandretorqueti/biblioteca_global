@@ -163,6 +163,20 @@ export const projetoMotorConfig = mysqlTable("projeto_motor_config", {
   updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
 })
 
+/** Configurações operacionais globais editáveis pela tela CONFIGURAÇÕES. */
+export const motorConfiguracoes = mysqlTable("motor_configuracoes", {
+  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+  /** Chave estável do catálogo (ex.: motor.max_workers). */
+  chave: varchar("chave", { length: 150 }).notNull().unique(),
+  tipo: mysqlEnum("tipo", ["number", "string", "boolean"]).notNull(),
+  valor: json("valor").notNull(),
+  valorPadrao: json("valor_padrao").notNull(),
+  regraValidacao: varchar("regra_validacao", { length: 500 }).notNull(),
+  descricao: text("descricao").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+})
+
 export const definicoes = mysqlTable("definicoes", {
   id: bigint("id", { mode: "number", unsigned: true })
     .primaryKey()

@@ -282,6 +282,22 @@ export class GerenteAgentesController {
     return this.service.getModelSelection(this.projectKeyOuErro(projectKey), this.tipoOuErro(tipo));
   }
 
+  // ============================================================================
+  // CONFIGURAÇÕES OPERACIONAIS DO MOTOR
+  // ============================================================================
+
+  @Get('configuracoes')
+  @Roles('admin', 'gerente')
+  listarConfiguracoes() {
+    return this.service.listarConfiguracoesMotor();
+  }
+
+  @Put('configuracoes')
+  @Roles('admin', 'gerente')
+  atualizarConfiguracoes(@Body() body: { valores?: unknown }) {
+    return this.service.atualizarConfiguracoesMotor(body?.valores);
+  }
+
   @Put('model-selection/:projectKey/:tipo')
   @Roles('admin', 'gerente', 'operador')
   saveModelSelection(
