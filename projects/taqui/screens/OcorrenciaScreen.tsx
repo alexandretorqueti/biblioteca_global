@@ -23,17 +23,16 @@ import {
   InputLabel,
   MenuItem,
   Paper,
+  Select,
   Stack,
   TextField,
   Typography,
 } from "@mui/material"
 import {
-  CameraAltRounded,
   CheckCircleRounded,
   CloseRounded,
   DeleteSweepRounded,
   DescriptionRounded,
-  Inventory2Rounded,
   PhotoCameraRounded,
   WarningAmberRounded,
 } from "@mui/icons-material"
@@ -218,7 +217,13 @@ export default function OcorrenciaScreen(): ReactNode {
     // Busca funcionários para selecionar o registrante
     let funcionarioId: number | null = null
     try {
-      const fResult = await bundle.http.request<{ items: Array<{ id: number; nome: string }> }>(
+      const fResult = await bundle.http.request<{
+        items: Array<{
+          id: number
+          nome: string
+          funcao: "triagem" | "portaria" | "ambos"
+        }>
+      }>(
         "GET",
         `/${projeto.slug}/funcionarios`,
         { query: { pageSize: 200 }, auth: "access" },
@@ -227,7 +232,8 @@ export default function OcorrenciaScreen(): ReactNode {
         (f) => f.funcao === "portaria" || f.funcao === "ambos",
       )
       // Usa o primeiro — simplificação para a tela custom
-      if (funcionarios.length > 0) funcionarioId = funcionarios[0].id
+      const primeiroFuncionario = funcionarios[0]
+      if (primeiroFuncionario) funcionarioId = primeiroFuncionario.id
     } catch {
       setErroMsg("Não foi possível localizar funcionários para registrar a ocorrência.")
       return
