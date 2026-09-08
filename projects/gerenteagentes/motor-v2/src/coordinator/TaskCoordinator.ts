@@ -1429,6 +1429,21 @@ export class TaskCoordinator {
     const batchRows = rows.filter((row) => String(row.repo_path) === repoPath)
     const taskIds = batchRows.map((row) => String(row.task_id))
     const requestIds = batchRows.map((row) => Number(row.id))
+    // Confirma a identidade do ServerIA ANTES de marcar as solicitações como
+    // running. Assim uma chave SSH alterada não bloqueia em massa tarefas que
+    // já concluíram o desenvolvimento e só aguardam publicação.
+    try {
+      this.assertDeploySshReady()
+    } catch (error: unknown) {
+      const message = describeError(error).substring(0, 500)
+      const placeholders = requestIds.map(() => "?").join(",")
+      await this.db.query(
+        `UPDATE deploy_requests SET last_error = ?, updated_at = NOW() WHERE status = 'pending' AND id IN (${placeholders})`,
+        [message, ...requestIds],
+      )
+      this.logger.warn("Preflight de deploy falhou; lote mantido pendente: " + message, { taskIds })
+      return
+    }
     const batchId = "deploy-" + randomUUID()
     const placeholders = requestIds.map(() => "?").join(",")
     await this.db.query(
@@ -1479,7 +1494,7 @@ export class TaskCoordinator {
     const run = "bash " + shellQuote(hostDeployScript) + " " + shellQuote(hostRepoRoot)
     const wrapped = "(" + run + "; code=$?; if [ $code -eq 0 ]; then printf success; else printf 'failed:%s' $code; fi > " + shellQuote(statusFile) + ")"
     const remoteCommand = "nohup bash -lc " + shellQuote(wrapped) + " > " + shellQuote(logFile) + " 2>&1 < /dev/null & echo $!"
-    const output = execFileSync("ssh", ["-i", "/root/.ssh/id_ed25519", "-o", "BatchMode=yes", "alexandre@192.168.1.8", remoteCommand], { encoding: "utf8", timeout: 15_000 }).trim()
+    const output = execFileSync("ssh", this.deploySshArguments(remoteCommand), { encoding: "utf8", timeout: 15_000 }).trim()
     if (!/^\\d+$/.test(output)) throw new Error("SSH não confirmou o PID do deploy destacado: " + output)
     this.logger.info("Lote de deploy destacado no ServerIA", { batchId, taskIds, remotePid: output, logFile, statusFile })
   }
@@ -1525,8 +1540,29 @@ export class TaskCoordinator {
     const safeBatchId = batchId.replace(/[^a-zA-Z0-9_-]/g, "_")
     const statusFile = "/tmp/biblioteca-global-" + safeBatchId + ".status"
     const command = "if [ -f " + shellQuote(statusFile) + " ]; then cat " + shellQuote(statusFile) + "; fi"
-    const output = execFileSync("ssh", ["-i", "/root/.ssh/id_ed25519", "-o", "BatchMode=yes", "alexandre@192.168.1.8", command], { encoding: "utf8", timeout: 15_000 }).trim()
+    const output = execFileSync("ssh", this.deploySshArguments(command), { encoding: "utf8", timeout: 15_000 }).trim()
     return output || null
+  }
+
+  /** Falha cedo e sem alterar tarefas quando o SSH do deploy não é confiável. */
+  private assertDeploySshReady(): void {
+    try {
+      execFileSync("ssh", this.deploySshArguments("true"), { encoding: "utf8", timeout: 15_000, stdio: "pipe" })
+    } catch {
+      throw new Error("SSH do deploy não confiável ou indisponível; atualize a identidade do ServerIA antes de iniciar o lote")
+    }
+  }
+
+  private deploySshArguments(remoteCommand: string): string[] {
+    return [
+      "-i", "/root/.ssh/id_ed25519",
+      "-o", "BatchMode=yes",
+      "-o", "StrictHostKeyChecking=yes",
+      "-o", "UserKnownHostsFile=/root/.ssh/known_hosts",
+      "-o", "ConnectTimeout=10",
+      "alexandre@192.168.1.8",
+      remoteCommand,
+    ]
   }
 
   private async failDeployBatch(batchId: string, error: string, taskIds: string[]): Promise<void> {

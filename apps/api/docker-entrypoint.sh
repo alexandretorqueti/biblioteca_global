@@ -28,7 +28,19 @@ git config --global user.name "Motor v2"
 git config --global --add safe.directory "$SOURCE_DIR"
 git config --global --add safe.directory /run/media/alexandre/12T/codigofonte/biblioteca-global
 git config --global --add safe.directory /run/media/alexandre/12T/codigofonte/GerenteAgentes
-mkdir -p /root/.ssh && ssh-keyscan github.com >> /root/.ssh/known_hosts 2>/dev/null || true
+mkdir -p /root/.ssh
+# A API faz deploy por SSH no próprio ServerIA. A chave pública do host fica
+# versionada no repositório montado, para sobreviver à recriação do container;
+# não aceite uma chave nova silenciosamente nesse caminho de deploy.
+SERVERIA_KNOWN_HOSTS="$SOURCE_DIR/apps/api/serveria_known_hosts"
+if [ -f "$SERVERIA_KNOWN_HOSTS" ]; then
+  install -m 600 "$SERVERIA_KNOWN_HOSTS" /root/.ssh/known_hosts
+else
+  : > /root/.ssh/known_hosts
+  chmod 600 /root/.ssh/known_hosts
+  echo "[entrypoint] serveria_known_hosts ausente; deploy SSH será bloqueado pelo preflight" >&2
+fi
+ssh-keyscan github.com >> /root/.ssh/known_hosts 2>/dev/null || true
 
 attempt=0
 until npm run db:migrate; do
