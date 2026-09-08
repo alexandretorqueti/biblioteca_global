@@ -26,6 +26,7 @@ import { transitionTask, type TaskTransition } from "../policies/TaskStateMachin
 import { persistTaskClarificationAnswer, fetchPendingTaskClarification, fetchAnsweredTaskClarifications } from "../planning/ClarificationStore.js"
 import { createLogger, describeError } from "../shared/logger.js"
 import { ConsoleAgentRuntimeDriver, type RemoteSessionFailure } from "../runtime/ConsoleAgentRuntimeDriver.js"
+import { getTaskAnalystSession, touchTaskAnalystSession } from "../planning/AnalystSessionStore.js"
 import { execFileSync, execSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { existsSync } from "node:fs"
@@ -1089,6 +1090,38 @@ export class TaskCoordinator {
     if (!options?.jaPersistida) {
       await persistTaskClarificationAnswer(this.db, taskId, trimmed)
     }
+
+    // A análise interativa permanece na sessão reservada para a tarefa. O
+    // caminho legado abaixo continua disponível para tarefas antigas que não
+    // têm registro de sessão (ou cuja sessão foi criada antes desta migração).
+    const analystSession = await getTaskAnalystSession(this.db, taskId)
+    if (analystSession) {
+      const baseUrl = process.env.OPENCLAW_CONSOLE_URL
+      const token = process.env.OPENCLAW_CONSOLE_TOKEN
+      if (!baseUrl || !token) throw new Error("OPENCLAW_CONSOLE_URL e OPENCLAW_CONSOLE_TOKEN sao obrigatorios para continuar a conversa")
+
+      const driver = new ConsoleAgentRuntimeDriver({ baseUrl, token })
+      const session = await driver.createSession({
+        agentId: analystSession.agentId,
+        key: analystSession.sessionKey,
+        label: analystSession.sessionKey,
+        model: analystSession.model,
+      })
+      await touchTaskAnalystSession(this.db, analystSession.id, session.sessionId)
+      const sent = await driver.sendMessage({ session, message: trimmed })
+      const result = await driver.waitForRunCompletion(session, sent.runId)
+      if (result.state !== "final" || !result.content) {
+        throw new Error("Analista não respondeu na sessão vinculada: " + (result.errorMessage || result.state))
+      }
+      await this.db.query(
+        "INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) SELECT id, ?, ?, NOW() FROM tarefas WHERE external_id = ? OR id = ? LIMIT 1",
+        ["analyst", result.content, taskId, taskId],
+      )
+      await touchTaskAnalystSession(this.db, analystSession.id)
+      this.logger.info("Mensagem encaminhada à sessão persistente do analista", { taskId, sessionKey: analystSession.sessionKey })
+      return
+    }
+
     await this.saveTaskTransition(task, "clarification_answered")
     this.logger.info("Resposta de clarificação recebida; tarefa " + taskId + " volta para análise", { taskId })
     await this.pump()

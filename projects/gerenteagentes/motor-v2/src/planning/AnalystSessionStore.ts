@@ -38,3 +38,13 @@ export async function getOrReserveTaskAnalystSession(db: Db, taskId: string, inp
 export async function touchTaskAnalystSession(db: Db, sessionId: number, runtimeSessionId?: string): Promise<void> {
   await db.query("UPDATE motor_task_analyst_sessions SET runtime_session_id = COALESCE(?, runtime_session_id), last_activity_at = NOW(), updated_at = NOW() WHERE id = ?", [runtimeSessionId ?? null, sessionId])
 }
+
+/** Recupera a sessão já vinculada à tarefa, sem criar uma nova. */
+export async function getTaskAnalystSession(db: Db, taskId: string): Promise<TaskAnalystSession | null> {
+  const databaseTaskId = await resolveTaskId(db, taskId)
+  const result = await db.query(
+    "SELECT id, tarefa_id, agent_id, model, session_key, runtime_session_id, status FROM motor_task_analyst_sessions WHERE tarefa_id = ? LIMIT 1",
+    [databaseTaskId],
+  )
+  return result.rows[0] ? mapRow(result.rows[0]) : null
+}
