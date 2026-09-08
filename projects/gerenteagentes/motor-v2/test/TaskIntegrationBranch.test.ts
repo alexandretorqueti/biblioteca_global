@@ -56,6 +56,10 @@ describe("ensureTaskIntegration", () => {
       const calls = vi.mocked(runner.run).mock.calls.map(([command, cwd]) => ({ command, cwd }))
       expect(calls).toContainEqual({ command: ["git", "worktree", "add", "--detach", result.path, COMMIT], cwd: "/repo" })
       expect(calls).toContainEqual({ command: ["git", "switch", "-c", result.branch, COMMIT], cwd: result.path })
+      const worktreeAddIndex = calls.findIndex((call) => call.command[1] === "worktree" && call.command[2] === "add")
+      const preflightIndex = calls.findIndex((call) => call.command[1] === "diff" && call.command.includes("--name-only"))
+      expect(worktreeAddIndex).toBeGreaterThanOrEqual(0)
+      expect(preflightIndex).toBeGreaterThan(worktreeAddIndex)
       // Repositório principal nunca sofre checkout/switch.
       expect(calls.filter((call) => call.cwd === "/repo").some((call) => call.command[1] === "checkout" || (call.command[1] === "switch" && call.command[2] !== "-c"))).toBe(false)
     } finally {
