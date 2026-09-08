@@ -5,6 +5,7 @@ import {
   persistTaskClarification,
   persistTaskClarificationAnswer,
   fetchTaskClarificationHistory,
+  fetchLatestTaskClarificationAnswer,
 } from "../src/planning/ClarificationStore.js"
 import type { Db, QueryResult } from "../src/shared/types/infrastructure.js"
 
@@ -93,6 +94,19 @@ describe("fetchTaskClarificationHistory", () => {
     const [selectSql, params] = vi.mocked(db.query).mock.calls[1]!
     expect(String(selectSql)).toContain("role IN (?, ?)")
     expect(params).toEqual([42, "analyst", "user"])
+  })
+})
+
+describe("fetchLatestTaskClarificationAnswer", () => {
+  it("recupera somente o último turno do usuário para encaminhar à sessão", async () => {
+    const db = mockDb([
+      { rows: [{ id: 42 }], affectedRows: 0, insertId: 0 },
+      { rows: [{ texto: "  O que você quer dizer com a pergunta 2?  " }], affectedRows: 0, insertId: 0 },
+    ])
+    await expect(fetchLatestTaskClarificationAnswer(db, "task-9")).resolves.toBe("O que você quer dizer com a pergunta 2?")
+    const [sql, params] = vi.mocked(db.query).mock.calls[1]!
+    expect(String(sql)).toContain("ORDER BY id DESC LIMIT 1")
+    expect(params).toEqual([42, "user"])
   })
 })
 

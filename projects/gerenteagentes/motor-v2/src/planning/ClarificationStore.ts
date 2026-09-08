@@ -95,6 +95,19 @@ export async function persistTaskClarification(
   )
 }
 
+/** Persiste uma resposta textual livre do analista no chat da tarefa. */
+export async function persistTaskAnalystMessage(
+  db: Db,
+  taskId: string,
+  text: string,
+): Promise<void> {
+  const databaseTaskId = await resolveTaskDatabaseId(db, taskId)
+  await db.query(
+    "INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) VALUES (?, ?, ?, NOW())",
+    [databaseTaskId, CLARIFICATION_ROLE, text.trim()],
+  )
+}
+
 /** Persiste a resposta do dono/agente do projeto como mensagem `user`. */
 export async function persistTaskClarificationAnswer(
   db: Db,
@@ -127,6 +140,20 @@ export async function fetchTaskClarificationHistory(
     texto: String(row.texto ?? ""),
     createdAt: String(row.created_at ?? ""),
   }))
+}
+
+/** Última mensagem do usuário, usada como próximo turno da mesma sessão. */
+export async function fetchLatestTaskClarificationAnswer(
+  db: Db,
+  taskId: string,
+): Promise<string | null> {
+  const databaseTaskId = await resolveTaskDatabaseId(db, taskId)
+  const { rows } = await db.query(
+    "SELECT texto FROM tarefa_chats WHERE tarefa_id = ? AND role = ? ORDER BY id DESC LIMIT 1",
+    [databaseTaskId, ANSWER_ROLE],
+  )
+  const text = rows[0]?.texto == null ? "" : String(rows[0].texto).trim()
+  return text || null
 }
 
 /** Pergunta pendente (última mensagem analyst) — usada no detail da tarefa. */
