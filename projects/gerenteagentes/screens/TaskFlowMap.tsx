@@ -4,13 +4,15 @@ import {
   ArrowForwardRounded,
   ErrorOutlineRounded,
   SettingsRounded,
+  VisibilityRounded,
 } from "@mui/icons-material"
-import { Box, Chip, Paper, Stack, Typography } from "@mui/material"
+import { Box, Chip, Paper, Stack, Tooltip, Typography } from "@mui/material"
 import { taskStatusLabel } from "../motor-v2/src/shared/task-statuses"
 
 export interface FlowTask {
   id: number
   titulo: string
+  descricao?: string | null
   status: string
   projetoId: number
 }
@@ -143,10 +145,20 @@ function Station({ station, tarefas, selectedTaskId, search, movingIds, dragging
                 "@keyframes task-arrived": { "0%, 100%": { opacity: 1 }, "50%": { opacity: 0.45 } },
               }}
             >
-              <Stack direction="row" spacing={0.7} alignItems="center">
-                {aiActive && <SettingsRounded aria-label="IA trabalhando" sx={{ fontSize: 18, color: "warning.main", animation: "gear-spin 2s linear infinite", "@keyframes gear-spin": { to: { transform: "rotate(360deg)" } } }} />}
-                {station.tone === "danger" && <ErrorOutlineRounded sx={{ fontSize: 17, color: "error.main" }} />}
-                <Typography variant="caption" fontWeight={700} noWrap>#{task.id} {task.titulo}</Typography>
+              <Stack direction="row" spacing={0.7} alignItems="center" sx={{ minWidth: 0 }}>
+                {aiActive && <SettingsRounded aria-label="IA trabalhando" sx={{ flexShrink: 0, fontSize: 18, color: "warning.main", animation: "gear-spin 2s linear infinite", "@keyframes gear-spin": { to: { transform: "rotate(360deg)" } } }} />}
+                {station.tone === "danger" && <ErrorOutlineRounded sx={{ flexShrink: 0, fontSize: 17, color: "error.main" }} />}
+                <Typography variant="caption" fontWeight={700} noWrap sx={{ minWidth: 0, flex: 1 }}>#{task.id} {task.titulo}</Typography>
+                <Tooltip title={task.descricao?.trim() || "Tarefa sem descrição"} arrow placement="top">
+                  <Box
+                    component="span"
+                    aria-label={`Descrição da tarefa ${task.id}`}
+                    data-testid={`flow-task-description-${task.id}`}
+                    sx={{ display: "inline-flex", flexShrink: 0, color: "action.active", cursor: "help" }}
+                  >
+                    <VisibilityRounded sx={{ fontSize: 16 }} />
+                  </Box>
+                </Tooltip>
               </Stack>
             </Paper>
           )
