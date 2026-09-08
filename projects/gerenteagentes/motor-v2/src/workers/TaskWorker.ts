@@ -19,7 +19,7 @@ import { pathToFileURL } from "node:url"
 import { SecretProfileManager, resolveGitTopLevel } from "../workspaces/SecretProfileManager.js"
 import { DependencyInstaller, isLockfileOutOfSync, resolveInstallTimeoutMs } from "../workspaces/DependencyInstaller.js"
 import { GateFailureClassifier, type GateFailureVerdict } from "../policies/GateFailureClassifier.js"
-import { ConsoleAgentRuntimeDriver, type RuntimeSession, type RuntimeSessionMessage } from "../runtime/ConsoleAgentRuntimeDriver.js"
+import { ConsoleAgentRuntimeDriver, type RemoteSessionFailure, type RuntimeSession, type RuntimeSessionMessage } from "../runtime/ConsoleAgentRuntimeDriver.js"
 import type { WorkerInput, ExecutionContext, ExecutionResult, SubtaskInfo } from "../shared/types/execution.js"
 import type { CoordinatorToWorkerMessage, WorkerToCoordinatorMessage } from "./WorkerProtocol.js"
 import { defaultChain, formatSessionKey, isModelUnavailableError, type ModelSelection } from "../policies/ModelTierPolicy.js"
@@ -64,6 +64,35 @@ import { digestGateFailure, formatCarryOver, type CarryOverEvent } from "../poli
 
 const COMMAND_FAILURE_LIMIT = 12_000
 const ANSI_ESCAPE_PATTERN = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g
+const DEFAULT_SESSION_RECOVERY_LIMIT = 1
+
+export function resolveSessionRecoveryLimit(env: NodeJS.ProcessEnv = process.env): number {
+  const configured = Number(env.MOTOR_SESSION_RECOVERY_MAX_ATTEMPTS ?? DEFAULT_SESSION_RECOVERY_LIMIT)
+  return Number.isInteger(configured) && configured >= 0 && configured <= 5
+    ? configured
+    : DEFAULT_SESSION_RECOVERY_LIMIT
+}
+
+export function formatRemoteSessionFailure(failure: RemoteSessionFailure): string {
+  return `[${failure.code}] ${failure.message} (sessão=${failure.sessionKey}, run=${failure.runId}, ocorrido_em=${failure.occurredAt})`
+}
+
+export interface SessionFailurePersistenceDb {
+  query(sql: string, params?: unknown[]): Promise<unknown>
+}
+
+export async function persistRemoteSessionFailure(
+  db: SessionFailurePersistenceDb,
+  taskId: string,
+  agentId: string,
+  subtaskId: number | undefined,
+  failure: RemoteSessionFailure,
+): Promise<void> {
+  await db.query(
+    "INSERT INTO motor_agent_session_failures (tarefa_id, subtarefa_id, agent_id, session_key, runtime_session_id, run_id, code, message, occurred_at, scope, classification, classification_reason, fingerprint) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    [taskId, subtaskId ?? null, agentId, failure.sessionKey, failure.remoteSessionId ?? null, failure.runId, failure.code, failure.message, failure.occurredAt, failure.scope, failure.classification, failure.classificationReason, failure.fingerprint],
+  )
+}
 
 type IntegrationWorkspaceBaseline = {
   path: string
@@ -213,6 +242,8 @@ class TaskWorker {
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null
   private db: mysql.Connection | null = null
   private integrationBaseline: IntegrationWorkspaceBaseline | null = null
+  /** Diagnóstico remoto que causou a falha terminal desta execução. */
+  private sessionFailure: RemoteSessionFailure | undefined
 
   constructor() {
     this.executionId = process.env.EXECUTION_ID ?? "unknown"
@@ -295,6 +326,7 @@ class TaskWorker {
    * FASE 1: ANALYZE - Chama o Analista para criar subtarefas (ou perguntar)
    */
   private async phaseAnalyze(input: WorkerInput): Promise<{ kind: "done" } | { kind: "clarifying"; questionCount: number; summary?: string }> {
+    this.sessionFailure = undefined
     this.send({ type: "progress", executionId: input.context.executionId, phase: "analyze", message: "Iniciando analise" })
     this.log("info", "Fase ANALYZE: " + input.task.title)
 
@@ -363,7 +395,11 @@ class TaskWorker {
           ].join("\n\n")
           const { runId: contextRunId } = await driver.sendMessage({ session, message: contextMessage })
           const contextResult = await driver.waitForRunCompletion(session, contextRunId, { onActivity: () => this.sendHeartbeat() })
-          if (contextResult.state !== "final") throw new Error(`Analista nao confirmou o bloco ${chunkNumber}/${descriptionChunks.length}: ${contextResult.errorMessage || contextResult.state}`)
+          if (contextResult.state !== "final") {
+            await this.persistRemoteSessionFailure(input, undefined, contextResult.failure)
+            if (contextResult.failure) this.sessionFailure = contextResult.failure
+            throw new Error(`Analista nao confirmou o bloco ${chunkNumber}/${descriptionChunks.length}: ${contextResult.errorMessage || contextResult.state}`)
+          }
         }
 
         this.log("info", "Enviando prompt para analista (modelo " + model.model + ")...")
@@ -377,6 +413,8 @@ class TaskWorker {
         this.log("info", "Resultado do analista: state=" + result.state + ", contentLength=" + (result.content?.length || 0) + stopInfo)
 
         if (result.state !== "final" || !result.content) {
+          await this.persistRemoteSessionFailure(input, undefined, result.failure)
+          if (result.failure) this.sessionFailure = result.failure
           lastFailure = "Analista falhou: " + (result.errorMessage || result.state)
           this.log("warn", lastFailure)
           continue
@@ -453,6 +491,7 @@ class TaskWorker {
               onActivity: () => this.sendHeartbeat(),
             })
             if (retryResult.state !== "final" || !retryResult.content) {
+              await this.persistRemoteSessionFailure(input, undefined, retryResult.failure)
               lastFailure = "Retry corretivo de qualidade nao retornou resultado final: " + (retryResult.errorMessage || retryResult.state)
               this.log("warn", lastFailure)
               continue
@@ -629,6 +668,7 @@ class TaskWorker {
    * FASE 3: EXECUTE - Chama o Programador com a subtarefa
    */
   private async phaseExecute(input: WorkerInput): Promise<string | undefined> {
+    this.sessionFailure = undefined
     this.send({ type: "progress", executionId: input.context.executionId, phase: "execute", message: "Executando subtarefa" })
 
     const subtask = input.subtask
@@ -654,6 +694,7 @@ class TaskWorker {
     let deliverCount = subtask.deliverCount
     let lastFailure = ""
     const modelFailures: string[] = []
+    const sessionRecoveryLimit = resolveSessionRecoveryLimit()
 
     // P1 (Alexandre 2026-09-05): carry-over de aprendizado entre execuções.
     // Se a subtarefa já teve entregas persistidas (rework pós-rejeição,
@@ -663,7 +704,10 @@ class TaskWorker {
 
     modelLoop: for (let modelIndex = 0; modelIndex < chain.length; modelIndex += 1) {
       const model = chain[modelIndex]!
-      for (let attempt = 1; attempt <= input.task.maxRework; attempt += 1) {
+      // A recuperação de sessão é uma tentativa adicional, explicitamente
+      // limitada, e não deve ser confundida com o rework do gate.
+      let sessionRecoveryAttempts = 0
+      for (let attempt = 1; attempt <= input.task.maxRework + sessionRecoveryLimit; attempt += 1) {
         deliverCount += 1
         await this.db!.query(
           "UPDATE subtarefas SET status = 'running', deliver_count = ?, resultado = NULL, updated_at = NOW() WHERE id = ?",
@@ -743,9 +787,34 @@ class TaskWorker {
             continue
           }
           if (result.state !== "final") {
+            await this.persistRemoteSessionFailure(input, subtask, result.failure)
+            if (result.failure) {
+              this.sessionFailure = result.failure
+              const remoteReason = formatRemoteSessionFailure(result.failure)
+              if (result.failure.classification === "definitive") {
+                throw new Error("Falha definitiva da sessão remota: " + remoteReason)
+              }
+              if (result.failure.classification === "systemic") {
+                throw new Error("Falha sistêmica do Console: " + remoteReason)
+              }
+              if (result.failure.classification === "transient" && sessionRecoveryAttempts < sessionRecoveryLimit) {
+                sessionRecoveryAttempts += 1
+                lastFailure = "Recuperação de sessão " + sessionRecoveryAttempts + "/" + sessionRecoveryLimit + ": " + remoteReason
+                await this.db!.query(
+                  "UPDATE subtarefas SET status = 'pending', resultado = ?, finalizada_em = NULL, updated_at = NOW() WHERE id = ?",
+                  [lastFailure.substring(0, 500), subtask.id],
+                )
+                this.log("warn", lastFailure + "; criando/retomando a sessão para nova tentativa")
+                continue
+              }
+              throw new Error("Falha transitória da sessão remota após " + sessionRecoveryAttempts + " recuperação(ões): " + remoteReason)
+            }
             lastFailure = "Programador falhou: " + (result.errorMessage || result.state)
             break
           }
+          // A execução recuperou com sucesso; não contaminar uma falha
+          // posterior isolada com um diagnóstico transitório anterior.
+          this.sessionFailure = undefined
           agentSummary = this.extractAgentSummary(result.content)
 
           // O gateway pode usar state=final mesmo sem produzir uma resposta.
@@ -946,6 +1015,15 @@ class TaskWorker {
     const reason = "Escada de modelos esgotada: " + (lastFailure || "subtarefa não aprovada")
     await this.recordBlocker(subtask, "model_chain_exhausted", reason)
     throw new Error(reason)
+  }
+
+  private async persistRemoteSessionFailure(
+    input: WorkerInput,
+    subtask: SubtaskInfo | undefined,
+    failure: RemoteSessionFailure | undefined,
+  ): Promise<void> {
+    if (!this.db || !failure) return
+    await persistRemoteSessionFailure(this.db, input.task.id, input.task.agentId, subtask?.id, failure)
   }
 
   private async openDeveloperSession(subtaskId: number, model: string, session: RuntimeSession): Promise<void> {
@@ -1881,7 +1959,7 @@ class TaskWorker {
   }
 
   private sendFailed(context: ExecutionContext, error: string): void {
-    this.send({ type: "failed", executionId: context.executionId, error })
+    this.send({ type: "failed", executionId: context.executionId, error, sessionFailure: this.sessionFailure })
     this.cleanup()
     setTimeout(() => process.exit(1), 1000)
   }

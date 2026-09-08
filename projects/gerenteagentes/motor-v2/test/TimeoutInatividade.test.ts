@@ -26,6 +26,47 @@ afterEach(() => {
 })
 
 describe('B7 — timeout de inatividade', () => {
+  it('preserva o diagnóstico remoto estruturado de uma sessão falha', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
+      state: 'failed',
+      sessionId: 'remote-42',
+      error: { code: 'UPSTREAM_RESET', message: 'Gateway reiniciou durante a execução', occurredAt: '2026-09-08T12:00:00Z' },
+    })))
+
+    const driver = makeDriver()
+    const result = await driver.waitForRunCompletion({ ...session, sessionId: 'known-remote' }, 'run-42', { pollIntervalMs: 10 })
+
+    expect(result.state).toBe('error')
+    expect(result.failure).toMatchObject({
+      code: 'UPSTREAM_RESET',
+      message: 'Gateway reiniciou durante a execução',
+      sessionKey: 's1',
+      remoteSessionId: 'remote-42',
+      runId: 'run-42',
+      occurredAt: '2026-09-08T12:00:00.000Z',
+      classification: 'transient',
+    })
+  })
+
+  it('usa fallback legível quando a sessão falha sem detalhe remoto', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ state: 'failed', endedAt: 1_757_333_200_000 })))
+
+    const driver = makeDriver()
+    const result = await driver.waitForRunCompletion(session, 'run-sem-detalhe', { pollIntervalMs: 10 })
+
+    expect(result).toMatchObject({
+      state: 'error',
+      runId: 'run-sem-detalhe',
+      errorMessage: 'Session failed',
+      failure: {
+        code: 'SESSION_FAILED',
+        classification: 'transient',
+        sessionKey: 's1',
+      },
+    })
+    expect(result.failure?.occurredAt).toBe('2025-09-08T12:06:40.000Z')
+  })
+
   it('run ativo por vários polls não é interrompido; conclui quando termina', async () => {
     const responses: unknown[] = [
       { state: 'busy', hasActiveRun: true },
