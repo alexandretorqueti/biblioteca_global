@@ -1219,7 +1219,12 @@ export default function TaskMonitorScreen(): ReactNode {
           <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems="center" justifyContent="space-between">
             <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
               <Typography variant="h6">{tarefaSelecionada.titulo}</Typography>
-              <Typography variant="body2" color="text.secondary" data-testid="selected-task-id">
+              <Typography
+                variant="body2"
+                color="text.secondary"
+                aria-label={`ID da tarefa ${tarefaSelecionada.id}`}
+                data-testid="selected-task-id"
+              >
                 #{tarefaSelecionada.id}
               </Typography>
               <IconButton
