@@ -937,11 +937,33 @@ class TaskWorker {
   private async persistLightweightDelivery(input: WorkerInput, content: string): Promise<void> {
     if (!this.db) throw new Error("DB não conectado para registrar entrega")
     const text = content.trim() || "Agente finalizou sem mensagem de resposta."
+    const finalResult = this.parseLightweightResult(text)
     await this.db.query(
       "INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) " +
-      "SELECT id, 'assistant', ?, NOW() FROM tarefas WHERE external_id = ? OR id = ? LIMIT 1",
+      "SELECT id, 'assistant', ?, NOW() FROM tarefas WHERE (external_id = ? OR id = ?) AND tipo IN ('automacao', 'verificacao') LIMIT 1",
       [text.substring(0, 30_000), input.task.id, input.task.id],
     )
+    await this.db.query(
+      "UPDATE tarefas SET resultado_final = ?, updated_at = NOW() WHERE (external_id = ? OR id = ?) AND tipo IN ('automacao', 'verificacao')",
+      [JSON.stringify(finalResult), input.task.id, input.task.id],
+    )
+  }
+
+  private parseLightweightResult(content: string): { status: "done" | "need_help" | "blocked_environment"; summary: string; reason: string } {
+    const match = content.match(/\{[\s\S]*\}/)
+    if (match) {
+      try {
+        const parsed = JSON.parse(match[0]) as { status?: string; summary?: unknown; reason?: unknown }
+        if (parsed.status === "done" || parsed.status === "need_help" || parsed.status === "blocked_environment") {
+          return {
+            status: parsed.status,
+            summary: typeof parsed.summary === "string" ? parsed.summary.trim().substring(0, 10_000) : "",
+            reason: typeof parsed.reason === "string" ? parsed.reason.trim().substring(0, 10_000) : "",
+          }
+        }
+      } catch { /* mantém compatibilidade com resposta textual legada */ }
+    }
+    return { status: "done", summary: content.substring(0, 10_000), reason: "" }
   }
 
   /**

@@ -281,6 +281,9 @@ export const tarefas = mysqlTable("tarefas", {
   // Última mensagem de erro da execução — separada da descrição para que
   // falhas não sobrescrevam o texto original da tarefa (lacuna do saveTask).
   ultimaMensagemErro: text("ultima_mensagem_erro"),
+  // Resposta final estruturada das tarefas operacionais. Evidências e
+  // histórico técnico continuam persistidos nas subtarefas.
+  resultadoFinal: json("resultado_final"),
   status: varchar("status", { length: 50 }).notNull().default("draft"), // Ver motor-v2/src/shared/task-statuses.ts para lista completa
   maxRework: int("max_rework").notNull().default(3),
   hardTimeoutMs: bigint("hard_timeout_ms", { mode: "number" }),
@@ -641,6 +644,7 @@ export const annotations = {
     depends_on_task_id: { label: "Depende de" },
     auto_start: { label: "Início Automático" },
     boot_retry_count: { label: "Tentativas de Boot" },
+    resultado_final: { label: "Resultado final", type: "textarea", fullWidth: true },
   },
   subtarefas: {
     tarefa_id: { label: "Tarefa" },

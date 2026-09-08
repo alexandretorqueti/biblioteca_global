@@ -11,7 +11,7 @@
  */
 import { describe, expect, it } from "vitest"
 import { getTableConfig } from "drizzle-orm/mysql-core"
-import { projetoMotorConfig, annotations } from "../schema"
+import { projetoMotorConfig, tarefas, annotations } from "../schema"
 
 describe("projetoMotorConfig — schema Drizzle", () => {
   it("possui a coluna repo_path (varchar(500), obrigatória)", () => {
@@ -86,5 +86,21 @@ describe("annotations — projeto_motor_config", () => {
   it("inclui unit_test_command nas anotações", () => {
     const ann = annotations.projeto_motor_config
     expect(ann.unit_test_command).toMatchObject({ label: "Comando de testes", maxLength: 500 })
+  })
+})
+
+describe("tarefas — resultado final consolidado", () => {
+  it("possui resultado_final JSON opcional no nível da tarefa", () => {
+    const config = getTableConfig(tarefas)
+    const col = config.columns.find((c) => c.name === "resultado_final")
+
+    expect(col).toBeDefined()
+    expect(col!.dataType).toBe("json")
+    expect((col as unknown as { notNull: boolean }).notNull).toBe(false)
+    expect(tarefas.resultadoFinal).toBeDefined()
+  })
+
+  it("mantém o resultado final ausente para tarefas legadas", () => {
+    expect((tarefas.resultadoFinal as unknown as { hasDefault?: boolean }).hasDefault).not.toBe(true)
   })
 })
