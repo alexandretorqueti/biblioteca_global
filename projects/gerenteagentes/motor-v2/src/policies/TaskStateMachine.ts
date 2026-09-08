@@ -6,6 +6,7 @@ export type TaskTransition =
   | "resume_without_plan" | "queue" | "recover" | "fail" | "cancel"
   | "await_clarification" | "clarification_answered"
   | "propose_plan" | "approve_plan" | "request_adjustments"
+  | "continue_conversation"
 
 const taskTransitions: Record<TaskTransition, readonly TaskStatus[]> = {
   start_analysis: ["planned"],
@@ -22,6 +23,10 @@ const taskTransitions: Record<TaskTransition, readonly TaskStatus[]> = {
   // O dono pediu ajustes; a tarefa volta para `planned` e o pump a reenvia
   // para análise na mesma sessão do analista (contexto preservado).
   request_adjustments: ["awaiting_approval"],
+  // O dono quer continuar conversando sobre a proposta sem aprová-la nem
+  // pedir ajustes formais. A tarefa volta para `awaiting_clarification`
+  // para que o analista responda na mesma sessão (contexto preservado).
+  continue_conversation: ["awaiting_approval"],
   start_execution: ["ready"],
   // Entre subtarefas, a tarefa volta para `ready` para que o coordenador
   // possa selecionar a próxima. A última subtarefa pode, portanto, concluir
@@ -72,6 +77,7 @@ export function transitionTask(current: TaskStatus, transition: TaskTransition):
     propose_plan: "awaiting_approval",
     approve_plan: "ready",
     request_adjustments: "planned",
+    continue_conversation: "awaiting_clarification",
     start_execution: "running",
     execution_completed: "completed",
     deploy_completed: "deployed",
