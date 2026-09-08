@@ -57,6 +57,20 @@ export type {
   WorkerOutput,
 } from './shared/types/execution.js'
 
+export {
+  EXECUTION_ACTOR_TYPES,
+  EXECUTION_EVENT_TYPES,
+  EXECUTION_REASON_CODES,
+  EXECUTION_STATUSES,
+} from './shared/types/execution-event.js'
+export type {
+  ExecutionActorType,
+  ExecutionEvent,
+  ExecutionEventType,
+  ExecutionReasonCode,
+  ExecutionStatus,
+} from './shared/types/execution-event.js'
+
 export type {
   ResourceLease,
   AcquireResult,
