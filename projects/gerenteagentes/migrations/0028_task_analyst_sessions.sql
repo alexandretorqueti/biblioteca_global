@@ -1,0 +1,21 @@
+CREATE TABLE IF NOT EXISTS `motor_task_analyst_sessions` (
+  `id` bigint unsigned AUTO_INCREMENT NOT NULL,
+  `tarefa_id` bigint unsigned NOT NULL,
+  `agent_id` varchar(100) NOT NULL,
+  `model` varchar(200) NOT NULL,
+  `session_key` varchar(300) NOT NULL,
+  `runtime_session_id` varchar(300) NULL,
+  `status` varchar(30) NOT NULL DEFAULT 'active',
+  `opened_at` timestamp NOT NULL DEFAULT (now()),
+  `last_activity_at` timestamp NOT NULL DEFAULT (now()),
+  `closed_at` timestamp NULL,
+  `close_reason` varchar(100) NULL,
+  `created_at` timestamp NOT NULL DEFAULT (now()),
+  `updated_at` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT `motor_task_analyst_sessions_id` PRIMARY KEY(`id`),
+  CONSTRAINT `motor_task_analyst_sessions_task_fk` FOREIGN KEY (`tarefa_id`) REFERENCES `tarefas` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `motor_task_analyst_sessions_task_unique` UNIQUE(`tarefa_id`),
+  CONSTRAINT `motor_task_analyst_sessions_key_unique` UNIQUE(`session_key`),
+  KEY `motor_task_analyst_sessions_status_idx` (`status`),
+  KEY `motor_task_analyst_sessions_activity_idx` (`last_activity_at`)
+);

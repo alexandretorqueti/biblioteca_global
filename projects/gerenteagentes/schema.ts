@@ -422,6 +422,23 @@ export const motorAgentSessionMessages = mysqlTable("motor_agent_session_message
   createdAt: timestamp("created_at").notNull().defaultNow(),
 })
 
+/** Sessão persistente do analista durante a clarificação e aprovação do plano. */
+export const motorTaskAnalystSessions = mysqlTable("motor_task_analyst_sessions", {
+  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+  tarefaId: bigint("tarefa_id", { mode: "number", unsigned: true }).notNull().references(() => tarefas.id, { onDelete: "cascade" }),
+  agentId: varchar("agent_id", { length: 100 }).notNull(),
+  modelo: varchar("model", { length: 200 }).notNull(),
+  sessionKey: varchar("session_key", { length: 300 }).notNull().unique(),
+  runtimeSessionId: varchar("runtime_session_id", { length: 300 }),
+  status: varchar("status", { length: 30 }).notNull().default("active"),
+  openedAt: timestamp("opened_at").notNull(),
+  lastActivityAt: timestamp("last_activity_at").notNull(),
+  closedAt: timestamp("closed_at"),
+  closeReason: varchar("close_reason", { length: 100 }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+})
+
 /**
  * Histórico de entregas/erros/retornos por subtarefa.
  * Cada evento relevante (entrega iniciada, gate rejeitado, retorno para rework,
