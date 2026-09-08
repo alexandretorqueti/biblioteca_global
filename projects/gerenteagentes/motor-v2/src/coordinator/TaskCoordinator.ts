@@ -1094,6 +1094,31 @@ export class TaskCoordinator {
     return this.mapSaveDataToTask(data)
   }
 
+  async getTaskStatusHistory(taskId: string): Promise<Array<{
+    previousStatus: string
+    nextStatus: string
+    source: string
+    reason: string | null
+    createdAt: string
+  }>> {
+    const { rows } = await this.db.query(
+      "SELECT h.status_anterior, h.status_novo, h.origem, h.motivo, h.created_at " +
+      "FROM tarefas_status_historico h INNER JOIN tarefas t ON t.id = h.tarefa_id " +
+      "WHERE t.external_id = ? OR t.id = CAST(? AS UNSIGNED) ORDER BY h.id DESC LIMIT 200",
+      [taskId, taskId],
+    )
+    return rows.map((row) => {
+      const data = row as Record<string, unknown>
+      return {
+        previousStatus: String(data.status_anterior),
+        nextStatus: String(data.status_novo),
+        source: String(data.origem),
+        reason: data.motivo ? String(data.motivo) : null,
+        createdAt: String(data.created_at),
+      }
+    })
+  }
+
   /**
    * Tarefa completa com subtarefas e motivo de bloqueio na resposta —
    * remove a dependência do fallback direto no banco pela tela de
@@ -1825,6 +1850,13 @@ export class TaskCoordinator {
       return
     }
     await this.repository.saveTask({ ...task, ...patch, status, updatedAt: new Date().toISOString() })
+    // Auditoria persistente: `ready` é um estado operacional legítimo entre
+    // subtarefas, mas sem essa trilha ele parece uma regressão na interface.
+    await this.db.query(
+      "INSERT INTO tarefas_status_historico (tarefa_id, status_anterior, status_novo, origem, motivo) " +
+      "SELECT id, ?, ?, ?, ? FROM tarefas WHERE external_id = ? OR id = CAST(? AS UNSIGNED) LIMIT 1",
+      [task.status, status, `motor-v2:${transition}`, patch.errorMessage?.substring(0, 500) ?? null, task.id, task.id],
+    ).catch((error: unknown) => this.logger.warn("Falha ao auditar transição de tarefa: " + describeError(error), { taskId: task.id }))
     // Atualiza o objeto task em memória para manter consistência
     task.status = status as Task["status"]
     if (patch.updatedAt) task.updatedAt = patch.updatedAt
