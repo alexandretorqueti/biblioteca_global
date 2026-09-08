@@ -342,6 +342,8 @@ export const subtarefas = mysqlTable("subtarefas", {
     mode: "number",
     unsigned: true,
   }),
+  // Lista canônica de dependências; o campo singular acima permanece para compatibilidade.
+  dependsOnSubtaskIds: json("depends_on_subtask_ids"),
   resultado: text("resultado"),
   correctionForSubtaskId: bigint("correction_for_subtask_id", { mode: "number", unsigned: true }),
   correctionFingerprint: varchar("correction_fingerprint", { length: 500 }),

@@ -17,9 +17,10 @@ export function validatePlanQuality(subtasks: readonly PlannedSubtask[], coverag
     if (GENERIC_TEXT.test(subtask.titulo.trim()) || subtask.acceptanceCriteria.length < 2) return { ok: false, reason: `Subtarefa ${subtask.seq} tem título genérico ou critérios insuficientes.` }
     if (subtask.deliverables.length === 0) return { ok: false, reason: `Subtarefa ${subtask.seq} precisa declarar entregáveis.` }
     if (subtask.requirementsCovered.length === 0) return { ok: false, reason: `Subtarefa ${subtask.seq} precisa declarar requisitos cobertos.` }
-    if (subtask.dependsOn.some((dependency) => dependency === subtask.seq || !sequences.has(dependency) && !subtasks.some((candidate) => candidate.seq === dependency))) return { ok: false, reason: `Dependência inválida na subtarefa ${subtask.seq}.` }
+    if (subtask.dependsOn.some((dependency) => dependency >= subtask.seq || !subtasks.some((candidate) => candidate.seq === dependency))) return { ok: false, reason: `A subtarefa ${subtask.seq} só pode depender de etapas anteriores existentes.` }
   }
   const requirementIds = new Set(coverage.requirements.map((requirement) => requirement.id))
+  if (coverage.strategy && (coverage.strategy.executionOrder.length !== subtasks.length || coverage.strategy.executionOrder.some((seq, index) => seq !== [...subtasks].sort((a, b) => a.seq - b.seq)[index]?.seq))) return { ok: false, reason: "A estratégia precisa declarar a ordem completa das subtarefas." }
   if (requirementIds.size === 0) return { ok: false, reason: "O plano precisa listar os requisitos identificados." }
   if (coverage.requirements.some((requirement) => !requirement.id.trim() || !requirement.description.trim())) return { ok: false, reason: "Todo requisito precisa de identificador e descrição." }
   if (subtasks.some((subtask) => subtask.requirementsCovered.some((id) => !requirementIds.has(id)))) return { ok: false, reason: "Uma subtarefa referencia requisito inexistente." }

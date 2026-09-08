@@ -331,6 +331,10 @@ export class TaskCoordinator {
       "WHERE anterior.tarefa_id = s.tarefa_id AND anterior.seq < s.seq AND anterior.status NOT IN ('verified', 'superseded') " +
       "AND anterior.id != COALESCE(s.correction_for_subtask_id, -1)" +
       ") " +
+      "AND NOT EXISTS (" +
+      "SELECT 1 FROM subtarefas dependencia WHERE JSON_CONTAINS(COALESCE(s.depends_on_subtask_ids, JSON_ARRAY()), CAST(dependencia.id AS JSON)) " +
+      "AND dependencia.status NOT IN ('verified', 'superseded')" +
+      ") " +
       "ORDER BY s.seq ASC LIMIT 25"
     )
     return rows
