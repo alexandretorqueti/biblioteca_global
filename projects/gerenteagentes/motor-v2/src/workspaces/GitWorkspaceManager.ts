@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process"
 import { mkdir, rm } from "node:fs/promises"
+import { existsSync } from "node:fs"
 import { isAbsolute, relative, resolve, join } from "node:path"
 import { promisify } from "node:util"
 import { createLogger } from "../shared/logger.js"
@@ -28,6 +29,15 @@ export interface WorkspacePreparation {
   projectPath: string
   branch: string
   baseCommit: string
+}
+
+/** Metadados de uma tentativa já existente. Nunca cria, remove ou reseta nada. */
+export interface ExistingWorkspace {
+  path: string
+  projectPath: string
+  branch: string
+  baseCommit: string
+  headCommit: string
 }
 
 export interface WorkspaceIntegrationInput {
@@ -223,6 +233,28 @@ export class GitWorkspaceManager {
     if (!isAbsolute(options.root) || options.root.includes("\0") || /[\r\n]/.test(options.root)) throw new Error("raiz de workspaces inválida")
     this.root = resolve(options.root)
     this.runner = options.runner ?? new NodeGitCommandRunner()
+  }
+
+  /**
+   * Reabre uma tentativa persistida. Esta operação é deliberadamente somente
+   * leitura: retomadas não passam por prepare(), que cria uma tentativa nova.
+   */
+  async reuseExisting(input: { path: string; projectPath: string; branch: string; baseCommit: string }): Promise<ExistingWorkspace> {
+    if (!isAbsolute(input.path) || !isAbsolute(input.projectPath) || !validCommit(input.baseCommit)) {
+      throw new Error("metadados inválidos da tentativa persistida")
+    }
+    if (!existsSync(input.path) || !existsSync(input.projectPath)) {
+      throw new Error("worktree persistido não encontrado")
+    }
+    const branch = (await this.runner.run(["git", "branch", "--show-current"], input.path)).stdout.trim()
+    if (branch !== input.branch) throw new Error(`branch do worktree diverge: esperada ${input.branch}, encontrada ${branch || "(detached)"}`)
+    const baseCommit = (await this.runner.run(["git", "rev-parse", "--verify", `${input.branch}^{commit}`], input.path)).stdout.trim()
+    if (baseCommit !== input.baseCommit && !baseCommit.startsWith(input.baseCommit)) {
+      throw new Error("commit-base do worktree diverge do registro persistido")
+    }
+    const headCommit = (await this.runner.run(["git", "rev-parse", "HEAD"], input.path)).stdout.trim()
+    if (!validCommit(headCommit)) throw new Error("HEAD do worktree persistido inválido")
+    return { ...input, headCommit }
   }
 
   async prepare(input: PrepareWorkspaceInput): Promise<WorkspacePreparation> {

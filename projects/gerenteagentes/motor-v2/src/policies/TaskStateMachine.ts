@@ -25,7 +25,7 @@ const taskTransitions: Record<TaskTransition, readonly TaskStatus[]> = {
   resume: ["paused"],
   resume_without_plan: ["paused"],
   queue: ["paused", "planned"],
-  recover: ["analyzing", "running"],
+  recover: ["analyzing", "running", "blocked"],
   // Uma falha pode chegar depois de a tarefa ter sido pausada por uma
   // interrupção concorrente do worker (por exemplo, o gate termina enquanto
   // o evento de saída do processo é tratado). Nesse caso a falha precisa ser

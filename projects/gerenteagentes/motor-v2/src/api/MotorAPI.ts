@@ -94,6 +94,8 @@ export class MotorAPI {
         this.handlePauseTask(res, taskId)
       } else if (req.method === 'POST' && taskId && taskAction === 'resume') {
         this.handleResumeTask(res, taskId)
+      } else if (req.method === 'POST' && taskId && (taskAction === 'reanalyze-and-resume' || taskAction === 'reanalisar-e-retomar')) {
+        this.handleInfrastructureRecovery(res, taskId)
       } else if (req.method === 'POST' && taskId && taskAction === 'cancel') {
         this.handleCancelTask(res, taskId)
       } else if (req.method === 'POST' && taskId && taskAction === 'deploy') {
@@ -165,6 +167,15 @@ export class MotorAPI {
       this.json(res, 200, { ok: true })
     } catch (error) {
       this.json(res, 400, { ok: false, error: error instanceof Error ? error.message : 'Resume failed' })
+    }
+  }
+
+  private async handleInfrastructureRecovery(res: ServerResponse, taskId: string): Promise<void> {
+    try {
+      const result = await this.coordinator.reanalyzeAndResumeInfrastructureBlock(taskId)
+      this.json(res, 202, { ok: true, ...result })
+    } catch (error) {
+      this.json(res, 400, { ok: false, error: error instanceof Error ? error.message : 'Infrastructure recovery failed' })
     }
   }
 

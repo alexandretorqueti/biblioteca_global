@@ -172,6 +172,8 @@ export class TaskCoordinator {
   private eventBus: ExecutionEventBus
   private finalizingExecutions = new Set<string>()
   private activeMaintenance = 0
+  /** Tentativas autorizadas pela ação de recuperação; chaveadas pela subtarefa. */
+  private readonly recoveryWorkspaces = new Map<number, { path: string; projectPath: string; branch: string; baseCommit: string }>()
   /** Deploys não pertencem a um worker; mantê-los separados evita esconder a
    * atividade do Motor enquanto o script externo está em execução. */
   private activeDeployments = new Map<string, { taskId: string; phase: "verify" | "deploy"; startedAt: Date }>()
@@ -504,7 +506,10 @@ export class TaskCoordinator {
           activeWorker.testCommand = subtask.unitTestCommand ?? undefined
         }
         integrationBranch = taskWorkspace.branch
-        workspace = await this.workspaceManager.prepare({
+        const persistedWorkspace = this.recoveryWorkspaces.get(subtask.id)
+        workspace = persistedWorkspace
+          ? await this.workspaceManager.reuseExisting(persistedWorkspace)
+          : await this.workspaceManager.prepare({
           repoPath: subtask.repoPath,
           agentId: subtask.agentId,
           baseBranch: taskWorkspace.branch,
@@ -513,6 +518,7 @@ export class TaskCoordinator {
           attempt: Math.max(1, subtask.deliverCount + 1),
           ...(agentWorkspacePath ? { agentWorkspacePath } : {}),
         })
+        this.recoveryWorkspaces.delete(subtask.id)
         if (activeWorker) activeWorker.workspace = workspace
         await this.db.query(
         "UPDATE subtarefas SET workspace_path = ?, workspace_branch = ?, workspace_base_commit = ?, workspace_status = 'active', workspace_created_at = NOW(), workspace_cleaned_at = NULL WHERE id = ?",
@@ -1443,6 +1449,62 @@ export class TaskCoordinator {
     const hasPlan = await this.taskHasPersistedPlan(taskId)
     await this.saveTaskTransition(task, hasPlan ? "resume" : "resume_without_plan")
     await this.pump()
+  }
+
+  /**
+   * Reanalisa e retoma um bloqueio de infraestrutura elegível.
+   * O registro persistido da tentativa é obrigatório: sem ele a ação falha
+   * em vez de chamar prepare() e criar uma worktree substituta.
+   */
+  async reanalyzeAndResumeInfrastructureBlock(taskId: string): Promise<{ executionId: string; incidentId: string }> {
+    const task = await this.repository.getTask(taskId)
+    if (!task) throw new Error("Tarefa " + taskId + " nao encontrada")
+    if (task.status !== "blocked") throw new Error("Ação disponível apenas para tarefa bloqueada")
+
+    const { rows } = await this.db.query(
+      "SELECT b.id, b.block_reason, b.block_excerpt, s.id AS subtarefa_id, s.workspace_path, s.workspace_branch, s.workspace_base_commit, pmc.repo_path " +
+      "FROM bloqueios b LEFT JOIN subtarefas s ON s.id = b.subtarefa_id " +
+      "LEFT JOIN tarefas t ON t.id = b.tarefa_id LEFT JOIN projetos_captados pc ON t.projeto_id = pc.id " +
+      "LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id = pc.id " +
+      "WHERE b.tarefa_id = (SELECT id FROM tarefas WHERE external_id = ? OR id = CAST(? AS UNSIGNED) LIMIT 1) " +
+      "ORDER BY b.blocked_at DESC LIMIT 1", [taskId, taskId],
+    )
+    const block = rows[0]
+    const kind = String(block?.block_reason ?? "")
+    const excerpt = String(block?.block_excerpt ?? "")
+    const eligible = kind === "blocked_environment" || kind === "systemic_failure" || /infra|git|worktree|ssh|console|dependenc|deploy/i.test(excerpt)
+    if (!eligible) throw new Error("Bloqueio não elegível para recuperação de infraestrutura")
+    if (!block?.subtarefa_id || !block.workspace_path || !block.workspace_branch || !block.workspace_base_commit) {
+      throw new Error("Bloqueio elegível sem execução/worktree/commit persistidos")
+    }
+
+    const existing = await this.workspaceManager.reuseExisting({
+      path: String(block.workspace_path), projectPath: String(block.repo_path ?? block.workspace_path),
+      branch: String(block.workspace_branch), baseCommit: String(block.workspace_base_commit),
+    })
+    const dependency = await new DependencyInstaller().install({ worktreePath: existing.projectPath, timeoutMs: resolveInstallTimeoutMs() })
+    if (!dependency.ok) throw new Error("Preflight dependências falhou: " + dependency.reason)
+    const verification = await this.verifyAgentBeforeEnqueue(task.agentId)
+    if (!verification.ok) throw new Error("Preflight Console falhou: " + formatAgentVerificationReport(verification))
+    const deployHost = process.env.MOTOR_DEPLOY_SSH_HOST
+    if (deployHost) execFileSync("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", deployHost, "true"], { stdio: "pipe", timeout: 10_000 })
+
+    const incidentId = randomUUID()
+    this.recoveryWorkspaces.set(Number(block.subtarefa_id), {
+      path: String(block.workspace_path), projectPath: String(block.repo_path ?? block.workspace_path),
+      branch: String(block.workspace_branch), baseCommit: String(block.workspace_base_commit),
+    })
+    await this.db.query("UPDATE subtarefas SET status = 'pending', resultado = ?, updated_at = NOW() WHERE id = ?", ["Retomada após reanálise do bloqueio: " + excerpt, Number(block.subtarefa_id)])
+    await this.db.query(
+      "INSERT INTO motor_infrastructure_recovery_history (tarefa_id, subtarefa_id, incident_id, original_reason, correction_applied, resumed_by, execution_id) " +
+      "SELECT id, ?, ?, ?, ?, ?, ? FROM tarefas WHERE external_id = ? OR id = CAST(? AS UNSIGNED) LIMIT 1",
+      [Number(block.subtarefa_id), incidentId, excerpt, "preflight consolidado: Git/branch, dependências, Console e SSH", "motor-v2", "recovery-" + incidentId, taskId, taskId],
+    )
+    await this.saveTaskTransition(task, "recover", { errorMessage: "Bloqueio reanalisado; incidente " + incidentId })
+    await this.pump()
+    const executionId = [...this.activeWorkers.values()].find((worker) => worker.subtaskId === Number(block.subtarefa_id))?.executionId ?? "queued-" + incidentId
+    await this.db.query("UPDATE motor_infrastructure_recovery_history SET execution_id = ? WHERE incident_id = ?", [executionId, incidentId])
+    return { executionId, incidentId }
   }
 
   async cancelTask(taskId: string): Promise<void> {
