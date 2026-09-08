@@ -6,7 +6,7 @@ import {
   SettingsRounded,
 } from "@mui/icons-material"
 import { Box, Chip, Paper, Stack, Typography } from "@mui/material"
-import { taskStatusLabel } from "../motor-v2/src/shared/task-statuses"
+import { isTaskStatusUserDropAllowed, taskStatusLabel } from "../motor-v2/src/shared/task-statuses"
 
 export interface FlowTask {
   id: number
@@ -27,6 +27,7 @@ interface TaskFlowMapProps {
   motorActivities?: MotorActivity[]
   onSelectTask: (id: number) => void
   onMoveTask?: (id: number, status: string) => void | Promise<void>
+  onMoveRejected?: (message: string) => void
 }
 
 interface FlowStation {
@@ -64,7 +65,7 @@ const TONE_STYLE = {
   danger: { borderColor: "error.main", bgcolor: "error.dark", color: "error.contrastText" },
 } as const
 
-function Station({ station, tarefas, selectedTaskId, search, movingIds, draggingTaskId, onSelectTask, onMoveTask, onDragStart, onDragEnd }: {
+function Station({ station, tarefas, selectedTaskId, search, movingIds, draggingTaskId, onSelectTask, onMoveTask, onMoveRejected, onDragStart, onDragEnd }: {
   station: FlowStation
   tarefas: FlowTask[]
   selectedTaskId: number | ""
@@ -73,10 +74,12 @@ function Station({ station, tarefas, selectedTaskId, search, movingIds, dragging
   draggingTaskId: number | null
   onSelectTask: (id: number) => void
   onMoveTask?: (id: number, status: string) => void | Promise<void>
+  onMoveRejected?: (message: string) => void
   onDragStart: (id: number) => void
   onDragEnd: () => void
 }) {
   const [dragOver, setDragOver] = useState(false)
+  const [dropAllowed, setDropAllowed] = useState(false)
   const stationTasks = tarefas.filter((task) => station.statuses.includes(task.status))
   const normalizedSearch = search.trim().toLocaleLowerCase("pt-BR")
   const visibleTasks = stationTasks
@@ -88,18 +91,31 @@ function Station({ station, tarefas, selectedTaskId, search, movingIds, dragging
       variant="outlined"
       data-testid={`flow-station-${station.id}`}
       onDragOver={(event) => {
-        if (draggingTaskId !== null) {
+        const draggedTask = tarefas.find((task) => task.id === draggingTaskId)
+        const allowed = Boolean(draggedTask && isTaskStatusUserDropAllowed(draggedTask.status, station.statuses[0]))
+        setDropAllowed(allowed)
+        if (allowed) {
           event.preventDefault()
           setDragOver(true)
         }
       }}
-      onDragLeave={() => setDragOver(false)}
+      onDragLeave={() => {
+        setDragOver(false)
+        setDropAllowed(false)
+      }}
       onDrop={(event) => {
         event.preventDefault()
         setDragOver(false)
+        setDropAllowed(false)
         const taskId = Number(event.dataTransfer?.getData("text/plain")) || draggingTaskId
-        if (taskId && onMoveTask) void onMoveTask(taskId, station.statuses[0])
+        const draggedTask = tarefas.find((task) => task.id === taskId)
+        if (taskId && draggedTask && onMoveTask && isTaskStatusUserDropAllowed(draggedTask.status, station.statuses[0])) {
+          void onMoveTask(taskId, station.statuses[0])
+        } else if (draggedTask && onMoveRejected) {
+          onMoveRejected(`Movimentação não permitida: ${taskStatusLabel(draggedTask.status)} → ${taskStatusLabel(station.statuses[0])}.`)
+        }
       }}
+      aria-label={dropAllowed ? `Destino permitido: ${station.label}` : undefined}
       sx={{ ...TONE_STYLE[station.tone], p: 1.5, minWidth: 190, minHeight: 196, borderWidth: 1.5, borderRadius: 3, transition: "box-shadow 120ms ease, transform 120ms ease", ...(dragOver ? { boxShadow: 6, transform: "scale(1.02)", outline: "2px dashed", outlineColor: "primary.main" } : {}) }}
     >
       <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
@@ -158,7 +174,7 @@ function Station({ station, tarefas, selectedTaskId, search, movingIds, dragging
   )
 }
 
-export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", motorActivities = [], onSelectTask, onMoveTask }: TaskFlowMapProps) {
+export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", motorActivities = [], onSelectTask, onMoveTask, onMoveRejected }: TaskFlowMapProps) {
   const previousStatuses = useRef(new Map<number, string>())
   const [movements, setMovements] = useState<Array<{ id: number; from: string; to: string }>>([])
   const [draggingTaskId, setDraggingTaskId] = useState<number | null>(null)
@@ -206,7 +222,7 @@ export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", moto
           spacing={0.75}
           sx={{ width: "100%" }}
         >
-          {MAIN_FLOW.map((station, index) => <React.Fragment key={station.id}><Station station={station} tarefas={tarefas} selectedTaskId={selectedTaskId} search={search} movingIds={movingIds} draggingTaskId={draggingTaskId} onSelectTask={onSelectTask} onMoveTask={onMoveTask} onDragStart={setDraggingTaskId} onDragEnd={() => setDraggingTaskId(null)} />{index < MAIN_FLOW.length - 1 && <ArrowForwardRounded color="action" aria-hidden="true" />}</React.Fragment>)}
+          {MAIN_FLOW.map((station, index) => <React.Fragment key={station.id}><Station station={station} tarefas={tarefas} selectedTaskId={selectedTaskId} search={search} movingIds={movingIds} draggingTaskId={draggingTaskId} onSelectTask={onSelectTask} onMoveTask={onMoveTask} onMoveRejected={onMoveRejected} onDragStart={setDraggingTaskId} onDragEnd={() => setDraggingTaskId(null)} />{index < MAIN_FLOW.length - 1 && <ArrowForwardRounded color="action" aria-hidden="true" />}</React.Fragment>)}
         </Stack>
         <Stack alignItems="center" sx={{ width: "100%", my: 0.5 }}><ArrowDownwardRounded color="action" /></Stack>
         <Stack
@@ -218,7 +234,7 @@ export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", moto
           spacing={1}
           sx={{ width: "100%" }}
         >
-          {SIDE_FLOW.map((station, index) => <React.Fragment key={station.id}><Station station={station} tarefas={tarefas} selectedTaskId={selectedTaskId} search={search} movingIds={movingIds} draggingTaskId={draggingTaskId} onSelectTask={onSelectTask} onMoveTask={onMoveTask} onDragStart={setDraggingTaskId} onDragEnd={() => setDraggingTaskId(null)} />{index < SIDE_FLOW.length - 1 && <ArrowForwardRounded color="action" aria-hidden="true" />}</React.Fragment>)}
+          {SIDE_FLOW.map((station, index) => <React.Fragment key={station.id}><Station station={station} tarefas={tarefas} selectedTaskId={selectedTaskId} search={search} movingIds={movingIds} draggingTaskId={draggingTaskId} onSelectTask={onSelectTask} onMoveTask={onMoveTask} onMoveRejected={onMoveRejected} onDragStart={setDraggingTaskId} onDragEnd={() => setDraggingTaskId(null)} />{index < SIDE_FLOW.length - 1 && <ArrowForwardRounded color="action" aria-hidden="true" />}</React.Fragment>)}
         </Stack>
       </Box>
     </Paper>

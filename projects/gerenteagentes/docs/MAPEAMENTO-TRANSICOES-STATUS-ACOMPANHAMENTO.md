@@ -2,7 +2,7 @@
 
 ## Escopo e conclusão
 
-Este documento registra o comportamento encontrado na tela “Acompanhar Tarefa”, no endpoint usado pelo arrastar e soltar e no fluxo canônico do Motor v2. A tela atualmente permite arrastar para qualquer estação renderizada e o backend aceita qualquer valor de `ALL_TASK_STATUSES`; portanto, a proteção de transições ainda não está aplicada nessa rota.
+Este documento registra o comportamento encontrado na tela “Acompanhar Tarefa”, no endpoint usado pelo arrastar e soltar e no fluxo canônico do Motor v2. A interação visual aplica a matriz de destinos manuais abaixo; a validação do backend permanece necessária para impedir bypass da API.
 
 `draft → running` (rascunho → em execução), incluindo o caminho direto `draft → ready`/`draft → analyzing`, deve ser reservado ao Motor. O usuário pode solicitar o início pela ação `POST .../start`, mas essa ação apenas enfileira no Motor; não deve ser substituída por um PATCH manual de status.
 
@@ -30,7 +30,7 @@ Origem: `motor-v2/src/shared/task-statuses.ts:20-54`.
 | Atenção | `blocked`, `failed` | `blocked` |
 | Encerradas | `cancelled`, `aborted` | `cancelled` |
 
-O cartão é sempre arrastável quando `onMoveTask` existe (`TaskFlowMap.tsx:123-134`). O `drop` chama `onMoveTask(taskId, station.statuses[0])` (`TaskFlowMap.tsx:87-102`). A tela faz atualização otimista e envia `PATCH /gerenteagentes/tarefas/:id/status` com o destino (`TaskMonitorScreen.tsx:565-584`).
+O cartão é arrastável quando `onMoveTask` existe. Durante `dragover`, a estação só aceita o evento quando a origem e o destino estão na matriz manual; o `drop` repete a validação antes de chamar `onMoveTask`. A tela também repete a guarda antes da atualização otimista e envia `PATCH /gerenteagentes/tarefas/:id/status` somente para destinos aceitos. Drops rejeitados exibem a transição bloqueada no alerta de erro.
 
 ## Matriz canônica de transições
 
@@ -71,7 +71,6 @@ Para o arrastar e soltar, o destino deve ser rejeitado quando não estiver na li
 4. `motor-v2/src/database/DrizzleDb.ts:84-105` persiste o status recebido pelo coordenador com `UPDATE` na tarefa.
 5. `POST .../start`, `POST .../pause` e `POST .../resume` são caminhos separados no controller (`api/gerenteagentes.controller.ts:78+`) e, no serviço, chamam o Motor antes de persistir o estado resultante. O deploy também tem endpoint próprio.
 
-## Recomendação para a implementação posterior
+## Proteção implementada na interação visual
 
-Centralizar uma política de autorização de transição que receba `origem`, `destino` e `ator` (`user` ou `motor`). Usá-la no `TaskFlowMap` para não oferecer/aceitar destinos inválidos e obrigatoriamente no serviço do PATCH para impedir bypass via API. O Motor deve continuar usando `TaskStateMachine`; não duplicar uma lista permissiva somente no frontend.
-
+`TASK_STATUS_USER_DROP_DESTINATIONS` e `isTaskStatusUserDropAllowed` em `motor-v2/src/shared/task-statuses.ts` centralizam a matriz usada pelo mapa e pela tela. Em particular, `draft` não possui destinos manuais, portanto `draft → running` (e demais saídas de `draft`) fica reservado ao Motor. A autorização no serviço do PATCH continua sendo uma evolução separada necessária para impedir alterações diretas fora da UI; o Motor deve continuar usando `TaskStateMachine`.
