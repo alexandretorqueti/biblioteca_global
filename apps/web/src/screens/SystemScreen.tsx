@@ -89,6 +89,7 @@ export default function SystemScreen(): ReactNode {
         config={config}
         runtime={runtime}
         actions={actions}
+        perfil={projeto?.perfil}
       />
       {helpDeskClient && (
         <HelpDeskWidget client={helpDeskClient} />
