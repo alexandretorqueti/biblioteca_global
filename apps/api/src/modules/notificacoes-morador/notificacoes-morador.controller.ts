@@ -19,6 +19,7 @@ import {
   NotFoundException,
   Param,
   Patch,
+  Put,
   Query,
   UseGuards,
 } from "@nestjs/common"
@@ -110,5 +111,29 @@ export class NotificacoesMoradorController {
     }
 
     return this.service.marcarComoLida(projeto, usuario, notificacaoId)
+  }
+
+  /** Aliases legados preservados para clientes já publicados. */
+  @Get(":slug/notificacoes/morador")
+  async listarNotificacoesLegado(
+    @CurrentProject() projeto: ProjetoResumo,
+    @CurrentUser() usuario: UsuarioAutenticado,
+    @Param("slug") slug: string,
+    @Query() query: Record<string, string>,
+  ) {
+    if (slug !== projeto.slug) throw new NotFoundException("Projeto não encontrado")
+    const parsed = notificacoesMoradorQuerySchema.safeParse(query)
+    if (!parsed.success) throw new BadRequestException("Parâmetros de consulta inválidos")
+    return this.service.listarNotificacoes(projeto, usuario, parsed.data as NotificacoesMoradorQuery)
+  }
+
+  @Patch(":slug/notificacoes/:id/marcar-lida")
+  async marcarComoLidaLegado(
+    @CurrentProject() projeto: ProjetoResumo,
+    @CurrentUser() usuario: UsuarioAutenticado,
+    @Param("slug") slug: string,
+    @Param("id") idParam: string,
+  ) {
+    return this.marcarComoLida(projeto, usuario, slug, idParam)
   }
 }

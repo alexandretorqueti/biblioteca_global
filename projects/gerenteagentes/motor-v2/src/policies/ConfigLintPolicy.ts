@@ -195,12 +195,28 @@ export function extractActions(configContent: string): Array<{
 // ─── Validação de completude ────────────────────────────────────────────────
 
 /**
+ * Normaliza um nome para comparação: remove hífens, prefixos de projeto,
+ * sufixos comuns (Screen, Modal) e converte para lowercase.
+ * Ex.: "taqui-registro-encomenda" → "registroencomenda"
+ *      "RegistroEncomendaScreen" → "registroencomenda"
+ */
+function normalizeScreenName(name: string, projectSlug: string): string {
+  return name
+    .toLowerCase()
+    .replace(/-/g, "") // remove hífens
+    .replace(new RegExp(`^${projectSlug}`), "") // remove prefixo do projeto
+    .replace(/screen$/i, "") // remove sufixo "Screen"
+    .replace(/modal$/i, "") // remove sufixo "Modal"
+}
+
+/**
  * Verifica se um componentId tem implementação correspondente no projeto.
  *
  * Procura por:
  * - projects/<slug>/screens/<ComponentId>.tsx
  * - projects/<slug>/screens/<componentId>.tsx (lowercase)
  * - projects/<slug>/screens/*<componentId>*.tsx (contains)
+ * - Correspondência normalizada (remove hífens, prefixos, sufixos)
  *
  * @param projectPath - Caminho raiz do monorepo
  * @param projectSlug - Slug do projeto
@@ -237,7 +253,24 @@ export function hasCustomScreenImplementation(
       return nameWithoutExt.includes(componentId.toLowerCase())
     })
 
-    return partialMatches.length > 0
+    if (partialMatches.length > 0) {
+      return true
+    }
+
+    // Busca correspondência normalizada (remove hífens, prefixos, sufixos)
+    // Ex.: componentId "taqui-registro-encomenda" → "registroencomenda"
+    //      arquivo "RegistroEncomendaScreen.tsx" → "registroencomenda"
+    // Também aceita prefixo: "ocorrencia" é prefixo de "ocorrenciadevolucao"
+    const normalizedComponentId = normalizeScreenName(componentId, projectSlug)
+    const normalizedMatches = files.filter(f => {
+      const nameWithoutExt = basename(f, ".tsx")
+      const normalizedName = normalizeScreenName(nameWithoutExt, projectSlug)
+      // Match exato ou prefixo (filename é prefixo do componentId normalizado)
+      return normalizedName === normalizedComponentId ||
+        normalizedComponentId.startsWith(normalizedName)
+    })
+
+    return normalizedMatches.length > 0
   } catch {
     return false
   }

@@ -12,6 +12,8 @@ import {
   realtimeIngressEventSchema,
   taskEventEnvelopeSchema,
   type ProjetoResumo,
+  type RealtimeIngressEvent,
+  type TaskEventEnvelope,
 } from "@biblioteca-global/shared"
 import type { MySqlTable } from "drizzle-orm/mysql-core"
 import { componentes } from "../../../../../../projects/documentacao/schema"
@@ -264,7 +266,7 @@ describe("CrudService — whitelist e validação", () => {
       // Ambos publicam evento de reconciliação.
       expect(p1).toHaveBeenCalledTimes(1)
       expect(p2).toHaveBeenCalledTimes(1)
-      const ingressos = [p1.mock.calls[0][0], p2.mock.calls[0][0]]
+      const ingressos = [p1.mock.calls[0]![0] as RealtimeIngressEvent, p2.mock.calls[0]![0] as RealtimeIngressEvent]
       for (const e of ingressos) {
         expect(e.type).toBe("task.created")
         expect(e.projectId).toBe(1)
@@ -771,7 +773,7 @@ describe("CrudService — eventos realtime no CRUD de tarefas/subtarefas", () =>
   /** Devolve o ingresso validado e o envelope da única chamada de publicar. */
   function unicoEvento(publicar: {
     mock: { calls: unknown[][]; results: Array<{ value: unknown }> }
-  }): { ingress: unknown; envelope: unknown } {
+  }): { ingress: RealtimeIngressEvent; envelope: TaskEventEnvelope } {
     const chamada = publicar.mock.calls[0]
     const resultado = publicar.mock.results[0]
     if (!chamada || !resultado) {

@@ -597,9 +597,21 @@ export const config: GeradorSistemaConfig = {
           label: "Registrar Encomenda",
           path: "registrar",
           icon: "add_photo_alternate",
+          roleFilter: ["admin", "gerente", "operador"],
           screen: {
             kind: "custom",
             componentId: "taqui-registro-encomenda",
+          },
+        },
+        {
+          id: "entrega-encomenda",
+          label: "Entregar Encomenda",
+          path: "entregar",
+          icon: "handyman",
+          roleFilter: ["admin", "gerente", "operador"],
+          screen: {
+            kind: "custom",
+            componentId: "taqui-entrega-encomenda",
           },
         },
         {
@@ -607,9 +619,21 @@ export const config: GeradorSistemaConfig = {
           label: "Painel da Portaria",
           path: "portaria",
           icon: "desk",
+          roleFilter: ["admin", "gerente", "operador"],
           screen: {
             kind: "custom",
             componentId: "taqui-painel-portaria",
+          },
+        },
+        {
+          id: "ocorrencia-devolucao",
+          label: "Ocorrência / Devolução",
+          path: "ocorrencia",
+          icon: "warning_amber",
+          roleFilter: ["admin", "gerente", "operador"],
+          screen: {
+            kind: "custom",
+            componentId: "taqui-ocorrencia-devolucao",
           },
         },
         {
@@ -617,6 +641,7 @@ export const config: GeradorSistemaConfig = {
           label: "Minhas Encomendas",
           path: "minhas-encomendas",
           icon: "inbox",
+          roleFilter: ["visualizador"],
           screen: {
             kind: "custom",
             componentId: "taqui-notificacoes-morador",

@@ -14,6 +14,8 @@ export default tseslint.config(
       '**/coverage/**',
       // Backup da v1 — referência apenas, nunca lintado.
       'biblioteca_old/**',
+      // Diretório de deploy — tem tsconfig próprio, não deve ser lintado.
+      'wt-deploy/**',
     ],
   },
   js.configs.recommended,
