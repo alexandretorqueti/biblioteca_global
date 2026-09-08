@@ -62,6 +62,7 @@ import { composeDevelopmentPrompt } from "../prompts/PromptComposition.js"
 import { confirmBaselineIndependentFailure } from "../policies/BaselineConfirmation.js"
 import { digestGateFailure, formatCarryOver, type CarryOverEvent } from "../policies/CarryOverPolicy.js"
 import { formatPriorSubtaskHandoff, parseGitNameStatus, type PriorSubtaskHandoff } from "../policies/SubtaskHandoffPolicy.js"
+import { getOrReserveTaskAnalystSession, touchTaskAnalystSession, type TaskAnalystSession } from "../planning/AnalystSessionStore.js"
 
 const COMMAND_FAILURE_LIMIT = 12_000
 const ANSI_ESCAPE_PATTERN = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g
@@ -372,9 +373,15 @@ class TaskWorker {
     })
 
     let lastFailure: string | undefined
+    let analystSession: TaskAnalystSession | undefined
     for (let modelIndex = 0; modelIndex < chain.length; modelIndex++) {
       const model = chain[modelIndex]!
-      const sessionKey = formatSessionKey({ agentId: input.task.agentId, taskId: input.task.id, phase: "analysis", model: model.model, modelIndex, generation: 0 })
+      analystSession = await getOrReserveTaskAnalystSession(planningDb, input.task.id, {
+        agentId: input.task.agentId,
+        model: analystSession?.model ?? model.model,
+        sessionKey: analystSession?.sessionKey ?? `analysis-${input.task.id}`,
+      })
+      const sessionKey = analystSession.sessionKey
       let session
 
       try {
@@ -382,8 +389,9 @@ class TaskWorker {
           agentId: input.task.agentId,
           key: sessionKey,
           label: sessionKey,
-          model: model.model,
+          model: analystSession.model,
         })
+        await touchTaskAnalystSession(planningDb, analystSession.id, session.sessionId)
 
         for (let chunkIndex = 0; chunkIndex < descriptionChunks.length; chunkIndex++) {
           const chunkNumber = chunkIndex + 1

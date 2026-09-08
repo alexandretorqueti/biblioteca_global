@@ -190,6 +190,13 @@
       "when": 1788867000000,
       "tag": "0026_motor_session_continuity",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "5",
+      "when": 1788897600000,
+      "tag": "0028_task_analyst_sessions",
+      "breakpoints": true
     }
   ]
 }
