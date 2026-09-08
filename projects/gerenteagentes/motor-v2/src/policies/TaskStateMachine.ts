@@ -21,7 +21,9 @@ const taskTransitions: Record<TaskTransition, readonly TaskStatus[]> = {
   execution_completed: ["running", "ready"],
   deploy_completed: ["completed"],
   subtasks_pending: ["running"],
-  pause: ["analyzing", "running"],
+  // A pausa cooperativa é aplicada depois que o agente termina; nesse
+  // momento a tarefa já pode estar `ready`, aguardando a próxima subtarefa.
+  pause: ["analyzing", "running", "ready"],
   resume: ["paused"],
   resume_without_plan: ["paused"],
   queue: ["paused", "planned"],
