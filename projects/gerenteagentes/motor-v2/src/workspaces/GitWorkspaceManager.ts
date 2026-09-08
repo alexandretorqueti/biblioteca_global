@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process"
-import { cp, mkdir, rm, writeFile } from "node:fs/promises"
-import { dirname, isAbsolute, relative, resolve, join } from "node:path"
+import { mkdir, rm } from "node:fs/promises"
+import { isAbsolute, relative, resolve, join } from "node:path"
 import { promisify } from "node:util"
 import { createLogger } from "../shared/logger.js"
 
@@ -50,6 +50,8 @@ export interface TaskIntegrationInput {
   taskId: string
   /** Workspace real do agente (do Console). Se informado, worktree é criado dentro dele. */
   agentWorkspacePath?: string
+  /** Arquivos compartilhados que fazem parte explicitamente do escopo da tarefa. */
+  sharedPaths?: readonly string[]
 }
 
 export interface TaskBranchMergeInput {
@@ -226,31 +228,6 @@ export class GitWorkspaceManager {
     if (projectRelativePath === ".." || projectRelativePath.startsWith(`..${"/"}`) || isAbsolute(projectRelativePath)) {
       throw new Error("repo_path fora da raiz do repositório Git")
     }
-    // Falha ambiental clara: repo ausente causa "spawn git ENOENT" e entraria
-    // em loop de retries no coordenador. Classificar como bloqueio ambiental.
-    // Untracked files não afetam worktree/merge e não podem travar o motor
-    // enquanto outra sessão mantém arquivos novos no repositório.
-    // Verifica se o repo tem alterações reais (ignora whitespace-at-eol para
-    // não bloquear por artefatos de db:migrate em _journal.json — só newline no fim).
-    const diff = await this.runner.run(["git", "diff", "--name-only", "--ignore-space-at-eol", "HEAD"], repositoryRoot).catch((error: unknown) => {
-      const code = (error as NodeJS.ErrnoException | undefined)?.code
-      if (code === "ENOENT") {
-        throw new Error("Ambiente bloqueado: repositório não encontrado: " + input.repoPath)
-      }
-      throw error
-    })
-    // staged files also need checking (git diff HEAD misses index-only changes if working tree matches index)
-    const staged = await this.runner.run(["git", "diff", "--name-only", "--cached", "--ignore-space-at-eol"], repositoryRoot)
-    const dirtyFiles = [...new Set([...diff.stdout.split("\n"), ...staged.stdout.split("\n")].map((s) => s.trim()).filter(Boolean))]
-    const dirtyReport = classifyDirtyFiles({
-      repositoryRoot,
-      taskProjectPath: repoPath,
-      dirtyFiles,
-      sharedPaths: input.sharedPaths,
-    })
-    if (dirtyReport.taskProject.length > 0 || dirtyReport.relevantShared.length > 0) {
-      throw new Error(formatDirtyFilesReport(dirtyReport))
-    }
     const baseCommit = (await this.runner.run(["git", "rev-parse", "--verify", `${baseBranch}^{commit}`], repoPath)).stdout.trim()
     if (!/^[a-f0-9]{7,}$/i.test(baseCommit)) throw new Error("commit-base inválido")
 
@@ -300,12 +277,25 @@ export class GitWorkspaceManager {
         }
       }
       await this.markSafeDirectory(target)
+
+      // O isolamento precisa existir antes do preflight: alterações externas
+      // no monorepo não podem contaminar o workspace da tarefa. O estado da
+      // base é classificado somente depois que o worktree exclusivo foi criado.
+      const diff = await this.runner.run(["git", "diff", "--name-only", "--ignore-space-at-eol", "HEAD"], repositoryRoot)
+      const staged = await this.runner.run(["git", "diff", "--name-only", "--cached", "--ignore-space-at-eol"], repositoryRoot)
+      const dirtyFiles = [...new Set([...diff.stdout.split("\n"), ...staged.stdout.split("\n")].map((s) => s.trim()).filter(Boolean))]
+      const dirtyReport = classifyDirtyFiles({ repositoryRoot, taskProjectPath: repoPath, dirtyFiles, sharedPaths: input.sharedPaths })
+      if (dirtyReport.taskProject.length > 0 || dirtyReport.relevantShared.length > 0) {
+        throw new Error(formatDirtyFilesReport(dirtyReport))
+      }
       logger.info(`Worktree validado com sucesso: path=${target}, branch=${branch}`, { taskId: input.taskId, subtaskId: input.subtaskId })
       return { path: target, projectPath: resolve(join(target, projectRelativePath)), branch, baseCommit }
     } catch (error) {
       logger.error(`Erro ao criar worktree: ${error instanceof Error ? error.message : String(error)}`, { taskId: input.taskId, subtaskId: input.subtaskId })
       // O alvo foi criado exclusivamente por esta tentativa, sempre dentro da
       // raiz dedicada; removê-lo evita worktree parcial sem tocar no repositório.
+      await this.runner.run(["git", "worktree", "remove", "--force", target], repoPath).catch(() => {})
+      if (!finalBranchExists) await this.runner.run(["git", "branch", "-D", branch], repoPath).catch(() => {})
       await rm(target, { recursive: true, force: true }).catch(() => {})
       throw error
     }
@@ -361,17 +351,19 @@ export class GitWorkspaceManager {
       return { path: target, projectPath: resolve(join(target, projectRelativePath)), branch, baseCommit }
     }
 
-    // Criação nova: a base pode conter trabalho não commitado justamente
-    // quando a subtarefa existe para corrigir a baseline. O conteúdo é
-    // capturado e levado para o worktree da tarefa; a pasta original nunca é
-    // editada, resetada ou usada pelo agente.
-    const diff = await this.runner.run(["git", "diff", "--name-only", "--ignore-space-at-eol", "HEAD"], repoPath).catch((error: unknown) => {
+    // Criação nova: alterações externas no monorepo não pertencem ao
+    // preflight; somente o projeto e compartilhamentos declarados contam.
+    const diff = await this.runner.run(["git", "diff", "--name-only", "--ignore-space-at-eol", "HEAD"], repositoryRoot).catch((error: unknown) => {
       const code = (error as NodeJS.ErrnoException | undefined)?.code
       if (code === "ENOENT") throw new Error("Ambiente bloqueado: repositório não encontrado: " + input.repoPath)
       throw error
     })
-    const staged = await this.runner.run(["git", "diff", "--name-only", "--cached", "--ignore-space-at-eol"], repoPath)
+    const staged = await this.runner.run(["git", "diff", "--name-only", "--cached", "--ignore-space-at-eol"], repositoryRoot)
     const dirtyFiles = [...new Set([...diff.stdout.split("\n"), ...staged.stdout.split("\n")].map((s) => s.trim()).filter(Boolean))]
+    const dirtyReport = classifyDirtyFiles({ repositoryRoot, taskProjectPath: repoPath, dirtyFiles, sharedPaths: input.sharedPaths })
+    if (dirtyReport.taskProject.length > 0 || dirtyReport.relevantShared.length > 0) {
+      throw new Error(formatDirtyFilesReport(dirtyReport))
+    }
     const baseCommit = (await this.runner.run(["git", "rev-parse", "--verify", `${rootBaseBranch}^{commit}`], repoPath)).stdout.trim()
     if (!validCommit(baseCommit)) throw new Error("commit-base inválido para branch da tarefa")
 
@@ -404,42 +396,14 @@ export class GitWorkspaceManager {
           throw switchError
         }
       }
-      if (dirtyFiles.length > 0) {
-        await this.importDirtyBaseIntoTaskWorktree(repoPath, target)
-        logger.warn(`Alterações não commitadas da base capturadas na branch da tarefa: ${dirtyFiles.join(", ")}`, { taskId: input.taskId })
-      }
       await this.markSafeDirectory(target)
       logger.info(`Branch de integração da tarefa criada: ${branch} a partir de ${rootBaseBranch} (${baseCommit})`, { taskId: input.taskId })
       return { path: target, projectPath: resolve(join(target, projectRelativePath)), branch, baseCommit }
     } catch (error) {
+      await this.runner.run(["git", "worktree", "remove", "--force", target], repoPath).catch(() => {})
       await rm(target, { recursive: true, force: true }).catch(() => {})
       throw error
     }
-  }
-
-  /**
-   * Transporta alterações rastreadas e não rastreadas da base para o
-   * worktree isolado. O commit técnico torna o snapshot visível às branches
-   * de subtarefa, sem alterar a base original.
-   */
-  private async importDirtyBaseIntoTaskWorktree(repoPath: string, target: string): Promise<void> {
-    const patch = (await this.runner.run(["git", "diff", "--binary", "HEAD"], repoPath)).stdout
-    if (patch) {
-      const patchFile = join(target, ".motor-baseline.patch")
-      await writeFile(patchFile, patch, "utf8")
-      await this.runner.run(["git", "apply", "--whitespace=nowarn", patchFile], target)
-      await rm(patchFile, { force: true })
-    }
-    const untracked = (await this.runner.run(["git", "ls-files", "--others", "--exclude-standard", "-z"], repoPath)).stdout
-    for (const sourceRelative of untracked.split("\0").filter(Boolean)) {
-      const source = resolve(repoPath, sourceRelative)
-      const destination = resolve(target, sourceRelative)
-      if (!inside(target, destination)) throw new Error("arquivo não rastreado fora do worktree permitido")
-      await mkdir(dirname(destination), { recursive: true })
-      await cp(source, destination, { recursive: true, errorOnExist: false })
-    }
-    await this.runner.run(["git", "add", "-A"], target)
-    await this.runner.run(["git", "commit", "--no-verify", "-m", "motor-v2: snapshot da baseline para correção"], target)
   }
 
   /**

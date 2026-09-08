@@ -122,6 +122,45 @@ describe("GitWorkspaceManager", () => {
     })).rejects.toThrow("projeto da tarefa: M arquivo.ts")
   })
 
+  it("ignora sujeira exclusiva de outro projeto depois de criar o worktree", async () => {
+    const root = await mkdtemp(join(tmpdir(), "motor-v2-workspaces-"))
+    const runner: GitCommandRunner = {
+      run: vi.fn().mockImplementation(async (command: readonly string[]) => {
+        if (command[1] === "rev-parse" && command[2] === "--show-toplevel") return { stdout: "/repo\n", stderr: "" }
+        if (command[1] === "rev-parse") return { stdout: "a".repeat(40) + "\n", stderr: "" }
+        if (command[1] === "diff" && command.includes("HEAD")) return { stdout: "projects/taqui/src/b.ts\n", stderr: "" }
+        if (command[1] === "show-ref") throw new Error("branch inexistente")
+        return { stdout: "", stderr: "" }
+      }),
+    }
+    try {
+      const result = await new GitWorkspaceManager({ root, runner }).prepare({
+        repoPath: "/repo/projects/gerenteagentes", agentId: "test-agent", baseBranch: "base", taskId: "7", subtaskId: "8", attempt: 1,
+      })
+      expect(result.projectPath).toBe(join(result.path, "projects", "gerenteagentes"))
+      const commands = vi.mocked(runner.run).mock.calls.map(([command]) => command)
+      expect(commands.some((command) => command[1] === "worktree" && command[2] === "add")).toBe(true)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it("bloqueia compartilhado explicitamente declarado e registra projeto e externos", async () => {
+    const runner: GitCommandRunner = {
+      run: vi.fn().mockImplementation(async (command: readonly string[]) => {
+        if (command[1] === "rev-parse" && command[2] === "--show-toplevel") return { stdout: "/repo\n", stderr: "" }
+        if (command[1] === "rev-parse") return { stdout: "a".repeat(40) + "\n", stderr: "" }
+        if (command[1] === "diff" && command.includes("HEAD")) return { stdout: "package-lock.json\nprojects/taqui/src/b.ts\n", stderr: "" }
+        if (command[1] === "show-ref") throw new Error("branch inexistente")
+        return { stdout: "", stderr: "" }
+      }),
+    }
+    await expect(new GitWorkspaceManager({ root: "/tmp/motor-v2-workspaces", runner }).prepare({
+      repoPath: "/repo/projects/gerenteagentes", agentId: "test-agent", baseBranch: "base", taskId: "7", subtaskId: "8", attempt: 1,
+      sharedPaths: ["package-lock.json"],
+    })).rejects.toThrow("projeto da tarefa: (nenhum); compartilhados relevantes: package-lock.json; externos: projects/taqui/src/b.ts")
+  })
+
   it("classifica repositório ausente (ENOENT) como bloqueio ambiental", async () => {
     const enoent = Object.assign(new Error("spawn git ENOENT"), { code: "ENOENT" })
     const runner: GitCommandRunner = {
