@@ -59,6 +59,8 @@ interface ActiveWorker {
   timeoutHandle?: ReturnType<typeof setTimeout>
   lastHeartbeatAt?: Date
   silenceHandle?: ReturnType<typeof setTimeout>
+  /** Pausa solicitada: o processo atual termina; a fila só para depois dele. */
+  pauseRequested?: boolean
 }
 
 export interface TaskCoordinatorConfig {
@@ -170,6 +172,8 @@ export class TaskCoordinator {
   private waitManager?: ResourceWaitManager
   private eventBus: ExecutionEventBus
   private finalizingExecutions = new Set<string>()
+  /** Estado operacional transitório, distinto de `blocked`. */
+  private pauseRequestedTasks = new Set<string>()
   private activeMaintenance = 0
   /** Deploys não pertencem a um worker; mantê-los separados evita esconder a
    * atividade do Motor enquanto o script externo está em execução. */
@@ -266,7 +270,7 @@ export class TaskCoordinator {
       "LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id = pc.id " +
       "WHERE t.status = 'planned' AND NOT EXISTS (SELECT 1 FROM subtarefas s WHERE s.tarefa_id = t.id) ORDER BY t.created_at ASC LIMIT 25"
     )
-    return rows.map((row) => this.mapTask(row)).find(() => this.canStartAnalysis()) ?? null
+    return rows.map((row) => this.mapTask(row)).find((task) => !this.pauseRequestedTasks.has(task.id) && this.canStartAnalysis()) ?? null
   }
 
   async getTasksByStatus(since?: string): Promise<{
@@ -330,7 +334,7 @@ export class TaskCoordinator {
       ") " +
       "ORDER BY s.seq ASC LIMIT 25"
     )
-    return rows.map((row) => this.mapSubtask(row)).find((subtask) => this.canStartExecution(subtask.projectSlug)) ?? null
+    return rows.map((row) => this.mapSubtask(row)).find((subtask) => !this.pauseRequestedTasks.has(subtask.taskExternalId) && this.canStartExecution(subtask.projectSlug)) ?? null
   }
 
   /** Limite de desenvolvimento: máximo global e, por padrão, um por projeto. */
@@ -597,6 +601,7 @@ export class TaskCoordinator {
   async onTaskCompleted(executionId: string, result?: ExecutionResult): Promise<void> {
     const worker = this.activeWorkers.get(executionId)
     if (!worker || !this.beginFinalization(executionId, worker)) return
+    const pauseRequested = this.pauseRequestedTasks.has(worker.taskId)
 
     try {
     if (worker.phase === "analyze") {
@@ -616,6 +621,10 @@ export class TaskCoordinator {
           task.status = "analyzing"
         }
         await this.saveTaskTransition(task, "analysis_completed")
+        if (pauseRequested) {
+          await this.saveTaskTransition(task, "pause")
+          this.pauseRequestedTasks.delete(worker.taskId)
+        }
       }
     } else {
       this.logger.info("Execucao completada: subtarefa " + worker.subtaskId, { taskId: worker.taskId, subtaskId: worker.subtaskId, executionId, phase: "execute" })
@@ -719,6 +728,11 @@ export class TaskCoordinator {
         if (task) {
           const pending = Number((rows[0] as Record<string, unknown>)?.pending ?? 0)
           await this.saveTaskTransition(task, pending === 0 ? "execution_completed" : "subtasks_pending")
+          if (pauseRequested && pending === 0) this.pauseRequestedTasks.delete(worker.taskId)
+          if (pauseRequested && pending > 0) {
+            await this.saveTaskTransition(task, "pause")
+            this.pauseRequestedTasks.delete(worker.taskId)
+          }
         }
       } else if (worker.subtaskId) {
         const { rows } = await this.db.query(
@@ -865,6 +879,7 @@ export class TaskCoordinator {
             }
             // Trabalho promovido para a base: marca como completed
             await this.saveTaskTransition(task, "execution_completed")
+            if (pauseRequested) this.pauseRequestedTasks.delete(worker.taskId)
             
             // Publicação é agrupada e só começa quando todos os workers
             // terminarem. A tarefa permanece completed enquanto aguarda.
@@ -879,6 +894,10 @@ export class TaskCoordinator {
           const task = await this.repository.getTask(worker.taskId)
           if (task) {
             await this.saveTaskTransition(task, "subtasks_pending")
+            if (pauseRequested) {
+              await this.saveTaskTransition(task, "pause")
+              this.pauseRequestedTasks.delete(worker.taskId)
+            }
           }
         }
       }
@@ -895,6 +914,7 @@ export class TaskCoordinator {
   async onTaskFailed(executionId: string, error: string, kind = "error"): Promise<void> {
     const worker = this.activeWorkers.get(executionId)
     if (!worker || !this.beginFinalization(executionId, worker)) return
+    this.pauseRequestedTasks.delete(worker.taskId)
     const failure = `[${kind}] ${error}`
     const transient = kind === "timeout" || kind === "lease_lost" || kind === "lease_expired" || kind === "lost"
     this.publishActivity(worker, { type: "failed", level: "error", message: failure })
@@ -1055,6 +1075,7 @@ export class TaskCoordinator {
       startedAt: worker.startedAt.toISOString(),
       ageMs: Date.now() - worker.startedAt.getTime(),
       lastHeartbeatAt: worker.lastHeartbeatAt?.toISOString() ?? null,
+      pauseRequested: worker.pauseRequested === true,
     }))
     const deployments = Array.from(this.activeDeployments.values()).map((deployment) => ({
       taskId: deployment.taskId,
@@ -1124,7 +1145,7 @@ export class TaskCoordinator {
    * remove a dependência do fallback direto no banco pela tela de
    * acompanhamento e dá visibilidade ao motivo de bloqueio.
    */
-  async getTaskWithSubtasks(taskId: string): Promise<(Task & { subtasks: SubtaskView[]; errorMessage?: string; ultimoBloqueio: UltimoBloqueio | null; clarificacaoPendente: ClarificacaoPendente | null }) | null> {
+  async getTaskWithSubtasks(taskId: string): Promise<(Task & { subtasks: SubtaskView[]; errorMessage?: string; ultimoBloqueio: UltimoBloqueio | null; clarificacaoPendente: ClarificacaoPendente | null; pauseRequested: boolean }) | null> {
     const data = await this.repository.getTask(taskId)
     if (!data) return null
     const task = this.mapSaveDataToTask(data)
@@ -1222,7 +1243,7 @@ export class TaskCoordinator {
       }
     }
 
-    return { ...task, subtasks, errorMessage: data.errorMessage, ultimoBloqueio, clarificacaoPendente }
+    return { ...task, subtasks, errorMessage: data.errorMessage, ultimoBloqueio, clarificacaoPendente, pauseRequested: this.pauseRequestedTasks.has(task.id) }
   }
 
   private mapSaveDataToTask(data: import("../shared/types/infrastructure.js").SaveTaskData): Task {
@@ -1343,8 +1364,17 @@ export class TaskCoordinator {
     }
     for (const [executionId, worker] of this.activeWorkers.entries()) {
       if (worker.taskId === taskId) {
-        await this.workerLauncher.stopWorker(executionId)
-        await this.onTaskPaused(executionId, "Pausada via API")
+        // Não interromper o agente: a solicitação fica registrada enquanto o
+        // worker conclui normalmente. O bloqueio da fila é aplicado no evento
+        // `completed`, depois que a entrega atual foi processada.
+        this.pauseRequestedTasks.add(taskId)
+        worker.pauseRequested = true
+        this.publishActivity(worker, {
+          type: "progress",
+          level: "info",
+          message: "Pausa solicitada; aguardando conclusão do agente atual",
+        })
+        this.logger.info("Pausa cooperativa solicitada: " + taskId, { taskId, executionId })
         return
       }
     }
@@ -1355,6 +1385,7 @@ export class TaskCoordinator {
     const task = await this.repository.getTask(taskId)
     if (!task) throw new Error("Tarefa " + taskId + " nao encontrada")
     if (task.status !== "paused") throw new Error("Tarefa " + taskId + " nao esta pausada")
+    this.pauseRequestedTasks.delete(taskId)
     const hasPlan = await this.taskHasPersistedPlan(taskId)
     await this.saveTaskTransition(task, hasPlan ? "resume" : "resume_without_plan")
     await this.pump()
