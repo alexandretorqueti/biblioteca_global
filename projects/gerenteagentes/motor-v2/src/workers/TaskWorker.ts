@@ -326,6 +326,7 @@ class TaskWorker {
    * FASE 1: ANALYZE - Chama o Analista para criar subtarefas (ou perguntar)
    */
   private async phaseAnalyze(input: WorkerInput): Promise<{ kind: "done" } | { kind: "clarifying"; questionCount: number; summary?: string }> {
+    this.sessionFailure = undefined
     this.send({ type: "progress", executionId: input.context.executionId, phase: "analyze", message: "Iniciando analise" })
     this.log("info", "Fase ANALYZE: " + input.task.title)
 
@@ -396,6 +397,7 @@ class TaskWorker {
           const contextResult = await driver.waitForRunCompletion(session, contextRunId, { onActivity: () => this.sendHeartbeat() })
           if (contextResult.state !== "final") {
             await this.persistRemoteSessionFailure(input, undefined, contextResult.failure)
+            if (contextResult.failure) this.sessionFailure = contextResult.failure
             throw new Error(`Analista nao confirmou o bloco ${chunkNumber}/${descriptionChunks.length}: ${contextResult.errorMessage || contextResult.state}`)
           }
         }
@@ -412,6 +414,7 @@ class TaskWorker {
 
         if (result.state !== "final" || !result.content) {
           await this.persistRemoteSessionFailure(input, undefined, result.failure)
+          if (result.failure) this.sessionFailure = result.failure
           lastFailure = "Analista falhou: " + (result.errorMessage || result.state)
           this.log("warn", lastFailure)
           continue
@@ -665,6 +668,7 @@ class TaskWorker {
    * FASE 3: EXECUTE - Chama o Programador com a subtarefa
    */
   private async phaseExecute(input: WorkerInput): Promise<string | undefined> {
+    this.sessionFailure = undefined
     this.send({ type: "progress", executionId: input.context.executionId, phase: "execute", message: "Executando subtarefa" })
 
     const subtask = input.subtask
@@ -808,6 +812,9 @@ class TaskWorker {
             lastFailure = "Programador falhou: " + (result.errorMessage || result.state)
             break
           }
+          // A execução recuperou com sucesso; não contaminar uma falha
+          // posterior isolada com um diagnóstico transitório anterior.
+          this.sessionFailure = undefined
           agentSummary = this.extractAgentSummary(result.content)
 
           // O gateway pode usar state=final mesmo sem produzir uma resposta.

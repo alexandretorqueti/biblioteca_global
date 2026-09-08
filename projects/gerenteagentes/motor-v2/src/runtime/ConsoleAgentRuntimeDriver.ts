@@ -350,7 +350,9 @@ export class ConsoleAgentRuntimeDriver {
       code: String(code).slice(0, 120), message, sessionKey: session.key,
       ...(desc.sessionId || desc.id || session.sessionId ? { remoteSessionId: desc.sessionId || desc.id || session.sessionId } : {}),
       runId, occurredAt, scope, classification,
-      classificationReason: classification === "transient" ? "remote_code_or_message_indicates_retryable_failure" : "remote_failure_default_classification",
+      classificationReason: classification === "systemic"
+        ? "remote_code_or_message_indicates_shared_console_failure"
+        : classification === "transient" ? "remote_code_or_message_indicates_retryable_failure" : "remote_failure_default_classification",
       fingerprint: `${code}:${message}`.slice(0, 600),
     }
   }

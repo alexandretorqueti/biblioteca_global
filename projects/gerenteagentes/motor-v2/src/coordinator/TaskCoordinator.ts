@@ -176,8 +176,8 @@ export class TaskCoordinator {
    * atividade do Motor enquanto o script externo está em execução. */
   private activeDeployments = new Map<string, { taskId: string; phase: "verify" | "deploy"; startedAt: Date }>()
   private pumping = false
-  /** Agentes pausados por falha sistêmica do Console; alerta é emitido uma vez. */
-  private pausedAgents = new Set<string>()
+  /** Incidentes ativos por agente. Um incidente gera exatamente um alerta. */
+  private consoleIncidents = new Map<string, { id: string; fingerprint: string; openedAt: string; taskIds: Set<string>; taskId: string; subtaskId?: number; phase: "analyze" | "execute" }>()
   private logger = createLogger("TaskCoordinator")
 
   constructor(
@@ -269,7 +269,7 @@ export class TaskCoordinator {
       "LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id = pc.id " +
       "WHERE t.status = 'planned' AND NOT EXISTS (SELECT 1 FROM subtarefas s WHERE s.tarefa_id = t.id) ORDER BY t.created_at ASC LIMIT 25"
     )
-    return rows.map((row) => this.mapTask(row)).find(() => this.canStartAnalysis()) ?? null
+    return rows.map((row) => this.mapTask(row)).find((task) => !this.consoleIncidents.has(task.agentId) && this.canStartAnalysis()) ?? null
   }
 
   async getTasksByStatus(since?: string): Promise<{
@@ -335,7 +335,7 @@ export class TaskCoordinator {
     )
     return rows
       .map((row) => this.mapSubtask(row))
-      .find((subtask) => !this.pausedAgents.has(subtask.agentId) && this.canStartExecution(subtask.projectSlug)) ?? null
+      .find((subtask) => !this.consoleIncidents.has(subtask.agentId) && this.canStartExecution(subtask.projectSlug)) ?? null
   }
 
   /** Limite de desenvolvimento: máximo global e, por padrão, um por projeto. */
@@ -606,6 +606,9 @@ export class TaskCoordinator {
     if (!worker || !this.beginFinalization(executionId, worker)) return
 
     try {
+    // Uma execução concluída pelo agente é a evidência explícita de que o
+    // Console voltou. A retomada só afeta a fila desse agente.
+    if (worker.agentId) await this.markConsoleRecovered(worker.agentId, worker)
     if (worker.phase === "analyze") {
       this.publishActivity(worker, { type: "completed" })
       this.logger.info("Analise completada: " + worker.taskId, { taskId: worker.taskId, executionId, phase: "analyze" })
@@ -909,16 +912,7 @@ export class TaskCoordinator {
 
     this.logger.error("Falha: " + failure, { taskId: worker.taskId, subtaskId: worker.subtaskId, executionId, phase: worker.phase })
 
-    if (systemic && worker.agentId) {
-      if (!this.pausedAgents.has(worker.agentId)) {
-        this.pausedAgents.add(worker.agentId)
-        this.logger.error("Fila do agente pausada após falha sistêmica do Console", {
-          agentId: worker.agentId,
-          code: sessionFailure?.code,
-          message: sessionFailure?.message,
-        })
-      }
-    }
+    if (systemic && worker.agentId) this.pauseAgentQueue(worker, sessionFailure)
 
     try {
       if (worker.phase === "analyze") {
@@ -947,6 +941,78 @@ export class TaskCoordinator {
     } finally {
       await this.finishWorker(executionId, worker)
     }
+  }
+
+  /**
+   * Pausa somente novas execuções do agente afetado. Tarefas já pendentes
+   * continuam pendentes; não são convertidas em bloqueios individuais.
+   */
+  private pauseAgentQueue(worker: ActiveWorker, failure?: RemoteSessionFailure): void {
+    const agentId = worker.agentId!
+    const active = this.consoleIncidents.get(agentId)
+    if (active) {
+      active.taskIds.add(worker.taskId)
+      return
+    }
+    const incidentId = randomUUID()
+    const incident = {
+      id: incidentId,
+      fingerprint: failure?.fingerprint ?? "console-unavailable",
+      openedAt: failure?.occurredAt ?? new Date().toISOString(),
+      taskIds: new Set([worker.taskId]),
+      taskId: worker.taskId,
+      subtaskId: worker.subtaskId,
+      phase: worker.phase,
+    }
+    this.consoleIncidents.set(agentId, incident)
+    this.logger.error("Fila do agente pausada após falha sistêmica do Console", {
+      agentId, incidentId, code: failure?.code, message: failure?.message,
+    })
+    // O evento é emitido uma única vez por incidente ativo. Repetições de
+    // falha enquanto a fila está pausada não geram spam.
+    this.eventBus.publish({
+      type: "system_alert",
+      executionId: worker.executionId,
+      taskId: worker.taskId,
+      subtaskId: worker.subtaskId,
+      phase: worker.phase,
+      level: "error",
+      agentId,
+      incidentId,
+      message: `Fila do agente ${agentId} pausada: Console indisponível${failure?.message ? ` — ${failure.message}` : ""}`,
+      timestamp: new Date(),
+    })
+  }
+
+  /** Retomada explícita da fila após uma verificação de saúde do Console. */
+  async markConsoleRecovered(agentId: string, source?: ActiveWorker): Promise<boolean> {
+    const incident = this.consoleIncidents.get(agentId)
+    if (!incident) return false
+    this.consoleIncidents.delete(agentId)
+    for (const taskId of incident.taskIds) {
+      const task = await this.repository.getTask(taskId)
+      if (!task || task.status !== "paused") continue
+      const hasPlan = await this.taskHasPersistedPlan(taskId)
+      await this.saveTaskTransition(task, hasPlan ? "resume" : "resume_without_plan")
+    }
+    this.eventBus.publish({
+      type: "system_recovered",
+      executionId: source?.executionId ?? "system-" + incident.id,
+      taskId: source?.taskId ?? incident.taskId,
+      subtaskId: source?.subtaskId ?? incident.subtaskId,
+      phase: source?.phase ?? incident.phase,
+      level: "info",
+      agentId,
+      incidentId: incident.id,
+      message: `Console recuperado; fila do agente ${agentId} retomada`,
+      timestamp: new Date(),
+    })
+    await this.pump()
+    return true
+  }
+
+  isAgentQueuePaused(agentId: string): boolean {
+    return this.consoleIncidents.has(agentId)
   }
 
   async onTaskPaused(executionId: string, reason: string): Promise<void> {
