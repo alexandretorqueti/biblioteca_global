@@ -23,6 +23,8 @@ export { ResourceEventBus, resourceEventBus } from './resources/ResourceEventBus
 export type { ResourceEvent, ResourceEventHandler, ResourceEventType } from './resources/ResourceEventBus.js'
 export { ResourceWaitManager } from './resources/ResourceWaitManager.js'
 export { ExecutionEventBus, executionEventBus } from './events/ExecutionEventBus.js'
+export { ObservabilityRepository } from './database/ObservabilityRepository.js'
+export type { CreateAttemptInput, FinishAttemptInput, GateRunInput } from './database/ObservabilityRepository.js'
 export type { ExecutionActivityEvent, ExecutionActivityBroadcaster } from './events/ExecutionEventBus.js'
 export { LibraryRealtimeBroadcaster } from './events/LibraryRealtimeBroadcaster.js'
 

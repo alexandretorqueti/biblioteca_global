@@ -19,6 +19,8 @@
 import {
   bigint,
   boolean,
+  decimal,
+  index,
   int,
   json,
   mysqlTable,
@@ -289,6 +291,19 @@ export const tarefas = mysqlTable("tarefas", {
   autoStart: boolean("auto_start").notNull().default(false),
   planCoverage: json("plan_coverage"), // requisitos identificados e matriz de cobertura do analista
   bootRetryCount: int("boot_retry_count").notNull().default(0),
+  weight: decimal("weight", { precision: 10, scale: 2 }),
+  plannedStart: timestamp("planned_start"),
+  plannedEnd: timestamp("planned_end"),
+  estimatedEffortMinutes: int("estimated_effort_minutes"),
+  priority: int("priority"),
+  criticalPath: boolean("critical_path"),
+  baselineVersion: varchar("baseline_version", { length: 64 }),
+  deployedAt: timestamp("deployed_at"),
+  smokeTestAt: timestamp("smoke_test_at"),
+  smokeTestOk: boolean("smoke_test_ok"),
+  rollbackAt: timestamp("rollback_at"),
+  incidentId: varchar("incident_id", { length: 200 }),
+  customerImpact: boolean("customer_impact"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at")
     .notNull()
@@ -350,6 +365,14 @@ export const subtarefas = mysqlTable("subtarefas", {
   replacesSubtaskId: bigint("replaces_subtask_id", { mode: "number", unsigned: true }),
   supersededBySubtaskId: bigint("superseded_by_subtask_id", { mode: "number", unsigned: true }),
   rebriefCount: int("rebrief_count").notNull().default(0),
+  weight: decimal("weight", { precision: 10, scale: 2 }),
+  plannedStart: timestamp("planned_start"),
+  plannedEnd: timestamp("planned_end"),
+  estimatedEffortMinutes: int("estimated_effort_minutes"),
+  priority: int("priority"),
+  criticalPath: boolean("critical_path"),
+  baselineVersion: varchar("baseline_version", { length: 64 }),
+  verifiedAt: timestamp("verified_at"),
   premiseFingerprint: varchar("premise_fingerprint", { length: 500 }),
   premiseEvidence: json("premise_evidence"),
   // Metadados do worktree exclusivo (migration 0011). Permanecem até a
@@ -549,8 +572,87 @@ export const bloqueios = mysqlTable("bloqueios", {
   blockExitCode: int("block_exit_code"),
   blockExcerpt: text("block_excerpt"),
   blockedAt: timestamp("blocked_at"),
+  resolvedAt: timestamp("resolved_at"),
+  category: varchar("category", { length: 80 }),
+  severity: varchar("severity", { length: 30 }),
+  ownerId: varchar("owner_id", { length: 200 }),
+  rootCause: text("root_cause"),
+  resolution: text("resolution"),
+  recurrenceFingerprint: varchar("recurrence_fingerprint", { length: 128 }),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-})
+}, (table) => ({
+  tarefaStatusDateIdx: index("idx_bloqueios_tarefa_status_date").on(table.tarefaId, table.resolvedAt, table.createdAt),
+  recurrenceIdx: index("idx_bloqueios_recurrence_fingerprint").on(table.recurrenceFingerprint),
+}))
+
+// ============================================================================
+// OBSERVABILIDADE DE EXECUÇÃO (aditivo; histórico legado permanece intacto)
+// ============================================================================
+
+export const executionAttempts = mysqlTable("execution_attempts", {
+  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+  subtaskId: bigint("subtask_id", { mode: "number", unsigned: true }).notNull().references(() => subtarefas.id, { onDelete: "cascade" }),
+  attemptNumber: int("attempt_number").notNull(),
+  startedAt: timestamp("started_at").notNull(),
+  finishedAt: timestamp("finished_at"),
+  outcome: varchar("outcome", { length: 40 }),
+  reworkReason: text("rework_reason"),
+  agentId: varchar("agent_id", { length: 200 }),
+  model: varchar("model", { length: 150 }),
+  executionId: varchar("execution_id", { length: 200 }),
+  workspacePath: varchar("workspace_path", { length: 1000 }),
+  baseCommit: varchar("base_commit", { length: 64 }),
+  resultCommit: varchar("result_commit", { length: 64 }),
+  tokenInput: bigint("token_input", { mode: "number", unsigned: true }),
+  tokenOutput: bigint("token_output", { mode: "number", unsigned: true }),
+  costUsd: decimal("cost_usd", { precision: 12, scale: 6 }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => ({
+  subtaskAttemptIdx: index("idx_execution_attempts_subtask_number").on(table.subtaskId, table.attemptNumber),
+  executionIdx: index("idx_execution_attempts_execution_id").on(table.executionId),
+}))
+
+export const executionEvents = mysqlTable("execution_events", {
+  eventId: varchar("event_id", { length: 128 }).primaryKey(),
+  occurredAt: timestamp("occurred_at").notNull(),
+  taskId: bigint("task_id", { mode: "number", unsigned: true }).notNull().references(() => tarefas.id, { onDelete: "cascade" }),
+  subtaskId: bigint("subtask_id", { mode: "number", unsigned: true }).references(() => subtarefas.id, { onDelete: "cascade" }),
+  attemptId: bigint("attempt_id", { mode: "number", unsigned: true }).references(() => executionAttempts.id, { onDelete: "set null" }),
+  eventType: varchar("event_type", { length: 60 }).notNull(),
+  fromStatus: varchar("from_status", { length: 50 }),
+  toStatus: varchar("to_status", { length: 50 }),
+  actorType: varchar("actor_type", { length: 30 }).notNull(),
+  agentId: varchar("agent_id", { length: 200 }),
+  model: varchar("model", { length: 150 }),
+  executionId: varchar("execution_id", { length: 200 }),
+  workspaceCommit: varchar("workspace_commit", { length: 64 }),
+  reasonCode: varchar("reason_code", { length: 60 }),
+  correlationId: varchar("correlation_id", { length: 128 }).notNull(),
+}, (table) => ({
+  subtaskIdx: index("idx_execution_events_subtask").on(table.subtaskId),
+  attemptIdx: index("idx_execution_events_attempt").on(table.attemptId),
+  occurredIdx: index("idx_execution_events_occurred_at").on(table.occurredAt),
+  typeIdx: index("idx_execution_events_event_type").on(table.eventType),
+  correlationIdx: index("idx_execution_events_correlation").on(table.correlationId),
+}))
+
+export const gateRuns = mysqlTable("gate_runs", {
+  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+  attemptId: bigint("attempt_id", { mode: "number", unsigned: true }).notNull().references(() => executionAttempts.id, { onDelete: "cascade" }),
+  gateType: varchar("gate_type", { length: 40 }).notNull(),
+  command: varchar("command", { length: 1000 }),
+  startedAt: timestamp("started_at").notNull(),
+  finishedAt: timestamp("finished_at"),
+  durationMs: bigint("duration_ms", { mode: "number", unsigned: true }),
+  exitCode: int("exit_code"),
+  status: varchar("status", { length: 30 }).notNull(),
+  failureFingerprint: varchar("failure_fingerprint", { length: 128 }),
+  evidenceJson: json("evidence_json"),
+}, (table) => ({
+  attemptGateIdx: index("idx_gate_runs_attempt_type").on(table.attemptId, table.gateType),
+  dateIdx: index("idx_gate_runs_started_at").on(table.startedAt),
+  fingerprintIdx: index("idx_gate_runs_failure_fingerprint").on(table.failureFingerprint),
+}))
 
 // ============================================================================
 // ANNOTATIONS (metadata de formulário)
