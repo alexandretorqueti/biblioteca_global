@@ -33,6 +33,7 @@ import { markersIn, renderPromptTemplate, validatePromptTemplate } from '../moto
 import { composeDevelopmentPrompt, type PromptPart } from '../motor-v2/src/prompts/PromptComposition';
 import { ProvisionService } from '../../../apps/api/src/modules/provision/provision.service';
 import { ALL_TASK_STATUSES, TASK_STATUS_STARTABLE } from '../motor-v2/src/shared/task-statuses';
+import { authorizeTaskStatusTransition } from '../motor-v2/src/policies/TaskTransitionAuthorizationPolicy';
 import { RealtimeService } from '../../../apps/api/src/modules/realtime/realtime.service';
 
 @Injectable()
@@ -603,11 +604,24 @@ export class GerenteAgentesService {
     }
 
     const [tarefa] = await db
-      .select({ id: tarefas.id })
+      .select({ id: tarefas.id, status: tarefas.status })
       .from(tarefas)
       .where(eq(tarefas.id, tarefaId))
       .limit(1);
     if (!tarefa) throw new NotFoundException('Tarefa não encontrada');
+
+    const authorization = authorizeTaskStatusTransition(
+      tarefa.status as Parameters<typeof authorizeTaskStatusTransition>[0],
+      status as Parameters<typeof authorizeTaskStatusTransition>[1],
+      'user',
+    );
+    if (!authorization.allowed) {
+      throw new BadRequestException(
+        authorization.reason === 'reserved_for_motor'
+          ? `Transição ${tarefa.status} -> ${status} reservada ao Motor`
+          : `Transição de tarefa não permitida: ${tarefa.status} -> ${status}`,
+      );
+    }
 
     await db.update(tarefas).set({ status, updatedAt: new Date() }).where(eq(tarefas.id, tarefaId));
     return { id: tarefaId, status };

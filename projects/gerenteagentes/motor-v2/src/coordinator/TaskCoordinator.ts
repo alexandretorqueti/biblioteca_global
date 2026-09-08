@@ -23,6 +23,8 @@ import { isBaselineCorrection, withBaselineExcludes } from "../policies/Baseline
 import { digestGateFailure } from "../policies/CarryOverPolicy.js"
 import { blockerEvidence } from "../policies/BlockerPolicy.js"
 import { transitionTask, type TaskTransition } from "../policies/TaskStateMachine.js"
+import { authorizeTaskStatusTransition } from "../policies/TaskTransitionAuthorizationPolicy.js"
+import type { AnyTaskStatus } from "../shared/task-statuses.js"
 import { persistTaskClarificationAnswer, fetchPendingTaskClarification, fetchAnsweredTaskClarifications } from "../planning/ClarificationStore.js"
 import { createLogger, describeError } from "../shared/logger.js"
 import { ConsoleAgentRuntimeDriver } from "../runtime/ConsoleAgentRuntimeDriver.js"
@@ -1824,6 +1826,8 @@ export class TaskCoordinator {
       }
       return
     }
+    const authorization = authorizeTaskStatusTransition(task.status as AnyTaskStatus, status as AnyTaskStatus, "motor")
+    if (!authorization.allowed) return
     await this.repository.saveTask({ ...task, ...patch, status, updatedAt: new Date().toISOString() })
     // Atualiza o objeto task em memória para manter consistência
     task.status = status as Task["status"]
