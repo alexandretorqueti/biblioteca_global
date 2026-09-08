@@ -177,3 +177,13 @@ selecionar tarefa
 ```
 
 Os testes existentes em `projects/gerenteagentes/screens/__tests__/TaskMonitorScreen.test.tsx` já cobrem seleção, detalhe, grid, edição e compatibilidade do motor. A integração deve acrescentar casos de histórico vazio/carregado, envio, troca sem vazamento de mensagens, erro/retry e reconexão/replay indisponível; testes unitários de `AgentChat` e `RealtimeClient` já estão em `packages/ui/src/components/__tests__/AgentChat.test.tsx` e `packages/api-client/src/__tests__/realtime-client.spec.ts`.
+
+## 6. Evidência do componente e do teclado — subtarefa 1
+
+O campo de composição da tela está em `screens/TaskMonitorScreen.tsx:1083-1099`, dentro do `Paper[data-testid="task-chat"]`. É um `TextField` MUI com `multiline`, `maxRows={4}`, estado controlado por `chatInput`, atualização em `onChange` e identificação de teste `task-chat-input`. Portanto, o requisito de permitir mais de uma linha já está parcialmente atendido pelo componente atual.
+
+O envio é centralizado em `enviarMensagemChat`, em `screens/TaskMonitorScreen.tsx:387-416`. A função remove espaços laterais, impede envio sem tarefa/texto ou durante outro envio, faz `POST /gerenteagentes/tarefas/:id/chat` com `{ role: "user", texto }`, limpa o rascunho e recarrega o histórico após sucesso. O botão `task-chat-send-button` também chama essa mesma função por clique (`:1100-1110`).
+
+O comportamento atual do teclado está confirmado no código em `screens/TaskMonitorScreen.tsx:1092-1097`: qualquer `Enter` sem `Shift` chama `event.preventDefault()` e `enviarMensagemChat`; `Shift+Enter` não envia e preserva a quebra de linha. Não há tratamento de `Ctrl+Enter` ou `Meta+Enter`.
+
+Arquivo de teste diretamente afetado: `screens/__tests__/TaskMonitorScreen.test.tsx`. O arquivo atualmente cobre edição da tarefa, mas não possui casos do `task-chat-input`; o bundle falso também não roteia `GET/POST .../chat`. Para a alteração, os casos mínimos a acrescentar são: `Enter` insere quebra sem chamar POST, `Ctrl+Enter` chama exatamente o POST e mantém quebra com Enter, além de preservar o envio por clique. O escopo não exige mudanças no histórico, no realtime, no botão ou nos endpoints.
