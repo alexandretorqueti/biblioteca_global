@@ -638,7 +638,7 @@ UI (web) ──► API NestJS (/api/gerenteagentes) ──► motor (container O
 ```
 
 - A UI só conhece a API da plataforma.
-- A API fala com o motor via `motorRequest`/`motorGet` (timeout padrão 60 s / 5 s).
+- A API fala com o motor via `motorRequest`/`motorGet` (timeout padrão 90 s / 5 s).
   O timeout das requisições de `motorRequest` pode ser ajustado por
   `MOTOR_REQUEST_TIMEOUT_MS` quando o motor precisar de mais tempo para
   responder.
