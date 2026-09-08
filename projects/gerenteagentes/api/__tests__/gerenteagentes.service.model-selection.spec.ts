@@ -113,7 +113,7 @@ describe("GerenteAgentesService — model-selection (proxy p/ motor)", () => {
     const chamada = capturas[0];
     if (!chamada) throw new Error("captura ausente");
     expect(chamada.options.path).toBe("/api/model-selection/biblioteca-global/DEV");
-    expect(chamada.options.timeout).toBe(60_000);
+    expect(chamada.options.timeout).toBe(90_000);
   });
 
   it("aceita timeout do motor configurável por ambiente", async () => {

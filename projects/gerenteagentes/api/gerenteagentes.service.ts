@@ -35,7 +35,7 @@ import { ProvisionService } from '../../../apps/api/src/modules/provision/provis
 import { ALL_TASK_STATUSES, TASK_STATUS_STARTABLE } from '../motor-v2/src/shared/task-statuses';
 import { RealtimeService } from '../../../apps/api/src/modules/realtime/realtime.service';
 
-const DEFAULT_MOTOR_REQUEST_TIMEOUT_MS = 60_000;
+const DEFAULT_MOTOR_REQUEST_TIMEOUT_MS = 90_000;
 
 @Injectable()
 export class GerenteAgentesService {
@@ -485,7 +485,8 @@ export class GerenteAgentesService {
         ...(!baseUrl && this.motorHostHeader ? { Host: this.motorHostHeader } : {}),
       },
       // Consultas de detalhe/estado de tarefas bloqueadas podem aguardar o
-      // motor liberar o coordenador; 15 s causava falso "Motor indisponível".
+      // motor liberar o coordenador; o limite anterior causava falso
+      // "Motor indisponível".
       timeout: this.motorRequestTimeoutMs,
     };
     return new Promise((resolve, reject) => {
