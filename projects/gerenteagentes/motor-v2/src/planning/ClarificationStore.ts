@@ -307,3 +307,64 @@ export async function fetchProjectClarificationHistory(
     createdAt: String(row.created_at ?? ""),
   }))
 }
+
+// ============================================================================
+// AUDITORIA DE DECISÕES (aprovar / ajustar / continuar conversando)
+// ============================================================================
+
+export type PlanDecision = "approve" | "request_adjustments" | "continue_conversation"
+
+/**
+ * Persiste no chat da tarefa a decisão do dono sobre a proposta de plano.
+ * Usado para auditoria das transições — a decisão fica visível no histórico
+ * do chat junto com as mensagens do analista e as respostas do usuário.
+ */
+export async function persistPlanDecision(
+  db: Db,
+  taskId: string,
+  decision: PlanDecision,
+  actor: string,
+  reason: string | null,
+): Promise<void> {
+  const databaseTaskId = await resolveTaskDatabaseId(db, taskId)
+  const labels: Record<PlanDecision, string> = {
+    approve: "✅ Aprovado e iniciado",
+    request_adjustments: "✏️ Ajustes solicitados",
+    continue_conversation: "💬 Conversa continuada",
+  }
+  const emoji = labels[decision]
+  const reasonPart = reason ? " — " + reason : ""
+  const text = `${emoji} (por ${actor})${reasonPart}`
+  await db.query(
+    "INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) VALUES (?, ?, ?, NOW())",
+    [databaseTaskId, ANSWER_ROLE, text],
+  )
+}
+
+/**
+ * Busca as decisões de plano registradas no chat da tarefa.
+ * Útil para auditoria e para a tela de acompanhamento.
+ */
+export async function fetchPlanDecisions(
+  db: Db,
+  taskId: string,
+): Promise<Array<{ decision: PlanDecision; actor: string; reason: string | null; createdAt: string }>> {
+  const databaseTaskId = await resolveTaskDatabaseId(db, taskId)
+  const { rows } = await db.query(
+    "SELECT texto, created_at FROM tarefa_chats " +
+    "WHERE tarefa_id = ? AND role = ? AND (texto LIKE '✅ %' OR texto LIKE '✏️ %' OR texto LIKE '💬 %') " +
+    "ORDER BY id ASC",
+    [databaseTaskId, ANSWER_ROLE],
+  )
+  return rows.map((row) => {
+    const text = String(row.texto ?? "")
+    let decision: PlanDecision = "continue_conversation"
+    if (text.startsWith("✅")) decision = "approve"
+    else if (text.startsWith("✏️")) decision = "request_adjustments"
+    const actorMatch = text.match(/\(por ([^)]+)\)/)
+    const actor: string = actorMatch?.[1] ?? "unknown"
+    const reasonMatch = text.match(/— (.+)$/)
+    const reason: string | null = reasonMatch?.[1] ?? null
+    return { decision, actor, reason, createdAt: String(row.created_at ?? "") }
+  })
+}

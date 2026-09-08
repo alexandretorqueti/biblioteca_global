@@ -1155,6 +1155,42 @@ export class TaskCoordinator {
   }
 
   /**
+   * Continua a conversa sobre a proposta de plano sem aprová-la nem pedir
+   * ajustes formais. A mensagem do usuário é encaminhada para a mesma sessão
+   * do analista, que responde em texto natural.
+   *
+   * Fluxo:
+   * 1. Persiste a mensagem no chat da tarefa
+   * 2. Transita awaiting_approval → awaiting_clarification (continue_conversation)
+   * 3. Transita awaiting_clarification → planned (clarification_answered)
+   * 4. Pump reenvia para análise na mesma sessão (contexto preservado)
+   *
+   * Diferença para `requestPlanAdjustments`:
+   * - `requestPlanAdjustments` REJEITA a proposta e volta para `planned`
+   * - `continueConversationFromApproval` mantém a proposta válida e apenas continua o diálogo
+   */
+  async continueConversationFromApproval(taskId: string, message: string): Promise<void> {
+    const task = await this.repository.getTask(taskId)
+    if (!task) throw new Error("Tarefa " + taskId + " nao encontrada")
+    if (task.status !== "awaiting_approval") {
+      throw new Error("Tarefa " + taskId + " nao esta aguardando aprovação (status: " + task.status + ")")
+    }
+    const trimmed = message.trim()
+    if (!trimmed) throw new Error("Mensagem de continuação vazia")
+
+    // Grava a mensagem do usuário no chat da tarefa
+    await persistTaskClarificationAnswer(this.db, taskId, "💬 [Continuar conversando] " + trimmed)
+
+    // Transita awaiting_approval → awaiting_clarification
+    await this.saveTaskTransition(task, "continue_conversation")
+    // Transita awaiting_clarification → planned (para o pump reenviar para análise)
+    await this.saveTaskTransition({ ...task, status: "awaiting_clarification" } as Task, "clarification_answered")
+
+    this.logger.info("Conversa continuada a partir de awaiting_approval: " + taskId, { taskId })
+    await this.pump()
+  }
+
+  /**
    * Rejeita a proposta de plano e solicita ajustes. Transita a tarefa de
    * volta para `planned`; o pump a reenvia para análise na mesma sessão do
    * analista (contexto preservado).

@@ -104,6 +104,8 @@ export class MotorAPI {
         this.handleApprovePlan(req, res, taskId)
       } else if (req.method === 'POST' && taskId && taskAction === 'request-adjustments') {
         this.handleRequestAdjustments(req, res, taskId)
+      } else if (req.method === 'POST' && taskId && taskAction === 'continue-conversation') {
+        this.handleContinueConversation(req, res, taskId)
       } else if (req.method === 'GET' && taskId && taskAction === 'plan-proposal') {
         this.handleGetPlanProposal(res, taskId)
       } else {
@@ -243,6 +245,25 @@ export class MotorAPI {
       .then(() => this.json(res, 200, { ok: true }))
       .catch((error) => {
         this.json(res, 400, { ok: false, error: error instanceof Error ? error.message : 'Request adjustments failed' })
+      })
+  }
+
+  /**
+   * POST /api/motor/task/:id/continue-conversation — continua o diálogo com
+   * o analista sobre a proposta de plano sem aprová-la nem pedir ajustes
+   * formais. A mensagem é encaminhada para a mesma sessão do analista.
+   * Body: { message: string }
+   */
+  private handleContinueConversation(req: IncomingMessage, res: ServerResponse, taskId: string): void {
+    this.readBody(req)
+      .then(async (body) => {
+        const message = typeof body?.message === 'string' ? body.message : ''
+        if (!message.trim()) throw new Error('Mensagem é obrigatória')
+        await this.coordinator.continueConversationFromApproval(taskId, message)
+      })
+      .then(() => this.json(res, 200, { ok: true }))
+      .catch((error) => {
+        this.json(res, 400, { ok: false, error: error instanceof Error ? error.message : 'Continue conversation failed' })
       })
   }
 
