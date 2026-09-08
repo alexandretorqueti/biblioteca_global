@@ -44,6 +44,7 @@ import {
   withBaselineExcludes,
 } from "../policies/BaselinePolicy.js"
 import { hasPersistedPlan, persistPlan, type PlanCoverage } from "../planning/PlanPersistence.js"
+import { persistPlanProposal, type PlanProposal } from "../planning/PlanProposalStore.js"
 import { parseAnalystConversationReply, safeParseAnalystReply, type AnalystReply } from "../planning/AnalystReply.js"
 import { validatePlanQuality } from "../planning/PlanQualityPolicy.js"
 import {
@@ -308,6 +309,10 @@ class TaskWorker {
           this.sendClarifying(ctx, outcome)
           return
         }
+        if (outcome.kind === "proposing") {
+          this.sendPlanProposal(ctx, outcome)
+          return
+        }
       } else if (ctx.phase === "execute") {
         if (this.isDevelopmentTask(input)) await this.phasePrepare(input)
         if (this.cancelled) { this.sendFailed(ctx, "Cancelled"); return }
@@ -329,7 +334,7 @@ class TaskWorker {
   /**
    * FASE 1: ANALYZE - Chama o Analista para criar subtarefas (ou perguntar)
    */
-  private async phaseAnalyze(input: WorkerInput): Promise<{ kind: "done" } | { kind: "clarifying"; questionCount: number; summary?: string }> {
+  private async phaseAnalyze(input: WorkerInput): Promise<{ kind: "done" } | { kind: "clarifying"; questionCount: number; summary?: string } | { kind: "proposing"; proposalId: number; subtaskCount: number }> {
     this.sessionFailure = undefined
     this.send({ type: "progress", executionId: input.context.executionId, phase: "analyze", message: "Iniciando analise" })
     this.log("info", "Fase ANALYZE: " + input.task.title)
@@ -595,12 +600,11 @@ class TaskWorker {
           this.log("info", "Setup detectado: subtarefa de smoke test injetada (seq=" + smokeTestSeq + ")")
         }
 
-        const persisted = await persistPlan(planningDb, input.task.id, subtarefas, coverage)
-        if (persisted === "already_persisted") {
-          this.log("info", "Plano foi persistido por outra execução; preservando-o")
-        }
-        this.log("info", "Fase ANALYZE concluida: " + subtarefas.length + " subtarefas criadas")
-        return { kind: "done" }
+        // Persiste como PROPOSTA de plano (não materializa subtarefas ainda).
+        // A materialização só ocorre após aprovação explícita do dono.
+        const proposal = await persistPlanProposal(planningDb, input.task.id, subtarefas, coverage)
+        this.log("info", "Fase ANALYZE concluida: proposta de plano persistida (versão " + proposal.version + ", " + subtarefas.length + " subtarefas)")
+        return { kind: "proposing", proposalId: proposal.id, subtaskCount: subtarefas.length }
       } catch (error) {
         if (isModelUnavailableError(error)) {
           lastFailure = `Modelo indisponível: ${model.model}`
@@ -2033,6 +2037,13 @@ class TaskWorker {
   /** Analista pediu esclarecimentos: encerra o worker sem falha. */
   private sendClarifying(context: ExecutionContext, info: { questionCount: number; summary?: string }): void {
     this.send({ type: "clarifying", executionId: context.executionId, questionCount: info.questionCount, summary: info.summary })
+    this.cleanup()
+    setTimeout(() => process.exit(0), 1000)
+  }
+
+  /** Analista apresentou proposta de plano: encerra o worker; o coordenador transita para awaiting_approval. */
+  private sendPlanProposal(context: ExecutionContext, info: { proposalId: number; subtaskCount: number }): void {
+    this.send({ type: "plan_proposal", executionId: context.executionId, subtaskCount: info.subtaskCount, proposalId: info.proposalId })
     this.cleanup()
     setTimeout(() => process.exit(0), 1000)
   }

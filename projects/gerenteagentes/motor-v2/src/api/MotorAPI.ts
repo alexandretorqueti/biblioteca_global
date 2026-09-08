@@ -100,6 +100,12 @@ export class MotorAPI {
         this.handleDeployTask(res, taskId)
       } else if (req.method === 'POST' && taskId && taskAction === 'clarification') {
         this.handleClarification(req, res, taskId)
+      } else if (req.method === 'POST' && taskId && taskAction === 'approve') {
+        this.handleApprovePlan(req, res, taskId)
+      } else if (req.method === 'POST' && taskId && taskAction === 'request-adjustments') {
+        this.handleRequestAdjustments(req, res, taskId)
+      } else if (req.method === 'GET' && taskId && taskAction === 'plan-proposal') {
+        this.handleGetPlanProposal(res, taskId)
       } else {
         this.json(res, 404, { ok: false, error: 'Not found' })
       }
@@ -203,6 +209,59 @@ export class MotorAPI {
       .catch((error) => {
         this.json(res, 400, { ok: false, error: error instanceof Error ? error.message : 'Clarification failed' })
       })
+  }
+
+  /**
+   * POST /api/motor/task/:id/approve — aprova a proposta de plano pendente.
+   * Materializa as subtarefas e transita a tarefa para `ready`.
+   */
+  private handleApprovePlan(req: IncomingMessage, res: ServerResponse, taskId: string): void {
+    this.readBody(req)
+      .then(async (body) => {
+        const approvedBy = typeof body?.approvedBy === 'string' ? body.approvedBy : 'user'
+        const result = await this.coordinator.approvePlan(taskId, approvedBy)
+        return result
+      })
+      .then((result) => this.json(res, 200, { ok: true, ...result }))
+      .catch((error) => {
+        this.json(res, 400, { ok: false, error: error instanceof Error ? error.message : 'Approve failed' })
+      })
+  }
+
+  /**
+   * POST /api/motor/task/:id/request-adjustments — rejeita a proposta de plano
+   * e solicita ajustes. Transita a tarefa de volta para `planned`.
+   */
+  private handleRequestAdjustments(req: IncomingMessage, res: ServerResponse, taskId: string): void {
+    this.readBody(req)
+      .then(async (body) => {
+        const reason = typeof body?.reason === 'string' ? body.reason : ''
+        if (!reason.trim()) throw new Error('Motivo do ajuste é obrigatório')
+        const requestedBy = typeof body?.requestedBy === 'string' ? body.requestedBy : 'user'
+        await this.coordinator.requestPlanAdjustments(taskId, reason, requestedBy)
+      })
+      .then(() => this.json(res, 200, { ok: true }))
+      .catch((error) => {
+        this.json(res, 400, { ok: false, error: error instanceof Error ? error.message : 'Request adjustments failed' })
+      })
+  }
+
+  /**
+   * GET /api/motor/task/:id/plan-proposal — consulta a proposta de plano
+   * pendente (para a tela de acompanhamento).
+   */
+  private async handleGetPlanProposal(res: ServerResponse, taskId: string): Promise<void> {
+    try {
+      const proposal = await this.coordinator.getPendingPlanProposal(taskId)
+      if (!proposal) {
+        this.json(res, 404, { ok: false, error: 'No pending plan proposal' })
+        return
+      }
+      this.json(res, 200, { ok: true, proposal })
+    } catch (error) {
+      this.logger.error('Failed to get plan proposal', { error, taskId })
+      this.json(res, 500, { ok: false, error: error instanceof Error ? error.message : 'Internal error' })
+    }
   }
 
   private readBody(req: IncomingMessage): Promise<Record<string, unknown> | null> {

@@ -22,6 +22,7 @@ export const TASK_STATUSES = [
   "planned",
   "analyzing",
   "awaiting_clarification",
+  "awaiting_approval",
   "ready",
   "running",
   "paused",
@@ -61,6 +62,7 @@ export const TASK_STATUS_LABELS: Record<string, string> = {
   planned: "Planejada",
   analyzing: "Em análise",
   awaiting_clarification: "Aguardando esclarecimento",
+  awaiting_approval: "Aguardando aprovação",
   ready: "Pronta",
   running: "Em execução",
   paused: "Pausada",
@@ -94,6 +96,7 @@ export const TASK_STATUS_COLORS: Record<
   // Aviso (pausada / aguardando)
   paused: "warning",
   awaiting_clarification: "warning",
+  awaiting_approval: "warning",
   // Erro (falha / bloqueio)
   blocked: "error",
   failed: "error",

@@ -5,6 +5,7 @@ export type TaskTransition =
   | "execution_completed" | "deploy_completed" | "subtasks_pending" | "pause" | "resume"
   | "resume_without_plan" | "queue" | "recover" | "fail" | "cancel"
   | "await_clarification" | "clarification_answered"
+  | "propose_plan" | "approve_plan" | "request_adjustments"
 
 const taskTransitions: Record<TaskTransition, readonly TaskStatus[]> = {
   start_analysis: ["planned"],
@@ -14,6 +15,13 @@ const taskTransitions: Record<TaskTransition, readonly TaskStatus[]> = {
   // subtarefas ainda), de onde o pump a reenvia para análise.
   await_clarification: ["analyzing"],
   clarification_answered: ["awaiting_clarification"],
+  // O analista apresentou uma proposta de plano; a tarefa aguarda aprovação
+  // explícita do dono antes de criar subtarefas e iniciar execução.
+  propose_plan: ["analyzing"],
+  approve_plan: ["awaiting_approval"],
+  // O dono pediu ajustes; a tarefa volta para `planned` e o pump a reenvia
+  // para análise na mesma sessão do analista (contexto preservado).
+  request_adjustments: ["awaiting_approval"],
   start_execution: ["ready"],
   // Entre subtarefas, a tarefa volta para `ready` para que o coordenador
   // possa selecionar a próxima. A última subtarefa pode, portanto, concluir
@@ -33,8 +41,8 @@ const taskTransitions: Record<TaskTransition, readonly TaskStatus[]> = {
   // Falhas ambientais podem ocorrer antes de a análise conseguir iniciar
   // (por exemplo, workspace inacessível em uma tarefa `planned`) ou durante a
   // execução com a tarefa ainda `ready`/`running` (repo removido, git ausente).
-  fail: ["planned", "analyzing", "awaiting_clarification", "ready", "running", "paused"],
-  cancel: ["planned", "analyzing", "awaiting_clarification", "ready", "running", "paused", "blocked", "failed"],
+  fail: ["planned", "analyzing", "awaiting_clarification", "awaiting_approval", "ready", "running", "paused"],
+  cancel: ["planned", "analyzing", "awaiting_clarification", "awaiting_approval", "ready", "running", "paused", "blocked", "failed"],
 }
 
 const subtaskTransitions: Record<SubTaskStatus, readonly SubTaskStatus[]> = {
@@ -61,6 +69,9 @@ export function transitionTask(current: TaskStatus, transition: TaskTransition):
     analysis_completed: "ready",
     await_clarification: "awaiting_clarification",
     clarification_answered: "planned",
+    propose_plan: "awaiting_approval",
+    approve_plan: "ready",
+    request_adjustments: "planned",
     start_execution: "running",
     execution_completed: "completed",
     deploy_completed: "deployed",
