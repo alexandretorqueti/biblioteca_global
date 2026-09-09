@@ -5,7 +5,7 @@
 import { describe, expect, it, vi } from "vitest"
 import type { Db, QueryResult, TaskRepository } from "../src/shared/types/infrastructure.js"
 import { ResourceLeaseService } from "../src/resources/ResourceLeaseService.js"
-import { TaskCoordinator } from "../src/coordinator/TaskCoordinator.js"
+import { shellQuote, TaskCoordinator } from "../src/coordinator/TaskCoordinator.js"
 
 function setup() {
   const db: Db = {
@@ -31,6 +31,11 @@ type Internals = {
 }
 
 describe("fila de deploy", () => {
+  it("cita aspas simples sem introduzir aspas literais no comando remoto", () => {
+    expect(shellQuote("/tmp/arquivo com 'aspas'"))
+      .toBe("'/tmp/arquivo com '\"'\"'aspas'\"'\"''")
+  })
+
   it("não inicia deploy enquanto houver worker ativo", async () => {
     const { db, coordinator } = setup()
     const internal = coordinator as unknown as Internals

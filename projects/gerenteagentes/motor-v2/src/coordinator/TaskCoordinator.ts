@@ -96,8 +96,8 @@ function isLightweightTask(tipo: Task["tipo"] | undefined): boolean {
 }
 
 /** Citação POSIX de argumento enviado como um único parâmetro ao shell remoto. */
-function shellQuote(value: string): string {
-  return "'" + value.replace(/'/g, "'\\\"'\\\"'") + "'"
+export function shellQuote(value: string): string {
+  return "'" + value.replace(/'/g, "'\"'\"'") + "'"
 }
 
 interface SubtaskView {
