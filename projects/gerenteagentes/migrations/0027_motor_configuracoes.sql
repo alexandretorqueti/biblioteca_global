@@ -28,4 +28,5 @@ INSERT IGNORE INTO `motor_configuracoes` (`chave`,`tipo`,`valor`,`valor_padrao`,
 ('motor.dependency_install_timeout_ms','number','900000','900000','inteiro entre 10000 e 3600000','Tempo máximo para instalar dependências.'),
 ('motor.worker_shutdown_timeout_ms','number','10000','10000','inteiro entre 1000 e 120000','Tempo de encerramento gracioso de workers.'),
 ('motor.resource_event_wait_timeout_ms','number','30000','30000','inteiro entre 1000 e 3600000','Tempo máximo de espera por evento de recurso.'),
-('motor.baseline_confirmation_timeout_ms','number','300000','300000','inteiro entre 10000 e 3600000','Tempo máximo para confirmar o baseline.');
+('motor.baseline_confirmation_timeout_ms','number','300000','300000','inteiro entre 10000 e 3600000','Tempo máximo para confirmar o baseline.'),
+('motor.build_test_timeout_ms','number','300000','300000','inteiro entre 60000 e 3600000','Tempo máximo para execução de build e testes unitários.');
