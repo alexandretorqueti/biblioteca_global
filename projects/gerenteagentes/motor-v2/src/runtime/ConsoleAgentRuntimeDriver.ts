@@ -3,6 +3,8 @@
  * Adaptado do motor antigo
  */
 
+import { getConfigNumber } from '../config/MotorConfigReader.js'
+
 export interface ConsoleTransportOptions {
   baseUrl: string
   token: string
@@ -165,7 +167,7 @@ export class ConsoleAgentRuntimeDriver {
         message: input.message,
         ...(input.session.sessionId ? { sessionId: input.session.sessionId } : {}),
       },
-      timeoutMs: 600_000,
+      timeoutMs: getConfigNumber('motor.console_send_timeout_ms'),
     })
     return { runId: response.runId }
   }
@@ -179,9 +181,9 @@ export class ConsoleAgentRuntimeDriver {
    * (sem progresso por idleTimeoutMs) ou pelo teto absoluto (4h).
    */
   async waitForRunCompletion(session: RuntimeSession, runId: string, options: WaitForRunOptions = {}): Promise<AgentRunCompletion> {
-    const absoluteTimeoutMs = options.absoluteTimeoutMs ?? 14_400_000
-    const idleTimeoutMs = options.idleTimeoutMs ?? 600_000
-    const pollInterval = options.pollIntervalMs ?? 5000
+    const absoluteTimeoutMs = options.absoluteTimeoutMs ?? getConfigNumber('motor.console_run_absolute_timeout_ms')
+    const idleTimeoutMs = options.idleTimeoutMs ?? getConfigNumber('motor.console_run_idle_timeout_ms')
+    const pollInterval = options.pollIntervalMs ?? getConfigNumber('motor.console_poll_interval_ms')
     const startMs = Date.now()
     let lastActivityMs = Date.now()
 

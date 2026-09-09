@@ -61,6 +61,7 @@ import { outputContractDefault } from "../prompts/output-contract-catalog.js"
 import { composeDevelopmentPrompt } from "../prompts/PromptComposition.js"
 import { confirmBaselineIndependentFailure } from "../policies/BaselineConfirmation.js"
 import { digestGateFailure, formatCarryOver, type CarryOverEvent } from "../policies/CarryOverPolicy.js"
+import { getConfigNumber } from "../config/MotorConfigReader.js"
 import { formatPriorSubtaskHandoff, parseGitNameStatus, type PriorSubtaskHandoff } from "../policies/SubtaskHandoffPolicy.js"
 
 const COMMAND_FAILURE_LIMIT = 12_000
@@ -1122,7 +1123,7 @@ class TaskWorker {
 
     this.log("info", "Executando: " + input.buildCommand)
     try {
-      this.exec(input.buildCommand, input.repoPath, 300_000)
+      this.exec(input.buildCommand, input.repoPath, getConfigNumber("motor.build_test_timeout_ms"))
       this.log("info", "Build OK")
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
@@ -1133,8 +1134,8 @@ class TaskWorker {
       if (isLockfileOutOfSync(msg)) {
         this.log("warn", "Build falhou com lockfile desatualizado; tentando npm install + rebuild...")
         try {
-          this.exec("npm install", input.repoPath, 300_000)
-          this.exec(input.buildCommand, input.repoPath, 300_000)
+          this.exec("npm install", input.repoPath, getConfigNumber("motor.build_test_timeout_ms"))
+          this.exec(input.buildCommand, input.repoPath, getConfigNumber("motor.build_test_timeout_ms"))
           this.log("info", "Build OK após npm install (lockfile regenerado)")
         } catch (recoveryError) {
           const recoveryMsg = recoveryError instanceof Error ? recoveryError.message : String(recoveryError)
@@ -1197,7 +1198,7 @@ class TaskWorker {
 
     this.log("info", `Executando testes (${scopeLabel}): ` + command)
     try {
-      this.exec(command, input.repoPath, 300_000)
+      this.exec(command, input.repoPath, getConfigNumber("motor.build_test_timeout_ms"))
       this.log("info", "Testes OK")
       return { kind: "verified" }
     } catch (error) {
@@ -1207,7 +1208,7 @@ class TaskWorker {
       const confirmationCommand = confirmationTestCommand(command, firstFailure)
       this.log("warn", "Gate vermelho; confirmando falha no workspace intocado: " + confirmationCommand)
       try {
-        this.exec(confirmationCommand, input.repoPath, 300_000)
+        this.exec(confirmationCommand, input.repoPath, getConfigNumber("motor.build_test_timeout_ms"))
         this.log("warn", "Teste passou na repetição sem alteração do workspace; falha classificada como flaky")
         return { kind: "verified" }
       } catch (confirmationError) {
@@ -1257,7 +1258,7 @@ class TaskWorker {
         repoPath: input.repoPath,
         confirmationCommand,
         runner: (command, cwd, timeoutMs) => this.exec(command, cwd, timeoutMs),
-        timeoutMs: 300_000,
+        timeoutMs: getConfigNumber("motor.build_test_timeout_ms"),
       })
     } catch (error) {
       // Worktree inconsistente (stash pop falhou): bloqueio ambiental — nunca
@@ -1416,8 +1417,8 @@ class TaskWorker {
     const baselineTestCommand = withBaselineExcludes(input.testCommand)
     this.log("info", "Baseline: rodando build + suíte na branch-base antes da primeira subtarefa: " + baselineTestCommand)
     try {
-      this.exec(input.buildCommand, input.repoPath, 300_000)
-      this.exec(baselineTestCommand, input.repoPath, 300_000)
+      this.exec(input.buildCommand, input.repoPath, getConfigNumber("motor.build_test_timeout_ms"))
+      this.exec(baselineTestCommand, input.repoPath, getConfigNumber("motor.build_test_timeout_ms"))
     } catch (error) {
       const reason = (error instanceof Error ? error.message : String(error)).substring(0, 2000)
       await this.createBaselineCorrection(subtask, reason)

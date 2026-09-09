@@ -26,6 +26,7 @@ import { transitionTask, type TaskTransition } from "../policies/TaskStateMachin
 import { persistTaskClarificationAnswer, fetchPendingTaskClarification, fetchAnsweredTaskClarifications } from "../planning/ClarificationStore.js"
 import { createLogger, describeError } from "../shared/logger.js"
 import { ConsoleAgentRuntimeDriver, type RemoteSessionFailure } from "../runtime/ConsoleAgentRuntimeDriver.js"
+import { getConfigNumber } from "../config/MotorConfigReader.js"
 import { execFileSync, execSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { existsSync } from "node:fs"
@@ -537,7 +538,7 @@ export class TaskCoordinator {
         repoPath: subtask.repoPath, buildCommand: subtask.buildCommand ?? "",
         unitTestCommand: subtask.unitTestCommand ?? "", unitTestExclude: subtask.unitTestExclude,
         baselineMode: "full", status: "running",
-        maxRework: subtask.maxRework ?? 3, hardTimeoutMs: subtask.hardTimeoutMs ?? 14_400_000,
+        maxRework: subtask.maxRework ?? 3, hardTimeoutMs: subtask.hardTimeoutMs ?? getConfigNumber('motor.worker_timeout_ms'),
         projectSlug: subtask.projectSlug,
         createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
       }
@@ -556,7 +557,7 @@ export class TaskCoordinator {
         modelPhase: "development",
         modelChain: await this.getProjectModelChain(subtask.projectSlug, "development"),
       })
-      this.armWorkerTimeout(executionId, subtask.hardTimeoutMs ?? 14_400_000)
+      this.armWorkerTimeout(executionId, subtask.hardTimeoutMs ?? getConfigNumber('motor.worker_timeout_ms'))
 
       this.logger.info("Worker de execucao iniciado: subtarefa #" + subtask.seq + " (" + executionId + ")", {
         taskId: subtask.taskExternalId, subtaskId: subtask.id, executionId, phase: "execute",
@@ -1704,11 +1705,11 @@ export class TaskCoordinator {
   private armSilenceWatchdog(executionId: string): void {
     const worker = this.activeWorkers.get(executionId)
     if (!worker) return
-    const silenceMs = 600_000 // 10 minutos - tempo suficiente para chamadas LLM demoradas
+    const silenceMs = getConfigNumber('motor.worker_silence_timeout_ms')
     worker.lastHeartbeatAt = new Date()
     if (worker.silenceHandle) clearTimeout(worker.silenceHandle)
     worker.silenceHandle = setTimeout(() => {
-      this.handleWorkerFailure(executionId, "Worker sem heartbeat por 600000ms", "lost").catch((error: unknown) => {
+      this.handleWorkerFailure(executionId, "Worker sem heartbeat por " + silenceMs + "ms", "lost").catch((error: unknown) => {
         this.logger.error("Falha ao processar silence watchdog: " + describeError(error), { executionId })
       })
     }, silenceMs)
@@ -1855,7 +1856,7 @@ export class TaskCoordinator {
       unitTestExclude: [], baselineMode: "full",
       status: String(row.status ?? "planned") as Task["status"],
       maxRework: Number(row.max_rework ?? row.default_max_rework ?? 3),
-      hardTimeoutMs: Number(row.hard_timeout_ms ?? row.default_hard_timeout_ms ?? 14_400_000),
+      hardTimeoutMs: Number(row.hard_timeout_ms ?? row.default_hard_timeout_ms ?? getConfigNumber('motor.worker_timeout_ms')),
       dependsOnTaskId: row.depends_on_task_id ? String(row.depends_on_task_id) : undefined,
       projectSlug: row.project_slug ? String(row.project_slug) : null,
       createdAt: String(row.created_at ?? new Date().toISOString()),

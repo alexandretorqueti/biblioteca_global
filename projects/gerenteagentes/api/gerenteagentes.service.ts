@@ -26,9 +26,15 @@ import {
   promptsVersoes,
   promptsContratos,
   promptsContratosVersoes,
+  motorConfiguracoes,
   motorAgentSessions,
   motorAgentSessionMessages,
 } from '../schema';
+import {
+  MOTOR_CONFIGURACOES,
+  configuracaoPorChave,
+  type MotorConfiguracaoResposta,
+} from './motor-configuracoes.catalog';
 import { AGENT_PROMPT_CATALOG } from '../motor-v2/src/prompts/prompt-catalog';
 import { OUTPUT_CONTRACT_CATALOG } from '../motor-v2/src/prompts/output-contract-catalog';
 import { markersIn, renderPromptTemplate, validatePromptTemplate } from '../motor-v2/src/prompts/PromptTemplateEngine';
@@ -333,6 +339,68 @@ export class GerenteAgentesService {
    */
   private async dbDoMotor() {
     return await this.factory.obter({ id: 640 });
+  }
+
+  /** Garante o bootstrap idempotente sem substituir valores já editados. */
+  private async garantirConfiguracoesMotor() {
+    const db = await this.dbDoMotor();
+    const atuais = await db.select({ chave: motorConfiguracoes.chave }).from(motorConfiguracoes);
+    const existentes = new Set(atuais.map((item) => item.chave));
+    for (const definicao of MOTOR_CONFIGURACOES) {
+      if (existentes.has(definicao.chave)) continue;
+      await db.insert(motorConfiguracoes).values({
+        chave: definicao.chave,
+        tipo: definicao.tipo,
+        valor: definicao.valorPadrao,
+        valorPadrao: definicao.valorPadrao,
+        regraValidacao: definicao.regraValidacao,
+        descricao: definicao.descricao,
+      });
+    }
+    return db;
+  }
+
+  async listarConfiguracoesMotor(): Promise<MotorConfiguracaoResposta[]> {
+    const db = await this.garantirConfiguracoesMotor();
+    const linhas = await db.select().from(motorConfiguracoes);
+    return MOTOR_CONFIGURACOES.map((definicao) => {
+      const linha = linhas.find((item) => item.chave === definicao.chave);
+      return {
+        chave: definicao.chave,
+        tipo: definicao.tipo,
+        valor: (linha?.valor as typeof definicao.valorPadrao | undefined) ?? definicao.valorPadrao,
+        valorPadrao: definicao.valorPadrao,
+        regraValidacao: definicao.regraValidacao,
+        descricao: definicao.descricao,
+        editavel: true as const,
+        atualizadoEm: linha?.updatedAt ?? null,
+      };
+    });
+  }
+
+  async atualizarConfiguracoesMotor(valores: unknown) {
+    if (!valores || typeof valores !== 'object' || Array.isArray(valores)) {
+      throw new BadRequestException('Body inválido — esperado { valores: { "chave": valor } }');
+    }
+    const entradas = Object.entries(valores as Record<string, unknown>);
+    if (entradas.length === 0) throw new BadRequestException('Informe ao menos uma configuração');
+
+    // Valida o lote inteiro antes de tocar no banco para evitar alterações parciais.
+    const erros: Array<{ chave: string; mensagem: string; regraValidacao?: string }> = [];
+    for (const [chave, valor] of entradas) {
+      const definicao = configuracaoPorChave(chave);
+      if (!definicao) erros.push({ chave, mensagem: 'Configuração não editável ou desconhecida' });
+      else if (!definicao.validar(valor)) erros.push({ chave, mensagem: 'Valor inválido', regraValidacao: definicao.regraValidacao });
+    }
+    if (erros.length > 0) {
+      throw new BadRequestException({ message: 'Uma ou mais configurações são inválidas', erros });
+    }
+
+    const db = await this.garantirConfiguracoesMotor();
+    for (const [chave, valor] of entradas) {
+      await db.update(motorConfiguracoes).set({ valor }).where(eq(motorConfiguracoes.chave, chave));
+    }
+    return this.listarConfiguracoesMotor();
   }
 
   private catalogEntry(chave: string) {

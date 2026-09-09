@@ -41,3 +41,36 @@ describe('GerenteAgentesController — criação de tarefa', () => {
     );
   });
 });
+
+describe('GerenteAgentesController — configurações do motor', () => {
+  it('lista configurações pelo contrato protegido de leitura', async () => {
+    const listarConfiguracoesMotor = vi.fn().mockResolvedValue([{ chave: 'motor.max_workers', editavel: true }]);
+    const instance = new GerenteAgentesController({ listarConfiguracoesMotor } as never, {} as never);
+
+    await expect(instance.listarConfiguracoes()).resolves.toEqual([{ chave: 'motor.max_workers', editavel: true }]);
+    expect(listarConfiguracoesMotor).toHaveBeenCalledOnce();
+  });
+
+  it('encaminha o mapa de valores para persistência validada', async () => {
+    const atualizarConfiguracoesMotor = vi.fn().mockResolvedValue([]);
+    const instance = new GerenteAgentesController({ atualizarConfiguracoesMotor } as never, {} as never);
+
+    await instance.atualizarConfiguracoes({ valores: { 'motor.max_workers': 3 } });
+
+    expect(atualizarConfiguracoesMotor).toHaveBeenCalledWith({ 'motor.max_workers': 3 });
+  });
+
+  it('mantém a resposta de validação do serviço para a interface', async () => {
+    const erro = {
+      status: 400,
+      response: {
+        message: 'Uma ou mais configurações são inválidas',
+        erros: [{ chave: 'motor.max_workers', mensagem: 'Valor inválido', regraValidacao: 'inteiro entre 1 e 100' }],
+      },
+    };
+    const atualizarConfiguracoesMotor = vi.fn().mockRejectedValue(erro);
+    const instance = new GerenteAgentesController({ atualizarConfiguracoesMotor } as never, {} as never);
+
+    await expect(instance.atualizarConfiguracoes({ valores: { 'motor.max_workers': 0 } })).rejects.toMatchObject(erro);
+  });
+});
