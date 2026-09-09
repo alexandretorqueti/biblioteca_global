@@ -423,6 +423,41 @@ export const motorAgentSessionMessages = mysqlTable("motor_agent_session_message
 })
 
 /**
+ * Histórico persistente de sessões do analista no nível da tarefa.
+ * Permite consultar a sessão do analista mesmo após a sessão operacional ser apagada.
+ * Suporta múltiplas sessões por tarefa (escalonamento) com ordenação determinística.
+ */
+export const analystTaskSessions = mysqlTable("analyst_task_sessions", {
+  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+  tarefaId: bigint("tarefa_id", { mode: "number", unsigned: true }).notNull().references(() => tarefas.id, { onDelete: "cascade" }),
+  sessionKey: varchar("session_key", { length: 300 }).notNull(),
+  runtimeSessionId: varchar("runtime_session_id", { length: 300 }),
+  modelo: varchar("model", { length: 200 }).notNull(),
+  executionOrder: int("execution_order").notNull(),
+  status: varchar("status", { length: 30 }).notNull().default("active"),
+  openedAt: timestamp("opened_at").notNull().defaultNow(),
+  lastActivityAt: timestamp("last_activity_at").notNull().defaultNow(),
+  closedAt: timestamp("closed_at"),
+  closeReason: varchar("close_reason", { length: 100 }),
+  summary: text("summary"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+})
+
+/** Mensagens das sessões do analista no nível da tarefa. Conteúdo persistido independentemente da sessão operacional. */
+export const analystTaskSessionMessages = mysqlTable("analyst_task_session_messages", {
+  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+  sessionId: bigint("session_id", { mode: "number", unsigned: true }).notNull().references(() => analystTaskSessions.id, { onDelete: "cascade" }),
+  messageKey: varchar("message_key", { length: 300 }).notNull(),
+  sequenceNumber: int("sequence_number").notNull(),
+  role: varchar("role", { length: 30 }).notNull(),
+  content: text("content").notNull(),
+  contentSha256: varchar("content_sha256", { length: 64 }).notNull(),
+  occurredAt: timestamp("occurred_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+})
+
+/**
  * Histórico de entregas/erros/retornos por subtarefa.
  * Cada evento relevante (entrega iniciada, gate rejeitado, retorno para rework,
  * bloqueio, conclusão) grava uma linha nova — nunca sobrescreve o histórico anterior.
@@ -764,5 +799,26 @@ export const annotations = {
     block_exit_code: { label: "Exit Code" },
     block_excerpt: { label: "Excerto", type: "textarea", fullWidth: true },
     blocked_at: { label: "Bloqueado em" },
+  },
+  analyst_task_sessions: {
+    tarefa_id: { label: "Tarefa" },
+    session_key: { label: "Session Key", maxLength: 300 },
+    runtime_session_id: { label: "Runtime Session ID", maxLength: 300 },
+    model: { label: "Modelo", maxLength: 200 },
+    execution_order: { label: "Ordem de Execução" },
+    status: { label: "Status", helperText: "active | closed | failed" },
+    opened_at: { label: "Aberta em" },
+    last_activity_at: { label: "Última Atividade" },
+    closed_at: { label: "Fechada em" },
+    close_reason: { label: "Motivo do Fechamento", maxLength: 100 },
+    summary: { label: "Resumo", type: "textarea", fullWidth: true },
+  },
+  analyst_task_session_messages: {
+    session_id: { label: "Sessão" },
+    message_key: { label: "Message Key", maxLength: 300 },
+    sequence_number: { label: "Sequência" },
+    role: { label: "Role", helperText: "user | assistant | system | analyst" },
+    content: { label: "Conteúdo", type: "textarea", fullWidth: true },
+    occurred_at: { label: "Ocorrido em" },
   },
 } satisfies FormAnnotationsPorTabela
