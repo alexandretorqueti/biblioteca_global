@@ -83,7 +83,9 @@ export class GerenteAgentesService {
       .limit(1);
 
     if (!tarefa) throw new NotFoundException('Tarefa não encontrada');
-    if (tarefa.projetoId !== projeto.id) throw new NotFoundException('Tarefa não encontrada');
+    // Nota: não validar tarefa.projetoId contra projeto.id — são namespaces diferentes
+    // (tarefas.projetoId → projetos_captados.id; projeto.id → core.projetos da plataforma).
+    // O banco já é tenant-scoped (dbDoMotor → projeto_640), então a existência da tarefa basta.
     const [subtarefa] = await db
       .select({ id: subtarefas.id })
       .from(subtarefas)
