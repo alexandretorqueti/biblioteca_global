@@ -18,6 +18,7 @@ export interface DerivedTaskStatusFacts {
   subtaskStatuses: readonly string[]
   deploySucceeded: boolean
   integrationConfirmed: boolean
+  pausedAt?: string | null
 }
 
 const APPROVED_SUBTASK_STATUSES = new Set(["verified", "superseded"])
@@ -47,7 +48,11 @@ export function deriveTaskStatus(facts: DerivedTaskStatusFacts): TaskStatus {
     (status) => APPROVED_SUBTASK_STATUSES.has(status),
   )
   if (allSubtasksApproved && facts.integrationConfirmed) return "completed"
-  if (hasSubtasks) return "ready"
+  if (hasSubtasks) {
+    // Se a tarefa está pausada (paused_at preenchido) e estaria pronta, retorna "paused"
+    if (facts.pausedAt) return "paused"
+    return "ready"
+  }
 
   return "planned"
 }
