@@ -697,3 +697,407 @@ describe("ResumePreflightChecker — garantia de somente leitura", () => {
     }
   })
 })
+
+// ─── Verificação de sessão do Console ────────────────────────────────────────
+
+describe("ResumePreflightChecker — verificação de sessão do Console", () => {
+  function createMockHttpRunner(options: {
+    status?: number
+    body?: string
+    error?: Error
+  } = {}): import("../src/workspaces/ResumePreflightChecker.js").PreflightHttpCommandRunner {
+    return {
+      request: vi.fn().mockImplementation(async () => {
+        if (options.error) throw options.error
+        return {
+          status: options.status ?? 200,
+          body: options.body ?? '{"agents":[]}',
+        }
+      }),
+    }
+  }
+
+  it("passa quando o Console responde HTTP 200 com JSON válido", async () => {
+    const repoPath = join(tempDir, "repo")
+    await mkdir(repoPath, { recursive: true })
+
+    const checker = new ResumePreflightChecker({
+      gitRunner: createMockGitRunner({ gitRoot: repoPath }),
+      httpRunner: createMockHttpRunner({ status: 200, body: '{"agents":[]}' }),
+    })
+
+    const report = await checker.check({
+      repoPath,
+      consoleBaseUrl: "http://127.0.0.1:6280",
+      consoleToken: "test-token",
+    })
+
+    const consoleCheck = report.checks.find((c) => c.check === "console_session")
+    expect(consoleCheck).toBeDefined()
+    expect(consoleCheck!.ok).toBe(true)
+    expect(consoleCheck!.details?.baseUrl).toBe("http://127.0.0.1:6280")
+  })
+
+  it("falha quando o Console retorna HTTP 401 (token inválido)", async () => {
+    const repoPath = join(tempDir, "repo")
+    await mkdir(repoPath, { recursive: true })
+
+    const checker = new ResumePreflightChecker({
+      gitRunner: createMockGitRunner({ gitRoot: repoPath }),
+      httpRunner: createMockHttpRunner({ status: 401 }),
+    })
+
+    const report = await checker.check({
+      repoPath,
+      consoleBaseUrl: "http://127.0.0.1:6280",
+      consoleToken: "expired-token",
+    })
+
+    const consoleCheck = report.checks.find((c) => c.check === "console_session")
+    expect(consoleCheck).toBeDefined()
+    expect(consoleCheck!.ok).toBe(false)
+    expect(consoleCheck!.cause).toContain("token inválido")
+    expect(report.incidentClassification).toBe("console_unreachable")
+  })
+
+  it("falha quando o Console retorna HTTP 500", async () => {
+    const repoPath = join(tempDir, "repo")
+    await mkdir(repoPath, { recursive: true })
+
+    const checker = new ResumePreflightChecker({
+      gitRunner: createMockGitRunner({ gitRoot: repoPath }),
+      httpRunner: createMockHttpRunner({ status: 500 }),
+    })
+
+    const report = await checker.check({
+      repoPath,
+      consoleBaseUrl: "http://127.0.0.1:6280",
+    })
+
+    const consoleCheck = report.checks.find((c) => c.check === "console_session")
+    expect(consoleCheck!.ok).toBe(false)
+    expect(consoleCheck!.cause).toContain("Console não respondeu ou falhou internamente")
+  })
+
+  it("falha quando a conexão é recusada (ECONNREFUSED)", async () => {
+    const repoPath = join(tempDir, "repo")
+    await mkdir(repoPath, { recursive: true })
+
+    const checker = new ResumePreflightChecker({
+      gitRunner: createMockGitRunner({ gitRoot: repoPath }),
+      httpRunner: createMockHttpRunner({ error: new Error("connect ECONNREFUSED 127.0.0.1:6280") }),
+    })
+
+    const report = await checker.check({
+      repoPath,
+      consoleBaseUrl: "http://127.0.0.1:6280",
+    })
+
+    const consoleCheck = report.checks.find((c) => c.check === "console_session")
+    expect(consoleCheck!.ok).toBe(false)
+    expect(consoleCheck!.cause).toContain("Conexão recusada")
+    expect(consoleCheck!.suggestedAction).toContain("container do Console")
+  })
+
+  it("falha quando o DNS não resolve (ENOTFOUND)", async () => {
+    const repoPath = join(tempDir, "repo")
+    await mkdir(repoPath, { recursive: true })
+
+    const checker = new ResumePreflightChecker({
+      gitRunner: createMockGitRunner({ gitRoot: repoPath }),
+      httpRunner: createMockHttpRunner({ error: new Error("getaddrinfo ENOTFOUND invalid-host") }),
+    })
+
+    const report = await checker.check({
+      repoPath,
+      consoleBaseUrl: "http://invalid-host:6280",
+    })
+
+    const consoleCheck = report.checks.find((c) => c.check === "console_session")
+    expect(consoleCheck!.ok).toBe(false)
+    expect(consoleCheck!.cause).toContain("DNS falhou")
+  })
+
+  it("falha quando o timeout é atingido", async () => {
+    const repoPath = join(tempDir, "repo")
+    await mkdir(repoPath, { recursive: true })
+
+    const checker = new ResumePreflightChecker({
+      gitRunner: createMockGitRunner({ gitRoot: repoPath }),
+      httpRunner: createMockHttpRunner({ error: new Error("timeout após 10000ms") }),
+    })
+
+    const report = await checker.check({
+      repoPath,
+      consoleBaseUrl: "http://127.0.0.1:6280",
+      consoleCheckTimeoutMs: 10_000,
+    })
+
+    const consoleCheck = report.checks.find((c) => c.check === "console_session")
+    expect(consoleCheck!.ok).toBe(false)
+    expect(consoleCheck!.cause).toContain("Timeout")
+  })
+
+  it("falha quando a resposta não é JSON válido", async () => {
+    const repoPath = join(tempDir, "repo")
+    await mkdir(repoPath, { recursive: true })
+
+    const checker = new ResumePreflightChecker({
+      gitRunner: createMockGitRunner({ gitRoot: repoPath }),
+      httpRunner: createMockHttpRunner({ status: 200, body: "<html>Not Found</html>" }),
+    })
+
+    const report = await checker.check({
+      repoPath,
+      consoleBaseUrl: "http://127.0.0.1:6280",
+    })
+
+    const consoleCheck = report.checks.find((c) => c.check === "console_session")
+    expect(consoleCheck!.ok).toBe(false)
+    expect(consoleCheck!.cause).toContain("não é JSON válido")
+  })
+
+  it("não é executada quando consoleBaseUrl não é fornecida", async () => {
+    const repoPath = join(tempDir, "repo")
+    await mkdir(repoPath, { recursive: true })
+
+    const checker = new ResumePreflightChecker({
+      gitRunner: createMockGitRunner({ gitRoot: repoPath }),
+    })
+
+    const report = await checker.check({ repoPath })
+
+    const consoleCheck = report.checks.find((c) => c.check === "console_session")
+    expect(consoleCheck).toBeUndefined()
+  })
+})
+
+// ─── Verificação de SSH de deploy ────────────────────────────────────────────
+
+describe("ResumePreflightChecker — verificação de SSH de deploy", () => {
+  it("passa quando SSH responde com exit code 0", async () => {
+    const repoPath = join(tempDir, "repo")
+    await mkdir(repoPath, { recursive: true })
+
+    const shellRunner = createMockShellRunner(0, "", "")
+    const checker = new ResumePreflightChecker({
+      gitRunner: createMockGitRunner({ gitRoot: repoPath }),
+      shellRunner,
+    })
+
+    const report = await checker.check({
+      repoPath,
+      sshDeployTarget: "alexandre@192.168.1.8",
+    })
+
+    const sshCheck = report.checks.find((c) => c.check === "ssh_deploy")
+    expect(sshCheck).toBeDefined()
+    expect(sshCheck!.ok).toBe(true)
+    expect(sshCheck!.details?.target).toBe("alexandre@192.168.1.8")
+  })
+
+  it("usa StrictHostKeyChecking=yes e UserKnownHostsFile nos argumentos", async () => {
+    const repoPath = join(tempDir, "repo")
+    await mkdir(repoPath, { recursive: true })
+
+    const shellRunner = createMockShellRunner(0, "", "")
+    const checker = new ResumePreflightChecker({
+      gitRunner: createMockGitRunner({ gitRoot: repoPath }),
+      shellRunner,
+    })
+
+    await checker.check({
+      repoPath,
+      sshDeployTarget: "alexandre@192.168.1.8",
+      sshDeployKeyPath: "/root/.ssh/id_ed25519",
+      sshDeployKnownHostsPath: "/root/.ssh/known_hosts",
+    })
+
+    const calls = vi.mocked(shellRunner.run).mock.calls
+    const sshCall = calls.find(([cmd]) => cmd.includes("ssh"))
+    expect(sshCall).toBeDefined()
+    const [command] = sshCall!
+    expect(command).toContain("StrictHostKeyChecking=yes")
+    expect(command).toContain("UserKnownHostsFile=/root/.ssh/known_hosts")
+    expect(command).toContain("-i /root/.ssh/id_ed25519")
+    expect(command).toContain("BatchMode=yes")
+    expect(command).toContain("true")
+  })
+
+  it("falha quando host key verification falha (chave alterada)", async () => {
+    const repoPath = join(tempDir, "repo")
+    await mkdir(repoPath, { recursive: true })
+
+    const shellRunner = createMockShellRunner(255, "", "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @\nHost key verification failed.")
+    const checker = new ResumePreflightChecker({
+      gitRunner: createMockGitRunner({ gitRoot: repoPath }),
+      shellRunner,
+    })
+
+    const report = await checker.check({
+      repoPath,
+      sshDeployTarget: "alexandre@192.168.1.8",
+    })
+
+    const sshCheck = report.checks.find((c) => c.check === "ssh_deploy")
+    expect(sshCheck!.ok).toBe(false)
+    expect(sshCheck!.cause).toContain("Host key verification failed")
+    expect(sshCheck!.cause).toContain("chave do host pode ter sido alterada")
+    expect(report.incidentClassification).toBe("ssh_deploy_unreachable")
+  })
+
+  it("falha quando a autenticação é recusada (permission denied)", async () => {
+    const repoPath = join(tempDir, "repo")
+    await mkdir(repoPath, { recursive: true })
+
+    const shellRunner = createMockShellRunner(255, "", "alexandre@192.168.1.8: Permission denied (publickey).")
+    const checker = new ResumePreflightChecker({
+      gitRunner: createMockGitRunner({ gitRoot: repoPath }),
+      shellRunner,
+    })
+
+    const report = await checker.check({
+      repoPath,
+      sshDeployTarget: "alexandre@192.168.1.8",
+    })
+
+    const sshCheck = report.checks.find((c) => c.check === "ssh_deploy")
+    expect(sshCheck!.ok).toBe(false)
+    expect(sshCheck!.cause).toContain("Permission denied")
+    expect(sshCheck!.cause).toContain("chave privada não aceita")
+    expect(sshCheck!.suggestedAction).toContain("chave")
+  })
+
+  it("falha quando a conexão é recusada (host fora do ar)", async () => {
+    const repoPath = join(tempDir, "repo")
+    await mkdir(repoPath, { recursive: true })
+
+    const shellRunner = createMockShellRunner(255, "", "ssh: connect to host 192.168.1.8 port 22: Connection refused")
+    const checker = new ResumePreflightChecker({
+      gitRunner: createMockGitRunner({ gitRoot: repoPath }),
+      shellRunner,
+    })
+
+    const report = await checker.check({
+      repoPath,
+      sshDeployTarget: "alexandre@192.168.1.8",
+    })
+
+    const sshCheck = report.checks.find((c) => c.check === "ssh_deploy")
+    expect(sshCheck!.ok).toBe(false)
+    expect(sshCheck!.cause).toContain("Conexão recusada ou sem rota")
+    expect(sshCheck!.cause).toContain("Connection refused")
+  })
+
+  it("não é executada quando sshDeployTarget não é fornecido", async () => {
+    const repoPath = join(tempDir, "repo")
+    await mkdir(repoPath, { recursive: true })
+
+    const checker = new ResumePreflightChecker({
+      gitRunner: createMockGitRunner({ gitRoot: repoPath }),
+    })
+
+    const report = await checker.check({ repoPath })
+
+    const sshCheck = report.checks.find((c) => c.check === "ssh_deploy")
+    expect(sshCheck).toBeUndefined()
+  })
+
+  it("executa somente o comando 'true' no host remoto (sem alterações)", async () => {
+    const repoPath = join(tempDir, "repo")
+    await mkdir(repoPath, { recursive: true })
+
+    const shellRunner = createMockShellRunner(0, "", "")
+    const checker = new ResumePreflightChecker({
+      gitRunner: createMockGitRunner({ gitRoot: repoPath }),
+      shellRunner,
+    })
+
+    await checker.check({
+      repoPath,
+      sshDeployTarget: "alexandre@192.168.1.8",
+    })
+
+    const calls = vi.mocked(shellRunner.run).mock.calls
+    const sshCall = calls.find(([cmd]) => cmd.includes("ssh"))
+    expect(sshCall).toBeDefined()
+    // O último argumento deve ser 'true' — comando remoto inofensivo
+    const [command] = sshCall!
+    expect(command.trim().endsWith("true")).toBe(true)
+    // Nenhum comando destrutivo no argumento SSH
+    expect(command).not.toContain("rm ")
+    expect(command).not.toContain("git push")
+    expect(command).not.toContain("docker")
+  })
+})
+
+// ─── Agrupamento de falhas externas com internas ─────────────────────────────
+
+describe("ResumePreflightChecker — agrupamento de falhas externas com internas", () => {
+  it("classifica como multiple_infrastructure_failures quando Console + SSH + Git falham", async () => {
+    const repoPath = join(tempDir, "repo")
+    await mkdir(repoPath, { recursive: true })
+
+    const httpRunner = {
+      request: vi.fn().mockRejectedValue(new Error("ECONNREFUSED")),
+    }
+    const shellRunner = createMockShellRunner(255, "", "Connection refused")
+    const gitRunner = createMockGitRunner({ gitRoot: repoPath, branch: "wrong-branch" })
+
+    const checker = new ResumePreflightChecker({
+      gitRunner,
+      shellRunner,
+      httpRunner,
+    })
+
+    const report = await checker.check({
+      repoPath,
+      worktreePath: join(tempDir, "wt"),
+      expectedBranch: "motor-v2/task-7/13/a1",
+      checkDependencies: true,
+      consoleBaseUrl: "http://127.0.0.1:6280",
+      sshDeployTarget: "alexandre@192.168.1.8",
+    })
+
+    expect(report.failures.length).toBeGreaterThanOrEqual(3)
+    expect(report.incidentClassification).toBe("multiple_infrastructure_failures")
+  })
+
+  it("classifica como console_unreachable quando só o Console falha", async () => {
+    const repoPath = join(tempDir, "repo")
+    await mkdir(repoPath, { recursive: true })
+
+    const checker = new ResumePreflightChecker({
+      gitRunner: createMockGitRunner({ gitRoot: repoPath }),
+      httpRunner: {
+        request: vi.fn().mockRejectedValue(new Error("ECONNREFUSED")),
+      },
+    })
+
+    const report = await checker.check({
+      repoPath,
+      consoleBaseUrl: "http://127.0.0.1:6280",
+    })
+
+    expect(report.failures.length).toBe(1)
+    expect(report.incidentClassification).toBe("console_unreachable")
+  })
+
+  it("classifica como ssh_deploy_unreachable quando só o SSH falha", async () => {
+    const repoPath = join(tempDir, "repo")
+    await mkdir(repoPath, { recursive: true })
+
+    const checker = new ResumePreflightChecker({
+      gitRunner: createMockGitRunner({ gitRoot: repoPath }),
+      shellRunner: createMockShellRunner(255, "", "Permission denied (publickey)."),
+    })
+
+    const report = await checker.check({
+      repoPath,
+      sshDeployTarget: "alexandre@192.168.1.8",
+    })
+
+    expect(report.failures.length).toBe(1)
+    expect(report.incidentClassification).toBe("ssh_deploy_unreachable")
+  })
+})
