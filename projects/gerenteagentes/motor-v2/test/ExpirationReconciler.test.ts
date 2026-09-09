@@ -33,6 +33,7 @@ describe("ExpirationReconciler", () => {
       { rows: [{ id: 41, external_id: "task-41", status: "running", has_subtasks: 1 }], affectedRows: 0, insertId: 0 },
       { rows: [], affectedRows: 1, insertId: 0 },
       { rows: [], affectedRows: 1, insertId: 0 },
+      { rows: [], affectedRows: 0, insertId: 0 }, // recoverOrphanedAnalysis
     ])
 
     await new ExpirationReconciler({ db }).reconcile()
@@ -40,7 +41,7 @@ describe("ExpirationReconciler", () => {
     const calls = vi.mocked(db.query).mock.calls
     expect(String(calls[3]?.[0])).toContain("status IN ('running', 'delivered', 'verifying', 'rejected')")
     expect(calls[3]?.[1]).toEqual(["41"])
-    expect(calls).toHaveLength(5)
+    expect(calls).toHaveLength(6)
   })
 
   it("retoma análise órfã como planned, sem replanejar tarefas que já têm subtarefas", async () => {
@@ -49,12 +50,13 @@ describe("ExpirationReconciler", () => {
       { rows: [], affectedRows: 0, insertId: 0 },
       { rows: [{ id: 42, external_id: "task-42", status: "analyzing", has_subtasks: 0 }], affectedRows: 0, insertId: 0 },
       { rows: [], affectedRows: 1, insertId: 0 },
+      { rows: [], affectedRows: 0, insertId: 0 }, // recoverOrphanedAnalysis
     ])
 
     await new ExpirationReconciler({ db }).reconcile()
 
     const calls = vi.mocked(db.query).mock.calls
-    expect(calls).toHaveLength(4)
+    expect(calls).toHaveLength(5)
   })
 
   it("recupera subtarefa running órfã mesmo quando a tarefa pai está planned", async () => {
@@ -65,13 +67,14 @@ describe("ExpirationReconciler", () => {
       { rows: [{ subtask_id: 829, tarefa_id: 758, external_id: "task-758" }], affectedRows: 0, insertId: 0 },
       { rows: [], affectedRows: 1, insertId: 0 },
       { rows: [], affectedRows: 1, insertId: 0 },
+      { rows: [], affectedRows: 0, insertId: 0 }, // recoverOrphanedAnalysis
     ])
     await new ExpirationReconciler({ db }).reconcile()
     const calls = vi.mocked(db.query).mock.calls
     expect(String(calls[3]?.[0])).toContain("s.status = 'running'")
     expect(String(calls[4]?.[0])).toContain("status = 'pending'")
     expect(calls[4]?.[1]).toEqual([829])
-    expect(calls).toHaveLength(5)
+    expect(calls).toHaveLength(6)
   })
 
   it("repara verified com retorno exato sem resposta e deixa a tarefa pai pronta", async () => {
@@ -81,6 +84,7 @@ describe("ExpirationReconciler", () => {
       { rows: [], affectedRows: 1, insertId: 0 },
       { rows: [], affectedRows: 1, insertId: 0 },
       { rows: [], affectedRows: 0, insertId: 0 },
+      { rows: [], affectedRows: 0, insertId: 0 }, // recoverOrphanedAnalysis
     ])
 
     await new ExpirationReconciler({ db }).reconcile()
@@ -88,6 +92,6 @@ describe("ExpirationReconciler", () => {
     const calls = vi.mocked(db.query).mock.calls
     expect(String(calls[1]?.[0])).toContain("s.status = 'verified'")
     expect(calls[2]?.[1]).toEqual(["The agent run failed before producing a reply."])
-    expect(calls).toHaveLength(5)
+    expect(calls).toHaveLength(6)
   })
 })
