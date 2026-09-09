@@ -1,6 +1,6 @@
 import { failureFingerprint } from './SystemFailurePolicy.js'
 
-export type BlockerKind = 'blocked_environment' | 'systemic_failure' | 'model_chain_exhausted' | 'correction_failed'
+export type BlockerKind = 'blocked_environment' | 'systemic_failure' | 'model_chain_exhausted' | 'correction_failed' | 'no_reply_exhausted'
 
 export interface BlockerEvidence {
   kind: BlockerKind

@@ -326,6 +326,7 @@ export class TaskCoordinator {
       // devolvida manualmente para planned. Nesse caso, o plano já existe e
       // ela deve seguir para execução, não ser analisada novamente.
       "WHERE s.status = 'pending' AND t.status IN ('ready', 'planned') " +
+      "AND (s.next_retry_at IS NULL OR s.next_retry_at <= NOW()) " +
       "AND NOT EXISTS (" +
       "SELECT 1 FROM subtarefas anterior " +
       "WHERE anterior.tarefa_id = s.tarefa_id AND anterior.seq < s.seq AND anterior.status NOT IN ('verified', 'superseded') " +
@@ -783,7 +784,7 @@ export class TaskCoordinator {
               const placeholders = retryableSubtaskIds.map(() => "?").join(", ")
               const retryReason = ("Evidência da entrega inválida; reenfileirada para nova execução pela escada de modelos. " + promotionReason).substring(0, 500)
               await this.db.query(
-                `UPDATE subtarefas SET status = 'pending', workspace_status = 'evidence_rejected', workspace_commit_sha = NULL, resultado = ?, finalizada_em = NULL, updated_at = NOW() WHERE id IN (${placeholders})`,
+                `UPDATE subtarefas SET status = 'pending', workspace_status = 'evidence_rejected', workspace_commit_sha = NULL, resultado = ?, finalizada_em = NULL, next_retry_at = NULL, updated_at = NOW() WHERE id IN (${placeholders})`,
                 [retryReason, ...retryableSubtaskIds],
               )
               await this.saveTaskTransition(task, "subtasks_pending")
@@ -928,7 +929,7 @@ export class TaskCoordinator {
       } else {
         if (worker.subtaskId) {
           await this.db.query(
-            "UPDATE subtarefas SET status = ?, resultado = ? WHERE id = ?",
+            "UPDATE subtarefas SET status = ?, resultado = ?, next_retry_at = NULL WHERE id = ?",
             [transient ? "pending" : "blocked", failure.substring(0, 500), worker.subtaskId],
           )
         }
@@ -1027,7 +1028,7 @@ export class TaskCoordinator {
     // resume; sem isso ela ficaria órfã em running/verifying para sempre.
     if (worker.subtaskId) {
       await this.db.query(
-        "UPDATE subtarefas SET status = 'pending', updated_at = NOW() WHERE id = ? AND status IN ('running', 'verifying', 'delivered', 'rework')",
+        "UPDATE subtarefas SET status = 'pending', next_retry_at = NULL, updated_at = NOW() WHERE id = ? AND status IN ('running', 'verifying', 'delivered', 'rework')",
         [worker.subtaskId],
       ).catch((error: unknown) => this.logger.error("Falha ao resetar subtarefa pausada: " + describeError(error), { taskId: worker.taskId, subtaskId: worker.subtaskId, executionId }))
     }
@@ -2046,7 +2047,7 @@ export class TaskCoordinator {
     }
 
     await this.db.query(
-      "UPDATE subtarefas SET status = 'pending', workspace_status = 'integration_conflict', resultado = ?, finalizada_em = NULL, updated_at = NOW() WHERE id = ?",
+      "UPDATE subtarefas SET status = 'pending', workspace_status = 'integration_conflict', resultado = ?, finalizada_em = NULL, next_retry_at = NULL, updated_at = NOW() WHERE id = ?",
       [note, subtaskId],
     )
     this.logger.warn("Conflito na integração com a branch da tarefa; subtarefa re-enfileirada para o agente resolver: " + note, { taskId: worker.taskId, subtaskId, executionId })
@@ -2160,7 +2161,7 @@ export class TaskCoordinator {
     }
 
     await this.db.query(
-      "UPDATE subtarefas SET status = 'pending', workspace_status = 'integration_reverted', resultado = ?, finalizada_em = NULL, updated_at = NOW() WHERE id = ?",
+      "UPDATE subtarefas SET status = 'pending', workspace_status = 'integration_reverted', resultado = ?, finalizada_em = NULL, next_retry_at = NULL, updated_at = NOW() WHERE id = ?",
       [note, subtaskId],
     )
     this.logger.warn("Gate de integração vermelho; merge revertido e subtarefa re-enfileirada: " + note.substring(0, 200), { taskId: worker.taskId, subtaskId, executionId })
@@ -2202,7 +2203,7 @@ export class TaskCoordinator {
     // verified pularia o trabalho real.
     if (isBaselineCorrection(rows[0]?.correction_fingerprint ? String(rows[0].correction_fingerprint) : null)) {
       await this.db.query(
-        "UPDATE subtarefas SET status = 'pending', resultado = CONCAT(COALESCE(resultado, ''), '\\nBaseline verde via subtarefa ', ?), updated_at = NOW() WHERE id = ? AND status = 'rejected'",
+        "UPDATE subtarefas SET status = 'pending', resultado = CONCAT(COALESCE(resultado, ''), '\\nBaseline verde via subtarefa ', ?), next_retry_at = NULL, updated_at = NOW() WHERE id = ? AND status = 'rejected'",
         [subtaskId, originalId],
       )
       return
