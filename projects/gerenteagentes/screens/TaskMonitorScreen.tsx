@@ -1182,26 +1182,28 @@ export default function TaskMonitorScreen(): ReactNode {
       {erro && <Alert severity="error" data-testid="error-alert">{erro}</Alert>}
 
       {/* Sessão 1: Mapa vivo da tarefa */}
-      <TaskFlowMap
-        tarefas={tarefas}
-        selectedTaskId={tarefaId}
-        search={buscaTarefa}
-        motorActivities={motorActivities}
-        onSelectTask={setTarefaId}
-        onMoveTask={moverTarefaNoFluxo}
-      />
+      <Box data-testid="task-map-section">
+        <TaskFlowMap
+          tarefas={tarefas}
+          selectedTaskId={tarefaId}
+          search={buscaTarefa}
+          motorActivities={motorActivities}
+          onSelectTask={setTarefaId}
+          onMoveTask={moverTarefaNoFluxo}
+        />
+      </Box>
 
       {/* Sessão 2: Filtros + detalhes da tarefa, em moldura única */}
-      <Paper variant="outlined" sx={{ p: 2 }}>
+      <Paper variant="outlined" sx={{ p: 2 }} data-testid="task-monitoring-section">
         <Stack spacing={2}>
-          <Stack direction={{ xs: "column", sm: "row" }} spacing={2} flexWrap="wrap" useFlexGap>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={2} flexWrap="wrap" useFlexGap data-testid="task-filter-section">
         <TextField
           size="small"
           label="Buscar tarefa"
           placeholder="#766 ou título"
           value={buscaTarefa}
           onChange={(event) => setBuscaTarefa(event.target.value)}
-          inputProps={{ "data-testid": "input-task-search" }}
+          inputProps={{ "data-testid": "filter-busca" }}
           sx={{ minWidth: 260 }}
         />
         <FormControl size="small" sx={{ minWidth: 240 }}>
@@ -1210,7 +1212,7 @@ export default function TaskMonitorScreen(): ReactNode {
             label="Projeto"
             value={projetoFiltro}
             onChange={(e) => setProjetoFiltro(String(e.target.value) === "" ? "" : Number(e.target.value))}
-            data-testid="select-projeto"
+            data-testid="filter-projeto"
           >
             <MenuItem value="">Todos os projetos</MenuItem>
             {projetos.map((p) => (
@@ -1227,7 +1229,7 @@ export default function TaskMonitorScreen(): ReactNode {
             label="Status"
             value={statusFiltro}
             onChange={(e) => setStatusFiltro(String(e.target.value))}
-            data-testid="select-status"
+            data-testid="filter-status"
           >
             <MenuItem value="">Todos</MenuItem>
             {ALL_TASK_STATUSES.map((s) => (
@@ -1244,7 +1246,7 @@ export default function TaskMonitorScreen(): ReactNode {
             label="Tarefa"
             value={tarefaId}
             onChange={(e) => setTarefaId(Number(e.target.value))}
-            data-testid="select-tarefa"
+            data-testid="filter-tarefa"
           >
             {tarefas.length === 0 && (
               <MenuItem value="" disabled>
@@ -1261,6 +1263,8 @@ export default function TaskMonitorScreen(): ReactNode {
       </Stack>
 
       {tarefaSelecionada && (
+        <>
+          <Box data-testid="task-detail-section">
           <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems="center" justifyContent="space-between">
             <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
               <Typography variant="h6">{tarefaSelecionada.titulo}</Typography>
@@ -1620,8 +1624,10 @@ export default function TaskMonitorScreen(): ReactNode {
           )}
 
           {taskChatPanel}
-        </Stack>
+          </Box>
+        </>
       )}
+        </Stack>
       </Paper>
 
       <Dialog
