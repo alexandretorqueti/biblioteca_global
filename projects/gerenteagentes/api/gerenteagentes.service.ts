@@ -35,7 +35,7 @@ import { ProvisionService } from '../../../apps/api/src/modules/provision/provis
 import { ALL_TASK_STATUSES, TASK_STATUS_STARTABLE } from '../motor-v2/src/shared/task-statuses';
 import { RealtimeService } from '../../../apps/api/src/modules/realtime/realtime.service';
 
-const DEFAULT_MOTOR_REQUEST_TIMEOUT_MS = 90_000;
+const DEFAULT_MOTOR_REQUEST_TIMEOUT_MS = 180_000;
 
 @Injectable()
 export class GerenteAgentesService {
