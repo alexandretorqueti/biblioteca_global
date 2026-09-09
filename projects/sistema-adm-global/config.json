@@ -156,6 +156,12 @@
                 "gridVisible": false
               },
               {
+                "name": "instagram",
+                "label": "Instagram",
+                "type": "text",
+                "maxLength": 200
+              },
+              {
                 "name": "email",
                 "label": "E-mail",
                 "type": "email",
