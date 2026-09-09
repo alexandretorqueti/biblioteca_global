@@ -201,13 +201,7 @@ export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", moto
     <Paper
       variant="outlined"
       sx={{
-        // Break out of parent Container's maxWidth constraint to use full viewport width
-        width: "100vw",
-        position: "relative",
-        left: "50%",
-        marginLeft: "-50vw",
-        marginRight: "-50vw",
-        maxWidth: "none",
+        width: "100%",
         p: { xs: 1.5, md: 2 },
         overflow: "hidden",
         boxSizing: "border-box",
