@@ -47,7 +47,7 @@ describe("fila de deploy", () => {
 
     expect(dispatch).not.toHaveBeenCalled()
     expect(db.query).toHaveBeenCalledTimes(1)
-    expect(String(vi.mocked(db.query).mock.calls[0]?.[0])).toContain("t.status = 'completed'")
+    expect(String(vi.mocked(db.query).mock.calls[0]?.[0])).toContain("f.integration_confirmed_at IS NOT NULL")
   })
 
   it("não inicia deploy quando o banco ainda registra trabalho ativo após reinício", async () => {
@@ -105,7 +105,7 @@ describe("fila de deploy", () => {
 
     const sql = vi.mocked(db.query).mock.calls.map(([query]) => String(query)).join("\n")
     expect(sql).toContain("status = 'succeeded'")
-    expect(sql).toContain("t.status = 'deployed'")
+    expect(sql).not.toContain("t.status = 'deployed'")
     expect(internal.activeDeployments.size).toBe(0)
   })
 
@@ -118,7 +118,7 @@ describe("fila de deploy", () => {
 
     const sql = String(vi.mocked(db.query).mock.calls[0]?.[0])
     expect(sql).toContain("t.tipo = 'desenvolvimento'")
-    expect(sql).toContain("t.status = 'completed'")
+    expect(sql).toContain("f.integration_confirmed_at IS NOT NULL")
     expect(sql).toContain("dr.id IS NULL")
   })
 
@@ -133,7 +133,7 @@ describe("fila de deploy", () => {
     const calls = vi.mocked(db.query).mock.calls
     const sql = calls.map(([query]) => String(query)).join("\n")
     expect(sql).toContain("INSERT INTO bloqueios")
-    expect(sql).toContain("t.status = 'blocked'")
+    expect(sql).not.toContain("t.status = 'blocked'")
     expect(calls.some(([, params]) => Array.isArray(params) && params.includes("healthcheck da API falhou"))).toBe(true)
   })
 })

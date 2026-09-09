@@ -302,6 +302,9 @@ export const tarefas = mysqlTable("tarefas", {
   // FK self-reference criada na migration (tarefas.depends_on_task_id → tarefas.id)
   autoStart: boolean("auto_start").notNull().default(false),
   planCoverage: json("plan_coverage"), // requisitos identificados e matriz de cobertura do analista
+  // Pausa é um fato operacional; não deve disputar a fonte de verdade com o
+  // status derivado da tarefa.
+  pausedAt: timestamp("paused_at"),
   bootRetryCount: int("boot_retry_count").notNull().default(0),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at")
@@ -330,6 +333,19 @@ export const deployRequests = mysqlTable("deploy_requests", {
 }, (table) => ({
   tarefaIdx: uniqueIndex("deploy_requests_tarefa_unique").on(table.tarefaId),
 }))
+
+/** Fatos transitórios/terminais que compõem o status derivado da tarefa. */
+export const taskRuntimeFacts = mysqlTable("task_runtime_facts", {
+  tarefaId: bigint("tarefa_id", { mode: "number", unsigned: true })
+    .primaryKey()
+    .references(() => tarefas.id, { onDelete: "cascade" }),
+  analysisStartedAt: timestamp("analysis_started_at"),
+  integrationConfirmedAt: timestamp("integration_confirmed_at"),
+  terminalStatus: varchar("terminal_status", { length: 30 }),
+  terminalAt: timestamp("terminal_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+})
 
 export const subtarefas = mysqlTable("subtarefas", {
   id: bigint("id", { mode: "number", unsigned: true })
@@ -616,6 +632,7 @@ export const bloqueios = mysqlTable("bloqueios", {
   blockExitCode: int("block_exit_code"),
   blockExcerpt: text("block_excerpt"),
   blockedAt: timestamp("blocked_at"),
+  resolvedAt: timestamp("resolved_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 })
 

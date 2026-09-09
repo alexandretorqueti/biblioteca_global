@@ -87,8 +87,11 @@ export class MysqlTaskRepository implements TaskRepository {
 
     if (existing) {
       // UPDATE - NAO sobrescrever external_id com executionId!
-      const updates: string[] = ["status = ?"]
-      const values: unknown[] = [data.status]
+      // O status operacional é derivado em TaskFactsStore. Este método ainda
+      // atualiza metadados da tarefa para compatibilidade, mas nunca grava
+      // tarefas.status durante uma transição do Motor.
+      const updates: string[] = []
+      const values: unknown[] = []
 
       if (data.errorMessage) {
         // Erro vai para a coluna dedicada; a descrição original da tarefa

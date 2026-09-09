@@ -74,10 +74,11 @@ export class ExpirationReconciler {
     // 2. Tarefas órfãs: o plano é preservado e a primeira subtarefa não
     // verificada volta à fila. Uma análise sem plano volta a `planned`.
     const orphans = await this.db.query(
-      `SELECT t.id, t.external_id, t.status,
+      `SELECT t.id, t.external_id,
               EXISTS(SELECT 1 FROM subtarefas s WHERE s.tarefa_id = t.id) AS has_subtasks
-       FROM tarefas t
-       WHERE t.status IN ('analyzing', 'running')
+       FROM tarefas t LEFT JOIN task_runtime_facts f ON f.tarefa_id = t.id
+       WHERE f.terminal_status IS NULL
+         AND (f.analysis_started_at IS NOT NULL OR EXISTS(SELECT 1 FROM subtarefas s WHERE s.tarefa_id = t.id AND s.status IN ('running', 'delivered', 'verifying')))
          AND NOT EXISTS (
            SELECT 1 FROM execution_resources r
            WHERE (r.owner_id = CAST(t.id AS CHAR) OR r.owner_id = t.external_id)
@@ -97,10 +98,6 @@ export class ExpirationReconciler {
           [taskId],
         )
       }
-      await this.db.query(
-        `UPDATE tarefas SET status = ?, updated_at = NOW() WHERE id = ?`,
-        [hasSubtasks ? 'ready' : 'planned', taskId],
-      )
     }
 
     await this.repairOrphanedRunningSubtasks(now)
@@ -116,8 +113,9 @@ export class ExpirationReconciler {
       `SELECT s.id AS subtask_id, s.tarefa_id, t.external_id
        FROM subtarefas s
        INNER JOIN tarefas t ON t.id = s.tarefa_id
+       LEFT JOIN task_runtime_facts f ON f.tarefa_id = t.id
        WHERE s.status = 'running'
-         AND t.status NOT IN ('completed', 'deployed', 'cancelled', 'failed')
+         AND f.terminal_status IS NULL
          AND NOT EXISTS (
            SELECT 1 FROM execution_resources r
            WHERE (r.owner_id = CAST(t.id AS CHAR) OR r.owner_id = t.external_id)
@@ -134,11 +132,6 @@ export class ExpirationReconciler {
              resultado = CONCAT(COALESCE(resultado, ''), '\n[reconciliado] Worker/lease expirado; subtarefa devolvida à fila.')
            WHERE id = ? AND status = 'running'`,
           [subtaskId],
-        )
-        await tx.query(
-          `UPDATE tarefas SET status = 'ready', updated_at = NOW()
-           WHERE id = ? AND status NOT IN ('completed', 'deployed', 'cancelled', 'failed')`,
-          [taskId],
         )
       })
       this.logger.warn(`Subtarefa órfã reconciliada: ${subtaskId}`, { taskId: String(row.external_id) })
@@ -159,13 +152,6 @@ export class ExpirationReconciler {
          WHERE status = 'verified' AND TRIM(COALESCE(resultado, '')) = ?`,
         [AGENT_RUN_FAILED_WITHOUT_REPLY],
       )
-      for (const row of affected.rows) {
-        await tx.query(
-          `UPDATE tarefas SET status = 'ready', updated_at = NOW()
-           WHERE id = ? AND status <> 'cancelled'`,
-          [row.tarefa_id],
-        )
-      }
       this.logger.warn(`Reparadas ${affected.rows.length} tarefa(s) com subtarefa verified sem resposta`)
     })
   }
