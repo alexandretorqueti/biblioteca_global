@@ -354,6 +354,12 @@ export const subtarefas = mysqlTable("subtarefas", {
   rebriefCount: int("rebrief_count").notNull().default(0),
   premiseFingerprint: varchar("premise_fingerprint", { length: 500 }),
   premiseEvidence: json("premise_evidence"),
+  // Política de retry (migration 0029): controle de reenfileiramento quando
+  // o runtime não produz resposta verificável. NULL = sem falha de retry pendente.
+  nextRetryAt: timestamp("next_retry_at"),
+  failureClassification: varchar("failure_classification", { length: 30 }),
+  failureFingerprint: varchar("failure_fingerprint", { length: 600 }),
+  failureDiagnostic: text("failure_diagnostic"),
   // Metadados do worktree exclusivo (migration 0011). Permanecem até a
   // integração e limpeza recuperável para permitir auditoria/retomada.
   workspacePath: varchar("workspace_path", { length: 1000 }),
