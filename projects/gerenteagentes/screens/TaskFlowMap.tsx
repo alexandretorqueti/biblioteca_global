@@ -40,7 +40,6 @@ interface FlowStation {
 }
 
 const MAIN_FLOW: FlowStation[] = [
-  { id: "draft", label: "Rascunhos", subtitle: "em preparação", statuses: ["draft"], tone: "neutral" },
   { id: "planning", label: "Planejadas", subtitle: "aguardando análise", statuses: ["planned"], tone: "neutral" },
   { id: "analyzing", label: "Em análise", subtitle: "IA analisando", statuses: ["analyzing"], tone: "active" },
   { id: "ready", label: "Prontas / na fila", subtitle: "próxima subtarefa", statuses: ["ready"], tone: "neutral" },

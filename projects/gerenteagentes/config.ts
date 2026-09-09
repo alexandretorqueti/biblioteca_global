@@ -193,13 +193,6 @@ export const config: GeradorSistemaConfig = {
                 filterField: "projetoId",
                 title: "Tarefas do Projeto",
                 defaultOrderBy: [
-                  {
-                    campo: "status",
-                    direction: "asc",
-                    valuesLast: [...TASK_STATUS_FINAIS].filter((s) =>
-                      ["completed", "deployed", "cancelled", "failed", "blocked"].includes(s),
-                    ),
-                  },
                   { campo: "createdAt", direction: "desc" },
                 ],
                 fields: [
@@ -227,7 +220,7 @@ export const config: GeradorSistemaConfig = {
                     "createdAt",
                     "updatedAt",
                   ],
-                  columnLabels: { id: "ID", titulo: "Título", status: "Status" },
+                  columnLabels: { id: "ID", titulo: "Título" },
                 },
                 rowActions: [
                   {
