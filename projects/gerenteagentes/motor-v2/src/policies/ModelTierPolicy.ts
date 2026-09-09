@@ -28,8 +28,13 @@ export function isModelUnavailableError(error: unknown): boolean {
   const message = candidate.message.toLowerCase()
   return candidate.status === 404 || candidate.status === 422 ||
     code.includes("model_not_found") || code.includes("model_unavailable") ||
+    code.includes("provider_auth_error") || code.includes("missing_provider_auth") ||
+    code.includes("authentication_error") || code.includes("invalid_api_key") ||
     message.includes("model not found") || message.includes("modelo indisponível") ||
-    message.includes("model unavailable") || message.includes("model not allowed")
+    message.includes("model unavailable") || message.includes("model not allowed") ||
+    message.includes("no api key found") || message.includes("missing api key") ||
+    message.includes("provider auth error") || message.includes("invalid api key") ||
+    message.includes("authentication error") || message.includes("unauthorized")
 }
 
 export function formatSessionKey(input: {
