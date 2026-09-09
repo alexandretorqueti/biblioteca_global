@@ -12,6 +12,8 @@ CREATE TABLE IF NOT EXISTS `motor_configuracoes` (
   CONSTRAINT `motor_configuracoes_chave_unique` UNIQUE(`chave`)
 );
 
+--> statement-breakpoint
+
 INSERT IGNORE INTO `motor_configuracoes` (`chave`,`tipo`,`valor`,`valor_padrao`,`regra_validacao`,`descricao`) VALUES
 ('motor.max_workers','number','1','1','inteiro entre 1 e 100','Número máximo global de tarefas de desenvolvimento em paralelo.'),
 ('motor.max_workers_per_project','number','1','1','inteiro entre 1 e 100','Número máximo de tarefas em paralelo por projeto.'),
