@@ -1531,8 +1531,10 @@ export class TaskCoordinator {
     await this.reconcileRunningDeploys()
     await this.recoverCompletedTasksWithoutDeploy()
     if (this.activeWorkers.size > 0 || this.finalizingExecutions.size > 0 || this.activeMaintenance > 0 || this.activeDeployments.size > 0) return
+    // Verifica se há tarefas ativas usando fatos operacionais (status é derivado)
     const { rows: busyRows } = await this.db.query(
-      "SELECT EXISTS(SELECT 1 FROM tarefas WHERE status IN ('analyzing','running','motor_fix')) " +
+      "SELECT EXISTS(SELECT 1 FROM tarefas t LEFT JOIN task_runtime_facts f ON f.tarefa_id = t.id " +
+      "WHERE f.terminal_status IS NULL AND f.analysis_started_at IS NOT NULL) " +
       "OR EXISTS(SELECT 1 FROM subtarefas WHERE status IN ('running','delivered','verifying')) AS busy",
     )
     if (Number(busyRows[0]?.busy ?? 0) !== 0) return

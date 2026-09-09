@@ -66,7 +66,7 @@ export class MysqlTaskRepository implements TaskRepository {
     const params = isNumericId ? [id, id] : [id]
 
     const { rows } = await this.db.query(
-      `SELECT t.id, t.external_id, t.titulo, t.descricao, t.tipo, t.ultima_mensagem_erro, t.status,
+      `SELECT t.id, t.external_id, t.titulo, t.descricao, t.tipo, t.ultima_mensagem_erro,
               t.max_rework, t.hard_timeout_ms, t.depends_on_task_id,
               t.created_at, t.updated_at,
               pc.slug as project_slug, pmc.repo_path,
