@@ -62,6 +62,8 @@ interface ActiveWorker {
   timeoutHandle?: ReturnType<typeof setTimeout>
   lastHeartbeatAt?: Date
   silenceHandle?: ReturnType<typeof setTimeout>
+  /** Flag de pause graceful: quando true, worker pausa após terminar fase atual. */
+  pendingPause?: boolean
 }
 
 export interface TaskCoordinatorConfig {
@@ -182,6 +184,8 @@ export class TaskCoordinator {
   /** Incidentes ativos por agente. Um incidente gera exatamente um alerta. */
   private consoleIncidents = new Map<string, { id: string; fingerprint: string; openedAt: string; taskIds: Set<string>; taskId: string; subtaskId?: number; phase: "analyze" | "execute" }>()
   private logger = createLogger("TaskCoordinator")
+  /** Round-robin: ID da última tarefa agendada para alternar entre tarefas elegíveis. */
+  private lastScheduledTaskId: string | null = null
 
   constructor(
     db: Db,
@@ -283,7 +287,31 @@ export class TaskCoordinator {
       "AND COALESCE((SELECT c.role FROM tarefa_chats c WHERE c.tarefa_id = t.id AND c.role IN ('analyst', 'user') ORDER BY c.id DESC LIMIT 1), '') <> 'analyst' " +
       "ORDER BY t.created_at ASC LIMIT 25"
     )
-    return rows.map((row) => this.mapTask(row)).find((task) => !this.consoleIncidents.has(task.agentId) && this.canStartAnalysis()) ?? null
+    
+    const eligibleTasks = rows.map((row) => this.mapTask(row)).filter((task) => !this.consoleIncidents.has(task.agentId) && this.canStartAnalysis())
+    
+    if (eligibleTasks.length === 0) return null
+    
+    // Round-robin: alterna entre tarefas elegíveis para evitar que uma tarefa
+    // com muitas subtarefas "prenda" o motor enquanto outras aguardam
+    // Usa o ID da tarefa como seed para determinar a ordem de rodízio
+    const taskIds = eligibleTasks.map(t => t.id).sort()
+    const lastTaskId = this.lastScheduledTaskId
+    let nextIndex = 0
+    
+    if (lastTaskId) {
+      const lastIndex = taskIds.indexOf(lastTaskId)
+      if (lastIndex >= 0) {
+        nextIndex = (lastIndex + 1) % eligibleTasks.length
+      }
+    }
+    
+    const selectedTask = eligibleTasks[nextIndex]
+    if (!selectedTask) return null
+    
+    this.lastScheduledTaskId = selectedTask.id
+    
+    return selectedTask
   }
 
   async getTasksByStatus(since?: string): Promise<{
@@ -648,6 +676,23 @@ export class TaskCoordinator {
   async onTaskCompleted(executionId: string, result?: ExecutionResult): Promise<void> {
     const worker = this.activeWorkers.get(executionId)
     if (!worker || !this.beginFinalization(executionId, worker)) return
+
+    // Verifica se há pendingPause: se sim, pausa a tarefa após completar a fase atual
+    if (worker.pendingPause) {
+      this.logger.info("Pause graceful: fase completada, pausando tarefa", {
+        taskId: worker.taskId,
+        executionId,
+        phase: worker.phase
+      })
+      await this.db.query(
+        "UPDATE tarefas SET paused_at = NOW(), updated_at = NOW() WHERE external_id = ? OR id = CAST(? AS UNSIGNED)",
+        [worker.taskId, worker.taskId]
+      )
+      // Remove o worker da lista de ativos (não continua processando)
+      this.activeWorkers.delete(executionId)
+      this.logger.info("Tarefa pausada com sucesso (pause graceful)", { taskId: worker.taskId })
+      return
+    }
 
     try {
     // Uma execução concluída pelo agente é a evidência explícita de que o
@@ -1451,14 +1496,31 @@ export class TaskCoordinator {
   async pauseTask(taskId: string): Promise<void> {
     const task = await this.repository.getTask(taskId)
     if (!task) throw new Error("Tarefa " + taskId + " nao encontrada")
+    
+    // Verifica se há worker ativo para esta tarefa
+    let workerAtivo = false
     for (const [executionId, worker] of this.activeWorkers.entries()) {
       if (worker.taskId === taskId) {
-        await this.workerLauncher.stopWorker(executionId)
-        await this.onTaskPaused(executionId, "Pausada via API")
-        return
+        // Pause graceful: marca para pausar após terminar a fase atual
+        worker.pendingPause = true
+        workerAtivo = true
+        this.logger.info("Pause graceful agendado: worker terminará fase atual antes de pausar", {
+          taskId,
+          executionId,
+          phase: worker.phase
+        })
+        break
       }
     }
-    throw new Error("Worker ativo nao encontrado para tarefa " + taskId)
+    
+    // Se não há worker ativo, pausa imediatamente
+    if (!workerAtivo) {
+      await this.db.query(
+        "UPDATE tarefas SET paused_at = NOW(), updated_at = NOW() WHERE external_id = ? OR id = CAST(? AS UNSIGNED)",
+        [taskId, taskId]
+      )
+      this.logger.info("Tarefa pausada imediatamente (sem worker ativo)", { taskId })
+    }
   }
 
   async resumeTask(taskId: string): Promise<void> {
