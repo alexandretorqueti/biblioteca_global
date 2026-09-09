@@ -77,8 +77,8 @@ export class ManagedPromptResolver {
       "INSERT INTO prompts_execucoes (prompt_id, versao_id, contrato_versao_id, chave, tarefa_id, subtarefa_id, fallback_usado, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())",
       [promptId, versionId, contractVersionId, input.key, input.taskId ?? null, input.subtaskId ?? null, 0],
     )
-    const result = Array.isArray(executionResult) ? executionResult[0] : executionResult
-    const executionId = Number((result as { insertId?: number }).insertId ?? 0)
+    const result = executionResult ? (Array.isArray(executionResult) ? executionResult[0] : executionResult) : null
+    const executionId = Number((result as { insertId?: number } | null)?.insertId ?? 0)
     return { text: output, executionId, contractInstructions, outputContract: { instructions: contractInstructions, schema: contractSchema, example: contractExample } }
   }
 
