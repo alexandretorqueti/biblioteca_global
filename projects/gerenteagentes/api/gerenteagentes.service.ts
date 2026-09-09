@@ -1318,12 +1318,12 @@ export class GerenteAgentesService {
         task: {
           id: motorTask.id || String(tarefaId),
           title: motorTask.title || tarefa.titulo,
-          // O estado persistido é atualizado pela ação de desbloqueio antes
-          // de o motor processar uma nova execução; ele deve prevalecer na UI.
-          status: tarefa.status,
+          // O status calculado pelo motor (via fatos operacionais) deve
+          // prevalecer sobre o status persistido no banco.
+          status: motorTask.status || tarefa.status,
           integrationBranch: `motor-v2/${motorId}/integracao`,
           errorMessage: motorTask.errorMessage ?? undefined,
-          blockInfo: tarefa.status === 'blocked' ? (motorTask.ultimoBloqueio ?? null) : null,
+          blockInfo: motorTask.status === 'blocked' ? (motorTask.ultimoBloqueio ?? null) : null,
         },
         subtasks,
         currentSubTask,
