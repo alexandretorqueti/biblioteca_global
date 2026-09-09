@@ -25,8 +25,9 @@ export class ExpirationReconciler {
 
   constructor(config: ExpirationReconcilerConfig) {
     this.db = config.db
-    this.intervalMs = config.intervalMs ?? 30000
-    this.maxStalenessMs = config.maxStalenessMs ?? 120000
+    // Defaults alinhados com o catálogo de configurações do motor
+    this.intervalMs = config.intervalMs ?? 30000 // 30 segundos
+    this.maxStalenessMs = config.maxStalenessMs ?? 120000 // 2 minutos
     this.onLeaseExpired = config.onLeaseExpired
   }
 

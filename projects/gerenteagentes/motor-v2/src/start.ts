@@ -7,6 +7,7 @@ import { Motor } from './Motor.js'
 import { createDbConnection, MysqlTaskRepository } from './database/DrizzleDb.js'
 import { LibraryRealtimeBroadcaster } from './events/LibraryRealtimeBroadcaster.js'
 import { createLogger } from './shared/logger.js'
+import { initConfigReader } from './config/MotorConfigReader.js'
 
 const logger = createLogger('MotorStart')
 
@@ -18,6 +19,11 @@ async function main() {
   const { db } = await createDbConnection()
   const repository = new MysqlTaskRepository(db)
   logger.info('✅ Banco conectado')
+
+  // Inicializa o leitor de configurações persistidas
+  logger.info('⚙️ Inicializando leitor de configurações...')
+  initConfigReader({ db })
+  logger.info('✅ Configurações carregadas')
 
   const realtimeToken = process.env.LIBRARY_REALTIME_EVENTS_TOKEN
   const activityBroadcaster = realtimeToken
@@ -32,9 +38,9 @@ async function main() {
   const motor = new Motor({
     db,
     repository,
-    maxWorkers: Number(process.env.MOTOR_MAX_WORKERS ?? 1),
+    maxWorkers: Number(process.env.MOTOR_MAX_WORKERS) || undefined, // undefined = usa config reader
     apiPort,
-    reconcilerIntervalMs: 30000,
+    reconcilerIntervalMs: Number(process.env.MOTOR_RECONCILER_INTERVAL_MS) || undefined,
     activityBroadcaster,
   })
 

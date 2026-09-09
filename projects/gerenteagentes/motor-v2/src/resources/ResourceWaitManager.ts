@@ -6,6 +6,7 @@ import type { Db, TaskRepository } from '../shared/types/infrastructure.js'
 import type { ResourceKey } from '../shared/types/resources.js'
 import type { Task } from '../shared/types/index.js'
 import { createLogger } from '../shared/logger.js'
+import { getConfigNumber } from '../config/MotorConfigReader.js'
 
 export class ResourceWaitManager {
   private logger = createLogger('ResourceWaitManager')
@@ -148,7 +149,7 @@ export class ResourceWaitManager {
       baselineMode: 'full',
       status: String(row.status ?? 'planned') as Task['status'],
       maxRework: Number(row.max_rework ?? row.maxRework ?? 3),
-      hardTimeoutMs: Number(row.hard_timeout_ms ?? row.hardTimeoutMs ?? 3600000),
+      hardTimeoutMs: Number(row.hard_timeout_ms ?? row.hardTimeoutMs ?? getConfigNumber('motor.worker_timeout_ms')),
       dependsOnTaskId: row.depends_on_task_id ? String(row.depends_on_task_id) : undefined,
       projectSlug: row.project_slug ? String(row.project_slug) : null,
       createdAt: String(row.created_at ?? new Date().toISOString()),

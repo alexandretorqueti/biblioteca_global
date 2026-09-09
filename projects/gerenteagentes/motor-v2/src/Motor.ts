@@ -12,6 +12,7 @@ import { MotorAPI } from './api/MotorAPI.js'
 import { resourceEventBus } from './resources/ResourceEventBus.js'
 import { executionEventBus, type ExecutionActivityBroadcaster } from './events/ExecutionEventBus.js'
 import { createLogger, describeError } from './shared/logger.js'
+import { getConfigNumber } from './config/MotorConfigReader.js'
 
 export interface MotorConfig {
   db: Db
@@ -34,24 +35,30 @@ export class Motor {
   private pumpInterval: ReturnType<typeof setInterval> | null = null
 
   constructor(config: MotorConfig) {
-    const maxWorkers = config.maxWorkers ?? 1
+    // Usa valores explícitos se fornecidos, senão busca do config reader (com fallback para defaults)
+    const maxWorkers = config.maxWorkers ?? getConfigNumber('motor.max_workers')
+    const maxWorkersPerProject = config.maxWorkersPerProject ?? getConfigNumber('motor.max_workers_per_project')
     const apiPort = config.apiPort ?? 3010
+
+    // Configurações de recursos — lê do config reader com fallback para defaults
+    const defaultLeaseMs = getConfigNumber('motor.resource_lease_ms')
+    const heartbeatIntervalMs = getConfigNumber('motor.resource_heartbeat_interval_ms')
 
     this.resourceLease = new ResourceLeaseService({ 
       db: config.db,
-      defaultLeaseMs: 600_000, // 10 minutos - tempo suficiente para chamadas LLM e testes
-      heartbeatIntervalMs: 30_000, // 30 segundos
+      defaultLeaseMs,
+      heartbeatIntervalMs,
     })
     this._waitManager = new ResourceWaitManager(config.db, config.repository)
     this.workerLauncher = new WorkerLauncher()
     this.reconciler = new ExpirationReconciler({
       db: config.db,
-      intervalMs: config.reconcilerIntervalMs,
+      intervalMs: config.reconcilerIntervalMs ?? getConfigNumber('motor.reconciler_interval_ms'),
       onLeaseExpired: (resourceKey, executionId) => this.coordinator.onLeaseExpired(resourceKey, executionId),
     })
     this.coordinator = new TaskCoordinator(config.db, config.repository, this.resourceLease, {
       maxWorkers,
-      maxWorkersPerProject: config.maxWorkersPerProject ?? 1,
+      maxWorkersPerProject,
     }, this.workerLauncher, undefined, this._waitManager)
     this.api = new MotorAPI({ port: apiPort, coordinator: this.coordinator, db: config.db })
 
@@ -70,12 +77,14 @@ export class Motor {
     this.reconciler.start()
     await this.api.start()
 
+    // Intervalo de pump configurável
+    const pumpIntervalMs = getConfigNumber('motor.pump_interval_ms')
     this.pumpInterval = setInterval(() => {
       this.coordinator.pump().catch((err: Error) => this.logger.error('Erro no pump: ' + describeError(err)))
-    }, 30000)
+    }, pumpIntervalMs)
 
     await this.coordinator.pump()
-    this.logger.info('Motor-v2 iniciado')
+    this.logger.info('Motor-v2 iniciado (pump a cada ' + pumpIntervalMs + 'ms)')
   }
 
   async stop(): Promise<void> {
