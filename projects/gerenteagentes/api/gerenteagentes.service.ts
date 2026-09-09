@@ -29,7 +29,13 @@ import {
   motorAgentSessions,
   motorAgentSessionMessages,
   bloqueios,
+  motorConfiguracoes,
 } from '../schema';
+import {
+  MOTOR_CONFIGURACOES,
+  configuracaoPorChave,
+  type MotorConfiguracaoResposta,
+} from './motor-configuracoes.catalog';
 import { AGENT_PROMPT_CATALOG } from '../motor-v2/src/prompts/prompt-catalog';
 import { OUTPUT_CONTRACT_CATALOG } from '../motor-v2/src/prompts/output-contract-catalog';
 import { markersIn, renderPromptTemplate, validatePromptTemplate } from '../motor-v2/src/prompts/PromptTemplateEngine';
@@ -67,6 +73,60 @@ export class GerenteAgentesService {
     // Console OpenClaw (fonte de agentes — st-5)
     this.consoleUrl = this.configService.get<string>('OPENCLAW_CONSOLE_URL') || 'https://openclaw-api.webconnect.com.br';
     this.consoleToken = this.configService.get<string>('OPENCLAW_CONSOLE_TOKEN') || '';
+  }
+
+  async listarConfiguracoesMotor(): Promise<MotorConfiguracaoResposta[]> {
+    const db = await this.dbDoMotor();
+    const rows = await db.select().from(motorConfiguracoes);
+    const persisted = new Map(rows.map((row) => [row.chave, row]));
+    return MOTOR_CONFIGURACOES.map((definition) => {
+      const row = persisted.get(definition.chave);
+      const value = row?.valor;
+      return {
+        chave: definition.chave,
+        tipo: definition.tipo,
+        valor: definition.validar(value) ? value as MotorConfiguracaoResposta['valor'] : definition.valorPadrao,
+        valorPadrao: definition.valorPadrao,
+        regraValidacao: definition.regraValidacao,
+        descricao: definition.descricao,
+        editavel: true,
+        atualizadoEm: row?.updatedAt ?? null,
+      };
+    });
+  }
+
+  async atualizarConfiguracoesMotor(valores: unknown): Promise<MotorConfiguracaoResposta[]> {
+    if (!valores || typeof valores !== 'object' || Array.isArray(valores)) {
+      throw new BadRequestException('valores deve ser um objeto chave → valor');
+    }
+    const entries = Object.entries(valores as Record<string, unknown>);
+    if (entries.length === 0) throw new BadRequestException('Informe ao menos uma configuração');
+    const db = await this.dbDoMotor();
+    for (const [chave, valor] of entries) {
+      const definition = configuracaoPorChave(chave);
+      if (!definition) throw new BadRequestException(`Configuração desconhecida: ${chave}`);
+      if (!definition.validar(valor)) {
+        throw new BadRequestException(`Valor inválido para ${chave}: ${definition.regraValidacao}`);
+      }
+      await db.insert(motorConfiguracoes).values({
+        chave,
+        tipo: definition.tipo,
+        valor,
+        valorPadrao: definition.valorPadrao,
+        regraValidacao: definition.regraValidacao,
+        descricao: definition.descricao,
+      }).onDuplicateKeyUpdate({
+        set: {
+          tipo: definition.tipo,
+          valor,
+          valorPadrao: definition.valorPadrao,
+          regraValidacao: definition.regraValidacao,
+          descricao: definition.descricao,
+          updatedAt: new Date(),
+        },
+      });
+    }
+    return this.listarConfiguracoesMotor();
   }
 
   /**
