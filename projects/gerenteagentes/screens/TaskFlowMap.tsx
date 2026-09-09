@@ -198,7 +198,22 @@ export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", moto
   const activeAiCount = useMemo(() => tarefas.filter((task) => ACTIVE_AI_STATUSES.has(task.status)).length, [tarefas])
 
   return (
-    <Paper variant="outlined" sx={{ p: { xs: 1.5, md: 2 }, overflow: "hidden" }} data-testid="task-flow-map">
+    <Paper
+      variant="outlined"
+      sx={{
+        // Break out of parent Container's maxWidth constraint to use full viewport width
+        width: "100vw",
+        position: "relative",
+        left: "50%",
+        marginLeft: "-50vw",
+        marginRight: "-50vw",
+        maxWidth: "none",
+        p: { xs: 1.5, md: 2 },
+        overflow: "hidden",
+        boxSizing: "border-box",
+      }}
+      data-testid="task-flow-map"
+    >
       <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" spacing={1} sx={{ mb: 2 }}>
         <Box><Typography variant="h6" fontWeight={750}>Mapa Vivo da Operação</Typography><Typography variant="body2" color="text.secondary">Acompanhe as tarefas percorrendo o fluxo em tempo real.</Typography></Box>
         <Stack direction="row" spacing={1} alignItems="center" data-testid="flow-ai-activity"><SettingsRounded sx={{ color: activeAiCount ? "warning.main" : "text.disabled", animation: activeAiCount ? "legend-spin 2s linear infinite" : "none", "@keyframes legend-spin": { to: { transform: "rotate(360deg)" } } }} /><Typography variant="caption" color="text.secondary">{activeAiCount ? `IA trabalhando (${activeAiCount})` : "Nenhuma IA trabalhando"}</Typography></Stack>
