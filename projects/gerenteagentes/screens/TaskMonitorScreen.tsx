@@ -57,6 +57,7 @@ export const componentId = "gerenteagentes-task-monitor"
 
 interface Tarefa {
   id: number
+  externalId?: string | null
   titulo: string
   descricao?: string | null
   tipo?: "desenvolvimento" | "automacao" | "verificacao" | string | null
@@ -343,7 +344,8 @@ export default function TaskMonitorScreen(): ReactNode {
         }
         // Sobrescreve o status do CRUD genérico com o status calculado pelo motor
         for (const tarefa of lista) {
-          const motorTaskId = `task-${tarefa.id}`
+          // Usa o external_id se disponível, senão constrói o ID manualmente
+          const motorTaskId = tarefa.externalId || `task-${tarefa.id}`
           const calculatedStatus = statusByTaskId.get(motorTaskId)
           if (calculatedStatus) {
             tarefa.status = calculatedStatus
