@@ -25,7 +25,7 @@ import { blockerEvidence } from "../policies/BlockerPolicy.js"
 import { transitionTask, type TaskTransition } from "../policies/TaskStateMachine.js"
 import { persistTaskClarificationAnswer, fetchPendingTaskClarification, fetchAnsweredTaskClarifications } from "../planning/ClarificationStore.js"
 import { createLogger, describeError } from "../shared/logger.js"
-import { ConsoleAgentRuntimeDriver } from "../runtime/ConsoleAgentRuntimeDriver.js"
+import { ConsoleAgentRuntimeDriver, type RemoteSessionFailure } from "../runtime/ConsoleAgentRuntimeDriver.js"
 import { getConfigNumber } from "../config/MotorConfigReader.js"
 import { execFileSync, execSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
@@ -56,6 +56,7 @@ interface ActiveWorker {
   testCommand?: string
   repoPath?: string
   projectSlug?: string
+  agentId?: string
   baseBranch?: string
   timeoutHandle?: ReturnType<typeof setTimeout>
   lastHeartbeatAt?: Date
@@ -176,6 +177,8 @@ export class TaskCoordinator {
    * atividade do Motor enquanto o script externo está em execução. */
   private activeDeployments = new Map<string, { taskId: string; phase: "verify" | "deploy"; startedAt: Date }>()
   private pumping = false
+  /** Incidentes ativos por agente. Um incidente gera exatamente um alerta. */
+  private consoleIncidents = new Map<string, { id: string; fingerprint: string; openedAt: string; taskIds: Set<string>; taskId: string; subtaskId?: number; phase: "analyze" | "execute" }>()
   private logger = createLogger("TaskCoordinator")
 
   constructor(
@@ -267,7 +270,7 @@ export class TaskCoordinator {
       "LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id = pc.id " +
       "WHERE t.status = 'planned' AND NOT EXISTS (SELECT 1 FROM subtarefas s WHERE s.tarefa_id = t.id) ORDER BY t.created_at ASC LIMIT 25"
     )
-    return rows.map((row) => this.mapTask(row)).find(() => this.canStartAnalysis()) ?? null
+    return rows.map((row) => this.mapTask(row)).find((task) => !this.consoleIncidents.has(task.agentId) && this.canStartAnalysis()) ?? null
   }
 
   async getTasksByStatus(since?: string): Promise<{
@@ -329,9 +332,15 @@ export class TaskCoordinator {
       "WHERE anterior.tarefa_id = s.tarefa_id AND anterior.seq < s.seq AND anterior.status NOT IN ('verified', 'superseded') " +
       "AND anterior.id != COALESCE(s.correction_for_subtask_id, -1)" +
       ") " +
+      "AND NOT EXISTS (" +
+      "SELECT 1 FROM subtarefas dependencia WHERE JSON_CONTAINS(COALESCE(s.depends_on_subtask_ids, JSON_ARRAY()), CAST(dependencia.id AS JSON)) " +
+      "AND dependencia.status NOT IN ('verified', 'superseded')" +
+      ") " +
       "ORDER BY s.seq ASC LIMIT 25"
     )
-    return rows.map((row) => this.mapSubtask(row)).find((subtask) => this.canStartExecution(subtask.projectSlug)) ?? null
+    return rows
+      .map((row) => this.mapSubtask(row))
+      .find((subtask) => !this.consoleIncidents.has(subtask.agentId) && this.canStartExecution(subtask.projectSlug)) ?? null
   }
 
   /** Limite de desenvolvimento: máximo global e, por padrão, um por projeto. */
@@ -403,6 +412,7 @@ export class TaskCoordinator {
       taskId: task.id, executionId, resourceKey, fencingToken,
       startedAt: new Date(), phase: "analyze", taskTipo: task.tipo,
       projectSlug: task.projectSlug ?? undefined,
+      agentId: task.agentId,
     })
 
     try {
@@ -456,6 +466,7 @@ export class TaskCoordinator {
       startedAt: new Date(), phase: "execute", subtaskId: subtask.id, taskTipo: subtask.taskTipo,
       repoPath: subtask.repoPath,
       projectSlug: subtask.projectSlug ?? undefined,
+      agentId: subtask.agentId,
     })
 
     try {
@@ -600,6 +611,9 @@ export class TaskCoordinator {
     if (!worker || !this.beginFinalization(executionId, worker)) return
 
     try {
+    // Uma execução concluída pelo agente é a evidência explícita de que o
+    // Console voltou. A retomada só afeta a fila desse agente.
+    if (worker.agentId) await this.markConsoleRecovered(worker.agentId, worker)
     if (worker.phase === "analyze") {
       this.publishActivity(worker, { type: "completed" })
       this.logger.info("Analise completada: " + worker.taskId, { taskId: worker.taskId, executionId, phase: "analyze" })
@@ -893,14 +907,17 @@ export class TaskCoordinator {
     }
   }
 
-  async onTaskFailed(executionId: string, error: string, kind = "error"): Promise<void> {
+  async onTaskFailed(executionId: string, error: string, kind = "error", sessionFailure?: RemoteSessionFailure): Promise<void> {
     const worker = this.activeWorkers.get(executionId)
     if (!worker || !this.beginFinalization(executionId, worker)) return
     const failure = `[${kind}] ${error}`
-    const transient = kind === "timeout" || kind === "lease_lost" || kind === "lease_expired" || kind === "lost"
+    const systemic = sessionFailure?.classification === "systemic"
+    const transient = systemic || sessionFailure?.classification === "transient" || kind === "timeout" || kind === "lease_lost" || kind === "lease_expired" || kind === "lost"
     this.publishActivity(worker, { type: "failed", level: "error", message: failure })
 
     this.logger.error("Falha: " + failure, { taskId: worker.taskId, subtaskId: worker.subtaskId, executionId, phase: worker.phase })
+
+    if (systemic && worker.agentId) this.pauseAgentQueue(worker, sessionFailure)
 
     try {
       if (worker.phase === "analyze") {
@@ -929,6 +946,78 @@ export class TaskCoordinator {
     } finally {
       await this.finishWorker(executionId, worker)
     }
+  }
+
+  /**
+   * Pausa somente novas execuções do agente afetado. Tarefas já pendentes
+   * continuam pendentes; não são convertidas em bloqueios individuais.
+   */
+  private pauseAgentQueue(worker: ActiveWorker, failure?: RemoteSessionFailure): void {
+    const agentId = worker.agentId!
+    const active = this.consoleIncidents.get(agentId)
+    if (active) {
+      active.taskIds.add(worker.taskId)
+      return
+    }
+    const incidentId = randomUUID()
+    const incident = {
+      id: incidentId,
+      fingerprint: failure?.fingerprint ?? "console-unavailable",
+      openedAt: failure?.occurredAt ?? new Date().toISOString(),
+      taskIds: new Set([worker.taskId]),
+      taskId: worker.taskId,
+      subtaskId: worker.subtaskId,
+      phase: worker.phase,
+    }
+    this.consoleIncidents.set(agentId, incident)
+    this.logger.error("Fila do agente pausada após falha sistêmica do Console", {
+      agentId, incidentId, code: failure?.code, message: failure?.message,
+    })
+    // O evento é emitido uma única vez por incidente ativo. Repetições de
+    // falha enquanto a fila está pausada não geram spam.
+    this.eventBus.publish({
+      type: "system_alert",
+      executionId: worker.executionId,
+      taskId: worker.taskId,
+      subtaskId: worker.subtaskId,
+      phase: worker.phase,
+      level: "error",
+      agentId,
+      incidentId,
+      message: `Fila do agente ${agentId} pausada: Console indisponível${failure?.message ? ` — ${failure.message}` : ""}`,
+      timestamp: new Date(),
+    })
+  }
+
+  /** Retomada explícita da fila após uma verificação de saúde do Console. */
+  async markConsoleRecovered(agentId: string, source?: ActiveWorker): Promise<boolean> {
+    const incident = this.consoleIncidents.get(agentId)
+    if (!incident) return false
+    this.consoleIncidents.delete(agentId)
+    for (const taskId of incident.taskIds) {
+      const task = await this.repository.getTask(taskId)
+      if (!task || task.status !== "paused") continue
+      const hasPlan = await this.taskHasPersistedPlan(taskId)
+      await this.saveTaskTransition(task, hasPlan ? "resume" : "resume_without_plan")
+    }
+    this.eventBus.publish({
+      type: "system_recovered",
+      executionId: source?.executionId ?? "system-" + incident.id,
+      taskId: source?.taskId ?? incident.taskId,
+      subtaskId: source?.subtaskId ?? incident.subtaskId,
+      phase: source?.phase ?? incident.phase,
+      level: "info",
+      agentId,
+      incidentId: incident.id,
+      message: `Console recuperado; fila do agente ${agentId} retomada`,
+      timestamp: new Date(),
+    })
+    await this.pump()
+    return true
+  }
+
+  isAgentQueuePaused(agentId: string): boolean {
+    return this.consoleIncidents.has(agentId)
   }
 
   async onTaskPaused(executionId: string, reason: string): Promise<void> {
@@ -1430,6 +1519,21 @@ export class TaskCoordinator {
     const batchRows = rows.filter((row) => String(row.repo_path) === repoPath)
     const taskIds = batchRows.map((row) => String(row.task_id))
     const requestIds = batchRows.map((row) => Number(row.id))
+    // Confirma a identidade do ServerIA ANTES de marcar as solicitações como
+    // running. Assim uma chave SSH alterada não bloqueia em massa tarefas que
+    // já concluíram o desenvolvimento e só aguardam publicação.
+    try {
+      this.assertDeploySshReady()
+    } catch (error: unknown) {
+      const message = describeError(error).substring(0, 500)
+      const placeholders = requestIds.map(() => "?").join(",")
+      await this.db.query(
+        `UPDATE deploy_requests SET last_error = ?, updated_at = NOW() WHERE status = 'pending' AND id IN (${placeholders})`,
+        [message, ...requestIds],
+      )
+      this.logger.warn("Preflight de deploy falhou; lote mantido pendente: " + message, { taskIds })
+      return
+    }
     const batchId = "deploy-" + randomUUID()
     const placeholders = requestIds.map(() => "?").join(",")
     await this.db.query(
@@ -1480,8 +1584,8 @@ export class TaskCoordinator {
     const run = "bash " + shellQuote(hostDeployScript) + " " + shellQuote(hostRepoRoot)
     const wrapped = "(" + run + "; code=$?; if [ $code -eq 0 ]; then printf success; else printf 'failed:%s' $code; fi > " + shellQuote(statusFile) + ")"
     const remoteCommand = "nohup bash -lc " + shellQuote(wrapped) + " > " + shellQuote(logFile) + " 2>&1 < /dev/null & echo $!"
-    const output = execFileSync("ssh", ["-i", "/root/.ssh/id_ed25519", "-o", "BatchMode=yes", "alexandre@192.168.1.8", remoteCommand], { encoding: "utf8", timeout: 15_000 }).trim()
-    if (!/^\\d+$/.test(output)) throw new Error("SSH não confirmou o PID do deploy destacado: " + output)
+    const output = execFileSync("ssh", this.deploySshArguments(remoteCommand), { encoding: "utf8", timeout: 15_000 }).trim()
+    if (!/^\d+$/.test(output)) throw new Error("SSH não confirmou o PID do deploy destacado: " + output)
     this.logger.info("Lote de deploy destacado no ServerIA", { batchId, taskIds, remotePid: output, logFile, statusFile })
   }
 
@@ -1526,8 +1630,29 @@ export class TaskCoordinator {
     const safeBatchId = batchId.replace(/[^a-zA-Z0-9_-]/g, "_")
     const statusFile = "/tmp/biblioteca-global-" + safeBatchId + ".status"
     const command = "if [ -f " + shellQuote(statusFile) + " ]; then cat " + shellQuote(statusFile) + "; fi"
-    const output = execFileSync("ssh", ["-i", "/root/.ssh/id_ed25519", "-o", "BatchMode=yes", "alexandre@192.168.1.8", command], { encoding: "utf8", timeout: 15_000 }).trim()
+    const output = execFileSync("ssh", this.deploySshArguments(command), { encoding: "utf8", timeout: 15_000 }).trim()
     return output || null
+  }
+
+  /** Falha cedo e sem alterar tarefas quando o SSH do deploy não é confiável. */
+  private assertDeploySshReady(): void {
+    try {
+      execFileSync("ssh", this.deploySshArguments("true"), { encoding: "utf8", timeout: 15_000, stdio: "pipe" })
+    } catch {
+      throw new Error("SSH do deploy não confiável ou indisponível; atualize a identidade do ServerIA antes de iniciar o lote")
+    }
+  }
+
+  private deploySshArguments(remoteCommand: string): string[] {
+    return [
+      "-i", "/root/.ssh/id_ed25519",
+      "-o", "BatchMode=yes",
+      "-o", "StrictHostKeyChecking=yes",
+      "-o", "UserKnownHostsFile=/root/.ssh/known_hosts",
+      "-o", "ConnectTimeout=10",
+      "alexandre@192.168.1.8",
+      remoteCommand,
+    ]
   }
 
   private async failDeployBatch(batchId: string, error: string, taskIds: string[]): Promise<void> {
@@ -1645,9 +1770,9 @@ export class TaskCoordinator {
         this.logger.error("Falha ao processar completed: " + describeError(error), { executionId: msg.executionId })
       }
     })
-    this.workerLauncher.on("failed", async (msg: { executionId: string; error: string }) => {
+    this.workerLauncher.on("failed", async (msg: { executionId: string; error: string; sessionFailure?: RemoteSessionFailure }) => {
       try {
-        await this.onTaskFailed(msg.executionId, msg.error)
+        await this.onTaskFailed(msg.executionId, msg.error, "error", msg.sessionFailure)
       } catch (error) {
         this.logger.error("Falha ao processar failed: " + describeError(error), { executionId: msg.executionId })
       }

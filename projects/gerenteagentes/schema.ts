@@ -356,6 +356,8 @@ export const subtarefas = mysqlTable("subtarefas", {
     mode: "number",
     unsigned: true,
   }),
+  // Lista canônica de dependências; o campo singular acima permanece para compatibilidade.
+  dependsOnSubtaskIds: json("depends_on_subtask_ids"),
   resultado: text("resultado"),
   correctionForSubtaskId: bigint("correction_for_subtask_id", { mode: "number", unsigned: true }),
   correctionFingerprint: varchar("correction_fingerprint", { length: 500 }),
@@ -383,6 +385,57 @@ export const subtarefas = mysqlTable("subtarefas", {
     .notNull()
     .defaultNow()
     .onUpdateNow(),
+})
+
+/** Diagnóstico imutável de falhas devolvidas pelo Console/OpenClaw. */
+export const motorAgentSessionFailures = mysqlTable("motor_agent_session_failures", {
+  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+  tarefaId: bigint("tarefa_id", { mode: "number", unsigned: true }).notNull().references(() => tarefas.id, { onDelete: "cascade" }),
+  subtarefaId: bigint("subtarefa_id", { mode: "number", unsigned: true }).references(() => subtarefas.id, { onDelete: "set null" }),
+  agentId: varchar("agent_id", { length: 100 }).notNull(),
+  sessionKey: varchar("session_key", { length: 300 }).notNull(),
+  runtimeSessionId: varchar("runtime_session_id", { length: 300 }),
+  runId: varchar("run_id", { length: 300 }).notNull(),
+  code: varchar("code", { length: 120 }).notNull(),
+  message: varchar("message", { length: 500 }).notNull(),
+  occurredAt: timestamp("occurred_at").notNull(),
+  observedAt: timestamp("observed_at").notNull().defaultNow(),
+  scope: varchar("scope", { length: 20 }).notNull().default("session"),
+  classification: varchar("classification", { length: 20 }).notNull(),
+  classificationReason: varchar("classification_reason", { length: 160 }).notNull(),
+  fingerprint: varchar("fingerprint", { length: 600 }).notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+})
+
+/** Sessões de execução por subtarefa, preservadas para rework e auditoria. */
+export const motorAgentSessions = mysqlTable("motor_agent_sessions", {
+  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+  subtarefaId: bigint("subtarefa_id", { mode: "number", unsigned: true }).notNull().references(() => subtarefas.id, { onDelete: "cascade" }),
+  agentId: varchar("agent_id", { length: 100 }).notNull(),
+  modelo: varchar("model", { length: 200 }).notNull(),
+  sessionKey: varchar("session_key", { length: 300 }).notNull().unique(),
+  runtimeSessionId: varchar("runtime_session_id", { length: 300 }),
+  status: varchar("status", { length: 30 }).notNull(),
+  openedAt: timestamp("opened_at").notNull(),
+  lastActivityAt: timestamp("last_activity_at").notNull(),
+  approvedAt: timestamp("approved_at"),
+  closedAt: timestamp("closed_at"),
+  closeReason: varchar("close_reason", { length: 100 }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+})
+
+/** Histórico persistido das mensagens de uma sessão de execução. */
+export const motorAgentSessionMessages = mysqlTable("motor_agent_session_messages", {
+  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+  sessionId: bigint("session_id", { mode: "number", unsigned: true }).notNull().references(() => motorAgentSessions.id, { onDelete: "cascade" }),
+  messageKey: varchar("message_key", { length: 300 }).notNull(),
+  sequenceNumber: int("sequence_number").notNull(),
+  role: varchar("role", { length: 30 }).notNull(),
+  content: text("content").notNull(),
+  contentSha256: varchar("content_sha256", { length: 64 }).notNull(),
+  occurredAt: timestamp("occurred_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
 })
 
 /**

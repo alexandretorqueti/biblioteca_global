@@ -26,6 +26,16 @@ export { ExecutionEventBus, executionEventBus } from './events/ExecutionEventBus
 export type { ExecutionActivityEvent, ExecutionActivityBroadcaster } from './events/ExecutionEventBus.js'
 export { LibraryRealtimeBroadcaster } from './events/LibraryRealtimeBroadcaster.js'
 
+// Workspaces / escopo Git
+export { DirtyFilesError, GitWorkspaceManager, classifyDirtyFiles } from './workspaces/GitWorkspaceManager.js'
+export type {
+  ClassifiedDirtyFile,
+  DirtyFileClassification,
+  DirtyFilesReport,
+  PrepareWorkspaceInput,
+  WorkspacePreparation,
+} from './workspaces/GitWorkspaceManager.js'
+
 // Execution
 export { executionContextManager, getCurrentContext, requireCurrentContext } from './execution/ExecutionContextManager.js'
 

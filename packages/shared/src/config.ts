@@ -364,6 +364,14 @@ export const geradorSistemaRouteSchema = z
     /** Nome do ícone — resolvido por mapa no front. */
     icon: z.string().min(1).optional(),
     screen: screenConfigSchema,
+    /**
+     * Filtro de perfil (opcional). Quando definido, a rota só é visível/acessível
+     * para usuários com um dos perfis listados. Perfis: admin, gerente, operador,
+     * visualizador. Quando omitido, a rota é acessível a todos os perfis.
+     * A autorização real é enforced pelo backend; este campo controla visibilidade
+     * no menu e navegação frontend.
+     */
+    roleFilter: z.array(z.enum(["admin", "gerente", "operador", "visualizador"])).min(1).optional(),
   })
   .strict()
 

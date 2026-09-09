@@ -4,13 +4,15 @@ import {
   ArrowForwardRounded,
   ErrorOutlineRounded,
   SettingsRounded,
+  VisibilityRounded,
 } from "@mui/icons-material"
-import { Box, Chip, Paper, Stack, Typography } from "@mui/material"
+import { Box, Chip, Paper, Stack, Tooltip, Typography } from "@mui/material"
 import { taskStatusLabel } from "../motor-v2/src/shared/task-statuses"
 
 export interface FlowTask {
   id: number
   titulo: string
+  descricao?: string | null
   status: string
   projetoId: number
 }
@@ -55,6 +57,12 @@ const SIDE_FLOW: FlowStation[] = [
 ]
 
 const ACTIVE_AI_STATUSES = new Set(["analyzing", "running", "motor_fix"])
+
+function taskDescription(task: FlowTask): string {
+  return typeof task.descricao === "string" && task.descricao.trim()
+    ? task.descricao.trim()
+    : "Tarefa sem descrição"
+}
 
 const TONE_STYLE = {
   neutral: { borderColor: "divider", bgcolor: "action.hover" },
@@ -143,10 +151,20 @@ function Station({ station, tarefas, selectedTaskId, search, movingIds, dragging
                 "@keyframes task-arrived": { "0%, 100%": { opacity: 1 }, "50%": { opacity: 0.45 } },
               }}
             >
-              <Stack direction="row" spacing={0.7} alignItems="center">
-                {aiActive && <SettingsRounded aria-label="IA trabalhando" sx={{ fontSize: 18, color: "warning.main", animation: "gear-spin 2s linear infinite", "@keyframes gear-spin": { to: { transform: "rotate(360deg)" } } }} />}
-                {station.tone === "danger" && <ErrorOutlineRounded sx={{ fontSize: 17, color: "error.main" }} />}
-                <Typography variant="caption" fontWeight={700} noWrap>#{task.id} {task.titulo}</Typography>
+              <Stack direction="row" spacing={0.7} alignItems="center" sx={{ minWidth: 0 }}>
+                {aiActive && <SettingsRounded aria-label="IA trabalhando" sx={{ flexShrink: 0, fontSize: 18, color: "warning.main", animation: "gear-spin 2s linear infinite", "@keyframes gear-spin": { to: { transform: "rotate(360deg)" } } }} />}
+                {station.tone === "danger" && <ErrorOutlineRounded sx={{ flexShrink: 0, fontSize: 17, color: "error.main" }} />}
+                <Typography variant="caption" fontWeight={700} noWrap sx={{ minWidth: 0, flex: 1 }}>#{task.id} {task.titulo}</Typography>
+                <Tooltip title={taskDescription(task)} arrow placement="top">
+                  <Box
+                    component="span"
+                    aria-label={`Descrição da tarefa ${task.id}`}
+                    data-testid={`flow-task-description-${task.id}`}
+                    sx={{ display: "inline-flex", flexShrink: 0, color: "action.active", cursor: "help" }}
+                  >
+                    <VisibilityRounded sx={{ fontSize: 16 }} />
+                  </Box>
+                </Tooltip>
               </Stack>
             </Paper>
           )
@@ -180,7 +198,22 @@ export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", moto
   const activeAiCount = useMemo(() => tarefas.filter((task) => ACTIVE_AI_STATUSES.has(task.status)).length, [tarefas])
 
   return (
-    <Paper variant="outlined" sx={{ p: { xs: 1.5, md: 2 }, overflow: "hidden" }} data-testid="task-flow-map">
+    <Paper
+      variant="outlined"
+      sx={{
+        // Break out of parent Container's maxWidth constraint to use full viewport width
+        width: "100vw",
+        position: "relative",
+        left: "50%",
+        marginLeft: "-50vw",
+        marginRight: "-50vw",
+        maxWidth: "none",
+        p: { xs: 1.5, md: 2 },
+        overflow: "hidden",
+        boxSizing: "border-box",
+      }}
+      data-testid="task-flow-map"
+    >
       <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" spacing={1} sx={{ mb: 2 }}>
         <Box><Typography variant="h6" fontWeight={750}>Mapa Vivo da Operação</Typography><Typography variant="body2" color="text.secondary">Acompanhe as tarefas percorrendo o fluxo em tempo real.</Typography></Box>
         <Stack direction="row" spacing={1} alignItems="center" data-testid="flow-ai-activity"><SettingsRounded sx={{ color: activeAiCount ? "warning.main" : "text.disabled", animation: activeAiCount ? "legend-spin 2s linear infinite" : "none", "@keyframes legend-spin": { to: { transform: "rotate(360deg)" } } }} /><Typography variant="caption" color="text.secondary">{activeAiCount ? `IA trabalhando (${activeAiCount})` : "Nenhuma IA trabalhando"}</Typography></Stack>

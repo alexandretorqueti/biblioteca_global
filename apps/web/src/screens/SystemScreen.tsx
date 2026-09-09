@@ -16,6 +16,7 @@ import {
   Typography,
 } from "@mui/material"
 import {
+  AppsRounded,
   DarkModeRounded,
   LightModeRounded,
   LogoutRounded,
@@ -28,13 +29,33 @@ import { useProject } from "../project/ProjectContext"
 import { useThemeSetting } from "../theme/ThemeContext"
 
 export default function SystemScreen(): ReactNode {
-  const { logout, projeto, bundle } = useAuth()
+  const { logout, projeto, projetos, bundle } = useAuth()
   const { config, runtime } = useProject()
   const { toggle, themeName } = useThemeSetting()
+
+  /** Botão de troca de projeto: aparece só quando há >1 projeto. */
+  const projetoTroca = useMemo(() => {
+    if (projetos.length <= 1) return null
+    return (
+      <Tooltip title="Trocar de projeto">
+        <IconButton
+          onClick={() => {
+            window.location.href = "/select"
+          }}
+          aria-label="Trocar de projeto"
+          data-testid="project-switch-button"
+        >
+          <AppsRounded />
+        </IconButton>
+      </Tooltip>
+    )
+  }, [projetos])
 
   const actions = useMemo(
     () => (
       <Stack direction="row" spacing={1} alignItems="center">
+        {projetoTroca}
+
         <Tooltip title={themeName === "claro" ? "Modo escuro" : "Modo claro"}>
           <IconButton
             onClick={toggle}
@@ -62,10 +83,11 @@ export default function SystemScreen(): ReactNode {
         </Typography>
       </Stack>
     ),
-    [toggle, themeName, logout, projeto],
+    [toggle, themeName, logout, projeto, projetoTroca],
   )
 
   // HelpDesk: driver injetado quando há autenticação + projeto.
+  // O HelpDesk só aparece quando há autenticação e projeto.
   const helpDeskClient = useMemo(() => {
     if (!projeto?.id) return null
     return createHelpDeskClient({
@@ -89,6 +111,7 @@ export default function SystemScreen(): ReactNode {
         config={config}
         runtime={runtime}
         actions={actions}
+        perfil={projeto?.perfil}
       />
       {helpDeskClient && (
         <HelpDeskWidget client={helpDeskClient} />

@@ -18,6 +18,7 @@ export interface PlanRequirement {
 export interface PlanCoverage {
   requirements: PlanRequirement[]
   coverage: Array<{ requirement: string; coveredBy: number[] }>
+  strategy?: { invariants: string[]; sharedArtifacts: string[]; executionOrder: number[] }
 }
 
 export type PersistPlanResult = "created" | "already_persisted"
@@ -62,16 +63,15 @@ export async function persistPlan(
     const subtaskIds = new Map<number, number>()
     for (const subtask of subtasks) {
       await tx.query(
-        "INSERT INTO subtarefas (tarefa_id, seq, titulo, scope, acceptance_criteria, deliverables, requirements_covered, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NOW(), NOW())",
-        [databaseTaskId, subtask.seq, subtask.titulo, subtask.scope, JSON.stringify(subtask.acceptanceCriteria), JSON.stringify(subtask.deliverables), JSON.stringify(subtask.requirementsCovered)],
+        "INSERT INTO subtarefas (tarefa_id, seq, titulo, scope, acceptance_criteria, deliverables, requirements_covered, depends_on_subtask_ids, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', NOW(), NOW())",
+        [databaseTaskId, subtask.seq, subtask.titulo, subtask.scope, JSON.stringify(subtask.acceptanceCriteria), JSON.stringify(subtask.deliverables), JSON.stringify(subtask.requirementsCovered), JSON.stringify(subtask.dependsOn)],
       )
       const result = await tx.query("SELECT LAST_INSERT_ID() AS id")
       subtaskIds.set(subtask.seq, Number(result.rows[0]?.id ?? 0))
     }
     for (const subtask of subtasks) {
-      for (const dependencySeq of subtask.dependsOn) {
-        await tx.query("UPDATE subtarefas SET depends_on_subtask_id = ? WHERE tarefa_id = ? AND seq = ?", [subtaskIds.get(dependencySeq) ?? null, databaseTaskId, subtask.seq])
-      }
+      const dependencyIds = subtask.dependsOn.map((dependencySeq) => subtaskIds.get(dependencySeq)).filter((id): id is number => Boolean(id))
+      await tx.query("UPDATE subtarefas SET depends_on_subtask_id = ?, depends_on_subtask_ids = ? WHERE tarefa_id = ? AND seq = ?", [dependencyIds[0] ?? null, JSON.stringify(dependencyIds), databaseTaskId, subtask.seq])
     }
     await tx.query("UPDATE tarefas SET plan_coverage = ? WHERE id = ?", [JSON.stringify(coverage), databaseTaskId])
     return "created"

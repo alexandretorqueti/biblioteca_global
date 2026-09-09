@@ -79,6 +79,12 @@ interface Notificacao {
   createdAt: string
 }
 
+interface NotificacoesResponse {
+  notificacoes: Array<Omit<Notificacao, "createdAt"> & { criadaEm: string }>
+  total: number
+  naoLidas: number
+}
+
 interface Encomenda {
   id: number
   status: StatusEncomenda
@@ -696,21 +702,26 @@ export default function NotificacoesMoradorScreen(): ReactNode {
   // =========================================================================
 
   const carregarNotificacoes = useCallback(async () => {
-    if (!bundle || !projeto || !morador) return
+    if (!bundle || !projeto || !usuario) return
     try {
-      const result = await bundle.http.request<{ items: Notificacao[] }>(
+      const result = await bundle.http.request<NotificacoesResponse>(
         "GET",
-        `/${projeto.slug}/notificacoes`,
+        `/${projeto.slug}/notificacoes/minhas`,
         {
-          query: { moradorId: String(morador.id), pageSize: 50 },
+          query: { limit: "50", offset: "0" },
           auth: "access",
         },
       )
-      setNotificacoes(result.items ?? [])
+      setNotificacoes(
+        (result.notificacoes ?? []).map((notificacao) => ({
+          ...notificacao,
+          createdAt: notificacao.criadaEm,
+        })),
+      )
     } catch {
       // Silencioso
     }
-  }, [bundle, projeto, morador])
+  }, [bundle, projeto, usuario])
 
   // =========================================================================
   // CARREGAR ENCOMENDAS
@@ -751,10 +762,9 @@ export default function NotificacoesMoradorScreen(): ReactNode {
       if (!bundle || !projeto) return
       try {
         await bundle.http.request(
-          "PATCH",
-          `/${projeto.slug}/notificacoes/${notificacaoId}`,
+          "PUT",
+          `/${projeto.slug}/notificacoes/${notificacaoId}/lida`,
           {
-            body: { lida: true },
             auth: "access",
           },
         )
@@ -880,8 +890,8 @@ export default function NotificacoesMoradorScreen(): ReactNode {
   }, [carregarMorador])
 
   useEffect(() => {
+    void carregarNotificacoes()
     if (morador) {
-      void carregarNotificacoes()
       void carregarEncomendas()
     }
   }, [morador, carregarNotificacoes, carregarEncomendas])

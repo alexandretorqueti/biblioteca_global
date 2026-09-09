@@ -3,7 +3,7 @@
  * no motor GerenteAgentes (reproduz o dashboard-standalone.html do motor
  * dentro da biblioteca).
  *
- * - Polling de 5s no endpoint proxy /gerenteagentes/tarefas/:id/motor-detail
+ * - Carga inicial HTTP e atualizações posteriores pelo WebSocket realtime
  * - Subtarefas com status, progresso (verified/total), banner da subtarefa atual
  * - Activity feed com os eventos do motor
  * - Ações: iniciar / pausar / retomar
@@ -28,14 +28,13 @@ import {
   Table,
   TableBody,
   TableCell,
-  TableContainer,
   TableHead,
   TableRow,
   TextField,
   Tooltip,
   Typography,
 } from "@mui/material"
-import { PlayArrowRounded, PauseRounded, ReplayRounded, LockOpenRounded, EditRounded, CloseRounded, ExpandMoreRounded, ExpandLessRounded, AddTaskRounded, SendRounded, RocketLaunchRounded } from "@mui/icons-material"
+import { PlayArrowRounded, PauseRounded, ReplayRounded, EditRounded, CloseRounded, ExpandMoreRounded, ExpandLessRounded, AddTaskRounded, SendRounded, VisibilityRounded } from "@mui/icons-material"
 import { DynamicForm } from "@biblioteca-global/ui"
 import { RealtimeClient, type RealtimeServerMessage } from "@biblioteca-global/api-client"
 import type { DynamicField, DynamicFormValues } from "@biblioteca-global/ui"
@@ -53,6 +52,7 @@ import {
   taskStatusColor,
   taskStatusLabel,
 } from "../motor-v2/src/shared/task-statuses"
+
 export const componentId = "gerenteagentes-task-monitor"
 
 interface Tarefa {
@@ -106,8 +106,6 @@ interface SubTaskMotor {
   scope?: string | null
   acceptanceCriteria?: unknown
   workspaceStatus?: string | null
-  workspaceBranch?: string | null
-  workspaceCommitSha?: string | null
   correctionForSubtaskId?: number | null
   deliveryHistory?: DeliveryHistoryEntry[]
 }
@@ -125,9 +123,19 @@ interface SubTarefaDb {
   resultado?: string | null
   dependsOnSubtaskId?: number | null
   workspaceStatus?: string | null
-  workspaceBranch?: string | null
-  workspaceCommitSha?: string | null
   correctionForSubtaskId?: number | null
+}
+
+interface SessionMessage {
+  role: "agent" | "user" | "system"
+  text: string
+}
+
+interface SubtaskSession {
+  available: boolean
+  sessionKey?: string
+  text: string
+  messages: SessionMessage[]
 }
 
 interface MotorEvent {
@@ -144,7 +152,6 @@ interface MotorDetail {
     id: string
     status: string
     title: string
-    integrationBranch?: string
     errorMessage?: string
     blockInfo?: {
       kind?: string
@@ -159,6 +166,7 @@ interface MotorDetail {
   errors?: Array<{ subtaskId?: string; ok?: boolean; failures?: string }>
   models?: Array<{ model: string; tierIndex?: number; reason?: string; occurredAt?: string }>
 }
+
 
 interface MotorStats {
   activities?: MotorActivity[]
@@ -253,9 +261,9 @@ export default function TaskMonitorScreen(): ReactNode {
   const [projetoFiltro, setProjetoFiltro] = useState<number | "">("")
   const [statusFiltro, setStatusFiltro] = useState<string>("")
   const [buscaTarefa, setBuscaTarefa] = useState("")
+  const [motorActivities, setMotorActivities] = useState<MotorActivity[]>([])
   const [tarefaId, setTarefaId] = useState<number | "">("")
   const [detail, setDetail] = useState<MotorDetail | null>(null)
-  const [motorActivities, setMotorActivities] = useState<MotorActivity[]>([])
   const [chat, setChat] = useState<TarefaChatMessage[]>([])
   const [chatLoading, setChatLoading] = useState(false)
   const [chatInput, setChatInput] = useState("")
@@ -281,6 +289,11 @@ export default function TaskMonitorScreen(): ReactNode {
   const [terminalEvents, setTerminalEvents] = useState<RealtimeServerMessage[]>([])
   const [editingSub, setEditingSub] = useState<SubTarefaDb | null>(null)
   const [expandedSubtasks, setExpandedSubtasks] = useState<Set<number>>(new Set())
+  const [sessionOpen, setSessionOpen] = useState(false)
+  const [sessionSubtask, setSessionSubtask] = useState<SubTaskMotor | null>(null)
+  const [sessionLoading, setSessionLoading] = useState(false)
+  const [sessionError, setSessionError] = useState<string | null>(null)
+  const [sessionData, setSessionData] = useState<SubtaskSession | null>(null)
   const mounted = useRef(true)
   const activeRealtimeTask = useRef<number | "">("")
 
@@ -303,6 +316,7 @@ export default function TaskMonitorScreen(): ReactNode {
     try {
       const query: Record<string, string | number> = { pageSize: 100 }
       if (projetoFiltro !== "") query.projetoId = projetoFiltro
+      if (statusFiltro !== "") query.status = statusFiltro
       // A listagem é fornecida pelo CRUD do projeto; as rotas específicas do
       // acompanhamento (detalhe, chat e subtarefas) ficam no proxy customizado.
       const res = await bundle.http.request<{ items: Tarefa[] }>("GET", "/gerenteagentes/tarefas", {
@@ -324,7 +338,7 @@ export default function TaskMonitorScreen(): ReactNode {
     } catch {
       // silencioso — o painel fica vazio até a próxima tentativa
     }
-  }, [bundle, projetoFiltro])
+  }, [bundle, projetoFiltro, statusFiltro])
 
   const carregarDetail = useCallback(async (id: number) => {
     if (!bundle) return
@@ -337,6 +351,7 @@ export default function TaskMonitorScreen(): ReactNode {
       if (mounted.current) setErro(e instanceof Error ? e.message : "Erro ao carregar detalhes da tarefa")
     }
   }, [bundle])
+
 
   const carregarAtividadeMotor = useCallback(async () => {
     if (!bundle) return
@@ -435,17 +450,11 @@ export default function TaskMonitorScreen(): ReactNode {
     void carregarProjetos()
     void carregarTarefas()
     void carregarAtividadeMotor()
-    const t1 = setInterval(() => {
-      void carregarTarefas()
-      void carregarAtividadeMotor()
-    }, 30000)
     return () => {
       mounted.current = false
-      clearInterval(t1)
     }
-  }, [carregarProjetos, carregarTarefas, carregarAtividadeMotor])
+  }, [carregarProjetos, carregarTarefas])
 
-  // Polling de 60s no detalhe (tempo real)
   useEffect(() => {
     if (tarefaId === "") {
       activeRealtimeTask.current = ""
@@ -467,13 +476,55 @@ export default function TaskMonitorScreen(): ReactNode {
     void carregarDetail(tarefaId)
     void carregarSubtarefasDb(tarefaId)
     void carregarChat(tarefaId)
-    const t2 = setInterval(() => {
-      void carregarDetail(tarefaId)
-      void carregarSubtarefasDb(tarefaId)
-      void carregarChat(tarefaId)
-    }, 60000)
-    return () => clearInterval(t2)
   }, [tarefaId, carregarDetail, carregarSubtarefasDb, carregarChat])
+
+  const aplicarEventoTarefa = useCallback((type: string, payload: Record<string, unknown>, eventTaskId: number) => {
+    if (type === "task.deleted") {
+      setTarefas((atual) => atual.filter((tarefa) => tarefa.id !== eventTaskId))
+      setTarefaId((atual) => atual === eventTaskId ? "" : atual)
+      return
+    }
+    if (type === "task.status.changed") {
+      const status = typeof payload.status === "string" ? payload.status : null
+      if (!status) return
+      setTarefas((atual) => atual.map((tarefa) => tarefa.id === eventTaskId ? { ...tarefa, status } : tarefa))
+      setDetail((atual) => atual?.task && eventTaskId === tarefaId
+        ? { ...atual, task: { ...atual.task, status } }
+        : atual)
+      return
+    }
+    if (type !== "task.created" && type !== "task.updated") return
+    const tarefa: Tarefa = {
+      id: Number(payload.id ?? eventTaskId),
+      titulo: String(payload.titulo ?? payload.title ?? ""),
+      descricao: typeof payload.descricao === "string" ? payload.descricao : null,
+      tipo: typeof payload.tipo === "string" ? payload.tipo : null,
+      dependsOnTaskId: typeof payload.dependsOnTaskId === "number" ? payload.dependsOnTaskId : null,
+      status: String(payload.status ?? "draft"),
+      projetoId: Number(payload.projetoId ?? payload.projectId ?? 0),
+      updatedAt: typeof payload.updatedAt === "string" ? payload.updatedAt : undefined,
+      createdAt: typeof payload.createdAt === "string" ? payload.createdAt : undefined,
+    }
+    setTarefas((atual) => {
+      const index = atual.findIndex((item) => item.id === tarefa.id)
+      if (index < 0) return [tarefa, ...atual]
+      const anterior = atual[index]
+      if (!anterior) return atual
+      const proxima = [...atual]
+      proxima[index] = {
+        ...anterior,
+        ...tarefa,
+        ...(payload.descricao === undefined ? { descricao: anterior.descricao } : {}),
+        ...(payload.tipo === undefined ? { tipo: anterior.tipo } : {}),
+        ...(payload.dependsOnTaskId === undefined ? { dependsOnTaskId: anterior.dependsOnTaskId } : {}),
+        ...(payload.createdAt === undefined ? { createdAt: anterior.createdAt } : {}),
+      }
+      return proxima.sort((a, b) => new Date(b.updatedAt ?? b.createdAt ?? 0).getTime() - new Date(a.updatedAt ?? a.createdAt ?? 0).getTime())
+    })
+    if (eventTaskId === tarefaId) {
+      setDetail((atual) => atual?.task ? { ...atual, task: { ...atual.task, title: tarefa.titulo, status: tarefa.status } } : atual)
+    }
+  }, [tarefaId])
 
   useEffect(() => {
     if (tarefaId === "" || !bundle) return
@@ -495,6 +546,7 @@ export default function TaskMonitorScreen(): ReactNode {
           // O buffer do servidor expirou; recupera a fonte persistida antes de
           // continuar ouvindo a conexão recém-reaberta.
           void carregarDetail(tarefaId)
+          void carregarSubtarefasDb(tarefaId)
           void carregarChat(tarefaId)
           return
         }
@@ -526,8 +578,16 @@ export default function TaskMonitorScreen(): ReactNode {
           }
         }
         if (message.event.type === "task.status.changed") {
-          const status = String(message.event.payload.status ?? "")
-          setTarefas((atual) => atual.map((tarefa) => tarefa.id === tarefaId ? { ...tarefa, status } : tarefa))
+          aplicarEventoTarefa(message.event.type, message.event.payload, message.event.taskId)
+        }
+        if (message.event.type === "task.created" || message.event.type === "task.updated" || message.event.type === "task.deleted") {
+          aplicarEventoTarefa(message.event.type, message.event.payload, message.event.taskId)
+        }
+        if (message.event.type.startsWith("subtask.")) {
+          // O protocolo de subtarefa não carrega todos os campos do detalhe;
+          // reconcilia o snapshot somente após o evento, sem polling.
+          void carregarDetail(tarefaId)
+          void carregarSubtarefasDb(tarefaId)
         }
       },
     })
@@ -536,7 +596,7 @@ export default function TaskMonitorScreen(): ReactNode {
       if (activeRealtimeTask.current === tarefaId) activeRealtimeTask.current = ""
       realtime.close()
     }
-  }, [tarefaId, bundle, carregarChat])
+  }, [tarefaId, bundle, carregarChat, carregarDetail, carregarSubtarefasDb, aplicarEventoTarefa])
 
   useEffect(() => {
     setLoading(false)
@@ -562,6 +622,7 @@ export default function TaskMonitorScreen(): ReactNode {
     [bundle, tarefaId, carregarDetail, carregarTarefas],
   )
 
+
   const moverTarefaNoFluxo = useCallback(async (id: number, status: string) => {
     if (!bundle) return
     const anterior = tarefas.find((tarefa) => tarefa.id === id)
@@ -583,38 +644,6 @@ export default function TaskMonitorScreen(): ReactNode {
     }
   }, [bundle, tarefas, carregarTarefas])
 
-  const desbloquearTarefa = useCallback(async () => {
-    if (!bundle || tarefaId === "") return
-    setAcao("unlock")
-    setErro(null)
-    try {
-      await bundle.http.request("POST", `/gerenteagentes/tarefas/${tarefaId}/unlock`, {
-        auth: "access",
-      })
-      await carregarDetail(tarefaId)
-      await carregarSubtarefasDb(tarefaId)
-      await carregarTarefas()
-    } catch (e) {
-      setErro(e instanceof Error ? e.message : "Erro ao desbloquear tarefa")
-    } finally {
-      setAcao(null)
-    }
-  }, [bundle, tarefaId, carregarDetail, carregarSubtarefasDb, carregarTarefas])
-
-  const fazerDeployTarefa = useCallback(async () => {
-    if (!bundle || tarefaId === "") return
-    setAcao("deploy")
-    setErro(null)
-    try {
-      await bundle.http.request("POST", `/gerenteagentes/tarefas/${tarefaId}/deploy`, { auth: "access" })
-      await carregarAtividadeMotor()
-    } catch (e) {
-      setErro(e instanceof Error ? e.message : "Erro ao iniciar deploy")
-    } finally {
-      setAcao(null)
-    }
-  }, [bundle, tarefaId, carregarAtividadeMotor])
-
   const handleNewTaskSubmit = useCallback(async (values: TarefaFormValues) => {
     if (!bundle) return
     setNewTaskLoading(true)
@@ -622,7 +651,7 @@ export default function TaskMonitorScreen(): ReactNode {
     try {
       await bundle.http.request("POST", "/gerenteagentes/tarefas", {
         body: {
-          managedProjectId: Number(values.projetoId),
+          projeto_id: Number(values.projetoId),
           titulo: values.titulo,
           descricao: values.descricao || null,
           tipo: values.tipo,
@@ -645,7 +674,7 @@ export default function TaskMonitorScreen(): ReactNode {
       try {
         const res = await bundle.http.request<{ items: Array<Record<string, unknown>> }>(
           "GET",
-          `/gerenteagentes/${resource}`,
+          `/${resource}`,
           {
             query: search ? { search, pageSize: 50 } : { pageSize: 100 },
             auth: "access",
@@ -936,6 +965,27 @@ export default function TaskMonitorScreen(): ReactNode {
     [subtarefasDb],
   )
 
+  const abrirSessaoSubtarefa = useCallback(async (subtask: SubTaskMotor) => {
+    if (!bundle || tarefaId === "") return
+    setSessionSubtask(subtask)
+    setSessionOpen(true)
+    setSessionLoading(true)
+    setSessionError(null)
+    setSessionData(null)
+    try {
+      const data = await bundle.http.request<SubtaskSession>(
+        "GET",
+        `/gerenteagentes/tarefas/${tarefaId}/subtarefas/${subtask.seq}/sessao`,
+        { auth: "access" },
+      )
+      if (mounted.current) setSessionData(data)
+    } catch (e) {
+      if (mounted.current) setSessionError(e instanceof Error ? e.message : "Não foi possível carregar a sessão.")
+    } finally {
+      if (mounted.current) setSessionLoading(false)
+    }
+  }, [bundle, tarefaId])
+
   /**
    * O Motor-v2 expõe os dados da tarefa, mas subtarefas podem chegar vazias
    * durante uma atualização gradual do proxy. A tabela do projeto é a fonte
@@ -953,8 +1003,6 @@ export default function TaskMonitorScreen(): ReactNode {
       scope: subtarefa.scope ?? null,
       acceptanceCriteria: subtarefa.acceptanceCriteria ?? null,
       workspaceStatus: subtarefa.workspaceStatus ?? null,
-      workspaceBranch: subtarefa.workspaceBranch ?? null,
-      workspaceCommitSha: subtarefa.workspaceCommitSha ?? null,
       correctionForSubtaskId: subtarefa.correctionForSubtaskId ?? null,
     }))
   }, [detail?.subtasks, subtarefasDb])
@@ -975,11 +1023,6 @@ export default function TaskMonitorScreen(): ReactNode {
     const active = detail?.currentSubTask ?? subs.find((s) => ["running", "delivered", "verifying", "planning"].includes(s.status)) ?? null
     return { total, verified, active }
   }, [detail?.currentSubTask, subtasks])
-
-  const integrationFailure = useMemo(
-    () => subtasks.find((s) => s.workspaceStatus === "integration_failed" && s.workspaceBranch),
-    [subtasks],
-  )
 
   const tarefaSelecionada = tarefas.find((t) => t.id === tarefaId)
   const tarefasVisiveis = useMemo(() => {
@@ -1008,7 +1051,6 @@ export default function TaskMonitorScreen(): ReactNode {
   const eventos = detail?.events ?? []
   const tipoTarefa = tarefaSelecionada?.tipo ?? "desenvolvimento"
   const isDesenvolvimento = tipoTarefa === "desenvolvimento"
-  const podeFazerDeploy = isDesenvolvimento && statusMotor === "completed"
 
   const taskChatPanel = tarefaId !== "" ? (
     <Paper variant="outlined" sx={{ mt: 2, p: 2 }} data-testid="task-chat">
@@ -1200,12 +1242,12 @@ export default function TaskMonitorScreen(): ReactNode {
             onChange={(e) => setTarefaId(Number(e.target.value))}
             data-testid="select-tarefa"
           >
-            {tarefasVisiveis.length === 0 && (
+            {tarefas.length === 0 && (
               <MenuItem value="" disabled>
                 Nenhuma tarefa com os filtros selecionados
               </MenuItem>
             )}
-            {tarefasVisiveis.map((t) => (
+            {tarefas.map((t) => (
               <MenuItem key={t.id} value={t.id}>
                 #{t.id} — {t.titulo} ({t.status})
               </MenuItem>
@@ -1219,6 +1261,16 @@ export default function TaskMonitorScreen(): ReactNode {
           <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems="center" justifyContent="space-between">
             <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
               <Typography variant="h6">{tarefaSelecionada.titulo}</Typography>
+              <Typography
+                variant="body2"
+                color="text.secondary"
+                fontWeight={600}
+                aria-label={`ID da tarefa ${tarefaSelecionada.id}`}
+                title={`ID da tarefa ${tarefaSelecionada.id}`}
+                data-testid="selected-task-id"
+              >
+                #{tarefaSelecionada.id}
+              </Typography>
               <IconButton
                 size="small"
                 aria-label="Editar tarefa"
@@ -1230,17 +1282,6 @@ export default function TaskMonitorScreen(): ReactNode {
               >
                 <EditRounded fontSize="small" />
               </IconButton>
-              <Tooltip title="Desbloquear tarefa">
-                <IconButton
-                  size="small"
-                  aria-label="Desbloquear tarefa"
-                  onClick={() => void desbloquearTarefa()}
-                  disabled={acao !== null}
-                  data-testid="btn-unlock-task"
-                >
-                  <LockOpenRounded fontSize="small" />
-                </IconButton>
-              </Tooltip>
               <Chip size="small" label={statusMotor} color={corStatus(statusMotor)} data-testid="task-status-pill" />
               <Chip
                 size="small"
@@ -1283,19 +1324,6 @@ export default function TaskMonitorScreen(): ReactNode {
               >
                 Retomar
               </Button>
-              {podeFazerDeploy && (
-                <Button
-                  size="small"
-                  variant="contained"
-                  color="success"
-                  startIcon={<RocketLaunchRounded />}
-                  disabled={acao !== null}
-                  onClick={() => void fazerDeployTarefa()}
-                  data-testid="btn-deploy-task"
-                >
-                  Fazer deploy
-                </Button>
-              )}
             </Stack>
           </Stack>
 
@@ -1318,17 +1346,6 @@ export default function TaskMonitorScreen(): ReactNode {
                   : ""}
                 {detail.task.blockInfo.subtaskId ? ` · Subtarefa #${detail.task.blockInfo.subtaskId}` : ""}
               </Typography>
-              {integrationFailure?.workspaceBranch && (
-                <Stack spacing={0.25} sx={{ mt: 0.75 }} data-testid="integration-branches">
-                  <Typography variant="caption" component="div" sx={{ wordBreak: "break-all" }}>
-                    <b>Origem (branch da subtarefa):</b> <code>{integrationFailure.workspaceBranch}</code>
-                    {integrationFailure.workspaceCommitSha ? <> · commit <code>{integrationFailure.workspaceCommitSha}</code></> : null}
-                  </Typography>
-                  <Typography variant="caption" component="div" sx={{ wordBreak: "break-all" }}>
-                    <b>Destino (branch para o merge):</b> <code>{detail.task.integrationBranch ?? "não informado"}</code>
-                  </Typography>
-                </Stack>
-              )}
             </Alert>
           )}
 
@@ -1350,16 +1367,7 @@ export default function TaskMonitorScreen(): ReactNode {
 
           {detail?.exists && isDesenvolvimento && (
             <>
-              <TableContainer
-                sx={{
-                  mt: 2,
-                  width: "100%",
-                  maxWidth: "100%",
-                  overflowX: "auto",
-                  WebkitOverflowScrolling: "touch",
-                }}
-              >
-              <Table size="small" sx={{ minWidth: 760 }} data-testid="subtask-table">
+              <Table size="small" sx={{ mt: 2 }} data-testid="subtask-table">
                 <TableHead>
                   <TableRow>
                     <TableCell>#</TableCell>
@@ -1454,9 +1462,7 @@ export default function TaskMonitorScreen(): ReactNode {
                         </TableCell>
                         <TableCell>
                           {s.workspaceStatus ? (
-                            <Tooltip title={s.workspaceBranch ? `Branch: ${s.workspaceBranch}${s.workspaceCommitSha ? ` · commit: ${s.workspaceCommitSha}` : ""}` : s.workspaceStatus}>
-                              <Chip size="small" variant="outlined" label={s.workspaceStatus} data-testid={`workspace-status-${s.seq}`} />
-                            </Tooltip>
+                            <Chip size="small" variant="outlined" label={s.workspaceStatus} data-testid={`workspace-status-${s.seq}`} />
                           ) : (
                             <Typography variant="caption" color="text.secondary">—</Typography>
                           )}
@@ -1472,6 +1478,16 @@ export default function TaskMonitorScreen(): ReactNode {
                             >
                               <EditRounded fontSize="small" />
                             </IconButton>
+                            <Tooltip title="Visualizar sessão do agente">
+                              <IconButton
+                                size="small"
+                                aria-label={`Visualizar sessão da subtarefa ${s.seq}`}
+                                onClick={() => void abrirSessaoSubtarefa(s)}
+                                data-testid={`btn-view-session-${s.seq}`}
+                              >
+                                <VisibilityRounded fontSize="small" />
+                              </IconButton>
+                            </Tooltip>
                             {history.length > 0 && (
                               <Tooltip title={isExpanded ? "Recolher histórico" : "Ver histórico de entregas"}>
                                 <IconButton
@@ -1557,7 +1573,6 @@ export default function TaskMonitorScreen(): ReactNode {
                   )}
                 </TableBody>
               </Table>
-              </TableContainer>
 
               <Typography variant="h6" sx={{ mt: 3 }}>Atividade</Typography>
               <Paper variant="outlined" sx={{ p: 2, maxHeight: 260, overflow: "auto" }} data-testid="activity-feed">
@@ -1604,6 +1619,35 @@ export default function TaskMonitorScreen(): ReactNode {
           {taskChatPanel}
         </Paper>
       )}
+
+      <Dialog
+        open={sessionOpen}
+        onClose={() => {
+          if (!sessionLoading) setSessionOpen(false)
+        }}
+        fullWidth
+        maxWidth="lg"
+        data-testid="session-dialog"
+      >
+        <DialogTitle sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <Box>Sessão do agente{sessionSubtask ? ` — subtarefa #${sessionSubtask.seq}` : ""}</Box>
+          <IconButton aria-label="Fechar sessão" size="small" onClick={() => setSessionOpen(false)} disabled={sessionLoading}>
+            <CloseRounded />
+          </IconButton>
+        </DialogTitle>
+        <DialogContent>
+          {sessionLoading && <Stack direction="row" spacing={1} alignItems="center" data-testid="session-loading"><CircularProgress size={20} /><Typography>Carregando sessão…</Typography></Stack>}
+          {sessionError && <Alert severity="error" data-testid="session-error">{sessionError}</Alert>}
+          {!sessionLoading && !sessionError && sessionData && !sessionData.available && (
+            <Typography color="text.secondary" data-testid="session-unavailable">Nenhuma sessão disponível para esta subtarefa.</Typography>
+          )}
+          {!sessionLoading && !sessionError && sessionData?.available && (
+            <Box component="pre" data-testid="session-content" sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: "65vh", overflow: "auto", m: 0, p: 2, bgcolor: "action.hover", borderRadius: 1, fontFamily: "monospace", fontSize: "0.85rem" }}>
+              {sessionData.text}
+            </Box>
+          )}
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={newTaskOpen}

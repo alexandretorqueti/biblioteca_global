@@ -63,6 +63,16 @@ function mapCoverage(value: unknown): PlanCoverage {
     const entry = item as Record<string, unknown>
     return { requirement: String(entry.requirement ?? "").trim(), coveredBy: Array.isArray(entry.covered_by) ? entry.covered_by.map(Number).filter(Number.isInteger) : [] }
   })
+  const strategy = record.estrategia
+  if (strategy !== undefined) {
+    if (typeof strategy !== "object" || strategy === null || Array.isArray(strategy)) throw new Error("Estratégia inválida")
+    const item = strategy as Record<string, unknown>
+    const invariants = Array.isArray(item.invariantes) ? item.invariantes.map(String).map((value) => value.trim()).filter(Boolean) : []
+    const sharedArtifacts = Array.isArray(item.artefatos_compartilhados) ? item.artefatos_compartilhados.map(String).map((value) => value.trim()).filter(Boolean) : []
+    const executionOrder = Array.isArray(item.ordem_de_execucao) ? item.ordem_de_execucao.map(Number).filter(Number.isInteger) : []
+    if (invariants.length === 0 || executionOrder.length === 0) throw new Error("Plano sem estratégia coesa")
+    return { requirements, coverage, strategy: { invariants, sharedArtifacts, executionOrder } }
+  }
   return { requirements, coverage }
 }
 

@@ -56,6 +56,10 @@ describe("ensureTaskIntegration", () => {
       const calls = vi.mocked(runner.run).mock.calls.map(([command, cwd]) => ({ command, cwd }))
       expect(calls).toContainEqual({ command: ["git", "worktree", "add", "--detach", result.path, COMMIT], cwd: "/repo" })
       expect(calls).toContainEqual({ command: ["git", "switch", "-c", result.branch, COMMIT], cwd: result.path })
+      const worktreeAddIndex = calls.findIndex((call) => call.command[1] === "worktree" && call.command[2] === "add")
+      const preflightIndex = calls.findIndex((call) => call.command[1] === "diff" && call.command.includes("--name-only"))
+      expect(worktreeAddIndex).toBeGreaterThanOrEqual(0)
+      expect(preflightIndex).toBeGreaterThan(worktreeAddIndex)
       // Repositório principal nunca sofre checkout/switch.
       expect(calls.filter((call) => call.cwd === "/repo").some((call) => call.command[1] === "checkout" || (call.command[1] === "switch" && call.command[2] !== "-c"))).toBe(false)
     } finally {
@@ -86,17 +90,17 @@ describe("ensureTaskIntegration", () => {
     }
   })
 
-  it("captura alterações da base no worktree isolado da tarefa", async () => {
+  it("ignora alterações externas ao projeto ao criar o worktree isolado", async () => {
     const runner: GitCommandRunner = {
-      run: baseRunner({ "diff --name-only --ignore-space-at-eol HEAD": { stdout: " M arquivo.ts\n" } }),
+      run: baseRunner({ "diff --name-only --ignore-space-at-eol HEAD": { stdout: "projects/taqui/src/arquivo.ts\n" } }),
     }
     const result = await new GitWorkspaceManager({ root: "/tmp/motor-v2-taskint", runner }).ensureTaskIntegration({
-      repoPath: "/repo", agentId: "test-agent", rootBaseBranch: "base-desenvolvimento", taskId: "task-9",
+      repoPath: "/repo/projects/gerenteagentes", agentId: "test-agent", rootBaseBranch: "base-desenvolvimento", taskId: "task-9",
     })
     expect(result.branch).toBe("motor-v2/task-9/integracao")
     const commands = vi.mocked(runner.run).mock.calls.map(([command]) => command.join(" "))
-    expect(commands.some((command) => command.includes("diff --binary HEAD"))).toBe(true)
-    expect(commands.some((command) => command.includes("commit --no-verify"))).toBe(true)
+    expect(commands.some((command) => command.includes("diff --binary HEAD"))).toBe(false)
+    expect(commands.some((command) => command.includes("commit --no-verify"))).toBe(false)
   })
 })
 

@@ -65,6 +65,7 @@ export const clientes = mysqlTable("clientes", {
   cep: varchar("cep", { length: 10 }).notNull(),
   telefone: varchar("telefone", { length: 30 }).notNull(),
   ramal: varchar("ramal", { length: 10 }),
+  instagram: varchar("instagram", { length: 200 }),
   email: varchar("email", { length: 200 }).notNull(),
   ativo: boolean("ativo").notNull().default(true),
   administradorId: bigint("administrador_id", { mode: "number", unsigned: true })
@@ -213,6 +214,7 @@ export const annotations = {
     cep: { label: "CEP", maxLength: 10 },
     telefone: { label: "Telefone", maxLength: 30 },
     ramal: { label: "Ramal", maxLength: 10 },
+    instagram: { label: "Instagram", maxLength: 200 },
     email: { label: "E-mail", type: "email", fullWidth: true, maxLength: 200 },
     ativo: { label: "Cliente Ativo" },
     administrador_id: { label: "Administrador Vinculado" },

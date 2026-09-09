@@ -81,6 +81,7 @@ export const config: GeradorSistemaConfig = {
               { name: "cep", label: "CEP", type: "text", required: true, maxLength: 10, gridVisible: false },
               { name: "telefone", label: "Telefone", type: "text", required: true, maxLength: 30 },
               { name: "ramal", label: "Ramal", type: "text", maxLength: 10, gridVisible: false },
+              { name: "instagram", label: "Instagram", type: "text", maxLength: 200 },
               { name: "email", label: "E-mail", type: "email", required: true, maxLength: 200, fullWidth: true },
               { name: "ativo", label: "Cliente Ativo", type: "switch", defaultValue: true, gridVisible: false },
             ],
