@@ -43,6 +43,8 @@ import { ProvisionService } from '../../../apps/api/src/modules/provision/provis
 import { ALL_TASK_STATUSES, TASK_STATUS_STARTABLE } from '../motor-v2/src/shared/task-statuses';
 import { RealtimeService } from '../../../apps/api/src/modules/realtime/realtime.service';
 
+const DEFAULT_MOTOR_REQUEST_TIMEOUT_MS = 180_000;
+
 @Injectable()
 export class GerenteAgentesService {
   private readonly logger = new Logger(GerenteAgentesService.name);
@@ -50,6 +52,7 @@ export class GerenteAgentesService {
   private readonly motorHostHeader: string;
   private readonly motorVersao: string;
   private readonly motorV2Url: string;
+  private readonly motorRequestTimeoutMs: number;
   private readonly consoleUrl: string;
   private readonly consoleToken: string;
 
@@ -69,6 +72,10 @@ export class GerenteAgentesService {
     this.motorVersao = this.configService.get<string>('MOTOR_VERSION') || 'v1';
     const motorV2Porta = this.configService.get<string>('MOTOR_API_PORT') || '3010';
     this.motorV2Url = `http://127.0.0.1:${motorV2Porta}`;
+    const timeoutConfig = Number(this.configService.get<string>('MOTOR_REQUEST_TIMEOUT_MS'));
+    this.motorRequestTimeoutMs = Number.isFinite(timeoutConfig) && timeoutConfig > 0
+      ? timeoutConfig
+      : DEFAULT_MOTOR_REQUEST_TIMEOUT_MS;
     // Console OpenClaw (fonte de agentes — st-5)
     this.consoleUrl = this.configService.get<string>('OPENCLAW_CONSOLE_URL') || 'https://openclaw-api.webconnect.com.br';
     this.consoleToken = this.configService.get<string>('OPENCLAW_CONSOLE_TOKEN') || '';
@@ -591,7 +598,10 @@ export class GerenteAgentesService {
         ...(body ? { 'Content-Type': 'application/json' } : {}),
         ...(!baseUrl && this.motorHostHeader ? { Host: this.motorHostHeader } : {}),
       },
-      timeout: 15000,
+      // Consultas de detalhe/estado de tarefas bloqueadas podem aguardar o
+      // motor liberar o coordenador; o limite anterior causava falso
+      // "Motor indisponível".
+      timeout: this.motorRequestTimeoutMs,
     };
     return new Promise((resolve, reject) => {
       const req = (isHttps ? httpsRequest : httpRequest)(options, (res) => {
