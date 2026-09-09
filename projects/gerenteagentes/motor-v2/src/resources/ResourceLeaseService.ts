@@ -25,8 +25,9 @@ export class ResourceLeaseService {
 
   constructor(config: ResourceLeaseServiceConfig) {
     this.db = config.db
-    this.defaultLeaseMs = config.defaultLeaseMs ?? 60000 // 60s
-    this.heartbeatIntervalMs = config.heartbeatIntervalMs ?? 10000 // 10s
+    // Defaults alinhados com o catálogo de configurações do motor
+    this.defaultLeaseMs = config.defaultLeaseMs ?? 600000 // 10 minutos
+    this.heartbeatIntervalMs = config.heartbeatIntervalMs ?? 30000 // 30 segundos
   }
 
   /**

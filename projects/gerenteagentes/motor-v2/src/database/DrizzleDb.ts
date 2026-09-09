@@ -4,6 +4,7 @@
 
 import mysql from "mysql2/promise"
 import type { Db, QueryResult, TaskRepository, SaveTaskData } from "../shared/types/infrastructure.js"
+import { getConfigNumber } from "../config/MotorConfigReader.js"
 
 /** O motor trabalha no database físico do projeto configurado para esta instância. */
 export function resolveProjectDatabase(): string {
@@ -112,7 +113,7 @@ export class MysqlTaskRepository implements TaskRepository {
         `INSERT INTO tarefas
          (external_id, projeto_id, titulo, descricao, tipo, status, max_rework, hard_timeout_ms, created_at, updated_at)
          VALUES (?, 1, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
-        [data.id, data.title, data.description ?? "", data.tipo ?? "desenvolvimento", data.status, data.maxRework ?? 3, data.hardTimeoutMs ?? 3600000]
+        [data.id, data.title, data.description ?? "", data.tipo ?? "desenvolvimento", data.status, data.maxRework ?? 3, data.hardTimeoutMs ?? getConfigNumber('motor.worker_timeout_ms')]
       )
     }
   }
@@ -132,7 +133,7 @@ export class MysqlTaskRepository implements TaskRepository {
       buildCommand: "npm run build",
       unitTestCommand: "npm run test",
       maxRework: Number(row.max_rework ?? 3),
-      hardTimeoutMs: Number(row.hard_timeout_ms ?? 3600000),
+      hardTimeoutMs: Number(row.hard_timeout_ms ?? getConfigNumber('motor.worker_timeout_ms')),
       dependsOnTaskId: row.depends_on_task_id ? String(row.depends_on_task_id) : undefined,
       createdAt: String(row.created_at ?? ""),
       updatedAt: String(row.updated_at ?? ""),

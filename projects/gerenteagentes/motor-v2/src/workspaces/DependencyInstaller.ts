@@ -19,6 +19,7 @@ import { execSync } from "node:child_process"
 import { existsSync } from "node:fs"
 import { join } from "node:path"
 import { createLogger } from "../shared/logger.js"
+import { getConfigNumber } from "../config/MotorConfigReader.js"
 
 const logger = createLogger("DependencyInstaller")
 
@@ -230,7 +231,8 @@ export function isLockfileOutOfSync(errorMessage: string): boolean {
 }
 
 /**
- * Resolve o timeout de instalação de dependências a partir da variável de ambiente.
+ * Resolve o timeout de instalação de dependências a partir da variável de ambiente
+ * ou das configurações persistidas (prioridade: env var > config reader > default).
  * Exportado para testes e para uso direto no TaskWorker.
  */
 export function resolveInstallTimeoutMs(): number {
@@ -239,5 +241,11 @@ export function resolveInstallTimeoutMs(): number {
     const parsed = Number(envValue)
     if (Number.isFinite(parsed) && parsed > 0) return parsed
   }
-  return DEFAULT_TIMEOUT_MS
+  // Tenta ler das configurações persistidas
+  try {
+    return getConfigNumber('motor.dependency_install_timeout_ms')
+  } catch {
+    // Config reader não inicializado — usa o default
+    return DEFAULT_TIMEOUT_MS
+  }
 }

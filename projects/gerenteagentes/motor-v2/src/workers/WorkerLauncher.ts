@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 import type { WorkerInput } from '../shared/types/execution.js'
 import type { WorkerToCoordinatorMessage } from './WorkerProtocol.js'
 import { createLogger } from '../shared/logger.js'
+import { getConfigNumber } from '../config/MotorConfigReader.js'
 
 export type WorkerEvent = WorkerToCoordinatorMessage
 
@@ -99,7 +100,7 @@ export class WorkerLauncher extends EventEmitter {
     }
   }
 
-  async shutdownAll(timeoutMs = 10_000): Promise<void> {
+  async shutdownAll(timeoutMs = getConfigNumber('motor.worker_shutdown_timeout_ms')): Promise<void> {
     const pending: Promise<void>[] = []
     for (const [, worker] of this.workers) {
       if (worker.connected) {
@@ -130,7 +131,7 @@ export class WorkerLauncher extends EventEmitter {
     }
   }
 
-  async stopWorker(executionId: string, timeoutMs = 10_000): Promise<void> {
+  async stopWorker(executionId: string, timeoutMs = getConfigNumber('motor.worker_shutdown_timeout_ms')): Promise<void> {
     const worker = this.workers.get(executionId)
     if (!worker) return
     if (worker.connected) worker.send({ type: 'shutdown' })
