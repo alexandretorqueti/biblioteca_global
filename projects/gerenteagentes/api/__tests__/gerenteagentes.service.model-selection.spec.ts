@@ -113,13 +113,13 @@ describe("GerenteAgentesService — model-selection (proxy p/ motor)", () => {
     const chamada = capturas[0];
     if (!chamada) throw new Error("captura ausente");
     expect(chamada.options.path).toBe("/api/model-selection/biblioteca-global/DEV");
-    expect(chamada.options.timeout).toBe(90_000);
+    expect(chamada.options.timeout).toBe(180_000);
   });
 
   it("aceita timeout do motor configurável por ambiente", async () => {
     const { service } = novoService({
       MOTOR_DEV_URL: "http://motor.test:6282",
-      MOTOR_REQUEST_TIMEOUT_MS: "90000",
+      MOTOR_REQUEST_TIMEOUT_MS: "180000",
     });
     respostas.push({
       status: 200,
@@ -128,7 +128,7 @@ describe("GerenteAgentesService — model-selection (proxy p/ motor)", () => {
 
     await service.getModelSelection("biblioteca-global", "DEV");
 
-    expect(capturas[0]?.options.timeout).toBe(90_000);
+    expect(capturas[0]?.options.timeout).toBe(180_000);
   });
 
   it("GET 404 do motor (sem seleção) → entries vazio com o projectKey pedido", async () => {
