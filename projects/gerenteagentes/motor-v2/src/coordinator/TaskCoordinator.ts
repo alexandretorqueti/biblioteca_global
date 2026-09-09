@@ -1359,14 +1359,14 @@ export class TaskCoordinator {
   async pauseTask(taskId: string): Promise<void> {
     const task = await this.repository.getTask(taskId)
     if (!task) throw new Error("Tarefa " + taskId + " nao encontrada")
-    if (task.status !== "running" && task.status !== "analyzing") {
+    if (task.status !== "running" && task.status !== "analyzing" && task.status !== "ready") {
       throw new Error("Tarefa " + taskId + " nao esta em execucao")
     }
+    // Pausa cooperativa: o agente atual termina normalmente; a fila só para
+    // depois dele. Se não há worker ativo (tarefa `ready`, entre subtarefas),
+    // a pausa é imediata — não há agente para esperar.
     for (const [executionId, worker] of this.activeWorkers.entries()) {
       if (worker.taskId === taskId) {
-        // Não interromper o agente: a solicitação fica registrada enquanto o
-        // worker conclui normalmente. O bloqueio da fila é aplicado no evento
-        // `completed`, depois que a entrega atual foi processada.
         this.pauseRequestedTasks.add(taskId)
         worker.pauseRequested = true
         this.publishActivity(worker, {
@@ -1378,7 +1378,11 @@ export class TaskCoordinator {
         return
       }
     }
-    throw new Error("Worker ativo nao encontrado para tarefa " + taskId)
+    // Nenhum worker ativo: pausa imediata (tarefa `ready` entre subtarefas,
+    // ou `running`/`analyzing` sem worker — transição direta para `paused`).
+    this.pauseRequestedTasks.add(taskId)
+    await this.saveTaskTransition(task, "pause")
+    this.logger.info("Pausa imediata aplicada (sem worker ativo): " + taskId, { taskId, status: task.status })
   }
 
   async resumeTask(taskId: string): Promise<void> {

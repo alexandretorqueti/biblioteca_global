@@ -692,7 +692,10 @@ export class GerenteAgentesService {
       throw new NotFoundException('Tarefa não encontrada');
     }
 
-    if (tarefa.status !== 'running') {
+    // Pausa cooperativa: o motor espera o agente atual terminar antes de
+    // pausar. Status válidos: running (agente em execução), analyzing
+    // (analista em execução), ready (entre subtarefas, pausa imediata).
+    if (tarefa.status !== 'running' && tarefa.status !== 'analyzing' && tarefa.status !== 'ready') {
       throw new BadRequestException(`Tarefa não pode ser pausada (status: ${tarefa.status})`);
     }
 
@@ -709,8 +712,13 @@ export class GerenteAgentesService {
       if (!resp.ok) {
         throw new BadRequestException(`Motor rejeitou a pausa (${resp.status}): ${resp.body.slice(0, 200)}`);
       }
+      // O motor gerencia a transição de status (cooperativa: espera o agente
+      // terminar; imediata se não há worker ativo). Não sobrescrever o status
+      // aqui — o motor já persistiu ou persistirá a transição correta.
+      return { id: tarefaId, status: 'paused', message: 'Pausa solicitada; aguardando conclusão do agente atual' };
     }
 
+    // Fallback v1: transição direta (sem cooperativa)
     await db
       .update(tarefas)
       .set({ status: 'paused', updatedAt: new Date() })
@@ -748,8 +756,14 @@ export class GerenteAgentesService {
       if (!resp.ok) {
         throw new BadRequestException(`Motor rejeitou a retomada (${resp.status}): ${resp.body.slice(0, 200)}`);
       }
+      // O motor gerencia a transição de status (paused → ready/planned) e
+      // já fez pump para retomar a execução da próxima etapa pendente. Não
+      // sobrescrever o status aqui — o motor já persistiu o estado correto
+      // e a execução continua de onde parou, sem repetir agente concluído.
+      return { id: tarefaId, status: 'ready', message: 'Tarefa retomada; continuando da próxima etapa pendente' };
     }
 
+    // Fallback v1: transição direta
     await db
       .update(tarefas)
       .set({ status: 'running', updatedAt: new Date() })

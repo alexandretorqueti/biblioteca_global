@@ -537,6 +537,53 @@ describe('TaskCoordinator', () => {
         .find((query) => query.includes("WHERE t.status = 'planned'"))
       expect(analysisQuery).toContain('NOT EXISTS (SELECT 1 FROM subtarefas')
     })
+
+    it('pausa imediata quando a tarefa está ready sem worker ativo', async () => {
+      vi.mocked(repository.getTask).mockResolvedValue({
+        id: 'task-pause-ready', chatId: '', agentId: 'agent', title: 'Pausar ready', description: '',
+        repoPath: '/repo', buildCommand: 'npm run build', unitTestCommand: 'npm run test',
+        status: 'ready', maxRework: 3, hardTimeoutMs: 1000, projectSlug: 'project',
+      })
+
+      await coordinator.pauseTask('task-pause-ready')
+
+      expect(repository.saveTask).toHaveBeenCalledWith(expect.objectContaining({ id: 'task-pause-ready', status: 'paused' }))
+    })
+
+    it('pausa cooperativa quando há worker ativo (não interrompe o agente)', async () => {
+      vi.mocked(repository.getTask).mockResolvedValue({
+        id: 'task-pause-running', chatId: '', agentId: 'agent', title: 'Pausar running', description: '',
+        repoPath: '/repo', buildCommand: 'npm run build', unitTestCommand: 'npm run test',
+        status: 'running', maxRework: 3, hardTimeoutMs: 1000, projectSlug: 'project',
+      })
+      const internal = coordinator as unknown as { activeWorkers: Map<string, { taskId: string; phase: string; pauseRequested?: boolean }> }
+      internal.activeWorkers.set('exec-1', { taskId: 'task-pause-running', phase: 'execute' })
+
+      await coordinator.pauseTask('task-pause-running')
+
+      // Não deve ter feito transição imediata — apenas marcado para pausa cooperativa
+      expect(repository.saveTask).not.toHaveBeenCalled()
+      const worker = internal.activeWorkers.get('exec-1')
+      expect(worker?.pauseRequested).toBe(true)
+    })
+
+    it('retomada preserva subtarefas já verificadas e continua da próxima pendente', async () => {
+      vi.mocked(repository.getTask).mockResolvedValue({
+        id: 'task-resume-partial', chatId: '', agentId: 'agent', title: 'Retomar parcial', description: '',
+        repoPath: '/repo', buildCommand: 'npm run build', unitTestCommand: 'npm run test',
+        status: 'paused', maxRework: 3, hardTimeoutMs: 1000, projectSlug: 'project',
+      })
+      // Has plan (subtarefas exist)
+      vi.mocked(db.query).mockResolvedValueOnce({ rows: [{ has_plan: 1 }], affectedRows: 0, insertId: 0 })
+      vi.spyOn(coordinator, 'pump').mockResolvedValue()
+
+      await coordinator.resumeTask('task-resume-partial')
+
+      // Transiciona para ready (não planned), preservando o plano existente
+      expect(repository.saveTask).toHaveBeenCalledWith(expect.objectContaining({ id: 'task-resume-partial', status: 'ready' }))
+      // pump é chamado para selecionar a próxima subtarefa pendente
+      expect(coordinator.pump).toHaveBeenCalled()
+    })
   })
 
   describe('execução sequencial de subtarefas', () => {
