@@ -223,6 +223,14 @@ export class GerenteAgentesController {
     return this.service.sessaoSubtarefa(projeto, id, seq);
   }
 
+  @Get('tarefas/:id/sessoes-analista')
+  visualizarSessoesAnalistaTarefa(
+    @CurrentProject() projeto: ProjetoResumo,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    return this.service.sessoesAnalistaTarefa(projeto, id);
+  }
+
   @Get('tarefas/:id/motor-detail')
   motorDetailTarefa(
     @CurrentProject() projeto: ProjetoResumo,
