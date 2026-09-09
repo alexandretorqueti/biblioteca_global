@@ -98,7 +98,9 @@ export async function persistRemoteSessionFailure(
   ) as { rows: Array<{ id: number }> } | undefined
   const tarefaId = Number(lookupResult?.rows?.[0]?.id ?? 0)
   if (!tarefaId) {
-    throw new Error(`Tarefa não encontrada: ${taskId}`)
+    // Tarefa não encontrada - apenas logar e retornar sem persistir
+    console.warn(`[persistRemoteSessionFailure] Tarefa não encontrada: ${taskId}`)
+    return
   }
   
   await db.query(
