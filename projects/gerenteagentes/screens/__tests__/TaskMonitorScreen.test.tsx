@@ -1282,3 +1282,177 @@ describe("TaskMonitorScreen — Lista de subtarefas (scope, critérios, workspac
     expect(screen.getByTestId("workspace-status-1")).toHaveTextContent("clean")
   })
 })
+
+describe("TaskMonitorScreen — ST-3 (visualizar sessão da subtarefa)", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", mockFetch)
+    mockFetch.mockReset()
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    delete globalThis.__bundleFalso
+  })
+
+  function renderScreen() {
+    return render(
+      <BibliotecaThemeProvider>
+        <TaskMonitorScreen />
+      </BibliotecaThemeProvider>,
+    )
+  }
+
+  function subTarefaDbFactory(
+    id: number,
+    tarefaId: number,
+    seq: number,
+    titulo: string,
+    status = "pending",
+  ) {
+    return {
+      id,
+      tarefaId,
+      seq,
+      titulo,
+      status,
+      descricao: null,
+      scope: null,
+      acceptanceCriteria: null,
+      resultado: null,
+      dependsOnSubtaskId: null,
+    } as const
+  }
+
+  function setupBundle(sessionHandler: (method: string, path: string) => unknown) {
+    const tarefas = [tarefaFactory(99, "Tarefa Sessao", "running", 1)]
+    const motorDetail = {
+      motorId: "m1",
+      exists: true,
+      task: { id: "task-99", status: "running", title: "Tarefa Sessao" },
+      subtasks: [{ seq: 1, title: "Sub 1", status: "running" }],
+      currentSubTask: { seq: 1, title: "Sub 1", status: "running" },
+      events: [],
+    }
+    const dbSubs = [subTarefaDbFactory(10, 99, 1, "Sub 1")]
+
+    const bundle = {
+      http: {
+        request: async (method: string, path: string, opts?: { auth?: string }) => {
+          if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
+          if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
+          if (method === "GET" && path.endsWith("/subtarefas")) return dbSubs
+          // Delegate session endpoint to the test-specific handler
+          if (method === "GET" && path.includes("/sessao")) {
+            return sessionHandler(method, path)
+          }
+          return {}
+        },
+      },
+    } as never
+
+    globalThis.__bundleFalso = bundle
+    return { tarefas, motorDetail, dbSubs }
+  }
+
+  it("clica em btn-view-session-<seq> e chama GET com a URL exata da sessão", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const requestSpy = vi.fn()
+
+    setupBundle((method, path) => {
+      requestSpy(method, path)
+      return { available: true, text: "sessão", messages: [] }
+    })
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("btn-view-session-1")).toBeInTheDocument()
+    })
+
+    await user.click(screen.getByTestId("btn-view-session-1"))
+
+    await waitFor(() => {
+      expect(screen.getByTestId("session-dialog")).toBeInTheDocument()
+    })
+
+    // Assert the exact URL pattern
+    const sessionCall = requestSpy.mock.calls.find(
+      ([m, p]) => m === "GET" && p.includes("/sessao"),
+    )
+    expect(sessionCall).toBeDefined()
+    expect(sessionCall![1]).toBe("/gerenteagentes/tarefas/99/subtarefas/1/sessao")
+  })
+
+  it("renderiza session-content com o texto da sessão quando available=true", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+
+    setupBundle(() => ({
+      available: true,
+      text: "Conteúdo da sessão do agente para subtarefa 1",
+      messages: [{ role: "agent", text: "Olá" }],
+    }))
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("btn-view-session-1")).toBeInTheDocument()
+    })
+
+    await user.click(screen.getByTestId("btn-view-session-1"))
+
+    await waitFor(() => {
+      expect(screen.getByTestId("session-content")).toBeInTheDocument()
+    })
+
+    expect(screen.getByTestId("session-content")).toHaveTextContent(
+      "Conteúdo da sessão do agente para subtarefa 1",
+    )
+  })
+
+  it("renderiza session-unavailable quando available=false", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+
+    setupBundle(() => ({
+      available: false,
+      text: "",
+      messages: [],
+    }))
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("btn-view-session-1")).toBeInTheDocument()
+    })
+
+    await user.click(screen.getByTestId("btn-view-session-1"))
+
+    await waitFor(() => {
+      expect(screen.getByTestId("session-unavailable")).toBeInTheDocument()
+    })
+  })
+
+  it("renderiza session-error com a mensagem quando o backend falha (HTTP error)", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+
+    setupBundle(() => {
+      throw new Error("Tarefa não encontrada")
+    })
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("btn-view-session-1")).toBeInTheDocument()
+    })
+
+    await user.click(screen.getByTestId("btn-view-session-1"))
+
+    await waitFor(() => {
+      expect(screen.getByTestId("session-error")).toBeInTheDocument()
+    })
+
+    expect(screen.getByTestId("session-error")).toHaveTextContent("Tarefa não encontrada")
+  })
+})
