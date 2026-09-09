@@ -36,6 +36,7 @@ import { validateTaskCompletion, formatPromotionValidationReport } from "../poli
 import { isAgentRunFailureWithoutReply } from "../policies/NoReplyFailurePolicy.js"
 import { validateProjectId, formatProjectIdValidationReport } from "../policies/ProjectIdValidationPolicy.js"
 import { verifyAgentInGateway, formatAgentVerificationReport, shouldBlockEnqueue } from "../policies/GatewayAgentVerificationPolicy.js"
+import { deriveTaskStatus } from "../policies/DerivedTaskStatus.js"
 
 interface ActiveWorker {
   taskId: string
@@ -1244,6 +1245,22 @@ export class TaskCoordinator {
       correctionForSubtaskId: row.correction_for_subtask_id ? Number(row.correction_for_subtask_id) : null,
       deliveryHistory: [], // será preenchido abaixo
     }))
+
+    // Durante a migração, o valor gravado ainda é usado como compatibilidade
+    // para fatos que não possuíam coluna própria (deploy, clarificação e
+    // bloqueio). A resposta da API, porém, deixa de aceitar `tarefas.status`
+    // como verdade sobre a existência de trabalho pendente ou em execução.
+    const persistedStatus = task.status
+    task.status = deriveTaskStatus({
+      persistedStatus,
+      hasPendingClarification: persistedStatus === "awaiting_clarification",
+      hasActiveBlocker: persistedStatus === "blocked" || subtasks.some((subtask) => subtask.status === "blocked"),
+      analysisInProgress: persistedStatus === "analyzing",
+      hasPersistedPlan: subtasks.length > 0,
+      subtaskStatuses: subtasks.map((subtask) => subtask.status),
+      deploySucceeded: persistedStatus === "deployed",
+      integrationConfirmed: persistedStatus === "completed" || persistedStatus === "deployed",
+    })
 
     // Busca o histórico de entregas para todas as subtarefas da tarefa
     if (subtasks.length > 0) {
