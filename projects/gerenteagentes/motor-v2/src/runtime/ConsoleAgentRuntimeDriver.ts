@@ -323,6 +323,29 @@ export class ConsoleAgentRuntimeDriver {
     return response.agents ?? []
   }
 
+  /**
+   * Lista sessões de um agente específico.
+   */
+  async listSessions(agentId: string): Promise<Array<{ key: string; label?: string; agentId?: string }>> {
+    const response = await this.request<{ sessions: Array<{ key: string; label?: string; agentId?: string }> }>({
+      method: "GET",
+      path: "/api/sessions",
+      query: { agentId, limit: 100, offset: 0 },
+    })
+    return response.sessions ?? []
+  }
+
+  /**
+   * Consulta o estado de uma sessão específica no OpenClaw.
+   */
+  async describeSession(sessionKey: string, agentId: string): Promise<SessionDescription> {
+    return await this.request<SessionDescription>({
+      method: "GET",
+      path: "/api/sessions/describe",
+      query: { key: sessionKey, agentId },
+    })
+  }
+
   async readSessionHistory(session: RuntimeSession, limit = 50): Promise<Array<{ role: string; content: string }>> {
     const response = await this.request<{ messages: Array<{ role: string; content: unknown }> }>({
       method: "GET",

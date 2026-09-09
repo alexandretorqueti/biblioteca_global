@@ -90,9 +90,20 @@ export async function persistRemoteSessionFailure(
   subtaskId: number | undefined,
   failure: RemoteSessionFailure,
 ): Promise<void> {
+  // Converter taskId (string ou número) para ID numérico
+  const numeric = /^\d+$/.test(taskId)
+  const lookupResult = await db.query(
+    "SELECT id FROM tarefas WHERE " + (numeric ? "(external_id = ? OR id = ?)" : "external_id = ?") + " LIMIT 1",
+    numeric ? [taskId, taskId] : [taskId],
+  ) as { rows: Array<{ id: number }> }
+  const tarefaId = Number(lookupResult.rows[0]?.id ?? 0)
+  if (!tarefaId) {
+    throw new Error(`Tarefa não encontrada: ${taskId}`)
+  }
+  
   await db.query(
     "INSERT INTO motor_agent_session_failures (tarefa_id, subtarefa_id, agent_id, session_key, runtime_session_id, run_id, code, message, occurred_at, scope, classification, classification_reason, fingerprint) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    [taskId, subtaskId ?? null, agentId, failure.sessionKey, failure.remoteSessionId ?? null, failure.runId, failure.code, failure.message, failure.occurredAt, failure.scope, failure.classification, failure.classificationReason, failure.fingerprint],
+    [tarefaId, subtaskId ?? null, agentId, failure.sessionKey, failure.remoteSessionId ?? null, failure.runId, failure.code, failure.message, failure.occurredAt, failure.scope, failure.classification, failure.classificationReason, failure.fingerprint],
   )
 }
 

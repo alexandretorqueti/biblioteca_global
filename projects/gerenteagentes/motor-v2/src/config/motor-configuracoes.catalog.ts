@@ -43,6 +43,9 @@ export const MOTOR_CONFIGURACOES: readonly MotorConfiguracaoDefinicao[] = [
   { chave: "motor.resource_event_wait_timeout_ms", tipo: "number", valorPadrao: 30000, regraValidacao: "inteiro entre 1000 e 3600000", descricao: "Tempo máximo de espera por evento de recurso.", validar: (v) => inteiroPositivo(v, 3600000) && v >= 1000 },
   { chave: "motor.baseline_confirmation_timeout_ms", tipo: "number", valorPadrao: 300000, regraValidacao: "inteiro entre 10000 e 3600000", descricao: "Tempo máximo para confirmar o baseline.", validar: (v) => inteiroPositivo(v, 3600000) && v >= 10000 },
   { chave: "motor.build_test_timeout_ms", tipo: "number", valorPadrao: 300000, regraValidacao: "inteiro entre 60000 e 3600000", descricao: "Tempo máximo para execução de build e testes unitários.", validar: (v) => inteiroPositivo(v, 3600000) && v >= 60000 },
+  { chave: "motor.orphan_analysis_timeout_ms", tipo: "number", valorPadrao: 600000, regraValidacao: "inteiro entre 60000 e 3600000", descricao: "Tempo sem atividade antes de recuperar tarefa orfa em analise.", validar: (v) => inteiroPositivo(v, 3600000) && v >= 60000 },
+  { chave: "motor.console_url", tipo: "string", valorPadrao: "http://127.0.0.1:6280", regraValidacao: "URL valida", descricao: "URL do Console OpenClaw para consultas de sessao.", validar: (v) => typeof v === "string" && v.startsWith("http") },
+  { chave: "motor.console_token", tipo: "string", valorPadrao: "", regraValidacao: "string", descricao: "Token de autenticacao do Console OpenClaw.", validar: (v) => typeof v === "string" },
 ]
 
 export function configuracaoPorChave(chave: string): MotorConfiguracaoDefinicao | undefined {

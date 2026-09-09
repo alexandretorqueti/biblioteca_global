@@ -12,7 +12,8 @@ import { MotorAPI } from './api/MotorAPI.js'
 import { resourceEventBus } from './resources/ResourceEventBus.js'
 import { executionEventBus, type ExecutionActivityBroadcaster } from './events/ExecutionEventBus.js'
 import { createLogger, describeError } from './shared/logger.js'
-import { getConfigNumber } from './config/MotorConfigReader.js'
+import { getConfigNumber, getConfigString } from './config/MotorConfigReader.js'
+import { ConsoleAgentRuntimeDriver } from './runtime/ConsoleAgentRuntimeDriver.js'
 
 export interface MotorConfig {
   db: Db
@@ -33,16 +34,23 @@ export class Motor {
   private reconciler: ExpirationReconciler
   private api: MotorAPI
   private pumpInterval: ReturnType<typeof setInterval> | null = null
+  private consoleDriver: ConsoleAgentRuntimeDriver
 
   constructor(config: MotorConfig) {
-    // Usa valores explícitos se fornecidos, senão busca do config reader (com fallback para defaults)
     const maxWorkers = config.maxWorkers ?? getConfigNumber('motor.max_workers')
     const maxWorkersPerProject = config.maxWorkersPerProject ?? getConfigNumber('motor.max_workers_per_project')
     const apiPort = config.apiPort ?? 3010
 
-    // Configurações de recursos — lê do config reader com fallback para defaults
     const defaultLeaseMs = getConfigNumber('motor.resource_lease_ms')
     const heartbeatIntervalMs = getConfigNumber('motor.resource_heartbeat_interval_ms')
+
+    // Driver do Console OpenClaw para consultar sessões ativas
+    const consoleUrl = getConfigString('motor.console_url') || 'http://127.0.0.1:6280'
+    const consoleToken = getConfigString('motor.console_token') || ''
+    this.consoleDriver = new ConsoleAgentRuntimeDriver({
+      baseUrl: consoleUrl,
+      token: consoleToken,
+    })
 
     this.resourceLease = new ResourceLeaseService({ 
       db: config.db,
@@ -54,6 +62,7 @@ export class Motor {
     this.reconciler = new ExpirationReconciler({
       db: config.db,
       intervalMs: config.reconcilerIntervalMs ?? getConfigNumber('motor.reconciler_interval_ms'),
+      consoleDriver: this.consoleDriver,
       onLeaseExpired: (resourceKey, executionId) => this.coordinator.onLeaseExpired(resourceKey, executionId),
     })
     this.coordinator = new TaskCoordinator(config.db, config.repository, this.resourceLease, {
@@ -77,7 +86,6 @@ export class Motor {
     this.reconciler.start()
     await this.api.start()
 
-    // Intervalo de pump configurável
     const pumpIntervalMs = getConfigNumber('motor.pump_interval_ms')
     this.pumpInterval = setInterval(() => {
       this.coordinator.pump().catch((err: Error) => this.logger.error('Erro no pump: ' + describeError(err)))
