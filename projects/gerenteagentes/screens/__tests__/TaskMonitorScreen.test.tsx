@@ -1282,3 +1282,150 @@ describe("TaskMonitorScreen — Lista de subtarefas (scope, critérios, workspac
     expect(screen.getByTestId("workspace-status-1")).toHaveTextContent("clean")
   })
 })
+
+describe("TaskMonitorScreen — Contrato de composição visual (sessões)", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", mockFetch)
+    mockFetch.mockReset()
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    delete globalThis.__bundleFalso
+  })
+
+  function renderScreen() {
+    return render(
+      <BibliotecaThemeProvider>
+        <TaskMonitorScreen />
+      </BibliotecaThemeProvider>,
+    )
+  }
+
+  function bundleComTarefaSelecionada() {
+    const tarefas = [tarefaFactory(1, "Tarefa Teste", "running", 1)]
+    const motorDetail = {
+      motorId: "m1",
+      exists: true,
+      task: { id: "task-1", status: "running", title: "Tarefa Teste" },
+      subtasks: [{ seq: 1, title: "Sub 1", status: "pending" }],
+      currentSubTask: null,
+      events: [],
+    }
+    return {
+      http: {
+        request: async (method: string, path: string) => {
+          if (method === "GET" && path === "/gerenteagentes/projetos_captados") {
+            return { items: [projetoFactory(1, "Projeto X")] }
+          }
+          if (method === "GET" && path === "/gerenteagentes/tarefas") {
+            return { items: tarefas }
+          }
+          if (method === "GET" && path.endsWith("/motor-detail")) {
+            return motorDetail
+          }
+          if (method === "GET" && path.endsWith("/subtarefas")) {
+            return []
+          }
+          if (method === "GET" && path.endsWith("/chat")) {
+            return []
+          }
+          return {}
+        },
+      },
+    } as never
+  }
+
+  it("identifica uma sessão do mapa (task-map-section) e uma segunda sessão de acompanhamento (task-monitoring-section)", async () => {
+    globalThis.__bundleFalso = bundleComTarefaSelecionada()
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("task-map-section")).toBeInTheDocument()
+      expect(screen.getByTestId("task-monitoring-section")).toBeInTheDocument()
+    })
+
+    // Sessão 1: mapa da tarefa
+    const mapSection = screen.getByTestId("task-map-section")
+    expect(mapSection).toBeInTheDocument()
+    // O TaskFlowMap deve estar dentro da sessão do mapa
+    expect(within(mapSection).getByTestId("task-flow-map")).toBeInTheDocument()
+
+    // Sessão 2: acompanhamento (filtros + detalhes + chat)
+    const monitoringSection = screen.getByTestId("task-monitoring-section")
+    expect(monitoringSection).toBeInTheDocument()
+  })
+
+  it("os filtros Projeto, Status, Busca e Tarefa estão dentro da segunda sessão (task-monitoring-section)", async () => {
+    globalThis.__bundleFalso = bundleComTarefaSelecionada()
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("task-monitoring-section")).toBeInTheDocument()
+    })
+
+    const monitoringSection = screen.getByTestId("task-monitoring-section")
+
+    // Todos os filtros devem estar dentro da segunda sessão
+    expect(within(monitoringSection).getByTestId("filter-projeto")).toBeInTheDocument()
+    expect(within(monitoringSection).getByTestId("filter-status")).toBeInTheDocument()
+    expect(within(monitoringSection).getByTestId("filter-busca")).toBeInTheDocument()
+    expect(within(monitoringSection).getByTestId("filter-tarefa")).toBeInTheDocument()
+  })
+
+  it("quando há tarefa selecionada, detalhes e task-chat permanecem no fluxo da segunda sessão, depois dos filtros", async () => {
+    globalThis.__bundleFalso = bundleComTarefaSelecionada()
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("task-monitoring-section")).toBeInTheDocument()
+    })
+
+    const monitoringSection = screen.getByTestId("task-monitoring-section")
+
+    // Detalhes da tarefa devem estar dentro da segunda sessão
+    expect(within(monitoringSection).getByTestId("task-detail-section")).toBeInTheDocument()
+
+    // Chat deve estar dentro da segunda sessão
+    expect(within(monitoringSection).getByTestId("task-chat")).toBeInTheDocument()
+
+    // Verificar ordem: filtros vêm antes dos detalhes e do chat
+    const filterSection = within(monitoringSection).getByTestId("task-filter-section")
+    const detailSection = within(monitoringSection).getByTestId("task-detail-section")
+    const chatContainer = within(monitoringSection).getByTestId("task-chat")
+
+    // Filtros devem vir antes dos detalhes no DOM
+    expect(filterSection.compareDocumentPosition(detailSection)).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+
+    // Detalhes devem vir antes do chat no DOM
+    expect(detailSection.compareDocumentPosition(chatContainer)).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+  })
+
+  it("a sessão do mapa e a sessão de acompanhamento são contêineres distintos e irmãos", async () => {
+    globalThis.__bundleFalso = bundleComTarefaSelecionada()
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("task-map-section")).toBeInTheDocument()
+      expect(screen.getByTestId("task-monitoring-section")).toBeInTheDocument()
+    })
+
+    const mapSection = screen.getByTestId("task-map-section")
+    const monitoringSection = screen.getByTestId("task-monitoring-section")
+
+    // As duas sessões não devem ser a mesma
+    expect(mapSection).not.toBe(monitoringSection)
+
+    // A sessão do mapa não deve estar dentro da sessão de acompanhamento
+    expect(monitoringSection.contains(mapSection)).toBe(false)
+
+    // A sessão de acompanhamento não deve estar dentro da sessão do mapa
+    expect(mapSection.contains(monitoringSection)).toBe(false)
+  })
+})
