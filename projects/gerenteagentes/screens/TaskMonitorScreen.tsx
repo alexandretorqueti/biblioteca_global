@@ -34,7 +34,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material"
-import { PlayArrowRounded, PauseRounded, ReplayRounded, EditRounded, CloseRounded, ExpandMoreRounded, ExpandLessRounded, AddTaskRounded, SendRounded, VisibilityRounded } from "@mui/icons-material"
+import { PlayArrowRounded, PauseRounded, ReplayRounded, LockOpenRounded, EditRounded, CloseRounded, ExpandMoreRounded, ExpandLessRounded, AddTaskRounded, SendRounded, VisibilityRounded } from "@mui/icons-material"
 import { DynamicForm } from "@biblioteca-global/ui"
 import { RealtimeClient, type RealtimeServerMessage } from "@biblioteca-global/api-client"
 import type { DynamicField, DynamicFormValues } from "@biblioteca-global/ui"
@@ -444,6 +444,24 @@ export default function TaskMonitorScreen(): ReactNode {
       if (mounted.current) setSubtarefasDb([])
     }
   }, [bundle])
+
+  const desbloquearTarefa = useCallback(async () => {
+    if (!bundle || tarefaId === "") return
+    setAcao("unlock")
+    setErro(null)
+    try {
+      await bundle.http.request("POST", `/gerenteagentes/tarefas/${tarefaId}/unlock`, {
+        auth: "access",
+      })
+      await carregarDetail(tarefaId)
+      await carregarSubtarefasDb(tarefaId)
+      await carregarTarefas()
+    } catch (e) {
+      setErro(e instanceof Error ? e.message : "Erro ao desbloquear tarefa")
+    } finally {
+      setAcao(null)
+    }
+  }, [bundle, tarefaId, carregarDetail, carregarSubtarefasDb, carregarTarefas])
 
   useEffect(() => {
     mounted.current = true
@@ -1282,6 +1300,17 @@ export default function TaskMonitorScreen(): ReactNode {
               >
                 <EditRounded fontSize="small" />
               </IconButton>
+              <Tooltip title="Desbloquear tarefa">
+                <IconButton
+                  size="small"
+                  aria-label="Desbloquear tarefa"
+                  onClick={() => void desbloquearTarefa()}
+                  disabled={acao !== null}
+                  data-testid="btn-unlock-task"
+                >
+                  <LockOpenRounded fontSize="small" />
+                </IconButton>
+              </Tooltip>
               <Chip size="small" label={statusMotor} color={corStatus(statusMotor)} data-testid="task-status-pill" />
               <Chip
                 size="small"
