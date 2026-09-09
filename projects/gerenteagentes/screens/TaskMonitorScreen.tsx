@@ -469,10 +469,20 @@ export default function TaskMonitorScreen(): ReactNode {
     void carregarProjetos()
     void carregarTarefas()
     void carregarAtividadeMotor()
+    
+    // Polling periódico para atualizar a lista de tarefas (TaskFlowMap)
+    // O WebSocket está conectado apenas para a tarefa selecionada,
+    // então precisamos recarregar todas as tarefas periodicamente.
+    const intervalId = setInterval(() => {
+      void carregarTarefas()
+      void carregarAtividadeMotor()
+    }, 5000) // 5 segundos
+    
     return () => {
       mounted.current = false
+      clearInterval(intervalId)
     }
-  }, [carregarProjetos, carregarTarefas])
+  }, [carregarProjetos, carregarTarefas, carregarAtividadeMotor])
 
   useEffect(() => {
     if (tarefaId === "") {
