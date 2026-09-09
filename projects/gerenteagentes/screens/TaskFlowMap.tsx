@@ -182,7 +182,18 @@ export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", moto
   return (
     <Paper
       variant="outlined"
-      sx={{ width: "100%", maxWidth: "none", p: { xs: 1.5, md: 2 }, overflow: "hidden" }}
+      sx={{
+        // Break out of parent Container's maxWidth constraint to use full viewport width
+        width: "100vw",
+        position: "relative",
+        left: "50%",
+        marginLeft: "-50vw",
+        marginRight: "-50vw",
+        maxWidth: "none",
+        p: { xs: 1.5, md: 2 },
+        overflow: "hidden",
+        boxSizing: "border-box",
+      }}
       data-testid="task-flow-map"
     >
       <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" spacing={1} sx={{ mb: 2 }}>
