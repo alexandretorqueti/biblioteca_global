@@ -65,8 +65,8 @@ export interface CompletenessIssue {
 
 /** Resultado combinado do lint + completude. */
 export type ConfigValidationResult =
-  | { ok: true; lintIssues: ConfigLintIssue[]; completenessIssues: CompletenessIssue[] }
-  | { ok: false; lintIssues: ConfigLintIssue[]; completenessIssues: CompletenessIssue[]; summary: string }
+  | { ok: true; lintIssues: ConfigLintIssue[]; completenessIssues: CompletenessIssue[]; registryErrors: RegistryIssue[]; registryWarnings: RegistryIssue[] }
+  | { ok: false; lintIssues: ConfigLintIssue[]; completenessIssues: CompletenessIssue[]; registryErrors: RegistryIssue[]; registryWarnings: RegistryIssue[]; summary: string }
 
 // ─── Regras de lint ────────────────────────────────────────────────────────
 
@@ -299,7 +299,7 @@ export interface ParsedRegistry {
 
 /** Issue de validação de registry. */
 export interface RegistryIssue {
-  /** componentId declarado no config.ts. */
+  /** componentId declarado no config.ts (ou no registry, para issues de registry). */
   componentId: string
   /** Tipo do problema. */
   kind:
@@ -309,6 +309,11 @@ export interface RegistryIssue {
     | "componentId-export-missing"  // arquivo não exporta componentId
     | "componentId-mismatch"   // componentId exportado diverge do declarado
     | "duplicate-componentId"  // componentId duplicado no config
+    | "duplicate-registry-componentId"  // componentId duplicado no registry
+    | "invalid-registry-import" // import no registry aponta para arquivo inexistente
+    | "unused-registry-entry"  // entrada no registry não é usada no config
+  /** Severidade: error bloqueia, warning apenas avisa. */
+  severity: "error" | "warning"
   /** Mensagem de diagnóstico. */
   message: string
   /** Caminho do arquivo esperado ou encontrado. */
@@ -414,6 +419,7 @@ export function validateCustomScreenRegistry(
         issues.push({
           componentId: firstDecl.componentId,
           kind: "registry-missing",
+          severity: "error",
           message: `Registry.ts não encontrado em projects/${projectSlug}/screens/registry.ts. Crie o registry para registrar todas as telas custom declaradas no config.`,
           registryPath,
         })
@@ -430,6 +436,7 @@ export function validateCustomScreenRegistry(
     issues.push({
       componentId: "",
       kind: "registry-missing",
+      severity: "error",
       message: `Não foi possível ler registry.ts em ${registryPath}.`,
       registryPath,
     })
@@ -454,7 +461,49 @@ export function validateCustomScreenRegistry(
     aliasToComponent.set(entry.componentIdRef, entry.componentNameRef)
   }
 
-  // 3. Para cada componentId declarado no config, valida
+  // 3. Validação de integridade do próprio registry (independente do config)
+
+  // 3a. Valida que todos os imports do registry apontam para arquivos existentes
+  for (const imp of parsed.imports) {
+    const resolvedFile = resolveScreenImportFile(screensDir, imp.importPath)
+    if (!resolvedFile) {
+      issues.push({
+        componentId: imp.defaultImportName,
+        kind: "invalid-registry-import",
+        severity: "error",
+        message: `Import "${imp.importPath}" no registry.ts aponta para arquivo inexistente em projects/${projectSlug}/screens/. O registry contém um import quebrado que impedirá a compilação.`,
+        expectedPath: join(screensDir, imp.importPath),
+        registryPath,
+      })
+    }
+  }
+
+  // 3b. Detecta componentId duplicado no registry (dois imports com mesmo valor exportado)
+  const registryComponentIdMap = new Map<string, RegistryImport[]>()
+  for (const imp of parsed.imports) {
+    const resolvedFile = resolveScreenImportFile(screensDir, imp.importPath)
+    if (!resolvedFile) continue
+    const exportedId = readComponentIdFromScreenFile(resolvedFile)
+    if (exportedId) {
+      const existing = registryComponentIdMap.get(exportedId) ?? []
+      existing.push(imp)
+      registryComponentIdMap.set(exportedId, existing)
+    }
+  }
+  for (const [exportedId, imps] of registryComponentIdMap) {
+    if (imps.length > 1) {
+      const paths = imps.map(i => i.importPath).join(", ")
+      issues.push({
+        componentId: exportedId,
+        kind: "duplicate-registry-componentId",
+        severity: "error",
+        message: `componentId "${exportedId}" exportado por múltiplos arquivos no registry.ts: ${paths}. Cada componentId deve ser único.`,
+        registryPath,
+      })
+    }
+  }
+
+  // 4. Para cada componentId declarado no config, valida
   const declaredIds = extractCustomScreenComponentIds(configContent)
   const seenIds = new Set<string>()
 
@@ -464,6 +513,7 @@ export function validateCustomScreenRegistry(
       issues.push({
         componentId,
         kind: "duplicate-componentId",
+        severity: "error",
         message: `componentId "${componentId}" declarado mais de uma vez no config.ts.`,
       })
       continue
@@ -504,6 +554,7 @@ export function validateCustomScreenRegistry(
         issues.push({
           componentId,
           kind: "not-registered",
+          severity: "error",
           message: `Tela "${componentId}" possui arquivo com export correto, mas não está registrada no objeto customScreens do registry.ts. Adicione [${anyAliasForId.componentIdAlias}]: ${anyAliasForId.defaultImportName} ao objeto customScreens.`,
           registryPath,
         })
@@ -511,6 +562,7 @@ export function validateCustomScreenRegistry(
         issues.push({
           componentId,
           kind: "not-registered",
+          severity: "error",
           message: `Tela custom "${componentId}" declarada no config.ts mas sem entrada correspondente no registry.ts. Crie o arquivo da tela com export const componentId = "${componentId}" e registre em projects/${projectSlug}/screens/registry.ts.`,
           expectedPath: `projects/${projectSlug}/screens/<ScreenName>.tsx`,
           registryPath,
@@ -525,6 +577,7 @@ export function validateCustomScreenRegistry(
       issues.push({
         componentId,
         kind: "import-missing",
+        severity: "error",
         message: `Arquivo importado "${foundImport.importPath}" no registry.ts não existe em projects/${projectSlug}/screens/.`,
         expectedPath: join(screensDir, foundImport.importPath),
         registryPath,
@@ -538,6 +591,7 @@ export function validateCustomScreenRegistry(
       issues.push({
         componentId,
         kind: "componentId-export-missing",
+        severity: "error",
         message: `Arquivo "${basename(resolvedFile)}" não exporta "componentId". Adicione: export const componentId = "${componentId}"`,
         expectedPath: resolvedFile,
         registryPath,
@@ -549,6 +603,7 @@ export function validateCustomScreenRegistry(
       issues.push({
         componentId,
         kind: "componentId-mismatch",
+        severity: "error",
         message: `Arquivo "${basename(resolvedFile)}" exporta componentId = "${exportedId}" mas o config declara "${componentId}". Ajuste para que os valores coincidam.`,
         expectedPath: resolvedFile,
         registryPath,
@@ -557,18 +612,56 @@ export function validateCustomScreenRegistry(
   }
 
   // 5. Sentido inverso: entradas no registry não declaradas no config → warning
+  // Isso pode indicar tela obsoleta, registro esquecido ou tela de outro projeto.
+  // Gera aviso (não erro) para manter o gate aprovável mas chamar atenção.
   const declaredIdSet = new Set(declaredIds.map(d => d.componentId))
   for (const imp of parsed.imports) {
     const resolvedFile = resolveScreenImportFile(screensDir, imp.importPath)
-    if (!resolvedFile) continue
+    if (!resolvedFile) continue // já reportado como erro em 3a
+
     const exportedId = readComponentIdFromScreenFile(resolvedFile)
-    if (exportedId && !declaredIdSet.has(exportedId)) {
-      // Entry exists in registry but not declared in config — this is a warning, not error
-      // We don't add to issues here; the caller can decide severity
+    if (!exportedId) continue // já reportado como erro em 4
+
+    // Verifica se este componentId exportado está no registry (objeto customScreens)
+    const isRegistered = parsed.entries.some(e => e.componentIdRef === imp.componentIdAlias)
+    if (!isRegistered) continue // import existe mas não está no objeto → problema diferente
+
+    // Se está no registry mas não é usado no config → aviso
+    if (!declaredIdSet.has(exportedId)) {
+      issues.push({
+        componentId: exportedId,
+        kind: "unused-registry-entry",
+        severity: "warning",
+        message: `Tela "${exportedId}" está registrada no registry.ts mas não é declarada no config.ts. Remova do registry se não for mais usada, ou adicione ao config se deveria estar ativa.`,
+        expectedPath: resolvedFile,
+        registryPath,
+      })
     }
   }
 
   return issues
+}
+
+/**
+ * Separa issues do registry em erros (bloqueantes) e avisos (não-bloqueantes).
+ *
+ * @param issues - Lista de issues do registry
+ * @returns Objeto com errors e warnings separados
+ */
+export function partitionRegistryIssues(issues: RegistryIssue[]): {
+  errors: RegistryIssue[]
+  warnings: RegistryIssue[]
+} {
+  const errors: RegistryIssue[] = []
+  const warnings: RegistryIssue[] = []
+  for (const issue of issues) {
+    if (issue.severity === "error") {
+      errors.push(issue)
+    } else {
+      warnings.push(issue)
+    }
+  }
+  return { errors, warnings }
 }
 
 /**
@@ -776,8 +869,9 @@ export function validateCompleteness(
   const customScreens = extractCustomScreenComponentIds(configContent)
   const registryIssues = validateCustomScreenRegistry(projectPath, projectSlug, configContent)
 
-  // Converte registry issues em completeness issues
-  for (const issue of registryIssues) {
+  // Converte apenas registry errors em completeness issues (warnings não reprovam)
+  const registryErrors = registryIssues.filter(i => i.severity === "error")
+  for (const issue of registryErrors) {
     const matchingDecl = customScreens.find(c => c.componentId === issue.componentId)
     missing.push({
       kind: "custom-screen",
@@ -841,6 +935,8 @@ export function validateProjectConfig(
         message: `Arquivo config.ts não encontrado em projects/${projectSlug}/.`,
         expectedFile: `projects/${projectSlug}/config.ts`,
       }],
+      registryErrors: [],
+      registryWarnings: [],
       summary: `config.ts do projeto "${projectSlug}" não encontrado.`,
     }
   }
@@ -848,13 +944,20 @@ export function validateProjectConfig(
   const lintResult = lintConfig(configContent)
   const completenessResult = validateCompleteness(projectPath, projectSlug, configContent)
 
-  const allOk = lintResult.ok && completenessResult.ok
+  // Separa registry issues em erros e avisos
+  const allRegistryIssues = validateCustomScreenRegistry(projectPath, projectSlug, configContent)
+  const { errors: registryErrors, warnings: registryWarnings } = partitionRegistryIssues(allRegistryIssues)
+
+  const allOk = lintResult.ok && completenessResult.ok && registryErrors.length === 0
 
   if (allOk) {
+    const lintWarnings = lintResult.issues.filter(i => i.severity === "warning")
     return {
       ok: true,
       lintIssues: lintResult.issues,
       completenessIssues: [],
+      registryErrors: [],
+      registryWarnings,
     }
   }
 
@@ -865,7 +968,9 @@ export function validateProjectConfig(
     ok: false,
     lintIssues: lintResult.issues,
     completenessIssues: completenessResult.ok ? [] : completenessResult.missing,
-    summary: `Validação do config.ts falhou: ${lintErrors} erro(s) de lint, ${completenessErrors} declaração(ões) sem implementação.`,
+    registryErrors,
+    registryWarnings,
+    summary: `Validação do config.ts falhou: ${lintErrors} erro(s) de lint, ${completenessErrors} declaração(ões) sem implementação, ${registryErrors.length} erro(s) de registry.`,
   }
 }
 
@@ -879,11 +984,13 @@ export function validateProjectConfig(
  */
 export function formatConfigValidationReport(result: ConfigValidationResult): string {
   if (result.ok) {
-    const warnings = result.lintIssues.filter(i => i.severity === "warning")
-    if (warnings.length === 0) {
-      return "✅ Config.ts validado com sucesso (lint + completude)."
+    const lintWarnings = result.lintIssues.filter(i => i.severity === "warning")
+    const registryWarnings = result.registryWarnings ?? []
+    const totalWarnings = lintWarnings.length + registryWarnings.length
+    if (totalWarnings === 0) {
+      return "✅ Config.ts validado com sucesso (lint + completude + registry)."
     }
-    return `✅ Config.ts validado com ${warnings.length} aviso(s).`
+    return `✅ Config.ts validado com ${totalWarnings} aviso(s).`
   }
 
   const lines: string[] = [
@@ -914,6 +1021,29 @@ export function formatConfigValidationReport(result: ConfigValidationResult): st
       if (issue.expectedFile) {
         lines.push(`    Arquivo esperado: ${issue.expectedFile}`)
       }
+    }
+    lines.push("")
+  }
+
+  // Erros de registry (bloqueantes)
+  const registryErrors = result.registryErrors ?? []
+  if (registryErrors.length > 0) {
+    lines.push("## Erros de Registry (bloqueantes):")
+    for (const issue of registryErrors) {
+      lines.push(`  - [${issue.kind}] ${issue.componentId}: ${issue.message}`)
+      if (issue.expectedPath) {
+        lines.push(`    Arquivo: ${issue.expectedPath}`)
+      }
+    }
+    lines.push("")
+  }
+
+  // Avisos de registry (não-bloqueantes)
+  const registryWarnings = result.registryWarnings ?? []
+  if (registryWarnings.length > 0) {
+    lines.push("## Avisos de Registry (não-bloqueantes):")
+    for (const issue of registryWarnings) {
+      lines.push(`  - [${issue.kind}] ${issue.componentId}: ${issue.message}`)
     }
     lines.push("")
   }
