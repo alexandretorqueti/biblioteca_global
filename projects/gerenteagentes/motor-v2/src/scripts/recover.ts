@@ -131,12 +131,6 @@ async function unblockTask(db: Db, options: CliOptions): Promise<void> {
   for (const step of plan) console.log((options.dryRun ? "[dry-run] " : "") + step)
   if (options.dryRun) return
 
-  if (taskStatus === "blocked") {
-    await db.query(
-      "UPDATE tarefas SET status = ?, updated_at = NOW() WHERE id = ? AND status = 'blocked'",
-      [hasPlan ? "ready" : "planned", taskId],
-    )
-  }
   await db.query(
     "UPDATE subtarefas SET status = 'pending', updated_at = NOW() WHERE tarefa_id = ? AND status = 'blocked'",
     [taskId],
@@ -237,10 +231,6 @@ async function integrateSubtask(db: Db, options: CliOptions): Promise<void> {
     "UPDATE subtarefas SET workspace_status = 'integrated', resultado = CONCAT(COALESCE(resultado, ''), ?) WHERE id = ?",
     [`\nIntegrado via recover em ${new Date().toISOString()} (merge ${mergeCommit})`, context.subtaskId],
   )
-  await db.query(
-    "UPDATE tarefas SET status = 'ready', updated_at = NOW() WHERE id = ? AND status = 'blocked'",
-    [context.tarefaId],
-  )
   console.log(`Integração concluída: merge ${mergeCommit}. Tarefa #${context.tarefaId} devolvida para ready (se estava bloqueada).`)
 }
 
@@ -271,10 +261,6 @@ async function markIntegrated(db: Db, options: CliOptions): Promise<void> {
   await db.query(
     "UPDATE subtarefas SET workspace_status = 'integrated', resultado = CONCAT(COALESCE(resultado, ''), ?) WHERE id = ?",
     [`\nMarcado como integrado manualmente via recover em ${new Date().toISOString()}`, context.subtaskId],
-  )
-  await db.query(
-    "UPDATE tarefas SET status = 'ready', updated_at = NOW() WHERE id = ? AND status = 'blocked'",
-    [context.tarefaId],
   )
   console.log("Marcado como integrado. Confira o merge no repositório antes de retomar a tarefa.")
 }

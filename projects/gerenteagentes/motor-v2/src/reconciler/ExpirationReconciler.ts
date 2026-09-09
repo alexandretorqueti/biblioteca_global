@@ -97,10 +97,6 @@ export class ExpirationReconciler {
           [taskId],
         )
       }
-      await this.db.query(
-        `UPDATE tarefas SET status = ?, updated_at = NOW() WHERE id = ?`,
-        [hasSubtasks ? 'ready' : 'planned', taskId],
-      )
     }
 
     await this.repairOrphanedRunningSubtasks(now)
@@ -135,11 +131,6 @@ export class ExpirationReconciler {
            WHERE id = ? AND status = 'running'`,
           [subtaskId],
         )
-        await tx.query(
-          `UPDATE tarefas SET status = 'ready', updated_at = NOW()
-           WHERE id = ? AND status NOT IN ('completed', 'deployed', 'cancelled', 'failed')`,
-          [taskId],
-        )
       })
       this.logger.warn(`Subtarefa órfã reconciliada: ${subtaskId}`, { taskId: String(row.external_id) })
     }
@@ -159,13 +150,6 @@ export class ExpirationReconciler {
          WHERE status = 'verified' AND TRIM(COALESCE(resultado, '')) = ?`,
         [AGENT_RUN_FAILED_WITHOUT_REPLY],
       )
-      for (const row of affected.rows) {
-        await tx.query(
-          `UPDATE tarefas SET status = 'ready', updated_at = NOW()
-           WHERE id = ? AND status <> 'cancelled'`,
-          [row.tarefa_id],
-        )
-      }
       this.logger.warn(`Reparadas ${affected.rows.length} tarefa(s) com subtarefa verified sem resposta`)
     })
   }

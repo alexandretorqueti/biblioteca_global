@@ -428,7 +428,7 @@ export class TaskCoordinator {
       try {
         const evidence = blockerEvidence("blocked_environment", preflightResult.reason)
         await this.persistTaskBlock(task.id, null, evidence.kind, "motor-v2:" + evidence.fingerprint, evidence.excerpt)
-        await this.repository.saveTask({ ...task, status: "blocked", updatedAt: new Date().toISOString() })
+        await this.saveTaskTransition(task, "fail")
         this.logger.info("Tarefa bloqueada no preflight de manifesto: " + task.id, { taskId: task.id })
       } catch (persistError) {
         this.logger.error("Falha ao persistir bloqueio de preflight: " + describeError(persistError), { taskId: task.id })
@@ -506,7 +506,6 @@ export class TaskCoordinator {
       const parentTask = await this.repository.getTask(subtask.taskExternalId)
       if (parentTask) {
         if (parentTask.status === "planned") {
-          await this.repository.saveTask({ ...parentTask, status: "ready", updatedAt: new Date().toISOString() })
           parentTask.status = "ready"
         }
         await this.saveTaskTransition(parentTask, "start_execution")
@@ -656,7 +655,7 @@ export class TaskCoordinator {
           this.logger.warn("Tarefa ainda planned ao concluir análise; normalizando para analyzing", {
             taskId: worker.taskId, executionId, phase: "analyze",
           })
-          await this.repository.saveTask({ ...task, status: "analyzing", updatedAt: new Date().toISOString() })
+          await this.saveTaskTransition(task, "start_analysis")
           task.status = "analyzing"
         }
         await this.saveTaskTransition(task, "analysis_completed")
@@ -1092,7 +1091,7 @@ export class TaskCoordinator {
       const task = await this.repository.getTask(worker.taskId)
       if (task) {
         if (task.status === "planned") {
-          await this.repository.saveTask({ ...task, status: "analyzing", updatedAt: new Date().toISOString() })
+          await this.saveTaskTransition(task, "start_analysis")
           task.status = "analyzing"
         }
         if (task.status === "analyzing") {
@@ -1466,7 +1465,6 @@ export class TaskCoordinator {
 
     // Se está em draft, transiciona diretamente para planned (atualiza o banco)
     if (task.status === "draft") {
-      await this.repository.saveTask({ ...task, status: "planned", updatedAt: new Date().toISOString() })
       task.status = "planned"
     }
     if (task.status !== "planned") {
@@ -1668,10 +1666,6 @@ export class TaskCoordinator {
       }
       if (status === "success") {
         await this.db.query("UPDATE deploy_requests SET status = 'succeeded', finished_at = NOW(), updated_at = NOW() WHERE batch_id = ? AND status = 'running'", [batchId])
-        await this.db.query(
-          "UPDATE tarefas t INNER JOIN deploy_requests dr ON dr.tarefa_id = t.id SET t.status = 'deployed', t.ultima_mensagem_erro = NULL, t.updated_at = NOW() WHERE dr.batch_id = ? AND dr.status = 'succeeded' AND t.status = 'completed'",
-          [batchId],
-        )
         this.logger.info("Lote de deploy confirmado", { batchId, taskIds: batch.taskIds })
       } else {
         await this.failDeployBatch(batchId, status, batch.taskIds)
@@ -1715,11 +1709,6 @@ export class TaskCoordinator {
       "INSERT INTO bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at) " +
       "SELECT dr.tarefa_id, NULL, 'deploy_failed', ?, ?, NOW() FROM deploy_requests dr WHERE dr.batch_id = ?",
       ["motor-v2:deploy:" + batchId, error.substring(0, 500), batchId],
-    )
-    await this.db.query(
-      "UPDATE tarefas t INNER JOIN deploy_requests dr ON dr.tarefa_id = t.id " +
-      "SET t.status = 'blocked', t.ultima_mensagem_erro = ?, t.updated_at = NOW() WHERE dr.batch_id = ?",
-      ["Deploy falhou: " + error.substring(0, 500), batchId],
     )
     for (const taskId of taskIds) this.activeDeployments.delete(taskId)
   }
