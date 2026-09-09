@@ -448,9 +448,15 @@ body {
   }
 }
 
-@media (max-width: 768px) {
+@media (max-width: 1024px) {
   body {
     font-size: 16px;
+  }
+
+  /* No mobile/tablet, o chat ocupa toda a viewport sem chrome adicional. */
+  .alpha-header,
+  .alpha-footer {
+    display: none;
   }
 
   .alpha-layout.alpha-authed {
