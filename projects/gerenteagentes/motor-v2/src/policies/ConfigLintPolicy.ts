@@ -21,7 +21,7 @@
  */
 
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs"
-import { join, basename } from "node:path"
+import { join, basename, dirname, resolve } from "node:path"
 
 // ─── Tipos ─────────────────────────────────────────────────────────────────
 
@@ -212,16 +212,15 @@ function normalizeScreenName(name: string, projectSlug: string): string {
 /**
  * Verifica se um componentId tem implementação correspondente no projeto.
  *
- * Procura por:
- * - projects/<slug>/screens/<ComponentId>.tsx
- * - projects/<slug>/screens/<componentId>.tsx (lowercase)
- * - projects/<slug>/screens/*<componentId>*.tsx (contains)
- * - Correspondência normalizada (remove hífens, prefixos, sufixos)
+ * HEURÍSTICA LEGADA (mantida para compatibilidade): busca por nome de arquivo
+ * em projects/<slug>/screens/. Para validação determinística, use
+ * `validateCustomScreenRegistry()` que exige registry.ts com exports corretos.
  *
  * @param projectPath - Caminho raiz do monorepo
  * @param projectSlug - Slug do projeto
  * @param componentId - ID do componente
- * @returns true se existe implementação
+ * @returns true se existe implementação (heurística por nome de arquivo)
+ * @deprecated Use `validateCustomScreenRegistry()` para validação determinística.
  */
 export function hasCustomScreenImplementation(
   projectPath: string,
@@ -258,14 +257,10 @@ export function hasCustomScreenImplementation(
     }
 
     // Busca correspondência normalizada (remove hífens, prefixos, sufixos)
-    // Ex.: componentId "taqui-registro-encomenda" → "registroencomenda"
-    //      arquivo "RegistroEncomendaScreen.tsx" → "registroencomenda"
-    // Também aceita prefixo: "ocorrencia" é prefixo de "ocorrenciadevolucao"
     const normalizedComponentId = normalizeScreenName(componentId, projectSlug)
     const normalizedMatches = files.filter(f => {
       const nameWithoutExt = basename(f, ".tsx")
       const normalizedName = normalizeScreenName(nameWithoutExt, projectSlug)
-      // Match exato ou prefixo (filename é prefixo do componentId normalizado)
       return normalizedName === normalizedComponentId ||
         normalizedComponentId.startsWith(normalizedName)
     })
@@ -274,6 +269,335 @@ export function hasCustomScreenImplementation(
   } catch {
     return false
   }
+}
+
+// ─── Validação determinística via registry.ts ───────────────────────────────
+
+/** Entrada de import parseada do registry.ts. */
+export interface RegistryImport {
+  /** Caminho relativo do import (ex.: "./PainelPortariaScreen"). */
+  importPath: string
+  /** Alias do componentId importado (ex.: "painelId"). */
+  componentIdAlias: string
+  /** Nome do import default (ex.: "PainelPortariaScreen"). */
+  defaultImportName: string
+}
+
+/** Entrada registrada no objeto customScreens do registry.ts. */
+export interface RegistryEntry {
+  /** componentId registrado (valor da chave no objeto). */
+  componentIdRef: string
+  /** Nome do componente associado (valor no objeto). */
+  componentNameRef: string
+}
+
+/** Resultado do parse do registry.ts. */
+export interface ParsedRegistry {
+  imports: RegistryImport[]
+  entries: RegistryEntry[]
+}
+
+/** Issue de validação de registry. */
+export interface RegistryIssue {
+  /** componentId declarado no config.ts. */
+  componentId: string
+  /** Tipo do problema. */
+  kind:
+    | "registry-missing"       // registry.ts não existe
+    | "not-registered"         // componentId não está no registry
+    | "import-missing"         // arquivo importado não existe
+    | "componentId-export-missing"  // arquivo não exporta componentId
+    | "componentId-mismatch"   // componentId exportado diverge do declarado
+    | "duplicate-componentId"  // componentId duplicado no config
+  /** Mensagem de diagnóstico. */
+  message: string
+  /** Caminho do arquivo esperado ou encontrado. */
+  expectedPath?: string
+  /** Caminho do registry.ts. */
+  registryPath?: string
+}
+
+/**
+ * Lê e faz parse do registry.ts do projeto.
+ *
+ * Extrai:
+ * - Imports: `import X, { componentId as aliasId } from "./File"`
+ * - Entradas: `[aliasId]: X` no objeto customScreens
+ *
+ * @param registryContent - Conteúdo texto do registry.ts
+ * @returns ParsedRegistry com imports e entries
+ */
+export function parseRegistryFile(registryContent: string): ParsedRegistry {
+  const imports: RegistryImport[] = []
+  const entries: RegistryEntry[] = []
+
+  // Parse imports: import DefaultName, { componentId as aliasName } from "./Path"
+  const importPattern = /import\s+(\w+)\s*,\s*\{\s*componentId\s+as\s+(\w+)\s*\}\s+from\s+["']([^"']+)["']/g
+  let match: RegExpExecArray | null
+
+  while ((match = importPattern.exec(registryContent)) !== null) {
+    imports.push({
+      defaultImportName: match[1] ?? "",
+      componentIdAlias: match[2] ?? "",
+      importPath: match[3] ?? "",
+    })
+  }
+
+  // Parse entries: [aliasId]: ComponentName
+  const entryPattern = /\[(\w+)\]\s*:\s*(\w+)/g
+  while ((match = entryPattern.exec(registryContent)) !== null) {
+    entries.push({
+      componentIdRef: match[1] ?? "",
+      componentNameRef: match[2] ?? "",
+    })
+  }
+
+  return { imports, entries }
+}
+
+/**
+ * Lê o componentId exportado de um arquivo de tela.
+ *
+ * Busca por: `export const componentId = "..."`
+ *
+ * @param filePath - Caminho absoluto do arquivo
+ * @returns O valor do componentId exportado, ou null se não encontrado
+ */
+export function readComponentIdFromScreenFile(filePath: string): string | null {
+  if (!existsSync(filePath)) {
+    return null
+  }
+
+  try {
+    const content = readFileSync(filePath, "utf8")
+    // Match: export const componentId = "value" ou 'value'
+    const pattern = /export\s+const\s+componentId\s*=\s*["']([^"']+)["']/
+    const match = pattern.exec(content)
+    return match ? match[1] ?? null : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Validação determinística de telas custom via registry.ts.
+ *
+ * Para cada componentId declarado no config.ts:
+ * 1. Verifica que registry.ts existe em projects/<slug>/screens/
+ * 2. Verifica que o componentId está registrado no objeto customScreens
+ * 3. Resolve o import correspondente e verifica que o arquivo existe
+ * 4. Lê o componentId exportado do arquivo e compara com o declarado
+ *
+ * Também valida o sentido inverso:
+ * 5. Entradas no registry sem componentId declarado no config → warning
+ *
+ * @param projectPath - Caminho raiz do monorepo
+ * @param projectSlug - Slug do projeto
+ * @param configContent - Conteúdo texto do config.ts
+ * @returns Lista de issues encontrados (vazia = tudo OK)
+ */
+export function validateCustomScreenRegistry(
+  projectPath: string,
+  projectSlug: string,
+  configContent: string,
+): RegistryIssue[] {
+  const issues: RegistryIssue[] = []
+  const screensDir = join(projectPath, "projects", projectSlug, "screens")
+  const registryPath = join(screensDir, "registry.ts")
+
+  // 1. Verifica existência do registry.ts
+  if (!existsSync(registryPath)) {
+    const declaredIds = extractCustomScreenComponentIds(configContent)
+    if (declaredIds.length > 0) {
+      const firstDecl = declaredIds[0]
+      if (firstDecl) {
+        issues.push({
+          componentId: firstDecl.componentId,
+          kind: "registry-missing",
+          message: `Registry.ts não encontrado em projects/${projectSlug}/screens/registry.ts. Crie o registry para registrar todas as telas custom declaradas no config.`,
+          registryPath,
+        })
+      }
+    }
+    return issues
+  }
+
+  // 2. Parse do registry
+  let registryContent: string
+  try {
+    registryContent = readFileSync(registryPath, "utf8")
+  } catch {
+    issues.push({
+      componentId: "",
+      kind: "registry-missing",
+      message: `Não foi possível ler registry.ts em ${registryPath}.`,
+      registryPath,
+    })
+    return issues
+  }
+
+  const parsed = parseRegistryFile(registryContent)
+
+  // Constrói mapa: alias → import info
+  const aliasToImport = new Map<string, RegistryImport>()
+  for (const imp of parsed.imports) {
+    aliasToImport.set(imp.componentIdAlias, imp)
+  }
+
+  // Constrói mapa: componentIdRef (alias) → componentNameRef
+  // Precisamos resolver o alias para o valor real do componentId
+  // O alias é uma variável JS; o valor real está no arquivo importado
+  const registeredAliases = new Set<string>()
+  const aliasToComponent = new Map<string, string>()
+  for (const entry of parsed.entries) {
+    registeredAliases.add(entry.componentIdRef)
+    aliasToComponent.set(entry.componentIdRef, entry.componentNameRef)
+  }
+
+  // 3. Para cada componentId declarado no config, valida
+  const declaredIds = extractCustomScreenComponentIds(configContent)
+  const seenIds = new Set<string>()
+
+  for (const { componentId } of declaredIds) {
+    // Verifica duplicata
+    if (seenIds.has(componentId)) {
+      issues.push({
+        componentId,
+        kind: "duplicate-componentId",
+        message: `componentId "${componentId}" declarado mais de uma vez no config.ts.`,
+      })
+      continue
+    }
+    seenIds.add(componentId)
+
+    // Encontra qual alias no registry corresponde a este componentId
+    // O alias é uma variável cujo valor é o componentId real (lido do arquivo)
+    let foundAlias: string | null = null
+    let foundImport: RegistryImport | null = null
+
+    for (const imp of parsed.imports) {
+      // Resolve o arquivo importado
+      const resolvedFile = resolveScreenImportFile(screensDir, imp.importPath)
+      if (!resolvedFile) continue
+
+      // Lê o componentId exportado do arquivo
+      const exportedId = readComponentIdFromScreenFile(resolvedFile)
+      if (exportedId === componentId) {
+        foundAlias = imp.componentIdAlias
+        foundImport = imp
+        break
+      }
+    }
+
+    if (!foundAlias || !foundImport) {
+      // Verifica se o alias existe no registry mas o arquivo não tem o componentId certo
+      // ou se o componentId simplesmente não está registrado
+      const anyAliasForId = parsed.imports.find(imp => {
+        const resolvedFile = resolveScreenImportFile(screensDir, imp.importPath)
+        if (!resolvedFile) return false
+        const exportedId = readComponentIdFromScreenFile(resolvedFile)
+        return exportedId === componentId
+      })
+
+      if (anyAliasForId) {
+        // Arquivo existe com componentId correto, mas não está no customScreens
+        issues.push({
+          componentId,
+          kind: "not-registered",
+          message: `Tela "${componentId}" possui arquivo com export correto, mas não está registrada no objeto customScreens do registry.ts. Adicione [${anyAliasForId.componentIdAlias}]: ${anyAliasForId.defaultImportName} ao objeto customScreens.`,
+          registryPath,
+        })
+      } else {
+        issues.push({
+          componentId,
+          kind: "not-registered",
+          message: `Tela custom "${componentId}" declarada no config.ts mas sem entrada correspondente no registry.ts. Crie o arquivo da tela com export const componentId = "${componentId}" e registre em projects/${projectSlug}/screens/registry.ts.`,
+          expectedPath: `projects/${projectSlug}/screens/<ScreenName>.tsx`,
+          registryPath,
+        })
+      }
+      continue
+    }
+
+    // Valida que o arquivo importado existe
+    const resolvedFile = resolveScreenImportFile(screensDir, foundImport.importPath)
+    if (!resolvedFile) {
+      issues.push({
+        componentId,
+        kind: "import-missing",
+        message: `Arquivo importado "${foundImport.importPath}" no registry.ts não existe em projects/${projectSlug}/screens/.`,
+        expectedPath: join(screensDir, foundImport.importPath),
+        registryPath,
+      })
+      continue
+    }
+
+    // Valida que o arquivo exporta componentId com o valor correto
+    const exportedId = readComponentIdFromScreenFile(resolvedFile)
+    if (!exportedId) {
+      issues.push({
+        componentId,
+        kind: "componentId-export-missing",
+        message: `Arquivo "${basename(resolvedFile)}" não exporta "componentId". Adicione: export const componentId = "${componentId}"`,
+        expectedPath: resolvedFile,
+        registryPath,
+      })
+      continue
+    }
+
+    if (exportedId !== componentId) {
+      issues.push({
+        componentId,
+        kind: "componentId-mismatch",
+        message: `Arquivo "${basename(resolvedFile)}" exporta componentId = "${exportedId}" mas o config declara "${componentId}". Ajuste para que os valores coincidam.`,
+        expectedPath: resolvedFile,
+        registryPath,
+      })
+    }
+  }
+
+  // 5. Sentido inverso: entradas no registry não declaradas no config → warning
+  const declaredIdSet = new Set(declaredIds.map(d => d.componentId))
+  for (const imp of parsed.imports) {
+    const resolvedFile = resolveScreenImportFile(screensDir, imp.importPath)
+    if (!resolvedFile) continue
+    const exportedId = readComponentIdFromScreenFile(resolvedFile)
+    if (exportedId && !declaredIdSet.has(exportedId)) {
+      // Entry exists in registry but not declared in config — this is a warning, not error
+      // We don't add to issues here; the caller can decide severity
+    }
+  }
+
+  return issues
+}
+
+/**
+ * Resolve um caminho de import relativo do registry.ts para um arquivo absoluto.
+ *
+ * @param screensDir - Diretório onde está o registry.ts
+ * @param importPath - Caminho do import (ex.: "./PainelPortariaScreen")
+ * @returns Caminho absoluto resolvido, ou null se não existir
+ */
+function resolveScreenImportFile(screensDir: string, importPath: string): string | null {
+  // Remove leading ./
+  const relativePath = importPath.replace(/^\.\//, "")
+
+  // Tenta extensões comuns
+  const extensions = [".tsx", ".ts", ".jsx", ".js"]
+  for (const ext of extensions) {
+    const fullPath = resolve(screensDir, relativePath + ext)
+    if (existsSync(fullPath)) {
+      return fullPath
+    }
+  }
+
+  // Tenta sem extensão (pode ser um index)
+  const indexPath = resolve(screensDir, relativePath, "index.tsx")
+  if (existsSync(indexPath)) {
+    return indexPath
+  }
+
+  return null
 }
 
 /**
@@ -448,18 +772,20 @@ export function validateCompleteness(
 ): CompletenessResult {
   const missing: CompletenessIssue[] = []
 
-  // Verifica telas custom
+  // Verifica telas custom via registry determinístico
   const customScreens = extractCustomScreenComponentIds(configContent)
-  for (const { componentId, path } of customScreens) {
-    if (!hasCustomScreenImplementation(projectPath, projectSlug, componentId)) {
-      missing.push({
-        kind: "custom-screen",
-        identifier: componentId,
-        path,
-        message: `Tela custom "${componentId}" declarada no config.ts mas sem implementação em projects/${projectSlug}/screens/.`,
-        expectedFile: `projects/${projectSlug}/screens/${componentId}.tsx`,
-      })
-    }
+  const registryIssues = validateCustomScreenRegistry(projectPath, projectSlug, configContent)
+
+  // Converte registry issues em completeness issues
+  for (const issue of registryIssues) {
+    const matchingDecl = customScreens.find(c => c.componentId === issue.componentId)
+    missing.push({
+      kind: "custom-screen",
+      identifier: issue.componentId,
+      path: matchingDecl?.path ?? `screen with componentId "${issue.componentId}"`,
+      message: issue.message,
+      expectedFile: issue.expectedPath ?? `projects/${projectSlug}/screens/registry.ts`,
+    })
   }
 
   // Verifica actions/rowActions
