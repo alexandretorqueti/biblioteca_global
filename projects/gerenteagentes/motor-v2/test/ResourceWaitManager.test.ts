@@ -46,10 +46,9 @@ describe('ResourceWaitManager', () => {
     expect(query).toHaveBeenNthCalledWith(2, expect.stringContaining('WHERE external_id = ?'), ['task-biblioteca-740'])
   })
 
-  it('retoma uma tarefa de execucao como ready e consome a entrada da fila', async () => {
+  it('retoma uma tarefa removendo a pausa factual e consome a entrada da fila', async () => {
     const query = vi.fn()
       .mockResolvedValueOnce({ rows: [{ id: '42', resource_wait_id: 7 }], affectedRows: 0, insertId: 0 })
-      .mockResolvedValueOnce({ rows: [{ id: 1 }], affectedRows: 0, insertId: 0 })
     const db: Db = {
       query,
       transaction: vi.fn().mockImplementation(async (callback: (tx: Db) => Promise<unknown>) => callback(db)),
@@ -59,7 +58,7 @@ describe('ResourceWaitManager', () => {
     await manager.resumeNext('project:demo:execution')
 
     expect(query).toHaveBeenCalledWith(expect.stringContaining('FOR UPDATE'), ['project:demo:execution'])
-    expect(query).toHaveBeenCalledWith(expect.stringContaining("SET status = ?"), ['ready', '42', 7])
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('SET resource_wait_key = NULL'), ['42', 7])
     expect(query).toHaveBeenCalledWith(expect.stringContaining("SET status = 'granted'"), [7])
   })
 

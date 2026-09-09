@@ -302,6 +302,9 @@ export const tarefas = mysqlTable("tarefas", {
   // FK self-reference criada na migration (tarefas.depends_on_task_id → tarefas.id)
   autoStart: boolean("auto_start").notNull().default(false),
   planCoverage: json("plan_coverage"), // requisitos identificados e matriz de cobertura do analista
+  // Pausa é um fato operacional; não deve disputar a fonte de verdade com o
+  // status derivado da tarefa.
+  pausedAt: timestamp("paused_at"),
   bootRetryCount: int("boot_retry_count").notNull().default(0),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at")

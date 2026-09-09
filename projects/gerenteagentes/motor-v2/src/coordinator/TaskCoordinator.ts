@@ -1061,8 +1061,10 @@ export class TaskCoordinator {
         [worker.subtaskId],
       ).catch((error: unknown) => this.logger.error("Falha ao resetar subtarefa pausada: " + describeError(error), { taskId: worker.taskId, subtaskId: worker.subtaskId, executionId }))
     }
-    const task = await this.repository.getTask(worker.taskId)
-    if (task) await this.saveTaskTransition(task, "pause")
+    await this.db.query(
+      "UPDATE tarefas SET paused_at = NOW(), updated_at = NOW() WHERE external_id = ? OR id = CAST(? AS UNSIGNED)",
+      [worker.taskId, worker.taskId],
+    )
     // Preservar o worktree no pause: trabalho não commitado do dev pode estar lá;
     // limpar destruiria progresso e queimaria tokens no rework.
     await this.finishWorker(executionId, worker, { preserveWorkspace: true })
@@ -1477,9 +1479,6 @@ export class TaskCoordinator {
   async pauseTask(taskId: string): Promise<void> {
     const task = await this.repository.getTask(taskId)
     if (!task) throw new Error("Tarefa " + taskId + " nao encontrada")
-    if (task.status !== "running" && task.status !== "analyzing") {
-      throw new Error("Tarefa " + taskId + " nao esta em execucao")
-    }
     for (const [executionId, worker] of this.activeWorkers.entries()) {
       if (worker.taskId === taskId) {
         await this.workerLauncher.stopWorker(executionId)
@@ -1493,9 +1492,15 @@ export class TaskCoordinator {
   async resumeTask(taskId: string): Promise<void> {
     const task = await this.repository.getTask(taskId)
     if (!task) throw new Error("Tarefa " + taskId + " nao encontrada")
-    if (task.status !== "paused") throw new Error("Tarefa " + taskId + " nao esta pausada")
-    const hasPlan = await this.taskHasPersistedPlan(taskId)
-    await this.saveTaskTransition(task, hasPlan ? "resume" : "resume_without_plan")
+    const { rows } = await this.db.query(
+      "SELECT paused_at FROM tarefas WHERE external_id = ? OR id = CAST(? AS UNSIGNED) LIMIT 1",
+      [taskId, taskId],
+    )
+    if (!rows[0]?.paused_at) throw new Error("Tarefa " + taskId + " nao esta pausada")
+    await this.db.query(
+      "UPDATE tarefas SET paused_at = NULL, updated_at = NOW() WHERE external_id = ? OR id = CAST(? AS UNSIGNED)",
+      [taskId, taskId],
+    )
     await this.pump()
   }
 

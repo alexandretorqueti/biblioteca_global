@@ -501,32 +501,38 @@ describe('TaskCoordinator', () => {
   })
 
   describe('retomada', () => {
-    it('retoma tarefa pausada com plano como ready, sem replanejar', async () => {
+    it('retoma tarefa pausada removendo apenas o fato paused_at', async () => {
       vi.mocked(repository.getTask).mockResolvedValue({
         id: 'task-81', chatId: '', agentId: 'agent', title: 'Retomar', description: '',
         repoPath: '/repo', buildCommand: 'npm run build', unitTestCommand: 'npm run test',
         status: 'paused', maxRework: 3, hardTimeoutMs: 1000, projectSlug: 'project',
       })
-      vi.mocked(db.query).mockResolvedValueOnce({ rows: [{ has_plan: 1 }], affectedRows: 0, insertId: 0 })
+      vi.mocked(db.query)
+        .mockResolvedValueOnce({ rows: [{ paused_at: '2026-09-09 12:00:00' }], affectedRows: 0, insertId: 0 })
+        .mockResolvedValueOnce({ rows: [], affectedRows: 1, insertId: 0 })
       vi.spyOn(coordinator, 'pump').mockResolvedValue()
 
       await coordinator.resumeTask('task-81')
 
-      expect(repository.saveTask).toHaveBeenCalledWith(expect.objectContaining({ id: 'task-81', status: 'ready' }))
+      expect(db.query).toHaveBeenCalledWith(expect.stringContaining('SET paused_at = NULL'), ['task-81', 'task-81'])
+      expect(repository.saveTask).not.toHaveBeenCalled()
     })
 
-    it('retoma tarefa pausada sem plano como planned, para análise inicial', async () => {
+    it('não usa o status materializado para decidir se uma tarefa está pausada', async () => {
       vi.mocked(repository.getTask).mockResolvedValue({
         id: 'task-82', chatId: '', agentId: 'agent', title: 'Planejar', description: '',
         repoPath: '/repo', buildCommand: 'npm run build', unitTestCommand: 'npm run test',
         status: 'paused', maxRework: 3, hardTimeoutMs: 1000, projectSlug: 'project',
       })
-      vi.mocked(db.query).mockResolvedValue({ rows: [{ has_plan: 0 }], affectedRows: 0, insertId: 0 })
+      vi.mocked(db.query)
+        .mockResolvedValueOnce({ rows: [{ paused_at: '2026-09-09 12:00:00' }], affectedRows: 0, insertId: 0 })
+        .mockResolvedValueOnce({ rows: [], affectedRows: 1, insertId: 0 })
       vi.spyOn(coordinator, 'pump').mockResolvedValue()
 
       await coordinator.resumeTask('task-82')
 
-      expect(repository.saveTask).toHaveBeenCalledWith(expect.objectContaining({ id: 'task-82', status: 'planned' }))
+      expect(db.query).toHaveBeenCalledWith(expect.stringContaining('SET paused_at = NULL'), ['task-82', 'task-82'])
+      expect(repository.saveTask).not.toHaveBeenCalled()
     })
 
     it('nunca seleciona para análise uma tarefa que já possui subtarefas', async () => {

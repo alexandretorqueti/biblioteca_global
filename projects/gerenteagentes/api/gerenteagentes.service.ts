@@ -40,7 +40,7 @@ import { OUTPUT_CONTRACT_CATALOG } from '../motor-v2/src/prompts/output-contract
 import { markersIn, renderPromptTemplate, validatePromptTemplate } from '../motor-v2/src/prompts/PromptTemplateEngine';
 import { composeDevelopmentPrompt, type PromptPart } from '../motor-v2/src/prompts/PromptComposition';
 import { ProvisionService } from '../../../apps/api/src/modules/provision/provision.service';
-import { ALL_TASK_STATUSES, TASK_STATUS_STARTABLE } from '../motor-v2/src/shared/task-statuses';
+import { TASK_STATUS_STARTABLE } from '../motor-v2/src/shared/task-statuses';
 import { RealtimeService } from '../../../apps/api/src/modules/realtime/realtime.service';
 
 @Injectable()
@@ -710,21 +710,10 @@ export class GerenteAgentesService {
     return created;
   }
 
-  async atualizarStatusTarefa(_projeto: ProjetoResumo, tarefaId: number, status?: string) {
-    const db = await this.dbDoMotor();
-    if (!status || !ALL_TASK_STATUSES.includes(status as (typeof ALL_TASK_STATUSES)[number])) {
-      throw new BadRequestException(`Status inválido: ${status ?? ''}`);
-    }
-
-    const [tarefa] = await db
-      .select({ id: tarefas.id })
-      .from(tarefas)
-      .where(eq(tarefas.id, tarefaId))
-      .limit(1);
-    if (!tarefa) throw new NotFoundException('Tarefa não encontrada');
-
-    await db.update(tarefas).set({ status, updatedAt: new Date() }).where(eq(tarefas.id, tarefaId));
-    return { id: tarefaId, status };
+  async atualizarStatusTarefa(_projeto: ProjetoResumo, _tarefaId: number, _status?: string) {
+    throw new BadRequestException(
+      'Status da tarefa é derivado dos fatos operacionais e não pode ser alterado diretamente.',
+    );
   }
 
   /**
@@ -786,12 +775,7 @@ export class GerenteAgentesService {
       throw new BadRequestException(`Motor rejeitou o início (${start.status}): ${start.body.slice(0, 200)}`);
     }
 
-    await db
-      .update(tarefas)
-      .set({ status: 'planned', updatedAt: new Date() })
-      .where(eq(tarefas.id, tarefaId));
-
-    return { id: tarefaId, status: 'planned', message: 'Tarefa iniciada no motor', motorId };
+    return { id: tarefaId, message: 'Tarefa iniciada no motor', motorId };
   }
 
   async pausarTarefa(projeto: ProjetoResumo, tarefaId: number) {
@@ -806,8 +790,8 @@ export class GerenteAgentesService {
       throw new NotFoundException('Tarefa não encontrada');
     }
 
-    if (tarefa.status !== 'running') {
-      throw new BadRequestException(`Tarefa não pode ser pausada (status: ${tarefa.status})`);
+    if (tarefa.pausedAt) {
+      throw new BadRequestException('Tarefa já está pausada');
     }
 
     if (this.motorVersao === 'v2') {
@@ -825,12 +809,7 @@ export class GerenteAgentesService {
       }
     }
 
-    await db
-      .update(tarefas)
-      .set({ status: 'paused', updatedAt: new Date() })
-      .where(eq(tarefas.id, tarefaId));
-
-    return { id: tarefaId, status: 'paused', message: 'Tarefa pausada' };
+    return { id: tarefaId, paused: true, message: 'Tarefa pausada' };
   }
 
   async retomarTarefa(projeto: ProjetoResumo, tarefaId: number) {
@@ -845,8 +824,8 @@ export class GerenteAgentesService {
       throw new NotFoundException('Tarefa não encontrada');
     }
 
-    if (tarefa.status !== 'paused') {
-      throw new BadRequestException(`Tarefa não pode ser retomada (status: ${tarefa.status})`);
+    if (!tarefa.pausedAt) {
+      throw new BadRequestException('Tarefa não está pausada');
     }
 
     if (this.motorVersao === 'v2') {
@@ -864,12 +843,7 @@ export class GerenteAgentesService {
       }
     }
 
-    await db
-      .update(tarefas)
-      .set({ status: 'running', updatedAt: new Date() })
-      .where(eq(tarefas.id, tarefaId));
-
-    return { id: tarefaId, status: 'running', message: 'Tarefa retomada' };
+    return { id: tarefaId, paused: false, message: 'Tarefa retomada' };
   }
 
   /**
@@ -903,17 +877,10 @@ export class GerenteAgentesService {
         .where(and(eq(subtarefas.tarefaId, tarefaId), eq(subtarefas.status, 'blocked')));
     }
 
-    const status = existentes.length > 0 ? 'ready' : 'draft';
-    await db
-      .update(tarefas)
-      .set({ status, updatedAt: new Date() })
-      .where(eq(tarefas.id, tarefaId));
-
     return {
       id: tarefaId,
-      status,
       subtarefasDesbloqueadas: bloqueadas,
-      message: existentes.length > 0 ? 'Tarefa desbloqueada' : 'Tarefa devolvida para rascunho',
+      message: existentes.length > 0 ? 'Tarefa desbloqueada' : 'Bloqueio removido',
     };
   }
 

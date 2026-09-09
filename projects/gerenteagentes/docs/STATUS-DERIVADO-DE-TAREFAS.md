@@ -138,3 +138,11 @@ sem virar nova fonte de verdade.
 6. Exclusão preserva auditoria e não pode quebrar dependências.
 7. Os casos `ready` com execução ativa e `completed` com pendências são
    impossíveis pelo cálculo central.
+
+## Registro de implementação
+
+Em 2026-09-09, os comandos de pausar, retomar e aguardar recurso foram
+migrados para alterar exclusivamente o fato `paused_at`. A alteração manual
+de `tarefas.status` pela API foi bloqueada. A tela deve reler o detalhe após
+essas ações e usar o status calculado, exibindo a pausa como condição
+complementar.

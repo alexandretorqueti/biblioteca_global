@@ -27,8 +27,7 @@ export class ResourceWaitManager {
     const taskWhere = this.taskWhere(taskId)
     await this.db.query(
       `UPDATE tarefas
-       SET status = 'paused',
-           resource_wait_key = ?,
+       SET resource_wait_key = ?,
            resource_wait_id = ?,
            resource_wait_position = ?,
            paused_at = NOW()
@@ -49,8 +48,7 @@ export class ResourceWaitManager {
     )
     await this.db.query(
       `UPDATE tarefas
-       SET status = 'planned',
-           resource_wait_key = NULL,
+       SET resource_wait_key = NULL,
            resource_wait_id = NULL,
            resource_wait_position = NULL,
            paused_at = NULL
@@ -73,7 +71,7 @@ export class ResourceWaitManager {
         `SELECT t.id, t.resource_wait_id
          FROM tarefas t
          INNER JOIN execution_resource_queue q ON q.id = t.resource_wait_id
-         WHERE t.status = 'paused'
+         WHERE t.paused_at IS NOT NULL
            AND t.resource_wait_key = ?
            AND q.status = 'waiting'
          ORDER BY t.resource_wait_position ASC, q.requested_at ASC
@@ -85,28 +83,14 @@ export class ResourceWaitManager {
 
       const row = rows[0]!
       const taskId = String(row.id ?? '')
-      const { rows: subtaskRows } = await tx.query(
-        `SELECT 1 FROM subtarefas
-         WHERE tarefa_id = ? AND status IN ('pending', 'running', 'rejected')
-         LIMIT 1`,
-        [taskId],
-      )
-      const resumeStatus = subtaskRows.length > 0 ? 'ready' : 'planned'
-
       await tx.query(
         `UPDATE tarefas
-         SET status = ?,
-             resource_wait_key = NULL,
+         SET resource_wait_key = NULL,
              resource_wait_id = NULL,
              resource_wait_position = NULL,
              paused_at = NULL
-         WHERE id = ? AND status = 'paused' AND resource_wait_id = ?`,
-        [resumeStatus, taskId, row.resource_wait_id],
-      )
-      await tx.query(
-        `INSERT INTO tarefas_status_historico (tarefa_id, status_anterior, status_novo, origem, motivo)
-         VALUES (?, 'paused', ?, 'motor-v2:resource_resume', ?)`,
-        [taskId, resumeStatus, `Recurso ${resourceKey} liberado`],
+         WHERE id = ? AND paused_at IS NOT NULL AND resource_wait_id = ?`,
+        [taskId, row.resource_wait_id],
       )
       await tx.query(
         `UPDATE execution_resource_queue
@@ -114,10 +98,10 @@ export class ResourceWaitManager {
          WHERE id = ? AND status = 'waiting'`,
         [row.resource_wait_id]
       )
-      return { taskId, resumeStatus }
+      return { taskId }
     })
     if (resumedTask) {
-      this.logger.info(`Tarefa ${resumedTask.taskId} retomada como ${resumedTask.resumeStatus}`, { taskId: resumedTask.taskId })
+      this.logger.info(`Tarefa ${resumedTask.taskId} retomada após recurso liberado`, { taskId: resumedTask.taskId })
     }
   }
 
@@ -125,7 +109,7 @@ export class ResourceWaitManager {
     const { rows } = await this.db.query(
       `SELECT t.* 
        FROM tarefas t
-       WHERE t.status = 'paused'
+       WHERE t.paused_at IS NOT NULL
          AND t.resource_wait_key = ?
        ORDER BY t.resource_wait_position ASC`,
       [resourceKey]
