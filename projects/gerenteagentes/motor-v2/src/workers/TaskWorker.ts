@@ -54,7 +54,15 @@ import {
 import type { Db, QueryResult } from "../shared/types/infrastructure.js"
 import { resolveProjectDatabase } from "../database/DrizzleDb.js"
 import mysql from "mysql2/promise"
-import { getAgentReplyFailureReason } from "../policies/NoReplyFailurePolicy.js"
+import {
+  getAgentReplyFailureReason,
+  classifyNoReplyFailure,
+  computeNextRetryAt,
+  hasExceededRetryLimit,
+  formatTerminalDiagnostic,
+  isRepeatedNoReplyFailure,
+  type NoReplyClassification,
+} from "../policies/NoReplyFailurePolicy.js"
 import { validatePremiseRefutation, type PremiseRefutation } from "../policies/PremiseRefutationPolicy.js"
 import { ManagedPromptResolver } from "../prompts/ManagedPromptResolver.js"
 import { outputContractDefault } from "../prompts/output-contract-catalog.js"
@@ -714,7 +722,7 @@ class TaskWorker {
       for (let attempt = 1; attempt <= input.task.maxRework + sessionRecoveryLimit; attempt += 1) {
         deliverCount += 1
         await this.db!.query(
-          "UPDATE subtarefas SET status = 'running', deliver_count = ?, resultado = NULL, updated_at = NOW() WHERE id = ?",
+          "UPDATE subtarefas SET status = 'running', deliver_count = ?, resultado = NULL, next_retry_at = NULL, updated_at = NOW() WHERE id = ?",
           [deliverCount, subtask.id],
         )
         // Registra início da entrega no histórico
@@ -805,7 +813,7 @@ class TaskWorker {
                 sessionRecoveryAttempts += 1
                 lastFailure = "Recuperação de sessão " + sessionRecoveryAttempts + "/" + sessionRecoveryLimit + ": " + remoteReason
                 await this.db!.query(
-                  "UPDATE subtarefas SET status = 'pending', resultado = ?, finalizada_em = NULL, updated_at = NOW() WHERE id = ?",
+                  "UPDATE subtarefas SET status = 'pending', resultado = ?, finalizada_em = NULL, next_retry_at = NULL, updated_at = NOW() WHERE id = ?",
                   [lastFailure.substring(0, 500), subtask.id],
                 )
                 this.log("warn", lastFailure + "; criando/retomando a sessão para nova tentativa")
@@ -825,11 +833,7 @@ class TaskWorker {
           // Essa mensagem nunca pode atravessar o gate como entrega válida.
           const replyFailureReason = getAgentReplyFailureReason(result.content)
           if (replyFailureReason) {
-            await this.db!.query(
-              "UPDATE subtarefas SET status = 'pending', resultado = ?, finalizada_em = NULL, updated_at = NOW() WHERE id = ?",
-              [replyFailureReason, subtask.id],
-            )
-            this.log("warn", "Agente não produziu resposta verificável; subtarefa reenfileirada: " + subtask.id)
+            await this.handleNoReplyFailure(input, subtask, result.content, replyFailureReason, deliverCount, model.model)
             return undefined
           }
 
@@ -1879,6 +1883,75 @@ class TaskWorker {
       this.log("warn", `Falha ao classificar falha de gate: ${error instanceof Error ? error.message : String(error)}`)
       return null
     }
+  }
+
+  /**
+   * Persiste falha sem resposta verificável do runtime (remote_no_reply / runtime_unavailable).
+   *
+   * Contrato:
+   * - deliver_count já foi incrementado pelo loop antes desta chamada.
+   * - Grava evento append-only em subtarefas_entregas com classificação e fingerprint.
+   * - Se o limite de retry foi atingido: bloqueia a subtarefa com diagnóstico terminal.
+   * - Caso contrário: mantém pending com next_retry_at no futuro (backoff exponencial + jitter).
+   * - Persiste failure_classification, failure_fingerprint e failure_diagnostic na subtarefa.
+   */
+  private async handleNoReplyFailure(
+    input: WorkerInput,
+    subtask: SubtaskInfo,
+    content: unknown,
+    replyFailureReason: string,
+    deliverCount: number,
+    model: string,
+  ): Promise<void> {
+    if (!this.db) return
+
+    const classification = classifyNoReplyFailure(content)
+    const noReplyClassification: NoReplyClassification = classification?.classification ?? "runtime_unavailable"
+    const fingerprint = classification?.fingerprint ?? "runtime_unavailable:unknown"
+
+    // Persiste a falha no histórico de sessão (motor_agent_session_failures)
+    // quando há um failure remoto classificado pelo driver.
+    if (this.sessionFailure) {
+      await this.persistRemoteSessionFailure(input, subtask, this.sessionFailure)
+    }
+
+    // Registra evento append-only no histórico de entregas
+    const eventReason = JSON.stringify({
+      classification: noReplyClassification,
+      fingerprint,
+      reason: replyFailureReason.slice(0, 500),
+    })
+    await this.recordDeliveryEvent(subtask.id, deliverCount, model, "gate_rejected", eventReason)
+
+    // Atualiza campos de diagnóstico na subtarefa
+    await this.db.query(
+      "UPDATE subtarefas SET failure_classification = ?, failure_fingerprint = ?, updated_at = NOW() WHERE id = ?",
+      [noReplyClassification, fingerprint.slice(0, 600), subtask.id],
+    )
+
+    const maxRework = input.task.maxRework
+    const exceeded = hasExceededRetryLimit(deliverCount, maxRework)
+
+    if (exceeded) {
+      // Limite atingido: bloquear com diagnóstico terminal
+      const diagnostic = formatTerminalDiagnostic(noReplyClassification, deliverCount, maxRework, fingerprint, replyFailureReason)
+      await this.db.query(
+        "UPDATE subtarefas SET status = 'blocked', resultado = ?, failure_diagnostic = ?, next_retry_at = NULL, finalizada_em = NOW(), updated_at = NOW() WHERE id = ?",
+        [diagnostic.slice(0, 500), diagnostic, subtask.id],
+      )
+      await this.recordBlocker(subtask, "no_reply_exhausted", diagnostic, model)
+      this.log("error", "Limite de retry sem resposta atingido; subtarefa bloqueada: " + subtask.id + " (" + diagnostic.replace(/\n/g, "; ") + ")")
+      throw new Error(diagnostic)
+    }
+
+    // Ainda há tentativas: manter pending com next_retry_at no futuro
+    const nextRetryAt = computeNextRetryAt(deliverCount)
+    const diagnostic = formatTerminalDiagnostic(noReplyClassification, deliverCount, maxRework, fingerprint, replyFailureReason)
+    await this.db.query(
+      "UPDATE subtarefas SET status = 'pending', resultado = ?, failure_diagnostic = ?, next_retry_at = ?, finalizada_em = NULL, updated_at = NOW() WHERE id = ?",
+      [diagnostic.slice(0, 500), diagnostic.slice(0, 2000), nextRetryAt, subtask.id],
+    )
+    this.log("warn", "Agente não produziu resposta verificável; subtarefa " + subtask.id + " reenfileirada com retry em " + nextRetryAt.toISOString() + " (tentativa " + deliverCount + "/" + (maxRework + 1) + ", classificação: " + noReplyClassification + ")")
   }
 
   private async recordBlocker(subtask: SubtaskInfo, kind: BlockerKind, reason: string, model?: string): Promise<void> {
