@@ -24,6 +24,7 @@ import {
   parseRegistryFile,
   readComponentIdFromScreenFile,
   validateCustomScreenRegistry,
+  partitionRegistryIssues,
   type ConfigLintIssue,
   type RegistryIssue,
 } from '../src/policies/ConfigLintPolicy.js'
@@ -414,8 +415,14 @@ export const customScreens = {
 
     const config = `screen: { kind: "custom", componentId: "taqui-painel-portaria" }`
     const issues = validateCustomScreenRegistry(testDir, 'taqui', config)
-    expect(issues.length).toBe(1)
-    expect(issues[0].kind).toBe('not-registered')
+    // Gera 2 issues: (1) not-registered error para o config, (2) unused-registry-entry warning para o registry
+    expect(issues.length).toBe(2)
+    const errors = issues.filter(i => i.severity === 'error')
+    const warnings = issues.filter(i => i.severity === 'warning')
+    expect(errors).toHaveLength(1)
+    expect(errors[0].kind).toBe('not-registered')
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0].kind).toBe('unused-registry-entry')
     // O componentId exportado ("taqui-painel-antigo") não bate com o config ("taqui-painel-portaria")
   })
 
@@ -837,5 +844,333 @@ describe('readProjectConfig', () => {
   it('retorna null quando config.ts não existe', () => {
     const content = readProjectConfig(testDir, 'inexistente')
     expect(content).toBeNull()
+  })
+})
+
+// ─── duplicate-registry-componentId ─────────────────────────────────────
+
+describe('validateCustomScreenRegistry — duplicate-registry-componentId', () => {
+  const testDir = join(process.cwd(), '.test-registry-dup-' + Date.now())
+
+  afterEach(() => {
+    if (existsSync(testDir)) {
+      rmSync(testDir, { recursive: true, force: true })
+    }
+  })
+
+  it('dois arquivos exportando o mesmo componentId no registry geram erro', () => {
+    const screensDir = join(testDir, 'projects', 'taqui', 'screens')
+    mkdirSync(screensDir, { recursive: true })
+
+    // Dois arquivos com o mesmo componentId
+    writeFileSync(
+      join(screensDir, 'ScreenA.tsx'),
+      `export const componentId = "taqui-duplicado"\nexport default function ScreenA() { return null }`,
+    )
+    writeFileSync(
+      join(screensDir, 'ScreenB.tsx'),
+      `export const componentId = "taqui-duplicado"\nexport default function ScreenB() { return null }`,
+    )
+
+    // Registry importa ambos
+    writeFileSync(
+      join(screensDir, 'registry.ts'),
+      `import ScreenA, { componentId as idA } from "./ScreenA"
+import ScreenB, { componentId as idB } from "./ScreenB"
+
+export const customScreens = {
+  [idA]: ScreenA,
+  [idB]: ScreenB,
+}`,
+    )
+
+    const config = `screen: { kind: "custom", componentId: "taqui-duplicado" }`
+    const issues = validateCustomScreenRegistry(testDir, 'taqui', config)
+    const dupErrors = issues.filter(i => i.kind === 'duplicate-registry-componentId')
+    expect(dupErrors.length).toBe(1)
+    expect(dupErrors[0].severity).toBe('error')
+    expect(dupErrors[0].componentId).toBe('taqui-duplicado')
+    expect(dupErrors[0].message).toContain('./ScreenA')
+    expect(dupErrors[0].message).toContain('./ScreenB')
+  })
+})
+
+// ─── invalid-registry-import ────────────────────────────────────────────
+
+describe('validateCustomScreenRegistry — invalid-registry-import', () => {
+  const testDir = join(process.cwd(), '.test-registry-invalid-import-' + Date.now())
+
+  afterEach(() => {
+    if (existsSync(testDir)) {
+      rmSync(testDir, { recursive: true, force: true })
+    }
+  })
+
+  it('import no registry apontando para arquivo inexistente gera erro', () => {
+    const screensDir = join(testDir, 'projects', 'taqui', 'screens')
+    mkdirSync(screensDir, { recursive: true })
+
+    // Registry importa arquivo que não existe
+    writeFileSync(
+      join(screensDir, 'registry.ts'),
+      `import TelaInexistente, { componentId as telaId } from "./TelaInexistente"
+
+export const customScreens = {
+  [telaId]: TelaInexistente,
+}`,
+    )
+
+    const config = `screen: { kind: "custom", componentId: "taqui-tela" }`
+    const issues = validateCustomScreenRegistry(testDir, 'taqui', config)
+    const importErrors = issues.filter(i => i.kind === 'invalid-registry-import')
+    expect(importErrors.length).toBe(1)
+    expect(importErrors[0].severity).toBe('error')
+    expect(importErrors[0].message).toContain('./TelaInexistente')
+    expect(importErrors[0].message).toContain('inexistente')
+  })
+
+  it('import quebrado é detectado mesmo sem config declarando a tela', () => {
+    const screensDir = join(testDir, 'projects', 'taqui', 'screens')
+    mkdirSync(screensDir, { recursive: true })
+
+    // Registry com import quebrado, mas config não declara telas custom
+    writeFileSync(
+      join(screensDir, 'registry.ts'),
+      `import TelaQuebrada, { componentId as quebradaId } from "./TelaQuebrada"
+
+export const customScreens = {
+  [quebradaId]: TelaQuebrada,
+}`,
+    )
+
+    const config = `screen: { kind: "cadastro", resource: "items" }`
+    const issues = validateCustomScreenRegistry(testDir, 'taqui', config)
+    const importErrors = issues.filter(i => i.kind === 'invalid-registry-import')
+    expect(importErrors.length).toBe(1)
+    expect(importErrors[0].severity).toBe('error')
+  })
+})
+
+// ─── unused-registry-entry (warning) ─────────────────────────────────
+
+describe('validateCustomScreenRegistry — unused-registry-entry', () => {
+  const testDir = join(process.cwd(), '.test-registry-unused-' + Date.now())
+
+  afterEach(() => {
+    if (existsSync(testDir)) {
+      rmSync(testDir, { recursive: true, force: true })
+    }
+  })
+
+  it('entrada no registry não usada no config gera aviso (não erro)', () => {
+    const screensDir = join(testDir, 'projects', 'taqui', 'screens')
+    mkdirSync(screensDir, { recursive: true })
+
+    // Tela registrada mas não declarada no config
+    writeFileSync(
+      join(screensDir, 'TelaExtraScreen.tsx'),
+      `export const componentId = "taqui-tela-extra"\nexport default function TelaExtraScreen() { return null }`,
+    )
+
+    writeFileSync(
+      join(screensDir, 'registry.ts'),
+      `import TelaExtraScreen, { componentId as extraId } from "./TelaExtraScreen"
+
+export const customScreens = {
+  [extraId]: TelaExtraScreen,
+}`,
+    )
+
+    // Config não declara nenhuma tela custom
+    const config = `screen: { kind: "cadastro", resource: "items" }`
+    const issues = validateCustomScreenRegistry(testDir, 'taqui', config)
+    const warnings = issues.filter(i => i.kind === 'unused-registry-entry')
+    expect(warnings.length).toBe(1)
+    expect(warnings[0].severity).toBe('warning')
+    expect(warnings[0].componentId).toBe('taqui-tela-extra')
+    expect(warnings[0].message).toContain('não é declarada no config.ts')
+  })
+
+  it('aviso de entrada não usada não reprova o gate (ok=true se não há erros)', () => {
+    const screensDir = join(testDir, 'projects', 'taqui', 'screens')
+    mkdirSync(screensDir, { recursive: true })
+
+    // Tela usada no config
+    writeFileSync(
+      join(screensDir, 'TelaAtivaScreen.tsx'),
+      `export const componentId = "taqui-tela-ativa"\nexport default function TelaAtivaScreen() { return null }`,
+    )
+    // Tela extra não usada no config
+    writeFileSync(
+      join(screensDir, 'TelaExtraScreen.tsx'),
+      `export const componentId = "taqui-tela-extra"\nexport default function TelaExtraScreen() { return null }`,
+    )
+
+    writeFileSync(
+      join(screensDir, 'registry.ts'),
+      `import TelaAtivaScreen, { componentId as ativaId } from "./TelaAtivaScreen"
+import TelaExtraScreen, { componentId as extraId } from "./TelaExtraScreen"
+
+export const customScreens = {
+  [ativaId]: TelaAtivaScreen,
+  [extraId]: TelaExtraScreen,
+}`,
+    )
+
+    // Config declara só a tela ativa
+    const config = `screen: { kind: "custom", componentId: "taqui-tela-ativa" }`
+    const issues = validateCustomScreenRegistry(testDir, 'taqui', config)
+    const errors = issues.filter(i => i.severity === 'error')
+    const warnings = issues.filter(i => i.severity === 'warning')
+    expect(errors).toHaveLength(0)
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0].kind).toBe('unused-registry-entry')
+  })
+})
+
+// ─── partitionRegistryIssues ─────────────────────────────────────────────
+
+describe('partitionRegistryIssues', () => {
+  it('separa erros e avisos corretamente', () => {
+    const issues: RegistryIssue[] = [
+      { componentId: 'a', kind: 'not-registered', severity: 'error', message: 'erro 1' },
+      { componentId: 'b', kind: 'unused-registry-entry', severity: 'warning', message: 'aviso 1' },
+      { componentId: 'c', kind: 'invalid-registry-import', severity: 'error', message: 'erro 2' },
+      { componentId: 'd', kind: 'unused-registry-entry', severity: 'warning', message: 'aviso 2' },
+    ]
+    const { errors, warnings } = partitionRegistryIssues(issues)
+    expect(errors).toHaveLength(2)
+    expect(warnings).toHaveLength(2)
+    expect(errors.map(e => e.componentId)).toEqual(['a', 'c'])
+    expect(warnings.map(w => w.componentId)).toEqual(['b', 'd'])
+  })
+
+  it('retorna arrays vazios para lista vazia', () => {
+    const { errors, warnings } = partitionRegistryIssues([])
+    expect(errors).toHaveLength(0)
+    expect(warnings).toHaveLength(0)
+  })
+})
+
+// ─── validateProjectConfig com registry errors/warnings ───────────────
+
+describe('validateProjectConfig — registry integration', () => {
+  const testDir = join(process.cwd(), '.test-project-config-registry-' + Date.now())
+
+  afterEach(() => {
+    if (existsSync(testDir)) {
+      rmSync(testDir, { recursive: true, force: true })
+    }
+  })
+
+  it('resultado ok inclui registryWarnings quando há entradas não usadas', () => {
+    const screensDir = join(testDir, 'projects', 'taqui', 'screens')
+    mkdirSync(screensDir, { recursive: true })
+
+    writeFileSync(
+      join(testDir, 'projects', 'taqui', 'config.ts'),
+      `export const config = { screen: { kind: "custom", componentId: "taqui-ativa" } }`,
+    )
+    writeFileSync(
+      join(screensDir, 'TelaAtivaScreen.tsx'),
+      `export const componentId = "taqui-ativa"\nexport default function() { return null }`,
+    )
+    writeFileSync(
+      join(screensDir, 'TelaExtraScreen.tsx'),
+      `export const componentId = "taqui-extra"\nexport default function() { return null }`,
+    )
+    writeFileSync(
+      join(screensDir, 'registry.ts'),
+      `import TelaAtivaScreen, { componentId as ativaId } from "./TelaAtivaScreen"
+import TelaExtraScreen, { componentId as extraId } from "./TelaExtraScreen"
+
+export const customScreens = {
+  [ativaId]: TelaAtivaScreen,
+  [extraId]: TelaExtraScreen,
+}`,
+    )
+
+    const result = validateProjectConfig(testDir, 'taqui')
+    expect(result.ok).toBe(true)
+    expect(result.registryErrors).toHaveLength(0)
+    expect(result.registryWarnings.length).toBeGreaterThan(0)
+    expect(result.registryWarnings.some(w => w.kind === 'unused-registry-entry')).toBe(true)
+  })
+
+  it('resultado falha quando há erros de registry (import quebrado)', () => {
+    const screensDir = join(testDir, 'projects', 'taqui', 'screens')
+    mkdirSync(screensDir, { recursive: true })
+
+    writeFileSync(
+      join(testDir, 'projects', 'taqui', 'config.ts'),
+      `export const config = { screen: { kind: "custom", componentId: "taqui-tela" } }`,
+    )
+    writeFileSync(
+      join(screensDir, 'registry.ts'),
+      `import TelaInexistente, { componentId as telaId } from "./TelaInexistente"
+
+export const customScreens = {
+  [telaId]: TelaInexistente,
+}`,
+    )
+
+    const result = validateProjectConfig(testDir, 'taqui')
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.registryErrors.length).toBeGreaterThan(0)
+      expect(result.registryErrors.some(e => e.kind === 'invalid-registry-import')).toBe(true)
+    }
+  })
+})
+
+// ─── formatConfigValidationReport com registry ───────────────────────
+
+describe('formatConfigValidationReport — registry sections', () => {
+  it('inclui seção de erros de registry quando há erros bloqueantes', () => {
+    const result = {
+      ok: false as const,
+      lintIssues: [],
+      completenessIssues: [],
+      registryErrors: [{
+        componentId: 'taqui-tela',
+        kind: 'invalid-registry-import' as const,
+        severity: 'error' as const,
+        message: 'Import "./TelaInexistente" aponta para arquivo inexistente.',
+        expectedPath: '/path/to/screens/TelaInexistente.tsx',
+        registryPath: '/path/to/screens/registry.ts',
+      }],
+      registryWarnings: [],
+      summary: 'Validação do config.ts falhou.',
+    }
+    const report = formatConfigValidationReport(result)
+    expect(report).toContain('Erros de Registry')
+    expect(report).toContain('invalid-registry-import')
+    expect(report).toContain('taqui-tela')
+  })
+
+  it('inclui seção de avisos de registry quando há entradas não usadas', () => {
+    const result = {
+      ok: false as const,
+      lintIssues: [],
+      completenessIssues: [],
+      registryErrors: [{
+        componentId: 'taqui-erro',
+        kind: 'not-registered' as const,
+        severity: 'error' as const,
+        message: 'Tela não registrada.',
+      }],
+      registryWarnings: [{
+        componentId: 'taqui-extra',
+        kind: 'unused-registry-entry' as const,
+        severity: 'warning' as const,
+        message: 'Tela registrada mas não declarada no config.',
+      }],
+      summary: 'Validação do config.ts falhou.',
+    }
+    const report = formatConfigValidationReport(result)
+    expect(report).toContain('Erros de Registry')
+    expect(report).toContain('Avisos de Registry')
+    expect(report).toContain('taqui-extra')
+    expect(report).toContain('não-bloqueantes')
   })
 })
