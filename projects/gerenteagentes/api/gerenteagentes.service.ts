@@ -803,11 +803,8 @@ export class GerenteAgentesService {
       throw new NotFoundException('Tarefa não encontrada');
     }
 
-    // Permite reiniciar tarefas bloqueadas/falhas/pausadas (não apenas draft/planned)
-    const statusPermitidos = [...TASK_STATUS_STARTABLE];
-    if (!statusPermitidos.includes(tarefa.status)) {
-      throw new BadRequestException(`Tarefa não pode ser iniciada (status: ${tarefa.status})`);
-    }
+    // Status é calculado dinamicamente pelo motor - não valida mais status materializado
+    // O motor verifica fatos operacionais (subtarefas, bloqueios, paused_at, etc.)
 
     // ── Ponte com o motor de execução ────────────────────────────────────────
     // A tarefa já existe no motor com o external_id. Chama apenas o endpoint
@@ -1020,8 +1017,25 @@ export class GerenteAgentesService {
     // Clarificação interativa: se a tarefa está aguardando esclarecimento e a
     // mensagem é uma resposta (role user), notifica o motor para gravar a
     // retomada da análise com o histórico. A mensagem já foi persistida aqui.
-    if (role === 'user' && tarefa.status === 'awaiting_clarification') {
-      await this.encaminharRespostaClarificacao(tarefa, texto);
+    // Como o status é calculado dinamicamente, consultamos o motor para verificar.
+    if (role === 'user') {
+      const motorId = tarefa.externalId || `task-${tarefa.id}`;
+      try {
+        const resp = await this.motorRequest(
+          'GET',
+          `/api/motor/task/${encodeURIComponent(motorId)}`,
+          null,
+          this.motorV2Url,
+        );
+        if (resp.ok) {
+          const motorTask = JSON.parse(resp.body) as { status?: string };
+          if (motorTask.status === 'awaiting_clarification') {
+            await this.encaminharRespostaClarificacao(tarefa, texto);
+          }
+        }
+      } catch {
+        // Se falhar, não encaminha (fallback silencioso)
+      }
     }
 
     const createdAt = new Date();

@@ -128,14 +128,14 @@ export default function DashboardScreen(): ReactNode {
           query: { pageSize: 100 },
           auth: "access",
         }),
-        bundle.http.request<PaginatedResult<Tarefa>>("GET", "/gerenteagentes/tarefas", {
+        bundle.http.request<Tarefa[]>("GET", "/gerenteagentes/tarefas-com-status", {
           query: { pageSize: 100 },
           auth: "access",
         }),
       ])
 
       setProjetos(projsResult.items || [])
-      setTarefas(tarefasResult.items || [])
+      setTarefas(tarefasResult || [])
     } catch (e) {
       setErro(e instanceof Error ? e.message : "Erro ao carregar dados")
     } finally {

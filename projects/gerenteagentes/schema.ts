@@ -295,7 +295,9 @@ export const tarefas = mysqlTable("tarefas", {
   // Última mensagem de erro da execução — separada da descrição para que
   // falhas não sobrescrevam o texto original da tarefa (lacuna do saveTask).
   ultimaMensagemErro: text("ultima_mensagem_erro"),
-  status: varchar("status", { length: 50 }).notNull().default("draft"), // Ver motor-v2/src/shared/task-statuses.ts para lista completa
+  // REMOVIDO: status era materializado aqui, mas agora é calculado dinamicamente
+  // pelo motor via fatos operacionais (task_runtime_facts, subtarefas, bloqueios, etc.)
+  // Ver motor-v2/src/policies/DerivedTaskStatus.ts para o calculador central.
   maxRework: int("max_rework").notNull().default(3),
   hardTimeoutMs: bigint("hard_timeout_ms", { mode: "number" }),
   dependsOnTaskId: bigint("depends_on_task_id", { mode: "number", unsigned: true }),

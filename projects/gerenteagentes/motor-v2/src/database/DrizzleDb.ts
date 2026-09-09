@@ -114,9 +114,9 @@ export class MysqlTaskRepository implements TaskRepository {
     } else {
       await this.db.query(
         `INSERT INTO tarefas
-         (external_id, projeto_id, titulo, descricao, tipo, status, max_rework, hard_timeout_ms, created_at, updated_at)
-         VALUES (?, 1, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
-        [data.id, data.title, data.description ?? "", data.tipo ?? "desenvolvimento", data.status, data.maxRework ?? 3, data.hardTimeoutMs ?? getConfigNumber('motor.worker_timeout_ms')]
+         (external_id, projeto_id, titulo, descricao, tipo, max_rework, hard_timeout_ms, paused_at, created_at, updated_at)
+         VALUES (?, 1, ?, ?, ?, ?, ?, NOW(), NOW(), NOW())`,
+        [data.id, data.title, data.description ?? "", data.tipo ?? "desenvolvimento", data.maxRework ?? 3, data.hardTimeoutMs ?? getConfigNumber('motor.worker_timeout_ms')]
       )
     }
   }
@@ -129,7 +129,8 @@ export class MysqlTaskRepository implements TaskRepository {
       description: String(row.descricao ?? ""),
       tipo: isTaskTipo(row.tipo) ? row.tipo : "desenvolvimento",
       errorMessage: row.ultima_mensagem_erro ? String(row.ultima_mensagem_erro) : undefined,
-      status: String(row.status ?? "planned"),
+      // Status não é mais materializado - é calculado dinamicamente pelo motor
+      status: "planned",
       repoPath: String(row.repo_path ?? ""),
       agentId: String(row.agent_id ?? ""),
       projectSlug: row.project_slug ? String(row.project_slug) : null,
