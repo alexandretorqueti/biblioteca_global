@@ -26,15 +26,9 @@ import {
   promptsVersoes,
   promptsContratos,
   promptsContratosVersoes,
-  motorConfiguracoes,
   motorAgentSessions,
   motorAgentSessionMessages,
 } from '../schema';
-import {
-  MOTOR_CONFIGURACOES,
-  configuracaoPorChave,
-  type MotorConfiguracaoResposta,
-} from './motor-configuracoes.catalog';
 import { AGENT_PROMPT_CATALOG } from '../motor-v2/src/prompts/prompt-catalog';
 import { OUTPUT_CONTRACT_CATALOG } from '../motor-v2/src/prompts/output-contract-catalog';
 import { markersIn, renderPromptTemplate, validatePromptTemplate } from '../motor-v2/src/prompts/PromptTemplateEngine';
@@ -43,8 +37,6 @@ import { ProvisionService } from '../../../apps/api/src/modules/provision/provis
 import { ALL_TASK_STATUSES, TASK_STATUS_STARTABLE } from '../motor-v2/src/shared/task-statuses';
 import { RealtimeService } from '../../../apps/api/src/modules/realtime/realtime.service';
 
-const DEFAULT_MOTOR_REQUEST_TIMEOUT_MS = 180_000;
-
 @Injectable()
 export class GerenteAgentesService {
   private readonly logger = new Logger(GerenteAgentesService.name);
@@ -52,7 +44,6 @@ export class GerenteAgentesService {
   private readonly motorHostHeader: string;
   private readonly motorVersao: string;
   private readonly motorV2Url: string;
-  private readonly motorRequestTimeoutMs: number;
   private readonly consoleUrl: string;
   private readonly consoleToken: string;
 
@@ -72,10 +63,6 @@ export class GerenteAgentesService {
     this.motorVersao = this.configService.get<string>('MOTOR_VERSION') || 'v1';
     const motorV2Porta = this.configService.get<string>('MOTOR_API_PORT') || '3010';
     this.motorV2Url = `http://127.0.0.1:${motorV2Porta}`;
-    const timeoutConfig = Number(this.configService.get<string>('MOTOR_REQUEST_TIMEOUT_MS'));
-    this.motorRequestTimeoutMs = Number.isFinite(timeoutConfig) && timeoutConfig > 0
-      ? timeoutConfig
-      : DEFAULT_MOTOR_REQUEST_TIMEOUT_MS;
     // Console OpenClaw (fonte de agentes — st-5)
     this.consoleUrl = this.configService.get<string>('OPENCLAW_CONSOLE_URL') || 'https://openclaw-api.webconnect.com.br';
     this.consoleToken = this.configService.get<string>('OPENCLAW_CONSOLE_TOKEN') || '';
@@ -96,7 +83,9 @@ export class GerenteAgentesService {
       .limit(1);
 
     if (!tarefa) throw new NotFoundException('Tarefa não encontrada');
-    if (tarefa.projetoId !== projeto.id) throw new NotFoundException('Tarefa não encontrada');
+    // Nota: não validar tarefa.projetoId contra projeto.id — são namespaces diferentes
+    // (tarefas.projetoId → projetos_captados.id; projeto.id → core.projetos da plataforma).
+    // O banco já é tenant-scoped (dbDoMotor → projeto_640), então a existência da tarefa basta.
     const [subtarefa] = await db
       .select({ id: subtarefas.id })
       .from(subtarefas)
@@ -348,68 +337,6 @@ export class GerenteAgentesService {
     return await this.factory.obter({ id: 640 });
   }
 
-  /** Garante o bootstrap idempotente sem substituir valores já editados. */
-  private async garantirConfiguracoesMotor() {
-    const db = await this.dbDoMotor();
-    const atuais = await db.select({ chave: motorConfiguracoes.chave }).from(motorConfiguracoes);
-    const existentes = new Set(atuais.map((item) => item.chave));
-    for (const definicao of MOTOR_CONFIGURACOES) {
-      if (existentes.has(definicao.chave)) continue;
-      await db.insert(motorConfiguracoes).values({
-        chave: definicao.chave,
-        tipo: definicao.tipo,
-        valor: definicao.valorPadrao,
-        valorPadrao: definicao.valorPadrao,
-        regraValidacao: definicao.regraValidacao,
-        descricao: definicao.descricao,
-      });
-    }
-    return db;
-  }
-
-  async listarConfiguracoesMotor(): Promise<MotorConfiguracaoResposta[]> {
-    const db = await this.garantirConfiguracoesMotor();
-    const linhas = await db.select().from(motorConfiguracoes);
-    return MOTOR_CONFIGURACOES.map((definicao) => {
-      const linha = linhas.find((item) => item.chave === definicao.chave);
-      return {
-        chave: definicao.chave,
-        tipo: definicao.tipo,
-        valor: (linha?.valor as typeof definicao.valorPadrao | undefined) ?? definicao.valorPadrao,
-        valorPadrao: definicao.valorPadrao,
-        regraValidacao: definicao.regraValidacao,
-        descricao: definicao.descricao,
-        editavel: true as const,
-        atualizadoEm: linha?.updatedAt ?? null,
-      };
-    });
-  }
-
-  async atualizarConfiguracoesMotor(valores: unknown) {
-    if (!valores || typeof valores !== 'object' || Array.isArray(valores)) {
-      throw new BadRequestException('Body inválido — esperado { valores: { "chave": valor } }');
-    }
-    const entradas = Object.entries(valores as Record<string, unknown>);
-    if (entradas.length === 0) throw new BadRequestException('Informe ao menos uma configuração');
-
-    // Valida o lote inteiro antes de tocar no banco para evitar alterações parciais.
-    const erros: Array<{ chave: string; mensagem: string; regraValidacao?: string }> = [];
-    for (const [chave, valor] of entradas) {
-      const definicao = configuracaoPorChave(chave);
-      if (!definicao) erros.push({ chave, mensagem: 'Configuração não editável ou desconhecida' });
-      else if (!definicao.validar(valor)) erros.push({ chave, mensagem: 'Valor inválido', regraValidacao: definicao.regraValidacao });
-    }
-    if (erros.length > 0) {
-      throw new BadRequestException({ message: 'Uma ou mais configurações são inválidas', erros });
-    }
-
-    const db = await this.garantirConfiguracoesMotor();
-    for (const [chave, valor] of entradas) {
-      await db.update(motorConfiguracoes).set({ valor }).where(eq(motorConfiguracoes.chave, chave));
-    }
-    return this.listarConfiguracoesMotor();
-  }
-
   private catalogEntry(chave: string) {
     const entry = AGENT_PROMPT_CATALOG.find((item) => item.key === chave);
     if (!entry) throw new BadRequestException(`Prompt desconhecido: ${chave}`);
@@ -598,10 +525,7 @@ export class GerenteAgentesService {
         ...(body ? { 'Content-Type': 'application/json' } : {}),
         ...(!baseUrl && this.motorHostHeader ? { Host: this.motorHostHeader } : {}),
       },
-      // Consultas de detalhe/estado de tarefas bloqueadas podem aguardar o
-      // motor liberar o coordenador; o limite anterior causava falso
-      // "Motor indisponível".
-      timeout: this.motorRequestTimeoutMs,
+      timeout: 15000,
     };
     return new Promise((resolve, reject) => {
       const req = (isHttps ? httpsRequest : httpRequest)(options, (res) => {
