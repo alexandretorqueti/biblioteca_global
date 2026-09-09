@@ -326,6 +326,32 @@ export default function TaskMonitorScreen(): ReactNode {
       const lista = (res.items ?? []).sort((a, b) =>
         new Date(b.updatedAt ?? b.createdAt ?? 0).getTime() - new Date(a.updatedAt ?? a.createdAt ?? 0).getTime(),
       )
+      // Busca o status calculado pelo motor (via fatos operacionais) para
+      // sobrescrever o status do banco. O motor calcula o status real com
+      // base em subtarefas, bloqueios, clarificação, etc.
+      try {
+        const motorStatus = await bundle.http.request<{ tasks: Record<string, Array<{ id: string; status: string }>> }>(
+          "GET",
+          "/gerenteagentes/tasks/by-status",
+          { auth: "access" },
+        )
+        const statusByTaskId = new Map<string, string>()
+        for (const [status, tasks] of Object.entries(motorStatus.tasks ?? {})) {
+          for (const task of tasks) {
+            statusByTaskId.set(task.id, status)
+          }
+        }
+        // Sobrescreve o status do CRUD genérico com o status calculado pelo motor
+        for (const tarefa of lista) {
+          const motorTaskId = `task-${tarefa.id}`
+          const calculatedStatus = statusByTaskId.get(motorTaskId)
+          if (calculatedStatus) {
+            tarefa.status = calculatedStatus
+          }
+        }
+      } catch {
+        // Se falhar, usa o status do banco (fallback)
+      }
       setTarefas(lista)
       setTarefaId((atual) => {
         if (atual !== "") {
