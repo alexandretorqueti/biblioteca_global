@@ -294,10 +294,25 @@ export class TaskCoordinator {
       " ORDER BY t.updated_at ASC",
       params,
     )
+    const taskDatabaseIds = rows.map((row) => Number(row.id)).filter((id) => Number.isInteger(id) && id > 0)
+    const subtaskStatusesByTaskId = new Map<number, string[]>()
+    if (taskDatabaseIds.length > 0) {
+      const placeholders = taskDatabaseIds.map(() => "?").join(", ")
+      const { rows: subtaskRows } = await this.db.query(
+        "SELECT tarefa_id, status FROM subtarefas WHERE tarefa_id IN (" + placeholders + ")",
+        taskDatabaseIds,
+      )
+      for (const subtask of subtaskRows) {
+        const taskDatabaseId = Number(subtask.tarefa_id)
+        const statuses = subtaskStatusesByTaskId.get(taskDatabaseId) ?? []
+        statuses.push(String(subtask.status ?? "pending"))
+        subtaskStatusesByTaskId.set(taskDatabaseId, statuses)
+      }
+    }
     const tasks: Record<string, Array<{ id: string; agentId: string; title: string; status: string; projectSlug: string | null }>> = {}
     for (const row of rows) {
       const task = this.mapTask(row)
-      const status = task.status
+      const status = this.deriveStatusFromSubtasks(task, subtaskStatusesByTaskId.get(Number(row.id)) ?? [])
       const list = tasks[status] ?? (tasks[status] = [])
       list.push({
         id: task.id,
@@ -1250,17 +1265,7 @@ export class TaskCoordinator {
     // para fatos que não possuíam coluna própria (deploy, clarificação e
     // bloqueio). A resposta da API, porém, deixa de aceitar `tarefas.status`
     // como verdade sobre a existência de trabalho pendente ou em execução.
-    const persistedStatus = task.status
-    task.status = deriveTaskStatus({
-      persistedStatus,
-      hasPendingClarification: persistedStatus === "awaiting_clarification",
-      hasActiveBlocker: persistedStatus === "blocked" || subtasks.some((subtask) => subtask.status === "blocked"),
-      analysisInProgress: persistedStatus === "analyzing",
-      hasPersistedPlan: subtasks.length > 0,
-      subtaskStatuses: subtasks.map((subtask) => subtask.status),
-      deploySucceeded: persistedStatus === "deployed",
-      integrationConfirmed: persistedStatus === "completed" || persistedStatus === "deployed",
-    })
+    task.status = this.deriveStatusFromSubtasks(task, subtasks.map((subtask) => subtask.status))
 
     // Busca o histórico de entregas para todas as subtarefas da tarefa
     if (subtasks.length > 0) {
@@ -1345,6 +1350,20 @@ export class TaskCoordinator {
       createdAt: data.createdAt ?? new Date().toISOString(),
       updatedAt: data.updatedAt ?? new Date().toISOString(),
     }
+  }
+
+  private deriveStatusFromSubtasks(task: Task, subtaskStatuses: readonly string[]): Task["status"] {
+    const persistedStatus = task.status
+    return deriveTaskStatus({
+      persistedStatus,
+      hasPendingClarification: persistedStatus === "awaiting_clarification",
+      hasActiveBlocker: persistedStatus === "blocked" || subtaskStatuses.includes("blocked"),
+      analysisInProgress: persistedStatus === "analyzing",
+      hasPersistedPlan: subtaskStatuses.length > 0,
+      subtaskStatuses,
+      deploySucceeded: persistedStatus === "deployed",
+      integrationConfirmed: persistedStatus === "completed" || persistedStatus === "deployed",
+    })
   }
 
   async enqueueTask(taskId: string): Promise<{ executionId: string }> {
