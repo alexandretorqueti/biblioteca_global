@@ -95,8 +95,8 @@ export async function persistRemoteSessionFailure(
   const lookupResult = await db.query(
     "SELECT id FROM tarefas WHERE " + (numeric ? "(external_id = ? OR id = ?)" : "external_id = ?") + " LIMIT 1",
     numeric ? [taskId, taskId] : [taskId],
-  ) as { rows: Array<{ id: number }> }
-  const tarefaId = Number(lookupResult.rows[0]?.id ?? 0)
+  ) as { rows: Array<{ id: number }> } | undefined
+  const tarefaId = Number(lookupResult?.rows?.[0]?.id ?? 0)
   if (!tarefaId) {
     throw new Error(`Tarefa não encontrada: ${taskId}`)
   }
