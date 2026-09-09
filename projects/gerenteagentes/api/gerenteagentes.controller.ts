@@ -5,6 +5,7 @@ import {
   Post,
   Param,
   Body,
+  Query,
   ParseIntPipe,
   UseGuards,
   Inject,
@@ -73,6 +74,20 @@ export class GerenteAgentesController {
     @Body() body: { status?: string },
   ) {
     return this.service.atualizarStatusTarefa(projeto, id, body?.status);
+  }
+
+  /** Lista tarefas com status calculado pelo motor (fatos operacionais). */
+  @Get('tarefas-com-status')
+  @Roles('admin', 'gerente', 'operador')
+  listarTarefasComStatusCalculado(
+    @CurrentProject() projeto: ProjetoResumo,
+    @Query('projetoId') projetoId?: string,
+    @Query('status') status?: string,
+  ) {
+    return this.service.listarTarefasComStatusCalculado(projeto, {
+      projetoId: projetoId ? Number(projetoId) : undefined,
+      status,
+    });
   }
 
   @Post('tarefas/:id/start')

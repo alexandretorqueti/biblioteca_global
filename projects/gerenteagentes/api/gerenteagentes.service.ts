@@ -685,6 +685,9 @@ export class GerenteAgentesService {
       status: 'planned',
       dependsOnTaskId: input.dependsOnTaskId ?? null,
       autoStart: input.autoStart ?? false,
+      // Tarefas novas são criadas em PAUSA (paused_at definido).
+      // O status derivado será 'planned', mas a tarefa não executa até ser retomada.
+      pausedAt: new Date(),
     });
     const tarefaId = Number(result[0].insertId);
     // IDs numéricos mantêm o external_id dentro do limite de 64 caracteres e
@@ -708,6 +711,59 @@ export class GerenteAgentesService {
     throw new BadRequestException(
       'Status da tarefa é derivado dos fatos operacionais e não pode ser alterado diretamente.',
     );
+  }
+
+  /**
+   * Lista tarefas com status calculado pelo motor (via fatos operacionais).
+   * O status retornado não é o valor gravado em `tarefas.status`, mas sim o
+   * status derivado de subtarefas, bloqueios, clarificação, etc.
+   */
+  async listarTarefasComStatusCalculado(
+    projeto: ProjetoResumo,
+    filtros?: { projetoId?: number; status?: string },
+  ): Promise<Array<Record<string, unknown>>> {
+    const db = await this.dbDoMotor();
+    
+    // Busca todas as tarefas (com filtros opcionais)
+    const condicoes = [];
+    if (filtros?.projetoId) {
+      condicoes.push(eq(tarefas.projetoId, filtros.projetoId));
+    }
+    const onde = condicoes.length > 0 ? and(...condicoes) : undefined;
+    
+    const tarefasLista = await db
+      .select()
+      .from(tarefas)
+      .where(onde)
+      .orderBy(desc(tarefas.createdAt));
+    
+    // Para cada tarefa, busca o status calculado pelo motor
+    const tarefasComStatus = await Promise.all(
+      tarefasLista.map(async (tarefa) => {
+        const motorId = tarefa.externalId || `task-${tarefa.id}`;
+        try {
+          // Chama o endpoint do motor que retorna status calculado
+          const resp = await this.motorRequest(
+            'GET',
+            `/api/motor/task/${encodeURIComponent(motorId)}`,
+            null,
+            this.motorV2Url,
+          );
+          if (resp.ok) {
+            const motorTask = JSON.parse(resp.body) as { status?: string };
+            return {
+              ...tarefa,
+              status: motorTask.status || tarefa.status,
+            };
+          }
+        } catch {
+          // Se falhar, usa o status do banco (fallback)
+        }
+        return tarefa;
+      }),
+    );
+    
+    return tarefasComStatus;
   }
 
   /**
