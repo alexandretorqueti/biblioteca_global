@@ -17,18 +17,7 @@ CREATE TABLE IF NOT EXISTS `task_runtime_facts` (
 
 --> statement-breakpoint
 
-SET @bg_bloqueios_resolved_exists = (
-  SELECT COUNT(*) FROM information_schema.columns
-  WHERE table_schema = DATABASE() AND table_name = 'bloqueios' AND column_name = 'resolved_at'
-);
-SET @bg_bloqueios_resolved_sql = IF(
-  @bg_bloqueios_resolved_exists = 0,
-  'ALTER TABLE `bloqueios` ADD COLUMN `resolved_at` timestamp NULL',
-  'SELECT 1'
-);
-PREPARE bg_stmt FROM @bg_bloqueios_resolved_sql;
-EXECUTE bg_stmt;
-DEALLOCATE PREPARE bg_stmt;
+ALTER TABLE `bloqueios` ADD COLUMN IF NOT EXISTS `resolved_at` timestamp NULL;
 
 --> statement-breakpoint
 
@@ -45,15 +34,4 @@ WHERE b.resolved_at IS NULL
 
 --> statement-breakpoint
 
-SET @bg_bloqueios_active_index_exists = (
-  SELECT COUNT(*) FROM information_schema.statistics
-  WHERE table_schema = DATABASE() AND table_name = 'bloqueios' AND index_name = 'bloqueios_active_task_idx'
-);
-SET @bg_bloqueios_active_index_sql = IF(
-  @bg_bloqueios_active_index_exists = 0,
-  'CREATE INDEX `bloqueios_active_task_idx` ON `bloqueios` (`tarefa_id`, `resolved_at`)',
-  'SELECT 1'
-);
-PREPARE bg_idx_stmt FROM @bg_bloqueios_active_index_sql;
-EXECUTE bg_idx_stmt;
-DEALLOCATE PREPARE bg_idx_stmt;
+CREATE INDEX `bloqueios_active_task_idx` ON `bloqueios` (`tarefa_id`, `resolved_at`);
