@@ -342,7 +342,20 @@ export class TaskCoordinator {
       // Uma análise pode ter criado as subtarefas e a tarefa ter sido
       // devolvida manualmente para planned. Nesse caso, o plano já existe e
       // ela deve seguir para execução, não ser analisada novamente.
-      "WHERE s.status = 'pending' AND t.status IN ('ready', 'planned') " +
+      // A seleção da fila usa os mesmos fatos do calculador: pausa impede
+      // execução; uma subtarefa ativa ou bloqueada impede outra seleção da
+      // mesma tarefa. `tarefas.status` fica somente como compatibilidade para
+      // os terminais administrativos e a clarificação ainda legada.
+      "WHERE s.status = 'pending' AND t.paused_at IS NULL " +
+      "AND t.status NOT IN ('awaiting_clarification', 'blocked', 'cancelled', 'failed', 'motor_fix') " +
+      "AND NOT EXISTS (" +
+      "SELECT 1 FROM subtarefas ativa WHERE ativa.tarefa_id = s.tarefa_id " +
+      "AND ativa.status IN ('running', 'delivered', 'verifying')" +
+      ") " +
+      "AND NOT EXISTS (" +
+      "SELECT 1 FROM subtarefas bloqueada WHERE bloqueada.tarefa_id = s.tarefa_id " +
+      "AND bloqueada.status = 'blocked'" +
+      ") " +
       "AND NOT EXISTS (" +
       "SELECT 1 FROM subtarefas anterior " +
       "WHERE anterior.tarefa_id = s.tarefa_id AND anterior.seq < s.seq AND anterior.status NOT IN ('verified', 'superseded') " +
