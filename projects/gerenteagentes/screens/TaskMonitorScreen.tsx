@@ -1163,7 +1163,7 @@ export default function TaskMonitorScreen(): ReactNode {
   }
 
   return (
-    <Stack spacing={3} data-testid="task-monitor-screen">
+    <Stack spacing={3} sx={{ width: "90%", mx: "auto" }} data-testid="task-monitor-screen">
       <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" alignItems="center">
         <Typography variant="h4" fontWeight={600}>Acompanhar Tarefa</Typography>
         <Button
@@ -1181,6 +1181,7 @@ export default function TaskMonitorScreen(): ReactNode {
 
       {erro && <Alert severity="error" data-testid="error-alert">{erro}</Alert>}
 
+      {/* Sessão 1: Mapa vivo da tarefa */}
       <TaskFlowMap
         tarefas={tarefas}
         selectedTaskId={tarefaId}
@@ -1190,7 +1191,10 @@ export default function TaskMonitorScreen(): ReactNode {
         onMoveTask={moverTarefaNoFluxo}
       />
 
-      <Stack direction={{ xs: "column", sm: "row" }} spacing={2} flexWrap="wrap" useFlexGap>
+      {/* Sessão 2: Filtros + detalhes da tarefa, em moldura única */}
+      <Paper variant="outlined" sx={{ p: 2 }}>
+        <Stack spacing={2}>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={2} flexWrap="wrap" useFlexGap>
         <TextField
           size="small"
           label="Buscar tarefa"
@@ -1257,7 +1261,6 @@ export default function TaskMonitorScreen(): ReactNode {
       </Stack>
 
       {tarefaSelecionada && (
-        <Paper variant="outlined" sx={{ p: 2 }}>
           <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems="center" justifyContent="space-between">
             <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
               <Typography variant="h6">{tarefaSelecionada.titulo}</Typography>
@@ -1617,8 +1620,9 @@ export default function TaskMonitorScreen(): ReactNode {
           )}
 
           {taskChatPanel}
-        </Paper>
+        </Stack>
       )}
+      </Paper>
 
       <Dialog
         open={sessionOpen}
