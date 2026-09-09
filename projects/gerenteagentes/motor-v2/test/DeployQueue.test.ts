@@ -42,7 +42,7 @@ describe("fila de deploy", () => {
 
     expect(dispatch).not.toHaveBeenCalled()
     expect(db.query).toHaveBeenCalledTimes(1)
-    expect(String(vi.mocked(db.query).mock.calls[0]?.[0])).toContain("t.status = 'completed'")
+    expect(String(vi.mocked(db.query).mock.calls[0]?.[0])).toContain("f.integration_confirmed_at IS NOT NULL")
   })
 
   it("não inicia deploy quando o banco ainda registra trabalho ativo após reinício", async () => {
@@ -113,7 +113,7 @@ describe("fila de deploy", () => {
 
     const sql = String(vi.mocked(db.query).mock.calls[0]?.[0])
     expect(sql).toContain("t.tipo = 'desenvolvimento'")
-    expect(sql).toContain("t.status = 'completed'")
+    expect(sql).toContain("f.integration_confirmed_at IS NOT NULL")
     expect(sql).toContain("dr.id IS NULL")
   })
 

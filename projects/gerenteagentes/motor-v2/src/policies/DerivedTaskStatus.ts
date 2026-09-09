@@ -8,6 +8,8 @@ import type { TaskStatus } from "../shared/types/index.js"
  * desses comandos seja concluída.
  */
 export interface DerivedTaskStatusFacts {
+  terminalStatus?: string | null
+  /** Compatibilidade somente para linhas anteriores à migration 0029. */
   persistedStatus?: string | null
   hasPendingClarification: boolean
   hasActiveBlocker: boolean
@@ -31,8 +33,8 @@ const ADMINISTRATIVE_TERMINAL_STATUSES = new Set<TaskStatus>([
  * A ordem reproduz a prioridade definida em STATUS-DERIVADO-DE-TAREFAS.md.
  */
 export function deriveTaskStatus(facts: DerivedTaskStatusFacts): TaskStatus {
-  const persisted = facts.persistedStatus as TaskStatus | undefined
-  if (persisted && ADMINISTRATIVE_TERMINAL_STATUSES.has(persisted)) return persisted
+  const terminal = (facts.terminalStatus ?? facts.persistedStatus) as TaskStatus | undefined
+  if (terminal && ADMINISTRATIVE_TERMINAL_STATUSES.has(terminal)) return terminal
 
   if (facts.hasPendingClarification) return "awaiting_clarification"
   if (facts.hasActiveBlocker) return "blocked"

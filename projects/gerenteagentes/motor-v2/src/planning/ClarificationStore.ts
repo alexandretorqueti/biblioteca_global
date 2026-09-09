@@ -153,8 +153,9 @@ export interface AnsweredTaskClarification {
 }
 
 /**
- * Conciliação de clarificações respondidas: tarefas em `awaiting_clarification`
- * cuja última mensagem de clarificação no chat (analyst/user) é do usuário.
+ * Conciliação de clarificações respondidas cuja última mensagem de
+ * clarificação no chat (analyst/user) é do usuário e cuja análise ainda não
+ * foi retomada.
  *
  * Cobre o caso em que a resposta foi gravada no chat por um caminho que não
  * notificou o motor (ex.: insert direto no banco por agente/sessão, ou rota
@@ -164,14 +165,15 @@ export interface AnsweredTaskClarification {
 export async function fetchAnsweredTaskClarifications(db: Db): Promise<AnsweredTaskClarification[]> {
   const { rows } = await db.query(
     "SELECT t.id AS db_id, t.external_id AS external_id, c.texto AS texto " +
-    "FROM tarefas t " +
+    "FROM tarefas t LEFT JOIN task_runtime_facts f ON f.tarefa_id = t.id " +
     "JOIN tarefa_chats c ON c.tarefa_id = t.id " +
-    "WHERE t.status = ? AND c.role = ? " +
+    "WHERE c.role = ? AND f.analysis_started_at IS NULL " +
+    "AND NOT EXISTS (SELECT 1 FROM subtarefas s WHERE s.tarefa_id = t.id) " +
     "AND c.id = (" +
     "  SELECT MAX(c2.id) FROM tarefa_chats c2 " +
     "  WHERE c2.tarefa_id = t.id AND c2.role IN (?, ?)" +
     ")",
-    ["awaiting_clarification", ANSWER_ROLE, CLARIFICATION_ROLE, ANSWER_ROLE],
+    [ANSWER_ROLE, CLARIFICATION_ROLE, ANSWER_ROLE],
   )
   return rows.map((row) => ({
     taskId: row.external_id != null && String(row.external_id) !== "" ? String(row.external_id) : String(row.db_id),

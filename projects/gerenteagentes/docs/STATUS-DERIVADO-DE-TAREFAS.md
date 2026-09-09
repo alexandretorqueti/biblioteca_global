@@ -146,3 +146,11 @@ migrados para alterar exclusivamente o fato `paused_at`. A alteração manual
 de `tarefas.status` pela API foi bloqueada. A tela deve reler o detalhe após
 essas ações e usar o status calculado, exibindo a pausa como condição
 complementar.
+
+Na continuação da migração, foi criada a migration `0029_task_runtime_facts`:
+`analysis_started_at`, `integration_confirmed_at` e os terminais
+administrativos passaram a ser fatos em `task_runtime_facts`; bloqueios agora
+possuem `resolved_at`. O coordenador, a fila, a recuperação de deploys e o
+reconciliador usam esses fatos e não persistem mais transições em
+`tarefas.status`. O campo legado permanece apenas para leitura de registros
+anteriores à migration.

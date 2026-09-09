@@ -115,9 +115,9 @@ describe("fetchAnsweredTaskClarifications", () => {
     // Sem external_id: usa o id numérico como referência
     expect(answered[1]).toEqual({ taskId: "750", texto: "pode seguir" })
     const [sql, params] = vi.mocked(db.query).mock.calls[0]!
-    expect(String(sql)).toContain("t.status = ?")
+    expect(String(sql)).toContain("f.analysis_started_at IS NULL")
     expect(String(sql)).toContain("c.role = ?")
-    expect(params).toEqual(["awaiting_clarification", "user", "analyst", "user"])
+    expect(params).toEqual(["user", "analyst", "user"])
   })
 
   it("retorna lista vazia quando nenhuma resposta está pendente", async () => {

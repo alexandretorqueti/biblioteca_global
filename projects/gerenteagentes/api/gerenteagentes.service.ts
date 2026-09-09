@@ -1,6 +1,6 @@
 import { Injectable, Inject, Logger, NotFoundException, BadRequestException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { eq, desc, and, asc } from 'drizzle-orm';
+import { eq, desc, and, asc, isNull } from 'drizzle-orm';
 import { request as httpRequest, type RequestOptions } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { randomUUID } from 'node:crypto';
@@ -29,6 +29,7 @@ import {
   motorConfiguracoes,
   motorAgentSessions,
   motorAgentSessionMessages,
+  bloqueios,
 } from '../schema';
 import {
   MOTOR_CONFIGURACOES,
@@ -666,9 +667,8 @@ export class GerenteAgentesService {
       );
     }
 
-    const status = input.status ?? 'draft';
-    if (!['draft', 'planned'].includes(status)) {
-      throw new BadRequestException('Status inicial deve ser draft ou planned');
+    if (input.status != null && input.status !== 'planned' && input.status !== 'draft') {
+      throw new BadRequestException('Status inicial deve ser planned');
     }
     if (input.dependsOnTaskId != null) {
       const [dependency] = await db
@@ -688,7 +688,7 @@ export class GerenteAgentesService {
       titulo,
       descricao: input.descricao?.trim() || null,
       tipo: input.tipo ?? 'desenvolvimento',
-      status,
+      status: 'planned',
       dependsOnTaskId: input.dependsOnTaskId ?? null,
       autoStart: input.autoStart ?? false,
     });
@@ -876,6 +876,10 @@ export class GerenteAgentesService {
         .set({ status: 'pending', updatedAt: new Date() })
         .where(and(eq(subtarefas.tarefaId, tarefaId), eq(subtarefas.status, 'blocked')));
     }
+    await db
+      .update(bloqueios)
+      .set({ resolvedAt: new Date() })
+      .where(and(eq(bloqueios.tarefaId, tarefaId), isNull(bloqueios.resolvedAt)));
 
     return {
       id: tarefaId,
@@ -888,8 +892,8 @@ export class GerenteAgentesService {
     const db = await this.dbDoMotor();
     const [tarefa] = await db.select().from(tarefas).where(eq(tarefas.id, tarefaId)).limit(1);
     if (!tarefa) throw new NotFoundException('Tarefa não encontrada');
-    if (tarefa.tipo !== 'desenvolvimento' || tarefa.status !== 'completed') {
-      throw new BadRequestException('Deploy manual disponível somente para tarefas de desenvolvimento concluídas');
+    if (tarefa.tipo !== 'desenvolvimento') {
+      throw new BadRequestException('Deploy manual disponível somente para tarefas de desenvolvimento');
     }
     const motorId = tarefa.externalId || String(tarefa.id);
     const resp = await this.motorRequest('POST', `/api/motor/task/${encodeURIComponent(motorId)}/deploy`, undefined, this.motorV2Url);

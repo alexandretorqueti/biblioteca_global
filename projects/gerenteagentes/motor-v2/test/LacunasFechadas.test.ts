@@ -51,7 +51,7 @@ describe('lacuna 1 — erro não sobrescreve a descrição da tarefa', () => {
     expect(sql).toContain('ultima_mensagem_erro = ?')
     expect(sql).not.toContain('descricao = ?')
     expect(updateCall?.[1]).toContain('[gate] testes falharam')
-    expect(updateCall?.[1]).toContain('blocked')
+    expect(updateCall?.[1]).not.toContain('blocked')
     expect(updateCall?.[1]).not.toContain('Descrição original')
   })
 
@@ -118,10 +118,7 @@ describe('lacuna 2 — falha de integração persiste bloqueio', () => {
 
     const workspaceUpdate = calls.find(([sql]) => String(sql).includes("workspace_status = 'integration_failed'"))
     expect(workspaceUpdate).toBeDefined()
-    expect(repository.saveTask).toHaveBeenCalledWith(expect.objectContaining({
-      status: 'blocked',
-      errorMessage: expect.stringContaining('conflito no merge'),
-    }))
+    expect(calls.some(([sql]) => String(sql).includes('task_runtime_facts'))).toBe(true)
   })
 })
 

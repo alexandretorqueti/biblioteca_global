@@ -176,10 +176,8 @@ describe('TaskCoordinator', () => {
 
       await coordinator.pump()
 
-      // Resposta já persistida no chat: motor não grava de novo, só transiciona
-      const saved = vi.mocked(repository.saveTask).mock.calls[0]?.[0]
-      expect(saved).toBeDefined()
-      expect(saved?.status).toBe('planned')
+      // Resposta já persistida no chat: o Motor grava apenas o evento factual.
+      expect(vi.mocked(repository.saveTask)).not.toHaveBeenCalled()
       expect(vi.mocked(repository.getTask)).toHaveBeenCalledWith('task-respondida')
     })
 
@@ -327,10 +325,9 @@ describe('TaskCoordinator', () => {
       launcher.emit('worker_exit', { executionId: 'exec-exit-1', code: 0, signal: null })
       launcher.emit('worker_exit', { executionId: 'exec-exit-1', code: 0, signal: null })
 
-      await vi.waitFor(() => expect(repository.saveTask).toHaveBeenCalled())
+      await vi.waitFor(() => expect(vi.mocked(db.query).mock.calls.some(([sql]) => String(sql).includes('bloqueios'))).toBe(true))
       expect(stopWorker).not.toHaveBeenCalled()
-      expect(repository.saveTask).toHaveBeenCalledTimes(1)
-      expect(repository.saveTask.mock.calls[0]?.[0].errorMessage).toContain('[worker_exit]')
+      expect(repository.saveTask).not.toHaveBeenCalled()
     })
 
     it('encerra e bloqueia worker que excede o timeout', async () => {
@@ -344,9 +341,9 @@ describe('TaskCoordinator', () => {
       internal.armWorkerTimeout('exec-timeout-1', 10)
 
       await vi.advanceTimersByTimeAsync(10)
-      await vi.waitFor(() => expect(repository.saveTask).toHaveBeenCalled())
+      await vi.waitFor(() => expect(vi.mocked(db.query).mock.calls.some(([sql]) => String(sql).includes('bloqueios'))).toBe(true))
       expect(stopWorker).toHaveBeenCalledWith('exec-timeout-1', 5000)
-      expect(repository.saveTask.mock.calls[0]?.[0].errorMessage).toContain('[timeout]')
+      expect(repository.saveTask).not.toHaveBeenCalled()
     })
   })
 
@@ -540,7 +537,7 @@ describe('TaskCoordinator', () => {
 
       const analysisQuery = vi.mocked(db.query).mock.calls
         .map(([query]) => String(query))
-        .find((query) => query.includes("WHERE t.status = 'planned'"))
+        .find((query) => query.includes('f.analysis_started_at IS NULL'))
       expect(analysisQuery).toContain('NOT EXISTS (SELECT 1 FROM subtarefas')
     })
   })
@@ -551,7 +548,7 @@ describe('TaskCoordinator', () => {
 
       const selectionQuery = vi.mocked(db.query).mock.calls
         .map(([query]) => String(query))
-        .find((query) => query.includes('FROM subtarefas s'))
+        .find((query) => query.includes('FROM subtarefas s ') && query.includes('anterior.tarefa_id = s.tarefa_id'))
 
       expect(selectionQuery).toContain('anterior.tarefa_id = s.tarefa_id')
       expect(selectionQuery).toContain('anterior.seq < s.seq')
@@ -588,8 +585,7 @@ describe('TaskCoordinator', () => {
       vi.mocked(db.query).mockResolvedValueOnce({ rows: [{ pending: 0 }], affectedRows: 0, insertId: 0 })
       await coordinator.onTaskCompleted('exec-2')
 
-      expect(repository.saveTask).toHaveBeenNthCalledWith(1, expect.objectContaining({ status: 'ready' }))
-      expect(repository.saveTask).toHaveBeenNthCalledWith(2, expect.objectContaining({ status: 'completed' }))
+      expect(repository.saveTask).not.toHaveBeenCalled()
     })
   })
 
@@ -599,7 +595,7 @@ describe('TaskCoordinator', () => {
       // Não deve lançar erro
     })
 
-    it('normaliza planned para analyzing antes de concluir uma análise', async () => {
+    it('encerra o fato de análise ao concluir uma análise', async () => {
       const task = {
         id: 'task-analysis-status', chatId: '', agentId: 'agent', title: 'Análise', description: '',
         repoPath: '/repo', buildCommand: 'npm run build', unitTestCommand: 'npm test',
@@ -619,8 +615,7 @@ describe('TaskCoordinator', () => {
 
       await coordinator.onTaskCompleted('exec-analysis-status')
 
-      expect(repository.saveTask).toHaveBeenNthCalledWith(1, expect.objectContaining({ status: 'analyzing' }))
-      expect(repository.saveTask).toHaveBeenNthCalledWith(2, expect.objectContaining({ status: 'ready' }))
+      expect(repository.saveTask).not.toHaveBeenCalled()
     })
   })
 

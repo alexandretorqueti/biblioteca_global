@@ -42,7 +42,8 @@ function parseArgs(argv: string[]): { command: string; options: CliOptions } {
 
 async function printStatus(db: Db): Promise<void> {
   const blockedTasks = await db.query(
-    "SELECT t.id, t.external_id, t.titulo, t.status, t.updated_at FROM tarefas t WHERE t.status = 'blocked' ORDER BY t.id",
+    "SELECT DISTINCT t.id, t.external_id, t.titulo, t.updated_at FROM tarefas t " +
+    "INNER JOIN bloqueios b ON b.tarefa_id = t.id AND b.resolved_at IS NULL ORDER BY t.id",
   )
   const blockedSubtasks = await db.query(
     "SELECT s.id, s.seq, s.titulo, s.tarefa_id, s.status, s.workspace_status, s.updated_at FROM subtarefas s WHERE s.status = 'blocked' ORDER BY s.id",
@@ -60,7 +61,7 @@ async function printStatus(db: Db): Promise<void> {
   console.log("== Tarefas bloqueadas ==")
   if (blockedTasks.rows.length === 0) console.log("  (nenhuma)")
   for (const row of blockedTasks.rows) {
-    console.log(`  #${row.id} (${row.external_id ?? "-"}) ${row.titulo} [${row.status}] atualizada em ${row.updated_at}`)
+    console.log(`  #${row.id} (${row.external_id ?? "-"}) ${row.titulo} [bloqueio ativo] atualizada em ${row.updated_at}`)
   }
 
   console.log("== Subtarefas bloqueadas ==")
@@ -105,8 +106,6 @@ async function unblockTask(db: Db, options: CliOptions): Promise<void> {
   const taskId = await findTaskId(db, options.tarefaId)
   if (taskId === null) throw new Error("tarefa não encontrada: " + options.tarefaId)
 
-  const task = await db.query("SELECT status FROM tarefas WHERE id = ?", [taskId])
-  const taskStatus = String(task.rows[0]?.status ?? "")
   const subtasks = await db.query(
     "SELECT status, COUNT(*) AS total FROM subtarefas WHERE tarefa_id = ? GROUP BY status",
     [taskId],
@@ -114,11 +113,11 @@ async function unblockTask(db: Db, options: CliOptions): Promise<void> {
   const hasPlan = subtasks.rows.length > 0
 
   const plan: string[] = []
-  if (taskStatus === "blocked") {
-    plan.push(`tarefa #${taskId}: blocked -> ${hasPlan ? "ready" : "planned"}`)
-  } else {
-    console.log(`Tarefa #${taskId} não está bloqueada (status=${taskStatus}); nada a fazer no nível da tarefa.`)
-  }
+  const activeBlocks = await db.query(
+    "SELECT COUNT(*) AS total FROM bloqueios WHERE tarefa_id = ? AND resolved_at IS NULL",
+    [taskId],
+  )
+  if (Number(activeBlocks.rows[0]?.total ?? 0) > 0) plan.push(`bloqueios ativos da tarefa #${taskId}: resolver`)
   const blockedCount = subtasks.rows.find((row) => row.status === "blocked")
   if (blockedCount) {
     plan.push(`subtarefas bloqueadas da tarefa #${taskId}: blocked -> pending (${blockedCount.total})`)
@@ -135,6 +134,7 @@ async function unblockTask(db: Db, options: CliOptions): Promise<void> {
     "UPDATE subtarefas SET status = 'pending', updated_at = NOW() WHERE tarefa_id = ? AND status = 'blocked'",
     [taskId],
   )
+  await db.query("UPDATE bloqueios SET resolved_at = NOW() WHERE tarefa_id = ? AND resolved_at IS NULL", [taskId])
   console.log("Desbloqueio aplicado. O próximo pump do motor retoma o trabalho.")
 }
 

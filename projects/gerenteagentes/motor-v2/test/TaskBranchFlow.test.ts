@@ -114,7 +114,7 @@ describe("conflito subtarefa → branch da tarefa", () => {
     // Nada de bloqueio na primeira ocorrência.
     expect(calls.some((call) => call.sql.includes("INSERT INTO bloqueios"))).toBe(false)
     // Tarefa segue viva (subtasks_pending → ready), não bloqueada.
-    expect(repository.saveTask).toHaveBeenCalledWith(expect.objectContaining({ status: "ready" }))
+    expect(repository.saveTask).not.toHaveBeenCalled()
   })
 
   it("conflito repetido escala para intervenção humana (bloqueio)", async () => {
@@ -136,7 +136,7 @@ describe("conflito subtarefa → branch da tarefa", () => {
     expect(bloqueio).toBeDefined()
     expect(bloqueio?.params).toContain("systemic_failure")
     expect(calls.some((call) => call.sql.includes("status = 'blocked'") && call.sql.includes("integration_failed"))).toBe(true)
-    expect(repository.saveTask).toHaveBeenCalledWith(expect.objectContaining({ status: "blocked" }))
+    expect(repository.saveTask).not.toHaveBeenCalled()
   })
 })
 
@@ -162,7 +162,7 @@ describe("gate de integração na branch da tarefa", () => {
     expect(requeue).toBeDefined()
     expect(String(requeue?.params?.[0])).toContain("AssertionError")
     expect(calls.some((call) => call.sql.includes("INSERT INTO bloqueios"))).toBe(false)
-    expect(repository.saveTask).toHaveBeenCalledWith(expect.objectContaining({ status: "ready" }))
+    expect(repository.saveTask).not.toHaveBeenCalled()
   })
 
   it("segunda falha de integração → bloqueio para intervenção humana", async () => {
@@ -184,7 +184,7 @@ describe("gate de integração na branch da tarefa", () => {
     const calls = vi.mocked(db.query).mock.calls.map(([sql, params]) => ({ sql: String(sql), params }))
     expect(calls.some((call) => call.sql.includes("INSERT INTO bloqueios"))).toBe(true)
     expect(calls.some((call) => call.sql.includes("status = 'blocked'"))).toBe(true)
-    expect(repository.saveTask).toHaveBeenCalledWith(expect.objectContaining({ status: "blocked" }))
+    expect(repository.saveTask).not.toHaveBeenCalled()
   })
 })
 
@@ -213,13 +213,9 @@ describe("promoção da branch da tarefa para a base", () => {
     const bloqueio = calls.find((call) => call.sql.includes("INSERT INTO bloqueios"))
     expect(bloqueio).toBeDefined()
     expect(bloqueio?.params).toContain("blocked_environment")
-    expect(repository.saveTask).toHaveBeenCalledWith(expect.objectContaining({
-      status: "blocked",
-      errorMessage: expect.stringContaining("resolução humana necessária"),
-    }))
+    expect(repository.saveTask).not.toHaveBeenCalled()
     // Artefatos preservados para o humano resolver: nada de purge, nada de execução concluída.
     expect(wm.purgeTaskArtifacts).not.toHaveBeenCalled()
-    expect(repository.saveTask).not.toHaveBeenCalledWith(expect.objectContaining({ status: "completed" }))
   })
 
   it("persiste bloqueio resolvendo o external_id para a FK interna da tarefa", async () => {

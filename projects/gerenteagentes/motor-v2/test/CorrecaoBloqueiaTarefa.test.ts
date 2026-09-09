@@ -108,6 +108,7 @@ describe('detalhe da tarefa expõe errorMessage e ultimoBloqueio', () => {
       }),
     }
     vi.mocked(db.query)
+      .mockResolvedValueOnce({ rows: [], affectedRows: 0, insertId: 0 }) // facts ausentes: fallback legado do fixture
       .mockResolvedValueOnce({ rows: [], affectedRows: 0, insertId: 0 }) // subtarefas vazias
       .mockResolvedValueOnce({
         rows: [{
@@ -165,6 +166,6 @@ describe('detalhe da tarefa expõe errorMessage e ultimoBloqueio', () => {
 
     expect(detail?.ultimoBloqueio).toBeNull()
     const calls = vi.mocked(db.query).mock.calls
-    expect(calls.some(([sql]) => String(sql).includes('bloqueios'))).toBe(false)
+    expect(calls.some(([sql]) => String(sql).includes('SELECT b.block_reason'))).toBe(false)
   })
 })

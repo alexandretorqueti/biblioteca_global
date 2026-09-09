@@ -74,10 +74,11 @@ export class ExpirationReconciler {
     // 2. Tarefas órfãs: o plano é preservado e a primeira subtarefa não
     // verificada volta à fila. Uma análise sem plano volta a `planned`.
     const orphans = await this.db.query(
-      `SELECT t.id, t.external_id, t.status,
+      `SELECT t.id, t.external_id,
               EXISTS(SELECT 1 FROM subtarefas s WHERE s.tarefa_id = t.id) AS has_subtasks
-       FROM tarefas t
-       WHERE t.status IN ('analyzing', 'running')
+       FROM tarefas t LEFT JOIN task_runtime_facts f ON f.tarefa_id = t.id
+       WHERE f.terminal_status IS NULL
+         AND (f.analysis_started_at IS NOT NULL OR EXISTS(SELECT 1 FROM subtarefas s WHERE s.tarefa_id = t.id AND s.status IN ('running', 'delivered', 'verifying')))
          AND NOT EXISTS (
            SELECT 1 FROM execution_resources r
            WHERE (r.owner_id = CAST(t.id AS CHAR) OR r.owner_id = t.external_id)
@@ -112,8 +113,9 @@ export class ExpirationReconciler {
       `SELECT s.id AS subtask_id, s.tarefa_id, t.external_id
        FROM subtarefas s
        INNER JOIN tarefas t ON t.id = s.tarefa_id
+       LEFT JOIN task_runtime_facts f ON f.tarefa_id = t.id
        WHERE s.status = 'running'
-         AND t.status NOT IN ('completed', 'deployed', 'cancelled', 'failed')
+         AND f.terminal_status IS NULL
          AND NOT EXISTS (
            SELECT 1 FROM execution_resources r
            WHERE (r.owner_id = CAST(t.id AS CHAR) OR r.owner_id = t.external_id)

@@ -334,6 +334,19 @@ export const deployRequests = mysqlTable("deploy_requests", {
   tarefaIdx: uniqueIndex("deploy_requests_tarefa_unique").on(table.tarefaId),
 }))
 
+/** Fatos transitórios/terminais que compõem o status derivado da tarefa. */
+export const taskRuntimeFacts = mysqlTable("task_runtime_facts", {
+  tarefaId: bigint("tarefa_id", { mode: "number", unsigned: true })
+    .primaryKey()
+    .references(() => tarefas.id, { onDelete: "cascade" }),
+  analysisStartedAt: timestamp("analysis_started_at"),
+  integrationConfirmedAt: timestamp("integration_confirmed_at"),
+  terminalStatus: varchar("terminal_status", { length: 30 }),
+  terminalAt: timestamp("terminal_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+})
+
 export const subtarefas = mysqlTable("subtarefas", {
   id: bigint("id", { mode: "number", unsigned: true })
     .primaryKey()
@@ -619,6 +632,7 @@ export const bloqueios = mysqlTable("bloqueios", {
   blockExitCode: int("block_exit_code"),
   blockExcerpt: text("block_excerpt"),
   blockedAt: timestamp("blocked_at"),
+  resolvedAt: timestamp("resolved_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 })
 

@@ -22,7 +22,7 @@ import { correctionOnlyChangesTests } from "../policies/CorrectionDiffPolicy.js"
 import { isBaselineCorrection, withBaselineExcludes } from "../policies/BaselinePolicy.js"
 import { digestGateFailure } from "../policies/CarryOverPolicy.js"
 import { blockerEvidence } from "../policies/BlockerPolicy.js"
-import { transitionTask, type TaskTransition } from "../policies/TaskStateMachine.js"
+import type { TaskTransition } from "../policies/TaskStateMachine.js"
 import { persistTaskClarificationAnswer, fetchPendingTaskClarification, fetchAnsweredTaskClarifications } from "../planning/ClarificationStore.js"
 import { createLogger, describeError } from "../shared/logger.js"
 import { ConsoleAgentRuntimeDriver, type RemoteSessionFailure } from "../runtime/ConsoleAgentRuntimeDriver.js"
@@ -36,7 +36,7 @@ import { validateTaskCompletion, formatPromotionValidationReport } from "../poli
 import { isAgentRunFailureWithoutReply } from "../policies/NoReplyFailurePolicy.js"
 import { validateProjectId, formatProjectIdValidationReport } from "../policies/ProjectIdValidationPolicy.js"
 import { verifyAgentInGateway, formatAgentVerificationReport, shouldBlockEnqueue } from "../policies/GatewayAgentVerificationPolicy.js"
-import { deriveTaskStatus } from "../policies/DerivedTaskStatus.js"
+import { TaskFactsStore } from "../database/TaskFactsStore.js"
 
 interface ActiveWorker {
   taskId: string
@@ -169,6 +169,7 @@ export class TaskCoordinator {
   private workerLauncher: WorkerLauncher
   private db: Db
   private repository: TaskRepository
+  private facts: TaskFactsStore
   private workspaceManager: GitWorkspaceManager
   private waitManager?: ResourceWaitManager
   private eventBus: ExecutionEventBus
@@ -194,6 +195,7 @@ export class TaskCoordinator {
   ) {
     this.db = db
     this.repository = repository
+    this.facts = new TaskFactsStore(db)
     this.config = { ...DEFAULT_CONFIG, ...config }
     this.resourceLease = resourceLease
     this.workerLauncher = workerLauncher
@@ -249,7 +251,12 @@ export class TaskCoordinator {
   }
 
   private async reconcileOrphanedReadyTasks(): Promise<void> {
-    const { rows } = await this.db.query("SELECT t.* FROM tarefas t WHERE t.status = 'ready' AND EXISTS (SELECT 1 FROM subtarefas s WHERE s.tarefa_id = t.id) AND NOT EXISTS (SELECT 1 FROM subtarefas s WHERE s.tarefa_id = t.id AND s.status NOT IN ('verified', 'superseded'))")
+    const { rows } = await this.db.query(
+      "SELECT t.* FROM tarefas t LEFT JOIN task_runtime_facts f ON f.tarefa_id = t.id " +
+      "WHERE f.integration_confirmed_at IS NULL AND f.terminal_status IS NULL " +
+      "AND EXISTS (SELECT 1 FROM subtarefas s WHERE s.tarefa_id = t.id) " +
+      "AND NOT EXISTS (SELECT 1 FROM subtarefas s WHERE s.tarefa_id = t.id AND s.status NOT IN ('verified', 'superseded'))",
+    )
     for (const row of rows) {
       const task = this.mapTask(row)
       const { rows: subtasks } = await this.db.query("SELECT id, seq, workspace_commit_sha, workspace_status, completion_kind, status, resultado FROM subtarefas WHERE tarefa_id = ? AND status != 'superseded'", [task.id])
@@ -269,7 +276,12 @@ export class TaskCoordinator {
       "LEFT JOIN projetos_captados pc ON t.projeto_id = pc.id " +
       "LEFT JOIN agentes a ON pc.agente_id = a.id " +
       "LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id = pc.id " +
-      "WHERE t.status = 'planned' AND NOT EXISTS (SELECT 1 FROM subtarefas s WHERE s.tarefa_id = t.id) ORDER BY t.created_at ASC LIMIT 25"
+      "LEFT JOIN task_runtime_facts f ON f.tarefa_id = t.id " +
+      "WHERE f.terminal_status IS NULL AND f.analysis_started_at IS NULL " +
+      "AND NOT EXISTS (SELECT 1 FROM subtarefas s WHERE s.tarefa_id = t.id) " +
+      "AND NOT EXISTS (SELECT 1 FROM bloqueios b WHERE b.tarefa_id = t.id AND b.resolved_at IS NULL) " +
+      "AND COALESCE((SELECT c.role FROM tarefa_chats c WHERE c.tarefa_id = t.id AND c.role IN ('analyst', 'user') ORDER BY c.id DESC LIMIT 1), '') <> 'analyst' " +
+      "ORDER BY t.created_at ASC LIMIT 25"
     )
     return rows.map((row) => this.mapTask(row)).find((task) => !this.consoleIncidents.has(task.agentId) && this.canStartAnalysis()) ?? null
   }
@@ -312,7 +324,7 @@ export class TaskCoordinator {
     const tasks: Record<string, Array<{ id: string; agentId: string; title: string; status: string; projectSlug: string | null }>> = {}
     for (const row of rows) {
       const task = this.mapTask(row)
-      const status = this.deriveStatusFromSubtasks(task, subtaskStatusesByTaskId.get(Number(row.id)) ?? [])
+      const status = await this.facts.derive(task.id, task.status)
       const list = tasks[status] ?? (tasks[status] = [])
       list.push({
         id: task.id,
@@ -347,7 +359,11 @@ export class TaskCoordinator {
       // mesma tarefa. `tarefas.status` fica somente como compatibilidade para
       // os terminais administrativos e a clarificação ainda legada.
       "WHERE s.status = 'pending' AND t.paused_at IS NULL " +
-      "AND t.status NOT IN ('awaiting_clarification', 'blocked', 'cancelled', 'failed', 'motor_fix') " +
+      "AND NOT EXISTS (" +
+      "AND NOT EXISTS (SELECT 1 FROM task_runtime_facts f WHERE f.tarefa_id = t.id AND f.terminal_status IS NOT NULL) " +
+      "AND NOT EXISTS (SELECT 1 FROM bloqueios b WHERE b.tarefa_id = t.id AND b.resolved_at IS NULL) " +
+      "AND COALESCE((SELECT c.role FROM tarefa_chats c WHERE c.tarefa_id = t.id AND c.role IN ('analyst', 'user') ORDER BY c.id DESC LIMIT 1), '') <> 'analyst' " +
+      "AND NOT EXISTS (" +
       "AND NOT EXISTS (" +
       "SELECT 1 FROM subtarefas ativa WHERE ativa.tarefa_id = s.tarefa_id " +
       "AND ativa.status IN ('running', 'delivered', 'verifying')" +
@@ -505,9 +521,6 @@ export class TaskCoordinator {
       await this.db.query("UPDATE subtarefas SET status = 'running', iniciada_em = NOW() WHERE id = ?", [subtask.id])
       const parentTask = await this.repository.getTask(subtask.taskExternalId)
       if (parentTask) {
-        if (parentTask.status === "planned") {
-          parentTask.status = "ready"
-        }
         await this.saveTaskTransition(parentTask, "start_execution")
       }
       let workspace: Awaited<ReturnType<GitWorkspaceManager["prepare"]>> | undefined
@@ -647,17 +660,6 @@ export class TaskCoordinator {
       this.logger.info("Analise completada: " + worker.taskId, { taskId: worker.taskId, executionId, phase: "analyze" })
       const task = await this.repository.getTask(worker.taskId)
       if (task) {
-        // Uma análise concluída precisa passar por `analyzing`. Se uma
-        // persistência concorrente/deploy deixou o registro em `planned`,
-        // recupera a etapa intermediária antes de aplicar a transição final;
-        // caso contrário, a exceção derruba o processo inteiro do Motor.
-        if (task.status === "planned") {
-          this.logger.warn("Tarefa ainda planned ao concluir análise; normalizando para analyzing", {
-            taskId: worker.taskId, executionId, phase: "analyze",
-          })
-          await this.saveTaskTransition(task, "start_analysis")
-          task.status = "analyzing"
-        }
         await this.saveTaskTransition(task, "analysis_completed")
       }
     } else {
@@ -1024,9 +1026,11 @@ export class TaskCoordinator {
     this.consoleIncidents.delete(agentId)
     for (const taskId of incident.taskIds) {
       const task = await this.repository.getTask(taskId)
-      if (!task || task.status !== "paused") continue
-      const hasPlan = await this.taskHasPersistedPlan(taskId)
-      await this.saveTaskTransition(task, hasPlan ? "resume" : "resume_without_plan")
+      if (!task) continue
+      await this.db.query(
+        "UPDATE tarefas SET paused_at = NULL, updated_at = NOW() WHERE external_id = ? OR id = CAST(? AS UNSIGNED)",
+        [taskId, taskId],
+      )
     }
     this.eventBus.publish({
       type: "system_recovered",
@@ -1090,15 +1094,7 @@ export class TaskCoordinator {
       })
       const task = await this.repository.getTask(worker.taskId)
       if (task) {
-        if (task.status === "planned") {
-          await this.saveTaskTransition(task, "start_analysis")
-          task.status = "analyzing"
-        }
-        if (task.status === "analyzing") {
-          await this.saveTaskTransition(task, "await_clarification")
-        } else {
-          this.logger.warn("Tarefa em status inesperado ao pedir clarificação: " + task.status, { taskId: worker.taskId, executionId })
-        }
+        await this.saveTaskTransition(task, "await_clarification")
       }
     } catch (error) {
       this.logger.error("Falha ao registrar clarificação da tarefa " + worker.taskId + ": " + describeError(error), { taskId: worker.taskId, executionId })
@@ -1116,8 +1112,9 @@ export class TaskCoordinator {
   async answerClarification(taskId: string, texto: string, options?: { jaPersistida?: boolean }): Promise<void> {
     const task = await this.repository.getTask(taskId)
     if (!task) throw new Error("Tarefa " + taskId + " nao encontrada")
-    if (task.status !== "awaiting_clarification") {
-      throw new Error("Tarefa " + taskId + " nao esta aguardando esclarecimento (status: " + task.status + ")")
+    const status = await this.facts.derive(taskId, task.status as Task["status"])
+    if (status !== "awaiting_clarification") {
+      throw new Error("Tarefa " + taskId + " nao esta aguardando esclarecimento (status: " + status + ")")
     }
     const trimmed = texto.trim()
     if (!trimmed) throw new Error("Resposta de esclarecimento vazia")
@@ -1203,7 +1200,8 @@ export class TaskCoordinator {
     const task = await this.repository.getTask(taskId)
     if (!task) throw new Error("Tarefa " + taskId + " não encontrada")
     if (task.tipo !== "desenvolvimento") throw new Error("Deploy manual é permitido apenas para tarefas de desenvolvimento")
-    if (task.status !== "completed") throw new Error("Deploy manual exige tarefa concluída (status atual: " + task.status + ")")
+    const status = await this.facts.derive(taskId)
+    if (status !== "completed") throw new Error("Deploy manual exige tarefa concluída (status atual: " + status + ")")
     await this.enqueueDeploy(taskId, task.repoPath)
     void this.pump().catch((error: unknown) => this.logger.error("Falha ao avaliar fila de deploy: " + describeError(error), { taskId }))
   }
@@ -1211,7 +1209,7 @@ export class TaskCoordinator {
   async getTask(taskId: string): Promise<Task | null> {
     const data = await this.repository.getTask(taskId)
     if (!data) return null
-    return this.mapSaveDataToTask(data)
+    return this.mapSaveDataToTask({ ...data, status: await this.facts.derive(taskId, data.status as Task["status"]) })
   }
 
   async getTaskStatusHistory(taskId: string): Promise<Array<{
@@ -1279,7 +1277,7 @@ export class TaskCoordinator {
     // para fatos que não possuíam coluna própria (deploy, clarificação e
     // bloqueio). A resposta da API, porém, deixa de aceitar `tarefas.status`
     // como verdade sobre a existência de trabalho pendente ou em execução.
-    task.status = this.deriveStatusFromSubtasks(task, subtasks.map((subtask) => subtask.status))
+    task.status = await this.facts.derive(taskId, task.status)
 
     // Busca o histórico de entregas para todas as subtarefas da tarefa
     if (subtasks.length > 0) {
@@ -1366,27 +1364,12 @@ export class TaskCoordinator {
     }
   }
 
-  private deriveStatusFromSubtasks(task: Task, subtaskStatuses: readonly string[]): Task["status"] {
-    const persistedStatus = task.status
-    return deriveTaskStatus({
-      persistedStatus,
-      hasPendingClarification: persistedStatus === "awaiting_clarification",
-      hasActiveBlocker: persistedStatus === "blocked" || subtaskStatuses.includes("blocked"),
-      analysisInProgress: persistedStatus === "analyzing",
-      hasPersistedPlan: subtaskStatuses.length > 0,
-      subtaskStatuses,
-      deploySucceeded: persistedStatus === "deployed",
-      integrationConfirmed: persistedStatus === "completed" || persistedStatus === "deployed",
-    })
-  }
-
   async enqueueTask(taskId: string): Promise<{ executionId: string }> {
     const task = await this.repository.getTask(taskId)
     if (!task) throw new Error("Tarefa " + taskId + " nao encontrada")
-    // Permite iniciar de draft (recém-criada), planned (pronta para executar)
-    // ou paused (retomando). Draft é tratado como planned para o motor.
-    if (task.status !== "planned" && task.status !== "paused" && task.status !== "draft") {
-      throw new Error("Tarefa " + taskId + " esta em status " + task.status)
+    const status = await this.facts.derive(taskId, task.status as Task["status"])
+    if (status !== "planned") {
+      throw new Error("Tarefa " + taskId + " esta em status " + status)
     }
 
     // A FK persistida identifica o projeto operacional. O projeto/tenant do
@@ -1463,13 +1446,6 @@ export class TaskCoordinator {
       })
     }
 
-    // Se está em draft, transiciona diretamente para planned (atualiza o banco)
-    if (task.status === "draft") {
-      task.status = "planned"
-    }
-    if (task.status !== "planned") {
-      await this.saveTaskTransition(task, "queue")
-    }
     await this.pump()
     return { executionId: "exec-" + task.id + "-" + Date.now() }
   }
@@ -1505,8 +1481,9 @@ export class TaskCoordinator {
   async cancelTask(taskId: string): Promise<void> {
     const task = await this.repository.getTask(taskId)
     if (!task) throw new Error("Tarefa " + taskId + " nao encontrada")
-    if (task.status === "completed" || task.status === "cancelled") {
-      throw new Error("Tarefa " + taskId + " ja esta " + task.status)
+    const status = await this.facts.derive(taskId)
+    if (status === "completed" || status === "cancelled") {
+      throw new Error("Tarefa " + taskId + " ja esta " + status)
     }
     for (const [executionId, worker] of this.activeWorkers.entries()) {
       if (worker.taskId === taskId) {
@@ -1616,7 +1593,9 @@ export class TaskCoordinator {
       "INNER JOIN projetos_captados pc ON pc.id = t.projeto_id " +
       "INNER JOIN projeto_motor_config pmc ON pmc.projeto_id = pc.id " +
       "LEFT JOIN deploy_requests dr ON dr.tarefa_id = t.id " +
-      "WHERE t.tipo = 'desenvolvimento' AND t.status = 'completed' " +
+      "INNER JOIN task_runtime_facts f ON f.tarefa_id = t.id AND f.integration_confirmed_at IS NOT NULL " +
+      "WHERE t.tipo = 'desenvolvimento' AND f.terminal_status IS NULL " +
+      "AND NOT EXISTS (SELECT 1 FROM subtarefas s WHERE s.tarefa_id = t.id AND s.status NOT IN ('verified', 'superseded')) " +
       "AND pmc.repo_path IS NOT NULL AND pmc.repo_path <> '' AND dr.id IS NULL",
     )
     if ((result.affectedRows ?? 0) > 0) {
@@ -1998,33 +1977,51 @@ export class TaskCoordinator {
     transition: TaskTransition,
     patch: Partial<import("../shared/types/infrastructure.js").SaveTaskData> = {},
   ): Promise<void> {
-    let status: string
-    try {
-      status = transitionTask(task.status as Task["status"], transition)
-    } catch (error) {
-      // Transição inválida não deve matar o motor (unhandled rejection).
-      // Log + persistir em bloqueios para trilha de auditoria.
-      const reason = error instanceof Error ? error.message : String(error)
-      this.logger.error(`Transição de tarefa inválida (não fatal): ${task.status} → ${transition} — ${reason}`, {
-        taskId: task.id,
-        currentStatus: task.status,
-        requestedTransition: transition,
-      })
-      try {
-        const evidence = blockerEvidence("systemic_failure", `Transição inválida: ${task.status} → ${transition} — ${reason}`)
+    const previousStatus = task.status as Task["status"]
+    switch (transition) {
+      case "start_analysis":
+        await this.facts.record(task.id, "start_analysis")
+        break
+      case "analysis_completed":
+        await this.facts.record(task.id, "analysis_completed")
+        break
+      case "execution_completed":
+        await this.facts.record(task.id, "integration_confirmed")
+        break
+      case "cancel":
+        await this.facts.record(task.id, "cancelled")
+        break
+      case "fail": {
+        const evidence = blockerEvidence("systemic_failure", patch.errorMessage ?? "Falha operacional do Motor")
         await this.persistTaskBlock(task.id, null, evidence.kind, "motor-v2:" + evidence.fingerprint, evidence.excerpt)
-      } catch (persistError) {
-        this.logger.error("Falha ao persistir bloqueio de transição inválida: " + describeError(persistError), { taskId: task.id })
+        break
       }
-      return
+      // start_execution/subtasks_pending/queue/recover descrevem mudanças em
+      // subtarefas; clarificação e deploy já possuem fatos próprios.
+      default:
+        break
     }
-    await this.repository.saveTask({ ...task, ...patch, status, updatedAt: new Date().toISOString() })
-    // Auditoria persistente: `ready` é um estado operacional legítimo entre
-    // subtarefas, mas sem essa trilha ele parece uma regressão na interface.
+    const projectedStatus: Partial<Record<TaskTransition, Task["status"]>> = {
+      start_analysis: "analyzing",
+      analysis_completed: "ready",
+      await_clarification: "awaiting_clarification",
+      clarification_answered: "planned",
+      start_execution: "running",
+      execution_completed: "completed",
+      deploy_completed: "deployed",
+      subtasks_pending: "ready",
+      fail: "blocked",
+      cancel: "cancelled",
+      recover: "planned",
+      queue: "planned",
+    }
+    const status = projectedStatus[transition] ?? previousStatus
+    // O histórico é uma projeção auditável dos fatos; não é usado para tomar
+    // decisões nem atualiza tarefas.status.
     await this.db.query(
       "INSERT INTO tarefas_status_historico (tarefa_id, status_anterior, status_novo, origem, motivo) " +
       "SELECT id, ?, ?, ?, ? FROM tarefas WHERE external_id = ? OR id = CAST(? AS UNSIGNED) LIMIT 1",
-      [task.status, status, `motor-v2:${transition}`, patch.errorMessage?.substring(0, 500) ?? null, task.id, task.id],
+      [previousStatus, status, `motor-v2:${transition}`, patch.errorMessage?.substring(0, 500) ?? null, task.id, task.id],
     ).catch((error: unknown) => this.logger.warn("Falha ao auditar transição de tarefa: " + describeError(error), { taskId: task.id }))
     // Atualiza o objeto task em memória para manter consistência
     task.status = status as Task["status"]
