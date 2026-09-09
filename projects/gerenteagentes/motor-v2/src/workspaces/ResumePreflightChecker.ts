@@ -32,6 +32,16 @@ export interface PreflightShellCommandRunner {
   run(command: string, cwd: string, timeoutMs: number): Promise<{ stdout: string; stderr: string; exitCode: number }>
 }
 
+/** Runner de requisições HTTP injetável para testes (Console). */
+export interface PreflightHttpCommandRunner {
+  request(options: {
+    url: string
+    method: "GET" | "HEAD"
+    headers?: Record<string, string>
+    timeoutMs: number
+  }): Promise<{ status: number; body: string }>
+}
+
 /** Identificação da execução a ser retomada. */
 export interface ResumePreflightInput {
   /** Caminho absoluto do repositório (repo_path do projeto). */
@@ -50,6 +60,20 @@ export interface ResumePreflightInput {
   checkDependencies?: boolean
   /** Timeout para verificação de dependências (ms). Default: 30s (verificação, não instalação). */
   dependencyCheckTimeoutMs?: number
+  /** URL base do Console OpenClaw (ex.: http://127.0.0.1:6280). Se fornecida, valida sessão. */
+  consoleBaseUrl?: string
+  /** Token de autenticação do Console. Obrigatório se consoleBaseUrl fornecida. */
+  consoleToken?: string
+  /** Timeout para verificação do Console (ms). Default: 10s. */
+  consoleCheckTimeoutMs?: number
+  /** Host SSH de deploy (ex.: alexandre@192.168.1.8). Se fornecido, valida conectividade. */
+  sshDeployTarget?: string
+  /** Caminho da chave SSH privada para deploy. Default: /root/.ssh/id_ed25519. */
+  sshDeployKeyPath?: string
+  /** Caminho do arquivo known_hosts para verificação estrita. Default: /root/.ssh/known_hosts. */
+  sshDeployKnownHostsPath?: string
+  /** Timeout para verificação SSH (ms). Default: 15s. */
+  sshDeployTimeoutMs?: number
 }
 
 /** Resultado de uma verificação individual do preflight. */
@@ -79,6 +103,8 @@ export type PreflightCheckId =
   | "project_scope"
   | "dependencies_present"
   | "dependencies_consistent"
+  | "console_session"
+  | "ssh_deploy"
 
 /** Resultado consolidado do preflight. */
 export interface ResumePreflightReport {
@@ -106,6 +132,8 @@ export type IncidentClassification =
   | "dependencies_missing"
   | "dependencies_inconsistent"
   | "project_scope_violation"
+  | "console_unreachable"
+  | "ssh_deploy_unreachable"
   | "multiple_infrastructure_failures"
 
 // ─── Runner padrão (Git) ────────────────────────────────────────────────────
@@ -149,6 +177,53 @@ class NodePreflightShellRunner implements PreflightShellCommandRunner {
   }
 }
 
+// ─── Runner padrão (HTTP para Console) ─────────────────────────────────────
+
+class NodePreflightHttpRunner implements PreflightHttpCommandRunner {
+  async request(options: {
+    url: string
+    method: "GET" | "HEAD"
+    headers?: Record<string, string>
+    timeoutMs: number
+  }): Promise<{ status: number; body: string }> {
+    const { default: http } = await import("node:http")
+    const { default: https } = await import("node:https")
+    const urlObj = new URL(options.url)
+    const transport = urlObj.protocol === "https:" ? https : http
+
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        req.destroy()
+        reject(new Error(`timeout após ${options.timeoutMs}ms`))
+      }, options.timeoutMs)
+
+      const req = transport.request(
+        {
+          hostname: urlObj.hostname,
+          port: urlObj.port || (urlObj.protocol === "https:" ? 443 : 80),
+          path: urlObj.pathname + urlObj.search,
+          method: options.method,
+          headers: options.headers ?? {},
+        },
+        (res) => {
+          let body = ""
+          res.setEncoding("utf-8")
+          res.on("data", (chunk: string) => { body += chunk })
+          res.on("end", () => {
+            clearTimeout(timer)
+            resolve({ status: res.statusCode ?? 0, body })
+          })
+        },
+      )
+      req.on("error", (err: Error) => {
+        clearTimeout(timer)
+        reject(err)
+      })
+      req.end()
+    })
+  }
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function validCommit(commit: string): boolean {
@@ -168,10 +243,16 @@ function fail(check: PreflightCheckId, message: string, cause: string, suggested
 export class ResumePreflightChecker {
   private readonly gitRunner: PreflightGitCommandRunner
   private readonly shellRunner: PreflightShellCommandRunner
+  private readonly httpRunner: PreflightHttpCommandRunner
 
-  constructor(options?: { gitRunner?: PreflightGitCommandRunner; shellRunner?: PreflightShellCommandRunner }) {
+  constructor(options?: {
+    gitRunner?: PreflightGitCommandRunner
+    shellRunner?: PreflightShellCommandRunner
+    httpRunner?: PreflightHttpCommandRunner
+  }) {
     this.gitRunner = options?.gitRunner ?? new NodePreflightGitRunner()
     this.shellRunner = options?.shellRunner ?? new NodePreflightShellRunner()
+    this.httpRunner = options?.httpRunner ?? new NodePreflightHttpRunner()
   }
 
   /**
@@ -241,6 +322,27 @@ export class ResumePreflightChecker {
         )
         checks.push(depsConsistentResult)
       }
+    }
+
+    // 9. Verificar sessão do Console (somente leitura, sem iniciar/substituir sessão)
+    if (input.consoleBaseUrl) {
+      const consoleResult = await this.checkConsoleSession(
+        input.consoleBaseUrl,
+        input.consoleToken,
+        input.consoleCheckTimeoutMs ?? 10_000,
+      )
+      checks.push(consoleResult)
+    }
+
+    // 10. Verificar conectividade SSH de deploy (identidade estrita do host)
+    if (input.sshDeployTarget) {
+      const sshResult = await this.checkSshDeploy(
+        input.sshDeployTarget,
+        input.sshDeployKeyPath ?? "/root/.ssh/id_ed25519",
+        input.sshDeployKnownHostsPath ?? "/root/.ssh/known_hosts",
+        input.sshDeployTimeoutMs ?? 15_000,
+      )
+      checks.push(sshResult)
     }
 
     return this.buildReport(checks, startedAt)
@@ -626,6 +728,225 @@ export class ResumePreflightChecker {
     }
   }
 
+  // ─── Verificações externas (Console e SSH) ─────────────────────────────────
+
+  /**
+   * Verifica se o Console OpenClaw está acessível via HTTP.
+   * SOMENTE LEITURA: GET /api/agents — não inicia nem substitui sessões.
+   * Valida que o Console responde com HTTP 200 e retorna JSON válido.
+   */
+  private async checkConsoleSession(
+    baseUrl: string,
+    token: string | undefined,
+    timeoutMs: number,
+  ): Promise<PreflightCheckResult> {
+    const normalizedUrl = baseUrl.replace(/\/$/, "")
+    const url = `${normalizedUrl}/api/agents`
+
+    try {
+      const headers: Record<string, string> = {
+        "Accept": "application/json",
+      }
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`
+      }
+
+      const response = await this.httpRunner.request({
+        url,
+        method: "GET",
+        headers,
+        timeoutMs,
+      })
+
+      if (response.status === 401 || response.status === 403) {
+        return fail(
+          "console_session",
+          "Console recusou a autenticação",
+          `HTTP ${response.status} — token inválido ou expirado`,
+          "Verificar OPENCLAW_CONSOLE_TOKEN; o token pode ter sido rotacionado",
+          { baseUrl: normalizedUrl, status: response.status },
+        )
+      }
+
+      if (response.status === 0 || response.status >= 500) {
+        return fail(
+          "console_session",
+          "Console indisponível ou com erro interno",
+          `HTTP ${response.status} — Console não respondeu ou falhou internamente`,
+          "Verificar se o container do Console está rodando e se a URL está correta",
+          { baseUrl: normalizedUrl, status: response.status },
+        )
+      }
+
+      if (response.status >= 400) {
+        return fail(
+          "console_session",
+          "Console retornou erro HTTP",
+          `HTTP ${response.status} — resposta inesperada do Console`,
+          "Verificar a versão do Console e compatibilidade da API",
+          { baseUrl: normalizedUrl, status: response.status },
+        )
+      }
+
+      // Valida que o corpo é JSON parseável (mesmo que vazio)
+      try {
+        JSON.parse(response.body || "{}")
+      } catch {
+        return fail(
+          "console_session",
+          "Console retornou resposta inválida",
+          "Resposta não é JSON válido — possível proxy ou página de erro",
+          "Verificar se a URL aponta para o Console e não para um proxy intermediário",
+          { baseUrl: normalizedUrl, status: response.status, bodyPreview: response.body.slice(0, 200) },
+        )
+      }
+
+      return pass("console_session", "Console acessível e respondendo", {
+        baseUrl: normalizedUrl,
+        status: response.status,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+
+      // Erros de conexão/recusa são os mais comuns
+      if (message.includes("ECONNREFUSED") || message.includes("ECONNRESET")) {
+        return fail(
+          "console_session",
+          "Console não está escutando",
+          `Conexão recusada: ${message}`,
+          "Verificar se o container do Console está rodando (docker ps) e se a porta está correta",
+          { baseUrl: normalizedUrl, error: message.slice(0, 200) },
+        )
+      }
+
+      if (message.includes("ENOTFOUND") || message.includes("getaddrinfo")) {
+        return fail(
+          "console_session",
+          "Host do Console não resolvido",
+          `DNS falhou: ${message}`,
+          "Verificar OPENCLAW_CONSOLE_URL — hostname inválido ou DNS indisponível",
+          { baseUrl: normalizedUrl, error: message.slice(0, 200) },
+        )
+      }
+
+      if (message.includes("timeout")) {
+        return fail(
+          "console_session",
+          "Console não respondeu dentro do timeout",
+          `Timeout após ${timeoutMs}ms: ${message}`,
+          "Console pode estar sobrecarregado ou travado; verificar logs do container",
+          { baseUrl: normalizedUrl, timeoutMs, error: message.slice(0, 200) },
+        )
+      }
+
+      return fail(
+        "console_session",
+        "Falha ao conectar com o Console",
+        message,
+        "Verificar OPENCLAW_CONSOLE_URL e conectividade de rede",
+        { baseUrl: normalizedUrl, error: message.slice(0, 200) },
+      )
+    }
+  }
+
+  /**
+   * Verifica conectividade SSH de deploy com identidade estrita do host.
+   * SOMENTE LEITURA: `ssh -o BatchMode=yes -o StrictHostKeyChecking=yes ... true`
+   * Não executa nenhum comando remoto além de `true` (exit 0 imediato).
+   * Não altera worktree, commits ou estado da tarefa.
+   */
+  private async checkSshDeploy(
+    target: string,
+    keyPath: string,
+    knownHostsPath: string,
+    timeoutMs: number,
+  ): Promise<PreflightCheckResult> {
+    // target formato: user@host
+    const sshArgs = [
+      "-i", keyPath,
+      "-o", "BatchMode=yes",
+      "-o", "StrictHostKeyChecking=yes",
+      "-o", `UserKnownHostsFile=${knownHostsPath}`,
+      "-o", `ConnectTimeout=${Math.floor(timeoutMs / 1000)}`,
+      target,
+      "true",
+    ]
+
+    const command = `ssh ${sshArgs.join(" ")}`
+
+    try {
+      const result = await this.shellRunner.run(command, "/tmp", timeoutMs)
+
+      if (result.exitCode === 0) {
+        return pass("ssh_deploy", "SSH de deploy acessível com identidade estrita", {
+          target,
+          keyPath,
+          knownHostsPath,
+        })
+      }
+
+      // Analisa stderr para diagnóstico acionável
+      const stderr = result.stderr.toLowerCase()
+
+      if (stderr.includes("host key verification failed") || stderr.includes("host key has changed")) {
+        return fail(
+          "ssh_deploy",
+          "Identidade do host SSH alterada",
+          "Host key verification failed — a chave do host pode ter sido alterada (MITM ou reinstalação)",
+          "Verificar a chave do host em known_hosts; se o host foi reinstalado, atualizar known_hosts manualmente",
+          { target, keyPath, knownHostsPath, exitCode: result.exitCode, stderr: result.stderr.slice(0, 300) },
+        )
+      }
+
+      if (stderr.includes("permission denied") || stderr.includes("publickey")) {
+        return fail(
+          "ssh_deploy",
+          "Autenticação SSH falhou",
+          "Permission denied (publickey) — chave privada não aceita ou ausente",
+          `Verificar se a chave ${keyPath} existe e está autorizada no host de deploy`,
+          { target, keyPath, exitCode: result.exitCode, stderr: result.stderr.slice(0, 300) },
+        )
+      }
+
+      if (stderr.includes("connection refused") || stderr.includes("no route to host")) {
+        return fail(
+          "ssh_deploy",
+          "Host de deploy inalcançável",
+          `Conexão recusada ou sem rota: ${result.stderr.slice(0, 200)}`,
+          "Verificar se o host de deploy está ligado e acessível na rede",
+          { target, exitCode: result.exitCode, stderr: result.stderr.slice(0, 300) },
+        )
+      }
+
+      if (stderr.includes("connection timed out") || stderr.includes("timeout")) {
+        return fail(
+          "ssh_deploy",
+          "SSH de deploy não respondeu dentro do timeout",
+          `Timeout após ${timeoutMs}ms`,
+          "Host pode estar sobrecarregado ou firewall bloqueando; verificar conectividade",
+          { target, timeoutMs, exitCode: result.exitCode },
+        )
+      }
+
+      return fail(
+        "ssh_deploy",
+        "SSH de deploy falhou",
+        `exit code ${result.exitCode}: ${result.stderr.slice(0, 200)}`,
+        "Verificar conectividade SSH, chave e known_hosts",
+        { target, keyPath, knownHostsPath, exitCode: result.exitCode, stderr: result.stderr.slice(0, 300) },
+      )
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      return fail(
+        "ssh_deploy",
+        "Falha ao executar verificação SSH",
+        message,
+        "Verificar se o binário ssh está disponível e se os caminhos da chave/known_hosts estão corretos",
+        { target, keyPath, knownHostsPath, error: message.slice(0, 200) },
+      )
+    }
+  }
+
   // ─── Construção do relatório ────────────────────────────────────────────────
 
   private buildReport(checks: PreflightCheckResult[], checkedAt: string): ResumePreflightReport {
@@ -678,6 +999,12 @@ export class ResumePreflightChecker {
     // Falhas de dependências
     if (failureChecks.has("dependencies_present")) return "dependencies_missing"
     if (failureChecks.has("dependencies_consistent")) return "dependencies_inconsistent"
+
+    // Falhas de Console (sessão indisponível)
+    if (failureChecks.has("console_session")) return "console_unreachable"
+
+    // Falhas de SSH de deploy
+    if (failureChecks.has("ssh_deploy")) return "ssh_deploy_unreachable"
 
     return "multiple_infrastructure_failures"
   }
