@@ -1,8 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   AccountTreeRounded,
-  ArrowDownwardRounded,
-  ArrowForwardRounded,
   BuildRounded,
   CancelRounded,
   CheckCircleRounded,
@@ -155,6 +153,129 @@ function toneToColor(tone: FlowStation["tone"]): string {
     case "danger": return "#d32f2f" // error.main
     default: return "#9e9e9e" // grey
   }
+}
+
+// ─── Conectores SVG animados (2.1) ───────────────────────────────────────────
+
+/**
+ * FlowConnector: SVG com linha + gradiente em movimento (stroke-dashoffset animado)
+ * e ponta chevron ('arrow with tail') substituindo ArrowForwardRounded/ArrowDownwardRounded.
+ * 
+ * Props:
+ * - direction: 'horizontal' | 'vertical'
+ * - hasMovement: intensifica animação quando há tarefas se movendo (efeito 'rio' 2.1b)
+ */
+function FlowConnector({ direction = "horizontal", hasMovement = false }: { direction?: "horizontal" | "vertical"; hasMovement?: boolean }) {
+  const isHorizontal = direction === "horizontal"
+  const width = isHorizontal ? 48 : 24
+  const height = isHorizontal ? 24 : 48
+
+  // Gradiente IDs únicos para evitar colisão
+  const gradientId = `flow-grad-${direction}-${hasMovement ? "active" : "idle"}`
+
+  // Duração da animação: mais rápida quando há movimento (efeito 'rio')
+  const animDuration = hasMovement ? "0.8s" : "1.6s"
+  const strokeOpacity = hasMovement ? 0.9 : 0.5
+
+  return (
+    <Box
+      component="svg"
+      width={width}
+      height={height}
+      viewBox={`0 0 ${width} ${height}`}
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden="true"
+      data-testid={`flow-connector-${direction}`}
+      sx={{ flexShrink: 0, overflow: "visible" }}
+    >
+      <defs>
+        <linearGradient id={gradientId} x1="0%" y1="0%" x2={isHorizontal ? "100%" : "0%"} y2={isHorizontal ? "0%" : "100%"}>
+          <stop offset="0%" stopColor="#1976d2" stopOpacity="0.2" />
+          <stop offset="50%" stopColor="#1976d2" stopOpacity="0.8" />
+          <stop offset="100%" stopColor="#1976d2" stopOpacity="0.2" />
+        </linearGradient>
+      </defs>
+      {/* Linha com gradiente em movimento */}
+      <line
+        x1={isHorizontal ? 0 : width / 2}
+        y1={isHorizontal ? height / 2 : 0}
+        x2={isHorizontal ? width - 10 : width / 2}
+        y2={isHorizontal ? height / 2 : height - 10}
+        stroke={`url(#${gradientId})`}
+        strokeWidth="2.5"
+        strokeLinecap="round"
+        strokeDasharray="6 4"
+        style={{
+          animation: `flow-dash ${animDuration} linear infinite`,
+          opacity: strokeOpacity,
+        }}
+      />
+      {/* Chevron na ponta (estilo 'arrow with tail') */}
+      {isHorizontal ? (
+        <path
+          d={`M ${width - 12} ${height / 2 - 5} L ${width - 4} ${height / 2} L ${width - 12} ${height / 2 + 5}`}
+          stroke="#1976d2"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          fill="none"
+          style={{ opacity: strokeOpacity }}
+        />
+      ) : (
+        <path
+          d={`M ${width / 2 - 5} ${height - 12} L ${width / 2} ${height - 4} L ${width / 2 + 5} ${height - 12}`}
+          stroke="#1976d2"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          fill="none"
+          style={{ opacity: strokeOpacity }}
+        />
+      )}
+    </Box>
+  )
+}
+
+// ─── Keyframes globais (injetados via <style> no primeiro render) ────────────
+
+const KEYFRAMES_CSS = `
+@keyframes flow-dash {
+  to { stroke-dashoffset: -20; }
+}
+@keyframes task-slide-in {
+  0% { opacity: 0; transform: translateX(-12px); }
+  100% { opacity: 1; transform: translateX(0); }
+}
+@keyframes task-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.02); }
+}
+@keyframes task-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(237, 108, 2, 0); }
+  50% { box-shadow: 0 0 8px 2px rgba(237, 108, 2, 0.35); }
+}
+@keyframes task-fade-in {
+  0% { opacity: 0; }
+  100% { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  @keyframes flow-dash { to { stroke-dashoffset: 0; } }
+  @keyframes task-slide-in { 0%, 100% { opacity: 1; transform: none; } }
+  @keyframes task-pulse { 0%, 100% { transform: none; } }
+  @keyframes task-glow { 0%, 100% { box-shadow: none; } }
+  @keyframes task-fade-in { 0%, 100% { opacity: 1; } }
+}
+`
+
+let keyframesInjected = false
+function ensureKeyframes() {
+  if (keyframesInjected || typeof document === "undefined") return
+  const style = document.createElement("style")
+  style.setAttribute("data-testid", "flow-keyframes")
+  style.textContent = KEYFRAMES_CSS
+  document.head.appendChild(style)
+  keyframesInjected = true
 }
 
 // Rótulo legível para o id da estação (para tooltips do dashboard)
@@ -328,6 +449,15 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, l
             </Box>
           )
 
+          // Animações (2.2): slide-in na chegada, pulsação em ativas, glow em IA
+          const isMoving = movingIds.has(task.id)
+          const isAiActive = ACTIVE_AI_STATUSES.has(task.status)
+          const animationParts: string[] = []
+          if (isMoving) animationParts.push("task-slide-in 0.5s ease-out 1")
+          if (isAiActive && !isMoving) animationParts.push("task-pulse 2.5s ease-in-out infinite")
+          if (isAiActive) animationParts.push("task-glow 2.5s ease-in-out infinite")
+          if (!isMoving && !isAiActive) animationParts.push("task-fade-in 0.3s ease-out 1")
+
           return (
             <Tooltip key={task.id} title={tooltipContent} arrow placement="top">
               <Paper
@@ -346,11 +476,14 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, l
                   cursor: "pointer",
                   bgcolor: isSelected ? "action.selected" : "background.paper",
                   color: "text.primary",
-                  animation: movingIds.has(task.id) ? "task-arrived 1.1s ease-in-out 3" : undefined,
+                  animation: animationParts.length > 0 ? animationParts.join(", ") : undefined,
                   opacity: matchesLegenda ? 1 : 0.25,
                   transition: "opacity 200ms ease, background-color 150ms ease, box-shadow 150ms ease",
                   "&:hover": { transform: "translateY(-1px)", boxShadow: 2 },
-                  "@keyframes task-arrived": { "0%, 100%": { opacity: 1 }, "50%": { opacity: 0.45 } },
+                  // prefers-reduced-motion: desativa animações via media query
+                  "@media (prefers-reduced-motion: reduce)": {
+                    animation: "none",
+                  },
                 }}
               >
                 {/* Linha 1: Avatar + '#id título' noWrap + tempo */}
@@ -435,6 +568,9 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, l
 }
 
 export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", motorActivities = [], onSelectTask, projetos = [], filtros: filtrosExternos, onFiltrosChange, aoVivo = true }: TaskFlowMapProps) {
+  // Injeta keyframes globais na primeira renderização
+  ensureKeyframes()
+
   const previousStatuses = useRef(new Map<number, string>())
   const [movements, setMovements] = useState<Array<{ id: number; from: string; to: string }>>([])
   const [legendaAtiva, setLegendaAtiva] = useState<FlowStation["tone"] | null>(null)
@@ -835,11 +971,14 @@ export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", moto
                 onSelectTask={onSelectTask}
                 taskMatchesLegenda={taskMatchesLegenda}
               />
-              {index < MAIN_FLOW.length - 1 && <ArrowForwardRounded color="action" aria-hidden="true" />}
+              {index < MAIN_FLOW.length - 1 && <FlowConnector direction="horizontal" hasMovement={movingIds.size > 0} />}
             </React.Fragment>
           ))}
         </Stack>
-        <Stack alignItems="center" sx={{ width: "100%", my: 0.5 }}><ArrowDownwardRounded color="action" /></Stack>
+        {/* Conector vertical entre MAIN_FLOW e SIDE_FLOW (2.1 — direção do fluxo clara) */}
+        <Stack alignItems="center" sx={{ width: "100%", my: 0.5 }}>
+          <FlowConnector direction="vertical" hasMovement={movingIds.size > 0} />
+        </Stack>
         <Stack
           direction="row"
           justifyContent="center"
@@ -863,7 +1002,7 @@ export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", moto
                 onSelectTask={onSelectTask}
                 taskMatchesLegenda={taskMatchesLegenda}
               />
-              {index < SIDE_FLOW.length - 1 && <ArrowForwardRounded color="action" aria-hidden="true" />}
+              {index < SIDE_FLOW.length - 1 && <FlowConnector direction="horizontal" hasMovement={movingIds.size > 0} />}
             </React.Fragment>
           ))}
         </Stack>
