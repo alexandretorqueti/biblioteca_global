@@ -6,6 +6,7 @@ import { createServer, type IncomingMessage, type ServerResponse, type Server } 
 import type { TaskCoordinator } from '../coordinator/TaskCoordinator.js'
 import { createLogger } from '../shared/logger.js'
 import type { Db } from '../shared/types/infrastructure.js'
+import { AdvancementMetricsRepository, type MetricsFilter, type AdvancementMetricsResult } from '../metrics/AdvancementMetrics.js'
 
 export interface MotorAPIConfig {
   port: number
@@ -82,6 +83,12 @@ export class MotorAPI {
         this.handleListModelsConsole(res)
       } else if (req.method === 'GET' && path === '/api/motor/tasks/by-status') {
         this.handleGetTasksByStatus(res, url.searchParams.get('since'))
+      }
+      // Metrics endpoints
+      else if (req.method === 'GET' && path === '/api/motor/metrics') {
+        this.handleGetMetrics(res, url)
+      } else if (req.method === 'GET' && path === '/api/motor/metrics/tasks') {
+        this.handleGetMetricsTasks(res, url)
       }
       // Task endpoints
       else if (req.method === 'GET' && taskId && !taskAction) {
@@ -192,6 +199,273 @@ export class MotorAPI {
       .catch((error) => {
         this.json(res, 400, { ok: false, error: error instanceof Error ? error.message : 'Clarification failed' })
       })
+  }
+
+  // ===========================================================================
+  // METRICS ENDPOINTS
+  // ===========================================================================
+
+  /**
+   * GET /api/motor/metrics — KPIs consolidados de avanço do Motor.
+   *
+   * Query params:
+   * - projectId: number (opcional) — filtra por projeto
+   * - taskId: number (opcional) — filtra por tarefa
+   * - from: ISO-8601 date (opcional) — início do período
+   * - to: ISO-8601 date (opcional) — fim do período
+   *
+   * Retorna todos os indicadores de avanço aceito, progresso operacional,
+   * taxas de aprovação/retrabalho/bloqueio, lead time, tempo bloqueado,
+   * sucesso de gates, confiabilidade pós-deploy e data_quality.
+   */
+  private async handleGetMetrics(res: ServerResponse, url: URL): Promise<void> {
+    if (!this.db) {
+      this.json(res, 503, { ok: false, error: 'Database not available' })
+      return
+    }
+
+    try {
+      const filter = this.parseMetricsFilter(url)
+      const repo = new AdvancementMetricsRepository(this.db)
+      const result = await repo.compute(filter)
+
+      this.json(res, 200, {
+        ok: true,
+        ...this.formatMetricsResponse(result),
+      })
+    } catch (error) {
+      this.logger.error('Failed to compute metrics', { error })
+      this.json(res, 500, { ok: false, error: error instanceof Error ? error.message : 'Internal error' })
+    }
+  }
+
+  /**
+   * GET /api/motor/metrics/tasks — lista tarefas com resumo de métricas por tarefa.
+   *
+   * Query params:
+   * - projectId: number (opcional) — filtra por projeto
+   * - from: ISO-8601 date (opcional) — início do período
+   * - to: ISO-8601 date (opcional) — fim do período
+   * - page: number (default 1) — página
+   * - pageSize: number (default 20, max 100) — itens por página
+   *
+   * Retorna lista de tarefas com contagem de subtarefas por status,
+   * avanço aceito e progresso operacional por tarefa.
+   */
+  private async handleGetMetricsTasks(res: ServerResponse, url: URL): Promise<void> {
+    if (!this.db) {
+      this.json(res, 503, { ok: false, error: 'Database not available' })
+      return
+    }
+
+    try {
+      const projectId = url.searchParams.get('projectId')
+        ? Number(url.searchParams.get('projectId'))
+        : undefined
+      const from = url.searchParams.get('from')
+        ? new Date(url.searchParams.get('from')!)
+        : undefined
+      const to = url.searchParams.get('to')
+        ? new Date(url.searchParams.get('to')!)
+        : undefined
+      const page = Math.max(1, Number(url.searchParams.get('page') ?? '1'))
+      const pageSize = Math.min(100, Math.max(1, Number(url.searchParams.get('pageSize') ?? '20')))
+      const offset = (page - 1) * pageSize
+
+      const conditions: string[] = []
+      const params: unknown[] = []
+
+      if (projectId != null && !Number.isNaN(projectId)) {
+        conditions.push('t.projeto_id = ?')
+        params.push(projectId)
+      }
+      if (from != null && !Number.isNaN(from.getTime())) {
+        conditions.push('t.created_at >= ?')
+        params.push(from)
+      }
+      if (to != null && !Number.isNaN(to.getTime())) {
+        conditions.push('t.created_at <= ?')
+        params.push(to)
+      }
+
+      const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+
+      // Count total
+      const countResult = await this.db.query(
+        `SELECT COUNT(*) AS total FROM tarefas t ${where}`,
+        params,
+      )
+      const total = Number(countResult.rows[0]?.total ?? 0)
+
+      // Fetch tasks with subtask summary
+      const { rows } = await this.db.query(
+        `SELECT
+           t.id,
+           t.title,
+           t.status,
+           t.projeto_id,
+           t.created_at,
+           t.completed_at,
+           COALESCE(sub.total_subtasks, 0) AS total_subtasks,
+           COALESCE(sub.verified_count, 0) AS verified_count,
+           COALESCE(sub.running_count, 0) AS running_count,
+           COALESCE(sub.blocked_count, 0) AS blocked_count,
+           COALESCE(sub.pending_count, 0) AS pending_count,
+           COALESCE(sub.total_weight, 0) AS total_weight,
+           COALESCE(sub.accepted_weight, 0) AS accepted_weight
+         FROM tarefas t
+         LEFT JOIN (
+           SELECT
+             s.tarefa_id,
+             COUNT(*) AS total_subtasks,
+             SUM(CASE WHEN s.status IN ('verified', 'completed') THEN 1 ELSE 0 END) AS verified_count,
+             SUM(CASE WHEN s.status IN ('running', 'delivered', 'verifying', 'rework') THEN 1 ELSE 0 END) AS running_count,
+             SUM(CASE WHEN s.status = 'blocked' THEN 1 ELSE 0 END) AS blocked_count,
+             SUM(CASE WHEN s.status = 'pending' THEN 1 ELSE 0 END) AS pending_count,
+             SUM(COALESCE(s.weight, 1)) AS total_weight,
+             SUM(CASE WHEN s.status IN ('verified', 'completed') THEN COALESCE(s.weight, 1) ELSE 0 END) AS accepted_weight
+           FROM subtarefas s
+           WHERE s.status NOT IN ('skipped')
+             AND (s.superseded_by_subtask_id IS NULL OR s.status != 'superseded')
+           GROUP BY s.tarefa_id
+         ) sub ON sub.tarefa_id = t.id
+         ${where}
+         ORDER BY t.created_at DESC
+         LIMIT ? OFFSET ?`,
+        [...params, pageSize, offset],
+      )
+
+      const tasks = rows.map((row: Record<string, unknown>) => {
+        const totalWeight = Number(row.total_weight) || 0
+        const acceptedWeight = Number(row.accepted_weight) || 0
+        const totalSubtasks = Number(row.total_subtasks) || 0
+        const verifiedCount = Number(row.verified_count) || 0
+        const runningCount = Number(row.running_count) || 0
+        const blockedCount = Number(row.blocked_count) || 0
+
+        return {
+          id: String(row.id),
+          title: String(row.title ?? ''),
+          status: String(row.status),
+          projectId: Number(row.projeto_id),
+          createdAt: String(row.created_at),
+          completedAt: row.completed_at ? String(row.completed_at) : null,
+          subtasks: {
+            total: totalSubtasks,
+            verified: verifiedCount,
+            running: runningCount,
+            blocked: blockedCount,
+            pending: Number(row.pending_count) || 0,
+          },
+          advancement: {
+            totalWeight,
+            acceptedWeight,
+            acceptedAdvancement: totalWeight > 0 ? acceptedWeight / totalWeight : null,
+            operationalProgress: totalSubtasks > 0
+              ? (verifiedCount + runningCount + blockedCount) / totalSubtasks
+              : null,
+          },
+        }
+      })
+
+      this.json(res, 200, {
+        ok: true,
+        pagination: {
+          page,
+          pageSize,
+          total,
+          totalPages: Math.ceil(total / pageSize),
+        },
+        tasks,
+      })
+    } catch (error) {
+      this.logger.error('Failed to get metrics tasks', { error })
+      this.json(res, 500, { ok: false, error: error instanceof Error ? error.message : 'Internal error' })
+    }
+  }
+
+  /**
+   * Parse query params into MetricsFilter.
+   */
+  private parseMetricsFilter(url: URL): MetricsFilter {
+    const filter: MetricsFilter = {}
+
+    const projectId = url.searchParams.get('projectId')
+    if (projectId != null) {
+      const num = Number(projectId)
+      if (!Number.isNaN(num)) filter.projectId = num
+    }
+
+    const taskId = url.searchParams.get('taskId')
+    if (taskId != null) {
+      const num = Number(taskId)
+      if (!Number.isNaN(num)) filter.taskId = num
+    }
+
+    const from = url.searchParams.get('from')
+    if (from != null) {
+      const date = new Date(from)
+      if (!Number.isNaN(date.getTime())) filter.from = date
+    }
+
+    const to = url.searchParams.get('to')
+    if (to != null) {
+      const date = new Date(to)
+      if (!Number.isNaN(date.getTime())) filter.to = date
+    }
+
+    return filter
+  }
+
+  /**
+   * Format metrics result for API response.
+   * Ensures null values are explicit and data_quality is always present.
+   */
+  private formatMetricsResponse(result: AdvancementMetricsResult): Record<string, unknown> {
+    return {
+      // Escopo
+      totalWeightedScope: result.totalWeightedScope,
+
+      // Avanço aceito (null se dados insuficientes)
+      acceptedAdvancement: result.acceptedAdvancement,
+
+      // Progresso operacional (null se dados insuficientes)
+      operationalProgress: result.operationalProgress,
+
+      // Itens bloqueados
+      blockedItems: result.blockedItems,
+
+      // Taxas
+      firstAttemptApprovalRate: result.firstAttemptApprovalRate,
+      reworkRate: result.reworkRate,
+      blockerRate: result.blockerRate,
+
+      // Tempos
+      medianLeadTimeSeconds: result.medianLeadTimeSeconds,
+      totalBlockedTimeSeconds: result.totalBlockedTimeSeconds,
+
+      // Gates e deploy
+      gateSuccessRate: result.gateSuccessRate,
+      deployReliability: result.deployReliability,
+
+      // Qualidade de dados — sempre presente
+      dataQuality: {
+        weightCoverage: result.dataQuality.weightCoverage,
+        deadlineCoverage: result.dataQuality.deadlineCoverage,
+        durationCoverage: result.dataQuality.durationCoverage,
+        gateCoverage: result.dataQuality.gateCoverage,
+        warnings: result.dataQuality.warnings,
+      },
+
+      // Metadados
+      filter: {
+        projectId: result.filter.projectId ?? null,
+        taskId: result.filter.taskId ?? null,
+        from: result.filter.from ? result.filter.from.toISOString() : null,
+        to: result.filter.to ? result.filter.to.toISOString() : null,
+      },
+      computedAt: result.computedAt.toISOString(),
+    }
   }
 
   private readBody(req: IncomingMessage): Promise<Record<string, unknown> | null> {
