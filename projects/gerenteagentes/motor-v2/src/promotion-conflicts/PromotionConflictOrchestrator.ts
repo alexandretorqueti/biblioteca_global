@@ -1,7 +1,7 @@
 import { createLogger, describeError } from "../shared/logger.js"
 import { PromotionConflictEvidenceCollector } from "./PromotionConflictEvidenceCollector.js"
 import { PromotionConflictRepository } from "./PromotionConflictRepository.js"
-import type { PromotionConflictAnalyzerPort, PromotionConflictCandidate } from "./promotion-conflict.types.js"
+import type { PromotionConflictAnalyzerPort, PromotionConflictCandidate, PromotionConflictPromoterPort, PromotionConflictResolverPort } from "./promotion-conflict.types.js"
 
 /** Coordena os gatilhos imediato e pós-reinício sem bloquear o pump do Motor. */
 export class PromotionConflictOrchestrator {
@@ -13,6 +13,8 @@ export class PromotionConflictOrchestrator {
     private readonly repository: PromotionConflictRepository,
     private readonly collector: PromotionConflictEvidenceCollector,
     private readonly analyzer: PromotionConflictAnalyzerPort,
+    private readonly resolver?: PromotionConflictResolverPort,
+    private readonly promoter?: PromotionConflictPromoterPort,
   ) {}
 
   schedule(candidate: PromotionConflictCandidate): void {
@@ -39,9 +41,29 @@ export class PromotionConflictOrchestrator {
       const evidence = await this.collector.collect(candidate)
       fingerprint = evidence.fingerprint
       if (!await this.repository.claim(candidate, evidence)) return
-      const result = await this.analyzer.analyze(candidate, evidence)
-      await this.repository.complete(evidence.fingerprint, result)
-      this.logger.info("Análise automática do conflito concluída", { taskId: candidate.taskId })
+      if (!this.resolver || !this.promoter) {
+        const result = await this.analyzer.analyze(candidate, evidence)
+        await this.repository.complete(evidence.fingerprint, result)
+        this.logger.info("Análise automática do conflito concluída", { taskId: candidate.taskId })
+        return
+      }
+
+      const resolution = await this.resolver.resolve(candidate, evidence)
+      if (resolution.kind === "resolved") {
+        await this.promoter.promote(candidate, resolution.resolutionBranch)
+        await this.repository.complete(evidence.fingerprint, {
+          confidence: "high", recommendation: "resolved_automatically", report: resolution.report,
+        })
+        this.logger.info("Conflito de promoção resolvido automaticamente", { taskId: candidate.taskId })
+        return
+      }
+      if (resolution.kind === "needs_human_review") {
+        await this.repository.complete(evidence.fingerprint, {
+          confidence: "low", recommendation: "human_review", report: resolution.report,
+        })
+        return
+      }
+      await this.repository.fail(evidence.fingerprint, resolution.reason)
     } catch (error) {
       const reason = describeError(error)
       if (fingerprint) await this.repository.fail(fingerprint, reason).catch(() => undefined)

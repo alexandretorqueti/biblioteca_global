@@ -8,7 +8,7 @@ export class PromotionConflictRepository {
   async findPendingCandidates(): Promise<PromotionConflictCandidate[]> {
     const { rows } = await this.db.query(
       "SELECT b.id AS block_id, b.tarefa_id, b.subtarefa_id, b.block_command, b.block_excerpt, " +
-      "t.external_id, pmc.repo_path, pmc.branch_trabalho AS base_branch, " +
+      "t.external_id, pc.slug AS project_slug, pmc.repo_path, pmc.branch_trabalho AS base_branch, pmc.build_command, pmc.unit_test_command, " +
       "COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), pc.slug) AS agent_id " +
       "FROM bloqueios b INNER JOIN tarefas t ON t.id = b.tarefa_id " +
       "LEFT JOIN projetos_captados pc ON pc.id = t.projeto_id " +
