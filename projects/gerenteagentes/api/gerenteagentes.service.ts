@@ -826,16 +826,17 @@ export class GerenteAgentesService {
             this.motorV2Url,
           );
           if (resp.ok) {
-            const motorTask = JSON.parse(resp.body) as { status?: string };
+            const motorTask = JSON.parse(resp.body) as { status?: string; subtasks?: unknown[] };
             return {
               ...tarefa,
               status: motorTask.status || 'pending',
+              subtaskCount: Array.isArray(motorTask.subtasks) ? motorTask.subtasks.length : 0,
             };
           }
         } catch {
           // Se falhar, usa status padrão (fallback)
         }
-        return { ...tarefa, status: 'pending' };
+        return { ...tarefa, status: 'pending', subtaskCount: 0 };
       }),
     );
     
