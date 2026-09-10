@@ -40,7 +40,7 @@ import { RealtimeClient, type RealtimeServerMessage } from "@biblioteca-global/a
 import type { DynamicField, DynamicFormValues } from "@biblioteca-global/ui"
 import { useApi } from "../../../apps/web/src/hooks/useApi"
 import TarefaForm, { type TarefaFormValues } from "./TarefaForm"
-import TaskFlowMap, { type MotorActivity } from "./TaskFlowMap"
+import TaskFlowMap, { type MotorActivity, type FiltrosMapa } from "./TaskFlowMap"
 import { resolveRealtimeUrl, resolveApiBaseUrl } from "../../../apps/web/src/api/client"
 import {
   ALL_TASK_STATUSES,
@@ -263,6 +263,13 @@ export default function TaskMonitorScreen(): ReactNode {
   const [statusFiltro, setStatusFiltro] = useState<string>("")
   const [buscaTarefa, setBuscaTarefa] = useState("")
   const [motorActivities, setMotorActivities] = useState<MotorActivity[]>([])
+  // Filtros integrados ao mapa (substituem a combo de tarefas)
+  const [filtrosMapa, setFiltrosMapa] = useState<FiltrosMapa>({
+    busca: "",
+    status: [],
+    projetoId: "",
+    prioridade: "",
+  })
   const [tarefaId, setTarefaId] = useState<number | "">("")
   const [detail, setDetail] = useState<MotorDetail | null>(null)
   const [chat, setChat] = useState<TarefaChatMessage[]>([])
@@ -1206,77 +1213,17 @@ export default function TaskMonitorScreen(): ReactNode {
           search={buscaTarefa}
           motorActivities={motorActivities}
           onSelectTask={setTarefaId}
+          projetos={projetos}
+          filtros={filtrosMapa}
+          onFiltrosChange={setFiltrosMapa}
         />
       </Box>
 
       {/* Sessão 2: Filtros + detalhes da tarefa, em moldura única */}
       <Paper variant="outlined" sx={{ p: 2 }} data-testid="task-monitoring-section">
         <Stack spacing={2}>
-          <Stack direction={{ xs: "column", sm: "row" }} spacing={2} flexWrap="wrap" useFlexGap data-testid="task-filter-section">
-        <TextField
-          size="small"
-          label="Buscar tarefa"
-          placeholder="#766 ou título"
-          value={buscaTarefa}
-          onChange={(event) => setBuscaTarefa(event.target.value)}
-          inputProps={{ "data-testid": "filter-busca" }}
-          sx={{ minWidth: 260 }}
-        />
-        <FormControl size="small" sx={{ minWidth: 240 }}>
-          <InputLabel>Projeto</InputLabel>
-          <Select
-            label="Projeto"
-            value={projetoFiltro}
-            onChange={(e) => setProjetoFiltro(String(e.target.value) === "" ? "" : Number(e.target.value))}
-            data-testid="filter-projeto"
-          >
-            <MenuItem value="">Todos os projetos</MenuItem>
-            {projetos.map((p) => (
-              <MenuItem key={p.id} value={p.id}>
-                {p.nome}
-              </MenuItem>
-            ))}
-          </Select>
-        </FormControl>
-
-        <FormControl size="small" sx={{ minWidth: 240 }}>
-          <InputLabel>Status</InputLabel>
-          <Select
-            label="Status"
-            value={statusFiltro}
-            onChange={(e) => setStatusFiltro(String(e.target.value))}
-            data-testid="filter-status"
-          >
-            <MenuItem value="">Todos</MenuItem>
-            {ALL_TASK_STATUSES.map((s) => (
-              <MenuItem key={s} value={s}>
-                {taskStatusLabel(s)}
-              </MenuItem>
-            ))}
-          </Select>
-        </FormControl>
-
-        <FormControl size="small" sx={{ minWidth: 320 }}>
-          <InputLabel>Tarefa</InputLabel>
-          <Select
-            label="Tarefa"
-            value={tarefaId}
-            onChange={(e) => setTarefaId(Number(e.target.value))}
-            data-testid="filter-tarefa"
-          >
-            {tarefas.length === 0 && (
-              <MenuItem value="" disabled>
-                Nenhuma tarefa com os filtros selecionados
-              </MenuItem>
-            )}
-            {tarefas.map((t) => (
-              <MenuItem key={t.id} value={t.id}>
-                #{t.id} — {t.titulo} ({t.status})
-              </MenuItem>
-            ))}
-          </Select>
-        </FormControl>
-      </Stack>
+          {/* Filtros removidos — agora integrados ao topo do mapa (TaskFlowMap) */}
+          {/* A seleção de tarefa é feita apenas pelo clique nos cards do mapa */}
 
       {tarefaSelecionada && (
         <>
