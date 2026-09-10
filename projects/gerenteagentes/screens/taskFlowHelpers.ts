@@ -36,6 +36,7 @@ export interface TarefaParaMetricas {
   projetoId: number
   createdAt?: string | null
   updatedAt?: string | null
+  subtaskCount?: number
 }
 
 // ============================================================================
@@ -198,6 +199,18 @@ const ESTACOES = {
 } as const
 
 /**
+ * Determina o status efetivo de uma tarefa para fins de contagem por estação.
+ * Tarefas com status 'paused' e sem subtarefas (subtaskCount === 0 ou undefined)
+ * são tratadas como 'draft' (Rascunhos) em vez de 'waiting' (Aguardando).
+ */
+export function getEffectiveStatusForMetrics(task: TarefaParaMetricas): string {
+  if (task.status === "paused" && (task.subtaskCount === 0 || task.subtaskCount === undefined)) {
+    return "draft"
+  }
+  return task.status
+}
+
+/**
  * Verifica se uma data ISO é do dia atual.
  */
 function isHoje(data?: string | null, agora: Date = new Date()): boolean {
@@ -270,7 +283,7 @@ export function calcularMetricas(
   // Contagem por estação
   const porEstacao: Record<string, number> = {}
   for (const [estacao, statuses] of Object.entries(ESTACOES)) {
-    porEstacao[estacao] = tarefas.filter((t) => statuses.includes(t.status)).length
+    porEstacao[estacao] = tarefas.filter((t) => statuses.includes(getEffectiveStatusForMetrics(t))).length
   }
 
   return {
