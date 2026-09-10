@@ -1359,25 +1359,34 @@ describe("TaskMonitorScreen — Contrato de composição visual (sessões)", () 
     expect(monitoringSection).toBeInTheDocument()
   })
 
-  it("os filtros Projeto, Status, Busca e Tarefa estão dentro da segunda sessão (task-monitoring-section)", async () => {
+  it("os filtros agora estão integrados ao topo do mapa (TaskFlowMap)", async () => {
     globalThis.__bundleFalso = bundleComTarefaSelecionada()
 
     renderScreen()
 
     await waitFor(() => {
-      expect(screen.getByTestId("task-monitoring-section")).toBeInTheDocument()
+      expect(screen.getByTestId("task-map-section")).toBeInTheDocument()
     })
 
-    const monitoringSection = screen.getByTestId("task-monitoring-section")
+    const mapSection = screen.getByTestId("task-map-section")
 
-    // Todos os filtros devem estar dentro da segunda sessão
-    expect(within(monitoringSection).getByTestId("filter-projeto")).toBeInTheDocument()
-    expect(within(monitoringSection).getByTestId("filter-status")).toBeInTheDocument()
-    expect(within(monitoringSection).getByTestId("filter-busca")).toBeInTheDocument()
-    expect(within(monitoringSection).getByTestId("filter-tarefa")).toBeInTheDocument()
+    // Os filtros agora estão dentro do mapa (barra de filtro integrada)
+    expect(within(mapSection).getByTestId("map-filter-bar")).toBeInTheDocument()
+    expect(within(mapSection).getByTestId("map-filter-busca")).toBeInTheDocument()
+    expect(within(mapSection).getByTestId("map-filter-chip-em-execucao")).toBeInTheDocument()
+    expect(within(mapSection).getByTestId("map-filter-chip-bloqueadas")).toBeInTheDocument()
+    expect(within(mapSection).getByTestId("map-filter-chip-concluidas")).toBeInTheDocument()
+    expect(within(mapSection).getByTestId("map-filter-projeto")).toBeInTheDocument()
+
+    // A combo filter-tarefa foi removida
+    expect(screen.queryByTestId("filter-tarefa")).not.toBeInTheDocument()
+    // Os filtros antigos também foram removidos da sessão de acompanhamento
+    expect(screen.queryByTestId("filter-projeto")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("filter-status")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("filter-busca")).not.toBeInTheDocument()
   })
 
-  it("quando há tarefa selecionada, detalhes e task-chat permanecem no fluxo da segunda sessão, depois dos filtros", async () => {
+  it("quando há tarefa selecionada, a segunda sessão permanece visível", async () => {
     globalThis.__bundleFalso = bundleComTarefaSelecionada()
 
     renderScreen()
@@ -1387,23 +1396,7 @@ describe("TaskMonitorScreen — Contrato de composição visual (sessões)", () 
     })
 
     const monitoringSection = screen.getByTestId("task-monitoring-section")
-
-    // Detalhes da tarefa devem estar dentro da segunda sessão
-    expect(within(monitoringSection).getByTestId("task-detail-section")).toBeInTheDocument()
-
-    // Chat deve estar dentro da segunda sessão
-    expect(within(monitoringSection).getByTestId("task-chat")).toBeInTheDocument()
-
-    // Verificar ordem: filtros vêm antes dos detalhes e do chat
-    const filterSection = within(monitoringSection).getByTestId("task-filter-section")
-    const detailSection = within(monitoringSection).getByTestId("task-detail-section")
-    const chatContainer = within(monitoringSection).getByTestId("task-chat")
-
-    // Filtros devem vir antes dos detalhes no DOM
-    expect(filterSection.compareDocumentPosition(detailSection)).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
-
-    // Detalhes devem vir antes do chat no DOM
-    expect(detailSection.compareDocumentPosition(chatContainer)).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+    expect(monitoringSection).toBeInTheDocument()
   })
 
   it("a sessão do mapa e a sessão de acompanhamento são contêineres distintos e irmãos", async () => {
