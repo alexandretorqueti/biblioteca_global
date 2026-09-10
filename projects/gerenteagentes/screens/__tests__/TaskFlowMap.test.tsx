@@ -388,3 +388,129 @@ describe("TaskFlowMap — Legenda interativa", () => {
     expect(screen.getByTestId("map-legend-active")).toHaveTextContent("🔵")
   })
 })
+
+describe("TaskFlowMap — Estações com identidade visual (1.2)", () => {
+  it("renderiza 11 estações com ícones representativos", () => {
+    view()
+    // Main flow: draft, planned, analyzing, ready, running, completed, deployed (7)
+    // Side flow: waiting, repair, attention, closed (4)
+    // Total = 11
+    expect(screen.getByTestId("flow-station-draft")).toBeInTheDocument()
+    expect(screen.getByTestId("flow-station-planned")).toBeInTheDocument()
+    expect(screen.getByTestId("flow-station-analyzing")).toBeInTheDocument()
+    expect(screen.getByTestId("flow-station-ready")).toBeInTheDocument()
+    expect(screen.getByTestId("flow-station-running")).toBeInTheDocument()
+    expect(screen.getByTestId("flow-station-completed")).toBeInTheDocument()
+    expect(screen.getByTestId("flow-station-deployed")).toBeInTheDocument()
+    expect(screen.getByTestId("flow-station-waiting")).toBeInTheDocument()
+    expect(screen.getByTestId("flow-station-repair")).toBeInTheDocument()
+    expect(screen.getByTestId("flow-station-attention")).toBeInTheDocument()
+    expect(screen.getByTestId("flow-station-closed")).toBeInTheDocument()
+  })
+
+  it("contador em cada estação com badge circular (flow-count-*)", () => {
+    view()
+    const countRunning = screen.getByTestId("flow-count-running")
+    expect(countRunning).toBeInTheDocument()
+    expect(countRunning).toHaveTextContent("1")
+    // Verifica que o contador tem estilo de badge (border-radius 50% via sx)
+    expect(countRunning).toHaveStyle({ borderRadius: "50%" })
+  })
+
+  it("contador usa fonte monoespaçada (Roboto Mono)", () => {
+    view()
+    const countRunning = screen.getByTestId("flow-count-running")
+    expect(countRunning).toHaveStyle({ fontFamily: "'Roboto Mono', ui-monospace, monospace" })
+  })
+})
+
+describe("TaskFlowMap — Toggle Compactar (4.1)", () => {
+  it("renderiza o botão 'Compactar' com data-testid map-toggle-compactar", () => {
+    view()
+    expect(screen.getByTestId("map-toggle-compactar")).toBeInTheDocument()
+    expect(screen.getByTestId("map-toggle-compactar")).toHaveTextContent("Compactar")
+  })
+
+  it("ao clicar em 'Compactar', botão muda para 'Expandir'", async () => {
+    view()
+    await userEvent.click(screen.getByTestId("map-toggle-compactar"))
+    expect(screen.getByTestId("map-toggle-compactar")).toHaveTextContent("Expandir")
+  })
+
+  it("modo compacto oculta os cards de tarefas", async () => {
+    view()
+    // Antes: cards visíveis
+    expect(screen.getByTestId("flow-task-766")).toBeInTheDocument()
+    // Compactar
+    await userEvent.click(screen.getByTestId("map-toggle-compactar"))
+    // Depois: cards ocultos
+    expect(screen.queryByTestId("flow-task-766")).not.toBeInTheDocument()
+  })
+
+  it("modo compacto mantém contadores visíveis", async () => {
+    view()
+    await userEvent.click(screen.getByTestId("map-toggle-compactar"))
+    // Contadores ainda visíveis
+    expect(screen.getByTestId("flow-count-running")).toBeInTheDocument()
+    expect(screen.getByTestId("flow-count-ready")).toBeInTheDocument()
+  })
+})
+
+describe("TaskFlowMap — Expansão de estação (4.1)", () => {
+  const muitasTarefas: FlowTask[] = [
+    { id: 900, titulo: "Tarefa 1", status: "running", projetoId: 1 },
+    { id: 901, titulo: "Tarefa 2", status: "running", projetoId: 1 },
+    { id: 902, titulo: "Tarefa 3", status: "running", projetoId: 1 },
+    { id: 903, titulo: "Tarefa 4", status: "running", projetoId: 1 },
+    { id: 904, titulo: "Tarefa 5", status: "running", projetoId: 1 },
+  ]
+
+  it("mostra indicador '+ N tarefas' quando há mais de 3 tarefas na estação", () => {
+    view(muitasTarefas)
+    expect(screen.getByTestId("flow-station-running")).toHaveTextContent("+ 2 tarefas")
+  })
+
+  it("ao clicar no header da estação, expande mostrando todas as tarefas", async () => {
+    view(muitasTarefas)
+    // Antes: só 3 visíveis
+    expect(screen.getByTestId("flow-task-900")).toBeInTheDocument()
+    expect(screen.getByTestId("flow-task-901")).toBeInTheDocument()
+    expect(screen.getByTestId("flow-task-902")).toBeInTheDocument()
+    expect(screen.queryByTestId("flow-task-903")).not.toBeInTheDocument()
+    // Clica no header para expandir
+    await userEvent.click(screen.getByTestId("flow-station-running-header"))
+    // Depois: todas visíveis
+    expect(screen.getByTestId("flow-task-903")).toBeInTheDocument()
+    expect(screen.getByTestId("flow-task-904")).toBeInTheDocument()
+  })
+
+  it("ao expandir, mostra texto 'Mostrando todas (N)'", async () => {
+    view(muitasTarefas)
+    await userEvent.click(screen.getByTestId("flow-station-running-header"))
+    expect(screen.getByTestId("flow-station-running")).toHaveTextContent("Mostrando todas (5)")
+  })
+})
+
+describe("TaskFlowMap — Navegação por teclado (4.2)", () => {
+  it("estações têm tabIndex=0 para navegação por Tab", () => {
+    view()
+    const stationRunning = screen.getByTestId("flow-station-running")
+    expect(stationRunning).toHaveAttribute("tabIndex", "0")
+  })
+
+  it("estações têm role='group' e aria-label com nome e contador", () => {
+    view()
+    const stationRunning = screen.getByTestId("flow-station-running")
+    expect(stationRunning).toHaveAttribute("role", "group")
+    expect(stationRunning).toHaveAttribute("aria-label", "Em execução: 1 tarefas")
+  })
+
+  it("Enter no card de tarefa chama onSelectTask", async () => {
+    const onSelectTask = vi.fn()
+    view(tarefas, onSelectTask)
+    const card = screen.getByTestId("flow-task-767")
+    card.focus()
+    await userEvent.keyboard("{Enter}")
+    expect(onSelectTask).toHaveBeenCalledWith(767)
+  })
+})

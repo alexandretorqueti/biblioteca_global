@@ -3,11 +3,22 @@ import {
   AccountTreeRounded,
   ArrowDownwardRounded,
   ArrowForwardRounded,
+  BuildRounded,
+  CancelRounded,
+  CheckCircleRounded,
   ClearRounded,
+  ContentPasteRounded,
+  EditNoteRounded,
   ErrorOutlineRounded,
+  HourglassBottomRounded,
+  PauseCircleRounded,
+  RocketLaunchRounded,
   SearchRounded,
   SettingsRounded,
+  UnfoldLessRounded,
+  UnfoldMoreRounded,
   VisibilityRounded,
+  WarningAmberRounded,
 } from "@mui/icons-material"
 import { Box, Button, Chip, FormControl, InputLabel, MenuItem, Paper, Select, Stack, TextField, Tooltip, Typography } from "@mui/material"
 import { taskStatusLabel } from "../motor-v2/src/shared/task-statuses"
@@ -63,7 +74,8 @@ interface FlowStation {
 }
 
 export const MAIN_FLOW: FlowStation[] = [
-  { id: "planning", label: "Planejadas", subtitle: "aguardando análise", statuses: ["planned"], tone: "neutral" },
+  { id: "draft", label: "Rascunhos", subtitle: "não iniciadas", statuses: ["draft"], tone: "neutral" },
+  { id: "planned", label: "Planejadas", subtitle: "aguardando análise", statuses: ["planned"], tone: "neutral" },
   { id: "analyzing", label: "Em análise", subtitle: "IA analisando", statuses: ["analyzing"], tone: "active" },
   { id: "ready", label: "Prontas / na fila", subtitle: "próxima subtarefa", statuses: ["ready"], tone: "neutral" },
   { id: "running", label: "Em execução", subtitle: "IA trabalhando", statuses: ["running"], tone: "active" },
@@ -77,6 +89,21 @@ export const SIDE_FLOW: FlowStation[] = [
   { id: "attention", label: "Atenção", subtitle: "exige intervenção", statuses: ["blocked", "failed"], tone: "danger" },
   { id: "closed", label: "Encerradas", subtitle: "canceladas ou abortadas", statuses: ["cancelled", "aborted"], tone: "neutral" },
 ]
+
+// Ícones representativos por estação (1.2)
+const STATION_ICONS: Record<string, React.ComponentType<{ sx?: object }>> = {
+  draft: EditNoteRounded,
+  planned: ContentPasteRounded,
+  analyzing: SearchRounded,
+  ready: HourglassBottomRounded,
+  running: SettingsRounded,
+  completed: CheckCircleRounded,
+  deployed: RocketLaunchRounded,
+  waiting: PauseCircleRounded,
+  repair: BuildRounded,
+  attention: WarningAmberRounded,
+  closed: CancelRounded,
+}
 
 const ACTIVE_AI_STATUSES = new Set(["analyzing", "running", "motor_fix"])
 
@@ -126,15 +153,22 @@ function taskDescription(task: FlowTask): string {
     : "Tarefa sem descrição"
 }
 
-const TONE_STYLE = {
-  neutral: { borderColor: "divider", bgcolor: "action.hover" },
-  active: { borderColor: "primary.main", bgcolor: "primary.main", color: "primary.contrastText" },
-  success: { borderColor: "success.main", bgcolor: "success.dark", color: "success.contrastText" },
-  warning: { borderColor: "warning.main", bgcolor: "warning.dark", color: "warning.contrastText" },
-  danger: { borderColor: "error.main", bgcolor: "error.dark", color: "error.contrastText" },
-} as const
+// Cores de borda superior por tone (1.2 — borda superior 3-4px)
+const TONE_BORDER_COLOR: Record<FlowStation["tone"], string> = {
+  neutral: "#9e9e9e",
+  active: "#1976d2",
+  success: "#2e7d32",
+  warning: "#ed6c02",
+  danger: "#d32f2f",
+}
 
-function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, legendaAtiva, movingIds, onSelectTask, taskMatchesLegenda }: {
+// Gradiente sutil de topo para base por tone (1.2)
+function stationGradient(tone: FlowStation["tone"]): string {
+  const hex = TONE_BORDER_COLOR[tone]
+  return `linear-gradient(180deg, ${hex}10 0%, transparent 60%)`
+}
+
+function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, legendaAtiva, movingIds, compacto, onSelectTask, taskMatchesLegenda }: {
   station: FlowStation
   tarefas: FlowTask[]
   tarefasFiltradas: FlowTask[]
@@ -142,38 +176,107 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, l
   search: string
   legendaAtiva: FlowStation["tone"] | null
   movingIds: Set<number>
+  compacto: boolean
   onSelectTask: (id: number) => void
   taskMatchesLegenda: (task: FlowTask, station: FlowStation) => boolean
 }) {
+  const [expandida, setExpandida] = useState(false)
   const stationTasks = tarefas.filter((task) => station.statuses.includes(task.status))
   // Tarefas da estação que passam nos filtros
   const stationTasksFiltradas = tarefasFiltradas.filter((task) => station.statuses.includes(task.status))
   const normalizedSearch = search.trim().toLocaleLowerCase("pt-BR")
-  const visibleTasks = stationTasksFiltradas
+  const filteredVisible = stationTasksFiltradas
     .filter((task) => !normalizedSearch || `#${task.id} ${task.titulo}`.toLocaleLowerCase("pt-BR").includes(normalizedSearch))
-    .slice(0, 3)
+  // Se expandida, mostra todas; senão, mantém slice(0,3)
+  const visibleTasks = expandida ? filteredVisible : filteredVisible.slice(0, 3)
+  const temMais = stationTasks.length > 3
+
+  const StationIcon = STATION_ICONS[station.id]
+  const borderColor = TONE_BORDER_COLOR[station.tone]
+
+  // Handler de teclado no header da estação (Enter/Space expande)
+  const handleHeaderKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault()
+      setExpandida((prev) => !prev)
+    }
+  }, [])
 
   return (
     <Paper
       variant="outlined"
       data-testid={`flow-station-${station.id}`}
-      sx={{ ...TONE_STYLE[station.tone], p: 1.5, minWidth: 190, minHeight: 196, borderWidth: 1.5, borderRadius: 3, transition: "box-shadow 120ms ease, transform 120ms ease" }}
+      tabIndex={0}
+      role="group"
+      aria-label={`${station.label}: ${stationTasks.length} tarefas`}
+      sx={{
+        p: 1.5,
+        minWidth: 190,
+        minHeight: compacto ? 80 : 196,
+        borderWidth: 1.5,
+        borderRadius: 3,
+        borderTop: `4px solid ${borderColor}`,
+        background: stationGradient(station.tone),
+        bgcolor: "background.paper",
+        transition: "box-shadow 120ms ease, transform 120ms ease, min-height 200ms ease",
+        outline: "none",
+        "&:focus-visible": {
+          boxShadow: `0 0 0 3px ${borderColor}40`,
+          borderColor: borderColor,
+        },
+      }}
     >
-      <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
-        <Box>
-          <Typography fontWeight={750}>{station.label}</Typography>
-          <Typography variant="caption" sx={{ opacity: 0.78 }}>{station.subtitle}</Typography>
-        </Box>
-        <Typography variant="h5" fontWeight={800} data-testid={`flow-count-${station.id}`}>{stationTasks.length}</Typography>
-      </Stack>
-      {station.statuses.length > 1 && (
-        <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap sx={{ mt: 1 }}>
-          {station.statuses.map((status) => (
-            <Chip key={status} size="small" label={`${taskStatusLabel(status)}: ${stationTasks.filter((task) => task.status === status).length}`} sx={{ height: 20, fontSize: 10 }} />
-          ))}
+      {/* Header da estação — clicável para expandir/compactar (4.1) */}
+      <Box
+        onClick={() => !compacto && setExpandida((prev) => !prev)}
+        onKeyDown={handleHeaderKeyDown}
+        role={!compacto ? "button" : undefined}
+        aria-expanded={!compacto ? expandida : undefined}
+        data-testid={`flow-station-${station.id}-header`}
+        sx={{ cursor: compacto ? "default" : "pointer", mb: compacto ? 0 : 0.5 }}
+      >
+        <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
+          <Stack direction="row" spacing={0.75} alignItems="center">
+            {StationIcon && <StationIcon sx={{ fontSize: 22, color: borderColor }} aria-hidden="true" />}
+            <Box>
+              <Typography fontWeight={750} sx={{ fontSize: "0.9rem" }}>{station.label}</Typography>
+              {!compacto && <Typography variant="caption" sx={{ opacity: 0.78 }}>{station.subtitle}</Typography>}
+            </Box>
+          </Stack>
+          {/* Contador em círculo/badge monoespaçado (1.2) */}
+          <Box
+            data-testid={`flow-count-${station.id}`}
+            sx={{
+              minWidth: 36,
+              height: 36,
+              borderRadius: "50%",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              bgcolor: `${borderColor}18`,
+              border: `2px solid ${borderColor}`,
+              fontFamily: "'Roboto Mono', ui-monospace, monospace",
+              fontWeight: 800,
+              fontSize: "1rem",
+              color: borderColor,
+              flexShrink: 0,
+            }}
+          >
+            {stationTasks.length}
+          </Box>
         </Stack>
-      )}
-      <Stack spacing={0.75} sx={{ mt: 1.25 }}>
+      </Box>
+      {/* Modo compacto: não mostra cards */}
+      {!compacto && (
+        <>
+          {station.statuses.length > 1 && (
+            <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap sx={{ mt: 1 }}>
+              {station.statuses.map((status) => (
+                <Chip key={status} size="small" label={`${taskStatusLabel(status)}: ${stationTasks.filter((task) => task.status === status).length}`} sx={{ height: 20, fontSize: 10 }} />
+              ))}
+            </Stack>
+          )}
+          <Stack spacing={0.75} sx={{ mt: 1.25 }}>
         {visibleTasks.map((task) => {
           const aiActive = ACTIVE_AI_STATUSES.has(task.status)
           const matchesLegenda = taskMatchesLegenda(task, station)
@@ -214,9 +317,20 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, l
             </Paper>
           )
         })}
-        {normalizedSearch && stationTasks.length > 0 && visibleTasks.length === 0 && <Typography variant="caption" sx={{ opacity: 0.65 }}>Nenhuma correspondência</Typography>}
-        {!normalizedSearch && stationTasks.length > visibleTasks.length && <Typography variant="caption" textAlign="center" sx={{ opacity: 0.72 }}>+ {stationTasks.length - visibleTasks.length} tarefas</Typography>}
-      </Stack>
+          {normalizedSearch && stationTasks.length > 0 && visibleTasks.length === 0 && <Typography variant="caption" sx={{ opacity: 0.65 }}>Nenhuma correspondência</Typography>}
+          {!normalizedSearch && !expandida && temMais && <Typography variant="caption" textAlign="center" sx={{ opacity: 0.72 }}>+ {stationTasks.length - visibleTasks.length} tarefas</Typography>}
+          {expandida && filteredVisible.length > 3 && <Typography variant="caption" textAlign="center" sx={{ opacity: 0.72, mt: 0.5 }}>Mostrando todas ({filteredVisible.length})</Typography>}
+        </Stack>
+        </>
+      )}
+      {/* Indicador de expansão */}
+      {!compacto && temMais && (
+        <Stack direction="row" justifyContent="center" sx={{ mt: 0.5 }}>
+          {expandida
+            ? <UnfoldLessRounded sx={{ fontSize: 18, color: "action.active" }} aria-label="Recolher estação" />
+            : <UnfoldMoreRounded sx={{ fontSize: 18, color: "action.active" }} aria-label="Expandir estação" />}
+        </Stack>
+      )}
     </Paper>
   )
 }
@@ -225,6 +339,7 @@ export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", moto
   const previousStatuses = useRef(new Map<number, string>())
   const [movements, setMovements] = useState<Array<{ id: number; from: string; to: string }>>([])
   const [legendaAtiva, setLegendaAtiva] = useState<FlowStation["tone"] | null>(null)
+  const [compacto, setCompacto] = useState(false)
 
   // Filtros internos (usados quando não há filtrosExternos)
   const [filtrosInternos, setFiltrosInternos] = useState<FiltrosMapa>({
@@ -580,6 +695,23 @@ export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", moto
 
       {movements.map((movement) => <Chip key={movement.id} color="info" sx={{ mb: 1.5, mr: 1 }} label={`#${movement.id} · ${taskStatusLabel(movement.from)} → ${taskStatusLabel(movement.to)}`} data-testid={`flow-movement-${movement.id}`} />)}
 
+      {/* Toggle Compactar (4.1) */}
+      {/* Nota: mini-mapa NÃO implementado (opcional conforme especificação) — 
+          o toggle compactar + expansão por estação atendem o mesmo propósito 
+          de visão geral sem a complexidade adicional de um mini-mapa. */}
+      <Stack direction="row" justifyContent="flex-end" sx={{ mb: 1 }}>
+        <Button
+          size="small"
+          startIcon={compacto ? <UnfoldMoreRounded /> : <UnfoldLessRounded />}
+          onClick={() => setCompacto((prev) => !prev)}
+          data-testid="map-toggle-compactar"
+          variant={compacto ? "contained" : "outlined"}
+          sx={{ minWidth: "auto" }}
+        >
+          {compacto ? "Expandir" : "Compactar"}
+        </Button>
+      </Stack>
+
       <Box sx={{ overflowX: "auto", pb: 1 }}>
         <Stack
           direction="row"
@@ -600,6 +732,7 @@ export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", moto
                 search={search}
                 legendaAtiva={legendaAtiva}
                 movingIds={movingIds}
+                compacto={compacto}
                 onSelectTask={onSelectTask}
                 taskMatchesLegenda={taskMatchesLegenda}
               />
@@ -627,6 +760,7 @@ export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", moto
                 search={search}
                 legendaAtiva={legendaAtiva}
                 movingIds={movingIds}
+                compacto={compacto}
                 onSelectTask={onSelectTask}
                 taskMatchesLegenda={taskMatchesLegenda}
               />

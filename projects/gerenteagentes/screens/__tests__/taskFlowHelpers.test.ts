@@ -230,7 +230,7 @@ describe("calcularMetricas", () => {
       { id: 5, status: "blocked", projetoId: 1 },
     ]
     const metricas = calcularMetricas(tarefas, agora)
-    expect(metricas.porEstacao.planning).toBe(1)
+    expect(metricas.porEstacao.planned).toBe(1)
     expect(metricas.porEstacao.analyzing).toBe(1)
     expect(metricas.porEstacao.running).toBe(1)
     expect(metricas.porEstacao.completed).toBe(1)
