@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  webai-provider:
+    build: .
+    container_name: webai-provider
+    restart: unless-stopped
+    ports:
+      - "3100:3100"  # API OpenAI-compatible
+      - "6080:6080"  # noVNC (VNC via navegador)
+    environment:
+      # WebAI Provider
+      - PORT=3100
+      - HEADLESS=false  # IMPORTANTE: false para usar VNC
+      - DEBUG_PORT=9222
+      - TASK_TIMEOUT_MS=1800000
+      - COMMAND_TIMEOUT_MS=60000
+      - POLL_INTERVAL_MS=10000
+      # VNC
+      - DISPLAY=:99
+      - VNC_PORT=5900
+      - NOVNC_PORT=6080
+      - VNC_PASSWORD=global  # ALTERE ESTA SENHA
+      - RESOLUTION=1280x1024x24
+    volumes:
+      - ./webai-providers.json:/app/webai-providers.json:ro
+      - webai-data:/tmp/webai
+      - webai-chrome-profile:/tmp/webai-chrome-profile  # Perfil do Chrome (persiste login)
+    networks:
+      - openclaw_default
+      - ai_network
+
+networks:
+  openclaw_default:
+    external: true
+  ai_network:
+    external: true
+
+volumes:
+  webai-data:
+  webai-chrome-profile:
