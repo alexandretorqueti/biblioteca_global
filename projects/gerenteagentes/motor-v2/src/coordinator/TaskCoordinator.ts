@@ -1211,6 +1211,42 @@ export class TaskCoordinator {
   }
 
   /**
+   * Trilha de auditoria de retomadas de bloqueio de infraestrutura da tarefa.
+   * Registros append-only: motivo original, correção aplicada, data, origem
+   * (manual/automática) e identificador de quem acionou a retomada.
+   */
+  async getRecoveryHistory(taskId: string): Promise<Array<{
+    id: number
+    incidentId: string
+    originalReason: string
+    correctionApplied: string
+    resumeType: "manual" | "automatic"
+    resumedBy: string
+    executionId: string | null
+    createdAt: string
+  }>> {
+    const { rows } = await this.db.query(
+      "SELECT h.id, h.incident_id, h.original_reason, h.correction_applied, h.resume_type, h.resumed_by, h.execution_id, h.created_at " +
+      "FROM motor_infrastructure_recovery_history h INNER JOIN tarefas t ON t.id = h.tarefa_id " +
+      "WHERE t.external_id = ? OR t.id = CAST(? AS UNSIGNED) ORDER BY h.id DESC LIMIT 200",
+      [taskId, taskId],
+    )
+    return rows.map((row) => {
+      const data = row as Record<string, unknown>
+      return {
+        id: Number(data.id),
+        incidentId: String(data.incident_id),
+        originalReason: String(data.original_reason),
+        correctionApplied: String(data.correction_applied),
+        resumeType: String(data.resume_type) as "manual" | "automatic",
+        resumedBy: String(data.resumed_by),
+        executionId: data.execution_id ? String(data.execution_id) : null,
+        createdAt: String(data.created_at),
+      }
+    })
+  }
+
+  /**
    * Tarefa completa com subtarefas e motivo de bloqueio na resposta —
    * remove a dependência do fallback direto no banco pela tela de
    * acompanhamento e dá visibilidade ao motivo de bloqueio.
@@ -1456,10 +1492,12 @@ export class TaskCoordinator {
    * O registro persistido da tentativa é obrigatório: sem ele a ação falha
    * em vez de chamar prepare() e criar uma worktree substituta.
    */
-  async reanalyzeAndResumeInfrastructureBlock(taskId: string): Promise<{ executionId: string; incidentId: string }> {
+  async reanalyzeAndResumeInfrastructureBlock(taskId: string, options?: { resumeType?: "manual" | "automatic"; resumedBy?: string }): Promise<{ executionId: string; incidentId: string }> {
     const task = await this.repository.getTask(taskId)
     if (!task) throw new Error("Tarefa " + taskId + " nao encontrada")
     if (task.status !== "blocked") throw new Error("Ação disponível apenas para tarefa bloqueada")
+    const resumeType = options?.resumeType ?? "automatic"
+    const resumedBy = options?.resumedBy ?? (resumeType === "manual" ? "unknown-user" : "motor-v2")
 
     const { rows } = await this.db.query(
       "SELECT b.id, b.block_reason, b.block_excerpt, s.id AS subtarefa_id, s.workspace_path, s.workspace_branch, s.workspace_base_commit, pmc.repo_path " +
@@ -1496,9 +1534,9 @@ export class TaskCoordinator {
     })
     await this.db.query("UPDATE subtarefas SET status = 'pending', resultado = ?, updated_at = NOW() WHERE id = ?", ["Retomada após reanálise do bloqueio: " + excerpt, Number(block.subtarefa_id)])
     await this.db.query(
-      "INSERT INTO motor_infrastructure_recovery_history (tarefa_id, subtarefa_id, incident_id, original_reason, correction_applied, resumed_by, execution_id) " +
-      "SELECT id, ?, ?, ?, ?, ?, ? FROM tarefas WHERE external_id = ? OR id = CAST(? AS UNSIGNED) LIMIT 1",
-      [Number(block.subtarefa_id), incidentId, excerpt, "preflight consolidado: Git/branch, dependências, Console e SSH", "motor-v2", "recovery-" + incidentId, taskId, taskId],
+      "INSERT INTO motor_infrastructure_recovery_history (tarefa_id, subtarefa_id, incident_id, original_reason, correction_applied, resume_type, resumed_by, execution_id) " +
+      "SELECT id, ?, ?, ?, ?, ?, ?, ? FROM tarefas WHERE external_id = ? OR id = CAST(? AS UNSIGNED) LIMIT 1",
+      [Number(block.subtarefa_id), incidentId, excerpt, "preflight consolidado: Git/branch, dependências, Console e SSH", resumeType, resumedBy, "recovery-" + incidentId, taskId, taskId],
     )
     await this.saveTaskTransition(task, "recover", { errorMessage: "Bloqueio reanalisado; incidente " + incidentId })
     await this.pump()

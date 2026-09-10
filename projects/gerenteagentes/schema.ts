@@ -604,6 +604,29 @@ export const bloqueios = mysqlTable("bloqueios", {
 })
 
 // ============================================================================
+// AUDITORIA DE RETOMADA DE BLOQUEIOS (Motor v2)
+// ============================================================================
+
+/**
+ * Trilha de auditoria append-only da reanálise e retomada de bloqueios de infraestrutura.
+ * Cada retomada grava o motivo original do bloqueio, a correção aplicada, a data,
+ * se a ação foi manual ou automática, e o identificador do usuário/processo.
+ * Vinculada à tarefa (tarefa_id) e consultável após a execução.
+ */
+export const motorInfrastructureRecoveryHistory = mysqlTable("motor_infrastructure_recovery_history", {
+  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+  tarefaId: bigint("tarefa_id", { mode: "number", unsigned: true }).notNull(),
+  subtarefaId: bigint("subtarefa_id", { mode: "number", unsigned: true }).notNull(),
+  incidentId: varchar("incident_id", { length: 100 }).notNull(),
+  originalReason: varchar("original_reason", { length: 500 }).notNull(),
+  correctionApplied: varchar("correction_applied", { length: 1000 }).notNull(),
+  resumeType: mysqlEnum("resume_type", ["manual", "automatic"]).notNull().default("automatic"),
+  resumedBy: varchar("resumed_by", { length: 120 }).notNull(),
+  executionId: varchar("execution_id", { length: 200 }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+})
+
+// ============================================================================
 // ANNOTATIONS (metadata de formulário)
 // ============================================================================
 

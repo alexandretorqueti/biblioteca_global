@@ -88,6 +88,8 @@ export class MotorAPI {
         this.handleGetTask(res, taskId)
       } else if (req.method === 'GET' && taskId && taskAction === 'status-history') {
         this.handleGetTaskStatusHistory(res, taskId)
+      } else if (req.method === 'GET' && taskId && taskAction === 'recovery-history') {
+        this.handleGetRecoveryHistory(res, taskId)
       } else if (req.method === 'POST' && taskId && taskAction === 'enqueue') {
         this.handleEnqueueTask(res, taskId)
       } else if (req.method === 'POST' && taskId && taskAction === 'pause') {
@@ -95,7 +97,7 @@ export class MotorAPI {
       } else if (req.method === 'POST' && taskId && taskAction === 'resume') {
         this.handleResumeTask(res, taskId)
       } else if (req.method === 'POST' && taskId && (taskAction === 'reanalyze-and-resume' || taskAction === 'reanalisar-e-retomar')) {
-        this.handleInfrastructureRecovery(res, taskId)
+        this.handleInfrastructureRecovery(req, res, taskId)
       } else if (req.method === 'POST' && taskId && taskAction === 'cancel') {
         this.handleCancelTask(res, taskId)
       } else if (req.method === 'POST' && taskId && taskAction === 'deploy') {
@@ -170,12 +172,24 @@ export class MotorAPI {
     }
   }
 
-  private async handleInfrastructureRecovery(res: ServerResponse, taskId: string): Promise<void> {
+  private async handleInfrastructureRecovery(req: IncomingMessage, res: ServerResponse, taskId: string): Promise<void> {
     try {
-      const result = await this.coordinator.reanalyzeAndResumeInfrastructureBlock(taskId)
+      const body = await this.readBody(req)
+      const resumeType = (body?.resumeType === 'manual' || body?.resumeType === 'automatic') ? body.resumeType : undefined
+      const resumedBy = typeof body?.resumedBy === 'string' && body.resumedBy.length > 0 ? body.resumedBy : undefined
+      const result = await this.coordinator.reanalyzeAndResumeInfrastructureBlock(taskId, { resumeType, resumedBy })
       this.json(res, 202, { ok: true, ...result })
     } catch (error) {
       this.json(res, 400, { ok: false, error: error instanceof Error ? error.message : 'Infrastructure recovery failed' })
+    }
+  }
+
+  private async handleGetRecoveryHistory(res: ServerResponse, taskId: string): Promise<void> {
+    try {
+      this.json(res, 200, { items: await this.coordinator.getRecoveryHistory(taskId) })
+    } catch (error) {
+      this.logger.error('Failed to get recovery history', { error, taskId })
+      this.json(res, 500, { ok: false, error: error instanceof Error ? error.message : 'Internal error' })
     }
   }
 
