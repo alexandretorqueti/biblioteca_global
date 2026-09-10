@@ -385,7 +385,58 @@ Pausa a tarefa (running → paused).
 **POST /api/gerenteagentes/tarefas/:id/resume**
 Retoma a tarefa (paused → running).
 
-### 3.3 Subtarefas
+### 3.3 Resultado Final Consolidado (ST-4)
+
+**GET /api/gerenteagentes/tarefas/:id/resultado**
+Retorna a tarefa com o resultado final consolidado para tarefas de automação
+e verificação. O resultado final é obtido diretamente da coluna
+`resultado_final` da tabela `tarefas`, sem necessidade de consultar a tabela
+de subtarefas.
+
+Para tarefas de desenvolvimento, o campo `resultadoFinal` será `null`.
+
+```json
+// Response 200
+{
+  "id": 1,
+  "externalId": "task-biblioteca-1",
+  "projetoId": 1,
+  "titulo": "Verificar integridade do banco",
+  "descricao": "Executar verificações de integridade no banco de dados",
+  "tipo": "verificacao",
+  "status": "completed",
+  "resultadoFinal": {
+    "status": "done",
+    "summary": "Todas as verificações passaram com sucesso",
+    "reason": "Integridade confirmada em todas as tabelas"
+  },
+  "ultimaMensagemErro": null,
+  "maxRework": 3,
+  "hardTimeoutMs": 3600000,
+  "dependsOnTaskId": null,
+  "autoStart": false,
+  "planCoverage": null,
+  "bootRetryCount": 0,
+  "createdAt": "2026-08-18T14:30:00Z",
+  "updatedAt": "2026-08-18T14:35:00Z"
+}
+```
+
+**Campos de `resultadoFinal`:**
+
+| Campo | Tipo | Descrição |
+|-------|------|-----------|
+| `status` | string | Status do resultado: `done` (sucesso), `need_help` (precisa ajuda), `blocked_environment` (ambiente bloqueado) |
+| `summary` | string | Resumo consolidado do resultado |
+| `reason` | string | Motivo ou detalhes adicionais do resultado |
+
+> **Nota:** O resultado final é preenchido pelo motor-v2 ao concluir tarefas de
+> automação e verificação. Evidências e histórico técnico detalhado permanecem
+> persistidos nas subtarefas e podem ser consultados via
+> `GET /api/gerenteagentes/tarefas/:id/subtarefas` ou
+> `GET /api/gerenteagentes/tarefas/:id/motor-detail`.
+
+### 3.4 Subtarefas
 
 **GET /api/gerenteagentes/tarefas/:id/subtarefas**
 Lista subtarefas da tarefa (tabela local; a fonte da verdade da execução é o
@@ -413,7 +464,7 @@ motor — ver [§6](#6-integração-com-console-openclaw)).
 }
 ```
 
-### 3.4 Detalhe no Motor (proxy)
+### 3.5 Detalhe no Motor (proxy)
 
 **GET /api/gerenteagentes/tarefas/:id/motor-detail**
 Proxy para o motor: task + subtasks + events + currentSubTask. O motor é a

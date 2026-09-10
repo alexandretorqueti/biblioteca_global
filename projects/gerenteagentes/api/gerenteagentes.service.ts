@@ -1259,6 +1259,69 @@ export class GerenteAgentesService {
     }
   }
 
+  /**
+   * Obtém uma tarefa específica com o resultado final consolidado (ST-4).
+   * Para tarefas de automação e verificação, retorna o resultado final
+   * diretamente da coluna resultado_final, sem necessidade de consultar
+   * a tabela de subtarefas.
+   */
+  async obterTarefaComResultadoFinal(projeto: ProjetoResumo, tarefaId: number) {
+    const db = await this.dbDoMotor();
+    
+    const [tarefa] = await db
+      .select()
+      .from(tarefas)
+      .where(eq(tarefas.id, tarefaId))
+      .limit(1);
+
+    if (!tarefa) {
+      throw new NotFoundException('Tarefa não encontrada');
+    }
+
+    // Para tarefas de automação e verificação, inclui o resultado final consolidado
+    const resultadoFinal = (tarefa.tipo === 'automacao' || tarefa.tipo === 'verificacao')
+      ? this.parseResultadoFinal(tarefa.resultadoFinal)
+      : null;
+
+    return {
+      id: tarefa.id,
+      externalId: tarefa.externalId,
+      projetoId: tarefa.projetoId,
+      titulo: tarefa.titulo,
+      descricao: tarefa.descricao,
+      tipo: tarefa.tipo,
+      status: tarefa.status,
+      resultadoFinal,
+      ultimaMensagemErro: tarefa.ultimaMensagemErro,
+      maxRework: tarefa.maxRework,
+      hardTimeoutMs: tarefa.hardTimeoutMs,
+      dependsOnTaskId: tarefa.dependsOnTaskId,
+      autoStart: tarefa.autoStart,
+      planCoverage: tarefa.planCoverage,
+      bootRetryCount: tarefa.bootRetryCount,
+      createdAt: tarefa.createdAt,
+      updatedAt: tarefa.updatedAt,
+    };
+  }
+
+  /**
+   * Parse seguro do resultado final (JSON -> objeto tipado).
+   */
+  private parseResultadoFinal(value: unknown): { status: 'done' | 'need_help' | 'blocked_environment'; summary: string; reason: string } | null {
+    if (value == null) return null;
+    try {
+      const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+      if (!parsed || typeof parsed !== 'object') return null;
+      const result = parsed as Record<string, unknown>;
+      const status = result.status;
+      if (status !== 'done' && status !== 'need_help' && status !== 'blocked_environment') return null;
+      if (typeof result.summary !== 'string' || typeof result.reason !== 'string') return null;
+      return { status, summary: result.summary, reason: result.reason };
+    } catch {
+      return null;
+    }
+  }
+
   async listarSubtarefas(projeto: ProjetoResumo, tarefaId: number) {
     const db = await this.dbDoMotor();
     

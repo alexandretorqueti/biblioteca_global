@@ -206,6 +206,20 @@ export class GerenteAgentesController {
   // SUBTAREFAS
   // ============================================================================
 
+  /**
+   * ST-4: Obtém uma tarefa específica com o resultado final consolidado.
+   * Para tarefas de automação e verificação, retorna o resultado final
+   * diretamente da coluna resultado_final, sem necessidade de consultar
+   * a tabela de subtarefas.
+   */
+  @Get('tarefas/:id/resultado')
+  obterTarefaComResultadoFinal(
+    @CurrentProject() projeto: ProjetoResumo,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    return this.service.obterTarefaComResultadoFinal(projeto, id);
+  }
+
   @Get('tarefas/:id/subtarefas')
   listarSubtarefas(
     @CurrentProject() projeto: ProjetoResumo,
