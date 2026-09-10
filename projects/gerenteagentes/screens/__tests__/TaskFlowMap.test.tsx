@@ -851,3 +851,76 @@ describe("TaskFlowMap — prefers-reduced-motion (2.2d)", () => {
     expect(css).toContain("transform: none")
   })
 })
+
+describe("TaskFlowMap — Responsividade mobile-first (6.1)", () => {
+  it("renderiza o botão de toggle do filtro (funil) com data-testid map-filter-toggle", () => {
+    view()
+    expect(screen.getByTestId("map-filter-toggle")).toBeInTheDocument()
+  })
+
+  it("botão de toggle do filtro tem aria-label descritivo", () => {
+    view()
+    const toggle = screen.getByTestId("map-filter-toggle")
+    expect(toggle).toHaveAttribute("aria-label", "Expandir filtros")
+  })
+
+  it("ao clicar no toggle, aria-label muda para 'Recolher filtros'", async () => {
+    view()
+    await userEvent.click(screen.getByTestId("map-filter-toggle"))
+    expect(screen.getByTestId("map-filter-toggle")).toHaveAttribute("aria-label", "Recolher filtros")
+  })
+
+  it("ao clicar no toggle, aria-expanded muda para true", async () => {
+    view()
+    await userEvent.click(screen.getByTestId("map-filter-toggle"))
+    expect(screen.getByTestId("map-filter-toggle")).toHaveAttribute("aria-expanded", "true")
+  })
+})
+
+describe("TaskFlowMap — Skeleton loaders (7.1)", () => {
+  it("renderiza skeletons das estações quando carregando=true", () => {
+    render(
+      <BibliotecaThemeProvider>
+        <TaskFlowMap
+          tarefas={tarefas}
+          selectedTaskId=""
+          onSelectTask={vi.fn()}
+          carregando={true}
+        />
+      </BibliotecaThemeProvider>
+    )
+    // Verifica que os skeletons são renderizados para cada estação
+    expect(screen.getByTestId("map-skeleton-running")).toBeInTheDocument()
+    expect(screen.getByTestId("map-skeleton-ready")).toBeInTheDocument()
+    expect(screen.getByTestId("map-skeleton-completed")).toBeInTheDocument()
+    expect(screen.getByTestId("map-skeleton-container")).toBeInTheDocument()
+  })
+
+  it("skeletons usam animation='wave' (shimmer effect)", () => {
+    render(
+      <BibliotecaThemeProvider>
+        <TaskFlowMap
+          tarefas={tarefas}
+          selectedTaskId=""
+          onSelectTask={vi.fn()}
+          carregando={true}
+        />
+      </BibliotecaThemeProvider>
+    )
+    const skeleton = screen.getByTestId("map-skeleton-running")
+    // MUI Skeleton com animation="wave" adiciona a classe MuiSkeleton-wave
+    expect(skeleton).toHaveClass("MuiSkeleton-wave")
+  })
+
+  it("não renderiza skeletons quando carregando=false (default)", () => {
+    view()
+    expect(screen.queryByTestId("map-skeleton-container")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("map-skeleton-running")).not.toBeInTheDocument()
+  })
+
+  it("renderiza estações reais quando carregando=false", () => {
+    view()
+    expect(screen.getByTestId("flow-station-running")).toBeInTheDocument()
+    expect(screen.getByTestId("flow-station-ready")).toBeInTheDocument()
+  })
+})

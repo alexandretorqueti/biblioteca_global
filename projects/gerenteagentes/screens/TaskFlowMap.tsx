@@ -8,6 +8,7 @@ import {
   ContentPasteRounded,
   EditNoteRounded,
   ErrorOutlineRounded,
+  FilterAltRounded,
   HourglassBottomRounded,
   InfoOutlined,
   PauseCircleRounded,
@@ -18,7 +19,8 @@ import {
   UnfoldMoreRounded,
   WarningAmberRounded,
 } from "@mui/icons-material"
-import { Avatar, Box, Button, Chip, FormControl, InputLabel, LinearProgress, MenuItem, Paper, Select, Stack, TextField, Tooltip, Typography } from "@mui/material"
+import { Avatar, Box, Button, Chip, Collapse, FormControl, IconButton, InputLabel, LinearProgress, MenuItem, Paper, Select, Skeleton, Stack, TextField, Tooltip, Typography, useMediaQuery } from "@mui/material"
+import { useTheme } from "@mui/material/styles"
 import { taskStatusLabel } from "../motor-v2/src/shared/task-statuses"
 import { calcularMetricas, deriveTaskPriority, formatTempoRelativo, projetoAvatar, type Prioridade } from "./taskFlowHelpers"
 
@@ -61,6 +63,7 @@ interface TaskFlowMapProps {
   filtros?: FiltrosMapa
   onFiltrosChange?: (filtros: FiltrosMapa) => void
   aoVivo?: boolean
+  carregando?: boolean
 }
 
 interface FlowStation {
@@ -567,14 +570,18 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, l
   )
 }
 
-export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", motorActivities = [], onSelectTask, projetos = [], filtros: filtrosExternos, onFiltrosChange, aoVivo = true }: TaskFlowMapProps) {
+export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", motorActivities = [], onSelectTask, projetos = [], filtros: filtrosExternos, onFiltrosChange, aoVivo = true, carregando = false }: TaskFlowMapProps) {
   // Injeta keyframes globais na primeira renderização
   ensureKeyframes()
+
+  const theme = useTheme()
+  const isMobile = useMediaQuery(theme.breakpoints.down("sm"))
 
   const previousStatuses = useRef(new Map<number, string>())
   const [movements, setMovements] = useState<Array<{ id: number; from: string; to: string }>>([])
   const [legendaAtiva, setLegendaAtiva] = useState<FlowStation["tone"] | null>(null)
   const [compacto, setCompacto] = useState(false)
+  const [filtroMobileAberto, setFiltroMobileAberto] = useState(false)
 
   // Filtros internos (usados quando não há filtrosExternos)
   const [filtrosInternos, setFiltrosInternos] = useState<FiltrosMapa>({
@@ -842,90 +849,106 @@ export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", moto
         </Stack>
       </Paper>
 
-      {/* Barra de filtro integrada ao topo */}
+      {/* Barra de filtro integrada ao topo (6.1 — colapsável em mobile) */}
       <Paper
         variant="outlined"
         sx={{ p: 1.5, mb: 2, bgcolor: "action.hover", borderRadius: 2 }}
         data-testid="map-filter-bar"
       >
-        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems="center" flexWrap="wrap" useFlexGap>
-          {/* Busca */}
-          <TextField
-            size="small"
-            placeholder="Buscar tarefa..."
-            value={filtros.busca}
-            onChange={(e) => setFiltros({ ...filtros, busca: e.target.value })}
-            inputProps={{ "data-testid": "map-filter-busca" }}
-            InputProps={{ startAdornment: <SearchRounded sx={{ mr: 0.5, color: "text.secondary", fontSize: 20 }} /> }}
-            sx={{ minWidth: 200, flex: 1 }}
-          />
-
-          {/* Chips de status */}
-          {Object.entries(STATUS_CHIP_GROUPS).map(([slug, group]) => (
-            <Chip
-              key={slug}
-              label={group.label}
-              onClick={() => toggleStatusChip(slug)}
-              color={filtros.status.includes(slug) ? "primary" : "default"}
-              variant={filtros.status.includes(slug) ? "filled" : "outlined"}
-              data-testid={`map-filter-chip-${slug}`}
-              sx={{ cursor: "pointer" }}
-            />
-          ))}
-
-          {/* Projeto */}
-          <FormControl size="small" sx={{ minWidth: 160 }}>
-            <InputLabel>Projeto</InputLabel>
-            <Select
-              label="Projeto"
-              value={filtros.projetoId}
-              onChange={(e) => setFiltros({ ...filtros, projetoId: e.target.value as number | "" })}
-              data-testid="map-filter-projeto"
-            >
-              <MenuItem value="">Todos</MenuItem>
-              {projetos.map((p) => (
-                <MenuItem key={p.id} value={p.id}>{p.nome}</MenuItem>
-              ))}
-            </Select>
-          </FormControl>
-
-          {/* Prioridade */}
-          <Stack direction="row" spacing={0.5} alignItems="center">
-            <Typography variant="caption" sx={{ mr: 0.5 }}>Prioridade:</Typography>
-            {(["alta", "media", "baixa"] as const).map((nivel) => (
-              <Chip
-                key={nivel}
-                label={nivel === "alta" ? "Alta" : nivel === "media" ? "Média" : "Baixa"}
-                size="small"
-                onClick={() => setFiltros({ ...filtros, prioridade: filtros.prioridade === nivel ? "" : nivel })}
-                color={filtros.prioridade === nivel
-                  ? (nivel === "alta" ? "error" : nivel === "media" ? "warning" : "success")
-                  : "default"}
-                variant={filtros.prioridade === nivel ? "filled" : "outlined"}
-                data-testid={`map-filter-prioridade-${nivel}`}
-                sx={{ cursor: "pointer", minWidth: 50 }}
-              />
-            ))}
-          </Stack>
-
-          {/* Contador */}
+        {/* Linha superior: toggle mobile + contador */}
+        <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: isMobile && !filtroMobileAberto ? 0 : 1 }}>
+          {/* Botão funil (visível só em mobile) */}
+          <IconButton
+            onClick={() => setFiltroMobileAberto((prev) => !prev)}
+            data-testid="map-filter-toggle"
+            aria-label={filtroMobileAberto ? "Recolher filtros" : "Expandir filtros"}
+            aria-expanded={filtroMobileAberto}
+            color={filtroMobileAberto ? "primary" : "default"}
+            sx={{ display: { xs: "flex", sm: "none" } }}
+          >
+            <FilterAltRounded />
+          </IconButton>
+          {/* Contador (sempre visível) */}
           <Typography variant="caption" color="text.secondary" data-testid="map-filter-contador" sx={{ ml: "auto" }}>
             {contadorFiltro}
           </Typography>
-
-          {/* Botão limpar filtros */}
+          {/* Botão limpar (sempre visível quando há filtros) */}
           {hasFiltrosAtivos && (
             <Button
               size="small"
               startIcon={<ClearRounded />}
               onClick={limparFiltros}
               data-testid="map-filter-limpar"
-              sx={{ minWidth: "auto" }}
+              sx={{ minWidth: "auto", ml: 1 }}
             >
               Limpar
             </Button>
           )}
         </Stack>
+
+        {/* Campos do filtro (colapsável em mobile, sempre visível em desktop) */}
+        <Collapse in={!isMobile || filtroMobileAberto} timeout="auto" unmountOnExit={isMobile}>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mt: 1 }}>
+            {/* Busca */}
+            <TextField
+              size="small"
+              placeholder="Buscar tarefa..."
+              value={filtros.busca}
+              onChange={(e) => setFiltros({ ...filtros, busca: e.target.value })}
+              inputProps={{ "data-testid": "map-filter-busca" }}
+              InputProps={{ startAdornment: <SearchRounded sx={{ mr: 0.5, color: "text.secondary", fontSize: 20 }} /> }}
+              sx={{ minWidth: 200, flex: 1 }}
+            />
+
+            {/* Chips de status */}
+            {Object.entries(STATUS_CHIP_GROUPS).map(([slug, group]) => (
+              <Chip
+                key={slug}
+                label={group.label}
+                onClick={() => toggleStatusChip(slug)}
+                color={filtros.status.includes(slug) ? "primary" : "default"}
+                variant={filtros.status.includes(slug) ? "filled" : "outlined"}
+                data-testid={`map-filter-chip-${slug}`}
+                sx={{ cursor: "pointer" }}
+              />
+            ))}
+
+            {/* Projeto */}
+            <FormControl size="small" sx={{ minWidth: 160 }}>
+              <InputLabel>Projeto</InputLabel>
+              <Select
+                label="Projeto"
+                value={filtros.projetoId}
+                onChange={(e) => setFiltros({ ...filtros, projetoId: e.target.value as number | "" })}
+                data-testid="map-filter-projeto"
+              >
+                <MenuItem value="">Todos</MenuItem>
+                {projetos.map((p) => (
+                  <MenuItem key={p.id} value={p.id}>{p.nome}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+
+            {/* Prioridade */}
+            <Stack direction="row" spacing={0.5} alignItems="center">
+              <Typography variant="caption" sx={{ mr: 0.5 }}>Prioridade:</Typography>
+              {(["alta", "media", "baixa"] as const).map((nivel) => (
+                <Chip
+                  key={nivel}
+                  label={nivel === "alta" ? "Alta" : nivel === "media" ? "Média" : "Baixa"}
+                  size="small"
+                  onClick={() => setFiltros({ ...filtros, prioridade: filtros.prioridade === nivel ? "" : nivel })}
+                  color={filtros.prioridade === nivel
+                    ? (nivel === "alta" ? "error" : nivel === "media" ? "warning" : "success")
+                    : "default"}
+                  variant={filtros.prioridade === nivel ? "filled" : "outlined"}
+                  data-testid={`map-filter-prioridade-${nivel}`}
+                  sx={{ cursor: "pointer", minWidth: 50 }}
+                />
+              ))}
+            </Stack>
+          </Stack>
+        </Collapse>
       </Paper>
 
       {movements.map((movement) => <Chip key={movement.id} color="info" sx={{ mb: 1.5, mr: 1 }} label={`#${movement.id} · ${taskStatusLabel(movement.from)} → ${taskStatusLabel(movement.to)}`} data-testid={`flow-movement-${movement.id}`} />)}
@@ -947,30 +970,132 @@ export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", moto
         </Button>
       </Stack>
 
+      {/* 7.1 — Skeleton loaders enquanto carrega */}
+      {carregando ? (
+        <Box data-testid="map-skeleton-container">
+          <Stack
+            direction={{ xs: "column", sm: "row" }}
+            alignItems={{ xs: "stretch", sm: "center" }}
+            justifyContent="center"
+            flexWrap="wrap"
+            useFlexGap
+            spacing={2}
+            sx={{ width: "100%" }}
+          >
+            {MAIN_FLOW.map((station, index) => (
+              <React.Fragment key={station.id}>
+                <Skeleton
+                  variant="rounded"
+                  width={190}
+                  height={compacto ? 80 : 196}
+                  animation="wave"
+                  data-testid={`map-skeleton-${station.id}`}
+                  sx={{
+                    borderRadius: 3,
+                    animationDelay: `${index * 60}ms`,
+                    animationDuration: "1.2s",
+                  }}
+                />
+                {index < MAIN_FLOW.length - 1 && (
+                  <Skeleton
+                    variant="rounded"
+                    width={48}
+                    height={24}
+                    animation="wave"
+                    sx={{ display: { xs: "none", sm: "block" }, animationDelay: `${(index + 0.5) * 60}ms` }}
+                  />
+                )}
+              </React.Fragment>
+            ))}
+          </Stack>
+          <Stack alignItems="center" sx={{ width: "100%", my: 0.5 }}>
+            <Skeleton variant="rounded" width={24} height={48} animation="wave" sx={{ display: { xs: "none", sm: "block" } }} />
+          </Stack>
+          <Stack
+            direction={{ xs: "column", sm: "row" }}
+            justifyContent="center"
+            alignItems={{ xs: "stretch", sm: "center" }}
+            flexWrap="wrap"
+            useFlexGap
+            spacing={2}
+            sx={{ width: "100%" }}
+          >
+            {SIDE_FLOW.map((station, index) => (
+              <React.Fragment key={station.id}>
+                <Skeleton
+                  variant="rounded"
+                  width={190}
+                  height={compacto ? 80 : 196}
+                  animation="wave"
+                  data-testid={`map-skeleton-${station.id}`}
+                  sx={{
+                    borderRadius: 3,
+                    animationDelay: `${(MAIN_FLOW.length + index) * 60}ms`,
+                    animationDuration: "1.2s",
+                  }}
+                />
+                {index < SIDE_FLOW.length - 1 && (
+                  <Skeleton
+                    variant="rounded"
+                    width={48}
+                    height={24}
+                    animation="wave"
+                    sx={{ display: { xs: "none", sm: "block" }, animationDelay: `${(MAIN_FLOW.length + index + 0.5) * 60}ms` }}
+                  />
+                )}
+              </React.Fragment>
+            ))}
+          </Stack>
+        </Box>
+      ) : (
       <Box sx={{ overflowX: "auto", pb: 1 }}>
+        {/* 6.1 — Direção responsiva: column em xs (empilhado), row em sm+ (horizontal) */}
+        {/* Em mobile, overflowX + scrollSnapType como equivalente de swipe */}
         <Stack
-          direction="row"
-          alignItems="center"
+          direction={{ xs: "column", sm: "row" }}
+          alignItems={{ xs: "stretch", sm: "center" }}
           justifyContent="center"
-          flexWrap="wrap"
+          flexWrap={{ xs: "nowrap", sm: "wrap" }}
           useFlexGap
           spacing={2}
-          sx={{ width: "100%" }}
+          sx={{
+            width: "100%",
+            // 6.1 — Swipe em mobile: scroll-snap como equivalente de gestos
+            ...(isMobile && {
+              overflowX: "auto" as const,
+              scrollSnapType: "x mandatory" as const,
+              WebkitOverflowScrolling: "touch" as const,
+              "& > *": {
+                scrollSnapAlign: "start" as const,
+                flexShrink: 0,
+              },
+            }),
+          }}
         >
           {MAIN_FLOW.map((station, index) => (
             <React.Fragment key={station.id}>
-              <Station
-                station={station}
-                tarefas={tarefas}
-                tarefasFiltradas={tarefasFiltradas}
-                selectedTaskId={selectedTaskId}
-                search={search}
-                legendaAtiva={legendaAtiva}
-                movingIds={movingIds}
-                compacto={compacto}
-                onSelectTask={onSelectTask}
-                taskMatchesLegenda={taskMatchesLegenda}
-              />
+              <Box
+                sx={{
+                  // 7.1 — Progressive loading: fade-in escalonado ao carregar
+                  animation: `task-fade-in 0.3s ease-out ${index * 60}ms both`,
+                  "@media (prefers-reduced-motion: reduce)": {
+                    animation: "none",
+                  },
+                }}
+              >
+                <Station
+                  station={station}
+                  tarefas={tarefas}
+                  tarefasFiltradas={tarefasFiltradas}
+                  selectedTaskId={selectedTaskId}
+                  search={search}
+                  legendaAtiva={legendaAtiva}
+                  movingIds={movingIds}
+                  compacto={compacto}
+                  onSelectTask={onSelectTask}
+                  taskMatchesLegenda={taskMatchesLegenda}
+                />
+              </Box>
               {index < MAIN_FLOW.length - 1 && <FlowConnector direction="horizontal" hasMovement={movingIds.size > 0} />}
             </React.Fragment>
           ))}
@@ -980,33 +1105,54 @@ export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", moto
           <FlowConnector direction="vertical" hasMovement={movingIds.size > 0} />
         </Stack>
         <Stack
-          direction="row"
+          direction={{ xs: "column", sm: "row" }}
           justifyContent="center"
-          alignItems="center"
-          flexWrap="wrap"
+          alignItems={{ xs: "stretch", sm: "center" }}
+          flexWrap={{ xs: "nowrap", sm: "wrap" }}
           useFlexGap
           spacing={2}
-          sx={{ width: "100%" }}
+          sx={{
+            width: "100%",
+            ...(isMobile && {
+              overflowX: "auto" as const,
+              scrollSnapType: "x mandatory" as const,
+              WebkitOverflowScrolling: "touch" as const,
+              "& > *": {
+                scrollSnapAlign: "start" as const,
+                flexShrink: 0,
+              },
+            }),
+          }}
         >
           {SIDE_FLOW.map((station, index) => (
             <React.Fragment key={station.id}>
-              <Station
-                station={station}
-                tarefas={tarefas}
-                tarefasFiltradas={tarefasFiltradas}
-                selectedTaskId={selectedTaskId}
-                search={search}
-                legendaAtiva={legendaAtiva}
-                movingIds={movingIds}
-                compacto={compacto}
-                onSelectTask={onSelectTask}
-                taskMatchesLegenda={taskMatchesLegenda}
-              />
+              <Box
+                sx={{
+                  animation: `task-fade-in 0.3s ease-out ${(MAIN_FLOW.length + index) * 60}ms both`,
+                  "@media (prefers-reduced-motion: reduce)": {
+                    animation: "none",
+                  },
+                }}
+              >
+                <Station
+                  station={station}
+                  tarefas={tarefas}
+                  tarefasFiltradas={tarefasFiltradas}
+                  selectedTaskId={selectedTaskId}
+                  search={search}
+                  legendaAtiva={legendaAtiva}
+                  movingIds={movingIds}
+                  compacto={compacto}
+                  onSelectTask={onSelectTask}
+                  taskMatchesLegenda={taskMatchesLegenda}
+                />
+              </Box>
               {index < SIDE_FLOW.length - 1 && <FlowConnector direction="horizontal" hasMovement={movingIds.size > 0} />}
             </React.Fragment>
           ))}
         </Stack>
       </Box>
+      )}
 
       {/* Legenda interativa no rodapé */}
       <Stack
