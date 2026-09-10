@@ -177,6 +177,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   async function selecionarProjetoResolvido(projetoId: number): Promise<void> {
     const res = await bundle.auth.selectProject({ projetoId })
     store.setAccessToken(res.accessToken)
+    store.setProjetoId(String(projetoId))
     projetoAtualRef.current = res.projeto
     setSession((prev) => ({
       ...prev,
@@ -253,13 +254,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       store.setRefreshToken(res.refreshToken)
       aplicarRespostaAutenticacao(res)
       const projetoAtualId = projetoAtualRef.current?.id
-      const projetoId = res.projetos.some(
-        (projeto) => projeto.id === projetoAtualId,
-      )
-        ? projetoAtualId
-        : res.projetos.length === 1
-          ? res.projetos[0]?.id
-          : undefined
+      const projetoAtualExiste =
+        projetoAtualId !== undefined &&
+        res.projetos.some((projeto) => projeto.id === projetoAtualId)
+
+      let projetoId: number | undefined
+      if (projetoAtualExiste) {
+        projetoId = projetoAtualId
+      } else if (projetoAtualRef.current === null) {
+        // Após reload: projetoAtualRef é null — tenta o projetoId persistido
+        // no store (UX "voltar ao projeto anterior após F5").
+        const persistido = store.getProjetoId()
+        if (persistido !== null) {
+          const idPersistido = Number(persistido)
+          if (res.projetos.some((p) => p.id === idPersistido)) {
+            projetoId = idPersistido
+          }
+        }
+        // Fallback: comportamento atual (1 projeto = auto-seleção).
+        if (
+          projetoId === undefined &&
+          res.projetos.length === 1 &&
+          res.projetos[0]
+        ) {
+          projetoId = res.projetos[0].id
+        }
+      } else if (res.projetos.length === 1 && res.projetos[0]) {
+        // projetoAtualRef tem valor mas o projeto não está mais na lista.
+        projetoId = res.projetos[0].id
+      }
 
       if (projetoId !== undefined) {
         // O refresh global não emite access token; é necessário selecionar

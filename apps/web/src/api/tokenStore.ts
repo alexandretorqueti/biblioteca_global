@@ -9,6 +9,7 @@
 import type { TokenStore } from "@biblioteca-global/api-client"
 
 const REFRESH_KEY = "bg.refreshToken"
+const PROJETO_KEY = "bg.projetoId"
 
 /** Segregada para permitir limpeza em testes e storage indisponível. */
 function readStored(key: string): string | null {
@@ -35,6 +36,11 @@ function writeStored(key: string, value: string | null): void {
  * Guarda os tokens da sessão. `persist` pode ser ligado/desligado a qualquer
  * momento ("lembrar de mim" no login): ao ligar, recarrega o refresh do
  * storage; ao desligar, apaga do storage.
+ *
+ * O ID do último projeto selecionado é persistido separadamente (chave
+ * `bg.projetoId`) — é informação de UX ("voltar ao projeto anterior após
+ * F5"), não de sessão: sobrevive a `setPersist(false)` e só é apagado no
+ * `clear()` (logout).
  */
 export class LocalTokenStore implements TokenStore {
   private access: string | null = null
@@ -87,9 +93,19 @@ export class LocalTokenStore implements TokenStore {
     }
   }
 
+  /** ID do último projeto selecionado (UX — independente de `persistMode`). */
+  getProjetoId(): string | null {
+    return readStored(PROJETO_KEY)
+  }
+
+  setProjetoId(id: string | null): void {
+    writeStored(PROJETO_KEY, id)
+  }
+
   clear(): void {
     this.access = null
     this.refresh = null
     writeStored(REFRESH_KEY, null)
+    writeStored(PROJETO_KEY, null)
   }
 }
