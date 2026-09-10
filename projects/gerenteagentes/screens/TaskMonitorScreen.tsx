@@ -1216,6 +1216,7 @@ export default function TaskMonitorScreen(): ReactNode {
           projetos={projetos}
           filtros={filtrosMapa}
           onFiltrosChange={setFiltrosMapa}
+          aoVivo={realtimeStatus === "open"}
         />
       </Box>
 

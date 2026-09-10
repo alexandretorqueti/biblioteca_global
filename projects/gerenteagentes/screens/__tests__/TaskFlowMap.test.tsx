@@ -255,6 +255,105 @@ describe("TaskFlowMap — Tecla Esc", () => {
   })
 })
 
+describe("TaskFlowMap — Cabeçalho impactante (1.1)", () => {
+  it("renderiza o cabeçalho com ícone, título e badge 'AO VIVO' pulsante", () => {
+    view()
+    expect(screen.getByTestId("map-header")).toBeInTheDocument()
+    expect(screen.getByTestId("map-badge-ao-vivo")).toBeInTheDocument()
+    expect(screen.getByTestId("map-badge-ao-vivo")).toHaveTextContent("AO VIVO")
+  })
+
+  it("oculta o badge 'AO VIVO' quando aoVivo=false", () => {
+    render(
+      <BibliotecaThemeProvider>
+        <TaskFlowMap tarefas={tarefas} selectedTaskId="" onSelectTask={vi.fn()} aoVivo={false} />
+      </BibliotecaThemeProvider>
+    )
+    expect(screen.queryByTestId("map-badge-ao-vivo")).not.toBeInTheDocument()
+  })
+
+  it("renderiza o separador visual com gradiente", () => {
+    view()
+    expect(screen.getByTestId("map-header-separator")).toBeInTheDocument()
+  })
+
+  it("exibe métricas rápidas no topo (total, em andamento, concluídas hoje)", () => {
+    view()
+    expect(screen.getByTestId("map-metricas-rapidas")).toBeInTheDocument()
+    expect(screen.getByTestId("map-metric-total")).toHaveTextContent("4")
+    expect(screen.getByTestId("map-metric-andamento")).toHaveTextContent("2") // running + motor_fix
+    expect(screen.getByTestId("map-metric-hoje")).toHaveTextContent("0") // nenhuma updatedAt hoje
+  })
+})
+
+describe("TaskFlowMap — Dashboard compacto (3.1)", () => {
+  it("renderiza o dashboard entre o cabeçalho e as estações", () => {
+    view()
+    expect(screen.getByTestId("map-dashboard")).toBeInTheDocument()
+  })
+
+  it("exibe total de tarefas ativas no dashboard", () => {
+    view()
+    expect(screen.getByTestId("map-dashboard-total-ativas")).toHaveTextContent("4")
+  })
+
+  it("renderiza mini gráfico de barras por fase", () => {
+    view()
+    expect(screen.getByTestId("map-dashboard-barras")).toBeInTheDocument()
+    // Verifica que existem barras para as estações
+    expect(screen.getByTestId("map-dashboard-bar-running")).toBeInTheDocument()
+    expect(screen.getByTestId("map-dashboard-bar-ready")).toBeInTheDocument()
+    expect(screen.getByTestId("map-dashboard-bar-repair")).toBeInTheDocument()
+    expect(screen.getByTestId("map-dashboard-bar-completed")).toBeInTheDocument()
+  })
+
+  it("exibe tempo médio de execução no dashboard", () => {
+    view()
+    expect(screen.getByTestId("map-dashboard-tempo-medio")).toBeInTheDocument()
+    expect(screen.getByTestId("map-dashboard-tempo-medio")).toHaveTextContent("—") // sem concluídas com datas
+  })
+
+  it("destaca tarefas bloqueadas em vermelho quando > 0", () => {
+    const tarefasComBloqueadas: FlowTask[] = [
+      { id: 800, titulo: "Bloqueada", status: "blocked", projetoId: 1 },
+      { id: 801, titulo: "Falhou", status: "failed", projetoId: 1 },
+      { id: 802, titulo: "Rodando", status: "running", projetoId: 1 },
+    ]
+    view(tarefasComBloqueadas)
+    expect(screen.getByTestId("map-metric-bloqueadas")).toHaveTextContent("2")
+  })
+
+  it("mostra 0 bloqueadas em cor neutra quando não há bloqueadas", () => {
+    view()
+    expect(screen.getByTestId("map-metric-bloqueadas")).toHaveTextContent("0")
+  })
+
+  it("preserva flow-ai-activity no dashboard", () => {
+    view()
+    expect(screen.getByTestId("flow-ai-activity")).toBeInTheDocument()
+    expect(screen.getByTestId("flow-ai-activity")).toHaveTextContent("IA trabalhando (2)")
+  })
+
+  it("preserva flow-motor-activity no dashboard", () => {
+    render(
+      <BibliotecaThemeProvider>
+        <TaskFlowMap
+          tarefas={tarefas}
+          selectedTaskId=""
+          onSelectTask={vi.fn()}
+          motorActivities={[
+            { taskId: "task-p2-770", phase: "verify" },
+            { taskId: "task-p2-771", phase: "deploy" },
+          ]}
+        />
+      </BibliotecaThemeProvider>
+    )
+    expect(screen.getByTestId("flow-motor-activity")).toBeInTheDocument()
+    expect(screen.getByTestId("flow-motor-activity")).toHaveTextContent("verificando task-p2-770")
+    expect(screen.getByTestId("flow-motor-activity")).toHaveTextContent("deployando task-p2-771")
+  })
+})
+
 describe("TaskFlowMap — Legenda interativa", () => {
   it("renderiza a legenda no rodapé com os 4 tones", () => {
     view()
