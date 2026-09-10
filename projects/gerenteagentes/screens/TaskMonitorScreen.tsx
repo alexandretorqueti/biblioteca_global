@@ -1065,7 +1065,8 @@ export default function TaskMonitorScreen(): ReactNode {
   }, [tarefas, projetos])
   const statusMotor = detail?.task?.status ?? tarefaSelecionada?.status ?? "—"
   const podeIniciar = STATUS_INICIO_PERMITIDO.has(statusMotor)
-  const podePausar = statusMotor !== "deployed"
+  // Pausar só é permitido quando a tarefa está em execução (running/analyzing/motor_fix)
+  const podePausar = statusMotor === "running" || statusMotor === "analyzing" || statusMotor === "motor_fix"
   const podeRetomar = statusMotor === "paused"
 
   const editInitialValues = useMemo<DynamicFormValues>(() => {
@@ -1185,6 +1186,15 @@ export default function TaskMonitorScreen(): ReactNode {
     </Paper>
   ) : null
 
+  // 6.1 — Handler para seleção de tarefa: abre bottom sheet em mobile
+  // MOVIDO antes do early return para respeitar as Rules of Hooks
+  const handleSelectTask = useCallback((id: number) => {
+    setTarefaId(id)
+    if (isMobile) {
+      setBottomSheetOpen(true)
+    }
+  }, [isMobile])
+
   if (loading) {
     return (
       <Box sx={{ display: "flex", justifyContent: "center", p: 4 }} data-testid="loading-spinner">
@@ -1192,14 +1202,6 @@ export default function TaskMonitorScreen(): ReactNode {
       </Box>
     )
   }
-
-  // 6.1 — Handler para seleção de tarefa: abre bottom sheet em mobile
-  const handleSelectTask = useCallback((id: number) => {
-    setTarefaId(id)
-    if (isMobile) {
-      setBottomSheetOpen(true)
-    }
-  }, [isMobile])
 
   return (
     <Stack spacing={3} sx={{ width: "90%", mx: "auto" }} data-testid="task-monitor-screen">
@@ -1784,6 +1786,7 @@ export default function TaskMonitorScreen(): ReactNode {
         anchor="bottom"
         open={bottomSheetOpen}
         onClose={() => setBottomSheetOpen(false)}
+        keepMounted
         data-testid="task-detail-sheet"
         sx={{
           display: { xs: "block", sm: "none" },

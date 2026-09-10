@@ -135,7 +135,7 @@ export default function DashboardScreen(): ReactNode {
       ])
 
       setProjetos(projsResult.items || [])
-      setTarefas(tarefasResult || [])
+      setTarefas((tarefasResult as any)?.items || tarefasResult || [])
     } catch (e) {
       setErro(e instanceof Error ? e.message : "Erro ao carregar dados")
     } finally {
