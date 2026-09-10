@@ -141,6 +141,69 @@ export class ResourceLeaseService {
   }
 
   /**
+   * Tenta adquirir um recurso SEM entrar na fila de espera.
+   * Usado para locks de curta duração (ex.: integração/promoção de branch),
+   * onde o chamador prefere fazer retry próprio a ser enfileirado.
+   */
+  async tryAcquire(
+    resourceKey: ResourceKey,
+    executionId: string,
+    ownerId: string
+  ): Promise<{ kind: 'acquired'; lease: ResourceLease } | { kind: 'busy' } | { kind: 'denied'; reason: string }> {
+    const now = new Date()
+    const expiresAt = new Date(now.getTime() + this.defaultLeaseMs)
+
+    try {
+      return await this.db.transaction(async (tx) => {
+        const { rows } = await tx.query(
+          `SELECT resource_key, execution_id, fencing_token, expires_at
+           FROM execution_resources
+           WHERE resource_key = ?`,
+          [resourceKey]
+        )
+
+        if (rows.length === 0) {
+          await tx.query(
+            `INSERT INTO execution_resources
+             (resource_key, execution_id, owner_id, fencing_token, heartbeat_at, acquired_at, expires_at)
+             VALUES (?, ?, ?, 1, NOW(), NOW(), ?)`,
+            [resourceKey, executionId, ownerId, expiresAt]
+          )
+          return {
+            kind: 'acquired' as const,
+            lease: { resourceKey, executionId, ownerId, fencingToken: 1, heartbeatAt: now, acquiredAt: now, expiresAt },
+          }
+        }
+
+        const existing = rows[0]!
+        const existingExpires = new Date(String(existing.expires_at))
+
+        if (existingExpires < now) {
+          const newToken = Number(existing.fencing_token) + 1
+          await tx.query(
+            `UPDATE execution_resources
+             SET execution_id = ?, owner_id = ?, fencing_token = ?,
+                 heartbeat_at = NOW(), acquired_at = NOW(), expires_at = ?
+             WHERE resource_key = ?`,
+            [executionId, ownerId, newToken, expiresAt, resourceKey]
+          )
+          return {
+            kind: 'acquired' as const,
+            lease: { resourceKey, executionId, ownerId, fencingToken: newToken, heartbeatAt: now, acquiredAt: now, expiresAt },
+          }
+        }
+
+        return { kind: 'busy' as const }
+      })
+    } catch (error) {
+      return {
+        kind: 'denied',
+        reason: error instanceof Error ? error.message : String(error),
+      }
+    }
+  }
+
+  /**
    * Renova o heartbeat de um lease
    */
   async renew(

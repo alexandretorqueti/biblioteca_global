@@ -310,6 +310,54 @@ describe('TaskCoordinator', () => {
       expect(repository.saveTask).not.toHaveBeenCalled()
     })
 
+    it('worker_exit code 0 com entrega verified no banco retoma conclusão em vez de falhar', async () => {
+      const launcher = new WorkerLauncher()
+      completedTaskRepository()
+      const coordinatorUnderTest = new TaskCoordinator(db, repository, resourceLease, { maxWorkers: 1 }, launcher)
+      const internal = coordinatorUnderTest as unknown as {
+        activeWorkers: Map<string, Record<string, unknown>>
+      }
+      // Workspace aponta para o próprio repositório do teste: readBranchCommitSha
+      // resolve HEAD de verdade via git rev-parse
+      internal.activeWorkers.set('exec-exit-ok', {
+        taskId: 'task-123', executionId: 'exec-exit-ok', resourceKey: null, fencingToken: 0,
+        startedAt: new Date(), phase: 'execute', subtaskId: 77,
+        workspace: { path: process.cwd(), branch: 'HEAD', baseCommit: 'abc1234' },
+      })
+      // Subtarefa verified no banco (entrega registrada pelo worker)
+      vi.mocked(db.query).mockResolvedValueOnce({ rows: [{ status: 'verified' }], affectedRows: 0, insertId: 0 })
+      const completedSpy = vi.spyOn(coordinatorUnderTest, 'onTaskCompleted').mockResolvedValue()
+
+      launcher.emit('worker_exit', { executionId: 'exec-exit-ok', code: 0, signal: null })
+
+      await vi.waitFor(() => expect(completedSpy).toHaveBeenCalled())
+      const [executionId, result] = completedSpy.mock.calls[0]!
+      expect(executionId).toBe('exec-exit-ok')
+      expect(result?.ok).toBe(true)
+      expect(result?.gitCommitSha).toMatch(/^[a-f0-9]{7,40}$/)
+    })
+
+    it('worker_exit durante finalização é ignorado (esperado)', async () => {
+      const launcher = new WorkerLauncher()
+      completedTaskRepository()
+      const coordinatorUnderTest = new TaskCoordinator(db, repository, resourceLease, { maxWorkers: 1 }, launcher)
+      const internal = coordinatorUnderTest as unknown as {
+        activeWorkers: Map<string, Record<string, unknown>>
+        finalizingExecutions: Set<string>
+      }
+      internal.activeWorkers.set('exec-fin', {
+        taskId: 'task-123', executionId: 'exec-fin', resourceKey: null, fencingToken: 0,
+        startedAt: new Date(), phase: 'execute', subtaskId: 77,
+      })
+      internal.finalizingExecutions.add('exec-fin')
+      const failedSpy = vi.spyOn(coordinatorUnderTest, 'onTaskFailed').mockResolvedValue()
+
+      launcher.emit('worker_exit', { executionId: 'exec-fin', code: 0, signal: null })
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      expect(failedSpy).not.toHaveBeenCalled()
+    })
+
     it('encerra e bloqueia worker que excede o timeout', async () => {
       vi.useFakeTimers()
       const launcher = new WorkerLauncher()
@@ -519,6 +567,56 @@ describe('TaskCoordinator', () => {
         .map(([query]) => String(query))
         .find((query) => query.includes('f.analysis_started_at IS NULL'))
       expect(analysisQuery).toContain('NOT EXISTS (SELECT 1 FROM subtarefas')
+    })
+  })
+
+  describe('pause', () => {
+    it('pausa sem worker ativo em transação com FOR UPDATE e limpa espera de recurso', async () => {
+      vi.mocked(repository.getTask).mockResolvedValue({
+        id: 'task-90', chatId: '', agentId: 'agent', title: 'Pausar', description: '',
+        repoPath: '/repo', buildCommand: 'npm run build', unitTestCommand: 'npm run test',
+        status: 'running', maxRework: 3, hardTimeoutMs: 1000, projectSlug: 'project',
+      })
+
+      await coordinator.pauseTask('task-90')
+
+      // Transação usada (proteção contra resumeNext concorrente)
+      expect(db.transaction).toHaveBeenCalled()
+      const queries = vi.mocked(db.query).mock.calls.map(([sql]) => String(sql))
+      // Lock de linha antes de mutar
+      expect(queries.some((sql) => sql.includes('FOR UPDATE'))).toBe(true)
+      // Remove da fila de espera
+      expect(queries.some((sql) => sql.includes('DELETE q FROM execution_resource_queue'))).toBe(true)
+      // Pause limpa campos de espera de recurso (senão selectNextSubtask re-seleciona)
+      expect(queries.some((sql) =>
+        sql.includes('paused_at = NOW()') &&
+        sql.includes('resource_wait_key = NULL') &&
+        sql.includes('resource_wait_id = NULL') &&
+        sql.includes('resource_wait_position = NULL')
+      )).toBe(true)
+    })
+
+    it('com worker ativo agenda pause graceful sem tocar no banco imediatamente', async () => {
+      vi.mocked(repository.getTask).mockResolvedValue({
+        id: 'task-91', chatId: '', agentId: 'agent', title: 'Pausar graceful', description: '',
+        repoPath: '/repo', buildCommand: 'npm run build', unitTestCommand: 'npm run test',
+        status: 'running', maxRework: 3, hardTimeoutMs: 1000, projectSlug: 'project',
+      })
+      const internal = coordinator as unknown as { activeWorkers: Map<string, Record<string, unknown>> }
+      internal.activeWorkers.set('exec-pause-1', {
+        taskId: 'task-91', executionId: 'exec-pause-1', resourceKey: null, fencingToken: 0,
+        startedAt: new Date(), phase: 'execute', subtaskId: 5,
+      })
+
+      await coordinator.pauseTask('task-91')
+
+      const worker = internal.activeWorkers.get('exec-pause-1')!
+      expect(worker.pendingPause).toBe(true)
+      // Nenhuma query de pause imediato
+      const queries = vi.mocked(db.query).mock.calls.map(([sql]) => String(sql))
+      expect(queries.some((sql) => sql.includes('paused_at = NOW()'))).toBe(false)
+
+      internal.activeWorkers.delete('exec-pause-1')
     })
   })
 

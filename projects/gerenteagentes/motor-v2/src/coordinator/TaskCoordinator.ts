@@ -181,6 +181,8 @@ export class TaskCoordinator {
    * atividade do Motor enquanto o script externo está em execução. */
   private activeDeployments = new Map<string, { taskId: string; phase: "verify" | "deploy"; startedAt: Date }>()
   private pumping = false
+  /** Guarda de reentrância do processDeployQueue (roda fora do guarda pumping). */
+  private processingDeployQueue = false
   /** Incidentes ativos por agente. Um incidente gera exatamente um alerta. */
   private consoleIncidents = new Map<string, { id: string; fingerprint: string; openedAt: string; taskIds: Set<string>; taskId: string; subtaskId?: number; phase: "analyze" | "execute" }>()
   private logger = createLogger("TaskCoordinator")
@@ -692,8 +694,11 @@ export class TaskCoordinator {
         executionId,
         phase: worker.phase
       })
+      // Limpa também campos de espera de recurso: se resource_wait_key ficasse
+      // preenchido, o selectNextSubtask voltaria a selecionar a tarefa pausada
+      // (condição "paused_at IS NULL OR resource_wait_key IS NOT NULL").
       await this.db.query(
-        "UPDATE tarefas SET paused_at = NOW(), updated_at = NOW() WHERE external_id = ? OR id = CAST(? AS UNSIGNED)",
+        "UPDATE tarefas SET paused_at = NOW(), resource_wait_key = NULL, resource_wait_id = NULL, resource_wait_position = NULL, updated_at = NOW() WHERE external_id = ? OR id = CAST(? AS UNSIGNED)",
         [worker.taskId, worker.taskId]
       )
       // Remove o worker da lista de ativos (não continua processando)
@@ -908,11 +913,19 @@ export class TaskCoordinator {
             if (worker.taskWorkspace && worker.repoPath && worker.rootBaseBranch) {
               let promotion: TaskPromotionResult | null = null
               try {
-                promotion = await this.workspaceManager.promoteTaskBranch({
-                  repoPath: worker.repoPath,
-                  baseBranch: worker.rootBaseBranch,
-                  taskBranch: worker.taskWorkspace.branch,
+                // LOCK DE INTEGRAÇÃO: promoteTaskBranch faz git switch + merge no
+                // working tree do repositório PRINCIPAL. Duas promoções concorrentes
+                // do mesmo projeto corromperiam o repo. Serializa via lease de banco
+                // (project:<slug>:integration) — protege inclusive multi-instância.
+                const integrationSlug = worker.projectSlug ?? task.projectSlug
+                const promote = () => this.workspaceManager.promoteTaskBranch({
+                  repoPath: worker.repoPath!,
+                  baseBranch: worker.rootBaseBranch!,
+                  taskBranch: worker.taskWorkspace!.branch,
                 })
+                promotion = integrationSlug
+                  ? await this.withProjectIntegrationLock(integrationSlug, executionId, task.id, promote)
+                  : await promote()
               } catch (promotionError) {
                 const reason = promotionError instanceof Error ? promotionError.message : String(promotionError)
                 const blockReason = "Falha na promoção da branch da tarefa: " + reason + ". Branch preservada: " + worker.taskWorkspace.branch
@@ -1521,21 +1534,27 @@ export class TaskCoordinator {
       }
     }
     
-    // Se não há worker ativo, pausa imediatamente
+    // Se não há worker ativo, pausa imediatamente — em transação com lock de
+    // linha para não correr com resumeNext (liberação de recurso concorrente
+    // poderia desfazer o pause entre o DELETE da fila e o UPDATE da tarefa).
     if (!workerAtivo) {
-      // Se a tarefa está aguardando recurso, limpa o resource_wait_key
-      // para evitar que continue sendo selecionada pelo selectNextSubtask
-      // Remove também da fila de espera de recursos
-      await this.db.query(
-        `DELETE q FROM execution_resource_queue q
-         INNER JOIN tarefas t ON t.resource_wait_id = q.id
-         WHERE (t.external_id = ? OR t.id = CAST(? AS UNSIGNED)) AND q.status = 'waiting'`,
-        [taskId, taskId]
-      )
-      await this.db.query(
-        "UPDATE tarefas SET paused_at = NOW(), resource_wait_key = NULL, resource_wait_id = NULL, resource_wait_position = NULL, updated_at = NOW() WHERE external_id = ? OR id = CAST(? AS UNSIGNED)",
-        [taskId, taskId]
-      )
+      await this.db.transaction(async (tx) => {
+        await tx.query(
+          "SELECT id FROM tarefas WHERE external_id = ? OR id = CAST(? AS UNSIGNED) LIMIT 1 FOR UPDATE",
+          [taskId, taskId]
+        )
+        await tx.query(
+          "DELETE q FROM execution_resource_queue q " +
+          "INNER JOIN tarefas t ON t.resource_wait_id = q.id " +
+          "WHERE (t.external_id = ? OR t.id = CAST(? AS UNSIGNED)) AND q.status = 'waiting'",
+          [taskId, taskId]
+        )
+        await tx.query(
+          "UPDATE tarefas SET paused_at = NOW(), resource_wait_key = NULL, resource_wait_id = NULL, resource_wait_position = NULL, updated_at = NOW() " +
+          "WHERE external_id = ? OR id = CAST(? AS UNSIGNED)",
+          [taskId, taskId]
+        )
+      })
       this.logger.info("Tarefa pausada imediatamente (sem worker ativo)", { taskId })
     }
   }
@@ -1607,6 +1626,19 @@ export class TaskCoordinator {
   /** Concilia um lote que sobreviveu à recriação da API e, quando o Motor está
    * totalmente ocioso, inicia no máximo um lote por repositório. */
   private async processDeployQueue(): Promise<void> {
+    // Guarda de reentrância: processDeployQueue roda FORA do guarda `pumping`
+    // (é chamado após o finally do pump). Sem esta flag, dois pumps sobrepostos
+    // poderiam despachar o mesmo lote de deploy duas vezes.
+    if (this.processingDeployQueue) return
+    this.processingDeployQueue = true
+    try {
+      await this.processDeployQueueInner()
+    } finally {
+      this.processingDeployQueue = false
+    }
+  }
+
+  private async processDeployQueueInner(): Promise<void> {
     await this.reconcileRunningDeploys()
     await this.recoverCompletedTasksWithoutDeploy()
     if (this.activeWorkers.size > 0 || this.finalizingExecutions.size > 0 || this.activeMaintenance > 0 || this.activeDeployments.size > 0) return
@@ -1644,10 +1676,16 @@ export class TaskCoordinator {
     }
     const batchId = "deploy-" + randomUUID()
     const placeholders = requestIds.map(() => "?").join(",")
-    await this.db.query(
+    // Reivindica o lote atomicamente: se affectedRows = 0, outro processamento
+    // concorrente (ou instância) já marcou estas solicitações como running.
+    const claimResult = await this.db.query(
       `UPDATE deploy_requests SET status = 'running', batch_id = ?, started_at = NOW(), finished_at = NULL, last_error = NULL, updated_at = NOW() WHERE status = 'pending' AND id IN (${placeholders})`,
       [batchId, ...requestIds],
     )
+    if ((claimResult.affectedRows ?? 0) === 0) {
+      this.logger.info("Lote de deploy já reivindicado por outro processamento; ignorando", { batchId, taskIds })
+      return
+    }
     const startedAt = new Date()
     for (const taskId of taskIds) this.activeDeployments.set(taskId, { taskId, phase: "verify", startedAt })
     try {
@@ -1830,6 +1868,51 @@ export class TaskCoordinator {
     await this.onTaskFailed(executionId, reason, kind)
   }
 
+  /**
+   * Lock de integração por projeto: serializa operações que tocam o working tree
+   * do repositório principal (git switch + merge + push da promoção da branch da
+   * tarefa). Usa lease persistido no banco (tryAcquire sem fila + retry), então
+   * protege inclusive se houver mais de uma instância do motor no futuro.
+   */
+  private async withProjectIntegrationLock<T>(
+    projectSlug: string,
+    executionId: string,
+    ownerId: string,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const leaseKey = RESOURCE_KEYS.projectIntegration(projectSlug)
+    let fencingToken: number | null = null
+    const maxAttempts = 150 // ~5 minutos com espera de 2s
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const result = await this.resourceLease.tryAcquire(leaseKey, executionId, ownerId)
+      if (result.kind === "acquired") {
+        fencingToken = result.lease.fencingToken
+        break
+      }
+      if (result.kind === "denied") {
+        throw new Error("Falha ao adquirir lock de integração do projeto " + projectSlug + ": " + result.reason)
+      }
+      if (attempt === 0) {
+        this.logger.info("Aguardando lock de integração do projeto: " + projectSlug, { executionId })
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2000))
+    }
+    if (fencingToken === null) {
+      throw new Error("Timeout adquirindo lock de integração do projeto " + projectSlug)
+    }
+    try {
+      return await fn()
+    } finally {
+      const release = await this.resourceLease.release(leaseKey, executionId, fencingToken).catch((error: unknown) => {
+        this.logger.warn("Falha ao liberar lock de integração: " + describeError(error), { projectSlug, executionId })
+        return { kind: "not_found" as const }
+      })
+      if (release.kind === "not_found") {
+        this.logger.warn("Lock de integração não encontrado na liberação (lease expirado?)", { projectSlug, executionId })
+      }
+    }
+  }
+
   private async finishWorker(executionId: string, worker: ActiveWorker, options?: { preserveWorkspace?: boolean }): Promise<void> {
     if (worker.timeoutHandle) {
       clearTimeout(worker.timeoutHandle)
@@ -1860,6 +1943,90 @@ export class TaskCoordinator {
         this.finalizingExecutions.delete(executionId)
         await this.pump()
       }
+    }
+  }
+
+  /**
+   * Recuperação de worker que saiu com code 0 sem o evento completed/clarifying
+   * ter sido processado (perda/atraso de mensagem IPC). Verifica o estado no
+   * banco: se a entrega foi registrada (subtarefa verified / plano persistido /
+   * clarificação pendente), retoma o fluxo correto em vez de falhar a tarefa.
+   */
+  private async recoverSilentCodeZeroExit(executionId: string): Promise<void> {
+    const worker = this.activeWorkers.get(executionId)
+    if (!worker || this.finalizingExecutions.has(executionId)) return
+
+    let action: "complete" | "clarify" | "fail" = "fail"
+    let recoveredSha: string | undefined
+    try {
+      if (worker.phase === "execute" && worker.subtaskId) {
+        const { rows } = await this.db.query(
+          "SELECT status FROM subtarefas WHERE id = ?",
+          [worker.subtaskId],
+        )
+        const status = String(rows[0]?.status ?? "")
+        if (status === "verified" || status === "delivered") {
+          // Entrega registrada pelo worker. Recupera o commit da branch do
+          // worktree (o worker publica a branch antes de sair) para que a
+          // integração na branch da tarefa possa prosseguir normalmente.
+          recoveredSha = this.readBranchCommitSha(worker)
+          action = recoveredSha ? "complete" : "fail"
+        }
+      } else if (worker.phase === "analyze") {
+        const { rows } = await this.db.query(
+          "SELECT s.id FROM subtarefas s INNER JOIN tarefas t ON s.tarefa_id = t.id " +
+          "WHERE (t.external_id = ? OR t.id = CAST(? AS UNSIGNED)) LIMIT 1",
+          [worker.taskId, worker.taskId],
+        )
+        if (rows.length > 0) {
+          // Plano persistido pelo worker antes do exit: análise concluída.
+          action = "complete"
+        } else {
+          const pending = await fetchPendingTaskClarification(this.db, worker.taskId)
+          if (pending) action = "clarify"
+        }
+      }
+    } catch (error) {
+      this.logger.warn("Falha ao verificar estado no banco para worker code 0: " + describeError(error), { executionId })
+    }
+
+    // O estado pode ter mudado durante as consultas (evento completed chegou
+    // atrasado e já iniciou a finalização)
+    if (this.finalizingExecutions.has(executionId) || !this.activeWorkers.has(executionId)) return
+
+    if (action === "complete") {
+      this.logger.warn("Worker saiu com code 0 sem completed; banco confirma entrega — processando conclusão", {
+        executionId, taskId: worker.taskId, subtaskId: worker.subtaskId,
+      })
+      await this.onTaskCompleted(executionId, {
+        ok: true,
+        reason: "Recuperado após worker exit code 0 sem evento completed",
+        ...(recoveredSha ? { gitCommitSha: recoveredSha } : {}),
+      })
+      return
+    }
+    if (action === "clarify") {
+      this.logger.warn("Worker saiu com code 0 sem clarifying; banco confirma clarificação pendente — registrando", { executionId, taskId: worker.taskId })
+      await this.onTaskClarifying(executionId, 0)
+      return
+    }
+    const reason = "Worker encerrou sem enviar o evento completed"
+    this.logger.error(reason + ": " + executionId, { executionId })
+    await this.onTaskFailed(executionId, reason, "worker_exit")
+  }
+
+  /** Lê o commit da branch do worktree da subtarefa (melhor esforço). */
+  private readBranchCommitSha(worker: ActiveWorker): string | undefined {
+    if (!worker.workspace) return undefined
+    try {
+      const sha = execFileSync(
+        "git",
+        ["rev-parse", "--verify", worker.workspace.branch],
+        { cwd: worker.workspace.path, encoding: "utf8" },
+      ).trim()
+      return /^[a-f0-9]{7,40}$/.test(sha) ? sha : undefined
+    } catch {
+      return undefined
     }
   }
 
@@ -1911,15 +2078,22 @@ export class TaskCoordinator {
         this.logger.info("Worker exit durante finalização (esperado): " + event.executionId, { executionId: event.executionId })
         return
       }
-      if (this.activeWorkers.has(event.executionId)) {
-        const reason = event.code === 0
-          ? "Worker encerrou sem enviar o evento completed"
-          : "Worker encerrado inesperadamente (codigo " + String(event.code) + ")"
-        this.logger.error(reason + ": " + event.executionId, { executionId: event.executionId })
-        void this.onTaskFailed(event.executionId, reason, "worker_exit").catch((error: unknown) => {
-          this.logger.error("Falha ao persistir encerramento do worker: " + describeError(error), { executionId: event.executionId })
+      if (!this.activeWorkers.has(event.executionId)) return
+      if (event.code === 0) {
+        // Code 0 sem completed: o worker só sai com code 0 após enviar completed
+        // ou clarifying (com delay de 1s). Antes de declarar falha, verifica o
+        // estado no banco — se a entrega/clarificação foi registrada, recupera
+        // o fluxo de conclusão em vez de falhar a tarefa.
+        void this.recoverSilentCodeZeroExit(event.executionId).catch((error: unknown) => {
+          this.logger.error("Falha ao recuperar worker code 0: " + describeError(error), { executionId: event.executionId })
         })
+        return
       }
+      const reason = "Worker encerrado inesperadamente (codigo " + String(event.code) + ")"
+      this.logger.error(reason + ": " + event.executionId, { executionId: event.executionId })
+      void this.onTaskFailed(event.executionId, reason, "worker_exit").catch((error: unknown) => {
+        this.logger.error("Falha ao persistir encerramento do worker: " + describeError(error), { executionId: event.executionId })
+      })
     })
     this.workerLauncher.on("worker_error", (event: { executionId: string; error: Error }) => {
       const reason = "Erro no worker: " + event.error.message

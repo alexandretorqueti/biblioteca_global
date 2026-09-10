@@ -78,6 +78,60 @@ describe('ResourceLeaseService', () => {
     })
   })
 
+  describe('tryAcquire', () => {
+    it('deve adquirir recurso quando disponível (sem fila)', async () => {
+      vi.mocked(db.query).mockResolvedValueOnce({ rows: [], affectedRows: 0, insertId: 0 })
+      vi.mocked(db.query).mockResolvedValueOnce({ rows: [], affectedRows: 1, insertId: 1 })
+
+      const result = await service.tryAcquire(resourceKey, executionId, ownerId)
+
+      expect(result.kind).toBe('acquired')
+      if (result.kind === 'acquired') {
+        expect(result.lease.fencingToken).toBe(1)
+      }
+    })
+
+    it('deve retornar busy quando recurso está ocupado (sem enfileirar)', async () => {
+      const futureDate = new Date(Date.now() + 60000)
+      vi.mocked(db.query).mockResolvedValueOnce({
+        rows: [{ resource_key: resourceKey, execution_id: 'other-exec', fencing_token: 5, expires_at: futureDate.toISOString() }],
+        affectedRows: 0,
+        insertId: 0,
+      })
+
+      const result = await service.tryAcquire(resourceKey, executionId, ownerId)
+
+      expect(result.kind).toBe('busy')
+      // Garante que NÃO houve INSERT na fila (apenas 1 query: o SELECT)
+      expect(vi.mocked(db.query)).toHaveBeenCalledTimes(1)
+    })
+
+    it('deve adquirir com fencing incrementado quando lease expirou', async () => {
+      const pastDate = new Date(Date.now() - 60000)
+      vi.mocked(db.query).mockResolvedValueOnce({
+        rows: [{ resource_key: resourceKey, execution_id: 'old-exec', fencing_token: 7, expires_at: pastDate.toISOString() }],
+        affectedRows: 0,
+        insertId: 0,
+      })
+      vi.mocked(db.query).mockResolvedValueOnce({ rows: [], affectedRows: 1, insertId: 0 })
+
+      const result = await service.tryAcquire(resourceKey, executionId, ownerId)
+
+      expect(result.kind).toBe('acquired')
+      if (result.kind === 'acquired') {
+        expect(result.lease.fencingToken).toBe(8)
+      }
+    })
+
+    it('deve retornar denied em caso de erro', async () => {
+      vi.mocked(db.transaction).mockRejectedValueOnce(new Error('db fora do ar'))
+
+      const result = await service.tryAcquire(resourceKey, executionId, ownerId)
+
+      expect(result.kind).toBe('denied')
+    })
+  })
+
   describe('renew', () => {
     it('deve renovar lease válido', async () => {
       // UPDATE bem-sucedido
