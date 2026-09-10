@@ -18,14 +18,14 @@ const projetos: ProjetoInfo[] = [
   { id: 2, nome: "Projeto Beta" },
 ]
 
-function view(items = tarefas, onSelectTask = vi.fn(), filtros?: FiltrosMapa, onFiltrosChange = vi.fn()) {
+function view(items = tarefas, onSelectTask = vi.fn(), filtros?: FiltrosMapa, onFiltrosChange = vi.fn(), projetosView: ProjetoInfo[] = projetos) {
   return render(
     <BibliotecaThemeProvider>
       <TaskFlowMap
         tarefas={items}
         selectedTaskId=""
         onSelectTask={onSelectTask}
-        projetos={projetos}
+        projetos={projetosView}
         filtros={filtros}
         onFiltrosChange={onFiltrosChange}
       />
@@ -512,5 +512,151 @@ describe("TaskFlowMap — Navegação por teclado (4.2)", () => {
     card.focus()
     await userEvent.keyboard("{Enter}")
     expect(onSelectTask).toHaveBeenCalledWith(767)
+  })
+})
+
+describe("TaskFlowMap — Cards informativos (1.3)", () => {
+  it("renderiza avatar do projeto com letra e cor determinística em cada card", () => {
+    const tarefasComNome: FlowTask[] = [
+      { id: 766, titulo: "Registry de telas", status: "running", projetoId: 1, projetoNome: "Alpha" },
+      { id: 767, titulo: "Documentar API", status: "ready", projetoId: 2, projetoNome: "Beta" },
+    ]
+    view(tarefasComNome, vi.fn(), undefined, vi.fn(), [
+      { id: 1, nome: "Alpha" },
+      { id: 2, nome: "Beta" },
+    ])
+    // Avatar do projeto 1 (Alpha) → letra "A"
+    const avatar766 = screen.getByTestId("flow-task-avatar-766")
+    expect(avatar766).toBeInTheDocument()
+    expect(avatar766).toHaveTextContent("A")
+    // Avatar do projeto 2 (Beta) → letra "B"
+    const avatar767 = screen.getByTestId("flow-task-avatar-767")
+    expect(avatar767).toBeInTheDocument()
+    expect(avatar767).toHaveTextContent("B")
+  })
+
+  it("avatar usa '#' como fallback quando projeto não tem nome", () => {
+    view([{ id: 990, titulo: "Sem nome projeto", status: "ready", projetoId: 5 }])
+    const avatar = screen.getByTestId("flow-task-avatar-990")
+    expect(avatar).toHaveTextContent("#")
+  })
+
+  it("exibe tempo relativo (flow-task-tempo-<id>) em cada card", () => {
+    const agora = new Date()
+    const duasHorasAtras = new Date(agora.getTime() - 2 * 60 * 60 * 1000).toISOString()
+    const umDiaAtras = new Date(agora.getTime() - 24 * 60 * 60 * 1000).toISOString()
+    view([
+      { id: 980, titulo: "Recente", status: "running", projetoId: 1, updatedAt: duasHorasAtras },
+      { id: 981, titulo: "Antiga", status: "ready", projetoId: 1, updatedAt: umDiaAtras },
+    ])
+    expect(screen.getByTestId("flow-task-tempo-980")).toHaveTextContent("há 2h")
+    expect(screen.getByTestId("flow-task-tempo-981")).toHaveTextContent("há 1d")
+  })
+
+  it("exibe '—' quando a tarefa não tem data de atualização", () => {
+    view([{ id: 982, titulo: "Sem data", status: "draft", projetoId: 1 }])
+    expect(screen.getByTestId("flow-task-tempo-982")).toHaveTextContent("—")
+  })
+
+  it("renderiza barra de progresso condicional apenas para tarefas em execução com dados", () => {
+    view([
+      { id: 970, titulo: "Com progresso", status: "running", projetoId: 1, progresso: { verified: 3, total: 4 } },
+      { id: 971, titulo: "Sem progresso", status: "running", projetoId: 1 },
+      { id: 972, titulo: "Progresso mas fora de execução", status: "completed", projetoId: 1, progresso: { verified: 4, total: 4 } },
+      { id: 973, titulo: "Analyzing com progresso", status: "analyzing", projetoId: 1, progresso: { verified: 1, total: 2 } },
+    ])
+    // 970: running + progresso → mostra barra
+    expect(screen.getByTestId("flow-task-progresso-970")).toBeInTheDocument()
+    // 971: running mas sem progresso → NÃO mostra barra
+    expect(screen.queryByTestId("flow-task-progresso-971")).not.toBeInTheDocument()
+    // 972: tem progresso mas status completed → NÃO mostra barra
+    expect(screen.queryByTestId("flow-task-progresso-972")).not.toBeInTheDocument()
+    // 973: analyzing + progresso → mostra barra
+    expect(screen.getByTestId("flow-task-progresso-973")).toBeInTheDocument()
+  })
+
+  it("barra de progresso reflete percentual correto (verified/total*100)", () => {
+    view([
+      { id: 974, titulo: "75%", status: "running", projetoId: 1, progresso: { verified: 3, total: 4 } },
+    ])
+    const bar = screen.getByTestId("flow-task-progresso-974")
+    expect(bar).toBeInTheDocument()
+    // LinearProgress MUI usa role="progressbar" e aria-valuenow
+    expect(bar).toHaveAttribute("aria-valuenow", "75")
+  })
+
+  it("tooltip rico mostra descrição, projeto, prioridade e atualização ao hover", async () => {
+    const updatedAt = "2026-09-09T15:30:00.000Z"
+    view([
+      {
+        id: 960,
+        titulo: "Tarefa rica",
+        descricao: "Descrição completa da tarefa rica",
+        status: "blocked",
+        projetoId: 1,
+        projetoNome: "Projeto Alpha",
+        updatedAt,
+      },
+    ], vi.fn(), undefined, vi.fn(), [{ id: 1, nome: "Projeto Alpha" }])
+
+    await userEvent.hover(screen.getByTestId("flow-task-description-960"))
+    const tooltip = await screen.findByRole("tooltip")
+    // Descrição completa
+    expect(tooltip).toHaveTextContent("Descrição completa da tarefa rica")
+    // Projeto
+    expect(tooltip).toHaveTextContent("Projeto Alpha")
+    // Prioridade em pt-BR (blocked → alta)
+    expect(tooltip).toHaveTextContent("Alta")
+    // Última atualização formatada
+    expect(tooltip).toHaveTextContent("Atualizado:")
+  })
+
+  it("tooltip rico mostra 'Projeto #id' quando projetoNome está ausente", async () => {
+    view([
+      { id: 961, titulo: "Sem nome", descricao: "Desc", status: "ready", projetoId: 42 },
+    ])
+    await userEvent.hover(screen.getByTestId("flow-task-description-961"))
+    const tooltip = await screen.findByRole("tooltip")
+    expect(tooltip).toHaveTextContent("Projeto #42")
+  })
+
+  it("tooltip rico mostra prioridade correta por status", async () => {
+    view([
+      { id: 962, titulo: "Alta", status: "failed", projetoId: 1 },
+      { id: 963, titulo: "Média", status: "running", projetoId: 1 },
+      { id: 964, titulo: "Baixa", status: "draft", projetoId: 1 },
+    ])
+    // Alta (failed)
+    await userEvent.hover(screen.getByTestId("flow-task-description-962"))
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Alta")
+    await userEvent.unhover(screen.getByTestId("flow-task-description-962"))
+    // Média (running)
+    await userEvent.hover(screen.getByTestId("flow-task-description-963"))
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Média")
+    await userEvent.unhover(screen.getByTestId("flow-task-description-963"))
+    // Baixa (draft)
+    await userEvent.hover(screen.getByTestId("flow-task-description-964"))
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Baixa")
+  })
+
+  it("card selecionado usa elevation 5 e bgcolor action.selected", () => {
+    render(
+      <BibliotecaThemeProvider>
+        <TaskFlowMap
+          tarefas={tarefas}
+          selectedTaskId={766}
+          onSelectTask={vi.fn()}
+          projetos={projetos}
+        />
+      </BibliotecaThemeProvider>
+    )
+    const selectedCard = screen.getByTestId("flow-task-766")
+    expect(selectedCard).toBeInTheDocument()
+    // elevation deve ser 5 quando selecionado (MUI Paper renders elevation as class, but we check the component prop)
+    // O Paper com elevation 5 tem classe MuiPaper-elevation5
+    expect(selectedCard.className).toMatch(/MuiPaper-elevation5/)
+    // Card não selecionado deve ter elevation 0
+    const unselectedCard = screen.getByTestId("flow-task-767")
+    expect(unselectedCard.className).toMatch(/MuiPaper-elevation0/)
   })
 })
