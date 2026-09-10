@@ -404,6 +404,8 @@ export default function GeradorSistema({
       return runtimeField
     })
 
+    const isDrawerOpen = (desktop && !menuCollapsed) || mobileMenuOpen
+
     return (
       <Box sx={{ display: "flex", minHeight: "100vh" }}>
         <SistemaBarraSuperior
@@ -421,18 +423,18 @@ export default function GeradorSistema({
           component="nav"
           aria-label="Navegação principal"
           sx={{
-            width: desktop && !menuCollapsed ? drawerWidth : 0,
+            width: isDrawerOpen ? drawerWidth : 0,
             flexShrink: 0,
           }}
         >
           <Drawer
             variant={desktop ? "permanent" : "temporary"}
-            open={(desktop && !menuCollapsed) || mobileMenuOpen}
+            open={isDrawerOpen}
             onClose={() => setMobileMenuOpen(false)}
             ModalProps={{ keepMounted: true }}
             sx={{
               "& .MuiDrawer-paper": {
-                width: desktop && !menuCollapsed ? drawerWidth : 0,
+                width: isDrawerOpen ? drawerWidth : 0,
                 boxSizing: "border-box",
                 borderRightColor: "divider",
                 overflowX: "hidden",
@@ -521,6 +523,8 @@ export default function GeradorSistema({
     )
   }
 
+  const isDrawerOpen = (desktop && !menuCollapsed) || mobileMenuOpen
+
   return (
     <Box sx={{ display: "flex", minHeight: "100vh" }}>
       <SistemaBarraSuperior
@@ -538,18 +542,18 @@ export default function GeradorSistema({
         component="nav"
         aria-label="Navegação principal"
         sx={{
-          width: desktop && !menuCollapsed ? drawerWidth : 0,
+          width: isDrawerOpen ? drawerWidth : 0,
           flexShrink: 0,
         }}
       >
         <Drawer
           variant={desktop ? "permanent" : "temporary"}
-          open={(desktop && !menuCollapsed) || mobileMenuOpen}
+          open={isDrawerOpen}
           onClose={() => setMobileMenuOpen(false)}
           ModalProps={{ keepMounted: true }}
           sx={{
             "& .MuiDrawer-paper": {
-              width: desktop && !menuCollapsed ? drawerWidth : 0,
+              width: isDrawerOpen ? drawerWidth : 0,
               boxSizing: "border-box",
               borderRightColor: "divider",
               overflowX: "hidden",
