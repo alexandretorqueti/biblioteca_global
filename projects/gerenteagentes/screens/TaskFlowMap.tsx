@@ -84,7 +84,7 @@ export const MAIN_FLOW: FlowStation[] = [
   { id: "draft", label: "Rascunhos", subtitle: "não iniciadas", statuses: ["draft"], tone: "neutral" },
   { id: "planned", label: "Planejadas", subtitle: "aguardando análise", statuses: ["planned"], tone: "neutral" },
   { id: "analyzing", label: "Em análise", subtitle: "IA analisando", statuses: ["analyzing"], tone: "active" },
-  { id: "ready", label: "Prontas / na fila", subtitle: "próxima subtarefa", statuses: ["ready"], tone: "neutral" },
+  { id: "ready", label: "Fila de Execução", subtitle: "próxima subtarefa", statuses: ["ready"], tone: "neutral" },
   { id: "running", label: "Em execução", subtitle: "IA trabalhando", statuses: ["running"], tone: "active" },
   { id: "completed", label: "Concluídas", subtitle: "entregues", statuses: ["completed", "finalizada"], tone: "success" },
   { id: "deployed", label: "Deployadas", subtitle: "em produção", statuses: ["deployed", "deployada"], tone: "success" },
