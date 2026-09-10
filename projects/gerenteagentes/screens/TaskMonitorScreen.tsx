@@ -18,6 +18,7 @@ import {
   Dialog,
   DialogContent,
   DialogTitle,
+  Drawer,
   FormControl,
   IconButton,
   InputLabel,
@@ -33,14 +34,16 @@ import {
   TextField,
   Tooltip,
   Typography,
+  useMediaQuery,
 } from "@mui/material"
+import { useTheme } from "@mui/material/styles"
 import { PlayArrowRounded, PauseRounded, ReplayRounded, LockOpenRounded, EditRounded, CloseRounded, ExpandMoreRounded, ExpandLessRounded, AddTaskRounded, SendRounded, VisibilityRounded } from "@mui/icons-material"
 import { DynamicForm } from "@biblioteca-global/ui"
 import { RealtimeClient, type RealtimeServerMessage } from "@biblioteca-global/api-client"
 import type { DynamicField, DynamicFormValues } from "@biblioteca-global/ui"
 import { useApi } from "../../../apps/web/src/hooks/useApi"
 import TarefaForm, { type TarefaFormValues } from "./TarefaForm"
-import TaskFlowMap, { type MotorActivity } from "./TaskFlowMap"
+import TaskFlowMap, { type MotorActivity, type FiltrosMapa } from "./TaskFlowMap"
 import { resolveRealtimeUrl, resolveApiBaseUrl } from "../../../apps/web/src/api/client"
 import {
   ALL_TASK_STATUSES,
@@ -257,12 +260,23 @@ function parseCriteriosTexto(texto: string): string[] {
 
 export default function TaskMonitorScreen(): ReactNode {
   const bundle = useApi()
+  const theme = useTheme()
+  const isMobile = useMediaQuery(theme.breakpoints.down("sm"))
+  // 6.1 — Bottom sheet para detalhe da tarefa em mobile
+  const [bottomSheetOpen, setBottomSheetOpen] = useState(false)
   const [tarefas, setTarefas] = useState<Tarefa[]>([])
   const [projetos, setProjetos] = useState<ProjetoCaptado[]>([])
   const [projetoFiltro, setProjetoFiltro] = useState<number | "">("")
   const [statusFiltro, setStatusFiltro] = useState<string>("")
   const [buscaTarefa, setBuscaTarefa] = useState("")
   const [motorActivities, setMotorActivities] = useState<MotorActivity[]>([])
+  // Filtros integrados ao mapa (substituem a combo de tarefas)
+  const [filtrosMapa, setFiltrosMapa] = useState<FiltrosMapa>({
+    busca: "",
+    status: [],
+    projetoId: "",
+    prioridade: "",
+  })
   const [tarefaId, setTarefaId] = useState<number | "">("")
   const [detail, setDetail] = useState<MotorDetail | null>(null)
   const [chat, setChat] = useState<TarefaChatMessage[]>([])
@@ -658,27 +672,6 @@ export default function TaskMonitorScreen(): ReactNode {
   )
 
 
-  const moverTarefaNoFluxo = useCallback(async (id: number, status: string) => {
-    if (!bundle) return
-    const anterior = tarefas.find((tarefa) => tarefa.id === id)
-    if (!anterior || anterior.status === status) return
-
-    // Atualização otimista mantém o mapa responsivo; em caso de erro o estado
-    // local volta ao valor anterior e a mensagem permite nova tentativa.
-    setTarefas((atual) => atual.map((tarefa) => tarefa.id === id ? { ...tarefa, status } : tarefa))
-    setErro(null)
-    try {
-      await bundle.http.request("PATCH", `/gerenteagentes/tarefas/${id}/status`, {
-        body: { status },
-        auth: "access",
-      })
-      await carregarTarefas()
-    } catch (e) {
-      setTarefas((atual) => atual.map((tarefa) => tarefa.id === id ? { ...tarefa, status: anterior.status } : tarefa))
-      setErro(e instanceof Error ? e.message : "Não foi possível alterar o status da tarefa.")
-    }
-  }, [bundle, tarefas, carregarTarefas])
-
   const handleNewTaskSubmit = useCallback(async (values: TarefaFormValues) => {
     if (!bundle) return
     setNewTaskLoading(true)
@@ -1067,6 +1060,15 @@ export default function TaskMonitorScreen(): ReactNode {
       return !busca || `#${tarefa.id} ${tarefa.titulo}`.toLocaleLowerCase("pt-BR").includes(busca)
     })
   }, [tarefas, statusFiltro, buscaTarefa])
+  const tarefasParaMapa = useMemo(() => {
+    const projetoNomePorId = new Map(projetos.map((p) => [p.id, p.nome]))
+    return tarefas.map((t) => ({
+      ...t,
+      createdAt: t.createdAt ?? null,
+      updatedAt: t.updatedAt ?? null,
+      projetoNome: projetoNomePorId.get(t.projetoId) ?? null,
+    }))
+  }, [tarefas, projetos])
   const statusMotor = detail?.task?.status ?? tarefaSelecionada?.status ?? "—"
   const isPaused = statusMotor === "paused"
   const podeIniciar = !isPaused && STATUS_INICIO_PERMITIDO.has(statusMotor)
@@ -1190,6 +1192,15 @@ export default function TaskMonitorScreen(): ReactNode {
     </Paper>
   ) : null
 
+  // 6.1 — Handler para seleção de tarefa: abre bottom sheet em mobile
+  // MOVIDO antes do early return para respeitar as Rules of Hooks
+  const handleSelectTask = useCallback((id: number) => {
+    setTarefaId(id)
+    if (isMobile) {
+      setBottomSheetOpen(true)
+    }
+  }, [isMobile])
+
   if (loading) {
     return (
       <Box sx={{ display: "flex", justifyContent: "center", p: 4 }} data-testid="loading-spinner">
@@ -1220,83 +1231,24 @@ export default function TaskMonitorScreen(): ReactNode {
       {/* Sessão 1: Mapa vivo da tarefa */}
       <Box data-testid="task-map-section">
         <TaskFlowMap
-          tarefas={tarefas}
+          tarefas={tarefasParaMapa}
           selectedTaskId={tarefaId}
           search={buscaTarefa}
           motorActivities={motorActivities}
-          onSelectTask={setTarefaId}
-          onMoveTask={moverTarefaNoFluxo}
+          onSelectTask={handleSelectTask}
+          projetos={projetos}
+          filtros={filtrosMapa}
+          onFiltrosChange={setFiltrosMapa}
+          aoVivo={realtimeStatus === "open"}
+          carregando={loading}
         />
       </Box>
 
       {/* Sessão 2: Filtros + detalhes da tarefa, em moldura única */}
       <Paper variant="outlined" sx={{ p: 2 }} data-testid="task-monitoring-section">
         <Stack spacing={2}>
-          <Stack direction={{ xs: "column", sm: "row" }} spacing={2} flexWrap="wrap" useFlexGap data-testid="task-filter-section">
-        <TextField
-          size="small"
-          label="Buscar tarefa"
-          placeholder="#766 ou título"
-          value={buscaTarefa}
-          onChange={(event) => setBuscaTarefa(event.target.value)}
-          inputProps={{ "data-testid": "filter-busca" }}
-          sx={{ minWidth: 260 }}
-        />
-        <FormControl size="small" sx={{ minWidth: 240 }}>
-          <InputLabel>Projeto</InputLabel>
-          <Select
-            label="Projeto"
-            value={projetoFiltro}
-            onChange={(e) => setProjetoFiltro(String(e.target.value) === "" ? "" : Number(e.target.value))}
-            data-testid="filter-projeto"
-          >
-            <MenuItem value="">Todos os projetos</MenuItem>
-            {projetos.map((p) => (
-              <MenuItem key={p.id} value={p.id}>
-                {p.nome}
-              </MenuItem>
-            ))}
-          </Select>
-        </FormControl>
-
-        <FormControl size="small" sx={{ minWidth: 240 }}>
-          <InputLabel>Status</InputLabel>
-          <Select
-            label="Status"
-            value={statusFiltro}
-            onChange={(e) => setStatusFiltro(String(e.target.value))}
-            data-testid="filter-status"
-          >
-            <MenuItem value="">Todos</MenuItem>
-            {ALL_TASK_STATUSES.map((s) => (
-              <MenuItem key={s} value={s}>
-                {taskStatusLabel(s)}
-              </MenuItem>
-            ))}
-          </Select>
-        </FormControl>
-
-        <FormControl size="small" sx={{ minWidth: 320 }}>
-          <InputLabel>Tarefa</InputLabel>
-          <Select
-            label="Tarefa"
-            value={tarefaId}
-            onChange={(e) => setTarefaId(Number(e.target.value))}
-            data-testid="filter-tarefa"
-          >
-            {tarefas.length === 0 && (
-              <MenuItem value="" disabled>
-                Nenhuma tarefa com os filtros selecionados
-              </MenuItem>
-            )}
-            {tarefas.map((t) => (
-              <MenuItem key={t.id} value={t.id}>
-                #{t.id} — {t.titulo} ({t.status})
-              </MenuItem>
-            ))}
-          </Select>
-        </FormControl>
-      </Stack>
+          {/* Filtros removidos — agora integrados ao topo do mapa (TaskFlowMap) */}
+          {/* A seleção de tarefa é feita apenas pelo clique nos cards do mapa */}
 
       {tarefaSelecionada && (
         <>
@@ -1842,6 +1794,79 @@ export default function TaskMonitorScreen(): ReactNode {
           )}
         </DialogContent>
       </Dialog>
+
+      {/* 6.1 — Bottom sheet para detalhe da tarefa em mobile */}
+      <Drawer
+        anchor="bottom"
+        open={bottomSheetOpen}
+        onClose={() => setBottomSheetOpen(false)}
+        keepMounted
+        data-testid="task-detail-sheet"
+        sx={{
+          display: { xs: "block", sm: "none" },
+          "& .MuiDrawer-paper": {
+            borderTopLeftRadius: 16,
+            borderTopRightRadius: 16,
+            maxHeight: "60vh",
+            p: 2,
+          },
+        }}
+      >
+        <Stack spacing={2}>
+          {/* Handle visual */}
+          <Box sx={{ display: "flex", justifyContent: "center" }}>
+            <Box sx={{ width: 40, height: 4, borderRadius: 2, bgcolor: "text.disabled" }} />
+          </Box>
+          {tarefaSelecionada && (
+            <>
+              <Stack direction="row" justifyContent="space-between" alignItems="flex-start">
+                <Typography variant="h6" fontWeight={600}>
+                  #{tarefaSelecionada.id} {tarefaSelecionada.titulo}
+                </Typography>
+                <IconButton
+                  onClick={() => setBottomSheetOpen(false)}
+                  size="small"
+                  aria-label="Fechar detalhe"
+                >
+                  <CloseRounded />
+                </IconButton>
+              </Stack>
+              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                <Chip
+                  label={taskStatusLabel(tarefaSelecionada.status)}
+                  color={corStatus(tarefaSelecionada.status)}
+                  size="small"
+                />
+                {tarefaSelecionada.tipo && (
+                  <Chip label={TIPO_TAREFA_LABEL[tarefaSelecionada.tipo] ?? tarefaSelecionada.tipo} size="small" variant="outlined" />
+                )}
+              </Stack>
+              {tarefaSelecionada.descricao && (
+                <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.5 }}>
+                  {tarefaSelecionada.descricao.length > 200
+                    ? `${tarefaSelecionada.descricao.slice(0, 200)}...`
+                    : tarefaSelecionada.descricao}
+                </Typography>
+              )}
+              <Button
+                variant="outlined"
+                size="small"
+                onClick={() => {
+                  setBottomSheetOpen(false)
+                  // Scroll até a seção de detalhes
+                  const detailSection = document.querySelector('[data-testid="task-detail-section"]')
+                  if (detailSection) {
+                    detailSection.scrollIntoView({ behavior: "smooth", block: "start" })
+                  }
+                }}
+                data-testid="sheet-view-full"
+              >
+                Ver detalhe completo
+              </Button>
+            </>
+          )}
+        </Stack>
+      </Drawer>
     </Stack>
   )
 }
