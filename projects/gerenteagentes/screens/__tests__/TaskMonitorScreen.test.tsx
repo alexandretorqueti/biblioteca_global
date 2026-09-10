@@ -25,13 +25,14 @@ function tarefaFactory(
   titulo: string,
   status: string,
   projetoId: number,
-  extra?: { descricao?: string | null; dependsOnTaskId?: number | null },
+  extra?: { descricao?: string | null; dependsOnTaskId?: number | null; tipo?: string | null },
 ) {
   return {
     id,
     titulo,
     status,
     projetoId,
+    tipo: extra?.tipo ?? null,
     descricao: extra?.descricao ?? null,
     dependsOnTaskId: extra?.dependsOnTaskId ?? null,
     createdAt: "2026-08-24T12:00:00Z",
@@ -1300,7 +1301,7 @@ describe("TaskMonitorScreen — ST-4 (resultado final da tarefa sem depender de 
   }
 
   it("exibe o resultado final consolidado de tarefa de verificação (do task.finalResult, não de subtarefas)", async () => {
-    const tarefas = [tarefaFactory(1, "Verificar integridade", "completed", 1)]
+    const tarefas = [tarefaFactory(1, "Verificar integridade", "completed", 1, { tipo: "verificacao" })]
     const finalResult = {
       status: "done" as const,
       summary: "Subtarefa 1 — Validar API: API respondeu 200\nSubtarefa 2 — Conferir banco: 12 tabelas íntegras",
@@ -1352,7 +1353,7 @@ describe("TaskMonitorScreen — ST-4 (resultado final da tarefa sem depender de 
   })
 
   it("exibe o resultado final de tarefa de automação com status need_help", async () => {
-    const tarefas = [tarefaFactory(2, "Automatizar deploy", "completed", 1)]
+    const tarefas = [tarefaFactory(2, "Automatizar deploy", "completed", 1, { tipo: "automacao" })]
     const finalResult = {
       status: "need_help" as const,
       summary: "Subtarefa 1 — Configurar CI: Pipeline criado\nSubtarefa 2 — Deploy: Precisa ajuda",
@@ -1402,7 +1403,7 @@ describe("TaskMonitorScreen — ST-4 (resultado final da tarefa sem depender de 
   })
 
   it("exibe resultado final mesmo quando subtarefas estão vazias (independência da tabela de subtarefas)", async () => {
-    const tarefas = [tarefaFactory(3, "Verificação rápida", "completed", 1)]
+    const tarefas = [tarefaFactory(3, "Verificação rápida", "completed", 1, { tipo: "verificacao" })]
     const finalResult = {
       status: "done" as const,
       summary: "Verificação concluída com sucesso",
