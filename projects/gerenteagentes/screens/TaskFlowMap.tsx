@@ -11,18 +11,18 @@ import {
   EditNoteRounded,
   ErrorOutlineRounded,
   HourglassBottomRounded,
+  InfoOutlined,
   PauseCircleRounded,
   RocketLaunchRounded,
   SearchRounded,
   SettingsRounded,
   UnfoldLessRounded,
   UnfoldMoreRounded,
-  VisibilityRounded,
   WarningAmberRounded,
 } from "@mui/icons-material"
-import { Box, Button, Chip, FormControl, InputLabel, MenuItem, Paper, Select, Stack, TextField, Tooltip, Typography } from "@mui/material"
+import { Avatar, Box, Button, Chip, FormControl, InputLabel, LinearProgress, MenuItem, Paper, Select, Stack, TextField, Tooltip, Typography } from "@mui/material"
 import { taskStatusLabel } from "../motor-v2/src/shared/task-statuses"
-import { calcularMetricas, deriveTaskPriority, type Prioridade } from "./taskFlowHelpers"
+import { calcularMetricas, deriveTaskPriority, formatTempoRelativo, projetoAvatar, type Prioridade } from "./taskFlowHelpers"
 
 export interface FlowTask {
   id: number
@@ -121,6 +121,23 @@ const LEGENDA_ITEMS = [
   { tone: "danger" as const, label: "Perigo", emoji: "🔴" },
   { tone: "active" as const, label: "Ativo", emoji: "🔵" },
 ] as const
+
+// Cores de borda lateral por prioridade (1.3 — barra lateral 4px)
+const PRIORIDADE_BORDER_COLOR: Record<Prioridade, string> = {
+  alta: "#d32f2f",   // error.main
+  media: "#ed6c02",  // warning.main
+  baixa: "#2e7d32",  // success.main
+}
+
+// Rótulo legível para prioridade em pt-BR (para tooltip rico)
+const PRIORIDADE_LABEL: Record<Prioridade, string> = {
+  alta: "Alta",
+  media: "Média",
+  baixa: "Baixa",
+}
+
+// Status que podem exibir barra de progresso (1.3 — "se aplicável")
+const PROGRESSO_STATUSES = new Set(["analyzing", "running", "motor_fix"])
 
 // Mapeia id de estação para tone (para cores das barras do dashboard)
 function estacaoToTone(estacaoId: string): FlowStation["tone"] {
@@ -280,41 +297,123 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, l
         {visibleTasks.map((task) => {
           const aiActive = ACTIVE_AI_STATUSES.has(task.status)
           const matchesLegenda = taskMatchesLegenda(task, station)
+          const isSelected = task.id === selectedTaskId
+          const prioridade = deriveTaskPriority(task.status)
+          const prioridadeCor = PRIORIDADE_BORDER_COLOR[prioridade]
+          const avatar = projetoAvatar(task.projetoId, task.projetoNome)
+          const tempoRelativo = formatTempoRelativo(task.updatedAt ?? task.createdAt)
+          const showProgresso = task.progresso != null && PROGRESSO_STATUSES.has(task.status) && task.progresso.total > 0
+          const progressoPct = showProgresso ? Math.round((task.progresso!.verified / task.progresso!.total) * 100) : 0
+          const projetoLabel = task.projetoNome && task.projetoNome.trim() ? task.projetoNome.trim() : `Projeto #${task.projetoId}`
+          const ultimaAtualizacao = (task.updatedAt ?? task.createdAt)
+            ? new Date((task.updatedAt ?? task.createdAt)!).toLocaleString("pt-BR")
+            : "—"
+
+          // Tooltip rico (1.3e): descrição + projeto + prioridade + atualização
+          // Nota: campo responsável omitido — backend ainda não expõe essa informação.
+          const tooltipContent = (
+            <Box sx={{ maxWidth: 260 }}>
+              <Typography variant="caption" fontWeight={700} display="block" sx={{ mb: 0.25, color: "common.white" }}>
+                {taskDescription(task)}
+              </Typography>
+              <Typography variant="caption" display="block" sx={{ opacity: 0.85, color: "common.white" }}>
+                Projeto: {projetoLabel}
+              </Typography>
+              <Typography variant="caption" display="block" sx={{ opacity: 0.85, color: "common.white" }}>
+                Prioridade: {PRIORIDADE_LABEL[prioridade]}
+              </Typography>
+              <Typography variant="caption" display="block" sx={{ opacity: 0.7, color: "common.white" }}>
+                Atualizado: {ultimaAtualizacao}
+              </Typography>
+            </Box>
+          )
+
           return (
-            <Paper
-              key={task.id}
-              component="button"
-              type="button"
-              onClick={() => onSelectTask(task.id)}
-              data-testid={`flow-task-${task.id}`}
-              aria-label={`Abrir tarefa ${task.id}: ${task.titulo}`}
-              elevation={task.id === selectedTaskId ? 5 : 0}
-              sx={{
-                width: "100%", p: 0.8, border: 0, borderLeft: 3, borderColor: task.id === selectedTaskId ? "secondary.main" : "transparent",
-                textAlign: "left", cursor: "pointer", bgcolor: "background.paper", color: "text.primary",
-                animation: movingIds.has(task.id) ? "task-arrived 1.1s ease-in-out 3" : undefined,
-                opacity: matchesLegenda ? 1 : 0.25,
-                transition: "opacity 200ms ease",
-                "&:hover": { transform: "translateY(-1px)", boxShadow: 2 },
-                "@keyframes task-arrived": { "0%, 100%": { opacity: 1 }, "50%": { opacity: 0.45 } },
-              }}
-            >
-              <Stack direction="row" spacing={0.7} alignItems="center" sx={{ minWidth: 0 }}>
-                {aiActive && <SettingsRounded aria-label="IA trabalhando" sx={{ flexShrink: 0, fontSize: 18, color: "warning.main", animation: "gear-spin 2s linear infinite", "@keyframes gear-spin": { to: { transform: "rotate(360deg)" } } }} />}
-                {station.tone === "danger" && <ErrorOutlineRounded sx={{ flexShrink: 0, fontSize: 17, color: "error.main" }} />}
-                <Typography variant="caption" fontWeight={700} noWrap sx={{ minWidth: 0, flex: 1 }}>#{task.id} {task.titulo}</Typography>
-                <Tooltip title={taskDescription(task)} arrow placement="top">
+            <Tooltip key={task.id} title={tooltipContent} arrow placement="top">
+              <Paper
+                component="button"
+                type="button"
+                onClick={() => onSelectTask(task.id)}
+                data-testid={`flow-task-${task.id}`}
+                aria-label={`Abrir tarefa ${task.id}: ${task.titulo}`}
+                elevation={isSelected ? 5 : 0}
+                sx={{
+                  width: "100%",
+                  p: 0.8,
+                  border: 0,
+                  borderLeft: `4px solid ${prioridadeCor}`,
+                  textAlign: "left",
+                  cursor: "pointer",
+                  bgcolor: isSelected ? "action.selected" : "background.paper",
+                  color: "text.primary",
+                  animation: movingIds.has(task.id) ? "task-arrived 1.1s ease-in-out 3" : undefined,
+                  opacity: matchesLegenda ? 1 : 0.25,
+                  transition: "opacity 200ms ease, background-color 150ms ease, box-shadow 150ms ease",
+                  "&:hover": { transform: "translateY(-1px)", boxShadow: 2 },
+                  "@keyframes task-arrived": { "0%, 100%": { opacity: 1 }, "50%": { opacity: 0.45 } },
+                }}
+              >
+                {/* Linha 1: Avatar + '#id título' noWrap + tempo */}
+                <Stack direction="row" spacing={0.7} alignItems="center" sx={{ minWidth: 0 }}>
+                  {/* Avatar do projeto (1.3a) — letra + cor determinística */}
+                  <Avatar
+                    sx={{
+                      width: 22,
+                      height: 22,
+                      fontSize: 11,
+                      fontWeight: 700,
+                      bgcolor: avatar.cor,
+                      color: "common.white",
+                      flexShrink: 0,
+                    }}
+                    aria-label={`Projeto ${projetoLabel}`}
+                    data-testid={`flow-task-avatar-${task.id}`}
+                  >
+                    {avatar.letra}
+                  </Avatar>
+                  {aiActive && <SettingsRounded aria-label="IA trabalhando" sx={{ flexShrink: 0, fontSize: 18, color: "warning.main", animation: "gear-spin 2s linear infinite", "@keyframes gear-spin": { to: { transform: "rotate(360deg)" } } }} />}
+                  {station.tone === "danger" && <ErrorOutlineRounded sx={{ flexShrink: 0, fontSize: 17, color: "error.main" }} />}
+                  <Typography variant="caption" fontWeight={700} noWrap sx={{ minWidth: 0, flex: 1 }}>#{task.id} {task.titulo}</Typography>
+                  {/* Tempo na estação (1.3c) */}
+                  <Typography
+                    variant="caption"
+                    noWrap
+                    data-testid={`flow-task-tempo-${task.id}`}
+                    sx={{ flexShrink: 0, fontSize: "0.65rem", opacity: 0.65, fontFamily: "'Roboto Mono', ui-monospace, monospace" }}
+                  >
+                    {tempoRelativo}
+                  </Typography>
+                  {/* Ícone de info — trigger visual do tooltip rico (mantém flow-task-description-<id>) */}
                   <Box
                     component="span"
-                    aria-label={`Descrição da tarefa ${task.id}`}
+                    aria-label={`Detalhes da tarefa ${task.id}`}
                     data-testid={`flow-task-description-${task.id}`}
                     sx={{ display: "inline-flex", flexShrink: 0, color: "action.active", cursor: "help" }}
                   >
-                    <VisibilityRounded sx={{ fontSize: 16 }} />
+                    <InfoOutlined sx={{ fontSize: 15 }} />
                   </Box>
-                </Tooltip>
-              </Stack>
-            </Paper>
+                </Stack>
+                {/* Linha 2: Mini barra de progresso (1.3d) — só se aplicável */}
+                {showProgresso && (
+                  <LinearProgress
+                    variant="determinate"
+                    value={progressoPct}
+                    data-testid={`flow-task-progresso-${task.id}`}
+                    aria-label={`Progresso da tarefa ${task.id}: ${progressoPct}%`}
+                    sx={{
+                      mt: 0.5,
+                      height: 4,
+                      borderRadius: 2,
+                      bgcolor: "action.hover",
+                      "& .MuiLinearProgress-bar": {
+                        borderRadius: 2,
+                        bgcolor: prioridadeCor,
+                      },
+                    }}
+                  />
+                )}
+              </Paper>
+            </Tooltip>
           )
         })}
           {normalizedSearch && stationTasks.length > 0 && visibleTasks.length === 0 && <Typography variant="caption" sx={{ opacity: 0.65 }}>Nenhuma correspondência</Typography>}
