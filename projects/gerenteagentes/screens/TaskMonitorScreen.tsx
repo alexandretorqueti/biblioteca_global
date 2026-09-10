@@ -652,27 +652,6 @@ export default function TaskMonitorScreen(): ReactNode {
   )
 
 
-  const moverTarefaNoFluxo = useCallback(async (id: number, status: string) => {
-    if (!bundle) return
-    const anterior = tarefas.find((tarefa) => tarefa.id === id)
-    if (!anterior || anterior.status === status) return
-
-    // Atualização otimista mantém o mapa responsivo; em caso de erro o estado
-    // local volta ao valor anterior e a mensagem permite nova tentativa.
-    setTarefas((atual) => atual.map((tarefa) => tarefa.id === id ? { ...tarefa, status } : tarefa))
-    setErro(null)
-    try {
-      await bundle.http.request("PATCH", `/gerenteagentes/tarefas/${id}/status`, {
-        body: { status },
-        auth: "access",
-      })
-      await carregarTarefas()
-    } catch (e) {
-      setTarefas((atual) => atual.map((tarefa) => tarefa.id === id ? { ...tarefa, status: anterior.status } : tarefa))
-      setErro(e instanceof Error ? e.message : "Não foi possível alterar o status da tarefa.")
-    }
-  }, [bundle, tarefas, carregarTarefas])
-
   const handleNewTaskSubmit = useCallback(async (values: TarefaFormValues) => {
     if (!bundle) return
     setNewTaskLoading(true)
@@ -1227,7 +1206,6 @@ export default function TaskMonitorScreen(): ReactNode {
           search={buscaTarefa}
           motorActivities={motorActivities}
           onSelectTask={setTarefaId}
-          onMoveTask={moverTarefaNoFluxo}
         />
       </Box>
 
