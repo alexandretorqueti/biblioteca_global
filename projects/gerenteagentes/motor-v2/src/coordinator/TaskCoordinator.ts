@@ -36,6 +36,12 @@ import { isAgentRunFailureWithoutReply } from "../policies/NoReplyFailurePolicy.
 import { validateProjectId, formatProjectIdValidationReport } from "../policies/ProjectIdValidationPolicy.js"
 import { verifyAgentInGateway, formatAgentVerificationReport, shouldBlockEnqueue } from "../policies/GatewayAgentVerificationPolicy.js"
 import { failureFingerprint } from "../policies/SystemFailurePolicy.js"
+import {
+  InfrastructureIncidentManager,
+  computeIncidentSignature,
+  buildSignatureComponents,
+  type IncidentFailureClass,
+} from "../policies/InfrastructureIncident.js"
 
 interface ActiveWorker {
   taskId: string
@@ -1529,20 +1535,40 @@ export class TaskCoordinator {
     const deployHost = process.env.MOTOR_DEPLOY_SSH_HOST
     if (deployHost) execFileSync("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", deployHost, "true"], { stdio: "pipe", timeout: 10_000 })
 
-    // Agrupamento de incidente: tarefas com a mesma assinatura de falha
-    // compartilham o mesmo incident_id. A assinatura é derivada do block_command
-    // (que contém o fingerprint normalizado) ou, na falta dele, do excerpt.
-    const fingerprint = blockCommand.replace(/^motor-v2:/, "") || failureFingerprint(excerpt)
-    const incidentId = await this.resolveIncidentId(fingerprint, excerpt)
+    // Agrupamento de incidente por assinatura determinística:
+    // classe da falha + serviço afetado + mensagem normalizada.
+    // Tarefas com a mesma assinatura compartilham o mesmo incident_id;
+    // assinaturas distintas NÃO são agrupadas.
+    const failureClass = this.classifyBlockFailure(kind, excerpt)
+    const signatureComponents = buildSignatureComponents(failureClass, excerpt)
+    const signature = computeIncidentSignature(signatureComponents)
+    const incidentManager = new InfrastructureIncidentManager({ db: this.db })
+    const incidentId = await incidentManager.resolveOrCreate(
+      signature,
+      signatureComponents.failureClass,
+      signatureComponents.affectedService,
+      signatureComponents.normalizedMessage,
+    )
+
+    // Obtém o tarefa_id numérico para associar ao incidente
+    const { rows: tarefaIdRows } = await this.db.query(
+      "SELECT id FROM tarefas WHERE external_id = ? OR id = CAST(? AS UNSIGNED) LIMIT 1",
+      [taskId, taskId],
+    )
+    const tarefaIdNum = tarefaIdRows.length > 0 ? Number((tarefaIdRows[0] as Record<string, unknown>).id) : 0
+    if (tarefaIdNum > 0) {
+      await incidentManager.addTaskToIncident(incidentId, tarefaIdNum)
+    }
+
     this.recoveryWorkspaces.set(Number(block.subtarefa_id), {
       path: String(block.workspace_path), projectPath: String(block.repo_path ?? block.workspace_path),
       branch: String(block.workspace_branch), baseCommit: String(block.workspace_base_commit),
     })
     await this.db.query("UPDATE subtarefas SET status = 'pending', resultado = ?, updated_at = NOW() WHERE id = ?", ["Retomada após reanálise do bloqueio: " + excerpt, Number(block.subtarefa_id)])
     await this.db.query(
-      "INSERT INTO motor_infrastructure_recovery_history (tarefa_id, subtarefa_id, incident_id, original_reason, correction_applied, resume_type, resumed_by, execution_id) " +
-      "SELECT id, ?, ?, ?, ?, ?, ?, ? FROM tarefas WHERE external_id = ? OR id = CAST(? AS UNSIGNED) LIMIT 1",
-      [Number(block.subtarefa_id), incidentId, excerpt, "preflight consolidado: Git/branch, dependências, Console e SSH", resumeType, resumedBy, "recovery-" + incidentId, taskId, taskId],
+      "INSERT INTO motor_infrastructure_recovery_history (tarefa_id, subtarefa_id, incident_id, failure_signature, original_reason, correction_applied, resume_type, resumed_by, execution_id) " +
+      "SELECT id, ?, ?, ?, ?, ?, ?, ?, ? FROM tarefas WHERE external_id = ? OR id = CAST(? AS UNSIGNED) LIMIT 1",
+      [Number(block.subtarefa_id), incidentId, signature, excerpt, "preflight consolidado: Git/branch, dependências, Console e SSH", resumeType, resumedBy, "recovery-" + incidentId, taskId, taskId],
     )
     await this.saveTaskTransition(task, "recover", { errorMessage: "Bloqueio reanalisado; incidente " + incidentId })
     await this.pump()
@@ -1552,29 +1578,22 @@ export class TaskCoordinator {
   }
 
   /**
-   * Resolve o incident_id para agrupamento de falhas sistêmicas.
-   * Se já existe um incidente recente (últimos 7 dias) com a mesma assinatura
-   * (fingerprint), reutiliza o incident_id. Caso contrário, cria um novo.
-   * Isso garante que múltiplas tarefas afetadas pela mesma falha de infraestrutura
-   * fiquem associadas a um único incidente, enquanto assinaturas distintas
-   * não são agrupadas.
+   * Classifica o motivo do bloqueio em uma IncidentFailureClass.
+   * Usa o block_reason e o block_excerpt para determinar a classe.
    */
-  private async resolveIncidentId(fingerprint: string, excerpt: string): Promise<string> {
-    if (!fingerprint) return randomUUID()
-    // Busca incidente recente com o mesmo fingerprint no original_reason ou correction_applied
-    // O fingerprint é armazenado como prefixo do block_command e normalizado
-    const normalizedFingerprint = fingerprint.slice(0, 200)
-    const { rows } = await this.db.query(
-      "SELECT h.incident_id FROM motor_infrastructure_recovery_history h " +
-      "WHERE h.created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY) " +
-      "AND (h.original_reason LIKE ? OR h.correction_applied LIKE ?) " +
-      "ORDER BY h.id DESC LIMIT 1",
-      ["%" + normalizedFingerprint + "%", "%" + normalizedFingerprint + "%"],
-    )
-    if (rows.length > 0 && rows[0]?.incident_id) {
-      return String(rows[0].incident_id)
-    }
-    return randomUUID()
+  private classifyBlockFailure(blockReason: string, excerpt: string): IncidentFailureClass {
+    const combined = (blockReason + " " + excerpt).toLowerCase()
+    if (/ssh|deploy.*unreachable|connection refused.*ssh/i.test(combined)) return "ssh_deploy_unreachable"
+    if (/console|gateway.*unreachable|agent.*not.*found/i.test(combined)) return "console_unreachable"
+    if (/dependenc|node_modules|package.lock/i.test(combined)) return "dependencies_missing"
+    if (/worktree.*missing|worktree.*not.*found|worktree.*ausente/i.test(combined)) return "worktree_missing"
+    if (/branch.*diverg|branch.*differ/i.test(combined)) return "branch_diverged"
+    if (/commit.*lost|commit.*not.*found/i.test(combined)) return "commit_lost"
+    if (/git.*corrupt|fsck|not a git repository/i.test(combined)) return "git_repository_corrupted"
+    if (/git.*missing|repo.*not.*found|repositório.*não.*encontr/i.test(combined)) return "git_repository_missing"
+    if (/scope|fora.*do.*projeto|outside.*project/i.test(combined)) return "project_scope_violation"
+    if (/infra|systemic|blocked_environment/i.test(combined)) return "multiple_infrastructure_failures"
+    return "unknown"
   }
 
   async cancelTask(taskId: string): Promise<void> {

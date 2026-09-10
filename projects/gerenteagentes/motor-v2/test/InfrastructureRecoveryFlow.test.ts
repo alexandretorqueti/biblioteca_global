@@ -38,9 +38,22 @@ function createMockDb(options: {
   existingIncidentId?: string | null
 } = {}): Db {
   const db: Db = {
-    query: vi.fn().mockImplementation((sql: string) => {
-      // resolveIncidentId query — busca incidente existente com mesmo fingerprint
-      if (sql.includes('motor_infrastructure_recovery_history') && sql.includes('SELECT') && sql.includes('incident_id') && sql.includes('DATE_SUB')) {
+    query: vi.fn().mockImplementation((sql: string, params?: unknown[]) => {
+      // FROM bloqueios — deve vir ANTES do 'SELECT id FROM tarefas' porque a query de bloqueios
+      // contém uma subquery com 'SELECT id FROM tarefas WHERE external_id'
+      if (sql.includes('FROM bloqueios')) {
+        return Promise.resolve({
+          rows: options.blockRows ?? [],
+          affectedRows: 0,
+          insertId: 0,
+        } satisfies QueryResult)
+      }
+      // Busca tarefa_id numérico para associar ao incidente (query standalone, sem FROM bloqueios)
+      if (sql.includes('SELECT id FROM tarefas WHERE external_id') && !sql.includes('FROM bloqueios')) {
+        return Promise.resolve({ rows: [{ id: 1 }], affectedRows: 0, insertId: 0 } satisfies QueryResult)
+      }
+      // resolveOrCreate — busca incidente existente na tabela de incidentes
+      if (sql.includes('motor_infrastructure_incidents') && sql.includes('SELECT') && sql.includes('WHERE signature')) {
         if (options.existingIncidentId) {
           return Promise.resolve({
             rows: [{ incident_id: options.existingIncidentId }],
@@ -50,17 +63,26 @@ function createMockDb(options: {
         }
         return Promise.resolve({ rows: [], affectedRows: 0, insertId: 0 } satisfies QueryResult)
       }
+      // resolveOrCreate — insert novo incidente
+      if (sql.includes('motor_infrastructure_incidents') && sql.includes('INSERT')) {
+        return Promise.resolve({ rows: [], affectedRows: 1, insertId: 1 } satisfies QueryResult)
+      }
+      // resolveOrCreate — update last_seen_at
+      if (sql.includes('motor_infrastructure_incidents') && sql.includes('UPDATE') && sql.includes('last_seen_at')) {
+        return Promise.resolve({ rows: [], affectedRows: 1, insertId: 0 } satisfies QueryResult)
+      }
+      // addTaskToIncident — verifica associação existente
+      if (sql.includes('motor_infrastructure_incident_tasks') && sql.includes('SELECT') && sql.includes('SELECT id')) {
+        return Promise.resolve({ rows: [], affectedRows: 0, insertId: 0 } satisfies QueryResult)
+      }
+      // addTaskToIncident — insert associação
+      if (sql.includes('motor_infrastructure_incident_tasks') && sql.includes('INSERT')) {
+        return Promise.resolve({ rows: [], affectedRows: 1, insertId: 1 } satisfies QueryResult)
+      }
       // getRecoveryHistory query — busca histórico da tarefa
       if (sql.includes('motor_infrastructure_recovery_history') && sql.includes('SELECT') && sql.includes('h.id')) {
         return Promise.resolve({
           rows: options.recoveryRows ?? [],
-          affectedRows: 0,
-          insertId: 0,
-        } satisfies QueryResult)
-      }
-      if (sql.includes('FROM bloqueios')) {
-        return Promise.resolve({
-          rows: options.blockRows ?? [],
           affectedRows: 0,
           insertId: 0,
         } satisfies QueryResult)
@@ -189,11 +211,12 @@ describe('Fluxo de recuperação segura — Critério 1: retomada sem recriar wo
     )
     expect(insertCall).toBeDefined()
     const params = insertCall![1] as unknown[]
-    // Params: [subtarefaId, incidentId, excerpt, correction, resumeType, resumedBy, executionId, taskId, taskId]
-    expect(params[2]).toBe('SSH deploy host indisponível') // original_reason
-    expect(params[3]).toContain('preflight consolidado') // correction_applied
-    expect(params[4]).toBe('manual') // resume_type
-    expect(params[5]).toBe('user:alexandre') // resumed_by
+    // Params: [subtarefaId, incidentId, failureSignature, excerpt, correction, resumeType, resumedBy, executionId, taskId, taskId]
+    expect(params[2]).toMatch(/^[a-f0-9]{40}$/) // failure_signature (hash SHA-256 truncado)
+    expect(params[3]).toBe('SSH deploy host indisponível') // original_reason
+    expect(params[4]).toContain('preflight consolidado') // correction_applied
+    expect(params[5]).toBe('manual') // resume_type
+    expect(params[6]).toBe('user:alexandre') // resumed_by
   })
 })
 
@@ -380,10 +403,10 @@ describe('Fluxo de recuperação segura — Critério 4: agrupamento de incident
 
     const result = await coordinator.reanalyzeAndResumeInfrastructureBlock('task-blocked-3')
 
-    // O incident_id deve ser um novo UUID (não o do incidente anterior)
+    // O incident_id deve ser um novo identificador determinístico (não o do incidente anterior)
     expect(result.incidentId).toBeDefined()
-    expect(result.incidentId).toMatch(/^[0-9a-f-]{36}$/)
-    // Como não há incidente existente, o resolveIncidentId retorna um novo UUID
+    expect(result.incidentId).toMatch(/^incident-[a-f0-9]{16}-[a-z0-9]+$/)
+    // Como não há incidente existente, o resolveOrCreate cria um novo incidente
     expect(result.incidentId).not.toBe('incident-shared-001')
   })
 
