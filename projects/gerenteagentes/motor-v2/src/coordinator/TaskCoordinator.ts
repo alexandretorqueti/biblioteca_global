@@ -35,6 +35,8 @@ import { validateTaskCompletion, formatPromotionValidationReport } from "../poli
 import { isAgentRunFailureWithoutReply } from "../policies/NoReplyFailurePolicy.js"
 import { validateProjectId, formatProjectIdValidationReport } from "../policies/ProjectIdValidationPolicy.js"
 import { verifyAgentInGateway, formatAgentVerificationReport, shouldBlockEnqueue } from "../policies/GatewayAgentVerificationPolicy.js"
+import { ResumePreflightChecker, formatPreflightForHistory } from "../workspaces/ResumePreflightChecker.js"
+import { IncidentService, mapPreflightClassification, computeIncidentSignature } from "../policies/IncidentService.js"
 
 interface ActiveWorker {
   taskId: string
@@ -1461,49 +1463,226 @@ export class TaskCoordinator {
     if (!task) throw new Error("Tarefa " + taskId + " nao encontrada")
     if (task.status !== "blocked") throw new Error("Ação disponível apenas para tarefa bloqueada")
 
+    // ─── 1. Carregar contexto do bloqueio original ──────────────────────────
     const { rows } = await this.db.query(
-      "SELECT b.id, b.block_reason, b.block_excerpt, s.id AS subtarefa_id, s.workspace_path, s.workspace_branch, s.workspace_base_commit, pmc.repo_path " +
+      "SELECT b.id, b.block_reason, b.block_excerpt, b.blocked_at, " +
+      "s.id AS subtarefa_id, s.workspace_path, s.workspace_branch, " +
+      "s.workspace_base_commit, s.workspace_head_commit, pmc.repo_path " +
       "FROM bloqueios b LEFT JOIN subtarefas s ON s.id = b.subtarefa_id " +
-      "LEFT JOIN tarefas t ON t.id = b.tarefa_id LEFT JOIN projetos_captados pc ON t.projeto_id = pc.id " +
+      "LEFT JOIN tarefas t ON t.id = b.tarefa_id " +
+      "LEFT JOIN projetos_captados pc ON t.projeto_id = pc.id " +
       "LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id = pc.id " +
       "WHERE b.tarefa_id = (SELECT id FROM tarefas WHERE external_id = ? OR id = CAST(? AS UNSIGNED) LIMIT 1) " +
       "ORDER BY b.blocked_at DESC LIMIT 1", [taskId, taskId],
     )
     const block = rows[0]
     const kind = String(block?.block_reason ?? "")
-    const excerpt = String(block?.block_excerpt ?? "")
-    const eligible = kind === "blocked_environment" || kind === "systemic_failure" || /infra|git|worktree|ssh|console|dependenc|deploy/i.test(excerpt)
+    const originalReason = String(block?.block_excerpt ?? "")
+    const eligible = kind === "blocked_environment" || kind === "systemic_failure" || /infra|git|worktree|ssh|console|dependenc|deploy/i.test(originalReason)
     if (!eligible) throw new Error("Bloqueio não elegível para recuperação de infraestrutura")
     if (!block?.subtarefa_id || !block.workspace_path || !block.workspace_branch || !block.workspace_base_commit) {
       throw new Error("Bloqueio elegível sem execução/worktree/commit persistidos")
     }
 
-    const existing = await this.workspaceManager.reuseExisting({
-      path: String(block.workspace_path), projectPath: String(block.repo_path ?? block.workspace_path),
-      branch: String(block.workspace_branch), baseCommit: String(block.workspace_base_commit),
-    })
-    const dependency = await new DependencyInstaller().install({ worktreePath: existing.projectPath, timeoutMs: resolveInstallTimeoutMs() })
-    if (!dependency.ok) throw new Error("Preflight dependências falhou: " + dependency.reason)
-    const verification = await this.verifyAgentBeforeEnqueue(task.agentId)
-    if (!verification.ok) throw new Error("Preflight Console falhou: " + formatAgentVerificationReport(verification))
-    const deployHost = process.env.MOTOR_DEPLOY_SSH_HOST
-    if (deployHost) execFileSync("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", deployHost, "true"], { stdio: "pipe", timeout: 10_000 })
+    const repoPath = String(block.repo_path ?? task.repoPath)
+    const worktreePath = String(block.workspace_path)
+    const expectedBranch = String(block.workspace_branch)
+    const expectedBaseCommit = String(block.workspace_base_commit)
+    const expectedHeadCommit = block.workspace_head_commit ? String(block.workspace_head_commit) : undefined
 
-    const incidentId = randomUUID()
-    this.recoveryWorkspaces.set(Number(block.subtarefa_id), {
-      path: String(block.workspace_path), projectPath: String(block.repo_path ?? block.workspace_path),
-      branch: String(block.workspace_branch), baseCommit: String(block.workspace_base_commit),
+    // ─── 2. Preflight consolidado (somente leitura) ─────────────────────────
+    // Verifica Git, branch, dependências, Console e SSH sem alterar o workspace.
+    // NÃO cria worktrees, NÃO descarta commits.
+    const preflightChecker = new ResumePreflightChecker()
+    const preflightReport = await preflightChecker.check({
+      repoPath,
+      worktreePath,
+      expectedBranch,
+      expectedBaseCommit,
+      expectedHeadCommit,
+      projectPath: repoPath,
+      checkDependencies: true,
+      dependencyCheckTimeoutMs: resolveInstallTimeoutMs(),
+      consoleBaseUrl: process.env.OPENCLAW_CONSOLE_URL,
+      consoleToken: process.env.OPENCLAW_CONSOLE_TOKEN,
+      consoleCheckTimeoutMs: 10_000,
+      sshDeployTarget: process.env.MOTOR_DEPLOY_SSH_HOST,
+      sshDeployKeyPath: "/root/.ssh/id_ed25519",
+      sshDeployTimeoutMs: 15_000,
     })
-    await this.db.query("UPDATE subtarefas SET status = 'pending', resultado = ?, updated_at = NOW() WHERE id = ?", ["Retomada após reanálise do bloqueio: " + excerpt, Number(block.subtarefa_id)])
+
+    // ─── 3. Classificar e agrupar em incidente sistêmico ────────────────────
+    // A assinatura determinística (classe + serviço + mensagem normalizada)
+    // garante que falhas do mesmo tipo são agrupadas em um único incidente.
+    const incidentService = new IncidentService(this.db)
+    let incidentId: string
+
+    if (!preflightReport.ok && preflightReport.incidentClassification) {
+      const { failureClass, affectedService } = mapPreflightClassification(preflightReport.incidentClassification)
+      const upsertResult = await incidentService.upsertIncident({
+        failureClass,
+        affectedService,
+        rawMessage: preflightReport.summary,
+        taskId,
+        subtaskId: Number(block.subtarefa_id),
+        diagnosis: formatPreflightForHistory(preflightReport, {
+          taskId,
+          resumedBy: "motor-v2:reanalyze-and-resume",
+        }),
+      })
+      incidentId = upsertResult.incident.id
+
+      if (!upsertResult.created) {
+        this.logger.info("Incidente existente atualizado", {
+          incidentId,
+          taskId,
+          signature: upsertResult.signature.slice(0, 80),
+          occurrenceCount: upsertResult.incident.occurrenceCount,
+        })
+      }
+    } else {
+      // Preflight passou — criar incidente de resolução (marca recuperação)
+      incidentId = "resolved-" + randomUUID().slice(0, 8)
+    }
+
+    // ─── 4. Decisão de retomada — exige preflight OK ────────────────────────
+    if (!preflightReport.ok) {
+      // Preflight falhou — NÃO retoma. Registra no histórico da tarefa.
+      const historyEntry = formatPreflightForHistory(preflightReport, {
+        taskId,
+        resumedBy: "motor-v2:reanalyze-and-resume",
+      })
+      await this.db.query(
+        "INSERT INTO motor_infrastructure_recovery_history " +
+        "(tarefa_id, subtarefa_id, incident_id, original_reason, correction_applied, resumed_by, execution_id) " +
+        "SELECT id, ?, ?, ?, ?, ?, ? FROM tarefas WHERE external_id = ? OR id = CAST(? AS UNSIGNED) LIMIT 1",
+        [
+          Number(block.subtarefa_id),
+          incidentId,
+          originalReason,
+          "Retomada BLOQUEADA pelo preflight: " + preflightReport.summary,
+          "motor-v2:reanalyze-and-resume",
+          "blocked-" + incidentId,
+          taskId,
+          taskId,
+        ],
+      )
+      throw new Error(
+        "Preflight consolidado falhou — retomada não segura: " +
+        preflightReport.summary +
+        " (incidente " + incidentId + ")",
+      )
+    }
+
+    // ─── 5. Preflight OK — reutilizar worktree existente ────────────────────
+    // NÃO cria worktrees novos, NÃO descarta commits.
+    const existing = await this.workspaceManager.reuseExisting({
+      path: worktreePath,
+      projectPath: repoPath,
+      branch: expectedBranch,
+      baseCommit: expectedBaseCommit,
+    })
+
+    // Instala dependências se necessário (preflight já validou consistência)
+    const dependency = await new DependencyInstaller().install({
+      worktreePath: existing.projectPath,
+      timeoutMs: resolveInstallTimeoutMs(),
+    })
+    if (!dependency.ok) {
+      throw new Error("Instalação de dependências falhou após preflight OK: " + dependency.reason)
+    }
+
+    // Verifica agente no Console (sessão ativa)
+    const verification = await this.verifyAgentBeforeEnqueue(task.agentId)
+    if (!verification.ok) {
+      throw new Error("Preflight Console falhou após validação: " + formatAgentVerificationReport(verification))
+    }
+
+    // Verifica SSH de deploy (conectividade)
+    const deployHost = process.env.MOTOR_DEPLOY_SSH_HOST
+    if (deployHost) {
+      try {
+        execFileSync("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", deployHost, "true"], {
+          stdio: "pipe",
+          timeout: 10_000,
+        })
+      } catch (sshError) {
+        throw new Error("Preflight SSH falhou após validação: " + describeError(sshError))
+      }
+    }
+
+    // ─── 6. Retomar execução — registrar no histórico ───────────────────────
+    this.recoveryWorkspaces.set(Number(block.subtarefa_id), {
+      path: worktreePath,
+      projectPath: repoPath,
+      branch: expectedBranch,
+      baseCommit: expectedBaseCommit,
+    })
+
+    // Atualiza subtarefa para pending (retomável pelo pump)
     await this.db.query(
-      "INSERT INTO motor_infrastructure_recovery_history (tarefa_id, subtarefa_id, incident_id, original_reason, correction_applied, resumed_by, execution_id) " +
-      "SELECT id, ?, ?, ?, ?, ?, ? FROM tarefas WHERE external_id = ? OR id = CAST(? AS UNSIGNED) LIMIT 1",
-      [Number(block.subtarefa_id), incidentId, excerpt, "preflight consolidado: Git/branch, dependências, Console e SSH", "motor-v2", "recovery-" + incidentId, taskId, taskId],
+      "UPDATE subtarefas SET status = 'pending', resultado = ?, updated_at = NOW() WHERE id = ?",
+      ["Retomada após preflight consolidado OK (incidente " + incidentId + "): " + originalReason, Number(block.subtarefa_id)],
     )
-    await this.saveTaskTransition(task, "recover", { errorMessage: "Bloqueio reanalisado; incidente " + incidentId })
+
+    // Registra no histórico de recuperação (auditoria)
+    const correctionApplied = [
+      "Preflight consolidado: Git/branch/dependências/Console/SSH",
+      preflightReport.ok ? "Todas as verificações passaram" : "Falhas detectadas mas worktree reutilizado",
+    ].join("; ")
+
+    await this.db.query(
+      "INSERT INTO motor_infrastructure_recovery_history " +
+      "(tarefa_id, subtarefa_id, incident_id, original_reason, correction_applied, resumed_by, execution_id) " +
+      "SELECT id, ?, ?, ?, ?, ?, ? FROM tarefas WHERE external_id = ? OR id = CAST(? AS UNSIGNED) LIMIT 1",
+      [
+        Number(block.subtarefa_id),
+        incidentId,
+        originalReason,
+        correctionApplied,
+        "motor-v2:reanalyze-and-resume",
+        "recovery-" + incidentId,
+        taskId,
+        taskId,
+      ],
+    )
+
+    // Transição de estado da tarefa
+    await this.saveTaskTransition(task, "recover", {
+      errorMessage: "Bloqueio reanalisado com preflight consolidado; incidente " + incidentId,
+    })
+
+    // Dispara o pump para retomar a execução
     await this.pump()
-    const executionId = [...this.activeWorkers.values()].find((worker) => worker.subtaskId === Number(block.subtarefa_id))?.executionId ?? "queued-" + incidentId
-    await this.db.query("UPDATE motor_infrastructure_recovery_history SET execution_id = ? WHERE incident_id = ?", [executionId, incidentId])
+
+    const executionId = [...this.activeWorkers.values()].find(
+      (worker) => worker.subtaskId === Number(block.subtarefa_id),
+    )?.executionId ?? "queued-" + incidentId
+
+    await this.db.query(
+      "UPDATE motor_infrastructure_recovery_history SET execution_id = ? WHERE incident_id = ?",
+      [executionId, incidentId],
+    )
+
+    // Se o incidente era de falha e o preflight passou, resolve o incidente
+    if (incidentId.startsWith("inc-") || incidentId.startsWith("resolved-")) {
+      const incidentService2 = new IncidentService(this.db)
+      try {
+        await incidentService2.resolveIncident(incidentId)
+      } catch {
+        // Não falha a retomada se não conseguir resolver o incidente
+        this.logger.warn("Falha ao resolver incidente após retomada", { incidentId })
+      }
+    }
+
+    this.logger.info("Retomada de bloqueio concluída", {
+      taskId,
+      incidentId,
+      executionId,
+      preflightChecks: preflightReport.checks.length,
+      preflightOk: preflightReport.ok,
+    })
+
     return { executionId, incidentId }
   }
 
