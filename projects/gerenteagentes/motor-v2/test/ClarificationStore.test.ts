@@ -60,7 +60,7 @@ describe("persistTaskClarification", () => {
     expect(String(calls[0]![0])).toContain("FROM tarefas")
     const [insertSql, params] = calls[1]!
     expect(String(insertSql)).toContain("INSERT INTO tarefa_chats")
-    expect(params).toEqual([42, "analyst", expect.stringContaining("1) p?")])
+    expect(params).toEqual([42, "analyst", null, expect.stringContaining("1) p?")])
   })
 })
 
@@ -73,7 +73,7 @@ describe("persistTaskClarificationAnswer", () => {
     await persistTaskClarificationAnswer(db, "42", "1: MySQL")
     const [insertSql, params] = vi.mocked(db.query).mock.calls[1]!
     expect(String(insertSql)).toContain("INSERT INTO tarefa_chats")
-    expect(params).toEqual([42, "user", "1: MySQL"])
+    expect(params).toEqual([42, "user", null, "1: MySQL"])
   })
 })
 
@@ -226,7 +226,7 @@ describe("persistTaskPlanProposal", () => {
     expect(String(calls[0]![0])).toContain("FROM tarefas")
     const [insertSql, params] = calls[1]!
     expect(String(insertSql)).toContain("INSERT INTO tarefa_chats")
-    expect(params).toEqual([42, "analyst", expect.stringContaining("Proposta de Plano")])
-    expect(params).toEqual([42, "analyst", expect.stringContaining("1. Teste")])
+    expect(params).toEqual([42, "analyst", null, expect.stringContaining("Proposta de Plano")])
+    expect(params).toEqual([42, "analyst", null, expect.stringContaining("1. Teste")])
   })
 })

@@ -29,6 +29,7 @@ export interface ClarificationQuestions {
 
 export interface ChatHistoryEntry {
   role: string
+  author: string | null
   texto: string
   createdAt: string
 }
@@ -51,7 +52,9 @@ export function formatClarificationMessage(input: ClarificationQuestions): strin
 export function formatHistoryForPrompt(entries: readonly ChatHistoryEntry[]): string {
   if (entries.length === 0) return ""
   const lines = entries.map((entry) => {
-    const who = entry.role === CLARIFICATION_ROLE ? "ANALISTA" : "RESPOSTA"
+    const who = entry.role === CLARIFICATION_ROLE
+      ? (entry.author ? `ANALISTA (${entry.author})` : "ANALISTA")
+      : (entry.author ? `RESPOSTA (${entry.author})` : "RESPOSTA")
     return `[${who}] ${entry.texto}`
   })
   return lines.join("\n\n")
@@ -87,11 +90,12 @@ export async function persistTaskClarification(
   db: Db,
   taskId: string,
   input: ClarificationQuestions,
+  author?: string,
 ): Promise<void> {
   const databaseTaskId = await resolveTaskDatabaseId(db, taskId)
   await db.query(
-    "INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) VALUES (?, ?, ?, NOW())",
-    [databaseTaskId, CLARIFICATION_ROLE, formatClarificationMessage(input)],
+    "INSERT INTO tarefa_chats (tarefa_id, role, author, texto, created_at) VALUES (?, ?, ?, ?, NOW())",
+    [databaseTaskId, CLARIFICATION_ROLE, author ?? null, formatClarificationMessage(input)],
   )
 }
 
@@ -100,11 +104,12 @@ export async function persistTaskAnalystMessage(
   db: Db,
   taskId: string,
   text: string,
+  author?: string,
 ): Promise<void> {
   const databaseTaskId = await resolveTaskDatabaseId(db, taskId)
   await db.query(
-    "INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) VALUES (?, ?, ?, NOW())",
-    [databaseTaskId, CLARIFICATION_ROLE, text.trim()],
+    "INSERT INTO tarefa_chats (tarefa_id, role, author, texto, created_at) VALUES (?, ?, ?, ?, NOW())",
+    [databaseTaskId, CLARIFICATION_ROLE, author ?? null, text.trim()],
   )
 }
 
@@ -156,12 +161,13 @@ export async function persistTaskPlanProposal(
   db: Db,
   taskId: string,
   proposal: { version: number; subtasks: readonly import("./PlanPersistence.js").PlannedSubtask[] },
+  author?: string,
 ): Promise<void> {
   const databaseTaskId = await resolveTaskDatabaseId(db, taskId)
   const message = formatPlanProposalMessage(proposal)
   await db.query(
-    "INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) VALUES (?, ?, ?, NOW())",
-    [databaseTaskId, CLARIFICATION_ROLE, message],
+    "INSERT INTO tarefa_chats (tarefa_id, role, author, texto, created_at) VALUES (?, ?, ?, ?, NOW())",
+    [databaseTaskId, CLARIFICATION_ROLE, author ?? null, message],
   )
 }
 
@@ -170,11 +176,12 @@ export async function persistTaskClarificationAnswer(
   db: Db,
   taskId: string,
   text: string,
+  author?: string,
 ): Promise<void> {
   const databaseTaskId = await resolveTaskDatabaseId(db, taskId)
   await db.query(
-    "INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) VALUES (?, ?, ?, NOW())",
-    [databaseTaskId, ANSWER_ROLE, text],
+    "INSERT INTO tarefa_chats (tarefa_id, role, author, texto, created_at) VALUES (?, ?, ?, ?, NOW())",
+    [databaseTaskId, ANSWER_ROLE, author ?? null, text],
   )
 }
 
@@ -188,12 +195,13 @@ export async function fetchTaskClarificationHistory(
 ): Promise<ChatHistoryEntry[]> {
   const databaseTaskId = await resolveTaskDatabaseId(db, taskId)
   const { rows } = await db.query(
-    "SELECT role, texto, created_at FROM tarefa_chats " +
+    "SELECT role, author, texto, created_at FROM tarefa_chats " +
     "WHERE tarefa_id = ? AND role IN (?, ?) ORDER BY id ASC",
     [databaseTaskId, CLARIFICATION_ROLE, ANSWER_ROLE],
   )
   return rows.map((row) => ({
     role: String(row.role ?? ""),
+    author: row.author == null ? null : String(row.author),
     texto: String(row.texto ?? ""),
     createdAt: String(row.created_at ?? ""),
   }))
@@ -272,10 +280,11 @@ export async function persistProjectClarification(
   db: Db,
   projetoId: number,
   input: ClarificationQuestions,
+  author?: string,
 ): Promise<void> {
   await db.query(
-    "INSERT INTO projeto_chats (projeto_id, role, texto, created_at) VALUES (?, ?, ?, NOW())",
-    [projetoId, CLARIFICATION_ROLE, formatClarificationMessage(input)],
+    "INSERT INTO projeto_chats (projeto_id, role, author, texto, created_at) VALUES (?, ?, ?, ?, NOW())",
+    [projetoId, CLARIFICATION_ROLE, author ?? null, formatClarificationMessage(input)],
   )
 }
 
@@ -284,10 +293,11 @@ export async function persistProjectClarificationAnswer(
   db: Db,
   projetoId: number,
   text: string,
+  author?: string,
 ): Promise<void> {
   await db.query(
-    "INSERT INTO projeto_chats (projeto_id, role, texto, created_at) VALUES (?, ?, ?, NOW())",
-    [projetoId, ANSWER_ROLE, text],
+    "INSERT INTO projeto_chats (projeto_id, role, author, texto, created_at) VALUES (?, ?, ?, ?, NOW())",
+    [projetoId, ANSWER_ROLE, author ?? null, text],
   )
 }
 
@@ -297,12 +307,13 @@ export async function fetchProjectClarificationHistory(
   projetoId: number,
 ): Promise<ChatHistoryEntry[]> {
   const { rows } = await db.query(
-    "SELECT role, texto, created_at FROM projeto_chats " +
+    "SELECT role, author, texto, created_at FROM projeto_chats " +
     "WHERE projeto_id = ? AND role IN (?, ?) ORDER BY id ASC",
     [projetoId, CLARIFICATION_ROLE, ANSWER_ROLE],
   )
   return rows.map((row) => ({
     role: String(row.role ?? ""),
+    author: row.author == null ? null : String(row.author),
     texto: String(row.texto ?? ""),
     createdAt: String(row.created_at ?? ""),
   }))
@@ -336,8 +347,8 @@ export async function persistPlanDecision(
   const reasonPart = reason ? " — " + reason : ""
   const text = `${emoji} (por ${actor})${reasonPart}`
   await db.query(
-    "INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) VALUES (?, ?, ?, NOW())",
-    [databaseTaskId, ANSWER_ROLE, text],
+    "INSERT INTO tarefa_chats (tarefa_id, role, author, texto, created_at) VALUES (?, ?, ?, ?, NOW())",
+    [databaseTaskId, ANSWER_ROLE, actor, text],
   )
 }
 

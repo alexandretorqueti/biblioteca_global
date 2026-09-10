@@ -30,11 +30,12 @@ function createMockDb() {
       // INSERT into tarefa_chats
       if (normalized.startsWith("INSERT INTO tarefa_chats")) {
         chatIdSeq++
-        const [taskId, role, texto] = params
+        const [taskId, role, author, texto] = params
         chats.push({
           id: chatIdSeq,
           tarefa_id: taskId,
           role,
+          author: author ?? null,
           texto,
           created_at: new Date().toISOString(),
         })

@@ -440,6 +440,53 @@ export const motorTaskAnalystSessions = mysqlTable("motor_task_analyst_sessions"
 })
 
 /**
+ * Auditoria enriquecida de transições de tarefa.
+ * Complementa tarefas_status_historico com contexto completo:
+ * sessão do analista, proposta de plano, decisão do usuário,
+ * execução/worker, e última mensagem do chat.
+ */
+export const motorTaskTransitionAudit = mysqlTable("motor_task_transition_audit", {
+  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+  tarefaId: bigint("tarefa_id", { mode: "number", unsigned: true }).notNull().references(() => tarefas.id, { onDelete: "cascade" }),
+  transition: varchar("transition", { length: 50 }).notNull(),
+  statusAnterior: varchar("status_anterior", { length: 50 }).notNull(),
+  statusNovo: varchar("status_novo", { length: 50 }).notNull(),
+  analystSessionId: bigint("analyst_session_id", { mode: "number", unsigned: true }).references(() => motorTaskAnalystSessions.id, { onDelete: "set null" }),
+  planProposalId: bigint("plan_proposal_id", { mode: "number", unsigned: true }),
+  planProposalVersion: int("plan_proposal_version", { mode: "number", unsigned: true }),
+  decisionType: varchar("decision_type", { length: 30 }),
+  decisionActor: varchar("decision_actor", { length: 200 }),
+  decisionReason: text("decision_reason"),
+  executionId: varchar("execution_id", { length: 200 }),
+  workerId: varchar("worker_id", { length: 200 }),
+  lastChatMessageId: bigint("last_chat_message_id", { mode: "number", unsigned: true }),
+  motivo: varchar("motivo", { length: 500 }),
+  occurredAt: timestamp("occurred_at").notNull().defaultNow(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+})
+
+/**
+ * Propostas de plano do analista.
+ * Separa a representação estruturada do plano da execução efetiva.
+ * O analista apresenta uma proposta (status: proposed); o plano só é
+ * materializado em subtarefas após aprovação explícita do dono.
+ */
+export const motorPlanProposals = mysqlTable("motor_plan_proposals", {
+  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+  tarefaId: bigint("tarefa_id", { mode: "number", unsigned: true }).notNull().references(() => tarefas.id, { onDelete: "cascade" }),
+  version: int("version", { mode: "number", unsigned: true }).notNull().default(1),
+  status: varchar("status", { length: 20 }).notNull().default("proposed"),
+  subtasksJson: json("subtasks_json").notNull(),
+  coverageJson: json("coverage_json").notNull(),
+  proposedAt: timestamp("proposed_at").notNull(),
+  decidedAt: timestamp("decided_at"),
+  decidedBy: varchar("decided_by", { length: 120 }),
+  decisionReason: text("decision_reason"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+})
+
+/**
  * Histórico de entregas/erros/retornos por subtarefa.
  * Cada evento relevante (entrega iniciada, gate rejeitado, retorno para rework,
  * bloqueio, conclusão) grava uma linha nova — nunca sobrescreve o histórico anterior.
@@ -531,6 +578,7 @@ export const tarefaChats = mysqlTable("tarefa_chats", {
     .notNull()
     .references(() => tarefas.id, { onDelete: "cascade" }),
   role: varchar("role", { length: 20 }).notNull(), // user, assistant, system, analyst
+  author: varchar("author", { length: 200 }), // quem enviou (ex.: "alexandre", "analyst-gpt4")
   texto: text("texto").notNull(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 })
@@ -543,6 +591,7 @@ export const projetoChats = mysqlTable("projeto_chats", {
     .notNull()
     .references(() => projetosCaptados.id, { onDelete: "cascade" }),
   role: varchar("role", { length: 20 }).notNull(), // user, assistant, system, analyst
+  author: varchar("author", { length: 200 }), // quem enviou (ex.: "alexandre", "analyst-gpt4")
   texto: text("texto").notNull(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 })
