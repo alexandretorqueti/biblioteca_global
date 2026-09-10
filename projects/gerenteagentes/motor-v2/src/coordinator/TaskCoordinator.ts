@@ -1904,6 +1904,13 @@ export class TaskCoordinator {
       })
     })
     this.workerLauncher.on("worker_exit", (event: { executionId: string; code: number | null }) => {
+      // Verifica se a execução já está em processo de finalização
+      // (race condition: o worker pode exit após enviar "completed" mas antes
+      // do finishWorker remover do activeWorkers)
+      if (this.finalizingExecutions.has(event.executionId)) {
+        this.logger.info("Worker exit durante finalização (esperado): " + event.executionId, { executionId: event.executionId })
+        return
+      }
       if (this.activeWorkers.has(event.executionId)) {
         const reason = event.code === 0
           ? "Worker encerrou sem enviar o evento completed"
