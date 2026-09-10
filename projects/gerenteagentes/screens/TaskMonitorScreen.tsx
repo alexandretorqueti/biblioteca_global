@@ -37,7 +37,7 @@ import {
   useMediaQuery,
 } from "@mui/material"
 import { useTheme } from "@mui/material/styles"
-import { PlayArrowRounded, PauseRounded, ReplayRounded, LockOpenRounded, EditRounded, CloseRounded, ExpandMoreRounded, ExpandLessRounded, AddTaskRounded, SendRounded, VisibilityRounded } from "@mui/icons-material"
+import { PlayArrowRounded, PauseRounded, ReplayRounded, LockOpenRounded, EditRounded, CloseRounded, ExpandMoreRounded, ExpandLessRounded, AddTaskRounded, SendRounded, VisibilityRounded, PsychologyRounded } from "@mui/icons-material"
 import { DynamicForm } from "@biblioteca-global/ui"
 import { RealtimeClient, type RealtimeServerMessage } from "@biblioteca-global/api-client"
 import type { DynamicField, DynamicFormValues } from "@biblioteca-global/ui"
@@ -140,6 +140,29 @@ interface SubtaskSession {
   sessionKey?: string
   text: string
   messages: SessionMessage[]
+}
+
+interface AnalystSessionMessage {
+  role: string
+  text: string
+  sequenceNumber: number
+}
+
+interface AnalystSessionEntry {
+  executionOrder: number
+  model: string
+  sessionKey: string
+  status: string
+  openedAt: string
+  closedAt: string | null
+  closeReason: string | null
+  messages: AnalystSessionMessage[]
+  text: string
+}
+
+interface AnalystTaskSessionsResponse {
+  available: boolean
+  sessions: AnalystSessionEntry[]
 }
 
 interface MotorEvent {
@@ -312,6 +335,10 @@ export default function TaskMonitorScreen(): ReactNode {
   const [pausandoTodas, setPausandoTodas] = useState(false)
   const [retomandoTodas, setRetomandoTodas] = useState(false)
   const [bulkMessage, setBulkMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+  const [analystSessionOpen, setAnalystSessionOpen] = useState(false)
+  const [analystSessionLoading, setAnalystSessionLoading] = useState(false)
+  const [analystSessionError, setAnalystSessionError] = useState<string | null>(null)
+  const [analystSessionData, setAnalystSessionData] = useState<AnalystTaskSessionsResponse | null>(null)
   const mounted = useRef(true)
   const activeRealtimeTask = useRef<number | "">("")
 
@@ -1089,6 +1116,26 @@ export default function TaskMonitorScreen(): ReactNode {
     }
   }, [bundle, tarefaId])
 
+  const abrirSessoesAnalista = useCallback(async () => {
+    if (!bundle || tarefaId === "") return
+    setAnalystSessionOpen(true)
+    setAnalystSessionLoading(true)
+    setAnalystSessionError(null)
+    setAnalystSessionData(null)
+    try {
+      const data = await bundle.http.request<AnalystTaskSessionsResponse>(
+        "GET",
+        `/gerenteagentes/tarefas/${tarefaId}/sessoes-analista`,
+        { auth: "access" },
+      )
+      if (mounted.current) setAnalystSessionData(data)
+    } catch (e) {
+      if (mounted.current) setAnalystSessionError(e instanceof Error ? e.message : "Não foi possível carregar as sessões do analista.")
+    } finally {
+      if (mounted.current) setAnalystSessionLoading(false)
+    }
+  }, [bundle, tarefaId])
+
   /**
    * O Motor-v2 expõe os dados da tarefa, mas subtarefas podem chegar vazias
    * durante uma atualização gradual do proxy. A tabela do projeto é a fonte
@@ -1403,6 +1450,16 @@ export default function TaskMonitorScreen(): ReactNode {
                   data-testid="btn-unlock-task"
                 >
                   <LockOpenRounded fontSize="small" />
+                </IconButton>
+              </Tooltip>
+              <Tooltip title="Visualizar sessões do analista">
+                <IconButton
+                  size="small"
+                  aria-label="Visualizar sessões do analista"
+                  onClick={() => void abrirSessoesAnalista()}
+                  data-testid="btn-view-analyst-sessions"
+                >
+                  <PsychologyRounded fontSize="small" />
                 </IconButton>
               </Tooltip>
               <Chip size="small" label={statusMotor} color={corStatus(statusMotor)} data-testid="task-status-pill" />
@@ -1779,6 +1836,57 @@ export default function TaskMonitorScreen(): ReactNode {
             <Box component="pre" data-testid="session-content" sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: "65vh", overflow: "auto", m: 0, p: 2, bgcolor: "action.hover", borderRadius: 1, fontFamily: "monospace", fontSize: "0.85rem" }}>
               {sessionData.text}
             </Box>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={analystSessionOpen}
+        onClose={() => {
+          if (!analystSessionLoading) setAnalystSessionOpen(false)
+        }}
+        fullWidth
+        maxWidth="lg"
+        data-testid="analyst-session-dialog"
+      >
+        <DialogTitle sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <Box>Sessões do analista</Box>
+          <IconButton aria-label="Fechar sessões do analista" size="small" onClick={() => setAnalystSessionOpen(false)} disabled={analystSessionLoading}>
+            <CloseRounded />
+          </IconButton>
+        </DialogTitle>
+        <DialogContent>
+          {analystSessionLoading && <Stack direction="row" spacing={1} alignItems="center" data-testid="analyst-session-loading"><CircularProgress size={20} /><Typography>Carregando sessões do analista…</Typography></Stack>}
+          {analystSessionError && <Alert severity="error" data-testid="analyst-session-error">{analystSessionError}</Alert>}
+          {!analystSessionLoading && !analystSessionError && analystSessionData && !analystSessionData.available && (
+            <Typography color="text.secondary" data-testid="analyst-session-unavailable">Nenhuma sessão do analista registrada para esta tarefa.</Typography>
+          )}
+          {!analystSessionLoading && !analystSessionError && analystSessionData?.available && analystSessionData.sessions.length === 0 && (
+            <Typography color="text.secondary" data-testid="analyst-session-empty">Nenhuma sessão do analista encontrada.</Typography>
+          )}
+          {!analystSessionLoading && !analystSessionError && analystSessionData?.available && analystSessionData.sessions.length > 0 && (
+            <Stack spacing={2} data-testid="analyst-session-list">
+              {analystSessionData.sessions.map((session) => (
+                <Paper key={session.sessionKey} variant="outlined" sx={{ p: 2 }} data-testid={`analyst-session-${session.executionOrder}`}>
+                  <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+                    <PsychologyRounded fontSize="small" color="primary" />
+                    <Typography variant="subtitle2" fontWeight={700} data-testid={`analyst-session-model-${session.executionOrder}`}>
+                      Modelo: {session.model}
+                    </Typography>
+                    <Chip size="small" label={`Sessão ${session.executionOrder}`} color="primary" variant="outlined" />
+                    <Chip size="small" label={session.status} color={session.status === "active" ? "success" : session.status === "closed" ? "default" : "warning"} />
+                  </Stack>
+                  <Typography variant="caption" color="text.secondary" sx={{ mb: 1, display: "block" }}>
+                    Aberta: {new Date(session.openedAt).toLocaleString("pt-BR")}
+                    {session.closedAt ? ` · Encerrada: ${new Date(session.closedAt).toLocaleString("pt-BR")}` : ""}
+                    {session.closeReason ? ` · Motivo: ${session.closeReason}` : ""}
+                  </Typography>
+                  <Box component="pre" data-testid={`analyst-session-content-${session.executionOrder}`} sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: "40vh", overflow: "auto", m: 0, p: 2, bgcolor: "action.hover", borderRadius: 1, fontFamily: "monospace", fontSize: "0.85rem" }}>
+                    {session.text}
+                  </Box>
+                </Paper>
+              ))}
+            </Stack>
           )}
         </DialogContent>
       </Dialog>

@@ -390,6 +390,7 @@ class TaskWorker {
       const model = chain[modelIndex]!
       const sessionKey = formatSessionKey({ agentId: input.task.agentId, taskId: input.task.id, phase: "analysis", model: model.model, modelIndex, generation: 0 })
       let session
+      const executionOrder = modelIndex + 1
 
       try {
         session = await driver.createSession({
@@ -398,6 +399,10 @@ class TaskWorker {
           label: sessionKey,
           model: model.model,
         })
+
+        // Registra a sessão do analista no histórico persistente da tarefa.
+        // Cada modelo da escada (escalonamento) gera um registro distinto.
+        await this.openAnalystTaskSession(input.task.id, session, model.model, executionOrder)
 
         let contextFailedDueToUnavailable = false
         for (let chunkIndex = 0; chunkIndex < descriptionChunks.length; chunkIndex++) {
@@ -603,7 +608,12 @@ class TaskWorker {
         // análise falha. A próxima tentativa reutiliza a mesma sessão/chave,
         // permitindo comparar as respostas. Sessões de execução continuam
         // sendo encerradas nos respectivos finally abaixo.
-        if (session) this.log("info", "Sessão do analista preservada para auditoria: " + session.key)
+        if (session) {
+          this.log("info", "Sessão do analista preservada para auditoria: " + session.key)
+          // Persiste o histórico da sessão no banco para consulta futura,
+          // mesmo após a sessão operacional ser apagada.
+          await this.persistAnalystTaskSessionHistory(input.task.id, session, driver)
+        }
       }
     }
 
@@ -1070,6 +1080,74 @@ class TaskWorker {
   ): Promise<void> {
     if (!this.db || !failure) return
     await persistRemoteSessionFailure(this.db, input.task.id, input.task.agentId, subtask?.id, failure)
+  }
+
+  /**
+   * Registra uma sessão do analista no histórico persistente da tarefa.
+   * Cada modelo da escada (escalonamento) gera um registro distinto com
+   * executionOrder sequencial, permitindo reconstruir a ordem de execução.
+   */
+  private async openAnalystTaskSession(
+    taskId: string,
+    session: RuntimeSession,
+    model: string,
+    executionOrder: number,
+  ): Promise<void> {
+    if (!this.db) return
+    try {
+      await this.db.query(
+        "INSERT INTO analyst_task_sessions (tarefa_id, session_key, runtime_session_id, model, execution_order, status, opened_at, last_activity_at) " +
+        "VALUES (?, ?, ?, ?, ?, 'active', NOW(), NOW()) " +
+        "ON DUPLICATE KEY UPDATE runtime_session_id = VALUES(runtime_session_id), model = VALUES(model), status = 'active', last_activity_at = NOW(), closed_at = NULL, close_reason = NULL",
+        [taskId, session.key, session.sessionId ?? null, model, executionOrder],
+      )
+    } catch (error) {
+      this.log("warn", "Falha ao registrar sessão do analista no histórico: " + (error instanceof Error ? error.message : String(error)))
+    }
+  }
+
+  /**
+   * Persiste as mensagens da sessão do analista no histórico da tarefa.
+   * Permite consultar a sessão mesmo após a sessão operacional ser apagada.
+   */
+  private async persistAnalystTaskSessionHistory(
+    taskId: string,
+    session: RuntimeSession,
+    driver: ConsoleAgentRuntimeDriver,
+  ): Promise<void> {
+    if (!this.db) return
+    try {
+      const messages = await driver.getSessionHistory(session)
+      // Busca o ID da sessão registrada
+      const [rows] = await this.db.query(
+        "SELECT id FROM analyst_task_sessions WHERE session_key = ? ORDER BY execution_order DESC LIMIT 1",
+        [session.key],
+      ) as unknown as [Array<Record<string, unknown>>]
+      const sessionId = Number((rows[0] as Record<string, unknown> | undefined)?.id)
+      if (!Number.isInteger(sessionId) || sessionId <= 0) {
+        this.log("warn", "Sessão do analista não encontrada para persistir histórico: " + session.key)
+        return
+      }
+      for (let index = 0; index < messages.length; index += 1) {
+        const message = messages[index]!
+        const content = this.stringifySessionContent(message.content)
+        const hash = createHash("sha256").update(content).digest("hex")
+        const messageKey = String(message.id ?? `${index}:${message.role}:${hash}`)
+        await this.db.query(
+          "INSERT INTO analyst_task_session_messages (session_id, message_key, sequence_number, role, content, content_sha256, occurred_at) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?) " +
+          "ON DUPLICATE KEY UPDATE sequence_number = VALUES(sequence_number), role = VALUES(role), content = VALUES(content), content_sha256 = VALUES(content_sha256), occurred_at = VALUES(occurred_at)",
+          [sessionId, messageKey, index, String(message.role).slice(0, 30), content, hash, this.parseSessionTimestamp(message)],
+        )
+      }
+      // Marca a sessão como closed após persistir o histórico
+      await this.db.query(
+        "UPDATE analyst_task_sessions SET status = 'closed', closed_at = NOW(), close_reason = 'completed', last_activity_at = NOW() WHERE id = ?",
+        [sessionId],
+      )
+    } catch (error) {
+      this.log("warn", "Falha ao persistir histórico da sessão do analista: " + (error instanceof Error ? error.message : String(error)))
+    }
   }
 
   private async openDeveloperSession(subtaskId: number, model: string, session: RuntimeSession): Promise<void> {

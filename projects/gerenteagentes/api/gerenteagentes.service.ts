@@ -31,6 +31,8 @@ import {
   bloqueios,
   motorConfiguracoes,
   taskRuntimeFacts,
+  analystTaskSessions,
+  analystTaskSessionMessages,
 } from '../schema';
 import {
   MOTOR_CONFIGURACOES,
@@ -174,6 +176,76 @@ export class GerenteAgentesService {
       messages: normalized,
       text: normalized.map((message) => `[${message.role}]\n${message.text}`).join('\n\n'),
     };
+  }
+
+  /**
+   * Consulta o histórico persistido das sessões do analista no nível da tarefa.
+   * Retorna todas as sessões em ordem de execução (escalonamentos incluídos),
+   * com o nome do modelo no início de cada registro. Funciona mesmo após a
+   * sessão operacional ser apagada, pois os dados estão persistidos em banco.
+   */
+  async sessoesAnalistaTarefa(projeto: ProjetoResumo, tarefaId: number) {
+    const db = await this.dbDoMotor();
+    const [tarefa] = await db
+      .select({ projetoId: tarefas.projetoId })
+      .from(tarefas)
+      .where(eq(tarefas.id, tarefaId))
+      .limit(1);
+
+    if (!tarefa) throw new NotFoundException('Tarefa não encontrada');
+    if (tarefa.projetoId !== projeto.id) throw new NotFoundException('Tarefa não encontrada');
+
+    const sessions = await db
+      .select({
+        id: analystTaskSessions.id,
+        sessionKey: analystTaskSessions.sessionKey,
+        modelo: analystTaskSessions.modelo,
+        executionOrder: analystTaskSessions.executionOrder,
+        status: analystTaskSessions.status,
+        openedAt: analystTaskSessions.openedAt,
+        closedAt: analystTaskSessions.closedAt,
+        closeReason: analystTaskSessions.closeReason,
+      })
+      .from(analystTaskSessions)
+      .where(eq(analystTaskSessions.tarefaId, tarefaId))
+      .orderBy(asc(analystTaskSessions.executionOrder));
+
+    if (sessions.length === 0) {
+      return { available: false, sessions: [] };
+    }
+
+    const result = [];
+    for (const session of sessions) {
+      const messages = await db
+        .select({
+          role: analystTaskSessionMessages.role,
+          content: analystTaskSessionMessages.content,
+          sequenceNumber: analystTaskSessionMessages.sequenceNumber,
+        })
+        .from(analystTaskSessionMessages)
+        .where(eq(analystTaskSessionMessages.sessionId, session.id))
+        .orderBy(asc(analystTaskSessionMessages.sequenceNumber));
+
+      const normalizedMessages = messages.map((m) => ({
+        role: m.role,
+        text: m.content,
+        sequenceNumber: m.sequenceNumber,
+      }));
+
+      result.push({
+        executionOrder: session.executionOrder,
+        model: session.modelo,
+        sessionKey: session.sessionKey,
+        status: session.status,
+        openedAt: session.openedAt,
+        closedAt: session.closedAt,
+        closeReason: session.closeReason,
+        messages: normalizedMessages,
+        text: normalizedMessages.map((m) => `[${m.role}]\n${m.text}`).join('\n\n'),
+      });
+    }
+
+    return { available: true, sessions: result };
   }
 
   /**

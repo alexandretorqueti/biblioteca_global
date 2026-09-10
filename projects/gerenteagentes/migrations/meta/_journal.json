@@ -204,6 +204,20 @@
       "when": 1788969067076,
       "tag": "0029_task_runtime_facts",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "5",
+      "when": 1788969067077,
+      "tag": "0027_motor_session_failure_diagnostics",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "5",
+      "when": 1788969067078,
+      "tag": "0028_analyst_task_sessions",
+      "breakpoints": true
     }
   ]
 }
