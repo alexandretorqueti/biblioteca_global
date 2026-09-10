@@ -926,6 +926,53 @@ describe("TaskFlowMap — Skeleton loaders (7.1)", () => {
   })
 })
 
+describe("TaskFlowMap — Tarefas pausadas sem subtarefas vão para Rascunhos", () => {
+  it("tarefa paused sem subtarefas (subtaskCount=0) aparece na estação draft", () => {
+    const tarefasComPausada: FlowTask[] = [
+      { id: 900, titulo: "Pausada sem subtarefas", status: "paused", projetoId: 1, subtaskCount: 0 },
+    ]
+    view(tarefasComPausada)
+    expect(screen.getByTestId("flow-count-draft")).toHaveTextContent("1")
+    expect(screen.getByTestId("flow-count-waiting")).toHaveTextContent("0")
+  })
+
+  it("tarefa paused com subtaskCount undefined aparece na estação draft", () => {
+    const tarefasComPausada: FlowTask[] = [
+      { id: 901, titulo: "Pausada sem subtaskCount", status: "paused", projetoId: 1 },
+    ]
+    view(tarefasComPausada)
+    expect(screen.getByTestId("flow-count-draft")).toHaveTextContent("1")
+    expect(screen.getByTestId("flow-count-waiting")).toHaveTextContent("0")
+  })
+
+  it("tarefa paused com subtarefas (subtaskCount>0) aparece na estação waiting", () => {
+    const tarefasComPausada: FlowTask[] = [
+      { id: 902, titulo: "Pausada com subtarefas", status: "paused", projetoId: 1, subtaskCount: 3 },
+    ]
+    view(tarefasComPausada)
+    expect(screen.getByTestId("flow-count-draft")).toHaveTextContent("0")
+    expect(screen.getByTestId("flow-count-waiting")).toHaveTextContent("1")
+  })
+
+  it("outros status não são afetados pela lógica de paused", () => {
+    const tarefasVariadas: FlowTask[] = [
+      { id: 903, titulo: "Running", status: "running", projetoId: 1, subtaskCount: 0 },
+      { id: 904, titulo: "Draft", status: "draft", projetoId: 1, subtaskCount: 0 },
+      { id: 905, titulo: "Completed", status: "completed", projetoId: 1, subtaskCount: 5 },
+    ]
+    view(tarefasVariadas)
+    expect(screen.getByTestId("flow-count-running")).toHaveTextContent("1")
+    expect(screen.getByTestId("flow-count-draft")).toHaveTextContent("1")
+    expect(screen.getByTestId("flow-count-completed")).toHaveTextContent("1")
+  })
+
+  it("subtitle da estação draft menciona 'pausadas sem subtarefas'", () => {
+    view()
+    const draftStation = screen.getByTestId("flow-station-draft")
+    expect(draftStation).toHaveTextContent("não iniciadas ou pausadas sem subtarefas")
+  })
+})
+
 describe("TaskFlowMap — Paginação infinita (10 em 10 com scroll)", () => {
   function gerarTarefasPlanned(qtd: number): FlowTask[] {
     return Array.from({ length: qtd }, (_, i) => ({
