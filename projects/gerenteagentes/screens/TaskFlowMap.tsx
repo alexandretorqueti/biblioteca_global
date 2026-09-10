@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
+  AccountTreeRounded,
   ArrowDownwardRounded,
   ArrowForwardRounded,
   ClearRounded,
@@ -10,7 +11,7 @@ import {
 } from "@mui/icons-material"
 import { Box, Button, Chip, FormControl, InputLabel, MenuItem, Paper, Select, Stack, TextField, Tooltip, Typography } from "@mui/material"
 import { taskStatusLabel } from "../motor-v2/src/shared/task-statuses"
-import { deriveTaskPriority, type Prioridade } from "./taskFlowHelpers"
+import { calcularMetricas, deriveTaskPriority, type Prioridade } from "./taskFlowHelpers"
 
 export interface FlowTask {
   id: number
@@ -50,6 +51,7 @@ interface TaskFlowMapProps {
   projetos?: ProjetoInfo[]
   filtros?: FiltrosMapa
   onFiltrosChange?: (filtros: FiltrosMapa) => void
+  aoVivo?: boolean
 }
 
 interface FlowStation {
@@ -92,6 +94,31 @@ const LEGENDA_ITEMS = [
   { tone: "danger" as const, label: "Perigo", emoji: "🔴" },
   { tone: "active" as const, label: "Ativo", emoji: "🔵" },
 ] as const
+
+// Mapeia id de estação para tone (para cores das barras do dashboard)
+function estacaoToTone(estacaoId: string): FlowStation["tone"] {
+  const allStations = [...MAIN_FLOW, ...SIDE_FLOW]
+  const station = allStations.find((s) => s.id === estacaoId)
+  return station?.tone ?? "neutral"
+}
+
+// Mapeia tone para cor CSS (para as barras do dashboard)
+function toneToColor(tone: FlowStation["tone"]): string {
+  switch (tone) {
+    case "active": return "#1976d2" // primary.main
+    case "success": return "#2e7d32" // success.dark
+    case "warning": return "#ed6c02" // warning.main
+    case "danger": return "#d32f2f" // error.main
+    default: return "#9e9e9e" // grey
+  }
+}
+
+// Rótulo legível para o id da estação (para tooltips do dashboard)
+function estacaoLabel(estacaoId: string): string {
+  const allStations = [...MAIN_FLOW, ...SIDE_FLOW]
+  const station = allStations.find((s) => s.id === estacaoId)
+  return station?.label ?? estacaoId
+}
 
 function taskDescription(task: FlowTask): string {
   return typeof task.descricao === "string" && task.descricao.trim()
@@ -194,7 +221,7 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, l
   )
 }
 
-export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", motorActivities = [], onSelectTask, projetos = [], filtros: filtrosExternos, onFiltrosChange }: TaskFlowMapProps) {
+export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", motorActivities = [], onSelectTask, projetos = [], filtros: filtrosExternos, onFiltrosChange, aoVivo = true }: TaskFlowMapProps) {
   const previousStatuses = useRef(new Map<number, string>())
   const [movements, setMovements] = useState<Array<{ id: number; from: string; to: string }>>([])
   const [legendaAtiva, setLegendaAtiva] = useState<FlowStation["tone"] | null>(null)
@@ -269,6 +296,9 @@ export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", moto
   const movingIds = useMemo(() => new Set(movements.map((movement) => movement.id)), [movements])
   const activeAiCount = useMemo(() => tarefas.filter((task) => ACTIVE_AI_STATUSES.has(task.status)).length, [tarefas])
 
+  // Métricas consolidadas para o cabeçalho e dashboard
+  const metricas = useMemo(() => calcularMetricas(tarefas), [tarefas])
+
   // Filtra tarefas baseado nos filtros ativos
   const tarefasFiltradas = useMemo(() => {
     return tarefas.filter((task) => {
@@ -318,10 +348,149 @@ export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", moto
       }}
       data-testid="task-flow-map"
     >
-      <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" spacing={1} sx={{ mb: 2 }}>
-        <Box><Typography variant="h6" fontWeight={750}>Mapa Vivo da Operação</Typography><Typography variant="body2" color="text.secondary">Acompanhe as tarefas percorrendo o fluxo em tempo real.</Typography></Box>
-        <Stack direction="row" spacing={1} alignItems="center" data-testid="flow-ai-activity"><SettingsRounded sx={{ color: activeAiCount ? "warning.main" : "text.disabled", animation: activeAiCount ? "legend-spin 2s linear infinite" : "none", "@keyframes legend-spin": { to: { transform: "rotate(360deg)" } } }} /><Typography variant="caption" color="text.secondary">{activeAiCount ? `IA trabalhando (${activeAiCount})` : "Nenhuma IA trabalhando"}</Typography></Stack>
-      </Stack>
+      {/* ═══ Cabeçalho impactante (1.1) ═══ */}
+      <Box sx={{ mb: 2 }} data-testid="map-header">
+        <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" alignItems={{ xs: "flex-start", sm: "center" }} spacing={1}>
+          <Stack direction="row" spacing={1.5} alignItems="center">
+            <AccountTreeRounded sx={{ fontSize: 32, color: "primary.main" }} aria-hidden="true" />
+            <Box>
+              <Stack direction="row" spacing={1} alignItems="center">
+                <Typography variant="h6" fontWeight={800} sx={{ fontSize: { xs: "1.15rem", sm: "1.25rem" } }}>
+                  Mapa Vivo da Operação
+                </Typography>
+                {aoVivo && (
+                  <Chip
+                    label="AO VIVO"
+                    size="small"
+                    color="error"
+                    data-testid="map-badge-ao-vivo"
+                    sx={{
+                      fontWeight: 700,
+                      fontSize: "0.65rem",
+                      height: 22,
+                      animation: "map-badge-ao-vivo-pulse 2s ease-in-out infinite",
+                      "@keyframes map-badge-ao-vivo-pulse": {
+                        "0%, 100%": { opacity: 1, transform: "scale(1)" },
+                        "50%": { opacity: 0.7, transform: "scale(1.05)" },
+                      },
+                    }}
+                  />
+                )}
+              </Stack>
+              <Typography variant="body2" color="text.secondary">
+                Acompanhe as tarefas percorrendo o fluxo em tempo real.
+              </Typography>
+            </Box>
+          </Stack>
+          {/* Métricas rápidas no topo (1.1) */}
+          <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap" useFlexGap data-testid="map-metricas-rapidas">
+            <Typography variant="body2" data-testid="map-metric-total">
+              <Box component="span" sx={{ fontWeight: 800, fontFamily: "'Roboto Mono', monospace", fontSize: "1.1rem" }}>{metricas.total}</Box> total
+            </Typography>
+            <Typography variant="body2" data-testid="map-metric-andamento">
+              <Box component="span" sx={{ fontWeight: 800, fontFamily: "'Roboto Mono', monospace", fontSize: "1.1rem", color: "primary.main" }}>{metricas.emAndamento}</Box> em andamento
+            </Typography>
+            <Typography variant="body2" data-testid="map-metric-hoje">
+              <Box component="span" sx={{ fontWeight: 800, fontFamily: "'Roboto Mono', monospace", fontSize: "1.1rem", color: "success.main" }}>{metricas.concluidasHoje}</Box> concluídas hoje
+            </Typography>
+          </Stack>
+        </Stack>
+        {/* Separador visual com gradiente */}
+        <Box
+          sx={{
+            mt: 1.5,
+            height: 2,
+            background: "linear-gradient(90deg, var(--mui-palette-primary-main) 0%, transparent 100%)",
+            borderRadius: 1,
+          }}
+          data-testid="map-header-separator"
+          aria-hidden="true"
+        />
+      </Box>
+
+      {/* ═══ Dashboard compacto (3.1) ═══ */}
+      <Paper
+        variant="outlined"
+        sx={{ p: 1.5, mb: 2, bgcolor: "action.hover", borderRadius: 2 }}
+        data-testid="map-dashboard"
+      >
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems="center" flexWrap="wrap" useFlexGap>
+          {/* Total de tarefas ativas */}
+          <Stack alignItems="center" spacing={0.5} data-testid="map-dashboard-total-ativas">
+            <Typography variant="caption" color="text.secondary">Ativas</Typography>
+            <Typography variant="h6" fontWeight={800} sx={{ fontFamily: "'Roboto Mono', monospace" }}>
+              {metricas.total}
+            </Typography>
+          </Stack>
+
+          {/* Mini gráfico de barras por fase */}
+          <Stack direction="row" spacing={0.5} alignItems="flex-end" sx={{ height: 48 }} data-testid="map-dashboard-barras">
+            {Object.entries(metricas.porEstacao).map(([estacao, count]) => {
+              const maxCount = Math.max(1, ...Object.values(metricas.porEstacao))
+              const altura = count > 0 ? Math.max(6, (count / maxCount) * 40) : 4
+              const tone = estacaoToTone(estacao)
+              const cor = toneToColor(tone)
+              return (
+                <Tooltip key={estacao} title={`${estacaoLabel(estacao)}: ${count}`} arrow placement="top">
+                  <Box
+                    sx={{
+                      width: 18,
+                      height: altura,
+                      bgcolor: cor,
+                      borderRadius: "3px 3px 0 0",
+                      transition: "height 300ms ease",
+                      opacity: count > 0 ? 1 : 0.3,
+                    }}
+                    data-testid={`map-dashboard-bar-${estacao}`}
+                    aria-label={`${estacaoLabel(estacao)}: ${count}`}
+                  />
+                </Tooltip>
+              )
+            })}
+          </Stack>
+
+          {/* Tempo médio de execução */}
+          <Stack alignItems="center" spacing={0.5} data-testid="map-dashboard-tempo-medio">
+            <Typography variant="caption" color="text.secondary">Tempo médio</Typography>
+            <Typography variant="body2" fontWeight={700} sx={{ fontFamily: "'Roboto Mono', monospace" }}>
+              {metricas.tempoMedioExecucao}
+            </Typography>
+          </Stack>
+
+          {/* Tarefas bloqueadas (destaque vermelho) */}
+          <Stack alignItems="center" spacing={0.5} data-testid="map-metric-bloqueadas">
+            <Typography variant="caption" color="text.secondary">Bloqueadas</Typography>
+            <Typography
+              variant="h6"
+              fontWeight={metricas.bloqueadas > 0 ? 800 : 700}
+              sx={{
+                fontFamily: "'Roboto Mono', monospace",
+                color: metricas.bloqueadas > 0 ? "error.main" : "text.secondary",
+              }}
+            >
+              {metricas.bloqueadas}
+            </Typography>
+          </Stack>
+
+          {/* IA trabalhando (preservado do flow-ai-activity) */}
+          <Stack direction="row" spacing={0.5} alignItems="center" data-testid="flow-ai-activity">
+            <SettingsRounded sx={{ color: activeAiCount ? "warning.main" : "text.disabled", animation: activeAiCount ? "legend-spin 2s linear infinite" : "none", "@keyframes legend-spin": { to: { transform: "rotate(360deg)" } }, fontSize: 18 }} />
+            <Typography variant="caption" color="text.secondary">
+              {activeAiCount ? `IA trabalhando (${activeAiCount})` : "Nenhuma IA trabalhando"}
+            </Typography>
+          </Stack>
+
+          {/* Atividade do Motor (preservado do flow-motor-activity) */}
+          <Stack direction="row" spacing={0.5} alignItems="center" data-testid="flow-motor-activity">
+            <SettingsRounded sx={{ color: motorActivities.length ? "info.main" : "text.disabled", animation: motorActivities.length ? "motor-gear-spin 2s linear infinite" : "none", "@keyframes motor-gear-spin": { to: { transform: "rotate(360deg)" } }, fontSize: 18 }} />
+            <Typography variant="caption" color="text.secondary">
+              {motorActivities.length
+                ? motorActivities.map((activity) => `${activity.phase === "verify" ? "verificando" : "deployando"} ${activity.taskId}`).join(" · ")
+                : "Motor sem verificações ou deploys"}
+            </Typography>
+          </Stack>
+        </Stack>
+      </Paper>
 
       {/* Barra de filtro integrada ao topo */}
       <Paper
@@ -408,15 +577,6 @@ export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", moto
           )}
         </Stack>
       </Paper>
-
-      <Stack direction="row" spacing={1} alignItems="center" data-testid="flow-motor-activity" sx={{ mb: 2 }}>
-        <SettingsRounded sx={{ color: motorActivities.length ? "info.main" : "text.disabled", animation: motorActivities.length ? "motor-gear-spin 2s linear infinite" : "none", "@keyframes motor-gear-spin": { to: { transform: "rotate(360deg)" } } }} />
-        <Typography variant="caption" color="text.secondary">
-          {motorActivities.length
-            ? motorActivities.map((activity) => `${activity.phase === "verify" ? "verificando" : "deployando"} ${activity.taskId}`).join(" · ")
-            : "Motor sem verificações ou deploys"}
-        </Typography>
-      </Stack>
 
       {movements.map((movement) => <Chip key={movement.id} color="info" sx={{ mb: 1.5, mr: 1 }} label={`#${movement.id} · ${taskStatusLabel(movement.from)} → ${taskStatusLabel(movement.to)}`} data-testid={`flow-movement-${movement.id}`} />)}
 
