@@ -476,13 +476,19 @@ export default function TaskMonitorScreen(): ReactNode {
     const intervalId = setInterval(() => {
       void carregarTarefas()
       void carregarAtividadeMotor()
+      // Atualiza também os detalhes da tarefa selecionada
+      if (tarefaId !== "") {
+        void carregarDetail(tarefaId)
+        void carregarSubtarefasDb(tarefaId)
+        void carregarChat(tarefaId)
+      }
     }, 5000) // 5 segundos
     
     return () => {
       mounted.current = false
       clearInterval(intervalId)
     }
-  }, [carregarProjetos, carregarTarefas, carregarAtividadeMotor])
+  }, [carregarProjetos, carregarTarefas, carregarAtividadeMotor, tarefaId, carregarDetail, carregarSubtarefasDb, carregarChat])
 
   useEffect(() => {
     if (tarefaId === "") {
@@ -1062,9 +1068,10 @@ export default function TaskMonitorScreen(): ReactNode {
     })
   }, [tarefas, statusFiltro, buscaTarefa])
   const statusMotor = detail?.task?.status ?? tarefaSelecionada?.status ?? "—"
-  const podeIniciar = STATUS_INICIO_PERMITIDO.has(statusMotor)
-  const podePausar = statusMotor !== "deployed"
-  const podeRetomar = statusMotor === "paused"
+  const isPaused = statusMotor === "paused"
+  const podeIniciar = !isPaused && STATUS_INICIO_PERMITIDO.has(statusMotor)
+  const podePausar = !isPaused && statusMotor !== "deployed"
+  const podeRetomar = isPaused
 
   const editInitialValues = useMemo<DynamicFormValues>(() => {
     if (!tarefaSelecionada) return { titulo: "", descricao: "", tipo: "desenvolvimento", status: "draft", dependsOnTaskId: "" }
@@ -1377,6 +1384,14 @@ export default function TaskMonitorScreen(): ReactNode {
           {detail && !detail.exists && (
             <Alert severity="info" sx={{ mt: 2 }} data-testid="not-on-motor">
               {detail.message ?? "Tarefa ainda não enviada ao motor."} Clique em <b>Iniciar</b> para começar.
+            </Alert>
+          )}
+
+          {detail?.exists && statusMotor === "paused" && (
+            <Alert severity="warning" sx={{ mt: 2 }} data-testid="task-paused-banner">
+              <Typography variant="body2">
+                <b>⏸ Tarefa pausada:</b> A execução está suspensa. Clique em <b>Retomar</b> para continuar.
+              </Typography>
             </Alert>
           )}
 

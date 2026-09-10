@@ -1381,6 +1381,12 @@ class TaskWorker {
       }
     }
 
+    // Correção de baseline pode alterar qualquer arquivo do repositório
+    const isBaselineCorrection = input.subtask?.correctionFingerprint?.startsWith("baseline:") ?? false
+    if (isBaselineCorrection) {
+      return null
+    }
+
     const changed = this.listChangedPaths(repoPath)
     const outOfProject = projectRelativePath === ""
       ? []
