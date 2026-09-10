@@ -184,7 +184,8 @@ const STATUS_BLOQUEADAS = new Set(["blocked", "failed"])
  * Estações do fluxo principal e lateral (para contagem por estação).
  */
 const ESTACOES = {
-  planning: ["planned"],
+  draft: ["draft"],
+  planned: ["planned"],
   analyzing: ["analyzing"],
   ready: ["ready"],
   running: ["running"],
