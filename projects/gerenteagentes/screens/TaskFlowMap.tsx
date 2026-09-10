@@ -21,6 +21,8 @@ import {
   UnfoldLessRounded,
   UnfoldMoreRounded,
   WarningAmberRounded,
+  RemoveRounded,
+  AddRounded,
 } from "@mui/icons-material"
 import { Avatar, Box, Button, Chip, Collapse, FormControl, IconButton, InputLabel, LinearProgress, MenuItem, Paper, Select, Skeleton, Stack, TextField, Tooltip, Typography, useMediaQuery } from "@mui/material"
 import { useTheme } from "@mui/material/styles"
@@ -346,6 +348,7 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, l
   onResumeTask?: (id: number) => void
 }) {
   const [expandida, setExpandida] = useState(false)
+  const [compactoLocal, setCompactoLocal] = useState<boolean>(true)
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
   const stationTasks = tarefas.filter((task) => station.statuses.includes(getEffectiveStatus(task)))
   // Tarefas da estação que passam nos filtros
@@ -422,31 +425,50 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, l
               {!compacto && <Typography variant="caption" sx={{ opacity: 0.78 }}>{station.subtitle}</Typography>}
             </Box>
           </Stack>
-          {/* Contador em círculo/badge monoespaçado (1.2) */}
-          <Box
-            data-testid={`flow-count-${station.id}`}
-            sx={{
-              minWidth: 36,
-              height: 36,
-              borderRadius: "50%",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              bgcolor: `${borderColor}18`,
-              border: `2px solid ${borderColor}`,
-              fontFamily: "'Roboto Mono', ui-monospace, monospace",
-              fontWeight: 800,
-              fontSize: "1rem",
-              color: borderColor,
-              flexShrink: 0,
-            }}
-          >
-            {stationTasks.length}
-          </Box>
+          {/* Contador em círculo/badge monoespaçado (1.2) + botão de compactação individual */}
+          <Stack direction="row" spacing={0.5} alignItems="center">
+            <Box
+              data-testid={`flow-count-${station.id}`}
+              sx={{
+                minWidth: 36,
+                height: 36,
+                borderRadius: "50%",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                bgcolor: `${borderColor}18`,
+                border: `2px solid ${borderColor}`,
+                fontFamily: "'Roboto Mono', ui-monospace, monospace",
+                fontWeight: 800,
+                fontSize: "1rem",
+                color: borderColor,
+                flexShrink: 0,
+              }}
+            >
+              {stationTasks.length}
+            </Box>
+            <Tooltip title={compactoLocal ? "Compactar estação" : "Expandir estação"}>
+              <IconButton
+                size="small"
+                data-testid={`flow-station-${station.id}-compact`}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setCompactoLocal((prev) => !prev)
+                }}
+                sx={{
+                  padding: 0.25,
+                  color: borderColor,
+                  "&:hover": { bgcolor: `${borderColor}14` },
+                }}
+              >
+                {compactoLocal ? <RemoveRounded sx={{ fontSize: 16 }} /> : <AddRounded sx={{ fontSize: 16 }} />}
+              </IconButton>
+            </Tooltip>
+          </Stack>
         </Stack>
       </Box>
       {/* Modo compacto: não mostra cards */}
-      {!compacto && (
+      {!compacto && compactoLocal && (
         <>
           {station.statuses.length > 1 && (
             <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap sx={{ mt: 1 }}>
