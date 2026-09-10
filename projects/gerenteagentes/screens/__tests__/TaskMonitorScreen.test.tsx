@@ -1277,3 +1277,365 @@ describe("TaskMonitorScreen — Lista de subtarefas (scope, critérios, workspac
     expect(screen.getByTestId("workspace-status-1")).toHaveTextContent("clean")
   })
 })
+
+describe("TaskMonitorScreen — ST-5 (resultado final consolidado)", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", mockFetch)
+    mockFetch.mockReset()
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    delete globalThis.__bundleFalso
+  })
+
+  function renderScreen() {
+    return render(
+      <BibliotecaThemeProvider>
+        <TaskMonitorScreen />
+      </BibliotecaThemeProvider>,
+    )
+  }
+
+  function tarefaFactory(
+    id: number,
+    titulo: string,
+    status: string,
+    projetoId: number,
+    extra?: { descricao?: string | null; tipo?: string },
+  ) {
+    return {
+      id,
+      titulo,
+      status,
+      projetoId,
+      descricao: extra?.descricao ?? null,
+      tipo: extra?.tipo ?? "desenvolvimento",
+      dependsOnTaskId: null,
+      createdAt: "2026-08-24T12:00:00Z",
+      updatedAt: "2026-08-24T12:00:00Z",
+    } as const
+  }
+
+  it("exibe o resultado final consolidado para tarefa de verificacao com status done", async () => {
+    const tarefas = [tarefaFactory(1, "Verificar integridade", "completed", 1, { tipo: "verificacao" })]
+    const motorDetail = {
+      motorId: "m1",
+      exists: true,
+      task: {
+        id: "task-1",
+        status: "completed",
+        title: "Verificar integridade",
+        finalResult: {
+          status: "done",
+          summary: "Todas as verificações passaram com sucesso",
+          reason: "Integridade confirmada em todas as tabelas",
+        },
+      },
+      subtasks: [],
+      currentSubTask: null,
+      events: [],
+    }
+
+    const bundle = {
+      http: {
+        request: async (method: string, path: string) => {
+          if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
+          if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
+          return {}
+        },
+      },
+    } as never
+
+    globalThis.__bundleFalso = bundle
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("task-final-result")).toBeInTheDocument()
+    })
+
+    const alert = screen.getByTestId("task-final-result")
+    expect(alert).toHaveTextContent("Resultado final consolidado")
+    expect(alert).toHaveTextContent("Todas as verificações passaram com sucesso")
+    expect(alert).toHaveTextContent("Motivo: Integridade confirmada em todas as tabelas")
+    // Alert de sucesso deve ter classe MuiAlert-colorSuccess
+    expect(alert.className).toMatch(/MuiAlert-colorSuccess/)
+  })
+
+  it("exibe o resultado final consolidado para tarefa de automacao com status need_help", async () => {
+    const tarefas = [tarefaFactory(2, "Automatizar deploy", "completed", 1, { tipo: "automacao" })]
+    const motorDetail = {
+      motorId: "m2",
+      exists: true,
+      task: {
+        id: "task-2",
+        status: "completed",
+        title: "Automatizar deploy",
+        finalResult: {
+          status: "need_help",
+          summary: "Precisa configuração adicional",
+          reason: "Faltam credenciais de deploy",
+        },
+      },
+      subtasks: [],
+      currentSubTask: null,
+      events: [],
+    }
+
+    const bundle = {
+      http: {
+        request: async (method: string, path: string) => {
+          if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
+          if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
+          return {}
+        },
+      },
+    } as never
+
+    globalThis.__bundleFalso = bundle
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("task-final-result")).toBeInTheDocument()
+    })
+
+    const alert = screen.getByTestId("task-final-result")
+    expect(alert).toHaveTextContent("Resultado final consolidado")
+    expect(alert).toHaveTextContent("Precisa configuração adicional")
+    expect(alert).toHaveTextContent("Motivo: Faltam credenciais de deploy")
+    // Alert de warning deve ter classe MuiAlert-colorWarning
+    expect(alert.className).toMatch(/MuiAlert-colorWarning/)
+  })
+
+  it("exibe o resultado final consolidado para tarefa de verificacao com status blocked_environment", async () => {
+    const tarefas = [tarefaFactory(3, "Verificar ambiente", "blocked", 1, { tipo: "verificacao" })]
+    const motorDetail = {
+      motorId: "m3",
+      exists: true,
+      task: {
+        id: "task-3",
+        status: "blocked",
+        title: "Verificar ambiente",
+        finalResult: {
+          status: "blocked_environment",
+          summary: "Ambiente indisponível",
+          reason: "Banco de dados fora do ar",
+        },
+      },
+      subtasks: [],
+      currentSubTask: null,
+      events: [],
+    }
+
+    const bundle = {
+      http: {
+        request: async (method: string, path: string) => {
+          if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
+          if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
+          return {}
+        },
+      },
+    } as never
+
+    globalThis.__bundleFalso = bundle
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("task-final-result")).toBeInTheDocument()
+    })
+
+    const alert = screen.getByTestId("task-final-result")
+    expect(alert).toHaveTextContent("Resultado final consolidado")
+    expect(alert).toHaveTextContent("Ambiente indisponível")
+    expect(alert).toHaveTextContent("Motivo: Banco de dados fora do ar")
+    // Alert de error deve ter classe MuiAlert-colorError
+    expect(alert.className).toMatch(/MuiAlert-colorError/)
+  })
+
+  it("não exibe o resultado final quando tarefa de verificacao não tem resultado final disponível", async () => {
+    const tarefas = [tarefaFactory(4, "Verificar integridade", "running", 1, { tipo: "verificacao" })]
+    const motorDetail = {
+      motorId: "m4",
+      exists: true,
+      task: {
+        id: "task-4",
+        status: "running",
+        title: "Verificar integridade",
+        finalResult: null,
+      },
+      subtasks: [],
+      currentSubTask: null,
+      events: [],
+    }
+
+    const bundle = {
+      http: {
+        request: async (method: string, path: string) => {
+          if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
+          if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
+          return {}
+        },
+      },
+    } as never
+
+    globalThis.__bundleFalso = bundle
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("task-monitor-screen")).toBeInTheDocument()
+    })
+
+    // O Alert de resultado final não deve estar presente
+    expect(screen.queryByTestId("task-final-result")).not.toBeInTheDocument()
+  })
+
+  it("não exibe o resultado final para tarefa de desenvolvimento mesmo com finalResult populado", async () => {
+    const tarefas = [tarefaFactory(5, "Implementar feature", "completed", 1, { tipo: "desenvolvimento" })]
+    const motorDetail = {
+      motorId: "m5",
+      exists: true,
+      task: {
+        id: "task-5",
+        status: "completed",
+        title: "Implementar feature",
+        finalResult: {
+          status: "done",
+          summary: "Feature implementada",
+          reason: "",
+        },
+      },
+      subtasks: [
+        { seq: 1, title: "Sub 1", status: "verified" },
+      ],
+      currentSubTask: null,
+      events: [],
+    }
+
+    const bundle = {
+      http: {
+        request: async (method: string, path: string) => {
+          if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
+          if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
+          return {}
+        },
+      },
+    } as never
+
+    globalThis.__bundleFalso = bundle
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("subtask-table")).toBeInTheDocument()
+    })
+
+    // O Alert de resultado final não deve estar presente para tarefas de desenvolvimento
+    expect(screen.queryByTestId("task-final-result")).not.toBeInTheDocument()
+    // Mas a tabela de subtarefas deve estar presente
+    expect(screen.getByTestId("subtask-table")).toBeInTheDocument()
+  })
+
+  it("preserva acesso às subtarefas para tarefa de desenvolvimento enquanto exibe resultado final para verificacao", async () => {
+    // Para tarefa de desenvolvimento: subtarefas visíveis, resultado final não
+    const tarefasDev = [tarefaFactory(6, "Tarefa Dev", "completed", 1, { tipo: "desenvolvimento" })]
+    const motorDetailDev = {
+      motorId: "m6",
+      exists: true,
+      task: {
+        id: "task-6",
+        status: "completed",
+        title: "Tarefa Dev",
+        finalResult: null,
+      },
+      subtasks: [
+        { seq: 1, title: "Sub 1", status: "verified" },
+        { seq: 2, title: "Sub 2", status: "verified" },
+      ],
+      currentSubTask: null,
+      events: [],
+    }
+
+    const bundleDev = {
+      http: {
+        request: async (method: string, path: string) => {
+          if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
+          if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefasDev }
+          if (method === "GET" && path.endsWith("/motor-detail")) return motorDetailDev
+          return {}
+        },
+      },
+    } as never
+
+    globalThis.__bundleFalso = bundleDev
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("subtask-table")).toBeInTheDocument()
+    })
+
+    // Tarefa de desenvolvimento: subtarefas visíveis
+    expect(screen.getByTestId("subtask-row-1")).toBeInTheDocument()
+    expect(screen.getByTestId("subtask-row-2")).toBeInTheDocument()
+    // Resultado final não visível
+    expect(screen.queryByTestId("task-final-result")).not.toBeInTheDocument()
+  })
+
+  it("exibe resultado final sem depender da tabela de subtarefas para tarefa de verificacao", async () => {
+    const tarefas = [tarefaFactory(7, "Verificar sistema", "completed", 1, { tipo: "verificacao" })]
+    const motorDetail = {
+      motorId: "m7",
+      exists: true,
+      task: {
+        id: "task-7",
+        status: "completed",
+        title: "Verificar sistema",
+        finalResult: {
+          status: "done",
+          summary: "Sistema verificado com sucesso",
+          reason: "",
+        },
+      },
+      // Subtarefas vazias - o resultado final deve ser exibido mesmo assim
+      subtasks: [],
+      currentSubTask: null,
+      events: [],
+    }
+
+    const bundle = {
+      http: {
+        request: async (method: string, path: string) => {
+          if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
+          if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
+          return {}
+        },
+      },
+    } as never
+
+    globalThis.__bundleFalso = bundle
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("task-final-result")).toBeInTheDocument()
+    })
+
+    // Resultado final visível mesmo sem subtarefas
+    const alert = screen.getByTestId("task-final-result")
+    expect(alert).toHaveTextContent("Sistema verificado com sucesso")
+    // Tabela de subtarefas não deve estar presente para tarefa de verificação
+    expect(screen.queryByTestId("subtask-table")).not.toBeInTheDocument()
+  })
+})
