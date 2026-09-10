@@ -289,7 +289,15 @@ export class TaskCoordinator {
       "ORDER BY t.created_at ASC LIMIT 25"
     )
     
-    const eligibleTasks = rows.map((row) => this.mapTask(row)).filter((task) => !this.consoleIncidents.has(task.agentId) && this.canStartAnalysis())
+    const eligibleTasks = rows.map((row) => this.mapTask(row)).filter((task) => {
+      // Verifica se já existe um worker de análise ativo para esta tarefa
+      const hasActiveAnalysisWorker = [...this.activeWorkers.values()].some(
+        (worker) => worker.taskId === task.id && worker.phase === "analyze"
+      )
+      return !hasActiveAnalysisWorker &&
+             !this.consoleIncidents.has(task.agentId) &&
+             this.canStartAnalysis()
+    })
     
     if (eligibleTasks.length === 0) return null
     
@@ -414,7 +422,16 @@ export class TaskCoordinator {
     )
     return rows
       .map((row) => this.mapSubtask(row))
-      .find((subtask) => !this.consoleIncidents.has(subtask.agentId) && this.canStartExecution(subtask.projectSlug)) ?? null
+      .find((subtask) => {
+        // Verifica se já existe um worker ativo para esta subtarefa
+        // (evita seleção duplicada quando o pump é chamado múltiplas vezes rapidamente)
+        const hasActiveWorker = [...this.activeWorkers.values()].some(
+          (worker) => worker.subtaskId === subtask.id && worker.phase === "execute"
+        )
+        return !hasActiveWorker && 
+               !this.consoleIncidents.has(subtask.agentId) && 
+               this.canStartExecution(subtask.projectSlug)
+      }) ?? null
   }
 
   /** Limite de desenvolvimento: máximo global e, por padrão, um por projeto. */
