@@ -37,6 +37,7 @@ import { isAgentRunFailureWithoutReply } from "../policies/NoReplyFailurePolicy.
 import { validateProjectId, formatProjectIdValidationReport } from "../policies/ProjectIdValidationPolicy.js"
 import { verifyAgentInGateway, formatAgentVerificationReport, shouldBlockEnqueue } from "../policies/GatewayAgentVerificationPolicy.js"
 import { TaskFactsStore } from "../database/TaskFactsStore.js"
+import { identifyWorkspaceAutoRecovery } from "../policies/WorkspaceAutoRecoveryPolicy.js"
 
 interface ActiveWorker {
   taskId: string
@@ -663,6 +664,16 @@ export class TaskCoordinator {
     } catch (error) {
       const reason = error instanceof Error ? (error.message || String(error)) : String(error)
       const transientDb = /ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|PROTOCOL_CONNECTION_LOST|Connection lost/i.test(reason)
+      const activeWorker = this.activeWorkers.get(executionId)
+      if (activeWorker) {
+        try {
+          if (await this.tryRecoverInvalidWorkspace(executionId, activeWorker, `[startup] ${reason}`)) return false
+        } catch (recoveryError) {
+          this.logger.error("Falha na auto-recuperacao do workspace; seguindo para bloqueio seguro: " + describeError(recoveryError), {
+            taskId: subtask.taskExternalId, subtaskId: subtask.id, executionId,
+          })
+        }
+      }
       // Qualquer falha no preparo/início (repo ausente, configuração ausente,
       // git indisponível) não pode entrar em loop de retry: persistir bloqueio
       // e marcar subtarefa/tarefa como bloqueadas. Falhas transientes de banco
@@ -692,7 +703,6 @@ export class TaskCoordinator {
           taskId: subtask.taskExternalId, subtaskId: subtask.id, executionId,
         })
       }
-      const activeWorker = this.activeWorkers.get(executionId)
       if (activeWorker && this.beginFinalization(executionId, activeWorker)) {
         await this.finishWorker(executionId, activeWorker)
       }
@@ -1023,6 +1033,15 @@ export class TaskCoordinator {
     const worker = this.activeWorkers.get(executionId)
     if (!worker || !this.beginFinalization(executionId, worker)) return
     const failure = `[${kind}] ${error}`
+
+    try {
+      if (await this.tryRecoverInvalidWorkspace(executionId, worker, failure)) return
+    } catch (recoveryError) {
+      this.logger.error("Falha na auto-recuperacao do workspace; seguindo para bloqueio seguro: " + describeError(recoveryError), {
+        taskId: worker.taskId, subtaskId: worker.subtaskId, executionId,
+      })
+    }
+
     const systemic = sessionFailure?.classification === "systemic"
     const transient = systemic || sessionFailure?.classification === "transient" || kind === "timeout" || kind === "lease_lost" || kind === "lease_expired" || kind === "lost"
     this.publishActivity(worker, { type: "failed", level: "error", message: failure })
@@ -1058,6 +1077,68 @@ export class TaskCoordinator {
     } finally {
       await this.finishWorker(executionId, worker)
     }
+  }
+
+  /**
+   * Recupera uma única vez falhas inequívocas de worktree ocorridas antes de
+   * qualquer commit. O registro resolvido em bloqueios funciona como auditoria
+   * e contador persistente entre pumps/restarts. Repetição cai no fluxo normal
+   * de bloqueio humano, evitando loop e perda silenciosa de evidência.
+   */
+  private async tryRecoverInvalidWorkspace(
+    executionId: string,
+    worker: ActiveWorker,
+    failure: string,
+  ): Promise<boolean> {
+    if (!worker.subtaskId) return false
+
+    const { rows } = await this.db.query(
+      "SELECT workspace_commit_sha FROM subtarefas WHERE id = ? LIMIT 1",
+      [worker.subtaskId],
+    )
+    const workspaceCommitSha = rows[0]?.workspace_commit_sha ? String(rows[0].workspace_commit_sha) : null
+    const decision = identifyWorkspaceAutoRecovery({
+      error: failure,
+      phase: worker.phase,
+      subtaskId: worker.subtaskId,
+      workspaceCommitSha,
+    })
+    if (!decision.recoverable || !decision.fingerprint || !decision.reason) return false
+
+    const command = `motor-v2:auto-recover-workspace:${decision.fingerprint}`
+    const { rows: priorRows } = await this.db.query(
+      "SELECT COUNT(*) AS total FROM bloqueios WHERE subtarefa_id = ? AND block_command = ?",
+      [worker.subtaskId, command],
+    )
+    if (Number(priorRows[0]?.total ?? 0) > 0) {
+      this.logger.warn("Auto-recuperacao de workspace ja utilizada; escalando para bloqueio humano", {
+        taskId: worker.taskId, subtaskId: worker.subtaskId, executionId,
+      })
+      return false
+    }
+
+    await this.db.transaction(async (tx) => {
+      await tx.query(
+        "INSERT INTO bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at, resolved_at) " +
+        "SELECT tarefa_id, ?, 'blocked_environment', ?, ?, NOW(), NOW() FROM subtarefas WHERE id = ?",
+        [worker.subtaskId, command, decision.reason, worker.subtaskId],
+      )
+      await tx.query(
+        "UPDATE subtarefas SET status = 'pending', workspace_status = 'auto_recovery_pending', workspace_commit_sha = NULL, resultado = ?, finalizada_em = NULL, updated_at = NOW() WHERE id = ? AND workspace_commit_sha IS NULL",
+        [`[auto_recovery] ${decision.reason}`.slice(0, 500), worker.subtaskId],
+      )
+    })
+
+    this.publishActivity(worker, {
+      type: "system_recovered",
+      level: "warn",
+      message: "Workspace Git inválido detectado; tentativa descartada e subtarefa reenfileirada uma vez.",
+    })
+    this.logger.warn("Workspace invalido recuperado automaticamente; subtarefa reenfileirada", {
+      taskId: worker.taskId, subtaskId: worker.subtaskId, executionId,
+    })
+    await this.finishWorker(executionId, worker)
+    return true
   }
 
   /**

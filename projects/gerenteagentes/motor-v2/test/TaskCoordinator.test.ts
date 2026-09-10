@@ -727,6 +727,51 @@ describe('TaskCoordinator', () => {
     it('deve lidar com execução desconhecida sem erro', async () => {
       await coordinator.onTaskFailed('exec-inexistente', 'erro qualquer')
     })
+
+    it('reenfileira uma vez falha de workspace Git sem commit', async () => {
+      const internal = coordinator as unknown as {
+        tryRecoverInvalidWorkspace(executionId: string, worker: Record<string, unknown>, failure: string): Promise<boolean>
+        finishWorker(executionId: string, worker: Record<string, unknown>): Promise<void>
+      }
+      const worker = {
+        taskId: 'task-793', executionId: 'exec-935', resourceKey: null, fencingToken: 0,
+        startedAt: new Date(), phase: 'execute', subtaskId: 935, repoPath: '/repo',
+      }
+      vi.mocked(db.query)
+        .mockResolvedValueOnce({ rows: [{ workspace_commit_sha: null }], affectedRows: 0, insertId: 0 })
+        .mockResolvedValueOnce({ rows: [{ total: 0 }], affectedRows: 0, insertId: 0 })
+      const finishSpy = vi.spyOn(internal, 'finishWorker').mockResolvedValue()
+
+      const recovered = await internal.tryRecoverInvalidWorkspace(
+        'exec-935', worker, '[error] exit=128 fatal: not a git repository: (null)',
+      )
+
+      expect(recovered).toBe(true)
+      expect(finishSpy).toHaveBeenCalledWith('exec-935', worker)
+      const queries = vi.mocked(db.query).mock.calls.map(([sql]) => String(sql))
+      expect(queries.some((sql) => sql.includes("workspace_status = 'auto_recovery_pending'"))).toBe(true)
+      expect(queries.some((sql) => sql.includes('resolved_at') && sql.includes('INSERT INTO bloqueios'))).toBe(true)
+    })
+
+    it('não entra em loop quando a recuperação do mesmo workspace já foi usada', async () => {
+      const internal = coordinator as unknown as {
+        tryRecoverInvalidWorkspace(executionId: string, worker: Record<string, unknown>, failure: string): Promise<boolean>
+      }
+      const worker = {
+        taskId: 'task-793', executionId: 'exec-935-b', resourceKey: null, fencingToken: 0,
+        startedAt: new Date(), phase: 'execute', subtaskId: 935, repoPath: '/repo',
+      }
+      vi.mocked(db.query)
+        .mockResolvedValueOnce({ rows: [{ workspace_commit_sha: null }], affectedRows: 0, insertId: 0 })
+        .mockResolvedValueOnce({ rows: [{ total: 1 }], affectedRows: 0, insertId: 0 })
+
+      const recovered = await internal.tryRecoverInvalidWorkspace(
+        'exec-935-b', worker, '[error] fatal: not a git repository: (null)',
+      )
+
+      expect(recovered).toBe(false)
+      expect(vi.mocked(db.query).mock.calls.some(([sql]) => String(sql).includes('UPDATE subtarefas SET status'))).toBe(false)
+    })
   })
 
   describe('concorrência com múltiplos workers', () => {
