@@ -69,6 +69,7 @@ interface Tarefa {
   projetoId: number
   updatedAt?: string
   createdAt?: string
+  subtaskCount?: number
 }
 
 interface TarefaChatMessage {
