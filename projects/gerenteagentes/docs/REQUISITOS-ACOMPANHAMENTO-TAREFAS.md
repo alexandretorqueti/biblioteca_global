@@ -87,3 +87,22 @@ da validação desta base visual.
 - `screens/__tests__/TaskFlowMap.test.tsx` — 70+ testes cobrindo todas as melhorias.
 - `screens/__tests__/taskFlowHelpers.test.ts` — testes das funções puras.
 - `docs/REQUISITOS-ACOMPANHAMENTO-TAREFAS.md` — esta documentação.
+
+### Evolução: 10 tarefas por quadro, rolagem e paginação infinita (2026-09-09, tarefa 802)
+
+Cada quadro/estação do Mapa Vivo passou a exibir **10 tarefas visíveis** por vez (antes: 3),
+com barra de rolagem vertical e paginação infinita client-side.
+
+- **Container rolável:** cada estação possui um container com `data-testid="flow-scroll-{stationId}"`,
+  `maxHeight: 360px` e `overflowY: "auto"`, permitindo rolagem vertical quando o número de tarefas
+  excede a altura visível.
+- **Paginação infinita client-side:** ao rolar até o final do container (threshold de 8px), mais 10
+  tarefas são carregadas incrementalmente (`visibleCount += PAGE_SIZE`). A lista completa já vem da
+  API `GET /gerenteagentes/tarefas-com-status` (sem paginação de backend); a paginação é puramente
+  visual, para evitar renderizar centenas de cards de uma vez.
+- **Busca reseta paginação:** quando o termo de busca muda, `visibleCount` volta para `PAGE_SIZE`
+  (10), garantindo que o usuário veja sempre o primeiro lote do resultado filtrado.
+- **Constante `PAGE_SIZE = 10`:** definida no topo do `TaskFlowMap.tsx`, usada tanto para o estado
+  inicial de `visibleCount` quanto para o incremento no `handleScroll`.
+- **Nota:** a lista completa de tarefas já é retornada pela API sem paginação; a paginação infinita
+  é uma otimização de renderização front-end, não uma mudança de contrato com o backend.
