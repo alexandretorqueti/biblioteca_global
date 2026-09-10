@@ -5,13 +5,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { render, screen } from "@testing-library/react"
 import "@testing-library/jest-dom/vitest"
-import type { ReactNode } from "react"
+import type { ReactNode, ReactElement } from "react"
 
-function MockGeradorSistema({ actions }: { actions?: ReactNode }): JSX.Element {
+function MockGeradorSistema({ actions }: { actions?: ReactNode }): ReactElement {
   return <div data-testid="gerador-sistema">{actions}</div>
 }
 function MockHelpDeskWidget(): null { return null }
-function ThemeProviderWrapper({ children }: { children: ReactNode }): JSX.Element {
+function ThemeProviderWrapper({ children }: { children: ReactNode }): ReactElement {
   return <div data-testid="theme-provider-wrapper">{children}</div>
 }
 
