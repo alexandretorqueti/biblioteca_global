@@ -39,6 +39,7 @@ import { verifyAgentInGateway, formatAgentVerificationReport, shouldBlockEnqueue
 import { TaskFactsStore } from "../database/TaskFactsStore.js"
 import { identifyWorkspaceAutoRecovery } from "../policies/WorkspaceAutoRecoveryPolicy.js"
 import type { PromotionConflictOrchestrator } from "../promotion-conflicts/PromotionConflictOrchestrator.js"
+import type { PromotionConflictCandidate, PromotionConflictPromoterPort } from "../promotion-conflicts/promotion-conflict.types.js"
 
 interface ActiveWorker {
   taskId: string
@@ -178,7 +179,7 @@ interface SubtaskWithTask {
   correctionFingerprint?: string | null
 }
 
-export class TaskCoordinator {
+export class TaskCoordinator implements PromotionConflictPromoterPort {
   private config: TaskCoordinatorConfig
   private activeWorkers = new Map<string, ActiveWorker>()
   private resourceLease: ResourceLeaseService
@@ -276,6 +277,42 @@ export class TaskCoordinator {
       this.pumping = false
     }
     await this.processDeployQueue()
+  }
+
+  /**
+   * Última etapa de uma resolução feita pelo Monitor. O resolvedor nunca toca
+   * na base; somente este coordenador, sob o mesmo lock de integração usado
+   * pelo fluxo normal, pode promover a branch validada e liberar o deploy.
+   */
+  async promote(candidate: PromotionConflictCandidate, resolutionBranch: string): Promise<void> {
+    const task = await this.repository.getTask(candidate.taskId)
+    if (!task) throw new Error("Tarefa não encontrada para promover resolução: " + candidate.taskId)
+    if (!candidate.projectSlug) throw new Error("Projeto ausente para promover resolução: " + candidate.taskId)
+
+    const executionId = "promotion-resolution-" + randomUUID()
+    const promotion = await this.withProjectIntegrationLock(candidate.projectSlug, executionId, task.id, () =>
+      this.workspaceManager.promoteTaskBranch({
+        repoPath: candidate.repoPath,
+        baseBranch: candidate.baseBranch,
+        taskBranch: resolutionBranch,
+      }),
+    )
+    if (promotion.kind !== "promoted") {
+      throw new Error("A branch de resolução voltou a conflitar com a base: " + promotion.conflictFiles.join(", "))
+    }
+
+    // Só agora o bloqueio deixa de existir: a base recebeu o commit e o fato
+    // integration_confirmed passa a corresponder ao Git real.
+    await this.db.query(
+      "UPDATE bloqueios SET resolved_at = NOW() WHERE tarefa_id = (SELECT id FROM tarefas WHERE external_id = ? OR id = CAST(? AS UNSIGNED) LIMIT 1) " +
+      "AND resolved_at IS NULL AND subtarefa_id IS NULL AND block_command LIKE 'motor-v2:promotion-conflict:%'",
+      [candidate.taskId, candidate.taskId],
+    )
+    await this.saveTaskTransition(task, "execution_completed")
+    await this.enqueueDeploy(task.id, candidate.repoPath)
+    this.logger.info("Resolução de conflito promovida e deploy enfileirado", {
+      taskId: candidate.taskId, resolutionBranch, mergeCommit: promotion.mergeCommit,
+    })
   }
 
   private async reconcileOrphanedReadyTasks(): Promise<void> {

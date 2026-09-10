@@ -42,9 +42,12 @@ export function identifyPromotionConflict(row: Record<string, unknown>): Promoti
     taskDatabaseId: Number(row.tarefa_id) || undefined,
     blockId: Number(row.block_id ?? row.id) || undefined,
     agentId,
+    projectSlug: row.project_slug == null ? null : String(row.project_slug),
     repoPath,
     baseBranch,
     taskBranch,
+    buildCommand: row.build_command == null ? null : String(row.build_command),
+    testCommand: row.unit_test_command == null ? null : String(row.unit_test_command),
     reportedFiles: reported,
   }
 }

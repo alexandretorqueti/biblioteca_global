@@ -18,6 +18,7 @@ import { PromotionConflictAnalyzer } from './promotion-conflicts/PromotionConfli
 import { PromotionConflictEvidenceCollector } from './promotion-conflicts/PromotionConflictEvidenceCollector.js'
 import { PromotionConflictOrchestrator } from './promotion-conflicts/PromotionConflictOrchestrator.js'
 import { PromotionConflictRepository } from './promotion-conflicts/PromotionConflictRepository.js'
+import { PromotionConflictResolver } from './promotion-conflicts/PromotionConflictResolver.js'
 
 export interface MotorConfig {
   db: Db
@@ -47,8 +48,11 @@ export class Motor {
     const heartbeatIntervalMs = getConfigNumber('motor.resource_heartbeat_interval_ms')
 
     // Driver do Console OpenClaw para consultar sessões ativas
-    const consoleUrl = getConfigString('motor.console_url') || 'http://127.0.0.1:6280'
-    const consoleToken = getConfigString('motor.console_token') || ''
+    // Workers usam as variáveis de ambiente injetadas pelo container. O Motor
+    // principal deve usar a mesma rota; uma configuração antiga no banco não
+    // pode desviar somente o Monitor para um Console inacessível.
+    const consoleUrl = process.env.OPENCLAW_CONSOLE_URL || getConfigString('motor.console_url') || 'http://127.0.0.1:6280'
+    const consoleToken = process.env.OPENCLAW_CONSOLE_TOKEN || getConfigString('motor.console_token') || ''
     this.consoleDriver = new ConsoleAgentRuntimeDriver({
       baseUrl: consoleUrl,
       token: consoleToken,
@@ -65,6 +69,10 @@ export class Motor {
       new PromotionConflictRepository(config.db),
       new PromotionConflictEvidenceCollector(),
       new PromotionConflictAnalyzer(this.consoleDriver),
+      new PromotionConflictResolver(this.consoleDriver),
+      // O callback só roda depois do construtor terminar, quando o
+      // coordenador já existe. Assim o módulo de conflitos não depende dele.
+      { promote: (candidate, resolutionBranch) => this.coordinator.promote(candidate, resolutionBranch) },
     )
     this.reconciler = new ExpirationReconciler({
       db: config.db,

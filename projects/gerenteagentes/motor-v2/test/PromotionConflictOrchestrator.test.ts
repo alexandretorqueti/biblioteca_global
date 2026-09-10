@@ -33,4 +33,26 @@ describe("PromotionConflictOrchestrator", () => {
     await vi.waitFor(() => expect(repository.fail).toHaveBeenCalledWith(evidence.fingerprint, expect.stringContaining("console down")))
     expect(repository.complete).not.toHaveBeenCalled()
   })
+
+  it("promove somente a branch que o Monitor resolveu e validou", async () => {
+    const repository = { findPendingCandidates: vi.fn(), claim: vi.fn().mockResolvedValue(true), complete: vi.fn(), fail: vi.fn().mockResolvedValue(undefined) }
+    const collector = { collect: vi.fn().mockResolvedValue(evidence) }
+    const resolver = { resolve: vi.fn().mockResolvedValue({ kind: "resolved", resolutionBranch: "motor-v2/promotion-resolution/task-1/abc", resolutionCommit: "e".repeat(40), report: "gates verdes" }) }
+    const promoter = { promote: vi.fn().mockResolvedValue(undefined) }
+    const orchestrator = new PromotionConflictOrchestrator(repository as never, collector as never, { analyze: vi.fn() }, resolver, promoter)
+    orchestrator.schedule(candidate)
+    await vi.waitFor(() => expect(promoter.promote).toHaveBeenCalledWith(candidate, "motor-v2/promotion-resolution/task-1/abc"))
+    expect(repository.complete).toHaveBeenCalledWith(evidence.fingerprint, expect.objectContaining({ recommendation: "resolved_automatically" }))
+  })
+
+  it("não promove quando o Monitor considera o conflito ambíguo", async () => {
+    const repository = { findPendingCandidates: vi.fn(), claim: vi.fn().mockResolvedValue(true), complete: vi.fn(), fail: vi.fn().mockResolvedValue(undefined) }
+    const collector = { collect: vi.fn().mockResolvedValue(evidence) }
+    const resolver = { resolve: vi.fn().mockResolvedValue({ kind: "needs_human_review", report: "mudança semântica ambígua" }) }
+    const promoter = { promote: vi.fn() }
+    const orchestrator = new PromotionConflictOrchestrator(repository as never, collector as never, { analyze: vi.fn() }, resolver, promoter)
+    orchestrator.schedule(candidate)
+    await vi.waitFor(() => expect(repository.complete).toHaveBeenCalled())
+    expect(promoter.promote).not.toHaveBeenCalled()
+  })
 })
