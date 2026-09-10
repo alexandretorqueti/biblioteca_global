@@ -315,6 +315,8 @@ function stationGradient(tone: FlowStation["tone"]): string {
   return `linear-gradient(180deg, ${hex}10 0%, transparent 60%)`
 }
 
+const PAGE_SIZE = 10
+
 function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, legendaAtiva, movingIds, compacto, onSelectTask, taskMatchesLegenda, onStartTask, onPauseTask, onResumeTask }: {
   station: FlowStation
   tarefas: FlowTask[]
@@ -331,15 +333,29 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, l
   onResumeTask?: (id: number) => void
 }) {
   const [expandida, setExpandida] = useState(false)
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
   const stationTasks = tarefas.filter((task) => station.statuses.includes(task.status))
   // Tarefas da estação que passam nos filtros
   const stationTasksFiltradas = tarefasFiltradas.filter((task) => station.statuses.includes(task.status))
   const normalizedSearch = search.trim().toLocaleLowerCase("pt-BR")
   const filteredVisible = stationTasksFiltradas
     .filter((task) => !normalizedSearch || `#${task.id} ${task.titulo}`.toLocaleLowerCase("pt-BR").includes(normalizedSearch))
-  // Se expandida, mostra todas; senão, mantém slice(0,3)
-  const visibleTasks = expandida ? filteredVisible : filteredVisible.slice(0, 3)
-  const temMais = stationTasks.length > 3
+  // Se expandida, mostra todas; senão, usa paginação infinita (PAGE_SIZE por vez)
+  const visibleTasks = expandida ? filteredVisible : filteredVisible.slice(0, visibleCount)
+  const temMais = stationTasks.length > visibleTasks.length
+
+  // Reset da paginação quando o termo de busca muda
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE)
+  }, [normalizedSearch])
+
+  // Handler de scroll para paginação infinita
+  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 8) {
+      setVisibleCount((prev) => Math.min(prev + PAGE_SIZE, stationTasks.length))
+    }
+  }, [stationTasks.length])
 
   const StationIcon = STATION_ICONS[station.id]
   const borderColor = TONE_BORDER_COLOR[station.tone]
@@ -426,7 +442,18 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, l
               ))}
             </Stack>
           )}
-          <Stack spacing={0.75} sx={{ mt: 1.25 }}>
+          <Box
+            data-testid={`flow-scroll-${station.id}`}
+            onScroll={handleScroll}
+            sx={{
+              mt: 1.25,
+              maxHeight: 360,
+              overflowY: "auto",
+              overscrollBehavior: "contain",
+              pr: 0.5,
+            }}
+          >
+          <Stack spacing={0.75}>
         {visibleTasks.map((task) => {
           const aiActive = ACTIVE_AI_STATUSES.has(task.status)
           const matchesLegenda = taskMatchesLegenda(task, station)
@@ -605,7 +632,8 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, l
           {normalizedSearch && stationTasks.length > 0 && visibleTasks.length === 0 && <Typography variant="caption" sx={{ opacity: 0.65 }}>Nenhuma correspondência</Typography>}
           {!normalizedSearch && !expandida && temMais && <Typography variant="caption" textAlign="center" sx={{ opacity: 0.72 }}>+ {stationTasks.length - visibleTasks.length} tarefas</Typography>}
           {expandida && filteredVisible.length > 3 && <Typography variant="caption" textAlign="center" sx={{ opacity: 0.72, mt: 0.5 }}>Mostrando todas ({filteredVisible.length})</Typography>}
-        </Stack>
+          </Stack>
+          </Box>
         </>
       )}
       {/* Indicador de expansão */}

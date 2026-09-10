@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest"
-import { render, screen } from "@testing-library/react"
+import { render, screen, fireEvent } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import "@testing-library/jest-dom/vitest"
 import { BibliotecaThemeProvider } from "@biblioteca-global/ui"
@@ -504,37 +504,38 @@ describe("TaskFlowMap — Toggle Compactar (4.1)", () => {
 })
 
 describe("TaskFlowMap — Expansão de estação (4.1)", () => {
-  const muitasTarefas: FlowTask[] = [
-    { id: 900, titulo: "Tarefa 1", status: "running", projetoId: 1 },
-    { id: 901, titulo: "Tarefa 2", status: "running", projetoId: 1 },
-    { id: 902, titulo: "Tarefa 3", status: "running", projetoId: 1 },
-    { id: 903, titulo: "Tarefa 4", status: "running", projetoId: 1 },
-    { id: 904, titulo: "Tarefa 5", status: "running", projetoId: 1 },
-  ]
+  // Com PAGE_SIZE=10, precisamos de mais de 10 tarefas para testar a expansão
+  const muitasTarefas: FlowTask[] = Array.from({ length: 12 }, (_, i) => ({
+    id: 900 + i,
+    titulo: `Tarefa ${i + 1}`,
+    status: "running" as const,
+    projetoId: 1,
+  }))
 
-  it("mostra indicador '+ N tarefas' quando há mais de 3 tarefas na estação", () => {
+  it("mostra indicador '+ N tarefas' quando há mais de 10 tarefas na estação", () => {
     view(muitasTarefas)
+    // 12 tarefas total, 10 visíveis inicialmente → "+ 2 tarefas"
     expect(screen.getByTestId("flow-station-running")).toHaveTextContent("+ 2 tarefas")
   })
 
   it("ao clicar no header da estação, expande mostrando todas as tarefas", async () => {
     view(muitasTarefas)
-    // Antes: só 3 visíveis
+    // Antes: só 10 visíveis (PAGE_SIZE)
     expect(screen.getByTestId("flow-task-900")).toBeInTheDocument()
-    expect(screen.getByTestId("flow-task-901")).toBeInTheDocument()
-    expect(screen.getByTestId("flow-task-902")).toBeInTheDocument()
-    expect(screen.queryByTestId("flow-task-903")).not.toBeInTheDocument()
+    expect(screen.getByTestId("flow-task-909")).toBeInTheDocument()
+    expect(screen.queryByTestId("flow-task-910")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("flow-task-911")).not.toBeInTheDocument()
     // Clica no header para expandir
     await userEvent.click(screen.getByTestId("flow-station-running-header"))
     // Depois: todas visíveis
-    expect(screen.getByTestId("flow-task-903")).toBeInTheDocument()
-    expect(screen.getByTestId("flow-task-904")).toBeInTheDocument()
+    expect(screen.getByTestId("flow-task-910")).toBeInTheDocument()
+    expect(screen.getByTestId("flow-task-911")).toBeInTheDocument()
   })
 
   it("ao expandir, mostra texto 'Mostrando todas (N)'", async () => {
     view(muitasTarefas)
     await userEvent.click(screen.getByTestId("flow-station-running-header"))
-    expect(screen.getByTestId("flow-station-running")).toHaveTextContent("Mostrando todas (5)")
+    expect(screen.getByTestId("flow-station-running")).toHaveTextContent("Mostrando todas (12)")
   })
 })
 
@@ -922,5 +923,95 @@ describe("TaskFlowMap — Skeleton loaders (7.1)", () => {
     view()
     expect(screen.getByTestId("flow-station-running")).toBeInTheDocument()
     expect(screen.getByTestId("flow-station-ready")).toBeInTheDocument()
+  })
+})
+
+describe("TaskFlowMap — Paginação infinita (10 em 10 com scroll)", () => {
+  function gerarTarefasPlanned(qtd: number): FlowTask[] {
+    return Array.from({ length: qtd }, (_, i) => ({
+      id: i + 1,
+      titulo: `Tarefa ${i + 1}`,
+      status: "planned" as const,
+      projetoId: 1,
+    }))
+  }
+
+  function definirDimensoesScroll(container: HTMLElement, scrollHeight: number, clientHeight: number, scrollTop: number) {
+    Object.defineProperty(container, "scrollHeight", { value: scrollHeight, configurable: true })
+    Object.defineProperty(container, "clientHeight", { value: clientHeight, configurable: true })
+    Object.defineProperty(container, "scrollTop", { value: scrollTop, configurable: true })
+  }
+
+  it("(a) exibe no máximo 10 tarefas por estação com 25 tarefas e caption '+ 15 tarefas'", () => {
+    const tarefas25 = gerarTarefasPlanned(25)
+    view(tarefas25)
+
+    // Exatamente 10 fichas visíveis (regex específica para flow-task-<id>)
+    const fichas = screen.getAllByTestId(/^flow-task-\d+$/)
+    expect(fichas).toHaveLength(10)
+
+    // Container de scroll da estação planned existe
+    const scrollContainer = screen.getByTestId("flow-scroll-planned")
+    expect(scrollContainer).toBeInTheDocument()
+
+    // Caption "+ 15 tarefas"
+    expect(screen.getByText("+ 15 tarefas")).toBeInTheDocument()
+  })
+
+  it("(b) carrega mais 10 ao rolar até o fim (20, depois 25)", () => {
+    const tarefas25 = gerarTarefasPlanned(25)
+    view(tarefas25)
+
+    const scrollContainer = screen.getByTestId("flow-scroll-planned")
+
+    // Primeiro scroll: scrollTop=640 + clientHeight=360 = 1000 >= scrollHeight(1000) - 8
+    definirDimensoesScroll(scrollContainer, 1000, 360, 640)
+    fireEvent.scroll(scrollContainer)
+
+    // Agora 20 fichas visíveis (regex específica para flow-task-<id>)
+    expect(screen.getAllByTestId(/^flow-task-\d+$/)).toHaveLength(20)
+    // Caption "+ 5 tarefas"
+    expect(screen.getByText("+ 5 tarefas")).toBeInTheDocument()
+
+    // Segundo scroll: rolar até o fim novamente
+    // scrollHeight cresce proporcionalmente; scrollTop + clientHeight >= scrollHeight - 8
+    definirDimensoesScroll(scrollContainer, 1400, 360, 1040)
+    fireEvent.scroll(scrollContainer)
+
+    // Agora 25 fichas (todas), sem caption (regex específica para flow-task-<id>)
+    expect(screen.getAllByTestId(/^flow-task-\d+$/)).toHaveLength(25)
+    expect(screen.queryByText(/\+ \d+ tarefas/)).not.toBeInTheDocument()
+  })
+
+  it("(c) não ultrapassa o total — rolar além mantém 25 fichas sem duplicação", () => {
+    const tarefas25 = gerarTarefasPlanned(25)
+    view(tarefas25)
+
+    const scrollContainer = screen.getByTestId("flow-scroll-planned")
+
+    // Scroll 1: 10 → 20
+    definirDimensoesScroll(scrollContainer, 1000, 360, 640)
+    fireEvent.scroll(scrollContainer)
+    expect(screen.getAllByTestId(/^flow-task-\d+$/)).toHaveLength(20)
+
+    // Scroll 2: 20 → 25
+    definirDimensoesScroll(scrollContainer, 1400, 360, 1040)
+    fireEvent.scroll(scrollContainer)
+    expect(screen.getAllByTestId(/^flow-task-\d+$/)).toHaveLength(25)
+
+    // Scroll 3: já no fim, não deve duplicar
+    definirDimensoesScroll(scrollContainer, 1800, 360, 1440)
+    fireEvent.scroll(scrollContainer)
+    expect(screen.getAllByTestId(/^flow-task-\d+$/)).toHaveLength(25)
+  })
+
+  it("(d) busca ativa respeita o limite de 10 visíveis", () => {
+    const tarefas25 = gerarTarefasPlanned(25)
+    const filtros: FiltrosMapa = { busca: "Tarefa", status: [], projetoId: "", prioridade: "" }
+    view(tarefas25, vi.fn(), filtros)
+
+    // Com busca "Tarefa" casando com todos os 25 títulos, ainda exibe apenas 10 (regex específica)
+    const fichas = screen.getAllByTestId(/^flow-task-\d+$/)
+    expect(fichas).toHaveLength(10)
   })
 })
