@@ -263,3 +263,45 @@ describe("validarCoberturaPrioridade", () => {
     expect(validarCoberturaPrioridade()).toEqual([])
   })
 })
+
+// ============================================================================
+// getEffectiveStatusForMetrics
+// ============================================================================
+
+describe("getEffectiveStatusForMetrics", () => {
+  it("retorna 'draft' para tarefa paused sem subtarefas (subtaskCount = 0)", async () => {
+    const { getEffectiveStatusForMetrics } = await import("../taskFlowHelpers")
+    expect(getEffectiveStatusForMetrics({ id: 1, status: "paused", projetoId: 1, subtaskCount: 0 })).toBe("draft")
+  })
+
+  it("retorna 'draft' para tarefa paused com subtaskCount undefined", async () => {
+    const { getEffectiveStatusForMetrics } = await import("../taskFlowHelpers")
+    expect(getEffectiveStatusForMetrics({ id: 1, status: "paused", projetoId: 1 })).toBe("draft")
+  })
+
+  it("retorna 'paused' para tarefa paused com subtarefas (subtaskCount > 0)", async () => {
+    const { getEffectiveStatusForMetrics } = await import("../taskFlowHelpers")
+    expect(getEffectiveStatusForMetrics({ id: 1, status: "paused", projetoId: 1, subtaskCount: 3 })).toBe("paused")
+  })
+
+  it("não altera status de tarefas que não são paused", async () => {
+    const { getEffectiveStatusForMetrics } = await import("../taskFlowHelpers")
+    expect(getEffectiveStatusForMetrics({ id: 1, status: "running", projetoId: 1, subtaskCount: 0 })).toBe("running")
+    expect(getEffectiveStatusForMetrics({ id: 2, status: "draft", projetoId: 1 })).toBe("draft")
+    expect(getEffectiveStatusForMetrics({ id: 3, status: "completed", projetoId: 1, subtaskCount: 5 })).toBe("completed")
+  })
+
+  it("calcularMetricas conta tarefa paused sem subtarefas na estação draft", async () => {
+    const { calcularMetricas, getEffectiveStatusForMetrics } = await import("../taskFlowHelpers")
+    const tarefas = [
+      { id: 1, status: "paused", projetoId: 1, subtaskCount: 0 },
+      { id: 2, status: "paused", projetoId: 1, subtaskCount: 2 },
+      { id: 3, status: "draft", projetoId: 1 },
+    ]
+    const metricas = calcularMetricas(tarefas)
+    // draft: tarefa 1 (paused sem subtarefas) + tarefa 3 (draft real) = 2
+    expect(metricas.porEstacao.draft).toBe(2)
+    // waiting: apenas tarefa 2 (paused com subtarefas)
+    expect(metricas.porEstacao.waiting).toBe(1)
+  })
+})

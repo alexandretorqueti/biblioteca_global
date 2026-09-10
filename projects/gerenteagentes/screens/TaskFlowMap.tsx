@@ -37,6 +37,7 @@ export interface FlowTask {
   updatedAt?: string | null
   projetoNome?: string | null
   progresso?: { verified: number; total: number } | null
+  subtaskCount?: number
 }
 
 export interface MotorActivity {
@@ -81,7 +82,7 @@ interface FlowStation {
 }
 
 export const MAIN_FLOW: FlowStation[] = [
-  { id: "draft", label: "Rascunhos", subtitle: "não iniciadas", statuses: ["draft"], tone: "neutral" },
+  { id: "draft", label: "Rascunhos", subtitle: "não iniciadas ou pausadas sem subtarefas", statuses: ["draft"], tone: "neutral" },
   { id: "planned", label: "Planejadas", subtitle: "aguardando análise", statuses: ["planned"], tone: "neutral" },
   { id: "analyzing", label: "Em análise", subtitle: "IA analisando", statuses: ["analyzing"], tone: "active" },
   { id: "ready", label: "Fila de Execução", subtitle: "próxima subtarefa", statuses: ["ready"], tone: "neutral" },
@@ -315,6 +316,18 @@ function stationGradient(tone: FlowStation["tone"]): string {
   return `linear-gradient(180deg, ${hex}10 0%, transparent 60%)`
 }
 
+/**
+ * Determina o status efetivo de uma tarefa para fins de exibição no mapa.
+ * Tarefas com status 'paused' e sem subtarefas (subtaskCount === 0 ou undefined)
+ * são tratadas como 'draft' (Rascunhos) em vez de 'waiting' (Aguardando).
+ */
+export function getEffectiveStatus(task: FlowTask): string {
+  if (task.status === "paused" && (task.subtaskCount === 0 || task.subtaskCount === undefined)) {
+    return "draft"
+  }
+  return task.status
+}
+
 const PAGE_SIZE = 10
 
 function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, legendaAtiva, movingIds, compacto, onSelectTask, taskMatchesLegenda, onStartTask, onPauseTask, onResumeTask }: {
@@ -334,9 +347,9 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, l
 }) {
   const [expandida, setExpandida] = useState(false)
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
-  const stationTasks = tarefas.filter((task) => station.statuses.includes(task.status))
+  const stationTasks = tarefas.filter((task) => station.statuses.includes(getEffectiveStatus(task)))
   // Tarefas da estação que passam nos filtros
-  const stationTasksFiltradas = tarefasFiltradas.filter((task) => station.statuses.includes(task.status))
+  const stationTasksFiltradas = tarefasFiltradas.filter((task) => station.statuses.includes(getEffectiveStatus(task)))
   const normalizedSearch = search.trim().toLocaleLowerCase("pt-BR")
   const filteredVisible = stationTasksFiltradas
     .filter((task) => !normalizedSearch || `#${task.id} ${task.titulo}`.toLocaleLowerCase("pt-BR").includes(normalizedSearch))
@@ -438,7 +451,7 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, l
           {station.statuses.length > 1 && (
             <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap sx={{ mt: 1 }}>
               {station.statuses.map((status) => (
-                <Chip key={status} size="small" label={`${taskStatusLabel(status)}: ${stationTasks.filter((task) => task.status === status).length}`} sx={{ height: 20, fontSize: 10 }} />
+                <Chip key={status} size="small" label={`${taskStatusLabel(status)}: ${stationTasks.filter((task) => getEffectiveStatus(task) === status).length}`} sx={{ height: 20, fontSize: 10 }} />
               ))}
             </Stack>
           )}
