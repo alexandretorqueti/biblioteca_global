@@ -70,6 +70,9 @@ function bundleFalso(opts?: {
         if (method === "GET" && path === "/gerenteagentes/tarefas") {
           return { items: tarefas }
         }
+        if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") {
+          return tarefas
+        }
         if (method === "GET" && path.startsWith("/gerenteagentes/tarefas/") && path.endsWith("/motor-detail")) {
           return motorDetail
         }
@@ -174,6 +177,7 @@ describe("TaskMonitorScreen — ST-1 (botão editar + diálogo)", () => {
         request: async (method: string, path: string, reqOpts?: { body?: unknown }) => {
           if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
           if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
           if (method === "GET" && path.startsWith("/gerenteagentes/tarefas/")) {
             return { motorId: "m1", exists: false, message: "Não enviada" }
           }
@@ -232,6 +236,7 @@ describe("TaskMonitorScreen — ST-1 (botão editar + diálogo)", () => {
         request: async (method: string, path: string) => {
           if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
           if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
           if (method === "GET" && path.startsWith("/gerenteagentes/tarefas/")) {
             return { motorId: "m1", exists: false, message: "Não enviada" }
           }
@@ -359,6 +364,7 @@ describe("TaskMonitorScreen — ST-2 (editar subtarefa)", () => {
         request: async (method: string, path: string) => {
           if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
           if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
           if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
           if (method === "GET" && path.endsWith("/subtarefas")) {
             return [
@@ -404,6 +410,7 @@ describe("TaskMonitorScreen — ST-2 (editar subtarefa)", () => {
         request: async (method: string, path: string) => {
           if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
           if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
           if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
           if (method === "GET" && path.endsWith("/subtarefas")) return [dbSub]
           return {}
@@ -452,6 +459,7 @@ describe("TaskMonitorScreen — ST-2 (editar subtarefa)", () => {
         request: async (method: string, path: string, reqOpts?: { query?: Record<string, unknown>; body?: unknown }) => {
           if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
           if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
           if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
           if (method === "GET" && path.endsWith("/subtarefas")) return [dbSub]
           if (method === "PUT" && path === "/gerenteagentes/subtarefas/10") {
@@ -521,6 +529,7 @@ describe("TaskMonitorScreen — ST-2 (editar subtarefa)", () => {
         request: async (method: string, path: string) => {
           if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
           if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
           if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
           if (method === "GET" && path.endsWith("/subtarefas")) return [dbSub]
           if (method === "PUT" && path === "/gerenteagentes/subtarefas/10") {
@@ -574,6 +583,7 @@ describe("TaskMonitorScreen — ST-2 (editar subtarefa)", () => {
         request: async (method: string, path: string) => {
           if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
           if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
           if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
           if (method === "GET" && path.endsWith("/subtarefas")) return [] // banco vazio
           return {}
@@ -620,6 +630,7 @@ describe("TaskMonitorScreen — ST-2 (editar subtarefa)", () => {
         request: async (method: string, path: string) => {
           if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
           if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
           if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
           if (method === "GET" && path.endsWith("/subtarefas")) return [dbSub]
           return {}
@@ -707,6 +718,7 @@ describe("TaskMonitorScreen — ST-3 (diálogo: scope + acceptance_criteria, sta
         request: async (method: string, path: string, reqOpts?: { query?: Record<string, unknown>; body?: unknown }) => {
           if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
           if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
           if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
           if (method === "GET" && path.endsWith("/subtarefas")) return [dbSub]
           if (method === "PUT" && path === `/gerenteagentes/subtarefas/${dbSub.id}`) {
@@ -902,6 +914,7 @@ describe("TaskMonitorScreen — compatibilidade Motor-v2", () => {
         request: async (method: string, path: string) => {
           if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(2, "GerenteAgentes")] }
           if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
           if (method === "GET" && path.endsWith("/motor-detail")) {
             return {
               motorId: "727",
@@ -939,6 +952,7 @@ describe("TaskMonitorScreen — compatibilidade Motor-v2", () => {
         request: async (method: string, path: string) => {
           if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(2, "GerenteAgentes")] }
           if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
           if (method === "GET" && path.endsWith("/motor-detail")) {
             return {
               motorId: "727",
@@ -1062,6 +1076,7 @@ describe("TaskMonitorScreen — Lista de subtarefas (scope, critérios, workspac
         request: async (method: string, path: string) => {
           if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
           if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
           if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
           if (method === "GET" && path.endsWith("/subtarefas")) return dbSubs
           return {}
@@ -1117,6 +1132,7 @@ describe("TaskMonitorScreen — Lista de subtarefas (scope, critérios, workspac
         request: async (method: string, path: string) => {
           if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
           if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
           if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
           if (method === "GET" && path.endsWith("/subtarefas")) return dbSubs
           return {}
@@ -1162,6 +1178,7 @@ describe("TaskMonitorScreen — Lista de subtarefas (scope, critérios, workspac
         request: async (method: string, path: string) => {
           if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
           if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
           if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
           if (method === "GET" && path.endsWith("/subtarefas")) return dbSubs
           return {}
@@ -1213,6 +1230,7 @@ describe("TaskMonitorScreen — Lista de subtarefas (scope, critérios, workspac
         request: async (method: string, path: string) => {
           if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
           if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
           if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
           if (method === "GET" && path.endsWith("/subtarefas")) return dbSubs
           return {}
@@ -1259,6 +1277,7 @@ describe("TaskMonitorScreen — Lista de subtarefas (scope, critérios, workspac
         request: async (method: string, path: string) => {
           if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
           if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
           if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
           if (method === "GET" && path.endsWith("/subtarefas")) return dbSubs
           return {}
@@ -1322,6 +1341,9 @@ describe("TaskMonitorScreen — Contrato de composição visual (sessões)", () 
           }
           if (method === "GET" && path === "/gerenteagentes/tarefas") {
             return { items: tarefas }
+          }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") {
+            return tarefas
           }
           if (method === "GET" && path.endsWith("/motor-detail")) {
             return motorDetail
@@ -1435,6 +1457,51 @@ describe("TaskMonitorScreen — Bottom sheet mobile (6.1)", () => {
     vi.unstubAllGlobals()
     delete globalThis.__bundleFalso
   })
+
+  function renderScreen() {
+    return render(
+      <BibliotecaThemeProvider>
+        <TaskMonitorScreen />
+      </BibliotecaThemeProvider>,
+    )
+  }
+
+  function bundleComTarefaSelecionada() {
+    const tarefas = [tarefaFactory(1, "Tarefa Teste", "running", 1)]
+    const motorDetail = {
+      motorId: "m1",
+      exists: true,
+      task: { id: "task-1", status: "running", title: "Tarefa Teste" },
+      subtasks: [{ seq: 1, title: "Sub 1", status: "pending" }],
+      currentSubTask: null,
+      events: [],
+    }
+    return {
+      http: {
+        request: async (method: string, path: string) => {
+          if (method === "GET" && path === "/gerenteagentes/projetos_captados") {
+            return { items: [projetoFactory(1, "Projeto X")] }
+          }
+          if (method === "GET" && path === "/gerenteagentes/tarefas") {
+            return { items: tarefas }
+          }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") {
+            return tarefas
+          }
+          if (method === "GET" && path.endsWith("/motor-detail")) {
+            return motorDetail
+          }
+          if (method === "GET" && path.endsWith("/subtarefas")) {
+            return []
+          }
+          if (method === "GET" && path.endsWith("/chat")) {
+            return []
+          }
+          return {}
+        },
+      },
+    } as never
+  }
 
   it("renderiza o Drawer com data-testid task-detail-sheet", async () => {
     globalThis.__bundleFalso = bundleComTarefaSelecionada()
