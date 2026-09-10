@@ -35,6 +35,7 @@ import { validateTaskCompletion, formatPromotionValidationReport } from "../poli
 import { isAgentRunFailureWithoutReply } from "../policies/NoReplyFailurePolicy.js"
 import { validateProjectId, formatProjectIdValidationReport } from "../policies/ProjectIdValidationPolicy.js"
 import { verifyAgentInGateway, formatAgentVerificationReport, shouldBlockEnqueue } from "../policies/GatewayAgentVerificationPolicy.js"
+import { failureFingerprint } from "../policies/SystemFailurePolicy.js"
 
 interface ActiveWorker {
   taskId: string
@@ -1500,7 +1501,7 @@ export class TaskCoordinator {
     const resumedBy = options?.resumedBy ?? (resumeType === "manual" ? "unknown-user" : "motor-v2")
 
     const { rows } = await this.db.query(
-      "SELECT b.id, b.block_reason, b.block_excerpt, s.id AS subtarefa_id, s.workspace_path, s.workspace_branch, s.workspace_base_commit, pmc.repo_path " +
+      "SELECT b.id, b.block_reason, b.block_command, b.block_excerpt, s.id AS subtarefa_id, s.workspace_path, s.workspace_branch, s.workspace_base_commit, pmc.repo_path " +
       "FROM bloqueios b LEFT JOIN subtarefas s ON s.id = b.subtarefa_id " +
       "LEFT JOIN tarefas t ON t.id = b.tarefa_id LEFT JOIN projetos_captados pc ON t.projeto_id = pc.id " +
       "LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id = pc.id " +
@@ -1510,6 +1511,7 @@ export class TaskCoordinator {
     const block = rows[0]
     const kind = String(block?.block_reason ?? "")
     const excerpt = String(block?.block_excerpt ?? "")
+    const blockCommand = String(block?.block_command ?? "")
     const eligible = kind === "blocked_environment" || kind === "systemic_failure" || /infra|git|worktree|ssh|console|dependenc|deploy/i.test(excerpt)
     if (!eligible) throw new Error("Bloqueio não elegível para recuperação de infraestrutura")
     if (!block?.subtarefa_id || !block.workspace_path || !block.workspace_branch || !block.workspace_base_commit) {
@@ -1527,7 +1529,11 @@ export class TaskCoordinator {
     const deployHost = process.env.MOTOR_DEPLOY_SSH_HOST
     if (deployHost) execFileSync("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", deployHost, "true"], { stdio: "pipe", timeout: 10_000 })
 
-    const incidentId = randomUUID()
+    // Agrupamento de incidente: tarefas com a mesma assinatura de falha
+    // compartilham o mesmo incident_id. A assinatura é derivada do block_command
+    // (que contém o fingerprint normalizado) ou, na falta dele, do excerpt.
+    const fingerprint = blockCommand.replace(/^motor-v2:/, "") || failureFingerprint(excerpt)
+    const incidentId = await this.resolveIncidentId(fingerprint, excerpt)
     this.recoveryWorkspaces.set(Number(block.subtarefa_id), {
       path: String(block.workspace_path), projectPath: String(block.repo_path ?? block.workspace_path),
       branch: String(block.workspace_branch), baseCommit: String(block.workspace_base_commit),
@@ -1543,6 +1549,32 @@ export class TaskCoordinator {
     const executionId = [...this.activeWorkers.values()].find((worker) => worker.subtaskId === Number(block.subtarefa_id))?.executionId ?? "queued-" + incidentId
     await this.db.query("UPDATE motor_infrastructure_recovery_history SET execution_id = ? WHERE incident_id = ?", [executionId, incidentId])
     return { executionId, incidentId }
+  }
+
+  /**
+   * Resolve o incident_id para agrupamento de falhas sistêmicas.
+   * Se já existe um incidente recente (últimos 7 dias) com a mesma assinatura
+   * (fingerprint), reutiliza o incident_id. Caso contrário, cria um novo.
+   * Isso garante que múltiplas tarefas afetadas pela mesma falha de infraestrutura
+   * fiquem associadas a um único incidente, enquanto assinaturas distintas
+   * não são agrupadas.
+   */
+  private async resolveIncidentId(fingerprint: string, excerpt: string): Promise<string> {
+    if (!fingerprint) return randomUUID()
+    // Busca incidente recente com o mesmo fingerprint no original_reason ou correction_applied
+    // O fingerprint é armazenado como prefixo do block_command e normalizado
+    const normalizedFingerprint = fingerprint.slice(0, 200)
+    const { rows } = await this.db.query(
+      "SELECT h.incident_id FROM motor_infrastructure_recovery_history h " +
+      "WHERE h.created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY) " +
+      "AND (h.original_reason LIKE ? OR h.correction_applied LIKE ?) " +
+      "ORDER BY h.id DESC LIMIT 1",
+      ["%" + normalizedFingerprint + "%", "%" + normalizedFingerprint + "%"],
+    )
+    if (rows.length > 0 && rows[0]?.incident_id) {
+      return String(rows[0].incident_id)
+    }
+    return randomUUID()
   }
 
   async cancelTask(taskId: string): Promise<void> {
