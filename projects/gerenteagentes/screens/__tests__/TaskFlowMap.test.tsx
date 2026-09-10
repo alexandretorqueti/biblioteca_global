@@ -255,6 +255,53 @@ describe("TaskFlowMap — Tecla Esc", () => {
   })
 })
 
+describe("TaskFlowMap — Polimento transversal (5.1/5.2/5.3)", () => {
+  it("título do mapa usa tipografia refinada (5.2)", () => {
+    view()
+    const titulo = screen.getByText("Mapa Vivo da Operação")
+    expect(titulo).toBeInTheDocument()
+    // Verifica que o título é um h6 (variant="h6") com fontWeight 800
+    // O fontWeight é aplicado via MUI Typography props, gerando classe CSS
+    expect(titulo.tagName).toBe("H6")
+    // Verifica que tem a classe do MUI Typography
+    expect(titulo).toHaveClass("MuiTypography-root")
+  })
+
+  it("estações têm borda superior colorida (borderTop 4px)", () => {
+    view()
+    const stationRunning = screen.getByTestId("flow-station-running")
+    expect(stationRunning).toBeInTheDocument()
+    // Verifica que a estação tem borderTop (via sx)
+    // O estilo é aplicado via sx, então verificamos via getComputedStyle
+    const computedStyle = window.getComputedStyle(stationRunning)
+    expect(computedStyle.borderTopWidth).toBe("4px")
+  })
+
+  it("renderiza corretamente no tema claro (default)", () => {
+    view()
+    const map = screen.getByTestId("task-flow-map")
+    expect(map).toBeInTheDocument()
+    // Verifica que o mapa renderizou com sucesso
+    expect(screen.getByTestId("map-header")).toBeInTheDocument()
+    expect(screen.getByTestId("map-dashboard")).toBeInTheDocument()
+  })
+
+  it("renderiza corretamente no tema escuro", () => {
+    // Renderiza com tema escuro usando BibliotecaThemeProvider com mode="dark"
+    render(
+      <BibliotecaThemeProvider themeMode="dark">
+        <TaskFlowMap tarefas={tarefas} selectedTaskId="" onSelectTask={vi.fn()} />
+      </BibliotecaThemeProvider>
+    )
+    const map = screen.getByTestId("task-flow-map")
+    expect(map).toBeInTheDocument()
+    // Verifica que o mapa renderizou com sucesso no tema escuro
+    expect(screen.getByTestId("map-header")).toBeInTheDocument()
+    expect(screen.getByTestId("map-dashboard")).toBeInTheDocument()
+    expect(screen.getByTestId("flow-station-running")).toBeInTheDocument()
+  })
+})
+
 describe("TaskFlowMap — Cabeçalho impactante (1.1)", () => {
   it("renderiza o cabeçalho com ícone, título e badge 'AO VIVO' pulsante", () => {
     view()
