@@ -377,6 +377,10 @@ export default function GeradorSistema({
     .flatMap((group) => group.items)
     .find((item) => item.path === currentPath)?.screen
 
+  // autoHideMenu: quando true (ou omitido), drawer fecha ao clicar fora;
+  // quando false, drawer permanece aberto até toggle/navigate.
+  const autoHideMenu = config.autoHideMenu ?? true
+
   // Se há navegação hierárquica ativa, renderizar tela filha
   if (navigationStack.length > 0) {
     const currentLevel = navigationStack[navigationStack.length - 1]!
@@ -430,8 +434,9 @@ export default function GeradorSistema({
           <Drawer
             variant={desktop ? "permanent" : "temporary"}
             open={isDrawerOpen}
-            onClose={() => setMobileMenuOpen(false)}
-            ModalProps={{ keepMounted: true }}
+            onClose={autoHideMenu ? () => setMobileMenuOpen(false) : () => {}}
+            disableRestoreFocus={!autoHideMenu}
+            ModalProps={{ keepMounted: true, disableAutoFocus: !autoHideMenu }}
             sx={{
               "& .MuiDrawer-paper": {
                 width: isDrawerOpen ? drawerWidth : 0,
@@ -549,8 +554,9 @@ export default function GeradorSistema({
         <Drawer
           variant={desktop ? "permanent" : "temporary"}
           open={isDrawerOpen}
-          onClose={() => setMobileMenuOpen(false)}
-          ModalProps={{ keepMounted: true }}
+          onClose={autoHideMenu ? () => setMobileMenuOpen(false) : () => {}}
+          disableRestoreFocus={!autoHideMenu}
+          ModalProps={{ keepMounted: true, disableAutoFocus: !autoHideMenu }}
           sx={{
             "& .MuiDrawer-paper": {
               width: isDrawerOpen ? drawerWidth : 0,
