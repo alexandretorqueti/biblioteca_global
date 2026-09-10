@@ -18,11 +18,15 @@ describe('GerenteAgentesService — resultado final consolidado (ST-4)', () => {
       obter: vi.fn().mockResolvedValue(mockDb),
     };
 
+    const configService = {
+      get: vi.fn().mockReturnValue(''),
+    };
+
     const instance = new GerenteAgentesService(
       factory as never,
       {} as never,
       {} as never,
-      {} as never,
+      configService as never,
     );
 
     return { instance, mockDb, factory };
