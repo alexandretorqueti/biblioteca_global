@@ -620,7 +620,7 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, l
   )
 }
 
-export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", motorActivities = [], onSelectTask, projetos = [], filtros: filtrosExternos, onFiltrosChange, aoVivo = true, carregando = false }: TaskFlowMapProps) {
+export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", motorActivities = [], onSelectTask, projetos = [], filtros: filtrosExternos, onFiltrosChange, aoVivo = true, carregando = false, onStartTask, onPauseTask, onResumeTask }: TaskFlowMapProps) {
   // Injeta keyframes globais na primeira renderização
   ensureKeyframes()
 
