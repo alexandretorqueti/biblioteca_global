@@ -4,12 +4,55 @@
  * Centraliza valores, labels amigáveis, cores e conjuntos auxiliares para que
  * adicionar/remover status exija mudança em um só lugar.
  *
+ * ## Taxonomia canônica
+ *
+ * Este módulo define a taxonomia oficial de estados. Todos os consumidores
+ * (APIs, KPIs, dashboard, persistência) DEVEM usar estes valores. Status
+ * legados existem apenas para compatibilidade com dados históricos e são
+ * normalizados em tempo de leitura por `status-normalization.ts`.
+ *
+ * ### Semântica dos estados de tarefa
+ *
+ * | Estado                 | Significado                                                | Avanço |
+ * |------------------------|------------------------------------------------------------|--------|
+ * | `draft`                | rascunho; não iniciada                                     | 0%     |
+ * | `planned`              | planejada, aguardando execução                             | 0%     |
+ * | `analyzing`            | analista trabalhando                                       | operacional, não aceito |
+ * | `awaiting_clarification` | aguardando resposta do humano                            | 0%     |
+ * | `ready`                | pronta para execução                                       | 0%     |
+ * | `running`              | execução em curso                                          | operacional, não aceito |
+ * | `paused`               | pausada manualmente                                        | 0%     |
+ * | `completed`            | concluída com sucesso                                      | 100%   |
+ * | `deployed`             | entregue em ambiente; exige smoke test para confiabilidade  | 100% (condicional) |
+ * | `blocked`              | impedimento ativo                                          | 0%     |
+ * | `motor_fix`            | correção pelo motor                                        | operacional, não aceito |
+ * | `failed`               | falhou                                                     | 0%     |
+ * | `cancelled`            | cancelada                                                  | 0%     |
+ *
+ * ### Semântica dos estados de subtarefa
+ *
+ * | Estado       | Significado                                                  | Avanço |
+ * |--------------|--------------------------------------------------------------|--------|
+ * | `pending`    | ainda não iniciada; 0%                                       | 0%     |
+ * | `running`    | execução em curso; avanço operacional, não aceito             | operacional |
+ * | `delivered`  | entrega submetida a gate                                     | operacional |
+ * | `verifying`  | gate em execução; não aceito                                 | operacional |
+ * | `verified`   | aceite técnico; 100% do peso aceito                          | 100% aceito |
+ * | `rejected`   | entrega não aceita; não conta como avanço aceito             | 0%     |
+ * | `blocked`    | impedimento ativo; não conta como avanço aceito              | 0%     |
+ * | `completed`  | concluída                                                    | 100%   |
+ * | `failed`     | falhou                                                       | 0%     |
+ * | `skipped`    | ignorada (não elegível)                                      | excluída |
+ * | `rework`     | em retrabalho                                                | operacional |
+ * | `superseded` | substituída formalmente; excluída do denominador QUANDO a sucessora existir | excluída condicional |
+ *
  * Consumidores:
  * - TaskMonitorScreen (combo de filtro, Chip de cor, formulário de edição)
  * - motor-v2/shared/types (TaskStatus / SubTaskStatus)
  * - gerenteagentes.service (validação de transições)
  * - schema.ts (annotations / helperText)
  * - config.ts (options de select, valuesLast)
+ * - APIs de métricas/KPIs (normalização em leitura)
  */
 
 // ============================================================================
@@ -169,6 +212,33 @@ export const SUBTASK_STATUSES = [
 ] as const
 
 export type SubTaskStatusValue = (typeof SUBTASK_STATUSES)[number]
+
+/**
+ * Categoria de avanço para cada status de subtarefa.
+ * Usado por KPIs para decidir se um status conta como avanço aceito,
+ * operacional, excluído do denominador, etc.
+ */
+export type SubtaskStatusCategory =
+  | "not_started"       // 0%, não iniciada
+  | "operational"       // em andamento, não aceito
+  | "accepted"          // 100% do peso aceito
+  | "excluded"          // excluída do denominador (skipped)
+  | "excluded_conditional" // excluída somente se sucessora existir (superseded)
+
+export const SUBTASK_STATUS_CATEGORIES: Record<SubTaskStatusValue, SubtaskStatusCategory> = {
+  pending: "not_started",
+  running: "operational",
+  delivered: "operational",
+  verifying: "operational",
+  verified: "accepted",
+  rejected: "operational",
+  blocked: "operational",
+  completed: "accepted",
+  failed: "operational",
+  skipped: "excluded",
+  rework: "operational",
+  superseded: "excluded_conditional",
+}
 
 /** Labels amigáveis para cada status de subtarefa. */
 export const SUBTASK_STATUS_LABELS: Record<string, string> = {
