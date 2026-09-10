@@ -736,4 +736,111 @@ describe('TaskCoordinator', () => {
       expect(result.ok).toBe(true)
     })
   })
+
+  describe('persistFinalLightweightResult', () => {
+    type PersistFn = (task: { id: string; tipo?: string }, knownRows?: Record<string, unknown>[]) => Promise<void>
+
+    function getPersistFn(): PersistFn {
+      return (coordinator as unknown as {
+        persistFinalLightweightResult: PersistFn
+      }).persistFinalLightweightResult.bind(coordinator)
+    }
+
+    it('persiste resultado final consolidado para tarefa de verificação', async () => {
+      const persist = getPersistFn()
+      const knownRows = [
+        { seq: 1, titulo: 'Validar API', resultado: JSON.stringify({ status: 'done', summary: 'API respondeu 200', reason: '' }) },
+        { seq: 2, titulo: 'Conferir banco', resultado: JSON.stringify({ status: 'done', summary: '12 tabelas OK', reason: '' }) },
+      ]
+      const task = { id: 'task-verif-1', tipo: 'verificacao' }
+
+      await persist(task, knownRows)
+
+      // A transação foi executada (UPDATE tarefas + INSERT chat)
+      expect(db.transaction).toHaveBeenCalled()
+      // O UPDATE do resultado_final foi executado
+      const queryCalls = (db.query as ReturnType<typeof vi.fn>).mock.calls
+      const updateCall = queryCalls.find((call: unknown[]) =>
+        typeof call[0] === 'string' && (call[0] as string).includes('UPDATE tarefas SET resultado_final')
+      )
+      expect(updateCall).toBeDefined()
+      // O JSON persistido contém o resultado consolidado
+      const persistedJson = updateCall![1][0] as string
+      const parsed = JSON.parse(persistedJson)
+      expect(parsed.status).toBe('done')
+      expect(parsed.summary).toContain('Subtarefa 1')
+      expect(parsed.summary).toContain('API respondeu 200')
+    })
+
+    it('persiste resultado final consolidado para tarefa de automação', async () => {
+      const persist = getPersistFn()
+      const knownRows = [
+        { seq: 1, titulo: 'Configurar CI', resultado: JSON.stringify({ status: 'done', summary: 'Pipeline criado', reason: '' }) },
+        { seq: 2, titulo: 'Deploy', resultado: JSON.stringify({ status: 'need_help', summary: 'Precisa config', reason: 'Credenciais faltando' }) },
+      ]
+      const task = { id: 'task-auto-1', tipo: 'automacao' }
+
+      await persist(task, knownRows)
+
+      expect(db.transaction).toHaveBeenCalled()
+      const queryCalls = (db.query as ReturnType<typeof vi.fn>).mock.calls
+      const updateCall = queryCalls.find((call: unknown[]) =>
+        typeof call[0] === 'string' && (call[0] as string).includes('UPDATE tarefas SET resultado_final')
+      )
+      expect(updateCall).toBeDefined()
+      const parsed = JSON.parse(updateCall![1][0] as string)
+      expect(parsed.status).toBe('need_help')
+      expect(parsed.reason).toContain('Credenciais faltando')
+    })
+
+    it('não persiste nada para tarefa de desenvolvimento', async () => {
+      const persist = getPersistFn()
+      const task = { id: 'task-dev-1', tipo: 'desenvolvimento' }
+
+      await persist(task, [])
+
+      // Nenhuma transação deve ser aberta para desenvolvimento
+      expect(db.transaction).not.toHaveBeenCalled()
+    })
+
+    it('insere mensagem no chat da tarefa com o texto consolidado', async () => {
+      const persist = getPersistFn()
+      const knownRows = [
+        { seq: 1, titulo: 'Verificar saúde', resultado: JSON.stringify({ status: 'done', summary: 'Tudo OK', reason: '' }) },
+      ]
+      const task = { id: 'task-chat-1', tipo: 'verificacao' }
+
+      await persist(task, knownRows)
+
+      const queryCalls = (db.query as ReturnType<typeof vi.fn>).mock.calls
+      const chatInsert = queryCalls.find((call: unknown[]) =>
+        typeof call[0] === 'string' && (call[0] as string).includes('INSERT INTO tarefa_chats')
+      )
+      expect(chatInsert).toBeDefined()
+      // O texto do chat contém o resumo consolidado
+      const chatText = chatInsert![1][0] as string
+      expect(chatText).toContain('Subtarefa 1')
+      expect(chatText).toContain('Tudo OK')
+    })
+
+    it('evidências das subtarefas permanecem intactas (somente leitura)', async () => {
+      const persist = getPersistFn()
+      const knownRows = [
+        { seq: 1, titulo: 'Teste A', resultado: JSON.stringify({ status: 'done', summary: 'Resultado A', reason: 'Detalhe A' }) },
+        { seq: 2, titulo: 'Teste B', resultado: JSON.stringify({ status: 'done', summary: 'Resultado B', reason: 'Detalhe B' }) },
+      ]
+      // Clonar para verificar que não são modificadas
+      const originalRows = knownRows.map((r) => ({ ...r }))
+      const task = { id: 'task-evidence-1', tipo: 'verificacao' }
+
+      await persist(task, knownRows)
+
+      // As knownRows NÃO foram modificadas pela persistência
+      for (let i = 0; i < knownRows.length; i++) {
+        expect(knownRows[i]!.resultado).toBe(originalRows[i]!.resultado)
+        expect(knownRows[i]!.titulo).toBe(originalRows[i]!.titulo)
+        expect(knownRows[i]!.seq).toBe(originalRows[i]!.seq)
+      }
+    })
+  })
 })
