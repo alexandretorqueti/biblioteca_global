@@ -15,6 +15,10 @@ export interface FlowTask {
   descricao?: string | null
   status: string
   projetoId: number
+  createdAt?: string | null
+  updatedAt?: string | null
+  projetoNome?: string | null
+  progresso?: { verified: number; total: number } | null
 }
 
 export interface MotorActivity {
@@ -39,7 +43,7 @@ interface FlowStation {
   tone: "neutral" | "active" | "success" | "warning" | "danger"
 }
 
-const MAIN_FLOW: FlowStation[] = [
+export const MAIN_FLOW: FlowStation[] = [
   { id: "planning", label: "Planejadas", subtitle: "aguardando análise", statuses: ["planned"], tone: "neutral" },
   { id: "analyzing", label: "Em análise", subtitle: "IA analisando", statuses: ["analyzing"], tone: "active" },
   { id: "ready", label: "Prontas / na fila", subtitle: "próxima subtarefa", statuses: ["ready"], tone: "neutral" },
@@ -48,7 +52,7 @@ const MAIN_FLOW: FlowStation[] = [
   { id: "deployed", label: "Deployadas", subtitle: "em produção", statuses: ["deployed", "deployada"], tone: "success" },
 ]
 
-const SIDE_FLOW: FlowStation[] = [
+export const SIDE_FLOW: FlowStation[] = [
   { id: "waiting", label: "Aguardando", subtitle: "pausa ou resposta humana", statuses: ["awaiting_clarification", "paused"], tone: "warning" },
   { id: "repair", label: "Correção do motor", subtitle: "IA corrigindo o fluxo", statuses: ["motor_fix"], tone: "active" },
   { id: "attention", label: "Atenção", subtitle: "exige intervenção", statuses: ["blocked", "failed"], tone: "danger" },

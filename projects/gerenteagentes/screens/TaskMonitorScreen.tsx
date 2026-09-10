@@ -1061,6 +1061,15 @@ export default function TaskMonitorScreen(): ReactNode {
       return !busca || `#${tarefa.id} ${tarefa.titulo}`.toLocaleLowerCase("pt-BR").includes(busca)
     })
   }, [tarefas, statusFiltro, buscaTarefa])
+  const tarefasParaMapa = useMemo(() => {
+    const projetoNomePorId = new Map(projetos.map((p) => [p.id, p.nome]))
+    return tarefas.map((t) => ({
+      ...t,
+      createdAt: t.createdAt ?? null,
+      updatedAt: t.updatedAt ?? null,
+      projetoNome: projetoNomePorId.get(t.projetoId) ?? null,
+    }))
+  }, [tarefas, projetos])
   const statusMotor = detail?.task?.status ?? tarefaSelecionada?.status ?? "—"
   const podeIniciar = STATUS_INICIO_PERMITIDO.has(statusMotor)
   const podePausar = statusMotor !== "deployed"
@@ -1213,7 +1222,7 @@ export default function TaskMonitorScreen(): ReactNode {
       {/* Sessão 1: Mapa vivo da tarefa */}
       <Box data-testid="task-map-section">
         <TaskFlowMap
-          tarefas={tarefas}
+          tarefas={tarefasParaMapa}
           selectedTaskId={tarefaId}
           search={buscaTarefa}
           motorActivities={motorActivities}
