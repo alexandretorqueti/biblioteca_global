@@ -348,7 +348,7 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, l
       role="group"
       aria-label={`${station.label}: ${stationTasks.length} tarefas`}
       sx={{
-        p: 1.5,
+        p: 2.5,
         minWidth: 190,
         minHeight: compacto ? 80 : 196,
         borderWidth: 1.5,
@@ -954,7 +954,7 @@ export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", moto
           justifyContent="center"
           flexWrap="wrap"
           useFlexGap
-          spacing={0.75}
+          spacing={2}
           sx={{ width: "100%" }}
         >
           {MAIN_FLOW.map((station, index) => (
@@ -985,7 +985,7 @@ export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", moto
           alignItems="center"
           flexWrap="wrap"
           useFlexGap
-          spacing={1}
+          spacing={2}
           sx={{ width: "100%" }}
         >
           {SIDE_FLOW.map((station, index) => (
