@@ -1520,8 +1520,17 @@ export class TaskCoordinator {
     
     // Se não há worker ativo, pausa imediatamente
     if (!workerAtivo) {
+      // Se a tarefa está aguardando recurso, limpa o resource_wait_key
+      // para evitar que continue sendo selecionada pelo selectNextSubtask
+      // Remove também da fila de espera de recursos
       await this.db.query(
-        "UPDATE tarefas SET paused_at = NOW(), updated_at = NOW() WHERE external_id = ? OR id = CAST(? AS UNSIGNED)",
+        `DELETE q FROM execution_resource_queue q
+         INNER JOIN tarefas t ON t.resource_wait_id = q.id
+         WHERE (t.external_id = ? OR t.id = CAST(? AS UNSIGNED)) AND q.status = 'waiting'`,
+        [taskId, taskId]
+      )
+      await this.db.query(
+        "UPDATE tarefas SET paused_at = NOW(), resource_wait_key = NULL, resource_wait_id = NULL, resource_wait_position = NULL, updated_at = NOW() WHERE external_id = ? OR id = CAST(? AS UNSIGNED)",
         [taskId, taskId]
       )
       this.logger.info("Tarefa pausada imediatamente (sem worker ativo)", { taskId })
