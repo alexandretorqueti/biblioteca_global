@@ -58,6 +58,32 @@ describe("buildAnalystPrompt (limites anti-truncamento)", () => {
     expect(prompt).toContain('"subtarefas": [')
     expect(prompt).toContain('"kind": "perguntas"')
   })
+
+  it("orienta conversa natural em vez de formulário de perguntas numeradas", () => {
+    const prompt = buildPrompt({ title: "Tarefa exemplo", description: "descricao" })
+    expect(prompt).toContain("CONVERSA NATURAL")
+    expect(prompt).toContain("texto livre")
+    expect(prompt).toContain("nao e formulario")
+    expect(prompt).toContain("Nao exija JSON")
+  })
+
+  it("proíbe explicitamente criar subtarefas ou iniciar execução sem aprovação", () => {
+    const prompt = buildPrompt({ title: "Tarefa exemplo", description: "descricao" })
+    expect(prompt).toContain("PROIBICAO ABSOLUTA")
+    expect(prompt).toContain("NUNCA crie subtarefas")
+    expect(prompt).toContain("aprovacao explicita")
+  })
+
+  it("orienta a responder perguntas livres do usuário naturalmente", () => {
+    const prompt = buildPrompt({ title: "Tarefa exemplo", description: "descricao" })
+    expect(prompt).toContain("o que voce quer dizer com a pergunta")
+    expect(prompt).toContain("responda naturalmente")
+  })
+
+  it("orienta a apresentar proposta apenas quando há informação suficiente", () => {
+    const prompt = buildPrompt({ title: "Tarefa exemplo", description: "descricao" })
+    expect(prompt).toContain("So elabore a proposta de plano quando houver informacao suficiente")
+  })
 })
 
 describe("analystCorrectiveFeedback", () => {
