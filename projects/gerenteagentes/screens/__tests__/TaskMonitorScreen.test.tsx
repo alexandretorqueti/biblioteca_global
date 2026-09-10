@@ -1530,3 +1530,177 @@ describe("TaskMonitorScreen — Bottom sheet mobile (6.1)", () => {
     expect(drawer).toBeInTheDocument()
   })
 })
+
+describe("TaskMonitorScreen — Chat (campo multilinha, Enter sem envio, Ctrl+Enter com envio)", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", mockFetch)
+    mockFetch.mockReset()
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    delete globalThis.__bundleFalso
+  })
+
+  function renderScreen() {
+    return render(
+      <BibliotecaThemeProvider>
+        <TaskMonitorScreen />
+      </BibliotecaThemeProvider>,
+    )
+  }
+
+  function makeBundleWithChat(postSpy: ReturnType<typeof vi.fn>) {
+    const tarefas = [tarefaFactory(1, "Tarefa Chat", "running", 1)]
+    const motorDetail = {
+      motorId: "m1",
+      exists: true,
+      task: { id: "task-1", status: "running", title: "Tarefa Chat" },
+      subtasks: [],
+      currentSubTask: null,
+      events: [],
+    }
+    return {
+      http: {
+        request: async (method: string, path: string, reqOpts?: { body?: unknown }) => {
+          if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
+          if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          // A base evoluiu após a branch da 785: a tela carrega a lista via
+          // /tarefas-com-status (status derivado pelo motor) e auto-seleciona a
+          // tarefa em execução — sem este handler o painel de chat não renderiza.
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
+          if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
+          if (method === "GET" && path.endsWith("/chat")) return { items: [] }
+          if (method === "GET" && path.endsWith("/subtarefas")) return []
+          if (method === "POST" && path.endsWith("/chat")) {
+            postSpy(reqOpts?.body)
+            return { ok: true }
+          }
+          return {}
+        },
+      },
+    } as never
+  }
+
+  it("campo de entrada do chat é um textarea (multilinha)", async () => {
+    const postSpy = vi.fn()
+    globalThis.__bundleFalso = makeBundleWithChat(postSpy)
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("task-chat-input")).toBeInTheDocument()
+    })
+
+    const chatInput = screen.getByTestId("task-chat-input")
+    // O TextField do MUI com multiline renderiza um <textarea> (não um <input>)
+    expect(chatInput.tagName.toLowerCase()).toBe("textarea")
+  })
+
+  it("Enter isolado NÃO envia a mensagem (insere quebra de linha)", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const postSpy = vi.fn()
+    globalThis.__bundleFalso = makeBundleWithChat(postSpy)
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("task-chat-input")).toBeInTheDocument()
+    })
+
+    const chatInput = screen.getByTestId("task-chat-input") as HTMLTextAreaElement
+
+    // Digita texto no campo
+    await user.click(chatInput)
+    await user.type(chatInput, "Linha 1")
+
+    // Pressiona Enter (sem Ctrl) — deve inserir quebra de linha, NÃO enviar
+    await user.keyboard("{Enter}")
+    await user.type(chatInput, "Linha 2")
+
+    // O valor deve conter quebra de linha
+    expect(chatInput.value).toContain("\n")
+    expect(chatInput.value).toContain("Linha 1")
+    expect(chatInput.value).toContain("Linha 2")
+
+    // O POST NÃO deve ter sido chamado
+    expect(postSpy).not.toHaveBeenCalled()
+  })
+
+  it("Ctrl+Enter envia a mensagem (chama POST /chat)", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const postSpy = vi.fn()
+    globalThis.__bundleFalso = makeBundleWithChat(postSpy)
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("task-chat-input")).toBeInTheDocument()
+    })
+
+    const chatInput = screen.getByTestId("task-chat-input") as HTMLTextAreaElement
+
+    // Digita texto no campo
+    await user.click(chatInput)
+    await user.type(chatInput, "Mensagem de teste")
+
+    // Pressiona Ctrl+Enter — deve enviar
+    await user.keyboard("{Control>}{Enter}{/Control}")
+
+    // O POST deve ter sido chamado com o texto correto
+    await waitFor(() => {
+      expect(postSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          role: "user",
+          texto: "Mensagem de teste",
+        }),
+      )
+    })
+  })
+
+  it("Meta+Enter (Cmd no Mac) também envia a mensagem", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const postSpy = vi.fn()
+    globalThis.__bundleFalso = makeBundleWithChat(postSpy)
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("task-chat-input")).toBeInTheDocument()
+    })
+
+    const chatInput = screen.getByTestId("task-chat-input") as HTMLTextAreaElement
+
+    await user.click(chatInput)
+    await user.type(chatInput, "Mensagem Mac")
+
+    // Pressiona Meta+Enter (Cmd no Mac)
+    await user.keyboard("{Meta>}{Enter}{/Meta}")
+
+    await waitFor(() => {
+      expect(postSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          role: "user",
+          texto: "Mensagem Mac",
+        }),
+      )
+    })
+  })
+
+  it("helperText informa o atalho Ctrl+Enter para enviar", async () => {
+    const postSpy = vi.fn()
+    globalThis.__bundleFalso = makeBundleWithChat(postSpy)
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("task-chat-input")).toBeInTheDocument()
+    })
+
+    // O helperText deve estar visível e conter a instrução
+    expect(screen.getByText(/Ctrl\+Enter para enviar/)).toBeInTheDocument()
+    expect(screen.getByText(/Enter para nova linha/)).toBeInTheDocument()
+  })
+})

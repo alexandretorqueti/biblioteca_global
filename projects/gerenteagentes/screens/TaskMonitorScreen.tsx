@@ -1286,18 +1286,20 @@ export default function TaskMonitorScreen(): ReactNode {
           fullWidth
           size="small"
           multiline
+          minRows={2}
           maxRows={4}
           placeholder="Escreva uma mensagem para a tarefa…"
           value={chatInput}
           disabled={chatSending}
           onChange={(event) => setChatInput(event.target.value)}
           onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
+            if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
               event.preventDefault()
               void enviarMensagemChat()
             }
           }}
           inputProps={{ "data-testid": "task-chat-input" }}
+          helperText="Ctrl+Enter para enviar; Enter para nova linha"
         />
         <Button
           variant="contained"
