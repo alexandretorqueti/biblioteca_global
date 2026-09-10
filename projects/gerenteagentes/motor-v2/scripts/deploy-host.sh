@@ -52,22 +52,47 @@ rollback() {
   if [[ "$can_restore" == "true" && -n "$OLD_API_IMAGE" && -n "$OLD_WEB_IMAGE" ]]; then
     docker tag "$OLD_API_IMAGE" biblioteca-global-api:latest
     docker tag "$OLD_WEB_IMAGE" biblioteca-global-web:latest
-    # Remove containers órfãos antes de recriar
-    docker compose -f docker-compose.yml down --remove-orphans || true
+    # Remove apenas API e Web, mantém MySQL
+    docker compose -f docker-compose.yml rm -f -s api web || true
+    docker compose -f docker-compose.yml up -d mysql 2>/dev/null || true
+    # Aguarda MySQL ficar healthy
+    for _ in $(seq 1 20); do
+      if docker compose -f docker-compose.yml ps mysql 2>/dev/null | grep -q "healthy"; then
+        break
+      fi
+      sleep 2
+    done
     docker compose -f docker-compose.yml up -d --no-deps --force-recreate api web || true
   else
     echo "[deploy-host] rollback parcial: pelo menos uma imagem antiga não existe mais" >&2
     # Tenta pelo menos subir os containers com as imagens atuais
-    docker compose -f docker-compose.yml down --remove-orphans || true
+    docker compose -f docker-compose.yml rm -f -s api web || true
+    docker compose -f docker-compose.yml up -d mysql 2>/dev/null || true
+    for _ in $(seq 1 20); do
+      if docker compose -f docker-compose.yml ps mysql 2>/dev/null | grep -q "healthy"; then
+        break
+      fi
+      sleep 2
+    done
     docker compose -f docker-compose.yml up -d --no-deps --force-recreate api web || true
   fi
 }
 trap rollback ERR
 
 # Remove containers órfãos antes do deploy para evitar conflito de nomes
-docker compose -f docker-compose.yml down --remove-orphans 2>/dev/null || true
+# Mas mantém o MySQL rodando (não derruba dependências)
+docker compose -f docker-compose.yml rm -f -s api web 2>/dev/null || true
 docker compose -f docker-compose.yml config --quiet
 docker compose -f docker-compose.yml build api web
+# Sobe MySQL primeiro (se não estiver rodando) e depois API/Web
+docker compose -f docker-compose.yml up -d mysql 2>/dev/null || true
+# Aguarda MySQL ficar healthy antes de subir API
+for _ in $(seq 1 20); do
+  if docker compose -f docker-compose.yml ps mysql 2>/dev/null | grep -q "healthy"; then
+    break
+  fi
+  sleep 2
+done
 docker compose -f docker-compose.yml up -d --no-deps --force-recreate api web
 
 for _ in $(seq 1 30); do
