@@ -688,3 +688,5 @@ export default function EntregaEncomendaScreen(): ReactNode {
     </Stack>
   )
 }
+
+export const componentId = "taqui-entrega-encomenda"

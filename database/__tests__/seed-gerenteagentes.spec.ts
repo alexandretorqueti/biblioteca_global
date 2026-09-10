@@ -11,10 +11,13 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest"
 import { seed } from "../seed.js"
 import { loadEnv } from "../env.js"
 
+const hasMysql = Boolean(process.env.MYSQL_HOST)
+
 let connection: mysql.Connection
 let env: ReturnType<typeof loadEnv>
 
 beforeAll(async () => {
+  if (!hasMysql) return
   env = loadEnv()
   connection = await mysql.createConnection({
     host: env.MYSQL_HOST,
@@ -26,10 +29,10 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
-  await connection.end()
+  if (connection) await connection.end()
 })
 
-describe("seed — gerenteagentes piloto", () => {
+describe.skipIf(!hasMysql)("seed — gerenteagentes piloto", () => {
   it("executa sem erro e é idempotente (rodada dupla)", async () => {
     // Roda duas vezes — a segunda deve ser inócua, não quebrar.
     await seed()

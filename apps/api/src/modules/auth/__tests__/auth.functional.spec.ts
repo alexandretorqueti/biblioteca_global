@@ -43,8 +43,9 @@ const SENHA_ALEXANDRE = "Bo4MfU29r0GPi1" // seed inicial (PoC §9.3)
 const USUARIO_TESTE = "teste_funcional"
 const SENHA_TESTE = "TesteFuncional#2026"
 const SENHA_NOVA = "NovaSenhaFuncional#2026"
+const hasMysql = Boolean(process.env.MYSQL_HOST)
 
-describe("auth — funcional (API + MySQL)", () => {
+describe.skipIf(!hasMysql)("auth — funcional (API + MySQL)", () => {
   let app: INestApplication
   let db: CoreDb
   let fakeEmail: FakeEmailService

@@ -19,7 +19,9 @@ import * as schemaBibliotecaGlobal from "../../../../../../projects/biblioteca-g
 import { config as configDocumentacao } from "../../../../../../projects/documentacao/config"
 import * as schemaDocumentacao from "../../../../../../projects/documentacao/schema"
 
-describe("provisionamento dos projetos iniciais (Etapa 6)", () => {
+const hasMysql = Boolean(process.env.MYSQL_HOST)
+
+describe.skipIf(!hasMysql)("provisionamento dos projetos iniciais (Etapa 6)", () => {
   let documentacaoId: number
   let bibliotecaGlobalId: number
   let conexaoApp: mysql.Connection

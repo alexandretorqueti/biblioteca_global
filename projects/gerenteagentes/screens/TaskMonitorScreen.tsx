@@ -1071,7 +1071,7 @@ export default function TaskMonitorScreen(): ReactNode {
   const statusMotor = detail?.task?.status ?? tarefaSelecionada?.status ?? "—"
   const isPaused = statusMotor === "paused"
   const podeIniciar = !isPaused && STATUS_INICIO_PERMITIDO.has(statusMotor)
-  const podePausar = !isPaused && statusMotor !== "deployed"
+  const podePausar = !isPaused && STATUS_EXECUCAO.has(statusMotor)
   const podeRetomar = isPaused
 
   const editInitialValues = useMemo<DynamicFormValues>(() => {
