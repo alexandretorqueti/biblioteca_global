@@ -25,6 +25,7 @@ import { blockerEvidence } from "../policies/BlockerPolicy.js"
 import { transitionTask, type TaskTransition } from "../policies/TaskStateMachine.js"
 import { persistTaskClarificationAnswer, fetchPendingTaskClarification, fetchAnsweredTaskClarifications } from "../planning/ClarificationStore.js"
 import { createLogger, describeError } from "../shared/logger.js"
+import { normalizeTaskStatus, normalizeSubtaskStatus } from "../shared/status-normalization.js"
 import { ConsoleAgentRuntimeDriver } from "../runtime/ConsoleAgentRuntimeDriver.js"
 import { execFileSync, execSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
@@ -1120,7 +1121,7 @@ export class TaskCoordinator {
       id: Number(row.id),
       seq: Number(row.seq),
       titulo: String(row.titulo ?? ""),
-      status: String(row.status ?? "pending"),
+      status: normalizeSubtaskStatus(String(row.status ?? "pending")),
       resultado: row.resultado ? String(row.resultado) : null,
       deliverCount: Number(row.deliver_count ?? 0),
       workspaceStatus: row.workspace_status ? String(row.workspace_status) : null,
@@ -1207,7 +1208,7 @@ export class TaskCoordinator {
       tipo: data.tipo ?? "desenvolvimento",
       repoPath: data.repoPath ?? "", buildCommand: data.buildCommand ?? "npm run build",
       unitTestCommand: data.unitTestCommand ?? "npm run test", unitTestExclude: [],
-      baselineMode: "full", status: data.status as Task["status"],
+      baselineMode: "full", status: normalizeTaskStatus(data.status) as Task["status"],
       maxRework: data.maxRework, hardTimeoutMs: data.hardTimeoutMs,
       dependsOnTaskId: data.dependsOnTaskId, projectSlug: data.projectSlug ?? null,
       createdAt: data.createdAt ?? new Date().toISOString(),
@@ -1703,7 +1704,7 @@ export class TaskCoordinator {
       repoPath: String(row.repo_path ?? ""),
       buildCommand: String(row.build_command ?? ""), unitTestCommand: String(row.unit_test_command ?? ""),
       unitTestExclude: [], baselineMode: "full",
-      status: String(row.status ?? "planned") as Task["status"],
+      status: normalizeTaskStatus(String(row.status ?? "planned")) as Task["status"],
       maxRework: Number(row.max_rework ?? row.default_max_rework ?? 3),
       hardTimeoutMs: Number(row.hard_timeout_ms ?? row.default_hard_timeout_ms ?? 14_400_000),
       dependsOnTaskId: row.depends_on_task_id ? String(row.depends_on_task_id) : undefined,

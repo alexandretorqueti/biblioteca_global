@@ -69,7 +69,13 @@ export const EXECUTION_REASON_CODES = [
 ] as const
 export type ExecutionReasonCode = (typeof EXECUTION_REASON_CODES)[number]
 
-/** Status que podem aparecer nas transições auditadas; deployada é somente legado. */
+/**
+ * Status que podem aparecer nas transições auditadas.
+ *
+ * ⚠️ `deployada` é legado (v1). Pode existir em eventos históricos, mas
+ * novas gravações DEVEM usar `deployed`. Leituras normalizam via
+ * `normalizeTaskStatus()` em `status-normalization.ts`.
+ */
 export const EXECUTION_STATUSES = [
   "pending", "running", "verifying", "verified", "rejected", "blocked",
   "superseded", "deployed", "deployada",
@@ -77,6 +83,18 @@ export const EXECUTION_STATUSES = [
   "paused", "completed", "failed", "cancelled",
 ] as const
 export type ExecutionStatus = (typeof EXECUTION_STATUSES)[number]
+
+/**
+ * Status canônicos para novas gravações de eventos.
+ * Exclui legados (`deployada`). Usar este tipo para validar transições
+ * antes de gravar um evento.
+ */
+export const EXECUTION_WRITABLE_STATUSES: readonly string[] = [
+  "pending", "running", "verifying", "verified", "rejected", "blocked",
+  "superseded", "deployed",
+  "draft", "planned", "analyzing", "awaiting_clarification", "ready",
+  "paused", "completed", "failed", "cancelled",
+] as const
 
 export interface ExecutionEvent {
   event_id: string
