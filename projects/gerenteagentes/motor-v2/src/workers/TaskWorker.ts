@@ -399,6 +399,7 @@ class TaskWorker {
           model: model.model,
         })
 
+        let contextFailedDueToUnavailable = false
         for (let chunkIndex = 0; chunkIndex < descriptionChunks.length; chunkIndex++) {
           const chunkNumber = chunkIndex + 1
           const contextMessage = [
@@ -413,8 +414,35 @@ class TaskWorker {
           if (contextResult.state !== "final") {
             await this.persistRemoteSessionFailure(input, undefined, contextResult.failure)
             if (contextResult.failure) this.sessionFailure = contextResult.failure
-            throw new Error(`Analista nao confirmou o bloco ${chunkNumber}/${descriptionChunks.length}: ${contextResult.errorMessage || contextResult.state}`)
+            
+            // Verifica se é erro de modelo indisponível (autenticação, provider, etc)
+            // Se for, escala para o próximo modelo da cadeia em vez de falhar
+            const errorMessage = contextResult.errorMessage || contextResult.state
+            const isUnavailable = contextResult.failure?.code === "missing-provider-auth" ||
+              contextResult.failure?.code === "provider_auth_error" ||
+              contextResult.failure?.code === "model_unavailable" ||
+              errorMessage.toLowerCase().includes("no api key found") ||
+              errorMessage.toLowerCase().includes("missing api key") ||
+              errorMessage.toLowerCase().includes("provider auth error") ||
+              errorMessage.toLowerCase().includes("authentication error") ||
+              errorMessage.toLowerCase().includes("model unavailable") ||
+              errorMessage.toLowerCase().includes("model not found")
+            
+            if (isUnavailable) {
+              lastFailure = `Modelo indisponível durante contexto: ${model.model} — ${errorMessage}`
+              this.send({ type: "model_unavailable", executionId: input.context.executionId, model: model.model, message: lastFailure })
+              this.log("warn", lastFailure + "; escalando para o próximo modelo da escada")
+              contextFailedDueToUnavailable = true
+              break // Sai do loop de chunks
+            }
+            
+            throw new Error(`Analista nao confirmou o bloco ${chunkNumber}/${descriptionChunks.length}: ${errorMessage}`)
           }
+        }
+        
+        // Se o contexto falhou por modelo indisponível, pula para o próximo modelo
+        if (contextFailedDueToUnavailable) {
+          continue
         }
 
         this.log("info", "Enviando prompt para analista (modelo " + model.model + ")...")
