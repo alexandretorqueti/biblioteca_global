@@ -18,6 +18,7 @@ import {
   Dialog,
   DialogContent,
   DialogTitle,
+  Drawer,
   FormControl,
   IconButton,
   InputLabel,
@@ -33,7 +34,9 @@ import {
   TextField,
   Tooltip,
   Typography,
+  useMediaQuery,
 } from "@mui/material"
+import { useTheme } from "@mui/material/styles"
 import { PlayArrowRounded, PauseRounded, ReplayRounded, LockOpenRounded, EditRounded, CloseRounded, ExpandMoreRounded, ExpandLessRounded, AddTaskRounded, SendRounded, VisibilityRounded } from "@mui/icons-material"
 import { DynamicForm } from "@biblioteca-global/ui"
 import { RealtimeClient, type RealtimeServerMessage } from "@biblioteca-global/api-client"
@@ -257,6 +260,10 @@ function parseCriteriosTexto(texto: string): string[] {
 
 export default function TaskMonitorScreen(): ReactNode {
   const bundle = useApi()
+  const theme = useTheme()
+  const isMobile = useMediaQuery(theme.breakpoints.down("sm"))
+  // 6.1 — Bottom sheet para detalhe da tarefa em mobile
+  const [bottomSheetOpen, setBottomSheetOpen] = useState(false)
   const [tarefas, setTarefas] = useState<Tarefa[]>([])
   const [projetos, setProjetos] = useState<ProjetoCaptado[]>([])
   const [projetoFiltro, setProjetoFiltro] = useState<number | "">("")
@@ -1186,6 +1193,14 @@ export default function TaskMonitorScreen(): ReactNode {
     )
   }
 
+  // 6.1 — Handler para seleção de tarefa: abre bottom sheet em mobile
+  const handleSelectTask = useCallback((id: number) => {
+    setTarefaId(id)
+    if (isMobile) {
+      setBottomSheetOpen(true)
+    }
+  }, [isMobile])
+
   return (
     <Stack spacing={3} sx={{ width: "90%", mx: "auto" }} data-testid="task-monitor-screen">
       <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" alignItems="center">
@@ -1212,11 +1227,12 @@ export default function TaskMonitorScreen(): ReactNode {
           selectedTaskId={tarefaId}
           search={buscaTarefa}
           motorActivities={motorActivities}
-          onSelectTask={setTarefaId}
+          onSelectTask={handleSelectTask}
           projetos={projetos}
           filtros={filtrosMapa}
           onFiltrosChange={setFiltrosMapa}
           aoVivo={realtimeStatus === "open"}
+          carregando={loading}
         />
       </Box>
 
@@ -1762,6 +1778,78 @@ export default function TaskMonitorScreen(): ReactNode {
           )}
         </DialogContent>
       </Dialog>
+
+      {/* 6.1 — Bottom sheet para detalhe da tarefa em mobile */}
+      <Drawer
+        anchor="bottom"
+        open={bottomSheetOpen}
+        onClose={() => setBottomSheetOpen(false)}
+        data-testid="task-detail-sheet"
+        sx={{
+          display: { xs: "block", sm: "none" },
+          "& .MuiDrawer-paper": {
+            borderTopLeftRadius: 16,
+            borderTopRightRadius: 16,
+            maxHeight: "60vh",
+            p: 2,
+          },
+        }}
+      >
+        <Stack spacing={2}>
+          {/* Handle visual */}
+          <Box sx={{ display: "flex", justifyContent: "center" }}>
+            <Box sx={{ width: 40, height: 4, borderRadius: 2, bgcolor: "text.disabled" }} />
+          </Box>
+          {tarefaSelecionada && (
+            <>
+              <Stack direction="row" justifyContent="space-between" alignItems="flex-start">
+                <Typography variant="h6" fontWeight={600}>
+                  #{tarefaSelecionada.id} {tarefaSelecionada.titulo}
+                </Typography>
+                <IconButton
+                  onClick={() => setBottomSheetOpen(false)}
+                  size="small"
+                  aria-label="Fechar detalhe"
+                >
+                  <CloseRounded />
+                </IconButton>
+              </Stack>
+              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                <Chip
+                  label={taskStatusLabel(tarefaSelecionada.status)}
+                  color={corStatus(tarefaSelecionada.status)}
+                  size="small"
+                />
+                {tarefaSelecionada.tipo && (
+                  <Chip label={TIPO_TAREFA_LABEL[tarefaSelecionada.tipo] ?? tarefaSelecionada.tipo} size="small" variant="outlined" />
+                )}
+              </Stack>
+              {tarefaSelecionada.descricao && (
+                <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.5 }}>
+                  {tarefaSelecionada.descricao.length > 200
+                    ? `${tarefaSelecionada.descricao.slice(0, 200)}...`
+                    : tarefaSelecionada.descricao}
+                </Typography>
+              )}
+              <Button
+                variant="outlined"
+                size="small"
+                onClick={() => {
+                  setBottomSheetOpen(false)
+                  // Scroll até a seção de detalhes
+                  const detailSection = document.querySelector('[data-testid="task-detail-section"]')
+                  if (detailSection) {
+                    detailSection.scrollIntoView({ behavior: "smooth", block: "start" })
+                  }
+                }}
+                data-testid="sheet-view-full"
+              >
+                Ver detalhe completo
+              </Button>
+            </>
+          )}
+        </Stack>
+      </Drawer>
     </Stack>
   )
 }
