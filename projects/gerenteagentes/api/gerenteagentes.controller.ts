@@ -117,6 +117,26 @@ export class GerenteAgentesController {
     return this.service.retomarTarefa(projeto, id);
   }
 
+  /**
+   * Bulk: pausa todas as tarefas não-finais e não-pausadas.
+   * Pausa individual via motor; falhas não abortam o lote (Promise.allSettled).
+   */
+  @Post('tarefas/pause-all')
+  @Roles('admin', 'gerente', 'operador')
+  pausarTodasTarefas() {
+    return this.service.pausarTodasTarefas();
+  }
+
+  /**
+   * Bulk: retoma todas as tarefas pausadas (limpa pausedAt).
+   * Tarefas não-pausadas são contadas como skipped.
+   */
+  @Post('tarefas/resume-all')
+  @Roles('admin', 'gerente', 'operador')
+  retomarTodasTarefas() {
+    return this.service.retomarTodasTarefas();
+  }
+
   @Post('tarefas/:id/unlock')
   @Roles('admin', 'gerente', 'operador')
   desbloquearTarefa(

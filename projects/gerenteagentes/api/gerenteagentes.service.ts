@@ -1,6 +1,6 @@
 import { Injectable, Inject, Logger, NotFoundException, BadRequestException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { eq, desc, and, asc, isNull } from 'drizzle-orm';
+import { eq, desc, and, asc, isNull, isNotNull } from 'drizzle-orm';
 import { request as httpRequest, type RequestOptions } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { randomUUID } from 'node:crypto';
@@ -30,6 +30,7 @@ import {
   motorAgentSessionMessages,
   bloqueios,
   motorConfiguracoes,
+  taskRuntimeFacts,
 } from '../schema';
 import {
   MOTOR_CONFIGURACOES,
@@ -41,7 +42,7 @@ import { OUTPUT_CONTRACT_CATALOG } from '../motor-v2/src/prompts/output-contract
 import { markersIn, renderPromptTemplate, validatePromptTemplate } from '../motor-v2/src/prompts/PromptTemplateEngine';
 import { composeDevelopmentPrompt, type PromptPart } from '../motor-v2/src/prompts/PromptComposition';
 import { ProvisionService } from '../../../apps/api/src/modules/provision/provision.service';
-import { TASK_STATUS_STARTABLE } from '../motor-v2/src/shared/task-statuses';
+import { TASK_STATUS_STARTABLE, TASK_STATUS_FINAIS } from '../motor-v2/src/shared/task-statuses';
 import { RealtimeService } from '../../../apps/api/src/modules/realtime/realtime.service';
 
 @Injectable()
@@ -894,6 +895,119 @@ export class GerenteAgentesService {
     }
 
     return { id: tarefaId, paused: false, message: 'Tarefa retomada' };
+  }
+
+  /**
+   * Bulk: pausa todas as tarefas não-finais e não-pausadas.
+   * Consulta tarefas + fatos de runtime, filtra elegíveis e chama o motor
+   * para cada uma. Falhas individuais não abortam o lote (Promise.allSettled).
+   */
+  async pausarTodasTarefas(): Promise<{ paused: number; skipped: number }> {
+    const db = await this.dbDoMotor();
+
+    // Busca todas as tarefas
+    const todasTarefas = await db
+      .select({
+        id: tarefas.id,
+        externalId: tarefas.externalId,
+        pausedAt: tarefas.pausedAt,
+      })
+      .from(tarefas);
+
+    // Busca fatos de runtime para verificar status terminal
+    const facts = await db
+      .select({
+        tarefaId: taskRuntimeFacts.tarefaId,
+        terminalStatus: taskRuntimeFacts.terminalStatus,
+      })
+      .from(taskRuntimeFacts);
+
+    const factsMap = new Map(facts.map((f) => [f.tarefaId, f]));
+
+    // Filtra tarefas elegíveis: não-final e não-pausada
+    const elegiveis: Array<{ id: number; externalId: string | null }> = [];
+    let skipped = 0;
+
+    for (const tarefa of todasTarefas) {
+      const fact = factsMap.get(tarefa.id);
+      const statusTerminal = fact?.terminalStatus;
+
+      // Pula tarefas em status final
+      if (statusTerminal && TASK_STATUS_FINAIS.has(statusTerminal)) {
+        skipped++;
+        continue;
+      }
+
+      // Pula tarefas já pausadas
+      if (tarefa.pausedAt) {
+        skipped++;
+        continue;
+      }
+
+      elegiveis.push({ id: tarefa.id, externalId: tarefa.externalId });
+    }
+
+    // Pausa cada tarefa elegível via motor (Promise.allSettled)
+    const resultados = await Promise.allSettled(
+      elegiveis.map(async (t) => {
+        const identificador = t.externalId || String(t.id);
+        await this.motorRequest(
+          'POST',
+          `/api/motor/task/${encodeURIComponent(identificador)}/pause`,
+          undefined,
+          this.motorV2Url,
+        );
+        // Atualiza pausedAt localmente
+        await db
+          .update(tarefas)
+          .set({ pausedAt: new Date() })
+          .where(eq(tarefas.id, t.id));
+      }),
+    );
+
+    let paused = 0;
+    for (const resultado of resultados) {
+      if (resultado.status === 'fulfilled') {
+        paused++;
+      } else {
+        this.logger.warn(`Falha ao pausar tarefa em lote: ${resultado.reason}`);
+        skipped++;
+      }
+    }
+
+    this.logger.log(`pause-all: ${paused} pausadas, ${skipped} skipadas`);
+    return { paused, skipped };
+  }
+
+  /**
+   * Bulk: retoma todas as tarefas pausadas (limpa pausedAt via drizzle).
+   * Tarefas não-pausadas são contadas como skipped.
+   */
+  async retomarTodasTarefas(): Promise<{ resumed: number; skipped: number }> {
+    const db = await this.dbDoMotor();
+
+    // Conta tarefas pausadas (pausedAt não-null)
+    const pausadas = await db
+      .select({ id: tarefas.id })
+      .from(tarefas)
+      .where(isNotNull(tarefas.pausedAt));
+
+    // Conta tarefas não-pausadas (para skipped)
+    const naoPausadas = await db
+      .select({ id: tarefas.id })
+      .from(tarefas)
+      .where(isNull(tarefas.pausedAt));
+
+    // Limpa pausedAt de todas as tarefas pausadas
+    if (pausadas.length > 0) {
+      await db
+        .update(tarefas)
+        .set({ pausedAt: null })
+        .where(isNotNull(tarefas.pausedAt));
+    }
+
+    this.logger.log(`resume-all: ${pausadas.length} retomadas, ${naoPausadas.length} skipadas`);
+    return { resumed: pausadas.length, skipped: naoPausadas.length };
   }
 
   /**
