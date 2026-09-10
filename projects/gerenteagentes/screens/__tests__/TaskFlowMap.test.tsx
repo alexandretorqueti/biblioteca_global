@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest"
-import { render, screen } from "@testing-library/react"
+import { render, screen, fireEvent } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import "@testing-library/jest-dom/vitest"
 import { BibliotecaThemeProvider } from "@biblioteca-global/ui"
@@ -922,5 +922,95 @@ describe("TaskFlowMap — Skeleton loaders (7.1)", () => {
     view()
     expect(screen.getByTestId("flow-station-running")).toBeInTheDocument()
     expect(screen.getByTestId("flow-station-ready")).toBeInTheDocument()
+  })
+})
+
+describe("TaskFlowMap — Paginação infinita (10 em 10 com scroll)", () => {
+  function gerarTarefasPlanned(qtd: number): FlowTask[] {
+    return Array.from({ length: qtd }, (_, i) => ({
+      id: i + 1,
+      titulo: `Tarefa ${i + 1}`,
+      status: "planned" as const,
+      projetoId: 1,
+    }))
+  }
+
+  function definirDimensoesScroll(container: HTMLElement, scrollHeight: number, clientHeight: number, scrollTop: number) {
+    Object.defineProperty(container, "scrollHeight", { value: scrollHeight, configurable: true })
+    Object.defineProperty(container, "clientHeight", { value: clientHeight, configurable: true })
+    Object.defineProperty(container, "scrollTop", { value: scrollTop, configurable: true })
+  }
+
+  it("(a) exibe no máximo 10 tarefas por estação com 25 tarefas e caption '+ 15 tarefas'", () => {
+    const tarefas25 = gerarTarefasPlanned(25)
+    view(tarefas25)
+
+    // Exatamente 10 fichas visíveis
+    const fichas = screen.getAllByTestId(/^flow-task-/)
+    expect(fichas).toHaveLength(10)
+
+    // Container de scroll da estação planned existe
+    const scrollContainer = screen.getByTestId("flow-scroll-planned")
+    expect(scrollContainer).toBeInTheDocument()
+
+    // Caption "+ 15 tarefas"
+    expect(screen.getByText("+ 15 tarefas")).toBeInTheDocument()
+  })
+
+  it("(b) carrega mais 10 ao rolar até o fim (20, depois 25)", () => {
+    const tarefas25 = gerarTarefasPlanned(25)
+    view(tarefas25)
+
+    const scrollContainer = screen.getByTestId("flow-scroll-planned")
+
+    // Primeiro scroll: scrollTop=640 + clientHeight=360 = 1000 >= scrollHeight(1000) - 8
+    definirDimensoesScroll(scrollContainer, 1000, 360, 640)
+    fireEvent.scroll(scrollContainer)
+
+    // Agora 20 fichas visíveis
+    expect(screen.getAllByTestId(/^flow-task-/)).toHaveLength(20)
+    // Caption "+ 5 tarefas"
+    expect(screen.getByText("+ 5 tarefas")).toBeInTheDocument()
+
+    // Segundo scroll: rolar até o fim novamente
+    // scrollHeight cresce proporcionalmente; scrollTop + clientHeight >= scrollHeight - 8
+    definirDimensoesScroll(scrollContainer, 1400, 360, 1040)
+    fireEvent.scroll(scrollContainer)
+
+    // Agora 25 fichas (todas), sem caption
+    expect(screen.getAllByTestId(/^flow-task-/)).toHaveLength(25)
+    expect(screen.queryByText(/\+ \d+ tarefas/)).not.toBeInTheDocument()
+  })
+
+  it("(c) não ultrapassa o total — rolar além mantém 25 fichas sem duplicação", () => {
+    const tarefas25 = gerarTarefasPlanned(25)
+    view(tarefas25)
+
+    const scrollContainer = screen.getByTestId("flow-scroll-planned")
+
+    // Scroll 1: 10 → 20
+    definirDimensoesScroll(scrollContainer, 1000, 360, 640)
+    fireEvent.scroll(scrollContainer)
+    expect(screen.getAllByTestId(/^flow-task-/)).toHaveLength(20)
+
+    // Scroll 2: 20 → 25
+    definirDimensoesScroll(scrollContainer, 1400, 360, 1040)
+    fireEvent.scroll(scrollContainer)
+    expect(screen.getAllByTestId(/^flow-task-/)).toHaveLength(25)
+
+    // Scroll 3: já no fim, não deve duplicar
+    definirDimensoesScroll(scrollContainer, 1800, 360, 1440)
+    fireEvent.scroll(scrollContainer)
+    expect(screen.getAllByTestId(/^flow-task-/)).toHaveLength(25)
+  })
+
+  it("(d) busca ativa respeita o limite de 10 visíveis", () => {
+    const tarefas25 = gerarTarefasPlanned(25)
+    const filtros: FiltrosMapa = { busca: "Tarefa", status: [], projetoId: "", prioridade: "" }
+    view(tarefas25, vi.fn(), filtros)
+
+    // Com busca "Tarefa" casando com todos os 25 títulos, ainda exibe apenas 10
+    const fichas = screen.getAllByTestId(/^flow-task-/)
+    expect(fichas).toHaveLength(10)
   })
 })
