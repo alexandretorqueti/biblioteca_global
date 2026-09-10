@@ -37,8 +37,6 @@ export class Motor {
   private consoleDriver: ConsoleAgentRuntimeDriver
 
   constructor(config: MotorConfig) {
-    const maxWorkers = config.maxWorkers ?? getConfigNumber('motor.max_workers')
-    const maxWorkersPerProject = config.maxWorkersPerProject ?? getConfigNumber('motor.max_workers_per_project')
     const apiPort = config.apiPort ?? 3010
 
     const defaultLeaseMs = getConfigNumber('motor.resource_lease_ms')
@@ -65,9 +63,11 @@ export class Motor {
       consoleDriver: this.consoleDriver,
       onLeaseExpired: (resourceKey, executionId) => this.coordinator.onLeaseExpired(resourceKey, executionId),
     })
+    // maxWorkers e maxWorkersPerProject são lidos dinamicamente pelo TaskCoordinator
+    // via getConfigNumber, permitindo alteração em runtime sem restart
     this.coordinator = new TaskCoordinator(config.db, config.repository, this.resourceLease, {
-      maxWorkers,
-      maxWorkersPerProject,
+      maxWorkers: config.maxWorkers,
+      maxWorkersPerProject: config.maxWorkersPerProject,
     }, this.workerLauncher, undefined, this._waitManager)
     this.api = new MotorAPI({ port: apiPort, coordinator: this.coordinator, db: config.db })
 

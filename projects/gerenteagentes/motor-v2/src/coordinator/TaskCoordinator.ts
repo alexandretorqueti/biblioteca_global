@@ -67,13 +67,13 @@ interface ActiveWorker {
 }
 
 export interface TaskCoordinatorConfig {
-  maxWorkers: number
-  maxWorkersPerProject: number
+  maxWorkers?: number
+  maxWorkersPerProject?: number
   /** Timeout máximo de um worker; quando omitido usa hard_timeout_ms da tarefa. */
   workerTimeoutMs?: number
 }
 
-const DEFAULT_CONFIG: TaskCoordinatorConfig = {
+const DEFAULT_CONFIG: Required<Pick<TaskCoordinatorConfig, 'maxWorkers' | 'maxWorkersPerProject'>> = {
   maxWorkers: 1,
   maxWorkersPerProject: 1,
 }
@@ -223,8 +223,9 @@ export class TaskCoordinator {
       await this.resumeAnsweredClarifications()
       // Desenvolvimento e análise são pistas independentes. Uma subtarefa
       // aguardando recurso não pode interromper a seleção do analista.
+      const maxWorkers = this.config.maxWorkers ?? getConfigNumber('motor.max_workers')
       let developmentGuard = 0
-      while (this.activeDevelopmentCount() < this.config.maxWorkers && developmentGuard < this.config.maxWorkers) {
+      while (this.activeDevelopmentCount() < maxWorkers && developmentGuard < maxWorkers) {
         developmentGuard += 1
         const subtask = await this.selectNextSubtask()
         if (!subtask) break
@@ -418,7 +419,8 @@ export class TaskCoordinator {
 
   /** Limite de desenvolvimento: máximo global e, por padrão, um por projeto. */
   private canStartExecution(projectSlug: string | null): boolean {
-    if (this.activeDevelopmentCount() >= this.config.maxWorkers) return false
+    const maxWorkers = this.config.maxWorkers ?? getConfigNumber('motor.max_workers')
+    if (this.activeDevelopmentCount() >= maxWorkers) return false
     return this.canStartProject(projectSlug)
   }
 
@@ -433,11 +435,12 @@ export class TaskCoordinator {
 
   private canStartProject(projectSlug: string | null): boolean {
     if (!projectSlug) return true
+    const maxWorkersPerProject = this.config.maxWorkersPerProject ?? getConfigNumber('motor.max_workers_per_project')
     let runningForProject = 0
     for (const worker of this.activeWorkers.values()) {
       if (worker.resourceKey === RESOURCE_KEYS.projectExecution(projectSlug)) runningForProject += 1
     }
-    return runningForProject < this.config.maxWorkersPerProject
+    return runningForProject < maxWorkersPerProject
   }
 
   /** Retorna true quando o worker foi iniciado; false quando o trabalho não começou (espera/falha). */
@@ -1230,8 +1233,8 @@ export class TaskCoordinator {
     ]
     return {
       activeWorkers: this.activeWorkers.size,
-      maxWorkers: this.config.maxWorkers,
-      maxWorkersPerProject: this.config.maxWorkersPerProject,
+      maxWorkers: this.config.maxWorkers ?? getConfigNumber('motor.max_workers'),
+      maxWorkersPerProject: this.config.maxWorkersPerProject ?? getConfigNumber('motor.max_workers_per_project'),
       workers,
       deployments,
       activities,
