@@ -438,7 +438,7 @@ export class TaskCoordinator {
     const maxWorkersPerProject = this.config.maxWorkersPerProject ?? getConfigNumber('motor.max_workers_per_project')
     let runningForProject = 0
     for (const worker of this.activeWorkers.values()) {
-      if (worker.resourceKey === RESOURCE_KEYS.projectExecution(projectSlug)) runningForProject += 1
+      if (worker.phase === "execute" && worker.projectSlug === projectSlug) runningForProject += 1
     }
     return runningForProject < maxWorkersPerProject
   }
@@ -521,24 +521,12 @@ export class TaskCoordinator {
   /** Retorna true quando o worker foi iniciado; false quando o trabalho não começou (espera/falha). */
   private async startSubtaskExecution(subtask: SubtaskWithTask): Promise<boolean> {
     const executionId = "exec-execute-" + subtask.id + "-" + Date.now()
-    const resourceKey = subtask.projectSlug ? RESOURCE_KEYS.projectExecution(subtask.projectSlug) : null
-    let fencingToken = 0
-
-    if (resourceKey) {
-      const result = await this.resourceLease.acquire(resourceKey, executionId, String(subtask.tarefaId), 120)
-      if (result.kind === "waiting") {
-        await this.waitManager?.waitForResource(String(subtask.tarefaId), resourceKey, result.waitId, result.position)
-        this.logger.info("Subtarefa #" + subtask.seq + " aguardando recurso", {
-          taskId: subtask.taskExternalId, subtaskId: subtask.id, projectSlug: subtask.projectSlug ?? undefined,
-        })
-        return false
-      }
-      if (result.kind !== "acquired") throw new Error("Falha ao adquirir recurso: " + result.reason)
-      fencingToken = result.lease.fencingToken
-    }
+    // Sem lease exclusivo por projeto: o controle de paralelismo é feito via
+    // maxWorkersPerProject no canStartProject. Cada tarefa tem seu próprio
+    // worktree/branch de integração, evitando conflitos de git.
 
     this.activeWorkers.set(executionId, {
-      taskId: subtask.taskExternalId, executionId, resourceKey, fencingToken,
+      taskId: subtask.taskExternalId, executionId, resourceKey: null, fencingToken: 0,
       startedAt: new Date(), phase: "execute", subtaskId: subtask.id, taskTipo: subtask.taskTipo,
       repoPath: subtask.repoPath,
       projectSlug: subtask.projectSlug ?? undefined,
@@ -618,7 +606,7 @@ export class TaskCoordinator {
       await this.workerLauncher.spawn({
         context: {
           executionId, taskId: subtask.taskExternalId, projectSlug: subtask.projectSlug,
-          phase: "execute", fencingToken, startedAt: new Date(),
+          phase: "execute", fencingToken: 0, startedAt: new Date(),
           subtaskId: String(subtask.id),
         },
         task, repoPath: workspace?.projectPath ?? subtask.repoPath,
@@ -671,8 +659,6 @@ export class TaskCoordinator {
       const activeWorker = this.activeWorkers.get(executionId)
       if (activeWorker && this.beginFinalization(executionId, activeWorker)) {
         await this.finishWorker(executionId, activeWorker)
-      } else if (resourceKey) {
-        await this.resourceLease.release(resourceKey, executionId, fencingToken)
       }
       return false
     }
