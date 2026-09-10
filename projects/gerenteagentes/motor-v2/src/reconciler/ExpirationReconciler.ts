@@ -79,9 +79,8 @@ export class ExpirationReconciler {
        WHERE f.terminal_status IS NULL
          AND (f.analysis_started_at IS NOT NULL OR EXISTS(SELECT 1 FROM subtarefas s WHERE s.tarefa_id = t.id AND s.status IN ('running', 'delivered', 'verifying')))
          AND NOT EXISTS (
-           SELECT 1 FROM execution_resources r
-           WHERE (r.owner_id = CAST(t.id AS CHAR) OR r.owner_id = t.external_id)
-             AND r.expires_at > ?
+           SELECT 1 FROM motor_active_executions e
+           WHERE e.tarefa_id = t.id AND e.expires_at > ?
          )`,
       [now]
     )
@@ -118,9 +117,8 @@ export class ExpirationReconciler {
          AND f.terminal_status IS NULL
          AND f.analysis_started_at < ?
          AND NOT EXISTS (
-           SELECT 1 FROM execution_resources r
-           WHERE (r.owner_id = CAST(t.id AS CHAR) OR r.owner_id = t.external_id)
-             AND r.expires_at > ?
+           SELECT 1 FROM motor_active_executions e
+           WHERE e.tarefa_id = t.id AND e.expires_at > ?
          )`,
       [cutoff, now]
     )
@@ -197,9 +195,8 @@ export class ExpirationReconciler {
        WHERE s.status = 'running'
          AND f.terminal_status IS NULL
          AND NOT EXISTS (
-           SELECT 1 FROM execution_resources r
-           WHERE (r.owner_id = CAST(t.id AS CHAR) OR r.owner_id = t.external_id)
-             AND r.expires_at > ?
+           SELECT 1 FROM motor_active_executions e
+           WHERE e.subtarefa_id = s.id AND e.expires_at > ?
          )`,
       [now],
     )

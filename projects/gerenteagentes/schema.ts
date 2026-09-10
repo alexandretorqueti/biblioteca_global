@@ -23,6 +23,7 @@ import {
   json,
   mysqlTable,
   mysqlEnum,
+  index,
   uniqueIndex,
   text,
   timestamp,
@@ -637,6 +638,23 @@ export const executionResources = mysqlTable("execution_resources", {
   expiresAt: timestamp("expires_at").notNull(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 })
+
+/** Presença/heartbeat de workers; não concede exclusividade de recurso. */
+export const motorActiveExecutions = mysqlTable("motor_active_executions", {
+  executionId: varchar("execution_id", { length: 200 }).primaryKey(),
+  tarefaId: bigint("tarefa_id", { mode: "number", unsigned: true })
+    .notNull()
+    .references(() => tarefas.id, { onDelete: "cascade" }),
+  subtarefaId: bigint("subtarefa_id", { mode: "number", unsigned: true })
+    .references(() => subtarefas.id, { onDelete: "cascade" }),
+  phase: varchar("phase", { length: 20 }).notNull(),
+  startedAt: timestamp("started_at").notNull().defaultNow(),
+  heartbeatAt: timestamp("heartbeat_at").notNull().defaultNow(),
+  expiresAt: timestamp("expires_at").notNull(),
+}, (table) => ({
+  taskExpiryIdx: index("motor_active_executions_task_expiry_idx").on(table.tarefaId, table.expiresAt),
+  subtaskExpiryIdx: index("motor_active_executions_subtask_expiry_idx").on(table.subtarefaId, table.expiresAt),
+}))
 
 export const executionResourceQueue = mysqlTable("execution_resource_queue", {
   id: bigint("id", { mode: "number", unsigned: true })

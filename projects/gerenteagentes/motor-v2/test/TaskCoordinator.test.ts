@@ -358,6 +358,32 @@ describe('TaskCoordinator', () => {
       expect(failedSpy).not.toHaveBeenCalled()
     })
 
+    it('heartbeat de worker sem lease renova sua presença persistida', async () => {
+      const launcher = new WorkerLauncher()
+      const coordinatorUnderTest = new TaskCoordinator(db, repository, resourceLease, { maxWorkers: 1 }, launcher)
+      registerWorker(coordinatorUnderTest, 'exec-heartbeat-1')
+
+      launcher.emit('heartbeat', { executionId: 'exec-heartbeat-1' })
+
+      await vi.waitFor(() => expect(vi.mocked(db.query).mock.calls.some(([sql, params]) =>
+        String(sql).includes('UPDATE motor_active_executions') && params?.[1] === 'exec-heartbeat-1',
+      )).toBe(true))
+      expect(vi.mocked(db.query).mock.calls.some(([sql]) => String(sql).includes('execution_resources'))).toBe(false)
+    })
+
+    it('finalização remove a presença persistida da execução', async () => {
+      const internal = coordinator as unknown as {
+        removeActiveExecution: (executionId: string) => Promise<void>
+      }
+
+      await internal.removeActiveExecution('exec-finished-1')
+
+      expect(vi.mocked(db.query)).toHaveBeenCalledWith(
+        'DELETE FROM motor_active_executions WHERE execution_id = ?',
+        ['exec-finished-1'],
+      )
+    })
+
     it('encerra e bloqueia worker que excede o timeout', async () => {
       vi.useFakeTimers()
       const launcher = new WorkerLauncher()

@@ -62,6 +62,7 @@ interface ActiveWorker {
   timeoutHandle?: ReturnType<typeof setTimeout>
   lastHeartbeatAt?: Date
   silenceHandle?: ReturnType<typeof setTimeout>
+  presenceHeartbeatHandle?: ReturnType<typeof setInterval>
   /** Flag de pause graceful: quando true, worker pausa após terminar fase atual. */
   pendingPause?: boolean
 }
@@ -518,6 +519,8 @@ export class TaskCoordinator {
     })
 
     try {
+      await this.registerActiveExecution(executionId, task.id, null, "analyze")
+      this.armActiveExecutionHeartbeat(executionId)
       await this.saveTaskTransition(task, "start_analysis", { executionId })
 
       await this.workerLauncher.spawn({
@@ -539,6 +542,8 @@ export class TaskCoordinator {
     } catch (error) {
       this.logger.error("Erro ao iniciar analise: " + describeError(error), { taskId: task.id, executionId, phase: "analyze" })
       if (resourceKey) await this.resourceLease.release(resourceKey, executionId, fencingToken)
+      this.clearActiveExecutionHeartbeat(executionId)
+      await this.removeActiveExecution(executionId)
       this.activeWorkers.delete(executionId)
       return false
     }
@@ -562,8 +567,13 @@ export class TaskCoordinator {
     try {
       if (!subtask.agentId) throw new Error("Projeto sem agente configurado")
       if (!isLightweightTask(subtask.taskTipo)) this.assertExecutionConfig(subtask)
-      // Marca subtarefa como running
-      await this.db.query("UPDATE subtarefas SET status = 'running', iniciada_em = NOW() WHERE id = ?", [subtask.id])
+      // Presença persistida e status running nascem juntos: o reconciliador
+      // nunca observa uma subtarefa running sem uma execução correspondente.
+      await this.db.transaction(async (tx) => {
+        await this.registerActiveExecution(executionId, subtask.taskExternalId, subtask.id, "execute", tx)
+        await tx.query("UPDATE subtarefas SET status = 'running', iniciada_em = NOW() WHERE id = ?", [subtask.id])
+      })
+      this.armActiveExecutionHeartbeat(executionId)
       const parentTask = await this.repository.getTask(subtask.taskExternalId)
       if (parentTask) {
         await this.saveTaskTransition(parentTask, "start_execution")
@@ -708,8 +718,9 @@ export class TaskCoordinator {
         "UPDATE tarefas SET paused_at = NOW(), resource_wait_key = NULL, resource_wait_id = NULL, resource_wait_position = NULL, updated_at = NOW() WHERE external_id = ? OR id = CAST(? AS UNSIGNED)",
         [worker.taskId, worker.taskId]
       )
-      // Remove o worker da lista de ativos (não continua processando)
-      this.activeWorkers.delete(executionId)
+      // Finalização comum libera lease, remove presença persistida e limpa os
+      // controles locais sem apagar o workspace da fase recém-concluída.
+      await this.finishWorker(executionId, worker, { preserveWorkspace: true })
       this.logger.info("Tarefa pausada com sucesso (pause graceful)", { taskId: worker.taskId })
       return
     }
@@ -1925,6 +1936,7 @@ export class TaskCoordinator {
       clearTimeout(worker.timeoutHandle)
       worker.timeoutHandle = undefined
     }
+    this.clearActiveExecutionHeartbeat(executionId)
     const preserveWorkspace = options?.preserveWorkspace === true
     try {
       if (worker.workspace && worker.repoPath && !preserveWorkspace) {
@@ -1946,11 +1958,64 @@ export class TaskCoordinator {
       try {
         if (worker.resourceKey) await this.resourceLease.release(worker.resourceKey, executionId, worker.fencingToken)
       } finally {
+        await this.removeActiveExecution(executionId)
         this.activeWorkers.delete(executionId)
         this.finalizingExecutions.delete(executionId)
         await this.pump()
       }
     }
+  }
+
+  private activeExecutionExpiry(): Date {
+    return new Date(Date.now() + getConfigNumber("motor.worker_silence_timeout_ms"))
+  }
+
+  private async registerActiveExecution(
+    executionId: string,
+    taskId: string,
+    subtaskId: number | null,
+    phase: ActiveWorker["phase"],
+    db: import("../shared/types/infrastructure.js").Db = this.db,
+  ): Promise<void> {
+    await db.query(
+      "INSERT INTO motor_active_executions (execution_id, tarefa_id, subtarefa_id, phase, started_at, heartbeat_at, expires_at) " +
+      "SELECT ?, t.id, ?, ?, NOW(), NOW(), ? FROM tarefas t " +
+      "WHERE t.external_id = ? OR t.id = CAST(? AS UNSIGNED) LIMIT 1 " +
+      "ON DUPLICATE KEY UPDATE heartbeat_at = NOW(), expires_at = VALUES(expires_at)",
+      [executionId, subtaskId, phase, this.activeExecutionExpiry(), taskId, taskId],
+    )
+  }
+
+  private async heartbeatActiveExecution(executionId: string): Promise<void> {
+    await this.db.query(
+      "UPDATE motor_active_executions SET heartbeat_at = NOW(), expires_at = ? WHERE execution_id = ?",
+      [this.activeExecutionExpiry(), executionId],
+    )
+  }
+
+  private armActiveExecutionHeartbeat(executionId: string): void {
+    const worker = this.activeWorkers.get(executionId)
+    if (!worker || worker.presenceHeartbeatHandle) return
+    const silenceMs = getConfigNumber("motor.worker_silence_timeout_ms")
+    const intervalMs = Math.max(1000, Math.min(30000, Math.floor(silenceMs / 3)))
+    worker.presenceHeartbeatHandle = setInterval(() => {
+      void this.heartbeatActiveExecution(executionId).catch((error: unknown) => {
+        this.logger.error("Falha ao manter presença da execução: " + describeError(error), { executionId })
+      })
+    }, intervalMs)
+    worker.presenceHeartbeatHandle.unref?.()
+  }
+
+  private clearActiveExecutionHeartbeat(executionId: string): void {
+    const worker = this.activeWorkers.get(executionId)
+    if (!worker?.presenceHeartbeatHandle) return
+    clearInterval(worker.presenceHeartbeatHandle)
+    worker.presenceHeartbeatHandle = undefined
+  }
+
+  private async removeActiveExecution(executionId: string): Promise<void> {
+    await this.db.query("DELETE FROM motor_active_executions WHERE execution_id = ?", [executionId])
+      .catch((error: unknown) => this.logger.warn("Falha ao remover presença da execução: " + describeError(error), { executionId }))
   }
 
   /**
@@ -2065,6 +2130,9 @@ export class TaskCoordinator {
       worker.lastHeartbeatAt = new Date()
       this.armSilenceWatchdog(msg.executionId)
       this.publishActivity(worker, { type: "heartbeat" })
+      void this.heartbeatActiveExecution(msg.executionId).catch((error: unknown) => {
+        this.logger.error("Falha ao persistir heartbeat: " + describeError(error), { executionId: msg.executionId })
+      })
       if (!worker.resourceKey) return
       void this.resourceLease.renew(worker.resourceKey, msg.executionId, worker.fencingToken).then((result) => {
         if (result.kind === "lost") {

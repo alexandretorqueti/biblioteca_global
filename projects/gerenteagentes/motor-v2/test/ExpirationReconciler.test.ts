@@ -11,7 +11,7 @@ function mockDb(responses: QueryResult[]): Db {
 }
 
 describe("ExpirationReconciler", () => {
-  it("reconhece lease ativo pelo owner_id da tarefa, sem depender do formato do execution_id", async () => {
+  it("reconhece worker ativo pela presença persistida, sem exigir lease exclusivo", async () => {
     const db = mockDb([
       { rows: [], affectedRows: 0, insertId: 0 },
       { rows: [], affectedRows: 0, insertId: 0 },
@@ -21,9 +21,27 @@ describe("ExpirationReconciler", () => {
     await new ExpirationReconciler({ db }).reconcile()
 
     const orphanQuery = String(vi.mocked(db.query).mock.calls[2]?.[0])
-    expect(orphanQuery).toContain("r.owner_id = CAST(t.id AS CHAR)")
-    expect(orphanQuery).toContain("r.owner_id = t.external_id")
-    expect(orphanQuery).not.toContain("r.execution_id LIKE")
+    expect(orphanQuery).toContain("motor_active_executions")
+    expect(orphanQuery).toContain("e.tarefa_id = t.id")
+    expect(orphanQuery).not.toContain("execution_resources")
+  })
+
+  it("protege análise e subtarefa running nos três detectores de órfãos", async () => {
+    const db = mockDb([
+      { rows: [], affectedRows: 0, insertId: 0 },
+      { rows: [], affectedRows: 0, insertId: 0 },
+      { rows: [], affectedRows: 0, insertId: 0 },
+      { rows: [], affectedRows: 0, insertId: 0 },
+      { rows: [], affectedRows: 0, insertId: 0 },
+    ])
+
+    await new ExpirationReconciler({ db }).reconcile()
+
+    const queries = vi.mocked(db.query).mock.calls.map(([sql]) => String(sql))
+    const presenceQueries = queries.filter((sql) => sql.includes("motor_active_executions"))
+    expect(presenceQueries).toHaveLength(3)
+    expect(presenceQueries.some((sql) => sql.includes("e.subtarefa_id = s.id"))).toBe(true)
+    expect(presenceQueries.every((sql) => !sql.includes("execution_resources"))).toBe(true)
   })
 
   it("retoma tarefa órfã com plano sem alterar subtarefas verificadas", async () => {
