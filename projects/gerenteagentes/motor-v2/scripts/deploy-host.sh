@@ -39,14 +39,33 @@ OLD_WEB_IMAGE=$(docker inspect "$WEB" --format '{{.Image}}' 2>/dev/null || true)
 
 rollback() {
   echo "[deploy-host] falhou; restaurando imagens anteriores" >&2
-  if [[ -n "$OLD_API_IMAGE" && -n "$OLD_WEB_IMAGE" ]]; then
+  # Verifica se as imagens antigas ainda existem antes de tentar restaurar
+  local can_restore=true
+  if [[ -n "$OLD_API_IMAGE" ]] && ! docker image inspect "$OLD_API_IMAGE" >/dev/null 2>&1; then
+    echo "[deploy-host] imagem antiga da API não existe mais, não é possível restaurar" >&2
+    can_restore=false
+  fi
+  if [[ -n "$OLD_WEB_IMAGE" ]] && ! docker image inspect "$OLD_WEB_IMAGE" >/dev/null 2>&1; then
+    echo "[deploy-host] imagem antiga do Web não existe mais, não é possível restaurar" >&2
+    can_restore=false
+  fi
+  if [[ "$can_restore" == "true" && -n "$OLD_API_IMAGE" && -n "$OLD_WEB_IMAGE" ]]; then
     docker tag "$OLD_API_IMAGE" biblioteca-global-api:latest
     docker tag "$OLD_WEB_IMAGE" biblioteca-global-web:latest
+    # Remove containers órfãos antes de recriar
+    docker compose -f docker-compose.yml down --remove-orphans || true
+    docker compose -f docker-compose.yml up -d --no-deps --force-recreate api web || true
+  else
+    echo "[deploy-host] rollback parcial: pelo menos uma imagem antiga não existe mais" >&2
+    # Tenta pelo menos subir os containers com as imagens atuais
+    docker compose -f docker-compose.yml down --remove-orphans || true
     docker compose -f docker-compose.yml up -d --no-deps --force-recreate api web || true
   fi
 }
 trap rollback ERR
 
+# Remove containers órfãos antes do deploy para evitar conflito de nomes
+docker compose -f docker-compose.yml down --remove-orphans 2>/dev/null || true
 docker compose -f docker-compose.yml config --quiet
 docker compose -f docker-compose.yml build api web
 docker compose -f docker-compose.yml up -d --no-deps --force-recreate api web

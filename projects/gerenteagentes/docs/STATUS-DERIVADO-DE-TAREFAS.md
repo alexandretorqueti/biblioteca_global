@@ -36,46 +36,68 @@ O estado `draft` será eliminado.
 O status é calculado por prioridade. A primeira condição verdadeira determina
 o estado apresentado pela API e pela tela.
 
-1. `awaiting_clarification`
+1. `paused`
+   - o campo `paused_at` está preenchido e não há `resource_wait_key`.
+   - prioridade máxima: se o usuário pausou, o status é "Pausada" independente
+     de clarificação pendente ou bloqueio de deploy.
+   - quando `resource_wait_key` está preenchido, a tarefa está aguardando
+     recurso (não está pausada pelo usuário) — segue para as regras abaixo.
+
+2. `awaiting_clarification`
    - existe pergunta pendente do analista que exige decisão do Alexandre.
    - não se infere apenas pela última mensagem; deve existir um registro
      estruturado de clarificação pendente.
 
-2. `blocked`
-   - existe bloqueio ativo e não resolvido que impede o fluxo.
+3. `blocked`
+   - existe subtarefa em estado `blocked` que impede o fluxo.
 
-3. `analyzing`
+4. `analyzing`
    - existe sessão de análise em execução e ainda não há plano persistido.
 
-4. `running`
+5. `running`
    - ao menos uma subtarefa está em `running`, `delivered` ou `verifying`.
 
-5. `deployed`
+6. `deployed`
    - o deploy da versão aprovada foi confirmado com sucesso.
 
-6. `completed`
+7. `completed`
    - todas as subtarefas estão em `verified` ou `superseded`;
    - a integração necessária foi confirmada;
    - ainda não há deploy confirmado.
 
-7. `ready`
-   - há ao menos uma subtarefa pendente elegível ou aguardando dependências;
-   - não existe subtarefa ativa, bloqueio ou clarificação pendente.
+8. `completed` (deploy falhou)
+   - todas as subtarefas estão em `verified` ou `superseded`;
+   - o deploy foi solicitado mas falhou;
+   - o desenvolvimento foi concluído; o deploy é etapa operacional separada.
 
-8. `planned`
-   - não há subtarefas e a tarefa ainda não iniciou análise;
-   - ou não existe plano executável após edição administrativa do plano.
+9. `blocked`
+   - existe bloqueio ativo e não resolvido que impede o fluxo.
+   - não se aplica quando todas as subtarefas estão aprovadas (desenvolvimento
+     concluído) — nesse caso, retorna `completed`.
+
+10. `ready`
+    - há ao menos uma subtarefa pendente elegível ou aguardando dependências;
+    - não existe subtarefa ativa, bloqueio ou clarificação pendente.
+
+11. `planned`
+    - não há subtarefas e a tarefa ainda não iniciou análise;
+    - ou não existe plano executável após edição administrativa do plano.
 
 ## Pausa
 
-Pausa não precisa criar outro status de negócio.
+Pausa é um status de negócio com prioridade máxima no cálculo.
 
-O campo factual `paused_at` impede a fila de selecionar a tarefa, mesmo que o
-estado calculado pelas subtarefas seja `ready`. A interface pode exibir
-"Pausada" como condição visual complementar, sem criar ambiguidade no fluxo.
+O campo factual `paused_at` impede a fila de selecionar a tarefa e faz o
+status calculado retornar `paused`, independente de haver clarificação
+pendente ou bloqueio de deploy. Isso garante que o usuário veja "Pausada"
+quando pausou a tarefa, sem ambiguidade.
 
 Ao retomar, `paused_at` é removido. A próxima consulta calcula o estado real:
 `ready`, `analyzing`, `awaiting_clarification` ou outro aplicável.
+
+Exceção: quando `resource_wait_key` está preenchido, a tarefa está aguardando
+recurso (ex.: GPU) — não está pausada pelo usuário, então o cálculo segue
+para as regras abaixo.
 
 ## Dependências e correções
 

@@ -25,7 +25,8 @@ export class TaskFactsStore {
       "SELECT t.id, t.paused_at, t.resource_wait_key, f.analysis_started_at, f.integration_confirmed_at, f.terminal_status, " +
       "EXISTS(SELECT 1 FROM bloqueios b WHERE b.tarefa_id = t.id AND b.resolved_at IS NULL) AS has_active_blocker, " +
       "(SELECT c.role FROM tarefa_chats c WHERE c.tarefa_id = t.id AND c.role IN ('analyst', 'user') ORDER BY c.id DESC LIMIT 1) AS last_clarification_role, " +
-      "EXISTS(SELECT 1 FROM deploy_requests d WHERE d.tarefa_id = t.id AND d.status = 'succeeded') AS deploy_succeeded " +
+      "EXISTS(SELECT 1 FROM deploy_requests d WHERE d.tarefa_id = t.id AND d.status = 'succeeded') AS deploy_succeeded, " +
+      "EXISTS(SELECT 1 FROM deploy_requests d WHERE d.tarefa_id = t.id AND d.status = 'failed') AS deploy_failed " +
       "FROM tarefas t LEFT JOIN task_runtime_facts f ON f.tarefa_id = t.id WHERE " + lookup.sql + " LIMIT 1",
       lookup.params,
     )
@@ -45,6 +46,7 @@ export class TaskFactsStore {
       hasPersistedPlan: subtaskRows.length > 0,
       subtaskStatuses: subtaskRows.map((subtask) => String(subtask.status)),
       deploySucceeded: Number(row.deploy_succeeded ?? 0) === 1,
+      deployFailed: Number(row.deploy_failed ?? 0) === 1,
       integrationConfirmed: row.integration_confirmed_at != null,
       pausedAt: row.paused_at ? String(row.paused_at) : null,
       resourceWaitKey: row.resource_wait_key ? String(row.resource_wait_key) : null,
