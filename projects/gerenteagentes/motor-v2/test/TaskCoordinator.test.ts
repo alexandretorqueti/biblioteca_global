@@ -815,4 +815,39 @@ describe('TaskCoordinator', () => {
       expect(result.ok).toBe(true)
     })
   })
+
+  // BUG 789/785 (2026-09-10): conflito na promoção tarefa→base era contornado
+  // pelo reconcileOrphanedReadyTasks, que confirmava integração sem o código
+  // estar na base e a tarefa virava deployed. Bloqueio ativo agora impede a
+  // reconciliação e a tarefa fica pendente para resolução humana.
+  describe('reconciliação de tarefas órfãs', () => {
+    it('não reconcilia tarefa com bloqueio ativo (conflito de promoção fica pendente para humano)', async () => {
+      const internals = coordinator as unknown as { reconcileOrphanedReadyTasks: () => Promise<void> }
+      await internals.reconcileOrphanedReadyTasks()
+      const sql = String(vi.mocked(db.query).mock.calls[0]![0])
+      expect(sql).toContain('NOT EXISTS (SELECT 1 FROM bloqueios blk WHERE blk.tarefa_id = t.id AND blk.resolved_at IS NULL)')
+      // Com bloqueio ativo o banco não retorna a tarefa; nenhuma transição é salva
+      expect(sql).toContain("f.integration_confirmed_at IS NULL AND f.terminal_status IS NULL")
+    })
+  })
+
+  describe('saveTaskTransition fail', () => {
+    it('com skipBlocker não duplica o registro de bloqueio; sem skipBlocker registra', async () => {
+      const internals = coordinator as unknown as {
+        saveTaskTransition: (task: unknown, transition: string, patch?: Record<string, unknown>, options?: { skipBlocker?: boolean }) => Promise<void>
+      }
+      const task = { id: 'task-dup', externalId: 'task-p2-dup', status: 'ready' }
+
+      // Caminhos de conflito/erro de promoção já persistem bloqueio detalhado:
+      // a transição fail não pode criar uma segunda linha systemic_failure
+      await internals.saveTaskTransition(task, 'fail', { errorMessage: 'Conflito na promoção' }, { skipBlocker: true })
+      let bloqueioInserts = vi.mocked(db.query).mock.calls.filter(([s]) => String(s).includes('INSERT INTO bloqueios'))
+      expect(bloqueioInserts).toHaveLength(0)
+
+      // Falha operacional sem bloqueio prévio continua registrando
+      await internals.saveTaskTransition(task, 'fail', { errorMessage: 'Falha sem bloqueio prévio' })
+      bloqueioInserts = vi.mocked(db.query).mock.calls.filter(([s]) => String(s).includes('INSERT INTO bloqueios'))
+      expect(bloqueioInserts).toHaveLength(1)
+    })
+  })
 })

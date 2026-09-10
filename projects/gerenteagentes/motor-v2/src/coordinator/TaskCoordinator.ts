@@ -261,6 +261,13 @@ export class TaskCoordinator {
     const { rows } = await this.db.query(
       "SELECT t.* FROM tarefas t LEFT JOIN task_runtime_facts f ON f.tarefa_id = t.id " +
       "WHERE f.integration_confirmed_at IS NULL AND f.terminal_status IS NULL " +
+      // BUG 789/785 (2026-09-10): com conflito na promoção tarefa→base, a tarefa
+      // recebia transição fail (sem terminal_status) e o próximo pump a confirmava
+      // como execution_completed SEM o código estar na base — deploy rodava e o
+      // status virava deployed, escondendo o bloqueio que deveria aguardar resolução
+      // humana. Bloqueio ativo (resolved_at IS NULL) agora impede a reconciliação:
+      // a tarefa fica pendente até o bloqueio ser resolvido.
+      "AND NOT EXISTS (SELECT 1 FROM bloqueios blk WHERE blk.tarefa_id = t.id AND blk.resolved_at IS NULL) " +
       "AND EXISTS (SELECT 1 FROM subtarefas s WHERE s.tarefa_id = t.id) " +
       "AND NOT EXISTS (SELECT 1 FROM subtarefas s WHERE s.tarefa_id = t.id AND s.status NOT IN ('verified', 'superseded'))",
     )
@@ -940,7 +947,7 @@ export class TaskCoordinator {
                 } catch (persistError) {
                   this.logger.error("Falha ao persistir bloqueio de promoção: " + describeError(persistError), { taskId: worker.taskId, executionId })
                 }
-                await this.saveTaskTransition(task, "fail", { errorMessage: blockReason.substring(0, 500) })
+                await this.saveTaskTransition(task, "fail", { errorMessage: blockReason.substring(0, 500) }, { skipBlocker: true })
                 this.publishActivity(worker, { type: "failed", level: "error", message: "Promoção da tarefa para a base falhou — resolução humana necessária" })
                 await this.finishWorker(executionId, worker)
                 return
@@ -959,7 +966,7 @@ export class TaskCoordinator {
                 } catch (persistError) {
                   this.logger.error("Falha ao persistir bloqueio de promoção: " + describeError(persistError), { taskId: worker.taskId, executionId })
                 }
-                await this.saveTaskTransition(task, "fail", { errorMessage: blockReason.substring(0, 500) })
+                await this.saveTaskTransition(task, "fail", { errorMessage: blockReason.substring(0, 500) }, { skipBlocker: true })
                 this.publishActivity(worker, { type: "failed", level: "error", message: "Conflito no merge da tarefa para a base — resolução humana necessária. Arquivos: " + files })
                 // NÃO purga: worktree e branch da tarefa ficam preservados para resolução manual.
                 await this.finishWorker(executionId, worker)
@@ -2236,6 +2243,7 @@ export class TaskCoordinator {
     task: import("../shared/types/infrastructure.js").SaveTaskData,
     transition: TaskTransition,
     patch: Partial<import("../shared/types/infrastructure.js").SaveTaskData> = {},
+    options?: { skipBlocker?: boolean },
   ): Promise<void> {
     const previousStatus = task.status as Task["status"]
     switch (transition) {
@@ -2252,8 +2260,14 @@ export class TaskCoordinator {
         await this.facts.record(task.id, "cancelled")
         break
       case "fail": {
-        const evidence = blockerEvidence("systemic_failure", patch.errorMessage ?? "Falha operacional do Motor")
-        await this.persistTaskBlock(task.id, null, evidence.kind, "motor-v2:" + evidence.fingerprint, evidence.excerpt)
+        // BUG bloqueio duplicado (2026-09-10): caminhos que já persistem bloqueio
+        // detalhado (conflito/erro de promoção) passavam por aqui e geravam uma
+        // segunda linha systemic_failure para o mesmo evento. skipBlocker evita a
+        // duplicação mantendo o bloqueio detalhado como registro único.
+        if (!options?.skipBlocker) {
+          const evidence = blockerEvidence("systemic_failure", patch.errorMessage ?? "Falha operacional do Motor")
+          await this.persistTaskBlock(task.id, null, evidence.kind, "motor-v2:" + evidence.fingerprint, evidence.excerpt)
+        }
         break
       }
       // start_execution/subtasks_pending/queue/recover descrevem mudanças em
@@ -2340,7 +2354,7 @@ export class TaskCoordinator {
         [blockReason.substring(0, 500), subtaskId],
       )
       const task = await this.repository.getTask(worker.taskId)
-      if (task) await this.saveTaskTransition(task, "fail", { errorMessage: blockReason.substring(0, 500) })
+      if (task) await this.saveTaskTransition(task, "fail", { errorMessage: blockReason.substring(0, 500) }, { skipBlocker: true })
       this.publishActivity(worker, { type: "failed", level: "error", message: blockReason })
       await this.finishWorker(executionId, worker)
       return
@@ -2454,7 +2468,7 @@ export class TaskCoordinator {
         [blockReason.substring(0, 500), subtaskId],
       )
       const task = await this.repository.getTask(worker.taskId)
-      if (task) await this.saveTaskTransition(task, "fail", { errorMessage: blockReason.substring(0, 500) })
+      if (task) await this.saveTaskTransition(task, "fail", { errorMessage: blockReason.substring(0, 500) }, { skipBlocker: true })
       this.publishActivity(worker, { type: "failed", level: "error", message: blockReason })
       await this.finishWorker(executionId, worker)
       return
