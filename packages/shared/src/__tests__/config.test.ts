@@ -181,6 +181,42 @@ describe("geradorSistemaConfigSchema", () => {
     })
     expect(result.success).toBe(false)
   })
+
+  it("aceita config sem autoHideMenu (backward-compatible)", () => {
+    const semAutoHide = { ...configValida }
+    delete (semAutoHide as Record<string, unknown>).autoHideMenu
+    const result = geradorSistemaConfigSchema.safeParse(semAutoHide)
+    expect(result.success).toBe(true)
+  })
+
+  it("aceita autoHideMenu: true", () => {
+    const result = geradorSistemaConfigSchema.safeParse({
+      ...configValida,
+      autoHideMenu: true,
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it("aceita autoHideMenu: false", () => {
+    const result = geradorSistemaConfigSchema.safeParse({
+      ...configValida,
+      autoHideMenu: false,
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it("rejeita autoHideMenu de tipo inválido (não boolean)", () => {
+    for (const valor of ["true", 1, null, {}]) {
+      const result = geradorSistemaConfigSchema.safeParse({
+        ...configValida,
+        autoHideMenu: valor,
+      })
+      expect(
+        result.success,
+        `autoHideMenu ${JSON.stringify(valor)} deveria falhar`,
+      ).toBe(false)
+    }
+  })
 })
 
 describe("dynamicFieldConfigSchema", () => {

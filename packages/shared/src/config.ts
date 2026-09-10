@@ -393,6 +393,13 @@ export const geradorSistemaConfigSchema = z
   .object({
     app: geradorSistemaAppConfigSchema,
     drawerWidth: z.number().int().positive().optional(),
+    /**
+     * Controle de auto-hide do menu lateral (temporary drawer).
+     * Quando true (default), o menu fecha automaticamente ao clicar fora
+     * em telas pequenas. Backward-compatible: configs antigas sem o campo
+     * funcionam com default true no consumo.
+     */
+    autoHideMenu: z.boolean().optional(),
     groups: z.array(geradorSistemaGroupSchema),
   })
   .strict()

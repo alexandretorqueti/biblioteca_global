@@ -1,5 +1,5 @@
 import { Inject, Injectable } from "@nestjs/common"
-import { and, eq, notInArray } from "drizzle-orm"
+import { and, eq, sql } from "drizzle-orm"
 import { tarefas } from "../../../../../projects/gerenteagentes/schema"
 import {
   PROJECT_DB_FACTORY,
@@ -31,13 +31,7 @@ export interface ApiErrorTask {
  * abrir outra tarefa depois que a tarefa anterior chegou a um deles.
  * `deployada` e `finalizada` são valores legados ainda presentes na base.
  */
-const STATUS_QUE_PERMITEM_NOVA_OCORRENCIA = [
-  "ready",
-  "completed",
-  "deployed",
-  "finalizada",
-  "deployada",
-] as const
+const STATUS_TERMINAIS = ["cancelled", "failed", "motor_fix"] as const
 
 /** Persistência das tarefas de erro no schema do GestaoGlobal. */
 @Injectable()
@@ -69,7 +63,25 @@ export class GestaoGlobalTasksRepository {
       .where(and(
         eq(tarefas.projetoId, projetoId),
         eq(tarefas.titulo, titulo),
-        notInArray(tarefas.status, [...STATUS_QUE_PERMITEM_NOVA_OCORRENCIA]),
+        // O status materializado foi removido de `tarefas`. A tarefa ativa é
+        // identificada pelos fatos operacionais, que são a fonte de verdade.
+        sql`NOT EXISTS (
+          SELECT 1 FROM task_runtime_facts f
+          WHERE f.tarefa_id = ${tarefas.id}
+            AND (
+              f.terminal_status IN (${sql.join(STATUS_TERMINAIS.map((status) => sql`${status}`), sql`, `)})
+              OR (
+                f.integration_confirmed_at IS NOT NULL
+                AND EXISTS (SELECT 1 FROM subtarefas s WHERE s.tarefa_id = ${tarefas.id})
+                AND NOT EXISTS (
+                  SELECT 1 FROM subtarefas s
+                  WHERE s.tarefa_id = ${tarefas.id}
+                    AND s.status NOT IN ('verified', 'superseded')
+                )
+              )
+              OR EXISTS (SELECT 1 FROM deploy_requests d WHERE d.tarefa_id = ${tarefas.id} AND d.status = 'succeeded')
+            )
+        )`,
       ))
       .limit(1)
     return resultado[0]
@@ -99,7 +111,6 @@ export class GestaoGlobalTasksRepository {
         titulo: this.tituloDoErro(input.endpoint),
         descricao,
         tipo: "verificacao",
-        status: "planned",
       })
       .$returningId()
     const id = inserida[0]?.id
