@@ -690,7 +690,6 @@ export default function TaskMonitorScreen(): ReactNode {
           titulo: values.titulo,
           descricao: values.descricao || null,
           tipo: values.tipo,
-          status: values.status,
         },
         auth: "access",
       })
