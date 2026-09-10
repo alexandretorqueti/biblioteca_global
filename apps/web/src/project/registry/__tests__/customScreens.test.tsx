@@ -70,12 +70,15 @@ describe("registry de telas custom", () => {
       "gerenteagentes-isa-chat",
       "gerenteagentes-model-selection",
       "gerenteagentes-prompts",
+      "gerenteagentes-configuracoes",
       "sistema-adm-global-dashboard",
       "sistema-adm-global-hub-administrativo",
       "sistema-adm-global-hub-rh",
       "sistema-adm-global-hub-admin",
       "taqui-registro-encomenda",
+      "taqui-entrega-encomenda",
       "taqui-painel-portaria",
+      "taqui-ocorrencia-devolucao",
       "taqui-notificacoes-morador",
     ])
 

@@ -576,6 +576,10 @@ export class GerenteAgentesService {
     const base = baseUrl ?? this.motorUrl;
     const url = new URL(`${base}${path}`);
     const isHttps = url.protocol === 'https:';
+    const timeoutMs = parseInt(
+      this.configService.get<string>('MOTOR_REQUEST_TIMEOUT_MS') || '180000',
+      10,
+    );
     const options: RequestOptions = {
       hostname: url.hostname,
       port: url.port || (isHttps ? 443 : 80),
@@ -586,7 +590,7 @@ export class GerenteAgentesService {
         ...(body ? { 'Content-Type': 'application/json' } : {}),
         ...(!baseUrl && this.motorHostHeader ? { Host: this.motorHostHeader } : {}),
       },
-      timeout: 15000,
+      timeout: timeoutMs,
     };
     return new Promise((resolve, reject) => {
       const req = (isHttps ? httpsRequest : httpRequest)(options, (res) => {

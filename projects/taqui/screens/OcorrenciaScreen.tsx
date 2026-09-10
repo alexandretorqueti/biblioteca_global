@@ -584,3 +584,5 @@ export default function OcorrenciaScreen(): ReactNode {
     </Box>
   )
 }
+
+export const componentId = "taqui-ocorrencia-devolucao"
