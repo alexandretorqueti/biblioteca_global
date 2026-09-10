@@ -21,6 +21,7 @@ import {
   boolean,
   int,
   json,
+  longtext,
   mysqlTable,
   mysqlEnum,
   index,
@@ -691,6 +692,34 @@ export const bloqueios = mysqlTable("bloqueios", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 })
 
+/** Diagnóstico automático, idempotente e auditável de conflito tarefa → base. */
+export const promotionConflictAnalyses = mysqlTable("promotion_conflict_analyses", {
+  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+  tarefaId: bigint("tarefa_id", { mode: "number", unsigned: true }).notNull().references(() => tarefas.id, { onDelete: "cascade" }),
+  bloqueioId: bigint("bloqueio_id", { mode: "number", unsigned: true }).references(() => bloqueios.id, { onDelete: "set null" }),
+  fingerprint: varchar("fingerprint", { length: 64 }).notNull(),
+  baseBranch: varchar("base_branch", { length: 240 }).notNull(),
+  taskBranch: varchar("task_branch", { length: 240 }).notNull(),
+  baseCommit: varchar("base_commit", { length: 40 }).notNull(),
+  taskCommit: varchar("task_commit", { length: 40 }).notNull(),
+  mergeBaseCommit: varchar("merge_base_commit", { length: 40 }).notNull(),
+  conflictFilesJson: json("conflict_files_json").notNull(),
+  evidenceJson: longtext("evidence_json").notNull(),
+  status: varchar("status", { length: 30 }).notNull().default("pending"),
+  attempts: int("attempts", { unsigned: true }).notNull().default(0),
+  confidence: varchar("confidence", { length: 20 }),
+  recommendation: varchar("recommendation", { length: 50 }),
+  report: longtext("report"),
+  errorMessage: text("error_message"),
+  startedAt: timestamp("started_at"),
+  completedAt: timestamp("completed_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+}, (table) => ({
+  fingerprintUq: uniqueIndex("promotion_conflict_analyses_fingerprint_uq").on(table.fingerprint),
+  taskStatusIdx: index("promotion_conflict_analyses_task_status_idx").on(table.tarefaId, table.status),
+}))
+
 // ============================================================================
 // ANNOTATIONS (metadata de formulário)
 // ============================================================================
@@ -852,6 +881,16 @@ export const annotations = {
     block_exit_code: { label: "Exit Code" },
     block_excerpt: { label: "Excerto", type: "textarea", fullWidth: true },
     blocked_at: { label: "Bloqueado em" },
+  },
+  promotion_conflict_analyses: {
+    tarefa_id: { label: "Tarefa" },
+    bloqueio_id: { label: "Bloqueio de origem" },
+    fingerprint: { label: "Fingerprint", maxLength: 64 },
+    status: { label: "Status", helperText: "pending | analyzing | completed | failed" },
+    confidence: { label: "Confiança", helperText: "low | medium | high" },
+    recommendation: { label: "Recomendação" },
+    report: { label: "Relatório", type: "textarea", fullWidth: true },
+    error_message: { label: "Erro da análise", type: "textarea", fullWidth: true },
   },
   analyst_task_sessions: {
     tarefa_id: { label: "Tarefa" },

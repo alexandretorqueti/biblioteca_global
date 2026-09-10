@@ -78,6 +78,14 @@ export { RESOURCE_KEYS } from './shared/types/resources.js'
 export type { Db, TaskRepository, QueryResult, SaveTaskData, TaskRow, TaskTipo as InfrastructureTaskTipo } from './shared/types/infrastructure.js'
 export type { AgentRuntimeDriver, SendMessageResult, RunStatusResult, SendMessageParams } from './shared/types/agent-runtime.js'
 
+// Diagnóstico automático de conflitos na promoção tarefa → base
+export { PromotionConflictOrchestrator } from './promotion-conflicts/PromotionConflictOrchestrator.js'
+export { PromotionConflictEvidenceCollector } from './promotion-conflicts/PromotionConflictEvidenceCollector.js'
+export { PromotionConflictRepository } from './promotion-conflicts/PromotionConflictRepository.js'
+export { PromotionConflictAnalyzer } from './promotion-conflicts/PromotionConflictAnalyzer.js'
+export { identifyPromotionConflict } from './promotion-conflicts/PromotionConflictDetector.js'
+export type { PromotionConflictCandidate, PromotionConflictEvidence, PromotionConflictAnalysisResult } from './promotion-conflicts/promotion-conflict.types.js'
+
 // Steps
 export { MotorMonitorStep } from './steps/MotorMonitorStep.js'
 export type { MotorFixInput, MotorFixResult, MotorMonitorStepConfig } from './steps/MotorMonitorStep.js'

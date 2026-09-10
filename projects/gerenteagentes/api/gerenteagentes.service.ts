@@ -1512,6 +1512,16 @@ export class GerenteAgentesService {
           blockedAt?: string;
           subtaskId?: number | null;
         } | null;
+        promotionConflictAnalysis?: {
+          status: string;
+          confidence: string | null;
+          recommendation: string | null;
+          report: string | null;
+          errorMessage: string | null;
+          conflictFiles: string[];
+          attempts: number;
+          updatedAt: string;
+        } | null;
       };
       
       // Busca subtarefas do banco de dados (mesma tabela projeto_640.subtarefas
@@ -1582,6 +1592,7 @@ export class GerenteAgentesService {
           integrationBranch: `motor-v2/${motorId}/integracao`,
           errorMessage: motorTask.errorMessage ?? undefined,
           blockInfo: motorTask.status === 'blocked' ? (motorTask.ultimoBloqueio ?? null) : null,
+          promotionConflictAnalysis: motorTask.promotionConflictAnalysis ?? null,
         },
         subtasks,
         currentSubTask,

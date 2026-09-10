@@ -38,6 +38,7 @@ import { validateProjectId, formatProjectIdValidationReport } from "../policies/
 import { verifyAgentInGateway, formatAgentVerificationReport, shouldBlockEnqueue } from "../policies/GatewayAgentVerificationPolicy.js"
 import { TaskFactsStore } from "../database/TaskFactsStore.js"
 import { identifyWorkspaceAutoRecovery } from "../policies/WorkspaceAutoRecoveryPolicy.js"
+import type { PromotionConflictOrchestrator } from "../promotion-conflicts/PromotionConflictOrchestrator.js"
 
 interface ActiveWorker {
   taskId: string
@@ -90,6 +91,17 @@ interface UltimoBloqueio {
 interface ClarificacaoPendente {
   message: string
   askedAt: string
+}
+
+interface PromotionConflictAnalysisView {
+  status: string
+  confidence: string | null
+  recommendation: string | null
+  report: string | null
+  errorMessage: string | null
+  conflictFiles: string[]
+  attempts: number
+  updatedAt: string
 }
 
 function isTaskTipo(value: unknown): value is NonNullable<Task["tipo"]> {
@@ -200,6 +212,7 @@ export class TaskCoordinator {
     workspaceManager = new GitWorkspaceManager({ root: process.env.MOTOR_WORKSPACE_ROOT ?? "/tmp/motor-v2-workspaces" }),
     waitManager?: ResourceWaitManager,
     eventBus = executionEventBus,
+    private readonly promotionConflictOrchestrator?: PromotionConflictOrchestrator,
   ) {
     this.db = db
     this.repository = repository
@@ -253,6 +266,12 @@ export class TaskCoordinator {
         }
       }
       await this.reconcileOrphanedReadyTasks()
+      // O mesmo módulo atende conflitos recém-detectados e conflitos que já
+      // estavam bloqueados quando o processo iniciou. schedule() é não
+      // bloqueante e o fingerprint persistido impede análises duplicadas.
+      if (this.activeWorkers.size === 0 && this.activeDeployments.size === 0) {
+        await this.promotionConflictOrchestrator?.reconcilePendingAnalyses()
+      }
     } finally {
       this.pumping = false
     }
@@ -982,7 +1001,7 @@ export class TaskCoordinator {
                   await this.db.query(
                     "INSERT INTO bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at) " +
                     "SELECT tarefa_id, NULL, ?, ?, ?, NOW() FROM subtarefas WHERE id = ?",
-                    [evidence.kind, "motor-v2:" + evidence.fingerprint, evidence.excerpt, worker.subtaskId],
+                    [evidence.kind, `motor-v2:promotion-conflict:${encodeURIComponent(worker.rootBaseBranch)}:${encodeURIComponent(worker.taskWorkspace.branch)}:${evidence.fingerprint}`, evidence.excerpt, worker.subtaskId],
                   )
                 } catch (persistError) {
                   this.logger.error("Falha ao persistir bloqueio de promoção: " + describeError(persistError), { taskId: worker.taskId, executionId })
@@ -991,6 +1010,19 @@ export class TaskCoordinator {
                 this.publishActivity(worker, { type: "failed", level: "error", message: "Conflito no merge da tarefa para a base — resolução humana necessária. Arquivos: " + files })
                 // NÃO purga: worktree e branch da tarefa ficam preservados para resolução manual.
                 await this.finishWorker(executionId, worker)
+                // Análises usam modelos do mesmo ambiente dos workers. Só
+                // iniciamos imediatamente quando o Motor ficou ocioso; caso
+                // contrário o reconciliador agenda assim que houver segurança.
+                if (this.activeWorkers.size === 0 && this.activeDeployments.size === 0) {
+                  this.promotionConflictOrchestrator?.schedule({
+                    taskId: task.id,
+                    agentId: task.agentId,
+                    repoPath: worker.repoPath,
+                    baseBranch: worker.rootBaseBranch,
+                    taskBranch: worker.taskWorkspace.branch,
+                    reportedFiles: promotion.conflictFiles,
+                  })
+                }
                 return
               }
               this.publishActivity(worker, {
@@ -1405,7 +1437,7 @@ export class TaskCoordinator {
    * remove a dependência do fallback direto no banco pela tela de
    * acompanhamento e dá visibilidade ao motivo de bloqueio.
    */
-  async getTaskWithSubtasks(taskId: string): Promise<(Task & { subtasks: SubtaskView[]; errorMessage?: string; ultimoBloqueio: UltimoBloqueio | null; clarificacaoPendente: ClarificacaoPendente | null }) | null> {
+  async getTaskWithSubtasks(taskId: string): Promise<(Task & { subtasks: SubtaskView[]; errorMessage?: string; ultimoBloqueio: UltimoBloqueio | null; clarificacaoPendente: ClarificacaoPendente | null; promotionConflictAnalysis: PromotionConflictAnalysisView | null }) | null> {
     const data = await this.repository.getTask(taskId)
     if (!data) return null
     const task = this.mapSaveDataToTask(data)
@@ -1509,7 +1541,27 @@ export class TaskCoordinator {
       }
     }
 
-    return { ...task, subtasks, errorMessage: data.errorMessage, ultimoBloqueio, clarificacaoPendente }
+    const { rows: analysisRows } = await this.db.query(
+      "SELECT p.status, p.confidence, p.recommendation, p.report, p.error_message, p.conflict_files_json, p.attempts, p.updated_at " +
+      "FROM promotion_conflict_analyses p INNER JOIN tarefas t ON t.id = p.tarefa_id " + whereTask +
+      "ORDER BY p.created_at DESC LIMIT 1",
+      taskParams,
+    )
+    const analysisRow = analysisRows[0]
+    const rawFiles = analysisRow?.conflict_files_json
+    const conflictFiles = Array.isArray(rawFiles) ? rawFiles.map(String) : typeof rawFiles === "string" ? JSON.parse(rawFiles) as string[] : []
+    const promotionConflictAnalysis: PromotionConflictAnalysisView | null = analysisRow ? {
+      status: String(analysisRow.status),
+      confidence: analysisRow.confidence ? String(analysisRow.confidence) : null,
+      recommendation: analysisRow.recommendation ? String(analysisRow.recommendation) : null,
+      report: analysisRow.report ? String(analysisRow.report) : null,
+      errorMessage: analysisRow.error_message ? String(analysisRow.error_message) : null,
+      conflictFiles,
+      attempts: Number(analysisRow.attempts ?? 0),
+      updatedAt: String(analysisRow.updated_at ?? ""),
+    } : null
+
+    return { ...task, subtasks, errorMessage: data.errorMessage, ultimoBloqueio, clarificacaoPendente, promotionConflictAnalysis }
   }
 
   private mapSaveDataToTask(data: import("../shared/types/infrastructure.js").SaveTaskData): Task {

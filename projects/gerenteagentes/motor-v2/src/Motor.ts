@@ -14,6 +14,10 @@ import { executionEventBus, type ExecutionActivityBroadcaster } from './events/E
 import { createLogger, describeError } from './shared/logger.js'
 import { getConfigNumber, getConfigString } from './config/MotorConfigReader.js'
 import { ConsoleAgentRuntimeDriver } from './runtime/ConsoleAgentRuntimeDriver.js'
+import { PromotionConflictAnalyzer } from './promotion-conflicts/PromotionConflictAnalyzer.js'
+import { PromotionConflictEvidenceCollector } from './promotion-conflicts/PromotionConflictEvidenceCollector.js'
+import { PromotionConflictOrchestrator } from './promotion-conflicts/PromotionConflictOrchestrator.js'
+import { PromotionConflictRepository } from './promotion-conflicts/PromotionConflictRepository.js'
 
 export interface MotorConfig {
   db: Db
@@ -57,6 +61,11 @@ export class Motor {
     })
     this._waitManager = new ResourceWaitManager(config.db, config.repository)
     this.workerLauncher = new WorkerLauncher()
+    const promotionConflictOrchestrator = new PromotionConflictOrchestrator(
+      new PromotionConflictRepository(config.db),
+      new PromotionConflictEvidenceCollector(),
+      new PromotionConflictAnalyzer(this.consoleDriver),
+    )
     this.reconciler = new ExpirationReconciler({
       db: config.db,
       intervalMs: config.reconcilerIntervalMs ?? getConfigNumber('motor.reconciler_interval_ms'),
@@ -68,7 +77,7 @@ export class Motor {
     this.coordinator = new TaskCoordinator(config.db, config.repository, this.resourceLease, {
       maxWorkers: config.maxWorkers,
       maxWorkersPerProject: config.maxWorkersPerProject,
-    }, this.workerLauncher, undefined, this._waitManager)
+    }, this.workerLauncher, undefined, this._waitManager, undefined, promotionConflictOrchestrator)
     this.api = new MotorAPI({ port: apiPort, coordinator: this.coordinator, db: config.db })
 
     this.setupEventHandlers()
