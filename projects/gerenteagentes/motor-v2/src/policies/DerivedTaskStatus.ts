@@ -19,10 +19,12 @@ export interface DerivedTaskStatusFacts {
   deploySucceeded: boolean
   integrationConfirmed: boolean
   pausedAt?: string | null
+  resourceWaitKey?: string | null
 }
 
 const APPROVED_SUBTASK_STATUSES = new Set(["verified", "superseded"])
 const ACTIVE_SUBTASK_STATUSES = new Set(["running", "delivered", "verifying"])
+const BLOCKED_SUBTASK_STATUSES = new Set(["blocked"])
 const ADMINISTRATIVE_TERMINAL_STATUSES = new Set<TaskStatus>([
   "cancelled",
   "failed",
@@ -39,6 +41,7 @@ export function deriveTaskStatus(facts: DerivedTaskStatusFacts): TaskStatus {
 
   if (facts.hasPendingClarification) return "awaiting_clarification"
   if (facts.hasActiveBlocker) return "blocked"
+  if (facts.subtaskStatuses.some((status) => BLOCKED_SUBTASK_STATUSES.has(status))) return "blocked"
   if (facts.analysisInProgress && !facts.hasPersistedPlan) return "analyzing"
   if (facts.subtaskStatuses.some((status) => ACTIVE_SUBTASK_STATUSES.has(status))) return "running"
   if (facts.deploySucceeded) return "deployed"
@@ -50,7 +53,8 @@ export function deriveTaskStatus(facts: DerivedTaskStatusFacts): TaskStatus {
   if (allSubtasksApproved && facts.integrationConfirmed) return "completed"
   if (hasSubtasks) {
     // Se a tarefa está pausada (paused_at preenchido) e estaria pronta, retorna "paused"
-    if (facts.pausedAt) return "paused"
+    // Mas se está aguardando recurso (resourceWaitKey preenchido), não está realmente pausada
+    if (facts.pausedAt && !facts.resourceWaitKey) return "paused"
     return "ready"
   }
 

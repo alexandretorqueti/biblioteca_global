@@ -386,7 +386,9 @@ export class TaskCoordinator {
       // execução; uma subtarefa ativa ou bloqueada impede outra seleção da
       // mesma tarefa. `tarefas.status` fica somente como compatibilidade para
       // os terminais administrativos e a clarificação ainda legada.
-      "WHERE s.status = 'pending' AND t.paused_at IS NULL " +
+      // Se a tarefa tem paused_at mas também tem resource_wait_key, ela está
+      // aguardando recurso (não está pausada pelo usuário), então pode ser selecionada.
+      "WHERE s.status = 'pending' AND (t.paused_at IS NULL OR t.resource_wait_key IS NOT NULL) " +
       "AND NOT EXISTS (SELECT 1 FROM task_runtime_facts f WHERE f.tarefa_id = t.id AND f.terminal_status IS NOT NULL) " +
       "AND NOT EXISTS (SELECT 1 FROM bloqueios b WHERE b.tarefa_id = t.id AND b.resolved_at IS NULL) " +
       "AND COALESCE((SELECT c.role FROM tarefa_chats c WHERE c.tarefa_id = t.id AND c.role IN ('analyst', 'user') ORDER BY c.id DESC LIMIT 1), '') <> 'analyst' " +
