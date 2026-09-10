@@ -11,6 +11,35 @@ import { TaskCoordinator } from '../src/coordinator/TaskCoordinator.js'
 function createMockDb(recoveryRows: Array<Record<string, unknown>> = []): Db {
   const db: Db = {
     query: vi.fn().mockImplementation((sql: string) => {
+      // FROM bloqueios — deve vir ANTES do 'SELECT id FROM tarefas'
+      if (sql.includes('FROM bloqueios')) {
+        return Promise.resolve({ rows: [], affectedRows: 0, insertId: 0 } satisfies QueryResult)
+      }
+      // Busca tarefa_id numérico para associar ao incidente
+      if (sql.includes('SELECT id FROM tarefas WHERE external_id') && !sql.includes('FROM bloqueios')) {
+        return Promise.resolve({ rows: [{ id: 1 }], affectedRows: 0, insertId: 0 } satisfies QueryResult)
+      }
+      // resolveOrCreate — busca incidente existente
+      if (sql.includes('motor_infrastructure_incidents') && sql.includes('SELECT') && sql.includes('WHERE signature')) {
+        return Promise.resolve({ rows: [], affectedRows: 0, insertId: 0 } satisfies QueryResult)
+      }
+      // resolveOrCreate — insert novo incidente
+      if (sql.includes('motor_infrastructure_incidents') && sql.includes('INSERT')) {
+        return Promise.resolve({ rows: [], affectedRows: 1, insertId: 1 } satisfies QueryResult)
+      }
+      // resolveOrCreate — update last_seen_at
+      if (sql.includes('motor_infrastructure_incidents') && sql.includes('UPDATE') && sql.includes('last_seen_at')) {
+        return Promise.resolve({ rows: [], affectedRows: 1, insertId: 0 } satisfies QueryResult)
+      }
+      // addTaskToIncident — verifica associação existente
+      if (sql.includes('motor_infrastructure_incident_tasks') && sql.includes('SELECT') && sql.includes('SELECT id')) {
+        return Promise.resolve({ rows: [], affectedRows: 0, insertId: 0 } satisfies QueryResult)
+      }
+      // addTaskToIncident — insert associação
+      if (sql.includes('motor_infrastructure_incident_tasks') && sql.includes('INSERT')) {
+        return Promise.resolve({ rows: [], affectedRows: 1, insertId: 1 } satisfies QueryResult)
+      }
+      // getRecoveryHistory
       if (sql.includes('motor_infrastructure_recovery_history') && sql.includes('SELECT')) {
         return Promise.resolve({ rows: recoveryRows, affectedRows: 0, insertId: 0 } satisfies QueryResult)
       }
@@ -164,9 +193,10 @@ describe('Trilha de auditoria de retomada (recovery history)', () => {
     )
     expect(insertCall).toBeDefined()
     const params = insertCall![1] as unknown[]
-    // params: [subtarefaId, incidentId, excerpt, correction, resumeType, resumedBy, executionId, taskId, taskId]
-    expect(params[4]).toBe('manual')
-    expect(params[5]).toBe('user:alexandre')
+    // params: [subtarefaId, incidentId, failureSignature, excerpt, correction, resumeType, resumedBy, executionId, taskId, taskId]
+    expect(params[2]).toMatch(/^[a-f0-9]{40}$/) // failure_signature
+    expect(params[5]).toBe('manual')
+    expect(params[6]).toBe('user:alexandre')
   })
 
   it('reanalyzeAndResumeInfrastructureBlock default para automatic/motor-v2 quando sem opções', async () => {
@@ -237,7 +267,8 @@ describe('Trilha de auditoria de retomada (recovery history)', () => {
     )
     expect(insertCall).toBeDefined()
     const params = insertCall![1] as unknown[]
-    expect(params[4]).toBe('automatic')
-    expect(params[5]).toBe('motor-v2')
+    expect(params[2]).toMatch(/^[a-f0-9]{40}$/) // failure_signature
+    expect(params[5]).toBe('automatic')
+    expect(params[6]).toBe('motor-v2')
   })
 })
