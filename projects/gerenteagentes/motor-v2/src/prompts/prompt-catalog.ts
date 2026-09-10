@@ -48,7 +48,7 @@ export const AGENT_PROMPT_CATALOG: readonly AgentPromptCatalogEntry[] = [
     situation: "primeira_rodada_tarefa",
     source: "motor-v2/src/workers/TaskWorker.ts#buildAnalystPrompt",
     markers: ["**TITULOTAREFA**", "**DESCRICAOTAREFA**", "**TIPOTAREFA**"],
-    prompt: "Você é o analista responsável por transformar a tarefa **TITULOTAREFA** em um plano completo, executável e verificável. Tipo: **TIPOTAREFA**. Leia integralmente a descrição abaixo, preserve todos os requisitos, etapas numeradas, sequência e definição de pronto. Não minimize artificialmente a quantidade de subtarefas nem una etapas independentes. Cada subtarefa deve ter uma responsabilidade principal, escopo detalhado, entregáveis concretos, critérios objetivos e requisitos cobertos. Identifique todos os requisitos como REQ-* e forneça a matriz de cobertura. Se a descrição estiver truncada, incompleta ou ambígua, não invente um plano: peça esclarecimentos. Descrição integral: **DESCRICAOTAREFA**\n\n**CONTRATOSAIDA**",
+    prompt: "Você é o analista responsável por transformar a tarefa **TITULOTAREFA** em um plano completo, executável e verificável. Tipo: **TIPOTAREFA**. Leia integralmente a descrição abaixo, preserve todos os requisitos, etapas numeradas, sequência e definição de pronto. Não minimize artificialmente a quantidade de subtarefas nem una etapas independentes. Cada subtarefa deve ter uma responsabilidade principal, escopo detalhado, entregáveis concretos, critérios objetivos e requisitos cobertos. Identifique todos os requisitos como REQ-* e forneça a matriz de cobertura. Se a descrição estiver truncada, incompleta ou ambígua, não invente um plano: converse com o dono para esclarecer. Descrição integral: **DESCRICAOTAREFA**\n\n**CONTRATOSAIDA**",
     contractKey: "analista.plano_ou_perguntas",
   },
   {
@@ -57,7 +57,7 @@ export const AGENT_PROMPT_CATALOG: readonly AgentPromptCatalogEntry[] = [
     situation: "retomada_apos_clarificacao",
     source: "motor-v2/src/workers/TaskWorker.ts#buildAnalystPrompt",
     markers: ["**TITULOTAREFA**", "**DESCRICAOTAREFA**", "**HISTORICOCLARIFICACAO**"],
-    prompt: "Reanalise **TITULOTAREFA** usando a descrição integral: **DESCRICAOTAREFA**. Histórico já respondido: **HISTORICOCLARIFICACAO**. Preserve todos os requisitos e etapas, não una responsabilidades independentes, e não repita perguntas respondidas. Quando estiver claro, devolva plano completo com requisitos e matriz de cobertura; caso contrário, faça perguntas objetivas.\n\n**CONTRATOSAIDA**",
+    prompt: "Continue a conversa de análise da tarefa **TITULOTAREFA**. Descrição integral: **DESCRICAOTAREFA**. Histórico já respondido: **HISTORICOCLARIFICACAO**. Preserve todos os requisitos e etapas, não una responsabilidades independentes, e não repita perguntas respondidas. Responda à mensagem do usuário em linguagem natural. Quando a definição estiver clara o suficiente, apresente a proposta de plano em texto e inclua o JSON técnico completo; caso contrário, continue conversando ou pergunte o que falta.\n\n**CONTRATOSAIDA**",
     contractKey: "analista.plano_ou_perguntas",
   },
   {

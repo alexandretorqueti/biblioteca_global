@@ -3,7 +3,7 @@ import {
   Alert, Box, Button, Chip, CircularProgress, Divider, List, ListItemButton,
   ListItemText, MenuItem, Paper, Stack, TextField, Typography,
 } from "@mui/material"
-import { PreviewRounded, PublishRounded, SaveRounded, RestoreRounded } from "@mui/icons-material"
+import { InfoRounded, PreviewRounded, PublishRounded, SaveRounded, RestoreRounded } from "@mui/icons-material"
 import { useApi } from "../../../apps/web/src/hooks/useApi"
 
 export const componentId = "gerenteagentes-prompts"
@@ -122,6 +122,12 @@ export default function PromptsScreen(): ReactNode {
   if (loading) return <Box sx={{ display: "grid", placeItems: "center", minHeight: 300 }}><CircularProgress /></Box>
   return <Stack spacing={2} data-testid="prompts-screen">
     <Box><Typography variant="h4" fontWeight={700}>Prompts</Typography><Typography color="text.secondary">Edite, valide e publique os prompts usados pelo Motor.</Typography></Box>
+    {selected?.tipoAgente === "analista" && <Alert severity="info" icon={<InfoRounded />} sx={{ mb: 1 }}>
+      <Typography variant="subtitle2" fontWeight={700} gutterBottom>Diálogo natural com garantias de planejamento</Typography>
+      <Typography variant="body2" component="div">
+        A conversa entre o analista e o Alexandre é <strong>texto livre</strong> — explicações, dúvidas e refinamentos são mensagens normais, não formulário de perguntas numeradas. O analista só apresenta proposta de plano quando há informação suficiente, e <strong>nenhuma subtarefa é criada antes da aprovação explícita</strong>. O JSON técnico do plano é material interno para o Motor validar; a proposta textual é o que o Alexandre vê e decide.
+      </Typography>
+    </Alert>}
     {error && <Alert severity="error" onClose={() => setError(null)}>{error}</Alert>}
     {notice && <Alert severity="success" onClose={() => setNotice(null)}>{notice}</Alert>}
     <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", lg: "300px minmax(0,1fr) 300px" }, gap: 2 }}>
