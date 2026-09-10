@@ -27,8 +27,9 @@ const SENHA_TESTE = "Etapa4Funcional#2026"
 const USUARIO_DOC = "teste_etapa4_doc"
 const USUARIO_SO_BG = "teste_etapa4_so_bg"
 const SLUG_TESTE = "projeto-teste-etapa4"
+const hasMysql = Boolean(process.env.MYSQL_HOST)
 
-describe("usuarios + projetos — funcional (API + MySQL)", () => {
+describe.skipIf(!hasMysql)("usuarios + projetos — funcional (API + MySQL)", () => {
   let app: INestApplication
   let db: CoreDb
   let pool: Pool

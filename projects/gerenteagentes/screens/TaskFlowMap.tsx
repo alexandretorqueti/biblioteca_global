@@ -15,13 +15,16 @@ import {
   RocketLaunchRounded,
   SearchRounded,
   SettingsRounded,
+  PauseRounded,
+  PlayArrowRounded,
+  ReplayRounded,
   UnfoldLessRounded,
   UnfoldMoreRounded,
   WarningAmberRounded,
 } from "@mui/icons-material"
 import { Avatar, Box, Button, Chip, Collapse, FormControl, IconButton, InputLabel, LinearProgress, MenuItem, Paper, Select, Skeleton, Stack, TextField, Tooltip, Typography, useMediaQuery } from "@mui/material"
 import { useTheme } from "@mui/material/styles"
-import { taskStatusLabel } from "../motor-v2/src/shared/task-statuses"
+import { TASK_STATUS_EXECUTING, TASK_STATUS_STARTABLE, taskStatusLabel } from "../motor-v2/src/shared/task-statuses"
 import { calcularMetricas, deriveTaskPriority, formatTempoRelativo, projetoAvatar, type Prioridade } from "./taskFlowHelpers"
 
 export interface FlowTask {
@@ -64,6 +67,9 @@ interface TaskFlowMapProps {
   onFiltrosChange?: (filtros: FiltrosMapa) => void
   aoVivo?: boolean
   carregando?: boolean
+  onStartTask?: (id: number) => void
+  onPauseTask?: (id: number) => void
+  onResumeTask?: (id: number) => void
 }
 
 interface FlowStation {
@@ -309,7 +315,7 @@ function stationGradient(tone: FlowStation["tone"]): string {
   return `linear-gradient(180deg, ${hex}10 0%, transparent 60%)`
 }
 
-function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, legendaAtiva, movingIds, compacto, onSelectTask, taskMatchesLegenda }: {
+function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, legendaAtiva, movingIds, compacto, onSelectTask, taskMatchesLegenda, onStartTask, onPauseTask, onResumeTask }: {
   station: FlowStation
   tarefas: FlowTask[]
   tarefasFiltradas: FlowTask[]
@@ -320,6 +326,9 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, l
   compacto: boolean
   onSelectTask: (id: number) => void
   taskMatchesLegenda: (task: FlowTask, station: FlowStation) => boolean
+  onStartTask?: (id: number) => void
+  onPauseTask?: (id: number) => void
+  onResumeTask?: (id: number) => void
 }) {
   const [expandida, setExpandida] = useState(false)
   const stationTasks = tarefas.filter((task) => station.statuses.includes(task.status))
@@ -547,6 +556,47 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, l
                       },
                     }}
                   />
+                )}
+                {/* Botões de ação (play/pause/restart) — icon-only com tooltip */}
+                {(TASK_STATUS_STARTABLE.has(task.status) || TASK_STATUS_EXECUTING.has(task.status) || task.status === "paused") && (
+                  <Stack direction="row" justifyContent="flex-end" sx={{ mt: 0.25 }}>
+                    {TASK_STATUS_STARTABLE.has(task.status) && onStartTask && (
+                      <Tooltip title="Iniciar tarefa" arrow>
+                        <IconButton
+                          size="small"
+                          data-testid={`task-action-start-${task.id}`}
+                          onClick={(e) => { e.stopPropagation(); onStartTask(task.id) }}
+                          sx={{ p: 0.25 }}
+                        >
+                          <PlayArrowRounded sx={{ fontSize: 16 }} />
+                        </IconButton>
+                      </Tooltip>
+                    )}
+                    {TASK_STATUS_EXECUTING.has(task.status) && onPauseTask && (
+                      <Tooltip title="Pausar tarefa" arrow>
+                        <IconButton
+                          size="small"
+                          data-testid={`task-action-pause-${task.id}`}
+                          onClick={(e) => { e.stopPropagation(); onPauseTask(task.id) }}
+                          sx={{ p: 0.25 }}
+                        >
+                          <PauseRounded sx={{ fontSize: 16 }} />
+                        </IconButton>
+                      </Tooltip>
+                    )}
+                    {task.status === "paused" && onResumeTask && (
+                      <Tooltip title="Retomar tarefa" arrow>
+                        <IconButton
+                          size="small"
+                          data-testid={`task-action-resume-${task.id}`}
+                          onClick={(e) => { e.stopPropagation(); onResumeTask(task.id) }}
+                          sx={{ p: 0.25 }}
+                        >
+                          <ReplayRounded sx={{ fontSize: 16 }} />
+                        </IconButton>
+                      </Tooltip>
+                    )}
+                  </Stack>
                 )}
               </Paper>
             </Tooltip>
@@ -1094,6 +1144,9 @@ export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", moto
                   compacto={compacto}
                   onSelectTask={onSelectTask}
                   taskMatchesLegenda={taskMatchesLegenda}
+                  onStartTask={onStartTask}
+                  onPauseTask={onPauseTask}
+                  onResumeTask={onResumeTask}
                 />
               </Box>
               {index < MAIN_FLOW.length - 1 && <FlowConnector direction="horizontal" hasMovement={movingIds.size > 0} />}
@@ -1145,6 +1198,9 @@ export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", moto
                   compacto={compacto}
                   onSelectTask={onSelectTask}
                   taskMatchesLegenda={taskMatchesLegenda}
+                  onStartTask={onStartTask}
+                  onPauseTask={onPauseTask}
+                  onResumeTask={onResumeTask}
                 />
               </Box>
               {index < SIDE_FLOW.length - 1 && <FlowConnector direction="horizontal" hasMovement={movingIds.size > 0} />}

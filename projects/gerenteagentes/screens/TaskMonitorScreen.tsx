@@ -309,6 +309,9 @@ export default function TaskMonitorScreen(): ReactNode {
   const [sessionLoading, setSessionLoading] = useState(false)
   const [sessionError, setSessionError] = useState<string | null>(null)
   const [sessionData, setSessionData] = useState<SubtaskSession | null>(null)
+  const [pausandoTodas, setPausandoTodas] = useState(false)
+  const [retomandoTodas, setRetomandoTodas] = useState(false)
+  const [bulkMessage, setBulkMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const mounted = useRef(true)
   const activeRealtimeTask = useRef<number | "">("")
 
@@ -669,6 +672,79 @@ export default function TaskMonitorScreen(): ReactNode {
       }
     },
     [bundle, tarefaId, carregarDetail, carregarTarefas],
+  )
+
+  const executarAcaoBulk = useCallback(
+    async (acaoNome: 'pause-all' | 'resume-all') => {
+      if (!bundle) return
+      const setLoading = acaoNome === 'pause-all' ? setPausandoTodas : setRetomandoTodas
+      setLoading(true)
+      setBulkMessage(null)
+      try {
+        const res = await bundle.http.request<{ affected?: number }>("POST", `/gerenteagentes/tarefas/${acaoNome}`, {
+          auth: "access",
+        })
+        const contagem = typeof res?.affected === 'number' ? res.affected : undefined
+        const label = acaoNome === 'pause-all' ? 'pausadas' : 'retomadas'
+        setBulkMessage({
+          type: 'success',
+          text: contagem !== undefined
+            ? `${contagem} tarefa${contagem === 1 ? '' : 's'} ${label} com sucesso.`
+            : `Ação '${acaoNome === 'pause-all' ? 'Pausar todas' : 'Retomar todas'}' executada.`,
+        })
+        await carregarTarefas()
+      } catch (e) {
+        setBulkMessage({
+          type: 'error',
+          text: e instanceof Error ? e.message : `Erro ao executar ${acaoNome === 'pause-all' ? 'pausar todas' : 'retomar todas'}`,
+        })
+      } finally {
+        setLoading(false)
+      }
+    },
+    [bundle, carregarTarefas],
+  )
+
+  const iniciarTarefaId = useCallback(
+    async (id: number) => {
+      if (!bundle) return
+      setErro(null)
+      try {
+        await bundle.http.request("POST", `/gerenteagentes/tarefas/${id}/start`, { auth: "access" })
+        await carregarTarefas()
+      } catch (e) {
+        setErro(e instanceof Error ? e.message : "Erro ao iniciar tarefa")
+      }
+    },
+    [bundle, carregarTarefas],
+  )
+
+  const pausarTarefaId = useCallback(
+    async (id: number) => {
+      if (!bundle) return
+      setErro(null)
+      try {
+        await bundle.http.request("POST", `/gerenteagentes/tarefas/${id}/pause`, { auth: "access" })
+        await carregarTarefas()
+      } catch (e) {
+        setErro(e instanceof Error ? e.message : "Erro ao pausar tarefa")
+      }
+    },
+    [bundle, carregarTarefas],
+  )
+
+  const retomarTarefaId = useCallback(
+    async (id: number) => {
+      if (!bundle) return
+      setErro(null)
+      try {
+        await bundle.http.request("POST", `/gerenteagentes/tarefas/${id}/resume`, { auth: "access" })
+        await carregarTarefas()
+      } catch (e) {
+        setErro(e instanceof Error ? e.message : "Erro ao retomar tarefa")
+      }
+    },
+    [bundle, carregarTarefas],
   )
 
 
@@ -1071,7 +1147,7 @@ export default function TaskMonitorScreen(): ReactNode {
   const statusMotor = detail?.task?.status ?? tarefaSelecionada?.status ?? "—"
   const isPaused = statusMotor === "paused"
   const podeIniciar = !isPaused && STATUS_INICIO_PERMITIDO.has(statusMotor)
-  const podePausar = !isPaused && statusMotor !== "deployed"
+  const podePausar = !isPaused && STATUS_EXECUCAO.has(statusMotor)
   const podeRetomar = isPaused
 
   const editInitialValues = useMemo<DynamicFormValues>(() => {
@@ -1212,20 +1288,59 @@ export default function TaskMonitorScreen(): ReactNode {
     <Stack spacing={3} sx={{ width: "90%", mx: "auto" }} data-testid="task-monitor-screen">
       <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" alignItems="center">
         <Typography variant="h4" fontWeight={600}>Acompanhar Tarefa</Typography>
-        <Button
-          variant="contained" startIcon={<AddTaskRounded />} onClick={() => {
-            setNewTaskError(null)
-            setNewTaskOpen(true)
-          }} data-testid="btn-new-task"
-        >
-          Nova Tarefa
-        </Button>
+        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+          <Tooltip title="Pausa todas as tarefas que não estão concluídas/deployadas">
+            <span>
+              <Button
+                variant="outlined"
+                startIcon={<PauseRounded />}
+                disabled={pausandoTodas || !tarefas.some((t) => !STATUS_FINAIS.has(t.status) && t.status !== 'paused')}
+                loading={pausandoTodas}
+                onClick={() => void executarAcaoBulk('pause-all')}
+                data-testid="btn-pause-all"
+              >
+                Pausar todas
+              </Button>
+            </span>
+          </Tooltip>
+          <Tooltip title="Retoma todas as tarefas pausadas">
+            <span>
+              <Button
+                variant="outlined"
+                startIcon={<ReplayRounded />}
+                disabled={retomandoTodas || !tarefas.some((t) => t.status === 'paused')}
+                loading={retomandoTodas}
+                onClick={() => void executarAcaoBulk('resume-all')}
+                data-testid="btn-resume-all"
+              >
+                Retomar todas
+              </Button>
+            </span>
+          </Tooltip>
+          <Button
+            variant="contained" startIcon={<AddTaskRounded />} onClick={() => {
+              setNewTaskError(null)
+              setNewTaskOpen(true)
+            }} data-testid="btn-new-task"
+          >
+            Nova Tarefa
+          </Button>
           <Typography variant="caption" color={realtimeStatus === "open" ? "success.main" : "text.secondary"}>
-          {realtimeStatus === "open" ? "Tempo real conectado" : "Reconectando ao tempo real…"}
-        </Typography>
+            {realtimeStatus === "open" ? "Tempo real conectado" : "Reconectando ao tempo real…"}
+          </Typography>
+        </Stack>
       </Stack>
 
       {erro && <Alert severity="error" data-testid="error-alert">{erro}</Alert>}
+      {bulkMessage && (
+        <Alert
+          severity={bulkMessage.type}
+          onClose={() => setBulkMessage(null)}
+          data-testid="bulk-message-alert"
+        >
+          {bulkMessage.text}
+        </Alert>
+      )}
 
       {/* Sessão 1: Mapa vivo da tarefa */}
       <Box data-testid="task-map-section">
@@ -1240,6 +1355,9 @@ export default function TaskMonitorScreen(): ReactNode {
           onFiltrosChange={setFiltrosMapa}
           aoVivo={realtimeStatus === "open"}
           carregando={loading}
+          onStartTask={(id) => void iniciarTarefaId(id)}
+          onPauseTask={(id) => void pausarTarefaId(id)}
+          onResumeTask={(id) => void retomarTarefaId(id)}
         />
       </Box>
 

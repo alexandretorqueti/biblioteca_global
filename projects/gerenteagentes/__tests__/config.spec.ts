@@ -69,7 +69,7 @@ describe("config do projeto gerenteagentes", () => {
     })
   })
 
-  it("expõe o menu Prompts abaixo de Projetos com cadastro editável", () => {
+  it("expõe o menu Prompts abaixo de Projetos com componente custom", () => {
     const indiceProjetos = config.groups.findIndex((grupo) => grupo.id === "projetos")
     const indicePrompts = config.groups.findIndex((grupo) => grupo.id === "prompts")
     expect(indiceProjetos).toBeGreaterThanOrEqual(0)
@@ -80,19 +80,7 @@ describe("config do projeto gerenteagentes", () => {
     const item = grupoPrompts!.items.find((i) => i.id === "prompts-list")!
     expect(item.label).toBe("Prompts")
     expect(item.path).toBe("prompts")
-    expect(item.screen).toMatchObject({ kind: "cadastro", resource: "prompts_agentes" })
-
-    const tela = item.screen as CadastroScreenConfig
-    expect(tela.fields).toEqual(expect.arrayContaining([
-      expect.objectContaining({ name: "tipoAgente", label: "Tipo de agente" }),
-      expect.objectContaining({ name: "situacao", label: "Situação" }),
-      expect.objectContaining({ name: "conteudo", label: "Prompt", type: "textarea", fullWidth: true }),
-    ]))
-    expect(tela.overrides?.columnLabels).toMatchObject({
-      tipoAgente: "Agente",
-      situacao: "Situação",
-      conteudo: "Prompt",
-    })
+    expect(item.screen).toMatchObject({ kind: "custom", componentId: "gerenteagentes-prompts" })
   })
 
   it("define limites locais para o formulário de projetos", () => {

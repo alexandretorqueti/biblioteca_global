@@ -854,7 +854,7 @@ describe("CrudService — eventos realtime no CRUD de tarefas/subtarefas", () =>
     it("atualizar publica task.updated com o estado pós-edição", async () => {
       const linhaAtualizada = {
         id: 55,
-        titulo: "Nova tarefa",
+        titulo: "Tarefa atualizada",
         status: "running",
         projetoId: 1,
         updatedAt,
@@ -864,7 +864,7 @@ describe("CrudService — eventos realtime no CRUD de tarefas/subtarefas", () =>
       })
 
       await service.atualizar(projetoGerente, "tarefas", 55, {
-        status: "running",
+        titulo: "Tarefa atualizada",
       })
 
       expect(publicar).toHaveBeenCalledTimes(1)
@@ -874,7 +874,7 @@ describe("CrudService — eventos realtime no CRUD de tarefas/subtarefas", () =>
         projectId: 1,
         taskId: 55,
       })
-      expect(ingress).toHaveProperty("payload.status", "running")
+      expect(ingress).toHaveProperty("payload.titulo", "Tarefa atualizada")
     })
 
     it("remover publica task.deleted com os dados do registro removido", async () => {
@@ -1283,7 +1283,7 @@ describe("CrudService — eventos realtime no CRUD de tarefas/subtarefas", () =>
       })
 
       await expect(
-        service.atualizar(projetoGerente, "tarefas", 55, { status: "running" }),
+        service.atualizar(projetoGerente, "tarefas", 55, { titulo: "Y" }),
       ).rejects.toThrow("falha no update")
       expect(publicar).not.toHaveBeenCalled()
     })
