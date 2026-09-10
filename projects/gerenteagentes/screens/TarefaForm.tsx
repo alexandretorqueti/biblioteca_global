@@ -1,7 +1,6 @@
 import { useMemo, useState, type ReactNode } from "react"
 import { AddTaskRounded } from "@mui/icons-material"
 import { Alert, Box, Button, CircularProgress, MenuItem, Stack, TextField } from "@mui/material"
-import { TASK_STATUS_OPTIONS } from "../motor-v2/src/shared/task-statuses"
 
 export interface TarefaFormProjeto {
   id: number
@@ -13,7 +12,6 @@ export interface TarefaFormValues {
   titulo: string
   descricao: string
   tipo: "desenvolvimento" | "automacao" | "verificacao"
-  status: string
 }
 
 export const TIPO_TAREFA_OPTIONS = [
@@ -44,7 +42,6 @@ export default function TarefaForm({
   const [titulo, setTitulo] = useState("")
   const [descricao, setDescricao] = useState("")
   const [tipo, setTipo] = useState<TarefaFormValues["tipo"]>("desenvolvimento")
-  const [status, setStatus] = useState("draft")
 
   const errosCampos = useMemo(() => {
     const erros: string[] = []
@@ -55,13 +52,12 @@ export default function TarefaForm({
 
   const submit = async () => {
     if (errosCampos.length > 0 || loading) return
-    const result = await onSubmit({ projetoId, titulo: titulo.trim(), descricao: descricao.trim(), tipo, status })
+    const result = await onSubmit({ projetoId, titulo: titulo.trim(), descricao: descricao.trim(), tipo })
     if (result === false) return
     setProjetoId("")
     setTitulo("")
     setDescricao("")
     setTipo("desenvolvimento")
-    setStatus("draft")
   }
 
   return (
@@ -94,13 +90,6 @@ export default function TarefaForm({
         label="Descrição" value={descricao} onChange={(e) => setDescricao(e.target.value)}
         multiline rows={3} fullWidth inputProps={{ "data-testid": "input-descricao" }}
       />
-      <TextField
-        select label="Status inicial" value={status} onChange={(e) => setStatus(e.target.value)}
-        required fullWidth inputProps={{ "data-testid": "input-status" }}
-      >
-        {TASK_STATUS_OPTIONS.map((opcao) => <MenuItem key={opcao.value} value={opcao.value}>{opcao.label}</MenuItem>)}
-      </TextField>
-
       <Box>
         <Button
           variant="contained" startIcon={loading ? <CircularProgress size={20} /> : <AddTaskRounded />}

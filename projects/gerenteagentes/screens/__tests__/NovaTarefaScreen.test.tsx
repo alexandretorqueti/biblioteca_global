@@ -75,7 +75,7 @@ function instalarMockFetch() {
  * Localiza o `div role=combobox` do select MUI identificado por `testId`.
  * O combobox é a irmã anterior do `<input type="hidden">` no DOM do InputBase
  * do MUI. Usa o próprio elemento (sem `getByRole("combobox", {name})`) porque
- * a tela tem DOIS selects e a query por nome fica ambígua com um menu aberto.
+ * a query por nome fica ambígua com um menu aberto.
  */
 function comboboxDoCampo(testId: string): HTMLElement {
   const input = screen.getByTestId(testId)
@@ -162,6 +162,8 @@ describe("NovaTarefaScreen", () => {
     expect(screen.getByTestId("input-projeto-id")).toBeInTheDocument()
     expect(screen.getByTestId("input-titulo")).toBeInTheDocument()
     expect(screen.getByTestId("input-descricao")).toBeInTheDocument()
+    // Combo de status foi removido do formulário (contrato sem status da tarefa)
+    expect(screen.queryByTestId("input-status")).not.toBeInTheDocument()
     expect(screen.getByTestId("btn-enviar")).toBeDisabled()
   })
 
@@ -217,7 +219,8 @@ describe("NovaTarefaScreen", () => {
       expect(corpo.managedProjectId).toBe(2)
       expect(corpo.titulo).toBe("Minha tarefa")
       expect(corpo.descricao).toBe("Descricao testando aqui")
-      expect(corpo.status).toBe("draft")
+      // O body não deve mais conter o campo status (combo removido)
+      expect(corpo.status).toBeUndefined()
     })
 
     await waitFor(() => {

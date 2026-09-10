@@ -682,7 +682,6 @@ export class GerenteAgentesService {
       titulo,
       descricao: input.descricao?.trim() || null,
       tipo: input.tipo ?? 'desenvolvimento',
-      status: 'planned',
       dependsOnTaskId: input.dependsOnTaskId ?? null,
       autoStart: input.autoStart ?? false,
       // Tarefas novas são criadas em PAUSA (paused_at definido).
@@ -753,13 +752,13 @@ export class GerenteAgentesService {
             const motorTask = JSON.parse(resp.body) as { status?: string };
             return {
               ...tarefa,
-              status: motorTask.status || tarefa.status,
+              status: motorTask.status || 'pending',
             };
           }
         } catch {
-          // Se falhar, usa o status do banco (fallback)
+          // Se falhar, usa status padrão (fallback)
         }
-        return tarefa;
+        return { ...tarefa, status: 'pending' };
       }),
     );
     
@@ -1388,9 +1387,8 @@ export class GerenteAgentesService {
         task: {
           id: motorTask.id || String(tarefaId),
           title: motorTask.title || tarefa.titulo,
-          // O status calculado pelo motor (via fatos operacionais) deve
-          // prevalecer sobre o status persistido no banco.
-          status: motorTask.status || tarefa.status,
+          // O status calculado pelo motor (via fatos operacionais) é a fonte canônica.
+          status: motorTask.status || 'pending',
           integrationBranch: `motor-v2/${motorId}/integracao`,
           errorMessage: motorTask.errorMessage ?? undefined,
           blockInfo: motorTask.status === 'blocked' ? (motorTask.ultimoBloqueio ?? null) : null,
@@ -1622,7 +1620,6 @@ export class GerenteAgentesService {
           projetoId: executor.id,
           titulo: `Setup do projeto: ${projetoCaptado.nome}`,
           descricao,
-          status: 'planned',
         })
         .$returningId();
       if (!inserida) {
