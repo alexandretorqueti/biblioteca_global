@@ -186,6 +186,16 @@ interface MotorDetail {
       blockedAt?: string
       subtaskId?: number | null
     } | null
+    promotionConflictAnalysis?: {
+      status: string
+      confidence: string | null
+      recommendation: string | null
+      report: string | null
+      errorMessage: string | null
+      conflictFiles: string[]
+      attempts: number
+      updatedAt: string
+    } | null
   }
   subtasks?: SubTaskMotor[]
   currentSubTask?: SubTaskMotor | null
@@ -1544,6 +1554,27 @@ export default function TaskMonitorScreen(): ReactNode {
               <Typography variant="body2">
                 <b>⚠ Tarefa bloqueada:</b> {detail.task.errorMessage}
               </Typography>
+            </Alert>
+          )}
+
+          {detail?.task?.promotionConflictAnalysis && (
+            <Alert severity={detail.task.promotionConflictAnalysis.status === "failed" ? "warning" : "info"} sx={{ mt: 2 }} data-testid="promotion-conflict-analysis">
+              <Typography variant="body2">
+                <b>🔎 Análise automática do conflito:</b> {detail.task.promotionConflictAnalysis.status === "analyzing" ? "em andamento" : detail.task.promotionConflictAnalysis.status}
+                {detail.task.promotionConflictAnalysis.confidence ? ` · confiança ${detail.task.promotionConflictAnalysis.confidence}` : ""}
+              </Typography>
+              {detail.task.promotionConflictAnalysis.conflictFiles.length > 0 && (
+                <Typography variant="caption" component="div">Arquivos: {detail.task.promotionConflictAnalysis.conflictFiles.join(", ")}</Typography>
+              )}
+              {detail.task.promotionConflictAnalysis.report && (
+                <Box component="details" sx={{ mt: 1 }}>
+                  <Box component="summary" sx={{ cursor: "pointer", fontWeight: 600 }}>Ver diagnóstico e estratégia sugerida</Box>
+                  <Typography component="pre" variant="caption" sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word", mt: 1 }}>{detail.task.promotionConflictAnalysis.report}</Typography>
+                </Box>
+              )}
+              {detail.task.promotionConflictAnalysis.errorMessage && (
+                <Typography variant="caption" component="div">Falha da análise: {detail.task.promotionConflictAnalysis.errorMessage}</Typography>
+              )}
             </Alert>
           )}
 

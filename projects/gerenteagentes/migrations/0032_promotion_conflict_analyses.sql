@@ -1,0 +1,30 @@
+-- Diagnósticos idempotentes de conflitos tarefa → base. A resolução continua
+-- humana; esta tabela torna a investigação automática e recuperável após restart.
+CREATE TABLE IF NOT EXISTS `promotion_conflict_analyses` (
+  `id` bigint unsigned AUTO_INCREMENT NOT NULL,
+  `tarefa_id` bigint unsigned NOT NULL,
+  `bloqueio_id` bigint unsigned NULL,
+  `fingerprint` char(64) NOT NULL,
+  `base_branch` varchar(240) NOT NULL,
+  `task_branch` varchar(240) NOT NULL,
+  `base_commit` char(40) NOT NULL,
+  `task_commit` char(40) NOT NULL,
+  `merge_base_commit` char(40) NOT NULL,
+  `conflict_files_json` json NOT NULL,
+  `evidence_json` longtext NOT NULL,
+  `status` varchar(30) NOT NULL DEFAULT 'pending',
+  `attempts` int unsigned NOT NULL DEFAULT 0,
+  `confidence` varchar(20) NULL,
+  `recommendation` varchar(50) NULL,
+  `report` longtext NULL,
+  `error_message` text NULL,
+  `started_at` timestamp NULL,
+  `completed_at` timestamp NULL,
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT `promotion_conflict_analyses_pk` PRIMARY KEY (`id`),
+  CONSTRAINT `promotion_conflict_analyses_task_fk` FOREIGN KEY (`tarefa_id`) REFERENCES `tarefas` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `promotion_conflict_analyses_block_fk` FOREIGN KEY (`bloqueio_id`) REFERENCES `bloqueios` (`id`) ON DELETE SET NULL,
+  UNIQUE KEY `promotion_conflict_analyses_fingerprint_uq` (`fingerprint`),
+  KEY `promotion_conflict_analyses_task_status_idx` (`tarefa_id`, `status`)
+);

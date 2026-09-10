@@ -84,8 +84,8 @@ function seedWorker(coordinator: TaskCoordinator, executionId: string): Internal
   return worker
 }
 
-function createCoordinator(db: Db, repository: TaskRepository, workspaceManager: unknown): TaskCoordinator {
-  return new TaskCoordinator(db, repository, new ResourceLeaseService({ db }), { maxWorkers: 1 }, new WorkerLauncher(), workspaceManager as never)
+function createCoordinator(db: Db, repository: TaskRepository, workspaceManager: unknown, promotionConflictOrchestrator?: unknown): TaskCoordinator {
+  return new TaskCoordinator(db, repository, new ResourceLeaseService({ db }), { maxWorkers: 1 }, new WorkerLauncher(), workspaceManager as never, undefined, undefined, promotionConflictOrchestrator as never)
 }
 
 describe("conflito subtarefa → branch da tarefa", () => {
@@ -198,7 +198,8 @@ describe("promoção da branch da tarefa para a base", () => {
     const wm = createWorkspaceManager({
       promotion: { kind: "conflict", conflictFiles: ["src/conflito.ts"], reason: "CONFLICT (content)" },
     })
-    const coordinator = createCoordinator(db, repository, wm)
+    const promotionConflictOrchestrator = { schedule: vi.fn(), reconcilePendingAnalyses: vi.fn() }
+    const coordinator = createCoordinator(db, repository, wm, promotionConflictOrchestrator)
     seedWorker(coordinator, "exec-promo")
 
     // Entrega sem commit (ex.: gate pulado) — vai direto para o bloco de conclusão.
@@ -214,6 +215,12 @@ describe("promoção da branch da tarefa para a base", () => {
     expect(bloqueio).toBeDefined()
     expect(bloqueio?.params).toContain("blocked_environment")
     expect(repository.saveTask).not.toHaveBeenCalled()
+    expect(promotionConflictOrchestrator.schedule).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: "task-p",
+      baseBranch: "base-desenvolvimento",
+      taskBranch: "motor-v2/task-p/integracao",
+      reportedFiles: ["src/conflito.ts"],
+    }))
     // Artefatos preservados para o humano resolver: nada de purge, nada de execução concluída.
     expect(wm.purgeTaskArtifacts).not.toHaveBeenCalled()
   })
