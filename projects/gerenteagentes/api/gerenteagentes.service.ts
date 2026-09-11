@@ -1238,6 +1238,10 @@ export class GerenteAgentesService {
           workspaceBranch: subtarefas.workspaceBranch,
           workspaceCommitSha: subtarefas.workspaceCommitSha,
           correctionForSubtaskId: subtarefas.correctionForSubtaskId,
+          nextRetryAt: subtarefas.nextRetryAt,
+          failureClassification: subtarefas.failureClassification,
+          failureFingerprint: subtarefas.failureFingerprint,
+          failureDiagnostic: subtarefas.failureDiagnostic,
         })
         .from(subtarefas)
         .where(eq(subtarefas.tarefaId, tarefaId))
@@ -1264,7 +1268,11 @@ export class GerenteAgentesService {
         title: s.titulo,
         status: s.status,
         deliverCount: s.deliverCount,
-        blockInfo: s.resultado ? { reason: s.resultado } : null,
+        nextRetryAt: s.nextRetryAt ?? null,
+        failureClassification: s.failureClassification ?? null,
+        failureFingerprint: s.failureFingerprint ?? null,
+        failureDiagnostic: s.failureDiagnostic ?? null,
+        blockInfo: s.failureDiagnostic || s.resultado ? { reason: s.failureDiagnostic || s.resultado } : null,
         scope: s.scope ?? null,
         acceptanceCriteria: s.acceptanceCriteria ?? null,
         workspaceStatus: s.workspaceStatus ?? null,

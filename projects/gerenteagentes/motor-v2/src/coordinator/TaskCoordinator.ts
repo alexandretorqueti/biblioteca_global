@@ -112,6 +112,10 @@ interface SubtaskView {
   status: string
   resultado: string | null
   deliverCount: number
+  nextRetryAt: string | null
+  failureClassification: string | null
+  failureFingerprint: string | null
+  failureDiagnostic: string | null
   workspaceStatus: string | null
   workspaceBranch: string | null
   workspaceCommitSha: string | null
@@ -1278,6 +1282,7 @@ export class TaskCoordinator {
 
     const { rows } = await this.db.query(
       "SELECT s.id, s.seq, s.titulo, s.status, s.resultado, s.deliver_count, " +
+      "s.next_retry_at, s.failure_classification, s.failure_fingerprint, s.failure_diagnostic, " +
       "s.workspace_status, s.workspace_branch, s.workspace_commit_sha, s.correction_for_subtask_id " +
       "FROM subtarefas s " +
       "INNER JOIN tarefas t ON t.id = s.tarefa_id " +
@@ -1292,6 +1297,10 @@ export class TaskCoordinator {
       status: String(row.status ?? "pending"),
       resultado: row.resultado ? String(row.resultado) : null,
       deliverCount: Number(row.deliver_count ?? 0),
+      nextRetryAt: row.next_retry_at ? new Date(row.next_retry_at as string | Date).toISOString() : null,
+      failureClassification: row.failure_classification ? String(row.failure_classification) : null,
+      failureFingerprint: row.failure_fingerprint ? String(row.failure_fingerprint) : null,
+      failureDiagnostic: row.failure_diagnostic ? String(row.failure_diagnostic) : null,
       workspaceStatus: row.workspace_status ? String(row.workspace_status) : null,
       workspaceBranch: row.workspace_branch ? String(row.workspace_branch) : null,
       workspaceCommitSha: row.workspace_commit_sha ? String(row.workspace_commit_sha) : null,

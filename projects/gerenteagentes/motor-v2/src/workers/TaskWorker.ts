@@ -275,7 +275,12 @@ class TaskWorker {
       } catch (error) {
         this.log("error", "Erro no handler de mensagem: " + (error instanceof Error ? error.message : String(error)))
         // Envia failed para o coordenador saber que o worker travou
-        this.send({ type: "failed", executionId: this.executionId, error: error instanceof Error ? error.message : String(error) })
+        this.send({
+          type: "failed",
+          executionId: this.executionId,
+          error: error instanceof Error ? error.message : String(error),
+          sessionFailure: this.sessionFailure,
+        })
         this.cleanup()
         setTimeout(() => process.exit(1), 1000)
       }
