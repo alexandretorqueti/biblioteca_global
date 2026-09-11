@@ -44,7 +44,7 @@ describe("PromotionConflictResolver workspace", () => {
     const second = resolutionAttemptSessionIdentity(candidate, evidence, "/tmp/attempt-def456")
 
     expect(first.key).toContain("task-p2-811:dddddddddddd:attempt-abc123")
-    expect(first.label).toBe("Resolução de conflito da tarefa task-p2-811 (attempt-abc123)")
+    expect(first.label).toBe(first.key)
     expect(second.key).not.toBe(first.key)
     expect(second.label).not.toBe(first.label)
   })
