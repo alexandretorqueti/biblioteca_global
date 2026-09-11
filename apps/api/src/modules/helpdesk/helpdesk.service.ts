@@ -136,7 +136,7 @@ export class HelpDeskService {
 
     // Registra a solicitação antes de chamar o agente. O agente nunca deve
     // executar alterações diretamente; o motor recebe a solicitação em draft.
-    this.detectarECriarTarefa(sessao.projetoId, input.text.trim()).catch(() => {})
+    await this.detectarECriarTarefa(sessao.projetoId, input.text.trim())
 
     if (!this.bridge.isConfigured()) {
       return { ok: false, reason: "offline" }
@@ -406,7 +406,11 @@ export class HelpDeskService {
         return
       }
 
-      const db = await this.factory.obter({ id: projetoId })
+      // `projetoId` é o ID do projeto da plataforma (ex.: TaQui = 6611),
+      // enquanto tarefas e projetos_captados vivem no database do Gerente de
+      // Agentes (projeto_640). Usar projetoId aqui tentava inserir em
+      // projeto_6611, que não possui a tabela operacional `tarefas`.
+      const db = await this.factory.obter({ id: GERENTE_AGENTES_PROJECT_ID })
       const titulo = `[HelpDesk] ${solicitacao.substring(0, 100)}`
       await db.execute(
         sql`INSERT INTO tarefas (projeto_id, titulo, descricao, status, tipo, auto_start, created_at, updated_at) VALUES (${projetoCaptado.id}, ${titulo}, ${textoOriginal}, 'draft', 'desenvolvimento', false, NOW(), NOW())`,
