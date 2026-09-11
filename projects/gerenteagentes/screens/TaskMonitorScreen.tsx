@@ -1206,6 +1206,8 @@ export default function TaskMonitorScreen(): ReactNode {
   const isPaused = statusMotor === "paused"
   const podeIniciar = !isPaused && STATUS_INICIO_PERMITIDO.has(statusMotor)
   const podePausar = !isPaused && STATUS_EXECUCAO.has(statusMotor)
+  const aguardandoRetentativaPromocao = /Falha na promoção da branch da tarefa: repositório principal não está limpo para promoção:/i
+    .test(detail?.task?.blockInfo?.excerpt ?? "")
   const podeRetomar = isPaused
 
   const editInitialValues = useMemo<DynamicFormValues>(() => {
@@ -1454,12 +1456,12 @@ export default function TaskMonitorScreen(): ReactNode {
               >
                 <EditRounded fontSize="small" />
               </IconButton>
-              <Tooltip title="Desbloquear tarefa">
+              <Tooltip title={aguardandoRetentativaPromocao ? "O Motor tentará novamente a promoção quando o repositório estiver limpo" : "Desbloquear tarefa"}>
                 <IconButton
                   size="small"
                   aria-label="Desbloquear tarefa"
                   onClick={() => void desbloquearTarefa()}
-                  disabled={acao !== null}
+                  disabled={acao !== null || aguardandoRetentativaPromocao}
                   data-testid="btn-unlock-task"
                 >
                   <LockOpenRounded fontSize="small" />

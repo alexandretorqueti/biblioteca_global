@@ -19,6 +19,8 @@ import { PromotionConflictEvidenceCollector } from './promotion-conflicts/Promot
 import { PromotionConflictOrchestrator } from './promotion-conflicts/PromotionConflictOrchestrator.js'
 import { PromotionConflictRepository } from './promotion-conflicts/PromotionConflictRepository.js'
 import { PromotionConflictResolver } from './promotion-conflicts/PromotionConflictResolver.js'
+import { PromotionRetryRepository } from './promotion-retries/PromotionRetryRepository.js'
+import { PromotionRetryOrchestrator } from './promotion-retries/PromotionRetryOrchestrator.js'
 
 export interface MotorConfig {
   db: Db
@@ -74,6 +76,10 @@ export class Motor {
       // coordenador já existe. Assim o módulo de conflitos não depende dele.
       { promote: (candidate, resolutionBranch) => this.coordinator.promote(candidate, resolutionBranch) },
     )
+    const promotionRetryOrchestrator = new PromotionRetryOrchestrator(
+      new PromotionRetryRepository(config.db),
+      { retry: (candidate) => this.coordinator.retry(candidate) },
+    )
     this.reconciler = new ExpirationReconciler({
       db: config.db,
       intervalMs: config.reconcilerIntervalMs ?? getConfigNumber('motor.reconciler_interval_ms'),
@@ -85,7 +91,7 @@ export class Motor {
     this.coordinator = new TaskCoordinator(config.db, config.repository, this.resourceLease, {
       maxWorkers: config.maxWorkers,
       maxWorkersPerProject: config.maxWorkersPerProject,
-    }, this.workerLauncher, undefined, this._waitManager, undefined, promotionConflictOrchestrator)
+    }, this.workerLauncher, undefined, this._waitManager, undefined, promotionConflictOrchestrator, promotionRetryOrchestrator)
     this.api = new MotorAPI({ port: apiPort, coordinator: this.coordinator, db: config.db })
 
     this.setupEventHandlers()

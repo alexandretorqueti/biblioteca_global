@@ -40,6 +40,8 @@ import { TaskFactsStore } from "../database/TaskFactsStore.js"
 import { identifyWorkspaceAutoRecovery } from "../policies/WorkspaceAutoRecoveryPolicy.js"
 import type { PromotionConflictOrchestrator } from "../promotion-conflicts/PromotionConflictOrchestrator.js"
 import type { PromotionConflictCandidate, PromotionConflictPromoterPort } from "../promotion-conflicts/promotion-conflict.types.js"
+import type { PromotionRetryCandidate, PromotionRetryPort, PromotionRetryResult } from "../promotion-retries/promotion-retry.types.js"
+import type { PromotionRetryOrchestrator } from "../promotion-retries/PromotionRetryOrchestrator.js"
 
 interface ActiveWorker {
   taskId: string
@@ -179,7 +181,7 @@ interface SubtaskWithTask {
   correctionFingerprint?: string | null
 }
 
-export class TaskCoordinator implements PromotionConflictPromoterPort {
+export class TaskCoordinator implements PromotionConflictPromoterPort, PromotionRetryPort {
   private config: TaskCoordinatorConfig
   private activeWorkers = new Map<string, ActiveWorker>()
   private resourceLease: ResourceLeaseService
@@ -214,6 +216,7 @@ export class TaskCoordinator implements PromotionConflictPromoterPort {
     waitManager?: ResourceWaitManager,
     eventBus = executionEventBus,
     private readonly promotionConflictOrchestrator?: PromotionConflictOrchestrator,
+    private readonly promotionRetryOrchestrator?: PromotionRetryOrchestrator,
   ) {
     this.db = db
     this.repository = repository
@@ -272,6 +275,7 @@ export class TaskCoordinator implements PromotionConflictPromoterPort {
       // bloqueante e o fingerprint persistido impede análises duplicadas.
       if (this.activeWorkers.size === 0 && this.activeDeployments.size === 0) {
         await this.promotionConflictOrchestrator?.reconcilePendingAnalyses()
+        await this.promotionRetryOrchestrator?.reconcile()
       }
     } finally {
       this.pumping = false
@@ -313,6 +317,57 @@ export class TaskCoordinator implements PromotionConflictPromoterPort {
     this.logger.info("Resolução de conflito promovida e deploy enfileirado", {
       taskId: candidate.taskId, resolutionBranch, mergeCommit: promotion.mergeCommit,
     })
+  }
+
+  /**
+   * Recupera somente a falha transitória "repositório principal sujo".
+   * Não remove o bloqueio antes de o merge real entrar na base; se o drift
+   * agora virar conflito, converte-o ao fluxo especializado do Monitor.
+   */
+  async retry(candidate: PromotionRetryCandidate): Promise<PromotionRetryResult> {
+    const task = await this.repository.getTask(candidate.taskId)
+    if (!task) return { kind: "failed", reason: "Tarefa não encontrada para retentativa: " + candidate.taskId }
+    if (!candidate.projectSlug) return { kind: "failed", reason: "Projeto ausente para retentativa: " + candidate.taskId }
+
+    const { rows: unfinished } = await this.db.query(
+      "SELECT id FROM subtarefas WHERE tarefa_id = (SELECT id FROM tarefas WHERE external_id = ? OR id = CAST(? AS UNSIGNED) LIMIT 1) " +
+      "AND status NOT IN ('verified', 'superseded') LIMIT 1",
+      [candidate.taskId, candidate.taskId],
+    )
+    if (unfinished.length > 0) return { kind: "failed", reason: "Subtarefas não estão mais todas verificadas; não é seguro promover" }
+
+    const executionId = "promotion-retry-" + randomUUID()
+    let promotion: TaskPromotionResult
+    try {
+      promotion = await this.withProjectIntegrationLock(candidate.projectSlug, executionId, task.id, () =>
+        this.workspaceManager.promoteTaskBranch({
+          repoPath: candidate.repoPath, baseBranch: candidate.baseBranch, taskBranch: candidate.taskBranch,
+        }),
+      )
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      return /repositório principal não está limpo para promoção/i.test(reason)
+        ? { kind: "still_dirty", reason }
+        : { kind: "failed", reason }
+    }
+
+    if (promotion.kind === "conflict") {
+      const files = promotion.conflictFiles.join(", ") || "(arquivos não listados)"
+      const excerpt = "Conflito no merge da branch da tarefa para a base (" + candidate.baseBranch + ") durante retentativa automática. " +
+        "Merge cancelado; nada parcial aplicado. Arquivos em conflito: " + files + ". Branch preservada: " + candidate.taskBranch
+      const evidence = blockerEvidence("blocked_environment", excerpt)
+      await this.db.query(
+        "UPDATE bloqueios SET block_command = ?, block_excerpt = ?, blocked_at = NOW() WHERE id = ? AND resolved_at IS NULL",
+        [`motor-v2:promotion-conflict:${encodeURIComponent(candidate.baseBranch)}:${encodeURIComponent(candidate.taskBranch)}:${evidence.fingerprint}`, evidence.excerpt, candidate.blockId],
+      )
+      return { kind: "conflict", files: promotion.conflictFiles }
+    }
+
+    await this.db.query("UPDATE bloqueios SET resolved_at = NOW() WHERE id = ? AND resolved_at IS NULL", [candidate.blockId])
+    await this.saveTaskTransition(task, "execution_completed")
+    await this.enqueueDeploy(task.id, candidate.repoPath)
+    this.logger.info("Retentativa de promoção concluída e deploy enfileirado", { taskId: candidate.taskId, mergeCommit: promotion.mergeCommit })
+    return { kind: "promoted" }
   }
 
   private async reconcileOrphanedReadyTasks(): Promise<void> {
@@ -1013,13 +1068,17 @@ export class TaskCoordinator implements PromotionConflictPromoterPort {
               } catch (promotionError) {
                 const reason = promotionError instanceof Error ? promotionError.message : String(promotionError)
                 const blockReason = "Falha na promoção da branch da tarefa: " + reason + ". Branch preservada: " + worker.taskWorkspace.branch
+                const isDirtyRepository = /repositório principal não está limpo para promoção/i.test(reason)
+                const evidence = blockerEvidence("blocked_environment", blockReason)
+                const blockCommand = isDirtyRepository
+                  ? `motor-v2:promotion-repo-dirty:${encodeURIComponent(worker.rootBaseBranch!)}:${encodeURIComponent(worker.taskWorkspace.branch)}:0`
+                  : "motor-v2:" + evidence.fingerprint
                 this.logger.error(blockReason, { taskId: worker.taskId, executionId })
                 try {
-                  const evidence = blockerEvidence("blocked_environment", blockReason)
                   await this.db.query(
                     "INSERT INTO bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at) " +
                     "SELECT tarefa_id, NULL, ?, ?, ?, NOW() FROM subtarefas WHERE id = ?",
-                    [evidence.kind, "motor-v2:" + evidence.fingerprint, evidence.excerpt, worker.subtaskId],
+                    [evidence.kind, blockCommand, evidence.excerpt, worker.subtaskId],
                   )
                 } catch (persistError) {
                   this.logger.error("Falha ao persistir bloqueio de promoção: " + describeError(persistError), { taskId: worker.taskId, executionId })
