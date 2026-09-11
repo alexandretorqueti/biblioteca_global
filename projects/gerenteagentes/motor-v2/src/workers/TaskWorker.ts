@@ -82,6 +82,14 @@ export interface SessionFailurePersistenceDb {
   query(sql: string, params?: unknown[]): Promise<unknown>
 }
 
+/** Assinatura estável de uma falha remota, ignorando identificadores voláteis. */
+export function remoteFailureSignature(code: string, message: string): string {
+  return `${code}|${message}`
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "<run>")
+    .replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z?/g, "<ts>")
+    .slice(0, 300)
+}
+
 export async function persistRemoteSessionFailure(
   db: SessionFailurePersistenceDb,
   taskId: string,
@@ -245,6 +253,8 @@ class TaskWorker {
   private integrationBaseline: IntegrationWorkspaceBaseline | null = null
   /** Diagnóstico remoto que causou a falha terminal desta execução. */
   private sessionFailure: RemoteSessionFailure | undefined
+  /** Ocorrências por assinatura de falha remota dentro deste worker. */
+  private readonly remoteFailureSignatures = new Map<string, number>()
 
   constructor() {
     this.executionId = process.env.EXECUTION_ID ?? "unknown"
@@ -397,8 +407,15 @@ class TaskWorker {
           const { runId: contextRunId } = await driver.sendMessage({ session, message: contextMessage })
           const contextResult = await driver.waitForRunCompletion(session, contextRunId, { onActivity: () => this.sendHeartbeat() })
           if (contextResult.state !== "final") {
-            await this.persistRemoteSessionFailure(input, undefined, contextResult.failure)
-            if (contextResult.failure) this.sessionFailure = contextResult.failure
+            const failure = contextResult.failure
+            await this.persistRemoteSessionFailure(input, undefined, failure)
+            if (failure) this.sessionFailure = failure
+            if (isModelUnavailableError(failure)) {
+              throw Object.assign(new Error(`Modelo indisponível: ${model.model}`), {
+                code: failure?.code,
+                status: 404,
+              })
+            }
             throw new Error(`Analista nao confirmou o bloco ${chunkNumber}/${descriptionChunks.length}: ${contextResult.errorMessage || contextResult.state}`)
           }
         }
@@ -416,6 +433,12 @@ class TaskWorker {
         if (result.state !== "final" || !result.content) {
           await this.persistRemoteSessionFailure(input, undefined, result.failure)
           if (result.failure) this.sessionFailure = result.failure
+          if (isModelUnavailableError(result.failure)) {
+            lastFailure = `Modelo indisponível: ${model.model}`
+            this.send({ type: "model_unavailable", executionId: input.context.executionId, model: model.model, message: lastFailure })
+            this.log("warn", lastFailure)
+            continue
+          }
           lastFailure = "Analista falhou: " + (result.errorMessage || result.state)
           this.log("warn", lastFailure)
           continue
@@ -795,6 +818,17 @@ class TaskWorker {
             if (result.failure) {
               this.sessionFailure = result.failure
               const remoteReason = formatRemoteSessionFailure(result.failure)
+              const signature = remoteFailureSignature(result.failure.code, result.failure.message)
+              const repeats = (this.remoteFailureSignatures.get(signature) ?? 0) + 1
+              this.remoteFailureSignatures.set(signature, repeats)
+              // Uma segunda falha remota idêntica indica que repetir o mesmo
+              // modelo não recuperou a sessão; escalar evita loop infinito.
+              if (isModelUnavailableError(result.failure) || repeats >= 2) {
+                lastFailure = `Modelo indisponível: ${model.model} — ${remoteReason}`
+                this.send({ type: "model_unavailable", executionId: input.context.executionId, model: model.model, message: lastFailure })
+                this.log("warn", lastFailure)
+                continue modelLoop
+              }
               if (result.failure.classification === "definitive") {
                 throw new Error("Falha definitiva da sessão remota: " + remoteReason)
               }
