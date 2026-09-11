@@ -1,7 +1,7 @@
-# Contrato de workspace da sessão — Motor → Console
+# Contrato de workspace da sessão — Motor → Console (investigação, 2026-09-11)
 
-Documento de operação. Existe porque, em 2026-09-11, a tarefa **task-p2-812 /
-subtarefa 1012 / tentativa a2** foi bloqueada assim:
+Documento de operação **e de decisão pendente**. Existe porque a tarefa
+`task-p2-812 / subtarefa 1012` foi bloqueada assim:
 
 ```
 [error] Ambiente bloqueado: pwd returned
@@ -9,80 +9,86 @@ subtarefa 1012 / tentativa a2** foi bloqueada assim:
 '/data/workspace/projects/agentes/gerenteagentes/worktrees/task-p2-812/1012/a2/projects/gerenteagentes'
 ```
 
-O agente estava certo em bloquear: ele rodou no **repositório-base** em vez do
-worktree isolado. O defeito era do Motor.
+O agente estava certo em bloquear: rodou no diretório do agente, não no worktree.
 
-## Por que acontecia (causa raiz)
+## O que foi descoberto (com evidência)
 
-1. **O Motor não enviava `workspacePath`** ao criar sessões normais de
-   desenvolvimento. O comentário anterior no código afirmava que o Console só
-   suportava `workspacePath` para `subagent:*`/`acp:*` — **isso é falso** na
-   versão atual do Console.
-2. **A chave da sessão não distinguia a entrega/tentativa**
-   (`dev-<modelo>-<tarefa>-s<subtarefa>`). Uma nova tentativa podia reutilizar
-   uma sessão criada com o cwd de um worktree anterior.
-3. Sem `workspacePath`, o Console não grava `spawnedCwd`, e o run do agente
-   acontece no diretório padrão do agente (a base do projeto).
+### 1. O Gateway NÃO aceita `spawnedCwd` em sessão normal
 
-## Como o Console realmente funciona (evidência no código do Console)
+Fonte autoritativa: `/opt/openclaw/app/src/gateway/sessions-patch.ts`
 
-`POST /api/sessions`:
+```ts
+function supportsSpawnLineage(storeKey: string): boolean {
+  return isSubagentSessionKey(storeKey) || isAcpSessionKey(storeKey);
+}
+// ...
+const checkSpawnLineage = (field: string): PatchError =>
+  supportsSpawnLineage(storeKey)
+    ? null
+    : invalid(`${field} is only supported for subagent:* or acp:* sessions`);
+```
 
-- aceita `workspacePath` e o valida (`assertValidSessionWorkspacePath`):
-  precisa ser caminho absoluto, sem byte nulo, **descendente da raiz de
-  workspaces** do Console e sem escape por symlink (realpath);
-- cria a sessão no Gateway (`sessions.create`) e, em seguida, faz
-  `sessions.patch` com `{ spawnedCwd: workspacePath }` — é esse patch que define
-  o cwd do run seguinte;
-- **não devolve** `spawnedCwd` na resposta (`{ ok, key, sessionId?, runStarted? }`).
+`spawnedCwd` é campo **imutável** e passa por `checkSpawnLineage`. Logo:
 
-`GET /api/sessions/describe`: repassa o `sessions.describe` do Gateway e
-**também não expõe** `spawnedCwd`. `spawnedCwd` é campo **patch-only**
-(`PatchSessionRequestSchema`).
+> **Só sessões `subagent:*` ou `acp:*` aceitam `spawnedCwd`.**
 
-Consequência prática: **não existe leitura de volta do cwd pelo Console**. A
-garantia tem que ser construída na escrita + validada pelo próprio run.
+Confirmado em produção: ao enviar `workspacePath` numa sessão normal, o Gateway
+respondeu e o Motor registrou o bloqueio:
 
-## O que o Motor garante agora
+```
+[error] spawnedCwd is only supported for subagent:* or acp:* sessions
+```
 
-1. **Sempre envia `workspacePath`** em sessão de desenvolvimento
-   (`ConsoleAgentRuntimeDriver.createSession`).
-2. **Falha rápido** se a tarefa de desenvolvimento não tem `repoPath`
-   (`WorkspaceBindingError` no `TaskWorker`) — nunca abre sessão sem workspace.
-3. **Traduz rejeição do Console** (`INVALID_WORKSPACE_PATH`) em
-   `WorkspaceBindingError`, com mensagem explicando que o worktree precisa estar
-   dentro da raiz de workspaces e sem escape por symlink.
-4. **Valida cwd divergente quando o Console ecoar** algum campo de cwd
-   (`spawnedCwd`/`cwd`) — compatibilidade com versões futuras do Console.
-5. **Sessão única por entrega**: `formatSessionKey` inclui `-g<generation>`
-   (`generation = deliver_count`), então retry/rework nunca herda o cwd de uma
-   sessão anterior.
-6. **Bloqueio classificado como ambiente**: `WorkspaceBindingError` registra
-   `blocked_environment` (não é culpa da entrega) e a varredura de retomada
-   automática do coordenador reexecuta quando a causa for corrigida.
+### 2. O Console também não devolve o cwd
 
-## Camadas de defesa (ordem)
+`openclaw-console-app` (`apps/server/src/index.ts`):
+
+- `POST /api/sessions` aceita `workspacePath`, valida (absoluto, descendente de
+  `OPENCLAW_SESSION_WORKSPACE_ROOT`, default `/data/workspace/projects/agentes`,
+  sem escape por symlink) e chama `sessions.patch` com `{ spawnedCwd }`;
+- o `POST` devolve apenas `{ ok, key, sessionId?, runStarted? }`;
+- `GET /api/sessions/describe` repassa o `sessions.describe` do Gateway e
+  **não expõe** `spawnedCwd`.
+
+Ou seja: não há leitura de volta do cwd. A única garantia possível é o Gateway
+aceitar o patch — e ele só aceita para `subagent:*`/`acp:*`.
+
+### 3. Conclusão
+
+O Motor **não consegue** fixar o cwd de uma sessão normal de desenvolvimento pelo
+Console. O caminho do worktree vai no prompt, e o agente opera por caminhos
+absolutos a partir do seu próprio workspace. Esta é a situação atual (e foi a
+decisão original do código, que estava documentada em comentário).
+
+## Estado do código após esta investigação
+
+- `TaskWorker`: **não** envia `workspacePath` em sessão de desenvolvimento
+  (comentário no código aponta a regra do Gateway acima). Mantém a guarda de que
+  tarefa de desenvolvimento sem `repoPath` falha cedo.
+- `ConsoleAgentRuntimeDriver`: mantém suporte a `workspacePath` (aceitável
+  quando o chamador usa sessão `subagent:*`/`acp:*`) e a tradução de
+  `INVALID_WORKSPACE_PATH` para `WorkspaceBindingError`. `assertSessionWorkspace`
+  valida cwd reportado quando existir (ausência de eco não é erro).
+- `ModelTierPolicy.formatSessionKey`: formato original
+  (`<fase>-<modelo>-<tarefa>[-s<subtarefa>]`), estável no rework.
+
+## Opções para resolver de verdade (decisão do Alexandre)
+
+| # | Opção | Como | Risco |
+| --- | --- | --- | --- |
+| A | Sessão de desenvolvimento como **subagente/ACP** | abrir a sessão com chave `subagent:*` (ou runtime ACP) e então enviar `spawnedCwd` = caminho do worktree, que o Gateway aceita | médio: muda o tipo de sessão (isolamento/limpeza próprios); precisa validar no Console |
+| B | Manter como hoje (prompt + caminhos absolutos) | nada a mudar | o agente pode falhar/bloquear quando a regra dele exigir cwd == worktree |
+| C | Preparar o worktree **no** workspace do agente | montar o checkout dentro do caminho em que a sessão já roda | baixo, mas reposiciona a árvore de worktrees do Motor |
+
+Enquanto não houver decisão, tarefas que exigem cwd isolado continuam sujeitas a
+bloqueio `blocked_environment` — que a varredura de retomada automática tenta de
+novo (teto de 3/24h) em vez de ficar parada para sempre.
+
+## Camadas de defesa hoje
 
 | Camada | Quem | O que faz |
 | --- | --- | --- |
-| 1 | Motor | valida `repoPath`, envia `workspacePath`, sessão isolada por entrega |
-| 2 | Console | valida o caminho (absoluto, dentro da raiz, sem escape por symlink) e aplica `spawnedCwd` |
-| 3 | Agente | confere `pwd` no início do run e bloqueia se divergir (regra de segurança) |
-| 4 | Coordenador | trata o bloqueio como ambiente e retoma automaticamente após a correção |
-
-## Como diagnosticar de novo
-
-```bash
-# 1) o worktree existe e aponta para o gitdir correto?
-ls -d /data/workspace/projects/agentes/<agente>/worktrees/<tarefa>/<sub>/a<N>
-git -C <worktree> rev-parse --show-toplevel
-
-# 2) a sessão foi criada com workspacePath? (o Console não ecoa, verifique no log do Motor)
-grep -a "workspacePath\|WorkspaceBindingError\|spawnedCwd" <log do container biblioteca-global-api>
-
-# 3) a raiz de workspaces do Console inclui o caminho do worktree?
-#    (se não incluir, o Console responde INVALID_WORKSPACE_PATH)
-```
-
-Se o Console responder `INVALID_WORKSPACE_PATH`, o problema é de configuração de
-raiz — **não** é a tarefa, não é o agente e não se resolve retomando.
+| 1 | Motor | valida `repoPath`, informa o worktree no prompt; sessão estável por subtarefa+modelo |
+| 2 | Console | valida `workspacePath` se enviado (raiz, symlink) — patch de `spawnedCwd` só passa em `subagent:*`/`acp:*` |
+| 3 | Agente | confere `pwd` e bloqueia se divergir (regra de segurança do agente) |
+| 4 | Coordenador | trata o bloqueio como ambiente, libera espelho de tarefa e retoma automaticamente com teto |
