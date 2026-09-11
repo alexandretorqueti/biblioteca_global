@@ -78,6 +78,24 @@ export function formatRemoteSessionFailure(failure: RemoteSessionFailure): strin
   return `[${failure.code}] ${failure.message} (sessão=${failure.sessionKey}, run=${failure.runId}, ocorrido_em=${failure.occurredAt})`
 }
 
+/**
+ * Gate final da evidência Git: uma entrega só pode ser publicada quando não
+ * restam alterações rastreadas, staged ou não rastreadas no worktree.
+ *
+ * Mantém a regra fora do fluxo de commit para que ela também seja testável e
+ * para evitar que um commit técnico parcialmente concluído seja tratado como
+ * entrega aprovada.
+ */
+export function assertCleanGitEvidence(statusOutput: string): void {
+  const status = statusOutput.trim()
+  if (status) {
+    throw new Error(
+      "Gate de evidência Git falhou: worktree não ficou integralmente limpo após o commit: " +
+      status.split("\n")[0],
+    )
+  }
+}
+
 export interface SessionFailurePersistenceDb {
   query(sql: string, params?: unknown[]): Promise<unknown>
 }
@@ -1476,6 +1494,11 @@ class TaskWorker {
       throw new Error("Commit técnico falhou: " + (details.stderr?.toString() || details.message || String(error)).substring(0, 500), { cause: error })
     }
     const commit = this.exec("git rev-parse --verify HEAD", input.repoPath).trim()
+    // O commit só é evidência integral quando o Git confirma que não sobrou
+    // nada fora dele. Inclui arquivos não rastreados individualmente para não
+    // aceitar um diretório de artefatos como worktree limpo.
+    const finalStatus = this.exec("git status --porcelain=v1 --untracked-files=all", input.repoPath)
+    assertCleanGitEvidence(finalStatus)
     this.log("info", "Entrega aprovada registrada no commit " + commit)
     return commit
   }
