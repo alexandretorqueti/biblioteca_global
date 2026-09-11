@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { monitorResolutionWorktreeParent } from "../src/promotion-conflicts/PromotionConflictResolver.js"
+import { monitorResolutionWorktreeParent, resolutionAttemptSessionIdentity } from "../src/promotion-conflicts/PromotionConflictResolver.js"
 
 const candidate = {
   taskId: "task-p2-811",
@@ -37,5 +37,15 @@ describe("PromotionConflictResolver workspace", () => {
     expect(() => monitorResolutionWorktreeParent(null, candidate, evidence)).toThrow("Workspace absoluto")
     expect(() => monitorResolutionWorktreeParent("worktrees/monitor", candidate, evidence)).toThrow("Workspace absoluto")
     expect(() => monitorResolutionWorktreeParent("/tmp/monitor", candidate, evidence)).toThrow("fora da área autorizada")
+  })
+
+  it("usa identidade de sessão distinta para cada retry do mesmo conflito", () => {
+    const first = resolutionAttemptSessionIdentity(candidate, evidence, "/tmp/attempt-abc123")
+    const second = resolutionAttemptSessionIdentity(candidate, evidence, "/tmp/attempt-def456")
+
+    expect(first.key).toContain("task-p2-811:dddddddddddd:attempt-abc123")
+    expect(first.label).toBe("Resolução de conflito da tarefa task-p2-811 (attempt-abc123)")
+    expect(second.key).not.toBe(first.key)
+    expect(second.label).not.toBe(first.label)
   })
 })
