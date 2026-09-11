@@ -22,12 +22,25 @@ export function defaultChain(phase: ModelPhase): readonly ModelSelection[] {
 }
 
 export function isModelUnavailableError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false
-  const candidate = error as Error & { status?: number; code?: string }
-  const code = candidate.code?.toLowerCase() ?? ""
-  const message = candidate.message.toLowerCase()
+  // O Console pode devolver a falha diretamente como RemoteSessionFailure,
+  // e não como Error. A indisponibilidade precisa continuar escalando a
+  // cadeia nesses dois formatos (createSession usa Error; waitForRun usa o
+  // objeto estruturado retornado no resultado).
+  const candidate = error as (Error & { status?: number; code?: string }) | {
+    status?: unknown
+    code?: unknown
+    message?: unknown
+  } | null | undefined
+  if (!candidate || typeof candidate !== "object") return false
+  const code = typeof candidate.code === "string" ? candidate.code.toLowerCase() : ""
+  const message = typeof candidate.message === "string" ? candidate.message.toLowerCase() : ""
   return candidate.status === 404 || candidate.status === 422 ||
     code.includes("model_not_found") || code.includes("model_unavailable") ||
+    code.includes("model_not_allowed") ||
+    // O Console pode reportar uma sessão recusada pelo modelo como
+    // SESSION_FAILED, sem expor status HTTP ou código específico do modelo.
+    code.includes("session_failed") || message.includes("[session_failed]") ||
+    message.includes("session failed") ||
     message.includes("model not found") || message.includes("modelo indisponível") ||
     message.includes("model unavailable") || message.includes("model not allowed")
 }
