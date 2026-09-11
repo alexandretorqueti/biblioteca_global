@@ -15,7 +15,7 @@ describe("ModelTierPolicy", () => {
       model: "alibaba/qwen3.7-max",
       modelIndex: 0,
       generation: 2,
-    })).toBe("dev-qwen3.7-max-701")
+    })).toBe("dev-qwen3.7-max-701-g2")
   })
 
   it("formata a SessionKey da análise no padrão operacional", () => {
@@ -26,10 +26,10 @@ describe("ModelTierPolicy", () => {
       model: "alibaba/qwen3.8-max",
       modelIndex: 0,
       generation: 0,
-    })).toBe("analysis-qwen3.8-max-701")
+    })).toBe("analysis-qwen3.8-max-701-g0")
   })
 
-  it("mantém a sessão de desenvolvimento estável no rework e isolada por subtarefa", () => {
+  it("isola cada entrega e cada subtarefa em uma sessão própria", () => {
     const common = {
       agentId: "programador-senior",
       taskId: "701",
@@ -41,7 +41,7 @@ describe("ModelTierPolicy", () => {
     const rework = formatSessionKey({ ...common, subtaskId: "810", generation: 2 })
     const anotherSubtask = formatSessionKey({ ...common, subtaskId: "811", generation: 0 })
 
-    expect(rework).toBe(firstAttempt)
+    expect(rework).not.toBe(firstAttempt)
     expect(anotherSubtask).not.toBe(firstAttempt)
   })
 
