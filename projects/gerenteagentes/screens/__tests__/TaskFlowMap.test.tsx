@@ -107,6 +107,101 @@ describe("TaskFlowMap", () => {
   })
 })
 
+describe("TaskFlowMap — contrato das ações dos cards", () => {
+  it("exibe iniciar somente para tarefas iniciáveis e encaminha o id", async () => {
+    const onStartTask = vi.fn()
+    const onSelectTask = vi.fn()
+    const tarefasIniciaveis = [
+      { id: 801, titulo: "Rascunho", status: "draft", projetoId: 1 },
+      { id: 802, titulo: "Planejada", status: "planned", projetoId: 1 },
+      { id: 803, titulo: "Bloqueada", status: "blocked", projetoId: 1 },
+      { id: 804, titulo: "Falhou", status: "failed", projetoId: 1 },
+    ] satisfies FlowTask[]
+    render(
+      <BibliotecaThemeProvider>
+        <TaskFlowMap
+          tarefas={tarefasIniciaveis}
+          selectedTaskId=""
+          onSelectTask={onSelectTask}
+          onStartTask={onStartTask}
+        />
+      </BibliotecaThemeProvider>,
+    )
+
+    for (const id of [801, 802, 803, 804]) {
+      expect(screen.getByTestId(`task-action-start-${id}`)).toBeInTheDocument()
+      await userEvent.click(screen.getByTestId(`task-action-start-${id}`))
+      expect(onStartTask).toHaveBeenLastCalledWith(id)
+    }
+    expect(onSelectTask).not.toHaveBeenCalled()
+  })
+
+  it("mapeia execução para pausar e pausa para retomar, sem misturar ações", async () => {
+    const onPauseTask = vi.fn()
+    const onResumeTask = vi.fn()
+    const onStartTask = vi.fn()
+    const onSelectTask = vi.fn()
+    render(
+      <BibliotecaThemeProvider>
+        <TaskFlowMap
+          tarefas={[
+            { id: 805, titulo: "Executando", status: "running", projetoId: 1 },
+            { id: 806, titulo: "Analisando", status: "analyzing", projetoId: 1 },
+            { id: 807, titulo: "Pausada", status: "paused", projetoId: 1 },
+          ]}
+          selectedTaskId=""
+          onSelectTask={onSelectTask}
+          onStartTask={onStartTask}
+          onPauseTask={onPauseTask}
+          onResumeTask={onResumeTask}
+        />
+      </BibliotecaThemeProvider>,
+    )
+
+    for (const id of [805, 806]) {
+      expect(screen.getByTestId(`task-action-pause-${id}`)).toBeInTheDocument()
+      expect(screen.queryByTestId(`task-action-start-${id}`)).not.toBeInTheDocument()
+      expect(screen.queryByTestId(`task-action-resume-${id}`)).not.toBeInTheDocument()
+      await userEvent.click(screen.getByTestId(`task-action-pause-${id}`))
+      expect(onPauseTask).toHaveBeenLastCalledWith(id)
+    }
+
+    expect(screen.getByTestId("task-action-resume-807")).toBeInTheDocument()
+    expect(screen.queryByTestId("task-action-start-807")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("task-action-pause-807")).not.toBeInTheDocument()
+    await userEvent.click(screen.getByTestId("task-action-resume-807"))
+    expect(onResumeTask).toHaveBeenCalledWith(807)
+    expect(onSelectTask).not.toHaveBeenCalled()
+  })
+
+  it("não renderiza ações em estados que não têm transição operacional no card", () => {
+    const ids = [808, 809, 810, 811]
+    render(
+      <BibliotecaThemeProvider>
+        <TaskFlowMap
+          tarefas={[
+            { id: 808, titulo: "Em análise humana", status: "awaiting_clarification", projetoId: 1 },
+            { id: 809, titulo: "Concluída", status: "completed", projetoId: 1 },
+            { id: 810, titulo: "Deployada", status: "deployed", projetoId: 1 },
+            { id: 811, titulo: "Cancelada", status: "cancelled", projetoId: 1 },
+          ]}
+          selectedTaskId=""
+          onSelectTask={vi.fn()}
+          onStartTask={vi.fn()}
+          onPauseTask={vi.fn()}
+          onResumeTask={vi.fn()}
+        />
+      </BibliotecaThemeProvider>,
+    )
+
+    for (const id of ids) {
+      expect(screen.queryByTestId(`task-action-start-${id}`)).not.toBeInTheDocument()
+      expect(screen.queryByTestId(`task-action-pause-${id}`)).not.toBeInTheDocument()
+      expect(screen.queryByTestId(`task-action-resume-${id}`)).not.toBeInTheDocument()
+    }
+  })
+})
+
 describe("TaskFlowMap — Filtros integrados", () => {
   it("renderiza a barra de filtro no topo com busca, chips de status, projeto e prioridade", () => {
     view()

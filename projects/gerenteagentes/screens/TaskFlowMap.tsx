@@ -620,9 +620,9 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, l
                   />
                 )}
                 {/* Botões de ação (play/pause/restart) — icon-only com tooltip */}
-                {(TASK_STATUS_STARTABLE.has(task.status) || TASK_STATUS_EXECUTING.has(task.status) || task.status === "paused") && (
+                {((TASK_STATUS_STARTABLE.has(task.status) && task.status !== "paused") || TASK_STATUS_EXECUTING.has(task.status) || task.status === "paused") && (
                   <Stack direction="row" justifyContent="flex-end" sx={{ mt: 0.25 }}>
-                    {TASK_STATUS_STARTABLE.has(task.status) && onStartTask && (
+                    {TASK_STATUS_STARTABLE.has(task.status) && task.status !== "paused" && onStartTask && (
                       <Tooltip title="Iniciar tarefa" arrow>
                         <IconButton
                           size="small"
