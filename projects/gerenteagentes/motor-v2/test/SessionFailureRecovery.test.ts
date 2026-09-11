@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { classifyRemoteFailure } from "../src/runtime/ConsoleAgentRuntimeDriver.js"
-import { formatRemoteSessionFailure, resolveSessionRecoveryLimit } from "../src/workers/TaskWorker.js"
+import { formatRemoteSessionFailure, remoteFailureSignature, resolveSessionRecoveryLimit } from "../src/workers/TaskWorker.js"
 
 describe("política de recuperação de sessão", () => {
   it("classifica falha definitiva e não permite recuperação indevida", () => {
@@ -17,6 +17,15 @@ describe("política de recuperação de sessão", () => {
     expect(resolveSessionRecoveryLimit({ MOTOR_SESSION_RECOVERY_MAX_ATTEMPTS: "2" })).toBe(2)
     expect(resolveSessionRecoveryLimit({ MOTOR_SESSION_RECOVERY_MAX_ATTEMPTS: "99" })).toBe(1)
     expect(resolveSessionRecoveryLimit({ MOTOR_SESSION_RECOVERY_MAX_ATTEMPTS: "0" })).toBe(0)
+  })
+
+  // O Console devolve só status=failed: sem assinatura estável não há como saber
+  // que a falha está se repetindo e que o modelo precisa ser escalado.
+  it("agrupa falhas idênticas ignorando run e timestamp", () => {
+    const a = remoteFailureSignature("SESSION_FAILED", "Session failed (sessão=agent:x, run=7a83cae5-7454-4da5-8bb1-dc380987dbed, ocorrido_em=2026-09-11T17:31:38.878Z)")
+    const b = remoteFailureSignature("SESSION_FAILED", "Session failed (sessão=agent:x, run=d4bf64a4-cce7-47cc-af5b-2d3a6768bac2, ocorrido_em=2026-09-11T17:31:57.553Z)")
+    expect(a).toBe(b)
+    expect(remoteFailureSignature("SESSION_FAILED", "outro motivo")).not.toBe(a)
   })
 
   it("formata causa remota com rastreabilidade suficiente para o bloqueio", () => {
