@@ -36,6 +36,7 @@ import { validateTaskCompletion, formatPromotionValidationReport } from "../poli
 import { isAgentRunFailureWithoutReply } from "../policies/NoReplyFailurePolicy.js"
 import { validateProjectId, formatProjectIdValidationReport } from "../policies/ProjectIdValidationPolicy.js"
 import { verifyAgentInGateway, formatAgentVerificationReport, shouldBlockEnqueue } from "../policies/GatewayAgentVerificationPolicy.js"
+import { PROMOTION_BLOCKER_SQL_FILTER } from "../policies/PromotionBlockers.js"
 import { TaskFactsStore } from "../database/TaskFactsStore.js"
 import { identifyWorkspaceAutoRecovery } from "../policies/WorkspaceAutoRecoveryPolicy.js"
 import type { PromotionConflictOrchestrator } from "../promotion-conflicts/PromotionConflictOrchestrator.js"
@@ -296,9 +297,30 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     const recovery = planPromotionRecovery(report.issues)
     if (!recovery) return
     const result = await createPromotionCorrectionSubtask(this.db, task.id, recovery)
+    // O gate assume a correção: o bloqueio de promoção perde o sentido. Além de
+    // obsoleto, ele é impeditivo — `selectNextSubtask` ignora tarefas com bloqueio
+    // ativo, então a própria corretiva nunca seria selecionada. Idempotente e
+    // executado mesmo quando a corretiva já existia de uma execução anterior.
+    const resolvedBlockers = await this.resolvePromotionBlockers(task.id)
     if (!result.created) return
     await this.saveTaskTransition(task, "subtasks_pending", { errorMessage: "Reconciliação do gate de promoção criou corretiva: " + report.issues.map((issue) => issue.message).join("; ").slice(0, 500) })
-    this.logger.warn("Corretiva criada ao reconciliar promoção bloqueada", { taskId: candidate.taskId, issues: report.issues.map((issue) => issue.fingerprint) })
+    this.logger.warn("Corretiva criada ao reconciliar promoção bloqueada", { taskId: candidate.taskId, issues: report.issues.map((issue) => issue.fingerprint), resolvedBlockers })
+  }
+
+  /**
+   * Remove os bloqueios de promoção (conflito/sujo, estruturado ou legado)
+   * quando o gate assume a correção. Devolve quantos foram encerrados.
+   */
+  private async resolvePromotionBlockers(taskId: string): Promise<number> {
+    const numeric = /^\d+$/.test(taskId)
+    const lookup = numeric ? "(t.external_id = ? OR t.id = CAST(? AS UNSIGNED))" : "(t.external_id = ?)"
+    const params = numeric ? [taskId, taskId] : [taskId]
+    const result = await this.db.query(
+      "UPDATE bloqueios b INNER JOIN tarefas t ON t.id = b.tarefa_id SET b.resolved_at = NOW() " +
+      "WHERE b.resolved_at IS NULL AND b.subtarefa_id IS NULL AND " + lookup + " AND " + PROMOTION_BLOCKER_SQL_FILTER,
+      params,
+    )
+    return result.affectedRows
   }
 
   /**
@@ -310,6 +332,14 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     const task = await this.repository.getTask(candidate.taskId)
     if (!task) throw new Error("Tarefa não encontrada para promover resolução: " + candidate.taskId)
     if (!candidate.projectSlug) throw new Error("Projeto ausente para promover resolução: " + candidate.taskId)
+    // Guarda de segurança: nunca promover com subtarefas abertas (ex.: corretiva
+    // pendente criada pelo gate de promoção).
+    const { rows: unfinished } = await this.db.query(
+      "SELECT id FROM subtarefas WHERE tarefa_id = (SELECT id FROM tarefas WHERE external_id = ? OR id = CAST(? AS UNSIGNED) LIMIT 1) " +
+      "AND status NOT IN ('verified', 'superseded') LIMIT 1",
+      [candidate.taskId, candidate.taskId],
+    )
+    if (unfinished.length > 0) throw new Error("Subtarefas não estão todas verificadas; não é seguro promover: " + candidate.taskId)
 
     const executionId = "promotion-resolution-" + randomUUID()
     const promotion = await this.withProjectIntegrationLock(candidate.projectSlug, executionId, task.id, () =>

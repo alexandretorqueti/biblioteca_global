@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
+import { ConflictNotReproducibleError } from "../src/promotion-conflicts/PromotionConflictEvidenceCollector.js"
 import { PromotionConflictOrchestrator } from "../src/promotion-conflicts/PromotionConflictOrchestrator.js"
 
 const candidate = { taskId: "task-1", agentId: "agent", repoPath: "/repo", baseBranch: "base", taskBranch: "task" }
@@ -43,6 +44,49 @@ describe("PromotionConflictOrchestrator", () => {
     orchestrator.schedule(candidate)
     await vi.waitFor(() => expect(promoter.promote).toHaveBeenCalledWith(candidate, "motor-v2/promotion-resolution/task-1/abc"))
     expect(repository.complete).toHaveBeenCalledWith(evidence.fingerprint, expect.objectContaining({ recommendation: "resolved_automatically" }))
+  })
+
+  it("promove a própria branch quando o conflito deixou de ser reproduzível", async () => {
+    const repository = {
+      findPendingCandidates: vi.fn(), claim: vi.fn(), complete: vi.fn(), fail: vi.fn(),
+      findTaskState: vi.fn().mockResolvedValue({ integrationConfirmed: false, deploySucceeded: false, hasUnfinishedSubtasks: false }),
+      resolvePromotionBlockers: vi.fn(),
+    }
+    const collector = { collect: vi.fn().mockRejectedValue(new ConflictNotReproducibleError()) }
+    const promoter = { promote: vi.fn().mockResolvedValue(undefined) }
+    const orchestrator = new PromotionConflictOrchestrator(repository as never, collector as never, { analyze: vi.fn() }, undefined, promoter)
+    orchestrator.schedule({ ...candidate, projectSlug: "gerenteagentes" })
+    await vi.waitFor(() => expect(promoter.promote).toHaveBeenCalledWith(expect.objectContaining({ taskId: "task-1" }), "task"))
+    expect(repository.fail).not.toHaveBeenCalled()
+  })
+
+  it("encerra bloqueio obsoleto quando o conflito sumiu e a tarefa já está integrada", async () => {
+    const repository = {
+      findPendingCandidates: vi.fn(), claim: vi.fn(), complete: vi.fn(), fail: vi.fn(),
+      findTaskState: vi.fn().mockResolvedValue({ integrationConfirmed: true, deploySucceeded: true, hasUnfinishedSubtasks: false }),
+      resolvePromotionBlockers: vi.fn().mockResolvedValue(1),
+    }
+    const collector = { collect: vi.fn().mockRejectedValue(new ConflictNotReproducibleError()) }
+    const promoter = { promote: vi.fn() }
+    const orchestrator = new PromotionConflictOrchestrator(repository as never, collector as never, { analyze: vi.fn() }, undefined, promoter)
+    orchestrator.schedule({ ...candidate, projectSlug: "gerenteagentes" })
+    await vi.waitFor(() => expect(repository.resolvePromotionBlockers).toHaveBeenCalledWith("task-1"))
+    expect(promoter.promote).not.toHaveBeenCalled()
+  })
+
+  it("não promove quando o conflito sumiu mas há subtarefas abertas", async () => {
+    const repository = {
+      findPendingCandidates: vi.fn(), claim: vi.fn(), complete: vi.fn(), fail: vi.fn(),
+      findTaskState: vi.fn().mockResolvedValue({ integrationConfirmed: false, deploySucceeded: false, hasUnfinishedSubtasks: true }),
+      resolvePromotionBlockers: vi.fn(),
+    }
+    const collector = { collect: vi.fn().mockRejectedValue(new ConflictNotReproducibleError()) }
+    const promoter = { promote: vi.fn() }
+    const orchestrator = new PromotionConflictOrchestrator(repository as never, collector as never, { analyze: vi.fn() }, undefined, promoter)
+    orchestrator.schedule({ ...candidate, projectSlug: "gerenteagentes" })
+    await vi.waitFor(() => expect(repository.findTaskState).toHaveBeenCalled())
+    expect(promoter.promote).not.toHaveBeenCalled()
+    expect(repository.resolvePromotionBlockers).not.toHaveBeenCalled()
   })
 
   it("não promove quando o Monitor considera o conflito ambíguo", async () => {

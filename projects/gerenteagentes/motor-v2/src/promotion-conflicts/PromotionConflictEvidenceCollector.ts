@@ -9,6 +9,18 @@ import type { PromotionConflictCandidate, PromotionConflictEvidence, PromotionCo
 const execFileAsync = promisify(execFile)
 const MAX_EXCERPT = 12_000
 
+/**
+ * O merge simulado não produz mais conflito: a branch já pode entrar na base.
+ * Erro tipado para que o orquestrador recupere (promova) em vez de só registrar
+ * falha — sem isso o bloqueio antigo fica preso e a análise se repete para sempre.
+ */
+export class ConflictNotReproducibleError extends Error {
+  constructor(message = "Conflito não é mais reproduzível contra o HEAD atual da base") {
+    super(message)
+    this.name = "ConflictNotReproducibleError"
+  }
+}
+
 async function git(cwd: string, ...args: string[]): Promise<string> {
   const result = await execFileAsync("git", args, { cwd, timeout: 120_000, maxBuffer: 4 * 1024 * 1024 })
   return result.stdout.trim()
@@ -43,7 +55,7 @@ export class PromotionConflictEvidenceCollector {
       }
       const files = (await git(tempRoot, "diff", "--name-only", "--diff-filter=U"))
         .split("\n").map((line) => line.trim()).filter(Boolean)
-      if (files.length === 0) throw new Error("Conflito não é mais reproduzível contra o HEAD atual da base")
+      if (files.length === 0) throw new ConflictNotReproducibleError()
 
       const conflictFiles: PromotionConflictFileEvidence[] = []
       for (const path of files) {
