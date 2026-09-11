@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { monitorResolutionWorktreeParent, resolutionAttemptSessionIdentity } from "../src/promotion-conflicts/PromotionConflictResolver.js"
+import { buildResolutionMission, monitorResolutionWorktreeParent, resolutionAttemptSessionIdentity } from "../src/promotion-conflicts/PromotionConflictResolver.js"
 
 const candidate = {
   taskId: "task-p2-811",
@@ -47,5 +47,13 @@ describe("PromotionConflictResolver workspace", () => {
     expect(first.label).toBe(first.key)
     expect(second.key).not.toBe(first.key)
     expect(second.label).not.toBe(first.label)
+  })
+
+  it("informa o workspace autorizado na missão sem depender de spawnedCwd", () => {
+    const workspace = "/data/workspace/projects/agentes/programador-senior/worktrees/promotion-resolutions/task/attempt-abc/projeto"
+    const prompt = buildResolutionMission(candidate, evidence, "resolution-branch", workspace)
+
+    expect(prompt).toContain(`Trabalhe APENAS neste workspace: ${workspace}`)
+    expect(prompt).toContain("Branch de resolução: resolution-branch")
   })
 })
