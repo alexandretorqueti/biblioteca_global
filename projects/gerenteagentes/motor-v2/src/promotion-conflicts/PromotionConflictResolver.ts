@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process"
 import { mkdir, mkdtemp, rm } from "node:fs/promises"
-import { isAbsolute, join, relative, resolve, sep } from "node:path"
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { promisify } from "node:util"
 import { ConsoleAgentRuntimeDriver } from "../runtime/ConsoleAgentRuntimeDriver.js"
 import type { PromotionConflictCandidate, PromotionConflictEvidence, PromotionConflictResolutionResult, PromotionConflictResolverPort } from "./promotion-conflict.types.js"
@@ -33,6 +33,25 @@ export function monitorResolutionWorktreeParent(
   }
   const task = candidate.taskId.replace(/[^a-zA-Z0-9._-]/g, "-").slice(0, 100)
   return join(workspace, "worktrees", "promotion-resolutions", `${task}-${evidence.fingerprint.slice(0, 12)}`)
+}
+
+/**
+ * O Console mantém os labels de sessão como únicos mesmo após a sessão ser
+ * fechada. Um retry do mesmo fingerprint precisa, portanto, de uma identidade
+ * por tentativa; o diretório temporário já fornece um sufixo seguro e
+ * rastreável, sem perder a correlação com tarefa e fingerprint.
+ */
+export function resolutionAttemptSessionIdentity(
+  candidate: PromotionConflictCandidate,
+  evidence: PromotionConflictEvidence,
+  worktree: string,
+): { key: string; label: string } {
+  const attempt = basename(worktree)
+  const prefix = `motor:promotion-resolution:${candidate.taskId}:${evidence.fingerprint.slice(0, 12)}`
+  return {
+    key: `${prefix}:${attempt}`,
+    label: `Resolução de conflito da tarefa ${candidate.taskId} (${attempt})`,
+  }
 }
 
 async function git(cwd: string, ...args: string[]): Promise<string> {
@@ -97,11 +116,10 @@ export class PromotionConflictResolver implements PromotionConflictResolverPort 
       const projectPath = join(worktree, projectRelative)
       let report = "O conflito deixou de ser reproduzível; o merge normal foi revalidado contra a base atual."
       if (conflicts.trim()) {
-        const key = `motor:promotion-resolution:${candidate.taskId}:${evidence.fingerprint.slice(0, 12)}`
+        const sessionIdentity = resolutionAttemptSessionIdentity(candidate, evidence, worktree)
         session = await this.driver.createSession({
           agentId: this.monitorAgentId,
-          key,
-          label: `Resolução de conflito da tarefa ${candidate.taskId}`,
+          ...sessionIdentity,
           model: this.monitorModel,
           workspacePath: projectPath,
         })
