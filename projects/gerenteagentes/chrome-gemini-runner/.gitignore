@@ -1,9 +1,0 @@
-node_modules/
-dist/
-*.log
-.env
-.env.local
-webai-providers.json
-/tmp/
-*.tgz
-.DS_Store
