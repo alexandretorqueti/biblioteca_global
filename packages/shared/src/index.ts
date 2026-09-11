@@ -154,6 +154,11 @@ export {
   errorReportErroSchema,
   errorReportRequestSchema,
   errorReportResultSchema,
+  CODIGO_ERRO_VALIDACAO,
+  CODIGOS_DE_VALIDACAO,
+  RECURSOS_SEM_SLUG,
+  erroReportavel,
+  montarEndpointCanonico,
 } from "./error-report"
 export type {
   ErrorReportUsuario,
@@ -161,6 +166,9 @@ export type {
   ErrorReportErro,
   ErrorReportRequest,
   ErrorReportResult,
+  ErroReportavelInput,
+  ErroReportavelResultado,
+  MontarEndpointCanonicoInput,
 } from "./error-report"
 
 // HelpDesk persistido no core

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import { BadRequestException } from "@nestjs/common"
+import { BadRequestException, NotFoundException } from "@nestjs/common"
 import { ApiExceptionFilter } from "../api-exception.filter"
 import type { EnvService } from "../../../config/env.service"
 
@@ -64,7 +64,7 @@ describe("ApiExceptionFilter", () => {
     })
   })
 
-  it("preserva a resposta HTTP amigável quando o diagnóstico está desligado", () => {
+  it("não marca como validação um 400 sem marcador explícito", () => {
     const response = criarResponse()
     const filtro = new ApiExceptionFilter(criarEnv(false))
 
@@ -72,9 +72,25 @@ describe("ApiExceptionFilter", () => {
 
     expect(response.status).toHaveBeenCalledWith(400)
     expect(response.json).toHaveBeenCalledWith({
-      code: "VALIDATION_ERROR",
+      code: "BAD_REQUEST",
       message: "Campo inválido",
       details: "Campo inválido",
+    })
+  })
+
+  it("respeita o código explícito enviado no payload", () => {
+    const response = criarResponse()
+    const filtro = new ApiExceptionFilter(criarEnv(false))
+
+    filtro.catch(
+      new BadRequestException({ code: "FK_INEXISTENTE", message: "projeto_id inexistente" }),
+      criarHost(response),
+    )
+
+    expect(response.json).toHaveBeenCalledWith({
+      code: "FK_INEXISTENTE",
+      message: "projeto_id inexistente",
+      details: "projeto_id inexistente",
     })
   })
 
@@ -97,32 +113,55 @@ describe("ApiExceptionFilter", () => {
     })
   })
 
-  it("registra o erro no projeto do escopo sem alterar a resposta", async () => {
+  it("registra o erro no projeto do escopo com a chave canônica do endpoint", async () => {
     const response = criarResponse()
     const criarTarefaErro = vi.fn().mockResolvedValue(undefined)
     const request = {
       method: "get",
-      route: { path: "/clientes/:id" },
-      scope: { projeto: { id: 23 } },
+      originalUrl: "/api/taqui/clientes/12?busca=maria",
+      scope: { projeto: { id: 23, slug: "taqui" } },
     }
     const filtro = new ApiExceptionFilter(criarEnv(false), { criarTarefaErro })
-    const exception = new BadRequestException("Campo inválido")
+    const exception = new BadRequestException("Coluna desconhecida: foo")
 
     filtro.catch(exception, criarHost(response, request))
     await vi.waitFor(() => expect(criarTarefaErro).toHaveBeenCalledOnce())
 
     expect(response.status).toHaveBeenCalledWith(400)
     expect(response.json).toHaveBeenCalledWith({
-      code: "VALIDATION_ERROR",
-      message: "Campo inválido",
-      details: "Campo inválido",
+      code: "BAD_REQUEST",
+      message: "Coluna desconhecida: foo",
+      details: "Coluna desconhecida: foo",
     })
     expect(criarTarefaErro).toHaveBeenCalledWith(expect.objectContaining({
       projetoId: 23,
-      endpoint: "/clientes/:id",
+      endpoint: "GET /api/taqui/clientes/:id",
       method: "get",
       status: 400,
     }))
+  })
+
+  it("não registra tarefa para 404 nem para validação de entrada", async () => {
+    const criarTarefaErro = vi.fn().mockResolvedValue(undefined)
+    const filtro = new ApiExceptionFilter(criarEnv(false), { criarTarefaErro })
+    const request = {
+      method: "get",
+      originalUrl: "/api/taqui/clientes/12",
+      scope: { projeto: { id: 23, slug: "taqui" } },
+    }
+
+    filtro.catch(new NotFoundException("Registro não encontrado"), criarHost(criarResponse(), request))
+    filtro.catch(
+      new BadRequestException({
+        message: "Registro inválido",
+        details: [{ caminho: "slug", problema: "Too big" }],
+      }),
+      criarHost(criarResponse(), request),
+    )
+
+    // O registro é assíncrono: dar uma volta no event loop antes de concluir.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(criarTarefaErro).not.toHaveBeenCalled()
   })
 
   it("usa o projeto do token quando o erro ocorre antes do scope", async () => {
@@ -138,7 +177,7 @@ describe("ApiExceptionFilter", () => {
 
     expect(criarTarefaErro).toHaveBeenCalledWith(expect.objectContaining({
       projetoId: 41,
-      endpoint: "/api/clientes",
+      endpoint: "POST /api/clientes",
     }))
   })
 

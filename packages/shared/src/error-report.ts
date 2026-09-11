@@ -107,3 +107,186 @@ export const errorReportResultSchema = z
   .strict()
 
 export type ErrorReportResult = z.infer<typeof errorReportResultSchema>
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Política central de classificação (subtarefa 2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Código canônico do `ApiError.code` para erro de validação da entrada do
+ * usuário. É o ÚNICO marcador que torna um 400/422 não reportável: o mesmo
+ * status é usado pelo CRUD genérico tanto para validação (Zod, com `details`
+ * estruturado) quanto para defeitos reais (FK inexistente, coluna
+ * desconhecida), então o status sozinho não basta para classificar.
+ */
+export const CODIGO_ERRO_VALIDACAO = "VALIDATION_ERROR"
+
+/** Códigos que identificam validação da entrada do usuário (não reportável). */
+export const CODIGOS_DE_VALIDACAO: ReadonlySet<string> = new Set([CODIGO_ERRO_VALIDACAO])
+
+/**
+ * Resources servidos por controllers dedicados, SEM slug na URL
+ * (`/api/usuarios`, `/api/projetos`). Fonte única da regra: o api-client usa
+ * para montar a URL e esta função para montar a chave canônica do endpoint.
+ */
+export const RECURSOS_SEM_SLUG: ReadonlySet<string> = new Set(["usuarios", "projetos"])
+
+/**
+ * Status HTTP que não indicam defeito real no código — não viram tarefa.
+ * 400/422 ficam de fora de propósito: só são não reportáveis quando o payload
+ * traz o código de validação (ver `erroReportavel`).
+ */
+const STATUS_NAO_REPORTAVEIS: ReadonlyMap<number, string> = new Map([
+  [401, "Não autorizado (sessão/credencial)"],
+  [403, "Acesso negado"],
+  [404, "Recurso não encontrado"],
+  [409, "Conflito (ex.: registro duplicado)"],
+  [429, "Limite de requisições excedido"],
+])
+
+/** Entrada da decisão "este erro vira tarefa?" (front e back usam a mesma). */
+export interface ErroReportavelInput {
+  /**
+   * Status HTTP recebido; `null`/ausente quando a falha ocorreu antes de
+   * qualquer resposta (rede/timeout/CORS).
+   */
+  status?: number | null
+  /** `ApiError.code` do payload, quando houver. Distingue o 400 ambíguo. */
+  code?: string | null
+  /** Contexto da chamada — enriquece o motivo, não muda a decisão. */
+  origem?: ErrorReportOrigem
+}
+
+export interface ErroReportavelResultado {
+  reportavel: boolean
+  motivo: string
+}
+
+function contextoDeOrigem(origem: ErrorReportOrigem | undefined): string {
+  if (!origem) return ""
+  const partes = [origem.tela, origem.funcionalidade].filter(
+    (parte): parte is string => typeof parte === "string" && parte.length > 0,
+  )
+  return partes.length === 0 ? ` — rota ${origem.rota}` : ` — rota ${origem.rota} (${partes.join("/")})`
+}
+
+/**
+ * Decide se uma ocorrência vira tarefa — fonte única para front e back.
+ *
+ * | Situação | Decisão |
+ * | --- | --- |
+ * | 404, 401, 403, 409, 429 | não reportável |
+ * | 400/422 com `code` de validação | não reportável |
+ * | 400/422 sem marcador de validação | reportável (pode ser defeito real) |
+ * | 5xx | reportável |
+ * | outro 4xx não mapeado | reportável (pode ser defeito real) |
+ * | sem status (rede/timeout/CORS) | reportável |
+ */
+export function erroReportavel(input: ErroReportavelInput): ErroReportavelResultado {
+  const status = input.status ?? null
+  const code = (input.code ?? "").trim()
+  const onde = contextoDeOrigem(input.origem)
+
+  if (status === null) {
+    return {
+      reportavel: true,
+      motivo: `Falha sem resposta HTTP (rede/timeout/CORS)${onde}`,
+    }
+  }
+
+  if (status >= 500 && status <= 599) {
+    return { reportavel: true, motivo: `Erro do servidor (HTTP ${status})${onde}` }
+  }
+
+  if (status === 400 || status === 422) {
+    if (CODIGOS_DE_VALIDACAO.has(code)) {
+      return {
+        reportavel: false,
+        motivo: `Validação da entrada do usuário (HTTP ${status})${onde}`,
+      }
+    }
+    return {
+      reportavel: true,
+      motivo:
+        `HTTP ${status} sem marcador de validação (code "${code || "ausente"}")` +
+        ` — pode indicar defeito real no código${onde}`,
+    }
+  }
+
+  const motivoMapeado = STATUS_NAO_REPORTAVEIS.get(status)
+  if (motivoMapeado !== undefined) {
+    return { reportavel: false, motivo: `${motivoMapeado} (HTTP ${status})${onde}` }
+  }
+
+  if (status >= 400 && status <= 499) {
+    return {
+      reportavel: true,
+      motivo: `HTTP ${status} não mapeado — pode indicar defeito real no código${onde}`,
+    }
+  }
+
+  return {
+    reportavel: false,
+    motivo: `HTTP ${status} não corresponde a erro de aplicação${onde}`,
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Chave canônica do endpoint (subtarefa 2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SEGMENTO_NUMERICO = /^\d+$/
+const SEGMENTO_UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** Segmento que representa um identificador (numérico ou UUID). */
+function ehSegmentoId(segmento: string): boolean {
+  return SEGMENTO_NUMERICO.test(segmento) || SEGMENTO_UUID.test(segmento)
+}
+
+export interface MontarEndpointCanonicoInput {
+  /** Método HTTP (ex.: "get", "POST"). */
+  method: string
+  /**
+   * Caminho da chamada — URL completa (`/api/taqui/clientes/12?busca=x`) ou
+   * rota executada. Query string e hash são descartados.
+   */
+  path: string
+  /**
+   * Slug do projeto da sessão. No front vem do projeto ativo; no back, do
+   * escopo do token. Ausente quando o erro ocorre antes do escopo.
+   */
+  slug?: string
+}
+
+/**
+ * Chave canônica do endpoint usada no título da tarefa e na deduplicação:
+ * `MÉTODO /api/<slug>/<recurso>`.
+ *
+ * - remove query string e hash;
+ * - garante UM único prefixo `/api`;
+ * - não repete o slug quando ele já está no caminho e o omite nos resources
+ *   sem slug na URL (`usuarios`, `projetos`);
+ * - normaliza segmentos que pareçam identificador para `:id`
+ *   (`GET /api/taqui/clientes/12` → `GET /api/taqui/clientes/:id`).
+ *
+ * Front e back chamam esta mesma função — é o que garante chave idêntica
+ * (senão a deduplicação por endpoint nunca casa).
+ */
+export function montarEndpointCanonico(input: MontarEndpointCanonicoInput): string {
+  const metodo = input.method.trim().toUpperCase() || "HTTP"
+  const slug = (input.slug ?? "").trim().replace(/^\/+|\/+$/g, "")
+  const semQuery = (input.path.split("#")[0] ?? "").split("?")[0] ?? ""
+  const segmentos = semQuery.split("/").filter((segmento) => segmento.length > 0)
+  const semPrefixoApi = segmentos[0] === "api" ? segmentos.slice(1) : segmentos
+  const primeiro = semPrefixoApi[0] ?? ""
+  const comSlug =
+    slug !== "" && primeiro !== slug && !RECURSOS_SEM_SLUG.has(primeiro)
+      ? [slug, ...semPrefixoApi]
+      : semPrefixoApi
+  const normalizados = comSlug.map((segmento) =>
+    ehSegmentoId(segmento) ? ":id" : segmento,
+  )
+  if (normalizados.length === 0) return `${metodo} /api`
+  return `${metodo} /api/${normalizados.join("/")}`
+}
