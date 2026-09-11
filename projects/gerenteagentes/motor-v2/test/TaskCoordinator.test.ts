@@ -613,6 +613,12 @@ describe('TaskCoordinator', () => {
       expect(queries.some((sql) => sql.includes('FOR UPDATE'))).toBe(true)
       // Remove da fila de espera
       expect(queries.some((sql) => sql.includes('DELETE q FROM execution_resource_queue'))).toBe(true)
+      // Worker perdido após reinício: toda subtarefa operacional volta a pending
+      // para que um resume possa recomeçar pelo worktree preservado.
+      expect(queries.some((sql) =>
+        sql.includes("UPDATE subtarefas s INNER JOIN tarefas t") &&
+        sql.includes("s.status = 'pending'")
+      )).toBe(true)
       // Pause limpa campos de espera de recurso (senão selectNextSubtask re-seleciona)
       expect(queries.some((sql) =>
         sql.includes('paused_at = NOW()') &&
