@@ -43,6 +43,7 @@ import {
 } from "../policies/SystemBlockers.js"
 import {
   orphanBlockedSubtaskSql,
+  orphanTaskLevelBlockerSql,
   resolveTaskLevelSystemBlockersSql,
   staleBlockerSweepSql,
   systemBlockedSubtaskSql,
@@ -294,6 +295,7 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
       // promover de novo, nem esconder o estado real da tarefa.
       await this.reconcileStalePromotionBlockers()
       await this.retrySystemBlockedSubtasks()
+      await this.releaseOrphanTaskBlockers()
       // O mesmo módulo atende conflitos recém-detectados e conflitos que já
       // estavam bloqueados quando o processo iniciou. schedule() é não
       // bloqueante e o fingerprint persistido impede análises duplicadas.
@@ -549,6 +551,29 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
           reason,
         },
       )
+    }
+  }
+
+  /**
+   * Encerra bloqueio espelhado no nível da tarefa quando a causa já não existe
+   * (a tarefa tem subtarefas e nenhuma está `blocked`). Sem isto, uma subtarefa
+   * retomada deixa a tarefa parada para sempre — o espelho segue aberto e a
+   * seleção ignora a tarefa (caso real: task-p2-812/bloqueio 841).
+   */
+  private async releaseOrphanTaskBlockers(): Promise<void> {
+    const { rows } = await this.db.query(orphanTaskLevelBlockerSql())
+    for (const row of rows) {
+      const result = await this.db.query(
+        "UPDATE bloqueios SET resolved_at = NOW() WHERE id = ? AND resolved_at IS NULL",
+        [row.id],
+      )
+      if (result.affectedRows === 0) continue
+      this.logger.warn("Bloqueio espelhado no nível da tarefa encerrado (nenhuma subtarefa bloqueada)", {
+        taskId: String(row.external_id ?? row.tarefa_id),
+        blockId: Number(row.id),
+        reason: String(row.block_reason ?? ""),
+        excerpt: String(row.block_command || row.block_excerpt || "").slice(0, 80),
+      })
     }
   }
 

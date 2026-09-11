@@ -113,3 +113,30 @@ export function resolveTaskLevelSystemBlockersSql(): string {
     `AND NOT ${promotionBlockerSqlFilter("b")}`
   )
 }
+
+/**
+ * Bloqueio espelhado no nível da TAREFA cuja causa já não existe: a tarefa tem
+ * subtarefas e **nenhuma** está `blocked`. Acontece quando a subtarefa é
+ * retomada (ou o bloqueio dela é resolvido) e o espelho fica para trás — a
+ * tarefa continua fora da seleção sem motivo (caso real: task-p2-812, bloqueio
+ * 841, 2026-09-11).
+ *
+ * Exigir "tem subtarefas e nenhuma blocked" protege os casos legítimos: tarefa
+ * sem plano (falha de análise) e tarefa com subtarefa ainda bloqueada ficam de
+ * fora.
+ */
+export function orphanTaskLevelBlockerSql(): string {
+  return (
+    "SELECT b.id, b.tarefa_id, COALESCE(b.block_reason, '') AS block_reason, " +
+    "COALESCE(b.block_command, '') AS block_command, COALESCE(b.block_excerpt, '') AS block_excerpt, " +
+    "t.external_id, b.blocked_at " +
+    "FROM bloqueios b INNER JOIN tarefas t ON t.id = b.tarefa_id " +
+    "WHERE b.resolved_at IS NULL AND b.subtarefa_id IS NULL " +
+    `AND b.block_reason IN ${SYSTEM_BLOCK_REASON_SQL_LIST} ` +
+    `AND b.blocked_at < DATE_SUB(NOW(), INTERVAL ${SYSTEM_BLOCK_COOLDOWN_SECONDS} SECOND) ` +
+    `AND NOT ${promotionBlockerSqlFilter("b")} ` +
+    "AND EXISTS (SELECT 1 FROM subtarefas s WHERE s.tarefa_id = t.id) " +
+    "AND NOT EXISTS (SELECT 1 FROM subtarefas s2 WHERE s2.tarefa_id = t.id AND s2.status = 'blocked') " +
+    "LIMIT 20"
+  )
+}
