@@ -21,6 +21,7 @@ import { PromotionConflictRepository } from './promotion-conflicts/PromotionConf
 import { PromotionConflictResolver } from './promotion-conflicts/PromotionConflictResolver.js'
 import { PromotionRetryRepository } from './promotion-retries/PromotionRetryRepository.js'
 import { PromotionRetryOrchestrator } from './promotion-retries/PromotionRetryOrchestrator.js'
+import { PromotionGateRecoveryOrchestrator } from './promotion-gate/PromotionGateRecoveryOrchestrator.js'
 
 export interface MotorConfig {
   db: Db
@@ -80,6 +81,9 @@ export class Motor {
       new PromotionRetryRepository(config.db),
       { retry: (candidate) => this.coordinator.retry(candidate) },
     )
+    const promotionGateRecoveryOrchestrator = new PromotionGateRecoveryOrchestrator(config.db, {
+      recoverPromotionGate: (candidate, report) => this.coordinator.recoverPromotionGate(candidate, report),
+    })
     this.reconciler = new ExpirationReconciler({
       db: config.db,
       intervalMs: config.reconcilerIntervalMs ?? getConfigNumber('motor.reconciler_interval_ms'),
@@ -91,7 +95,7 @@ export class Motor {
     this.coordinator = new TaskCoordinator(config.db, config.repository, this.resourceLease, {
       maxWorkers: config.maxWorkers,
       maxWorkersPerProject: config.maxWorkersPerProject,
-    }, this.workerLauncher, undefined, this._waitManager, undefined, promotionConflictOrchestrator, promotionRetryOrchestrator)
+    }, this.workerLauncher, undefined, this._waitManager, undefined, promotionConflictOrchestrator, promotionRetryOrchestrator, promotionGateRecoveryOrchestrator)
     this.api = new MotorAPI({ port: apiPort, coordinator: this.coordinator, db: config.db })
 
     this.setupEventHandlers()

@@ -45,6 +45,8 @@ import type { PromotionRetryOrchestrator } from "../promotion-retries/PromotionR
 import { verifyWorkspacePromotionGate } from "../promotion-gate/WorkspacePromotionGate.js"
 import { planPromotionRecovery } from "../promotion-gate/PromotionRecoveryPlanner.js"
 import { createPromotionCorrectionSubtask } from "../planning/CorrectionSubtaskStore.js"
+import type { PromotionGateRecoveryCandidate, PromotionGateRecoveryOrchestrator, PromotionGateRecoveryPort } from "../promotion-gate/PromotionGateRecoveryOrchestrator.js"
+import type { PromotionGateReport } from "../promotion-gate/PromotionGateVerifier.js"
 
 interface ActiveWorker {
   taskId: string
@@ -184,7 +186,7 @@ interface SubtaskWithTask {
   correctionFingerprint?: string | null
 }
 
-export class TaskCoordinator implements PromotionConflictPromoterPort, PromotionRetryPort {
+export class TaskCoordinator implements PromotionConflictPromoterPort, PromotionRetryPort, PromotionGateRecoveryPort {
   private config: TaskCoordinatorConfig
   private activeWorkers = new Map<string, ActiveWorker>()
   private resourceLease: ResourceLeaseService
@@ -220,6 +222,7 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     eventBus = executionEventBus,
     private readonly promotionConflictOrchestrator?: PromotionConflictOrchestrator,
     private readonly promotionRetryOrchestrator?: PromotionRetryOrchestrator,
+    private readonly promotionGateRecoveryOrchestrator?: PromotionGateRecoveryOrchestrator,
   ) {
     this.db = db
     this.repository = repository
@@ -279,11 +282,23 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
       if (this.activeWorkers.size === 0 && this.activeDeployments.size === 0) {
         await this.promotionConflictOrchestrator?.reconcilePendingAnalyses()
         await this.promotionRetryOrchestrator?.reconcile()
+        await this.promotionGateRecoveryOrchestrator?.reconcile()
       }
     } finally {
       this.pumping = false
     }
     await this.processDeployQueue()
+  }
+
+  async recoverPromotionGate(candidate: PromotionGateRecoveryCandidate, report: PromotionGateReport): Promise<void> {
+    const task = await this.repository.getTask(candidate.taskId)
+    if (!task || report.ok) return
+    const recovery = planPromotionRecovery(report.issues)
+    if (!recovery) return
+    const result = await createPromotionCorrectionSubtask(this.db, task.id, recovery)
+    if (!result.created) return
+    await this.saveTaskTransition(task, "subtasks_pending", { errorMessage: "Reconciliação do gate de promoção criou corretiva: " + report.issues.map((issue) => issue.message).join("; ").slice(0, 500) })
+    this.logger.warn("Corretiva criada ao reconciliar promoção bloqueada", { taskId: candidate.taskId, issues: report.issues.map((issue) => issue.fingerprint) })
   }
 
   /**

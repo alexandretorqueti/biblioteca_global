@@ -20,7 +20,9 @@ const taskTransitions: Record<TaskTransition, readonly TaskStatus[]> = {
   // a tarefa tanto a partir de `running` quanto de `ready`.
   execution_completed: ["running", "ready"],
   deploy_completed: ["completed"],
-  subtasks_pending: ["running"],
+  // Uma corretiva criada pelo reconciliador pode recuperar uma tarefa que
+  // estava bloqueada na promoção; há trabalho pendente de novo, logo `ready`.
+  subtasks_pending: ["running", "blocked"],
   pause: ["analyzing", "running"],
   resume: ["paused"],
   resume_without_plan: ["paused"],

@@ -3,6 +3,7 @@ import { verifyPromotionGate } from "../src/promotion-gate/PromotionGateVerifier
 import { planPromotionRecovery } from "../src/promotion-gate/PromotionRecoveryPlanner.js"
 import { createPromotionCorrectionSubtask } from "../src/planning/CorrectionSubtaskStore.js"
 import type { Db, QueryResult } from "../src/shared/types/infrastructure.js"
+import { transitionTask } from "../src/policies/TaskStateMachine.js"
 
 describe("verifyPromotionGate", () => {
   it("detecta migration fora do journal e coluna sem migration", () => {
@@ -27,6 +28,10 @@ describe("verifyPromotionGate", () => {
 })
 
 describe("recuperação de promoção", () => {
+  it("reabre tarefa bloqueada quando uma corretiva de promoção é criada", () => {
+    expect(transitionTask("blocked", "subtasks_pending")).toBe("ready")
+  })
+
   it("planeja uma corretiva limitada e idempotente", async () => {
     const request = planPromotionRecovery([{ kind: "migration_journal", fingerprint: "migration-not-journaled:0029_plan", message: "Migration ausente no journal", evidence: "0029_plan.sql" }])
     expect(request?.scope).toContain("sem ampliar o escopo funcional")
