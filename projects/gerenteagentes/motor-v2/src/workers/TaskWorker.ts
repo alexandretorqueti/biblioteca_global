@@ -84,6 +84,22 @@ export interface SessionFailurePersistenceDb {
 }
 
 /**
+ * Assinatura estável de uma falha remota de sessão: mesmo `code`+`message`,
+ * ignorando run id e timestamp (que mudam a cada tentativa).
+ *
+ * O Console devolve apenas `status: failed` no describe — a causa real
+ * (ex.: "429 quota exhausted" do provedor) não chega ao Motor. Comparar
+ * assinaturas é o único sinal confiável de que repetir o MESMO modelo não vai
+ * resolver, e que a cadeia precisa escalar.
+ */
+export function remoteFailureSignature(code: string, message: string): string {
+  return `${code}|${message}`
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "<run>")
+    .replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z?/g, "<ts>")
+    .slice(0, 300)
+}
+
+/**
  * `motor_agent_session_failures.occurred_at` é TIMESTAMP NOT NULL e o driver
  * não converte ISO-8601 com `T`/`Z` ("Incorrect datetime value"). Normaliza
  * epoch/ISO para o formato MySQL, com fallback para agora.
@@ -279,6 +295,8 @@ class TaskWorker {
   private integrationBaseline: IntegrationWorkspaceBaseline | null = null
   /** Diagnóstico remoto que causou a falha terminal desta execução. */
   private sessionFailure: RemoteSessionFailure | undefined
+  /** Ocorrências por assinatura de falha remota dentro deste worker. */
+  private readonly remoteFailureSignatures = new Map<string, number>()
 
   constructor() {
     this.executionId = process.env.EXECUTION_ID ?? "unknown"
@@ -872,7 +890,12 @@ class TaskWorker {
               // indisponibilidade do MODELO faz o worker escalar para o próximo
               // da cadeia; como falha transitória ele repetiria o MESMO modelo
               // para sempre (loop de tentativas de 2026-09-11).
-              if (isModelUnavailableFailure(result.failure.code, result.failure.message)) {
+              const signature = remoteFailureSignature(result.failure.code, result.failure.message)
+              const repeats = (this.remoteFailureSignatures.get(signature) ?? 0) + 1
+              this.remoteFailureSignatures.set(signature, repeats)
+              // A primeira ocorrência ainda tenta recuperar a sessão; a segunda
+              // idêntica significa que o modelo não está entregando — escalar.
+              if (isModelUnavailableFailure(result.failure.code, result.failure.message) || repeats >= 2) {
                 lastFailure = `Modelo indisponível: ${model.model} — ${remoteReason}`
                 this.send({ type: "model_unavailable", executionId: input.context.executionId, model: model.model, message: lastFailure })
                 this.log("warn", lastFailure)
