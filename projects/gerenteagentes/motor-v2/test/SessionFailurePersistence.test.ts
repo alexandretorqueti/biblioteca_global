@@ -1,7 +1,16 @@
 import { describe, expect, it, vi } from "vitest"
-import { persistRemoteSessionFailure } from "../src/workers/TaskWorker.js"
+import { persistRemoteSessionFailure, toMysqlDateTime } from "../src/workers/TaskWorker.js"
 
 describe("persistência do diagnóstico de falha de sessão", () => {
+  // A coluna é TIMESTAMP NOT NULL: ISO-8601 com T/Z era rejeitado pelo MySQL
+  // ("Incorrect datetime value") e a falha de sessão bloqueava a subtarefa.
+  it("converte o occurred_at para DATETIME do MySQL", () => {
+    expect(toMysqlDateTime("2026-09-11T17:22:24.062Z")).toBe("2026-09-11 17:22:24")
+    expect(toMysqlDateTime(1789146942620)).toBe(new Date(1789146942620).toISOString().slice(0, 19).replace("T", " "))
+    expect(toMysqlDateTime(undefined, new Date("2026-09-11T00:00:00Z"))).toBe("2026-09-11 00:00:00")
+    expect(toMysqlDateTime("data-invalida", new Date("2026-09-11T00:00:00Z"))).toBe("2026-09-11 00:00:00")
+  })
+
   it("grava e permite ler todos os campos associados à tarefa e ao agente", async () => {
     const rows = [{
       tarefa_id: 77, subtarefa_id: 8, agent_id: "agente-projeto", session_key: "task-77",
@@ -23,7 +32,7 @@ describe("persistência do diagnóstico de falha de sessão", () => {
 
     const insert = db.query.mock.calls[1]!
     expect(insert[0]).toContain("motor_agent_session_failures")
-    expect(insert[1]).toEqual([77, 8, "agente-projeto", "task-77", "remote-8", "run-8", "SESSION_BUSY", "sessão ocupada", "2026-09-08T12:00:00.000Z", "session", "transient", "remote_code_or_message_indicates_retryable_failure", "SESSION_BUSY:sessão ocupada"])
+    expect(insert[1]).toEqual([77, 8, "agente-projeto", "task-77", "remote-8", "run-8", "SESSION_BUSY", "sessão ocupada", "2026-09-08 12:00:00", "session", "transient", "remote_code_or_message_indicates_retryable_failure", "SESSION_BUSY:sessão ocupada"])
     const [read] = await db.query("SELECT * FROM motor_agent_session_failures WHERE tarefa_id = ?", [77]) as unknown as [typeof rows]
     expect(read[0]).toMatchObject({ tarefa_id: 77, subtarefa_id: 8, agent_id: "agente-projeto", code: "SESSION_BUSY", runtime_session_id: "remote-8", occurred_at: "2026-09-08T12:00:00.000Z" })
   })
@@ -46,5 +55,6 @@ describe("persistência do diagnóstico de falha de sessão", () => {
     const insert = db.query.mock.calls[1]!
     expect(insert[0]).toContain("motor_agent_session_failures")
     expect((insert[1] as unknown[])[0]).toBe(792)
+    expect((insert[1] as unknown[])[8]).toBe("2026-09-11 17:14:35")
   })
 })

@@ -83,6 +83,20 @@ export interface SessionFailurePersistenceDb {
   query(sql: string, params?: unknown[]): Promise<unknown>
 }
 
+/**
+ * `motor_agent_session_failures.occurred_at` é TIMESTAMP NOT NULL e o driver
+ * não converte ISO-8601 com `T`/`Z` ("Incorrect datetime value"). Normaliza
+ * epoch/ISO para o formato MySQL, com fallback para agora.
+ */
+export function toMysqlDateTime(value: string | number | Date | undefined, now = new Date()): string {
+  const iso = (date: Date) => date.toISOString().slice(0, 19).replace("T", " ")
+  if (value === undefined || value === null || value === "") return iso(now)
+  const parsed = value instanceof Date
+    ? value
+    : new Date(typeof value === "string" && /^\d+$/.test(value) ? Number(value) : value)
+  return Number.isNaN(parsed.getTime()) ? iso(now) : iso(parsed)
+}
+
 export async function persistRemoteSessionFailure(
   db: SessionFailurePersistenceDb,
   taskId: string,
@@ -111,7 +125,7 @@ export async function persistRemoteSessionFailure(
   
   await db.query(
     "INSERT INTO motor_agent_session_failures (tarefa_id, subtarefa_id, agent_id, session_key, runtime_session_id, run_id, code, message, occurred_at, scope, classification, classification_reason, fingerprint) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    [tarefaId, subtaskId ?? null, agentId, failure.sessionKey, failure.remoteSessionId ?? null, failure.runId, failure.code, failure.message, failure.occurredAt, failure.scope, failure.classification, failure.classificationReason, failure.fingerprint],
+    [tarefaId, subtaskId ?? null, agentId, failure.sessionKey, failure.remoteSessionId ?? null, failure.runId, failure.code, failure.message, toMysqlDateTime(failure.occurredAt), failure.scope, failure.classification, failure.classificationReason, failure.fingerprint],
   )
 }
 
