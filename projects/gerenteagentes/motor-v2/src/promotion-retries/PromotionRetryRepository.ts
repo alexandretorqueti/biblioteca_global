@@ -1,3 +1,4 @@
+import { PROMOTION_DIRTY_SQL_FILTER } from "../policies/PromotionBlockers.js"
 import type { Db } from "../shared/types/infrastructure.js"
 import { identifyDirtyPromotionRetry } from "./PromotionRetryDetector.js"
 import type { PromotionRetryCandidate } from "./promotion-retry.types.js"
@@ -17,8 +18,7 @@ export class PromotionRetryRepository {
       "LEFT JOIN projetos_captados pc ON pc.id = t.projeto_id " +
       "LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id = pc.id " +
       "WHERE b.resolved_at IS NULL AND b.subtarefa_id IS NULL " +
-      "AND (b.block_command LIKE 'motor-v2:promotion-repo-dirty:%' " +
-      "OR b.block_excerpt LIKE 'Falha na promoção da branch da tarefa: repositório principal não está limpo para promoção:%') " +
+      `AND ${PROMOTION_DIRTY_SQL_FILTER} ` +
       `AND b.blocked_at < DATE_SUB(NOW(), INTERVAL ${BACKOFF_MINUTES} MINUTE) ORDER BY b.blocked_at ASC LIMIT 20`,
     )
     return rows.map(identifyDirtyPromotionRetry).filter((item): item is PromotionRetryCandidate => item !== null)

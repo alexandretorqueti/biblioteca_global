@@ -1,6 +1,6 @@
+import { isPromotionConflictBlocker, PROMOTION_CONFLICT_COMMAND_PREFIX } from "../policies/PromotionBlockers.js"
 import type { PromotionConflictCandidate } from "./promotion-conflict.types.js"
 
-const LEGACY_PROMOTION_MESSAGE = /Conflito no merge da branch da tarefa para a base/i
 const BRANCH_PATTERN = /Branch preservada:\s*([^\s,]+)/i
 const BASE_PATTERN = /para a base \(([^)]+)\)/i
 const FILES_PATTERN = /Arquivos em conflito:\s*(.+?)\.\s*Branch preservada:/i
@@ -20,8 +20,8 @@ function structuredBranches(command: string): { baseBranch?: string; taskBranch?
 export function identifyPromotionConflict(row: Record<string, unknown>): PromotionConflictCandidate | null {
   const excerpt = String(row.block_excerpt ?? "")
   const command = String(row.block_command ?? "")
-  const structured = command.startsWith("motor-v2:promotion-conflict:")
-  if (!structured && !LEGACY_PROMOTION_MESSAGE.test(excerpt)) return null
+  const structured = command.startsWith(PROMOTION_CONFLICT_COMMAND_PREFIX)
+  if (!isPromotionConflictBlocker(command, excerpt)) return null
   if (row.subtarefa_id != null) return null
 
   const encoded = structuredBranches(command)
