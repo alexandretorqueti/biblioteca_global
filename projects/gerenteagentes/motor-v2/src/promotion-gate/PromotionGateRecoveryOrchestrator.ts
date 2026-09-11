@@ -5,11 +5,16 @@ import { join } from "node:path"
 import type { Db } from "../shared/types/infrastructure.js"
 import { createLogger, describeError } from "../shared/logger.js"
 import { TaskFactsStore } from "../database/TaskFactsStore.js"
+import { PROMOTION_BLOCKER_SQL_FILTER } from "../policies/PromotionBlockers.js"
 import { verifyWorkspacePromotionGate } from "./WorkspacePromotionGate.js"
 import type { PromotionGateReport } from "./PromotionGateVerifier.js"
 
 export interface PromotionGateRecoveryCandidate { taskId: string; repoPath: string; baseBranch: string; taskBranch: string }
-export interface PromotionGateRecoveryPort { recoverPromotionGate(candidate: PromotionGateRecoveryCandidate, report: PromotionGateReport): Promise<void> }
+export interface PromotionGateRecoveryPort {
+  recoverPromotionGate(candidate: PromotionGateRecoveryCandidate, report: PromotionGateReport): Promise<void>
+  /** Encerra bloqueio de promoção obsoleto que mantém uma corretiva do gate presa em `pending`. */
+  releaseStalePromotionBlocker(taskId: string): Promise<void>
+}
 
 /** Verificação do gate em worktree isolado (mutável: injetável em teste). */
 export type PromotionGateRecoveryVerifier = (candidate: PromotionGateRecoveryCandidate) => PromotionGateReport
@@ -57,9 +62,11 @@ export class PromotionGateRecoveryOrchestrator {
       if (Number(locks[0]?.acquired ?? 0) !== 1) return
       try {
         const candidate = await this.nextCandidate()
-        if (!candidate) return
-        const report = this.verify(candidate)
-        if (!report.ok) await this.port.recoverPromotionGate(candidate, report)
+        if (candidate) {
+          const report = this.verify(candidate)
+          if (!report.ok) await this.port.recoverPromotionGate(candidate, report)
+        }
+        await this.releaseStaleBlockers()
       } finally {
         await this.db.query("DO RELEASE_LOCK('motor:promotion-gate-recovery')").catch(() => undefined)
       }
@@ -71,6 +78,33 @@ export class PromotionGateRecoveryOrchestrator {
         this.logger.error("Falha ao reconciliar gate de promoção: " + message)
       }
     } finally { this.running = false }
+  }
+
+  /**
+   * Varre corretivas do próprio gate que ficaram presas atrás de um bloqueio de
+   * promoção obsoleto. Acontece quando a corretiva foi criada por uma versão do
+   * gate que ainda não encerrava o bloqueio, ou quando o processo morre entre
+   * criar a corretiva e encerrar o bloqueio. Como `selectNextSubtask` ignora
+   * tarefas com bloqueio ativo, a correção nunca seria executada: a pendência
+   * ficaria pendurada para sempre. Idempotente e limitada a tarefas que ainda
+   * não foram integradas.
+   */
+  private async releaseStaleBlockers(): Promise<void> {
+    const { rows } = await this.db.query(
+      "SELECT DISTINCT t.id, t.external_id FROM tarefas t " +
+      "INNER JOIN bloqueios b ON b.tarefa_id = t.id AND b.resolved_at IS NULL AND b.subtarefa_id IS NULL " +
+      "WHERE " + PROMOTION_BLOCKER_SQL_FILTER + " " +
+      "AND EXISTS (SELECT 1 FROM subtarefas s WHERE s.tarefa_id = t.id AND s.status IN ('pending', 'running') " +
+      "AND s.correction_fingerprint LIKE 'promotion-gate:%') " +
+      "AND NOT EXISTS (SELECT 1 FROM task_runtime_facts f WHERE f.tarefa_id = t.id " +
+      "AND (f.integration_confirmed_at IS NOT NULL OR f.terminal_status IS NOT NULL)) " +
+      "LIMIT 5",
+    )
+    for (const row of rows) {
+      const taskId = String(row.external_id ?? row.id ?? "")
+      if (!taskId) continue
+      await this.port.releaseStalePromotionBlocker(taskId)
+    }
   }
 
   /**

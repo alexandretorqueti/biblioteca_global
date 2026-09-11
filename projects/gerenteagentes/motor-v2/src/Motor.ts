@@ -83,6 +83,7 @@ export class Motor {
     )
     const promotionGateRecoveryOrchestrator = new PromotionGateRecoveryOrchestrator(config.db, {
       recoverPromotionGate: (candidate, report) => this.coordinator.recoverPromotionGate(candidate, report),
+      releaseStalePromotionBlocker: (taskId) => this.coordinator.releaseStalePromotionBlocker(taskId),
     })
     this.reconciler = new ExpirationReconciler({
       db: config.db,
