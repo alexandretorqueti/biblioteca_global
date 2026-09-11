@@ -67,6 +67,38 @@ describe('B7 — timeout de inatividade', () => {
     expect(result.failure?.occurredAt).toBe('2025-09-08T12:06:40.000Z')
   })
 
+  it('recupera do histórico a falta de cota omitida pelo describe', async () => {
+    const fetchMock = vi.fn(async (url: unknown) => {
+      if (String(url).includes('/api/chat/history')) {
+        return jsonResponse({ messages: [{
+          role: 'assistant',
+          content: [],
+          stopReason: 'error',
+          errorCode: 'insufficient_quota',
+          errorType: 'insufficient_quota',
+          errorMessage: '429 Your token-plan 1-week quota has been exhausted.',
+          timestamp: 1_789_155_838_757,
+        }] })
+      }
+      return jsonResponse({ status: 'failed', endedAt: 1_789_155_842_059 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const driver = makeDriver()
+    const result = await driver.waitForRunCompletion(session, 'run-quota', { pollIntervalMs: 10 })
+
+    expect(result).toMatchObject({
+      state: 'error',
+      errorMessage: '429 Your token-plan 1-week quota has been exhausted.',
+      failure: {
+        code: 'insufficient_quota',
+        message: '429 Your token-plan 1-week quota has been exhausted.',
+        classification: 'transient',
+      },
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
   it('run ativo por vários polls não é interrompido; conclui quando termina', async () => {
     const responses: unknown[] = [
       { state: 'busy', hasActiveRun: true },
