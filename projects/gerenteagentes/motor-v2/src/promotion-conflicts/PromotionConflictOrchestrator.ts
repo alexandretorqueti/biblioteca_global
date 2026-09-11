@@ -1,5 +1,5 @@
 import { createLogger, describeError } from "../shared/logger.js"
-import { PromotionConflictEvidenceCollector } from "./PromotionConflictEvidenceCollector.js"
+import { ConflictNotReproducibleError, PromotionConflictEvidenceCollector } from "./PromotionConflictEvidenceCollector.js"
 import { PromotionConflictRepository } from "./PromotionConflictRepository.js"
 import type { PromotionConflictAnalyzerPort, PromotionConflictCandidate, PromotionConflictPromoterPort, PromotionConflictResolverPort } from "./promotion-conflict.types.js"
 
@@ -65,9 +65,49 @@ export class PromotionConflictOrchestrator {
       }
       await this.repository.fail(evidence.fingerprint, resolution.reason)
     } catch (error) {
+      // O conflito sumiu: não é falha, é recuperação. Registrar `fail` deixaria o
+      // bloqueio preso e a análise se repetindo a cada ciclo.
+      if (error instanceof ConflictNotReproducibleError) {
+        await this.recoverVanishedConflict(candidate)
+        return
+      }
       const reason = describeError(error)
       if (fingerprint) await this.repository.fail(fingerprint, reason).catch(() => undefined)
       this.logger.error("Falha na análise automática do conflito: " + reason, { taskId: candidate.taskId })
+    }
+  }
+
+  /**
+   * Devolve a tarefa ao fluxo quando o merge simulado deixou de conflitar
+   * (a base andou ou o conflito foi resolvido por outra via):
+   *  - já integrada/deployada -> encerra o bloqueio obsoleto;
+   *  - subtarefas ainda abertas -> não é seguro promover, mantém como está;
+   *  - caso geral -> promove a própria branch da tarefa.
+   */
+  private async recoverVanishedConflict(candidate: PromotionConflictCandidate): Promise<void> {
+    const state = await this.repository.findTaskState(candidate.taskId)
+    if (!state) {
+      this.logger.warn("Conflito de promoção não é mais reproduzível, mas a tarefa não foi encontrada", { taskId: candidate.taskId })
+      return
+    }
+    if (state.hasUnfinishedSubtasks) {
+      this.logger.info("Conflito de promoção não é mais reproduzível; tarefa segue com subtarefas abertas", { taskId: candidate.taskId })
+      return
+    }
+    if (state.integrationConfirmed || state.deploySucceeded) {
+      const resolved = await this.repository.resolvePromotionBlockers(candidate.taskId)
+      this.logger.warn("Conflito não é mais reproduzível e a tarefa já está integrada; bloqueio de promoção obsoleto encerrado", { taskId: candidate.taskId, resolvedBlockers: resolved })
+      return
+    }
+    if (!this.promoter || !candidate.projectSlug) {
+      this.logger.warn("Conflito não é mais reproduzível, mas não há caminho de promoção disponível", { taskId: candidate.taskId })
+      return
+    }
+    try {
+      await this.promoter.promote(candidate, candidate.taskBranch)
+      this.logger.info("Conflito não é mais reproduzível; branch da tarefa promovida", { taskId: candidate.taskId })
+    } catch (error) {
+      this.logger.warn("Conflito não é mais reproduzível, mas a promoção falhou: " + describeError(error), { taskId: candidate.taskId })
     }
   }
 }

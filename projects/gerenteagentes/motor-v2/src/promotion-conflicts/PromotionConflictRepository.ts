@@ -1,6 +1,7 @@
 import { PROMOTION_CONFLICT_SQL_FILTER } from "../policies/PromotionBlockers.js"
 import type { Db } from "../shared/types/infrastructure.js"
 import { identifyPromotionConflict } from "./PromotionConflictDetector.js"
+import { PROMOTION_BLOCKER_SQL_FILTER } from "../policies/PromotionBlockers.js"
 import type { PromotionConflictAnalysisResult, PromotionConflictCandidate, PromotionConflictEvidence } from "./promotion-conflict.types.js"
 
 export class PromotionConflictRepository {
@@ -20,6 +21,39 @@ export class PromotionConflictRepository {
       "ORDER BY b.blocked_at ASC LIMIT 20",
     )
     return rows.map(identifyPromotionConflict).filter((item): item is PromotionConflictCandidate => item !== null)
+  }
+
+  /**
+   * Fatos mínimos para decidir a recuperação quando o conflito deixa de existir:
+   * só promove se a tarefa ainda não está integrada/deployada e se todas as
+   * subtarefas estão aprovadas.
+   */
+  async findTaskState(taskId: string): Promise<{ integrationConfirmed: boolean; deploySucceeded: boolean; hasUnfinishedSubtasks: boolean } | null> {
+    const { rows } = await this.db.query(
+      "SELECT t.id, f.integration_confirmed_at, " +
+      "(SELECT COUNT(*) FROM subtarefas s WHERE s.tarefa_id = t.id AND s.status NOT IN ('verified', 'superseded')) AS abertas, " +
+      "(SELECT COUNT(*) FROM deploy_requests d WHERE d.tarefa_id = t.id AND d.status = 'succeeded') AS deploy_ok " +
+      "FROM tarefas t LEFT JOIN task_runtime_facts f ON f.tarefa_id = t.id " +
+      "WHERE t.external_id = ? OR t.id = CAST(? AS UNSIGNED) LIMIT 1",
+      [taskId, taskId],
+    )
+    const row = rows[0]
+    if (!row) return null
+    return {
+      integrationConfirmed: row.integration_confirmed_at != null,
+      deploySucceeded: Number(row.deploy_ok ?? 0) > 0,
+      hasUnfinishedSubtasks: Number(row.abertas ?? 0) > 0,
+    }
+  }
+
+  /** Encerra bloqueios de promoção obsoletos (tarefa já integrada e sem conflito). */
+  async resolvePromotionBlockers(taskId: string): Promise<number> {
+    const result = await this.db.query(
+      "UPDATE bloqueios b INNER JOIN tarefas t ON t.id = b.tarefa_id SET b.resolved_at = NOW() " +
+      "WHERE b.resolved_at IS NULL AND b.subtarefa_id IS NULL AND (t.external_id = ? OR t.id = CAST(? AS UNSIGNED)) AND " + PROMOTION_BLOCKER_SQL_FILTER,
+      [taskId, taskId],
+    )
+    return result.affectedRows
   }
 
   async claim(candidate: PromotionConflictCandidate, evidence: PromotionConflictEvidence): Promise<boolean> {
