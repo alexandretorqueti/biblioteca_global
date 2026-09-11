@@ -308,6 +308,15 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
   }
 
   /**
+   * Encerra um bloqueio de promoção obsoleto que mantém uma corretiva do gate
+   * presa em `pending` (ver `PromotionGateRecoveryOrchestrator.releaseStaleBlockers`).
+   */
+  async releaseStalePromotionBlocker(taskId: string): Promise<void> {
+    const resolvedBlockers = await this.resolvePromotionBlockers(taskId)
+    this.logger.warn("Bloqueio de promoção obsoleto encerrado para liberar a corretiva do gate", { taskId, resolvedBlockers })
+  }
+
+  /**
    * Remove os bloqueios de promoção (conflito/sujo, estruturado ou legado)
    * quando o gate assume a correção. Devolve quantos foram encerrados.
    */
