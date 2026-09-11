@@ -159,6 +159,9 @@ export {
   RECURSOS_SEM_SLUG,
   erroReportavel,
   montarEndpointCanonico,
+  PREFIXO_TITULO_TAREFA_ERRO,
+  LIMITE_TITULO_TAREFA_ERRO,
+  tituloTarefaErro,
 } from "./error-report"
 export type {
   ErrorReportUsuario,

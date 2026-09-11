@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import {
   errorReportResultSchema,
   errorReportRequestSchema,
+  tituloTarefaErro,
 } from "../index.js"
 
 /** Payload completo e válido — cobre todos os dados exigidos no relato. */
@@ -99,6 +100,25 @@ describe("contrato do relato de erro", () => {
         ocorridoEm: "2026-09-11 21:35:48",
       }).success,
     ).toBe(false)
+  })
+
+  it("monta o título canônico da tarefa a partir da chave do endpoint", () => {
+    expect(tituloTarefaErro("GET /api/taqui/clientes/:id")).toBe(
+      "Erro de API: GET /api/taqui/clientes/:id",
+    )
+    // Mesma entrada, mesmo título — é o que a deduplicação compara.
+    expect(tituloTarefaErro("GET /api/taqui/clientes/:id")).toBe(
+      tituloTarefaErro("GET /api/taqui/clientes/:id"),
+    )
+    expect(tituloTarefaErro("   ")).toBe("Erro de API: HTTP /api")
+  })
+
+  it("trunca o título no limite da coluna sem perder o prefixo", () => {
+    const longo = `GET /api/taqui/${"segmento/".repeat(40)}:id`
+    const titulo = tituloTarefaErro(longo)
+
+    expect(titulo.length).toBeLessThanOrEqual(200)
+    expect(titulo.startsWith("Erro de API: ")).toBe(true)
   })
 
   it("descreve o resultado do relato com e sem tarefa criada", () => {

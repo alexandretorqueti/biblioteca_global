@@ -290,3 +290,37 @@ export function montarEndpointCanonico(input: MontarEndpointCanonicoInput): stri
   if (normalizados.length === 0) return `${metodo} /api`
   return `${metodo} /api/${normalizados.join("/")}`
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Título canônico da tarefa de erro (subtarefa 3)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Prefixo de todo título de tarefa criada a partir de um relato de erro.
+ * É o que identifica a origem na listagem do Gerente de Agentes.
+ */
+export const PREFIXO_TITULO_TAREFA_ERRO = "Erro de API: "
+
+/**
+ * Limite de `tarefas.titulo` no catálogo do Gerente de Agentes
+ * (`varchar(200)`). O título canônico nunca pode exceder — senão o insert
+ * falha e a ocorrência se perde.
+ */
+export const LIMITE_TITULO_TAREFA_ERRO = 200
+
+/**
+ * Título canônico da tarefa de erro, derivado da chave canônica do endpoint
+ * (`montarEndpointCanonico`): `Erro de API: MÉTODO /api/<slug>/<recurso>`.
+ *
+ * Fonte única do título — o repositório grava e deduplica por este mesmo
+ * valor; se o front/back calculassem títulos diferentes, a deduplicação por
+ * endpoint nunca casaria. Títulos maiores que `LIMITE_TITULO_TAREFA_ERRO` são
+ * truncados (o prefixo identificador é preservado) para caber na coluna.
+ */
+export function tituloTarefaErro(endpoint: string): string {
+  const chave = endpoint.trim() || "HTTP /api"
+  const titulo = `${PREFIXO_TITULO_TAREFA_ERRO}${chave}`
+  return titulo.length <= LIMITE_TITULO_TAREFA_ERRO
+    ? titulo
+    : titulo.slice(0, LIMITE_TITULO_TAREFA_ERRO).trimEnd()
+}
