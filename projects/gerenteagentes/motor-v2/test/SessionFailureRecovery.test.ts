@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { classifyRemoteFailure } from "../src/runtime/ConsoleAgentRuntimeDriver.js"
-import { formatRemoteSessionFailure, remoteFailureSignature, resolveSessionRecoveryLimit } from "../src/workers/TaskWorker.js"
+import { formatRemoteSessionFailure, remoteFailureSignature, resolveSessionRecoveryLimit, shouldEscalateAnalysisContextFailure } from "../src/workers/TaskWorker.js"
 
 describe("política de recuperação de sessão", () => {
   it("classifica falha definitiva e não permite recuperação indevida", () => {
@@ -45,5 +45,21 @@ describe("política de recuperação de sessão", () => {
     expect(reason).toContain("task-7-subtask-4")
     expect(reason).toContain("run-9")
     expect(reason).toContain("2026-09-08T12:00:00.000Z")
+  })
+
+  it("promove o modelo quando o Console oculta a causa da falha de contexto", () => {
+    expect(shouldEscalateAnalysisContextFailure({
+      code: "SESSION_FAILED", message: "Session failed", sessionKey: "analysis-qwen-task-812",
+      runId: "run-1", occurredAt: "2026-09-11T20:00:00.000Z", scope: "session",
+      classification: "transient", classificationReason: "retryable", fingerprint: "SESSION_FAILED:Session failed",
+    }, "Session failed")).toBe(true)
+  })
+
+  it("não troca de modelo quando a infraestrutura compartilhada caiu", () => {
+    expect(shouldEscalateAnalysisContextFailure({
+      code: "GATEWAY_DOWN", message: "Console indisponível", sessionKey: "analysis-qwen-task-812",
+      runId: "run-2", occurredAt: "2026-09-11T20:00:00.000Z", scope: "console",
+      classification: "systemic", classificationReason: "shared_console_failure", fingerprint: "GATEWAY_DOWN:Console indisponível",
+    }, "Console indisponível")).toBe(false)
   })
 })

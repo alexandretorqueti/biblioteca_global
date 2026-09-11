@@ -100,6 +100,23 @@ export function remoteFailureSignature(code: string, message: string): string {
 }
 
 /**
+ * A confirmação inicial de contexto não produz trabalho aproveitável. Quando
+ * ela falha, promover o modelo é seguro e evita depender de o Console expor a
+ * causa do provedor. Falha sistêmica do Console é a única exceção: trocar de
+ * modelo não recupera uma infraestrutura compartilhada indisponível.
+ */
+export function shouldEscalateAnalysisContextFailure(
+  failure: RemoteSessionFailure | undefined,
+  errorMessage: string,
+): boolean {
+  if (failure?.classification === "systemic") return false
+  if (!failure) return true
+  return isModelUnavailableFailure(failure.code, failure.message) ||
+    failure.classification === "transient" ||
+    isModelUnavailableFailure(failure.code, errorMessage)
+}
+
+/**
  * `motor_agent_session_failures.occurred_at` é TIMESTAMP NOT NULL e o driver
  * não converte ISO-8601 com `T`/`Z` ("Incorrect datetime value"). Normaliza
  * epoch/ISO para o formato MySQL, com fallback para agora.
@@ -461,17 +478,7 @@ class TaskWorker {
             // Verifica se é erro de modelo indisponível (autenticação, provider, etc)
             // Se for, escala para o próximo modelo da cadeia em vez de falhar
             const errorMessage = contextResult.errorMessage || contextResult.state
-            const isUnavailable = (contextResult.failure != null &&
-              isModelUnavailableFailure(contextResult.failure.code, contextResult.failure.message)) ||
-              contextResult.failure?.code === "missing-provider-auth" ||
-              contextResult.failure?.code === "provider_auth_error" ||
-              contextResult.failure?.code === "model_unavailable" ||
-              errorMessage.toLowerCase().includes("no api key found") ||
-              errorMessage.toLowerCase().includes("missing api key") ||
-              errorMessage.toLowerCase().includes("provider auth error") ||
-              errorMessage.toLowerCase().includes("authentication error") ||
-              errorMessage.toLowerCase().includes("model unavailable") ||
-              errorMessage.toLowerCase().includes("model not found")
+            const isUnavailable = shouldEscalateAnalysisContextFailure(contextResult.failure, errorMessage)
             
             if (isUnavailable) {
               lastFailure = `Modelo indisponível durante contexto: ${model.model} — ${errorMessage}`
