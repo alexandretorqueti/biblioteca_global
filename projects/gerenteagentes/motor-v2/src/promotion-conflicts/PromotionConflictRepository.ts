@@ -1,3 +1,4 @@
+import { PROMOTION_CONFLICT_SQL_FILTER } from "../policies/PromotionBlockers.js"
 import type { Db } from "../shared/types/infrastructure.js"
 import { identifyPromotionConflict } from "./PromotionConflictDetector.js"
 import type { PromotionConflictAnalysisResult, PromotionConflictCandidate, PromotionConflictEvidence } from "./promotion-conflict.types.js"
@@ -15,7 +16,7 @@ export class PromotionConflictRepository {
       "LEFT JOIN agentes a ON a.id = pc.agente_id " +
       "LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id = pc.id " +
       "WHERE b.resolved_at IS NULL AND b.subtarefa_id IS NULL " +
-      "AND (b.block_command LIKE 'motor-v2:promotion-conflict:%' OR b.block_excerpt LIKE 'Conflito no merge da branch da tarefa para a base%') " +
+      `AND ${PROMOTION_CONFLICT_SQL_FILTER} ` +
       "ORDER BY b.blocked_at ASC LIMIT 20",
     )
     return rows.map(identifyPromotionConflict).filter((item): item is PromotionConflictCandidate => item !== null)

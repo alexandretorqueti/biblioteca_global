@@ -1,6 +1,6 @@
+import { isPromotionDirtyBlocker } from "../policies/PromotionBlockers.js"
 import type { PromotionRetryCandidate } from "./promotion-retry.types.js"
 
-const DIRTY_MESSAGE = /Falha na promoção da branch da tarefa: repositório principal não está limpo para promoção:/i
 const PRESERVED_BRANCH = /Branch preservada:\s*([^\s,]+)/i
 
 /** Reconhece exclusivamente o bloqueio transitório de checkout sujo na promoção. */
@@ -9,7 +9,7 @@ export function identifyDirtyPromotionRetry(row: Record<string, unknown>): Promo
   const command = String(row.block_command ?? "")
   const excerpt = String(row.block_excerpt ?? "")
   const structured = command.match(/^motor-v2:promotion-repo-dirty:([^:]+):([^:]+):(\d+)$/)
-  if (!structured && !DIRTY_MESSAGE.test(excerpt)) return null
+  if (!isPromotionDirtyBlocker(command, excerpt)) return null
   const taskBranch = structured ? decodeURIComponent(structured[2]!) : excerpt.match(PRESERVED_BRANCH)?.[1]
   const baseBranch = structured ? decodeURIComponent(structured[1]!) : String(row.base_branch ?? "")
   const taskId = String(row.external_id ?? row.tarefa_id ?? "")

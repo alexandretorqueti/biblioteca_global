@@ -151,3 +151,37 @@ duplica a regra.
   `bloqueios` não resolvidos, ex. #784) — o reconciliador deveria resolvê-los
   quando `integration_confirmed_at` for gravado. Fora do escopo desta correção,
   mas registrar como item seguinte.
+
+---
+
+## Correção implementada — branch `fix/promotion-gate-derived-status` (2026-09-11)
+
+- `src/policies/PromotionBlockers.ts` (**novo**): fonte única dos formatos de
+  bloqueio de promoção (estruturado + legado), com
+  `isPromotionConflictBlocker` / `isPromotionDirtyBlocker` / `isPromotionBlocker`
+  e os recortes SQL correspondentes. `PromotionConflictDetector`,
+  `PromotionRetryDetector`, `PromotionConflictRepository` e
+  `PromotionRetryRepository` passaram a reutilizá-los (antes cada um tinha o seu LIKE).
+- `PromotionGateRecoveryOrchestrator.nextCandidate()`: consulta apenas colunas
+  existentes (fatos persistidos) e **confirma** o candidato com
+  `TaskFactsStore.derive() === 'blocked'`. Deixou de usar `t.status`.
+- Erro de schema no `reconcile()` agora é logado de forma explícita (o gate
+  inerte deixa de ser silencioso).
+- Verificação do worktree extraída para `verifyCandidateInWorktree` e injetável
+  no construtor (`PromotionGateRecoveryVerifier`), permitindo teste do orquestrador.
+- Testes novos: `test/PromotionGateRecoveryOrchestrator.test.ts` (6) e
+  `test/PromotionBlockers.test.ts` (5), incluindo guardrail que proíbe
+  `tarefas.status` no SQL. Suíte: **523 testes / 61 arquivos verdes**, typecheck limpo.
+
+### Decisão de seleção (mudança de semântica — validar)
+
+O filtro antigo **excluía** tarefas com bloqueio de promoção (`NOT EXISTS`).
+Isso tornava inalcançáveis exatamente as pendências que o fluxo de conflito já
+abandonou (`promotion_conflict_analyses.status = 'failed'`) — casos de #793, #780
+e #792. A nova regra exclui apenas o que **outro fluxo está tratando agora**
+(`status = 'analyzing'`), deixando as demais alcançáveis pelo gate.
+
+Validação contra o banco real (`projeto_640`, com a derivação canônica): o
+candidato pescado é **#793** (`task-gerenteagentes-analyst-natural-chat-20260908`),
+depois #780 e #792 — exatamente as pendências de promoção.
+
