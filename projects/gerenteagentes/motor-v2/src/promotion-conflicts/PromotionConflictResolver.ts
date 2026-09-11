@@ -1,12 +1,39 @@
 import { execFile } from "node:child_process"
-import { mkdtemp, rm } from "node:fs/promises"
-import { tmpdir } from "node:os"
-import { join, relative, resolve } from "node:path"
+import { mkdir, mkdtemp, rm } from "node:fs/promises"
+import { isAbsolute, join, relative, resolve, sep } from "node:path"
 import { promisify } from "node:util"
 import { ConsoleAgentRuntimeDriver } from "../runtime/ConsoleAgentRuntimeDriver.js"
 import type { PromotionConflictCandidate, PromotionConflictEvidence, PromotionConflictResolutionResult, PromotionConflictResolverPort } from "./promotion-conflict.types.js"
 
 const execFileAsync = promisify(execFile)
+const AGENT_WORKSPACES_ROOT = "/data/workspace/projects/agentes"
+
+function isDescendant(root: string, candidate: string): boolean {
+  const pathRelative = relative(root, candidate)
+  return Boolean(pathRelative) && pathRelative !== ".." && !pathRelative.startsWith(`..${sep}`) && !isAbsolute(pathRelative)
+}
+
+/**
+ * O Console só permite que um agente opere dentro do seu próprio workspace.
+ * Git aceitaria um worktree em /tmp, mas esse caminho seria recusado pelo
+ * Console ao criar a sessão do Monitor. Mantemos o worktree temporário sob
+ * o workspace do Monitor, onde as duas camadas compartilham a mesma fronteira.
+ */
+export function monitorResolutionWorktreeParent(
+  monitorWorkspace: string | null,
+  candidate: PromotionConflictCandidate,
+  evidence: PromotionConflictEvidence,
+): string {
+  if (!monitorWorkspace || !isAbsolute(monitorWorkspace)) {
+    throw new Error("Workspace absoluto do Monitor não está configurado")
+  }
+  const workspace = resolve(monitorWorkspace)
+  if (!isDescendant(resolve(AGENT_WORKSPACES_ROOT), workspace)) {
+    throw new Error(`Workspace do Monitor fora da área autorizada: ${workspace}`)
+  }
+  const task = candidate.taskId.replace(/[^a-zA-Z0-9._-]/g, "-").slice(0, 100)
+  return join(workspace, "worktrees", "promotion-resolutions", `${task}-${evidence.fingerprint.slice(0, 12)}`)
+}
 
 async function git(cwd: string, ...args: string[]): Promise<string> {
   const result = await execFileAsync("git", args, { cwd, timeout: 15 * 60_000, maxBuffer: 8 * 1024 * 1024 })
@@ -52,7 +79,12 @@ export class PromotionConflictResolver implements PromotionConflictResolverPort 
     if (!projectRelative || projectRelative.startsWith("..")) return { kind: "failed", reason: "repo_path fora do repositório Git" }
 
     const branch = resolutionBranch(candidate, evidence)
-    const worktree = await mkdtemp(join(tmpdir(), "motor-promotion-resolution-"))
+    // Consulta o caminho canônico no Console; não use o workspace do agente
+    // da tarefa, pois a sessão executa como o Monitor.
+    const monitorWorkspace = await this.driver.getAgentWorkspace(this.monitorAgentId)
+    const worktreeParent = monitorResolutionWorktreeParent(monitorWorkspace, candidate, evidence)
+    await mkdir(worktreeParent, { recursive: true })
+    const worktree = await mkdtemp(join(worktreeParent, "attempt-"))
     let session: Awaited<ReturnType<ConsoleAgentRuntimeDriver["createSession"]>> | undefined
     try {
       // A branch é derivada do fingerprint e pertence exclusivamente a esta
