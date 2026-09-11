@@ -147,6 +147,22 @@ export {
   sendChatMessageResultSchema,
 } from "./chat"
 
+// Relato de erro (contrato único front↔back)
+export {
+  errorReportUsuarioSchema,
+  errorReportOrigemSchema,
+  errorReportErroSchema,
+  errorReportRequestSchema,
+  errorReportResultSchema,
+} from "./error-report"
+export type {
+  ErrorReportUsuario,
+  ErrorReportOrigem,
+  ErrorReportErro,
+  ErrorReportRequest,
+  ErrorReportResult,
+} from "./error-report"
+
 // HelpDesk persistido no core
 export {
   helpDeskSessionStatusSchema,
