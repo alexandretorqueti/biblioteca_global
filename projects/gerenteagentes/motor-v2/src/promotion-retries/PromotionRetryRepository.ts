@@ -19,6 +19,12 @@ export class PromotionRetryRepository {
       "LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id = pc.id " +
       "WHERE b.resolved_at IS NULL AND b.subtarefa_id IS NULL " +
       `AND ${PROMOTION_DIRTY_SQL_FILTER} ` +
+      // Tarefa já integrada/deployada não é candidata: promover de novo o que já
+      // está na base é exatamente o que a 3ª variante legada de bloqueio sujo
+      // provocaria ao ser reconhecida. Aqui o reconhecimento é para higiene
+      // (`reconcileStalePromotionBlockers`), não para reexecutar promoção.
+      "AND NOT EXISTS (SELECT 1 FROM task_runtime_facts f WHERE f.tarefa_id = t.id AND (f.integration_confirmed_at IS NOT NULL OR f.terminal_status IS NOT NULL)) " +
+      "AND NOT EXISTS (SELECT 1 FROM deploy_requests d WHERE d.tarefa_id = t.id AND d.status = 'succeeded') " +
       `AND b.blocked_at < DATE_SUB(NOW(), INTERVAL ${BACKOFF_MINUTES} MINUTE) ORDER BY b.blocked_at ASC LIMIT 20`,
     )
     return rows.map(identifyDirtyPromotionRetry).filter((item): item is PromotionRetryCandidate => item !== null)

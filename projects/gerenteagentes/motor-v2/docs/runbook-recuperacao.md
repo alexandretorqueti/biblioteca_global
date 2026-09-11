@@ -59,6 +59,22 @@ Sintoma: `bloqueios` com `blocked_environment` (repo ausente, git
 indisponível) ou `systemic_failure` (configuração operacional faltando).
 A subtarefa está `blocked` e a tarefa também.
 
+**Desde 2026-09-11 isso é automático (não precisa de runbook).** O pump do
+coordenador roda `retrySystemBlockedSubtasks()` e retoma sozinho subtarefa
+`blocked` cuja causa é do próprio Motor/ambiente:
+
+- causas cobertas: `blocked_environment`, `systemic_failure`,
+  `model_chain_exhausted`;
+- espera de 90s após o bloqueio (dá chance de o fluxo dono ou o humano agir);
+- teto de 3 retomadas por subtarefa/causa em 24h — ao estourar, o bloqueio é
+  mantido e o motor registra `error` no log (aí sim é caso de runbook);
+- não roda se a tarefa já foi integrada/deployada, se tem deploy concluído, se
+  há execução ativa na subtarefa ou se existe bloqueio de promoção aberto na
+  tarefa (esse pertence ao fluxo de promoção).
+
+O comando manual abaixo continua valendo para os casos **não** cobertos
+(bloqueio de entrega, conflito, decisão humana) e para quando o teto estourou.
+
 1. Corrigir a causa (caminho do repo, `repo_path`/`branch_trabalho`/
    `build_command`/`unit_test_command` no `projeto_motor_config`).
 2. Desbloquear:
@@ -70,6 +86,24 @@ node dist/scripts/recover.js unblock --tarefa <id>
 
 O comando devolve subtarefas `blocked -> pending` e a tarefa `blocked ->
 ready` (ou `planned` se ainda não tem plano). O próximo pump retoma.
+
+## Cenário 2b — bloqueio de promoção obsoleto (limpeza automática)
+
+Sintoma: tarefa **já integrada** (ou deployada) com `bloqueios` aberto de
+promoção — famílias `promotion-conflict`, `promotion-repo-dirty`,
+`motor-v2:repositório principal não está limpo:`,
+`motor-v2:falha na promoção da branch da tarefa:` (ex.: timeout no lock de
+integração). Ele não protege mais nada: esconde o estado derivado e mantém a
+tarefa na fila dos fluxos de promoção.
+
+O pump roda `reconcileStalePromotionBlockers()` antes dos orquestradores de
+promoção e encerra esses bloqueios (`resolved_at = NOW()`) quando a tarefa tem
+`task_runtime_facts.integration_confirmed_at` ou um `deploy_requests` com
+`status = 'succeeded'`. É idempotente e registra `warn` com `blockId`/motivo.
+
+Reconhecer as variantes legadas **não** reativa o retry de promoção: o
+`PromotionRetryRepository` só considera tarefa não integrada, não terminal e
+sem deploy concluído.
 
 ## Cenário 3 — worktree órfão / workspace preso
 
