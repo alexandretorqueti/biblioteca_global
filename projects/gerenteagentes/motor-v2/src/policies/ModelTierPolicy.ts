@@ -37,6 +37,23 @@ export function isModelUnavailableError(error: unknown): boolean {
     message.includes("authentication error") || message.includes("unauthorized")
 }
 
+/**
+ * Indisponibilidade do provedor do MODELO (não do Console/Gateway).
+ *
+ * Cota esgotada, rate limit, chave inválida ou modelo removido chegam pela
+ * sessão remota como texto (`[SESSION_FAILED] ... 429 Your token-plan 1-week
+ * quota has been exhausted`). Sem esta leitura o Motor classificava como falha
+ * transitória do Console e repetia o MESMO modelo indefinidamente (loop
+ * observado em 2026-09-11, subtarefa 1010, ~5 execuções por minuto), em vez de
+ * escalar para o próximo modelo da cadeia do projeto.
+ */
+const MODEL_UNAVAILABLE_TEXT = /quota|rate[_ -]?limit|too many requests|exhausted|insufficient|billing|credits|token-plan|model not found|modelo indispon[ií]vel|model unavailable|model not allowed|no api key|missing api key|provider auth|invalid api key|authentication error|unauthorized|\b(429|401|403|404|422)\b/i
+
+/** Mesma decisão de `isModelUnavailableError`, para falhas que chegam como texto. */
+export function isModelUnavailableFailure(code: string, message: string): boolean {
+  return MODEL_UNAVAILABLE_TEXT.test(`${code} ${message}`)
+}
+
 export function formatSessionKey(input: {
   agentId: string
   taskId: string
