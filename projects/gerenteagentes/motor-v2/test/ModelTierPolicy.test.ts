@@ -54,4 +54,8 @@ describe("ModelTierPolicy", () => {
   it("reconhece modelo recusado pelo runtime como indisponível para a cadeia", () => {
     expect(isModelUnavailableError(new Error("model not allowed: provider/indisponivel"))).toBe(true)
   })
+
+  it("reconhece SESSION_FAILED do Console como indisponibilidade do modelo", () => {
+    expect(isModelUnavailableError(Object.assign(new Error("[SESSION_FAILED] Session failed"), { code: "SESSION_FAILED" }))).toBe(true)
+  })
 })

@@ -796,6 +796,16 @@ class TaskWorker {
             if (result.failure) {
               this.sessionFailure = result.failure
               const remoteReason = formatRemoteSessionFailure(result.failure)
+              // O Console pode devolver SESSION_FAILED sem expor o detalhe do
+              // provedor. Nesse caso o modelo solicitado não deve consumir a
+              // subtarefa inteira: trate-o como indisponível e avance na
+              // cadeia configurada/default.
+              if (isModelUnavailableError(Object.assign(new Error(remoteReason), { code: result.failure.code }))) {
+                lastFailure = `Modelo indisponível: ${model.model} — ${remoteReason}`
+                this.send({ type: "model_unavailable", executionId: input.context.executionId, model: model.model, message: lastFailure })
+                this.log("warn", lastFailure)
+                continue modelLoop
+              }
               if (result.failure.classification === "definitive") {
                 throw new Error("Falha definitiva da sessão remota: " + remoteReason)
               }

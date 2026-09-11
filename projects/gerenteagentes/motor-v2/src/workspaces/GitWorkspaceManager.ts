@@ -284,6 +284,23 @@ export class GitWorkspaceManager {
         targetIsRegistered = worktrees.stdout.split("\n").some((line) => line === `worktree ${target}`)
       }
     }
+    // Retomada do mesmo attempt: se o registro e o diretório continuam
+    // íntegros, o worktree já é o alvo desta execução. Tentar `worktree add`
+    // novamente falha com "already checked out" e transforma uma retomada
+    // válida em stale. Só reutilizamos quando o bloco confirma a branch
+    // esperada; um registro sem branch é removido e segue para a recuperação.
+    const targetHasExpectedBranch = worktrees.stdout.split("\n").some((line) => line === `branch refs/heads/${branch}`)
+    const targetExists = await stat(target).then(() => true).catch(() => false)
+    if (targetIsRegistered && targetExists && targetHasExpectedBranch) {
+      await this.markSafeDirectory(target)
+      return { path: target, projectPath: resolve(join(target, projectRelativePath)), branch, baseCommit }
+    }
+    if (targetIsRegistered && targetExists) {
+      await this.runner.run(["git", "worktree", "remove", "--force", target], repoPath).catch(() => {})
+      await rm(target, { recursive: true, force: true })
+      worktrees = await this.runner.run(["git", "worktree", "list", "--porcelain"], repoPath)
+      targetIsRegistered = worktrees.stdout.split("\n").some((line) => line === `worktree ${target}`)
+    }
     // Branch órfã: existe mas nenhum worktree ativo aponta para ela.
     // Típico quando tentativa anterior criou a branch mas falhou antes do merge.
     const branchExists = await this.runner.run(["git", "show-ref", "--verify", "--quiet", `refs/heads/${branch}`], repoPath)

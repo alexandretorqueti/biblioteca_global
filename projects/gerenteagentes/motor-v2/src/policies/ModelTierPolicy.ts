@@ -28,8 +28,10 @@ export function isModelUnavailableError(error: unknown): boolean {
   const message = candidate.message.toLowerCase()
   return candidate.status === 404 || candidate.status === 422 ||
     code.includes("model_not_found") || code.includes("model_unavailable") ||
+    code.includes("session_failed") ||
     message.includes("model not found") || message.includes("modelo indisponível") ||
-    message.includes("model unavailable") || message.includes("model not allowed")
+    message.includes("model unavailable") || message.includes("model not allowed") ||
+    message.includes("[session_failed]")
 }
 
 export function formatSessionKey(input: {
