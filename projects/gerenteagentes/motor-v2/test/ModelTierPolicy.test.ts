@@ -58,4 +58,8 @@ describe("ModelTierPolicy", () => {
   it("reconhece SESSION_FAILED do Console como indisponibilidade do modelo", () => {
     expect(isModelUnavailableError(Object.assign(new Error("[SESSION_FAILED] Session failed"), { code: "SESSION_FAILED" }))).toBe(true)
   })
+
+  it("reconhece SESSION_FAILED quando o Console devolve payload estruturado", () => {
+    expect(isModelUnavailableError({ code: "SESSION_FAILED", message: "Session failed" })).toBe(true)
+  })
 })

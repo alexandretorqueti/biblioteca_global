@@ -22,10 +22,13 @@ export function defaultChain(phase: ModelPhase): readonly ModelSelection[] {
 }
 
 export function isModelUnavailableError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false
-  const candidate = error as Error & { status?: number; code?: string }
-  const code = candidate.code?.toLowerCase() ?? ""
-  const message = candidate.message.toLowerCase()
+  // O Console pode devolver a falha como Error ou como payload estruturado.
+  // Normalizar ambos evita perder o fallback quando SESSION_FAILED chega sem
+  // ser encapsulado por Error.
+  if (error === null || (typeof error !== "object" && typeof error !== "string")) return false
+  const candidate = typeof error === "string" ? { message: error } : error as { message?: unknown; status?: unknown; code?: unknown }
+  const code = typeof candidate.code === "string" ? candidate.code.toLowerCase() : ""
+  const message = typeof candidate.message === "string" ? candidate.message.toLowerCase() : ""
   return candidate.status === 404 || candidate.status === 422 ||
     code.includes("model_not_found") || code.includes("model_unavailable") ||
     code.includes("session_failed") ||
