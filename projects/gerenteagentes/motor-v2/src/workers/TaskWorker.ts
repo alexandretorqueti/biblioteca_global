@@ -57,6 +57,7 @@ import mysql from "mysql2/promise"
 import {
   getAgentReplyFailureReason,
   classifyNoReplyFailure,
+  computeEffectiveRetryLimit,
   computeNextRetryAt,
   hasExceededRetryLimit,
   formatTerminalDiagnostic,
@@ -709,6 +710,11 @@ class TaskWorker {
     let lastFailure = ""
     const modelFailures: string[] = []
     const sessionRecoveryLimit = resolveSessionRecoveryLimit()
+    // O orçamento é da subtarefa inteira, não de cada modelo da escada.
+    // `deliver_count` é a fonte única de verdade para impedir que uma falha
+    // sem resposta (inclusive MODEL_UNAVAILABLE) reinicie o ciclo para cada
+    // modelo e crie worktrees sem limite.
+    const maxDeliveries = computeEffectiveRetryLimit(input.task.maxRework)
 
     // P1 (Alexandre 2026-09-05): carry-over de aprendizado entre execuções.
     // Se a subtarefa já teve entregas persistidas (rework pós-rejeição,
@@ -724,7 +730,7 @@ class TaskWorker {
       // A recuperação de sessão é uma tentativa adicional, explicitamente
       // limitada, e não deve ser confundida com o rework do gate.
       let sessionRecoveryAttempts = 0
-      for (let attempt = 1; attempt <= input.task.maxRework + sessionRecoveryLimit; attempt += 1) {
+      for (let attempt = 1; deliverCount < maxDeliveries; attempt += 1) {
         deliverCount += 1
         await this.db!.query(
           "UPDATE subtarefas SET status = 'running', deliver_count = ?, resultado = NULL, next_retry_at = NULL, updated_at = NOW() WHERE id = ?",
