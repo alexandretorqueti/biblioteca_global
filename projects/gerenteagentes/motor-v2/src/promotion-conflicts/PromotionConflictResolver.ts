@@ -68,10 +68,11 @@ function resolutionBranch(candidate: PromotionConflictCandidate, evidence: Promo
   return `motor-v2/promotion-resolution/${task}/${evidence.fingerprint.slice(0, 12)}`
 }
 
-function mission(candidate: PromotionConflictCandidate, evidence: PromotionConflictEvidence, branch: string): string {
+export function buildResolutionMission(candidate: PromotionConflictCandidate, evidence: PromotionConflictEvidence, branch: string, workspacePath: string): string {
   return [
     "Você é o Monitor do Motor-v2 e recebeu uma missão de resolução de conflito Git.",
-    "Trabalhe APENAS no workspace fornecido. Não faça push, não altere a base e não mude arquivos de configuração do OpenClaw.",
+    `Trabalhe APENAS neste workspace: ${workspacePath}`,
+    "Não faça push, não altere a base e não mude arquivos de configuração do OpenClaw.",
     `Tarefa: ${candidate.taskId}`,
     `Branch de resolução: ${branch}`,
     `Base: ${evidence.baseBranch} @ ${evidence.baseCommit}`,
@@ -125,9 +126,10 @@ export class PromotionConflictResolver implements PromotionConflictResolverPort 
           agentId: this.monitorAgentId,
           ...sessionIdentity,
           model: this.monitorModel,
-          workspacePath: projectPath,
+          // Sessões normais do Console não aceitam spawnedCwd/workspacePath.
+          // O diretório autorizado é informado explicitamente na missão.
         })
-        const sent = await this.driver.sendMessage({ session, message: mission(candidate, evidence, branch), idempotencyKey: evidence.fingerprint })
+        const sent = await this.driver.sendMessage({ session, message: buildResolutionMission(candidate, evidence, branch, projectPath), idempotencyKey: evidence.fingerprint })
         const completion = await this.driver.waitForRunCompletion(session, sent.runId)
         if (completion.state !== "final") return { kind: "failed", reason: "Monitor não concluiu: " + (completion.errorMessage ?? completion.state) }
         report = completion.content ?? "Monitor resolveu o conflito e os gates passaram."
