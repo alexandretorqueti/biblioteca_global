@@ -62,6 +62,7 @@ import { composeDevelopmentPrompt } from "../prompts/PromptComposition.js"
 import { confirmBaselineIndependentFailure } from "../policies/BaselineConfirmation.js"
 import { digestGateFailure, formatCarryOver, type CarryOverEvent } from "../policies/CarryOverPolicy.js"
 import { formatPriorSubtaskHandoff, parseGitNameStatus, type PriorSubtaskHandoff } from "../policies/SubtaskHandoffPolicy.js"
+import { formatConfigValidationReport, validateProjectConfig } from "../policies/ConfigLintPolicy.js"
 
 const COMMAND_FAILURE_LIMIT = 12_000
 const ANSI_ESCAPE_PATTERN = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g
@@ -1154,6 +1155,20 @@ class TaskWorker {
         }
         throw new Error("Build falhou: " + msg.substring(0, 500), { cause: error })
       }
+    }
+
+    // Configuração e telas custom fazem parte da entrega do setup. O agente
+    // pode compilar mesmo deixando componentId/action sem implementação;
+    // por isso o build sozinho não é evidência suficiente. Valida no
+    // worktree efetivo, antes do gate de testes, e devolve o relatório
+    // determinístico para a próxima entrega.
+    if (input.context.projectSlug && isSetupTask(input.task.title, input.task.description)) {
+      const projectRoot = await resolveGitTopLevel(input.repoPath)
+      const configValidation = validateProjectConfig(projectRoot, input.context.projectSlug)
+      if (!configValidation.ok) {
+        throw new Error(formatConfigValidationReport(configValidation))
+      }
+      this.log("info", formatConfigValidationReport(configValidation))
     }
 
     const correctionFingerprint = input.subtask?.correctionFingerprint
