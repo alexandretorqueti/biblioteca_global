@@ -65,6 +65,9 @@ coordenador roda `retrySystemBlockedSubtasks()` e retoma sozinho subtarefa
 
 - causas cobertas: `blocked_environment`, `systemic_failure`,
   `model_chain_exhausted`;
+- também cobre subtarefa `blocked` **sem nenhum bloqueio aberto** (estado órfão:
+  a evidência foi resolvida mas o status ficou `blocked` — antes ninguém mais
+  olharia para ela);
 - espera de 90s após o bloqueio (dá chance de o fluxo dono ou o humano agir);
 - teto de 3 retomadas por subtarefa/causa em 24h — ao estourar, o bloqueio é
   mantido e o motor registra `error` no log (aí sim é caso de runbook);
@@ -97,9 +100,17 @@ integração). Ele não protege mais nada: esconde o estado derivado e mantém a
 tarefa na fila dos fluxos de promoção.
 
 O pump roda `reconcileStalePromotionBlockers()` antes dos orquestradores de
-promoção e encerra esses bloqueios (`resolved_at = NOW()`) quando a tarefa tem
-`task_runtime_facts.integration_confirmed_at` ou um `deploy_requests` com
-`status = 'succeeded'`. É idempotente e registra `warn` com `blockId`/motivo.
+promoção e encerra esses bloqueios (`resolved_at = NOW()`) em dois recortes:
+
+1. **bloqueio de promoção** em tarefa já integrada **ou** deployada;
+2. **qualquer** bloqueio em tarefa **concluída**: na base, deployada e com
+   todas as subtarefas em estado terminal (`verified`/`superseded`) — cobre os
+   resíduos de `spawn git enoent`, `projeto sem configuração operacional` e
+   deploy antigo na família 741/751/753/754/755/756.
+
+É idempotente e registra `warn` com `blockId`/motivo/`integrada`/`deployada`.
+O segundo recorte é deliberadamente restrito a tarefa concluída: tarefa com
+subtarefa pendente mantém os bloqueios (pode ser caso real).
 
 Reconhecer as variantes legadas **não** reativa o retry de promoção: o
 `PromotionRetryRepository` só considera tarefa não integrada, não terminal e
