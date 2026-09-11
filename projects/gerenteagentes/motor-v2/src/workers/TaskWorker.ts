@@ -19,7 +19,7 @@ import { pathToFileURL } from "node:url"
 import { SecretProfileManager, resolveGitTopLevel } from "../workspaces/SecretProfileManager.js"
 import { DependencyInstaller, isLockfileOutOfSync, resolveInstallTimeoutMs } from "../workspaces/DependencyInstaller.js"
 import { GateFailureClassifier, type GateFailureVerdict } from "../policies/GateFailureClassifier.js"
-import { ConsoleAgentRuntimeDriver, type RemoteSessionFailure, type RuntimeSession, type RuntimeSessionMessage } from "../runtime/ConsoleAgentRuntimeDriver.js"
+import { ConsoleAgentRuntimeDriver, WorkspaceBindingError, type RemoteSessionFailure, type RuntimeSession, type RuntimeSessionMessage } from "../runtime/ConsoleAgentRuntimeDriver.js"
 import type { WorkerInput, ExecutionContext, ExecutionResult, SubtaskInfo } from "../shared/types/execution.js"
 import type { CoordinatorToWorkerMessage, WorkerToCoordinatorMessage } from "./WorkerProtocol.js"
 import { defaultChain, formatSessionKey, isModelUnavailableError, isModelUnavailableFailure, type ModelSelection } from "../policies/ModelTierPolicy.js"
@@ -821,21 +821,43 @@ class TaskWorker {
         this.send({ type: "progress", executionId: input.context.executionId, phase: "execute", message: `Entrega ${deliverCount}, modelo ${model.model}` })
 
         const driver = this.createDriver()
-        // A chave é estável por subtarefa+modelo. Assim um rework retorna ao
-        // mesmo contexto; uma troca de modelo abre uma sessão distinta.
-        const sessionKey = formatSessionKey({ agentId: input.task.agentId, taskId: input.task.id, subtaskId: String(subtask.id), phase: "development", model: model.model, modelIndex, generation: 0 })
+        // Cada entrega tem sessão própria: rework/retry pode apontar para um
+        // worktree recriado, portanto jamais pode herdar o cwd de uma sessão
+        // anterior. O histórico útil continua no carry-over persistido.
+        const sessionKey = formatSessionKey({ agentId: input.task.agentId, taskId: input.task.id, subtaskId: String(subtask.id), phase: "development", model: model.model, modelIndex, generation: deliverCount })
+        // Guarda defensiva (incidente 2026-09-11, task-p2-812/1012): sessão de
+        // desenvolvimento SEM workspace declarado roda no repositório-base e o
+        // agente bloqueia por segurança. Falhar aqui é mais honesto e mais
+        // barato do que descobrir isso depois do prompt enviado.
+        const developmentWorkspace = this.isDevelopmentTask(input) ? input.repoPath : undefined
+        if (this.isDevelopmentTask(input) && !developmentWorkspace) {
+          throw new WorkspaceBindingError(
+            `Tarefa de desenvolvimento sem repoPath: impossível vincular a sessão ao worktree (subtarefa ${subtask.id})`,
+          )
+        }
         let session: RuntimeSession | undefined
         let sessionApproved = false
         let agentSummary: string | null = null
         try {
-          session = await driver.createSession({
-            agentId: input.task.agentId,
-            key: sessionKey,
-            label: sessionKey,
-            model: model.model,
-            // workspacePath não é suportado para sessões normais do Console
-            // (apenas subagent:* ou acp:*). O caminho vai no prompt.
-          })
+          try {
+            session = await driver.createSession({
+              agentId: input.task.agentId,
+              key: sessionKey,
+              label: sessionKey,
+              model: model.model,
+              // O Console valida e aplica o cwd (sessions.patch/spawnedCwd) antes
+              // de o prompt ser enviado; ver WorkspaceBindingError.
+              workspacePath: developmentWorkspace,
+            })
+          } catch (error) {
+            // Vínculo de cwd é ambiente do Motor, nunca culpa da entrega:
+            // registra o bloqueio certo para a retomada automática reexecutar
+            // quando a causa (raiz/worktree) for corrigida.
+            if (error instanceof WorkspaceBindingError) {
+              await this.recordBlocker(subtask, "blocked_environment", error.message)
+            }
+            throw error
+          }
           if (this.isDevelopmentTask(input)) await this.openDeveloperSession(subtask.id, model.model, session)
           const { header: embeddedHeader, context } = this.buildProgrammerPrompt(
             input.task,

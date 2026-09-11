@@ -1,8 +1,43 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { ConsoleAgentRuntimeDriver } from "../src/runtime/ConsoleAgentRuntimeDriver.js"
+import {
+  assertSessionWorkspace,
+  ConsoleAgentRuntimeDriver,
+  WorkspaceBindingError,
+} from "../src/runtime/ConsoleAgentRuntimeDriver.js"
 
 describe("ConsoleAgentRuntimeDriver", () => {
   afterEach(() => vi.restoreAllMocks())
+
+  it("envia workspacePath ao criar a sessão de desenvolvimento (senão o agente roda na base)", async () => {
+    const expected = "/data/workspace/projects/agentes/gerenteagentes/worktrees/task-p2-812/1012/a2/projects/gerenteagentes"
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, key: "dev-task-p2-812-s1012-g2" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }))
+    const driver = new ConsoleAgentRuntimeDriver({ baseUrl: "http://console.test", token: "test-token" })
+
+    await driver.createSession({ agentId: "programador-senior", key: "dev-task-p2-812-s1012-g2", workspacePath: expected })
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(JSON.parse(String(init.body))).toMatchObject({ workspacePath: expected })
+  })
+
+  it("traduz rejeição do Console (INVALID_WORKSPACE_PATH) em erro de vínculo de workspace", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ error: { code: "INVALID_WORKSPACE_PATH", message: "workspacePath must be a descendant of /raiz" } }), { status: 400 }),
+    )
+    const driver = new ConsoleAgentRuntimeDriver({ baseUrl: "http://console.test", token: "test-token" })
+
+    await expect(driver.createSession({ agentId: "programador-senior", key: "k", workspacePath: "/fora/do/root" }))
+      .rejects.toBeInstanceOf(WorkspaceBindingError)
+  })
+
+  it("recusa cwd divergente e ignora ausência de eco (Console não devolve spawnedCwd)", () => {
+    const expected = "/data/workspace/projects/agentes/gerenteagentes/worktrees/task-p2-812/1012/a2/projects/gerenteagentes"
+    expect(() => assertSessionWorkspace(expected, undefined)).not.toThrow()
+    expect(() => assertSessionWorkspace(expected, "")).not.toThrow()
+    expect(() => assertSessionWorkspace(expected, `${expected}/.`)).not.toThrow()
+    expect(() => assertSessionWorkspace(expected, "/data/workspace/projects/agentes/gerenteagentes")).toThrow(WorkspaceBindingError)
+  })
 
   it("remove a sessão pelo endpoint oficial ao encerrar", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(

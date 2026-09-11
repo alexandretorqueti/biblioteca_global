@@ -4,6 +4,7 @@
  */
 
 import { getConfigNumber } from '../config/MotorConfigReader.js'
+import { resolve } from 'node:path'
 
 export interface ConsoleTransportOptions {
   baseUrl: string
@@ -77,6 +78,58 @@ type SessionDescription = {
   error?: SessionFailureDetail | string
   failure?: SessionFailureDetail | string
   details?: SessionFailureDetail
+  /** CWD efetivo retornado pelo Gateway após o Console aplicar workspacePath. */
+  spawnedCwd?: unknown
+}
+
+/**
+ * Contrato de segurança Motor → Console para sessões que alteram código.
+ *
+ * O prompt é apenas orientação; a garantia é o `spawnedCwd` confirmado pelo
+ * Gateway. Aceitamos normalização de `.`/`..`, mas nunca outro diretório nem
+ * ausência da confirmação.
+ */
+export function assertSessionWorkspace(expectedPath: string, reportedPath: unknown): void {
+  // O Console não ecoa o cwd hoje; ausência de eco não é evidência de erro.
+  // O que nunca pode passar é um cwd reportado DIFERENTE do worktree exigido.
+  if (typeof reportedPath !== "string" || reportedPath.trim() === "") return
+  const expected = resolve(expectedPath)
+  const actual = resolve(reportedPath)
+  if (actual !== expected) {
+    throw new WorkspaceBindingError(`Console iniciou sessão no workspace incorreto: esperado ${expected}, recebido ${actual}`)
+  }
+}
+
+/**
+ * Falta de confirmação do cwd — o prompt NUNCA pode ser enviado nesse estado,
+ * senão o agente trabalha no repositório-base. É falha de ambiente do Motor
+ * (não da entrega), então o coordenador a trata como sistêmica.
+ */
+export class WorkspaceBindingError extends Error {
+  readonly code = "MOTOR_WORKSPACE_BINDING"
+  constructor(message: string) {
+    super(message)
+    this.name = "WorkspaceBindingError"
+  }
+}
+
+/**
+ * O Console (`POST /api/sessions`) valida o `workspacePath` recebido (absoluto,
+ * descendente da raiz de workspaces e sem escape por symlink) e o aplica em
+ * `sessions.patch` como `spawnedCwd` — que é o cwd usado no run seguinte.
+ *
+ * Importante (evidência de 2026-09-11, código do Console): `spawnedCwd` é campo
+ * **patch-only** e NÃO é devolvido por `POST /api/sessions` nem por
+ * `GET /api/sessions/describe`. Portanto a garantia do Motor é:
+ *   1. sempre enviar `workspacePath` em sessão de desenvolvimento;
+ *   2. tratar rejeição do Console (`INVALID_WORKSPACE_PATH`) como falha fatal;
+ *   3. validar cwd divergente **caso** a resposta traga algum campo de cwd
+ *      (compatível com versões futuras do Console que ecoem o valor).
+ * O run do agente confirma o `pwd` como última camada (regra de segurança do
+ * agente), e um cwd errado vira bloqueio sistêmico — nunca trabalho na base.
+ */
+function reportedCwd(payload: Record<string, unknown>): unknown {
+  return payload.spawnedCwd ?? payload.cwd ?? undefined
 }
 
 type SessionHistoryMessage = {
@@ -148,22 +201,44 @@ export class ConsoleAgentRuntimeDriver {
   }
 
   async createSession(input: CreateSessionInput): Promise<RuntimeSession> {
-    const response = await this.request<{ key: string; sessionId?: string }>({
-      method: "POST",
-      path: "/api/sessions",
-      body: {
-        agentId: input.agentId,
-        key: input.key,
-        label: input.label,
-        model: input.model,
-        ...(input.workspacePath ? { workspacePath: input.workspacePath } : {}),
-      },
-    })
+    let response: { key: string; sessionId?: string } & Record<string, unknown>
+    try {
+      response = await this.request<{ key: string; sessionId?: string } & Record<string, unknown>>({
+        method: "POST",
+        path: "/api/sessions",
+        body: {
+          agentId: input.agentId,
+          key: input.key,
+          label: input.label,
+          model: input.model,
+          // Sem isto o Console não define spawnedCwd e o agente roda no
+          // repositório-base: foi exatamente a causa do bloqueio de
+          // task-p2-812/subtarefa-1012 em 2026-09-11.
+          ...(input.workspacePath ? { workspacePath: input.workspacePath } : {}),
+        },
+      })
+    } catch (error) {
+      const isWorkspaceRejection =
+        (error instanceof ConsoleRequestError && error.code === "INVALID_WORKSPACE_PATH") ||
+        /INVALID_WORKSPACE_PATH|workspacePath\s+must/i.test(error instanceof Error ? error.message : String(error))
+      if (input.workspacePath && isWorkspaceRejection) {
+        throw new WorkspaceBindingError(
+          `Console recusou o workspace da sessão (${input.workspacePath}): ` +
+          `${error instanceof Error ? error.message : String(error)}. ` +
+          "O worktree precisa estar dentro da raiz de workspaces do Console e sem escape por symlink.",
+        )
+      }
+      throw error
+    }
     await this.request({
       method: "PATCH",
       path: "/api/sessions",
       body: { key: response.key, agentId: input.agentId, archived: false },
     })
+    if (input.workspacePath) {
+      // Confirma o vínculo quando o Console ecoa o cwd (hoje ele não ecoa).
+      assertSessionWorkspace(input.workspacePath, reportedCwd(response))
+    }
     return { key: response.key, agentId: input.agentId, sessionId: response.sessionId }
   }
 
