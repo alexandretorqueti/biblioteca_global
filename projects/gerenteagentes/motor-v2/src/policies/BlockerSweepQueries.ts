@@ -95,3 +95,21 @@ export function orphanBlockedSubtaskSql(): string {
     "ORDER BY s.updated_at ASC LIMIT 5"
   )
 }
+
+/**
+ * Bloqueios espelhados no nível da TAREFA (`subtarefa_id` nulo) com causa de
+ * sistema/ambiente. Eles nascem junto do bloqueio da subtarefa; depois da
+ * retomada automática continuam abertos e mantêm a tarefa fora da seleção —
+ * anulando a retomada (caso real: task-p2-812 em 2026-09-11, bloqueio 841).
+ *
+ * Resolve o espelho no mesmo ciclo em que a subtarefa é retomada. Idempotente e
+ * restrito a causa de sistema, nunca a bloqueio de promoção/entrega.
+ */
+export function resolveTaskLevelSystemBlockersSql(): string {
+  return (
+    "UPDATE bloqueios b SET b.resolved_at = NOW() " +
+    "WHERE b.resolved_at IS NULL AND b.subtarefa_id IS NULL AND b.tarefa_id = ? " +
+    `AND b.block_reason IN ${SYSTEM_BLOCK_REASON_SQL_LIST} ` +
+    `AND NOT ${promotionBlockerSqlFilter("b")}`
+  )
+}

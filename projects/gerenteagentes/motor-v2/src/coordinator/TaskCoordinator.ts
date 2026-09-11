@@ -43,6 +43,7 @@ import {
 } from "../policies/SystemBlockers.js"
 import {
   orphanBlockedSubtaskSql,
+  resolveTaskLevelSystemBlockersSql,
   staleBlockerSweepSql,
   systemBlockedSubtaskSql,
 } from "../policies/BlockerSweepQueries.js"
@@ -534,6 +535,9 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
       if (row.block_id != null) {
         await this.db.query("UPDATE bloqueios SET resolved_at = NOW() WHERE id = ? AND resolved_at IS NULL", [row.block_id])
       }
+      // O bloqueio espelhado no nível da tarefa tem o mesmo motivo e travaria a
+      // seleção: sem resolvê-lo junto, a retomada não produz efeito.
+      await this.db.query(resolveTaskLevelSystemBlockersSql(), [Number(row.tarefa_id)])
       this.logger.warn(
         orphan
           ? "Subtarefa retomada automaticamente (estava blocked sem bloqueio aberto — estado órfão)"
