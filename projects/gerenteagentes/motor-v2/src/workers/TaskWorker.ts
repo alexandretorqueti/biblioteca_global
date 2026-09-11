@@ -393,7 +393,11 @@ class TaskWorker {
       const model = chain[modelIndex]!
       analystSession = await getOrReserveTaskAnalystSession(planningDb, input.task.id, {
         agentId: input.task.agentId,
-        model: analystSession?.model ?? model.model,
+        // A reserva sem runtime_session_id pode ter sido criada pelo degrau
+        // anterior que ficou indisponível. O store atualiza essa reserva para
+        // o modelo corrente; manter analystSession.model aqui repetia o
+        // modelo quebrado e impedia a promoção para o próximo degrau.
+        model: model.model,
         sessionKey: analystSession?.sessionKey ?? `analysis-${input.task.id}`,
       })
       const sessionKey = analystSession.sessionKey
