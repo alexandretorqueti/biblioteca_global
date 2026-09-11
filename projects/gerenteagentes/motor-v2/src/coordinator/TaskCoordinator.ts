@@ -1840,6 +1840,18 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
           "WHERE (t.external_id = ? OR t.id = CAST(? AS UNSIGNED)) AND q.status = 'waiting'",
           [taskId, taskId]
         )
+        // Se o processo foi reiniciado, não há worker em memória para chamar
+        // onTaskPaused(). As subtarefas que ficaram em estado operacional
+        // precisam voltar a pending; caso contrário a tarefa parece pausada,
+        // mas não encontra trabalho retomável depois do resume. O worktree é
+        // mantido: apenas o estado do agendamento é reparado.
+        await tx.query(
+          "UPDATE subtarefas s INNER JOIN tarefas t ON t.id = s.tarefa_id " +
+          "SET s.status = 'pending', s.updated_at = NOW() " +
+          "WHERE (t.external_id = ? OR t.id = CAST(? AS UNSIGNED)) " +
+          "AND s.status IN ('running', 'verifying', 'delivered', 'rework')",
+          [taskId, taskId]
+        )
         await tx.query(
           "UPDATE tarefas SET paused_at = NOW(), resource_wait_key = NULL, resource_wait_id = NULL, resource_wait_position = NULL, updated_at = NOW() " +
           "WHERE external_id = ? OR id = CAST(? AS UNSIGNED)",
