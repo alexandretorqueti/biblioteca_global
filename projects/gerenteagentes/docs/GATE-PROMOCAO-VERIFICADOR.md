@@ -185,3 +185,28 @@ Validação contra o banco real (`projeto_640`, com a derivação canônica): o
 candidato pescado é **#793** (`task-gerenteagentes-analyst-natural-chat-20260908`),
 depois #780 e #792 — exatamente as pendências de promoção.
 
+### Deploy em produção — validado (2026-09-11)
+
+- Merge `578405f` em `base-desenvolvimento`; deploy pelo script canônico
+  (`bash deploy.sh`).
+- **O gate pescou a #793**: criou a corretiva idempotente (subtarefa 1008, seq 11,
+  `correction_fingerprint = promotion-gate:migration-not-journaled:0029_plan_proposals|…`)
+  e devolveu a tarefa ao fluxo (`blocked → ready`, origem `motor-v2:subtasks_pending`)
+  às 16:39:41 UTC. Na janela seguinte pescou a #780 (corretiva 1009, seq 9).
+- Uma pendência por ciclo, sob o lock global `motor:promotion-gate-recovery`.
+
+### ⚠️ Pegadinha do deploy (importante)
+
+O container da API **executa o `dist` do repositório montado do host**
+(`REPO_PATH=/home/alexandre/codigofonte/biblioteca-global`), não o `/app` da
+imagem — o `docker-entrypoint.sh` troca para o bind-mount de propósito
+("código-fonte vivo"). Por isso `docker compose up -d --build api web` **sozinho
+não ativa mudanças do Motor**: a imagem é recompilada em `/app`, mas o processo
+continua rodando o `dist` antigo do volume.
+
+O `deploy.sh` do projeto faz o passo que faltava: cria um container efêmero da
+imagem recém-buildada e copia o `dist` compilado para o repo montado
+(`docker cp …/dist`) antes de recriar `api`/`web`. **Use sempre `bash deploy.sh`**
+(não `docker compose up --build` direto), senão as mudanças do Motor não entram
+em produção.
+
