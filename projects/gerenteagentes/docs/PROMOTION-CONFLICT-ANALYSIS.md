@@ -52,3 +52,13 @@ ou reinícios.
 O endpoint de detalhe da tarefa expõe `promotionConflictAnalysis`. A tela
 **Acompanhar Tarefa** mostra status, arquivos, confiança, erro e o relatório
 completo associado ao bloqueio.
+
+## Retentativa de promoção com checkout sujo
+
+Falhas do tipo `repositório principal não está limpo para promoção` não são
+conflitos semânticos e não devem ser desbloqueadas manualmente. O módulo
+`promotion-retries/` registra um bloqueio estruturado, impede o botão
+**Desbloquear** e, após cinco minutos, tenta novamente sob o lock de
+integração. Há no máximo três tentativas. A promoção bem-sucedida resolve o
+bloqueio, confirma a integração e agenda deploy; um conflito Git encontrado
+na retentativa é convertido para o fluxo do Monitor acima.

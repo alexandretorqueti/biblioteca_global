@@ -1111,6 +1111,21 @@ export class GerenteAgentesService {
       throw new NotFoundException('Tarefa não encontrada');
     }
 
+    // Promoção bloqueada por checkout sujo é transitória e o Motor possui um
+    // recuperador próprio. Desbloquear aqui removeria o único gate antes de o
+    // merge real acontecer e poderia marcar a tarefa como concluída sem base.
+    const bloqueiosAtivos = await db
+      .select({ command: bloqueios.blockCommand, excerpt: bloqueios.blockExcerpt })
+      .from(bloqueios)
+      .where(and(eq(bloqueios.tarefaId, tarefaId), isNull(bloqueios.resolvedAt)));
+    const aguardandoPromocao = bloqueiosAtivos.some((bloqueio) =>
+      (bloqueio.command ?? '').startsWith('motor-v2:promotion-repo-dirty:') ||
+      /Falha na promoção da branch da tarefa: repositório principal não está limpo para promoção:/i.test(bloqueio.excerpt ?? ''),
+    );
+    if (aguardandoPromocao) {
+      throw new BadRequestException('A promoção está aguardando retentativa automática do Motor. Não desbloqueie esta tarefa.');
+    }
+
     const existentes = await db
       .select({ id: subtarefas.id, status: subtarefas.status })
       .from(subtarefas)
