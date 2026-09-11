@@ -28,6 +28,12 @@ export function isModelUnavailableError(error: unknown): boolean {
   const message = candidate.message.toLowerCase()
   return candidate.status === 404 || candidate.status === 422 ||
     code.includes("model_not_found") || code.includes("model_unavailable") ||
+    // O Console pode reportar uma sessão recusada pelo modelo como
+    // SESSION_FAILED, sem expor status HTTP ou um código de modelo. Sem
+    // essa classificação a fase ANALYZE encerra a tarefa antes de tentar o
+    // próximo item da cadeia configurada.
+    code.includes("session_failed") || message.includes("[session_failed]") ||
+    message.includes("session failed") ||
     message.includes("model not found") || message.includes("modelo indisponível") ||
     message.includes("model unavailable") || message.includes("model not allowed")
 }
