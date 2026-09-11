@@ -16,8 +16,45 @@ class NodeGitCommandRunner implements GitCommandRunner {
   async run(command: readonly string[], cwd: string): Promise<{ stdout: string; stderr: string }> {
     const [file, ...args] = command
     if (!file) throw new Error("comando Git vazio")
-    const result = await execFileAsync(file, args, { cwd, timeout: 120_000 })
-    return { stdout: result.stdout, stderr: result.stderr }
+    try {
+      const result = await execFileAsync(file, args, { cwd, timeout: 120_000 })
+      return { stdout: result.stdout, stderr: result.stderr }
+    } catch (error) {
+      throw new GitCommandError(command, cwd, error)
+    }
+  }
+}
+
+export interface GitFailureDiagnostic {
+  command: string[]
+  cwd: string
+  code?: string | number
+  stdout: string
+  stderr: string
+  /** Indica que o estado pode ser corrigido por prune/remove/retry. */
+  recoverable: boolean
+}
+
+/** Erro Git serializável para logs e recuperação manual/automática. */
+export class GitCommandError extends Error {
+  readonly diagnostic: GitFailureDiagnostic
+
+  constructor(command: readonly string[], cwd: string, error: unknown) {
+    const candidate = error as {
+      code?: string | number
+      stdout?: string | Buffer
+      stderr?: string | Buffer
+      message?: string
+    } | undefined
+    const stdout = String(candidate?.stdout ?? "").trim()
+    const stderr = String(candidate?.stderr ?? candidate?.message ?? "").trim()
+    const text = `${stderr}\n${stdout}`
+    const recoverable = /(?:worktree|branch).*(?:already exists|already registered|is locked)|(?:is already checked out|is registered at)/i.test(text)
+    const commandText = command.join(" ")
+    const suffix = [stderr, stdout].filter(Boolean).join(" | ")
+    super(`Git falhou (cwd=${cwd}, comando=${commandText})${suffix ? `: ${suffix}` : ""}`)
+    this.name = "GitCommandError"
+    this.diagnostic = { command: [...command], cwd, code: candidate?.code, stdout, stderr, recoverable }
   }
 }
 
@@ -162,6 +199,14 @@ function pathInsideOrEqual(root: string, target: string): boolean {
   return path === "" || (path !== ".." && !path.startsWith(`..${"/"}`) && !isAbsolute(path))
 }
 
+function registeredWorktreeBranch(worktreeList: string, target: string): string | null {
+  const lines = worktreeList.split("\n")
+  const targetIndex = lines.findIndex((line) => line === `worktree ${target}`)
+  if (targetIndex < 0) return null
+  const branchLine = lines.slice(targetIndex + 1).find((line) => line.startsWith("branch ") || line.startsWith("worktree "))
+  return branchLine?.startsWith("branch refs/heads/") ? branchLine.slice("branch refs/heads/".length) : null
+}
+
 /** Classifica alterações do Git contra o projeto e compartilhamentos declarados. */
 export function classifyDirtyFiles(input: {
   repositoryRoot: string
@@ -258,7 +303,7 @@ export class GitWorkspaceManager {
     if (!/^[a-f0-9]{7,}$/i.test(baseCommit)) throw new Error("commit-base inválido")
 
     const branch = `motor-v2/${task}/${subtask}/a${input.attempt}`
-    await mkdir(join(this.root, task, subtask), { recursive: true })
+    await mkdir(join(workspaceRoot, "worktrees", task, subtask), { recursive: true })
     // Uma tentativa anterior pode ter deixado um worktree prunable e a
     // branch ainda registrada. Elimina somente o registro obsoleto; se o
     // worktree continuar ativo, não toca nele e deixa o Git explicar o
@@ -266,6 +311,19 @@ export class GitWorkspaceManager {
     await this.runner.run(["git", "worktree", "prune"], repoPath).catch(() => {})
     const worktrees = await this.runner.run(["git", "worktree", "list", "--porcelain"], repoPath)
     const targetIsRegistered = worktrees.stdout.split("\n").some((line) => line === `worktree ${target}`)
+    const registeredBranch = registeredWorktreeBranch(worktrees.stdout, target)
+    const targetExists = await stat(target).then(() => true).catch(() => false)
+    if (targetIsRegistered && targetExists && registeredBranch === branch) {
+      const existingCommit = (await this.runner.run(["git", "rev-parse", "--verify", "HEAD"], target)).stdout.trim()
+      if (!validCommit(existingCommit)) throw new Error(`worktree existente com HEAD inválido: ${target}`)
+      await this.markSafeDirectory(target)
+      logger.info(`Worktree existente reutilizado: target=${target}, branch=${branch}`, { taskId: input.taskId, subtaskId: input.subtaskId })
+      return { path: target, projectPath: resolve(join(target, projectRelativePath)), branch, baseCommit: existingCommit }
+    }
+    if (targetIsRegistered && targetExists) {
+      const registered = registeredBranch ?? "detached"
+      throw new Error(`Worktree ocupado no alvo ${target} (branch registrada: ${registered}); remova-o somente após confirmar que não há execução ativa.`)
+    }
     if (!targetIsRegistered) {
       await rm(target, { recursive: true, force: true })
     } else {
@@ -273,7 +331,6 @@ export class GitWorkspaceManager {
       // conseguiu atualizar o administrative dir. Nesse caso o remove é
       // seguro e permite a retomada. Nunca remova à força um worktree que
       // ainda existe: ele pode estar sendo usado por outra execução.
-      const targetExists = await stat(target).then(() => true).catch(() => false)
       if (!targetExists) {
         await this.runner.run(["git", "worktree", "remove", "--force", target], repoPath).catch(() => {})
       }
@@ -283,7 +340,7 @@ export class GitWorkspaceManager {
     const branchExists = await this.runner.run(["git", "show-ref", "--verify", "--quiet", `refs/heads/${branch}`], repoPath)
       .then(() => true)
       .catch(() => false)
-    const branchHasActiveWorktree = branchExists && worktrees.stdout.includes(branch)
+    const branchHasActiveWorktree = branchExists && worktrees.stdout.split("\n").some((line) => line === `branch refs/heads/${branch}`)
     if (branchExists && !branchHasActiveWorktree && !targetIsRegistered) {
       logger.info(`Branch órfã detectada (sem worktree ativo): deletando ${branch}`, { taskId: input.taskId, subtaskId: input.subtaskId })
       await this.runner.run(["git", "branch", "-D", branch], repoPath).catch(() => {})
