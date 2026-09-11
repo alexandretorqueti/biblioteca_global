@@ -36,13 +36,16 @@ import { validateTaskCompletion, formatPromotionValidationReport } from "../poli
 import { isAgentRunFailureWithoutReply } from "../policies/NoReplyFailurePolicy.js"
 import { validateProjectId, formatProjectIdValidationReport } from "../policies/ProjectIdValidationPolicy.js"
 import { verifyAgentInGateway, formatAgentVerificationReport, shouldBlockEnqueue } from "../policies/GatewayAgentVerificationPolicy.js"
-import { PROMOTION_BLOCKER_SQL_FILTER, promotionBlockerSqlFilter } from "../policies/PromotionBlockers.js"
+import { PROMOTION_BLOCKER_SQL_FILTER, isPromotionBlocker } from "../policies/PromotionBlockers.js"
 import {
-  SYSTEM_BLOCK_COOLDOWN_SECONDS,
   SYSTEM_BLOCK_MAX_AUTO_RETRIES,
-  SYSTEM_BLOCK_REASON_SQL_LIST,
   isSystemBlocker,
 } from "../policies/SystemBlockers.js"
+import {
+  orphanBlockedSubtaskSql,
+  staleBlockerSweepSql,
+  systemBlockedSubtaskSql,
+} from "../policies/BlockerSweepQueries.js"
 import { TaskFactsStore } from "../database/TaskFactsStore.js"
 import { identifyWorkspaceAutoRecovery } from "../policies/WorkspaceAutoRecoveryPolicy.js"
 import type { PromotionConflictOrchestrator } from "../promotion-conflicts/PromotionConflictOrchestrator.js"
@@ -441,35 +444,43 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
   }
 
   /**
-   * Encerra bloqueios de promoção **obsoletos**: a tarefa já foi integrada (ou
+   * Encerra bloqueios **obsoletos**: a tarefa já concluiu o ciclo (na base e
    * deployada) e o bloqueio continua aberto. Ele não protege mais nada — só
-   * esconde o estado derivado e mantém a tarefa na fila dos fluxos de promoção
-   * (era o caso de #784 e da família 741/751/753/754/755/756, incluindo as
-   * variantes legadas de "repositório principal não está limpo").
+   * esconde o estado derivado (a tarefa aparece bloqueada/pausada) e mantém a
+   * tarefa na fila dos fluxos de promoção.
+   *
+   * Dois recortes:
+   *  - bloqueio de promoção (conflito / repo sujo / falha na promoção) quando a
+   *    tarefa já está integrada **ou** deployada — cobre as três gerações do
+   *    texto de repo sujo e o caso do lock de integração (#784);
+   *  - **qualquer** bloqueio em tarefa integrada **e** deployada com todas as
+   *    subtarefas em estado terminal — cobre a família 741/751/753/754/755/756
+   *    (resíduos de `spawn git enoent`, `projeto sem configuração operacional`,
+   *    deploy antigo) sem tocar em tarefa que ainda tenha trabalho pendente.
    */
   private async reconcileStalePromotionBlockers(): Promise<void> {
-    const { rows } = await this.db.query(
-      "SELECT b.id, b.tarefa_id, b.subtarefa_id, COALESCE(b.block_reason, '') AS block_reason, " +
-      "LEFT(COALESCE(NULLIF(b.block_command, ''), b.block_excerpt, ''), 80) AS excerpt, t.external_id " +
-      "FROM bloqueios b INNER JOIN tarefas t ON t.id = b.tarefa_id " +
-      "WHERE b.resolved_at IS NULL AND " + promotionBlockerSqlFilter("b") + " " +
-      "AND (EXISTS (SELECT 1 FROM task_runtime_facts f WHERE f.tarefa_id = t.id AND f.integration_confirmed_at IS NOT NULL) " +
-      "     OR EXISTS (SELECT 1 FROM deploy_requests d WHERE d.tarefa_id = t.id AND d.status = 'succeeded')) " +
-      "LIMIT 50",
-    )
+    const { rows } = await this.db.query(staleBlockerSweepSql())
     for (const row of rows) {
       const result = await this.db.query(
         "UPDATE bloqueios SET resolved_at = NOW() WHERE id = ? AND resolved_at IS NULL",
         [row.id],
       )
       if (result.affectedRows === 0) continue
-      this.logger.warn("Bloqueio de promoção obsoleto encerrado (tarefa já integrada)", {
-        taskId: String(row.external_id ?? row.tarefa_id),
-        blockId: Number(row.id),
-        subtaskId: row.subtarefa_id == null ? undefined : Number(row.subtarefa_id),
-        reason: String(row.block_reason ?? ""),
-        excerpt: String(row.excerpt ?? ""),
-      })
+      const promocao = isPromotionBlocker(String(row.block_command ?? ""), String(row.block_excerpt ?? ""))
+      this.logger.warn(
+        promocao
+          ? "Bloqueio de promoção obsoleto encerrado (tarefa já integrada)"
+          : "Bloqueio obsoleto encerrado (tarefa concluída e deployada)",
+        {
+          taskId: String(row.external_id ?? row.tarefa_id),
+          blockId: Number(row.id),
+          subtaskId: row.subtarefa_id == null ? undefined : Number(row.subtarefa_id),
+          reason: String(row.block_reason ?? ""),
+          integrada: Number(row.integrada) === 1,
+          deployada: Number(row.deployada) === 1,
+          excerpt: String(row.block_command || row.block_excerpt || "").slice(0, 80),
+        },
+      )
     }
   }
 
@@ -479,44 +490,39 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
    * runbook. Bloqueio de entrega/promoção fica de fora: retomá-lo sozinho seria
    * pular validação.
    *
-   * Guardas: carência de {@link SYSTEM_BLOCK_COOLDOWN_SECONDS} após o bloqueio;
-   * tarefa não integrada, não terminal e sem deploy concluído; nenhum bloqueio de
-   * promoção aberto na tarefa; nenhuma execução ativa para a subtarefa; e teto de
-   * {@link SYSTEM_BLOCK_MAX_AUTO_RETRIES} retomadas por subtarefa/causa em 24h.
+   * Cobre dois estados que antes só o runbook resolvia:
+   *  1. subtarefa `blocked` com bloqueio aberto de causa do Motor/ambiente;
+   *  2. subtarefa `blocked` **sem nenhum bloqueio aberto** (tarefa órfã: a
+   *     evidência foi resolvida mas o status ficou `blocked` — ninguém mais
+   *     olharia para ela).
+   *
+   * Guardas comuns: carência de `SYSTEM_BLOCK_COOLDOWN_SECONDS`;
+   * tarefa não integrada, não terminal e sem deploy concluído; nenhuma execução
+   * ativa para a subtarefa; e teto de {@link SYSTEM_BLOCK_MAX_AUTO_RETRIES}
+   * retomadas por subtarefa em 24h.
    */
   private async retrySystemBlockedSubtasks(): Promise<void> {
-    const { rows } = await this.db.query(
-      "SELECT b.id AS block_id, b.block_reason, COALESCE(b.block_command, '') AS block_command, " +
-      "COALESCE(b.block_excerpt, '') AS block_excerpt, s.id AS subtarefa_id, s.seq, t.id AS tarefa_id, t.external_id " +
-      "FROM bloqueios b " +
-      "INNER JOIN subtarefas s ON s.id = b.subtarefa_id " +
-      "INNER JOIN tarefas t ON t.id = b.tarefa_id " +
-      "LEFT JOIN task_runtime_facts f ON f.tarefa_id = t.id " +
-      "WHERE b.resolved_at IS NULL AND s.status = 'blocked' " +
-      "AND b.block_reason IN " + SYSTEM_BLOCK_REASON_SQL_LIST + " " +
-      `AND b.blocked_at < DATE_SUB(NOW(), INTERVAL ${SYSTEM_BLOCK_COOLDOWN_SECONDS} SECOND) ` +
-      "AND f.terminal_status IS NULL AND f.integration_confirmed_at IS NULL " +
-      "AND NOT EXISTS (SELECT 1 FROM deploy_requests d WHERE d.tarefa_id = t.id AND d.status = 'succeeded') " +
-      "AND NOT EXISTS (SELECT 1 FROM motor_active_executions e WHERE e.subtarefa_id = s.id AND e.expires_at > NOW()) " +
-      "AND NOT EXISTS (SELECT 1 FROM bloqueios b2 WHERE b2.tarefa_id = t.id AND b2.resolved_at IS NULL AND " +
-      promotionBlockerSqlFilter("b2") + ") " +
-      "ORDER BY b.blocked_at ASC LIMIT 5",
-    )
-    for (const row of rows) {
+    const { rows } = await this.db.query(systemBlockedSubtaskSql())
+    const candidates: Array<Record<string, unknown>> = [...rows]
+
+    const { rows: orphans } = await this.db.query(orphanBlockedSubtaskSql())
+    candidates.push(...orphans)
+
+    for (const row of candidates) {
       const subtaskId = Number(row.subtarefa_id)
       const reason = String(row.block_reason ?? "")
-      if (!isSystemBlocker(reason, String(row.block_command), String(row.block_excerpt))) continue
+      const orphan = Number(row.orphan) === 1
+      if (!orphan && !isSystemBlocker(reason, String(row.block_command), String(row.block_excerpt))) continue
       const { rows: previous } = await this.db.query(
-        "SELECT COUNT(*) AS total FROM bloqueios WHERE subtarefa_id = ? AND block_reason = ? " +
-        "AND resolved_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)",
-        [subtaskId, reason],
+        "SELECT COUNT(*) AS total FROM bloqueios WHERE subtarefa_id = ? AND resolved_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)",
+        [subtaskId],
       )
       if (Number(previous[0]?.total ?? 0) >= SYSTEM_BLOCK_MAX_AUTO_RETRIES) {
         if (!this.systemBlockRetryWarned.has(subtaskId)) {
           this.systemBlockRetryWarned.add(subtaskId)
           this.logger.error(
             "Retomadas automáticas esgotadas para subtarefa bloqueada por falha do Motor/ambiente; bloqueio mantido",
-            { taskId: String(row.external_id ?? row.tarefa_id ?? ""), subtaskId, seq: Number(row.seq), reason },
+            { taskId: String(row.external_id ?? row.tarefa_id ?? ""), subtaskId, seq: Number(row.seq), reason, orphan },
           )
         }
         continue
@@ -525,13 +531,20 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
         "UPDATE subtarefas SET status = 'pending', updated_at = NOW() WHERE id = ? AND status = 'blocked'",
         [subtaskId],
       )
-      await this.db.query("UPDATE bloqueios SET resolved_at = NOW() WHERE id = ? AND resolved_at IS NULL", [row.block_id])
-      this.logger.warn("Subtarefa retomada automaticamente (bloqueio era do Motor/ambiente, não da entrega)", {
-        taskId: String(row.external_id ?? row.tarefa_id ?? ""),
-        subtaskId,
-        seq: Number(row.seq),
-        reason,
-      })
+      if (row.block_id != null) {
+        await this.db.query("UPDATE bloqueios SET resolved_at = NOW() WHERE id = ? AND resolved_at IS NULL", [row.block_id])
+      }
+      this.logger.warn(
+        orphan
+          ? "Subtarefa retomada automaticamente (estava blocked sem bloqueio aberto — estado órfão)"
+          : "Subtarefa retomada automaticamente (bloqueio era do Motor/ambiente, não da entrega)",
+        {
+          taskId: String(row.external_id ?? row.tarefa_id ?? ""),
+          subtaskId,
+          seq: Number(row.seq),
+          reason,
+        },
+      )
     }
   }
 
