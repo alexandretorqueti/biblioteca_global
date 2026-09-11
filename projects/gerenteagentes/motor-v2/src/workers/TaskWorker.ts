@@ -22,7 +22,7 @@ import { GateFailureClassifier, type GateFailureVerdict } from "../policies/Gate
 import { ConsoleAgentRuntimeDriver, type RemoteSessionFailure, type RuntimeSession, type RuntimeSessionMessage } from "../runtime/ConsoleAgentRuntimeDriver.js"
 import type { WorkerInput, ExecutionContext, ExecutionResult, SubtaskInfo } from "../shared/types/execution.js"
 import type { CoordinatorToWorkerMessage, WorkerToCoordinatorMessage } from "./WorkerProtocol.js"
-import { defaultChain, formatSessionKey, isModelUnavailableError, type ModelSelection } from "../policies/ModelTierPolicy.js"
+import { defaultChain, formatSessionKey, isModelUnavailableError, isModelUnavailableFailure, type ModelSelection } from "../policies/ModelTierPolicy.js"
 import { isSystemicFailure } from "../policies/SystemFailurePolicy.js"
 import { blockerEvidence, type BlockerKind } from "../policies/BlockerPolicy.js"
 import { failureFingerprint } from "../policies/SystemFailurePolicy.js"
@@ -90,13 +90,19 @@ export async function persistRemoteSessionFailure(
   subtaskId: number | undefined,
   failure: RemoteSessionFailure,
 ): Promise<void> {
-  // Converter taskId (string ou número) para ID numérico
+  // Converter taskId (string ou número) para ID numérico.
+  // O worker usa conexão mysql2 crua (devolve [rows, fields]); o restante do
+  // Motor usa o adaptador `Db` (devolve { rows }). Sem normalizar, o lookup
+  // falhava sempre e nenhuma falha de sessão era persistida.
   const numeric = /^\d+$/.test(taskId)
-  const lookupResult = await db.query(
+  const raw = await db.query(
     "SELECT id FROM tarefas WHERE " + (numeric ? "(external_id = ? OR id = ?)" : "external_id = ?") + " LIMIT 1",
     numeric ? [taskId, taskId] : [taskId],
-  ) as { rows: Array<{ id: number }> } | undefined
-  const tarefaId = Number(lookupResult?.rows?.[0]?.id ?? 0)
+  ) as unknown
+  const rows = Array.isArray(raw)
+    ? ((raw[0] ?? []) as Array<{ id: number }>)
+    : (((raw as { rows?: Array<{ id: number }> } | undefined)?.rows) ?? [])
+  const tarefaId = Number(rows[0]?.id ?? 0)
   if (!tarefaId) {
     // Tarefa não encontrada - apenas logar e retornar sem persistir
     console.warn(`[persistRemoteSessionFailure] Tarefa não encontrada: ${taskId}`)
@@ -847,6 +853,17 @@ class TaskWorker {
             if (result.failure) {
               this.sessionFailure = result.failure
               const remoteReason = formatRemoteSessionFailure(result.failure)
+              // Cota/limite do provedor do modelo (429, quota esgotada, chave
+              // inválida) chega como falha da sessão do Console. Ler como
+              // indisponibilidade do MODELO faz o worker escalar para o próximo
+              // da cadeia; como falha transitória ele repetiria o MESMO modelo
+              // para sempre (loop de tentativas de 2026-09-11).
+              if (isModelUnavailableFailure(result.failure.code, result.failure.message)) {
+                lastFailure = `Modelo indisponível: ${model.model} — ${remoteReason}`
+                this.send({ type: "model_unavailable", executionId: input.context.executionId, model: model.model, message: lastFailure })
+                this.log("warn", lastFailure)
+                continue modelLoop
+              }
               if (result.failure.classification === "definitive") {
                 throw new Error("Falha definitiva da sessão remota: " + remoteReason)
               }

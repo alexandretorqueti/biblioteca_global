@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { defaultChain, formatSessionKey, isModelUnavailableError } from "../src/policies/ModelTierPolicy.js"
+import { defaultChain, formatSessionKey, isModelUnavailableError, isModelUnavailableFailure } from "../src/policies/ModelTierPolicy.js"
 
 describe("ModelTierPolicy", () => {
   it("mantém cadeias distintas para análise e desenvolvimento", () => {
@@ -53,5 +53,16 @@ describe("ModelTierPolicy", () => {
 
   it("reconhece modelo recusado pelo runtime como indisponível para a cadeia", () => {
     expect(isModelUnavailableError(new Error("model not allowed: provider/indisponivel"))).toBe(true)
+  })
+
+  it("lê cota esgotada do provedor como indisponibilidade do modelo (escalar a cadeia)", () => {
+    expect(isModelUnavailableFailure("SESSION_FAILED", "429 Your token-plan 1-week quota has been exhausted")).toBe(true)
+    expect(isModelUnavailableFailure("429", "Too Many Requests")).toBe(true)
+    expect(isModelUnavailableFailure("HTTP_503", "model not found: qwen3.7-plus")).toBe(true)
+  })
+
+  it("não escala a cadeia por falha operacional genérica da sessão", () => {
+    expect(isModelUnavailableFailure("SESSION_FAILED", "sessão encerrada sem resposta final")).toBe(false)
+    expect(isModelUnavailableFailure("ECONNREFUSED", "socket hang up")).toBe(false)
   })
 })
