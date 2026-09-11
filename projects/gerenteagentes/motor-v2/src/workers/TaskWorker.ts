@@ -461,7 +461,9 @@ class TaskWorker {
             // Verifica se é erro de modelo indisponível (autenticação, provider, etc)
             // Se for, escala para o próximo modelo da cadeia em vez de falhar
             const errorMessage = contextResult.errorMessage || contextResult.state
-            const isUnavailable = contextResult.failure?.code === "missing-provider-auth" ||
+            const isUnavailable = (contextResult.failure != null &&
+              isModelUnavailableFailure(contextResult.failure.code, contextResult.failure.message)) ||
+              contextResult.failure?.code === "missing-provider-auth" ||
               contextResult.failure?.code === "provider_auth_error" ||
               contextResult.failure?.code === "model_unavailable" ||
               errorMessage.toLowerCase().includes("no api key found") ||

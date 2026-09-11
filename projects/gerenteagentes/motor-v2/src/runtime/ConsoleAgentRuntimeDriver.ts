@@ -79,6 +79,16 @@ type SessionDescription = {
   details?: SessionFailureDetail
 }
 
+type SessionHistoryMessage = {
+  role?: string
+  content?: unknown
+  errorCode?: unknown
+  errorMessage?: unknown
+  errorType?: unknown
+  stopReason?: unknown
+  timestamp?: unknown
+}
+
 type SessionFailureDetail = {
   code?: unknown
   message?: unknown
@@ -208,7 +218,8 @@ export class ConsoleAgentRuntimeDriver {
 
         // Tratar falhas como erro
         if (desc.status === "failed" || desc.state === "failed") {
-          const failure = this.describeRemoteFailure(session, runId, desc, "session")
+          const genericFailure = this.describeRemoteFailure(session, runId, desc, "session")
+          const failure = await this.enrichFailureFromHistory(session, runId, genericFailure)
           return { state: "error", runId, errorMessage: failure.message, failure }
         }
 
@@ -379,6 +390,54 @@ export class ConsoleAgentRuntimeDriver {
         ? "remote_code_or_message_indicates_shared_console_failure"
         : classification === "transient" ? "remote_code_or_message_indicates_retryable_failure" : "remote_failure_default_classification",
       fingerprint: `${code}:${message}`.slice(0, 600),
+    }
+  }
+
+  /**
+   * O endpoint de descrição pode devolver apenas `status=failed`, enquanto a
+   * causa do provedor (por exemplo `429 insufficient_quota`) fica registrada
+   * na última mensagem do assistente. Recuperar esse detalhe é necessário para
+   * o worker promover imediatamente ao próximo modelo da cadeia.
+   */
+  private async enrichFailureFromHistory(
+    session: RuntimeSession,
+    runId: string,
+    fallback: RemoteSessionFailure,
+  ): Promise<RemoteSessionFailure> {
+    try {
+      const history = await this.request<{ messages?: SessionHistoryMessage[] }>({
+        method: "GET",
+        path: "/api/chat/history",
+        query: { sessionKey: session.key, agentId: session.agentId, limit: 10, offset: 0 },
+      })
+      const assistant = (history.messages ?? []).filter((message) => message.role === "assistant").pop()
+      const code = this.stringValue(assistant?.errorCode) || this.stringValue(assistant?.errorType)
+      const message = this.stringValue(assistant?.errorMessage)
+      if (!code && !message) return fallback
+
+      const resolvedCode = (code || fallback.code).slice(0, 120)
+      const resolvedMessage = (message || fallback.message).slice(0, 500)
+      const classification = classifyRemoteFailure(resolvedCode, resolvedMessage)
+      return {
+        ...fallback,
+        code: resolvedCode,
+        message: resolvedMessage,
+        occurredAt: normalizeRemoteTimestamp(
+          typeof assistant?.timestamp === "number" || typeof assistant?.timestamp === "string"
+            ? assistant.timestamp
+            : undefined,
+        ) ?? fallback.occurredAt,
+        classification,
+        classificationReason: classification === "systemic"
+          ? "remote_code_or_message_indicates_shared_console_failure"
+          : classification === "transient"
+            ? "remote_code_or_message_indicates_retryable_failure"
+            : "remote_failure_default_classification",
+        fingerprint: `${resolvedCode}:${resolvedMessage}`.slice(0, 600),
+        runId,
+      }
+    } catch {
+      return fallback
     }
   }
 
