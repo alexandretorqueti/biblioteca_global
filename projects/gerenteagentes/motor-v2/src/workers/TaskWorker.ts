@@ -1096,15 +1096,15 @@ class TaskWorker {
     if (!this.db) return
     try {
       // Busca o ID numérico da tarefa no banco
-      const { rows } = await this.db.query(
+      const [rows] = await this.db.query(
         "SELECT id FROM tarefas WHERE external_id = ? OR id = CAST(? AS UNSIGNED) LIMIT 1",
         [taskExternalId, taskExternalId],
-      )
-      if (!rows || rows.length === 0) {
+      ) as unknown as [Array<{ id: number }>]
+      if (rows.length === 0) {
         this.log("warn", "Tarefa não encontrada para registrar sessão do analista: " + taskExternalId)
         return
       }
-      const tarefaId = Number(rows[0].id)
+      const tarefaId = Number(rows[0]?.id)
       
       await this.db.query(
         "INSERT INTO analyst_task_sessions (tarefa_id, session_key, runtime_session_id, model, execution_order, status, opened_at, last_activity_at) " +
