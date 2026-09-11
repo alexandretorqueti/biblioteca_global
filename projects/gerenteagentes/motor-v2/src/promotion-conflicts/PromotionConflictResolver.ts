@@ -48,9 +48,13 @@ export function resolutionAttemptSessionIdentity(
 ): { key: string; label: string } {
   const attempt = basename(worktree)
   const prefix = `motor:promotion-resolution:${candidate.taskId}:${evidence.fingerprint.slice(0, 12)}`
+  const key = `${prefix}:${attempt}`
   return {
-    key: `${prefix}:${attempt}`,
-    label: `Resolução de conflito da tarefa ${candidate.taskId} (${attempt})`,
+    key,
+    // Alguns provedores do Console normalizam títulos humanos antes de
+    // verificar unicidade. O label técnico, igual à chave já única, evita que
+    // dois retries sejam tratados como a mesma sessão por essa normalização.
+    label: key,
   }
 }
 
