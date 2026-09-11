@@ -1088,18 +1088,29 @@ class TaskWorker {
    * executionOrder sequencial, permitindo reconstruir a ordem de execução.
    */
   private async openAnalystTaskSession(
-    taskId: string,
+    taskExternalId: string,
     session: RuntimeSession,
     model: string,
     executionOrder: number,
   ): Promise<void> {
     if (!this.db) return
     try {
+      // Busca o ID numérico da tarefa no banco
+      const { rows } = await this.db.query(
+        "SELECT id FROM tarefas WHERE external_id = ? OR id = CAST(? AS UNSIGNED) LIMIT 1",
+        [taskExternalId, taskExternalId],
+      )
+      if (!rows || rows.length === 0) {
+        this.log("warn", "Tarefa não encontrada para registrar sessão do analista: " + taskExternalId)
+        return
+      }
+      const tarefaId = Number(rows[0].id)
+      
       await this.db.query(
         "INSERT INTO analyst_task_sessions (tarefa_id, session_key, runtime_session_id, model, execution_order, status, opened_at, last_activity_at) " +
         "VALUES (?, ?, ?, ?, ?, 'active', NOW(), NOW()) " +
         "ON DUPLICATE KEY UPDATE runtime_session_id = VALUES(runtime_session_id), model = VALUES(model), status = 'active', last_activity_at = NOW(), closed_at = NULL, close_reason = NULL",
-        [taskId, session.key, session.sessionId ?? null, model, executionOrder],
+        [tarefaId, session.key, session.sessionId ?? null, model, executionOrder],
       )
     } catch (error) {
       this.log("warn", "Falha ao registrar sessão do analista no histórico: " + (error instanceof Error ? error.message : String(error)))
