@@ -622,6 +622,16 @@ export const config: GeradorSistemaConfig = {
             componentId: "taqui-notificacoes-morador",
           },
         },
+        {
+          id: "ocorrencia-devolucao",
+          label: "Registrar Ocorrência / Devolução",
+          path: "ocorrencias/registrar",
+          icon: "report_problem",
+          screen: {
+            kind: "custom",
+            componentId: "taqui-ocorrencia-devolucao",
+          },
+        },
       ],
     },
   ],

@@ -77,6 +77,7 @@ describe("registry de telas custom", () => {
       "taqui-registro-encomenda",
       "taqui-painel-portaria",
       "taqui-notificacoes-morador",
+      "taqui-ocorrencia-devolucao",
     ])
 
     for (const id of ids) {
