@@ -264,8 +264,8 @@ export class GitWorkspaceManager {
     // worktree continuar ativo, não toca nele e deixa o Git explicar o
     // conflito real.
     await this.runner.run(["git", "worktree", "prune"], repoPath).catch(() => {})
-    const worktrees = await this.runner.run(["git", "worktree", "list", "--porcelain"], repoPath)
-    const targetIsRegistered = worktrees.stdout.split("\n").some((line) => line === `worktree ${target}`)
+    let worktrees = await this.runner.run(["git", "worktree", "list", "--porcelain"], repoPath)
+    let targetIsRegistered = worktrees.stdout.split("\n").some((line) => line === `worktree ${target}`)
     if (!targetIsRegistered) {
       await rm(target, { recursive: true, force: true })
     } else {
@@ -276,6 +276,12 @@ export class GitWorkspaceManager {
       const targetExists = await stat(target).then(() => true).catch(() => false)
       if (!targetExists) {
         await this.runner.run(["git", "worktree", "remove", "--force", target], repoPath).catch(() => {})
+        // A stale administrative entry can remain visible in the listing
+        // captured above. Refresh it before deciding whether the branch is
+        // still attached; otherwise the stale entry prevents branch cleanup
+        // and the subsequent `worktree add` fails with "already checked out".
+        worktrees = await this.runner.run(["git", "worktree", "list", "--porcelain"], repoPath)
+        targetIsRegistered = worktrees.stdout.split("\n").some((line) => line === `worktree ${target}`)
       }
     }
     // Branch órfã: existe mas nenhum worktree ativo aponta para ela.
@@ -366,8 +372,17 @@ export class GitWorkspaceManager {
     // Estado existente: branch + worktree ativos → reutiliza (próxima subtarefa
     // da mesma tarefa, retomada após pause, etc.).
     await this.runner.run(["git", "worktree", "prune"], repoPath).catch(() => {})
-    const worktrees = await this.runner.run(["git", "worktree", "list", "--porcelain"], repoPath)
-    const targetIsActive = worktrees.stdout.split("\n").some((line) => line === `worktree ${target}`)
+    let worktrees = await this.runner.run(["git", "worktree", "list", "--porcelain"], repoPath)
+    let targetIsActive = worktrees.stdout.split("\n").some((line) => line === `worktree ${target}`)
+    if (targetIsActive && !(await stat(target).then(() => true).catch(() => false))) {
+      // `worktree prune` may leave an administrative entry behind. Remove the
+      // stale registration and refresh the listing before choosing the
+      // branch/worktree recovery path.
+      await this.runner.run(["git", "worktree", "remove", "--force", target], repoPath).catch(() => {})
+      await rm(target, { recursive: true, force: true })
+      worktrees = await this.runner.run(["git", "worktree", "list", "--porcelain"], repoPath)
+      targetIsActive = worktrees.stdout.split("\n").some((line) => line === `worktree ${target}`)
+    }
     const branchExists = await this.runner.run(["git", "show-ref", "--verify", "--quiet", `refs/heads/${branch}`], repoPath)
       .then(() => true)
       .catch(() => false)
