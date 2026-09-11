@@ -32,7 +32,13 @@ import { existsSync } from "node:fs"
 import { join } from "node:path"
 import { SecretProfileManager, resolveGitTopLevel } from "../workspaces/SecretProfileManager.js"
 import { validateTaskCompletion, formatPromotionValidationReport } from "../policies/PromotionValidationPolicy.js"
-import { isAgentRunFailureWithoutReply } from "../policies/NoReplyFailurePolicy.js"
+import {
+  computeEffectiveRetryLimit,
+  computeNextRetryAt,
+  computeNoReplyFingerprint,
+  formatTerminalDiagnostic,
+  isAgentRunFailureWithoutReply,
+} from "../policies/NoReplyFailurePolicy.js"
 import { validateProjectId, formatProjectIdValidationReport } from "../policies/ProjectIdValidationPolicy.js"
 import { verifyAgentInGateway, formatAgentVerificationReport, shouldBlockEnqueue } from "../policies/GatewayAgentVerificationPolicy.js"
 
@@ -928,10 +934,20 @@ export class TaskCoordinator {
         }
       } else {
         if (worker.subtaskId) {
-          await this.db.query(
-            "UPDATE subtarefas SET status = ?, resultado = ?, next_retry_at = NULL WHERE id = ?",
-            [transient ? "pending" : "blocked", failure.substring(0, 500), worker.subtaskId],
-          )
+          // Uma sessão que falha antes de produzir uma resposta não passa por
+          // TaskWorker.handleNoReplyFailure. Sem este limite, o cleanup chama
+          // pump imediatamente, zera next_retry_at e a mesma subtarefa é
+          // selecionada de novo indefinidamente (e cria worktrees a cada
+          // ciclo). O contador persistido da entrega é a fonte única de
+          // tentativas também para falhas reportadas pelo runtime.
+          if (sessionFailure && sessionFailure.classification === "transient") {
+            await this.handleRuntimeFailureRetry(worker.subtaskId, sessionFailure, failure)
+          } else {
+            await this.db.query(
+              "UPDATE subtarefas SET status = ?, resultado = ?, next_retry_at = NULL WHERE id = ?",
+              [transient ? "pending" : "blocked", failure.substring(0, 500), worker.subtaskId],
+            )
+          }
         }
         const task = await this.repository.getTask(worker.taskId)
         if (task) {
@@ -945,6 +961,44 @@ export class TaskCoordinator {
       }
     } finally {
       await this.finishWorker(executionId, worker)
+    }
+  }
+
+  private async handleRuntimeFailureRetry(subtaskId: number, sessionFailure: RemoteSessionFailure, failure: string): Promise<void> {
+    const { rows } = await this.db.query(
+      "SELECT s.deliver_count, COALESCE(t.max_rework, pmc.default_max_rework, 3) AS max_rework " +
+      "FROM subtarefas s INNER JOIN tarefas t ON t.id = s.tarefa_id " +
+      "LEFT JOIN projetos_captados pc ON pc.id = t.projeto_id " +
+      "LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id = pc.id WHERE s.id = ? LIMIT 1",
+      [subtaskId],
+    )
+    const row = rows[0] as Record<string, unknown> | undefined
+    const deliverCount = Number(row?.deliver_count ?? 0)
+    const configuredMaxRework = Number(row?.max_rework ?? 3)
+    const maxRework = Number.isFinite(configuredMaxRework) ? configuredMaxRework : 3
+    const reason = `${sessionFailure.code}: ${sessionFailure.message}`.slice(0, 500)
+    const fingerprint = computeNoReplyFingerprint("runtime_unavailable", reason)
+    const limit = computeEffectiveRetryLimit(maxRework)
+    const diagnostic = formatTerminalDiagnostic("runtime_unavailable", deliverCount, maxRework, fingerprint, reason)
+
+    await this.db.query(
+      "UPDATE subtarefas SET failure_classification = 'runtime_unavailable', failure_fingerprint = ?, resultado = ?, failure_diagnostic = ?, status = ?, next_retry_at = ?, finalizada_em = ?, updated_at = NOW() WHERE id = ?",
+      [fingerprint.slice(0, 600), diagnostic.slice(0, 500), diagnostic.slice(0, 2000), deliverCount >= limit ? "blocked" : "pending", deliverCount >= limit ? null : computeNextRetryAt(Math.max(1, deliverCount)), deliverCount >= limit ? new Date() : null, subtaskId],
+    )
+
+    await this.db.query(
+      "INSERT INTO subtarefas_entregas (subtarefa_id, deliver_number, model, event_type, reason, created_at) VALUES (?, ?, NULL, ?, ?, NOW())",
+      [subtaskId, deliverCount, deliverCount >= limit ? "blocked" : "gate_rejected", JSON.stringify({ classification: "runtime_unavailable", fingerprint, reason: failure.slice(0, 500) })],
+    ).catch((eventError: unknown) => this.logger.warn("Falha ao registrar falha de runtime: " + describeError(eventError)))
+
+    if (deliverCount >= limit) {
+      await this.db.query(
+        "INSERT INTO bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at) SELECT tarefa_id, ?, 'no_reply_exhausted', ?, ?, NOW() FROM subtarefas WHERE id = ?",
+        [subtaskId, "motor-v2:" + fingerprint, diagnostic.slice(0, 500), subtaskId],
+      )
+      this.logger.error("Falha de runtime sem resposta atingiu o limite; subtarefa bloqueada: " + subtaskId)
+    } else {
+      this.logger.warn("Falha de runtime sem resposta; retry agendado: subtarefa " + subtaskId + " (" + deliverCount + "/" + limit + ")")
     }
   }
 
