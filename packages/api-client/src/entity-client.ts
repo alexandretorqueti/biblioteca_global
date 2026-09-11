@@ -12,6 +12,7 @@ import type {
   ListParams,
   PaginatedResult,
 } from "@biblioteca-global/shared"
+import { RECURSOS_SEM_SLUG } from "@biblioteca-global/shared"
 import type { ApiHttpClient } from "./http"
 
 /**
@@ -19,20 +20,12 @@ import type { ApiHttpClient } from "./http"
  * O CrudService bloqueia esses nomes no CRUD genérico; os controllers
  * específicos (UsuariosController, ProjetosController) respondem em
  * /api/usuarios e /api/projetos diretamente.
- */
-const RESOURCES_COM_ENDPOINT_DEDICADO: ReadonlySet<string> = new Set([
-  "usuarios",
-  "projetos",
-])
-
-/**
- * Resolve o prefixo da URL para um resource: vazio para resources com
- * endpoint dedicado (usuarios, projetos) ou /:slug para os demais.
- * Exportada para uso em outros pontos que montam URLs diretamente
- * (ex.: getLoadOptions no ProjectContext).
+ *
+ * A lista vem do shared porque a MESMA regra monta a chave canônica do
+ * endpoint em `montarEndpointCanonico` — uma só fonte de verdade.
  */
 export function resolverPrefixoResource(slug: string, resource: string): string {
-  return RESOURCES_COM_ENDPOINT_DEDICADO.has(resource) ? "" : `/${slug}`
+  return RECURSOS_SEM_SLUG.has(resource) ? "" : `/${slug}`
 }
 
 export class RestEntityClient<T extends EntityRecord> {
@@ -44,7 +37,7 @@ export class RestEntityClient<T extends EntityRecord> {
     private readonly slug: string,
     private readonly resource: string,
   ) {
-    this.prefixo = RESOURCES_COM_ENDPOINT_DEDICADO.has(resource)
+    this.prefixo = RECURSOS_SEM_SLUG.has(resource)
       ? ""
       : `/${this.slug}`
   }
