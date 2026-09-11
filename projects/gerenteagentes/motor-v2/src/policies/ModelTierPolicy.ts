@@ -66,8 +66,5 @@ export function formatSessionKey(input: {
 }): string {
   const slug = input.model.split("/").at(-1)?.replace(/[^a-zA-Z0-9.-]/g, "_") || "unknown"
   const phase = input.phase === "analysis" ? "analysis" : input.phase === "development" ? "dev" : "monitor"
-  // `generation` é a entrega persistida da subtarefa. Incluí-la na chave é
-  // obrigatório: uma nova tentativa recebe outro worktree e não pode reutilizar
-  // uma sessão criada com o cwd de uma tentativa anterior.
-  return `${phase}-${slug}-${input.taskId}${input.subtaskId ? `-s${input.subtaskId}` : ""}-g${input.generation}`
+  return `${phase}-${slug}-${input.taskId}${input.subtaskId ? `-s${input.subtaskId}` : ""}`
 }

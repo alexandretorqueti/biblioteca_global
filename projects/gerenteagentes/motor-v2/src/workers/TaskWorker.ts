@@ -821,43 +821,32 @@ class TaskWorker {
         this.send({ type: "progress", executionId: input.context.executionId, phase: "execute", message: `Entrega ${deliverCount}, modelo ${model.model}` })
 
         const driver = this.createDriver()
-        // Cada entrega tem sessão própria: rework/retry pode apontar para um
-        // worktree recriado, portanto jamais pode herdar o cwd de uma sessão
-        // anterior. O histórico útil continua no carry-over persistido.
+        // A chave é estável por subtarefa+modelo. Assim um rework retorna ao
+        // mesmo contexto; uma troca de modelo abre uma sessão distinta.
         const sessionKey = formatSessionKey({ agentId: input.task.agentId, taskId: input.task.id, subtaskId: String(subtask.id), phase: "development", model: model.model, modelIndex, generation: deliverCount })
-        // Guarda defensiva (incidente 2026-09-11, task-p2-812/1012): sessão de
-        // desenvolvimento SEM workspace declarado roda no repositório-base e o
-        // agente bloqueia por segurança. Falhar aqui é mais honesto e mais
-        // barato do que descobrir isso depois do prompt enviado.
+        // Guarda defensiva: tarefa de desenvolvimento sem repoPath não tem como
+        // resolver o worktree — falhar aqui é mais honesto que descobrir depois.
         const developmentWorkspace = this.isDevelopmentTask(input) ? input.repoPath : undefined
         if (this.isDevelopmentTask(input) && !developmentWorkspace) {
           throw new WorkspaceBindingError(
-            `Tarefa de desenvolvimento sem repoPath: impossível vincular a sessão ao worktree (subtarefa ${subtask.id})`,
+            `Tarefa de desenvolvimento sem repoPath: impossível resolver o worktree (subtarefa ${subtask.id})`,
           )
         }
         let session: RuntimeSession | undefined
         let sessionApproved = false
         let agentSummary: string | null = null
         try {
-          try {
-            session = await driver.createSession({
-              agentId: input.task.agentId,
-              key: sessionKey,
-              label: sessionKey,
-              model: model.model,
-              // O Console valida e aplica o cwd (sessions.patch/spawnedCwd) antes
-              // de o prompt ser enviado; ver WorkspaceBindingError.
-              workspacePath: developmentWorkspace,
-            })
-          } catch (error) {
-            // Vínculo de cwd é ambiente do Motor, nunca culpa da entrega:
-            // registra o bloqueio certo para a retomada automática reexecutar
-            // quando a causa (raiz/worktree) for corrigida.
-            if (error instanceof WorkspaceBindingError) {
-              await this.recordBlocker(subtask, "blocked_environment", error.message)
-            }
-            throw error
-          }
+          session = await driver.createSession({
+            agentId: input.task.agentId,
+            key: sessionKey,
+            label: sessionKey,
+            model: model.model,
+            // NÃO enviamos workspacePath: o Gateway rejeita `spawnedCwd` em
+            // sessão normal (`src/gateway/sessions-patch.ts`: "spawnedCwd is
+            // only supported for subagent:* or acp:* sessions") — evidência de
+            // 2026-09-11. O caminho do worktree vai no prompt e o agente opera
+            // por caminhos absolutos a partir do workspace do agente.
+          })
           if (this.isDevelopmentTask(input)) await this.openDeveloperSession(subtask.id, model.model, session)
           const { header: embeddedHeader, context } = this.buildProgrammerPrompt(
             input.task,
