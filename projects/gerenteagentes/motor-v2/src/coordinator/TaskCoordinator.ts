@@ -42,6 +42,9 @@ import type { PromotionConflictOrchestrator } from "../promotion-conflicts/Promo
 import type { PromotionConflictCandidate, PromotionConflictPromoterPort } from "../promotion-conflicts/promotion-conflict.types.js"
 import type { PromotionRetryCandidate, PromotionRetryPort, PromotionRetryResult } from "../promotion-retries/promotion-retry.types.js"
 import type { PromotionRetryOrchestrator } from "../promotion-retries/PromotionRetryOrchestrator.js"
+import { verifyWorkspacePromotionGate } from "../promotion-gate/WorkspacePromotionGate.js"
+import { planPromotionRecovery } from "../promotion-gate/PromotionRecoveryPlanner.js"
+import { createPromotionCorrectionSubtask } from "../planning/CorrectionSubtaskStore.js"
 
 interface ActiveWorker {
   taskId: string
@@ -1050,6 +1053,32 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
             // bloqueada, worktree/branch da tarefa preservados para o
             // Alexandre resolver. Sem rebase automático.
             if (worker.taskWorkspace && worker.repoPath && worker.rootBaseBranch) {
+              // Gate final, antes de tocar a base. A verificação e a criação
+              // de corretiva são módulos distintos; falha preserva a branch.
+              let promotionGate
+              try {
+                promotionGate = verifyWorkspacePromotionGate({
+                  worktreePath: worker.taskWorkspace.path,
+                  baseBranch: worker.rootBaseBranch,
+                })
+              } catch (error) {
+                // Falha para COLETAR evidência não é prova de defeito de código;
+                // não cria corretiva espúria. A promoção ainda conserva seus
+                // preflights Git e a falha ambiental entra no fluxo existente.
+                this.logger.warn("Gate de promoção indisponível para inspeção; mantendo preflight Git: " + describeError(error), { taskId: worker.taskId })
+                promotionGate = { ok: true as const, issues: [] }
+              }
+              if (!promotionGate.ok) {
+                const recovery = planPromotionRecovery(promotionGate.issues)
+                if (recovery) await createPromotionCorrectionSubtask(this.db, task.id, recovery)
+                const report = promotionGate.issues.map((issue) => issue.message).join("; ").slice(0, 500)
+                await this.saveTaskTransition(task, "subtasks_pending", { errorMessage: "Gate de promoção reprovado; corretiva criada: " + report })
+                this.publishActivity(worker, { type: "progress", executionPhase: "publish", level: "warn", message: "Gate de promoção reprovado; corretiva automática criada antes do merge." })
+                this.logger.warn("Gate de promoção reprovado; branch preservada", { taskId: worker.taskId, issues: promotionGate.issues.map((issue) => issue.fingerprint) })
+                await this.finishWorker(executionId, worker)
+                await this.pump()
+                return
+              }
               let promotion: TaskPromotionResult | null = null
               try {
                 // LOCK DE INTEGRAÇÃO: promoteTaskBranch faz git switch + merge no
