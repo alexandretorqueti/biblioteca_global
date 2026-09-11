@@ -1749,7 +1749,16 @@ class TaskWorker {
   }
 
   private chainFor(input: WorkerInput, phase: "analysis" | "development"): readonly ModelSelection[] {
-    return input.modelChain && input.modelChain.length > 0 ? input.modelChain : defaultChain(phase)
+    const configured = input.modelChain?.filter((selection) => selection.model.trim().length > 0) ?? []
+    if (configured.length === 0) return defaultChain(phase)
+
+    // A seleção persistida no projeto é prioritária, mas não pode transformar
+    // uma indisponibilidade transitória de um único provedor em falha terminal
+    // da tarefa. Mantém a ordem configurada e acrescenta os defaults ainda não
+    // tentados como fallback determinístico.
+    const configuredModels = new Set(configured.map((selection) => selection.model))
+    const fallback = defaultChain(phase).filter((selection) => !configuredModels.has(selection.model))
+    return [...configured, ...fallback]
   }
 
   private classifyAgentOutcome(content?: string): { kind: "done" } | { kind: "need_help" | "blocked_environment"; reason: string } | { kind: "premise_incorrect"; payload: unknown } {

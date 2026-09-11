@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process"
-import { mkdir, rm } from "node:fs/promises"
+import { mkdir, rm, stat } from "node:fs/promises"
 import { isAbsolute, relative, resolve, join } from "node:path"
 import { promisify } from "node:util"
 import { createLogger } from "../shared/logger.js"
@@ -264,19 +264,27 @@ export class GitWorkspaceManager {
     // worktree continuar ativo, não toca nele e deixa o Git explicar o
     // conflito real.
     await this.runner.run(["git", "worktree", "prune"], repoPath).catch(() => {})
-    // Força limpeza adicional: remove entrada stale que prune não conseguiu
-    // apagar (permissão negada no container, paths diferentes, etc.)
-    await this.runner.run(["git", "worktree", "remove", "--force", target], repoPath).catch(() => {})
     const worktrees = await this.runner.run(["git", "worktree", "list", "--porcelain"], repoPath)
-    const targetIsActive = worktrees.stdout.split("\n").some((line) => line === `worktree ${target}`)
-    if (!targetIsActive) await rm(target, { recursive: true, force: true })
+    const targetIsRegistered = worktrees.stdout.split("\n").some((line) => line === `worktree ${target}`)
+    if (!targetIsRegistered) {
+      await rm(target, { recursive: true, force: true })
+    } else {
+      // Uma entrada stale sem diretório pode sobrar quando o prune não
+      // conseguiu atualizar o administrative dir. Nesse caso o remove é
+      // seguro e permite a retomada. Nunca remova à força um worktree que
+      // ainda existe: ele pode estar sendo usado por outra execução.
+      const targetExists = await stat(target).then(() => true).catch(() => false)
+      if (!targetExists) {
+        await this.runner.run(["git", "worktree", "remove", "--force", target], repoPath).catch(() => {})
+      }
+    }
     // Branch órfã: existe mas nenhum worktree ativo aponta para ela.
     // Típico quando tentativa anterior criou a branch mas falhou antes do merge.
     const branchExists = await this.runner.run(["git", "show-ref", "--verify", "--quiet", `refs/heads/${branch}`], repoPath)
       .then(() => true)
       .catch(() => false)
     const branchHasActiveWorktree = branchExists && worktrees.stdout.includes(branch)
-    if (branchExists && !branchHasActiveWorktree && !targetIsActive) {
+    if (branchExists && !branchHasActiveWorktree && !targetIsRegistered) {
       logger.info(`Branch órfã detectada (sem worktree ativo): deletando ${branch}`, { taskId: input.taskId, subtaskId: input.subtaskId })
       await this.runner.run(["git", "branch", "-D", branch], repoPath).catch(() => {})
     }
