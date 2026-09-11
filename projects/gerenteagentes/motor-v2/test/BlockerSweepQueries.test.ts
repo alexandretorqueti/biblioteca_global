@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
   orphanBlockedSubtaskSql,
+  orphanTaskLevelBlockerSql,
   resolveTaskLevelSystemBlockersSql,
   staleBlockerSweepSql,
   systemBlockedSubtaskSql,
@@ -61,6 +62,17 @@ describe("BlockerSweepQueries", () => {
     // nunca mexe em bloqueio de promoção (fluxo próprio tem orquestração)
     expect(sql).toContain("motor-v2:promotion-conflict:")
     expect(sql).toContain(" AND NOT ")
+  })
+
+  it("libera espelho de tarefa só quando não há subtarefa bloqueada e a tarefa tem plano", () => {
+    const sql = orphanTaskLevelBlockerSql()
+    expect(sql).toContain("b.subtarefa_id IS NULL")
+    expect(sql).toContain("b.block_reason IN ('blocked_environment', 'systemic_failure', 'model_chain_exhausted')")
+    expect(sql).toContain("EXISTS (SELECT 1 FROM subtarefas s WHERE s.tarefa_id = t.id)")
+    expect(sql).toContain("s2.status = 'blocked'")
+    expect(sql).toContain("INTERVAL 90 SECOND")
+    // nunca toca em bloqueio de promoção
+    expect(sql).toContain("motor-v2:promotion-conflict:")
   })
 
   it("nenhuma varredura lê coluna inexistente de tarefas (status)", () => {
