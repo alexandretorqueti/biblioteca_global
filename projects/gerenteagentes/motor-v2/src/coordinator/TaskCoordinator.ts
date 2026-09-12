@@ -596,6 +596,13 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
       // `task.id` é o external_id público (slug); relações usam a FK
       // numérica `tarefas.id`. Nunca enviar o slug para subtarefas.tarefa_id.
       const taskDatabaseId = Number(row.id)
+      if (!Number.isSafeInteger(taskDatabaseId) || taskDatabaseId <= 0) {
+        this.logger.error("ID interno inválido ao reconciliar tarefa órfã; reconciliação ignorada", {
+          taskId: String(row.external_id ?? task.id),
+          taskDatabaseId: row.id,
+        })
+        continue
+      }
       const { rows: subtasks } = await this.db.query("SELECT id, seq, workspace_commit_sha, workspace_status, completion_kind, status, resultado FROM subtarefas WHERE tarefa_id = ? AND status != 'superseded'", [taskDatabaseId])
       const validation = validateTaskCompletion(subtasks.map((st: Record<string, unknown>) => ({ id: Number(st.id), seq: Number(st.seq), workspaceCommitSha: st.workspace_commit_sha ? String(st.workspace_commit_sha) : null, workspaceStatus: st.workspace_status ? String(st.workspace_status) : null, completionKind: st.completion_kind ? String(st.completion_kind) : null, status: String(st.status), resultado: st.resultado ? String(st.resultado) : null })))
       if (!validation.ok) await this.saveTaskTransition(task, "fail", { errorMessage: validation.reason })
