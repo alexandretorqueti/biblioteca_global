@@ -834,6 +834,10 @@ describe('TaskCoordinator', () => {
         })
         return true
       })
+      // Este cenário valida apenas o preenchimento das vagas. A fila de
+      // deploy executada ao final de pump possui reconciliações próprias e
+      // não deve consumir o mock genérico de db desta unidade.
+      vi.spyOn(internals, 'processDeployQueue').mockResolvedValue()
 
       await coordinatorMulti.pump()
 
