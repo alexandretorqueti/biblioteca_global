@@ -44,6 +44,30 @@ da validação desta base visual.
 - **Estações com identidade visual:** ícones representativos por estação (📝 Rascunhos, 🔍 Em análise, ⚙️ Em execução, ✅ Concluídas, 🚀 Deployadas, ⏸️ Aguardando, 🔧 Correção, ⚠️ Atenção, 🚫 Encerradas) + borda superior colorida (4px) + contador em badge circular com fonte monoespaçada (Roboto Mono) + gradiente sutil de topo para base.
 - **Cards informativos:** avatar do projeto (letra + cor determinística) + barra lateral de prioridade (4px: vermelho=alta, laranja=média, verde=baixa) + tempo relativo ("há 2h", "há 1d") + mini barra de progresso para tarefas em execução + tooltip rico (descrição, projeto, prioridade, última atualização).
 
+#### Comportamento do Tooltip da tarefa (2026-09-12)
+
+O cartão de cada tarefa no `TaskFlowMap` possui um Tooltip MUI rico, aberto ao
+passar o mouse sobre qualquer área do cartão ou sobre o ícone de informações.
+Ele fica ancorado no cartão, aparece acima dele com seta e permite que o texto
+quebre linhas; descrições longas não são truncadas (largura máxima de 420px).
+
+O conteúdo é exibido nesta ordem:
+
+1. título da tarefa;
+2. descrição — ou `Tarefa sem descrição` quando o campo estiver vazio, nulo ou
+   ausente;
+3. projeto — usa `projetoNome` e, quando indisponível, `Projeto #<projetoId>`;
+4. prioridade — derivada deterministicamente do status atual (`Alta`, `Média`
+   ou `Baixa`), pois a tarefa não possui campo de prioridade persistido;
+5. última atualização — `updatedAt`, com fallback para `createdAt`, formatada
+   em `pt-BR`; quando nenhuma data existir, exibe `—`.
+
+O hover no cartão abre o mesmo Tooltip acionado pelo ícone de informações. O
+clique no cartão continua selecionando a tarefa e os botões de ação internos
+(`Iniciar`, `Pausar` ou `Retomar`) interrompem a propagação para não selecionar
+novamente o cartão. O Tooltip não exibe responsável, porque essa informação
+ainda não é fornecida pelo backend.
+
 #### 2. Fluxo e movimento
 - **Conexões SVG animadas:** linhas com gradiente em movimento (`stroke-dashoffset` animado) + pontas chevron ("arrow with tail") + efeito "rio" intensificado quando há tarefas se movendo.
 - **Animações suaves:** slide-in na chegada, pulsação em tarefas ativas (scale 1.0→1.02→1.0), glow effect em tarefas processadas pela IA, fade in/out ao entrar/sair de estações. Respeita `prefers-reduced-motion`.
