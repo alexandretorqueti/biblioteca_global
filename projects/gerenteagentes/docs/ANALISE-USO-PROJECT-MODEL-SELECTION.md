@@ -35,21 +35,36 @@ cadeia para selecionar o modelo a ser usado em cada fase da execução.
   `project_slug`/`tipo`; a operação deve ser tratada como configuração
   operacional, não como dado descartável.
 
-## Inventário de definição
+## Inventário de definição e configuração global
 
-Não foi encontrada declaração de `project_model_selection` em `schema.ts` nem
-em `migrations/*.sql` deste projeto. Isso não caracteriza ausência de uso:
-o motor acessa a tabela diretamente via SQL e a tabela pode ser provisionada
-fora das migrations locais. Recomenda-se confirmar e registrar no inventário
-de banco onde a tabela é criada e como ela é migrada antes de qualquer
-alteração estrutural.
+As tabelas são declaradas em `schema.ts` e provisionadas pelas migrations
+`0036_global_model_selection.sql` e `0037_inherit_global_model_selection.sql`:
+
+- `global_model_selection` guarda uma fila por `DEV`, `ANALYST` e `MONITOR`;
+- `project_model_selection` guarda a cópia materializada por projeto e tipo;
+- o trigger da migration `0037` copia as três filas ao inserir um projeto,
+  somente se ainda não houver seleção para aquele slug.
+
+A configuração global não é um fallback de leitura. Ela é persistida e depois
+materializada nos projetos existentes pela operação de propagação; portanto,
+uma edição individual posterior continua sendo a fonte daquele projeto. A
+aplicação global não é atômica entre projetos: cada projeto é transacionado
+separadamente.
 
 ## Recomendação
 
-**Manter a tabela.** Há consumidores de leitura, escrita e interface ativos;
-removê-la quebraria a configuração de modelos e pode bloquear execuções.
-Qualquer substituição deve primeiro migrar o `TaskCoordinator`, a API, a
-tela e os testes, com validação de dados e plano de rollback. Como ação de
-manutenção, documentar a origem/provisionamento da tabela e avaliar a
-inclusão de uma migration ou mecanismo formal de schema compatível com o
-banco do motor.
+**Manter as tabelas.** Há consumidores de leitura, escrita e interface ativos;
+removê-las quebraria a configuração de modelos e pode bloquear execuções.
+Qualquer alteração deve preservar a separação entre a configuração global e a
+cópia individual, além de validar a migration e a propagação parcial.
+
+Limites conhecidos de `project_model_selection`: a tabela não registra se uma
+linha foi herdada ou editada; não há vínculo de versão entre global e projeto;
+uma nova propagação substitui as três filas dos projetos que forem aplicados;
+e falhas em um projeto não desfazem projetos anteriores. O slug precisa ser
+estável e único no cadastro de projetos.
+
+Notas operacionais da migration `0037`: o `CREATE TRIGGER` exige privilégio
+`SUPER` (ou `log_bin_trust_function_creators=1`) quando o binlog está habilitado;
+e a comparação `project_model_selection.project_slug = projetos_captados.slug`
+usa `COLLATE` explícito porque as collations das duas colunas podem divergir.

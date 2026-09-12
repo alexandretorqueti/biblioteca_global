@@ -7,8 +7,10 @@
   "main": "src/index.ts",
   "scripts": {
     "pretest": "cd motor-v2 && ([ -d node_modules ] || npm install --include=dev)",
+    "pretypecheck": "cd motor-v2 && ([ -d node_modules ] || npm install --include=dev)",
     "test": "npm --prefix ./motor-v2 test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "npm --prefix ./motor-v2 run typecheck",
+    "typecheck:project": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
     "@biblioteca-global/schema-tools": "*",
