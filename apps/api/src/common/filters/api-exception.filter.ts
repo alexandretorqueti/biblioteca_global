@@ -155,7 +155,7 @@ export class ApiExceptionFilter implements ExceptionFilter {
     const method = request.method ?? "HTTP"
     // Caminho efetivamente chamado — a chave canônica precisa ser a MESMA que
     // o front monta (senão a deduplicação por endpoint nunca casa).
-    const caminho = request.originalUrl ?? request.url ?? request.route?.path
+    const caminho = request.route?.path ?? request.originalUrl ?? request.url
     if (!this.tasksRepository || projetoId === undefined || !caminho) return
 
     // Política central do shared (subtarefa 2): só erro com indício de defeito

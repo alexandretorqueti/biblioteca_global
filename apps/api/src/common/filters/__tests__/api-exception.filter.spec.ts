@@ -141,6 +141,27 @@ describe("ApiExceptionFilter", () => {
     }))
   })
 
+  it("usa a rota resolvida pelo servidor no fallback 5xx", async () => {
+    const response = criarResponse()
+    const criarTarefaErro = vi.fn().mockResolvedValue(undefined)
+    const filtro = new ApiExceptionFilter(criarEnv(false), { criarTarefaErro })
+
+    filtro.catch(new Error("falha inesperada"), criarHost(response, {
+      method: "post",
+      route: { path: "/api/taqui/clientes/:id" },
+      originalUrl: "/api/taqui/clientes/12",
+      scope: { projeto: { id: 23, slug: "taqui" } },
+    }))
+    await vi.waitFor(() => expect(criarTarefaErro).toHaveBeenCalledOnce())
+
+    expect(criarTarefaErro).toHaveBeenCalledWith(expect.objectContaining({
+      projetoId: 23,
+      endpoint: "POST /api/taqui/clientes/:id",
+      status: 500,
+    }))
+    expect(response.status).toHaveBeenCalledWith(500)
+  })
+
   it("não registra tarefa para 404 nem para validação de entrada", async () => {
     const criarTarefaErro = vi.fn().mockResolvedValue(undefined)
     const filtro = new ApiExceptionFilter(criarEnv(false), { criarTarefaErro })
