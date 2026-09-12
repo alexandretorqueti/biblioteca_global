@@ -1235,7 +1235,7 @@ export class GerenteAgentesService {
     // recuperador próprio. Desbloquear aqui removeria o único gate antes de o
     // merge real acontecer e poderia marcar a tarefa como concluída sem base.
     const bloqueiosAtivos = await db
-      .select({ command: bloqueios.blockCommand, excerpt: bloqueios.blockExcerpt })
+      .select({ reason: bloqueios.blockReason, command: bloqueios.blockCommand, excerpt: bloqueios.blockExcerpt })
       .from(bloqueios)
       .where(and(eq(bloqueios.tarefaId, tarefaId), isNull(bloqueios.resolvedAt)));
     const aguardandoPromocao = bloqueiosAtivos.some((bloqueio) =>
@@ -1246,6 +1246,14 @@ export class GerenteAgentesService {
       throw new BadRequestException('A promoção está aguardando retentativa automática do Motor. Não desbloqueie esta tarefa.');
     }
 
+    // Um bloqueio por limite de entregas é uma trava operacional, não uma
+    // evidência que deva ser apagada. Ao liberar manualmente a tarefa, reinicie
+    // somente o contador das subtarefas bloqueadas para que o Worker possa
+    // executar novamente; `subtarefas_entregas` permanece como auditoria.
+    const limiteDeEntregas = bloqueiosAtivos.some((bloqueio) =>
+      /Limite de entregas atingido/i.test(bloqueio.excerpt ?? ''),
+    );
+
     const existentes = await db
       .select({ id: subtarefas.id, status: subtarefas.status })
       .from(subtarefas)
@@ -1255,7 +1263,11 @@ export class GerenteAgentesService {
     if (existentes.length > 0) {
       await db
         .update(subtarefas)
-        .set({ status: 'pending', updatedAt: new Date() })
+        .set({
+          status: 'pending',
+          ...(limiteDeEntregas ? { deliverCount: 0 } : {}),
+          updatedAt: new Date(),
+        })
         .where(and(eq(subtarefas.tarefaId, tarefaId), eq(subtarefas.status, 'blocked')));
     }
     await db
@@ -1266,6 +1278,7 @@ export class GerenteAgentesService {
     return {
       id: tarefaId,
       subtarefasDesbloqueadas: bloqueadas,
+      contadorDeEntregasZerado: limiteDeEntregas,
       message: existentes.length > 0 ? 'Tarefa desbloqueada' : 'Bloqueio removido',
     };
   }
