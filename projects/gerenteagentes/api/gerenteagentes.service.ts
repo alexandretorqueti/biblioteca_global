@@ -952,17 +952,18 @@ export class GerenteAgentesService {
             this.motorV2Url,
           );
           if (resp.ok) {
-            const motorTask = JSON.parse(resp.body) as { status?: string; subtasks?: unknown[] };
+            const motorTask = JSON.parse(resp.body) as { status?: string; subtasks?: unknown[]; recoveryEligibility?: unknown };
             return {
               ...tarefa,
               status: motorTask.status || 'pending',
               subtaskCount: Array.isArray(motorTask.subtasks) ? motorTask.subtasks.length : 0,
+              ...(motorTask.recoveryEligibility !== undefined ? { recoveryEligibility: motorTask.recoveryEligibility } : {}),
             };
           }
         } catch {
           // Se falhar, usa status padrão (fallback)
         }
-        return { ...tarefa, status: 'pending', subtaskCount: 0 };
+        return { ...tarefa, status: 'pending', subtaskCount: 0, recoveryEligibility: null };
       }),
     );
     
@@ -1687,6 +1688,7 @@ export class GerenteAgentesService {
           attempts: number;
           updatedAt: string;
         } | null;
+        recoveryEligibility?: unknown;
       };
       
       // Busca subtarefas do banco de dados (mesma tabela projeto_640.subtarefas
@@ -1758,6 +1760,7 @@ export class GerenteAgentesService {
           errorMessage: motorTask.errorMessage ?? undefined,
           blockInfo: motorTask.status === 'blocked' ? (motorTask.ultimoBloqueio ?? null) : null,
           promotionConflictAnalysis: motorTask.promotionConflictAnalysis ?? null,
+          recoveryEligibility: motorTask.recoveryEligibility ?? null,
         },
         subtasks,
         currentSubTask,
