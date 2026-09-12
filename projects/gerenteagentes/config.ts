@@ -3,7 +3,7 @@
  *
  * Gerenciamento de agentes de IA com fluxo completo:
  * - Captação: contatos, projetos, definições (via Isa ou manual)
- * - Execução: tarefas com subtarefas, chats, start/pause/resume
+ * - Execução: tarefas com subtarefas, chats e ações de start/pause
  * - Geração macro: analista forte gera tarefas a partir de definições
  *
  * Navegação hierárquica:
@@ -236,13 +236,6 @@ export const config: GeradorSistemaConfig = {
                     method: "POST",
                     path: "/api/gerenteagentes/tarefas/:id/pause",
                     confirm: "Pausar esta tarefa?",
-                  },
-                  {
-                    id: "retomar-tarefa",
-                    label: "Retomar",
-                    method: "POST",
-                    path: "/api/gerenteagentes/tarefas/:id/resume",
-                    confirm: "Retomar execução desta tarefa?",
                   },
                 ],
                 childRoutes: [

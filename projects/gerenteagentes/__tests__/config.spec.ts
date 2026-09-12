@@ -2,7 +2,7 @@
 /**
  * Valida a configuração do projeto `gerenteagentes` — em especial a tela
  * "Tarefas" (kind: cadastro, resource: tarefas) que consome a API interna da
- * plataforma (/api/gerenteagentes/tarefas) e as ações de start/pause/resume.
+ * plataforma (/api/gerenteagentes/tarefas) e as ações de start/pause.
  *
  * Histórico: esta tela já foi validada quando era `kind: "external"` apontando
  * para a API do motor (http://api.tarefas.localhost/api/tasks). O commit
@@ -100,11 +100,11 @@ describe("config do projeto gerenteagentes", () => {
     expect(tela.title).toBe("Tarefas do Projeto")
   })
 
-  it("define as rowActions iniciar/pausar/retomar com POST para a API interna", () => {
+  it("define somente as rowActions iniciar/pausar com POST para a API interna", () => {
     const tela = localizarTelaTarefas() as unknown as ChildRoute
 
     expect(tela.rowActions).toBeDefined()
-    expect(tela.rowActions!.length).toBe(3)
+    expect(tela.rowActions!.length).toBe(2)
 
     const iniciar = tela.rowActions!.find((a) => a.id === "iniciar-tarefa")
     expect(iniciar).toEqual({
@@ -124,14 +124,7 @@ describe("config do projeto gerenteagentes", () => {
       confirm: "Pausar esta tarefa?",
     })
 
-    const retomar = tela.rowActions!.find((a) => a.id === "retomar-tarefa")
-    expect(retomar).toEqual({
-      id: "retomar-tarefa",
-      label: "Retomar",
-      method: "POST",
-      path: "/api/gerenteagentes/tarefas/:id/resume",
-      confirm: "Retomar execução desta tarefa?",
-    })
+    expect(tela.rowActions!.find((a) => a.id === "retomar-tarefa")).toBeUndefined()
   })
 
   it("define os campos obrigatórios da tela tarefas", () => {
