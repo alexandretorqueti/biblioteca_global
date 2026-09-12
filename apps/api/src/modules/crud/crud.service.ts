@@ -41,6 +41,7 @@ export const RESOURCES_RESERVADOS: ReadonlySet<string> = new Set([
   "projetos",
   "projetos_usuarios",
   "refresh_tokens",
+  "erros",
 ])
 
 /** Limite máximo de valores no valuesLast de um orderBy. */
