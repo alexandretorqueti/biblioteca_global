@@ -42,7 +42,8 @@ da validação desta base visual.
 - **Cabeçalho impactante:** ícone `AccountTreeRounded` + título "Mapa Vivo da Operação" (h6, weight 800) + badge "AO VIVO" pulsante (CSS animation `badge-pulse`) + separador visual com gradiente.
 - **Métricas rápidas no topo:** total de tarefas | em andamento | concluídas hoje | bloqueadas (destaque vermelho quando >0).
 - **Estações com identidade visual:** ícones representativos por estação (📝 Rascunhos, 🔍 Em análise, ⚙️ Em execução, ✅ Concluídas, 🚀 Deployadas, ⏸️ Aguardando, 🔧 Correção, ⚠️ Atenção, 🚫 Encerradas) + borda superior colorida (4px) + contador em badge circular com fonte monoespaçada (Roboto Mono) + gradiente sutil de topo para base.
-- **Cards informativos:** avatar do projeto (letra + cor determinística) + barra lateral de prioridade (4px: vermelho=alta, laranja=média, verde=baixa) + tempo relativo ("há 2h", "há 1d") + mini barra de progresso para tarefas em execução + tooltip rico (descrição, projeto, prioridade, última atualização).
+- **Cards informativos:** avatar do projeto (letra + cor determinística) + barra lateral de prioridade (4px: vermelho=alta, laranja=média, verde=baixa) + tempo relativo ("há 2h", "há 1d") + mini barra de progresso para tarefas em execução.
+- **Tooltip da tarefa:** não aparece ao passar o mouse na ficha inteira; é acionado somente ao passar o mouse no ícone de informações (`i`). Exibe apenas as cinco primeiras linhas da descrição, truncando o conteúdo maior, e mantém as informações complementares de projeto, prioridade e última atualização.
 
 #### 2. Fluxo e movimento
 - **Conexões SVG animadas:** linhas com gradiente em movimento (`stroke-dashoffset` animado) + pontas chevron ("arrow with tail") + efeito "rio" intensificado quando há tarefas se movendo.
