@@ -79,4 +79,13 @@ describe("formatCarryOver", () => {
     expect(carryOver).toContain("baseline vermelho")
     expect(carryOver).toContain("conflito na integração com a branch da tarefa")
   })
+
+  it("leva a falha sem resposta ao próximo modelo", () => {
+    const events: CarryOverEvent[] = [
+      { deliverNumber: 5, model: "ollama/qwen2.5-coder:32b", eventType: "agent_no_reply", reason: "The agent run failed before producing a reply." },
+    ]
+    const carryOver = formatCarryOver(events)
+    expect(carryOver).toContain("agente não produziu resposta verificável")
+    expect(carryOver).toContain("ollama/qwen2.5-coder:32b")
+  })
 })

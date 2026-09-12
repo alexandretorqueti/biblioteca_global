@@ -95,6 +95,7 @@ const EVENT_LABELS: Record<string, string> = {
   baseline_red: "baseline vermelho",
   integration_conflict: "conflito na integração com a branch da tarefa",
   integration_gate_failed: "gate de integração falhou após merge na branch da tarefa",
+  agent_no_reply: "agente não produziu resposta verificável",
 }
 
 const RELEVANT_EVENTS = new Set([
@@ -104,6 +105,7 @@ const RELEVANT_EVENTS = new Set([
   "baseline_red",
   "integration_conflict",
   "integration_gate_failed",
+  "agent_no_reply",
 ])
 
 const MAX_CARRY_OVER_EVENTS = 6

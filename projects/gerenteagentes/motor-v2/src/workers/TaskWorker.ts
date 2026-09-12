@@ -961,12 +961,19 @@ class TaskWorker {
           // Essa mensagem nunca pode atravessar o gate como entrega válida.
           const replyFailureReason = getAgentReplyFailureReason(result.content)
           if (replyFailureReason) {
+            // `state=final` sem texto é uma falha do runtime/modelo, não uma
+            // entrega a ser reenfileirada do zero. Retornar aqui recriava o
+            // worker com o primeiro modelo da cadeia e produzia um loop
+            // infinito no mesmo modelo. Registra a evidência e avança já para
+            // o próximo modelo desta mesma execução.
+            lastFailure = replyFailureReason
             await this.db!.query(
-              "UPDATE subtarefas SET status = 'pending', resultado = ?, finalizada_em = NULL, updated_at = NOW() WHERE id = ?",
+              "UPDATE subtarefas SET status = 'rejected', resultado = ?, finalizada_em = NULL, updated_at = NOW() WHERE id = ?",
               [replyFailureReason, subtask.id],
             )
-            this.log("warn", "Agente não produziu resposta verificável; subtarefa reenfileirada: " + subtask.id)
-            return undefined
+            await this.recordDeliveryEvent(subtask.id, deliverCount, model.model, "agent_no_reply", replyFailureReason)
+            this.log("warn", `Agente não produziu resposta verificável (${model.model}); escalando para o próximo modelo.`)
+            continue modelLoop
           }
 
           // Tarefas operacionais não têm artefato de código como entrega. A
@@ -2124,7 +2131,7 @@ class TaskWorker {
     subtaskId: number,
     deliverNumber: number,
     model: string | undefined,
-    eventType: "delivery_started" | "gate_rejected" | "return_for_rework" | "blocked" | "completed" | "baseline_red",
+    eventType: "delivery_started" | "gate_rejected" | "return_for_rework" | "blocked" | "completed" | "baseline_red" | "agent_no_reply",
     reason: string | null,
   ): Promise<void> {
     if (!this.db) return

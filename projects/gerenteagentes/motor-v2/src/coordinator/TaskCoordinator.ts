@@ -173,6 +173,7 @@ interface DeliveryHistoryEntry {
     | "baseline_red"
     | "integration_conflict"
     | "integration_gate_failed"
+    | "agent_no_reply"
   reason: string | null
   createdAt: string
 }
