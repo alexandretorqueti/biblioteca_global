@@ -17,7 +17,6 @@ import {
   SettingsRounded,
   PauseRounded,
   PlayArrowRounded,
-  ReplayRounded,
   UnfoldLessRounded,
   UnfoldMoreRounded,
   WarningAmberRounded,
@@ -72,7 +71,6 @@ interface TaskFlowMapProps {
   carregando?: boolean
   onStartTask?: (id: number) => void
   onPauseTask?: (id: number) => void
-  onResumeTask?: (id: number) => void
 }
 
 interface FlowStation {
@@ -332,7 +330,7 @@ export function getEffectiveStatus(task: FlowTask): string {
 
 const PAGE_SIZE = 10
 
-function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, legendaAtiva, movingIds, compacto, onSelectTask, taskMatchesLegenda, onStartTask, onPauseTask, onResumeTask }: {
+function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, legendaAtiva, movingIds, compacto, onSelectTask, taskMatchesLegenda, onStartTask, onPauseTask }: {
   station: FlowStation
   tarefas: FlowTask[]
   tarefasFiltradas: FlowTask[]
@@ -345,7 +343,6 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, l
   taskMatchesLegenda: (task: FlowTask, station: FlowStation) => boolean
   onStartTask?: (id: number) => void
   onPauseTask?: (id: number) => void
-  onResumeTask?: (id: number) => void
 }) {
   const [expandida, setExpandida] = useState(false)
   const [compactoLocal, setCompactoLocal] = useState<boolean>(true)
@@ -619,8 +616,8 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, l
                     }}
                   />
                 )}
-                {/* Botões de ação (play/pause/restart) — icon-only com tooltip */}
-                {(TASK_STATUS_STARTABLE.has(task.status) || TASK_STATUS_EXECUTING.has(task.status) || task.status === "paused") && (
+                {/* Botões de ação (play/pause) — icon-only com tooltip */}
+                {(TASK_STATUS_STARTABLE.has(task.status) || TASK_STATUS_EXECUTING.has(task.status)) && (
                   <Stack direction="row" justifyContent="flex-end" sx={{ mt: 0.25 }}>
                     {TASK_STATUS_STARTABLE.has(task.status) && onStartTask && (
                       <Tooltip title="Iniciar tarefa" arrow>
@@ -643,18 +640,6 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, l
                           sx={{ p: 0.25 }}
                         >
                           <PauseRounded sx={{ fontSize: 16 }} />
-                        </IconButton>
-                      </Tooltip>
-                    )}
-                    {task.status === "paused" && onResumeTask && (
-                      <Tooltip title="Retomar tarefa" arrow>
-                        <IconButton
-                          size="small"
-                          data-testid={`task-action-resume-${task.id}`}
-                          onClick={(e) => { e.stopPropagation(); onResumeTask(task.id) }}
-                          sx={{ p: 0.25 }}
-                        >
-                          <ReplayRounded sx={{ fontSize: 16 }} />
                         </IconButton>
                       </Tooltip>
                     )}
@@ -683,7 +668,7 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, l
   )
 }
 
-export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", motorActivities = [], onSelectTask, projetos = [], filtros: filtrosExternos, onFiltrosChange, aoVivo = true, carregando = false, onStartTask, onPauseTask, onResumeTask }: TaskFlowMapProps) {
+export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", motorActivities = [], onSelectTask, projetos = [], filtros: filtrosExternos, onFiltrosChange, aoVivo = true, carregando = false, onStartTask, onPauseTask }: TaskFlowMapProps) {
   // Injeta keyframes globais na primeira renderização
   ensureKeyframes()
 
@@ -1209,7 +1194,6 @@ export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", moto
                   taskMatchesLegenda={taskMatchesLegenda}
                   onStartTask={onStartTask}
                   onPauseTask={onPauseTask}
-                  onResumeTask={onResumeTask}
                 />
               </Box>
               {index < MAIN_FLOW.length - 1 && <FlowConnector direction="horizontal" hasMovement={movingIds.size > 0} />}
@@ -1263,7 +1247,6 @@ export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", moto
                   taskMatchesLegenda={taskMatchesLegenda}
                   onStartTask={onStartTask}
                   onPauseTask={onPauseTask}
-                  onResumeTask={onResumeTask}
                 />
               </Box>
               {index < SIDE_FLOW.length - 1 && <FlowConnector direction="horizontal" hasMovement={movingIds.size > 0} />}

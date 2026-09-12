@@ -982,7 +982,45 @@ describe("TaskMonitorScreen — compatibilidade Motor-v2", () => {
     })
     expect(screen.getByTestId("btn-start")).not.toBeDisabled()
     expect(screen.getByTestId("btn-pause")).toBeDisabled()
-    expect(screen.getByTestId("btn-resume")).toBeDisabled()
+    expect(screen.queryByTestId("btn-resume")).not.toBeInTheDocument()
+  })
+
+  it("mantém a tarefa pausada sem botão individual de retomar", async () => {
+    const tarefas = [tarefaFactory(727, "Tarefa pausada", "paused", 2)]
+    globalThis.__bundleFalso = {
+      http: {
+        request: async (method: string, path: string) => {
+          if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(2, "GerenteAgentes")] }
+          if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
+          if (method === "GET" && path.endsWith("/motor-detail")) {
+            return {
+              motorId: "727",
+              exists: true,
+              task: { id: "727", status: "paused", title: "Tarefa pausada" },
+              subtasks: [],
+              currentSubTask: null,
+              events: [],
+            }
+          }
+          if (method === "GET" && path.endsWith("/subtarefas")) return []
+          return {}
+        },
+      },
+    } as never
+
+    render(
+      <BibliotecaThemeProvider>
+        <TaskMonitorScreen />
+      </BibliotecaThemeProvider>,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByTestId("task-paused-banner")).toBeInTheDocument()
+    })
+    expect(screen.queryByTestId("btn-resume")).not.toBeInTheDocument()
+    expect(screen.getByTestId("btn-resume-all")).toBeEnabled()
+    expect(screen.getByTestId("task-paused-banner")).not.toHaveTextContent("Clique em Retomar")
   })
 })
 
