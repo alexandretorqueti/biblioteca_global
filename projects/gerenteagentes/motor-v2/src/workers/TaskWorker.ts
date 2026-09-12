@@ -50,6 +50,7 @@ import {
   fetchTaskClarificationHistory,
   formatHistoryForPrompt,
   persistTaskClarification,
+  persistTaskDeveloperClarification,
 } from "../planning/ClarificationStore.js"
 import type { Db, QueryResult } from "../shared/types/infrastructure.js"
 import { resolveProjectDatabase } from "../database/DrizzleDb.js"
@@ -1003,7 +1004,7 @@ class TaskWorker {
             throw new Error(reason)
           }
           if (outcome.kind === "need_help") {
-            await persistTaskClarification(this.planningDb(), input.task.id, {
+            await persistTaskDeveloperClarification(this.planningDb(), input.task.id, {
               summary: "O desenvolvedor precisa de uma decisão ou informação para concluir a subtarefa #" + subtask.seq + ".",
               questions: [outcome.reason],
             })

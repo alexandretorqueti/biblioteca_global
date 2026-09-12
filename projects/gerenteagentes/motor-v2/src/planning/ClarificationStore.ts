@@ -47,6 +47,16 @@ export function formatClarificationMessage(input: ClarificationQuestions): strin
   return lines.join("\n")
 }
 
+/** Mensagem do DEV; preserva o papel técnico `analyst` para pausar a tarefa. */
+export function formatDeveloperClarificationMessage(input: ClarificationQuestions): string {
+  const lines: string[] = ["🤖 O desenvolvedor precisa de esclarecimentos para concluir a subtarefa.", ""]
+  const summary = input.summary.trim()
+  if (summary) lines.push("Entendimento atual: " + summary, "")
+  input.questions.forEach((question, index) => lines.push(`${index + 1}) ${question.trim()}`))
+  lines.push("", "Responda neste chat para retomar a execução.")
+  return lines.join("\n")
+}
+
 /** Histórico de clarificação formatado para reinjeção no prompt do analista. */
 export function formatHistoryForPrompt(entries: readonly ChatHistoryEntry[]): string {
   if (entries.length === 0) return ""
@@ -92,6 +102,19 @@ export async function persistTaskClarification(
   await db.query(
     "INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) VALUES (?, ?, ?, NOW())",
     [databaseTaskId, CLARIFICATION_ROLE, formatClarificationMessage(input)],
+  )
+}
+
+/** Persiste esclarecimento do DEV sem confundi-lo visualmente com o analista. */
+export async function persistTaskDeveloperClarification(
+  db: Db,
+  taskId: string,
+  input: ClarificationQuestions,
+): Promise<void> {
+  const databaseTaskId = await resolveTaskDatabaseId(db, taskId)
+  await db.query(
+    "INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) VALUES (?, ?, ?, NOW())",
+    [databaseTaskId, CLARIFICATION_ROLE, formatDeveloperClarificationMessage(input)],
   )
 }
 

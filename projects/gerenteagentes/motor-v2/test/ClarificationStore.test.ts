@@ -3,6 +3,7 @@ import {
   formatClarificationMessage,
   formatHistoryForPrompt,
   persistTaskClarification,
+  formatDeveloperClarificationMessage,
   persistTaskClarificationAnswer,
   fetchTaskClarificationHistory,
 } from "../src/planning/ClarificationStore.js"
@@ -47,6 +48,9 @@ describe("formatHistoryForPrompt", () => {
 })
 
 describe("persistTaskClarification", () => {
+  it("identifica o desenvolvedor sem alterar o mecanismo de pausa", () => {
+    expect(formatDeveloperClarificationMessage({ summary: "s", questions: ["p?"] })).toContain("O desenvolvedor precisa")
+  })
   it("resolve a tarefa por external_id e grava mensagem analyst", async () => {
     const db = mockDb([
       { rows: [{ id: 42 }], affectedRows: 0, insertId: 0 },
