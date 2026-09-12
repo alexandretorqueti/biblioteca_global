@@ -44,7 +44,7 @@ import { ProvisionService } from '../../../apps/api/src/modules/provision/provis
 import { RealtimeService } from '../../../apps/api/src/modules/realtime/realtime.service';
 
 const DEFAULT_SESSION_PAGE_SIZE = 50;
-const MAX_SESSION_PAGE_SIZE = 100;
+const MAX_SESSION_PAGE_SIZE = 500;
 
 type SessionMessagesQuery = {
   sessionKey?: string;
@@ -211,7 +211,8 @@ export class GerenteAgentesService {
       .from(subtarefas)
       .where(and(eq(subtarefas.tarefaId, tarefaId), eq(subtarefas.seq, seq)))
       .limit(1);
-    if (!subtarefa) return { available: false, messages: [], text: '' };
+    if (!subtarefa) return { available: false, sessions: [] };
+    const pageSize = await this.resolveSessionPageSize(db, options.pageSize);
     const sessions = await db
       .select({ id: motorAgentSessions.id, sessionKey: motorAgentSessions.sessionKey })
       .from(motorAgentSessions)
@@ -225,7 +226,7 @@ export class GerenteAgentesService {
     if (options.sessionKey && !selected) throw new NotFoundException('Sessão não encontrada');
     const visibleSessions = selected ? [selected] : sessions;
     const result = await Promise.all(visibleSessions.map((session) =>
-      this.paginaMensagensMotor(db, session, options),
+      this.paginaMensagensMotor(db, session, { ...options, pageSize }),
     ));
     return { available: true, sessions: result };
   }
@@ -251,6 +252,7 @@ export class GerenteAgentesService {
     if (!tarefa) throw new NotFoundException('Tarefa não encontrada');
     if (tarefa.projetoId !== projeto.id) throw new NotFoundException('Tarefa não encontrada');
 
+    const pageSize = await this.resolveSessionPageSize(db, options.pageSize);
     const sessions = await db
       .select({
         id: analystTaskSessions.id,
@@ -276,7 +278,7 @@ export class GerenteAgentesService {
     if (options.sessionKey && !selected) throw new NotFoundException('Sessão não encontrada');
     const visibleSessions = selected ? [selected] : sessions;
     const result = await Promise.all(visibleSessions.map(async (session) => {
-      const messages = await this.paginaMensagensAnalista(db, session, options);
+      const messages = await this.paginaMensagensAnalista(db, session, { ...options, pageSize });
       return {
         id: session.id,
         executionOrder: session.executionOrder,
@@ -292,6 +294,21 @@ export class GerenteAgentesService {
     }));
 
     return { available: true, sessions: result };
+  }
+
+  private async resolveSessionPageSize(
+    db: Awaited<ReturnType<GerenteAgentesService['dbDoMotor']>>,
+    requested: number | undefined,
+  ): Promise<number> {
+    if (requested !== undefined) return normalizePageSize(requested);
+    const [config] = await db.select({ valor: motorConfiguracoes.valor })
+      .from(motorConfiguracoes)
+      .where(eq(motorConfiguracoes.chave, 'motor.session_history_page_size'))
+      .limit(1);
+    const definition = configuracaoPorChave('motor.session_history_page_size');
+    return definition?.validar(config?.valor)
+      ? normalizePageSize(config!.valor as number)
+      : DEFAULT_SESSION_PAGE_SIZE;
   }
 
   private async paginaMensagensMotor(

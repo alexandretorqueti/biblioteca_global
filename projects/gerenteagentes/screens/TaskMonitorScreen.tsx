@@ -139,15 +139,26 @@ interface SubTarefaDb {
 }
 
 interface SessionMessage {
-  role: "agent" | "user" | "system"
+  role: string
   text: string
+}
+
+interface SessionMessagesPage {
+  items: SessionMessage[]
+  nextCursor: string | null
+  hasNextPage: boolean
+}
+
+interface SubtaskSessionAttempt {
+  id?: number
+  sessionKey: string
+  messages: SessionMessagesPage
+  text?: string
 }
 
 interface SubtaskSession {
   available: boolean
-  sessionKey?: string
-  text: string
-  messages: SessionMessage[]
+  sessions: SubtaskSessionAttempt[]
 }
 
 interface AnalystSessionMessage {
@@ -164,8 +175,8 @@ interface AnalystSessionEntry {
   openedAt: string
   closedAt: string | null
   closeReason: string | null
-  messages: AnalystSessionMessage[]
-  text: string
+  messages: SessionMessagesPage
+  text?: string
 }
 
 interface AnalystTaskSessionsResponse {
@@ -1143,6 +1154,38 @@ export default function TaskMonitorScreen(): ReactNode {
     }
   }, [bundle, tarefaId])
 
+  const carregarMaisSessao = useCallback(async (sessionKey: string, cursor: string) => {
+    if (!bundle || tarefaId === "") return
+    const data = await bundle.http.request<SubtaskSession>(
+      "GET", `/gerenteagentes/tarefas/${tarefaId}/subtarefas/${sessionSubtask?.seq ?? 0}/sessao`,
+      { query: { sessionKey, cursor }, auth: "access" },
+    )
+    setSessionData((atual) => atual ? {
+      ...atual,
+      sessions: atual.sessions.map((sessao) => sessao.sessionKey !== sessionKey ? sessao : {
+        ...sessao,
+        messages: { ...sessao.messages, items: [...sessao.messages.items, ...((data.sessions.find((s) => s.sessionKey === sessionKey)?.messages.items) ?? [])], nextCursor: data.sessions.find((s) => s.sessionKey === sessionKey)?.messages.nextCursor ?? null, hasNextPage: data.sessions.find((s) => s.sessionKey === sessionKey)?.messages.hasNextPage ?? false },
+      }),
+    } : atual)
+  }, [bundle, tarefaId, sessionSubtask])
+
+  const carregarMaisSessaoAnalista = useCallback(async (sessionKey: string, cursor: string) => {
+    if (!bundle || tarefaId === "") return
+    const data = await bundle.http.request<AnalystTaskSessionsResponse>(
+      "GET", `/gerenteagentes/tarefas/${tarefaId}/sessoes-analista`,
+      { query: { sessionKey, cursor }, auth: "access" },
+    )
+    const pagina = data.sessions.find((s) => s.sessionKey === sessionKey)?.messages
+    if (!pagina) return
+    setAnalystSessionData((atual) => atual ? {
+      ...atual,
+      sessions: atual.sessions.map((sessao) => sessao.sessionKey !== sessionKey ? sessao : {
+        ...sessao,
+        messages: { ...sessao.messages, items: [...sessao.messages.items, ...pagina.items], nextCursor: pagina.nextCursor, hasNextPage: pagina.hasNextPage },
+      }),
+    } : atual)
+  }, [bundle, tarefaId])
+
   /**
    * O Motor-v2 expõe os dados da tarefa, mas subtarefas podem chegar vazias
    * durante uma atualização gradual do proxy. A tabela do projeto é a fonte
@@ -1875,9 +1918,16 @@ export default function TaskMonitorScreen(): ReactNode {
             <Typography color="text.secondary" data-testid="session-unavailable">Nenhuma sessão disponível para esta subtarefa.</Typography>
           )}
           {!sessionLoading && !sessionError && sessionData?.available && (
-            <Box component="pre" data-testid="session-content" sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: "65vh", overflow: "auto", m: 0, p: 2, bgcolor: "action.hover", borderRadius: 1, fontFamily: "monospace", fontSize: "0.85rem" }}>
-              {sessionData.text}
-            </Box>
+            <Stack spacing={2} data-testid="session-list">
+              {sessionData.sessions.map((session, sessionIndex) => <Paper key={session.sessionKey} variant="outlined" sx={{ p: 2 }} data-testid={`session-${sessionIndex + 1}`}>
+                {sessionIndex > 0 && <Box sx={{ borderTop: 2, borderColor: "divider", mb: 2 }} data-testid="session-separator" />}
+                <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1 }}>Tentativa {sessionIndex + 1}</Typography>
+                <Box component="pre" data-testid={sessionIndex === 0 ? "session-content" : `session-content-${sessionIndex + 1}`} sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: "65vh", overflow: "auto", m: 0, p: 2, bgcolor: "action.hover", borderRadius: 1, fontFamily: "monospace", fontSize: "0.85rem" }}>
+                  {session.messages.items.map((message, index) => <Box key={`${message.sequenceNumber}-${index}`} component="div" sx={{ mb: 1 }}>{`[${message.role}]\n${message.text}`}</Box>)}
+                </Box>
+                {session.messages.hasNextPage && session.messages.nextCursor && <Button size="small" onClick={() => void carregarMaisSessao(session.sessionKey, session.messages.nextCursor!)} data-testid={`session-load-more-${sessionIndex + 1}`}>Carregar mais</Button>}
+              </Paper>)}
+            </Stack>
           )}
         </DialogContent>
       </Dialog>
@@ -1924,8 +1974,9 @@ export default function TaskMonitorScreen(): ReactNode {
                     {session.closeReason ? ` · Motivo: ${session.closeReason}` : ""}
                   </Typography>
                   <Box component="pre" data-testid={`analyst-session-content-${session.executionOrder}`} sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: "40vh", overflow: "auto", m: 0, p: 2, bgcolor: "action.hover", borderRadius: 1, fontFamily: "monospace", fontSize: "0.85rem" }}>
-                    {session.text}
+                    {session.messages.items.map((message, index) => <Box key={`${message.sequenceNumber}-${index}`} component="div" sx={{ mb: 1 }}>{`[${message.role}]\n${message.text}`}</Box>)}
                   </Box>
+                  {session.messages.hasNextPage && session.messages.nextCursor && <Button size="small" onClick={() => void carregarMaisSessaoAnalista(session.sessionKey, session.messages.nextCursor!)} data-testid={`analyst-session-load-more-${session.executionOrder}`}>Carregar mais</Button>}
                 </Paper>
               ))}
             </Stack>
