@@ -961,6 +961,22 @@ describe('TaskCoordinator', () => {
   })
 
   describe('saveTaskTransition fail', () => {
+    it('resolve task-p2-819 antes de persistir systemic_failure e preserva o erro original', async () => {
+      const internals = coordinator as unknown as {
+        persistTaskBlock: (taskId: string, subtaskId: number | null, reason: string, command: string, excerpt: string) => Promise<void>
+      }
+      const originalError = "Truncated incorrect DOUBLE value: 'task-p2-819'"
+
+      await internals.persistTaskBlock('task-p2-819', null, 'systemic_failure', 'motor-v2:db', originalError)
+
+      const insert = vi.mocked(db.query).mock.calls.find(([sql]) => String(sql).includes('INSERT INTO bloqueios'))
+      expect(insert).toBeDefined()
+      expect(String(insert?.[0])).toContain('SELECT t.id, NULL')
+      expect(String(insert?.[0])).toContain('WHERE t.external_id = ? OR t.id = CAST(? AS UNSIGNED)')
+      expect(insert?.[1]).toEqual(['systemic_failure', 'motor-v2:db', originalError, 'task-p2-819', 'task-p2-819'])
+      expect(String(insert?.[0])).not.toContain('VALUES (\'task-p2-819\'')
+    })
+
     it('com skipBlocker não duplica o registro de bloqueio; sem skipBlocker registra', async () => {
       const internals = coordinator as unknown as {
         saveTaskTransition: (task: unknown, transition: string, patch?: Record<string, unknown>, options?: { skipBlocker?: boolean }) => Promise<void>
