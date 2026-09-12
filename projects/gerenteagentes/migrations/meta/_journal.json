@@ -253,6 +253,20 @@
       "when": 1789170120000,
       "tag": "0035_monitor_recovery_prompt",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "5",
+      "when": 1789170180000,
+      "tag": "0036_global_model_selection",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "5",
+      "when": 1789170240000,
+      "tag": "0037_inherit_global_model_selection",
+      "breakpoints": true
     }
   ]
 }

@@ -70,7 +70,7 @@ function validateEntry(value: unknown, path: string, issues: string[]): value is
   if (!hasExactlyKeys(value, ["ordem", "provider", "model", "enabled"])) {
     issues.push(`${path} contém campos ausentes ou extras`)
   }
-  if (!Number.isSafeInteger(value.ordem) || value.ordem <= 0) issues.push(`${path}.ordem deve ser inteiro positivo`)
+  if (!Number.isSafeInteger(value.ordem) || (typeof value.ordem === "number" && value.ordem <= 0)) issues.push(`${path}.ordem deve ser inteiro positivo`)
   if (typeof value.provider !== "string" || value.provider.trim() === "") issues.push(`${path}.provider não pode ser vazio`)
   if (typeof value.model !== "string" || value.model.trim() === "") issues.push(`${path}.model não pode ser vazio`)
   if (typeof value.enabled !== "boolean") issues.push(`${path}.enabled deve ser booleano`)

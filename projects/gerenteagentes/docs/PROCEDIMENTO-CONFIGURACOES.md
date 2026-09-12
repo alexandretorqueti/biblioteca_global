@@ -12,11 +12,101 @@ O Motor v2 possui parâmetros operacionais configuráveis que controlam comporta
 
 Esses parâmetros são editáveis através da tela **CONFIGURAÇÕES** no painel administrativo do GerenteAgentes.
 
+## MODELOS — configuração global (aba da tela CONFIGURAÇÕES)
+
+A tela **CONFIGURAÇÕES** passou a ter duas abas: **Parâmetros** (parâmetros
+operacionais do Motor, descritos abaixo) e **MODELOS** (configuração global da
+fila de modelos). A aba MODELOS é uma cópia da tela de modelos do projeto,
+porém ao salvar propaga a alteração para todos os projetos; a edição
+individual continua disponível na tela de cada projeto.
+
+A configuração global é restrita a administradores e gerentes. Ela mantém
+três filas obrigatórias — `DEV`, `ANALYST` e `MONITOR` — com a mesma estrutura
+da tela de seleção de modelos do projeto: posição (`ordem`), provider, modelo
+e habilitação (`enabled`). Cada fila precisa ter ao menos uma entrada válida.
+
+| Operação | Endpoint | Permissão | Efeito |
+|---|---|---|---|
+| Ler global | `GET /gerenteagentes/model-selection/global` | `admin`, `gerente` | Lê somente `global_model_selection`. |
+| Salvar global | `PUT /gerenteagentes/model-selection/global` | `admin`, `gerente` | Salva as três filas e propaga projeto a projeto. |
+| Ler individual | `GET /gerenteagentes/model-selection/:projectKey/:tipo` | rota de leitura do projeto | Lê `project_model_selection` do slug informado. |
+| Salvar individual | `PUT /gerenteagentes/model-selection/:projectKey/:tipo` | `admin`, `gerente`, `operador` | Substitui somente a fila do projeto e tipo informados. |
+
+O payload global não contém `projectKey`:
+
+```json
+{
+  "DEV": [{"ordem": 1, "provider": "openai", "model": "gpt-5", "enabled": true}],
+  "ANALYST": [{"ordem": 1, "provider": "openai", "model": "gpt-5", "enabled": true}],
+  "MONITOR": [{"ordem": 1, "provider": "openai", "model": "gpt-5", "enabled": true}]
+}
+```
+
+O Motor salva primeiro `global_model_selection` e depois processa cada projeto
+em uma transação própria: apaga e recria as três filas em
+`project_model_selection`. A resposta informa `projetosAplicados`,
+`errosPorProjeto` e `resultadoPropagacao`. Se um projeto falhar, os anteriores
+permanecem aplicados e não há rollback global.
+
+Projetos criados depois da configuração recebem uma cópia das três filas pelo
+trigger de `0037_inherit_global_model_selection.sql`. A herança ocorre somente
+no `INSERT`; mudanças globais posteriores não atualizam automaticamente
+projetos já criados. A edição individual posterior não altera a configuração
+global nem os demais projetos.
+
+Limites conhecidos de `project_model_selection`: a tabela não identifica se a
+linha foi herdada ou editada, não possui versão da configuração global e
+depende de slug estável. Uma nova propagação substitui a seleção existente dos
+projetos que concluírem sua unidade de aplicação.
+
+### Validação integrada
+
+Na raiz do projeto:
+
+```bash
+npm run typecheck   # typecheck do Motor (tsc de motor-v2; não exige install do monorepo)
+npm test            # suíte do Motor (motor-v2)
+```
+
+Suítes do Motor relacionadas à funcionalidade (a partir de `motor-v2/`):
+
+```bash
+cd motor-v2
+npm test -- --run test/GlobalModelSelection.test.ts test/GlobalModelSelectionInheritance.test.ts test/MotorAPIModelSelectionRegression.test.ts
+```
+
+> O typecheck completo do projeto (`npm run typecheck:project`, que roda
+> `tsc --noEmit -p tsconfig.json`) exige as dependências hoisted do monorepo
+> (`@nestjs/*`, React, `vitest`) instaladas na raiz da Biblioteca Global. Em um
+> worktree isolado do Motor, essas dependências não existem; por isso o script
+> `typecheck` do projeto delega para o typecheck do Motor, que cobre o contrato
+> global e o código do Motor. As suítes de UI/API do projeto (`screens/__tests__`,
+> `api/__tests__`) são executadas pelo vitest da raiz da Biblioteca Global.
+
+As migrations `0036` e `0037` estão registradas em `migrations/meta/_journal.json`
+e foram aplicadas no banco autorizado do projeto (`projeto_640`) com
+`npm run db:migrate:gerenteagentes` a partir da raiz da Biblioteca Global,
+confirmando: as duas tabelas (`global_model_selection`, `project_model_selection`),
+as três filas, a propagação em múltiplos projetos, a falha parcial sem rollback,
+a herança de projeto novo (trigger) e a edição individual.
+
+> ⚠️ A migration `0037` cria um `TRIGGER` em `projetos_captados`. No MySQL 8 com
+> binlog habilitado, `CREATE TRIGGER` exige privilégio `SUPER` (ou
+> `log_bin_trust_function_creators=1`). O usuário de aplicação (`biblioteca`)
+> não possui `SUPER`; nesse caso, aplique a migration com um usuário
+> privilegiado (ex.: `root`).
+>
+> ⚠️ O trigger compara `projetos_captados.slug` com
+> `project_model_selection.project_slug`, que podem ter collations diferentes
+> (`utf8mb4_0900_ai_ci` vs `utf8mb4_unicode_ci`). A comparação usa `COLLATE`
+> explícito para evitar o erro `Illegal mix of collations`.
+
 ## Acesso à Tela
 
 1. Acesse o painel administrativo do GerenteAgentes
 2. No menu lateral, clique em **CONFIGURAÇÕES**
-3. A tela lista todos os parâmetros editáveis com seus valores atuais, padrões e regras de validação
+3. A aba **Parâmetros** lista todos os parâmetros editáveis com seus valores atuais, padrões e regras de validação
+4. A aba **MODELOS** edita a fila global (DEV, ANALYST, MONITOR) e aplica a mudança a todos os projetos
 
 ## Parâmetros Editáveis
 
