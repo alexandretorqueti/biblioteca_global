@@ -32,7 +32,16 @@ export class TaskFactsStore {
     const { rows: blockers } = await this.db.query("SELECT b.id, b.subtarefa_id, b.block_reason, b.block_command, b.block_excerpt, COALESCE(b.blocked_at, s.updated_at) AS blocked_at, (b.id IS NULL) AS orphan FROM bloqueios b LEFT JOIN subtarefas s ON s.id=b.subtarefa_id WHERE b.tarefa_id=? AND b.resolved_at IS NULL ORDER BY b.blocked_at ASC, b.id ASC", [taskIdNumber])
     const { rows: orphans } = await this.db.query("SELECT NULL AS id, s.id AS subtarefa_id, '' AS block_reason, '' AS block_command, '' AS block_excerpt, s.updated_at AS blocked_at, 1 AS orphan FROM subtarefas s WHERE s.tarefa_id=? AND s.status='blocked' AND NOT EXISTS (SELECT 1 FROM bloqueios b WHERE b.tarefa_id=? AND b.resolved_at IS NULL)", [taskIdNumber, taskIdNumber])
     const { rows: retries } = await this.db.query("SELECT COUNT(*) AS total FROM bloqueios WHERE subtarefa_id IN (SELECT id FROM subtarefas WHERE tarefa_id=?) AND block_reason IN ('blocked_environment', 'systemic_failure', 'model_chain_exhausted') AND resolved_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)", [taskIdNumber])
-    const { rows: leases } = await this.db.query("SELECT execution_id, owner_id, resource_key, expires_at FROM execution_resources WHERE resource_key='motor:monitor' AND expires_at > NOW() AND owner_id IN (SELECT CAST(id AS CHAR) FROM subtarefas WHERE tarefa_id=?) LIMIT 1", [taskIdNumber])
+    // O Monitor usa o ID da tarefa como owner do lease (e pode receber o
+    // external_id); workers de subtarefa usam o ID da subtarefa. Aceitamos os
+    // três formatos, mas somente enquanto o lease ainda estiver válido.
+    const { rows: leases } = await this.db.query(
+      "SELECT r.execution_id, r.owner_id, r.resource_key, r.expires_at " +
+      "FROM execution_resources r INNER JOIN tarefas t ON t.id = ? " +
+      "WHERE r.resource_key='motor:monitor' AND r.expires_at > NOW() AND " +
+      "(r.owner_id = CAST(t.id AS CHAR) OR r.owner_id = t.external_id OR r.owner_id IN (SELECT CAST(s.id AS CHAR) FROM subtarefas s WHERE s.tarefa_id=t.id)) LIMIT 1",
+      [taskIdNumber],
+    )
     const { rows: chats } = await this.db.query("SELECT id, role, texto, created_at FROM tarefa_chats WHERE tarefa_id=? AND role IN ('monitor','user') ORDER BY id DESC LIMIT 20", [taskIdNumber])
     const monitor = chats.find((chat) => chat.role === "monitor")
     const user = chats.find((chat) => chat.role === "user")
