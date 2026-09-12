@@ -2942,13 +2942,14 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     blockExcerpt: string,
   ): Promise<void> {
     const subtaskSql = subtaskId === null ? "NULL" : "?"
+    const numeric = /^\d+$/.test(taskExternalId)
     const params: unknown[] = subtaskId === null
-      ? [blockReason, blockCommand, blockExcerpt, taskExternalId, taskExternalId]
-      : [subtaskId, blockReason, blockCommand, blockExcerpt, taskExternalId, taskExternalId]
+      ? (numeric ? [blockReason, blockCommand, blockExcerpt, taskExternalId, taskExternalId] : [blockReason, blockCommand, blockExcerpt, taskExternalId])
+      : (numeric ? [subtaskId, blockReason, blockCommand, blockExcerpt, taskExternalId, taskExternalId] : [subtaskId, blockReason, blockCommand, blockExcerpt, taskExternalId])
     await this.db.query(
       "INSERT INTO bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at) " +
       `SELECT t.id, ${subtaskSql}, ?, ?, ?, NOW() FROM tarefas t ` +
-      "WHERE t.external_id = ? OR t.id = CAST(? AS UNSIGNED) LIMIT 1",
+      numeric ? "WHERE t.external_id = ? OR t.id = ? LIMIT 1" : "WHERE t.external_id = ? LIMIT 1",
       params,
     )
   }
