@@ -183,6 +183,27 @@ export const globalModelSelection = mysqlTable(
   }),
 )
 
+/** Cadeias materializadas por projeto, inicializadas pela configuração global. */
+export const projectModelSelection = mysqlTable(
+  "project_model_selection",
+  {
+    id: bigint("id", { mode: "number", unsigned: true })
+      .primaryKey()
+      .autoincrement(),
+    projectSlug: varchar("project_slug", { length: 100 }).notNull(),
+    tipo: mysqlEnum("tipo", ["DEV", "ANALYST", "MONITOR"]).notNull(),
+    ordem: int("ordem").notNull(),
+    provider: varchar("provider", { length: 100 }).notNull(),
+    model: varchar("model", { length: 200 }).notNull(),
+    enabled: boolean("enabled").notNull().default(true),
+  },
+  (table) => ({
+    projectTipoOrdemUnique: uniqueIndex("project_model_selection_project_tipo_ordem_unique")
+      .on(table.projectSlug, table.tipo, table.ordem),
+    projectTipoIdx: index("project_model_selection_project_tipo_idx").on(table.projectSlug, table.tipo),
+  }),
+)
+
 export const definicoes = mysqlTable("definicoes", {
   id: bigint("id", { mode: "number", unsigned: true })
     .primaryKey()
@@ -918,6 +939,14 @@ export const annotations = {
     occurred_at: { label: "Ocorrido em" },
   },
   global_model_selection: {
+    tipo: { label: "Tipo", helperText: "DEV | ANALYST | MONITOR" },
+    ordem: { label: "Ordem" },
+    provider: { label: "Provider", maxLength: 100 },
+    model: { label: "Modelo", maxLength: 200 },
+    enabled: { label: "Habilitado" },
+  },
+  project_model_selection: {
+    project_slug: { label: "Projeto", maxLength: 100 },
     tipo: { label: "Tipo", helperText: "DEV | ANALYST | MONITOR" },
     ordem: { label: "Ordem" },
     provider: { label: "Provider", maxLength: 100 },
