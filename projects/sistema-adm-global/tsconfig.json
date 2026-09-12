@@ -5,5 +5,5 @@
     "moduleResolution": "Bundler",
     "noEmit": true
   },
-  "include": ["schema.ts", "config.ts"]
+  "include": ["schema.ts", "config.ts", "scripts/**/*.ts"]
 }
