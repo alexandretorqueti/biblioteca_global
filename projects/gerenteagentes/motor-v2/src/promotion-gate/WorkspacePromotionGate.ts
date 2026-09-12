@@ -10,10 +10,14 @@ function requirementsFromSchemaDiff(worktreePath: string, baseBranch: string): S
   const diff = execFileSync("git", ["diff", "--unified=100000", `${baseBranch}...HEAD`, "--", "projects/gerenteagentes/schema.ts"], { cwd: worktreePath, encoding: "utf8", timeout: 30_000 })
   let table: string | null = null
   const requirements: SchemaColumnRequirement[] = []
-  for (const line of diff.split("\n")) {
+  const lines = diff.split("\n")
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? ""
     if (line.startsWith("@@") || line.startsWith("diff ") || line.startsWith("index ") || line.startsWith("---") || line.startsWith("+++")) continue
     const content = line.startsWith("+") || line.startsWith(" ") ? line.slice(1) : ""
-    const tableMatch = /mysqlTable\("([a-zA-Z0-9_]+)"/.exec(content)
+    const nextLine = lines[index + 1] ?? ""
+    const nextContent = nextLine.startsWith("+") || nextLine.startsWith(" ") ? nextLine.slice(1) : ""
+    const tableMatch = /mysqlTable\(\s*"([a-zA-Z0-9_]+)"/.exec(`${content} ${nextContent}`)
     if (tableMatch?.[1]) table = tableMatch[1]
     if (!line.startsWith("+") || !table) continue
     const property = /^\+\s*([A-Za-z_$][\w$]*):\s*\w+\("([a-zA-Z0-9_]+)"/.exec(line)

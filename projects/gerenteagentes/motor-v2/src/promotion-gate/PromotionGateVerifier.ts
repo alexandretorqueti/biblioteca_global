@@ -51,7 +51,7 @@ function hasColumn(sql: string, requirement: SchemaColumnRequirement): boolean {
   const column = requirement.column.toLowerCase().replace(/[^a-z0-9_]/g, "")
   const tablePattern = table.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
   const columnPattern = column.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-  return new RegExp(`(?:create table(?: if not exists)? ${tablePattern}[\\s\\S]*?\\b${columnPattern}\\b|alter table ${tablePattern}[\\s\\S]*?add column(?: if not exists)? ${columnPattern}\\b)`, "i").test(source)
+  return new RegExp(`(?:create table(?: if not exists)? ${tablePattern}[\\s\\S]*?(?:\\b${columnPattern}\\b|(?:unique key|key|index) ${columnPattern}\\b)|alter table ${tablePattern}[\\s\\S]*?add column(?: if not exists)? ${columnPattern}\\b)`, "i").test(source)
 }
 
 /** Confere journal e contratos explícitos de tabela/coluna em migrations. */

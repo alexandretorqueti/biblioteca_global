@@ -25,6 +25,22 @@ describe("verifyPromotionGate", () => {
     })
     expect(report).toEqual({ ok: true, issues: [] })
   })
+
+  it("aceita contratos de tabelas declaradas em múltiplas linhas e seus índices", () => {
+    const report = verifyPromotionGate({
+      journalContent: JSON.stringify({ entries: [{ tag: "0036_global_model_selection" }] }),
+      migrations: [{
+        path: "migrations/0036_global_model_selection.sql",
+        content: "CREATE TABLE IF NOT EXISTS `global_model_selection` (`id` bigint, `tipo` enum('DEV'), UNIQUE KEY `global_model_selection_tipo_ordem_unique` (`tipo`), KEY `global_model_selection_tipo_enabled_idx` (`tipo`));",
+      }],
+      requiredColumns: [
+        { table: "global_model_selection", column: "id", source: "schema.ts:id" },
+        { table: "global_model_selection", column: "global_model_selection_tipo_ordem_unique", source: "schema.ts:tipoOrdemUnique" },
+        { table: "global_model_selection", column: "global_model_selection_tipo_enabled_idx", source: "schema.ts:tipoEnabledIdx" },
+      ],
+    })
+    expect(report).toEqual({ ok: true, issues: [] })
+  })
 })
 
 describe("recuperação de promoção", () => {
