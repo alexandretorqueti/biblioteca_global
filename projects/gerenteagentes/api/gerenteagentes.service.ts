@@ -893,14 +893,17 @@ export class GerenteAgentesService {
     // O motor verifica fatos operacionais (subtarefas, bloqueios, paused_at, etc.)
 
     // ── Ponte com o motor de execução ────────────────────────────────────────
-    // A tarefa já existe no motor com o external_id. Chama apenas o endpoint
-    // de enfileirar — o motor enfileira (FIFO) e executa.
-    // v1: POST /api/task/:id/start · v2: POST /api/motor/task/:id/enqueue.
+    // Play é uma ação única: para tarefa pausada, primeiro remove a pausa e
+    // deixa o Motor retomar o ciclo; para as demais, enfileira normalmente.
     const motorId = tarefa.externalId || `task-biblioteca-${tarefa.id}`;
     const usarV2 = this.motorVersao === 'v2';
-    const startPath = usarV2
-      ? `/api/motor/task/${encodeURIComponent(motorId)}/enqueue`
-      : `/api/task/${encodeURIComponent(motorId)}/start`;
+    const startPath = tarefa.pausedAt
+      ? (usarV2
+        ? `/api/motor/task/${encodeURIComponent(motorId)}/resume`
+        : `/api/task/${encodeURIComponent(motorId)}/resume`)
+      : (usarV2
+        ? `/api/motor/task/${encodeURIComponent(motorId)}/enqueue`
+        : `/api/task/${encodeURIComponent(motorId)}/start`);
     const start = await this.motorRequest('POST', startPath, undefined, usarV2 ? this.motorV2Url : undefined).catch((e: unknown) => {
       throw new BadRequestException(`Motor indisponível ao iniciar a tarefa: ${e instanceof Error ? e.message : String(e)}`);
     });
@@ -908,7 +911,7 @@ export class GerenteAgentesService {
       throw new BadRequestException(`Motor rejeitou o início (${start.status}): ${start.body.slice(0, 200)}`);
     }
 
-    return { id: tarefaId, message: 'Tarefa iniciada no motor', motorId };
+    return { id: tarefaId, message: tarefa.pausedAt ? 'Tarefa retomada no motor' : 'Tarefa iniciada no motor', motorId };
   }
 
   async pausarTarefa(projeto: ProjetoResumo, tarefaId: number) {

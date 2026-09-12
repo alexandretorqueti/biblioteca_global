@@ -195,6 +195,44 @@ describe("promoteTaskBranch", () => {
   })
 })
 
+describe("sincronização da branch de integração", () => {
+  it("reconhece quando a branch da tarefa já está na base", async () => {
+    const runner: GitCommandRunner = {
+      run: vi.fn().mockImplementation(async (command: readonly string[]) => {
+        const key = command.slice(1).join(" ")
+        if (key.startsWith("merge-base --is-ancestor")) return { stdout: "", stderr: "" }
+        return { stdout: "", stderr: "" }
+      }),
+    }
+    const result = await new GitWorkspaceManager({ root: "/tmp/x", runner }).mergeBaseIntoTaskBranch({
+      repoPath: "/repo", baseBranch: "base-desenvolvimento", taskBranch: "motor-v2/task-9/integracao",
+    })
+    expect(result).toEqual({ kind: "up_to_date" })
+  })
+
+  it("mergeia a base na worktree da integração e publica a branch", async () => {
+    const target = "/ws/worktrees/task-9/integracao"
+    const calls: string[][] = []
+    const runner: GitCommandRunner = {
+      run: vi.fn().mockImplementation(async (command: readonly string[], cwd: string) => {
+        calls.push([...command])
+        const key = command.slice(1).join(" ")
+        if (key.startsWith("merge-base --is-ancestor")) throw new Error("não ancestral")
+        if (key === "worktree list --porcelain") return { stdout: `worktree /repo\nworktree ${target}\nbranch refs/heads/motor-v2/task-9/integracao\n`, stderr: "" }
+        if (key === "rev-parse --verify HEAD") return { stdout: MERGE_COMMIT + "\n", stderr: "" }
+        void cwd
+        return { stdout: "", stderr: "" }
+      }),
+    }
+    const result = await new GitWorkspaceManager({ root: "/tmp/x", runner }).mergeBaseIntoTaskBranch({
+      repoPath: "/repo", baseBranch: "base-desenvolvimento", taskBranch: "motor-v2/task-9/integracao",
+    })
+    expect(result).toEqual({ kind: "merged", mergeCommit: MERGE_COMMIT })
+    expect(calls).toContainEqual(["git", "merge", "--no-ff", "--no-edit", "base-desenvolvimento"])
+    expect(calls).toContainEqual(["git", "push", "origin", "motor-v2/task-9/integracao"])
+  })
+})
+
 describe("purgeTaskArtifacts com worktree de integração", () => {
   it("remove worktree integracao e de subtarefa sem varrer a raiz worktrees/", async () => {
     const root = await mkdtemp(join(tmpdir(), "motor-v2-purge-"))

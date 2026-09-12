@@ -77,6 +77,11 @@ export type TaskPromotionResult =
   | { kind: "promoted"; mergeCommit: string }
   | { kind: "conflict"; conflictFiles: string[]; reason: string }
 
+export type TaskBranchSyncResult =
+  | { kind: "up_to_date" }
+  | { kind: "merged"; mergeCommit: string }
+  | { kind: "conflict"; conflictFiles: string[]; reason: string }
+
 /**
  * Nome da branch de integração da tarefa (P1, decisão Alexandre 2026-09-05).
  * Não pode ser exatamente `motor-v2/<taskId>`: as branches de subtarefa
@@ -223,6 +228,67 @@ export class GitWorkspaceManager {
     if (!isAbsolute(options.root) || options.root.includes("\0") || /[\r\n]/.test(options.root)) throw new Error("raiz de workspaces inválida")
     this.root = resolve(options.root)
     this.runner = options.runner ?? new NodeGitCommandRunner()
+  }
+
+  /** Confirma se uma branch de tarefa já foi incorporada à branch-base. */
+  async isBranchAncestor(input: { repoPath: string; branch: string; ancestor: string }): Promise<boolean> {
+    if (!isAbsolute(input.repoPath)) throw new Error("repoPath inválido para ancestralidade Git")
+    const branch = safeBranch(input.branch)
+    const ancestor = safeBranch(input.ancestor)
+    try {
+      await this.runner.run(["git", "merge-base", "--is-ancestor", branch, ancestor], resolve(input.repoPath))
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * Atualiza a branch de integração da tarefa com a base, usando a worktree
+   * dessa própria branch. Nunca executa merge em uma branch sem worktree nem
+   * descarta alterações locais.
+   */
+  async mergeBaseIntoTaskBranch(input: {
+    repoPath: string
+    baseBranch: string
+    taskBranch: string
+  }): Promise<TaskBranchSyncResult> {
+    if (!isAbsolute(input.repoPath)) throw new Error("repoPath inválido para sincronização Git")
+    const repoPath = resolve(input.repoPath)
+    const baseBranch = safeBranch(input.baseBranch)
+    const taskBranch = safeBranch(input.taskBranch)
+    if (await this.isBranchAncestor({ repoPath, branch: baseBranch, ancestor: taskBranch })) return { kind: "up_to_date" }
+
+    const worktreeList = await this.runner.run(["git", "worktree", "list", "--porcelain"], repoPath)
+    const lines = worktreeList.stdout.split("\n")
+    let worktreePath: string | undefined
+    for (let index = 0; index < lines.length; index += 1) {
+      if (lines[index] === `branch refs/heads/${taskBranch}`) {
+        const previous = lines[index - 1] ?? ""
+        if (previous.startsWith("worktree ")) worktreePath = previous.slice("worktree ".length).trim()
+        break
+      }
+    }
+    if (!worktreePath) throw new Error(`worktree da branch de integração não encontrada: ${taskBranch}`)
+
+    const dirty = await this.runner.run(["git", "status", "--porcelain"], worktreePath)
+    if (dirty.stdout.trim()) throw new Error(`branch de integração não está limpa: ${dirty.stdout.trim()}`)
+
+    try {
+      await this.runner.run(["git", "merge", "--no-ff", "--no-edit", baseBranch], worktreePath)
+      const mergeCommit = (await this.runner.run(["git", "rev-parse", "--verify", "HEAD"], worktreePath)).stdout.trim()
+      if (!validCommit(mergeCommit)) throw new Error("commit de sincronização inválido")
+      await this.runner.run(["git", "push", "origin", taskBranch], worktreePath)
+      return { kind: "merged", mergeCommit }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      const conflictFiles = await this.listConflictFiles(worktreePath)
+      await this.runner.run(["git", "merge", "--abort"], worktreePath).catch(() => {})
+      if (conflictFiles.length > 0 || /CONFLICT|Automatic merge failed/i.test(reason)) {
+        return { kind: "conflict", conflictFiles, reason: reason.slice(0, 500) }
+      }
+      throw new Error(`Sincronização da branch da tarefa falhou: ${reason}`, { cause: error })
+    }
   }
 
   async prepare(input: PrepareWorkspaceInput): Promise<WorkspacePreparation> {

@@ -1200,7 +1200,7 @@ export default function TaskMonitorScreen(): ReactNode {
   }, [tarefas, projetos])
   const statusMotor = detail?.task?.status ?? tarefaSelecionada?.status ?? "—"
   const isPaused = statusMotor === "paused"
-  const podeIniciar = !isPaused && STATUS_INICIO_PERMITIDO.has(statusMotor)
+  const podeIniciar = isPaused || STATUS_INICIO_PERMITIDO.has(statusMotor)
   const podePausar = !isPaused && STATUS_EXECUCAO.has(statusMotor)
   const aguardandoRetentativaPromocao = /Falha na promoção da branch da tarefa: repositório principal não está limpo para promoção:/i
     .test(detail?.task?.blockInfo?.excerpt ?? "")
@@ -1513,7 +1513,7 @@ export default function TaskMonitorScreen(): ReactNode {
                 onClick={() => void executarAcao("start")}
                 data-testid="btn-start"
               >
-                Iniciar
+                Play
               </Button>
               <Button
                 size="small"
