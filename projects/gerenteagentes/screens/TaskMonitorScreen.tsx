@@ -139,15 +139,28 @@ interface SubTarefaDb {
 }
 
 interface SessionMessage {
-  role: "agent" | "user" | "system"
+  role: string
   text: string
+  sequenceNumber: number
+  occurredAt?: string | null
+}
+
+interface SessionMessagesPage {
+  items: SessionMessage[]
+  nextCursor: string | null
+  hasNextPage: boolean
+}
+
+interface SubtaskSessionAttempt {
+  id?: number
+  sessionKey: string
+  messages: SessionMessagesPage
+  text?: string
 }
 
 interface SubtaskSession {
   available: boolean
-  sessionKey?: string
-  text: string
-  messages: SessionMessage[]
+  sessions: SubtaskSessionAttempt[]
 }
 
 interface AnalystSessionMessage {
@@ -164,8 +177,8 @@ interface AnalystSessionEntry {
   openedAt: string
   closedAt: string | null
   closeReason: string | null
-  messages: AnalystSessionMessage[]
-  text: string
+  messages: SessionMessagesPage
+  text?: string
 }
 
 interface AnalystTaskSessionsResponse {
@@ -357,6 +370,9 @@ export default function TaskMonitorScreen(): ReactNode {
   const [sessionLoading, setSessionLoading] = useState(false)
   const [sessionError, setSessionError] = useState<string | null>(null)
   const [sessionData, setSessionData] = useState<SubtaskSession | null>(null)
+  const [sessionPageLoading, setSessionPageLoading] = useState<Set<string>>(new Set())
+  const [sessionPageErrors, setSessionPageErrors] = useState<Record<string, string>>({})
+  const sessionPageLoadingRef = useRef(new Set<string>())
   const [pausandoTodas, setPausandoTodas] = useState(false)
   const [retomandoTodas, setRetomandoTodas] = useState(false)
   const [bulkMessage, setBulkMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
@@ -364,6 +380,9 @@ export default function TaskMonitorScreen(): ReactNode {
   const [analystSessionLoading, setAnalystSessionLoading] = useState(false)
   const [analystSessionError, setAnalystSessionError] = useState<string | null>(null)
   const [analystSessionData, setAnalystSessionData] = useState<AnalystTaskSessionsResponse | null>(null)
+  const [analystPageLoading, setAnalystPageLoading] = useState<Set<string>>(new Set())
+  const [analystPageErrors, setAnalystPageErrors] = useState<Record<string, string>>({})
+  const analystPageLoadingRef = useRef(new Set<string>())
   const mounted = useRef(true)
   const activeRealtimeTask = useRef<number | "">("")
 
@@ -1109,6 +1128,9 @@ export default function TaskMonitorScreen(): ReactNode {
     setSessionLoading(true)
     setSessionError(null)
     setSessionData(null)
+    sessionPageLoadingRef.current.clear()
+    setSessionPageLoading(new Set())
+    setSessionPageErrors({})
     try {
       const data = await bundle.http.request<SubtaskSession>(
         "GET",
@@ -1129,6 +1151,9 @@ export default function TaskMonitorScreen(): ReactNode {
     setAnalystSessionLoading(true)
     setAnalystSessionError(null)
     setAnalystSessionData(null)
+    analystPageLoadingRef.current.clear()
+    setAnalystPageLoading(new Set())
+    setAnalystPageErrors({})
     try {
       const data = await bundle.http.request<AnalystTaskSessionsResponse>(
         "GET",
@@ -1142,6 +1167,74 @@ export default function TaskMonitorScreen(): ReactNode {
       if (mounted.current) setAnalystSessionLoading(false)
     }
   }, [bundle, tarefaId])
+
+  const carregarMaisSessao = useCallback(async (sessionKey: string, cursor: string) => {
+    if (!bundle || tarefaId === "" || sessionPageLoadingRef.current.has(sessionKey)) return
+    sessionPageLoadingRef.current.add(sessionKey)
+    setSessionPageLoading((atual) => new Set(atual).add(sessionKey))
+    setSessionPageErrors((atual) => { const { [sessionKey]: _removed, ...rest } = atual; return rest })
+    try {
+      const data = await bundle.http.request<SubtaskSession>(
+        "GET", `/gerenteagentes/tarefas/${tarefaId}/subtarefas/${sessionSubtask?.seq ?? 0}/sessao`,
+        { query: { sessionKey, cursor }, auth: "access" },
+      )
+      const pagina = data.sessions.find((s) => s.sessionKey === sessionKey)?.messages
+      if (!pagina) return
+      setSessionData((atual) => atual ? {
+        ...atual,
+        sessions: atual.sessions.map((sessao) => sessao.sessionKey !== sessionKey ? sessao : {
+          ...sessao,
+          messages: { ...sessao.messages, items: [...sessao.messages.items, ...pagina.items].sort((a, b) => b.sequenceNumber - a.sequenceNumber), nextCursor: pagina.nextCursor, hasNextPage: pagina.hasNextPage },
+        }),
+      } : atual)
+    } catch (e) {
+      if (mounted.current) setSessionPageErrors((atual) => ({ ...atual, [sessionKey]: e instanceof Error ? e.message : "Não foi possível carregar mais mensagens." }))
+    } finally {
+      sessionPageLoadingRef.current.delete(sessionKey)
+      if (mounted.current) setSessionPageLoading((atual) => { const proximo = new Set(atual); proximo.delete(sessionKey); return proximo })
+    }
+  }, [bundle, tarefaId, sessionSubtask])
+
+  const carregarMaisSessaoAnalista = useCallback(async (sessionKey: string, cursor: string) => {
+    if (!bundle || tarefaId === "" || analystPageLoadingRef.current.has(sessionKey)) return
+    analystPageLoadingRef.current.add(sessionKey)
+    setAnalystPageLoading((atual) => new Set(atual).add(sessionKey))
+    setAnalystPageErrors((atual) => { const { [sessionKey]: _removed, ...rest } = atual; return rest })
+    try {
+      const data = await bundle.http.request<AnalystTaskSessionsResponse>(
+        "GET", `/gerenteagentes/tarefas/${tarefaId}/sessoes-analista`,
+        { query: { sessionKey, cursor }, auth: "access" },
+      )
+      const pagina = data.sessions.find((s) => s.sessionKey === sessionKey)?.messages
+      if (!pagina) return
+      setAnalystSessionData((atual) => atual ? {
+        ...atual,
+        sessions: atual.sessions.map((sessao) => sessao.sessionKey !== sessionKey ? sessao : {
+          ...sessao,
+          messages: { ...sessao.messages, items: [...sessao.messages.items, ...pagina.items].sort((a, b) => b.sequenceNumber - a.sequenceNumber), nextCursor: pagina.nextCursor, hasNextPage: pagina.hasNextPage },
+        }),
+      } : atual)
+    } catch (e) {
+      if (mounted.current) setAnalystPageErrors((atual) => ({ ...atual, [sessionKey]: e instanceof Error ? e.message : "Não foi possível carregar mais mensagens." }))
+    } finally {
+      analystPageLoadingRef.current.delete(sessionKey)
+      if (mounted.current) setAnalystPageLoading((atual) => { const proximo = new Set(atual); proximo.delete(sessionKey); return proximo })
+    }
+  }, [bundle, tarefaId])
+
+  const aoRolarSessao = useCallback((event: React.UIEvent<HTMLElement>, session: SubtaskSessionAttempt) => {
+    const elemento = event.currentTarget
+    if (elemento.scrollHeight - elemento.scrollTop - elemento.clientHeight < 48 && session.messages.hasNextPage && session.messages.nextCursor) {
+      void carregarMaisSessao(session.sessionKey, session.messages.nextCursor)
+    }
+  }, [carregarMaisSessao])
+
+  const aoRolarSessaoAnalista = useCallback((event: React.UIEvent<HTMLElement>, session: AnalystSessionEntry) => {
+    const elemento = event.currentTarget
+    if (elemento.scrollHeight - elemento.scrollTop - elemento.clientHeight < 48 && session.messages.hasNextPage && session.messages.nextCursor) {
+      void carregarMaisSessaoAnalista(session.sessionKey, session.messages.nextCursor)
+    }
+  }, [carregarMaisSessaoAnalista])
 
   /**
    * O Motor-v2 expõe os dados da tarefa, mas subtarefas podem chegar vazias
@@ -1875,9 +1968,17 @@ export default function TaskMonitorScreen(): ReactNode {
             <Typography color="text.secondary" data-testid="session-unavailable">Nenhuma sessão disponível para esta subtarefa.</Typography>
           )}
           {!sessionLoading && !sessionError && sessionData?.available && (
-            <Box component="pre" data-testid="session-content" sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: "65vh", overflow: "auto", m: 0, p: 2, bgcolor: "action.hover", borderRadius: 1, fontFamily: "monospace", fontSize: "0.85rem" }}>
-              {sessionData.text}
-            </Box>
+            <Stack spacing={2} data-testid="session-list">
+              {sessionData.sessions.map((session, sessionIndex) => <Paper key={session.sessionKey} variant="outlined" sx={{ p: 2 }} data-testid={`session-${sessionIndex + 1}`}>
+                {sessionIndex > 0 && <Box sx={{ borderTop: 2, borderColor: "divider", mb: 2 }} data-testid="session-separator" />}
+                <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1 }}>Tentativa {sessionIndex + 1}</Typography>
+                <Box component="pre" onScroll={(event) => aoRolarSessao(event, session)} data-testid={sessionIndex === 0 ? "session-content" : `session-content-${sessionIndex + 1}`} sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: "65vh", overflow: "auto", m: 0, p: 2, bgcolor: "action.hover", borderRadius: 1, fontFamily: "monospace", fontSize: "0.85rem" }}>
+                  {[...session.messages.items].sort((a, b) => b.sequenceNumber - a.sequenceNumber).map((message, index) => <Box key={`${message.sequenceNumber}-${index}`} component="div" sx={{ mb: 1 }}>{`[${message.role}]\n${message.text}`}</Box>)}
+                </Box>
+                {sessionPageErrors[session.sessionKey] && <Alert severity="error" sx={{ mt: 1 }}>{sessionPageErrors[session.sessionKey]}</Alert>}
+                {sessionPageLoading.has(session.sessionKey) && <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1 }} data-testid={`session-page-loading-${sessionIndex + 1}`}><CircularProgress size={16} /><Typography variant="caption">Carregando mensagens…</Typography></Stack>}
+              </Paper>)}
+            </Stack>
           )}
         </DialogContent>
       </Dialog>
@@ -1908,8 +2009,9 @@ export default function TaskMonitorScreen(): ReactNode {
           )}
           {!analystSessionLoading && !analystSessionError && analystSessionData?.available && analystSessionData.sessions.length > 0 && (
             <Stack spacing={2} data-testid="analyst-session-list">
-              {analystSessionData.sessions.map((session) => (
+              {analystSessionData.sessions.map((session, sessionIndex) => (
                 <Paper key={session.sessionKey} variant="outlined" sx={{ p: 2 }} data-testid={`analyst-session-${session.executionOrder}`}>
+                  {sessionIndex > 0 && <Box sx={{ borderTop: 2, borderColor: "divider", mb: 2 }} data-testid="analyst-session-separator" />}
                   <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
                     <PsychologyRounded fontSize="small" color="primary" />
                     <Typography variant="subtitle2" fontWeight={700} data-testid={`analyst-session-model-${session.executionOrder}`}>
@@ -1923,9 +2025,11 @@ export default function TaskMonitorScreen(): ReactNode {
                     {session.closedAt ? ` · Encerrada: ${new Date(session.closedAt).toLocaleString("pt-BR")}` : ""}
                     {session.closeReason ? ` · Motivo: ${session.closeReason}` : ""}
                   </Typography>
-                  <Box component="pre" data-testid={`analyst-session-content-${session.executionOrder}`} sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: "40vh", overflow: "auto", m: 0, p: 2, bgcolor: "action.hover", borderRadius: 1, fontFamily: "monospace", fontSize: "0.85rem" }}>
-                    {session.text}
+                  <Box component="pre" onScroll={(event) => aoRolarSessaoAnalista(event, session)} data-testid={`analyst-session-content-${session.executionOrder}`} sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: "40vh", overflow: "auto", m: 0, p: 2, bgcolor: "action.hover", borderRadius: 1, fontFamily: "monospace", fontSize: "0.85rem" }}>
+                    {[...session.messages.items].sort((a, b) => b.sequenceNumber - a.sequenceNumber).map((message, index) => <Box key={`${message.sequenceNumber}-${index}`} component="div" sx={{ mb: 1 }}>{`[${message.role}]\n${message.text}`}</Box>)}
                   </Box>
+                  {analystPageErrors[session.sessionKey] && <Alert severity="error" sx={{ mt: 1 }}>{analystPageErrors[session.sessionKey]}</Alert>}
+                  {analystPageLoading.has(session.sessionKey) && <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1 }} data-testid={`analyst-session-page-loading-${session.executionOrder}`}><CircularProgress size={16} /><Typography variant="caption">Carregando mensagens…</Typography></Stack>}
                 </Paper>
               ))}
             </Stack>

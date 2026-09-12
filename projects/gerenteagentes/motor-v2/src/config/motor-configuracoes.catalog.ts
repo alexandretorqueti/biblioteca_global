@@ -47,6 +47,7 @@ export const MOTOR_CONFIGURACOES: readonly MotorConfiguracaoDefinicao[] = [
   { chave: "motor.orphan_analysis_timeout_ms", tipo: "number", valorPadrao: 600000, regraValidacao: "inteiro entre 60000 e 3600000", descricao: "Tempo sem atividade antes de recuperar tarefa orfa em analise.", validar: (v) => inteiroPositivo(v, 3600000) && v >= 60000 },
   { chave: "motor.console_url", tipo: "string", valorPadrao: "http://127.0.0.1:6280", regraValidacao: "URL valida", descricao: "URL do Console OpenClaw para consultas de sessao.", validar: (v) => typeof v === "string" && v.startsWith("http") },
   { chave: "motor.console_token", tipo: "string", valorPadrao: "", regraValidacao: "string", descricao: "Token de autenticacao do Console OpenClaw.", validar: (v) => typeof v === "string" },
+  { chave: "motor.session_history_page_size", tipo: "number", valorPadrao: 50, regraValidacao: "inteiro entre 1 e 500", descricao: "Numero de linhas do historico de sessao carregadas por pagina.", validar: (v) => inteiroPositivo(v, 500) },
 ]
 
 export function configuracaoPorChave(chave: string): MotorConfiguracaoDefinicao | undefined {

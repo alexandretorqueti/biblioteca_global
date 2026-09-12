@@ -24,8 +24,10 @@ type Internals = {
   activeWorkers: Map<string, unknown>
   activeDeployments: Map<string, unknown>
   processDeployQueue(): Promise<void>
+  reconcileCompletedTasksAlreadyMerged(): Promise<void>
   reconcileRunningDeploys(): Promise<void>
   recoverCompletedTasksWithoutDeploy(): Promise<void>
+  assertDeploySshReady(): void
   dispatchDeployBatch(repoPath: string, batchId: string, taskIds: string[]): void
   readRemoteDeployStatus(batchId: string): string | null
 }
@@ -39,6 +41,8 @@ describe("fila de deploy", () => {
   it("não inicia deploy enquanto houver worker ativo", async () => {
     const { db, coordinator } = setup()
     const internal = coordinator as unknown as Internals
+    vi.spyOn(internal, "reconcileCompletedTasksAlreadyMerged").mockResolvedValue()
+    vi.spyOn(internal, "recoverCompletedTasksWithoutDeploy").mockResolvedValue()
     internal.activeWorkers.set("exec-1", {})
     vi.spyOn(internal, "reconcileRunningDeploys").mockResolvedValue()
     const dispatch = vi.spyOn(internal, "dispatchDeployBatch").mockImplementation(() => undefined)
@@ -46,31 +50,33 @@ describe("fila de deploy", () => {
     await internal.processDeployQueue()
 
     expect(dispatch).not.toHaveBeenCalled()
-    expect(db.query).toHaveBeenCalledTimes(1)
-    expect(String(vi.mocked(db.query).mock.calls[0]?.[0])).toContain("f.integration_confirmed_at IS NOT NULL")
+    expect(db.query).not.toHaveBeenCalled()
   })
 
   it("não inicia deploy quando o banco ainda registra trabalho ativo após reinício", async () => {
     const { db, coordinator } = setup()
     const internal = coordinator as unknown as Internals
+    vi.spyOn(internal, "reconcileCompletedTasksAlreadyMerged").mockResolvedValue()
+    vi.spyOn(internal, "recoverCompletedTasksWithoutDeploy").mockResolvedValue()
     vi.spyOn(internal, "reconcileRunningDeploys").mockResolvedValue()
     vi.mocked(db.query)
-      .mockResolvedValueOnce({ rows: [], affectedRows: 0, insertId: 0 })
       .mockResolvedValueOnce({ rows: [{ busy: 1 }], affectedRows: 0, insertId: 0 })
     const dispatch = vi.spyOn(internal, "dispatchDeployBatch").mockImplementation(() => undefined)
 
     await internal.processDeployQueue()
 
     expect(dispatch).not.toHaveBeenCalled()
-    expect(db.query).toHaveBeenCalledTimes(2)
+    expect(db.query).toHaveBeenCalledTimes(1)
   })
 
   it("agrupa tarefas pendentes do mesmo repositório em um único deploy", async () => {
     const { db, coordinator } = setup()
     const internal = coordinator as unknown as Internals
+    vi.spyOn(internal, "reconcileCompletedTasksAlreadyMerged").mockResolvedValue()
+    vi.spyOn(internal, "recoverCompletedTasksWithoutDeploy").mockResolvedValue()
+    vi.spyOn(internal, "assertDeploySshReady").mockImplementation(() => undefined)
     vi.spyOn(internal, "reconcileRunningDeploys").mockResolvedValue()
     vi.mocked(db.query)
-      .mockResolvedValueOnce({ rows: [], affectedRows: 0, insertId: 0 })
       .mockResolvedValueOnce({ rows: [{ busy: 0 }], affectedRows: 0, insertId: 0 })
       .mockResolvedValueOnce({
         rows: [
