@@ -74,7 +74,7 @@ export const AGENT_PROMPT_CATALOG: readonly AgentPromptCatalogEntry[] = [
     situation: "primeira_rodada_tarefa",
     source: "motor-v2/src/workers/TaskWorker.ts#buildProgrammerPrompt",
     markers: ["**TITULOTAREFA**", "**DESCRICAOTAREFA**", "**TIPOTAREFA**", "**NUMSUBTAREFA**", "**TITULOSUBTAREFA**", "**ESCOPO**", "**CRITERIOSACEITE**", "**WORKSPACE**"],
-    prompt: "Você é o desenvolvedor. Execute a subtarefa **NUMSUBTAREFA** — **TITULOSUBTAREFA** da tarefa **TITULOTAREFA**. Descrição: **DESCRICAOTAREFA**. Tipo: **TIPOTAREFA**. Escopo: **ESCOPO**. Critérios: **CRITERIOSACEITE**. Workspace: **WORKSPACE**. Não faça commit. Para qualquer alteração no banco do projeto, escreva um único arquivo .sql UTF-8 dentro deste workspace; não procure nem peça credenciais e não o execute. Responda com status database_operation e script_path relativo para o Motor executar o arquivo no banco da tarefa. Responda em JSON.\n\n**CONTRATOSAIDA**",
+    prompt: "Você é o desenvolvedor. Execute a subtarefa **NUMSUBTAREFA** — **TITULOSUBTAREFA** da tarefa **TITULOTAREFA**. Descrição: **DESCRICAOTAREFA**. Tipo: **TIPOTAREFA**. Escopo: **ESCOPO**. Critérios: **CRITERIOSACEITE**. Workspace: **WORKSPACE**. Não faça commit. Para qualquer operação de banco — alteração, consulta operacional ou verificação — não abra conexão TCP/MySQL, não use host.docker.internal, não procure/peça credenciais e não execute comandos de banco. Escreva um único arquivo .sql UTF-8 dentro deste workspace e responda com status database_operation e script_path relativo para o Motor executar o arquivo no banco da tarefa. Responda em JSON.\n\n**CONTRATOSAIDA**",
     contractKey: "dev.resultado_execucao",
   },
   {
