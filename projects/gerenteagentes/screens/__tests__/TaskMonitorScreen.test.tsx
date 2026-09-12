@@ -304,6 +304,99 @@ describe("TaskMonitorScreen — ST-1 (botão editar + diálogo)", () => {
   })
 })
 
+describe("TaskMonitorScreen — selo de elegibilidade de recuperação", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", mockFetch)
+    mockFetch.mockReset()
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    delete globalThis.__bundleFalso
+  })
+
+  const estados = [
+    ["eligible", "Elegível para correção automática"],
+    ["cooldown", "Em carência — 63s"],
+    ["monitor_correcting", "Monitor corrigindo"],
+    ["awaiting_user", "Aguardando sua resposta"],
+    ["max_retries", "Limite de recuperações atingido"],
+    ["promotion_blocked", "Não elegível: bloqueio de promoção"],
+  ] as const
+
+  it.each(estados)("renderiza o rótulo %s", async (state, label) => {
+    globalThis.__bundleFalso = bundleFalso({
+      tarefas: [tarefaFactory(1, "Bloqueada", "blocked", 1)],
+      motorDetail: {
+        motorId: "m1",
+        exists: true,
+        task: { id: "task-1", status: "blocked", title: "Bloqueada", recoveryEligibility: {
+          state,
+          label,
+          reason: "motivo de teste",
+          cooldown: state === "cooldown" ? { secondsRemaining: 63, seconds: 120 } : null,
+        } },
+      },
+    })
+
+    render(
+      <BibliotecaThemeProvider>
+        <TaskMonitorScreen />
+      </BibliotecaThemeProvider>,
+    )
+
+    await waitFor(() => expect(screen.getByTestId("recovery-eligibility-chip")).toBeInTheDocument())
+    expect(screen.getByTestId("recovery-eligibility-chip")).toHaveTextContent(label)
+  })
+
+  it("não exibe selo para tarefa que não está bloqueada", async () => {
+    globalThis.__bundleFalso = bundleFalso({
+      tarefas: [tarefaFactory(1, "Em execução", "running", 1)],
+      motorDetail: {
+        motorId: "m1", exists: true,
+        task: { id: "task-1", status: "running", title: "Em execução", recoveryEligibility: {
+          state: "eligible", label: "Elegível para correção automática", reason: "não deve aparecer",
+        } },
+      },
+    })
+
+    render(<BibliotecaThemeProvider><TaskMonitorScreen /></BibliotecaThemeProvider>)
+    await waitFor(() => expect(screen.getByTestId("task-status-pill")).toBeInTheDocument())
+    expect(screen.queryByTestId("recovery-eligibility-chip")).not.toBeInTheDocument()
+  })
+
+  it("expõe no tooltip os fatos disponíveis e um nome acessível", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    globalThis.__bundleFalso = bundleFalso({
+      tarefas: [tarefaFactory(1, "Bloqueada", "blocked", 1)],
+      motorDetail: {
+        motorId: "m1", exists: true,
+        task: { id: "task-1", status: "blocked", title: "Bloqueada", recoveryEligibility: {
+          state: "eligible", label: "Elegível para correção automática", reason: "bloqueio sistêmico",
+          evidence: { reason: "comando falhou", command: "npm test", excerpt: "saída segura", blockedAt: "2026-09-12T10:00:00Z" },
+          cooldown: { secondsRemaining: 0, seconds: 120 }, attempts: { resolvedLast24h: 2, max: 5 },
+          pendingQuestion: { askedAt: "2026-09-12T10:01:00Z", text: "Qual ambiente devo usar?" },
+          promotionBlocker: { reason: "branch protegida" },
+        } },
+      },
+    })
+
+    render(<BibliotecaThemeProvider><TaskMonitorScreen /></BibliotecaThemeProvider>)
+    await waitFor(() => expect(screen.getByTestId("recovery-eligibility-chip")).toBeInTheDocument())
+    const chip = screen.getByTestId("recovery-eligibility-chip")
+    expect(chip).toHaveAttribute("tabindex", "0")
+    expect(chip).toHaveAttribute("aria-label", "Elegibilidade de recuperação: Elegível para correção automática")
+    await user.hover(chip)
+    await waitFor(() => expect(screen.getByText("bloqueio sistêmico")).toBeInTheDocument())
+    expect(screen.getByText("npm test")).toBeInTheDocument()
+    expect(screen.getByText("saída segura")).toBeInTheDocument()
+    expect(screen.getByText("Qual ambiente devo usar?")).toBeInTheDocument()
+    expect(screen.getByText("branch protegida")).toBeInTheDocument()
+  })
+})
+
 describe("TaskMonitorScreen — ST-2 (editar subtarefa)", () => {
   beforeEach(() => {
     vi.stubGlobal("fetch", mockFetch)

@@ -23,6 +23,20 @@ import { getConfigNumber } from "../config/MotorConfigReader.js"
 
 const logger = createLogger("DependencyInstaller")
 
+// ─── Comandos de instalação ─────────────────────────────────────────────────
+
+/**
+ * `--include=dev` é OBRIGATÓRIO. O container do motor roda `NODE_ENV=production`
+ * e, nesse modo, o npm omite devDependencies por padrão (`npm config get omit`
+ * retorna `dev`). Sem os devDeps, a fase VERIFY não consegue validar a entrega:
+ * `npm run typecheck` falha (tsc ausente) e os testes de telas falham (vitest,
+ * jsdom, @testing-library/react ausentes). É exatamente o que o README e o
+ * ETAPAS_DESENVOLVIMENTO.md determinam: "SEMPRE --include=dev".
+ * Estes comandos são exportados para que os testes usem a mesma fonte.
+ */
+export const NPM_CI_COMMAND = "npm ci --include=dev"
+export const NPM_INSTALL_COMMAND = "npm install --include=dev"
+
 // ─── Tipos ──────────────────────────────────────────────────────────────────
 
 export interface CommandRunner {
@@ -109,6 +123,7 @@ export interface InstallDependenciesInput {
  * - Captura git status --porcelain antes/depois; se npm ci alterar arquivo rastreado, falha.
  * - Sem package-lock.json → pula (não roda npm install).
  * - Falha do npm ci → erro claro com trecho da saída, sem consumir escada de modelos.
+ * - Sempre instala com `--include=dev` (NODE_ENV=production omite devDeps por padrão).
  *
  * O runner é injetável para testes; em produção usa execSync (NodeCommandRunner).
  */
@@ -143,10 +158,10 @@ export class DependencyInstaller {
       worktreePath: input.worktreePath,
     })
 
-    // Executa npm ci
+    // Executa npm ci (com devDeps: o container roda NODE_ENV=production)
     let lockfileRegenerated = false
     try {
-      await this.runner.run("npm ci", input.worktreePath, timeoutMs)
+      await this.runner.run(NPM_CI_COMMAND, input.worktreePath, timeoutMs)
       logger.info("npm ci concluído com sucesso")
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
@@ -155,9 +170,9 @@ export class DependencyInstaller {
       if (isLockfileOutOfSync(msg)) {
         logger.warn("npm ci falhou com lockfile desatualizado (EUSAGE); tentando npm install para regenerar...")
         try {
-          await this.runner.run("npm install", input.worktreePath, timeoutMs)
+          await this.runner.run(NPM_INSTALL_COMMAND, input.worktreePath, timeoutMs)
           logger.info("npm install concluído; tentando npm ci novamente...")
-          await this.runner.run("npm ci", input.worktreePath, timeoutMs)
+          await this.runner.run(NPM_CI_COMMAND, input.worktreePath, timeoutMs)
           logger.info("npm ci concluído com sucesso após regeneração do lockfile")
           lockfileRegenerated = true
         } catch (recoveryError) {

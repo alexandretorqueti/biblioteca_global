@@ -34,6 +34,22 @@ function view(items = tarefas, onSelectTask = vi.fn(), filtros?: FiltrosMapa, on
 }
 
 describe("TaskFlowMap", () => {
+  it("exibe o selo de recuperação somente para tarefas bloqueadas", () => {
+    const eligibility = {
+      state: "eligible" as const,
+      label: "Elegível para correção automática",
+      reason: "bloqueio sistêmico",
+    }
+
+    view([
+      { id: 800, titulo: "Bloqueada", status: "blocked", projetoId: 1, recoveryEligibility: eligibility },
+      { id: 801, titulo: "Falhou", status: "failed", projetoId: 1, recoveryEligibility: eligibility },
+    ])
+
+    expect(screen.getByTestId("flow-task-recovery-800")).toBeInTheDocument()
+    expect(screen.queryByTestId("flow-task-recovery-801")).not.toBeInTheDocument()
+  })
+
   it("mostra a quantidade de tarefas em cada estação e sinaliza a IA ativa", () => {
     view()
     expect(screen.getByTestId("flow-count-running")).toHaveTextContent("1")
@@ -725,7 +741,13 @@ describe("TaskFlowMap — Cards informativos (1.3)", () => {
     }])
 
     await userEvent.hover(screen.getByTestId("flow-task-description-966"))
-    const description = await screen.findByText("Linha 1\nLinha 2\nLinha 3\nLinha 4\nLinha 5\nLinha 6")
+    // O texto da descrição contém quebras de linha; o matcher por string do
+    // @testing-library/dom normaliza o texto do nó (colapsa \n em espaço) mas
+    // compara contra a string crua, então um matcher por função é o único
+    // locator estável aqui.
+    const description = await screen.findByText(
+      (_content, element) => element?.textContent === "Linha 1\nLinha 2\nLinha 3\nLinha 4\nLinha 5\nLinha 6",
+    )
     expect(description).toHaveStyle({
       display: "-webkit-box",
       WebkitBoxOrient: "vertical",

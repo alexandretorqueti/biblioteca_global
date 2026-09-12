@@ -61,6 +61,7 @@ import { createPromotionCorrectionSubtask } from "../planning/CorrectionSubtaskS
 import type { PromotionGateRecoveryCandidate, PromotionGateRecoveryOrchestrator, PromotionGateRecoveryPort } from "../promotion-gate/PromotionGateRecoveryOrchestrator.js"
 import type { PromotionGateReport } from "../promotion-gate/PromotionGateVerifier.js"
 import { MotorMonitorStep, type MotorFixInput } from "../steps/MotorMonitorStep.js"
+import type { RecoveryEligibility } from "../shared/recoveryEligibility.js"
 
 interface ActiveWorker {
   taskId: string
@@ -1864,7 +1865,7 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
    * remove a dependência do fallback direto no banco pela tela de
    * acompanhamento e dá visibilidade ao motivo de bloqueio.
    */
-  async getTaskWithSubtasks(taskId: string): Promise<(Task & { subtasks: SubtaskView[]; errorMessage?: string; ultimoBloqueio: UltimoBloqueio | null; clarificacaoPendente: ClarificacaoPendente | null; promotionConflictAnalysis: PromotionConflictAnalysisView | null }) | null> {
+  async getTaskWithSubtasks(taskId: string): Promise<(Task & { subtasks: SubtaskView[]; errorMessage?: string; ultimoBloqueio: UltimoBloqueio | null; clarificacaoPendente: ClarificacaoPendente | null; promotionConflictAnalysis: PromotionConflictAnalysisView | null; recoveryEligibility: RecoveryEligibility | null }) | null> {
     const data = await this.repository.getTask(taskId)
     if (!data) return null
     const task = this.mapSaveDataToTask(data)
@@ -1988,7 +1989,16 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
       updatedAt: String(analysisRow.updated_at ?? ""),
     } : null
 
-    return { ...task, subtasks, errorMessage: data.errorMessage, ultimoBloqueio, clarificacaoPendente, promotionConflictAnalysis }
+    // A elegibilidade é uma projeção complementar: falha em qualquer consulta
+    // dos fatos não pode derrubar o contrato principal da tarefa.
+    let recoveryEligibility: RecoveryEligibility | null = null
+    try {
+      recoveryEligibility = await this.facts.recoveryEligibility(taskId)
+    } catch (error) {
+      this.logger.warn("Falha ao consultar elegibilidade de recuperação da tarefa " + taskId + ": " + describeError(error), { taskId })
+    }
+
+    return { ...task, subtasks, errorMessage: data.errorMessage, ultimoBloqueio, clarificacaoPendente, promotionConflictAnalysis, recoveryEligibility }
   }
 
   private mapSaveDataToTask(data: import("../shared/types/infrastructure.js").SaveTaskData): Task {

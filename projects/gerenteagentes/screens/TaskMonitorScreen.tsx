@@ -43,7 +43,7 @@ import { RealtimeClient, type RealtimeServerMessage } from "@biblioteca-global/a
 import type { DynamicField, DynamicFormValues } from "@biblioteca-global/ui"
 import { useApi } from "../../../apps/web/src/hooks/useApi"
 import TarefaForm, { type TarefaFormValues } from "./TarefaForm"
-import TaskFlowMap, { type MotorActivity, type FiltrosMapa } from "./TaskFlowMap"
+import TaskFlowMap, { recoveryEligibilityLabel, RecoveryEligibilityTooltipContent, type MotorActivity, type FiltrosMapa, type RecoveryEligibility } from "./TaskFlowMap"
 import { resolveRealtimeUrl, resolveApiBaseUrl } from "../../../apps/web/src/api/client"
 import {
   ALL_TASK_STATUSES,
@@ -69,6 +69,7 @@ interface Tarefa {
   updatedAt?: string
   createdAt?: string
   subtaskCount?: number
+  recoveryEligibility?: RecoveryEligibility | null
 }
 
 /** Campos que podem ser alterados manualmente; o status é derivado pelo motor. */
@@ -217,6 +218,7 @@ interface MotorDetail {
       attempts: number
       updatedAt: string
     } | null
+    recoveryEligibility?: RecoveryEligibility | null
   }
   subtasks?: SubTaskMotor[]
   currentSubTask?: SubTaskMotor | null
@@ -1298,6 +1300,11 @@ export default function TaskMonitorScreen(): ReactNode {
   const aguardandoRetentativaPromocao = /Falha na promoção da branch da tarefa: repositório principal não está limpo para promoção:/i
     .test(detail?.task?.blockInfo?.excerpt ?? "")
 
+  const recoveryEligibility = detail?.task?.recoveryEligibility ?? tarefaSelecionada?.recoveryEligibility ?? null
+  const recoveryTooltip = recoveryEligibility
+    ? <RecoveryEligibilityTooltipContent eligibility={recoveryEligibility} />
+    : null
+
   const editInitialValues = useMemo<DynamicFormValues>(() => {
     if (!tarefaSelecionada) return { titulo: "", descricao: "", tipo: "desenvolvimento", dependsOnTaskId: "" }
     return {
@@ -1587,6 +1594,20 @@ export default function TaskMonitorScreen(): ReactNode {
                 </IconButton>
               </Tooltip>
               <Chip size="small" label={statusMotor} color={corStatus(statusMotor)} data-testid="task-status-pill" />
+              {statusMotor === "blocked" && recoveryEligibility && (
+                <Tooltip title={recoveryTooltip} arrow placement="top-start">
+                  <Chip
+                    component="span"
+                    tabIndex={0}
+                    size="small"
+                    color={recoveryEligibility.state === "eligible" ? "success" : recoveryEligibility.state === "monitor_correcting" ? "info" : recoveryEligibility.state === "promotion_blocked" || recoveryEligibility.state === "max_retries" ? "error" : "warning"}
+                    label={recoveryEligibilityLabel(recoveryEligibility)}
+                    aria-label={`Elegibilidade de recuperação: ${recoveryEligibilityLabel(recoveryEligibility)}`}
+                    data-testid="recovery-eligibility-chip"
+                    sx={{ maxWidth: "100%", height: "auto", "& .MuiChip-label": { whiteSpace: "normal", overflowWrap: "anywhere", py: 0.5 } }}
+                  />
+                </Tooltip>
+              )}
               <Chip
                 size="small"
                 variant="outlined"
