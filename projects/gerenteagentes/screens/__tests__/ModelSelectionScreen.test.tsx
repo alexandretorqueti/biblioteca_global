@@ -283,6 +283,48 @@ describe("ModelSelectionScreen", () => {
     expect(screen.getByTestId("entry-row-1")).toBeInTheDocument()
   })
 
+  it("mantém o fluxo individual completo: reordena, remove e salva enabled sem tocar configuração global", async () => {
+    modelosDoConsole = {
+      models: [
+        { id: "m1", name: "Modelo Um", provider: "ollama" },
+        { id: "m2", name: "Modelo Dois", provider: "openai" },
+      ],
+    }
+    filaSelecao = [{
+      projectKey: "gerenteagentes",
+      tipo: "DEV",
+      entries: [
+        { ordem: 1, provider: "ollama", model: "m1", enabled: true },
+        { ordem: 2, provider: "openai", model: "m2", enabled: false },
+      ],
+    }]
+    putSelecao = {
+      projectKey: "gerenteagentes",
+      tipo: "DEV",
+      entries: [{ ordem: 1, provider: "openai", model: "m2", enabled: true }],
+    }
+    const user = userEvent.setup()
+    render(<ModelSelectionScreen />)
+
+    await waitFor(() => expect(screen.getByTestId("entry-row-2")).toBeInTheDocument())
+    await user.click(screen.getByTestId("entry-up-2"))
+    await user.click(screen.getByTestId("entry-remove-2"))
+    await user.click(screen.getByRole("checkbox", { name: "enabled-1" }))
+    await user.click(screen.getByTestId("btn-save"))
+
+    await waitFor(() => expect(mockRequest).toHaveBeenCalledWith(
+      "PUT",
+      "/gerenteagentes/model-selection/gerenteagentes/DEV",
+      {
+        auth: "access",
+        body: { entries: [{ ordem: 1, provider: "openai", model: "m2", enabled: true }] },
+      },
+    ))
+    expect(mockRequest.mock.calls.some(([method, path]) =>
+      method === "PUT" && path === "/gerenteagentes/model-selection/global",
+    )).toBe(false)
+  })
+
   it("Salvar chama PUT no proxy e recarrega a resposta", async () => {
     modelosDoConsole = {
       models: [

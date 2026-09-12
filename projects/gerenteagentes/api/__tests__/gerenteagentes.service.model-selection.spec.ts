@@ -209,6 +209,30 @@ describe("GerenteAgentesService — model-selection (proxy p/ motor)", () => {
     expect(chamada.options.path).toBe("/api/model-selection/biblioteca-global/DEV");
   });
 
+  it("mantém PUT individual isolado do endpoint global após aplicação global", async () => {
+    const { service } = novoService({ MOTOR_DEV_URL: "http://motor.test:6282" });
+    respostas.push({
+      status: 200,
+      body: JSON.stringify({
+        projectKey: "biblioteca-global",
+        tipo: "DEV",
+        entries: [{ ordem: 1, provider: "openai", model: "gpt-5", enabled: false }],
+      }),
+    });
+
+    await service.saveModelSelection("biblioteca-global", "DEV", [
+      { ordem: 1, provider: "openai", model: "gpt-5", enabled: false },
+    ]);
+
+    expect(capturas).toHaveLength(1);
+    expect(capturas[0]?.options.path).toBe("/api/model-selection/biblioteca-global/DEV");
+    expect(capturas[0]?.options.method).toBe("PUT");
+    expect(JSON.parse(capturas[0]?.body ?? "{}")).toEqual({
+      entries: [{ ordem: 1, provider: "openai", model: "gpt-5", enabled: false }],
+    });
+    expect(capturas.some(({ options }) => options.path === "/api/model-selection/global")).toBe(false);
+  });
+
   it("PUT com entries vazio → erro de validação do contrato shared", async () => {
     const { service } = novoService({ MOTOR_DEV_URL: "http://motor.test:6282" });
 
