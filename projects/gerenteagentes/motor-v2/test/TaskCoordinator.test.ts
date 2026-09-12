@@ -972,8 +972,8 @@ describe('TaskCoordinator', () => {
       const insert = vi.mocked(db.query).mock.calls.find(([sql]) => String(sql).includes('INSERT INTO bloqueios'))
       expect(insert).toBeDefined()
       expect(String(insert?.[0])).toContain('SELECT t.id, NULL')
-      expect(String(insert?.[0])).toContain('WHERE t.external_id = ? OR t.id = CAST(? AS UNSIGNED)')
-      expect(insert?.[1]).toEqual(['systemic_failure', 'motor-v2:db', originalError, 'task-p2-819', 'task-p2-819'])
+      expect(String(insert?.[0])).toContain('WHERE t.external_id = ? LIMIT 1')
+      expect(insert?.[1]).toEqual(['systemic_failure', 'motor-v2:db', originalError, 'task-p2-819'])
       expect(String(insert?.[0])).not.toContain('VALUES (\'task-p2-819\'')
     })
 
