@@ -902,6 +902,54 @@ describe('TaskCoordinator', () => {
   // estar na base e a tarefa virava deployed. Bloqueio ativo agora impede a
   // reconciliação e a tarefa fica pendente para resolução humana.
   describe('reconciliação de tarefas órfãs', () => {
+    it('usa tarefas.id numérico nas consultas relacionais, não tarefas.external_id', async () => {
+      // Contrato de identificadores: tarefas.id é a FK numérica referenciada
+      // por subtarefas e bloqueios; tarefas.external_id é o identificador
+      // público textual (por exemplo, `task-p2-819`). Logs podem expor o
+      // external_id, mas nenhum slug pode chegar a uma coluna FK numérica.
+      vi.mocked(db.query).mockResolvedValueOnce({
+        rows: [{
+          id: 819,
+          external_id: 'task-p2-819',
+          status: 'ready',
+          titulo: 'Tarefa órfã',
+          descricao: '',
+          chat_id: '',
+          agent_id: 'agent',
+          repo_path: '/repo',
+          build_command: 'npm run build',
+          unit_test_command: 'npm test',
+          max_rework: 3,
+          hard_timeout_ms: 1000,
+          project_slug: 'project',
+        }],
+        affectedRows: 0,
+        insertId: 0,
+      }).mockResolvedValueOnce({
+        rows: [{
+          id: 9001,
+          seq: 1,
+          workspace_commit_sha: 'abc123',
+          workspace_status: 'integrated',
+          completion_kind: null,
+          status: 'verified',
+          resultado: 'entrega validada',
+        }],
+        affectedRows: 0,
+        insertId: 0,
+      })
+
+      const internals = coordinator as unknown as { reconcileOrphanedReadyTasks: () => Promise<void> }
+      await internals.reconcileOrphanedReadyTasks()
+
+      const subtaskQuery = vi.mocked(db.query).mock.calls.find(([sql]) =>
+        String(sql).includes('FROM subtarefas WHERE tarefa_id = ?'))
+      expect(subtaskQuery).toBeDefined()
+      expect(subtaskQuery?.[1]).toEqual([819])
+      expect(typeof subtaskQuery?.[1]?.[0]).toBe('number')
+      expect(subtaskQuery?.[1]).not.toContain('task-p2-819')
+    })
+
     it('não reconcilia tarefa com bloqueio ativo (conflito de promoção fica pendente para humano)', async () => {
       const internals = coordinator as unknown as { reconcileOrphanedReadyTasks: () => Promise<void> }
       await internals.reconcileOrphanedReadyTasks()
