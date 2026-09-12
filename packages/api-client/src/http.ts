@@ -65,6 +65,11 @@ export class ApiHttpClient {
     this.recovery = recovery
   }
 
+  /** Registra o observador global de falhas reais do transporte. */
+  setErrorReporter(errorReporter: NonNullable<ApiClientOptions["errorReporter"]>): void {
+    this.options.errorReporter = errorReporter
+  }
+
   request<T>(
     method: string,
     path: string,

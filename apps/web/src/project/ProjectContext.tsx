@@ -31,6 +31,11 @@ import { createDataSource, resolverPrefixoResource } from "@biblioteca-global/ap
 import { getProjectConfig } from "./registry/projects"
 import { useAuth } from "../auth/AuthContext"
 import type { ApiClientBundle } from "../api/client"
+import { marcarOrigem } from "../observability/origemStore"
+
+function marcarRecurso(resource: string, funcionalidade: string): void {
+  marcarOrigem({ tela: resource, funcionalidade })
+}
 
 export interface ProjectContextValue {
   /** Config validada do projeto selecionado (undefined enquanto não houver). */
@@ -69,6 +74,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   const executeAction = useCallback<ExecuteAction>(
     async (action: CustomAction, context?: { row?: EntityRecord }) => {
       if (!bundle || !projectSlug) throw new Error("Bundle HTTP ou projeto não disponível")
+      marcarOrigem({ tela: action.label, funcionalidade: `ação:${action.id}` })
       
       // Interpola :id no path com o ID do registro
       let path = action.path
@@ -110,12 +116,33 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       getDataSource<T extends EntityRecord>(resource: string): CadastroDataSource<T> {
         // bundle pode ser undefined se ainda não houver auth; protegemos.
         if (!bundle || !projectSlug) return undefined as any
-        return createDataSource<T>(bundle.http, projectSlug, resource)
+        marcarRecurso(resource, "criar dataSource")
+        const dataSource = createDataSource<T>(bundle.http, projectSlug, resource)
+        return {
+          ...dataSource,
+          list: async (params) => {
+            marcarRecurso(resource, "listar")
+            return dataSource.list(params)
+          },
+          create: async (values) => {
+            marcarRecurso(resource, "criar")
+            return dataSource.create(values)
+          },
+          update: async (row, values) => {
+            marcarRecurso(resource, "editar")
+            return dataSource.update(row, values)
+          },
+          remove: async (row) => {
+            marcarRecurso(resource, "excluir")
+            return dataSource.remove(row)
+          },
+        }
       },
       getLoadOptions(resource: string) {
         if (!bundle || !projectSlug) return async () => []
         const prefixo = resolverPrefixoResource(projectSlug, resource)
         return async (search: string) => {
+          marcarRecurso(resource, "carregar opções")
           try {
             const result = await bundle.http.request<PaginatedResult<EntityRecord>>(
               "GET",

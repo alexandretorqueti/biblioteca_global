@@ -27,6 +27,7 @@ import { createHelpDeskClient } from "@biblioteca-global/api-client"
 import { useAuth } from "../auth/AuthContext"
 import { useProject } from "../project/ProjectContext"
 import { useThemeSetting } from "../theme/ThemeContext"
+import { marcarOrigem } from "../observability/origemStore"
 
 export default function SystemScreen(): ReactNode {
   const { logout, projeto, projetos, bundle } = useAuth()
@@ -112,6 +113,7 @@ export default function SystemScreen(): ReactNode {
         runtime={runtime}
         actions={actions}
         perfil={projeto?.perfil}
+        onRouteChange={(path) => marcarOrigem({ tela: path, funcionalidade: "navegação" })}
       />
       {helpDeskClient && (
         <HelpDeskWidget client={helpDeskClient} />

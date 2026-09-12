@@ -294,6 +294,9 @@ export default function GeradorSistema({
     initialPath ?? firstPath,
   )
   const currentPath = activePath ?? uncontrolledPath
+  useEffect(() => {
+    onRouteChange?.(currentPath)
+  }, [currentPath, onRouteChange])
   const breadcrumbs = getSistemaBreadcrumb(config, currentPath)
   const drawerWidth = config.drawerWidth ?? defaultDrawerWidth
 
