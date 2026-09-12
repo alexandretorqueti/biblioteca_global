@@ -28,6 +28,76 @@ import { useTheme } from "@mui/material/styles"
 import { TASK_STATUS_EXECUTING, TASK_STATUS_STARTABLE, taskStatusLabel } from "../motor-v2/src/shared/task-statuses"
 import { calcularMetricas, deriveTaskPriority, formatTempoRelativo, projetoAvatar, type Prioridade } from "./taskFlowHelpers"
 
+export type RecoveryEligibilityState =
+  | "eligible"
+  | "cooldown"
+  | "monitor_correcting"
+  | "awaiting_user"
+  | "max_retries"
+  | "promotion_blocked"
+
+export interface RecoveryEvidence {
+  id?: number
+  subtarefaId?: number | null
+  reason?: string
+  command?: string
+  excerpt?: string
+  blockedAt?: string | null
+}
+
+export interface RecoveryEligibility {
+  state: RecoveryEligibilityState
+  label?: string
+  reason?: string
+  evidence?: RecoveryEvidence | null
+  cooldown?: { secondsRemaining?: number; seconds?: number } | null
+  attempts?: { resolvedLast24h?: number; max?: number } | null
+  lease?: { executionId?: string; ownerId?: string; resourceKey?: string; expiresAt?: string } | null
+  pendingQuestion?: { messageId?: number; askedAt?: string; text?: string } | null
+  promotionBlocker?: RecoveryEvidence | null
+}
+
+export function recoveryEligibilityLabel(eligibility: RecoveryEligibility): string {
+  const labels: Record<RecoveryEligibilityState, string> = {
+    eligible: "Elegível para correção automática",
+    cooldown: eligibility.label ?? "Em carência",
+    monitor_correcting: "Monitor corrigindo",
+    awaiting_user: "Aguardando sua resposta",
+    max_retries: "Limite de recuperações atingido",
+    promotion_blocked: "Não elegível: bloqueio de promoção",
+  }
+  return labels[eligibility.state]
+}
+
+function recoveryFact(label: string, value: unknown) {
+  if (value == null || value === "") return null
+  const safeValue = String(value)
+    .replace(/(authorization\s*:\s*bearer\s+)[^\s,;]+/gi, "$1[redigido]")
+    .replace(/((?:token|password|passwd|secret|api[_-]?key)\s*[=:]\s*)[^\s,;]+/gi, "$1[redigido]")
+  return <Typography variant="caption" component="div"><b>{label}:</b> {safeValue}</Typography>
+}
+
+export function RecoveryEligibilityTooltipContent({ eligibility }: { eligibility: RecoveryEligibility }) {
+  return (
+    <Box sx={{ maxWidth: { xs: 280, sm: 420 }, overflowWrap: "anywhere" }}>
+      <Typography variant="body2" sx={{ fontWeight: 700, mb: 0.5 }}>{recoveryEligibilityLabel(eligibility)}</Typography>
+      {recoveryFact("Motivo", eligibility.reason)}
+      {recoveryFact("Motivo do bloqueio", eligibility.evidence?.reason)}
+      {recoveryFact("Comando", eligibility.evidence?.command)}
+      {recoveryFact("Evidência", eligibility.evidence?.excerpt)}
+      {recoveryFact("Data do bloqueio", eligibility.evidence?.blockedAt ? new Date(eligibility.evidence.blockedAt).toLocaleString("pt-BR") : null)}
+      {recoveryFact("Carência", eligibility.cooldown ? `${eligibility.cooldown.secondsRemaining ?? 0}s restantes (de ${eligibility.cooldown.seconds ?? 0}s)` : null)}
+      {recoveryFact("Tentativas", eligibility.attempts ? `${eligibility.attempts.resolvedLast24h ?? 0} de ${eligibility.attempts.max ?? 0}` : null)}
+      {recoveryFact("Estado do Monitor", eligibility.lease ? `corrigindo${eligibility.lease.expiresAt ? ` (expira em ${new Date(eligibility.lease.expiresAt).toLocaleString("pt-BR")})` : ""}` : null)}
+      {recoveryFact("Pergunta pendente", eligibility.pendingQuestion?.text ?? (eligibility.pendingQuestion ? "aguardando resposta" : null))}
+      {recoveryFact("Pergunta feita em", eligibility.pendingQuestion?.askedAt ? new Date(eligibility.pendingQuestion.askedAt).toLocaleString("pt-BR") : null)}
+      {recoveryFact("Bloqueio de promoção", eligibility.promotionBlocker?.reason)}
+      {recoveryFact("Comando de promoção", eligibility.promotionBlocker?.command)}
+      {recoveryFact("Evidência da promoção", eligibility.promotionBlocker?.excerpt)}
+    </Box>
+  )
+}
+
 export interface FlowTask {
   id: number
   titulo: string
@@ -39,6 +109,7 @@ export interface FlowTask {
   projetoNome?: string | null
   progresso?: { verified: number; total: number } | null
   subtaskCount?: number
+  recoveryEligibility?: RecoveryEligibility | null
 }
 
 export interface MotorActivity {
@@ -500,6 +571,8 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, l
           const ultimaAtualizacao = (task.updatedAt ?? task.createdAt)
             ? new Date((task.updatedAt ?? task.createdAt)!).toLocaleString("pt-BR")
             : "—"
+          const showRecovery = ["blocked", "failed"].includes(task.status) && task.recoveryEligibility != null
+          const recoveryLabel = showRecovery ? recoveryEligibilityLabel(task.recoveryEligibility!) : ""
 
           // Tooltip rico (1.3e): descrição + projeto + prioridade + atualização
           // Nota: campo responsável omitido — backend ainda não expõe essa informação.
@@ -593,6 +666,21 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, l
                   {aiActive && <SettingsRounded aria-label="IA trabalhando" sx={{ flexShrink: 0, fontSize: 18, color: "warning.main", animation: "gear-spin 2s linear infinite", "@keyframes gear-spin": { to: { transform: "rotate(360deg)" } } }} />}
                   {station.tone === "danger" && <ErrorOutlineRounded sx={{ flexShrink: 0, fontSize: 17, color: "error.main" }} />}
                   <Typography variant="caption" fontWeight={700} noWrap sx={{ minWidth: 0, flex: 1 }}>#{task.id} {task.titulo}</Typography>
+                  {showRecovery && (
+                    <Tooltip title={<RecoveryEligibilityTooltipContent eligibility={task.recoveryEligibility!} />} arrow placement="top-start">
+                      <Chip
+                        component="span"
+                        tabIndex={0}
+                        size="small"
+                        label={recoveryLabel}
+                        data-testid={`flow-task-recovery-${task.id}`}
+                        aria-label={`Elegibilidade de recuperação: ${recoveryLabel}`}
+                        onClick={(event) => event.stopPropagation()}
+                        onKeyDown={(event) => event.stopPropagation()}
+                        sx={{ height: 20, maxWidth: 180, flexShrink: 0, fontSize: "0.6rem", cursor: "help", bgcolor: "action.hover" }}
+                      />
+                    </Tooltip>
+                  )}
                   {/* Tempo na estação (1.3c) */}
                   <Typography
                     variant="caption"
@@ -619,8 +707,11 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, l
                   >
                     <Box
                       component="span"
+                      tabIndex={0}
+                      role="img"
                       aria-label={`Detalhes da tarefa ${task.id}`}
                       data-testid={`flow-task-description-${task.id}`}
+                      onKeyDown={(event) => event.stopPropagation()}
                       sx={{ display: "inline-flex", flexShrink: 0, color: "action.active", cursor: "help" }}
                     >
                       <InfoOutlined sx={{ fontSize: 15 }} />
