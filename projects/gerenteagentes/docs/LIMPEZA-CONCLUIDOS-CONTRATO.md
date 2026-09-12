@@ -27,6 +27,16 @@ ancestralidade da branch de integração na branch base. A automação posterior
 persistirá o fato histórico em `deploy_requests`; nunca atualizará
 `tarefas.status`.
 
+A seleção deve ser feita pelo calculador canônico de status (equivalente a
+`deriveTaskStatus(facts) = 'completed'`), e não por `tarefas.status`. Em termos
+de fatos mínimos, a consulta deve restringir `t.tipo = 'desenvolvimento'`,
+`integration_confirmed_at IS NOT NULL`, todas as subtarefas em
+`('verified', 'superseded')`, ausência de terminal administrativo, pausa,
+clarificação pendente e subtarefa ativa/bloqueada, além de excluir qualquer
+`deploy_requests.status = 'succeeded'`. O caso de deploy falho só entra quando
+o calculador também retornar `completed`; o valor textual de qualquer coluna
+materializada não substitui esse cálculo.
+
 ## Contrato de classificação
 
 - **candidato confirmado**: todos os requisitos de seleção e evidência Git são
@@ -55,21 +65,19 @@ repositório oficial do projeto.
 
 | tarefa | external_id | status de deploy | bloqueio ativo | branch de integração | HEAD da branch | ancestral da base | classificação |
 |---:|---|---|---:|---|---|---|---|
-| 758 | `taqui-quick-actions-20260903-06` | `failed` | sim | `motor-v2/taqui-quick-actions-20260903-06/integracao` | `5ab1da3d7520468516c16301b09b0ae82fbfd595`* | não* | conflito Git/histórico |
+| 758 | `taqui-quick-actions-20260903-06` | `failed` | sim | `motor-v2/taqui-quick-actions-20260903-06/integracao` | `507cd23b2a5a596e3e765f4b549ee86da4f17b21` | sim | conflito histórico |
 | 779 | `task-p2-779` | `failed` | sim | `motor-v2/task-p2-779/integracao` | `0b6071bd5f4dddcf12cc3ba493f44f239af522af` | sim | conflito |
 | 787 | `task-p2-787` | `failed` | sim | `motor-v2/task-p2-787/integracao` | `4586a50cfc5b42e88675d73b08f1a227cafb132e` | sim | conflito |
 | 795 | `task-p6-795` | `failed` | sim | `motor-v2/task-p6-795/integracao` | `4fbf04081575d3e3cca589ec92b53cbf3cd5e46d` | sim | conflito |
 
-Na leitura inicial, a tarefa 758 é `completed` pelo cálculo derivado (sete
-subtarefas aprovadas, integração confirmada e deploy falho), mas sua branch não
-é ancestral da base. As tarefas 779,
+Na leitura atual, a tarefa 758 é `completed` pelo cálculo derivado (sete
+subtarefas aprovadas, integração confirmada e deploy falho), e sua branch agora
+é ancestral da base; ainda assim, o `failed` histórico e o bloqueio ativo
+impedem a conversão automática. As tarefas 779,
 787 e 795 satisfazem a forma `completed` prevista para deploy falho, mas o
 `failed` histórico e o bloqueio ativo são conflitos e não devem ser convertidos
 automaticamente em `succeeded`. Portanto, nesta subtarefa não há candidato
 confirmado para persistência.
-
-\* O HEAD da branch 758 existe, mas `git merge-base --is-ancestor` retornou
-falso.
 
 ## Formato obrigatório do relatório
 
