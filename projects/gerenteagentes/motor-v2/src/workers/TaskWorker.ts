@@ -1003,7 +1003,7 @@ class TaskWorker {
             throw new Error(reason)
           }
           if (outcome.kind === "need_help") {
-            await persistTaskClarification(this.db!, input.task.id, {
+            await persistTaskClarification(this.planningDb(), input.task.id, {
               summary: "O desenvolvedor precisa de uma decisão ou informação para concluir a subtarefa #" + subtask.seq + ".",
               questions: [outcome.reason],
             })
@@ -1015,7 +1015,7 @@ class TaskWorker {
             return undefined
           }
           if (outcome.kind === "database_operation") {
-            const executed = await new ProjectDatabaseOperationExecutor().execute(this.db!, {
+            const executed = await new ProjectDatabaseOperationExecutor().execute(this.planningDb(), {
               taskId: input.task.id,
               workspacePath: input.repoPath,
               scriptPath: outcome.scriptPath,
