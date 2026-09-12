@@ -54,10 +54,12 @@ da `sessionKey`.
 
 Ordem confiável: para uma sessão, `motor_agent_session_messages.sequence_number`
 é a ordem do transcript. Para várias sessões do analista, a ordem de início é
-`opened_at` com `id` como desempate; o índice `modelIndex`/ordem da cadeia
-explica o escalonamento, mas não substitui timestamps para ordenar eventos
-reais. A ordem de exibição deve ser crescente (primeira sessão, segunda, etc.)
-e manter as mensagens de cada sessão juntas.
+`execution_order ASC` (com `id ASC` como desempate); o índice `modelIndex`/ordem
+da cadeia explica o escalonamento, mas não substitui os registros persistidos.
+Para desenvolvimento, a seleção atual usa `last_activity_at DESC` (com `id
+DESC` como desempate). Essas ordens de tentativas são preservadas, mantendo as
+mensagens de cada sessão juntas; somente as mensagens dentro de cada tentativa
+passam a ser descendentes.
 
 ## Pontos de captura e persistência propostos
 
@@ -82,6 +84,82 @@ retenção local passa a ser a fonte da consulta após `DELETE /api/sessions` no
 Console.
 
 ## Contratos a alterar
+
+### Paginação dos transcripts (contrato desta alteração)
+
+A paginação é interna a cada tentativa. A resposta nunca pagina a coleção de
+tentativas: o endpoint continua retornando todos os registros persistidos e na
+mesma ordem de hoje. Portanto, não se cria uma entidade ou agrupamento novo de
+tentativas:
+
+- desenvolvimento: uma tentativa é um registro de
+  `motor_agent_sessions` ligado à subtarefa por `subtarefa_id`;
+- analista: uma tentativa é um registro de `analyst_task_sessions` ligado à
+  tarefa por `tarefa_id`.
+
+O contrato comum de cada endpoint é:
+
+```ts
+type SessionMessagesPage = {
+  items: Array<{
+    role: string;
+    text: string;
+    sequenceNumber: number;
+    occurredAt: string | null;
+  }>;
+  nextCursor: string | null;
+  hasNextPage: boolean;
+};
+
+type SessionAttempt = {
+  // Os metadados atuais da tentativa permanecem no mesmo nível.
+  sessionKey: string;
+  messages: SessionMessagesPage;
+};
+```
+
+`items` é sempre ordenado por `sequenceNumber DESC` (e por `id DESC` como
+desempate), ou seja, a mensagem mais recente vem primeiro. O cursor é opaco,
+estável para aquela tentativa e representa a continuação da consulta dessa
+tentativa; `nextCursor: null` e `hasNextPage: false` encerram o transcript.
+Uma página inicial usa `pageSize` (valor padrão definido pelo backend); uma
+requisição de continuação envia o cursor da própria tentativa. Cursor, offset,
+`hasNextPage` e carregamento são independentes entre tentativas. A lista de
+tentativas não recebe `cursor`, `offset`, `hasNextPage` nem limite.
+
+Na primeira resposta, o backend devolve todos os registros de tentativas e uma
+primeira página de mensagens para cada um. O frontend mantém esse conjunto e
+renderiza as tentativas na ordem existente, inserindo um separador visual entre
+blocos. Ao atingir o fim de um bloco, busca somente a próxima página daquele
+bloco e anexa as mensagens abaixo das já exibidas (preservando a ordem
+descendente no transcript).
+
+Para o desenvolvedor, a fonte continua sendo `motor_agent_sessions` e
+`motor_agent_session_messages`; para o analista, continua sendo
+`analyst_task_sessions` e `analyst_task_session_messages`. A ordenação da lista
+de tentativas não muda: desenvolvimento mantém a ordem atualmente usada para
+as sessões da subtarefa e analista mantém `executionOrder ASC` (a primeira
+tentativa antes da segunda). A paginação não pode selecionar apenas a sessão
+mais recente nem remover tentativas anteriores.
+
+O estado de disponibilidade também permanece compatível com os endpoints
+atuais:
+
+- `available: false` com `sessions: []`/tentativa equivalente vazia quando
+  não há registro persistido;
+- `available: true` quando há histórico persistido, inclusive quando uma
+  tentativa existente tem uma página vazia;
+- erro continua sendo o erro HTTP já produzido pela rota, sem transformar erro
+  em `available: false`.
+
+O parâmetro de continuação identifica explicitamente a tentativa (por
+`sessionKey`) e seu cursor; nunca existe um cursor único compartilhado pela
+lista. A rota de continuação deve retornar o mesmo envelope de tentativa e
+somente a página solicitada, sem alterar a coleção de tentativas. O contrato
+deve manter também os metadados atuais (`model`, status, datas e motivo de
+fechamento) e, quando o consumidor precisar de texto, montá-lo a partir das
+mensagens recebidas — não é um transcript completo implícito na primeira
+página.
 
 ### Banco/schema
 
@@ -111,9 +189,13 @@ Contrato sugerido:
       "status": "closed",
       "openedAt": "2026-09-08T10:00:00.000Z",
       "closedAt": "2026-09-08T10:08:00.000Z",
-      "messages": [
-        { "sequenceNumber": 0, "role": "user", "text": "...", "occurredAt": "..." }
-      ]
+      "messages": {
+        "items": [
+          { "sequenceNumber": 7, "role": "assistant", "text": "...", "occurredAt": "..." }
+        ],
+        "nextCursor": "opaque-cursor",
+        "hasNextPage": true
+      }
     }
   ],
   "text": "[provider/model-a]\\n[user]\\n..."
@@ -121,9 +203,10 @@ Contrato sugerido:
 ```
 
 `taskId` deve ser validado contra `CurrentProject`, assim como
-`sessaoSubtarefa`. Consultar `ORDER BY opened_at ASC, id ASC` e mensagens por
-`sequence_number ASC`; não consultar o Console em tempo real para preencher o
-histórico.
+`sessaoSubtarefa`. Não consultar o Console em tempo real para preencher o
+histórico. A lista de sessões permanece completa e na ordem de tentativas
+definida acima; cada `messages` é uma página independente, ordenada por
+`sequence_number DESC` (e `id DESC` como desempate).
 
 ### Frontend
 
