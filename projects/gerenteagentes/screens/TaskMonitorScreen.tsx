@@ -71,6 +71,14 @@ interface Tarefa {
   subtaskCount?: number
 }
 
+/** Campos que podem ser alterados manualmente; o status é derivado pelo motor. */
+interface TarefaEdicaoPayload {
+  titulo: string
+  descricao: string | null
+  tipo: string
+  dependsOnTaskId: number | null
+}
+
 interface TarefaChatMessage {
   id: number
   tarefaId: number
@@ -875,7 +883,7 @@ export default function TaskMonitorScreen(): ReactNode {
       setEditLoading(true)
       setEditError(null)
       try {
-        const body: Record<string, unknown> = {
+        const body: TarefaEdicaoPayload = {
           titulo: String(values.titulo ?? "").trim(),
           descricao: values.descricao ? String(values.descricao).trim() : null,
           tipo: values.tipo ? String(values.tipo) : "desenvolvimento",
