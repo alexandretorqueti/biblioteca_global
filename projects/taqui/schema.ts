@@ -348,6 +348,20 @@ export const ocorrencias = mysqlTable(
     registradoPorId: bigint("registrado_por_id", { mode: "number", unsigned: true })
       .notNull()
       .references(() => funcionarios.id, { onDelete: "restrict" }),
+    /** Status da encomenda no instante em que a ocorrência foi registrada. */
+    statusAnterior: mysqlEnum("status_anterior", [
+      "pendente",
+      "pronta_retirada",
+      "entregue",
+      "cancelada",
+    ]),
+    /** Status resultante da ocorrência (normalmente cancelada ou o mesmo status). */
+    statusNovo: mysqlEnum("status_novo", [
+      "pendente",
+      "pronta_retirada",
+      "entregue",
+      "cancelada",
+    ]),
     /**
      * Tipo padronizado da ocorrência:
      * - devolucao_transportadora: transportadora veio buscar a encomenda
@@ -480,6 +494,8 @@ export const annotations = {
     encomenda_id: { label: "Encomenda" },
     condominio_id: { label: "Condomínio" },
     registrado_por_id: { label: "Registrado por" },
+    status_anterior: { label: "Status Anterior" },
+    status_novo: { label: "Status Novo" },
     tipo: { label: "Tipo de Ocorrência" },
     motivo: { label: "Motivo", fullWidth: true, maxLength: 2000, helperText: "Obrigatório, mínimo 10 caracteres" },
     descricao: { label: "Descrição", type: "textarea", fullWidth: true, helperText: "Obrigatória quando tipo for 'Outro'" },

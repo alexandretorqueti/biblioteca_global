@@ -1,0 +1,2 @@
+ALTER TABLE `ocorrencias` ADD `status_anterior` enum('pendente','pronta_retirada','entregue','cancelada');--> statement-breakpoint
+ALTER TABLE `ocorrencias` ADD `status_novo` enum('pendente','pronta_retirada','entregue','cancelada');

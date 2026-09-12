@@ -194,6 +194,8 @@ export class OcorrenciasService {
       encomendaId: body.encomendaId,
       condominioId,
       registradoPorId: funcionarioId,
+      statusAnterior: encomenda.status,
+      statusNovo: deveCancelar ? "cancelada" : encomenda.status,
       tipo: body.tipo,
       motivo: body.motivo,
       descricao: body.descricao ?? null,
