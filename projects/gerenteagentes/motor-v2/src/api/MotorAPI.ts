@@ -6,6 +6,14 @@ import { createServer, type IncomingMessage, type ServerResponse, type Server } 
 import type { TaskCoordinator } from '../coordinator/TaskCoordinator.js'
 import { createLogger } from '../shared/logger.js'
 import type { Db } from '../shared/types/infrastructure.js'
+import {
+  GLOBAL_MODEL_SELECTION_TYPES,
+  parseGlobalModelSelection,
+  GlobalModelSelectionValidationError,
+  type GlobalModelSelection,
+  type GlobalModelSelectionEntry,
+  type GlobalModelSelectionTipo,
+} from '../shared/global-model-selection.js'
 
 export interface MotorAPIConfig {
   port: number
@@ -45,7 +53,7 @@ export class MotorAPI {
 
   private handleRequest(req: IncomingMessage, res: ServerResponse): void {
     res.setHeader('Access-Control-Allow-Origin', '*')
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS')
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
 
     if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return }
@@ -76,6 +84,11 @@ export class MotorAPI {
           .catch((error: unknown) => this.json(res, 500, { ok: false, error: error instanceof Error ? error.message : 'Pump failed' }))
       }
       // Model selection endpoints
+      else if (path === '/api/model-selection/global' && req.method === 'GET') {
+        this.handleGetGlobalModelSelection(res)
+      } else if (path === '/api/model-selection/global' && req.method === 'PUT') {
+        this.handleApplyGlobalModelSelection(req, res)
+      }
       else if (req.method === 'GET' && projectKey && tipo) {
         this.handleGetModelSelection(res, projectKey, tipo)
       } else if (req.method === 'PUT' && projectKey && tipo) {
@@ -269,6 +282,121 @@ export class MotorAPI {
     } catch (error) {
       this.logger.error('Failed to get model selection', { error, projectKey, tipo })
       this.json(res, 500, { ok: false, error: error instanceof Error ? error.message : 'Internal error' })
+    }
+  }
+
+  /**
+   * GET /api/model-selection/global — lê somente a configuração global.
+   * Não consulta as seleções materializadas de nenhum projeto.
+   */
+  private async handleGetGlobalModelSelection(res: ServerResponse): Promise<void> {
+    if (!this.db) {
+      this.json(res, 503, { ok: false, error: 'Database not available' })
+      return
+    }
+    try {
+      const result = await this.db.query(
+        `SELECT tipo, ordem, provider, model, enabled
+           FROM global_model_selection
+          ORDER BY tipo ASC, ordem ASC`,
+      )
+      const configuracaoGlobal = this.emptyGlobalSelection()
+      for (const row of result.rows) {
+        const tipo = String(row.tipo) as GlobalModelSelectionTipo
+        if (GLOBAL_MODEL_SELECTION_TYPES.includes(tipo)) {
+          configuracaoGlobal[tipo].push(this.mapModelSelectionEntry(row))
+        }
+      }
+      this.json(res, 200, { ok: true, configuracaoGlobal })
+    } catch (error) {
+      this.logger.error('Failed to get global model selection', { error })
+      this.json(res, 500, { ok: false, error: error instanceof Error ? error.message : 'Internal error' })
+    }
+  }
+
+  /**
+   * PUT /api/model-selection/global — persiste e materializa as três filas
+   * em todos os projetos cadastrados. Cada projeto é uma unidade transacional;
+   * uma falha não desfaz projetos já concluídos.
+   */
+  private async handleApplyGlobalModelSelection(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.db) {
+      this.json(res, 503, { ok: false, error: 'Database not available' })
+      return
+    }
+
+    let configuracaoGlobal: GlobalModelSelection
+    try {
+      configuracaoGlobal = parseGlobalModelSelection(await this.readBody(req))
+    } catch (error) {
+      const issues = error instanceof GlobalModelSelectionValidationError ? error.issues : [error instanceof Error ? error.message : 'Body JSON inválido']
+      this.json(res, 400, { ok: false, error: 'Configuração global inválida', issues })
+      return
+    }
+
+    try {
+      // A validação acima é deliberadamente anterior a qualquer efeito.
+      await this.db.transaction(async (tx) => {
+        await tx.query('DELETE FROM global_model_selection')
+        for (const tipo of GLOBAL_MODEL_SELECTION_TYPES) {
+          for (const entry of configuracaoGlobal[tipo]) {
+            await tx.query(
+              `INSERT INTO global_model_selection (tipo, ordem, provider, model, enabled)
+               VALUES (?, ?, ?, ?, ?)`,
+              [tipo, entry.ordem, entry.provider.trim(), entry.model.trim(), entry.enabled ? 1 : 0],
+            )
+          }
+        }
+      })
+
+      const projects = await this.db.query('SELECT slug FROM projetos_captados ORDER BY slug ASC')
+      const projetosAplicados: Array<{ projectKey: string; tipos: GlobalModelSelectionTipo[] }> = []
+      const errosPorProjeto: Array<{ projectKey: string; error: string }> = []
+
+      for (const row of projects.rows) {
+        const projectKey = String(row.slug ?? '')
+        try {
+          await this.db.transaction(async (tx) => {
+            for (const tipo of GLOBAL_MODEL_SELECTION_TYPES) {
+              await tx.query('DELETE FROM project_model_selection WHERE project_slug = ? AND tipo = ?', [projectKey, tipo])
+              for (const entry of configuracaoGlobal[tipo]) {
+                await tx.query(
+                  `INSERT INTO project_model_selection (project_slug, tipo, ordem, provider, model, enabled)
+                   VALUES (?, ?, ?, ?, ?, ?)`,
+                  [projectKey, tipo, entry.ordem, entry.provider.trim(), entry.model.trim(), entry.enabled ? 1 : 0],
+                )
+              }
+            }
+          })
+          projetosAplicados.push({ projectKey, tipos: [...GLOBAL_MODEL_SELECTION_TYPES] })
+        } catch (error) {
+          errosPorProjeto.push({ projectKey, error: error instanceof Error ? error.message : 'Falha ao aplicar configuração' })
+        }
+      }
+
+      this.json(res, 200, {
+        ok: true,
+        configuracaoGlobal,
+        resultadoPropagacao: { sucesso: errosPorProjeto.length === 0, totalProjetos: projects.rows.length },
+        projetosAplicados,
+        errosPorProjeto,
+      })
+    } catch (error) {
+      this.logger.error('Failed to apply global model selection', { error })
+      this.json(res, 500, { ok: false, error: error instanceof Error ? error.message : 'Internal error' })
+    }
+  }
+
+  private emptyGlobalSelection(): GlobalModelSelection {
+    return { DEV: [], ANALYST: [], MONITOR: [] }
+  }
+
+  private mapModelSelectionEntry(row: Record<string, unknown>): GlobalModelSelectionEntry {
+    return {
+      ordem: Number(row.ordem),
+      provider: String(row.provider),
+      model: String(row.model),
+      enabled: row.enabled === true || row.enabled === 1 || row.enabled === '1',
     }
   }
 
