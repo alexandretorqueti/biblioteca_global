@@ -5,6 +5,12 @@
  */
 export { ApiClientError } from "./errors"
 export {
+  createErrorReporter,
+  type CreateErrorReporterOptions,
+  type ErrorReportContext,
+  type ErrorReportEntrada,
+} from "./error-report"
+export {
   ApiHttpClient,
   assertSemProjetoId,
   type AuthMode,
@@ -22,6 +28,7 @@ export { createDataSource } from "./data-source"
 export { ExternalApiClient } from "./external-client"
 export type {
   ApiClientOptions,
+  ErrorReporter,
   FetchFn,
   SessionRecovery,
   TokenStore,

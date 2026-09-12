@@ -18,6 +18,8 @@ export interface RequestOptions {
   auth?: AuthMode
   /** Headers adicionais (ex.: Authorization com token de serviço). */
   headers?: Record<string, string>
+  /** Uso interno do reporter para impedir recursão ao chamar POST /erros. */
+  skipErrorReporter?: boolean
 }
 
 /** Defesa em profundidade: nenhum body pode carregar projetoId. */
@@ -102,11 +104,24 @@ export class ApiHttpClient {
     }
 
     const url = `${this.options.baseUrl}${path}${montarQuery(opts.query)}`
-    const resposta = await this.fetchImpl(url, {
-      method,
-      headers,
-      body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
-    })
+    let resposta: Awaited<ReturnType<FetchFn>>
+    try {
+      resposta = await this.fetchImpl(url, {
+        method,
+        headers,
+        body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+      })
+    } catch (erro: unknown) {
+      this.reportarFalha(opts, {
+        method,
+        path,
+        query: opts.query,
+        body: opts.body,
+        status: null,
+        erro,
+      })
+      throw erro
+    }
 
     if (
       resposta.status === 401 &&
@@ -124,6 +139,33 @@ export class ApiHttpClient {
     if (resposta.status >= 200 && resposta.status < 300) {
       return dados as T
     }
-    throw ApiClientError.fromResponse(resposta.status, dados)
+    const erro = ApiClientError.fromResponse(resposta.status, dados)
+    this.reportarFalha(opts, {
+      method,
+      path,
+      query: opts.query,
+      body: opts.body,
+      status: resposta.status,
+      responseBody: dados,
+      erro,
+    })
+    throw erro
   }
+
+  private reportarFalha(
+    opts: RequestOptions,
+    entrada: import("./error-report").ErrorReportEntrada,
+  ): void {
+    if (opts.skipErrorReporter || pathEhRelatoDeErro(entrada.path)) return
+    try {
+      this.options.errorReporter?.relatar(entrada)
+    } catch {
+      // O reporter é observador: falhar ao registrá-lo não muda o transporte.
+    }
+  }
+}
+
+function pathEhRelatoDeErro(path: string): boolean {
+  const semQuery = (path.split(/[?#]/, 1)[0] ?? path).replace(/\/+$/, "")
+  return semQuery === "/erros" || semQuery === "/api/erros"
 }
