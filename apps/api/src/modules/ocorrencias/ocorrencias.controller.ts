@@ -105,6 +105,14 @@ export class OcorrenciasController {
     const parsedOffset = offset ? Number.parseInt(offset, 10) : undefined
     const parsedEncomendaId = encomendaId ? Number.parseInt(encomendaId, 10) : undefined
 
+    if (
+      (parsedLimit !== undefined && (!Number.isInteger(parsedLimit) || parsedLimit < 1 || parsedLimit > 100)) ||
+      (parsedOffset !== undefined && (!Number.isInteger(parsedOffset) || parsedOffset < 0)) ||
+      (parsedEncomendaId !== undefined && (!Number.isInteger(parsedEncomendaId) || parsedEncomendaId < 1))
+    ) {
+      throw new BadRequestException("Parâmetros de paginação ou encomenda inválidos")
+    }
+
     // Valida tipo se informado
     let parsedTipo: TipoOcorrencia | undefined
     if (tipo) {

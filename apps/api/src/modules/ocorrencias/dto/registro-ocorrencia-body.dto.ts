@@ -47,5 +47,17 @@ export const registroOcorrenciaBodySchema = z
       path: ["descricao"],
     },
   )
+  .refine(
+    (data) => {
+      if (data.tipo === "extravio" || data.tipo === "devolucao_transportadora") {
+        return Boolean(data.fotoEvidenciaUrl)
+      }
+      return true
+    },
+    {
+      message: "Foto/evidência é obrigatória para extravio ou devolução à transportadora",
+      path: ["fotoEvidenciaUrl"],
+    },
+  )
 
 export type RegistroOcorrenciaBody = z.infer<typeof registroOcorrenciaBodySchema>
