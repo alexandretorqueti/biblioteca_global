@@ -70,6 +70,13 @@ const COMMAND_FAILURE_LIMIT = 12_000
 const ANSI_ESCAPE_PATTERN = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g
 const DEFAULT_SESSION_RECOVERY_LIMIT = 1
 
+/** Contexto explícito para o DEV retomar uma pergunta respondida no chat. */
+export function formatDeveloperClarificationContext(history: Parameters<typeof formatHistoryForPrompt>[0]): string {
+  const formatted = formatHistoryForPrompt(history)
+  if (!formatted) return ""
+  return "CONTEXTO DE ESCLARECIMENTO DO CHAT (pergunta e resposta; cumpra a resposta do usuário):\n" + formatted.slice(-8_000)
+}
+
 export function resolveSessionRecoveryLimit(env: NodeJS.ProcessEnv = process.env): number {
   const configured = Number(env.MOTOR_SESSION_RECOVERY_MAX_ATTEMPTS ?? DEFAULT_SESSION_RECOVERY_LIMIT)
   return Number.isInteger(configured) && configured >= 0 && configured <= 5
@@ -890,6 +897,9 @@ class TaskWorker {
             "**WORKSPACE**": input.repoPath,
             "**ERROGATEANTERIOR**": lastFailure,
           }, fallback: embeddedHeader, taskId: input.task.id, subtaskId: subtask.id })
+          let clarificationContext = ""
+          try { clarificationContext = formatDeveloperClarificationContext(await fetchTaskClarificationHistory(this.planningDb(), input.task.id)) }
+          catch (error) { this.log("warn", "Falha ao carregar esclarecimento do chat para o DEV: " + (error instanceof Error ? error.message : String(error))) }
           const composition = this.isDevelopmentTask(input)
             ? composeDevelopmentPrompt(input.repoPath, developmentGitRoot, resolved.text)
             : { finalText: resolved.text, parts: [{ source: "table" as const, label: "Prompt publicado na tabela", text: resolved.text }] }
@@ -899,7 +909,10 @@ class TaskWorker {
           if (context) {
             composition.parts.push({ source: "context", label: "Contexto enviado em mensagem separada", text: context })
           }
-          const header = composition.finalText
+          const header = clarificationContext ? `${composition.finalText}\n\n${clarificationContext}` : composition.finalText
+          if (clarificationContext) {
+            composition.parts.push({ source: "context", label: "Esclarecimento respondido no chat da tarefa", text: clarificationContext })
+          }
           await promptResolver.recordFinalComposition(resolved.executionId, header, composition.parts)
           // Envia contexto separado se a missao for longa (evita truncamento no viewer)
           if (context) {
