@@ -25,7 +25,7 @@ Layout atual, em ordem:
 
 1. Cabeçalho “Acompanhar Tarefa” e status da conexão realtime.
 2. Filtros Projeto, Status e Tarefa.
-3. Card da tarefa selecionada: título, edição, chips de status/tipo/progresso e ações iniciar/pausar/retomar.
+3. Card da tarefa selecionada: título, edição, chips de status/tipo/progresso e ações iniciar/pausar.
 4. Banners de tarefa ausente no motor, bloqueio e subtarefa ativa.
 5. Para tipo diferente de `desenvolvimento`, um `Paper[data-testid="task-chat"]` com histórico somente leitura (“Entrega pelo chat”).
 6. Para `desenvolvimento`, `Table[data-testid="subtask-table"]` com seq, título, escopo, critérios, status, workspace, entregas, edição e histórico de entregas expansível.
