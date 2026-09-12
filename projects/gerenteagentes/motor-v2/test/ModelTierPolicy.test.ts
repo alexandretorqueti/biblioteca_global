@@ -61,10 +61,11 @@ describe("ModelTierPolicy", () => {
     expect(isModelUnavailableFailure("SESSION_FAILED", "429 Your token-plan 1-week quota has been exhausted")).toBe(true)
     expect(isModelUnavailableFailure("429", "Too Many Requests")).toBe(true)
     expect(isModelUnavailableFailure("HTTP_503", "model not found: qwen3.7-plus")).toBe(true)
+    expect(isModelUnavailableFailure("ECONNREFUSED", "connect ECONNREFUSED 127.0.0.1:11434")).toBe(true)
   })
 
   it("não escala a cadeia por falha operacional genérica da sessão", () => {
     expect(isModelUnavailableFailure("SESSION_FAILED", "sessão encerrada sem resposta final")).toBe(false)
-    expect(isModelUnavailableFailure("ECONNREFUSED", "socket hang up")).toBe(false)
+    expect(isModelUnavailableFailure("SESSION_FAILED", "socket hang up")).toBe(false)
   })
 })

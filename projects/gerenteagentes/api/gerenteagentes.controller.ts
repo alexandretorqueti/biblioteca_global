@@ -157,6 +157,11 @@ export class GerenteAgentesController {
     return this.service.atividadeMotor(projeto);
   }
 
+  @Get('motor-deploy-diagnostics')
+  diagnosticoDeploy(@CurrentProject() projeto: ProjetoResumo) {
+    return this.service.diagnosticoDeploy(projeto);
+  }
+
   // ============================================================================
   // CHAT DA TAREFA
   // ============================================================================

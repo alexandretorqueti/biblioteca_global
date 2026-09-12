@@ -14,7 +14,7 @@ import { ResourceLeaseService } from "../resources/ResourceLeaseService.js"
 import { RESOURCE_KEYS } from "../shared/types/resources.js"
 import { WorkerLauncher } from "../workers/WorkerLauncher.js"
 import { type ModelPhase, type ModelSelection } from "../policies/ModelTierPolicy.js"
-import { GitWorkspaceManager, type TaskPromotionResult } from "../workspaces/GitWorkspaceManager.js"
+import { GitWorkspaceManager, taskIntegrationBranch, type TaskPromotionResult } from "../workspaces/GitWorkspaceManager.js"
 import { DependencyInstaller, resolveInstallTimeoutMs } from "../workspaces/DependencyInstaller.js"
 import { ResourceWaitManager } from "../resources/ResourceWaitManager.js"
 import { executionEventBus, type ExecutionEventBus } from "../events/ExecutionEventBus.js"
@@ -1718,6 +1718,40 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     }
   }
 
+  async getDeployDiagnostics(): Promise<{ canStart: boolean; reasons: string[]; pendingRequests: number }> {
+    const reasons: string[] = []
+    if (this.activeWorkers.size > 0) reasons.push(`${this.activeWorkers.size} worker(s) ativo(s)`)
+    if (this.finalizingExecutions.size > 0) reasons.push(`${this.finalizingExecutions.size} execução(ões) finalizando`)
+    if (this.activeMaintenance > 0) reasons.push(`${this.activeMaintenance} manutenção(ões) ativa(s)`)
+    if (this.activeDeployments.size > 0) reasons.push(`${this.activeDeployments.size} deploy(s) em andamento`)
+    const { rows: busyRows } = await this.db.query(
+      "SELECT EXISTS(SELECT 1 FROM tarefas t LEFT JOIN task_runtime_facts f ON f.tarefa_id = t.id " +
+      "WHERE t.paused_at IS NULL AND f.terminal_status IS NULL AND f.analysis_started_at IS NOT NULL) " +
+      "OR EXISTS(SELECT 1 FROM subtarefas WHERE status IN ('running','delivered','verifying')) AS busy",
+    )
+    const { rows } = await this.db.query("SELECT COUNT(*) AS total FROM deploy_requests WHERE status = 'pending'")
+    const pendingRequests = Number(rows[0]?.total ?? 0)
+    if (Number(busyRows[0]?.busy ?? 0) !== 0) {
+      const { rows: activeRows } = await this.db.query(
+        "SELECT DISTINCT COALESCE(t.external_id, CAST(t.id AS CHAR)) AS task_id " +
+        "FROM tarefas t LEFT JOIN task_runtime_facts f ON f.tarefa_id = t.id " +
+        "WHERE (t.paused_at IS NULL AND f.terminal_status IS NULL AND f.analysis_started_at IS NOT NULL) " +
+        "OR EXISTS (SELECT 1 FROM subtarefas s WHERE s.tarefa_id = t.id AND s.status IN ('running','delivered','verifying')) " +
+        "ORDER BY task_id LIMIT 10",
+      )
+      const taskIds = activeRows.map((row) => String(row.task_id)).filter(Boolean)
+      reasons.push(taskIds.length > 0 ? `tarefas ativas: ${taskIds.join(', ')}` : "há tarefa ou subtarefa ativa")
+    }
+    if (pendingRequests > 0 && reasons.length === 0) {
+      try {
+        this.assertDeploySshReady()
+      } catch (error: unknown) {
+        reasons.push(`SSH do deploy indisponível: ${describeError(error).substring(0, 300)}`)
+      }
+    }
+    return { canStart: reasons.length === 0 && pendingRequests > 0, reasons: reasons.length ? reasons : [pendingRequests > 0 ? "deploy pronto para iniciar" : "nenhuma solicitação de deploy pendente"], pendingRequests }
+  }
+
   /** Agenda o deploy de uma tarefa concluída. O botão nunca recria a API
    * enquanto há workers ativos. */
   async deployTask(taskId: string): Promise<void> {
@@ -2132,12 +2166,13 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
 
   private async processDeployQueueInner(): Promise<void> {
     await this.reconcileRunningDeploys()
+    await this.reconcileCompletedTasksAlreadyMerged()
     await this.recoverCompletedTasksWithoutDeploy()
     if (this.activeWorkers.size > 0 || this.finalizingExecutions.size > 0 || this.activeMaintenance > 0 || this.activeDeployments.size > 0) return
     // Verifica se há tarefas ativas usando fatos operacionais (status é derivado)
     const { rows: busyRows } = await this.db.query(
       "SELECT EXISTS(SELECT 1 FROM tarefas t LEFT JOIN task_runtime_facts f ON f.tarefa_id = t.id " +
-      "WHERE f.terminal_status IS NULL AND f.analysis_started_at IS NOT NULL) " +
+      "WHERE t.paused_at IS NULL AND f.terminal_status IS NULL AND f.analysis_started_at IS NOT NULL) " +
       "OR EXISTS(SELECT 1 FROM subtarefas WHERE status IN ('running','delivered','verifying')) AS busy",
     )
     if (Number(busyRows[0]?.busy ?? 0) !== 0) return
@@ -2190,6 +2225,78 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
       const message = describeError(error).substring(0, 500)
       await this.failDeployBatch(batchId, message, taskIds)
       this.logger.error("Falha ao disparar lote de deploy: " + message, { batchId, taskIds })
+    }
+  }
+
+  /**
+   * Reconcilia tarefas antigas que já chegaram à base, mas não possuem o fato
+   * de deploy persistido. A ancestralidade Git é a evidência; não confiamos
+   * apenas no status materializado da tarefa.
+   */
+  private async reconcileCompletedTasksAlreadyMerged(): Promise<void> {
+    const { rows } = await this.db.query(
+      "SELECT t.id, COALESCE(t.external_id, CAST(t.id AS CHAR)) AS task_id, pmc.repo_path, pmc.branch_trabalho AS base_branch " +
+      "FROM tarefas t INNER JOIN projeto_motor_config pmc ON pmc.projeto_id = t.projeto_id " +
+      "INNER JOIN task_runtime_facts f ON f.tarefa_id = t.id AND f.integration_confirmed_at IS NOT NULL " +
+      "WHERE t.tipo = 'desenvolvimento' AND f.terminal_status IS NULL " +
+      "AND NOT EXISTS (SELECT 1 FROM bloqueios b WHERE b.tarefa_id = t.id AND b.resolved_at IS NULL) " +
+      "AND NOT EXISTS (SELECT 1 FROM deploy_requests d WHERE d.tarefa_id = t.id AND d.status = 'succeeded') " +
+      "AND NOT EXISTS (SELECT 1 FROM subtarefas s WHERE s.tarefa_id = t.id AND s.status NOT IN ('verified', 'superseded')) " +
+      "AND pmc.repo_path IS NOT NULL AND pmc.repo_path <> ''",
+    )
+    for (const row of rows) {
+      const taskId = String(row.task_id)
+      const repoPath = String(row.repo_path)
+      const baseBranch = String(row.base_branch || "base-desenvolvimento")
+      const taskBranch = taskIntegrationBranch(taskId)
+      if (!(await this.workspaceManager.isBranchAncestor({ repoPath, branch: taskBranch, ancestor: baseBranch }))) continue
+      await this.db.query(
+        "INSERT INTO deploy_requests (tarefa_id, repo_path, status, batch_id, last_error, requested_at, started_at, finished_at, updated_at) " +
+        "VALUES (?, ?, 'succeeded', ?, ?, NOW(), NOW(), NOW(), NOW()) " +
+        "ON DUPLICATE KEY UPDATE status = 'succeeded', batch_id = VALUES(batch_id), last_error = VALUES(last_error), started_at = VALUES(started_at), finished_at = VALUES(finished_at), updated_at = NOW()",
+        [Number(row.id), repoPath, `reconciled-${Date.now()}-${Number(row.id)}`, "reconciliado: branch já estava mergeada na base"],
+      )
+      this.logger.info("Tarefa concluída reconciliada como deployada: branch já estava na base", { taskId, taskBranch, baseBranch })
+    }
+  }
+
+  /** Atualiza as branches de integração das tarefas ainda não concluídas. */
+  private async synchronizeOngoingTaskBranches(): Promise<void> {
+    const { rows } = await this.db.query(
+      "SELECT DISTINCT t.id, COALESCE(t.external_id, CAST(t.id AS CHAR)) AS task_id, pc.slug AS project_slug, pmc.repo_path, pmc.branch_trabalho AS base_branch " +
+      "FROM tarefas t INNER JOIN projetos_captados pc ON pc.id = t.projeto_id " +
+      "INNER JOIN projeto_motor_config pmc ON pmc.projeto_id = t.projeto_id " +
+      "INNER JOIN subtarefas s ON s.tarefa_id = t.id " +
+      "LEFT JOIN task_runtime_facts f ON f.tarefa_id = t.id " +
+      "WHERE t.tipo = 'desenvolvimento' AND COALESCE(f.terminal_status, '') NOT IN ('failed', 'cancelled') " +
+      "AND s.status NOT IN ('verified', 'superseded') " +
+      "AND NOT EXISTS (SELECT 1 FROM deploy_requests d WHERE d.tarefa_id = t.id AND d.status = 'succeeded') " +
+      "AND pmc.repo_path IS NOT NULL AND pmc.repo_path <> ''",
+    )
+    for (const row of rows) {
+      const taskId = String(row.task_id)
+      const taskBranch = taskIntegrationBranch(taskId)
+      const projectSlug = String(row.project_slug || "")
+      const sync = async () => this.workspaceManager.mergeBaseIntoTaskBranch({
+        repoPath: String(row.repo_path),
+        baseBranch: String(row.base_branch || "base-desenvolvimento"),
+        taskBranch,
+      })
+      try {
+        const result = projectSlug
+          ? await this.withProjectIntegrationLock(projectSlug, `deploy-sync-${randomUUID()}`, taskId, sync)
+          : await sync()
+        if (result.kind === "merged") this.logger.info("Branch de integração atualizada com a base após deploy", { taskId, taskBranch, mergeCommit: result.mergeCommit })
+      } catch (error: unknown) {
+        const reason = `Sincronização da branch de integração após deploy falhou: ${describeError(error)}`
+        await this.db.query(
+          "INSERT INTO bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at) " +
+          "SELECT id, NULL, 'systemic_failure', ?, ?, NOW() FROM tarefas WHERE id = ? " +
+          "AND NOT EXISTS (SELECT 1 FROM bloqueios WHERE tarefa_id = ? AND block_command = ? AND resolved_at IS NULL)",
+          [`motor-v2:base-sync:${encodeURIComponent(taskBranch)}`, reason.substring(0, 500), Number(row.id), Number(row.id), `motor-v2:base-sync:${encodeURIComponent(taskBranch)}`],
+        )
+        this.logger.warn(reason, { taskId, taskBranch })
+      }
     }
   }
 
@@ -2255,6 +2362,7 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
       if (status === "success") {
         await this.db.query("UPDATE deploy_requests SET status = 'succeeded', finished_at = NOW(), updated_at = NOW() WHERE batch_id = ? AND status = 'running'", [batchId])
         this.logger.info("Lote de deploy confirmado", { batchId, taskIds: batch.taskIds })
+        await this.synchronizeOngoingTaskBranches()
       } else {
         await this.failDeployBatch(batchId, status, batch.taskIds)
       }

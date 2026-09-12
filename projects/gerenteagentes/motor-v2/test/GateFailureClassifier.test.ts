@@ -245,7 +245,7 @@ describe("GateFailureClassifier — sessão do monitor", () => {
 
     expect(result.kind).toBe("verdict")
     expect(modelosUsados[0]).toBe("openai/gpt-5.6-sol")
-    // Consulta usa a tabela da tela de seleção de modelos, não o legado projeto_model_chain
+    // A consulta usa a tabela canônica da tela de seleção de modelos.
     expect(String(db.query.mock.calls[0]?.[0])).toContain("project_model_selection")
     expect(String(db.query.mock.calls[0]?.[0])).not.toContain("projeto_model_chain")
     expect(db.query.mock.calls[0]?.[1]).toEqual(["biblioteca-global"])

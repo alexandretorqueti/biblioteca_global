@@ -1,8 +1,15 @@
 import { describe, expect, it } from "vitest"
 import { classifyRemoteFailure } from "../src/runtime/ConsoleAgentRuntimeDriver.js"
-import { formatRemoteSessionFailure, remoteFailureSignature, resolveSessionRecoveryLimit, shouldEscalateAnalysisContextFailure } from "../src/workers/TaskWorker.js"
+import { formatRemoteSessionFailure, remoteFailureSignature, resolveMaxDeliveryAttempts, resolveSessionRecoveryLimit, shouldEscalateAnalysisContextFailure } from "../src/workers/TaskWorker.js"
 
 describe("política de recuperação de sessão", () => {
+  it("usa limite configurável de entregas e fallback seguro", () => {
+    expect(resolveMaxDeliveryAttempts(20)).toBe(20)
+    expect(resolveMaxDeliveryAttempts(1)).toBe(1)
+    expect(resolveMaxDeliveryAttempts(0)).toBe(20)
+    expect(resolveMaxDeliveryAttempts(201)).toBe(20)
+  })
+
   it("classifica falha definitiva e não permite recuperação indevida", () => {
     expect(classifyRemoteFailure("INVALID_SESSION", "session key inválida")).toBe("definitive")
     expect(classifyRemoteFailure("AGENT_NOT_FOUND", "agente inexistente")).toBe("definitive")

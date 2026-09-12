@@ -217,6 +217,12 @@ interface MotorStats {
   activities?: MotorActivity[]
 }
 
+interface DeployDiagnostics {
+  canStart: boolean
+  reasons: string[]
+  pendingRequests: number
+}
+
 const STATUS_FINAIS = _TASK_STATUS_FINAIS
 const STATUS_INICIO_PERMITIDO = _TASK_STATUS_STARTABLE
 const STATUS_EXECUCAO = _TASK_STATUS_EXECUTING
@@ -311,6 +317,7 @@ export default function TaskMonitorScreen(): ReactNode {
   const [statusFiltro, setStatusFiltro] = useState<string>("")
   const [buscaTarefa, setBuscaTarefa] = useState("")
   const [motorActivities, setMotorActivities] = useState<MotorActivity[]>([])
+  const [deployDiagnostics, setDeployDiagnostics] = useState<DeployDiagnostics | null>(null)
   // Filtros integrados ao mapa (substituem a combo de tarefas)
   const [filtrosMapa, setFiltrosMapa] = useState<FiltrosMapa>({
     busca: "",
@@ -421,6 +428,10 @@ export default function TaskMonitorScreen(): ReactNode {
     try {
       const res = await bundle.http.request<MotorStats>("GET", "/gerenteagentes/motor-activity", { auth: "access" })
       if (mounted.current) setMotorActivities(res.activities ?? [])
+      const diagnostics = await bundle.http.request<DeployDiagnostics>("GET", "/gerenteagentes/motor-deploy-diagnostics", { auth: "access" })
+      if (mounted.current && Array.isArray(diagnostics.reasons) && typeof diagnostics.pendingRequests === "number") {
+        setDeployDiagnostics(diagnostics)
+      }
     } catch {
       // Atividade é complementar; não interrompe o acompanhamento se o Motor reiniciar.
     }
@@ -1189,7 +1200,7 @@ export default function TaskMonitorScreen(): ReactNode {
   }, [tarefas, projetos])
   const statusMotor = detail?.task?.status ?? tarefaSelecionada?.status ?? "—"
   const isPaused = statusMotor === "paused"
-  const podeIniciar = !isPaused && STATUS_INICIO_PERMITIDO.has(statusMotor)
+  const podeIniciar = isPaused || STATUS_INICIO_PERMITIDO.has(statusMotor)
   const podePausar = !isPaused && STATUS_EXECUCAO.has(statusMotor)
   const aguardandoRetentativaPromocao = /Falha na promoção da branch da tarefa: repositório principal não está limpo para promoção:/i
     .test(detail?.task?.blockInfo?.excerpt ?? "")
@@ -1387,6 +1398,29 @@ export default function TaskMonitorScreen(): ReactNode {
         </Alert>
       )}
 
+      {deployDiagnostics && (
+        <Tooltip
+          arrow
+          placement="bottom-start"
+          title={deployDiagnostics.reasons.join(" · ")}
+        >
+          <Alert
+            severity={deployDiagnostics.canStart ? "success" : deployDiagnostics.pendingRequests > 0 ? "warning" : "info"}
+            icon={false}
+            sx={{ cursor: "help" }}
+            data-testid="deploy-diagnostics"
+          >
+            <Typography variant="body2">
+              <b>Deploy:</b>{" "}
+              {deployDiagnostics.canStart
+                ? "pronto para iniciar"
+                : deployDiagnostics.reasons[0]}
+              {deployDiagnostics.pendingRequests > 0 && ` · ${deployDiagnostics.pendingRequests} pendente(s)`}
+            </Typography>
+          </Alert>
+        </Tooltip>
+      )}
+
       {/* Sessão 1: Mapa vivo da tarefa */}
       <Box data-testid="task-map-section">
         <TaskFlowMap
@@ -1479,7 +1513,7 @@ export default function TaskMonitorScreen(): ReactNode {
                 onClick={() => void executarAcao("start")}
                 data-testid="btn-start"
               >
-                Iniciar
+                Play
               </Button>
               <Button
                 size="small"

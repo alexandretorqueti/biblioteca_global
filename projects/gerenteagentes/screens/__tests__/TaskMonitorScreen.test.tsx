@@ -224,7 +224,7 @@ describe("TaskMonitorScreen — ST-1 (botão editar + diálogo)", () => {
     expect(putSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         titulo: "Tarefa Atualizada",
-        status: undefined,
+        tipo: "desenvolvimento",
       }),
     )
   })
@@ -987,9 +987,12 @@ describe("TaskMonitorScreen — compatibilidade Motor-v2", () => {
 
   it("mantém a tarefa pausada sem botão individual de retomar", async () => {
     const tarefas = [tarefaFactory(727, "Tarefa pausada", "paused", 2)]
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    let actionPath = ""
     globalThis.__bundleFalso = {
       http: {
         request: async (method: string, path: string) => {
+          if (method === "POST") actionPath = path
           if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(2, "GerenteAgentes")] }
           if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
           if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
@@ -1020,6 +1023,9 @@ describe("TaskMonitorScreen — compatibilidade Motor-v2", () => {
     })
     expect(screen.queryByTestId("btn-resume")).not.toBeInTheDocument()
     expect(screen.getByTestId("btn-resume-all")).toBeEnabled()
+    expect(screen.getByTestId("btn-start")).toBeEnabled()
+    await user.click(screen.getByTestId("btn-start"))
+    await waitFor(() => expect(actionPath).toBe("/gerenteagentes/tarefas/727/start"))
     expect(screen.getByTestId("task-paused-banner")).not.toHaveTextContent("Clique em Retomar")
   })
 })

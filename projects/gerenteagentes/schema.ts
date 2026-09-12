@@ -132,21 +132,6 @@ export const projetosCaptados = mysqlTable("projetos_captados", {
     .onUpdateNow(),
 })
 
-/** Cadeia operacional de modelos por projeto e fase do motor. */
-export const projetoModelChain = mysqlTable("projeto_model_chain", {
-  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
-  projetoId: bigint("projeto_id", { mode: "number", unsigned: true })
-    .notNull()
-    .references(() => projetosCaptados.id, { onDelete: "cascade" }),
-  fase: varchar("fase", { length: 30 }).notNull(),
-  modelo: varchar("modelo", { length: 150 }).notNull(),
-  posicao: int("posicao").notNull(),
-  ativo: boolean("ativo").notNull().default(true),
-  isLocal: boolean("is_local").notNull().default(false),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-  updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
-})
-
 /** Configuração operacional explícita usada pelo Motor-v2. */
 export const projetoMotorConfig = mysqlTable("projeto_motor_config", {
   id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),

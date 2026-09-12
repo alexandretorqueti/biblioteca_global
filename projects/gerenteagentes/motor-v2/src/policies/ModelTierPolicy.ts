@@ -51,7 +51,8 @@ const MODEL_UNAVAILABLE_TEXT = /quota|rate[_ -]?limit|too many requests|exhauste
 
 /** Mesma decisão de `isModelUnavailableError`, para falhas que chegam como texto. */
 export function isModelUnavailableFailure(code: string, message: string): boolean {
-  return MODEL_UNAVAILABLE_TEXT.test(`${code} ${message}`)
+  return MODEL_UNAVAILABLE_TEXT.test(`${code} ${message}`) ||
+    /ECONNREFUSED|connection refused|connect timeout.*(ollama|provider)|failed to fetch.*(ollama|provider)/i.test(`${code} ${message}`)
 }
 
 export function formatSessionKey(input: {
