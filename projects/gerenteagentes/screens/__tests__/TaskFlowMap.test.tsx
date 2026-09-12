@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest"
-import { render, screen, fireEvent } from "@testing-library/react"
+import { render, screen, fireEvent, waitForElementToBeRemoved } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import "@testing-library/jest-dom/vitest"
 import { BibliotecaThemeProvider } from "@biblioteca-global/ui"
@@ -685,6 +685,53 @@ describe("TaskFlowMap — Cards informativos (1.3)", () => {
     // Baixa (draft)
     await userEvent.hover(screen.getByTestId("flow-task-description-964"))
     expect(await screen.findByRole("tooltip")).toHaveTextContent("Baixa")
+  })
+
+  it("não abre o tooltip rico ao passar o mouse no cartão, somente no ícone", async () => {
+    view([
+      {
+        id: 965,
+        titulo: "Tarefa do cartão",
+        descricao: "Detalhes exibidos no cartão",
+        status: "running",
+        projetoId: 1,
+        projetoNome: "Projeto Alpha",
+        updatedAt: "2026-09-10T12:00:00.000Z",
+      },
+    ])
+
+    const card = screen.getByTestId("flow-task-965")
+    await userEvent.hover(card)
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument()
+
+    await userEvent.hover(screen.getByTestId("flow-task-description-965"))
+    const tooltip = await screen.findByRole("tooltip")
+    expect(tooltip).toHaveTextContent("Detalhes exibidos no cartão")
+    expect(tooltip).toHaveTextContent("Projeto: Projeto Alpha")
+    expect(tooltip).toHaveTextContent("Prioridade: Média")
+    expect(tooltip).toHaveTextContent("Atualizado:")
+
+    await userEvent.unhover(screen.getByTestId("flow-task-description-965"))
+    await waitForElementToBeRemoved(() => screen.queryByRole("tooltip"))
+  })
+
+  it("limita a descrição do tooltip a cinco linhas", async () => {
+    view([{
+      id: 966,
+      titulo: "Descrição longa",
+      descricao: "Linha 1\nLinha 2\nLinha 3\nLinha 4\nLinha 5\nLinha 6",
+      status: "ready",
+      projetoId: 1,
+    }])
+
+    await userEvent.hover(screen.getByTestId("flow-task-description-966"))
+    const description = await screen.findByText("Linha 1\nLinha 2\nLinha 3\nLinha 4\nLinha 5\nLinha 6")
+    expect(description).toHaveStyle({
+      display: "-webkit-box",
+      WebkitBoxOrient: "vertical",
+      WebkitLineClamp: "5",
+      overflow: "hidden",
+    })
   })
 
   it("card selecionado usa elevation 5 e bgcolor action.selected", () => {

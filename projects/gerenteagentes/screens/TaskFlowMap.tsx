@@ -504,8 +504,23 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, l
           // Tooltip rico (1.3e): descrição + projeto + prioridade + atualização
           // Nota: campo responsável omitido — backend ainda não expõe essa informação.
           const tooltipContent = (
-            <Box sx={{ maxWidth: 260 }}>
-              <Typography variant="caption" fontWeight={700} display="block" sx={{ mb: 0.25, color: "common.white" }}>
+            <Box sx={{ maxWidth: 420, whiteSpace: "normal", overflowWrap: "anywhere" }}>
+              <Typography variant="caption" fontWeight={700} display="block" sx={{ mb: 0.25, color: "common.white", whiteSpace: "normal", overflowWrap: "anywhere" }}>
+                {task.titulo}
+              </Typography>
+              <Typography
+                variant="caption"
+                fontWeight={700}
+                display="block"
+                sx={{
+                  mb: 0.25,
+                  color: "common.white",
+                  display: "-webkit-box",
+                  WebkitBoxOrient: "vertical",
+                  WebkitLineClamp: 5,
+                  overflow: "hidden",
+                }}
+              >
                 {taskDescription(task)}
               </Typography>
               <Typography variant="caption" display="block" sx={{ opacity: 0.85, color: "common.white" }}>
@@ -530,8 +545,8 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, l
           if (!isMoving && !isAiActive) animationParts.push("task-fade-in 0.3s ease-out 1")
 
           return (
-            <Tooltip key={task.id} title={tooltipContent} arrow placement="top">
-              <Paper
+            <Paper
+              key={task.id}
                 component="button"
                 type="button"
                 onClick={() => onSelectTask(task.id)}
@@ -588,14 +603,29 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, l
                     {tempoRelativo}
                   </Typography>
                   {/* Ícone de info — trigger visual do tooltip rico (mantém flow-task-description-<id>) */}
-                  <Box
-                    component="span"
-                    aria-label={`Detalhes da tarefa ${task.id}`}
-                    data-testid={`flow-task-description-${task.id}`}
-                    sx={{ display: "inline-flex", flexShrink: 0, color: "action.active", cursor: "help" }}
+                  <Tooltip
+                    title={tooltipContent}
+                    arrow
+                    placement="top"
+                    componentsProps={{
+                      tooltip: {
+                        sx: {
+                          maxWidth: 420,
+                          whiteSpace: "normal",
+                          overflowWrap: "anywhere",
+                        },
+                      },
+                    }}
                   >
-                    <InfoOutlined sx={{ fontSize: 15 }} />
-                  </Box>
+                    <Box
+                      component="span"
+                      aria-label={`Detalhes da tarefa ${task.id}`}
+                      data-testid={`flow-task-description-${task.id}`}
+                      sx={{ display: "inline-flex", flexShrink: 0, color: "action.active", cursor: "help" }}
+                    >
+                      <InfoOutlined sx={{ fontSize: 15 }} />
+                    </Box>
+                  </Tooltip>
                 </Stack>
                 {/* Linha 2: Mini barra de progresso (1.3d) — só se aplicável */}
                 {showProgresso && (
@@ -645,8 +675,7 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, l
                     )}
                   </Stack>
                 )}
-              </Paper>
-            </Tooltip>
+            </Paper>
           )
         })}
           {normalizedSearch && stationTasks.length > 0 && visibleTasks.length === 0 && <Typography variant="caption" sx={{ opacity: 0.65 }}>Nenhuma correspondência</Typography>}
