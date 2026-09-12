@@ -164,6 +164,25 @@ export const motorConfiguracoes = mysqlTable("motor_configuracoes", {
   updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
 })
 
+/** Cadeias globais de modelos, independentes das seleções por projeto. */
+export const globalModelSelection = mysqlTable(
+  "global_model_selection",
+  {
+    id: bigint("id", { mode: "number", unsigned: true })
+      .primaryKey()
+      .autoincrement(),
+    tipo: mysqlEnum("tipo", ["DEV", "ANALYST", "MONITOR"]).notNull(),
+    ordem: int("ordem").notNull(),
+    provider: varchar("provider", { length: 100 }).notNull(),
+    model: varchar("model", { length: 200 }).notNull(),
+    enabled: boolean("enabled").notNull().default(true),
+  },
+  (table) => ({
+    tipoOrdemUnique: uniqueIndex("global_model_selection_tipo_ordem_unique").on(table.tipo, table.ordem),
+    tipoEnabledIdx: index("global_model_selection_tipo_enabled_idx").on(table.tipo, table.enabled),
+  }),
+)
+
 export const definicoes = mysqlTable("definicoes", {
   id: bigint("id", { mode: "number", unsigned: true })
     .primaryKey()
@@ -897,5 +916,12 @@ export const annotations = {
     role: { label: "Role", helperText: "user | assistant | system | analyst" },
     content: { label: "Conteúdo", type: "textarea", fullWidth: true },
     occurred_at: { label: "Ocorrido em" },
+  },
+  global_model_selection: {
+    tipo: { label: "Tipo", helperText: "DEV | ANALYST | MONITOR" },
+    ordem: { label: "Ordem" },
+    provider: { label: "Provider", maxLength: 100 },
+    model: { label: "Modelo", maxLength: 200 },
+    enabled: { label: "Habilitado" },
   },
 } satisfies FormAnnotationsPorTabela
