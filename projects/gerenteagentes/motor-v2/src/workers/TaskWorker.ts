@@ -63,6 +63,7 @@ import { confirmBaselineIndependentFailure } from "../policies/BaselineConfirmat
 import { digestGateFailure, formatCarryOver, type CarryOverEvent } from "../policies/CarryOverPolicy.js"
 import { getConfigNumber } from "../config/MotorConfigReader.js"
 import { formatPriorSubtaskHandoff, parseGitNameStatus, type PriorSubtaskHandoff } from "../policies/SubtaskHandoffPolicy.js"
+import { ProjectDatabaseOperationExecutor } from "../database/ProjectDatabaseOperationExecutor.js"
 
 const COMMAND_FAILURE_LIMIT = 12_000
 const ANSI_ESCAPE_PATTERN = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g
@@ -101,6 +102,11 @@ export function remoteFailureSignature(code: string, message: string): string {
     .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "<run>")
     .replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z?/g, "<ts>")
     .slice(0, 300)
+}
+
+/** SESSION_FAILED sem resposta útil não é recuperável pela mesma sessão/modelo. */
+export function shouldSkipModelAfterRemoteFailure(failure: RemoteSessionFailure, repeats: number): boolean {
+  return failure.code === "SESSION_FAILED" || isModelUnavailableFailure(failure.code, failure.message) || repeats >= 2
 }
 
 /**
@@ -318,6 +324,7 @@ class TaskWorker {
   private sessionFailure: RemoteSessionFailure | undefined
   /** Ocorrências por assinatura de falha remota dentro deste worker. */
   private readonly remoteFailureSignatures = new Map<string, number>()
+  private pendingDeveloperClarification: { questionCount: number; summary?: string } | null = null
 
   constructor() {
     this.executionId = process.env.EXECUTION_ID ?? "unknown"
@@ -382,6 +389,10 @@ class TaskWorker {
         if (this.isDevelopmentTask(input)) await this.phasePrepare(input)
         if (this.cancelled) { this.sendFailed(ctx, "Cancelled"); return }
         gitCommitSha = await this.phaseExecute(input)
+        if (this.pendingDeveloperClarification) {
+          this.sendClarifying(ctx, this.pendingDeveloperClarification)
+          return
+        }
         if (this.cancelled) { this.sendFailed(ctx, "Cancelled"); return }
         if (gitCommitSha && this.isDevelopmentTask(input)) await this.phasePublish(input, gitCommitSha)
       }
@@ -925,7 +936,7 @@ class TaskWorker {
               this.remoteFailureSignatures.set(signature, repeats)
               // A primeira ocorrência ainda tenta recuperar a sessão; a segunda
               // idêntica significa que o modelo não está entregando — escalar.
-              if (isModelUnavailableFailure(result.failure.code, result.failure.message) || repeats >= 2) {
+              if (shouldSkipModelAfterRemoteFailure(result.failure, repeats)) {
                 lastFailure = `Modelo indisponível: ${model.model} — ${remoteReason}`
                 this.send({ type: "model_unavailable", executionId: input.context.executionId, model: model.model, message: lastFailure })
                 this.log("warn", lastFailure)
@@ -992,8 +1003,26 @@ class TaskWorker {
             throw new Error(reason)
           }
           if (outcome.kind === "need_help") {
-            lastFailure = outcome.reason
-            break
+            await persistTaskClarification(this.db!, input.task.id, {
+              summary: "O desenvolvedor precisa de uma decisão ou informação para concluir a subtarefa #" + subtask.seq + ".",
+              questions: [outcome.reason],
+            })
+            await this.db!.query(
+              "UPDATE subtarefas SET status = 'pending', resultado = ?, finalizada_em = NULL, updated_at = NOW() WHERE id = ?",
+              ["Aguardando esclarecimento: " + outcome.reason.substring(0, 450), subtask.id],
+            )
+            this.pendingDeveloperClarification = { questionCount: 1, summary: outcome.reason }
+            return undefined
+          }
+          if (outcome.kind === "database_operation") {
+            const executed = await new ProjectDatabaseOperationExecutor().execute(this.db!, {
+              taskId: input.task.id,
+              workspacePath: input.repoPath,
+              scriptPath: outcome.scriptPath,
+            })
+            const evidence = `Operação SQL executada no banco ${executed.database}; arquivo=${executed.scriptPath}; sha256=${executed.sha256}`
+            await this.recordDeliveryEvent(subtask.id, deliverCount, model.model, "database_operation", evidence)
+            this.log("info", evidence)
           }
           if (outcome.kind === "premise_incorrect") {
             const validation = validatePremiseRefutation(outcome.payload, input.repoPath)
@@ -1980,14 +2009,17 @@ class TaskWorker {
     return input.modelChain && input.modelChain.length > 0 ? input.modelChain : defaultChain(phase)
   }
 
-  private classifyAgentOutcome(content?: string): { kind: "done" } | { kind: "need_help" | "blocked_environment"; reason: string } | { kind: "premise_incorrect"; payload: unknown } {
+  private classifyAgentOutcome(content?: string): { kind: "done" } | { kind: "need_help" | "blocked_environment"; reason: string } | { kind: "database_operation"; scriptPath: string } | { kind: "premise_incorrect"; payload: unknown } {
     if (!content) return { kind: "done" }
     const match = content.match(/\{[\s\S]*\}/)
     if (!match) return { kind: "done" }
     try {
-      const parsed = JSON.parse(match[0]) as { status?: string; reason?: string; summary?: string }
+      const parsed = JSON.parse(match[0]) as { status?: string; reason?: string; summary?: string; script_path?: string }
       if (parsed.status === "need_help" || parsed.status === "blocked_environment") {
         return { kind: parsed.status, reason: parsed.reason || parsed.summary || parsed.status }
+      }
+      if (parsed.status === "database_operation") {
+        return { kind: "database_operation", scriptPath: parsed.script_path || "" }
       }
       if (parsed.status === "premise_incorrect") return { kind: "premise_incorrect", payload: parsed }
     } catch { /* resposta legada em texto continua compatível */ }
@@ -2131,7 +2163,7 @@ class TaskWorker {
     subtaskId: number,
     deliverNumber: number,
     model: string | undefined,
-    eventType: "delivery_started" | "gate_rejected" | "return_for_rework" | "blocked" | "completed" | "baseline_red" | "agent_no_reply",
+    eventType: "delivery_started" | "gate_rejected" | "return_for_rework" | "blocked" | "completed" | "baseline_red" | "agent_no_reply" | "database_operation",
     reason: string | null,
   ): Promise<void> {
     if (!this.db) return

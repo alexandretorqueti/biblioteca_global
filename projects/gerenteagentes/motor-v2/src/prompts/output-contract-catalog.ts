@@ -39,10 +39,10 @@ export const OUTPUT_CONTRACT_CATALOG: readonly OutputContractDefault[] = [
   {
     key: "dev.resultado_execucao",
     title: "Resultado do desenvolvedor",
-    description: "Resultado normal, bloqueio ou refutação fundamentada.",
-    schema: { type: "object", required: ["status", "summary"], properties: { status: { enum: ["done", "need_help", "blocked_environment", "premise_incorrect"] }, summary: { type: "string" }, reason: { type: "string" }, claim: { type: "string" }, conflict_type: { type: "string" }, evidence: { type: "array", items: { type: "object", required: ["path", "observation"] } }, suggested_revision: { type: "string" } } },
+    description: "Resultado normal, bloqueio, esclarecimento, refutação ou operação de banco fundamentada.",
+    schema: { type: "object", required: ["status", "summary"], properties: { status: { enum: ["done", "need_help", "blocked_environment", "premise_incorrect", "database_operation"] }, summary: { type: "string" }, reason: { type: "string" }, script_path: { type: "string" }, claim: { type: "string" }, conflict_type: { type: "string" }, evidence: { type: "array", items: { type: "object", required: ["path", "observation"] } }, suggested_revision: { type: "string" } } },
     example: { status: "done", summary: "Alteração implementada e verificada." },
-    instructions: 'Responda somente com JSON: {"status":"done|need_help|blocked_environment|premise_incorrect","summary":"...","reason":"..."}. Para premise_incorrect, inclua claim, conflict_type, evidence e suggested_revision.',
+    instructions: 'Responda somente com JSON: {"status":"done|need_help|blocked_environment|premise_incorrect|database_operation","summary":"...","reason":"..."}. Se uma alteração no banco do projeto for necessária, não tente obter credenciais nem executá-la: salve um .sql UTF-8 dentro do workspace e responda {"status":"database_operation","summary":"...","script_path":"caminho/relativo.sql"}. O Motor executará apenas esse arquivo no banco resolvido para a tarefa. Para premise_incorrect, inclua claim, conflict_type, evidence e suggested_revision.',
   },
   {
     key: "monitor.veredito_gate",
