@@ -519,10 +519,6 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
       const reason = String(row.block_reason ?? "")
       const orphan = Number(row.orphan) === 1
       if (!orphan && !isSystemBlocker(reason, String(row.block_command), String(row.block_excerpt))) continue
-      if (this.config.monitorStep) {
-        this.scheduleMonitorRecovery(row, orphan)
-        continue
-      }
       const { rows: previous } = await this.db.query(
         "SELECT COUNT(*) AS total FROM bloqueios WHERE subtarefa_id = ? AND resolved_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)",
         [subtaskId],
@@ -535,6 +531,10 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
             { taskId: String(row.external_id ?? row.tarefa_id ?? ""), subtaskId, seq: Number(row.seq), reason, orphan },
           )
         }
+        continue
+      }
+      if (this.config.monitorStep) {
+        this.scheduleMonitorRecovery(row, orphan)
         continue
       }
       await this.db.query(
@@ -569,16 +569,19 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     void (async () => {
       const taskId = String(row.external_id ?? row.tarefa_id)
       const latest = await this.db.query(
-        "SELECT role, texto FROM tarefa_chats WHERE tarefa_id = ? ORDER BY id DESC LIMIT 1", [Number(row.tarefa_id)],
+        "SELECT role, texto FROM tarefa_chats WHERE tarefa_id = ? ORDER BY id DESC LIMIT 2", [Number(row.tarefa_id)],
       )
-      const last = latest.rows[0]
+      const [last, previous] = latest.rows
       if (last?.role === "monitor") return
       const input: MotorFixInput = {
         taskId, subtaskId: String(subtaskId), reason: String(row.block_reason ?? "bloqueio sistêmico"),
         evidence: { command: String(row.block_command ?? ""), excerpt: String(row.block_excerpt ?? "") },
       }
       const context = { executionId: `monitor-recovery-${subtaskId}`, taskId, projectSlug: row.project_slug == null ? null : String(row.project_slug), phase: "execute" as const, fencingToken: 0, startedAt: new Date(), subtaskId: String(subtaskId) }
-      const result = last?.role === "user"
+      // Uma mensagem comum no chat não pode ser enviada como se fosse resposta
+      // do responsável: só retoma quando responde diretamente ao Monitor.
+      const isMonitorReply = last?.role === "user" && previous?.role === "monitor"
+      const result = isMonitorReply
         ? await this.config.monitorStep!.continueAfterUserReply(input, context, String(last.texto))
         : await this.config.monitorStep!.execute(input, context)
       if (result.kind === "success") {
