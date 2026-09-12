@@ -6,7 +6,7 @@
   "description": "Projeto gerenteagentes — piloto para gerenciamento de agentes de IA",
   "main": "src/index.ts",
   "scripts": {
-    "pretest": "cd motor-v2 && ([ -d node_modules ] || npm install)",
+    "pretest": "cd motor-v2 && ([ -d node_modules ] || npm install --include=dev)",
     "test": "npm --prefix ./motor-v2 test",
     "typecheck": "tsc --noEmit"
   },
