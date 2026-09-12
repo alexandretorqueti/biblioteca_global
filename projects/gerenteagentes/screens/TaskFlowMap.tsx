@@ -571,7 +571,7 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, l
           const ultimaAtualizacao = (task.updatedAt ?? task.createdAt)
             ? new Date((task.updatedAt ?? task.createdAt)!).toLocaleString("pt-BR")
             : "—"
-          const showRecovery = ["blocked", "failed"].includes(task.status) && task.recoveryEligibility != null
+          const showRecovery = task.status === "blocked" && task.recoveryEligibility != null
           const recoveryLabel = showRecovery ? recoveryEligibilityLabel(task.recoveryEligibility!) : ""
 
           // Tooltip rico (1.3e): descrição + projeto + prioridade + atualização

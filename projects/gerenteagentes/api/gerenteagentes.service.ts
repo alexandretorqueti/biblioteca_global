@@ -63,7 +63,13 @@ function decodeCursor(value: string | undefined): SessionCursor | undefined {
   if (!value) return undefined;
   try {
     const parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as Partial<SessionCursor>;
-    if (Number.isSafeInteger(parsed.sequenceNumber) && Number.isSafeInteger(parsed.id)) {
+    // Os guards `typeof number` são necessários para o narrowing do TypeScript:
+    // `Number.isSafeInteger` não é um type guard e `Partial<SessionCursor>` deixa
+    // ambos os campos como `number | undefined`.
+    if (
+      typeof parsed.sequenceNumber === 'number' && Number.isSafeInteger(parsed.sequenceNumber) &&
+      typeof parsed.id === 'number' && Number.isSafeInteger(parsed.id)
+    ) {
       return { sequenceNumber: parsed.sequenceNumber, id: parsed.id };
     }
   } catch {

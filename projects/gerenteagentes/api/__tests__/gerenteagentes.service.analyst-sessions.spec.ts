@@ -101,11 +101,16 @@ describe("GerenteAgentesService.sessoesAnalistaTarefa", () => {
       // Mock do drizzle chain para sessões vazias (sem limit)
       const sessoesChain = criarDrizzleChainSemLimit([]);
 
+      // O service consulta motor.session_history_page_size (motorConfiguracoes)
+      // entre a consulta da tarefa e a das sessões; o chain precisa de .limit().
+      const configChain = criarDrizzleChainComLimit([]);
+
       let callCount = 0;
       const dbMock = {
         select: vi.fn().mockImplementation(() => {
           callCount++;
           if (callCount === 1) return tarefaChain;
+          if (callCount === 2) return configChain;
           return sessoesChain;
         }),
       };
@@ -133,9 +138,9 @@ describe("GerenteAgentesService.sessoesAnalistaTarefa", () => {
       ];
 
       const mensagens = [
-        { role: "system", content: "Você é um analista...", sequenceNumber: 0 },
-        { role: "user", content: "Analise esta tarefa", sequenceNumber: 1 },
-        { role: "assistant", content: "Aqui está a análise...", sequenceNumber: 2 },
+        { role: "system", text: "Você é um analista...", sequenceNumber: 0 },
+        { role: "user", text: "Analise esta tarefa", sequenceNumber: 1 },
+        { role: "assistant", text: "Aqui está a análise...", sequenceNumber: 2 },
       ];
 
       // Mock do chain do drizzle para tarefa (com limit)
@@ -145,14 +150,19 @@ describe("GerenteAgentesService.sessoesAnalistaTarefa", () => {
       const sessoesChain = criarDrizzleChainSemLimit(sessoes);
       
       // Mock do chain para mensagens (sem limit)
-      const mensagensChain = criarDrizzleChainSemLimit(mensagens);
+      const mensagensChain = criarDrizzleChainComLimit(mensagens);
+
+      // O service consulta motor.session_history_page_size (motorConfiguracoes)
+      // entre a consulta da tarefa e a das sessões; o chain precisa de .limit().
+      const configChain = criarDrizzleChainComLimit([]);
 
       let callCount = 0;
       const dbMock = {
         select: vi.fn().mockImplementation(() => {
           callCount++;
           if (callCount === 1) return tarefaChain;
-          if (callCount === 2) return sessoesChain;
+          if (callCount === 2) return configChain;
+          if (callCount === 3) return sessoesChain;
           return mensagensChain;
         }),
       };
@@ -170,7 +180,8 @@ describe("GerenteAgentesService.sessoesAnalistaTarefa", () => {
         sessionKey: "analyst-task-1-model-1",
         status: "closed",
       });
-      expect(resultado.sessions[0]!.messages).toHaveLength(3);
+      // `messages` é a página retornada por makeMessagesPage ({ items, nextCursor, hasNextPage }).
+      expect(resultado.sessions[0]!.messages.items).toHaveLength(3);
       expect(resultado.sessions[0]!.text).toContain("[system]");
       expect(resultado.sessions[0]!.text).toContain("[user]");
       expect(resultado.sessions[0]!.text).toContain("[assistant]");
@@ -195,8 +206,8 @@ describe("GerenteAgentesService.sessoesAnalistaTarefa", () => {
       ];
 
       const mensagens = [
-        { role: "system", content: "Contexto do analista", sequenceNumber: 0 },
-        { role: "assistant", content: "Análise completa da tarefa", sequenceNumber: 1 },
+        { role: "system", text: "Contexto do analista", sequenceNumber: 0 },
+        { role: "assistant", text: "Análise completa da tarefa", sequenceNumber: 1 },
       ];
 
       // Mock do chain do drizzle para tarefa (com limit)
@@ -206,14 +217,19 @@ describe("GerenteAgentesService.sessoesAnalistaTarefa", () => {
       const sessoesChain = criarDrizzleChainSemLimit(sessoes);
       
       // Mock do chain para mensagens (sem limit)
-      const mensagensChain = criarDrizzleChainSemLimit(mensagens);
+      const mensagensChain = criarDrizzleChainComLimit(mensagens);
+
+      // O service consulta motor.session_history_page_size (motorConfiguracoes)
+      // entre a consulta da tarefa e a das sessões; o chain precisa de .limit().
+      const configChain = criarDrizzleChainComLimit([]);
 
       let callCount = 0;
       const dbMock = {
         select: vi.fn().mockImplementation(() => {
           callCount++;
           if (callCount === 1) return tarefaChain;
-          if (callCount === 2) return sessoesChain;
+          if (callCount === 2) return configChain;
+          if (callCount === 3) return sessoesChain;
           return mensagensChain;
         }),
       };
@@ -226,7 +242,8 @@ describe("GerenteAgentesService.sessoesAnalistaTarefa", () => {
       // Dados persistidos devem estar disponíveis mesmo sem sessão operacional
       expect(resultado.available).toBe(true);
       expect(resultado.sessions).toHaveLength(1);
-      expect(resultado.sessions[0]!.messages).toHaveLength(2);
+      // `messages` é a página retornada por makeMessagesPage ({ items, nextCursor, hasNextPage }).
+      expect(resultado.sessions[0]!.messages.items).toHaveLength(2);
       expect(resultado.sessions[0]!.text).toContain("Contexto do analista");
       expect(resultado.sessions[0]!.text).toContain("Análise completa da tarefa");
     });
@@ -268,19 +285,19 @@ describe("GerenteAgentesService.sessoesAnalistaTarefa", () => {
         },
       ];
 
-      const mensagensPorSessao: Record<number, Array<{ role: string; content: string; sequenceNumber: number }>> = {
+      const mensagensPorSessao: Record<number, Array<{ role: string; text: string; sequenceNumber: number }>> = {
         1: [
-          { role: "system", content: "Tentativa 1", sequenceNumber: 0 },
-          { role: "assistant", content: "Erro de autenticação", sequenceNumber: 1 },
+          { role: "system", text: "Tentativa 1", sequenceNumber: 0 },
+          { role: "assistant", text: "Erro de autenticação", sequenceNumber: 1 },
         ],
         2: [
-          { role: "system", content: "Tentativa 2", sequenceNumber: 0 },
-          { role: "assistant", content: "Modelo indisponível", sequenceNumber: 1 },
+          { role: "system", text: "Tentativa 2", sequenceNumber: 0 },
+          { role: "assistant", text: "Modelo indisponível", sequenceNumber: 1 },
         ],
         3: [
-          { role: "system", content: "Tentativa 3 - sucesso", sequenceNumber: 0 },
-          { role: "user", content: "Tarefa de desenvolvimento", sequenceNumber: 1 },
-          { role: "assistant", content: "Análise completa com sucesso", sequenceNumber: 2 },
+          { role: "system", text: "Tentativa 3 - sucesso", sequenceNumber: 0 },
+          { role: "user", text: "Tarefa de desenvolvimento", sequenceNumber: 1 },
+          { role: "assistant", text: "Análise completa com sucesso", sequenceNumber: 2 },
         ],
       };
 
@@ -290,15 +307,20 @@ describe("GerenteAgentesService.sessoesAnalistaTarefa", () => {
       // Mock do chain para sessões (sem limit)
       const sessoesChain = criarDrizzleChainSemLimit(sessoes);
 
+      // O service consulta motor.session_history_page_size (motorConfiguracoes)
+      // entre a consulta da tarefa e a das sessões; o chain precisa de .limit().
+      const configChain = criarDrizzleChainComLimit([]);
+
       let callCount = 0;
       const dbMock = {
         select: vi.fn().mockImplementation(() => {
           callCount++;
           if (callCount === 1) return tarefaChain;
-          if (callCount === 2) return sessoesChain;
+          if (callCount === 2) return configChain;
+          if (callCount === 3) return sessoesChain;
           // Para mensagens, retorna baseado no sessionId
-          const sessionId = callCount - 2; // 1, 2, 3
-          return criarDrizzleChainSemLimit(mensagensPorSessao[sessionId] ?? []);
+          const sessionId = callCount - 3; // 1, 2, 3
+          return criarDrizzleChainComLimit(mensagensPorSessao[sessionId] ?? []);
         }),
       };
 
@@ -346,8 +368,8 @@ describe("GerenteAgentesService.sessoesAnalistaTarefa", () => {
       ];
 
       const mensagens = [
-        { role: "system", content: "Prompt do analista", sequenceNumber: 0 },
-        { role: "assistant", content: "Resposta", sequenceNumber: 1 },
+        { role: "system", text: "Prompt do analista", sequenceNumber: 0 },
+        { role: "assistant", text: "Resposta", sequenceNumber: 1 },
       ];
 
       // Mock do chain do drizzle para tarefa (com limit)
@@ -357,14 +379,19 @@ describe("GerenteAgentesService.sessoesAnalistaTarefa", () => {
       const sessoesChain = criarDrizzleChainSemLimit(sessoes);
       
       // Mock do chain para mensagens (sem limit)
-      const mensagensChain = criarDrizzleChainSemLimit(mensagens);
+      const mensagensChain = criarDrizzleChainComLimit(mensagens);
+
+      // O service consulta motor.session_history_page_size (motorConfiguracoes)
+      // entre a consulta da tarefa e a das sessões; o chain precisa de .limit().
+      const configChain = criarDrizzleChainComLimit([]);
 
       let callCount = 0;
       const dbMock = {
         select: vi.fn().mockImplementation(() => {
           callCount++;
           if (callCount === 1) return tarefaChain;
-          if (callCount === 2) return sessoesChain;
+          if (callCount === 2) return configChain;
+          if (callCount === 3) return sessoesChain;
           return mensagensChain;
         }),
       };
