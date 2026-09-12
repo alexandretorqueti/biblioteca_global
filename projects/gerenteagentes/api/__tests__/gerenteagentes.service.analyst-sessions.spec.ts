@@ -170,7 +170,7 @@ describe("GerenteAgentesService.sessoesAnalistaTarefa", () => {
         sessionKey: "analyst-task-1-model-1",
         status: "closed",
       });
-      expect(resultado.sessions[0]!.messages).toHaveLength(3);
+      expect(resultado.sessions[0]!.messages.items).toHaveLength(3);
       expect(resultado.sessions[0]!.text).toContain("[system]");
       expect(resultado.sessions[0]!.text).toContain("[user]");
       expect(resultado.sessions[0]!.text).toContain("[assistant]");
@@ -226,7 +226,7 @@ describe("GerenteAgentesService.sessoesAnalistaTarefa", () => {
       // Dados persistidos devem estar disponíveis mesmo sem sessão operacional
       expect(resultado.available).toBe(true);
       expect(resultado.sessions).toHaveLength(1);
-      expect(resultado.sessions[0]!.messages).toHaveLength(2);
+      expect(resultado.sessions[0]!.messages.items).toHaveLength(2);
       expect(resultado.sessions[0]!.text).toContain("Contexto do analista");
       expect(resultado.sessions[0]!.text).toContain("Análise completa da tarefa");
     });
