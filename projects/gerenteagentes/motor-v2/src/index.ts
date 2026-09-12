@@ -74,6 +74,8 @@ export type {
 } from './shared/types/resources.js'
 
 export { RESOURCE_KEYS } from './shared/types/resources.js'
+export { RecoveryEligibilityState, verifyRecoveryEligibility } from './shared/recoveryEligibility.js'
+export type { RecoveryActiveLease, RecoveryBlockerEvidence, RecoveryEligibility, RecoveryEligibilityFacts, RecoveryPendingQuestion } from './shared/recoveryEligibility.js'
 
 export type { Db, TaskRepository, QueryResult, SaveTaskData, TaskRow, TaskTipo as InfrastructureTaskTipo } from './shared/types/infrastructure.js'
 export type { AgentRuntimeDriver, SendMessageResult, RunStatusResult, SendMessageParams } from './shared/types/agent-runtime.js'
