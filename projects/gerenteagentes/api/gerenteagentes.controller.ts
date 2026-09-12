@@ -353,6 +353,13 @@ export class GerenteAgentesController {
     return this.service.getModelSelection(this.projectKeyOuErro(projectKey), this.tipoOuErro(tipo));
   }
 
+  /** Configuração global, administrada pela tela CONFIGURAÇÕES. */
+  @Get('model-selection/global')
+  @Roles('admin', 'gerente')
+  getGlobalModelSelection() {
+    return this.service.getGlobalModelSelection();
+  }
+
   // ============================================================================
   // CONFIGURAÇÕES OPERACIONAIS DO MOTOR
   // ============================================================================
@@ -380,6 +387,13 @@ export class GerenteAgentesController {
       throw new BadRequestException('Body inválido — esperado { entries: [...] }');
     }
     return this.service.saveModelSelection(this.projectKeyOuErro(projectKey), this.tipoOuErro(tipo), body.entries);
+  }
+
+  /** Aplica a configuração global e a propaga para todos os projetos. */
+  @Put('model-selection/global')
+  @Roles('admin', 'gerente')
+  saveGlobalModelSelection(@Body() body: unknown) {
+    return this.service.saveGlobalModelSelection(body);
   }
 
   /**

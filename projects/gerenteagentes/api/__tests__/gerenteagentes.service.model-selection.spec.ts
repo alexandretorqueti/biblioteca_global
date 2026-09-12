@@ -95,6 +95,53 @@ beforeEach(() => {
 });
 
 describe("GerenteAgentesService — model-selection (proxy p/ motor)", () => {
+  const configuracaoGlobal = {
+    DEV: [{ ordem: 1, provider: "alibaba", model: "qwen3.7-plus", enabled: true }],
+    ANALYST: [{ ordem: 1, provider: "openai", model: "gpt-5", enabled: true }],
+    MONITOR: [{ ordem: 1, provider: "anthropic", model: "claude-sonnet", enabled: false }],
+  };
+
+  it("GET global usa o endpoint global e preserva a configuração", async () => {
+    const { service } = novoService({ MOTOR_DEV_URL: "http://motor.test:6282" });
+    respostas.push({ status: 200, body: JSON.stringify({ ok: true, configuracaoGlobal }) });
+
+    const resultado = await service.getGlobalModelSelection();
+
+    expect(resultado.configuracaoGlobal).toEqual(configuracaoGlobal);
+    expect(capturas[0]?.options.path).toBe("/api/model-selection/global");
+  });
+
+  it("PUT global encaminha o payload completo sem projectKey e preserva falha parcial", async () => {
+    const { service } = novoService({ MOTOR_DEV_URL: "http://motor.test:6282" });
+    respostas.push({
+      status: 200,
+      body: JSON.stringify({
+        ok: true,
+        configuracaoGlobal,
+        resultadoPropagacao: { sucesso: false, totalProjetos: 2 },
+        projetosAplicados: [{ projectKey: "alpha", tipos: ["DEV", "ANALYST", "MONITOR"] }],
+        errosPorProjeto: [{ projectKey: "beta", error: "database indisponível" }],
+      }),
+    });
+
+    const resultado = await service.saveGlobalModelSelection(configuracaoGlobal);
+    const chamada = capturas[0];
+    if (!chamada) throw new Error("captura ausente");
+
+    expect(chamada.options.method).toBe("PUT");
+    expect(chamada.options.path).toBe("/api/model-selection/global");
+    expect(JSON.parse(chamada.body ?? "{}")).toEqual(configuracaoGlobal);
+    expect(resultado.errosPorProjeto).toHaveLength(1);
+    expect(resultado.mensagem).toMatch(/falhou em 1 projeto/);
+  });
+
+  it("PUT global rejeita payload inválido antes de chamar o Motor", async () => {
+    const { service } = novoService({ MOTOR_DEV_URL: "http://motor.test:6282" });
+
+    await expect(service.saveGlobalModelSelection({ DEV: [] })).rejects.toThrow(/Configuração global inválida/);
+    expect(capturas).toHaveLength(0);
+  });
+
   it("GET repassa ao motor o projectKey da rota (não o do projeto logado)", async () => {
     const { service } = novoService({ MOTOR_DEV_URL: "http://motor.test:6282" });
     respostas.push({
