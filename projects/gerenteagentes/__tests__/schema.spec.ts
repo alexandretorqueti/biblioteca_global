@@ -11,7 +11,39 @@
  */
 import { describe, expect, it } from "vitest"
 import { getTableConfig } from "drizzle-orm/mysql-core"
-import { projetoMotorConfig, annotations } from "../schema"
+import { globalModelSelection, projetoMotorConfig, annotations } from "../schema"
+
+describe("globalModelSelection — schema Drizzle", () => {
+  it("possui a tabela global sem project_slug e com os campos da fila", () => {
+    const config = getTableConfig(globalModelSelection)
+    expect(config.name).toBe("global_model_selection")
+    expect(config.columns.map((column) => column.name)).toEqual([
+      "id",
+      "tipo",
+      "ordem",
+      "provider",
+      "model",
+      "enabled",
+    ])
+    expect(config.columns.some((column) => column.name === "project_slug")).toBe(false)
+  })
+
+  it("restringe tipo e preserva a unicidade da posição dentro de cada fila", () => {
+    const config = getTableConfig(globalModelSelection)
+    const tipo = config.columns.find((column) => column.name === "tipo")
+    const enabled = config.columns.find((column) => column.name === "enabled")
+
+    expect((tipo as unknown as { enumValues: string[] }).enumValues).toEqual(["DEV", "ANALYST", "MONITOR"])
+    expect((enabled as unknown as { notNull: boolean }).notNull).toBe(true)
+    const indexes = config.indexes.map((entry) => (entry as any).config ?? entry)
+    expect(indexes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "global_model_selection_tipo_ordem_unique", unique: true }),
+        expect.objectContaining({ name: "global_model_selection_tipo_enabled_idx" }),
+      ]),
+    )
+  })
+})
 
 describe("projetoMotorConfig — schema Drizzle", () => {
   it("possui a coluna repo_path (varchar(500), obrigatória)", () => {
