@@ -214,7 +214,15 @@ export class GerenteAgentesService {
     if (!subtarefa) return { available: false, sessions: [] };
     const pageSize = await this.resolveSessionPageSize(db, options.pageSize);
     const sessions = await db
-      .select({ id: motorAgentSessions.id, sessionKey: motorAgentSessions.sessionKey })
+      .select({
+        id: motorAgentSessions.id,
+        model: motorAgentSessions.modelo,
+        sessionKey: motorAgentSessions.sessionKey,
+        status: motorAgentSessions.status,
+        openedAt: motorAgentSessions.openedAt,
+        closedAt: motorAgentSessions.closedAt,
+        closeReason: motorAgentSessions.closeReason,
+      })
       .from(motorAgentSessions)
       .where(eq(motorAgentSessions.subtarefaId, subtarefa.id))
       .orderBy(desc(motorAgentSessions.lastActivityAt), desc(motorAgentSessions.id));
@@ -225,9 +233,16 @@ export class GerenteAgentesService {
       : undefined;
     if (options.sessionKey && !selected) throw new NotFoundException('Sessão não encontrada');
     const visibleSessions = selected ? [selected] : sessions;
-    const result = await Promise.all(visibleSessions.map((session) =>
-      this.paginaMensagensMotor(db, session, { ...options, pageSize }),
-    ));
+    const result = await Promise.all(visibleSessions.map(async (session) => ({
+      id: session.id,
+      model: session.model,
+      sessionKey: session.sessionKey,
+      status: session.status,
+      openedAt: session.openedAt,
+      closedAt: session.closedAt,
+      closeReason: session.closeReason,
+      messages: await this.paginaMensagensMotor(db, session, { ...options, pageSize }),
+    })));
     return { available: true, sessions: result };
   }
 
