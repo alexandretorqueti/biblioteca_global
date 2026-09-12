@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest"
-import { render, screen, fireEvent } from "@testing-library/react"
+import { render, screen, fireEvent, waitForElementToBeRemoved } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import "@testing-library/jest-dom/vitest"
 import { BibliotecaThemeProvider } from "@biblioteca-global/ui"
@@ -685,6 +685,32 @@ describe("TaskFlowMap — Cards informativos (1.3)", () => {
     // Baixa (draft)
     await userEvent.hover(screen.getByTestId("flow-task-description-964"))
     expect(await screen.findByRole("tooltip")).toHaveTextContent("Baixa")
+  })
+
+  it("abre o tooltip rico ao passar o mouse no cartão da tarefa e o remove ao sair", async () => {
+    view([
+      {
+        id: 965,
+        titulo: "Tarefa do cartão",
+        descricao: "Detalhes exibidos no cartão",
+        status: "running",
+        projetoId: 1,
+        projetoNome: "Projeto Alpha",
+        updatedAt: "2026-09-10T12:00:00.000Z",
+      },
+    ])
+
+    const card = screen.getByTestId("flow-task-965")
+    await userEvent.hover(card)
+
+    const tooltip = await screen.findByRole("tooltip")
+    expect(tooltip).toHaveTextContent("Detalhes exibidos no cartão")
+    expect(tooltip).toHaveTextContent("Projeto: Projeto Alpha")
+    expect(tooltip).toHaveTextContent("Prioridade: Média")
+    expect(tooltip).toHaveTextContent("Atualizado:")
+
+    await userEvent.unhover(card)
+    await waitForElementToBeRemoved(() => screen.queryByRole("tooltip"))
   })
 
   it("card selecionado usa elevation 5 e bgcolor action.selected", () => {
