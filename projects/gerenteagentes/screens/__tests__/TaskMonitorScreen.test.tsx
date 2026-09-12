@@ -1577,6 +1577,175 @@ describe("TaskMonitorScreen — Bottom sheet mobile (6.1)", () => {
   })
 })
 
+describe("TaskMonitorScreen — regressão dos diálogos de sessão", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", mockFetch)
+    mockFetch.mockReset()
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    delete globalThis.__bundleFalso
+  })
+
+  function renderScreen() {
+    return render(
+      <BibliotecaThemeProvider>
+        <TaskMonitorScreen />
+      </BibliotecaThemeProvider>,
+    )
+  }
+
+  function sessaoFactory(sessionKey: string, sequenceNumber: number, text: string, extra?: { model?: string; executionOrder?: number; nextCursor?: string | null; hasNextPage?: boolean }) {
+    return {
+      id: sequenceNumber,
+      model: extra?.model ?? "provider/model-a",
+      executionOrder: extra?.executionOrder,
+      sessionKey,
+      status: "closed",
+      openedAt: "2026-09-08T10:00:00.000Z",
+      closedAt: "2026-09-08T10:08:00.000Z",
+      closeReason: "completed",
+      messages: {
+        items: [{ role: "assistant", text, sequenceNumber, occurredAt: "2026-09-08T10:01:00.000Z" }],
+        nextCursor: extra?.nextCursor ?? null,
+        hasNextPage: extra?.hasNextPage ?? false,
+      },
+    }
+  }
+
+  function bundleComSessoes(responses: { subtask: unknown; analyst: unknown; onRequest?: (path: string, query?: Record<string, string>) => void }) {
+    const tarefas = [tarefaFactory(1, "Tarefa com sessões", "running", 1)]
+    const motorDetail = {
+      motorId: "m1",
+      exists: true,
+      task: { id: "task-1", status: "running", title: "Tarefa com sessões" },
+      subtasks: [{ seq: 1, title: "Sub 1", status: "running" }],
+      currentSubTask: null,
+      events: [],
+    }
+
+    return {
+      http: {
+        request: async (method: string, path: string, reqOpts?: { query?: Record<string, string> }) => {
+          if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
+          if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
+          if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
+          if (method === "GET" && path.endsWith("/subtarefas")) return []
+          if (method === "GET" && path.endsWith("/subtarefas/1/sessao")) {
+            responses.onRequest?.(path, reqOpts?.query)
+            return responses.subtask
+          }
+          if (method === "GET" && path.endsWith("/sessoes-analista")) {
+            responses.onRequest?.(path, reqOpts?.query)
+            return responses.analyst
+          }
+          return {}
+        },
+      },
+    } as never
+  }
+
+  it("abre a sessão da subtarefa e exibe role e mensagens", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    globalThis.__bundleFalso = bundleComSessoes({
+      subtask: { available: true, sessions: [sessaoFactory("sub-1", 2, "Resposta da subtarefa")] },
+      analyst: { available: false, sessions: [] },
+    })
+
+    renderScreen()
+    await waitFor(() => expect(screen.getByTestId("btn-view-session-1")).toBeInTheDocument())
+    await user.click(screen.getByTestId("btn-view-session-1"))
+
+    await waitFor(() => expect(screen.getByTestId("session-content")).toBeInTheDocument())
+    expect(screen.getByTestId("session-content")).toHaveTextContent("[assistant]")
+    expect(screen.getByTestId("session-content")).toHaveTextContent("Resposta da subtarefa")
+    expect(screen.queryByText("Tarefa não encontrada")).not.toBeInTheDocument()
+  })
+
+  it("abre as sessões do analista e exibe modelo e mensagens", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    globalThis.__bundleFalso = bundleComSessoes({
+      subtask: { available: false, sessions: [] },
+      analyst: { available: true, sessions: [sessaoFactory("analyst-1", 1, "Análise concluída", { model: "provider/model-b", executionOrder: 1 })] },
+    })
+
+    renderScreen()
+    await waitFor(() => expect(screen.getByTestId("btn-view-analyst-sessions")).toBeInTheDocument())
+    await user.click(screen.getByTestId("btn-view-analyst-sessions"))
+
+    await waitFor(() => expect(screen.getByTestId("analyst-session-content-1")).toBeInTheDocument())
+    expect(screen.getByTestId("analyst-session-model-1")).toHaveTextContent("provider/model-b")
+    expect(screen.getByTestId("analyst-session-content-1")).toHaveTextContent("Análise concluída")
+    expect(screen.queryByText("Tarefa não encontrada")).not.toBeInTheDocument()
+  })
+
+  it("exibe ausência sem quebrar quando available=false", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    globalThis.__bundleFalso = bundleComSessoes({
+      subtask: { available: false, sessions: [] },
+      analyst: { available: false, sessions: [] },
+    })
+
+    renderScreen()
+    await waitFor(() => expect(screen.getByTestId("btn-view-session-1")).toBeInTheDocument())
+    await user.click(screen.getByTestId("btn-view-session-1"))
+    await waitFor(() => expect(screen.getByTestId("session-unavailable")).toBeInTheDocument())
+    expect(screen.getByTestId("session-unavailable")).toHaveTextContent("Nenhuma sessão disponível")
+    await user.click(screen.getByRole("button", { name: "Fechar sessão" }))
+
+    await user.click(screen.getByTestId("btn-view-analyst-sessions"))
+    await waitFor(() => expect(screen.getByTestId("analyst-session-unavailable")).toBeInTheDocument())
+    expect(screen.getByTestId("analyst-session-unavailable")).toHaveTextContent("Nenhuma sessão do analista")
+  })
+
+  it("renderiza tentativas separadas na ordem recebida", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    globalThis.__bundleFalso = bundleComSessoes({
+      subtask: { available: true, sessions: [sessaoFactory("sub-1", 2, "Primeira"), sessaoFactory("sub-2", 1, "Segunda")] },
+      analyst: { available: false, sessions: [] },
+    })
+
+    renderScreen()
+    await waitFor(() => expect(screen.getByTestId("btn-view-session-1")).toBeInTheDocument())
+    await user.click(screen.getByTestId("btn-view-session-1"))
+    await waitFor(() => expect(screen.getByTestId("session-content-2")).toBeInTheDocument())
+    expect(screen.getByTestId("session-separator")).toBeInTheDocument()
+    expect(screen.getByTestId("session-content").textContent).toContain("Primeira")
+    expect(screen.getByTestId("session-content-2").textContent).toContain("Segunda")
+  })
+
+  it("pagina cada tentativa com sua própria sessionKey e cursor", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const requests: Array<{ path: string; query?: Record<string, string> }> = []
+    globalThis.__bundleFalso = bundleComSessoes({
+      subtask: { available: true, sessions: [sessaoFactory("sub-1", 2, "Inicial", { nextCursor: "cursor-sub", hasNextPage: true })] },
+      analyst: { available: true, sessions: [sessaoFactory("analyst-1", 1, "Inicial analista", { executionOrder: 1, nextCursor: "cursor-analyst", hasNextPage: true })] },
+      onRequest: (path, query) => requests.push({ path, query }),
+    })
+
+    renderScreen()
+    await waitFor(() => expect(screen.getByTestId("btn-view-session-1")).toBeInTheDocument())
+    await user.click(screen.getByTestId("btn-view-session-1"))
+    await waitFor(() => expect(screen.getByTestId("session-content")).toBeInTheDocument())
+    const subContent = screen.getByTestId("session-content")
+    Object.defineProperties(subContent, { scrollHeight: { value: 100 }, scrollTop: { value: 100 }, clientHeight: { value: 100 } })
+    subContent.dispatchEvent(new Event("scroll", { bubbles: true }))
+    await waitFor(() => expect(requests).toContainEqual({ path: "/gerenteagentes/tarefas/1/subtarefas/1/sessao", query: { sessionKey: "sub-1", cursor: "cursor-sub" } }))
+
+    await user.click(screen.getByRole("button", { name: "Fechar sessão" }))
+    await user.click(screen.getByTestId("btn-view-analyst-sessions"))
+    await waitFor(() => expect(screen.getByTestId("analyst-session-content-1")).toBeInTheDocument())
+    const analystContent = screen.getByTestId("analyst-session-content-1")
+    Object.defineProperties(analystContent, { scrollHeight: { value: 100 }, scrollTop: { value: 100 }, clientHeight: { value: 100 } })
+    analystContent.dispatchEvent(new Event("scroll", { bubbles: true }))
+    await waitFor(() => expect(requests).toContainEqual({ path: "/gerenteagentes/tarefas/1/sessoes-analista", query: { sessionKey: "analyst-1", cursor: "cursor-analyst" } }))
+  })
+})
+
 describe("TaskMonitorScreen — Chat (campo multilinha, Enter sem envio, Ctrl+Enter com envio)", () => {
   beforeEach(() => {
     vi.stubGlobal("fetch", mockFetch)
