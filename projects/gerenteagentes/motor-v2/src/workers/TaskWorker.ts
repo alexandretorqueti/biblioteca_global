@@ -1230,9 +1230,12 @@ class TaskWorker {
     if (!this.db) return
     try {
       // Busca o ID numérico da tarefa no banco
+      const numeric = /^\d+$/.test(taskExternalId)
       const [rows] = await this.db.query(
-        "SELECT id FROM tarefas WHERE external_id = ? OR id = CAST(? AS UNSIGNED) LIMIT 1",
-        [taskExternalId, taskExternalId],
+        numeric
+          ? "SELECT id FROM tarefas WHERE external_id = ? OR id = ? LIMIT 1"
+          : "SELECT id FROM tarefas WHERE external_id = ? LIMIT 1",
+        numeric ? [taskExternalId, taskExternalId] : [taskExternalId],
       ) as unknown as [Array<{ id: number }>]
       if (rows.length === 0) {
         this.log("warn", "Tarefa não encontrada para registrar sessão do analista: " + taskExternalId)
@@ -1365,10 +1368,14 @@ class TaskWorker {
   private async persistLightweightDelivery(input: WorkerInput, content: string): Promise<void> {
     if (!this.db) throw new Error("DB não conectado para registrar entrega")
     const text = content.trim() || "Agente finalizou sem mensagem de resposta."
+    const taskId = input.task.id
+    const numeric = /^\d+$/.test(taskId)
     await this.db.query(
       "INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) " +
-      "SELECT id, 'assistant', ?, NOW() FROM tarefas WHERE external_id = ? OR id = ? LIMIT 1",
-      [text.substring(0, 30_000), input.task.id, input.task.id],
+      (numeric
+        ? "SELECT id, 'assistant', ?, NOW() FROM tarefas WHERE external_id = ? OR id = ? LIMIT 1"
+        : "SELECT id, 'assistant', ?, NOW() FROM tarefas WHERE external_id = ? LIMIT 1"),
+      numeric ? [text.substring(0, 30_000), taskId, taskId] : [text.substring(0, 30_000), taskId],
     )
   }
 
