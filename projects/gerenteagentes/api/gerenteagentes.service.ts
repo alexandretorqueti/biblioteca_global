@@ -1,6 +1,6 @@
 import { Injectable, Inject, Logger, NotFoundException, BadRequestException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { eq, desc, and, asc, isNull, isNotNull } from 'drizzle-orm';
+import { eq, desc, and, asc, lt, or, isNull, isNotNull } from 'drizzle-orm';
 import { request as httpRequest, type RequestOptions } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { randomUUID } from 'node:crypto';
@@ -42,6 +42,61 @@ import {
 import type { PromptPart } from '../motor-v2/src/prompts/PromptComposition.js' with { "resolution-mode": "import" };
 import { ProvisionService } from '../../../apps/api/src/modules/provision/provision.service';
 import { RealtimeService } from '../../../apps/api/src/modules/realtime/realtime.service';
+
+const DEFAULT_SESSION_PAGE_SIZE = 50;
+const MAX_SESSION_PAGE_SIZE = 100;
+
+type SessionMessagesQuery = {
+  sessionKey?: string;
+  cursor?: string;
+  pageSize?: number;
+};
+
+type SessionCursor = { sequenceNumber: number; id: number };
+
+function normalizePageSize(value: number | undefined): number {
+  if (!Number.isFinite(value) || value === undefined) return DEFAULT_SESSION_PAGE_SIZE;
+  return Math.min(MAX_SESSION_PAGE_SIZE, Math.max(1, Math.floor(value)));
+}
+
+function decodeCursor(value: string | undefined): SessionCursor | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as Partial<SessionCursor>;
+    if (Number.isSafeInteger(parsed.sequenceNumber) && Number.isSafeInteger(parsed.id)) {
+      return { sequenceNumber: parsed.sequenceNumber, id: parsed.id };
+    }
+  } catch {
+    throw new BadRequestException('Cursor de sessão inválido');
+  }
+  throw new BadRequestException('Cursor de sessão inválido');
+}
+
+function encodeCursor(cursor: SessionCursor): string {
+  return Buffer.from(JSON.stringify(cursor)).toString('base64url');
+}
+
+function makeMessagesPage<T extends {
+  id: number;
+  role: string;
+  text: string;
+  sequenceNumber: number;
+  occurredAt: Date | null;
+}>(rows: T[], pageSize: number) {
+  const hasNextPage = rows.length > pageSize;
+  const items = rows.slice(0, pageSize).map(({ role, text, sequenceNumber, occurredAt }) => ({
+    role,
+    text,
+    sequenceNumber,
+    occurredAt,
+  }));
+  const last = rows[pageSize - 1];
+  return {
+    items,
+    nextCursor: hasNextPage && last ? encodeCursor({ sequenceNumber: last.sequenceNumber, id: last.id }) : null,
+    hasNextPage,
+  };
+}
 
 @Injectable()
 export class GerenteAgentesService {
@@ -132,7 +187,12 @@ export class GerenteAgentesService {
    * Consulta o histórico persistido da sessão da subtarefa. A consulta não
    * depende da sessão remota ainda existir após a aprovação.
    */
-  async sessaoSubtarefa(projeto: ProjetoResumo, tarefaId: number, seq: number) {
+  async sessaoSubtarefa(
+    projeto: ProjetoResumo,
+    tarefaId: number,
+    seq: number,
+    options: SessionMessagesQuery = {},
+  ) {
     const db = await this.dbDoMotor();
     const [tarefa] = await db
       .select({
@@ -152,26 +212,22 @@ export class GerenteAgentesService {
       .where(and(eq(subtarefas.tarefaId, tarefaId), eq(subtarefas.seq, seq)))
       .limit(1);
     if (!subtarefa) return { available: false, messages: [], text: '' };
-    const [session] = await db
+    const sessions = await db
       .select({ id: motorAgentSessions.id, sessionKey: motorAgentSessions.sessionKey })
       .from(motorAgentSessions)
       .where(eq(motorAgentSessions.subtarefaId, subtarefa.id))
-      .orderBy(desc(motorAgentSessions.lastActivityAt))
-      .limit(1);
-    if (!session) return { available: false, messages: [], text: '' };
+      .orderBy(desc(motorAgentSessions.lastActivityAt), desc(motorAgentSessions.id));
+    if (sessions.length === 0) return { available: false, sessions: [] };
 
-    const messages = await db
-      .select({ role: motorAgentSessionMessages.role, text: motorAgentSessionMessages.content })
-      .from(motorAgentSessionMessages)
-      .where(eq(motorAgentSessionMessages.sessionId, session.id))
-      .orderBy(asc(motorAgentSessionMessages.sequenceNumber));
-    const normalized = messages.map((message) => ({ role: message.role, text: message.text }));
-    return {
-      available: normalized.length > 0,
-      sessionKey: session.sessionKey,
-      messages: normalized,
-      text: normalized.map((message) => `[${message.role}]\n${message.text}`).join('\n\n'),
-    };
+    const selected = options.sessionKey
+      ? sessions.find((session) => session.sessionKey === options.sessionKey)
+      : undefined;
+    if (options.sessionKey && !selected) throw new NotFoundException('Sessão não encontrada');
+    const visibleSessions = selected ? [selected] : sessions;
+    const result = await Promise.all(visibleSessions.map((session) =>
+      this.paginaMensagensMotor(db, session, options),
+    ));
+    return { available: true, sessions: result };
   }
 
   /**
@@ -180,7 +236,11 @@ export class GerenteAgentesService {
    * com o nome do modelo no início de cada registro. Funciona mesmo após a
    * sessão operacional ser apagada, pois os dados estão persistidos em banco.
    */
-  async sessoesAnalistaTarefa(projeto: ProjetoResumo, tarefaId: number) {
+  async sessoesAnalistaTarefa(
+    projeto: ProjetoResumo,
+    tarefaId: number,
+    options: SessionMessagesQuery = {},
+  ) {
     const db = await this.dbDoMotor();
     const [tarefa] = await db
       .select({ projetoId: tarefas.projetoId })
@@ -210,25 +270,15 @@ export class GerenteAgentesService {
       return { available: false, sessions: [] };
     }
 
-    const result = [];
-    for (const session of sessions) {
-      const messages = await db
-        .select({
-          role: analystTaskSessionMessages.role,
-          content: analystTaskSessionMessages.content,
-          sequenceNumber: analystTaskSessionMessages.sequenceNumber,
-        })
-        .from(analystTaskSessionMessages)
-        .where(eq(analystTaskSessionMessages.sessionId, session.id))
-        .orderBy(asc(analystTaskSessionMessages.sequenceNumber));
-
-      const normalizedMessages = messages.map((m) => ({
-        role: m.role,
-        text: m.content,
-        sequenceNumber: m.sequenceNumber,
-      }));
-
-      result.push({
+    const selected = options.sessionKey
+      ? sessions.find((session) => session.sessionKey === options.sessionKey)
+      : undefined;
+    if (options.sessionKey && !selected) throw new NotFoundException('Sessão não encontrada');
+    const visibleSessions = selected ? [selected] : sessions;
+    const result = await Promise.all(visibleSessions.map(async (session) => {
+      const messages = await this.paginaMensagensAnalista(db, session, options);
+      return {
+        id: session.id,
         executionOrder: session.executionOrder,
         model: session.modelo,
         sessionKey: session.sessionKey,
@@ -236,12 +286,62 @@ export class GerenteAgentesService {
         openedAt: session.openedAt,
         closedAt: session.closedAt,
         closeReason: session.closeReason,
-        messages: normalizedMessages,
-        text: normalizedMessages.map((m) => `[${m.role}]\n${m.text}`).join('\n\n'),
+        messages,
+        text: messages.items.map((m) => `[${m.role}]\n${m.text}`).join('\n\n'),
       });
-    }
+    }));
 
     return { available: true, sessions: result };
+  }
+
+  private async paginaMensagensMotor(
+    db: Awaited<ReturnType<GerenteAgentesService['dbDoMotor']>>,
+    session: { id: number; sessionKey: string },
+    options: SessionMessagesQuery,
+  ) {
+    const pageSize = normalizePageSize(options.pageSize);
+    const cursor = decodeCursor(options.cursor);
+    const where = cursor
+      ? and(eq(motorAgentSessionMessages.sessionId, session.id), or(
+        lt(motorAgentSessionMessages.sequenceNumber, cursor.sequenceNumber),
+        and(eq(motorAgentSessionMessages.sequenceNumber, cursor.sequenceNumber), lt(motorAgentSessionMessages.id, cursor.id)),
+      ))
+      : eq(motorAgentSessionMessages.sessionId, session.id);
+    const rows = await db.select({
+      id: motorAgentSessionMessages.id,
+      role: motorAgentSessionMessages.role,
+      text: motorAgentSessionMessages.content,
+      sequenceNumber: motorAgentSessionMessages.sequenceNumber,
+      occurredAt: motorAgentSessionMessages.occurredAt,
+    }).from(motorAgentSessionMessages).where(where)
+      .orderBy(desc(motorAgentSessionMessages.sequenceNumber), desc(motorAgentSessionMessages.id))
+      .limit(pageSize + 1);
+    return makeMessagesPage(rows, pageSize);
+  }
+
+  private async paginaMensagensAnalista(
+    db: Awaited<ReturnType<GerenteAgentesService['dbDoMotor']>>,
+    session: { id: number; sessionKey: string },
+    options: SessionMessagesQuery,
+  ) {
+    const pageSize = normalizePageSize(options.pageSize);
+    const cursor = decodeCursor(options.cursor);
+    const where = cursor
+      ? and(eq(analystTaskSessionMessages.sessionId, session.id), or(
+        lt(analystTaskSessionMessages.sequenceNumber, cursor.sequenceNumber),
+        and(eq(analystTaskSessionMessages.sequenceNumber, cursor.sequenceNumber), lt(analystTaskSessionMessages.id, cursor.id)),
+      ))
+      : eq(analystTaskSessionMessages.sessionId, session.id);
+    const rows = await db.select({
+      id: analystTaskSessionMessages.id,
+      role: analystTaskSessionMessages.role,
+      text: analystTaskSessionMessages.content,
+      sequenceNumber: analystTaskSessionMessages.sequenceNumber,
+      occurredAt: analystTaskSessionMessages.occurredAt,
+    }).from(analystTaskSessionMessages).where(where)
+      .orderBy(desc(analystTaskSessionMessages.sequenceNumber), desc(analystTaskSessionMessages.id))
+      .limit(pageSize + 1);
+    return makeMessagesPage(rows, pageSize);
   }
 
   /**

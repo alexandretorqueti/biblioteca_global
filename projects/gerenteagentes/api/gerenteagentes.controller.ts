@@ -259,16 +259,30 @@ export class GerenteAgentesController {
     @CurrentProject() projeto: ProjetoResumo,
     @Param('id', ParseIntPipe) id: number,
     @Param('seq', ParseIntPipe) seq: number,
+    @Query('sessionKey') sessionKey?: string,
+    @Query('cursor') cursor?: string,
+    @Query('pageSize') pageSize?: string,
   ) {
-    return this.service.sessaoSubtarefa(projeto, id, seq);
+    return this.service.sessaoSubtarefa(projeto, id, seq, {
+      sessionKey,
+      cursor,
+      pageSize: pageSize ? Number(pageSize) : undefined,
+    });
   }
 
   @Get('tarefas/:id/sessoes-analista')
   visualizarSessoesAnalistaTarefa(
     @CurrentProject() projeto: ProjetoResumo,
     @Param('id', ParseIntPipe) id: number,
+    @Query('sessionKey') sessionKey?: string,
+    @Query('cursor') cursor?: string,
+    @Query('pageSize') pageSize?: string,
   ) {
-    return this.service.sessoesAnalistaTarefa(projeto, id);
+    return this.service.sessoesAnalistaTarefa(projeto, id, {
+      sessionKey,
+      cursor,
+      pageSize: pageSize ? Number(pageSize) : undefined,
+    });
   }
 
   @Get('tarefas/:id/motor-detail')
