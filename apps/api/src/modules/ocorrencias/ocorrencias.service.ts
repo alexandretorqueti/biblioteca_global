@@ -21,6 +21,7 @@
  */
 import {
   BadRequestException,
+  ConflictException,
   Inject,
   Injectable,
   NotFoundException,
@@ -159,6 +160,14 @@ export class OcorrenciasService {
     if (!encomenda) {
       throw new BadRequestException(
         "Encomenda não encontrada ou não pertence a este condomínio",
+      )
+    }
+
+    // Entregue e cancelada são estados terminais. A ocorrência só pode
+    // cancelar uma encomenda ainda em fluxo operacional.
+    if (encomenda.status !== "pendente" && encomenda.status !== "pronta_retirada") {
+      throw new ConflictException(
+        "A encomenda já está entregue ou cancelada e não aceita novas ocorrências",
       )
     }
 
