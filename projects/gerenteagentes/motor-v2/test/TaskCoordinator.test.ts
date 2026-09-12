@@ -902,6 +902,54 @@ describe('TaskCoordinator', () => {
   // estar na base e a tarefa virava deployed. Bloqueio ativo agora impede a
   // reconciliação e a tarefa fica pendente para resolução humana.
   describe('reconciliação de tarefas órfãs', () => {
+    it('usa tarefas.id numérico nas consultas relacionais, não tarefas.external_id', async () => {
+      // Contrato de identificadores: tarefas.id é a FK numérica referenciada
+      // por subtarefas e bloqueios; tarefas.external_id é o identificador
+      // público textual (por exemplo, `task-p2-819`). Logs podem expor o
+      // external_id, mas nenhum slug pode chegar a uma coluna FK numérica.
+      vi.mocked(db.query).mockResolvedValueOnce({
+        rows: [{
+          id: 819,
+          external_id: 'task-p2-819',
+          status: 'ready',
+          titulo: 'Tarefa órfã',
+          descricao: '',
+          chat_id: '',
+          agent_id: 'agent',
+          repo_path: '/repo',
+          build_command: 'npm run build',
+          unit_test_command: 'npm test',
+          max_rework: 3,
+          hard_timeout_ms: 1000,
+          project_slug: 'project',
+        }],
+        affectedRows: 0,
+        insertId: 0,
+      }).mockResolvedValueOnce({
+        rows: [{
+          id: 9001,
+          seq: 1,
+          workspace_commit_sha: 'abc123',
+          workspace_status: 'integrated',
+          completion_kind: null,
+          status: 'verified',
+          resultado: 'entrega validada',
+        }],
+        affectedRows: 0,
+        insertId: 0,
+      })
+
+      const internals = coordinator as unknown as { reconcileOrphanedReadyTasks: () => Promise<void> }
+      await internals.reconcileOrphanedReadyTasks()
+
+      const subtaskQuery = vi.mocked(db.query).mock.calls.find(([sql]) =>
+        String(sql).includes('FROM subtarefas WHERE tarefa_id = ?'))
+      expect(subtaskQuery).toBeDefined()
+      expect(subtaskQuery?.[1]).toEqual([819])
+      expect(typeof subtaskQuery?.[1]?.[0]).toBe('number')
+      expect(subtaskQuery?.[1]).not.toContain('task-p2-819')
+    })
+
     it('não reconcilia tarefa com bloqueio ativo (conflito de promoção fica pendente para humano)', async () => {
       const internals = coordinator as unknown as { reconcileOrphanedReadyTasks: () => Promise<void> }
       await internals.reconcileOrphanedReadyTasks()
@@ -913,6 +961,22 @@ describe('TaskCoordinator', () => {
   })
 
   describe('saveTaskTransition fail', () => {
+    it('resolve task-p2-819 antes de persistir systemic_failure e preserva o erro original', async () => {
+      const internals = coordinator as unknown as {
+        persistTaskBlock: (taskId: string, subtaskId: number | null, reason: string, command: string, excerpt: string) => Promise<void>
+      }
+      const originalError = "Truncated incorrect DOUBLE value: 'task-p2-819'"
+
+      await internals.persistTaskBlock('task-p2-819', null, 'systemic_failure', 'motor-v2:db', originalError)
+
+      const insert = vi.mocked(db.query).mock.calls.find(([sql]) => String(sql).includes('INSERT INTO bloqueios'))
+      expect(insert).toBeDefined()
+      expect(String(insert?.[0])).toContain('SELECT t.id, NULL')
+      expect(String(insert?.[0])).toContain('WHERE t.external_id = ? OR t.id = CAST(? AS UNSIGNED)')
+      expect(insert?.[1]).toEqual(['systemic_failure', 'motor-v2:db', originalError, 'task-p2-819', 'task-p2-819'])
+      expect(String(insert?.[0])).not.toContain('VALUES (\'task-p2-819\'')
+    })
+
     it('com skipBlocker não duplica o registro de bloqueio; sem skipBlocker registra', async () => {
       const internals = coordinator as unknown as {
         saveTaskTransition: (task: unknown, transition: string, patch?: Record<string, unknown>, options?: { skipBlocker?: boolean }) => Promise<void>
