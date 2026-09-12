@@ -1419,7 +1419,6 @@ export default function TaskMonitorScreen(): ReactNode {
           carregando={loading}
           onStartTask={(id) => void iniciarTarefaId(id)}
           onPauseTask={(id) => void pausarTarefaId(id)}
-          onResumeTask={(id) => void retomarTarefaId(id)}
         />
       </Box>
 
