@@ -50,7 +50,6 @@ import {
   TASK_STATUS_FINAIS as _TASK_STATUS_FINAIS,
   TASK_STATUS_STARTABLE as _TASK_STATUS_STARTABLE,
   TASK_STATUS_EXECUTING as _TASK_STATUS_EXECUTING,
-  TASK_STATUS_OPTIONS,
   SUBTASK_STATUS_OPTIONS,
   taskStatusColor,
   taskStatusLabel,
@@ -70,6 +69,14 @@ interface Tarefa {
   updatedAt?: string
   createdAt?: string
   subtaskCount?: number
+}
+
+/** Campos que podem ser alterados manualmente; o status é derivado pelo motor. */
+interface TarefaEdicaoPayload {
+  titulo: string
+  descricao: string | null
+  tipo: string
+  dependsOnTaskId: number | null
 }
 
 interface TarefaChatMessage {
@@ -856,12 +863,6 @@ export default function TaskMonitorScreen(): ReactNode {
         ],
       },
       {
-        name: "status",
-        label: "Status",
-        type: "select",
-        options: TASK_STATUS_OPTIONS,
-      },
-      {
         name: "dependsOnTaskId",
         label: "Depende da tarefa",
         type: "multipleChoice",
@@ -882,11 +883,10 @@ export default function TaskMonitorScreen(): ReactNode {
       setEditLoading(true)
       setEditError(null)
       try {
-        const body: Record<string, unknown> = {
+        const body: TarefaEdicaoPayload = {
           titulo: String(values.titulo ?? "").trim(),
           descricao: values.descricao ? String(values.descricao).trim() : null,
           tipo: values.tipo ? String(values.tipo) : "desenvolvimento",
-          status: values.status ? String(values.status) : undefined,
           dependsOnTaskId:
             values.dependsOnTaskId !== "" && values.dependsOnTaskId != null
               ? Number(values.dependsOnTaskId)
@@ -1211,12 +1211,11 @@ export default function TaskMonitorScreen(): ReactNode {
   const podeRetomar = isPaused
 
   const editInitialValues = useMemo<DynamicFormValues>(() => {
-    if (!tarefaSelecionada) return { titulo: "", descricao: "", tipo: "desenvolvimento", status: "draft", dependsOnTaskId: "" }
+    if (!tarefaSelecionada) return { titulo: "", descricao: "", tipo: "desenvolvimento", dependsOnTaskId: "" }
     return {
       titulo: tarefaSelecionada.titulo,
       descricao: tarefaSelecionada.descricao ?? "",
       tipo: tarefaSelecionada.tipo ?? "desenvolvimento",
-      status: tarefaSelecionada.status ?? "draft",
       dependsOnTaskId: tarefaSelecionada.dependsOnTaskId ?? "",
     }
   }, [tarefaSelecionada])

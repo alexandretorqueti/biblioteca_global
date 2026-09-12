@@ -165,6 +165,7 @@ describe("TaskMonitorScreen — ST-1 (botão editar + diálogo)", () => {
     // O campo título está preenchido com o valor atual
     const tituloInput = within(dialog).getByLabelText(/Título/)
     expect(tituloInput).toHaveValue("Tarefa Edit")
+    expect(within(dialog).queryByLabelText(/^Status$/)).not.toBeInTheDocument()
   })
 
   it("submete PUT /tarefas/:id com sucesso — fecha o diálogo", async () => {
@@ -223,6 +224,7 @@ describe("TaskMonitorScreen — ST-1 (botão editar + diálogo)", () => {
     expect(putSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         titulo: "Tarefa Atualizada",
+        status: undefined,
       }),
     )
   })

@@ -55,6 +55,20 @@ describe("política de recuperação de sessão", () => {
     }, "Session failed")).toBe(true)
   })
 
+  it("promove o modelo quando a sessão informa modelo indisponível", () => {
+    expect(shouldEscalateAnalysisContextFailure({
+      code: "SESSION_FAILED",
+      message: "Modelo indisponível: alibaba/qwen3.7-plus — [SESSION_FAILED] Session failed",
+      sessionKey: "dev-qwen3.7-plus-task-p2-816-s1033",
+      runId: "ec5dc24a-06d7-47ce-aab0-f51c8eefb197",
+      occurredAt: "2026-09-12T01:02:13.409Z",
+      scope: "session",
+      classification: "transient",
+      classificationReason: "retryable",
+      fingerprint: "SESSION_FAILED:Modelo indisponível",
+    }, "Modelo indisponível: alibaba/qwen3.7-plus")).toBe(true)
+  })
+
   it("não troca de modelo quando a infraestrutura compartilhada caiu", () => {
     expect(shouldEscalateAnalysisContextFailure({
       code: "GATEWAY_DOWN", message: "Console indisponível", sessionKey: "analysis-qwen-task-812",
