@@ -43,7 +43,7 @@ import { RealtimeClient, type RealtimeServerMessage } from "@biblioteca-global/a
 import type { DynamicField, DynamicFormValues } from "@biblioteca-global/ui"
 import { useApi } from "../../../apps/web/src/hooks/useApi"
 import TarefaForm, { type TarefaFormValues } from "./TarefaForm"
-import TaskFlowMap, { type MotorActivity, type FiltrosMapa } from "./TaskFlowMap"
+import TaskFlowMap, { recoveryEligibilityLabel, RecoveryEligibilityTooltipContent, type MotorActivity, type FiltrosMapa, type RecoveryEligibility } from "./TaskFlowMap"
 import { resolveRealtimeUrl, resolveApiBaseUrl } from "../../../apps/web/src/api/client"
 import {
   ALL_TASK_STATUSES,
@@ -70,35 +70,6 @@ interface Tarefa {
   createdAt?: string
   subtaskCount?: number
   recoveryEligibility?: RecoveryEligibility | null
-}
-
-type RecoveryEligibilityState =
-  | "eligible"
-  | "cooldown"
-  | "monitor_correcting"
-  | "awaiting_user"
-  | "max_retries"
-  | "promotion_blocked"
-
-interface RecoveryEvidence {
-  id?: number
-  subtarefaId?: number | null
-  reason?: string
-  command?: string
-  excerpt?: string
-  blockedAt?: string | null
-}
-
-interface RecoveryEligibility {
-  state: RecoveryEligibilityState
-  label?: string
-  reason?: string
-  evidence?: RecoveryEvidence | null
-  cooldown?: { secondsRemaining?: number; seconds?: number } | null
-  attempts?: { resolvedLast24h?: number; max?: number } | null
-  lease?: { executionId?: string; ownerId?: string; resourceKey?: string; expiresAt?: string } | null
-  pendingQuestion?: { messageId?: number; askedAt?: string; text?: string } | null
-  promotionBlocker?: RecoveryEvidence | null
 }
 
 /** Campos que podem ser alterados manualmente; o status é derivado pelo motor. */
@@ -1330,41 +1301,9 @@ export default function TaskMonitorScreen(): ReactNode {
     .test(detail?.task?.blockInfo?.excerpt ?? "")
 
   const recoveryEligibility = detail?.task?.recoveryEligibility ?? tarefaSelecionada?.recoveryEligibility ?? null
-  const recoveryLabels: Record<RecoveryEligibilityState, string> = {
-    eligible: "Elegível para correção automática",
-    cooldown: recoveryEligibility?.label ?? "Em carência",
-    monitor_correcting: "Monitor corrigindo",
-    awaiting_user: "Aguardando sua resposta",
-    max_retries: "Limite de recuperações atingido",
-    promotion_blocked: "Não elegível: bloqueio de promoção",
-  }
-
-  const renderRecoveryFact = (label: string, value: unknown) => {
-    if (value == null || value === "") return null
-    const safeValue = String(value)
-      .replace(/(authorization\s*:\s*bearer\s+)[^\s,;]+/gi, "$1[redigido]")
-      .replace(/((?:token|password|passwd|secret|api[_-]?key)\s*[=:]\s*)[^\s,;]+/gi, "$1[redigido]")
-    return <Typography variant="caption" component="div"><b>{label}:</b> {safeValue}</Typography>
-  }
-
-  const recoveryTooltip = recoveryEligibility ? (
-    <Box sx={{ maxWidth: { xs: 280, sm: 420 }, overflowWrap: "anywhere" }}>
-      <Typography variant="body2" sx={{ fontWeight: 700, mb: 0.5 }}>{recoveryLabels[recoveryEligibility.state]}</Typography>
-      {renderRecoveryFact("Motivo", recoveryEligibility.reason)}
-      {renderRecoveryFact("Motivo do bloqueio", recoveryEligibility.evidence?.reason)}
-      {renderRecoveryFact("Comando", recoveryEligibility.evidence?.command)}
-      {renderRecoveryFact("Evidência", recoveryEligibility.evidence?.excerpt)}
-      {renderRecoveryFact("Data do bloqueio", recoveryEligibility.evidence?.blockedAt ? new Date(recoveryEligibility.evidence.blockedAt).toLocaleString("pt-BR") : null)}
-      {renderRecoveryFact("Carência", recoveryEligibility.cooldown ? `${recoveryEligibility.cooldown.secondsRemaining ?? 0}s restantes (de ${recoveryEligibility.cooldown.seconds ?? 0}s)` : null)}
-      {renderRecoveryFact("Tentativas", recoveryEligibility.attempts ? `${recoveryEligibility.attempts.resolvedLast24h ?? 0} de ${recoveryEligibility.attempts.max ?? 0}` : null)}
-      {renderRecoveryFact("Estado do Monitor", recoveryEligibility.lease ? `corrigindo${recoveryEligibility.lease.expiresAt ? ` (expira em ${new Date(recoveryEligibility.lease.expiresAt).toLocaleString("pt-BR")})` : ""}` : null)}
-      {renderRecoveryFact("Pergunta pendente", recoveryEligibility.pendingQuestion?.text ?? (recoveryEligibility.pendingQuestion ? "aguardando resposta" : null))}
-      {renderRecoveryFact("Pergunta feita em", recoveryEligibility.pendingQuestion?.askedAt ? new Date(recoveryEligibility.pendingQuestion.askedAt).toLocaleString("pt-BR") : null)}
-      {renderRecoveryFact("Bloqueio de promoção", recoveryEligibility.promotionBlocker?.reason)}
-      {renderRecoveryFact("Comando de promoção", recoveryEligibility.promotionBlocker?.command)}
-      {renderRecoveryFact("Evidência da promoção", recoveryEligibility.promotionBlocker?.excerpt)}
-    </Box>
-  ) : null
+  const recoveryTooltip = recoveryEligibility
+    ? <RecoveryEligibilityTooltipContent eligibility={recoveryEligibility} />
+    : null
 
   const editInitialValues = useMemo<DynamicFormValues>(() => {
     if (!tarefaSelecionada) return { titulo: "", descricao: "", tipo: "desenvolvimento", dependsOnTaskId: "" }
@@ -1662,8 +1601,8 @@ export default function TaskMonitorScreen(): ReactNode {
                     tabIndex={0}
                     size="small"
                     color={recoveryEligibility.state === "eligible" ? "success" : recoveryEligibility.state === "monitor_correcting" ? "info" : recoveryEligibility.state === "promotion_blocked" || recoveryEligibility.state === "max_retries" ? "error" : "warning"}
-                    label={recoveryLabels[recoveryEligibility.state]}
-                    aria-label={`Elegibilidade de recuperação: ${recoveryLabels[recoveryEligibility.state]}`}
+                    label={recoveryEligibilityLabel(recoveryEligibility)}
+                    aria-label={`Elegibilidade de recuperação: ${recoveryEligibilityLabel(recoveryEligibility)}`}
                     data-testid="recovery-eligibility-chip"
                     sx={{ maxWidth: "100%", height: "auto", "& .MuiChip-label": { whiteSpace: "normal", overflowWrap: "anywhere", py: 0.5 } }}
                   />
