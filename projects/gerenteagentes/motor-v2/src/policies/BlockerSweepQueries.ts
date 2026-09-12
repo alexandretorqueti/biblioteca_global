@@ -97,6 +97,34 @@ export function orphanBlockedSubtaskSql(): string {
 }
 
 /**
+ * Bloqueio sistêmico gravado somente na tarefa (`subtarefa_id IS NULL`).
+ *
+ * Alguns caminhos antigos espelharam a falha na tarefa sem criar o bloqueio
+ * correspondente na subtarefa. Associamos esse fato à subtarefa bloqueada que
+ * não possui bloqueio próprio; promoção e entrega continuam explicitamente
+ * excluídas pela política de bloqueadores.
+ */
+export function taskLevelSystemBlockedSubtaskSql(): string {
+  return (
+    "SELECT b.id AS block_id, b.block_reason, COALESCE(b.block_command, '') AS block_command, " +
+    "COALESCE(b.block_excerpt, '') AS block_excerpt, s.id AS subtarefa_id, s.seq, t.id AS tarefa_id, t.external_id, " +
+    "0 AS orphan " +
+    "FROM bloqueios b INNER JOIN tarefas t ON t.id = b.tarefa_id " +
+    "INNER JOIN subtarefas s ON s.tarefa_id = t.id AND s.status = 'blocked' " +
+    "LEFT JOIN task_runtime_facts f ON f.tarefa_id = t.id " +
+    "WHERE b.resolved_at IS NULL AND b.subtarefa_id IS NULL " +
+    `AND b.block_reason IN ${SYSTEM_BLOCK_REASON_SQL_LIST} ` +
+    `AND b.blocked_at < DATE_SUB(NOW(), INTERVAL ${SYSTEM_BLOCK_COOLDOWN_SECONDS} SECOND) ` +
+    "AND f.terminal_status IS NULL AND f.integration_confirmed_at IS NULL " +
+    `AND NOT ${tarefaDeployadaSql("t")} ` +
+    `AND NOT ${promotionBlockerSqlFilter("b")} ` +
+    "AND NOT EXISTS (SELECT 1 FROM bloqueios own WHERE own.subtarefa_id = s.id AND own.resolved_at IS NULL) " +
+    "AND NOT EXISTS (SELECT 1 FROM motor_active_executions e WHERE e.subtarefa_id = s.id AND e.expires_at > NOW()) " +
+    "ORDER BY b.blocked_at ASC LIMIT 5"
+  )
+}
+
+/**
  * Bloqueios espelhados no nível da TAREFA (`subtarefa_id` nulo) com causa de
  * sistema/ambiente. Eles nascem junto do bloqueio da subtarefa; depois da
  * retomada automática continuam abertos e mantêm a tarefa fora da seleção —

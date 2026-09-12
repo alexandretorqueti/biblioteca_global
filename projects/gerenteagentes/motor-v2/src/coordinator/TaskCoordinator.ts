@@ -43,6 +43,7 @@ import {
 } from "../policies/SystemBlockers.js"
 import {
   orphanBlockedSubtaskSql,
+  taskLevelSystemBlockedSubtaskSql,
   orphanTaskLevelBlockerSql,
   resolveTaskLevelSystemBlockersSql,
   staleBlockerSweepSql,
@@ -515,6 +516,10 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
 
     const { rows: orphans } = await this.db.query(orphanBlockedSubtaskSql())
     candidates.push(...orphans)
+
+    // Compatibilidade com bloqueios legados gravados somente na tarefa.
+    const { rows: taskLevelBlocks } = await this.db.query(taskLevelSystemBlockedSubtaskSql())
+    candidates.push(...taskLevelBlocks)
 
     for (const row of candidates) {
       const subtaskId = Number(row.subtarefa_id)
