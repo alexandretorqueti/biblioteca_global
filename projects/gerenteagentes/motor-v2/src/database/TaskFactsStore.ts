@@ -24,11 +24,14 @@ export class TaskFactsStore {
   async recoveryEligibility(taskId: string, now = new Date()): Promise<RecoveryEligibility | null> {
     const lookup = taskLookup(taskId)
     const { rows } = await this.db.query(
-      "SELECT t.id, COALESCE(f.terminal_status, t.status) AS derived_status FROM tarefas t LEFT JOIN task_runtime_facts f ON f.tarefa_id=t.id WHERE " + lookup.sql + " LIMIT 1", lookup.params,
+      "SELECT t.id FROM tarefas t WHERE " + lookup.sql + " LIMIT 1", lookup.params,
     )
     const task = rows[0]
     if (!task) return null
     const taskIdNumber = Number(task.id)
+    // `tarefas.status` foi removida: a mesma projeção usada pelo restante do
+    // Motor é a única fonte válida para decidir se o selo deve aparecer.
+    const derivedStatus = await this.derive(taskId)
     const { rows: blockers } = await this.db.query("SELECT b.id, b.subtarefa_id, b.block_reason, b.block_command, b.block_excerpt, COALESCE(b.blocked_at, s.updated_at) AS blocked_at, (b.id IS NULL) AS orphan FROM bloqueios b LEFT JOIN subtarefas s ON s.id=b.subtarefa_id WHERE b.tarefa_id=? AND b.resolved_at IS NULL ORDER BY b.blocked_at ASC, b.id ASC", [taskIdNumber])
     const { rows: orphans } = await this.db.query("SELECT NULL AS id, s.id AS subtarefa_id, '' AS block_reason, '' AS block_command, '' AS block_excerpt, s.updated_at AS blocked_at, 1 AS orphan FROM subtarefas s WHERE s.tarefa_id=? AND s.status='blocked' AND NOT EXISTS (SELECT 1 FROM bloqueios b WHERE b.tarefa_id=? AND b.resolved_at IS NULL)", [taskIdNumber, taskIdNumber])
     const { rows: retries } = await this.db.query("SELECT COUNT(*) AS total FROM bloqueios WHERE subtarefa_id IN (SELECT id FROM subtarefas WHERE tarefa_id=?) AND block_reason IN ('blocked_environment', 'systemic_failure', 'model_chain_exhausted') AND resolved_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)", [taskIdNumber])
@@ -47,7 +50,7 @@ export class TaskFactsStore {
     const user = chats.find((chat) => chat.role === "user")
     const pendingQuestion = monitor && (!user || Number(user.id) < Number(monitor.id)) ? { messageId: Number(monitor.id), askedAt: String(monitor.created_at), text: String(monitor.texto ?? "") } : null
     return verifyRecoveryEligibility({
-      status: String(task.derived_status ?? ""),
+      status: derivedStatus,
       blockers: [...blockers, ...orphans].map((row) => ({ id: row.id == null ? undefined : Number(row.id), subtarefaId: row.subtarefa_id == null ? null : Number(row.subtarefa_id), reason: String(row.block_reason ?? ""), command: String(row.block_command ?? ""), excerpt: String(row.block_excerpt ?? ""), blockedAt: row.blocked_at == null ? null : String(row.blocked_at), orphan: Number(row.orphan ?? 0) === 1 })),
       resolvedSystemBlockCount24h: Number(retries[0]?.total ?? 0),
       activeLease: leases[0] ? { executionId: String(leases[0].execution_id), ownerId: String(leases[0].owner_id), resourceKey: String(leases[0].resource_key), expiresAt: String(leases[0].expires_at) } : null,
