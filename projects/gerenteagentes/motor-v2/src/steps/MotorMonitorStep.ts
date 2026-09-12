@@ -44,7 +44,8 @@ const DEFAULT_CONFIG: MotorMonitorStepConfig = {
   monitorModel: 'openai/gpt-5.6-terra',
   monitorSessionKey: 'agent:programador-senior:monitor',
   maxWaitSeconds: 600,
-  maxAttempts: 60,
+  // 120 × 5s: o Monitor pode investigar sem ser cancelado prematuramente.
+  maxAttempts: 120,
   heartbeatIntervalMs: 5000,
 }
 

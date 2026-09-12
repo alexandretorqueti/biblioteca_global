@@ -227,6 +227,8 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
   /** Subtarefas que já esgotaram as retomadas automáticas (evita log repetido). */
   private systemBlockRetryWarned = new Set<number>()
   private monitorRecoveryInFlight = new Set<number>()
+  /** O Monitor é exclusivo; evita que várias candidatas disputem o mesmo lease. */
+  private monitorRecoveryActive = false
 
   constructor(
     db: Db,
@@ -564,8 +566,9 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
   /** Não bloqueia o pump enquanto o Monitor trabalha ou aguarda o usuário. */
   private scheduleMonitorRecovery(row: Record<string, unknown>, orphan: boolean): void {
     const subtaskId = Number(row.subtarefa_id)
-    if (this.monitorRecoveryInFlight.has(subtaskId)) return
+    if (this.monitorRecoveryActive || this.monitorRecoveryInFlight.has(subtaskId)) return
     this.monitorRecoveryInFlight.add(subtaskId)
+    this.monitorRecoveryActive = true
     void (async () => {
       const taskId = String(row.external_id ?? row.tarefa_id)
       const latest = await this.db.query(
@@ -593,7 +596,10 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
         await this.db.query("INSERT INTO tarefa_chats (tarefa_id,role,texto,created_at) VALUES (?, 'monitor', ?, NOW())", [Number(row.tarefa_id), `Monitor não conseguiu concluir a recuperação: ${result.reason}`])
       }
     })().catch((error: unknown) => this.logger.error("Falha na recuperação pelo Monitor: " + describeError(error), { subtaskId }))
-      .finally(() => this.monitorRecoveryInFlight.delete(subtaskId))
+      .finally(() => {
+        this.monitorRecoveryInFlight.delete(subtaskId)
+        this.monitorRecoveryActive = false
+      })
   }
 
   /**

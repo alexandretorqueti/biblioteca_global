@@ -133,6 +133,27 @@ export class ResourceLeaseService {
 
       return result
     } catch (error) {
+      // Duas transações podem observar o recurso ausente e tentar inseri-lo
+      // simultaneamente. A chave única escolhe uma vencedora; a perdedora deve
+      // entrar na fila, nunca transformar essa disputa normal em falha.
+      if (isDuplicateResourceKey(error)) {
+        try {
+          const queueResult = await this.db.query(
+            `INSERT INTO execution_resource_queue
+             (resource_key, execution_id, task_id, priority, requested_at)
+             VALUES (?, ?, ?, 0, NOW())`,
+            [resourceKey, executionId, ownerId],
+          )
+          const { rows } = await this.db.query(
+            `SELECT COUNT(*) AS position FROM execution_resource_queue
+             WHERE resource_key = ? AND requested_at <= NOW()`,
+            [resourceKey],
+          )
+          return { kind: 'waiting', waitId: queueResult.insertId, position: Number(rows[0]?.position ?? 1) }
+        } catch (queueError) {
+          return { kind: 'denied', reason: queueError instanceof Error ? queueError.message : String(queueError) }
+        }
+      }
       return {
         kind: 'denied',
         reason: error instanceof Error ? error.message : String(error),
@@ -316,4 +337,9 @@ export class ResourceLeaseService {
       ownerId: String(row.owner_id),
     }
   }
+}
+
+function isDuplicateResourceKey(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /duplicate entry .*execution_resources\.resource_key/i.test(message)
 }
