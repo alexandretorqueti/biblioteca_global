@@ -152,8 +152,13 @@ interface SessionMessagesPage {
 }
 
 interface SubtaskSessionAttempt {
-  id?: number
+  id: number
+  model: string
   sessionKey: string
+  status: string
+  openedAt: string
+  closedAt: string | null
+  closeReason: string | null
   messages: SessionMessagesPage
   text?: string
 }
