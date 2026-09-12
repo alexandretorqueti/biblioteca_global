@@ -1,12 +1,12 @@
 # Mapeamento — sessão do analista no acompanhamento da tarefa
 
-## Escopo e conclusão do levantamento
+## Escopo e comportamento integrado
 
-Este documento descreve o fluxo existente sem alterar comportamento. A tela
-`screens/TaskMonitorScreen.tsx` hoje expõe somente a sessão do programador por
-subtarefa. A sessão do analista acontece antes de as subtarefas serem criadas
-e, portanto, não possui `subtarefa_id`; ela não é persistida em
-`motor_agent_sessions` nem em `motor_agent_session_messages`.
+Este documento registra o contrato integrado para a visualização do histórico
+das sessões do desenvolvedor e do analista. A implementação está em
+`api/gerenteagentes.controller.ts`, `api/gerenteagentes.service.ts` e
+`screens/TaskMonitorScreen.tsx`. O histórico é persistido no banco e a tela
+carrega uma página por tentativa, sem consultar o Console em tempo real.
 
 ## Fluxo atual por subtarefa
 
@@ -43,9 +43,9 @@ analista. Cada run é aguardado pelo mesmo driver. Resposta inválida recebe um
 retry corretivo na mesma sessão; falha persistente, modelo indisponível ou
 plano rejeitado avança para o próximo modelo. As tentativas seguintes usam
 `modelIndex` na chave da sessão; uma nova análise após clarificação também é
-uma execução independente. O transcript do analista é mantido remoto apenas:
-o `finally` registra que a sessão foi preservada, mas não chama
-`getSessionHistory`, não insere `motor_agent_sessions` e não fecha a sessão.
+uma execução independente. O transcript do analista é persistido em
+`analyst_task_sessions` e `analyst_task_session_messages`, permitindo a
+consulta mesmo quando a sessão operacional remota já foi apagada.
 
 Origem confiável do modelo: `model.model`, vindo de `chainFor(input,
 "analysis")`, que é carregada da seleção do projeto e normalizada como
@@ -61,31 +61,21 @@ DESC` como desempate). Essas ordens de tentativas são preservadas, mantendo as
 mensagens de cada sessão juntas; somente as mensagens dentro de cada tentativa
 passam a ser descendentes.
 
-## Pontos de captura e persistência propostos
+## Pontos de captura e persistência
 
-Sem mudar o fluxo de execução:
-
-- imediatamente após `createSession` na fase `analysis`: inserir um registro
-  de sessão ligado à tarefa, com `agent_id`, `model`, `session_key`,
-  `runtime_session_id`, `phase='analysis'`, `model_index`, `generation`,
-  `opened_at` e status;
-- no `finally` da análise: chamar `getSessionHistory` antes de qualquer
-  eventual limpeza remota e fazer upsert idempotente das mensagens por
-  `(session_id, message_key)`, depois registrar `closed_at`/`close_reason`;
-- em falha de criação/execução: persistir o estado/falha usando a mesma
-  sessão, relacionando-a à tarefa e, quando aplicável, ao `run_id`;
-- manter `motor_agent_sessions`/messages atuais para desenvolvimento por
-  subtarefa e acrescentar um escopo explícito de tarefa para o analista, em
-  vez de usar `subtarefa_id` nulo sem distinção.
+Sem mudar o fluxo de execução, o worker persiste as sessões e seus históricos
+em tabelas append-only. A sessão do desenvolvedor é ligada à subtarefa; a do
+analista é ligada diretamente à tarefa. As mensagens são idempotentes por
+sessão/chave e permanecem disponíveis após a limpeza da sessão remota.
 
 O armazenamento deve ser histórico (não sobrescrever sessões anteriores), com
 índices por `(tarefa_id, phase, opened_at)` e unicidade da `session_key`. A
 retenção local passa a ser a fonte da consulta após `DELETE /api/sessions` no
 Console.
 
-## Contratos a alterar
+## Contrato final da visualização
 
-### Paginação dos transcripts (contrato desta alteração)
+### Paginação dos transcripts
 
 A paginação é interna a cada tentativa. A resposta nunca pagina a coleção de
 tentativas: o endpoint continua retornando todos os registros persistidos e na
@@ -129,10 +119,11 @@ tentativas não recebe `cursor`, `offset`, `hasNextPage` nem limite.
 
 Na primeira resposta, o backend devolve todos os registros de tentativas e uma
 primeira página de mensagens para cada um. O frontend mantém esse conjunto e
-renderiza as tentativas na ordem existente, inserindo um separador visual entre
-blocos. Ao atingir o fim de um bloco, busca somente a próxima página daquele
-bloco e anexa as mensagens abaixo das já exibidas (preservando a ordem
-descendente no transcript).
+renderiza as tentativas na ordem existente. `TaskMonitorScreen` insere um
+separador visual entre blocos tanto em `session-separator` (desenvolvedor)
+quanto em `analyst-session-separator` (analista). Ao atingir o fim de um bloco,
+busca somente a próxima página daquele bloco e anexa as mensagens carregadas,
+preservando a ordem descendente no transcript.
 
 Para o desenvolvedor, a fonte continua sendo `motor_agent_sessions` e
 `motor_agent_session_messages`; para o analista, continua sendo
@@ -161,22 +152,35 @@ fechamento) e, quando o consumidor precisar de texto, montá-lo a partir das
 mensagens recebidas — não é um transcript completo implícito na primeira
 página.
 
-### Banco/schema
+### Artefatos reais
 
-Opção recomendada: ampliar `motor_agent_sessions` com `tarefa_id` obrigatório
-e `subtarefa_id` opcional, além de `phase`, `model_index` e `generation`, e
-alterar a FK de subtarefa para `ON DELETE SET NULL`. Isso preserva a mesma
-tabela/transcript, distingue análise de desenvolvimento e permite agrupar
-por tarefa sem criar uma segunda tabela. A migration e `schema.ts` devem
-manter a unicidade da chave e o cascade das mensagens.
+- Desenvolvimento: `schema.ts`/migração `0026_motor_session_continuity.sql`,
+  `motorAgentSessions` e `motorAgentSessionMessages`.
+- Analista: `schema.ts`/migração `0028_analyst_task_sessions.sql`,
+  `analystTaskSessions` e `analystTaskSessionMessages`.
+- Configuração: `api/motor-configuracoes.catalog.ts` e
+  `motor-v2/src/config/motor-configuracoes.catalog.ts` registram
+  `motor.session_history_page_size`, padrão 50 e limite 1–500. O service
+  resolve o valor persistido em `resolveSessionPageSize` e normaliza qualquer
+  `pageSize` solicitado.
+- Backend: `GerenteAgentesController` expõe
+  `GET /api/gerenteagentes/tarefas/:id/subtarefas/:seq/sessao` e
+  `GET /api/gerenteagentes/tarefas/:id/sessoes-analista`; os métodos
+  `sessaoSubtarefa`, `sessoesAnalistaTarefa`, `paginaMensagensMotor` e
+  `paginaMensagensAnalista` implementam o envelope e o cursor.
+- Frontend: `TaskMonitorScreen` usa `abrirSessaoSubtarefa`/
+  `abrirSessoesAnalista` para a primeira página e
+  `carregarMaisSessao`/`carregarMaisSessaoAnalista` no scroll infinito.
 
 ### Backend
 
-Adicionar uma rota protegida, paralela à rota existente:
+As rotas protegidas já integradas são:
 
-`GET /api/gerenteagentes/tarefas/:id/sessao-analista`
+`GET /api/gerenteagentes/tarefas/:id/subtarefas/:seq/sessao`
 
-Contrato sugerido:
+`GET /api/gerenteagentes/tarefas/:id/sessoes-analista`
+
+O envelope final de cada rota é:
 
 ```json
 {
@@ -210,12 +214,22 @@ definida acima; cada `messages` é uma página independente, ordenada por
 
 ### Frontend
 
-`TaskMonitorScreen` já possui estado/dialog e padrão de carregamento para a
-sessão por subtarefa. O ponto de integração é acrescentar uma ação no cabeçalho
-da tarefa (ou na área de atividade) que chama a nova rota e renderiza cada
-sessão em sequência, exibindo o modelo no início de cada bloco. O contrato
-deve continuar permitindo `available=false` e transcript vazio, preservando o
-comportamento atual quando não há sessão persistida.
+`TaskMonitorScreen` possui os dois botões de visualização, dialogs separados e
+renderiza cada tentativa em sequência, exibindo o modelo no início do bloco do
+analista. O contrato mantém `available=false` e transcript vazio quando não há
+sessão persistida.
+
+## Validação
+
+`npm test` passou na suíte do Motor-v2: 64 arquivos e 562 testes. Ela cobre os
+testes de configuração do Motor, inclusive o catálogo e o limite de página.
+O typecheck raiz não pôde ser executado porque o workspace não tem `tsc`
+instalado (`sh: 1: tsc: not found`). Também não há script/configuração de
+runner no pacote raiz para executar `api/__tests__` e
+`screens/__tests__`; o único `vitest.config.ts` encontrado inclui apenas
+`motor-v2/test/**/*.test.ts`. Esses bloqueios ambientais devem ser resolvidos
+no workspace que fornece as dependências Nest/React antes de declarar essas
+duas suítes validadas.
 
 ## Limites identificados
 

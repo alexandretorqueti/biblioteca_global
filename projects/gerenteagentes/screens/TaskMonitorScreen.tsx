@@ -2009,8 +2009,9 @@ export default function TaskMonitorScreen(): ReactNode {
           )}
           {!analystSessionLoading && !analystSessionError && analystSessionData?.available && analystSessionData.sessions.length > 0 && (
             <Stack spacing={2} data-testid="analyst-session-list">
-              {analystSessionData.sessions.map((session) => (
+              {analystSessionData.sessions.map((session, sessionIndex) => (
                 <Paper key={session.sessionKey} variant="outlined" sx={{ p: 2 }} data-testid={`analyst-session-${session.executionOrder}`}>
+                  {sessionIndex > 0 && <Box sx={{ borderTop: 2, borderColor: "divider", mb: 2 }} data-testid="analyst-session-separator" />}
                   <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
                     <PsychologyRounded fontSize="small" color="primary" />
                     <Typography variant="subtitle2" fontWeight={700} data-testid={`analyst-session-model-${session.executionOrder}`}>
