@@ -18,6 +18,7 @@ export interface MotorFixInput {
 
 export type MotorFixResult =
   | { kind: 'success'; runId: string }
+  | { kind: 'awaiting_user'; runId: string; question: string }
   | { kind: 'waiting_resource'; resourceKey: ResourceKey; waitId: number; position: number }
   | { kind: 'failed'; reason: string }
   | { kind: 'timeout'; reason: string }
@@ -63,6 +64,19 @@ export class MotorMonitorStep {
   }
 
   async execute(input: MotorFixInput, context: ExecutionContext): Promise<MotorFixResult> {
+    return this.runMission(this.buildMission(input, context), context)
+  }
+
+  /** Retoma a mesma sessão do Monitor depois de uma resposta no chat da tarefa. */
+  async continueAfterUserReply(input: MotorFixInput, context: ExecutionContext, reply: string): Promise<MotorFixResult> {
+    return this.runMission(
+      `O responsável respondeu à sua pergunta sobre a tarefa ${input.taskId}, subtarefa ${input.subtaskId}:\n\n${reply}\n\n` +
+      "Continue a investigação. Se precisar de outra decisão, responda novamente com STATUS: AGUARDANDO_USUARIO e PERGUNTA:. Caso contrário, conclua no contrato de recuperação.",
+      context,
+    )
+  }
+
+  private async runMission(mission: string, context: ExecutionContext): Promise<MotorFixResult> {
     const resourceKey = RESOURCE_KEYS.motorMonitor()
 
     const acquireResult = await this.resourceLease.acquire(
@@ -81,7 +95,6 @@ export class MotorMonitorStep {
 
     try {
       const selection = await this.resolveSelection(context.projectSlug)
-      const mission = this.buildMission(input, context)
       const sendResult = await this.driver.sendMessage({
         agentId: selection.agentId,
         sessionKey: selection.sessionKey,
@@ -94,7 +107,9 @@ export class MotorMonitorStep {
       }
 
       const runId = sendResult.runId!
-      return await this.waitForCompletion(runId, lease.resourceKey, context.executionId, lease.fencingToken)
+      const result = await this.waitForCompletion(runId, lease.resourceKey, context.executionId, lease.fencingToken)
+      if (result.kind === 'awaiting_user') await this.persistQuestion(context.taskId, result.question)
+      return result
     } finally {
       await this.resourceLease.release(lease.resourceKey, context.executionId, lease.fencingToken)
     }
@@ -143,7 +158,11 @@ export class MotorMonitorStep {
       }
 
       const status = await this.driver.getRunStatus(runId)
-      if (status.status === 'completed') return { kind: 'success', runId }
+      if (status.status === 'completed') {
+        const question = questionFromMonitorReply(status.content)
+        if (question) return { kind: 'awaiting_user', runId, question }
+        return { kind: 'success', runId }
+      }
       if (status.status === 'failed') return { kind: 'failed', reason: 'Monitor falhou' }
 
       await this.sleep(this.config.heartbeatIntervalMs)
@@ -154,10 +173,28 @@ export class MotorMonitorStep {
   }
 
   private buildMission(input: MotorFixInput, context: ExecutionContext): string {
-    return `## Missão Motor Fix\n\n**Tarefa**: ${context.taskId}\n**Subtarefa**: ${input.subtaskId}\n\n### Problema\n${input.reason}\n\n### Evidência\n\`${input.evidence.command}\`\n\`\`\`\n${input.evidence.excerpt}\n\`\`\``
+    return `## Missão Motor Fix\n\n**Tarefa**: ${context.taskId}\n**Subtarefa**: ${input.subtaskId}\n\n### Problema\n${input.reason}\n\n### Evidência\n\`${input.evidence.command}\`\n\`\`\`\n${input.evidence.excerpt}\n\`\`\`\n\nSe precisar de uma decisão do responsável pela tarefa, não suponha a resposta. Encerre sua resposta exatamente com:\n\nSTATUS: AGUARDANDO_USUARIO\nPERGUNTA:\n<sua pergunta objetiva>\n\nCaso contrário, use o contrato normal de recuperação.`
+  }
+
+  /** Persiste a pergunta do Monitor no mesmo chat já exibido na tela da tarefa. */
+  private async persistQuestion(taskId: string, question: string): Promise<void> {
+    if (!this.config.db) throw new Error('DB não configurado para registrar a pergunta do Monitor')
+    await this.config.db.query(
+      "INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) " +
+      "SELECT id, 'monitor', ?, NOW() FROM tarefas WHERE external_id = ? OR id = CAST(? AS UNSIGNED) LIMIT 1",
+      [question.slice(0, 30_000), taskId, taskId],
+    )
   }
 
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms))
   }
+}
+
+/** Aceita somente uma solicitação explícita, evitando transformar relatórios em perguntas. */
+export function questionFromMonitorReply(content: string | undefined): string | null {
+  if (!content || !/^STATUS:\s*AGUARDANDO_USUARIO\s*$/mi.test(content)) return null
+  const match = content.match(/^PERGUNTA:\s*\n?([\s\S]*?)(?=\n\s*[A-Z_]+:|$)/mi)
+  const question = match?.[1]?.trim()
+  return question || null
 }

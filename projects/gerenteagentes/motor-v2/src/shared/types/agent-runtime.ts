@@ -15,6 +15,8 @@ export interface SendMessageResult {
 /** Resultado do status de um run */
 export interface RunStatusResult {
   status: 'pending' | 'running' | 'completed' | 'failed'
+  /** Resposta final do agente, quando o runtime a disponibiliza. */
+  content?: string
 }
 
 /** Parâmetros para enviar mensagem */

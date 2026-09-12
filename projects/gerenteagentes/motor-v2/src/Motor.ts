@@ -14,6 +14,8 @@ import { executionEventBus, type ExecutionActivityBroadcaster } from './events/E
 import { createLogger, describeError } from './shared/logger.js'
 import { getConfigNumber, getConfigString } from './config/MotorConfigReader.js'
 import { ConsoleAgentRuntimeDriver } from './runtime/ConsoleAgentRuntimeDriver.js'
+import { MonitorRuntimeAdapter } from './runtime/MonitorRuntimeAdapter.js'
+import { MotorMonitorStep } from './steps/MotorMonitorStep.js'
 import { PromotionConflictAnalyzer } from './promotion-conflicts/PromotionConflictAnalyzer.js'
 import { PromotionConflictEvidenceCollector } from './promotion-conflicts/PromotionConflictEvidenceCollector.js'
 import { PromotionConflictOrchestrator } from './promotion-conflicts/PromotionConflictOrchestrator.js'
@@ -93,9 +95,11 @@ export class Motor {
     })
     // maxWorkers e maxWorkersPerProject são lidos dinamicamente pelo TaskCoordinator
     // via getConfigNumber, permitindo alteração em runtime sem restart
+    const monitorStep = new MotorMonitorStep(new MonitorRuntimeAdapter(this.consoleDriver), this.resourceLease, { db: config.db })
     this.coordinator = new TaskCoordinator(config.db, config.repository, this.resourceLease, {
       maxWorkers: config.maxWorkers,
       maxWorkersPerProject: config.maxWorkersPerProject,
+      monitorStep,
     }, this.workerLauncher, undefined, this._waitManager, undefined, promotionConflictOrchestrator, promotionRetryOrchestrator, promotionGateRecoveryOrchestrator)
     this.api = new MotorAPI({ port: apiPort, coordinator: this.coordinator, db: config.db })
 

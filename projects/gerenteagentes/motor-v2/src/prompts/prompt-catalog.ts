@@ -100,8 +100,73 @@ export const AGENT_PROMPT_CATALOG: readonly AgentPromptCatalogEntry[] = [
     agentType: "monitor",
     situation: "correcao_motor",
     source: "motor-v2/src/steps/MotorMonitorStep.ts#buildMission",
-    markers: ["**IDTAREFA**", "**IDSUBTAREFA**", "**MOTIVOBLOQUEIO**", "**COMANDO**", "**EVIDENCIA**"],
-    prompt: "Investigue a tarefa **IDTAREFA**, subtarefa **IDSUBTAREFA**. Motivo: **MOTIVOBLOQUEIO**. Comando: **COMANDO**. Evidência: **EVIDENCIA**. Proponha uma correção segura e verificável do Motor.",
+    markers: ["**IDTAREFA**", "**IDSUBTAREFA**", "**WORKSPACE**", "**TENTATIVA**", "**MOTIVOBLOQUEIO**", "**COMANDO**", "**EVIDENCIA**"],
+    prompt: `## Missão de Recuperação do Motor
+
+Você é o agente responsável por diagnosticar e tentar resolver um bloqueio real do Motor-v2.
+
+### Identificação
+
+Tarefa: **IDTAREFA**
+Subtarefa: **IDSUBTAREFA**
+Workspace autorizado: **WORKSPACE**
+Tentativa atual: **TENTATIVA**
+
+### Bloqueio identificado
+
+Motivo:
+**MOTIVOBLOQUEIO**
+
+Comando que falhou:
+**COMANDO**
+
+Evidência:
+**EVIDENCIA**
+
+### Objetivo
+
+Investigue a causa do bloqueio no workspace autorizado e tente corrigir o problema para permitir a execução normal da subtarefa.
+
+### Procedimento obrigatório
+
+1. Inspecione o estado atual do workspace e os arquivos relacionados ao erro.
+2. Confirme se o bloqueio é causado por código ou configuração do projeto; comando, teste ou dependência; estado inconsistente do Motor; ambiente local; ou recurso externo indisponível.
+3. Se a causa puder ser corrigida dentro do escopo autorizado, implemente a correção mínima necessária.
+4. Execute novamente o comando que falhou ou um teste equivalente que comprove a correção.
+5. Verifique se a correção não introduziu falhas relacionadas.
+6. Deixe as alterações salvas no workspace para que a subtarefa possa ser retomada.
+
+### Restrições
+
+- Trabalhe somente no workspace autorizado.
+- Preserve o objetivo original da tarefa.
+- Não faça push.
+- Não altere a branch base.
+- Não altere configurações globais do OpenClaw, Gateway, Docker ou infraestrutura compartilhada.
+- Não contorne testes, gates ou validações.
+- Não declare o bloqueio resolvido sem evidência de validação.
+- Se depender de uma ação externa ou de infraestrutura fora do escopo, não invente uma correção: registre exatamente o que precisa ser feito.
+
+### Resposta obrigatória
+
+Responda neste formato:
+
+STATUS: RESOLVIDO | PARCIALMENTE_RESOLVIDO | NAO_RESOLVIDO
+
+CAUSA:
+<causa técnica confirmada>
+
+CORREÇÃO:
+<alterações realizadas ou “nenhuma”>
+
+VALIDAÇÃO:
+<comandos executados e resultados>
+
+RETOMADA:
+<o que deve ser executado na próxima tentativa>
+
+BLOQUEIO_REMANESCENTE:
+<descreva o impedimento restante ou “nenhum”>`,
   },
   {
     key: "analista.revisao_premissa_incorreta",

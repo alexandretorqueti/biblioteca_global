@@ -59,6 +59,7 @@ import { planPromotionRecovery } from "../promotion-gate/PromotionRecoveryPlanne
 import { createPromotionCorrectionSubtask } from "../planning/CorrectionSubtaskStore.js"
 import type { PromotionGateRecoveryCandidate, PromotionGateRecoveryOrchestrator, PromotionGateRecoveryPort } from "../promotion-gate/PromotionGateRecoveryOrchestrator.js"
 import type { PromotionGateReport } from "../promotion-gate/PromotionGateVerifier.js"
+import { MotorMonitorStep, type MotorFixInput } from "../steps/MotorMonitorStep.js"
 
 interface ActiveWorker {
   taskId: string
@@ -94,6 +95,7 @@ export interface TaskCoordinatorConfig {
   maxWorkersPerProject?: number
   /** Timeout máximo de um worker; quando omitido usa hard_timeout_ms da tarefa. */
   workerTimeoutMs?: number
+  monitorStep?: MotorMonitorStep
 }
 
 const DEFAULT_CONFIG: Required<Pick<TaskCoordinatorConfig, 'maxWorkers' | 'maxWorkersPerProject'>> = {
@@ -224,6 +226,7 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
   private lastScheduledTaskId: string | null = null
   /** Subtarefas que já esgotaram as retomadas automáticas (evita log repetido). */
   private systemBlockRetryWarned = new Set<number>()
+  private monitorRecoveryInFlight = new Set<number>()
 
   constructor(
     db: Db,
@@ -516,6 +519,10 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
       const reason = String(row.block_reason ?? "")
       const orphan = Number(row.orphan) === 1
       if (!orphan && !isSystemBlocker(reason, String(row.block_command), String(row.block_excerpt))) continue
+      if (this.config.monitorStep) {
+        this.scheduleMonitorRecovery(row, orphan)
+        continue
+      }
       const { rows: previous } = await this.db.query(
         "SELECT COUNT(*) AS total FROM bloqueios WHERE subtarefa_id = ? AND resolved_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)",
         [subtaskId],
@@ -552,6 +559,38 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
         },
       )
     }
+  }
+
+  /** Não bloqueia o pump enquanto o Monitor trabalha ou aguarda o usuário. */
+  private scheduleMonitorRecovery(row: Record<string, unknown>, orphan: boolean): void {
+    const subtaskId = Number(row.subtarefa_id)
+    if (this.monitorRecoveryInFlight.has(subtaskId)) return
+    this.monitorRecoveryInFlight.add(subtaskId)
+    void (async () => {
+      const taskId = String(row.external_id ?? row.tarefa_id)
+      const latest = await this.db.query(
+        "SELECT role, texto FROM tarefa_chats WHERE tarefa_id = ? ORDER BY id DESC LIMIT 1", [Number(row.tarefa_id)],
+      )
+      const last = latest.rows[0]
+      if (last?.role === "monitor") return
+      const input: MotorFixInput = {
+        taskId, subtaskId: String(subtaskId), reason: String(row.block_reason ?? "bloqueio sistêmico"),
+        evidence: { command: String(row.block_command ?? ""), excerpt: String(row.block_excerpt ?? "") },
+      }
+      const context = { executionId: `monitor-recovery-${subtaskId}`, taskId, projectSlug: row.project_slug == null ? null : String(row.project_slug), phase: "execute" as const, fencingToken: 0, startedAt: new Date(), subtaskId: String(subtaskId) }
+      const result = last?.role === "user"
+        ? await this.config.monitorStep!.continueAfterUserReply(input, context, String(last.texto))
+        : await this.config.monitorStep!.execute(input, context)
+      if (result.kind === "success") {
+        await this.db.query("UPDATE subtarefas SET status='pending', updated_at=NOW() WHERE id=? AND status='blocked'", [subtaskId])
+        if (row.block_id != null) await this.db.query("UPDATE bloqueios SET resolved_at=NOW() WHERE id=? AND resolved_at IS NULL", [row.block_id])
+        await this.db.query(resolveTaskLevelSystemBlockersSql(), [Number(row.tarefa_id)])
+        this.logger.warn("Monitor corrigiu bloqueio; subtarefa reenfileirada", { taskId, subtaskId, orphan })
+      } else if (result.kind === "failed" || result.kind === "timeout") {
+        await this.db.query("INSERT INTO tarefa_chats (tarefa_id,role,texto,created_at) VALUES (?, 'monitor', ?, NOW())", [Number(row.tarefa_id), `Monitor não conseguiu concluir a recuperação: ${result.reason}`])
+      }
+    })().catch((error: unknown) => this.logger.error("Falha na recuperação pelo Monitor: " + describeError(error), { subtaskId }))
+      .finally(() => this.monitorRecoveryInFlight.delete(subtaskId))
   }
 
   /**
