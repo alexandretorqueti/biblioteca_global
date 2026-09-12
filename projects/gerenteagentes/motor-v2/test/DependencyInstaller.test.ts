@@ -14,7 +14,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { DependencyInstaller, isLockfileOutOfSync, resolveInstallTimeoutMs, type CommandRunner } from "../src/workspaces/DependencyInstaller.js"
+import { DependencyInstaller, isLockfileOutOfSync, resolveInstallTimeoutMs, NPM_CI_COMMAND, NPM_INSTALL_COMMAND, type CommandRunner } from "../src/workspaces/DependencyInstaller.js"
 
 let tempDir: string
 
@@ -61,7 +61,7 @@ describe("DependencyInstaller — detecção de package-lock.json", () => {
     }
     // Runner deve ter sido chamado com npm ci
     const calls = vi.mocked(runner.run).mock.calls
-    const npmCiCall = calls.find(([cmd]) => cmd === "npm ci")
+    const npmCiCall = calls.find(([cmd]) => cmd === NPM_CI_COMMAND)
     expect(npmCiCall).toBeTruthy()
     expect(npmCiCall![1]).toBe(tempDir)
   })
@@ -80,7 +80,7 @@ describe("DependencyInstaller — git status antes/depois", () => {
     // Deve haver 2 chamadas: antes e depois do npm ci
     expect(gitStatusCalls.length).toBe(2)
     // A primeira chamada é ANTES do npm ci
-    const npmCiIndex = calls.findIndex(([cmd]) => cmd === "npm ci")
+    const npmCiIndex = calls.findIndex(([cmd]) => cmd === NPM_CI_COMMAND)
     const firstStatusIndex = calls.findIndex(([cmd]) => cmd === "git status --porcelain")
     expect(firstStatusIndex).toBeLessThan(npmCiIndex)
   })
@@ -98,7 +98,7 @@ describe("DependencyInstaller — git status antes/depois", () => {
           // Depois do npm ci: package-lock.json foi modificado (arquivo rastreado)
           return { stdout: " M package-lock.json\n", stderr: "" }
         }
-        if (cmd === "npm ci") return { stdout: "added 100 packages\n", stderr: "" }
+        if (cmd === NPM_CI_COMMAND) return { stdout: "added 100 packages\n", stderr: "" }
         return { stdout: "", stderr: "" }
       }),
     })
@@ -125,7 +125,7 @@ describe("DependencyInstaller — git status antes/depois", () => {
           // Depois do npm ci: apenas node_modules (untracked) apareceu
           return { stdout: "?? node_modules/\n", stderr: "" }
         }
-        if (cmd === "npm ci") return { stdout: "added 100 packages\n", stderr: "" }
+        if (cmd === NPM_CI_COMMAND) return { stdout: "added 100 packages\n", stderr: "" }
         return { stdout: "", stderr: "" }
       }),
     })
@@ -150,7 +150,7 @@ describe("DependencyInstaller — git status antes/depois", () => {
           if (callCount === 1) return { stdout: "", stderr: "" }
           return { stdout: " M package-lock.json\n M package.json\n?? node_modules/\n", stderr: "" }
         }
-        if (cmd === "npm ci") return { stdout: "", stderr: "" }
+        if (cmd === NPM_CI_COMMAND) return { stdout: "", stderr: "" }
         return { stdout: "", stderr: "" }
       }),
     })
@@ -177,7 +177,7 @@ describe("DependencyInstaller — falha do npm ci", () => {
     const runner = createMockRunner({
       run: vi.fn().mockImplementation(async (cmd: string) => {
         if (cmd === "git status --porcelain") return { stdout: "", stderr: "" }
-        if (cmd === "npm ci") throw new Error("npm ERR! ERESOLVE could not resolve dependency tree")
+        if (cmd === NPM_CI_COMMAND) throw new Error("npm ERR! ERESOLVE could not resolve dependency tree")
         return { stdout: "", stderr: "" }
       }),
     })
@@ -199,7 +199,7 @@ describe("DependencyInstaller — falha do npm ci", () => {
     const runner = createMockRunner({
       run: vi.fn().mockImplementation(async (cmd: string) => {
         if (cmd === "git status --porcelain") return { stdout: "", stderr: "" }
-        if (cmd === "npm ci") throw new Error(longOutput)
+        if (cmd === NPM_CI_COMMAND) throw new Error(longOutput)
         return { stdout: "", stderr: "" }
       }),
     })
@@ -220,7 +220,7 @@ describe("DependencyInstaller — falha do npm ci", () => {
     const runner = createMockRunner({
       run: vi.fn().mockImplementation(async (cmd: string) => {
         if (cmd === "git status --porcelain") return { stdout: "", stderr: "" }
-        if (cmd === "npm ci") throw new Error("npm ERR! fail")
+        if (cmd === NPM_CI_COMMAND) throw new Error("npm ERR! fail")
         return { stdout: "", stderr: "" }
       }),
     })
@@ -244,7 +244,7 @@ describe("DependencyInstaller — timeout", () => {
     await installer.install({ worktreePath: tempDir, timeoutMs: 42_000 })
 
     const calls = vi.mocked(runner.run).mock.calls
-    const npmCiCall = calls.find(([cmd]) => cmd === "npm ci")
+    const npmCiCall = calls.find(([cmd]) => cmd === NPM_CI_COMMAND)
     expect(npmCiCall).toBeTruthy()
     expect(npmCiCall![2]).toBe(42_000)
   })
@@ -257,7 +257,7 @@ describe("DependencyInstaller — timeout", () => {
     await installer.install({ worktreePath: tempDir })
 
     const calls = vi.mocked(runner.run).mock.calls
-    const npmCiCall = calls.find(([cmd]) => cmd === "npm ci")
+    const npmCiCall = calls.find(([cmd]) => cmd === NPM_CI_COMMAND)
     expect(npmCiCall).toBeTruthy()
     expect(npmCiCall![2]).toBe(15 * 60 * 1000)
   })
@@ -305,13 +305,13 @@ describe("DependencyInstaller — auto-recovery de lockfile desatualizado", () =
     const runner = createMockRunner({
       run: vi.fn().mockImplementation(async (cmd: string) => {
         if (cmd === "git status --porcelain") return { stdout: "", stderr: "" }
-        if (cmd === "npm ci") {
+        if (cmd === NPM_CI_COMMAND) {
           // Primeira chamada: falha com EUSAGE (lockfile desatualizado)
           throw new Error(
             "npm error code EUSAGE\nnpm error\nnpm error `npm ci` can only install packages when your package.json and package-lock.json are in sync.\nnpm error Missing: @biblioteca-global/project-taqui@0.0.0 from lock file"
           )
         }
-        if (cmd === "npm install") return { stdout: "added 50 packages\n", stderr: "" }
+        if (cmd === NPM_INSTALL_COMMAND) return { stdout: "added 50 packages\n", stderr: "" }
         return { stdout: "", stderr: "" }
       }),
     })
@@ -321,7 +321,7 @@ describe("DependencyInstaller — auto-recovery de lockfile desatualizado", () =
     let npmCiCallCount = 0
     vi.mocked(runner.run).mockImplementation(async (cmd: string) => {
       if (cmd === "git status --porcelain") return { stdout: "", stderr: "" }
-      if (cmd === "npm ci") {
+      if (cmd === NPM_CI_COMMAND) {
         npmCiCallCount++
         if (npmCiCallCount === 1) {
           throw new Error(
@@ -330,7 +330,7 @@ describe("DependencyInstaller — auto-recovery de lockfile desatualizado", () =
         }
         return { stdout: "added 100 packages\n", stderr: "" }
       }
-      if (cmd === "npm install") return { stdout: "added 50 packages\n", stderr: "" }
+      if (cmd === NPM_INSTALL_COMMAND) return { stdout: "added 50 packages\n", stderr: "" }
       return { stdout: "", stderr: "" }
     })
 
@@ -342,10 +342,10 @@ describe("DependencyInstaller — auto-recovery de lockfile desatualizado", () =
     }
     // Verifica que npm install foi chamado
     const calls = vi.mocked(runner.run).mock.calls
-    const npmInstallCall = calls.find(([cmd]) => cmd === "npm install")
+    const npmInstallCall = calls.find(([cmd]) => cmd === NPM_INSTALL_COMMAND)
     expect(npmInstallCall).toBeTruthy()
     // Verifica que npm ci foi chamado 2 vezes
-    const npmCiCalls = calls.filter(([cmd]) => cmd === "npm ci")
+    const npmCiCalls = calls.filter(([cmd]) => cmd === NPM_CI_COMMAND)
     expect(npmCiCalls.length).toBe(2)
   })
 
@@ -356,11 +356,11 @@ describe("DependencyInstaller — auto-recovery de lockfile desatualizado", () =
     const runner = createMockRunner({
       run: vi.fn().mockImplementation(async (cmd: string) => {
         if (cmd === "git status --porcelain") return { stdout: "", stderr: "" }
-        if (cmd === "npm ci") {
+        if (cmd === NPM_CI_COMMAND) {
           npmCiCallCount++
           throw new Error("npm error code EUSAGE\nnpm error Missing: @pkg from lock file")
         }
-        if (cmd === "npm install") throw new Error("npm error ECONNREFUSED")
+        if (cmd === NPM_INSTALL_COMMAND) throw new Error("npm error ECONNREFUSED")
         return { stdout: "", stderr: "" }
       }),
     })
@@ -380,7 +380,7 @@ describe("DependencyInstaller — auto-recovery de lockfile desatualizado", () =
     const runner = createMockRunner({
       run: vi.fn().mockImplementation(async (cmd: string) => {
         if (cmd === "git status --porcelain") return { stdout: "", stderr: "" }
-        if (cmd === "npm ci") throw new Error("npm error ERESOLVE could not resolve dependency tree")
+        if (cmd === NPM_CI_COMMAND) throw new Error("npm error ERESOLVE could not resolve dependency tree")
         return { stdout: "", stderr: "" }
       }),
     })
@@ -395,7 +395,7 @@ describe("DependencyInstaller — auto-recovery de lockfile desatualizado", () =
     }
     // npm install NÃO deve ter sido chamado
     const calls = vi.mocked(runner.run).mock.calls
-    const npmInstallCall = calls.find(([cmd]) => cmd === "npm install")
+    const npmInstallCall = calls.find(([cmd]) => cmd === NPM_INSTALL_COMMAND)
     expect(npmInstallCall).toBeFalsy()
   })
 })
@@ -429,7 +429,7 @@ describe("DependencyInstaller — integração com git status falhando", () => {
     const runner = createMockRunner({
       run: vi.fn().mockImplementation(async (cmd: string) => {
         if (cmd === "git status --porcelain") throw new Error("not a git repository")
-        if (cmd === "npm ci") return { stdout: "added 100 packages\n", stderr: "" }
+        if (cmd === NPM_CI_COMMAND) return { stdout: "added 100 packages\n", stderr: "" }
         return { stdout: "", stderr: "" }
       }),
     })
@@ -452,7 +452,7 @@ describe("DependencyInstaller — integração com git status falhando", () => {
           if (callCount === 1) return { stdout: "", stderr: "" }
           throw new Error("not a git repository")
         }
-        if (cmd === "npm ci") return { stdout: "added 100 packages\n", stderr: "" }
+        if (cmd === NPM_CI_COMMAND) return { stdout: "added 100 packages\n", stderr: "" }
         return { stdout: "", stderr: "" }
       }),
     })
