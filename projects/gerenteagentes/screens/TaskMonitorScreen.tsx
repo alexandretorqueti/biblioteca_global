@@ -6,7 +6,7 @@
  * - Carga inicial HTTP e atualizações posteriores pelo WebSocket realtime
  * - Subtarefas com status, progresso (verified/total), banner da subtarefa atual
  * - Activity feed com os eventos do motor
- * - Ações: iniciar / pausar / retomar
+ * - Ações: iniciar / pausar (individual) e retomar em massa
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import {
@@ -771,21 +771,6 @@ export default function TaskMonitorScreen(): ReactNode {
     [bundle, carregarTarefas],
   )
 
-  const retomarTarefaId = useCallback(
-    async (id: number) => {
-      if (!bundle) return
-      setErro(null)
-      try {
-        await bundle.http.request("POST", `/gerenteagentes/tarefas/${id}/resume`, { auth: "access" })
-        await carregarTarefas()
-      } catch (e) {
-        setErro(e instanceof Error ? e.message : "Erro ao retomar tarefa")
-      }
-    },
-    [bundle, carregarTarefas],
-  )
-
-
   const handleNewTaskSubmit = useCallback(async (values: TarefaFormValues) => {
     if (!bundle) return
     setNewTaskLoading(true)
@@ -1208,7 +1193,6 @@ export default function TaskMonitorScreen(): ReactNode {
   const podePausar = !isPaused && STATUS_EXECUCAO.has(statusMotor)
   const aguardandoRetentativaPromocao = /Falha na promoção da branch da tarefa: repositório principal não está limpo para promoção:/i
     .test(detail?.task?.blockInfo?.excerpt ?? "")
-  const podeRetomar = isPaused
 
   const editInitialValues = useMemo<DynamicFormValues>(() => {
     if (!tarefaSelecionada) return { titulo: "", descricao: "", tipo: "desenvolvimento", status: "draft", dependsOnTaskId: "" }
@@ -1508,16 +1492,6 @@ export default function TaskMonitorScreen(): ReactNode {
               >
                 Pausar
               </Button>
-              <Button
-                size="small"
-                variant="outlined"
-                startIcon={<ReplayRounded />}
-                disabled={acao !== null || !podeRetomar}
-                onClick={() => void executarAcao("resume")}
-                data-testid="btn-resume"
-              >
-                Retomar
-              </Button>
             </Stack>
           </Stack>
 
@@ -1530,7 +1504,7 @@ export default function TaskMonitorScreen(): ReactNode {
           {detail?.exists && statusMotor === "paused" && (
             <Alert severity="warning" sx={{ mt: 2 }} data-testid="task-paused-banner">
               <Typography variant="body2">
-                <b>⏸ Tarefa pausada:</b> A execução está suspensa. Clique em <b>Retomar</b> para continuar.
+                <b>⏸ Tarefa pausada:</b> A execução está suspensa.
               </Typography>
             </Alert>
           )}

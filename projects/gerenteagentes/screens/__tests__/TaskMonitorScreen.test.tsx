@@ -980,7 +980,7 @@ describe("TaskMonitorScreen — compatibilidade Motor-v2", () => {
     })
     expect(screen.getByTestId("btn-start")).not.toBeDisabled()
     expect(screen.getByTestId("btn-pause")).toBeDisabled()
-    expect(screen.getByTestId("btn-resume")).toBeDisabled()
+    expect(screen.queryByTestId("btn-resume")).not.toBeInTheDocument()
   })
 })
 
