@@ -11,6 +11,11 @@ transições de status e demais interações necessárias. A implementação dev
 controlar a inscrição e a limpeza da conexão, além de tratar desconexão e
 reconciliação do estado local.
 
+O contrato normativo dessa projeção está em
+[`CONTRATO-REALTIME-MAPA.md`](./CONTRATO-REALTIME-MAPA.md), incluindo snapshot
+HTTP, envelope WebSocket, eventos aceitos, deduplicação e recuperação por
+replay/snapshot.
+
 ## Chat da tarefa no acompanhamento
 
 Tarefa `#762` (`task-biblioteca-762`): mostrar o chat da tarefa selecionada
