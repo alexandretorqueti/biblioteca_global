@@ -9,6 +9,8 @@
 import {
   ApiHttpClient,
   AuthClient,
+  createErrorReporter,
+  type ErrorReportContext,
 } from "@biblioteca-global/api-client"
 
 /** Base url resolvida: protocolo+host atuais + /api (proxy dev / deploy). */
@@ -40,10 +42,13 @@ export function createApiClient(tokens: {
   getRefreshToken(): string | null
   setAccessToken(token: string | null): void
   setRefreshToken(token: string | null): void
-}): ApiClientBundle {
+}, getErrorContext?: () => ErrorReportContext): ApiClientBundle {
   const http = new ApiHttpClient({
     baseUrl: resolveApiBaseUrl(),
     tokens,
   })
+  if (getErrorContext) {
+    http.setErrorReporter(createErrorReporter({ http, getContext: getErrorContext }))
+  }
   return { http, auth: new AuthClient(http), getAccessToken: () => tokens.getAccessToken() }
 }

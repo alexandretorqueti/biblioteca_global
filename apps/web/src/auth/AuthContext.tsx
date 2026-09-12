@@ -38,6 +38,7 @@ import {
 import { ApiClientError } from "@biblioteca-global/api-client"
 import { createApiClient, type ApiClientBundle } from "../api/client"
 import { LocalTokenStore } from "../api/tokenStore"
+import { getOrigem } from "../observability/origemStore"
 import {
   TokenRefresher,
   lerExpDoAccessStore,
@@ -103,8 +104,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   const bundleRef = useRef<ApiClientBundle | null>(null)
+  const contextoErroRef = useRef<{
+    usuario: UsuarioAutenticado | null
+    projeto: ProjetoResumo | null
+  }>({ usuario: null, projeto: null })
   if (!bundleRef.current) {
-    bundleRef.current = createApiClient(storeRef.current)
+    bundleRef.current = createApiClient(storeRef.current, () => {
+      const contexto = contextoErroRef.current
+      if (!contexto.usuario) {
+        throw new Error("Não há usuário autenticado para relatar o erro")
+      }
+      return {
+        usuario: {
+          id: contexto.usuario.id,
+          nome: contexto.usuario.nome,
+          ...(contexto.usuario.email ? { login: contexto.usuario.email } : {}),
+        },
+        origem: getOrigem(),
+        ...(contexto.projeto?.slug ? { slug: contexto.projeto.slug } : {}),
+      }
+    })
   }
   const store = storeRef.current
   const bundle = bundleRef.current
@@ -152,6 +171,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       projetos,
       accessToken: store.getAccessToken(),
     }))
+    contextoErroRef.current.usuario = usuario ?? contextoErroRef.current.usuario
     reactor.schedule(
       () => lerExpDoAccessStore(store),
       Math.floor(Date.now() / 1000),
@@ -163,6 +183,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     reactor.cancel()
     authenticatedRef.current = false
     projetoAtualRef.current = null
+    contextoErroRef.current = { usuario: null, projeto: null }
     setSession({
       status: "unauthenticated",
       usuario: null,
@@ -179,6 +200,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     store.setAccessToken(res.accessToken)
     store.setProjetoId(String(projetoId))
     projetoAtualRef.current = res.projeto
+    contextoErroRef.current.projeto = res.projeto
     setSession((prev) => ({
       ...prev,
       status: "authenticated",
@@ -217,6 +239,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       store.setPersist(input.rememberMe ?? false)
       store.clear()
       const res = await bundle.auth.login(parsed.data)
+      contextoErroRef.current.usuario = res.usuario
       store.setRefreshToken(res.refreshToken)
       // Com exatamente 1 projeto, seleciona direto (fluxo do Estudo);
       // com vários, a tela de seleção decide.
@@ -350,6 +373,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       store.setPersist(false)
       store.clear()
       store.setRefreshToken(res.refreshToken)
+      contextoErroRef.current.usuario = res.usuario
       if (res.projetos.length === 1 && res.projetos[0]) {
         await selecionarProjetoResolvido(res.projetos[0].id)
       }
