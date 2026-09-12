@@ -507,7 +507,10 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, l
           // Tooltip rico (1.3e): descrição + projeto + prioridade + atualização
           // Nota: campo responsável omitido — backend ainda não expõe essa informação.
           const tooltipContent = (
-            <Box sx={{ maxWidth: 260 }}>
+            <Box sx={{ maxWidth: 420, whiteSpace: "normal", overflowWrap: "anywhere" }}>
+              <Typography variant="caption" fontWeight={700} display="block" sx={{ mb: 0.25, color: "common.white", whiteSpace: "normal", overflowWrap: "anywhere" }}>
+                {task.titulo}
+              </Typography>
               <Typography variant="caption" fontWeight={700} display="block" sx={{ mb: 0.25, color: "common.white" }}>
                 {taskDescription(task)}
               </Typography>
@@ -533,7 +536,24 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, l
           if (!isMoving && !isAiActive) animationParts.push("task-fade-in 0.3s ease-out 1")
 
           return (
-            <Tooltip key={task.id} title={tooltipContent} arrow placement="top">
+            <Tooltip
+              key={task.id}
+              title={tooltipContent}
+              arrow
+              placement="top"
+              // O tooltip acompanha o cartão (e, portanto, também o ícone de
+              // informação), mas o conteúdo precisa poder crescer e quebrar
+              // linhas. O limite padrão de 300px truncava descrições longas.
+              componentsProps={{
+                tooltip: {
+                  sx: {
+                    maxWidth: 420,
+                    whiteSpace: "normal",
+                    overflowWrap: "anywhere",
+                  },
+                },
+              }}
+            >
               <Paper
                 component="button"
                 type="button"
