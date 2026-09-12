@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest"
 import { classifyRemoteFailure } from "../src/runtime/ConsoleAgentRuntimeDriver.js"
-import { formatRemoteSessionFailure, remoteFailureSignature, resolveMaxDeliveryAttempts, resolveSessionRecoveryLimit, shouldEscalateAnalysisContextFailure } from "../src/workers/TaskWorker.js"
+import { formatRemoteSessionFailure, remoteFailureSignature, resolveMaxDeliveryAttempts, resolveSessionRecoveryLimit, shouldEscalateAnalysisContextFailure, shouldSkipModelAfterRemoteFailure } from "../src/workers/TaskWorker.js"
 
 describe("política de recuperação de sessão", () => {
+  it("pula imediatamente o modelo quando o Console devolve SESSION_FAILED", () => {
+    expect(shouldSkipModelAfterRemoteFailure({ code: "SESSION_FAILED", message: "Session failed", sessionKey: "s", runId: "r", occurredAt: "2026-09-12T00:00:00Z", scope: "session", classification: "transient", classificationReason: "retryable", fingerprint: "f" }, 1)).toBe(true)
+  })
+
   it("usa limite configurável de entregas e fallback seguro", () => {
     expect(resolveMaxDeliveryAttempts(20)).toBe(20)
     expect(resolveMaxDeliveryAttempts(1)).toBe(1)

@@ -1681,6 +1681,9 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
       this.logger.info("Análise pausada para clarificação: " + worker.taskId + " (" + questionCount + " perguntas)", {
         taskId: worker.taskId, executionId, phase: "analyze", summary: summary ?? undefined,
       })
+      if (worker.subtaskId) {
+        await this.db.query("UPDATE subtarefas SET status = 'pending', updated_at = NOW() WHERE id = ?", [worker.subtaskId])
+      }
       const task = await this.repository.getTask(worker.taskId)
       if (task) {
         await this.saveTaskTransition(task, "await_clarification")
