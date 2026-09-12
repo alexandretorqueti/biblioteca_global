@@ -5,6 +5,7 @@ import {
   ApiHttpClient,
   AuthClient,
   createDataSource,
+  createErrorReporter,
   RestEntityClient,
 } from "../index"
 import type { FetchFn, TokenStore } from "../index"
@@ -173,6 +174,85 @@ describe("ApiHttpClient", () => {
       http.request("POST", "/auth/refresh", { auth: "refresh" }),
     ).rejects.toBeInstanceOf(ApiClientError)
     expect(recuperou).toBe(false)
+  })
+
+  it("500 dispara exatamente um relato e 404 não dispara relato", async () => {
+    const reporter = createErrorReporter({
+      http,
+      getContext: () => ({
+        usuario: { id: 7 },
+        origem: { rota: "/clientes" },
+      }),
+    })
+    const client = new ApiHttpClient({
+      baseUrl: "http://api.local/api",
+      tokens,
+      fetchImpl: fake.handler,
+      errorReporter: reporter,
+    })
+
+    fake.enqueue(
+      { status: 500, body: { code: "INTERNAL_ERROR", message: "falhou" } },
+      { status: 200, body: { registrada: true } },
+      { status: 404, body: { code: "NOT_FOUND", message: "ausente" } },
+    )
+    await expect(client.request("GET", "/clientes/12")).rejects.toBeInstanceOf(ApiClientError)
+    await expect(client.request("GET", "/clientes/13")).rejects.toBeInstanceOf(ApiClientError)
+
+    expect(fake.requests).toHaveLength(3)
+    expect(fake.requests[1]?.url).toBe("http://api.local/api/erros")
+    expect(fake.requests[1]?.body).toMatchObject({ responseStatus: 500 })
+  })
+
+  it("falha do reporter não altera a exceção original", async () => {
+    const client = new ApiHttpClient({
+      baseUrl: "http://api.local/api",
+      tokens,
+      fetchImpl: fake.handler,
+      errorReporter: { relatar: (): void => { throw new Error("reporter indisponível") } },
+    })
+    fake.enqueue({ status: 500, body: { code: "INTERNAL_ERROR", message: "original" } })
+
+    await expect(client.request("GET", "/clientes")).rejects.toMatchObject({
+      status: 500,
+      message: "original",
+    })
+  })
+
+  it("POST de relato não reentra no reporter", async () => {
+    fake.enqueue(
+      { status: 500, body: { code: "INTERNAL_ERROR", message: "original" } },
+      { status: 500, body: { code: "INTERNAL_ERROR", message: "falha no relato" } },
+    )
+    const client = new ApiHttpClient({
+      baseUrl: "http://api.local/api",
+      tokens,
+      fetchImpl: fake.handler,
+    })
+    const relatos = createErrorReporter({
+      http: client,
+      getContext: () => ({
+        usuario: { id: 7, nome: "Alexandre" },
+        origem: { rota: "/clientes", tela: "Clientes", funcionalidade: "listar" },
+        slug: "taqui",
+      }),
+    })
+    const observado = { relatar: relatos.relatar }
+    const comReporter = new ApiHttpClient({
+      baseUrl: "http://api.local/api",
+      tokens,
+      fetchImpl: fake.handler,
+      errorReporter: observado,
+    })
+
+    await expect(comReporter.request("GET", "/clientes")).rejects.toBeInstanceOf(ApiClientError)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(fake.requests).toHaveLength(2)
+    expect(fake.requests[1]?.url).toBe("http://api.local/api/erros")
+    expect(fake.requests[1]?.body).toMatchObject({
+      endpoint: "GET /api/taqui/clientes",
+      responseStatus: 500,
+    })
   })
 })
 

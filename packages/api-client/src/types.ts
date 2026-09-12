@@ -28,11 +28,17 @@ export type FetchFn = (
   },
 ) => Promise<{ status: number; json(): Promise<unknown> }>
 
+export interface ErrorReporter {
+  relatar(entrada: import("./error-report").ErrorReportEntrada): void
+}
+
 export interface ApiClientOptions {
   /** ex.: "http://localhost:3001/api" */
   baseUrl: string
   tokens: TokenStore
   fetchImpl?: FetchFn
+  /** Reporter opcional de falhas reais do transporte; nunca altera a chamada. */
+  errorReporter?: ErrorReporter
 }
 
 export interface RealtimeClientOptions {
