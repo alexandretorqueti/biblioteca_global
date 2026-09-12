@@ -15,6 +15,25 @@ SELECT 'contagens_destino' AS verificacao,
        (SELECT COUNT(*) FROM departamentos) AS departamentos,
        (SELECT COUNT(*) FROM config_empresa) AS config_empresa;
 
+-- Confirma que todas as tabelas consultadas pertencem ao schema atual e que
+-- nenhuma tabela legado sem equivalente foi criada durante a importação.
+SELECT 'tabelas_destino_esperadas' AS verificacao,
+       (SELECT COUNT(*)
+          FROM information_schema.tables
+         WHERE table_schema = DATABASE()
+           AND table_type = 'BASE TABLE'
+           AND table_name IN ('usuarios', 'clientes', 'responsaveis',
+                              'contratos', 'contatos_site', 'circulares',
+                              'departamentos', 'config_empresa')) AS tabelas_esperadas,
+       (SELECT COUNT(*)
+          FROM information_schema.tables
+         WHERE table_schema = DATABASE()
+           AND table_type = 'BASE TABLE'
+           AND table_name NOT IN ('usuarios', 'clientes', 'responsaveis',
+                                  'contratos', 'contatos_site', 'circulares',
+                                  'departamentos', 'config_empresa')) AS tabelas_nao_previstas,
+       'esperado: 8 tabelas esperadas e 0 não previstas' AS resultado_esperado;
+
 SELECT 'esperados_relatorio_pre_importacao' AS verificacao,
        7 AS clientes_legado,
        3 AS circulares_legado_ativas,
@@ -68,6 +87,15 @@ SELECT 'usuarios_local_preservados' AS verificacao,
        COUNT(*) AS linhas_usuarios_local,
        CASE WHEN COUNT(*) = 0 THEN 'OK' ELSE 'REVISAR_COM_BASE_NO_SNAPSHOT_PRE_IMPORTACAO' END AS resultado
   FROM usuarios;
+
+-- O vínculo de administrador foi deliberadamente descartado: usuários são
+-- geridos pela Biblioteca Global e a tabela local não deve ser importada nem
+-- receber registros do legado. Clientes sem vínculo local são aceitáveis.
+SELECT 'vinculos_administrador_descartados' AS verificacao,
+       COUNT(*) AS clientes_com_administrador_local,
+       'esperado: 0; administrador_id deve permanecer nulo' AS resultado_esperado
+  FROM clientes
+ WHERE administrador_id IS NOT NULL;
 
 -- O schema atual não possui ativo em circulares. A origem foi consultada com
 -- Ativo = 1; portanto não deve haver circular legada inativa para contabilizar.
