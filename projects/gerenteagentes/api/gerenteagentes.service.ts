@@ -1169,6 +1169,12 @@ export class GerenteAgentesService {
     return JSON.parse(resp.body) as unknown;
   }
 
+  async diagnosticoDeploy(projeto: ProjetoResumo) {
+    const resp = await this.motorRequest('GET', '/api/motor/deploy-diagnostics', undefined, this.motorV2Url);
+    if (!resp.ok) throw new BadRequestException(`Diagnóstico de deploy indisponível (${resp.status}): ${resp.body.slice(0, 200)}`);
+    return JSON.parse(resp.body) as unknown;
+  }
+
   // ============================================================================
   // CHAT DA TAREFA
   // ============================================================================

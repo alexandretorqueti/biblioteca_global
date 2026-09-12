@@ -19,6 +19,15 @@ describe("catálogo de configurações do motor", () => {
     expect(config.validar("2")).toBe(false)
   })
 
+  it("expõe e valida o limite de entregas", () => {
+    const config = configuracaoPorChave("motor.max_delivery_attempts")!
+    expect(config.valorPadrao).toBe(20)
+    expect(config.validar(1)).toBe(true)
+    expect(config.validar(20)).toBe(true)
+    expect(config.validar(0)).toBe(false)
+    expect(config.validar(201)).toBe(false)
+  })
+
   it("expõe metadados suficientes para a tela editar cada valor", () => {
     expect(MOTOR_CONFIGURACOES.every((config) =>
       config.chave.startsWith("motor.") &&

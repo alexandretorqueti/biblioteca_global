@@ -1718,6 +1718,40 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     }
   }
 
+  async getDeployDiagnostics(): Promise<{ canStart: boolean; reasons: string[]; pendingRequests: number }> {
+    const reasons: string[] = []
+    if (this.activeWorkers.size > 0) reasons.push(`${this.activeWorkers.size} worker(s) ativo(s)`)
+    if (this.finalizingExecutions.size > 0) reasons.push(`${this.finalizingExecutions.size} execução(ões) finalizando`)
+    if (this.activeMaintenance > 0) reasons.push(`${this.activeMaintenance} manutenção(ões) ativa(s)`)
+    if (this.activeDeployments.size > 0) reasons.push(`${this.activeDeployments.size} deploy(s) em andamento`)
+    const { rows: busyRows } = await this.db.query(
+      "SELECT EXISTS(SELECT 1 FROM tarefas t LEFT JOIN task_runtime_facts f ON f.tarefa_id = t.id " +
+      "WHERE t.paused_at IS NULL AND f.terminal_status IS NULL AND f.analysis_started_at IS NOT NULL) " +
+      "OR EXISTS(SELECT 1 FROM subtarefas WHERE status IN ('running','delivered','verifying')) AS busy",
+    )
+    const { rows } = await this.db.query("SELECT COUNT(*) AS total FROM deploy_requests WHERE status = 'pending'")
+    const pendingRequests = Number(rows[0]?.total ?? 0)
+    if (Number(busyRows[0]?.busy ?? 0) !== 0) {
+      const { rows: activeRows } = await this.db.query(
+        "SELECT DISTINCT COALESCE(t.external_id, CAST(t.id AS CHAR)) AS task_id " +
+        "FROM tarefas t LEFT JOIN task_runtime_facts f ON f.tarefa_id = t.id " +
+        "WHERE (t.paused_at IS NULL AND f.terminal_status IS NULL AND f.analysis_started_at IS NOT NULL) " +
+        "OR EXISTS (SELECT 1 FROM subtarefas s WHERE s.tarefa_id = t.id AND s.status IN ('running','delivered','verifying')) " +
+        "ORDER BY task_id LIMIT 10",
+      )
+      const taskIds = activeRows.map((row) => String(row.task_id)).filter(Boolean)
+      reasons.push(taskIds.length > 0 ? `tarefas ativas: ${taskIds.join(', ')}` : "há tarefa ou subtarefa ativa")
+    }
+    if (pendingRequests > 0 && reasons.length === 0) {
+      try {
+        this.assertDeploySshReady()
+      } catch (error: unknown) {
+        reasons.push(`SSH do deploy indisponível: ${describeError(error).substring(0, 300)}`)
+      }
+    }
+    return { canStart: reasons.length === 0 && pendingRequests > 0, reasons: reasons.length ? reasons : [pendingRequests > 0 ? "deploy pronto para iniciar" : "nenhuma solicitação de deploy pendente"], pendingRequests }
+  }
+
   /** Agenda o deploy de uma tarefa concluída. O botão nunca recria a API
    * enquanto há workers ativos. */
   async deployTask(taskId: string): Promise<void> {
@@ -2137,7 +2171,7 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     // Verifica se há tarefas ativas usando fatos operacionais (status é derivado)
     const { rows: busyRows } = await this.db.query(
       "SELECT EXISTS(SELECT 1 FROM tarefas t LEFT JOIN task_runtime_facts f ON f.tarefa_id = t.id " +
-      "WHERE f.terminal_status IS NULL AND f.analysis_started_at IS NOT NULL) " +
+      "WHERE t.paused_at IS NULL AND f.terminal_status IS NULL AND f.analysis_started_at IS NOT NULL) " +
       "OR EXISTS(SELECT 1 FROM subtarefas WHERE status IN ('running','delivered','verifying')) AS busy",
     )
     if (Number(busyRows[0]?.busy ?? 0) !== 0) return

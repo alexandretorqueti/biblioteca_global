@@ -75,6 +75,10 @@ export function resolveSessionRecoveryLimit(env: NodeJS.ProcessEnv = process.env
     : DEFAULT_SESSION_RECOVERY_LIMIT
 }
 
+export function resolveMaxDeliveryAttempts(value = getConfigNumber("motor.max_delivery_attempts")): number {
+  return Number.isInteger(value) && value >= 1 && value <= 200 ? value : 20
+}
+
 export function formatRemoteSessionFailure(failure: RemoteSessionFailure): string {
   return `[${failure.code}] ${failure.message} (sessão=${failure.sessionKey}, run=${failure.runId}, ocorrido_em=${failure.occurredAt})`
 }
@@ -792,6 +796,7 @@ class TaskWorker {
       : input.repoPath
     // Uma retomada não pode apagar as entregas já registradas no banco.
     let deliverCount = subtask.deliverCount
+    const maxDeliveryAttempts = resolveMaxDeliveryAttempts()
     let lastFailure = ""
     const modelFailures: string[] = []
     const sessionRecoveryLimit = resolveSessionRecoveryLimit()
@@ -811,6 +816,11 @@ class TaskWorker {
       // limitada, e não deve ser confundida com o rework do gate.
       let sessionRecoveryAttempts = 0
       for (let attempt = 1; attempt <= input.task.maxRework + sessionRecoveryLimit; attempt += 1) {
+        if (deliverCount >= maxDeliveryAttempts) {
+          const reason = `Limite de entregas atingido (${maxDeliveryAttempts}) para a subtarefa #${subtask.id}; novas tentativas bloqueadas.`
+          await this.recordBlocker(subtask, "systemic_failure", reason)
+          throw new Error(reason)
+        }
         deliverCount += 1
         await this.db!.query(
           "UPDATE subtarefas SET status = 'running', deliver_count = ?, resultado = NULL, updated_at = NOW() WHERE id = ?",

@@ -68,6 +68,8 @@ export class MotorAPI {
         this.json(res, 200, { ok: true, runtime: 'motor-v2', timestamp: new Date().toISOString() })
       } else if (req.method === 'GET' && path === '/api/motor/stats') {
         this.json(res, 200, this.coordinator.getStats())
+      } else if (req.method === 'GET' && path === '/api/motor/deploy-diagnostics') {
+        this.coordinator.getDeployDiagnostics().then((diagnostics) => this.json(res, 200, diagnostics)).catch((error: unknown) => this.json(res, 500, { ok: false, error: error instanceof Error ? error.message : 'Diagnostics failed' }))
       } else if (req.method === 'POST' && path === '/api/motor/pump') {
         this.coordinator.pump()
           .then(() => this.json(res, 200, { ok: true }))

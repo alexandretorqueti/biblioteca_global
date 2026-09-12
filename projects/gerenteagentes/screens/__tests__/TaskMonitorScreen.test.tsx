@@ -224,7 +224,7 @@ describe("TaskMonitorScreen — ST-1 (botão editar + diálogo)", () => {
     expect(putSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         titulo: "Tarefa Atualizada",
-        status: undefined,
+        tipo: "desenvolvimento",
       }),
     )
   })

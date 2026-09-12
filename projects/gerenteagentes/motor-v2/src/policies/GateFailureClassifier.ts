@@ -15,7 +15,7 @@
  * `project_model_selection` (tipo MONITOR) — a MESMA tabela que a tela de
  * seleção de modelos usa. Sem cadeia padrão/default: projeto sem modelos
  * MONITOR cadastrados → classificador indisponível (fail-open). A tabela
- * antiga `projeto_model_chain` é legado e NÃO deve mais ser consultada.
+ * A fonte legada de cadeia por projeto não deve mais ser consultada.
  */
 
 import type { ConsoleAgentRuntimeDriver } from "../runtime/ConsoleAgentRuntimeDriver.js"
