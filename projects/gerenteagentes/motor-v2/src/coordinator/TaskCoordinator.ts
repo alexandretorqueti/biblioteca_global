@@ -1466,13 +1466,27 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     const contextFile = "docs/CONTEXTO-ANALISTA.md"
     const baseUrl = process.env.OPENCLAW_CONSOLE_URL
     const token = process.env.OPENCLAW_CONSOLE_TOKEN
-    if (!baseUrl || !token || !worker.agentId) throw new Error("Revisão do Analista indisponível: Console ou agente ausente")
-    const driver = new ConsoleAgentRuntimeDriver({ baseUrl, token })
-    const session = await driver.createSession({ agentId: worker.agentId, key: `analyst-review-${task.id}`, label: `Revisão final ${task.id}` })
-    const message = `Você é o Analista na revisão final da tarefa ${task.id}. Workspace de integração autorizado: ${workspace.path}. Leia ${contextFile}, o diff e as evidências da tarefa. Se houver conhecimento estrutural confirmado, edite SOMENTE ${contextFile}; não faça commit, não altere qualquer outro arquivo e não invente fatos. Responda com um resumo objetivo da revisão.`
-    const { runId } = await driver.sendMessage({ session, message })
-    const result = await driver.waitForRunCompletion(session, runId)
-    if (result.state !== "final") throw new Error("Revisão final do Analista não concluiu: " + (result.errorMessage ?? result.state))
+    if (!baseUrl || !token || !worker.agentId) {
+      // Console/agente indisponível não pode bloquear a promoção de uma tarefa
+      // já verde: a atualização do contexto é um incremento, não um gate.
+      this.logger.warn("Revisão do Analista ignorada: Console ou agente ausente", { taskId: task.id })
+      return
+    }
+    let result: Awaited<ReturnType<ConsoleAgentRuntimeDriver["waitForRunCompletion"]>>
+    try {
+      const driver = new ConsoleAgentRuntimeDriver({ baseUrl, token })
+      const session = await driver.createSession({ agentId: worker.agentId, key: `analyst-review-${task.id}`, label: `Revisão final ${task.id}` })
+      const message = `Você é o Analista na revisão final da tarefa ${task.id}. Workspace de integração autorizado: ${workspace.path}. Leia ${contextFile}, o diff e as evidências da tarefa. Se houver conhecimento estrutural confirmado, edite SOMENTE ${contextFile}; não faça commit, não altere qualquer outro arquivo e não invente fatos. Responda com um resumo objetivo da revisão.`
+      const { runId } = await driver.sendMessage({ session, message })
+      result = await driver.waitForRunCompletion(session, runId)
+    } catch (error) {
+      this.logger.warn("Revisão do Analista indisponível; seguindo com a promoção: " + describeError(error), { taskId: task.id })
+      return
+    }
+    if (result.state !== "final") {
+      this.logger.warn("Revisão final do Analista não concluiu: " + (result.errorMessage ?? result.state), { taskId: task.id })
+      return
+    }
     const changed = execSync("git status --porcelain --untracked-files=all", { cwd: workspace.path, encoding: "utf8" }).trim().split("\n").filter(Boolean)
     const files = changed.map((line) => line.slice(3).trim())
     if (files.some((file) => file !== contextFile)) throw new Error("Revisão do Analista alterou arquivo fora do permitido: " + files.join(", "))
@@ -2984,10 +2998,14 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     const params: unknown[] = subtaskId === null
       ? (numeric ? [blockReason, blockCommand, blockExcerpt, taskExternalId, taskExternalId] : [blockReason, blockCommand, blockExcerpt, taskExternalId])
       : (numeric ? [subtaskId, blockReason, blockCommand, blockExcerpt, taskExternalId, taskExternalId] : [subtaskId, blockReason, blockCommand, blockExcerpt, taskExternalId])
+    // A cláusula WHERE precisa ser resolvida ANTES da concatenação: com o
+    // ternário aplicado ao fim da concatenação, o operador `+` vence o `?:` e
+    // a query enviada viraria apenas a cláusula WHERE (SQL inválido).
+    const whereClause = numeric ? "WHERE t.external_id = ? OR t.id = ? LIMIT 1" : "WHERE t.external_id = ? LIMIT 1"
     await this.db.query(
       "INSERT INTO bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at) " +
       `SELECT t.id, ${subtaskSql}, ?, ?, ?, NOW() FROM tarefas t ` +
-      numeric ? "WHERE t.external_id = ? OR t.id = ? LIMIT 1" : "WHERE t.external_id = ? LIMIT 1",
+      whereClause,
       params,
     )
   }

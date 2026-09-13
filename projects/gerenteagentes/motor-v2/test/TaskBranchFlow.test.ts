@@ -235,8 +235,25 @@ describe("promoção da branch da tarefa para a base", () => {
     await internal.persistTaskBlock("taqui-quick-actions-20260903-04", null, "blocked_environment", "motor-v2:test", "excerpt")
 
     const [sql, params] = vi.mocked(db.query).mock.calls[0]!
+    expect(String(sql)).toContain("INSERT INTO bloqueios")
     expect(String(sql)).toContain("SELECT t.id")
     expect(String(sql)).toContain("t.external_id = ?")
-    expect(params).toEqual(["blocked_environment", "motor-v2:test", "excerpt", "taqui-quick-actions-20260903-04", "taqui-quick-actions-20260903-04"])
+    // External id textual: resolve somente por external_id (4 parâmetros).
+    expect(String(sql)).not.toContain("OR t.id = ?")
+    expect(params).toEqual(["blocked_environment", "motor-v2:test", "excerpt", "taqui-quick-actions-20260903-04"])
+  })
+
+  it("resolve external_id numérico aceitando também o id interno da tarefa", async () => {
+    const db = createDispatchDb([])
+    const coordinator = createCoordinator(db, createRepository(), createWorkspaceManager())
+    const internal = coordinator as unknown as {
+      persistTaskBlock: (taskId: string, subtaskId: number | null, reason: string, command: string, excerpt: string) => Promise<void>
+    }
+
+    await internal.persistTaskBlock("826", null, "blocked_environment", "motor-v2:test", "excerpt")
+
+    const [sql, params] = vi.mocked(db.query).mock.calls[0]!
+    expect(String(sql)).toContain("WHERE t.external_id = ? OR t.id = ? LIMIT 1")
+    expect(params).toEqual(["blocked_environment", "motor-v2:test", "excerpt", "826", "826"])
   })
 })
