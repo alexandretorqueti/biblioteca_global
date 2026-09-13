@@ -27,7 +27,7 @@ import { blockerEvidence } from "../policies/BlockerPolicy.js"
 import type { TaskTransition } from "../policies/TaskStateMachine.js"
 import { persistTaskClarificationAnswer, fetchPendingTaskClarification, fetchAnsweredTaskClarifications } from "../planning/ClarificationStore.js"
 import { createLogger, describeError } from "../shared/logger.js"
-import { ConsoleAgentRuntimeDriver, type RemoteSessionFailure } from "../runtime/ConsoleAgentRuntimeDriver.js"
+import { ConsoleAgentRuntimeDriver, type RemoteSessionFailure, type RuntimeSession } from "../runtime/ConsoleAgentRuntimeDriver.js"
 import { getConfigNumber, getConfigString } from "../config/MotorConfigReader.js"
 import { execFileSync, execSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
@@ -1771,9 +1771,12 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     const worker = this.activeWorkers.get(executionId)
     if (!worker || !this.beginFinalization(executionId, worker)) return
     this.publishActivity(worker, { type: "clarifying", level: "info", message: "Aguardando interação humana no checkpoint" })
+    const task = await this.repository.getTask(worker.taskId)
+    if (task) await this.saveTaskTransition(task, "interaction_requested", { errorMessage: summary })
     this.eventBus.publish({
-      type: "progress", executionId, taskId: worker.taskId, subtaskId: worker.subtaskId,
-      phase: worker.phase, level: "info", message: "Tarefa aguardando você no chat", timestamp: new Date(),
+      type: "task.interaction.awaiting", executionId, taskId: worker.taskId, subtaskId: worker.subtaskId,
+      phase: worker.phase, level: "info", message: "Tarefa aguardando você no chat",
+      interactionPhase: phase, interactionSummary: summary, timestamp: new Date(),
     })
     this.logger.info("Tarefa aguardando interação humana", { taskId: worker.taskId, executionId, phase })
     await this.finishWorker(executionId, worker, { preserveWorkspace: true })
@@ -1821,14 +1824,67 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     const status = await this.facts.derive(taskId, task.status as Task["status"])
     if (rows.some((row) => row.modo === "solicitar_pausa") && [...this.activeWorkers.values()].some((worker) => worker.taskId === taskId)) {
       await this.db.query("UPDATE tarefa_contextos_execucao SET estado='checkpoint_requested', updated_at=NOW() WHERE tarefa_id=(SELECT id FROM tarefas WHERE " + lookup.sql + " LIMIT 1) AND estado='active'", lookup.params)
+      const worker = [...this.activeWorkers.values()].find((item) => item.taskId === taskId)
+      if (worker) this.eventBus.publish({ type: "task.interaction.checkpoint_requested", executionId: worker.executionId, taskId, subtaskId: worker.subtaskId, phase: worker.phase, interactionPhase: worker.phase === "analyze" ? "analysis" : "development", timestamp: new Date() })
     }
     if (status === "awaiting_clarification" && rows[0]) {
       await this.answerClarification(taskId, rows[0].texto, { jaPersistida: true })
       await this.db.query("UPDATE tarefa_chat_entregas SET estado='consumed', consumed_at=NOW(), updated_at=NOW() WHERE id=? AND estado='pending'", [rows[0].id])
       return { pending: Math.max(0, rows.length - 1), action: "clarification_resumed" }
     }
+    if (status === "awaiting_interaction" && rows.length > 0 && ![...this.activeWorkers.values()].some((worker) => worker.taskId === taskId)) {
+      const consumed = await this.deliverWaitingInteraction(taskId, rows)
+      return { pending: Math.max(0, rows.length - consumed), action: "queued" }
+    }
     await this.pump()
     return { pending: rows.length, action: "queued" }
+  }
+
+  private async deliverWaitingInteraction(taskId: string, rows: Array<{ id: number; mensagem_id: number; modo: string; texto: string }>): Promise<number> {
+    const lookup = taskIdentifierLookup(taskId)
+    const contextResult = await this.db.query(
+      "SELECT sessao_chave, agent_id FROM tarefa_contextos_execucao WHERE tarefa_id=(SELECT id FROM tarefas WHERE " + lookup.sql + " LIMIT 1) AND estado='awaiting_human' ORDER BY updated_at DESC LIMIT 1",
+      lookup.params,
+    )
+    const context = contextResult.rows[0]
+    if (!context?.sessao_chave) return 0
+    const baseUrl = process.env.OPENCLAW_CONSOLE_URL
+    const token = process.env.OPENCLAW_CONSOLE_TOKEN
+    if (!baseUrl || !token) return 0
+    const driver = new ConsoleAgentRuntimeDriver({ baseUrl, token })
+    const session: RuntimeSession = { key: String(context.sessao_chave), agentId: String(context.agent_id ?? "") }
+    let consumed = 0
+    for (const row of rows) {
+      try {
+        const sent = await driver.sendMessage({ session, message: "MENSAGEM DO RESPONSÁVEL — CONTINUAÇÃO DA INTERAÇÃO:\n\n" + row.texto })
+        const result = await driver.waitForRunCompletion(session, sent.runId)
+        if (result.state !== "final" || !result.content?.trim()) throw new Error(result.errorMessage || "Agente não respondeu")
+        await this.db.query("INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) SELECT tarefa_id, 'agent', ?, NOW() FROM tarefa_chat_entregas WHERE id=?", [result.content.trim().slice(0, 20000), row.id])
+        await this.db.query("UPDATE tarefa_chat_entregas SET estado='consumed', consumed_at=NOW(), delivered_at=COALESCE(delivered_at,NOW()), erro=NULL, updated_at=NOW() WHERE id=? AND estado='pending'", [row.id])
+        this.eventBus.publish({ type: "task.chat.delivery.updated", executionId: "chat-" + taskId, taskId, phase: "execute", messageId: row.mensagem_id, deliveryId: row.id, deliveryState: "consumed", timestamp: new Date() })
+        consumed++
+      } catch (error) {
+        await this.db.query("UPDATE tarefa_chat_entregas SET estado='failed', erro=?, updated_at=NOW() WHERE id=? AND estado='pending'", [String(error instanceof Error ? error.message : error).slice(0, 2000), row.id])
+      }
+    }
+    return consumed
+  }
+
+  /** Troca explícita de agente preservando a sessão e o histórico do Console. */
+  async switchTaskAgent(taskId: string, agentId: string, actor = "motor", reason = "troca explícita"): Promise<void> {
+    const task = await this.repository.getTask(taskId)
+    if (!task) throw new Error("Tarefa " + taskId + " nao encontrada")
+    const lookup = taskIdentifierLookup(taskId)
+    const { rows } = await this.db.query("SELECT id, sessao_chave, agent_id FROM tarefa_contextos_execucao WHERE tarefa_id=(SELECT id FROM tarefas WHERE " + lookup.sql + " LIMIT 1) ORDER BY updated_at DESC LIMIT 1", lookup.params)
+    const context = rows[0]
+    if (!context?.sessao_chave) throw new Error("Tarefa " + taskId + " nao possui sessao persistida")
+    const baseUrl = process.env.OPENCLAW_CONSOLE_URL
+    const token = process.env.OPENCLAW_CONSOLE_TOKEN
+    if (!baseUrl || !token) throw new Error("Console não configurado")
+    const driver = new ConsoleAgentRuntimeDriver({ baseUrl, token })
+    await driver.switchAgent({ key: String(context.sessao_chave), agentId: String(context.agent_id ?? "") }, agentId)
+    await this.db.query("UPDATE tarefa_contextos_execucao SET agent_id=?, updated_at=NOW() WHERE id=?", [agentId, context.id])
+    await this.db.query("INSERT INTO tarefa_eventos (tarefa_id, tarefa_external_id, evento, ator, origem, payload, created_at) SELECT id, external_id, 'agent_switched', ?, 'motor', ?, NOW() FROM tarefas WHERE " + lookup.sql + " LIMIT 1", [actor, JSON.stringify({ previousAgentId: context.agent_id ?? null, agentId, reason }), ...lookup.params])
   }
 
   /** Recupera claims interrompidos e checkpoints que sobreviveram ao restart. */
@@ -1853,8 +1909,22 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     const task = await this.repository.getTask(taskId)
     if (!task) throw new Error("Tarefa " + taskId + " nao encontrada")
     const lookup = taskIdentifierLookup(taskId)
+    const contextResult = await this.db.query(
+      "SELECT fase FROM tarefa_contextos_execucao WHERE tarefa_id=(SELECT id FROM tarefas WHERE " + lookup.sql + " LIMIT 1) AND estado='awaiting_human' ORDER BY updated_at DESC LIMIT 1",
+      lookup.params,
+    )
+    const context = contextResult.rows[0] as { fase?: string } | undefined
+    if (!context) throw new Error("Tarefa " + taskId + " nao possui interação aguardando retomada")
     await this.db.query("UPDATE tarefa_contextos_execucao SET estado='ready_to_resume', updated_at=NOW() WHERE tarefa_id=(SELECT id FROM tarefas WHERE " + lookup.sql + " LIMIT 1) AND estado='awaiting_human'", lookup.params)
+    // A interação terminou; o pump precisa enxergar a tarefa novamente como
+    // elegível, sem criar um novo plano nem uma nova sessão conversacional.
+    await this.saveTaskTransition(task, "interaction_resumed")
     const result = await this.pumpTaskChat(taskId)
+    this.eventBus.publish({
+      type: "task.interaction.resumed", executionId: "chat-" + taskId, taskId, phase: "execute",
+      interactionPhase: context.fase === "analysis" ? "analysis" : context.fase === "verification" ? "verification" : "development",
+      timestamp: new Date(),
+    })
     return { pending: result.pending, action: "resumed" }
   }
 
@@ -3190,6 +3260,8 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
       analysis_completed: "ready",
       await_clarification: "awaiting_clarification",
       clarification_answered: "planned",
+      interaction_requested: "awaiting_interaction",
+      interaction_resumed: "ready",
       start_execution: "running",
       execution_completed: "completed",
       deploy_completed: "deployed",

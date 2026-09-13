@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import type { ExecutionPhase } from '../shared/types/execution.js'
 
-export type ExecutionActivityType = 'started' | 'progress' | 'log' | 'heartbeat' | 'completed' | 'failed' | 'model_unavailable' | 'developer_branch_integrated' | 'deployed' | 'clarifying' | 'system_alert' | 'system_recovered' | 'task.chat.delivery.updated'
+export type ExecutionActivityType = 'started' | 'progress' | 'log' | 'heartbeat' | 'completed' | 'failed' | 'model_unavailable' | 'developer_branch_integrated' | 'deployed' | 'clarifying' | 'system_alert' | 'system_recovered' | 'task.chat.delivery.updated' | 'task.interaction.checkpoint_requested' | 'task.interaction.awaiting' | 'task.interaction.resumed'
 
 export interface ExecutionActivityEvent {
   type: ExecutionActivityType
@@ -20,6 +20,8 @@ export interface ExecutionActivityEvent {
   deliveryId?: number
   deliveryState?: 'pending' | 'delivering' | 'delivered' | 'consumed' | 'cancelled' | 'failed'
   deliveryError?: string
+  interactionPhase?: 'analysis' | 'development' | 'verification'
+  interactionSummary?: string
   timestamp: Date
 }
 

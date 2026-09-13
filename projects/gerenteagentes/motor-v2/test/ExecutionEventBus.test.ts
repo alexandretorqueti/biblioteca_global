@@ -58,4 +58,24 @@ describe('ExecutionEventBus', () => {
 
     expect(handler).toHaveBeenCalledWith(event)
   })
+
+  it('aceita o ciclo explícito de checkpoint, espera e retomada', () => {
+    const bus = new ExecutionEventBus()
+    const handler = vi.fn()
+    bus.on(handler)
+    const base = {
+      executionId: 'exec-interaction', taskId: 'task-interaction', phase: 'execute' as const,
+      interactionPhase: 'development' as const, timestamp: new Date(),
+    }
+
+    bus.publish({ ...base, type: 'task.interaction.checkpoint_requested' as const })
+    bus.publish({ ...base, type: 'task.interaction.awaiting' as const, interactionSummary: 'Aguardando decisão' })
+    bus.publish({ ...base, type: 'task.interaction.resumed' as const })
+
+    expect(handler).toHaveBeenCalledTimes(3)
+    expect(handler.mock.calls.map(([event]) => event.type)).toEqual([
+      'task.interaction.checkpoint_requested', 'task.interaction.awaiting', 'task.interaction.resumed',
+    ])
+    expect(handler.mock.calls[1]?.[0]).toMatchObject({ interactionSummary: 'Aguardando decisão' })
+  })
 })

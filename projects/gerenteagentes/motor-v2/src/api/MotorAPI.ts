@@ -113,6 +113,8 @@ export class MotorAPI {
         this.handleChatPump(res, taskId)
       } else if (req.method === 'POST' && taskId && taskAction === 'chat-resume') {
         this.handleChatResume(res, taskId)
+      } else if (req.method === 'POST' && taskId && taskAction === 'chat-agent') {
+        this.handleChatAgent(req, res, taskId)
       } else {
         this.json(res, 404, { ok: false, error: 'Not found' })
       }
@@ -137,6 +139,15 @@ export class MotorAPI {
     } catch (error) {
       this.json(res, 400, { ok: false, error: error instanceof Error ? error.message : 'Chat resume failed' })
     }
+  }
+
+  private handleChatAgent(req: IncomingMessage, res: ServerResponse, taskId: string): void {
+    this.readBody(req).then(async (body) => {
+      const agentId = typeof body?.agentId === 'string' ? body.agentId.trim() : ''
+      if (!agentId) throw new Error('agentId é obrigatório')
+      await this.coordinator.switchTaskAgent(taskId, agentId, typeof body?.actor === 'string' ? body.actor : 'motor', typeof body?.reason === 'string' ? body.reason : 'troca explícita')
+      this.json(res, 200, { ok: true, agentId })
+    }).catch((error) => this.json(res, 400, { ok: false, error: error instanceof Error ? error.message : 'Agent switch failed' }))
   }
 
   private async handleGetTask(res: ServerResponse, taskId: string): Promise<void> {

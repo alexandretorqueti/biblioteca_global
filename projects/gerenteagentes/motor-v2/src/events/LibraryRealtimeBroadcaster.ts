@@ -55,6 +55,8 @@ export class LibraryRealtimeBroadcaster implements ExecutionActivityBroadcaster 
           ...(event.deliveryId != null ? { deliveryId: event.deliveryId } : {}),
           ...(event.deliveryState ? { state: event.deliveryState } : {}),
           ...(event.deliveryError ? { error: event.deliveryError } : {}),
+          ...(event.interactionPhase ? { phase: event.interactionPhase } : {}),
+          ...(event.interactionSummary ? { summary: event.interactionSummary.slice(0, 8000) } : {}),
         },
       }),
     })
