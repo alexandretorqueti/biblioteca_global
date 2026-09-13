@@ -63,6 +63,8 @@ export interface WorkerInput {
   context: ExecutionContext
   task: Task
   repoPath: string
+  /** Caminho absoluto autorizado para investigação do Analista. */
+  analystWorkspacePath?: string
   buildCommand: string
   testCommand: string
   subtask?: SubtaskInfo

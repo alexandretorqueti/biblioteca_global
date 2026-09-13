@@ -913,6 +913,9 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
           phase: "analyze", fencingToken, startedAt: new Date(),
         },
         task, repoPath: task.repoPath,
+        // Sessões normais do Console não aceitam cwd fixado; o caminho absoluto
+        // segue explicitamente no briefing do Analista para leitura/investigação.
+        analystWorkspacePath: task.repoPath,
         buildCommand: task.buildCommand, testCommand: task.unitTestCommand,
         modelPhase: "analysis",
         modelChain: await this.getProjectModelChain(task.projectSlug, "analysis"),

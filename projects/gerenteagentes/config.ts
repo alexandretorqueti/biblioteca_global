@@ -51,6 +51,16 @@ export const config: GeradorSistemaConfig = {
           },
         },
         {
+          id: "mapa-agentes-view",
+          label: "Mapa de agentes",
+          path: "mapa-agentes",
+          icon: "account_tree",
+          screen: {
+            kind: "custom",
+            componentId: "gerenteagentes-operation-map",
+          },
+        },
+        {
           id: "isa-chat-view",
           label: "Conversar com a Isa",
           path: "isa-chat",

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import { TaskWorker, analystCorrectiveFeedback, analystPlanRejectionFeedback, formatAnalystOutputContract, splitAnalystDescription, truncateDescriptionForAnalyst } from "../src/workers/TaskWorker.js"
 
 type PromptBuilder = {
-  buildAnalystPrompt: (task: { title: string; description?: string }, clarificationHistory?: string) => string
+  buildAnalystPrompt: (task: { title: string; description?: string }, clarificationHistory?: string, analystWorkspacePath?: string) => string
 }
 
 function buildPrompt(task: { title: string; description?: string }): string {
@@ -57,6 +57,13 @@ describe("buildAnalystPrompt (limites anti-truncamento)", () => {
     const prompt = buildPrompt({ title: "Tarefa exemplo", description: "descricao" })
     expect(prompt).toContain('"subtarefas": [')
     expect(prompt).toContain('"kind": "perguntas"')
+  })
+
+  it("informa o repositório e exige o contexto transversal", () => {
+    const worker = new TaskWorker() as unknown as PromptBuilder
+    const prompt = worker.buildAnalystPrompt({ title: "Tarefa", description: "descricao" }, undefined, "/tmp/projeto")
+    expect(prompt).toContain("/tmp/projeto")
+    expect(prompt).toContain("docs/CONTEXTO-ANALISTA.md")
   })
 })
 

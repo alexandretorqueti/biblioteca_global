@@ -67,6 +67,7 @@ describe("registry de telas custom", () => {
       "documentation",
       "gerenteagentes-dashboard",
       "gerenteagentes-task-monitor",
+      "gerenteagentes-operation-map",
       "gerenteagentes-isa-chat",
       "gerenteagentes-model-selection",
       "gerenteagentes-prompts",

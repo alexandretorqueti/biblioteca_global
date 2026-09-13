@@ -442,7 +442,8 @@ class TaskWorker {
 
     const driver = this.createDriver()
     const chain = this.chainFor(input, "analysis")
-    const embeddedPrompt = this.buildAnalystPrompt(input.task, clarificationHistory)
+    const analystWorkspacePath = input.analystWorkspacePath ?? input.repoPath
+    const embeddedPrompt = this.buildAnalystPrompt(input.task, clarificationHistory, analystWorkspacePath)
     const promptKey = clarificationHistory ? "analista.retomada_apos_clarificacao" : "analista.primeira_rodada_tarefa"
     const promptResolver = new ManagedPromptResolver(planningDb)
     const descriptionChunks = splitAnalystDescription(input.task.description)
@@ -452,6 +453,7 @@ class TaskWorker {
       "**DESCRICAOTAREFA**": descriptionReference,
       "**TIPOTAREFA**": input.task.tipo ?? "desenvolvimento",
       "**HISTORICOCLARIFICACAO**": clarificationHistory ?? "",
+      "**WORKSPACE**": analystWorkspacePath,
     }, fallback: embeddedPrompt, taskId: input.task.id })
     const fullContract = formatAnalystOutputContract(resolvedPrompt.outputContract)
     const prompt = `${resolvedPrompt.text}\n\n${fullContract}\n\nCONFIRMACAO DE CONTEXTO: a descricao possui ${(input.task.description?.trim() || "N/A").length} caracteres e terminou no marcador FIM DA DESCRICAO. Se algum bloco ou marcador estiver ausente, responda pela forma de perguntas informando exatamente o bloco ausente.`
@@ -1838,7 +1840,7 @@ class TaskWorker {
     return db
   }
 
-  private buildAnalystPrompt(task: { title: string; description?: string; tipo?: string }, clarificationHistory?: string): string {
+  private buildAnalystPrompt(task: { title: string; description?: string; tipo?: string }, clarificationHistory?: string, analystWorkspacePath?: string): string {
     const lightweight = task.tipo === "automacao" || task.tipo === "verificacao"
     const lines = [
       lightweight
@@ -1847,6 +1849,8 @@ class TaskWorker {
       "",
       "Tarefa: " + task.title,
       "Descricao integral (nao truncar nem omitir secoes): " + (task.description?.trim() || "N/A"),
+      "Repositorio/workspace autorizado para leitura: " + (analystWorkspacePath || "N/A"),
+      "Leia primeiro docs/CONTEXTO-ANALISTA.md nesse repositorio. Ele e o contexto inicial; para a area afetada, siga as referencias dele e confirme no codigo e nos contratos vigentes.",
       "",
       "Responda APENAS com JSON valido, em UMA das duas formas abaixo.",
       "",
