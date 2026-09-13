@@ -253,6 +253,69 @@
       "when": 1789170120000,
       "tag": "0035_monitor_recovery_prompt",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "5",
+      "when": 1789170180000,
+      "tag": "0036_developer_database_operation_contract",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "5",
+      "when": 1789170240000,
+      "tag": "0037_developer_database_access_guard",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "5",
+      "when": 1789170300000,
+      "tag": "0038_analyst_context_document",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "5",
+      "when": 1789170360000,
+      "tag": "0039_developer_contextual_prompt",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "5",
+      "when": 1789170420000,
+      "tag": "0040_modelo_cooldown",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "5",
+      "when": 1789170480000,
+      "tag": "0041_developer_task_description_prompt",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "5",
+      "when": 1789170540000,
+      "tag": "0018_remove_duplicated_fields",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "5",
+      "when": 1789170600000,
+      "tag": "0028_v4_analyst_cohesion",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "5",
+      "when": 1789170660000,
+      "tag": "0030_remove_tarefas_status",
+      "breakpoints": true
     }
   ]
 }
