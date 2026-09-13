@@ -679,6 +679,7 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
       "LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id = pc.id " +
       "LEFT JOIN task_runtime_facts f ON f.tarefa_id = t.id " +
       "WHERE f.terminal_status IS NULL AND f.analysis_started_at IS NULL " +
+      "AND t.paused_at IS NULL " +
       "AND NOT EXISTS (SELECT 1 FROM subtarefas s WHERE s.tarefa_id = t.id) " +
       "AND NOT EXISTS (SELECT 1 FROM bloqueios b WHERE b.tarefa_id = t.id AND b.resolved_at IS NULL) " +
       "AND COALESCE((SELECT c.role FROM tarefa_chats c WHERE c.tarefa_id = t.id AND c.role IN ('analyst', 'user') ORDER BY c.id DESC LIMIT 1), '') <> 'analyst' " +
@@ -791,8 +792,9 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
       // execução; uma subtarefa ativa ou bloqueada impede outra seleção da
       // mesma tarefa. `tarefas.status` fica somente como compatibilidade para
       // os terminais administrativos e a clarificação ainda legada.
-      // Se a tarefa tem paused_at mas também tem resource_wait_key, ela está
-      // aguardando recurso (não está pausada pelo usuário), então pode ser selecionada.
+      // A exceção de resource_wait_key mantém a retomada automática da fila
+      // de recursos. pauseTask() limpa esse campo junto com paused_at, então
+      // uma pausa explícita continua impedindo qualquer nova seleção.
       "WHERE s.status = 'pending' AND (t.paused_at IS NULL OR t.resource_wait_key IS NOT NULL) " +
       "AND NOT EXISTS (SELECT 1 FROM task_runtime_facts f WHERE f.tarefa_id = t.id AND f.terminal_status IS NOT NULL) " +
       "AND NOT EXISTS (SELECT 1 FROM bloqueios b WHERE b.tarefa_id = t.id AND b.resolved_at IS NULL) " +
@@ -963,10 +965,26 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
       if (!isLightweightTask(subtask.taskTipo)) this.assertExecutionConfig(subtask)
       // Presença persistida e status running nascem juntos: o reconciliador
       // nunca observa uma subtarefa running sem uma execução correspondente.
-      await this.db.transaction(async (tx) => {
+      const started = await this.db.transaction(async (tx) => {
+        // A seleção acontece antes deste ponto. O lock e a revalidação fecham
+        // a janela em que pauseTask() poderia marcar a tarefa pausada depois
+        // da seleção, mas antes de o worker ser registrado como running.
+        const { rows } = await tx.query(
+          "SELECT paused_at FROM tarefas WHERE external_id = ? OR id = CAST(? AS UNSIGNED) LIMIT 1 FOR UPDATE",
+          [subtask.taskExternalId, subtask.taskExternalId],
+        )
+        if (rows[0]?.paused_at) return false
         await this.registerActiveExecution(executionId, subtask.taskExternalId, subtask.id, "execute", tx)
         await tx.query("UPDATE subtarefas SET status = 'running', iniciada_em = NOW() WHERE id = ?", [subtask.id])
+        return true
       })
+      if (!started) {
+        this.activeWorkers.delete(executionId)
+        this.logger.info("Subtarefa não iniciada: tarefa foi pausada antes do registro", {
+          taskId: subtask.taskExternalId, subtaskId: subtask.id, executionId,
+        })
+        return false
+      }
       this.armActiveExecutionHeartbeat(executionId)
       const parentTask = await this.repository.getTask(subtask.taskExternalId)
       if (parentTask) {
@@ -2181,6 +2199,24 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
         break
       }
     }
+
+    if (workerAtivo) {
+      // A intenção precisa ser visível para o pump imediatamente. O worker
+      // atual continua até concluir a fase, mas nenhuma próxima subtarefa (ou
+      // análise) poderá ser selecionada durante essa finalização.
+      await this.db.transaction(async (tx) => {
+        await tx.query(
+          "SELECT id FROM tarefas WHERE external_id = ? OR id = CAST(? AS UNSIGNED) LIMIT 1 FOR UPDATE",
+          [taskId, taskId],
+        )
+        await tx.query(
+          "UPDATE tarefas SET paused_at = NOW(), resource_wait_key = NULL, resource_wait_id = NULL, resource_wait_position = NULL, updated_at = NOW() " +
+          "WHERE external_id = ? OR id = CAST(? AS UNSIGNED)",
+          [taskId, taskId],
+        )
+      })
+      this.logger.info("Pausa persistida; fase atual seguirá até finalizar", { taskId })
+    }
     
     // Se não há worker ativo, pausa imediatamente — em transação com lock de
     // linha para não correr com resumeNext (liberação de recurso concorrente
@@ -2227,6 +2263,9 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
       [taskId, taskId],
     )
     if (!rows[0]?.paused_at) throw new Error("Tarefa " + taskId + " nao esta pausada")
+    for (const worker of this.activeWorkers.values()) {
+      if (worker.taskId === taskId) worker.pendingPause = false
+    }
     await this.db.query(
       "UPDATE tarefas SET paused_at = NULL, updated_at = NOW() WHERE external_id = ? OR id = CAST(? AS UNSIGNED)",
       [taskId, taskId],

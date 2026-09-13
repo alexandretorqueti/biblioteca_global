@@ -594,6 +594,15 @@ describe('TaskCoordinator', () => {
         .find((query) => query.includes('f.analysis_started_at IS NULL'))
       expect(analysisQuery).toContain('NOT EXISTS (SELECT 1 FROM subtarefas')
     })
+
+    it('não seleciona para análise uma tarefa pausada', async () => {
+      await coordinator.pump()
+
+      const analysisQuery = vi.mocked(db.query).mock.calls
+        .map(([query]) => String(query))
+        .find((query) => query.includes('SELECT t.*, pc.slug as project_slug') && query.includes('f.analysis_started_at IS NULL'))
+      expect(analysisQuery).toContain('t.paused_at IS NULL')
+    })
   })
 
   describe('pause', () => {
@@ -628,7 +637,7 @@ describe('TaskCoordinator', () => {
       )).toBe(true)
     })
 
-    it('com worker ativo agenda pause graceful sem tocar no banco imediatamente', async () => {
+    it('com worker ativo persiste a pausa e mantém a finalização graceful', async () => {
       vi.mocked(repository.getTask).mockResolvedValue({
         id: 'task-91', chatId: '', agentId: 'agent', title: 'Pausar graceful', description: '',
         repoPath: '/repo', buildCommand: 'npm run build', unitTestCommand: 'npm run test',
@@ -644,9 +653,13 @@ describe('TaskCoordinator', () => {
 
       const worker = internal.activeWorkers.get('exec-pause-1')!
       expect(worker.pendingPause).toBe(true)
-      // Nenhuma query de pause imediato
+      // A intenção é persistida antes de a fase corrente terminar, impedindo
+      // que o pump selecione uma próxima subtarefa durante a finalização.
       const queries = vi.mocked(db.query).mock.calls.map(([sql]) => String(sql))
-      expect(queries.some((sql) => sql.includes('paused_at = NOW()'))).toBe(false)
+      expect(queries.some((sql) =>
+        sql.includes('paused_at = NOW()') &&
+        sql.includes('resource_wait_key = NULL')
+      )).toBe(true)
 
       internal.activeWorkers.delete('exec-pause-1')
     })
