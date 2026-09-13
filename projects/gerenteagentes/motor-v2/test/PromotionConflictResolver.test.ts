@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { buildResolutionMission, monitorResolutionWorktreeParent, resolutionAttemptSessionIdentity } from "../src/promotion-conflicts/PromotionConflictResolver.js"
+import { buildResolutionMission, monitorResolutionWorktreeParent, repositoryProjectRelativePath, resolutionAttemptSessionIdentity } from "../src/promotion-conflicts/PromotionConflictResolver.js"
 
 const candidate = {
   taskId: "task-p2-811",
@@ -21,6 +21,12 @@ const evidence = {
 }
 
 describe("PromotionConflictResolver workspace", () => {
+  it("aceita a raiz do repositório como projeto e normaliza para .", () => {
+    expect(repositoryProjectRelativePath("/repo", "/repo")).toBe(".")
+    expect(repositoryProjectRelativePath("/repo", "/repo/motor-v2")).toBe("motor-v2")
+    expect(repositoryProjectRelativePath("/repo", "/outside/project")).toBeNull()
+  })
+
   it("cria a tentativa dentro do workspace autorizado do Monitor", () => {
     const parent = monitorResolutionWorktreeParent(
       "/data/workspace/projects/agentes/programador-senior",

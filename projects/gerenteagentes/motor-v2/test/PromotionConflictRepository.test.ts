@@ -26,5 +26,14 @@ describe("PromotionConflictRepository", () => {
     expect(claimed).toBe(true)
     expect(String(query.mock.calls[0]?.[0])).toContain("INSERT IGNORE")
   })
-})
 
+  it("persiste uma mensagem genérica quando a falha chega vazia", async () => {
+    const query = vi.fn().mockResolvedValue(empty)
+    await new PromotionConflictRepository({ query, transaction: vi.fn() } as unknown as Db).fail("d".repeat(64), "   ")
+
+    expect(query).toHaveBeenCalledWith(expect.stringContaining("status = 'failed'"), [
+      "Falha não identificada na resolução automática do conflito",
+      "d".repeat(64),
+    ])
+  })
+})

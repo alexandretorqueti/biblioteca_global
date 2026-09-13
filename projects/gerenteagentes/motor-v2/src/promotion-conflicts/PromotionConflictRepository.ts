@@ -84,9 +84,10 @@ export class PromotionConflictRepository {
   }
 
   async fail(fingerprint: string, error: string): Promise<void> {
+    const reason = error.trim() || "Falha não identificada na resolução automática do conflito"
     await this.db.query(
       "UPDATE promotion_conflict_analyses SET status = 'failed', error_message = ?, updated_at = NOW() WHERE fingerprint = ?",
-      [error.slice(0, 2000), fingerprint],
+      [reason.slice(0, 2000), fingerprint],
     )
   }
 }

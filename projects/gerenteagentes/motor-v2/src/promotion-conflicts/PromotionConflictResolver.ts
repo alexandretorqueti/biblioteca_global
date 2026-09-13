@@ -68,6 +68,18 @@ function resolutionBranch(candidate: PromotionConflictCandidate, evidence: Promo
   return `motor-v2/promotion-resolution/${task}/${evidence.fingerprint.slice(0, 12)}`
 }
 
+/**
+ * Converte o caminho configurado do projeto em um caminho relativo à raiz Git.
+ * A raiz do repositório é um projeto válido e é representada por `.`; string
+ * vazia não pode ser usada como sinal de caminho inválido porque `relative()`
+ * retorna exatamente esse valor quando os dois caminhos são iguais.
+ */
+export function repositoryProjectRelativePath(root: string, repoPath: string): string | null {
+  const projectRelative = relative(resolve(root), resolve(repoPath))
+  if (projectRelative.startsWith(".." + sep) || isAbsolute(projectRelative) || projectRelative === "..") return null
+  return projectRelative || "."
+}
+
 export function buildResolutionMission(candidate: PromotionConflictCandidate, evidence: PromotionConflictEvidence, branch: string, workspacePath: string): string {
   return [
     "Você é o Monitor do Motor-v2 e recebeu uma missão de resolução de conflito Git.",
@@ -99,8 +111,8 @@ export class PromotionConflictResolver implements PromotionConflictResolverPort 
 
   async resolve(candidate: PromotionConflictCandidate, evidence: PromotionConflictEvidence): Promise<PromotionConflictResolutionResult> {
     const root = await git(candidate.repoPath, "rev-parse", "--show-toplevel")
-    const projectRelative = relative(root, resolve(candidate.repoPath))
-    if (!projectRelative || projectRelative.startsWith("..")) return { kind: "failed", reason: "repo_path fora do repositório Git" }
+    const projectRelative = repositoryProjectRelativePath(root, candidate.repoPath)
+    if (!projectRelative) return { kind: "failed", reason: "repo_path fora do repositório Git" }
 
     const branch = resolutionBranch(candidate, evidence)
     // Consulta o caminho canônico no Console; não use o workspace do agente
@@ -131,7 +143,10 @@ export class PromotionConflictResolver implements PromotionConflictResolverPort 
         })
         const sent = await this.driver.sendMessage({ session, message: buildResolutionMission(candidate, evidence, branch, projectPath), idempotencyKey: evidence.fingerprint })
         const completion = await this.driver.waitForRunCompletion(session, sent.runId)
-        if (completion.state !== "final") return { kind: "failed", reason: "Monitor não concluiu: " + (completion.errorMessage ?? completion.state) }
+        if (completion.state !== "final") {
+          const completionReason = completion.errorMessage?.trim() || completion.state || "estado desconhecido"
+          return { kind: "failed", reason: "Monitor não concluiu: " + completionReason }
+        }
         report = completion.content ?? "Monitor resolveu o conflito e os gates passaram."
       }
 
