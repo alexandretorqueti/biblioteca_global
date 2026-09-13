@@ -14,6 +14,8 @@ import { ResourceLeaseService } from "../resources/ResourceLeaseService.js"
 import { RESOURCE_KEYS } from "../shared/types/resources.js"
 import { WorkerLauncher } from "../workers/WorkerLauncher.js"
 import { type ModelPhase, type ModelSelection } from "../policies/ModelTierPolicy.js"
+import { ModelCooldownExhaustedError } from "../policies/ModelCooldownPolicy.js"
+import { ModelCooldownStore } from "../database/ModelCooldownStore.js"
 import { GitWorkspaceManager, taskIntegrationBranch, type TaskPromotionResult } from "../workspaces/GitWorkspaceManager.js"
 import { DependencyInstaller, resolveInstallTimeoutMs } from "../workspaces/DependencyInstaller.js"
 import { ResourceWaitManager } from "../resources/ResourceWaitManager.js"
@@ -927,7 +929,12 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
       })
       return true
     } catch (error) {
-      this.logger.error("Erro ao iniciar analise: " + describeError(error), { taskId: task.id, executionId, phase: "analyze" })
+      if (error instanceof ModelCooldownExhaustedError) {
+        // Análise apenas adiada: todos os modelos da cadeia em cooldown.
+        this.logger.warn("Análise adiada — " + error.message, { taskId: task.id, executionId, phase: "analyze" })
+      } else {
+        this.logger.error("Erro ao iniciar analise: " + describeError(error), { taskId: task.id, executionId, phase: "analyze" })
+      }
       if (resourceKey) await this.resourceLease.release(resourceKey, executionId, fencingToken)
       this.clearActiveExecutionHeartbeat(executionId)
       await this.removeActiveExecution(executionId)
@@ -1049,8 +1056,19 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
       return true
     } catch (error) {
       const reason = error instanceof Error ? (error.message || String(error)) : String(error)
-      const transientDb = /ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|PROTOCOL_CONNECTION_LOST|Connection lost/i.test(reason)
       const activeWorker = this.activeWorkers.get(executionId)
+      // Cadeia inteira em cooldown: não é falha de negócio nem bloqueio.
+      // A execução é apenas adiada; a tarefa volta à fila para o próximo pump.
+      if (error instanceof ModelCooldownExhaustedError) {
+        this.logger.warn("Execução adiada — " + reason, {
+          taskId: subtask.taskExternalId, subtaskId: subtask.id, executionId,
+        })
+        if (activeWorker && this.beginFinalization(executionId, activeWorker)) {
+          await this.finishWorker(executionId, activeWorker)
+        }
+        return false
+      }
+      const transientDb = /ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|PROTOCOL_CONNECTION_LOST|Connection lost/i.test(reason)
       if (activeWorker) {
         try {
           if (await this.tryRecoverInvalidWorkspace(executionId, activeWorker, `[startup] ${reason}`)) return false
@@ -3326,11 +3344,30 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     if (rows.length === 0) {
       throw new Error(`Configuração de modelos ausente para o projeto ${projectSlug} na fase ${tipo}`)
     }
-    return rows.map((row) => ({
+    // Cooldown global por modelo: um provedor indisponível (sem token, cota
+    // esgotada, modelo removido) sai da cadeia até liberar. Sem isso, cada nova
+    // subtarefa reinicia a cadeia do zero e bate de novo no mesmo modelo
+    // quebrado como primeira tentativa.
+    const cooldowns = await new ModelCooldownStore(this.db).listActive()
+    const candidates = rows.map((row) => ({
       model: `${String(row.provider)}/${String(row.model)}`,
       position: Number(row.ordem) - 1,
       isLocal: String(row.provider).toLowerCase() === "ollama",
     }))
+    const available = candidates.filter((candidate) => !cooldowns.has(candidate.model))
+    if (available.length === 0) {
+      const until = [...cooldowns.values()]
+        .filter((cooldown) => candidates.some((candidate) => candidate.model === cooldown.model))
+        .sort((a, b) => a.until.getTime() - b.until.getTime())[0]?.until ?? null
+      throw new ModelCooldownExhaustedError(phase, projectSlug, until, candidates.map((candidate) => candidate.model))
+    }
+    if (available.length < candidates.length) {
+      const skipped = candidates.filter((candidate) => cooldowns.has(candidate.model)).map((candidate) => candidate.model)
+      this.logger.warn("Modelos em cooldown ignorados na cadeia " + tipo + " do projeto " + projectSlug + ": " + skipped.join(", "), {
+        projectSlug, phase,
+      })
+    }
+    return available
   }
 
   /**

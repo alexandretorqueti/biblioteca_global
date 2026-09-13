@@ -54,6 +54,8 @@ import {
 } from "../planning/ClarificationStore.js"
 import type { Db, QueryResult } from "../shared/types/infrastructure.js"
 import { resolveProjectDatabase } from "../database/DrizzleDb.js"
+import { ModelCooldownStore } from "../database/ModelCooldownStore.js"
+import { cooldownReason } from "../policies/ModelCooldownPolicy.js"
 import mysql from "mysql2/promise"
 import { getAgentReplyFailureReason } from "../policies/NoReplyFailurePolicy.js"
 import { validatePremiseRefutation, type PremiseRefutation } from "../policies/PremiseRefutationPolicy.js"
@@ -507,6 +509,7 @@ class TaskWorker {
             
             if (isUnavailable) {
               lastFailure = `Modelo indisponível durante contexto: ${model.model} — ${errorMessage}`
+              await this.markModelUnavailable(input.context.executionId, model.model, cooldownReason(contextResult.failure?.code, errorMessage))
               this.send({ type: "model_unavailable", executionId: input.context.executionId, model: model.model, message: lastFailure })
               this.log("warn", lastFailure + "; escalando para o próximo modelo da escada")
               contextFailedDueToUnavailable = true
@@ -669,6 +672,7 @@ class TaskWorker {
       } catch (error) {
         if (isModelUnavailableError(error)) {
           lastFailure = `Modelo indisponível: ${model.model}`
+          await this.markModelUnavailable(input.context.executionId, model.model, cooldownReason((error as { code?: string }).code, error instanceof Error ? error.message : String(error)))
           this.send({ type: "model_unavailable", executionId: input.context.executionId, model: model.model, message: lastFailure })
           this.log("warn", lastFailure)
           continue
@@ -954,6 +958,7 @@ class TaskWorker {
               // idêntica significa que o modelo não está entregando — escalar.
               if (shouldSkipModelAfterRemoteFailure(result.failure, repeats)) {
                 lastFailure = `Modelo indisponível: ${model.model} — ${remoteReason}`
+                await this.markModelUnavailable(input.context.executionId, model.model, cooldownReason(result.failure.code, result.failure.message))
                 this.send({ type: "model_unavailable", executionId: input.context.executionId, model: model.model, message: lastFailure })
                 this.log("warn", lastFailure)
                 continue modelLoop
@@ -1171,6 +1176,7 @@ class TaskWorker {
         } catch (error) {
           if (isModelUnavailableError(error)) {
             lastFailure = `Modelo indisponível: ${model.model}`
+            await this.markModelUnavailable(input.context.executionId, model.model, cooldownReason((error as { code?: string }).code, error instanceof Error ? error.message : String(error)))
             this.send({ type: "model_unavailable", executionId: input.context.executionId, model: model.model, message: lastFailure })
             this.log("warn", lastFailure)
             continue modelLoop
@@ -1674,6 +1680,43 @@ class TaskWorker {
       .filter((path) => path.length > 0 && isTestPath(path))
     const changedTests = this.listChangedPaths(repoPath).filter((path) => isTestPath(path))
     return [...new Set([...listed, ...changedTests])]
+  }
+
+  /**
+   * Registra o modelo como indisponível na tabela global de cooldown.
+   * Best-effort: falha de persistência nunca derruba a escalada de modelos.
+   * O motivo recebido deve ser a assinatura CRUA do provedor/sessão (não o
+   * rótulo "Modelo indisponível", que é classificado à parte).
+   */
+  private async markModelUnavailable(executionId: string, model: string, reason: string): Promise<void> {
+    const store = this.modelCooldowns()
+    if (!store) return
+    try {
+      const applied = await store.register({ model, reason })
+      this.log("warn", `Cooldown aplicado: ${applied.model} (${applied.classe}, strikes=${applied.strikes}) até ${applied.until.toISOString()}`)
+      this.send({ type: "log", executionId, level: "warn", message: `Modelo ${applied.model} em cooldown até ${applied.until.toISOString()}` })
+    } catch (error) {
+      this.log("warn", "Falha ao registrar cooldown do modelo " + model + ": " + (error instanceof Error ? error.message : String(error)))
+    }
+  }
+
+  /**
+   * Adapta a conexão mysql2 do worker ao contrato `Db` usado pelo cooldown.
+   * O worker não mantém uma instância de `Db`; a conversão fica local.
+   */
+  private modelCooldowns(): ModelCooldownStore | null {
+    const connection = this.db
+    if (!connection) return null
+    const adapt = (): Db => ({
+      query: async (sql: string, params?: unknown[]) => {
+        const [result] = await connection.query(sql, params as never)
+        if (Array.isArray(result)) return { rows: result as Record<string, unknown>[], affectedRows: 0, insertId: 0 }
+        const ok = result as { affectedRows?: number; insertId?: number } | undefined
+        return { rows: [], affectedRows: ok?.affectedRows ?? 0, insertId: ok?.insertId ?? 0 }
+      },
+      transaction: async <T>(fn: (db: Db) => Promise<T>) => fn(adapt()),
+    })
+    return new ModelCooldownStore(adapt())
   }
 
   /**

@@ -27,6 +27,7 @@ export function isModelUnavailableError(error: unknown): boolean {
   const code = candidate.code?.toLowerCase() ?? ""
   const message = candidate.message.toLowerCase()
   return candidate.status === 404 || candidate.status === 422 ||
+    candidate.status === 401 || candidate.status === 403 ||
     code.includes("model_not_found") || code.includes("model_unavailable") ||
     code.includes("provider_auth_error") || code.includes("missing_provider_auth") ||
     code.includes("authentication_error") || code.includes("invalid_api_key") ||

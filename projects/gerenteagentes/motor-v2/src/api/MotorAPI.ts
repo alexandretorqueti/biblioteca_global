@@ -6,6 +6,7 @@ import { createServer, type IncomingMessage, type ServerResponse, type Server } 
 import type { TaskCoordinator } from '../coordinator/TaskCoordinator.js'
 import { createLogger } from '../shared/logger.js'
 import type { Db } from '../shared/types/infrastructure.js'
+import { ModelCooldownStore } from '../database/ModelCooldownStore.js'
 
 export interface MotorAPIConfig {
   port: number
@@ -82,6 +83,10 @@ export class MotorAPI {
         this.handleSaveModelSelection(req, res, projectKey, tipo)
       } else if (req.method === 'GET' && path === '/api/modelos-console') {
         this.handleListModelsConsole(res)
+      } else if (req.method === 'GET' && path === '/api/motor/model-cooldowns') {
+        this.handleListModelCooldowns(res)
+      } else if (req.method === 'POST' && path === '/api/motor/model-cooldowns/reactivate') {
+        this.handleReactivateModelCooldown(req, res)
       } else if (req.method === 'GET' && path === '/api/motor/tasks/by-status') {
         this.handleGetTasksByStatus(res, url.searchParams.get('since'))
       }
@@ -207,8 +212,55 @@ export class MotorAPI {
       })
   }
 
-  private readBody(req: IncomingMessage): Promise<Record<string, unknown> | null> {
-    return new Promise((resolve, reject) => {
+  /** Lista os cooldowns de modelos (vigentes e históricos). */
+  private async handleListModelCooldowns(res: ServerResponse): Promise<void> {
+    if (!this.db) {
+      this.json(res, 503, { ok: false, error: 'Database not available' })
+      return
+    }
+    try {
+      const store = new ModelCooldownStore(this.db)
+      const rows = await this.db.query(
+        "SELECT provider, model, motivo_classe, motivo, strikes, bloqueado_ate, updated_at, " +
+        "(bloqueado_ate > NOW()) AS ativo FROM modelo_cooldown ORDER BY bloqueado_ate DESC",
+      )
+      const ativos = await store.listActiveOrdered()
+      this.json(res, 200, {
+        ok: true,
+        ativos: ativos.map((cooldown) => ({
+          model: cooldown.model, classe: cooldown.classe, strikes: cooldown.strikes, bloqueadoAte: cooldown.until.toISOString(),
+        })),
+        registros: rows.rows,
+      })
+    } catch (error) {
+      this.logger.error('Failed to list model cooldowns', { error })
+      this.json(res, 500, { ok: false, error: error instanceof Error ? error.message : 'Internal error' })
+    }
+  }
+
+  /** Reativa um modelo manualmente, removendo o cooldown. */
+  private async handleReactivateModelCooldown(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.db) {
+      this.json(res, 503, { ok: false, error: 'Database not available' })
+      return
+    }
+    try {
+      const body = await this.readBody(req)
+      const model = typeof body?.model === 'string' ? body.model.trim() : ''
+      if (!model || !model.includes('/')) {
+        this.json(res, 400, { ok: false, error: 'Informe model no formato provider/modelo' })
+        return
+      }
+      await new ModelCooldownStore(this.db).clear(model)
+      this.logger.info('Model cooldown reactivated', { model })
+      this.json(res, 200, { ok: true, model })
+    } catch (error) {
+      this.logger.error('Failed to reactivate model cooldown', { error })
+      this.json(res, 500, { ok: false, error: error instanceof Error ? error.message : 'Internal error' })
+    }
+  }
+
+  private readBody(req: IncomingMessage): Promise<Record<string, unknown> | null> {    return new Promise((resolve, reject) => {
       let data = ''
       req.on('data', (chunk) => { data += chunk })
       req.on('end', () => {
