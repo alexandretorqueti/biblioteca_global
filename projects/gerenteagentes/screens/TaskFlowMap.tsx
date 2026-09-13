@@ -401,13 +401,12 @@ export function getEffectiveStatus(task: FlowTask): string {
 
 const PAGE_SIZE = 10
 
-function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, legendaAtiva, movingIds, compacto, onSelectTask, taskMatchesLegenda, onStartTask, onPauseTask }: {
+function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, movingIds, compacto, onSelectTask, taskMatchesLegenda, onStartTask, onPauseTask }: {
   station: FlowStation
   tarefas: FlowTask[]
   tarefasFiltradas: FlowTask[]
   selectedTaskId: number | ""
   search: string
-  legendaAtiva: FlowStation["tone"] | null
   movingIds: Set<number>
   compacto: boolean
   onSelectTask: (id: number) => void
@@ -1307,7 +1306,6 @@ export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", moto
                   tarefasFiltradas={tarefasFiltradas}
                   selectedTaskId={selectedTaskId}
                   search={search}
-                  legendaAtiva={legendaAtiva}
                   movingIds={movingIds}
                   compacto={compacto}
                   onSelectTask={onSelectTask}
@@ -1360,7 +1358,6 @@ export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", moto
                   tarefasFiltradas={tarefasFiltradas}
                   selectedTaskId={selectedTaskId}
                   search={search}
-                  legendaAtiva={legendaAtiva}
                   movingIds={movingIds}
                   compacto={compacto}
                   onSelectTask={onSelectTask}
