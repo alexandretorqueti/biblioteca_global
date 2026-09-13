@@ -34,6 +34,7 @@ import {
   analystTaskSessions,
   analystTaskSessionMessages,
   tarefaEventos,
+  tarefaChatEntregas,
 } from '../schema';
 import {
   MOTOR_CONFIGURACOES,
@@ -1399,10 +1400,18 @@ export class GerenteAgentesService {
   async adicionarMensagemChatTarefa(
     projeto: ProjetoResumo,
     tarefaId: number,
-    role: string,
     texto: string,
+    modo: 'normal' | 'solicitar_pausa' = 'normal',
+    ator: { id: string; nome: string } = { id: 'usuario', nome: 'usuario' },
   ) {
     const db = await this.dbDoMotor();
+    const normalizedText = texto.replace(/\r\n/g, '\n').trim();
+    if (!normalizedText || normalizedText.length > 8000) {
+      throw new BadRequestException('A mensagem deve conter entre 1 e 8.000 caracteres');
+    }
+    if (modo !== 'normal' && modo !== 'solicitar_pausa') {
+      throw new BadRequestException('Modo de chat inválido');
+    }
     
     // Verificar se a tarefa pertence ao projeto
     const [tarefa] = await db
@@ -1415,43 +1424,27 @@ export class GerenteAgentesService {
       throw new NotFoundException('Tarefa não encontrada');
     }
 
-    const [mensagem] = await db
-      .insert(tarefaChats)
-      .values({
-        tarefaId,
-        role,
-        texto,
-        createdAt: new Date(),
-      })
-      .$returningId();
+    const mensagem = await db.transaction(async (tx) => {
+      const [created] = await tx.insert(tarefaChats).values({
+        tarefaId, role: 'user', texto: normalizedText, createdAt: new Date(),
+      }).$returningId();
+      if (!created) throw new BadRequestException('Falha ao criar mensagem');
+      await tx.insert(tarefaChatEntregas).values({
+        tarefaId, mensagemId: created.id, modo, atorId: ator.id, atorNome: ator.nome,
+        estado: 'pending', tentativas: 0, createdAt: new Date(),
+      });
+      return created;
+    });
 
     if (!mensagem) {
       throw new BadRequestException('Falha ao criar mensagem');
     }
 
-    // Clarificação interativa: se a tarefa está aguardando esclarecimento e a
-    // mensagem é uma resposta (role user), notifica o motor para gravar a
-    // retomada da análise com o histórico. A mensagem já foi persistida aqui.
-    // Como o status é calculado dinamicamente, consultamos o motor para verificar.
-    if (role === 'user') {
-      const motorId = tarefa.externalId || `task-${tarefa.id}`;
-      try {
-        const resp = await this.motorRequest(
-          'GET',
-          `/api/motor/task/${encodeURIComponent(motorId)}`,
-          null,
-          this.motorV2Url,
-        );
-        if (resp.ok) {
-          const motorTask = JSON.parse(resp.body) as { status?: string };
-          if (motorTask.status === 'awaiting_clarification') {
-            await this.encaminharRespostaClarificacao(tarefa, texto);
-          }
-        }
-      } catch {
-        // Se falhar, não encaminha (fallback silencioso)
-      }
-    }
+    // O wake-up ocorre depois da transação. Se o Motor estiver indisponível,
+    // a entrega pending será conciliada pelo próximo pump.
+    const motorId = tarefa.externalId || `task-${tarefa.id}`;
+    void this.motorRequest('POST', `/api/motor/task/${encodeURIComponent(motorId)}/chat-pump`, undefined, this.motorV2Url)
+      .catch(() => undefined);
 
     const createdAt = new Date();
     this.realtime?.publicar({
@@ -1464,13 +1457,23 @@ export class GerenteAgentesService {
       payload: {
         id: mensagem.id,
         tarefaId,
-        role,
-        texto,
+        role: 'user',
+        texto: normalizedText,
         createdAt: createdAt.toISOString(),
       },
     });
 
-    return { id: mensagem.id, tarefaId, role, texto, createdAt };
+    return { id: mensagem.id, tarefaId, role: 'user', texto: normalizedText, modo, estado: 'pending', createdAt };
+  }
+
+  async retomarInteracaoTarefa(projeto: ProjetoResumo, tarefaId: number) {
+    const db = await this.dbDoMotor();
+    const [tarefa] = await db.select().from(tarefas).where(eq(tarefas.id, tarefaId)).limit(1);
+    if (!tarefa) throw new NotFoundException('Tarefa não encontrada');
+    const motorId = tarefa.externalId || `task-${tarefa.id}`;
+    const response = await this.motorRequest('POST', `/api/motor/task/${encodeURIComponent(motorId)}/chat-resume`, undefined, this.motorV2Url);
+    if (!response.ok) throw new BadRequestException(`Motor não retomou a interação (${response.status})`);
+    return { ok: true, tarefaId, status: 'ready_to_resume' };
   }
 
   // ============================================================================

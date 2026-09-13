@@ -586,6 +586,53 @@ export const tarefaChats = mysqlTable("tarefa_chats", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 })
 
+/** Entrega durável de uma mensagem do operador ao contexto do Motor. */
+export const tarefaChatEntregas = mysqlTable("tarefa_chat_entregas", {
+  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+  tarefaId: bigint("tarefa_id", { mode: "number", unsigned: true }).notNull().references(() => tarefas.id, { onDelete: "cascade" }),
+  mensagemId: bigint("mensagem_id", { mode: "number", unsigned: true }).notNull().references(() => tarefaChats.id, { onDelete: "cascade" }),
+  modo: mysqlEnum("modo", ["normal", "solicitar_pausa", "retomar", "replanejar"]).notNull().default("normal"),
+  faseAlvo: mysqlEnum("fase_alvo", ["analysis", "development", "verification"]),
+  subtarefaId: bigint("subtarefa_id", { mode: "number", unsigned: true }),
+  sessaoChave: varchar("sessao_chave", { length: 200 }),
+  estado: mysqlEnum("estado", ["pending", "delivering", "delivered", "consumed", "cancelled", "failed"]).notNull().default("pending"),
+  atorId: varchar("ator_id", { length: 100 }),
+  atorNome: varchar("ator_nome", { length: 255 }),
+  tentativas: int("tentativas").notNull().default(0),
+  erro: text("erro"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  deliveredAt: timestamp("delivered_at"),
+  consumedAt: timestamp("consumed_at"),
+  updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+}, (table) => ({
+  tarefaEstadoIdx: index("tarefa_chat_entregas_tarefa_estado_idx").on(table.tarefaId, table.estado, table.id),
+  sessaoEstadoIdx: index("tarefa_chat_entregas_sessao_estado_idx").on(table.sessaoChave, table.estado),
+  mensagemUnique: uniqueIndex("tarefa_chat_entregas_mensagem_unique").on(table.mensagemId),
+}))
+
+/** Vínculo durável entre tarefa, subtarefa, worktree e sessão remota. */
+export const tarefaContextosExecucao = mysqlTable("tarefa_contextos_execucao", {
+  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+  tarefaId: bigint("tarefa_id", { mode: "number", unsigned: true }).notNull().references(() => tarefas.id, { onDelete: "cascade" }),
+  subtarefaId: bigint("subtarefa_id", { mode: "number", unsigned: true }),
+  fase: mysqlEnum("fase", ["analysis", "development"]).notNull(),
+  sessaoChave: varchar("sessao_chave", { length: 200 }).notNull(),
+  agentId: varchar("agent_id", { length: 200 }).notNull(),
+  modelo: varchar("modelo", { length: 160 }),
+  worktreePath: varchar("worktree_path", { length: 1000 }),
+  branchName: varchar("branch_name", { length: 255 }),
+  estado: mysqlEnum("estado", ["active", "checkpoint_requested", "awaiting_human", "ready_to_resume", "closed"]).notNull().default("active"),
+  lastRunId: varchar("last_run_id", { length: 200 }),
+  lastCheckpointAt: timestamp("last_checkpoint_at"),
+  resumoContexto: text("resumo_contexto"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  closedAt: timestamp("closed_at"),
+}, (table) => ({
+  tarefaFaseIdx: index("tarefa_contextos_execucao_tarefa_fase_idx").on(table.tarefaId, table.fase, table.subtarefaId),
+  sessaoIdx: index("tarefa_contextos_execucao_sessao_idx").on(table.sessaoChave, table.estado),
+}))
+
 export const projetoChats = mysqlTable("projeto_chats", {
   id: bigint("id", { mode: "number", unsigned: true })
     .primaryKey()

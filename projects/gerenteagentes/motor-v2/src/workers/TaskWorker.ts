@@ -525,6 +525,8 @@ class TaskWorker {
           continue
         }
 
+        await this.consumeChatAtCheckpoint(input, session, driver, "analysis")
+
         this.log("info", "Enviando prompt para analista (modelo " + model.model + ")...")
         const { runId } = await driver.sendMessage({ session, message: prompt })
         this.log("info", "Analista respondendo... runId=" + runId)
@@ -883,6 +885,7 @@ class TaskWorker {
             // por caminhos absolutos a partir do workspace do agente.
           })
           if (this.isDevelopmentTask(input)) await this.openDeveloperSession(subtask.id, model.model, session)
+          await this.consumeChatAtCheckpoint(input, session, driver, "development", subtask.id)
           const { header: embeddedHeader, context } = this.buildProgrammerPrompt(
             input.task,
             subtask,
@@ -1839,6 +1842,51 @@ class TaskWorker {
   }
 
   // === HELPERS ===
+
+  /**
+   * Entrega mensagens humanas somente em pontos seguros do pipeline. O claim
+   * condicional impede duplicidade após retries/restarts; comandos e testes em
+   * andamento nunca são interrompidos no meio.
+   */
+  private async consumeChatAtCheckpoint(
+    input: WorkerInput,
+    session: RuntimeSession,
+    driver: ConsoleAgentRuntimeDriver,
+    phase: "analysis" | "development" | "verification",
+    subtaskId?: number,
+  ): Promise<void> {
+    if (!this.db) return
+    const db = this.planningDb()
+    const numeric = /^\d+$/.test(input.task.id)
+    const predicate = numeric ? "(t.external_id = ? OR t.id = ?)" : "t.external_id = ?"
+    const taskParams = numeric ? [input.task.id, input.task.id] : [input.task.id]
+    const claimed = await db.query(
+      "UPDATE tarefa_chat_entregas e JOIN tarefas t ON t.id=e.tarefa_id SET e.estado='delivering', e.tentativas=e.tentativas+1, e.sessao_chave=?, e.fase_alvo=?, e.subtarefa_id=?, e.updated_at=NOW() WHERE " + predicate + " AND e.estado='pending' ORDER BY e.id ASC LIMIT 20",
+      [session.key, phase, subtaskId ?? null, ...taskParams],
+    )
+    if (claimed.affectedRows === 0) return
+    const pending = await db.query(
+      "SELECT e.id, e.mensagem_id, c.texto FROM tarefa_chat_entregas e JOIN tarefa_chats c ON c.id=e.mensagem_id JOIN tarefas t ON t.id=e.tarefa_id WHERE " + predicate + " AND e.estado='delivering' AND e.sessao_chave=? ORDER BY e.id ASC LIMIT 20",
+      [...taskParams, session.key],
+    )
+    for (const row of pending.rows as Array<{ id: number; mensagem_id: number; texto: string }>) {
+      try {
+        const sent = await driver.sendMessage({ session, message: [
+          "MENSAGEM DO RESPONSÁVEL — CHECKPOINT SEGURO",
+          `Fase: ${phase}${subtaskId ? `; subtarefa: ${subtaskId}` : ""}`,
+          "Responda primeiro no chat. Não faça commit, deploy, exclusão ou alteração irreversível sem autorização explícita.",
+          row.texto,
+        ].join("\n\n") })
+        const result = await driver.waitForRunCompletion(session, sent.runId, { onActivity: () => this.sendHeartbeat() })
+        if (result.state !== "final" || !result.content?.trim()) throw new Error(result.errorMessage || "Agente não respondeu ao chat")
+        await db.query("INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) SELECT tarefa_id, 'agent', ?, NOW() FROM tarefa_chat_entregas WHERE id=?", [result.content.trim().slice(0, 20000), row.id])
+        await db.query("UPDATE tarefa_chat_entregas SET estado='consumed', consumed_at=NOW(), delivered_at=COALESCE(delivered_at,NOW()), erro=NULL, updated_at=NOW() WHERE id=? AND estado='delivering'", [row.id])
+      } catch (error) {
+        await db.query("UPDATE tarefa_chat_entregas SET estado='failed', erro=?, updated_at=NOW() WHERE id=? AND estado='delivering'", [String(error instanceof Error ? error.message : error).slice(0, 2000), row.id])
+        this.log("warn", `Falha ao entregar mensagem de chat ${row.mensagem_id}: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  }
 
   private createDriver(): ConsoleAgentRuntimeDriver {
     const baseUrl = process.env.OPENCLAW_CONSOLE_URL

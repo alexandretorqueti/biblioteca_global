@@ -109,11 +109,33 @@ export class MotorAPI {
         this.handleDeployTask(res, taskId)
       } else if (req.method === 'POST' && taskId && taskAction === 'clarification') {
         this.handleClarification(req, res, taskId)
+      } else if (req.method === 'POST' && taskId && taskAction === 'chat-pump') {
+        this.handleChatPump(res, taskId)
+      } else if (req.method === 'POST' && taskId && taskAction === 'chat-resume') {
+        this.handleChatResume(res, taskId)
       } else {
         this.json(res, 404, { ok: false, error: 'Not found' })
       }
     } catch (error) {
       this.json(res, 500, { ok: false, error: error instanceof Error ? error.message : 'Internal error' })
+    }
+  }
+
+  private async handleChatPump(res: ServerResponse, taskId: string): Promise<void> {
+    try {
+      const result = await this.coordinator.pumpTaskChat(taskId)
+      this.json(res, 200, { ok: true, ...result })
+    } catch (error) {
+      this.json(res, 400, { ok: false, error: error instanceof Error ? error.message : 'Chat pump failed' })
+    }
+  }
+
+  private async handleChatResume(res: ServerResponse, taskId: string): Promise<void> {
+    try {
+      const result = await this.coordinator.resumeTaskChat(taskId)
+      this.json(res, 200, { ok: true, ...result })
+    } catch (error) {
+      this.json(res, 400, { ok: false, error: error instanceof Error ? error.message : 'Chat resume failed' })
     }
   }
 

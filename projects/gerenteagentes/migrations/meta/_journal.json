@@ -299,43 +299,50 @@
     {
       "idx": 42,
       "version": "5",
-      "when": 1789170540000,
-      "tag": "0018_remove_duplicated_fields",
-      "breakpoints": true
-    },
-    {
-      "idx": 43,
-      "version": "5",
-      "when": 1789170600000,
-      "tag": "0028_v4_analyst_cohesion",
-      "breakpoints": true
-    },
-    {
-      "idx": 44,
-      "version": "5",
-      "when": 1789170660000,
-      "tag": "0030_remove_tarefas_status",
-      "breakpoints": true
-    },
-    {
-      "idx": 45,
-      "version": "5",
       "when": 1789170720000,
       "tag": "0046_infrastructure_config",
       "breakpoints": true
     },
     {
-      "idx": 46,
+      "idx": 43,
       "version": "5",
       "when": 1789170780000,
       "tag": "0047_task_events",
       "breakpoints": true
     },
     {
-      "idx": 47,
+      "idx": 44,
       "version": "5",
       "when": 1789170840000,
       "tag": "0048_dev_database_migration_only",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "5",
+      "when": 1789170900000,
+      "tag": "0049_task_chat_realtime_execution",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "5",
+      "when": 1789170960000,
+      "tag": "0018_remove_duplicated_fields",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "5",
+      "when": 1789171020000,
+      "tag": "0028_v4_analyst_cohesion",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "5",
+      "when": 1789171080000,
+      "tag": "0030_remove_tarefas_status",
       "breakpoints": true
     }
   ]

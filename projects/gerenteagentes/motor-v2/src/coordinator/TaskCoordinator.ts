@@ -1780,6 +1780,40 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
   }
 
   /**
+   * Acorda o Motor após uma mensagem persistida pela Biblioteca. A fila é a
+   * fonte de verdade: o wake-up pode falhar sem perder a mensagem e chamadas
+   * repetidas são inofensivas. A entrega de mensagens durante um run fica
+   * pending até um checkpoint do worker, evitando concorrência de runs.
+   */
+  async pumpTaskChat(taskId: string): Promise<{ pending: number; action: "queued" | "clarification_resumed" }> {
+    const task = await this.repository.getTask(taskId)
+    if (!task) throw new Error("Tarefa " + taskId + " nao encontrada")
+    const lookup = taskIdentifierLookup(taskId)
+    const pendingRows = await this.db.query(
+      "SELECT e.id, e.mensagem_id, e.modo, c.texto FROM tarefa_chat_entregas e JOIN tarefa_chats c ON c.id=e.mensagem_id WHERE e.tarefa_id = (SELECT id FROM tarefas WHERE " + lookup.sql + " LIMIT 1) AND e.estado = 'pending' ORDER BY e.id ASC LIMIT 50",
+      lookup.params,
+    )
+    const rows = pendingRows.rows as Array<{ id: number; mensagem_id: number; modo: string; texto: string }>
+    const status = await this.facts.derive(taskId, task.status as Task["status"])
+    if (status === "awaiting_clarification" && rows[0]) {
+      await this.answerClarification(taskId, rows[0].texto, { jaPersistida: true })
+      await this.db.query("UPDATE tarefa_chat_entregas SET estado='consumed', consumed_at=NOW(), updated_at=NOW() WHERE id=? AND estado='pending'", [rows[0].id])
+      return { pending: Math.max(0, rows.length - 1), action: "clarification_resumed" }
+    }
+    await this.pump()
+    return { pending: rows.length, action: "queued" }
+  }
+
+  async resumeTaskChat(taskId: string): Promise<{ pending: number; action: "resumed" }> {
+    const task = await this.repository.getTask(taskId)
+    if (!task) throw new Error("Tarefa " + taskId + " nao encontrada")
+    const lookup = taskIdentifierLookup(taskId)
+    await this.db.query("UPDATE tarefa_contextos_execucao SET estado='ready_to_resume', updated_at=NOW() WHERE tarefa_id=(SELECT id FROM tarefas WHERE " + lookup.sql + " LIMIT 1) AND estado='awaiting_human'", lookup.params)
+    const result = await this.pumpTaskChat(taskId)
+    return { pending: result.pending, action: "resumed" }
+  }
+
+  /**
    * Conciliação de clarificações respondidas (chamada no pump): se a resposta
    * do usuário foi gravada no chat por um caminho que não notificou o motor,
    * detecta aqui e retoma a análise — a retomada não depende de aviso externo.

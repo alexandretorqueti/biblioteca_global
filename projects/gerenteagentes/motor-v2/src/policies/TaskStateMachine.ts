@@ -5,6 +5,7 @@ export type TaskTransition =
   | "execution_completed" | "deploy_completed" | "subtasks_pending" | "pause" | "resume"
   | "resume_without_plan" | "queue" | "recover" | "fail" | "cancel"
   | "await_clarification" | "clarification_answered"
+  | "interaction_requested" | "interaction_resumed"
 
 const taskTransitions: Record<TaskTransition, readonly TaskStatus[]> = {
   start_analysis: ["planned"],
@@ -14,6 +15,8 @@ const taskTransitions: Record<TaskTransition, readonly TaskStatus[]> = {
   // subtarefas ainda), de onde o pump a reenvia para análise.
   await_clarification: ["analyzing"],
   clarification_answered: ["awaiting_clarification"],
+  interaction_requested: ["analyzing", "running", "ready"],
+  interaction_resumed: ["awaiting_interaction"],
   start_execution: ["ready"],
   // Entre subtarefas, a tarefa volta para `ready` para que o coordenador
   // possa selecionar a próxima. A última subtarefa pode, portanto, concluir
@@ -63,6 +66,8 @@ export function transitionTask(current: TaskStatus, transition: TaskTransition):
     analysis_completed: "ready",
     await_clarification: "awaiting_clarification",
     clarification_answered: "planned",
+    interaction_requested: "awaiting_interaction",
+    interaction_resumed: "ready",
     start_execution: "running",
     execution_completed: "completed",
     deploy_completed: "deployed",

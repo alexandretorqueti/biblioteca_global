@@ -7,7 +7,8 @@ SELECT p.id, COALESCE(MAX(v.versao), 0) + 1,
     'Para tarefas que exigem mudança ou importação de dados, crie a migration correta no diretório de migrations do projeto. Não abra conexão TCP/MySQL, não procure credenciais e não execute SQL. Responda com status database_operation e script_path relativo da migration para revisão e aplicação no fluxo de deploy.'),
     'Para qualquer alteração no banco do projeto, escreva um único arquivo .sql UTF-8 dentro deste workspace; não procure nem peça credenciais e não o execute. Responda com status database_operation e script_path relativo para o Motor executar o arquivo no banco da tarefa.',
     'Para tarefas que exigem mudança ou importação de dados, crie a migration correta no diretório de migrations do projeto. Não abra conexão TCP/MySQL, não procure credenciais e não execute SQL. Responda com status database_operation e script_path relativo da migration para revisão e aplicação no fluxo de deploy.'),
-  p.versao_ativa_id, 'DEV cria migration; Motor não executa SQL', 'sistema', JSON_OBJECT('ok', true)
+  (SELECT c.versao_ativa_id FROM prompts_contratos c WHERE c.chave = 'dev.resultado_execucao'),
+  'DEV cria migration; Motor não executa SQL', 'sistema', JSON_OBJECT('ok', true)
 FROM prompts_agentes p LEFT JOIN prompts_versoes v ON v.prompt_id = p.id
 WHERE p.chave = 'dev.primeira_rodada_tarefa'
 GROUP BY p.id, p.conteudo, p.versao_ativa_id;

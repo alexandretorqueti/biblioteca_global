@@ -201,10 +201,20 @@ export class GerenteAgentesController {
   @Roles('admin', 'gerente', 'operador')
   adicionarMensagemChatTarefa(
     @CurrentProject() projeto: ProjetoResumo,
+    @CurrentUser() usuario: UsuarioAutenticado,
     @Param('id', ParseIntPipe) id: number,
-    @Body() body: { role: string; texto: string },
+    @Body() body: { texto: string; modo?: 'normal' | 'solicitar_pausa' },
   ) {
-    return this.service.adicionarMensagemChatTarefa(projeto, id, body.role, body.texto);
+    return this.service.adicionarMensagemChatTarefa(projeto, id, body.texto, body.modo, {
+      id: String(usuario.id),
+      nome: usuario.email || usuario.username || String(usuario.id),
+    });
+  }
+
+  @Post('tarefas/:id/interacao/retomar')
+  @Roles('admin', 'gerente', 'operador')
+  retomarInteracaoTarefa(@CurrentProject() projeto: ProjetoResumo, @Param('id', ParseIntPipe) id: number) {
+    return this.service.retomarInteracaoTarefa(projeto, id);
   }
 
   // ============================================================================
