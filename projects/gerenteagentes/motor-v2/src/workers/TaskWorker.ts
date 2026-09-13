@@ -1882,11 +1882,22 @@ class TaskWorker {
     } catch (error) {
       this.log("warn", "Falha ao persistir contexto de execução: " + (error instanceof Error ? error.message : String(error)))
     }
-    const claimed = await db.query(
-      "UPDATE tarefa_chat_entregas e JOIN tarefas t ON t.id=e.tarefa_id SET e.estado='delivering', e.tentativas=e.tentativas+1, e.sessao_chave=?, e.fase_alvo=?, e.subtarefa_id=?, e.updated_at=NOW() WHERE " + predicate + " AND e.estado='pending' ORDER BY e.id ASC LIMIT 20",
-      [session.key, phase, subtaskId ?? null, ...taskParams],
+    // MySQL não aceita ORDER BY/LIMIT nessa forma de UPDATE com JOIN. Primeiro
+    // selecionamos um lote determinístico e depois fazemos claims condicionais;
+    // a condição `estado='pending'` mantém a operação idempotente em retries.
+    const candidates = await db.query(
+      "SELECT e.id FROM tarefa_chat_entregas e JOIN tarefas t ON t.id=e.tarefa_id WHERE " + predicate + " AND e.estado='pending' ORDER BY e.id ASC LIMIT 20",
+      taskParams,
     )
-    if (claimed.affectedRows === 0) return
+    let claimedCount = 0
+    for (const candidate of candidates.rows as Array<{ id: number }>) {
+      const claimed = await db.query(
+        "UPDATE tarefa_chat_entregas SET estado='delivering', tentativas=tentativas+1, sessao_chave=?, fase_alvo=?, subtarefa_id=?, updated_at=NOW() WHERE id=? AND estado='pending'",
+        [session.key, phase, subtaskId ?? null, candidate.id],
+      )
+      claimedCount += claimed.affectedRows
+    }
+    if (claimedCount === 0) return
     const pending = await db.query(
       "SELECT e.id, e.mensagem_id, e.modo, c.texto FROM tarefa_chat_entregas e JOIN tarefa_chats c ON c.id=e.mensagem_id JOIN tarefas t ON t.id=e.tarefa_id WHERE " + predicate + " AND e.estado='delivering' AND e.sessao_chave=? ORDER BY e.id ASC LIMIT 20",
       [...taskParams, session.key],
