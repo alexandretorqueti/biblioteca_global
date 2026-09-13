@@ -19,6 +19,7 @@ export type WorkerToCoordinatorMessage =
   | { type: 'waiting_resource'; executionId: string; resourceKey: string; waitId: number; position: number }
   | { type: 'completed'; executionId: string; result: ExecutionResult }
   | { type: 'clarifying'; executionId: string; questionCount: number; summary?: string }
+  | { type: 'interaction_awaiting'; executionId: string; phase: 'analysis' | 'development' | 'verification'; summary?: string }
   | { type: 'failed'; executionId: string; error: string; sessionFailure?: RemoteSessionFailure }
   | { type: 'heartbeat'; executionId: string; cpuUsage?: number; memUsage?: number }
   | { type: 'model_unavailable'; executionId: string; model: string; message: string }

@@ -335,6 +335,7 @@ class TaskWorker {
   /** Ocorrências por assinatura de falha remota dentro deste worker. */
   private readonly remoteFailureSignatures = new Map<string, number>()
   private pendingDeveloperClarification: { questionCount: number; summary?: string } | null = null
+  private pendingInteraction: { phase: "analysis" | "development" | "verification"; summary?: string } | null = null
 
   constructor() {
     this.executionId = process.env.EXECUTION_ID ?? "unknown"
@@ -395,10 +396,18 @@ class TaskWorker {
           this.sendClarifying(ctx, outcome)
           return
         }
+        if (this.pendingInteraction) {
+          this.send({ type: "interaction_awaiting", executionId: ctx.executionId, ...this.pendingInteraction })
+          return
+        }
       } else if (ctx.phase === "execute") {
         if (this.isDevelopmentTask(input)) await this.phasePrepare(input)
         if (this.cancelled) { this.sendFailed(ctx, "Cancelled"); return }
         gitCommitSha = await this.phaseExecute(input)
+        if (this.pendingInteraction) {
+          this.send({ type: "interaction_awaiting", executionId: ctx.executionId, ...this.pendingInteraction })
+          return
+        }
         if (this.pendingDeveloperClarification) {
           this.sendClarifying(ctx, this.pendingDeveloperClarification)
           return
@@ -1860,16 +1869,29 @@ class TaskWorker {
     const numeric = /^\d+$/.test(input.task.id)
     const predicate = numeric ? "(t.external_id = ? OR t.id = ?)" : "t.external_id = ?"
     const taskParams = numeric ? [input.task.id, input.task.id] : [input.task.id]
+    try {
+      const contextPhase = phase === "verification" ? "development" : phase
+      const updated = await db.query(
+        "UPDATE tarefa_contextos_execucao c JOIN tarefas t ON t.id=c.tarefa_id SET c.sessao_chave=?, c.agent_id=?, c.modelo=?, c.worktree_path=?, c.branch_name=?, c.estado='active', c.updated_at=NOW() WHERE " + predicate + " AND c.fase=? AND (c.subtarefa_id <=> ?)",
+        [session.key, input.task.agentId, input.context.modelId ?? null, input.repoPath, input.workBranch ?? null, ...taskParams, contextPhase, subtaskId ?? null],
+      )
+      if (updated.affectedRows === 0) await db.query(
+        "INSERT INTO tarefa_contextos_execucao (tarefa_id, subtarefa_id, fase, sessao_chave, agent_id, modelo, worktree_path, branch_name, estado, last_checkpoint_at, updated_at) SELECT t.id, ?, ?, ?, ?, ?, ?, ?, 'active', NOW(), NOW() FROM tarefas t WHERE " + predicate,
+        [subtaskId ?? null, contextPhase, session.key, input.task.agentId, input.context.modelId ?? null, input.repoPath, input.workBranch ?? null, ...taskParams],
+      )
+    } catch (error) {
+      this.log("warn", "Falha ao persistir contexto de execução: " + (error instanceof Error ? error.message : String(error)))
+    }
     const claimed = await db.query(
       "UPDATE tarefa_chat_entregas e JOIN tarefas t ON t.id=e.tarefa_id SET e.estado='delivering', e.tentativas=e.tentativas+1, e.sessao_chave=?, e.fase_alvo=?, e.subtarefa_id=?, e.updated_at=NOW() WHERE " + predicate + " AND e.estado='pending' ORDER BY e.id ASC LIMIT 20",
       [session.key, phase, subtaskId ?? null, ...taskParams],
     )
     if (claimed.affectedRows === 0) return
     const pending = await db.query(
-      "SELECT e.id, e.mensagem_id, c.texto FROM tarefa_chat_entregas e JOIN tarefa_chats c ON c.id=e.mensagem_id JOIN tarefas t ON t.id=e.tarefa_id WHERE " + predicate + " AND e.estado='delivering' AND e.sessao_chave=? ORDER BY e.id ASC LIMIT 20",
+      "SELECT e.id, e.mensagem_id, e.modo, c.texto FROM tarefa_chat_entregas e JOIN tarefa_chats c ON c.id=e.mensagem_id JOIN tarefas t ON t.id=e.tarefa_id WHERE " + predicate + " AND e.estado='delivering' AND e.sessao_chave=? ORDER BY e.id ASC LIMIT 20",
       [...taskParams, session.key],
     )
-    for (const row of pending.rows as Array<{ id: number; mensagem_id: number; texto: string }>) {
+    for (const row of pending.rows as Array<{ id: number; mensagem_id: number; modo: string; texto: string }>) {
       try {
         const sent = await driver.sendMessage({ session, message: [
           "MENSAGEM DO RESPONSÁVEL — CHECKPOINT SEGURO",
@@ -1881,6 +1903,10 @@ class TaskWorker {
         if (result.state !== "final" || !result.content?.trim()) throw new Error(result.errorMessage || "Agente não respondeu ao chat")
         await db.query("INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) SELECT tarefa_id, 'agent', ?, NOW() FROM tarefa_chat_entregas WHERE id=?", [result.content.trim().slice(0, 20000), row.id])
         await db.query("UPDATE tarefa_chat_entregas SET estado='consumed', consumed_at=NOW(), delivered_at=COALESCE(delivered_at,NOW()), erro=NULL, updated_at=NOW() WHERE id=? AND estado='delivering'", [row.id])
+        if (row.modo === "solicitar_pausa") {
+          await db.query("UPDATE tarefa_contextos_execucao SET estado='awaiting_human', last_checkpoint_at=NOW(), resumo_contexto=?, updated_at=NOW() WHERE tarefa_id=(SELECT tarefa_id FROM tarefa_chat_entregas WHERE id=?) AND sessao_chave=? AND estado IN ('active','checkpoint_requested','ready_to_resume')", [result.content.trim().slice(0, 8000), row.id, session.key])
+          this.pendingInteraction = { phase, summary: result.content.trim().slice(0, 8000) }
+        }
       } catch (error) {
         await db.query("UPDATE tarefa_chat_entregas SET estado='failed', erro=?, updated_at=NOW() WHERE id=? AND estado='delivering'", [String(error instanceof Error ? error.message : error).slice(0, 2000), row.id])
         this.log("warn", `Falha ao entregar mensagem de chat ${row.mensagem_id}: ${error instanceof Error ? error.message : String(error)}`)

@@ -1756,6 +1756,19 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     }
   }
 
+  async onTaskInteractionAwaiting(executionId: string, phase: "analysis" | "development" | "verification", summary?: string): Promise<void> {
+    const worker = this.activeWorkers.get(executionId)
+    if (!worker || !this.beginFinalization(executionId, worker)) return
+    this.publishActivity(worker, { type: "clarifying", level: "info", message: "Aguardando interação humana no checkpoint" })
+    this.eventBus.publish({
+      type: "progress", executionId, taskId: worker.taskId, subtaskId: worker.subtaskId,
+      phase: worker.phase, level: "info", message: "Tarefa aguardando você no chat", timestamp: new Date(),
+    })
+    this.logger.info("Tarefa aguardando interação humana", { taskId: worker.taskId, executionId, phase })
+    await this.finishWorker(executionId, worker, { preserveWorkspace: true })
+    await this.pump()
+  }
+
   /**
    * Resposta de clarificação recebida (via API do motor ou via chat da
    * biblioteca). Grava a resposta no chat da tarefa (salvo quando o chamador
@@ -2897,6 +2910,13 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
         await this.onTaskClarifying(msg.executionId, msg.questionCount, msg.summary)
       } catch (error) {
         this.logger.error("Falha ao processar clarifying: " + describeError(error), { executionId: msg.executionId })
+      }
+    })
+    this.workerLauncher.on("interaction_awaiting", async (msg: { executionId: string; phase: "analysis" | "development" | "verification"; summary?: string }) => {
+      try {
+        await this.onTaskInteractionAwaiting(msg.executionId, msg.phase, msg.summary)
+      } catch (error) {
+        this.logger.error("Falha ao processar interaction_awaiting: " + describeError(error), { executionId: msg.executionId })
       }
     })
     this.workerLauncher.on("heartbeat", (msg: { executionId: string }) => {

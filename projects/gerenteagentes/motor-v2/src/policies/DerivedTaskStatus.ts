@@ -12,6 +12,7 @@ export interface DerivedTaskStatusFacts {
   /** Compatibilidade somente para linhas anteriores à migration 0029. */
   persistedStatus?: string | null
   hasPendingClarification: boolean
+  awaitingInteraction: boolean
   hasActiveBlocker: boolean
   analysisInProgress: boolean
   hasPersistedPlan: boolean
@@ -46,6 +47,7 @@ export function deriveTaskStatus(facts: DerivedTaskStatusFacts): TaskStatus {
   if (facts.pausedAt && !facts.resourceWaitKey) return "paused"
 
   if (facts.hasPendingClarification) return "awaiting_clarification"
+  if (facts.awaitingInteraction) return "awaiting_interaction"
   if (facts.subtaskStatuses.some((status) => BLOCKED_SUBTASK_STATUSES.has(status))) return "blocked"
   if (facts.analysisInProgress && !facts.hasPersistedPlan) return "analyzing"
   if (facts.subtaskStatuses.some((status) => ACTIVE_SUBTASK_STATUSES.has(status))) return "running"
