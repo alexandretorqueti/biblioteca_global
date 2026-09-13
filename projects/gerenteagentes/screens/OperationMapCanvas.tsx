@@ -1,7 +1,6 @@
 import React, { useMemo, useState } from "react"
 import {
   AccountTreeRounded,
-  AddRounded,
   BuildRounded,
   CheckCircleRounded,
   ContentPasteRounded,
@@ -122,7 +121,7 @@ export default function OperationMapCanvas({ tarefas, selectedTaskId, projetos, 
     const Icon = ICONS[station.id]
     return <Paper variant="outlined" data-testid={`operation-station-${station.id}`} sx={{ minWidth: { xs: 170, md: 190 }, flex: "1 1 0", p: 1.25, borderTop: 2, borderTopColor: toneColor(station.tone), bgcolor: stationTasks.length ? "background.paper" : "action.hover", transition: "border-color 180ms ease" }}>
       <Stack direction="row" spacing={1} alignItems="flex-start"><Icon sx={{ color: toneColor(station.tone), fontSize: 21 }} /><Box sx={{ minWidth: 0, flex: 1 }}><Typography variant="caption" fontWeight={800} textTransform="uppercase" letterSpacing=".04em" noWrap>{station.label}</Typography><Typography variant="caption" color="text.secondary" display="block" noWrap>{station.description}</Typography></Box><Typography variant="h6" fontWeight={800} lineHeight={1} data-testid={`operation-count-${station.id}`}>{allStationTasks.length}</Typography></Stack>
-      <Box sx={{ minHeight: 31, mt: 1, display: "flex", gap: .25, alignItems: "center", flexWrap: "wrap" }}>{visible.map(task => <Marker key={task.id} task={task} station={station} />)}{!stationTasks.length && <Typography variant="caption" color="text.disabled">vazio</Typography>}{stationTasks.length > 5 && <Button size="small" onClick={() => setExpanded(old => { const next = new Set(old); isExpanded ? next.delete(station.id) : next.add(station.id); return next })} sx={{ minWidth: 0, p: 0, fontSize: 11 }}>+{isExpanded ? " recolher" : ` ${stationTasks.length - 5}`}</Button>}</Box>
+      <Box sx={{ minHeight: 31, mt: 1, display: "flex", gap: .25, alignItems: "center", flexWrap: "wrap" }}>{visible.map(task => <Marker key={task.id} task={task} station={station} />)}{!stationTasks.length && <Typography variant="caption" color="text.disabled">vazio</Typography>}{stationTasks.length > 5 && <Button size="small" onClick={() => setExpanded(old => { const next = new Set(old); if (isExpanded) next.delete(station.id); else next.add(station.id); return next })} sx={{ minWidth: 0, p: 0, fontSize: 11 }}>+{isExpanded ? " recolher" : ` ${stationTasks.length - 5}`}</Button>}</Box>
     </Paper>
   }
 
