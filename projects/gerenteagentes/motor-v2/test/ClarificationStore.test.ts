@@ -8,7 +8,7 @@ import {
   fetchTaskClarificationHistory,
 } from "../src/planning/ClarificationStore.js"
 import type { Db, QueryResult } from "../src/shared/types/infrastructure.js"
-import { classifyDeveloperOutcome } from "../src/workers/TaskWorker.js"
+import { classifyDeveloperOutcome, extractDeveloperQuestion } from "../src/workers/TaskWorker.js"
 
 function mockDb(responses: QueryResult[]): Db {
   const db: Db = {
@@ -57,6 +57,14 @@ describe("classifyDeveloperOutcome", () => {
       expect(outcome.question).not.toBe("Nenhum arquivo foi alterado.")
       expect(outcome.question).toContain("sem formular uma pergunta objetiva")
     }
+  })
+
+  it("recupera pergunta textual do transcript quando o JSON final não a repete", () => {
+    expect(extractDeveloperQuestion([
+      { role: "user", content: "Execute a subtarefa." },
+      { role: "assistant", content: "Você tem razão. Pergunta: posso iniciar a fase de desenvolvimento, sem commit nem deploy?" },
+      { role: "assistant", content: JSON.stringify({ status: "need_help", reason: "Nenhum arquivo foi alterado." }) },
+    ])).toBe("posso iniciar a fase de desenvolvimento, sem commit nem deploy?")
   })
 })
 

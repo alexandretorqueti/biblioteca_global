@@ -1029,7 +1029,18 @@ class TaskWorker {
             await this.persistLightweightDelivery(input, result.content || "")
           }
 
-          const outcome = this.classifyAgentOutcome(result.content)
+          let outcome = this.classifyAgentOutcome(result.content)
+          // Alguns runtimes exibem a pergunta em uma mensagem textual da
+          // sessão e devolvem apenas o status no resultado final. Recuperamos
+          // essa pergunta do transcript antes de criar uma clarificação.
+          if (outcome.kind === "need_help" && outcome.question === DEVELOPER_QUESTION_FALLBACK) {
+            try {
+              const question = extractDeveloperQuestion(await driver.getSessionHistory(session))
+              if (question) outcome = { ...outcome, question }
+            } catch (error) {
+              this.log("warn", "Falha ao recuperar pergunta do DEV no transcript: " + (error instanceof Error ? error.message : String(error)))
+            }
+          }
           if (outcome.kind === "blocked_environment") {
             const reason = "Ambiente bloqueado: " + outcome.reason
             await this.recordBlocker(subtask, "blocked_environment", reason, model.model)
@@ -2432,6 +2443,8 @@ export type DeveloperOutcome =
   | { kind: "database_operation"; scriptPath: string }
   | { kind: "premise_incorrect"; payload: unknown }
 
+export const DEVELOPER_QUESTION_FALLBACK = "O desenvolvedor retornou need_help sem formular uma pergunta objetiva. Revise a resposta do agente antes de continuar."
+
 /** Interpreta o contrato JSON do DEV sem transformar um motivo em pergunta. */
 export function classifyDeveloperOutcome(content?: string): DeveloperOutcome {
   if (!content) return { kind: "done" }
@@ -2444,7 +2457,7 @@ export function classifyDeveloperOutcome(content?: string): DeveloperOutcome {
       return {
         kind: "need_help",
         summary: typeof parsed.summary === "string" ? parsed.summary.trim() : "",
-        question: question || "O desenvolvedor retornou need_help sem formular uma pergunta objetiva. Revise a resposta do agente antes de continuar.",
+        question: question || DEVELOPER_QUESTION_FALLBACK,
       }
     }
     if (parsed.status === "blocked_environment") {
@@ -2456,6 +2469,20 @@ export function classifyDeveloperOutcome(content?: string): DeveloperOutcome {
     if (parsed.status === "premise_incorrect") return { kind: "premise_incorrect", payload: parsed }
   } catch { /* resposta legada em texto continua compatível */ }
   return { kind: "done" }
+}
+
+/** Extrai uma pergunta textual produzida pelo DEV antes do JSON final. */
+export function extractDeveloperQuestion(messages: RuntimeSessionMessage[]): string | null {
+  for (const message of [...messages].reverse()) {
+    if (message.role !== "assistant" || typeof message.content !== "string") continue
+    const content = message.content.trim()
+    if (!content || content.startsWith("{")) continue
+    const marked = content.match(/(?:pergunta|question)\s*:\s*([\s\S]*?\?)/i)
+    if (marked?.[1]?.trim()) return marked[1].trim()
+    const question = content.match(/([^\n?]{8,}\?)(?:\s*)$/)
+    if (question?.[1]?.trim()) return question[1].trim()
+  }
+  return null
 }
 
 // Auto-start somente quando este arquivo É o processo principal (o
