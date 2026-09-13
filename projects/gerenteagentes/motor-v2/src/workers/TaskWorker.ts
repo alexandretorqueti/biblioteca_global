@@ -22,7 +22,7 @@ import { GateFailureClassifier, type GateFailureVerdict } from "../policies/Gate
 import { ConsoleAgentRuntimeDriver, WorkspaceBindingError, type RemoteSessionFailure, type RuntimeSession, type RuntimeSessionMessage } from "../runtime/ConsoleAgentRuntimeDriver.js"
 import type { WorkerInput, ExecutionContext, ExecutionResult, SubtaskInfo } from "../shared/types/execution.js"
 import type { CoordinatorToWorkerMessage, WorkerToCoordinatorMessage } from "./WorkerProtocol.js"
-import { defaultChain, formatSessionKey, isModelUnavailableError, isModelUnavailableFailure, type ModelSelection } from "../policies/ModelTierPolicy.js"
+import { defaultChain, formatSessionKey, formatTaskSessionKey, isModelUnavailableError, isModelUnavailableFailure, type ModelSelection } from "../policies/ModelTierPolicy.js"
 import { isSystemicFailure } from "../policies/SystemFailurePolicy.js"
 import { blockerEvidence, type BlockerKind } from "../policies/BlockerPolicy.js"
 import { failureFingerprint } from "../policies/SystemFailurePolicy.js"
@@ -479,7 +479,7 @@ class TaskWorker {
     let lastFailure: string | undefined
     for (let modelIndex = 0; modelIndex < chain.length; modelIndex++) {
       const model = chain[modelIndex]!
-      const sessionKey = formatSessionKey({ agentId: input.task.agentId, taskId: input.task.id, phase: "analysis", model: model.model, modelIndex, generation: 0 })
+      const sessionKey = formatTaskSessionKey(input.task.id)
       let session
       const executionOrder = modelIndex + 1
 
@@ -869,7 +869,7 @@ class TaskWorker {
         const driver = this.createDriver()
         // A chave é estável por subtarefa+modelo. Assim um rework retorna ao
         // mesmo contexto; uma troca de modelo abre uma sessão distinta.
-        const sessionKey = formatSessionKey({ agentId: input.task.agentId, taskId: input.task.id, subtaskId: String(subtask.id), phase: "development", model: model.model, modelIndex, generation: deliverCount })
+        const sessionKey = formatTaskSessionKey(input.task.id)
         // Guarda defensiva: tarefa de desenvolvimento sem repoPath não tem como
         // resolver o worktree — falhar aqui é mais honesto que descobrir depois.
         const developmentWorkspace = this.isDevelopmentTask(input) ? input.repoPath : undefined
@@ -2172,7 +2172,7 @@ class TaskWorker {
       const driver = this.createDriver()
       let session
       try {
-        session = await driver.createSession({ agentId: input.task.agentId, key: formatSessionKey({ agentId: input.task.agentId, taskId: input.task.id, phase: "analysis", model: selection.model, modelIndex: 0, generation: 1 }), label: `rebrief:${input.task.id}:${subtask.id}`, model: selection.model })
+        session = await driver.createSession({ agentId: input.task.agentId, key: formatTaskSessionKey(input.task.id), label: `rebrief:${input.task.id}:${subtask.id}`, model: selection.model })
         const embedded = [
           "Você é o analista. A premissa de uma subtarefa foi refutada com evidência validada.",
           `Tarefa: ${input.task.title}`,

@@ -949,6 +949,14 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
 
   /** Retorna true quando o worker foi iniciado; false quando o trabalho não começou (espera/falha). */
   private async startSubtaskExecution(subtask: SubtaskWithTask): Promise<boolean> {
+    // A sessão conversacional agora é única por tarefa; duas subtarefas
+    // simultâneas contaminariam o contexto e criariam runs concorrentes.
+    if ([...this.activeWorkers.values()].some((worker) => worker.taskId === subtask.taskExternalId)) {
+      this.logger.info("Subtarefa aguardando: já existe uma execução ativa da mesma tarefa", {
+        taskId: subtask.taskExternalId, subtaskId: subtask.id,
+      })
+      return false
+    }
     const executionId = "exec-execute-" + subtask.id + "-" + Date.now()
     // Sem lease exclusivo por projeto: o controle de paralelismo é feito via
     // maxWorkersPerProject no canStartProject. Cada tarefa tem seu próprio

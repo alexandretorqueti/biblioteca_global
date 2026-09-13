@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest"
-import { defaultChain, formatSessionKey, isModelUnavailableError, isModelUnavailableFailure } from "../src/policies/ModelTierPolicy.js"
+import { defaultChain, formatSessionKey, formatTaskSessionKey, isModelUnavailableError, isModelUnavailableFailure } from "../src/policies/ModelTierPolicy.js"
 
 describe("ModelTierPolicy", () => {
+  it("mantém uma chave estável por tarefa, independente de agente e fase", () => {
+    expect(formatTaskSessionKey("task/818")).toBe("motor:tarefa:task_818")
+    expect(formatTaskSessionKey("task/818")).toBe(formatTaskSessionKey("task/818"))
+  })
   it("mantém cadeias distintas para análise e desenvolvimento", () => {
     expect(defaultChain("analysis").length).toBeGreaterThan(0)
     expect(defaultChain("development").length).toBeGreaterThan(0)

@@ -257,6 +257,26 @@ export class ConsoleAgentRuntimeDriver {
     return { runId: response.runId }
   }
 
+  /** Altera o agente da sessão sem recriar o histórico conversacional. */
+  async switchAgent(session: RuntimeSession, agentId: string): Promise<RuntimeSession> {
+    const response = await this.request<{ key?: string; sessionId?: string }>({
+      method: "PATCH",
+      path: "/api/sessions",
+      body: { key: session.key, agentId, archived: false },
+    })
+    return { ...session, agentId, ...(response.sessionId ? { sessionId: response.sessionId } : {}) }
+  }
+
+  /** Solicita interrupção explícita do run no Console. */
+  async abortRun(session: RuntimeSession, runId: string): Promise<boolean> {
+    const response = await this.request<{ aborted?: boolean }>({
+      method: "POST",
+      path: "/api/chat/abort",
+      body: { sessionKey: session.key, agentId: session.agentId, runId },
+    })
+    return response.aborted === true
+  }
+
   /**
    * Aguarda conclusao do run via polling (describe + history).
    * Fallback robusto quando SSE nao captura o evento final.

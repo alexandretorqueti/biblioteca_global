@@ -70,3 +70,9 @@ export function formatSessionKey(input: {
   const phase = input.phase === "analysis" ? "analysis" : input.phase === "development" ? "dev" : "monitor"
   return `${phase}-${slug}-${input.taskId}${input.subtaskId ? `-s${input.subtaskId}` : ""}`
 }
+
+/** Sessão conversacional única da tarefa, independente da fase/modelo. */
+export function formatTaskSessionKey(taskId: string): string {
+  const safeTaskId = taskId.replace(/[^a-zA-Z0-9._-]/g, "_")
+  return `motor:tarefa:${safeTaskId}`
+}
