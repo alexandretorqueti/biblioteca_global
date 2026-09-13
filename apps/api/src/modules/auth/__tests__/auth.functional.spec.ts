@@ -63,6 +63,13 @@ describe.skipIf(!hasMysql)("auth — funcional (API + MySQL)", () => {
     await app.init()
     db = app.get<CoreDb>(CORE_DB)
 
+    // O banco funcional é persistente: restaura a credencial usada pelo
+    // contrato do teste, sem depender de execuções anteriores.
+    const alexandre = (await db.select({ id: usuarios.id }).from(usuarios).where(eq(usuarios.username, "alexandre"))).at(0)
+    if (alexandre) {
+      await db.update(usuarios).set({ passwordHash: await argon2.hash(SENHA_ALEXANDRE, { type: argon2.argon2id }), ativo: true }).where(eq(usuarios.id, alexandre.id))
+    }
+
     // Provisiona o usuário de teste (limpa resíduo de execuções anteriores).
     await limparUsuarioTeste()
     const hash = await argon2.hash(SENHA_TESTE, { type: argon2.argon2id })
@@ -399,8 +406,13 @@ describe.skipIf(!hasMysql)("auth — funcional (API + MySQL)", () => {
     let usuarioCriadoId: number | undefined
     let projetoCriadoId: number | undefined
 
-    beforeAll(() => {
+    beforeAll(async () => {
       provisionToken = app.get(EnvService).provisionToken
+      const existing = (await db.select({ id: projetos.id }).from(projetos).where(eq(projetos.slug, SLUG))).at(0)
+      if (existing) {
+        await db.delete(projetosUsuarios).where(eq(projetosUsuarios.projetoId, existing.id))
+        await db.delete(projetos).where(eq(projetos.id, existing.id))
+      }
     })
 
     afterAll(async () => {
