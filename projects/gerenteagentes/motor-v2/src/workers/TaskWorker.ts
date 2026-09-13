@@ -1899,6 +1899,13 @@ class TaskWorker {
           "Responda primeiro no chat. Não faça commit, deploy, exclusão ou alteração irreversível sem autorização explícita.",
           row.texto,
         ].join("\n\n") })
+        // Guarda o run antes de esperar a resposta. Em caso de reinício ou
+        // pedido de pausa, o coordenador consegue correlacionar o checkpoint
+        // com a execução remota sem criar uma segunda sessão.
+        await db.query(
+          "UPDATE tarefa_contextos_execucao SET last_run_id=?, updated_at=NOW() WHERE sessao_chave=? AND estado IN ('active','checkpoint_requested','ready_to_resume')",
+          [sent.runId, session.key],
+        )
         const result = await driver.waitForRunCompletion(session, sent.runId, { onActivity: () => this.sendHeartbeat() })
         if (result.state !== "final" || !result.content?.trim()) throw new Error(result.errorMessage || "Agente não respondeu ao chat")
         await db.query("INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) SELECT tarefa_id, 'agent', ?, NOW() FROM tarefa_chat_entregas WHERE id=?", [result.content.trim().slice(0, 20000), row.id])
