@@ -413,6 +413,11 @@ describe.skipIf(!hasMysql)("auth — funcional (API + MySQL)", () => {
         await db.delete(projetosUsuarios).where(eq(projetosUsuarios.projetoId, existing.id))
         await db.delete(projetos).where(eq(projetos.id, existing.id))
       }
+      const existingUser = (await db.select({ id: usuarios.id }).from(usuarios).where(eq(usuarios.email, EMAIL_NOVO))).at(0)
+      if (existingUser) {
+        await db.delete(projetosUsuarios).where(eq(projetosUsuarios.usuarioId, existingUser.id))
+        await db.delete(usuarios).where(eq(usuarios.id, existingUser.id))
+      }
     })
 
     afterAll(async () => {
