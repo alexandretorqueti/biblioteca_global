@@ -28,7 +28,7 @@ import type { TaskTransition } from "../policies/TaskStateMachine.js"
 import { persistTaskClarificationAnswer, fetchPendingTaskClarification, fetchAnsweredTaskClarifications } from "../planning/ClarificationStore.js"
 import { createLogger, describeError } from "../shared/logger.js"
 import { ConsoleAgentRuntimeDriver, type RemoteSessionFailure } from "../runtime/ConsoleAgentRuntimeDriver.js"
-import { getConfigNumber } from "../config/MotorConfigReader.js"
+import { getConfigNumber, getConfigString } from "../config/MotorConfigReader.js"
 import { execFileSync, execSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { existsSync } from "node:fs"
@@ -2463,9 +2463,9 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
 
   private dispatchDeployBatch(repoPath: string, batchId: string, taskIds: string[]): void {
     const repoRoot = execFileSync("git", ["-C", repoPath, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim()
-    const relativeScript = "projects/gerenteagentes/motor-v2/scripts/deploy-host.sh"
+    const relativeScript = getConfigString("motor.deploy_script")
     if (!existsSync(join(repoRoot, relativeScript))) throw new Error("deploy-host.sh não encontrado na raiz Git " + repoRoot)
-    const hostRepoRoot = process.env.DEPLOY_REPO_HOST ?? "/home/alexandre/codigofonte/biblioteca-global"
+    const hostRepoRoot = process.env.DEPLOY_REPO_HOST ?? getConfigString("motor.deploy_host_root")
     const hostDeployScript = hostRepoRoot + "/" + relativeScript
     const safeBatchId = batchId.replace(/[^a-zA-Z0-9_-]/g, "_")
     const logFile = "/tmp/biblioteca-global-" + safeBatchId + ".log"
@@ -2536,7 +2536,7 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
       "-o", "StrictHostKeyChecking=yes",
       "-o", "UserKnownHostsFile=/root/.ssh/known_hosts",
       "-o", "ConnectTimeout=10",
-      "alexandre@192.168.1.8",
+      getConfigString("motor.deploy_ssh_target"),
       remoteCommand,
     ]
   }

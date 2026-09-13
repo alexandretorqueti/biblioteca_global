@@ -56,7 +56,7 @@ export class Motor {
     // Workers usam as variáveis de ambiente injetadas pelo container. O Motor
     // principal deve usar a mesma rota; uma configuração antiga no banco não
     // pode desviar somente o Monitor para um Console inacessível.
-    const consoleUrl = process.env.OPENCLAW_CONSOLE_URL || getConfigString('motor.console_url') || 'http://127.0.0.1:6280'
+    const consoleUrl = process.env.OPENCLAW_CONSOLE_URL || getConfigString('motor.console_url')
     const consoleToken = process.env.OPENCLAW_CONSOLE_TOKEN || getConfigString('motor.console_token') || ''
     this.consoleDriver = new ConsoleAgentRuntimeDriver({
       baseUrl: consoleUrl,

@@ -7,7 +7,7 @@ import { Motor } from './Motor.js'
 import { createDbConnection, MysqlTaskRepository } from './database/DrizzleDb.js'
 import { LibraryRealtimeBroadcaster } from './events/LibraryRealtimeBroadcaster.js'
 import { createLogger } from './shared/logger.js'
-import { initConfigReader } from './config/MotorConfigReader.js'
+import { getConfigString, initConfigReader } from './config/MotorConfigReader.js'
 
 const logger = createLogger('MotorStart')
 
@@ -30,7 +30,7 @@ async function main() {
     ? new LibraryRealtimeBroadcaster({
         db,
         token: realtimeToken,
-        endpoint: process.env.LIBRARY_REALTIME_EVENTS_URL ?? 'http://localhost:3001/internal/realtime/events',
+        endpoint: process.env.LIBRARY_REALTIME_EVENTS_URL ?? getConfigString('motor.realtime_events_url'),
       })
     : undefined
 
@@ -80,4 +80,3 @@ main().catch((error) => {
   logger.error('❌ Fatal: ' + (error instanceof Error ? error.stack ?? error.message : String(error)))
   process.exit(1)
 })
-
