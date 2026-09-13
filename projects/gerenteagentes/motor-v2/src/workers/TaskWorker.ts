@@ -1037,14 +1037,14 @@ class TaskWorker {
           }
           if (outcome.kind === "need_help") {
             await persistTaskDeveloperClarification(this.planningDb(), input.task.id, {
-              summary: "O desenvolvedor precisa de uma decisão ou informação para concluir a subtarefa #" + subtask.seq + ".",
-              questions: [outcome.reason],
+              summary: outcome.summary || "O desenvolvedor precisa de uma decisão ou informação para concluir a subtarefa #" + subtask.seq + ".",
+              questions: [outcome.question],
             })
             await this.db!.query(
               "UPDATE subtarefas SET status = 'pending', resultado = ?, finalizada_em = NULL, updated_at = NOW() WHERE id = ?",
-              ["Aguardando esclarecimento: " + outcome.reason.substring(0, 450), subtask.id],
+              ["Aguardando esclarecimento: " + (outcome.summary || outcome.question).substring(0, 450), subtask.id],
             )
-            this.pendingDeveloperClarification = { questionCount: 1, summary: outcome.reason }
+            this.pendingDeveloperClarification = { questionCount: 1, summary: outcome.question }
             return undefined
           }
           if (outcome.kind === "database_operation") {
@@ -2087,7 +2087,7 @@ class TaskWorker {
       "2. Nao faca commit (o motor faz depois)",
       lightweight
         ? "3. Responda APENAS com JSON: {\"status\":\"done\"|\"need_help\"|\"blocked_environment\",\"summary\":\"resposta final detalhada\",\"reason\":\"...\"}"
-        : "3. Responda APENAS com JSON: {\"status\":\"done\"|\"need_help\"|\"blocked_environment\"|\"premise_incorrect\",\"summary\":\"...\",\"reason\":\"...\"}",
+        : "3. Responda APENAS com JSON: {\"status\":\"done\"|\"need_help\"|\"blocked_environment\"|\"premise_incorrect\",\"summary\":\"...\",\"reason\":\"...\",\"question\":\"...\"}. Se status=need_help, question é obrigatória e deve ser objetiva; nunca responda apenas que nenhum arquivo foi alterado.",
       ...(lightweight ? [] : ["4. Use premise_incorrect somente se a missão contradizer o repositório. Inclua claim, conflict_type, evidence:[{path,observation}] e suggested_revision; caminhos devem existir no workspace."]),
       ...(carryOver ? ["", carryOver] : []),
       ...(reworkNote ? ["", "Feedback do gate anterior:", digestGateFailure(reworkNote, { maxLines: 50, maxChars: 7000 })] : []),
@@ -2167,21 +2167,8 @@ class TaskWorker {
     return input.modelChain && input.modelChain.length > 0 ? input.modelChain : defaultChain(phase)
   }
 
-  private classifyAgentOutcome(content?: string): { kind: "done" } | { kind: "need_help" | "blocked_environment"; reason: string } | { kind: "database_operation"; scriptPath: string } | { kind: "premise_incorrect"; payload: unknown } {
-    if (!content) return { kind: "done" }
-    const match = content.match(/\{[\s\S]*\}/)
-    if (!match) return { kind: "done" }
-    try {
-      const parsed = JSON.parse(match[0]) as { status?: string; reason?: string; summary?: string; script_path?: string }
-      if (parsed.status === "need_help" || parsed.status === "blocked_environment") {
-        return { kind: parsed.status, reason: parsed.reason || parsed.summary || parsed.status }
-      }
-      if (parsed.status === "database_operation") {
-        return { kind: "database_operation", scriptPath: parsed.script_path || "" }
-      }
-      if (parsed.status === "premise_incorrect") return { kind: "premise_incorrect", payload: parsed }
-    } catch { /* resposta legada em texto continua compatível */ }
-    return { kind: "done" }
+  private classifyAgentOutcome(content?: string): DeveloperOutcome {
+    return classifyDeveloperOutcome(content)
   }
 
   private async rebriefRefutedSubtask(input: WorkerInput, subtask: SubtaskInfo, refutation: PremiseRefutation): Promise<{ title: string; scope: string; criteria: string[] }> {
@@ -2436,6 +2423,39 @@ class TaskWorker {
     this.cleanup()
     process.exit(0)
   }
+}
+
+export type DeveloperOutcome =
+  | { kind: "done" }
+  | { kind: "need_help"; summary: string; question: string }
+  | { kind: "blocked_environment"; reason: string }
+  | { kind: "database_operation"; scriptPath: string }
+  | { kind: "premise_incorrect"; payload: unknown }
+
+/** Interpreta o contrato JSON do DEV sem transformar um motivo em pergunta. */
+export function classifyDeveloperOutcome(content?: string): DeveloperOutcome {
+  if (!content) return { kind: "done" }
+  const match = content.match(/\{[\s\S]*\}/)
+  if (!match) return { kind: "done" }
+  try {
+    const parsed = JSON.parse(match[0]) as { status?: string; reason?: string; summary?: string; question?: string; script_path?: string }
+    if (parsed.status === "need_help") {
+      const question = typeof parsed.question === "string" ? parsed.question.trim() : ""
+      return {
+        kind: "need_help",
+        summary: typeof parsed.summary === "string" ? parsed.summary.trim() : "",
+        question: question || "O desenvolvedor retornou need_help sem formular uma pergunta objetiva. Revise a resposta do agente antes de continuar.",
+      }
+    }
+    if (parsed.status === "blocked_environment") {
+      return { kind: "blocked_environment", reason: parsed.reason || parsed.summary || parsed.status }
+    }
+    if (parsed.status === "database_operation") {
+      return { kind: "database_operation", scriptPath: parsed.script_path || "" }
+    }
+    if (parsed.status === "premise_incorrect") return { kind: "premise_incorrect", payload: parsed }
+  } catch { /* resposta legada em texto continua compatível */ }
+  return { kind: "done" }
 }
 
 // Auto-start somente quando este arquivo É o processo principal (o

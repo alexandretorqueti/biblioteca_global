@@ -8,6 +8,7 @@ import {
   fetchTaskClarificationHistory,
 } from "../src/planning/ClarificationStore.js"
 import type { Db, QueryResult } from "../src/shared/types/infrastructure.js"
+import { classifyDeveloperOutcome } from "../src/workers/TaskWorker.js"
 
 function mockDb(responses: QueryResult[]): Db {
   const db: Db = {
@@ -29,6 +30,33 @@ describe("formatClarificationMessage", () => {
     const text = formatClarificationMessage({ summary: "  ", questions: ["p?"] })
     expect(text).not.toContain("Entendimento atual")
     expect(text).toContain("1) p?")
+  })
+})
+
+describe("classifyDeveloperOutcome", () => {
+  it("preserva a pergunta objetiva enviada pelo desenvolvedor", () => {
+    expect(classifyDeveloperOutcome(JSON.stringify({
+      status: "need_help",
+      summary: "A implementação depende de uma decisão de produto.",
+      reason: "Há duas opções compatíveis.",
+      question: "Devemos manter o comportamento atual ou adotar o novo fluxo?",
+    }))).toEqual({
+      kind: "need_help",
+      summary: "A implementação depende de uma decisão de produto.",
+      question: "Devemos manter o comportamento atual ou adotar o novo fluxo?",
+    })
+  })
+
+  it("não apresenta um motivo genérico como se fosse pergunta", () => {
+    const outcome = classifyDeveloperOutcome(JSON.stringify({
+      status: "need_help",
+      reason: "Nenhum arquivo foi alterado.",
+    }))
+    expect(outcome.kind).toBe("need_help")
+    if (outcome.kind === "need_help") {
+      expect(outcome.question).not.toBe("Nenhum arquivo foi alterado.")
+      expect(outcome.question).toContain("sem formular uma pergunta objetiva")
+    }
   })
 })
 
