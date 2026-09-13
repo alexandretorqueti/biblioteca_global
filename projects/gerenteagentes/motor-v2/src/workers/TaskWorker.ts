@@ -67,6 +67,7 @@ import { digestGateFailure, formatCarryOver, type CarryOverEvent } from "../poli
 import { getConfigNumber } from "../config/MotorConfigReader.js"
 import { formatPriorSubtaskHandoff, parseGitNameStatus, type PriorSubtaskHandoff } from "../policies/SubtaskHandoffPolicy.js"
 import { ProjectDatabaseOperationExecutor } from "../database/ProjectDatabaseOperationExecutor.js"
+import { diagnosticText } from "../shared/diagnosticText.js"
 
 const COMMAND_FAILURE_LIMIT = 12_000
 const ANSI_ESCAPE_PATTERN = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g
@@ -974,7 +975,7 @@ class TaskWorker {
                 lastFailure = "Recuperação de sessão " + sessionRecoveryAttempts + "/" + sessionRecoveryLimit + ": " + remoteReason
                 await this.db!.query(
                   "UPDATE subtarefas SET status = 'pending', resultado = ?, finalizada_em = NULL, updated_at = NOW() WHERE id = ?",
-                  [lastFailure.substring(0, 500), subtask.id],
+                  [diagnosticText(lastFailure), subtask.id],
                 )
                 this.log("warn", lastFailure + "; criando/retomando a sessão para nova tentativa")
                 continue
@@ -1097,7 +1098,7 @@ class TaskWorker {
             lastFailure = error instanceof Error ? error.message : String(error)
             await this.db!.query(
               "UPDATE subtarefas SET status = 'rejected', resultado = ?, updated_at = NOW() WHERE id = ?",
-              [lastFailure.substring(0, 500), subtask.id],
+              [diagnosticText(lastFailure), subtask.id],
             )
             // Registra rejeição do gate no histórico — em formato digest para o
             // carry-over das próximas entregas não receber ruído (HTML de
@@ -1146,7 +1147,7 @@ class TaskWorker {
               this.log("warn", reason)
               await this.db!.query(
                 "UPDATE subtarefas SET status = 'rejected', resultado = ?, updated_at = NOW() WHERE id = ?",
-                [reason.substring(0, 500), subtask.id],
+                [diagnosticText(reason), subtask.id],
               )
               lastFailure = reason
               if (await this.createCorrectionOnRepeatedGateFailure(input, subtask, model.model, lastFailure)) return undefined
@@ -1158,7 +1159,7 @@ class TaskWorker {
           if (this.isDevelopmentTask(input)) {
             await this.db!.query(
               "UPDATE subtarefas SET status = 'verified', deliver_count = ?, resultado = ?, finalizada_em = NOW(), updated_at = NOW() WHERE id = ?",
-              [deliverCount, result.content?.substring(0, 500) || "OK", subtask.id],
+              [deliverCount, diagnosticText(result.content, "OK"), subtask.id],
             )
           } else {
             // O chat é a entrega das tarefas operacionais; não duplique a

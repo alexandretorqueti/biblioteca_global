@@ -64,6 +64,7 @@ import type { PromotionGateRecoveryCandidate, PromotionGateRecoveryOrchestrator,
 import type { PromotionGateReport } from "../promotion-gate/PromotionGateVerifier.js"
 import { MotorMonitorStep, type MotorFixInput } from "../steps/MotorMonitorStep.js"
 import type { RecoveryEligibility } from "../shared/recoveryEligibility.js"
+import { diagnosticText } from "../shared/diagnosticText.js"
 
 interface ActiveWorker {
   taskId: string
@@ -1212,7 +1213,7 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
           const reason = error instanceof Error ? error.message : String(error)
           await this.db.query(
             "UPDATE subtarefas SET workspace_status = 'integration_failed', resultado = ? WHERE id = ?",
-            [reason.substring(0, 500), worker.subtaskId],
+            [diagnosticText(reason), worker.subtaskId],
           )
           // Falha de integração também deixa trilha em bloqueios — sem isso só
           // o errorMessage registrava o ocorrido.
@@ -1300,7 +1301,7 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
             const task = await this.repository.getTask(worker.taskId)
             if (task && retryableSubtaskIds.length > 0) {
               const placeholders = retryableSubtaskIds.map(() => "?").join(", ")
-              const retryReason = ("Evidência da entrega inválida; reenfileirada para nova execução pela escada de modelos. " + promotionReason).substring(0, 500)
+              const retryReason = diagnosticText("Evidência da entrega inválida; reenfileirada para nova execução pela escada de modelos. " + promotionReason)
               await this.db.query(
                 `UPDATE subtarefas SET status = 'pending', workspace_status = 'evidence_rejected', workspace_commit_sha = NULL, resultado = ?, finalizada_em = NULL, updated_at = NOW() WHERE id IN (${placeholders})`,
                 [retryReason, ...retryableSubtaskIds],
@@ -1544,7 +1545,7 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
         if (worker.subtaskId) {
           await this.db.query(
             "UPDATE subtarefas SET status = ?, resultado = ? WHERE id = ?",
-            [transient ? "pending" : "blocked", failure.substring(0, 500), worker.subtaskId],
+            [transient ? "pending" : "blocked", diagnosticText(failure), worker.subtaskId],
           )
         }
         const task = await this.repository.getTask(worker.taskId)
@@ -1608,7 +1609,7 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
       )
       await tx.query(
         "UPDATE subtarefas SET status = 'pending', workspace_status = 'auto_recovery_pending', workspace_commit_sha = NULL, resultado = ?, finalizada_em = NULL, updated_at = NOW() WHERE id = ? AND workspace_commit_sha IS NULL",
-        [`[auto_recovery] ${decision.reason}`.slice(0, 500), worker.subtaskId],
+        [diagnosticText(`[auto_recovery] ${decision.reason}`), worker.subtaskId],
       )
     })
 
@@ -2667,7 +2668,7 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
       if (worker.subtaskId) {
         await this.db.query(
           "UPDATE subtarefas SET workspace_status = 'cleanup_failed', resultado = ? WHERE id = ?",
-          [String(error).substring(0, 500), worker.subtaskId],
+          [diagnosticText(error), worker.subtaskId],
         ).catch((dbError: unknown) => this.logger.error("Falha ao registrar limpeza: " + describeError(dbError), { executionId, subtaskId: worker.subtaskId }))
       }
     } finally {
@@ -3140,7 +3141,7 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
       }
       await this.db.query(
         "UPDATE subtarefas SET status = 'blocked', workspace_status = 'integration_failed', resultado = ?, updated_at = NOW() WHERE id = ?",
-        [blockReason.substring(0, 500), subtaskId],
+        [diagnosticText(blockReason), subtaskId],
       )
       const task = await this.repository.getTask(worker.taskId)
       if (task) await this.saveTaskTransition(task, "fail", { errorMessage: blockReason.substring(0, 500) }, { skipBlocker: true })
@@ -3151,7 +3152,7 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
 
     await this.db.query(
       "UPDATE subtarefas SET status = 'pending', workspace_status = 'integration_conflict', resultado = ?, finalizada_em = NULL, updated_at = NOW() WHERE id = ?",
-      [note, subtaskId],
+      [diagnosticText(note), subtaskId],
     )
     this.logger.warn("Conflito na integração com a branch da tarefa; subtarefa re-enfileirada para o agente resolver: " + note, { taskId: worker.taskId, subtaskId, executionId })
     this.publishActivity(worker, {
@@ -3254,7 +3255,7 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
       }
       await this.db.query(
         "UPDATE subtarefas SET status = 'blocked', workspace_status = 'integration_failed', resultado = ?, updated_at = NOW() WHERE id = ?",
-        [blockReason.substring(0, 500), subtaskId],
+        [diagnosticText(blockReason), subtaskId],
       )
       const task = await this.repository.getTask(worker.taskId)
       if (task) await this.saveTaskTransition(task, "fail", { errorMessage: blockReason.substring(0, 500) }, { skipBlocker: true })

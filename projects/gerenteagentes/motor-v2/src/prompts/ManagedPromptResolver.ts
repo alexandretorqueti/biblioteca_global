@@ -94,9 +94,14 @@ export class ManagedPromptResolver {
 
   async recordFinalComposition(executionId: number, finalText: string, composition: unknown): Promise<void> {
     if (!executionId) return
+    const serializableComposition = Array.isArray(composition)
+      ? composition.map((part) => typeof part === "object" && part !== null
+        ? part
+        : { source: "runtime", label: "Parte da composição", text: String(part ?? "") })
+      : composition
     await this.db.query(
       "UPDATE prompts_execucoes SET prompt_final = ?, composicao_json = ? WHERE id = ?",
-      [finalText, JSON.stringify(composition), executionId],
+      [finalText, JSON.stringify(serializableComposition), executionId],
     )
   }
 }
