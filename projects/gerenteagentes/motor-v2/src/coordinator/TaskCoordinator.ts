@@ -2262,6 +2262,21 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     await this.pump()
   }
 
+  /** Exclui tarefa somente fora de execução; a trilha fica no banco. */
+  async deleteTask(taskId: string): Promise<void> {
+    const task = await this.repository.getTask(taskId)
+    if (!task) throw new Error("Tarefa " + taskId + " nao encontrada")
+    if (["analyzing", "running", "verifying"].includes(await this.facts.derive(taskId))) {
+      throw new Error("Tarefa " + taskId + " ainda está em execução; cancele antes de excluir")
+    }
+    for (const worker of this.activeWorkers.values()) {
+      if (worker.taskId === taskId) throw new Error("Tarefa " + taskId + " possui worker ativo")
+    }
+    await this.db.query("DELETE FROM tarefas WHERE id = ?", [Number(task.id)])
+    if (task.repoPath) this.purgeTaskArtifactsFireAndForget(taskId, task.repoPath)
+    await this.pump()
+  }
+
   /**
    * Purga worktrees/branches de tarefa terminal sem bloquear o fluxo.
    * Acumulo de a1/a2/a3... consome disco; limpar após completion/cancel.

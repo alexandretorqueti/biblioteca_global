@@ -46,7 +46,7 @@ export class MotorAPI {
 
   private handleRequest(req: IncomingMessage, res: ServerResponse): void {
     res.setHeader('Access-Control-Allow-Origin', '*')
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS')
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
 
     if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return }
@@ -103,6 +103,8 @@ export class MotorAPI {
         this.handleResumeTask(res, taskId)
       } else if (req.method === 'POST' && taskId && taskAction === 'cancel') {
         this.handleCancelTask(res, taskId)
+      } else if (req.method === 'DELETE' && taskId && !taskAction) {
+        this.handleDeleteTask(res, taskId)
       } else if (req.method === 'POST' && taskId && taskAction === 'deploy') {
         this.handleDeployTask(res, taskId)
       } else if (req.method === 'POST' && taskId && taskAction === 'clarification') {
@@ -181,6 +183,15 @@ export class MotorAPI {
       this.json(res, 200, { ok: true })
     } catch (error) {
       this.json(res, 400, { ok: false, error: error instanceof Error ? error.message : 'Cancel failed' })
+    }
+  }
+
+  private async handleDeleteTask(res: ServerResponse, taskId: string): Promise<void> {
+    try {
+      await this.coordinator.deleteTask(taskId)
+      this.json(res, 200, { ok: true })
+    } catch (error) {
+      this.json(res, 400, { ok: false, error: error instanceof Error ? error.message : 'Delete failed' })
     }
   }
 

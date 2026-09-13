@@ -33,6 +33,7 @@ import {
   taskRuntimeFacts,
   analystTaskSessions,
   analystTaskSessionMessages,
+  tarefaEventos,
 } from '../schema';
 import {
   MOTOR_CONFIGURACOES,
@@ -113,6 +114,24 @@ export class GerenteAgentesService {
   private readonly motorV2Url: string;
   private readonly consoleUrl: string;
   private readonly consoleToken: string;
+
+  private async registrarEvento(
+    db: any,
+    tarefa: { id: number; externalId?: string | null },
+    evento: string,
+    ator: string,
+    origem: 'usuario' | 'motor',
+    payload?: unknown,
+  ): Promise<void> {
+    await db.insert(tarefaEventos).values({
+      tarefaId: Number(tarefa.id),
+      tarefaExternalId: tarefa.externalId ?? null,
+      evento,
+      ator,
+      origem,
+      payload: payload ?? null,
+    });
+  }
 
   constructor(
     @Inject(PROJECT_DB_FACTORY) private readonly factory: ProjectDbFactory,
@@ -830,6 +849,7 @@ export class GerenteAgentesService {
       status?: string;
       dependsOnTaskId?: number | null;
       autoStart?: boolean;
+      ator?: string;
     },
   ) {
     // O token seleciona o banco/tenant. A FK abaixo seleciona um projeto
@@ -912,6 +932,7 @@ export class GerenteAgentesService {
       .where(eq(tarefas.id, tarefaId))
       .limit(1);
     if (!created) throw new BadRequestException('Falha ao criar tarefa');
+    await this.registrarEvento(db, created, 'created', input.ator ?? 'usuario', 'usuario', { tipo: created.tipo });
     return created;
   }
 
@@ -1001,7 +1022,7 @@ export class GerenteAgentesService {
     }
   }
 
-  async iniciarTarefa(projeto: ProjetoResumo, tarefaId: number) {
+  async iniciarTarefa(projeto: ProjetoResumo, tarefaId: number, ator = 'usuario') {
     const db = await this.dbDoMotor();
     const [tarefa] = await db
       .select()
@@ -1035,10 +1056,11 @@ export class GerenteAgentesService {
       throw new BadRequestException(`Motor rejeitou o início (${start.status}): ${start.body.slice(0, 200)}`);
     }
 
+    await this.registrarEvento(db, tarefa, tarefa.pausedAt ? 'resumed' : 'started', ator, 'usuario');
     return { id: tarefaId, message: tarefa.pausedAt ? 'Tarefa retomada no motor' : 'Tarefa iniciada no motor', motorId };
   }
 
-  async pausarTarefa(projeto: ProjetoResumo, tarefaId: number) {
+  async pausarTarefa(projeto: ProjetoResumo, tarefaId: number, ator = 'usuario') {
     const db = await this.dbDoMotor();
     const [tarefa] = await db
       .select()
@@ -1069,10 +1091,11 @@ export class GerenteAgentesService {
       }
     }
 
+    await this.registrarEvento(db, tarefa, 'paused', ator, 'usuario');
     return { id: tarefaId, paused: true, message: 'Tarefa pausada' };
   }
 
-  async retomarTarefa(projeto: ProjetoResumo, tarefaId: number) {
+  async retomarTarefa(projeto: ProjetoResumo, tarefaId: number, ator = 'usuario') {
     const db = await this.dbDoMotor();
     const [tarefa] = await db
       .select()
@@ -1103,7 +1126,37 @@ export class GerenteAgentesService {
       }
     }
 
+    await this.registrarEvento(db, tarefa, 'resumed', ator, 'usuario');
     return { id: tarefaId, paused: false, message: 'Tarefa retomada' };
+  }
+
+  async cancelarTarefa(projeto: ProjetoResumo, tarefaId: number, ator = 'usuario', motivo?: string) {
+    const db = await this.dbDoMotor();
+    const [tarefa] = await db.select().from(tarefas).where(eq(tarefas.id, tarefaId)).limit(1);
+    if (!tarefa) throw new NotFoundException('Tarefa não encontrada');
+    const motorId = tarefa.externalId || String(tarefa.id);
+    const resp = await this.motorRequest('POST', `/api/motor/task/${encodeURIComponent(motorId)}/cancel`, undefined, this.motorV2Url);
+    if (!resp.ok) throw new BadRequestException(`Motor rejeitou o cancelamento (${resp.status}): ${resp.body.slice(0, 200)}`);
+    await this.registrarEvento(db, tarefa, 'cancelled', ator, 'usuario', { motivo: motivo?.trim() || null });
+    return { id: tarefaId, cancelled: true };
+  }
+
+  async excluirTarefa(projeto: ProjetoResumo, tarefaId: number, ator = 'usuario') {
+    const db = await this.dbDoMotor();
+    const [tarefa] = await db.select().from(tarefas).where(eq(tarefas.id, tarefaId)).limit(1);
+    if (!tarefa) throw new NotFoundException('Tarefa não encontrada');
+    // O evento é gravado antes da remoção e não tem FK, preservando a autoria.
+    await this.registrarEvento(db, tarefa, 'deleted', ator, 'usuario');
+    const motorId = tarefa.externalId || String(tarefa.id);
+    const resp = await this.motorRequest('DELETE', `/api/motor/task/${encodeURIComponent(motorId)}`, undefined, this.motorV2Url);
+    if (!resp.ok) throw new BadRequestException(`Motor rejeitou a exclusão (${resp.status}): ${resp.body.slice(0, 200)}`);
+    return { id: tarefaId, deleted: true };
+  }
+
+  async listarEventosTarefa(projeto: ProjetoResumo, tarefaId: number) {
+    const db = await this.dbDoMotor();
+    const rows = await db.select().from(tarefaEventos).where(eq(tarefaEventos.tarefaId, tarefaId)).orderBy(desc(tarefaEventos.createdAt));
+    return rows;
   }
 
   /**
@@ -1290,7 +1343,7 @@ export class GerenteAgentesService {
     };
   }
 
-  async fazerDeployTarefa(projeto: ProjetoResumo, tarefaId: number) {
+  async fazerDeployTarefa(projeto: ProjetoResumo, tarefaId: number, ator = 'usuario') {
     const db = await this.dbDoMotor();
     const [tarefa] = await db.select().from(tarefas).where(eq(tarefas.id, tarefaId)).limit(1);
     if (!tarefa) throw new NotFoundException('Tarefa não encontrada');
@@ -1300,6 +1353,7 @@ export class GerenteAgentesService {
     const motorId = tarefa.externalId || String(tarefa.id);
     const resp = await this.motorRequest('POST', `/api/motor/task/${encodeURIComponent(motorId)}/deploy`, undefined, this.motorV2Url);
     if (!resp.ok) throw new BadRequestException(`Motor rejeitou o deploy (${resp.status}): ${resp.body.slice(0, 200)}`);
+    await this.registrarEvento(db, tarefa, 'deploy_requested', ator, 'usuario');
     return { id: tarefaId, status: 'deploy_pending', message: 'Deploy agendado para quando o Motor ficar ocioso' };
   }
 

@@ -810,6 +810,31 @@ export default function TaskMonitorScreen(): ReactNode {
     [bundle, carregarTarefas],
   )
 
+  const cancelarTarefaId = useCallback(async (id: number) => {
+    if (!bundle || !window.confirm("Cancelar esta tarefa imediatamente?")) return
+    const motivo = window.prompt("Motivo do cancelamento (opcional):")?.trim() || undefined
+    setErro(null)
+    try {
+      await bundle.http.request("POST", `/gerenteagentes/tarefas/${id}/cancel`, { auth: "access", body: { motivo } })
+      await carregarDetail(String(id))
+      await carregarTarefas()
+    } catch (e) {
+      setErro(e instanceof Error ? e.message : "Erro ao cancelar tarefa")
+    }
+  }, [bundle, carregarDetail, carregarTarefas])
+
+  const excluirTarefaId = useCallback(async (id: number) => {
+    if (!bundle || !window.confirm("Excluir esta tarefa e seus dados operacionais? Esta ação não pode ser desfeita.")) return
+    setErro(null)
+    try {
+      await bundle.http.request("DELETE", `/gerenteagentes/tarefas/${id}`, { auth: "access" })
+      setTarefaId("")
+      await carregarTarefas()
+    } catch (e) {
+      setErro(e instanceof Error ? e.message : "Erro ao excluir tarefa")
+    }
+  }, [bundle, carregarTarefas])
+
   const handleNewTaskSubmit = useCallback(async (values: TarefaFormValues) => {
     if (!bundle) return
     setNewTaskLoading(true)
@@ -1638,6 +1663,27 @@ export default function TaskMonitorScreen(): ReactNode {
                 data-testid="btn-pause"
               >
                 Pausar
+              </Button>
+              <Button
+                size="small"
+                color="error"
+                variant="outlined"
+                startIcon={<CloseRounded />}
+                disabled={acao !== null || statusMotor === "cancelled" || statusMotor === "completed" || statusMotor === "deployed"}
+                onClick={() => void cancelarTarefaId(Number(tarefaId))}
+                data-testid="btn-cancel"
+              >
+                Cancelar
+              </Button>
+              <Button
+                size="small"
+                color="error"
+                variant="text"
+                disabled={acao !== null || ["analyzing", "running", "verifying"].includes(statusMotor)}
+                onClick={() => void excluirTarefaId(Number(tarefaId))}
+                data-testid="btn-delete"
+              >
+                Excluir
               </Button>
             </Stack>
           </Stack>

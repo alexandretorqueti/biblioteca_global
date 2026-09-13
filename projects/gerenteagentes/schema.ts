@@ -302,6 +302,18 @@ export const tarefas = mysqlTable("tarefas", {
     .onUpdateNow(),
 })
 
+/** Trilha imutável de ações sobre tarefas, inclusive após exclusão. */
+export const tarefaEventos = mysqlTable("tarefa_eventos", {
+  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+  tarefaId: bigint("tarefa_id", { mode: "number", unsigned: true }),
+  tarefaExternalId: varchar("tarefa_external_id", { length: 64 }),
+  evento: varchar("evento", { length: 40 }).notNull(),
+  ator: varchar("ator", { length: 255 }).notNull(),
+  origem: varchar("origem", { length: 40 }).notNull(),
+  payload: json("payload"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+})
+
 /** Fila persistente de deploy. Um único deploy pode publicar várias tarefas
  * concluídas do mesmo repositório quando o Motor ficar ocioso. */
 export const deployRequests = mysqlTable("deploy_requests", {

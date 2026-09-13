@@ -1,4 +1,4 @@
-import { Patch, Put } from '@nestjs/common';
+import { Delete, Patch, Put } from '@nestjs/common';
 import {
   Controller,
   Get,
@@ -53,6 +53,7 @@ export class GerenteAgentesController {
       dependsOnTaskId?: number | null;
       autoStart?: boolean;
     },
+    @CurrentUser() usuario?: UsuarioAutenticado,
   ) {
     return this.service.criarTarefa(projeto, {
       managedProjectId: body.managedProjectId ?? body.projeto_id,
@@ -62,6 +63,7 @@ export class GerenteAgentesController {
       status: body.status,
       dependsOnTaskId: body.dependsOnTaskId,
       autoStart: body.autoStart,
+      ator: usuario?.email || usuario?.username || String(usuario?.id ?? 'usuario'),
     });
   }
 
@@ -94,27 +96,48 @@ export class GerenteAgentesController {
   @Roles('admin', 'gerente', 'operador')
   iniciarTarefa(
     @CurrentProject() projeto: ProjetoResumo,
+    @CurrentUser() usuario: UsuarioAutenticado,
     @Param('id', ParseIntPipe) id: number,
   ) {
-    return this.service.iniciarTarefa(projeto, id);
+    return this.service.iniciarTarefa(projeto, id, usuario.email || usuario.username || String(usuario.id));
   }
 
   @Post('tarefas/:id/pause')
   @Roles('admin', 'gerente', 'operador')
   pausarTarefa(
     @CurrentProject() projeto: ProjetoResumo,
+    @CurrentUser() usuario: UsuarioAutenticado,
     @Param('id', ParseIntPipe) id: number,
   ) {
-    return this.service.pausarTarefa(projeto, id);
+    return this.service.pausarTarefa(projeto, id, usuario.email || usuario.username || String(usuario.id));
   }
 
   @Post('tarefas/:id/resume')
   @Roles('admin', 'gerente', 'operador')
   retomarTarefa(
     @CurrentProject() projeto: ProjetoResumo,
+    @CurrentUser() usuario: UsuarioAutenticado,
     @Param('id', ParseIntPipe) id: number,
   ) {
-    return this.service.retomarTarefa(projeto, id);
+    return this.service.retomarTarefa(projeto, id, usuario.email || usuario.username || String(usuario.id));
+  }
+
+  @Post('tarefas/:id/cancel')
+  @Roles('admin', 'gerente', 'operador')
+  cancelarTarefa(@CurrentProject() projeto: ProjetoResumo, @CurrentUser() usuario: UsuarioAutenticado, @Param('id', ParseIntPipe) id: number, @Body() body: { motivo?: string }) {
+    return this.service.cancelarTarefa(projeto, id, usuario.email || usuario.username || String(usuario.id), body?.motivo);
+  }
+
+  @Delete('tarefas/:id')
+  @Roles('admin', 'gerente')
+  excluirTarefa(@CurrentProject() projeto: ProjetoResumo, @CurrentUser() usuario: UsuarioAutenticado, @Param('id', ParseIntPipe) id: number) {
+    return this.service.excluirTarefa(projeto, id, usuario.email || usuario.username || String(usuario.id));
+  }
+
+  @Get('tarefas/:id/eventos')
+  @Roles('admin', 'gerente', 'operador')
+  listarEventosTarefa(@CurrentProject() projeto: ProjetoResumo, @Param('id', ParseIntPipe) id: number) {
+    return this.service.listarEventosTarefa(projeto, id);
   }
 
   /**
@@ -148,8 +171,8 @@ export class GerenteAgentesController {
 
   @Post('tarefas/:id/deploy')
   @Roles('admin', 'gerente', 'operador')
-  fazerDeployTarefa(@CurrentProject() projeto: ProjetoResumo, @Param('id', ParseIntPipe) id: number) {
-    return this.service.fazerDeployTarefa(projeto, id);
+  fazerDeployTarefa(@CurrentProject() projeto: ProjetoResumo, @CurrentUser() usuario: UsuarioAutenticado, @Param('id', ParseIntPipe) id: number) {
+    return this.service.fazerDeployTarefa(projeto, id, usuario.email || usuario.username || String(usuario.id));
   }
 
   @Get('motor-activity')
