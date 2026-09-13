@@ -1389,8 +1389,18 @@ export class GerenteAgentesService {
     }
 
     const mensagens = await db
-      .select()
+      .select({
+        id: tarefaChats.id,
+        tarefaId: tarefaChats.tarefaId,
+        role: tarefaChats.role,
+        texto: tarefaChats.texto,
+        createdAt: tarefaChats.createdAt,
+        deliveryId: tarefaChatEntregas.id,
+        deliveryState: tarefaChatEntregas.estado,
+        deliveryError: tarefaChatEntregas.erro,
+      })
       .from(tarefaChats)
+      .leftJoin(tarefaChatEntregas, eq(tarefaChatEntregas.mensagemId, tarefaChats.id))
       .where(eq(tarefaChats.tarefaId, tarefaId))
       .orderBy(tarefaChats.createdAt);
 
