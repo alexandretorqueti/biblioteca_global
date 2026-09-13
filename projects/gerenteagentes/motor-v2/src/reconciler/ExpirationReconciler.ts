@@ -100,6 +100,32 @@ export class ExpirationReconciler {
 
     await this.repairOrphanedRunningSubtasks(now)
     await this.recoverOrphanedAnalysis(now)
+    await this.cleanupExpiredExecutionPresence(now)
+  }
+
+  /** Remove presenças e sessões que sobreviveram ao processo que as criou. */
+  private async cleanupExpiredExecutionPresence(now: Date): Promise<void> {
+    const executions = await this.db.query(
+      `DELETE FROM motor_active_executions WHERE expires_at < ?`,
+      [now],
+    )
+    if (executions.affectedRows > 0) {
+      this.logger.warn(`Removidas ${executions.affectedRows} presenças de execução expiradas`)
+    }
+
+    // Sessões returnable são úteis para recuperação recente; depois de 24h não
+    // há execução viva para retomá-las e mantê-las abertas só polui o estado.
+    const sessions = await this.db.query(
+      `UPDATE motor_agent_sessions
+       SET status = 'closed', closed_at = COALESCE(closed_at, NOW()),
+           close_reason = COALESCE(close_reason, 'stale_returnable_session'),
+           updated_at = NOW()
+       WHERE status = 'returnable' AND last_activity_at < DATE_SUB(?, INTERVAL 24 HOUR)`,
+      [now],
+    )
+    if (sessions.affectedRows > 0) {
+      this.logger.warn(`Encerradas ${sessions.affectedRows} sessões returnable obsoletas`)
+    }
   }
 
   /**
