@@ -892,9 +892,13 @@ class TaskWorker {
           )
           const promptKey = lastFailure ? "dev.retorno_por_falha_de_gate" : "dev.primeira_rodada_tarefa"
           const promptResolver = new ManagedPromptResolver(this.db!)
+          const promptDescriptionLimit = getConfigNumber("motor.prompt_description_embed_max_chars") || 12_000
+          const promptDescription = input.task.description.length > promptDescriptionLimit
+            ? `A descrição integral foi enviada anteriormente nesta sessão. Consulte a mensagem separada com a descrição completa (${input.task.description.length} caracteres).`
+            : input.task.description
           const resolved = await promptResolver.resolveDetailed({ key: promptKey, values: {
             "**TITULOTAREFA**": input.task.title,
-            "**DESCRICAOTAREFA**": input.task.description ?? "",
+            "**DESCRICAOTAREFA**": promptDescription,
             "**TIPOTAREFA**": input.task.tipo ?? "desenvolvimento",
             "**NUMSUBTAREFA**": subtask.seq,
             "**TITULOSUBTAREFA**": subtask.titulo,
@@ -2004,13 +2008,15 @@ class TaskWorker {
     ].join("\n")
 
     // Descrição longa → mensagem separada para evitar truncamento no viewer
-    if (description.length > 12000) {
-      return { header, context: "Descrição completa da missão:\n\n" + description.substring(0, 30000) }
+    const embedLimit = getConfigNumber("motor.prompt_description_embed_max_chars") || 12_000
+    const contextLimit = getConfigNumber("motor.prompt_description_context_max_chars") || 30_000
+    if (description.length > embedLimit) {
+      return { header, context: "Descrição completa da missão:\n\n" + description.substring(0, contextLimit) }
     }
     // Descrição curta → incluir no header
     const fullHeader = header.replace(
       "Voce e um programador senior. Execute a subtarefa abaixo.",
-      "Voce e um programador senior. Execute a subtarefa abaixo.\n\nDescrição da missão: " + description.substring(0, 12000),
+      "Voce e um programador senior. Execute a subtarefa abaixo.\n\nDescrição da missão: " + description.substring(0, embedLimit),
     )
     return { header: fullHeader, context: null }
   }

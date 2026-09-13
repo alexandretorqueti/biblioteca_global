@@ -40,6 +40,7 @@ export class ManagedPromptResolver {
     let contractSchema: unknown | null = null
     let contractExample: unknown | null = null
     let output = ""
+    let fallbackUsed = false
     try {
       const loadRow = async () => {
         const rawResult = await this.db.query(
@@ -67,7 +68,15 @@ export class ManagedPromptResolver {
         contractInstructions = row.instrucoes ?? ""
         contractSchema = parseJsonColumn(row.schema_json)
         contractExample = parseJsonColumn(row.exemplo_json)
-        output = renderWithContract(String(row.texto), input.values, contractInstructions)
+        const publishedText = String(row.texto)
+        const requiredTokens = Object.keys(input.values).filter((token) => input.fallback.includes(token))
+        const missingCriticalToken = requiredTokens.some((token) => !publishedText.includes(token))
+        if (missingCriticalToken) {
+          output = renderWithContract(input.fallback, input.values, contractInstructions)
+          fallbackUsed = true
+        } else {
+          output = renderWithContract(publishedText, input.values, contractInstructions)
+        }
       }
       if (!row) throw new Error(`prompt_configuration_missing: prompt ativo não encontrado: ${input.key}`)
     } catch (error) {
@@ -75,7 +84,7 @@ export class ManagedPromptResolver {
     }
     const executionResult = await this.db.query(
       "INSERT INTO prompts_execucoes (prompt_id, versao_id, contrato_versao_id, chave, tarefa_id, subtarefa_id, fallback_usado, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())",
-      [promptId, versionId, contractVersionId, input.key, input.taskId ?? null, input.subtaskId ?? null, 0],
+      [promptId, versionId, contractVersionId, input.key, input.taskId ?? null, input.subtaskId ?? null, fallbackUsed ? 1 : 0],
     )
     const result = executionResult ? (Array.isArray(executionResult) ? executionResult[0] : executionResult) : null
     const executionId = Number((result as { insertId?: number } | null)?.insertId ?? 0)
