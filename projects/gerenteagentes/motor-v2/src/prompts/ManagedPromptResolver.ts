@@ -23,6 +23,13 @@ export type ResolvedOutputContract = {
   example: unknown | null
 }
 
+export type PromptGuarantee = {
+  marker: string
+  value: string
+  label: string
+  limit?: number
+}
+
 export class ManagedPromptResolver {
   constructor(private readonly db: PromptQueryable) {}
 
@@ -32,7 +39,8 @@ export class ManagedPromptResolver {
     fallback: string
     taskId?: string
     subtaskId?: number
-  }): Promise<{ text: string; executionId: number; contractInstructions: string; outputContract: ResolvedOutputContract }> {
+    guarantees?: PromptGuarantee[]
+  }): Promise<{ text: string; executionId: number; contractInstructions: string; outputContract: ResolvedOutputContract; fallbackUsado: boolean; guaranteeNotes: string[] }> {
     let promptId: number | null = null
     let versionId: number | null = null
     let contractVersionId: number | null = null
@@ -40,6 +48,8 @@ export class ManagedPromptResolver {
     let contractSchema: unknown | null = null
     let contractExample: unknown | null = null
     let output = ""
+    let fallbackUsado = false
+    const guaranteeNotes: string[] = []
     try {
       const loadRow = async () => {
         const rawResult = await this.db.query(
@@ -49,7 +59,7 @@ export class ManagedPromptResolver {
         "WHERE p.chave = ? AND p.status = 'active' LIMIT 1",
         [input.key],
         )
-        return (Array.isArray(rawResult) ? rawResult[0] : (rawResult as { rows?: unknown[] }).rows ?? []) as Array<{ prompt_id: number; version_id: number; texto: string; contract_version_id: number | null; instrucoes: string | null; schema_json: unknown; exemplo_json: unknown }>
+        return (Array.isArray(rawResult) ? rawResult[0] : (rawResult as { rows?: unknown[] }).rows ?? []) as Array<{ prompt_id: number; version_id: number; texto: string | null; contract_version_id: number | null; instrucoes: string | null; schema_json: unknown; exemplo_json: unknown }>
       }
       let rows = await loadRow()
       if (!rows[0]) {
@@ -63,11 +73,28 @@ export class ManagedPromptResolver {
         promptId = Number(row.prompt_id)
         versionId = Number(row.version_id)
         contractVersionId = row.contract_version_id == null ? null : Number(row.contract_version_id)
-        if (!row.texto) throw new Error(`prompt_configuration_missing: prompt ativo sem texto: ${input.key}`)
         contractInstructions = row.instrucoes ?? ""
         contractSchema = parseJsonColumn(row.schema_json)
         contractExample = parseJsonColumn(row.exemplo_json)
-        output = renderWithContract(String(row.texto), input.values, contractInstructions)
+        const rawText = row.texto == null ? "" : String(row.texto)
+        const template = rawText || input.fallback
+        if (!rawText) {
+          fallbackUsado = true
+          guaranteeNotes.push(`Prompt ativo sem texto: fallback embarcado utilizado para ${input.key}.`)
+        }
+        output = renderWithContract(template, input.values, contractInstructions)
+        for (const guarantee of input.guarantees ?? []) {
+          if (rawText.includes(guarantee.marker)) continue
+          const value = typeof guarantee.value === "string" ? guarantee.value : String(guarantee.value ?? "")
+          if (!value.trim()) {
+            guaranteeNotes.push(`${guarantee.label}: conteúdo não foi enviado porque o valor está vazio.`)
+            continue
+          }
+          const limitedValue = guarantee.limit == null ? value : value.slice(0, guarantee.limit)
+          output += `\n\n${guarantee.label}:\n${limitedValue}`
+          fallbackUsado = true
+          guaranteeNotes.push(`${guarantee.label}: conteúdo anexado como fallback porque ${guarantee.marker} não está no prompt publicado.`)
+        }
       }
       if (!row) throw new Error(`prompt_configuration_missing: prompt ativo não encontrado: ${input.key}`)
     } catch (error) {
@@ -75,11 +102,11 @@ export class ManagedPromptResolver {
     }
     const executionResult = await this.db.query(
       "INSERT INTO prompts_execucoes (prompt_id, versao_id, contrato_versao_id, chave, tarefa_id, subtarefa_id, fallback_usado, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())",
-      [promptId, versionId, contractVersionId, input.key, input.taskId ?? null, input.subtaskId ?? null, 0],
+      [promptId, versionId, contractVersionId, input.key, input.taskId ?? null, input.subtaskId ?? null, fallbackUsado ? 1 : 0],
     )
     const result = executionResult ? (Array.isArray(executionResult) ? executionResult[0] : executionResult) : null
     const executionId = Number((result as { insertId?: number } | null)?.insertId ?? 0)
-    return { text: output, executionId, contractInstructions, outputContract: { instructions: contractInstructions, schema: contractSchema, example: contractExample } }
+    return { text: output, executionId, contractInstructions, outputContract: { instructions: contractInstructions, schema: contractSchema, example: contractExample }, fallbackUsado, guaranteeNotes }
   }
 
   async resolve(input: {
@@ -88,6 +115,7 @@ export class ManagedPromptResolver {
     fallback: string
     taskId?: string
     subtaskId?: number
+    guarantees?: PromptGuarantee[]
   }): Promise<string> {
     return (await this.resolveDetailed(input)).text
   }
