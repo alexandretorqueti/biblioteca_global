@@ -22,7 +22,7 @@ import { GateFailureClassifier, type GateFailureVerdict } from "../policies/Gate
 import { ConsoleAgentRuntimeDriver, WorkspaceBindingError, type RemoteSessionFailure, type RuntimeSession, type RuntimeSessionMessage } from "../runtime/ConsoleAgentRuntimeDriver.js"
 import type { WorkerInput, ExecutionContext, ExecutionResult, SubtaskInfo } from "../shared/types/execution.js"
 import type { CoordinatorToWorkerMessage, WorkerToCoordinatorMessage } from "./WorkerProtocol.js"
-import { defaultChain, formatSessionKey, formatTaskSessionKey, isModelUnavailableError, isModelUnavailableFailure, type ModelSelection } from "../policies/ModelTierPolicy.js"
+import { defaultChain, formatTaskSessionKey, isModelUnavailableError, isModelUnavailableFailure, type ModelSelection } from "../policies/ModelTierPolicy.js"
 import { isSystemicFailure } from "../policies/SystemFailurePolicy.js"
 import { blockerEvidence, type BlockerKind } from "../policies/BlockerPolicy.js"
 import { failureFingerprint } from "../policies/SystemFailurePolicy.js"

@@ -191,6 +191,15 @@ export interface WaitForRunOptions {
   onActivity?: () => void
 }
 
+/**
+ * Sessões legadas codificam o agente na própria chave. A sessão contínua do
+ * Motor não: nesse caso o Console deve resolver o agente vigente, inclusive
+ * quando Alexandre o troca manualmente pela interface.
+ */
+function sessionAgentHint(session: RuntimeSession): { agentId: string } | Record<string, never> {
+  return session.key.startsWith("agent:") ? { agentId: session.agentId } : {}
+}
+
 export class ConsoleAgentRuntimeDriver {
   private baseUrl: string
   private token: string
@@ -248,7 +257,7 @@ export class ConsoleAgentRuntimeDriver {
       path: "/api/chat/send",
       body: {
         sessionKey: input.session.key,
-        agentId: input.session.agentId,
+        ...sessionAgentHint(input.session),
         message: input.message,
         ...(input.session.sessionId ? { sessionId: input.session.sessionId } : {}),
       },
@@ -272,7 +281,7 @@ export class ConsoleAgentRuntimeDriver {
     const response = await this.request<{ aborted?: boolean }>({
       method: "POST",
       path: "/api/chat/abort",
-      body: { sessionKey: session.key, agentId: session.agentId, runId },
+      body: { sessionKey: session.key, ...sessionAgentHint(session), runId },
     })
     return response.aborted === true
   }
@@ -456,7 +465,7 @@ export class ConsoleAgentRuntimeDriver {
     const response = await this.request<{ messages: Array<{ role: string; content: unknown }> }>({
       method: "GET",
       path: "/api/chat/history",
-      query: { sessionKey: session.key, agentId: session.agentId, limit, offset: 0 },
+      query: { sessionKey: session.key, ...sessionAgentHint(session), limit, offset: 0 },
     })
 
     return (response.messages || [])

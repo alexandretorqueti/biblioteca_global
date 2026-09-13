@@ -135,6 +135,11 @@ recuperação e usa `chat.send` para continuar a sessão. A tabela local guarda
 somente o espelho operacional e a fila; não deve concorrer com o histórico
 técnico do Console.
 
+Para a sessão `motor:tarefa:*`, o Motor não envia `agentId` nas operações de
+mensagem, histórico ou abort. Assim, uma troca feita manualmente no Console
+continua válida e não é sobrescrita pelo agente que estava registrado no
+contexto local. O `agentId` só é enviado na criação/troca explícita da sessão.
+
 ## 5. Máquina de estados
 
 Adicionar o status de tarefa `awaiting_interaction`. Ele é diferente de
