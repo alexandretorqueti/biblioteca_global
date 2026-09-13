@@ -565,7 +565,7 @@ describe('TaskCoordinator', () => {
 
       await coordinator.resumeTask('task-81')
 
-      expect(db.query).toHaveBeenCalledWith(expect.stringContaining('SET paused_at = NULL'), ['task-81', 'task-81'])
+      expect(db.query).toHaveBeenCalledWith(expect.stringContaining('SET paused_at = NULL'), ['task-81'])
       expect(repository.saveTask).not.toHaveBeenCalled()
     })
 
@@ -582,7 +582,7 @@ describe('TaskCoordinator', () => {
 
       await coordinator.resumeTask('task-82')
 
-      expect(db.query).toHaveBeenCalledWith(expect.stringContaining('SET paused_at = NULL'), ['task-82', 'task-82'])
+      expect(db.query).toHaveBeenCalledWith(expect.stringContaining('SET paused_at = NULL'), ['task-82'])
       expect(repository.saveTask).not.toHaveBeenCalled()
     })
 

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto"
 import { readFile } from "node:fs/promises"
+import { taskIdentifierLookup } from "./TaskIdentifierLookup.js"
 import { isAbsolute, resolve, relative } from "node:path"
 import mysql from "mysql2/promise"
 import type { Db } from "../shared/types/infrastructure.js"
@@ -43,9 +44,10 @@ export class ProjectDatabaseOperationExecutor {
     const sql = await readFile(absolutePath, "utf8")
     validateProjectSql(sql)
 
+    const lookup = taskIdentifierLookup(request.taskId, "t")
     const { rows } = await motorDb.query(
-      "SELECT pc.plataforma_projeto_id FROM tarefas t INNER JOIN projetos_captados pc ON pc.id = t.projeto_id WHERE t.external_id = ? OR t.id = CAST(? AS UNSIGNED) LIMIT 1",
-      [request.taskId, request.taskId],
+      "SELECT pc.plataforma_projeto_id FROM tarefas t INNER JOIN projetos_captados pc ON pc.id = t.projeto_id WHERE " + lookup.sql + " LIMIT 1",
+      lookup.params,
     )
     const platformProjectId = Number(rows[0]?.plataforma_projeto_id ?? 0)
     if (!Number.isSafeInteger(platformProjectId) || platformProjectId < 1) {

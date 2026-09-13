@@ -3,6 +3,7 @@ import type { Db } from "../shared/types/infrastructure.js"
 import { identifyPromotionConflict } from "./PromotionConflictDetector.js"
 import { PROMOTION_BLOCKER_SQL_FILTER } from "../policies/PromotionBlockers.js"
 import type { PromotionConflictAnalysisResult, PromotionConflictCandidate, PromotionConflictEvidence } from "./promotion-conflict.types.js"
+import { taskIdentifierLookup } from "../database/TaskIdentifierLookup.js"
 
 export class PromotionConflictRepository {
   constructor(private readonly db: Db) {}
@@ -29,13 +30,14 @@ export class PromotionConflictRepository {
    * subtarefas estão aprovadas.
    */
   async findTaskState(taskId: string): Promise<{ integrationConfirmed: boolean; deploySucceeded: boolean; hasUnfinishedSubtasks: boolean } | null> {
+    const lookup = taskIdentifierLookup(taskId, "t")
     const { rows } = await this.db.query(
       "SELECT t.id, f.integration_confirmed_at, " +
       "(SELECT COUNT(*) FROM subtarefas s WHERE s.tarefa_id = t.id AND s.status NOT IN ('verified', 'superseded')) AS abertas, " +
       "(SELECT COUNT(*) FROM deploy_requests d WHERE d.tarefa_id = t.id AND d.status = 'succeeded') AS deploy_ok " +
       "FROM tarefas t LEFT JOIN task_runtime_facts f ON f.tarefa_id = t.id " +
-      "WHERE t.external_id = ? OR t.id = CAST(? AS UNSIGNED) LIMIT 1",
-      [taskId, taskId],
+      "WHERE " + lookup.sql + " LIMIT 1",
+      lookup.params,
     )
     const row = rows[0]
     if (!row) return null
@@ -48,24 +50,26 @@ export class PromotionConflictRepository {
 
   /** Encerra bloqueios de promoção obsoletos (tarefa já integrada e sem conflito). */
   async resolvePromotionBlockers(taskId: string): Promise<number> {
+    const lookup = taskIdentifierLookup(taskId, "t")
     const result = await this.db.query(
       "UPDATE bloqueios b INNER JOIN tarefas t ON t.id = b.tarefa_id SET b.resolved_at = NOW() " +
-      "WHERE b.resolved_at IS NULL AND b.subtarefa_id IS NULL AND (t.external_id = ? OR t.id = CAST(? AS UNSIGNED)) AND " + PROMOTION_BLOCKER_SQL_FILTER,
-      [taskId, taskId],
+      "WHERE b.resolved_at IS NULL AND b.subtarefa_id IS NULL AND " + lookup.sql + " AND " + PROMOTION_BLOCKER_SQL_FILTER,
+      lookup.params,
     )
     return result.affectedRows
   }
 
   async claim(candidate: PromotionConflictCandidate, evidence: PromotionConflictEvidence): Promise<boolean> {
+    const lookup = taskIdentifierLookup(candidate.taskId, "t")
     const result = await this.db.query(
       "INSERT IGNORE INTO promotion_conflict_analyses " +
       "(tarefa_id, bloqueio_id, fingerprint, base_branch, task_branch, base_commit, task_commit, merge_base_commit, conflict_files_json, evidence_json, status, attempts, started_at, created_at, updated_at) " +
       "SELECT t.id, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'analyzing', 1, NOW(), NOW(), NOW() FROM tarefas t " +
-      "WHERE t.external_id = ? OR t.id = CAST(? AS UNSIGNED) LIMIT 1",
+      "WHERE " + lookup.sql + " LIMIT 1",
       [candidate.blockId ?? null, evidence.fingerprint, evidence.baseBranch, evidence.taskBranch,
         evidence.baseCommit, evidence.taskCommit, evidence.mergeBase,
         JSON.stringify(evidence.conflictFiles.map((file) => file.path)), JSON.stringify(evidence),
-        candidate.taskId, candidate.taskId],
+        ...lookup.params],
     )
     if (result.affectedRows > 0) return true
     const retry = await this.db.query(

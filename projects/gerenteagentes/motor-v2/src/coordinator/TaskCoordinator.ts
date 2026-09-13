@@ -52,6 +52,7 @@ import {
   systemBlockedSubtaskSql,
 } from "../policies/BlockerSweepQueries.js"
 import { TaskFactsStore } from "../database/TaskFactsStore.js"
+import { taskIdentifierLookup } from "../database/TaskIdentifierLookup.js"
 import { identifyWorkspaceAutoRecovery } from "../policies/WorkspaceAutoRecoveryPolicy.js"
 import type { PromotionConflictOrchestrator } from "../promotion-conflicts/PromotionConflictOrchestrator.js"
 import type { PromotionConflictCandidate, PromotionConflictPromoterPort } from "../promotion-conflicts/promotion-conflict.types.js"
@@ -350,13 +351,11 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
    * quando o gate assume a correção. Devolve quantos foram encerrados.
    */
   private async resolvePromotionBlockers(taskId: string): Promise<number> {
-    const numeric = /^\d+$/.test(taskId)
-    const lookup = numeric ? "(t.external_id = ? OR t.id = CAST(? AS UNSIGNED))" : "(t.external_id = ?)"
-    const params = numeric ? [taskId, taskId] : [taskId]
+    const lookup = taskIdentifierLookup(taskId, "t")
     const result = await this.db.query(
       "UPDATE bloqueios b INNER JOIN tarefas t ON t.id = b.tarefa_id SET b.resolved_at = NOW() " +
       "WHERE b.resolved_at IS NULL AND b.subtarefa_id IS NULL AND " + lookup + " AND " + PROMOTION_BLOCKER_SQL_FILTER,
-      params,
+      lookup.params,
     )
     return result.affectedRows
   }
@@ -372,10 +371,11 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     if (!candidate.projectSlug) throw new Error("Projeto ausente para promover resolução: " + candidate.taskId)
     // Guarda de segurança: nunca promover com subtarefas abertas (ex.: corretiva
     // pendente criada pelo gate de promoção).
+    const lookup = taskIdentifierLookup(candidate.taskId)
     const { rows: unfinished } = await this.db.query(
-      "SELECT id FROM subtarefas WHERE tarefa_id = (SELECT id FROM tarefas WHERE external_id = ? OR id = CAST(? AS UNSIGNED) LIMIT 1) " +
+      "SELECT id FROM subtarefas WHERE tarefa_id = (SELECT id FROM tarefas WHERE " + lookup.sql + " LIMIT 1) " +
       "AND status NOT IN ('verified', 'superseded') LIMIT 1",
-      [candidate.taskId, candidate.taskId],
+      lookup.params,
     )
     if (unfinished.length > 0) throw new Error("Subtarefas não estão todas verificadas; não é seguro promover: " + candidate.taskId)
 
@@ -394,9 +394,9 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     // Só agora o bloqueio deixa de existir: a base recebeu o commit e o fato
     // integration_confirmed passa a corresponder ao Git real.
     await this.db.query(
-      "UPDATE bloqueios SET resolved_at = NOW() WHERE tarefa_id = (SELECT id FROM tarefas WHERE external_id = ? OR id = CAST(? AS UNSIGNED) LIMIT 1) " +
+      "UPDATE bloqueios SET resolved_at = NOW() WHERE tarefa_id = (SELECT id FROM tarefas WHERE " + lookup.sql + " LIMIT 1) " +
       "AND resolved_at IS NULL AND subtarefa_id IS NULL AND block_command LIKE 'motor-v2:promotion-conflict:%'",
-      [candidate.taskId, candidate.taskId],
+      lookup.params,
     )
     await this.saveTaskTransition(task, "execution_completed")
     await this.enqueueDeploy(task.id, candidate.repoPath)
@@ -415,10 +415,11 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     if (!task) return { kind: "failed", reason: "Tarefa não encontrada para retentativa: " + candidate.taskId }
     if (!candidate.projectSlug) return { kind: "failed", reason: "Projeto ausente para retentativa: " + candidate.taskId }
 
+    const lookup = taskIdentifierLookup(candidate.taskId)
     const { rows: unfinished } = await this.db.query(
-      "SELECT id FROM subtarefas WHERE tarefa_id = (SELECT id FROM tarefas WHERE external_id = ? OR id = CAST(? AS UNSIGNED) LIMIT 1) " +
+      "SELECT id FROM subtarefas WHERE tarefa_id = (SELECT id FROM tarefas WHERE " + lookup.sql + " LIMIT 1) " +
       "AND status NOT IN ('verified', 'superseded') LIMIT 1",
-      [candidate.taskId, candidate.taskId],
+      lookup.params,
     )
     if (unfinished.length > 0) return { kind: "failed", reason: "Subtarefas não estão mais todas verificadas; não é seguro promover" }
 
@@ -1128,9 +1129,10 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
       // Limpa também campos de espera de recurso: se resource_wait_key ficasse
       // preenchido, o selectNextSubtask voltaria a selecionar a tarefa pausada
       // (condição "paused_at IS NULL OR resource_wait_key IS NOT NULL").
+      const lookup = taskIdentifierLookup(worker.taskId)
       await this.db.query(
-        "UPDATE tarefas SET paused_at = NOW(), resource_wait_key = NULL, resource_wait_id = NULL, resource_wait_position = NULL, updated_at = NOW() WHERE external_id = ? OR id = CAST(? AS UNSIGNED)",
-        [worker.taskId, worker.taskId]
+        "UPDATE tarefas SET paused_at = NOW(), resource_wait_key = NULL, resource_wait_id = NULL, resource_wait_position = NULL, updated_at = NOW() WHERE " + lookup.sql,
+        lookup.params,
       )
       // Finalização comum libera lease, remove presença persistida e limpa os
       // controles locais sem apagar o workspace da fase recém-concluída.
@@ -1673,9 +1675,10 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     for (const taskId of incident.taskIds) {
       const task = await this.repository.getTask(taskId)
       if (!task) continue
+      const lookup = taskIdentifierLookup(taskId)
       await this.db.query(
-        "UPDATE tarefas SET paused_at = NULL, updated_at = NOW() WHERE external_id = ? OR id = CAST(? AS UNSIGNED)",
-        [taskId, taskId],
+        "UPDATE tarefas SET paused_at = NULL, updated_at = NOW() WHERE " + lookup.sql,
+        lookup.params,
       )
     }
     this.eventBus.publish({
@@ -1710,9 +1713,10 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
         [worker.subtaskId],
       ).catch((error: unknown) => this.logger.error("Falha ao resetar subtarefa pausada: " + describeError(error), { taskId: worker.taskId, subtaskId: worker.subtaskId, executionId }))
     }
+    const lookup = taskIdentifierLookup(worker.taskId)
     await this.db.query(
-      "UPDATE tarefas SET paused_at = NOW(), updated_at = NOW() WHERE external_id = ? OR id = CAST(? AS UNSIGNED)",
-      [worker.taskId, worker.taskId],
+      "UPDATE tarefas SET paused_at = NOW(), updated_at = NOW() WHERE " + lookup.sql,
+      lookup.params,
     )
     // Preservar o worktree no pause: trabalho não commitado do dev pode estar lá;
     // limpar destruiria progresso e queimaria tokens no rework.
@@ -1902,11 +1906,12 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     reason: string | null
     createdAt: string
   }>> {
+    const lookup = taskIdentifierLookup(taskId, "t")
     const { rows } = await this.db.query(
       "SELECT h.status_anterior, h.status_novo, h.origem, h.motivo, h.created_at " +
       "FROM tarefas_status_historico h INNER JOIN tarefas t ON t.id = h.tarefa_id " +
-      "WHERE t.external_id = ? OR t.id = CAST(? AS UNSIGNED) ORDER BY h.id DESC LIMIT 200",
-      [taskId, taskId],
+      "WHERE " + lookup.sql + " ORDER BY h.id DESC LIMIT 200",
+      lookup.params,
     )
     return rows.map((row) => {
       const data = row as Record<string, unknown>
@@ -2186,16 +2191,18 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     // linha para não correr com resumeNext (liberação de recurso concorrente
     // poderia desfazer o pause entre o DELETE da fila e o UPDATE da tarefa).
     if (!workerAtivo) {
+      const lookup = taskIdentifierLookup(taskId, "t")
+      const lookupWithoutAlias = taskIdentifierLookup(taskId)
       await this.db.transaction(async (tx) => {
         await tx.query(
-          "SELECT id FROM tarefas WHERE external_id = ? OR id = CAST(? AS UNSIGNED) LIMIT 1 FOR UPDATE",
-          [taskId, taskId]
+          "SELECT id FROM tarefas WHERE " + lookupWithoutAlias.sql + " LIMIT 1 FOR UPDATE",
+          lookupWithoutAlias.params,
         )
         await tx.query(
           "DELETE q FROM execution_resource_queue q " +
           "INNER JOIN tarefas t ON t.resource_wait_id = q.id " +
-          "WHERE (t.external_id = ? OR t.id = CAST(? AS UNSIGNED)) AND q.status = 'waiting'",
-          [taskId, taskId]
+          "WHERE " + lookup.sql + " AND q.status = 'waiting'",
+          lookup.params,
         )
         // Se o processo foi reiniciado, não há worker em memória para chamar
         // onTaskPaused(). As subtarefas que ficaram em estado operacional
@@ -2205,14 +2212,14 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
         await tx.query(
           "UPDATE subtarefas s INNER JOIN tarefas t ON t.id = s.tarefa_id " +
           "SET s.status = 'pending', s.updated_at = NOW() " +
-          "WHERE (t.external_id = ? OR t.id = CAST(? AS UNSIGNED)) " +
+          "WHERE " + lookup.sql + " " +
           "AND s.status IN ('running', 'verifying', 'delivered', 'rework')",
-          [taskId, taskId]
+          lookup.params,
         )
         await tx.query(
           "UPDATE tarefas SET paused_at = NOW(), resource_wait_key = NULL, resource_wait_id = NULL, resource_wait_position = NULL, updated_at = NOW() " +
-          "WHERE external_id = ? OR id = CAST(? AS UNSIGNED)",
-          [taskId, taskId]
+          "WHERE " + lookupWithoutAlias.sql,
+          lookupWithoutAlias.params,
         )
       })
       this.logger.info("Tarefa pausada imediatamente (sem worker ativo)", { taskId })
@@ -2222,14 +2229,15 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
   async resumeTask(taskId: string): Promise<void> {
     const task = await this.repository.getTask(taskId)
     if (!task) throw new Error("Tarefa " + taskId + " nao encontrada")
+    const lookup = taskIdentifierLookup(taskId)
     const { rows } = await this.db.query(
-      "SELECT paused_at FROM tarefas WHERE external_id = ? OR id = CAST(? AS UNSIGNED) LIMIT 1",
-      [taskId, taskId],
+      "SELECT paused_at FROM tarefas WHERE " + lookup.sql + " LIMIT 1",
+      lookup.params,
     )
     if (!rows[0]?.paused_at) throw new Error("Tarefa " + taskId + " nao esta pausada")
     await this.db.query(
-      "UPDATE tarefas SET paused_at = NULL, updated_at = NOW() WHERE external_id = ? OR id = CAST(? AS UNSIGNED)",
-      [taskId, taskId],
+      "UPDATE tarefas SET paused_at = NULL, updated_at = NOW() WHERE " + lookup.sql,
+      lookup.params,
     )
     await this.pump()
   }
@@ -2693,12 +2701,13 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     phase: ActiveWorker["phase"],
     db: import("../shared/types/infrastructure.js").Db = this.db,
   ): Promise<void> {
+    const lookup = taskIdentifierLookup(taskId, "t")
     await db.query(
       "INSERT INTO motor_active_executions (execution_id, tarefa_id, subtarefa_id, phase, started_at, heartbeat_at, expires_at) " +
       "SELECT ?, t.id, ?, ?, NOW(), NOW(), ? FROM tarefas t " +
-      "WHERE t.external_id = ? OR t.id = CAST(? AS UNSIGNED) LIMIT 1 " +
+      "WHERE " + lookup.sql + " LIMIT 1 " +
       "ON DUPLICATE KEY UPDATE heartbeat_at = NOW(), expires_at = VALUES(expires_at)",
-      [executionId, subtaskId, phase, this.activeExecutionExpiry(), taskId, taskId],
+      [executionId, subtaskId, phase, this.activeExecutionExpiry(), ...lookup.params],
     )
   }
 
@@ -2761,10 +2770,11 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
           action = recoveredSha ? "complete" : "fail"
         }
       } else if (worker.phase === "analyze") {
+        const lookup = taskIdentifierLookup(worker.taskId, "t")
         const { rows } = await this.db.query(
           "SELECT s.id FROM subtarefas s INNER JOIN tarefas t ON s.tarefa_id = t.id " +
-          "WHERE (t.external_id = ? OR t.id = CAST(? AS UNSIGNED)) LIMIT 1",
-          [worker.taskId, worker.taskId],
+          "WHERE " + lookup.sql + " LIMIT 1",
+          lookup.params,
         )
         if (rows.length > 0) {
           // Plano persistido pelo worker antes do exit: análise concluída.
@@ -3079,12 +3089,13 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
       queue: "planned",
     }
     const status = projectedStatus[transition] ?? previousStatus
+    const lookup = taskIdentifierLookup(task.id)
     // O histórico é uma projeção auditável dos fatos; não é usado para tomar
     // decisões nem atualiza tarefas.status.
     await this.db.query(
       "INSERT INTO tarefas_status_historico (tarefa_id, status_anterior, status_novo, origem, motivo) " +
-      "SELECT id, ?, ?, ?, ? FROM tarefas WHERE external_id = ? OR id = CAST(? AS UNSIGNED) LIMIT 1",
-      [previousStatus, status, `motor-v2:${transition}`, patch.errorMessage?.substring(0, 500) ?? null, task.id, task.id],
+      "SELECT id, ?, ?, ?, ? FROM tarefas WHERE " + lookup.sql + " LIMIT 1",
+      [previousStatus, status, `motor-v2:${transition}`, patch.errorMessage?.substring(0, 500) ?? null, ...lookup.params],
     ).catch((error: unknown) => this.logger.warn("Falha ao auditar transição de tarefa: " + describeError(error), { taskId: task.id }))
     // Atualiza o objeto task em memória para manter consistência
     task.status = status as Task["status"]

@@ -2,6 +2,7 @@ import { deriveTaskStatus, type DerivedTaskStatusFacts } from "../policies/Deriv
 import type { TaskStatus } from "../shared/types/index.js"
 import type { Db } from "../shared/types/infrastructure.js"
 import { verifyRecoveryEligibility, type RecoveryEligibility } from "../shared/recoveryEligibility.js"
+import { taskIdentifierLookup } from "./TaskIdentifierLookup.js"
 
 export type TaskFactEvent =
   | "start_analysis"
@@ -10,19 +11,13 @@ export type TaskFactEvent =
   | "cancelled"
   | "failed"
 
-function taskLookup(taskId: string): { sql: string; params: unknown[] } {
-  return /^\d+$/.test(taskId)
-    ? { sql: "external_id = ? OR id = CAST(? AS UNSIGNED)", params: [taskId, taskId] }
-    : { sql: "external_id = ?", params: [taskId] }
-}
-
 /** Fonte única dos fatos que determinam o status operacional da tarefa. */
 export class TaskFactsStore {
   constructor(private readonly db: Db) {}
 
   /** Lê os fatos persistidos e aplica o contrato canônico do selo de recuperação. */
   async recoveryEligibility(taskId: string, now = new Date()): Promise<RecoveryEligibility | null> {
-    const lookup = taskLookup(taskId)
+    const lookup = taskIdentifierLookup(taskId, "t")
     const { rows } = await this.db.query(
       "SELECT t.id FROM tarefas t WHERE " + lookup.sql + " LIMIT 1", lookup.params,
     )
@@ -60,7 +55,7 @@ export class TaskFactsStore {
   }
 
   async derive(taskId: string, legacyFallback?: TaskStatus): Promise<TaskStatus> {
-    const lookup = taskLookup(taskId)
+    const lookup = taskIdentifierLookup(taskId, "t")
     const { rows } = await this.db.query(
       "SELECT t.id, t.paused_at, t.resource_wait_key, f.analysis_started_at, f.integration_confirmed_at, f.terminal_status, " +
       "EXISTS(SELECT 1 FROM bloqueios b WHERE b.tarefa_id = t.id AND b.resolved_at IS NULL) AS has_active_blocker, " +
@@ -95,7 +90,7 @@ export class TaskFactsStore {
   }
 
   async record(taskId: string, event: TaskFactEvent): Promise<void> {
-    const lookup = taskLookup(taskId)
+    const lookup = taskIdentifierLookup(taskId)
     const sqlByEvent: Record<TaskFactEvent, string> = {
       start_analysis: "analysis_started_at = NOW(), terminal_status = NULL, terminal_at = NULL",
       analysis_completed: "analysis_started_at = NULL",
@@ -112,7 +107,7 @@ export class TaskFactsStore {
   }
 
   async resolveBlocks(taskId: string): Promise<void> {
-    const lookup = taskLookup(taskId)
+    const lookup = taskIdentifierLookup(taskId, "t")
     await this.db.query(
       "UPDATE bloqueios b INNER JOIN tarefas t ON t.id = b.tarefa_id SET b.resolved_at = NOW() " +
       "WHERE (" + lookup.sql + ") AND b.resolved_at IS NULL",

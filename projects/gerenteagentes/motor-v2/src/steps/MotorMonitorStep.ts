@@ -8,6 +8,7 @@ import type { ResourceKey } from '../shared/types/resources.js'
 import { RESOURCE_KEYS } from '../shared/types/resources.js'
 import type { ExecutionContext } from '../shared/types/execution.js'
 import type { Db } from '../shared/types/infrastructure.js'
+import { taskIdentifierLookup } from '../database/TaskIdentifierLookup.js'
 
 export interface MotorFixInput {
   taskId: string
@@ -180,10 +181,11 @@ export class MotorMonitorStep {
   /** Persiste a pergunta do Monitor no mesmo chat já exibido na tela da tarefa. */
   private async persistQuestion(taskId: string, question: string): Promise<void> {
     if (!this.config.db) throw new Error('DB não configurado para registrar a pergunta do Monitor')
+    const lookup = taskIdentifierLookup(taskId)
     await this.config.db.query(
       "INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) " +
-      "SELECT id, 'monitor', ?, NOW() FROM tarefas WHERE external_id = ? OR id = CAST(? AS UNSIGNED) LIMIT 1",
-      [question.slice(0, 30_000), taskId, taskId],
+      "SELECT id, 'monitor', ?, NOW() FROM tarefas WHERE " + lookup.sql + " LIMIT 1",
+      [question.slice(0, 30_000), ...lookup.params],
     )
   }
 
