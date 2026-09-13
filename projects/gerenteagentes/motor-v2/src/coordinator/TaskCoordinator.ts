@@ -1325,6 +1325,7 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
             // bloqueada, worktree/branch da tarefa preservados para o
             // Alexandre resolver. Sem rebase automático.
             if (worker.taskWorkspace && worker.repoPath && worker.rootBaseBranch) {
+              await this.reviewAndCommitAnalystContext(task, worker)
               // Gate final, antes de tocar a base. A verificação e a criação
               // de corretiva são módulos distintos; falha preserva a branch.
               let promotionGate
@@ -1456,6 +1457,27 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
       await this.finishWorker(executionId, worker)
       throw error
     }
+  }
+
+  /** Revisão final em sessão normal: o agente conserva sua identidade; o
+   * worktree é informado por caminho absoluto e o Motor é o guardião do diff. */
+  private async reviewAndCommitAnalystContext(task: Pick<Task, "id">, worker: ActiveWorker): Promise<void> {
+    const workspace = worker.taskWorkspace!
+    const contextFile = "docs/CONTEXTO-ANALISTA.md"
+    const baseUrl = process.env.OPENCLAW_CONSOLE_URL
+    const token = process.env.OPENCLAW_CONSOLE_TOKEN
+    if (!baseUrl || !token || !worker.agentId) throw new Error("Revisão do Analista indisponível: Console ou agente ausente")
+    const driver = new ConsoleAgentRuntimeDriver({ baseUrl, token })
+    const session = await driver.createSession({ agentId: worker.agentId, key: `analyst-review-${task.id}`, label: `Revisão final ${task.id}` })
+    const message = `Você é o Analista na revisão final da tarefa ${task.id}. Workspace de integração autorizado: ${workspace.path}. Leia ${contextFile}, o diff e as evidências da tarefa. Se houver conhecimento estrutural confirmado, edite SOMENTE ${contextFile}; não faça commit, não altere qualquer outro arquivo e não invente fatos. Responda com um resumo objetivo da revisão.`
+    const { runId } = await driver.sendMessage({ session, message })
+    const result = await driver.waitForRunCompletion(session, runId)
+    if (result.state !== "final") throw new Error("Revisão final do Analista não concluiu: " + (result.errorMessage ?? result.state))
+    const changed = execSync("git status --porcelain --untracked-files=all", { cwd: workspace.path, encoding: "utf8" }).trim().split("\n").filter(Boolean)
+    const files = changed.map((line) => line.slice(3).trim())
+    if (files.some((file) => file !== contextFile)) throw new Error("Revisão do Analista alterou arquivo fora do permitido: " + files.join(", "))
+    if (files.length === 0) return
+    execSync(`git add -- ${contextFile} && git commit -m "docs: atualizar contexto do analista da tarefa ${task.id}"`, { cwd: workspace.path, stdio: "pipe" })
   }
 
   async onTaskFailed(executionId: string, error: string, kind = "error", sessionFailure?: RemoteSessionFailure): Promise<void> {
