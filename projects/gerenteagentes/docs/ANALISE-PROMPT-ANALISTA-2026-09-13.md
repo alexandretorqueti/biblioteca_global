@@ -10,23 +10,33 @@ Registro de 2026-09-13, solicitado por Alexandre. Este documento é uma análise
 - `docs/P2-PROMPTS-E-REFUTACAO-DE-PREMISSA.md`;
 - `docs/REVISAO-FINAL-PELO-ANALISTA.md`.
 
-Como prompts persistidos ativos no banco prevalecem sobre o fallback, este diagnóstico deve ser confrontado com a versão publicada antes de qualquer alteração de produção.
+Os prompts persistidos ativos foram consultados diretamente em `projeto_640` em 2026-09-13. O Motor resolve `prompts_agentes.versao_ativa_id` e usa `prompts_versoes.texto`; o campo `conteudo` da tabela de prompts não é a fonte da execução.
+
+| Chave | Versão ativa | Contexto/contrato adicional |
+|---|---:|---|
+| `analista.primeira_rodada_tarefa` | 6 (id 23) | contrato de saída v4 |
+| `analista.retomada_apos_clarificacao` | 5 (id 19) | nenhum |
+| `analista.retry_resposta_invalida` | 1 (id 4) | nenhum |
+| `analista.revisao_premissa_incorreta` | 1 (id 9) | nenhum |
 
 ## O contrato atual
 
-O Analista recebe título, descrição integral, tipo da tarefa e, quando houver, histórico de clarificação. Deve devolver somente JSON: um plano de até dez subtarefas, requisitos `REQ-*`, matriz de cobertura, entregáveis, critérios de aceite e dependências; ou perguntas de clarificação, com resumo e até oito perguntas.
+Na primeira rodada, o Analista recebe título, descrição integral e tipo da tarefa. O prompt ativo v6 exige leitura de `AGENTS.md`, `TOOLS.md`, `INFRA.md`, documentação, runbooks, configurações não sensíveis e arquivos relevantes; também pede identificação de namespaces/containers/host, planejamento de baixo para cima e análise de dependências antes de dividir o trabalho. O contrato de saída v4 exige JSON, requisitos, cobertura, estratégia, invariantes, artefatos compartilhados e ordem de execução.
+
+Na retomada, ele recebe título, descrição e histórico de clarificação, mas somente uma instrução genérica para inspecionar documentação/arquivos. Retry de JSON inválido e rebriefing após refutação têm apenas uma frase de instrução e não recebem o contrato completo.
 
 O contrato já acerta ao exigir cobertura explícita, critérios verificáveis, perguntas em vez de inventar planos, persistência do histórico e refutação de premissa pelo executor com auditoria determinística.
 
 ## Lacunas prioritárias
 
-1. Não exige descoberta baseada em fonte de verdade antes de planejar. O Analista pode decompor uma descrição sem ler `AGENTS.md`, documentação do projeto, código, schema, contratos de API, testes ou estado atual do repositório.
-2. Não recebe identidade operacional suficiente: repositório canônico, branch base, projeto/slug, worktree aplicável, stack, comandos de validação, limites de acesso e fontes de verdade relevantes.
-3. Não separa explicitamente fato observado, hipótese e decisão de produto. Isto permite transformar suposições em escopo executável.
-4. Os critérios de aceite cobram que sejam verificáveis, mas não exigem método de verificação, evidência esperada ou responsável pela validação.
-5. A regra de "somente trabalho de código ou documentação" é ampla demais: não orienta como tratar investigação, migração de dados, configuração de ambiente, integrações externas ou trabalho pertencente à plataforma Biblioteca.
-6. O contrato não força classificar risco/necessidade de decisão humana antes de gerar subtarefas. Clarificação existe, mas os gatilhos estão vagos.
-7. Há inconsistência documental: `REVISAO-FINAL-PELO-ANALISTA.md` prevê uma sessão lógica contínua até a aprovação final, enquanto `MAPEAMENTO_SESSAO_ANALISTA_TAREFA.md` descreve sessões efêmeras por modelo/tentativa. O comportamento canônico precisa ser decidido e implementado/documentado de forma única.
+1. A primeira rodada melhorou, mas não recebe identidade operacional estruturada: repositório canônico, branch base, projeto/slug, stack, comandos de validação, fontes de verdade e permissões ainda dependem de descoberta livre.
+2. A retomada após clarificação não repete as regras fortes de ambiente, namespace, investigação e estratégia da primeira rodada. Uma resposta humana pode, assim, reabrir uma análise com menos contexto do que a que a originou.
+3. Retry de JSON inválido e rebriefing de premissa incorreta são minimalistas e não reaplicam contrato de saída, critérios de descoberta ou contexto da tarefa. O rebriefing é especialmente frágil porque deveria reexaminar requisito, evidência, dependências e impacto no plano.
+4. Não separa explicitamente fato observado, hipótese e decisão de produto. Isto permite transformar suposições em escopo executável.
+5. Os critérios de aceite cobram que sejam verificáveis, mas não exigem método de verificação, evidência esperada ou responsável pela validação.
+6. A regra de "somente trabalho de código ou documentação" é ampla demais: não orienta como tratar investigação, migração de dados, configuração de ambiente, integrações externas ou trabalho pertencente à plataforma Biblioteca.
+7. O contrato ativo contém texto com codificação corrompida (`AlÃ©m`, `vÃ¡rias`, `orquestraÃ§Ã£o`). Embora compreensível, deve ser republicado em UTF-8 correto para não degradar a instrução do modelo.
+8. Há inconsistência documental: `REVISAO-FINAL-PELO-ANALISTA.md` prevê uma sessão lógica contínua até a aprovação final, enquanto `MAPEAMENTO_SESSAO_ANALISTA_TAREFA.md` descreve sessões efêmeras por modelo/tentativa. O comportamento canônico precisa ser decidido e implementado/documentado de forma única.
 
 ## Direção recomendada
 
