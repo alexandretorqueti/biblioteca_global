@@ -21,6 +21,16 @@ interface Projeto {
   nome: string
 }
 
+function obterAccessToken(): string | null {
+  if (typeof window === "undefined") return null
+
+  try {
+    return window.localStorage?.getItem("access_token") ?? null
+  } catch {
+    return null
+  }
+}
+
 export default function NovaTarefaScreen(): ReactNode {
   const [projetos, setProjetos] = useState<Projeto[]>([])
   const [enviando, setEnviando] = useState(false)
@@ -28,7 +38,7 @@ export default function NovaTarefaScreen(): ReactNode {
   const [erro, setErro] = useState<string | null>(null)
 
   const carregarOpcoes = useCallback(async () => {
-    const token = localStorage.getItem("access_token")
+    const token = obterAccessToken()
     const headers: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {}
     try {
       const projsRes = await fetch("/api/gerenteagentes/projetos_captados", { headers })
@@ -51,7 +61,7 @@ export default function NovaTarefaScreen(): ReactNode {
     setEnviando(true)
 
     try {
-      const token = localStorage.getItem("access_token")
+      const token = obterAccessToken()
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
       }

@@ -167,6 +167,31 @@ describe("NovaTarefaScreen", () => {
     expect(screen.getByTestId("btn-enviar")).toBeDisabled()
   })
 
+  it("carrega opções sem localStorage disponível", async () => {
+    const descriptorOriginal = Object.getOwnPropertyDescriptor(window, "localStorage")
+    Object.defineProperty(window, "localStorage", { configurable: true, value: undefined })
+
+    try {
+      await act(async () => {
+        render(
+          <BibliotecaThemeProvider>
+            <NovaTarefaScreen />
+          </BibliotecaThemeProvider>,
+        )
+      })
+
+      await waitFor(() => {
+        expect(mockFetch).toHaveBeenCalledWith(
+          "/api/gerenteagentes/projetos_captados",
+          expect.any(Object),
+        )
+      })
+    } finally {
+      if (descriptorOriginal) Object.defineProperty(window, "localStorage", descriptorOriginal)
+      else delete (window as Window & { localStorage?: Storage }).localStorage
+    }
+  })
+
   it("exibe botão enviar desabilitado enquanto falta campo obrigatório", async () => {
     await act(async () => {
       render(

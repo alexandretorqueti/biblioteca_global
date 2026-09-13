@@ -23,6 +23,7 @@ export default defineConfig({
     // por arquivo: jsdom externaliza builtins Node e o Vitest 4.1.10 quebra com
     // "No such built-in module: node:" (ERR_UNKNOWN_BUILTIN_MODULE).
     environment: "jsdom",
+    setupFiles: ["./test/setup.ts"],
     // Testes funcionais (etapa 3+) usam MySQL real + argon2.
     testTimeout: 30_000,
     hookTimeout: 60_000,
