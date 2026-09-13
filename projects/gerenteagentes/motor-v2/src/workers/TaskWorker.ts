@@ -474,6 +474,7 @@ class TaskWorker {
       const sessionKey = formatSessionKey({ agentId: input.task.agentId, taskId: input.task.id, phase: "analysis", model: model.model, modelIndex, generation: 0 })
       let session
       const executionOrder = modelIndex + 1
+      await this.recordAnalysisAttempt(input, undefined, model.model, modelIndex, executionOrder, lastFailure ?? "modelo selecionado")
 
       try {
         session = await driver.createSession({
@@ -510,6 +511,7 @@ class TaskWorker {
             
             if (isUnavailable) {
               lastFailure = `Modelo indisponível durante contexto: ${model.model} — ${errorMessage}`
+              await this.recordAnalysisAttempt(input, undefined, model.model, modelIndex, executionOrder, lastFailure)
               await this.markModelUnavailable(input.context.executionId, model.model, cooldownReason(contextResult.failure?.code, errorMessage))
               this.send({ type: "model_unavailable", executionId: input.context.executionId, model: model.model, message: lastFailure })
               this.log("warn", lastFailure + "; escalando para o próximo modelo da escada")
@@ -838,6 +840,7 @@ class TaskWorker {
 
     modelLoop: for (let modelIndex = 0; modelIndex < chain.length; modelIndex += 1) {
       const model = chain[modelIndex]!
+      await this.recordAnalysisAttempt(input, subtask, model.model, modelIndex, deliverCount, lastFailure ?? "modelo selecionado")
       // A recuperação de sessão é uma tentativa adicional, explicitamente
       // limitada, e não deve ser confundida com o rework do gate.
       let sessionRecoveryAttempts = 0
@@ -959,6 +962,7 @@ class TaskWorker {
               // idêntica significa que o modelo não está entregando — escalar.
               if (shouldSkipModelAfterRemoteFailure(result.failure, repeats)) {
                 lastFailure = `Modelo indisponível: ${model.model} — ${remoteReason}`
+                await this.recordAnalysisAttempt(input, subtask, model.model, modelIndex, deliverCount, lastFailure, repeats)
                 await this.markModelUnavailable(input.context.executionId, model.model, cooldownReason(result.failure.code, result.failure.message))
                 this.send({ type: "model_unavailable", executionId: input.context.executionId, model: model.model, message: lastFailure })
                 this.log("warn", lastFailure)
@@ -1698,6 +1702,31 @@ class TaskWorker {
       this.send({ type: "log", executionId, level: "warn", message: `Modelo ${applied.model} em cooldown até ${applied.until.toISOString()}` })
     } catch (error) {
       this.log("warn", "Falha ao registrar cooldown do modelo " + model + ": " + (error instanceof Error ? error.message : String(error)))
+    }
+  }
+
+  /** Persiste a trilha da escada sem tornar a execução dependente do diagnóstico. */
+  private async recordAnalysisAttempt(
+    input: WorkerInput,
+    subtask: SubtaskInfo | undefined,
+    model: string,
+    tier: number,
+    attempt: number,
+    reason: string,
+    repeats = 0,
+  ): Promise<void> {
+    if (!this.db) return
+    try {
+      const numericTaskId = /^\d+$/.test(input.task.id)
+      const where = numericTaskId ? "t.external_id = ? OR t.id = CAST(? AS UNSIGNED)" : "t.external_id = ?"
+      const taskParams = numericTaskId ? [input.task.id, input.task.id] : [input.task.id]
+      await this.db.query(
+        "INSERT INTO analysis_attempt (tarefa_id, subtarefa_id, fase, modelo, tier, tentativa, repeticoes, motivo, created_at) " +
+        "SELECT t.id, ?, ?, ?, ?, ?, ?, ?, NOW() FROM tarefas t WHERE " + where + " LIMIT 1",
+        [subtask?.id ?? null, subtask ? "development" : "analysis", model, tier, attempt, repeats, diagnosticText(reason), ...taskParams],
+      )
+    } catch (error) {
+      this.log("warn", "Falha ao registrar tentativa do modelo: " + (error instanceof Error ? error.message : String(error)))
     }
   }
 
