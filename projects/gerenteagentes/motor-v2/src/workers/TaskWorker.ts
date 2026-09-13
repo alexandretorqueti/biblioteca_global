@@ -66,7 +66,7 @@ import { confirmBaselineIndependentFailure } from "../policies/BaselineConfirmat
 import { digestGateFailure, formatCarryOver, type CarryOverEvent } from "../policies/CarryOverPolicy.js"
 import { getConfigNumber } from "../config/MotorConfigReader.js"
 import { formatPriorSubtaskHandoff, parseGitNameStatus, type PriorSubtaskHandoff } from "../policies/SubtaskHandoffPolicy.js"
-import { ProjectDatabaseOperationExecutor } from "../database/ProjectDatabaseOperationExecutor.js"
+import { validateDatabaseMigrationPath } from "../database/ProjectDatabaseOperationExecutor.js"
 
 const COMMAND_FAILURE_LIMIT = 12_000
 const ANSI_ESCAPE_PATTERN = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g
@@ -1036,14 +1036,10 @@ class TaskWorker {
             return undefined
           }
           if (outcome.kind === "database_operation") {
-            const executed = await new ProjectDatabaseOperationExecutor().execute(this.planningDb(), {
-              taskId: input.task.id,
-              workspacePath: input.repoPath,
-              scriptPath: outcome.scriptPath,
-            })
-            const evidence = `Operação SQL executada no banco ${executed.database}; arquivo=${executed.scriptPath}; sha256=${executed.sha256}`
+            validateDatabaseMigrationPath(input.repoPath, outcome.scriptPath)
+            const evidence = `Migration criada pelo agente e deixada para revisão/aplicação no deploy; arquivo=${outcome.scriptPath}`
             await this.recordDeliveryEvent(subtask.id, deliverCount, model.model, "database_operation", evidence)
-            this.log("info", evidence)
+            this.log("info", evidence + "; o Motor não executa SQL do agente")
           }
           if (outcome.kind === "premise_incorrect") {
             const validation = validatePremiseRefutation(outcome.payload, input.repoPath)

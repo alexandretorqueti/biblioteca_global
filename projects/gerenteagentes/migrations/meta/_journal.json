@@ -330,6 +330,13 @@
       "when": 1789170780000,
       "tag": "0047_task_events",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "5",
+      "when": 1789170840000,
+      "tag": "0048_dev_database_migration_only",
+      "breakpoints": true
     }
   ]
 }
