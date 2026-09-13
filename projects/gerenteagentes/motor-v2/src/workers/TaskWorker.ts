@@ -1903,12 +1903,14 @@ class TaskWorker {
         if (result.state !== "final" || !result.content?.trim()) throw new Error(result.errorMessage || "Agente não respondeu ao chat")
         await db.query("INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) SELECT tarefa_id, 'agent', ?, NOW() FROM tarefa_chat_entregas WHERE id=?", [result.content.trim().slice(0, 20000), row.id])
         await db.query("UPDATE tarefa_chat_entregas SET estado='consumed', consumed_at=NOW(), delivered_at=COALESCE(delivered_at,NOW()), erro=NULL, updated_at=NOW() WHERE id=? AND estado='delivering'", [row.id])
+        this.send({ type: "chat_delivery", executionId: input.context.executionId, messageId: row.mensagem_id, deliveryId: row.id, state: "consumed" })
         if (row.modo === "solicitar_pausa") {
           await db.query("UPDATE tarefa_contextos_execucao SET estado='awaiting_human', last_checkpoint_at=NOW(), resumo_contexto=?, updated_at=NOW() WHERE tarefa_id=(SELECT tarefa_id FROM tarefa_chat_entregas WHERE id=?) AND sessao_chave=? AND estado IN ('active','checkpoint_requested','ready_to_resume')", [result.content.trim().slice(0, 8000), row.id, session.key])
           this.pendingInteraction = { phase, summary: result.content.trim().slice(0, 8000) }
         }
       } catch (error) {
         await db.query("UPDATE tarefa_chat_entregas SET estado='failed', erro=?, updated_at=NOW() WHERE id=? AND estado='delivering'", [String(error instanceof Error ? error.message : error).slice(0, 2000), row.id])
+        this.send({ type: "chat_delivery", executionId: input.context.executionId, messageId: row.mensagem_id, deliveryId: row.id, state: "failed", error: String(error instanceof Error ? error.message : error).slice(0, 2000) })
         this.log("warn", `Falha ao entregar mensagem de chat ${row.mensagem_id}: ${error instanceof Error ? error.message : String(error)}`)
       }
     }

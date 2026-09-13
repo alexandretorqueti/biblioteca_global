@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import type { ExecutionPhase } from '../shared/types/execution.js'
 
-export type ExecutionActivityType = 'started' | 'progress' | 'log' | 'heartbeat' | 'completed' | 'failed' | 'model_unavailable' | 'developer_branch_integrated' | 'deployed' | 'clarifying' | 'system_alert' | 'system_recovered'
+export type ExecutionActivityType = 'started' | 'progress' | 'log' | 'heartbeat' | 'completed' | 'failed' | 'model_unavailable' | 'developer_branch_integrated' | 'deployed' | 'clarifying' | 'system_alert' | 'system_recovered' | 'task.chat.delivery.updated'
 
 export interface ExecutionActivityEvent {
   type: ExecutionActivityType
@@ -16,6 +16,10 @@ export interface ExecutionActivityEvent {
   /** Correlação da indisponibilidade compartilhada do Console. */
   agentId?: string
   incidentId?: string
+  messageId?: number
+  deliveryId?: number
+  deliveryState?: 'pending' | 'delivering' | 'delivered' | 'consumed' | 'cancelled' | 'failed'
+  deliveryError?: string
   timestamp: Date
 }
 

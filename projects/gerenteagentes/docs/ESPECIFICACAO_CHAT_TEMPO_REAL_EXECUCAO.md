@@ -32,8 +32,8 @@ O Mapa de agentes já é a base correta para esta evolução:
   em `awaiting_clarification`;
 - `TaskCoordinator.answerClarification()` só aceita esse estado e o converte
   para `planned`, provocando **nova análise**;
-- `TaskWorker` cria sessão do analista e do desenvolvedor, envia uma mensagem
-  e aguarda a finalização do run. O driver atual expõe `createSession`,
+- `TaskWorker` cria sessões separadas para analista e desenvolvedor, envia uma
+  mensagem e aguarda a finalização do run. O driver atual expõe `createSession`,
   `sendMessage` e `waitForRunCompletion`; ele não expõe interrupção cooperativa
   de um run em andamento.
 
@@ -61,6 +61,15 @@ sem reanalisar a tarefa.
    de “replanejar”.
 6. **A mensagem é auditável.** Autor, instante, intenção, fase, subtarefa,
    sessão-alvo e transições de entrega são registrados.
+7. **Uma tarefa possui uma sessão principal persistente.** Analista,
+   desenvolvedor e responsável conversam no mesmo `sessionKey`, preservando o
+   contexto e evitando reenvio integral de histórico.
+8. **A identidade da sessão pode mudar em checkpoint.** O Console permite
+   trocar o agente em tempo real; o Motor registra a troca e usa o agente
+   vigente nas mensagens seguintes. Não se abre uma sessão nova apenas por
+   troca de agente.
+9. **Nova sessão é exceção.** Só é criada para sessão perdida, isolamento de
+   segurança ou quando uma troca de modelo não puder ser aplicada pelo Console.
 
 ## 4. Modelo de dados proposto
 
@@ -113,6 +122,19 @@ preservado.
 Não se replica o histórico textual do Console nessas tabelas: ele continua em
 `sessoes_agente`/mensagens da sessão. O novo contexto apenas aponta para ele.
 
+### 4.3 Identidade contínua da sessão
+
+O `sessionKey` principal deve ser estável e independente de agente e modelo,
+por exemplo `motor:tarefa:<id>`. O campo `agent_id` no contexto representa o
+agente vigente, não a identidade da sessão. Cada troca deve gerar um evento de
+auditoria com agente anterior, agente novo, origem (`console`, `motor` ou
+`usuario`), motivo e confirmação retornada pelo Console.
+
+O Motor consulta o Console usando `chat.history`/`chat.message.get` para
+recuperação e usa `chat.send` para continuar a sessão. A tabela local guarda
+somente o espelho operacional e a fila; não deve concorrer com o histórico
+técnico do Console.
+
 ## 5. Máquina de estados
 
 Adicionar o status de tarefa `awaiting_interaction`. Ele é diferente de
@@ -156,8 +178,8 @@ imediatamente e recebe o chip **“Será entregue no próximo checkpoint”**. I
 4. O Motor é avisado por endpoint interno `POST /api/motor/task/:id/chat-pump`
    **após o commit**. Falha nessa chamada não desfaz a mensagem.
 5. O `TaskCoordinator` acorda o worker correspondente ou o próximo `pump` lê
-   a fila. Se houver run ativo, marca `checkpoint_requested`; se não houver,
-   abre a sessão persistida e entrega a mensagem.
+  a fila. Se houver run ativo, marca `checkpoint_requested`; se não houver,
+  resolve a sessão principal persistida e entrega a mensagem via Console.
 6. No checkpoint, o Worker envia ao agente: autor, texto, fase, subtarefa,
    resumo do estado e instrução para responder primeiro no chat e não executar
    ação irreversível sem autorização explícita.
@@ -185,7 +207,8 @@ imediatamente e recebe o chip **“Será entregue no próximo checkpoint”**. I
 1. Usuário aciona **Retomar execução**.
 2. Coordenador confirma que existe contexto não fechado e worktree acessível.
 3. A tarefa volta ao estado que a originou (`analyzing`, `running` ou
-   `verifying`) e o Worker abre a mesma `sessao_chave`.
+   `verifying`) e o Worker continua na mesma `sessao_chave`; se o agente foi
+   trocado no Console, lê a identidade vigente antes de enviar a retomada.
 4. A primeira mensagem de retomada inclui o resumo/contexto e todas as
    mensagens `consumed` posteriores ao último checkpoint. Não reenvia a
    descrição inteira, não zera contadores de entrega e não roda análise de
@@ -235,11 +258,12 @@ incluindo no prompt o `resumo_contexto`, o diff e o histórico do chat.
 - `TaskWorker`: checkpoints antes/depois de chamadas remotas, comandos e
   gates; persistência do resumo; consumo da fila; prompt de mensagem humana;
   gravação da resposta do agente no chat.
-- `ConsoleAgentRuntimeDriver`: manter o contrato atual para a primeira etapa.
-  Para interrupção durante um run longo, acrescentar no Console Developer uma
-  operação de pausa cooperativa (`POST /api/chat/runs/:runId/interrupt` ou
-  equivalente) e então expor `interruptRun()` no driver. Sem essa operação,
-  “Pausar e conversar” só conclui no próximo polling/checkpoint seguro.
+- `ConsoleAgentRuntimeDriver`: reutilizar `chat.send`, `chat.history`,
+  `chat.message.get` e `chat.abort`. Acrescentar uma operação de troca de
+  agente da sessão, caso ainda não esteja exposta ao driver, com confirmação e
+  auditoria. Para interrupção durante um run longo, usar `chat.abort` somente
+  com contrato cooperativo confirmado pelo Console; sem essa garantia,
+  “Pausar e conversar” só conclui no próximo checkpoint seguro.
 - `TaskStateMachine`: novo estado/transições e testes de transição inválida.
 - `ExecutionEventBus`/`LibraryRealtimeBroadcaster`: eventos definidos na
   seção 8.
@@ -326,11 +350,13 @@ deduplicação deve usar `eventId` do envelope e `id` da mensagem.
 
 1. Migration, schema e fila durável de entregas.
 2. Endpoint de chat seguro e eventos realtime; adaptar a aba Chat do Mapa.
-3. Consumo de mensagens quando não existe run ativo e compatibilidade com
-   `awaiting_clarification`.
+3. Sessão principal por tarefa usando `chat.send`/`chat.history`, com
+   compatibilidade para `awaiting_clarification`.
 4. Contexto de execução + checkpoint ordenado + `awaiting_interaction`.
-5. Retomada na mesma sessão/worktree e reconciliação pós-restart.
-6. Só então, se o Console oferecer suporte, interrupção cooperativa de run.
+5. Troca dinâmica de agente em checkpoint, com confirmação e auditoria.
+6. Retomada na mesma sessão/worktree e reconciliação pós-restart.
+7. Só então, se o Console oferecer suporte seguro, interrupção cooperativa de
+   run longo.
 
 Cada passo deve ser uma tarefa revisável isoladamente. O primeiro já entrega
 confiabilidade e visibilidade; os demais entregam conversa verdadeiramente

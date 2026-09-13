@@ -36,4 +36,10 @@ describe("TaskStateMachine", () => {
     expect(() => transitionTask("planned", "clarification_answered")).toThrow()
     expect(() => transitionTask("analyzing", "clarification_answered")).toThrow()
   })
+
+  it("entra em interação humana somente a partir de uma execução ativa", () => {
+    expect(transitionTask("running", "interaction_requested")).toBe("awaiting_interaction")
+    expect(transitionTask("awaiting_interaction", "interaction_resumed")).toBe("ready")
+    expect(() => transitionTask("planned", "interaction_resumed")).toThrow()
+  })
 })

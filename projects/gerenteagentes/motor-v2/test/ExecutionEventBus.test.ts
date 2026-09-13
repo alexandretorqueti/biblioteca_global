@@ -42,4 +42,20 @@ describe('ExecutionEventBus', () => {
 
     expect(handler).toHaveBeenCalledWith(event)
   })
+
+  it('propaga atualização de entrega do chat com seus identificadores', () => {
+    const bus = new ExecutionEventBus()
+    const handler = vi.fn()
+    bus.on(handler)
+    const event = {
+      type: 'task.chat.delivery.updated' as const,
+      executionId: 'exec-chat', taskId: 'task-chat', phase: 'execute' as const,
+      messageId: 41, deliveryId: 7, deliveryState: 'consumed' as const,
+      timestamp: new Date(),
+    }
+
+    bus.publish(event)
+
+    expect(handler).toHaveBeenCalledWith(event)
+  })
 })

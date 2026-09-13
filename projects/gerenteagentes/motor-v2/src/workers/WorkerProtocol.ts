@@ -20,6 +20,7 @@ export type WorkerToCoordinatorMessage =
   | { type: 'completed'; executionId: string; result: ExecutionResult }
   | { type: 'clarifying'; executionId: string; questionCount: number; summary?: string }
   | { type: 'interaction_awaiting'; executionId: string; phase: 'analysis' | 'development' | 'verification'; summary?: string }
+  | { type: 'chat_delivery'; executionId: string; messageId: number; deliveryId: number; state: 'consumed' | 'failed'; error?: string }
   | { type: 'failed'; executionId: string; error: string; sessionFailure?: RemoteSessionFailure }
   | { type: 'heartbeat'; executionId: string; cpuUsage?: number; memUsage?: number }
   | { type: 'model_unavailable'; executionId: string; model: string; message: string }

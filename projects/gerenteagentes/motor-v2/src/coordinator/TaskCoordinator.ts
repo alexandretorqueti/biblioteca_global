@@ -273,6 +273,9 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
       // caminhos que não notificaram o motor (ex.: insert direto por agente/sessão)
       // são detectadas aqui e retomam a análise sem depender de aviso externo.
       await this.resumeAnsweredClarifications()
+      // Só depois da compatibilidade com a clarificação legada: além de manter
+      // a ordem de recuperação, isso permite rollout gradual da migration 0049.
+      await this.reconcileTaskChat()
       // Desenvolvimento e análise são pistas independentes. Uma subtarefa
       // aguardando recurso não pode interromper a seleção do analista.
       const maxWorkers = this.config.maxWorkers ?? getConfigNumber('motor.max_workers')
@@ -1808,6 +1811,9 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     )
     const rows = pendingRows.rows as Array<{ id: number; mensagem_id: number; modo: string; texto: string }>
     const status = await this.facts.derive(taskId, task.status as Task["status"])
+    if (rows.some((row) => row.modo === "solicitar_pausa") && [...this.activeWorkers.values()].some((worker) => worker.taskId === taskId)) {
+      await this.db.query("UPDATE tarefa_contextos_execucao SET estado='checkpoint_requested', updated_at=NOW() WHERE tarefa_id=(SELECT id FROM tarefas WHERE " + lookup.sql + " LIMIT 1) AND estado='active'", lookup.params)
+    }
     if (status === "awaiting_clarification" && rows[0]) {
       await this.answerClarification(taskId, rows[0].texto, { jaPersistida: true })
       await this.db.query("UPDATE tarefa_chat_entregas SET estado='consumed', consumed_at=NOW(), updated_at=NOW() WHERE id=? AND estado='pending'", [rows[0].id])
@@ -1815,6 +1821,24 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     }
     await this.pump()
     return { pending: rows.length, action: "queued" }
+  }
+
+  /** Recupera claims interrompidos e checkpoints que sobreviveram ao restart. */
+  private async reconcileTaskChat(): Promise<void> {
+    try {
+      await this.db.query("UPDATE tarefa_chat_entregas SET estado='pending', erro='Entrega recuperada após reinício', updated_at=NOW() WHERE estado='delivering' AND updated_at < DATE_SUB(NOW(), INTERVAL 10 MINUTE)")
+      const { rows } = await this.db.query("SELECT id, tarefa_id FROM tarefa_contextos_execucao WHERE estado='checkpoint_requested'")
+      for (const row of rows) {
+        const taskId = String(row.tarefa_id)
+        if (![...this.activeWorkers.values()].some((worker) => worker.taskId === taskId)) {
+          await this.db.query("UPDATE tarefa_contextos_execucao SET estado='awaiting_human', last_checkpoint_at=COALESCE(last_checkpoint_at,NOW()), updated_at=NOW() WHERE id=? AND estado='checkpoint_requested'", [row.id])
+        }
+      }
+    } catch (error) {
+      // Compatibilidade durante o rollout: o Motor continua operando antes da
+      // migration 0049 ser aplicada; o próximo pump tentará novamente.
+      this.logger.warn("Falha ao reconciliar fila de chat: " + describeError(error))
+    }
   }
 
   async resumeTaskChat(taskId: string): Promise<{ pending: number; action: "resumed" }> {
@@ -2742,6 +2766,7 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
       }
     } finally {
       try {
+        await this.db.query("UPDATE tarefa_contextos_execucao SET estado='closed', closed_at=NOW(), updated_at=NOW() WHERE sessao_chave IN (SELECT sessao_chave FROM tarefa_chat_entregas WHERE sessao_chave IS NOT NULL AND estado='consumed') AND estado IN ('active','ready_to_resume')").catch(() => undefined)
         if (worker.resourceKey) await this.resourceLease.release(worker.resourceKey, executionId, worker.fencingToken)
       } finally {
         await this.removeActiveExecution(executionId)
@@ -2918,6 +2943,15 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
       } catch (error) {
         this.logger.error("Falha ao processar interaction_awaiting: " + describeError(error), { executionId: msg.executionId })
       }
+    })
+    this.workerLauncher.on("chat_delivery", (msg: { executionId: string; messageId: number; deliveryId: number; state: "consumed" | "failed"; error?: string }) => {
+      const worker = this.activeWorkers.get(msg.executionId)
+      if (!worker) return
+      this.eventBus.publish({
+        type: "task.chat.delivery.updated", executionId: msg.executionId, taskId: worker.taskId,
+        subtaskId: worker.subtaskId, phase: worker.phase, messageId: msg.messageId,
+        deliveryId: msg.deliveryId, deliveryState: msg.state, deliveryError: msg.error, timestamp: new Date(),
+      })
     })
     this.workerLauncher.on("heartbeat", (msg: { executionId: string }) => {
       const worker = this.activeWorkers.get(msg.executionId)
