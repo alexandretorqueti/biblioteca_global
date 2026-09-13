@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { classifyRemoteFailure } from "../src/runtime/ConsoleAgentRuntimeDriver.js"
-import { formatRemoteSessionFailure, remoteFailureSignature, resolveMaxDeliveryAttempts, resolveSessionRecoveryLimit, shouldEscalateAnalysisContextFailure, shouldSkipModelAfterRemoteFailure } from "../src/workers/TaskWorker.js"
+import { formatRemoteSessionFailure, remoteFailureSignature, resolveMaxDeliveryAttempts, resolveSessionRecoveryBackoffMs, resolveSessionRecoveryLimit, shouldEscalateAnalysisContextFailure, shouldSkipModelAfterRemoteFailure } from "../src/workers/TaskWorker.js"
 
 describe("política de recuperação de sessão", () => {
   it("pula imediatamente o modelo quando o Console devolve SESSION_FAILED", () => {
@@ -28,6 +28,13 @@ describe("política de recuperação de sessão", () => {
     expect(resolveSessionRecoveryLimit({ MOTOR_SESSION_RECOVERY_MAX_ATTEMPTS: "2" })).toBe(2)
     expect(resolveSessionRecoveryLimit({ MOTOR_SESSION_RECOVERY_MAX_ATTEMPTS: "99" })).toBe(1)
     expect(resolveSessionRecoveryLimit({ MOTOR_SESSION_RECOVERY_MAX_ATTEMPTS: "0" })).toBe(0)
+  })
+
+  it("calcula backoff exponencial com teto e fallback seguro", () => {
+    expect(resolveSessionRecoveryBackoffMs(1, { MOTOR_SESSION_RECOVERY_BACKOFF_MS: "30000" })).toBe(30_000)
+    expect(resolveSessionRecoveryBackoffMs(2, { MOTOR_SESSION_RECOVERY_BACKOFF_MS: "30000" })).toBe(60_000)
+    expect(resolveSessionRecoveryBackoffMs(20, { MOTOR_SESSION_RECOVERY_BACKOFF_MS: "30000" })).toBe(300_000)
+    expect(resolveSessionRecoveryBackoffMs(1, { MOTOR_SESSION_RECOVERY_BACKOFF_MS: "invalido" })).toBe(30_000)
   })
 
   // O Console devolve só status=failed: sem assinatura estável não há como saber

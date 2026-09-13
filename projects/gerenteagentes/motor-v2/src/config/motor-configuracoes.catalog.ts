@@ -54,6 +54,7 @@ export const MOTOR_CONFIGURACOES: readonly MotorConfiguracaoDefinicao[] = [
   { chave: "motor.model_cooldown_session_ms", tipo: "number", valorPadrao: 900000, regraValidacao: "inteiro entre 60000 e 86400000", descricao: "Cooldown global de um modelo cuja sessao nao entrega (falhas identicas sem assinatura de provedor).", validar: (v) => inteiroPositivo(v, 86400000) && v >= 60000 },
   { chave: "motor.model_cooldown_growth_factor", tipo: "number", valorPadrao: 1.5, regraValidacao: "numero entre 1 e 10", descricao: "Fator de crescimento do cooldown a cada reincidencia do mesmo modelo (1.5 = +50%).", validar: (v) => typeof v === "number" && Number.isFinite(v) && v >= 1 && v <= 10 },
   { chave: "motor.model_cooldown_max_ms", tipo: "number", valorPadrao: 43200000, regraValidacao: "inteiro entre 60000 e 604800000", descricao: "Teto do cooldown de um modelo (nao cresce alem disso).", validar: (v) => inteiroPositivo(v, 604800000) && v >= 60000 },
+  { chave: "motor.session_recovery_backoff_ms", tipo: "number", valorPadrao: 30000, regraValidacao: "inteiro entre 0 e 300000", descricao: "Espera inicial entre recuperações transitórias de sessão; dobra a cada tentativa até cinco minutos.", validar: (v) => typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 300000 },
 ]
 
 export function configuracaoPorChave(chave: string): MotorConfiguracaoDefinicao | undefined {

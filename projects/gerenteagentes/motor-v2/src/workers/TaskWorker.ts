@@ -71,6 +71,8 @@ import { ProjectDatabaseOperationExecutor } from "../database/ProjectDatabaseOpe
 const COMMAND_FAILURE_LIMIT = 12_000
 const ANSI_ESCAPE_PATTERN = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g
 const DEFAULT_SESSION_RECOVERY_LIMIT = 1
+const DEFAULT_SESSION_RECOVERY_BACKOFF_MS = 30_000
+const MAX_SESSION_RECOVERY_BACKOFF_MS = 300_000
 
 /** Contexto explícito para o DEV retomar uma pergunta respondida no chat. */
 export function formatDeveloperClarificationContext(history: Parameters<typeof formatHistoryForPrompt>[0]): string {
@@ -84,6 +86,13 @@ export function resolveSessionRecoveryLimit(env: NodeJS.ProcessEnv = process.env
   return Number.isInteger(configured) && configured >= 0 && configured <= 5
     ? configured
     : DEFAULT_SESSION_RECOVERY_LIMIT
+}
+
+/** Backoff exponencial entre recuperações da mesma sessão remota. */
+export function resolveSessionRecoveryBackoffMs(attempt: number, env: NodeJS.ProcessEnv = process.env): number {
+  const configured = Number(env.MOTOR_SESSION_RECOVERY_BACKOFF_MS ?? getConfigNumber("motor.session_recovery_backoff_ms") ?? DEFAULT_SESSION_RECOVERY_BACKOFF_MS)
+  const base = Number.isFinite(configured) && configured >= 0 ? configured : DEFAULT_SESSION_RECOVERY_BACKOFF_MS
+  return Math.min(MAX_SESSION_RECOVERY_BACKOFF_MS, base * 2 ** (Math.max(1, Math.floor(attempt)) - 1))
 }
 
 export function resolveMaxDeliveryAttempts(value = getConfigNumber("motor.max_delivery_attempts")): number {
@@ -976,7 +985,9 @@ class TaskWorker {
                   "UPDATE subtarefas SET status = 'pending', resultado = ?, finalizada_em = NULL, updated_at = NOW() WHERE id = ?",
                   [lastFailure.substring(0, 500), subtask.id],
                 )
-                this.log("warn", lastFailure + "; criando/retomando a sessão para nova tentativa")
+                const backoffMs = resolveSessionRecoveryBackoffMs(sessionRecoveryAttempts)
+                this.log("warn", lastFailure + `; aguardando ${backoffMs}ms antes de criar/retomar a sessão`)
+                await new Promise((resolve) => setTimeout(resolve, backoffMs))
                 continue
               }
               throw new Error("Falha transitória da sessão remota após " + sessionRecoveryAttempts + " recuperação(ões): " + remoteReason)
