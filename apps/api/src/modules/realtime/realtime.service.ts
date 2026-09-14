@@ -13,16 +13,20 @@ export class RealtimeService {
   private readonly eventos = new Map<string, TaskEventEnvelope[]>()
   private readonly inscritos = new Map<string, Map<WebSocket, number>>()
   private readonly eventosRecebidos = new Set<string>()
+  private readonly envelopesPorId = new Map<string, TaskEventEnvelope>()
 
   publicar(evento: unknown): TaskEventEnvelope {
     const parsed = realtimeIngressEventSchema.safeParse(evento)
     if (!parsed.success) throw new Error("Evento realtime inválido")
     const input: RealtimeIngressEvent = parsed.data
+    const existente = this.envelopesPorId.get(input.eventId)
+    if (existente) return existente
     const atual = this.sequencias.get(input.projectId) ?? 0
     const envelope: TaskEventEnvelope = {
       ...input,
       sequence: atual + 1,
     }
+    this.envelopesPorId.set(envelope.eventId, envelope)
     this.sequencias.set(envelope.projectId, envelope.sequence)
     const chave = this.chave(envelope.projectId, envelope.taskId)
     const lista = this.eventos.get(chave) ?? []
