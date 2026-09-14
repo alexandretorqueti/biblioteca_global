@@ -27,7 +27,20 @@ export type {
   TokenStore,
 } from "./types"
 export { RealtimeClient } from "./realtime"
-export type { RealtimeServerMessage } from "./realtime"
+export type {
+  RealtimeClientMessage,
+  RealtimeIngressEvent,
+  RealtimeServerMessage,
+  TaskEventEnvelope,
+  TaskExecutionEvent,
+} from "@biblioteca-global/shared"
+export {
+  realtimeClientMessageSchema,
+  realtimeIngressEventSchema,
+  realtimeServerMessageSchema,
+  taskEventEnvelopeSchema,
+  taskExecutionEventSchema,
+} from "@biblioteca-global/shared"
 export type { RealtimeClientOptions } from "./types"
 export { createAgentChatClient } from "./agent-chat-client"
 export type {
