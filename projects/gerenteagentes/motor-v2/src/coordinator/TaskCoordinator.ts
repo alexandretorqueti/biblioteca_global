@@ -37,6 +37,7 @@ import { SecretProfileManager, resolveGitTopLevel } from "../workspaces/SecretPr
 import { validateTaskCompletion, formatPromotionValidationReport } from "../policies/PromotionValidationPolicy.js"
 import { isAgentRunFailureWithoutReply } from "../policies/NoReplyFailurePolicy.js"
 import { validateProjectId, formatProjectIdValidationReport } from "../policies/ProjectIdValidationPolicy.js"
+import { assertUniformDeployBatch, resolveDeployScript } from "../deploy/DeployScriptResolver.js"
 import { verifyAgentInGateway, formatAgentVerificationReport, shouldBlockEnqueue } from "../policies/GatewayAgentVerificationPolicy.js"
 import { PROMOTION_BLOCKER_SQL_FILTER, isPromotionBlocker } from "../policies/PromotionBlockers.js"
 import {
@@ -2522,7 +2523,7 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     const startedAt = new Date()
     for (const taskId of taskIds) this.activeDeployments.set(taskId, { taskId, phase: "verify", startedAt })
     try {
-      this.dispatchDeployBatch(repoPath, batchId, taskIds)
+      await this.dispatchDeployBatch(repoPath, batchId, taskIds)
       for (const taskId of taskIds) {
         const deployment = this.activeDeployments.get(taskId)
         if (deployment) deployment.phase = "deploy"
@@ -2625,12 +2626,38 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     }
   }
 
-  private dispatchDeployBatch(repoPath: string, batchId: string, taskIds: string[]): void {
+  private async dispatchDeployBatch(repoPath: string, batchId: string, taskIds: string[]): Promise<void> {
     const repoRoot = execFileSync("git", ["-C", repoPath, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim()
-    const relativeScript = getConfigString("motor.deploy_script")
-    if (!existsSync(join(repoRoot, relativeScript))) throw new Error("deploy-host.sh não encontrado na raiz Git " + repoRoot)
-    const hostRepoRoot = process.env.DEPLOY_REPO_HOST ?? getConfigString("motor.deploy_host_root")
-    const hostDeployScript = hostRepoRoot + "/" + relativeScript
+    const placeholders = taskIds.map(() => "?").join(",")
+    const { rows: projectRows } = await this.db.query(
+      "SELECT COALESCE(t.external_id, CAST(t.id AS CHAR)) AS task_id, pc.slug AS project_slug, " +
+      "pmc.deploy_script, pmc.deploy_host_root " +
+      "FROM tarefas t INNER JOIN projetos_captados pc ON pc.id = t.projeto_id " +
+      "LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id = t.projeto_id " +
+      `WHERE t.external_id IN (${placeholders}) OR CAST(t.id AS CHAR) IN (${placeholders})`,
+      [...taskIds, ...taskIds],
+    )
+    const projectsByTaskId = new Map(projectRows.map((row) => [String(row.task_id), row]))
+    const deployRepoHost = process.env.DEPLOY_REPO_HOST ?? getConfigString("motor.deploy_host_root")
+    const plans = taskIds.map((taskId) => {
+      const project = projectsByTaskId.get(taskId)
+      if (!project) throw new Error("Projeto dono da tarefa de deploy não encontrado: " + taskId)
+      return resolveDeployScript({
+        project: {
+          projectSlug: String(project.project_slug ?? ""),
+          deploy_script: project.deploy_script == null ? null : String(project.deploy_script),
+          deploy_host_root: project.deploy_host_root == null ? null : String(project.deploy_host_root),
+        },
+        gitTopLevel: repoRoot,
+        deployRepoHost,
+        defaultRelativeScript: getConfigString("motor.deploy_script"),
+        fileExists: existsSync,
+      })
+    })
+    assertUniformDeployBatch(plans)
+    const plan = plans[0]
+    if (!plan) throw new Error("Lote de deploy sem tarefas")
+    const { hostRepoRoot, hostDeployScript } = plan
     const safeBatchId = batchId.replace(/[^a-zA-Z0-9_-]/g, "_")
     const logFile = "/tmp/biblioteca-global-" + safeBatchId + ".log"
     const statusFile = "/tmp/biblioteca-global-" + safeBatchId + ".status"
