@@ -74,7 +74,6 @@ update_nginx() {
   [ -f "$NGINX_CONFIG" ] || { echo "configuração Nginx ausente: $NGINX_CONFIG" >&2; return 1; }
 
   python3 - "$NGINX_CONFIG" "$NGINX_TEMPLATE" "$web_port" "$api_port" <<'PY'
-import os
 import sys
 from pathlib import Path
 
@@ -92,9 +91,9 @@ if start in current and end in current:
     updated = before + block + after.lstrip("\n")
 else:
     updated = current.rstrip() + "\n\n" + block
-tmp = config.with_name(config.name + f".tmp.{os.getpid()}")
-tmp.write_text(updated, encoding="utf-8")
-os.replace(tmp, config)
+# O arquivo é bind-mounted no container do Nginx. Não troque o inode com
+# os.replace(): o container continuaria enxergando a configuração antiga.
+config.write_text(updated, encoding="utf-8")
 PY
 
   docker exec "$NGINX_CONTAINER" nginx -t
