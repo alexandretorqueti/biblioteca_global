@@ -14,6 +14,10 @@ NGINX_TEMPLATE="$REPO_ROOT/infra/nginx/biblioteca-global.conf.template"
 STATE_FILE="${BLUE_GREEN_STATE_FILE:-/home/alexandre/containers/biblioteca-global/blue-green-state}"
 MYSQL_HOST_BLUEGREEN="${BLUE_GREEN_MYSQL_HOST:-host.docker.internal}"
 MYSQL_PORT_BLUEGREEN="${BLUE_GREEN_MYSQL_PORT:-3308}"
+CONSOLE_URL_BLUEGREEN="${BLUE_GREEN_CONSOLE_URL:-http://host.docker.internal:6280}"
+MOTOR_REPO_ROOT_CONTAINER="/data/workspace/projects/codigofonte/biblioteca-global"
+MOTOR_WORKSPACE_ROOT_CONTAINER="${MOTOR_WORKSPACE_ROOT:-/data/workspace/projects/agentes/gerenteagentes/worktrees}"
+MOTOR_WORKSPACE_MOUNT_CONTAINER="${MOTOR_WORKSPACE_ROOT_CONTAINER%/worktrees}"
 
 mkdir -p "$(dirname "$STATE_FILE")"
 cd "$REPO_ROOT"
@@ -129,6 +133,8 @@ echo "[deploy-blue-green] dist do Motor materializado a partir da imagem $target
 
 echo "[deploy-blue-green] iniciando $NEW_PROJECT (MySQL compartilhado em $MYSQL_HOST_BLUEGREEN:$MYSQL_PORT_BLUEGREEN)..."
 MYSQL_HOST="$MYSQL_HOST_BLUEGREEN" MYSQL_PORT="$MYSQL_PORT_BLUEGREEN" \
+  OPENCLAW_CONSOLE_URL="$CONSOLE_URL_BLUEGREEN" \
+  MOTOR_WORKSPACE_ROOT="$MOTOR_WORKSPACE_ROOT_CONTAINER" \
   API_HOST_PORT="$NEW_API_PORT" MOTOR_V2_HOST_PORT="$NEW_MOTOR_PORT" WEB_HOST_PORT="$NEW_WEB_PORT" \
   docker compose -p "$NEW_PROJECT" -f "$COMPOSE_FILE" up -d --no-deps api web
 
@@ -138,6 +144,40 @@ cleanup_new() {
     docker compose -p "$NEW_PROJECT" -f "$COMPOSE_FILE" down --remove-orphans || true
 }
 trap cleanup_new ERR
+
+NEW_API_CONTAINER="${NEW_PROJECT}-api-1"
+echo "[deploy-blue-green] validando workspace do Motor no novo container"
+docker exec -e "MOTOR_REPO_ROOT_CONTAINER=$MOTOR_REPO_ROOT_CONTAINER" "$NEW_API_CONTAINER" sh -eu -c '
+  test -d "$MOTOR_WORKSPACE_ROOT" || {
+    echo "workspace do Motor ausente: $MOTOR_WORKSPACE_ROOT" >&2
+    exit 1
+  }
+  command -v git >/dev/null || {
+    echo "git ausente no container da API" >&2
+    exit 1
+  }
+  git -C "$MOTOR_REPO_ROOT_CONTAINER" rev-parse --show-toplevel >/dev/null || {
+    echo "repositório do Motor ausente ou inválido: $MOTOR_REPO_ROOT_CONTAINER" >&2
+    exit 1
+  }
+'
+docker inspect "$NEW_API_CONTAINER" --format '{{range .Mounts}}{{println .Destination}}{{end}}' \
+  | grep -Fx "$MOTOR_WORKSPACE_MOUNT_CONTAINER" >/dev/null || {
+    echo "mount do workspace não encontrado no container da API: $MOTOR_WORKSPACE_MOUNT_CONTAINER" >&2
+    exit 1
+  }
+echo "[deploy-blue-green] workspace e Git OK"
+
+echo "[deploy-blue-green] validando acesso ao Console OpenClaw"
+docker exec "$NEW_API_CONTAINER" node -e '
+  fetch(process.env.OPENCLAW_CONSOLE_URL + "/api/agents")
+    .then((response) => process.exit(response.status >= 500 ? 1 : 0))
+    .catch(() => process.exit(1))
+' || {
+  echo "Console OpenClaw inacessível: $CONSOLE_URL_BLUEGREEN" >&2
+  exit 1
+}
+echo "[deploy-blue-green] Console OpenClaw acessível"
 
 if ! wait_http "http://127.0.0.1:$NEW_WEB_PORT/health" 30 "web-$target" \
    || ! wait_http "http://127.0.0.1:$NEW_API_PORT/api/auth/me" 40 "api-$target" \
