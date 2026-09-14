@@ -134,7 +134,7 @@ export class GateFailureClassifier {
         const session = await this.driver.createSession({
           agentId: this.config.monitorAgentId,
           key: sessionKey,
-          label: `monitor:t${input.taskId}:s${input.subtaskId}`,
+          label: `analysis-monitor:t${input.taskId}:s${input.subtaskId}`,
           model,
         })
 
