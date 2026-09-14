@@ -14,7 +14,12 @@ export function configureApp(app: INestApplication): INestApplication {
   // O front de produção é servido no mesmo host; manter o CORS padrão
   // preserva os consumidores cross-origin existentes. O WebSocket usa
   // cookie automaticamente em conexões same-origin.
-  app.enableCors()
+  app.enableCors({
+    origin: ["https://biblioteca.globaltecnologia.net"],
+    credentials: true,
+    methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,

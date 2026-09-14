@@ -1,4 +1,5 @@
 import { Module } from "@nestjs/common"
+import { AuthModule } from "../auth/auth.module"
 import { LgpdController } from "./lgpd.controller"
 import { LgpdService } from "./lgpd.service"
 import { AcessoDadosController } from "./acesso-dados.controller"
@@ -13,6 +14,7 @@ import {
 } from "./lgpd.repository"
 
 @Module({
+  imports: [AuthModule],
   controllers: [LgpdController, AcessoDadosController, RetencaoController],
   providers: [
     LgpdService,
