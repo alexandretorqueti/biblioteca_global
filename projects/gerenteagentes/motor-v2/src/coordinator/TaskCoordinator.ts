@@ -2628,7 +2628,7 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
   private dispatchDeployBatch(repoPath: string, batchId: string, taskIds: string[]): void {
     const repoRoot = execFileSync("git", ["-C", repoPath, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim()
     const relativeScript = getConfigString("motor.deploy_script")
-    if (!existsSync(join(repoRoot, relativeScript))) throw new Error("deploy-host.sh não encontrado na raiz Git " + repoRoot)
+    if (!existsSync(join(repoRoot, relativeScript))) throw new Error("script de deploy não encontrado na raiz Git: " + relativeScript)
     const hostRepoRoot = process.env.DEPLOY_REPO_HOST ?? getConfigString("motor.deploy_host_root")
     const hostDeployScript = hostRepoRoot + "/" + relativeScript
     const safeBatchId = batchId.replace(/[^a-zA-Z0-9_-]/g, "_")

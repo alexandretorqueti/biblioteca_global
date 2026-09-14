@@ -344,6 +344,13 @@
       "when": 1789171080000,
       "tag": "0030_remove_tarefas_status",
       "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "5",
+      "when": 1789379000000,
+      "tag": "0050_blue_green_deploy",
+      "breakpoints": true
     }
   ]
 }
