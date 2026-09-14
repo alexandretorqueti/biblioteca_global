@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { realtimeIngressEventSchema } from '@biblioteca-global/shared'
 import { LibraryRealtimeBroadcaster } from '../src/events/LibraryRealtimeBroadcaster.js'
 import type { Db } from '../src/shared/types/infrastructure.js'
 
@@ -34,6 +35,7 @@ describe('LibraryRealtimeBroadcaster', () => {
     expect(db.query).toHaveBeenCalledWith(expect.stringContaining('t.external_id = ?'), ['task-123'])
     const [, request] = fetchImpl.mock.calls[0]!
     const body = JSON.parse(String(request.body))
+    expect(realtimeIngressEventSchema.safeParse(body).success).toBe(true)
     expect(body).toMatchObject({
       projectId: 7, taskId: 123, sourceTaskId: 'task-123', sourceProjectSlug: 'gerenteagentes',
       subtaskId: 9, type: 'model_unavailable',
