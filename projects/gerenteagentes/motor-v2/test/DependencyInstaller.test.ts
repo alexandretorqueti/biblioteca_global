@@ -10,11 +10,11 @@
  * - Timeout configurável
  */
 
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { DependencyInstaller, isLockfileOutOfSync, resolveInstallTimeoutMs, NPM_CI_COMMAND, NPM_INSTALL_COMMAND, type CommandRunner } from "../src/workspaces/DependencyInstaller.js"
+import { DependencyInstaller, findPackageLockRoot, isLockfileOutOfSync, resolveInstallTimeoutMs, NPM_CI_COMMAND, NPM_INSTALL_COMMAND, type CommandRunner } from "../src/workspaces/DependencyInstaller.js"
 
 let tempDir: string
 
@@ -64,6 +64,21 @@ describe("DependencyInstaller — detecção de package-lock.json", () => {
     const npmCiCall = calls.find(([cmd]) => cmd === NPM_CI_COMMAND)
     expect(npmCiCall).toBeTruthy()
     expect(npmCiCall![1]).toBe(tempDir)
+  })
+
+  it("encontra o lockfile da raiz Git quando o projeto é um workspace filho", async () => {
+    const projectPath = join(tempDir, "projects", "gerenteagentes")
+    await mkdir(projectPath, { recursive: true })
+    await writeFile(join(tempDir, ".git"), "gitdir: /tmp/worktree")
+    await writeFile(join(tempDir, "package-lock.json"), "{}")
+    const runner = createMockRunner()
+
+    const result = await new DependencyInstaller(runner).install({ worktreePath: projectPath })
+
+    expect(result).toMatchObject({ ok: true, skipped: false })
+    const npmCiCall = vi.mocked(runner.run).mock.calls.find(([cmd]) => cmd === NPM_CI_COMMAND)
+    expect(npmCiCall?.[1]).toBe(tempDir)
+    expect(findPackageLockRoot(projectPath)).toBe(tempDir)
   })
 })
 

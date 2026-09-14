@@ -17,7 +17,7 @@
 
 import { execSync } from "node:child_process"
 import { existsSync } from "node:fs"
-import { join } from "node:path"
+import { dirname, join, resolve } from "node:path"
 import { createLogger } from "../shared/logger.js"
 import { getConfigNumber } from "../config/MotorConfigReader.js"
 
@@ -135,9 +135,9 @@ export class DependencyInstaller {
   }
 
   async install(input: InstallDependenciesInput): Promise<DependencyInstallOutcome> {
-    const lockFile = join(input.worktreePath, "package-lock.json")
-    if (!existsSync(lockFile)) {
-      logger.info("npm ci pulado: package-lock.json não encontrado", { worktreePath: input.worktreePath })
+    const installPath = findPackageLockRoot(input.worktreePath)
+    if (!installPath) {
+      logger.info("npm ci pulado: package-lock.json não encontrado até a raiz Git", { worktreePath: input.worktreePath })
       return { ok: true, skipped: true, reason: "package-lock.json ausente" }
     }
 
@@ -146,7 +146,7 @@ export class DependencyInstaller {
     // Captura git status ANTES do npm ci
     let statusBefore: string
     try {
-      const result = await this.runner.run("git status --porcelain", input.worktreePath, 30_000)
+      const result = await this.runner.run("git status --porcelain", installPath, 30_000)
       statusBefore = result.stdout.trim()
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
@@ -155,13 +155,13 @@ export class DependencyInstaller {
     }
 
     logger.info("Executando npm ci (timeout: " + Math.round(timeoutMs / 1000) + "s)...", {
-      worktreePath: input.worktreePath,
+      worktreePath: installPath,
     })
 
     // Executa npm ci (com devDeps: o container roda NODE_ENV=production)
     let lockfileRegenerated = false
     try {
-      await this.runner.run(NPM_CI_COMMAND, input.worktreePath, timeoutMs)
+      await this.runner.run(NPM_CI_COMMAND, installPath, timeoutMs)
       logger.info("npm ci concluído com sucesso")
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
@@ -170,9 +170,9 @@ export class DependencyInstaller {
       if (isLockfileOutOfSync(msg)) {
         logger.warn("npm ci falhou com lockfile desatualizado (EUSAGE); tentando npm install para regenerar...")
         try {
-          await this.runner.run(NPM_INSTALL_COMMAND, input.worktreePath, timeoutMs)
+          await this.runner.run(NPM_INSTALL_COMMAND, installPath, timeoutMs)
           logger.info("npm install concluído; tentando npm ci novamente...")
-          await this.runner.run(NPM_CI_COMMAND, input.worktreePath, timeoutMs)
+          await this.runner.run(NPM_CI_COMMAND, installPath, timeoutMs)
           logger.info("npm ci concluído com sucesso após regeneração do lockfile")
           lockfileRegenerated = true
         } catch (recoveryError) {
@@ -198,7 +198,7 @@ export class DependencyInstaller {
     // Captura git status DEPOIS e compara
     let statusAfter: string
     try {
-      const result = await this.runner.run("git status --porcelain", input.worktreePath, 30_000)
+      const result = await this.runner.run("git status --porcelain", installPath, 30_000)
       statusAfter = result.stdout.trim()
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
@@ -226,6 +226,22 @@ export class DependencyInstaller {
     }
 
     return { ok: true, skipped: false, lockfileRegenerated }
+  }
+}
+
+/**
+ * Em monorepos o projeto entregue pode estar abaixo da raiz que contém o
+ * lockfile. Usa primeiro o lockfile mais próximo e nunca sobe além do
+ * worktree Git, evitando instalar dependências no repositório pai.
+ */
+export function findPackageLockRoot(worktreePath: string): string | null {
+  let candidate = resolve(worktreePath)
+  while (true) {
+    if (existsSync(join(candidate, "package-lock.json"))) return candidate
+    if (existsSync(join(candidate, ".git"))) return null
+    const parent = dirname(candidate)
+    if (parent === candidate) return null
+    candidate = parent
   }
 }
 
