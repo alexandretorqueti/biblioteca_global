@@ -26,6 +26,7 @@ const authPanelConfig: AuthPanelConfig = {
   socialProviders: [],
   registrationFields: [],
   loginButtonLabel: "Entrar",
+  requirePrivacyConsent: true,
 }
 
 /** Traduz um ApiClientError para mensagem amigável. */
@@ -65,6 +66,7 @@ export default function LoginScreen(): ReactNode {
         password: String(values.password ?? ""),
         identifierType: "email",
         rememberMe: Boolean(values.rememberMe),
+        consentimentoAceito: Boolean(values.consentimentoAceito),
       })
       // Sucesso: AuthContext autentica (1 projeto seleciona direto; com
       // vários, o roteador leva à seleção).
@@ -131,7 +133,7 @@ export default function LoginScreen(): ReactNode {
         display="block"
         sx={{ mt: 3 }}
       >
-        Plataforma de geração de sistemas — Biblioteca Global
+        Seus dados estão protegidos conforme a LGPD
       </Typography>
     </Box>
   )

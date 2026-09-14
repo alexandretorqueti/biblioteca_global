@@ -80,6 +80,8 @@ export interface AuthPanelConfig {
   /** Habilita "Entrar com código por e-mail" (auth única — default true). */
   allowCodeLogin?: boolean
   allowRememberMe?: boolean
+  /** Exige o aceite da política de privacidade no login. */
+  requirePrivacyConsent?: boolean
   requirePasswordConfirmation?: boolean
   registrationColumns?: 1 | 2
   loginButtonLabel?: string
@@ -155,6 +157,7 @@ export default function AuthPanel({
   >("login")
   const [showPassword, setShowPassword] = useState(false)
   const [successMessage, setSuccessMessage] = useState("")
+  const [loginError, setLoginError] = useState("")
   const [isLoading, setIsLoading] = useState(false)
 
   const identifierLabel =
@@ -175,6 +178,7 @@ export default function AuthPanel({
     identifier: "",
     password: "",
     rememberMe: false,
+    ...(config.requirePrivacyConsent ? { consentimentoAceito: false } : {}),
   })
 
   const [registerValues, setRegisterValues] =
@@ -193,6 +197,7 @@ export default function AuthPanel({
 
   const updateLogin = (name: string, value: string | boolean) => {
     setSuccessMessage("")
+    setLoginError("")
     setLoginValues((current) => ({ ...current, [name]: value }))
   }
 
@@ -203,6 +208,10 @@ export default function AuthPanel({
 
   const handleLogin = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    if (config.requirePrivacyConsent && !loginValues.consentimentoAceito) {
+      setLoginError("Você precisa aceitar a Política de Privacidade para entrar.")
+      return
+    }
     setIsLoading(true)
     try {
       await onLogin?.(loginValues)
@@ -473,6 +482,34 @@ export default function AuthPanel({
                       </Link>
                     )}
                   </Stack>
+
+                  {config.requirePrivacyConsent && (
+                    <Box>
+                      <FormControlLabel
+                        control={
+                          <Checkbox
+                            checked={Boolean(loginValues.consentimentoAceito)}
+                            onChange={(event) =>
+                              updateLogin("consentimentoAceito", event.target.checked)
+                            }
+                          />
+                        }
+                        label={
+                          <span>
+                            Li e concordo com a{" "}
+                            <Link href="/politica-privacidade" target="_blank" rel="noreferrer">
+                              Política de Privacidade
+                            </Link>
+                          </span>
+                        }
+                      />
+                      {loginError && (
+                        <Typography color="error" variant="body2" role="alert">
+                          {loginError}
+                        </Typography>
+                      )}
+                    </Box>
+                  )}
 
                   <Button type="submit" variant="contained" size="large" disabled={isLoading} startIcon={isLoading ? <CancelIcon /> : undefined}>
                     {isLoading ? "Entrando..." : (config.loginButtonLabel ?? "Entrar")}
