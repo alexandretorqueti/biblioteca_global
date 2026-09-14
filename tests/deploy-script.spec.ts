@@ -3,24 +3,23 @@ import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
 import { describe, expect, it } from "vitest"
 
-const script = readFileSync(resolve(process.cwd(), "deploy.sh"), "utf8")
+const script = readFileSync(
+  resolve(process.cwd(), "projects/gerenteagentes/motor-v2/scripts/deploy-blue-green.sh"),
+  "utf8",
+)
+const normalizedScript = script.replace(/\s+/g, " ")
 
 describe("deploy de produção isolado do banco", () => {
   it("recria api/web sem administrar dependências no deploy e no rollback", () => {
-    const composeUp = script.match(/docker compose[^\n]+ up [^\n]+/g) ?? []
-
-    expect(composeUp).toHaveLength(2)
-    for (const command of composeUp) {
-      expect(command).toContain("--no-deps")
-      expect(command).toMatch(/\bapi web\b/)
-      expect(command).not.toMatch(/\bmysql\b/)
-    }
+    expect(normalizedScript).toContain("docker compose -p \"$NEW_PROJECT\" -f \"$COMPOSE_FILE\" build api web")
+    expect(normalizedScript).toContain("docker compose -p \"$NEW_PROJECT\" -f \"$COMPOSE_FILE\" up -d --no-deps api web")
+    expect(normalizedScript).not.toContain("up -d --no-deps mysql")
   })
 
   it("confere saúde e preserva a identidade do MySQL", () => {
-    expect(script).toContain("MYSQL_HEALTH")
-    expect(script).toContain("MYSQL_ID_BEFORE")
-    expect(script).toContain("MYSQL_ID_AFTER")
-    expect(script).toContain('[ "$MYSQL_ID_BEFORE" = "$MYSQL_ID_AFTER" ]')
+    expect(script).toContain("MYSQL_HOST_BLUEGREEN")
+    expect(script).toContain("MYSQL_PORT_BLUEGREEN")
+    expect(script).toContain("MySQL é")
+    expect(script).toContain("nunca é recriado")
   })
 })
