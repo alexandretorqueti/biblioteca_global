@@ -32,6 +32,8 @@ export const loginRequestSchema = z
     identifier: z.string().min(1),
     password: z.string().min(1),
     identifierType: loginIdentifierTypeSchema,
+    /** Obrigatório no primeiro consentimento; opcional para contas existentes. */
+    consentimentoAceito: z.boolean().optional(),
   })
   .strict()
 

@@ -100,6 +100,28 @@ export type {
   MeResponse,
 } from "./auth"
 
+// LGPD — consentimento e direitos do titular
+export {
+  consentimentoRequestSchema,
+  consentimentoResponseSchema,
+  usuarioConsentimentoSchema,
+  usuarioVinculoExportSchema,
+  usuarioDadosExportSchema,
+  dadosExportResponseSchema,
+  retificacaoRequestSchema,
+  exclusaoResponseSchema,
+} from "./lgpd"
+export type {
+  ConsentimentoRequest,
+  ConsentimentoResponse,
+  UsuarioConsentimento,
+  UsuarioVinculoExport,
+  UsuarioDadosExport,
+  DadosExportResponse,
+  RetificacaoRequest,
+  ExclusaoResponse,
+} from "./lgpd"
+
 // Entidades do core
 export type { Usuario, Projeto, ProjetoUsuario } from "./core"
 
