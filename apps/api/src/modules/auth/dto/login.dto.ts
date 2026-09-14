@@ -3,6 +3,8 @@ import {
   IsIn,
   IsNotEmpty,
   IsString,
+  IsBoolean,
+  IsOptional,
   MinLength,
 } from "class-validator"
 import type { LoginIdentifierType } from "@biblioteca-global/shared"
@@ -29,4 +31,8 @@ export class LoginDto {
   @IsDefined()
   @IsIn(IDENTIFIER_TYPES)
   identifierType!: LoginIdentifierType
+
+  @IsOptional()
+  @IsBoolean()
+  consentimentoAceito?: boolean
 }

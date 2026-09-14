@@ -61,8 +61,8 @@ export class AuthController {
   @Public()
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post("login")
-  login(@Body() dto: LoginDto): Promise<LoginResponse> {
-    return this.authService.login(dto)
+  login(@Body() dto: LoginDto, @Req() req: ApiRequest): Promise<LoginResponse> {
+    return this.authService.login(dto, req.ip ?? null)
   }
 
   @UseGuards(RefreshAuthGuard)
@@ -99,8 +99,8 @@ export class AuthController {
   /** Valida o código — 1ª vez (token efêmero) ou login completo. */
   @Public()
   @Post("verify-code")
-  verifyCode(@Body() dto: VerifyCodeDto): Promise<VerifyCodeResponse> {
-    return this.authService.verifyCode(dto)
+  verifyCode(@Body() dto: VerifyCodeDto, @Req() req: ApiRequest): Promise<VerifyCodeResponse> {
+    return this.authService.verifyCode(dto, req.ip ?? null)
   }
 
   /** Define a senha na 1ª vez (autenticado pelo token efêmero). */
@@ -141,5 +141,20 @@ export class AuthController {
   ): Promise<{ ok: boolean }> {
     await this.authService.changePassword(usuario.id, dto)
     return { ok: true }
+  }
+
+  @UseGuards(JwtAuthGuard, ProjectScopeGuard)
+  @Post("consentimento")
+  consentimento(
+    @CurrentUser() usuario: UsuarioAutenticado,
+    @Req() req: ApiRequest,
+  ): Promise<{ ok: true }> {
+    return this.authService.registrarConsentimento(usuario.id, req.ip ?? null)
+  }
+
+  @UseGuards(JwtAuthGuard, ProjectScopeGuard)
+  @Get("consentimento")
+  consentimentoStatus(@CurrentUser() usuario: UsuarioAutenticado) {
+    return this.authService.statusConsentimento(usuario.id)
   }
 }

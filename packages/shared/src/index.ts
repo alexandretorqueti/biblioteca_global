@@ -104,6 +104,7 @@ export type {
 export {
   consentimentoRequestSchema,
   consentimentoResponseSchema,
+  consentimentoStatusSchema,
   usuarioConsentimentoSchema,
   usuarioVinculoExportSchema,
   usuarioDadosExportSchema,
@@ -114,6 +115,7 @@ export {
 export type {
   ConsentimentoRequest,
   ConsentimentoResponse,
+  ConsentimentoStatus,
   UsuarioConsentimento,
   UsuarioVinculoExport,
   UsuarioDadosExport,

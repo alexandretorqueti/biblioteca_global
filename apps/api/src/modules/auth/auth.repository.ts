@@ -13,6 +13,7 @@ import type {
 } from "@biblioteca-global/shared"
 import {
   emailVerifications,
+  consentimentos,
   projetos,
   projetosUsuarios,
   refreshTokens,
@@ -37,6 +38,15 @@ export interface ResolvedScope {
 }
 
 export interface AuthRepository {
+  findConsentimentoAtual(usuarioId: number): Promise<{
+    versaoPolitica: string
+    data: Date
+  } | undefined>
+  registrarConsentimento(row: {
+    usuarioId: number
+    versaoPolitica: string
+    ip: string | null
+  }): Promise<void>
   findUsuarioByIdentifier(
     identifierType: LoginIdentifierType,
     identifier: string,
@@ -127,6 +137,34 @@ export class DrizzleAuthRepository implements AuthRepository {
       .where(eq(usuarios.id, id))
       .limit(1)
     return linhas.at(0)
+  }
+
+  async findConsentimentoAtual(usuarioId: number): Promise<{
+    versaoPolitica: string
+    data: Date
+  } | undefined> {
+    const linhas = await this.db
+      .select({
+        versaoPolitica: consentimentos.versaoPolitica,
+        data: consentimentos.data,
+      })
+      .from(consentimentos)
+      .where(eq(consentimentos.usuarioId, usuarioId))
+      .orderBy(desc(consentimentos.data))
+      .limit(1)
+    return linhas.at(0)
+  }
+
+  async registrarConsentimento(row: {
+    usuarioId: number
+    versaoPolitica: string
+    ip: string | null
+  }): Promise<void> {
+    await this.db.insert(consentimentos).values({
+      usuarioId: row.usuarioId,
+      versaoPolitica: row.versaoPolitica,
+      ip: row.ip,
+    })
   }
 
   async listProjetosDoUsuario(usuarioId: number): Promise<ProjetoResumo[]> {

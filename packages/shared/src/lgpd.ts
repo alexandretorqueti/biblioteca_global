@@ -26,6 +26,16 @@ export const consentimentoResponseSchema = z
 
 export type ConsentimentoResponse = z.infer<typeof consentimentoResponseSchema>
 
+export const consentimentoStatusSchema = z
+  .object({
+    aceito: z.boolean(),
+    versao_politica: z.string().nullable(),
+    data: dataIsoSchema.nullable(),
+  })
+  .strict()
+
+export type ConsentimentoStatus = z.infer<typeof consentimentoStatusSchema>
+
 export interface UsuarioConsentimento {
   id: number
   usuario_id: number

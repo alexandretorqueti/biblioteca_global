@@ -72,6 +72,7 @@ export const verifyCodeRequestSchema = z
   .object({
     email: z.string().email(),
     code: z.string().length(6),
+    consentimentoAceito: z.boolean().optional(),
   })
   .strict()
 
