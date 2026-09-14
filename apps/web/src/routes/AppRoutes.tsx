@@ -10,6 +10,7 @@ import { useAuth } from "../auth/AuthContext"
 import LoginScreen from "../screens/LoginScreen"
 import ProjectSelectScreen from "../screens/ProjectSelectScreen"
 import SystemScreen from "../screens/SystemScreen"
+import PoliticaPrivacidadeScreen from "../screens/PoliticaPrivacidadeScreen"
 import { RequireAuth, RequireProject } from "./RequireAuth"
 
 /** Raiz: autenticado + sem projeto → seleção; com projeto → sistema. */
@@ -31,6 +32,7 @@ export function AppRoutes(): ReactNode {
           </LoginRedirectLogic>
         }
       />
+      <Route path="/politica-privacidade" element={<PoliticaPrivacidadeScreen />} />
 
       {/* Raiz */}
       <Route path="/" element={<RootRedirect />} />

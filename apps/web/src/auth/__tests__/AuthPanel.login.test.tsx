@@ -135,6 +135,7 @@ describe("AuthPanel login flow", () => {
       "alexandre@globaltecnologia.net",
     )
     await user.type(screen.getByLabelText(/Senha\b/), "senha-secreta")
+    await user.click(screen.getByLabelText(/Li e concordo com a Política de Privacidade/))
     await user.click(screen.getByRole("button", { name: "Entrar" }))
 
     await waitFor(() => {
@@ -161,6 +162,7 @@ describe("AuthPanel login flow", () => {
       "errado@globaltecnologia.net",
     )
     await user.type(screen.getByLabelText(/Senha\b/), "senha-errada")
+    await user.click(screen.getByLabelText(/Li e concordo com a Política de Privacidade/))
     await user.click(screen.getByRole("button", { name: "Entrar" }))
 
     await waitFor(() => {

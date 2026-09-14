@@ -32,6 +32,7 @@ class FakeAuthRepository implements AuthRepository {
   vinculos: { usuarioId: number; projetoId: number; perfil: Perfil }[] = []
   refreshTokens: (RefreshTokenRow & { tokenHash: string })[] = []
   emailVerifications: (EmailVerificationRow & { codeHash: string })[] = []
+  consentimentos: { usuarioId: number; versaoPolitica: string; data: Date; ip: string | null }[] = []
   private proximoTokenId = 1
   private proximaVerificacaoId = 1
 
@@ -189,6 +190,17 @@ class FakeAuthRepository implements AuthRepository {
     const v = this.emailVerifications.find((x) => x.id === id)
     if (v) v.usedAt = new Date()
   }
+
+  async findConsentimentoAtual(usuarioId: number): Promise<{ versaoPolitica: string; data: Date } | undefined> {
+    return this.consentimentos
+      .filter((consentimento) => consentimento.usuarioId === usuarioId)
+      .sort((a, b) => b.data.getTime() - a.data.getTime())
+      .at(0)
+  }
+
+  async registrarConsentimento(row: { usuarioId: number; versaoPolitica: string; ip: string | null }): Promise<void> {
+    this.consentimentos.push({ ...row, data: new Date() })
+  }
 }
 
 function makeUsuario(overrides: Partial<UsuarioRow>): UsuarioRow {
@@ -198,11 +210,12 @@ function makeUsuario(overrides: Partial<UsuarioRow>): UsuarioRow {
     email: "alexandre@globaltecnologia.com.br",
     telefone: null,
     cpf: null,
+    cpfCriptografado: null,
     nome: "Alexandre",
     ativo: true,
     passwordHash: "",
-    createdAt: new Date(),
-    updatedAt: new Date(),
+    createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    updatedAt: new Date("2026-01-01T00:00:00.000Z"),
     ...overrides,
   }
 }

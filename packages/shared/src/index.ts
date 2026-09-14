@@ -67,6 +67,7 @@ export type {
 // Auth e sessão
 export {
   loginIdentifierTypeSchema,
+  mascararCpf,
   perfilSchema,
   loginRequestSchema,
   selectProjectRequestSchema,
@@ -99,6 +100,30 @@ export type {
   SessionInfo,
   MeResponse,
 } from "./auth"
+
+// LGPD — consentimento e direitos do titular
+export {
+  consentimentoRequestSchema,
+  consentimentoResponseSchema,
+  consentimentoStatusSchema,
+  usuarioConsentimentoSchema,
+  usuarioVinculoExportSchema,
+  usuarioDadosExportSchema,
+  dadosExportResponseSchema,
+  retificacaoRequestSchema,
+  exclusaoResponseSchema,
+} from "./lgpd"
+export type {
+  ConsentimentoRequest,
+  ConsentimentoResponse,
+  ConsentimentoStatus,
+  UsuarioConsentimento,
+  UsuarioVinculoExport,
+  UsuarioDadosExport,
+  DadosExportResponse,
+  RetificacaoRequest,
+  ExclusaoResponse,
+} from "./lgpd"
 
 // Entidades do core
 export type { Usuario, Projeto, ProjetoUsuario } from "./core"

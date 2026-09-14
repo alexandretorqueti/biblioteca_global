@@ -23,6 +23,7 @@ import type {
   RequestCodeResponse,
   SelectProjectResponse,
   SetPasswordResponse,
+  ConsentimentoStatus,
   VerifyCodeResponse,
 } from "@biblioteca-global/shared"
 import { EnvService } from "../../config/env.service"
@@ -48,6 +49,8 @@ import type { SetPasswordDto } from "./dto/set-password.dto"
 
 const CREDENCIAIS_INVALIDAS = "Credenciais inválidas"
 const CODIGO_INVALIDO = "Código inválido ou expirado"
+const VERSAO_POLITICA_ATUAL = "1.0"
+const VIGENCIA_POLITICA = new Date("2026-09-01T00:00:00.000Z")
 
 export interface AccessTokenClaims {
   sub: number
@@ -138,7 +141,7 @@ export class AuthService {
    * - Sem senha (conta provisionada): token efêmero p/ set-password.
    * - Com senha: login completo (mesmo formato do login por senha).
    */
-  async verifyCode(dto: VerifyCodeDto): Promise<VerifyCodeResponse> {
+  async verifyCode(dto: VerifyCodeDto, ip: string | null = null): Promise<VerifyCodeResponse> {
     const email = dto.email.trim().toLowerCase()
     const linha = await this.repo.getActiveEmailVerification(email)
     if (!linha) {
@@ -160,6 +163,8 @@ export class AuthService {
     if (!usuario || !usuario.ativo) {
       throw new UnauthorizedException(CODIGO_INVALIDO)
     }
+
+    await this.validarConsentimento(usuario, dto.consentimentoAceito, ip)
 
     if (!usuario.passwordHash) {
       const verificationToken = await this.jwt.signAsync(
@@ -205,7 +210,7 @@ export class AuthService {
     return { ok: true }
   }
 
-  async login(dto: LoginDto): Promise<LoginResponse> {
+  async login(dto: LoginDto, ip: string | null = null): Promise<LoginResponse> {
     const usuario = await this.repo.findUsuarioByIdentifier(
       dto.identifierType,
       dto.identifier,
@@ -224,12 +229,57 @@ export class AuthService {
       throw new UnauthorizedException(CREDENCIAIS_INVALIDAS)
     }
 
+    await this.validarConsentimento(usuario, dto.consentimentoAceito, ip)
+
     const refreshToken = await this.issueRefreshToken(usuario.id)
     const projetos = await this.repo.listProjetosDoUsuario(usuario.id)
     return {
       refreshToken,
       usuario: toUsuarioAutenticado(usuario),
       projetos,
+    }
+  }
+
+  async registrarConsentimento(usuarioId: number, ip: string | null): Promise<{ ok: true }> {
+    const usuario = await this.repo.findUsuarioById(usuarioId)
+    if (!usuario || !usuario.ativo) {
+      throw new UnauthorizedException(CREDENCIAIS_INVALIDAS)
+    }
+    await this.repo.registrarConsentimento({
+      usuarioId,
+      versaoPolitica: VERSAO_POLITICA_ATUAL,
+      ip,
+    })
+    return { ok: true }
+  }
+
+  async statusConsentimento(usuarioId: number): Promise<ConsentimentoStatus> {
+    const consentimento = await this.repo.findConsentimentoAtual(usuarioId)
+    return {
+      aceito: consentimento !== undefined,
+      versao_politica: consentimento?.versaoPolitica ?? null,
+      data: consentimento?.data.toISOString() ?? null,
+    }
+  }
+
+  private async validarConsentimento(
+    usuario: { id: number; createdAt: Date },
+    aceito: boolean | undefined,
+    ip: string | null,
+  ): Promise<void> {
+    const atual = await this.repo.findConsentimentoAtual(usuario.id)
+    if (aceito === true && !atual) {
+      await this.repo.registrarConsentimento({
+        usuarioId: usuario.id,
+        versaoPolitica: VERSAO_POLITICA_ATUAL,
+        ip,
+      })
+      return
+    }
+    if (!atual && usuario.createdAt >= VIGENCIA_POLITICA && aceito !== true) {
+      throw new BadRequestException(
+        "É necessário aceitar a Política de Privacidade para entrar",
+      )
     }
   }
 

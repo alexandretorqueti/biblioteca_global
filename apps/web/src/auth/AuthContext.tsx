@@ -64,6 +64,7 @@ export interface AuthContextValue extends AuthSession {
     password: string
     identifierType: LoginIdentifierType
     rememberMe?: boolean
+    consentimentoAceito?: boolean
   }) => Promise<void>
   /** Seleciona o projeto → novo access token (escopo do refresh token). */
   selectProject: (projetoId: number) => Promise<void>
@@ -201,11 +202,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       password: string
       identifierType: LoginIdentifierType
       rememberMe?: boolean
+      consentimentoAceito?: boolean
     }): Promise<void> => {
       const parsed = loginRequestSchema.safeParse({
         identifier: input.identifier,
         password: input.password,
         identifierType: input.identifierType,
+        consentimentoAceito: input.consentimentoAceito,
       })
       if (!parsed.success) {
         throw new ApiClientError(

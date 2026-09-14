@@ -17,6 +17,11 @@ export const loginIdentifierTypeSchema = z.enum([
 
 export type LoginIdentifierType = z.infer<typeof loginIdentifierTypeSchema>
 
+/** Nunca expõe CPF em claro em respostas de autenticação. */
+export function mascararCpf(cpf: string | null | undefined): string | null {
+  return cpf ? "***.***.***-**" : null
+}
+
 /** Perfil do usuário DENTRO de um projeto (pivot projetos_usuarios). */
 export const perfilSchema = z.enum([
   "admin",
@@ -32,6 +37,8 @@ export const loginRequestSchema = z
     identifier: z.string().min(1),
     password: z.string().min(1),
     identifierType: loginIdentifierTypeSchema,
+    /** Obrigatório no primeiro consentimento; opcional para contas existentes. */
+    consentimentoAceito: z.boolean().optional(),
   })
   .strict()
 
@@ -70,6 +77,7 @@ export const verifyCodeRequestSchema = z
   .object({
     email: z.string().email(),
     code: z.string().length(6),
+    consentimentoAceito: z.boolean().optional(),
   })
   .strict()
 
