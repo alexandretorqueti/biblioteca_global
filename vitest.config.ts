@@ -12,7 +12,17 @@ import { defineConfig } from "vitest/config"
 export default defineConfig({
   test: {
     include: ["**/*.{test,spec}.{ts,tsx}"],
-    exclude: ["**/node_modules/**", "**/dist/**", "biblioteca_old/**", "**/e2e/**", "wt-*/**", "**/motor-v2/**"],
+    exclude: [
+      "**/node_modules/**",
+      "**/dist/**",
+      "biblioteca_old/**",
+      "**/e2e/**",
+      "wt-*/**",
+      "**/motor-v2/**",
+      // Integrações com MySQL real: executadas separadamente no ambiente de integração.
+      "**/*.functional.spec.ts",
+      "database/__tests__/seed-gerenteagentes.spec.ts",
+    ],
     // Cleanup automático do @testing-library/react entre testes.
     globals: true,
     // O container roda NODE_ENV=production; o build production do React
