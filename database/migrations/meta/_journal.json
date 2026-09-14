@@ -22,6 +22,13 @@
       "when": 1788518561084,
       "tag": "0002_uneven_eternals",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1789386600000,
+      "tag": "0003_lgpd_consentimentos",
+      "breakpoints": true
     }
   ]
 }
