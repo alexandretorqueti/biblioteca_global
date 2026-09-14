@@ -116,8 +116,11 @@ docker compose -p "$NEW_PROJECT" -f "$COMPOSE_FILE" build api web
 # A API usa o checkout do host como volume para o Motor. Materialize o dist
 # produzido na imagem antes de iniciar a nova stack, como fazia o deploy
 # legado, mas usando a imagem do slot novo.
-NEW_API_IMAGE="$(docker compose -p "$NEW_PROJECT" -f "$COMPOSE_FILE" images -q api)"
-[ -n "$NEW_API_IMAGE" ] || { echo "imagem da API do slot não encontrada" >&2; exit 1; }
+NEW_API_IMAGE="${NEW_PROJECT}-api:latest"
+docker image inspect "$NEW_API_IMAGE" >/dev/null 2>&1 || {
+  echo "imagem da API do slot não encontrada: $NEW_API_IMAGE" >&2
+  exit 1
+}
 MOTOR_DIST_CONTAINER="biblioteca-global-motor-dist-$$"
 docker create --name "$MOTOR_DIST_CONTAINER" "$NEW_API_IMAGE" >/dev/null
 rm -rf projects/gerenteagentes/motor-v2/dist
