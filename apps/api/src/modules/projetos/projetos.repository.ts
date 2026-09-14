@@ -54,6 +54,12 @@ export const PROJETOS_REPOSITORY = Symbol("PROJETOS_REPOSITORY")
 export class DrizzleProjetosRepository implements ProjetosRepository {
   constructor(@Inject(CORE_DB) private readonly db: CoreDb) {}
 
+  /**
+   * Lista apenas projetos ATIVOS: `DELETE /projetos/:id` é soft delete
+   * (`ativo = false`) por design (PoC §6.2 — database preservado). Sem este
+   * filtro o projeto desativado continuava aparecendo na tela, dando a
+   * impressão de que o botão Excluir não funcionava.
+   */
   async listar(filtros: {
     page: number
     pageSize: number
@@ -61,10 +67,12 @@ export class DrizzleProjetosRepository implements ProjetosRepository {
     const total = await this.db
       .select({ quantidade: sql<number>`count(*)` })
       .from(projetos)
+      .where(eq(projetos.ativo, true))
 
     const items = await this.db
       .select()
       .from(projetos)
+      .where(eq(projetos.ativo, true))
       .orderBy(projetos.nome)
       .limit(filtros.pageSize)
       .offset((filtros.page - 1) * filtros.pageSize)
