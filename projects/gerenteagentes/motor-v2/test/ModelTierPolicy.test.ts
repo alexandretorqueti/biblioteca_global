@@ -3,7 +3,7 @@ import { defaultChain, formatSessionKey, formatTaskSessionKey, isModelUnavailabl
 
 describe("ModelTierPolicy", () => {
   it("mantém uma chave estável por tarefa, independente de agente e fase", () => {
-    expect(formatTaskSessionKey("task/818")).toBe("motor:tarefa:task_818")
+    expect(formatTaskSessionKey("task/818")).toBe("dev-motor:tarefa:task_818")
     expect(formatTaskSessionKey("task/818")).toBe(formatTaskSessionKey("task/818"))
   })
   it("mantém cadeias distintas para análise e desenvolvimento", () => {

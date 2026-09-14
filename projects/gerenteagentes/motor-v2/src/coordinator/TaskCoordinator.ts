@@ -2862,7 +2862,7 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     if (!task || !["completed", "deployed", "failed", "cancelled", "finalizada", "deployada", "aborted"].includes(String(task.status))) return
     const lookup = taskIdentifierLookup(taskId, "t")
     const { rows } = await this.db.query(
-      "SELECT sessao_chave, agent_id FROM tarefa_contextos_execucao WHERE tarefa_id=(SELECT t.id FROM tarefas t WHERE " + lookup.sql + " LIMIT 1) AND sessao_chave LIKE 'motor:tarefa:%' ORDER BY updated_at DESC LIMIT 1",
+      "SELECT sessao_chave, agent_id FROM tarefa_contextos_execucao WHERE tarefa_id=(SELECT t.id FROM tarefas t WHERE " + lookup.sql + " LIMIT 1) AND sessao_chave LIKE 'dev-motor:tarefa:%' ORDER BY updated_at DESC LIMIT 1",
       lookup.params,
     )
     const context = rows[0] as { sessao_chave?: string; agent_id?: string } | undefined

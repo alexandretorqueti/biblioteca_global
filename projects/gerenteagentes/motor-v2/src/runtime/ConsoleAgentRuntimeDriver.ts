@@ -213,7 +213,7 @@ export class ConsoleAgentRuntimeDriver {
     // O sessionKey de uma tarefa é uma identidade estável. Consulte primeiro
     // o Console para que uma nova subtarefa/retry reutilize a sessão existente
     // em vez de criar outro transcript.
-    if (input.key?.startsWith("motor:tarefa:")) {
+    if (input.key?.startsWith("dev-motor:tarefa:")) {
       try {
         const existing = await this.describeSession(input.key, input.agentId)
         const session: RuntimeSession = {

@@ -125,7 +125,7 @@ Não se replica o histórico textual do Console nessas tabelas: ele continua em
 ### 4.3 Identidade contínua da sessão
 
 O `sessionKey` principal deve ser estável e independente de agente e modelo,
-por exemplo `motor:tarefa:<id>`. O campo `agent_id` no contexto representa o
+por exemplo `dev-motor:tarefa:<id>`. O campo `agent_id` no contexto representa o
 agente vigente, não a identidade da sessão. Cada troca deve gerar um evento de
 auditoria com agente anterior, agente novo, origem (`console`, `motor` ou
 `usuario`), motivo e confirmação retornada pelo Console.
@@ -135,7 +135,7 @@ recuperação e usa `chat.send` para continuar a sessão. A tabela local guarda
 somente o espelho operacional e a fila; não deve concorrer com o histórico
 técnico do Console.
 
-Para a sessão `motor:tarefa:*`, o Motor não envia `agentId` nas operações de
+Para a sessão `dev-motor:tarefa:*`, o Motor não envia `agentId` nas operações de
 mensagem, histórico ou abort. Assim, uma troca feita manualmente no Console
 continua válida e não é sobrescrita pelo agente que estava registrado no
 contexto local. O `agentId` só é enviado na criação/troca explícita da sessão.

@@ -12,11 +12,11 @@ describe("ConsoleAgentRuntimeDriver", () => {
     const expected = "/data/workspace/projects/agentes/gerenteagentes/worktrees/task-p2-812/1012/a2/projects/gerenteagentes"
     const fetchMock = vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: "NOT_FOUND", message: "not found" } }), { status: 404 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, key: "motor:tarefa:task-p2-812" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, key: "dev-motor:tarefa:task-p2-812" }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }))
     const driver = new ConsoleAgentRuntimeDriver({ baseUrl: "http://console.test", token: "test-token" })
 
-    await driver.createSession({ agentId: "programador-senior", key: "motor:tarefa:task-p2-812", workspacePath: expected })
+    await driver.createSession({ agentId: "programador-senior", key: "dev-motor:tarefa:task-p2-812", workspacePath: expected })
 
     const [, init] = fetchMock.mock.calls[1] as [string, RequestInit]
     expect(JSON.parse(String(init.body))).toMatchObject({ workspacePath: expected })
@@ -24,16 +24,16 @@ describe("ConsoleAgentRuntimeDriver", () => {
 
   it("reutiliza sessão existente por sessionKey e não faz POST de criação", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(new Response(JSON.stringify({ key: "motor:tarefa:task-829", sessionId: "console-session-1" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ key: "dev-motor:tarefa:task-829", sessionId: "console-session-1" }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }))
     const driver = new ConsoleAgentRuntimeDriver({ baseUrl: "http://console.test", token: "test-token" })
 
-    const session = await driver.createSession({ agentId: "programador-senior", key: "motor:tarefa:task-829", model: "anthropic/claude" })
+    const session = await driver.createSession({ agentId: "programador-senior", key: "dev-motor:tarefa:task-829", model: "anthropic/claude" })
 
-    expect(session).toEqual({ key: "motor:tarefa:task-829", agentId: "programador-senior", sessionId: "console-session-1" })
+    expect(session).toEqual({ key: "dev-motor:tarefa:task-829", agentId: "programador-senior", sessionId: "console-session-1" })
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect((fetchMock.mock.calls[0]![0] as string)).toContain("/api/sessions/describe")
-    expect(JSON.parse(String((fetchMock.mock.calls[1]![1] as RequestInit).body))).toEqual({ key: "motor:tarefa:task-829", archived: false, model: "anthropic/claude" })
+    expect(JSON.parse(String((fetchMock.mock.calls[1]![1] as RequestInit).body))).toEqual({ key: "dev-motor:tarefa:task-829", archived: false, model: "anthropic/claude" })
   })
 
   it("traduz rejeição do Console (INVALID_WORKSPACE_PATH) em erro de vínculo de workspace", async () => {
