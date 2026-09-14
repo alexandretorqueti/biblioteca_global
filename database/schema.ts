@@ -36,7 +36,10 @@ export const usuarios = mysqlTable("usuarios", {
   username: varchar("username", { length: 100 }).unique(),
   email: varchar("email", { length: 255 }).unique(),
   telefone: varchar("telefone", { length: 30 }).unique(),
+  /** Campo legado; novos fluxos devem usar cpfCriptografado. */
   cpf: varchar("cpf", { length: 14 }).unique(),
+  /** CPF protegido com AES-256-GCM (IV e tag fazem parte do ciphertext). */
+  cpfCriptografado: varchar("cpf_criptografado", { length: 255 }),
   /** argon2id — nunca logar nem retornar (PoC §11).
    * Nullable: contas provisionadas sem senha entram por código (auth única). */
   passwordHash: varchar("password_hash", { length: 255 }),
@@ -122,6 +125,41 @@ export const refreshTokens = mysqlTable(
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (t) => [index("idx_refresh_tokens_usuario").on(t.usuarioId)],
+)
+
+/** Consentimentos da política de privacidade por usuário e versão. */
+export const consentimentos = mysqlTable(
+  "consentimentos",
+  {
+    id: bigint("id", { mode: "number", unsigned: true })
+      .primaryKey()
+      .autoincrement(),
+    usuarioId: bigint("usuario_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => usuarios.id, { onDelete: "cascade" }),
+    data: timestamp("data").notNull().defaultNow(),
+    versaoPolitica: varchar("versao_politica", { length: 50 }).notNull(),
+    ip: varchar("ip", { length: 45 }),
+  },
+  (t) => [index("idx_consentimentos_usuario").on(t.usuarioId)],
+)
+
+/** Auditoria de acesso a dados pessoais sensíveis. */
+export const logsAcessoDadosSensiveis = mysqlTable(
+  "logs_acesso_dados_sensiveis",
+  {
+    id: bigint("id", { mode: "number", unsigned: true })
+      .primaryKey()
+      .autoincrement(),
+    usuarioId: bigint("usuario_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => usuarios.id, { onDelete: "cascade" }),
+    tipoDado: varchar("tipo_dado", { length: 50 }).notNull(),
+    acao: varchar("acao", { length: 50 }).notNull(),
+    timestamp: timestamp("timestamp").notNull().defaultNow(),
+    ip: varchar("ip", { length: 45 }),
+  },
+  (t) => [index("idx_logs_acesso_dados_sensiveis_usuario").on(t.usuarioId)],
 )
 
 /** Sessões do HelpDesk iniciadas por um usuário em um projeto. */

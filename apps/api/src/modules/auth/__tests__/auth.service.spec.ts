@@ -198,6 +198,7 @@ function makeUsuario(overrides: Partial<UsuarioRow>): UsuarioRow {
     email: "alexandre@globaltecnologia.com.br",
     telefone: null,
     cpf: null,
+    cpfCriptografado: null,
     nome: "Alexandre",
     ativo: true,
     passwordHash: "",

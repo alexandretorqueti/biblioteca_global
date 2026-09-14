@@ -169,6 +169,10 @@ export async function seed(): Promise<void> {
   })
   const db = drizzle(connection)
 
+  // O seed pode ser executado diretamente em uma instalação existente;
+  // garanta que o schema core esteja atualizado antes dos upserts.
+  await migrate(db, { migrationsFolder: resolve(__dirname, "migrations") })
+
   // 1) Projetos — upsert por slug, com a config inicial GERADA.
   for (const semente of projetosSeed) {
     const config = configInicialDoProjeto(semente)
