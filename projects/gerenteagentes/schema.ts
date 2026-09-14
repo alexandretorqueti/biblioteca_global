@@ -143,6 +143,8 @@ export const projetoMotorConfig = mysqlTable("projeto_motor_config", {
   branchTrabalho: varchar("branch_trabalho", { length: 255 }).notNull(),
   buildCommand: varchar("build_command", { length: 500 }).notNull(),
   unitTestCommand: varchar("unit_test_command", { length: 500 }).notNull(),
+  deployScript: varchar("deploy_script", { length: 500 }),
+  deployHostRoot: varchar("deploy_host_root", { length: 500 }),
   unitTestExclude: json("unit_test_exclude"),
   defaultMaxRework: int("default_max_rework").notNull().default(3),
   defaultHardTimeoutMs: bigint("default_hard_timeout_ms", { mode: "number" }).notNull().default(3600000),
