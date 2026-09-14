@@ -3,6 +3,7 @@ import { TaskWorker, analystCorrectiveFeedback, analystPlanRejectionFeedback, fo
 
 type PromptBuilder = {
   buildAnalystPrompt: (task: { title: string; description?: string }, clarificationHistory?: string, analystWorkspacePath?: string) => string
+  buildProgrammerPrompt: (task: { title: string; description?: string; tipo?: string }, subtask: { seq: number; titulo: string; scope?: string; acceptanceCriteria?: string[] }, repoPath: string) => { header: string; context: string | null }
 }
 
 function buildPrompt(task: { title: string; description?: string }): string {
@@ -64,6 +65,21 @@ describe("buildAnalystPrompt (limites anti-truncamento)", () => {
     const prompt = worker.buildAnalystPrompt({ title: "Tarefa", description: "descricao" }, undefined, "/tmp/projeto")
     expect(prompt).toContain("/tmp/projeto")
     expect(prompt).toContain("docs/CONTEXTO-ANALISTA.md")
+  })
+})
+
+describe("buildProgrammerPrompt (fronteira do worktree)", () => {
+  it("permite ler contratos compartilhados apenas no mesmo worktree Git", () => {
+    const worker = new TaskWorker() as unknown as PromptBuilder
+    const { header } = worker.buildProgrammerPrompt(
+      { title: "Contrato compartilhado" },
+      { seq: 1, titulo: "Consumir contrato", scope: "Ler tipo compartilhado", acceptanceCriteria: [] },
+      "/workspace/projects/gerenteagentes",
+    )
+
+    expect(header).toContain("edicao, git, build e testes devem acontecer SOMENTE dentro do Workspace")
+    expect(header).toContain("permitido ler somente arquivos sob a raiz Git do MESMO worktree")
+    expect(header).toContain("nunca modifique, commite ou execute git em outro diretorio")
   })
 })
 

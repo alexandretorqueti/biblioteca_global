@@ -2082,8 +2082,9 @@ class TaskWorker {
         ? ["Fluxo: " + task.tipo + " (sem workspace, branch, clone, build ou testes)"]
         : [
             "Workspace: " + repoPath,
-            "RESTRICAO ABSOLUTA DE CAMINHO: todo o trabalho (leitura, edicao, git, build, testes) deve acontecer SOMENTE dentro do Workspace acima. " +
-              "Nunca leia, modifique, commite ou execute git em qualquer outro caminho do repositorio (pasta base, outro worktree, outra copia). " +
+            "RESTRICAO ABSOLUTA DE CAMINHO: edicao, git, build e testes devem acontecer SOMENTE dentro do Workspace acima. " +
+              "Para consultar contratos ou tipos compartilhados, e permitido ler somente arquivos sob a raiz Git do MESMO worktree, obtida com `git -C <Workspace> rev-parse --show-toplevel`. " +
+              "Essa permissao e exclusivamente de leitura: nunca modifique, commite ou execute git em outro diretorio do repositorio, em outro worktree ou em outra copia. " +
               "Se um comando git falhar dentro do Workspace (ex.: 'not a git repository', 'dubious ownership'), NAO improvise em outro caminho: " +
               "responda blocked_environment com o erro exato.",
           ]),
