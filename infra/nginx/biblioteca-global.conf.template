@@ -19,7 +19,10 @@ server {
 
 server {
     listen 80;
-    server_name api.biblioteca.globaltecnologia.net;
+    # O hostname antigo continua sendo usado pelo front já publicado no
+    # Cloudflare Pages. Mantê-lo como alias evita quebrar clientes durante a
+    # migração para api.biblioteca.globaltecnologia.net.
+    server_name api.biblioteca.globaltecnologia.net biblioteca-api.webconnect.com.br;
 
     location / {
         proxy_pass http://host.docker.internal:__API_PORT__;
