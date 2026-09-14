@@ -1,5 +1,6 @@
 import { Inject, Injectable } from "@nestjs/common"
 import { asc, eq } from "drizzle-orm"
+import { desc } from "drizzle-orm"
 import { createHash } from "node:crypto"
 import {
   consentimentos,
@@ -22,11 +23,17 @@ export interface LogAcessoDadosSensiveis {
   ip: string | null
 }
 
+export interface LogAcessoDadosSensiveisRow extends LogAcessoDadosSensiveis {
+  id: number
+  timestamp: Date
+}
+
 export interface LgpdRepository {
   exportarDados(usuarioId: number): Promise<UsuarioDadosExport | undefined>
   retificarDados(usuarioId: number, dados: RetificacaoRequest): Promise<void>
   anonimizarDados(usuarioId: number): Promise<void>
   registrarAcesso(log: LogAcessoDadosSensiveis): Promise<void>
+  listarAcessos(limit: number): Promise<LogAcessoDadosSensiveisRow[]>
 }
 
 export const LGPD_REPOSITORY = Symbol("LGPD_REPOSITORY")
@@ -124,6 +131,21 @@ export class DrizzleLgpdRepository implements LgpdRepository {
       acao: log.acao,
       ip: log.ip,
     })
+  }
+
+  async listarAcessos(limit: number): Promise<LogAcessoDadosSensiveisRow[]> {
+    return this.db
+      .select({
+        id: logsAcessoDadosSensiveis.id,
+        usuarioId: logsAcessoDadosSensiveis.usuarioId,
+        tipoDado: logsAcessoDadosSensiveis.tipoDado,
+        acao: logsAcessoDadosSensiveis.acao,
+        timestamp: logsAcessoDadosSensiveis.timestamp,
+        ip: logsAcessoDadosSensiveis.ip,
+      })
+      .from(logsAcessoDadosSensiveis)
+      .orderBy(desc(logsAcessoDadosSensiveis.timestamp))
+      .limit(limit)
   }
 
   private cpfPortavel(cpf: string | null, cpfCriptografado: string | null): string | null {

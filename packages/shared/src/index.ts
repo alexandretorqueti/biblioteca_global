@@ -67,6 +67,7 @@ export type {
 // Auth e sessão
 export {
   loginIdentifierTypeSchema,
+  mascararCpf,
   perfilSchema,
   loginRequestSchema,
   selectProjectRequestSchema,

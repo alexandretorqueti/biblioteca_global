@@ -52,6 +52,8 @@ function makeRepo(scope: ResolvedScope | undefined): AuthRepository {
     getActiveEmailVerification: async () => undefined,
     incrementVerificationAttempts: async () => undefined,
     markVerificationUsed: async () => undefined,
+    findConsentimentoAtual: async () => undefined,
+    registrarConsentimento: async () => undefined,
   }
 }
 

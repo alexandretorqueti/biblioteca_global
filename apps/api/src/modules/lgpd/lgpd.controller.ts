@@ -8,6 +8,7 @@ import {
   ParseIntPipe,
   Put,
   UseGuards,
+  UseInterceptors,
 } from "@nestjs/common"
 import type { RetificacaoRequest } from "@biblioteca-global/shared"
 import { CurrentProject, CurrentUser } from "../../common/decorators/current.decorator"
@@ -15,9 +16,11 @@ import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard"
 import { ProjectScopeGuard } from "../../common/guards/project-scope.guard"
 import type { ProjectScope } from "../../common/types"
 import { LgpdService } from "./lgpd.service"
+import { AcessoDadosInterceptor } from "./acesso-dados.interceptor"
 
 @Controller("usuarios")
 @UseGuards(JwtAuthGuard, ProjectScopeGuard)
+@UseInterceptors(AcessoDadosInterceptor)
 export class LgpdController {
   constructor(private readonly service: LgpdService) {}
 

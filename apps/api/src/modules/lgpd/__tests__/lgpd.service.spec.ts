@@ -46,6 +46,10 @@ class FakeRepository implements LgpdRepository {
   async registrarAcesso(log: LogAcessoDadosSensiveis): Promise<void> {
     this.logs.push(log)
   }
+
+  async listarAcessos(): Promise<never[]> {
+    return []
+  }
 }
 
 function scope(usuarioId: number, slug = "meu-projeto", perfil: "admin" | "operador" = "operador"): ProjectScope {
