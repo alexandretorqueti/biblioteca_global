@@ -2844,6 +2844,7 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
       }
     } finally {
       try {
+        await this.closeTaskSessionIfTerminal(worker.taskId)
         await this.db.query("UPDATE tarefa_contextos_execucao SET estado='closed', closed_at=NOW(), updated_at=NOW() WHERE sessao_chave IN (SELECT sessao_chave FROM tarefa_chat_entregas WHERE sessao_chave IS NOT NULL AND estado='consumed') AND estado IN ('active','ready_to_resume')").catch(() => undefined)
         if (worker.resourceKey) await this.resourceLease.release(worker.resourceKey, executionId, worker.fencingToken)
       } finally {
@@ -2853,6 +2854,26 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
         await this.pump()
       }
     }
+  }
+
+  /** Fecha a sessão principal somente quando a tarefa inteira chegou a estado final. */
+  private async closeTaskSessionIfTerminal(taskId: string): Promise<void> {
+    const task = await this.repository.getTask(taskId)
+    if (!task || !["completed", "deployed", "failed", "cancelled", "finalizada", "deployada", "aborted"].includes(String(task.status))) return
+    const lookup = taskIdentifierLookup(taskId, "t")
+    const { rows } = await this.db.query(
+      "SELECT sessao_chave, agent_id FROM tarefa_contextos_execucao WHERE tarefa_id=(SELECT t.id FROM tarefas t WHERE " + lookup.sql + " LIMIT 1) AND sessao_chave LIKE 'motor:tarefa:%' ORDER BY updated_at DESC LIMIT 1",
+      lookup.params,
+    )
+    const context = rows[0] as { sessao_chave?: string; agent_id?: string } | undefined
+    if (!context?.sessao_chave) return
+    const baseUrl = process.env.OPENCLAW_CONSOLE_URL
+    const token = process.env.OPENCLAW_CONSOLE_TOKEN
+    if (!baseUrl || !token) return
+    const driver = new ConsoleAgentRuntimeDriver({ baseUrl, token })
+    await driver.closeSession({ key: context.sessao_chave, agentId: String(context.agent_id ?? "") }).catch((error: unknown) => {
+      this.logger.warn("Falha ao fechar sessão principal da tarefa: " + describeError(error), { taskId })
+    })
   }
 
   private activeExecutionExpiry(): Date {
