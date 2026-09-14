@@ -15,7 +15,7 @@ import {
   NotFoundException,
 } from "@nestjs/common"
 import argon2 from "argon2"
-import type { PaginatedResult, Perfil } from "@biblioteca-global/shared"
+import { mascararCpf, type PaginatedResult, type Perfil } from "@biblioteca-global/shared"
 import { ehErroDuplicado } from "../../common/erros"
 import { SLUG_ADMIN_GLOBAL } from "../../common/guards/global-admin.guard"
 import type { ProjectScope } from "../../common/types"
@@ -57,7 +57,7 @@ function semHash(linha: UsuarioRow): UsuarioPublico {
     username: linha.username ?? null,
     email: linha.email ?? null,
     telefone: linha.telefone ?? null,
-    cpf: linha.cpf ?? null,
+    cpf: mascararCpf(linha.cpf),
     ativo: linha.ativo,
     createdAt: linha.createdAt,
     updatedAt: linha.updatedAt,
@@ -95,7 +95,12 @@ export class UsuariosService {
       page,
       pageSize,
     })
-    return { ...resultado, page, pageSize }
+    return {
+      ...resultado,
+      items: resultado.items.map((item) => ({ ...item, cpf: mascararCpf(item.cpf) })),
+      page,
+      pageSize,
+    }
   }
 
   async detalhar(

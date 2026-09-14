@@ -5,6 +5,7 @@
  */
 import { Inject, Injectable } from "@nestjs/common"
 import { and, desc, eq, gt, isNull, sql } from "drizzle-orm"
+import { mascararCpf } from "@biblioteca-global/shared"
 import type {
   LoginIdentifierType,
   Perfil,
@@ -109,7 +110,7 @@ export function toUsuarioAutenticado(
     username: row.username,
     email: row.email,
     telefone: row.telefone,
-    cpf: row.cpf,
+    cpf: mascararCpf(row.cpf),
   }
 }
 
@@ -253,7 +254,7 @@ export class DrizzleAuthRepository implements AuthRepository {
         username: linha.username,
         email: linha.email,
         telefone: linha.telefone,
-        cpf: linha.cpf,
+        cpf: mascararCpf(linha.cpf),
       },
       projeto: {
         id: linha.projetoId,

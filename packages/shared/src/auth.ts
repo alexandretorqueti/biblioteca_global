@@ -17,6 +17,11 @@ export const loginIdentifierTypeSchema = z.enum([
 
 export type LoginIdentifierType = z.infer<typeof loginIdentifierTypeSchema>
 
+/** Nunca expõe CPF em claro em respostas de autenticação. */
+export function mascararCpf(cpf: string | null | undefined): string | null {
+  return cpf ? "***.***.***-**" : null
+}
+
 /** Perfil do usuário DENTRO de um projeto (pivot projetos_usuarios). */
 export const perfilSchema = z.enum([
   "admin",
