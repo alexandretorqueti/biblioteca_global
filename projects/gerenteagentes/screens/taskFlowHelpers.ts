@@ -58,6 +58,9 @@ export const PRIORIDADE_POR_STATUS: Record<string, Prioridade> = {
   planned: "baixa",
   analyzing: "media",
   awaiting_clarification: "media",
+  // Aguardando resposta humana na execução — exige ação da pessoa, então
+  // entra na faixa de atenção (mesma régua de awaiting_clarification).
+  awaiting_interaction: "alta",
   ready: "media",
   running: "media",
   paused: "media",
