@@ -879,7 +879,6 @@ class TaskWorker {
           )
         }
         let session: RuntimeSession | undefined
-        let sessionApproved = false
         let agentSummary: string | null = null
         try {
           session = await driver.createSession({
@@ -1190,7 +1189,6 @@ class TaskWorker {
           // Registra conclusão bem-sucedida no histórico
           await this.recordDeliveryEvent(subtask.id, deliverCount, model.model, "completed", null)
           this.log("info", "Subtarefa verificada: " + subtask.titulo)
-          sessionApproved = this.isDevelopmentTask(input)
           return gitCommitSha
         } catch (error) {
           if (isModelUnavailableError(error)) {
@@ -1203,15 +1201,12 @@ class TaskWorker {
           throw error
         } finally {
           if (session && this.isDevelopmentTask(input)) {
-            await this.persistDeveloperSessionHistory(subtask.id, session, driver, sessionApproved ? "approved" : "returnable").catch((error: unknown) => {
+            await this.persistDeveloperSessionHistory(subtask.id, session, driver, "active").catch((error: unknown) => {
               this.log("warn", "Falha ao persistir histórico da sessão do desenvolvedor: " + (error instanceof Error ? error.message : String(error)))
             })
-            // Só a aprovação técnica permite apagar a sessão remota. Em
-            // reprovação, bloqueio ou retorno o Console conserva o contexto.
-            if (sessionApproved) {
-              await driver.closeSession(session).catch(() => {})
-              await this.markDeveloperSessionClosed(session.key, "approved").catch(() => {})
-            }
+            // A sessão pertence à tarefa, não à subtarefa. Ela permanece viva
+            // após uma entrega aprovada para que o próximo DEV continue no
+            // mesmo contexto; o encerramento ocorre no fim da tarefa.
           } else if (session) {
             // Tarefas leves não retornam ao mesmo contexto de desenvolvimento.
             await driver.closeSession(session).catch(() => {})
@@ -1339,7 +1334,7 @@ class TaskWorker {
     subtaskId: number,
     session: RuntimeSession,
     driver: ConsoleAgentRuntimeDriver,
-    status: "approved" | "returnable",
+    status: "active" | "approved" | "returnable",
   ): Promise<void> {
     if (!this.db) return
     const messages = await driver.getSessionHistory(session)

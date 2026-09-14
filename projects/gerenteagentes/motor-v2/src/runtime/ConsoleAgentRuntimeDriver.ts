@@ -210,6 +210,28 @@ export class ConsoleAgentRuntimeDriver {
   }
 
   async createSession(input: CreateSessionInput): Promise<RuntimeSession> {
+    // O sessionKey de uma tarefa é uma identidade estável. Consulte primeiro
+    // o Console para que uma nova subtarefa/retry reutilize a sessão existente
+    // em vez de criar outro transcript.
+    if (input.key?.startsWith("motor:tarefa:")) {
+      try {
+        const existing = await this.describeSession(input.key, input.agentId)
+        const session: RuntimeSession = {
+          key: input.key,
+          agentId: input.agentId,
+          ...(typeof existing.sessionId === "string" ? { sessionId: existing.sessionId } : typeof existing.id === "string" ? { sessionId: existing.id } : {}),
+        }
+        await this.request({
+          method: "PATCH",
+          path: "/api/sessions",
+          body: { key: input.key, archived: false, ...(input.model ? { model: input.model } : {}) },
+        })
+        return session
+      } catch (error) {
+        const code = typeof error === "object" && error !== null && "code" in error ? String(error.code) : ""
+        if (code !== "NOT_FOUND" && code !== "404") throw error
+      }
+    }
     let response: { key: string; sessionId?: string } & Record<string, unknown>
     try {
       response = await this.request<{ key: string; sessionId?: string } & Record<string, unknown>>({
@@ -406,7 +428,7 @@ export class ConsoleAgentRuntimeDriver {
     const history = await this.request<{ messages: RuntimeSessionMessage[] }>({
       method: "GET",
       path: "/api/chat/history",
-      query: { sessionKey: session.key, agentId: session.agentId, limit: 500, offset: 0 },
+      query: { sessionKey: session.key, ...(sessionAgentHint(session).agentId ? { agentId: session.agentId } : {}), limit: 500, offset: 0 },
     })
     return Array.isArray(history.messages) ? history.messages : []
   }
