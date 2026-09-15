@@ -30,8 +30,21 @@ export function workspaceSystemClosing(): string {
 }
 
 export function composeDevelopmentPrompt(workspace: string, gitRoot: string, tableText: string): ComposedPrompt {
+  const executionInstructions = [
+    "FLUXO DE EXECUÇÃO OBRIGATÓRIO (use as ferramentas para REALMENTE fazer as alterações):",
+    "1. Leia os arquivos relevantes usando a ferramenta 'read'",
+    "2. Faça as alterações necessárias usando as ferramentas 'edit' (para modificar) ou 'write' (para criar)",
+    "3. Execute os comandos de build/teste usando a ferramenta 'exec'",
+    "4. Verifique git status --short para confirmar as alterações",
+    "5. Só então gere o JSON de conclusão do contrato",
+    "",
+    "IMPORTANTE: NÃO gere o JSON de conclusão sem antes ter feito as alterações REAIS com as ferramentas.",
+    "O Motor verifica git diff — se não houver alterações reais, a entrega será rejeitada.",
+  ].join("\n")
+
   const parts: PromptPart[] = [
     { source: "system", label: "Segurança do workspace", text: workspaceSystemGuard(workspace, gitRoot) },
+    { source: "system", label: "Instruções de execução", text: executionInstructions },
     { source: "table", label: "Prompt publicado na tabela", text: tableText },
     { source: "system", label: "Verificação final", text: workspaceSystemClosing() },
   ]
