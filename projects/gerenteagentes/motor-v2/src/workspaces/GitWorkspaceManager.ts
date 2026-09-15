@@ -648,7 +648,11 @@ export class GitWorkspaceManager {
   async publishBranch(repoPath: string, branch: string): Promise<void> {
     if (!isAbsolute(repoPath)) throw new Error("repoPath inválido para publicação")
     const safe = safeBranch(branch)
-    await this.runner.run(["git", "push", "--force-with-lease", "origin", safe], repoPath)
+    // O repoPath persistido pode estar no namespace do host/console; sem
+    // normalizar, o push falha com ENOENT dentro do container da API.
+    const normalized = this.normalizeRepoPath(repoPath)
+    await this.markSafeDirectory(normalized)
+    await this.runner.run(["git", "push", "--force-with-lease", "origin", safe], normalized)
   }
 
   private async listConflictFiles(cwd: string): Promise<string[]> {
