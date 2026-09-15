@@ -1130,28 +1130,6 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     const worker = this.activeWorkers.get(executionId)
     if (!worker || !this.beginFinalization(executionId, worker)) return
 
-    // Verifica se há pendingPause: se sim, pausa a tarefa após completar a fase atual
-    if (worker.pendingPause) {
-      this.logger.info("Pause graceful: fase completada, pausando tarefa", {
-        taskId: worker.taskId,
-        executionId,
-        phase: worker.phase
-      })
-      // Limpa também campos de espera de recurso: se resource_wait_key ficasse
-      // preenchido, o selectNextSubtask voltaria a selecionar a tarefa pausada
-      // (condição "paused_at IS NULL OR resource_wait_key IS NOT NULL").
-      const lookup = taskIdentifierLookup(worker.taskId)
-      await this.db.query(
-        "UPDATE tarefas SET paused_at = NOW(), resource_wait_key = NULL, resource_wait_id = NULL, resource_wait_position = NULL, updated_at = NOW() WHERE " + lookup.sql,
-        lookup.params,
-      )
-      // Finalização comum libera lease, remove presença persistida e limpa os
-      // controles locais sem apagar o workspace da fase recém-concluída.
-      await this.finishWorker(executionId, worker, { preserveWorkspace: true })
-      this.logger.info("Tarefa pausada com sucesso (pause graceful)", { taskId: worker.taskId })
-      return
-    }
-
     try {
     // Uma execução concluída pelo agente é a evidência explícita de que o
     // Console voltou. A retomada só afeta a fila desse agente.
@@ -1715,6 +1693,7 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
   async onTaskPaused(executionId: string, reason: string): Promise<void> {
     const worker = this.activeWorkers.get(executionId)
     if (!worker || !this.beginFinalization(executionId, worker)) return
+    worker.pendingPause = true
     this.logger.info("Tarefa pausada: " + worker.taskId + " - " + reason, { taskId: worker.taskId, executionId })
     // Subtarefa interrompida volta a pendente para o pump retomá-la depois do
     // resume; sem isso ela ficaria órfã em running/verifying para sempre.
@@ -1724,11 +1703,6 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
         [worker.subtaskId],
       ).catch((error: unknown) => this.logger.error("Falha ao resetar subtarefa pausada: " + describeError(error), { taskId: worker.taskId, subtaskId: worker.subtaskId, executionId }))
     }
-    const lookup = taskIdentifierLookup(worker.taskId)
-    await this.db.query(
-      "UPDATE tarefas SET paused_at = NOW(), updated_at = NOW() WHERE " + lookup.sql,
-      lookup.params,
-    )
     // Preservar o worktree no pause: trabalho não commitado do dev pode estar lá;
     // limpar destruiria progresso e queimaria tokens no rework.
     await this.finishWorker(executionId, worker, { preserveWorkspace: true })
@@ -2862,7 +2836,9 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
       worker.timeoutHandle = undefined
     }
     this.clearActiveExecutionHeartbeat(executionId)
-    const preserveWorkspace = options?.preserveWorkspace === true
+    // Uma pausa solicitada enquanto o worker estava ativo também preserva o
+    // worktree, inclusive nos caminhos de falha, clarificação e interação.
+    const preserveWorkspace = options?.preserveWorkspace === true || worker.pendingPause === true
     try {
       if (worker.workspace && worker.repoPath && !preserveWorkspace) {
         await this.workspaceManager.cleanup({ repoPath: worker.repoPath, workspacePath: worker.workspace.path })
@@ -2884,6 +2860,7 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
         await this.closeTaskSessionIfTerminal(worker.taskId)
         await this.db.query("UPDATE tarefa_contextos_execucao SET estado='closed', closed_at=NOW(), updated_at=NOW() WHERE sessao_chave IN (SELECT sessao_chave FROM tarefa_chat_entregas WHERE sessao_chave IS NOT NULL AND estado='consumed') AND estado IN ('active','ready_to_resume')").catch(() => undefined)
         if (worker.resourceKey) await this.resourceLease.release(worker.resourceKey, executionId, worker.fencingToken)
+        await this.materializePendingPause(worker)
       } finally {
         await this.removeActiveExecution(executionId)
         this.activeWorkers.delete(executionId)
@@ -2891,6 +2868,26 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
         await this.pump()
       }
     }
+  }
+
+  /** Materializa a pausa somente após o término e a liberação dos recursos. */
+  private async materializePendingPause(worker: ActiveWorker): Promise<void> {
+    if (!worker.pendingPause) return
+    const status = await this.facts.derive(worker.taskId)
+    if (["completed", "deployed", "finalizada", "deployada"].includes(String(status))) {
+      this.logger.info("Pausa pendente descartada: tarefa terminou em estado não pausável", {
+        taskId: worker.taskId, executionId: worker.executionId, status,
+      })
+      return
+    }
+    const lookup = taskIdentifierLookup(worker.taskId)
+    await this.db.query(
+      "UPDATE tarefas SET paused_at = NOW(), resource_wait_key = NULL, resource_wait_id = NULL, resource_wait_position = NULL, updated_at = NOW() WHERE " + lookup.sql + " AND paused_at IS NULL",
+      lookup.params,
+    )
+    this.logger.info("Tarefa pausada com sucesso (pause graceful)", {
+      taskId: worker.taskId, executionId: worker.executionId, phase: worker.phase,
+    })
   }
 
   /** Fecha a sessão principal somente quando a tarefa inteira chegou a estado final. */
