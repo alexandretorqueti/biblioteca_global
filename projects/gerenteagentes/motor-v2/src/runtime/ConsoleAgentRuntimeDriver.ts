@@ -420,6 +420,18 @@ export class ConsoleAgentRuntimeDriver {
   }
 
   /**
+   * Arquiva a sessão física sem apagar seu transcript. Usado quando o Motor
+   * detecta contexto contaminado e precisa iniciar uma continuação limpa.
+   */
+  async archiveSession(session: RuntimeSession): Promise<void> {
+    await this.request({
+      method: "PATCH",
+      path: "/api/sessions",
+      body: { key: session.key, ...sessionAgentHint(session), archived: true },
+    })
+  }
+
+  /**
    * Obtém o transcript canônico antes de arquivar ou reutilizar a sessão.
    * O Motor persiste essa cópia para que o Console não seja a única fonte de
    * recuperação de contexto em um retorno por gate reprovado.

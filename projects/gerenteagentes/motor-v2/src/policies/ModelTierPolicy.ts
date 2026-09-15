@@ -72,7 +72,8 @@ export function formatSessionKey(input: {
 }
 
 /** Sessão conversacional única da tarefa, independente da fase/modelo. */
-export function formatTaskSessionKey(taskId: string): string {
+export function formatTaskSessionKey(taskId: string, generation = 1): string {
   const safeTaskId = taskId.replace(/[^a-zA-Z0-9._-]/g, "_")
-  return `dev-motor:tarefa:${safeTaskId}`
+  const base = `dev-motor:tarefa:${safeTaskId}`
+  return generation > 1 ? `${base}:g${generation}` : base
 }

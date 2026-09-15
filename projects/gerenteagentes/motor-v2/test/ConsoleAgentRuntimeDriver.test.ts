@@ -71,6 +71,23 @@ describe("ConsoleAgentRuntimeDriver", () => {
     )
   })
 
+  it("arquiva sem apagar quando o Motor precisa sanear o contexto", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), { status: 200 }),
+    )
+    const driver = new ConsoleAgentRuntimeDriver({ baseUrl: "http://console.test", token: "test-token" })
+
+    await driver.archiveSession({ key: "dev-motor:tarefa:task-822", agentId: "programador-senior" })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://console.test/api/sessions",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ key: "dev-motor:tarefa:task-822", archived: true }),
+      }),
+    )
+  })
+
   describe("listAgents", () => {
     it("retorna lista de agentes do gateway", async () => {
       const agents = [

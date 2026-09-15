@@ -884,6 +884,11 @@ class TaskWorker {
     const priorHandoff = this.isDevelopmentTask(input)
       ? await this.buildPriorSubtaskHandoff(subtask, developmentGitRoot)
       : ""
+    // Uma continuação física só é criada quando o Motor rejeita uma alegação
+    // ambiental inválida. A tarefa/auditoria continuam sendo uma só.
+    let sessionGeneration = await this.resolveTaskSessionGeneration(input.task.id, subtask.id)
+    let freshSessionBootstrap = false
+    let invalidEnvironmentClaims = 0
 
     modelLoop: for (let modelIndex = 0; modelIndex < chain.length; modelIndex += 1) {
       const model = chain[modelIndex]!
@@ -908,7 +913,7 @@ class TaskWorker {
         const driver = this.createDriver()
         // A chave é estável por subtarefa+modelo. Assim um rework retorna ao
         // mesmo contexto; uma troca de modelo abre uma sessão distinta.
-        const sessionKey = formatTaskSessionKey(input.task.id)
+        const sessionKey = formatTaskSessionKey(input.task.id, sessionGeneration)
         // Guarda defensiva: tarefa de desenvolvimento sem repoPath não tem como
         // resolver o worktree — falhar aqui é mais honesto que descobrir depois.
         const developmentWorkspace = this.isDevelopmentTask(input) ? input.repoPath : undefined
@@ -918,6 +923,7 @@ class TaskWorker {
           )
         }
         let session: RuntimeSession | undefined
+        let sessionArchived = false
         let agentSummary: string | null = null
         try {
           session = await driver.createSession({
@@ -957,11 +963,11 @@ class TaskWorker {
           // primeira entrega recebe a decisão mais recente do chat; retries
           // usam o transcript já existente e não repetem toda a conversa.
           let clarificationContext = ""
-          if (deliverCount === 1) {
+          if (deliverCount === 1 || freshSessionBootstrap) {
             try { clarificationContext = formatDeveloperClarificationContext(await fetchTaskClarificationHistory(this.planningDb(), input.task.id)) }
             catch (error) { this.log("warn", "Falha ao carregar esclarecimento do chat para o DEV: " + (error instanceof Error ? error.message : String(error))) }
           }
-          const instructionText = deliverCount > 1
+          const instructionText = deliverCount > 1 && !freshSessionBootstrap
             ? this.buildDevelopmentResumePrompt(subtask, lastFailure, [priorHandoff, carryOver].filter(Boolean).join("\n\n"))
             : resolved.text
           const composition = this.isDevelopmentTask(input)
@@ -973,7 +979,10 @@ class TaskWorker {
           if (context) {
             composition.parts.push({ source: "context", label: "Contexto enviado em mensagem separada", text: context })
           }
-          const header = clarificationContext ? `${composition.finalText}\n\n${clarificationContext}` : composition.finalText
+          const recoveryBootstrap = freshSessionBootstrap
+            ? this.buildCleanSessionBootstrap(input, subtask, lastFailure)
+            : ""
+          const header = [composition.finalText, recoveryBootstrap, clarificationContext].filter(Boolean).join("\n\n")
           if (clarificationContext) {
             composition.parts.push({ source: "context", label: "Esclarecimento respondido no chat da tarefa", text: clarificationContext })
           }
@@ -983,6 +992,7 @@ class TaskWorker {
             await driver.sendMessage({ session, message: context })
           }
           const { runId } = await driver.sendMessage({ session, message: header })
+          freshSessionBootstrap = false
           const result = await driver.waitForRunCompletion(session, runId, {
             onActivity: () => this.sendHeartbeat(),
           })
@@ -1088,9 +1098,33 @@ class TaskWorker {
             }
           }
           if (outcome.kind === "blocked_environment") {
-            const reason = "Ambiente bloqueado: " + outcome.reason
-            await this.recordBlocker(subtask, "blocked_environment", reason, model.model)
-            throw new Error(reason)
+            const actualFailure = this.verifyEnvironmentClaim(input)
+            if (actualFailure) {
+              const reason = "Ambiente bloqueado: " + actualFailure
+              await this.recordBlocker(subtask, "blocked_environment", reason, model.model)
+              throw new Error(reason)
+            }
+
+            invalidEnvironmentClaims += 1
+            const factualReason = "A alegação blocked_environment foi rejeitada pelo Motor: cwd, raiz Git e branch do worktree foram validados. A sessão anterior foi arquivada e a continuação receberá somente fatos validados."
+            await this.recordDeliveryEvent(subtask.id, deliverCount, model.model, "invalid_environment_claim", factualReason)
+            await this.db!.query(
+              "UPDATE subtarefas SET status = 'pending', resultado = ?, finalizada_em = NULL, updated_at = NOW() WHERE id = ?",
+              [factualReason, subtask.id],
+            )
+            await this.persistDeveloperSessionHistory(subtask.id, session, driver, "returnable")
+            await driver.archiveSession(session)
+            await this.markDeveloperSessionClosed(session.key, "invalid_environment_claim")
+            sessionArchived = true
+            sessionGeneration += 1
+            freshSessionBootstrap = true
+            lastFailure = factualReason
+            this.log("warn", factualReason)
+            if (invalidEnvironmentClaims >= 2) {
+              this.log("warn", `Alegação ambiental inválida repetida no modelo ${model.model}; escalando modelo.`)
+              continue modelLoop
+            }
+            continue
           }
           if (outcome.kind === "need_help") {
             await persistTaskDeveloperClarification(this.planningDb(), input.task.id, {
@@ -1247,7 +1281,7 @@ class TaskWorker {
           }
           throw error
         } finally {
-          if (session && this.isDevelopmentTask(input)) {
+          if (session && this.isDevelopmentTask(input) && !sessionArchived) {
             await this.persistDeveloperSessionHistory(subtask.id, session, driver, "active").catch((error: unknown) => {
               this.log("warn", "Falha ao persistir histórico da sessão do desenvolvedor: " + (error instanceof Error ? error.message : String(error)))
             })
@@ -1416,6 +1450,30 @@ class TaskWorker {
       "UPDATE motor_agent_sessions SET status = 'closed', closed_at = NOW(), close_reason = ?, last_activity_at = NOW() WHERE session_key = ?",
       [reason, sessionKey],
     )
+  }
+
+  /**
+   * Retoma a geração física atual. Se o processo reiniciar entre arquivar uma
+   * sessão contaminada e criar sua sucessora, não reabrimos acidentalmente o
+   * transcript contaminado.
+   */
+  private async resolveTaskSessionGeneration(taskId: string, subtaskId: number): Promise<number> {
+    if (!this.db) return 1
+    const base = formatTaskSessionKey(taskId)
+    try {
+      const [rows] = await this.db.query(
+        "SELECT session_key, close_reason FROM motor_agent_sessions WHERE subtarefa_id = ? AND session_key LIKE ? ORDER BY id DESC LIMIT 1",
+        [subtaskId, `${base}%`],
+      ) as unknown as [Array<{ session_key: string; close_reason: string | null }>]
+      const latest = rows[0]
+      if (!latest) return 1
+      const match = String(latest.session_key).match(/:g(\\d+)$/)
+      const generation = match ? Number(match[1]) : 1
+      return latest.close_reason === "invalid_environment_claim" ? generation + 1 : generation
+    } catch (error) {
+      this.log("warn", "Falha ao resolver geração da sessão; usando sessão base: " + (error instanceof Error ? error.message : String(error)))
+      return 1
+    }
   }
 
   private stringifySessionContent(content: unknown): string {
@@ -1724,6 +1782,45 @@ class TaskWorker {
       return reason
     }
     return null
+  }
+
+  /**
+   * A alegação do agente não basta para bloquear uma tarefa. O Motor mede o
+   * workspace que ele próprio criou; `null` significa ambiente válido e,
+   * consequentemente, alegação inválida.
+   */
+  private verifyEnvironmentClaim(input: WorkerInput): string | null {
+    try {
+      const repoPath = resolve(input.repoPath)
+      if (!existsSync(repoPath)) return `diretório do projeto não existe: ${repoPath}`
+      const cwd = resolve(this.exec("pwd -P", repoPath).trim())
+      if (cwd !== repoPath) return `cwd divergente: esperado ${repoPath}, encontrado ${cwd}`
+      const gitRoot = resolve(this.exec("git rev-parse --show-toplevel", repoPath).trim())
+      const projectRelativePath = relative(gitRoot, repoPath)
+      if (projectRelativePath === ".." || projectRelativePath.startsWith("../") || isAbsolute(projectRelativePath)) {
+        return `projeto fora da raiz Git: projeto=${repoPath}, raiz=${gitRoot}`
+      }
+      const branch = this.exec("git branch --show-current", repoPath).trim()
+      if (!input.workBranch || branch !== input.workBranch) {
+        return `branch divergente: esperado ${input.workBranch ?? "não informada"}, encontrado ${branch || "sem branch"}`
+      }
+      // Não exige árvore limpa: alterações legítimas da entrega são permitidas.
+      this.exec("git status --short", repoPath)
+      return null
+    } catch (error) {
+      return "sonda independente do Motor falhou: " + (error instanceof Error ? error.message : String(error)).slice(0, 1200)
+    }
+  }
+
+  /** Bootstrap factual de uma nova sessão física após contexto contaminado. */
+  private buildCleanSessionBootstrap(input: WorkerInput, subtask: SubtaskInfo, reason: string): string {
+    return [
+      "CONTINUAÇÃO LIMPA CRIADA PELO MOTOR.",
+      "A sessão anterior foi arquivada porque alegou bloqueio ambiental que a sonda independente do Motor refutou.",
+      `Fatos validados: projeto=${resolve(input.repoPath)}; branch=${input.workBranch}; subtarefa #${subtask.seq} — ${subtask.titulo}.`,
+      "Não use alegações ambientais anteriores como fatos. Inspecione somente o workspace autorizado, faça a próxima ação necessária e responda no JSON do Motor.",
+      reason ? "Registro operacional: " + reason : "",
+    ].filter(Boolean).join("\n")
   }
 
   private resetDedicatedWorktree(worktreePath: string, resetTo?: string): void {
@@ -2182,12 +2279,17 @@ class TaskWorker {
         "SELECT deliver_number, model, event_type, reason FROM subtarefas_entregas WHERE subtarefa_id = ? ORDER BY id ASC LIMIT 60",
         [subtask.id],
       ) as unknown as [Array<{ deliver_number: number | string; model: string | null; event_type: string; reason: string | null }>]
-      const events: CarryOverEvent[] = rows.map((row) => ({
-        deliverNumber: Number(row.deliver_number ?? 0),
-        model: row.model == null ? null : String(row.model),
-        eventType: String(row.event_type ?? ""),
-        reason: row.reason == null ? null : String(row.reason),
-      }))
+      const events: CarryOverEvent[] = rows
+        // A invalidação permanece na auditoria, mas não atravessa para o
+        // contexto do próximo agente. O bootstrap da nova sessão traz apenas
+        // a prova objetiva atual.
+        .filter((row) => String(row.event_type ?? "") !== "invalid_environment_claim")
+        .map((row) => ({
+          deliverNumber: Number(row.deliver_number ?? 0),
+          model: row.model == null ? null : String(row.model),
+          eventType: String(row.event_type ?? ""),
+          reason: row.reason == null ? null : String(row.reason),
+        }))
       return formatCarryOver(events)
     } catch (error) {
       this.log("warn", "Falha ao carregar histórico de entregas (carry-over ignorado): " + (error instanceof Error ? error.message : String(error)))
@@ -2373,7 +2475,7 @@ class TaskWorker {
     subtaskId: number,
     deliverNumber: number,
     model: string | undefined,
-    eventType: "delivery_started" | "gate_rejected" | "return_for_rework" | "blocked" | "completed" | "baseline_red" | "agent_no_reply" | "database_operation",
+    eventType: "delivery_started" | "gate_rejected" | "return_for_rework" | "blocked" | "completed" | "baseline_red" | "agent_no_reply" | "database_operation" | "invalid_environment_claim",
     reason: string | null,
   ): Promise<void> {
     if (!this.db) return

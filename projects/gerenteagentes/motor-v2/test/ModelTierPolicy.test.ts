@@ -6,6 +6,11 @@ describe("ModelTierPolicy", () => {
     expect(formatTaskSessionKey("task/818")).toBe("dev-motor:tarefa:task_818")
     expect(formatTaskSessionKey("task/818")).toBe(formatTaskSessionKey("task/818"))
   })
+
+  it("cria uma nova geração física apenas quando a sessão precisa ser saneada", () => {
+    expect(formatTaskSessionKey("task/818", 2)).toBe("dev-motor:tarefa:task_818:g2")
+    expect(formatTaskSessionKey("task/818", 3)).toBe("dev-motor:tarefa:task_818:g3")
+  })
   it("mantém cadeias distintas para análise e desenvolvimento", () => {
     expect(defaultChain("analysis").length).toBeGreaterThan(0)
     expect(defaultChain("development").length).toBeGreaterThan(0)
