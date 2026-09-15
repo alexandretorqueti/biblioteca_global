@@ -19,6 +19,16 @@ export function deployFailedBlockerSqlFilter(alias = "b"): string {
   return `COALESCE(${alias}.block_reason, '') = 'deploy_failed'`
 }
 
+/** Transição exclusiva de uma evidência persistida de deploy falho. */
+export function recognizeManualDeploySql(): string {
+  return "UPDATE deploy_requests SET status = 'succeeded', updated_at = NOW() WHERE tarefa_id = ? AND status = 'failed'"
+}
+
+/** Encerra somente os bloqueios que registram a falha do deploy reconhecido. */
+export function resolveDeployFailedBlockersSql(): string {
+  return `UPDATE bloqueios SET resolved_at = NOW() WHERE tarefa_id = ? AND resolved_at IS NULL AND ${deployFailedBlockerSqlFilter("bloqueios")}`
+}
+
 /** A tarefa já está na base (integração confirmada). */
 export function tarefaIntegradaSql(alias = "t"): string {
   return `EXISTS (SELECT 1 FROM task_runtime_facts f WHERE f.tarefa_id = ${alias}.id AND f.integration_confirmed_at IS NOT NULL)`
