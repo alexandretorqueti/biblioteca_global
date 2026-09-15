@@ -32,7 +32,49 @@ type Internals = {
   readRemoteDeployStatus(batchId: string): string | null
 }
 
+function mergedTaskRow() {
+  return { id: 787, task_id: "task-p2-787", repo_path: "/repo/projeto", base_branch: "base-desenvolvimento" }
+}
+
 describe("fila de deploy", () => {
+  it("reconhece failed integrado e encerra apenas seus bloqueios, sem enfileirar deploy", async () => {
+    const { db, coordinator } = setup()
+    const internal = coordinator as unknown as Internals
+    const manager = { isBranchAncestor: vi.fn().mockResolvedValue(true) }
+    ;(internal as unknown as { workspaceManager: typeof manager }).workspaceManager = manager
+    vi.mocked(db.query).mockResolvedValueOnce({ rows: [mergedTaskRow()], affectedRows: 0, insertId: 0 })
+    vi.mocked(db.transaction).mockImplementation(async (fn) => {
+      const tx = { query: vi.fn()
+        .mockResolvedValueOnce({ rows: [], affectedRows: 1, insertId: 0 })
+        .mockResolvedValueOnce({ rows: [], affectedRows: 1, insertId: 0 }) }
+      return fn(tx)
+    })
+
+    await internal.reconcileCompletedTasksAlreadyMerged()
+
+    expect(manager.isBranchAncestor).toHaveBeenCalledWith({
+      repoPath: "/repo/projeto", branch: "motor-v2/task-p2-787/integracao", ancestor: "base-desenvolvimento",
+    })
+    const txQueries = vi.mocked(db.transaction).mock.calls
+    expect(txQueries).toHaveLength(1)
+    expect(db.query).toHaveBeenCalledTimes(1)
+  })
+
+  it("não reconhece nem resolve bloqueios quando não existe solicitação failed", async () => {
+    const { db, coordinator } = setup()
+    const internal = coordinator as unknown as Internals
+    const manager = { isBranchAncestor: vi.fn().mockResolvedValue(true) }
+    ;(internal as unknown as { workspaceManager: typeof manager }).workspaceManager = manager
+    vi.mocked(db.query).mockResolvedValueOnce({ rows: [mergedTaskRow()], affectedRows: 0, insertId: 0 })
+    const txQuery = vi.fn().mockResolvedValueOnce({ rows: [], affectedRows: 0, insertId: 0 })
+    vi.mocked(db.transaction).mockImplementation(async (fn) => fn({ query: txQuery }))
+
+    await internal.reconcileCompletedTasksAlreadyMerged()
+
+    expect(txQuery).toHaveBeenCalledTimes(1)
+    expect(String(txQuery.mock.calls[0]?.[0])).toContain("status = 'failed'")
+  })
+
   it("cita aspas simples sem introduzir aspas literais no comando remoto", () => {
     expect(shellQuote("/tmp/arquivo com 'aspas'"))
       .toBe("'/tmp/arquivo com '\"'\"'aspas'\"'\"''")

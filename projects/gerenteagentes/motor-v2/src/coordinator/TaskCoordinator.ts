@@ -2550,13 +2550,16 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
       const baseBranch = String(row.base_branch || "base-desenvolvimento")
       const taskBranch = taskIntegrationBranch(taskId)
       if (!(await this.workspaceManager.isBranchAncestor({ repoPath, branch: taskBranch, ancestor: baseBranch }))) continue
+      let recognized = false
       await this.db.transaction(async (tx) => {
         const result = await tx.query(recognizeManualDeploySql(), [Number(row.id)])
         // Sem uma linha failed existente, a ancestralidade Git sozinha não é
         // evidência de que este fluxo possa reconhecer um deploy manual.
         if (result.affectedRows === 0) return
+        recognized = true
         await tx.query(resolveDeployFailedBlockersSql(), [Number(row.id)])
       })
+      if (!recognized) continue
       this.logger.info("Tarefa concluída reconciliada como deployada: branch já estava na base", { taskId, taskBranch, baseBranch })
     }
   }
