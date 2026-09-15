@@ -21,12 +21,11 @@ export function workspaceSystemGuard(workspace: string, gitRoot: string): string
   ].join("\n")
 }
 
-export function workspaceSystemClosing(workspace: string, gitRoot: string): string {
+export function workspaceSystemClosing(): string {
   return [
     "VERIFICAÇÃO DE SEGURANÇA DO MOTOR:",
-    `Confirme pwd = ${workspace}.`,
-    `Confirme git rev-parse --show-toplevel = ${gitRoot}.`,
-    "Execute git status --short a partir do diretório do projeto antes da resposta final.",
+    "Antes da resposta final, execute git status --short a partir do diretório do projeto.",
+    "Responda somente com o JSON do contrato do Motor; mensagens humanas de progresso pertencem ao chat da tarefa.",
   ].join("\n")
 }
 
@@ -34,7 +33,7 @@ export function composeDevelopmentPrompt(workspace: string, gitRoot: string, tab
   const parts: PromptPart[] = [
     { source: "system", label: "Segurança do workspace", text: workspaceSystemGuard(workspace, gitRoot) },
     { source: "table", label: "Prompt publicado na tabela", text: tableText },
-    { source: "system", label: "Verificação final", text: workspaceSystemClosing(workspace, gitRoot) },
+    { source: "system", label: "Verificação final", text: workspaceSystemClosing() },
   ]
   return { parts, finalText: parts.map((part) => part.text).filter(Boolean).join("\n\n") }
 }

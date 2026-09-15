@@ -7,6 +7,15 @@ describe("política de recuperação de sessão", () => {
     expect(shouldSkipModelAfterRemoteFailure({ code: "SESSION_FAILED", message: "Session failed", sessionKey: "s", runId: "r", occurredAt: "2026-09-12T00:00:00Z", scope: "session", classification: "transient", classificationReason: "retryable", fingerprint: "f" }, 1)).toBe(true)
   })
 
+  it("escala imediatamente após timeout de inatividade do modelo", () => {
+    expect(shouldSkipModelAfterRemoteFailure({
+      code: "TIMEOUT",
+      message: "Timeout por inatividade (900000ms sem progresso) aguardando conclusao do run",
+      sessionKey: "s", runId: "r", occurredAt: "2026-09-15T00:00:00Z",
+      scope: "run", classification: "transient", classificationReason: "idle", fingerprint: "f",
+    }, 1)).toBe(true)
+  })
+
   it("usa limite configurável de entregas e fallback seguro", () => {
     expect(resolveMaxDeliveryAttempts(20)).toBe(20)
     expect(resolveMaxDeliveryAttempts(1)).toBe(1)

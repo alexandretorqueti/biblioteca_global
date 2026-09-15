@@ -16,5 +16,6 @@ describe("composição do prompt de desenvolvimento", () => {
     expect(result.finalText).toContain("PROMPT DA TABELA")
     expect(result.finalText.indexOf("PROMPT DA TABELA")).toBeGreaterThan(result.finalText.indexOf("REGRA DE SEGURANÇA"))
     expect(result.finalText).toContain("VERIFICAÇÃO DE SEGURANÇA")
+    expect(result.finalText.match(/Confirme pwd/g)).toBeNull()
   })
 })

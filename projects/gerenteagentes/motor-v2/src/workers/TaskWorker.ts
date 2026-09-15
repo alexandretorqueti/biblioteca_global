@@ -72,11 +72,31 @@ const COMMAND_FAILURE_LIMIT = 12_000
 const ANSI_ESCAPE_PATTERN = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g
 const DEFAULT_SESSION_RECOVERY_LIMIT = 1
 
-/** Contexto explícito para o DEV retomar uma pergunta respondida no chat. */
+/**
+ * Contexto explícito para o DEV retomar a ÚLTIMA decisão respondida no chat.
+ *
+ * Não há resumo por IA: preservamos pergunta/resposta literalmente, mas nunca
+ * despejamos o histórico inteiro em todo retry. A decisão anterior já está no
+ * transcript da sessão única; este trecho existe para a retomada do worker.
+ */
 export function formatDeveloperClarificationContext(history: Parameters<typeof formatHistoryForPrompt>[0]): string {
-  const formatted = formatHistoryForPrompt(history)
-  if (!formatted) return ""
-  return "CONTEXTO DE ESCLARECIMENTO DO CHAT (pergunta e resposta; cumpra a resposta do usuário):\n" + formatted.slice(-8_000)
+  let answerIndex = -1
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    if (history[index]?.role === "user") { answerIndex = index; break }
+  }
+  if (answerIndex < 0) return ""
+  let questionIndex = -1
+  for (let index = answerIndex - 1; index >= 0; index -= 1) {
+    if (history[index]?.role === "analyst") { questionIndex = index; break }
+  }
+  const answer = history[answerIndex]?.texto.trim()
+  if (!answer) return ""
+  const question = questionIndex >= 0 ? history[questionIndex]?.texto.trim() : ""
+  return [
+    "DECISÃO DO USUÁRIO — checkpoint mais recente (texto literal; não reinterpretar):",
+    ...(question ? ["Pergunta do agente:\n" + question] : []),
+    "Resposta do usuário:\n" + answer,
+  ].join("\n\n").slice(-4_000)
 }
 
 export function resolveSessionRecoveryLimit(env: NodeJS.ProcessEnv = process.env): number {
@@ -116,7 +136,11 @@ export function remoteFailureSignature(code: string, message: string): string {
 
 /** SESSION_FAILED sem resposta útil não é recuperável pela mesma sessão/modelo. */
 export function shouldSkipModelAfterRemoteFailure(failure: RemoteSessionFailure, repeats: number): boolean {
-  return failure.code === "SESSION_FAILED" || isModelUnavailableFailure(failure.code, failure.message) || repeats >= 2
+  // Timeout sem progresso é sinal do modelo/sessão atual. Repetir o mesmo
+  // modelo recria o prompt e consome uma entrega sem produzir trabalho; a
+  // sessão lógica é preservada e o Console recebe PATCH com o próximo modelo.
+  const idleTimeout = /timeout\s+por\s+inatividade|idle timeout|idle_timeout|no response from model|llm idle timeout/i.test(`${failure.code} ${failure.message}`)
+  return idleTimeout || failure.code === "SESSION_FAILED" || isModelUnavailableFailure(failure.code, failure.message) || repeats >= 2
 }
 
 /**
@@ -211,7 +235,7 @@ export function truncateDescriptionForAnalyst(description?: string): string {
  * Feedback corretivo enviado ao analista quando a resposta veio truncada ou
  * inválida: uma única nova chance no mesmo modelo antes de escalar a escada.
  */
-export function formatAnalystOutputContract(contract: { instructions: string; schema: unknown | null; example: unknown | null }): string {
+export function formatAnalystOutputContract(_contract: { instructions: string; schema: unknown | null; example: unknown | null }): string {
   // O schema e o exemplo do plano são um protocolo do Motor, não conteúdo
   // livre do prompt. A versão armazenada no banco continua fornecendo as
   // instruções editáveis, mas nunca pode degradar o contrato estrutural que
@@ -220,7 +244,9 @@ export function formatAnalystOutputContract(contract: { instructions: string; sc
   if (!canonical) throw new Error("Contrato canônico do analista não encontrado")
   return [
     "CONTRATO DE SAIDA OBRIGATORIO (use exatamente os nomes de campos abaixo):",
-    contract.instructions,
+    // Instruções editáveis antigas podem exigir campos fora do schema (incidente
+    // "estrategia"). O contrato canônico é a única autoridade estrutural.
+    canonical.instructions,
     "JSON Schema completo:\n" + JSON.stringify(canonical.schema, null, 2),
     "Exemplo completo valido:\n" + JSON.stringify(canonical.example, null, 2),
   ].filter(Boolean).join("\n\n")
@@ -715,9 +741,22 @@ class TaskWorker {
     this.send({ type: "progress", executionId: input.context.executionId, phase: "prepare", message: "Preparando workspace" })
     this.log("info", "Fase PREPARE: " + input.repoPath)
 
-    const repoPath = input.repoPath
+    const repoPath = resolve(input.repoPath)
     if (!existsSync(repoPath)) {
-      throw new Error("Repositorio nao encontrado: " + repoPath)
+      throw new Error("Ambiente bloqueado: diretório autorizado não encontrado: " + repoPath)
+    }
+
+    // O Motor valida o cwd antes de abrir a sessão. O prompt continua sendo
+    // uma confirmação para o agente, mas não é a única proteção contra path
+    // configurado incorretamente ou worktree montado no lugar errado.
+    const actualCwd = resolve(this.exec("pwd -P", repoPath).trim())
+    if (actualCwd !== repoPath) {
+      throw new Error(`Ambiente bloqueado: cwd do worktree divergente (esperado=${repoPath}; recebido=${actualCwd})`)
+    }
+    const gitTopLevel = resolve(this.exec("git rev-parse --show-toplevel", repoPath).trim())
+    const relativeProjectPath = relative(gitTopLevel, repoPath)
+    if (relativeProjectPath === ".." || relativeProjectPath.startsWith("../") || isAbsolute(relativeProjectPath)) {
+      throw new Error(`Ambiente bloqueado: diretório autorizado fora da raiz Git (cwd=${repoPath}; gitRoot=${gitTopLevel})`)
     }
 
     const workBranch = input.workBranch
@@ -725,7 +764,7 @@ class TaskWorker {
     const currentBranch = this.exec("git branch --show-current", repoPath).trim()
     if (currentBranch !== workBranch) throw new Error("Worktree não está na branch exclusiva esperada")
 
-    this.log("info", "Workspace isolado validado: branch " + workBranch)
+    this.log("info", `Workspace isolado validado: cwd=${repoPath}, gitRoot=${gitTopLevel}, branch=${workBranch}`)
     this.integrationBaseline = this.captureIntegrationBaseline(repoPath)
 
     // Materializa segredos do manifesto (task-environment.json)
@@ -914,12 +953,20 @@ class TaskWorker {
             "**WORKSPACE**": input.repoPath,
             "**ERROGATEANTERIOR**": lastFailure,
           }, fallback: embeddedHeader, taskId: input.task.id, subtaskId: subtask.id })
+          // A sessão da tarefa é estável, inclusive após troca de modelo. Só a
+          // primeira entrega recebe a decisão mais recente do chat; retries
+          // usam o transcript já existente e não repetem toda a conversa.
           let clarificationContext = ""
-          try { clarificationContext = formatDeveloperClarificationContext(await fetchTaskClarificationHistory(this.planningDb(), input.task.id)) }
-          catch (error) { this.log("warn", "Falha ao carregar esclarecimento do chat para o DEV: " + (error instanceof Error ? error.message : String(error))) }
+          if (deliverCount === 1) {
+            try { clarificationContext = formatDeveloperClarificationContext(await fetchTaskClarificationHistory(this.planningDb(), input.task.id)) }
+            catch (error) { this.log("warn", "Falha ao carregar esclarecimento do chat para o DEV: " + (error instanceof Error ? error.message : String(error))) }
+          }
+          const instructionText = deliverCount > 1
+            ? this.buildDevelopmentResumePrompt(subtask, lastFailure, [priorHandoff, carryOver].filter(Boolean).join("\n\n"))
+            : resolved.text
           const composition = this.isDevelopmentTask(input)
-            ? composeDevelopmentPrompt(input.repoPath, developmentGitRoot, resolved.text)
-            : { finalText: resolved.text, parts: [{ source: "table" as const, label: "Prompt publicado na tabela", text: resolved.text }] }
+            ? composeDevelopmentPrompt(input.repoPath, developmentGitRoot, instructionText)
+            : { finalText: instructionText, parts: [{ source: "table" as const, label: deliverCount > 1 ? "Retomada incremental" : "Prompt publicado na tabela", text: instructionText }] }
           if (resolved.contractInstructions) {
             composition.parts.push({ source: "contract", label: "Contrato de saída vinculado", text: resolved.contractInstructions })
           }
@@ -2110,6 +2157,17 @@ class TaskWorker {
       "Voce e um programador senior. Execute a subtarefa abaixo.\n\nDescrição da missão: " + description.substring(0, 12000),
     )
     return { header: fullHeader, context: null }
+  }
+
+  /** Retomada da mesma sessão: somente o delta, nunca a missão inteira outra vez. */
+  private buildDevelopmentResumePrompt(subtask: SubtaskInfo, lastFailure: string, carryOver: string): string {
+    return [
+      "RETOMADA INCREMENTAL DA SUBTAREFA — a missão e os critérios já estão no histórico desta sessão.",
+      `Subtarefa #${subtask.seq}: ${subtask.titulo}`,
+      lastFailure ? "Último resultado a tratar:\n" + digestGateFailure(lastFailure, { maxLines: 16, maxChars: 2_500 }) : "Continue do último ponto confirmado.",
+      carryOver ? "Fatos das tentativas anteriores:\n" + carryOver.slice(-3_000) : "",
+      "Não reanalise a tarefa inteira. Inspecione o estado atual do worktree, faça somente a próxima correção necessária e responda no JSON do Motor.",
+    ].filter(Boolean).join("\n\n")
   }
 
   /**

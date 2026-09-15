@@ -10,4 +10,17 @@ describe("contexto de esclarecimento para DEV", () => {
     expect(context).toContain("Qual banco?")
     expect(context).toContain("não peça credenciais")
   })
+
+  it("envia apenas o último checkpoint respondido", () => {
+    const context = formatDeveloperClarificationContext([
+      { role: "analyst", texto: "1) Primeira pergunta?", createdAt: "" },
+      { role: "user", texto: "Primeira resposta", createdAt: "" },
+      { role: "analyst", texto: "1) Segunda pergunta?", createdAt: "" },
+      { role: "user", texto: "Segunda resposta", createdAt: "" },
+    ])
+    expect(context).toContain("Segunda pergunta?")
+    expect(context).toContain("Segunda resposta")
+    expect(context).not.toContain("Primeira pergunta?")
+    expect(context).not.toContain("Primeira resposta")
+  })
 })
