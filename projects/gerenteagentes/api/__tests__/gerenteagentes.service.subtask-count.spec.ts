@@ -169,4 +169,32 @@ describe('GerenteAgentesService — subtaskCount em tarefas-com-status', () => {
     const tarefa = resultado.find((t) => t.id === 1);
     expect(tarefa?.subtaskCount).toBe(0);
   });
+
+  it('filtra pelo status calculado pelo motor, ignorando o status legado da tarefa', async () => {
+    responseBody = JSON.stringify({ status: 'running' });
+    const { service } = novoService({ MOTOR_VERSION: 'v2', MOTOR_API_PORT: '3010' });
+
+    const resultado = await service.listarTarefasComStatusCalculado(
+      { id: 640, slug: 'gerenteagentes' } as never,
+      { status: 'running' },
+    );
+
+    expect(resultado).toHaveLength(3);
+    expect(resultado.every((tarefa) => tarefa.status === 'running')).toBe(true);
+  });
+
+  it('não usa o status persistido quando o motor retorna outro status', async () => {
+    responseBody = JSON.stringify({ status: 'completed' });
+    const { service } = novoService({ MOTOR_VERSION: 'v2', MOTOR_API_PORT: '3010' });
+
+    const resultado = await service.listarTarefasComStatusCalculado(
+      { id: 640, slug: 'gerenteagentes' } as never,
+    );
+
+    expect(resultado.map((tarefa) => tarefa.status)).toEqual([
+      'completed',
+      'completed',
+      'completed',
+    ]);
+  });
 });

@@ -995,6 +995,12 @@ export class GerenteAgentesService {
       }),
     );
     
+    // O filtro deve ser aplicado sobre o status calculado pelo Motor, nunca
+    // sobre um eventual valor legado da tabela `tarefas`.
+    if (filtros?.status) {
+      return tarefasComStatus.filter((tarefa) => tarefa.status === filtros.status);
+    }
+
     return tarefasComStatus;
   }
 
