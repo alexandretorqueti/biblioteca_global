@@ -125,7 +125,7 @@ export default function OperationMapCanvas({ tarefas, selectedTaskId, projetos, 
     </Paper>
   }
 
-  return <Paper variant="outlined" data-testid="operation-map-canvas" sx={{ overflow: "hidden" }}>
+  return <Paper variant="outlined" data-testid="operation-map-canvas" sx={{ width: "100%", minHeight: "100%", overflow: "visible" }}>
     <Stack spacing={1.5} sx={{ p: { xs: 1.5, md: 2 } }}>
       <Stack direction={{ xs: "column", md: "row" }} justifyContent="space-between" alignItems={{ xs: "stretch", md: "center" }} spacing={1}>
         <Stack direction="row" spacing={1} alignItems="center"><AccountTreeRounded color="primary" /><Box><Typography variant="h6" fontWeight={800}>Mapa da operação</Typography><Typography variant="body2" color="text.secondary">Fluxo vivo de tarefas e intervenções</Typography></Box></Stack>
