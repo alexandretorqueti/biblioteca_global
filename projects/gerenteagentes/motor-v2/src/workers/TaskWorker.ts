@@ -144,6 +144,16 @@ export function shouldSkipModelAfterRemoteFailure(failure: RemoteSessionFailure,
 }
 
 /**
+ * Detecta erro de context overflow (prompt muito grande para o modelo).
+ * Quando ocorre, a sessão está contaminada com contexto acumulado e precisa
+ * ser saneada (arquivada + nova geração) antes de tentar novamente.
+ */
+export function isContextOverflowFailure(code: string, message: string): boolean {
+  const signature = `${code} ${message}`.toLowerCase()
+  return /context overflow|prompt too large|context_window_exceeded|max_tokens_exceeded|token limit/i.test(signature)
+}
+
+/**
  * A confirmação inicial de contexto não produz trabalho aproveitável. Quando
  * ela falha, promover o modelo é seguro e evita depender de o Console expor a
  * causa do provedor. Falha sistêmica do Console é a única exceção: trocar de
@@ -1015,6 +1025,33 @@ class TaskWorker {
             if (result.failure) {
               this.sessionFailure = result.failure
               const remoteReason = formatRemoteSessionFailure(result.failure)
+              // Context overflow: a sessão acumulou contexto demais e o modelo
+              // não consegue mais processar. Saneamento automático: arquivar a
+              // sessão física e criar nova geração com contexto limpo.
+              if (isContextOverflowFailure(result.failure.code, result.failure.message)) {
+                this.log("warn", `Context overflow detectado (${model.model}): ${remoteReason}. Saneando sessão automaticamente.`)
+                try {
+                  // Registrar evento de saneamento automático
+                  await this.db!.query(
+                    "INSERT INTO subtarefas_entregas (subtarefa_id, deliver_number, model, event_type, reason) VALUES (?, ?, ?, 'auto_context_sanitization', ?)",
+                    [subtask.id, deliverCount, model.model, remoteReason.substring(0, 2000)],
+                  )
+                  // Arquivar a sessão física no Console (preserva transcript)
+                  await driver.archiveSession(session)
+                  await this.markDeveloperSessionClosed(session.key, "auto_context_sanitization")
+                  this.log("info", `Sessão arquivada para auditoria: ${session.key}`)
+                } catch (archiveError) {
+                  this.log("warn", `Falha ao arquivar sessão (continuando): ${archiveError instanceof Error ? archiveError.message : String(archiveError)}`)
+                }
+                // Incrementar geração força nova sessão física na próxima tentativa
+                sessionGeneration += 1
+                lastFailure = `Context overflow — sessão saneada automaticamente: ${remoteReason}`
+                await this.db!.query(
+                  "UPDATE subtarefas SET status = 'pending', resultado = ?, finalizada_em = NULL, updated_at = NOW() WHERE id = ?",
+                  [lastFailure.substring(0, 500), subtask.id],
+                )
+                continue
+              }
               // Cota/limite do provedor do modelo (429, quota esgotada, chave
               // inválida) chega como falha da sessão do Console. Ler como
               // indisponibilidade do MODELO faz o worker escalar para o próximo
