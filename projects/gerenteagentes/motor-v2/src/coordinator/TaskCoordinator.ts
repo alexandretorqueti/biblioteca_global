@@ -49,6 +49,7 @@ import {
   orphanTaskLevelBlockerSql,
   resolveTaskLevelSystemBlockersSql,
   staleBlockerSweepSql,
+  completedDeploymentReconciliationSql,
   systemBlockedSubtaskSql,
 } from "../policies/BlockerSweepQueries.js"
 import { TaskFactsStore } from "../database/TaskFactsStore.js"
@@ -2540,16 +2541,7 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
    * apenas no status materializado da tarefa.
    */
   private async reconcileCompletedTasksAlreadyMerged(): Promise<void> {
-    const { rows } = await this.db.query(
-      "SELECT t.id, COALESCE(t.external_id, CAST(t.id AS CHAR)) AS task_id, pmc.repo_path, pmc.branch_trabalho AS base_branch " +
-      "FROM tarefas t INNER JOIN projeto_motor_config pmc ON pmc.projeto_id = t.projeto_id " +
-      "INNER JOIN task_runtime_facts f ON f.tarefa_id = t.id AND f.integration_confirmed_at IS NOT NULL " +
-      "WHERE t.tipo = 'desenvolvimento' AND f.terminal_status IS NULL " +
-      "AND NOT EXISTS (SELECT 1 FROM bloqueios b WHERE b.tarefa_id = t.id AND b.resolved_at IS NULL) " +
-      "AND NOT EXISTS (SELECT 1 FROM deploy_requests d WHERE d.tarefa_id = t.id AND d.status = 'succeeded') " +
-      "AND NOT EXISTS (SELECT 1 FROM subtarefas s WHERE s.tarefa_id = t.id AND s.status NOT IN ('verified', 'superseded')) " +
-      "AND pmc.repo_path IS NOT NULL AND pmc.repo_path <> ''",
-    )
+    const { rows } = await this.db.query(completedDeploymentReconciliationSql())
     for (const row of rows) {
       const taskId = String(row.task_id)
       const repoPath = String(row.repo_path)

@@ -6,6 +6,8 @@ import {
   staleBlockerSweepSql,
   systemBlockedSubtaskSql,
   tarefaConcluidaSql,
+  completedDeploymentReconciliationSql,
+  deployFailedBlockerSqlFilter,
 } from "../src/policies/BlockerSweepQueries.js"
 
 /**
@@ -14,6 +16,19 @@ import {
  * recortes (e o que eles deliberadamente NÃO incluem).
  */
 describe("BlockerSweepQueries", () => {
+  it("classifica deploy_failed como o único bloqueio permitido na reconciliação", () => {
+    expect(deployFailedBlockerSqlFilter("b")).toBe("COALESCE(b.block_reason, '') = 'deploy_failed'")
+    const sql = completedDeploymentReconciliationSql()
+    expect(sql).toContain("f.integration_confirmed_at IS NOT NULL")
+    expect(sql).toContain("t.tipo = 'desenvolvimento'")
+    expect(sql).toContain("f.terminal_status IS NULL")
+    expect(sql).toContain("s.status NOT IN ('verified', 'superseded')")
+    expect(sql).toContain("d.status = 'succeeded'")
+    expect(sql).toContain("COALESCE(b.block_reason, '') = 'deploy_failed'")
+    expect(sql).toContain("NOT EXISTS (SELECT 1 FROM bloqueios b")
+    expect(sql).not.toMatch(/t\.status/)
+  })
+
   it("só considera tarefa concluída quando está na base E deployada E sem subtarefa pendente", () => {
     const sql = tarefaConcluidaSql("t")
     expect(sql).toContain("f.tarefa_id = t.id AND f.integration_confirmed_at IS NOT NULL")
