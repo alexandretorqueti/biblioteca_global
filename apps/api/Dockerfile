@@ -3,6 +3,11 @@ WORKDIR /app
 # Instala git, openssh e bash (necessários para o motor-v2 executar pipelines
 # de desenvolvimento e o deploy.sh do repositório)
 RUN apk add --no-cache bash git openssh-client
+# O motor-v2 opera sobre volumes montados com donos diferentes do usuário do
+# container; sem safe.directory o git falha com "dubious ownership" e toda
+# execução de subtarefa quebra ("spawn git"). Persistido na imagem para
+# sobreviver a recriações de container.
+RUN git config --global --add safe.directory '*'
 COPY package*.json ./
 COPY apps/api/package.json apps/api/package.json
 COPY apps/web/package.json apps/web/package.json
