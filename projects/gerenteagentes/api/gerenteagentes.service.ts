@@ -44,6 +44,11 @@ import {
 import type { PromptPart } from '../motor-v2/src/prompts/PromptComposition.js' with { "resolution-mode": "import" };
 import { ProvisionService } from '../../../apps/api/src/modules/provision/provision.service';
 import { RealtimeService } from '../../../apps/api/src/modules/realtime/realtime.service';
+import {
+  isTaskPauseEligible,
+  TASK_STATUS_EXECUTING,
+  type PauseAllResult,
+} from '../motor-v2/src/shared/task-statuses';
 
 const DEFAULT_SESSION_PAGE_SIZE = 50;
 const MAX_SESSION_PAGE_SIZE = 500;
@@ -1165,7 +1170,7 @@ export class GerenteAgentesService {
    * Consulta tarefas + fatos de runtime, filtra elegíveis e chama o motor
    * para cada uma. Falhas individuais não abortam o lote (Promise.allSettled).
    */
-  async pausarTodasTarefas(): Promise<{ paused: number; skipped: number }> {
+  async pausarTodasTarefas(): Promise<PauseAllResult> {
     const db = await this.dbDoMotor();
 
     // Busca todas as tarefas
@@ -1177,70 +1182,47 @@ export class GerenteAgentesService {
       })
       .from(tarefas);
 
-    // Busca fatos de runtime para verificar status terminal
-    const facts = await db
-      .select({
-        tarefaId: taskRuntimeFacts.tarefaId,
-        terminalStatus: taskRuntimeFacts.terminalStatus,
-      })
-      .from(taskRuntimeFacts);
-
-    const factsMap = new Map(facts.map((f) => [f.tarefaId, f]));
-
-    // Filtra tarefas elegíveis: não-final e não-pausada
-    const elegiveis: Array<{ id: number; externalId: string | null }> = [];
-    let skipped = 0;
-
-    for (const tarefa of todasTarefas) {
-      const fact = factsMap.get(tarefa.id);
-      const statusTerminal = fact?.terminalStatus;
-
-      // Pula tarefas em status final
-      const { TASK_STATUS_FINAIS } = await import('../motor-v2/src/shared/task-statuses');
-      if (statusTerminal && TASK_STATUS_FINAIS.has(statusTerminal)) {
-        skipped++;
-        continue;
-      }
-
-      // Pula tarefas já pausadas
-      if (tarefa.pausedAt) {
-        skipped++;
-        continue;
-      }
-
-      elegiveis.push({ id: tarefa.id, externalId: tarefa.externalId });
-    }
-
-    // Pausa cada tarefa elegível via motor (Promise.allSettled)
     const resultados = await Promise.allSettled(
-      elegiveis.map(async (t) => {
-        const identificador = t.externalId || String(t.id);
-        await this.motorRequest(
+      todasTarefas.map(async (tarefa): Promise<'paused' | 'scheduled' | 'skipped'> => {
+        const identificador = tarefa.externalId || String(tarefa.id);
+        const statusResp = await this.motorRequest(
+          'GET',
+          `/api/motor/task/${encodeURIComponent(identificador)}`,
+          undefined,
+          this.motorV2Url,
+        );
+        if (!statusResp.ok) {
+          throw new Error(`Motor rejeitou a leitura do status (${statusResp.status})`);
+        }
+        const motorTask = JSON.parse(statusResp.body) as { status?: string };
+        const status = motorTask.status || 'planned';
+        if (!isTaskPauseEligible(status, tarefa.pausedAt)) return 'skipped';
+
+        const pauseResp = await this.motorRequest(
           'POST',
           `/api/motor/task/${encodeURIComponent(identificador)}/pause`,
           undefined,
           this.motorV2Url,
         );
-        // Atualiza pausedAt localmente
-        await db
-          .update(tarefas)
-          .set({ pausedAt: new Date() })
-          .where(eq(tarefas.id, t.id));
+        if (!pauseResp.ok) {
+          throw new Error(`Motor rejeitou a pausa (${pauseResp.status}): ${pauseResp.body.slice(0, 200)}`);
+        }
+        return TASK_STATUS_EXECUTING.has(status) ? 'scheduled' : 'paused';
       }),
     );
 
-    let paused = 0;
+    const result: PauseAllResult = { paused: 0, scheduled: 0, skipped: 0, failed: 0 };
     for (const resultado of resultados) {
       if (resultado.status === 'fulfilled') {
-        paused++;
+        result[resultado.value]++;
       } else {
+        result.failed++;
         this.logger.warn(`Falha ao pausar tarefa em lote: ${resultado.reason}`);
-        skipped++;
       }
     }
 
-    this.logger.log(`pause-all: ${paused} pausadas, ${skipped} skipadas`);
-    return { paused, skipped };
+    this.logger.log(`pause-all: ${result.paused} pausadas, ${result.scheduled} agendadas, ${result.skipped} ignoradas, ${result.failed} falhas`);
+    return result;
   }
 
   /**
