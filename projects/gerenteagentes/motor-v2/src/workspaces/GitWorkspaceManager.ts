@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process"
-import { mkdir, rm } from "node:fs/promises"
+import { access, mkdir, rm } from "node:fs/promises"
 import { isAbsolute, relative, resolve, join } from "node:path"
 import { promisify } from "node:util"
 import { createLogger } from "../shared/logger.js"
@@ -16,8 +16,19 @@ class NodeGitCommandRunner implements GitCommandRunner {
   async run(command: readonly string[], cwd: string): Promise<{ stdout: string; stderr: string }> {
     const [file, ...args] = command
     if (!file) throw new Error("comando Git vazio")
-    const result = await execFileAsync(file, args, { cwd, timeout: 120_000 })
-    return { stdout: result.stdout, stderr: result.stderr }
+    try {
+      const result = await execFileAsync(file, args, { cwd, timeout: 120_000 })
+      return { stdout: result.stdout, stderr: result.stderr }
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException | undefined)?.code
+      if (code === "ENOENT") {
+        throw new Error(
+          `Ambiente bloqueado: Git não conseguiu iniciar; cwd não encontrado ou inacessível: ${cwd}`,
+          { cause: error },
+        )
+      }
+      throw error
+    }
   }
 }
 
@@ -230,6 +241,31 @@ export class GitWorkspaceManager {
     this.runner = options.runner ?? new NodeGitCommandRunner()
   }
 
+  /**
+   * O Console pode devolver um caminho válido no container do agente, mas
+   * inexistente no container da API. Worktrees físicos precisam ser criados
+   * somente em uma raiz visível pelo Motor; caso contrário execFile retorna
+   * o enganoso `spawn git ENOENT` por causa do cwd.
+   */
+  private async resolveWorkspaceRoot(agentWorkspacePath: string | undefined, agentId: string): Promise<string> {
+    if (agentWorkspacePath && isAbsolute(agentWorkspacePath)) {
+      const candidate = resolve(agentWorkspacePath)
+      try {
+        await access(candidate)
+        return candidate
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException | undefined)?.code
+        logger.warn(
+          `Workspace do agente não está acessível no container do Motor; usando raiz do Motor (path=${candidate}, code=${code ?? "unknown"})`,
+        )
+      }
+    }
+
+    const fallback = resolve(join(this.root, agentId))
+    await mkdir(fallback, { recursive: true })
+    return fallback
+  }
+
   /** Confirma se uma branch de tarefa já foi incorporada à branch-base. */
   async isBranchAncestor(input: { repoPath: string; branch: string; ancestor: string }): Promise<boolean> {
     if (!isAbsolute(input.repoPath)) throw new Error("repoPath inválido para ancestralidade Git")
@@ -300,9 +336,7 @@ export class GitWorkspaceManager {
     const baseBranch = safeBranch(input.baseBranch)
     
     // Usa workspace do agente (do Console) se disponível; senão usa root padrão
-    const workspaceRoot = input.agentWorkspacePath && isAbsolute(input.agentWorkspacePath)
-      ? resolve(input.agentWorkspacePath)
-      : resolve(join(this.root, agentId))
+    const workspaceRoot = await this.resolveWorkspaceRoot(input.agentWorkspacePath, agentId)
     const target = resolve(join(workspaceRoot, "worktrees", task, subtask, `a${input.attempt}`))
     // Verifica contra o workspaceRoot usado (workspace do agente OU root padrão)
     if (!inside(workspaceRoot, target)) throw new Error("workspace fora da raiz segura")
@@ -412,9 +446,7 @@ export class GitWorkspaceManager {
     const task = safeSegment(input.taskId, "taskId")
     const rootBaseBranch = safeBranch(input.rootBaseBranch)
 
-    const workspaceRoot = input.agentWorkspacePath && isAbsolute(input.agentWorkspacePath)
-      ? resolve(input.agentWorkspacePath)
-      : resolve(join(this.root, agentId))
+    const workspaceRoot = await this.resolveWorkspaceRoot(input.agentWorkspacePath, agentId)
     const target = resolve(join(workspaceRoot, "worktrees", task, "integracao"))
     if (!inside(workspaceRoot, target)) throw new Error("workspace da tarefa fora da raiz segura")
 

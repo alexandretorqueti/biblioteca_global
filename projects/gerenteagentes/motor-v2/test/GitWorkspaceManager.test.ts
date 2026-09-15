@@ -64,6 +64,32 @@ describe("GitWorkspaceManager", () => {
     }
   })
 
+  it("usa a raiz do Motor quando o workspace do agente não existe no container", async () => {
+    const root = await mkdtemp(join(tmpdir(), "motor-v2-workspaces-"))
+    const runner: GitCommandRunner = {
+      run: vi.fn().mockImplementation(async (command: readonly string[]) => {
+        if (command[1] === "rev-parse" && command[2] === "--show-toplevel") return { stdout: "/repo/principal\n", stderr: "" }
+        if (command[1] === "rev-parse") return { stdout: "a".repeat(40) + "\n", stderr: "" }
+        if (command[1] === "show-ref") throw new Error("branch inexistente")
+        return { stdout: "", stderr: "" }
+      }),
+    }
+    try {
+      const result = await new GitWorkspaceManager({ root, runner }).prepare({
+        repoPath: "/repo/principal",
+        agentId: "test-agent",
+        agentWorkspacePath: "/path-only-visible-in-another-container",
+        baseBranch: "base-desenvolvimento",
+        taskId: "task-8",
+        subtaskId: "14",
+        attempt: 1,
+      })
+      expect(result.path).toBe(join(root, "test-agent", "worktrees", "task-8", "14", "a1"))
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it("reutiliza branch existente após worktree prunable, sem switch -c", async () => {
     const root = await mkdtemp(join(tmpdir(), "motor-v2-workspaces-"))
     const branch = "motor-v2/task-7/13/a1"
