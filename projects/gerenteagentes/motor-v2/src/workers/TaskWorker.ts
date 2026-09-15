@@ -2293,7 +2293,7 @@ class TaskWorker {
           eventType: String(row.event_type ?? ""),
           reason: row.reason == null ? null : String(row.reason),
         }))
-      return formatCarryOver(events, input.task.id)
+      return formatCarryOver(events, taskId)
     } catch (error) {
       this.log("warn", "Falha ao carregar histórico de entregas (carry-over ignorado): " + (error instanceof Error ? error.message : String(error)))
       return ""
