@@ -14,6 +14,11 @@
 import { promotionBlockerSqlFilter } from "./PromotionBlockers.js"
 import { SYSTEM_BLOCK_COOLDOWN_SECONDS, SYSTEM_BLOCK_REASON_SQL_LIST } from "./SystemBlockers.js"
 
+/** Bloqueio de entrega criado quando uma publicação falha. */
+export function deployFailedBlockerSqlFilter(alias = "b"): string {
+  return `COALESCE(${alias}.block_reason, '') = 'deploy_failed'`
+}
+
 /** A tarefa já está na base (integração confirmada). */
 export function tarefaIntegradaSql(alias = "t"): string {
   return `EXISTS (SELECT 1 FROM task_runtime_facts f WHERE f.tarefa_id = ${alias}.id AND f.integration_confirmed_at IS NOT NULL)`
@@ -22,6 +27,27 @@ export function tarefaIntegradaSql(alias = "t"): string {
 /** A tarefa já teve deploy concluído. */
 export function tarefaDeployadaSql(alias = "t"): string {
   return `EXISTS (SELECT 1 FROM deploy_requests d WHERE d.tarefa_id = ${alias}.id AND d.status = 'succeeded')`
+}
+
+/**
+ * Candidatas à reconciliação de deploy por integração já presente na base.
+ *
+ * Bloqueios de deploy_failed são evidência do deploy que falhou, não impedem
+ * a confirmação pela ancestralidade Git. Qualquer outra causa ativa continua
+ * impedindo a seleção.
+ */
+export function completedDeploymentReconciliationSql(): string {
+  return (
+    "SELECT t.id, COALESCE(t.external_id, CAST(t.id AS CHAR)) AS task_id, pmc.repo_path, " +
+    "pmc.branch_trabalho AS base_branch " +
+    "FROM tarefas t INNER JOIN projeto_motor_config pmc ON pmc.projeto_id = t.projeto_id " +
+    "INNER JOIN task_runtime_facts f ON f.tarefa_id = t.id AND f.integration_confirmed_at IS NOT NULL " +
+    "WHERE t.tipo = 'desenvolvimento' AND f.terminal_status IS NULL " +
+    `AND NOT EXISTS (SELECT 1 FROM bloqueios b WHERE b.tarefa_id = t.id AND b.resolved_at IS NULL AND NOT ${deployFailedBlockerSqlFilter("b")}) ` +
+    `AND NOT EXISTS (SELECT 1 FROM deploy_requests d WHERE d.tarefa_id = t.id AND d.status = 'succeeded') ` +
+    "AND NOT EXISTS (SELECT 1 FROM subtarefas s WHERE s.tarefa_id = t.id AND s.status NOT IN ('verified', 'superseded')) " +
+    "AND pmc.repo_path IS NOT NULL AND pmc.repo_path <> ''"
+  )
 }
 
 /**
