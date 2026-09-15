@@ -10,6 +10,11 @@ import type {
   ModelSelectionEntry,
 } from '@biblioteca-global/shared';
 import { ProjectModelSelectionSchema } from '@biblioteca-global/shared';
+import {
+  parseGlobalModelSelection,
+  type GlobalModelSelection,
+  type GlobalModelSelectionPropagationResponse,
+} from '../motor-v2/src/shared/global-model-selection.js';
 import { PROJECT_DB_FACTORY, type ProjectDbFactory } from '../../../apps/api/src/modules/crud/project-db.factory';
 import { SCHEMA_REGISTRY, type SchemaRegistry } from '../../../apps/api/src/modules/crud/schema-registry';
 import {
@@ -1933,6 +1938,41 @@ export class GerenteAgentesService {
     }
     const data = JSON.parse(resp.body) as { projectKey?: string; tipo?: string; entries?: ModelSelectionEntry[] };
     return { projectKey: data.projectKey ?? parsed.projectKey, tipo, entries: data.entries ?? parsed.entries };
+  }
+
+  async getGlobalModelSelection(): Promise<{ ok: boolean; configuracaoGlobal: GlobalModelSelection }> {
+    const resp = await this.motorRequest('GET', '/api/model-selection/global', undefined, this.motorVersao === 'v2' ? this.motorV2Url : undefined)
+      .catch((e: unknown) => { throw new BadRequestException(`Motor indisponível ao ler configuração global: ${e instanceof Error ? e.message : String(e)}`); });
+    if (!resp.ok) throw new BadRequestException(`Motor retornou ${resp.status} ao ler configuração global: ${resp.body.slice(0, 300)}`);
+    try {
+      const data = JSON.parse(resp.body) as { ok?: boolean; configuracaoGlobal?: unknown };
+      if (!data.configuracaoGlobal || typeof data.configuracaoGlobal !== 'object') throw new Error('resposta sem configuracaoGlobal');
+      return { ok: data.ok ?? true, configuracaoGlobal: data.configuracaoGlobal as GlobalModelSelection };
+    } catch (e: unknown) {
+      throw new BadRequestException(`Resposta inválida do Motor para configuração global: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  async saveGlobalModelSelection(input: unknown): Promise<GlobalModelSelectionPropagationResponse & { mensagem?: string }> {
+    let configuracaoGlobal: GlobalModelSelection;
+    try { configuracaoGlobal = parseGlobalModelSelection(input); }
+    catch (e: unknown) { throw new BadRequestException(`Configuração global inválida: ${e instanceof Error ? e.message : String(e)}`); }
+    const resp = await this.motorRequest('PUT', '/api/model-selection/global', configuracaoGlobal, this.motorVersao === 'v2' ? this.motorV2Url : undefined)
+      .catch((e: unknown) => { throw new BadRequestException(`Motor indisponível ao aplicar configuração global: ${e instanceof Error ? e.message : String(e)}`); });
+    if (!resp.ok) throw new BadRequestException(`Motor retornou ${resp.status} ao aplicar configuração global: ${resp.body.slice(0, 300)}`);
+    try {
+      const data = JSON.parse(resp.body) as Partial<GlobalModelSelectionPropagationResponse> & { error?: string };
+      if (!data.configuracaoGlobal || !data.resultadoPropagacao || !Array.isArray(data.errosPorProjeto)) throw new Error(data.error || 'resposta sem resultado de propagação');
+      const resultado = {
+        configuracaoGlobal: data.configuracaoGlobal as GlobalModelSelection,
+        resultadoPropagacao: data.resultadoPropagacao,
+        projetosAplicados: data.projetosAplicados ?? [],
+        errosPorProjeto: data.errosPorProjeto,
+      };
+      return resultado.errosPorProjeto.length > 0 ? { ...resultado, mensagem: `Configuração global salva, mas falhou em ${resultado.errosPorProjeto.length} projeto(s).` } : resultado;
+    } catch (e: unknown) {
+      throw new BadRequestException(`Resposta inválida do Motor para propagação global: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   // ============================================================================
