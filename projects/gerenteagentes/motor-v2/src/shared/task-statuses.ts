@@ -119,6 +119,48 @@ export const TASK_STATUS_FINAIS = new Set<string>([
   "aborted",
 ])
 
+/**
+ * Status derivados que não podem receber uma solicitação de pausa.
+ *
+ * Este conjunto é deliberadamente menor que TASK_STATUS_FINAIS: falha,
+ * cancelamento e abortamento ainda podem precisar ser pausados/inspecionados
+ * pelo fluxo operacional. Os valores legados permanecem aqui para que a
+ * política também seja segura para registros anteriores à migração de status.
+ */
+export const TASK_STATUS_NAO_PAUSAVEL = new Set<string>([
+  "completed",
+  "deployed",
+  "finalizada",
+  "deployada",
+])
+
+/** Status que já representam uma pausa materializada. */
+export const TASK_STATUS_PAUSADO = new Set<string>(["paused"])
+
+/**
+ * Política canônica compartilhada pela pausa individual e em lote.
+ * `pausedAt` é aceito porque a pausa é uma condição persistida e deve ser
+ * idempotente mesmo quando o status derivado ainda não foi atualizado.
+ */
+export function isTaskPauseEligible(
+  status: string,
+  pausedAt?: string | Date | null,
+): boolean {
+  return !pausedAt && !TASK_STATUS_NAO_PAUSAVEL.has(status) && !TASK_STATUS_PAUSADO.has(status)
+}
+
+/** Resultado normalizado da operação de pausa em lote. */
+export interface PauseAllResult {
+  /** Tarefas cuja pausa foi materializada imediatamente. */
+  paused: number
+  /** Tarefas com worker ativo, cuja pausa ficou pendente. */
+  scheduled: number
+  /** Tarefas não elegíveis ou já pausadas. */
+  skipped: number
+  /** Solicitações rejeitadas ou que falharam individualmente. */
+  failed: number
+}
+
 /** Status que permitem ação "start" (iniciar/retomar). */
 export const TASK_STATUS_STARTABLE = new Set<string>([
   "draft",
