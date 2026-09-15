@@ -119,6 +119,33 @@ export const TASK_STATUS_FINAIS = new Set<string>([
   "aborted",
 ])
 
+/** Status derivados que não podem receber uma solicitação de pausa. */
+export const TASK_STATUS_NAO_PAUSAVEL = new Set<string>([
+  "completed",
+  "deployed",
+  "finalizada",
+  "deployada",
+])
+
+/** Status que já representam uma pausa materializada. */
+export const TASK_STATUS_PAUSADO = new Set<string>(["paused"])
+
+/** Política compartilhada de elegibilidade para pausa individual e em lote. */
+export function isTaskPauseEligible(
+  status: string,
+  pausedAt?: string | Date | null,
+): boolean {
+  return !pausedAt && !TASK_STATUS_NAO_PAUSAVEL.has(status) && !TASK_STATUS_PAUSADO.has(status)
+}
+
+/** Contrato normalizado do resultado de pause-all. */
+export interface PauseAllResult {
+  paused: number
+  scheduled: number
+  skipped: number
+  failed: number
+}
+
 /** Status que permitem ação "start" (iniciar/retomar). */
 export const TASK_STATUS_STARTABLE = new Set<string>([
   "draft",
