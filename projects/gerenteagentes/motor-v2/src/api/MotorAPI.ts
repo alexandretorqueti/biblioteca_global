@@ -101,6 +101,8 @@ export class MotorAPI {
         this.handlePauseTask(res, taskId)
       } else if (req.method === 'POST' && taskId && taskAction === 'resume') {
         this.handleResumeTask(res, taskId)
+      } else if (req.method === 'POST' && taskId && taskAction === 'sanitize-session') {
+        this.handleSanitizeTaskSession(res, taskId)
       } else if (req.method === 'POST' && taskId && taskAction === 'cancel') {
         this.handleCancelTask(res, taskId)
       } else if (req.method === 'DELETE' && taskId && !taskAction) {
@@ -207,6 +209,15 @@ export class MotorAPI {
       this.json(res, 200, { ok: true })
     } catch (error) {
       this.json(res, 400, { ok: false, error: error instanceof Error ? error.message : 'Resume failed' })
+    }
+  }
+
+  private async handleSanitizeTaskSession(res: ServerResponse, taskId: string): Promise<void> {
+    try {
+      const result = await this.coordinator.sanitizeTaskSession(taskId)
+      this.json(res, 200, { ok: true, ...result })
+    } catch (error) {
+      this.json(res, 400, { ok: false, error: error instanceof Error ? error.message : 'Session sanitization failed' })
     }
   }
 

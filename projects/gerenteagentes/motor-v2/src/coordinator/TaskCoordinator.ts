@@ -1887,6 +1887,43 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     await this.db.query("INSERT INTO tarefa_eventos (tarefa_id, tarefa_external_id, evento, ator, origem, payload, created_at) SELECT id, external_id, 'agent_switched', ?, 'motor', ?, NOW() FROM tarefas WHERE " + lookup.sql + " LIMIT 1", [actor, JSON.stringify({ previousAgentId: context.agent_id ?? null, agentId, reason }), ...lookup.params])
   }
 
+  /**
+   * Arquiva a sessão física de desenvolvimento, mantendo transcript e dados
+   * operacionais. Não desbloqueia a tarefa: essa decisão continua explícita
+   * na tela, depois que o responsável avaliou o bloqueio.
+   */
+  async sanitizeTaskSession(taskId: string): Promise<{ sessionsArchived: number; nextGeneration: number }> {
+    if ([...this.activeWorkers.values()].some((worker) => worker.taskId === taskId)) {
+      throw new Error("Não é possível sanear uma sessão em execução. Pause ou aguarde a execução terminar.")
+    }
+    const lookup = taskIdentifierLookup(taskId, "t")
+    const { rows } = await this.db.query(
+      "SELECT DISTINCT ms.session_key, ms.agent_id FROM motor_agent_sessions ms " +
+      "JOIN subtarefas st ON st.id=ms.subtarefa_id JOIN tarefas t ON t.id=st.tarefa_id " +
+      "WHERE " + lookup.sql + " AND ms.status <> 'closed' AND ms.session_key LIKE 'dev-motor:tarefa:%'",
+      lookup.params,
+    )
+    const sessions = rows as Array<{ session_key?: string; agent_id?: string | null }>
+    if (sessions.length === 0) throw new Error("A tarefa não possui sessão de desenvolvimento ativa para sanear.")
+    const baseUrl = process.env.OPENCLAW_CONSOLE_URL
+    const token = process.env.OPENCLAW_CONSOLE_TOKEN
+    if (!baseUrl || !token) throw new Error("Console não configurado para arquivar a sessão")
+    const driver = new ConsoleAgentRuntimeDriver({ baseUrl, token })
+    for (const session of sessions) {
+      const key = String(session.session_key ?? "")
+      if (!key) continue
+      await driver.archiveSession({ key, agentId: String(session.agent_id ?? "") })
+    }
+    await this.db.query(
+      "UPDATE motor_agent_sessions ms JOIN subtarefas st ON st.id=ms.subtarefa_id JOIN tarefas t ON t.id=st.tarefa_id " +
+      "SET ms.status='closed', ms.closed_at=NOW(), ms.close_reason='manual_context_sanitization', ms.last_activity_at=NOW() " +
+      "WHERE " + lookup.sql + " AND ms.status <> 'closed' AND ms.session_key LIKE 'dev-motor:tarefa:%'",
+      lookup.params,
+    )
+    this.logger.info("Sessão de desenvolvimento saneada por ação manual", { taskId, sessionsArchived: sessions.length })
+    return { sessionsArchived: sessions.length, nextGeneration: 2 }
+  }
+
   /** Recupera claims interrompidos e checkpoints que sobreviveram ao restart. */
   private async reconcileTaskChat(): Promise<void> {
     try {

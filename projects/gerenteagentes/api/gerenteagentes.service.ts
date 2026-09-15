@@ -1344,6 +1344,19 @@ export class GerenteAgentesService {
     };
   }
 
+  /** Arquiva a sessão física sem apagar auditoria; não desbloqueia a tarefa. */
+  async sanearSessaoTarefa(projeto: ProjetoResumo, tarefaId: number, ator = 'usuario') {
+    const db = await this.dbDoMotor();
+    const [tarefa] = await db.select().from(tarefas).where(eq(tarefas.id, tarefaId)).limit(1);
+    if (!tarefa) throw new NotFoundException('Tarefa não encontrada');
+    const motorId = tarefa.externalId || String(tarefa.id);
+    const resp = await this.motorRequest('POST', `/api/motor/task/${encodeURIComponent(motorId)}/sanitize-session`, undefined, this.motorV2Url);
+    if (!resp.ok) throw new BadRequestException(`Motor não conseguiu sanear a sessão (${resp.status}): ${resp.body.slice(0, 200)}`);
+    const result = JSON.parse(resp.body) as { sessionsArchived?: number; nextGeneration?: number };
+    await this.registrarEvento(db, tarefa, 'session_sanitized', ator, 'usuario', result);
+    return { id: tarefaId, ...result, message: 'Sessão arquivada. Desbloqueie a tarefa para retomá-la com um contexto novo.' };
+  }
+
   async fazerDeployTarefa(projeto: ProjetoResumo, tarefaId: number, ator = 'usuario') {
     const db = await this.dbDoMotor();
     const [tarefa] = await db.select().from(tarefas).where(eq(tarefas.id, tarefaId)).limit(1);

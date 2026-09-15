@@ -1469,7 +1469,9 @@ class TaskWorker {
       if (!latest) return 1
       const match = String(latest.session_key).match(/:g(\\d+)$/)
       const generation = match ? Number(match[1]) : 1
-      return latest.close_reason === "invalid_environment_claim" ? generation + 1 : generation
+      return ["invalid_environment_claim", "manual_context_sanitization"].includes(String(latest.close_reason ?? ""))
+        ? generation + 1
+        : generation
     } catch (error) {
       this.log("warn", "Falha ao resolver geração da sessão; usando sessão base: " + (error instanceof Error ? error.message : String(error)))
       return 1

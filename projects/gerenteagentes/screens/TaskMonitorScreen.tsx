@@ -558,6 +558,23 @@ export default function TaskMonitorScreen(): ReactNode {
     }
   }, [bundle, tarefaId, carregarDetail, carregarSubtarefasDb, carregarTarefas])
 
+  const sanearSessaoTarefa = useCallback(async () => {
+    if (!bundle || tarefaId === "") return
+    if (!window.confirm("Arquivar a sessão atual do agente e preparar uma continuação com contexto limpo? O histórico será preservado. Depois, desbloqueie a tarefa para retomá-la.")) return
+    setAcao("sanitize-session")
+    setErro(null)
+    try {
+      await bundle.http.request("POST", `/gerenteagentes/tarefas/${tarefaId}/sanitize-session`, { auth: "access" })
+      await carregarDetail(tarefaId)
+      await carregarSubtarefasDb(tarefaId)
+      await carregarTarefas()
+    } catch (e) {
+      setErro(e instanceof Error ? e.message : "Erro ao sanear a sessão da tarefa")
+    } finally {
+      setAcao(null)
+    }
+  }, [bundle, tarefaId, carregarDetail, carregarSubtarefasDb, carregarTarefas])
+
   useEffect(() => {
     mounted.current = true
     void carregarProjetos()
@@ -1606,6 +1623,17 @@ export default function TaskMonitorScreen(): ReactNode {
                   data-testid="btn-unlock-task"
                 >
                   <LockOpenRounded fontSize="small" />
+                </IconButton>
+              </Tooltip>
+              <Tooltip title="Arquivar a sessão do agente e preparar uma continuação com contexto limpo">
+                <IconButton
+                  size="small"
+                  aria-label="Sanear sessão da tarefa"
+                  onClick={() => void sanearSessaoTarefa()}
+                  disabled={acao !== null || STATUS_EXECUCAO.has(tarefaSelecionada.status)}
+                  data-testid="btn-sanitize-task-session"
+                >
+                  <ReplayRounded fontSize="small" />
                 </IconButton>
               </Tooltip>
               <Tooltip title="Visualizar sessões do analista">

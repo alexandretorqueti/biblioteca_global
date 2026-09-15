@@ -169,6 +169,16 @@ export class GerenteAgentesController {
     return this.service.desbloquearTarefa(projeto, id);
   }
 
+  @Post('tarefas/:id/sanitize-session')
+  @Roles('admin', 'gerente', 'operador')
+  sanearSessaoTarefa(
+    @CurrentProject() projeto: ProjetoResumo,
+    @CurrentUser() usuario: UsuarioAutenticado,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    return this.service.sanearSessaoTarefa(projeto, id, usuario.email || usuario.username || String(usuario.id));
+  }
+
   @Post('tarefas/:id/deploy')
   @Roles('admin', 'gerente', 'operador')
   fazerDeployTarefa(@CurrentProject() projeto: ProjetoResumo, @CurrentUser() usuario: UsuarioAutenticado, @Param('id', ParseIntPipe) id: number) {
