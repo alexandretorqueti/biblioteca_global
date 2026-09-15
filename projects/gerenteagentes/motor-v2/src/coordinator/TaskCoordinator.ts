@@ -50,6 +50,8 @@ import {
   resolveTaskLevelSystemBlockersSql,
   staleBlockerSweepSql,
   completedDeploymentReconciliationSql,
+  recognizeManualDeploySql,
+  resolveDeployFailedBlockersSql,
   systemBlockedSubtaskSql,
 } from "../policies/BlockerSweepQueries.js"
 import { TaskFactsStore } from "../database/TaskFactsStore.js"
@@ -2548,12 +2550,13 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
       const baseBranch = String(row.base_branch || "base-desenvolvimento")
       const taskBranch = taskIntegrationBranch(taskId)
       if (!(await this.workspaceManager.isBranchAncestor({ repoPath, branch: taskBranch, ancestor: baseBranch }))) continue
-      await this.db.query(
-        "INSERT INTO deploy_requests (tarefa_id, repo_path, status, batch_id, last_error, requested_at, started_at, finished_at, updated_at) " +
-        "VALUES (?, ?, 'succeeded', ?, ?, NOW(), NOW(), NOW(), NOW()) " +
-        "ON DUPLICATE KEY UPDATE status = 'succeeded', batch_id = VALUES(batch_id), last_error = VALUES(last_error), started_at = VALUES(started_at), finished_at = VALUES(finished_at), updated_at = NOW()",
-        [Number(row.id), repoPath, `reconciled-${Date.now()}-${Number(row.id)}`, "reconciliado: branch já estava mergeada na base"],
-      )
+      await this.db.transaction(async (tx) => {
+        const result = await tx.query(recognizeManualDeploySql(), [Number(row.id)])
+        // Sem uma linha failed existente, a ancestralidade Git sozinha não é
+        // evidência de que este fluxo possa reconhecer um deploy manual.
+        if (result.affectedRows === 0) return
+        await tx.query(resolveDeployFailedBlockersSql(), [Number(row.id)])
+      })
       this.logger.info("Tarefa concluída reconciliada como deployada: branch já estava na base", { taskId, taskBranch, baseBranch })
     }
   }

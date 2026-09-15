@@ -8,6 +8,8 @@ import {
   tarefaConcluidaSql,
   completedDeploymentReconciliationSql,
   deployFailedBlockerSqlFilter,
+  recognizeManualDeploySql,
+  resolveDeployFailedBlockersSql,
 } from "../src/policies/BlockerSweepQueries.js"
 
 /**
@@ -27,6 +29,18 @@ describe("BlockerSweepQueries", () => {
     expect(sql).toContain("COALESCE(b.block_reason, '') = 'deploy_failed'")
     expect(sql).toContain("NOT EXISTS (SELECT 1 FROM bloqueios b")
     expect(sql).not.toMatch(/t\.status/)
+  })
+
+  it("reconhece somente deploy_failed persistido e preserva os demais campos", () => {
+    expect(recognizeManualDeploySql()).toBe(
+      "UPDATE deploy_requests SET status = 'succeeded', updated_at = NOW() WHERE tarefa_id = ? AND status = 'failed'",
+    )
+    expect(recognizeManualDeploySql()).not.toContain("INSERT")
+    expect(recognizeManualDeploySql()).not.toContain("last_error")
+    expect(recognizeManualDeploySql()).not.toContain("batch_id")
+    expect(resolveDeployFailedBlockersSql()).toContain("resolved_at IS NULL")
+    expect(resolveDeployFailedBlockersSql()).toContain("COALESCE(bloqueios.block_reason, '') = 'deploy_failed'")
+    expect(resolveDeployFailedBlockersSql()).not.toContain("block_reason <>")
   })
 
   it("só considera tarefa concluída quando está na base E deployada E sem subtarefa pendente", () => {
