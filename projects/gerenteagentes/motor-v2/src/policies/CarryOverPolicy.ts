@@ -117,8 +117,15 @@ const MAX_CARRY_OVER_CHARS = 8000
  * Inclui apenas eventos com sinal (rejeições, bloqueios, rework) — o agente
  * precisa saber o que já foi tentado e por que falhou, sem repetir.
  */
-export function formatCarryOver(events: readonly CarryOverEvent[]): string {
-  const relevant = events.filter((event) => RELEVANT_EVENTS.has(event.eventType) && event.reason)
+export function formatCarryOver(events: readonly CarryOverEvent[], taskId?: string): string {
+  // Filtra eventos cujo reason menciona paths de outras tarefas (contaminação cruzada).
+  // Isso previne que carry-over de uma tarefa apareça no prompt de outra.
+  const crossTaskPattern = taskId ? new RegExp(`task-p\\d+-(?!${taskId.replace('task-p', '').replace(/-\d+$/, '')})\\d+`) : null
+  const relevant = events.filter((event) => {
+    if (!RELEVANT_EVENTS.has(event.eventType) || !event.reason) return false
+    if (crossTaskPattern && event.reason && crossTaskPattern.test(event.reason)) return false
+    return true
+  })
   if (relevant.length === 0) return ""
   const selected = relevant.slice(-MAX_CARRY_OVER_EVENTS)
   const lines = selected.map((event) => {

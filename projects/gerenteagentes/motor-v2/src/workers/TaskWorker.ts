@@ -880,7 +880,7 @@ class TaskWorker {
     // Se a subtarefa já teve entregas persistidas (rework pós-rejeição,
     // retomada), o histórico estruturado vai no prompt do programador para
     // que ele não repita abordagens que já falharam.
-    const carryOver = await this.buildCarryOver(subtask)
+    const carryOver = await this.buildCarryOver(subtask, input.task.id)
     const priorHandoff = this.isDevelopmentTask(input)
       ? await this.buildPriorSubtaskHandoff(subtask, developmentGitRoot)
       : ""
@@ -995,6 +995,7 @@ class TaskWorker {
           freshSessionBootstrap = false
           const result = await driver.waitForRunCompletion(session, runId, {
             onActivity: () => this.sendHeartbeat(),
+            idleTimeoutMs: getConfigNumber('motor.analysis_idle_timeout_ms'),
           })
           const workspaceErrorAfterRun = this.isDevelopmentTask(input)
             ? this.validateAndRepairAgentWorkspace(input)
@@ -2274,7 +2275,7 @@ class TaskWorker {
    * de aprendizado). Fail-open: sem histórico ou com erro de consulta, o
    * prompt segue sem a seção.
    */
-  private async buildCarryOver(subtask: SubtaskInfo): Promise<string> {
+  private async buildCarryOver(subtask: SubtaskInfo, taskId?: string): Promise<string> {
     if (!this.db || subtask.deliverCount <= 0) return ""
     try {
       const [rows] = await this.db.query(
@@ -2292,7 +2293,7 @@ class TaskWorker {
           eventType: String(row.event_type ?? ""),
           reason: row.reason == null ? null : String(row.reason),
         }))
-      return formatCarryOver(events)
+      return formatCarryOver(events, input.task.id)
     } catch (error) {
       this.log("warn", "Falha ao carregar histórico de entregas (carry-over ignorado): " + (error instanceof Error ? error.message : String(error)))
       return ""
