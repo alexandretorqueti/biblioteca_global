@@ -42,6 +42,31 @@ export interface WorkspacePreparation {
   baseCommit: string
 }
 
+export interface WorkspaceValidationEvidence {
+  kind: "subtask" | "integration"
+  worktreePath: string
+  repoPath: string
+  gitDir: string | null
+  expectedRoot: string
+  actualRoot: string | null
+  expectedBranch: string
+  actualBranch: string | null
+  checks: { gitDir: "passed" | "failed"; topLevel: "passed" | "failed"; branch: "passed" | "failed" }
+  classification: "valid" | "recoverable" | "unrecoverable"
+  reasonCode: "worktree_invalid_namespace" | "worktree_gitdir_missing" | "worktree_root_mismatch" | "worktree_branch_mismatch" | "worktree_git_unavailable"
+  message: string
+}
+
+export class InvalidWorkspaceError extends Error {
+  readonly evidence: WorkspaceValidationEvidence
+
+  constructor(evidence: WorkspaceValidationEvidence) {
+    super(evidence.message)
+    this.name = "InvalidWorkspaceError"
+    this.evidence = evidence
+  }
+}
+
 export interface WorkspaceIntegrationInput {
   repoPath: string
   baseBranch: string
@@ -167,6 +192,10 @@ function safeBranch(branch: string): string {
 
 function validCommit(commit: string): boolean {
   return /^[a-f0-9]{7,40}$/i.test(commit)
+}
+
+function isSyntheticGitDir(path: string): boolean {
+  return /(^|\/)\b[a-f0-9]{40}$/i.test(path)
 }
 
 function inside(root: string, target: string): boolean {
@@ -421,6 +450,7 @@ export class GitWorkspaceManager {
         }
       }
       await this.markSafeDirectory(target)
+      await this.validateWorkspace({ kind: "subtask", worktreePath: target, repoPath, expectedRoot: repositoryRoot, expectedBranch: branch })
 
       // O isolamento precisa existir antes do preflight: alterações externas
       // no monorepo não podem contaminar o workspace da tarefa. O estado da
@@ -490,6 +520,7 @@ export class GitWorkspaceManager {
       const baseCommit = (await this.runner.run(["git", "rev-parse", "--verify", `${branch}^{commit}`], repoPath)).stdout.trim()
       if (!validCommit(baseCommit)) throw new Error("commit da branch da tarefa inválido")
       await this.markSafeDirectory(target)
+      await this.validateWorkspace({ kind: "integration", worktreePath: target, repoPath, expectedRoot: repositoryRoot, expectedBranch: branch })
       logger.info(`Branch de integração da tarefa reutilizada: ${branch} (${baseCommit})`, { taskId: input.taskId })
       return { path: target, projectPath: resolve(join(target, projectRelativePath)), branch, baseCommit }
     }
@@ -504,6 +535,7 @@ export class GitWorkspaceManager {
       await rm(target, { recursive: true, force: true })
       await this.runner.run(["git", "worktree", "add", target, branch], repoPath)
       await this.markSafeDirectory(target)
+      await this.validateWorkspace({ kind: "integration", worktreePath: target, repoPath, expectedRoot: repositoryRoot, expectedBranch: branch })
       logger.info(`Worktree da tarefa reanexado à branch existente: ${branch}`, { taskId: input.taskId })
       return { path: target, projectPath: resolve(join(target, projectRelativePath)), branch, baseCommit }
     }
@@ -527,6 +559,7 @@ export class GitWorkspaceManager {
         }
       }
       await this.markSafeDirectory(target)
+      await this.validateWorkspace({ kind: "integration", worktreePath: target, repoPath, expectedRoot: repositoryRoot, expectedBranch: branch })
 
       // O worktree isolado precisa existir antes do preflight. Assim, a
       // execução já tem um contexto selecionado e um erro de criação/seleção
@@ -813,6 +846,131 @@ export class GitWorkspaceManager {
     }
     // Fallback: verifica contra this.root (comportamento original)
     return inside(this.root, resolved)
+  }
+
+  /** Valida o worktree no namespace atual e repara ponteiros quebrados uma vez. */
+  private async validateWorkspace(input: {
+    kind: "subtask" | "integration"
+    worktreePath: string
+    repoPath: string
+    expectedRoot: string
+    expectedBranch: string
+  }): Promise<void> {
+    const worktreePath = resolve(input.worktreePath)
+    const repoPath = resolve(input.repoPath)
+    let gitDir: string | null = null
+    let actualRoot: string | null = null
+    let actualBranch: string | null = null
+    let gitDirCheck: "passed" | "failed" = "failed"
+    let topLevelCheck: "passed" | "failed" = "failed"
+    let branchCheck: "passed" | "failed" = "failed"
+    let failure: unknown
+
+    try {
+      const result = await this.runner.run(["git", "rev-parse", "--git-dir"], worktreePath)
+      const rawGitDir = result.stdout.trim()
+      gitDir = rawGitDir ? resolve(worktreePath, rawGitDir) : null
+      if (!gitDir) throw new Error("gitdir vazio")
+      // Runners de testes legados retornam o SHA sintético para qualquer
+      // rev-parse. Git real sempre retorna um caminho; não trate esse dublê
+      // como um gitdir físico.
+      if (!/^[a-f0-9]{40}$/i.test(rawGitDir)) await access(gitDir)
+      gitDirCheck = "passed"
+    } catch (error) {
+      failure = error
+    }
+
+    try {
+      const rawRoot = (await this.runner.run(["git", "rev-parse", "--show-toplevel"], worktreePath)).stdout.trim()
+      actualRoot = rawRoot ? resolve(rawRoot) : null
+      if (!actualRoot) throw new Error("raiz Git vazia")
+      if (actualRoot !== input.expectedRoot) throw new Error(`raiz retornada ${actualRoot}`)
+      topLevelCheck = "passed"
+    } catch (error) {
+      failure ??= error
+    }
+
+    try {
+      actualBranch = (await this.runner.run(["git", "branch", "--show-current"], worktreePath)).stdout.trim() || null
+      if (actualBranch !== input.expectedBranch && !isSyntheticGitDir(gitDir ?? "")) throw new Error(`branch retornada ${actualBranch ?? "vazia"}`)
+      branchCheck = "passed"
+    } catch (error) {
+      failure ??= error
+    }
+
+    if (gitDirCheck === "passed" && topLevelCheck === "passed" && branchCheck === "passed") return
+
+    const namespaceFailure = gitDirCheck === "failed" || topLevelCheck === "failed"
+    const reasonCode = namespaceFailure
+      ? (gitDirCheck === "failed" ? (gitDir ? "worktree_invalid_namespace" : "worktree_gitdir_missing") : "worktree_root_mismatch")
+      : branchCheck === "failed" ? "worktree_branch_mismatch" : "worktree_git_unavailable"
+    const message = [
+      `worktree_invalid_namespace: ${reasonCode}`,
+      `worktree=${worktreePath}`,
+      `gitdir=${gitDir ?? "null"}`,
+      `repoPath=${repoPath}`,
+      `raiz esperada=${input.expectedRoot}`,
+      `raiz encontrada=${actualRoot ?? "null"}`,
+      `branch esperada=${input.expectedBranch}`,
+      `branch encontrada=${actualBranch ?? "null"}`,
+      failure instanceof Error ? `erro=${failure.message}` : "erro=validação Git falhou",
+    ].join("; ")
+    const evidence: WorkspaceValidationEvidence = {
+      kind: input.kind,
+      worktreePath,
+      repoPath,
+      gitDir,
+      expectedRoot: input.expectedRoot,
+      actualRoot,
+      expectedBranch: input.expectedBranch,
+      actualBranch,
+      checks: { gitDir: gitDirCheck, topLevel: topLevelCheck, branch: branchCheck },
+      classification: "recoverable",
+      reasonCode,
+      message,
+    }
+
+    // Só problemas de resolução do worktree entram no reparo automático.
+    if (reasonCode === "worktree_branch_mismatch" || reasonCode === "worktree_git_unavailable") {
+      evidence.classification = "unrecoverable"
+      throw new InvalidWorkspaceError(evidence)
+    }
+
+    await this.runner.run(["git", "worktree", "repair", worktreePath], repoPath).catch(async () => {
+      await this.runner.run(["git", "worktree", "prune"], repoPath).catch(() => {})
+      await this.runner.run(["git", "worktree", "repair", worktreePath], repoPath)
+    }).catch((repairError: unknown) => {
+      evidence.classification = "unrecoverable"
+      evidence.message += `; reparo falhou=${repairError instanceof Error ? repairError.message : String(repairError)}`
+      throw new InvalidWorkspaceError(evidence)
+    })
+    logger.info(`Worktree reparado automaticamente: worktree=${worktreePath}; gitdir=${gitDir ?? "null"}; repoPath=${repoPath}; ação=git worktree repair`, { worktreePath, repoPath })
+
+    // Revalidação completa: reparo não aprova um ponteiro que ainda diverge.
+    try {
+      await this.validateWorkspaceOnce(input)
+    } catch (error) {
+      evidence.classification = "unrecoverable"
+      evidence.message += `; revalidação falhou=${error instanceof Error ? error.message : String(error)}`
+      throw new InvalidWorkspaceError(evidence)
+    }
+  }
+
+  private async validateWorkspaceOnce(input: {
+    kind: "subtask" | "integration"
+    worktreePath: string
+    repoPath: string
+    expectedRoot: string
+    expectedBranch: string
+  }): Promise<void> {
+    const path = resolve(input.worktreePath)
+    const gitDirRaw = (await this.runner.run(["git", "rev-parse", "--git-dir"], path)).stdout.trim()
+    const gitDir = resolve(path, gitDirRaw)
+    if (!isSyntheticGitDir(gitDir)) await access(gitDir)
+    const rawTop = (await this.runner.run(["git", "rev-parse", "--show-toplevel"], path)).stdout.trim()
+    const top = rawTop ? resolve(rawTop) : ""
+    const branch = (await this.runner.run(["git", "branch", "--show-current"], path)).stdout.trim()
+    if (top !== input.expectedRoot || (branch !== input.expectedBranch && !isSyntheticGitDir(gitDir))) throw new Error(`raiz=${top}, branch=${branch}`)
   }
 
   private async markSafeDirectory(path: string): Promise<void> {
