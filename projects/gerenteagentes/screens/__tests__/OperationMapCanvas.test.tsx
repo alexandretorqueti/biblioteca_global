@@ -5,8 +5,8 @@ import "@testing-library/jest-dom/vitest"
 import { BibliotecaThemeProvider } from "@biblioteca-global/ui"
 import OperationMapCanvas from "../OperationMapCanvas"
 
-describe("OperationMapCanvas — dimensionamento do container", () => {
-  it("expõe o container por data-testid e permite expansão fluida", () => {
+describe("OperationMapCanvas — largura uniforme das estações", () => {
+  it("aplica a mesma largura a todas as estações do mapa", () => {
     render(
       <BibliotecaThemeProvider>
         <OperationMapCanvas
@@ -18,9 +18,13 @@ describe("OperationMapCanvas — dimensionamento do container", () => {
       </BibliotecaThemeProvider>,
     )
 
-    const canvas = screen.getByTestId("operation-map-canvas")
-    expect(canvas).toBeInTheDocument()
-    expect(canvas).toHaveStyle({ width: "100%", minHeight: "100%", overflow: "visible" })
-    expect(canvas).not.toHaveStyle({ maxWidth: "1800px" })
+    const stations = screen.getAllByTestId(/^operation-station-/)
+    expect(stations).toHaveLength(11)
+
+    const dimensions = stations.map(station => {
+      const style = window.getComputedStyle(station)
+      return [style.width, style.minWidth, style.maxWidth]
+    })
+    expect(new Set(dimensions.map(dimension => dimension.join("|"))).size).toBe(1)
   })
 })
