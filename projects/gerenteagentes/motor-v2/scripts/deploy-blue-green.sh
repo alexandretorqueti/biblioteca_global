@@ -156,7 +156,7 @@ docker exec -e "MOTOR_REPO_ROOT_CONTAINER=$MOTOR_REPO_ROOT_CONTAINER" "$NEW_API_
     echo "git ausente no container da API" >&2
     exit 1
   }
-  git -C "$MOTOR_REPO_ROOT_CONTAINER" rev-parse --show-toplevel >/dev/null || {
+  git -c "safe.directory=$MOTOR_REPO_ROOT_CONTAINER" -C "$MOTOR_REPO_ROOT_CONTAINER" rev-parse --show-toplevel >/dev/null || {
     echo "repositório do Motor ausente ou inválido: $MOTOR_REPO_ROOT_CONTAINER" >&2
     exit 1
   }
