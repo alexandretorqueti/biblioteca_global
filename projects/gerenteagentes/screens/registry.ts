@@ -6,6 +6,7 @@ import PromptsScreen, { componentId as promptsId } from "./PromptsScreen"
 import TaskMonitorScreen, { componentId as taskMonitorId } from "./TaskMonitorScreen"
 import OperationMapScreen, { componentId as operationMapId } from "./OperationMapScreen"
 import ConfiguracoesScreen, { componentId as configuracoesId } from "./ConfiguracoesScreen"
+import GlobalModelSelectionScreen, { componentId as globalModelSelectionId } from "./GlobalModelSelectionScreen"
 
 /** Registry exclusivo das telas customizadas do projeto gerenteagentes. */
 export const customScreens = {
@@ -17,4 +18,5 @@ export const customScreens = {
   [taskMonitorId]: TaskMonitorScreen,
   [operationMapId]: OperationMapScreen,
   [configuracoesId]: ConfiguracoesScreen,
+  [globalModelSelectionId]: GlobalModelSelectionScreen,
 }

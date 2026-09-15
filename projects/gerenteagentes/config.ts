@@ -430,6 +430,13 @@ export const config: GeradorSistemaConfig = {
           icon: "settings",
           screen: { kind: "custom", componentId: "gerenteagentes-configuracoes" },
         },
+        {
+          id: "modelos-globais",
+          label: "Modelos Globais",
+          path: "modelos-globais",
+          icon: "model_training",
+          screen: { kind: "custom", componentId: "gerenteagentes-global-model-selection" },
+        },
       ],
     },
   ],
