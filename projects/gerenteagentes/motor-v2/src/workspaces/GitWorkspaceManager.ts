@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process"
 import { access, mkdir, rm } from "node:fs/promises"
+import { existsSync } from "node:fs"
 import { isAbsolute, relative, resolve, join } from "node:path"
 import { promisify } from "node:util"
 import { createLogger } from "../shared/logger.js"
@@ -266,13 +267,30 @@ export class GitWorkspaceManager {
     return fallback
   }
 
+  /**
+   * Tarefas antigas podem ter persistido repo_path no namespace do host
+   * (/home/alexandre/...). A API usa o mesmo bind mount em
+   * /data/workspace/projects; normalize antes de qualquer comando Git.
+   */
+  private normalizeRepoPath(repoPath: string): string {
+    const original = resolve(repoPath)
+    if (existsSync(original)) return original
+    const hostPrefix = "/home/alexandre/"
+    const containerPrefix = "/data/workspace/projects/"
+    if (!original.startsWith(hostPrefix)) return original
+    const mapped = resolve(containerPrefix + original.slice(hostPrefix.length))
+    if (!existsSync(mapped)) return original
+    logger.warn(`repo_path normalizado para o namespace do container: ${original} -> ${mapped}`)
+    return mapped
+  }
+
   /** Confirma se uma branch de tarefa já foi incorporada à branch-base. */
   async isBranchAncestor(input: { repoPath: string; branch: string; ancestor: string }): Promise<boolean> {
     if (!isAbsolute(input.repoPath)) throw new Error("repoPath inválido para ancestralidade Git")
     const branch = safeBranch(input.branch)
     const ancestor = safeBranch(input.ancestor)
     try {
-      await this.runner.run(["git", "merge-base", "--is-ancestor", branch, ancestor], resolve(input.repoPath))
+      await this.runner.run(["git", "merge-base", "--is-ancestor", branch, ancestor], this.normalizeRepoPath(input.repoPath))
       return true
     } catch {
       return false
@@ -290,7 +308,7 @@ export class GitWorkspaceManager {
     taskBranch: string
   }): Promise<TaskBranchSyncResult> {
     if (!isAbsolute(input.repoPath)) throw new Error("repoPath inválido para sincronização Git")
-    const repoPath = resolve(input.repoPath)
+    const repoPath = this.normalizeRepoPath(input.repoPath)
     const baseBranch = safeBranch(input.baseBranch)
     const taskBranch = safeBranch(input.taskBranch)
     if (await this.isBranchAncestor({ repoPath, branch: baseBranch, ancestor: taskBranch })) return { kind: "up_to_date" }
@@ -329,7 +347,7 @@ export class GitWorkspaceManager {
 
   async prepare(input: PrepareWorkspaceInput): Promise<WorkspacePreparation> {
     if (!isAbsolute(input.repoPath) || !Number.isInteger(input.attempt) || input.attempt < 1) throw new Error("pré-condição inválida para workspace")
-    const repoPath = resolve(input.repoPath)
+    const repoPath = this.normalizeRepoPath(input.repoPath)
     const agentId = safeSegment(input.agentId, "agentId")
     const task = safeSegment(input.taskId, "taskId")
     const subtask = safeSegment(input.subtaskId, "subtaskId")
@@ -441,7 +459,7 @@ export class GitWorkspaceManager {
    */
   async ensureTaskIntegration(input: TaskIntegrationInput): Promise<WorkspacePreparation> {
     if (!isAbsolute(input.repoPath)) throw new Error("pré-condição inválida para integração da tarefa")
-    const repoPath = resolve(input.repoPath)
+    const repoPath = this.normalizeRepoPath(input.repoPath)
     const agentId = safeSegment(input.agentId, "agentId")
     const task = safeSegment(input.taskId, "taskId")
     const rootBaseBranch = safeBranch(input.rootBaseBranch)
@@ -547,13 +565,14 @@ export class GitWorkspaceManager {
     if (!isAbsolute(input.repoPath) || !isAbsolute(input.taskWorktreePath) || !validCommit(input.expectedCommit)) {
       throw new Error("pré-condição inválida para integração na branch da tarefa")
     }
+    const repoPath = this.normalizeRepoPath(input.repoPath)
     const workBranch = safeBranch(input.workBranch)
 
     const dirty = await this.runner.run(["git", "status", "--porcelain"], input.taskWorktreePath)
     if (dirty.stdout.trim()) {
       throw new Error("worktree da tarefa não está limpo para integração: " + dirty.stdout.trim().split("\n")[0])
     }
-    const workCommit = (await this.runner.run(["git", "rev-parse", "--verify", `${workBranch}^{commit}`], input.repoPath)).stdout.trim()
+    const workCommit = (await this.runner.run(["git", "rev-parse", "--verify", `${workBranch}^{commit}`], repoPath)).stdout.trim()
     if (!validCommit(workCommit) || workCommit.toLowerCase() !== input.expectedCommit.toLowerCase()) {
       throw new Error("commit da branch de trabalho não corresponde ao commit aprovado")
     }
@@ -592,30 +611,31 @@ export class GitWorkspaceManager {
    */
   async promoteTaskBranch(input: TaskPromotionInput): Promise<TaskPromotionResult> {
     if (!isAbsolute(input.repoPath)) throw new Error("pré-condição inválida para promoção da tarefa")
+    const repoPath = this.normalizeRepoPath(input.repoPath)
     const baseBranch = safeBranch(input.baseBranch)
     const taskBranch = safeBranch(input.taskBranch)
 
-    const diff = await this.runner.run(["git", "diff", "--name-only", "--ignore-space-at-eol", "HEAD"], input.repoPath)
+    const diff = await this.runner.run(["git", "diff", "--name-only", "--ignore-space-at-eol", "HEAD"], repoPath)
     if (diff.stdout.trim()) throw new Error("repositório principal não está limpo para promoção: " + diff.stdout.trim())
 
-    const originalBranch = (await this.runner.run(["git", "symbolic-ref", "--quiet", "--short", "HEAD"], input.repoPath)).stdout.trim()
+    const originalBranch = (await this.runner.run(["git", "symbolic-ref", "--quiet", "--short", "HEAD"], repoPath)).stdout.trim()
     try {
-      await this.runner.run(["git", "switch", baseBranch], input.repoPath)
-      await this.runner.run(["git", "merge", "--no-ff", "--no-edit", taskBranch], input.repoPath)
-      const mergeCommit = (await this.runner.run(["git", "rev-parse", "--verify", "HEAD"], input.repoPath)).stdout.trim()
+      await this.runner.run(["git", "switch", baseBranch], repoPath)
+      await this.runner.run(["git", "merge", "--no-ff", "--no-edit", taskBranch], repoPath)
+      const mergeCommit = (await this.runner.run(["git", "rev-parse", "--verify", "HEAD"], repoPath)).stdout.trim()
       if (!validCommit(mergeCommit)) throw new Error("commit de promoção inválido")
-      await this.runner.run(["git", "push", "origin", baseBranch], input.repoPath)
+      await this.runner.run(["git", "push", "origin", baseBranch], repoPath)
       // Publica também a branch da tarefa (rastreabilidade do que foi promovido).
-      await this.runner.run(["git", "push", "origin", taskBranch], input.repoPath).catch((error: unknown) => {
+      await this.runner.run(["git", "push", "origin", taskBranch], repoPath).catch((error: unknown) => {
         logger.warn("Falha ao publicar branch da tarefa (promoção mantida): " + (error instanceof Error ? error.message : String(error)))
       })
       return { kind: "promoted", mergeCommit }
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error)
-      const conflictFiles = await this.listConflictFiles(input.repoPath)
-      await this.runner.run(["git", "merge", "--abort"], input.repoPath).catch(() => {})
+      const conflictFiles = await this.listConflictFiles(repoPath)
+      await this.runner.run(["git", "merge", "--abort"], repoPath).catch(() => {})
       if (originalBranch && originalBranch !== baseBranch) {
-        await this.runner.run(["git", "switch", originalBranch], input.repoPath).catch(() => {})
+        await this.runner.run(["git", "switch", originalBranch], repoPath).catch(() => {})
       }
       if (conflictFiles.length > 0 || /CONFLICT|Automatic merge failed/i.test(reason)) {
         return { kind: "conflict", conflictFiles, reason: reason.slice(0, 500) }
@@ -652,35 +672,36 @@ export class GitWorkspaceManager {
     if (!isAbsolute(input.repoPath) || !validCommit(input.expectedCommit)) {
       throw new Error("pré-condição inválida para integração Git")
     }
+    const repoPath = this.normalizeRepoPath(input.repoPath)
     const baseBranch = safeBranch(input.baseBranch)
     const workBranch = safeBranch(input.workBranch)
     // Untracked files não conflitam com merge; não podem travar a integração
     // enquanto outra sessão mantém arquivos novos no repositório.
     // Ignora whitespace-at-eol (artefato de db:migrate em _journal.json).
-    const diffIntegrate = await this.runner.run(["git", "diff", "--name-only", "--ignore-space-at-eol", "HEAD"], input.repoPath)
+    const diffIntegrate = await this.runner.run(["git", "diff", "--name-only", "--ignore-space-at-eol", "HEAD"], repoPath)
     if (diffIntegrate.stdout.trim()) throw new Error("repositório principal não está limpo para integração: " + diffIntegrate.stdout.trim())
 
-    const workCommit = (await this.runner.run(["git", "rev-parse", "--verify", `${workBranch}^{commit}`], input.repoPath)).stdout.trim()
+    const workCommit = (await this.runner.run(["git", "rev-parse", "--verify", `${workBranch}^{commit}`], repoPath)).stdout.trim()
     if (!validCommit(workCommit) || workCommit.toLowerCase() !== input.expectedCommit.toLowerCase()) {
       throw new Error("commit da branch de trabalho não corresponde ao commit aprovado")
     }
 
-    const originalBranch = (await this.runner.run(["git", "symbolic-ref", "--quiet", "--short", "HEAD"], input.repoPath)).stdout.trim()
+    const originalBranch = (await this.runner.run(["git", "symbolic-ref", "--quiet", "--short", "HEAD"], repoPath)).stdout.trim()
     try {
-      await this.runner.run(["git", "switch", baseBranch], input.repoPath)
-      await this.runner.run(["git", "merge", "--no-ff", "--no-edit", workBranch], input.repoPath)
-      const mergeCommit = (await this.runner.run(["git", "rev-parse", "--verify", "HEAD"], input.repoPath)).stdout.trim()
+      await this.runner.run(["git", "switch", baseBranch], repoPath)
+      await this.runner.run(["git", "merge", "--no-ff", "--no-edit", workBranch], repoPath)
+      const mergeCommit = (await this.runner.run(["git", "rev-parse", "--verify", "HEAD"], repoPath)).stdout.trim()
       if (!validCommit(mergeCommit)) throw new Error("commit de merge inválido")
       // A publicação da subtarefa envia apenas a branch temporária. Depois da
       // integração, a branch-base também precisa ser publicada antes do deploy;
       // caso contrário o host fica correto localmente, mas origin permanece
       // atrasado e a próxima execução pode partir de uma base divergente.
-      await this.runner.run(["git", "push", "origin", baseBranch], input.repoPath)
+      await this.runner.run(["git", "push", "origin", baseBranch], repoPath)
       return { mergeCommit }
     } catch (error) {
-      await this.runner.run(["git", "merge", "--abort"], input.repoPath).catch(() => {})
+      await this.runner.run(["git", "merge", "--abort"], repoPath).catch(() => {})
       if (originalBranch && originalBranch !== baseBranch) {
-        await this.runner.run(["git", "switch", originalBranch], input.repoPath).catch(() => {})
+        await this.runner.run(["git", "switch", originalBranch], repoPath).catch(() => {})
       }
       const reason = error instanceof Error ? error.message : String(error)
       throw new Error("Integração Git falhou: " + reason, { cause: error })
@@ -692,6 +713,7 @@ export class GitWorkspaceManager {
     if (!isAbsolute(input.repoPath) || !isAbsolute(input.workspacePath)) {
       throw new Error("pré-condição inválida para limpeza do workspace")
     }
+    const repoPath = this.normalizeRepoPath(input.repoPath)
     const workspacePath = resolve(input.workspacePath)
     // Verifica se está dentro de um workspace válido:
     // - Se contém /worktrees/, extrai a raiz do próprio caminho
@@ -704,7 +726,7 @@ export class GitWorkspaceManager {
     } else if (!inside(this.root, workspacePath)) {
       throw new Error("workspace fora da raiz segura")
     }
-    await this.runner.run(["git", "worktree", "remove", "--force", workspacePath], input.repoPath)
+    await this.runner.run(["git", "worktree", "remove", "--force", workspacePath], repoPath)
     await rm(workspacePath, { recursive: true, force: true })
   }
 
@@ -715,12 +737,13 @@ export class GitWorkspaceManager {
    */
   async purgeTaskArtifacts(input: { repoPath: string; taskId: string }): Promise<{ worktreesRemoved: number; branchesRemoved: number }> {
     if (!isAbsolute(input.repoPath)) throw new Error("repoPath inválido para purge")
+    const repoPath = this.normalizeRepoPath(input.repoPath)
     const taskId = safeSegment(input.taskId, "taskId")
     let worktreesRemoved = 0
     let branchesRemoved = 0
 
     // Listar worktrees do repositório e filtrar os que pertencem à tarefa
-    const worktreeList = await this.runner.run(["git", "worktree", "list", "--porcelain"], input.repoPath).catch(() => ({ stdout: "", stderr: "" }))
+    const worktreeList = await this.runner.run(["git", "worktree", "list", "--porcelain"], repoPath).catch(() => ({ stdout: "", stderr: "" }))
     const worktreePaths: string[] = []
     const taskDirectories = new Set<string>()
     for (const line of worktreeList.stdout.split("\n")) {
@@ -745,7 +768,7 @@ export class GitWorkspaceManager {
 
     for (const wtPath of worktreePaths) {
       try {
-        await this.runner.run(["git", "worktree", "remove", "--force", wtPath], input.repoPath)
+        await this.runner.run(["git", "worktree", "remove", "--force", wtPath], repoPath)
         await rm(wtPath, { recursive: true, force: true })
         worktreesRemoved++
       } catch {
@@ -755,12 +778,12 @@ export class GitWorkspaceManager {
     }
 
     // Listar branches do motor-v2 para esta tarefa e removê-las
-    const branchList = await this.runner.run(["git", "branch", "--list", `motor-v2/${taskId}/*`], input.repoPath).catch(() => ({ stdout: "", stderr: "" }))
+    const branchList = await this.runner.run(["git", "branch", "--list", `motor-v2/${taskId}/*`], repoPath).catch(() => ({ stdout: "", stderr: "" }))
     for (const line of branchList.stdout.split("\n")) {
       const branch = line.replace(/^[*\s]+/, "").trim()
       if (!branch) continue
       try {
-        await this.runner.run(["git", "branch", "-D", branch], input.repoPath)
+        await this.runner.run(["git", "branch", "-D", branch], repoPath)
         branchesRemoved++
       } catch {
         // Branch pode já ter sido deletada; ignorar
