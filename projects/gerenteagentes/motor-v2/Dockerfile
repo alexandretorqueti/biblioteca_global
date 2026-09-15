@@ -32,6 +32,11 @@ WORKDIR /app
 # O worker executa build/teste no workspace e publica a branch aprovada.
 RUN apk add --no-cache git openssh-client
 
+# O repo base é montado de volumes externos com donos diferentes do usuário do
+# container; sem isso o git recusa com "dubious ownership" e toda execução de
+# subtarefa falha com "spawn git". Mantido na imagem para sobreviver a recriações.
+RUN git config --global --add safe.directory '*'
+
 # Copia package.json e instala apenas deps de produção
 COPY projects/gerenteagentes/motor-v2/package.json ./
 RUN npm install --omit=dev
