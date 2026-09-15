@@ -70,6 +70,11 @@ const toneColor = (tone: StationTone): "text.disabled" | "primary.main" | "succe
 
 const EMPTY_FILTERS: FiltrosMapa = { busca: "", status: [], projetoId: "", prioridade: "" }
 
+// A mesma régua é usada nas duas linhas para que o conteúdo da estação não
+// altere a geometria do mapa. A quebra das linhas em telas menores é tratada
+// pela composição externa do mapa.
+const STATION_CARD_WIDTH = { xs: 170, sm: 190, md: 220, lg: 240 }
+
 export interface OperationMapCanvasProps {
   tarefas: FlowTask[]
   selectedTaskId: number | ""
@@ -119,7 +124,7 @@ export default function OperationMapCanvas({ tarefas, selectedTaskId, projetos, 
     const isExpanded = expanded.has(station.id)
     const visible = isExpanded ? stationTasks : stationTasks.slice(0, 5)
     const Icon = ICONS[station.id]
-    return <Paper variant="outlined" data-testid={`operation-station-${station.id}`} sx={{ minWidth: { xs: 170, md: 190 }, flex: "1 1 0", p: 1.25, borderTop: 2, borderTopColor: toneColor(station.tone), bgcolor: stationTasks.length ? "background.paper" : "action.hover", transition: "border-color 180ms ease" }}>
+    return <Paper variant="outlined" data-testid={`operation-station-${station.id}`} sx={{ width: STATION_CARD_WIDTH, minWidth: STATION_CARD_WIDTH, maxWidth: STATION_CARD_WIDTH, flex: "0 0 auto", p: 1.25, borderTop: 2, borderTopColor: toneColor(station.tone), bgcolor: stationTasks.length ? "background.paper" : "action.hover", transition: "border-color 180ms ease" }}>
       <Stack direction="row" spacing={1} alignItems="flex-start"><Icon sx={{ color: toneColor(station.tone), fontSize: 21 }} /><Box sx={{ minWidth: 0, flex: 1 }}><Typography variant="caption" fontWeight={800} textTransform="uppercase" letterSpacing=".04em" noWrap>{station.label}</Typography><Typography variant="caption" color="text.secondary" display="block" noWrap>{station.description}</Typography></Box><Typography variant="h6" fontWeight={800} lineHeight={1} data-testid={`operation-count-${station.id}`}>{allStationTasks.length}</Typography></Stack>
       <Box sx={{ minHeight: 31, mt: 1, display: "flex", gap: .25, alignItems: "center", flexWrap: "wrap" }}>{visible.map(task => <Marker key={task.id} task={task} station={station} />)}{!stationTasks.length && <Typography variant="caption" color="text.disabled">vazio</Typography>}{stationTasks.length > 5 && <Button size="small" onClick={() => setExpanded(old => { const next = new Set(old); if (isExpanded) next.delete(station.id); else next.add(station.id); return next })} sx={{ minWidth: 0, p: 0, fontSize: 11 }}>+{isExpanded ? " recolher" : ` ${stationTasks.length - 5}`}</Button>}</Box>
     </Paper>
