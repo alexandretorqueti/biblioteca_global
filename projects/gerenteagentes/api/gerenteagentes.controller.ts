@@ -415,6 +415,18 @@ export class GerenteAgentesController {
     return this.service.saveModelSelection(this.projectKeyOuErro(projectKey), this.tipoOuErro(tipo), body.entries);
   }
 
+  @Get('model-selection/global')
+  @Roles('admin', 'gerente')
+  getGlobalModelSelection() {
+    return this.service.getGlobalModelSelection();
+  }
+
+  @Put('model-selection/global')
+  @Roles('admin', 'gerente')
+  saveGlobalModelSelection(@Body() body: unknown) {
+    return this.service.saveGlobalModelSelection(body);
+  }
+
   /**
    * Modelos disponíveis no Console OpenClaw (proxy — task-66): alimenta o
    * combo de escolha de modelos por projeto. Admin/gerente escolhem;

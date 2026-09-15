@@ -351,6 +351,13 @@
       "when": 1789379000000,
       "tag": "0050_blue_green_deploy",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "5",
+      "when": 1789379060000,
+      "tag": "0051_global_model_selection",
+      "breakpoints": true
     }
   ]
 }

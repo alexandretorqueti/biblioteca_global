@@ -164,6 +164,41 @@ export const motorConfiguracoes = mysqlTable("motor_configuracoes", {
   updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
 })
 
+/** Filas globais de modelos, separadas das seleções individuais por projeto. */
+export const globalModelSelection = mysqlTable(
+  "global_model_selection",
+  {
+    id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+    tipo: mysqlEnum("tipo", ["DEV", "ANALYST", "MONITOR"]).notNull(),
+    ordem: int("ordem").notNull(),
+    provider: varchar("provider", { length: 100 }).notNull(),
+    model: varchar("model", { length: 200 }).notNull(),
+    enabled: boolean("enabled").notNull().default(true),
+  },
+  (table) => ({
+    tipoOrdemUnique: uniqueIndex("global_model_selection_tipo_ordem_unique").on(table.tipo, table.ordem),
+    tipoEnabledIdx: index("global_model_selection_tipo_enabled_idx").on(table.tipo, table.enabled),
+  }),
+)
+
+/** Cópias por projeto; edições posteriores não alteram a fila global. */
+export const projectModelSelection = mysqlTable(
+  "project_model_selection",
+  {
+    id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+    projectSlug: varchar("project_slug", { length: 100 }).notNull(),
+    tipo: mysqlEnum("tipo", ["DEV", "ANALYST", "MONITOR"]).notNull(),
+    ordem: int("ordem").notNull(),
+    provider: varchar("provider", { length: 100 }).notNull(),
+    model: varchar("model", { length: 200 }).notNull(),
+    enabled: boolean("enabled").notNull().default(true),
+  },
+  (table) => ({
+    projectTipoOrdemUnique: uniqueIndex("project_model_selection_project_tipo_ordem_unique").on(table.projectSlug, table.tipo, table.ordem),
+    projectTipoIdx: index("project_model_selection_project_tipo_idx").on(table.projectSlug, table.tipo),
+  }),
+)
+
 export const definicoes = mysqlTable("definicoes", {
   id: bigint("id", { mode: "number", unsigned: true })
     .primaryKey()
