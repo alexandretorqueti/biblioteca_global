@@ -10,6 +10,7 @@
  */
 
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
+import { sql } from 'drizzle-orm'
 import type { CatalogLoader, CatalogAction } from '../catalog/CatalogLoader.js'
 import type { MotorContext } from '../shared/context.js'
 import * as schema from '../db/schema.js'

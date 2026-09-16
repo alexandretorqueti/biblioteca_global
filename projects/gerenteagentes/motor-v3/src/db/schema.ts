@@ -7,7 +7,7 @@
  * ou SQL puro no repositório).
  */
 
-import { mysqlTable, int, varchar, text, json, timestamp, tinyint, enum as mysqlEnum, mysqlEnum } from 'drizzle-orm/mysql-core'
+import { mysqlTable, int, varchar, text, json, timestamp, tinyint, mysqlEnum } from 'drizzle-orm/mysql-core'
 import { sql } from 'drizzle-orm'
 
 // ============================================================
