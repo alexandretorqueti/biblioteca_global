@@ -791,3 +791,295 @@ export async function verifyReality(worktreePath: string, allowedPaths: string[]
 ```
 
 ---
+
+## 17. API HTTP do Motor v3 (`/api/motor/*`)
+
+O motor v3 mantém **compatibilidade total** com os endpoints do v2 (a biblioteca/BFF já consome esses paths) e adiciona endpoints novos para o catálogo e ocorrências.
+
+### 17.1 Endpoints compatíveis com v2 (sem alteração de contrato)
+
+| Método | Path | Descrição |
+|--------|------|-----------|
+| GET | `/api/motor/health` | Health check (`{ ok: true, runtime: 'motor-v3' }`) |
+| GET | `/api/motor/stats` | Estatísticas (workers, pump, deploy) |
+| POST | `/api/motor/pump` | Dispara pump manual |
+| GET | `/api/motor/tasks/by-status` | Tarefas agrupadas por status derivado |
+| GET | `/api/motor/task/:id` | Detalhe da tarefa |
+| GET | `/api/motor/task/:id/status-history` | Histórico de transições |
+| POST | `/api/motor/task/:id/enqueue` | Enfileira tarefa para execução |
+| POST | `/api/motor/task/:id/pause` | Pausa tarefa |
+| POST | `/api/motor/task/:id/resume` | Retoma tarefa pausada |
+| POST | `/api/motor/task/:id/cancel` | Cancela tarefa |
+| DELETE | `/api/motor/task/:id` | Remove tarefa (só se não executada) |
+| POST | `/api/motor/task/:id/deploy` | Dispara deploy manual |
+| POST | `/api/motor/task/:id/clarification` | Envia resposta de clarificação |
+| POST | `/api/motor/task/:id/chat-pump` | Injeta mensagem no chat da tarefa |
+| POST | `/api/motor/task/:id/chat-resume` | Resume após AGUARDANDO_USUARIO |
+| POST | `/api/motor/task/:id/chat-agent` | Envia mensagem direta ao agente |
+| POST | `/api/motor/task/:id/sanitize-session` | Arquiva sessão e cria nova geração |
+| GET | `/api/motor/deploy-diagnostics` | Diagnóstico de deploy |
+| GET | `/api/motor/model-cooldowns` | Lista modelos em cooldown |
+| POST | `/api/motor/model-cooldowns/reactivate` | Reativa modelo em cooldown |
+| GET | `/api/model-selection/:projectKey/:tipo` | Cadeia de modelos do projeto |
+| PUT | `/api/model-selection/:projectKey/:tipo` | Atualiza cadeia de modelos |
+| GET | `/api/modelos-console` | Modelos disponíveis no Console |
+
+### 17.2 Endpoints NOVOS — Catálogo
+
+| Método | Path | Descrição |
+|--------|------|-----------|
+| GET | `/api/motor/catalog/events` | Lista eventos (com patterns e reactions) |
+| GET | `/api/motor/catalog/events/:id` | Detalhe de evento |
+| POST | `/api/motor/catalog/events` | Cria evento |
+| PUT | `/api/motor/catalog/events/:id` | Atualiza evento |
+| DELETE | `/api/motor/catalog/events/:id` | Desativa evento (`active=0`) |
+| GET | `/api/motor/catalog/actions` | Lista ações (com primitivas) |
+| GET | `/api/motor/catalog/actions/:id` | Detalhe de ação |
+| POST | `/api/motor/catalog/actions` | Cria ação |
+| PUT | `/api/motor/catalog/actions/:id` | Atualiza ação |
+| DELETE | `/api/motor/catalog/actions/:id` | Desativa ação |
+| GET | `/api/motor/catalog/primitives` | Lista primitivas registradas (código fixo) |
+| GET | `/api/motor/catalog/patterns` | Lista patterns |
+| POST | `/api/motor/catalog/patterns` | Cria pattern |
+| DELETE | `/api/motor/catalog/patterns/:id` | Remove pattern |
+| GET | `/api/motor/catalog/reactions` | Lista reações |
+| POST | `/api/motor/catalog/reactions` | Cria reação (valida B19 no INSERT) |
+| PUT | `/api/motor/catalog/reactions/:id` | Atualiza reação |
+| DELETE | `/api/motor/catalog/reactions/:id` | Remove reação |
+
+### 17.3 Endpoints NOVOS — Ocorrências e aprendizado
+
+| Método | Path | Descrição |
+|--------|------|-----------|
+| GET | `/api/motor/occurrences` | Lista ocorrências (filtros: taskId, subtaskId, eventId, generation) |
+| DELETE | `/api/motor/occurrences` | Reset de ocorrências (body: taskId, subtaskId, generation) |
+| POST | `/api/motor/catalog/propose` | Monitor propõe nova entrada (B01) — retorna `{proposalId, status}` |
+| POST | `/api/motor/catalog/approve/:proposalId` | Humano aprova proposta (ativa entrada) |
+| GET | `/api/motor/catalog/proposals` | Lista propostas pendentes de revisão |
+
+### 17.4 Auth
+
+- Todos os endpoints exigem header `Authorization: Bearer <jwt>` (mesmo JWT da biblioteca).
+- Endpoints de catálogo (POST/PUT/DELETE) exigem role `admin` ou `motor-operator`.
+- Endpoints de leitura (GET) e de tarefa (enqueue/pause/resume) exigem role `admin`, `motor-operator` ou `developer`.
+- Health check e stats: sem auth (uso interno para monitoramento).
+
+### 17.5 Contratos de request/response
+
+```typescript
+// POST /api/motor/catalog/events
+interface CreateEventRequest {
+  code: string           // Ex: 'E36_UNKNOWN_ERROR'
+  name: string
+  category: 'erro' | 'verificacao' | 'conclusao' | 'estado' | 'humano' | 'infra'
+  scope?: 'global' | 'projeto' | 'tarefa' | 'subtarefa'
+  priority?: number
+  patterns?: { pattern: string; matchType: 'regex' | 'contains' | 'exact'; matchTarget: 'code' | 'message' | 'stack' | 'action_result' }[]
+  reactions?: { occurrence: number; actionCode: string; params?: Record<string, any> }[]
+}
+
+// POST /api/motor/catalog/propose (Monitor bridge)
+interface CatalogProposal {
+  source: 'monitor' | 'human'
+  eventId?: number       // Se for variação de evento existente (Caso A)
+  event?: CreateEventRequest  // Se for evento novo (Caso B)
+  diagnosis: string      // Diagnóstico do erro não catalogado
+  taskId: string
+  subtaskId?: number
+}
+
+// Response
+interface CatalogProposalResponse {
+  proposalId: string
+  status: 'auto_activated' | 'pending_review' | 'rejected'
+  reason?: string
+}
+```
+
+---
+
+## 18. Seed do Catálogo (dados iniciais)
+
+Baseado nos 35 eventos, 20 ações e 32 microcomandos mapeados no doc 2 §1–§3.
+
+### 18.1 Primitivas (32 — registro fixo em código)
+
+```sql
+-- Primitivas são registradas em código (não via SQL).
+-- Esta tabela é referência para documentação.
+-- O CatalogLoader popula a tabela motor_primitives no bootstrap.
+
+INSERT INTO motor_primitives (code, name, domain) VALUES
+-- Sessão / Console
+('create_session',          'Criar sessão no Console',       'session'),
+('archive_session',         'Arquivar sessão física',        'session'),
+('increment_generation',    'Incrementar geração da sessão', 'session'),
+('send_message',            'Enviar mensagem ao modelo',     'session'),
+('send_feedback',           'Enviar feedback corretivo',     'session'),
+('wait_for_completion',     'Aguardar fim do run',           'session'),
+('parse_reply',             'Parse da resposta do agente',   'session'),
+-- Modelo
+('cooldown_model',          'Colocar modelo em cooldown',    'model'),
+('escalate_model',          'Escalar para próximo modelo',   'model'),
+-- Git / Workspace
+('create_worktree',         'Criar worktree isolado',        'git'),
+('remove_worktree',         'Remover worktree',              'git'),
+('install_dependencies',    'Instalar dependências (npm ci)', 'git'),
+('verify_git',              'Verificar git status/diff',     'git'),
+('run_build',               'Rodar build + testes',          'git'),
+('commit_changes',          'Commit na branch da subtarefa', 'git'),
+('merge_branch',            'Merge na branch da tarefa',     'git'),
+('revert_merge',            'Reverter merge',                'git'),
+('publish_branch',          'Push da branch da tarefa',      'git'),
+('promote_to_base',         'Promover para base (lock)',     'git'),
+('check_paths',             'Validar paths permitidos',      'git'),
+-- Banco / Tarefa
+('persist_plan',            'Persistir plano de análise',    'db'),
+('create_subtasks',         'Criar subtarefas no banco',     'db'),
+('check_commits',           'Verificar workspaceCommitSha',  'db'),
+('block_task',              'Bloquear tarefa',               'db'),
+('block_subtask',           'Bloquear subtarefa',            'db'),
+('persist_blocker',         'Persistir registro em bloqueios', 'db'),
+('unblock_subtask',         'Desbloquear subtarefa',         'db'),
+-- Fila / Controle
+('pause_agent_queue',       'Pausar fila do agente',         'queue'),
+('resume_agent_queue',      'Retomar fila do agente',        'queue'),
+('enqueue_deploy',          'Enfileirar deploy',             'queue'),
+('set_flag',                'Setar flag no MotorContext',    'control'),
+('log',                     'Registrar log estruturado',     'control');
+```
+
+### 18.2 Ações (20)
+
+```sql
+INSERT INTO motor_actions (code, name, primitives_json, on_partial_failure, is_terminal) VALUES
+('A01_SANITIZE',            'Saneamento de sessão',           '[{"primitive":"archive_session"},{"primitive":"increment_generation"},{"primitive":"log","params":{"level":"info"}}]', 'continue', FALSE),
+('A02_ESCALATE',            'Escalada com cooldown',          '[{"primitive":"cooldown_model","params":{"minutes":30}},{"primitive":"escalate_model"},{"primitive":"log","params":{"level":"warn"}}]', 'continue', FALSE),
+('A03_BLOCK',               'Bloquear e notificar',           '[{"primitive":"block_task"},{"primitive":"persist_blocker"},{"primitive":"log","params":{"level":"error"}}]', 'continue', TRUE),
+('A04_VERIFY_BUILD',        'Verificar e buildar',            '[{"primitive":"verify_git"},{"primitive":"run_build"}]', 'compensate', FALSE),
+('A05_FEEDBACK',            'Feedback e retry',               '[{"primitive":"send_feedback"},{"primitive":"set_flag","params":{"flag":"retry"}},{"primitive":"log","params":{"level":"warn"}}]', 'continue', FALSE),
+('A06_RETRY',               'Retry transiente',               '[{"primitive":"set_flag","params":{"flag":"retry"}},{"primitive":"log","params":{"level":"warn"}}]', 'continue', FALSE),
+('A07_PAUSE',               'Pausar e aguardar',              '[{"primitive":"pause_agent_queue"},{"primitive":"log","params":{"level":"error"}}]', 'continue', FALSE),
+('A08_RESUME',              'Retomar fila',                   '[{"primitive":"resume_agent_queue"},{"primitive":"log","params":{"level":"info"}}]', 'continue', FALSE),
+('A09_PREPARE',             'Preparar workspace',             '[{"primitive":"create_worktree"},{"primitive":"install_dependencies"}]', 'compensate', FALSE),
+('A10_COMMIT_MERGE',        'Commit e merge',                 '[{"primitive":"commit_changes"},{"primitive":"merge_branch"}]', 'compensate', FALSE),
+('A11_REVERT',              'Reverter e retornar',            '[{"primitive":"revert_merge"},{"primitive":"set_flag","params":{"flag":"return_subtask"}},{"primitive":"log","params":{"level":"warn"}}]', 'continue', FALSE),
+('A12_PUBLISH',             'Publicar e integrar',            '[{"primitive":"publish_branch"},{"primitive":"set_flag","params":{"flag":"integrated"}},{"primitive":"log","params":{"level":"info"}}]', 'continue', FALSE),
+('A13_FINALIZE',            'Finalizar análise',              '[{"primitive":"persist_plan"},{"primitive":"create_subtasks"},{"primitive":"log","params":{"level":"info"}}]', 'continue', FALSE),
+('A14_PROMOTE',             'Promover e deployar',            '[{"primitive":"promote_to_base"},{"primitive":"enqueue_deploy"},{"primitive":"log","params":{"level":"info"}}]', 'mark_dirty', FALSE),
+('A15_ANALYSIS_SESSION',    'Iniciar sessão de análise',      '[{"primitive":"create_session"},{"primitive":"send_message"},{"primitive":"wait_for_completion"}]', 'compensate', FALSE),
+('A16_DEV_SESSION',         'Iniciar sessão de desenvolvimento', '[{"primitive":"create_session"},{"primitive":"send_message"},{"primitive":"wait_for_completion"}]', 'compensate', FALSE),
+('A17_VALIDATE_PROMOTION',  'Validar promoção',               '[{"primitive":"check_commits"},{"primitive":"set_flag","params":{"flag":"promotion_ok"}}]', 'continue', FALSE),
+('A18_RECOVER_WORKSPACE',   'Auto-recuperar workspace',       '[{"primitive":"remove_worktree"},{"primitive":"create_worktree"},{"primitive":"install_dependencies"},{"primitive":"log","params":{"level":"warn"}}]', 'compensate', FALSE),
+('A19_PARSE_REPLY',         'Parse de resposta do analista',   '[{"primitive":"parse_reply"},{"primitive":"set_flag","params":{"flag":"plan_ok"}}]', 'continue', FALSE),
+('A20_PROBE_ENV',           'Sondar ambiente',                '[{"primitive":"verify_git"},{"primitive":"check_paths"},{"primitive":"set_flag","params":{"flag":"env_ok"}}]', 'continue', FALSE);
+```
+
+### 18.3 Eventos (35) + Patterns + Reações
+
+```sql
+-- Erros (E01–E10)
+INSERT INTO motor_events (code, name, category, scope, priority) VALUES
+('E01_CONTEXT_OVERFLOW',    'Estouro de Contexto',           'erro', 'subtarefa', 10),
+('E02_MODEL_UNAVAILABLE',   'Modelo Indisponível',           'erro', 'subtarefa', 20),
+('E03_MODEL_TIMEOUT',       'Timeout do Modelo',             'erro', 'subtarefa', 30),
+('E04_CONSOLE_404',         'Erro 404 do Console',           'erro', 'subtarefa', 40),
+('E05_RATE_LIMIT',          'Erro 429 Rate Limit',           'erro', 'subtarefa', 50),
+('E06_CONSOLE_SYSTEMIC',    'Erro Sistêmico do Console',    'erro', 'subtarefa', 60),
+('E07_WORKSPACE_INVALID',   'Workspace Inválido',            'erro', 'subtarefa', 70),
+('E08_BUILD_FAILED',        'Build Falhou',                  'erro', 'subtarefa', 80),
+('E09_GATE_FAILED',         'Gate de Integração Falhou',     'erro', 'subtarefa', 90),
+('E10_ANALYST_INVALID',     'Resposta do Analista Inválida', 'erro', 'subtarefa', 100);
+
+-- Patterns para erros
+INSERT INTO motor_patterns (event_id, pattern, match_type, match_target) VALUES
+-- E01
+(1, 'context overflow',          'contains', 'message'),
+(1, 'prompt too large',          'contains', 'message'),
+(1, 'context_window_exceeded',   'contains', 'message'),
+-- E02
+(2, 'model_unavailable',         'contains', 'code'),
+(2, 'missing-provider-auth',     'contains', 'code'),
+(2, 'no API key found',          'contains', 'message'),
+-- E03
+(3, 'idle timeout',              'contains', 'message'),
+(3, 'LLM idle timeout',          'contains', 'message'),
+-- E04
+(4, '404',                       'exact',    'code'),
+-- E05
+(5, '429',                       'exact',    'code'),
+(5, 'insufficient_quota',        'contains', 'message'),
+-- E06
+(6, 'console_unavailable',       'contains', 'code'),
+-- E07
+(7, 'dubious ownership',         'contains', 'message'),
+(7, 'spawn git ENOENT',          'contains', 'message'),
+-- E08
+(8, 'exitCode',                  'contains', 'action_result'),
+-- E09
+(9, 'integration_gate_failed',   'contains', 'code'),
+-- E10
+(10, 'invalid_json',             'contains', 'code'),
+(10, 'contract_violation',       'contains', 'code');
+
+-- Reações progressivas para erros (D5 reset, D6 teto)
+INSERT INTO motor_reactions (event_id, occurrence, action_id) VALUES
+-- E01: 1x sanitize, 2x escalate, 3x block
+(1, 1, 1), (1, 2, 2), (1, 3, 3),
+-- E02: 1x escalate
+(2, 1, 2),
+-- E03: 1x escalate
+(3, 1, 2),
+-- E04: 1x retry, 2x retry, 3x escalate, 4x block
+(4, 1, 6), (4, 2, 6), (4, 3, 2), (4, 4, 3),
+-- E05: 1x escalate
+(5, 1, 2),
+-- E06: 1x pause
+(6, 1, 7),
+-- E07: 1x recover, 2x block
+(7, 1, 18), (7, 2, 3),
+-- E08: 1x feedback, 2x sanitize, 3x escalate, 4x block
+(8, 1, 5), (8, 2, 1), (8, 3, 2), (8, 4, 3),
+-- E09: 1x revert
+(9, 1, 11),
+-- E10: 1x feedback, 2x escalate, 3x block
+(10, 1, 5), (10, 2, 2), (10, 3, 3);
+```
+
+```sql
+-- Verificações (E11–E16)
+INSERT INTO motor_events (code, name, category, scope, priority) VALUES
+('E11_HAS_CHANGES',         'Workspace com Alterações',      'verificacao', 'subtarefa', 110),
+('E12_NO_CHANGES',          'Workspace sem Alterações',      'verificacao', 'subtarefa', 120),
+('E13_BUILD_OK',            'Build Aprovado',                'verificacao', 'subtarefa', 130),
+('E14_PROMOTION_VALID',     'Promoção Válida',               'verificacao', 'tarefa',    140),
+('E15_PROMOTION_INVALID',   'Promoção Inválida',             'verificacao', 'tarefa',    150),
+('E16_ENV_CLAIM_INVALID',   'Alegação Ambiental Inválida',   'verificacao', 'subtarefa', 160);
+
+-- Conclusões (E17–E27)
+INSERT INTO motor_events (code, name, category, scope, priority) VALUES
+('E17_TASK_SELECTED',       'Tarefa Selecionada para Análise', 'conclusao', 'tarefa',    200),
+('E18_CONTEXT_CONFIRMED',   'Contexto Confirmado',             'conclusao', 'tarefa',    210),
+('E19_ANALYSIS_DONE',       'Análise Concluída',               'conclusao', 'tarefa',    220),
+('E20_READY_FOR_DEV',       'Tarefa Pronta p/ Programação',    'conclusao', 'tarefa',    230),
+('E21_SUBTASK_SELECTED',    'Subtarefa Selecionada',            'conclusao', 'subtarefa', 240),
+('E22_PROGRAMMING_DONE',    'Programação Concluída',            'conclusao', 'subtarefa', 250),
+('E23_MERGE_DONE',          'Merge Realizado',                  'conclusao', 'subtarefa', 260),
+('E24_INTEGRATED',          'Subtarefa Integrada',              'conclusao', 'subtarefa', 270),
+('E25_ALL_COMPLETE',        'Todas Subtarefas Completas',       'conclusao', 'tarefa',    280),
+('E26_PROMOTED',            'Promoção Realizada',               'conclusao', 'tarefa',    290),
+('E27_DEPLOY_ENQUEUED',     'Deploy Enfileirado',               'conclusao', 'tarefa',    300);
+
+-- Estado (E28–E35)
+INSERT INTO motor_events (code, name, category, scope, priority) VALUES
+('E28_SESSION_SANITIZED',   'Sessão Saneada',              'estado', 'subtarefa', 310),
+('E29_MODEL_COOLDOWN',      'Modelo em Cooldown',          'estado', 'subtarefa', 320),
+('E30_QUEUE_PAUSED',        'Fila Pausada',                'estado', 'global',    330),
+('E31_CONSOLE_RECOVERED',   'Console Recuperado',          'estado', 'global',    340),
+('E32_SUBTASK_BLOCKED',     'Subtarefa Bloqueada',         'estado', 'subtarefa', 350),
+('E33_TASK_BLOCKED',        'Tarefa Bloqueada',            'estado', 'tarefa',    360),
+('E34_EXECUTION_DONE',      'Execução Concluída',          'estado', 'tarefa',    370),
+('E35_WORKER_EXIT',         'Worker Encerrou',             'estado', 'subtarefa', 380);
+```
+
+---
