@@ -54,7 +54,7 @@ export const motorPrimitives = mysqlTable('motor_primitives', {
 // ============================================================
 // motor_actions — composição de primitivas (configurável via banco)
 // ============================================================
-export const motorActions = mysqlTable('motor_actions', {
+export const motorActions: any = mysqlTable('motor_actions', {
   id: int('id').primaryKey().autoincrement(),
   code: varchar('code', { length: 100 }).notNull().unique(),
   name: varchar('name', { length: 255 }).notNull(),

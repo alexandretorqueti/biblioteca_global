@@ -9,7 +9,7 @@
  * B20: semântica de falha parcial por ação composta.
  */
 
-import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
+import type { MySql2Database } from 'drizzle-orm/mysql2'
 import { sql } from 'drizzle-orm'
 import type { CatalogLoader, CatalogAction } from '../catalog/CatalogLoader.js'
 import type { MotorContext } from '../shared/context.js'
@@ -33,11 +33,11 @@ export interface ActionResult {
 }
 
 export class ActionExecutor {
-  private db: NodePgDatabase<typeof schema>
+  private db: MySql2Database<typeof schema>
   private loader: CatalogLoader
   private primitives = new Map<string, PrimitiveHandler>()
 
-  constructor(db: NodePgDatabase<typeof schema>, loader: CatalogLoader) {
+  constructor(db: MySql2Database<typeof schema>, loader: CatalogLoader) {
     this.db = db
     this.loader = loader
   }

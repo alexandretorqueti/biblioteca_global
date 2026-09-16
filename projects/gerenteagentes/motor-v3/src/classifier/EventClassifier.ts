@@ -8,7 +8,7 @@
  * Escopo de contagem: (event_id, task_id, subtask_id, generation) — B13.
  */
 
-import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
+import type { MySql2Database } from 'drizzle-orm/mysql2'
 import { sql, and, eq } from 'drizzle-orm'
 import type { CatalogLoader, CatalogEvent, CatalogReaction, CatalogAction } from '../catalog/CatalogLoader.js'
 import * as schema from '../db/schema.js'
@@ -28,10 +28,10 @@ export interface ClassificationResult {
 }
 
 export class EventClassifier {
-  private db: NodePgDatabase<typeof schema>
+  private db: MySql2Database<typeof schema>
   private loader: CatalogLoader
 
-  constructor(db: NodePgDatabase<typeof schema>, loader: CatalogLoader) {
+  constructor(db: MySql2Database<typeof schema>, loader: CatalogLoader) {
     this.db = db
     this.loader = loader
   }

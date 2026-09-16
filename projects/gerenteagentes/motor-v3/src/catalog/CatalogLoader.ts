@@ -5,7 +5,7 @@
  * Hot reload sem restart do motor.
  */
 
-import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
+import type { MySql2Database } from 'drizzle-orm/mysql2'
 import type { MessageBus } from '../bus/MessageBus.js'
 import * as schema from '../db/schema.js'
 import { eq } from 'drizzle-orm'
@@ -59,17 +59,19 @@ export interface Catalog {
 
 export class CatalogLoader {
   private cache: Catalog | null = null
-  private db: NodePgDatabase<typeof schema>
-  private bus: MessageBus
+  private db: MySql2Database<typeof schema>
+  private bus?: MessageBus
 
-  constructor(db: NodePgDatabase<typeof schema>, bus: MessageBus) {
+  constructor(db: MySql2Database<typeof schema>, bus?: MessageBus) {
     this.db = db
     this.bus = bus
 
     // Invalidar cache quando catálogo mudar
-    this.bus.on('CATALOG_CHANGED', async () => {
-      await this.reload()
-    })
+    if (bus) {
+      bus.on('CATALOG_CHANGED', async () => {
+        await this.reload()
+      })
+    }
   }
 
   /**
@@ -165,6 +167,22 @@ export class CatalogLoader {
     return catalog.reactions
       .filter(r => r.eventId === eventId)
       .sort((a, b) => a.occurrence - b.occurrence)
+  }
+
+  /**
+   * Retorna todos os eventos (para API).
+   */
+  async getAllEvents(): Promise<CatalogEvent[]> {
+    const catalog = await this.load()
+    return catalog.events
+  }
+
+  /**
+   * Retorna todas as ações (para API).
+   */
+  async getAllActions(): Promise<CatalogAction[]> {
+    const catalog = await this.load()
+    return catalog.actions
   }
 
   /**
