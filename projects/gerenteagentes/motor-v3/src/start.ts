@@ -28,7 +28,13 @@ import { MonitorBridge } from './monitor-bridge/MonitorBridge.js'
 
 // Config
 const PORT = parseInt(process.env.MOTOR_PORT || '3010')
-const DB_URL = process.env.DATABASE_URL || 'mysql://root:root@localhost:3308/projeto_640'
+const DB_CONFIG = {
+  host: process.env.MYSQL_HOST || 'host.docker.internal',
+  port: parseInt(process.env.MYSQL_PORT || '3308'),
+  user: process.env.MYSQL_USER || 'biblioteca',
+  password: process.env.MYSQL_PASSWORD || '',
+  database: process.env.MYSQL_DATABASE || 'projeto_640',
+}
 
 // Estado global (para graceful shutdown)
 let server: any = null
@@ -40,7 +46,8 @@ async function start() {
 
   // 1. Conecta ao MySQL
   console.log('[Motor v3] Conectando ao MySQL...')
-  const pool = await mysql.createPool(DB_URL)
+  console.log('[Motor v3] DB_CONFIG:', { ...DB_CONFIG, password: '***' })
+  const pool = await mysql.createPool(DB_CONFIG)
   const db = drizzle(pool, { schema, mode: 'default' })
   console.log('[Motor v3] MySQL conectado')
 
@@ -175,6 +182,86 @@ async function start() {
         await monitorBridge.rejectProposal(proposalId, reviewedBy || 'unknown', reason)
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ success: true }))
+        return
+      }
+      
+      // ============================================================
+      // Task management endpoints (v2 API compatibility)
+      // ============================================================
+      const taskMatch = path.match(/^\/api\/motor\/task\/([^/]+)(?:\/(.+))?$/)
+      const taskId = taskMatch?.[1]
+      const taskAction = taskMatch?.[2]
+      
+      // POST /api/motor/pump
+      if (req.method === 'POST' && path === '/api/motor/pump') {
+        console.log('[Motor v3] Pump triggered')
+        await bus?.emit('PUMP_TRIGGERED', { taskId: 'system', executionId: 'system', payload: {} })
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: true }))
+        return
+      }
+      
+      // GET /api/motor/tasks/by-status
+      if (req.method === 'GET' && path === '/api/motor/tasks/by-status') {
+        const executions = scheduler?.getActiveExecutions() ?? []
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ executions }))
+        return
+      }
+      
+      // GET /api/motor/task/:id
+      if (req.method === 'GET' && taskId && !taskAction) {
+        const execution = scheduler?.getActiveExecutions().find(e => e.taskId === taskId)
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({
+          exists: !!execution,
+          taskId,
+          status: execution ? 'running' : 'unknown',
+          execution: execution || null,
+        }))
+        return
+      }
+      
+      // POST /api/motor/task/:id/enqueue
+      if (req.method === 'POST' && taskId && taskAction === 'enqueue') {
+        let body = ''
+        req.on('data', chunk => body += chunk)
+        await new Promise(resolve => req.on('end', resolve))
+        const taskData = body ? JSON.parse(body) : {}
+        console.log(`[Motor v3] Task ${taskId} enqueued:`, JSON.stringify(taskData).slice(0, 200))
+        
+        // Emit task enqueued event
+        await bus?.emit('TASK_ENQUEUED', { taskId, executionId: `exec-${taskId}-${Date.now()}`, payload: { ...taskData } })
+        
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: true, taskId, executionId: `exec-${taskId}-${Date.now()}` }))
+        return
+      }
+      
+      // POST /api/motor/task/:id/pause
+      if (req.method === 'POST' && taskId && taskAction === 'pause') {
+        console.log(`[Motor v3] Task ${taskId} pause requested`)
+        await bus?.emit('TASK_PAUSE_REQUESTED', { taskId, executionId: taskId, payload: {} })
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: true, taskId }))
+        return
+      }
+      
+      // POST /api/motor/task/:id/resume
+      if (req.method === 'POST' && taskId && taskAction === 'resume') {
+        console.log(`[Motor v3] Task ${taskId} resume requested`)
+        await bus?.emit('TASK_RESUME_REQUESTED', { taskId, executionId: taskId, payload: {} })
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: true, taskId }))
+        return
+      }
+      
+      // POST /api/motor/task/:id/cancel
+      if (req.method === 'POST' && taskId && taskAction === 'cancel') {
+        console.log(`[Motor v3] Task ${taskId} cancel requested`)
+        await bus?.emit('TASK_CANCEL_REQUESTED', { taskId, executionId: taskId, payload: {} })
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: true, taskId }))
         return
       }
       

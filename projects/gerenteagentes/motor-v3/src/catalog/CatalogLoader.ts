@@ -88,10 +88,15 @@ export class CatalogLoader {
    * Recarrega catálogo do DB (invalida cache).
    */
   async reload(): Promise<Catalog> {
+    console.log('[CatalogLoader] Reloading catalog from DB...')
     const events = await this.db.select().from(schema.motorEvents).where(eq(schema.motorEvents.active, 1))
+    console.log(`[CatalogLoader] Loaded ${events.length} events`)
     const patterns = await this.db.select().from(schema.motorPatterns).where(eq(schema.motorPatterns.active, 1))
+    console.log(`[CatalogLoader] Loaded ${patterns.length} patterns`)
     const actions = await this.db.select().from(schema.motorActions).where(eq(schema.motorActions.active, 1))
+    console.log(`[CatalogLoader] Loaded ${actions.length} actions`)
     const reactions = await this.db.select().from(schema.motorReactions).where(eq(schema.motorReactions.active, 1))
+    console.log(`[CatalogLoader] Loaded ${reactions.length} reactions`)
 
     this.cache = {
       events: events.map(e => ({
