@@ -82,3 +82,103 @@ Ainda não implementado:
 Esses itens ficam separados para não publicar uma tarefa antes de a transação
 que a criou estar confirmada e para não iniciar o motor com uma fila sem
 coordenador conectado.
+
+## Roadmap de implementação
+
+Esta é a ordem definida para concluir o fluxo de criação/destravamento até o
+fim da análise. Cada ciclo deve manter testes e documentação atualizados.
+
+### Ciclo 1 — transporte durável ✅
+
+- contrato `QueueMessage` serializável;
+- `RabbitMqTransport` com mensagens persistentes e publisher confirms;
+- `QueueConsumer` com `ack` manual;
+- transporte em memória para testes;
+- documentação dos limites do transporte.
+
+### Ciclo 2 — `TaskCoordinator`
+
+- criar `src/coordinator/TaskCoordinator.ts`;
+- receber `TASK_CREATED`, `TASK_ENQUEUED` e `TASK_RESUME_REQUESTED`;
+- consultar o estado real da tarefa e respeitar pausa/cancelamento;
+- garantir que uma tarefa não tenha duas análises simultâneas;
+- separar decisão de análise da decisão de execução de subtarefa;
+- publicar eventos de seleção, início, conclusão e falha;
+- testar o caminho feliz e mensagens duplicadas.
+
+### Ciclo 3 — ciclo do analista
+
+- criar o contexto de análise a partir da tarefa;
+- chamar `WorkerLauncher` com a instrução correta;
+- tratar resposta do analista e o marcador de conclusão;
+- validar o plano recebido;
+- persistir o plano aprovado;
+- criar subtarefas `pending` na ordem definida;
+- publicar `ANALYSIS_COMPLETED` e `TASK_READY_FOR_PROGRAMMING`.
+
+### Ciclo 4 — outbox transacional
+
+- criar tabela/repositório de outbox no banco do motor;
+- registrar criação/destravamento e mensagem na mesma transação;
+- publicar mensagens pendentes com segurança após commit;
+- marcar publicação confirmada;
+- impedir perda entre banco e RabbitMQ;
+- definir idempotência persistida por `messageId`.
+
+### Ciclo 5 — integração com API e MessageBus
+
+- trocar os `bus.emit(...)` diretos dos endpoints por publicação na fila;
+- manter o `MessageBus` apenas para eventos internos do processo;
+- ligar `QueueConsumer → TaskCoordinator → MessageBus`;
+- preservar compatibilidade das respostas HTTP;
+- adicionar endpoints/telemetria de fila quando necessário.
+
+### Ciclo 6 — execução de subtarefas
+
+- selecionar subtarefas liberadas por dependências;
+- aplicar limites de concorrência e locks;
+- iniciar `WorkerLauncher` para o agente programador;
+- tratar conclusão, falha, bloqueio e retry;
+- conectar `Scheduler` à execução real;
+- persistir transições e eventos operacionais.
+
+### Ciclo 7 — RabbitMQ de produção
+
+- definir URL e credenciais somente por ambiente/secrets;
+- criar exchange, fila principal, filas de retry e DLQ;
+- configurar TTL, limite de tentativas e dead-letter exchange;
+- testar reinício do motor com mensagens pendentes;
+- testar duplicação, falha do broker e recuperação;
+- validar observabilidade no ServerIA.
+
+### Ciclo 8 — piloto e ativação
+
+- executar tarefa trivial de análise;
+- executar tarefa com pausa e destravamento;
+- confirmar que nenhuma mensagem é perdida;
+- confirmar que análise cria as subtarefas corretas;
+- acompanhar logs, eventos e DLQ;
+- somente então ativar o fluxo para tarefas reais.
+
+## Critérios de conclusão do fluxo inicial
+
+O fluxo criação → pausa → destravamento → análise estará pronto quando:
+
+1. a tarefa e a mensagem forem persistidas de forma atômica;
+2. o destravamento publicar uma mensagem durável;
+3. o consumidor receber a mensagem após reinício sem intervenção manual;
+4. o coordenador iniciar uma única análise por tarefa;
+5. o analista concluir e seu plano ficar persistido;
+6. as subtarefas forem criadas sem duplicidade;
+7. falhas forem encaminhadas para retry/DLQ;
+8. testes automatizados cobrirem caminho feliz, duplicidade e reinício.
+
+## Decisões ainda não autorizadas
+
+Este documento não autoriza, por si só, mudanças de infraestrutura. Ainda
+precisam ser avaliadas antes da execução:
+
+- instalação ou alteração do RabbitMQ no ServerIA;
+- criação de filas reais e políticas de DLQ;
+- alteração do contrato público da API;
+- mudança do banco ou migração de tabelas existentes.
