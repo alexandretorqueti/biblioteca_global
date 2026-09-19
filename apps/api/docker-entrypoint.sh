@@ -60,12 +60,23 @@ npm run db:bootstrap:gerenteagentes
 # Seed temporariamente desabilitado - migrations já aplicadas
 # npm run db:seed
 
-# Inicia motor-v2 em background (se MOTOR_VERSION=v2) — depois do migrate para garantir DNS
+# Inicia motor-v2 ou motor-v3 em background (dependendo da versão) — depois do migrate para garantir DNS
 if [ "${MOTOR_VERSION:-v1}" = "v2" ]; then
   echo "[entrypoint] Iniciando motor-v2 em background..."
   node projects/gerenteagentes/motor-v2/dist/start.js &
   MOTOR_PID=$!
   echo "[entrypoint] Motor-v2 PID: $MOTOR_PID"
+  sleep 2
+elif [ "${MOTOR_VERSION:-v1}" = "v3" ]; then
+  echo "[entrypoint] Iniciando motor-v3 em background..."
+  export MOTOR_MYSQL_HOST="${MOTOR_MYSQL_HOST:-${MYSQL_HOST:-host.docker.internal}}"
+  export MOTOR_MYSQL_PORT="${MOTOR_MYSQL_PORT:-${MYSQL_PORT:-3308}}"
+  export MOTOR_MYSQL_DATABASE="${MOTOR_MYSQL_DATABASE:-projeto_640}"
+  export MOTOR_MYSQL_USER="${MOTOR_MYSQL_USER:-${MYSQL_USER:-biblioteca}}"
+  export MOTOR_MYSQL_PASSWORD="${MOTOR_MYSQL_PASSWORD:-${MYSQL_PASSWORD:-}}"
+  node projects/gerenteagentes/motor-v3/dist/start.js &
+  MOTOR_PID=$!
+  echo "[entrypoint] Motor-v3 PID: $MOTOR_PID"
   sleep 2
 fi
 

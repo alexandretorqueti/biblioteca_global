@@ -190,6 +190,12 @@ export class GerenteAgentesController {
     return this.service.atividadeMotor(projeto);
   }
 
+  @Get('motor-v3/tabelas/:tabela')
+  @Roles('admin', 'gerente', 'operador')
+  listarTabelaMotorV3(@Param('tabela') tabela: string) {
+    return this.service.listarTabelaMotorV3(tabela);
+  }
+
   @Get('motor-deploy-diagnostics')
   diagnosticoDeploy(@CurrentProject() projeto: ProjetoResumo) {
     return this.service.diagnosticoDeploy(projeto);

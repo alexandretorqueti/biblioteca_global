@@ -276,7 +276,7 @@ export class SandboxConfigGenerator {
     }
 
     // Verifica se o único bind rw é o worktree
-    if (rwBinds.length === 1 && rwBinds[0].containerPath !== '/work') {
+    if (rwBinds.length === 1 && rwBinds[0] && rwBinds[0].containerPath !== '/work') {
       issues.push(`Bind rw deveria ser /work (worktree), mas é ${rwBinds[0].containerPath}`)
     }
 

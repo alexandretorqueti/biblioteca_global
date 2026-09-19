@@ -65,13 +65,16 @@ services:
       MOTOR_DEV_URL: ${MOTOR_DEV_URL:-http://localhost:3010}
       MOTOR_URL_HOST: ${MOTOR_URL_HOST:-api.tarefas.localhost}
       API_PORT: 3001
-      # Motor-v2 (integrado na API)
-      MOTOR_VERSION: ${MOTOR_VERSION:-v2}
-      MOTOR_MAX_WORKERS: ${MOTOR_MAX_WORKERS:-1}
-      MOTOR_API_PORT: ${MOTOR_API_PORT:-3010}
-      MOTOR_WORKSPACE_ROOT: ${MOTOR_WORKSPACE_ROOT:-/data/workspace/projects/agentes/gerenteagentes/worktrees}
-      # Push do motor-v2 para o GitHub (fase PUBLISH) — chave montada como volume
-      GIT_SSH_COMMAND: ${GIT_SSH_COMMAND:-ssh -i /root/.ssh/github_id_ed25519 -o StrictHostKeyChecking=accept-new}
+      # Motor-v3 (integrado na API) - substitui motor-v2
+      MOTOR_VERSION: v3
+      MOTOR_API_PORT: 3010
+      MOTOR_MAX_WORKERS: 2
+      MOTOR_WORKSPACE_ROOT: /data/workspace/projects/agentes/gerenteagentes/worktrees
+      MOTOR_MYSQL_HOST: ${MOTOR_MYSQL_HOST:-host.docker.internal}
+      MOTOR_MYSQL_PORT: ${MOTOR_MYSQL_PORT:-3308}
+      MOTOR_MYSQL_DATABASE: ${MOTOR_MYSQL_DATABASE:-projeto_640}
+      MOTOR_MYSQL_USER: ${MOTOR_MYSQL_USER:-biblioteca}
+      MOTOR_MYSQL_PASSWORD: ${MOTOR_MYSQL_PASSWORD:-}
       # Isa Chat
       ISA_PROJECT_ID: ${ISA_PROJECT_ID:-640}
       ISA_AGENT_ID: ${ISA_AGENT_ID:-isa}
@@ -85,7 +88,7 @@ services:
         condition: service_healthy
     ports:
       - "${API_HOST_PORT:-3003}:3001"
-      - "${MOTOR_V2_HOST_PORT:-3010}:3010"
+      - "${MOTOR_HOST_PORT:-3010}:3010"
     volumes:
       # Caminhos fixos dentro do container: o banco guarda paths do namespace
       # do OpenClaw, que precisam existir também no slot blue/green.

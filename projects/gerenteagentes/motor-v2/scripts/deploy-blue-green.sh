@@ -111,14 +111,15 @@ case "$active" in
   *) echo "estado blue-green inválido: $active" >&2; exit 1 ;;
 esac
 slot_values "$target"
+NEW_API_CONTAINER="${NEW_PROJECT}-api-1"
 
 echo "[deploy-blue-green] ativo=$active; subindo $target em $NEW_PROJECT"
 echo "[deploy-blue-green] build das imagens api/web..."
 docker compose -p "$NEW_PROJECT" -f "$COMPOSE_FILE" build api web
 
-# A API usa o checkout do host como volume para o Motor. Materialize o dist
-# produzido na imagem antes de iniciar a nova stack, como fazia o deploy
-# legado, mas usando a imagem do slot novo.
+# A API usa o checkout do host como volume para o Motor. Materialize os dist
+# produzidos na imagem antes de iniciar a nova stack; sem isso o bind-mount
+# esconde os artefatos compilados dentro da imagem.
 NEW_API_IMAGE="${NEW_PROJECT}-api:latest"
 docker image inspect "$NEW_API_IMAGE" >/dev/null 2>&1 || {
   echo "imagem da API do slot não encontrada: $NEW_API_IMAGE" >&2
@@ -126,26 +127,45 @@ docker image inspect "$NEW_API_IMAGE" >/dev/null 2>&1 || {
 }
 MOTOR_DIST_CONTAINER="biblioteca-global-motor-dist-$$"
 docker create --name "$MOTOR_DIST_CONTAINER" "$NEW_API_IMAGE" >/dev/null
-rm -rf projects/gerenteagentes/motor-v2/dist
-docker cp "$MOTOR_DIST_CONTAINER:/app/projects/gerenteagentes/motor-v2/dist" projects/gerenteagentes/motor-v2/
+for motor in motor-v2 motor-v3; do
+  mkdir -p "projects/gerenteagentes/$motor"
+  rm -rf "projects/gerenteagentes/$motor/dist"
+  docker cp "$MOTOR_DIST_CONTAINER:/app/projects/gerenteagentes/$motor/dist" "projects/gerenteagentes/$motor/"
+done
 docker rm "$MOTOR_DIST_CONTAINER" >/dev/null
-echo "[deploy-blue-green] dist do Motor materializado a partir da imagem $target"
+echo "[deploy-blue-green] dist dos motores v2/v3 materializados a partir da imagem $target"
 
 echo "[deploy-blue-green] iniciando $NEW_PROJECT (MySQL compartilhado em $MYSQL_HOST_BLUEGREEN:$MYSQL_PORT_BLUEGREEN)..."
 MYSQL_HOST="$MYSQL_HOST_BLUEGREEN" MYSQL_PORT="$MYSQL_PORT_BLUEGREEN" \
   OPENCLAW_CONSOLE_URL="$CONSOLE_URL_BLUEGREEN" \
   MOTOR_WORKSPACE_ROOT="$MOTOR_WORKSPACE_ROOT_CONTAINER" \
-  API_HOST_PORT="$NEW_API_PORT" MOTOR_V2_HOST_PORT="$NEW_MOTOR_PORT" WEB_HOST_PORT="$NEW_WEB_PORT" \
-  docker compose -p "$NEW_PROJECT" -f "$COMPOSE_FILE" up -d --no-deps api web
+  API_HOST_PORT="$NEW_API_PORT" MOTOR_HOST_PORT="$NEW_MOTOR_PORT" WEB_HOST_PORT="$NEW_WEB_PORT" \
+  docker compose -p "$NEW_PROJECT" -f "$COMPOSE_FILE" up -d --no-deps api
+
+# O Nginx do frontend resolve o upstream "api" pela rede do projeto Compose.
+# Aguarde o container da API existir antes de criar o frontend, evitando que o
+# Nginx entre em loop de restart quando o DNS ainda não tem o alias do serviço.
+for i in $(seq 1 30); do
+  if docker inspect "$NEW_API_CONTAINER" >/dev/null 2>&1; then break; fi
+  sleep 1
+done
+docker inspect "$NEW_API_CONTAINER" >/dev/null 2>&1 || {
+  echo "container da API não foi criado: $NEW_API_CONTAINER" >&2
+  exit 1
+}
+MYSQL_HOST="$MYSQL_HOST_BLUEGREEN" MYSQL_PORT="$MYSQL_PORT_BLUEGREEN" \
+  OPENCLAW_CONSOLE_URL="$CONSOLE_URL_BLUEGREEN" \
+  MOTOR_WORKSPACE_ROOT="$MOTOR_WORKSPACE_ROOT_CONTAINER" \
+  API_HOST_PORT="$NEW_API_PORT" MOTOR_HOST_PORT="$NEW_MOTOR_PORT" WEB_HOST_PORT="$NEW_WEB_PORT" \
+  docker compose -p "$NEW_PROJECT" -f "$COMPOSE_FILE" up -d --no-deps web
 
 cleanup_new() {
   MYSQL_HOST="$MYSQL_HOST_BLUEGREEN" MYSQL_PORT="$MYSQL_PORT_BLUEGREEN" \
-    API_HOST_PORT="$NEW_API_PORT" MOTOR_V2_HOST_PORT="$NEW_MOTOR_PORT" WEB_HOST_PORT="$NEW_WEB_PORT" \
+  API_HOST_PORT="$NEW_API_PORT" MOTOR_HOST_PORT="$NEW_MOTOR_PORT" WEB_HOST_PORT="$NEW_WEB_PORT" \
     docker compose -p "$NEW_PROJECT" -f "$COMPOSE_FILE" down --remove-orphans || true
 }
 trap cleanup_new ERR
 
-NEW_API_CONTAINER="${NEW_PROJECT}-api-1"
 echo "[deploy-blue-green] validando workspace do Motor no novo container"
 docker exec -e "MOTOR_REPO_ROOT_CONTAINER=$MOTOR_REPO_ROOT_CONTAINER" "$NEW_API_CONTAINER" sh -eu -c '
   test -d "$MOTOR_WORKSPACE_ROOT" || {

@@ -29,11 +29,14 @@ import { MonitorBridge } from './monitor-bridge/MonitorBridge.js'
 // Config
 const PORT = parseInt(process.env.MOTOR_PORT || '3010')
 const DB_CONFIG = {
-  host: process.env.MYSQL_HOST || 'host.docker.internal',
-  port: parseInt(process.env.MYSQL_PORT || '3308'),
-  user: process.env.MYSQL_USER || 'biblioteca',
-  password: process.env.MYSQL_PASSWORD || '',
-  database: process.env.MYSQL_DATABASE || 'projeto_640',
+  // A API usa o banco "core"; o catálogo operacional do Motor vive em
+  // projeto_640. Permitir configuração própria evita que o Motor tente ler
+  // tabelas motor_* no banco da plataforma.
+  host: process.env.MOTOR_MYSQL_HOST || process.env.MYSQL_HOST || 'host.docker.internal',
+  port: parseInt(process.env.MOTOR_MYSQL_PORT || process.env.MYSQL_PORT || '3308'),
+  user: process.env.MOTOR_MYSQL_USER || process.env.MYSQL_USER || 'biblioteca',
+  password: process.env.MOTOR_MYSQL_PASSWORD || process.env.MYSQL_PASSWORD || '',
+  database: process.env.MOTOR_MYSQL_DATABASE || process.env.MYSQL_DATABASE || 'projeto_640',
 }
 
 // Estado global (para graceful shutdown)
@@ -211,15 +214,49 @@ async function start() {
       
       // GET /api/motor/task/:id
       if (req.method === 'GET' && taskId && !taskAction) {
-        const execution = scheduler?.getActiveExecutions().find(e => e.taskId === taskId)
-        res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({
-          exists: !!execution,
-          taskId,
-          status: execution ? 'running' : 'unknown',
-          execution: execution || null,
-        }))
-        return
+        try {
+          // Usa mysql2 diretamente para queries SQL (Drizzle não suporta query() nativamente)
+          const [tarefaRow] = await pool.query(
+            `SELECT t.*, p.nome as projetoNome
+             FROM tarefas t
+             LEFT JOIN projetos_captados p ON t.projeto_id = p.id
+             WHERE t.external_id = ? OR t.id = ?
+             LIMIT 1`,
+            [taskId, taskId.replace('task-', '')]
+          ) as any[]
+
+          const tarefa = tarefaRow?.[0]
+          if (!tarefa) {
+            res.writeHead(404, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ error: 'Task not found', exists: false }))
+            return
+          }
+
+          // Busca subtarefas
+          const [subtasksRows] = await pool.query(
+            `SELECT * FROM subtarefas WHERE tarefa_id = ? ORDER BY seq`,
+            [tarefa.id]
+          ) as any[]
+
+          const execution = scheduler?.getActiveExecutions().find(e => e.taskId === taskId)
+
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({
+            exists: true,
+            ...tarefa,
+            // `tarefas.status` foi removido; o status é derivado dos fatos
+            // operacionais. Nesta consulta, só temos certeza da execução
+            // ativa; os demais estados ficam para a API da plataforma.
+            status: execution ? 'running' : 'queued',
+            subtasks: subtasksRows || [],
+            recoveryEligibility: null, // O motor-v3 não tem dados de recuperação ainda
+          }))
+          return
+        } catch (err: any) {
+          res.writeHead(500, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: err.message }))
+          return
+        }
       }
       
       // POST /api/motor/task/:id/enqueue

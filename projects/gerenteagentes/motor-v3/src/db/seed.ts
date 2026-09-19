@@ -14,7 +14,7 @@
 import 'dotenv/config'
 import { drizzle } from 'drizzle-orm/mysql2'
 import mysql from 'mysql2/promise'
-import * as schema from '../src/db/schema.js'
+import * as schema from './schema.js'
 
 const DB_URL = process.env.DATABASE_URL || 'mysql://root:root@localhost:3308/projeto_640'
 
