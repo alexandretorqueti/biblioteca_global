@@ -33,6 +33,7 @@ services:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
+      network: host
     restart: unless-stopped
     extra_hosts:
       # Permite resolver host.docker.internal (usado por OPENCLAW_CONSOLE_URL)
@@ -132,6 +133,7 @@ services:
     build:
       context: .
       dockerfile: apps/web/Dockerfile
+      network: host
     restart: unless-stopped
     depends_on:
       api:
