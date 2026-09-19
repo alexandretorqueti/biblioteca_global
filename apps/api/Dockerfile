@@ -29,7 +29,8 @@ COPY . .
 RUN npx tsc -p packages/shared --noEmit false --module Node16 --moduleResolution Node16 \
  && npx tsc -p packages/schema-tools --noEmit false \
  && npx tsc -p database --noEmit false
-# Compila motor-v2 (TypeScript → JavaScript)
-RUN cd projects/gerenteagentes/motor-v2 && npx tsc --build --force
+# Compila motor-v2 e motor-v3 (TypeScript → JavaScript)
+RUN cd projects/gerenteagentes/motor-v2 && npx tsc --build --force \
+ && cd ../motor-v3 && npx tsc --build --force
 EXPOSE 3001 3010
 CMD ["sh", "apps/api/docker-entrypoint.sh"]

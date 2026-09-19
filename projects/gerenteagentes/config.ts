@@ -420,6 +420,19 @@ export const config: GeradorSistemaConfig = {
       ],
     },
     {
+      id: "motor-v3",
+      label: "Motor v3",
+      items: [
+        {
+          id: "motor-v3-tabelas",
+          label: "Regras e observabilidade",
+          path: "motor-v3",
+          icon: "account_tree",
+          screen: { kind: "custom", componentId: "gerenteagentes-motor-v3-tabelas" },
+        },
+      ],
+    },
+    {
       id: "configuracoes",
       label: "CONFIGURAÇÕES",
       items: [

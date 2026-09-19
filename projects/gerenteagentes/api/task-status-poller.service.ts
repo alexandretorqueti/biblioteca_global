@@ -17,6 +17,7 @@ interface ByStatusResponse {
   tasks: Record<string, MotorTask[]>;
   timestamp: string;
   count: number;
+  executions?: Array<MotorTask & { taskId?: string }>;
 }
 
 /**
@@ -120,7 +121,8 @@ export class TaskStatusPollerService {
    */
   async poll(): Promise<void> {
     try {
-      const prefixo = this.motorVersao === 'v2' ? '/api/motor/tasks/by-status' : '/api/tasks/by-status';
+      // v2 e v3 expõem o endpoint sob /api/motor; /api/tasks é legado v1.
+      const prefixo = this.motorVersao === 'v1' ? '/api/tasks/by-status' : '/api/motor/tasks/by-status';
       const path = this.lastTimestamp
         ? `${prefixo}?since=${encodeURIComponent(this.lastTimestamp)}`
         : prefixo;
@@ -132,6 +134,20 @@ export class TaskStatusPollerService {
       }
 
       const data = JSON.parse(response.body) as ByStatusResponse;
+      // O v3 retorna execuções ativas em lista, enquanto o contrato legado
+      // agrupava tarefas por status. Normalize os dois formatos no cache.
+      if (Array.isArray(data.executions)) {
+        const tasks: Record<string, MotorTask[]> = {};
+        for (const execution of data.executions) {
+          const status = execution.status || 'running';
+          const task = { ...execution, id: execution.id || execution.taskId || '' };
+          if (!tasks[status]) tasks[status] = [];
+          tasks[status].push(task);
+        }
+        data.tasks = tasks;
+        data.count = data.executions.length;
+        data.timestamp = data.timestamp || new Date().toISOString();
+      }
 
       if (data.count > 0) {
         // Atualiza cache com tarefas modificadas

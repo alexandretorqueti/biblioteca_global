@@ -1,6 +1,6 @@
 import { Injectable, Inject, Logger, NotFoundException, BadRequestException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { eq, desc, and, asc, lt, or, isNull, isNotNull } from 'drizzle-orm';
+import { eq, desc, and, asc, lt, or, isNull, isNotNull, sql } from 'drizzle-orm';
 import { request as httpRequest, type RequestOptions } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { randomUUID } from 'node:crypto';
@@ -608,6 +608,27 @@ export class GerenteAgentesService {
    */
   private async dbDoMotor() {
     return await this.factory.obter({ id: 640 });
+  }
+
+  /** Consulta somente leitura das tabelas de configuração/observabilidade do Motor v3. */
+  async listarTabelaMotorV3(tabela: string) {
+    const tabelas: Record<string, string> = {
+      events: 'motor_events',
+      patterns: 'motor_patterns',
+      primitives: 'motor_primitives',
+      actions: 'motor_actions',
+      reactions: 'motor_reactions',
+      occurrences: 'motor_occurrences',
+      promotionState: 'motor_promotion_state',
+      proposals: 'motor_catalog_proposals',
+      eventLog: 'motor_event_log',
+      modelCooldown: 'motor_model_cooldown',
+    };
+    const nomeTabela = tabelas[tabela];
+    if (!nomeTabela) throw new BadRequestException('Tabela do Motor v3 inválida');
+    const db = await this.dbDoMotor();
+    const [rows] = await db.execute(sql.raw(`SELECT * FROM \`${nomeTabela}\` ORDER BY id DESC LIMIT 200`));
+    return { tabela, items: rows };
   }
 
   private async catalogEntry(chave: string) {

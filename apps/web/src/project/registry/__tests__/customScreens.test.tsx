@@ -71,6 +71,7 @@ describe("registry de telas custom", () => {
       "gerenteagentes-isa-chat",
       "gerenteagentes-model-selection",
       "gerenteagentes-prompts",
+      "gerenteagentes-motor-v3-tabelas",
       "gerenteagentes-configuracoes",
       "sistema-adm-global-dashboard",
       "sistema-adm-global-hub-administrativo",
