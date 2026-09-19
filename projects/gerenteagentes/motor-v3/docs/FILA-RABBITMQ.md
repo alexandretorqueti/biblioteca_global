@@ -149,6 +149,25 @@ contrato.
 - nenhum endpoint HTTP foi trocado para publicar diretamente no RabbitMQ
   ainda: isso depende do outbox transacional.
 
+### Ciclo 4b — outbox transacional do Motor ✅
+
+- criada a tabela `motor_outbox` com `message_id` único;
+- comandos HTTP passam pelo outbox quando `MOTOR_QUEUE_ENABLED=true`;
+- a gravação ocorre antes da tentativa de publicação;
+- a publicação é tentada imediatamente, sem polling periódico;
+- mensagens pendentes são drenadas no boot do motor;
+- falha do RabbitMQ mantém a mensagem `pending` com erro e contador de
+  tentativas;
+- publicação duplicada após crash é tolerada pelo `messageId` idempotente;
+- o `MessageBus` continua sendo o fallback quando a fila está desativada.
+
+O outbox implementado neste ciclo protege os comandos recebidos pelos
+endpoints do Motor (`enqueue`, `pause`, `resume`, `cancel` e `pump`). A
+criação original da tarefa ainda acontece na Biblioteca; para que criação da
+tarefa e `TASK_CREATED` sejam uma única transação, a Biblioteca deverá gravar
+no mesmo outbox ou chamar uma operação transacional compartilhada. O Motor
+não finge essa atomicidade entre dois serviços independentes.
+
 Variáveis opcionais:
 
 ```text

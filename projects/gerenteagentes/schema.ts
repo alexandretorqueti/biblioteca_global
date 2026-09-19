@@ -349,6 +349,24 @@ export const taskRuntimeFacts = mysqlTable("task_runtime_facts", {
   updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
 })
 
+export const motorOutbox = mysqlTable("motor_outbox", {
+  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+  messageId: varchar("message_id", { length: 200 }).notNull().unique(),
+  type: varchar("type", { length: 200 }).notNull(),
+  taskId: varchar("task_id", { length: 100 }).notNull(),
+  executionId: varchar("execution_id", { length: 200 }).notNull(),
+  payloadJson: json("payload_json").notNull(),
+  timestamp: timestamp("timestamp").notNull(),
+  correlationId: varchar("correlation_id", { length: 200 }),
+  causationId: varchar("causation_id", { length: 200 }),
+  status: mysqlEnum("status", ["pending", "published"]).notNull().default("pending"),
+  attempt: int("attempt").notNull().default(0),
+  lastError: text("last_error"),
+  publishedAt: timestamp("published_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+})
+
 export const subtarefas = mysqlTable("subtarefas", {
   id: bigint("id", { mode: "number", unsigned: true })
     .primaryKey()

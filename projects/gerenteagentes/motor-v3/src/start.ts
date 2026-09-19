@@ -27,6 +27,8 @@ import { Scheduler } from './scheduler/Scheduler.js'
 import { MonitorBridge } from './monitor-bridge/MonitorBridge.js'
 import { QueueConsumer } from './queue/QueueConsumer.js'
 import { RabbitMqTransport } from './queue/RabbitMqTransport.js'
+import { OutboxPublisher, createQueueMessage } from './queue/index.js'
+import type { QueueMessage } from './queue/QueueMessage.js'
 import { TaskCoordinator, MySqlTaskCoordinatorRepository } from './coordinator/index.js'
 import { ConsoleAnalystRunner } from './analysis/ConsoleAnalystRunner.js'
 import { ConsoleHttpApi } from './analysis/ConsoleHttpApi.js'
@@ -50,6 +52,7 @@ let server: any = null
 let scheduler: Scheduler | null = null
 let bus: MessageBus | null = null
 let queueConsumer: QueueConsumer | null = null
+let outboxPublisher: OutboxPublisher | null = null
 
 async function start() {
   console.log('[Motor v3] Iniciando...')
@@ -116,6 +119,8 @@ async function start() {
       exchange: process.env.MOTOR_RABBITMQ_EXCHANGE || 'motor',
       prefetch: Number(process.env.MOTOR_RABBITMQ_PREFETCH || 1),
     })
+    outboxPublisher = new OutboxPublisher(pool, transport, process.env.MOTOR_RABBITMQ_QUEUE || 'motor.commands')
+    await outboxPublisher.start()
     queueConsumer = new QueueConsumer(transport, message => coordinator.handle(message), {
       queue: process.env.MOTOR_RABBITMQ_QUEUE || 'motor.commands',
       maxAttempts: Number(process.env.MOTOR_QUEUE_MAX_ATTEMPTS || 3),
@@ -124,6 +129,16 @@ async function start() {
     console.log('[Motor v3] QueueConsumer + TaskCoordinator inicializados')
   } else {
     console.log('[Motor v3] Fila durável desativada (MOTOR_QUEUE_ENABLED != true)')
+  }
+
+  const dispatchCommand = async (type: string, taskId: string, executionId: string, payload: Record<string, unknown>): Promise<QueueMessage> => {
+    const message = createQueueMessage({ type, taskId, executionId, payload })
+    if (outboxPublisher) {
+      await outboxPublisher.enqueue(message)
+    } else {
+      await bus?.emit(type, { taskId, executionId, payload })
+    }
+    return message
   }
 
   // 9. Inicia API HTTP (http nativo)
@@ -235,7 +250,7 @@ async function start() {
       // POST /api/motor/pump
       if (req.method === 'POST' && path === '/api/motor/pump') {
         console.log('[Motor v3] Pump triggered')
-        await bus?.emit('PUMP_TRIGGERED', { taskId: 'system', executionId: 'system', payload: {} })
+        await dispatchCommand('PUMP_TRIGGERED', 'system', 'system', {})
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ ok: true }))
         return
@@ -303,19 +318,18 @@ async function start() {
         await new Promise(resolve => req.on('end', resolve))
         const taskData = body ? JSON.parse(body) : {}
         console.log(`[Motor v3] Task ${taskId} enqueued:`, JSON.stringify(taskData).slice(0, 200))
-        
-        // Emit task enqueued event
-        await bus?.emit('TASK_ENQUEUED', { taskId, executionId: `exec-${taskId}-${Date.now()}`, payload: { ...taskData } })
+        const executionId = `exec-${taskId}-${Date.now()}`
+        await dispatchCommand('TASK_ENQUEUED', taskId, executionId, { ...taskData })
         
         res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ ok: true, taskId, executionId: `exec-${taskId}-${Date.now()}` }))
+        res.end(JSON.stringify({ ok: true, taskId, executionId }))
         return
       }
       
       // POST /api/motor/task/:id/pause
       if (req.method === 'POST' && taskId && taskAction === 'pause') {
         console.log(`[Motor v3] Task ${taskId} pause requested`)
-        await bus?.emit('TASK_PAUSE_REQUESTED', { taskId, executionId: taskId, payload: {} })
+        await dispatchCommand('TASK_PAUSE_REQUESTED', taskId, taskId, {})
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ ok: true, taskId }))
         return
@@ -324,7 +338,7 @@ async function start() {
       // POST /api/motor/task/:id/resume
       if (req.method === 'POST' && taskId && taskAction === 'resume') {
         console.log(`[Motor v3] Task ${taskId} resume requested`)
-        await bus?.emit('TASK_RESUME_REQUESTED', { taskId, executionId: taskId, payload: {} })
+        await dispatchCommand('TASK_RESUME_REQUESTED', taskId, taskId, {})
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ ok: true, taskId }))
         return
@@ -333,7 +347,7 @@ async function start() {
       // POST /api/motor/task/:id/cancel
       if (req.method === 'POST' && taskId && taskAction === 'cancel') {
         console.log(`[Motor v3] Task ${taskId} cancel requested`)
-        await bus?.emit('TASK_CANCEL_REQUESTED', { taskId, executionId: taskId, payload: {} })
+        await dispatchCommand('TASK_CANCEL_REQUESTED', taskId, taskId, {})
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ ok: true, taskId }))
         return

@@ -16,6 +16,7 @@ export class RabbitMqTransport implements QueueTransport {
   constructor(private readonly config: RabbitMqTransportConfig) {}
 
   async connect(): Promise<void> {
+    if (this.channel) return
     this.connection = await amqp.connect(this.config.url)
     this.channel = await this.connection.createConfirmChannel()
     await this.channel.assertExchange(this.config.exchange, 'direct', { durable: true })
