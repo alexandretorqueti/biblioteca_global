@@ -193,3 +193,24 @@ describe("OperationMapScreen — cancelar e excluir tarefa", () => {
     expect(screen.getByTestId("btn-delete")).toBeDisabled()
   })
 })
+
+describe("OperationMapScreen — tarefas enfileiradas", () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+    delete globalThis.__bundleMapa
+  })
+
+  it("exibe no mapa tarefas com status queued do Motor v3", async () => {
+    globalThis.__bundleMapa = bundleFalso(
+      [tarefaFactory(88, "Tarefa aguardando consumidor", "queued")],
+      [],
+    )
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("operation-map-task-88")).toBeInTheDocument()
+      expect(screen.getByTestId("operation-count-planned")).toHaveTextContent("1")
+    })
+  })
+})
