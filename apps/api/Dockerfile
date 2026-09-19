@@ -20,6 +20,10 @@ COPY packages/ui/package.json packages/ui/package.json
 # adicionar projects/<slug>/package.json não exige alterar este Dockerfile.
 COPY projects ./projects
 RUN npm ci --include=dev
+# motor-v3 fica fora do workspace de primeiro nível e mantém seu próprio
+# package-lock; suas dependências (RabbitMQ e tipos) precisam existir para o
+# tsc do runtime compilar o consumidor da fila.
+RUN cd projects/gerenteagentes/motor-v3 && npm ci --include=dev
 
 FROM dependencies AS runtime
 WORKDIR /app
