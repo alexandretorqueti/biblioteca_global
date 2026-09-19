@@ -124,13 +124,18 @@ contrato.
 
 ### Ciclo 3 — ciclo do analista
 
-- criar o contexto de análise a partir da tarefa;
-- chamar `WorkerLauncher` com a instrução correta;
-- tratar resposta do analista e o marcador de conclusão;
-- validar o plano recebido;
-- persistir o plano aprovado;
-- criar subtarefas `pending` na ordem definida;
-- publicar `ANALYSIS_COMPLETED` e `TASK_READY_FOR_PROGRAMMING`.
+**Estado: domínio implementado; integração de inicialização pendente.**
+
+- criado `ConsoleAnalystRunner`, separado do `WorkerLauncher` de programação;
+- criado cliente HTTP mínimo do Console;
+- resposta do analista aceita plano ou perguntas de clarificação;
+- parser valida subtarefas, critérios, entregáveis e matriz de cobertura;
+- plano é persistido em transação e cria subtarefas `pending` na ordem definida;
+- perguntas são persistidas em `tarefa_chats`;
+- claim só é liberado depois da persistência;
+- publicados `ANALYSIS_COMPLETED`, `TASK_READY_FOR_PROGRAMMING` ou
+  `ANALYSIS_CLARIFICATION_REQUESTED`;
+- pendente: montar esses componentes no `start.ts` com configuração explícita.
 
 ### Ciclo 4 — outbox transacional
 

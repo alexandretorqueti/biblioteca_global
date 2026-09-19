@@ -62,17 +62,21 @@ describe('coordinator adapters', () => {
   })
 
   it('adapta o WorkerLauncher e propaga falha da análise', async () => {
-    const launcher = { executeTask: vi.fn(async () => ({ success: true, attempts: 1 })) } as any
-    const runner = new WorkerAnalysisRunner(launcher, async () => ({
-      taskId: 'task-1', subtaskId: undefined, executionId: 'exec-1', generation: 1,
-      projectSlug: 'biblioteca', repoPath: '/repo', worktreePath: '/repo', branchName: 'main',
-      agentId: 'agent-1', db: {},
-    }))
+    const consoleApi = {
+      createSession: vi.fn(async () => ({ sessionId: 'session-1' })),
+      sendMessage: vi.fn(async () => {}),
+      getSessionStatus: vi.fn()
+        .mockResolvedValueOnce({ isComplete: false })
+        .mockResolvedValueOnce({ isComplete: true, lastResponse: JSON.stringify({
+          subtarefas: [{ seq: 1, titulo: 'Corrigir texto', scope: 'Ajustar texto', acceptance_criteria: ['OK'], deliverables: ['Código'], requirements_covered: ['REQ-1'], depends_on: [] }],
+          requirements: [{ id: 'REQ-1', description: 'Texto correto' }], coverage: [{ requirement: 'REQ-1', covered_by: [1] }],
+        }) }),
+    }
+    const { ConsoleAnalystRunner } = await import('../src/analysis/index.js')
+    const runner = new ConsoleAnalystRunner(consoleApi, { pollIntervalMs: 0 })
 
-    await runner.start(task(), 'exec-1')
-    expect(launcher.executeTask).toHaveBeenCalledWith(expect.objectContaining({ taskId: 'task-1' }), expect.stringContaining('Corrigir charset'))
-
-    launcher.executeTask.mockResolvedValue({ success: false, error: 'Console indisponível' })
-    await expect(runner.start(task(), 'exec-1')).rejects.toThrow('Console indisponível')
+    const result = await runner.start(task(), 'exec-1')
+    expect(result.kind).toBe('plan')
+    expect(consoleApi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-1' }))
   })
 })

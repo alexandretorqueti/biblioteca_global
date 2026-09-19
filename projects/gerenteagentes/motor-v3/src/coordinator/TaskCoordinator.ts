@@ -1,5 +1,6 @@
 import type { MessageBus } from '../bus/MessageBus.js'
 import type { QueueMessage } from '../queue/QueueMessage.js'
+import type { AnalysisOutcome } from '../analysis/AnalystReply.js'
 
 export type TaskLifecycleStatus = 'planned' | 'running' | 'paused' | 'blocked' | 'cancelled' | 'completed' | 'failed'
 
@@ -28,10 +29,11 @@ export interface TaskCoordinatorRepository {
   getTask(taskId: string): Promise<TaskSnapshot | null>
   claimAnalysis(taskId: string, executionId: string): Promise<boolean>
   releaseAnalysisClaim(taskId: string, executionId: string): Promise<void>
+  persistAnalysis(taskId: string, executionId: string, outcome: AnalysisOutcome): Promise<void>
 }
 
 export interface AnalysisRunner {
-  start(task: TaskSnapshot, executionId: string): Promise<void>
+  start(task: TaskSnapshot, executionId: string): Promise<AnalysisOutcome>
 }
 
 export interface TaskCoordinatorConfig {
@@ -90,8 +92,16 @@ export class TaskCoordinator {
 
     await this.emit('ANALYSIS_SELECTED', message, { executionId })
     try {
-      await this.runner.start(task, executionId)
       await this.emit('ANALYSIS_STARTED', message, { executionId })
+      const outcome = await this.runner.start(task, executionId)
+      await this.repository.persistAnalysis(task.taskId, executionId, outcome)
+      await this.repository.releaseAnalysisClaim(task.taskId, executionId)
+      if (outcome.kind === 'questions') {
+        await this.emit('ANALYSIS_CLARIFICATION_REQUESTED', message, { executionId, questionCount: outcome.questions.length })
+      } else {
+        await this.emit('ANALYSIS_COMPLETED', message, { executionId, subtaskCount: outcome.subtasks.length })
+        await this.emit('TASK_READY_FOR_PROGRAMMING', message, { executionId, subtaskCount: outcome.subtasks.length })
+      }
     } catch (error) {
       await this.repository.releaseAnalysisClaim(task.taskId, executionId)
       await this.emit('ANALYSIS_FAILED', message, {

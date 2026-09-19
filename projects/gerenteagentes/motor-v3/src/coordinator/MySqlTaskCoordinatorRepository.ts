@@ -1,5 +1,6 @@
 import type { Pool, PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
 import type { TaskCoordinatorRepository, TaskLifecycleStatus, TaskSnapshot } from './TaskCoordinator.js'
+import type { AnalysisOutcome } from '../analysis/AnalystReply.js'
 
 interface TaskRow extends RowDataPacket {
   id: number
@@ -93,6 +94,64 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
          AND f.analysis_execution_id = ?`,
       [taskId, taskId, executionId],
     )
+  }
+
+  async persistAnalysis(taskId: string, executionId: string, outcome: AnalysisOutcome): Promise<void> {
+    const connection = await this.pool.getConnection()
+    try {
+      await connection.beginTransaction()
+      const [taskRows] = await connection.query<TaskRow[]>(
+        `SELECT t.id FROM tarefas t
+         INNER JOIN task_runtime_facts f ON f.tarefa_id = t.id
+         WHERE (t.external_id = ? OR CAST(t.id AS CHAR) = ?)
+           AND f.analysis_execution_id = ?
+         LIMIT 1 FOR UPDATE`,
+        [taskId, taskId, executionId],
+      )
+      const databaseTaskId = taskRows[0]?.id
+      if (!databaseTaskId) throw new Error(`Claim de análise não encontrado para ${taskId}`)
+
+      if (outcome.kind === 'questions') {
+        await connection.query(
+          `INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at)
+           VALUES (?, 'analyst', ?, NOW())`,
+          [databaseTaskId, JSON.stringify({ summary: outcome.summary, questions: outcome.questions })],
+        )
+      } else {
+        const [existing] = await connection.query<RowDataPacket[]>(
+          'SELECT id FROM subtarefas WHERE tarefa_id = ? LIMIT 1 FOR UPDATE', [databaseTaskId],
+        )
+        if (existing.length === 0) {
+          const ids = new Map<number, number>()
+          for (const subtask of outcome.subtasks) {
+            const [result] = await connection.query<ResultSetHeader>(
+              `INSERT INTO subtarefas
+                (tarefa_id, seq, titulo, scope, acceptance_criteria, deliverables, requirements_covered, depends_on_subtask_ids, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', NOW(), NOW())`,
+              [databaseTaskId, subtask.seq, subtask.titulo, subtask.scope,
+                JSON.stringify(subtask.acceptanceCriteria), JSON.stringify(subtask.deliverables),
+                JSON.stringify(subtask.requirementsCovered), JSON.stringify([])],
+            )
+            ids.set(subtask.seq, result.insertId)
+          }
+          for (const subtask of outcome.subtasks) {
+            const dependencyIds = subtask.dependsOn.map(seq => ids.get(seq)).filter((id): id is number => Boolean(id))
+            await connection.query(
+              `UPDATE subtarefas SET depends_on_subtask_id = ?, depends_on_subtask_ids = ?
+               WHERE tarefa_id = ? AND seq = ?`,
+              [dependencyIds[0] ?? null, JSON.stringify(dependencyIds), databaseTaskId, subtask.seq],
+            )
+          }
+          await connection.query('UPDATE tarefas SET plan_coverage = ? WHERE id = ?', [JSON.stringify(outcome.coverage), databaseTaskId])
+        }
+      }
+      await connection.commit()
+    } catch (error) {
+      await connection.rollback()
+      throw error
+    } finally {
+      connection.release()
+    }
   }
 
   private async lockTask(connection: PoolConnection, taskId: string): Promise<TaskRow | null> {

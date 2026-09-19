@@ -21,8 +21,9 @@ function setup(snapshot: TaskSnapshot | null = task()) {
     getTask: vi.fn(async () => snapshot),
     claimAnalysis: vi.fn(async () => true),
     releaseAnalysisClaim: vi.fn(async () => {}),
+    persistAnalysis: vi.fn(async () => {}),
   }
-  const runner = { start: vi.fn(async () => {}) }
+  const runner = { start: vi.fn(async () => ({ kind: 'plan' as const, subtasks: [{ seq: 1, titulo: 'Subtarefa', scope: 'Escopo', acceptanceCriteria: ['OK'], deliverables: ['Entrega'], requirementsCovered: ['REQ-1'], dependsOn: [] }], coverage: { requirements: [{ id: 'REQ-1', description: 'Requisito' }], coverage: [{ requirement: 'REQ-1', coveredBy: [1] }] } })) }
   const coordinator = new TaskCoordinator(repository, runner, bus)
   return { bus, repository, runner, coordinator }
 }
