@@ -20,7 +20,10 @@ export interface ClaimResult {
 }
 
 export class MessageProcessingState {
-    constructor(private readonly pool: Pool) {}
+    constructor(
+        private readonly pool: Pool,
+        private readonly processingTimeoutSeconds = 300,
+    ) {}
 
     /**
      * Registra uma nova mensagem na fila para processamento.
@@ -46,37 +49,48 @@ export class MessageProcessingState {
      * - { alreadyCompleted: true }: mensagem já foi processada, ack silencioso
      * - { alreadyProcessing: true }: outra instância já está processando, ack silencioso
      */
-    async tryClaim(messageId: string): Promise<ClaimResult> {
-        // Primeiro verifica se já existe e já foi completado
+    async tryClaim(
+        messageId: string,
+        messageType: string,
+        taskId: string,
+    ): Promise<ClaimResult> {
+        // A mensagem pode vir diretamente do RabbitMQ, sem ter passado pela
+        // outbox deste processo. O INSERT torna o primeiro claim autocontido
+        // e é idempotente para redeliveries.
+        await this.pool.execute(
+            `INSERT INTO motor_message_processing_state
+                (message_id, task_id, message_type, status, attempt, created_at)
+             VALUES (?, ?, ?, 'pending', 1, NOW())
+             ON DUPLICATE KEY UPDATE message_id = VALUES(message_id)`,
+            [messageId, taskId, messageType],
+        );
+
+        // O UPDATE condicional é o claim atômico: somente um consumidor pode
+        // trocar pending/failed para processing. Um processing antigo é
+        // considerado abandonado após o timeout e pode ser recuperado.
+        const [result] = await this.pool.execute(
+            `UPDATE motor_message_processing_state
+                SET status='processing', started_at=NOW(), completed_at=NULL
+              WHERE message_id=?
+                AND (
+                  status IN ('pending', 'failed')
+                  OR (status='processing' AND started_at < DATE_SUB(NOW(), INTERVAL ? SECOND))
+                )`,
+            [messageId, this.processingTimeoutSeconds],
+        ) as any;
+
+        if (Number((result as any).affectedRows) > 0) {
+            return { claimed: true, alreadyCompleted: false, alreadyProcessing: false };
+        }
+
         const [rows]: any[][] = await this.pool.query(
             'SELECT status FROM motor_message_processing_state WHERE message_id = ?',
-            [messageId]
+            [messageId],
         );
-
-        if (rows.length > 0) {
-            const existing = rows[0] as any;
-            if (existing.status === 'completed') {
-                return { claimed: false, alreadyCompleted: true, alreadyProcessing: false };
-            }
-
-            if (existing.status === 'processing') {
-                return { claimed: false, alreadyCompleted: false, alreadyProcessing: true };
-            }
+        if (rows[0]?.status === 'completed') {
+            return { claimed: false, alreadyCompleted: true, alreadyProcessing: false };
         }
-
-        // Tenta claim o pendente para processing
-        const [[result]]: any[] = await this.pool.query(
-            `UPDATE motor_message_processing_state 
-             SET status='processing', started_at=NOW() 
-             WHERE message_id=? AND status='pending'`,
-            [messageId]
-        );
-
-        if ((result as any).affectedRows === 0) {
-            return { claimed: false, alreadyCompleted: false, alreadyProcessing: true };
-        }
-
-        return { claimed: true, alreadyCompleted: false, alreadyProcessing: false };
+        return { claimed: false, alreadyCompleted: false, alreadyProcessing: true };
     }
 
     /**
@@ -94,7 +108,7 @@ export class MessageProcessingState {
      */
     async markFailed(messageId: string, errorMessage: string): Promise<void> {
         await this.pool.execute(
-            'UPDATE motor_message_processing_state SET status=failed, completed_at=NOW(), error_message=? WHERE message_id=?',
+            'UPDATE motor_message_processing_state SET status=failed, completed_at=NULL, error_message=? WHERE message_id=?',
             [errorMessage, messageId]
         );
     }
@@ -104,14 +118,10 @@ export class MessageProcessingState {
      */
     async incrementAttempt(messageId: string): Promise<void> {
         await this.pool.execute(
-            `UPDATE motor_message_processing_state 
-             SET status='pending', started_at=NULL, completed_at=NULL, timeout_at=NULL, error_message=NULL 
-             WHERE message_id = ?`,
-            [messageId]
-        );
-        
-        await this.pool.execute(
-            'UPDATE motor_message_processing_state SET attempt = attempt + 1 WHERE message_id = ?',
+            `UPDATE motor_message_processing_state
+                SET status='pending', attempt=attempt + 1, started_at=NULL,
+                    completed_at=NULL, timeout_at=NULL, error_message=NULL
+              WHERE message_id = ?`,
             [messageId]
         );
     }

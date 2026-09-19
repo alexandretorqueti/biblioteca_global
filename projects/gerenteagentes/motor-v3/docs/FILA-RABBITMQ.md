@@ -47,10 +47,13 @@ função ou outro objeto do processo.
 6. Ao atingir `MOTOR_QUEUE_MAX_ATTEMPTS`, a mensagem é publicada na DLQ e o
    delivery original é confirmado.
 
-O conjunto `processed` do `QueueConsumer` evita duplicação dentro do processo,
-mas não é a garantia final de idempotência. A próxima etapa deverá persistir o
-`messageId` processado ou usar uma chave única equivalente antes de executar
-efeitos irreversíveis.
+O `QueueConsumer` persiste o estado por `messageId` em
+`motor_message_processing_state`. O claim é atômico, mensagens concluídas são
+confirmadas sem repetir o handler e claims abandonados podem ser recuperados
+após o timeout configurado. Isso evita duplicidade no consumo, mas não promete
+exactly-once para efeitos externos: se o processo cair depois de executar o
+efeito e antes de marcar `completed`, o efeito precisa ser idempotente por sua
+própria chave de negócio.
 
 ## Topologia esperada
 
@@ -76,11 +79,12 @@ Implementado neste ciclo:
 - consumidor com `ack`/`nack` manual;
 - retry por TTL sem polling da aplicação e encaminhamento para DLQ;
 - transporte em memória e testes unitários.
+- estado persistente do consumidor com claim atômico e recuperação de claims
+  expirados.
 
 Ainda não implementado:
 
 - instalação/configuração do RabbitMQ no ServerIA;
-- idempotência persistida para efeitos irreversíveis.
 
 Esses itens ficam separados para não publicar uma tarefa antes de a transação
 que a criou estar confirmada e para não iniciar o motor com uma fila sem
@@ -196,6 +200,15 @@ independentes apenas com uma chamada HTTP.
 - falhas acima do limite são publicadas na DLQ;
 - mensagens inválidas também são encaminhadas à DLQ;
 - o número de retornos é calculado pelo cabeçalho `x-death` do RabbitMQ.
+
+### Ciclo 4e — idempotência persistente do consumidor ✅
+
+- migration `0004_message_processing_state` criada e registrada no journal;
+- primeira entrega registra automaticamente o `messageId` como `pending`;
+- claim atômico impede dois consumidores de executarem a mesma mensagem;
+- mensagens `completed` são reconhecidas sem reexecução;
+- estados `processing` abandonados são recuperáveis após 300 segundos;
+- falhas transitórias retornam a `pending` antes do retry do broker.
 
 Também não há polling periódico: se uma publicação falhar, a mensagem fica
 `pending` e é reenviada no próximo ciclo de publicação (boot ou novo enqueue).

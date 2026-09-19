@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS motor_message_processing_state (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Índices para performance nas consultas de estado e tarefa
-CREATE INDEX idx_message_processing_state_status ON motor_message_processing_state(status, attempt);
-CREATE INDEX idx_message_processing_state_task ON motor_message_processing_state(task_id, status);
+CREATE INDEX IF NOT EXISTS idx_message_processing_state_status ON motor_message_processing_state(status, attempt);
+CREATE INDEX IF NOT EXISTS idx_message_processing_state_task ON motor_message_processing_state(task_id, status);
 
 SELECT 1 AS migration_applied;

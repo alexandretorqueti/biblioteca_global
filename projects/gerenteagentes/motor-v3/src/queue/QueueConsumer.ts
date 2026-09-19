@@ -18,15 +18,16 @@ export type QueueMessageHandler = (message: QueueMessage) => Promise<void>
  */
 export class QueueConsumer {
   private running = false
+  private readonly processingState: MessageProcessingState
 
   constructor(
     private readonly transport: QueueTransport,
     private readonly handler: QueueMessageHandler,
     private readonly config: QueueConsumerConfig,
     private readonly pool: Pool,
-  ) {}
-
-  private readonly processingState = new MessageProcessingState(this.pool)
+  ) {
+    this.processingState = new MessageProcessingState(pool)
+  }
 
   async start(): Promise<void> {
     if (this.running) return
@@ -53,7 +54,11 @@ export class QueueConsumer {
     }
 
     // Tentativa de claim idempotente
-    const claimResult = await this.processingState.tryClaim(message.messageId)
+    const claimResult = await this.processingState.tryClaim(
+      message.messageId,
+      message.type,
+      message.taskId,
+    )
 
     if (claimResult.alreadyCompleted) {
       // Já foi processado com sucesso anteriormente, ack silencioso

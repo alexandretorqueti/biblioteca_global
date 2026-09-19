@@ -1,13 +1,63 @@
 import { describe, expect, it, vi } from 'vitest'
 import { InMemoryQueueTransport, QueueConsumer, createQueueMessage } from '../src/queue/index.js'
 
+function createProcessingPool() {
+  const records = new Map<string, { status: string; attempt: number }>()
+  return {
+    execute: vi.fn(async (sql: string, params: unknown[]) => {
+      const messageId = String(
+        sql.includes('SET status=failed') || sql.includes("SET status='pending'")
+          ? params[params.length - 1]
+          : params[0],
+      )
+      if (sql.includes('INSERT INTO motor_message_processing_state')) {
+        if (!records.has(messageId)) records.set(messageId, { status: 'pending', attempt: 1 })
+        return [{ affectedRows: 1 }, []]
+      }
+      if (sql.includes("SET status='processing'")) {
+        const record = records.get(messageId)
+        if (!record || !['pending', 'failed'].includes(record.status)) return [{ affectedRows: 0 }, []]
+        record.status = 'processing'
+        return [{ affectedRows: 1 }, []]
+      }
+      if (sql.includes('SET status=completed')) {
+        records.get(messageId)!.status = 'completed'
+        return [{ affectedRows: 1 }, []]
+      }
+      if (sql.includes("SET status=failed")) {
+        records.get(messageId)!.status = 'failed'
+        return [{ affectedRows: 1 }, []]
+      }
+      if (sql.includes("SET status='pending'")) {
+        const record = records.get(messageId)!
+        record.status = 'pending'
+        record.attempt += 1
+        return [{ affectedRows: 1 }, []]
+      }
+      throw new Error(`SQL inesperado: ${sql}`)
+    }),
+    query: vi.fn(async (_sql: string, params: unknown[]) => {
+      const record = records.get(String(params[0]))
+      return [record ? [{ status: record.status }] : [], []]
+    }),
+  } as any
+}
+
+function createConsumer(
+  transport: InMemoryQueueTransport,
+  handler: (message: any) => Promise<void>,
+  maxAttempts = 3,
+) {
+  return new QueueConsumer(transport, handler, { queue: 'motor.commands', maxAttempts }, createProcessingPool())
+}
+
 describe('QueueConsumer', () => {
   it('processa e confirma somente depois do handler concluir', async () => {
     const transport = new InMemoryQueueTransport()
     const handled: string[] = []
-    const consumer = new QueueConsumer(transport, async message => {
+    const consumer = createConsumer(transport, async message => {
       handled.push(message.messageId)
-    }, { queue: 'motor.commands', maxAttempts: 3 })
+    })
 
     await consumer.start()
     const message = createQueueMessage({
@@ -26,7 +76,7 @@ describe('QueueConsumer', () => {
   it('envia falha para rejeição sem reprocessar em loop', async () => {
     const transport = new InMemoryQueueTransport()
     const handler = vi.fn(async () => { throw new Error('falha transitória') })
-    const consumer = new QueueConsumer(transport, handler, { queue: 'motor.commands', maxAttempts: 3 })
+    const consumer = createConsumer(transport, handler)
 
     await consumer.start()
     await transport.publish('motor.commands', createQueueMessage({
@@ -44,7 +94,7 @@ describe('QueueConsumer', () => {
   it('descarta mensagem repetida depois do primeiro processamento', async () => {
     const transport = new InMemoryQueueTransport()
     const handler = vi.fn(async () => {})
-    const consumer = new QueueConsumer(transport, handler, { queue: 'motor.commands', maxAttempts: 3 })
+    const consumer = createConsumer(transport, handler)
     const message = createQueueMessage({
       type: 'TASK_ENQUEUED',
       taskId: 'task-3',
@@ -63,7 +113,7 @@ describe('QueueConsumer', () => {
   it('encaminha falha para a DLQ quando atinge o limite', async () => {
     const transport = new InMemoryQueueTransport()
     const handler = vi.fn(async () => { throw new Error('falha permanente') })
-    const consumer = new QueueConsumer(transport, handler, { queue: 'motor.commands', maxAttempts: 1 })
+    const consumer = createConsumer(transport, handler, 1)
 
     await consumer.start()
     await transport.publish('motor.commands', createQueueMessage({
