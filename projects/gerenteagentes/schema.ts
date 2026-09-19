@@ -341,6 +341,7 @@ export const taskRuntimeFacts = mysqlTable("task_runtime_facts", {
     .primaryKey()
     .references(() => tarefas.id, { onDelete: "cascade" }),
   analysisStartedAt: timestamp("analysis_started_at"),
+  analysisExecutionId: varchar("analysis_execution_id", { length: 200 }),
   integrationConfirmedAt: timestamp("integration_confirmed_at"),
   terminalStatus: varchar("terminal_status", { length: 30 }),
   terminalAt: timestamp("terminal_at"),

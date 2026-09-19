@@ -1,0 +1,78 @@
+import { describe, expect, it, vi } from 'vitest'
+import { MySqlTaskCoordinatorRepository, WorkerAnalysisRunner } from '../src/coordinator/index.js'
+import type { TaskSnapshot } from '../src/coordinator/index.js'
+
+function task(): TaskSnapshot {
+  return {
+    taskId: 'task-1', title: 'Corrigir charset', description: 'Corrigir acentuação', agentId: 'agent-1',
+    projectSlug: 'biblioteca', repoPath: '/repo', status: 'planned', paused: false,
+    terminal: false, analysisStartedAt: null, subtaskCount: 0,
+  }
+}
+
+describe('coordinator adapters', () => {
+  it('faz claim e libera somente o executionId correspondente', async () => {
+    const locked = {
+      id: 42, external_id: 'task-1', status: 'planned', paused_at: null,
+      analysis_started_at: null, analysis_execution_id: null, terminal_status: null,
+      subtask_count: 0, blocked_count: 0,
+    }
+    const connection = {
+      beginTransaction: vi.fn(async () => {}),
+      rollback: vi.fn(async () => {}),
+      commit: vi.fn(async () => {}),
+      release: vi.fn(),
+      query: vi.fn()
+        .mockResolvedValueOnce([[locked], []])
+        .mockResolvedValueOnce([[], []])
+        .mockResolvedValueOnce([{ affectedRows: 1 }, []]),
+    }
+    const pool = {
+      getConnection: vi.fn(async () => connection),
+      query: vi.fn(async () => [[], []]),
+    } as any
+    const repository = new MySqlTaskCoordinatorRepository(pool)
+
+    await expect(repository.claimAnalysis('task-1', 'exec-1')).resolves.toBe(true)
+    await repository.releaseAnalysisClaim('task-1', 'exec-1')
+
+    expect(connection.commit).toHaveBeenCalledOnce()
+    expect(connection.release).toHaveBeenCalledOnce()
+    expect(pool.query).toHaveBeenCalledWith(expect.stringContaining('f.analysis_execution_id = ?'), ['task-1', 'task-1', 'exec-1'])
+  })
+
+  it('não faz claim quando a tarefa já tem análise', async () => {
+    const connection = {
+      beginTransaction: vi.fn(async () => {}),
+      rollback: vi.fn(async () => {}),
+      commit: vi.fn(async () => {}),
+      release: vi.fn(),
+      query: vi.fn(async () => [[{
+        id: 42, status: 'running', paused_at: null,
+        analysis_started_at: new Date(), analysis_execution_id: 'other-exec',
+        terminal_status: null, subtask_count: 0, blocked_count: 0,
+      }], []]),
+    }
+    const pool = { getConnection: vi.fn(async () => connection) } as any
+    const repository = new MySqlTaskCoordinatorRepository(pool)
+
+    await expect(repository.claimAnalysis('task-1', 'exec-2')).resolves.toBe(false)
+    expect(connection.rollback).toHaveBeenCalledOnce()
+    expect(connection.commit).not.toHaveBeenCalled()
+  })
+
+  it('adapta o WorkerLauncher e propaga falha da análise', async () => {
+    const launcher = { executeTask: vi.fn(async () => ({ success: true, attempts: 1 })) } as any
+    const runner = new WorkerAnalysisRunner(launcher, async () => ({
+      taskId: 'task-1', subtaskId: undefined, executionId: 'exec-1', generation: 1,
+      projectSlug: 'biblioteca', repoPath: '/repo', worktreePath: '/repo', branchName: 'main',
+      agentId: 'agent-1', db: {},
+    }))
+
+    await runner.start(task(), 'exec-1')
+    expect(launcher.executeTask).toHaveBeenCalledWith(expect.objectContaining({ taskId: 'task-1' }), expect.stringContaining('Corrigir charset'))
+
+    launcher.executeTask.mockResolvedValue({ success: false, error: 'Console indisponível' })
+    await expect(runner.start(task(), 'exec-1')).rejects.toThrow('Console indisponível')
+  })
+})
