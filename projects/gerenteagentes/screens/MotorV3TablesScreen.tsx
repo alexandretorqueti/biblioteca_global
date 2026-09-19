@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState, type ReactNode } from "react"
+import { useEffect, useState, type ReactNode } from "react"
 import { Alert, Box, CircularProgress, ListSubheader, MenuItem, Paper, Stack, Table, TableBody, TableCell, TableHead, TableRow, TextField, Typography } from "@mui/material"
 import { useApi } from "../../../apps/web/src/hooks/useApi"
 
@@ -40,8 +40,11 @@ export default function MotorV3TablesScreen(): ReactNode {
   const currentLabel = tabelas.find((item) => item.key === table)?.label ?? table
   return <Stack spacing={2} data-testid="motor-v3-tables-screen">
     <Box><Typography variant="h4" fontWeight={700}>Motor v3</Typography><Typography color="text.secondary">Catálogo de regras, estado operacional e observabilidade. Consulta somente leitura.</Typography></Box>
-    <TextField select label="Tabela" value={table} onChange={(event) => { const next = event.target.value; if (tabelas.some((item) => item.key === next)) setTable(next) }} sx={{ maxWidth: 420 }}>
-      {grupos.map((grupo) => <Fragment key={grupo.label}><ListSubheader>{grupo.label}</ListSubheader>{grupo.tables.map((item) => <MenuItem key={item.key} value={item.key}>{item.label}</MenuItem>)}</Fragment>)}
+    <TextField select label="Tabela" value={table} onChange={(event) => { const next = event.target.value; if (tabelas.some((item) => item.key === next)) { setRows([]); setTable(next) } }} sx={{ maxWidth: 420 }}>
+      {grupos.flatMap((grupo) => [
+        <ListSubheader key={`group-${grupo.label}`}>{grupo.label}</ListSubheader>,
+        ...grupo.tables.map((item) => <MenuItem key={item.key} value={item.key}>{item.label}</MenuItem>),
+      ])}
     </TextField>
     {error && <Alert severity="error">{error}</Alert>}
     <Paper variant="outlined" sx={{ overflow: "auto" }}>
