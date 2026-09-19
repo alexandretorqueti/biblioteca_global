@@ -35,6 +35,7 @@ import {
   analystTaskSessionMessages,
   tarefaEventos,
   tarefaChatEntregas,
+  motorOutbox,
 } from '../schema';
 import {
   MOTOR_CONFIGURACOES,
@@ -928,34 +929,59 @@ export class GerenteAgentesService {
       }
     }
 
-    const result = await db.insert(tarefas).values({
-      projetoId: managedProjectId,
-      titulo,
-      descricao: input.descricao?.trim() || null,
-      tipo: input.tipo ?? 'desenvolvimento',
-      dependsOnTaskId: input.dependsOnTaskId ?? null,
-      autoStart: input.autoStart ?? false,
-      // Tarefas novas são criadas em PAUSA (paused_at definido).
-      // O status derivado será 'planned', mas a tarefa não executa até ser retomada.
-      pausedAt: new Date(),
-    });
-    const tarefaId = Number(result[0].insertId);
-    // IDs numéricos mantêm o external_id dentro do limite de 64 caracteres e
-    // deixam explícito que ambos pertencem ao namespace operacional.
-    const externalId = `task-p${managedProjectId}-${tarefaId}`;
-    await db
-      .update(tarefas)
-      .set({ externalId, updatedAt: new Date() })
-      .where(eq(tarefas.id, tarefaId));
+    return await db.transaction(async (tx: any) => {
+      const result = await tx.insert(tarefas).values({
+        projetoId: managedProjectId,
+        titulo,
+        descricao: input.descricao?.trim() || null,
+        tipo: input.tipo ?? 'desenvolvimento',
+        dependsOnTaskId: input.dependsOnTaskId ?? null,
+        autoStart: input.autoStart ?? false,
+        // Tarefas novas são criadas em PAUSA (paused_at definido).
+        // O status derivado será 'planned', mas a tarefa não executa até ser retomada.
+        pausedAt: new Date(),
+      });
+      const tarefaId = Number(result[0].insertId);
+      // IDs numéricos mantêm o external_id dentro do limite de 64 caracteres e
+      // deixam explícito que ambos pertencem ao namespace operacional.
+      const externalId = `task-p${managedProjectId}-${tarefaId}`;
+      await tx
+        .update(tarefas)
+        .set({ externalId, updatedAt: new Date() })
+        .where(eq(tarefas.id, tarefaId));
 
-    const [created] = await db
-      .select()
-      .from(tarefas)
-      .where(eq(tarefas.id, tarefaId))
-      .limit(1);
-    if (!created) throw new BadRequestException('Falha ao criar tarefa');
-    await this.registrarEvento(db, created, 'created', input.ator ?? 'usuario', 'usuario', { tipo: created.tipo });
-    return created;
+      const [created] = await tx
+        .select()
+        .from(tarefas)
+        .where(eq(tarefas.id, tarefaId))
+        .limit(1);
+      if (!created) throw new BadRequestException('Falha ao criar tarefa');
+      await this.registrarEvento(tx, created, 'created', input.ator ?? 'usuario', 'usuario', { tipo: created.tipo });
+
+      // A tarefa nasce pausada, mas o Motor precisa conhecer sua existência.
+      // A mensagem fica na mesma transação da tarefa: depois do commit, o
+      // OutboxPublisher pode publicá-la mesmo que o RabbitMQ esteja indisponível.
+      const messageId = randomUUID();
+      await tx.insert(motorOutbox).values({
+        messageId,
+        type: 'TASK_CREATED',
+        taskId: externalId,
+        executionId: `exec-${externalId}-${messageId}`,
+        payloadJson: {
+          taskId: externalId,
+          taskDatabaseId: tarefaId,
+          managedProjectId,
+          status: 'planned',
+          paused: true,
+        },
+        timestamp: new Date(),
+        correlationId: messageId,
+        causationId: null,
+        status: 'pending',
+        attempt: 0,
+      });
+      return created;
+    });
   }
 
   async atualizarStatusTarefa(_projeto: ProjetoResumo, _tarefaId: number, _status?: string) {

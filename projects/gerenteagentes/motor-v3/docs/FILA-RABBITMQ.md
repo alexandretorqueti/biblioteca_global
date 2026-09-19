@@ -122,9 +122,9 @@ contrato.
 - criado o adaptador `WorkerAnalysisRunner` para o `WorkerLauncher` existente;
 - migration ainda não foi aplicada em produção.
 
-### Ciclo 3 — ciclo do analista
+### Ciclo 3 — ciclo do analista ✅
 
-**Estado: domínio implementado; integração de inicialização pendente.**
+**Estado: implementado e integrado ao consumidor.**
 
 - criado `ConsoleAnalystRunner`, separado do `WorkerLauncher` de programação;
 - criado cliente HTTP mínimo do Console;
@@ -135,7 +135,8 @@ contrato.
 - claim só é liberado depois da persistência;
 - publicados `ANALYSIS_COMPLETED`, `TASK_READY_FOR_PROGRAMMING` ou
   `ANALYSIS_CLARIFICATION_REQUESTED`;
-- pendente: montar esses componentes no `start.ts` com configuração explícita.
+- componentes montados no `start.ts` com configuração explícita e encerramento
+  gracioso.
 
 ### Ciclo 4a — integração de inicialização ✅
 
@@ -146,8 +147,8 @@ contrato.
 - a integração exige explicitamente `MOTOR_RABBITMQ_URL`,
   `OPENCLAW_CONSOLE_URL` e `OPENCLAW_CONSOLE_TOKEN`;
 - a flag permanece desativada por padrão;
-- nenhum endpoint HTTP foi trocado para publicar diretamente no RabbitMQ
-  ainda: isso depende do outbox transacional.
+- os endpoints HTTP encaminham comandos para o outbox quando a fila está ativa;
+- o `MessageBus` permanece como fallback quando a fila está desativada.
 
 ### Ciclo 4b — outbox transacional do Motor ✅
 
@@ -162,11 +163,32 @@ contrato.
 - o `MessageBus` continua sendo o fallback quando a fila está desativada.
 
 O outbox implementado neste ciclo protege os comandos recebidos pelos
-endpoints do Motor (`enqueue`, `pause`, `resume`, `cancel` e `pump`). A
-criação original da tarefa ainda acontece na Biblioteca; para que criação da
-tarefa e `TASK_CREATED` sejam uma única transação, a Biblioteca deverá gravar
-no mesmo outbox ou chamar uma operação transacional compartilhada. O Motor
-não finge essa atomicidade entre dois serviços independentes.
+endpoints do Motor (`enqueue`, `pause`, `resume`, `cancel` e `pump`).
+
+### Ciclo 4c — criação atômica da tarefa ✅
+
+`GerenteAgentesService.criarTarefa` agora grava, na mesma transação do banco
+do projeto 640:
+
+- a tarefa e seu `external_id`;
+- o evento de auditoria `created`;
+- a mensagem `TASK_CREATED` na `motor_outbox`.
+
+A tarefa continua nascendo pausada. Portanto, `TASK_CREATED` apenas registra a
+existência no Motor; o destravamento gera o comando de retomada, que também
+passa pelo outbox do Motor. Depois do commit, o publicador tenta enviar a
+mensagem ao RabbitMQ e a deixa persistida como `pending` se o broker estiver
+indisponível.
+
+Limite atual: essa atomicidade vale porque a criação e `motor_outbox` estão no
+mesmo banco. Uma criação feita por outro serviço ou por outro banco ainda
+precisará de um outbox próprio nesse mesmo banco ou de uma operação transacional
+compartilhada. Não é possível garantir atomicidade entre duas transações
+independentes apenas com uma chamada HTTP.
+
+Também não há polling periódico: se uma publicação falhar, a mensagem fica
+`pending` e é reenviada no próximo ciclo de publicação (boot ou novo enqueue).
+Um retry temporizado e uma DLQ serão tratados na etapa de operação do RabbitMQ.
 
 Variáveis opcionais:
 
@@ -178,15 +200,6 @@ MOTOR_QUEUE_MAX_ATTEMPTS=3
 MOTOR_ANALYSIS_TIMEOUT_MS=1800000
 MOTOR_ANALYSIS_POLL_INTERVAL_MS=5000
 ```
-
-### Ciclo 4 — outbox transacional
-
-- criar tabela/repositório de outbox no banco do motor;
-- registrar criação/destravamento e mensagem na mesma transação;
-- publicar mensagens pendentes com segurança após commit;
-- marcar publicação confirmada;
-- impedir perda entre banco e RabbitMQ;
-- definir idempotência persistida por `messageId`.
 
 ### Ciclo 5 — integração com API e MessageBus
 
