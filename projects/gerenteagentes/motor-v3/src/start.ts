@@ -25,6 +25,11 @@ import { ActionExecutor } from './executor/ActionExecutor.js'
 import { registerAllPrimitives } from './primitives/index.js'
 import { Scheduler } from './scheduler/Scheduler.js'
 import { MonitorBridge } from './monitor-bridge/MonitorBridge.js'
+import { QueueConsumer } from './queue/QueueConsumer.js'
+import { RabbitMqTransport } from './queue/RabbitMqTransport.js'
+import { TaskCoordinator, MySqlTaskCoordinatorRepository } from './coordinator/index.js'
+import { ConsoleAnalystRunner } from './analysis/ConsoleAnalystRunner.js'
+import { ConsoleHttpApi } from './analysis/ConsoleHttpApi.js'
 
 // Config
 const PORT = parseInt(process.env.MOTOR_PORT || '3010')
@@ -44,6 +49,7 @@ const DB_CONFIG = {
 let server: any = null
 let scheduler: Scheduler | null = null
 let bus: MessageBus | null = null
+let queueConsumer: QueueConsumer | null = null
 
 async function start() {
   console.log('[Motor v3] Iniciando...')
@@ -90,7 +96,37 @@ async function start() {
   const monitorBridge = new MonitorBridge(bus, catalogLoader, classifier)
   console.log('[Motor v3] Monitor Bridge inicializado')
 
-  // 8. Inicia API HTTP (http nativo)
+  // 8. Fila durável e coordenador (opt-in até RabbitMQ/outbox estarem ativos)
+  if (process.env.MOTOR_QUEUE_ENABLED === 'true') {
+    const rabbitUrl = process.env.MOTOR_RABBITMQ_URL
+    const consoleUrl = process.env.OPENCLAW_CONSOLE_URL
+    const consoleToken = process.env.OPENCLAW_CONSOLE_TOKEN
+    if (!rabbitUrl || !consoleUrl || !consoleToken) {
+      throw new Error('MOTOR_QUEUE_ENABLED exige MOTOR_RABBITMQ_URL, OPENCLAW_CONSOLE_URL e OPENCLAW_CONSOLE_TOKEN')
+    }
+
+    const repository = new MySqlTaskCoordinatorRepository(pool)
+    const analyst = new ConsoleAnalystRunner(new ConsoleHttpApi(consoleUrl, consoleToken), {
+      timeoutMs: Number(process.env.MOTOR_ANALYSIS_TIMEOUT_MS || 1800000),
+      pollIntervalMs: Number(process.env.MOTOR_ANALYSIS_POLL_INTERVAL_MS || 5000),
+    })
+    const coordinator = new TaskCoordinator(repository, analyst, bus)
+    const transport = new RabbitMqTransport({
+      url: rabbitUrl,
+      exchange: process.env.MOTOR_RABBITMQ_EXCHANGE || 'motor',
+      prefetch: Number(process.env.MOTOR_RABBITMQ_PREFETCH || 1),
+    })
+    queueConsumer = new QueueConsumer(transport, message => coordinator.handle(message), {
+      queue: process.env.MOTOR_RABBITMQ_QUEUE || 'motor.commands',
+      maxAttempts: Number(process.env.MOTOR_QUEUE_MAX_ATTEMPTS || 3),
+    })
+    await queueConsumer.start()
+    console.log('[Motor v3] QueueConsumer + TaskCoordinator inicializados')
+  } else {
+    console.log('[Motor v3] Fila durável desativada (MOTOR_QUEUE_ENABLED != true)')
+  }
+
+  // 9. Inicia API HTTP (http nativo)
   console.log('[Motor v3] Iniciando API HTTP...')
   
   const http = await import('http')
@@ -320,6 +356,11 @@ async function start() {
 
 async function shutdown() {
   console.log('[Motor v3] Encerrando...')
+
+  if (queueConsumer) {
+    await queueConsumer.stop()
+    console.log('[Motor v3] QueueConsumer parado')
+  }
 
   // Para scheduler
   if (scheduler) {

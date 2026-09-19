@@ -137,6 +137,29 @@ contrato.
   `ANALYSIS_CLARIFICATION_REQUESTED`;
 - pendente: montar esses componentes no `start.ts` com configuração explícita.
 
+### Ciclo 4a — integração de inicialização ✅
+
+- `start.ts` inicializa `RabbitMqTransport`, `QueueConsumer`,
+  `TaskCoordinator`, repositório MySQL e `ConsoleAnalystRunner` quando
+  `MOTOR_QUEUE_ENABLED=true`;
+- o consumidor é encerrado no shutdown do processo;
+- a integração exige explicitamente `MOTOR_RABBITMQ_URL`,
+  `OPENCLAW_CONSOLE_URL` e `OPENCLAW_CONSOLE_TOKEN`;
+- a flag permanece desativada por padrão;
+- nenhum endpoint HTTP foi trocado para publicar diretamente no RabbitMQ
+  ainda: isso depende do outbox transacional.
+
+Variáveis opcionais:
+
+```text
+MOTOR_RABBITMQ_EXCHANGE=motor
+MOTOR_RABBITMQ_QUEUE=motor.commands
+MOTOR_RABBITMQ_PREFETCH=1
+MOTOR_QUEUE_MAX_ATTEMPTS=3
+MOTOR_ANALYSIS_TIMEOUT_MS=1800000
+MOTOR_ANALYSIS_POLL_INTERVAL_MS=5000
+```
+
 ### Ciclo 4 — outbox transacional
 
 - criar tabela/repositório de outbox no banco do motor;
