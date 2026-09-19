@@ -63,7 +63,7 @@ describe('coordinator adapters', () => {
 
   it('adapta o WorkerLauncher e propaga falha da análise', async () => {
     const consoleApi = {
-      createSession: vi.fn(async () => ({ sessionId: 'session-1' })),
+      createSession: vi.fn(async () => ({ sessionId: 'session-1', sessionKey: 'motor-v3:analysis:task-1', agentId: 'agent-1' })),
       sendMessage: vi.fn(async () => {}),
       getSessionStatus: vi.fn()
         .mockResolvedValueOnce({ isComplete: false })
@@ -77,6 +77,6 @@ describe('coordinator adapters', () => {
 
     const result = await runner.start(task(), 'exec-1')
     expect(result.kind).toBe('plan')
-    expect(consoleApi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-1' }))
+    expect(consoleApi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ session: expect.objectContaining({ sessionId: 'session-1' }) }))
   })
 })

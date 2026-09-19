@@ -1,31 +1,31 @@
-import type { AnalystConsole } from './ConsoleAnalystRunner.js'
+import type { AnalystConsole, AnalystSession } from './ConsoleAnalystRunner.js'
 
 export class ConsoleHttpApi implements AnalystConsole {
   constructor(private readonly baseUrl: string, private readonly token: string) {}
 
-  async createSession(input: { key: string; agentId: string; metadata: Record<string, unknown> }): Promise<{ sessionId: string }> {
-    const response = await this.request<{ sessionId?: string; id?: string }>('/api/sessions', {
+  async createSession(input: { key: string; agentId: string; metadata: Record<string, unknown> }): Promise<AnalystSession> {
+    const response = await this.request<{ sessionId?: string; id?: string; key?: string }>('/api/sessions', {
       method: 'POST', body: { agentId: input.agentId, key: input.key, label: input.key, metadata: input.metadata },
     })
     const sessionId = response.sessionId ?? response.id
     if (!sessionId) throw new Error('Console não retornou sessionId')
-    return { sessionId }
+    return { sessionId, sessionKey: response.key ?? input.key, agentId: input.agentId }
   }
 
-  async sendMessage(input: { sessionId: string; message: string }): Promise<void> {
-    await this.request('/api/chat/send', { method: 'POST', body: { sessionId: input.sessionId, message: input.message } })
+  async sendMessage(input: { session: AnalystSession; message: string }): Promise<void> {
+    await this.request('/api/chat/send', { method: 'POST', body: { sessionKey: input.session.sessionKey, agentId: input.session.agentId, sessionId: input.session.sessionId, message: input.message } })
   }
 
-  async getSessionStatus(sessionId: string): Promise<{ isComplete: boolean; isFailed?: boolean; lastResponse?: string; error?: string }> {
+  async getSessionStatus(session: AnalystSession): Promise<{ isComplete: boolean; isFailed?: boolean; lastResponse?: string; error?: string }> {
     const status = await this.request<{ status?: string; state?: string; hasActiveRun?: boolean; errorMessage?: string }>('/api/sessions/describe', {
-      method: 'GET', query: { sessionId },
+      method: 'GET', query: { key: session.sessionKey, agentId: session.agentId },
     })
     const failed = status.status === 'failed' || status.state === 'failed' || status.status === 'error' || status.state === 'error'
     const complete = !failed && (status.status === 'done' || status.status === 'idle' || status.state === 'done' || status.state === 'idle' || status.hasActiveRun === false)
     if (!complete && !failed) return { isComplete: false }
     if (failed) return { isComplete: false, isFailed: true, error: status.errorMessage }
     const history = await this.request<{ messages?: Array<{ role: string; content: unknown }> }>('/api/chat/history', {
-      method: 'GET', query: { sessionId, limit: 20 },
+      method: 'GET', query: { sessionKey: session.sessionKey, agentId: session.agentId, limit: 20 },
     })
     const assistant = [...(history.messages ?? [])].reverse().find(message => message.role === 'assistant')
     return { isComplete: true, lastResponse: assistant ? String(assistant.content) : undefined }

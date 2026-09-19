@@ -2,9 +2,15 @@ import type { AnalysisRunner, TaskSnapshot } from '../coordinator/TaskCoordinato
 import { parseAnalystReply, type AnalysisOutcome } from './AnalystReply.js'
 
 export interface AnalystConsole {
-  createSession(input: { key: string; agentId: string; metadata: Record<string, unknown> }): Promise<{ sessionId: string }>
-  sendMessage(input: { sessionId: string; message: string }): Promise<void>
-  getSessionStatus(sessionId: string): Promise<{ isComplete: boolean; isFailed?: boolean; lastResponse?: string; error?: string }>
+  createSession(input: { key: string; agentId: string; metadata: Record<string, unknown> }): Promise<AnalystSession>
+  sendMessage(input: { session: AnalystSession; message: string }): Promise<void>
+  getSessionStatus(session: AnalystSession): Promise<{ isComplete: boolean; isFailed?: boolean; lastResponse?: string; error?: string }>
+}
+
+export interface AnalystSession {
+  sessionId: string
+  sessionKey: string
+  agentId: string
 }
 
 export interface ConsoleAnalystRunnerConfig {
@@ -28,11 +34,11 @@ export class ConsoleAnalystRunner implements AnalysisRunner {
       agentId: task.agentId,
       metadata: { taskId: task.taskId, executionId, phase: 'analysis' },
     })
-    await this.consoleApi.sendMessage({ sessionId: session.sessionId, message: this.prompt(task) })
+    await this.consoleApi.sendMessage({ session, message: this.prompt(task) })
 
     const deadline = Date.now() + this.config.timeoutMs
     while (Date.now() < deadline) {
-      const status = await this.consoleApi.getSessionStatus(session.sessionId)
+      const status = await this.consoleApi.getSessionStatus(session)
       if (status.isFailed) throw new Error(status.error ?? 'Sessão do analista falhou')
       if (status.isComplete) {
         if (!status.lastResponse) throw new Error('Analista concluiu sem resposta')
