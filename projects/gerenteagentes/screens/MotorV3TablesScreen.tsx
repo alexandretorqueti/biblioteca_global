@@ -20,13 +20,13 @@ function formatValue(value: unknown): string {
 
 export default function MotorV3TablesScreen(): ReactNode {
   const api = useApi()
-  const [table, setTable] = useState("events")
+  const [table, setTable] = useState(tabelas[0]?.key ?? "")
   const [rows, setRows] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!api) return
+    if (!api || !table) return
     let active = true
     setLoading(true); setError(null)
     void api.http.request<{ items?: Row[] }>("GET", `/gerenteagentes/motor-v3/tabelas/${table}`, { auth: "access" })
@@ -40,7 +40,7 @@ export default function MotorV3TablesScreen(): ReactNode {
   const currentLabel = tabelas.find((item) => item.key === table)?.label ?? table
   return <Stack spacing={2} data-testid="motor-v3-tables-screen">
     <Box><Typography variant="h4" fontWeight={700}>Motor v3</Typography><Typography color="text.secondary">Catálogo de regras, estado operacional e observabilidade. Consulta somente leitura.</Typography></Box>
-    <TextField select label="Tabela" value={table} onChange={(event) => setTable(event.target.value)} sx={{ maxWidth: 420 }}>
+    <TextField select label="Tabela" value={table} onChange={(event) => { const next = event.target.value; if (tabelas.some((item) => item.key === next)) setTable(next) }} sx={{ maxWidth: 420 }}>
       {grupos.map((grupo) => <Box component="span" key={grupo.label}><Typography component="div" variant="overline" sx={{ px: 2, pt: 1 }}>{grupo.label}</Typography>{grupo.tables.map((item) => <MenuItem key={item.key} value={item.key}>{item.label}</MenuItem>)}</Box>)}
     </TextField>
     {error && <Alert severity="error">{error}</Alert>}
