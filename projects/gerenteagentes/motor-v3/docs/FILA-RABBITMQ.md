@@ -112,6 +112,16 @@ implementação MySQL nem chamada real ao `WorkerLauncher`; esses acoplamentos
 ficam para os ciclos de persistência e do analista, depois da revisão do
 contrato.
 
+### Ciclo 2b — claim persistente da análise ✅
+
+- adicionada a migration `0002_analysis_execution_claim`;
+- `task_runtime_facts.analysis_execution_id` identifica o dono do claim;
+- o repositório MySQL trava a tarefa, valida elegibilidade e grava o claim em
+  transação;
+- a liberação exige o mesmo `executionId`, evitando liberar outra análise;
+- criado o adaptador `WorkerAnalysisRunner` para o `WorkerLauncher` existente;
+- migration ainda não foi aplicada em produção.
+
 ### Ciclo 3 — ciclo do analista
 
 - criar o contexto de análise a partir da tarefa;
