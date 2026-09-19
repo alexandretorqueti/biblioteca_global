@@ -13,7 +13,34 @@ CREATE TABLE IF NOT EXISTS motor_message_processing_state (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Índices para performance nas consultas de estado e tarefa
-CREATE INDEX IF NOT EXISTS idx_message_processing_state_status ON motor_message_processing_state(status, attempt);
-CREATE INDEX IF NOT EXISTS idx_message_processing_state_task ON motor_message_processing_state(task_id, status);
+SET @status_index_exists = (
+    SELECT COUNT(*) FROM information_schema.statistics
+     WHERE table_schema = DATABASE()
+       AND table_name = 'motor_message_processing_state'
+       AND index_name = 'idx_message_processing_state_status'
+);
+SET @status_index_sql = IF(
+    @status_index_exists = 0,
+    'CREATE INDEX idx_message_processing_state_status ON motor_message_processing_state(status, attempt)',
+    'SELECT 1'
+);
+PREPARE status_index_stmt FROM @status_index_sql;
+EXECUTE status_index_stmt;
+DEALLOCATE PREPARE status_index_stmt;
+
+SET @task_index_exists = (
+    SELECT COUNT(*) FROM information_schema.statistics
+     WHERE table_schema = DATABASE()
+       AND table_name = 'motor_message_processing_state'
+       AND index_name = 'idx_message_processing_state_task'
+);
+SET @task_index_sql = IF(
+    @task_index_exists = 0,
+    'CREATE INDEX idx_message_processing_state_task ON motor_message_processing_state(task_id, status)',
+    'SELECT 1'
+);
+PREPARE task_index_stmt FROM @task_index_sql;
+EXECUTE task_index_stmt;
+DEALLOCATE PREPARE task_index_stmt;
 
 SELECT 1 AS migration_applied;
