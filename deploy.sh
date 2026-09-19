@@ -21,6 +21,8 @@ echo "[deploy] acesso ao host $HOST_ADDR OK"
 ssh_host bash -s -- "$REPO_HOST" "$BASE_BRANCH" "$DEPLOY_SCRIPT" <<'REMOTE'
 set -eu
 REPO="$1"; BASE_BRANCH="$2"; DEPLOY_SCRIPT="$3"
+export HOME=/home/alexandre
+export GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o UserKnownHostsFile=/home/alexandre/.ssh/known_hosts -o StrictHostKeyChecking=accept-new}"
 cd "$REPO"
 set -a
 . ./.env
