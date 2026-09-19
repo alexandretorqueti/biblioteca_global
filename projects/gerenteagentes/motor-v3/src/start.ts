@@ -128,7 +128,7 @@ async function start() {
     queueConsumer = new QueueConsumer(transport, message => coordinator.handle(message), {
       queue: process.env.MOTOR_RABBITMQ_QUEUE || 'motor.commands',
       maxAttempts: Number(process.env.MOTOR_QUEUE_MAX_ATTEMPTS || 3),
-    })
+    }, pool)
     await queueConsumer.start()
     console.log('[Motor v3] QueueConsumer + TaskCoordinator inicializados')
   } else {

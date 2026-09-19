@@ -1,5 +1,7 @@
 import type { QueueDelivery, QueueMessage } from './QueueMessage.js'
 import type { QueueTransport } from './QueueTransport.js'
+import { MessageProcessingState } from './MessageProcessingState.js'
+import type { Pool } from 'mysql2/promise'
 
 export interface QueueConsumerConfig {
   queue: string
@@ -16,14 +18,15 @@ export type QueueMessageHandler = (message: QueueMessage) => Promise<void>
  */
 export class QueueConsumer {
   private running = false
-  private readonly processing = new Set<string>()
-  private readonly processed = new Set<string>()
 
   constructor(
     private readonly transport: QueueTransport,
     private readonly handler: QueueMessageHandler,
     private readonly config: QueueConsumerConfig,
+    private readonly pool: Pool,
   ) {}
+
+  private readonly processingState = new MessageProcessingState(this.pool)
 
   async start(): Promise<void> {
     if (this.running) return
@@ -48,25 +51,45 @@ export class QueueConsumer {
       await this.transport.deadLetter(delivery, 'max-attempts-exceeded')
       return
     }
-    if (this.processed.has(message.messageId) || this.processing.has(message.messageId)) {
+
+    // Tentativa de claim idempotente
+    const claimResult = await this.processingState.tryClaim(message.messageId)
+
+    if (claimResult.alreadyCompleted) {
+      // Já foi processado com sucesso anteriormente, ack silencioso
       this.transport.ack(delivery)
       return
     }
 
-    this.processing.add(message.messageId)
+    if (claimResult.alreadyProcessing) {
+      // Outra instância já está processando, ack para não reencilhar
+      this.transport.ack(delivery)
+      return
+    }
+
+    if (!claimResult.claimed) {
+      // Estado inesperado, enviar para DLQ
+      await this.transport.deadLetter(delivery, 'unexpected-state')
+      return
+    }
+
+    // Executar o handler
     try {
       await this.handler(message)
-      this.processed.add(message.messageId)
+      await this.processingState.markCompleted(message.messageId)
       this.transport.ack(delivery)
     } catch (error) {
       console.error(`[QueueConsumer] falha ao processar ${message.messageId}:`, error)
+      await this.processingState.markFailed(message.messageId, (error as Error).message)
+
+      // Se atingiu o limite de tentativas, enviar para DLQ
       if ((delivery.attempt ?? message.attempt) >= this.config.maxAttempts) {
         await this.transport.deadLetter(delivery, 'max-attempts-exceeded')
       } else {
+        // Liberar o estado para retry (outro consumo pegará)
+        await this.processingState.incrementAttempt(message.messageId)
         this.transport.nack(delivery, false)
       }
-    } finally {
-      this.processing.delete(message.messageId)
     }
   }
 }
