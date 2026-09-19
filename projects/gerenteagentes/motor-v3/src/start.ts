@@ -118,6 +118,10 @@ async function start() {
       url: rabbitUrl,
       exchange: process.env.MOTOR_RABBITMQ_EXCHANGE || 'motor',
       prefetch: Number(process.env.MOTOR_RABBITMQ_PREFETCH || 1),
+      queue: process.env.MOTOR_RABBITMQ_QUEUE || 'motor.commands',
+      retryQueue: process.env.MOTOR_RABBITMQ_RETRY_QUEUE || 'motor.commands.retry',
+      deadLetterQueue: process.env.MOTOR_RABBITMQ_DLQ || 'motor.commands.dlq',
+      retryDelayMs: Number(process.env.MOTOR_RABBITMQ_RETRY_DELAY_MS || 30000),
     })
     outboxPublisher = new OutboxPublisher(pool, transport, process.env.MOTOR_RABBITMQ_QUEUE || 'motor.commands')
     await outboxPublisher.start()

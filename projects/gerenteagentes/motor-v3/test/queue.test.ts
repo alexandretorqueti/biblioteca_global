@@ -59,4 +59,23 @@ describe('QueueConsumer', () => {
     expect(handler).toHaveBeenCalledTimes(1)
     await consumer.stop()
   })
+
+  it('encaminha falha para a DLQ quando atinge o limite', async () => {
+    const transport = new InMemoryQueueTransport()
+    const handler = vi.fn(async () => { throw new Error('falha permanente') })
+    const consumer = new QueueConsumer(transport, handler, { queue: 'motor.commands', maxAttempts: 1 })
+
+    await consumer.start()
+    await transport.publish('motor.commands', createQueueMessage({
+      type: 'TASK_CREATED',
+      taskId: 'task-dlq',
+      executionId: 'exec-dlq',
+      payload: {},
+    }))
+
+    expect(handler).toHaveBeenCalledTimes(1)
+    expect(transport.pending('motor.commands')).toBe(0)
+    expect(transport.deadLettered()).toHaveLength(1)
+    await consumer.stop()
+  })
 })

@@ -6,9 +6,13 @@ export interface RabbitMqTransportConfig {
   url: string
   exchange: string
   prefetch: number
+  queue: string
+  retryQueue: string
+  deadLetterQueue: string
+  retryDelayMs: number
 }
 
-/** Adaptador RabbitMQ. A topologia (DLQ/retry) fica sob responsabilidade do deploy. */
+/** Adaptador RabbitMQ com retry por TTL e fila de mensagens mortas. */
 export class RabbitMqTransport implements QueueTransport {
   private connection: ChannelModel | null = null
   private channel: ConfirmChannel | null = null
@@ -56,7 +60,13 @@ export class RabbitMqTransport implements QueueTransport {
         channel.nack(raw, false, false)
         return
       }
-      await handler({ message, redelivered: raw.fields.redelivered, raw })
+      const attempt = this.retryAttempt(raw)
+      await handler({
+        message: { ...message, attempt: Math.max(message.attempt || 1, attempt) },
+        attempt,
+        redelivered: raw.fields.redelivered,
+        raw,
+      })
     }, { noAck: false })
   }
 
@@ -66,6 +76,29 @@ export class RabbitMqTransport implements QueueTransport {
 
   nack(delivery: QueueDelivery, requeue: boolean): void {
     this.requireChannel().nack(delivery.raw as ConsumeMessage, false, requeue)
+  }
+
+  async deadLetter(delivery: QueueDelivery, reason: string): Promise<void> {
+    const raw = delivery.raw as ConsumeMessage
+    const message = {
+      ...delivery.message,
+      payload: { ...delivery.message.payload, deadLetterReason: reason },
+    }
+    const published = this.requireChannel().publish(
+      this.config.exchange,
+      this.config.deadLetterQueue,
+      Buffer.from(JSON.stringify(message), 'utf8'),
+      {
+        contentType: 'application/json',
+        contentEncoding: 'utf-8',
+        persistent: true,
+        messageId: message.messageId,
+        headers: { deadLetterReason: reason },
+      },
+    )
+    if (!published) throw new Error(`RabbitMQ não aceitou a DLQ ${message.messageId}`)
+    await this.requireChannel().waitForConfirms()
+    this.requireChannel().ack(raw)
   }
 
   async close(): Promise<void> {
@@ -82,7 +115,37 @@ export class RabbitMqTransport implements QueueTransport {
 
   private async ensureQueue(queue: string): Promise<void> {
     const channel = this.requireChannel()
-    await channel.assertQueue(queue, { durable: true })
+    if (queue === this.config.queue) {
+      await channel.assertQueue(queue, {
+        durable: true,
+        arguments: {
+          'x-dead-letter-exchange': this.config.exchange,
+          'x-dead-letter-routing-key': this.config.retryQueue,
+        },
+      })
+      await channel.assertQueue(this.config.retryQueue, {
+        durable: true,
+        arguments: {
+          'x-message-ttl': this.config.retryDelayMs,
+          'x-dead-letter-exchange': this.config.exchange,
+          'x-dead-letter-routing-key': this.config.queue,
+        },
+      })
+      await channel.assertQueue(this.config.deadLetterQueue, { durable: true })
+      await channel.bindQueue(this.config.retryQueue, this.config.exchange, this.config.retryQueue)
+      await channel.bindQueue(this.config.deadLetterQueue, this.config.exchange, this.config.deadLetterQueue)
+    } else {
+      await channel.assertQueue(queue, { durable: true })
+    }
     await channel.bindQueue(queue, this.config.exchange, queue)
+  }
+
+  private retryAttempt(raw: ConsumeMessage): number {
+    const deaths = raw.properties.headers?.['x-death']
+    if (!Array.isArray(deaths)) return 1
+    const retryCount = deaths
+      .filter(entry => entry && entry.queue === this.config.retryQueue)
+      .reduce((total, entry) => total + Number(entry.count ?? 0), 0)
+    return retryCount + 1
   }
 }

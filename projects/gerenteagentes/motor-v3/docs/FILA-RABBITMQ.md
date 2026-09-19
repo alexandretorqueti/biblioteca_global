@@ -42,10 +42,10 @@ função ou outro objeto do processo.
 1. O consumidor recebe a mensagem com `ack` manual.
 2. O handler é executado.
 3. O `ack` só é enviado depois que o handler termina com sucesso.
-4. Uma falha é rejeitada sem requeue pelo consumidor atual, para que a
-   topologia do RabbitMQ encaminhe a mensagem à DLQ.
-5. Retry com atraso será adicionado junto com a configuração de DLQ/retry e
-   política de idempotência persistida.
+4. Uma falha abaixo do limite é rejeitada e vai para a fila de retry com TTL.
+5. A fila de retry devolve a mensagem à fila principal após o atraso.
+6. Ao atingir `MOTOR_QUEUE_MAX_ATTEMPTS`, a mensagem é publicada na DLQ e o
+   delivery original é confirmado.
 
 O conjunto `processed` do `QueueConsumer` evita duplicação dentro do processo,
 mas não é a garantia final de idempotência. A próxima etapa deverá persistir o
@@ -54,10 +54,15 @@ efeitos irreversíveis.
 
 ## Topologia esperada
 
-O adaptador declara um exchange `direct` durável. Ao iniciar o consumo, ele
-declara a fila durável e a associa ao exchange usando o nome da fila como
-routing key. O deploy deverá criar, adicionalmente, as filas de retry e DLQ
-com as políticas de TTL e dead-letter exchange.
+O adaptador declara um exchange `direct` durável e, ao iniciar o consumo,
+declara automaticamente:
+
+- a fila principal, que envia rejeições para a fila de retry;
+- a fila de retry, com TTL e retorno para a fila principal;
+- a DLQ, para falhas permanentes ou mensagens inválidas.
+
+As filas precisam ser criadas com os mesmos argumentos em todos os reinícios;
+alterar o TTL ou a política exige recriar a topologia de forma controlada.
 
 O código não instala nem configura RabbitMQ no host. A conexão só será ativada
 quando o serviço receber uma URL e uma topologia de produção por configuração.
@@ -69,15 +74,13 @@ Implementado neste ciclo:
 - contrato e criação de mensagens;
 - transporte RabbitMQ com publisher confirms;
 - consumidor com `ack`/`nack` manual;
+- retry por TTL sem polling da aplicação e encaminhamento para DLQ;
 - transporte em memória e testes unitários.
 
 Ainda não implementado:
 
-- outbox transacional entre `tarefas` e a mensagem;
-- `TaskCoordinator` para análise e subtarefas;
-- conexão do endpoint HTTP ao RabbitMQ;
 - instalação/configuração do RabbitMQ no ServerIA;
-- retry/DLQ de produção e idempotência persistida.
+- idempotência persistida para efeitos irreversíveis.
 
 Esses itens ficam separados para não publicar uma tarefa antes de a transação
 que a criou estar confirmada e para não iniciar o motor com uma fila sem
@@ -186,15 +189,28 @@ precisará de um outbox próprio nesse mesmo banco ou de uma operação transaci
 compartilhada. Não é possível garantir atomicidade entre duas transações
 independentes apenas com uma chamada HTTP.
 
+### Ciclo 4d — retry e DLQ orientados pelo broker ✅
+
+- rejeições transitórias seguem para uma fila de retry com TTL;
+- a fila de retry devolve a mensagem à fila principal sem polling da aplicação;
+- falhas acima do limite são publicadas na DLQ;
+- mensagens inválidas também são encaminhadas à DLQ;
+- o número de retornos é calculado pelo cabeçalho `x-death` do RabbitMQ.
+
 Também não há polling periódico: se uma publicação falhar, a mensagem fica
 `pending` e é reenviada no próximo ciclo de publicação (boot ou novo enqueue).
-Um retry temporizado e uma DLQ serão tratados na etapa de operação do RabbitMQ.
+O retry de processamento agora é temporizado pelo próprio RabbitMQ, sem um
+processo consultando o banco a cada poucos segundos. A publicação da outbox
+ainda depende de boot ou novo enqueue quando o broker está indisponível.
 
 Variáveis opcionais:
 
 ```text
 MOTOR_RABBITMQ_EXCHANGE=motor
 MOTOR_RABBITMQ_QUEUE=motor.commands
+MOTOR_RABBITMQ_RETRY_QUEUE=motor.commands.retry
+MOTOR_RABBITMQ_DLQ=motor.commands.dlq
+MOTOR_RABBITMQ_RETRY_DELAY_MS=30000
 MOTOR_RABBITMQ_PREFETCH=1
 MOTOR_QUEUE_MAX_ATTEMPTS=3
 MOTOR_ANALYSIS_TIMEOUT_MS=1800000

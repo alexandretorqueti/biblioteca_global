@@ -11,9 +11,8 @@ export type QueueMessageHandler = (message: QueueMessage) => Promise<void>
 /**
  * Entrada única do motor para mensagens duráveis.
  *
- * Ack só acontece depois do handler terminar. Falhas não são reencaminhadas
- * automaticamente nesta primeira etapa: o broker deve encaminhar a mensagem
- * rejeitada para a DLQ configurada pelo deploy.
+ * Ack só acontece depois do handler terminar. Falhas transitórias são
+ * rejeitadas para o retry do broker; após o limite, vão para a DLQ.
  */
 export class QueueConsumer {
   private running = false
@@ -42,11 +41,11 @@ export class QueueConsumer {
     const { message } = delivery
     if (!this.running) return
     if (!message.messageId || !message.type || !message.taskId) {
-      this.transport.nack(delivery, false)
+      await this.transport.deadLetter(delivery, 'invalid-message')
       return
     }
     if (message.attempt > this.config.maxAttempts) {
-      this.transport.nack(delivery, false)
+      await this.transport.deadLetter(delivery, 'max-attempts-exceeded')
       return
     }
     if (this.processed.has(message.messageId) || this.processing.has(message.messageId)) {
@@ -61,7 +60,11 @@ export class QueueConsumer {
       this.transport.ack(delivery)
     } catch (error) {
       console.error(`[QueueConsumer] falha ao processar ${message.messageId}:`, error)
-      this.transport.nack(delivery, false)
+      if ((delivery.attempt ?? message.attempt) >= this.config.maxAttempts) {
+        await this.transport.deadLetter(delivery, 'max-attempts-exceeded')
+      } else {
+        this.transport.nack(delivery, false)
+      }
     } finally {
       this.processing.delete(message.messageId)
     }

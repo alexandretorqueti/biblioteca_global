@@ -5,6 +5,7 @@ import type { QueueDeliveryHandler, QueueTransport } from './QueueTransport.js'
 export class InMemoryQueueTransport implements QueueTransport {
   private readonly queues = new Map<string, QueueDelivery[]>()
   private readonly consumers = new Map<string, QueueDeliveryHandler>()
+  private readonly deadLetters: QueueDelivery[] = []
   private connected = false
 
   async connect(): Promise<void> {
@@ -37,6 +38,11 @@ export class InMemoryQueueTransport implements QueueTransport {
     delivery.redelivered = true
   }
 
+  async deadLetter(delivery: QueueDelivery, _reason: string): Promise<void> {
+    this.deadLetters.push(delivery)
+    this.removeDelivery(delivery)
+  }
+
   async close(): Promise<void> {
     this.connected = false
     this.consumers.clear()
@@ -44,6 +50,10 @@ export class InMemoryQueueTransport implements QueueTransport {
 
   pending(queue: string): number {
     return this.queues.get(queue)?.length ?? 0
+  }
+
+  deadLettered(): QueueDelivery[] {
+    return [...this.deadLetters]
   }
 
   private async drain(queue: string): Promise<void> {

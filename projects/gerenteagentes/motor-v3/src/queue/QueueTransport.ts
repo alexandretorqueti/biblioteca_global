@@ -8,5 +8,6 @@ export interface QueueTransport {
   consume(queue: string, handler: QueueDeliveryHandler): Promise<void>
   ack(delivery: QueueDelivery): void
   nack(delivery: QueueDelivery, requeue: boolean): void
+  deadLetter(delivery: QueueDelivery, reason: string): Promise<void>
   close(): Promise<void>
 }

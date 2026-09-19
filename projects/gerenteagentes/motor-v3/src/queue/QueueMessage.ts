@@ -21,6 +21,8 @@ export interface QueueMessage<TPayload extends Record<string, unknown> = Record<
 export interface QueueDelivery {
   message: QueueMessage
   redelivered: boolean
+  /** Número de retornos pela fila de retry, quando fornecido pelo broker. */
+  attempt?: number
   raw: unknown
 }
 
