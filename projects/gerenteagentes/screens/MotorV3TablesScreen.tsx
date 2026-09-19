@@ -1,5 +1,5 @@
-import { useEffect, useState, type ReactNode } from "react"
-import { Alert, Box, CircularProgress, MenuItem, Paper, Stack, Table, TableBody, TableCell, TableHead, TableRow, TextField, Typography } from "@mui/material"
+import { Fragment, useEffect, useState, type ReactNode } from "react"
+import { Alert, Box, CircularProgress, ListSubheader, MenuItem, Paper, Stack, Table, TableBody, TableCell, TableHead, TableRow, TextField, Typography } from "@mui/material"
 import { useApi } from "../../../apps/web/src/hooks/useApi"
 
 export const componentId = "gerenteagentes-motor-v3-tabelas"
@@ -41,7 +41,7 @@ export default function MotorV3TablesScreen(): ReactNode {
   return <Stack spacing={2} data-testid="motor-v3-tables-screen">
     <Box><Typography variant="h4" fontWeight={700}>Motor v3</Typography><Typography color="text.secondary">Catálogo de regras, estado operacional e observabilidade. Consulta somente leitura.</Typography></Box>
     <TextField select label="Tabela" value={table} onChange={(event) => { const next = event.target.value; if (tabelas.some((item) => item.key === next)) setTable(next) }} sx={{ maxWidth: 420 }}>
-      {grupos.map((grupo) => <Box component="span" key={grupo.label}><Typography component="div" variant="overline" sx={{ px: 2, pt: 1 }}>{grupo.label}</Typography>{grupo.tables.map((item) => <MenuItem key={item.key} value={item.key}>{item.label}</MenuItem>)}</Box>)}
+      {grupos.map((grupo) => <Fragment key={grupo.label}><ListSubheader>{grupo.label}</ListSubheader>{grupo.tables.map((item) => <MenuItem key={item.key} value={item.key}>{item.label}</MenuItem>)}</Fragment>)}
     </TextField>
     {error && <Alert severity="error">{error}</Alert>}
     <Paper variant="outlined" sx={{ overflow: "auto" }}>
