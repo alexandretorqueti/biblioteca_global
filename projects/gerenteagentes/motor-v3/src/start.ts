@@ -37,6 +37,7 @@ const DB_CONFIG = {
   user: process.env.MOTOR_MYSQL_USER || process.env.MYSQL_USER || 'biblioteca',
   password: process.env.MOTOR_MYSQL_PASSWORD || process.env.MYSQL_PASSWORD || '',
   database: process.env.MOTOR_MYSQL_DATABASE || process.env.MYSQL_DATABASE || 'projeto_640',
+  charset: 'utf8mb4',
 }
 
 // Estado global (para graceful shutdown)

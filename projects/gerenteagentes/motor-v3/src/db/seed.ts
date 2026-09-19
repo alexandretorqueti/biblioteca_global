@@ -20,7 +20,7 @@ const DB_URL = process.env.DATABASE_URL || 'mysql://root:root@localhost:3308/pro
 
 async function seed() {
   console.log('[Seed] Conectando ao MySQL...')
-  const pool = await mysql.createPool(DB_URL)
+  const pool = await mysql.createPool({ uri: DB_URL, charset: 'utf8mb4' })
   const db = drizzle(pool, { schema, mode: 'default' })
 
   console.log('[Seed] Populando primitivas...')
