@@ -96,15 +96,21 @@ fim da análise. Cada ciclo deve manter testes e documentação atualizados.
 - transporte em memória para testes;
 - documentação dos limites do transporte.
 
-### Ciclo 2 — `TaskCoordinator`
+### Ciclo 2 — `TaskCoordinator` ✅
 
-- criar `src/coordinator/TaskCoordinator.ts`;
-- receber `TASK_CREATED`, `TASK_ENQUEUED` e `TASK_RESUME_REQUESTED`;
-- consultar o estado real da tarefa e respeitar pausa/cancelamento;
-- garantir que uma tarefa não tenha duas análises simultâneas;
-- separar decisão de análise da decisão de execução de subtarefa;
-- publicar eventos de seleção, início, conclusão e falha;
-- testar o caminho feliz e mensagens duplicadas.
+- criado `src/coordinator/TaskCoordinator.ts`;
+- recebe `TASK_CREATED`, `TASK_ENQUEUED` e `TASK_RESUME_REQUESTED`;
+- consulta o estado recebido pelo repositório e respeita pausa/cancelamento;
+- exige `claimAnalysis` atômico para impedir duas análises simultâneas;
+- separa decisão de análise da decisão de execução de subtarefa;
+- publica eventos de seleção, início, encaminhamento e falha no `MessageBus`;
+- cobre caminho feliz, pausa, plano existente, duplicidade, falha e comandos
+  que não pertencem à análise.
+
+O ciclo usa interfaces injetáveis de repositório e runner. Ainda não há
+implementação MySQL nem chamada real ao `WorkerLauncher`; esses acoplamentos
+ficam para os ciclos de persistência e do analista, depois da revisão do
+contrato.
 
 ### Ciclo 3 — ciclo do analista
 
