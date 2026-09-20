@@ -14,6 +14,15 @@ interface OutboxRow extends RowDataPacket {
   attempt: number
 }
 
+/** Converte o timestamp serializável da mensagem para DATETIME do MySQL. */
+function toMysqlDateTime(value: string | Date): string {
+  const date = value instanceof Date ? value : new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    throw new Error(`Timestamp inválido para o outbox: ${String(value)}`)
+  }
+  return date.toISOString().slice(0, 19).replace('T', ' ')
+}
+
 /** Publica mensagens persistidas sem polling periódico. */
 export class OutboxPublisher {
   private started = false
@@ -38,7 +47,7 @@ export class OutboxPublisher {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0)
        ON DUPLICATE KEY UPDATE message_id = VALUES(message_id)`,
       [message.messageId, message.type, message.taskId, message.executionId,
-        JSON.stringify(message.payload), message.timestamp, message.correlationId ?? null,
+        JSON.stringify(message.payload), toMysqlDateTime(message.timestamp), message.correlationId ?? null,
         message.causationId ?? null],
     )
     if (this.started) await this.flush()

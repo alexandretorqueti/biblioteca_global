@@ -27,6 +27,7 @@ describe('OutboxPublisher', () => {
     await publisher.enqueue(message)
 
     expect(stored.get(message.messageId)?.status).toBe('published')
+    expect(stored.get(message.messageId)?.timestamp).toBe(message.timestamp.slice(0, 19).replace('T', ' '))
     expect(transport.pending('motor.commands')).toBe(1)
   })
 

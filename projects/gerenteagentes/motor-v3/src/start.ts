@@ -357,6 +357,43 @@ async function start() {
         res.end(JSON.stringify({ ok: true, taskId }))
         return
       }
+
+      // DELETE /api/motor/task/:id
+      // Mantém a compatibilidade com o contrato do motor v2. A exclusão
+      // definitiva é feita aqui porque esta é a origem de verdade operacional
+      // usada pela API para remover a tarefa e suas relações em cascata.
+      if (req.method === 'DELETE' && taskId && !taskAction) {
+        const [taskRows] = await pool.query<any[]>(
+          `SELECT t.id, t.external_id,
+                  COALESCE(f.terminal_status, '') AS terminal_status,
+                  f.analysis_started_at,
+                  (SELECT COUNT(*) FROM subtarefas s WHERE s.tarefa_id = t.id) AS subtask_count
+             FROM tarefas t
+             LEFT JOIN task_runtime_facts f ON f.tarefa_id = t.id
+            WHERE t.external_id = ? OR CAST(t.id AS CHAR) = ?
+            LIMIT 1`,
+          [taskId, taskId],
+        )
+        const task = taskRows[0]
+        if (!task) {
+          res.writeHead(404, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: false, error: 'Task not found' }))
+          return
+        }
+
+        const activeExecution = scheduler?.getActiveExecutions().find((execution) => execution.taskId === taskId)
+        if (activeExecution || task.analysis_started_at) {
+          res.writeHead(400, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: false, error: `Tarefa ${taskId} ainda está em execução; cancele antes de excluir` }))
+          return
+        }
+
+        await pool.query('DELETE FROM tarefas WHERE id = ?', [task.id])
+        console.log(`[Motor v3] Task ${taskId} deleted`)
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: true }))
+        return
+      }
       
       // 404
       res.writeHead(404, { 'Content-Type': 'application/json' })
