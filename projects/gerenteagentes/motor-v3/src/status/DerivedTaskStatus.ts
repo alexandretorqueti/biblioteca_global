@@ -30,8 +30,8 @@ export class DerivedTaskStatusResolver {
   async resolve(taskId: string): Promise<DerivedTaskStatus> {
     const [rows] = await this.pool.query<TaskFactsRow[]>(`
       SELECT
-        t.id, t.paused_at,
-        f.resource_wait_key, f.analysis_started_at, f.terminal_status,
+        t.id, t.paused_at, t.resource_wait_key,
+        f.analysis_started_at, f.terminal_status,
         (SELECT c.role FROM tarefa_chats c
           WHERE c.tarefa_id = t.id AND c.role IN ('analyst', 'user')
           ORDER BY c.id DESC LIMIT 1) AS last_clarification_role,
