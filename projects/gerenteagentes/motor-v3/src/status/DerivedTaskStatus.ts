@@ -57,9 +57,15 @@ export class DerivedTaskStatusResolver {
     )
     const subtaskStatuses = subtaskRows.map(row => String(row.status ?? ''))
     const terminal = String(task.terminal_status ?? '').toLowerCase()
+    const hasSubtasks = subtaskStatuses.length > 0
+    const allApproved = hasSubtasks && subtaskStatuses.every(status => ['verified', 'superseded'].includes(status))
 
     if (terminal === 'cancelled' || terminal === 'failed' || terminal === 'motor_fix') return terminal
-    if (task.paused_at && !task.resource_wait_key) return 'paused'
+    if (task.paused_at && !task.resource_wait_key) {
+      if (Number(task.deploy_succeeded) === 1) return 'deployed'
+      if (allApproved && (Number(task.deploy_failed) === 1 || await this.integrationConfirmed(task.id))) return 'completed'
+      return 'paused'
+    }
     if (task.last_clarification_role === 'analyst') return 'awaiting_clarification'
     if (Number(task.awaiting_interaction) === 1) return 'awaiting_interaction'
     if (subtaskStatuses.includes('blocked')) return 'blocked'
@@ -67,9 +73,8 @@ export class DerivedTaskStatusResolver {
     if (subtaskStatuses.some(status => ['running', 'delivered', 'verifying'].includes(status))) return 'running'
     if (Number(task.deploy_succeeded) === 1) return 'deployed'
 
-    const hasSubtasks = subtaskStatuses.length > 0
-    const allApproved = hasSubtasks && subtaskStatuses.every(status => ['verified', 'superseded'].includes(status))
     if (allApproved && (Number(task.deploy_failed) === 1 || await this.integrationConfirmed(task.id))) return 'completed'
+    if (task.paused_at && !task.resource_wait_key) return 'paused'
     if (Number(task.has_active_blocker) === 1) return 'blocked'
     return hasSubtasks ? 'ready' : 'planned'
   }

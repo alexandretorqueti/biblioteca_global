@@ -71,6 +71,14 @@ describe("deriveTaskStatus", () => {
     }))).toBe("ready")
   })
 
+  it("não mascara deployed com uma pausa antiga", () => {
+    expect(deriveTaskStatus({ ...facts(), pausedAt: "2026-09-15T20:35:56.000Z", deploySucceeded: true })).toBe("deployed")
+  })
+
+  it("não mascara completed com uma pausa antiga", () => {
+    expect(deriveTaskStatus({ ...facts(), pausedAt: "2026-09-15T20:35:56.000Z", subtaskStatuses: ["verified"], integrationConfirmed: true })).toBe("completed")
+  })
+
   it("não permite ready enquanto existe execução ativa", () => {
     expect(deriveTaskStatus(facts({
       hasPersistedPlan: true,

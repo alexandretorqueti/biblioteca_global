@@ -36,44 +36,43 @@ O estado `draft` será eliminado.
 O status é calculado por prioridade. A primeira condição verdadeira determina
 o estado apresentado pela API e pela tela.
 
-1. `paused`
-   - o campo `paused_at` está preenchido e não há `resource_wait_key`.
-   - prioridade máxima: se o usuário pausou, o status é "Pausada" independente
-     de clarificação pendente ou bloqueio de deploy.
-   - quando `resource_wait_key` está preenchido, a tarefa está aguardando
-     recurso (não está pausada pelo usuário) — segue para as regras abaixo.
-
-2. `awaiting_clarification`
+1. `awaiting_clarification`
    - existe pergunta pendente do analista que exige decisão do Alexandre.
    - não se infere apenas pela última mensagem; deve existir um registro
      estruturado de clarificação pendente.
 
-3. `blocked`
+2. `blocked`
    - existe subtarefa em estado `blocked` que impede o fluxo.
 
-4. `analyzing`
+3. `analyzing`
    - existe sessão de análise em execução e ainda não há plano persistido.
 
-5. `running`
+4. `running`
    - ao menos uma subtarefa está em `running`, `delivered` ou `verifying`.
 
-6. `deployed`
+5. `deployed`
    - o deploy da versão aprovada foi confirmado com sucesso.
 
-7. `completed`
+6. `completed`
    - todas as subtarefas estão em `verified` ou `superseded`;
    - a integração necessária foi confirmada;
    - ainda não há deploy confirmado.
 
-8. `completed` (deploy falhou)
+7. `completed` (deploy falhou)
    - todas as subtarefas estão em `verified` ou `superseded`;
    - o deploy foi solicitado mas falhou;
    - o desenvolvimento foi concluído; o deploy é etapa operacional separada.
 
-9. `blocked`
+8. `blocked`
    - existe bloqueio ativo e não resolvido que impede o fluxo.
    - não se aplica quando todas as subtarefas estão aprovadas (desenvolvimento
      concluído) — nesse caso, retorna `completed`.
+
+9. `paused`
+    - o campo `paused_at` está preenchido e não há `resource_wait_key`;
+    - a pausa não mascara estados finais já confirmados (`completed` ou
+      `deployed`);
+    - quando `resource_wait_key` está preenchido, segue para as regras abaixo.
 
 10. `ready`
     - há ao menos uma subtarefa pendente elegível ou aguardando dependências;
@@ -85,12 +84,13 @@ o estado apresentado pela API e pela tela.
 
 ## Pausa
 
-Pausa é um status de negócio com prioridade máxima no cálculo.
+Pausa é um status de negócio para tarefas não finais.
 
 O campo factual `paused_at` impede a fila de selecionar a tarefa e faz o
-status calculado retornar `paused`, independente de haver clarificação
-pendente ou bloqueio de deploy. Isso garante que o usuário veja "Pausada"
-quando pausou a tarefa, sem ambiguidade.
+status calculado retornar `paused` enquanto a tarefa não tiver um estado final
+confirmado. Estados `completed` e `deployed` permanecem visíveis mesmo que uma
+pausa antiga ainda esteja registrada. Clarificação pendente, subtarefa bloqueada
+ou análise ativa continuam tendo precedência operacional sobre a pausa.
 
 Ao retomar, `paused_at` é removido. A próxima consulta calcula o estado real:
 `ready`, `analyzing`, `awaiting_clarification` ou outro aplicável.

@@ -41,10 +41,18 @@ export function deriveTaskStatus(facts: DerivedTaskStatusFacts): TaskStatus {
   const terminal = (facts.terminalStatus ?? facts.persistedStatus) as TaskStatus | undefined
   if (terminal && ADMINISTRATIVE_TERMINAL_STATUSES.has(terminal)) return terminal
 
-  // Bug 802/803: Pausa tem prioridade sobre clarificação pendente.
-  // Se o usuário pausou a tarefa, o status deve ser "paused" independente
-  // de haver clarificação pendente ou bloqueio de deploy.
-  if (facts.pausedAt && !facts.resourceWaitKey) return "paused"
+  const hasSubtasks = facts.subtaskStatuses.length > 0
+  const allSubtasksApproved = hasSubtasks && facts.subtaskStatuses.every(
+    (status) => APPROVED_SUBTASK_STATUSES.has(status),
+  )
+
+  // Pausa continua prevalecendo sobre estados intermediários, mas não pode
+  // esconder uma conclusão ou deploy já confirmado.
+  if (facts.pausedAt && !facts.resourceWaitKey) {
+    if (facts.deploySucceeded) return "deployed"
+    if (allSubtasksApproved && (facts.integrationConfirmed || facts.deployFailed)) return "completed"
+    return "paused"
+  }
 
   if (facts.hasPendingClarification) return "awaiting_clarification"
   if (facts.awaitingInteraction) return "awaiting_interaction"
@@ -53,16 +61,16 @@ export function deriveTaskStatus(facts: DerivedTaskStatusFacts): TaskStatus {
   if (facts.subtaskStatuses.some((status) => ACTIVE_SUBTASK_STATUSES.has(status))) return "running"
   if (facts.deploySucceeded) return "deployed"
 
-  const hasSubtasks = facts.subtaskStatuses.length > 0
-  const allSubtasksApproved = hasSubtasks && facts.subtaskStatuses.every(
-    (status) => APPROVED_SUBTASK_STATUSES.has(status),
-  )
   if (allSubtasksApproved && facts.integrationConfirmed) return "completed"
 
   // Bug 801: Se todas as subtarefas estão aprovadas mas o deploy falhou,
   // o desenvolvimento foi concluído — retornar "completed" (deploy é etapa
   // operacional separada, não deve bloquear o status de conclusão).
   if (allSubtasksApproved && facts.deployFailed) return "completed"
+
+  // Uma pausa antiga não mascara estados finais já confirmados. Para tarefas
+  // não finais, a pausa continua impedindo a seleção pela fila e é exibida.
+  if (facts.pausedAt && !facts.resourceWaitKey) return "paused"
 
   // Bloqueio de deploy só se aplica quando o desenvolvimento ainda não concluiu
   if (facts.hasActiveBlocker) return "blocked"
