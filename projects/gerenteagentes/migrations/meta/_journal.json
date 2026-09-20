@@ -379,6 +379,13 @@
       "when": 1789902000000,
       "tag": "0054_motor_command_governance",
       "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "5",
+      "when": 1789905600000,
+      "tag": "0055_analyst_task_decomposition_policy",
+      "breakpoints": true
     }
   ]
 }
