@@ -1,7 +1,7 @@
 import type { Pool, RowDataPacket } from 'mysql2/promise'
 
 export type DerivedTaskStatus =
-  | 'planned' | 'analyzing' | 'awaiting_clarification' | 'awaiting_interaction'
+  | 'draft' | 'planned' | 'analyzing' | 'awaiting_clarification' | 'awaiting_interaction'
   | 'ready' | 'running' | 'paused' | 'completed' | 'deployed'
   | 'blocked' | 'motor_fix' | 'failed' | 'cancelled'
 
@@ -62,6 +62,7 @@ export class DerivedTaskStatusResolver {
 
     if (terminal === 'cancelled' || terminal === 'failed' || terminal === 'motor_fix') return terminal
     if (task.paused_at && !task.resource_wait_key) {
+      if (!hasSubtasks) return 'draft'
       if (Number(task.deploy_succeeded) === 1) return 'deployed'
       if (allApproved && (Number(task.deploy_failed) === 1 || await this.integrationConfirmed(task.id))) return 'completed'
       return 'paused'

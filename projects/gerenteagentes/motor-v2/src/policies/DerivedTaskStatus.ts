@@ -49,6 +49,7 @@ export function deriveTaskStatus(facts: DerivedTaskStatusFacts): TaskStatus {
   // Pausa continua prevalecendo sobre estados intermediários, mas não pode
   // esconder uma conclusão ou deploy já confirmado.
   if (facts.pausedAt && !facts.resourceWaitKey) {
+    if (!hasSubtasks) return "draft"
     if (facts.deploySucceeded) return "deployed"
     if (allSubtasksApproved && (facts.integrationConfirmed || facts.deployFailed)) return "completed"
     return "paused"

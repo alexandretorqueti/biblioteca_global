@@ -1089,15 +1089,16 @@ export class GerenteAgentesService {
     // Play é uma ação única: para tarefa pausada, primeiro remove a pausa e
     // deixa o Motor retomar o ciclo; para as demais, enfileira normalmente.
     const motorId = tarefa.externalId || `task-biblioteca-${tarefa.id}`;
-    const usarV2 = this.motorVersao === 'v2';
+    const usarMotorV2OuV3 = this.motorVersao === 'v2' || this.motorVersao === 'v3';
     const startPath = tarefa.pausedAt
-      ? (usarV2
-        ? `/api/motor/task/${encodeURIComponent(motorId)}/resume`
-        : `/api/task/${encodeURIComponent(motorId)}/resume`)
-      : (usarV2
+      ? `/api/motor/task/${encodeURIComponent(motorId)}/resume`
+      : (usarMotorV2OuV3
         ? `/api/motor/task/${encodeURIComponent(motorId)}/enqueue`
         : `/api/task/${encodeURIComponent(motorId)}/start`);
-    const start = await this.motorRequest('POST', startPath, undefined, usarV2 ? this.motorV2Url : undefined).catch((e: unknown) => {
+    if (tarefa.pausedAt && this.motorVersao === 'v3') {
+      await db.update(tarefas).set({ pausedAt: null, updatedAt: new Date() }).where(eq(tarefas.id, tarefaId));
+    }
+    const start = await this.motorRequest('POST', startPath, undefined, usarMotorV2OuV3 ? this.motorV2Url : undefined).catch((e: unknown) => {
       throw new BadRequestException(`Motor indisponível ao iniciar a tarefa: ${e instanceof Error ? e.message : String(e)}`);
     });
     if (!start.ok) {
@@ -1124,7 +1125,7 @@ export class GerenteAgentesService {
       throw new BadRequestException('Tarefa já está pausada');
     }
 
-    if (this.motorVersao === 'v2') {
+    if (this.motorVersao === 'v2' || this.motorVersao === 'v3') {
       const motorId = tarefa.externalId || String(tarefa.id);
       const resp = await this.motorRequest(
         'POST',
@@ -1139,6 +1140,9 @@ export class GerenteAgentesService {
       }
     }
 
+    if (this.motorVersao === 'v3') {
+      await db.update(tarefas).set({ pausedAt: new Date(), updatedAt: new Date() }).where(eq(tarefas.id, tarefaId));
+    }
     await this.registrarEvento(db, tarefa, 'paused', ator, 'usuario');
     return { id: tarefaId, paused: true, message: 'Tarefa pausada' };
   }
@@ -1159,7 +1163,11 @@ export class GerenteAgentesService {
       throw new BadRequestException('Tarefa não está pausada');
     }
 
-    if (this.motorVersao === 'v2') {
+    if (this.motorVersao === 'v3') {
+      await db.update(tarefas).set({ pausedAt: null, updatedAt: new Date() }).where(eq(tarefas.id, tarefaId));
+    }
+
+    if (this.motorVersao === 'v2' || this.motorVersao === 'v3') {
       const motorId = tarefa.externalId || String(tarefa.id);
       const resp = await this.motorRequest(
         'POST',
