@@ -37,7 +37,7 @@ describe('GitWorktreePreparer', () => {
       taskId: 'task-1', subtaskId: 10, repoPath: repository, baseBranch: 'base-desenvolvimento',
     })
 
-    expect(prepared.branch).toBe('motor-v3/subtask-task-1-10-a1')
+    expect(prepared.branch).toBe('motor-v3-work/subtask-task-1-10-a1')
     await expect(execFileAsync('git', ['rev-parse', '--show-toplevel'], { cwd: prepared.path })).resolves.toBeDefined()
     await expect(execFileAsync('git', ['status', '--porcelain'], { cwd: repository })).resolves.toMatchObject({ stdout: '' })
   })

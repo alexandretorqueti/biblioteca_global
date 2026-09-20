@@ -247,3 +247,14 @@ acionadas automaticamente pelo Motor v3.
   publica novos `TASK_READY_FOR_PROGRAMMING` para as entradas aguardando.
   Cada uma ainda passa pelo claim atômico, portanto os limites permanecem
   respeitados sem `pump` nem polling de decisão.
+
+### 20/09/2026 — preflight de worktree
+
+- `repo_path` persistido no namespace do host (`/home/alexandre/codigofonte/...`)
+  é normalizado para o bind da API (`/data/workspace/projects/codigofonte/...`).
+- O Motor valida a disponibilidade de Git, a visibilidade do repositório e a
+  escrita na raiz de worktrees antes de iniciar uma subtarefa.
+- O namespace de branches do runtime é `motor-v3-work/...`; ele não conflita
+  com a branch histórica `motor-v3`.
+- Diretórios de worktree incompletos e não registrados pelo Git são removidos
+  antes de nova tentativa. Worktrees registrados são preservados e reutilizados.

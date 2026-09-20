@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { access, mkdir, stat } from 'node:fs/promises'
+import { access, mkdir, rm, stat } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { promisify } from 'node:util'
 
@@ -28,16 +28,16 @@ export class GitWorktreePreparer {
     const repoPath = await this.resolveRepoPath(input.repoPath)
     await this.assertGitAvailable()
     const safeTaskId = input.taskId.replace(/[^a-zA-Z0-9._-]/g, '-')
-    const taskBranch = `motor-v3/integration-${safeTaskId}`
+    // `motor-v3` já é uma branch histórica; Git não permite refs filhas de
+    // uma branch existente (`motor-v3/...`). O runtime usa namespace próprio.
+    const taskBranch = `motor-v3-work/integration-${safeTaskId}`
     await this.prepareNamedWorktree(repoPath, input.baseBranch, taskBranch, resolve(this.root, safeTaskId, 'integration'))
-    const branch = `motor-v3/subtask-${safeTaskId}-${input.subtaskId}-a1`
+    const branch = `motor-v3-work/subtask-${safeTaskId}-${input.subtaskId}-a1`
     const path = resolve(this.root, safeTaskId, String(input.subtaskId), 'a1')
     await mkdir(dirname(path), { recursive: true })
 
-    if (await this.exists(path)) {
-      const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: path })
-      return { path, branch, baseCommit: stdout.trim() }
-    }
+    const existingCommit = await this.existingWorktreeCommit(repoPath, path)
+    if (existingCommit) return { path, branch, baseCommit: existingCommit }
 
     const { stdout } = await execFileAsync('git', ['rev-parse', taskBranch], { cwd: repoPath })
     const baseCommit = stdout.trim()
@@ -49,7 +49,7 @@ export class GitWorktreePreparer {
     const repoPath = await this.resolveRepoPath(input.repoPath)
     await this.assertGitAvailable()
     const safeTaskId = input.taskId.replace(/[^a-zA-Z0-9._-]/g, '-')
-    const branch = `motor-v3/integration-${safeTaskId}`
+    const branch = `motor-v3-work/integration-${safeTaskId}`
     const path = resolve(this.root, safeTaskId, 'integration')
     const baseCommit = await this.prepareNamedWorktree(repoPath, input.baseBranch, branch, path)
     return { path, branch, baseCommit }
@@ -57,10 +57,8 @@ export class GitWorktreePreparer {
 
   private async prepareNamedWorktree(repoPath: string, baseRef: string, branch: string, path: string): Promise<string> {
     await mkdir(dirname(path), { recursive: true })
-    if (await this.exists(path)) {
-      const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: path })
-      return stdout.trim()
-    }
+    const existingCommit = await this.existingWorktreeCommit(repoPath, path)
+    if (existingCommit) return existingCommit
     const branchExists = await execFileAsync('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], { cwd: repoPath })
       .then(() => true, () => false)
     if (branchExists) {
@@ -74,6 +72,19 @@ export class GitWorktreePreparer {
 
   private async exists(path: string): Promise<boolean> {
     try { await stat(path); return true } catch { return false }
+  }
+
+  /** Remove somente diretório incompleto que não está registrado pelo Git. */
+  private async existingWorktreeCommit(repoPath: string, path: string): Promise<string | null> {
+    if (!await this.exists(path)) return null
+    const { stdout } = await execFileAsync('git', ['worktree', 'list', '--porcelain'], { cwd: repoPath })
+    const registered = stdout.split('\n').some(line => line === `worktree ${path}`)
+    if (!registered) {
+      await rm(path, { recursive: true, force: true })
+      return null
+    }
+    const { stdout: commit } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: path })
+    return commit.trim()
   }
 
   /** Converte o caminho persistido pelo host para o bind visível na API. */
