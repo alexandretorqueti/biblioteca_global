@@ -1227,10 +1227,10 @@ export class GerenteAgentesService {
              reason_code AS reasonCode, result_json AS resultJson,
              duration_ms AS durationMs, created_at AS createdAt
         FROM motor_operation_log
-       WHERE tarefa_id = COALESCE(
+       WHERE CAST(tarefa_id AS BINARY) = CAST(COALESCE(
          (SELECT external_id FROM tarefas WHERE id = ${tarefaId} LIMIT 1),
          ${String(tarefaId)}
-       )
+       ) AS BINARY)
        ORDER BY created_at DESC, sequence DESC
        LIMIT 500
     `);
