@@ -17,7 +17,7 @@ export const createSession: PrimitiveDefinition = {
         return { success: false, error: 'Console API não disponível' }
       }
 
-      const sessionKey = `task-${context.taskId}-sub-${context.subtaskId}-gen-${context.generation}`
+      const sessionKey = `agent:${context.agentId}:motor-v3:development:${context.taskId}:${context.subtaskId}:gen-${context.generation}`
       
       const response = await context.consoleApi.createSession({
         key: sessionKey,

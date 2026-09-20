@@ -1,0 +1,53 @@
+import { randomUUID } from 'node:crypto'
+import type { QueueMessage } from '../queue/QueueMessage.js'
+import type { OperationLogger } from '../commands/OperationLogger.js'
+import { MySqlDevelopmentExecutionRepository } from './DevelopmentExecutionRepository.js'
+
+export const TASK_READY_FOR_PROGRAMMING = 'TASK_READY_FOR_PROGRAMMING'
+
+/** Consome o fim da análise e transforma-o no primeiro comando de execução. */
+export class DevelopmentExecutionConsumer {
+  constructor(
+    private readonly repository: MySqlDevelopmentExecutionRepository,
+    private readonly operationLogger?: OperationLogger,
+  ) {}
+
+  async handle(message: QueueMessage): Promise<void> {
+    if (message.type !== TASK_READY_FOR_PROGRAMMING) return
+
+    const operationId = randomUUID()
+    await this.operationLogger?.append({
+      operationId, sequence: 1, phase: 'received', outcome: 'executed',
+      messageId: message.messageId, messageType: message.type,
+      correlationId: message.correlationId, causationId: message.causationId,
+      taskId: message.taskId,
+    })
+
+    const reserved = await this.repository.reserveNextSubtask(message.taskId, message)
+    if (!reserved) {
+      await this.operationLogger?.append({
+        operationId, sequence: 2, phase: 'rejected', outcome: 'skipped',
+        messageId: message.messageId, messageType: message.type,
+        correlationId: message.correlationId, causationId: message.causationId,
+        taskId: message.taskId, reasonCode: 'no_eligible_subtask',
+      })
+      return
+    }
+
+    await this.operationLogger?.append({
+      operationId, sequence: 2, phase: 'primitive', outcome: 'succeeded',
+      messageId: message.messageId, messageType: message.type,
+      correlationId: message.correlationId, causationId: message.causationId,
+      taskId: message.taskId, subtaskId: reserved.subtaskId,
+      primitiveCode: 'claim_subtask_atomic',
+      result: { seq: reserved.seq, executionId: reserved.message.executionId },
+    })
+    await this.operationLogger?.append({
+      operationId, sequence: 3, phase: 'completed', outcome: 'succeeded',
+      messageId: message.messageId, messageType: message.type,
+      correlationId: message.correlationId, causationId: message.causationId,
+      taskId: message.taskId, subtaskId: reserved.subtaskId,
+      result: { nextMessageId: reserved.message.messageId, nextMessageType: reserved.message.type, seq: reserved.seq },
+    })
+  }
+}

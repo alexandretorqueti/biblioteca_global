@@ -1,0 +1,427 @@
+import type { Pool, PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
+import { createQueueMessage, type QueueMessage } from '../queue/QueueMessage.js'
+
+export interface ReservedSubtask {
+  message: QueueMessage<{ subtaskId: number; seq: number; title: string; scope: string }>
+  subtaskId: number
+  seq: number
+}
+
+export interface SubtaskExecutionContext {
+  taskId: string
+  databaseTaskId: number
+  subtaskId: number
+  seq: number
+  taskTitle: string
+  taskDescription: string
+  title: string
+  scope: string
+  acceptanceCriteria: string[]
+  deliverables: string[]
+  projectSlug: string
+  repoPath: string
+  baseBranch: string
+  buildCommand: string
+  testCommand: string
+  agentId: string
+  workspacePath: string | null
+  workspaceBranch: string | null
+  workspaceBaseCommit: string | null
+}
+
+interface TaskRow extends RowDataPacket {
+  id: number
+  external_id: string | null
+}
+
+interface SubtaskRow extends RowDataPacket {
+  id: number
+  seq: number
+  titulo: string
+  scope: string | null
+}
+
+interface ExecutionRow extends RowDataPacket {
+  database_task_id: number
+  external_id: string | null
+  task_title: string
+  task_description: string | null
+  subtask_id: number
+  seq: number
+  subtask_title: string
+  scope: string | null
+  acceptance_criteria: string | null
+  deliverables: string | null
+  project_slug: string | null
+  repo_path: string | null
+  branch_trabalho: string | null
+  build_command: string | null
+  unit_test_command: string | null
+  agent_id: string | null
+  workspace_path: string | null
+  workspace_branch: string | null
+  workspace_base_commit: string | null
+}
+
+/**
+ * Reserva a próxima subtarefa e grava o comando seguinte no outbox na mesma
+ * transação. Assim, não existe o estado "subtarefa running sem mensagem".
+ */
+export class MySqlDevelopmentExecutionRepository {
+  constructor(private readonly pool: Pool) {}
+
+  async reserveNextSubtask(taskId: string, source: QueueMessage): Promise<ReservedSubtask | null> {
+    const connection = await this.pool.getConnection()
+    try {
+      await connection.beginTransaction()
+
+      const [taskRows] = await connection.query<TaskRow[]>(
+        `SELECT t.id, t.external_id
+           FROM tarefas t
+          WHERE (t.external_id = ? OR CAST(t.id AS CHAR) = ?)
+            AND t.paused_at IS NULL
+            AND NOT EXISTS (
+              SELECT 1 FROM bloqueios b
+               WHERE b.tarefa_id = t.id AND b.resolved_at IS NULL
+            )
+          LIMIT 1 FOR UPDATE`,
+        [taskId, taskId],
+      )
+      const task = taskRows[0]
+      if (!task) {
+        await connection.rollback()
+        return null
+      }
+
+      const [subtaskRows] = await connection.query<SubtaskRow[]>(
+        `SELECT s.id, s.seq, s.titulo, s.scope
+           FROM subtarefas s
+          WHERE s.tarefa_id = ?
+            AND s.status = 'pending'
+            AND NOT EXISTS (
+              SELECT 1 FROM subtarefas active
+               WHERE active.tarefa_id = s.tarefa_id
+                 AND active.status IN ('running', 'delivered', 'verifying')
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM subtarefas previous
+               WHERE previous.tarefa_id = s.tarefa_id
+                 AND previous.seq < s.seq
+                 AND previous.status NOT IN ('verified', 'superseded')
+                 AND previous.id != COALESCE(s.correction_for_subtask_id, -1)
+            )
+            AND NOT EXISTS (
+              SELECT 1
+                FROM subtarefas dependency
+               WHERE JSON_CONTAINS(COALESCE(s.depends_on_subtask_ids, JSON_ARRAY()), CAST(dependency.id AS JSON))
+                 AND dependency.status NOT IN ('verified', 'superseded')
+            )
+          ORDER BY s.seq ASC
+          LIMIT 1 FOR UPDATE`,
+        [task.id],
+      )
+      const subtask = subtaskRows[0]
+      if (!subtask) {
+        await connection.rollback()
+        return null
+      }
+
+      const executionId = `exec-subtask-${task.external_id ?? task.id}-${subtask.id}-${Date.now()}`
+      const executionPayload = {
+        subtaskId: Number(subtask.id),
+        seq: Number(subtask.seq),
+        title: String(subtask.titulo ?? ''),
+        scope: String(subtask.scope ?? ''),
+      }
+      const message = createQueueMessage({
+        type: 'SUBTASK_EXECUTION_REQUESTED',
+        taskId: String(task.external_id ?? task.id),
+        executionId,
+        correlationId: source.correlationId ?? source.messageId,
+        causationId: source.messageId,
+        payload: executionPayload,
+      }) as QueueMessage<typeof executionPayload>
+
+      const [updated] = await connection.query<ResultSetHeader>(
+        `UPDATE subtarefas
+            SET status = 'running', updated_at = NOW()
+          WHERE id = ? AND status = 'pending'`,
+        [subtask.id],
+      )
+      if (updated.affectedRows !== 1) {
+        await connection.rollback()
+        return null
+      }
+
+      await connection.query(
+        `INSERT INTO motor_outbox
+          (message_id, type, task_id, execution_id, payload_json, timestamp,
+           correlation_id, causation_id, status, attempt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0)`,
+        [
+          message.messageId,
+          message.type,
+          message.taskId,
+          message.executionId,
+          JSON.stringify(message.payload),
+          new Date(message.timestamp).toISOString().slice(0, 19).replace('T', ' '),
+          message.correlationId ?? null,
+          message.causationId ?? null,
+        ],
+      )
+
+      await connection.commit()
+      return { message, subtaskId: Number(subtask.id), seq: Number(subtask.seq) }
+    } catch (error) {
+      await connection.rollback()
+      throw error
+    } finally {
+      connection.release()
+    }
+  }
+
+  async getExecutionContext(taskId: string, subtaskId: number, expectedStatus = 'running'): Promise<SubtaskExecutionContext | null> {
+    const [rows] = await this.pool.query<ExecutionRow[]>(
+      `SELECT t.id AS database_task_id, t.external_id, t.titulo AS task_title,
+              t.descricao AS task_description, s.id AS subtask_id, s.seq,
+              s.titulo AS subtask_title, s.scope, s.acceptance_criteria, s.deliverables,
+              pc.slug AS project_slug, pmc.repo_path, pmc.branch_trabalho,
+              pmc.build_command, pmc.unit_test_command,
+              COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), pc.slug, '') AS agent_id,
+              s.workspace_path, s.workspace_branch, s.workspace_base_commit
+         FROM tarefas t
+         INNER JOIN subtarefas s ON s.tarefa_id = t.id
+         LEFT JOIN projetos_captados pc ON pc.id = t.projeto_id
+         LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id = t.projeto_id
+         LEFT JOIN agentes a ON a.id = pc.agente_id
+        WHERE (t.external_id = ? OR CAST(t.id AS CHAR) = ?)
+          AND s.id = ? AND s.status = ?
+        LIMIT 1`,
+      [taskId, taskId, subtaskId, expectedStatus],
+    )
+    const row = rows[0]
+    if (!row) return null
+    return {
+      taskId: String(row.external_id ?? row.database_task_id),
+      databaseTaskId: Number(row.database_task_id),
+      subtaskId: Number(row.subtask_id),
+      seq: Number(row.seq),
+      taskTitle: String(row.task_title ?? ''),
+      taskDescription: String(row.task_description ?? ''),
+      title: String(row.subtask_title ?? ''),
+      scope: String(row.scope ?? ''),
+      acceptanceCriteria: this.parseStringArray(row.acceptance_criteria),
+      deliverables: this.parseStringArray(row.deliverables),
+      projectSlug: String(row.project_slug ?? ''),
+      repoPath: String(row.repo_path ?? ''),
+      baseBranch: String(row.branch_trabalho ?? ''),
+      buildCommand: String(row.build_command ?? ''),
+      testCommand: String(row.unit_test_command ?? ''),
+      agentId: String(row.agent_id ?? ''),
+      workspacePath: row.workspace_path ? String(row.workspace_path) : null,
+      workspaceBranch: row.workspace_branch ? String(row.workspace_branch) : null,
+      workspaceBaseCommit: row.workspace_base_commit ? String(row.workspace_base_commit) : null,
+    }
+  }
+
+  async requestVerification(context: SubtaskExecutionContext, source: QueueMessage): Promise<QueueMessage> {
+    return this.transitionWithMessage(context, source, 'delivered', 'verifying', 'SUBTASK_VERIFICATION_REQUESTED', {
+      subtaskId: context.subtaskId, seq: context.seq,
+    })
+  }
+
+  async completeVerification(
+    context: SubtaskExecutionContext,
+    source: QueueMessage,
+    evidence: { commitSha: string; integrationCommitSha: string },
+  ): Promise<{ verified: QueueMessage; next: QueueMessage }> {
+    const connection = await this.pool.getConnection()
+    try {
+      await connection.beginTransaction()
+      const [updated] = await connection.query<ResultSetHeader>(
+        `UPDATE subtarefas
+            SET status = 'verified', workspace_commit_sha = ?, workspace_status = 'integrated',
+                finalizada_em = NOW(), updated_at = NOW()
+          WHERE id = ? AND status = 'verifying'`,
+        [evidence.commitSha, context.subtaskId],
+      )
+      if (updated.affectedRows !== 1) throw new Error(`Subtarefa ${context.subtaskId} não está em verificação`)
+
+      const verified = createQueueMessage({
+        type: 'SUBTASK_VERIFIED', taskId: context.taskId, executionId: source.executionId,
+        correlationId: source.correlationId ?? source.messageId, causationId: source.messageId,
+        payload: { subtaskId: context.subtaskId, seq: context.seq, ...evidence },
+      })
+      await this.insertOutbox(connection, verified)
+
+      const reserved = await this.reserveNextSubtaskInTransaction(connection, context.databaseTaskId, context.taskId, verified)
+      let next: QueueMessage
+      if (reserved) {
+        next = reserved.message
+      } else {
+        const [pending] = await connection.query<RowDataPacket[]>(
+          `SELECT COUNT(*) AS total FROM subtarefas
+            WHERE tarefa_id = ? AND status NOT IN ('verified', 'superseded')`, [context.databaseTaskId],
+        )
+        if (Number(pending[0]?.total ?? 0) > 0) throw new Error('Existem subtarefas não concluídas, mas nenhuma está elegível')
+        await connection.query(
+          `INSERT INTO task_runtime_facts (tarefa_id, terminal_status, terminal_at, integration_confirmed_at, created_at, updated_at)
+           VALUES (?, 'completed', NOW(), NOW(), NOW(), NOW())
+           ON DUPLICATE KEY UPDATE terminal_status = 'completed', terminal_at = NOW(), integration_confirmed_at = NOW(), updated_at = NOW()`,
+          [context.databaseTaskId],
+        )
+        next = createQueueMessage({
+          type: 'TASK_EXECUTION_COMPLETED', taskId: context.taskId, executionId: source.executionId,
+          correlationId: source.correlationId ?? source.messageId, causationId: verified.messageId,
+          payload: { integrationCommitSha: evidence.integrationCommitSha },
+        })
+        await this.insertOutbox(connection, next)
+      }
+      await connection.commit()
+      return { verified, next }
+    } catch (error) {
+      await connection.rollback()
+      throw error
+    } finally {
+      connection.release()
+    }
+  }
+
+  async recordWorkspace(subtaskId: number, workspacePath: string, branchName: string, baseCommit: string): Promise<void> {
+    await this.pool.query(
+      `UPDATE subtarefas
+          SET workspace_path = ?, workspace_branch = ?, workspace_base_commit = ?,
+              workspace_status = 'active', workspace_created_at = COALESCE(workspace_created_at, NOW()), updated_at = NOW()
+        WHERE id = ? AND status = 'running'`,
+      [workspacePath, branchName, baseCommit, subtaskId],
+    )
+  }
+
+  async finishExecution(
+    context: SubtaskExecutionContext,
+    source: QueueMessage,
+    result: { success: boolean; response?: string; error?: string; attempts: number },
+  ): Promise<QueueMessage> {
+    const connection = await this.pool.getConnection()
+    try {
+      await connection.beginTransaction()
+      const nextType = result.success ? 'SUBTASK_EXECUTION_COMPLETED' : 'SUBTASK_EXECUTION_FAILED'
+      const nextStatus = result.success ? 'delivered' : 'failed'
+      const payload = {
+        subtaskId: context.subtaskId,
+        seq: context.seq,
+        success: result.success,
+        attempts: result.attempts,
+        response: result.response ?? '',
+        error: result.error ?? '',
+      }
+      const message = createQueueMessage({
+        type: nextType,
+        taskId: context.taskId,
+        executionId: source.executionId,
+        correlationId: source.correlationId ?? source.messageId,
+        causationId: source.messageId,
+        payload,
+      })
+      const [updated] = await connection.query<ResultSetHeader>(
+        `UPDATE subtarefas SET status = ?, resultado = ?, updated_at = NOW()
+          WHERE id = ? AND status = 'running'`,
+        [nextStatus, result.response ?? result.error ?? null, context.subtaskId],
+      )
+      if (updated.affectedRows !== 1) throw new Error(`Subtarefa ${context.subtaskId} não está em execução`)
+      await connection.query(
+        `INSERT INTO motor_outbox
+          (message_id, type, task_id, execution_id, payload_json, timestamp,
+           correlation_id, causation_id, status, attempt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0)`,
+        [message.messageId, message.type, message.taskId, message.executionId,
+          JSON.stringify(message.payload), new Date(message.timestamp).toISOString().slice(0, 19).replace('T', ' '),
+          message.correlationId ?? null, message.causationId ?? null],
+      )
+      await connection.commit()
+      return message
+    } catch (error) {
+      await connection.rollback()
+      throw error
+    } finally {
+      connection.release()
+    }
+  }
+
+  private parseStringArray(value: string | null): string[] {
+    if (!value) return []
+    try {
+      const parsed: unknown = typeof value === 'string' ? JSON.parse(value) : value
+      return Array.isArray(parsed) ? parsed.map(item => String(item)) : []
+    } catch {
+      return []
+    }
+  }
+
+  private async transitionWithMessage(
+    context: SubtaskExecutionContext, source: QueueMessage, from: string, to: string,
+    type: string, payload: Record<string, unknown>,
+  ): Promise<QueueMessage> {
+    const connection = await this.pool.getConnection()
+    try {
+      await connection.beginTransaction()
+      const [updated] = await connection.query<ResultSetHeader>(
+        'UPDATE subtarefas SET status = ?, updated_at = NOW() WHERE id = ? AND status = ?',
+        [to, context.subtaskId, from],
+      )
+      if (updated.affectedRows !== 1) throw new Error(`Subtarefa ${context.subtaskId} não está em ${from}`)
+      const message = createQueueMessage({
+        type, taskId: context.taskId, executionId: source.executionId,
+        correlationId: source.correlationId ?? source.messageId, causationId: source.messageId, payload,
+      })
+      await this.insertOutbox(connection, message)
+      await connection.commit()
+      return message
+    } catch (error) {
+      await connection.rollback()
+      throw error
+    } finally { connection.release() }
+  }
+
+  private async reserveNextSubtaskInTransaction(
+    connection: PoolConnection, databaseTaskId: number, taskId: string, source: QueueMessage,
+  ): Promise<ReservedSubtask | null> {
+    const [rows] = await connection.query<SubtaskRow[]>(
+      `SELECT s.id, s.seq, s.titulo, s.scope FROM subtarefas s
+        WHERE s.tarefa_id = ? AND s.status = 'pending'
+          AND NOT EXISTS (SELECT 1 FROM subtarefas previous
+            WHERE previous.tarefa_id = s.tarefa_id AND previous.seq < s.seq
+              AND previous.status NOT IN ('verified', 'superseded'))
+          AND NOT EXISTS (SELECT 1 FROM subtarefas dependency
+            WHERE JSON_CONTAINS(COALESCE(s.depends_on_subtask_ids, JSON_ARRAY()), CAST(dependency.id AS JSON))
+              AND dependency.status NOT IN ('verified', 'superseded'))
+        ORDER BY s.seq ASC LIMIT 1 FOR UPDATE`, [databaseTaskId],
+    )
+    const subtask = rows[0]
+    if (!subtask) return null
+    const payload = { subtaskId: Number(subtask.id), seq: Number(subtask.seq), title: String(subtask.titulo), scope: String(subtask.scope ?? '') }
+    const message = createQueueMessage({
+      type: 'SUBTASK_EXECUTION_REQUESTED', taskId,
+      executionId: `exec-subtask-${taskId}-${subtask.id}-${Date.now()}`,
+      correlationId: source.correlationId ?? source.messageId, causationId: source.messageId, payload,
+    }) as QueueMessage<typeof payload>
+    const [updated] = await connection.query<ResultSetHeader>(
+      `UPDATE subtarefas SET status = 'running', updated_at = NOW() WHERE id = ? AND status = 'pending'`, [subtask.id],
+    )
+    if (updated.affectedRows !== 1) return null
+    await this.insertOutbox(connection, message)
+    return { message, subtaskId: Number(subtask.id), seq: Number(subtask.seq) }
+  }
+
+  private async insertOutbox(connection: PoolConnection, message: QueueMessage): Promise<void> {
+    await connection.query(
+      `INSERT INTO motor_outbox
+        (message_id, type, task_id, execution_id, payload_json, timestamp,
+         correlation_id, causation_id, status, attempt)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0)`,
+      [message.messageId, message.type, message.taskId, message.executionId, JSON.stringify(message.payload),
+        new Date(message.timestamp).toISOString().slice(0, 19).replace('T', ' '),
+        message.correlationId ?? null, message.causationId ?? null],
+    )
+  }
+}

@@ -110,7 +110,10 @@ export class WorkerLauncher {
           }
 
           // 6. Rodar build + testes
-          const buildResult = await runBuild.handler(context, {})
+          const buildResult = await runBuild.handler(context, {
+            buildCommand: context.buildCommand,
+            testCommand: context.testCommand,
+          })
 
           const buildPassed = buildResult.success
 
@@ -136,7 +139,6 @@ export class WorkerLauncher {
         }
       } catch (error: any) {
         context.logger?.error('Erro inesperado', { error: error.message, attempts })
-        attempts++
       }
     }
 

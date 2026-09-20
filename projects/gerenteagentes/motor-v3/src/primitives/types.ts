@@ -11,6 +11,8 @@ export interface PrimitiveContext {
   repoPath: string
   worktreePath: string
   branchName: string
+  buildCommand?: string
+  testCommand?: string
   sessionId?: string
   agentId: string
   db: any // Drizzle DB instance

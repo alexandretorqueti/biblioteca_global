@@ -100,6 +100,16 @@ describe('TaskCoordinator', () => {
     expect(failed).toHaveBeenCalled()
   })
 
+  it('propaga falha ao persistir TASK_READY_FOR_PROGRAMMING para permitir retry da fila', async () => {
+    const { bus, repository, runner } = setup()
+    const publishTaskReady = vi.fn().mockRejectedValue(new Error('outbox indisponível'))
+    const coordinator = new TaskCoordinator(repository, runner, bus, { publishTaskReady })
+
+    await expect(coordinator.handle(command())).rejects.toThrow('outbox indisponível')
+
+    expect(publishTaskReady).toHaveBeenCalledWith(expect.objectContaining({ type: 'TASK_RESUME_REQUESTED' }), expect.objectContaining({ subtaskCount: 1 }))
+  })
+
   it('ignora tipos de mensagem que não são comandos de análise', async () => {
     const { coordinator, repository, runner } = setup()
 

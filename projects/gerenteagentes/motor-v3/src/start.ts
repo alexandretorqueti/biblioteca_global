@@ -35,6 +35,8 @@ import { ConsoleHttpApi } from './analysis/ConsoleHttpApi.js'
 import { ManagedAnalysisPromptResolver } from './analysis/ManagedAnalysisPromptResolver.js'
 import { DerivedTaskStatusResolver } from './status/DerivedTaskStatus.js'
 import { MySqlCommandPolicyRepository, MySqlOperationLogger } from './commands/index.js'
+import { DevelopmentExecutionConsumer, GitVerificationIntegrator, GitWorktreePreparer, MySqlDevelopmentExecutionRepository, SubtaskExecutionConsumer, SubtaskVerificationConsumer, WorkerConsoleAdapter } from './execution/index.js'
+import { WorkerLauncher } from './worker-launcher/WorkerLauncher.js'
 
 // Config
 const PORT = parseInt(process.env.MOTOR_PORT || '3010')
@@ -56,6 +58,9 @@ let scheduler: Scheduler | null = null
 let bus: MessageBus | null = null
 let queueConsumer: QueueConsumer | null = null
 let outboxPublisher: OutboxPublisher | null = null
+let developmentConsumer: DevelopmentExecutionConsumer | null = null
+let subtaskExecutionConsumer: SubtaskExecutionConsumer | null = null
+let subtaskVerificationConsumer: SubtaskVerificationConsumer | null = null
 
 async function start() {
   console.log('[Motor v3] Iniciando...')
@@ -113,7 +118,8 @@ async function start() {
     }
 
     const repository = new MySqlTaskCoordinatorRepository(pool)
-    const analyst = new ConsoleAnalystRunner(new ConsoleHttpApi(consoleUrl, consoleToken), {
+    const consoleApi = new ConsoleHttpApi(consoleUrl, consoleToken)
+    const analyst = new ConsoleAnalystRunner(consoleApi, {
       timeoutMs: Number(process.env.MOTOR_ANALYSIS_TIMEOUT_MS || 1800000),
       pollIntervalMs: Number(process.env.MOTOR_ANALYSIS_POLL_INTERVAL_MS || 5000),
       promptResolver: new ManagedAnalysisPromptResolver(pool),
@@ -148,10 +154,6 @@ async function start() {
         }
       },
     })
-    const coordinator = new TaskCoordinator(repository, analyst, bus, {
-      commandPolicies: new MySqlCommandPolicyRepository(pool),
-      operationLogger: new MySqlOperationLogger(pool),
-    })
     const transport = new RabbitMqTransport({
       url: rabbitUrl,
       exchange: process.env.MOTOR_RABBITMQ_EXCHANGE || 'motor',
@@ -163,7 +165,52 @@ async function start() {
     })
     outboxPublisher = new OutboxPublisher(pool, transport, process.env.MOTOR_RABBITMQ_QUEUE || 'motor.commands')
     await outboxPublisher.start()
-    queueConsumer = new QueueConsumer(transport, message => coordinator.handle(message), {
+    const operationLogger = new MySqlOperationLogger(pool)
+    const coordinator = new TaskCoordinator(repository, analyst, bus, {
+      commandPolicies: new MySqlCommandPolicyRepository(pool),
+      operationLogger,
+      publishTaskReady: async (source, payload) => {
+        if (!outboxPublisher) throw new Error('Outbox indisponível para TASK_READY_FOR_PROGRAMMING')
+        await outboxPublisher.enqueue(createQueueMessage({
+          type: 'TASK_READY_FOR_PROGRAMMING',
+          taskId: source.taskId,
+          executionId: typeof payload.executionId === 'string' ? payload.executionId : source.executionId,
+          correlationId: source.correlationId ?? source.messageId,
+          causationId: source.messageId,
+          payload,
+        }))
+      },
+    })
+    const developmentRepository = new MySqlDevelopmentExecutionRepository(pool)
+    developmentConsumer = new DevelopmentExecutionConsumer(
+      developmentRepository,
+      operationLogger,
+    )
+    const worktreePreparer = new GitWorktreePreparer(process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/agentes/gerenteagentes/worktrees')
+    subtaskExecutionConsumer = new SubtaskExecutionConsumer(
+      developmentRepository,
+      worktreePreparer,
+      new WorkerLauncher({
+        maxAttempts: Number(process.env.MOTOR_WORKER_MAX_ATTEMPTS || 3),
+        timeoutMs: Number(process.env.MOTOR_WORKER_TIMEOUT_MS || 1800000),
+        sandboxRoot: process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/agentes/gerenteagentes/worktrees',
+      }),
+      new WorkerConsoleAdapter(consoleApi),
+      db,
+      operationLogger,
+    )
+    subtaskVerificationConsumer = new SubtaskVerificationConsumer(
+      developmentRepository,
+      new GitVerificationIntegrator(worktreePreparer),
+      operationLogger,
+    )
+
+    queueConsumer = new QueueConsumer(transport, async message => {
+      await coordinator.handle(message)
+      await developmentConsumer?.handle(message)
+      await subtaskExecutionConsumer?.handle(message)
+      await subtaskVerificationConsumer?.handle(message)
+    }, {
       queue: process.env.MOTOR_RABBITMQ_QUEUE || 'motor.commands',
       maxAttempts: Number(process.env.MOTOR_QUEUE_MAX_ATTEMPTS || 3),
     }, pool)

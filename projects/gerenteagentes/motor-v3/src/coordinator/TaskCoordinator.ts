@@ -44,6 +44,7 @@ export interface TaskCoordinatorConfig {
   analysisExecutionId?: (message: QueueMessage) => string
   commandPolicies?: CommandPolicyRepository
   operationLogger?: OperationLogger
+  publishTaskReady?: (source: QueueMessage, payload: Record<string, unknown>) => Promise<void>
 }
 
 // Criar/enfileirar apenas registra a tarefa. Toda tarefa nasce pausada e a
@@ -62,6 +63,7 @@ export class TaskCoordinator {
   private readonly commandResolver = new CommandPolicyResolver()
   private readonly commandPolicies?: CommandPolicyRepository
   private readonly operationLogger?: OperationLogger
+  private readonly publishTaskReady?: (source: QueueMessage, payload: Record<string, unknown>) => Promise<void>
 
   constructor(
     private readonly repository: TaskCoordinatorRepository,
@@ -72,6 +74,7 @@ export class TaskCoordinator {
     this.executionIdFactory = config.analysisExecutionId ?? ((message) => `exec-analyze-${message.taskId}-${message.messageId}`)
     this.commandPolicies = config.commandPolicies
     this.operationLogger = config.operationLogger
+    this.publishTaskReady = config.publishTaskReady
   }
 
   async handle(message: QueueMessage): Promise<void> {
@@ -102,7 +105,7 @@ export class TaskCoordinator {
           result: { evaluatedPolicies: decision.evaluatedPolicies },
         })
         if (decision.reasonCode === 'task_has_plan' || decision.reasonCode === 'analysis_already_claimed') {
-          await this.emit('TASK_READY_FOR_PROGRAMMING', message, { reason: decision.reasonCode, subtaskCount: task.subtaskCount })
+          await this.emitTaskReady(message, { reason: decision.reasonCode, subtaskCount: task.subtaskCount })
         } else {
           await this.emit('TASK_IGNORED', message, { reason: decision.reasonCode })
         }
@@ -135,7 +138,7 @@ export class TaskCoordinator {
 
     if (task.subtaskCount > 0 || task.analysisStartedAt !== null) {
       await this.log(operationId, 4, 'rejected', 'rejected', message, { reasonCode: task.subtaskCount > 0 ? 'task_has_plan' : 'analysis_already_claimed' })
-      await this.emit('TASK_READY_FOR_PROGRAMMING', message, {
+      await this.emitTaskReady(message, {
         reason: task.subtaskCount > 0 ? 'plan_exists' : 'analysis_already_started',
         subtaskCount: task.subtaskCount,
       })
@@ -162,7 +165,7 @@ export class TaskCoordinator {
         await this.emit('ANALYSIS_CLARIFICATION_REQUESTED', message, { executionId, questionCount: outcome.questions.length })
       } else {
         await this.emit('ANALYSIS_COMPLETED', message, { executionId, subtaskCount: outcome.subtasks.length })
-        await this.emit('TASK_READY_FOR_PROGRAMMING', message, { executionId, subtaskCount: outcome.subtasks.length })
+        await this.emitTaskReady(message, { executionId, subtaskCount: outcome.subtasks.length })
       }
       await this.log(operationId, 7, 'completed', 'succeeded', message, { result: { executionId, outcome: outcome.kind } })
     } catch (error) {
@@ -175,6 +178,13 @@ export class TaskCoordinator {
       })
       throw error
     }
+  }
+
+  private async emitTaskReady(message: QueueMessage, payload: Record<string, unknown>): Promise<void> {
+    // A persistência precisa propagar falhas ao QueueConsumer. O MessageBus
+    // deliberadamente captura erros de handlers e não pode ser a garantia de durabilidade.
+    await this.publishTaskReady?.(message, payload)
+    await this.emit('TASK_READY_FOR_PROGRAMMING', message, payload)
   }
 
   private async log(operationId: string, sequence: number, phase: 'received' | 'decision' | 'action' | 'primitive' | 'completed' | 'failed' | 'rejected', outcome: 'pending' | 'executed' | 'skipped' | 'rejected' | 'succeeded' | 'failed', message: QueueMessage, extra: Omit<Parameters<OperationLogger['append']>[0], 'operationId' | 'sequence' | 'phase' | 'outcome' | 'messageId' | 'messageType' | 'correlationId' | 'causationId' | 'taskId'> = {}): Promise<void> {

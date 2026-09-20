@@ -174,5 +174,64 @@ não aceita SQL. O schema inicial de retomada é:
 
 ### Próximo trabalho
 
-Aplicar a migration em ambiente controlado, validar a consulta na tela com uma
-retomada real e, então, migrar os demais comandos para o mesmo padrão.
+### 20/09/2026 — início da execução event-driven
+
+- Criado `DevelopmentExecutionConsumer` para consumir a mensagem durável
+  `TASK_READY_FOR_PROGRAMMING`.
+- Criado `MySqlDevelopmentExecutionRepository`: seleciona a primeira
+  subtarefa elegível respeitando ordem, dependências, bloqueios e subtarefas
+  ativas; altera `pending` para `running` com claim condicional.
+- O claim e a gravação de `SUBTASK_EXECUTION_REQUESTED` no `motor_outbox`
+  acontecem na mesma transação, evitando subtarefa `running` sem mensagem
+  durável correspondente.
+- Criada uma porta durável explícita no `TaskCoordinator` para gravar
+  `TASK_READY_FOR_PROGRAMMING` no `motor_outbox`. A publicação não depende do
+  `MessageBus`, pois ele captura falhas de handlers; erro de outbox agora é
+  propagado ao consumidor RabbitMQ e permite retry.
+- Registrada a operação no `motor_operation_log`, incluindo recebimento,
+  `claim_subtask_atomic`, resultado e o identificador da próxima mensagem.
+- Testes do novo consumidor e do fluxo completo adicionados; suíte do Motor v3
+  com 140 testes aprovados e typecheck aprovado.
+
+### 20/09/2026 — consumidor do programador
+
+- Criado `SubtaskExecutionConsumer` para consumir
+  `SUBTASK_EXECUTION_REQUESTED`.
+- O consumidor recarrega do banco tarefa, subtarefa, projeto, agente e comandos
+  de build/teste; mensagens sem subtarefa `running` são ignoradas de forma
+  idempotente.
+- Criado `GitWorktreePreparer`: gera um worktree isolado sem trocar o checkout
+  da branch base e persiste caminho, branch e commit-base na subtarefa.
+- Criado `WorkerConsoleAdapter` para compatibilizar o contrato tipado do Console
+  usado pelo analista com as primitivas legadas do `WorkerLauncher`.
+- O `WorkerLauncher` agora recebe os comandos de build/teste configurados no
+  projeto; corrigida também a contagem dupla de tentativas em exceções.
+- Ao terminar, status e próxima mensagem são gravados na mesma transação:
+  `delivered + SUBTASK_EXECUTION_COMPLETED` ou
+  `failed + SUBTASK_EXECUTION_FAILED`.
+- A timeline registra recebimento, preparação do worktree, execução do
+  programador e mensagem resultante.
+
+### 20/09/2026 — verificação, integração e conclusão
+
+- `SUBTASK_EXECUTION_COMPLETED` agora altera `delivered -> verifying` e publica
+  `SUBTASK_VERIFICATION_REQUESTED` na mesma transação.
+- O consumidor de verificação executa novamente os comandos configurados de
+  build e testes, cria o commit da subtarefa e integra por `cherry-pick` em um
+  worktree exclusivo da tarefa.
+- O checkout do repositório base não é alterado e não há push nem deploy
+  implícitos.
+- Commit e integração são idempotentes: um retry após sucesso do Git e falha
+  posterior do banco reutiliza o commit e reconhece que ele já foi integrado.
+- Após a verificação, a subtarefa passa para `verified`; o Motor publica
+  `SUBTASK_VERIFIED` e, atomicamente, reserva/publica a próxima
+  `SUBTASK_EXECUTION_REQUESTED`.
+- Quando todas as subtarefas estão `verified`/`superseded`, o Motor registra
+  `terminal_status=completed`, confirma a integração e publica
+  `TASK_EXECUTION_COMPLETED`.
+
+### Limite atual
+
+O fluxo event-driven agora chega até `completed`. Publicação remota, promoção
+para a branch base e deploy permanecem etapas separadas e ainda não são
+acionadas automaticamente pelo Motor v3.
