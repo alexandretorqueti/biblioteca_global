@@ -98,7 +98,7 @@ export class MessageProcessingState {
      */
     async markCompleted(messageId: string): Promise<void> {
         await this.pool.execute(
-            'UPDATE motor_message_processing_state SET status=completed, completed_at=NOW() WHERE message_id=?',
+            "UPDATE motor_message_processing_state SET status='completed', completed_at=NOW() WHERE message_id=?",
             [messageId]
         );
     }
@@ -108,7 +108,7 @@ export class MessageProcessingState {
      */
     async markFailed(messageId: string, errorMessage: string): Promise<void> {
         await this.pool.execute(
-            'UPDATE motor_message_processing_state SET status=failed, completed_at=NULL, error_message=? WHERE message_id=?',
+            "UPDATE motor_message_processing_state SET status='failed', completed_at=NULL, error_message=? WHERE message_id=?",
             [errorMessage, messageId]
         );
     }

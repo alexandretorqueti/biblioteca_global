@@ -6,7 +6,7 @@ function createProcessingPool() {
   return {
     execute: vi.fn(async (sql: string, params: unknown[]) => {
       const messageId = String(
-        sql.includes('SET status=failed') || sql.includes("SET status='pending'")
+        sql.includes("SET status='failed'") || sql.includes("SET status='pending'")
           ? params[params.length - 1]
           : params[0],
       )
@@ -20,11 +20,11 @@ function createProcessingPool() {
         record.status = 'processing'
         return [{ affectedRows: 1 }, []]
       }
-      if (sql.includes('SET status=completed')) {
+      if (sql.includes("SET status='completed'")) {
         records.get(messageId)!.status = 'completed'
         return [{ affectedRows: 1 }, []]
       }
-      if (sql.includes("SET status=failed")) {
+      if (sql.includes("SET status='failed'")) {
         records.get(messageId)!.status = 'failed'
         return [{ affectedRows: 1 }, []]
       }

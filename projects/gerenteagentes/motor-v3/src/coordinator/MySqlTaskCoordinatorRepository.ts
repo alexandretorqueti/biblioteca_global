@@ -26,7 +26,7 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
   async getTask(taskId: string): Promise<TaskSnapshot | null> {
     const [rows] = await this.pool.query<TaskRow[]>(`
       SELECT
-        t.id, t.external_id, t.titulo, t.descricao, t.repo_path, t.status, t.paused_at,
+        t.id, t.external_id, t.titulo, t.descricao, pmc.repo_path, t.status, t.paused_at,
         COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), pc.slug, '') AS agente_id,
         pc.slug AS project_slug,
         f.analysis_started_at, f.analysis_execution_id, f.terminal_status,
@@ -35,6 +35,7 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
           WHERE b.tarefa_id = t.id AND b.resolved_at IS NULL) AS blocked_count
       FROM tarefas t
       LEFT JOIN projetos_captados pc ON pc.id = t.projeto_id
+      LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id = t.projeto_id
       LEFT JOIN agentes a ON a.id = pc.agente_id
       LEFT JOIN task_runtime_facts f ON f.tarefa_id = t.id
       WHERE t.external_id = ? OR CAST(t.id AS CHAR) = ?
