@@ -33,6 +33,17 @@ export class DevelopmentExecutionConsumer {
       })
       return
     }
+    if ('kind' in reserved && reserved.kind === 'capacity_waiting') {
+      await this.operationLogger?.append({
+        operationId, sequence: 2, phase: 'rejected', outcome: 'skipped',
+        messageId: message.messageId, messageType: message.type,
+        correlationId: message.correlationId, causationId: message.causationId,
+        taskId: message.taskId, reasonCode: reserved.reason,
+        result: { queue: 'motor_execution_wait_queue' },
+      })
+      return
+    }
+    if (!('subtaskId' in reserved)) return
 
     await this.operationLogger?.append({
       operationId, sequence: 2, phase: 'primitive', outcome: 'succeeded',

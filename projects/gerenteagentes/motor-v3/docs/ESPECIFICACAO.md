@@ -817,7 +817,7 @@ O motor v3 mantém **compatibilidade total** com os endpoints do v2 (a bibliotec
 | POST | `/api/motor/task/:id/chat-resume` | Resume após AGUARDANDO_USUARIO |
 | POST | `/api/motor/task/:id/chat-agent` | Envia mensagem direta ao agente |
 | POST | `/api/motor/task/:id/sanitize-session` | Arquiva sessão e cria nova geração |
-| GET | `/api/motor/deploy-diagnostics` | Diagnóstico de deploy |
+| GET | `/api/motor/deploy-diagnostics` | Diagnóstico somente de leitura da fila de deploy; não inicia deploy no v3 |
 | GET | `/api/motor/model-cooldowns` | Lista modelos em cooldown |
 | POST | `/api/motor/model-cooldowns/reactivate` | Reativa modelo em cooldown |
 | GET | `/api/model-selection/:projectKey/:tipo` | Cadeia de modelos do projeto |

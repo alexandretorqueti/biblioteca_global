@@ -7,6 +7,14 @@ export interface ReservedSubtask {
   seq: number
 }
 
+/** A tarefa permanece em fila; uma liberação de capacidade publicará novo gatilho. */
+export interface CapacityWaiting {
+  kind: 'capacity_waiting'
+  reason: 'global_limit' | 'project_limit'
+}
+
+export type ReserveNextSubtaskResult = ReservedSubtask | CapacityWaiting | null
+
 export interface SubtaskExecutionContext {
   taskId: string
   databaseTaskId: number
@@ -32,6 +40,7 @@ export interface SubtaskExecutionContext {
 interface TaskRow extends RowDataPacket {
   id: number
   external_id: string | null
+  projeto_id: number
 }
 
 interface SubtaskRow extends RowDataPacket {
@@ -63,6 +72,15 @@ interface ExecutionRow extends RowDataPacket {
   workspace_base_commit: string | null
 }
 
+interface MotorLimitRow extends RowDataPacket {
+  chave: string
+  limite: number | string | null
+}
+
+interface ActiveDevelopmentCountRow extends RowDataPacket {
+  total: number | string
+}
+
 /**
  * Reserva a próxima subtarefa e grava o comando seguinte no outbox na mesma
  * transação. Assim, não existe o estado "subtarefa running sem mensagem".
@@ -70,13 +88,13 @@ interface ExecutionRow extends RowDataPacket {
 export class MySqlDevelopmentExecutionRepository {
   constructor(private readonly pool: Pool) {}
 
-  async reserveNextSubtask(taskId: string, source: QueueMessage): Promise<ReservedSubtask | null> {
+  async reserveNextSubtask(taskId: string, source: QueueMessage): Promise<ReserveNextSubtaskResult> {
     const connection = await this.pool.getConnection()
     try {
       await connection.beginTransaction()
 
       const [taskRows] = await connection.query<TaskRow[]>(
-        `SELECT t.id, t.external_id
+        `SELECT t.id, t.external_id, t.projeto_id
            FROM tarefas t
           WHERE (t.external_id = ? OR CAST(t.id AS CHAR) = ?)
             AND t.paused_at IS NULL
@@ -91,6 +109,48 @@ export class MySqlDevelopmentExecutionRepository {
       if (!task) {
         await connection.rollback()
         return null
+      }
+
+      // Serialize reservas concorrentes nos próprios registros de configuração.
+      // Sem este lock, duas mensagens podem contar o mesmo número de workers e
+      // ultrapassar o limite antes de ambas alterarem pending -> running.
+      const [limitRows] = await connection.query<MotorLimitRow[]>(
+        `SELECT chave, CAST(JSON_UNQUOTE(valor) AS UNSIGNED) AS limite
+           FROM motor_configuracoes
+          WHERE chave IN ('motor.max_workers', 'motor.max_workers_per_project')
+          ORDER BY chave
+          FOR UPDATE`,
+      )
+      const limits = new Map(limitRows.map(row => [row.chave, Math.max(1, Number(row.limite ?? 1))]))
+      const maxWorkers = limits.get('motor.max_workers') ?? 1
+      const maxWorkersPerProject = limits.get('motor.max_workers_per_project') ?? 1
+
+      const [globalRows] = await connection.query<ActiveDevelopmentCountRow[]>(
+        `SELECT COUNT(*) AS total
+           FROM subtarefas s
+           INNER JOIN tarefas active_task ON active_task.id = s.tarefa_id
+          WHERE active_task.tipo = 'desenvolvimento'
+            AND s.status IN ('running', 'delivered', 'verifying')`,
+      )
+      if (Number(globalRows[0]?.total ?? 0) >= maxWorkers) {
+        await this.enqueueCapacityWait(connection, task, source)
+        await connection.commit()
+        return { kind: 'capacity_waiting', reason: 'global_limit' }
+      }
+
+      const [projectRows] = await connection.query<ActiveDevelopmentCountRow[]>(
+        `SELECT COUNT(*) AS total
+           FROM subtarefas s
+           INNER JOIN tarefas active_task ON active_task.id = s.tarefa_id
+          WHERE active_task.tipo = 'desenvolvimento'
+            AND active_task.projeto_id = ?
+            AND s.status IN ('running', 'delivered', 'verifying')`,
+        [task.projeto_id],
+      )
+      if (Number(projectRows[0]?.total ?? 0) >= maxWorkersPerProject) {
+        await this.enqueueCapacityWait(connection, task, source)
+        await connection.commit()
+        return { kind: 'capacity_waiting', reason: 'project_limit' }
       }
 
       const [subtaskRows] = await connection.query<SubtaskRow[]>(
@@ -152,6 +212,11 @@ export class MySqlDevelopmentExecutionRepository {
         await connection.rollback()
         return null
       }
+
+      await connection.query(
+        'DELETE FROM motor_execution_wait_queue WHERE tarefa_id = ?',
+        [task.id],
+      )
 
       await connection.query(
         `INSERT INTO motor_outbox
@@ -276,6 +341,7 @@ export class MySqlDevelopmentExecutionRepository {
           payload: { integrationCommitSha: evidence.integrationCommitSha },
         })
         await this.insertOutbox(connection, next)
+        await this.wakeCapacityWaiters(connection, next)
       }
       await connection.commit()
       return { verified, next }
@@ -338,6 +404,7 @@ export class MySqlDevelopmentExecutionRepository {
           JSON.stringify(message.payload), new Date(message.timestamp).toISOString().slice(0, 19).replace('T', ' '),
           message.correlationId ?? null, message.causationId ?? null],
       )
+      if (!result.success) await this.wakeCapacityWaiters(connection, message)
       await connection.commit()
       return message
     } catch (error) {
@@ -411,6 +478,62 @@ export class MySqlDevelopmentExecutionRepository {
     if (updated.affectedRows !== 1) return null
     await this.insertOutbox(connection, message)
     return { message, subtaskId: Number(subtask.id), seq: Number(subtask.seq) }
+  }
+
+  private async enqueueCapacityWait(
+    connection: PoolConnection,
+    task: TaskRow,
+    source: QueueMessage,
+  ): Promise<void> {
+    await connection.query(
+      `INSERT INTO motor_execution_wait_queue
+        (tarefa_id, projeto_id, source_message_id, requested_at, status)
+       VALUES (?, ?, ?, NOW(), 'waiting')
+       ON DUPLICATE KEY UPDATE
+         projeto_id = VALUES(projeto_id),
+         source_message_id = VALUES(source_message_id),
+         status = 'waiting'`,
+      [task.id, task.projeto_id, source.messageId],
+    )
+  }
+
+  /**
+   * Publica sinais após uma vaga ser liberada. Cada consumidor ainda disputa
+   * o claim atômico, por isso acordar mais de uma tarefa não ultrapassa limites.
+   */
+  private async wakeCapacityWaiters(connection: PoolConnection, source: QueueMessage): Promise<void> {
+    const [rows] = await connection.query<Array<RowDataPacket & { tarefa_id: number; task_id: string }>>(
+      `SELECT q.tarefa_id, COALESCE(t.external_id, CAST(t.id AS CHAR)) AS task_id
+         FROM motor_execution_wait_queue q
+         INNER JOIN tarefas t ON t.id = q.tarefa_id
+        WHERE q.status = 'waiting'
+          AND t.paused_at IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM bloqueios b WHERE b.tarefa_id = t.id AND b.resolved_at IS NULL
+          )
+          AND EXISTS (
+            SELECT 1 FROM subtarefas s WHERE s.tarefa_id = t.id AND s.status = 'pending'
+          )
+        ORDER BY q.requested_at ASC, q.id ASC
+        LIMIT 25 FOR UPDATE`,
+    )
+    for (const row of rows) {
+      const message = createQueueMessage({
+        type: 'TASK_READY_FOR_PROGRAMMING',
+        taskId: String(row.task_id),
+        executionId: `exec-capacity-${row.task_id}-${Date.now()}`,
+        correlationId: source.correlationId ?? source.messageId,
+        causationId: source.messageId,
+        payload: { reason: 'development_capacity_released' },
+      })
+      await this.insertOutbox(connection, message)
+      await connection.query(
+        `UPDATE motor_execution_wait_queue
+            SET wake_count = wake_count + 1, last_woken_at = NOW()
+          WHERE tarefa_id = ?`,
+        [row.tarefa_id],
+      )
+    }
   }
 
   private async insertOutbox(connection: PoolConnection, message: QueueMessage): Promise<void> {

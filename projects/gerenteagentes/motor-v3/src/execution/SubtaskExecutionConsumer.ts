@@ -30,14 +30,25 @@ export class SubtaskExecutionConsumer {
       await this.log(operationId, 2, message, { phase: 'rejected', outcome: 'skipped', subtaskId, reasonCode: 'subtask_not_running' })
       return
     }
-    this.validateContext(execution)
+    try {
+      this.validateContext(execution)
+    } catch (error) {
+      await this.finishPreparationFailure(operationId, message, execution, error)
+      return
+    }
 
-    const workspace = await this.worktrees.prepare({
-      taskId: execution.taskId,
-      subtaskId,
-      repoPath: execution.repoPath,
-      baseBranch: execution.baseBranch,
-    })
+    let workspace: { path: string; branch: string; baseCommit: string }
+    try {
+      workspace = await this.worktrees.prepare({
+        taskId: execution.taskId,
+        subtaskId,
+        repoPath: execution.repoPath,
+        baseBranch: execution.baseBranch,
+      })
+    } catch (error) {
+      await this.finishPreparationFailure(operationId, message, execution, error)
+      return
+    }
     await this.repository.recordWorkspace(subtaskId, workspace.path, workspace.branch, workspace.baseCommit)
     await this.log(operationId, 2, message, {
       phase: 'primitive', outcome: 'succeeded', subtaskId, primitiveCode: 'prepare_worktree',
@@ -97,6 +108,25 @@ export class SubtaskExecutionConsumer {
 
   private resultForLog(result: WorkerResult): Record<string, unknown> {
     return { success: result.success, attempts: result.attempts, hasChanges: result.hasChanges, buildPassed: result.buildPassed, error: result.error }
+  }
+
+  private async finishPreparationFailure(
+    operationId: string,
+    message: QueueMessage,
+    execution: SubtaskExecutionContext,
+    error: unknown,
+  ): Promise<void> {
+    const reason = error instanceof Error ? error.message : String(error)
+    const result: WorkerResult = { success: false, error: `Falha de preparação: ${reason}`, attempts: 1, hasChanges: false, buildPassed: false }
+    await this.log(operationId, 2, message, {
+      phase: 'primitive', outcome: 'failed', subtaskId: execution.subtaskId,
+      primitiveCode: 'prepare_worktree', result: this.resultForLog(result),
+    })
+    const next = await this.repository.finishExecution(execution, message, result)
+    await this.log(operationId, 3, message, {
+      phase: 'completed', outcome: 'failed', subtaskId: execution.subtaskId,
+      result: { nextMessageId: next.messageId, nextMessageType: next.type, attempts: result.attempts },
+    })
   }
 
   private async log(

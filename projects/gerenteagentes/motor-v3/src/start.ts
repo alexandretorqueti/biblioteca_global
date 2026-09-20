@@ -37,6 +37,7 @@ import { DerivedTaskStatusResolver } from './status/DerivedTaskStatus.js'
 import { MySqlCommandPolicyRepository, MySqlOperationLogger } from './commands/index.js'
 import { DevelopmentExecutionConsumer, GitVerificationIntegrator, GitWorktreePreparer, MySqlDevelopmentExecutionRepository, SubtaskExecutionConsumer, SubtaskVerificationConsumer, WorkerConsoleAdapter } from './execution/index.js'
 import { WorkerLauncher } from './worker-launcher/WorkerLauncher.js'
+import { getDeployDiagnostics } from './deploy/DeployDiagnostics.js'
 
 // Config
 const PORT = parseInt(process.env.MOTOR_PORT || '3010')
@@ -272,6 +273,14 @@ async function start() {
           catalogEvents: (await catalogLoader.getAllEvents()).length,
           catalogActions: (await catalogLoader.getAllActions()).length,
         }))
+        return
+      }
+
+      // Diagnóstico somente de leitura. O executor de deploy ainda não foi
+      // migrado para o v3, portanto este endpoint nunca autoriza a execução.
+      if (path === '/api/motor/deploy-diagnostics' && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify(await getDeployDiagnostics(pool)))
         return
       }
       

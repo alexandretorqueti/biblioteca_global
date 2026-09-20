@@ -72,4 +72,23 @@ describe('SubtaskExecutionConsumer', () => {
     expect(repository.finishExecution).toHaveBeenCalledWith(context, message, expect.objectContaining({ success: false, error: 'timeout' }))
     expect(logger.append).toHaveBeenLastCalledWith(expect.objectContaining({ phase: 'completed', outcome: 'failed' }))
   })
+
+  it('não deixa a subtarefa running quando a preparação do worktree falha', async () => {
+    const repository = {
+      getExecutionContext: vi.fn().mockResolvedValue(context),
+      finishExecution: vi.fn().mockResolvedValue({ ...message, messageId: 'failed-prepare', type: 'SUBTASK_EXECUTION_FAILED' }),
+    }
+    const worktrees = { prepare: vi.fn().mockRejectedValue(new Error('spawn git ENOENT')) }
+    const worker = { executeTask: vi.fn() }
+    const logger = { append: vi.fn().mockResolvedValue(undefined) }
+    const consumer = new SubtaskExecutionConsumer(repository as never, worktrees as never, worker as never, {}, {}, logger)
+
+    await consumer.handle(message)
+
+    expect(worker.executeTask).not.toHaveBeenCalled()
+    expect(repository.finishExecution).toHaveBeenCalledWith(context, message, expect.objectContaining({
+      success: false, error: expect.stringContaining('spawn git ENOENT'),
+    }))
+    expect(logger.append).toHaveBeenLastCalledWith(expect.objectContaining({ phase: 'completed', outcome: 'failed' }))
+  })
 })

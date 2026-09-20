@@ -68,11 +68,24 @@ if [ "${MOTOR_VERSION:-v1}" = "v2" ]; then
   echo "[entrypoint] Motor-v2 PID: $MOTOR_PID"
   sleep 2
 elif [ "${MOTOR_VERSION:-v1}" = "v3" ]; then
+  if ! command -v git >/dev/null 2>&1; then
+    echo "[entrypoint] Motor-v3 bloqueado: imagem sem executável git" >&2
+    exit 1
+  fi
   export MOTOR_MYSQL_HOST="${MOTOR_MYSQL_HOST:-${MYSQL_HOST:-host.docker.internal}}"
   export MOTOR_MYSQL_PORT="${MOTOR_MYSQL_PORT:-${MYSQL_PORT:-3308}}"
   export MOTOR_MYSQL_DATABASE="${MOTOR_MYSQL_DATABASE:-projeto_640}"
   export MOTOR_MYSQL_USER="${MOTOR_MYSQL_USER:-${MYSQL_USER:-biblioteca}}"
   export MOTOR_MYSQL_PASSWORD="${MOTOR_MYSQL_PASSWORD:-${MYSQL_PASSWORD:-}}"
+  export MOTOR_WORKTREE_ROOT="${MOTOR_WORKTREE_ROOT:-/data/workspace/projects/agentes/gerenteagentes/worktrees}"
+  mkdir -p "$MOTOR_WORKTREE_ROOT"
+  if [ ! -w "$MOTOR_WORKTREE_ROOT" ]; then
+    echo "[entrypoint] Motor-v3 bloqueado: MOTOR_WORKTREE_ROOT sem permissão de escrita: $MOTOR_WORKTREE_ROOT" >&2
+    exit 1
+  fi
+  git config --global user.email "motor-v3@globaltecnologia.local"
+  git config --global user.name "Motor v3"
+  git config --global --add safe.directory /data/workspace/projects/codigofonte/biblioteca-global
   echo "[entrypoint] Validando/bootstrap do catálogo motor-v3..."
   npm --prefix projects/gerenteagentes/motor-v3 run db:bootstrap-runtime
   echo "[entrypoint] Iniciando motor-v3 em background..."

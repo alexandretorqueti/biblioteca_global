@@ -235,3 +235,15 @@ não aceita SQL. O schema inicial de retomada é:
 O fluxo event-driven agora chega até `completed`. Publicação remota, promoção
 para a branch base e deploy permanecem etapas separadas e ainda não são
 acionadas automaticamente pelo Motor v3.
+
+### 20/09/2026 — capacidade de desenvolvimento
+
+- O claim da primeira subtarefa consulta `motor.max_workers` e
+  `motor.max_workers_per_project` na mesma transação e serializa concorrência
+  bloqueando os registros de configuração.
+- Sem vaga global ou do projeto, a tarefa é persistida em
+  `motor_execution_wait_queue`; sua subtarefa continua `pending`.
+- Ao concluir uma tarefa ou liberar a vaga por falha de execução, o Motor
+  publica novos `TASK_READY_FOR_PROGRAMMING` para as entradas aguardando.
+  Cada uma ainda passa pelo claim atômico, portanto os limites permanecem
+  respeitados sem `pump` nem polling de decisão.
