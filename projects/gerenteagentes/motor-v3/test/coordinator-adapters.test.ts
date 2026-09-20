@@ -4,7 +4,7 @@ import type { TaskSnapshot } from '../src/coordinator/index.js'
 
 function task(): TaskSnapshot {
   return {
-    taskId: 'task-1', title: 'Corrigir charset', description: 'Corrigir acentuação', agentId: 'agent-1',
+    taskId: 'task-1', title: 'Corrigir charset', description: 'Corrigir acentuação', taskType: 'desenvolvimento', agentId: 'agent-1',
     projectSlug: 'biblioteca', repoPath: '/repo', status: 'planned', paused: false,
     terminal: false, analysisStartedAt: null, subtaskCount: 0,
   }
@@ -73,10 +73,38 @@ describe('coordinator adapters', () => {
         }) }),
     }
     const { ConsoleAnalystRunner } = await import('../src/analysis/index.js')
-    const runner = new ConsoleAnalystRunner(consoleApi, { pollIntervalMs: 0 })
+    const runner = new ConsoleAnalystRunner(consoleApi, {
+      pollIntervalMs: 0,
+      modelResolver: async () => 'openai/gpt-5.6-luna',
+    })
 
     const result = await runner.start(task(), 'exec-1')
     expect(result.kind).toBe('plan')
+    expect(consoleApi.createSession).toHaveBeenCalledWith(expect.objectContaining({ model: 'openai/gpt-5.6-luna' }))
     expect(consoleApi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ session: expect.objectContaining({ sessionId: 'session-1' }) }))
+  })
+
+  it('corrige uma resposta inválida antes de escalar o modelo', async () => {
+    const consoleApi = {
+      createSession: vi.fn(async () => ({ sessionId: 'session-1', sessionKey: 'key', agentId: 'agent-1' })),
+      sendMessage: vi.fn(async () => {}),
+      getSessionStatus: vi.fn()
+        .mockResolvedValueOnce({ isComplete: true, lastResponse: '{"subtarefas":[]}' })
+        .mockResolvedValueOnce({ isComplete: true, lastResponse: JSON.stringify({
+          subtarefas: [{ seq: 1, titulo: 'Corrigir', scope: 'Escopo', acceptance_criteria: ['OK'], deliverables: ['Código'], requirements_covered: ['REQ-1'], depends_on: [] }],
+          requirements: [{ id: 'REQ-1', description: 'Requisito' }], coverage: [{ requirement_id: 'REQ-1', subtasks: [1] }],
+        }) }),
+    }
+    const { ConsoleAnalystRunner } = await import('../src/analysis/index.js')
+    const runner = new ConsoleAnalystRunner(consoleApi, {
+      pollIntervalMs: 0,
+      modelChainResolver: async () => ['openai/model-a', 'openai/model-b'],
+      promptResolver: { resolve: async () => ({ text: 'prompt', contractText: 'JSON', contractSchema: undefined }) },
+    })
+
+    await expect(runner.start(task(), 'exec-1')).resolves.toMatchObject({ kind: 'plan' })
+    expect(consoleApi.createSession).toHaveBeenCalledTimes(1)
+    expect(consoleApi.sendMessage).toHaveBeenCalledTimes(2)
+    expect(consoleApi.sendMessage.mock.calls[1][0].message).toContain('Erro de validação')
   })
 })

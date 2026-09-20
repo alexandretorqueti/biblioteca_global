@@ -19,6 +19,7 @@
 import {
   bigint,
   boolean,
+  datetime,
   int,
   json,
   longtext,
@@ -31,6 +32,7 @@ import {
   varchar,
 } from "drizzle-orm/mysql-core"
 import type { FormAnnotationsPorTabela } from "@biblioteca-global/schema-tools"
+import { sql } from "drizzle-orm"
 
 // Helper text espelhando motor-v2/src/shared/task-statuses.ts (fonte canônica).
 // Não importar de motor-v2 aqui: aquele pacote é ESM e este schema é CJS.
@@ -366,6 +368,25 @@ export const motorOutbox = mysqlTable("motor_outbox", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
 })
+
+/** Claim idempotente das mensagens consumidas pelo Motor v3. */
+export const motorMessageProcessingState = mysqlTable("motor_message_processing_state", {
+  messageId: varchar("message_id", { length: 200 }).primaryKey(),
+  taskId: varchar("task_id", { length: 200 }),
+  messageType: varchar("message_type", { length: 50 }).notNull(),
+  status: mysqlEnum("status", ["pending", "processing", "completed", "failed"])
+    .notNull()
+    .default("pending"),
+  attempt: int("attempt").notNull().default(1),
+  createdAt: datetime("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  startedAt: datetime("started_at"),
+  completedAt: datetime("completed_at"),
+  timeoutAt: datetime("timeout_at"),
+  errorMessage: text("error_message"),
+}, (table) => ({
+  statusIdx: index("idx_message_processing_state_status").on(table.status, table.attempt),
+  taskIdx: index("idx_message_processing_state_task").on(table.taskId, table.status),
+}))
 
 export const subtarefas = mysqlTable("subtarefas", {
   id: bigint("id", { mode: "number", unsigned: true })

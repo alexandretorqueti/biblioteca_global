@@ -3,9 +3,11 @@ import type { AnalystConsole, AnalystSession } from './ConsoleAnalystRunner.js'
 export class ConsoleHttpApi implements AnalystConsole {
   constructor(private readonly baseUrl: string, private readonly token: string) {}
 
-  async createSession(input: { key: string; agentId: string; metadata: Record<string, unknown> }): Promise<AnalystSession> {
+  async createSession(input: { key: string; agentId: string; model?: string; metadata: Record<string, unknown> }): Promise<AnalystSession> {
     const response = await this.request<{ sessionId?: string; id?: string; key?: string }>('/api/sessions', {
-      method: 'POST', body: { agentId: input.agentId, key: input.key, label: input.key, metadata: input.metadata },
+      // O contrato público do Console é estrito e não aceita metadados livres.
+      // O contexto de correlação permanece no session key estável e no prompt.
+      method: 'POST', body: { agentId: input.agentId, key: input.key, label: input.key, ...(input.model ? { model: input.model } : {}) },
     })
     const sessionId = response.sessionId ?? response.id
     if (!sessionId) throw new Error('Console não retornou sessionId')

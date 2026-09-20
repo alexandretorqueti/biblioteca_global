@@ -27,6 +27,7 @@ function toMysqlDateTime(value: string | Date): string {
 export class OutboxPublisher {
   private started = false
   private flushing = false
+  private pollTimer: NodeJS.Timeout | null = null
 
   constructor(
     private readonly pool: Pool,
@@ -37,7 +38,42 @@ export class OutboxPublisher {
   async start(): Promise<void> {
     await this.transport.connect()
     this.started = true
+    const recovered = await this.recoverAbandonedProcessing()
+    if (recovered > 0) console.warn(`[OutboxPublisher] ${recovered} mensagem(ns) abandonada(s) recuperada(s) para reprocessamento`)
     await this.flush()
+    // A API e o Motor compartilham o outbox, mas não o mesmo objeto em
+    // memória. O polling garante que mensagens inseridas pela API sejam
+    // publicadas sem depender de outro comando HTTP ou de um reinício.
+    this.pollTimer = setInterval(() => {
+      void this.flush().catch(error => console.error('[OutboxPublisher] falha no polling:', error))
+    }, 1_000)
+    this.pollTimer.unref()
+  }
+
+  async stop(): Promise<void> {
+    this.started = false
+    if (this.pollTimer) clearInterval(this.pollTimer)
+    this.pollTimer = null
+  }
+
+  /** Reabre claims perdidos por reinício e republica sua mensagem pelo outbox. */
+  private async recoverAbandonedProcessing(): Promise<number> {
+    const [result] = await this.pool.query<ResultSetHeader>(
+      `UPDATE motor_message_processing_state state
+       INNER JOIN motor_outbox outbox
+         ON outbox.message_id COLLATE utf8mb4_unicode_ci = state.message_id
+       SET state.status = 'pending',
+           state.started_at = NULL,
+           state.completed_at = NULL,
+           state.timeout_at = NULL,
+           state.error_message = 'Recuperada após reinício do Motor',
+           outbox.status = 'pending',
+           outbox.last_error = 'Republicada após recuperação de processamento abandonado',
+           outbox.updated_at = NOW()
+       WHERE state.status = 'processing'
+         AND state.started_at < DATE_SUB(NOW(), INTERVAL 300 SECOND)`,
+    )
+    return result.affectedRows
   }
 
   async enqueue(message: QueueMessage): Promise<void> {

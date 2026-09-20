@@ -37,6 +37,16 @@ Toda mensagem externa usa `QueueMessage`:
 O payload precisa ser JSON serializável. Não deve conter sessão, conexão,
 função ou outro objeto do processo.
 
+## Regra de início da análise
+
+- Toda tarefa é criada com `paused_at` preenchido.
+- `TASK_CREATED` apenas registra a existência da tarefa; nunca inicia análise.
+- `TASK_ENQUEUED` também não inicia análise.
+- Somente `TASK_RESUME_REQUESTED`, emitido depois que a API remove `paused_at`,
+  pode adquirir o claim e iniciar o analista.
+- O Motor consulta o outbox periodicamente, pois a API pode inserir mensagens
+  em outro processo.
+
 ## Confirmação e falhas
 
 1. O consumidor recebe a mensagem com `ack` manual.
@@ -54,6 +64,11 @@ após o timeout configurado. Isso evita duplicidade no consumo, mas não promete
 exactly-once para efeitos externos: se o processo cair depois de executar o
 efeito e antes de marcar `completed`, o efeito precisa ser idempotente por sua
 própria chave de negócio.
+
+Na inicialização, antes de drenar o outbox, o Motor reabre claims `processing`
+com mais de cinco minutos: muda-os para `pending` e republica a mensagem
+original a partir do `motor_outbox`. Assim, uma interrupção do processo não
+deixa comandos perdidos apenas porque o banco registrou o claim antes do `ack`.
 
 ## Topologia esperada
 
@@ -167,6 +182,8 @@ contrato.
 - falha do RabbitMQ mantém a mensagem `pending` com erro e contador de
   tentativas;
 - publicação duplicada após crash é tolerada pelo `messageId` idempotente;
+- claims de consumo abandonados há mais de cinco minutos são reabertos e
+  republicados no boot;
 - o `MessageBus` continua sendo o fallback quando a fila está desativada.
 
 O outbox implementado neste ciclo protege os comandos recebidos pelos

@@ -1,16 +1,17 @@
 import type { Pool, PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
 import type { TaskCoordinatorRepository, TaskLifecycleStatus, TaskSnapshot } from './TaskCoordinator.js'
 import type { AnalysisOutcome } from '../analysis/AnalystReply.js'
+import { DerivedTaskStatusResolver } from '../status/DerivedTaskStatus.js'
 
 interface TaskRow extends RowDataPacket {
   id: number
   external_id: string | null
   titulo: string
   descricao: string | null
+  tipo: string | null
   agente_id: string | null
   project_slug: string | null
   repo_path: string | null
-  status: string | null
   paused_at: Date | string | null
   analysis_started_at: Date | string | null
   analysis_execution_id: string | null
@@ -21,12 +22,16 @@ interface TaskRow extends RowDataPacket {
 
 /** Repositório MySQL do claim inicial de análise. */
 export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository {
-  constructor(private readonly pool: Pool) {}
+  private readonly statusResolver: DerivedTaskStatusResolver
+
+  constructor(private readonly pool: Pool) {
+    this.statusResolver = new DerivedTaskStatusResolver(pool)
+  }
 
   async getTask(taskId: string): Promise<TaskSnapshot | null> {
     const [rows] = await this.pool.query<TaskRow[]>(`
       SELECT
-        t.id, t.external_id, t.titulo, t.descricao, pmc.repo_path, t.status, t.paused_at,
+        t.id, t.external_id, t.titulo, t.descricao, t.tipo, pmc.repo_path, t.paused_at,
         COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), pc.slug, '') AS agente_id,
         pc.slug AS project_slug,
         f.analysis_started_at, f.analysis_execution_id, f.terminal_status,
@@ -43,7 +48,11 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
     `, [taskId, taskId])
 
     const row = rows[0]
-    return row ? this.mapTask(row) : null
+    if (!row) return null
+    return {
+      ...this.mapTask(row),
+      status: await this.statusResolver.resolve(String(row.external_id ?? row.id)),
+    }
   }
 
   async claimAnalysis(taskId: string, executionId: string): Promise<boolean> {
@@ -158,7 +167,7 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
   private async lockTask(connection: PoolConnection, taskId: string): Promise<TaskRow | null> {
     const [rows] = await connection.query<TaskRow[]>(`
       SELECT
-        t.id, t.external_id, t.status, t.paused_at,
+        t.id, t.external_id, t.paused_at,
         f.analysis_started_at, f.analysis_execution_id, f.terminal_status,
         (SELECT COUNT(*) FROM subtarefas s WHERE s.tarefa_id = t.id) AS subtask_count,
         (SELECT COUNT(*) FROM bloqueios b
@@ -172,14 +181,13 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
     return rows[0] ?? null
   }
 
-  private cannotStart(row: Pick<TaskRow, 'paused_at' | 'analysis_started_at' | 'analysis_execution_id' | 'terminal_status' | 'subtask_count' | 'blocked_count' | 'status'>): boolean {
+  private cannotStart(row: Pick<TaskRow, 'paused_at' | 'analysis_started_at' | 'analysis_execution_id' | 'terminal_status' | 'subtask_count' | 'blocked_count'>): boolean {
     return row.paused_at != null
       || row.analysis_started_at != null
       || row.analysis_execution_id != null
       || row.terminal_status != null
       || Number(row.subtask_count) > 0
       || Number(row.blocked_count) > 0
-      || ['blocked', 'cancelled', 'completed', 'failed'].includes(String(row.status ?? '').toLowerCase())
   }
 
   private mapTask(row: TaskRow): TaskSnapshot {
@@ -191,11 +199,12 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
         ? 'paused'
         : row.analysis_started_at != null
           ? 'running'
-          : this.mapStatus(row.status)
+          : 'planned'
     return {
       taskId: String(row.external_id ?? row.id),
       title: String(row.titulo ?? ''),
       description: String(row.descricao ?? ''),
+      taskType: String(row.tipo ?? 'desenvolvimento'),
       agentId: String(row.agente_id ?? ''),
       projectSlug: row.project_slug ? String(row.project_slug) : null,
       repoPath: String(row.repo_path ?? ''),

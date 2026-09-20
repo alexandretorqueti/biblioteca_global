@@ -35,13 +35,24 @@ MOTOR_PORT=3010
 
 **Nota:** O `DATABASE_URL` usa o nome do container MySQL (`biblioteca-global-mysql`) e porta interna (3306), não a porta do host (3308). Isso funciona se o motor-v3 rodar na mesma rede Docker do MySQL.
 
-## Seed do Catálogo (opcional — dados iniciais)
+## Migração e bootstrap automáticos
 
-```bash
-npm run db:seed
-```
+O container da API executa, nesta ordem:
 
-**Nota:** O seed ainda está em desenvolvimento. Por enquanto, o catálogo pode ser populado via API HTTP após o motor iniciar.
+1. `db:migrate:gerenteagentes`, que aplica a migration canônica
+   `0051_motor_v3_runtime` para claim, outbox e estado do consumidor;
+2. `db:bootstrap-runtime`, somente quando `MOTOR_VERSION=v3`;
+3. inicialização do processo do Motor v3.
+
+O bootstrap usa um advisory lock MySQL para suportar blue/green. Em banco
+existente, apenas valida o catálogo. Em banco vazio, cria as dez tabelas do
+catálogo e popula os dados canônicos. Se encontrar schema ou catálogo
+parcialmente criado, encerra o boot com diagnóstico e não apaga nem reconstrói
+dados automaticamente.
+
+Não executar `motor-v3 npm run db:migrate` no deploy. O histórico Drizzle
+isolado anterior é referência de bootstrap; as estruturas compartilhadas são
+governadas pelo histórico canônico de `projects/gerenteagentes/migrations`.
 
 ## Iniciar Motor v3
 
@@ -209,6 +220,8 @@ curl -X POST http://localhost:3010/api/motor/catalog/reject/<proposalId> \
 - Verificar se MySQL está rodando
 - Verificar se porta 3010 está livre
 - Verificar logs: `npm start` (foreground)
+- Se aparecer `schema parcial do catálogo v3`, não recriar tabelas: comparar a
+  lista indicada no erro com as migrations antes de corrigir o schema.
 
 ### Agente não responde com ::DONE::
 

@@ -5,7 +5,7 @@ import { createQueueMessage, type QueueMessage } from '../src/queue/index.js'
 
 function task(overrides: Partial<TaskSnapshot> = {}): TaskSnapshot {
   return {
-    taskId: 'task-1', title: 'Tarefa', description: 'Descrição', agentId: 'agent-1',
+    taskId: 'task-1', title: 'Tarefa', description: 'Descrição', taskType: 'desenvolvimento', agentId: 'agent-1',
     projectSlug: 'projeto', repoPath: '/tmp/projeto', status: 'planned', paused: false,
     terminal: false, analysisStartedAt: null, subtaskCount: 0, ...overrides,
   }
@@ -52,6 +52,16 @@ describe('TaskCoordinator', () => {
     expect(repository.claimAnalysis).not.toHaveBeenCalled()
     expect(runner.start).not.toHaveBeenCalled()
     expect(ignored).toHaveBeenCalled()
+  })
+
+  it.each(['TASK_CREATED', 'TASK_ENQUEUED'])('não inicia análise com %s', async (type) => {
+    const { coordinator, repository, runner } = setup()
+
+    await coordinator.handle(command(type))
+
+    expect(repository.getTask).not.toHaveBeenCalled()
+    expect(repository.claimAnalysis).not.toHaveBeenCalled()
+    expect(runner.start).not.toHaveBeenCalled()
   })
 
   it('não repete análise quando o plano já existe', async () => {

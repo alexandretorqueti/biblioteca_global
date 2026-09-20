@@ -342,6 +342,15 @@ export class GerenteAgentesController {
     return this.service.motorDetailTarefa(projeto, id);
   }
 
+  @Get('tarefas/:id/operacoes-motor')
+  @Roles('admin', 'gerente', 'operador')
+  listarOperacoesMotorTarefa(
+    @CurrentProject() projeto: ProjetoResumo,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    return this.service.listarOperacoesMotorTarefa(projeto, id);
+  }
+
   // ============================================================================
   // AGENTES (sincronização com OpenClaw)
   // ============================================================================
@@ -373,7 +382,7 @@ export class GerenteAgentesController {
   }
 
   // ============================================================================
-  // SELEÇÃO DE MODELOS (proxy p/ motor — task-54)
+  // SELEÇÃO DE MODELOS (Biblioteca; consumida pelo Motor)
   // ============================================================================
 
   /** Valida o param `tipo` (DEV/ANALYST/MONITOR) — 400 se inválido. */

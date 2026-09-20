@@ -1215,6 +1215,25 @@ export class GerenteAgentesService {
     return rows;
   }
 
+  /** Timeline append-only das decisões/actions/primitivas do Motor v3. */
+  async listarOperacoesMotorTarefa(_projeto: ProjetoResumo, tarefaId: number) {
+    const db = await this.dbDoMotor();
+    const [rows] = await db.execute(sql`
+      SELECT operation_id AS operationId, sequence, phase, outcome,
+             message_id AS messageId, message_type AS messageType,
+             correlation_id AS correlationId, command_code AS commandCode,
+             policy_code AS policyCode, policy_version AS policyVersion,
+             action_code AS actionCode, primitive_code AS primitiveCode,
+             reason_code AS reasonCode, result_json AS resultJson,
+             duration_ms AS durationMs, created_at AS createdAt
+        FROM motor_operation_log
+       WHERE tarefa_id = ${String(tarefaId)}
+       ORDER BY created_at DESC, sequence DESC
+       LIMIT 500
+    `);
+    return rows;
+  }
+
   /**
    * Bulk: pausa todas as tarefas não-finais e não-pausadas.
    * Consulta tarefas + fatos de runtime, filtra elegíveis e chama o motor
@@ -1939,42 +1958,29 @@ export class GerenteAgentesService {
   }
 
   // ============================================================================
-  // SELEÇÃO DE MODELOS (proxy p/ motor — task-54)
+  // SELEÇÃO DE MODELOS (fonte operacional da Biblioteca)
   // ============================================================================
 
   /**
-   * GET /api/model-selection/:projectKey/:tipo — lista a seleção de modelos do
-   * projeto captado para o tipo (DEV/ANALYST/MONITOR). `projectKey` vem da
-   * rota (slug do projeto captado, ex.: "biblioteca-global") e é encaminhado
-   * ao motor tal qual — NÃO é o slug do projeto logado.
-   * 404 do motor (ainda não há seleção) → `entries: []`.
+   * Lista a seleção persistida do projeto para o tipo informado. Esta é uma
+   * configuração da Biblioteca; o Motor apenas a consome durante a execução.
    */
   async getModelSelection(
     projectKey: string,
     tipo: ModelSelectionTipo,
   ): Promise<{ projectKey: string; tipo: ModelSelectionTipo; entries: ModelSelectionEntry[] }> {
-    const resp = await this.motorRequest(
-      'GET',
-      `/api/model-selection/${encodeURIComponent(projectKey)}/${encodeURIComponent(tipo)}`,
-      undefined,
-      this.motorVersao === 'v2' ? this.motorV2Url : undefined,
-    ).catch((e: unknown) => {
-      throw new BadRequestException(`Motor indisponível: ${e instanceof Error ? e.message : String(e)}`);
-    });
-    if (resp.status === 404) {
-      return { projectKey, tipo, entries: [] };
-    }
-    if (!resp.ok) {
-      throw new BadRequestException(`Motor retornou ${resp.status}: ${resp.body.slice(0, 200)}`);
-    }
-    const data = JSON.parse(resp.body) as { projectKey?: string; tipo?: string; entries?: ModelSelectionEntry[] };
-    return { projectKey: data.projectKey ?? projectKey, tipo, entries: data.entries ?? [] };
+    const db = await this.dbDoMotor();
+    const [rows] = await db.execute(sql`
+      SELECT ordem, provider, model, enabled
+      FROM project_model_selection
+      WHERE project_slug = ${projectKey} AND tipo = ${tipo}
+      ORDER BY ordem ASC
+    `) as unknown as [Array<{ ordem: number | string; provider: string; model: string; enabled: number | boolean }>];
+    return { projectKey, tipo, entries: rows.map((row) => ({ ordem: Number(row.ordem), provider: row.provider, model: row.model, enabled: Boolean(row.enabled) })) };
   }
 
   /**
-   * PUT /api/model-selection/:projectKey/:tipo — salva a seleção de modelos do
-   * projeto captado (slug da rota) para o tipo. Body validado com o contrato
-   * shared (mesmo schema do motor); campos extras são rejeitados antes do proxy.
+   * Salva a seleção na Biblioteca. O Motor a lê como configuração de execução.
    */
   async saveModelSelection(
     projectKey: string,
@@ -1988,19 +1994,15 @@ export class GerenteAgentesService {
       entries: ModelSelectionEntry[];
     };
 
-    const resp = await this.motorRequest(
-      'PUT',
-      `/api/model-selection/${encodeURIComponent(parsed.projectKey)}/${encodeURIComponent(tipo)}`,
-      { entries: parsed.entries },
-      this.motorVersao === 'v2' ? this.motorV2Url : undefined,
-    ).catch((e: unknown) => {
-      throw new BadRequestException(`Motor indisponível: ${e instanceof Error ? e.message : String(e)}`);
+    const db = await this.dbDoMotor();
+    await db.transaction(async (tx: any) => {
+      await tx.execute(sql`DELETE FROM project_model_selection WHERE project_slug = ${parsed.projectKey} AND tipo = ${tipo}`);
+      for (const entry of parsed.entries) {
+        await tx.execute(sql`INSERT INTO project_model_selection (project_slug, tipo, ordem, provider, model, enabled)
+          VALUES (${parsed.projectKey}, ${tipo}, ${entry.ordem}, ${entry.provider}, ${entry.model}, ${entry.enabled ? 1 : 0})`);
+      }
     });
-    if (!resp.ok) {
-      throw new BadRequestException(`Motor retornou ${resp.status}: ${resp.body.slice(0, 200)}`);
-    }
-    const data = JSON.parse(resp.body) as { projectKey?: string; tipo?: string; entries?: ModelSelectionEntry[] };
-    return { projectKey: data.projectKey ?? parsed.projectKey, tipo, entries: data.entries ?? parsed.entries };
+    return { projectKey: parsed.projectKey, tipo, entries: parsed.entries };
   }
 
   // ============================================================================

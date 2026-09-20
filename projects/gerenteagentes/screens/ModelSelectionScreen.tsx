@@ -5,15 +5,15 @@
  * `project_model_selection`.
  *
  * - Seletor de tipo (DEV / ANALYST / MONITOR)
- * - Ao montar, busca `GET /gerenteagentes/modelos-console` (proxy p/ Console
- *   OpenClaw) e popula os combos de provider/modelo de cada entrada.
+ * - Ao montar, busca os endpoints da Biblioteca GerenteAgentes; a lista do
+ *   Console é obtida por proxy server-side e popula os combos.
  * - Lista editável de entradas: ordem, provider (combo), model (combo
  *   filtrado pelo provider), enabled
  * - Entradas já salvas com valores legados (fora da lista do console)
  *   continuam editáveis: o valor atual aparece como opção extra no combo.
  * - Botões: adicionar / remover / reordenar (acima / abaixo)
  * - Salvar via api-client → PUT /gerenteagentes/model-selection/:projectKey/:tipo
- *   (proxy p/ motor). O `projectKey` é o slug do projeto da linha pai
+ *   (persistência na Biblioteca). O `projectKey` é o slug do projeto da linha pai
  *   clicada na childRoute (props.parentRow.slug); se a tela for aberta sem
  *   contexto de linha (menu direto), usa o slug do projeto logado.
  *

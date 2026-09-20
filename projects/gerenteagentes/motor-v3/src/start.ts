@@ -32,7 +32,9 @@ import type { QueueMessage } from './queue/QueueMessage.js'
 import { TaskCoordinator, MySqlTaskCoordinatorRepository } from './coordinator/index.js'
 import { ConsoleAnalystRunner } from './analysis/ConsoleAnalystRunner.js'
 import { ConsoleHttpApi } from './analysis/ConsoleHttpApi.js'
+import { ManagedAnalysisPromptResolver } from './analysis/ManagedAnalysisPromptResolver.js'
 import { DerivedTaskStatusResolver } from './status/DerivedTaskStatus.js'
+import { MySqlCommandPolicyRepository, MySqlOperationLogger } from './commands/index.js'
 
 // Config
 const PORT = parseInt(process.env.MOTOR_PORT || '3010')
@@ -114,8 +116,42 @@ async function start() {
     const analyst = new ConsoleAnalystRunner(new ConsoleHttpApi(consoleUrl, consoleToken), {
       timeoutMs: Number(process.env.MOTOR_ANALYSIS_TIMEOUT_MS || 1800000),
       pollIntervalMs: Number(process.env.MOTOR_ANALYSIS_POLL_INTERVAL_MS || 5000),
+      promptResolver: new ManagedAnalysisPromptResolver(pool),
+      modelChainResolver: async (task) => {
+        if (!task.projectSlug) return []
+        const [rows] = await pool.query<any[]>(
+          `SELECT selection.model FROM project_model_selection selection
+            WHERE selection.project_slug = ? AND selection.tipo = 'ANALYST' AND selection.enabled = 1
+              AND NOT EXISTS (
+                SELECT 1 FROM motor_model_cooldown cooldown
+                 WHERE cooldown.model COLLATE utf8mb4_unicode_ci = selection.model COLLATE utf8mb4_unicode_ci
+                   AND cooldown.until > NOW()
+              )
+            ORDER BY selection.ordem ASC`,
+          [task.projectSlug],
+        )
+        return rows.map(row => String(row.model)).filter(Boolean)
+      },
+      modelFailureRecorder: async (model, error) => {
+        const reason = error.message.slice(0, 100)
+        const [updated] = await pool.query<any>(
+          `UPDATE motor_model_cooldown
+              SET until = DATE_ADD(NOW(), INTERVAL 10 MINUTE), reason = ?,
+                  occurrences = occurrences + 1, updated_at = NOW()
+            WHERE model = ? AND until > NOW()`, [reason, model],
+        )
+        if (updated.affectedRows === 0) {
+          await pool.query(
+            `INSERT INTO motor_model_cooldown (model, reason, until, occurrences, created_at, updated_at)
+             VALUES (?, ?, DATE_ADD(NOW(), INTERVAL 10 MINUTE), 1, NOW(), NOW())`, [model, reason],
+          )
+        }
+      },
     })
-    const coordinator = new TaskCoordinator(repository, analyst, bus)
+    const coordinator = new TaskCoordinator(repository, analyst, bus, {
+      commandPolicies: new MySqlCommandPolicyRepository(pool),
+      operationLogger: new MySqlOperationLogger(pool),
+    })
     const transport = new RabbitMqTransport({
       url: rabbitUrl,
       exchange: process.env.MOTOR_RABBITMQ_EXCHANGE || 'motor',
@@ -416,6 +452,11 @@ async function shutdown() {
   if (queueConsumer) {
     await queueConsumer.stop()
     console.log('[Motor v3] QueueConsumer parado')
+  }
+
+  if (outboxPublisher) {
+    await outboxPublisher.stop()
+    console.log('[Motor v3] OutboxPublisher parado')
   }
 
   // Para scheduler

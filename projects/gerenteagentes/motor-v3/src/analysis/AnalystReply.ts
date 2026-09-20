@@ -17,11 +17,12 @@ export type AnalysisOutcome =
   | { kind: 'plan'; subtasks: PlannedSubtask[]; coverage: PlanCoverage }
   | { kind: 'questions'; summary: string; questions: string[] }
 
-export function parseAnalystReply(content: string): AnalysisOutcome {
+export function parseAnalystReply(content: string, contractSchema?: unknown): AnalysisOutcome {
   const match = content.match(/\{[\s\S]*\}/)
   if (!match) throw new Error('Resposta do analista não contém JSON')
   const parsed: unknown = JSON.parse(match[0])
   if (!isRecord(parsed)) throw new Error('Resposta do analista não é um objeto JSON')
+  if (contractSchema) validateJsonSchema(parsed, contractSchema)
 
   if (parsed.kind === 'perguntas' || Array.isArray(parsed.perguntas)) {
     const questions = Array.isArray(parsed.perguntas) ? parsed.perguntas.map(String).map(value => value.trim()).filter(Boolean) : []
@@ -55,12 +56,57 @@ export function parseAnalystReply(content: string): AnalysisOutcome {
   })
   const coverage = parsed.coverage.map(value => {
     if (!isRecord(value)) throw new Error('Cobertura inválida')
-    return { requirement: String(value.requirement ?? '').trim(), coveredBy: integers(value.covered_by) }
+    return {
+      // Contratos publicados antes do v3 usavam estes aliases. A
+      // normalização mantém a migração compatível sem substituir o contrato.
+      requirement: String(value.requirement ?? value.requirement_id ?? '').trim(),
+      coveredBy: integers(value.covered_by ?? value.subtasks),
+    }
   })
   if (requirements.some(item => !item.id || !item.description) || coverage.some(item => !item.requirement || item.coveredBy.length === 0)) {
     throw new Error('Matriz de cobertura incompleta')
   }
+  const requirementIds = new Set(requirements.map(item => item.id))
+  const sequences = new Set(subtasks.map(item => item.seq))
+  if (sequences.size !== subtasks.length) throw new Error('Sequências de subtarefas duplicadas')
+  if (coverage.some(item => !requirementIds.has(item.requirement) || item.coveredBy.some(seq => !sequences.has(seq)))) {
+    throw new Error('Matriz de cobertura referencia requisito ou subtarefa inexistente')
+  }
+  if (requirements.some(requirement => !coverage.some(item => item.requirement === requirement.id))) {
+    throw new Error('Matriz de cobertura não cobre todos os requisitos')
+  }
   return { kind: 'plan', subtasks, coverage: { requirements, coverage } }
+}
+
+/** Validador do subconjunto de JSON Schema usado pelos contratos publicados. */
+function validateJsonSchema(value: unknown, schema: unknown, path = '$'): void {
+  if (!isRecord(schema)) return
+  if (Array.isArray(schema.oneOf)) {
+    const errors: string[] = []
+    for (const option of schema.oneOf) {
+      try { validateJsonSchema(value, option, path); return } catch (error) { errors.push(String((error as Error).message)) }
+    }
+    throw new Error(`Resposta não atende a nenhuma assinatura do contrato: ${errors.join(' | ')}`)
+  }
+  if (schema.type === 'object') {
+    if (!isRecord(value)) throw new Error(`${path} deve ser objeto`)
+    for (const field of Array.isArray(schema.required) ? schema.required.map(String) : []) {
+      if (!(field in value)) throw new Error(`${path}.${field} é obrigatório`)
+    }
+    if (isRecord(schema.properties)) {
+      for (const [field, childSchema] of Object.entries(schema.properties)) {
+        if (field in value) validateJsonSchema(value[field], childSchema, `${path}.${field}`)
+      }
+    }
+  } else if (schema.type === 'array') {
+    if (!Array.isArray(value)) throw new Error(`${path} deve ser array`)
+    if (Number(schema.minItems ?? 0) > value.length) throw new Error(`${path} deve ter ao menos ${schema.minItems} item(ns)`)
+    if (schema.items) value.forEach((item, index) => validateJsonSchema(item, schema.items, `${path}[${index}]`))
+  } else if (schema.type === 'string' && typeof value !== 'string') {
+    throw new Error(`${path} deve ser string`)
+  } else if (schema.type === 'integer' && !Number.isInteger(value)) {
+    throw new Error(`${path} deve ser inteiro`)
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, any> {

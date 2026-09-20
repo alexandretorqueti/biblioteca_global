@@ -23,6 +23,7 @@
     "lint": "eslint src test --ext .ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
+    "db:bootstrap-runtime": "node dist/db/bootstrap.js",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
     "db:seed": "node dist/db/seed.js"

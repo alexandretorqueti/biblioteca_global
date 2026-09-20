@@ -2,11 +2,29 @@ import { describe, expect, it, vi } from 'vitest'
 import { InMemoryQueueTransport, OutboxPublisher, createQueueMessage } from '../src/queue/index.js'
 
 describe('OutboxPublisher', () => {
+  it('recupera claims abandonados antes de processar o outbox no início', async () => {
+    const transport = new InMemoryQueueTransport()
+    const pool = {
+      query: vi.fn(async (sql: string) => {
+        if (sql.includes('UPDATE motor_message_processing_state')) return [{ affectedRows: 2 }, []]
+        if (sql.includes('SELECT message_id')) return [[], []]
+        throw new Error(`SQL inesperado: ${sql}`)
+      }),
+    } as any
+    const publisher = new OutboxPublisher(pool, transport, 'motor.commands')
+
+    await publisher.start()
+
+    expect(pool.query).toHaveBeenCalledWith(expect.stringContaining("state.status = 'pending'"))
+    await publisher.stop()
+  })
+
   it('persiste antes de publicar e marca a mensagem como publicada', async () => {
     const transport = new InMemoryQueueTransport()
     const stored = new Map<string, any>()
     const pool = {
       query: vi.fn(async (sql: string, params?: unknown[]) => {
+        if (sql.includes('UPDATE motor_message_processing_state')) return [{ affectedRows: 0 }, []]
         if (sql.includes('INSERT INTO motor_outbox')) {
           stored.set(String(params?.[0]), { message_id: params?.[0], type: params?.[1], task_id: params?.[2], execution_id: params?.[3], payload_json: params?.[4], timestamp: params?.[5], attempt: 0 })
           return [{ affectedRows: 1 }, []]
@@ -29,6 +47,7 @@ describe('OutboxPublisher', () => {
     expect(stored.get(message.messageId)?.status).toBe('published')
     expect(stored.get(message.messageId)?.timestamp).toBe(message.timestamp.slice(0, 19).replace('T', ' '))
     expect(transport.pending('motor.commands')).toBe(1)
+    await publisher.stop()
   })
 
   it('mantém pendente quando o transporte falha', async () => {
@@ -36,6 +55,7 @@ describe('OutboxPublisher', () => {
     const stored: any[] = []
     const pool = {
       query: vi.fn(async (sql: string, params?: unknown[]) => {
+        if (sql.includes('UPDATE motor_message_processing_state')) return [{ affectedRows: 0 }, []]
         if (sql.includes('INSERT INTO motor_outbox')) {
           stored.push({ message_id: params?.[0], type: params?.[1], task_id: params?.[2], execution_id: params?.[3], payload_json: params?.[4], timestamp: params?.[5], attempt: 0, status: 'pending' })
           return [{ affectedRows: 1 }, []]
@@ -51,5 +71,6 @@ describe('OutboxPublisher', () => {
 
     expect(stored[0].status).toBe('pending')
     expect(pool.query).toHaveBeenCalledWith(expect.stringContaining('last_error'), expect.any(Array))
+    await publisher.stop()
   })
 })
