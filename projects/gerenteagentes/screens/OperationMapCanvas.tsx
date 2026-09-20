@@ -39,10 +39,7 @@ type Station = { id: string; label: string; description: string; statuses: strin
 
 const MAIN_STATIONS: Station[] = [
   { id: "draft", label: "Rascunhos", description: "não iniciadas", statuses: ["draft"], tone: "neutral" },
-  // O Motor v3 usa `queued` enquanto a mensagem aguarda o consumidor e
-  // `pending` como fallback antes de haver uma execução. Ambos continuam
-  // sendo tarefas planejadas para fins de visualização operacional.
-  { id: "planned", label: "Planejadas", description: "aguardando análise", statuses: ["planned", "queued", "pending"], tone: "neutral" },
+  { id: "planned", label: "Planejadas", description: "aguardando análise", statuses: ["planned"], tone: "neutral" },
   { id: "analyzing", label: "Em análise", description: "IA analisando", statuses: ["analyzing"], tone: "active" },
   { id: "ready", label: "Fila de execução", description: "próximas subtarefas", statuses: ["ready"], tone: "neutral" },
   { id: "running", label: "Em execução", description: "IA trabalhando", statuses: ["running"], tone: "active" },

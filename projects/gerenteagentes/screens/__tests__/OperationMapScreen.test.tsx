@@ -200,9 +200,9 @@ describe("OperationMapScreen — tarefas enfileiradas", () => {
     delete globalThis.__bundleMapa
   })
 
-  it("exibe no mapa tarefas com status queued do Motor v3", async () => {
+  it("exibe no mapa tarefas planejadas aguardando a fila do Motor v3", async () => {
     globalThis.__bundleMapa = bundleFalso(
-      [tarefaFactory(88, "Tarefa aguardando consumidor", "queued")],
+      [tarefaFactory(88, "Tarefa aguardando consumidor", "planned")],
       [],
     )
 

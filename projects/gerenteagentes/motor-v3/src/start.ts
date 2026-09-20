@@ -32,6 +32,7 @@ import type { QueueMessage } from './queue/QueueMessage.js'
 import { TaskCoordinator, MySqlTaskCoordinatorRepository } from './coordinator/index.js'
 import { ConsoleAnalystRunner } from './analysis/ConsoleAnalystRunner.js'
 import { ConsoleHttpApi } from './analysis/ConsoleHttpApi.js'
+import { DerivedTaskStatusResolver } from './status/DerivedTaskStatus.js'
 
 // Config
 const PORT = parseInt(process.env.MOTOR_PORT || '3010')
@@ -62,6 +63,7 @@ async function start() {
   console.log('[Motor v3] DB_CONFIG:', { ...DB_CONFIG, password: '***' })
   const pool = await mysql.createPool(DB_CONFIG)
   const db = drizzle(pool, { schema, mode: 'default' })
+  const statusResolver = new DerivedTaskStatusResolver(pool)
   console.log('[Motor v3] MySQL conectado')
 
   // 2. Inicializa MessageBus + EventLogger
@@ -295,15 +297,14 @@ async function start() {
           ) as any[]
 
           const execution = scheduler?.getActiveExecutions().find(e => e.taskId === taskId)
+          const status = await statusResolver.resolve(taskId)
 
           res.writeHead(200, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({
             exists: true,
             ...tarefa,
-            // `tarefas.status` foi removido; o status é derivado dos fatos
-            // operacionais. Nesta consulta, só temos certeza da execução
-            // ativa; os demais estados ficam para a API da plataforma.
-            status: execution ? 'running' : 'queued',
+            status,
+            queueStatus: execution ? 'processing' : 'queued',
             subtasks: subtasksRows || [],
             recoveryEligibility: null, // O motor-v3 não tem dados de recuperação ainda
           }))

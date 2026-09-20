@@ -1030,7 +1030,7 @@ export class GerenteAgentesService {
             const motorTask = JSON.parse(resp.body) as { status?: string; subtasks?: unknown[]; recoveryEligibility?: unknown };
             return {
               ...tarefa,
-              status: motorTask.status || 'pending',
+              status: motorTask.status || 'planned',
               subtaskCount: Array.isArray(motorTask.subtasks) ? motorTask.subtasks.length : 0,
               ...(motorTask.recoveryEligibility !== undefined ? { recoveryEligibility: motorTask.recoveryEligibility } : {}),
             };
@@ -1038,7 +1038,7 @@ export class GerenteAgentesService {
         } catch {
           // Se falhar, usa status padrão (fallback)
         }
-        return { ...tarefa, status: 'pending', subtaskCount: 0, recoveryEligibility: null };
+        return { ...tarefa, status: 'planned', subtaskCount: 0, recoveryEligibility: null };
       }),
     );
     
