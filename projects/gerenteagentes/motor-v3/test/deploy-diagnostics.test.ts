@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { getDeployDiagnostics } from '../src/deploy/DeployDiagnostics.js'
 
 describe('getDeployDiagnostics', () => {
-  it('expõe solicitações pendentes sem autorizar deploy no v3', async () => {
+  it('autoriza o dispatch quando há solicitação pendente sem impedimentos', async () => {
     const pool = {
       query: vi.fn()
         .mockResolvedValueOnce([[{ pending: 2, running: 0 }]])
@@ -11,9 +11,9 @@ describe('getDeployDiagnostics', () => {
     } as any
 
     await expect(getDeployDiagnostics(pool)).resolves.toEqual({
-      canStart: false,
+      canStart: true,
       pendingRequests: 2,
-      reasons: ['executor de deploy ainda não habilitado no Motor v3'],
+      reasons: ['deploy pronto para iniciar'],
     })
   })
 

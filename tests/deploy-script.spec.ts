@@ -12,12 +12,16 @@ describe("deploy de produção isolado do banco", () => {
   it("recria api/web sem administrar dependências no deploy e no rollback", () => {
     const composeUp = script.match(/docker compose[^\n]+ up [^\n]+/g) ?? []
 
-    expect(composeUp).toHaveLength(1)
+    // api e web são criados em chamadas separadas (o Nginx do web precisa do
+    // alias DNS da API já existente); cada chamada deve ser isolada de dependências.
+    expect(composeUp).toHaveLength(2)
     for (const command of composeUp) {
       expect(command).toContain("--no-deps")
-      expect(command).toMatch(/\bapi web\b/)
+      expect(command).toMatch(/\b(api|web)\b/)
       expect(command).not.toMatch(/\bmysql\b/)
     }
+    expect(composeUp[0]).toMatch(/\bapi\b/)
+    expect(composeUp[1]).toMatch(/\bweb\b/)
   })
 
   it("confere saúde e preserva a identidade do MySQL", () => {

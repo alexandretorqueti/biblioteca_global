@@ -39,6 +39,9 @@ import { MySqlCommandPolicyRepository, MySqlOperationLogger } from './commands/i
 import { DevelopmentExecutionConsumer, GitVerificationIntegrator, GitWorktreePreparer, MySqlDevelopmentExecutionRepository, SubtaskExecutionConsumer, SubtaskVerificationConsumer, WorkerConsoleAdapter } from './execution/index.js'
 import { WorkerLauncher } from './worker-launcher/WorkerLauncher.js'
 import { getDeployDiagnostics } from './deploy/DeployDiagnostics.js'
+import { DeployConsumer } from './deploy/DeployConsumer.js'
+import { DeployRepository } from './deploy/DeployRepository.js'
+import { RemoteBlueGreenDeployer } from './deploy/RemoteBlueGreenDeployer.js'
 import { TestGateConsumer, TestGateOrchestrator, TestGateService, TestRecoveryConsumer } from './testing/index.js'
 
 // Config
@@ -67,6 +70,8 @@ let subtaskVerificationConsumer: SubtaskVerificationConsumer | null = null
 let testRecoveryConsumer: TestRecoveryConsumer | null = null
 let testGateQueueConsumer: QueueConsumer | null = null
 let testGateOutboxPublisher: OutboxPublisher | null = null
+let deployConsumer: DeployConsumer | null = null
+let deployReconciliationTimer: NodeJS.Timeout | null = null
 
 async function start() {
   console.log('[Motor v3] Iniciando...')
@@ -271,6 +276,13 @@ async function start() {
     const developmentRepository = new MySqlDevelopmentExecutionRepository(pool)
     const testGateService = new TestGateService(pool)
     const testGate = new TestGateOrchestrator(pool, gateQueue)
+    deployConsumer = new DeployConsumer(
+      new DeployRepository(pool, process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/agentes/gerenteagentes/worktrees'),
+      testGate,
+      new RemoteBlueGreenDeployer(),
+      operationLogger,
+      new MySqlCommandPolicyRepository(pool),
+    )
     const gateTransport = new RabbitMqTransport({
       url: rabbitUrl, exchange: process.env.MOTOR_RABBITMQ_EXCHANGE || 'motor', prefetch: 1,
       queue: gateQueue, retryQueue: `${gateQueue}.retry`, deadLetterQueue: `${gateQueue}.dlq`,
@@ -322,11 +334,17 @@ async function start() {
       await subtaskExecutionConsumer?.handle(message)
       await subtaskVerificationConsumer?.handle(message)
       await testRecoveryConsumer?.handle(message)
+      await deployConsumer?.handle(message)
     }, {
       queue: process.env.MOTOR_RABBITMQ_QUEUE || 'motor.commands',
       maxAttempts: Number(process.env.MOTOR_QUEUE_MAX_ATTEMPTS || 3),
     }, pool)
     await queueConsumer.start()
+    await deployConsumer.requestReconciliation()
+    deployReconciliationTimer = setInterval(() => {
+      void deployConsumer?.requestReconciliation().catch(error => console.error('[Motor v3] falha ao solicitar reconciliação de deploy:', error))
+    }, Number(process.env.MOTOR_DEPLOY_RECONCILE_INTERVAL_MS || 30_000))
+    deployReconciliationTimer.unref()
     console.log('[Motor v3] QueueConsumer + TaskCoordinator inicializados')
   } else {
     console.log('[Motor v3] Fila durável desativada (MOTOR_QUEUE_ENABLED != true)')
@@ -387,8 +405,8 @@ async function start() {
         return
       }
 
-      // Diagnóstico somente de leitura. O executor de deploy ainda não foi
-      // migrado para o v3, portanto este endpoint nunca autoriza a execução.
+      // Diagnóstico somente de leitura; a execução continua exclusivamente
+      // orientada por mensagens duráveis.
       if (path === '/api/motor/deploy-diagnostics' && req.method === 'GET') {
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify(await getDeployDiagnostics(pool)))
@@ -561,6 +579,16 @@ async function start() {
         return
       }
 
+      // POST /api/motor/task/:id/deploy. A API só registra a intenção no
+      // outbox; gate, Git, SSH e blue-green são processados pelo consumidor.
+      if (req.method === 'POST' && taskId && taskAction === 'deploy') {
+        const executionId = `deploy-request-${taskId}-${Date.now()}`
+        const message = await dispatchCommand('DEPLOY_REQUESTED', taskId, executionId, {})
+        res.writeHead(202, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: true, accepted: true, taskId, executionId, messageId: message.messageId }))
+        return
+      }
+
       // DELETE /api/motor/task/:id
       // Mantém a compatibilidade com o contrato do motor v2. A exclusão
       // definitiva é feita aqui porque esta é a origem de verdade operacional
@@ -615,6 +643,9 @@ async function start() {
 
 async function shutdown() {
   console.log('[Motor v3] Encerrando...')
+
+  if (deployReconciliationTimer) clearInterval(deployReconciliationTimer)
+  deployReconciliationTimer = null
 
   if (queueConsumer) {
     await queueConsumer.stop()

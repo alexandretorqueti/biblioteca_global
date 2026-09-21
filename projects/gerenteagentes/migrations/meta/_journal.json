@@ -421,6 +421,13 @@
       "when": 1790020800000,
       "tag": "0060_analyst_session_correlation",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "5",
+      "when": 1790024400000,
+      "tag": "0061_motor_v3_deploy_event_driven",
+      "breakpoints": true
     }
   ]
 }

@@ -20,9 +20,8 @@ interface FailingTestRow extends RowDataPacket { total: number | string }
 /**
  * Diagnóstico somente de leitura da fila de deploy.
  *
- * O v3 ainda não possui um executor de deploy. Portanto, `canStart` nunca é
- * true aqui: o endpoint informa o estado real e evita que a UI trate uma
- * solicitação pendente como se já pudesse ser executada.
+ * O diagnóstico não executa efeitos. `canStart` indica apenas que não há
+ * impedimento persistido para a próxima mensagem de dispatch.
  */
 export async function getDeployDiagnostics(pool: Pool): Promise<DeployDiagnostics> {
   const [deployRows] = await pool.query<DeployCountRow[]>(
@@ -60,11 +59,13 @@ export async function getDeployDiagnostics(pool: Pool): Promise<DeployDiagnostic
   if (runningRequests > 0) reasons.push(`${runningRequests} deploy(s) em andamento`)
   const activeTaskIds = activeRows.map(row => String(row.task_id ?? '')).filter(Boolean)
   if (activeTaskIds.length > 0) reasons.push(`tarefas ativas: ${activeTaskIds.join(', ')}`)
-  if (pendingRequests > 0) {
-    reasons.push('executor de deploy ainda não habilitado no Motor v3')
-  } else if (reasons.length === 0) {
+  if (pendingRequests === 0 && reasons.length === 0) {
     reasons.push('nenhuma solicitação de deploy pendente')
   }
 
-  return { canStart: false, pendingRequests, reasons }
+  return {
+    canStart: pendingRequests > 0 && reasons.length === 0,
+    pendingRequests,
+    reasons: reasons.length ? reasons : ['deploy pronto para iniciar'],
+  }
 }
