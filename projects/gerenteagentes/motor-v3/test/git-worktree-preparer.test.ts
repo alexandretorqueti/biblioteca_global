@@ -49,3 +49,4 @@ describe('GitWorktreePreparer', () => {
     })).rejects.toThrow('Repositório inacessível no container do Motor')
   })
 })
+// @vitest-environment node

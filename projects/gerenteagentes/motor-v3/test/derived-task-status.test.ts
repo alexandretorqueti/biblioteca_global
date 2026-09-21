@@ -15,3 +15,4 @@ describe('DerivedTaskStatusResolver', () => {
     await expect(resolver.resolve('task-p6-855')).resolves.toBe('failed')
   })
 })
+// @vitest-environment node

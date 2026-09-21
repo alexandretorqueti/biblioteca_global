@@ -176,3 +176,4 @@ describe('Scheduler', () => {
     })
   })
 })
+// @vitest-environment node

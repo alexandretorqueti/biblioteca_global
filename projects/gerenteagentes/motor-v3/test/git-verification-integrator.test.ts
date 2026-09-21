@@ -41,3 +41,4 @@ describe('GitVerificationIntegrator', () => {
     expect((await execFileAsync('git', ['branch', '--show-current'], { cwd: repo })).stdout.trim()).toBe('base-desenvolvimento')
   })
 })
+// @vitest-environment node

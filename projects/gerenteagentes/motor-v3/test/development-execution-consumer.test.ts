@@ -92,3 +92,4 @@ describe('DevelopmentExecutionConsumer', () => {
     expect(logger.append).not.toHaveBeenCalled()
   })
 })
+// @vitest-environment node

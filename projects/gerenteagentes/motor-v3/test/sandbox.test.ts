@@ -256,3 +256,4 @@ describe('SandboxConfigGenerator', () => {
     })
   })
 })
+// @vitest-environment node

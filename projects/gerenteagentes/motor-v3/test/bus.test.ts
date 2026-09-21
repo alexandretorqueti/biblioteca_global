@@ -230,3 +230,4 @@ describe('EventLogger', () => {
     expect(entries[0].correlationId).toBe('abc123456789')
   })
 })
+// @vitest-environment node

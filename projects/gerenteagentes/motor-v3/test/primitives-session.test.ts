@@ -97,3 +97,4 @@ describe('Session Primitives', () => {
     })
   })
 })
+// @vitest-environment node

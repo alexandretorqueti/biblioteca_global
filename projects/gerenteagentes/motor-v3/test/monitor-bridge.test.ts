@@ -195,3 +195,4 @@ describe('MonitorBridge', () => {
     })
   })
 })
+// @vitest-environment node

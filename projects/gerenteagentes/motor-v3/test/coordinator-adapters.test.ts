@@ -110,3 +110,4 @@ describe('coordinator adapters', () => {
     expect(consoleApi.sendMessage.mock.calls[2][0].message).toContain('Erro de validação')
   })
 })
+// @vitest-environment node

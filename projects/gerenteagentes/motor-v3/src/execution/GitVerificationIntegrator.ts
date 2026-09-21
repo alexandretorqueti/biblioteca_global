@@ -26,7 +26,12 @@ export class GitVerificationIntegrator {
     const integration = await this.worktrees.prepareIntegration(context)
     const alreadyIntegrated = await execFileAsync('git', ['merge-base', '--is-ancestor', commit.trim(), 'HEAD'], { cwd: integration.path })
       .then(() => true, () => false)
-    if (!alreadyIntegrated) await execFileAsync('git', ['cherry-pick', commit.trim()], { cwd: integration.path })
+    // O cherry-pick cria um novo SHA, portanto o commit original do worktree
+    // não se torna ancestral da branch de integração. `git cherry` identifica
+    // o patch equivalente e evita repetir um cherry-pick idempotente.
+    const patchAlreadyIntegrated = !alreadyIntegrated && await execFileAsync('git', ['cherry', 'HEAD', commit.trim()], { cwd: integration.path })
+      .then(({ stdout }) => stdout.split('\n').some(line => line.startsWith('- ')), () => false)
+    if (!alreadyIntegrated && !patchAlreadyIntegrated) await execFileAsync('git', ['cherry-pick', commit.trim()], { cwd: integration.path })
     const { stdout: integrated } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: integration.path })
     return { commitSha: commit.trim(), integrationCommitSha: integrated.trim() }
   }

@@ -16,3 +16,4 @@ describe('parseAnalystReply completion_kind', () => {
     if (result.kind === 'plan') expect(result.subtasks[0]?.completionKind).toBe('analysis')
   })
 })
+// @vitest-environment node

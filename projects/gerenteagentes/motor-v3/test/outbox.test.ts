@@ -95,3 +95,4 @@ describe('OutboxPublisher', () => {
     await publisher.stop()
   })
 })
+// @vitest-environment node

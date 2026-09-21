@@ -49,3 +49,4 @@ describe('SubtaskVerificationConsumer', () => {
     }))
   })
 })
+// @vitest-environment node

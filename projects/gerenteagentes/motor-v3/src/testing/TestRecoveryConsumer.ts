@@ -58,7 +58,7 @@ export class TestRecoveryConsumer {
         baseCommitSha: workspace.baseCommit, buildCommand: recovery.build_command, testCommand: recovery.unit_test_command,
         agentId: recovery.agent_id, db: this.db, consoleApi: this.consoleApi, logger: console,
       }
-      const result = await this.worker.executeTask(context, this.prompt(recovery), models, undefined, async (gateContext) => {
+      const result = await this.worker.executeTask(context, this.prompt(recovery, workspace), models, undefined, async (gateContext) => {
         const run = await this.testGate.request({
           projectId: recovery.project_id, taskDatabaseId: recovery.task_database_id, phase: 'monitor_recovery',
           baselineRunId: recovery.source_test_run_id, commitSha: gateContext.baseCommitSha ?? workspace.baseCommit,
@@ -111,10 +111,17 @@ export class TestRecoveryConsumer {
     return rows.map(row => String(row.model)).filter(Boolean)
   }
 
-  private prompt(recovery: RecoveryRow): string {
+  private prompt(recovery: RecoveryRow, workspace: { path: string; branch: string; baseCommit: string }): string {
     return [
       'Corrija as falhas de teste preexistentes abaixo. Esta é uma recuperação pós-tarefa executada pelo Monitor.',
       `Tarefa de origem: ${recovery.task_title} (${recovery.task_id})`,
+      `Workspace autorizado: ${workspace.path}`,
+      `Branch autorizada: ${workspace.branch}`,
+      `Commit-base: ${workspace.baseCommit}`,
+      `Repositório de referência: ${recovery.repo_path}`,
+      `Build: ${recovery.build_command}`,
+      `Testes: ${recovery.unit_test_command}`,
+      'Trabalhe exclusivamente no workspace autorizado acima. Não altere o checkout base nem outros worktrees.',
       'Não altere o requisito funcional já entregue. Investigue a causa, faça a menor correção segura e rode validações proporcionais.',
       recovery.failures_text ?? 'Consulte o gate no workspace para obter os erros.',
       'Não faça push nem deploy. Ao deixar o gate completo verde, responda com ::DONE::.',

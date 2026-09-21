@@ -165,3 +165,4 @@ describe('CatalogLoader', () => {
     expect(mockDb.select).toHaveBeenCalledTimes(8)
   })
 })
+// @vitest-environment node

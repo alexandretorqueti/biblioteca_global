@@ -32,3 +32,4 @@ describe('getDeployDiagnostics', () => {
     })
   })
 })
+// @vitest-environment node

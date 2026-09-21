@@ -173,3 +173,4 @@ describe('SubtaskExecutionConsumer', () => {
     expect(logger.append).toHaveBeenLastCalledWith(expect.objectContaining({ sequence: 5, phase: 'completed' }))
   })
 })
+// @vitest-environment node

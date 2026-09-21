@@ -74,3 +74,4 @@ describe('ConsoleAnalystRunner — contexto em etapas', () => {
     expect(api.sendMessage).toHaveBeenCalledTimes(1)
   })
 })
+// @vitest-environment node

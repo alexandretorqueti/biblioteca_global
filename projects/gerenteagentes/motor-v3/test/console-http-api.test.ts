@@ -37,3 +37,4 @@ describe('ConsoleHttpApi', () => {
     expect(status.error).toBe('429 quota exhausted')
   })
 })
+// @vitest-environment node

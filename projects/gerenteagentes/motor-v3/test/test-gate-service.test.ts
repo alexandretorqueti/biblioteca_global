@@ -35,3 +35,4 @@ describe('TestGateService', () => {
     expect(result.newFailures[0]?.classification).toBe('worsened')
   })
 })
+// @vitest-environment node

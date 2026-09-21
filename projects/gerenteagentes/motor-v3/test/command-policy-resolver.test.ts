@@ -34,3 +34,4 @@ describe('CommandPolicyResolver', () => {
     expect(decision).toMatchObject({ kind: 'reject', reasonCode: 'command_inactive' })
   })
 })
+// @vitest-environment node

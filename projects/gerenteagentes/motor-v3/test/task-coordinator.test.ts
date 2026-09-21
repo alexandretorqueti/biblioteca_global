@@ -119,3 +119,4 @@ describe('TaskCoordinator', () => {
     expect(runner.start).not.toHaveBeenCalled()
   })
 })
+// @vitest-environment node

@@ -102,3 +102,4 @@ describe('Control Primitives', () => {
     })
   })
 })
+// @vitest-environment node

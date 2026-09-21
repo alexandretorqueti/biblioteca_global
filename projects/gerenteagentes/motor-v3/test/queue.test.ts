@@ -129,3 +129,4 @@ describe('QueueConsumer', () => {
     await consumer.stop()
   })
 })
+// @vitest-environment node

@@ -182,3 +182,4 @@ describe('Bookkeeper', () => {
     })
   })
 })
+// @vitest-environment node

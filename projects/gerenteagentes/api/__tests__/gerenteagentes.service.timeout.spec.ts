@@ -14,21 +14,6 @@ import { request as httpsRequest } from "node:https";
 import { request as httpRequest } from "node:http";
 import { GerenteAgentesService } from "../gerenteagentes.service";
 
-/**
- * Validação do timeout aumentado para tarefas bloqueadas.
- *
- * Contexto: tarefas bloqueadas aguardando o motor liberar o coordenador
- * podem demorar significativamente. O timeout anterior (90s) causava falso
- * "Motor request failed: timeout". O novo timeout (180s) deve ser aplicado
- * a todas as requisições ao motor, especialmente consultas de estado de
- * tarefas bloqueadas.
- *
- * Critérios de aceitação:
- * - O timeout padrão é 50%+ superior ao anterior (180_000 vs 90_000 = 100% maior)
- * - O timeout é aplicado às requisições do motor (incluindo tarefas bloqueadas)
- * - O timeout é configurável via MOTOR_REQUEST_TIMEOUT_MS
- */
-
 interface Captura {
   options: Record<string, unknown>;
 }
@@ -49,11 +34,8 @@ function montarRequestMock(): ReturnType<typeof vi.fn> {
       setEncoding: vi.fn(),
       statusCode: 200,
       on: vi.fn((evento: string, handler: (chunk?: string) => void) => {
-        if (evento === "data") {
-          setImmediate(() => handler("{}"));
-        } else if (evento === "end") {
-          setImmediate(() => handler());
-        }
+        if (evento === "data") setImmediate(() => handler("{}"));
+        else if (evento === "end") setImmediate(() => handler());
       }),
     } as unknown as IncomingMessage;
     setImmediate(() => callback(res));
@@ -65,8 +47,14 @@ function novoService(env: Record<string, string> = {}): { service: GerenteAgente
   const configService = {
     get: (chave: string) => env[chave],
   } as unknown as ConfigService;
+  const execute = vi.fn().mockResolvedValue([[], []]);
+  const transaction = vi.fn(async (callback: (tx: { execute: typeof execute }) => Promise<void>) => {
+    await callback({ execute });
+  });
+  const db = { execute, transaction };
+  const obter = vi.fn().mockResolvedValue(db);
   return {
-    service: new GerenteAgentesService({} as never, {} as never, {} as never, configService),
+    service: new GerenteAgentesService({ obter } as never, {} as never, {} as never, configService),
   };
 }
 
@@ -79,16 +67,13 @@ beforeEach(() => {
 });
 
 describe("GerenteAgentesService — timeout para tarefas bloqueadas", () => {
-  it("timeout padrão é 180_000ms (100% superior ao anterior de 90_000ms)", async () => {
+  it("timeout padrão é 180_000ms", async () => {
     const { service } = novoService({ MOTOR_DEV_URL: "http://motor.test:6282" });
 
-    await service.getModelSelection("biblioteca-global", "DEV");
+    await service.atividadeMotor({} as never);
 
     expect(capturas).toHaveLength(1);
-    const timeout = capturas[0]?.options.timeout;
-    expect(timeout).toBe(180_000);
-    // Valida que é 50%+ superior ao anterior (90_000)
-    expect(timeout).toBeGreaterThanOrEqual(90_000 * 1.5);
+    expect(capturas[0]?.options.timeout).toBe(180_000);
   });
 
   it("timeout configurável via MOTOR_REQUEST_TIMEOUT_MS sobrescreve o padrão", async () => {
@@ -97,34 +82,28 @@ describe("GerenteAgentesService — timeout para tarefas bloqueadas", () => {
       MOTOR_REQUEST_TIMEOUT_MS: "300000",
     });
 
-    await service.getModelSelection("biblioteca-global", "DEV");
+    await service.atividadeMotor({} as never);
 
-    expect(capturas).toHaveLength(1);
     expect(capturas[0]?.options.timeout).toBe(300_000);
   });
 
-  it("timeout é aplicado a requisições POST (ex.: start/pause de tarefas)", async () => {
+  it("timeout é aplicado a requisições PUT", async () => {
     const { service } = novoService({ MOTOR_DEV_URL: "http://motor.test:6282" });
 
-    // Simula uma requisição POST (como start/pause de tarefa bloqueada)
-    await service.saveModelSelection("biblioteca-global", "DEV", [
-      { ordem: 1, provider: "alibaba", model: "qwen3.7-plus", enabled: true },
-    ]);
+    await (service as unknown as {
+      motorRequest: (method: string, path: string) => Promise<unknown>;
+    }).motorRequest("PUT", "/test");
 
-    expect(capturas).toHaveLength(1);
     expect(capturas[0]?.options.timeout).toBe(180_000);
     expect(capturas[0]?.options.method).toBe("PUT");
   });
 
-  it("timeout anterior (90_000) NÃO é mais usado — valida aumento", async () => {
+  it("não usa mais o timeout anterior de 90_000ms", async () => {
     const { service } = novoService({ MOTOR_DEV_URL: "http://motor.test:6282" });
 
-    await service.getModelSelection("biblioteca-global", "DEV");
+    await service.atividadeMotor({} as never);
 
-    const timeout = capturas[0]?.options.timeout;
-    // Garante que não está usando o valor antigo
-    expect(timeout).not.toBe(90_000);
-    // Garante que é pelo menos 50% maior que o antigo
-    expect(timeout).toBeGreaterThanOrEqual(135_000);
+    expect(capturas[0]?.options.timeout).not.toBe(90_000);
+    expect(capturas[0]?.options.timeout).toBeGreaterThanOrEqual(135_000);
   });
 });

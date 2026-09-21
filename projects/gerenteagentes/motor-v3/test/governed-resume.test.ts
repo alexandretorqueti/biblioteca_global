@@ -33,3 +33,4 @@ describe('retomada governada', () => {
     expect(entries.filter(entry => entry.phase === 'primitive').map(entry => entry.primitiveCode)).toEqual(['claim_analysis_atomic', 'emit_analysis_selected', 'start_analyst'])
   })
 })
+// @vitest-environment node

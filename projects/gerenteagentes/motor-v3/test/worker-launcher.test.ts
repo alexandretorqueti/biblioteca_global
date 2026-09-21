@@ -282,3 +282,4 @@ describe('WorkerLauncher', () => {
     expect(onModelFailure).toHaveBeenCalledWith('modelo-sem-cota', 'Run falhou: 429 quota exhausted')
   })
 })
+// @vitest-environment node

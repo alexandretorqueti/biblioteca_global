@@ -250,3 +250,4 @@ describe('ActionExecutor', () => {
     expect(primitives).toContain('git_commit')
   })
 })
+// @vitest-environment node
