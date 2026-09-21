@@ -7,7 +7,7 @@
  * ou SQL puro no repositório).
  */
 
-import { mysqlTable, int, varchar, text, json, timestamp, tinyint, mysqlEnum } from 'drizzle-orm/mysql-core'
+import { mysqlTable, int, bigint, varchar, text, json, timestamp, tinyint, mysqlEnum } from 'drizzle-orm/mysql-core'
 import { sql } from 'drizzle-orm'
 
 // ============================================================
@@ -154,4 +154,41 @@ export const motorModelCooldown = mysqlTable('motor_model_cooldown', {
   occurrences: int('occurrences').notNull().default(1),
   createdAt: timestamp('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp('updated_at').notNull().default(sql`CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP`),
+})
+
+// ============================================================
+// analyst_task_sessions — auditoria das sessões de análise do v3
+// ============================================================
+export const analystTaskSessions = mysqlTable('analyst_task_sessions', {
+  id: bigint('id', { mode: 'number' }).primaryKey().autoincrement(),
+  tarefaId: bigint('tarefa_id', { mode: 'number' }).notNull(),
+  sessionKey: varchar('session_key', { length: 300 }).notNull(),
+  runtimeSessionId: varchar('runtime_session_id', { length: 300 }),
+  model: varchar('model', { length: 200 }).notNull(),
+  executionOrder: int('execution_order').notNull(),
+  analysisExecutionId: varchar('analysis_execution_id', { length: 200 }),
+  analysisAttemptId: varchar('analysis_attempt_id', { length: 100 }),
+  modelAttempt: int('model_attempt').notNull().default(1),
+  status: varchar('status', { length: 30 }).notNull().default('active'),
+  openedAt: timestamp('opened_at').notNull().default(sql`CURRENT_TIMESTAMP`),
+  lastActivityAt: timestamp('last_activity_at').notNull().default(sql`CURRENT_TIMESTAMP`),
+  closedAt: timestamp('closed_at'),
+  closeReason: varchar('close_reason', { length: 100 }),
+  summary: text('summary'),
+  createdAt: timestamp('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp('updated_at').notNull().default(sql`CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP`),
+})
+
+export const analystTaskSessionMessages = mysqlTable('analyst_task_session_messages', {
+  id: bigint('id', { mode: 'number' }).primaryKey().autoincrement(),
+  sessionId: bigint('session_id', { mode: 'number' }).notNull(),
+  messageKey: varchar('message_key', { length: 300 }).notNull(),
+  sequenceNumber: int('sequence_number').notNull(),
+  role: varchar('role', { length: 30 }).notNull(),
+  phase: varchar('phase', { length: 40 }),
+  runId: varchar('run_id', { length: 300 }),
+  content: text('content').notNull(),
+  contentSha256: varchar('content_sha256', { length: 64 }).notNull(),
+  occurredAt: timestamp('occurred_at'),
+  createdAt: timestamp('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
 })

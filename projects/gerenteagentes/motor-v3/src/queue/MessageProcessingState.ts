@@ -53,6 +53,7 @@ export class MessageProcessingState {
         messageId: string,
         messageType: string,
         taskId: string,
+        attempt = 1,
     ): Promise<ClaimResult> {
         // A mensagem pode vir diretamente do RabbitMQ, sem ter passado pela
         // outbox deste processo. O INSERT torna o primeiro claim autocontido
@@ -60,9 +61,9 @@ export class MessageProcessingState {
         await this.pool.execute(
             `INSERT INTO motor_message_processing_state
                 (message_id, task_id, message_type, status, attempt, created_at)
-             VALUES (?, ?, ?, 'pending', 1, NOW())
-             ON DUPLICATE KEY UPDATE message_id = VALUES(message_id)`,
-            [messageId, taskId, messageType],
+             VALUES (?, ?, ?, 'pending', ?, NOW())
+             ON DUPLICATE KEY UPDATE attempt = GREATEST(attempt, VALUES(attempt))`,
+            [messageId, taskId, messageType, attempt],
         );
 
         // O UPDATE condicional é o claim atômico: somente um consumidor pode

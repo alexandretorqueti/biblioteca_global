@@ -414,6 +414,13 @@
       "when": 1790013600000,
       "tag": "0059_message_driven_test_gates",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "5",
+      "when": 1790020800000,
+      "tag": "0060_analyst_session_correlation",
+      "breakpoints": true
     }
   ]
 }

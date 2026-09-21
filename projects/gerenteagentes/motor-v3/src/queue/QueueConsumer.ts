@@ -54,10 +54,12 @@ export class QueueConsumer {
     }
 
     // Tentativa de claim idempotente
+    const attempt = delivery.attempt ?? message.attempt ?? 1
     const claimResult = await this.processingState.tryClaim(
       message.messageId,
       message.type,
       message.taskId,
+      attempt,
     )
 
     if (claimResult.alreadyCompleted) {
@@ -88,7 +90,7 @@ export class QueueConsumer {
       await this.processingState.markFailed(message.messageId, (error as Error).message)
 
       // Se atingiu o limite de tentativas, enviar para DLQ
-      if ((delivery.attempt ?? message.attempt) >= this.config.maxAttempts) {
+      if (attempt >= this.config.maxAttempts) {
         await this.transport.deadLetter(delivery, 'max-attempts-exceeded')
       } else {
         // Liberar o estado para retry (outro consumo pegará)

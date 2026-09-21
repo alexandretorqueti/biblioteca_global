@@ -71,7 +71,7 @@ export class TaskCoordinator {
     private readonly bus: MessageBus,
     config: TaskCoordinatorConfig = {},
   ) {
-    this.executionIdFactory = config.analysisExecutionId ?? ((message) => `exec-analyze-${message.taskId}-${message.messageId}`)
+    this.executionIdFactory = config.analysisExecutionId ?? ((message) => `exec-analyze-${message.taskId}-${message.messageId}-attempt-${message.attempt || 1}`)
     this.commandPolicies = config.commandPolicies
     this.operationLogger = config.operationLogger
     this.publishTaskReady = config.publishTaskReady
@@ -146,35 +146,38 @@ export class TaskCoordinator {
     }
 
     const executionId = this.executionIdFactory(message)
+    const analysisAttempt = message.attempt || 1
     const claimed = await this.repository.claimAnalysis(task.taskId, executionId)
-    await this.log(operationId, 4, 'primitive', claimed ? 'succeeded' : 'rejected', message, { primitiveCode: 'claim_analysis_atomic', result: { executionId }, reasonCode: claimed ? undefined : 'analysis_already_claimed' })
+    await this.log(operationId, 4, 'primitive', claimed ? 'succeeded' : 'rejected', message, { primitiveCode: 'claim_analysis_atomic', result: { executionId, analysisAttempt }, reasonCode: claimed ? undefined : 'analysis_already_claimed' })
     if (!claimed) {
-      await this.emit('TASK_IGNORED', message, { reason: 'analysis_already_claimed', executionId })
+      await this.emit('TASK_IGNORED', message, { reason: 'analysis_already_claimed', executionId, analysisAttempt })
       return
     }
 
-    await this.emit('ANALYSIS_SELECTED', message, { executionId })
-    await this.log(operationId, 5, 'primitive', 'succeeded', message, { primitiveCode: 'emit_analysis_selected', result: { executionId } })
+    await this.emit('ANALYSIS_SELECTED', message, { executionId, analysisAttempt })
+    await this.log(operationId, 5, 'primitive', 'succeeded', message, { primitiveCode: 'emit_analysis_selected', result: { executionId, analysisAttempt } })
     try {
-      await this.emit('ANALYSIS_STARTED', message, { executionId })
+      await this.emit('ANALYSIS_STARTED', message, { executionId, analysisAttempt })
       const outcome = await this.runner.start(task, executionId)
-      await this.log(operationId, 6, 'primitive', 'succeeded', message, { primitiveCode: 'start_analyst', result: { executionId, outcome: outcome.kind } })
+      await this.log(operationId, 6, 'primitive', 'succeeded', message, { primitiveCode: 'start_analyst', result: { executionId, analysisAttempt, outcome: outcome.kind } })
       await this.repository.persistAnalysis(task.taskId, executionId, outcome)
       await this.repository.releaseAnalysisClaim(task.taskId, executionId)
       if (outcome.kind === 'questions') {
-        await this.emit('ANALYSIS_CLARIFICATION_REQUESTED', message, { executionId, questionCount: outcome.questions.length })
+        await this.emit('ANALYSIS_CLARIFICATION_REQUESTED', message, { executionId, analysisAttempt, questionCount: outcome.questions.length })
       } else {
-        await this.emit('ANALYSIS_COMPLETED', message, { executionId, subtaskCount: outcome.subtasks.length })
-        await this.emitTaskReady(message, { executionId, subtaskCount: outcome.subtasks.length })
+        await this.emit('ANALYSIS_COMPLETED', message, { executionId, analysisAttempt, subtaskCount: outcome.subtasks.length })
+        await this.emitTaskReady(message, { executionId, analysisAttempt, subtaskCount: outcome.subtasks.length })
       }
-      await this.log(operationId, 7, 'completed', 'succeeded', message, { result: { executionId, outcome: outcome.kind } })
+      await this.log(operationId, 7, 'completed', 'succeeded', message, { result: { executionId, analysisAttempt, outcome: outcome.kind } })
     } catch (error) {
       await this.repository.releaseAnalysisClaim(task.taskId, executionId)
-      await this.log(operationId, 6, 'primitive', 'failed', message, { primitiveCode: 'start_analyst', result: { executionId }, reasonCode: 'analyst_failed' })
-      await this.log(operationId, 7, 'failed', 'failed', message, { result: { executionId, error: error instanceof Error ? error.message : String(error) }, reasonCode: 'analyst_failed' })
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      await this.log(operationId, 6, 'primitive', 'failed', message, { primitiveCode: 'start_analyst', result: { executionId, analysisAttempt, error: errorMessage }, reasonCode: 'analyst_failed' })
+      await this.log(operationId, 7, 'failed', 'failed', message, { result: { executionId, analysisAttempt, error: errorMessage }, reasonCode: 'analyst_failed' })
       await this.emit('ANALYSIS_FAILED', message, {
         executionId,
-        error: error instanceof Error ? error.message : String(error),
+        analysisAttempt,
+        error: errorMessage,
       })
       throw error
     }

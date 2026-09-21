@@ -19,9 +19,14 @@ export type AnalysisOutcome =
   | { kind: 'questions'; summary: string; questions: string[] }
 
 export function parseAnalystReply(content: string, contractSchema?: unknown): AnalysisOutcome {
-  const match = content.match(/\{[\s\S]*\}/)
-  if (!match) throw new Error('Resposta do analista não contém JSON')
-  const parsed: unknown = JSON.parse(match[0])
+  const jsonText = extractJsonObject(content)
+  if (!jsonText) throw new Error('Resposta do analista não contém JSON')
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(jsonText)
+  } catch (error) {
+    throw new Error(`JSON do analista inválido: ${error instanceof Error ? error.message : String(error)}`)
+  }
   if (!isRecord(parsed)) throw new Error('Resposta do analista não é um objeto JSON')
   if (contractSchema) validateJsonSchema(parsed, contractSchema)
 
@@ -79,6 +84,35 @@ export function parseAnalystReply(content: string, contractSchema?: unknown): An
     throw new Error('Matriz de cobertura não cobre todos os requisitos')
   }
   return { kind: 'plan', subtasks, coverage: { requirements, coverage } }
+}
+
+/** Extrai um único objeto JSON, aceitando resposta em bloco Markdown. */
+function extractJsonObject(content: string): string | null {
+  const source = content.replace(/^\s*```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim()
+  const start = source.indexOf('{')
+  if (start < 0) return null
+  let depth = 0
+  let inString = false
+  let escaped = false
+  for (let index = start; index < source.length; index += 1) {
+    const character = source[index]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (character === '\\') escaped = true
+      else if (character === '"') inString = false
+      continue
+    }
+    if (character === '"') {
+      inString = true
+      continue
+    }
+    if (character === '{') depth += 1
+    else if (character === '}') {
+      depth -= 1
+      if (depth === 0) return source.slice(start, index + 1)
+    }
+  }
+  return null
 }
 
 /** Validador do subconjunto de JSON Schema usado pelos contratos publicados. */

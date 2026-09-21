@@ -1,6 +1,8 @@
 import type { AnalystConsole, AnalystSession } from './ConsoleAnalystRunner.js'
 
 export class ConsoleHttpApi implements AnalystConsole {
+  private readonly pendingResponses = new Map<string, { assistantIds: Set<string>; sentAt: number }>()
+
   constructor(private readonly baseUrl: string, private readonly token: string) {}
 
   async createSession(input: { key: string; agentId: string; model?: string; metadata: Record<string, unknown> }): Promise<AnalystSession> {
@@ -15,7 +17,17 @@ export class ConsoleHttpApi implements AnalystConsole {
   }
 
   async sendMessage(input: { session: AnalystSession; message: string }): Promise<void> {
+    // O endpoint de status pode continuar como `idle`/`hasActiveRun=false`
+    // entre duas mensagens. Capture o histórico anterior para que a próxima
+    // consulta não devolva a resposta antiga (por exemplo, o ACK do contexto)
+    // como se fosse a resposta deste envio.
+    const before = await this.history(input.session)
+    const sentAt = Date.now()
     await this.request('/api/chat/send', { method: 'POST', body: { sessionKey: input.session.sessionKey, agentId: input.session.agentId, sessionId: input.session.sessionId, message: input.message } })
+    this.pendingResponses.set(this.sessionKey(input.session), {
+      assistantIds: new Set((before.messages ?? []).filter(message => message.role === 'assistant' && message.id).map(message => String(message.id))),
+      sentAt,
+    })
   }
 
   async getSessionStatus(session: AnalystSession): Promise<{ isComplete: boolean; isFailed?: boolean; lastResponse?: string; error?: string }> {
@@ -25,15 +37,14 @@ export class ConsoleHttpApi implements AnalystConsole {
     const failed = status.status === 'failed' || status.state === 'failed' || status.status === 'error' || status.state === 'error'
     const complete = !failed && (status.status === 'done' || status.status === 'idle' || status.state === 'done' || status.state === 'idle' || status.hasActiveRun === false || status.endedAt !== undefined)
     if (!complete && !failed) return { isComplete: false }
-    const history = await this.request<{ messages?: Array<{ role: string; content: unknown }> }>('/api/chat/history', {
-      method: 'GET', query: { sessionKey: session.sessionKey, agentId: session.agentId, limit: 20 },
-    })
+    const history = await this.history(session)
+    const marker = this.pendingResponses.get(this.sessionKey(session))
+    const assistant = [...(history.messages ?? [])].reverse().find(message => message.role === 'assistant' && this.isResponseAfter(message, marker)) as
+      | { role: string; content: unknown; errorCode?: unknown; errorType?: unknown; errorMessage?: unknown; stopReason?: unknown }
+      | undefined
     if (failed) {
       // O Console por vezes expõe apenas status=failed. O histórico pode trazer
       // o detalhe do provedor ou apenas uma falha genérica com stopReason=error.
-      const assistant = [...(history.messages ?? [])].reverse().find(message => message.role === 'assistant') as
-        | { role: string; content: unknown; errorCode?: unknown; errorType?: unknown; errorMessage?: unknown; stopReason?: unknown }
-        | undefined
       const detail = this.failureText(status.error) ?? this.failureText(status.failure) ?? this.failureText(status.details)
       const error = this.stringValue(assistant?.errorMessage)
         ?? this.stringValue(assistant?.errorCode)
@@ -46,10 +57,33 @@ export class ConsoleHttpApi implements AnalystConsole {
           ? `SESSION_FAILED: ${this.stringValue(assistant.content) ?? 'falha antes de produzir resposta'}`
           : undefined)
         ?? 'Sessão do Console falhou sem detalhamento'
+      this.pendingResponses.delete(this.sessionKey(session))
       return { isComplete: false, isFailed: true, error: error.slice(0, 800) }
     }
-    const assistant = [...(history.messages ?? [])].reverse().find(message => message.role === 'assistant')
-    return { isComplete: true, lastResponse: assistant ? String(assistant.content) : undefined }
+    // Estado ocioso sem uma mensagem nova ainda não é conclusão: o Console
+    // pode estar entre o envio e a criação/registro da resposta.
+    if (!assistant) return { isComplete: false }
+    this.pendingResponses.delete(this.sessionKey(session))
+    return { isComplete: true, lastResponse: String(assistant.content) }
+  }
+
+  private async history(session: AnalystSession): Promise<{ messages?: ConsoleHistoryMessage[] }> {
+    return this.request<{ messages?: ConsoleHistoryMessage[] }>('/api/chat/history', {
+      method: 'GET', query: { sessionKey: session.sessionKey, agentId: session.agentId, limit: 100 },
+    })
+  }
+
+  private sessionKey(session: AnalystSession): string {
+    return `${session.agentId}:${session.sessionKey}:${session.sessionId}`
+  }
+
+  private isResponseAfter(message: ConsoleHistoryMessage, marker?: { assistantIds: Set<string>; sentAt: number }): boolean {
+    if (!marker) return true
+    if (message.id && marker.assistantIds.has(String(message.id))) return false
+    if (message.id) return true
+    if (message.createdAt == null) return false
+    const occurredAt = typeof message.createdAt === 'number' ? message.createdAt : Date.parse(String(message.createdAt))
+    return Number.isFinite(occurredAt) && occurredAt >= marker.sentAt
   }
 
   private stringValue(value: unknown): string | undefined {
@@ -74,4 +108,15 @@ export class ConsoleHttpApi implements AnalystConsole {
     if (!response.ok) throw new Error(`Console HTTP ${response.status}: ${body.slice(0, 300)}`)
     return body ? JSON.parse(body) as T : {} as T
   }
+}
+
+type ConsoleHistoryMessage = {
+  id?: string
+  role: string
+  content: unknown
+  createdAt?: number | string
+  errorCode?: unknown
+  errorType?: unknown
+  errorMessage?: unknown
+  stopReason?: unknown
 }

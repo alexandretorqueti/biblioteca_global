@@ -14,6 +14,7 @@
  */
 
 import 'dotenv/config'
+import { createHash } from 'node:crypto'
 import { drizzle } from 'drizzle-orm/mysql2'
 import mysql from 'mysql2/promise'
 import * as schema from './db/schema.js'
@@ -124,6 +125,19 @@ async function start() {
 
     const repository = new MySqlTaskCoordinatorRepository(pool)
     const consoleApi = new ConsoleHttpApi(consoleUrl, consoleToken)
+    const analystSessionRows = new Map<string, number>()
+    const analystSessionSequences = new Map<string, number>()
+    const resolveTaskNumericId = async (taskId: string): Promise<number | null> => {
+      const [rows] = await pool.query<any[]>('SELECT id FROM tarefas WHERE external_id = ? LIMIT 1', [taskId])
+      if (rows[0]?.id) return Number(rows[0].id)
+      const numericId = Number(taskId.match(/(\d+)$/)?.[1])
+      return Number.isInteger(numericId) ? numericId : null
+    }
+    const auditAnalyst = async (operation: () => Promise<void>): Promise<void> => {
+      try { await operation() } catch (error) {
+        console.warn('[Motor v3] Falha ao persistir auditoria da sessão do analista:', error instanceof Error ? error.message : String(error))
+      }
+    }
     const analyst = new ConsoleAnalystRunner(consoleApi, {
       timeoutMs: Number(process.env.MOTOR_ANALYSIS_TIMEOUT_MS || 1800000),
       pollIntervalMs: Number(process.env.MOTOR_ANALYSIS_POLL_INTERVAL_MS || 5000),
@@ -158,6 +172,72 @@ async function start() {
           )
         }
       },
+      onSessionCreated: async (session, context) => auditAnalyst(async () => {
+        const tarefaId = await resolveTaskNumericId(context.taskId)
+        if (!tarefaId) return
+        const [result] = await pool.query<any>(
+          `INSERT INTO analyst_task_sessions
+             (tarefa_id, session_key, runtime_session_id, model, execution_order,
+              analysis_execution_id, analysis_attempt_id, model_attempt, status, opened_at, last_activity_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', NOW(), NOW())`,
+          [tarefaId, session.sessionKey, session.sessionId, context.model ?? 'console-default', context.modelAttempt,
+            context.executionId, context.analysisAttemptId, context.modelAttempt],
+        )
+        analystSessionRows.set(session.sessionId, Number(result.insertId))
+        analystSessionSequences.set(session.sessionId, 0)
+      }),
+      onMessageSent: async (session, message, context) => auditAnalyst(async () => {
+        const sessionRowId = analystSessionRows.get(session.sessionId)
+        if (!sessionRowId || !context.messageKey) return
+        const sequence = (analystSessionSequences.get(session.sessionId) ?? 0) + 1
+        analystSessionSequences.set(session.sessionId, sequence)
+        const content = String(message)
+        await pool.query(
+          `INSERT INTO analyst_task_session_messages
+             (session_id, message_key, sequence_number, role, phase, run_id, content, content_sha256, occurred_at)
+           VALUES (?, ?, ?, 'user', ?, ?, ?, ?, NOW())`,
+          [sessionRowId, context.messageKey, sequence, context.phase, context.messageKey, content, createHash('sha256').update(content).digest('hex')],
+        )
+        await pool.query('UPDATE analyst_task_sessions SET last_activity_at = NOW() WHERE id = ?', [sessionRowId])
+      }),
+      onResponseReceived: async (session, response, context) => auditAnalyst(async () => {
+        const sessionRowId = analystSessionRows.get(session.sessionId)
+        if (!sessionRowId) return
+        const sequence = (analystSessionSequences.get(session.sessionId) ?? 0) + 1
+        analystSessionSequences.set(session.sessionId, sequence)
+        const content = String(response)
+        const messageKey = `${context.messageKey ?? context.analysisAttemptId}:response:${sequence}`
+        await pool.query(
+          `INSERT INTO analyst_task_session_messages
+             (session_id, message_key, sequence_number, role, phase, run_id, content, content_sha256, occurred_at)
+           VALUES (?, ?, ?, 'assistant', ?, ?, ?, ?, NOW())`,
+          [sessionRowId, messageKey, sequence, context.phase, context.messageKey ?? null, content, createHash('sha256').update(content).digest('hex')],
+        )
+        await pool.query('UPDATE analyst_task_sessions SET last_activity_at = NOW() WHERE id = ?', [sessionRowId])
+      }),
+      onSessionCompleted: async (session) => auditAnalyst(async () => {
+        const sessionRowId = analystSessionRows.get(session.sessionId)
+        if (sessionRowId) await pool.query(`UPDATE analyst_task_sessions SET status = 'completed', close_reason = 'analysis_completed', closed_at = NOW(), last_activity_at = NOW() WHERE id = ?`, [sessionRowId])
+      }),
+      onSessionFailure: async (session, error, context) => auditAnalyst(async () => {
+        const sessionRowId = session ? analystSessionRows.get(session.sessionId) : undefined
+        if (sessionRowId) await pool.query(`UPDATE analyst_task_sessions SET status = 'failed', close_reason = 'analysis_failed', closed_at = NOW(), last_activity_at = NOW() WHERE id = ?`, [sessionRowId])
+        const tarefaId = await resolveTaskNumericId(context.taskId)
+        if (!tarefaId || !session) return
+        const message = error.message.slice(0, 500)
+        const fingerprint = createHash('sha256').update(`${context.phase}|${message}`).digest('hex')
+        await pool.query(
+          `INSERT INTO motor_agent_session_failures
+             (tarefa_id, agent_id, session_key, runtime_session_id, analysis_execution_id,
+              analysis_attempt_id, phase, run_id, code, message, occurred_at, classification,
+              classification_reason, fingerprint)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?, ?)`,
+          [tarefaId, session.agentId, session.sessionKey, session.sessionId, context.executionId,
+            context.analysisAttemptId, context.phase, context.messageKey ?? context.analysisAttemptId,
+            'ANALYSIS_SESSION_FAILED', message, /timeout|429|rate|gateway|network|console|session/i.test(message) ? 'transient' : 'permanent',
+            'motor_v3_analysis_runner', fingerprint],
+        )
+      }),
     })
     const transport = new RabbitMqTransport({
       url: rabbitUrl,
