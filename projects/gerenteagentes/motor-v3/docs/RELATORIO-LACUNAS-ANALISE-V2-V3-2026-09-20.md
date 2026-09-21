@@ -16,7 +16,10 @@ avalia a execução/programação das subtarefas.
 > blocos de 6.000 caracteres. Cada bloco exige a confirmação literal
 > `CONTEXTO_RECEBIDO`; o prompt final só é enviado após todas as confirmações
 > e a composição auditada registra quantidade de blocos e tamanho da descrição.
-> Esta atualização cobre a análise, não o prompt da fase de desenvolvimento.
+> Em 2026-09-21, o mesmo padrão foi aplicado ao programador: acima de 12.000
+> caracteres, a descrição da missão é enviada em mensagem separada (até 30.000
+> caracteres), antes do header que inicia a execução. Para descrições menores,
+> ela permanece no header.
 
 ## Conclusão executiva
 

@@ -37,7 +37,9 @@ describe('SubtaskExecutionConsumer', () => {
     expect(worker.executeTask).toHaveBeenCalledWith(expect.objectContaining({
       taskId: 'task-p6-845', subtaskId: 901, worktreePath: '/worktree',
       buildCommand: 'npm run build', testCommand: 'npm test',
-    }), expect.stringContaining('Workspace autorizado: /worktree'), ['modelo-a'], expect.any(Function))
+    }), expect.objectContaining({
+      header: expect.stringContaining('Workspace autorizado: /worktree'), context: null,
+    }), ['modelo-a'], expect.any(Function))
     expect(repository.finishExecution).toHaveBeenCalledWith(context, message, expect.objectContaining({ success: true }))
     expect(logger.append).toHaveBeenCalledTimes(4)
     expect(logger.append).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -57,6 +59,27 @@ describe('SubtaskExecutionConsumer', () => {
     expect(worktrees.prepare).not.toHaveBeenCalled()
     expect(worker.executeTask).not.toHaveBeenCalled()
     expect(logger.append).toHaveBeenLastCalledWith(expect.objectContaining({ reasonCode: 'subtask_not_running' }))
+  })
+
+  it('separa a descrição longa do header enviado ao programador', async () => {
+    const longContext = { ...context, taskDescription: 'D'.repeat(12_001) }
+    const repository = {
+      getExecutionContext: vi.fn().mockResolvedValue(longContext),
+      getDevelopmentModelChain: vi.fn().mockResolvedValue(['modelo-a']),
+      recordModelFailure: vi.fn().mockResolvedValue(undefined),
+      recordWorkspace: vi.fn().mockResolvedValue(undefined),
+      finishExecution: vi.fn().mockResolvedValue({ ...message, messageId: 'completed-long', type: 'SUBTASK_EXECUTION_COMPLETED' }),
+    }
+    const worktrees = { prepare: vi.fn().mockResolvedValue({ path: '/worktree', branch: 'branch', baseCommit: 'abc' }) }
+    const worker = { executeTask: vi.fn().mockResolvedValue({ success: true, attempts: 1 }) }
+    const consumer = new SubtaskExecutionConsumer(repository as never, worktrees as never, worker as never, {}, {})
+
+    await consumer.handle(message)
+
+    expect(worker.executeTask).toHaveBeenCalledWith(expect.any(Object), expect.objectContaining({
+      header: expect.not.stringContaining(longContext.taskDescription),
+      context: `Descrição completa da missão:\n\n${longContext.taskDescription}`,
+    }), expect.any(Array), expect.any(Function))
   })
 
   it('publica falha durável quando o programador esgota tentativas', async () => {

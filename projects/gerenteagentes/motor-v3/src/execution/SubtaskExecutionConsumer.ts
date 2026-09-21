@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { QueueMessage } from '../queue/QueueMessage.js'
 import type { OperationLogEntry, OperationLogger } from '../commands/OperationLogger.js'
 import type { PrimitiveContext } from '../primitives/types.js'
-import type { WorkerLauncher, WorkerResult } from '../worker-launcher/WorkerLauncher.js'
+import type { DevelopmentPrompt, WorkerLauncher, WorkerResult } from '../worker-launcher/WorkerLauncher.js'
 import type { MySqlDevelopmentExecutionRepository, SubtaskExecutionContext } from './DevelopmentExecutionRepository.js'
 import type { GitWorktreePreparer } from './GitWorktreePreparer.js'
 
@@ -106,11 +106,11 @@ export class SubtaskExecutionConsumer {
     if (missing.length > 0) throw new Error(`Contexto de execução incompleto: ${missing.join(', ')}`)
   }
 
-  private buildPrompt(context: SubtaskExecutionContext, workspacePath: string): string {
-    return [
+  private buildPrompt(context: SubtaskExecutionContext, workspacePath: string): DevelopmentPrompt {
+    const description = context.taskDescription || 'N/A'
+    const header = [
       'Execute somente a subtarefa abaixo no workspace autorizado.',
       `Tarefa: ${context.taskTitle}`,
-      `Descrição: ${context.taskDescription}`,
       `Subtarefa ${context.seq}: ${context.title}`,
       `Escopo: ${context.scope}`,
       `Entregáveis: ${context.deliverables.join('; ') || 'conforme o escopo'}`,
@@ -119,6 +119,15 @@ export class SubtaskExecutionConsumer {
       'Preserve mudanças existentes, não altere outros projetos e não faça push ou deploy.',
       'Ao terminar e validar, inclua o marcador ::DONE:: na resposta final.',
     ].join('\n')
+    // O viewer/sessão do agente pode truncar uma missão longa. Mantemos o
+    // mesmo limite do v2: até 12k no header; acima, contexto separado até 30k.
+    if (description.length > 12_000) {
+      return { header, context: `Descrição completa da missão:\n\n${description.substring(0, 30_000)}` }
+    }
+    return {
+      header: `${header}\nDescrição da missão: ${description.substring(0, 12_000)}`,
+      context: null,
+    }
   }
 
   private resultForLog(result: WorkerResult): Record<string, unknown> {

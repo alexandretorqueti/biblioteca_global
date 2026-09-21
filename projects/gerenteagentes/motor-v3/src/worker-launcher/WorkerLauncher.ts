@@ -28,6 +28,12 @@ export interface WorkerResult {
   failures?: Array<{ attempt: number; model?: string; error: string }>
 }
 
+/** Missão do programador, com contexto longo separado do comando principal. */
+export interface DevelopmentPrompt {
+  header: string
+  context: string | null
+}
+
 export class WorkerLauncher {
   private config: WorkerLauncherConfig
 
@@ -44,7 +50,7 @@ export class WorkerLauncher {
    */
   async executeTask(
     context: PrimitiveContext,
-    taskDescription: string,
+    taskDescription: string | DevelopmentPrompt,
     models: readonly string[] = [],
     onModelFailure?: (model: string, error: string) => Promise<void>,
   ): Promise<WorkerResult> {
@@ -81,9 +87,24 @@ export class WorkerLauncher {
           continue
         }
 
-        // 2. Enviar mensagem com descrição da tarefa
+        // 2. Contextos longos são enviados antes do comando principal, como no
+        // v2. O header é a mensagem que dispara a execução do programador.
+        const prompt = normalizePrompt(taskDescription)
+        if (prompt.context) {
+          const contextResult = await sendMessage.handler(context, { message: prompt.context })
+          if (!contextResult.success) {
+            context.logger?.error('Falha ao enviar contexto da tarefa', { error: contextResult.error })
+            lastError = contextResult.error ?? 'Falha ao enviar contexto da tarefa'
+            failures.push({ attempt: attempts, ...(model ? { model } : {}), error: lastError })
+            await this.recordModelFailure(model, lastError, onModelFailure)
+            context.generation++
+            continue
+          }
+        }
+
+        // 3. Enviar o comando principal da tarefa
         const sendResult = await sendMessage.handler(context, {
-          message: taskDescription,
+          message: prompt.header,
         })
 
         if (!sendResult.success) {
@@ -95,7 +116,7 @@ export class WorkerLauncher {
           continue
         }
 
-        // 3. Aguardar conclusão com timeout
+        // 4. Aguardar conclusão com timeout
         const waitResult = await waitForCompletion.handler(context, {
           timeoutMs: this.config.timeoutMs,
         })
@@ -111,7 +132,7 @@ export class WorkerLauncher {
 
         const response = waitResult.data?.response ?? ''
 
-        // 4. Parse da resposta (detecta ::DONE::)
+        // 5. Parse da resposta (detecta ::DONE::)
         const parseResult = await parseReply.handler(context, { response })
 
         if (!parseResult.success) {
@@ -124,7 +145,7 @@ export class WorkerLauncher {
 
         const hasDoneMarker = parseResult.data?.hasDoneMarker ?? false
 
-        // 5. Verificação de realidade (se tiver ::DONE::)
+        // 6. Verificação de realidade (se tiver ::DONE::)
         if (hasDoneMarker) {
           const verifyResult = await verifyGit.handler(context, {})
 
@@ -147,7 +168,7 @@ export class WorkerLauncher {
             continue
           }
 
-          // 6. Rodar build + testes
+          // 7. Rodar build + testes
           const buildResult = await runBuild.handler(context, {
             buildCommand: context.buildCommand,
             testCommand: context.testCommand,
@@ -183,7 +204,7 @@ export class WorkerLauncher {
           context.generation++
           continue
         }
-      } catch (error: any) {
+      } catch (error: unknown) {
         lastError = error instanceof Error ? error.message : String(error)
         failures.push({ attempt: attempts, ...(model ? { model } : {}), error: lastError })
         context.logger?.error('Erro inesperado', { error: lastError, attempts })
@@ -219,4 +240,8 @@ export class WorkerLauncher {
       console.warn('Falha ao registrar cooldown do modelo', { model, error: reason })
     }
   }
+}
+
+function normalizePrompt(prompt: string | DevelopmentPrompt): DevelopmentPrompt {
+  return typeof prompt === 'string' ? { header: prompt, context: null } : prompt
 }

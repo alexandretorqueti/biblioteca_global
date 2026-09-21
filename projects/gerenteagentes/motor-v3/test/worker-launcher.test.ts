@@ -27,7 +27,7 @@ vi.mock('../src/primitives/index.js', () => ({
 describe('WorkerLauncher', () => {
   let launcher: WorkerLauncher
   let mockContext: PrimitiveContext
-  let mocks: any
+  let mocks: Record<string, { handler: ReturnType<typeof vi.fn> }>
 
   beforeEach(async () => {
     vi.clearAllMocks()
@@ -82,6 +82,27 @@ describe('WorkerLauncher', () => {
     expect(result.attempts).toBe(1)
     expect(result.hasChanges).toBe(true)
     expect(result.buildPassed).toBe(true)
+  })
+
+  it('envia o contexto longo antes do header e aguarda somente após o header', async () => {
+    mocks.createSession.handler.mockResolvedValue({ success: true })
+    mocks.sendMessage.handler.mockResolvedValue({ success: true })
+    mocks.waitForCompletion.handler.mockResolvedValue({ success: true, data: { response: 'Pronto ::DONE::' } })
+    mocks.parseReply.handler.mockResolvedValue({ success: true, data: { hasDoneMarker: true } })
+    mocks.verifyGit.handler.mockResolvedValue({ success: true, data: { hasChanges: true } })
+    mocks.runBuild.handler.mockResolvedValue({ success: true })
+
+    const result = await launcher.executeTask(mockContext, {
+      header: 'Execute a subtarefa.', context: 'Descrição completa da missão:\n\n' + 'D'.repeat(12_001),
+    })
+
+    expect(result.success).toBe(true)
+    expect(mocks.sendMessage.handler).toHaveBeenCalledTimes(2)
+    expect(mocks.sendMessage.handler.mock.calls.map(([, params]: [PrimitiveContext, { message: string }]) => params.message)).toEqual([
+      expect.stringContaining('Descrição completa da missão'),
+      'Execute a subtarefa.',
+    ])
+    expect(mocks.waitForCompletion.handler).toHaveBeenCalledTimes(1)
   })
 
   it('should retry when no ::DONE:: marker found', async () => {
