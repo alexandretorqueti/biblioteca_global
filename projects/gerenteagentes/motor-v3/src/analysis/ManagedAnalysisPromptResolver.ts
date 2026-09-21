@@ -8,11 +8,18 @@ export interface ResolvedAnalysisPrompt {
   executionId: number | null
 }
 
+export interface AnalysisPromptContext {
+  descriptionReference: string
+  confirmation: string
+  chunkCount: number
+  descriptionLength: number
+}
+
 /** Resolve a versão ativa de prompt/contrato da Biblioteca e a audita. */
 export class ManagedAnalysisPromptResolver {
   constructor(private readonly pool: Pool) {}
 
-  async resolve(task: TaskSnapshot, executionId: string): Promise<ResolvedAnalysisPrompt> {
+  async resolve(task: TaskSnapshot, executionId: string, context?: AnalysisPromptContext): Promise<ResolvedAnalysisPrompt> {
     const key = task.status === 'awaiting_clarification'
       ? 'analista.retomada_apos_clarificacao'
       : 'analista.primeira_rodada_tarefa'
@@ -45,15 +52,16 @@ export class ManagedAnalysisPromptResolver {
     ].filter(Boolean).join('\n\n')
     const text = render(String(row.texto), {
       '**TITULOTAREFA**': task.title,
-      '**DESCRICAOTAREFA**': task.description,
+      '**DESCRICAOTAREFA**': context?.descriptionReference ?? task.description,
       '**WORKSPACE**': task.repoPath,
       '**IDTAREFA**': task.taskId,
       '**TIPOTAREFA**': task.taskType,
       '**HISTORICOCLARIFICACAO**': clarificationHistory || 'Sem esclarecimentos anteriores.',
       '**CONTRATOSAIDA**': contractText,
     })
-    const finalText = contractText && !String(row.texto).includes('**CONTRATOSAIDA**')
+    const promptWithContract = contractText && !String(row.texto).includes('**CONTRATOSAIDA**')
       ? `${text}\n\nCONTRATO DE SAÍDA OBRIGATÓRIO:\n${contractText}` : text
+    const finalText = context ? `${promptWithContract}\n\n${context.confirmation}` : promptWithContract
     const [result] = await this.pool.query<ResultSetHeader>(
       `INSERT INTO prompts_execucoes
          (prompt_id, versao_id, contrato_versao_id, chave, tarefa_id, fallback_usado, created_at)
@@ -62,7 +70,7 @@ export class ManagedAnalysisPromptResolver {
     )
     await this.pool.query(
       'UPDATE prompts_execucoes SET prompt_final = ?, composicao_json = ? WHERE id = ?',
-      [finalText, JSON.stringify({ executionId, taskId: task.taskId, key }), result.insertId],
+      [finalText, JSON.stringify({ executionId, taskId: task.taskId, key, ...(context ? { taskContext: { chunks: context.chunkCount, descriptionLength: context.descriptionLength } } : {}) }), result.insertId],
     )
     return { text: finalText, contractText, contractSchema: schema, executionId: result.insertId }
   }

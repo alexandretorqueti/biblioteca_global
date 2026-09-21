@@ -67,6 +67,7 @@ describe('coordinator adapters', () => {
       sendMessage: vi.fn(async () => {}),
       getSessionStatus: vi.fn()
         .mockResolvedValueOnce({ isComplete: false })
+        .mockResolvedValueOnce({ isComplete: true, lastResponse: 'CONTEXTO_RECEBIDO' })
         .mockResolvedValueOnce({ isComplete: true, lastResponse: JSON.stringify({
           subtarefas: [{ seq: 1, titulo: 'Corrigir texto', scope: 'Ajustar texto', acceptance_criteria: ['OK'], deliverables: ['Código'], requirements_covered: ['REQ-1'], depends_on: [] }],
           requirements: [{ id: 'REQ-1', description: 'Texto correto' }], coverage: [{ requirement: 'REQ-1', covered_by: [1] }],
@@ -89,6 +90,7 @@ describe('coordinator adapters', () => {
       createSession: vi.fn(async () => ({ sessionId: 'session-1', sessionKey: 'key', agentId: 'agent-1' })),
       sendMessage: vi.fn(async () => {}),
       getSessionStatus: vi.fn()
+        .mockResolvedValueOnce({ isComplete: true, lastResponse: 'CONTEXTO_RECEBIDO' })
         .mockResolvedValueOnce({ isComplete: true, lastResponse: '{"subtarefas":[]}' })
         .mockResolvedValueOnce({ isComplete: true, lastResponse: JSON.stringify({
           subtarefas: [{ seq: 1, titulo: 'Corrigir', scope: 'Escopo', acceptance_criteria: ['OK'], deliverables: ['Código'], requirements_covered: ['REQ-1'], depends_on: [] }],
@@ -104,7 +106,7 @@ describe('coordinator adapters', () => {
 
     await expect(runner.start(task(), 'exec-1')).resolves.toMatchObject({ kind: 'plan' })
     expect(consoleApi.createSession).toHaveBeenCalledTimes(1)
-    expect(consoleApi.sendMessage).toHaveBeenCalledTimes(2)
-    expect(consoleApi.sendMessage.mock.calls[1][0].message).toContain('Erro de validação')
+    expect(consoleApi.sendMessage).toHaveBeenCalledTimes(3)
+    expect(consoleApi.sendMessage.mock.calls[2][0].message).toContain('Erro de validação')
   })
 })

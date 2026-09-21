@@ -12,6 +12,12 @@ avalia a execução/programação das subtarefas.
 > continuam no backlog. A migração/bootstrap automático seguro foi concluída
 > no fluxo canônico do GerenteAgentes.
 
+> Em 2026-09-21, o contexto longo do analista também passou a ser enviado em
+> blocos de 6.000 caracteres. Cada bloco exige a confirmação literal
+> `CONTEXTO_RECEBIDO`; o prompt final só é enviado após todas as confirmações
+> e a composição auditada registra quantidade de blocos e tamanho da descrição.
+> Esta atualização cobre a análise, não o prompt da fase de desenvolvimento.
+
 ## Conclusão executiva
 
 O Motor v3 já possui a base para iniciar uma análise de forma durável:

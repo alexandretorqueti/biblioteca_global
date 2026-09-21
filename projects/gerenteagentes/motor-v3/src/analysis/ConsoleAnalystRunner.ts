@@ -1,8 +1,15 @@
 import type { AnalysisRunner, TaskSnapshot } from '../coordinator/TaskCoordinator.js'
 import { parseAnalystReply, type AnalysisOutcome } from './AnalystReply.js'
+import {
+  buildAnalysisContextConfirmation,
+  buildAnalysisContextMessage,
+  buildAnalysisDescriptionReference,
+  isContextAcknowledgement,
+  splitAnalysisDescription,
+} from './PromptChunking.js'
 
 export interface AnalysisPromptResolver {
-  resolve(task: TaskSnapshot, executionId: string): Promise<{ text: string; contractText: string; contractSchema: unknown }>
+  resolve(task: TaskSnapshot, executionId: string, context?: { descriptionReference: string; confirmation: string; chunkCount: number; descriptionLength: number }): Promise<{ text: string; contractText: string; contractSchema: unknown }>
 }
 
 export interface AnalystConsole {
@@ -41,9 +48,16 @@ export class ConsoleAnalystRunner implements AnalysisRunner {
   }
 
   async start(task: TaskSnapshot, executionId: string): Promise<AnalysisOutcome> {
+    const descriptionChunks = splitAnalysisDescription(task.description)
+    const context = {
+      descriptionReference: buildAnalysisDescriptionReference(descriptionChunks.length),
+      confirmation: buildAnalysisContextConfirmation(task.description, descriptionChunks.length),
+      chunkCount: descriptionChunks.length,
+      descriptionLength: (task.description || 'N/A').trim().length || 3,
+    }
     const resolvedPrompt = this.config.promptResolver
-      ? await this.config.promptResolver.resolve(task, executionId)
-      : { text: this.prompt(task), contractText: '', contractSchema: undefined }
+      ? await this.config.promptResolver.resolve(task, executionId, context)
+      : { text: `${this.prompt(task, context.descriptionReference)}\n\n${context.confirmation}`, contractText: '', contractSchema: undefined }
     const models = this.config.modelChainResolver
       ? await this.config.modelChainResolver(task)
       : [await this.config.modelResolver?.(task)].filter((model): model is string => Boolean(model))
@@ -60,6 +74,7 @@ export class ConsoleAnalystRunner implements AnalysisRunner {
           ...(model ? { model } : {}),
           metadata: { taskId: task.taskId, executionId, phase: 'analysis', attempt: index + 1 },
         })
+        await this.sendDescriptionContext(session, task, descriptionChunks)
         await this.consoleApi.sendMessage({ session, message: resolvedPrompt.text })
         const content = await this.waitForResult(session, task)
         try {
@@ -102,17 +117,27 @@ export class ConsoleAnalystRunner implements AnalysisRunner {
     ].join('\n')
   }
 
+  private async sendDescriptionContext(session: AnalystSession, task: TaskSnapshot, chunks: readonly string[]): Promise<void> {
+    for (const [index, chunk] of chunks.entries()) {
+      await this.consoleApi.sendMessage({ session, message: buildAnalysisContextMessage(chunk, index, chunks.length) })
+      const acknowledgement = await this.waitForResult(session, task)
+      if (!isContextAcknowledgement(acknowledgement)) {
+        throw new Error(`Analista não confirmou o bloco ${index + 1}/${chunks.length}: resposta recebida: ${acknowledgement.slice(0, 200) || '(vazia)'}`)
+      }
+    }
+  }
+
   private isModelUnavailable(error: Error): boolean {
     return /(?:401|403|404|429|quota|rate.limit|credit|billing|indispon[ií]vel|model.+not found)/i.test(error.message)
   }
 
-  private prompt(task: TaskSnapshot): string {
+  private prompt(task: TaskSnapshot, description: string): string {
     return [
       'Você é o analista técnico do Motor v3.',
       `Tarefa: ${task.title}`,
       `ID: ${task.taskId}`,
       `Repositório autorizado para leitura: ${task.repoPath}`,
-      '', 'Descrição da tarefa:', task.description, '',
+      '', 'Descrição da tarefa:', description, '',
       'Crie a menor quantidade de subtarefas necessária para executar a tarefa com clareza e segurança.',
       'Para alterações triviais, localizadas e independentes, crie apenas uma subtarefa.',
       'Não divida automaticamente a tarefa em preparar, implementar e validar.',
