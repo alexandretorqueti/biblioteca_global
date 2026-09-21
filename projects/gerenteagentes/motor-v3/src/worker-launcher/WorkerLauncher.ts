@@ -24,6 +24,7 @@ export interface WorkerResult {
   buildPassed?: boolean
   error?: string
   attempts: number
+  model?: string
 }
 
 export class WorkerLauncher {
@@ -42,12 +43,26 @@ export class WorkerLauncher {
    */
   async executeTask(
     context: PrimitiveContext,
-    taskDescription: string
+    taskDescription: string,
+    models: readonly string[] = [],
+    onModelFailure?: (model: string, error: string) => Promise<void>,
   ): Promise<WorkerResult> {
     let attempts = 0
+    let lastError = 'Nenhuma tentativa foi executada'
+    let lastModel: string | undefined
+    // Sem configuração explícita, preserva o comportamento do Console. Com
+    // cadeia configurada, cada tentativa recebe seu modelo e sua sessão própria.
+    const candidates = models.length > 0 ? models : [undefined]
+    const maximumAttempts = models.length > 0
+      ? Math.min(this.config.maxAttempts, candidates.length)
+      : this.config.maxAttempts
 
-    while (attempts < this.config.maxAttempts) {
+    while (attempts < maximumAttempts) {
+      const model = candidates[attempts] ?? candidates[candidates.length - 1]
       attempts++
+      lastModel = model
+      context.model = model
+      context.sessionId = undefined
 
       try {
         // 1. Criar sessão
@@ -57,6 +72,8 @@ export class WorkerLauncher {
 
         if (!sessionResult.success) {
           context.logger?.error('Falha ao criar sessão', { error: sessionResult.error })
+          lastError = sessionResult.error ?? 'Falha ao criar sessão'
+          context.generation++
           continue
         }
 
@@ -67,6 +84,8 @@ export class WorkerLauncher {
 
         if (!sendResult.success) {
           context.logger?.error('Falha ao enviar mensagem', { error: sendResult.error })
+          lastError = sendResult.error ?? 'Falha ao enviar mensagem'
+          context.generation++
           continue
         }
 
@@ -77,6 +96,9 @@ export class WorkerLauncher {
 
         if (!waitResult.success) {
           context.logger?.error('Timeout ou erro ao aguardar', { error: waitResult.error })
+          lastError = waitResult.error ?? 'Falha aguardando o programador'
+          await this.recordModelFailure(model, lastError, onModelFailure)
+          context.generation++
           continue
         }
 
@@ -87,6 +109,8 @@ export class WorkerLauncher {
 
         if (!parseResult.success) {
           context.logger?.error('Falha ao parsear resposta', { error: parseResult.error })
+          lastError = parseResult.error ?? 'Falha ao interpretar resposta do programador'
+          context.generation++
           continue
         }
 
@@ -98,6 +122,8 @@ export class WorkerLauncher {
 
           if (!verifyResult.success) {
             context.logger?.error('Falha ao verificar git', { error: verifyResult.error })
+            lastError = verifyResult.error ?? 'Falha ao verificar alterações Git'
+            context.generation++
             continue
           }
 
@@ -106,6 +132,8 @@ export class WorkerLauncher {
           // Se não tem mudanças, falha (agente mentiu ou não fez nada)
           if (!hasChanges) {
             context.logger?.warn('Agente disse ::DONE:: mas não há mudanças no git')
+            lastError = 'O programador declarou conclusão, mas não alterou o worktree autorizado'
+            context.generation++
             continue
           }
 
@@ -119,6 +147,8 @@ export class WorkerLauncher {
 
           if (!buildPassed) {
             context.logger?.warn('Build falhou', { error: buildResult.error })
+            lastError = buildResult.error ?? 'Build ou testes falharam'
+            context.generation++
             // Continua para próxima tentativa (agente pode corrigir)
             continue
           }
@@ -131,23 +161,40 @@ export class WorkerLauncher {
             hasChanges,
             buildPassed,
             attempts,
+            ...(model ? { model } : {}),
           }
         } else {
           // Sem ::DONE::, agente ainda não terminou
           context.logger?.info('Agente não indicou conclusão, tentando novamente', { attempts })
+          lastError = 'O programador encerrou sem o marcador ::DONE::'
+          context.generation++
           continue
         }
       } catch (error: any) {
-        context.logger?.error('Erro inesperado', { error: error.message, attempts })
+        lastError = error instanceof Error ? error.message : String(error)
+        context.logger?.error('Erro inesperado', { error: lastError, attempts })
+        await this.recordModelFailure(model, lastError, onModelFailure)
+        context.generation++
       }
     }
 
     // Esgotou tentativas
-    context.logger?.error('Esgotado número máximo de tentativas', { maxAttempts: this.config.maxAttempts })
+    context.logger?.error('Esgotado número máximo de tentativas', { maxAttempts: maximumAttempts })
     return {
       success: false,
-      error: `Esgotado número máximo de tentativas (${this.config.maxAttempts})`,
+      error: `Esgotado número máximo de tentativas (${maximumAttempts}): ${lastError}`,
       attempts,
+      ...(lastModel ? { model: lastModel } : {}),
     }
+  }
+
+  private async recordModelFailure(
+    model: string | undefined,
+    error: string,
+    callback: ((model: string, error: string) => Promise<void>) | undefined,
+  ): Promise<void> {
+    if (!model || !callback) return
+    if (!/(?:\b429\b|quota|rate[ -]?limit|credit|billing|model.+not found|indispon[ií]vel)/i.test(error)) return
+    await callback(model, error)
   }
 }

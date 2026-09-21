@@ -258,3 +258,15 @@ acionadas automaticamente pelo Motor v3.
   com a branch histórica `motor-v3`.
 - Diretórios de worktree incompletos e não registrados pelo Git são removidos
   antes de nova tentativa. Worktrees registrados são preservados e reutilizados.
+
+### 20/09/2026 — recuperação de falha do programador
+
+- O adaptador do Console agora recupera a causa de uma sessão `failed` no
+  histórico quando o endpoint de descrição só devolve o status terminal.
+- A execução consulta a cadeia `DEV` de `project_model_selection`, respeita
+  `motor_model_cooldown` e passa explicitamente o modelo para cada sessão.
+- Cada tentativa usa uma nova geração/chave de sessão; uma sessão remota já
+  encerrada não é reutilizada.
+- Falhas de cota, rate-limit ou indisponibilidade entram em cooldown e a
+  próxima tentativa usa o próximo modelo habilitado. O log operacional passa
+  a registrar modelo e causa concreta, em vez de apenas "tentativas esgotadas".

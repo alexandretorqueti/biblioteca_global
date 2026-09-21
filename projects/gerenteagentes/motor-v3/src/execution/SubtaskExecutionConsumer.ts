@@ -71,7 +71,13 @@ export class SubtaskExecutionConsumer {
       consoleApi: this.consoleApi,
       logger: console,
     }
-    const result = await this.worker.executeTask(context, this.buildPrompt(execution, workspace.path))
+    const models = await this.repository.getDevelopmentModelChain(execution.projectSlug)
+    const result = await this.worker.executeTask(
+      context,
+      this.buildPrompt(execution, workspace.path),
+      models,
+      (model, error) => this.repository.recordModelFailure(model, error),
+    )
     await this.log(operationId, 3, message, {
       phase: 'primitive', outcome: result.success ? 'succeeded' : 'failed', subtaskId,
       primitiveCode: 'start_programmer', result: this.resultForLog(result),
@@ -107,8 +113,9 @@ export class SubtaskExecutionConsumer {
   }
 
   private resultForLog(result: WorkerResult): Record<string, unknown> {
-    return { success: result.success, attempts: result.attempts, hasChanges: result.hasChanges, buildPassed: result.buildPassed, error: result.error }
+    return { success: result.success, attempts: result.attempts, model: result.model, hasChanges: result.hasChanges, buildPassed: result.buildPassed, error: result.error }
   }
+
 
   private async finishPreparationFailure(
     operationId: string,

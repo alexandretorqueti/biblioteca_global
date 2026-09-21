@@ -88,6 +88,45 @@ interface ActiveDevelopmentCountRow extends RowDataPacket {
 export class MySqlDevelopmentExecutionRepository {
   constructor(private readonly pool: Pool) {}
 
+  /** Cadeia de modelos do programador, administrada pela Biblioteca. */
+  async getDevelopmentModelChain(projectSlug: string): Promise<string[]> {
+    if (!projectSlug) return []
+    const [rows] = await this.pool.query<Array<RowDataPacket & { model: string }>>(
+      `SELECT selection.model
+         FROM project_model_selection selection
+        WHERE selection.project_slug = ? AND selection.tipo = 'DEV' AND selection.enabled = 1
+          AND NOT EXISTS (
+            SELECT 1 FROM motor_model_cooldown cooldown
+             WHERE cooldown.model COLLATE utf8mb4_unicode_ci = selection.model COLLATE utf8mb4_unicode_ci
+               AND cooldown.until > NOW()
+          )
+        ORDER BY selection.ordem ASC`,
+      [projectSlug],
+    )
+    return rows.map(row => String(row.model)).filter(Boolean)
+  }
+
+  /** Evita desperdiçar entregas com um modelo cuja cota/serviço acabou de falhar. */
+  async recordModelFailure(model: string, error: string): Promise<void> {
+    if (!model) return
+    const reason = error.slice(0, 500)
+    const [updated] = await this.pool.query<ResultSetHeader>(
+      `UPDATE motor_model_cooldown
+          SET until = DATE_ADD(NOW(), INTERVAL 10 MINUTE), reason = ?,
+              occurrences = occurrences + 1, updated_at = NOW()
+        WHERE model COLLATE utf8mb4_unicode_ci = ? COLLATE utf8mb4_unicode_ci
+          AND until > NOW()`,
+      [reason, model],
+    )
+    if (updated.affectedRows === 0) {
+      await this.pool.query(
+        `INSERT INTO motor_model_cooldown (model, reason, until, occurrences, created_at, updated_at)
+         VALUES (?, ?, DATE_ADD(NOW(), INTERVAL 10 MINUTE), 1, NOW(), NOW())`,
+        [model, reason],
+      )
+    }
+  }
+
   async reserveNextSubtask(taskId: string, source: QueueMessage): Promise<ReserveNextSubtaskResult> {
     const connection = await this.pool.getConnection()
     try {

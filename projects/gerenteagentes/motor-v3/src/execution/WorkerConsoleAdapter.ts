@@ -6,10 +6,11 @@ export class WorkerConsoleAdapter {
 
   constructor(private readonly consoleApi: AnalystConsole) {}
 
-  async createSession(input: { key: string; agentId: string }): Promise<{ sessionId: string }> {
+  async createSession(input: { key: string; agentId: string; model?: string }): Promise<{ sessionId: string }> {
     const session = await this.consoleApi.createSession({
       key: input.key,
       agentId: input.agentId,
+      ...(input.model ? { model: input.model } : {}),
       metadata: {},
     })
     this.sessions.set(session.sessionId, session)

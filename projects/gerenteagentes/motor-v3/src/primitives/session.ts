@@ -22,6 +22,7 @@ export const createSession: PrimitiveDefinition = {
       const response = await context.consoleApi.createSession({
         key: sessionKey,
         agentId: context.agentId,
+        ...(context.model ? { model: context.model } : {}),
         metadata: {
           taskId: context.taskId,
           subtaskId: context.subtaskId,

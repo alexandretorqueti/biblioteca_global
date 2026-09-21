@@ -200,4 +200,31 @@ describe('WorkerLauncher', () => {
       { error: 'Sandbox unavailable' }
     )
   })
+
+  it('usa o próximo modelo e uma nova geração quando a sessão remota falha', async () => {
+    const attempts: Array<{ model?: string; generation: number }> = []
+    mocks.createSession.handler.mockImplementation(async (context: PrimitiveContext) => {
+      attempts.push({ model: context.model, generation: context.generation })
+      return { success: true }
+    })
+    mocks.sendMessage.handler.mockResolvedValue({ success: true })
+    mocks.waitForCompletion.handler
+      .mockResolvedValueOnce({ success: false, error: 'Run falhou: 429 quota exhausted' })
+      .mockResolvedValueOnce({ success: true, data: { response: 'Feito ::DONE::' } })
+    mocks.parseReply.handler.mockResolvedValue({ success: true, data: { hasDoneMarker: true } })
+    mocks.verifyGit.handler.mockResolvedValue({ success: true, data: { hasChanges: true } })
+    mocks.runBuild.handler.mockResolvedValue({ success: true })
+
+    const onModelFailure = vi.fn().mockResolvedValue(undefined)
+    const result = await launcher.executeTask(mockContext, 'Implementar feature X', ['modelo-sem-cota', 'modelo-reserva'], onModelFailure)
+
+    expect(result.success).toBe(true)
+    expect(result.attempts).toBe(2)
+    expect(result.model).toBe('modelo-reserva')
+    expect(attempts).toEqual([
+      { model: 'modelo-sem-cota', generation: 1 },
+      { model: 'modelo-reserva', generation: 2 },
+    ])
+    expect(onModelFailure).toHaveBeenCalledWith('modelo-sem-cota', 'Run falhou: 429 quota exhausted')
+  })
 })

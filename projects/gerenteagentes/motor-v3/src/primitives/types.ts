@@ -13,6 +13,8 @@ export interface PrimitiveContext {
   branchName: string
   buildCommand?: string
   testCommand?: string
+  /** Modelo escolhido pela política de execução para esta tentativa. */
+  model?: string
   sessionId?: string
   agentId: string
   db: any // Drizzle DB instance
