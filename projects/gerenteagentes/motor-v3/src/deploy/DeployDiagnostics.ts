@@ -15,6 +15,8 @@ interface ActiveTaskRow extends RowDataPacket {
   task_id: string | null
 }
 
+interface FailingTestRow extends RowDataPacket { total: number | string }
+
 /**
  * Diagnóstico somente de leitura da fila de deploy.
  *
@@ -47,6 +49,14 @@ export async function getDeployDiagnostics(pool: Pool): Promise<DeployDiagnostic
   )
 
   const reasons: string[] = []
+  const [testRows] = await pool.query<FailingTestRow[]>(
+    `SELECT COUNT(*) AS total
+       FROM test_runs tr
+      WHERE tr.id IN (SELECT MAX(latest.id) FROM test_runs latest GROUP BY latest.projeto_id)
+        AND tr.status != 'passed'`,
+  )
+  const failingProjects = Number(testRows[0]?.total ?? 0)
+  if (failingProjects > 0) reasons.push(`${failingProjects} projeto(s) com gate de testes vermelho; deploy bloqueado`)
   if (runningRequests > 0) reasons.push(`${runningRequests} deploy(s) em andamento`)
   const activeTaskIds = activeRows.map(row => String(row.task_id ?? '')).filter(Boolean)
   if (activeTaskIds.length > 0) reasons.push(`tarefas ativas: ${activeTaskIds.join(', ')}`)

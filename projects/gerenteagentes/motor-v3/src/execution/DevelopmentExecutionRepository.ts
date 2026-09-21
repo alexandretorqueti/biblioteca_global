@@ -18,6 +18,7 @@ export type ReserveNextSubtaskResult = ReservedSubtask | CapacityWaiting | null
 export interface SubtaskExecutionContext {
   taskId: string
   databaseTaskId: number
+  projectId: number
   subtaskId: number
   seq: number
   taskTitle: string
@@ -52,6 +53,7 @@ interface SubtaskRow extends RowDataPacket {
 
 interface ExecutionRow extends RowDataPacket {
   database_task_id: number
+  project_id: number
   external_id: string | null
   task_title: string
   task_description: string | null
@@ -288,7 +290,7 @@ export class MySqlDevelopmentExecutionRepository {
 
   async getExecutionContext(taskId: string, subtaskId: number, expectedStatus = 'running'): Promise<SubtaskExecutionContext | null> {
     const [rows] = await this.pool.query<ExecutionRow[]>(
-      `SELECT t.id AS database_task_id, t.external_id, t.titulo AS task_title,
+      `SELECT t.id AS database_task_id, t.projeto_id AS project_id, t.external_id, t.titulo AS task_title,
               t.descricao AS task_description, s.id AS subtask_id, s.seq,
               s.titulo AS subtask_title, s.scope, s.acceptance_criteria, s.deliverables,
               pc.slug AS project_slug, pmc.repo_path, pmc.branch_trabalho,
@@ -310,6 +312,7 @@ export class MySqlDevelopmentExecutionRepository {
     return {
       taskId: String(row.external_id ?? row.database_task_id),
       databaseTaskId: Number(row.database_task_id),
+      projectId: Number(row.project_id),
       subtaskId: Number(row.subtask_id),
       seq: Number(row.seq),
       taskTitle: String(row.task_title ?? ''),
@@ -334,6 +337,18 @@ export class MySqlDevelopmentExecutionRepository {
     return this.transitionWithMessage(context, source, 'delivered', 'verifying', 'SUBTASK_VERIFICATION_REQUESTED', {
       subtaskId: context.subtaskId, seq: context.seq,
     })
+  }
+
+  async assertDifferentialGate(context: SubtaskExecutionContext): Promise<void> {
+    const [rows] = await this.pool.query<Array<RowDataPacket & { comparison_status: string }>>(
+      `SELECT comparison_status FROM test_runs
+        WHERE tarefa_id = ? AND subtarefa_id = ? AND phase IN ('post_dev', 'rework')
+        ORDER BY finished_at DESC, id DESC LIMIT 1`,
+      [context.databaseTaskId, context.subtaskId],
+    )
+    if (rows[0]?.comparison_status !== 'no_regression') {
+      throw new Error('Subtarefa sem gate diferencial aprovado; integração bloqueada')
+    }
   }
 
   async completeVerification(
@@ -382,6 +397,31 @@ export class MySqlDevelopmentExecutionRepository {
           payload: { integrationCommitSha: evidence.integrationCommitSha },
         })
         await this.insertOutbox(connection, next)
+        const [testRuns] = await connection.query<Array<RowDataPacket & { id: number; pre_existing: number | string }>>(
+          `SELECT tr.id,
+                  SUM(tf.classification = 'pre_existing') AS pre_existing
+             FROM test_runs tr
+             LEFT JOIN test_failures tf ON tf.test_run_id = tr.id
+            WHERE tr.tarefa_id = ? AND tr.phase IN ('post_dev', 'rework')
+            GROUP BY tr.id
+            ORDER BY tr.finished_at DESC, tr.id DESC LIMIT 1`,
+          [context.databaseTaskId],
+        )
+        const sourceRun = testRuns[0]
+        if (sourceRun && Number(sourceRun.pre_existing) > 0) {
+          const [recovery] = await connection.query<ResultSetHeader>(
+            `INSERT INTO test_recovery_attempts
+              (projeto_id, source_tarefa_id, source_test_run_id, status, attempt_count, created_at, updated_at)
+             VALUES (?, ?, ?, 'pending', 0, NOW(3), NOW(3))`,
+            [context.projectId, context.databaseTaskId, sourceRun.id],
+          )
+          const recoveryMessage = createQueueMessage({
+            type: 'TEST_BASELINE_RECOVERY_REQUESTED', taskId: context.taskId, executionId: source.executionId,
+            correlationId: source.correlationId ?? source.messageId, causationId: next.messageId,
+            payload: { recoveryId: recovery.insertId, sourceTestRunId: sourceRun.id },
+          })
+          await this.insertOutbox(connection, recoveryMessage)
+        }
         await this.wakeCapacityWaiters(connection, next)
       }
       await connection.commit()

@@ -624,6 +624,9 @@ export class GerenteAgentesService {
       proposals: 'motor_catalog_proposals',
       eventLog: 'motor_event_log',
       modelCooldown: 'motor_model_cooldown',
+      testRuns: 'test_runs',
+      testFailures: 'test_failures',
+      testRecovery: 'test_recovery_attempts',
     };
     const nomeTabela = tabelas[tabela];
     if (!nomeTabela) throw new BadRequestException('Tabela do Motor v3 inválida');
@@ -1441,6 +1444,23 @@ export class GerenteAgentesService {
     if (tarefa.tipo !== 'desenvolvimento') {
       throw new BadRequestException('Deploy manual disponível somente para tarefas de desenvolvimento');
     }
+    const [testHealth] = await db.execute(sql`
+      SELECT tr.id, tr.status, tr.phase, tr.commit_sha AS commitSha,
+             (SELECT COUNT(*) FROM test_failures tf WHERE tf.test_run_id = tr.id) AS failureCount
+        FROM test_runs tr
+       WHERE tr.projeto_id = ${tarefa.projetoId}
+         AND tr.phase IN ('post_dev', 'rework', 'monitor_recovery', 'pre_deploy')
+       ORDER BY tr.finished_at DESC, tr.id DESC
+       LIMIT 1
+    `);
+    const latest = (testHealth as unknown as Array<{ id: number; status: string; phase: string; commitSha: string; failureCount: number }>)[0];
+    if (!latest || latest.status !== 'passed' || Number(latest.failureCount) > 0) {
+      throw new BadRequestException(
+        latest
+          ? `Deploy bloqueado: o gate ${latest.phase} possui ${Number(latest.failureCount)} falha(s) de teste.`
+          : 'Deploy bloqueado: não existe gate de testes aprovado para o projeto.',
+      );
+    }
     const motorId = tarefa.externalId || String(tarefa.id);
     const resp = await this.motorRequest('POST', `/api/motor/task/${encodeURIComponent(motorId)}/deploy`, undefined, this.motorV2Url);
     if (!resp.ok) throw new BadRequestException(`Motor rejeitou o deploy (${resp.status}): ${resp.body.slice(0, 200)}`);
@@ -1467,6 +1487,41 @@ export class GerenteAgentesService {
     }
     if (!resp.ok) throw new BadRequestException(`Diagnóstico de deploy indisponível (${resp.status}): ${resp.body.slice(0, 200)}`);
     return JSON.parse(resp.body) as unknown;
+  }
+
+  async listarHistoricoTestes(_projeto: ProjetoResumo, filtros: { projetoId?: number; tarefaId?: number; limit?: number }) {
+    const db = await this.dbDoMotor();
+    const limit = Math.min(Math.max(Number(filtros.limit) || 100, 1), 500);
+    const where: string[] = [];
+    if (filtros.projetoId) where.push(`tr.projeto_id = ${Number(filtros.projetoId)}`);
+    if (filtros.tarefaId) where.push(`tr.tarefa_id = ${Number(filtros.tarefaId)}`);
+    const predicate = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const [runs] = await db.execute(sql.raw(`
+      SELECT tr.*, pc.nome AS projeto_nome, t.titulo AS tarefa_titulo,
+             SUM(tf.classification = 'new') AS new_failure_count,
+             SUM(tf.classification = 'pre_existing') AS pre_existing_failure_count,
+             SUM(tf.classification = 'resolved') AS resolved_failure_count,
+             COUNT(tf.id) AS failure_count
+        FROM test_runs tr
+        LEFT JOIN projetos_captados pc ON pc.id = tr.projeto_id
+        LEFT JOIN tarefas t ON t.id = tr.tarefa_id
+        LEFT JOIN test_failures tf ON tf.test_run_id = tr.id
+        ${predicate}
+       GROUP BY tr.id, pc.nome, t.titulo
+       ORDER BY tr.started_at DESC, tr.id DESC
+       LIMIT ${limit}
+    `));
+    const ids = (runs as unknown as Array<{ id: number }>).map(run => Number(run.id)).filter(Boolean);
+    if (ids.length === 0) return { items: [] };
+    const [failures] = await db.execute(sql.raw(`
+      SELECT * FROM test_failures WHERE test_run_id IN (${ids.join(',')}) ORDER BY test_run_id DESC, id ASC
+    `));
+    const byRun = new Map<number, unknown[]>();
+    for (const failure of failures as unknown as Array<Record<string, unknown>>) {
+      const runId = Number(failure.test_run_id);
+      byRun.set(runId, [...(byRun.get(runId) ?? []), failure]);
+    }
+    return { items: (runs as unknown as Array<Record<string, unknown>>).map(run => ({ ...run, failures: byRun.get(Number(run.id)) ?? [] })) };
   }
 
   // ============================================================================

@@ -30,6 +30,7 @@ type Internals = {
   assertDeploySshReady(): void
   dispatchDeployBatch(repoPath: string, batchId: string, taskIds: string[]): void
   readRemoteDeployStatus(batchId: string): string | null
+  assertTaskTestGateGreen(taskId: string): Promise<void>
 }
 
 describe("fila de deploy", () => {
@@ -94,6 +95,19 @@ describe("fila de deploy", () => {
     expect(dispatch.mock.calls[0]?.[0]).toBe("/repo/projeto")
     expect(dispatch.mock.calls[0]?.[2]).toEqual(["task-770", "task-771"])
     expect(internal.activeDeployments.size).toBe(2)
+    expect(String(vi.mocked(db.query).mock.calls[1]?.[0])).toContain("tr.status = 'passed'")
+  })
+
+  it("bloqueia deploy quando o gate da tarefa está vermelho", async () => {
+    const { db, coordinator } = setup()
+    const internal = coordinator as unknown as Internals
+    vi.mocked(db.query).mockResolvedValueOnce({
+      rows: [{ id: 91, status: 'failed', phase: 'post_dev', failure_count: 4 }], affectedRows: 0, insertId: 0,
+    })
+
+    await expect(internal.assertTaskTestGateGreen('task-855')).rejects.toThrow(
+      'Deploy bloqueado: gate post_dev possui 4 falha(s) de teste',
+    )
   })
 
   it("só marca tarefas como deployed após confirmar sucesso no host", async () => {

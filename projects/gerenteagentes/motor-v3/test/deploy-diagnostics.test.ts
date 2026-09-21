@@ -6,7 +6,8 @@ describe('getDeployDiagnostics', () => {
     const pool = {
       query: vi.fn()
         .mockResolvedValueOnce([[{ pending: 2, running: 0 }]])
-        .mockResolvedValueOnce([[]]),
+        .mockResolvedValueOnce([[]])
+        .mockResolvedValueOnce([[{ total: 0 }]]),
     } as any
 
     await expect(getDeployDiagnostics(pool)).resolves.toEqual({
@@ -20,7 +21,8 @@ describe('getDeployDiagnostics', () => {
     const pool = {
       query: vi.fn()
         .mockResolvedValueOnce([[{ pending: 0, running: 1 }]])
-        .mockResolvedValueOnce([[{ task_id: 'task-p6-850' }]]),
+        .mockResolvedValueOnce([[{ task_id: 'task-p6-850' }]])
+        .mockResolvedValueOnce([[{ total: 0 }]]),
     } as any
 
     await expect(getDeployDiagnostics(pool)).resolves.toEqual({

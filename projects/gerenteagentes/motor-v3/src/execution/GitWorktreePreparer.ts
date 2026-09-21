@@ -9,6 +9,8 @@ export interface PreparedWorktree {
   path: string
   branch: string
   baseCommit: string
+  integrationPath: string
+  integrationBranch: string
 }
 
 export function mapHostRepoPathToContainer(repoPath: string): string | null {
@@ -31,18 +33,19 @@ export class GitWorktreePreparer {
     // `motor-v3` já é uma branch histórica; Git não permite refs filhas de
     // uma branch existente (`motor-v3/...`). O runtime usa namespace próprio.
     const taskBranch = `motor-v3-work/integration-${safeTaskId}`
-    await this.prepareNamedWorktree(repoPath, input.baseBranch, taskBranch, resolve(this.root, safeTaskId, 'integration'))
+    const integrationPath = resolve(this.root, safeTaskId, 'integration')
+    await this.prepareNamedWorktree(repoPath, input.baseBranch, taskBranch, integrationPath)
     const branch = `motor-v3-work/subtask-${safeTaskId}-${input.subtaskId}-a1`
     const path = resolve(this.root, safeTaskId, String(input.subtaskId), 'a1')
     await mkdir(dirname(path), { recursive: true })
 
     const existingCommit = await this.existingWorktreeCommit(repoPath, path)
-    if (existingCommit) return { path, branch, baseCommit: existingCommit }
+    if (existingCommit) return { path, branch, baseCommit: existingCommit, integrationPath, integrationBranch: taskBranch }
 
     const { stdout } = await execFileAsync('git', ['rev-parse', taskBranch], { cwd: repoPath })
     const baseCommit = stdout.trim()
     await execFileAsync('git', ['worktree', 'add', '-b', branch, path, baseCommit], { cwd: repoPath })
-    return { path, branch, baseCommit }
+    return { path, branch, baseCommit, integrationPath, integrationBranch: taskBranch }
   }
 
   async prepareIntegration(input: { taskId: string; repoPath: string; baseBranch: string }): Promise<PreparedWorktree> {
@@ -52,7 +55,7 @@ export class GitWorktreePreparer {
     const branch = `motor-v3-work/integration-${safeTaskId}`
     const path = resolve(this.root, safeTaskId, 'integration')
     const baseCommit = await this.prepareNamedWorktree(repoPath, input.baseBranch, branch, path)
-    return { path, branch, baseCommit }
+    return { path, branch, baseCommit, integrationPath: path, integrationBranch: branch }
   }
 
   private async prepareNamedWorktree(repoPath: string, baseRef: string, branch: string, path: string): Promise<string> {

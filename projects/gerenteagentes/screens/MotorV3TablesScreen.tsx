@@ -8,6 +8,7 @@ const grupos = [
   { label: "Catálogo de regras", tables: [{ key: "events", label: "Eventos" }, { key: "patterns", label: "Padrões" }, { key: "primitives", label: "Primitivas" }, { key: "actions", label: "Ações" }, { key: "reactions", label: "Reações" }] },
   { label: "Estado operacional", tables: [{ key: "occurrences", label: "Ocorrências" }, { key: "promotionState", label: "Estado de promoção" }, { key: "modelCooldown", label: "Cooldown de modelos" }] },
   { label: "Observabilidade", tables: [{ key: "proposals", label: "Propostas do catálogo" }, { key: "eventLog", label: "Log de eventos" }] },
+  { label: "Saúde de testes", tables: [{ key: "testRuns", label: "Execuções de testes" }, { key: "testFailures", label: "Falhas normalizadas" }, { key: "testRecovery", label: "Recuperações do Monitor" }] },
 ]
 const tabelas = grupos.flatMap((grupo) => grupo.tables)
 type Row = Record<string, unknown>

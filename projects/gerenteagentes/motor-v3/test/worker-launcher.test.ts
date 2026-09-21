@@ -163,6 +163,26 @@ describe('WorkerLauncher', () => {
     expect(result.buildPassed).toBe(true)
   })
 
+  it('devolve somente a regressão nova ao DEV e repete o último modelo disponível', async () => {
+    mocks.createSession.handler.mockResolvedValue({ success: true })
+    mocks.sendMessage.handler.mockResolvedValue({ success: true })
+    mocks.waitForCompletion.handler.mockResolvedValue({ success: true, data: { response: 'Pronto ::DONE::' } })
+    mocks.parseReply.handler.mockResolvedValue({ success: true, data: { hasDoneMarker: true } })
+    mocks.verifyGit.handler.mockResolvedValue({ success: true, data: { hasChanges: true } })
+    const differentialGate = vi.fn()
+      .mockResolvedValueOnce({ success: false, runId: 20, newFailureCount: 1, error: '1. tests/new.test.ts: erro novo' })
+      .mockResolvedValueOnce({ success: true, runId: 21, newFailureCount: 0, preExistingFailureCount: 2 })
+
+    const result = await launcher.executeTask(mockContext, 'Alterar texto', ['modelo-dev'], undefined, differentialGate)
+
+    expect(result).toMatchObject({ success: true, attempts: 2, model: 'modelo-dev', postDevRunId: 21, preExistingFailureCount: 2 })
+    expect(differentialGate).toHaveBeenNthCalledWith(1, expect.any(Object), 'post_dev')
+    expect(differentialGate).toHaveBeenNthCalledWith(2, expect.any(Object), 'rework')
+    const sent = mocks.sendMessage.handler.mock.calls.map(([, params]: [PrimitiveContext, { message: string }]) => params.message)
+    expect(sent[1]).toContain('CORREÇÃO OBRIGATÓRIA DA TENTATIVA ANTERIOR')
+    expect(sent[1]).toContain('tests/new.test.ts: erro novo')
+  })
+
   it('should fail when no changes detected despite ::DONE::', async () => {
     mocks.createSession.handler.mockResolvedValue({ success: true })
     mocks.sendMessage.handler.mockResolvedValue({ success: true })

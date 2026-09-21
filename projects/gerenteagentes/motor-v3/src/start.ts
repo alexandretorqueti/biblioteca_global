@@ -38,6 +38,7 @@ import { MySqlCommandPolicyRepository, MySqlOperationLogger } from './commands/i
 import { DevelopmentExecutionConsumer, GitVerificationIntegrator, GitWorktreePreparer, MySqlDevelopmentExecutionRepository, SubtaskExecutionConsumer, SubtaskVerificationConsumer, WorkerConsoleAdapter } from './execution/index.js'
 import { WorkerLauncher } from './worker-launcher/WorkerLauncher.js'
 import { getDeployDiagnostics } from './deploy/DeployDiagnostics.js'
+import { TestGateService, TestRecoveryConsumer } from './testing/index.js'
 
 // Config
 const PORT = parseInt(process.env.MOTOR_PORT || '3010')
@@ -62,6 +63,7 @@ let outboxPublisher: OutboxPublisher | null = null
 let developmentConsumer: DevelopmentExecutionConsumer | null = null
 let subtaskExecutionConsumer: SubtaskExecutionConsumer | null = null
 let subtaskVerificationConsumer: SubtaskVerificationConsumer | null = null
+let testRecoveryConsumer: TestRecoveryConsumer | null = null
 
 async function start() {
   console.log('[Motor v3] Iniciando...')
@@ -183,6 +185,7 @@ async function start() {
       },
     })
     const developmentRepository = new MySqlDevelopmentExecutionRepository(pool)
+    const testGate = new TestGateService(pool)
     developmentConsumer = new DevelopmentExecutionConsumer(
       developmentRepository,
       operationLogger,
@@ -199,11 +202,21 @@ async function start() {
       new WorkerConsoleAdapter(consoleApi),
       db,
       operationLogger,
+      testGate,
     )
     subtaskVerificationConsumer = new SubtaskVerificationConsumer(
       developmentRepository,
       new GitVerificationIntegrator(worktreePreparer),
       operationLogger,
+    )
+    testRecoveryConsumer = new TestRecoveryConsumer(
+      pool, worktreePreparer,
+      new WorkerLauncher({
+        maxAttempts: Number(process.env.MOTOR_MONITOR_MAX_ATTEMPTS || 2),
+        timeoutMs: Number(process.env.MOTOR_WORKER_TIMEOUT_MS || 1800000),
+        sandboxRoot: process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/agentes/gerenteagentes/worktrees',
+      }),
+      new WorkerConsoleAdapter(consoleApi), db, testGate,
     )
 
     queueConsumer = new QueueConsumer(transport, async message => {
@@ -211,6 +224,7 @@ async function start() {
       await developmentConsumer?.handle(message)
       await subtaskExecutionConsumer?.handle(message)
       await subtaskVerificationConsumer?.handle(message)
+      await testRecoveryConsumer?.handle(message)
     }, {
       queue: process.env.MOTOR_RABBITMQ_QUEUE || 'motor.commands',
       maxAttempts: Number(process.env.MOTOR_QUEUE_MAX_ATTEMPTS || 3),

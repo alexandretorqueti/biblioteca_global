@@ -430,6 +430,13 @@ export const config: GeradorSistemaConfig = {
           icon: "account_tree",
           screen: { kind: "custom", componentId: "gerenteagentes-motor-v3-tabelas" },
         },
+        {
+          id: "motor-v3-test-history",
+          label: "Histórico de testes",
+          path: "motor-v3/testes",
+          icon: "fact_check",
+          screen: { kind: "custom", componentId: "gerenteagentes-test-history" },
+        },
       ],
     },
     {

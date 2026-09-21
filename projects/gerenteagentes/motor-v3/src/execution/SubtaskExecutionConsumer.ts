@@ -5,6 +5,7 @@ import type { PrimitiveContext } from '../primitives/types.js'
 import type { DevelopmentPrompt, WorkerLauncher, WorkerResult } from '../worker-launcher/WorkerLauncher.js'
 import type { MySqlDevelopmentExecutionRepository, SubtaskExecutionContext } from './DevelopmentExecutionRepository.js'
 import type { GitWorktreePreparer } from './GitWorktreePreparer.js'
+import type { TestGateService, TestRunPhase } from '../testing/index.js'
 
 export const SUBTASK_EXECUTION_REQUESTED = 'SUBTASK_EXECUTION_REQUESTED'
 
@@ -16,6 +17,7 @@ export class SubtaskExecutionConsumer {
     private readonly consoleApi: unknown,
     private readonly db: unknown,
     private readonly operationLogger?: OperationLogger,
+    private readonly testGate?: TestGateService,
   ) {}
 
   async handle(message: QueueMessage): Promise<void> {
@@ -37,7 +39,7 @@ export class SubtaskExecutionConsumer {
       return
     }
 
-    let workspace: { path: string; branch: string; baseCommit: string }
+    let workspace: { path: string; branch: string; baseCommit: string; integrationPath: string; integrationBranch: string }
     try {
       workspace = await this.worktrees.prepare({
         taskId: execution.taskId,
@@ -55,8 +57,25 @@ export class SubtaskExecutionConsumer {
       result: { workspacePath: workspace.path, branch: workspace.branch, baseCommit: workspace.baseCommit },
     })
 
+    let baselineRunId: number | undefined
+    if (this.testGate) {
+      const baseline = await this.testGate.run({
+        projectId: execution.projectId, taskDatabaseId: execution.databaseTaskId, subtaskId,
+        phase: 'baseline', commitSha: workspace.baseCommit, baseCommitSha: workspace.baseCommit,
+        branchName: workspace.integrationBranch, workspacePath: workspace.integrationPath,
+        buildCommand: execution.buildCommand, testCommand: execution.testCommand,
+      })
+      baselineRunId = baseline.id
+      await this.log(operationId, 3, message, {
+        phase: 'primitive', outcome: baseline.status === 'passed' ? 'succeeded' : 'executed', subtaskId,
+        primitiveCode: 'run_test_baseline', result: { testRunId: baseline.id, status: baseline.status, failureCount: baseline.failures.length },
+      })
+    }
+
     const context: PrimitiveContext = {
       taskId: execution.taskId,
+      databaseTaskId: execution.databaseTaskId,
+      projectId: execution.projectId,
       subtaskId,
       executionId: message.executionId,
       generation: 1,
@@ -64,6 +83,8 @@ export class SubtaskExecutionConsumer {
       repoPath: execution.repoPath,
       worktreePath: workspace.path,
       branchName: workspace.branch,
+      baseCommitSha: workspace.baseCommit,
+      baselineRunId,
       buildCommand: execution.buildCommand,
       testCommand: execution.testCommand,
       agentId: execution.agentId,
@@ -86,16 +107,42 @@ export class SubtaskExecutionConsumer {
       this.buildPrompt(execution, workspace.path),
       models,
       (model, error) => this.repository.recordModelFailure(model, error),
+      this.testGate ? async (gateContext, phase) => this.runDifferentialGate(execution, gateContext, phase) : undefined,
     )
-    await this.log(operationId, 3, message, {
+    const workerSequence = this.testGate ? 4 : 3
+    await this.log(operationId, workerSequence, message, {
       phase: 'primitive', outcome: result.success ? 'succeeded' : 'failed', subtaskId,
       primitiveCode: 'start_programmer', result: this.resultForLog(result),
     })
     const next = await this.repository.finishExecution(execution, message, result)
-    await this.log(operationId, 4, message, {
+    await this.log(operationId, workerSequence + 1, message, {
       phase: 'completed', outcome: result.success ? 'succeeded' : 'failed', subtaskId,
       result: { nextMessageId: next.messageId, nextMessageType: next.type, attempts: result.attempts },
     })
+  }
+
+  private async runDifferentialGate(
+    execution: SubtaskExecutionContext,
+    context: PrimitiveContext,
+    phase: Exclude<TestRunPhase, 'baseline' | 'monitor_recovery' | 'pre_deploy'>,
+  ) {
+    if (!this.testGate || !context.baselineRunId) return { success: false, error: 'Baseline de testes ausente' }
+    const run = await this.testGate.run({
+      projectId: execution.projectId, taskDatabaseId: execution.databaseTaskId, subtaskId: execution.subtaskId,
+      phase, baselineRunId: context.baselineRunId, commitSha: context.baseCommitSha ?? '',
+      baseCommitSha: context.baseCommitSha, branchName: context.branchName, workspacePath: context.worktreePath,
+      buildCommand: execution.buildCommand, testCommand: execution.testCommand,
+    })
+    const success = run.comparisonStatus === 'no_regression'
+    const inconclusive = run.comparisonStatus === 'inconclusive'
+    return {
+      success, runId: run.id, newFailureCount: run.newFailures.length,
+      preExistingFailureCount: run.preExistingFailures.length, resolvedFailureCount: run.resolvedFailures.length,
+      retryableByDeveloper: !inconclusive,
+      ...(success ? {} : inconclusive
+        ? { error: 'Gate inconclusivo: o ambiente do pós-DEV diverge do ambiente registrado no baseline. A alteração não foi atribuída ao DEV.' }
+        : { error: `Foram encontradas ${run.newFailures.length} regressões novas:\n${this.testGate.formatNewFailures(run)}` }),
+    }
   }
 
   private validateContext(context: SubtaskExecutionContext): void {
@@ -131,7 +178,12 @@ export class SubtaskExecutionConsumer {
   }
 
   private resultForLog(result: WorkerResult): Record<string, unknown> {
-    return { success: result.success, attempts: result.attempts, model: result.model, failures: result.failures, hasChanges: result.hasChanges, buildPassed: result.buildPassed, error: result.error }
+    return {
+      success: result.success, attempts: result.attempts, model: result.model, failures: result.failures,
+      hasChanges: result.hasChanges, buildPassed: result.buildPassed, error: result.error,
+      baselineRunId: result.baselineRunId, postDevRunId: result.postDevRunId,
+      preExistingFailureCount: result.preExistingFailureCount, resolvedFailureCount: result.resolvedFailureCount,
+    }
   }
 
   private async finishExecutionFailure(
@@ -141,12 +193,13 @@ export class SubtaskExecutionConsumer {
     reason: string,
   ): Promise<void> {
     const result: WorkerResult = { success: false, error: reason, attempts: 0, hasChanges: false, buildPassed: false }
-    await this.log(operationId, 3, message, {
+    const sequence = this.testGate ? 4 : 3
+    await this.log(operationId, sequence, message, {
       phase: 'primitive', outcome: 'failed', subtaskId: execution.subtaskId,
       primitiveCode: 'start_programmer', reasonCode: 'no_development_model', result: this.resultForLog(result),
     })
     const next = await this.repository.finishExecution(execution, message, result)
-    await this.log(operationId, 4, message, {
+    await this.log(operationId, sequence + 1, message, {
       phase: 'completed', outcome: 'failed', subtaskId: execution.subtaskId,
       result: { nextMessageId: next.messageId, nextMessageType: next.type, attempts: 0 },
     })

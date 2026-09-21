@@ -45,6 +45,7 @@ export class SubtaskVerificationConsumer {
       return
     }
     try {
+      await this.repository.assertDifferentialGate(context)
       const evidence = await this.integrator.verifyAndIntegrate(context)
       await this.log(operationId, 2, message, {
         phase: 'primitive', outcome: 'succeeded', subtaskId, primitiveCode: 'verify_commit_integrate', result: { ...evidence },

@@ -26,6 +26,20 @@ export interface WorkerResult {
   attempts: number
   model?: string
   failures?: Array<{ attempt: number; model?: string; error: string }>
+  baselineRunId?: number
+  postDevRunId?: number
+  preExistingFailureCount?: number
+  resolvedFailureCount?: number
+}
+
+export interface DifferentialGateResult {
+  success: boolean
+  runId?: number
+  error?: string
+  newFailureCount?: number
+  preExistingFailureCount?: number
+  resolvedFailureCount?: number
+  retryableByDeveloper?: boolean
 }
 
 /** Missão do programador, com contexto longo separado do comando principal. */
@@ -53,17 +67,20 @@ export class WorkerLauncher {
     taskDescription: string | DevelopmentPrompt,
     models: readonly string[] = [],
     onModelFailure?: (model: string, error: string) => Promise<void>,
+    runDifferentialGate?: (context: PrimitiveContext, phase: 'post_dev' | 'rework') => Promise<DifferentialGateResult>,
   ): Promise<WorkerResult> {
     let attempts = 0
     let lastError = 'Nenhuma tentativa foi executada'
     let lastModel: string | undefined
     const failures: Array<{ attempt: number; model?: string; error: string }> = []
+    let correctiveContext = ''
     // Sem configuração explícita, preserva o comportamento do Console. Com
     // cadeia configurada, cada tentativa recebe seu modelo e sua sessão própria.
     const candidates = models.length > 0 ? models : [undefined]
-    const maximumAttempts = models.length > 0
-      ? Math.min(this.config.maxAttempts, candidates.length)
-      : this.config.maxAttempts
+    // O número de modelos não limita rework. Depois de percorrer a cadeia,
+    // o último modelo pode receber o diagnóstico das regressões e corrigi-las
+    // até o teto operacional configurado.
+    const maximumAttempts = this.config.maxAttempts
 
     while (attempts < maximumAttempts) {
       const model = candidates[attempts] ?? candidates[candidates.length - 1]
@@ -104,7 +121,7 @@ export class WorkerLauncher {
 
         // 3. Enviar o comando principal da tarefa
         const sendResult = await sendMessage.handler(context, {
-          message: prompt.header,
+          message: correctiveContext ? `${prompt.header}\n\nCORREÇÃO OBRIGATÓRIA DA TENTATIVA ANTERIOR:\n${correctiveContext}` : prompt.header,
         })
 
         if (!sendResult.success) {
@@ -169,17 +186,25 @@ export class WorkerLauncher {
           }
 
           // 7. Rodar build + testes
-          const buildResult = await runBuild.handler(context, {
-            buildCommand: context.buildCommand,
-            testCommand: context.testCommand,
-          })
+          const buildResult = runDifferentialGate
+            ? await runDifferentialGate(context, attempts === 1 ? 'post_dev' : 'rework')
+            : await runBuild.handler(context, { buildCommand: context.buildCommand, testCommand: context.testCommand })
 
           const buildPassed = buildResult.success
 
           if (!buildPassed) {
             context.logger?.warn('Build falhou', { error: buildResult.error })
             lastError = buildResult.error ?? 'Build ou testes falharam'
+            correctiveContext = lastError
             failures.push({ attempt: attempts, ...(model ? { model } : {}), error: lastError })
+            if ('retryableByDeveloper' in buildResult && buildResult.retryableByDeveloper === false) {
+              return {
+                success: false, error: lastError, attempts, hasChanges, buildPassed: false,
+                ...(model ? { model } : {}), failures,
+                ...(context.baselineRunId ? { baselineRunId: context.baselineRunId } : {}),
+                ...('runId' in buildResult && buildResult.runId ? { postDevRunId: buildResult.runId } : {}),
+              }
+            }
             context.generation++
             // Continua para próxima tentativa (agente pode corrigir)
             continue
@@ -195,6 +220,10 @@ export class WorkerLauncher {
             attempts,
             ...(model ? { model } : {}),
             ...(failures.length > 0 ? { failures } : {}),
+            ...(context.baselineRunId ? { baselineRunId: context.baselineRunId } : {}),
+            ...('runId' in buildResult && buildResult.runId ? { postDevRunId: buildResult.runId } : {}),
+            ...('preExistingFailureCount' in buildResult && buildResult.preExistingFailureCount ? { preExistingFailureCount: buildResult.preExistingFailureCount } : {}),
+            ...('resolvedFailureCount' in buildResult && buildResult.resolvedFailureCount ? { resolvedFailureCount: buildResult.resolvedFailureCount } : {}),
           }
         } else {
           // Sem ::DONE::, agente ainda não terminou

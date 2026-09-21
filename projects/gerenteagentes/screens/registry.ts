@@ -7,6 +7,7 @@ import TaskMonitorScreen, { componentId as taskMonitorId } from "./TaskMonitorSc
 import OperationMapScreen, { componentId as operationMapId } from "./OperationMapScreen"
 import ConfiguracoesScreen, { componentId as configuracoesId } from "./ConfiguracoesScreen"
 import MotorV3TablesScreen, { componentId as motorV3TablesId } from "./MotorV3TablesScreen"
+import TestHistoryScreen, { componentId as testHistoryId } from "./TestHistoryScreen"
 
 /** Registry exclusivo das telas customizadas do projeto gerenteagentes. */
 export const customScreens = {
@@ -19,4 +20,5 @@ export const customScreens = {
   [operationMapId]: OperationMapScreen,
   [configuracoesId]: ConfiguracoesScreen,
   [motorV3TablesId]: MotorV3TablesScreen,
+  [testHistoryId]: TestHistoryScreen,
 }

@@ -4,6 +4,8 @@
 
 export interface PrimitiveContext {
   taskId: string
+  databaseTaskId?: number
+  projectId?: number
   subtaskId?: number
   executionId: string
   generation: number
@@ -11,6 +13,8 @@ export interface PrimitiveContext {
   repoPath: string
   worktreePath: string
   branchName: string
+  baseCommitSha?: string
+  baselineRunId?: number
   buildCommand?: string
   testCommand?: string
   /** Modelo escolhido pela política de execução para esta tentativa. */

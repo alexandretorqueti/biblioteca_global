@@ -29,6 +29,7 @@ describe('SubtaskVerificationConsumer', () => {
     const message = { ...base, messageId: 'verify-1', type: 'SUBTASK_VERIFICATION_REQUESTED' }
     const repository = {
       getExecutionContext: vi.fn().mockResolvedValue(context),
+      assertDifferentialGate: vi.fn().mockResolvedValue(undefined),
       completeVerification: vi.fn().mockResolvedValue({
         verified: { ...message, messageId: 'verified-1', type: 'SUBTASK_VERIFIED' },
         next: { ...message, messageId: 'next-1', type: 'TASK_EXECUTION_COMPLETED' },

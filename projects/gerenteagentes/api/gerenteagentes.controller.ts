@@ -201,6 +201,21 @@ export class GerenteAgentesController {
     return this.service.diagnosticoDeploy(projeto);
   }
 
+  @Get('test-runs')
+  @Roles('admin', 'gerente', 'operador')
+  listarHistoricoTestes(
+    @CurrentProject() projeto: ProjetoResumo,
+    @Query('projetoId') projetoId?: string,
+    @Query('tarefaId') tarefaId?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.service.listarHistoricoTestes(projeto, {
+      projetoId: projetoId ? Number(projetoId) : undefined,
+      tarefaId: tarefaId ? Number(tarefaId) : undefined,
+      limit: limit ? Number(limit) : undefined,
+    });
+  }
+
   // ============================================================================
   // CHAT DA TAREFA
   // ============================================================================

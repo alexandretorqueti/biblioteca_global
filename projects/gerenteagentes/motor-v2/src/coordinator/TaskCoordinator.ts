@@ -2075,8 +2075,32 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     if (task.tipo !== "desenvolvimento") throw new Error("Deploy manual é permitido apenas para tarefas de desenvolvimento")
     const status = await this.facts.derive(taskId)
     if (status !== "completed") throw new Error("Deploy manual exige tarefa concluída (status atual: " + status + ")")
+    await this.assertTaskTestGateGreen(taskId)
     await this.enqueueDeploy(taskId, task.repoPath)
     void this.pump().catch((error: unknown) => this.logger.error("Falha ao avaliar fila de deploy: " + describeError(error), { taskId }))
+  }
+
+  /** O executor legado continua sendo a última barreira de segurança. Mesmo
+   * que uma solicitação seja criada por outra rota, nunca promove uma tarefa
+   * cujo gate efetivo esteja ausente ou vermelho. */
+  private async assertTaskTestGateGreen(taskId: string): Promise<void> {
+    const lookup = taskIdentifierLookup(taskId, "t")
+    const { rows } = await this.db.query(
+      "SELECT tr.id, tr.status, tr.phase, " +
+      "(SELECT COUNT(*) FROM test_failures tf WHERE tf.test_run_id = tr.id) AS failure_count " +
+      "FROM tarefas t LEFT JOIN test_runs tr ON tr.id = (" +
+      "SELECT latest.id FROM test_runs latest WHERE latest.tarefa_id = t.id " +
+      "AND latest.phase IN ('post_dev','rework','monitor_recovery','pre_deploy') " +
+      "ORDER BY latest.finished_at DESC, latest.id DESC LIMIT 1) " +
+      "WHERE " + lookup.sql + " LIMIT 1",
+      lookup.params,
+    )
+    const gate = rows[0]
+    if (!gate?.id) throw new Error("Deploy bloqueado: não existe gate de testes aprovado para a tarefa")
+    const failureCount = Number(gate.failure_count ?? 0)
+    if (String(gate.status) !== "passed" || failureCount > 0) {
+      throw new Error(`Deploy bloqueado: gate ${String(gate.phase)} possui ${failureCount} falha(s) de teste`)
+    }
   }
 
   async getTask(taskId: string): Promise<Task | null> {
@@ -2522,7 +2546,13 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
 
     const { rows } = await this.db.query(
       "SELECT dr.id, dr.repo_path, COALESCE(t.external_id, CAST(t.id AS CHAR)) AS task_id FROM deploy_requests dr " +
-      "INNER JOIN tarefas t ON t.id = dr.tarefa_id WHERE dr.status = 'pending' ORDER BY dr.requested_at ASC",
+      "INNER JOIN tarefas t ON t.id = dr.tarefa_id WHERE dr.status = 'pending' " +
+      "AND EXISTS (SELECT 1 FROM test_runs tr WHERE tr.id = (" +
+      "SELECT latest.id FROM test_runs latest WHERE latest.tarefa_id = t.id " +
+      "AND latest.phase IN ('post_dev','rework','monitor_recovery','pre_deploy') " +
+      "ORDER BY latest.finished_at DESC, latest.id DESC LIMIT 1) " +
+      "AND tr.status = 'passed' AND NOT EXISTS (SELECT 1 FROM test_failures tf WHERE tf.test_run_id = tr.id)) " +
+      "ORDER BY dr.requested_at ASC",
     )
     if (rows.length === 0) return
     const repoPath = String(rows[0]!.repo_path)

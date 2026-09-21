@@ -1,9 +1,8 @@
-import { exec, execFile } from 'node:child_process'
+import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import type { SubtaskExecutionContext } from './DevelopmentExecutionRepository.js'
 import type { GitWorktreePreparer } from './GitWorktreePreparer.js'
 
-const execAsync = promisify(exec)
 const execFileAsync = promisify(execFile)
 
 export interface VerificationResult { commitSha: string; integrationCommitSha: string }
@@ -14,8 +13,9 @@ export class GitVerificationIntegrator {
 
   async verifyAndIntegrate(context: SubtaskExecutionContext): Promise<VerificationResult> {
     if (!context.workspacePath || !context.workspaceBranch || !context.workspaceBaseCommit) throw new Error('Subtarefa sem workspace persistido')
-    await execAsync(context.buildCommand, { cwd: context.workspacePath, timeout: 300_000 })
-    await execAsync(context.testCommand, { cwd: context.workspacePath, timeout: 300_000 })
+    // O gate já foi executado e comparado com o baseline antes da transição
+    // para `delivered`. Reexecutá-lo aqui perderia a semântica diferencial e
+    // voltaria a reprovar a tarefa por falhas preexistentes.
     const { stdout: status } = await execFileAsync('git', ['status', '--porcelain'], { cwd: context.workspacePath })
     if (status.trim()) {
       await execFileAsync('git', ['add', '-A'], { cwd: context.workspacePath })
