@@ -62,7 +62,7 @@ describe('SubtaskExecutionConsumer', () => {
   it('publica falha durável quando o programador esgota tentativas', async () => {
     const repository = {
       getExecutionContext: vi.fn().mockResolvedValue(context), recordWorkspace: vi.fn(),
-      getDevelopmentModelChain: vi.fn().mockResolvedValue([]),
+      getDevelopmentModelChain: vi.fn().mockResolvedValue(['modelo-a']),
       recordModelFailure: vi.fn().mockResolvedValue(undefined),
       finishExecution: vi.fn().mockResolvedValue({ ...message, messageId: 'failed-1', type: 'SUBTASK_EXECUTION_FAILED' }),
     }
@@ -95,5 +95,26 @@ describe('SubtaskExecutionConsumer', () => {
       success: false, error: expect.stringContaining('spawn git ENOENT'),
     }))
     expect(logger.append).toHaveBeenLastCalledWith(expect.objectContaining({ phase: 'completed', outcome: 'failed' }))
+  })
+
+  it('falha de forma durável quando não existe modelo DEV disponível', async () => {
+    const repository = {
+      getExecutionContext: vi.fn().mockResolvedValue(context), recordWorkspace: vi.fn(),
+      getDevelopmentModelChain: vi.fn().mockResolvedValue([]),
+      recordModelFailure: vi.fn(),
+      finishExecution: vi.fn().mockResolvedValue({ ...message, messageId: 'failed-model', type: 'SUBTASK_EXECUTION_FAILED' }),
+    }
+    const worktrees = { prepare: vi.fn().mockResolvedValue({ path: '/worktree', branch: 'branch', baseCommit: 'abc' }) }
+    const worker = { executeTask: vi.fn() }
+    const logger = { append: vi.fn().mockResolvedValue(undefined) }
+    const consumer = new SubtaskExecutionConsumer(repository as never, worktrees as never, worker as never, {}, {}, logger)
+
+    await consumer.handle(message)
+
+    expect(worker.executeTask).not.toHaveBeenCalled()
+    expect(repository.finishExecution).toHaveBeenCalledWith(context, message, expect.objectContaining({
+      success: false, attempts: 0, error: expect.stringContaining('Nenhum modelo DEV'),
+    }))
+    expect(logger.append).toHaveBeenCalledWith(expect.objectContaining({ reasonCode: 'no_development_model' }))
   })
 })

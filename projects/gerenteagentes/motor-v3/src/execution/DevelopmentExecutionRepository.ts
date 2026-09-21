@@ -109,7 +109,9 @@ export class MySqlDevelopmentExecutionRepository {
   /** Evita desperdiçar entregas com um modelo cuja cota/serviço acabou de falhar. */
   async recordModelFailure(model: string, error: string): Promise<void> {
     if (!model) return
-    const reason = error.slice(0, 500)
+    // A coluna histórica possui varchar(100); truncar aqui evita falha do
+    // próprio mecanismo de recuperação em MySQL strict mode.
+    const reason = error.slice(0, 100)
     const [updated] = await this.pool.query<ResultSetHeader>(
       `UPDATE motor_model_cooldown
           SET until = DATE_ADD(NOW(), INTERVAL 10 MINUTE), reason = ?,

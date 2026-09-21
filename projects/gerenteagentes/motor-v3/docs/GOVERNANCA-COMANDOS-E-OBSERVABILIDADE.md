@@ -261,12 +261,14 @@ acionadas automaticamente pelo Motor v3.
 
 ### 20/09/2026 — recuperação de falha do programador
 
-- O adaptador do Console agora recupera a causa de uma sessão `failed` no
-  histórico quando o endpoint de descrição só devolve o status terminal.
+- O adaptador do Console recupera detalhes estruturados de uma sessão `failed`
+  e, quando o provedor só devolve a mensagem genérica do histórico, produz a
+  assinatura estável `SESSION_FAILED` para permitir failover e cooldown.
 - A execução consulta a cadeia `DEV` de `project_model_selection`, respeita
   `motor_model_cooldown` e passa explicitamente o modelo para cada sessão.
 - Cada tentativa usa uma nova geração/chave de sessão; uma sessão remota já
   encerrada não é reutilizada.
 - Falhas de cota, rate-limit ou indisponibilidade entram em cooldown e a
-  próxima tentativa usa o próximo modelo habilitado. O log operacional passa
-  a registrar modelo e causa concreta, em vez de apenas "tentativas esgotadas".
+  próxima tentativa usa o próximo modelo habilitado. O log operacional registra
+  cada modelo, sua falha observável e o último erro, em vez de apenas
+  "tentativas esgotadas".

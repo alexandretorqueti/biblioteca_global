@@ -72,6 +72,15 @@ export class SubtaskExecutionConsumer {
       logger: console,
     }
     const models = await this.repository.getDevelopmentModelChain(execution.projectSlug)
+    if (models.length === 0) {
+      await this.finishExecutionFailure(
+        operationId,
+        message,
+        execution,
+        'Nenhum modelo DEV habilitado e disponível para o projeto (todos ausentes ou em cooldown)',
+      )
+      return
+    }
     const result = await this.worker.executeTask(
       context,
       this.buildPrompt(execution, workspace.path),
@@ -113,7 +122,25 @@ export class SubtaskExecutionConsumer {
   }
 
   private resultForLog(result: WorkerResult): Record<string, unknown> {
-    return { success: result.success, attempts: result.attempts, model: result.model, hasChanges: result.hasChanges, buildPassed: result.buildPassed, error: result.error }
+    return { success: result.success, attempts: result.attempts, model: result.model, failures: result.failures, hasChanges: result.hasChanges, buildPassed: result.buildPassed, error: result.error }
+  }
+
+  private async finishExecutionFailure(
+    operationId: string,
+    message: QueueMessage,
+    execution: SubtaskExecutionContext,
+    reason: string,
+  ): Promise<void> {
+    const result: WorkerResult = { success: false, error: reason, attempts: 0, hasChanges: false, buildPassed: false }
+    await this.log(operationId, 3, message, {
+      phase: 'primitive', outcome: 'failed', subtaskId: execution.subtaskId,
+      primitiveCode: 'start_programmer', reasonCode: 'no_development_model', result: this.resultForLog(result),
+    })
+    const next = await this.repository.finishExecution(execution, message, result)
+    await this.log(operationId, 4, message, {
+      phase: 'completed', outcome: 'failed', subtaskId: execution.subtaskId,
+      result: { nextMessageId: next.messageId, nextMessageType: next.type, attempts: 0 },
+    })
   }
 
 

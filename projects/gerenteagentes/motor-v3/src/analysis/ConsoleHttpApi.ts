@@ -29,8 +29,8 @@ export class ConsoleHttpApi implements AnalystConsole {
       method: 'GET', query: { sessionKey: session.sessionKey, agentId: session.agentId, limit: 20 },
     })
     if (failed) {
-      // O Console por vezes expõe apenas status=failed. A última mensagem do
-      // assistente contém o erro do provedor (quota, rate-limit etc.).
+      // O Console por vezes expõe apenas status=failed. O histórico pode trazer
+      // o detalhe do provedor ou apenas uma falha genérica com stopReason=error.
       const assistant = [...(history.messages ?? [])].reverse().find(message => message.role === 'assistant') as
         | { role: string; content: unknown; errorCode?: unknown; errorType?: unknown; errorMessage?: unknown; stopReason?: unknown }
         | undefined
@@ -42,7 +42,9 @@ export class ConsoleHttpApi implements AnalystConsole {
         ?? this.stringValue(status.errorMessage)
         ?? this.stringValue(status.message)
         ?? detail
-        ?? (assistant?.stopReason === 'error' ? this.stringValue(assistant.content) : undefined)
+        ?? (assistant?.stopReason === 'error'
+          ? `SESSION_FAILED: ${this.stringValue(assistant.content) ?? 'falha antes de produzir resposta'}`
+          : undefined)
         ?? 'Sessão do Console falhou sem detalhamento'
       return { isComplete: false, isFailed: true, error: error.slice(0, 800) }
     }
