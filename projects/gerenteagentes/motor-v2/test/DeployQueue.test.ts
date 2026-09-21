@@ -27,8 +27,9 @@ type Internals = {
   reconcileCompletedTasksAlreadyMerged(): Promise<void>
   reconcileRunningDeploys(): Promise<void>
   recoverCompletedTasksWithoutDeploy(): Promise<void>
+  preparePendingPreDeployGates(): Promise<void>
   assertDeploySshReady(): void
-  dispatchDeployBatch(repoPath: string, batchId: string, taskIds: string[]): void
+  dispatchDeployBatch(repoPath: string, batchId: string, taskIds: string[], expectedCommit: string): void
   readRemoteDeployStatus(batchId: string): string | null
   assertTaskTestGateGreen(taskId: string): Promise<void>
 }
@@ -46,6 +47,7 @@ describe("fila de deploy", () => {
     vi.spyOn(internal, "recoverCompletedTasksWithoutDeploy").mockResolvedValue()
     internal.activeWorkers.set("exec-1", {})
     vi.spyOn(internal, "reconcileRunningDeploys").mockResolvedValue()
+    vi.spyOn(internal, "preparePendingPreDeployGates").mockResolvedValue()
     const dispatch = vi.spyOn(internal, "dispatchDeployBatch").mockImplementation(() => undefined)
 
     await internal.processDeployQueue()
@@ -77,13 +79,14 @@ describe("fila de deploy", () => {
     vi.spyOn(internal, "recoverCompletedTasksWithoutDeploy").mockResolvedValue()
     vi.spyOn(internal, "assertDeploySshReady").mockImplementation(() => undefined)
     vi.spyOn(internal, "reconcileRunningDeploys").mockResolvedValue()
+    vi.spyOn(internal, "preparePendingPreDeployGates").mockResolvedValue()
     vi.mocked(db.query)
       .mockResolvedValueOnce({ rows: [{ busy: 0 }], affectedRows: 0, insertId: 0 })
       .mockResolvedValueOnce({
         rows: [
-          { id: 1, repo_path: "/repo/projeto", task_id: "task-770" },
-          { id: 2, repo_path: "/repo/projeto", task_id: "task-771" },
-          { id: 3, repo_path: "/outro/projeto", task_id: "task-900" },
+          { id: 1, repo_path: "/repo/projeto", task_id: "task-770", expected_commit: "abc" },
+          { id: 2, repo_path: "/repo/projeto", task_id: "task-771", expected_commit: "abc" },
+          { id: 3, repo_path: "/outro/projeto", task_id: "task-900", expected_commit: "def" },
         ], affectedRows: 0, insertId: 0,
       })
       .mockResolvedValueOnce({ rows: [], affectedRows: 2, insertId: 0 })
@@ -94,6 +97,7 @@ describe("fila de deploy", () => {
     expect(dispatch).toHaveBeenCalledTimes(1)
     expect(dispatch.mock.calls[0]?.[0]).toBe("/repo/projeto")
     expect(dispatch.mock.calls[0]?.[2]).toEqual(["task-770", "task-771"])
+    expect(dispatch.mock.calls[0]?.[3]).toBe("abc")
     expect(internal.activeDeployments.size).toBe(2)
     expect(String(vi.mocked(db.query).mock.calls[1]?.[0])).toContain("tr.status = 'passed'")
   })

@@ -26,7 +26,7 @@ describe('OutboxPublisher', () => {
       query: vi.fn(async (sql: string, params?: unknown[]) => {
         if (sql.includes('UPDATE motor_message_processing_state')) return [{ affectedRows: 0 }, []]
         if (sql.includes('INSERT INTO motor_outbox')) {
-          stored.set(String(params?.[0]), { message_id: params?.[0], type: params?.[1], task_id: params?.[2], execution_id: params?.[3], payload_json: params?.[4], timestamp: params?.[5], attempt: 0 })
+          stored.set(String(params?.[0]), { message_id: params?.[0], type: params?.[1], destination_queue: params?.[2], task_id: params?.[3], execution_id: params?.[4], payload_json: params?.[5], timestamp: params?.[6], attempt: 0 })
           return [{ affectedRows: 1 }, []]
         }
         if (sql.includes('SELECT message_id')) return [[...stored.values()].filter(row => row.status !== 'published'), []]
@@ -57,7 +57,7 @@ describe('OutboxPublisher', () => {
       query: vi.fn(async (sql: string, params?: unknown[]) => {
         if (sql.includes('UPDATE motor_message_processing_state')) return [{ affectedRows: 0 }, []]
         if (sql.includes('INSERT INTO motor_outbox')) {
-          stored.push({ message_id: params?.[0], type: params?.[1], task_id: params?.[2], execution_id: params?.[3], payload_json: params?.[4], timestamp: params?.[5], attempt: 0, status: 'pending' })
+          stored.push({ message_id: params?.[0], type: params?.[1], destination_queue: params?.[2], task_id: params?.[3], execution_id: params?.[4], payload_json: params?.[5], timestamp: params?.[6], attempt: 0, status: 'pending' })
           return [{ affectedRows: 1 }, []]
         }
         if (sql.includes('SELECT message_id')) return [stored, []]
@@ -71,6 +71,27 @@ describe('OutboxPublisher', () => {
 
     expect(stored[0].status).toBe('pending')
     expect(pool.query).toHaveBeenCalledWith(expect.stringContaining('last_error'), expect.any(Array))
+    await publisher.stop()
+  })
+
+  it('publica somente mensagens destinadas à fila dedicada', async () => {
+    const transport = new InMemoryQueueTransport()
+    const stored = [{
+      message_id: 'gate-1', type: 'TEST_RUN_REQUESTED', destination_queue: 'motor.test-gates',
+      task_id: 'task-1', execution_id: 'exec-1', payload_json: '{}', timestamp: new Date(), attempt: 0,
+    }]
+    const pool = {
+      query: vi.fn(async (sql: string) => {
+        if (sql.includes('UPDATE motor_message_processing_state')) return [{ affectedRows: 0 }, []]
+        if (sql.includes('SELECT message_id')) return [stored, []]
+        if (sql.includes("SET status = 'published'")) return [{ affectedRows: 1 }, []]
+        throw new Error(`SQL inesperado: ${sql}`)
+      }),
+    } as any
+    const publisher = new OutboxPublisher(pool, transport, 'motor.test-gates', 'motor.test-gates')
+    await publisher.start()
+    expect(transport.pending('motor.test-gates')).toBe(1)
+    expect(pool.query).toHaveBeenCalledWith(expect.stringContaining('destination_queue = ?'), ['motor.test-gates'])
     await publisher.stop()
   })
 })

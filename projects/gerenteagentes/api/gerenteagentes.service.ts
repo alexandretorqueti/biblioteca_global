@@ -1444,23 +1444,9 @@ export class GerenteAgentesService {
     if (tarefa.tipo !== 'desenvolvimento') {
       throw new BadRequestException('Deploy manual disponível somente para tarefas de desenvolvimento');
     }
-    const [testHealth] = await db.execute(sql`
-      SELECT tr.id, tr.status, tr.phase, tr.commit_sha AS commitSha,
-             (SELECT COUNT(*) FROM test_failures tf WHERE tf.test_run_id = tr.id) AS failureCount
-        FROM test_runs tr
-       WHERE tr.projeto_id = ${tarefa.projetoId}
-         AND tr.phase IN ('post_dev', 'rework', 'monitor_recovery', 'pre_deploy')
-       ORDER BY tr.finished_at DESC, tr.id DESC
-       LIMIT 1
-    `);
-    const latest = (testHealth as unknown as Array<{ id: number; status: string; phase: string; commitSha: string; failureCount: number }>)[0];
-    if (!latest || latest.status !== 'passed' || Number(latest.failureCount) > 0) {
-      throw new BadRequestException(
-        latest
-          ? `Deploy bloqueado: o gate ${latest.phase} possui ${Number(latest.failureCount)} falha(s) de teste.`
-          : 'Deploy bloqueado: não existe gate de testes aprovado para o projeto.',
-      );
-    }
+    // O Motor executa agora um gate `pre_deploy` novo no commit exato antes de
+    // aceitar a solicitação. Uma consulta antecipada aqui usaria um run antigo
+    // e impediria justamente a criação do gate autoritativo.
     const motorId = tarefa.externalId || String(tarefa.id);
     const resp = await this.motorRequest('POST', `/api/motor/task/${encodeURIComponent(motorId)}/deploy`, undefined, this.motorV2Url);
     if (!resp.ok) throw new BadRequestException(`Motor rejeitou o deploy (${resp.status}): ${resp.body.slice(0, 200)}`);
@@ -1974,6 +1960,26 @@ export class GerenteAgentesService {
       const currentSubTask = subtasks.find(s => 
         ['running', 'verifying', 'delivered', 'planning'].includes(s.status)
       ) || null;
+      const [healthRows] = await db.execute(sql`
+        SELECT tr.status, tr.phase, tr.comparison_status AS comparisonStatus,
+               SUM(tf.classification IN ('new','worsened')) AS regressions,
+               SUM(tf.classification = 'pre_existing') AS preExisting,
+               (SELECT pr.status FROM test_runs pr WHERE pr.projeto_id=${tarefa.projetoId}
+                 ORDER BY pr.finished_at DESC,pr.id DESC LIMIT 1) AS projectStatus,
+               r.status AS recoveryStatus
+          FROM test_runs tr
+          LEFT JOIN test_failures tf ON tf.test_run_id=tr.id
+          LEFT JOIN test_recovery_attempts r ON r.id=(
+            SELECT rr.id FROM test_recovery_attempts rr
+             WHERE rr.source_tarefa_id=${tarefaId} ORDER BY rr.created_at DESC,rr.id DESC LIMIT 1
+          )
+         WHERE tr.id=(SELECT x.id FROM test_runs x WHERE x.tarefa_id=${tarefaId} ORDER BY x.finished_at DESC,x.id DESC LIMIT 1)
+         GROUP BY tr.id,r.status
+      `);
+      const testHealth = (healthRows as unknown as Array<{
+        status: string; phase: string; comparisonStatus: string;
+        regressions: number | string; preExisting: number | string; projectStatus: string | null; recoveryStatus: string | null;
+      }>)[0];
       
       return { 
         motorId, 
@@ -1988,6 +1994,15 @@ export class GerenteAgentesService {
           blockInfo: motorTask.status === 'blocked' ? (motorTask.ultimoBloqueio ?? null) : null,
           promotionConflictAnalysis: motorTask.promotionConflictAnalysis ?? null,
           recoveryEligibility: motorTask.recoveryEligibility ?? null,
+          testHealth: testHealth ? {
+            delivery: motorTask.status === 'completed' || motorTask.status === 'deployed' ? 'completed' : motorTask.status,
+            verification: Number(testHealth.regressions) === 0 ? 'verified_without_regression' : 'regression',
+            projectHealth: testHealth.projectStatus === 'passed' ? 'tests_passing' : 'tests_failing',
+            deploy: testHealth.phase === 'pre_deploy' && testHealth.status === 'passed' ? 'authorized' : 'blocked',
+            recovery: testHealth.recoveryStatus ?? 'not_started',
+            preExistingFailures: Number(testHealth.preExisting ?? 0),
+            regressions: Number(testHealth.regressions ?? 0),
+          } : null,
         },
         subtasks,
         currentSubTask,

@@ -39,7 +39,7 @@ describe('SubtaskExecutionConsumer', () => {
       buildCommand: 'npm run build', testCommand: 'npm test',
     }), expect.objectContaining({
       header: expect.stringContaining('Workspace autorizado: /worktree'), context: null,
-    }), ['modelo-a'], expect.any(Function), undefined)
+    }), ['modelo-a'], expect.any(Function), undefined, false)
     expect(repository.finishExecution).toHaveBeenCalledWith(context, message, expect.objectContaining({ success: true }))
     expect(logger.append).toHaveBeenCalledTimes(4)
     expect(logger.append).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -79,7 +79,7 @@ describe('SubtaskExecutionConsumer', () => {
     expect(worker.executeTask).toHaveBeenCalledWith(expect.any(Object), expect.objectContaining({
       header: expect.not.stringContaining(longContext.taskDescription),
       context: `Descrição completa da missão:\n\n${longContext.taskDescription}`,
-    }), expect.any(Array), expect.any(Function), undefined)
+    }), expect.any(Array), expect.any(Function), undefined, false)
   })
 
   it('publica falha durável quando o programador esgota tentativas', async () => {
@@ -156,17 +156,16 @@ describe('SubtaskExecutionConsumer', () => {
     const worker = { executeTask: vi.fn().mockResolvedValue({ success: true, attempts: 1, postDevRunId: 52 }) }
     const logger = { append: vi.fn().mockResolvedValue(undefined) }
     const testGate = {
-      run: vi.fn().mockResolvedValue({ id: 51, phase: 'baseline', status: 'failed', failures: [{ fingerprint: 'known' }] }),
-      formatNewFailures: vi.fn(),
+      request: vi.fn().mockResolvedValue({ id: 51, phase: 'baseline', status: 'failed', failures: [{ fingerprint: 'known' }] }),
     }
     const consumer = new SubtaskExecutionConsumer(repository as never, worktrees as never, worker as never, {}, {}, logger, testGate as never)
 
     await consumer.handle(message)
 
-    expect(testGate.run).toHaveBeenCalledWith(expect.objectContaining({
+    expect(testGate.request).toHaveBeenCalledWith(expect.objectContaining({
       phase: 'baseline', workspacePath: '/repo', branchName: 'base-desenvolvimento', commitSha: 'abc',
-    }))
-    expect(worker.executeTask).toHaveBeenCalledWith(expect.objectContaining({ baselineRunId: 51 }), expect.any(Object), ['modelo-a'], expect.any(Function), expect.any(Function))
+    }), message)
+    expect(worker.executeTask).toHaveBeenCalledWith(expect.objectContaining({ baselineRunId: 51 }), expect.any(Object), ['modelo-a'], expect.any(Function), expect.any(Function), false)
     expect(repository.finishExecution).toHaveBeenCalledWith(context, message, expect.objectContaining({ success: true }))
     expect(logger.append).toHaveBeenCalledWith(expect.objectContaining({
       sequence: 3, primitiveCode: 'run_test_baseline', outcome: 'executed',

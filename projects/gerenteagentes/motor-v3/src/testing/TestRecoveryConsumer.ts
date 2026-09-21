@@ -5,7 +5,7 @@ import type { WorkerLauncher } from '../worker-launcher/index.js'
 import type { GitWorktreePreparer } from '../execution/GitWorktreePreparer.js'
 import { GitVerificationIntegrator } from '../execution/GitVerificationIntegrator.js'
 import type { SubtaskExecutionContext } from '../execution/DevelopmentExecutionRepository.js'
-import type { TestGateService } from './TestGateService.js'
+import type { TestGateOrchestrator } from './TestGateOrchestrator.js'
 
 interface RecoveryRow extends RowDataPacket {
   recovery_id: number
@@ -30,7 +30,7 @@ export class TestRecoveryConsumer {
     private readonly worker: Pick<WorkerLauncher, 'executeTask'>,
     private readonly consoleApi: unknown,
     private readonly db: unknown,
-    private readonly testGate: TestGateService,
+    private readonly testGate: TestGateOrchestrator,
   ) {}
 
   async handle(message: QueueMessage): Promise<void> {
@@ -59,12 +59,12 @@ export class TestRecoveryConsumer {
         agentId: recovery.agent_id, db: this.db, consoleApi: this.consoleApi, logger: console,
       }
       const result = await this.worker.executeTask(context, this.prompt(recovery), models, undefined, async (gateContext) => {
-        const run = await this.testGate.run({
+        const run = await this.testGate.request({
           projectId: recovery.project_id, taskDatabaseId: recovery.task_database_id, phase: 'monitor_recovery',
           baselineRunId: recovery.source_test_run_id, commitSha: gateContext.baseCommitSha ?? workspace.baseCommit,
           baseCommitSha: workspace.baseCommit, branchName: workspace.branch, workspacePath: workspace.path,
           buildCommand: recovery.build_command, testCommand: recovery.unit_test_command,
-        })
+        }, message)
         return {
           success: run.status === 'passed', runId: run.id, newFailureCount: run.failures.length,
           preExistingFailureCount: run.preExistingFailures.length, resolvedFailureCount: run.resolvedFailures.length,
@@ -129,6 +129,7 @@ export class TestRecoveryConsumer {
       projectSlug: recovery.project_slug, repoPath: recovery.repo_path, baseBranch: recovery.branch_trabalho,
       buildCommand: recovery.build_command, testCommand: recovery.unit_test_command, agentId: recovery.agent_id,
       workspacePath: workspace.path, workspaceBranch: workspace.branch, workspaceBaseCommit: workspace.baseCommit,
+      completionKind: 'code_change',
     }
   }
 

@@ -1,11 +1,14 @@
 import { createHash } from 'node:crypto'
 import { exec } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { promisify } from 'node:util'
+import { gzip as gzipCallback } from 'node:zlib'
 import type { Pool, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
 
 const execAsync = promisify(exec)
+const gzipAsync = promisify(gzipCallback)
 const ANSI = /\u001b\[[0-9;]*m/g
 
 export type TestRunPhase = 'baseline' | 'post_dev' | 'rework' | 'monitor_recovery' | 'pre_deploy'
@@ -65,6 +68,12 @@ interface FailureRow extends RowDataPacket {
 }
 
 interface RunEnvironmentRow extends RowDataPacket { environment_fingerprint: string }
+interface FailureComparison {
+  current: TestFailureRecord[]
+  newFailures: TestFailureRecord[]
+  preExistingFailures: TestFailureRecord[]
+  resolvedFailures: TestFailureRecord[]
+}
 
 export class TestGateService {
   constructor(private readonly pool: Pool) {}
@@ -72,6 +81,10 @@ export class TestGateService {
   async run(input: TestGateInput): Promise<TestRunResult> {
     const startedAt = new Date()
     const environment = await this.environment(input.workspacePath, input.buildCommand, input.testCommand)
+    if (input.phase === 'baseline') {
+      const reused = await this.reuseBaseline(input, environment.fingerprint)
+      if (reused) return reused
+    }
     let stdout = ''
     let stderr = ''
     let exitCode = 0
@@ -89,16 +102,32 @@ export class TestGateService {
     }
 
     const failures = this.parseFailures(`${stdout}\n${stderr}`)
-    const status = exitCode === 0 ? 'passed' : 'failed'
+    let status: TestRunResult['status'] = exitCode === 0 ? 'passed' : 'failed'
     const baseline = input.baselineRunId ? await this.failuresForRun(input.baselineRunId) : []
     const baselineEnvironment = input.baselineRunId ? await this.environmentForRun(input.baselineRunId) : null
     const comparable = !baselineEnvironment || baselineEnvironment === environment.fingerprint
-    const compared = comparable
+    let compared = comparable
       ? this.compare(failures, baseline, Boolean(input.baselineRunId))
       : this.inconclusive(failures, baseline)
+    let flakyDetected = false
+    if (input.baselineRunId && comparable && compared.newFailures.length > 0 && Number(process.env.MOTOR_TEST_FLAKY_RETRIES ?? 1) > 0) {
+      const confirmation = await this.confirmFailures(input)
+      const confirmed = new Set(confirmation.map(failure => failure.fingerprint))
+      const unstable = compared.newFailures.filter(failure => !confirmed.has(failure.fingerprint))
+      if (unstable.length > 0) {
+        flakyDetected = true
+        for (const failure of unstable) failure.classification = 'flaky_or_inconclusive'
+        compared = {
+          ...compared,
+          newFailures: compared.newFailures.filter(failure => confirmed.has(failure.fingerprint)),
+        }
+        status = 'inconclusive'
+      }
+    }
     const comparisonStatus = !input.baselineRunId
       ? 'not_compared'
       : !comparable ? 'inconclusive'
+      : flakyDetected ? 'inconclusive'
       : compared.newFailures.length > 0 ? 'regression' : 'no_regression'
     const finishedAt = new Date()
     const summary = this.summary(`${stdout}\n${stderr}`)
@@ -106,16 +135,26 @@ export class TestGateService {
       `INSERT INTO test_runs
         (projeto_id, tarefa_id, subtarefa_id, phase, baseline_run_id, commit_sha, base_commit_sha,
          branch_name, workspace_path, build_command, test_command, environment_fingerprint,
-         node_version, lockfile_hash, started_at, finished_at, exit_code, status,
+         environment_json, node_version, lockfile_hash, started_at, finished_at, exit_code, status,
          comparison_status, passed_count, failed_count, stdout, stderr)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [input.projectId, input.taskDatabaseId, input.subtaskId ?? null, input.phase, input.baselineRunId ?? null,
         input.commitSha, input.baseCommitSha ?? null, input.branchName, input.workspacePath,
-        input.buildCommand, input.testCommand, environment.fingerprint, process.version, environment.lockfileHash,
+        input.buildCommand, input.testCommand, environment.fingerprint, JSON.stringify(environment.evidence), process.version, environment.lockfileHash,
         startedAt, finishedAt, exitCode, status, comparisonStatus, summary.passed, summary.failed,
-        this.limit(stdout), this.limit(stderr)],
+        this.summaryLog(stdout), this.summaryLog(stderr)],
     )
     const runId = inserted.insertId
+    try {
+      const artifacts = await this.persistArtifacts(runId, stdout, stderr)
+      await this.pool.execute(
+        'UPDATE test_runs SET stdout_artifact_path=?, stderr_artifact_path=? WHERE id=?',
+        [artifacts.stdout, artifacts.stderr, runId],
+      )
+    } catch {
+      // Falha no armazenamento do artefato não pode apagar o resultado do
+      // gate; o resumo permanece no banco e o deploy continua obedecendo-o.
+    }
     const all = [...compared.current, ...compared.resolvedFailures]
     for (const failure of all) await this.insertFailure(runId, failure)
     return {
@@ -143,13 +182,58 @@ export class TestGateService {
     }))
   }
 
+  private async reuseBaseline(input: TestGateInput, environmentFingerprint: string): Promise<TestRunResult | null> {
+    const [rows] = await this.pool.query<Array<RowDataPacket & { id: number }>>(
+      `SELECT id FROM test_runs
+        WHERE projeto_id=? AND phase='baseline' AND commit_sha=?
+          AND environment_fingerprint=? AND build_command=? AND test_command=?
+        ORDER BY finished_at DESC, id DESC LIMIT 1`,
+      [input.projectId, input.commitSha, environmentFingerprint, input.buildCommand, input.testCommand],
+    )
+    const sourceId = Number(rows[0]?.id ?? 0)
+    if (!sourceId) return null
+    const [inserted] = await this.pool.execute<ResultSetHeader>(
+      `INSERT INTO test_runs
+        (projeto_id,tarefa_id,subtarefa_id,phase,baseline_run_id,reused_from_run_id,commit_sha,base_commit_sha,
+         branch_name,workspace_path,build_command,test_command,environment_fingerprint,environment_json,node_version,
+         lockfile_hash,started_at,finished_at,exit_code,status,comparison_status,passed_count,failed_count,
+         stdout,stderr,stdout_artifact_path,stderr_artifact_path)
+       SELECT ?,?,?, 'baseline',NULL,id,?,?, ?,?,?,?,environment_fingerprint,environment_json,node_version,
+              lockfile_hash,NOW(3),NOW(3),exit_code,status,'not_compared',passed_count,failed_count,
+              stdout,stderr,stdout_artifact_path,stderr_artifact_path
+         FROM test_runs WHERE id=?`,
+      [input.projectId, input.taskDatabaseId, input.subtaskId ?? null, input.commitSha, input.baseCommitSha ?? null,
+        input.branchName, input.workspacePath, input.buildCommand, input.testCommand, sourceId],
+    )
+    const runId = inserted.insertId
+    await this.pool.execute(
+      `INSERT INTO test_failures
+        (test_run_id,fingerprint_version,fingerprint,suite,test_case,error_type,normalized_message,
+         source_file,source_line,raw_excerpt,occurrence_count,classification)
+       SELECT ?,fingerprint_version,fingerprint,suite,test_case,error_type,normalized_message,
+              source_file,source_line,raw_excerpt,occurrence_count,'unclassified'
+         FROM test_failures WHERE test_run_id=?`,
+      [runId, sourceId],
+    )
+    const [runRows] = await this.pool.query<Array<RowDataPacket & { status: 'passed' | 'failed' | 'inconclusive'; exit_code: number; stdout: string | null; stderr: string | null }>>(
+      'SELECT status,exit_code,stdout,stderr FROM test_runs WHERE id=?', [runId],
+    )
+    const run = runRows[0]!
+    const failures = await this.failuresForRun(runId)
+    return {
+      id: runId, phase: 'baseline', status: run.status, comparisonStatus: 'not_compared',
+      exitCode: Number(run.exit_code), failures, newFailures: [], preExistingFailures: [], resolvedFailures: [],
+      stdout: run.stdout ?? '', stderr: run.stderr ?? '',
+    }
+  }
+
   formatNewFailures(run: TestRunResult): string {
     return run.newFailures.map((failure, index) =>
       `${index + 1}. ${failure.suite}${failure.testCase ? ` > ${failure.testCase}` : ''}: ${failure.normalizedMessage}`,
     ).join('\n')
   }
 
-  compare(current: TestFailureRecord[], baseline: TestFailureRecord[], hasBaseline = true) {
+  compare(current: TestFailureRecord[], baseline: TestFailureRecord[], hasBaseline = true): FailureComparison {
     if (!hasBaseline) return { current, newFailures: [], preExistingFailures: [], resolvedFailures: [] }
     const before = new Map(baseline.map(failure => [failure.fingerprint, failure]))
     const after = new Map(current.map(failure => [failure.fingerprint, failure]))
@@ -174,7 +258,7 @@ export class TestGateService {
     return { current, newFailures, preExistingFailures, resolvedFailures }
   }
 
-  private inconclusive(current: TestFailureRecord[], baseline: TestFailureRecord[]) {
+  private inconclusive(current: TestFailureRecord[], baseline: TestFailureRecord[]): FailureComparison {
     const marked = current.map(failure => ({ ...failure, classification: 'flaky_or_inconclusive' as const }))
     return { current: marked, newFailures: [], preExistingFailures: [], resolvedFailures: baseline.filter(failure => !current.some(item => item.fingerprint === failure.fingerprint)).map(failure => ({ ...failure, classification: 'flaky_or_inconclusive' as const })) }
   }
@@ -235,9 +319,35 @@ export class TestGateService {
 
   private async environment(workspace: string, buildCommand: string, testCommand: string) {
     let lockfileHash: string | null = null
-    try { lockfileHash = createHash('sha256').update(await readFile(resolve(workspace, 'package-lock.json'))).digest('hex') } catch {}
-    const fingerprint = createHash('sha256').update([process.version, process.platform, process.arch, buildCommand, testCommand].join('|')).digest('hex')
-    return { fingerprint, lockfileHash }
+    for (const name of ['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock']) {
+      try {
+        lockfileHash = createHash('sha256').update(await readFile(resolve(workspace, name))).digest('hex')
+        break
+      } catch {}
+    }
+    let containerIdentity = process.env.HOSTNAME ?? null
+    try {
+      const cgroup = await readFile('/proc/self/cgroup', 'utf8')
+      containerIdentity = cgroup.trim().split('\n').map(line => line.split('/').at(-1)).find(Boolean) ?? containerIdentity
+    } catch {}
+    const safeEnvironment = Object.fromEntries(
+      ['CI', 'NODE_ENV', 'TZ', 'LANG'].map(key => [key, process.env[key] ?? null]),
+    )
+    const evidence = {
+      nodeVersion: process.version, platform: process.platform, architecture: process.arch,
+      containerIdentity, lockfileHash, buildCommand, testCommand, safeEnvironment,
+    }
+    const fingerprint = createHash('sha256').update(JSON.stringify(evidence)).digest('hex')
+    return { fingerprint, lockfileHash, evidence }
+  }
+
+  private async confirmFailures(input: TestGateInput): Promise<TestFailureRecord[]> {
+    try {
+      const result = await execAsync(input.testCommand, { cwd: input.workspacePath, timeout: 300_000, maxBuffer: 30 * 1024 * 1024 })
+      return this.parseFailures(`${result.stdout}\n${result.stderr}`)
+    } catch (error: any) {
+      return this.parseFailures(`${String(error?.stdout ?? '')}\n${String(error?.stderr ?? error?.message ?? '')}`)
+    }
   }
 
   private normalizePath(value: string): string {
@@ -266,5 +376,18 @@ export class TestGateService {
     )
   }
 
-  private limit(value: string): string { return value.slice(-1_000_000) }
+  private summaryLog(value: string): string { return value.slice(-20_000) }
+
+  private async persistArtifacts(runId: number, stdout: string, stderr: string): Promise<{ stdout: string; stderr: string }> {
+    const root = process.env.MOTOR_TEST_ARTIFACTS_DIR || '/data/workspace/projects/agentes/gerenteagentes/artifacts/test-runs'
+    const directory = resolve(root, String(runId))
+    await mkdir(directory, { recursive: true })
+    const stdoutPath = resolve(directory, 'stdout.log.gz')
+    const stderrPath = resolve(directory, 'stderr.log.gz')
+    await Promise.all([
+      writeFile(stdoutPath, await gzipAsync(Buffer.from(stdout))),
+      writeFile(stderrPath, await gzipAsync(Buffer.from(stderr))),
+    ])
+    return { stdout: stdoutPath, stderr: stderrPath }
+  }
 }

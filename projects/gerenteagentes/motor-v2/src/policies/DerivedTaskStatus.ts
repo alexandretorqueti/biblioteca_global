@@ -27,6 +27,7 @@ export interface DerivedTaskStatusFacts {
 const APPROVED_SUBTASK_STATUSES = new Set(["verified", "superseded"])
 const ACTIVE_SUBTASK_STATUSES = new Set(["running", "delivered", "verifying"])
 const BLOCKED_SUBTASK_STATUSES = new Set(["blocked"])
+const FAILED_SUBTASK_STATUSES = new Set(["failed"])
 const ADMINISTRATIVE_TERMINAL_STATUSES = new Set<TaskStatus>([
   "cancelled",
   "failed",
@@ -49,14 +50,17 @@ export function deriveTaskStatus(facts: DerivedTaskStatusFacts): TaskStatus {
   // Pausa continua prevalecendo sobre estados intermediários, mas não pode
   // esconder uma conclusão ou deploy já confirmado.
   if (facts.pausedAt && !facts.resourceWaitKey) {
-    if (!hasSubtasks) return "draft"
     if (facts.deploySucceeded) return "deployed"
     if (allSubtasksApproved && (facts.integrationConfirmed || facts.deployFailed)) return "completed"
+    if (!hasSubtasks) return "draft"
     return "paused"
   }
 
   if (facts.hasPendingClarification) return "awaiting_clarification"
   if (facts.awaitingInteraction) return "awaiting_interaction"
+  // Falha definitiva exige intervenção humana. Sem esta regra a tarefa voltava
+  // a `ready` e saía da estação Atenção (caso real: tarefa 855/subtarefa 1170).
+  if (facts.subtaskStatuses.some((status) => FAILED_SUBTASK_STATUSES.has(status))) return "failed"
   if (facts.subtaskStatuses.some((status) => BLOCKED_SUBTASK_STATUSES.has(status))) return "blocked"
   if (facts.analysisInProgress && !facts.hasPersistedPlan) return "analyzing"
   if (facts.subtaskStatuses.some((status) => ACTIVE_SUBTASK_STATUSES.has(status))) return "running"

@@ -5,6 +5,7 @@ import type { QueueTransport } from './QueueTransport.js'
 interface OutboxRow extends RowDataPacket {
   message_id: string
   type: string
+  destination_queue: string | null
   task_id: string
   execution_id: string
   payload_json: string | Record<string, unknown>
@@ -33,6 +34,7 @@ export class OutboxPublisher {
     private readonly pool: Pool,
     private readonly transport: QueueTransport,
     private readonly queue: string,
+    private readonly destinationQueue: string = queue,
   ) {}
 
   async start(): Promise<void> {
@@ -76,13 +78,13 @@ export class OutboxPublisher {
     return result.affectedRows
   }
 
-  async enqueue(message: QueueMessage): Promise<void> {
+  async enqueue(message: QueueMessage, destinationQueue = this.destinationQueue): Promise<void> {
     await this.pool.query<ResultSetHeader>(
       `INSERT INTO motor_outbox
-        (message_id, type, task_id, execution_id, payload_json, timestamp, correlation_id, causation_id, status, attempt)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0)
+        (message_id, type, destination_queue, task_id, execution_id, payload_json, timestamp, correlation_id, causation_id, status, attempt)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0)
        ON DUPLICATE KEY UPDATE message_id = VALUES(message_id)`,
-      [message.messageId, message.type, message.taskId, message.executionId,
+      [message.messageId, message.type, destinationQueue, message.taskId, message.executionId,
         JSON.stringify(message.payload), toMysqlDateTime(message.timestamp), message.correlationId ?? null,
         message.causationId ?? null],
     )
@@ -94,9 +96,10 @@ export class OutboxPublisher {
     this.flushing = true
     try {
       const [rows] = await this.pool.query<OutboxRow[]>(
-        `SELECT message_id, type, task_id, execution_id, payload_json, timestamp,
+        `SELECT message_id, type, destination_queue, task_id, execution_id, payload_json, timestamp,
                 correlation_id, causation_id, attempt
-           FROM motor_outbox WHERE status = 'pending' ORDER BY id ASC LIMIT 100`,
+           FROM motor_outbox WHERE status = 'pending' AND destination_queue = ? ORDER BY id ASC LIMIT 100`,
+        [this.destinationQueue],
       )
       for (const row of rows) await this.publishRow(row)
     } finally {
@@ -117,7 +120,7 @@ export class OutboxPublisher {
       attempt: Number(row.attempt ?? 0) + 1,
     }
     try {
-      await this.transport.publish(this.queue, message, { messageId: message.messageId, persistent: true })
+      await this.transport.publish(row.destination_queue ?? this.queue, message, { messageId: message.messageId, persistent: true })
       await this.pool.query(
         `UPDATE motor_outbox SET status = 'published', published_at = NOW(), attempt = attempt + 1,
                 last_error = NULL, updated_at = NOW()

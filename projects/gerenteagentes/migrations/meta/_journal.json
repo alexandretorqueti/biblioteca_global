@@ -400,6 +400,20 @@
       "when": 1790006400000,
       "tag": "0057_test_baseline_history",
       "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "5",
+      "when": 1790010000000,
+      "tag": "0058_test_gate_hardening",
+      "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "5",
+      "when": 1790013600000,
+      "tag": "0059_message_driven_test_gates",
+      "breakpoints": true
     }
   ]
 }

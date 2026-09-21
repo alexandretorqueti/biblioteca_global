@@ -2075,7 +2075,8 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     if (task.tipo !== "desenvolvimento") throw new Error("Deploy manual é permitido apenas para tarefas de desenvolvimento")
     const status = await this.facts.derive(taskId)
     if (status !== "completed") throw new Error("Deploy manual exige tarefa concluída (status atual: " + status + ")")
-    await this.assertTaskTestGateGreen(taskId)
+    const commitSha = await this.runPreDeployGate(taskId, task.repoPath)
+    await this.assertTaskTestGateGreen(taskId, commitSha)
     await this.enqueueDeploy(taskId, task.repoPath)
     void this.pump().catch((error: unknown) => this.logger.error("Falha ao avaliar fila de deploy: " + describeError(error), { taskId }))
   }
@@ -2083,17 +2084,17 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
   /** O executor legado continua sendo a última barreira de segurança. Mesmo
    * que uma solicitação seja criada por outra rota, nunca promove uma tarefa
    * cujo gate efetivo esteja ausente ou vermelho. */
-  private async assertTaskTestGateGreen(taskId: string): Promise<void> {
+  private async assertTaskTestGateGreen(taskId: string, expectedCommit: string): Promise<void> {
     const lookup = taskIdentifierLookup(taskId, "t")
     const { rows } = await this.db.query(
-      "SELECT tr.id, tr.status, tr.phase, " +
+      "SELECT tr.id, tr.status, tr.phase, tr.commit_sha, " +
       "(SELECT COUNT(*) FROM test_failures tf WHERE tf.test_run_id = tr.id) AS failure_count " +
       "FROM tarefas t LEFT JOIN test_runs tr ON tr.id = (" +
       "SELECT latest.id FROM test_runs latest WHERE latest.tarefa_id = t.id " +
-      "AND latest.phase IN ('post_dev','rework','monitor_recovery','pre_deploy') " +
+      "AND latest.phase = 'pre_deploy' AND latest.commit_sha = ? " +
       "ORDER BY latest.finished_at DESC, latest.id DESC LIMIT 1) " +
       "WHERE " + lookup.sql + " LIMIT 1",
-      lookup.params,
+      [expectedCommit, ...lookup.params],
     )
     const gate = rows[0]
     if (!gate?.id) throw new Error("Deploy bloqueado: não existe gate de testes aprovado para a tarefa")
@@ -2101,6 +2102,34 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     if (String(gate.status) !== "passed" || failureCount > 0) {
       throw new Error(`Deploy bloqueado: gate ${String(gate.phase)} possui ${failureCount} falha(s) de teste`)
     }
+  }
+
+  private async runPreDeployGate(taskId: string, repoPath: string): Promise<string> {
+    const lookup = taskIdentifierLookup(taskId, "t")
+    const { rows } = await this.db.query(
+      "SELECT t.id, t.projeto_id, pmc.branch_trabalho, pmc.build_command, pmc.unit_test_command " +
+      "FROM tarefas t INNER JOIN projeto_motor_config pmc ON pmc.projeto_id=t.projeto_id " +
+      "WHERE " + lookup.sql + " LIMIT 1",
+      lookup.params,
+    )
+    const config = rows[0]
+    if (!config?.build_command || !config?.unit_test_command) throw new Error("Deploy bloqueado: comandos do gate não configurados")
+    const commitSha = execFileSync("git", ["-C", repoPath, "rev-parse", "HEAD"], { encoding: "utf8" }).trim()
+    const repoRoot = execFileSync("git", ["-C", repoPath, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim()
+    const cli = join(repoRoot, "projects/gerenteagentes/motor-v3/dist/testing/PreDeployCli.js")
+    if (!existsSync(cli)) throw new Error("Deploy bloqueado: executor pre_deploy não foi compilado: " + cli)
+    const payload = JSON.stringify({
+      projectId: Number(config.projeto_id), taskDatabaseId: Number(config.id), taskId,
+      repoPath, branchName: String(config.branch_trabalho || ""), expectedCommit: commitSha,
+      buildCommand: String(config.build_command), testCommand: String(config.unit_test_command),
+    })
+    try {
+      execFileSync(process.execPath, [cli, payload], { encoding: "utf8", timeout: 15 * 60_000, stdio: "pipe" })
+    } catch (error: unknown) {
+      const detail = error && typeof error === "object" && "stderr" in error ? String((error as { stderr?: unknown }).stderr ?? "") : describeError(error)
+      throw new Error("Deploy bloqueado: gate pre_deploy falhou: " + detail.substring(0, 1000))
+    }
+    return commitSha
   }
 
   async getTask(taskId: string): Promise<Task | null> {
@@ -2544,12 +2573,16 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     )
     if (Number(busyRows[0]?.busy ?? 0) !== 0) return
 
+    await this.preparePendingPreDeployGates()
+
     const { rows } = await this.db.query(
-      "SELECT dr.id, dr.repo_path, COALESCE(t.external_id, CAST(t.id AS CHAR)) AS task_id FROM deploy_requests dr " +
+      "SELECT dr.id, dr.repo_path, COALESCE(t.external_id, CAST(t.id AS CHAR)) AS task_id, " +
+      "(SELECT latest.commit_sha FROM test_runs latest WHERE latest.tarefa_id=t.id AND latest.phase='pre_deploy' ORDER BY latest.finished_at DESC,latest.id DESC LIMIT 1) AS expected_commit " +
+      "FROM deploy_requests dr " +
       "INNER JOIN tarefas t ON t.id = dr.tarefa_id WHERE dr.status = 'pending' " +
       "AND EXISTS (SELECT 1 FROM test_runs tr WHERE tr.id = (" +
       "SELECT latest.id FROM test_runs latest WHERE latest.tarefa_id = t.id " +
-      "AND latest.phase IN ('post_dev','rework','monitor_recovery','pre_deploy') " +
+      "AND latest.phase = 'pre_deploy' " +
       "ORDER BY latest.finished_at DESC, latest.id DESC LIMIT 1) " +
       "AND tr.status = 'passed' AND NOT EXISTS (SELECT 1 FROM test_failures tf WHERE tf.test_run_id = tr.id)) " +
       "ORDER BY dr.requested_at ASC",
@@ -2559,6 +2592,12 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     const batchRows = rows.filter((row) => String(row.repo_path) === repoPath)
     const taskIds = batchRows.map((row) => String(row.task_id))
     const requestIds = batchRows.map((row) => Number(row.id))
+    const expectedCommits = [...new Set(batchRows.map((row) => String(row.expected_commit || '')).filter(Boolean))]
+    if (expectedCommits.length !== 1) {
+      this.logger.warn('Lote de deploy possui commits pre_deploy divergentes; mantendo pendente', { taskIds, expectedCommits })
+      return
+    }
+    const expectedCommit = expectedCommits[0]!
     // Confirma a identidade do ServerIA ANTES de marcar as solicitações como
     // running. Assim uma chave SSH alterada não bloqueia em massa tarefas que
     // já concluíram o desenvolvimento e só aguardam publicação.
@@ -2589,7 +2628,7 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     const startedAt = new Date()
     for (const taskId of taskIds) this.activeDeployments.set(taskId, { taskId, phase: "verify", startedAt })
     try {
-      this.dispatchDeployBatch(repoPath, batchId, taskIds)
+      this.dispatchDeployBatch(repoPath, batchId, taskIds, expectedCommit)
       for (const taskId of taskIds) {
         const deployment = this.activeDeployments.get(taskId)
         if (deployment) deployment.phase = "deploy"
@@ -2598,6 +2637,35 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
       const message = describeError(error).substring(0, 500)
       await this.failDeployBatch(batchId, message, taskIds)
       this.logger.error("Falha ao disparar lote de deploy: " + message, { batchId, taskIds })
+    }
+  }
+
+  private async preparePendingPreDeployGates(): Promise<void> {
+    const { rows } = await this.db.query(
+      `SELECT dr.id,dr.repo_path,COALESCE(t.external_id,CAST(t.id AS CHAR)) task_id
+         FROM deploy_requests dr INNER JOIN tarefas t ON t.id=dr.tarefa_id
+        WHERE dr.status='pending' ORDER BY dr.requested_at ASC LIMIT 10`,
+    )
+    for (const row of rows) {
+      const taskId = String(row.task_id)
+      const repoPath = String(row.repo_path)
+      const head = execFileSync('git', ['-C', repoPath, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
+      const gate = await this.db.query(
+        `SELECT tr.id FROM test_runs tr INNER JOIN tarefas t ON t.id=tr.tarefa_id
+          WHERE (t.external_id=? OR CAST(t.id AS CHAR)=?) AND tr.phase='pre_deploy'
+            AND tr.commit_sha=? AND tr.status='passed'
+            AND NOT EXISTS (SELECT 1 FROM test_failures tf WHERE tf.test_run_id=tr.id)
+          ORDER BY tr.id DESC LIMIT 1`, [taskId, taskId, head],
+      )
+      if (gate.rows.length > 0) continue
+      try {
+        await this.runPreDeployGate(taskId, repoPath)
+        await this.db.query(`UPDATE deploy_requests SET last_error=NULL,updated_at=NOW() WHERE id=?`, [row.id])
+      } catch (error) {
+        const reason = describeError(error).substring(0, 500)
+        await this.db.query(`UPDATE deploy_requests SET last_error=?,updated_at=NOW() WHERE id=?`, [reason, row.id])
+        this.logger.warn(`Gate pre_deploy bloqueou tarefa ${taskId}: ${reason}`, { taskId })
+      }
     }
   }
 
@@ -2692,7 +2760,7 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     }
   }
 
-  private dispatchDeployBatch(repoPath: string, batchId: string, taskIds: string[]): void {
+  private dispatchDeployBatch(repoPath: string, batchId: string, taskIds: string[], expectedCommit: string): void {
     const repoRoot = execFileSync("git", ["-C", repoPath, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim()
     const relativeScript = getConfigString("motor.deploy_script")
     if (!existsSync(join(repoRoot, relativeScript))) throw new Error("script de deploy não encontrado na raiz Git: " + relativeScript)
@@ -2701,7 +2769,7 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     const safeBatchId = batchId.replace(/[^a-zA-Z0-9_-]/g, "_")
     const logFile = "/tmp/biblioteca-global-" + safeBatchId + ".log"
     const statusFile = "/tmp/biblioteca-global-" + safeBatchId + ".status"
-    const run = "bash " + shellQuote(hostDeployScript) + " " + shellQuote(hostRepoRoot)
+    const run = "EXPECTED_DEPLOY_COMMIT=" + shellQuote(expectedCommit) + " bash " + shellQuote(hostDeployScript) + " " + shellQuote(hostRepoRoot) + " " + shellQuote(expectedCommit)
     const wrapped = "(" + run + "; code=$?; if [ $code -eq 0 ]; then printf success; else printf 'failed:%s' $code; fi > " + shellQuote(statusFile) + ")"
     const remoteCommand = "nohup bash -lc " + shellQuote(wrapped) + " > " + shellQuote(logFile) + " 2>&1 < /dev/null & echo $!"
     const output = execFileSync("ssh", this.deploySshArguments(remoteCommand), { encoding: "utf8", timeout: 15_000 }).trim()

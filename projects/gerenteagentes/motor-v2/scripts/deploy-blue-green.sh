@@ -7,6 +7,7 @@
 set -euo pipefail
 
 REPO_ROOT="${1:?informe a raiz do repositório}"
+EXPECTED_DEPLOY_COMMIT="${2:-${EXPECTED_DEPLOY_COMMIT:-}}"
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml}"
 NGINX_CONTAINER="${NGINX_CONTAINER:-meu-servidor-nginx}"
 NGINX_CONFIG="${NGINX_CONFIG:-/home/alexandre/containers/nginx/conf/default.conf}"
@@ -24,6 +25,15 @@ cd "$REPO_ROOT"
 set -a
 . ./.env
 set +a
+
+if [ -n "$EXPECTED_DEPLOY_COMMIT" ]; then
+  ACTUAL_DEPLOY_COMMIT="$(git rev-parse HEAD)"
+  if [ "$ACTUAL_DEPLOY_COMMIT" != "$EXPECTED_DEPLOY_COMMIT" ]; then
+    echo "[deploy-blue-green] commit divergente: esperado=$EXPECTED_DEPLOY_COMMIT atual=$ACTUAL_DEPLOY_COMMIT" >&2
+    exit 1
+  fi
+  echo "[deploy-blue-green] commit pré-validado: $EXPECTED_DEPLOY_COMMIT"
+fi
 
 wait_http() {
   local url="$1" tries="$2" label="$3" i code

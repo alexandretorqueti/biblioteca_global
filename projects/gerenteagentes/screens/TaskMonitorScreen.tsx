@@ -219,6 +219,15 @@ interface MotorDetail {
       updatedAt: string
     } | null
     recoveryEligibility?: RecoveryEligibility | null
+    testHealth?: {
+      delivery: string
+      verification: string
+      projectHealth: string
+      deploy: string
+      recovery: string
+      preExistingFailures: number
+      regressions: number
+    } | null
   }
   subtasks?: SubTaskMotor[]
   currentSubTask?: SubTaskMotor | null
@@ -1772,6 +1781,24 @@ export default function TaskMonitorScreen(): ReactNode {
               {detail.task.promotionConflictAnalysis.errorMessage && (
                 <Typography variant="caption" component="div">Falha da análise: {detail.task.promotionConflictAnalysis.errorMessage}</Typography>
               )}
+            </Alert>
+          )}
+
+          {detail?.task?.testHealth && (
+            <Alert
+              severity={detail.task.testHealth.regressions > 0 ? "error" : detail.task.testHealth.deploy === "blocked" ? "warning" : "success"}
+              sx={{ mt: 2 }}
+              data-testid="task-test-health"
+            >
+              <Typography variant="body2"><b>Saúde da entrega:</b> {detail.task.testHealth.delivery}</Typography>
+              <Typography variant="caption" component="div">
+                Verificação: {detail.task.testHealth.verification}
+                {` · Regressões: ${detail.task.testHealth.regressions}`}
+                {` · Falhas preexistentes: ${detail.task.testHealth.preExistingFailures}`}
+                {` · Projeto: ${detail.task.testHealth.projectHealth}`}
+                {` · Deploy: ${detail.task.testHealth.deploy}`}
+                {` · Monitor: ${detail.task.testHealth.recovery}`}
+              </Typography>
             </Alert>
           )}
 

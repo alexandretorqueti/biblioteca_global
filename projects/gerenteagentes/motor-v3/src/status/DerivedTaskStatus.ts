@@ -62,13 +62,14 @@ export class DerivedTaskStatusResolver {
 
     if (terminal === 'cancelled' || terminal === 'failed' || terminal === 'motor_fix') return terminal
     if (task.paused_at && !task.resource_wait_key) {
-      if (!hasSubtasks) return 'draft'
       if (Number(task.deploy_succeeded) === 1) return 'deployed'
       if (allApproved && (Number(task.deploy_failed) === 1 || await this.integrationConfirmed(task.id))) return 'completed'
+      if (!hasSubtasks) return 'draft'
       return 'paused'
     }
     if (task.last_clarification_role === 'analyst') return 'awaiting_clarification'
     if (Number(task.awaiting_interaction) === 1) return 'awaiting_interaction'
+    if (subtaskStatuses.includes('failed')) return 'failed'
     if (subtaskStatuses.includes('blocked')) return 'blocked'
     if (task.analysis_started_at && subtaskStatuses.length === 0) return 'analyzing'
     if (subtaskStatuses.some(status => ['running', 'delivered', 'verifying'].includes(status))) return 'running'

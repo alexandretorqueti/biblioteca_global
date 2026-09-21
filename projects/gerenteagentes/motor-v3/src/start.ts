@@ -38,7 +38,7 @@ import { MySqlCommandPolicyRepository, MySqlOperationLogger } from './commands/i
 import { DevelopmentExecutionConsumer, GitVerificationIntegrator, GitWorktreePreparer, MySqlDevelopmentExecutionRepository, SubtaskExecutionConsumer, SubtaskVerificationConsumer, WorkerConsoleAdapter } from './execution/index.js'
 import { WorkerLauncher } from './worker-launcher/WorkerLauncher.js'
 import { getDeployDiagnostics } from './deploy/DeployDiagnostics.js'
-import { TestGateService, TestRecoveryConsumer } from './testing/index.js'
+import { TestGateConsumer, TestGateOrchestrator, TestGateService, TestRecoveryConsumer } from './testing/index.js'
 
 // Config
 const PORT = parseInt(process.env.MOTOR_PORT || '3010')
@@ -64,6 +64,8 @@ let developmentConsumer: DevelopmentExecutionConsumer | null = null
 let subtaskExecutionConsumer: SubtaskExecutionConsumer | null = null
 let subtaskVerificationConsumer: SubtaskVerificationConsumer | null = null
 let testRecoveryConsumer: TestRecoveryConsumer | null = null
+let testGateQueueConsumer: QueueConsumer | null = null
+let testGateOutboxPublisher: OutboxPublisher | null = null
 
 async function start() {
   console.log('[Motor v3] Iniciando...')
@@ -166,7 +168,9 @@ async function start() {
       deadLetterQueue: process.env.MOTOR_RABBITMQ_DLQ || 'motor.commands.dlq',
       retryDelayMs: Number(process.env.MOTOR_RABBITMQ_RETRY_DELAY_MS || 30000),
     })
-    outboxPublisher = new OutboxPublisher(pool, transport, process.env.MOTOR_RABBITMQ_QUEUE || 'motor.commands')
+    const mainQueue = process.env.MOTOR_RABBITMQ_QUEUE || 'motor.commands'
+    const gateQueue = process.env.MOTOR_TEST_GATE_QUEUE || 'motor.test-gates'
+    outboxPublisher = new OutboxPublisher(pool, transport, mainQueue, mainQueue)
     await outboxPublisher.start()
     const operationLogger = new MySqlOperationLogger(pool)
     const coordinator = new TaskCoordinator(repository, analyst, bus, {
@@ -185,7 +189,20 @@ async function start() {
       },
     })
     const developmentRepository = new MySqlDevelopmentExecutionRepository(pool)
-    const testGate = new TestGateService(pool)
+    const testGateService = new TestGateService(pool)
+    const testGate = new TestGateOrchestrator(pool, gateQueue)
+    const gateTransport = new RabbitMqTransport({
+      url: rabbitUrl, exchange: process.env.MOTOR_RABBITMQ_EXCHANGE || 'motor', prefetch: 1,
+      queue: gateQueue, retryQueue: `${gateQueue}.retry`, deadLetterQueue: `${gateQueue}.dlq`,
+      retryDelayMs: Number(process.env.MOTOR_RABBITMQ_RETRY_DELAY_MS || 30000),
+    })
+    testGateOutboxPublisher = new OutboxPublisher(pool, gateTransport, gateQueue, gateQueue)
+    await testGateOutboxPublisher.start()
+    const testGateConsumer = new TestGateConsumer(pool, testGateService, operationLogger, mainQueue)
+    testGateQueueConsumer = new QueueConsumer(gateTransport, message => testGateConsumer.handle(message), {
+      queue: gateQueue, maxAttempts: Number(process.env.MOTOR_QUEUE_MAX_ATTEMPTS || 3),
+    }, pool)
+    await testGateQueueConsumer.start()
     developmentConsumer = new DevelopmentExecutionConsumer(
       developmentRepository,
       operationLogger,
@@ -524,10 +541,13 @@ async function shutdown() {
     console.log('[Motor v3] QueueConsumer parado')
   }
 
+  if (testGateQueueConsumer) await testGateQueueConsumer.stop()
+
   if (outboxPublisher) {
     await outboxPublisher.stop()
     console.log('[Motor v3] OutboxPublisher parado')
   }
+  if (testGateOutboxPublisher) await testGateOutboxPublisher.stop()
 
   // Para scheduler
   if (scheduler) {

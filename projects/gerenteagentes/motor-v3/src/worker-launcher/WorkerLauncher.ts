@@ -68,12 +68,14 @@ export class WorkerLauncher {
     models: readonly string[] = [],
     onModelFailure?: (model: string, error: string) => Promise<void>,
     runDifferentialGate?: (context: PrimitiveContext, phase: 'post_dev' | 'rework') => Promise<DifferentialGateResult>,
+    allowNoChanges = false,
   ): Promise<WorkerResult> {
     let attempts = 0
     let lastError = 'Nenhuma tentativa foi executada'
     let lastModel: string | undefined
     const failures: Array<{ attempt: number; model?: string; error: string }> = []
     let correctiveContext = ''
+    let reusableSessionModel: string | undefined
     // Sem configuração explícita, preserva o comportamento do Console. Com
     // cadeia configurada, cada tentativa recebe seu modelo e sua sessão própria.
     const candidates = models.length > 0 ? models : [undefined]
@@ -87,13 +89,14 @@ export class WorkerLauncher {
       attempts++
       lastModel = model
       context.model = model
-      context.sessionId = undefined
+      const reuseSession = Boolean(correctiveContext && context.sessionId && reusableSessionModel === model)
+      if (!reuseSession) context.sessionId = undefined
 
       try {
         // 1. Criar sessão
-        const sessionResult = await createSession.handler(context, {
-          sandboxRoot: this.config.sandboxRoot,
-        })
+        const sessionResult = reuseSession
+          ? { success: true as const }
+          : await createSession.handler(context, { sandboxRoot: this.config.sandboxRoot })
 
         if (!sessionResult.success) {
           context.logger?.error('Falha ao criar sessão', { error: sessionResult.error })
@@ -178,6 +181,9 @@ export class WorkerLauncher {
 
           // Se não tem mudanças, falha (agente mentiu ou não fez nada)
           if (!hasChanges) {
+            if (allowNoChanges) {
+              return { success: true, response, hasChanges: false, buildPassed: true, attempts, ...(model ? { model } : {}) }
+            }
             context.logger?.warn('Agente disse ::DONE:: mas não há mudanças no git')
             lastError = 'O programador declarou conclusão, mas não alterou o worktree autorizado'
             failures.push({ attempt: attempts, ...(model ? { model } : {}), error: lastError })
@@ -196,6 +202,7 @@ export class WorkerLauncher {
             context.logger?.warn('Build falhou', { error: buildResult.error })
             lastError = buildResult.error ?? 'Build ou testes falharam'
             correctiveContext = lastError
+            reusableSessionModel = model
             failures.push({ attempt: attempts, ...(model ? { model } : {}), error: lastError })
             if ('retryableByDeveloper' in buildResult && buildResult.retryableByDeveloper === false) {
               return {

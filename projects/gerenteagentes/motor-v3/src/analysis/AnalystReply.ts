@@ -6,6 +6,7 @@ export interface PlannedSubtask {
   deliverables: string[]
   requirementsCovered: string[]
   dependsOn: number[]
+  completionKind?: 'code_change' | 'analysis' | 'external_operation' | 'no_code_change'
 }
 
 export interface PlanCoverage {
@@ -44,6 +45,8 @@ export function parseAnalystReply(content: string, contractSchema?: unknown): An
     return {
       seq: integer(value.seq, index + 1), titulo, scope, acceptanceCriteria,
       deliverables, requirementsCovered, dependsOn: integers(value.depends_on),
+      ...(typeof value.completion_kind === 'string' && ['code_change', 'analysis', 'external_operation', 'no_code_change'].includes(value.completion_kind)
+        ? { completionKind: value.completion_kind as PlannedSubtask['completionKind'] } : {}),
     }
   })
 

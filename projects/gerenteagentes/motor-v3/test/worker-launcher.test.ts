@@ -208,6 +208,19 @@ describe('WorkerLauncher', () => {
     )
   })
 
+  it('conclui análise sem alteração Git quando o contrato permite no_code_change', async () => {
+    mocks.createSession.handler.mockResolvedValue({ success: true })
+    mocks.sendMessage.handler.mockResolvedValue({ success: true })
+    mocks.waitForCompletion.handler.mockResolvedValue({ success: true, data: { response: 'Diagnóstico final ::DONE::' } })
+    mocks.parseReply.handler.mockResolvedValue({ success: true, data: { hasDoneMarker: true } })
+    mocks.verifyGit.handler.mockResolvedValue({ success: true, data: { hasChanges: false } })
+
+    const result = await launcher.executeTask(mockContext, 'Analisar arquitetura', ['modelo'], undefined, undefined, true)
+
+    expect(result).toMatchObject({ success: true, hasChanges: false, buildPassed: true, attempts: 1 })
+    expect(mocks.runBuild.handler).not.toHaveBeenCalled()
+  })
+
   it('should exhaust max attempts and fail', async () => {
     mocks.createSession.handler.mockResolvedValue({ success: true })
     mocks.sendMessage.handler.mockResolvedValue({ success: true })

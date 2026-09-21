@@ -112,3 +112,44 @@ Criar uma tela de saúde de testes por projeto e ligação na tarefa, contendo:
 ## Critério de deploy
 
 Deploy nunca deve depender apenas do status `completed` da tarefa. Antes da promoção, deve existir um `pre_deploy` verde no commit exato a ser promovido. Qualquer falha, inclusive preexistente, mantém o deploy bloqueado até correção ou decisão humana explícita e auditada sobre uma política de exceção futura.
+
+## Estado da implementação
+
+Atualizado em 2026-09-21 após o endurecimento do fluxo.
+
+### Pronto
+
+- Baseline executado antes do DEV no commit-base da worktree.
+- Comparação por fingerprint normalizado, sem caminhos voláteis de worktree, ANSI, duração, PID, porta ou IDs transitórios.
+- Classificações `new`, `pre_existing`, `resolved`, `worsened` e `flaky_or_inconclusive` persistidas.
+- Somente `new` e `worsened` são devolvidos ao DEV; o prompt declara explicitamente que falhas preexistentes estão fora do rework.
+- Rework reaproveita a mesma sessão quando o mesmo modelo permanece disponível; troca de modelo abre sessão nova com contexto corretivo.
+- Fingerprint ambiental inclui Node, plataforma, arquitetura, identidade do container, hash de `package-lock.json`/`pnpm-lock.yaml`/`yarn.lock`, comandos e variáveis não secretas permitidas (`CI`, `NODE_ENV`, `TZ`, `LANG`).
+- Divergência ambiental produz comparação `inconclusive` e não atribui culpa ao DEV.
+- Uma regressão nova é repetida uma vez, por padrão, antes da atribuição. Se desaparecer, é marcada `flaky_or_inconclusive` e bloqueia promoção sem reprovar o DEV. `MOTOR_TEST_FLAKY_RETRIES=0` desativa a confirmação.
+- Baseline é reutilizado por projeto + commit + fingerprint ambiental + comandos; cada uso ganha um novo `test_run` com `reused_from_run_id`, preservando auditoria por tarefa/subtarefa.
+- Logs integrais são gravados como artefatos gzip; o banco mantém somente os 20 kB finais para consulta rápida e os caminhos dos artefatos.
+- Recuperação do Monitor usa worktree independente, registro próprio e limite operacional; falha publica diagnóstico no chat e deixa `test_recovery_attempts.status=awaiting_user` sem reabrir a entrega funcional.
+- O detalhe da tarefa mostra separadamente entrega, verificação, saúde do projeto, deploy e recuperação.
+- A tela de saúde mostra linha do tempo, classificações, evidências e resumo de projetos verdes, bloqueados e inconclusivos.
+- O pedido de deploy executa um gate `pre_deploy` novo no checkout de integração, verifica que o `HEAD` continua no commit esperado e só enfileira o deploy quando esse run estiver verde e sem falhas.
+- O SHA aprovado no `pre_deploy` acompanha o lote até `deploy-blue-green.sh`; o script compara `git rev-parse HEAD` antes de construir imagens e aborta se houver qualquer divergência.
+- Subtarefa definitivamente `failed` deriva a tarefa para `failed`, levando-a à estação **Atenção**. Isso corrige o defeito observado na tarefa 855.
+- Baseline, pós-DEV, rework, recuperação e pré-deploy são solicitados por `TEST_RUN_REQUESTED` em fila RabbitMQ dedicada (`motor.test-gates`). O pedido e o job são gravados atomicamente em `motor_outbox` e `test_gate_jobs`.
+- Cada gate produz `TEST_RUN_COMPLETED`, mantém `correlationId`/`causationId` e registra recebimento/resultado em `motor_operation_log`. Reentrega é idempotente pelo `request_message_id` único e pelo claim `pending → processing`.
+- A fila de gates possui consumidor, retry e DLQ próprios, evitando deadlock com o consumidor principal de tarefas que aguarda o resultado persistido.
+- O outbox suporta roteamento por `destination_queue`; mensagens de tarefa e de teste continuam usando a mesma garantia transacional, mas filas independentes.
+- Tarefas `verificacao` e subtarefas declaradas com `completion_kind=analysis|no_code_change|external_operation` podem terminar sem alteração Git. A conclusão emite `SUBTASK_NO_CODE_COMPLETED` e `TASK_EXECUTION_COMPLETED` pelo outbox.
+
+### Operação necessária antes de publicar esta revisão
+
+- Aplicar `migrations/0058_test_gate_hardening.sql`.
+- Aplicar `migrations/0059_message_driven_test_gates.sql`.
+- Compilar Motor v2, Motor v3 e aplicação antes do deploy.
+- O diretório padrão de artefatos é o volume persistente do workspace em `/data/workspace/projects/agentes/gerenteagentes/artifacts/test-runs`; `MOTOR_TEST_ARTIFACTS_DIR` permite substituí-lo sem alterar código.
+- Executar uma tarefa nova de ponta a ponta; a tarefa 855 não possui baseline retroativo porque falhou antes da implantação do mecanismo.
+
+### Ainda não implementado
+
+- Armazenamento remoto de artefatos (S3/MinIO ou equivalente), retenção e limpeza automática. O contrato atual usa filesystem.
+- Política de exceção manual ao bloqueio de deploy. Deliberadamente não existe bypass: qualquer gate vermelho, ausente ou inconclusivo bloqueia.

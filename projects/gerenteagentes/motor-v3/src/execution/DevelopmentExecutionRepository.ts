@@ -36,6 +36,7 @@ export interface SubtaskExecutionContext {
   workspacePath: string | null
   workspaceBranch: string | null
   workspaceBaseCommit: string | null
+  completionKind: string | null
 }
 
 interface TaskRow extends RowDataPacket {
@@ -72,6 +73,7 @@ interface ExecutionRow extends RowDataPacket {
   workspace_path: string | null
   workspace_branch: string | null
   workspace_base_commit: string | null
+  completion_kind: string | null
 }
 
 interface MotorLimitRow extends RowDataPacket {
@@ -292,7 +294,7 @@ export class MySqlDevelopmentExecutionRepository {
     const [rows] = await this.pool.query<ExecutionRow[]>(
       `SELECT t.id AS database_task_id, t.projeto_id AS project_id, t.external_id, t.titulo AS task_title,
               t.descricao AS task_description, s.id AS subtask_id, s.seq,
-              s.titulo AS subtask_title, s.scope, s.acceptance_criteria, s.deliverables,
+              s.titulo AS subtask_title, s.scope, s.acceptance_criteria, s.deliverables, s.completion_kind,
               pc.slug AS project_slug, pmc.repo_path, pmc.branch_trabalho,
               pmc.build_command, pmc.unit_test_command,
               COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), pc.slug, '') AS agent_id,
@@ -330,6 +332,7 @@ export class MySqlDevelopmentExecutionRepository {
       workspacePath: row.workspace_path ? String(row.workspace_path) : null,
       workspaceBranch: row.workspace_branch ? String(row.workspace_branch) : null,
       workspaceBaseCommit: row.workspace_base_commit ? String(row.workspace_base_commit) : null,
+      completionKind: row.completion_kind ? String(row.completion_kind) : null,
     }
   }
 
@@ -494,6 +497,52 @@ export class MySqlDevelopmentExecutionRepository {
     } finally {
       connection.release()
     }
+  }
+
+  async completeNoCodeExecution(context: SubtaskExecutionContext, source: QueueMessage, result: string): Promise<QueueMessage> {
+    const connection = await this.pool.getConnection()
+    try {
+      await connection.beginTransaction()
+      const [updated] = await connection.query<ResultSetHeader>(
+        `UPDATE subtarefas SET status='verified',resultado=?,workspace_status='approved',finalizada_em=NOW(),updated_at=NOW()
+         WHERE id=? AND status='running' AND completion_kind IN ('analysis','no_code_change','external_operation')`,
+        [result, context.subtaskId],
+      )
+      if (updated.affectedRows !== 1) throw new Error(`Subtarefa analítica ${context.subtaskId} não está em execução`)
+      const completed = createQueueMessage({
+        type: 'SUBTASK_NO_CODE_COMPLETED', taskId: context.taskId, executionId: source.executionId,
+        correlationId: source.correlationId ?? source.messageId, causationId: source.messageId,
+        payload: { subtaskId: context.subtaskId, seq: context.seq, completionKind: context.completionKind ?? 'analysis' },
+      })
+      await this.insertOutbox(connection, completed)
+      const reserved = await this.reserveNextSubtaskInTransaction(connection, context.databaseTaskId, context.taskId, completed)
+      if (reserved) {
+        await connection.commit()
+        return reserved.message
+      }
+      const [pending] = await connection.query<RowDataPacket[]>(
+        `SELECT COUNT(*) total FROM subtarefas WHERE tarefa_id=? AND status NOT IN ('verified','superseded')`, [context.databaseTaskId],
+      )
+      if (Number(pending[0]?.total ?? 0) > 0) throw new Error('Existem subtarefas analíticas não concluídas sem dependência elegível')
+      await connection.query(
+        `INSERT INTO task_runtime_facts (tarefa_id,terminal_status,terminal_at,integration_confirmed_at,created_at,updated_at)
+         VALUES (?,'completed',NOW(),NOW(),NOW(),NOW())
+         ON DUPLICATE KEY UPDATE terminal_status='completed',terminal_at=NOW(),integration_confirmed_at=NOW(),updated_at=NOW()`,
+        [context.databaseTaskId],
+      )
+      const taskCompleted = createQueueMessage({
+        type: 'TASK_EXECUTION_COMPLETED', taskId: context.taskId, executionId: source.executionId,
+        correlationId: source.correlationId ?? source.messageId, causationId: completed.messageId,
+        payload: { completionKind: context.completionKind ?? 'analysis', noCodeChange: true },
+      })
+      await this.insertOutbox(connection, taskCompleted)
+      await this.wakeCapacityWaiters(connection, taskCompleted)
+      await connection.commit()
+      return taskCompleted
+    } catch (error) {
+      await connection.rollback()
+      throw error
+    } finally { connection.release() }
   }
 
   private parseStringArray(value: string | null): string[] {

@@ -26,4 +26,12 @@ describe('TestGateService', () => {
     expect(failures).toHaveLength(1)
     expect(failures[0]).toMatchObject({ suite: 'test-setup', errorType: 'SetupFailure' })
   })
+
+  it('classifica aumento de ocorrências como worsened', () => {
+    const baseline = service.parseFailures(`FAIL tests/a.test.ts > caso\nError: boom`)
+    const after = service.parseFailures(`FAIL tests/a.test.ts > caso\nError: boom\nFAIL tests/a.test.ts > caso\nError: boom`)
+    const result = service.compare(after, baseline)
+    expect(result.newFailures).toHaveLength(1)
+    expect(result.newFailures[0]?.classification).toBe('worsened')
+  })
 })

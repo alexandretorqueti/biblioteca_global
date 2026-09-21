@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react"
+import { useEffect, useMemo, useState, type ReactNode } from "react"
 import { Alert, Box, Chip, CircularProgress, Collapse, IconButton, Paper, Stack, Table, TableBody, TableCell, TableHead, TableRow, Typography } from "@mui/material"
 import { KeyboardArrowDown, KeyboardArrowUp } from "@mui/icons-material"
 import { useApi } from "../../../apps/web/src/hooks/useApi"
@@ -67,6 +67,20 @@ export default function TestHistoryScreen(): ReactNode {
   const [runs, setRuns] = useState<TestRun[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const health = useMemo(() => {
+    const latestByProject = new Map<string, TestRun>()
+    for (const run of runs) {
+      const key = run.projeto_nome ?? "sem-projeto"
+      if (!latestByProject.has(key)) latestByProject.set(key, run)
+    }
+    const latest = [...latestByProject.values()]
+    return {
+      projects: latest.length,
+      healthy: latest.filter(run => run.status === "passed" && Number(run.failure_count ?? 0) === 0).length,
+      blocked: latest.filter(run => run.status !== "passed" || Number(run.failure_count ?? 0) > 0).length,
+      inconclusive: latest.filter(run => run.comparison_status === "inconclusive").length,
+    }
+  }, [runs])
   useEffect(() => {
     if (!api) return
     let active = true
@@ -78,6 +92,12 @@ export default function TestHistoryScreen(): ReactNode {
   }, [api])
   return <Stack spacing={2} data-testid="test-history-screen">
     <Box><Typography variant="h4" fontWeight={700}>Saúde e histórico de testes</Typography><Typography color="text.secondary">Baselines, validações pós-DEV, regressões e recuperações executadas pelo Monitor.</Typography></Box>
+    <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
+      <Chip label={`Projetos observados: ${health.projects}`} />
+      <Chip color="success" label={`Gate verde: ${health.healthy}`} />
+      <Chip color="error" label={`Deploy bloqueado: ${health.blocked}`} />
+      <Chip color="warning" label={`Inconclusivo: ${health.inconclusive}`} />
+    </Stack>
     {error && <Alert severity="error">{error}</Alert>}
     <Paper variant="outlined" sx={{ overflow: "auto" }}>
       {loading ? <Box sx={{ display: "grid", placeItems: "center", p: 5 }}><CircularProgress /></Box> : runs.length === 0 ? <Typography sx={{ p: 3 }} color="text.secondary">Nenhuma execução registrada.</Typography> :
@@ -85,4 +105,3 @@ export default function TestHistoryScreen(): ReactNode {
     </Paper>
   </Stack>
 }
-

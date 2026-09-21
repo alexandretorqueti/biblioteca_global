@@ -116,6 +116,13 @@ describe("deriveTaskStatus", () => {
     expect(deriveTaskStatus(facts({ persistedStatus: "cancelled", subtaskStatuses: ["pending"] }))).toBe("cancelled")
     expect(deriveTaskStatus(facts({ persistedStatus: "failed", subtaskStatuses: ["running"] }))).toBe("failed")
   })
+
+  it("leva para Atenção quando uma subtarefa falha definitivamente", () => {
+    expect(deriveTaskStatus(facts({
+      hasPersistedPlan: true,
+      subtaskStatuses: ["verified", "failed"],
+    }))).toBe("failed")
+  })
 })
 
 describe("isTaskExecutionEligible", () => {

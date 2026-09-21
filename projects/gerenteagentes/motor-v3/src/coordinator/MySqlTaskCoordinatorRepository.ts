@@ -111,7 +111,7 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
     try {
       await connection.beginTransaction()
       const [taskRows] = await connection.query<TaskRow[]>(
-        `SELECT t.id FROM tarefas t
+        `SELECT t.id, t.tipo FROM tarefas t
          INNER JOIN task_runtime_facts f ON f.tarefa_id = t.id
          WHERE (t.external_id = ? OR CAST(t.id AS CHAR) = ?)
            AND f.analysis_execution_id = ?
@@ -119,6 +119,7 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
         [taskId, taskId, executionId],
       )
       const databaseTaskId = taskRows[0]?.id
+      const taskType = String(taskRows[0]?.tipo ?? '')
       if (!databaseTaskId) throw new Error(`Claim de análise não encontrado para ${taskId}`)
 
       if (outcome.kind === 'questions') {
@@ -136,11 +137,12 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
           for (const subtask of outcome.subtasks) {
             const [result] = await connection.query<ResultSetHeader>(
               `INSERT INTO subtarefas
-                (tarefa_id, seq, titulo, scope, acceptance_criteria, deliverables, requirements_covered, depends_on_subtask_ids, status, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', NOW(), NOW())`,
+                (tarefa_id, seq, titulo, scope, acceptance_criteria, deliverables, requirements_covered, depends_on_subtask_ids, completion_kind, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NOW(), NOW())`,
               [databaseTaskId, subtask.seq, subtask.titulo, subtask.scope,
                 JSON.stringify(subtask.acceptanceCriteria), JSON.stringify(subtask.deliverables),
-                JSON.stringify(subtask.requirementsCovered), JSON.stringify([])],
+                JSON.stringify(subtask.requirementsCovered), JSON.stringify([]),
+                subtask.completionKind ?? (taskType === 'verificacao' ? 'analysis' : null)],
             )
             ids.set(subtask.seq, result.insertId)
           }
