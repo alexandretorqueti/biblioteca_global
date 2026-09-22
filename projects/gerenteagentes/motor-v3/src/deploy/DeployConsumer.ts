@@ -171,6 +171,7 @@ export class DeployConsumer {
         if (!contained) await execFileAsync('git', ['cherry-pick', commit], { cwd: path })
       }
       await execFileAsync('npm', ['ci', '--prefer-offline', '--no-audit', '--no-fund'], { cwd: path })
+      await execFileAsync('npm', ['ci', '--prefer-offline', '--no-audit', '--no-fund'], { cwd: `${path}/projects/gerenteagentes/motor-v3` })
       const { stdout: composed } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: path, encoding: 'utf8' })
       return { path, commit: composed.trim() }
     } catch (error) {
