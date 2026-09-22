@@ -141,7 +141,7 @@ describe('SubtaskExecutionConsumer', () => {
     expect(logger.append).toHaveBeenCalledWith(expect.objectContaining({ reasonCode: 'no_development_model' }))
   })
 
-  it('registra um baseline com falhas e ainda encaminha a tarefa ao DEV', async () => {
+  it('só encaminha a tarefa ao DEV depois de um baseline verde', async () => {
     const repository = {
       getExecutionContext: vi.fn().mockResolvedValue(context),
       getDevelopmentModelChain: vi.fn().mockResolvedValue(['modelo-a']),
@@ -149,14 +149,20 @@ describe('SubtaskExecutionConsumer', () => {
       recordWorkspace: vi.fn().mockResolvedValue(undefined),
       finishExecution: vi.fn().mockResolvedValue({ ...message, messageId: 'completed-baseline', type: 'SUBTASK_EXECUTION_COMPLETED' }),
     }
-    const worktrees = { prepare: vi.fn().mockResolvedValue({
+    const worktrees = {
+      prepareIntegration: vi.fn().mockResolvedValue({
+        path: '/repo', branch: 'base-desenvolvimento', baseCommit: 'abc',
+        integrationPath: '/repo', integrationBranch: 'base-desenvolvimento',
+      }),
+      prepare: vi.fn().mockResolvedValue({
       path: '/worktree', branch: 'motor-v3/task/901/a1', baseCommit: 'abc',
       integrationPath: '/repo', integrationBranch: 'base-desenvolvimento',
-    }) }
+      }),
+    }
     const worker = { executeTask: vi.fn().mockResolvedValue({ success: true, attempts: 1, postDevRunId: 52 }) }
     const logger = { append: vi.fn().mockResolvedValue(undefined) }
     const testGate = {
-      request: vi.fn().mockResolvedValue({ id: 51, phase: 'baseline', status: 'failed', failures: [{ fingerprint: 'known' }] }),
+      request: vi.fn().mockResolvedValue({ id: 51, phase: 'baseline', status: 'passed', failures: [] }),
     }
     const consumer = new SubtaskExecutionConsumer(repository as never, worktrees as never, worker as never, {}, {}, logger, testGate as never)
 
@@ -167,10 +173,64 @@ describe('SubtaskExecutionConsumer', () => {
     }), message)
     expect(worker.executeTask).toHaveBeenCalledWith(expect.objectContaining({ baselineRunId: 51 }), expect.any(Object), ['modelo-a'], expect.any(Function), expect.any(Function), false)
     expect(repository.finishExecution).toHaveBeenCalledWith(context, message, expect.objectContaining({ success: true }))
-    expect(logger.append).toHaveBeenCalledWith(expect.objectContaining({
-      sequence: 3, primitiveCode: 'run_test_baseline', outcome: 'executed',
-    }))
-    expect(logger.append).toHaveBeenLastCalledWith(expect.objectContaining({ sequence: 5, phase: 'completed' }))
+    expect(logger.append).toHaveBeenCalledWith(expect.objectContaining({ primitiveCode: 'run_test_baseline', outcome: 'succeeded' }))
+    expect(logger.append).toHaveBeenLastCalledWith(expect.objectContaining({ phase: 'completed' }))
+  })
+
+  it('bloqueia antes do DEV quando o baseline ambiental permanece vermelho', async () => {
+    const repository = {
+      getExecutionContext: vi.fn().mockResolvedValue(context),
+      recordWorkspace: vi.fn(), getDevelopmentModelChain: vi.fn(),
+      blockExecution: vi.fn().mockResolvedValue({ ...message, messageId: 'blocked-1', type: 'SUBTASK_EXECUTION_BLOCKED' }),
+    }
+    const integration = {
+      path: '/repo', branch: 'base-desenvolvimento', baseCommit: 'abc',
+      integrationPath: '/repo', integrationBranch: 'base-desenvolvimento',
+    }
+    const worktrees = { prepareIntegration: vi.fn().mockResolvedValue(integration), prepare: vi.fn() }
+    const worker = { executeTask: vi.fn() }
+    const logger = { append: vi.fn().mockResolvedValue(undefined) }
+    const failure = { fingerprint: 'missing-package', suite: 'queue.test.ts', errorType: 'Error', normalizedMessage: "Cannot find package 'amqplib'", rawExcerpt: '', occurrenceCount: 1, classification: 'unclassified' }
+    const testGate = { request: vi.fn().mockResolvedValue({ id: 60, phase: 'baseline', status: 'failed', failures: [failure] }) }
+    const environment = { prepare: vi.fn().mockResolvedValue(['projects/gerenteagentes/motor-v3']) }
+    const consumer = new SubtaskExecutionConsumer(repository as never, worktrees as never, worker as never, {}, {}, logger, testGate as never, environment as never)
+
+    await consumer.handle(message)
+
+    expect(testGate.request).toHaveBeenCalledTimes(2)
+    expect(worktrees.prepare).not.toHaveBeenCalled()
+    expect(worker.executeTask).not.toHaveBeenCalled()
+    expect(repository.blockExecution).toHaveBeenCalledWith(context, message, expect.stringContaining('ambiente do baseline'))
+  })
+
+  it('aciona o Monitor na integração e libera o DEV somente após recuperação verde', async () => {
+    const repository = {
+      getExecutionContext: vi.fn().mockResolvedValue(context),
+      getDevelopmentModelChain: vi.fn().mockResolvedValue(['modelo-a']),
+      recordModelFailure: vi.fn().mockResolvedValue(undefined), recordWorkspace: vi.fn().mockResolvedValue(undefined),
+      finishExecution: vi.fn().mockResolvedValue({ ...message, messageId: 'completed-recovered', type: 'SUBTASK_EXECUTION_COMPLETED' }),
+    }
+    const integration = {
+      path: '/integration', branch: 'integration-task', baseCommit: 'abc',
+      integrationPath: '/integration', integrationBranch: 'integration-task',
+    }
+    const worktrees = {
+      prepareIntegration: vi.fn().mockResolvedValue(integration),
+      prepare: vi.fn().mockResolvedValue({ path: '/worktree', branch: 'dev', baseCommit: 'fixed', integrationPath: '/integration', integrationBranch: 'integration-task' }),
+    }
+    const worker = { executeTask: vi.fn().mockResolvedValue({ success: true, attempts: 1 }) }
+    const logger = { append: vi.fn().mockResolvedValue(undefined) }
+    const failure = { fingerprint: 'real-test', suite: 'feature.test.ts', errorType: 'AssertionError', normalizedMessage: 'expected true', rawExcerpt: '', occurrenceCount: 1, classification: 'unclassified' }
+    const testGate = { request: vi.fn().mockResolvedValue({ id: 70, phase: 'baseline', status: 'failed', failures: [failure] }) }
+    const environment = { prepare: vi.fn().mockResolvedValue([]) }
+    const recovery = { recover: vi.fn().mockResolvedValue({ success: true, baseline: { id: 71, phase: 'baseline', status: 'passed', failures: [] }, integrationCommit: 'fixed' }) }
+    const consumer = new SubtaskExecutionConsumer(repository as never, worktrees as never, worker as never, {}, {}, logger, testGate as never, environment as never, recovery as never)
+
+    await consumer.handle(message)
+
+    expect(recovery.recover).toHaveBeenCalledWith(context, integration, expect.objectContaining({ id: 70 }), message)
+    expect(worker.executeTask).toHaveBeenCalledWith(expect.objectContaining({ baselineRunId: 71, baseCommitSha: 'fixed' }), expect.any(Object), ['modelo-a'], expect.any(Function), expect.any(Function), false)
+    expect(repository.finishExecution).toHaveBeenCalledWith(context, message, expect.objectContaining({ success: true }))
   })
 })
 // @vitest-environment node

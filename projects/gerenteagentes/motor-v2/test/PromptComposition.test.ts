@@ -9,7 +9,7 @@ describe("composição do prompt de desenvolvimento", () => {
       "PROMPT DA TABELA",
     )
 
-    expect(result.parts.map((part) => part.source)).toEqual(["system", "table", "system"])
+    expect(result.parts.map((part) => part.source)).toEqual(["system", "system", "table", "system"])
     expect(result.finalText).toContain("resultado esperado de pwd): /worktree/a1/projects/gerenteagentes")
     expect(result.finalText).toContain("git rev-parse --show-toplevel): /worktree/a1")
     expect(result.finalText).toContain("esses caminhos não precisam ser iguais")

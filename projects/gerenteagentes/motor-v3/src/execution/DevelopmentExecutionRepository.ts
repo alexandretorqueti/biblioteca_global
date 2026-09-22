@@ -507,6 +507,40 @@ export class MySqlDevelopmentExecutionRepository {
     }
   }
 
+  async blockExecution(
+    context: SubtaskExecutionContext,
+    source: QueueMessage,
+    reason: string,
+  ): Promise<QueueMessage> {
+    const connection = await this.pool.getConnection()
+    try {
+      await connection.beginTransaction()
+      const message = createQueueMessage({
+        type: 'SUBTASK_EXECUTION_BLOCKED',
+        taskId: context.taskId,
+        executionId: source.executionId,
+        correlationId: source.correlationId ?? source.messageId,
+        causationId: source.messageId,
+        payload: { subtaskId: context.subtaskId, seq: context.seq, reason, phase: 'baseline_preflight' },
+      })
+      const [updated] = await connection.query<ResultSetHeader>(
+        `UPDATE subtarefas SET status='blocked', resultado=?, updated_at=NOW()
+          WHERE id=? AND status='running'`,
+        [reason.slice(0, 60_000), context.subtaskId],
+      )
+      if (updated.affectedRows !== 1) throw new Error(`Subtarefa ${context.subtaskId} não está em execução`)
+      await this.insertOutbox(connection, message)
+      await this.wakeCapacityWaiters(connection, message)
+      await connection.commit()
+      return message
+    } catch (error) {
+      await connection.rollback()
+      throw error
+    } finally {
+      connection.release()
+    }
+  }
+
   async completeNoCodeExecution(context: SubtaskExecutionContext, source: QueueMessage, result: string): Promise<QueueMessage> {
     const connection = await this.pool.getConnection()
     try {

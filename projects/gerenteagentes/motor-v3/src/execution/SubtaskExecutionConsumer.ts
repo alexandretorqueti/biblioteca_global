@@ -5,7 +5,13 @@ import type { PrimitiveContext } from '../primitives/types.js'
 import type { DevelopmentPrompt, WorkerLauncher, WorkerResult } from '../worker-launcher/WorkerLauncher.js'
 import type { MySqlDevelopmentExecutionRepository, SubtaskExecutionContext } from './DevelopmentExecutionRepository.js'
 import type { GitWorktreePreparer } from './GitWorktreePreparer.js'
-import type { TestGateOrchestrator, TestRunPhase } from '../testing/index.js'
+import type {
+  BaselinePreflightRecovery,
+  TestGateOrchestrator,
+  TestRunPhase,
+  TestRunResult,
+  WorkspaceEnvironmentPreparer,
+} from '../testing/index.js'
 
 export const SUBTASK_EXECUTION_REQUESTED = 'SUBTASK_EXECUTION_REQUESTED'
 
@@ -18,6 +24,8 @@ export class SubtaskExecutionConsumer {
     private readonly db: unknown,
     private readonly operationLogger?: OperationLogger,
     private readonly testGate?: TestGateOrchestrator,
+    private readonly environmentPreparer?: WorkspaceEnvironmentPreparer,
+    private readonly baselineRecovery?: BaselinePreflightRecovery,
   ) {}
 
   async handle(message: QueueMessage): Promise<void> {
@@ -39,6 +47,72 @@ export class SubtaskExecutionConsumer {
       return
     }
 
+    const noCode = ['analysis', 'no_code_change', 'external_operation'].includes(execution.completionKind ?? '')
+    let baselineRunId: number | undefined
+    let sequence = 2
+    if (this.testGate && !noCode) {
+      let integration
+      try {
+        integration = await this.worktrees.prepareIntegration({
+          taskId: execution.taskId,
+          repoPath: execution.repoPath,
+          baseBranch: execution.baseBranch,
+        })
+        await this.log(operationId, sequence++, message, {
+          phase: 'primitive', outcome: 'succeeded', subtaskId, primitiveCode: 'prepare_integration_worktree',
+          result: { workspacePath: integration.integrationPath, branch: integration.integrationBranch, baseCommit: integration.baseCommit },
+        })
+        if (this.environmentPreparer) {
+          const packages = await this.environmentPreparer.prepare(integration.integrationPath)
+          await this.log(operationId, sequence++, message, {
+            phase: 'primitive', outcome: 'succeeded', subtaskId, primitiveCode: 'prepare_test_environment', result: { packages },
+          })
+        }
+      } catch (error) {
+        await this.finishPreparationFailure(operationId, message, execution, error)
+        return
+      }
+
+      let baseline = await this.runBaseline(execution, subtaskId, integration, message)
+      await this.log(operationId, sequence++, message, {
+        phase: 'primitive', outcome: baseline.status === 'passed' ? 'succeeded' : 'executed', subtaskId,
+        primitiveCode: 'run_test_baseline', result: { testRunId: baseline.id, status: baseline.status, failureCount: baseline.failures.length },
+      })
+      if (baseline.status !== 'passed' && this.isEnvironmentFailure(baseline) && this.environmentPreparer) {
+        await this.environmentPreparer.prepare(integration.integrationPath)
+        baseline = await this.runBaseline(execution, subtaskId, integration, message)
+        await this.log(operationId, sequence++, message, {
+          phase: 'primitive', outcome: baseline.status === 'passed' ? 'succeeded' : 'failed', subtaskId,
+          primitiveCode: 'retry_environment_baseline', result: { testRunId: baseline.id, status: baseline.status, failureCount: baseline.failures.length },
+        })
+      }
+      if (baseline.status !== 'passed') {
+        if (this.isEnvironmentFailure(baseline)) {
+          await this.finishPreflightBlock(operationId, sequence, message, execution,
+            `O ambiente do baseline não pôde ser preparado automaticamente: ${this.failureSummary(baseline)}`)
+          return
+        }
+        if (!this.baselineRecovery) {
+          await this.finishPreflightBlock(operationId, sequence, message, execution,
+            `Baseline vermelho e recuperação pelo Monitor indisponível: ${this.failureSummary(baseline)}`)
+          return
+        }
+        const recovered = await this.baselineRecovery.recover(execution, integration, baseline, message)
+        await this.log(operationId, sequence++, message, {
+          phase: 'primitive', outcome: recovered.success ? 'succeeded' : 'failed', subtaskId,
+          primitiveCode: 'recover_baseline_before_development',
+          result: { success: recovered.success, testRunId: recovered.baseline?.id, integrationCommit: recovered.integrationCommit, error: recovered.error },
+        })
+        if (!recovered.success || !recovered.baseline) {
+          await this.finishPreflightBlock(operationId, sequence, message, execution,
+            recovered.error ?? 'Monitor não deixou o baseline verde')
+          return
+        }
+        baseline = recovered.baseline
+      }
+      baselineRunId = baseline.id
+    }
+
     let workspace: { path: string; branch: string; baseCommit: string; integrationPath: string; integrationBranch: string }
     try {
       workspace = await this.worktrees.prepare({
@@ -47,31 +121,16 @@ export class SubtaskExecutionConsumer {
         repoPath: execution.repoPath,
         baseBranch: execution.baseBranch,
       })
+      if (this.environmentPreparer && !noCode) await this.environmentPreparer.prepare(workspace.path)
     } catch (error) {
       await this.finishPreparationFailure(operationId, message, execution, error)
       return
     }
     await this.repository.recordWorkspace(subtaskId, workspace.path, workspace.branch, workspace.baseCommit)
-    await this.log(operationId, 2, message, {
+    await this.log(operationId, sequence++, message, {
       phase: 'primitive', outcome: 'succeeded', subtaskId, primitiveCode: 'prepare_worktree',
       result: { workspacePath: workspace.path, branch: workspace.branch, baseCommit: workspace.baseCommit },
     })
-
-    const noCode = ['analysis', 'no_code_change', 'external_operation'].includes(execution.completionKind ?? '')
-    let baselineRunId: number | undefined
-    if (this.testGate && !noCode) {
-      const baseline = await this.testGate.request({
-        projectId: execution.projectId, taskDatabaseId: execution.databaseTaskId, subtaskId,
-        phase: 'baseline', commitSha: workspace.baseCommit, baseCommitSha: workspace.baseCommit,
-        branchName: workspace.integrationBranch, workspacePath: workspace.integrationPath,
-        buildCommand: execution.buildCommand, testCommand: execution.testCommand,
-      }, message)
-      baselineRunId = baseline.id
-      await this.log(operationId, 3, message, {
-        phase: 'primitive', outcome: baseline.status === 'passed' ? 'succeeded' : 'executed', subtaskId,
-        primitiveCode: 'run_test_baseline', result: { testRunId: baseline.id, status: baseline.status, failureCount: baseline.failures.length },
-      })
-    }
 
     const context: PrimitiveContext = {
       taskId: execution.taskId,
@@ -111,7 +170,7 @@ export class SubtaskExecutionConsumer {
       this.testGate && !noCode ? async (gateContext, phase) => this.runDifferentialGate(execution, gateContext, phase, message) : undefined,
       noCode,
     )
-    const workerSequence = this.testGate ? 4 : 3
+    const workerSequence = sequence
     await this.log(operationId, workerSequence, message, {
       phase: 'primitive', outcome: result.success ? 'succeeded' : 'failed', subtaskId,
       primitiveCode: 'start_programmer', result: this.resultForLog(result),
@@ -122,6 +181,50 @@ export class SubtaskExecutionConsumer {
     await this.log(operationId, workerSequence + 1, message, {
       phase: 'completed', outcome: result.success ? 'succeeded' : 'failed', subtaskId,
       result: { nextMessageId: next.messageId, nextMessageType: next.type, attempts: result.attempts },
+    })
+  }
+
+  private async runBaseline(
+    execution: SubtaskExecutionContext,
+    subtaskId: number,
+    integration: { integrationPath: string; integrationBranch: string; baseCommit: string },
+    source: QueueMessage,
+  ): Promise<TestRunResult> {
+    if (!this.testGate) throw new Error('Gate de testes indisponível')
+    return this.testGate.request({
+      projectId: execution.projectId, taskDatabaseId: execution.databaseTaskId, subtaskId,
+      phase: 'baseline', commitSha: integration.baseCommit, baseCommitSha: integration.baseCommit,
+      branchName: integration.integrationBranch, workspacePath: integration.integrationPath,
+      buildCommand: execution.buildCommand, testCommand: execution.testCommand,
+    }, source)
+  }
+
+  private isEnvironmentFailure(run: TestRunResult): boolean {
+    return run.failures.length > 0 && run.failures.every(failure =>
+      /cannot find (?:package|module)|failed to resolve import|command not found|enoent|npm error/i.test(
+        `${failure.errorType} ${failure.normalizedMessage}`,
+      ),
+    )
+  }
+
+  private failureSummary(run: TestRunResult): string {
+    return run.failures.length === 0
+      ? 'o comando terminou com erro sem diagnóstico estruturado'
+      : run.failures.map(failure => `${failure.suite}: ${failure.normalizedMessage}`).join('; ')
+  }
+
+  private async finishPreflightBlock(
+    operationId: string,
+    sequence: number,
+    message: QueueMessage,
+    execution: SubtaskExecutionContext,
+    reason: string,
+  ): Promise<void> {
+    const next = await this.repository.blockExecution(execution, message, reason)
+    await this.log(operationId, sequence, message, {
+      phase: 'completed', outcome: 'failed', subtaskId: execution.subtaskId,
+      reasonCode: 'baseline_preflight_failed',
+      result: { nextMessageId: next.messageId, nextMessageType: next.type, attempts: 0, error: reason },
     })
   }
 

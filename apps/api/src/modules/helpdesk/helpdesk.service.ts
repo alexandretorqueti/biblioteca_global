@@ -2,7 +2,7 @@
  * helpdesk.service.ts — Lógica de negócio do HelpDesk.
  *
  * Orquestra persistência (core db via ProjectDbFactory), resolução de agente
- * do projeto (projetosCaptados.agenteId + projetoModelChain) e ponte com o
+ * do projeto (projetosCaptados.agenteId + project_model_selection) e ponte com o
  * BFF OpenClaw (HelpDeskBridgeService).
  */
 import { Injectable, Inject, Logger } from "@nestjs/common"
@@ -11,7 +11,7 @@ import { sql } from "drizzle-orm"
 import { PROJECT_DB_FACTORY, type ProjectDbFactory } from "../crud/project-db.factory"
 import { CORE_DB, type CoreDb } from "../../database/database.module"
 import * as coreSchema from "../../../../../database/schema"
-import { agentes, projetosCaptados, projetoModelChain } from "../../../../../projects/gerenteagentes/schema"
+import { agentes, projetosCaptados } from "../../../../../projects/gerenteagentes/schema"
 import { HelpDeskBridgeService } from "./helpdesk.bridge"
 
 const { helpdeskSessoes: helpDeskSessionTable, helpdeskMensagens: helpDeskMessageTable } = coreSchema
@@ -308,13 +308,13 @@ export class HelpDeskService {
   }
 
   // ===========================================================================
-  // RESOLUÇÃO DE AGENTE (projetosCaptados + projetoModelChain)
+  // RESOLUÇÃO DE AGENTE (projetosCaptados + project_model_selection)
   // ===========================================================================
 
   private async obterProjetoCaptado(projetoId: number) {
     const catalogoDb = await this.factory.obter({ id: GERENTE_AGENTES_PROJECT_ID })
     const [projeto] = await catalogoDb
-      .select({ id: projetosCaptados.id, agenteId: projetosCaptados.agenteId })
+      .select({ id: projetosCaptados.id, slug: projetosCaptados.slug, agenteId: projetosCaptados.agenteId })
       .from(projetosCaptados)
       .where(eq(projetosCaptados.plataformaProjetoId, projetoId))
       .limit(1)
@@ -352,15 +352,16 @@ export class HelpDeskService {
 
     if (!projeto) return [{ modelo: "biblioteca-global" }]
 
-    const rows = await catalogoDb
-      .select({ modelo: projetoModelChain.modelo })
-      .from(projetoModelChain)
-      .where(and(
-        eq(projetoModelChain.projetoId, projeto.id),
-        eq(projetoModelChain.fase, fase),
-        eq(projetoModelChain.ativo, true),
-      ))
-      .orderBy(asc(projetoModelChain.posicao))
+    const tipo = fase === "analysis" ? "ANALYST" : fase.toUpperCase()
+    const [result] = await catalogoDb.execute(sql`
+      SELECT model AS modelo
+        FROM project_model_selection
+       WHERE project_slug = ${projeto.slug}
+         AND tipo = ${tipo}
+         AND enabled = 1
+       ORDER BY ordem
+    `)
+    const rows = result as unknown as Array<{ modelo: string }>
 
     if (rows.length > 0) {
       this.logger.log(`Cadeia para projeto ${projetoId} [${fase}]: ${rows.map(r => r.modelo).join(", ")}`)

@@ -351,7 +351,9 @@ export class TestGateService {
   }
 
   private normalizePath(value: string): string {
-    return value.replace(/\/data\/workspace\/projects\/agentes\/[^/]+\/worktrees\/[^/]+\/[^/]+\/[^/]+\//g, '').replace(/^.*?(?=(?:apps|projects|packages|tests|database)\/)/, '')
+    return value
+      .replace(/\/data\/workspace\/projects\/agentes\/[^/]+\/worktrees\/[^/]+\/(?:integration|[^/]+\/[^/]+)\//g, '')
+      .replace(/^.*?(?=(?:apps|projects|packages|tests|database)\/)/, '')
   }
 
   private normalizeMessage(value: string): string {

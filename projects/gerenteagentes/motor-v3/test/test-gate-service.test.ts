@@ -13,6 +13,13 @@ describe('TestGateService', () => {
     expect(result.preExistingFailures[0]?.classification).toBe('pre_existing')
   })
 
+  it('gera o mesmo fingerprint para a integração e o worktree da subtarefa', () => {
+    const baseline = service.parseFailures(`FAIL projects/gerenteagentes/motor-v3/test/queue.test.ts\nError: Cannot find package 'amqplib' imported from /data/workspace/projects/agentes/gerenteagentes/worktrees/task-p6-861/integration/projects/gerenteagentes/motor-v3/src/queue/RabbitMqTransport.ts`)
+    const after = service.parseFailures(`FAIL projects/gerenteagentes/motor-v3/test/queue.test.ts\nError: Cannot find package 'amqplib' imported from /data/workspace/projects/agentes/gerenteagentes/worktrees/task-p6-861/1172/a1/projects/gerenteagentes/motor-v3/src/queue/RabbitMqTransport.ts`)
+    expect(after[0]?.fingerprint).toBe(baseline[0]?.fingerprint)
+    expect(service.compare(after, baseline).newFailures).toHaveLength(0)
+  })
+
   it('classifica falhas novas e resolvidas', () => {
     const baseline = service.parseFailures(`FAIL tests/old.test.ts > antigo\nError: erro antigo`)
     const after = service.parseFailures(`FAIL tests/new.test.ts > novo\nTypeError: erro novo`)

@@ -42,7 +42,7 @@ import { getDeployDiagnostics } from './deploy/DeployDiagnostics.js'
 import { DeployConsumer } from './deploy/DeployConsumer.js'
 import { DeployRepository } from './deploy/DeployRepository.js'
 import { RemoteBlueGreenDeployer } from './deploy/RemoteBlueGreenDeployer.js'
-import { TestGateConsumer, TestGateOrchestrator, TestGateService, TestRecoveryConsumer } from './testing/index.js'
+import { BaselinePreflightRecovery, TestGateConsumer, TestGateOrchestrator, TestGateService, TestRecoveryConsumer, WorkspaceEnvironmentPreparer } from './testing/index.js'
 
 // Config
 const PORT = parseInt(process.env.MOTOR_PORT || '3010')
@@ -299,6 +299,15 @@ async function start() {
       operationLogger,
     )
     const worktreePreparer = new GitWorktreePreparer(process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/agentes/gerenteagentes/worktrees')
+    const environmentPreparer = new WorkspaceEnvironmentPreparer()
+    const monitorWorker = new WorkerLauncher({
+      maxAttempts: Number(process.env.MOTOR_MONITOR_MAX_ATTEMPTS || 2),
+      timeoutMs: Number(process.env.MOTOR_WORKER_TIMEOUT_MS || 1800000),
+      sandboxRoot: process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/agentes/gerenteagentes/worktrees',
+    })
+    const baselineRecovery = new BaselinePreflightRecovery(
+      pool, monitorWorker, new WorkerConsoleAdapter(consoleApi), db, testGate,
+    )
     subtaskExecutionConsumer = new SubtaskExecutionConsumer(
       developmentRepository,
       worktreePreparer,
@@ -311,6 +320,8 @@ async function start() {
       db,
       operationLogger,
       testGate,
+      environmentPreparer,
+      baselineRecovery,
     )
     subtaskVerificationConsumer = new SubtaskVerificationConsumer(
       developmentRepository,
@@ -319,11 +330,7 @@ async function start() {
     )
     testRecoveryConsumer = new TestRecoveryConsumer(
       pool, worktreePreparer,
-      new WorkerLauncher({
-        maxAttempts: Number(process.env.MOTOR_MONITOR_MAX_ATTEMPTS || 2),
-        timeoutMs: Number(process.env.MOTOR_WORKER_TIMEOUT_MS || 1800000),
-        sandboxRoot: process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/agentes/gerenteagentes/worktrees',
-      }),
+      monitorWorker,
       new WorkerConsoleAdapter(consoleApi), db, testGate,
     )
 

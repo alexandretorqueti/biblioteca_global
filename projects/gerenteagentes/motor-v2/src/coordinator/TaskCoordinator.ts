@@ -3140,7 +3140,7 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     try {
       const sha = execFileSync(
         "git",
-        ["rev-parse", "--verify", worker.workspace.branch],
+        ["-c", "safe.directory=*", "rev-parse", "--verify", worker.workspace.branch],
         { cwd: worker.workspace.path, encoding: "utf8" },
       ).trim()
       return /^[a-f0-9]{7,40}$/.test(sha) ? sha : undefined
