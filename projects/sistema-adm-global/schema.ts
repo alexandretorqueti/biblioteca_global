@@ -8,6 +8,7 @@
  * - Contatos do site: mensagens recebidas pelo site
  * - Circulares: comunicados internos
  * - Departamentos: departamentos da empresa
+ * - Colaboradores: cadastro de colaboradores da empresa
  * - Usuários: admin/usuario do projeto (escopo local)
  * - Config empresa: configurações da empresa (singleton)
  *
@@ -175,6 +176,42 @@ export const departamentos = mysqlTable("departamentos", {
 })
 
 // ============================================================================
+// COLABORADORES
+// ============================================================================
+
+export const colaboradores = mysqlTable("colaboradores", {
+  id: bigint("id", { mode: "number", unsigned: true })
+    .primaryKey()
+    .autoincrement(),
+  nomeCompleto: varchar("nome_completo", { length: 200 }).notNull(),
+  cpf: varchar("cpf", { length: 14 }).notNull().unique(),
+  rg: varchar("rg", { length: 20 }),
+  email: varchar("email", { length: 200 }).notNull(),
+  telefone: varchar("telefone", { length: 30 }).notNull(),
+  dataNascimento: varchar("data_nascimento", { length: 10 }).notNull(),
+  cargo: varchar("cargo", { length: 100 }).notNull(),
+  departamentoId: bigint("departamento_id", { mode: "number", unsigned: true })
+    .references(() => departamentos.id, { onDelete: "set null" }),
+  dataAdmissao: varchar("data_admissao", { length: 10 }).notNull(),
+  tipoVinculo: mysqlEnum("tipo_vinculo", ["clt", "pj", "estagio", "temporario", "apprentiz"]).notNull().default("clt"),
+  logradouro: varchar("logradouro", { length: 200 }),
+  numero: varchar("numero", { length: 20 }),
+  complemento: varchar("complemento", { length: 100 }),
+  bairro: varchar("bairro", { length: 100 }),
+  cidade: varchar("cidade", { length: 100 }),
+  uf: varchar("uf", { length: 2 }),
+  cep: varchar("cep", { length: 10 }),
+  contatoEmergenciaNome: varchar("contato_emergencia_nome", { length: 200 }),
+  contatoEmergenciaTelefone: varchar("contato_emergencia_telefone", { length: 30 }),
+  ativo: boolean("ativo").notNull().default(true),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at")
+    .notNull()
+    .defaultNow()
+    .onUpdateNow(),
+})
+
+// ============================================================================
 // CONFIG EMPRESA (singleton — um registro apenas)
 // ============================================================================
 
@@ -235,6 +272,28 @@ export const annotations = {
   },
   departamentos: {
     nome: { label: "Nome do Departamento", fullWidth: true, maxLength: 50 },
+  },
+  colaboradores: {
+    nomeCompleto: { label: "Nome Completo", fullWidth: true, maxLength: 200 },
+    cpf: { label: "CPF", maxLength: 14 },
+    rg: { label: "RG", maxLength: 20 },
+    email: { label: "E-mail", type: "email", fullWidth: true, maxLength: 200 },
+    telefone: { label: "Telefone", maxLength: 30 },
+    dataNascimento: { label: "Data de Nascimento", maxLength: 10 },
+    cargo: { label: "Cargo", maxLength: 100 },
+    departamentoId: { label: "Departamento" },
+    dataAdmissao: { label: "Data de Admissão", maxLength: 10 },
+    tipoVinculo: { label: "Tipo de Vínculo" },
+    logradouro: { label: "Logradouro", fullWidth: true, maxLength: 200 },
+    numero: { label: "Número", maxLength: 20 },
+    complemento: { label: "Complemento", maxLength: 100 },
+    bairro: { label: "Bairro", maxLength: 100 },
+    cidade: { label: "Cidade", maxLength: 100 },
+    uf: { label: "UF", maxLength: 2 },
+    cep: { label: "CEP", maxLength: 10 },
+    contatoEmergenciaNome: { label: "Contato de Emergência (Nome)", fullWidth: true, maxLength: 200 },
+    contatoEmergenciaTelefone: { label: "Contato de Emergência (Telefone)", maxLength: 30 },
+    ativo: { label: "Ativo" },
   },
   config_empresa: {
     nome: { label: "Nome da Empresa", fullWidth: true, maxLength: 200 },

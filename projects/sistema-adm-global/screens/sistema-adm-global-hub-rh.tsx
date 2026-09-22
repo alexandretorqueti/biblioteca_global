@@ -3,7 +3,7 @@
  *
  * Cards:
  * - Circulares → navega para a tela de circulares
- * - Colaboradores → desabilitado (Em breve)
+ * - Colaboradores → navega para a tela de colaboradores
  * - Treinamentos → desabilitado (Em breve)
  *
  * Navegação via custom event `bg:navigate` consumido pelo GeradorSistema.
@@ -43,8 +43,7 @@ const cards: HubCard[] = [
   {
     label: "Colaboradores",
     icon: <GroupsRounded sx={{ fontSize: 48 }} />,
-    disabled: true,
-    badge: "Em breve",
+    path: "colaboradores",
   },
   {
     label: "Treinamentos",

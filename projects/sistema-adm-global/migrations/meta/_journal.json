@@ -15,6 +15,13 @@
       "when": 1788915799536,
       "tag": "0001_certain_zarda",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1790135520000,
+      "tag": "0002_colaboradores",
+      "breakpoints": true
     }
   ]
 }
