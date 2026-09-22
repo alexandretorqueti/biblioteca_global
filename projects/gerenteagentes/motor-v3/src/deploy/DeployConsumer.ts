@@ -170,6 +170,7 @@ export class DeployConsumer {
         const contained = await execFileAsync('git', ['merge-base', '--is-ancestor', commit, 'HEAD'], { cwd: path }).then(() => true, () => false)
         if (!contained) await execFileAsync('git', ['cherry-pick', commit], { cwd: path })
       }
+      await execFileAsync('npm', ['ci', '--prefer-offline', '--no-audit', '--no-fund'], { cwd: path })
       const { stdout: composed } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: path, encoding: 'utf8' })
       return { path, commit: composed.trim() }
     } catch (error) {
