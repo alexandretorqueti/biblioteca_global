@@ -14,5 +14,18 @@ describe('DerivedTaskStatusResolver', () => {
     const resolver = new DerivedTaskStatusResolver({ query } as never)
     await expect(resolver.resolve('task-p6-855')).resolves.toBe('failed')
   })
+
+  it('prioriza bloqueio de deploy sobre integração concluída', async () => {
+    const query = vi.fn()
+      .mockResolvedValueOnce([[{
+        id: 857, paused_at: null, resource_wait_key: null,
+        analysis_started_at: null, terminal_status: 'completed',
+        last_clarification_role: null, awaiting_interaction: 0,
+        has_active_blocker: 1, deploy_succeeded: 0, deploy_failed: 1,
+      }]])
+      .mockResolvedValueOnce([[{ status: 'verified' }]])
+    const resolver = new DerivedTaskStatusResolver({ query } as never)
+    await expect(resolver.resolve('task-p6-857')).resolves.toBe('blocked')
+  })
 })
 // @vitest-environment node

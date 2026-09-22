@@ -27,38 +27,60 @@ export class DeployConsumer {
     if (message.type === 'DEPLOY_REQUESTED') return this.accept(message)
     if (message.type === 'DEPLOY_BATCH_DISPATCH_REQUESTED') return this.dispatch(message)
     if (message.type === 'DEPLOY_RECONCILIATION_REQUESTED') return this.reconcile(message)
+    if (message.type === 'DEPLOY_BATCH_RESULT_RECEIVED') return this.receiveResult(message)
+    if (message.type === 'TEST_RUN_COMPLETED') return this.afterGate(message)
+    if (message.type === 'TASK_EXECUTION_COMPLETED') { await this.repository.enqueuePendingDispatches(); return }
   }
 
   async requestReconciliation(): Promise<number> { return this.repository.enqueueReconciliationForRunning() }
+  async recoverPendingWork(): Promise<number> {
+    const recovered = await this.repository.enqueueCompletedRecoveries()
+    const dispatches = await this.repository.enqueuePendingDispatches()
+    return recovered + dispatches
+  }
 
   private async accept(message: QueueMessage): Promise<void> {
     const operationId = randomUUID()
     await this.log(operationId, 1, 'received', 'executed', message, { commandCode: 'C10_DEPLOY_REQUESTED' })
     if (!await this.govern(operationId, message, 'A30_ACCEPT_DEPLOY_REQUEST')) return
-    const raw = await this.repository.getEligibleTask(message.taskId)
+    let raw: Omit<DeployTaskContext, 'integrationPath' | 'integrationBranch' | 'integrationCommit'> | null
+    try {
+      raw = await this.repository.getEligibleTask(message.taskId)
+    } catch (error) {
+      return this.reject(operationId, message, error instanceof Error ? error.message : 'deploy_not_eligible')
+    }
     if (!raw) return this.reject(operationId, message, 'task_not_found')
-    const context = await this.integrationContext(raw)
-    const result = await this.gate.request({ projectId: context.projectId, taskDatabaseId: context.databaseTaskId, phase: 'pre_deploy', commitSha: context.integrationCommit, baseCommitSha: context.integrationCommit, branchName: context.integrationBranch, workspacePath: context.integrationPath, buildCommand: context.buildCommand, testCommand: context.testCommand }, message)
-    await this.log(operationId, 3, 'primitive', result.status === 'passed' && result.failures.length === 0 ? 'succeeded' : 'failed', message, { primitiveCode: 'run_pre_deploy_gate', result: { testRunId: result.id, status: result.status, failures: result.failures.length } })
-    if (result.status !== 'passed' || result.failures.length > 0) return this.reject(operationId, message, 'pre_deploy_gate_failed')
-    const accepted = await this.repository.acceptRequest(context, message)
-    await this.log(operationId, 4, 'primitive', 'succeeded', message, { primitiveCode: 'upsert_deploy_request', result: { requestId: accepted.requestId, dispatchMessageId: accepted.dispatch.messageId } })
-    await this.log(operationId, 5, 'completed', 'succeeded', message, { actionCode: 'A30_ACCEPT_DEPLOY_REQUEST', result: { requestId: accepted.requestId } })
+    try {
+      const context = await this.integrationContext(raw)
+      const accepted = await this.repository.acceptRequest(context, message)
+      const jobId = await this.gate.enqueue({ projectId: context.projectId, taskDatabaseId: context.databaseTaskId, phase: 'pre_deploy', commitSha: context.integrationCommit, baseCommitSha: context.integrationCommit, branchName: context.integrationBranch, workspacePath: context.integrationPath, buildCommand: context.buildCommand, testCommand: context.testCommand }, message)
+      await this.log(operationId, 3, 'primitive', 'succeeded', message, { primitiveCode: 'upsert_deploy_request', result: { requestId: accepted.requestId, gateJobId: jobId } })
+      await this.log(operationId, 4, 'completed', 'succeeded', message, { actionCode: 'A30_ACCEPT_DEPLOY_REQUEST', result: { requestId: accepted.requestId, gateJobId: jobId } })
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      await this.block(operationId, message, 'deploy_preparation_failed', detail)
+    }
   }
 
   private async dispatch(message: QueueMessage): Promise<void> {
     const operationId = randomUUID(); await this.log(operationId, 1, 'received', 'executed', message, { commandCode: 'C11_DEPLOY_BATCH_DISPATCH_REQUESTED' })
     if (!await this.govern(operationId, message, 'A31_DISPATCH_DEPLOY_BATCH')) return
     const claimed = await this.repository.claimBatch(message)
-    if (!claimed) return this.log(operationId, 2, 'completed', 'skipped', message, { reasonCode: 'no_compatible_pending_batch' })
+    if (!claimed) return this.log(operationId, 2, 'completed', 'skipped', message, { reasonCode: 'motor_busy_or_no_compatible_pending_batch' })
     try {
-      await this.remote.assertReady(); await this.promote(claimed.batch.repoPath, claimed.batch.baseBranch, claimed.batch.expectedCommit)
-      await this.log(operationId, 3, 'primitive', 'succeeded', message, { primitiveCode: 'promote_commit_to_base', result: { batchId: claimed.batch.batchId } })
-      if (!this.hostRepoRoot) throw new Error('DEPLOY_REPO_HOST não configurado')
-      const remote = await this.remote.start({ batchId: claimed.batch.batchId, expectedCommit: claimed.batch.expectedCommit, hostRepoRoot: this.hostRepoRoot, deployScript: this.script })
-      await this.repository.markRemoteStarted(claimed.batch.batchId, remote.pid, remote.statusPath, message)
-      await this.log(operationId, 4, 'primitive', 'succeeded', message, { primitiveCode: 'start_remote_blue_green', result: { batchId: claimed.batch.batchId, pid: remote.pid, statusPath: remote.statusPath } })
-      await this.log(operationId, 5, 'completed', 'succeeded', message, { actionCode: 'A31_DISPATCH_DEPLOY_BATCH', result: { batchId: claimed.batch.batchId } })
+      const composed = await this.composeBatch(claimed.batch.repoPath, claimed.batch.baseBranch, claimed.batch.batchId, claimed.members.map(member => member.requestedCommit))
+      try {
+        const primary = claimed.members[0]!
+        if (claimed.members.some(member => member.buildCommand !== primary.buildCommand || member.testCommand !== primary.testCommand)) {
+          throw new Error('Lote reúne projetos com comandos de gate incompatíveis')
+        }
+        const gateJobId = await this.gate.enqueue({ projectId: primary.projectId, taskDatabaseId: primary.databaseTaskId, phase: 'pre_deploy', commitSha: composed.commit, baseCommitSha: claimed.batch.baseBranch, branchName: claimed.batch.baseBranch, workspacePath: composed.path, buildCommand: primary.buildCommand, testCommand: primary.testCommand }, message)
+        await this.repository.setBatchPrepared(claimed.batch.batchId, composed.commit, composed.path, gateJobId)
+        await this.log(operationId, 3, 'completed', 'succeeded', message, { actionCode: 'A31_DISPATCH_DEPLOY_BATCH', result: { batchId: claimed.batch.batchId, gateJobId, expectedCommit: composed.commit, memberCount: claimed.members.length } })
+      } catch (error) {
+        await this.removeComposedWorktree(claimed.batch.repoPath, composed.path)
+        throw error
+      }
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error)
       await this.repository.completeBatch(claimed.batch.batchId, false, reason, message)
@@ -80,6 +102,47 @@ export class DeployConsumer {
     }
   }
 
+  private async receiveResult(message: QueueMessage): Promise<void> {
+    const batchId = String(message.payload.batchId ?? '')
+    const success = message.payload.status === 'success'
+    if (!batchId || (message.payload.status !== 'success' && message.payload.status !== 'failed')) throw new Error('Resultado de deploy inválido')
+    const taskIds = await this.repository.completeBatch(batchId, success, success ? null : 'script blue-green informou falha', message)
+    const operationId = randomUUID()
+    await this.log(operationId, 1, success ? 'completed' : 'failed', success ? 'succeeded' : 'failed', message, { actionCode: 'A33_RECEIVE_DEPLOY_RESULT', primitiveCode: success ? 'complete_deploy_batch_atomic' : 'fail_deploy_batch_atomic', result: { batchId, taskIds } })
+  }
+
+  private async afterGate(message: QueueMessage): Promise<void> {
+    if (message.payload.phase !== 'pre_deploy') return
+    const testRunId = Number(message.payload.testRunId)
+    if (!Number.isInteger(testRunId) || testRunId <= 0) throw new Error('TEST_RUN_COMPLETED pre_deploy sem testRunId')
+    const result = await this.repository.continueAfterPreDeployGate(message.taskId, testRunId, message)
+    const operationId = randomUUID()
+    await this.log(operationId, 1, result.accepted ? 'completed' : 'failed', result.accepted ? 'succeeded' : 'failed', message, { actionCode: 'A30_ACCEPT_DEPLOY_REQUEST', primitiveCode: 'run_pre_deploy_gate', reasonCode: result.reason, result: { testRunId } })
+    const jobId = Number(message.payload.jobId)
+    if (!Number.isInteger(jobId) || jobId <= 0) return
+    const batch = await this.repository.findPendingBatchByGateJob(jobId)
+    if (!batch) return
+    try {
+      if (message.payload.status !== 'passed') throw new Error('Gate pre_deploy do commit composto falhou')
+      await this.startPreparedBatch(batch, message)
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      await this.repository.completeBatch(batch.batchId, false, reason, message)
+      if (batch.workspacePath) await this.removeComposedWorktree(batch.repoPath, batch.workspacePath)
+      throw error
+    }
+  }
+
+  private async startPreparedBatch(batch: import('./DeployRepository.js').DeployBatch, message: QueueMessage): Promise<void> {
+    if (!batch.workspacePath) throw new Error(`Lote ${batch.batchId} sem worktree composto`)
+    await this.remote.assertReady()
+    await this.promote(batch.repoPath, batch.baseBranch, batch.expectedCommit)
+    if (!this.hostRepoRoot) throw new Error('DEPLOY_REPO_HOST não configurado')
+    const remote = await this.remote.start({ batchId: batch.batchId, expectedCommit: batch.expectedCommit, hostRepoRoot: this.hostRepoRoot, deployScript: this.script })
+    await this.repository.markRemoteStarted(batch.batchId, remote.pid, remote.statusPath, message)
+    await this.removeComposedWorktree(batch.repoPath, batch.workspacePath)
+  }
+
   private async integrationContext(raw: Omit<DeployTaskContext, 'integrationPath' | 'integrationBranch' | 'integrationCommit'>): Promise<DeployTaskContext> {
     const interim = this.repository.withIntegration(raw, '')
     const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: interim.integrationPath, encoding: 'utf8' })
@@ -96,6 +159,30 @@ export class DeployConsumer {
     finally { await execFileAsync('git', ['worktree', 'remove', '--force', path], { cwd: repo }).catch(() => undefined) }
   }
 
+  /** Compõe patches das integrações pendentes sobre a branch-base em worktree exclusivo do lote. */
+  private async composeBatch(repoPath: string, baseBranch: string, batchId: string, commits: string[]): Promise<{ path: string; commit: string }> {
+    const { stdout } = await execFileAsync('git', ['rev-parse', '--show-toplevel'], { cwd: repoPath, encoding: 'utf8' })
+    const repo = stdout.trim(); const path = `${repo}/.motor-v3-deploy-${batchId.replace(/[^a-zA-Z0-9_-]/g, '_')}`
+    await execFileAsync('git', ['worktree', 'add', '--detach', path, baseBranch], { cwd: repo })
+    try {
+      for (const commit of [...new Set(commits)]) {
+        if (!/^[a-f0-9]{7,64}$/i.test(commit)) throw new Error(`Commit de integração inválido: ${commit}`)
+        const contained = await execFileAsync('git', ['merge-base', '--is-ancestor', commit, 'HEAD'], { cwd: path }).then(() => true, () => false)
+        if (!contained) await execFileAsync('git', ['cherry-pick', commit], { cwd: path })
+      }
+      const { stdout: composed } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: path, encoding: 'utf8' })
+      return { path, commit: composed.trim() }
+    } catch (error) {
+      await this.removeComposedWorktree(repo, path)
+      throw error
+    }
+  }
+
+  private async removeComposedWorktree(repoPath: string, path: string): Promise<void> {
+    const { stdout } = await execFileAsync('git', ['rev-parse', '--show-toplevel'], { cwd: repoPath, encoding: 'utf8' }).catch(() => ({ stdout: repoPath }))
+    await execFileAsync('git', ['worktree', 'remove', '--force', path], { cwd: stdout.trim() }).catch(() => undefined)
+  }
+
   /** Catálogo decide a action; as invariantes adicionais continuam nas primitives. */
   private async govern(operationId: string, message: QueueMessage, expectedAction: string): Promise<boolean> {
     if (!this.commandPolicies) return true
@@ -110,5 +197,6 @@ export class DeployConsumer {
   }
 
   private async reject(operationId: string, message: QueueMessage, reasonCode: string): Promise<void> { await this.log(operationId, 99, 'rejected', 'rejected', message, { commandCode: 'C10_DEPLOY_REQUESTED', policyCode: 'P10_DEPLOY_IF_ELIGIBLE', actionCode: 'A30_ACCEPT_DEPLOY_REQUEST', reasonCode }) }
+  private async block(operationId: string, message: QueueMessage, reasonCode: string, detail: string): Promise<void> { await this.repository.blockTask(message.taskId, reasonCode, detail); await this.log(operationId, 99, 'failed', 'failed', message, { actionCode: 'A30_ACCEPT_DEPLOY_REQUEST', reasonCode, result: { error: detail } }) }
   private async log(operationId: string, sequence: number, phase: any, outcome: any, message: QueueMessage, extra: Record<string, unknown>): Promise<void> { await this.logger?.append({ operationId, sequence, phase, outcome, messageId: message.messageId, messageType: message.type, correlationId: message.correlationId, causationId: message.causationId, taskId: message.taskId, ...(extra as any) }) }
 }

@@ -14,7 +14,7 @@
  */
 
 import 'dotenv/config'
-import { createHash } from 'node:crypto'
+import { createHash, timingSafeEqual } from 'node:crypto'
 import { drizzle } from 'drizzle-orm/mysql2'
 import mysql from 'mysql2/promise'
 import * as schema from './db/schema.js'
@@ -71,7 +71,6 @@ let testRecoveryConsumer: TestRecoveryConsumer | null = null
 let testGateQueueConsumer: QueueConsumer | null = null
 let testGateOutboxPublisher: OutboxPublisher | null = null
 let deployConsumer: DeployConsumer | null = null
-let deployReconciliationTimer: NodeJS.Timeout | null = null
 
 async function start() {
   console.log('[Motor v3] Iniciando...')
@@ -340,11 +339,10 @@ async function start() {
       maxAttempts: Number(process.env.MOTOR_QUEUE_MAX_ATTEMPTS || 3),
     }, pool)
     await queueConsumer.start()
+    // Recuperação única de fatos duráveis após boot. O fluxo normal avança
+    // exclusivamente por mensagens/eventos; não há timer de deploy.
+    await deployConsumer.recoverPendingWork()
     await deployConsumer.requestReconciliation()
-    deployReconciliationTimer = setInterval(() => {
-      void deployConsumer?.requestReconciliation().catch(error => console.error('[Motor v3] falha ao solicitar reconciliação de deploy:', error))
-    }, Number(process.env.MOTOR_DEPLOY_RECONCILE_INTERVAL_MS || 30_000))
-    deployReconciliationTimer.unref()
     console.log('[Motor v3] QueueConsumer + TaskCoordinator inicializados')
   } else {
     console.log('[Motor v3] Fila durável desativada (MOTOR_QUEUE_ENABLED != true)')
@@ -589,6 +587,27 @@ async function start() {
         return
       }
 
+      const deployResultMatch = path.match(/^\/api\/motor\/deploy\/batches\/([^/]+)\/result$/)
+      if (req.method === 'POST' && deployResultMatch) {
+        const callbackToken = process.env.MOTOR_DEPLOY_CALLBACK_TOKEN
+        const provided = String(req.headers['x-motor-deploy-token'] ?? '')
+        if (!callbackToken || provided.length !== callbackToken.length || !timingSafeEqual(Buffer.from(provided), Buffer.from(callbackToken))) {
+          res.writeHead(401, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Unauthorized' })); return
+        }
+        let body = ''
+        req.on('data', chunk => body += chunk)
+        await new Promise(resolve => req.on('end', resolve))
+        const payload = body ? JSON.parse(body) : {}
+        const status = payload.status === 'success' ? 'success' : payload.status === 'failed' ? 'failed' : null
+        if (!status) throw new Error('Resultado de deploy inválido')
+        const batchId = deployResultMatch[1]!
+        if (!/^[A-Za-z0-9_-]+$/.test(batchId)) throw new Error('Identificador de lote inválido')
+        const message = await dispatchCommand('DEPLOY_BATCH_RESULT_RECEIVED', 'system', `deploy-result-${batchId}`, { batchId, status })
+        res.writeHead(202, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: true, accepted: true, messageId: message.messageId }))
+        return
+      }
+
       // DELETE /api/motor/task/:id
       // Mantém a compatibilidade com o contrato do motor v2. A exclusão
       // definitiva é feita aqui porque esta é a origem de verdade operacional
@@ -643,9 +662,6 @@ async function start() {
 
 async function shutdown() {
   console.log('[Motor v3] Encerrando...')
-
-  if (deployReconciliationTimer) clearInterval(deployReconciliationTimer)
-  deployReconciliationTimer = null
 
   if (queueConsumer) {
     await queueConsumer.stop()

@@ -30,4 +30,13 @@ describe("deploy de produção isolado do banco", () => {
     expect(script).toContain("MySQL é")
     expect(script).toContain("compartilhado e nunca é recriado")
   })
+
+  it("entrega o resultado ao Motor do slot correto sem depender de rota no Nginx", () => {
+    expect(script).toContain('DEPLOY_BATCH_ID="${3:-}"')
+    expect(script).toContain("MOTOR_DEPLOY_CALLBACK_TOKEN")
+    expect(script).toContain("X-Motor-Deploy-Token")
+    expect(script).toContain("http://127.0.0.1:${port}/api/motor/deploy/batches/${DEPLOY_BATCH_ID}/result")
+    expect(script).toContain('callback_port="$NEW_MOTOR_PORT"')
+    expect(script).toContain('callback_port="$(motor_port_for_slot "$active")"')
+  })
 })

@@ -428,6 +428,13 @@
       "when": 1790024400000,
       "tag": "0061_motor_v3_deploy_event_driven",
       "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "5",
+      "when": 1790028000000,
+      "tag": "0062_motor_v3_deploy_callback",
+      "breakpoints": true
     }
   ]
 }

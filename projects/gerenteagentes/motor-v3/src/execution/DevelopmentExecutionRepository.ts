@@ -400,6 +400,14 @@ export class MySqlDevelopmentExecutionRepository {
           payload: { integrationCommitSha: evidence.integrationCommitSha },
         })
         await this.insertOutbox(connection, next)
+        // A conclusão da integração é o fato que libera o deploy. A intenção
+        // entra no mesmo outbox/transação, sem depender de varredura temporal.
+        const deployRequest = createQueueMessage({
+          type: 'DEPLOY_REQUESTED', taskId: context.taskId, executionId: source.executionId,
+          correlationId: source.correlationId ?? source.messageId, causationId: next.messageId,
+          payload: { integrationCommitSha: evidence.integrationCommitSha },
+        })
+        await this.insertOutbox(connection, deployRequest)
         const [testRuns] = await connection.query<Array<RowDataPacket & { id: number; pre_existing: number | string }>>(
           `SELECT tr.id,
                   SUM(tf.classification = 'pre_existing') AS pre_existing

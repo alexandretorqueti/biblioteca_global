@@ -13,6 +13,12 @@ export class TestGateOrchestrator {
   ) {}
 
   async request(input: TestGateInput, source: QueueMessage): Promise<TestRunResult> {
+    const jobId = await this.enqueue(input, source)
+    return this.wait(jobId)
+  }
+
+  /** Enfileira sem esperar: continuação deve reagir a TEST_RUN_COMPLETED. */
+  async enqueue(input: TestGateInput, source: QueueMessage): Promise<number> {
     const message = createQueueMessage({
       type: 'TEST_RUN_REQUESTED', taskId: source.taskId, executionId: source.executionId,
       correlationId: source.correlationId ?? source.messageId, causationId: source.messageId,
@@ -34,7 +40,7 @@ export class TestGateOrchestrator {
           JSON.stringify({ jobId: job.insertId }), message.correlationId ?? null, message.causationId ?? null],
       )
       await connection.commit()
-      return await this.wait(job.insertId)
+      return Number(job.insertId)
     } catch (error) {
       await connection.rollback()
       throw error

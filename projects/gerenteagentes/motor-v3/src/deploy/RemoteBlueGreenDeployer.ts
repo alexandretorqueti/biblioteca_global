@@ -22,8 +22,8 @@ export class RemoteBlueGreenDeployer {
     const statusPath = `/tmp/biblioteca-global-${safeBatch}.status`
     const logPath = `/tmp/biblioteca-global-${safeBatch}.log`
     const script = `${input.hostRepoRoot.replace(/\/$/, '')}/${input.deployScript.replace(/^\//, '')}`
-    const run = `EXPECTED_DEPLOY_COMMIT=${quote(input.expectedCommit)} bash ${quote(script)} ${quote(input.hostRepoRoot)} ${quote(input.expectedCommit)}`
-    const wrapped = `(${run}; code=$?; if [ $code -eq 0 ]; then printf success; else printf 'failed:%s' "$code"; fi > ${quote(statusPath)})`
+    const run = `EXPECTED_DEPLOY_COMMIT=${quote(input.expectedCommit)} bash ${quote(script)} ${quote(input.hostRepoRoot)} ${quote(input.expectedCommit)} ${quote(safeBatch)}`
+    const wrapped = `(${run}; code=$?; if [ $code -eq 0 ]; then status=success; else status=failed:$code; fi; printf '%s' "$status" > ${quote(statusPath)}; exit $code)`
     const { stdout } = await this.ssh(`nohup bash -lc ${quote(wrapped)} > ${quote(logPath)} 2>&1 < /dev/null & echo $!`)
     const pid = stdout.trim()
     if (!/^\d+$/.test(pid)) throw new Error(`SSH não confirmou PID do deploy destacado: ${pid.slice(0, 200)}`)

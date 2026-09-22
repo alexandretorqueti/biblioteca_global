@@ -69,6 +69,11 @@ services:
       # Motor-v3 (integrado na API) - substitui motor-v2
       MOTOR_VERSION: v3
       MOTOR_API_PORT: 3010
+      MOTOR_DEPLOY_CALLBACK_TOKEN: ${MOTOR_DEPLOY_CALLBACK_TOKEN:-}
+      DEPLOY_REPO_HOST: ${DEPLOY_REPO_HOST:-/home/alexandre/codigofonte/biblioteca-global}
+      MOTOR_DEPLOY_SSH_TARGET: ${MOTOR_DEPLOY_SSH_TARGET:-alexandre@host.docker.internal}
+      MOTOR_DEPLOY_SSH_IDENTITY: ${MOTOR_DEPLOY_SSH_IDENTITY:-/root/.ssh/id_ed25519}
+      MOTOR_DEPLOY_SCRIPT: ${MOTOR_DEPLOY_SCRIPT:-projects/gerenteagentes/motor-v2/scripts/deploy-blue-green.sh}
       MOTOR_MAX_WORKERS: 2
       MOTOR_WORKSPACE_ROOT: /data/workspace/projects/agentes/gerenteagentes/worktrees
       MOTOR_MYSQL_HOST: ${MOTOR_MYSQL_HOST:-host.docker.internal}

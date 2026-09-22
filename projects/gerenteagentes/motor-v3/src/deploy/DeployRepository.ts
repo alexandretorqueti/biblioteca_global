@@ -24,6 +24,17 @@ export interface DeployBatch {
   remotePid: string | null
   remoteStatusPath: string | null
   startedAt: Date | string | null
+  workspacePath: string | null
+  gateJobId: number | null
+}
+
+export interface DeployBatchMember {
+  databaseTaskId: number
+  taskId: string
+  requestedCommit: string
+  projectId: number
+  buildCommand: string
+  testCommand: string
 }
 
 interface ContextRow extends RowDataPacket {
@@ -36,7 +47,7 @@ interface ContextRow extends RowDataPacket {
 
 interface BatchRow extends RowDataPacket {
   batch_id: string; repo_path: string; base_branch: string; expected_commit: string; status: DeployBatch['status']
-  remote_pid: string | null; remote_status_path: string | null; started_at: Date | string | null
+  remote_pid: string | null; remote_status_path: string | null; started_at: Date | string | null; workspace_path: string | null; gate_job_id: number | null
 }
 
 /**
@@ -69,6 +80,54 @@ export class DeployRepository {
     }
   }
 
+  /** Recupera tarefas concluídas sem deploy ativo/sucedido no mesmo banco/outbox. */
+  async enqueueCompletedRecoveries(): Promise<number> {
+    const connection = await this.pool.getConnection()
+    try {
+      await connection.beginTransaction()
+      const [tasks] = await connection.query<Array<RowDataPacket & { id: number; external_id: string | null }>>(`
+        SELECT t.id,t.external_id FROM tarefas t
+        INNER JOIN task_runtime_facts f ON f.tarefa_id=t.id AND f.terminal_status='completed' AND f.integration_confirmed_at IS NOT NULL
+        WHERE t.tipo='desenvolvimento'
+          AND NOT EXISTS (SELECT 1 FROM bloqueios b WHERE b.tarefa_id=t.id AND b.resolved_at IS NULL)
+          AND NOT EXISTS (SELECT 1 FROM deploy_requests d WHERE d.tarefa_id=t.id AND d.status IN ('pending','running','succeeded'))
+        FOR UPDATE`)
+      for (const task of tasks) {
+        const taskId = String(task.external_id ?? task.id)
+        const message = createQueueMessage({ type: 'DEPLOY_REQUESTED', taskId, executionId: `deploy-recovery-${taskId}-${Date.now()}`, payload: { recovered: true } })
+        await this.insertOutbox(connection, message)
+      }
+      await connection.commit()
+      return tasks.length
+    } catch (error) { await connection.rollback(); throw error } finally { connection.release() }
+  }
+
+  /** A ociosidade vem de fatos persistidos, nunca de memória do processo. */
+  async isMotorIdle(): Promise<boolean> {
+    const [rows] = await this.pool.query<Array<RowDataPacket & { active: number | string }>>(`
+      SELECT (
+        EXISTS(SELECT 1 FROM subtarefas WHERE status IN ('running','delivered','verifying'))
+        OR EXISTS(SELECT 1 FROM task_runtime_facts WHERE analysis_started_at IS NOT NULL)
+        OR EXISTS(SELECT 1 FROM test_gate_jobs WHERE status IN ('pending','processing'))
+      ) AS active`)
+    return Number(rows[0]?.active ?? 0) === 0
+  }
+
+  async requeueDispatch(source: QueueMessage, reason: string): Promise<void> {
+    const message = createQueueMessage({ type: 'DEPLOY_BATCH_DISPATCH_REQUESTED', taskId: source.taskId,
+      executionId: `${source.executionId}-retry-${Date.now()}`, correlationId: source.correlationId ?? source.messageId,
+      causationId: source.messageId, payload: { ...source.payload, deferredReason: reason } })
+    const connection = await this.pool.getConnection()
+    try { await connection.beginTransaction(); await this.insertOutbox(connection, message); await connection.commit() }
+    catch (error) { await connection.rollback(); throw error } finally { connection.release() }
+  }
+
+  async blockTask(taskId: string, reason: string, detail: string): Promise<void> {
+    await this.pool.query(`INSERT INTO bloqueios (tarefa_id,subtarefa_id,block_reason,block_command,block_excerpt,blocked_at)
+      SELECT t.id,NULL,?,?,?,NOW() FROM tarefas t
+       WHERE t.external_id=? OR CAST(t.id AS CHAR)=?`, [reason, 'motor-v3:deploy', detail.slice(0, 500), taskId, taskId])
+  }
+
   withIntegration(context: Omit<DeployTaskContext, 'integrationPath' | 'integrationBranch' | 'integrationCommit'>, integrationCommit: string): DeployTaskContext {
     const safeTask = context.taskId.replace(/[^a-zA-Z0-9._-]/g, '-')
     return {
@@ -90,7 +149,7 @@ export class DeployRepository {
   }
 
   /** Persiste pedido e comando de lote na mesma transação. */
-  async acceptRequest(context: DeployTaskContext, source: QueueMessage): Promise<{ requestId: number; dispatch: QueueMessage }> {
+  async acceptRequest(context: DeployTaskContext, source: QueueMessage): Promise<{ requestId: number }> {
     const connection = await this.pool.getConnection()
     try {
       await connection.beginTransaction()
@@ -102,39 +161,62 @@ export class DeployRepository {
            status=IF(status IN ('succeeded','running'),status,'pending'),last_error=NULL,updated_at=NOW()`,
         [context.databaseTaskId, context.repoPath, context.integrationCommit, context.baseBranch],
       )
-      const dispatch = createQueueMessage({
-        type: 'DEPLOY_BATCH_DISPATCH_REQUESTED', taskId: context.taskId,
-        executionId: `deploy-dispatch-${context.taskId}-${source.messageId}`,
-        correlationId: source.correlationId ?? source.messageId, causationId: source.messageId,
-        payload: { repository: context.repoPath, baseBranch: context.baseBranch, expectedCommit: context.integrationCommit },
-      })
-      await this.insertOutbox(connection, dispatch)
       const accepted = createQueueMessage({ type: 'DEPLOY_REQUEST_ACCEPTED', taskId: context.taskId, executionId: source.executionId,
         correlationId: source.correlationId ?? source.messageId, causationId: source.messageId,
         payload: { requestId: Number(insert.insertId), expectedCommit: context.integrationCommit } })
       await this.insertOutbox(connection, accepted)
       await connection.commit()
-      return { requestId: Number(insert.insertId), dispatch }
+      return { requestId: Number(insert.insertId) }
     } catch (error) { await connection.rollback(); throw error } finally { connection.release() }
   }
 
-  /** Claim de um lote compatível; nunca agrupa commits diferentes. */
-  async claimBatch(source: QueueMessage): Promise<{ batch: DeployBatch; taskIds: string[] } | null> {
+  /** Converte o fato TEST_RUN_COMPLETED em próximo comando; não há espera ativa. */
+  async continueAfterPreDeployGate(taskId: string, testRunId: number, source: QueueMessage): Promise<{ accepted: boolean; reason?: string }> {
+    const connection = await this.pool.getConnection()
+    try {
+      await connection.beginTransaction()
+      const [runs] = await connection.query<Array<RowDataPacket & { status: string; failures: number | string; commit_sha: string }>>(
+        `SELECT tr.status,tr.commit_sha,(SELECT COUNT(*) FROM test_failures tf WHERE tf.test_run_id=tr.id) AS failures
+           FROM test_runs tr WHERE tr.id=? AND tr.phase='pre_deploy' LIMIT 1 FOR UPDATE`, [testRunId])
+      const run = runs[0]
+      if (!run || run.status !== 'passed' || Number(run.failures) > 0) {
+        await connection.commit(); await this.blockTask(taskId, 'pre_deploy_gate_failed', 'Gate pre_deploy falhou'); return { accepted: false, reason: 'pre_deploy_gate_failed' }
+      }
+      const [requests] = await connection.query<Array<RowDataPacket & { repo_path: string; base_branch: string; requested_commit: string }>>(
+        `SELECT dr.repo_path,dr.base_branch,dr.requested_commit FROM deploy_requests dr INNER JOIN tarefas t ON t.id=dr.tarefa_id
+          WHERE (t.external_id=? OR CAST(t.id AS CHAR)=?) AND dr.status='pending' AND dr.requested_commit=? LIMIT 1 FOR UPDATE`, [taskId, taskId, run.commit_sha])
+      const request = requests[0]
+      if (!request) { await connection.commit(); return { accepted: false, reason: 'deploy_request_not_pending' } }
+      const dispatch = createQueueMessage({ type: 'DEPLOY_BATCH_DISPATCH_REQUESTED', taskId, executionId: `deploy-dispatch-${taskId}-${source.messageId}`,
+        correlationId: source.correlationId ?? source.messageId, causationId: source.messageId,
+        payload: { repository: request.repo_path, baseBranch: request.base_branch, expectedCommit: request.requested_commit } })
+      await this.insertOutbox(connection, dispatch)
+      await connection.commit()
+      return { accepted: true }
+    } catch (error) { await connection.rollback(); throw error } finally { connection.release() }
+  }
+
+  /** Claim do lote por repositório/branch; os commits são compostos pelo consumidor antes do gate final. */
+  async claimBatch(source: QueueMessage): Promise<{ batch: DeployBatch; members: DeployBatchMember[] } | null> {
     const repoPath = String(source.payload.repository ?? '')
     const baseBranch = String(source.payload.baseBranch ?? '')
     const expectedCommit = String(source.payload.expectedCommit ?? '')
     if (!repoPath || !baseBranch || !expectedCommit) throw new Error('Comando de lote de deploy incompleto')
+    if (!await this.isMotorIdle()) return null
     const connection = await this.pool.getConnection()
     try {
       await connection.beginTransaction()
       const [busy] = await connection.query<Array<RowDataPacket & { total: number | string }>>(
         `SELECT COUNT(*) AS total FROM deploy_batches WHERE repo_path=? AND status IN ('pending','running') FOR UPDATE`, [repoPath])
       if (Number(busy[0]?.total ?? 0) > 0) { await connection.rollback(); return null }
-      const [requests] = await connection.query<Array<RowDataPacket & { id: number; task_id: number; external_id: string | null }>>(
-        `SELECT dr.id,dr.tarefa_id,t.external_id FROM deploy_requests dr INNER JOIN tarefas t ON t.id=dr.tarefa_id
-          WHERE dr.repo_path=? AND dr.base_branch=? AND dr.requested_commit=? AND dr.status='pending'
-          ORDER BY dr.id FOR UPDATE`, [repoPath, baseBranch, expectedCommit])
+      const [requests] = await connection.query<Array<RowDataPacket & { id: number; task_id: number; external_id: string | null; requested_commit: string; project_id: number; build_command: string | null; test_command: string | null }>>(
+        `SELECT dr.id,dr.tarefa_id,t.external_id,dr.requested_commit,t.projeto_id,pmc.build_command,pmc.unit_test_command AS test_command
+           FROM deploy_requests dr INNER JOIN tarefas t ON t.id=dr.tarefa_id
+           LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id=t.projeto_id
+          WHERE dr.repo_path=? AND dr.base_branch=? AND dr.status='pending'
+          ORDER BY dr.id FOR UPDATE`, [repoPath, baseBranch])
       if (requests.length === 0) { await connection.rollback(); return null }
+      if (requests.some(row => !row.requested_commit || !row.build_command || !row.test_command)) throw new Error('Pedido de deploy sem commit ou comandos de gate')
       const batchId = `deploy-${randomUUID()}`
       await connection.query(
         `INSERT INTO deploy_batches (batch_id,repo_path,base_branch,expected_commit,status,created_at,updated_at)
@@ -142,8 +224,16 @@ export class DeployRepository {
       const ids = requests.map(row => row.id)
       await connection.query(`UPDATE deploy_requests SET status='running',batch_id=?,started_at=NOW(),last_error=NULL,updated_at=NOW() WHERE id IN (${ids.map(() => '?').join(',')}) AND status='pending'`, [batchId, ...ids])
       await connection.commit()
-      return { batch: { batchId, repoPath, baseBranch, expectedCommit, status: 'pending', remotePid: null, remoteStatusPath: null, startedAt: null }, taskIds: requests.map(row => String(row.external_id ?? row.task_id)) }
+      return {
+        batch: { batchId, repoPath, baseBranch, expectedCommit, status: 'pending', remotePid: null, remoteStatusPath: null, startedAt: null, workspacePath: null, gateJobId: null },
+        members: requests.map(row => ({ databaseTaskId: Number(row.task_id), taskId: String(row.external_id ?? row.task_id), requestedCommit: String(row.requested_commit), projectId: Number(row.project_id), buildCommand: String(row.build_command), testCommand: String(row.test_command) })),
+      }
     } catch (error) { await connection.rollback(); throw error } finally { connection.release() }
+  }
+
+  async setBatchPrepared(batchId: string, expectedCommit: string, workspacePath: string, gateJobId: number): Promise<void> {
+    const [result] = await this.pool.query<ResultSetHeader>(`UPDATE deploy_batches SET expected_commit=?,workspace_path=?,gate_job_id=?,updated_at=NOW() WHERE batch_id=? AND status='pending'`, [expectedCommit, workspacePath, gateJobId, batchId])
+    if (result.affectedRows !== 1) throw new Error(`Lote ${batchId} não está pendente para receber commit composto`)
   }
 
   async markRemoteStarted(batchId: string, remotePid: string, statusPath: string, source: QueueMessage): Promise<QueueMessage> {
@@ -166,8 +256,13 @@ export class DeployRepository {
   }
 
   async runningBatches(): Promise<DeployBatch[]> {
-    const [rows] = await this.pool.query<BatchRow[]>(`SELECT batch_id,repo_path,base_branch,expected_commit,status,remote_pid,remote_status_path,started_at FROM deploy_batches WHERE status='running' ORDER BY started_at`)
-    return rows.map(row => ({ batchId: row.batch_id, repoPath: row.repo_path, baseBranch: row.base_branch, expectedCommit: row.expected_commit, status: row.status, remotePid: row.remote_pid, remoteStatusPath: row.remote_status_path, startedAt: row.started_at }))
+    const [rows] = await this.pool.query<BatchRow[]>(`SELECT batch_id,repo_path,base_branch,expected_commit,status,remote_pid,remote_status_path,started_at,workspace_path,gate_job_id FROM deploy_batches WHERE status='running' ORDER BY started_at`)
+    return rows.map(row => this.mapBatch(row))
+  }
+
+  async findPendingBatchByGateJob(gateJobId: number): Promise<DeployBatch | null> {
+    const [rows] = await this.pool.query<BatchRow[]>(`SELECT batch_id,repo_path,base_branch,expected_commit,status,remote_pid,remote_status_path,started_at,workspace_path,gate_job_id FROM deploy_batches WHERE gate_job_id=? AND status='pending' LIMIT 1`, [gateJobId])
+    return rows[0] ? this.mapBatch(rows[0]) : null
   }
 
   /** O scheduler só persiste comandos; o consumidor continua sendo o executor. */
@@ -186,12 +281,23 @@ export class DeployRepository {
     } catch (error) { await connection.rollback(); throw error } finally { connection.release() }
   }
 
+  /** Ciclo controlado que dá nova oportunidade a pedidos adiados por ociosidade/lote ativo. */
+  async enqueuePendingDispatches(): Promise<number> {
+    const connection = await this.pool.getConnection()
+    try {
+      await connection.beginTransaction()
+      const count = await this.insertPendingDispatches(connection)
+      await connection.commit()
+      return count
+    } catch (error) { await connection.rollback(); throw error } finally { connection.release() }
+  }
+
   async completeBatch(batchId: string, success: boolean, reason: string | null, source: QueueMessage): Promise<string[]> {
     const connection = await this.pool.getConnection()
     try {
       await connection.beginTransaction()
       const finalStatus = success ? 'succeeded' : 'failed'
-      const [batch] = await connection.query<ResultSetHeader>(`UPDATE deploy_batches SET status=?,last_error=?,finished_at=NOW(),updated_at=NOW() WHERE batch_id=? AND status='running'`, [finalStatus, reason, batchId])
+      const [batch] = await connection.query<ResultSetHeader>(`UPDATE deploy_batches SET status=?,last_error=?,finished_at=NOW(),updated_at=NOW() WHERE batch_id=? AND status IN ('pending','running')`, [finalStatus, reason, batchId])
       if (batch.affectedRows === 0) { await connection.rollback(); return [] }
       const [requests] = await connection.query<Array<RowDataPacket & { external_id: string | null; task_id: number }>>(`SELECT t.external_id,dr.tarefa_id FROM deploy_requests dr INNER JOIN tarefas t ON t.id=dr.tarefa_id WHERE dr.batch_id=? FOR UPDATE`, [batchId])
       await connection.query(`UPDATE deploy_requests SET status=?,last_error=?,finished_at=NOW(),updated_at=NOW() WHERE batch_id=? AND status='running'`, [finalStatus, reason, batchId])
@@ -208,6 +314,7 @@ export class DeployRepository {
           payload: { batchId, reason } })
         await this.insertOutbox(connection, event)
       }
+      await this.insertPendingDispatches(connection)
       await connection.commit()
       return requests.map(row => String(row.external_id ?? row.task_id))
     } catch (error) { await connection.rollback(); throw error } finally { connection.release() }
@@ -224,5 +331,22 @@ export class DeployRepository {
   private async insertOutbox(connection: PoolConnection, message: QueueMessage): Promise<void> {
     await connection.query(`INSERT INTO motor_outbox (message_id,type,destination_queue,task_id,execution_id,payload_json,timestamp,correlation_id,causation_id,status,attempt)
       VALUES (?,?, 'motor.commands',?,?,?,NOW(),?,?,'pending',0)`, [message.messageId, message.type, message.taskId, message.executionId, JSON.stringify(message.payload), message.correlationId ?? null, message.causationId ?? null])
+  }
+
+  private async insertPendingDispatches(connection: PoolConnection): Promise<number> {
+    const [groups] = await connection.query<Array<RowDataPacket & { repo_path: string; base_branch: string; requested_commit: string; task_id: string }>>(`
+      SELECT dr.repo_path,dr.base_branch,dr.requested_commit,MIN(COALESCE(t.external_id,CAST(t.id AS CHAR))) AS task_id
+        FROM deploy_requests dr INNER JOIN tarefas t ON t.id=dr.tarefa_id
+       WHERE dr.status='pending' GROUP BY dr.repo_path,dr.base_branch,dr.requested_commit`)
+    for (const group of groups) {
+      const message = createQueueMessage({ type: 'DEPLOY_BATCH_DISPATCH_REQUESTED', taskId: String(group.task_id),
+        executionId: `deploy-dispatch-recovery-${Date.now()}-${randomUUID()}`, payload: { repository: group.repo_path, baseBranch: group.base_branch, expectedCommit: group.requested_commit } })
+      await this.insertOutbox(connection, message)
+    }
+    return groups.length
+  }
+
+  private mapBatch(row: BatchRow): DeployBatch {
+    return { batchId: row.batch_id, repoPath: row.repo_path, baseBranch: row.base_branch, expectedCommit: row.expected_commit, status: row.status, remotePid: row.remote_pid, remoteStatusPath: row.remote_status_path, startedAt: row.started_at, workspacePath: row.workspace_path, gateJobId: row.gate_job_id == null ? null : Number(row.gate_job_id) }
   }
 }

@@ -8,6 +8,7 @@ set -euo pipefail
 
 REPO_ROOT="${1:?informe a raiz do repositório}"
 EXPECTED_DEPLOY_COMMIT="${2:-${EXPECTED_DEPLOY_COMMIT:-}}"
+DEPLOY_BATCH_ID="${3:-}"
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml}"
 NGINX_CONTAINER="${NGINX_CONTAINER:-meu-servidor-nginx}"
 NGINX_CONFIG="${NGINX_CONFIG:-/home/alexandre/containers/nginx/conf/default.conf}"
@@ -25,15 +26,6 @@ cd "$REPO_ROOT"
 set -a
 . ./.env
 set +a
-
-if [ -n "$EXPECTED_DEPLOY_COMMIT" ]; then
-  ACTUAL_DEPLOY_COMMIT="$(git rev-parse HEAD)"
-  if [ "$ACTUAL_DEPLOY_COMMIT" != "$EXPECTED_DEPLOY_COMMIT" ]; then
-    echo "[deploy-blue-green] commit divergente: esperado=$EXPECTED_DEPLOY_COMMIT atual=$ACTUAL_DEPLOY_COMMIT" >&2
-    exit 1
-  fi
-  echo "[deploy-blue-green] commit pré-validado: $EXPECTED_DEPLOY_COMMIT"
-fi
 
 wait_http() {
   local url="$1" tries="$2" label="$3" i code
@@ -122,6 +114,67 @@ case "$active" in
 esac
 slot_values "$target"
 NEW_API_CONTAINER="${NEW_PROJECT}-api-1"
+
+motor_port_for_slot() {
+  case "$1" in
+    blue|legacy) echo 3010 ;;
+    green) echo 3011 ;;
+    none) echo "$NEW_MOTOR_PORT" ;;
+    *) return 1 ;;
+  esac
+}
+
+notify_deploy_result() {
+  local status="$1" port="$2" payload
+  [ -n "$DEPLOY_BATCH_ID" ] || return 0
+  [ -n "${MOTOR_DEPLOY_CALLBACK_TOKEN:-}" ] || {
+    echo "[deploy-blue-green] MOTOR_DEPLOY_CALLBACK_TOKEN não configurado" >&2
+    return 1
+  }
+  payload="$(printf '{\"status\":\"%s\"}' "$status")"
+  curl --fail --silent --show-error --retry 5 --retry-delay 2 \
+    -X POST -H 'Content-Type: application/json' \
+    -H "X-Motor-Deploy-Token: $MOTOR_DEPLOY_CALLBACK_TOKEN" \
+    --data "$payload" \
+    "http://127.0.0.1:${port}/api/motor/deploy/batches/${DEPLOY_BATCH_ID}/result"
+}
+
+notify_deploy_on_exit() {
+  local code="$?" status callback_port
+  trap - EXIT
+  if [ "$code" -eq 0 ]; then
+    status=success
+    callback_port="$NEW_MOTOR_PORT"
+  else
+    status=failed
+    callback_port="$(motor_port_for_slot "$active")"
+  fi
+  notify_deploy_result "$status" "$callback_port" || {
+    echo "[deploy-blue-green] não foi possível entregar o resultado do lote $DEPLOY_BATCH_ID ao Motor" >&2
+  }
+  exit "$code"
+}
+
+if [ -n "$DEPLOY_BATCH_ID" ]; then
+  [[ "$DEPLOY_BATCH_ID" =~ ^[A-Za-z0-9_-]+$ ]] || {
+    echo "[deploy-blue-green] batch de deploy inválido: $DEPLOY_BATCH_ID" >&2
+    exit 1
+  }
+  [ -n "${MOTOR_DEPLOY_CALLBACK_TOKEN:-}" ] || {
+    echo "[deploy-blue-green] MOTOR_DEPLOY_CALLBACK_TOKEN não configurado" >&2
+    exit 1
+  }
+  trap notify_deploy_on_exit EXIT
+fi
+
+if [ -n "$EXPECTED_DEPLOY_COMMIT" ]; then
+  ACTUAL_DEPLOY_COMMIT="$(git rev-parse HEAD)"
+  if [ "$ACTUAL_DEPLOY_COMMIT" != "$EXPECTED_DEPLOY_COMMIT" ]; then
+    echo "[deploy-blue-green] commit divergente: esperado=$EXPECTED_DEPLOY_COMMIT atual=$ACTUAL_DEPLOY_COMMIT" >&2
+    exit 1
+  fi
+  echo "[deploy-blue-green] commit pré-validado: $EXPECTED_DEPLOY_COMMIT"
+fi
 
 echo "[deploy-blue-green] ativo=$active; subindo $target em $NEW_PROJECT"
 echo "[deploy-blue-green] build das imagens api/web..."

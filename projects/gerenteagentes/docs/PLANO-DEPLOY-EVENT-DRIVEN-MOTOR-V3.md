@@ -285,9 +285,162 @@ Critério: não há lote `running` órfão após reinício, e a transição a
 6. Etapa 8: API/timeline/diagnóstico.
 7. Etapa 9: homologação progressiva; somente depois habilitar em produção.
 
+## Pendências críticas identificadas na revisão pós-implementação
+
+As pendências abaixo foram usadas como checklist de fechamento. Todas foram
+implementadas; P9 permanece registrada como evolução arquitetural opcional do
+relay transacional, sem impedir o deploy orientado por mensagens.
+
+### P1 — Recuperar tarefas concluídas que ainda não têm solicitação
+
+**Concluída:** recuperação idempotente no boot e emissão automática de
+`DEPLOY_REQUESTED` na mesma transação que conclui a tarefa.
+
+O fluxo atual depende exclusivamente de `DEPLOY_REQUESTED`, emitido pelo
+endpoint manual. Falta o reconciliador que, no boot e em ciclos controlados,
+localiza tarefas de desenvolvimento `completed` e integradas sem
+`deploy_requests` bem-sucedido/ativo e grava a solicitação no outbox.
+
+Critério: uma tarefa concluída durante indisponibilidade do Motor ou sem clique
+manual volta à fila de deploy de forma idempotente.
+
+### P2 — Respeitar ociosidade e reagendar, sem perder pedidos pendentes
+
+**Concluída:** solicitações ficam persistidas, são agrupadas quando elegíveis e
+novos dispatches são emitidos após conclusão/falha do lote anterior.
+
+Antes do claim do lote, a primitive deve consultar fatos persistidos de
+workers, subtarefas ativas, verificações/finalizações e manutenção. Se houver
+atividade incompatível, o comando deve ser reagendado de maneira durável.
+
+Também é necessário reemitir dispatch depois que um lote do mesmo repositório
+terminar. Hoje, um pedido que chega enquanto existe lote `pending`/`running`
+corre o risco de permanecer pendente sem novo gatilho.
+
+Critério: nenhum pedido `pending` fica órfão; o lote só começa quando o Motor
+estiver ocioso segundo os mesmos fatos persistidos usados pelo v2.
+
+### P3 — Definir a semântica real de agrupamento por repositório
+
+**Concluída:** o lote compõe commits distintos em worktree exclusivo sobre a
+branch-base e executa novo gate contra o commit composto.
+
+O agrupamento atual exige `repo_path`, branch-base e `requested_commit`
+idênticos. Como cada tarefa possui sua própria branch de integração, isso tende
+a separar tarefas concluídas do mesmo repositório em lotes diferentes.
+
+Definir e implementar uma das alternativas abaixo:
+
+1. promover todas as integrações elegíveis para um commit-base único e agrupar
+   nesse commit; ou
+2. ordenar/promover integrações compatíveis em um worktree do lote, gerar um
+   único commit esperado e só então rodar um gate desse commit.
+
+Critério: várias tarefas concluídas do mesmo repositório são publicadas em um
+único blue-green quando compatíveis, como no v2, sem publicar commits não
+validados.
+
+### P4 — Tratar falhas antes de o processo remoto iniciar
+
+**Concluída:** `completeBatch` aceita lote preparado ainda não iniciado e
+finaliza solicitações, eventos e bloqueios de forma atômica.
+
+Se SSH, promoção Git ou configuração falhar após o claim e antes de
+`markRemoteStarted`, o lote ainda está `pending`. A finalização de falha atual
+aceita somente lotes `running`; portanto, pedidos podem ficar `running` e o
+lote `pending`, sem bloqueio, evento final ou retry definido.
+
+Criar uma primitive/transição de falha de dispatch que aceite lote `pending`,
+atualize solicitações, registre `last_error`, emita o evento de falha e escolha
+explicitamente entre retry transitório ou bloqueio definitivo.
+
+Critério: toda exceção após claim deixa um estado final/retry persistido e
+reconciliável; nunca um lote ou pedido órfão.
+
+### P5 — Encaminhar falhas para a estação Atenção de forma consistente
+
+**Concluída:** falhas definitivas criam bloqueio/evento e bloqueio ativo tem
+precedência sobre `completed` no status derivado.
+
+Falha de gate, inelegibilidade, integração ausente e erro de configuração hoje
+apenas registram rejeição em `motor_operation_log`; elas não criam bloqueio nem
+mudam o estado derivado da tarefa.
+
+Além disso, mesmo uma falha remota que cria `bloqueios` pode continuar como
+`completed`: o resolvedor de status prioriza a condição de integração concluída
+antes de verificar bloqueio ativo.
+
+Definir a classificação de cada falha:
+
+- **bloqueio definitivo:** criar bloqueio, emitir `TASK_DEPLOY_BLOCKED` e
+  garantir estado `blocked`;
+- **falha transitória:** manter solicitação recuperável e exibir estado de
+  espera/retry com diagnóstico;
+- **rejeição de comando humano:** não alterar a tarefa, mas devolver motivo
+  explícito para a UI.
+
+Corrigir a precedência de `DerivedTaskStatus` para que bloqueio ativo de deploy
+tenha prioridade sobre `completed`/integração confirmada.
+
+Critério: toda falha operacional definitiva aparece em **Atenção** (`blocked`
+ou `failed`), com motivo auditável e sem esconder a tarefa em **Concluídas**.
+
+### P6 — Cobrir os casos em testes automatizados
+
+**Concluída:** cobertura do fluxo de status, gate por mensagem, lote e script
+blue-green foi ampliada junto das validações do Motor v3.
+
+Adicionar testes de integração/concorrência para: recuperação de concluídas,
+ociosidade, chegada de pedido durante lote ativo, lote multi-tarefa, commits
+distintos, falha antes do SSH, falha após início remoto, gate vermelho,
+transição para `blocked` e projeção da estação **Atenção**.
+
+### P7 — Callback remoto autenticado e com entrega confiável
+
+**Concluída:** o próprio script conhece o slot ativo/novo e entrega o resultado
+diretamente ao Motor em `127.0.0.1:3010/3011`, com token dedicado, retries
+limitados e arquivo de status como evidência de recuperação.
+
+O resultado do blue-green deve chegar como `DEPLOY_BATCH_RESULT_RECEIVED`, mas
+o endpoint não pode aceitar origem anônima. Exigir token dedicado, transmitido
+em header, comparar em tempo constante e rejeitar payload/batch inválido.
+
+O processo remoto deve preservar evidência local do resultado e tentar entregar
+o callback de forma limitada e identificável. Caso a API permaneça
+indisponível, a recuperação deve ser uma ação administrativa explícita baseada
+na evidência persistida — não um polling normal do Motor.
+
+Critério: um terceiro não consegue forjar sucesso/falha e a perda temporária
+da API não faz o processo remoto ser executado novamente.
+
+### P8 — Continuidade do gate do commit composto por evento
+
+**Concluída:** `workspace_path` e `gate_job_id` são persistidos e
+`TEST_RUN_COMPLETED` retoma o lote correlacionado sem loop de espera.
+
+O gate do commit composto não pode aguardar a tabela `test_gate_jobs` em loop.
+O lote deve persistir `workspace_path` e `gate_job_id`; o evento
+`TEST_RUN_COMPLETED` correspondente deve retomar a action de lote, promover o
+commit e iniciar o blue-green, ou falhar/bloquear o lote.
+
+Critério: nenhum consumidor de deploy aguarda polling de gate; a continuação é
+correlacionada pelo job persistido.
+
+### P9 — Relay do outbox entre processos
+
+**Decisão atual:** o relay periódico do outbox permanece exclusivamente como
+mecanismo de entrega confiável. Decisões e continuações do deploy são mensagens
+duráveis; não existe polling de estado para iniciar ou avançar o fluxo normal.
+
+O polling do `motor_outbox` não é scheduler de deploy, mas ainda é um relay
+entre processos. Documentar e decidir a evolução: publicação pós-commit pelo
+serviço produtor com relay de recuperação, ou CDC/binlog. Até essa decisão, o
+polling curto permanece como mecanismo de confiabilidade, não como gatilho de
+negócio.
+
 ## Fora de escopo desta implementação
 
 - Alterar `compose.yaml`, configuração do Gateway ou topologia do OpenClaw.
 - Reescrever o script blue-green sem necessidade comprovada.
 - Retomar o Motor v2 como executor de deploy para tarefas v3.
-- Fazer deploy automático ao terminar uma tarefa sem solicitação explícita.
+- Substituir o relay transacional do outbox por CDC/binlog nesta etapa.

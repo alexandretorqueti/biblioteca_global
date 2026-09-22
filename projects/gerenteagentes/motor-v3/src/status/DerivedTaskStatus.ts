@@ -69,6 +69,9 @@ export class DerivedTaskStatusResolver {
     }
     if (task.last_clarification_role === 'analyst') return 'awaiting_clarification'
     if (Number(task.awaiting_interaction) === 1) return 'awaiting_interaction'
+    // Um bloqueio operacional (inclusive deploy) nunca pode ser escondido
+    // pela projeção de integração concluída abaixo.
+    if (Number(task.has_active_blocker) === 1) return 'blocked'
     if (subtaskStatuses.includes('failed')) return 'failed'
     if (subtaskStatuses.includes('blocked')) return 'blocked'
     if (task.analysis_started_at && subtaskStatuses.length === 0) return 'analyzing'
@@ -77,7 +80,6 @@ export class DerivedTaskStatusResolver {
 
     if (allApproved && (Number(task.deploy_failed) === 1 || await this.integrationConfirmed(task.id))) return 'completed'
     if (task.paused_at && !task.resource_wait_key) return 'paused'
-    if (Number(task.has_active_blocker) === 1) return 'blocked'
     return hasSubtasks ? 'ready' : 'planned'
   }
 
