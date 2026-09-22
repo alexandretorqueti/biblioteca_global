@@ -5,8 +5,11 @@ import {
   buildAnalysisContextConfirmation,
   buildAnalysisContextMessage,
   buildAnalysisDescriptionReference,
+  buildAnalysisPromptActivation,
+  buildAnalysisPromptBlock,
   isContextAcknowledgement,
   splitAnalysisDescription,
+  splitAnalysisPrompt,
 } from './PromptChunking.js'
 
 export interface AnalysisPromptResolver {
@@ -123,7 +126,7 @@ export class ConsoleAnalystRunner implements AnalysisRunner {
         phase = 'context'
         await this.sendDescriptionContext(session, task, descriptionChunks, send, wait)
         phase = 'prompt'
-        await send(phase, resolvedPrompt.text)
+        await this.sendAnalysisPrompt(resolvedPrompt.text, send, wait)
         phase = 'response'
         const content = await wait(phase)
         try {
@@ -181,6 +184,22 @@ export class ConsoleAnalystRunner implements AnalysisRunner {
         throw new Error(`Analista não confirmou o bloco ${index + 1}/${chunks.length}: resposta recebida: ${acknowledgement.slice(0, 200) || '(vazia)'}`)
       }
     }
+  }
+
+  private async sendAnalysisPrompt(prompt: string, send: (phase: string, message: string) => Promise<void>, wait: (phase: string) => Promise<string>): Promise<void> {
+    const chunks = splitAnalysisPrompt(prompt)
+    if (chunks.length === 1) {
+      await send('prompt', prompt)
+      return
+    }
+    for (const [index, chunk] of chunks.entries()) {
+      await send('prompt_context', buildAnalysisPromptBlock(chunk, index, chunks.length))
+      const acknowledgement = await wait('prompt_context_acknowledgement')
+      if (!isContextAcknowledgement(acknowledgement)) {
+        throw new Error(`Analista não confirmou o bloco de instruções ${index + 1}/${chunks.length}: resposta recebida: ${acknowledgement.slice(0, 200) || '(vazia)'}`)
+      }
+    }
+    await send('prompt', buildAnalysisPromptActivation(chunks.length))
   }
 
   private annotateError(error: Error, context: { task: TaskSnapshot; executionId: string; analysisAttemptId: string; modelAttempt: number; model?: string; phase: string }): Error {

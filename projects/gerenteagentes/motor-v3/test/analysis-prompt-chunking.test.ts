@@ -2,8 +2,11 @@ import { describe, expect, it, vi } from 'vitest'
 import { ConsoleAnalystRunner, type AnalystConsole, type AnalystSession } from '../src/analysis/ConsoleAnalystRunner.js'
 import {
   buildAnalysisContextMessage,
+  buildAnalysisPromptActivation,
+  buildAnalysisPromptBlock,
   isContextAcknowledgement,
   splitAnalysisDescription,
+  splitAnalysisPrompt,
 } from '../src/analysis/PromptChunking.js'
 import type { TaskSnapshot } from '../src/coordinator/TaskCoordinator.js'
 
@@ -43,6 +46,16 @@ describe('PromptChunking', () => {
     expect(isContextAcknowledgement(' CONTEXTO_RECEBIDO. ')).toBe(true)
     expect(isContextAcknowledgement('CONTEXTO_RECEBIDO, vou analisar agora')).toBe(false)
   })
+
+  it('divide o prompt final e só autoriza a execução depois de todos os blocos', () => {
+    const prompt = 'A'.repeat(6_000) + 'FIM'
+    const chunks = splitAnalysisPrompt(prompt)
+
+    expect(chunks).toHaveLength(2)
+    expect(chunks.join('')).toBe(prompt)
+    expect(buildAnalysisPromptBlock(chunks[0]!, 0, 2)).toContain('sem executar ainda')
+    expect(buildAnalysisPromptActivation(2)).toContain('Agora execute a análise')
+  })
 })
 
 describe('ConsoleAnalystRunner — contexto em etapas', () => {
@@ -72,6 +85,22 @@ describe('ConsoleAnalystRunner — contexto em etapas', () => {
 
     await expect(runner.start(task('descrição'), 'execution-1')).rejects.toThrow('não confirmou o bloco 1/1')
     expect(api.sendMessage).toHaveBeenCalledTimes(1)
+  })
+
+  it('envia prompt grande em blocos confirmados antes da ativação', async () => {
+    const api = consoleWithResponses(['CONTEXTO_RECEBIDO', 'CONTEXTO_RECEBIDO', 'CONTEXTO_RECEBIDO', plan])
+    const resolver = { resolve: vi.fn(async () => ({
+      text: 'P'.repeat(6_001), contractText: '', contractSchema: undefined,
+    })) }
+    const runner = new ConsoleAnalystRunner(api, { pollIntervalMs: 1, promptResolver: resolver })
+
+    await expect(runner.start(task('descrição'), 'execution-1')).resolves.toMatchObject({ kind: 'plan' })
+    expect(api.sendMessage.mock.calls.map(([input]) => input.message)).toEqual([
+      expect.stringContaining('CONTEXTO DA TAREFA'),
+      expect.stringContaining('INSTRUÇÕES DA ANÁLISE — BLOCO 1/2'),
+      expect.stringContaining('INSTRUÇÕES DA ANÁLISE — BLOCO 2/2'),
+      expect.stringContaining('Agora execute a análise'),
+    ])
   })
 })
 // @vitest-environment node

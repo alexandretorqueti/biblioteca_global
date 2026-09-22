@@ -36,3 +36,24 @@ export function buildAnalysisContextConfirmation(description: string | undefined
 export function isContextAcknowledgement(content: string): boolean {
   return /^CONTEXTO_RECEBIDO[.!]*$/i.test(content.trim())
 }
+
+export function splitAnalysisPrompt(prompt: string, chunkSize = DEFAULT_CHUNK_SIZE): string[] {
+  if (!Number.isInteger(chunkSize) || chunkSize <= 0) throw new Error('chunkSize deve ser um inteiro positivo')
+  if (prompt.length <= chunkSize) return [prompt]
+  const chunks: string[] = []
+  for (let offset = 0; offset < prompt.length; offset += chunkSize) chunks.push(prompt.slice(offset, offset + chunkSize))
+  return chunks
+}
+
+export function buildAnalysisPromptBlock(chunk: string, index: number, total: number): string {
+  return [
+    `INSTRUÇÕES DA ANÁLISE — BLOCO ${index + 1}/${total}`,
+    chunk,
+    `FIM DO BLOCO ${index + 1}/${total}`,
+    'Armazene estas instruções sem executar ainda. Responda somente CONTEXTO_RECEBIDO; a autorização para iniciar será enviada após todos os blocos.',
+  ].join('\n\n')
+}
+
+export function buildAnalysisPromptActivation(total: number): string {
+  return `Todos os ${total} blocos das instruções foram enviados. Agora execute a análise usando a descrição e todos os blocos recebidos. Responda somente no formato exigido pelo contrato indicado.`
+}

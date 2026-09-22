@@ -1,5 +1,6 @@
 import type { Pool, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
 import type { TaskSnapshot } from '../coordinator/TaskCoordinator.js'
+import { ContractArtifactStore } from './ContractArtifactStore.js'
 
 export interface ResolvedAnalysisPrompt {
   text: string
@@ -17,7 +18,10 @@ export interface AnalysisPromptContext {
 
 /** Resolve a versão ativa de prompt/contrato da Biblioteca e a audita. */
 export class ManagedAnalysisPromptResolver {
-  constructor(private readonly pool: Pool) {}
+  constructor(
+    private readonly pool: Pool,
+    private readonly artifacts = new ContractArtifactStore(process.env.MOTOR_AGENT_WORKSPACES_ROOT),
+  ) {}
 
   async resolve(task: TaskSnapshot, executionId: string, context?: AnalysisPromptContext): Promise<ResolvedAnalysisPrompt> {
     const key = task.status === 'awaiting_clarification'
@@ -45,11 +49,21 @@ export class ManagedAnalysisPromptResolver {
     const instructions = String(row.instrucoes ?? '').trim()
     const schema = jsonValue(row.schema_json)
     const example = jsonValue(row.exemplo_json)
-    const contractText = [
-      instructions,
-      `JSON SCHEMA OBRIGATÓRIO:\n${JSON.stringify(schema, null, 2)}`,
-      `EXEMPLO VÁLIDO:\n${JSON.stringify(example, null, 2)}`,
-    ].filter(Boolean).join('\n\n')
+    const contractVersionId = Number(row.contract_version_id)
+    const artifact = Number.isInteger(contractVersionId) && contractVersionId > 0
+      ? await this.artifacts.materialize({
+          agentId: task.agentId, promptKey: key, contractVersionId, instructions, schema, example,
+        })
+      : null
+    const contractText = artifact
+      ? [
+          'CONTRATO JSON OBRIGATÓRIO DISPONÍVEL EM ARQUIVO:',
+          `Caminho: ${artifact.path}`,
+          `Versão: ${artifact.version}`,
+          `SHA-256: ${artifact.sha256}`,
+          'Leia o arquivo integralmente antes de responder. O Motor validará a resposta usando exatamente o campo schema desse arquivo.',
+        ].join('\n')
+      : instructions
     const text = render(String(row.texto), {
       '**TITULOTAREFA**': task.title,
       '**DESCRICAOTAREFA**': context?.descriptionReference ?? task.description,
@@ -70,7 +84,7 @@ export class ManagedAnalysisPromptResolver {
     )
     await this.pool.query(
       'UPDATE prompts_execucoes SET prompt_final = ?, composicao_json = ? WHERE id = ?',
-      [finalText, JSON.stringify({ executionId, taskId: task.taskId, key, ...(context ? { taskContext: { chunks: context.chunkCount, descriptionLength: context.descriptionLength } } : {}) }), result.insertId],
+      [finalText, JSON.stringify({ executionId, taskId: task.taskId, key, ...(artifact ? { contractArtifact: artifact } : {}), ...(context ? { taskContext: { chunks: context.chunkCount, descriptionLength: context.descriptionLength } } : {}) }), result.insertId],
     )
     return { text: finalText, contractText, contractSchema: schema, executionId: result.insertId }
   }

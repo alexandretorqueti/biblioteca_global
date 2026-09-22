@@ -69,8 +69,9 @@ export class QueueConsumer {
     }
 
     if (claimResult.alreadyProcessing) {
-      // Outra instância já está processando, ack para não reencilhar
-      this.transport.ack(delivery)
+      // Pode ser uma entrega recuperada logo após a queda do processo. Não
+      // confirme: passe pelo retry até o lease de processamento expirar.
+      this.transport.nack(delivery, false)
       return
     }
 

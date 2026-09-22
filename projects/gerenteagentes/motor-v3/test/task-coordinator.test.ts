@@ -91,6 +91,20 @@ describe('TaskCoordinator', () => {
     expect(ready).toHaveBeenCalled()
   })
 
+  it('recupera claim órfão quando a mesma mensagem volta após queda', async () => {
+    const resume = command()
+    const orphanExecution = `exec-analyze-task-1-${resume.messageId}-attempt-1`
+    const { coordinator, repository, runner } = setup(task({
+      status: 'running', analysisStartedAt: new Date().toISOString(), analysisExecutionId: orphanExecution,
+    }))
+
+    await coordinator.handle(resume)
+
+    expect(repository.releaseAnalysisClaim).toHaveBeenCalledWith('task-1', orphanExecution)
+    expect(repository.claimAnalysis).toHaveBeenCalled()
+    expect(runner.start).toHaveBeenCalled()
+  })
+
   it('não inicia quando o claim atômico falha', async () => {
     const setupResult = setup()
     vi.mocked(setupResult.repository.claimAnalysis).mockResolvedValue(false)

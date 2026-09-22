@@ -220,6 +220,7 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
       paused,
       terminal,
       analysisStartedAt: row.analysis_started_at ? new Date(row.analysis_started_at).toISOString() : null,
+      analysisExecutionId: row.analysis_execution_id ? String(row.analysis_execution_id) : null,
       subtaskCount: Number(row.subtask_count ?? 0),
     }
   }

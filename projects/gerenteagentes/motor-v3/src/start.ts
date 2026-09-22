@@ -143,7 +143,9 @@ async function start() {
       }
     }
     const analyst = new ConsoleAnalystRunner(consoleApi, {
-      timeoutMs: Number(process.env.MOTOR_ANALYSIS_TIMEOUT_MS || 1800000),
+      // Margem antes do consumer_timeout padrão do RabbitMQ (30 minutos),
+      // para que a entrega possa ser rejeitada/repetida sem fechar o canal.
+      timeoutMs: Number(process.env.MOTOR_ANALYSIS_TIMEOUT_MS || 1500000),
       pollIntervalMs: Number(process.env.MOTOR_ANALYSIS_POLL_INTERVAL_MS || 5000),
       promptResolver: new ManagedAnalysisPromptResolver(pool),
       modelChainResolver: async (task) => {

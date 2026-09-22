@@ -19,6 +19,7 @@ export interface TaskSnapshot {
   paused: boolean
   terminal: boolean
   analysisStartedAt: string | null
+  analysisExecutionId?: string | null
   subtaskCount: number
 }
 
@@ -134,6 +135,14 @@ export class TaskCoordinator {
       await this.log(operationId, 4, 'rejected', 'rejected', message, { reasonCode: ignoredReason })
       await this.emit('TASK_IGNORED', message, { reason: ignoredReason })
       return
+    }
+
+    if (task.analysisStartedAt !== null && task.analysisExecutionId?.includes(message.messageId)) {
+      // A mesma mensagem voltou depois de uma queda do processo. O lease da
+      // fila já expirou; libere o claim órfão para refazer a análise.
+      await this.repository.releaseAnalysisClaim(task.taskId, task.analysisExecutionId)
+      task.analysisStartedAt = null
+      task.analysisExecutionId = null
     }
 
     if (task.subtaskCount > 0 || task.analysisStartedAt !== null) {

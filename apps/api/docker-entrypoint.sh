@@ -89,7 +89,14 @@ elif [ "${MOTOR_VERSION:-v1}" = "v3" ]; then
   echo "[entrypoint] Validando/bootstrap do catálogo motor-v3..."
   npm --prefix projects/gerenteagentes/motor-v3 run db:bootstrap-runtime
   echo "[entrypoint] Iniciando motor-v3 em background..."
-  node projects/gerenteagentes/motor-v3/dist/start.js &
+  (
+    set +e
+    node projects/gerenteagentes/motor-v3/dist/start.js
+    status=$?
+    echo "[entrypoint] Motor-v3 encerrou inesperadamente (status=$status); encerrando API para recuperação pelo Docker" >&2
+    kill -TERM 1 2>/dev/null || true
+    exit "$status"
+  ) &
   MOTOR_PID=$!
   echo "[entrypoint] Motor-v3 PID: $MOTOR_PID"
   sleep 2
