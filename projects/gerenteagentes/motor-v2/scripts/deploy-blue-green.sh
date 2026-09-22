@@ -18,7 +18,7 @@ MYSQL_HOST_BLUEGREEN="${BLUE_GREEN_MYSQL_HOST:-host.docker.internal}"
 MYSQL_PORT_BLUEGREEN="${BLUE_GREEN_MYSQL_PORT:-3308}"
 CONSOLE_URL_BLUEGREEN="${BLUE_GREEN_CONSOLE_URL:-http://host.docker.internal:6280}"
 MOTOR_REPO_ROOT_CONTAINER="/data/workspace/projects/codigofonte/biblioteca-global"
-MOTOR_WORKSPACE_ROOT_CONTAINER="${MOTOR_WORKSPACE_ROOT:-/data/workspace/projects/agentes/gerenteagentes/worktrees}"
+MOTOR_WORKSPACE_ROOT_CONTAINER="${MOTOR_WORKSPACE_ROOT:-/data/workspace/projects/agentes/worktrees}"
 MOTOR_WORKSPACE_MOUNT_CONTAINER="${MOTOR_WORKSPACE_ROOT_CONTAINER%/worktrees}"
 
 mkdir -p "$(dirname "$STATE_FILE")"
