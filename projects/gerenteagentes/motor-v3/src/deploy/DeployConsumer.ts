@@ -168,7 +168,18 @@ export class DeployConsumer {
       for (const commit of [...new Set(commits)]) {
         if (!/^[a-f0-9]{7,64}$/i.test(commit)) throw new Error(`Commit de integração inválido: ${commit}`)
         const contained = await execFileAsync('git', ['merge-base', '--is-ancestor', commit, 'HEAD'], { cwd: path }).then(() => true, () => false)
-        if (!contained) await execFileAsync('git', ['cherry-pick', commit], { cwd: path })
+        if (!contained) {
+          try {
+            await execFileAsync('git', ['cherry-pick', commit], { cwd: path })
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            if (message.includes('empty')) {
+              await execFileAsync('git', ['cherry-pick', '--skip'], { cwd: path })
+            } else {
+              throw error
+            }
+          }
+        }
       }
       await execFileAsync('npm', ['ci', '--prefer-offline', '--no-audit', '--no-fund'], { cwd: path })
       await execFileAsync('npm', ['ci', '--prefer-offline', '--no-audit', '--no-fund'], { cwd: `${path}/projects/gerenteagentes/motor-v3` })
