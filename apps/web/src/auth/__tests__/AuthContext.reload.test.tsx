@@ -30,6 +30,7 @@ interface RouteHandler {
 /** Estado capturado do AuthContext para asserções. */
 interface SessionSnapshot {
   status: string
+  usuarioNome: string | null
   projetoId: number | null
   projetoSlug: string | null
   projetosCount: number
@@ -37,6 +38,7 @@ interface SessionSnapshot {
 
 let snapshot: SessionSnapshot = {
   status: "unknown",
+  usuarioNome: null,
   projetoId: null,
   projetoSlug: null,
   projetosCount: 0,
@@ -44,9 +46,10 @@ let snapshot: SessionSnapshot = {
 
 /** Componente que captura o estado do AuthContext a cada render. */
 function SnapshotChild(): ReactNode {
-  const { status, projeto, projetos } = useAuth()
+  const { status, usuario, projeto, projetos } = useAuth()
   snapshot = {
     status,
+    usuarioNome: usuario?.nome ?? null,
     projetoId: projeto?.id ?? null,
     projetoSlug: projeto?.slug ?? null,
     projetosCount: projetos.length,
@@ -58,6 +61,7 @@ function SnapshotChild(): ReactNode {
 function renderWithRoutes(routes: RouteHandler[]): void {
   snapshot = {
     status: "unknown",
+    usuarioNome: null,
     projetoId: null,
     projetoSlug: null,
     projetosCount: 0,
@@ -98,9 +102,23 @@ function accessTokenFake(projetoId: number): string {
 /** Resposta de refresh com N projetos. */
 function refreshBody(projetos: Array<{ id: number; nome: string; slug: string; perfil: string }>): {
   refreshToken: string
+  usuario: typeof usuario
   projetos: typeof projetos
 } {
-  return { refreshToken: "refresh-renovado", projetos }
+  return {
+    refreshToken: "refresh-renovado",
+    usuario,
+    projetos,
+  }
+}
+
+const usuario = {
+  id: 1,
+  nome: "Alexandre Torqueti",
+  username: "alexandre",
+  email: "alexandre@globaltecnologia.net",
+  telefone: null,
+  cpf: null,
 }
 
 /** Resposta de select-project. */
@@ -157,6 +175,7 @@ describe("Reload — projeto persistido", () => {
 
     await waitFor(() => {
       expect(snapshot.status).toBe("authenticated")
+      expect(snapshot.usuarioNome).toBe("Alexandre Torqueti")
       expect(snapshot.projetoId).toBe(20)
       expect(snapshot.projetoSlug).toBe("helpdesk")
     })
@@ -187,6 +206,7 @@ describe("Reload — projeto persistido", () => {
 
     await waitFor(() => {
       expect(snapshot.status).toBe("authenticated")
+      expect(snapshot.usuarioNome).toBe("Alexandre Torqueti")
       expect(snapshot.projetoId).toBe(10)
       expect(snapshot.projetoSlug).toBe("taqui")
     })
@@ -216,6 +236,7 @@ describe("Reload — projeto removido da lista", () => {
     // Após hidratação: autenticado, mas projeto = null (tela de seleção).
     await waitFor(() => {
       expect(snapshot.status).toBe("authenticated")
+      expect(snapshot.usuarioNome).toBe("Alexandre Torqueti")
       expect(snapshot.projetoId).toBeNull()
       expect(snapshot.projetosCount).toBe(2)
     })
@@ -247,6 +268,7 @@ describe("Reload — projeto removido da lista", () => {
 
     await waitFor(() => {
       expect(snapshot.status).toBe("authenticated")
+      expect(snapshot.usuarioNome).toBe("Alexandre Torqueti")
       expect(snapshot.projetoId).toBe(30)
       expect(snapshot.projetoSlug).toBe("portaria")
     })
@@ -265,10 +287,11 @@ describe("Logout — limpeza de projetoId", () => {
 
     /** Componente que captura o estado E a função logout. */
     function CaptureAll(): ReactNode {
-      const { logout, status, projeto, projetos } = useAuth()
+      const { logout, status, usuario, projeto, projetos } = useAuth()
       logoutFn = logout
       snapshot = {
         status,
+        usuarioNome: usuario?.nome ?? null,
         projetoId: projeto?.id ?? null,
         projetoSlug: projeto?.slug ?? null,
         projetosCount: projetos.length,
@@ -320,6 +343,7 @@ describe("Logout — limpeza de projetoId", () => {
     // Reseta o snapshot antes de renderizar.
     snapshot = {
       status: "unknown",
+      usuarioNome: null,
       projetoId: null,
       projetoSlug: null,
       projetosCount: 0,
@@ -334,6 +358,7 @@ describe("Logout — limpeza de projetoId", () => {
     // Aguarda a hidratação completar.
     await waitFor(() => {
       expect(snapshot.status).toBe("authenticated")
+      expect(snapshot.usuarioNome).toBe("Alexandre Torqueti")
       expect(snapshot.projetoId).toBe(10)
     })
 

@@ -27,17 +27,22 @@ interface RouteHandler {
 /** Harness: expõe estado da sessão para assert no teste. */
 let sessionState: {
   status: string
+  usuarioNome: string | null
   projetoSlug: string | null
-} = { status: "unknown", projetoSlug: null }
+} = { status: "unknown", usuarioNome: null, projetoSlug: null }
 
 function HarnessChild(): ReactNode {
-  const { status, projeto } = useAuth()
-  sessionState = { status, projetoSlug: projeto?.slug ?? null }
+  const { status, usuario, projeto } = useAuth()
+  sessionState = {
+    status,
+    usuarioNome: usuario?.nome ?? null,
+    projetoSlug: projeto?.slug ?? null,
+  }
   return null
 }
 
 function renderLogin(routes: RouteHandler[]): void {
-  sessionState = { status: "unknown", projetoSlug: null }
+  sessionState = { status: "unknown", usuarioNome: null, projetoSlug: null }
 
   const fetchStub = vi.fn(async (url: string, init: unknown) => {
     const call: StubCall = {
@@ -140,6 +145,7 @@ describe("AuthPanel login flow", () => {
 
     await waitFor(() => {
       expect(sessionState.status).toBe("authenticated")
+      expect(sessionState.usuarioNome).toBe("Alexandre")
       expect(sessionState.projetoSlug).toBe("biblioteca-global")
     })
   })

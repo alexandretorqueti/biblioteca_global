@@ -310,9 +310,15 @@ export class AuthService {
   async refresh(token: string): Promise<RefreshResponse> {
     const sessao = await this.validateRefreshToken(token)
     await this.repo.revokeRefreshToken(sessao.tokenId)
+    const usuario = await this.repo.findUsuarioById(sessao.usuarioId)
+    // validateRefreshToken já valida a existência e atividade do usuário;
+    // a guarda abaixo mantém o contrato seguro caso essa implementação mude.
+    if (!usuario || !usuario.ativo) {
+      throw new UnauthorizedException("Usuário não encontrado ou inativo")
+    }
     const refreshToken = await this.issueRefreshToken(sessao.usuarioId)
     const projetos = await this.repo.listProjetosDoUsuario(sessao.usuarioId)
-    return { refreshToken, projetos }
+    return { refreshToken, usuario: toUsuarioAutenticado(usuario), projetos }
   }
 
   async logout(token: string): Promise<void> {

@@ -366,6 +366,7 @@ describe("AuthService", () => {
       })
       const renovado = await service.refresh(login.refreshToken)
       expect(renovado.refreshToken).not.toBe(login.refreshToken)
+      expect(renovado.usuario.nome).toBe("Alexandre")
       expect(renovado.projetos).toHaveLength(3)
 
       await expect(service.refresh(login.refreshToken)).rejects.toBeInstanceOf(
