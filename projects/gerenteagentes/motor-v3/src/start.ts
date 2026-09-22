@@ -30,7 +30,7 @@ import { QueueConsumer } from './queue/QueueConsumer.js'
 import { RabbitMqTransport } from './queue/RabbitMqTransport.js'
 import { OutboxPublisher, createQueueMessage } from './queue/index.js'
 import type { QueueMessage } from './queue/QueueMessage.js'
-import { TaskCoordinator, MySqlTaskCoordinatorRepository } from './coordinator/index.js'
+import { TaskCoordinator, MySqlTaskCoordinatorRepository, AnalysisClaimReconciler } from './coordinator/index.js'
 import { ConsoleAnalystRunner } from './analysis/ConsoleAnalystRunner.js'
 import { ConsoleHttpApi } from './analysis/ConsoleHttpApi.js'
 import { ManagedAnalysisPromptResolver } from './analysis/ManagedAnalysisPromptResolver.js'
@@ -347,6 +347,14 @@ async function start() {
       queue: process.env.MOTOR_RABBITMQ_QUEUE || 'motor.commands',
       maxAttempts: Number(process.env.MOTOR_QUEUE_MAX_ATTEMPTS || 3),
     }, pool)
+    // Incidente 862: libera claims de análise órfãos deixados por queda do
+    // Motor ANTES de iniciar os consumidores (instância única: no boot não há
+    // análise viva; se a mensagem original for reentregue, o claim atômico é
+    // refeito sem duplicação).
+    const orphanClaims = await new AnalysisClaimReconciler(pool).reconcile()
+    for (const orphan of orphanClaims) {
+      console.warn(`[Motor v3] Claim de análise órfão liberado no boot: task=${orphan.taskExternalId ?? orphan.tarefaId} execution=${orphan.analysisExecutionId ?? '(sem id)'} desde ${orphan.analysisStartedAt}`)
+    }
     await queueConsumer.start()
     // Recuperação única de fatos duráveis após boot. O fluxo normal avança
     // exclusivamente por mensagens/eventos; não há timer de deploy.

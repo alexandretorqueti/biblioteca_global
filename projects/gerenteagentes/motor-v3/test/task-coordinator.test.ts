@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { MessageBus } from '../src/bus/MessageBus.js'
 import { TaskCoordinator, type TaskCoordinatorRepository, type TaskSnapshot } from '../src/coordinator/index.js'
+import type { CommandPolicyRepository, OperationLogEntry, OperationLogger } from '../src/commands/index.js'
 import { createQueueMessage, type QueueMessage } from '../src/queue/index.js'
 
 function task(overrides: Partial<TaskSnapshot> = {}): TaskSnapshot {
@@ -26,6 +27,28 @@ function setup(snapshot: TaskSnapshot | null = task()) {
   const runner = { start: vi.fn(async () => ({ kind: 'plan' as const, subtasks: [{ seq: 1, titulo: 'Subtarefa', scope: 'Escopo', acceptanceCriteria: ['OK'], deliverables: ['Entrega'], requirementsCovered: ['REQ-1'], dependsOn: [] }], coverage: { requirements: [{ id: 'REQ-1', description: 'Requisito' }], coverage: [{ requirement: 'REQ-1', coveredBy: [1] }] } })) }
   const coordinator = new TaskCoordinator(repository, runner, bus)
   return { bus, repository, runner, coordinator }
+}
+
+/** Setup com gate de políticas governado (espelho da produção: C03/P03/A21). */
+function setupGoverned(snapshot: TaskSnapshot | null = task()) {
+  const bus = new MessageBus()
+  const entries: OperationLogEntry[] = []
+  const logger: OperationLogger = { append: vi.fn(async entry => { entries.push(entry) }) }
+  const policies: CommandPolicyRepository = {
+    findByMessageType: vi.fn(async () => ({
+      command: { code: 'C03_TASK_RESUME_REQUESTED', active: true, version: 1 },
+      policies: [{ code: 'P03_RESUME_IF_ELIGIBLE', priority: 100, conditions: ['task_not_paused', 'task_not_terminal', 'task_not_blocked', 'task_has_no_subtasks', 'analysis_not_claimed'], actionCode: 'A21_RESUME_TASK_ANALYSIS', active: true, version: 1 }],
+    })),
+  }
+  const repository: TaskCoordinatorRepository = {
+    getTask: vi.fn(async () => snapshot),
+    claimAnalysis: vi.fn(async () => true),
+    releaseAnalysisClaim: vi.fn(async () => {}),
+    persistAnalysis: vi.fn(async () => {}),
+  }
+  const runner = { start: vi.fn(async () => ({ kind: 'plan' as const, subtasks: [{ seq: 1, titulo: 'Subtarefa', scope: 'Escopo', acceptanceCriteria: ['OK'], deliverables: ['Entrega'], requirementsCovered: ['REQ-1'], dependsOn: [] }], coverage: { requirements: [{ id: 'REQ-1', description: 'Requisito' }], coverage: [{ requirement: 'REQ-1', coveredBy: [1] }] } })) }
+  const coordinator = new TaskCoordinator(repository, runner, bus, { commandPolicies: policies, operationLogger: logger })
+  return { bus, repository, runner, coordinator, entries }
 }
 
 describe('TaskCoordinator', () => {
@@ -103,6 +126,50 @@ describe('TaskCoordinator', () => {
     expect(repository.releaseAnalysisClaim).toHaveBeenCalledWith('task-1', orphanExecution)
     expect(repository.claimAnalysis).toHaveBeenCalled()
     expect(runner.start).toHaveBeenCalled()
+  })
+
+  it('libera claim órfão ANTES do gate de políticas quando a mesma mensagem volta (incidente 862)', async () => {
+    const resume = command()
+    const orphanExecution = `exec-analyze-task-1-${resume.messageId}-attempt-1`
+    const { coordinator, repository, runner } = setupGoverned(task({
+      status: 'analyzing', analysisStartedAt: new Date().toISOString(), analysisExecutionId: orphanExecution,
+    }))
+
+    await coordinator.handle(resume)
+
+    // Sem a correção, a política P03 rejeitaria com analysis_already_claimed
+    // antes da recuperação do claim órfão e a análise nunca seria refeita.
+    expect(repository.releaseAnalysisClaim).toHaveBeenCalledWith('task-1', orphanExecution)
+    expect(repository.claimAnalysis).toHaveBeenCalled()
+    expect(runner.start).toHaveBeenCalled()
+  })
+
+  it('registra a liberação do claim órfão como primitiva no operation log', async () => {
+    const resume = command()
+    const orphanExecution = `exec-analyze-task-1-${resume.messageId}-attempt-1`
+    const { coordinator, entries } = setupGoverned(task({
+      status: 'analyzing', analysisStartedAt: new Date().toISOString(), analysisExecutionId: orphanExecution,
+    }))
+
+    await coordinator.handle(resume)
+
+    expect(entries.some(entry => entry.primitiveCode === 'release_orphan_analysis_claim')).toBe(true)
+    const sequences = entries.map(entry => entry.sequence)
+    expect(new Set(sequences).size).toBe(sequences.length)
+  })
+
+  it('mantém a rejeição da política para claim de outra execução (messageId diferente)', async () => {
+    const { coordinator, repository, runner, entries } = setupGoverned(task({
+      status: 'analyzing', analysisStartedAt: new Date().toISOString(),
+      analysisExecutionId: 'exec-analyze-task-1-outro-message-id-attempt-1',
+    }))
+
+    await coordinator.handle(command())
+
+    expect(repository.releaseAnalysisClaim).not.toHaveBeenCalled()
+    expect(repository.claimAnalysis).not.toHaveBeenCalled()
+    expect(runner.start).not.toHaveBeenCalled()
+    expect(entries.some(entry => entry.reasonCode === 'analysis_already_claimed')).toBe(true)
   })
 
   it('não inicia quando o claim atômico falha', async () => {

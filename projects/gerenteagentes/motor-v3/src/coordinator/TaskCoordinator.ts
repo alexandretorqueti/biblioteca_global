@@ -82,12 +82,26 @@ export class TaskCoordinator {
     if (!ANALYSIS_COMMANDS.has(message.type)) return
 
     const operationId = randomUUID()
-    await this.log(operationId, 1, 'received', 'executed', message)
+    let sequence = 1
+    await this.log(operationId, sequence++, 'received', 'executed', message)
     const task = await this.repository.getTask(message.taskId)
     if (!task) {
-      await this.log(operationId, 2, 'rejected', 'rejected', message, { reasonCode: 'task_not_found' })
+      await this.log(operationId, sequence++, 'rejected', 'rejected', message, { reasonCode: 'task_not_found' })
       await this.emit('TASK_IGNORED', message, { reason: 'not_found' })
       return
+    }
+
+    // Incidente 862 (2026-09-22): a recuperação de claim órfão precisa rodar
+    // ANTES do gate de políticas. Quando o Motor cai no meio da análise, a
+    // mensagem durável é reentregue com o mesmo messageId e o claim da execução
+    // anterior fica órfão. Se o gate rodasse primeiro, a política rejeitaria com
+    // analysis_already_claimed, a mensagem seria confirmada e o claim nunca
+    // seria liberado — a tarefa ficaria "analyzing" para sempre.
+    if (task.analysisStartedAt !== null && task.analysisExecutionId?.includes(message.messageId)) {
+      await this.repository.releaseAnalysisClaim(task.taskId, task.analysisExecutionId)
+      await this.log(operationId, sequence++, 'primitive', 'succeeded', message, { primitiveCode: 'release_orphan_analysis_claim', result: { executionId: task.analysisExecutionId } })
+      task.analysisStartedAt = null
+      task.analysisExecutionId = null
     }
 
     if (this.commandPolicies) {
@@ -100,7 +114,7 @@ export class TaskCoordinator {
         analysisClaimed: task.analysisStartedAt !== null,
       })
       if (decision.kind === 'reject') {
-        await this.log(operationId, 2, 'rejected', 'rejected', message, {
+        await this.log(operationId, sequence++, 'rejected', 'rejected', message, {
           commandCode: decision.command?.code,
           reasonCode: decision.reasonCode,
           result: { evaluatedPolicies: decision.evaluatedPolicies },
@@ -113,18 +127,18 @@ export class TaskCoordinator {
         return
       }
       if (decision.policy.actionCode !== 'A21_RESUME_TASK_ANALYSIS') {
-        await this.log(operationId, 2, 'rejected', 'rejected', message, {
+        await this.log(operationId, sequence++, 'rejected', 'rejected', message, {
           commandCode: decision.command.code, policyCode: decision.policy.code, policyVersion: decision.policy.version,
           actionCode: decision.policy.actionCode, reasonCode: 'unsupported_command_action',
         })
         await this.emit('TASK_IGNORED', message, { reason: 'unsupported_command_action' })
         return
       }
-      await this.log(operationId, 2, 'decision', 'executed', message, {
+      await this.log(operationId, sequence++, 'decision', 'executed', message, {
         commandCode: decision.command.code, policyCode: decision.policy.code, policyVersion: decision.policy.version,
         actionCode: decision.policy.actionCode,
       })
-      await this.log(operationId, 3, 'action', 'executed', message, {
+      await this.log(operationId, sequence++, 'action', 'executed', message, {
         commandCode: decision.command.code, policyCode: decision.policy.code, policyVersion: decision.policy.version,
         actionCode: decision.policy.actionCode,
       })
@@ -132,21 +146,13 @@ export class TaskCoordinator {
 
     const ignoredReason = this.getIgnoredReason(task)
     if (ignoredReason) {
-      await this.log(operationId, 4, 'rejected', 'rejected', message, { reasonCode: ignoredReason })
+      await this.log(operationId, sequence++, 'rejected', 'rejected', message, { reasonCode: ignoredReason })
       await this.emit('TASK_IGNORED', message, { reason: ignoredReason })
       return
     }
 
-    if (task.analysisStartedAt !== null && task.analysisExecutionId?.includes(message.messageId)) {
-      // A mesma mensagem voltou depois de uma queda do processo. O lease da
-      // fila já expirou; libere o claim órfão para refazer a análise.
-      await this.repository.releaseAnalysisClaim(task.taskId, task.analysisExecutionId)
-      task.analysisStartedAt = null
-      task.analysisExecutionId = null
-    }
-
     if (task.subtaskCount > 0 || task.analysisStartedAt !== null) {
-      await this.log(operationId, 4, 'rejected', 'rejected', message, { reasonCode: task.subtaskCount > 0 ? 'task_has_plan' : 'analysis_already_claimed' })
+      await this.log(operationId, sequence++, 'rejected', 'rejected', message, { reasonCode: task.subtaskCount > 0 ? 'task_has_plan' : 'analysis_already_claimed' })
       await this.emitTaskReady(message, {
         reason: task.subtaskCount > 0 ? 'plan_exists' : 'analysis_already_started',
         subtaskCount: task.subtaskCount,
@@ -157,14 +163,14 @@ export class TaskCoordinator {
     const executionId = this.executionIdFactory(message)
     const analysisAttempt = message.attempt || 1
     const claimed = await this.repository.claimAnalysis(task.taskId, executionId)
-    await this.log(operationId, 4, 'primitive', claimed ? 'succeeded' : 'rejected', message, { primitiveCode: 'claim_analysis_atomic', result: { executionId, analysisAttempt }, reasonCode: claimed ? undefined : 'analysis_already_claimed' })
+    await this.log(operationId, sequence++, 'primitive', claimed ? 'succeeded' : 'rejected', message, { primitiveCode: 'claim_analysis_atomic', result: { executionId, analysisAttempt }, reasonCode: claimed ? undefined : 'analysis_already_claimed' })
     if (!claimed) {
       await this.emit('TASK_IGNORED', message, { reason: 'analysis_already_claimed', executionId, analysisAttempt })
       return
     }
 
     await this.emit('ANALYSIS_SELECTED', message, { executionId, analysisAttempt })
-    await this.log(operationId, 5, 'primitive', 'succeeded', message, { primitiveCode: 'emit_analysis_selected', result: { executionId, analysisAttempt } })
+    await this.log(operationId, sequence++, 'primitive', 'succeeded', message, { primitiveCode: 'emit_analysis_selected', result: { executionId, analysisAttempt } })
     try {
       await this.emit('ANALYSIS_STARTED', message, { executionId, analysisAttempt })
       // A projeção do status pode já enxergar a última mensagem do usuário e
@@ -174,7 +180,7 @@ export class TaskCoordinator {
         ? { ...task, status: 'awaiting_clarification' as const }
         : task
       const outcome = await this.runner.start(analysisTask, executionId)
-      await this.log(operationId, 6, 'primitive', 'succeeded', message, { primitiveCode: 'start_analyst', result: { executionId, analysisAttempt, outcome: outcome.kind } })
+      await this.log(operationId, sequence++, 'primitive', 'succeeded', message, { primitiveCode: 'start_analyst', result: { executionId, analysisAttempt, outcome: outcome.kind } })
       await this.repository.persistAnalysis(task.taskId, executionId, outcome)
       await this.repository.releaseAnalysisClaim(task.taskId, executionId)
       if (outcome.kind === 'questions') {
@@ -183,12 +189,12 @@ export class TaskCoordinator {
         await this.emit('ANALYSIS_COMPLETED', message, { executionId, analysisAttempt, subtaskCount: outcome.subtasks.length })
         await this.emitTaskReady(message, { executionId, analysisAttempt, subtaskCount: outcome.subtasks.length })
       }
-      await this.log(operationId, 7, 'completed', 'succeeded', message, { result: { executionId, analysisAttempt, outcome: outcome.kind } })
+      await this.log(operationId, sequence++, 'completed', 'succeeded', message, { result: { executionId, analysisAttempt, outcome: outcome.kind } })
     } catch (error) {
       await this.repository.releaseAnalysisClaim(task.taskId, executionId)
       const errorMessage = error instanceof Error ? error.message : String(error)
-      await this.log(operationId, 6, 'primitive', 'failed', message, { primitiveCode: 'start_analyst', result: { executionId, analysisAttempt, error: errorMessage }, reasonCode: 'analyst_failed' })
-      await this.log(operationId, 7, 'failed', 'failed', message, { result: { executionId, analysisAttempt, error: errorMessage }, reasonCode: 'analyst_failed' })
+      await this.log(operationId, sequence++, 'primitive', 'failed', message, { primitiveCode: 'start_analyst', result: { executionId, analysisAttempt, error: errorMessage }, reasonCode: 'analyst_failed' })
+      await this.log(operationId, sequence++, 'failed', 'failed', message, { result: { executionId, analysisAttempt, error: errorMessage }, reasonCode: 'analyst_failed' })
       await this.emit('ANALYSIS_FAILED', message, {
         executionId,
         analysisAttempt,
