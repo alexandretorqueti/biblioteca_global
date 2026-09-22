@@ -210,7 +210,7 @@ export class DeployRepository {
         `SELECT COUNT(*) AS total FROM deploy_batches WHERE repo_path=? AND status IN ('pending','running') FOR UPDATE`, [repoPath])
       if (Number(busy[0]?.total ?? 0) > 0) { await connection.rollback(); return null }
       const [requests] = await connection.query<Array<RowDataPacket & { id: number; task_id: number; external_id: string | null; requested_commit: string; project_id: number; build_command: string | null; test_command: string | null }>>(
-        `SELECT dr.id,dr.tarefa_id,t.external_id,dr.requested_commit,t.projeto_id,pmc.build_command,pmc.unit_test_command AS test_command
+        `SELECT dr.id,dr.tarefa_id AS task_id,t.external_id,dr.requested_commit,t.projeto_id AS project_id,pmc.build_command,pmc.unit_test_command AS test_command
            FROM deploy_requests dr INNER JOIN tarefas t ON t.id=dr.tarefa_id
            LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id=t.projeto_id
           WHERE dr.repo_path=? AND dr.base_branch=? AND dr.status='pending'
@@ -299,7 +299,7 @@ export class DeployRepository {
       const finalStatus = success ? 'succeeded' : 'failed'
       const [batch] = await connection.query<ResultSetHeader>(`UPDATE deploy_batches SET status=?,last_error=?,finished_at=NOW(),updated_at=NOW() WHERE batch_id=? AND status IN ('pending','running')`, [finalStatus, reason, batchId])
       if (batch.affectedRows === 0) { await connection.rollback(); return [] }
-      const [requests] = await connection.query<Array<RowDataPacket & { external_id: string | null; task_id: number }>>(`SELECT t.external_id,dr.tarefa_id FROM deploy_requests dr INNER JOIN tarefas t ON t.id=dr.tarefa_id WHERE dr.batch_id=? FOR UPDATE`, [batchId])
+      const [requests] = await connection.query<Array<RowDataPacket & { external_id: string | null; task_id: number }>>(`SELECT t.external_id,dr.tarefa_id AS task_id FROM deploy_requests dr INNER JOIN tarefas t ON t.id=dr.tarefa_id WHERE dr.batch_id=? FOR UPDATE`, [batchId])
       await connection.query(`UPDATE deploy_requests SET status=?,last_error=?,finished_at=NOW(),updated_at=NOW() WHERE batch_id=? AND status='running'`, [finalStatus, reason, batchId])
       if (!success) await connection.query(`INSERT INTO bloqueios (tarefa_id,subtarefa_id,block_reason,block_command,block_excerpt,blocked_at)
         SELECT tarefa_id,NULL,'deploy_failed',?, ?,NOW() FROM deploy_requests WHERE batch_id=?`, [`motor-v3:deploy:${batchId}`, String(reason ?? 'Falha no deploy').slice(0, 500), batchId])
