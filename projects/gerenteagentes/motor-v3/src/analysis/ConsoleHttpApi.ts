@@ -34,12 +34,15 @@ export class ConsoleHttpApi implements AnalystConsole {
     const status = await this.request<{ status?: string; state?: string; hasActiveRun?: boolean; endedAt?: unknown; errorMessage?: string; message?: string; errorCode?: string; error?: unknown; failure?: unknown; details?: unknown }>('/api/sessions/describe', {
       method: 'GET', query: { key: session.sessionKey, agentId: session.agentId },
     })
-    const failed = status.status === 'failed' || status.state === 'failed' || status.status === 'error' || status.state === 'error'
+    const terminalFailure = new Set(['failed', 'error', 'timeout', 'cancelled', 'canceled'])
+    const failed = terminalFailure.has(String(status.status ?? '').toLowerCase()) || terminalFailure.has(String(status.state ?? '').toLowerCase())
     const complete = !failed && (status.status === 'done' || status.status === 'idle' || status.state === 'done' || status.state === 'idle' || status.hasActiveRun === false || status.endedAt !== undefined)
     if (!complete && !failed) return { isComplete: false }
     const history = await this.history(session)
     const marker = this.pendingResponses.get(this.sessionKey(session))
-    const assistant = [...(history.messages ?? [])].reverse().find(message => message.role === 'assistant' && this.isResponseAfter(message, marker)) as
+    const assistant = [...(history.messages ?? [])].reverse().find(message =>
+      message.role === 'assistant' && this.isResponseAfter(message, marker) && this.isFinalAssistant(message),
+    ) as
       | { role: string; content: unknown; errorCode?: unknown; errorType?: unknown; errorMessage?: unknown; stopReason?: unknown }
       | undefined
     if (failed) {
@@ -56,7 +59,7 @@ export class ConsoleHttpApi implements AnalystConsole {
         ?? (assistant?.stopReason === 'error'
           ? `SESSION_FAILED: ${this.stringValue(assistant.content) ?? 'falha antes de produzir resposta'}`
           : undefined)
-        ?? 'Sessão do Console falhou sem detalhamento'
+        ?? `Sessão do Console terminou com status ${String(status.status ?? status.state ?? 'failed')}`
       this.pendingResponses.delete(this.sessionKey(session))
       return { isComplete: false, isFailed: true, error: error.slice(0, 800) }
     }
@@ -84,6 +87,11 @@ export class ConsoleHttpApi implements AnalystConsole {
     if (message.createdAt == null) return false
     const occurredAt = typeof message.createdAt === 'number' ? message.createdAt : Date.parse(String(message.createdAt))
     return Number.isFinite(occurredAt) && occurredAt >= marker.sentAt
+  }
+
+  private isFinalAssistant(message: ConsoleHistoryMessage): boolean {
+    if (/^(?:toolUse|tool_use)$/i.test(String(message.stopReason ?? ''))) return false
+    return typeof message.content === 'string' && message.content.trim().length > 0
   }
 
   private stringValue(value: unknown): string | undefined {

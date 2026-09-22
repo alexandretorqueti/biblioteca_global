@@ -211,7 +211,7 @@ export class ConsoleAnalystRunner implements AnalysisRunner {
   }
 
   private isModelUnavailable(error: Error): boolean {
-    return /(?:401|403|404|429|quota|rate.limit|credit|billing|indispon[ií]vel|model.+not found)/i.test(error.message)
+    return /(?:401|403|404|429|quota|rate.limit|credit|billing|timeout|indispon[ií]vel|model.+not found)/i.test(error.message)
   }
 
   private prompt(task: TaskSnapshot, description: string): string {

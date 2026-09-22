@@ -19,13 +19,25 @@ export type AnalysisOutcome =
   | { kind: 'questions'; summary: string; questions: string[] }
 
 export function parseAnalystReply(content: string, contractSchema?: unknown): AnalysisOutcome {
-  const jsonText = extractJsonObject(content)
-  if (!jsonText) throw new Error('Resposta do analista não contém JSON')
+  const candidates = extractJsonObjects(content)
+  if (candidates.length === 0) throw new Error('Resposta do analista não contém JSON')
   let parsed: unknown
-  try {
-    parsed = JSON.parse(jsonText)
-  } catch (error) {
-    throw new Error(`JSON do analista inválido: ${error instanceof Error ? error.message : String(error)}`)
+  let lastParseError: unknown
+  // A resposta pode mencionar objetos/código antes do contrato final. Prefira
+  // o último objeto válido com a assinatura de análise esperada.
+  for (const jsonText of [...candidates].reverse()) {
+    try {
+      const candidate = JSON.parse(jsonText) as unknown
+      if (isRecord(candidate) && isAnalysisReply(candidate)) {
+        parsed = candidate
+        break
+      }
+    } catch (error) {
+      lastParseError = error
+    }
+  }
+  if (parsed === undefined) {
+    throw new Error(`JSON do analista inválido: ${lastParseError instanceof Error ? lastParseError.message : 'nenhum objeto possui a assinatura esperada'}`)
   }
   if (!isRecord(parsed)) throw new Error('Resposta do analista não é um objeto JSON')
   if (contractSchema) validateJsonSchema(parsed, contractSchema)
@@ -86,16 +98,22 @@ export function parseAnalystReply(content: string, contractSchema?: unknown): An
   return { kind: 'plan', subtasks, coverage: { requirements, coverage } }
 }
 
-/** Extrai um único objeto JSON, aceitando resposta em bloco Markdown. */
-function extractJsonObject(content: string): string | null {
-  const source = content.replace(/^\s*```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim()
-  const start = source.indexOf('{')
-  if (start < 0) return null
+/** Extrai todos os objetos balanceados; o chamador escolhe a assinatura válida. */
+function extractJsonObjects(content: string): string[] {
+  const source = content.trim()
+  const objects: string[] = []
+  let start = -1
   let depth = 0
   let inString = false
   let escaped = false
-  for (let index = start; index < source.length; index += 1) {
+  for (let index = 0; index < source.length; index += 1) {
     const character = source[index]
+    if (start < 0) {
+      if (character !== '{') continue
+      start = index
+      depth = 1
+      continue
+    }
     if (inString) {
       if (escaped) escaped = false
       else if (character === '\\') escaped = true
@@ -109,10 +127,19 @@ function extractJsonObject(content: string): string | null {
     if (character === '{') depth += 1
     else if (character === '}') {
       depth -= 1
-      if (depth === 0) return source.slice(start, index + 1)
+      if (depth === 0) {
+        objects.push(source.slice(start, index + 1))
+        start = -1
+        inString = false
+        escaped = false
+      }
     }
   }
-  return null
+  return objects
+}
+
+function isAnalysisReply(value: Record<string, any>): boolean {
+  return value.kind === 'perguntas' || Array.isArray(value.perguntas) || Array.isArray(value.subtarefas)
 }
 
 /** Validador do subconjunto de JSON Schema usado pelos contratos publicados. */

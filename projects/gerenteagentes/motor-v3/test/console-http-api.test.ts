@@ -36,5 +36,27 @@ describe('ConsoleHttpApi', () => {
 
     expect(status.error).toBe('429 quota exhausted')
   })
+
+  it('trata timeout terminal como falha explícita', async () => {
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ status: 'timeout', endedAt: 1 }))
+      .mockResolvedValueOnce(jsonResponse({ messages: [] })))
+    const api = new ConsoleHttpApi('http://console.local', 'token-de-teste')
+
+    await expect(api.getSessionStatus({ sessionId: 's3', sessionKey: 'agent:a:k3', agentId: 'a' }))
+      .resolves.toEqual({ isComplete: false, isFailed: true, error: 'Sessão do Console terminou com status timeout' })
+  })
+
+  it('não considera resposta intermediária de ferramenta como conclusão', async () => {
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ status: 'idle', hasActiveRun: false }))
+      .mockResolvedValueOnce(jsonResponse({
+        messages: [{ id: 'm1', role: 'assistant', stopReason: 'toolUse', content: 'vou consultar arquivos' }],
+      })))
+    const api = new ConsoleHttpApi('http://console.local', 'token-de-teste')
+
+    await expect(api.getSessionStatus({ sessionId: 's4', sessionKey: 'agent:a:k4', agentId: 'a' }))
+      .resolves.toEqual({ isComplete: false })
+  })
 })
 // @vitest-environment node
