@@ -168,6 +168,11 @@ if [ -n "$DEPLOY_BATCH_ID" ]; then
 fi
 
 if [ -n "$EXPECTED_DEPLOY_COMMIT" ]; then
+  # O promote() do motor faz push para origin mas o host local pode ficar
+  # desatualizado. Fazer pull antes da verificação garante que HEAD bate.
+  echo "[deploy-blue-green] sincronizando com origin..."
+  git fetch origin
+  git reset --hard origin/$(git rev-parse --abbrev-ref HEAD)
   ACTUAL_DEPLOY_COMMIT="$(git rev-parse HEAD)"
   if [ "$ACTUAL_DEPLOY_COMMIT" != "$EXPECTED_DEPLOY_COMMIT" ]; then
     echo "[deploy-blue-green] commit divergente: esperado=$EXPECTED_DEPLOY_COMMIT atual=$ACTUAL_DEPLOY_COMMIT" >&2

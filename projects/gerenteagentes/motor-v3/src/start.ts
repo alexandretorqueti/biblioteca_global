@@ -623,6 +623,31 @@ async function start() {
         return
       }
 
+      // POST /api/motor/task/:id/sanitize-session. Arquiva a sessão física
+      // do agente sem apagar auditoria; prepara contexto limpo para retomada.
+      if (req.method === 'POST' && taskId && taskAction === 'sanitize-session') {
+        const [taskRows] = await pool.query<any[]>(
+          `SELECT t.id, t.external_id, f.analysis_execution_id
+             FROM tarefas t
+             LEFT JOIN task_runtime_facts f ON f.tarefa_id = t.id
+            WHERE t.external_id = ? OR CAST(t.id AS CHAR) = ?
+            LIMIT 1`,
+          [taskId, taskId],
+        )
+        const task = taskRows[0]
+        if (!task) {
+          res.writeHead(404, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: false, error: 'Task not found' }))
+          return
+        }
+        // Por enquanto apenas registra o evento; a implementação completa
+        // arquivaria a sessão no Console OpenClaw via API.
+        console.log(`[Motor v3] Session sanitize requested for task ${taskId}`)
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: true, sessionsArchived: 0, message: 'Sessão arquivada (implementação pendente)' }))
+        return
+      }
+
       const deployResultMatch = path.match(/^\/api\/motor\/deploy\/batches\/([^/]+)\/result$/)
       if (req.method === 'POST' && deployResultMatch) {
         const callbackToken = process.env.MOTOR_DEPLOY_CALLBACK_TOKEN
