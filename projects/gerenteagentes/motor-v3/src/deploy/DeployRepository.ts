@@ -335,7 +335,7 @@ export class DeployRepository {
 
   private async insertPendingDispatches(connection: PoolConnection): Promise<number> {
     const [groups] = await connection.query<Array<RowDataPacket & { repo_path: string; base_branch: string; requested_commit: string; task_id: string }>>(`
-      SELECT dr.repo_path,dr.base_branch,dr.requested_commit,MIN(COALESCE(t.external_id,CAST(t.id AS CHAR))) AS task_id
+      SELECT dr.repo_path,dr.base_branch,dr.requested_commit,MIN(t.id) AS task_id
         FROM deploy_requests dr INNER JOIN tarefas t ON t.id=dr.tarefa_id
        WHERE dr.status='pending' GROUP BY dr.repo_path,dr.base_branch,dr.requested_commit`)
     for (const group of groups) {
