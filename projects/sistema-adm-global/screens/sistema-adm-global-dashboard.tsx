@@ -7,16 +7,24 @@ import {
   CardActions,
   CardContent,
   CardMedia,
+  Chip,
   CircularProgress,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
   Grid,
+  IconButton,
   Stack,
   Typography,
+  useTheme,
 } from "@mui/material"
 import CampaignRounded from "@mui/icons-material/CampaignRounded"
+import CalendarTodayRounded from "@mui/icons-material/CalendarTodayRounded"
+import InboxRounded from "@mui/icons-material/InboxRounded"
+import RefreshRounded from "@mui/icons-material/RefreshRounded"
+import WavingHandRounded from "@mui/icons-material/WavingHandRounded"
+import CloseRounded from "@mui/icons-material/CloseRounded"
 import type { PaginatedResult } from "@biblioteca-global/shared"
 import { useApi } from "../../../apps/web/src/hooks/useApi"
 import { useAuth } from "../../../apps/web/src/auth/AuthContext"
@@ -46,6 +54,7 @@ function saudacao(hora: number): string {
 }
 
 export default function SistemaAdmGlobalDashboard(): ReactNode {
+  const theme = useTheme()
   const bundle = useApi()
   const { usuario, projeto } = useAuth()
   const [circulares, setCirculares] = useState<Circular[]>([])
@@ -81,57 +90,305 @@ export default function SistemaAdmGlobalDashboard(): ReactNode {
     return () => window.clearInterval(intervalo)
   }, [])
 
-  const dataHoraAtual = useMemo(
-    () => new Intl.DateTimeFormat("pt-BR", { dateStyle: "full", timeStyle: "short" }).format(agora),
+  const dataFormatada = useMemo(
+    () =>
+      new Intl.DateTimeFormat("pt-BR", {
+        weekday: "long",
+        day: "numeric",
+        month: "long",
+      }).format(agora),
+    [agora],
+  )
+
+  const horaFormatada = useMemo(
+    () =>
+      new Intl.DateTimeFormat("pt-BR", {
+        timeStyle: "short",
+      }).format(agora),
     [agora],
   )
 
   return (
     <Stack spacing={4} data-testid="sistema-adm-global-dashboard">
-      <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" spacing={2}>
-        <Box>
-          <Typography variant="h4" fontWeight={600}>
-            {saudacao(agora.getHours())}, {usuario?.nome ?? "usuário"}!
-          </Typography>
-          <Typography color="text.secondary">Bem-vindo ao Administrador Global.</Typography>
-        </Box>
-        <Typography color="text.secondary" textAlign={{ xs: "left", sm: "right" }}>
-          {dataHoraAtual}
-        </Typography>
-      </Stack>
+      {/* ─── Cabeçalho: saudação + data/hora ─── */}
+      <Box
+        sx={{
+          background: `linear-gradient(135deg, ${theme.palette.primary.main} 0%, ${theme.palette.primary.dark} 100%)`,
+          borderRadius: 3,
+          px: { xs: 3, sm: 4 },
+          py: { xs: 3, sm: 4 },
+          color: "primary.contrastText",
+          position: "relative",
+          overflow: "hidden",
+        }}
+      >
+        {/* Decorative circles */}
+        <Box
+          sx={{
+            position: "absolute",
+            top: -40,
+            right: -40,
+            width: 160,
+            height: 160,
+            borderRadius: "50%",
+            bgcolor: "rgba(255,255,255,0.08)",
+          }}
+        />
+        <Box
+          sx={{
+            position: "absolute",
+            bottom: -20,
+            right: 60,
+            width: 80,
+            height: 80,
+            borderRadius: "50%",
+            bgcolor: "rgba(255,255,255,0.05)",
+          }}
+        />
 
+        <Stack
+          direction={{ xs: "column", sm: "row" }}
+          justifyContent="space-between"
+          alignItems={{ xs: "flex-start", sm: "center" }}
+          spacing={2}
+          sx={{ position: "relative" }}
+        >
+          <Stack spacing={0.5}>
+            <Stack direction="row" spacing={1} alignItems="center">
+              <WavingHandRounded sx={{ fontSize: { xs: 24, sm: 28 } }} />
+              <Typography
+                variant="h5"
+                sx={{
+                  fontWeight: 700,
+                  fontSize: { xs: "1.25rem", sm: "1.5rem" },
+                }}
+              >
+                {saudacao(agora.getHours())}, {usuario?.nome ?? "usuário"}!
+              </Typography>
+            </Stack>
+            <Typography
+              sx={{
+                opacity: 0.85,
+                fontSize: { xs: "0.875rem", sm: "1rem" },
+                pl: { sm: "36px" },
+              }}
+            >
+              Bem-vindo ao Administrador Global.
+            </Typography>
+          </Stack>
+
+          <Stack
+            direction="row"
+            spacing={1.5}
+            alignItems="center"
+            sx={{
+              bgcolor: "rgba(255,255,255,0.12)",
+              borderRadius: 2,
+              px: 2,
+              py: 1,
+            }}
+          >
+            <CalendarTodayRounded sx={{ fontSize: 20, opacity: 0.9 }} />
+            <Stack>
+              <Typography
+                sx={{
+                  fontSize: { xs: "0.75rem", sm: "0.8125rem" },
+                  textTransform: "capitalize",
+                  opacity: 0.85,
+                  lineHeight: 1.2,
+                }}
+              >
+                {dataFormatada}
+              </Typography>
+              <Typography
+                sx={{
+                  fontSize: { xs: "1rem", sm: "1.125rem" },
+                  fontWeight: 600,
+                  lineHeight: 1.3,
+                  fontVariantNumeric: "tabular-nums",
+                }}
+              >
+                {horaFormatada}
+              </Typography>
+            </Stack>
+          </Stack>
+        </Stack>
+      </Box>
+
+      {/* ─── Seção de Circulares ─── */}
       <Box>
-        <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 2 }}>
-          <CampaignRounded color="primary" />
-          <Typography variant="h5" fontWeight={600}>Circulares</Typography>
+        <Stack
+          direction="row"
+          spacing={1.5}
+          alignItems="center"
+          sx={{ mb: 3 }}
+        >
+          <Box
+            sx={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 40,
+              height: 40,
+              borderRadius: 2,
+              bgcolor: "primary.main",
+              color: "primary.contrastText",
+            }}
+          >
+            <CampaignRounded sx={{ fontSize: 22 }} />
+          </Box>
+          <Stack direction="row" spacing={1} alignItems="baseline">
+            <Typography variant="h6" fontWeight={700}>
+              Circulares
+            </Typography>
+            {!carregando && !erro && circulares.length > 0 && (
+              <Chip
+                label={circulares.length}
+                size="small"
+                color="primary"
+                variant="outlined"
+                sx={{ fontWeight: 600 }}
+              />
+            )}
+          </Stack>
         </Stack>
 
         {carregando ? (
-          <Box display="flex" justifyContent="center" p={4} data-testid="dashboard-loading">
-            <CircularProgress />
-          </Box>
+          <Stack
+            spacing={2}
+            alignItems="center"
+            justifyContent="center"
+            py={8}
+            data-testid="dashboard-loading"
+          >
+            <CircularProgress size={40} />
+            <Typography color="text.secondary" variant="body2">
+              Carregando circulares…
+            </Typography>
+          </Stack>
         ) : erro ? (
-          <Alert severity="error" data-testid="dashboard-error">{erro}</Alert>
+          <Alert
+            severity="error"
+            data-testid="dashboard-error"
+            action={
+              <IconButton
+                aria-label="tentar novamente"
+                color="inherit"
+                size="small"
+                onClick={() => void carregarCirculares()}
+              >
+                <RefreshRounded fontSize="inherit" />
+              </IconButton>
+            }
+            sx={{ alignItems: "center" }}
+          >
+            {erro}
+          </Alert>
         ) : circulares.length === 0 ? (
-          <Typography color="text.secondary" data-testid="dashboard-empty">
-            Nenhuma circular publicada.
-          </Typography>
+          <Stack
+            spacing={2}
+            alignItems="center"
+            justifyContent="center"
+            py={8}
+            sx={{
+              border: 1,
+              borderColor: "divider",
+              borderRadius: 2,
+              borderStyle: "dashed",
+            }}
+            data-testid="dashboard-empty"
+          >
+            <InboxRounded sx={{ fontSize: 48, color: "text.disabled" }} />
+            <Typography color="text.secondary" variant="body1" fontWeight={500}>
+              Nenhuma circular publicada.
+            </Typography>
+            <Typography color="text.disabled" variant="body2">
+              As circulares publicadas aparecerão aqui.
+            </Typography>
+          </Stack>
         ) : (
-          <Grid container spacing={2}>
+          <Grid container spacing={2.5}>
             {circulares.map((circular) => (
-              <Grid key={circular.id} size={{ xs: 12, sm: 6, md: 4 }}>
-                <Card sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
+              <Grid key={circular.id} size={{ xs: 12, sm: 6, lg: 4 }}>
+                <Card
+                  sx={{
+                    height: "100%",
+                    display: "flex",
+                    flexDirection: "column",
+                    transition: "transform 0.2s ease, box-shadow 0.2s ease",
+                    "&:hover": {
+                      transform: "translateY(-3px)",
+                      boxShadow: theme.shadows[6],
+                    },
+                  }}
+                >
                   {circular.imageUrl ? (
-                    <CardMedia component="img" height="150" image={circular.imageUrl} alt="" />
-                  ) : null}
-                  <CardContent sx={{ flexGrow: 1 }}>
-                    <Typography variant="h6" component="h3" gutterBottom>{circular.titulo}</Typography>
-                    <Typography variant="body2" color="text.secondary">
+                    <CardMedia
+                      component="img"
+                      height="160"
+                      image={circular.imageUrl}
+                      alt=""
+                      sx={{
+                        objectFit: "cover",
+                        borderBottom: 1,
+                        borderBottomColor: "divider",
+                      }}
+                    />
+                  ) : (
+                    <Box
+                      sx={{
+                        height: 100,
+                        bgcolor: "action.hover",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        borderBottom: 1,
+                        borderBottomColor: "divider",
+                      }}
+                    >
+                      <CampaignRounded sx={{ fontSize: 36, color: "text.disabled" }} />
+                    </Box>
+                  )}
+                  <CardContent
+                    sx={{
+                      flexGrow: 1,
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 1,
+                      pb: 1.5,
+                    }}
+                  >
+                    <Typography
+                      variant="subtitle1"
+                      component="h3"
+                      fontWeight={600}
+                      sx={{
+                        lineHeight: 1.4,
+                        display: "-webkit-box",
+                        WebkitLineClamp: 2,
+                        WebkitBoxOrient: "vertical",
+                        overflow: "hidden",
+                      }}
+                    >
+                      {circular.titulo}
+                    </Typography>
+                    <Typography
+                      variant="caption"
+                      color="text.secondary"
+                      sx={{ fontVariantNumeric: "tabular-nums" }}
+                    >
                       {formatarData(circular.publicadoEm)}
                     </Typography>
                   </CardContent>
-                  <CardActions>
-                    <Button onClick={() => setCircularAberta(circular)}>Ler mais</Button>
+                  <CardActions sx={{ px: 2, pb: 2, pt: 0 }}>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      onClick={() => setCircularAberta(circular)}
+                      sx={{ borderRadius: 2 }}
+                    >
+                      Ler mais
+                    </Button>
                   </CardActions>
                 </Card>
               </Grid>
@@ -140,27 +397,93 @@ export default function SistemaAdmGlobalDashboard(): ReactNode {
         )}
       </Box>
 
+      {/* ─── Modal de leitura da circular ─── */}
       <Dialog
         open={circularAberta !== null}
         onClose={() => setCircularAberta(null)}
         fullWidth
         maxWidth="md"
         aria-labelledby="circular-dialog-title"
+        PaperProps={{
+          sx: {
+            borderRadius: 3,
+            maxHeight: { xs: "95vh", sm: "90vh" },
+          },
+        }}
       >
         {circularAberta ? (
           <>
-            <DialogTitle id="circular-dialog-title">{circularAberta.titulo}</DialogTitle>
-            <DialogContent dividers>
+            <DialogTitle
+              id="circular-dialog-title"
+              sx={{
+                fontWeight: 700,
+                pr: 6,
+                pb: 1,
+              }}
+            >
+              {circularAberta.titulo}
+            </DialogTitle>
+            <IconButton
+              aria-label="fechar"
+              onClick={() => setCircularAberta(null)}
+              sx={{
+                position: "absolute",
+                right: 8,
+                top: 8,
+                color: "text.secondary",
+              }}
+            >
+              <CloseRounded />
+            </IconButton>
+            <DialogContent dividers sx={{ p: { xs: 2, sm: 3 } }}>
               {circularAberta.imageUrl ? (
-                <Box component="img" src={circularAberta.imageUrl} alt="" sx={{ width: "100%", maxHeight: 360, objectFit: "contain", mb: 2 }} />
+                <Box
+                  component="img"
+                  src={circularAberta.imageUrl}
+                  alt=""
+                  sx={{
+                    width: "100%",
+                    maxHeight: { xs: 240, sm: 360 },
+                    objectFit: "contain",
+                    borderRadius: 2,
+                    mb: 3,
+                    bgcolor: "action.hover",
+                  }}
+                />
               ) : null}
-              <Typography sx={{ whiteSpace: "pre-wrap" }}>{circularAberta.conteudo}</Typography>
-              <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 3 }}>
+              <Typography
+                variant="body1"
+                sx={{
+                  whiteSpace: "pre-wrap",
+                  lineHeight: 1.7,
+                  color: "text.primary",
+                }}
+              >
+                {circularAberta.conteudo}
+              </Typography>
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                display="block"
+                sx={{
+                  mt: 3,
+                  pt: 2,
+                  borderTop: 1,
+                  borderColor: "divider",
+                  fontVariantNumeric: "tabular-nums",
+                }}
+              >
                 Publicado em: {formatarData(circularAberta.publicadoEm, true)}
               </Typography>
             </DialogContent>
-            <DialogActions>
-              <Button onClick={() => setCircularAberta(null)}>Fechar</Button>
+            <DialogActions sx={{ px: 3, py: 2 }}>
+              <Button
+                onClick={() => setCircularAberta(null)}
+                variant="contained"
+                sx={{ borderRadius: 2 }}
+              >
+                Fechar
+              </Button>
             </DialogActions>
           </>
         ) : null}
