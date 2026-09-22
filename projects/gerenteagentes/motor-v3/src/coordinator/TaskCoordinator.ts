@@ -4,6 +4,8 @@ import type { AnalysisOutcome } from '../analysis/AnalystReply.js'
 import type { DerivedTaskStatus } from '../status/DerivedTaskStatus.js'
 import { randomUUID } from 'node:crypto'
 import { CommandPolicyResolver, type CommandPolicyRepository, type OperationLogger } from '../commands/index.js'
+import type { TaskEventSink } from './TaskEventRecorder.js'
+import type { AnalysisFailureSink } from './AnalysisFailureBlocker.js'
 
 export type TaskLifecycleStatus = DerivedTaskStatus
 
@@ -46,6 +48,12 @@ export interface TaskCoordinatorConfig {
   commandPolicies?: CommandPolicyRepository
   operationLogger?: OperationLogger
   publishTaskReady?: (source: QueueMessage, payload: Record<string, unknown>) => Promise<void>
+  /** Trilha de auditoria em `tarefa_eventos` (item 6, incidente 862). */
+  taskEvents?: TaskEventSink
+  /** Bloqueio persistente na falha definitiva de análise (item 2, incidente 862). */
+  analysisFailure?: AnalysisFailureSink
+  /** Última tentativa antes da DLQ; na falha final o bloqueio é persistido. Default 3. */
+  maxAnalysisAttempts?: number
 }
 
 // Criar/enfileirar apenas registra a tarefa. Toda tarefa nasce pausada e a
@@ -65,6 +73,9 @@ export class TaskCoordinator {
   private readonly commandPolicies?: CommandPolicyRepository
   private readonly operationLogger?: OperationLogger
   private readonly publishTaskReady?: (source: QueueMessage, payload: Record<string, unknown>) => Promise<void>
+  private readonly taskEvents?: TaskEventSink
+  private readonly analysisFailure?: AnalysisFailureSink
+  private readonly maxAnalysisAttempts: number
 
   constructor(
     private readonly repository: TaskCoordinatorRepository,
@@ -76,6 +87,9 @@ export class TaskCoordinator {
     this.commandPolicies = config.commandPolicies
     this.operationLogger = config.operationLogger
     this.publishTaskReady = config.publishTaskReady
+    this.taskEvents = config.taskEvents
+    this.analysisFailure = config.analysisFailure
+    this.maxAnalysisAttempts = config.maxAnalysisAttempts ?? 3
   }
 
   async handle(message: QueueMessage): Promise<void> {
@@ -173,6 +187,7 @@ export class TaskCoordinator {
     await this.log(operationId, sequence++, 'primitive', 'succeeded', message, { primitiveCode: 'emit_analysis_selected', result: { executionId, analysisAttempt } })
     try {
       await this.emit('ANALYSIS_STARTED', message, { executionId, analysisAttempt })
+      await this.recordEvent(task.taskId, 'analysis_started', { executionId, attempt: analysisAttempt })
       // A projeção do status pode já enxergar a última mensagem do usuário e
       // retornar `planned`. O comando durável é a fonte de verdade de que esta
       // execução é uma retomada; preserve isso para o resolvedor do prompt.
@@ -185,8 +200,10 @@ export class TaskCoordinator {
       await this.repository.releaseAnalysisClaim(task.taskId, executionId)
       if (outcome.kind === 'questions') {
         await this.emit('ANALYSIS_CLARIFICATION_REQUESTED', message, { executionId, analysisAttempt, questionCount: outcome.questions.length })
+        await this.recordEvent(task.taskId, 'analysis_clarification', { executionId, attempt: analysisAttempt, questionCount: outcome.questions.length })
       } else {
         await this.emit('ANALYSIS_COMPLETED', message, { executionId, analysisAttempt, subtaskCount: outcome.subtasks.length })
+        await this.recordEvent(task.taskId, 'analysis_completed', { executionId, attempt: analysisAttempt, subtaskCount: outcome.subtasks.length })
         await this.emitTaskReady(message, { executionId, analysisAttempt, subtaskCount: outcome.subtasks.length })
       }
       await this.log(operationId, sequence++, 'completed', 'succeeded', message, { result: { executionId, analysisAttempt, outcome: outcome.kind } })
@@ -194,6 +211,24 @@ export class TaskCoordinator {
       await this.repository.releaseAnalysisClaim(task.taskId, executionId)
       const errorMessage = error instanceof Error ? error.message : String(error)
       await this.log(operationId, sequence++, 'primitive', 'failed', message, { primitiveCode: 'start_analyst', result: { executionId, analysisAttempt, error: errorMessage }, reasonCode: 'analyst_failed' })
+
+      // Incidente 862 (item 2): na tentativa final (a próxima parada é a DLQ),
+      // a falha precisa virar bloqueio persistente — status derivado `blocked`
+      // (estação Atenção) em vez de voltar silenciosamente para `planned`.
+      // Tentativas anteriores seguem para o retry do broker sem bloqueio.
+      const finalAttempt = analysisAttempt >= this.maxAnalysisAttempts
+      if (finalAttempt && this.analysisFailure) {
+        try {
+          await this.analysisFailure.blockForAnalysisFailure(task.taskId, { executionId, attempt: analysisAttempt, error: errorMessage })
+          await this.log(operationId, sequence++, 'primitive', 'succeeded', message, { primitiveCode: 'block_task_for_analysis_failure', result: { executionId, analysisAttempt } })
+        } catch (blockError) {
+          const blockErrorMessage = blockError instanceof Error ? blockError.message : String(blockError)
+          console.error(`[TaskCoordinator] falha ao persistir bloqueio de análise da tarefa ${task.taskId}: ${blockErrorMessage}`)
+          await this.log(operationId, sequence++, 'primitive', 'failed', message, { primitiveCode: 'block_task_for_analysis_failure', reasonCode: 'block_persistence_failed', result: { error: blockErrorMessage } })
+        }
+      }
+      await this.recordEvent(task.taskId, 'analysis_failed', { executionId, attempt: analysisAttempt, final: finalAttempt, error: errorMessage.slice(0, 1800) })
+
       await this.log(operationId, sequence++, 'failed', 'failed', message, { result: { executionId, analysisAttempt, error: errorMessage }, reasonCode: 'analyst_failed' })
       await this.emit('ANALYSIS_FAILED', message, {
         executionId,
@@ -201,6 +236,16 @@ export class TaskCoordinator {
         error: errorMessage,
       })
       throw error
+    }
+  }
+
+  /** Auditoria best-effort: falha de trilha não derruba o fluxo principal. */
+  private async recordEvent(taskId: string, evento: string, payload: Record<string, unknown>): Promise<void> {
+    if (!this.taskEvents) return
+    try {
+      await this.taskEvents.record(taskId, evento, 'motor', payload)
+    } catch (error) {
+      console.warn(`[TaskCoordinator] falha ao registrar evento ${evento} da tarefa ${taskId}:`, error instanceof Error ? error.message : String(error))
     }
   }
 

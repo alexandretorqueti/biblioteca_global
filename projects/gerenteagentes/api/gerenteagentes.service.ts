@@ -1194,9 +1194,23 @@ export class GerenteAgentesService {
     const [tarefa] = await db.select().from(tarefas).where(eq(tarefas.id, tarefaId)).limit(1);
     if (!tarefa) throw new NotFoundException('Tarefa não encontrada');
     const motorId = tarefa.externalId || String(tarefa.id);
-    const resp = await this.motorRequest('POST', `/api/motor/task/${encodeURIComponent(motorId)}/cancel`, undefined, this.motorV2Url);
+    const motivoNormalizado = motivo?.trim() || null;
+    const resp = await this.motorRequest(
+      'POST',
+      `/api/motor/task/${encodeURIComponent(motorId)}/cancel`,
+      { ator, motivo: motivoNormalizado },
+      this.motorV2Url,
+    );
     if (!resp.ok) throw new BadRequestException(`Motor rejeitou o cancelamento (${resp.status}): ${resp.body.slice(0, 200)}`);
-    await this.registrarEvento(db, tarefa, 'cancelled', ator, 'usuario', { motivo: motivo?.trim() || null });
+    if (this.motorVersao === 'v3') {
+      // Motor v3: cancelamento é assíncrono (comando durável C04, 202 accepted).
+      // A Biblioteca registra a solicitação; o fato 'cancelled' é registrado
+      // pelo Motor em tarefa_eventos quando o TaskCancelConsumer persistir o
+      // terminal_status (incidente 862, item 5 — trilha honesta).
+      await this.registrarEvento(db, tarefa, 'cancel_requested', ator, 'usuario', { motivo: motivoNormalizado });
+      return { id: tarefaId, cancelled: true, message: 'Cancelamento solicitado ao motor' };
+    }
+    await this.registrarEvento(db, tarefa, 'cancelled', ator, 'usuario', { motivo: motivoNormalizado });
     return { id: tarefaId, cancelled: true };
   }
 

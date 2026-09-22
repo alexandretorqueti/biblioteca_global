@@ -30,7 +30,7 @@ import { QueueConsumer } from './queue/QueueConsumer.js'
 import { RabbitMqTransport } from './queue/RabbitMqTransport.js'
 import { OutboxPublisher, createQueueMessage } from './queue/index.js'
 import type { QueueMessage } from './queue/QueueMessage.js'
-import { TaskCoordinator, MySqlTaskCoordinatorRepository, AnalysisClaimReconciler } from './coordinator/index.js'
+import { TaskCoordinator, MySqlTaskCoordinatorRepository, AnalysisClaimReconciler, TaskCancelConsumer, MySqlTaskEventRecorder, MySqlAnalysisFailureBlocker } from './coordinator/index.js'
 import { ConsoleAnalystRunner } from './analysis/ConsoleAnalystRunner.js'
 import { ConsoleHttpApi } from './analysis/ConsoleHttpApi.js'
 import { ManagedAnalysisPromptResolver } from './analysis/ManagedAnalysisPromptResolver.js'
@@ -71,6 +71,7 @@ let testRecoveryConsumer: TestRecoveryConsumer | null = null
 let testGateQueueConsumer: QueueConsumer | null = null
 let testGateOutboxPublisher: OutboxPublisher | null = null
 let deployConsumer: DeployConsumer | null = null
+let cancelConsumer: TaskCancelConsumer | null = null
 
 async function start() {
   console.log('[Motor v3] Iniciando...')
@@ -259,9 +260,13 @@ async function start() {
     outboxPublisher = new OutboxPublisher(pool, transport, mainQueue, mainQueue)
     await outboxPublisher.start()
     const operationLogger = new MySqlOperationLogger(pool)
+    const taskEvents = new MySqlTaskEventRecorder(pool)
     const coordinator = new TaskCoordinator(repository, analyst, bus, {
       commandPolicies: new MySqlCommandPolicyRepository(pool),
       operationLogger,
+      taskEvents,
+      analysisFailure: new MySqlAnalysisFailureBlocker(pool),
+      maxAnalysisAttempts: Number(process.env.MOTOR_QUEUE_MAX_ATTEMPTS || 3),
       publishTaskReady: async (source, payload) => {
         if (!outboxPublisher) throw new Error('Outbox indisponível para TASK_READY_FOR_PROGRAMMING')
         await outboxPublisher.enqueue(createQueueMessage({
@@ -336,8 +341,10 @@ async function start() {
       new WorkerConsoleAdapter(consoleApi), db, testGate,
     )
 
+    cancelConsumer = new TaskCancelConsumer(pool, operationLogger, new MySqlCommandPolicyRepository(pool), taskEvents)
     queueConsumer = new QueueConsumer(transport, async message => {
       await coordinator.handle(message)
+      await cancelConsumer?.handle(message)
       await developmentConsumer?.handle(message)
       await subtaskExecutionConsumer?.handle(message)
       await subtaskVerificationConsumer?.handle(message)
@@ -568,11 +575,14 @@ async function start() {
       }
       
       // POST /api/motor/task/:id/pause
+      // Assíncrono via comando durável: 202 accepted é o contrato honesto
+      // (item 5 da auditoria do incidente 862). O fato persistido (paused_at)
+      // continua sendo gravado pela Biblioteca antes do evento de auditoria.
       if (req.method === 'POST' && taskId && taskAction === 'pause') {
         console.log(`[Motor v3] Task ${taskId} pause requested`)
-        await dispatchCommand('TASK_PAUSE_REQUESTED', taskId, taskId, {})
-        res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ ok: true, taskId }))
+        const message = await dispatchCommand('TASK_PAUSE_REQUESTED', taskId, taskId, {})
+        res.writeHead(202, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: true, accepted: true, taskId, messageId: message.messageId }))
         return
       }
       
@@ -586,11 +596,20 @@ async function start() {
       }
       
       // POST /api/motor/task/:id/cancel
+      // Assíncrono via comando durável C04 (consumidor TaskCancelConsumer):
+      // 202 accepted reflete que o cancelamento foi ACEITO para processamento,
+      // não que o fato já foi persistido (item 5 da auditoria do incidente 862).
       if (req.method === 'POST' && taskId && taskAction === 'cancel') {
+        let cancelBody = ''
+        req.on('data', chunk => cancelBody += chunk)
+        await new Promise(resolve => req.on('end', resolve))
+        const cancelPayload = cancelBody ? JSON.parse(cancelBody) : {}
+        const ator = typeof cancelPayload.ator === 'string' ? cancelPayload.ator.slice(0, 255) : undefined
+        const motivo = typeof cancelPayload.motivo === 'string' ? cancelPayload.motivo.slice(0, 500) : undefined
         console.log(`[Motor v3] Task ${taskId} cancel requested`)
-        await dispatchCommand('TASK_CANCEL_REQUESTED', taskId, taskId, {})
-        res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ ok: true, taskId }))
+        const message = await dispatchCommand('TASK_CANCEL_REQUESTED', taskId, taskId, { ator, motivo })
+        res.writeHead(202, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: true, accepted: true, taskId, messageId: message.messageId }))
         return
       }
 

@@ -69,12 +69,44 @@ atômico é refeito sem duplicação.
 - Novos testes: `test/task-coordinator.test.ts` (+3 casos: liberação antes do gate com políticas ativas, primitiva no operation log com sequências únicas, rejeição mantida para claim de outra execução) e `test/analysis-claim-reconciler.test.ts` (2 casos: liberação com trilha, no-op sem claims).
 - Suíte motor-v3: **187/187 testes (31 arquivos)** + `tsc --noEmit` limpo.
 
+## Segundo ciclo de correções (2026-09-22, itens 2 → 1 → 5 → 6 autorizados por Alexandre)
+
+### Item 2 — falha definitiva de análise vai para "Atenção"
+
+- `TaskCoordinator` recebe `analysisFailure?: AnalysisFailureSink` e `maxAnalysisAttempts` (default 3 = `MOTOR_QUEUE_MAX_ATTEMPTS`).
+- Na **tentativa final** (a próxima parada é a DLQ), o catch persiste via `MySqlAnalysisFailureBlocker`: `INSERT INTO bloqueios` com `block_reason='analysis_failed'` (idempotente — não duplica bloqueio ativo) → `DerivedTaskStatus` passa a retornar `blocked` (estação Atenção). Tentativas anteriores seguem para o retry do broker sem bloqueio.
+- Falha ao persistir o bloqueio não esconde o erro original (log + `block_persistence_failed` no operation log).
+- Primitiva `block_task_for_analysis_failure` auditada no `motor_operation_log`.
+
+### Item 1 — cancel real via catálogo (C04/A22/P04)
+
+- Migração `0064_motor_v3_cancel_governance.sql`: primitivas (`release_analysis_claim`, `resolve_task_blockers`, `mark_task_cancelled`, `record_task_event`, `block_task_for_analysis_failure`, `release_orphan_analysis_claim`), ação `A22_CANCEL_TASK` (terminal), comando `C04_TASK_CANCEL_REQUESTED`, política `P04_CANCEL_IF_NOT_TERMINAL` (`task_not_terminal`).
+- Novo `TaskCancelConsumer` (padrão DeployConsumer): governado por política, executa as 4 primitivas idempotentes com trilha completa no operation log; rejeita tarefa terminal/inexistente. Limitação conhecida: não interrompe workers de desenvolvimento ativos (Scheduler v3 sem parada por tarefa; com `MOTOR_RABBITMQ_PREFETCH=1` o consumo é serial).
+- Endpoint `POST /api/motor/task/:id/cancel` aceita body `{ator, motivo}` e despacha no payload do comando.
+
+### Item 5 — contrato honesto
+
+- Motor: `POST .../cancel` e `POST .../pause` respondem **`202 {ok:true, accepted:true, messageId}`** (antes: `200 {ok:true}` fingindo síncrono). `motorRequest` da Biblioteca aceita 2xx — sem quebra.
+- Biblioteca (`cancelarTarefa`, caminho v3): envia `{ator, motivo}` ao motor e registra **`cancel_requested`** (origem usuário); o fato **`cancelled`** é registrado pelo Motor (origem motor) quando o consumidor persiste o `terminal_status`. Caminho v2 permanece com `cancelled` síncrono.
+
+### Item 6 — motor-v3 escreve `tarefa_eventos`
+
+- Novo `MySqlTaskEventRecorder` (`TaskEventSink`): insere trilha com `origem='motor'`, ator e payload JSON; best-effort (falha de auditoria não derruba o fluxo).
+- Eventos gravados pelo `TaskCoordinator`: `analysis_started`, `analysis_completed`, `analysis_clarification`, `analysis_failed` (com `final` e erro). Pelo `TaskCancelConsumer`: `cancelled` (ator real da solicitação + motivo).
+
+### Validação do ciclo 2
+
+- Testes novos: `task-cancel-consumer.test.ts` (6 casos), `task-event-recorder.test.ts` (5 casos), +6 casos em `task-coordinator.test.ts` (bloqueio na tentativa final, transitória sem bloqueio, falha de persistência do bloqueio, falha de auditoria isolada, eventos nos caminhos de plano/clarificação).
+- motor-v3: **204/204 (33 arquivos)**, typecheck limpo. Monorepo: **1109/1109 (107 arquivos)**. API da Biblioteca: typecheck limpo.
+- Deploy: a migração 0064 é aplicada pelo provisionador idempotente da Biblioteca (`aplicarMigrations` no ensure do banco do projeto); o SQL também é idempotente por construção.
+
 ## Pendências para próximos ciclos (backlog da auditoria)
 
-- [ ] Consumidor + catálogo para `TASK_CANCEL_REQUESTED` (C04: policy "cancelar se não terminal" + ação com primitivas `release_analysis_claim`, `mark_terminal_cancelled`, `resolve_blockers`).
-- [ ] Handler de `ANALYSIS_FAILED`: gravar `bloqueios` (→ derivado `blocked` = Atenção), emitir E33, registrar `tarefa_eventos` e operation log.
-- [ ] Consumidor de `TASK_PAUSE_REQUESTED` (parada graciosa de worker ativo; A07 já existe no catálogo sem uso).
-- [ ] Motor-v3 escrever `tarefa_eventos` nos eventos operacionais.
-- [ ] Cancel/pause retornarem `202 accepted`; Biblioteca só registrar evento após fato persistido.
+- [x] ~~Consumidor + catálogo para `TASK_CANCEL_REQUESTED`~~ (ciclo 2, item 1 — C04/P04/A22 + `TaskCancelConsumer`).
+- [x] ~~Handler de `ANALYSIS_FAILED`: gravar `bloqueios` (→ derivado `blocked` = Atenção)~~ (ciclo 2, item 2). Emitir o evento E33 do catálogo no bus permanece pendente — a trilha atual é `bloqueios` + `tarefa_eventos` + operation log.
+- [ ] Consumidor de `TASK_PAUSE_REQUESTED` (parada graciosa de worker ativo; A07 já existe no catálogo sem uso). Hoje a pausa funciona pelo `paused_at` gravado pela Biblioteca; o comando segue zumbi.
+- [x] ~~Motor-v3 escrever `tarefa_eventos` nos eventos operacionais~~ (ciclo 2, item 6 — análise e cancel; deploy/programação ainda não cobertos).
+- [x] ~~Cancel/pause retornarem `202 accepted`; Biblioteca só registrar evento após fato persistido~~ (ciclo 2, item 5).
 - [ ] Remover ou implementar consumidores de `TASK_CREATED`/`TASK_ENQUEUED`/`PUMP_TRIGGERED`.
+- [ ] Interromper workers de desenvolvimento ativos no cancelamento (parada por tarefa no Scheduler).
 - [ ] (motor-v2, legado) `saveTaskTransition` case `"fail"` chamar `facts.record(taskId, "failed")`.

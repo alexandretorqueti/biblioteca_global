@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { MessageBus } from '../src/bus/MessageBus.js'
-import { TaskCoordinator, type TaskCoordinatorRepository, type TaskSnapshot } from '../src/coordinator/index.js'
+import { TaskCoordinator, type TaskCoordinatorConfig, type TaskCoordinatorRepository, type TaskSnapshot } from '../src/coordinator/index.js'
 import type { CommandPolicyRepository, OperationLogEntry, OperationLogger } from '../src/commands/index.js'
 import { createQueueMessage, type QueueMessage } from '../src/queue/index.js'
 
@@ -16,7 +16,7 @@ function command(type = 'TASK_RESUME_REQUESTED'): QueueMessage {
   return createQueueMessage({ type, taskId: 'task-1', executionId: 'source-exec', payload: {} })
 }
 
-function setup(snapshot: TaskSnapshot | null = task()) {
+function setup(snapshot: TaskSnapshot | null = task(), config: TaskCoordinatorConfig = {}) {
   const bus = new MessageBus()
   const repository: TaskCoordinatorRepository = {
     getTask: vi.fn(async () => snapshot),
@@ -25,7 +25,7 @@ function setup(snapshot: TaskSnapshot | null = task()) {
     persistAnalysis: vi.fn(async () => {}),
   }
   const runner = { start: vi.fn(async () => ({ kind: 'plan' as const, subtasks: [{ seq: 1, titulo: 'Subtarefa', scope: 'Escopo', acceptanceCriteria: ['OK'], deliverables: ['Entrega'], requirementsCovered: ['REQ-1'], dependsOn: [] }], coverage: { requirements: [{ id: 'REQ-1', description: 'Requisito' }], coverage: [{ requirement: 'REQ-1', coveredBy: [1] }] } })) }
-  const coordinator = new TaskCoordinator(repository, runner, bus)
+  const coordinator = new TaskCoordinator(repository, runner, bus, config)
   return { bus, repository, runner, coordinator }
 }
 
@@ -204,6 +204,73 @@ describe('TaskCoordinator', () => {
     await expect(coordinator.handle(command())).rejects.toThrow('outbox indisponível')
 
     expect(publishTaskReady).toHaveBeenCalledWith(expect.objectContaining({ type: 'TASK_RESUME_REQUESTED' }), expect.objectContaining({ subtaskCount: 1 }))
+  })
+
+  describe('falha de análise e auditoria (incidente 862, itens 2 e 6)', () => {
+    it('na tentativa final persiste bloqueio, registra eventos e propaga o erro', async () => {
+      const analysisFailure = { blockForAnalysisFailure: vi.fn(async () => {}) }
+      const eventos: { evento: string; payload?: Record<string, unknown> | null }[] = []
+      const taskEvents = { record: vi.fn(async (_taskId: string, evento: string, _ator?: string, payload?: Record<string, unknown> | null) => { eventos.push({ evento, payload }) }) }
+      const { coordinator, runner } = setup(task(), { analysisFailure, taskEvents, maxAnalysisAttempts: 3 })
+      vi.mocked(runner.start).mockRejectedValue(new Error('Console indisponível'))
+
+      await expect(coordinator.handle({ ...command(), attempt: 3 })).rejects.toThrow('Console indisponível')
+
+      expect(analysisFailure.blockForAnalysisFailure).toHaveBeenCalledWith('task-1', expect.objectContaining({ attempt: 3, error: 'Console indisponível' }))
+      expect(eventos.map(e => e.evento)).toEqual(['analysis_started', 'analysis_failed'])
+      expect(eventos[1].payload).toMatchObject({ final: true, attempt: 3 })
+    })
+
+    it('tentativa transitória não bloqueia: segue para o retry do broker', async () => {
+      const analysisFailure = { blockForAnalysisFailure: vi.fn(async () => {}) }
+      const { coordinator, runner } = setup(task(), { analysisFailure, maxAnalysisAttempts: 3 })
+      vi.mocked(runner.start).mockRejectedValue(new Error('timeout'))
+
+      await expect(coordinator.handle(command())).rejects.toThrow('timeout')
+
+      expect(analysisFailure.blockForAnalysisFailure).not.toHaveBeenCalled()
+    })
+
+    it('falha ao persistir o bloqueio não esconde o erro original da análise', async () => {
+      const analysisFailure = { blockForAnalysisFailure: vi.fn(async () => { throw new Error('db indisponível') }) }
+      const { coordinator, runner } = setup(task(), { analysisFailure, maxAnalysisAttempts: 1 })
+      vi.mocked(runner.start).mockRejectedValue(new Error('Console indisponível'))
+
+      await expect(coordinator.handle(command())).rejects.toThrow('Console indisponível')
+
+      expect(analysisFailure.blockForAnalysisFailure).toHaveBeenCalled()
+    })
+
+    it('registra analysis_started e analysis_completed no caminho feliz', async () => {
+      const eventos: { evento: string; ator?: string }[] = []
+      const taskEvents = { record: vi.fn(async (_taskId: string, evento: string, ator?: string) => { eventos.push({ evento, ator }) }) }
+      const { coordinator } = setup(task(), { taskEvents })
+
+      await coordinator.handle(command())
+
+      expect(eventos.map(e => e.evento)).toEqual(['analysis_started', 'analysis_completed'])
+      expect(eventos.every(e => e.ator === 'motor')).toBe(true)
+    })
+
+    it('registra analysis_clarification quando o analista devolve perguntas', async () => {
+      const eventos: string[] = []
+      const taskEvents = { record: vi.fn(async (_taskId: string, evento: string) => { eventos.push(evento) }) }
+      const { coordinator, runner } = setup(task(), { taskEvents })
+      vi.mocked(runner.start).mockResolvedValue({ kind: 'questions', summary: 'preciso confirmar', questions: ['ok?'] })
+
+      await coordinator.handle(command())
+
+      expect(eventos).toEqual(['analysis_started', 'analysis_clarification'])
+    })
+
+    it('falha de auditoria não derruba o fluxo principal', async () => {
+      const taskEvents = { record: vi.fn(async () => { throw new Error('db fora') }) }
+      const { coordinator, runner } = setup(task(), { taskEvents })
+
+      await coordinator.handle(command())
+
+      expect(runner.start).toHaveBeenCalled()
+    })
   })
 
   it('ignora tipos de mensagem que não são comandos de análise', async () => {
