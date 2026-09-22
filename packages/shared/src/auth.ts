@@ -157,6 +157,7 @@ export interface SelectProjectResponse {
 
 export interface RefreshResponse {
   refreshToken: string
+  usuario: UsuarioAutenticado
   projetos: ProjetoResumo[]
 }
 

@@ -324,6 +324,7 @@ describe.skipIf(!hasMysql)("auth — funcional (API + MySQL)", () => {
         .post("/api/auth/refresh")
         .set("Authorization", `Bearer ${loginSenha.body.refreshToken}`)
       expect(refresh.status).toBe(201)
+      expect(refresh.body.usuario.nome).toBe("Cliente Primeira Vez")
       const logout = await request(app.getHttpServer())
         .post("/api/auth/logout")
         .set("Authorization", `Bearer ${refresh.body.refreshToken}`)

@@ -141,15 +141,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   /** Aplica um LoginResponse/RefreshResponse sem projetar (sessão parcial). */
   function aplicarRespostaAutenticacao(
-    res: Pick<LoginResponse | RefreshResponse, "projetos"> & Partial<LoginResponse>,
+    res: Pick<LoginResponse | RefreshResponse, "usuario" | "projetos">,
   ): void {
     const projetos = res.projetos
-    const usuario = "usuario" in res ? (res as LoginResponse).usuario : undefined
     authenticatedRef.current = true
     setSession((prev) => ({
       ...prev,
       status: "authenticated",
-      usuario: usuario ?? prev.usuario,
+      usuario: res.usuario,
       projetos,
       accessToken: store.getAccessToken(),
     }))
