@@ -42,6 +42,21 @@ describe('TaskCoordinator', () => {
     expect(events).toEqual(['EVENT_ANALYSIS_SELECTED', 'EVENT_ANALYSIS_STARTED'])
   })
 
+  it('usa o prompt de retomada quando a resposta de clarificação chega por mensagem', async () => {
+    const { coordinator, runner } = setup(task({ status: 'planned' }))
+    const resume = createQueueMessage({
+      type: 'TASK_RESUME_REQUESTED', taskId: 'task-1', executionId: 'clarification-1',
+      payload: { reason: 'clarification_response', chatMessageId: 42 },
+    })
+
+    await coordinator.handle(resume)
+
+    expect(runner.start).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'awaiting_clarification' }),
+      expect.any(String),
+    )
+  })
+
   it('não inicia tarefa pausada', async () => {
     const { coordinator, repository, runner, bus } = setup(task({ paused: true, status: 'paused' }))
     const ignored = vi.fn()

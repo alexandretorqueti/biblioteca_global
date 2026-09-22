@@ -435,6 +435,13 @@
       "when": 1790028000000,
       "tag": "0062_motor_v3_deploy_callback",
       "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "5",
+      "when": 1790031600000,
+      "tag": "0063_motor_v3_clarification_resume",
+      "breakpoints": true
     }
   ]
 }

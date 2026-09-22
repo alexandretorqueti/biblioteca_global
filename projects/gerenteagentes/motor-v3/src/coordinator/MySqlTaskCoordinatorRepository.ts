@@ -73,7 +73,7 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
       )
       const [result] = await connection.query<ResultSetHeader>(
         `UPDATE task_runtime_facts
-         SET analysis_started_at = NOW(), analysis_execution_id = ?, updated_at = NOW()
+         SET analysis_started_at = NOW(), analysis_execution_id = ?, clarification_pending_at = NULL, updated_at = NOW()
          WHERE tarefa_id = ? AND analysis_started_at IS NULL
            AND analysis_execution_id IS NULL AND terminal_status IS NULL`,
         [executionId, row.id],
@@ -127,6 +127,12 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
           `INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at)
            VALUES (?, 'analyst', ?, NOW())`,
           [databaseTaskId, JSON.stringify({ summary: outcome.summary, questions: outcome.questions })],
+        )
+        await connection.query(
+          `UPDATE task_runtime_facts
+             SET clarification_pending_at = NOW(), updated_at = NOW()
+           WHERE tarefa_id = ?`,
+          [databaseTaskId],
         )
       } else {
         const [existing] = await connection.query<RowDataPacket[]>(

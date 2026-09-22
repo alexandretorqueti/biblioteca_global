@@ -577,7 +577,7 @@ export class GerenteAgentesService {
    */
   async criarOuAtualizarAgenteLocal(openclawAgentId: string, modelo?: string): Promise<void> {
     const db = await this.dbDoMotor();
-    const { agentes } = await import('../schema');
+    const { agentes } = await import('../schema.js');
 
     const existente = await db.select().from(agentes).where(eq(agentes.nome, openclawAgentId)).limit(1);
     if (existente.length === 0) {
@@ -636,7 +636,7 @@ export class GerenteAgentesService {
   }
 
   private async catalogEntry(chave: string) {
-    const { AGENT_PROMPT_CATALOG } = await import('../motor-v2/src/prompts/prompt-catalog');
+    const { AGENT_PROMPT_CATALOG } = await import('../motor-v2/src/prompts/prompt-catalog.js');
     const entry = AGENT_PROMPT_CATALOG.find((item) => item.key === chave);
     if (!entry) throw new BadRequestException(`Prompt desconhecido: ${chave}`);
     return entry;
@@ -645,9 +645,9 @@ export class GerenteAgentesService {
   /** Sincroniza metadados canônicos sem sobrescrever textos editados. */
   private async sincronizarCatalogoPrompts() {
     const [{ AGENT_PROMPT_CATALOG }, { OUTPUT_CONTRACT_CATALOG }, { validatePromptTemplate }] = await Promise.all([
-      import('../motor-v2/src/prompts/prompt-catalog'),
-      import('../motor-v2/src/prompts/output-contract-catalog'),
-      import('../motor-v2/src/prompts/PromptTemplateEngine'),
+      import('../motor-v2/src/prompts/prompt-catalog.js'),
+      import('../motor-v2/src/prompts/output-contract-catalog.js'),
+      import('../motor-v2/src/prompts/PromptTemplateEngine.js'),
     ]);
     const db = await this.dbDoMotor();
     const activeContracts = new Map<string, number>();
@@ -741,7 +741,7 @@ export class GerenteAgentesService {
     const [prompt] = await db.select().from(promptsAgentes).where(eq(promptsAgentes.id, id)).limit(1);
     if (!prompt) throw new NotFoundException('Prompt não encontrado');
     const entry = await this.catalogEntry(prompt.chave);
-    const { validatePromptTemplate } = await import('../motor-v2/src/prompts/PromptTemplateEngine');
+    const { validatePromptTemplate } = await import('../motor-v2/src/prompts/PromptTemplateEngine.js');
     const allowed = [...entry.markers, ...(entry.contractKey ? ['**CONTRATOSAIDA**'] : [])];
     const validation = validatePromptTemplate(texto, allowed, entry.contractKey ? ['**CONTRATOSAIDA**'] : []);
     if (!validation.ok) throw new BadRequestException({ message: 'Máscaras inválidas', validation });
@@ -759,7 +759,7 @@ export class GerenteAgentesService {
     const [prompt] = await db.select().from(promptsAgentes).where(eq(promptsAgentes.id, promptId)).limit(1);
     if (!prompt) throw new NotFoundException('Prompt não encontrado');
     const entry = await this.catalogEntry(prompt.chave);
-    const { validatePromptTemplate } = await import('../motor-v2/src/prompts/PromptTemplateEngine');
+    const { validatePromptTemplate } = await import('../motor-v2/src/prompts/PromptTemplateEngine.js');
     const validation = validatePromptTemplate(version.texto, [...entry.markers, ...(entry.contractKey ? ['**CONTRATOSAIDA**'] : [])], entry.contractKey ? ['**CONTRATOSAIDA**'] : []);
     if (entry.contractKey && !version.contratoVersaoId) throw new BadRequestException('Selecione uma versão de contrato para publicar este prompt');
     if (!validation.ok) throw new BadRequestException({ message: 'Versão inválida', validation });
@@ -791,8 +791,8 @@ export class GerenteAgentesService {
     const [prompt] = await db.select().from(promptsAgentes).where(eq(promptsAgentes.id, id)).limit(1);
     if (!prompt) throw new NotFoundException('Prompt não encontrado');
     const entry = await this.catalogEntry(prompt.chave);
-    const { markersIn, renderPromptTemplate, validatePromptTemplate } = await import('../motor-v2/src/prompts/PromptTemplateEngine');
-    const { composeDevelopmentPrompt } = await import('../motor-v2/src/prompts/PromptComposition');
+    const { markersIn, renderPromptTemplate, validatePromptTemplate } = await import('../motor-v2/src/prompts/PromptTemplateEngine.js');
+    const { composeDevelopmentPrompt } = await import('../motor-v2/src/prompts/PromptComposition.js');
     const validation = validatePromptTemplate(texto, [...entry.markers, ...(entry.contractKey ? ['**CONTRATOSAIDA**'] : [])], entry.contractKey ? ['**CONTRATOSAIDA**'] : []);
     if (!validation.ok) return { validation, rendered: null };
     let contractInstructions = '';
@@ -1276,7 +1276,7 @@ export class GerenteAgentesService {
       const statusTerminal = fact?.terminalStatus;
 
       // Pula tarefas em status final
-      const { TASK_STATUS_FINAIS } = await import('../motor-v2/src/shared/task-statuses');
+      const { TASK_STATUS_FINAIS } = await import('../motor-v2/src/shared/task-statuses.js');
       if (statusTerminal && TASK_STATUS_FINAIS.has(statusTerminal)) {
         skipped++;
         continue;
@@ -1575,6 +1575,15 @@ export class GerenteAgentesService {
     }
 
     const mensagem = await db.transaction(async (tx) => {
+      // A resposta só retoma uma análise quando a última intervenção do
+      // analista ainda está aguardando esclarecimentos. Esta leitura e a
+      // criação do comando pertencem à mesma transação da mensagem do chat.
+      const [ultima] = await tx
+        .select({ id: tarefaChats.id, role: tarefaChats.role })
+        .from(tarefaChats)
+        .where(eq(tarefaChats.tarefaId, tarefaId))
+        .orderBy(desc(tarefaChats.id))
+        .limit(1);
       const [created] = await tx.insert(tarefaChats).values({
         tarefaId, role: 'user', texto: normalizedText, createdAt: new Date(),
       }).$returningId();
@@ -1583,18 +1592,31 @@ export class GerenteAgentesService {
         tarefaId, mensagemId: created.id, modo, atorId: ator.id, atorNome: ator.nome,
         estado: 'pending', tentativas: 0, createdAt: new Date(),
       });
-      return created;
+      const motorId = tarefa.externalId || `task-${tarefa.id}`;
+      if (ultima?.role === 'analyst') {
+        const messageId = randomUUID();
+        await tx.insert(motorOutbox).values({
+          messageId,
+          type: 'TASK_RESUME_REQUESTED',
+          taskId: motorId,
+          executionId: `clarification-${motorId}-${created.id}`,
+          payloadJson: {
+            reason: 'clarification_response',
+            chatMessageId: created.id,
+          },
+          timestamp: new Date(),
+          correlationId: messageId,
+          causationId: `task-chat-${created.id}`,
+          status: 'pending',
+          attempt: 0,
+        });
+      }
+      return { ...created, resumeRequested: ultima?.role === 'analyst' };
     });
 
     if (!mensagem) {
       throw new BadRequestException('Falha ao criar mensagem');
     }
-
-    // O wake-up ocorre depois da transação. Se o Motor estiver indisponível,
-    // a entrega pending será conciliada pelo próximo pump.
-    const motorId = tarefa.externalId || `task-${tarefa.id}`;
-    void this.motorRequest('POST', `/api/motor/task/${encodeURIComponent(motorId)}/chat-pump`, undefined, this.motorV2Url)
-      .catch(() => undefined);
 
     const createdAt = new Date();
     this.realtime?.publicar({
@@ -1613,7 +1635,7 @@ export class GerenteAgentesService {
       },
     });
 
-    return { id: mensagem.id, tarefaId, role: 'user', texto: normalizedText, modo, estado: 'pending', createdAt };
+    return { id: mensagem.id, tarefaId, role: 'user', texto: normalizedText, modo, estado: 'pending', resumeRequested: mensagem.resumeRequested, createdAt };
   }
 
   async retomarInteracaoTarefa(projeto: ProjetoResumo, tarefaId: number) {
@@ -1621,8 +1643,19 @@ export class GerenteAgentesService {
     const [tarefa] = await db.select().from(tarefas).where(eq(tarefas.id, tarefaId)).limit(1);
     if (!tarefa) throw new NotFoundException('Tarefa não encontrada');
     const motorId = tarefa.externalId || `task-${tarefa.id}`;
-    const response = await this.motorRequest('POST', `/api/motor/task/${encodeURIComponent(motorId)}/chat-resume`, undefined, this.motorV2Url);
-    if (!response.ok) throw new BadRequestException(`Motor não retomou a interação (${response.status})`);
+    const messageId = randomUUID();
+    await db.insert(motorOutbox).values({
+      messageId,
+      type: 'TASK_RESUME_REQUESTED',
+      taskId: motorId,
+      executionId: `manual-resume-${motorId}-${messageId}`,
+      payloadJson: { reason: 'clarification_response', requestedBy: 'user' },
+      timestamp: new Date(),
+      correlationId: messageId,
+      causationId: null,
+      status: 'pending',
+      attempt: 0,
+    });
     return { ok: true, tarefaId, status: 'ready_to_resume' };
   }
 

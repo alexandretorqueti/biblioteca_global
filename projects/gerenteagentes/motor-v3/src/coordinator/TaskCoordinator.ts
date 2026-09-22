@@ -158,7 +158,13 @@ export class TaskCoordinator {
     await this.log(operationId, 5, 'primitive', 'succeeded', message, { primitiveCode: 'emit_analysis_selected', result: { executionId, analysisAttempt } })
     try {
       await this.emit('ANALYSIS_STARTED', message, { executionId, analysisAttempt })
-      const outcome = await this.runner.start(task, executionId)
+      // A projeção do status pode já enxergar a última mensagem do usuário e
+      // retornar `planned`. O comando durável é a fonte de verdade de que esta
+      // execução é uma retomada; preserve isso para o resolvedor do prompt.
+      const analysisTask = message.payload.reason === 'clarification_response'
+        ? { ...task, status: 'awaiting_clarification' as const }
+        : task
+      const outcome = await this.runner.start(analysisTask, executionId)
       await this.log(operationId, 6, 'primitive', 'succeeded', message, { primitiveCode: 'start_analyst', result: { executionId, analysisAttempt, outcome: outcome.kind } })
       await this.repository.persistAnalysis(task.taskId, executionId, outcome)
       await this.repository.releaseAnalysisClaim(task.taskId, executionId)

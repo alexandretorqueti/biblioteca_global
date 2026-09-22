@@ -10,6 +10,7 @@ interface TaskFactsRow extends RowDataPacket {
   paused_at: Date | string | null
   resource_wait_key: string | null
   analysis_started_at: Date | string | null
+  clarification_pending_at: Date | string | null
   terminal_status: string | null
   last_clarification_role: string | null
   awaiting_interaction: number | string
@@ -31,7 +32,7 @@ export class DerivedTaskStatusResolver {
     const [rows] = await this.pool.query<TaskFactsRow[]>(`
       SELECT
         t.id, t.paused_at, t.resource_wait_key,
-        f.analysis_started_at, f.terminal_status,
+        f.analysis_started_at, f.clarification_pending_at, f.terminal_status,
         (SELECT c.role FROM tarefa_chats c
           WHERE c.tarefa_id = t.id AND c.role IN ('analyst', 'user')
           ORDER BY c.id DESC LIMIT 1) AS last_clarification_role,
@@ -67,14 +68,14 @@ export class DerivedTaskStatusResolver {
       if (!hasSubtasks) return 'draft'
       return 'paused'
     }
-    if (task.last_clarification_role === 'analyst') return 'awaiting_clarification'
+    if (task.analysis_started_at && subtaskStatuses.length === 0) return 'analyzing'
+    if (task.last_clarification_role === 'analyst' || task.clarification_pending_at) return 'awaiting_clarification'
     if (Number(task.awaiting_interaction) === 1) return 'awaiting_interaction'
     // Um bloqueio operacional (inclusive deploy) nunca pode ser escondido
     // pela projeção de integração concluída abaixo.
     if (Number(task.has_active_blocker) === 1) return 'blocked'
     if (subtaskStatuses.includes('failed')) return 'failed'
     if (subtaskStatuses.includes('blocked')) return 'blocked'
-    if (task.analysis_started_at && subtaskStatuses.length === 0) return 'analyzing'
     if (subtaskStatuses.some(status => ['running', 'delivered', 'verifying'].includes(status))) return 'running'
     if (Number(task.deploy_succeeded) === 1) return 'deployed'
 
