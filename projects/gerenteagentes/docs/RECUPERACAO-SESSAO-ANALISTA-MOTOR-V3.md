@@ -25,8 +25,20 @@ substituída por tentativa posterior não pode voltar a persistir um plano.
 3. Se ainda não houver resultado, mantém o claim e envia `[RECOVERY]` na mesma
    `session_key`, pedindo continuidade. O contexto e o histórico permanecem
    os da sessão original.
-4. Se o Console reportar falha, a sessão é fechada como `failed` e um evento
-   `analysis_recovery_failed` é registrado; não há reprocessamento imediato.
+4. Se o Console reportar falha — ou se ocorrer erro de rede, parser,
+   persistência ou retomada — a sessão é fechada como `failed`, o claim é
+   liberado somente se ainda pertencer ao mesmo `analysis_execution_id` e um
+   evento `analysis_recovery_failed` é registrado. Não há reprocessamento
+   imediato: uma nova análise exige ação explícita do usuário.
+
+## Isolamento de falhas
+
+Cada sessão é recuperada em uma cadeia assíncrona com captura própria. Uma
+falha de uma sessão, de sua auditoria, do Console ou do banco é registrada e
+limitada àquela sessão; não pode produzir uma rejeição não tratada nem encerrar
+o processo Node do Motor. O ciclo periódico também possui uma barreira externa:
+se a consulta inicial falhar, o Motor segue vivo e tenta novamente no próximo
+intervalo.
 
 Eventos de auditoria: `analysis_recovery_requested`,
 `analysis_recovered_completed`, `analysis_recovered_clarification` e

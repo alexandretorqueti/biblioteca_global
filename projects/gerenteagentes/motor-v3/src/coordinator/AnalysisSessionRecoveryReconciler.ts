@@ -36,12 +36,25 @@ export class AnalysisSessionRecoveryReconciler {
   ) { this.intervalMs = config.intervalMs ?? 300_000 }
 
   start(): void {
+    // `reconcile` já contém uma barreira de erro. A chamada explícita evita
+    // que uma rejeição futura introduzida neste timer se transforme em uma
+    // unhandled rejection e derrube o processo Node.
     this.timer = setInterval(() => void this.reconcile(), this.intervalMs)
   }
 
   stop(): void { if (this.timer) clearInterval(this.timer); this.timer = null }
 
   async reconcile(): Promise<void> {
+    try {
+      await this.reconcileOnce()
+    } catch (error) {
+      // Falha de leitura/escrita do reconciliador é operacional; o próximo
+      // intervalo deve poder tentar novamente sem parar o Motor.
+      console.error('[Motor v3] Falha no ciclo de recuperação de sessões de análise:', this.errorMessage(error))
+    }
+  }
+
+  private async reconcileOnce(): Promise<void> {
     const [rows] = await this.pool.query<RecoveryRow[]>(`
       SELECT s.id AS session_id, s.tarefa_id, t.external_id AS task_external_id,
              s.session_key, s.runtime_session_id, s.model, s.execution_order,
@@ -66,11 +79,26 @@ export class AnalysisSessionRecoveryReconciler {
     for (const row of rows) {
       // Só a sessão mais recente de cada tarefa pode ser retomada. As antigas
       // pertencem a tentativas substituídas pelo retry anterior.
-      if (seenTasks.has(Number(row.tarefa_id))) { await this.supersede(row); continue }
+      if (seenTasks.has(Number(row.tarefa_id))) {
+        try {
+          await this.supersede(row)
+        } catch (error) {
+          // Uma sessão histórica não pode impedir a recuperação das demais.
+          console.error(`[Motor v3] Falha ao superar sessão histórica ${row.session_id}:`, this.errorMessage(error))
+        }
+        continue
+      }
       seenTasks.add(Number(row.tarefa_id))
       if (!row.analysis_execution_id || !row.runtime_session_id || this.inFlight.has(Number(row.session_id))) continue
       this.inFlight.add(Number(row.session_id))
-      void this.recover(row).finally(() => this.inFlight.delete(Number(row.session_id)))
+      void this.recover(row)
+        .catch(error => this.failRecovery(row, error))
+        .catch(error => {
+          // `failRecovery` é deliberadamente defensivo, mas esta última
+          // barreira protege o processo caso seu contrato mude no futuro.
+          console.error(`[Motor v3] Falha ao tratar erro da recuperação da sessão ${row.session_id}:`, this.errorMessage(error))
+        })
+        .finally(() => this.inFlight.delete(Number(row.session_id)))
     }
   }
 
@@ -91,8 +119,7 @@ export class AnalysisSessionRecoveryReconciler {
       }
     }
     if (status.isFailed) {
-      await this.pool.query(`UPDATE analyst_task_sessions SET status='failed', close_reason='recovery_session_failed', closed_at=NOW(), last_activity_at=NOW() WHERE id=? AND status='active'`, [row.session_id])
-      await this.record(taskId, 'analysis_recovery_failed', { sessionId: row.session_id, executionId: row.analysis_execution_id, error: status.error ?? 'Console informou falha' })
+      await this.failRecovery(row, new Error(status.error ?? 'Console informou falha'), 'recovery_session_failed')
       return
     }
     await this.record(taskId, 'analysis_recovery_requested', { sessionId: row.session_id, executionId: row.analysis_execution_id })
@@ -119,8 +146,51 @@ export class AnalysisSessionRecoveryReconciler {
     await this.pool.query(`UPDATE analyst_task_sessions SET status='superseded', close_reason='superseded_by_newer_recovery_session', closed_at=NOW(), last_activity_at=NOW() WHERE id=? AND status='active'`, [row.session_id])
   }
 
+  /**
+   * Fecha somente a sessão que falhou e libera o claim com fencing pelo
+   * executionId. Não reenfileira a tarefa: ela fica disponível para uma nova
+   * ação explícita do usuário, nunca para retry automático do reconciliador.
+   */
+  private async failRecovery(row: RecoveryRow, error: unknown, closeReason = 'analysis_recovery_failed'): Promise<void> {
+    const taskId = String(row.task_external_id ?? row.tarefa_id)
+    const message = this.errorMessage(error)
+    console.error(`[Motor v3] Recuperação da sessão ${row.session_id} falhou para task=${taskId}:`, message)
+
+    try {
+      await this.pool.query(
+        `UPDATE analyst_task_sessions
+            SET status='failed', close_reason=?, closed_at=NOW(), last_activity_at=NOW()
+          WHERE id=? AND status='active'`,
+        [closeReason, row.session_id],
+      )
+    } catch (closeError) {
+      console.error(`[Motor v3] Falha ao fechar sessão de recuperação ${row.session_id}:`, this.errorMessage(closeError))
+    }
+
+    if (row.analysis_execution_id) {
+      try {
+        // O UPDATE do repositório exige o mesmo executionId; portanto uma
+        // tentativa mais nova jamais perde seu claim por causa desta falha.
+        await this.repository.releaseAnalysisClaim(taskId, String(row.analysis_execution_id))
+      } catch (releaseError) {
+        console.error(`[Motor v3] Falha ao liberar claim da recuperação ${row.session_id}:`, this.errorMessage(releaseError))
+      }
+    }
+
+    await this.record(taskId, 'analysis_recovery_failed', {
+      sessionId: row.session_id,
+      executionId: row.analysis_execution_id,
+      closeReason,
+      error: message.slice(0, 1800),
+    })
+  }
+
   private async record(taskId: string, event: string, payload: Record<string, unknown>): Promise<void> {
     try { await this.config.taskEvents?.record(taskId, event, 'motor', payload) }
     catch (error) { console.warn(`[Motor v3] Falha ao registrar ${event}:`, error instanceof Error ? error.message : String(error)) }
+  }
+
+  private errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error)
   }
 }
