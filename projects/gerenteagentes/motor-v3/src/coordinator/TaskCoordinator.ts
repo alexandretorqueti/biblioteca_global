@@ -39,6 +39,13 @@ export interface TaskCoordinatorRepository {
   persistAnalysis(taskId: string, executionId: string, outcome: AnalysisOutcome): Promise<void>
 }
 
+/** Presença durável da análise enquanto o processo a executa. */
+export interface AnalysisExecutionLeaseRepository {
+  acquireAnalysisLease(taskId: string, executionId: string, ttlMs: number): Promise<void>
+  heartbeatAnalysisLease(executionId: string, ttlMs: number): Promise<void>
+  releaseAnalysisLease(executionId: string): Promise<void>
+}
+
 export interface AnalysisRunner {
   start(task: TaskSnapshot, executionId: string): Promise<AnalysisOutcome>
 }
@@ -54,6 +61,8 @@ export interface TaskCoordinatorConfig {
   analysisFailure?: AnalysisFailureSink
   /** Última tentativa antes da DLQ; na falha final o bloqueio é persistido. Default 3. */
   maxAnalysisAttempts?: number
+  /** Lease durável usado pelo reconciliador para distinguir análise viva de queda. */
+  analysisLeaseTtlMs?: number
 }
 
 // Criar/enfileirar apenas registra a tarefa. Toda tarefa nasce pausada e a
@@ -76,6 +85,8 @@ export class TaskCoordinator {
   private readonly taskEvents?: TaskEventSink
   private readonly analysisFailure?: AnalysisFailureSink
   private readonly maxAnalysisAttempts: number
+  private readonly analysisLease?: AnalysisExecutionLeaseRepository
+  private readonly analysisLeaseTtlMs: number
 
   constructor(
     private readonly repository: TaskCoordinatorRepository,
@@ -90,6 +101,8 @@ export class TaskCoordinator {
     this.taskEvents = config.taskEvents
     this.analysisFailure = config.analysisFailure
     this.maxAnalysisAttempts = config.maxAnalysisAttempts ?? 3
+    this.analysisLease = this.hasAnalysisLease(repository) ? repository : undefined
+    this.analysisLeaseTtlMs = config.analysisLeaseTtlMs ?? 90_000
   }
 
   async handle(message: QueueMessage): Promise<void> {
@@ -168,9 +181,14 @@ export class TaskCoordinator {
       return
     }
 
-    await this.emit('ANALYSIS_SELECTED', message, { executionId, analysisAttempt })
-    await this.log(operationId, sequence++, 'primitive', 'succeeded', message, { primitiveCode: 'emit_analysis_selected', result: { executionId, analysisAttempt } })
+    let heartbeat: NodeJS.Timeout | undefined
     try {
+      if (this.analysisLease) {
+        await this.analysisLease.acquireAnalysisLease(task.taskId, executionId, this.analysisLeaseTtlMs)
+        heartbeat = this.armAnalysisLeaseHeartbeat(executionId)
+      }
+      await this.emit('ANALYSIS_SELECTED', message, { executionId, analysisAttempt })
+      await this.log(operationId, sequence++, 'primitive', 'succeeded', message, { primitiveCode: 'emit_analysis_selected', result: { executionId, analysisAttempt } })
       await this.emit('ANALYSIS_STARTED', message, { executionId, analysisAttempt })
       await this.recordEvent(task.taskId, 'analysis_started', { executionId, attempt: analysisAttempt })
       // A projeção do status pode já enxergar a última mensagem do usuário e
@@ -221,7 +239,37 @@ export class TaskCoordinator {
         error: errorMessage,
       })
       throw error
+    } finally {
+      if (heartbeat) clearInterval(heartbeat)
+      if (this.analysisLease) {
+        await this.analysisLease.releaseAnalysisLease(executionId).catch(leaseError => {
+          console.warn(`[TaskCoordinator] falha ao remover lease de análise ${executionId}:`, this.errorMessage(leaseError))
+        })
+      }
     }
+  }
+
+  private armAnalysisLeaseHeartbeat(executionId: string): NodeJS.Timeout {
+    const intervalMs = Math.max(1_000, Math.min(30_000, Math.floor(this.analysisLeaseTtlMs / 3)))
+    const heartbeat = setInterval(() => {
+      void this.analysisLease?.heartbeatAnalysisLease(executionId, this.analysisLeaseTtlMs).catch(error => {
+        // O lease expira sozinho caso o banco continue indisponível; não há
+        // rejeição não tratada e o reconciliador decide somente após expirar.
+        console.warn(`[TaskCoordinator] falha ao renovar lease de análise ${executionId}:`, this.errorMessage(error))
+      })
+    }, intervalMs)
+    heartbeat.unref?.()
+    return heartbeat
+  }
+
+  private hasAnalysisLease(repository: TaskCoordinatorRepository): repository is TaskCoordinatorRepository & AnalysisExecutionLeaseRepository {
+    return typeof (repository as Partial<AnalysisExecutionLeaseRepository>).acquireAnalysisLease === 'function'
+      && typeof (repository as Partial<AnalysisExecutionLeaseRepository>).heartbeatAnalysisLease === 'function'
+      && typeof (repository as Partial<AnalysisExecutionLeaseRepository>).releaseAnalysisLease === 'function'
+  }
+
+  private errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error)
   }
 
   /** Auditoria best-effort: falha de trilha não derruba o fluxo principal. */

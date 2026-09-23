@@ -1,6 +1,7 @@
 export {
   TaskCoordinator,
   type AnalysisRunner,
+  type AnalysisExecutionLeaseRepository,
   type TaskCoordinatorConfig,
   type TaskCoordinatorRepository,
   type TaskLifecycleStatus,

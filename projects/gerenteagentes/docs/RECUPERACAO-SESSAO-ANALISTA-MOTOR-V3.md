@@ -12,7 +12,10 @@ depois de reinícios do Motor.
 ## Contrato de recuperação
 
 Uma sessão `analyst_task_sessions.status = active` sem execução viva em
-`motor_active_executions` é candidata. Para cada tarefa, apenas a sessão ativa
+`motor_active_executions` é candidata. A análise normal registra um lease
+durável nessa tabela ao obter o claim e o renova enquanto aguarda o Console;
+o lease expira após 90 segundos sem heartbeat. Assim, o ciclo periódico nunca
+confunde uma análise normal em andamento com uma sessão caída. Para cada tarefa, apenas a sessão ativa
 mais recente pode ser retomada; as anteriores são auditadas como `superseded`.
 A sessão também precisa deter o claim vigente em `task_runtime_facts`
 (`analysis_execution_id` igual e `analysis_started_at` preenchido). Uma sessão
@@ -39,6 +42,10 @@ limitada àquela sessão; não pode produzir uma rejeição não tratada nem enc
 o processo Node do Motor. O ciclo periódico também possui uma barreira externa:
 se a consulta inicial falhar, o Motor segue vivo e tenta novamente no próximo
 intervalo.
+
+O lease é removido ao concluir ou falhar a análise. Se o processo cair, o
+heartbeat deixa de ser renovado e o lease expira; somente então a sessão volta
+a ser elegível para a recuperação no boot ou no ciclo periódico.
 
 Eventos de auditoria: `analysis_recovery_requested`,
 `analysis_recovered_completed`, `analysis_recovered_clarification` e

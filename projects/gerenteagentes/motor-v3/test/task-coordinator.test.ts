@@ -65,6 +65,40 @@ describe('TaskCoordinator', () => {
     expect(events).toEqual(['EVENT_ANALYSIS_SELECTED', 'EVENT_ANALYSIS_STARTED'])
   })
 
+  it('mantém lease durável durante a análise e o remove ao terminar', async () => {
+    const { bus, repository, runner } = setup()
+    const lease = {
+      acquireAnalysisLease: vi.fn(async () => undefined),
+      heartbeatAnalysisLease: vi.fn(async () => undefined),
+      releaseAnalysisLease: vi.fn(async () => undefined),
+    }
+    Object.assign(repository, lease)
+    const coordinator = new TaskCoordinator(repository, runner, bus, { analysisLeaseTtlMs: 90_000 })
+
+    await coordinator.handle(command())
+
+    expect(lease.acquireAnalysisLease).toHaveBeenCalledWith('task-1', expect.stringContaining('exec-analyze-task-1-'), 90_000)
+    expect(vi.mocked(runner.start).mock.invocationCallOrder[0]).toBeGreaterThan(lease.acquireAnalysisLease.mock.invocationCallOrder[0])
+    expect(lease.releaseAnalysisLease).toHaveBeenCalledWith(expect.stringContaining('exec-analyze-task-1-'))
+  })
+
+  it('libera lease e claim quando não consegue adquirir a presença durável', async () => {
+    const { bus, repository, runner } = setup()
+    const lease = {
+      acquireAnalysisLease: vi.fn(async () => { throw new Error('lease indisponível') }),
+      heartbeatAnalysisLease: vi.fn(async () => undefined),
+      releaseAnalysisLease: vi.fn(async () => undefined),
+    }
+    Object.assign(repository, lease)
+    const coordinator = new TaskCoordinator(repository, runner, bus)
+
+    await expect(coordinator.handle(command())).rejects.toThrow('lease indisponível')
+
+    expect(runner.start).not.toHaveBeenCalled()
+    expect(repository.releaseAnalysisClaim).toHaveBeenCalledWith('task-1', expect.any(String))
+    expect(lease.releaseAnalysisLease).toHaveBeenCalledWith(expect.any(String))
+  })
+
   it('usa o prompt de retomada quando a resposta de clarificação chega por mensagem', async () => {
     const { coordinator, runner } = setup(task({ status: 'planned' }))
     const resume = createQueueMessage({

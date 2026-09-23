@@ -1,5 +1,5 @@
 import type { Pool, PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
-import type { TaskCoordinatorRepository, TaskLifecycleStatus, TaskSnapshot } from './TaskCoordinator.js'
+import type { AnalysisExecutionLeaseRepository, TaskCoordinatorRepository, TaskLifecycleStatus, TaskSnapshot } from './TaskCoordinator.js'
 import type { AnalysisOutcome } from '../analysis/AnalystReply.js'
 import { DerivedTaskStatusResolver } from '../status/DerivedTaskStatus.js'
 
@@ -21,7 +21,7 @@ interface TaskRow extends RowDataPacket {
 }
 
 /** Repositório MySQL do claim inicial de análise. */
-export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository {
+export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository, AnalysisExecutionLeaseRepository {
   private readonly statusResolver: DerivedTaskStatusResolver
 
   constructor(private readonly pool: Pool) {
@@ -104,6 +104,37 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
          AND f.analysis_execution_id = ?`,
       [taskId, taskId, executionId],
     )
+  }
+
+  async acquireAnalysisLease(taskId: string, executionId: string, ttlMs: number): Promise<void> {
+    const ttlSeconds = this.leaseSeconds(ttlMs)
+    const [result] = await this.pool.query<ResultSetHeader>(
+      `INSERT INTO motor_active_executions
+         (execution_id, tarefa_id, subtarefa_id, phase, started_at, heartbeat_at, expires_at)
+       SELECT ?, t.id, NULL, 'analysis', NOW(), NOW(), DATE_ADD(NOW(), INTERVAL ? SECOND)
+         FROM tarefas t
+         INNER JOIN task_runtime_facts f ON f.tarefa_id = t.id
+        WHERE (t.external_id = ? OR CAST(t.id AS CHAR) = ?)
+          AND f.analysis_execution_id = ?
+        LIMIT 1
+       ON DUPLICATE KEY UPDATE heartbeat_at = NOW(), expires_at = VALUES(expires_at), phase = 'analysis'`,
+      [executionId, ttlSeconds, taskId, taskId, executionId],
+    )
+    if (result.affectedRows === 0) throw new Error(`Não foi possível adquirir lease de análise para ${taskId}`)
+  }
+
+  async heartbeatAnalysisLease(executionId: string, ttlMs: number): Promise<void> {
+    const [result] = await this.pool.query<ResultSetHeader>(
+      `UPDATE motor_active_executions
+          SET heartbeat_at = NOW(), expires_at = DATE_ADD(NOW(), INTERVAL ? SECOND)
+        WHERE execution_id = ? AND phase = 'analysis'`,
+      [this.leaseSeconds(ttlMs), executionId],
+    )
+    if (result.affectedRows !== 1) throw new Error(`Lease de análise ausente para ${executionId}`)
+  }
+
+  async releaseAnalysisLease(executionId: string): Promise<void> {
+    await this.pool.query('DELETE FROM motor_active_executions WHERE execution_id = ? AND phase = \'analysis\'', [executionId])
   }
 
   async persistAnalysis(taskId: string, executionId: string, outcome: AnalysisOutcome): Promise<void> {
@@ -235,5 +266,9 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
       case 'failed': case 'error': return 'failed'
       default: return 'planned'
     }
+  }
+
+  private leaseSeconds(ttlMs: number): number {
+    return Math.max(1, Math.ceil(ttlMs / 1000))
   }
 }
