@@ -42,7 +42,7 @@ import {
   configuracaoPorChave,
   type MotorConfiguracaoResposta,
 } from './motor-configuracoes.catalog';
-import type { PromptPart } from '../motor-v2/src/prompts/PromptComposition.js' with { "resolution-mode": "import" };
+import type { PromptPart } from '../motor-v2/dist/prompts/PromptComposition.js' with { "resolution-mode": "import" };
 import { ProvisionService } from '../../../apps/api/src/modules/provision/provision.service';
 import { RealtimeService } from '../../../apps/api/src/modules/realtime/realtime.service';
 
@@ -636,7 +636,7 @@ export class GerenteAgentesService {
   }
 
   private async catalogEntry(chave: string) {
-    const { AGENT_PROMPT_CATALOG } = await import('../motor-v2/src/prompts/prompt-catalog.js');
+    const { AGENT_PROMPT_CATALOG } = await import('../motor-v2/dist/prompts/prompt-catalog.js');
     const entry = AGENT_PROMPT_CATALOG.find((item) => item.key === chave);
     if (!entry) throw new BadRequestException(`Prompt desconhecido: ${chave}`);
     return entry;
@@ -645,9 +645,9 @@ export class GerenteAgentesService {
   /** Sincroniza metadados canônicos sem sobrescrever textos editados. */
   private async sincronizarCatalogoPrompts() {
     const [{ AGENT_PROMPT_CATALOG }, { OUTPUT_CONTRACT_CATALOG }, { validatePromptTemplate }] = await Promise.all([
-      import('../motor-v2/src/prompts/prompt-catalog.js'),
-      import('../motor-v2/src/prompts/output-contract-catalog.js'),
-      import('../motor-v2/src/prompts/PromptTemplateEngine.js'),
+      import('../motor-v2/dist/prompts/prompt-catalog.js'),
+      import('../motor-v2/dist/prompts/output-contract-catalog.js'),
+      import('../motor-v2/dist/prompts/PromptTemplateEngine.js'),
     ]);
     const db = await this.dbDoMotor();
     const activeContracts = new Map<string, number>();
@@ -741,7 +741,7 @@ export class GerenteAgentesService {
     const [prompt] = await db.select().from(promptsAgentes).where(eq(promptsAgentes.id, id)).limit(1);
     if (!prompt) throw new NotFoundException('Prompt não encontrado');
     const entry = await this.catalogEntry(prompt.chave);
-    const { validatePromptTemplate } = await import('../motor-v2/src/prompts/PromptTemplateEngine.js');
+    const { validatePromptTemplate } = await import('../motor-v2/dist/prompts/PromptTemplateEngine.js');
     const allowed = [...entry.markers, ...(entry.contractKey ? ['**CONTRATOSAIDA**'] : [])];
     const validation = validatePromptTemplate(texto, allowed, entry.contractKey ? ['**CONTRATOSAIDA**'] : []);
     if (!validation.ok) throw new BadRequestException({ message: 'Máscaras inválidas', validation });
@@ -759,7 +759,7 @@ export class GerenteAgentesService {
     const [prompt] = await db.select().from(promptsAgentes).where(eq(promptsAgentes.id, promptId)).limit(1);
     if (!prompt) throw new NotFoundException('Prompt não encontrado');
     const entry = await this.catalogEntry(prompt.chave);
-    const { validatePromptTemplate } = await import('../motor-v2/src/prompts/PromptTemplateEngine.js');
+    const { validatePromptTemplate } = await import('../motor-v2/dist/prompts/PromptTemplateEngine.js');
     const validation = validatePromptTemplate(version.texto, [...entry.markers, ...(entry.contractKey ? ['**CONTRATOSAIDA**'] : [])], entry.contractKey ? ['**CONTRATOSAIDA**'] : []);
     if (entry.contractKey && !version.contratoVersaoId) throw new BadRequestException('Selecione uma versão de contrato para publicar este prompt');
     if (!validation.ok) throw new BadRequestException({ message: 'Versão inválida', validation });
@@ -791,8 +791,8 @@ export class GerenteAgentesService {
     const [prompt] = await db.select().from(promptsAgentes).where(eq(promptsAgentes.id, id)).limit(1);
     if (!prompt) throw new NotFoundException('Prompt não encontrado');
     const entry = await this.catalogEntry(prompt.chave);
-    const { markersIn, renderPromptTemplate, validatePromptTemplate } = await import('../motor-v2/src/prompts/PromptTemplateEngine.js');
-    const { composeDevelopmentPrompt } = await import('../motor-v2/src/prompts/PromptComposition.js');
+    const { markersIn, renderPromptTemplate, validatePromptTemplate } = await import('../motor-v2/dist/prompts/PromptTemplateEngine.js');
+    const { composeDevelopmentPrompt } = await import('../motor-v2/dist/prompts/PromptComposition.js');
     const validation = validatePromptTemplate(texto, [...entry.markers, ...(entry.contractKey ? ['**CONTRATOSAIDA**'] : [])], entry.contractKey ? ['**CONTRATOSAIDA**'] : []);
     if (!validation.ok) return { validation, rendered: null };
     let contractInstructions = '';
@@ -1290,7 +1290,7 @@ export class GerenteAgentesService {
       const statusTerminal = fact?.terminalStatus;
 
       // Pula tarefas em status final
-      const { TASK_STATUS_FINAIS } = await import('../motor-v2/src/shared/task-statuses.js');
+      const { TASK_STATUS_FINAIS } = await import('../motor-v2/dist/shared/task-statuses.js');
       if (statusTerminal && TASK_STATUS_FINAIS.has(statusTerminal)) {
         skipped++;
         continue;
