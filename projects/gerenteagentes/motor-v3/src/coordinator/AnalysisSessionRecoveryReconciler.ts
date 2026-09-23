@@ -1,7 +1,7 @@
 import type { Pool, RowDataPacket } from 'mysql2/promise'
 import { parseAnalystReply, type AnalysisOutcome } from '../analysis/AnalystReply.js'
 import type { AnalystConsole, AnalystSession, ConsoleAnalystRunner } from '../analysis/ConsoleAnalystRunner.js'
-import type { TaskCoordinatorRepository, TaskSnapshot } from './TaskCoordinator.js'
+import type { AnalysisExecutionLeaseRepository, TaskCoordinatorRepository, TaskSnapshot } from './TaskCoordinator.js'
 import type { TaskEventSink } from './TaskEventRecorder.js'
 
 interface RecoveryRow extends RowDataPacket {
@@ -15,6 +15,7 @@ export interface AnalysisSessionRecoveryConfig {
   publishTaskReady: (taskId: string, executionId: string, subtaskCount: number) => Promise<void>
   taskEvents?: TaskEventSink
   intervalMs?: number
+  leaseTtlMs?: number
 }
 
 /**
@@ -26,6 +27,8 @@ export class AnalysisSessionRecoveryReconciler {
   private readonly inFlight = new Set<number>()
   private timer: NodeJS.Timeout | null = null
   private readonly intervalMs: number
+  private readonly leaseTtlMs: number
+  private readonly leaseRepository?: AnalysisExecutionLeaseRepository
 
   constructor(
     private readonly pool: Pool,
@@ -33,7 +36,11 @@ export class AnalysisSessionRecoveryReconciler {
     private readonly runner: ConsoleAnalystRunner,
     private readonly consoleApi: AnalystConsole,
     private readonly config: AnalysisSessionRecoveryConfig,
-  ) { this.intervalMs = config.intervalMs ?? 300_000 }
+  ) {
+    this.intervalMs = config.intervalMs ?? 300_000
+    this.leaseTtlMs = config.leaseTtlMs ?? 90_000
+    this.leaseRepository = this.hasAnalysisLease(repository) ? repository : undefined
+  }
 
   start(): void {
     // `reconcile` já contém uma barreira de erro. A chamada explícita evita
@@ -106,27 +113,42 @@ export class AnalysisSessionRecoveryReconciler {
     const taskId = String(row.task_external_id ?? row.tarefa_id)
     const task = await this.repository.getTask(taskId)
     if (!task || task.terminal || task.paused || task.subtaskCount > 0) return
-    const session: AnalystSession = { sessionId: String(row.runtime_session_id), sessionKey: String(row.session_key), agentId: task.agentId }
-    const status = await this.consoleApi.getSessionStatus(session)
-    if (status.isComplete && status.lastResponse) {
-      try {
-        await this.complete(row, task, parseAnalystReply(status.lastResponse))
+    const executionId = String(row.analysis_execution_id)
+    let heartbeat: NodeJS.Timeout | undefined
+    try {
+      if (this.leaseRepository) {
+        await this.leaseRepository.acquireAnalysisLease(taskId, executionId, this.leaseTtlMs)
+        heartbeat = this.armLeaseHeartbeat(executionId)
+      }
+      const session: AnalystSession = { sessionId: String(row.runtime_session_id), sessionKey: String(row.session_key), agentId: task.agentId }
+      const status = await this.consoleApi.getSessionStatus(session)
+      if (status.isComplete && status.lastResponse) {
+        try {
+          await this.complete(row, task, parseAnalystReply(status.lastResponse))
+          return
+        } catch (error) {
+          // A sessão terminou mas a resposta não é um plano válido; a correção
+          // ocorre na própria sessão abaixo, com o contrato atual.
+          console.warn(`[Motor v3] Resultado recuperado inválido da sessão ${row.session_id}:`, this.errorMessage(error))
+        }
+      }
+      if (status.isFailed) {
+        await this.failRecovery(row, new Error(status.error ?? 'Console informou falha'), 'recovery_session_failed')
         return
-      } catch (error) {
-        // A sessão terminou mas a resposta não é um plano válido; a correção
-        // ocorre na própria sessão abaixo, com o contrato atual.
-        console.warn(`[Motor v3] Resultado recuperado inválido da sessão ${row.session_id}:`, error instanceof Error ? error.message : String(error))
+      }
+      await this.record(taskId, 'analysis_recovery_requested', { sessionId: row.session_id, executionId: row.analysis_execution_id })
+      const outcome = await this.runner.resume(task, executionId, session, {
+        taskId, executionId, analysisAttemptId: String(row.analysis_attempt_id ?? `recovery-${row.session_id}`), modelAttempt: Number(row.model_attempt || 1), model: String(row.model), phase: 'recovery',
+      })
+      await this.complete(row, task, outcome)
+    } finally {
+      if (heartbeat) clearInterval(heartbeat)
+      if (this.leaseRepository) {
+        await this.leaseRepository.releaseAnalysisLease(executionId).catch(error => {
+          console.warn(`[Motor v3] Falha ao remover lease da recuperação ${row.session_id}:`, this.errorMessage(error))
+        })
       }
     }
-    if (status.isFailed) {
-      await this.failRecovery(row, new Error(status.error ?? 'Console informou falha'), 'recovery_session_failed')
-      return
-    }
-    await this.record(taskId, 'analysis_recovery_requested', { sessionId: row.session_id, executionId: row.analysis_execution_id })
-    const outcome = await this.runner.resume(task, String(row.analysis_execution_id), session, {
-      taskId, executionId: String(row.analysis_execution_id), analysisAttemptId: String(row.analysis_attempt_id ?? `recovery-${row.session_id}`), modelAttempt: Number(row.model_attempt || 1), model: String(row.model), phase: 'recovery',
-    })
-    await this.complete(row, task, outcome)
   }
 
   private async complete(row: RecoveryRow, task: TaskSnapshot, outcome: AnalysisOutcome): Promise<void> {
@@ -192,5 +214,22 @@ export class AnalysisSessionRecoveryReconciler {
 
   private errorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error)
+  }
+
+  private armLeaseHeartbeat(executionId: string): NodeJS.Timeout {
+    const intervalMs = Math.max(1_000, Math.min(30_000, Math.floor(this.leaseTtlMs / 3)))
+    const heartbeat = setInterval(() => {
+      void this.leaseRepository?.heartbeatAnalysisLease(executionId, this.leaseTtlMs).catch(error => {
+        console.warn(`[Motor v3] Falha ao renovar lease da recuperação ${executionId}:`, this.errorMessage(error))
+      })
+    }, intervalMs)
+    heartbeat.unref?.()
+    return heartbeat
+  }
+
+  private hasAnalysisLease(repository: TaskCoordinatorRepository): repository is TaskCoordinatorRepository & AnalysisExecutionLeaseRepository {
+    return typeof (repository as Partial<AnalysisExecutionLeaseRepository>).acquireAnalysisLease === 'function'
+      && typeof (repository as Partial<AnalysisExecutionLeaseRepository>).heartbeatAnalysisLease === 'function'
+      && typeof (repository as Partial<AnalysisExecutionLeaseRepository>).releaseAnalysisLease === 'function'
   }
 }

@@ -33,6 +33,12 @@ describe('AnalysisSessionRecoveryReconciler', () => {
       releaseAnalysisClaim: vi.fn(async () => undefined),
       claimAnalysis: vi.fn(), persistAnalysis: vi.fn(),
     } as unknown as TaskCoordinatorRepository
+    const lease = {
+      acquireAnalysisLease: vi.fn(async () => undefined),
+      heartbeatAnalysisLease: vi.fn(async () => undefined),
+      releaseAnalysisLease: vi.fn(async () => undefined),
+    }
+    Object.assign(repository, lease)
     const runner = { resume: vi.fn(async () => { throw new Error('Sessão do Console terminou com status failed') }) } as unknown as ConsoleAnalystRunner
     const consoleApi = { getSessionStatus: vi.fn(async () => ({ isComplete: false, isFailed: false })) } as unknown as AnalystConsole
     const events = { record: vi.fn(async () => undefined) }
@@ -45,6 +51,8 @@ describe('AnalysisSessionRecoveryReconciler', () => {
     await vi.waitFor(() => expect(events.record).toHaveBeenCalledWith(task.taskId, 'analysis_recovery_failed', 'motor', expect.any(Object)))
 
     expect(repository.releaseAnalysisClaim).toHaveBeenCalledWith(task.taskId, 'exec-recovery-868')
+    expect(lease.acquireAnalysisLease).toHaveBeenCalledWith(task.taskId, 'exec-recovery-868', 90_000)
+    expect(lease.releaseAnalysisLease).toHaveBeenCalledWith('exec-recovery-868')
     expect(events.record).toHaveBeenCalledWith(task.taskId, 'analysis_recovery_failed', 'motor', expect.objectContaining({
       sessionId: 55, executionId: 'exec-recovery-868', error: expect.stringContaining('status failed'),
     }))

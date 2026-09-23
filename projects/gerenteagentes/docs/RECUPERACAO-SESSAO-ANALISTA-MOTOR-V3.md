@@ -46,6 +46,8 @@ intervalo.
 O lease é removido ao concluir ou falhar a análise. Se o processo cair, o
 heartbeat deixa de ser renovado e o lease expira; somente então a sessão volta
 a ser elegível para a recuperação no boot ou no ciclo periódico.
+O mesmo lease é adquirido durante a própria recuperação, impedindo que um
+segundo ciclo concorra com uma retomada longa.
 
 Eventos de auditoria: `analysis_recovery_requested`,
 `analysis_recovered_completed`, `analysis_recovered_clarification` e
