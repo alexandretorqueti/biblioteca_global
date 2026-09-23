@@ -105,19 +105,6 @@ export class TaskCoordinator {
       return
     }
 
-    // Incidente 862 (2026-09-22): a recuperação de claim órfão precisa rodar
-    // ANTES do gate de políticas. Quando o Motor cai no meio da análise, a
-    // mensagem durável é reentregue com o mesmo messageId e o claim da execução
-    // anterior fica órfão. Se o gate rodasse primeiro, a política rejeitaria com
-    // analysis_already_claimed, a mensagem seria confirmada e o claim nunca
-    // seria liberado — a tarefa ficaria "analyzing" para sempre.
-    if (task.analysisStartedAt !== null && task.analysisExecutionId?.includes(message.messageId)) {
-      await this.repository.releaseAnalysisClaim(task.taskId, task.analysisExecutionId)
-      await this.log(operationId, sequence++, 'primitive', 'succeeded', message, { primitiveCode: 'release_orphan_analysis_claim', result: { executionId: task.analysisExecutionId } })
-      task.analysisStartedAt = null
-      task.analysisExecutionId = null
-    }
-
     if (this.commandPolicies) {
       const governed = await this.commandPolicies.findByMessageType(message.type)
       const decision = this.commandResolver.decide(governed?.command, governed?.policies ?? [], {
@@ -133,7 +120,7 @@ export class TaskCoordinator {
           reasonCode: decision.reasonCode,
           result: { evaluatedPolicies: decision.evaluatedPolicies },
         })
-        if (decision.reasonCode === 'task_has_plan' || decision.reasonCode === 'analysis_already_claimed') {
+        if (decision.reasonCode === 'task_has_plan') {
           await this.emitTaskReady(message, { reason: decision.reasonCode, subtaskCount: task.subtaskCount })
         } else {
           await this.emit('TASK_IGNORED', message, { reason: decision.reasonCode })
@@ -167,10 +154,8 @@ export class TaskCoordinator {
 
     if (task.subtaskCount > 0 || task.analysisStartedAt !== null) {
       await this.log(operationId, sequence++, 'rejected', 'rejected', message, { reasonCode: task.subtaskCount > 0 ? 'task_has_plan' : 'analysis_already_claimed' })
-      await this.emitTaskReady(message, {
-        reason: task.subtaskCount > 0 ? 'plan_exists' : 'analysis_already_started',
-        subtaskCount: task.subtaskCount,
-      })
+      if (task.subtaskCount > 0) await this.emitTaskReady(message, { reason: 'plan_exists', subtaskCount: task.subtaskCount })
+      else await this.emit('TASK_IGNORED', message, { reason: 'analysis_recovery_in_progress' })
       return
     }
 

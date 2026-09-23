@@ -30,7 +30,7 @@ import { QueueConsumer } from './queue/QueueConsumer.js'
 import { RabbitMqTransport } from './queue/RabbitMqTransport.js'
 import { OutboxPublisher, createQueueMessage } from './queue/index.js'
 import type { QueueMessage } from './queue/QueueMessage.js'
-import { TaskCoordinator, MySqlTaskCoordinatorRepository, AnalysisClaimReconciler, TaskCancelConsumer, MySqlTaskEventRecorder, MySqlAnalysisFailureBlocker } from './coordinator/index.js'
+import { TaskCoordinator, MySqlTaskCoordinatorRepository, AnalysisClaimReconciler, AnalysisSessionRecoveryReconciler, TaskCancelConsumer, MySqlTaskEventRecorder, MySqlAnalysisFailureBlocker } from './coordinator/index.js'
 import { ConsoleAnalystRunner } from './analysis/ConsoleAnalystRunner.js'
 import { ConsoleHttpApi } from './analysis/ConsoleHttpApi.js'
 import { ManagedAnalysisPromptResolver } from './analysis/ManagedAnalysisPromptResolver.js'
@@ -72,6 +72,7 @@ let testGateQueueConsumer: QueueConsumer | null = null
 let testGateOutboxPublisher: OutboxPublisher | null = null
 let deployConsumer: DeployConsumer | null = null
 let cancelConsumer: TaskCancelConsumer | null = null
+let analysisSessionRecovery: AnalysisSessionRecoveryReconciler | null = null
 
 async function start() {
   console.log('[Motor v3] Iniciando...')
@@ -192,6 +193,15 @@ async function start() {
         )
         analystSessionRows.set(session.sessionId, Number(result.insertId))
         analystSessionSequences.set(session.sessionId, 0)
+      }),
+      onSessionResumed: async (session) => auditAnalyst(async () => {
+        const [rows] = await pool.query<any[]>(`SELECT s.id, COALESCE(MAX(m.sequence_number), 0) AS last_sequence
+          FROM analyst_task_sessions s LEFT JOIN analyst_task_session_messages m ON m.session_id = s.id
+          WHERE s.runtime_session_id = ? AND s.status = 'active' GROUP BY s.id ORDER BY s.id DESC LIMIT 1`, [session.sessionId])
+        if (!rows[0]?.id) return
+        analystSessionRows.set(session.sessionId, Number(rows[0].id))
+        analystSessionSequences.set(session.sessionId, Number(rows[0].last_sequence ?? 0))
+        await pool.query('UPDATE analyst_task_sessions SET last_activity_at = NOW() WHERE id = ?', [rows[0].id])
       }),
       onMessageSent: async (session, message, context) => auditAnalyst(async () => {
         const sessionRowId = analystSessionRows.get(session.sessionId)
@@ -354,14 +364,27 @@ async function start() {
       queue: process.env.MOTOR_RABBITMQ_QUEUE || 'motor.commands',
       maxAttempts: Number(process.env.MOTOR_QUEUE_MAX_ATTEMPTS || 3),
     }, pool)
-    // Incidente 862: libera claims de análise órfãos deixados por queda do
-    // Motor ANTES de iniciar os consumidores (instância única: no boot não há
-    // análise viva; se a mensagem original for reentregue, o claim atômico é
-    // refeito sem duplicação).
+    // Claims sem sessão auditada não são recuperáveis e podem ser liberados.
+    // Sessões existentes ficam sob o reconciliador abaixo, na mesma chave.
     const orphanClaims = await new AnalysisClaimReconciler(pool).reconcile()
     for (const orphan of orphanClaims) {
       console.warn(`[Motor v3] Claim de análise órfão liberado no boot: task=${orphan.taskExternalId ?? orphan.tarefaId} execution=${orphan.analysisExecutionId ?? '(sem id)'} desde ${orphan.analysisStartedAt}`)
     }
+    analysisSessionRecovery = new AnalysisSessionRecoveryReconciler(pool, repository, analyst, consoleApi, {
+      taskEvents,
+      intervalMs: Number(process.env.MOTOR_ANALYSIS_RECOVERY_INTERVAL_MS || 300000),
+      publishTaskReady: async (taskId, executionId, subtaskCount) => {
+        if (!outboxPublisher) throw new Error('Outbox indisponível para recuperação de análise')
+        await outboxPublisher.enqueue(createQueueMessage({
+          type: 'TASK_READY_FOR_PROGRAMMING', taskId, executionId,
+          payload: { executionId, recovered: true, subtaskCount },
+        }))
+      },
+    })
+    // A primeira passagem termina antes de abrir consumidores; depois disso
+    // o timer cobre quedas de dependências externas sem criar nova análise.
+    await analysisSessionRecovery.reconcile()
+    analysisSessionRecovery.start()
     await queueConsumer.start()
     // Recuperação única de fatos duráveis após boot. O fluxo normal avança
     // exclusivamente por mensagens/eventos; não há timer de deploy.
@@ -742,6 +765,7 @@ async function shutdown() {
     scheduler.stop()
     console.log('[Motor v3] Scheduler parado')
   }
+  analysisSessionRecovery?.stop()
 
   // Fecha servidor HTTP
   if (server) {

@@ -102,5 +102,20 @@ describe('ConsoleAnalystRunner — contexto em etapas', () => {
       expect.stringContaining('Agora execute a análise'),
     ])
   })
+
+  it('retoma a sessão existente sem criar sessão ou reenviar o contexto', async () => {
+    const api = consoleWithResponses([plan])
+    const resumed = vi.fn(async () => {})
+    const runner = new ConsoleAnalystRunner(api, { pollIntervalMs: 1, onSessionResumed: resumed })
+    const existing: AnalystSession = { sessionId: 'persistida-1', sessionKey: 'agent:agent-1:existente', agentId: 'agent-1' }
+
+    await expect(runner.resume(task('descrição'), 'execution-1', existing, {
+      taskId: 'task-1', executionId: 'execution-1', analysisAttemptId: 'attempt-1', modelAttempt: 1, phase: 'recovery',
+    })).resolves.toMatchObject({ kind: 'plan' })
+
+    expect(api.createSession).not.toHaveBeenCalled()
+    expect(resumed).toHaveBeenCalledWith(existing, expect.objectContaining({ phase: 'recovery_claimed' }))
+    expect(api.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ session: existing, message: expect.stringContaining('[RECOVERY]') }))
+  })
 })
 // @vitest-environment node

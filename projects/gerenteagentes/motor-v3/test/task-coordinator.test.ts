@@ -114,46 +114,42 @@ describe('TaskCoordinator', () => {
     expect(ready).toHaveBeenCalled()
   })
 
-  it('recupera claim órfão quando a mesma mensagem volta após queda', async () => {
+  it('preserva claim recuperável quando a mesma mensagem volta após queda', async () => {
     const resume = command()
-    const orphanExecution = `exec-analyze-task-1-${resume.messageId}-attempt-1`
     const { coordinator, repository, runner } = setup(task({
-      status: 'running', analysisStartedAt: new Date().toISOString(), analysisExecutionId: orphanExecution,
+      status: 'running', analysisStartedAt: new Date().toISOString(), analysisExecutionId: `exec-analyze-task-1-${resume.messageId}-attempt-1`,
     }))
 
     await coordinator.handle(resume)
 
-    expect(repository.releaseAnalysisClaim).toHaveBeenCalledWith('task-1', orphanExecution)
-    expect(repository.claimAnalysis).toHaveBeenCalled()
-    expect(runner.start).toHaveBeenCalled()
+    expect(repository.releaseAnalysisClaim).not.toHaveBeenCalled()
+    expect(repository.claimAnalysis).not.toHaveBeenCalled()
+    expect(runner.start).not.toHaveBeenCalled()
   })
 
-  it('libera claim órfão ANTES do gate de políticas quando a mesma mensagem volta (incidente 862)', async () => {
+  it('não reabre análise no consumidor quando a recuperação de sessão está pendente', async () => {
     const resume = command()
-    const orphanExecution = `exec-analyze-task-1-${resume.messageId}-attempt-1`
     const { coordinator, repository, runner } = setupGoverned(task({
-      status: 'analyzing', analysisStartedAt: new Date().toISOString(), analysisExecutionId: orphanExecution,
+      status: 'analyzing', analysisStartedAt: new Date().toISOString(), analysisExecutionId: `exec-analyze-task-1-${resume.messageId}-attempt-1`,
     }))
 
     await coordinator.handle(resume)
 
-    // Sem a correção, a política P03 rejeitaria com analysis_already_claimed
-    // antes da recuperação do claim órfão e a análise nunca seria refeita.
-    expect(repository.releaseAnalysisClaim).toHaveBeenCalledWith('task-1', orphanExecution)
-    expect(repository.claimAnalysis).toHaveBeenCalled()
-    expect(runner.start).toHaveBeenCalled()
+    expect(repository.releaseAnalysisClaim).not.toHaveBeenCalled()
+    expect(repository.claimAnalysis).not.toHaveBeenCalled()
+    expect(runner.start).not.toHaveBeenCalled()
   })
 
-  it('registra a liberação do claim órfão como primitiva no operation log', async () => {
+  it('registra a análise recuperável como rejeição sem liberar o claim', async () => {
     const resume = command()
-    const orphanExecution = `exec-analyze-task-1-${resume.messageId}-attempt-1`
     const { coordinator, entries } = setupGoverned(task({
-      status: 'analyzing', analysisStartedAt: new Date().toISOString(), analysisExecutionId: orphanExecution,
+      status: 'analyzing', analysisStartedAt: new Date().toISOString(), analysisExecutionId: `exec-analyze-task-1-${resume.messageId}-attempt-1`,
     }))
 
     await coordinator.handle(resume)
 
-    expect(entries.some(entry => entry.primitiveCode === 'release_orphan_analysis_claim')).toBe(true)
+    expect(entries.some(entry => entry.reasonCode === 'analysis_already_claimed')).toBe(true)
+    expect(entries.some(entry => entry.primitiveCode === 'release_orphan_analysis_claim')).toBe(false)
     const sequences = entries.map(entry => entry.sequence)
     expect(new Set(sequences).size).toBe(sequences.length)
   })

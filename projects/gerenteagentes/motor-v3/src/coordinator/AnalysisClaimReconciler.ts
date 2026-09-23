@@ -42,6 +42,13 @@ export class AnalysisClaimReconciler {
       FROM task_runtime_facts f
       INNER JOIN tarefas t ON t.id = f.tarefa_id
       WHERE f.analysis_started_at IS NOT NULL
+        -- Sessões auditadas são recuperadas pelo AnalysisSessionRecoveryReconciler.
+        -- Só liberamos claims que caíram antes de abrir uma sessão recuperável.
+        AND NOT EXISTS (
+          SELECT 1 FROM analyst_task_sessions s
+           WHERE s.tarefa_id = f.tarefa_id AND s.status = 'active'
+             AND s.analysis_execution_id = f.analysis_execution_id
+        )
     `)
     const orphans: OrphanAnalysisClaim[] = rows.map(row => ({
       tarefaId: Number(row.tarefa_id),

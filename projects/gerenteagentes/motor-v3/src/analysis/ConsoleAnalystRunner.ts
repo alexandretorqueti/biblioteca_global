@@ -46,6 +46,8 @@ export interface ConsoleAnalystRunnerConfig {
   promptResolver?: AnalysisPromptResolver
   modelFailureRecorder?: (model: string, error: Error) => Promise<void>
   onSessionCreated?: (session: AnalystSession, context: AnalystSessionAuditContext) => Promise<void>
+  /** Vincula uma sessão já persistida antes de uma retomada pós-restart. */
+  onSessionResumed?: (session: AnalystSession, context: AnalystSessionAuditContext) => Promise<void>
   onMessageSent?: (session: AnalystSession, message: string, context: AnalystSessionAuditContext) => Promise<void>
   onResponseReceived?: (session: AnalystSession, response: string, context: AnalystSessionAuditContext) => Promise<void>
   onSessionCompleted?: (session: AnalystSession, context: AnalystSessionAuditContext) => Promise<void>
@@ -64,6 +66,7 @@ export class ConsoleAnalystRunner implements AnalysisRunner {
       promptResolver: config.promptResolver,
       modelFailureRecorder: config.modelFailureRecorder,
       onSessionCreated: config.onSessionCreated,
+      onSessionResumed: config.onSessionResumed,
       onMessageSent: config.onMessageSent,
       onResponseReceived: config.onResponseReceived,
       onSessionCompleted: config.onSessionCompleted,
@@ -151,6 +154,50 @@ export class ConsoleAnalystRunner implements AnalysisRunner {
       }
     }
     throw lastError ?? new Error(`Nenhum modelo configurado para análise da tarefa ${task.taskId}`)
+  }
+
+  /**
+   * Retoma uma sessão existente sem recriar contexto, tentativa ou worktree.
+   * O resultado continua passando pelo mesmo parser/contrato da análise nova.
+   */
+  async resume(task: TaskSnapshot, executionId: string, session: AnalystSession, context: AnalystSessionAuditContext): Promise<AnalysisOutcome> {
+    let sequence = 0
+    const audit = (phase: string, messageKey?: string): AnalystSessionAuditContext => ({ ...context, phase, ...(messageKey ? { messageKey } : {}) })
+    const send = async (phase: string, message: string): Promise<string> => {
+      const messageKey = `${context.analysisAttemptId}:recovery:${++sequence}`
+      await this.consoleApi.sendMessage({ session, message })
+      await this.config.onMessageSent?.(session, message, audit(phase, messageKey))
+      return messageKey
+    }
+    try {
+      await this.config.onSessionResumed?.(session, audit('recovery_claimed'))
+      const resolvedPrompt = this.config.promptResolver
+        ? await this.config.promptResolver.resolve(task, executionId)
+        : { text: '', contractText: '', contractSchema: undefined }
+      let messageKey = await send('recovery', [
+        '[RECOVERY] O Motor foi reiniciado enquanto esta análise estava em andamento.',
+        'Continue exatamente desta sessão; não reinicie a análise nem crie outra abordagem.',
+        'Se você já concluiu, reenvie agora somente o JSON final completo conforme o contrato.',
+      ].join('\n'))
+      let response = await this.waitForResult(session, task)
+      await this.config.onResponseReceived?.(session, response, audit('recovery_response', messageKey))
+      try {
+        const outcome = parseAnalystReply(response, resolvedPrompt.contractSchema)
+        await this.config.onSessionCompleted?.(session, audit('completed', messageKey))
+        return outcome
+      } catch (error) {
+        messageKey = await send('recovery_correction', this.correctiveFeedback(asError(error), resolvedPrompt.contractText))
+        response = await this.waitForResult(session, task)
+        await this.config.onResponseReceived?.(session, response, audit('recovery_corrected_response', messageKey))
+        const outcome = parseAnalystReply(response, resolvedPrompt.contractSchema)
+        await this.config.onSessionCompleted?.(session, audit('completed', messageKey))
+        return outcome
+      }
+    } catch (error) {
+      const failure = this.annotateError(asError(error), { task, executionId, analysisAttemptId: context.analysisAttemptId, modelAttempt: context.modelAttempt, model: context.model, phase: 'recovery' })
+      await this.config.onSessionFailure?.(session, failure, audit('recovery'))
+      throw failure
+    }
   }
 
   private async waitForResult(session: AnalystSession, task: TaskSnapshot): Promise<string> {
