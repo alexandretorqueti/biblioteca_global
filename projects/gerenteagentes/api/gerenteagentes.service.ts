@@ -1093,9 +1093,9 @@ export class GerenteAgentesService {
     // deixa o Motor retomar o ciclo; para as demais, enfileira normalmente.
     const motorId = tarefa.externalId || `task-biblioteca-${tarefa.id}`;
     const usarMotorV2OuV3 = this.motorVersao === 'v2' || this.motorVersao === 'v3';
-    const startPath = tarefa.pausedAt
+    const startPath = tarefa.pausedAt || this.motorVersao === 'v3'
       ? `/api/motor/task/${encodeURIComponent(motorId)}/resume`
-      : (usarMotorV2OuV3
+      : (this.motorVersao === 'v2'
         ? `/api/motor/task/${encodeURIComponent(motorId)}/enqueue`
         : `/api/task/${encodeURIComponent(motorId)}/start`);
     if (tarefa.pausedAt && this.motorVersao === 'v3') {

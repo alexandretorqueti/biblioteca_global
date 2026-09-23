@@ -608,8 +608,10 @@ Fluxo interno de `POST /api/gerenteagentes/tarefas/:id/start`:
    }
    ```
 
-5. **`POST /api/task/task-biblioteca-1/start`** — o motor enfileira (FIFO) e
-   executa, criando e processando subtarefas até a conclusão.
+5. No Motor v3, **`POST /api/motor/task/task-biblioteca-1/resume`** publica o
+   comando durável `TASK_RESUME_REQUESTED`, que é o único autorizado a obter o
+   claim e iniciar a análise. `TASK_ENQUEUED` apenas registra uma entrega e não
+   inicia análise.
 6. Atualiza `tarefas.status = 'planned'` e responde com `motorId`.
 
 Falha de rede/rejeição do motor → `400` com mensagem
