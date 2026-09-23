@@ -276,6 +276,12 @@ if ! wait_http "http://127.0.0.1:$NEW_WEB_PORT/health" 30 "web-$target" \
   exit 1
 fi
 
+# O desenvolvedor somente versiona migrations no worktree. A aplicação no
+# banco é uma operação privilegiada do Motor, no slot novo e antes do tráfego.
+echo "[deploy-blue-green] aplicando migrations pendentes dos projetos ativos"
+docker exec -e "MOTOR_REPO_ROOT_CONTAINER=$MOTOR_REPO_ROOT_CONTAINER" "$NEW_API_CONTAINER" \
+  node projects/gerenteagentes/motor-v3/dist/deploy/ApplyProjectMigrationsCli.js
+
 echo "[deploy-blue-green] trocando Nginx para $target"
 update_nginx "$NEW_WEB_PORT" "$NEW_API_PORT"
 trap - ERR

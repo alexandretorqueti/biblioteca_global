@@ -37,6 +37,10 @@ MOTOR_PORT=3010
 
 ## Migração e bootstrap automáticos
 
+O deploy blue-green aplica migrations pendentes dos projetos ativos no slot
+novo, antes da troca de tráfego. O desenvolvedor só versiona o arquivo da
+migration; a aplicação usa credencial privilegiada, lock MySQL e Drizzle.
+
 O container da API executa, nesta ordem:
 
 1. `db:migrate:gerenteagentes`, que aplica a migration canônica
