@@ -52,7 +52,14 @@ export class AnalysisSessionRecoveryReconciler {
         LEFT JOIN task_runtime_facts f ON f.tarefa_id = s.tarefa_id
         LEFT JOIN motor_active_executions e
           ON e.execution_id = s.analysis_execution_id AND e.expires_at > NOW()
-       WHERE s.status = 'active' AND e.execution_id IS NULL
+       -- A sessão só pode ser retomada quando ainda detém o claim da tarefa.
+       -- Uma tentativa posterior pode ter falhado, liberado/substituído o claim
+       -- e tornado esta sessão histórica; nesse caso persistir seu resultado
+       -- seria incorreto e violaria o fencing da análise.
+       WHERE s.status = 'active'
+         AND f.analysis_started_at IS NOT NULL
+         AND f.analysis_execution_id = s.analysis_execution_id
+         AND e.execution_id IS NULL
        ORDER BY s.tarefa_id ASC, s.opened_at DESC, s.id DESC
     `)
     const seenTasks = new Set<number>()

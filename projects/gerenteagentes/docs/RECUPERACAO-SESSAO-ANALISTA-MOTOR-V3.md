@@ -14,6 +14,9 @@ depois de reinícios do Motor.
 Uma sessão `analyst_task_sessions.status = active` sem execução viva em
 `motor_active_executions` é candidata. Para cada tarefa, apenas a sessão ativa
 mais recente pode ser retomada; as anteriores são auditadas como `superseded`.
+A sessão também precisa deter o claim vigente em `task_runtime_facts`
+(`analysis_execution_id` igual e `analysis_started_at` preenchido). Uma sessão
+substituída por tentativa posterior não pode voltar a persistir um plano.
 
 1. O Motor consulta o estado da própria sessão no Console.
 2. Se existir resposta final que atende ao parser de análise, persiste o plano
