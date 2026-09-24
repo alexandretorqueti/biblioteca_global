@@ -25,6 +25,16 @@ export interface Projeto {
   ativo: boolean
   /** Config corrente do GeradorSistema (iniciada igual à base versionada). */
   config: GeradorSistemaConfig
+  /** Host do MySQL customizado (opcional — null/undefined = usar env padrão). */
+  dbHost?: string | null
+  /** Porta do MySQL customizado (opcional). */
+  dbPort?: number | null
+  /** Nome do database no MySQL customizado (opcional). */
+  dbDatabase?: string | null
+  /** Usuário do MySQL customizado (opcional). */
+  dbUser?: string | null
+  /** Indica se a senha do banco está configurada (nunca exposta). */
+  dbPasswordConfigurado?: boolean
   createdAt: string
   updatedAt: string
 }

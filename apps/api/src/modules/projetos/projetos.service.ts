@@ -246,6 +246,18 @@ export class ProjetosService {
       logger.log(`Projeto ${projetoId} criado com conexão MySQL customizada (${configDb.dbHost}:${configDb.dbPort}/${configDb.dbDatabase})`)
     }
 
+    // Projetos com conexão customizada NÃO recebem provisionamento automático
+    // (CREATE DATABASE, migrations) — o banco externo já existe e é gerenciado
+    // fora da plataforma.
+    if (configDb) {
+      logger.log(`Projeto ${projetoId}: conexão customizada definida — provisionamento automático ignorado (banco externo ${configDb.dbHost}:${configDb.dbPort}/${configDb.dbDatabase})`)
+      const projeto = await this.repo.findById(projetoId)
+      if (!projeto) {
+        throw new Error("projeto não encontrado após a criação")
+      }
+      return { ...sanitizarProjetoPublico(projeto), database: configDb.dbDatabase, migrationsAplicadas: 0 }
+    }
+
     try {
       await this.provisioner.prepararDatabase(database)
       const migrationsAplicadas = await this.provisioner.aplicarMigrations(
@@ -404,12 +416,28 @@ export class ProjetosService {
    * (idempotente — pode rodar 2x sem quebrar). Usado quando o projeto já
    * existe na tabela core mas o database não foi provisionado (ex.: projeto
    * inserido manualmente ou provisioning anterior falhou).
+   *
+   * Projetos com conexão customizada NÃO recebem provisionamento automático
+   * — o banco externo já existe e é gerenciado fora da plataforma.
    */
   async garantirDatabaseProvisionado(
     projetoId: number,
     slug: string,
   ): Promise<{ database: string; migrationsAplicadas: number }> {
     validarSlug(slug)
+
+    // Verifica se o projeto tem conexão customizada.
+    const projeto = await this.repo.findById(projetoId)
+    if (!projeto) {
+      throw new NotFoundException("Projeto não encontrado")
+    }
+
+    // Se tem conexão customizada, não provisiona.
+    if (projeto.dbHost && projeto.dbPort && projeto.dbDatabase && projeto.dbUser && projeto.dbPasswordCriptografado) {
+      logger.log(`Projeto ${projetoId}: conexão customizada detectada — provisionamento ignorado (banco externo ${projeto.dbHost}:${projeto.dbPort}/${projeto.dbDatabase})`)
+      return { database: projeto.dbDatabase, migrationsAplicadas: 0 }
+    }
+
     const database = nomeDatabaseDoProjeto(projetoId)
 
     // CREATE DATABASE IF NOT EXISTS — idempotente.

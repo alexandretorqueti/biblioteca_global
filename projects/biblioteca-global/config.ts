@@ -72,9 +72,15 @@ export const config: GeradorSistemaConfig = {
                 helperText: "Config serializada do GeradorSistema (validada contra o schema)",
               },
               { name: "ativo", label: "Ativo", type: "switch", defaultValue: true, gridVisible: false },
+              // ── Conexão MySQL customizada (opcional) ────────────────
+              { name: "dbHost", label: "Host do MySQL", type: "text", gridVisible: false, helperText: "Host do banco externo (ex.: dbaas.example.com). Deixe vazio para usar o padrão." },
+              { name: "dbPort", label: "Porta do MySQL", type: "number", gridVisible: false, helperText: "Porta do banco externo (1-65535)" },
+              { name: "dbDatabase", label: "Nome do Database", type: "text", gridVisible: false, helperText: "Nome do database no banco externo" },
+              { name: "dbUser", label: "Usuário do MySQL", type: "text", gridVisible: false, helperText: "Usuário do banco externo" },
+              { name: "dbPassword", label: "Senha do MySQL", type: "text", gridVisible: false, helperText: "Senha do banco externo (nunca exibida após salvar — campo de escrita)" },
             ],
             overrides: {
-              hiddenColumns: ["createdAt", "updatedAt"],
+              hiddenColumns: ["createdAt", "updatedAt", "dbPasswordCriptografado"],
               newLabel: "Novo projeto",
             },
           },
