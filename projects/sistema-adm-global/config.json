@@ -774,13 +774,18 @@
                 "label": "CNPJ",
                 "type": "text",
                 "maxLength": 18,
+                "mask": "cnpj",
+                "validator": "cnpj",
                 "gridVisible": false
               },
               {
                 "name": "telefone",
                 "label": "Telefone",
                 "type": "text",
-                "maxLength": 30,
+                "maxLength": 21,
+                "mask": "telefone",
+                "validator": "telefone",
+                "defaultValue": "+55",
                 "gridVisible": false
               }
             ],

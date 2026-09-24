@@ -329,8 +329,8 @@ export const config: GeradorSistemaConfig = {
               { name: "nome", label: "Nome da Empresa", type: "text", required: true, maxLength: 200, fullWidth: true },
               { name: "logoUrl", label: "URL da Logo", type: "text", maxLength: 500, fullWidth: true, gridVisible: false },
               { name: "endereco", label: "Endereço", type: "text", maxLength: 300, fullWidth: true, gridVisible: false },
-              { name: "cnpj", label: "CNPJ", type: "text", maxLength: 18, gridVisible: false },
-              { name: "telefone", label: "Telefone", type: "text", maxLength: 30, gridVisible: false },
+              { name: "cnpj", label: "CNPJ", type: "text", maxLength: 18, mask: "cnpj", validator: "cnpj", gridVisible: false },
+              { name: "telefone", label: "Telefone", type: "text", maxLength: 21, mask: "telefone", validator: "telefone", defaultValue: "+55", gridVisible: false },
             ],
             overrides: {
               hiddenColumns: ["createdAt", "updatedAt"],
