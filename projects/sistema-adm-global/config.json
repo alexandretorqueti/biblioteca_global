@@ -390,21 +390,26 @@
                 "type": "text",
                 "required": true,
                 "maxLength": 200,
-                "fullWidth": true
+                "fullWidth": true,
+                "validator": "nomeCompleto"
               },
               {
                 "name": "cpf",
                 "label": "CPF",
                 "type": "text",
                 "required": true,
-                "maxLength": 14
+                "maxLength": 14,
+                "mask": "cpf",
+                "validator": "cpf"
               },
               {
                 "name": "rg",
                 "label": "RG",
                 "type": "text",
                 "maxLength": 20,
-                "gridVisible": false
+                "gridVisible": false,
+                "mask": "rg",
+                "validator": "rg"
               },
               {
                 "name": "email",
@@ -419,14 +424,16 @@
                 "label": "Telefone",
                 "type": "text",
                 "required": true,
-                "maxLength": 30
+                "maxLength": 21,
+                "mask": "telefone",
+                "defaultValue": "+55"
               },
               {
                 "name": "dataNascimento",
                 "label": "Data de Nascimento",
-                "type": "text",
+                "type": "date",
                 "required": true,
-                "maxLength": 10
+                "maxDate": "2026-09-23"
               },
               {
                 "name": "cargoId",
@@ -453,9 +460,8 @@
               {
                 "name": "dataAdmissao",
                 "label": "Data de Admissão",
-                "type": "text",
-                "required": true,
-                "maxLength": 10
+                "type": "date",
+                "required": true
               },
               {
                 "name": "tipoVinculo",
@@ -481,7 +487,7 @@
               {
                 "name": "numero",
                 "label": "Número",
-                "type": "text",
+                "type": "number",
                 "maxLength": 20,
                 "gridVisible": false
               },
@@ -517,8 +523,10 @@
                 "name": "cep",
                 "label": "CEP",
                 "type": "text",
-                "maxLength": 10,
-                "gridVisible": false
+                "maxLength": 9,
+                "gridVisible": false,
+                "mask": "cep",
+                "validator": "cep"
               },
               {
                 "name": "contatoEmergenciaNome",
@@ -532,8 +540,10 @@
                 "name": "contatoEmergenciaTelefone",
                 "label": "Contato de Emergência (Telefone)",
                 "type": "text",
-                "maxLength": 30,
-                "gridVisible": false
+                "maxLength": 21,
+                "gridVisible": false,
+                "mask": "telefone",
+                "defaultValue": "+55"
               },
               {
                 "name": "ativo",
