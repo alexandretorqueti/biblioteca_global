@@ -16,6 +16,16 @@ export interface ProjetoRow {
   branchTrabalho?: string | null
   repoPath?: string | null
   agenteId?: string | null
+  /** Host do MySQL customizado (opcional — null = usar env padrão). */
+  dbHost?: string | null
+  /** Porta do MySQL customizado (opcional). */
+  dbPort?: number | null
+  /** Nome do database no MySQL customizado (opcional). */
+  dbDatabase?: string | null
+  /** Usuário do MySQL customizado (opcional). */
+  dbUser?: string | null
+  /** Senha criptografada (AES-256-GCM) — NUNCA expor em respostas públicas. */
+  dbPasswordCriptografado?: string | null
   createdAt: Date
   updatedAt: Date
 }
@@ -35,6 +45,11 @@ export interface ProjetosRepository {
     branchTrabalho?: string
     repoPath?: string
     agenteId?: string
+    dbHost?: string
+    dbPort?: number
+    dbDatabase?: string
+    dbUser?: string
+    dbPasswordCriptografado?: string
   }): Promise<number>
   atualizar(
     id: number,
@@ -42,6 +57,11 @@ export interface ProjetosRepository {
       nome: string
       ativo: boolean
       config: GeradorSistemaConfig
+      dbHost: string | null
+      dbPort: number | null
+      dbDatabase: string | null
+      dbUser: string | null
+      dbPasswordCriptografado: string | null
     }>,
   ): Promise<void>
   /** Exclusão física — usada apenas como compensação de provisionamento. */
@@ -109,6 +129,11 @@ export class DrizzleProjetosRepository implements ProjetosRepository {
     branchTrabalho?: string
     repoPath?: string
     agenteId?: string
+    dbHost?: string
+    dbPort?: number
+    dbDatabase?: string
+    dbUser?: string
+    dbPasswordCriptografado?: string
   }): Promise<number> {
     const resultado = await this.db.insert(projetos).values({
       nome: row.nome,
@@ -118,6 +143,11 @@ export class DrizzleProjetosRepository implements ProjetosRepository {
       branchTrabalho: row.branchTrabalho,
       repoPath: row.repoPath,
       agenteId: row.agenteId,
+      dbHost: row.dbHost,
+      dbPort: row.dbPort,
+      dbDatabase: row.dbDatabase,
+      dbUser: row.dbUser,
+      dbPasswordCriptografado: row.dbPasswordCriptografado,
     })
     return resultado[0].insertId
   }
@@ -128,6 +158,11 @@ export class DrizzleProjetosRepository implements ProjetosRepository {
       nome: string
       ativo: boolean
       config: GeradorSistemaConfig
+      dbHost: string | null
+      dbPort: number | null
+      dbDatabase: string | null
+      dbUser: string | null
+      dbPasswordCriptografado: string | null
     }>,
   ): Promise<void> {
     await this.db.update(projetos).set(campos).where(eq(projetos.id, id))

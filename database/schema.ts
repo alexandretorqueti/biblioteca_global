@@ -68,6 +68,19 @@ export const projetos = mysqlTable("projetos", {
   repoPath: varchar("repo_path", { length: 500 }),
   /** ID do agente vinculado ao projeto (ex.: biblioteca-global). */
   agenteId: varchar("agente_id", { length: 100 }),
+  // ── Conexão MySQL customizada por projeto (opcional) ────────────────
+  // Quando todos vazios, a ProjectDbFactory usa as credenciais do env.
+  // Quando preenchidos, o projeto usa um banco MySQL externo (DbaaS, etc.).
+  /** Host do MySQL customizado (ex.: dbaas.example.com). */
+  dbHost: varchar("db_host", { length: 255 }),
+  /** Porta do MySQL customizado (padrão 3306 quando não informado). */
+  dbPort: int("db_port"),
+  /** Nome do database no MySQL customizado. */
+  dbDatabase: varchar("db_database", { length: 255 }),
+  /** Usuário do MySQL customizado. */
+  dbUser: varchar("db_user", { length: 255 }),
+  /** Senha criptografada (AES-256-GCM) do MySQL customizado — NUNCA logar/retornar. */
+  dbPasswordCriptografado: varchar("db_password_criptografado", { length: 512 }),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at")
     .notNull()
