@@ -1,10 +1,13 @@
 import {
   IsBoolean,
   IsDefined,
+  IsInt,
   IsNotEmpty,
   IsOptional,
   IsString,
   Matches,
+  Max,
+  Min,
 } from "class-validator"
 import type { GeradorSistemaConfig } from "@biblioteca-global/shared"
 
@@ -66,4 +69,39 @@ export class CreateProjetoDto {
   @IsOptional()
   @IsString()
   agente_id?: string
+
+  // ── Conexão MySQL customizada por projeto (opcional) ────────────────
+  // Todos opcionais, mas se algum for preenchido, todos são obrigatórios
+  // (validação de completude feita no service).
+
+  /** Host do MySQL customizado (ex.: dbaas.example.com). */
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  dbHost?: string
+
+  /** Porta do MySQL customizado (1-65535). */
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(65535)
+  dbPort?: number
+
+  /** Nome do database no MySQL customizado. */
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  dbDatabase?: string
+
+  /** Usuário do MySQL customizado. */
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  dbUser?: string
+
+  /** Senha do MySQL customizado (será criptografada antes de salvar). */
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  dbPassword?: string
 }
