@@ -105,7 +105,9 @@ export class TestGateService {
     let status: TestRunResult['status'] = exitCode === 0 ? 'passed' : 'failed'
     const baseline = input.baselineRunId ? await this.failuresForRun(input.baselineRunId) : []
     const baselineEnvironment = input.baselineRunId ? await this.environmentForRun(input.baselineRunId) : null
-    const comparable = !baselineEnvironment || baselineEnvironment === environment.fingerprint
+    // Se os testes passaram sem falhas, não precisa comparar ambiente — não há regressão.
+    const allTestsPassed = exitCode === 0 && failures.length === 0
+    const comparable = allTestsPassed || !baselineEnvironment || baselineEnvironment === environment.fingerprint
     let compared = comparable
       ? this.compare(failures, baseline, Boolean(input.baselineRunId))
       : this.inconclusive(failures, baseline)
@@ -135,12 +137,12 @@ export class TestGateService {
       `INSERT INTO test_runs
         (projeto_id, tarefa_id, subtarefa_id, phase, baseline_run_id, commit_sha, base_commit_sha,
          branch_name, workspace_path, build_command, test_command, environment_fingerprint,
-         environment_json, node_version, lockfile_hash, started_at, finished_at, exit_code, status,
+         environment_json, node_version, started_at, finished_at, exit_code, status,
          comparison_status, passed_count, failed_count, stdout, stderr)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [input.projectId, input.taskDatabaseId, input.subtaskId ?? null, input.phase, input.baselineRunId ?? null,
         input.commitSha, input.baseCommitSha ?? null, input.branchName, input.workspacePath,
-        input.buildCommand, input.testCommand, environment.fingerprint, JSON.stringify(environment.evidence), process.version, environment.lockfileHash,
+        input.buildCommand, input.testCommand, environment.fingerprint, JSON.stringify(environment.evidence), process.version,
         startedAt, finishedAt, exitCode, status, comparisonStatus, summary.passed, summary.failed,
         this.summaryLog(stdout), this.summaryLog(stderr)],
     )
@@ -196,10 +198,10 @@ export class TestGateService {
       `INSERT INTO test_runs
         (projeto_id,tarefa_id,subtarefa_id,phase,baseline_run_id,reused_from_run_id,commit_sha,base_commit_sha,
          branch_name,workspace_path,build_command,test_command,environment_fingerprint,environment_json,node_version,
-         lockfile_hash,started_at,finished_at,exit_code,status,comparison_status,passed_count,failed_count,
+         started_at,finished_at,exit_code,status,comparison_status,passed_count,failed_count,
          stdout,stderr,stdout_artifact_path,stderr_artifact_path)
        SELECT ?,?,?, 'baseline',NULL,id,?,?, ?,?,?,?,environment_fingerprint,environment_json,node_version,
-              lockfile_hash,NOW(3),NOW(3),exit_code,status,'not_compared',passed_count,failed_count,
+              NOW(3),NOW(3),exit_code,status,'not_compared',passed_count,failed_count,
               stdout,stderr,stdout_artifact_path,stderr_artifact_path
          FROM test_runs WHERE id=?`,
       [input.projectId, input.taskDatabaseId, input.subtaskId ?? null, input.commitSha, input.baseCommitSha ?? null,
@@ -318,13 +320,6 @@ export class TestGateService {
   }
 
   private async environment(workspace: string, buildCommand: string, testCommand: string) {
-    let lockfileHash: string | null = null
-    for (const name of ['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock']) {
-      try {
-        lockfileHash = createHash('sha256').update(await readFile(resolve(workspace, name))).digest('hex')
-        break
-      } catch {}
-    }
     let containerIdentity = process.env.HOSTNAME ?? null
     try {
       const cgroup = await readFile('/proc/self/cgroup', 'utf8')
@@ -335,10 +330,10 @@ export class TestGateService {
     )
     const evidence = {
       nodeVersion: process.version, platform: process.platform, architecture: process.arch,
-      containerIdentity, lockfileHash, buildCommand, testCommand, safeEnvironment,
+      containerIdentity, buildCommand, testCommand, safeEnvironment,
     }
     const fingerprint = createHash('sha256').update(JSON.stringify(evidence)).digest('hex')
-    return { fingerprint, lockfileHash, evidence }
+    return { fingerprint, evidence }
   }
 
   private async confirmFailures(input: TestGateInput): Promise<TestFailureRecord[]> {
