@@ -189,7 +189,7 @@ export const config: GeradorSistemaConfig = {
               { name: "telefone", label: "Telefone", type: "text", required: true, maxLength: 30 },
               { name: "dataNascimento", label: "Data de Nascimento", type: "text", required: true, maxLength: 10 },
               { name: "cargo", label: "Cargo", type: "text", required: true, maxLength: 100 },
-              { name: "departamentoId", label: "Departamento", type: "select", options: [], gridVisible: false },
+              { name: "departamentoId", label: "Departamento", type: "multipleChoice", multipleChoice: { resource: "departamentos", idField: "id", displayField: "nome" }, gridVisible: false },
               { name: "dataAdmissao", label: "Data de Admissão", type: "text", required: true, maxLength: 10 },
               { name: "tipoVinculo", label: "Tipo de Vínculo", type: "select", required: true, options: [{ value: "clt", label: "CLT" }, { value: "pj", label: "PJ" }, { value: "estagio", label: "Estágio" }, { value: "temporario", label: "Temporário" }, { value: "apprentiz", label: "Aprendiz" }] },
               { name: "logradouro", label: "Logradouro", type: "text", maxLength: 200, fullWidth: true, gridVisible: false },
