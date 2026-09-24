@@ -165,19 +165,33 @@ export class DeployConsumer {
     const repo = stdout.trim(); const path = `${repo}/.motor-v3-deploy-${batchId.replace(/[^a-zA-Z0-9_-]/g, '_')}`
     await execFileAsync('git', ['worktree', 'add', '--detach', path, baseBranch], { cwd: repo })
     try {
+      // Para cada commit de integração, listar TODOS os commits entre baseBranch e o commit,
+      // não apenas o HEAD. Isso garante que todas as subtarefas sejam incluídas no deploy.
+      const allCommitsToCherryPick: string[] = []
       for (const commit of [...new Set(commits)]) {
         if (!/^[a-f0-9]{7,64}$/i.test(commit)) throw new Error(`Commit de integração inválido: ${commit}`)
         const contained = await execFileAsync('git', ['merge-base', '--is-ancestor', commit, 'HEAD'], { cwd: path }).then(() => true, () => false)
-        if (!contained) {
-          try {
-            await execFileAsync('git', ['cherry-pick', commit], { cwd: path })
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error)
-            if (message.includes('empty')) {
-              await execFileAsync('git', ['cherry-pick', '--skip'], { cwd: path })
-            } else {
-              throw error
-            }
+        if (contained) continue
+        // Listar todos os commits entre baseBranch e commit (exclusivo baseBranch, inclusivo commit)
+        // Ordem reversa (mais antigo primeiro) para cherry-pick na ordem correta
+        const { stdout: logOutput } = await execFileAsync('git', ['rev-list', '--reverse', `${baseBranch}..${commit}`], { cwd: path })
+        const commitRange = logOutput.trim().split('\n').filter(Boolean)
+        for (const c of commitRange) {
+          if (!allCommitsToCherryPick.includes(c)) {
+            allCommitsToCherryPick.push(c)
+          }
+        }
+      }
+      // Fazer cherry-pick de todos os commits na ordem
+      for (const c of allCommitsToCherryPick) {
+        try {
+          await execFileAsync('git', ['cherry-pick', c], { cwd: path })
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          if (message.includes('empty')) {
+            await execFileAsync('git', ['cherry-pick', '--skip'], { cwd: path })
+          } else {
+            throw error
           }
         }
       }
