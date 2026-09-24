@@ -26,8 +26,6 @@ import { CrudService, RESOURCES_RESERVADOS, VIRTUAL_RESOURCE_OPENCLAW_AGENTES } 
 import { createHash } from "node:crypto"
 import {
   ProjectDbFactory,
-  type ConexaoProjeto,
-  type ConectorProjeto,
   type ProjetoDb,
 } from "../project-db.factory"
 import type { SchemaRegistry } from "../schema-registry"
@@ -350,44 +348,8 @@ describe("CrudService — whitelist e validação", () => {
   })
 })
 
-describe("ProjectDbFactory — cache e derivação do database", () => {
-  it("mesma instância por projeto (cache) e database derivado do id", async () => {
-    const databases: string[] = []
-    const conector: ConectorProjeto = async (
-      database: string,
-    ): Promise<ConexaoProjeto> => {
-      databases.push(database)
-      return {
-        db: { marcador: database } as unknown as ProjetoDb,
-        fechar: async () => undefined,
-      }
-    }
-    const factory = new ProjectDbFactory(conector)
-
-    const db1 = await factory.obter({ id: 5 })
-    const db2 = await factory.obter({ id: 5 })
-    expect(db1).toBe(db2)
-    expect(databases).toEqual(["projeto_5"])
-
-    await factory.obter({ id: 6 })
-    expect(databases).toEqual(["projeto_5", "projeto_6"])
-  })
-
-  it("não há como apontar para database fora do padrão projeto_<id>", async () => {
-    // O conector só recebe nomes derivados — input do cliente nunca chega.
-    const databases: string[] = []
-    const conector: ConectorProjeto = async (database: string) => {
-      databases.push(database)
-      return {
-        db: {} as ProjetoDb,
-        fechar: async () => undefined,
-      }
-    }
-    const factory = new ProjectDbFactory(conector)
-    await factory.obter({ id: 42 })
-    expect(databases.every((d) => /^projeto_[0-9]+$/.test(d))).toBe(true)
-  })
-})
+// Nota: os testes detalhados da ProjectDbFactory (fallback, customizada, cache,
+// invalidação) estão em project-db.factory.spec.ts.
 
 describe("CrudService — busca textual (search)", () => {
   const dialect = new MySqlDialect()
