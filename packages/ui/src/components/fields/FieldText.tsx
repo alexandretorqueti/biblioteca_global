@@ -1,5 +1,11 @@
 import { TextField } from "@mui/material"
-import { formatCnpj } from "../../utils/masks"
+import {
+  formatCnpj,
+  formatCpf,
+  formatTelefone,
+  formatCep,
+  onlyDigits,
+} from "../../utils/masks"
 
 interface FieldTextProps {
   name: string
@@ -12,7 +18,7 @@ interface FieldTextProps {
   disabled?: boolean
   minLength?: number
   maxLength?: number
-  mask?: "cnpj"
+  mask?: "cnpj" | "cpf" | "telefone" | "cep" | "rg"
   onChange: (name: string, value: string) => void
 }
 
@@ -54,10 +60,20 @@ export default function FieldText({
         maxLength,
       }}
       onChange={(event) => {
-        const nextValue =
-          mask === "cnpj"
-            ? formatCnpj(event.target.value)
-            : event.target.value
+        const raw = event.target.value
+        let nextValue = raw
+
+        if (mask === "cnpj") {
+          nextValue = formatCnpj(raw)
+        } else if (mask === "cpf") {
+          nextValue = formatCpf(raw)
+        } else if (mask === "telefone") {
+          nextValue = formatTelefone(raw)
+        } else if (mask === "cep") {
+          nextValue = formatCep(raw)
+        } else if (mask === "rg") {
+          nextValue = onlyDigits(raw)
+        }
 
         onChange(name, nextValue)
       }}

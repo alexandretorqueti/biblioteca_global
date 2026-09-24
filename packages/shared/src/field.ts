@@ -93,8 +93,8 @@ export const dynamicFieldConfigSchema = z
     currencyLocale: z.string().optional(),
     minimumFractionDigits: z.number().int().min(0).max(20).optional(),
     maximumFractionDigits: z.number().int().min(0).max(20).optional(),
-    mask: z.enum(["cnpj"]).optional(),
-    validator: z.enum(["cnpj"]).optional(),
+    mask: z.enum(["cnpj", "cpf", "telefone", "cep", "rg"]).optional(),
+    validator: z.enum(["cnpj", "cpf", "rg", "cep", "telefone", "nomeCompleto"]).optional(),
     fullWidth: z.boolean().optional(),
     disabled: z.boolean().optional(),
     /**

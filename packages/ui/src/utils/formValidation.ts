@@ -2,7 +2,14 @@ import type {
   DynamicField,
   DynamicFormValues,
 } from "../types"
-import { isValidCnpj } from "./masks"
+import {
+  isValidCnpj,
+  isValidCpf,
+  isValidRg,
+  isValidCep,
+  isValidNomeCompleto,
+  onlyDigits,
+} from "./masks"
 
 export type FormErrors = Record<string, string>
 
@@ -69,6 +76,57 @@ export const validateDynamicForm = (
       !isValidCnpj(value)
     ) {
       errors[field.name] = "Informe um CNPJ válido."
+      return errors
+    }
+
+    if (
+      field.validator === "cpf" &&
+      typeof value === "string" &&
+      !isValidCpf(value)
+    ) {
+      errors[field.name] = "Informe um CPF válido."
+      return errors
+    }
+
+    if (
+      field.validator === "rg" &&
+      typeof value === "string" &&
+      !isValidRg(value)
+    ) {
+      errors[field.name] = "Informe um RG válido."
+      return errors
+    }
+
+    if (
+      field.validator === "cep" &&
+      typeof value === "string" &&
+      !isValidCep(value)
+    ) {
+      errors[field.name] = "Informe um CEP válido."
+      return errors
+    }
+
+    if (
+      field.validator === "telefone" &&
+      typeof value === "string"
+    ) {
+      // Remove o 55 inicial se presente para validar
+      let digits = onlyDigits(value)
+      if (digits.startsWith("55") && digits.length > 10) {
+        digits = digits.slice(2)
+      }
+      if (digits.length < 10) {
+        errors[field.name] = "Informe um telefone válido."
+        return errors
+      }
+    }
+
+    if (
+      field.validator === "nomeCompleto" &&
+      typeof value === "string" &&
+      !isValidNomeCompleto(value)
+    ) {
+      errors[field.name] = "Informe o nome completo (pelo menos dois nomes)."
       return errors
     }
 
