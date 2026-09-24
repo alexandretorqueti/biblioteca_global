@@ -8,6 +8,7 @@
  * - Contatos do site: mensagens recebidas pelo site
  * - Circulares: comunicados internos
  * - Departamentos: departamentos da empresa
+ * - Cargos: cargos/funções da empresa
  * - Colaboradores: cadastro de colaboradores da empresa
  * - Usuários: admin/usuario do projeto (escopo local)
  * - Config empresa: configurações da empresa (singleton)
@@ -176,6 +177,22 @@ export const departamentos = mysqlTable("departamentos", {
 })
 
 // ============================================================================
+// CARGOS
+// ============================================================================
+
+export const cargos = mysqlTable("cargos", {
+  id: bigint("id", { mode: "number", unsigned: true })
+    .primaryKey()
+    .autoincrement(),
+  nome: varchar("nome", { length: 100 }).notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at")
+    .notNull()
+    .defaultNow()
+    .onUpdateNow(),
+})
+
+// ============================================================================
 // COLABORADORES
 // ============================================================================
 
@@ -189,7 +206,9 @@ export const colaboradores = mysqlTable("colaboradores", {
   email: varchar("email", { length: 200 }).notNull(),
   telefone: varchar("telefone", { length: 30 }).notNull(),
   dataNascimento: varchar("data_nascimento", { length: 10 }).notNull(),
-  cargo: varchar("cargo", { length: 100 }).notNull(),
+  cargoId: bigint("cargo_id", { mode: "number", unsigned: true })
+    .notNull()
+    .references(() => cargos.id, { onDelete: "restrict" }),
   departamentoId: bigint("departamento_id", { mode: "number", unsigned: true })
     .references(() => departamentos.id, { onDelete: "set null" }),
   dataAdmissao: varchar("data_admissao", { length: 10 }).notNull(),
@@ -273,6 +292,9 @@ export const annotations = {
   departamentos: {
     nome: { label: "Nome do Departamento", fullWidth: true, maxLength: 50 },
   },
+  cargos: {
+    nome: { label: "Nome do Cargo", fullWidth: true, maxLength: 100 },
+  },
   colaboradores: {
     nomeCompleto: { label: "Nome Completo", fullWidth: true, maxLength: 200 },
     cpf: { label: "CPF", maxLength: 14 },
@@ -280,7 +302,7 @@ export const annotations = {
     email: { label: "E-mail", type: "email", fullWidth: true, maxLength: 200 },
     telefone: { label: "Telefone", maxLength: 30 },
     dataNascimento: { label: "Data de Nascimento", maxLength: 10 },
-    cargo: { label: "Cargo", maxLength: 100 },
+    cargoId: { label: "Cargo" },
     departamentoId: { label: "Departamento" },
     dataAdmissao: { label: "Data de Admissão", maxLength: 10 },
     tipoVinculo: { label: "Tipo de Vínculo" },

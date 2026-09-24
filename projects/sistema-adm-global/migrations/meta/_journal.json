@@ -22,6 +22,13 @@
       "when": 1790135520000,
       "tag": "0002_colaboradores",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1790222400000,
+      "tag": "0003_cargos",
+      "breakpoints": true
     }
   ]
 }

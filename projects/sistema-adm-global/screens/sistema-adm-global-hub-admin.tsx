@@ -25,6 +25,7 @@ import {
   ManageAccountsRounded,
   BusinessRounded,
   ApartmentRounded,
+  BadgeRounded,
 } from "@mui/icons-material"
 export const componentId = "sistema-adm-global-hub-admin"
 
@@ -49,6 +50,11 @@ const cards: HubCard[] = [
     label: "Departamentos",
     icon: <ApartmentRounded sx={{ fontSize: 48 }} />,
     path: "departamento",
+  },
+  {
+    label: "Cargos",
+    icon: <BadgeRounded sx={{ fontSize: 48 }} />,
+    path: "cargo",
   },
 ]
 
