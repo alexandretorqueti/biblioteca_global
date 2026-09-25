@@ -2026,6 +2026,7 @@ export class GerenteAgentesService {
 
       // Converte para o formato esperado pelo front-end
       const subtasks = subtarefasList.map(s => ({
+        id: s.id,
         seq: s.seq,
         title: s.titulo,
         status: s.status,
