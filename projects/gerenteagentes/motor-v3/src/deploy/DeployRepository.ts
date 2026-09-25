@@ -170,11 +170,16 @@ export class DeployRepository {
       await connection.beginTransaction()
       await this.assertStillEligible(connection, context)
       const [insert] = await connection.query<ResultSetHeader>(
-        `INSERT INTO deploy_requests (tarefa_id,repo_path,status,requested_commit,base_branch,requested_at,updated_at)
-         VALUES (?,?,'pending',?,?,NOW(),NOW())
+        `INSERT INTO deploy_requests (tarefa_id,repo_path,status,requested_commit,base_branch,generation,parent_generation,requested_at,updated_at)
+         VALUES (?,?,'pending',?,?,
+           (SELECT COALESCE(MAX(s.generation), 1) FROM subtarefas s WHERE s.tarefa_id = ?),
+           (SELECT CASE WHEN COALESCE(MAX(s.generation), 1) > 1 THEN MAX(s.generation) - 1 ELSE NULL END FROM subtarefas s WHERE s.tarefa_id = ?),
+           NOW(),NOW())
          ON DUPLICATE KEY UPDATE repo_path=VALUES(repo_path),requested_commit=VALUES(requested_commit),base_branch=VALUES(base_branch),
+           generation=VALUES(generation),parent_generation=VALUES(parent_generation),
            status=IF(status IN ('succeeded','running'),status,'pending'),last_error=NULL,updated_at=NOW()`,
-        [context.databaseTaskId, context.repoPath, context.integrationCommit, context.baseBranch],
+        [context.databaseTaskId, context.repoPath, context.integrationCommit, context.baseBranch,
+         context.databaseTaskId, context.databaseTaskId],
       )
       const accepted = createQueueMessage({ type: 'DEPLOY_REQUEST_ACCEPTED', taskId: context.taskId, executionId: source.executionId,
         correlationId: source.correlationId ?? source.messageId, causationId: source.messageId,

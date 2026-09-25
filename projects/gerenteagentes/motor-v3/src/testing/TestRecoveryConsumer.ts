@@ -136,7 +136,7 @@ export class TestRecoveryConsumer {
       projectSlug: recovery.project_slug, repoPath: recovery.repo_path, baseBranch: recovery.branch_trabalho,
       buildCommand: recovery.build_command, testCommand: recovery.unit_test_command, agentId: recovery.agent_id,
       workspacePath: workspace.path, workspaceBranch: workspace.branch, workspaceBaseCommit: workspace.baseCommit,
-      completionKind: 'code_change',
+      completionKind: 'code_change', generation: 1,
     }
   }
 

@@ -44,6 +44,7 @@ import { DeployRepository } from './deploy/DeployRepository.js'
 import { RemoteBlueGreenDeployer } from './deploy/RemoteBlueGreenDeployer.js'
 import { BaselinePreflightRecovery, TestGateConsumer, TestGateJobReconciler, TestGateOrchestrator, TestGateService, TestRecoveryConsumer, WorkspaceEnvironmentPreparer } from './testing/index.js'
 import { ConsoleHumanNotifier, ExternalResolutionError, ExternalResolutionHandler, MonitorPromptResolver, MonitorResolutionConsumer, TaskUnblockedConsumer, createTaskBlockedMessage, loadActiveBlocker } from './monitor/index.js'
+import { TaskAdjustmentConsumer, TASK_ADJUSTMENT_REQUESTED } from './adjustment/index.js'
 import { ensureCompletionTrigger } from './db/ensureTriggers.js'
 
 // Config
@@ -78,6 +79,7 @@ let testGateJobReconciler: TestGateJobReconciler | null = null
 let deployConsumer: DeployConsumer | null = null
 let cancelConsumer: TaskCancelConsumer | null = null
 let analysisSessionRecovery: AnalysisSessionRecoveryReconciler | null = null
+let taskAdjustmentConsumer: TaskAdjustmentConsumer | null = null
 
 async function start() {
   console.log('[Motor v3] Iniciando...')
@@ -414,9 +416,11 @@ async function start() {
     taskUnblockedConsumer = new TaskUnblockedConsumer(pool, taskEvents)
 
     cancelConsumer = new TaskCancelConsumer(pool, operationLogger, new MySqlCommandPolicyRepository(pool), taskEvents)
+    taskAdjustmentConsumer = new TaskAdjustmentConsumer(pool, analyst, operationLogger)
     queueConsumer = new QueueConsumer(transport, async message => {
       await coordinator.handle(message)
       await cancelConsumer?.handle(message)
+      await taskAdjustmentConsumer?.handle(message)
       await developmentConsumer?.handle(message)
       await subtaskExecutionConsumer?.handle(message)
       await subtaskVerificationConsumer?.handle(message)
@@ -748,6 +752,75 @@ async function start() {
           }
           throw error
         }
+        return
+      }
+
+      // POST /api/motor/task/:id/adjustment — solicita ajuste incremental
+      // em tarefa já deployada/completed. Valida status, calcula nextGeneration,
+      // registra mensagem no chat e enfileira TASK_ADJUSTMENT_REQUESTED.
+      if (req.method === 'POST' && taskId && taskAction === 'adjustment') {
+        let body = ''
+        req.on('data', chunk => body += chunk)
+        await new Promise(resolve => req.on('end', resolve))
+        let payload: any = {}
+        try {
+          payload = body ? JSON.parse(body) : {}
+        } catch {
+          res.writeHead(400, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: false, error: 'JSON inválido' }))
+          return
+        }
+        const message = typeof payload.message === 'string' ? payload.message.trim() : ''
+        if (!message) {
+          res.writeHead(400, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: false, error: 'message é obrigatório' }))
+          return
+        }
+        // Validar status: deployed ou completed
+        const currentStatus = await statusResolver.resolve(taskId)
+        if (currentStatus !== 'deployed' && currentStatus !== 'completed') {
+          res.writeHead(409, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: false, error: `Ajuste permitido apenas para tarefas deployed ou completed (status atual: ${currentStatus})` }))
+          return
+        }
+        // Buscar ID numérico da tarefa
+        const [taskRows] = await pool.query<any[]>(
+          `SELECT t.id FROM tarefas t WHERE t.external_id = ? OR CAST(t.id AS CHAR) = ? LIMIT 1`,
+          [taskId, taskId],
+        )
+        if (!taskRows[0]) {
+          res.writeHead(404, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: false, error: 'Task not found' }))
+          return
+        }
+        const databaseTaskId = Number(taskRows[0].id)
+        // Calcular nextGeneration
+        const [genRows] = await pool.query<any[]>(
+          `SELECT COALESCE(MAX(generation), 0) AS max_generation FROM subtarefas WHERE tarefa_id = ?`,
+          [databaseTaskId],
+        )
+        const nextGeneration = Number(genRows[0]?.max_generation ?? 0) + 1
+        // Registrar mensagem do usuário no chat
+        await pool.query(
+          `INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) VALUES (?, 'user', ?, NOW())`,
+          [databaseTaskId, message],
+        )
+        // Enfileirar TASK_ADJUSTMENT_REQUESTED
+        if (!outboxPublisher) {
+          res.writeHead(503, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: false, error: 'Queue não inicializada' }))
+          return
+        }
+        const adjustmentMessage = createQueueMessage({
+          type: TASK_ADJUSTMENT_REQUESTED,
+          taskId,
+          executionId: `exec-adjustment-${taskId}-gen${nextGeneration}-${Date.now()}`,
+          payload: { message, generation: nextGeneration },
+        })
+        await outboxPublisher.enqueue(adjustmentMessage)
+        console.log(`[Motor v3] Adjustment requested task=${taskId} generation=${nextGeneration}`)
+        res.writeHead(202, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: true, accepted: true, generation: nextGeneration, messageId: adjustmentMessage.messageId }))
         return
       }
 

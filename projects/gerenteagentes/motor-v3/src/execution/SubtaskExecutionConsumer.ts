@@ -138,7 +138,7 @@ export class SubtaskExecutionConsumer {
       projectId: execution.projectId,
       subtaskId,
       executionId: message.executionId,
-      generation: 1,
+      generation: execution.generation ?? 1,
       projectSlug: execution.projectSlug,
       repoPath: execution.repoPath,
       worktreePath: workspace.path,
@@ -268,6 +268,13 @@ export class SubtaskExecutionConsumer {
 
   private buildPrompt(context: SubtaskExecutionContext, workspacePath: string): DevelopmentPrompt {
     const description = context.taskDescription || 'N/A'
+    const generation = context.generation ?? 1
+    const generationNote = generation > 1
+      ? [
+          `Esta é a generation ${generation} da tarefa. As generations anteriores já foram deployadas.`,
+          'Faça apenas mudanças incrementais para o ajuste solicitado. Não refaça o que já foi feito.',
+        ]
+      : []
     const header = [
       'Execute somente a subtarefa abaixo no workspace autorizado.',
       `Tarefa: ${context.taskTitle}`,
@@ -277,6 +284,7 @@ export class SubtaskExecutionConsumer {
       `Critérios de aceite: ${context.acceptanceCriteria.join('; ') || 'validar o resultado solicitado'}`,
       `Workspace autorizado: ${workspacePath}`,
       'Preserve mudanças existentes, não altere outros projetos e não faça push ou deploy.',
+      ...generationNote,
       ...(['analysis', 'no_code_change', 'external_operation'].includes(context.completionKind ?? '')
         ? ['Esta subtarefa é analítica/sem alteração de código. Entregue o resultado solicitado sem modificar o Git.'] : []),
       'Ao terminar e validar, inclua o marcador ::DONE:: na resposta final.',

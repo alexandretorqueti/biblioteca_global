@@ -47,6 +47,8 @@ export interface SubtaskExecutionContext {
   workspaceBranch: string | null
   workspaceBaseCommit: string | null
   completionKind: string | null
+  /** Generation da subtarefa (1 = original, 2+ = ajustes incrementais). */
+  generation: number
 }
 
 interface TaskRow extends RowDataPacket {
@@ -85,6 +87,7 @@ interface ExecutionRow extends RowDataPacket {
   workspace_branch: string | null
   workspace_base_commit: string | null
   completion_kind: string | null
+  generation: number | string | null
 }
 
 interface MotorLimitRow extends RowDataPacket {
@@ -224,6 +227,11 @@ export class MySqlDevelopmentExecutionRepository {
            FROM subtarefas s
           WHERE s.tarefa_id = ?
             AND s.status = 'pending'
+            AND s.generation = (
+              SELECT MAX(s2.generation)
+                FROM subtarefas s2
+               WHERE s2.tarefa_id = s.tarefa_id
+            )
             AND NOT EXISTS (
               SELECT 1 FROM subtarefas active
                WHERE active.tarefa_id = s.tarefa_id
@@ -232,6 +240,7 @@ export class MySqlDevelopmentExecutionRepository {
             AND NOT EXISTS (
               SELECT 1 FROM subtarefas previous
                WHERE previous.tarefa_id = s.tarefa_id
+                 AND previous.generation = s.generation
                  AND previous.seq < s.seq
                  AND previous.status NOT IN ('verified', 'superseded')
                  AND previous.id != COALESCE(s.correction_for_subtask_id, -1)
@@ -316,6 +325,7 @@ export class MySqlDevelopmentExecutionRepository {
       `SELECT t.id AS database_task_id, t.projeto_id AS project_id, t.external_id, t.titulo AS task_title,
               t.descricao AS task_description, s.id AS subtask_id, s.seq,
               s.titulo AS subtask_title, s.scope, s.acceptance_criteria, s.deliverables, s.completion_kind,
+              s.generation,
               pc.slug AS project_slug, pmc.repo_path, pmc.branch_trabalho,
               pmc.build_command, pmc.unit_test_command,
               COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), pc.slug, '') AS agent_id,
@@ -354,6 +364,7 @@ export class MySqlDevelopmentExecutionRepository {
       workspaceBranch: row.workspace_branch ? String(row.workspace_branch) : null,
       workspaceBaseCommit: row.workspace_base_commit ? String(row.workspace_base_commit) : null,
       completionKind: row.completion_kind ? String(row.completion_kind) : null,
+      generation: Number(row.generation ?? 1),
     }
   }
 
@@ -659,8 +670,14 @@ export class MySqlDevelopmentExecutionRepository {
     const [rows] = await connection.query<SubtaskRow[]>(
       `SELECT s.id, s.seq, s.titulo, s.scope FROM subtarefas s
         WHERE s.tarefa_id = ? AND s.status = 'pending'
+          AND s.generation = (
+            SELECT MAX(s2.generation)
+              FROM subtarefas s2
+             WHERE s2.tarefa_id = s.tarefa_id
+          )
           AND NOT EXISTS (SELECT 1 FROM subtarefas previous
-            WHERE previous.tarefa_id = s.tarefa_id AND previous.seq < s.seq
+            WHERE previous.tarefa_id = s.tarefa_id AND previous.generation = s.generation
+              AND previous.seq < s.seq
               AND previous.status NOT IN ('verified', 'superseded'))
           AND NOT EXISTS (SELECT 1 FROM subtarefas dependency
             WHERE JSON_CONTAINS(COALESCE(s.depends_on_subtask_ids, JSON_ARRAY()), CAST(dependency.id AS JSON))
