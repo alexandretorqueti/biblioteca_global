@@ -106,9 +106,12 @@ export default function OperationMapCanvas({ tarefas, selectedTaskId, projetos, 
     const selected = task.id === selectedTaskId
     const priority = deriveTaskPriority(task.status)
     const priorityColor: Record<Prioridade, "error.main" | "warning.main" | "success.main"> = { alta: "error.main", media: "warning.main", baixa: "success.main" }
+    const label = `#${task.id}`
     return <Tooltip title={<Box><Typography variant="caption" display="block" fontWeight={700}>#{task.id} {task.titulo}</Typography><Typography variant="caption" display="block">{station.label} · Projeto {task.projetoNome ?? task.projetoId}</Typography></Box>} arrow>
-      <IconButton size="small" onClick={() => onSelectTask(task.id)} aria-label={`Abrir tarefa ${task.id}: ${task.titulo}`} data-testid={`operation-map-task-${task.id}`} sx={{ p: 0.35, color: priorityColor[priority], border: selected ? 2 : 0, borderColor: "primary.main", borderRadius: "50%", '&:hover': { bgcolor: "action.hover" } }}>
-        <Box sx={{ width: 12, height: 12, borderRadius: "50%", bgcolor: "currentColor", boxShadow: station.tone === "active" ? "0 0 0 3px color-mix(in srgb, currentColor 18%, transparent)" : undefined }} />
+      <IconButton size="small" onClick={() => onSelectTask(task.id)} aria-label={`Abrir tarefa ${task.id}: ${task.titulo}`} data-testid={`operation-map-task-${task.id}`} sx={{ p: 0, color: priorityColor[priority], border: selected ? 2 : 0, borderColor: "primary.main", borderRadius: "50%", '&:hover': { bgcolor: "action.hover" } }}>
+        <Box sx={{ width: 30, height: 30, borderRadius: "50%", bgcolor: "currentColor", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: station.tone === "active" ? "0 0 0 3px color-mix(in srgb, currentColor 18%, transparent)" : undefined }}>
+          <Typography component="span" sx={{ fontSize: 10, fontWeight: 700, lineHeight: 1, color: "white", userSelect: "none", whiteSpace: "nowrap" }}>{label}</Typography>
+        </Box>
       </IconButton>
     </Tooltip>
   }
