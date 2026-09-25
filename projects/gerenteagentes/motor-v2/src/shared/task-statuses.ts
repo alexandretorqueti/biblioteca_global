@@ -134,6 +134,13 @@ export const TASK_STATUS_EXECUTING = new Set<string>([
   "analyzing",
 ])
 
+/** Status que permitem ação "pause" (pausar). */
+export const TASK_STATUS_PAUSABLE = new Set<string>([
+  "running",
+  "analyzing",
+  "blocked",
+])
+
 /**
  * Opções para combos/select de status de tarefa.
  * Array de { label, value } pronto para uso em DynamicForm e Select.

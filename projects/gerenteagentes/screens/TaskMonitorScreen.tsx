@@ -50,6 +50,7 @@ import {
   TASK_STATUS_FINAIS as _TASK_STATUS_FINAIS,
   TASK_STATUS_STARTABLE as _TASK_STATUS_STARTABLE,
   TASK_STATUS_EXECUTING as _TASK_STATUS_EXECUTING,
+  TASK_STATUS_PAUSABLE as _TASK_STATUS_PAUSABLE,
   SUBTASK_STATUS_OPTIONS,
   taskStatusColor,
   taskStatusLabel,
@@ -250,6 +251,7 @@ interface DeployDiagnostics {
 const STATUS_FINAIS = _TASK_STATUS_FINAIS
 const STATUS_INICIO_PERMITIDO = _TASK_STATUS_STARTABLE
 const STATUS_EXECUCAO = _TASK_STATUS_EXECUTING
+const STATUS_PAUSAVEL = _TASK_STATUS_PAUSABLE
 
 function corStatus(status: string): "default" | "primary" | "secondary" | "error" | "info" | "success" | "warning" {
   return taskStatusColor(status)
@@ -1347,7 +1349,7 @@ export default function TaskMonitorScreen(): ReactNode {
   const statusMotor = detail?.task?.status ?? tarefaSelecionada?.status ?? "—"
   const isPaused = statusMotor === "paused"
   const podeIniciar = isPaused || STATUS_INICIO_PERMITIDO.has(statusMotor)
-  const podePausar = !isPaused && STATUS_EXECUCAO.has(statusMotor)
+  const podePausar = !isPaused && STATUS_PAUSAVEL.has(statusMotor)
   const aguardandoRetentativaPromocao = /Falha na promoção da branch da tarefa: repositório principal não está limpo para promoção:/i
     .test(detail?.task?.blockInfo?.excerpt ?? "")
 

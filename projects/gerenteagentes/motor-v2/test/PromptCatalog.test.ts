@@ -14,6 +14,7 @@ describe("catálogo de prompts dos agentes", () => {
       "monitor.correcao_motor",
       "analista.revisao_premissa_incorreta",
       "auditor.auditoria_premissa_incorreta",
+      "monitor.resolucao_bloqueio",
     ])
   })
 
