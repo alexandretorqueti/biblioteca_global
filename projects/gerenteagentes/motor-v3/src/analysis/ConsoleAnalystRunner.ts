@@ -117,10 +117,11 @@ export class ConsoleAnalystRunner implements AnalysisRunner {
       }
       try {
         session = await this.consoleApi.createSession({
-          // O prefixo é obrigatório para o Console derivar o agente. O
-          // analysisAttemptId também diferencia retries do RabbitMQ, que
-          // podem entregar novamente o mesmo executionId.
-          key: `agent:${task.agentId}:motor-v3:analysis:${task.taskId}:${executionId}:${analysisAttemptId}:${modelAttempt}`,
+          // O formato da sessionKey é `analysis-{model}-{taskId}`. O Console
+          // normaliza automaticamente via toAgentStoreSessionKey, portanto o
+          // prefixo `agent:` não é mais necessário. O AnalysisSessionRecoveryReconciler
+          // lê session_key direto do banco, sendo transparente à mudança de formato.
+          key: `analysis-${model ?? 'console-default'}-${task.taskId}`,
           agentId: task.agentId,
           ...(model ? { model } : {}),
           metadata: { taskId: task.taskId, executionId, analysisAttemptId, phase: 'analysis', attempt: modelAttempt },
