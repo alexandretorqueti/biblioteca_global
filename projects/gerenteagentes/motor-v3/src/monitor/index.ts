@@ -15,9 +15,11 @@ export {
   type ResolvedMonitorPrompt,
 } from './MonitorPromptResolver.js'
 export { MonitorResolutionConsumer } from './MonitorResolutionConsumer.js'
+export { TaskUnblockedConsumer } from './TaskUnblockedConsumer.js'
 export {
   parseMonitorVerdict,
   type MonitorVerdict,
   type MonitorVerdictStatus,
   type MonitorVerdictOrigin,
 } from './MonitorVerdictParser.js'
+export { ConsoleHumanNotifier, type MonitorHumanNotifier } from './HumanNotifier.js'

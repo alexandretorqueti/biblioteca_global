@@ -5,6 +5,7 @@ import type { PrimitiveContext } from '../primitives/types.js'
 import type { WorkerLauncher } from '../worker-launcher/WorkerLauncher.js'
 import type { GitWorktreePreparer } from '../execution/GitWorktreePreparer.js'
 import type { TaskEventSink } from '../coordinator/TaskEventRecorder.js'
+import { ConsoleHumanNotifier, type MonitorHumanNotifier } from './HumanNotifier.js'
 import { MonitorPromptResolver } from './MonitorPromptResolver.js'
 import { parseMonitorVerdict, type MonitorVerdict } from './MonitorVerdictParser.js'
 import {
@@ -68,6 +69,7 @@ export class MonitorResolutionConsumer {
     private readonly events: TaskEventSink,
     private readonly consoleApi: unknown,
     private readonly db: unknown,
+    private readonly notifier: MonitorHumanNotifier = new ConsoleHumanNotifier(),
   ) {}
 
   async handle(message: QueueMessage): Promise<void> {
@@ -183,11 +185,13 @@ export class MonitorResolutionConsumer {
     workerError: string | null,
   ): Promise<void> {
     if (!workerSuccess || response == null) {
+      const summary = workerError ? `Erro na execução: ${workerError.slice(0, 500)}` : 'O worker não retornou resposta.'
       await this.safePostChat(Number(blocker.tarefa_id), [
         `❌ Monitor: não foi possível resolver o bloqueio \`${blocker.block_reason}\`.`,
-        workerError ? `Erro na execução: ${workerError.slice(0, 500)}` : 'O worker não retornou resposta.',
+        summary,
         'O bloqueio permanece ativo para revisão.',
       ].join('\n'))
+      await this.safeNotify(taskId, blocker.block_reason, summary)
       await this.safeRecord(taskId, 'monitor_resolution_kept_blocked', { blockId: blocker.id, reason: 'worker_sem_sucesso' })
       return
     }
@@ -210,6 +214,7 @@ export class MonitorResolutionConsumer {
       verdict.chatMessage,
       verdict.resumption ? `Retomada: ${verdict.resumption}` : null,
     ].filter(Boolean).join('\n\n'))
+    await this.safeNotify(taskId, blocker.block_reason, `status=${verdict.status} origem=${verdict.origin} parseable=${verdict.parseable}. ${verdict.cause || verdict.chatMessage}`.slice(0, 1000))
     await this.safeRecord(taskId, 'monitor_resolution_kept_blocked', {
       blockId: blocker.id, status: verdict.status, origin: verdict.origin, parseable: verdict.parseable,
     })
@@ -261,6 +266,15 @@ export class MonitorResolutionConsumer {
       )
     } catch {
       // Chat nunca derruba o fluxo principal; o evento de auditoria permanece.
+    }
+  }
+
+  /** Notificação humana quando o Monitor não resolve; nunca derruba o fluxo. */
+  private async safeNotify(taskId: string, blockReason: string, summary: string): Promise<void> {
+    try {
+      await this.notifier.notify({ taskId, blockReason, summary })
+    } catch {
+      // Notificação é melhor-esforço.
     }
   }
 

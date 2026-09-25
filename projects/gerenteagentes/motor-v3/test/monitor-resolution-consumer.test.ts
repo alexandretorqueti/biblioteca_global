@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Pool } from 'mysql2/promise'
-import { MonitorResolutionConsumer, createTaskBlockedMessage, TASK_BLOCKED_EVENT_TYPE } from '../src/monitor/index.js'
+import { MonitorResolutionConsumer, TASK_BLOCKED_EVENT_TYPE } from '../src/monitor/index.js'
 import type { MonitorPromptMarkers } from '../src/monitor/index.js'
 import { createQueueMessage, type QueueMessage } from '../src/queue/index.js'
 
@@ -105,12 +105,13 @@ function fakeEnvironment(options: FakeOptions = {}) {
   const events: Array<{ taskId: string; evento: string; payload: unknown }> = []
   const eventsSink = { record: vi.fn(async (taskId: string, evento: string, _ator?: string, payload?: unknown) => { events.push({ taskId, evento, payload }) }) }
 
-  const consumer = new MonitorResolutionConsumer(pool, worktrees, worker, prompts, eventsSink, undefined, undefined)
+  const notifier = { notify: vi.fn(async () => {}) }
+  const consumer = new MonitorResolutionConsumer(pool, worktrees, worker, prompts, eventsSink, undefined, undefined, notifier)
   const chats = () => queries
     .filter(q => q.sql.includes('INSERT INTO tarefa_chats'))
     .map(q => ({ databaseTaskId: q.params[0], texto: String(q.params[1]) }))
   const outbox = (type: string) => queries.filter(q => q.sql.includes('INSERT INTO motor_outbox') && q.params[1] === type)
-  return { consumer, pool, connection, queries, chats, outbox, worktrees, prepareIntegration, worker, executeTask, prompts, resolve, events, eventsSink }
+  return { consumer, pool, connection, queries, chats, outbox, worktrees, prepareIntegration, worker, executeTask, prompts, resolve, events, eventsSink, notifier }
 }
 
 function blockedMessage(overrides: Partial<QueueMessage> & { payload?: Record<string, unknown> } = {}): QueueMessage {
@@ -290,6 +291,8 @@ describe('MonitorResolutionConsumer — chat da tarefa e desbloqueio (etapa 4)',
     expect(env.events.map(e => e.evento)).toContain('monitor_resolution_unblocked')
     const unblockedRecord = env.events.find(e => e.evento === 'monitor_resolution_unblocked')
     expect(unblockedRecord!.payload).toMatchObject({ blockId: 45, origin: 'MOTOR', unblocked: true })
+    // Bloqueio resolvido: humano NÃO é notificado
+    expect(env.notifier.notify).not.toHaveBeenCalled()
   })
 
   it('veredito NAO_RESOLVIDO mantém o bloqueio e posta explicação no chat', async () => {
@@ -316,6 +319,9 @@ describe('MonitorResolutionConsumer — chat da tarefa e desbloqueio (etapa 4)',
     expect(chat!.texto).toContain('banco externo está indisponível')
     expect(chat!.texto).toContain('Retomada: reexecutar o deploy')
     expect(env.events.map(e => e.evento)).toContain('monitor_resolution_kept_blocked')
+    // Humano notificado quando o Monitor não resolve
+    expect(env.notifier.notify).toHaveBeenCalledOnce()
+    expect(env.notifier.notify.mock.calls[0][0]).toMatchObject({ taskId: 'task-p1-886', blockReason: 'deploy_failed' })
   })
 
   it('veredito PARCIALMENTE_RESOLVIDO mantém o bloqueio (conservador)', async () => {
@@ -351,6 +357,7 @@ describe('MonitorResolutionConsumer — chat da tarefa e desbloqueio (etapa 4)',
     expect(chat).toBeDefined()
     expect(chat!.texto).toContain('timeout após 3 tentativas')
     expect(env.events.map(e => e.evento)).toContain('monitor_resolution_kept_blocked')
+    expect(env.notifier.notify).toHaveBeenCalledOnce()
   })
 
   it('corrida benigna: bloqueio já resolvido por outro fluxo não emite TASK_UNBLOCKED duplicado', async () => {
@@ -366,7 +373,7 @@ describe('MonitorResolutionConsumer — chat da tarefa e desbloqueio (etapa 4)',
 
   it('falha ao postar chat não derruba o fluxo de desbloqueio', async () => {
     const env = fakeEnvironment()
-    ;(env.pool.query as ReturnType<typeof vi.fn>).mockImplementation(async (sql: string, params?: unknown[]) => {
+    ;(env.pool.query as ReturnType<typeof vi.fn>).mockImplementation(async (sql: string) => {
       if (String(sql).includes('INSERT INTO tarefa_chats')) throw new Error('chat indisponível')
       const normalized = String(sql).replace(/\s+/g, ' ').trim()
       if (normalized.includes('FROM bloqueios b')) return [[BLOCKER_ROW], []]

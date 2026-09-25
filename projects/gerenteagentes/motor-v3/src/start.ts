@@ -43,6 +43,7 @@ import { DeployConsumer } from './deploy/DeployConsumer.js'
 import { DeployRepository } from './deploy/DeployRepository.js'
 import { RemoteBlueGreenDeployer } from './deploy/RemoteBlueGreenDeployer.js'
 import { BaselinePreflightRecovery, TestGateConsumer, TestGateOrchestrator, TestGateService, TestRecoveryConsumer, WorkspaceEnvironmentPreparer } from './testing/index.js'
+import { ConsoleHumanNotifier, MonitorPromptResolver, MonitorResolutionConsumer, TaskUnblockedConsumer } from './monitor/index.js'
 
 // Config
 const PORT = parseInt(process.env.MOTOR_PORT || '3010')
@@ -68,6 +69,8 @@ let developmentConsumer: DevelopmentExecutionConsumer | null = null
 let subtaskExecutionConsumer: SubtaskExecutionConsumer | null = null
 let subtaskVerificationConsumer: SubtaskVerificationConsumer | null = null
 let testRecoveryConsumer: TestRecoveryConsumer | null = null
+let monitorResolutionConsumer: MonitorResolutionConsumer | null = null
+let taskUnblockedConsumer: TaskUnblockedConsumer | null = null
 let testGateQueueConsumer: QueueConsumer | null = null
 let testGateOutboxPublisher: OutboxPublisher | null = null
 let deployConsumer: DeployConsumer | null = null
@@ -350,6 +353,19 @@ async function start() {
       monitorWorker,
       new WorkerConsoleAdapter(consoleApi), db, testGate,
     )
+    // Monitor-Resolvedor de bloqueios (docs/MONITOR-RESOLVEDOR-DE-BLOQUEIOS.md):
+    // missão longa (pode corrigir o motor, mergear na base e rodar deploy) —
+    // launcher dedicado com timeout maior que o do monitor de testes.
+    const monitorResolutionWorker = new WorkerLauncher({
+      maxAttempts: Number(process.env.MOTOR_MONITOR_RESOLUTION_MAX_ATTEMPTS || 2),
+      timeoutMs: Number(process.env.MOTOR_MONITOR_RESOLUTION_TIMEOUT_MS || 3600000),
+      sandboxRoot: process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/agentes/gerenteagentes/worktrees',
+    })
+    monitorResolutionConsumer = new MonitorResolutionConsumer(
+      pool, worktreePreparer, monitorResolutionWorker, new MonitorPromptResolver(pool),
+      taskEvents, new WorkerConsoleAdapter(consoleApi), db, new ConsoleHumanNotifier(),
+    )
+    taskUnblockedConsumer = new TaskUnblockedConsumer(pool, taskEvents)
 
     cancelConsumer = new TaskCancelConsumer(pool, operationLogger, new MySqlCommandPolicyRepository(pool), taskEvents)
     queueConsumer = new QueueConsumer(transport, async message => {
@@ -359,6 +375,8 @@ async function start() {
       await subtaskExecutionConsumer?.handle(message)
       await subtaskVerificationConsumer?.handle(message)
       await testRecoveryConsumer?.handle(message)
+      await monitorResolutionConsumer?.handle(message)
+      await taskUnblockedConsumer?.handle(message)
       await deployConsumer?.handle(message)
     }, {
       queue: process.env.MOTOR_RABBITMQ_QUEUE || 'motor.commands',
