@@ -43,6 +43,26 @@ export class DevelopmentExecutionConsumer {
       })
       return
     }
+    if ('kind' in reserved && reserved.kind === 'task_completed') {
+      // Camada B do invariante de conclusão: a tarefa tinha todas as subtarefas
+      // finais sem terminal_status (escrita externa/bypass) e foi reconciliada.
+      await this.operationLogger?.append({
+        operationId, sequence: 2, phase: 'primitive', outcome: 'succeeded',
+        messageId: message.messageId, messageType: message.type,
+        correlationId: message.correlationId, causationId: message.causationId,
+        taskId: message.taskId,
+        primitiveCode: 'complete_task_by_reconciliation',
+        result: { nextMessageId: reserved.message.messageId, nextMessageType: reserved.message.type },
+      })
+      await this.operationLogger?.append({
+        operationId, sequence: 3, phase: 'completed', outcome: 'succeeded',
+        messageId: message.messageId, messageType: message.type,
+        correlationId: message.correlationId, causationId: message.causationId,
+        taskId: message.taskId,
+        result: { reason: 'reconciled_completion', nextMessageType: reserved.message.type },
+      })
+      return
+    }
     if (!('subtaskId' in reserved)) return
 
     await this.operationLogger?.append({

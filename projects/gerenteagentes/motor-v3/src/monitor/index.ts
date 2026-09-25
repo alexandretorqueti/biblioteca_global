@@ -17,6 +17,13 @@ export {
 export { MonitorResolutionConsumer } from './MonitorResolutionConsumer.js'
 export { TaskUnblockedConsumer } from './TaskUnblockedConsumer.js'
 export {
+  ExternalResolutionHandler,
+  ExternalResolutionError,
+  type ExternalResolutionInput,
+  type ExternalResolutionResult,
+  type ExternalResolutionErrorCode,
+} from './ExternalResolutionHandler.js'
+export {
   parseMonitorVerdict,
   type MonitorVerdict,
   type MonitorVerdictStatus,

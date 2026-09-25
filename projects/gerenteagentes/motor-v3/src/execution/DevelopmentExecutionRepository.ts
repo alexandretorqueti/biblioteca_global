@@ -13,7 +13,17 @@ export interface CapacityWaiting {
   reason: 'global_limit' | 'project_limit'
 }
 
-export type ReserveNextSubtaskResult = ReservedSubtask | CapacityWaiting | null
+/**
+ * Todas as subtarefas já estavam finais sem conclusão gravada; o motor
+ * reconciliou a tarefa (camada B do invariante de conclusão — incidente
+ * da tarefa 820 em 2026-09-25).
+ */
+export interface TaskCompletedByReconciliation {
+  kind: 'task_completed'
+  message: QueueMessage
+}
+
+export type ReserveNextSubtaskResult = ReservedSubtask | CapacityWaiting | TaskCompletedByReconciliation | null
 
 export interface SubtaskExecutionContext {
   taskId: string
@@ -43,6 +53,7 @@ interface TaskRow extends RowDataPacket {
   id: number
   external_id: string | null
   projeto_id: number
+  tipo: string
 }
 
 interface SubtaskRow extends RowDataPacket {
@@ -139,7 +150,7 @@ export class MySqlDevelopmentExecutionRepository {
       await connection.beginTransaction()
 
       const [taskRows] = await connection.query<TaskRow[]>(
-        `SELECT t.id, t.external_id, t.projeto_id
+        `SELECT t.id, t.external_id, t.projeto_id, t.tipo
            FROM tarefas t
           WHERE (t.external_id = ? OR CAST(t.id AS CHAR) = ?)
             AND t.paused_at IS NULL
@@ -154,6 +165,16 @@ export class MySqlDevelopmentExecutionRepository {
       if (!task) {
         await connection.rollback()
         return null
+      }
+
+      // Camada B do invariante de conclusão: se todas as subtarefas já estão
+      // finais mas a tarefa não tem terminal_status (escrita externa/bypass),
+      // reconcilia a conclusão aqui — antes dos limites de capacidade, que
+      // não se aplicam a uma tarefa que não precisa de worker.
+      const reconciled = await this.completeIfAllSubtasksFinal(connection, task, source)
+      if (reconciled) {
+        await connection.commit()
+        return reconciled
       }
 
       // Serialize reservas concorrentes nos próprios registros de configuração.
@@ -362,6 +383,9 @@ export class MySqlDevelopmentExecutionRepository {
     const connection = await this.pool.getConnection()
     try {
       await connection.beginTransaction()
+      // Suprime a rede de segurança do trigger (camada A): esta transação é o
+      // caminho canônico e já grava fatos + outbox de conclusão por conta própria.
+      await connection.query('SET @motor_completing := 1')
       const [updated] = await connection.query<ResultSetHeader>(
         `UPDATE subtarefas
             SET status = 'verified', workspace_commit_sha = ?, workspace_status = 'integrated',
@@ -441,6 +465,7 @@ export class MySqlDevelopmentExecutionRepository {
       await connection.rollback()
       throw error
     } finally {
+      await this.clearCompletionGuard(connection)
       connection.release()
     }
   }
@@ -545,6 +570,9 @@ export class MySqlDevelopmentExecutionRepository {
     const connection = await this.pool.getConnection()
     try {
       await connection.beginTransaction()
+      // Suprime a rede de segurança do trigger (camada A): esta transação é o
+      // caminho canônico e já grava fatos + outbox de conclusão por conta própria.
+      await connection.query('SET @motor_completing := 1')
       const [updated] = await connection.query<ResultSetHeader>(
         `UPDATE subtarefas SET status='verified',resultado=?,workspace_status='approved',finalizada_em=NOW(),updated_at=NOW()
          WHERE id=? AND status='running' AND completion_kind IN ('analysis','no_code_change','external_operation')`,
@@ -584,7 +612,10 @@ export class MySqlDevelopmentExecutionRepository {
     } catch (error) {
       await connection.rollback()
       throw error
-    } finally { connection.release() }
+    } finally {
+      await this.clearCompletionGuard(connection)
+      connection.release()
+    }
   }
 
   private parseStringArray(value: string | null): string[] {
@@ -670,6 +701,78 @@ export class MySqlDevelopmentExecutionRepository {
   }
 
   /**
+   * Camada B do invariante de conclusão: se todas as subtarefas já estão
+   * finais (verified/superseded) mas a tarefa não tem terminal_status,
+   * reconcilia a conclusão na mesma transação — fatos + outbox — e remove
+   * o zumbi da fila de capacidade. Cobre tarefas cuja última subtarefa foi
+   * finalizada fora do caminho do motor (SQL direto, bug histórico —
+   * incidente da tarefa 820 em 2026-09-25).
+   */
+  private async completeIfAllSubtasksFinal(
+    connection: PoolConnection,
+    task: TaskRow,
+    source: QueueMessage,
+  ): Promise<TaskCompletedByReconciliation | null> {
+    const [countRows] = await connection.query<Array<RowDataPacket & { total: number | string; finais: number | string | null }>>(
+      `SELECT COUNT(*) AS total,
+              SUM(status IN ('verified', 'superseded')) AS finais
+         FROM subtarefas
+        WHERE tarefa_id = ?
+        FOR UPDATE`,
+      [task.id],
+    )
+    const total = Number(countRows[0]?.total ?? 0)
+    const finais = Number(countRows[0]?.finais ?? 0)
+    if (total === 0 || finais !== total) return null
+
+    const [factRows] = await connection.query<Array<RowDataPacket & { terminal_status: string | null }>>(
+      'SELECT terminal_status FROM task_runtime_facts WHERE tarefa_id = ? LIMIT 1 FOR UPDATE',
+      [task.id],
+    )
+    if (factRows.length > 0 && factRows[0]?.terminal_status != null) return null
+
+    await connection.query(
+      `INSERT INTO task_runtime_facts (tarefa_id, terminal_status, terminal_at, integration_confirmed_at, created_at, updated_at)
+       VALUES (?, 'completed', NOW(), NOW(), NOW(), NOW())
+       ON DUPLICATE KEY UPDATE terminal_status = 'completed', terminal_at = COALESCE(terminal_at, NOW()),
+         integration_confirmed_at = COALESCE(integration_confirmed_at, NOW()), updated_at = NOW()`,
+      [task.id],
+    )
+
+    const taskId = String(task.external_id ?? task.id)
+    const taskCompleted = createQueueMessage({
+      type: 'TASK_EXECUTION_COMPLETED', taskId,
+      executionId: `exec-reconciled-completion-${taskId}-${Date.now()}`,
+      correlationId: source.correlationId ?? source.messageId, causationId: source.messageId,
+      payload: { reason: 'reconciled_completion', recovered: true },
+    })
+    await this.insertOutbox(connection, taskCompleted)
+
+    if (String(task.tipo ?? '') === 'desenvolvimento') {
+      const deployRequest = createQueueMessage({
+        type: 'DEPLOY_REQUESTED', taskId,
+        executionId: `deploy-reconciled-${taskId}-${Date.now()}`,
+        correlationId: source.correlationId ?? source.messageId, causationId: taskCompleted.messageId,
+        payload: { reason: 'reconciled_completion', recovered: true },
+      })
+      await this.insertOutbox(connection, deployRequest)
+    }
+
+    await connection.query('DELETE FROM motor_execution_wait_queue WHERE tarefa_id = ?', [task.id])
+    await this.wakeCapacityWaiters(connection, taskCompleted)
+    return { kind: 'task_completed', message: taskCompleted }
+  }
+
+  /** Libera a supressão do trigger (camada A); variável de sessão é por conexão. */
+  private async clearCompletionGuard(connection: PoolConnection): Promise<void> {
+    try {
+      await connection.query('SET @motor_completing := NULL')
+    } catch {
+      // Liberar a conexão não pode falhar por causa da guarda.
+    }
+  }
+
+  /**
    * Publica sinais após uma vaga ser liberada. Cada consumidor ainda disputa
    * o claim atômico, por isso acordar mais de uma tarefa não ultrapassa limites.
    */
@@ -683,8 +786,24 @@ export class MySqlDevelopmentExecutionRepository {
           AND NOT EXISTS (
             SELECT 1 FROM bloqueios b WHERE b.tarefa_id = t.id AND b.resolved_at IS NULL
           )
-          AND EXISTS (
-            SELECT 1 FROM subtarefas s WHERE s.tarefa_id = t.id AND s.status = 'pending'
+          AND (
+            EXISTS (
+              SELECT 1 FROM subtarefas s WHERE s.tarefa_id = t.id AND s.status = 'pending'
+            )
+            OR (
+              -- Zumbis da camada B: sem subtarefas pendentes, mas sem conclusão
+              -- gravada. Acordá-los permite que reserveNextSubtask reconcilie
+              -- a conclusão em vez de deixá-los parados na fila para sempre.
+              EXISTS (SELECT 1 FROM subtarefas s2 WHERE s2.tarefa_id = t.id)
+              AND NOT EXISTS (
+                SELECT 1 FROM subtarefas s3
+                 WHERE s3.tarefa_id = t.id AND s3.status NOT IN ('verified', 'superseded')
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM task_runtime_facts f
+                 WHERE f.tarefa_id = t.id AND f.terminal_status IS NOT NULL
+              )
+            )
           )
         ORDER BY q.requested_at ASC, q.id ASC
         LIMIT 25 FOR UPDATE`,

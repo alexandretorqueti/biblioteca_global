@@ -43,7 +43,8 @@ import { DeployConsumer } from './deploy/DeployConsumer.js'
 import { DeployRepository } from './deploy/DeployRepository.js'
 import { RemoteBlueGreenDeployer } from './deploy/RemoteBlueGreenDeployer.js'
 import { BaselinePreflightRecovery, TestGateConsumer, TestGateJobReconciler, TestGateOrchestrator, TestGateService, TestRecoveryConsumer, WorkspaceEnvironmentPreparer } from './testing/index.js'
-import { ConsoleHumanNotifier, MonitorPromptResolver, MonitorResolutionConsumer, TaskUnblockedConsumer, createTaskBlockedMessage, loadActiveBlocker } from './monitor/index.js'
+import { ConsoleHumanNotifier, ExternalResolutionError, ExternalResolutionHandler, MonitorPromptResolver, MonitorResolutionConsumer, TaskUnblockedConsumer, createTaskBlockedMessage, loadActiveBlocker } from './monitor/index.js'
+import { ensureCompletionTrigger } from './db/ensureTriggers.js'
 
 // Config
 const PORT = parseInt(process.env.MOTOR_PORT || '3010')
@@ -87,6 +88,16 @@ async function start() {
   const pool = await mysql.createPool(DB_CONFIG)
   const db = drizzle(pool, { schema, mode: 'default' })
   const statusResolver = new DerivedTaskStatusResolver(pool)
+  const externalResolutionHandler = new ExternalResolutionHandler(pool)
+
+  // Camada A do invariante de conclusão: trigger de rede de segurança para
+  // escritas externas em subtarefas. Falha não derruba o boot (camadas B/C
+  // seguem ativas), mas fica logada em destaque.
+  try {
+    await ensureCompletionTrigger(pool)
+  } catch (error) {
+    console.error('[Motor v3] FALHA ao instalar trigger de conclusão (camada A):', error instanceof Error ? error.message : String(error))
+  }
   console.log('[Motor v3] MySQL conectado')
 
   // 2. Inicializa MessageBus + EventLogger
@@ -697,6 +708,46 @@ async function start() {
         const message = await dispatchCommand('DEPLOY_REQUESTED', taskId, executionId, {})
         res.writeHead(202, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ ok: true, accepted: true, taskId, executionId, messageId: message.messageId }))
+        return
+      }
+
+      // POST /api/motor/task/:id/external-resolution — camada C do invariante
+      // de conclusão (incidente da tarefa 820): resolução externa governada de
+      // bloqueios, com verificação opcional de subtarefa e reconciliação da
+      // conclusão na mesma transação. Substitui SQL manual nas tabelas do motor.
+      if (req.method === 'POST' && taskId && taskAction === 'external-resolution') {
+        let body = ''
+        req.on('data', chunk => body += chunk)
+        await new Promise(resolve => req.on('end', resolve))
+        let payload: any = {}
+        try {
+          payload = body ? JSON.parse(body) : {}
+        } catch {
+          res.writeHead(400, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: false, error: 'JSON inválido' }))
+          return
+        }
+        try {
+          const result = await externalResolutionHandler.handle({
+            taskId,
+            motivo: payload.motivo,
+            resolvedBy: payload.resolvedBy,
+            blockIds: Array.isArray(payload.blockIds) ? payload.blockIds : undefined,
+            subtaskId: payload.subtaskId != null ? Number(payload.subtaskId) : undefined,
+            requestDeploy: payload.requestDeploy === true,
+          })
+          console.log(`[Motor v3] External resolution task=${taskId}:`, JSON.stringify(result).slice(0, 300))
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify(result))
+        } catch (error) {
+          if (error instanceof ExternalResolutionError) {
+            const statusCode = error.code === 'not_found' ? 404 : error.code === 'subtask_not_found' ? 404 : 400
+            res.writeHead(statusCode, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ ok: false, code: error.code, error: error.message }))
+            return
+          }
+          throw error
+        }
         return
       }
 
