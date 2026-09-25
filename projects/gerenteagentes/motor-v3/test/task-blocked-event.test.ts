@@ -133,6 +133,7 @@ describe('DeployRepository.completeBatch emite TASK_BLOCKED por tarefa quando o 
       [{ affectedRows: 1 }, []], // UPDATE deploy_requests
       [{ affectedRows: 1 }, []], // outbox DEPLOY_BATCH_SUCCEEDED
       [{ affectedRows: 1 }, []], // outbox TASK_DEPLOYED
+      [[], []], // SELECT tarefas dependentes elegíveis
       [[], []], // insertPendingDispatches SELECT
     ])
     const repository = new DeployRepository(pool, '/tmp/worktrees')

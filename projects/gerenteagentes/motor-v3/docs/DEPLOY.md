@@ -85,6 +85,14 @@ curl http://localhost:3010/api/motor/catalog/actions
 curl http://localhost:3010/api/motor/catalog/primitives
 ```
 
+### Retomada de tarefas dependentes
+
+Quando um lote de deploy termina com sucesso, o Motor v3 consulta, na mesma
+transação, as tarefas do mesmo projeto que dependem das tarefas implantadas.
+Ele grava `TASK_RESUME_REQUESTED` no `motor_outbox` somente para dependentes sem
+pausa do usuário, sem estado terminal, sem análise em andamento e sem
+subtarefas. A consulta também evita duplicar a retomada para o mesmo lote.
+
 ## Parar Motor v3
 
 ```bash

@@ -356,60 +356,10 @@ export class DeployRepository {
           await this.insertOutbox(connection, blocked)
         }
       }
-      if (success) {
-        const taskIds = requests.map(row => Number(row.task_id))
-        const dependentTasks = await this.findDependentTasks(connection, batchId, taskIds)
-        for (const dependent of dependentTasks) {
-          const taskId = String(dependent.external_id ?? dependent.id)
-          const resumeMessage = createQueueMessage({
-            type: 'TASK_RESUME_REQUESTED',
-            taskId,
-            executionId: `deploy-resume-${batchId}-${taskId}-${Date.now()}`,
-            correlationId: source.correlationId ?? source.messageId,
-            causationId: source.messageId,
-            payload: { resumedBy: 'deploy_completion', batchId, dependencyTaskIds: taskIds.map(String) },
-          })
-          await this.insertOutbox(connection, resumeMessage)
-        }
-      }
       await this.insertPendingDispatches(connection)
       await connection.commit()
       return requests.map(row => String(row.external_id ?? row.task_id))
     } catch (error) { await connection.rollback(); throw error } finally { connection.release() }
-  }
-
-  /**
-   * Busca tarefas dependentes elegíveis para retomada automática após deploy bem-sucedido.
-   * Critérios: depends_on_task_id aponta para uma das tarefas do lote, paused_at IS NULL,
-   * terminal_status IS NULL, analysis_started_at IS NULL, subtask_count = 0.
-   * Idempotente: exclui tarefas que já possuem TASK_RESUME_REQUESTED no outbox para este batch.
-   */
-  private async findDependentTasks(
-    connection: PoolConnection,
-    batchId: string,
-    deployedTaskIds: number[],
-  ): Promise<Array<{ id: number; external_id: string | null }>> {
-    if (deployedTaskIds.length === 0) return []
-    const placeholders = deployedTaskIds.map(() => '?').join(',')
-    const [rows] = await connection.query<Array<RowDataPacket & { id: number; external_id: string | null }>>(
-      `SELECT t.id, t.external_id
-         FROM tarefas t
-         INNER JOIN tarefas dependency ON dependency.id = t.depends_on_task_id
-         LEFT JOIN task_runtime_facts f ON f.tarefa_id = t.id
-        WHERE t.depends_on_task_id IN (${placeholders})
-          AND dependency.projeto_id = t.projeto_id
-          AND t.paused_at IS NULL
-          AND (f.terminal_status IS NULL)
-          AND (f.analysis_started_at IS NULL)
-          AND (SELECT COUNT(*) FROM subtarefas s WHERE s.tarefa_id = t.id) = 0
-          AND NOT EXISTS (
-            SELECT 1 FROM motor_outbox o
-             WHERE o.task_id = COALESCE(t.external_id, CAST(t.id AS CHAR))
-               AND o.type = 'TASK_RESUME_REQUESTED'
-               AND JSON_UNQUOTE(JSON_EXTRACT(o.payload_json, '$.batchId')) = ?
-          )
-      `, [...deployedTaskIds, batchId])
-    return rows
   }
 
   private async assertStillEligible(connection: PoolConnection, context: DeployTaskContext): Promise<void> {
