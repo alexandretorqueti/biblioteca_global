@@ -25,6 +25,8 @@ export interface TaskBlockedPayload {
   databaseTaskId?: number | null
   /** id numérico da linha em `bloqueios`, quando conhecido. */
   blockId?: number | null
+  /** Presente quando o evento é reemissão de um resume de tarefa bloqueada (etapa 6). */
+  resumeReason?: string
 }
 
 export interface TaskBlockedMessageInput {

@@ -5,6 +5,7 @@ import type { PrimitiveContext } from '../primitives/types.js'
 import type { WorkerLauncher } from '../worker-launcher/WorkerLauncher.js'
 import type { GitWorktreePreparer } from '../execution/GitWorktreePreparer.js'
 import type { TaskEventSink } from '../coordinator/TaskEventRecorder.js'
+import { loadActiveBlocker, type ActiveBlockerRow } from './ActiveBlockerLookup.js'
 import { ConsoleHumanNotifier, type MonitorHumanNotifier } from './HumanNotifier.js'
 import { MonitorPromptResolver } from './MonitorPromptResolver.js'
 import { parseMonitorVerdict, type MonitorVerdict } from './MonitorVerdictParser.js'
@@ -13,15 +14,6 @@ import {
   createTaskUnblockedMessage,
   type TaskBlockedPayload,
 } from './TaskBlockedEvent.js'
-
-interface ActiveBlockerRow extends RowDataPacket {
-  id: number
-  tarefa_id: number
-  subtarefa_id: number | null
-  block_reason: string
-  block_command: string | null
-  block_excerpt: string | null
-}
 
 interface TaskContextRow extends RowDataPacket {
   database_task_id: number
@@ -34,6 +26,7 @@ interface TaskContextRow extends RowDataPacket {
   build_command: string | null
   unit_test_command: string | null
   agent_id: string
+  paused_at: Date | null
 }
 
 /**
@@ -93,6 +86,12 @@ export class MonitorResolutionConsumer {
       const context = await this.loadContext(taskId)
       if (!context) {
         await this.safeRecord(taskId, 'monitor_resolution_skipped', { blockId: blocker.id, reason: 'tarefa_nao_encontrada' })
+        return
+      }
+      if (context.paused_at) {
+        // Pausa é decisão do usuário: o Monitor não mexe na tarefa. O resume
+        // (TASK_RESUME_REQUESTED) reemite TASK_BLOCKED e o Monitor é chamado.
+        await this.safeRecord(taskId, 'monitor_resolution_skipped', { blockId: blocker.id, reason: 'tarefa_pausada' })
         return
       }
       const models = await this.monitorModels(context.project_slug)
@@ -280,29 +279,7 @@ export class MonitorResolutionConsumer {
 
   /** Localiza o bloqueio ativo (resolved_at IS NULL) referente ao evento. */
   private async findActiveBlocker(taskId: string, payload: Partial<TaskBlockedPayload>): Promise<ActiveBlockerRow | null> {
-    const where = taskWhere(taskId)
-    const taskParams = taskParamsFor(taskId)
-    if (payload.blockId != null) {
-      const [rows] = await this.pool.query<ActiveBlockerRow[]>(
-        `SELECT b.id, b.tarefa_id, b.subtarefa_id, b.block_reason, b.block_command, b.block_excerpt
-           FROM bloqueios b INNER JOIN tarefas t ON t.id = b.tarefa_id
-          WHERE b.id = ? AND b.resolved_at IS NULL AND ${where} LIMIT 1`,
-        [payload.blockId, ...taskParams],
-      )
-      if (rows[0]) return rows[0]
-      // blockId do evento já resolvido: segue para busca por motivo (o evento
-      // pode ter sido emitido para um bloqueio antigo já tratado).
-    }
-    const reasonFilter = payload.blockReason ? 'AND b.block_reason = ?' : ''
-    const params = payload.blockReason ? [...taskParams, payload.blockReason] : [...taskParams]
-    const [rows] = await this.pool.query<ActiveBlockerRow[]>(
-      `SELECT b.id, b.tarefa_id, b.subtarefa_id, b.block_reason, b.block_command, b.block_excerpt
-         FROM bloqueios b INNER JOIN tarefas t ON t.id = b.tarefa_id
-        WHERE ${where} AND b.resolved_at IS NULL ${reasonFilter}
-        ORDER BY b.id DESC LIMIT 1`,
-      params,
-    )
-    return rows[0] ?? null
+    return loadActiveBlocker(this.pool, taskId, { blockId: payload.blockId, blockReason: payload.blockReason })
   }
 
   private async loadContext(taskId: string): Promise<TaskContextRow | null> {
@@ -310,7 +287,7 @@ export class MonitorResolutionConsumer {
       `SELECT t.id AS database_task_id, COALESCE(NULLIF(t.external_id,''), CAST(t.id AS CHAR)) AS task_id,
               t.titulo, t.projeto_id, pc.slug AS project_slug, pmc.repo_path, pmc.branch_trabalho,
               pmc.build_command, pmc.unit_test_command,
-              COALESCE(NULLIF(a.openclaw_agent_id,''), pc.slug) AS agent_id
+              COALESCE(NULLIF(a.openclaw_agent_id,''), pc.slug) AS agent_id, t.paused_at
          FROM tarefas t
          JOIN projetos_captados pc ON pc.id = t.projeto_id
          JOIN projeto_motor_config pmc ON pmc.projeto_id = t.projeto_id

@@ -14,7 +14,7 @@ const CONTEXT_ROW = {
   database_task_id: 886, task_id: 'task-p1-886', titulo: 'Conexão MySQL por projeto',
   projeto_id: 1, project_slug: 'biblioteca-global', repo_path: '/repo/biblioteca-global',
   branch_trabalho: 'base-desenvolvimento', build_command: 'npm run build',
-  unit_test_command: 'npm test', agent_id: 'bibliotecaglobal',
+  unit_test_command: 'npm test', agent_id: 'bibliotecaglobal', paused_at: null,
 }
 
 const VEREDITO_RESOLVIDO = [
@@ -207,6 +207,21 @@ describe('MonitorResolutionConsumer', () => {
     expect(env.executeTask).not.toHaveBeenCalled()
     expect(env.events[0].evento).toBe('monitor_resolution_skipped')
     expect(env.events[0].payload).toMatchObject({ reason: 'tarefa_nao_encontrada' })
+  })
+
+  it('tarefa pausada: Monitor não mexe (skip sem chat, sem worker, sem notificação)', async () => {
+    const env = fakeEnvironment({ context: { ...CONTEXT_ROW, paused_at: new Date('2026-09-25T00:00:00Z') } })
+
+    await env.consumer.handle(blockedMessage())
+
+    expect(env.executeTask).not.toHaveBeenCalled()
+    expect(env.prepareIntegration).not.toHaveBeenCalled()
+    expect(env.events).toHaveLength(1)
+    expect(env.events[0].evento).toBe('monitor_resolution_skipped')
+    expect(env.events[0].payload).toMatchObject({ reason: 'tarefa_pausada', blockId: 45 })
+    expect(env.notifier.notify).not.toHaveBeenCalled()
+    // Nenhuma mensagem de "investigando" no chat (o Monitor nem começou)
+    expect(env.chats()).toHaveLength(0)
   })
 
   it('não executa duas vezes o mesmo blockId concorrentemente (guarda in-flight)', async () => {

@@ -43,7 +43,7 @@ import { DeployConsumer } from './deploy/DeployConsumer.js'
 import { DeployRepository } from './deploy/DeployRepository.js'
 import { RemoteBlueGreenDeployer } from './deploy/RemoteBlueGreenDeployer.js'
 import { BaselinePreflightRecovery, TestGateConsumer, TestGateOrchestrator, TestGateService, TestRecoveryConsumer, WorkspaceEnvironmentPreparer } from './testing/index.js'
-import { ConsoleHumanNotifier, MonitorPromptResolver, MonitorResolutionConsumer, TaskUnblockedConsumer } from './monitor/index.js'
+import { ConsoleHumanNotifier, MonitorPromptResolver, MonitorResolutionConsumer, TaskUnblockedConsumer, createTaskBlockedMessage, loadActiveBlocker } from './monitor/index.js'
 
 // Config
 const PORT = parseInt(process.env.MOTOR_PORT || '3010')
@@ -289,6 +289,27 @@ async function start() {
           correlationId: source.correlationId ?? source.messageId,
           causationId: source.messageId,
           payload,
+        }))
+      },
+      // Etapa 6: resume de tarefa bloqueada reemite TASK_BLOCKED → Monitor-Resolvedor.
+      publishTaskBlocked: async (source, reason) => {
+        if (!outboxPublisher) throw new Error('Outbox indisponível para TASK_BLOCKED')
+        const blocker = await loadActiveBlocker(pool, source.taskId)
+        if (!blocker) return
+        await outboxPublisher.enqueue(createTaskBlockedMessage({
+          taskId: source.taskId,
+          executionId: `${source.executionId}-resume-block-${blocker.id}`,
+          correlationId: source.correlationId ?? source.messageId,
+          causationId: source.messageId,
+          payload: {
+            blockReason: blocker.block_reason,
+            blockCommand: blocker.block_command,
+            blockExcerpt: blocker.block_excerpt != null ? String(blocker.block_excerpt) : null,
+            subtaskId: blocker.subtarefa_id != null ? Number(blocker.subtarefa_id) : null,
+            blockId: Number(blocker.id),
+            databaseTaskId: Number(blocker.tarefa_id),
+            resumeReason: reason,
+          },
         }))
       },
     })

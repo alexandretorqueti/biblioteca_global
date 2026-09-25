@@ -55,6 +55,13 @@ export interface TaskCoordinatorConfig {
   commandPolicies?: CommandPolicyRepository
   operationLogger?: OperationLogger
   publishTaskReady?: (source: QueueMessage, payload: Record<string, unknown>) => Promise<void>
+  /**
+   * Etapa 6 do Monitor-Resolvedor: quando um resume encontra a tarefa
+   * bloqueada, reemite `TASK_BLOCKED` para o Monitor trabalhar (despausar
+   * → estação Atenção → Monitor acionado). Segue o mesmo contrato de
+   * durabilidade do publishTaskReady: falhas propagam para o QueueConsumer.
+   */
+  publishTaskBlocked?: (source: QueueMessage, reason: string) => Promise<void>
   /** Trilha de auditoria em `tarefa_eventos` (item 6, incidente 862). */
   taskEvents?: TaskEventSink
   /** Bloqueio persistente na falha definitiva de análise (item 2, incidente 862). */
@@ -82,6 +89,7 @@ export class TaskCoordinator {
   private readonly commandPolicies?: CommandPolicyRepository
   private readonly operationLogger?: OperationLogger
   private readonly publishTaskReady?: (source: QueueMessage, payload: Record<string, unknown>) => Promise<void>
+  private readonly publishTaskBlocked?: (source: QueueMessage, reason: string) => Promise<void>
   private readonly taskEvents?: TaskEventSink
   private readonly analysisFailure?: AnalysisFailureSink
   private readonly maxAnalysisAttempts: number
@@ -98,6 +106,7 @@ export class TaskCoordinator {
     this.commandPolicies = config.commandPolicies
     this.operationLogger = config.operationLogger
     this.publishTaskReady = config.publishTaskReady
+    this.publishTaskBlocked = config.publishTaskBlocked
     this.taskEvents = config.taskEvents
     this.analysisFailure = config.analysisFailure
     this.maxAnalysisAttempts = config.maxAnalysisAttempts ?? 3
@@ -136,6 +145,7 @@ export class TaskCoordinator {
         if (decision.reasonCode === 'task_has_plan') {
           await this.emitTaskReady(message, { reason: decision.reasonCode, subtaskCount: task.subtaskCount })
         } else {
+          if (decision.reasonCode === 'task_blocked') await this.publishTaskBlocked?.(message, decision.reasonCode)
           await this.emit('TASK_IGNORED', message, { reason: decision.reasonCode })
         }
         return
@@ -161,6 +171,9 @@ export class TaskCoordinator {
     const ignoredReason = this.getIgnoredReason(task)
     if (ignoredReason) {
       await this.log(operationId, sequence++, 'rejected', 'rejected', message, { reasonCode: ignoredReason })
+      // Despausar tarefa bloqueada cai aqui (status derivado 'blocked'):
+      // reemite TASK_BLOCKED para o Monitor-Resolvedor trabalhar.
+      if (ignoredReason === 'blocked') await this.publishTaskBlocked?.(message, ignoredReason)
       await this.emit('TASK_IGNORED', message, { reason: ignoredReason })
       return
     }
