@@ -404,7 +404,7 @@ export class DeployRepository {
           AND (SELECT COUNT(*) FROM subtarefas s WHERE s.tarefa_id = t.id) = 0
           AND NOT EXISTS (
             SELECT 1 FROM motor_outbox o
-             WHERE o.task_id = COALESCE(t.external_id, CAST(t.id AS CHAR))
+             WHERE o.task_id COLLATE utf8mb4_unicode_ci = COALESCE(t.external_id, CAST(t.id AS CHAR))
                AND o.type = 'TASK_RESUME_REQUESTED'
                AND JSON_UNQUOTE(JSON_EXTRACT(o.payload_json, '$.batchId')) = ?
           )
