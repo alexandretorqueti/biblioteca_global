@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS `motor_commands` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `motor_commands_code_unique` (`code`),
   UNIQUE KEY `motor_commands_message_type_unique` (`message_type`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 --> statement-breakpoint
 
 CREATE TABLE IF NOT EXISTS `motor_command_policies` (
@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS `motor_command_policies` (
   KEY `motor_command_policies_lookup_idx` (`command_id`,`active`,`priority`),
   CONSTRAINT `motor_command_policies_command_fk` FOREIGN KEY (`command_id`) REFERENCES `motor_commands` (`id`) ON DELETE CASCADE,
   CONSTRAINT `motor_command_policies_action_fk` FOREIGN KEY (`action_id`) REFERENCES `motor_actions` (`id`) ON DELETE RESTRICT
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 --> statement-breakpoint
 
 CREATE TABLE IF NOT EXISTS `motor_operation_log` (
@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS `motor_operation_log` (
   KEY `motor_operation_log_message_idx` (`message_id`),
   KEY `motor_operation_log_task_time_idx` (`tarefa_id`,`created_at`),
   KEY `motor_operation_log_correlation_idx` (`correlation_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 --> statement-breakpoint
 
 INSERT INTO `motor_primitives` (`code`, `name`, `domain`, `description`)

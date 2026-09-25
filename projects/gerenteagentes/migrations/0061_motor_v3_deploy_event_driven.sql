@@ -23,7 +23,7 @@ CREATE TABLE deploy_batches (
   UNIQUE KEY deploy_batches_batch_unique (batch_id),
   KEY deploy_batches_repository_status_idx (repo_path(255), status),
   KEY deploy_batches_status_started_idx (status, started_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 --> statement-breakpoint
 
 CREATE INDEX deploy_requests_repository_commit_status_idx ON deploy_requests (repo_path(255), base_branch, requested_commit, status);

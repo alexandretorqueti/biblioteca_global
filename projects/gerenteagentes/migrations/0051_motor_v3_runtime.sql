@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS `motor_outbox` (
   UNIQUE KEY `motor_outbox_message_id_unique` (`message_id`),
   KEY `motor_outbox_pending_idx` (`status`, `id`),
   KEY `motor_outbox_task_idx` (`task_id`, `created_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 --> statement-breakpoint
 
 CREATE TABLE IF NOT EXISTS `motor_message_processing_state` (
