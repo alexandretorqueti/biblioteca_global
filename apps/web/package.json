@@ -20,7 +20,9 @@
     "@emotion/styled": "^11.14.0",
     "@mui/icons-material": "^7.2.0",
     "@mui/material": "^7.2.0",
+    "@mui/x-tree-view": "^7.2.0",
     "react": "^19.2.8",
+    "react-diff-viewer-continued": "^4.4.0",
     "react-dom": "^19.2.8",
     "react-router-dom": "^6.30.0"
   },
