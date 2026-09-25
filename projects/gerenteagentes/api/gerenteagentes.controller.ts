@@ -21,6 +21,7 @@ import type { ProjetoResumo, UsuarioAutenticado, ModelSelectionTipo } from '@bib
 import { ModelSelectionTipoSchema } from '@biblioteca-global/shared';
 import { GerenteAgentesService } from './gerenteagentes.service';
 import { TaskStatusPollerService } from './task-status-poller.service';
+import { GitInspectorService } from './git-inspector.service';
 
 @Controller('gerenteagentes')
 @UseGuards(JwtAuthGuard, ProjectScopeGuard, RolesGuard)
@@ -28,6 +29,7 @@ export class GerenteAgentesController {
   constructor(
     @Inject(GerenteAgentesService) private readonly service: GerenteAgentesService,
     private readonly poller: TaskStatusPollerService,
+    private readonly gitInspector: GitInspectorService,
   ) {}
 
   // ============================================================================
@@ -557,5 +559,79 @@ export class GerenteAgentesController {
   @Roles('admin', 'gerente')
   publicarContrato(@Param('id', ParseIntPipe) id: number, @Param('versionId', ParseIntPipe) versionId: number) {
     return this.service.publicarVersaoContrato(id, versionId);
+  }
+
+  // ============================================================================
+  // GIT INSPECTION (ferramenta de resolução de conflitos)
+  // ============================================================================
+
+  /**
+   * Lista commits entre base-desenvolvimento e a branch de integração da tarefa.
+   * Retorna hash, autor, data e mensagem de cada commit.
+   */
+  @Get('tarefas/:id/git/commits')
+  @Roles('admin', 'gerente', 'operador')
+  async listarCommitsTarefa(
+    @CurrentProject() projeto: ProjetoResumo,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    return this.service.listarCommitsTarefa(projeto, id);
+  }
+
+  /**
+   * Árvore de arquivos em um ref (branch/commit) da tarefa.
+   * Query params: ref (opcional, default = branch de integração)
+   */
+  @Get('tarefas/:id/git/tree')
+  @Roles('admin', 'gerente', 'operador')
+  async listarArvoreTarefa(
+    @CurrentProject() projeto: ProjetoResumo,
+    @Param('id', ParseIntPipe) id: number,
+    @Query('ref') ref?: string,
+  ) {
+    return this.service.listarArvoreTarefa(projeto, id, ref);
+  }
+
+  /**
+   * Conteúdo de um arquivo em um ref específico da tarefa.
+   * Query params: ref (obrigatório), path (obrigatório)
+   */
+  @Get('tarefas/:id/git/file')
+  @Roles('admin', 'gerente', 'operador')
+  async conteudoArquivoTarefa(
+    @CurrentProject() projeto: ProjetoResumo,
+    @Param('id', ParseIntPipe) id: number,
+    @Query('ref') ref: string,
+    @Query('path') path: string,
+  ) {
+    return this.service.conteudoArquivoTarefa(projeto, id, ref, path);
+  }
+
+  /**
+   * Diff estruturado entre dois refs da tarefa.
+   * Query params: from (obrigatório), to (obrigatório)
+   */
+  @Get('tarefas/:id/git/diff')
+  @Roles('admin', 'gerente', 'operador')
+  async diffTarefa(
+    @CurrentProject() projeto: ProjetoResumo,
+    @Param('id', ParseIntPipe) id: number,
+    @Query('from') from: string,
+    @Query('to') to: string,
+  ) {
+    return this.service.diffTarefa(projeto, id, from, to);
+  }
+
+  /**
+   * Simulação de merge (dry-run) entre a branch de integração e base-desenvolvimento.
+   * Retorna success, lista de conflitos com conteúdo conflitante (ours/theirs/base).
+   */
+  @Post('tarefas/:id/git/merge-simulation')
+  @Roles('admin', 'gerente', 'operador')
+  async simularMergeTarefa(
+    @CurrentProject() projeto: ProjetoResumo,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    return this.service.simularMergeTarefa(projeto, id);
   }
 }

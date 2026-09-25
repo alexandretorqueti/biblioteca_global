@@ -42,6 +42,7 @@ import {
   tarefaEventos,
   tarefaChatEntregas,
   motorOutbox,
+  projetoMotorConfig,
 } from '../schema';
 import {
   MOTOR_CONFIGURACOES,
@@ -51,6 +52,7 @@ import {
 import type { PromptPart } from '../motor-v2/dist/prompts/PromptComposition.js' with { "resolution-mode": "import" };
 import { ProvisionService } from '../../../apps/api/src/modules/provision/provision.service';
 import { RealtimeService } from '../../../apps/api/src/modules/realtime/realtime.service';
+import { GitInspectorService } from './git-inspector.service';
 
 const DEFAULT_SESSION_PAGE_SIZE = 50;
 const MAX_SESSION_PAGE_SIZE = 500;
@@ -147,6 +149,7 @@ export class GerenteAgentesService {
     @Inject(ProvisionService) private readonly provisionService: ProvisionService,
     private readonly configService: ConfigService,
     @Optional() private readonly realtime?: RealtimeService,
+    private readonly gitInspector?: GitInspectorService,
   ) {
     // Motor de execução (rodando no container openclaw:6283, exposto via proxy NPM)
     this.motorUrl = this.configService.get<string>('MOTOR_DEV_URL') || 'http://192.168.1.16';
@@ -2566,5 +2569,165 @@ export class GerenteAgentesService {
       '    a tarefa como concluída. Itens faltantes = tarefa bloqueada.',
     ];
     return linhas.join('\n');
+  }
+
+  // ============================================================================
+  // GIT INSPECTION (ferramenta de resolução de conflitos)
+  // ============================================================================
+
+  /**
+   * Resolve repoPath e branch de integração para uma tarefa.
+   * A branch de integração segue a convenção: motor-v3-work/integration-<externalId>
+   * Se externalId não estiver disponível, usa o ID numérico.
+   */
+  private async resolverContextoGitTarefa(
+    projeto: ProjetoResumo,
+    tarefaId: number,
+  ): Promise<{ repoPath: string; integrationBranch: string; baseBranch: string; externalId: string | null }> {
+    const db = await this.dbDoMotor();
+
+    // Buscar tarefa com externalId e projetoId
+    const [tarefa] = await db
+      .select({
+        projetoId: tarefas.projetoId,
+        externalId: tarefas.externalId,
+      })
+      .from(tarefas)
+      .where(eq(tarefas.id, tarefaId))
+      .limit(1);
+
+    if (!tarefa) throw new NotFoundException('Tarefa não encontrada');
+
+    // Buscar repoPath via projeto_motor_config
+    const [config] = await db
+      .select({ repoPath: projetoMotorConfig.repoPath })
+      .from(projetoMotorConfig)
+      .where(eq(projetoMotorConfig.projetoId, tarefa.projetoId))
+      .limit(1);
+
+    if (!config) {
+      throw new NotFoundException('Configuração do motor não encontrada para o projeto da tarefa');
+    }
+
+    // Branch de integração: convenção motor-v3-work/integration-<externalId>
+    const taskIdentifier = tarefa.externalId || `task-${tarefaId}`;
+    const integrationBranch = `motor-v3-work/integration-${taskIdentifier}`;
+    const baseBranch = 'base-desenvolvimento';
+
+    return {
+      repoPath: config.repoPath,
+      integrationBranch,
+      baseBranch,
+      externalId: tarefa.externalId,
+    };
+  }
+
+  /**
+   * Lista commits entre base-desenvolvimento e a branch de integração da tarefa.
+   */
+  async listarCommitsTarefa(projeto: ProjetoResumo, tarefaId: number) {
+    if (!this.gitInspector) throw new BadRequestException('GitInspectorService não disponível');
+    const ctx = await this.resolverContextoGitTarefa(projeto, tarefaId);
+
+    // Verifica se a branch de integração existe
+    const exists = await this.gitInspector.branchExists(ctx.repoPath, ctx.integrationBranch);
+    if (!exists) {
+      throw new NotFoundException(
+        `Branch de integração '${ctx.integrationBranch}' não encontrada — tarefa ainda sem worktree ou não iniciada`,
+      );
+    }
+
+    const commits = await this.gitInspector.listCommits(ctx.repoPath, ctx.baseBranch, ctx.integrationBranch);
+    return {
+      taskId: tarefaId,
+      integrationBranch: ctx.integrationBranch,
+      baseBranch: ctx.baseBranch,
+      commits,
+    };
+  }
+
+  /**
+   * Árvore de arquivos em um ref da tarefa.
+   * Se ref não informado, usa a branch de integração.
+   */
+  async listarArvoreTarefa(projeto: ProjetoResumo, tarefaId: number, ref?: string) {
+    if (!this.gitInspector) throw new BadRequestException('GitInspectorService não disponível');
+    const ctx = await this.resolverContextoGitTarefa(projeto, tarefaId);
+
+    const targetRef = ref || ctx.integrationBranch;
+    const tree = await this.gitInspector.listTree(ctx.repoPath, targetRef);
+    return {
+      taskId: tarefaId,
+      ref: targetRef,
+      tree,
+    };
+  }
+
+  /**
+   * Conteúdo de um arquivo em um ref específico.
+   */
+  async conteudoArquivoTarefa(
+    projeto: ProjetoResumo,
+    tarefaId: number,
+    ref: string,
+    filePath: string,
+  ) {
+    if (!this.gitInspector) throw new BadRequestException('GitInspectorService não disponível');
+    if (!ref) throw new BadRequestException('Parâmetro ref é obrigatório');
+    if (!filePath) throw new BadRequestException('Parâmetro path é obrigatório');
+
+    const ctx = await this.resolverContextoGitTarefa(projeto, tarefaId);
+    const content = await this.gitInspector.getFileContent(ctx.repoPath, ref, filePath);
+    return {
+      taskId: tarefaId,
+      ref,
+      path: filePath,
+      content,
+    };
+  }
+
+  /**
+   * Diff estruturado entre dois refs.
+   */
+  async diffTarefa(
+    projeto: ProjetoResumo,
+    tarefaId: number,
+    from: string,
+    to: string,
+  ) {
+    if (!this.gitInspector) throw new BadRequestException('GitInspectorService não disponível');
+    if (!from) throw new BadRequestException('Parâmetro from é obrigatório');
+    if (!to) throw new BadRequestException('Parâmetro to é obrigatório');
+
+    const ctx = await this.resolverContextoGitTarefa(projeto, tarefaId);
+    const files = await this.gitInspector.diff(ctx.repoPath, from, to);
+    return {
+      taskId: tarefaId,
+      from,
+      to,
+      files,
+    };
+  }
+
+  /**
+   * Simulação de merge (dry-run) entre branch de integração e base-desenvolvimento.
+   */
+  async simularMergeTarefa(projeto: ProjetoResumo, tarefaId: number) {
+    if (!this.gitInspector) throw new BadRequestException('GitInspectorService não disponível');
+    const ctx = await this.resolverContextoGitTarefa(projeto, tarefaId);
+
+    // Verifica se a branch de integração existe
+    const exists = await this.gitInspector.branchExists(ctx.repoPath, ctx.integrationBranch);
+    if (!exists) {
+      throw new NotFoundException(
+        `Branch de integração '${ctx.integrationBranch}' não encontrada — tarefa ainda sem worktree ou não iniciada`,
+      );
+    }
+
+    const result = await this.gitInspector.simulateMerge(ctx.repoPath, ctx.baseBranch, ctx.integrationBranch);
+    return {
+      taskId: tarefaId,
+      ...result,
+    };
   }
 }
