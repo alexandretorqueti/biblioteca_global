@@ -81,6 +81,31 @@ describe('DevelopmentExecutionConsumer', () => {
     }))
   })
 
+  it('registra a reconciliação de conclusão quando todas as subtarefas já estavam finais', async () => {
+    const repository = {
+      reserveNextSubtask: vi.fn().mockResolvedValue({
+        kind: 'task_completed',
+        message: { ...readyMessage(), messageId: 'completed-1', type: 'TASK_EXECUTION_COMPLETED' },
+      }),
+    }
+    const logger = { append: vi.fn().mockResolvedValue(undefined) }
+    const consumer = new DevelopmentExecutionConsumer(repository as never, logger)
+
+    await consumer.handle(readyMessage())
+
+    expect(logger.append).toHaveBeenCalledTimes(3)
+    expect(logger.append).toHaveBeenCalledWith(expect.objectContaining({
+      phase: 'primitive',
+      outcome: 'succeeded',
+      primitiveCode: 'complete_task_by_reconciliation',
+    }))
+    expect(logger.append).toHaveBeenLastCalledWith(expect.objectContaining({
+      phase: 'completed',
+      outcome: 'succeeded',
+      result: expect.objectContaining({ reason: 'reconciled_completion', nextMessageType: 'TASK_EXECUTION_COMPLETED' }),
+    }))
+  })
+
   it('ignora outras mensagens', async () => {
     const repository = { reserveNextSubtask: vi.fn() }
     const logger = { append: vi.fn() }
