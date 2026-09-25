@@ -7,12 +7,13 @@
  * - Clientes (cadastro completo com endereço e contato)
  * - Contatos do site (mensagens recebidas)
  * - Circulares (comunicados internos)
- * - Configurações: Usuários, Empresa, Departamentos
+ * - Configurações: Usuários, Empresa, Departamentos, Cargos
  *
  * Menus: Início | Administrativo | RH | Configurações Admin
  * Telas: 4 custom (dashboard + 3 hubs de navegação) + CRUDs cadastro
  *
  * A tela Usuários é CRUD local (tabela usuarios no database do projeto).
+ * Schema espelha o banco legado bdportalemp.
  */
 import type { GeradorSistemaConfig } from "@biblioteca-global/shared"
 
@@ -67,26 +68,26 @@ export const config: GeradorSistemaConfig = {
             title: "Clientes Cadastrados",
             description: "Gerenciamento de empresas clientes",
             fields: [
-              { name: "nomeFantasia", label: "Nome Fantasia", type: "text", required: true, maxLength: 200, fullWidth: true },
-              { name: "razaoSocial", label: "Razão Social", type: "text", required: true, maxLength: 300, fullWidth: true, gridVisible: false },
-              { name: "cnpj", label: "CNPJ", type: "text", required: true, maxLength: 18, mask: "cnpj", validator: "cnpj" },
+              { name: "nomeFantasia", label: "Nome Fantasia", type: "text", maxLength: 100, fullWidth: true },
+              { name: "razaoSocial", label: "Razão Social", type: "text", maxLength: 100, fullWidth: true, gridVisible: false },
+              { name: "cnpj", label: "CNPJ", type: "text", maxLength: 20, mask: "cnpj", validator: "cnpj" },
               { name: "inscricaoMunicipal", label: "Inscrição Municipal", type: "text", maxLength: 50, gridVisible: false },
               { name: "inscricaoEstadual", label: "Inscrição Estadual", type: "text", maxLength: 50, gridVisible: false },
-              { name: "logradouro", label: "Logradouro", type: "text", required: true, maxLength: 200, fullWidth: true, gridVisible: false },
-              { name: "numero", label: "Número", type: "text", required: true, maxLength: 20, gridVisible: false },
-              { name: "complemento", label: "Complemento", type: "text", maxLength: 100, gridVisible: false },
-              { name: "bairro", label: "Bairro", type: "text", required: true, maxLength: 100, gridVisible: false },
-              { name: "cidade", label: "Cidade", type: "text", required: true, maxLength: 100, gridVisible: false },
-              { name: "uf", label: "UF", type: "text", required: true, maxLength: 2, gridVisible: false },
-              { name: "cep", label: "CEP", type: "text", required: true, maxLength: 10, gridVisible: false },
-              { name: "telefone", label: "Telefone", type: "text", required: true, maxLength: 30 },
+              { name: "logradouro", label: "Logradouro", type: "text", maxLength: 100, fullWidth: true, gridVisible: false },
+              { name: "numero", label: "Número", type: "text", maxLength: 10, gridVisible: false },
+              { name: "complemento", label: "Complemento", type: "text", maxLength: 50, gridVisible: false },
+              { name: "bairro", label: "Bairro", type: "text", maxLength: 50, gridVisible: false },
+              { name: "cidade", label: "Cidade", type: "text", maxLength: 50, gridVisible: false },
+              { name: "uf", label: "UF", type: "text", maxLength: 2, gridVisible: false },
+              { name: "cep", label: "CEP", type: "text", maxLength: 10, gridVisible: false },
+              { name: "telefone", label: "Telefone", type: "text", maxLength: 20 },
               { name: "ramal", label: "Ramal", type: "text", maxLength: 10, gridVisible: false },
               { name: "instagram", label: "Instagram", type: "text", maxLength: 200 },
-              { name: "email", label: "E-mail", type: "email", required: true, maxLength: 200, fullWidth: true },
+              { name: "email", label: "E-mail", type: "email", maxLength: 100, fullWidth: true },
               { name: "ativo", label: "Cliente Ativo", type: "switch", defaultValue: true, gridVisible: false },
             ],
             overrides: {
-              hiddenColumns: ["createdAt", "updatedAt", "inscricaoMunicipal", "inscricaoEstadual", "ramal", "complemento", "administradorId"],
+              hiddenColumns: ["data", "data_edicao", "inscricaoMunicipal", "inscricaoEstadual", "ramal", "complemento", "usuario", "instagram"],
               columnLabels: {
                 id: "ID",
                 nomeFantasia: "Nome Fantasia",
@@ -105,15 +106,24 @@ export const config: GeradorSistemaConfig = {
                 filterField: "clienteId",
                 title: "Responsáveis do Cliente",
                 fields: [
-                  { name: "nome", label: "Nome", type: "text", required: true, maxLength: 200, fullWidth: true },
+                  { name: "nome", label: "Nome", type: "text", maxLength: 100, fullWidth: true },
                   { name: "cargo", label: "Cargo", type: "text", maxLength: 100 },
-                  { name: "telefone", label: "Telefone", type: "text", maxLength: 30 },
-                  { name: "email", label: "E-mail", type: "email", maxLength: 200, fullWidth: true },
+                  { name: "cpf", label: "CPF", type: "text", maxLength: 14, mask: "cpf", validator: "cpf" },
+                  { name: "telefone", label: "Telefone", type: "text", maxLength: 20 },
+                  { name: "ramal", label: "Ramal", type: "text", maxLength: 10, gridVisible: false },
+                  { name: "email", label: "E-mail", type: "email", maxLength: 100, fullWidth: true },
+                  { name: "logradouro", label: "Logradouro", type: "text", maxLength: 100, fullWidth: true, gridVisible: false },
+                  { name: "numero", label: "Número", type: "text", maxLength: 10, gridVisible: false },
+                  { name: "complemento", label: "Complemento", type: "text", maxLength: 50, gridVisible: false },
+                  { name: "bairro", label: "Bairro", type: "text", maxLength: 50, gridVisible: false },
+                  { name: "cidade", label: "Cidade", type: "text", maxLength: 50, gridVisible: false },
+                  { name: "uf", label: "UF", type: "text", maxLength: 2, gridVisible: false },
+                  { name: "cep", label: "CEP", type: "text", maxLength: 10, gridVisible: false },
                 ],
                 overrides: {
                   newLabel: "Novo Responsável",
-                  hiddenColumns: ["clienteId", "createdAt", "updatedAt"],
-                  columnLabels: { id: "ID", nome: "Nome", cargo: "Cargo" },
+                  hiddenColumns: ["clienteId", "data", "logradouro", "numero", "complemento", "bairro", "cidade", "uf", "cep", "ramal"],
+                  columnLabels: { id: "ID", nome: "Nome", cargo: "Cargo", cpf: "CPF" },
                 },
               },
               {
@@ -124,7 +134,8 @@ export const config: GeradorSistemaConfig = {
                 filterField: "clienteId",
                 title: "Contratos do Cliente",
                 fields: [
-                  { name: "numero", label: "Número", type: "text", required: true, maxLength: 50 },
+                  { name: "numerocontrato", label: "Número", type: "text", maxLength: 50 },
+                  { name: "linkcontrato", label: "Link", type: "text", maxLength: 255, fullWidth: true },
                   { name: "descricao", label: "Descrição", type: "textarea", fullWidth: true, gridVisible: false },
                   { name: "valor", label: "Valor", type: "text", maxLength: 30 },
                   { name: "inicio", label: "Início", type: "text", maxLength: 10 },
@@ -133,8 +144,8 @@ export const config: GeradorSistemaConfig = {
                 ],
                 overrides: {
                   newLabel: "Novo Contrato",
-                  hiddenColumns: ["clienteId", "createdAt", "updatedAt"],
-                  columnLabels: { id: "ID", numero: "Número", valor: "Valor", ativo: "Status" },
+                  hiddenColumns: ["clienteId", "data", "linkcontrato", "descricao"],
+                  columnLabels: { id: "ID", numerocontrato: "Número", valor: "Valor", ativo: "Status" },
                 },
               },
             ],
@@ -147,18 +158,18 @@ export const config: GeradorSistemaConfig = {
           icon: "mail",
           screen: {
             kind: "cadastro",
-            resource: "contatos_site",
+            resource: "api_contatosite_contatos",
             title: "Contatos Recebidos",
             description: "Mensagens recebidas pelo site",
             fields: [
-              { name: "nome", label: "Nome", type: "text", required: true, maxLength: 200 },
-              { name: "email", label: "E-mail", type: "email", required: true, maxLength: 200 },
-              { name: "telefone", label: "Telefone", type: "text", maxLength: 30 },
-              { name: "assunto", label: "Assunto", type: "text", required: true, maxLength: 200 },
-              { name: "mensagem", label: "Mensagem", type: "textarea", required: true, fullWidth: true, gridVisible: false },
+              { name: "nome", label: "Nome", type: "text", maxLength: 100 },
+              { name: "email", label: "E-mail", type: "email", maxLength: 150 },
+              { name: "telefone", label: "Telefone", type: "text", maxLength: 20 },
+              { name: "assunto", label: "Assunto", type: "text", maxLength: 150 },
+              { name: "mensagem", label: "Mensagem", type: "textarea", fullWidth: true, gridVisible: false },
             ],
             overrides: {
-              hiddenColumns: [],
+              hiddenColumns: ["siteId", "ip", "userAgent", "origem"],
               columnLabels: {
                 id: "ID",
                 nome: "Nome",
@@ -186,7 +197,7 @@ export const config: GeradorSistemaConfig = {
               { name: "cpf", label: "CPF", type: "text", required: true, maxLength: 14, mask: "cpf", validator: "cpf" },
               { name: "rg", label: "RG", type: "text", maxLength: 20, gridVisible: false, mask: "rg", validator: "rg" },
               { name: "email", label: "E-mail", type: "email", required: true, maxLength: 200, fullWidth: true },
-              { name: "telefone", label: "Telefone", type: "text", required: true, maxLength: 21, mask: "telefone", defaultValue: "+55" },
+              { name: "telefone", label: "Telefone", type: "text", required: true, maxLength: 30, mask: "telefone", defaultValue: "+55" },
               { name: "dataNascimento", label: "Data de Nascimento", type: "date", required: true, maxDate: "2026-09-23" },
               { name: "cargoId", label: "Cargo", type: "multipleChoice", required: true, multipleChoice: { resource: "cargos", idField: "id", displayField: "nome" } },
               { name: "departamentoId", label: "Departamento", type: "multipleChoice", multipleChoice: { resource: "departamentos", idField: "id", displayField: "nome" }, gridVisible: false },
@@ -200,7 +211,7 @@ export const config: GeradorSistemaConfig = {
               { name: "uf", label: "UF", type: "text", maxLength: 2, gridVisible: false },
               { name: "cep", label: "CEP", type: "text", maxLength: 9, gridVisible: false, mask: "cep", validator: "cep" },
               { name: "contatoEmergenciaNome", label: "Contato de Emergência (Nome)", type: "text", maxLength: 200, fullWidth: true, gridVisible: false },
-              { name: "contatoEmergenciaTelefone", label: "Contato de Emergência (Telefone)", type: "text", maxLength: 21, gridVisible: false, mask: "telefone", defaultValue: "+55" },
+              { name: "contatoEmergenciaTelefone", label: "Contato de Emergência (Telefone)", type: "text", maxLength: 30, gridVisible: false, mask: "telefone", defaultValue: "+55" },
               { name: "ativo", label: "Ativo", type: "switch", defaultValue: true, gridVisible: false },
             ],
             overrides: {
@@ -246,20 +257,23 @@ export const config: GeradorSistemaConfig = {
           icon: "campaign",
           screen: {
             kind: "cadastro",
-            resource: "circulares",
+            resource: "circular",
             title: "Circulares",
             description: "Comunicados internos da empresa",
             fields: [
               { name: "titulo", label: "Título", type: "text", required: true, maxLength: 200, fullWidth: true },
               { name: "imageUrl", label: "URL da Imagem", type: "text", maxLength: 500, fullWidth: true, gridVisible: false },
-              { name: "conteudo", label: "Conteúdo", type: "textarea", required: true, maxLength: 5000, fullWidth: true, gridVisible: false },
+              { name: "conteudo", label: "Conteúdo", type: "textarea", required: true, fullWidth: true, gridVisible: false },
+              { name: "autor", label: "Autor", type: "text", maxLength: 100 },
+              { name: "ativo", label: "Ativo", type: "switch", defaultValue: true, gridVisible: false },
             ],
             overrides: {
-              hiddenColumns: ["updatedAt", "imageUrl", "createdAt"],
+              hiddenColumns: ["imageUrl", "autor"],
               columnLabels: {
                 id: "ID",
                 titulo: "Título",
                 publicadoEm: "Data",
+                ativo: "Status",
               },
               newLabel: "Nova Circular",
             },
@@ -269,7 +283,7 @@ export const config: GeradorSistemaConfig = {
     },
 
     // ========================================================================
-    // MENU: Configurações Admin (hub + usuarios + config empresa + departamentos)
+    // MENU: Configurações Admin (hub + usuarios + config empresa + departamentos + cargos)
     // ========================================================================
     {
       id: "config-admin",
@@ -296,19 +310,18 @@ export const config: GeradorSistemaConfig = {
             title: "Usuários do Sistema",
             description: "Gerenciamento de usuários e permissões",
             fields: [
-              { name: "nome", label: "Nome", type: "text", required: true, maxLength: 200, fullWidth: true },
-              { name: "email", label: "E-mail", type: "email", required: true, maxLength: 200, fullWidth: true },
-              { name: "senhaInicial", label: "Senha inicial", type: "text", required: true, minLength: 8, fullWidth: true },
-              { name: "perfil", label: "Perfil", type: "select", required: true, options: [{ value: "admin", label: "Administrador" }, { value: "gerente", label: "Gerente" }, { value: "operador", label: "Operador" }, { value: "visualizador", label: "Visualizador" }] },
+              { name: "nome", label: "Nome", type: "text", maxLength: 100, fullWidth: true },
+              { name: "email", label: "E-mail", type: "email", required: true, maxLength: 150, fullWidth: true },
+              { name: "papel", label: "Perfil", type: "text", maxLength: 50 },
               { name: "ativo", label: "Ativo", type: "switch", defaultValue: true },
             ],
             overrides: {
-              hiddenColumns: ["createdAt", "updatedAt"],
+              hiddenColumns: ["senha", "primeiro_acesso", "createdAt", "updatedAt"],
               columnLabels: {
                 id: "ID",
                 nome: "Nome",
                 email: "E-mail",
-                perfil: "Perfil",
+                papel: "Perfil",
                 ativo: "Status",
               },
               newLabel: "Novo Usuário",
@@ -326,14 +339,14 @@ export const config: GeradorSistemaConfig = {
             title: "Configurações da Empresa",
             description: "Dados e configurações da empresa",
             fields: [
-              { name: "nome", label: "Nome da Empresa", type: "text", required: true, maxLength: 200, fullWidth: true },
-              { name: "logoUrl", label: "URL da Logo", type: "text", maxLength: 500, fullWidth: true, gridVisible: false },
-              { name: "endereco", label: "Endereço", type: "text", maxLength: 300, fullWidth: true, gridVisible: false },
+              { name: "nome", label: "Nome da Empresa", type: "text", maxLength: 100, fullWidth: true },
+              { name: "logoUrl", label: "URL da Logo", type: "text", maxLength: 255, fullWidth: true, gridVisible: false },
+              { name: "endereco", label: "Endereço", type: "text", maxLength: 255, fullWidth: true, gridVisible: false },
               { name: "cnpj", label: "CNPJ", type: "text", maxLength: 18, mask: "cnpj", validator: "cnpj", gridVisible: false },
-              { name: "telefone", label: "Telefone", type: "text", maxLength: 21, mask: "telefone", validator: "telefone", defaultValue: "+55", gridVisible: false },
+              { name: "telefone", label: "Telefone", type: "text", maxLength: 20, mask: "telefone", validator: "telefone", defaultValue: "+55", gridVisible: false },
             ],
             overrides: {
-              hiddenColumns: ["createdAt", "updatedAt"],
+              hiddenColumns: [],
               columnLabels: { id: "ID", nome: "Empresa" },
               newLabel: "Nova Configuração",
             },
@@ -350,7 +363,7 @@ export const config: GeradorSistemaConfig = {
             title: "Departamentos",
             description: "Departamentos da empresa",
             fields: [
-              { name: "nome", label: "Nome", type: "text", required: true, maxLength: 50, fullWidth: true },
+              { name: "nome", label: "Nome", type: "text", required: true, maxLength: 100, fullWidth: true },
             ],
             overrides: {
               hiddenColumns: ["createdAt", "updatedAt"],

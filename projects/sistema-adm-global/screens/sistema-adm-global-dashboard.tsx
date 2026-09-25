@@ -33,9 +33,11 @@ export const componentId = "sistema-adm-global-dashboard"
 interface Circular {
   id: number
   titulo: string
-  imageUrl?: string | null
+  image_url?: string | null
   conteudo: string
-  publicadoEm: string
+  publicado_em: string | null
+  autor?: string | null
+  ativo?: boolean | null
 }
 
 function formatarData(valor: string, incluirHora = false): string {
@@ -163,7 +165,7 @@ export default function SistemaAdmGlobalDashboard(): ReactNode {
                   fontSize: { xs: "1.25rem", sm: "1.5rem" },
                 }}
               >
-                {saudacao(agora.getHours())}, {usuario?.nome ?? "usuário"}!
+                {saudacao(agora.getHours())}, {usuario?.nome ?? "Usuário"}!
               </Typography>
             </Stack>
             <Typography
@@ -322,11 +324,11 @@ export default function SistemaAdmGlobalDashboard(): ReactNode {
                     },
                   }}
                 >
-                  {circular.imageUrl ? (
+                  {circular.image_url ? (
                     <CardMedia
                       component="img"
                       height="160"
-                      image={circular.imageUrl}
+                      image={circular.image_url}
                       alt=""
                       sx={{
                         objectFit: "cover",
@@ -377,7 +379,7 @@ export default function SistemaAdmGlobalDashboard(): ReactNode {
                       color="text.secondary"
                       sx={{ fontVariantNumeric: "tabular-nums" }}
                     >
-                      {formatarData(circular.publicadoEm)}
+                      {circular.publicado_em ? formatarData(circular.publicado_em) : "—"}
                     </Typography>
                   </CardContent>
                   <CardActions sx={{ px: 2, pb: 2, pt: 0 }}>
@@ -436,10 +438,10 @@ export default function SistemaAdmGlobalDashboard(): ReactNode {
               <CloseRounded />
             </IconButton>
             <DialogContent dividers sx={{ p: { xs: 2, sm: 3 } }}>
-              {circularAberta.imageUrl ? (
+              {circularAberta.image_url ? (
                 <Box
                   component="img"
-                  src={circularAberta.imageUrl}
+                  src={circularAberta.image_url}
                   alt=""
                   sx={{
                     width: "100%",
@@ -473,7 +475,7 @@ export default function SistemaAdmGlobalDashboard(): ReactNode {
                   fontVariantNumeric: "tabular-nums",
                 }}
               >
-                Publicado em: {formatarData(circularAberta.publicadoEm, true)}
+                Publicado em: {circularAberta.publicado_em ? formatarData(circularAberta.publicado_em, true) : "—"}
               </Typography>
             </DialogContent>
             <DialogActions sx={{ px: 3, py: 2 }}>

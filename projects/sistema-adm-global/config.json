@@ -49,16 +49,14 @@
                 "name": "nomeFantasia",
                 "label": "Nome Fantasia",
                 "type": "text",
-                "required": true,
-                "maxLength": 200,
+                "maxLength": 100,
                 "fullWidth": true
               },
               {
                 "name": "razaoSocial",
                 "label": "Razão Social",
                 "type": "text",
-                "required": true,
-                "maxLength": 300,
+                "maxLength": 100,
                 "fullWidth": true,
                 "gridVisible": false
               },
@@ -66,8 +64,7 @@
                 "name": "cnpj",
                 "label": "CNPJ",
                 "type": "text",
-                "required": true,
-                "maxLength": 18,
+                "maxLength": 20,
                 "mask": "cnpj",
                 "validator": "cnpj"
               },
@@ -89,8 +86,7 @@
                 "name": "logradouro",
                 "label": "Logradouro",
                 "type": "text",
-                "required": true,
-                "maxLength": 200,
+                "maxLength": 100,
                 "fullWidth": true,
                 "gridVisible": false
               },
@@ -98,38 +94,34 @@
                 "name": "numero",
                 "label": "Número",
                 "type": "text",
-                "required": true,
-                "maxLength": 20,
+                "maxLength": 10,
                 "gridVisible": false
               },
               {
                 "name": "complemento",
                 "label": "Complemento",
                 "type": "text",
-                "maxLength": 100,
+                "maxLength": 50,
                 "gridVisible": false
               },
               {
                 "name": "bairro",
                 "label": "Bairro",
                 "type": "text",
-                "required": true,
-                "maxLength": 100,
+                "maxLength": 50,
                 "gridVisible": false
               },
               {
                 "name": "cidade",
                 "label": "Cidade",
                 "type": "text",
-                "required": true,
-                "maxLength": 100,
+                "maxLength": 50,
                 "gridVisible": false
               },
               {
                 "name": "uf",
                 "label": "UF",
                 "type": "text",
-                "required": true,
                 "maxLength": 2,
                 "gridVisible": false
               },
@@ -137,7 +129,6 @@
                 "name": "cep",
                 "label": "CEP",
                 "type": "text",
-                "required": true,
                 "maxLength": 10,
                 "gridVisible": false
               },
@@ -145,8 +136,7 @@
                 "name": "telefone",
                 "label": "Telefone",
                 "type": "text",
-                "required": true,
-                "maxLength": 30
+                "maxLength": 20
               },
               {
                 "name": "ramal",
@@ -165,8 +155,7 @@
                 "name": "email",
                 "label": "E-mail",
                 "type": "email",
-                "required": true,
-                "maxLength": 200,
+                "maxLength": 100,
                 "fullWidth": true
               },
               {
@@ -179,13 +168,14 @@
             ],
             "overrides": {
               "hiddenColumns": [
-                "createdAt",
-                "updatedAt",
+                "data",
+                "data_edicao",
                 "inscricaoMunicipal",
                 "inscricaoEstadual",
                 "ramal",
                 "complemento",
-                "administradorId"
+                "usuario",
+                "instagram"
               ],
               "columnLabels": {
                 "id": "ID",
@@ -209,8 +199,7 @@
                     "name": "nome",
                     "label": "Nome",
                     "type": "text",
-                    "required": true,
-                    "maxLength": 200,
+                    "maxLength": 100,
                     "fullWidth": true
                   },
                   {
@@ -220,30 +209,103 @@
                     "maxLength": 100
                   },
                   {
+                    "name": "cpf",
+                    "label": "CPF",
+                    "type": "text",
+                    "maxLength": 14,
+                    "mask": "cpf",
+                    "validator": "cpf"
+                  },
+                  {
                     "name": "telefone",
                     "label": "Telefone",
                     "type": "text",
-                    "maxLength": 30
+                    "maxLength": 20
+                  },
+                  {
+                    "name": "ramal",
+                    "label": "Ramal",
+                    "type": "text",
+                    "maxLength": 10,
+                    "gridVisible": false
                   },
                   {
                     "name": "email",
                     "label": "E-mail",
                     "type": "email",
-                    "maxLength": 200,
+                    "maxLength": 100,
                     "fullWidth": true
+                  },
+                  {
+                    "name": "logradouro",
+                    "label": "Logradouro",
+                    "type": "text",
+                    "maxLength": 100,
+                    "fullWidth": true,
+                    "gridVisible": false
+                  },
+                  {
+                    "name": "numero",
+                    "label": "Número",
+                    "type": "text",
+                    "maxLength": 10,
+                    "gridVisible": false
+                  },
+                  {
+                    "name": "complemento",
+                    "label": "Complemento",
+                    "type": "text",
+                    "maxLength": 50,
+                    "gridVisible": false
+                  },
+                  {
+                    "name": "bairro",
+                    "label": "Bairro",
+                    "type": "text",
+                    "maxLength": 50,
+                    "gridVisible": false
+                  },
+                  {
+                    "name": "cidade",
+                    "label": "Cidade",
+                    "type": "text",
+                    "maxLength": 50,
+                    "gridVisible": false
+                  },
+                  {
+                    "name": "uf",
+                    "label": "UF",
+                    "type": "text",
+                    "maxLength": 2,
+                    "gridVisible": false
+                  },
+                  {
+                    "name": "cep",
+                    "label": "CEP",
+                    "type": "text",
+                    "maxLength": 10,
+                    "gridVisible": false
                   }
                 ],
                 "overrides": {
                   "newLabel": "Novo Responsável",
                   "hiddenColumns": [
                     "clienteId",
-                    "createdAt",
-                    "updatedAt"
+                    "data",
+                    "logradouro",
+                    "numero",
+                    "complemento",
+                    "bairro",
+                    "cidade",
+                    "uf",
+                    "cep",
+                    "ramal"
                   ],
                   "columnLabels": {
                     "id": "ID",
                     "nome": "Nome",
-                    "cargo": "Cargo"
+                    "cargo": "Cargo",
+                    "cpf": "CPF"
                   }
                 }
               },
@@ -256,11 +318,17 @@
                 "title": "Contratos do Cliente",
                 "fields": [
                   {
-                    "name": "numero",
+                    "name": "numerocontrato",
                     "label": "Número",
                     "type": "text",
-                    "required": true,
                     "maxLength": 50
+                  },
+                  {
+                    "name": "linkcontrato",
+                    "label": "Link",
+                    "type": "text",
+                    "maxLength": 255,
+                    "fullWidth": true
                   },
                   {
                     "name": "descricao",
@@ -298,12 +366,13 @@
                   "newLabel": "Novo Contrato",
                   "hiddenColumns": [
                     "clienteId",
-                    "createdAt",
-                    "updatedAt"
+                    "data",
+                    "linkcontrato",
+                    "descricao"
                   ],
                   "columnLabels": {
                     "id": "ID",
-                    "numero": "Número",
+                    "numerocontrato": "Número",
                     "valor": "Valor",
                     "ativo": "Status"
                   }
@@ -319,7 +388,7 @@
           "icon": "mail",
           "screen": {
             "kind": "cadastro",
-            "resource": "contatos_site",
+            "resource": "api_contatosite_contatos",
             "title": "Contatos Recebidos",
             "description": "Mensagens recebidas pelo site",
             "fields": [
@@ -327,40 +396,41 @@
                 "name": "nome",
                 "label": "Nome",
                 "type": "text",
-                "required": true,
-                "maxLength": 200
+                "maxLength": 100
               },
               {
                 "name": "email",
                 "label": "E-mail",
                 "type": "email",
-                "required": true,
-                "maxLength": 200
+                "maxLength": 150
               },
               {
                 "name": "telefone",
                 "label": "Telefone",
                 "type": "text",
-                "maxLength": 30
+                "maxLength": 20
               },
               {
                 "name": "assunto",
                 "label": "Assunto",
                 "type": "text",
-                "required": true,
-                "maxLength": 200
+                "maxLength": 150
               },
               {
                 "name": "mensagem",
                 "label": "Mensagem",
                 "type": "textarea",
-                "required": true,
                 "fullWidth": true,
                 "gridVisible": false
               }
             ],
             "overrides": {
-              "hiddenColumns": [],
+              "hiddenColumns": [
+                "siteId",
+                "ip",
+                "userAgent",
+                "origem"
+              ],
               "columnLabels": {
                 "id": "ID",
                 "nome": "Nome",
@@ -424,7 +494,7 @@
                 "label": "Telefone",
                 "type": "text",
                 "required": true,
-                "maxLength": 21,
+                "maxLength": 30,
                 "mask": "telefone",
                 "defaultValue": "+55"
               },
@@ -469,11 +539,26 @@
                 "type": "select",
                 "required": true,
                 "options": [
-                  { "value": "clt", "label": "CLT" },
-                  { "value": "pj", "label": "PJ" },
-                  { "value": "estagio", "label": "Estágio" },
-                  { "value": "temporario", "label": "Temporário" },
-                  { "value": "apprentiz", "label": "Aprendiz" }
+                  {
+                    "value": "clt",
+                    "label": "CLT"
+                  },
+                  {
+                    "value": "pj",
+                    "label": "PJ"
+                  },
+                  {
+                    "value": "estagio",
+                    "label": "Estágio"
+                  },
+                  {
+                    "value": "temporario",
+                    "label": "Temporário"
+                  },
+                  {
+                    "value": "apprentiz",
+                    "label": "Aprendiz"
+                  }
                 ]
               },
               {
@@ -540,7 +625,7 @@
                 "name": "contatoEmergenciaTelefone",
                 "label": "Contato de Emergência (Telefone)",
                 "type": "text",
-                "maxLength": 21,
+                "maxLength": 30,
                 "gridVisible": false,
                 "mask": "telefone",
                 "defaultValue": "+55"
@@ -607,7 +692,7 @@
           "icon": "campaign",
           "screen": {
             "kind": "cadastro",
-            "resource": "circulares",
+            "resource": "circular",
             "title": "Circulares",
             "description": "Comunicados internos da empresa",
             "fields": [
@@ -632,21 +717,33 @@
                 "label": "Conteúdo",
                 "type": "textarea",
                 "required": true,
-                "maxLength": 5000,
                 "fullWidth": true,
+                "gridVisible": false
+              },
+              {
+                "name": "autor",
+                "label": "Autor",
+                "type": "text",
+                "maxLength": 100
+              },
+              {
+                "name": "ativo",
+                "label": "Ativo",
+                "type": "switch",
+                "defaultValue": true,
                 "gridVisible": false
               }
             ],
             "overrides": {
               "hiddenColumns": [
-                "updatedAt",
                 "imageUrl",
-                "createdAt"
+                "autor"
               ],
               "columnLabels": {
                 "id": "ID",
                 "titulo": "Título",
-                "publicadoEm": "Data"
+                "publicadoEm": "Data",
+                "ativo": "Status"
               },
               "newLabel": "Nova Circular"
             }
@@ -683,8 +780,7 @@
                 "name": "nome",
                 "label": "Nome",
                 "type": "text",
-                "required": true,
-                "maxLength": 200,
+                "maxLength": 100,
                 "fullWidth": true
               },
               {
@@ -692,24 +788,14 @@
                 "label": "E-mail",
                 "type": "email",
                 "required": true,
-                "maxLength": 200,
+                "maxLength": 150,
                 "fullWidth": true
               },
               {
                 "name": "papel",
-                "label": "Papel",
-                "type": "select",
-                "required": true,
-                "options": [
-                  {
-                    "value": "admin",
-                    "label": "Administrador"
-                  },
-                  {
-                    "value": "usuario",
-                    "label": "Usuário"
-                  }
-                ]
+                "label": "Perfil",
+                "type": "text",
+                "maxLength": 50
               },
               {
                 "name": "ativo",
@@ -720,6 +806,8 @@
             ],
             "overrides": {
               "hiddenColumns": [
+                "senha",
+                "primeiro_acesso",
                 "createdAt",
                 "updatedAt"
               ],
@@ -727,7 +815,7 @@
                 "id": "ID",
                 "nome": "Nome",
                 "email": "E-mail",
-                "papel": "Papel",
+                "papel": "Perfil",
                 "ativo": "Status"
               },
               "newLabel": "Novo Usuário"
@@ -749,15 +837,14 @@
                 "name": "nome",
                 "label": "Nome da Empresa",
                 "type": "text",
-                "required": true,
-                "maxLength": 200,
+                "maxLength": 100,
                 "fullWidth": true
               },
               {
                 "name": "logoUrl",
                 "label": "URL da Logo",
                 "type": "text",
-                "maxLength": 500,
+                "maxLength": 255,
                 "fullWidth": true,
                 "gridVisible": false
               },
@@ -765,7 +852,7 @@
                 "name": "endereco",
                 "label": "Endereço",
                 "type": "text",
-                "maxLength": 300,
+                "maxLength": 255,
                 "fullWidth": true,
                 "gridVisible": false
               },
@@ -782,7 +869,7 @@
                 "name": "telefone",
                 "label": "Telefone",
                 "type": "text",
-                "maxLength": 21,
+                "maxLength": 20,
                 "mask": "telefone",
                 "validator": "telefone",
                 "defaultValue": "+55",
@@ -790,10 +877,7 @@
               }
             ],
             "overrides": {
-              "hiddenColumns": [
-                "createdAt",
-                "updatedAt"
-              ],
+              "hiddenColumns": [],
               "columnLabels": {
                 "id": "ID",
                 "nome": "Empresa"
@@ -818,7 +902,7 @@
                 "label": "Nome",
                 "type": "text",
                 "required": true,
-                "maxLength": 50,
+                "maxLength": 100,
                 "fullWidth": true
               }
             ],
