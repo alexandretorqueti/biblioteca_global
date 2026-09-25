@@ -1,11 +1,17 @@
-import type { Pool, RowDataPacket } from 'mysql2/promise'
+import type { Pool, PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
 import type { QueueMessage } from '../queue/index.js'
+import { insertOutboxMessage } from '../queue/index.js'
 import type { PrimitiveContext } from '../primitives/types.js'
 import type { WorkerLauncher } from '../worker-launcher/WorkerLauncher.js'
 import type { GitWorktreePreparer } from '../execution/GitWorktreePreparer.js'
 import type { TaskEventSink } from '../coordinator/TaskEventRecorder.js'
 import { MonitorPromptResolver } from './MonitorPromptResolver.js'
-import { TASK_BLOCKED_EVENT_TYPE, type TaskBlockedPayload } from './TaskBlockedEvent.js'
+import { parseMonitorVerdict, type MonitorVerdict } from './MonitorVerdictParser.js'
+import {
+  TASK_BLOCKED_EVENT_TYPE,
+  createTaskUnblockedMessage,
+  type TaskBlockedPayload,
+} from './TaskBlockedEvent.js'
 
 interface ActiveBlockerRow extends RowDataPacket {
   id: number
@@ -37,9 +43,14 @@ interface TaskContextRow extends RowDataPacket {
  * prompt ativo `monitor.resolucao_bloqueio` da tabela de prompts e executa a
  * missão com a cadeia de modelos MONITOR do projeto.
  *
- * Etapa 3: execução da missão + auditoria em `tarefa_eventos`
- * (`monitor_resolution_started` / `monitor_resolution_finished`). O parse do
- * veredito, o desbloqueio e a mensagem no chat da tarefa vêm na etapa 4.
+ * Fluxo completo (etapas 3+4):
+ * - mensagem no chat da tarefa ao iniciar a investigação;
+ * - execução da missão com auditoria em `tarefa_eventos`
+ *   (`monitor_resolution_started` / `monitor_resolution_finished`);
+ * - parse do veredito (STATUS/ORIGEM/CAUSA/.../MENSAGEM_CHAT);
+ * - STATUS=RESOLVIDO → desbloqueio (`resolved_at`) + evento `TASK_UNBLOCKED`
+ *   na mesma transação + mensagem de resolução no chat;
+ * - demais status → bloqueio permanece + mensagem no chat explicando o que falta.
  *
  * Idempotência:
  * - bloqueio já resolvido → ignora (redelivery não re-executa);
@@ -111,6 +122,10 @@ export class MonitorResolutionConsumer {
       await this.safeRecord(taskId, 'monitor_resolution_started', {
         blockId: blocker.id, blockReason: blocker.block_reason, models, promptExecutionId: prompt.executionRowId,
       })
+      await this.safePostChat(Number(blocker.tarefa_id), [
+        `🔧 Monitor: investigando bloqueio \`${blocker.block_reason}\`.`,
+        blocker.block_excerpt ? `Evidência: ${String(blocker.block_excerpt).slice(0, 500)}` : null,
+      ].filter(Boolean).join('\n'))
       const execution: PrimitiveContext = {
         taskId: context.task_id,
         databaseTaskId: Number(context.database_task_id),
@@ -142,6 +157,7 @@ export class MonitorResolutionConsumer {
         error: result.error ?? null,
         response: result.response != null ? String(result.response).slice(0, 4000) : null,
       })
+      await this.applyVerdict(taskId, blocker, result.success, result.response ?? null, result.error ?? null)
     } catch (error) {
       // Falha da missão não propaga para a fila (evita loop de redelivery):
       // o bloqueio permanece ativo e o evento registra a causa.
@@ -150,6 +166,101 @@ export class MonitorResolutionConsumer {
         blockReason: blocker.block_reason,
         error: error instanceof Error ? error.message : String(error),
       })
+    }
+  }
+
+  /**
+   * Etapa 4 — aplica o veredito do Monitor:
+   * - RESOLVIDO (com worker success) → desbloqueia + TASK_UNBLOCKED + chat;
+   * - PARCIALMENTE_RESOLVIDO / NAO_RESOLVIDO / resposta fora do contrato /
+   *   worker sem sucesso → bloqueio permanece + chat explica o que falta.
+   */
+  private async applyVerdict(
+    taskId: string,
+    blocker: ActiveBlockerRow,
+    workerSuccess: boolean,
+    response: string | null,
+    workerError: string | null,
+  ): Promise<void> {
+    if (!workerSuccess || response == null) {
+      await this.safePostChat(Number(blocker.tarefa_id), [
+        `❌ Monitor: não foi possível resolver o bloqueio \`${blocker.block_reason}\`.`,
+        workerError ? `Erro na execução: ${workerError.slice(0, 500)}` : 'O worker não retornou resposta.',
+        'O bloqueio permanece ativo para revisão.',
+      ].join('\n'))
+      await this.safeRecord(taskId, 'monitor_resolution_kept_blocked', { blockId: blocker.id, reason: 'worker_sem_sucesso' })
+      return
+    }
+    const verdict = parseMonitorVerdict(response)
+    if (verdict.status === 'RESOLVIDO') {
+      const unblocked = await this.resolveBlocker(taskId, blocker, verdict)
+      await this.safePostChat(Number(blocker.tarefa_id), [
+        `✅ Monitor: bloqueio \`${blocker.block_reason}\` resolvido (origem: ${verdict.origin}).`,
+        verdict.chatMessage,
+      ].join('\n\n'))
+      await this.safeRecord(taskId, 'monitor_resolution_unblocked', {
+        blockId: blocker.id, origin: verdict.origin, unblocked,
+      })
+      return
+    }
+    // PARCIALMENTE_RESOLVIDO, NAO_RESOLVIDO ou resposta não parseável:
+    // conservador — o bloqueio permanece para revisão humana/outra tentativa.
+    await this.safePostChat(Number(blocker.tarefa_id), [
+      `⚠️ Monitor: bloqueio \`${blocker.block_reason}\` NÃO resolvido completamente (status: ${verdict.status}, origem: ${verdict.origin}).`,
+      verdict.chatMessage,
+      verdict.resumption ? `Retomada: ${verdict.resumption}` : null,
+    ].filter(Boolean).join('\n\n'))
+    await this.safeRecord(taskId, 'monitor_resolution_kept_blocked', {
+      blockId: blocker.id, status: verdict.status, origin: verdict.origin, parseable: verdict.parseable,
+    })
+  }
+
+  /**
+   * Desbloqueia gravando `resolved_at` e emitindo `TASK_UNBLOCKED` na MESMA
+   * transação (atomicidade fato+evento). Retorna true se a linha foi atualizada
+   * (false quando outro fluxo já havia resolvido — corrida benigna).
+   */
+  private async resolveBlocker(taskId: string, blocker: ActiveBlockerRow, verdict: MonitorVerdict): Promise<boolean> {
+    const unblocked = createTaskUnblockedMessage({
+      taskId,
+      executionId: `unblock-${blocker.id}-${Date.now()}`,
+      payload: {
+        blockId: Number(blocker.id),
+        blockReason: blocker.block_reason,
+        databaseTaskId: Number(blocker.tarefa_id),
+        verdictStatus: verdict.status,
+        verdictOrigin: verdict.origin,
+        resolvedBy: 'monitor',
+      },
+    })
+    const connection: PoolConnection = await this.pool.getConnection()
+    try {
+      await connection.beginTransaction()
+      const [result] = await connection.query<ResultSetHeader>(
+        'UPDATE bloqueios SET resolved_at = NOW() WHERE id = ? AND resolved_at IS NULL',
+        [blocker.id],
+      )
+      const updated = result.affectedRows > 0
+      if (updated) await insertOutboxMessage(connection, unblocked)
+      await connection.commit()
+      return updated
+    } catch (error) {
+      await connection.rollback()
+      throw error
+    } finally {
+      connection.release()
+    }
+  }
+
+  /** Mensagem no chat da tarefa (mesmo padrão do TestRecoveryConsumer). */
+  private async safePostChat(databaseTaskId: number, texto: string): Promise<void> {
+    try {
+      await this.pool.query(
+        `INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) VALUES (?, 'assistant', ?, NOW())`,
+        [databaseTaskId, texto.slice(0, 8000)],
+      )
+    } catch {
+      // Chat nunca derruba o fluxo principal; o evento de auditoria permanece.
     }
   }
 

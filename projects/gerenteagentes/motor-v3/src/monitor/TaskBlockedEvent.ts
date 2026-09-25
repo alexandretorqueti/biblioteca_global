@@ -47,3 +47,43 @@ export function createTaskBlockedMessage(input: TaskBlockedMessageInput): QueueM
     payload: { ...input.payload } as Record<string, unknown>,
   })
 }
+
+/**
+ * Contrato do evento TASK_UNBLOCKED — fato canônico do desbloqueio.
+ *
+ * Emitido na MESMA transação que grava `resolved_at` em `bloqueios`.
+ * Permite que o Motor reavalie a tarefa (retomada/deploy) sem depender de
+ * ação manual — lição do incidente da tarefa 886 (2026-09-24).
+ */
+export const TASK_UNBLOCKED_EVENT_TYPE = 'TASK_UNBLOCKED'
+
+export interface TaskUnblockedPayload {
+  blockId: number
+  blockReason: string
+  databaseTaskId?: number | null
+  /** Veredito do Monitor que motivou o desbloqueio, quando houver. */
+  verdictStatus?: string | null
+  verdictOrigin?: string | null
+  /** Quem desbloqueou: 'monitor' (automático) ou 'usuario'/'motor' (outros fluxos). */
+  resolvedBy?: string
+}
+
+export interface TaskUnblockedMessageInput {
+  taskId: string
+  executionId: string
+  payload: TaskUnblockedPayload
+  correlationId?: string
+  causationId?: string
+}
+
+/** Fábrica da mensagem TASK_UNBLOCKED. */
+export function createTaskUnblockedMessage(input: TaskUnblockedMessageInput): QueueMessage {
+  return createQueueMessage({
+    type: TASK_UNBLOCKED_EVENT_TYPE,
+    taskId: input.taskId,
+    executionId: input.executionId,
+    correlationId: input.correlationId,
+    causationId: input.causationId,
+    payload: { ...input.payload } as Record<string, unknown>,
+  })
+}
