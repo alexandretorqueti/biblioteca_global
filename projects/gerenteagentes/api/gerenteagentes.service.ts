@@ -1508,6 +1508,34 @@ export class GerenteAgentesService {
     return { id: tarefaId, status: 'deploy_pending', message: 'Deploy agendado para quando o Motor ficar ocioso' };
   }
 
+  /**
+   * Solicita ajuste incremental em tarefa deployed/completed.
+   * Proxy para o motor-v3 POST /api/motor/task/:id/adjustment.
+   */
+  async solicitarAjusteTarefa(projeto: ProjetoResumo, tarefaId: number, message: string | undefined) {
+    if (!message || !message.trim()) {
+      throw new BadRequestException('message é obrigatório');
+    }
+    const db = await this.dbDoMotor();
+    const [tarefa] = await db.select().from(tarefas).where(eq(tarefas.id, tarefaId)).limit(1);
+    if (!tarefa) throw new NotFoundException('Tarefa não encontrada');
+    const motorId = tarefa.externalId || String(tarefa.id);
+    const resp = await this.motorRequest(
+      'POST',
+      `/api/motor/task/${encodeURIComponent(motorId)}/adjustment`,
+      { message: message.trim() },
+      this.motorV2Url,
+    );
+    if (!resp.ok) {
+      throw new BadRequestException(`Motor rejeitou o ajuste (${resp.status}): ${resp.body.slice(0, 200)}`);
+    }
+    try {
+      return JSON.parse(resp.body) as { ok: boolean; accepted: boolean; generation: number; messageId: string };
+    } catch {
+      return { ok: true, accepted: true, generation: 0, messageId: '' };
+    }
+  }
+
   async atividadeMotor(projeto: ProjetoResumo) {
     const resp = await this.motorRequest('GET', '/api/motor/stats', undefined, this.motorV2Url);
     if (!resp.ok) throw new BadRequestException(`Motor indisponível (${resp.status}): ${resp.body.slice(0, 200)}`);

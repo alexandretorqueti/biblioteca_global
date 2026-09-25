@@ -187,6 +187,16 @@ export class GerenteAgentesController {
     return this.service.fazerDeployTarefa(projeto, id, usuario.email || usuario.username || String(usuario.id));
   }
 
+  @Post('tarefas/:id/adjustment')
+  @Roles('admin', 'gerente', 'operador')
+  solicitarAjusteTarefa(
+    @CurrentProject() projeto: ProjetoResumo,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { message: string },
+  ) {
+    return this.service.solicitarAjusteTarefa(projeto, id, body?.message);
+  }
+
   @Get('motor-activity')
   atividadeMotor(@CurrentProject() projeto: ProjetoResumo) {
     return this.service.atividadeMotor(projeto);

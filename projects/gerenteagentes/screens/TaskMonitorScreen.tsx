@@ -87,6 +87,7 @@ interface TarefaChatMessage {
   role: string
   texto: string
   createdAt: string | Date
+  generation?: number | null
 }
 
 const TIPO_TAREFA_LABEL: Record<string, string> = {
@@ -122,6 +123,7 @@ interface SubTaskMotor {
   workspaceStatus?: string | null
   correctionForSubtaskId?: number | null
   deliveryHistory?: DeliveryHistoryEntry[]
+  generation?: number | null
 }
 
 /** Subtarefa do banco de dados (para edição — o motor só tem seq/title/status). */
@@ -138,6 +140,7 @@ interface SubTarefaDb {
   dependsOnSubtaskId?: number | null
   workspaceStatus?: string | null
   correctionForSubtaskId?: number | null
+  generation?: number | null
 }
 
 interface SessionMessage {
@@ -396,6 +399,14 @@ export default function TaskMonitorScreen(): ReactNode {
   const [analystPageLoading, setAnalystPageLoading] = useState<Set<string>>(new Set())
   const [analystPageErrors, setAnalystPageErrors] = useState<Record<string, string>>({})
   const analystPageLoadingRef = useRef(new Set<string>())
+  // Ajuste incremental: modal + envio
+  const [adjustmentOpen, setAdjustmentOpen] = useState(false)
+  const [adjustmentMessage, setAdjustmentMessage] = useState("")
+  const [adjustmentSending, setAdjustmentSending] = useState(false)
+  const [adjustmentError, setAdjustmentError] = useState<string | null>(null)
+  const [adjustmentSuccess, setAdjustmentSuccess] = useState<string | null>(null)
+  // Colapso de generations na timeline de subtarefas
+  const [collapsedGenerations, setCollapsedGenerations] = useState<Set<number>>(new Set())
   const mounted = useRef(true)
   const activeRealtimeTask = useRef<number | "">("")
 
@@ -1223,6 +1234,44 @@ export default function TaskMonitorScreen(): ReactNode {
     }
   }, [bundle, tarefaId])
 
+  /** Solicita ajuste incremental via POST /gerenteagentes/tarefas/:id/adjustment */
+  const solicitarAjuste = useCallback(async () => {
+    const texto = adjustmentMessage.trim()
+    if (!bundle || tarefaId === "" || !texto || adjustmentSending) return
+    setAdjustmentSending(true)
+    setAdjustmentError(null)
+    setAdjustmentSuccess(null)
+    try {
+      const res = await bundle.http.request<{ ok: boolean; accepted: boolean; generation: number }>(
+        "POST",
+        `/gerenteagentes/tarefas/${tarefaId}/adjustment`,
+        { body: { message: texto }, auth: "access" },
+      )
+      setAdjustmentSuccess(`Ajuste solicitado com sucesso (Generation ${res.generation}). O analista criar\u00e1 subtarefas incrementais.`)
+      setAdjustmentMessage("")
+      setAdjustmentOpen(false)
+      // Recarregar chat para mostrar a mensagem do usu\u00e1rio
+      await carregarChat(tarefaId)
+      // Recarregar detail para mostrar novas subtarefas quando dispon\u00edveis
+      await carregarDetail(tarefaId)
+      await carregarTarefas()
+    } catch (e) {
+      setAdjustmentError(e instanceof Error ? e.message : "N\u00e3o foi poss\u00edvel solicitar o ajuste.")
+    } finally {
+      setAdjustmentSending(false)
+    }
+  }, [bundle, tarefaId, adjustmentMessage, adjustmentSending, carregarChat, carregarDetail, carregarTarefas])
+
+  /** Toggle de colapso de uma generation na timeline de subtarefas */
+  const toggleGenerationCollapse = useCallback((generation: number) => {
+    setCollapsedGenerations((prev) => {
+      const next = new Set(prev)
+      if (next.has(generation)) next.delete(generation)
+      else next.add(generation)
+      return next
+    })
+  }, [])
+
   const carregarMaisSessao = useCallback(async (sessionKey: string, cursor: string) => {
     if (!bundle || tarefaId === "" || sessionPageLoadingRef.current.has(sessionKey)) return
     sessionPageLoadingRef.current.add(sessionKey)
@@ -1309,8 +1358,24 @@ export default function TaskMonitorScreen(): ReactNode {
       acceptanceCriteria: subtarefa.acceptanceCriteria ?? null,
       workspaceStatus: subtarefa.workspaceStatus ?? null,
       correctionForSubtaskId: subtarefa.correctionForSubtaskId ?? null,
+      generation: subtarefa.generation ?? 1,
     }))
   }, [detail?.subtasks, subtarefasDb])
+
+  /** Agrupa subtarefas por generation para a timeline com collapse/expand */
+  const subtasksByGeneration = useMemo<Map<number, SubTaskMotor[]>>(() => {
+    const map = new Map<number, SubTaskMotor[]>()
+    for (const sub of subtasks) {
+      const gen = sub.generation ?? 1
+      const list = map.get(gen) ?? []
+      list.push(sub)
+      map.set(gen, list)
+    }
+    return map
+  }, [subtasks])
+
+  /** Se h\u00e1 mais de uma generation na timeline */
+  const hasMultipleGenerations = subtasksByGeneration.size > 1
 
   /** Mapa id → seq para resolver subtarefa corrigida (correção de #X). */
   const subtaskIdToSeq = useMemo<Record<number, number>>(() => {
@@ -1417,10 +1482,32 @@ export default function TaskMonitorScreen(): ReactNode {
               }}
               data-testid={`task-chat-message-${mensagem.id}`}
             >
-              <Typography variant="caption" sx={{ opacity: 0.75, display: "block" }}>
-                {fromAgent ? "Agente" : "Você"}
-                {mensagem.createdAt ? ` · ${new Date(mensagem.createdAt).toLocaleString("pt-BR")}` : ""}
-              </Typography>
+              <Stack direction="row" spacing={0.5} alignItems="center" sx={{ opacity: 0.75, display: "block" }}>
+                <Typography variant="caption" component="span">
+                  {fromAgent ? "Agente" : "Você"}
+                </Typography>
+                {mensagem.generation != null && mensagem.generation > 1 && (
+                  <Chip
+                    size="small"
+                    label={`Gen ${mensagem.generation}`}
+                    sx={{
+                      height: 16,
+                      fontSize: "0.65rem",
+                      bgcolor: fromAgent ? "info.dark" : "primary.dark",
+                      color: "common.white",
+                      "& .MuiChip-label": { px: 0.5 },
+                      ml: 0.5,
+                      verticalAlign: "middle",
+                    }}
+                    data-testid={`chat-generation-badge-${mensagem.id}`}
+                  />
+                )}
+                {mensagem.createdAt && (
+                  <Typography variant="caption" component="span">
+                    {` · ${new Date(mensagem.createdAt).toLocaleString("pt-BR")}`}
+                  </Typography>
+                )}
+              </Stack>
               <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{mensagem.texto}</Typography>
             </Box>
           )
@@ -1724,6 +1811,22 @@ export default function TaskMonitorScreen(): ReactNode {
               >
                 Excluir
               </Button>
+              {(statusMotor === "deployed" || statusMotor === "completed") && (
+                <Button
+                  size="small"
+                  color="secondary"
+                  variant="contained"
+                  startIcon={<EditRounded />}
+                  onClick={() => {
+                    setAdjustmentError(null)
+                    setAdjustmentSuccess(null)
+                    setAdjustmentOpen(true)
+                  }}
+                  data-testid="btn-request-adjustment"
+                >
+                  Solicitar Ajuste
+                </Button>
+              )}
             </Stack>
           </Stack>
 
@@ -1814,6 +1917,11 @@ export default function TaskMonitorScreen(): ReactNode {
 
           {detail?.exists && isDesenvolvimento && (
             <>
+              {hasMultipleGenerations && (
+                <Typography variant="subtitle2" sx={{ mt: 2, mb: 1, color: "text.secondary" }} data-testid="generations-timeline-label">
+                  Timeline por Generation
+                </Typography>
+              )}
               <Table size="small" sx={{ mt: 2 }} data-testid="subtask-table">
                 <TableHead>
                   <TableRow>
@@ -1828,7 +1936,36 @@ export default function TaskMonitorScreen(): ReactNode {
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {subtasks.map((s) => {
+                  {hasMultipleGenerations ? (
+                    // Renderiza subtarefas agrupadas por generation com collapse/expand
+                    Array.from(subtasksByGeneration.entries())
+                      .sort(([a], [b]) => a - b)
+                      .map(([generation, genSubtasks]) => {
+                        const isCollapsed = collapsedGenerations.has(generation)
+                        return (
+                          <React.Fragment key={`gen-${generation}`}>
+                            <TableRow
+                              sx={{ bgcolor: "action.selected", cursor: "pointer" }}
+                              onClick={() => toggleGenerationCollapse(generation)}
+                              data-testid={`generation-header-${generation}`}
+                            >
+                              <TableCell colSpan={8}>
+                                <Stack direction="row" spacing={1} alignItems="center">
+                                  {isCollapsed ? <ExpandMoreRounded fontSize="small" /> : <ExpandLessRounded fontSize="small" />}
+                                  <Chip
+                                    size="small"
+                                    label={`Generation ${generation}`}
+                                    color={generation === 1 ? "default" : "secondary"}
+                                    variant={generation === 1 ? "outlined" : "filled"}
+                                    data-testid={`generation-badge-${generation}`}
+                                  />
+                                  <Typography variant="caption" color="text.secondary">
+                                    {genSubtasks.length} subtarefa{genSubtasks.length !== 1 ? "s" : ""}
+                                  </Typography>
+                                </Stack>
+                              </TableCell>
+                            </TableRow>
+                            {!isCollapsed && genSubtasks.map((s) => {
                     const ativa = stats.active && s.seq === stats.active.seq
                     const criterioCount = contarCriterios(s.acceptanceCriteria)
                     const correctedSeq = s.correctionForSubtaskId != null ? subtaskIdToSeq[s.correctionForSubtaskId] : undefined
@@ -2009,6 +2146,216 @@ export default function TaskMonitorScreen(): ReactNode {
                       </React.Fragment>
                     )
                   })}
+                          </React.Fragment>
+                        )
+                      })
+                  ) : (
+                    // Renderização original sem agrupamento por generation (apenas uma generation)
+                    subtasks.map((s) => {
+                    const ativa = stats.active && s.seq === stats.active.seq
+                    const criterioCount = contarCriterios(s.acceptanceCriteria)
+                    const correctedSeq = s.correctionForSubtaskId != null ? subtaskIdToSeq[s.correctionForSubtaskId] : undefined
+                    const history = s.deliveryHistory ?? []
+                    const isExpanded = expandedSubtasks.has(s.seq)
+                    const motivoRetorno = ultimoMotivoRetorno(s)
+                    return (
+                      <React.Fragment key={s.seq}>
+                      <TableRow
+                        sx={ativa ? { bgcolor: "action.hover", boxShadow: "inset 3px 0 0 currentColor" } : undefined}
+                        data-testid={`subtask-row-${s.seq}`}
+                      >
+                        <TableCell>{ativa ? "▶ " : ""}{s.seq}</TableCell>
+                        <TableCell>
+                          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+                            <Typography component="span" variant="body2">{s.title}</Typography>
+                            {s.correctionForSubtaskId != null && (
+                              <Chip
+                                size="small"
+                                color="warning"
+                                variant="outlined"
+                                label={correctedSeq != null ? `Correção de #${correctedSeq}` : "Correção"}
+                                data-testid={`correction-badge-${s.seq}`}
+                              />
+                            )}
+                          </Stack>
+                          {s.blockInfo?.reason && (
+                            <Typography variant="caption" display="block" color="text.secondary">
+                              🚫 {s.blockInfo.reason}
+                              {s.blockInfo.command ? ` · ${s.blockInfo.command}` : ""}
+                              {s.blockInfo.exitCode != null ? ` · exit ${s.blockInfo.exitCode}` : ""}
+                            </Typography>
+                          )}
+                          {motivoRetorno && (
+                            <Typography
+                              variant="caption"
+                              display="block"
+                              sx={{ color: "warning.light", fontStyle: "italic", mt: 0.25 }}
+                              data-testid={`subtask-return-reason-${s.seq}`}
+                            >
+                              ↩ {motivoRetorno}
+                            </Typography>
+                          )}
+                        </TableCell>
+                        <TableCell sx={{ maxWidth: 240 }}>
+                          {s.scope ? (
+                            <Tooltip title={s.scope} arrow placement="top">
+                              <Typography
+                                variant="caption"
+                                sx={{
+                                  display: "-webkit-box",
+                                  WebkitLineClamp: 2,
+                                  WebkitBoxOrient: "vertical",
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                  wordBreak: "break-word",
+                                }}
+                                data-testid={`scope-text-${s.seq}`}
+                              >
+                                {s.scope}
+                              </Typography>
+                            </Tooltip>
+                          ) : (
+                            <Typography variant="caption" color="text.secondary">—</Typography>
+                          )}
+                        </TableCell>
+                        <TableCell align="center">
+                          <Chip
+                            size="small"
+                            variant="outlined"
+                            label={criterioCount}
+                            color={criterioCount > 0 ? "primary" : "default"}
+                            data-testid={`criteria-count-${s.seq}`}
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <Chip size="small" label={s.status} color={corStatus(s.status)} />
+                        </TableCell>
+                        <TableCell>
+                          {s.workspaceStatus ? (
+                            <Chip
+                              size="small"
+                              label={s.workspaceStatus}
+                              color={
+                                s.workspaceStatus === "dirty" ? "warning" :
+                                s.workspaceStatus === "clean" ? "success" :
+                                s.workspaceStatus === "ahead" ? "info" :
+                                "default"
+                              }
+                              variant="outlined"
+                              data-testid={`workspace-status-${s.seq}`}
+                            />
+                          ) : (
+                            <Typography variant="caption" color="text.secondary">—</Typography>
+                          )}
+                        </TableCell>
+                        <TableCell align="right">
+                          <Stack direction="row" spacing={0.5} alignItems="center" justifyContent="flex-end">
+                            <Chip
+                              size="small"
+                              label={s.deliverCount ?? 0}
+                              color={(s.deliverCount ?? 0) > 1 ? "warning" : "default"}
+                              variant="outlined"
+                              data-testid={`delivery-count-${s.seq}`}
+                            />
+                            {history.length > 0 && (
+                              <Tooltip title={isExpanded ? "Recolher histórico" : "Expandir histórico"}>
+                                <IconButton
+                                  size="small"
+                                  onClick={() => toggleSubtaskHistory(s.seq)}
+                                  data-testid={`btn-toggle-history-${s.seq}`}
+                                >
+                                  {isExpanded
+                                    ? <ExpandLessRounded fontSize="small" />
+                                    : <ExpandMoreRounded fontSize="small" />}
+                                </IconButton>
+                              </Tooltip>
+                            )}
+                          </Stack>
+                        </TableCell>
+                        <TableCell align="center">
+                          <Tooltip title="Editar subtarefa">
+                            <span>
+                              <IconButton
+                                size="small"
+                                onClick={() => abrirEdicaoSubtarefa(s)}
+                                data-testid={`btn-edit-subtask-${s.seq}`}
+                              >
+                                <EditRounded fontSize="small" />
+                              </IconButton>
+                            </span>
+                          </Tooltip>
+                          <Tooltip title="Ver sessão do agente">
+                            <span>
+                              <IconButton
+                                size="small"
+                                onClick={() => void abrirSessaoSubtarefa(s)}
+                                data-testid={`btn-view-session-${s.seq}`}
+                              >
+                                <VisibilityRounded fontSize="small" />
+                              </IconButton>
+                            </span>
+                          </Tooltip>
+                        </TableCell>
+                      </TableRow>
+                      {isExpanded && history.length > 0 && (
+                        <TableRow>
+                          <TableCell colSpan={8} sx={{ py: 1, px: 2, backgroundColor: "action.hover" }}>
+                            <Box sx={{ pl: 4 }}>
+                              <Typography variant="caption" sx={{ fontWeight: 600, mb: 0.5, display: "block" }}>
+                                Histórico de entregas ({history.length} evento{history.length !== 1 ? "s" : ""})
+                              </Typography>
+                              <Table size="small" data-testid={`delivery-history-${s.seq}`}>
+                                <TableHead>
+                                  <TableRow>
+                                    <TableCell sx={{ fontWeight: 600, py: 0.5 }}>#</TableCell>
+                                    <TableCell sx={{ fontWeight: 600, py: 0.5 }}>Evento</TableCell>
+                                    <TableCell sx={{ fontWeight: 600, py: 0.5 }}>Modelo</TableCell>
+                                    <TableCell sx={{ fontWeight: 600, py: 0.5 }}>Data/Hora</TableCell>
+                                    <TableCell sx={{ fontWeight: 600, py: 0.5 }}>Motivo</TableCell>
+                                  </TableRow>
+                                </TableHead>
+                                <TableBody>
+                                  {history.map((entry) => (
+                                    <TableRow key={entry.id}>
+                                      <TableCell sx={{ fontFamily: "monospace", py: 0.5 }}>{entry.deliverNumber}</TableCell>
+                                      <TableCell sx={{ py: 0.5 }}>
+                                        <Chip
+                                          label={labelEventType(entry.eventType)}
+                                          size="small"
+                                          color={corEventType(entry.eventType)}
+                                          variant="outlined"
+                                          sx={{ height: 20, fontSize: "0.7rem" }}
+                                        />
+                                      </TableCell>
+                                      <TableCell sx={{ fontFamily: "monospace", fontSize: "0.75rem", py: 0.5 }}>
+                                        {entry.model ?? "—"}
+                                      </TableCell>
+                                      <TableCell sx={{ fontFamily: "monospace", fontSize: "0.75rem", py: 0.5 }}>
+                                        {formatarDataHora(entry.createdAt)}
+                                      </TableCell>
+                                      <TableCell sx={{ py: 0.5, maxWidth: 300 }}>
+                                        <Typography
+                                          variant="caption"
+                                          sx={{
+                                            wordBreak: "break-word",
+                                            color: (entry.eventType === "gate_rejected" || entry.eventType === "blocked") ? "error.light" : "text.secondary",
+                                          }}
+                                        >
+                                          {entry.reason ?? "—"}
+                                        </Typography>
+                                      </TableCell>
+                                    </TableRow>
+                                  ))}
+                                </TableBody>
+                              </Table>
+                            </Box>
+                          </TableCell>
+                        </TableRow>
+                      )}
+                      </React.Fragment>
+                    )
+                  })
+                  )}
                   {subtasks.length === 0 && (
                     <TableRow>
                       <TableCell colSpan={8}>
@@ -2233,6 +2580,85 @@ export default function TaskMonitorScreen(): ReactNode {
               />
             </Box>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Diálogo de solicitação de ajuste incremental */}
+      <Dialog
+        open={adjustmentOpen}
+        onClose={(_ev, reason) => {
+          if (reason === "backdropClick" || adjustmentSending) return
+          setAdjustmentOpen(false)
+        }}
+        fullWidth
+        maxWidth="sm"
+        data-testid="adjustment-dialog"
+      >
+        <DialogTitle sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <Box>Solicitar Ajuste Incremental</Box>
+          <IconButton
+            aria-label="Fechar solicitação de ajuste"
+            size="small"
+            disabled={adjustmentSending}
+            onClick={() => {
+              setAdjustmentOpen(false)
+              setAdjustmentError(null)
+              setAdjustmentSuccess(null)
+            }}
+            data-testid="btn-close-adjustment"
+          >
+            <CloseRounded />
+          </IconButton>
+        </DialogTitle>
+        <DialogContent sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          {adjustmentError && (
+            <Alert severity="error" data-testid="adjustment-error-alert">
+              {adjustmentError}
+            </Alert>
+          )}
+          {adjustmentSuccess && (
+            <Alert severity="success" data-testid="adjustment-success-alert">
+              {adjustmentSuccess}
+            </Alert>
+          )}
+          <Typography variant="body2" color="text.secondary">
+            Descreva o ajuste necessário. O analista criar\u00e1 subtarefas incrementais para a pr\u00f3xima generation.
+          </Typography>
+          <TextField
+            fullWidth
+            multiline
+            minRows={3}
+            maxRows={8}
+            placeholder="Ex: O bot\u00e3o de salvar n\u00e3o est\u00e1 funcionando ap\u00f3s o deploy..."
+            value={adjustmentMessage}
+            disabled={adjustmentSending}
+            onChange={(e) => setAdjustmentMessage(e.target.value)}
+            inputProps={{ "data-testid": "adjustment-message-input" }}
+            helperText="Descreva o problema ou ajuste desejado"
+          />
+          <Stack direction="row" spacing={1} justifyContent="flex-end">
+            <Button
+              onClick={() => {
+                setAdjustmentOpen(false)
+                setAdjustmentError(null)
+                setAdjustmentSuccess(null)
+              }}
+              disabled={adjustmentSending}
+              data-testid="btn-cancel-adjustment"
+            >
+              Cancelar
+            </Button>
+            <Button
+              variant="contained"
+              color="secondary"
+              onClick={() => void solicitarAjuste()}
+              disabled={!adjustmentMessage.trim() || adjustmentSending}
+              startIcon={adjustmentSending ? <CircularProgress size={16} color="inherit" /> : <SendRounded />}
+              data-testid="btn-send-adjustment"
+            >
+              {adjustmentSending ? "Enviando..." : "Solicitar Ajuste"}
+            </Button>
+          </Stack>
         </DialogContent>
       </Dialog>
 
