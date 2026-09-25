@@ -449,6 +449,13 @@
       "when": 1790094561603,
       "tag": "0064_motor_v3_cancel_governance",
       "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "5",
+      "when": 1790100000000,
+      "tag": "0065_monitor_resolucao_bloqueio_prompt",
+      "breakpoints": true
     }
   ]
 }

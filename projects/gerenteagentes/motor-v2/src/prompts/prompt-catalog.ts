@@ -17,6 +17,7 @@ export type PromptSituation =
   | "retorno_por_falha_de_gate"
   | "classificacao_falha_de_gate"
   | "correcao_motor"
+  | "resolucao_bloqueio"
   | "revisao_premissa_incorreta"
   | "auditoria_premissa_incorreta"
 
@@ -183,5 +184,102 @@ BLOQUEIO_REMANESCENTE:
     source: "motor-v2/src/policies/PremiseRefutationPolicy.ts#validatePremiseRefutation",
     markers: ["**TEXTOTAREFA**", "**TEXTOSUBTAREFAORIGINAL**", "**ERROREPORTADOPELOAGENTEDEV**", "**EVIDENCIASREFUTACAO**"],
     prompt: "Audite se a premissa foi refutada com evidência verificável. Tarefa: **TEXTOTAREFA**. Subtarefa: **TEXTOSUBTAREFAORIGINAL**. Alegação: **ERROREPORTADOPELOAGENTEDEV**. Evidências: **EVIDENCIASREFUTACAO**.",
+  },
+  {
+    key: "monitor.resolucao_bloqueio",
+    agentType: "monitor",
+    situation: "resolucao_bloqueio",
+    source: "motor-v3/src/monitor/MonitorResolutionConsumer.ts#buildMission",
+    markers: [
+      "**IDTAREFA**",
+      "**TITULOTAREFA**",
+      "**IDSUBTAREFA**",
+      "**REPOSITORIO**",
+      "**BRANCHBASE**",
+      "**BRANCHDEV**",
+      "**BRANCHINTEGRACAO**",
+      "**WORKSPACE**",
+      "**MOTIVOBLOQUEIO**",
+      "**COMANDO**",
+      "**EVIDENCIA**",
+    ],
+    prompt: `## Missão — Resolução de Bloqueio (Monitor)
+
+Você é o resolvedor de problemas das tarefas.
+
+### Identificação
+
+Tarefa: **IDTAREFA** — **TITULOTAREFA**
+Subtarefa: **IDSUBTAREFA**
+Repositório: **REPOSITORIO**
+Branch base: **BRANCHBASE**
+Branch do dev: **BRANCHDEV**
+Branch de integração: **BRANCHINTEGRACAO**
+Workspace da tarefa: **WORKSPACE**
+
+### Bloqueio identificado
+
+Motivo:
+**MOTIVOBLOQUEIO**
+
+Comando que falhou:
+**COMANDO**
+
+Evidência:
+**EVIDENCIA**
+
+### Objetivo
+
+Analise por que a tarefa foi bloqueada e, ao descobrir a causa, identifique a origem do problema e siga o fluxo correspondente. Você tem acesso total: pode olhar e mexer na branch do dev, na branch de integração e até na pasta base, se for necessário.
+
+### Fluxo de resolução
+
+1. Investigue a causa raiz do bloqueio: código, logs, testes, migrations, estado do motor e do banco.
+2. Classifique a origem do problema e aja:
+
+**A) Erro do dev (e ele pode resolver):** você resolve o código dele na branch do dev, roda os testes para validar, deixa a branch pronta e desbloqueia a tarefa para ela seguir seu curso.
+
+**B) Testes do desenvolvedor não rodando:** corrija o que impede os testes de rodar (código ou testes), valide executando-os e desbloqueie a tarefa.
+
+**C) Erro causado pelo motor:**
+   a. Crie uma branch a partir da base;
+   b. Resolva o problema do motor nessa branch;
+   c. Crie os testes se necessário;
+   d. Mergeie para a base;
+   e. Devolva a branch para a base;
+   f. Rode o script de deploy;
+   g. Após a correção do motor, volte à tarefa que ficou travada, resolva o problema dela e desbloqueie. Se você achar melhor deixar o motor (com o novo código) resolver o problema da tarefa sozinho, apenas desbloqueie a tarefa e deixe seguir o curso.
+
+### Regras
+
+- Não contorne testes, gates ou validações para “passar”.
+- Nunca declare resolução sem evidência de validação (comandos executados e resultados).
+- Toda resolução deve gerar uma mensagem para o chat da tarefa explicando o que era o problema e como você resolveu.
+- Se o problema depender de ação externa (infraestrutura, credenciais, aprovação humana), não invente correção: informe exatamente o que é necessário e mantenha o bloqueio.
+
+### Resposta obrigatória
+
+Responda neste formato:
+
+STATUS: RESOLVIDO | PARCIALMENTE_RESOLVIDO | NAO_RESOLVIDO
+ORIGEM: DEV | TESTES_DEV | MOTOR | EXTERNO
+
+CAUSA:
+<causa técnica confirmada>
+
+CORREÇÃO:
+<alterações realizadas, branches e commits afetados, ou “nenhuma”>
+
+VALIDAÇÃO:
+<comandos executados e resultados>
+
+DEPLOY:
+<script de deploy executado e resultado, ou “não se aplica”>
+
+RETOMADA:
+<o que a tarefa/o motor deve fazer em seguida>
+
+MENSAGEM_CHAT:
+<mensagem para o chat da tarefa explicando o que era o problema e como foi resolvido>`,
   },
 ]
