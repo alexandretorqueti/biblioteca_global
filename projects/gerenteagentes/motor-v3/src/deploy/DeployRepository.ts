@@ -194,14 +194,24 @@ export class DeployRepository {
         `SELECT tr.status,tr.commit_sha,(SELECT COUNT(*) FROM test_failures tf WHERE tf.test_run_id=tr.id) AS failures
            FROM test_runs tr WHERE tr.id=? AND tr.phase='pre_deploy' LIMIT 1 FOR UPDATE`, [testRunId])
       const run = runs[0]
-      if (!run || run.status !== 'passed' || Number(run.failures) > 0) {
-        await connection.commit(); await this.blockTask(taskId, 'pre_deploy_gate_failed', 'Gate pre_deploy falhou', source); return { accepted: false, reason: 'pre_deploy_gate_failed' }
+      if (!run) {
+        await connection.commit()
+        await this.blockTask(taskId, 'pre_deploy_gate_failed', 'Gate pre_deploy falhou', source)
+        return { accepted: false, reason: 'pre_deploy_gate_failed' }
       }
       const [requests] = await connection.query<Array<RowDataPacket & { repo_path: string; base_branch: string; requested_commit: string }>>(
         `SELECT dr.repo_path,dr.base_branch,dr.requested_commit FROM deploy_requests dr INNER JOIN tarefas t ON t.id=dr.tarefa_id
           WHERE (t.external_id=? OR CAST(t.id AS CHAR)=?) AND dr.status='pending' AND dr.requested_commit=? LIMIT 1 FOR UPDATE`, [taskId, taskId, run.commit_sha])
       const request = requests[0]
+      // Pedido não pendente (deploy já concluído por outro caminho ou job obsoleto
+      // reenfileirado pela recuperação de órfãos): nada a bloquear nem a despachar.
+      // Bloquear aqui criaria bloqueio espúrio em tarefa já implantada.
       if (!request) { await connection.commit(); return { accepted: false, reason: 'deploy_request_not_pending' } }
+      if (run.status !== 'passed' || Number(run.failures) > 0) {
+        await connection.commit()
+        await this.blockTask(taskId, 'pre_deploy_gate_failed', 'Gate pre_deploy falhou', source)
+        return { accepted: false, reason: 'pre_deploy_gate_failed' }
+      }
       const dispatch = createQueueMessage({ type: 'DEPLOY_BATCH_DISPATCH_REQUESTED', taskId, executionId: `deploy-dispatch-${taskId}-${source.messageId}`,
         correlationId: source.correlationId ?? source.messageId, causationId: source.messageId,
         payload: { repository: request.repo_path, baseBranch: request.base_branch, expectedCommit: request.requested_commit } })

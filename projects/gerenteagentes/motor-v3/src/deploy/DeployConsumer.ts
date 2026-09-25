@@ -120,6 +120,10 @@ export class DeployConsumer {
     const result = await this.repository.continueAfterPreDeployGate(message.taskId, testRunId, message)
     const operationId = randomUUID()
     await this.log(operationId, 1, result.accepted ? 'completed' : 'failed', result.accepted ? 'succeeded' : 'failed', message, { actionCode: 'A30_ACCEPT_DEPLOY_REQUEST', primitiveCode: 'run_pre_deploy_gate', reasonCode: result.reason, result: { testRunId } })
+    // A conclusão de um gate pre_deploy é o ponto em que o motor pode voltar a
+    // ficar ocioso: dispatches pendentes cujo skip "motor ocupado" confirmou a
+    // mensagem precisam de nova chance (o claim é atômico e o skip é idempotente).
+    await this.repository.enqueuePendingDispatches()
     const jobId = Number(message.payload.jobId)
     if (!Number.isInteger(jobId) || jobId <= 0) return
     const batch = await this.repository.findPendingBatchByGateJob(jobId)
