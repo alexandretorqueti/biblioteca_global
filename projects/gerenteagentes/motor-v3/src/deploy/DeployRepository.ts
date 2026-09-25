@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { Pool, PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
-import { createQueueMessage, type QueueMessage } from '../queue/index.js'
+import { createQueueMessage, insertOutboxMessage, type QueueMessage } from '../queue/index.js'
+import { createTaskBlockedMessage } from '../monitor/index.js'
 
 export interface DeployTaskContext {
   taskId: string
@@ -122,10 +123,24 @@ export class DeployRepository {
     catch (error) { await connection.rollback(); throw error } finally { connection.release() }
   }
 
-  async blockTask(taskId: string, reason: string, detail: string): Promise<void> {
-    await this.pool.query(`INSERT INTO bloqueios (tarefa_id,subtarefa_id,block_reason,block_command,block_excerpt,blocked_at)
-      SELECT t.id,NULL,?,?,?,NOW() FROM tarefas t
-       WHERE t.external_id=? OR CAST(t.id AS CHAR)=?`, [reason, 'motor-v3:deploy', detail.slice(0, 500), taskId, taskId])
+  async blockTask(taskId: string, reason: string, detail: string, source?: QueueMessage): Promise<void> {
+    const excerpt = detail.slice(0, 500)
+    const blocked = createTaskBlockedMessage({
+      taskId,
+      executionId: source ? `${source.executionId}-block-${Date.now()}` : `block-${taskId}-${Date.now()}`,
+      correlationId: source?.correlationId ?? source?.messageId,
+      causationId: source?.messageId,
+      payload: { blockReason: reason, blockCommand: 'motor-v3:deploy', blockExcerpt: excerpt },
+    })
+    const connection = await this.pool.getConnection()
+    try {
+      await connection.beginTransaction()
+      await connection.query(`INSERT INTO bloqueios (tarefa_id,subtarefa_id,block_reason,block_command,block_excerpt,blocked_at)
+        SELECT t.id,NULL,?,?,?,NOW() FROM tarefas t
+         WHERE t.external_id=? OR CAST(t.id AS CHAR)=?`, [reason, 'motor-v3:deploy', excerpt, taskId, taskId])
+      await this.insertOutbox(connection, blocked)
+      await connection.commit()
+    } catch (error) { await connection.rollback(); throw error } finally { connection.release() }
   }
 
   withIntegration(context: Omit<DeployTaskContext, 'integrationPath' | 'integrationBranch' | 'integrationCommit'>, integrationCommit: string): DeployTaskContext {
@@ -180,7 +195,7 @@ export class DeployRepository {
            FROM test_runs tr WHERE tr.id=? AND tr.phase='pre_deploy' LIMIT 1 FOR UPDATE`, [testRunId])
       const run = runs[0]
       if (!run || run.status !== 'passed' || Number(run.failures) > 0) {
-        await connection.commit(); await this.blockTask(taskId, 'pre_deploy_gate_failed', 'Gate pre_deploy falhou'); return { accepted: false, reason: 'pre_deploy_gate_failed' }
+        await connection.commit(); await this.blockTask(taskId, 'pre_deploy_gate_failed', 'Gate pre_deploy falhou', source); return { accepted: false, reason: 'pre_deploy_gate_failed' }
       }
       const [requests] = await connection.query<Array<RowDataPacket & { repo_path: string; base_branch: string; requested_commit: string }>>(
         `SELECT dr.repo_path,dr.base_branch,dr.requested_commit FROM deploy_requests dr INNER JOIN tarefas t ON t.id=dr.tarefa_id
@@ -313,6 +328,23 @@ export class DeployRepository {
           executionId: source.executionId, correlationId: source.correlationId ?? source.messageId, causationId: source.messageId,
           payload: { batchId, reason } })
         await this.insertOutbox(connection, event)
+        if (!success) {
+          // Evento canônico para o Monitor-Resolvedor: todo bloqueio gera TASK_BLOCKED.
+          const blocked = createTaskBlockedMessage({
+            taskId,
+            executionId: `${source.executionId}-block-${batchId}`,
+            correlationId: source.correlationId ?? source.messageId,
+            causationId: source.messageId,
+            payload: {
+              blockReason: 'deploy_failed',
+              blockCommand: `motor-v3:deploy:${batchId}`,
+              blockExcerpt: String(reason ?? 'Falha no deploy').slice(0, 500),
+              batchId,
+              databaseTaskId: Number(request.task_id),
+            },
+          })
+          await this.insertOutbox(connection, blocked)
+        }
       }
       await this.insertPendingDispatches(connection)
       await connection.commit()
@@ -329,8 +361,7 @@ export class DeployRepository {
   }
 
   private async insertOutbox(connection: PoolConnection, message: QueueMessage): Promise<void> {
-    await connection.query(`INSERT INTO motor_outbox (message_id,type,destination_queue,task_id,execution_id,payload_json,timestamp,correlation_id,causation_id,status,attempt)
-      VALUES (?,?, 'motor.commands',?,?,?,NOW(),?,?,'pending',0)`, [message.messageId, message.type, message.taskId, message.executionId, JSON.stringify(message.payload), message.correlationId ?? null, message.causationId ?? null])
+    await insertOutboxMessage(connection, message)
   }
 
   private async insertPendingDispatches(connection: PoolConnection): Promise<number> {

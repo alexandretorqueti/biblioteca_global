@@ -224,6 +224,6 @@ export class DeployConsumer {
   }
 
   private async reject(operationId: string, message: QueueMessage, reasonCode: string): Promise<void> { await this.log(operationId, 99, 'rejected', 'rejected', message, { commandCode: 'C10_DEPLOY_REQUESTED', policyCode: 'P10_DEPLOY_IF_ELIGIBLE', actionCode: 'A30_ACCEPT_DEPLOY_REQUEST', reasonCode }) }
-  private async block(operationId: string, message: QueueMessage, reasonCode: string, detail: string): Promise<void> { await this.repository.blockTask(message.taskId, reasonCode, detail); await this.log(operationId, 99, 'failed', 'failed', message, { actionCode: 'A30_ACCEPT_DEPLOY_REQUEST', reasonCode, result: { error: detail } }) }
+  private async block(operationId: string, message: QueueMessage, reasonCode: string, detail: string): Promise<void> { await this.repository.blockTask(message.taskId, reasonCode, detail, message); await this.log(operationId, 99, 'failed', 'failed', message, { actionCode: 'A30_ACCEPT_DEPLOY_REQUEST', reasonCode, result: { error: detail } }) }
   private async log(operationId: string, sequence: number, phase: any, outcome: any, message: QueueMessage, extra: Record<string, unknown>): Promise<void> { await this.logger?.append({ operationId, sequence, phase, outcome, messageId: message.messageId, messageType: message.type, correlationId: message.correlationId, causationId: message.causationId, taskId: message.taskId, ...(extra as any) }) }
 }
