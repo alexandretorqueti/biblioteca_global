@@ -66,7 +66,9 @@ export class DeployConsumer {
     const operationId = randomUUID(); await this.log(operationId, 1, 'received', 'executed', message, { commandCode: 'C11_DEPLOY_BATCH_DISPATCH_REQUESTED' })
     if (!await this.govern(operationId, message, 'A31_DISPATCH_DEPLOY_BATCH')) return
     const claimed = await this.repository.claimBatch(message)
-    if (!claimed) return this.log(operationId, 2, 'completed', 'skipped', message, { reasonCode: 'motor_busy_or_no_compatible_pending_batch' })
+    // Seq 3: o govern() já gravou a decisão no seq 2; colisão aqui violaria
+    // (operation_id, sequence) e transformaria o skip benigno em retry infinito.
+    if (!claimed) return this.log(operationId, 3, 'completed', 'skipped', message, { reasonCode: 'motor_busy_or_no_compatible_pending_batch' })
     try {
       const composed = await this.composeBatch(claimed.batch.repoPath, claimed.batch.baseBranch, claimed.batch.batchId, claimed.members.map(member => member.requestedCommit))
       try {

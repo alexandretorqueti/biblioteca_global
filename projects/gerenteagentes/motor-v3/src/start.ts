@@ -42,7 +42,7 @@ import { getDeployDiagnostics } from './deploy/DeployDiagnostics.js'
 import { DeployConsumer } from './deploy/DeployConsumer.js'
 import { DeployRepository } from './deploy/DeployRepository.js'
 import { RemoteBlueGreenDeployer } from './deploy/RemoteBlueGreenDeployer.js'
-import { BaselinePreflightRecovery, TestGateConsumer, TestGateOrchestrator, TestGateService, TestRecoveryConsumer, WorkspaceEnvironmentPreparer } from './testing/index.js'
+import { BaselinePreflightRecovery, TestGateConsumer, TestGateJobReconciler, TestGateOrchestrator, TestGateService, TestRecoveryConsumer, WorkspaceEnvironmentPreparer } from './testing/index.js'
 import { ConsoleHumanNotifier, MonitorPromptResolver, MonitorResolutionConsumer, TaskUnblockedConsumer, createTaskBlockedMessage, loadActiveBlocker } from './monitor/index.js'
 
 // Config
@@ -73,6 +73,7 @@ let monitorResolutionConsumer: MonitorResolutionConsumer | null = null
 let taskUnblockedConsumer: TaskUnblockedConsumer | null = null
 let testGateQueueConsumer: QueueConsumer | null = null
 let testGateOutboxPublisher: OutboxPublisher | null = null
+let testGateJobReconciler: TestGateJobReconciler | null = null
 let deployConsumer: DeployConsumer | null = null
 let cancelConsumer: TaskCancelConsumer | null = null
 let analysisSessionRecovery: AnalysisSessionRecoveryReconciler | null = null
@@ -335,6 +336,19 @@ async function start() {
       queue: gateQueue, maxAttempts: Number(process.env.MOTOR_QUEUE_MAX_ATTEMPTS || 3),
     }, pool)
     await testGateQueueConsumer.start()
+    // Jobs de gate órfãos (worker morto com job em processing/pending) travam o
+    // isMotorIdle() para sempre; o reconciliador reenfileira TEST_RUN_REQUESTED
+    // no boot e periodicamente (claim SQL do consumer garante idempotência).
+    testGateJobReconciler = new TestGateJobReconciler(pool, {
+      enqueue: async message => {
+        if (!testGateOutboxPublisher) throw new Error('Outbox de gates indisponível para recuperação')
+        await testGateOutboxPublisher.enqueue(message)
+      },
+      staleMinutes: Number(process.env.MOTOR_TEST_GATE_STALE_MINUTES || 20),
+      intervalMs: Number(process.env.MOTOR_TEST_GATE_RECOVERY_INTERVAL_MS || 300000),
+    })
+    await testGateJobReconciler.reconcile()
+    testGateJobReconciler.start()
     developmentConsumer = new DevelopmentExecutionConsumer(
       developmentRepository,
       operationLogger,
@@ -798,6 +812,7 @@ async function shutdown() {
     await outboxPublisher.stop()
     console.log('[Motor v3] OutboxPublisher parado')
   }
+  testGateJobReconciler?.stop()
   if (testGateOutboxPublisher) await testGateOutboxPublisher.stop()
 
   // Para scheduler
