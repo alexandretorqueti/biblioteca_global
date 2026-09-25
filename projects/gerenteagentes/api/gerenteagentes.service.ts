@@ -1153,6 +1153,18 @@ export class GerenteAgentesService {
       throw new BadRequestException('Tarefa já está pausada');
     }
 
+    // Verifica se a tarefa está em status final (não pode pausar tarefa finalizada)
+    const [fact] = await db
+      .select({ terminalStatus: taskRuntimeFacts.terminalStatus })
+      .from(taskRuntimeFacts)
+      .where(eq(taskRuntimeFacts.tarefaId, tarefaId))
+      .limit(1);
+
+    const { TASK_STATUS_FINAIS } = await import('../motor-v2/dist/shared/task-statuses.js');
+    if (fact?.terminalStatus && TASK_STATUS_FINAIS.has(fact.terminalStatus)) {
+      throw new BadRequestException(`Não é possível pausar tarefa em status final: ${fact.terminalStatus}`);
+    }
+
     if (this.motorVersao === 'v2' || this.motorVersao === 'v3') {
       const motorId = tarefa.externalId || String(tarefa.id);
       const resp = await this.motorRequest(
