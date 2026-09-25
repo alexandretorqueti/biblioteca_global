@@ -459,13 +459,14 @@ export class MotorAPI {
       const configuracaoGlobal: Record<string, Array<{ ordem: number; provider: string; model: string; enabled: boolean }>> = {
         DEV: [], ANALYST: [], MONITOR: [],
       }
-      for (const row of result.rows) {
-        const tipo = String(row.tipo)
-        if (['DEV', 'ANALYST', 'MONITOR'].includes(tipo)) {
-          configuracaoGlobal[tipo].push({
+      for (const row of (result.rows ?? []) as any[]) {
+        const tipo = String(row.tipo) as 'DEV' | 'ANALYST' | 'MONITOR'
+        const arr = configuracaoGlobal[tipo]
+        if (arr) {
+          arr.push({
             ordem: Number(row.ordem),
-            provider: row.provider,
-            model: row.model,
+            provider: String(row.provider),
+            model: String(row.model),
             enabled: Boolean(row.enabled),
           })
         }
