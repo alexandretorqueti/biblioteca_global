@@ -456,6 +456,20 @@
       "when": 1790100000000,
       "tag": "0065_monitor_resolucao_bloqueio_prompt",
       "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "5",
+      "when": 1790100000001,
+      "tag": "0066_global_model_selection",
+      "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "5",
+      "when": 1790100000002,
+      "tag": "0067_inherit_global_model_selection",
+      "breakpoints": true
     }
   ]
 }

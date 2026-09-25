@@ -10,6 +10,12 @@ import type {
   ModelSelectionEntry,
 } from '@biblioteca-global/shared';
 import { ProjectModelSelectionSchema } from '@biblioteca-global/shared';
+import {
+  parseGlobalModelSelection,
+  type GlobalModelSelection,
+  type GlobalModelSelectionEntry,
+  type GlobalModelSelectionTipo,
+} from '../motor-v2/src/shared/global-model-selection.js';
 import { PROJECT_DB_FACTORY, type ProjectDbFactory } from '../../../apps/api/src/modules/crud/project-db.factory';
 import { SCHEMA_REGISTRY, type SchemaRegistry } from '../../../apps/api/src/modules/crud/schema-registry';
 import {
@@ -2132,6 +2138,98 @@ export class GerenteAgentesService {
       }
     });
     return { projectKey: parsed.projectKey, tipo, entries: parsed.entries };
+  }
+
+  /**
+   * Lê a configuração global de modelos da tabela global_model_selection.
+   */
+  async getGlobalModelSelection(): Promise<{ ok: boolean; configuracaoGlobal: GlobalModelSelection }> {
+    const db = await this.dbDoMotor();
+    const [rows] = await db.execute(sql`
+      SELECT tipo, ordem, provider, model, enabled
+      FROM global_model_selection
+      ORDER BY tipo, ordem ASC
+    `) as unknown as [Array<{ tipo: string; ordem: number | string; provider: string; model: string; enabled: number | boolean }>];
+    const configuracaoGlobal: GlobalModelSelection = { DEV: [], ANALYST: [], MONITOR: [] };
+    for (const row of rows) {
+      const tipo = row.tipo as GlobalModelSelectionTipo;
+      configuracaoGlobal[tipo].push({
+        ordem: Number(row.ordem),
+        provider: row.provider,
+        model: row.model,
+        enabled: Boolean(row.enabled),
+      });
+    }
+    return { ok: true, configuracaoGlobal };
+  }
+
+  /**
+   * Aplica a configuração global e propaga para todos os projetos ativos.
+   */
+  async saveGlobalModelSelection(input: unknown): Promise<{
+    configuracaoGlobal: GlobalModelSelection;
+    resultadoPropagacao: { sucesso: boolean; totalProjetos: number };
+    projetosAplicados: Array<{ projectKey: string; tipos: GlobalModelSelectionTipo[] }>;
+    errosPorProjeto: Array<{ projectKey: string; error: string }>;
+    mensagem?: string;
+  }> {
+    const configuracaoGlobal = parseGlobalModelSelection(input);
+    const db = await this.dbDoMotor();
+
+    // Salva na tabela global
+    await db.transaction(async (tx: any) => {
+      await tx.execute(sql`DELETE FROM global_model_selection`);
+      for (const tipo of ['DEV', 'ANALYST', 'MONITOR'] as GlobalModelSelectionTipo[]) {
+        for (const entry of configuracaoGlobal[tipo]) {
+          await tx.execute(sql`
+            INSERT INTO global_model_selection (tipo, ordem, provider, model, enabled)
+            VALUES (${tipo}, ${entry.ordem}, ${entry.provider}, ${entry.model}, ${entry.enabled ? 1 : 0})
+          `);
+        }
+      }
+    });
+
+    // Propaga para todos os projetos ativos
+    const [projetos] = await db.execute(sql`
+      SELECT slug FROM projetos_captados WHERE ativo = 1
+    `) as unknown as [Array<{ slug: string }>];
+
+    const projetosAplicados: Array<{ projectKey: string; tipos: GlobalModelSelectionTipo[] }> = [];
+    const errosPorProjeto: Array<{ projectKey: string; error: string }> = [];
+    const tipos: GlobalModelSelectionTipo[] = ['DEV', 'ANALYST', 'MONITOR'];
+
+    for (const projeto of projetos) {
+      try {
+        await db.transaction(async (tx: any) => {
+          for (const tipo of tipos) {
+            await tx.execute(sql`DELETE FROM project_model_selection WHERE project_slug = ${projeto.slug} AND tipo = ${tipo}`);
+            for (const entry of configuracaoGlobal[tipo]) {
+              await tx.execute(sql`
+                INSERT INTO project_model_selection (project_slug, tipo, ordem, provider, model, enabled)
+                VALUES (${projeto.slug}, ${tipo}, ${entry.ordem}, ${entry.provider}, ${entry.model}, ${entry.enabled ? 1 : 0})
+              `);
+            }
+          }
+        });
+        projetosAplicados.push({ projectKey: projeto.slug, tipos: [...tipos] });
+      } catch (e: unknown) {
+        errosPorProjeto.push({ projectKey: projeto.slug, error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+
+    const resultado = {
+      configuracaoGlobal,
+      resultadoPropagacao: { sucesso: errosPorProjeto.length === 0, totalProjetos: projetos.length },
+      projetosAplicados,
+      errosPorProjeto,
+    };
+    if (errosPorProjeto.length > 0) {
+      return {
+        ...resultado,
+        mensagem: `Configuração global salva, mas falhou em ${errosPorProjeto.length} projeto(s). Verifique errosPorProjeto e tente novamente.`,
+      };
+    }
+    return resultado;
   }
 
   // ============================================================================
