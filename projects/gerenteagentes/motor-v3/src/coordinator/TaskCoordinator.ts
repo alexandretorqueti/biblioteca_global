@@ -23,6 +23,12 @@ export interface TaskSnapshot {
   analysisStartedAt: string | null
   analysisExecutionId?: string | null
   subtaskCount: number
+  /** ID da tarefa da qual esta depende (null = sem dependência). */
+  dependsOnTaskId?: string | null
+  /** Estado da dependência (carregado pelo repositório). */
+  dependencyTerminalStatus?: string | null
+  dependencyDeployStatus?: string | null
+  dependencyTaskType?: string | null
 }
 
 /**
@@ -178,6 +184,21 @@ export class TaskCoordinator {
       return
     }
 
+    const dependencyCheck = this.checkDependencySatisfied(task)
+    if (!dependencyCheck.satisfied) {
+      await this.log(operationId, sequence++, 'rejected', 'rejected', message, {
+        reasonCode: 'dependency_not_met',
+        result: { dependencyTaskId: dependencyCheck.dependencyTaskId, dependencyStatus: dependencyCheck.dependencyStatus, dependencyDeployStatus: dependencyCheck.dependencyDeployStatus },
+      })
+      await this.recordEvent(task.taskId, 'dependency_not_met', {
+        dependencyTaskId: dependencyCheck.dependencyTaskId,
+        dependencyStatus: dependencyCheck.dependencyStatus,
+        dependencyDeployStatus: dependencyCheck.dependencyDeployStatus,
+      })
+      await this.emit('TASK_IGNORED', message, { reason: 'dependency_not_met' })
+      return
+    }
+
     if (task.subtaskCount > 0 || task.analysisStartedAt !== null) {
       await this.log(operationId, sequence++, 'rejected', 'rejected', message, { reasonCode: task.subtaskCount > 0 ? 'task_has_plan' : 'analysis_already_claimed' })
       if (task.subtaskCount > 0) await this.emitTaskReady(message, { reason: 'plan_exists', subtaskCount: task.subtaskCount })
@@ -312,6 +333,49 @@ export class TaskCoordinator {
     if (task.terminal || ['cancelled', 'completed', 'failed'].includes(task.status)) return 'terminal'
     if (task.status === 'blocked') return 'blocked'
     return null
+  }
+
+  /**
+   * Verifica se a dependência entre tarefas (depends_on_task_id) está satisfeita.
+   *
+   * Regras:
+   * - dependsOnTaskId NULL → satisfeita (sem dependência)
+   * - dependência do tipo 'desenvolvimento' → exige terminal_status='completed' E deploy_requests.status='succeeded'
+   * - dependência do tipo 'verificacao' ou 'automacao' → exige apenas terminal_status='completed'
+   * - dependência não encontrada (dependencyTaskType null) → não satisfeita
+   */
+  private checkDependencySatisfied(task: TaskSnapshot): {
+    satisfied: boolean
+    dependencyTaskId: string | null
+    dependencyStatus: string | null
+    dependencyDeployStatus: string | null
+  } {
+    const dependencyTaskId = task.dependsOnTaskId ?? null
+    if (!dependencyTaskId) {
+      return { satisfied: true, dependencyTaskId: null, dependencyStatus: null, dependencyDeployStatus: null }
+    }
+
+    const dependencyTaskType = task.dependencyTaskType ?? null
+    const dependencyStatus = task.dependencyTerminalStatus ?? null
+    const dependencyDeployStatus = task.dependencyDeployStatus ?? null
+
+    if (!dependencyTaskType) {
+      return { satisfied: false, dependencyTaskId, dependencyStatus, dependencyDeployStatus }
+    }
+
+    const isCompleted = dependencyStatus === 'completed'
+
+    if (dependencyTaskType === 'desenvolvimento') {
+      const satisfied = isCompleted && dependencyDeployStatus === 'succeeded'
+      return { satisfied, dependencyTaskId, dependencyStatus, dependencyDeployStatus }
+    }
+
+    if (dependencyTaskType === 'verificacao' || dependencyTaskType === 'automacao') {
+      return { satisfied: isCompleted, dependencyTaskId, dependencyStatus, dependencyDeployStatus }
+    }
+
+    // Tipo desconhecido: não satisfeita por segurança
+    return { satisfied: false, dependencyTaskId, dependencyStatus, dependencyDeployStatus }
   }
 
   private async emit(eventName: string, source: QueueMessage, payload: Record<string, unknown>): Promise<void> {

@@ -18,6 +18,12 @@ interface TaskRow extends RowDataPacket {
   terminal_status: string | null
   subtask_count: number | string
   blocked_count: number | string
+  depends_on_task_id: number | string | null
+  dependency_external_id: string | null
+  dependency_id: number | null
+  dependency_tipo: string | null
+  dependency_terminal_status: string | null
+  dependency_deploy_status: string | null
 }
 
 /** Repositório MySQL do claim inicial de análise. */
@@ -32,17 +38,30 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
     const [rows] = await this.pool.query<TaskRow[]>(`
       SELECT
         t.id, t.external_id, t.titulo, t.descricao, t.tipo, pmc.repo_path, t.paused_at,
+        t.depends_on_task_id,
         COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), pc.slug, '') AS agente_id,
         pc.slug AS project_slug,
         f.analysis_started_at, f.analysis_execution_id, f.terminal_status,
         (SELECT COUNT(*) FROM subtarefas s WHERE s.tarefa_id = t.id) AS subtask_count,
         (SELECT COUNT(*) FROM bloqueios b
-          WHERE b.tarefa_id = t.id AND b.resolved_at IS NULL) AS blocked_count
+          WHERE b.tarefa_id = t.id AND b.resolved_at IS NULL) AS blocked_count,
+        dep.external_id AS dependency_external_id,
+        dep.id AS dependency_id,
+        dep.tipo AS dependency_tipo,
+        dep_f.terminal_status AS dependency_terminal_status,
+        (SELECT CASE
+           WHEN EXISTS(SELECT 1 FROM deploy_requests dr WHERE dr.tarefa_id = dep.id AND dr.status = 'succeeded') THEN 'succeeded'
+           WHEN EXISTS(SELECT 1 FROM deploy_requests dr WHERE dr.tarefa_id = dep.id AND dr.status = 'failed') THEN 'failed'
+           WHEN EXISTS(SELECT 1 FROM deploy_requests dr WHERE dr.tarefa_id = dep.id AND dr.status IN ('pending','running')) THEN 'pending'
+           ELSE NULL
+         END) AS dependency_deploy_status
       FROM tarefas t
       LEFT JOIN projetos_captados pc ON pc.id = t.projeto_id
       LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id = t.projeto_id
       LEFT JOIN agentes a ON a.id = pc.agente_id
       LEFT JOIN task_runtime_facts f ON f.tarefa_id = t.id
+      LEFT JOIN tarefas dep ON dep.id = t.depends_on_task_id
+      LEFT JOIN task_runtime_facts dep_f ON dep_f.tarefa_id = dep.id
       WHERE t.external_id = ? OR CAST(t.id AS CHAR) = ?
       LIMIT 1
     `, [taskId, taskId])
@@ -52,6 +71,12 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
     return {
       ...this.mapTask(row),
       status: await this.statusResolver.resolve(String(row.external_id ?? row.id)),
+      dependsOnTaskId: row.depends_on_task_id != null
+        ? String(row.dependency_external_id ?? row.dependency_id ?? row.depends_on_task_id)
+        : null,
+      dependencyTerminalStatus: row.dependency_terminal_status ? String(row.dependency_terminal_status) : null,
+      dependencyDeployStatus: row.dependency_deploy_status ? String(row.dependency_deploy_status) : null,
+      dependencyTaskType: row.dependency_tipo ? String(row.dependency_tipo) : null,
     }
   }
 
