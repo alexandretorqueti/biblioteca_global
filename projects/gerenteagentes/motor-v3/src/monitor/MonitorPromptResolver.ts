@@ -1,6 +1,6 @@
 import type { Pool, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
 
-export const MONITOR_RESOLUTION_PROMPT_KEY = 'monitor…ucao'
+export const MONITOR_RESOLUTION_PROMPT_KEY = 'monitor.resolucao_bloqueio'
 
 export interface MonitorPromptMarkers {
   taskId: string
