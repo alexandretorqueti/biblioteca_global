@@ -16,7 +16,7 @@ import userEvent from "@testing-library/user-event"
 import "@testing-library/jest-dom/vitest"
 import { BibliotecaThemeProvider } from "@biblioteca-global/ui"
 
-import OperationMapScreen from "../OperationMapScreen"
+import OperationMapScreen, { resultadoCor } from "../OperationMapScreen"
 
 vi.mock("../../../../apps/web/src/hooks/useApi", () => ({
   useApi: () => globalThis.__bundleMapa ?? undefined,
@@ -212,5 +212,142 @@ describe("OperationMapScreen — tarefas enfileiradas", () => {
       expect(screen.getByTestId("operation-map-task-88")).toBeInTheDocument()
       expect(screen.getByTestId("operation-count-planned")).toHaveTextContent("1")
     })
+  })
+})
+
+describe("resultadoCor", () => {
+  it("retorna success para status de sucesso", () => {
+    expect(resultadoCor("verified")).toBe("success")
+    expect(resultadoCor("completed")).toBe("success")
+    expect(resultadoCor("delivered")).toBe("success")
+  })
+
+  it("retorna error para status de falha/bloqueio/rejeição", () => {
+    expect(resultadoCor("rejected")).toBe("error")
+    expect(resultadoCor("blocked")).toBe("error")
+    expect(resultadoCor("failed")).toBe("error")
+  })
+
+  it("retorna text.secondary para demais status", () => {
+    expect(resultadoCor("running")).toBe("text.secondary")
+    expect(resultadoCor("pending")).toBe("text.secondary")
+    expect(resultadoCor("analyzing")).toBe("text.secondary")
+  })
+})
+
+describe("OperationMapScreen — resultado da subtarefa na aba Execução", () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+    delete globalThis.__bundleMapa
+  })
+
+  function bundleComSubtarefas(tarefaId: number, subtarefas: Array<{ seq: number; titulo: string; status: string; resultado: string | null }>) {
+    return {
+      getAccessToken: () => "token-de-teste",
+      http: {
+        request: async (method: string, path: string) => {
+          if (path === "/gerenteagentes/tarefas-com-status") return [tarefaFactory(tarefaId, "Tarefa com resultado", "running")]
+          if (path === "/gerenteagentes/projetos_captados") return { items: [{ id: 1, nome: "Projeto X" }] }
+          if (path === "/gerenteagentes/motor-activity") return { activities: [] }
+          if (path === "/gerenteagentes/motor-deploy-diagnostics") return { canStart: true, reasons: [], pendingRequests: 0 }
+          if (path.endsWith("/motor-detail")) {
+            return {
+              motorId: "m1",
+              exists: true,
+              task: { status: "running", title: "Tarefa com resultado" },
+              subtasks: subtarefas.map(s => ({
+                seq: s.seq,
+                title: s.titulo,
+                status: s.status,
+                resultado: s.resultado,
+                deliverCount: 1,
+                scope: "Escopo",
+                acceptanceCriteria: [],
+              })),
+            }
+          }
+          if (path.endsWith("/subtarefas")) return []
+          if (path.endsWith("/chat")) return []
+          return {}
+        },
+      },
+    }
+  }
+
+  async function abrirAbaExecucao(taskId: number) {
+    await screen.findByTestId(`operation-map-task-${taskId}`)
+    await waitFor(() =>
+      expect(screen.getByTestId(`operation-map-task-${taskId}`)).toBeInTheDocument(),
+    )
+    fireEvent.click(screen.getByTestId(`operation-map-task-${taskId}`))
+    // Aguarda o drawer abrir
+    await screen.findByTestId("operation-task-drawer")
+    // Clica na aba "Execução" (índice 2)
+    const tabs = screen.getAllByRole("tab")
+    fireEvent.click(tabs[2])
+  }
+
+  it("exibe resultado em verde para subtarefa com status completed", async () => {
+    globalThis.__bundleMapa = bundleComSubtarefas(10, [
+      { seq: 1, titulo: "Subtarefa concluída", status: "completed", resultado: "Implementação finalizada com sucesso." },
+    ])
+    renderScreen()
+    await abrirAbaExecucao(10)
+
+    const resultado = await screen.findByTestId("subtask-result-1")
+    expect(resultado).toBeInTheDocument()
+    expect(resultado).toHaveTextContent("Resultado: Implementação finalizada com sucesso.")
+    // MUI aplica a cor via classe CSS; verificamos o estilo computado ou a classe
+    expect(resultado).toHaveStyle({ color: expect.stringContaining("success") })
+  })
+
+  it("exibe resultado em vermelho para subtarefa com status failed", async () => {
+    globalThis.__bundleMapa = bundleComSubtarefas(11, [
+      { seq: 1, titulo: "Subtarefa com falha", status: "failed", resultado: "Erro de compilação no módulo X." },
+    ])
+    renderScreen()
+    await abrirAbaExecucao(11)
+
+    const resultado = await screen.findByTestId("subtask-result-1")
+    expect(resultado).toBeInTheDocument()
+    expect(resultado).toHaveTextContent("Resultado: Erro de compilação no módulo X.")
+    expect(resultado).toHaveStyle({ color: expect.stringContaining("error") })
+  })
+
+  it("exibe resultado em verde para subtarefa com status verified", async () => {
+    globalThis.__bundleMapa = bundleComSubtarefas(12, [
+      { seq: 1, titulo: "Subtarefa verificada", status: "verified", resultado: "Testes passaram, revisão aprovada." },
+    ])
+    renderScreen()
+    await abrirAbaExecucao(12)
+
+    const resultado = await screen.findByTestId("subtask-result-1")
+    expect(resultado).toBeInTheDocument()
+    expect(resultado).toHaveStyle({ color: expect.stringContaining("success") })
+  })
+
+  it("exibe resultado em vermelho para subtarefa com status blocked", async () => {
+    globalThis.__bundleMapa = bundleComSubtarefas(13, [
+      { seq: 1, titulo: "Subtarefa bloqueada", status: "blocked", resultado: "Dependência externa não disponível." },
+    ])
+    renderScreen()
+    await abrirAbaExecucao(13)
+
+    const resultado = await screen.findByTestId("subtask-result-1")
+    expect(resultado).toBeInTheDocument()
+    expect(resultado).toHaveStyle({ color: expect.stringContaining("error") })
+  })
+
+  it("aplica tipografia sans-serif e tamanho aumentado no resultado", async () => {
+    globalThis.__bundleMapa = bundleComSubtarefas(14, [
+      { seq: 1, titulo: "Subtarefa", status: "completed", resultado: "Texto de teste." },
+    ])
+    renderScreen()
+    await abrirAbaExecucao(14)
+
+    const resultado = await screen.findByTestId("subtask-result-1")
+    // 0.9375rem = 15px (1pt acima do body2 padrão de 14px)
+    expect(resultado).toHaveStyle({ fontSize: "0.9375rem" })
+    expect(resultado).toHaveStyle({ lineHeight: "1.6" })
   })
 })
