@@ -104,6 +104,22 @@ export class ConsoleHttpApi implements AnalystConsole {
     return this.stringValue(detail.message) ?? this.stringValue(detail.error) ?? this.stringValue(detail.code)
   }
 
+  /**
+   * Arquiva a sessão no Console (best-effort). Falha não derruba o chamador —
+   * o sanitize-session prossegue mesmo sem arquivamento remoto.
+   */
+  async archiveSession(sessionKey: string): Promise<{ archived: boolean; error?: string }> {
+    try {
+      await this.request('/api/sessions/archive', {
+        method: 'POST',
+        body: { key: sessionKey },
+      })
+      return { archived: true }
+    } catch (error) {
+      return { archived: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
   private async request<T = unknown>(path: string, options: { method: 'GET' | 'POST'; body?: Record<string, unknown>; query?: Record<string, string | number> }): Promise<T> {
     const url = new URL(path, this.baseUrl.endsWith('/') ? this.baseUrl : `${this.baseUrl}/`)
     for (const [key, value] of Object.entries(options.query ?? {})) url.searchParams.set(key, String(value))

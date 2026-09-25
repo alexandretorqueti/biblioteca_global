@@ -30,7 +30,7 @@ import { QueueConsumer } from './queue/QueueConsumer.js'
 import { RabbitMqTransport } from './queue/RabbitMqTransport.js'
 import { OutboxPublisher, createQueueMessage } from './queue/index.js'
 import type { QueueMessage } from './queue/QueueMessage.js'
-import { TaskCoordinator, MySqlTaskCoordinatorRepository, AnalysisClaimReconciler, AnalysisSessionRecoveryReconciler, TaskCancelConsumer, MySqlTaskEventRecorder, MySqlAnalysisFailureBlocker } from './coordinator/index.js'
+import { TaskCoordinator, MySqlTaskCoordinatorRepository, AnalysisClaimReconciler, AnalysisSessionRecoveryReconciler, TaskCancelConsumer, MySqlTaskEventRecorder, MySqlAnalysisFailureBlocker, SanitizeSessionService } from './coordinator/index.js'
 import { ConsoleAnalystRunner } from './analysis/ConsoleAnalystRunner.js'
 import { ConsoleHttpApi } from './analysis/ConsoleHttpApi.js'
 import { ManagedAnalysisPromptResolver } from './analysis/ManagedAnalysisPromptResolver.js'
@@ -753,26 +753,24 @@ async function start() {
 
       // POST /api/motor/task/:id/sanitize-session. Arquiva a sessão física
       // do agente sem apagar auditoria; prepara contexto limpo para retomada.
+      // Detecta automaticamente bloqueio por análise e faz reset transacional
+      // (DELETE task_runtime_facts, DELETE bloqueios analysis, UPDATE paused_at,
+      // INSERT evento analysis_reset). Documentação: docs/SANITIZE-SESSION-RESET-ANALISE.md
       if (req.method === 'POST' && taskId && taskAction === 'sanitize-session') {
-        const [taskRows] = await pool.query<any[]>(
-          `SELECT t.id, t.external_id, f.analysis_execution_id
-             FROM tarefas t
-             LEFT JOIN task_runtime_facts f ON f.tarefa_id = t.id
-            WHERE t.external_id = ? OR CAST(t.id AS CHAR) = ?
-            LIMIT 1`,
-          [taskId, taskId],
-        )
-        const task = taskRows[0]
-        if (!task) {
-          res.writeHead(404, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({ ok: false, error: 'Task not found' }))
-          return
+        const consoleUrl = process.env.OPENCLAW_CONSOLE_URL
+        const consoleToken = process.env.OPENCLAW_CONSOLE_TOKEN
+        const archiver = (consoleUrl && consoleToken) ? new ConsoleHttpApi(consoleUrl, consoleToken) : undefined
+        const service = new SanitizeSessionService(pool, archiver)
+        try {
+          const result = await service.execute(taskId)
+          const statusCode = result.error === 'not_found' ? 404 : 200
+          res.writeHead(statusCode, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify(result))
+        } catch (error) {
+          console.error(`[Motor v3] Sanitize session failed for task ${taskId}:`, error instanceof Error ? error.message : String(error))
+          res.writeHead(500, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: false, sessionsArchived: 0, analysisReset: false, message: 'Falha interna ao sanitizar sessão' }))
         }
-        // Por enquanto apenas registra o evento; a implementação completa
-        // arquivaria a sessão no Console OpenClaw via API.
-        console.log(`[Motor v3] Session sanitize requested for task ${taskId}`)
-        res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ ok: true, sessionsArchived: 0, message: 'Sessão arquivada (implementação pendente)' }))
         return
       }
 
