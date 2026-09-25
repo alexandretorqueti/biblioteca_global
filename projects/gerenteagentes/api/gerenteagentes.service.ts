@@ -15,7 +15,7 @@ import {
   type GlobalModelSelection,
   type GlobalModelSelectionEntry,
   type GlobalModelSelectionTipo,
-} from '../motor-v2/src/shared/global-model-selection.js';
+} from '../motor-v2/dist/shared/global-model-selection.js';
 import { PROJECT_DB_FACTORY, type ProjectDbFactory } from '../../../apps/api/src/modules/crud/project-db.factory';
 import { SCHEMA_REGISTRY, type SchemaRegistry } from '../../../apps/api/src/modules/crud/schema-registry';
 import {
