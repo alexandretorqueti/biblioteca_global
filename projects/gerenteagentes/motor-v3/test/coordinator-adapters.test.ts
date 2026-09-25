@@ -109,5 +109,32 @@ describe('coordinator adapters', () => {
     expect(consoleApi.sendMessage).toHaveBeenCalledTimes(3)
     expect(consoleApi.sendMessage.mock.calls[2][0].message).toContain('Erro de validação')
   })
+
+  it('coloca modelo não permitido em cooldown e tenta o próximo da cadeia', async () => {
+    const consoleApi = {
+      createSession: vi.fn()
+        .mockRejectedValueOnce(new Error('Console HTTP 500: {"error":{"code":"INVALID_REQUEST","message":"model not allowed: deepseek/deepseek-v4-flash"}}'))
+        .mockResolvedValueOnce({ sessionId: 'session-2', sessionKey: 'key-2', agentId: 'agent-1' }),
+      sendMessage: vi.fn(async () => {}),
+      getSessionStatus: vi.fn()
+        .mockResolvedValueOnce({ isComplete: true, lastResponse: 'CONTEXTO_RECEBIDO' })
+        .mockResolvedValueOnce({ isComplete: true, lastResponse: JSON.stringify({
+          subtarefas: [{ seq: 1, titulo: 'Corrigir', scope: 'Escopo', acceptance_criteria: ['OK'], deliverables: ['Código'], requirements_covered: ['REQ-1'], depends_on: [] }],
+          requirements: [{ id: 'REQ-1', description: 'Requisito' }], coverage: [{ requirement_id: 'REQ-1', subtasks: [1] }],
+        }) }),
+    }
+    const recordFailure = vi.fn(async () => {})
+    const { ConsoleAnalystRunner } = await import('../src/analysis/index.js')
+    const runner = new ConsoleAnalystRunner(consoleApi, {
+      pollIntervalMs: 0,
+      modelChainResolver: async () => ['deepseek/deepseek-v4-flash', 'openai/model-b'],
+      modelFailureRecorder: recordFailure,
+    })
+
+    await expect(runner.start(task(), 'exec-1')).resolves.toMatchObject({ kind: 'plan' })
+    expect(recordFailure).toHaveBeenCalledWith('deepseek/deepseek-v4-flash', expect.objectContaining({ message: expect.stringContaining('INVALID_REQUEST') }))
+    expect(consoleApi.createSession).toHaveBeenCalledTimes(2)
+    expect(consoleApi.createSession.mock.calls[1][0]).toEqual(expect.objectContaining({ model: 'openai/model-b' }))
+  })
 })
 // @vitest-environment node
