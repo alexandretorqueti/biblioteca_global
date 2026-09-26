@@ -283,15 +283,15 @@ sleep 5 # Aguarda motor inicializar consumers
 motor_healthy=true
 
 # Verifica se há consumers ativos na fila motor.commands
-consumers=$(docker exec motor-rabbitmq rabbitmqctl list_queues name consumers --quiet 2>/dev/null | grep "motor.commands" | awk '{print $2}' || echo "0")
-if [ "${consumers:-0}" -lt 1 ]; then
-  echo "[deploy-blue-green] ERRO: motor.commands não tem consumers ativos ($consumers consumers)" >&2
+consumers=$(docker exec motor-rabbitmq rabbitmqctl list_queues name consumers --quiet 2>/dev/null | awk '$1 == "motor.commands" {print $2}')
+if [ -z "$consumers" ] || [ "${consumers:-0}" -lt 1 ]; then
+  echo "[deploy-blue-green] ERRO: motor.commands não tem consumers ativos (${consumers:-0} consumers)" >&2
   motor_healthy=false
 fi
 
 # Verifica se há mensagens unacknowledged (presa) na fila
-unacked=$(docker exec motor-rabbitmq rabbitmqctl list_queues name messages_unacknowledged --quiet 2>/dev/null | grep "motor.commands" | awk '{print $2}' || echo "0")
-if [ "${unacked:-0}" -gt 0 ]; then
+unacked=$(docker exec motor-rabbitmq rabbitmqctl list_queues name messages_unacknowledged --quiet 2>/dev/null | awk '$1 == "motor.commands" {print $2}')
+if [ -n "$unacked" ] && [ "${unacked:-0}" -gt 0 ]; then
   echo "[deploy-blue-green] AVISO: motor.commands tem $unacked mensagem(ens) não confirmada(s)" >&2
   # Não bloqueia, mas alerta
 fi
