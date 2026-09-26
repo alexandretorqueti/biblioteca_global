@@ -111,7 +111,8 @@ export class DevelopmentSessionRecoveryReconciler {
           )
           AND NOT EXISTS (
             SELECT 1 FROM motor_message_processing_state mps
-             WHERE mps.task_id IN (t.external_id, CAST(t.id AS CHAR))
+             WHERE (mps.task_id = t.external_id COLLATE utf8mb4_unicode_ci
+                 OR mps.task_id = CAST(t.id AS CHAR) COLLATE utf8mb4_unicode_ci)
                AND mps.message_type='SUBTASK_EXECUTION_REQUESTED'
                AND mps.status='processing'
                AND mps.started_at >= DATE_SUB(NOW(), INTERVAL ? MINUTE)
