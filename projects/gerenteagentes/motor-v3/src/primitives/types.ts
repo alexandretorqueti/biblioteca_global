@@ -20,6 +20,7 @@ export interface PrimitiveContext {
   /** Modelo escolhido pela política de execução para esta tentativa. */
   model?: string
   sessionId?: string
+  sessionKey?: string
   agentId: string
   db: any // Drizzle DB instance
   consoleApi?: any // Console API client

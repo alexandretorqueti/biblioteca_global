@@ -28,12 +28,18 @@ export const createSession: PrimitiveDefinition = {
         ...(context.model ? { model: context.model } : {}),
         metadata: {
           taskId: context.taskId,
+          databaseTaskId: context.databaseTaskId,
           subtaskId: context.subtaskId,
+          executionId: context.executionId,
           generation: context.generation,
+          baselineRunId: context.baselineRunId,
+          worktreePath: context.worktreePath,
+          branchName: context.branchName,
         },
       })
 
       context.sessionId = response.sessionId
+      context.sessionKey = sessionKey
       context.logger?.info('Sessão criada', { sessionId: response.sessionId, sessionKey })
 
       return { success: true, data: { sessionId: response.sessionId, sessionKey } }

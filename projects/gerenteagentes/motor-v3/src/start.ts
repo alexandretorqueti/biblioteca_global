@@ -36,7 +36,7 @@ import { ConsoleHttpApi } from './analysis/ConsoleHttpApi.js'
 import { ManagedAnalysisPromptResolver } from './analysis/ManagedAnalysisPromptResolver.js'
 import { DerivedTaskStatusResolver } from './status/DerivedTaskStatus.js'
 import { MySqlCommandPolicyRepository, MySqlOperationLogger } from './commands/index.js'
-import { DevelopmentExecutionConsumer, GitVerificationIntegrator, GitWorktreePreparer, MySqlDevelopmentExecutionRepository, SubtaskExecutionConsumer, SubtaskVerificationConsumer, WorkerConsoleAdapter } from './execution/index.js'
+import { DevelopmentExecutionConsumer, DevelopmentSessionRecoveryReconciler, GitVerificationIntegrator, GitWorktreePreparer, MySqlDevelopmentExecutionRepository, SubtaskExecutionConsumer, SubtaskVerificationConsumer, WorkerConsoleAdapter } from './execution/index.js'
 import { WorkerLauncher } from './worker-launcher/WorkerLauncher.js'
 import { getDeployDiagnostics } from './deploy/DeployDiagnostics.js'
 import { DeployConsumer } from './deploy/DeployConsumer.js'
@@ -79,6 +79,7 @@ let testGateJobReconciler: TestGateJobReconciler | null = null
 let deployConsumer: DeployConsumer | null = null
 let cancelConsumer: TaskCancelConsumer | null = null
 let analysisSessionRecovery: AnalysisSessionRecoveryReconciler | null = null
+let developmentSessionRecovery: DevelopmentSessionRecoveryReconciler | null = null
 let taskAdjustmentConsumer: TaskAdjustmentConsumer | null = null
 
 async function start() {
@@ -372,6 +373,47 @@ async function start() {
     )
     const worktreePreparer = new GitWorktreePreparer(process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/agentes/gerenteagentes/worktrees')
     const environmentPreparer = new WorkspaceEnvironmentPreparer()
+    const developmentConsole = new WorkerConsoleAdapter(consoleApi, {
+      onSessionCreated: async (session, input) => {
+        const metadata = input.metadata
+        if (!metadata.databaseTaskId || !metadata.subtaskId || !metadata.executionId) {
+          throw new Error('Sessão DEV sem contexto durável completo')
+        }
+        const connection = await pool.getConnection()
+        try {
+          await connection.beginTransaction()
+          await connection.query(
+            `INSERT INTO motor_agent_sessions
+              (subtarefa_id, agent_id, model, session_key, runtime_session_id, status, opened_at, last_activity_at)
+             VALUES (?, ?, ?, ?, ?, 'active', NOW(), NOW())
+             ON DUPLICATE KEY UPDATE runtime_session_id=VALUES(runtime_session_id), model=VALUES(model),
+               agent_id=VALUES(agent_id), status='active', opened_at=NOW(), last_activity_at=NOW(),
+               closed_at=NULL, close_reason=NULL`,
+            [metadata.subtaskId, session.agentId, input.model ?? 'console-default', session.sessionKey, session.sessionId],
+          )
+          await connection.query(
+            `UPDATE tarefa_contextos_execucao SET estado='closed', closed_at=NOW(), updated_at=NOW()
+              WHERE subtarefa_id=? AND fase='development' AND estado!='closed'`,
+            [metadata.subtaskId],
+          )
+          await connection.query(
+            `INSERT INTO tarefa_contextos_execucao
+              (tarefa_id, subtarefa_id, fase, sessao_chave, agent_id, modelo, worktree_path,
+               branch_name, estado, last_run_id, last_checkpoint_at, resumo_contexto, created_at, updated_at)
+             VALUES (?, ?, 'development', ?, ?, ?, ?, ?, 'active', ?, NOW(), ?, NOW(), NOW())`,
+            [metadata.databaseTaskId, metadata.subtaskId, session.sessionKey, session.agentId,
+              input.model ?? null, metadata.worktreePath ?? null, metadata.branchName ?? null,
+              metadata.executionId, JSON.stringify({ baselineRunId: metadata.baselineRunId ?? null, generation: metadata.generation ?? 1 })],
+          )
+          await connection.commit()
+        } catch (error) {
+          await connection.rollback()
+          throw error
+        } finally {
+          connection.release()
+        }
+      },
+    })
     const monitorWorker = new WorkerLauncher({
       maxAttempts: Number(process.env.MOTOR_MONITOR_MAX_ATTEMPTS || 2),
       timeoutMs: Number(process.env.MOTOR_WORKER_TIMEOUT_MS || 1800000),
@@ -388,13 +430,25 @@ async function start() {
         timeoutMs: Number(process.env.MOTOR_WORKER_TIMEOUT_MS || 1800000),
         sandboxRoot: process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/agentes/gerenteagentes/worktrees',
       }),
-      new WorkerConsoleAdapter(consoleApi),
+      developmentConsole,
       db,
       operationLogger,
       testGate,
       environmentPreparer,
       baselineRecovery,
       deployRepository,
+    )
+    developmentSessionRecovery = new DevelopmentSessionRecoveryReconciler(
+      pool,
+      developmentRepository,
+      subtaskExecutionConsumer,
+      consoleApi,
+      developmentConsole,
+      {
+        taskEvents,
+        intervalMs: Number(process.env.MOTOR_DEVELOPMENT_RECOVERY_INTERVAL_MS || 30000),
+        staleMinutes: Number(process.env.MOTOR_DEVELOPMENT_RECOVERY_STALE_MINUTES || 35),
+      },
     )
     subtaskVerificationConsumer = new SubtaskVerificationConsumer(
       developmentRepository,
@@ -466,6 +520,11 @@ async function start() {
     // o timer cobre quedas de dependências externas sem criar nova análise.
     await analysisSessionRecovery.reconcile()
     analysisSessionRecovery.start()
+    // Não bloqueia o health check enquanto uma sessão remota ainda executa.
+    // Mensagens reentregues são reconhecidas pelo consumer como pertencentes
+    // ao reconciliador e não criam um segundo worker.
+    void developmentSessionRecovery.reconcile()
+    developmentSessionRecovery.start()
     await queueConsumer.start()
     // Recuperação única de fatos duráveis após boot. O fluxo normal avança
     // exclusivamente por mensagens/eventos; não há timer de deploy.
@@ -955,6 +1014,7 @@ async function shutdown() {
     console.log('[Motor v3] Scheduler parado')
   }
   analysisSessionRecovery?.stop()
+  developmentSessionRecovery?.stop()
 
   // Fecha servidor HTTP
   if (server) {

@@ -3,5 +3,6 @@ export { MySqlDevelopmentExecutionRepository, type ReservedSubtask, type Capacit
 export { SubtaskExecutionConsumer, SUBTASK_EXECUTION_REQUESTED } from './SubtaskExecutionConsumer.js'
 export { GitWorktreePreparer, mapHostRepoPathToContainer, type PreparedWorktree } from './GitWorktreePreparer.js'
 export { WorkerConsoleAdapter } from './WorkerConsoleAdapter.js'
+export { DevelopmentSessionRecoveryReconciler } from './DevelopmentSessionRecoveryReconciler.js'
 export { GitVerificationIntegrator, type VerificationResult } from './GitVerificationIntegrator.js'
 export { SubtaskVerificationConsumer } from './SubtaskVerificationConsumer.js'

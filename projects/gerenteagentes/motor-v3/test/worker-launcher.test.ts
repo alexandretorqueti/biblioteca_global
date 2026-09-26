@@ -84,6 +84,19 @@ describe('WorkerLauncher', () => {
     expect(result.buildPassed).toBe(true)
   })
 
+  it('finaliza resposta de sessão recuperada sem criar ou reenviar prompt', async () => {
+    mocks.parseReply.handler.mockResolvedValue({ success: true, data: { hasDoneMarker: true } })
+    mocks.verifyGit.handler.mockResolvedValue({ success: true, data: { hasChanges: true } })
+    mocks.runBuild.handler.mockResolvedValue({ success: true })
+
+    const result = await launcher.recoverCompletedTask(mockContext, 'Recuperado ::DONE::')
+
+    expect(result).toMatchObject({ success: true, attempts: 1, hasChanges: true, buildPassed: true })
+    expect(mocks.createSession.handler).not.toHaveBeenCalled()
+    expect(mocks.sendMessage.handler).not.toHaveBeenCalled()
+    expect(mocks.waitForCompletion.handler).not.toHaveBeenCalled()
+  })
+
   it('envia o contexto longo antes do header e aguarda somente após o header', async () => {
     mocks.createSession.handler.mockResolvedValue({ success: true })
     mocks.sendMessage.handler.mockResolvedValue({ success: true })

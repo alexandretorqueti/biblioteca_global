@@ -21,7 +21,7 @@ export class SubtaskExecutionConsumer {
   constructor(
     private readonly repository: MySqlDevelopmentExecutionRepository,
     private readonly worktrees: GitWorktreePreparer,
-    private readonly worker: Pick<WorkerLauncher, 'executeTask'>,
+    private readonly worker: Pick<WorkerLauncher, 'executeTask' | 'recoverCompletedTask'>,
     private readonly consoleApi: unknown,
     private readonly db: unknown,
     private readonly operationLogger?: OperationLogger,
@@ -56,6 +56,14 @@ export class SubtaskExecutionConsumer {
     const execution = await this.repository.getExecutionContext(message.taskId, subtaskId)
     if (!execution) {
       await this.log(operationId, 2, message, { phase: 'rejected', outcome: 'skipped', subtaskId, reasonCode: 'subtask_not_running' })
+      return
+    }
+    // Após restart, a mensagem original pode ser reentregue pelo RabbitMQ.
+    // A sessão persistida pertence ao reconciliador; não crie outro worker.
+    if (await this.repository.hasActiveDevelopmentSession?.(subtaskId)) {
+      await this.log(operationId, 2, message, {
+        phase: 'rejected', outcome: 'skipped', subtaskId, reasonCode: 'development_session_recovery_owned',
+      })
       return
     }
     try {
@@ -196,9 +204,68 @@ export class SubtaskExecutionConsumer {
     const next = result.success && noCode
       ? await this.repository.completeNoCodeExecution(execution, message, result.response ?? '')
       : await this.repository.finishExecution(execution, message, result)
+    await this.repository.closeDevelopmentSession?.(subtaskId, context.sessionKey, result.success)
     await this.log(operationId, workerSequence + 1, message, {
       phase: 'completed', outcome: result.success ? 'succeeded' : 'failed', subtaskId,
       result: { nextMessageId: next.messageId, nextMessageType: next.type, attempts: result.attempts },
+    })
+  }
+
+  /** Retoma o pós-processamento de uma sessão DEV concluída durante o restart. */
+  async recoverCompletedSession(input: {
+    message: QueueMessage
+    sessionId: string
+    sessionKey: string
+    model: string
+    response: string
+    baselineRunId?: number
+  }): Promise<void> {
+    const subtaskId = Number(input.message.payload.subtaskId)
+    const execution = await this.repository.getExecutionContext(input.message.taskId, subtaskId)
+    if (!execution) return
+    this.validateContext(execution)
+    if (!execution.workspacePath || !execution.workspaceBranch || !execution.workspaceBaseCommit) {
+      throw new Error(`Subtarefa ${subtaskId} sem worktree persistido para recuperação`)
+    }
+    const context: PrimitiveContext = {
+      taskId: execution.taskId,
+      databaseTaskId: execution.databaseTaskId,
+      projectId: execution.projectId,
+      subtaskId,
+      executionId: input.message.executionId,
+      generation: execution.generation ?? 1,
+      projectSlug: execution.projectSlug,
+      repoPath: execution.repoPath,
+      worktreePath: execution.workspacePath,
+      branchName: execution.workspaceBranch,
+      baseCommitSha: execution.workspaceBaseCommit,
+      ...(input.baselineRunId ? { baselineRunId: input.baselineRunId } : {}),
+      buildCommand: execution.buildCommand,
+      testCommand: execution.testCommand,
+      model: input.model,
+      sessionId: input.sessionId,
+      sessionKey: input.sessionKey,
+      agentId: execution.agentId,
+      db: this.db,
+      consoleApi: this.consoleApi,
+      logger: console,
+    }
+    const noCode = ['analysis', 'no_code_change', 'external_operation'].includes(execution.completionKind ?? '')
+    const operationId = randomUUID()
+    await this.log(operationId, 1, input.message, {
+      phase: 'received', outcome: 'executed', subtaskId, reasonCode: 'development_session_recovered',
+    })
+    const result = await this.worker.recoverCompletedTask(
+      context,
+      input.response,
+      this.testGate && !noCode ? async (gateContext, phase) => this.runDifferentialGate(execution, gateContext, phase, input.message) : undefined,
+      noCode,
+    )
+    const next = await this.repository.finishExecution(execution, input.message, result)
+    await this.repository.closeDevelopmentSession?.(subtaskId, input.sessionKey, result.success)
+    await this.log(operationId, 2, input.message, {
+      phase: 'completed', outcome: result.success ? 'succeeded' : 'failed', subtaskId,
+      result: { recovered: true, nextMessageId: next.messageId, nextMessageType: next.type },
     })
   }
 

@@ -368,6 +368,15 @@ export class MySqlDevelopmentExecutionRepository {
     }
   }
 
+  async hasActiveDevelopmentSession(subtaskId: number): Promise<boolean> {
+    const [rows] = await this.pool.query<Array<RowDataPacket & { total: number | string }>>(
+      `SELECT COUNT(*) AS total FROM motor_agent_sessions
+        WHERE subtarefa_id=? AND status='active' AND runtime_session_id IS NOT NULL`,
+      [subtaskId],
+    )
+    return Number(rows[0]?.total ?? 0) > 0
+  }
+
   async requestVerification(context: SubtaskExecutionContext, source: QueueMessage): Promise<QueueMessage> {
     return this.transitionWithMessage(context, source, 'delivered', 'verifying', 'SUBTASK_VERIFICATION_REQUESTED', {
       subtaskId: context.subtaskId, seq: context.seq,
@@ -488,6 +497,51 @@ export class MySqlDevelopmentExecutionRepository {
               workspace_status = 'active', workspace_created_at = COALESCE(workspace_created_at, NOW()), updated_at = NOW()
         WHERE id = ? AND status = 'running'`,
       [workspacePath, branchName, baseCommit, subtaskId],
+    )
+  }
+
+  /** Reagenda uma subtarefa running cuja sessão remota não pode ser retomada. */
+  async requeueInterruptedExecution(taskId: string, subtaskId: number, previousExecutionId: string, reason: string): Promise<QueueMessage> {
+    const connection = await this.pool.getConnection()
+    try {
+      await connection.beginTransaction()
+      const [rows] = await connection.query<Array<RowDataPacket & { id: number; seq: number; titulo: string; scope: string | null }>>(
+        `SELECT id, seq, titulo, scope FROM subtarefas WHERE id=? AND status='running' LIMIT 1 FOR UPDATE`,
+        [subtaskId],
+      )
+      const subtask = rows[0]
+      if (!subtask) throw new Error(`Subtarefa ${subtaskId} não está em execução para recuperação`)
+      const message = createQueueMessage({
+        type: 'SUBTASK_EXECUTION_REQUESTED',
+        taskId,
+        executionId: `recover-${previousExecutionId}-${Date.now()}`,
+        payload: { subtaskId, seq: Number(subtask.seq), title: String(subtask.titulo), scope: String(subtask.scope ?? ''), recoveryReason: reason },
+      })
+      await this.insertOutbox(connection, message)
+      await connection.query('UPDATE subtarefas SET updated_at=NOW() WHERE id=? AND status=\'running\'', [subtaskId])
+      await connection.commit()
+      return message
+    } catch (error) {
+      await connection.rollback()
+      throw error
+    } finally {
+      connection.release()
+    }
+  }
+
+  async closeDevelopmentSession(subtaskId: number, sessionKey: string | undefined, success: boolean): Promise<void> {
+    if (!sessionKey) return
+    await this.pool.query(
+      `UPDATE motor_agent_sessions
+          SET status=?, close_reason=?, closed_at=NOW(), last_activity_at=NOW()
+        WHERE subtarefa_id=? AND session_key=? AND status='active'`,
+      [success ? 'completed' : 'failed', success ? 'development_completed' : 'development_failed', subtaskId, sessionKey],
+    )
+    await this.pool.query(
+      `UPDATE tarefa_contextos_execucao
+          SET estado='closed', closed_at=NOW(), updated_at=NOW()
+        WHERE subtarefa_id=? AND sessao_chave=? AND estado!='closed'`,
+      [subtaskId, sessionKey],
     )
   }
 

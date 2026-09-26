@@ -275,6 +275,78 @@ export class WorkerLauncher {
     }
   }
 
+  /**
+   * Finaliza uma execução cuja sessão sobreviveu ao restart do Motor.
+   * Não envia prompt e não cria sessão: valida exatamente a resposta já
+   * produzida pelo Console e executa os mesmos gates do fluxo normal.
+   */
+  async recoverCompletedTask(
+    context: PrimitiveContext,
+    response: string,
+    runDifferentialGate?: (context: PrimitiveContext, phase: 'post_dev' | 'rework') => Promise<DifferentialGateResult>,
+    allowNoChanges = false,
+  ): Promise<WorkerResult> {
+    const parseResult = await parseReply.handler(context, { response })
+    if (!parseResult.success || !parseResult.data?.hasDoneMarker) {
+      return {
+        success: false,
+        error: parseResult.error ?? 'A sessão recuperada terminou sem o marcador ::DONE::',
+        attempts: 1,
+        ...(context.model ? { model: context.model } : {}),
+      }
+    }
+
+    const verifyResult = await verifyGit.handler(context, {})
+    if (!verifyResult.success) {
+      return {
+        success: false,
+        error: verifyResult.error ?? 'Falha ao verificar alterações Git da sessão recuperada',
+        attempts: 1,
+        ...(context.model ? { model: context.model } : {}),
+      }
+    }
+    const hasChanges = verifyResult.data?.hasChanges ?? false
+    if (!hasChanges && !allowNoChanges) {
+      return {
+        success: false,
+        error: 'A sessão recuperada declarou conclusão, mas não alterou o worktree autorizado',
+        attempts: 1,
+        hasChanges: false,
+        ...(context.model ? { model: context.model } : {}),
+      }
+    }
+    if (!hasChanges && allowNoChanges) {
+      return { success: true, response, attempts: 1, hasChanges: false, buildPassed: true, ...(context.model ? { model: context.model } : {}) }
+    }
+
+    const gate = runDifferentialGate
+      ? await runDifferentialGate(context, 'post_dev')
+      : await runBuild.handler(context, { buildCommand: context.buildCommand, testCommand: context.testCommand })
+    if (!gate.success) {
+      return {
+        success: false,
+        error: gate.error ?? 'Build ou testes falharam após recuperação da sessão',
+        attempts: 1,
+        hasChanges,
+        buildPassed: false,
+        ...(context.model ? { model: context.model } : {}),
+        ...('runId' in gate && gate.runId ? { postDevRunId: gate.runId } : {}),
+      }
+    }
+    return {
+      success: true,
+      response,
+      attempts: 1,
+      hasChanges,
+      buildPassed: true,
+      ...(context.model ? { model: context.model } : {}),
+      ...(context.baselineRunId ? { baselineRunId: context.baselineRunId } : {}),
+      ...('runId' in gate && gate.runId ? { postDevRunId: gate.runId } : {}),
+      ...('preExistingFailureCount' in gate && gate.preExistingFailureCount ? { preExistingFailureCount: gate.preExistingFailureCount } : {}),
+      ...('resolvedFailureCount' in gate && gate.resolvedFailureCount ? { resolvedFailureCount: gate.resolvedFailureCount } : {}),
+    }
+  }
+
   private async recordModelFailure(
     model: string | undefined,
     error: string,
