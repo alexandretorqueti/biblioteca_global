@@ -17,7 +17,10 @@ export const createSession: PrimitiveDefinition = {
         return { success: false, error: 'Console API não disponível' }
       }
 
-      const sessionKey = `agent:${context.agentId}:motor-v3:development:${context.taskId}:${context.subtaskId}:gen-${context.generation}`
+      // Extrai nome do modelo removendo prefixo do provider (ex.: openai/gpt-5.6-luna → gpt-5.6-luna)
+      // Fallback para console-default quando context.model estiver ausente
+      const modelName = context.model ? context.model.split('/').pop()! : 'console-default'
+      const sessionKey = `dev-${modelName}-${context.taskId}-s${context.subtaskId}`
       
       const response = await context.consoleApi.createSession({
         key: sessionKey,
