@@ -16,6 +16,8 @@ import type {
 export const SUBTASK_EXECUTION_REQUESTED = 'SUBTASK_EXECUTION_REQUESTED'
 
 export class SubtaskExecutionConsumer {
+  private readonly deployLock?: { isDeployLocked(): Promise<boolean>; requeueForDeployRetry(message: QueueMessage, reason: string): Promise<void> }
+
   constructor(
     private readonly repository: MySqlDevelopmentExecutionRepository,
     private readonly worktrees: GitWorktreePreparer,
@@ -26,10 +28,26 @@ export class SubtaskExecutionConsumer {
     private readonly testGate?: TestGateOrchestrator,
     private readonly environmentPreparer?: WorkspaceEnvironmentPreparer,
     private readonly baselineRecovery?: BaselinePreflightRecovery,
-  ) {}
+    deployLock?: { isDeployLocked(): Promise<boolean>; requeueForDeployRetry(message: QueueMessage, reason: string): Promise<void> },
+  ) {
+    this.deployLock = deployLock
+  }
 
   async handle(message: QueueMessage): Promise<void> {
     if (message.type !== SUBTASK_EXECUTION_REQUESTED) return
+
+    // Deploy atômico: verifica se o lock de deploy está ativo antes de processar.
+    // Se locked, loga 'deploy_in_progress' e reenfileira com delay de 30s.
+    if (this.deployLock) {
+      const locked = await this.deployLock.isDeployLocked()
+      if (locked) {
+        const operationId = randomUUID()
+        await this.log(operationId, 1, message, { phase: 'rejected', outcome: 'skipped', reasonCode: 'deploy_in_progress' })
+        await this.deployLock.requeueForDeployRetry(message, 'deploy_in_progress')
+        return
+      }
+    }
+
     const subtaskId = Number(message.payload.subtaskId)
     if (!Number.isInteger(subtaskId) || subtaskId <= 0) throw new Error('SUBTASK_EXECUTION_REQUESTED sem subtaskId válido')
     const operationId = randomUUID()

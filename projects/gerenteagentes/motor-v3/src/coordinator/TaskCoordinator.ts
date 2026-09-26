@@ -76,6 +76,12 @@ export interface TaskCoordinatorConfig {
   maxAnalysisAttempts?: number
   /** Lease durável usado pelo reconciliador para distinguir análise viva de queda. */
   analysisLeaseTtlMs?: number
+  /**
+   * Verificação de lock de deploy. Quando fornecido, o coordenador verifica
+   * se o deploy está em andamento antes de iniciar análise. Se locked,
+   * rejeita com reasonCode 'deploy_in_progress' e emite TASK_IGNORED.
+   */
+  deployLock?: { isDeployLocked(): Promise<boolean>; requeueForDeployRetry(message: QueueMessage, reason: string): Promise<void> }
 }
 
 // Criar/enfileirar apenas registra a tarefa. Toda tarefa nasce pausada e a
@@ -101,6 +107,7 @@ export class TaskCoordinator {
   private readonly maxAnalysisAttempts: number
   private readonly analysisLease?: AnalysisExecutionLeaseRepository
   private readonly analysisLeaseTtlMs: number
+  private readonly deployLock?: { isDeployLocked(): Promise<boolean>; requeueForDeployRetry(message: QueueMessage, reason: string): Promise<void> }
 
   constructor(
     private readonly repository: TaskCoordinatorRepository,
@@ -118,6 +125,7 @@ export class TaskCoordinator {
     this.maxAnalysisAttempts = config.maxAnalysisAttempts ?? 3
     this.analysisLease = this.hasAnalysisLease(repository) ? repository : undefined
     this.analysisLeaseTtlMs = config.analysisLeaseTtlMs ?? 90_000
+    this.deployLock = config.deployLock
   }
 
   async handle(message: QueueMessage): Promise<void> {
@@ -204,6 +212,19 @@ export class TaskCoordinator {
       if (task.subtaskCount > 0) await this.emitTaskReady(message, { reason: 'plan_exists', subtaskCount: task.subtaskCount })
       else await this.emit('TASK_IGNORED', message, { reason: 'analysis_recovery_in_progress' })
       return
+    }
+
+    // Deploy atômico: verifica se o lock de deploy está ativo antes de claim.
+    // Se locked, rejeita com reasonCode 'deploy_in_progress' e reenfileira
+    // com delay de 30s para processamento pós-deploy.
+    if (this.deployLock) {
+      const locked = await this.deployLock.isDeployLocked()
+      if (locked) {
+        await this.log(operationId, sequence++, 'rejected', 'rejected', message, { reasonCode: 'deploy_in_progress' })
+        await this.emit('TASK_IGNORED', message, { reason: 'deploy_in_progress' })
+        await this.deployLock.requeueForDeployRetry(message, 'deploy_in_progress')
+        return
+      }
     }
 
     const executionId = this.executionIdFactory(message)

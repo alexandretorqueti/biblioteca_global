@@ -7,13 +7,35 @@ export const TASK_READY_FOR_PROGRAMMING = 'TASK_READY_FOR_PROGRAMMING'
 
 /** Consome o fim da análise e transforma-o no primeiro comando de execução. */
 export class DevelopmentExecutionConsumer {
+  private readonly deployLock?: { isDeployLocked(): Promise<boolean>; requeueForDeployRetry(message: QueueMessage, reason: string): Promise<void> }
+
   constructor(
     private readonly repository: MySqlDevelopmentExecutionRepository,
     private readonly operationLogger?: OperationLogger,
-  ) {}
+    deployLock?: { isDeployLocked(): Promise<boolean>; requeueForDeployRetry(message: QueueMessage, reason: string): Promise<void> },
+  ) {
+    this.deployLock = deployLock
+  }
 
   async handle(message: QueueMessage): Promise<void> {
     if (message.type !== TASK_READY_FOR_PROGRAMMING) return
+
+    // Deploy atômico: verifica se o lock de deploy está ativo antes de reservar subtarefa.
+    // Se locked, loga 'deploy_in_progress' e reenfileira com delay de 30s.
+    if (this.deployLock) {
+      const locked = await this.deployLock.isDeployLocked()
+      if (locked) {
+        const operationId = randomUUID()
+        await this.operationLogger?.append({
+          operationId, sequence: 1, phase: 'rejected', outcome: 'skipped',
+          messageId: message.messageId, messageType: message.type,
+          correlationId: message.correlationId, causationId: message.causationId,
+          taskId: message.taskId, reasonCode: 'deploy_in_progress',
+        })
+        await this.deployLock.requeueForDeployRetry(message, 'deploy_in_progress')
+        return
+      }
+    }
 
     const operationId = randomUUID()
     await this.operationLogger?.append({

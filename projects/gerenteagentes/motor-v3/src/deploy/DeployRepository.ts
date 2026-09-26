@@ -213,6 +213,41 @@ export class DeployRepository {
     catch (error) { await connection.rollback(); throw error } finally { connection.release() }
   }
 
+  /**
+   * Reenfileira mensagem rejeitada por deploy lock com delay de 30s.
+   * Insere no outbox com timestamp futuro (NOW() + 30s); o OutboxPublisher
+   * só publica mensagens cujo timestamp <= NOW(), garantindo o delay.
+   * A mensagem original é acked pelo consumidor; esta nova mensagem será
+   * publicada automaticamente após o deploy terminar (ou após 30s).
+   */
+  async requeueForDeployRetry(source: QueueMessage, reason: string): Promise<void> {
+    const retryMessage = createQueueMessage({
+      type: source.type,
+      taskId: source.taskId,
+      executionId: `${source.executionId}-deploy-retry-${Date.now()}`,
+      correlationId: source.correlationId ?? source.messageId,
+      causationId: source.messageId,
+      payload: { ...source.payload, deferredReason: reason, retryAfter: '30s' },
+    })
+    const connection = await this.pool.getConnection()
+    try {
+      await connection.beginTransaction()
+      // Insere com timestamp futuro (NOW() + 30s) para delay no publish
+      await connection.query(
+        `INSERT INTO motor_outbox (message_id, type, destination_queue, task_id, execution_id, payload_json, timestamp, correlation_id, causation_id, status, attempt)
+         VALUES (?, ?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 30 SECOND), ?, ?, 'pending', 0)`,
+        [retryMessage.messageId, retryMessage.type, 'motor.commands', retryMessage.taskId, retryMessage.executionId,
+          JSON.stringify(retryMessage.payload), retryMessage.correlationId ?? null, retryMessage.causationId ?? null],
+      )
+      await connection.commit()
+    } catch (error) {
+      await connection.rollback()
+      throw error
+    } finally {
+      connection.release()
+    }
+  }
+
   async blockTask(taskId: string, reason: string, detail: string, source?: QueueMessage): Promise<void> {
     const excerpt = detail.slice(0, 500)
     const blocked = createTaskBlockedMessage({

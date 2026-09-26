@@ -288,12 +288,14 @@ async function start() {
     await outboxPublisher.start()
     const operationLogger = new MySqlOperationLogger(pool)
     const taskEvents = new MySqlTaskEventRecorder(pool)
+    const deployRepository = new DeployRepository(pool, process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/agentes/gerenteagentes/worktrees')
     const coordinator = new TaskCoordinator(repository, analyst, bus, {
       commandPolicies: new MySqlCommandPolicyRepository(pool),
       operationLogger,
       taskEvents,
       analysisFailure: new MySqlAnalysisFailureBlocker(pool),
       maxAnalysisAttempts: Number(process.env.MOTOR_QUEUE_MAX_ATTEMPTS || 3),
+      deployLock: deployRepository,
       publishTaskReady: async (source, payload) => {
         if (!outboxPublisher) throw new Error('Outbox indisponível para TASK_READY_FOR_PROGRAMMING')
         await outboxPublisher.enqueue(createQueueMessage({
@@ -331,7 +333,7 @@ async function start() {
     const testGateService = new TestGateService(pool)
     const testGate = new TestGateOrchestrator(pool, gateQueue)
     deployConsumer = new DeployConsumer(
-      new DeployRepository(pool, process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/agentes/gerenteagentes/worktrees'),
+      deployRepository,
       testGate,
       new RemoteBlueGreenDeployer(),
       operationLogger,
@@ -365,6 +367,7 @@ async function start() {
     developmentConsumer = new DevelopmentExecutionConsumer(
       developmentRepository,
       operationLogger,
+      deployRepository,
     )
     const worktreePreparer = new GitWorktreePreparer(process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/agentes/gerenteagentes/worktrees')
     const environmentPreparer = new WorkspaceEnvironmentPreparer()
@@ -390,6 +393,7 @@ async function start() {
       testGate,
       environmentPreparer,
       baselineRecovery,
+      deployRepository,
     )
     subtaskVerificationConsumer = new SubtaskVerificationConsumer(
       developmentRepository,

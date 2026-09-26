@@ -98,7 +98,7 @@ export class OutboxPublisher {
       const [rows] = await this.pool.query<OutboxRow[]>(
         `SELECT message_id, type, destination_queue, task_id, execution_id, payload_json, timestamp,
                 correlation_id, causation_id, attempt
-           FROM motor_outbox WHERE status = 'pending' AND destination_queue = ? ORDER BY id ASC LIMIT 100`,
+           FROM motor_outbox WHERE status = 'pending' AND destination_queue = ? AND timestamp <= NOW() ORDER BY id ASC LIMIT 100`,
         [this.destinationQueue],
       )
       for (const row of rows) await this.publishRow(row)
