@@ -114,6 +114,96 @@ export class DeployRepository {
     return Number(rows[0]?.active ?? 0) === 0
   }
 
+  /**
+   * Adquire o lock de deploy. Idempotente: se já está locked pelo mesmo batchId,
+   * retorna true (re-entrant). Se está locked por outro batchId, retorna false.
+   * Usa INSERT ON DUPLICATE KEY UPDATE para atomicidade.
+   */
+  async acquireDeployLock(batchId: string, reason: string): Promise<boolean> {
+    const connection = await this.pool.getConnection()
+    try {
+      await connection.beginTransaction()
+      // Verifica se já está locked por outro batch
+      const [current] = await connection.query<Array<RowDataPacket & { locked: number | string; locked_by: string | null }>>(
+        `SELECT locked, locked_by FROM motor_deploy_lock WHERE id = 1 FOR UPDATE`
+      )
+      const row = current[0]
+      if (row && Number(row.locked) === 1 && row.locked_by && row.locked_by !== batchId) {
+        // Locked por outro batch — não pode adquirir
+        await connection.commit()
+        return false
+      }
+      // Adquire ou re-adquire (mesmo batchId)
+      await connection.query(
+        `INSERT INTO motor_deploy_lock (id, locked, locked_at, locked_by, reason)
+         VALUES (1, TRUE, NOW(), ?, ?)
+         ON DUPLICATE KEY UPDATE
+           locked = TRUE,
+           locked_at = NOW(),
+           locked_by = VALUES(locked_by),
+           reason = VALUES(reason)`,
+        [batchId, reason.slice(0, 500)]
+      )
+      await connection.commit()
+      return true
+    } catch (error) {
+      await connection.rollback()
+      throw error
+    } finally {
+      connection.release()
+    }
+  }
+
+  /**
+   * Libera o lock de deploy. Limpa metadados (locked_at, locked_by, reason).
+   * Idempotente: se já está unlocked, não faz nada.
+   */
+  async releaseDeployLock(): Promise<void> {
+    await this.pool.query(
+      `UPDATE motor_deploy_lock
+       SET locked = FALSE, locked_at = NULL, locked_by = NULL, reason = NULL
+       WHERE id = 1`
+    )
+  }
+
+  /**
+   * Verifica se o lock de deploy está ativo. Retorna true se locked.
+   */
+  async isDeployLocked(): Promise<boolean> {
+    const [rows] = await this.pool.query<Array<RowDataPacket & { locked: number | string }>>(
+      `SELECT locked FROM motor_deploy_lock WHERE id = 1`
+    )
+    const row = rows[0]
+    if (!row) return false
+    return Number(row.locked) === 1
+  }
+
+  /**
+   * Aguarda todas as execuções ativas terminarem (análises, subtarefas, test gates).
+   * Poll isMotorIdle() em intervalos de 5s até timeout.
+   * Retorna {completed: boolean, forced: boolean}:
+   * - completed=true: motor ficou ocioso antes do timeout
+   * - completed=false, forced=true: timeout expirou, deploy deve prosseguir forçadamente
+   * - completed=false, forced=false: não deveria ocorrer (timeout sem forçar)
+   */
+  async waitForActiveExecutionsToComplete(timeoutMs: number): Promise<{ completed: boolean; forced: boolean }> {
+    const pollIntervalMs = 5000
+    const startTime = Date.now()
+    while (true) {
+      const idle = await this.isMotorIdle()
+      if (idle) {
+        return { completed: true, forced: false }
+      }
+      const elapsed = Date.now() - startTime
+      if (elapsed >= timeoutMs) {
+        return { completed: false, forced: true }
+      }
+      // Aguarda próximo poll (ou o restante do timeout, o que for menor)
+      const waitMs = Math.min(pollIntervalMs, timeoutMs - elapsed)
+      await new Promise(resolve => setTimeout(resolve, waitMs))
+    }
+  }
+
   async requeueDispatch(source: QueueMessage, reason: string): Promise<void> {
     const message = createQueueMessage({ type: 'DEPLOY_BATCH_DISPATCH_REQUESTED', taskId: source.taskId,
       executionId: `${source.executionId}-retry-${Date.now()}`, correlationId: source.correlationId ?? source.messageId,
