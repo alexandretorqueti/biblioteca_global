@@ -276,6 +276,47 @@ if ! wait_http "http://127.0.0.1:$NEW_WEB_PORT/health" 30 "web-$target" \
   exit 1
 fi
 
+# Validação adicional: verificar se o motor-v3 está consumindo mensagens do RabbitMQ.
+# O health check HTTP não garante que o motor está processando mensagens.
+echo "[deploy-blue-green] validando consumers do RabbitMQ no motor-$target"
+sleep 5 # Aguarda motor inicializar consumers
+motor_healthy=true
+
+# Verifica se há consumers ativos na fila motor.commands
+consumers=$(docker exec motor-rabbitmq rabbitmqctl list_queues name consumers --quiet 2>/dev/null | grep "motor.commands" | awk '{print $2}' || echo "0")
+if [ "${consumers:-0}" -lt 1 ]; then
+  echo "[deploy-blue-green] ERRO: motor.commands não tem consumers ativos ($consumers consumers)" >&2
+  motor_healthy=false
+fi
+
+# Verifica se há mensagens unacknowledged (presa) na fila
+unacked=$(docker exec motor-rabbitmq rabbitmqctl list_queues name messages_unacknowledged --quiet 2>/dev/null | grep "motor.commands" | awk '{print $2}' || echo "0")
+if [ "${unacked:-0}" -gt 0 ]; then
+  echo "[deploy-blue-green] AVISO: motor.commands tem $unacked mensagem(ens) não confirmada(s)" >&2
+  # Não bloqueia, mas alerta
+fi
+
+if [ "$motor_healthy" = false ]; then
+  echo "[deploy-blue-green] motor não está consumindo mensagens; abortando deploy" >&2
+  echo "[deploy-blue-green] logs do motor:" >&2
+  docker logs "$NEW_API_CONTAINER" --since 2m 2>&1 | grep -iE "error|fail|motor v3|queueconsumer" | tail -20 >&2
+  exit 1
+fi
+echo "[deploy-blue-green] consumers do RabbitMQ OK ($consumers consumers ativos)"
+
+# Aguarda 2 minutos e verifica se não há erros críticos nos logs do motor
+echo "[deploy-blue-green] aguardando 2 minutos para validar logs do motor..."
+sleep 120
+
+critical_errors=$(docker logs "$NEW_API_CONTAINER" --since 2m 2>&1 | grep -iE "PRECONDITION_FAILED|Channel closed by server|Error:.*amqplib" | wc -l)
+if [ "${critical_errors:-0}" -gt 0 ]; then
+  echo "[deploy-blue-green] ERRO: $critical_errors erro(s) crítico(s) detectado(s) nos logs do motor" >&2
+  docker logs "$NEW_API_CONTAINER" --since 2m 2>&1 | grep -iE "PRECONDITION_FAILED|Channel closed by server|Error:.*amqplib" | head -10 >&2
+  echo "[deploy-blue-green] motor apresentou erros críticos; abortando deploy" >&2
+  exit 1
+fi
+echo "[deploy-blue-green] logs do motor OK (sem erros críticos nos últimos 2 minutos)"
+
 # O desenvolvedor somente versiona migrations no worktree. A aplicação no
 # banco é uma operação privilegiada do Motor, no slot novo e antes do tráfego.
 echo "[deploy-blue-green] aplicando migrations pendentes dos projetos ativos"
