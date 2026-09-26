@@ -11,8 +11,27 @@ interface RecoveryRow extends RowDataPacket {
   analysis_started_at: Date | string | null
 }
 
+/**
+ * Linha retornada pela query de sessões órfãs sem claim.
+ * Uma sessão é considerada órfã quando:
+ * - status = 'active'
+ * - E (analysis_started_at IS NULL OU analysis_execution_id divergente)
+ * - E opened_at > 10 minutos atrás
+ */
+export interface OrphanSessionRow extends RowDataPacket {
+  session_id: number
+  tarefa_id: number
+  task_external_id: string | null
+  analysis_execution_id: string | null
+}
+
 export interface AnalysisSessionRecoveryConfig {
   publishTaskReady: (taskId: string, executionId: string, subtaskCount: number) => Promise<void>
+  /**
+   * Callback para disparar TASK_RESUME_REQUESTED quando uma sessão órfã é limpa
+   * e a tarefa pode ser reanalisada (sem subtarefas, não bloqueada/pausada/terminal).
+   */
+  publishTaskResume?: (taskId: string, executionId: string) => Promise<void>
   taskEvents?: TaskEventSink
   intervalMs?: number
   leaseTtlMs?: number
@@ -106,6 +125,85 @@ export class AnalysisSessionRecoveryReconciler {
           console.error(`[Motor v3] Falha ao tratar erro da recuperação da sessão ${row.session_id}:`, this.errorMessage(error))
         })
         .finally(() => this.inFlight.delete(Number(row.session_id)))
+    }
+
+    // Segunda fase: limpar sessões órfãs sem claim (analysis_started_at IS NULL
+    // ou execution_id divergente). Essas sessões ficaram em limbo após restart
+    // do motor e precisam ser marcadas como failed para que a tarefa possa ser
+    // reanalisada.
+    await this.reconcileOrphanSessions()
+  }
+
+  /**
+   * Detecta e limpa sessões de análise órfãs que não têm claim correspondente.
+   * Uma sessão é considerada órfã quando:
+   * - status = 'active'
+   * - E (analysis_started_at IS NULL OU analysis_execution_id divergente do claim)
+   * - E opened_at > 10 minutos atrás (margem para evitar race com análise em andamento)
+   *
+   * Para cada sessão órfã:
+   * 1. Marca como status='failed' com close_reason='orphaned_by_restart'
+   * 2. Registra evento 'analysis_session_orphaned'
+   * 3. Se a tarefa não tem subtarefas e não está bloqueada/pausada/terminal,
+   *    dispara TASK_RESUME_REQUESTED via publishTaskResume para reanálise
+   */
+  private async reconcileOrphanSessions(): Promise<void> {
+    const [rows] = await this.pool.query<OrphanSessionRow[]>(`
+      SELECT s.id AS session_id, s.tarefa_id, t.external_id AS task_external_id,
+             s.analysis_execution_id
+        FROM analyst_task_sessions s
+        INNER JOIN tarefas t ON t.id = s.tarefa_id
+        LEFT JOIN task_runtime_facts f ON f.tarefa_id = s.tarefa_id
+       WHERE s.status = 'active'
+         AND (f.analysis_started_at IS NULL OR f.analysis_execution_id != s.analysis_execution_id)
+         AND s.opened_at < NOW() - INTERVAL 10 MINUTE
+       ORDER BY s.tarefa_id ASC, s.opened_at ASC
+    `)
+
+    for (const row of rows) {
+      const taskId = String(row.task_external_id ?? row.tarefa_id)
+      const executionId = row.analysis_execution_id ? String(row.analysis_execution_id) : `orphan-${row.session_id}`
+
+      try {
+        // 1. Marcar sessão como failed
+        await this.pool.query(
+          `UPDATE analyst_task_sessions
+              SET status='failed', close_reason='orphaned_by_restart', closed_at=NOW(), last_activity_at=NOW()
+            WHERE id=? AND status='active'`,
+          [row.session_id],
+        )
+
+        // 2. Registrar evento de sessão órfã
+        await this.record(taskId, 'analysis_session_orphaned', {
+          sessionId: row.session_id,
+          tarefaId: row.tarefa_id,
+          executionId: row.analysis_execution_id,
+          closeReason: 'orphaned_by_restart',
+        })
+
+        // 3. Verificar se a tarefa pode ser reanalisada
+        const task = await this.repository.getTask(taskId)
+        if (!task) continue
+
+        // Não disparar reanálise se:
+        // - tarefa tem subtarefas (já está em execução)
+        // - tarefa está terminal (completed/failed/cancelled)
+        // - tarefa está pausada
+        // - tarefa está bloqueada (terminal status derivado)
+        if (task.subtaskCount > 0 || task.terminal || task.paused) continue
+
+        // Disparar TASK_RESUME_REQUESTED para reanálise
+        if (this.config.publishTaskResume) {
+          await this.config.publishTaskResume(taskId, executionId)
+          await this.record(taskId, 'analysis_orphan_resume_requested', {
+            sessionId: row.session_id,
+            executionId,
+          })
+        }
+      } catch (error) {
+        // Falha no tratamento de uma sessão órfã não deve impedir as demais
+        console.error(`[Motor v3] Falha ao limpar sessão órfã ${row.session_id} para task=${taskId}:`, this.errorMessage(error))
+      }
     }
   }
 

@@ -453,6 +453,13 @@ async function start() {
           payload: { executionId, recovered: true, subtaskCount },
         }))
       },
+      publishTaskResume: async (taskId, executionId) => {
+        if (!outboxPublisher) throw new Error('Outbox indisponível para TASK_RESUME_REQUESTED')
+        await outboxPublisher.enqueue(createQueueMessage({
+          type: 'TASK_RESUME_REQUESTED', taskId, executionId,
+          payload: { reason: 'orphaned_session_cleanup' },
+        }))
+      },
     })
     // A primeira passagem termina antes de abrir consumidores; depois disso
     // o timer cobre quedas de dependências externas sem criar nova análise.

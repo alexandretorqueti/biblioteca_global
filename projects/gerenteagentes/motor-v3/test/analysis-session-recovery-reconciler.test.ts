@@ -24,7 +24,16 @@ describe('AnalysisSessionRecoveryReconciler', () => {
     const pool = {
       query: vi.fn(async (sql: string, params: unknown[] = []) => {
         queries.push({ sql: String(sql), params })
-        if (/^\s*SELECT/i.test(sql)) return [[recoveryRow]]
+        const sqlStr = String(sql)
+        // Query de recovery normal (com LEFT JOIN motor_active_executions)
+        if (/LEFT JOIN motor_active_executions/i.test(sqlStr)) {
+          return [[recoveryRow]]
+        }
+        // Query de sessões órfãs (sem resultados para este teste)
+        if (/f\.analysis_started_at IS NULL OR f\.analysis_execution_id != s\.analysis_execution_id/i.test(sqlStr)) {
+          return [[]]
+        }
+        // Default para UPDATEs e outras queries
         return [{ affectedRows: 1 }]
       }),
     } as unknown as Pool
@@ -56,7 +65,8 @@ describe('AnalysisSessionRecoveryReconciler', () => {
     expect(events.record).toHaveBeenCalledWith(task.taskId, 'analysis_recovery_failed', 'motor', expect.objectContaining({
       sessionId: 55, executionId: 'exec-recovery-868', error: expect.stringContaining('status failed'),
     }))
-    const close = queries.find(query => /UPDATE analyst_task_sessions/.test(query.sql))
+    // Busca especificamente o UPDATE de failRecovery (com close_reason como parâmetro)
+    const close = queries.find(query => /UPDATE analyst_task_sessions/.test(query.sql) && query.params.length === 2 && query.params[0] === 'analysis_recovery_failed')
     expect(close?.params).toEqual(['analysis_recovery_failed', 55])
   })
 
@@ -70,5 +80,156 @@ describe('AnalysisSessionRecoveryReconciler', () => {
     })
 
     await expect(reconciler.reconcile()).resolves.toBeUndefined()
+  })
+
+  it('limpa sessão órfã sem claim e dispara reanálise', async () => {
+    const queries: Array<{ sql: string; params: unknown[] }> = []
+    const orphanRow = {
+      session_id: 195,
+      tarefa_id: 873,
+      task_external_id: 'task-p1-873',
+      analysis_execution_id: 'exec-orphan-873',
+    }
+    const pool = {
+      query: vi.fn(async (sql: string, params: unknown[] = []) => {
+        queries.push({ sql: String(sql), params })
+        const sqlStr = String(sql)
+        // Query de recovery normal (com LEFT JOIN motor_active_executions)
+        if (/LEFT JOIN motor_active_executions/i.test(sqlStr)) {
+          return [[]] // Sem sessões com claim válido
+        }
+        // Query de sessões órfãs (com analysis_started_at IS NULL)
+        if (/f\.analysis_started_at IS NULL OR f\.analysis_execution_id != s\.analysis_execution_id/i.test(sqlStr)) {
+          return [[orphanRow]]
+        }
+        // Default para UPDATEs e outras queries
+        return [{ affectedRows: 1 }]
+      }),
+    } as unknown as Pool
+
+    const taskSnapshot: TaskSnapshot = {
+      taskId: 'task-p1-873',
+      title: 'Tarefa órfã',
+      description: 'Descrição',
+      taskType: 'desenvolvimento',
+      agentId: 'sistema-adm-global',
+      projectSlug: 'sistema-adm-global',
+      repoPath: '/tmp/repo',
+      status: 'analyzing',
+      paused: false,
+      terminal: false,
+      analysisStartedAt: null,
+      analysisExecutionId: null,
+      subtaskCount: 0,
+    }
+
+    const repository = {
+      getTask: vi.fn(async () => taskSnapshot),
+      releaseAnalysisClaim: vi.fn(async () => undefined),
+      claimAnalysis: vi.fn(),
+      persistAnalysis: vi.fn(),
+    } as unknown as TaskCoordinatorRepository
+
+    const runner = {} as ConsoleAnalystRunner
+    const consoleApi = {} as AnalystConsole
+    const events = { record: vi.fn(async () => undefined) }
+    const publishTaskResume = vi.fn(async () => undefined)
+
+    const reconciler = new AnalysisSessionRecoveryReconciler(pool, repository, runner, consoleApi, {
+      taskEvents: events,
+      publishTaskReady: vi.fn(async () => undefined),
+      publishTaskResume,
+    })
+
+    await expect(reconciler.reconcile()).resolves.toBeUndefined()
+
+    // Aguarda processamento assíncrono
+    await vi.waitFor(() => {
+      expect(events.record).toHaveBeenCalledWith('task-p1-873', 'analysis_session_orphaned', 'motor', expect.objectContaining({
+        sessionId: 195,
+        tarefaId: 873,
+        executionId: 'exec-orphan-873',
+        closeReason: 'orphaned_by_restart',
+      }))
+    })
+
+    // Verifica que a sessão foi marcada como failed
+    const closeQuery = queries.find(q => /UPDATE analyst_task_sessions/.test(q.sql) && q.params.length === 1 && q.params[0] === 195)
+    expect(closeQuery).toBeDefined()
+    expect(closeQuery?.sql).toContain('orphaned_by_restart')
+
+    // Verifica que TASK_RESUME_REQUESTED foi disparado
+    expect(publishTaskResume).toHaveBeenCalledWith('task-p1-873', 'exec-orphan-873')
+
+    // Verifica que o evento de resume foi registrado
+    expect(events.record).toHaveBeenCalledWith('task-p1-873', 'analysis_orphan_resume_requested', 'motor', expect.objectContaining({
+      sessionId: 195,
+      executionId: 'exec-orphan-873',
+    }))
+  })
+
+  it('não dispara reanálise quando tarefa tem subtarefas', async () => {
+    const orphanRow = {
+      session_id: 196,
+      tarefa_id: 874,
+      task_external_id: 'task-p1-874',
+      analysis_execution_id: 'exec-orphan-874',
+    }
+    const pool = {
+      query: vi.fn(async (sql: string, params: unknown[] = []) => {
+        const sqlStr = String(sql)
+        if (/LEFT JOIN motor_active_executions/i.test(sqlStr)) {
+          return [[]]
+        }
+        if (/f\.analysis_started_at IS NULL OR f\.analysis_execution_id != s\.analysis_execution_id/i.test(sqlStr)) {
+          return [[orphanRow]]
+        }
+        return [{ affectedRows: 1 }]
+      }),
+    } as unknown as Pool
+
+    const taskWithSubtasks: TaskSnapshot = {
+      taskId: 'task-p1-874',
+      title: 'Tarefa com subtarefas',
+      description: 'Descrição',
+      taskType: 'desenvolvimento',
+      agentId: 'sistema-adm-global',
+      projectSlug: 'sistema-adm-global',
+      repoPath: '/tmp/repo',
+      status: 'running',
+      paused: false,
+      terminal: false,
+      analysisStartedAt: '2026-09-23T18:00:00.000Z',
+      analysisExecutionId: 'exec-874',
+      subtaskCount: 3,
+    }
+
+    const repository = {
+      getTask: vi.fn(async () => taskWithSubtasks),
+      releaseAnalysisClaim: vi.fn(async () => undefined),
+      claimAnalysis: vi.fn(),
+      persistAnalysis: vi.fn(),
+    } as unknown as TaskCoordinatorRepository
+
+    const runner = {} as ConsoleAnalystRunner
+    const consoleApi = {} as AnalystConsole
+    const events = { record: vi.fn(async () => undefined) }
+    const publishTaskResume = vi.fn(async () => undefined)
+
+    const reconciler = new AnalysisSessionRecoveryReconciler(pool, repository, runner, consoleApi, {
+      taskEvents: events,
+      publishTaskReady: vi.fn(async () => undefined),
+      publishTaskResume,
+    })
+
+    await expect(reconciler.reconcile()).resolves.toBeUndefined()
+
+    // Sessão órfã foi marcada como failed
+    await vi.waitFor(() => {
+      expect(events.record).toHaveBeenCalledWith('task-p1-874', 'analysis_session_orphaned', 'motor', expect.any(Object))
+    })
+
+    // Mas TASK_RESUME_REQUESTED NÃO foi disparado porque tem subtarefas
+    expect(publishTaskResume).not.toHaveBeenCalled()
   })
 })
