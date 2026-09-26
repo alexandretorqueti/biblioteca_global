@@ -139,14 +139,64 @@ export class DeployConsumer {
     }
   }
 
+  /**
+   * Orquestra deploy atômico: acquireLock → waitForIdle → deploy → releaseLock → resumeTasks.
+   * Garante que o motor pare de aceitar novas tarefas antes do deploy, aguarde as execuções
+   * ativas terminarem (ou pause forçadamente após timeout), execute o deploy, e só depois
+   * libere o lock e retome as tarefas adiadas.
+   */
   private async startPreparedBatch(batch: import('./DeployRepository.js').DeployBatch, message: QueueMessage): Promise<void> {
     if (!batch.workspacePath) throw new Error(`Lote ${batch.batchId} sem worktree composto`)
-    await this.remote.assertReady()
-    await this.promote(batch.repoPath, batch.baseBranch, batch.expectedCommit)
-    if (!this.hostRepoRoot) throw new Error('DEPLOY_REPO_HOST não configurado')
-    const remote = await this.remote.start({ batchId: batch.batchId, expectedCommit: batch.expectedCommit, hostRepoRoot: this.hostRepoRoot, deployScript: this.script })
-    await this.repository.markRemoteStarted(batch.batchId, remote.pid, remote.statusPath, message)
-    await this.removeComposedWorktree(batch.repoPath, batch.workspacePath)
+    const operationId = randomUUID()
+
+    // 1. Adquire lock de deploy (impede novas análises/tarefas durante o deploy)
+    const acquired = await this.repository.acquireDeployLock(batch.batchId, `Deploy batch ${batch.batchId}`)
+    if (!acquired) {
+      throw new Error(`Lock de deploy já adquirido por outro batch (batchId=${batch.batchId})`)
+    }
+    await this.log(operationId, 1, 'deploy_lock_acquired', 'succeeded', message, { batchId: batch.batchId })
+
+    try {
+      // 2. Aguarda execuções ativas terminarem (timeout: 10 min)
+      const waitTimeoutMs = 600_000 // 10 minutos
+      const waitResult = await this.repository.waitForActiveExecutionsToComplete(waitTimeoutMs)
+      await this.log(operationId, 2, 'deploy_wait_completed', 'succeeded', message, {
+        batchId: batch.batchId,
+        completed: waitResult.completed,
+        forced: waitResult.forced,
+      })
+      if (!waitResult.completed && waitResult.forced) {
+        // Timeout expirou — registra evento de pausa forçada mas continua o deploy
+        await this.log(operationId, 3, 'forced_pause_for_deploy', 'succeeded', message, {
+          batchId: batch.batchId,
+          timeoutMs: waitTimeoutMs,
+        })
+      }
+
+      // 3. Executa o deploy
+      await this.remote.assertReady()
+      await this.promote(batch.repoPath, batch.baseBranch, batch.expectedCommit)
+      if (!this.hostRepoRoot) throw new Error('DEPLOY_REPO_HOST não configurado')
+      const remote = await this.remote.start({ batchId: batch.batchId, expectedCommit: batch.expectedCommit, hostRepoRoot: this.hostRepoRoot, deployScript: this.script })
+      await this.repository.markRemoteStarted(batch.batchId, remote.pid, remote.statusPath, message)
+
+      // 4. Libera lock de deploy
+      await this.repository.releaseDeployLock()
+      await this.log(operationId, 4, 'deploy_lock_released', 'succeeded', message, { batchId: batch.batchId })
+
+      // 5. Retoma tarefas adiadas (enqueue pending dispatches)
+      await this.repository.enqueuePendingDispatches()
+
+      await this.removeComposedWorktree(batch.repoPath, batch.workspacePath)
+    } catch (error) {
+      // Em caso de falha no deploy, libera o lock antes de propagar o erro
+      await this.repository.releaseDeployLock()
+      await this.log(operationId, 99, 'deploy_lock_released', 'failed', message, {
+        batchId: batch.batchId,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      throw error
+    }
   }
 
   private async integrationContext(raw: Omit<DeployTaskContext, 'integrationPath' | 'integrationBranch' | 'integrationCommit'>): Promise<DeployTaskContext> {
