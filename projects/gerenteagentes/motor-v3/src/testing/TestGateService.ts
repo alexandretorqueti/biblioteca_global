@@ -67,7 +67,6 @@ interface FailureRow extends RowDataPacket {
   occurrence_count: number
 }
 
-interface RunEnvironmentRow extends RowDataPacket { environment_fingerprint: string }
 interface FailureComparison {
   current: TestFailureRecord[]
   newFailures: TestFailureRecord[]
@@ -104,15 +103,11 @@ export class TestGateService {
     const failures = this.parseFailures(`${stdout}\n${stderr}`)
     let status: TestRunResult['status'] = exitCode === 0 ? 'passed' : 'failed'
     const baseline = input.baselineRunId ? await this.failuresForRun(input.baselineRunId) : []
-    const baselineEnvironment = input.baselineRunId ? await this.environmentForRun(input.baselineRunId) : null
-    // Se os testes passaram sem falhas, não precisa comparar ambiente — não há regressão.
-    const allTestsPassed = exitCode === 0 && failures.length === 0
-    const comparable = allTestsPassed || !baselineEnvironment || baselineEnvironment === environment.fingerprint
-    let compared = comparable
-      ? this.compare(failures, baseline, Boolean(input.baselineRunId))
-      : this.inconclusive(failures, baseline)
+    // A branch de integração é exclusiva da tarefa, então não verificamos se o ambiente mudou.
+    // Integrações anteriores da mesma tarefa podem ter alterado o ambiente sem afetar a comparação.
+    let compared = this.compare(failures, baseline, Boolean(input.baselineRunId))
     let flakyDetected = false
-    if (input.baselineRunId && comparable && compared.newFailures.length > 0 && Number(process.env.MOTOR_TEST_FLAKY_RETRIES ?? 1) > 0) {
+    if (input.baselineRunId && compared.newFailures.length > 0 && Number(process.env.MOTOR_TEST_FLAKY_RETRIES ?? 1) > 0) {
       const confirmation = await this.confirmFailures(input)
       const confirmed = new Set(confirmation.map(failure => failure.fingerprint))
       const unstable = compared.newFailures.filter(failure => !confirmed.has(failure.fingerprint))
@@ -128,7 +123,6 @@ export class TestGateService {
     }
     const comparisonStatus = !input.baselineRunId
       ? 'not_compared'
-      : !comparable ? 'inconclusive'
       : flakyDetected ? 'inconclusive'
       : compared.newFailures.length > 0 ? 'regression' : 'no_regression'
     const finishedAt = new Date()
@@ -263,11 +257,6 @@ export class TestGateService {
   private inconclusive(current: TestFailureRecord[], baseline: TestFailureRecord[]): FailureComparison {
     const marked = current.map(failure => ({ ...failure, classification: 'flaky_or_inconclusive' as const }))
     return { current: marked, newFailures: [], preExistingFailures: [], resolvedFailures: baseline.filter(failure => !current.some(item => item.fingerprint === failure.fingerprint)).map(failure => ({ ...failure, classification: 'flaky_or_inconclusive' as const })) }
-  }
-
-  private async environmentForRun(runId: number): Promise<string | null> {
-    const [rows] = await this.pool.query<RunEnvironmentRow[]>(`SELECT environment_fingerprint FROM test_runs WHERE id=? LIMIT 1`, [runId])
-    return rows[0]?.environment_fingerprint ?? null
   }
 
   parseFailures(raw: string): TestFailureRecord[] {
