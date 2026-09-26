@@ -1,0 +1,282 @@
+/**
+ * DependencyInstaller — instala dependências (npm ci) no worktree com salvaguardas
+ *
+ * Responsabilidades:
+ * - Detecta package-lock.json na raiz do worktree
+ * - Captura git status --porcelain antes/depois do npm ci
+ * - Falha se o npm ci alterar qualquer arquivo rastreado
+ * - Timeout configurável via TASK_DEPENDENCY_INSTALL_TIMEOUT_MS (default 15min)
+ * - Sem package-lock.json → pula silenciosamente
+ * - **Auto-recovery de lockfile desatualizado**: se npm ci falhar com EUSAGE
+ *   (pacote workspace ausente do lockfile), roda npm install automaticamente
+ *   e tenta npm ci novamente. Isso resolve o caso em que o agente cria um
+ *   novo pacote workspace sem sincronizar o package-lock.json.
+ *
+ * O runner de comandos é injetável para testes unitários.
+ */
+
+import { execSync } from "node:child_process"
+import { existsSync } from "node:fs"
+import { dirname, join, resolve } from "node:path"
+import { createLogger } from "../shared/logger.js"
+import { getConfigNumber } from "../config/MotorConfigReader.js"
+
+const logger = createLogger("DependencyInstaller")
+
+// ─── Comandos de instalação ─────────────────────────────────────────────────
+
+/**
+ * `--include=dev` é OBRIGATÓRIO. O container do motor roda `NODE_ENV=production`
+ * e, nesse modo, o npm omite devDependencies por padrão (`npm config get omit`
+ * retorna `dev`). Sem os devDeps, a fase VERIFY não consegue validar a entrega:
+ * `npm run typecheck` falha (tsc ausente) e os testes de telas falham (vitest,
+ * jsdom, @testing-library/react ausentes). É exatamente o que o README e o
+ * ETAPAS_DESENVOLVIMENTO.md determinam: "SEMPRE --include=dev".
+ * Estes comandos são exportados para que os testes usem a mesma fonte.
+ */
+export const NPM_CI_COMMAND = "npm ci --include=dev"
+export const NPM_INSTALL_COMMAND = "npm install --include=dev"
+
+// ─── Tipos ──────────────────────────────────────────────────────────────────
+
+export interface CommandRunner {
+  /**
+   * Executa um comando shell no cwd informado com timeout em ms.
+   * Retorna { stdout, stderr, exitCode }.
+   * Para compatibilidade com o legado (execSync), lançar erro em exit code != 0.
+   */
+  run(command: string, cwd: string, timeoutMs: number): Promise<{ stdout: string; stderr: string }>
+}
+
+export interface DependencyInstallResult {
+  ok: true
+  skipped: boolean
+  reason?: string
+  /** Indica que o lockfile foi regenerado automaticamente (npm install fallback). */
+  lockfileRegenerated?: boolean
+}
+
+export interface DependencyInstallError {
+  ok: false
+  reason: string
+}
+
+export type DependencyInstallOutcome = DependencyInstallResult | DependencyInstallError
+
+// ─── Runner padrão (execSync) ───────────────────────────────────────────────
+
+const ANSI_ESCAPE = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g
+
+function cleanOutput(value: string | Buffer | undefined | null): string {
+  return (typeof value === "string" ? value : value?.toString() ?? "")
+    .replace(ANSI_ESCAPE, "")
+    .replace(/\r/g, "")
+    .trim()
+}
+
+class NodeCommandRunner implements CommandRunner {
+  async run(command: string, cwd: string, timeoutMs: number): Promise<{ stdout: string; stderr: string }> {
+    try {
+      const stdout = execSync(command, {
+        cwd,
+        timeout: timeoutMs,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+      })
+      return { stdout: stdout ?? "", stderr: "" }
+    } catch (error: unknown) {
+      // Formata a saída do erro para diagnóstico (sem depender de TaskWorker)
+      const err = error as { stdout?: string | Buffer; stderr?: string | Buffer; status?: number | null; signal?: NodeJS.Signals | null; message?: string }
+      const stdout = cleanOutput(err.stdout)
+      const stderr = cleanOutput(err.stderr)
+      const metadata = [
+        err.status != null ? `exit=${err.status}` : "",
+        err.signal ? `signal=${err.signal}` : "",
+      ].filter(Boolean).join(" ")
+      const sections = [
+        metadata,
+        stdout ? `[stdout]\n${stdout}` : "",
+        stderr ? `[stderr]\n${stderr}` : "",
+        !stdout && !stderr ? cleanOutput(err.message) : "",
+      ].filter(Boolean)
+      const combined = sections.join("\n\n") || "Comando encerrou sem saída diagnóstica"
+      throw new Error(combined, { cause: error })
+    }
+  }
+}
+
+// ─── Constantes ─────────────────────────────────────────────────────────────
+
+const DEFAULT_TIMEOUT_MS = 15 * 60 * 1000 // 15 minutos (igual ao legado)
+
+// ─── Classe ─────────────────────────────────────────────────────────────────
+
+export interface InstallDependenciesInput {
+  worktreePath: string
+  timeoutMs?: number
+}
+
+/**
+ * Instala dependências via npm ci se houver package-lock.json na raiz do worktree.
+ *
+ * Salvaguardas:
+ * - Captura git status --porcelain antes/depois; se npm ci alterar arquivo rastreado, falha.
+ * - Sem package-lock.json → pula (não roda npm install).
+ * - Falha do npm ci → erro claro com trecho da saída, sem consumir escada de modelos.
+ * - Sempre instala com `--include=dev` (NODE_ENV=production omite devDeps por padrão).
+ *
+ * O runner é injetável para testes; em produção usa execSync (NodeCommandRunner).
+ */
+export class DependencyInstaller {
+  private readonly runner: CommandRunner
+
+  constructor(runner?: CommandRunner) {
+    this.runner = runner ?? new NodeCommandRunner()
+  }
+
+  async install(input: InstallDependenciesInput): Promise<DependencyInstallOutcome> {
+    const installPath = findPackageLockRoot(input.worktreePath)
+    if (!installPath) {
+      logger.info("npm ci pulado: package-lock.json não encontrado até a raiz Git", { worktreePath: input.worktreePath })
+      return { ok: true, skipped: true, reason: "package-lock.json ausente" }
+    }
+
+    const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS
+
+    // Captura git status ANTES do npm ci
+    let statusBefore: string
+    try {
+      const result = await this.runner.run("git status --porcelain", installPath, 30_000)
+      statusBefore = result.stdout.trim()
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error)
+      logger.warn("Falha ao capturar git status antes do npm ci: " + msg)
+      statusBefore = ""
+    }
+
+    logger.info("Executando npm ci (timeout: " + Math.round(timeoutMs / 1000) + "s)...", {
+      worktreePath: installPath,
+    })
+
+    // Executa npm ci (com devDeps: o container roda NODE_ENV=production)
+    let lockfileRegenerated = false
+    try {
+      await this.runner.run(NPM_CI_COMMAND, installPath, timeoutMs)
+      logger.info("npm ci concluído com sucesso")
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error)
+      
+      // Auto-recovery: se o erro for EUSAGE (lockfile desatualizado), tenta npm install
+      if (isLockfileOutOfSync(msg)) {
+        logger.warn("npm ci falhou com lockfile desatualizado (EUSAGE); tentando npm install para regenerar...")
+        try {
+          await this.runner.run(NPM_INSTALL_COMMAND, installPath, timeoutMs)
+          logger.info("npm install concluído; tentando npm ci novamente...")
+          await this.runner.run(NPM_CI_COMMAND, installPath, timeoutMs)
+          logger.info("npm ci concluído com sucesso após regeneração do lockfile")
+          lockfileRegenerated = true
+        } catch (recoveryError) {
+          const recoveryMsg = recoveryError instanceof Error ? recoveryError.message : String(recoveryError)
+          const excerpt = recoveryMsg.substring(0, 1000)
+          logger.error("Auto-recovery falhou: " + excerpt)
+          return {
+            ok: false,
+            reason: "npm ci falhou (mesmo após npm install) — " + excerpt,
+          }
+        }
+      } else {
+        // Trunca a saída para não poluir logs/eventos, mas mantém diagnóstico suficiente
+        const excerpt = msg.substring(0, 1000)
+        logger.error("npm ci falhou: " + excerpt)
+        return {
+          ok: false,
+          reason: "npm ci falhou — " + excerpt,
+        }
+      }
+    }
+
+    // Captura git status DEPOIS e compara
+    let statusAfter: string
+    try {
+      const result = await this.runner.run("git status --porcelain", installPath, 30_000)
+      statusAfter = result.stdout.trim()
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error)
+      logger.warn("Falha ao capturar git status depois do npm ci: " + msg)
+      return { ok: true, skipped: false }
+    }
+
+    if (statusBefore !== statusAfter) {
+      // Identifica linhas novas no status
+      const beforeLines = new Set(statusBefore.split("\n").filter(Boolean))
+      const newLines = statusAfter.split("\n").filter((line) => line && !beforeLines.has(line))
+      // Filtra apenas mudanças em arquivos rastreados (linhas que NÃO começam com "??")
+      const trackedChanges = newLines.filter((line) => !line.startsWith("??"))
+      if (trackedChanges.length > 0) {
+        const fileList = trackedChanges.slice(0, 10).join(", ")
+        logger.error("npm ci modificou arquivos rastreados: " + fileList)
+        return {
+          ok: false,
+          reason:
+            "npm ci modificou arquivos rastreados: " +
+            fileList +
+            " — verifique se o package-lock.json está consistente com package.json",
+        }
+      }
+    }
+
+    return { ok: true, skipped: false, lockfileRegenerated }
+  }
+}
+
+/**
+ * Em monorepos o projeto entregue pode estar abaixo da raiz que contém o
+ * lockfile. Usa primeiro o lockfile mais próximo e nunca sobe além do
+ * worktree Git, evitando instalar dependências no repositório pai.
+ */
+export function findPackageLockRoot(worktreePath: string): string | null {
+  let candidate = resolve(worktreePath)
+  while (true) {
+    if (existsSync(join(candidate, "package-lock.json"))) return candidate
+    if (existsSync(join(candidate, ".git"))) return null
+    const parent = dirname(candidate)
+    if (parent === candidate) return null
+    candidate = parent
+  }
+}
+
+/**
+ * Detecta se o erro do npm ci é por lockfile desatualizado (EUSAGE).
+ * Padrões conhecidos:
+ * - "npm error code EUSAGE"
+ * - "Missing: <package> from lock file"
+ * - "npm ci can only install packages when your package.json and package-lock.json"
+ */
+export function isLockfileOutOfSync(errorMessage: string): boolean {
+  const lower = errorMessage.toLowerCase()
+  return (
+    lower.includes("eusage") ||
+    (lower.includes("missing:") && lower.includes("from lock file")) ||
+    (lower.includes("npm ci") && lower.includes("package-lock.json") && lower.includes("in sync"))
+  )
+}
+
+/**
+ * Resolve o timeout de instalação de dependências a partir da variável de ambiente
+ * ou das configurações persistidas (prioridade: env var > config reader > default).
+ * Exportado para testes e para uso direto no TaskWorker.
+ */
+export function resolveInstallTimeoutMs(): number {
+  const envValue = process.env.TASK_DEPENDENCY_INSTALL_TIMEOUT_MS
+  if (envValue) {
+    const parsed = Number(envValue)
+    if (Number.isFinite(parsed) && parsed > 0) return parsed
+  }
+  // Tenta ler das configurações persistidas
+  try {
+    return getConfigNumber('motor.dependency_install_timeout_ms')
+  } catch {
+    // Config reader não inicializado — usa o default
+    return DEFAULT_TIMEOUT_MS
+  }
+}

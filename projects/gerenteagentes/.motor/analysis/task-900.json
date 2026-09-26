@@ -1,0 +1,82 @@
+{
+  "subtarefas": [
+    {
+      "seq": 1,
+      "scope": "Criar migration SQL para expandir o enum da coluna phase em motor_operation_log com as novas fases de deploy, atualizar os tipos TypeScript no OperationLogger, corrigir a lógica de lock no DeployConsumer para evitar vazamento, e validar o deploy end-to-end.",
+      "titulo": "Resolver deploy_failed por enum incompleto em motor_operation_log",
+      "depends_on": [],
+      "deliverables": [
+        "Migration 0071_motor_operation_log_deploy_phases.sql criada e registrada no journal do drizzle-kit",
+        "Tipos OperationPhase e OperationOutcome atualizados em OperationLogger.ts com as novas fases",
+        "DeployConsumer.ts corrigido: log movido para dentro do try, release defensivo no catch",
+        "Deploy da tarefa 898 concluído com sucesso via POST /api/motor/task/task-p2-898/external-resolution",
+        "Smoke test pós-deploy: filas RabbitMQ zeradas, DLQs estáveis, sem órfãos"
+      ],
+      "acceptance_criteria": [
+        "Migration 0071 aplicada com sucesso no banco de dados de produção",
+        "Enum da coluna phase inclui: received, decision, action, primitive, completed, failed, rejected, deploy_lock_acquired, deploy_wait_completed, forced_pause_for_deploy, deploy_lock_released",
+        "DeployConsumer não vaza lock quando log operacional falha (lock release no catch)",
+        "Tipo OperationPhase em TypeScript sincronizado com enum do banco",
+        "Tarefa 898 deployada com sucesso (commit promovido na base)",
+        "Nenhum erro 'Data truncated for column phase' nos logs do motor após deploy"
+      ],
+      "requirements_covered": [
+        "REQ-1",
+        "REQ-2",
+        "REQ-3",
+        "REQ-4"
+      ]
+    }
+  ],
+  "requirements": [
+    {
+      "id": "REQ-1",
+      "description": "Expandir enum da coluna phase em motor_operation_log para incluir fases de deploy (deploy_lock_acquired, deploy_wait_completed, forced_pause_for_deploy, deploy_lock_released)"
+    },
+    {
+      "id": "REQ-2",
+      "description": "Sincronizar tipos TypeScript (OperationPhase, OperationOutcome) com enum do banco para garantir type-safety"
+    },
+    {
+      "id": "REQ-3",
+      "description": "Prevenir vazamento de lock de deploy movendo log para dentro do try e adicionando release defensivo no catch"
+    },
+    {
+      "id": "REQ-4",
+      "description": "Resolver tarefa 898 bloqueada e validar deploy end-to-end sem erros de enum"
+    }
+  ],
+  "coverage": [
+    {
+      "requirement": "REQ-1",
+      "covered_by": [1]
+    },
+    {
+      "requirement": "REQ-2",
+      "covered_by": [1]
+    },
+    {
+      "requirement": "REQ-3",
+      "covered_by": [1]
+    },
+    {
+      "requirement": "REQ-4",
+      "covered_by": [1]
+    }
+  ],
+  "estrategia": {
+    "invariantes": [
+      "Migration SQL DEVE ser aplicada ANTES de qualquer código que use novos valores de enum",
+      "Aquisição de lock DEVE estar sempre dentro de try/catch com release no catch",
+      "Tipos TypeScript DEVEM refletir exatamente o enum do banco (fonte única de verdade)",
+      "deploy.sh raiz tem HOST_ADDR default obsoleto (192.168.1.8); usar DEPLOY_HOST_ADDR=host.docker.internal"
+    ],
+    "artefatos_compartilhados": [
+      "Migration 0071_motor_operation_log_deploy_phases.sql",
+      "motor-v3/src/commands/OperationLogger.ts (tipos OperationPhase/OperationOutcome)",
+      "motor-v3/src/deploy/DeployConsumer.ts (lógica de lock e log)",
+      "migrations/meta/_journal.json (registro da migration)"
+    ],
+    "ordem_de_execucao": [1]
+  }
+}

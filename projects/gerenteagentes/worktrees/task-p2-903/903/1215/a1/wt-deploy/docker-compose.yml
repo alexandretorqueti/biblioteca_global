@@ -1,0 +1,165 @@
+# Biblioteca Global v2 — ambiente de desenvolvimento.
+# Etapa 0: apenas o MySQL 8. Em etapa 12 entram os serviços api e web.
+name: biblioteca-global
+
+services:
+  mysql:
+    image: mysql:8
+    container_name: biblioteca-global-mysql
+    restart: unless-stopped
+    environment:
+      # Variaveis obrigatorias: defina no .env (ver .env.example).
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-core}
+      MYSQL_USER: ${MYSQL_USER:-biblioteca}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    ports:
+      # Porta do HOST: 3307 ja e usada pelo MySQL do Recrescer (ver INFRA.md).
+      - "3308:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test:
+        - CMD
+        - mysqladmin
+        - ping
+        - -h
+        - localhost
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: biblioteca-global-api
+    restart: unless-stopped
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-core}
+      MYSQL_USER: ${MYSQL_USER:-biblioteca}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET}
+      AUTH_CODE_SECRET: ${AUTH_CODE_SECRET}
+      AUTH_CODE_TTL_MS: ${AUTH_CODE_TTL_MS:-600000}
+      AUTH_MAX_ATTEMPTS: ${AUTH_MAX_ATTEMPTS:-5}
+      AUTH_RATE_LIMIT_MAX: ${AUTH_RATE_LIMIT_MAX:-3}
+      AUTH_RATE_LIMIT_WINDOW_MS: ${AUTH_RATE_LIMIT_WINDOW_MS:-900000}
+      AUTH_VERIFY_TOKEN_TTL: ${AUTH_VERIFY_TOKEN_TTL:-5m}
+      AUTH_CODE_DEBUG_LOG: ${AUTH_CODE_DEBUG_LOG:-false}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-noreply@globaltecnologia.com.br}
+      PROVISION_TOKEN: ${PROVISION_TOKEN}
+      OPENCLAW_CONSOLE_URL: ${OPENCLAW_CONSOLE_URL:-}
+      OPENCLAW_CONSOLE_TOKEN: ${OPENCLAW_CONSOLE_TOKEN:-}
+      MOTOR_DEV_URL: ${MOTOR_DEV_URL:-http://172.20.0.7:6283}
+      MOTOR_URL_HOST: ${MOTOR_URL_HOST:-api.tarefas.localhost}
+      API_PORT: 3001
+      # Motor-v2 (integrado na API)
+      MOTOR_VERSION: ${MOTOR_VERSION:-v2}
+      MOTOR_MAX_WORKERS: ${MOTOR_MAX_WORKERS:-1}
+      MOTOR_API_PORT: ${MOTOR_API_PORT:-3010}
+      MOTOR_WORKSPACE_ROOT: ${MOTOR_WORKSPACE_ROOT:-/data/workspace/projects/agentes/gerenteagentes/worktrees}
+      # Push do motor-v2 para o GitHub (fase PUBLISH) — chave montada como volume
+      GIT_SSH_COMMAND: ${GIT_SSH_COMMAND:-ssh -i /root/.ssh/github_id_ed25519 -o StrictHostKeyChecking=accept-new}
+      # Isa Chat
+      ISA_PROJECT_ID: ${ISA_PROJECT_ID:-640}
+      ISA_AGENT_ID: ${ISA_AGENT_ID:-isa}
+      ISA_BFF_UPSTREAM: ${ISA_BFF_UPSTREAM:-}
+      ISA_BFF_TOKEN: ${ISA_BFF_TOKEN:-}
+      ISA_VERIFICATION_SECRET: ${ISA_VERIFICATION_SECRET:-}
+    depends_on:
+      mysql:
+        condition: service_healthy
+    ports:
+      - "${API_HOST_PORT:-3003}:3001"
+      - "${MOTOR_V2_HOST_PORT:-3010}:3010"
+    volumes:
+      # Volume do repositório (para o motor-v2 acessar o código)
+      - ${REPO_PATH:-/run/media/alexandre/12T/codigofonte}:${REPO_PATH:-/run/media/alexandre/12T/codigofonte}
+      # Workspace do agente (para worktrees do motor-v2)
+      - /home/alexandre/projetos/agentes:/data/workspace/projects/agentes:rw
+      # Chave SSH do GitHub para a fase PUBLISH do motor-v2 (somente leitura)
+      - ${GITHUB_SSH_KEY_HOST:-/home/alexandre/secrets/biblioteca-global-api/github_id_ed25519}:/root/.ssh/github_id_ed25519:ro
+    networks:
+      - default
+      - openclaw_default
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          Promise.all([
+          fetch('http://localhost:3001/api/auth/me'),
+          fetch('http://localhost:3010/api/motor/health')
+          ]).then(([api, motor]) =>
+          api.status < 500 && motor.ok ? process.exit(0) : process.exit(1)
+          ).catch(() => process.exit(1))
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 45s
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    container_name: biblioteca-global-web
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${WEB_HOST_PORT:-5174}:80"
+
+  isa-chat:
+    build:
+      context: .
+      dockerfile: projects/isa-chat/Dockerfile
+    container_name: biblioteca-global-isa-chat
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${ISA_CHAT_HOST_PORT:-8082}:80"
+
+  alpha-chat:
+    build:
+      context: .
+      dockerfile: projects/alpha-chat/Dockerfile
+    container_name: biblioteca-global-alpha-chat
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${ALPHA_CHAT_HOST_PORT:-8083}:80"
+
+  chat-proxy:
+    build:
+      context: .
+      dockerfile: projects/chat-proxy/Dockerfile
+    container_name: biblioteca-global-chat-proxy
+    restart: unless-stopped
+    depends_on:
+      - isa-chat
+      - alpha-chat
+    ports:
+      - "8080:80"
+    # Usa a rede Docker padrão para resolver nomes dos containers
+
+volumes:
+  mysql-data:
+
+networks:
+  openclaw_default:
+    external: true

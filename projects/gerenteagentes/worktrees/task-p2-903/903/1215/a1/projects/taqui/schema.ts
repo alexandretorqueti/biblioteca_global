@@ -1,0 +1,491 @@
+/**
+ * Schema do projeto `taqui` — controle de encomendas multi-condomínio.
+ *
+ * Tabelas:
+ * - condominios: síndico cria seu condomínio (vertical/horizontal)
+ * - unidades: apartamentos (rua+bloco+andar+apto) ou casas (rua+quadra+lote)
+ * - moradores: vinculados a unidades
+ * - proprietarios: quando diferentes dos moradores (aluguel)
+ * - unidades_proprietarios: vínculo N:N entre unidades e proprietários
+ * - funcionarios: triagem/portaria do condomínio
+ * - transportadoras: lojas/transportadoras que enviam encomendas
+ * - encomendas: registro com foto, loja, unidade; status pendente→pronta_retirada→entregue→cancelada
+ *   (campos de cancelamento: canceladoPorId, canceladoEm, motivoCancelamento)
+ * - notificacoes: sininho para morador
+ * - entregas: registro de entrega efetiva com trilha auditável e evidência estruturada (JSON)
+ * - ocorrencias: registro de desvios/devoluções com motivo, tipo, evidência e rastreabilidade
+ *
+ * Relações:
+ * - condomínio → unidades (1:N)
+ * - unidade → moradores (1:N)
+ * - unidade ↔ proprietários (N:N via unidades_proprietarios)
+ * - condomínio → funcionários (1:N)
+ * - encomenda → condomínio, unidade, transportadora, funcionário (registrante), morador (confirmou), funcionário (cancelou)
+ * - entrega → encomenda, condomínio, funcionário
+ * - ocorrência → encomenda, condomínio, funcionário (registrante)
+ */
+import {
+  bigint,
+  boolean,
+  index,
+  int,
+  mysqlEnum,
+  mysqlTable,
+  text,
+  timestamp,
+  varchar,
+} from "drizzle-orm/mysql-core"
+import type { FormAnnotationsPorTabela } from "@biblioteca-global/schema-tools"
+
+// ============================================================================
+// CONDOMÍNIOS
+// ============================================================================
+
+export const condominios = mysqlTable("condominios", {
+  id: bigint("id", { mode: "number", unsigned: true })
+    .primaryKey()
+    .autoincrement(),
+  nome: varchar("nome", { length: 200 }).notNull(),
+  endereco: varchar("endereco", { length: 500 }).notNull(),
+  /** Tipo de estrutura: vertical (apartamentos) ou horizontal (casas). */
+  tipo: mysqlEnum("tipo", ["vertical", "horizontal"]).notNull(),
+  ativo: boolean("ativo").notNull().default(true),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at")
+    .notNull()
+    .defaultNow()
+    .onUpdateNow(),
+})
+
+// ============================================================================
+// UNIDADES (apartamentos ou casas)
+// ============================================================================
+
+export const unidades = mysqlTable("unidades", {
+  id: bigint("id", { mode: "number", unsigned: true })
+    .primaryKey()
+    .autoincrement(),
+  condominioId: bigint("condominio_id", { mode: "number", unsigned: true })
+    .notNull()
+    .references(() => condominios.id, { onDelete: "cascade" }),
+  /** Tipo da unidade: apartamento (vertical) ou casa (horizontal). */
+  tipo: mysqlEnum("tipo", ["apartamento", "casa"]).notNull(),
+  /** Rua (comum a ambos os tipos). */
+  rua: varchar("rua", { length: 200 }),
+  /** Bloco (apartamento — opcional). */
+  bloco: varchar("bloco", { length: 50 }),
+  /** Andar (apartamento — opcional). */
+  andar: int("andar"),
+  /** Número do apartamento (apartamento). */
+  numero: varchar("numero", { length: 20 }),
+  /** Quadra (casa — opcional). */
+  quadra: varchar("quadra", { length: 50 }),
+  /** Lote (casa — opcional). */
+  lote: varchar("lote", { length: 50 }),
+  /** Label amigável gerado automaticamente (ex.: "Rua A, Bloco 2, Apto 301"). */
+  label: varchar("label", { length: 300 }),
+  ativo: boolean("ativo").notNull().default(true),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at")
+    .notNull()
+    .defaultNow()
+    .onUpdateNow(),
+})
+
+// ============================================================================
+// MORADORES
+// ============================================================================
+
+export const moradores = mysqlTable("moradores", {
+  id: bigint("id", { mode: "number", unsigned: true })
+    .primaryKey()
+    .autoincrement(),
+  unidadeId: bigint("unidade_id", { mode: "number", unsigned: true })
+    .notNull()
+    .references(() => unidades.id, { onDelete: "cascade" }),
+  nome: varchar("nome", { length: 200 }).notNull(),
+  email: varchar("email", { length: 200 }),
+  telefone: varchar("telefone", { length: 50 }),
+  /** CPF opcional para identificação. */
+  cpf: varchar("cpf", { length: 14 }),
+  ativo: boolean("ativo").notNull().default(true),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at")
+    .notNull()
+    .defaultNow()
+    .onUpdateNow(),
+})
+
+// ============================================================================
+// PROPRIETÁRIOS (quando diferentes dos moradores — aluguel)
+// ============================================================================
+
+export const proprietarios = mysqlTable("proprietarios", {
+  id: bigint("id", { mode: "number", unsigned: true })
+    .primaryKey()
+    .autoincrement(),
+  nome: varchar("nome", { length: 200 }).notNull(),
+  email: varchar("email", { length: 200 }),
+  telefone: varchar("telefone", { length: 50 }),
+  cpf: varchar("cpf", { length: 14 }),
+  ativo: boolean("ativo").notNull().default(true),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at")
+    .notNull()
+    .defaultNow()
+    .onUpdateNow(),
+})
+
+/** Vínculo N:N entre unidades e proprietários. */
+export const unidadesProprietarios = mysqlTable("unidades_proprietarios", {
+  id: bigint("id", { mode: "number", unsigned: true })
+    .primaryKey()
+    .autoincrement(),
+  unidadeId: bigint("unidade_id", { mode: "number", unsigned: true })
+    .notNull()
+    .references(() => unidades.id, { onDelete: "cascade" }),
+  proprietarioId: bigint("proprietario_id", { mode: "number", unsigned: true })
+    .notNull()
+    .references(() => proprietarios.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+})
+
+// ============================================================================
+// FUNCIONÁRIOS (triagem / portaria)
+// ============================================================================
+
+export const funcionarios = mysqlTable("funcionarios", {
+  id: bigint("id", { mode: "number", unsigned: true })
+    .primaryKey()
+    .autoincrement(),
+  condominioId: bigint("condominio_id", { mode: "number", unsigned: true })
+    .notNull()
+    .references(() => condominios.id, { onDelete: "cascade" }),
+  nome: varchar("nome", { length: 200 }).notNull(),
+  /** Função do funcionário no condomínio. */
+  funcao: mysqlEnum("funcao", ["triagem", "portaria", "ambos"]).notNull(),
+  email: varchar("email", { length: 200 }),
+  telefone: varchar("telefone", { length: 50 }),
+  ativo: boolean("ativo").notNull().default(true),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at")
+    .notNull()
+    .defaultNow()
+    .onUpdateNow(),
+})
+
+// ============================================================================
+// TRANSPORTADORAS / LOJAS
+// ============================================================================
+
+export const transportadoras = mysqlTable("transportadoras", {
+  id: bigint("id", { mode: "number", unsigned: true })
+    .primaryKey()
+    .autoincrement(),
+  nome: varchar("nome", { length: 200 }).notNull(),
+  /** CNPJ opcional. */
+  cnpj: varchar("cnpj", { length: 18 }),
+  telefone: varchar("telefone", { length: 50 }),
+  ativo: boolean("ativo").notNull().default(true),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at")
+    .notNull()
+    .defaultNow()
+    .onUpdateNow(),
+})
+
+// ============================================================================
+// ENCOMENDAS
+// ============================================================================
+
+export const encomendas = mysqlTable("encomendas", {
+  id: bigint("id", { mode: "number", unsigned: true })
+    .primaryKey()
+    .autoincrement(),
+  condominioId: bigint("condominio_id", { mode: "number", unsigned: true })
+    .notNull()
+    .references(() => condominios.id, { onDelete: "cascade" }),
+  unidadeId: bigint("unidade_id", { mode: "number", unsigned: true })
+    .notNull()
+    .references(() => unidades.id, { onDelete: "cascade" }),
+  transportadoraId: bigint("transportadora_id", { mode: "number", unsigned: true })
+    .references(() => transportadoras.id, { onDelete: "set null" }),
+  /** Funcionário que registrou a encomenda na triagem. */
+  registradoPorId: bigint("registrado_por_id", { mode: "number", unsigned: true })
+    .notNull()
+    .references(() => funcionarios.id, { onDelete: "restrict" }),
+  /** Código de rastreamento (opcional — pode vir de QR/barcode). */
+  codigoRastreamento: varchar("codigo_rastreamento", { length: 100 }),
+  /** URL da foto tirada no momento do registro. */
+  fotoUrl: varchar("foto_url", { length: 1000 }),
+  /** Observações sobre a encomenda (caixa danificada, tamanho, etc.). */
+  observacoes: text("observacoes"),
+  /**
+   * Status do fluxo:
+   * - pendente: registrada, aguardando confirmação do morador
+   * - pronta_retirada: morador reconheceu a encomenda, aguardando retirada física
+   * - entregue: triagem liberou a encomenda após retirada
+   * - cancelada: encomenda cancelada (devolução, erro, etc.)
+   */
+  status: mysqlEnum("status", ["pendente", "pronta_retirada", "entregue", "cancelada"])
+    .notNull()
+    .default("pendente"),
+  /** Morador que confirmou o recebimento. */
+  confirmadoPorId: bigint("confirmado_por_id", { mode: "number", unsigned: true })
+    .references(() => moradores.id, { onDelete: "set null" }),
+  /** Data/hora da confirmação pelo morador. */
+  confirmadoEm: timestamp("confirmado_em"),
+  /** Funcionário que entregou a encomenda (após confirmação). */
+  entreguePorId: bigint("entregue_por_id", { mode: "number", unsigned: true })
+    .references(() => funcionarios.id, { onDelete: "set null" }),
+  /** Data/hora da entrega efetiva. */
+  entregueEm: timestamp("entregue_em"),
+  /** Funcionário que cancelou a encomenda (via ocorrência/devolução). */
+  canceladoPorId: bigint("cancelado_por_id", { mode: "number", unsigned: true })
+    .references(() => funcionarios.id, { onDelete: "set null" }),
+  /** Data/hora do cancelamento. */
+  canceladoEm: timestamp("cancelado_em"),
+  /** Motivo resumido do cancelamento (detalhe na tabela ocorrencias). */
+  motivoCancelamento: varchar("motivo_cancelamento", { length: 500 }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at")
+    .notNull()
+    .defaultNow()
+    .onUpdateNow(),
+})
+
+// ============================================================================
+// NOTIFICAÇÕES (sininho)
+// ============================================================================
+
+export const notificacoes = mysqlTable(
+  "notificacoes",
+  {
+    id: bigint("id", { mode: "number", unsigned: true })
+      .primaryKey()
+      .autoincrement(),
+    moradorId: bigint("morador_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => moradores.id, { onDelete: "cascade" }),
+    encomendaId: bigint("encomenda_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => encomendas.id, { onDelete: "cascade" }),
+    /** Tipo de notificação. */
+    tipo: mysqlEnum("tipo", ["encomenda_pendente", "encomenda_pronta_retirada", "encomenda_entregue", "ocorrencia_registrada"]).notNull(),
+    /** Mensagem da notificação. */
+    mensagem: varchar("mensagem", { length: 500 }).notNull(),
+    /** Se já foi lida pelo morador (campo boolean legado, manter para compat). */
+    lida: boolean("lida").notNull().default(false),
+    /** Data/hora em que o morador marcou como lida. */
+    lidaEm: timestamp("lida_em"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("idx_notificacoes_morador_id").on(table.moradorId),
+    index("idx_notificacoes_encomenda_id").on(table.encomendaId),
+    index("idx_notificacoes_lida").on(table.lida),
+  ],
+)
+
+// ============================================================================
+// ENTREGAS (registro de entrega efetiva)
+// ============================================================================
+
+export const entregas = mysqlTable(
+  "entregas",
+  {
+    id: bigint("id", { mode: "number", unsigned: true })
+      .primaryKey()
+      .autoincrement(),
+    encomendaId: bigint("encomenda_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => encomendas.id, { onDelete: "restrict" }),
+    condominioId: bigint("condominio_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => condominios.id, { onDelete: "cascade" }),
+    funcionarioId: bigint("funcionario_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => funcionarios.id, { onDelete: "restrict" }),
+    /** Data/hora da entrega efetiva. */
+    dataHoraEntrega: timestamp("data_hora_entrega").notNull().defaultNow(),
+    /**
+     * Evidência estruturada de quem retirou a encomenda (JSON).
+     * Contém: recebedorNome, recebedorDocumento, recebedorVinculo,
+     * fotoComprovanteUrl, pinRetirada, funcionarioNome, dataHora.
+     */
+    evidenciaQuemRetirou: text("evidencia_quem_retirou"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at")
+      .notNull()
+      .defaultNow()
+      .onUpdateNow(),
+  },
+  (table) => [
+    index("idx_entregas_encomenda_id").on(table.encomendaId),
+    index("idx_entregas_condominio_id").on(table.condominioId),
+    index("idx_entregas_funcionario_id").on(table.funcionarioId),
+  ],
+)
+
+// ============================================================================
+// OCORRÊNCIAS (registro de desvios/devoluções com auditoria)
+// ============================================================================
+
+export const ocorrencias = mysqlTable(
+  "ocorrencias",
+  {
+    id: bigint("id", { mode: "number", unsigned: true })
+      .primaryKey()
+      .autoincrement(),
+    encomendaId: bigint("encomenda_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => encomendas.id, { onDelete: "restrict" }),
+    /** Condomínio da ocorrência — isolamento multi-tenant. */
+    condominioId: bigint("condominio_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => condominios.id, { onDelete: "cascade" }),
+    /** Funcionário que registrou a ocorrência. */
+    registradoPorId: bigint("registrado_por_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => funcionarios.id, { onDelete: "restrict" }),
+    /**
+     * Tipo padronizado da ocorrência:
+     * - devolucao_transportadora: transportadora veio buscar a encomenda
+     * - extravio: encomenda perdida/danificada sem recuperação
+     * - recusada: morador recusou o recebimento
+     * - endereco_incorreto: unidade/destinatário errado
+     * - outro: tipo não padronizado (exige descricao)
+     */
+    tipo: mysqlEnum("tipo", [
+      "devolucao_transportadora",
+      "extravio",
+      "recusada",
+      "endereco_incorreto",
+      "outro",
+    ]).notNull(),
+    /** Motivo detalhado da ocorrência — obrigatório, mínimo 10 caracteres. */
+    motivo: varchar("motivo", { length: 2000 }).notNull(),
+    /** Descrição livre adicional (obrigatória quando tipo = 'outro'). */
+    descricao: text("descricao"),
+    /** URL da foto/evidência da ocorrência. */
+    fotoEvidenciaUrl: varchar("foto_evidencia_url", { length: 1000 }),
+    /** Observações sobre a ocorrência. */
+    observacoes: text("observacoes"),
+    /** Se a encomenda foi devolvida à transportadora. */
+    devolvidaTransportadora: boolean("devolvida_transportadora").notNull().default(false),
+    /** Data/hora da ocorrência. */
+    dataOcorrencia: timestamp("data_ocorrencia").notNull().defaultNow(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at")
+      .notNull()
+      .defaultNow()
+      .onUpdateNow(),
+  },
+  (table) => [
+    index("idx_ocorrencias_encomenda_id").on(table.encomendaId),
+    index("idx_ocorrencias_condominio_id").on(table.condominioId),
+    index("idx_ocorrencias_registrado_por_id").on(table.registradoPorId),
+  ],
+)
+
+// ============================================================================
+// ANNOTATIONS (metadata de formulário)
+// ============================================================================
+
+export const annotations = {
+  condominios: {
+    nome: { label: "Nome do Condomínio", fullWidth: true, maxLength: 200 },
+    endereco: { label: "Endereço", fullWidth: true, maxLength: 500 },
+    tipo: { label: "Tipo de Estrutura" },
+    ativo: { label: "Ativo" },
+  },
+  unidades: {
+    condominio_id: { label: "Condomínio" },
+    tipo: { label: "Tipo de Unidade" },
+    rua: { label: "Rua", maxLength: 200 },
+    bloco: { label: "Bloco", maxLength: 50, helperText: "Apenas apartamentos" },
+    andar: { label: "Andar", helperText: "Apenas apartamentos" },
+    numero: { label: "Número", maxLength: 20, helperText: "Número do apartamento" },
+    quadra: { label: "Quadra", maxLength: 50, helperText: "Apenas casas" },
+    lote: { label: "Lote", maxLength: 50, helperText: "Apenas casas" },
+    label: { label: "Identificação", fullWidth: true, helperText: "Gerado automaticamente" },
+    ativo: { label: "Ativo" },
+  },
+  moradores: {
+    unidade_id: { label: "Unidade" },
+    nome: { label: "Nome", fullWidth: true, maxLength: 200 },
+    email: { label: "E-mail", fullWidth: true, maxLength: 200 },
+    telefone: { label: "Telefone", maxLength: 50 },
+    cpf: { label: "CPF", maxLength: 14 },
+    ativo: { label: "Ativo" },
+  },
+  proprietarios: {
+    nome: { label: "Nome", fullWidth: true, maxLength: 200 },
+    email: { label: "E-mail", fullWidth: true, maxLength: 200 },
+    telefone: { label: "Telefone", maxLength: 50 },
+    cpf: { label: "CPF", maxLength: 14 },
+    ativo: { label: "Ativo" },
+  },
+  unidades_proprietarios: {
+    unidade_id: { label: "Unidade" },
+    proprietario_id: { label: "Proprietário" },
+  },
+  funcionarios: {
+    condominio_id: { label: "Condomínio" },
+    nome: { label: "Nome", fullWidth: true, maxLength: 200 },
+    funcao: { label: "Função" },
+    email: { label: "E-mail", fullWidth: true, maxLength: 200 },
+    telefone: { label: "Telefone", maxLength: 50 },
+    ativo: { label: "Ativo" },
+  },
+  transportadoras: {
+    nome: { label: "Nome", fullWidth: true, maxLength: 200 },
+    cnpj: { label: "CNPJ", maxLength: 18 },
+    telefone: { label: "Telefone", maxLength: 50 },
+    ativo: { label: "Ativo" },
+  },
+  encomendas: {
+    condominio_id: { label: "Condomínio" },
+    unidade_id: { label: "Unidade" },
+    transportadora_id: { label: "Transportadora / Loja" },
+    registrado_por_id: { label: "Registrado por" },
+    codigo_rastreamento: { label: "Código de Rastreamento", maxLength: 100 },
+    foto_url: { label: "Foto", fullWidth: true, maxLength: 1000 },
+    observacoes: { label: "Observações", type: "textarea", fullWidth: true },
+    status: { label: "Status" },
+    confirmado_por_id: { label: "Confirmado por" },
+    confirmado_em: { label: "Confirmado em" },
+    entregue_por_id: { label: "Entregue por" },
+    entregue_em: { label: "Entregue em" },
+    cancelado_por_id: { label: "Cancelado por" },
+    cancelado_em: { label: "Cancelado em" },
+    motivo_cancelamento: { label: "Motivo do Cancelamento", fullWidth: true, maxLength: 500 },
+  },
+  notificacoes: {
+    morador_id: { label: "Morador" },
+    encomenda_id: { label: "Encomenda" },
+    tipo: { label: "Tipo" },
+    mensagem: { label: "Mensagem", fullWidth: true, maxLength: 500 },
+    lida: { label: "Lida" },
+    lida_em: { label: "Lida em" },
+  },
+  entregas: {
+    encomenda_id: { label: "Encomenda" },
+    condominio_id: { label: "Condomínio" },
+    funcionario_id: { label: "Funcionário" },
+    data_hora_entrega: { label: "Data/Hora da Entrega" },
+    evidencia_quem_retirou: { label: "Evidência de Quem Retirou", type: "textarea", fullWidth: true, helperText: "JSON estruturado com recebedorNome, recebedorDocumento, fotoComprovanteUrl, etc." },
+  },
+  ocorrencias: {
+    encomenda_id: { label: "Encomenda" },
+    condominio_id: { label: "Condomínio" },
+    registrado_por_id: { label: "Registrado por" },
+    tipo: { label: "Tipo de Ocorrência" },
+    motivo: { label: "Motivo", fullWidth: true, maxLength: 2000, helperText: "Obrigatório, mínimo 10 caracteres" },
+    descricao: { label: "Descrição", type: "textarea", fullWidth: true, helperText: "Obrigatória quando tipo for 'Outro'" },
+    foto_evidencia_url: { label: "Foto/Evidência", fullWidth: true, maxLength: 1000 },
+    observacoes: { label: "Observações", type: "textarea", fullWidth: true },
+    devolvida_transportadora: { label: "Devolvida à Transportadora" },
+    data_ocorrencia: { label: "Data/Hora da Ocorrência" },
+  },
+} satisfies FormAnnotationsPorTabela

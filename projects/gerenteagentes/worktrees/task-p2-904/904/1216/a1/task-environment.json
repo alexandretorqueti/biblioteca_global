@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "files": [
+    { "source": "shared/${environment}.env", "target": ".env", "required": false },
+    { "source": "${projectSlug}/${environment}.env", "target": ".env", "required": false }
+  ]
+}

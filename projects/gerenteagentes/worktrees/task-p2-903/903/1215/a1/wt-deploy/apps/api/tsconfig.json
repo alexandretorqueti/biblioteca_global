@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    "noEmit": true,
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    // NestJS atribui dependências via DI fora do construtor.
+    "strictPropertyInitialization": false,
+    "types": ["node"]
+  },
+  "include": ["src"]
+}

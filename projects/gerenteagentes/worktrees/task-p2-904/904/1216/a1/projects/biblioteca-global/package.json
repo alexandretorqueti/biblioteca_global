@@ -1,0 +1,15 @@
+{
+  "name": "@biblioteca-global/project-biblioteca-global",
+  "version": "0.0.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "Projeto biblioteca-global — administração da plataforma (usuários + projetos)",
+  "main": "src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@biblioteca-global/schema-tools": "*",
+    "@biblioteca-global/shared": "*"
+  }
+}

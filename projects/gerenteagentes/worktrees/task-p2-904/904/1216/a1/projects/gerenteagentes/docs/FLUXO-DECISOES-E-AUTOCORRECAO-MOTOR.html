@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Motor v2 — decisões, promoção e recuperação automática</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg:#f8fafc; --fg:#172033; --muted:#5b6475; --line:#64748b;
+      --neutral:#e2e8f0; --input:#bfdbfe; --process:#c7d2fe;
+      --storage:#99f6e4; --external:#fde68a; --risk:#fecaca; --ok:#bbf7d0;
+      --panel:#ffffff;
+    }
+    @media (prefers-color-scheme:dark) {
+      :root {
+        --bg:#0f172a; --fg:#e5e7eb; --muted:#a3adbd; --line:#94a3b8;
+        --neutral:#334155; --input:#1d4ed8; --process:#4338ca;
+        --storage:#0f766e; --external:#92400e; --risk:#991b1b; --ok:#166534;
+        --panel:#111c30;
+      }
+    }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    main { max-width:1240px; margin:32px auto 64px; padding:0 20px; }
+    h1 { margin:0 0 8px; font-size:28px; } h2 { margin-top:34px; font-size:21px; }
+    p { max-width:1000px; } .lede { color:var(--muted); font-size:16px; }
+    .callout { border-left:5px solid #477db8; background:var(--input); padding:14px 18px; margin:20px 0; }
+    .diagram { overflow-x:auto; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; }
+    svg { display:block; min-width:1120px; width:100%; height:auto; }
+    .title { fill:var(--fg); font-size:20px; font-weight:700; }
+    .lane-title { fill:var(--muted); font-size:13px; font-weight:700; letter-spacing:1px; }
+    .label { fill:var(--fg); font-size:14px; font-weight:650; text-anchor:middle; }
+    .small { fill:var(--muted); font-size:12px; text-anchor:middle; }
+    .edge-label { fill:var(--muted); font-size:12px; font-weight:650; }
+    .node { stroke:var(--line); stroke-width:1.2; rx:9; ry:9; }
+    .neutral { fill:var(--neutral); } .input { fill:var(--input); }
+    .process { fill:var(--process); } .storage { fill:var(--storage); }
+    .external { fill:var(--external); } .risk { fill:var(--risk); } .ok { fill:var(--ok); }
+    .edge { stroke:var(--line); stroke-width:1.7; fill:none; marker-end:url(#arrow); }
+    .loop { stroke:#7c3aed; stroke-width:1.8; fill:none; stroke-dasharray:6 5; marker-end:url(#arrowPurple); }
+    .zone { fill:none; stroke:var(--line); stroke-width:1; stroke-dasharray:7 5; opacity:.75; }
+    table { width:100%; border-collapse:collapse; background:var(--panel); }
+    th,td { text-align:left; vertical-align:top; padding:10px 12px; border:1px solid var(--line); }
+    th { background:var(--neutral); } code { background:var(--neutral); padding:1px 4px; border-radius:4px; }
+    ul { padding-left:22px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Fluxo de decisões, promoção e autocorreção do Motor v2</h1>
+  <p class="lede">Estado implantado em 11 de setembro de 2026. O fluxo abaixo distingue execução, promoção e manutenção periódica; mostra as travas de concorrência, os limites de retry e os pontos em que uma tarefa pode voltar ao trabalho ou exigir decisão humana.</p>
+
+  <aside class="callout"><strong>Invariante central:</strong> estado persistido não prova que o código entrou na base. Integração e deploy só são confirmados com evidência Git e resultado operacional; bloqueios obsoletos podem ser encerrados, mas nunca usados para fabricar uma promoção.</aside>
+
+  <h2>Fluxograma operacional</h2>
+  <div class="diagram">
+    <svg viewBox="0 0 1180 1600" role="img" aria-labelledby="diagram-title diagram-desc">
+      <title id="diagram-title">Fluxo operacional do Motor v2</title>
+      <desc id="diagram-desc">Execução da tarefa, gates técnicos, promoção, despacho de recuperação e manutenção periódica.</desc>
+      <defs>
+        <marker id="arrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 Z" fill="#64748b" /></marker>
+        <marker id="arrowPurple" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 Z" fill="#7c3aed" /></marker>
+      </defs>
+
+      <text x="30" y="34" class="title">1. Caminho da tarefa</text>
+      <rect x="25" y="52" width="1130" height="465" class="zone" rx="12" />
+      <text x="155" y="82" class="lane-title">PLANEJAMENTO E EXECUÇÃO</text>
+      <text x="560" y="82" class="lane-title">VERIFICAÇÃO E PROMOÇÃO</text>
+      <text x="955" y="82" class="lane-title">DECISÃO</text>
+
+      <rect x="55" y="105" width="250" height="72" class="node input" />
+      <text x="180" y="133" class="label">Tarefa planejada</text>
+      <text x="180" y="154" class="small">REQ-*, critérios e subtarefas</text>
+      <path d="M180 177V218" class="edge" />
+      <rect x="55" y="220" width="250" height="84" class="node process" />
+      <text x="180" y="247" class="label">Executar subtarefa</text>
+      <text x="180" y="268" class="small">sessão, branch e worktree persistidos</text>
+      <text x="180" y="286" class="small">pausa preserva trabalho; órfã → pending</text>
+      <path d="M305 262H420" class="edge" />
+
+      <rect x="420" y="220" width="290" height="84" class="node external" />
+      <text x="565" y="247" class="label">Gate da entrega</text>
+      <text x="565" y="268" class="small">typecheck · testes · build · diff</text>
+      <text x="565" y="286" class="small">falha → rework / cadeia de modelos</text>
+      <path d="M565 304V346" class="edge" />
+      <rect x="420" y="348" width="290" height="100" class="node external" />
+      <text x="565" y="375" class="label">Gate de promoção</text>
+      <text x="565" y="396" class="small">Git limpo · branch · screens · migrations</text>
+      <text x="565" y="414" class="small">journal · schema ↔ migration · banco</text>
+      <text x="565" y="432" class="small">typecheck, testes e build configurados</text>
+
+      <path d="M710 398H825" class="edge" />
+      <text x="750" y="387" class="edge-label">verde</text>
+      <rect x="825" y="348" width="285" height="100" class="node ok" />
+      <text x="968" y="375" class="label">Promover com lock</text>
+      <text x="968" y="396" class="small">lock de integração por projeto</text>
+      <text x="968" y="414" class="small">confirmar Git real → push → deploy</text>
+      <text x="968" y="432" class="small">retestar e persistir evidência</text>
+
+      <path d="M420 398H345V375H305" class="edge" />
+      <text x="326" y="389" class="edge-label">falha</text>
+      <rect x="55" y="348" width="250" height="100" class="node risk" />
+      <text x="180" y="375" class="label">Despachar recuperação</text>
+      <text x="180" y="396" class="small">assinatura + fingerprint + evidência</text>
+      <text x="180" y="414" class="small">não altera a base nesta etapa</text>
+      <text x="180" y="432" class="small">ver classes no bloco 2</text>
+      <path d="M180 348V320H340V262H305" class="loop" />
+      <text x="318" y="334" class="edge-label">recuperado</text>
+
+      <text x="30" y="560" class="title">2. Classes de recuperação</text>
+      <rect x="25" y="578" width="1130" height="540" class="zone" rx="12" />
+
+      <rect x="55" y="615" width="310" height="118" class="node process" />
+      <text x="210" y="642" class="label">Motor / ambiente / sessão</text>
+      <text x="210" y="664" class="small">blocked_environment · systemic_failure</text>
+      <text x="210" y="682" class="small">model_chain_exhausted · órfã blocked</text>
+      <text x="210" y="700" class="small">carência 90s · até 3 retomadas / 24h</text>
+      <text x="210" y="718" class="small">sem execução ativa → pending → pump</text>
+
+      <rect x="435" y="615" width="310" height="118" class="node storage" />
+      <text x="590" y="642" class="label">Repositório principal sujo</text>
+      <text x="590" y="664" class="small">famílias atuais e variantes legadas</text>
+      <text x="590" y="682" class="small">retry com backoff; branch preservada</text>
+      <text x="590" y="700" class="small">não acorda tarefa integrada/terminal</text>
+      <text x="590" y="718" class="small">merge só após checkout limpo</text>
+
+      <rect x="815" y="615" width="310" height="118" class="node external" />
+      <text x="970" y="642" class="label">Conflito tarefa → base</text>
+      <text x="970" y="664" class="small">coleta ancestor/base/tarefa + arquivos</text>
+      <text x="970" y="682" class="small">worktree e branch de resolução isolados</text>
+      <text x="970" y="700" class="small">Monitor compõe os dois lados</text>
+      <text x="970" y="718" class="small">novo gate antes de qualquer promoção</text>
+
+      <path d="M970 733V780" class="edge" />
+      <rect x="815" y="782" width="310" height="128" class="node neutral" />
+      <text x="970" y="809" class="label">Sessão do Monitor por tentativa</text>
+      <text x="970" y="831" class="small">key e label técnicos únicos</text>
+      <text x="970" y="849" class="small">workspace informado no prompt</text>
+      <text x="970" y="867" class="small">sessão normal não recebe spawnedCwd</text>
+      <text x="970" y="885" class="small">fecha sessão e limpa worktree temporário</text>
+
+      <rect x="435" y="782" width="310" height="128" class="node process" />
+      <text x="590" y="809" class="label">Gate técnico / schema</text>
+      <text x="590" y="831" class="small">migration sem journal ou coluna sem migration</text>
+      <text x="590" y="849" class="small">→ subtarefa corretiva idempotente</text>
+      <text x="590" y="867" class="small">vinculada ao diagnóstico e à tarefa</text>
+      <text x="590" y="885" class="small">uma recuperação por vez via GET_LOCK</text>
+
+      <rect x="55" y="782" width="310" height="128" class="node risk" />
+      <text x="210" y="809" class="label">Sem progresso seguro</text>
+      <text x="210" y="831" class="small">tentativas ou risco excedidos</text>
+      <text x="210" y="849" class="small">→ bloqueio estruturado</text>
+      <text x="210" y="867" class="small">preserva branch, worktree, sessão e logs</text>
+      <text x="210" y="885" class="small">decisão humana somente aqui</text>
+
+      <path d="M365 674H404V846H435" class="loop" />
+      <path d="M745 674H780V846H815" class="loop" />
+      <path d="M815 846H780V975H365" class="edge" />
+      <rect x="365" y="940" width="450" height="76" class="node ok" />
+      <text x="590" y="968" class="label">Recuperação validada</text>
+      <text x="590" y="989" class="small">volta ao gate; nunca confirma integração por estado presumido</text>
+      <path d="M365 978H315V846H365" class="edge" />
+      <text x="284" y="934" class="edge-label">falhou</text>
+
+      <text x="30" y="1160" class="title">3. Reconciliação periódica e pós-reinício</text>
+      <rect x="25" y="1178" width="1130" height="335" class="zone" rx="12" />
+      <rect x="55" y="1220" width="290" height="106" class="node neutral" />
+      <text x="200" y="1248" class="label">Pump / reconciliadores</text>
+      <text x="200" y="1270" class="small">somente quando não há manutenção concorrente</text>
+      <text x="200" y="1288" class="small">locks locais + MySQL evitam duplicidade</text>
+      <text x="200" y="1306" class="small">retomam após restart</text>
+      <path d="M345 1273H430" class="edge" />
+
+      <rect x="430" y="1205" width="320" height="136" class="node storage" />
+      <text x="590" y="1233" class="label">Varreduras seguras</text>
+      <text x="590" y="1255" class="small">leases/execuções expiradas</text>
+      <text x="590" y="1273" class="small">subtarefas bloqueadas e órfãs</text>
+      <text x="590" y="1291" class="small">retry de promoção e gate bloqueado</text>
+      <text x="590" y="1309" class="small">higiene de bloqueio comprovadamente obsoleto</text>
+      <path d="M750 1273H835" class="edge" />
+
+      <rect x="835" y="1205" width="290" height="136" class="node external" />
+      <text x="980" y="1233" class="label">Revalidar evidências</text>
+      <text x="980" y="1255" class="small">Git, facts, subtarefas e deploy_requests</text>
+      <text x="980" y="1273" class="small">inconsistência → não fabricar sucesso</text>
+      <text x="980" y="1291" class="small">recuperável → fila apropriada</text>
+      <text x="980" y="1309" class="small">ambígua → bloqueio acionável</text>
+
+      <path d="M980 1341V1390H590V1341" class="loop" />
+      <rect x="430" y="1392" width="320" height="76" class="node risk" />
+      <text x="590" y="1420" class="label">Guarda contra falso integrado</text>
+      <text x="590" y="1441" class="small">branch/commit devem estar na base; deploy deve corresponder</text>
+    </svg>
+  </div>
+
+  <h2>Matriz de decisão implantada</h2>
+  <table>
+    <thead><tr><th>Sinal</th><th>Decisão automática</th><th>Travas</th><th>Saída</th></tr></thead>
+    <tbody>
+      <tr><td>Entrega falha no gate</td><td>Rework na cadeia configurada, preservando histórico.</td><td>Limite de rework, digest da falha e detecção de resposta inválida.</td><td><code>pending</code>, troca de modelo ou bloqueio.</td></tr>
+      <tr><td>Bloqueio do Motor/ambiente</td><td>Reabrir subtarefa elegível.</td><td>90s, até 3/24h, tarefa não integrada/terminal, sem worker ativo.</td><td><code>pending</code> e novo pump.</td></tr>
+      <tr><td>Checkout principal sujo</td><td>Repetir promoção com backoff.</td><td>Bloqueio permanece aberto; tarefa concluída não é acordada.</td><td>Promoção ou conversão para conflito.</td></tr>
+      <tr><td>Conflito de merge</td><td>Criar worktree isolado e chamar Monitor.</td><td>Fingerprint, sessão única, branch isolada e gates pós-resolução.</td><td>Promover, pedir revisão humana ou registrar falha.</td></tr>
+      <tr><td>Schema/migration inconsistente</td><td>Criar subtarefa corretiva vinculada à falha.</td><td>Idempotência e <code>GET_LOCK</code>: uma tarefa por vez.</td><td>Volta ao gate de promoção.</td></tr>
+      <tr><td>Bloqueio obsoleto</td><td>Encerrar somente quando fatos e artefatos comprovarem conclusão.</td><td>Subtarefas terminais, integração real e deploy correspondente.</td><td>Higiene sem reexecutar trabalho.</td></tr>
+      <tr><td>Estado diz “integrado”, Git não confirma</td><td>Tratar como inconsistência, não como sucesso.</td><td>Ancestralidade/commit na base e evidência de deploy.</td><td>Recuperação específica ou bloqueio acionável.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Responsabilidades e limites</h2>
+  <ul>
+    <li><strong>Verificador:</strong> coleta fatos e produz diagnóstico; não cria tarefas nem altera a base.</li>
+    <li><strong>Planejador/criador:</strong> transforma somente diagnósticos recuperáveis em subtarefas idempotentes.</li>
+    <li><strong>Resolvedor de conflito:</strong> trabalha em branch/worktree isolados; o coordenador é o único autorizado a promover sob lock.</li>
+    <li><strong>Monitor:</strong> pode corrigir dentro do escopo recebido; mudança de produto, credenciais ou infraestrutura exige decisão explícita.</li>
+    <li><strong>Bloqueio humano:</strong> é a última saída, sempre com motivo, comando, evidência, tentativas e artefatos preservados.</li>
+  </ul>
+
+  <h2>Lacunas ainda acompanhadas</h2>
+  <ul>
+    <li>Reconciliar automaticamente fatos de integração/deploy divergentes da ancestralidade Git, sem apagar evidências históricas.</li>
+    <li>Ampliar a recuperação de falhas de análise sem subtarefa e de deploy com retry limitado.</li>
+    <li>Consolidar a revisão semântica final de requisitos como gate explícito e auditável antes do encerramento.</li>
+  </ul>
+</main>
+</body>
+</html>

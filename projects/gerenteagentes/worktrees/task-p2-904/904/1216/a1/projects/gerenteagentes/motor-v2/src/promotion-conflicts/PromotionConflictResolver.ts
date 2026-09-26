@@ -1,0 +1,160 @@
+import { execFile } from "node:child_process"
+import { mkdir, mkdtemp, rm } from "node:fs/promises"
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path"
+import { promisify } from "node:util"
+import { ConsoleAgentRuntimeDriver } from "../runtime/ConsoleAgentRuntimeDriver.js"
+import type { PromotionConflictCandidate, PromotionConflictEvidence, PromotionConflictResolutionResult, PromotionConflictResolverPort } from "./promotion-conflict.types.js"
+
+const execFileAsync = promisify(execFile)
+const AGENT_WORKSPACES_ROOT = "/data/workspace/projects/agentes"
+
+function isDescendant(root: string, candidate: string): boolean {
+  const pathRelative = relative(root, candidate)
+  return Boolean(pathRelative) && pathRelative !== ".." && !pathRelative.startsWith(`..${sep}`) && !isAbsolute(pathRelative)
+}
+
+/**
+ * O Console só permite que um agente opere dentro do seu próprio workspace.
+ * Git aceitaria um worktree em /tmp, mas esse caminho seria recusado pelo
+ * Console ao criar a sessão do Monitor. Mantemos o worktree temporário sob
+ * o workspace do Monitor, onde as duas camadas compartilham a mesma fronteira.
+ */
+export function monitorResolutionWorktreeParent(
+  monitorWorkspace: string | null,
+  candidate: PromotionConflictCandidate,
+  evidence: PromotionConflictEvidence,
+): string {
+  if (!monitorWorkspace || !isAbsolute(monitorWorkspace)) {
+    throw new Error("Workspace absoluto do Monitor não está configurado")
+  }
+  const workspace = resolve(monitorWorkspace)
+  if (!isDescendant(resolve(AGENT_WORKSPACES_ROOT), workspace)) {
+    throw new Error(`Workspace do Monitor fora da área autorizada: ${workspace}`)
+  }
+  const task = candidate.taskId.replace(/[^a-zA-Z0-9._-]/g, "-").slice(0, 100)
+  return join(workspace, "worktrees", "promotion-resolutions", `${task}-${evidence.fingerprint.slice(0, 12)}`)
+}
+
+/**
+ * O Console mantém os labels de sessão como únicos mesmo após a sessão ser
+ * fechada. Um retry do mesmo fingerprint precisa, portanto, de uma identidade
+ * por tentativa; o diretório temporário já fornece um sufixo seguro e
+ * rastreável, sem perder a correlação com tarefa e fingerprint.
+ */
+export function resolutionAttemptSessionIdentity(
+  candidate: PromotionConflictCandidate,
+  evidence: PromotionConflictEvidence,
+  worktree: string,
+): { key: string; label: string } {
+  const attempt = basename(worktree)
+  const prefix = `motor:promotion-resolution:${candidate.taskId}:${evidence.fingerprint.slice(0, 12)}`
+  const key = `${prefix}:${attempt}`
+  return {
+    key,
+    // Alguns provedores do Console normalizam títulos humanos antes de
+    // verificar unicidade. O label técnico, igual à chave já única, evita que
+    // dois retries sejam tratados como a mesma sessão por essa normalização.
+    label: key,
+  }
+}
+
+async function git(cwd: string, ...args: string[]): Promise<string> {
+  const result = await execFileAsync("git", args, { cwd, timeout: 15 * 60_000, maxBuffer: 8 * 1024 * 1024 })
+  return result.stdout.trim()
+}
+
+function resolutionBranch(candidate: PromotionConflictCandidate, evidence: PromotionConflictEvidence): string {
+  const task = candidate.taskId.replace(/[^a-zA-Z0-9._-]/g, "-").slice(0, 100)
+  return `motor-v2/promotion-resolution/${task}/${evidence.fingerprint.slice(0, 12)}`
+}
+
+export function buildResolutionMission(candidate: PromotionConflictCandidate, evidence: PromotionConflictEvidence, branch: string, workspacePath: string): string {
+  return [
+    "Você é o Monitor do Motor-v2 e recebeu uma missão de resolução de conflito Git.",
+    `Trabalhe APENAS neste workspace: ${workspacePath}`,
+    "Não faça push, não altere a base e não mude arquivos de configuração do OpenClaw.",
+    `Tarefa: ${candidate.taskId}`,
+    `Branch de resolução: ${branch}`,
+    `Base: ${evidence.baseBranch} @ ${evidence.baseCommit}`,
+    `Branch da tarefa: ${evidence.taskBranch} @ ${evidence.taskCommit}`,
+    "O merge já está em andamento e contém marcadores de conflito.",
+    "Resolva preservando os comportamentos necessários dos dois lados. Não escolha ours/theirs integralmente.",
+    "Depois: confirme que não há marcadores, execute git diff --check e faça um commit local com mensagem 'fix(motor): resolve conflito de promoção <tarefa>'.",
+    "Não rode push. Responda com um resumo curto, riscos remanescentes e os testes que executou.",
+    "Arquivos conflitantes:\n" + evidence.conflictFiles.map((file) => `- ${file.path} (${file.kind})`).join("\n"),
+  ].join("\n\n")
+}
+
+/**
+ * Executa a tentativa limitada do Monitor em um worktree descartável.
+ * A base nunca é alterada aqui: uma branch de resolução só é devolvida após
+ * não haver conflitos, o diff ser válido e os gates configurados passarem.
+ */
+export class PromotionConflictResolver implements PromotionConflictResolverPort {
+  constructor(
+    private readonly driver: ConsoleAgentRuntimeDriver,
+    private readonly monitorAgentId = process.env.MOTOR_MONITOR_AGENT_ID ?? "programador-senior",
+    private readonly monitorModel = process.env.MOTOR_MONITOR_MODEL || undefined,
+  ) {}
+
+  async resolve(candidate: PromotionConflictCandidate, evidence: PromotionConflictEvidence): Promise<PromotionConflictResolutionResult> {
+    const root = await git(candidate.repoPath, "rev-parse", "--show-toplevel")
+    const projectRelative = relative(root, resolve(candidate.repoPath))
+    if (!projectRelative || projectRelative.startsWith("..")) return { kind: "failed", reason: "repo_path fora do repositório Git" }
+
+    const branch = resolutionBranch(candidate, evidence)
+    // Consulta o caminho canônico no Console; não use o workspace do agente
+    // da tarefa, pois a sessão executa como o Monitor.
+    const monitorWorkspace = await this.driver.getAgentWorkspace(this.monitorAgentId)
+    const worktreeParent = monitorResolutionWorktreeParent(monitorWorkspace, candidate, evidence)
+    await mkdir(worktreeParent, { recursive: true })
+    const worktree = await mkdtemp(join(worktreeParent, "attempt-"))
+    let session: Awaited<ReturnType<ConsoleAgentRuntimeDriver["createSession"]>> | undefined
+    try {
+      // A branch é derivada do fingerprint e pertence exclusivamente a esta
+      // tentativa. Um retry pode encontrar sobra de uma execução interrompida.
+      await git(root, "branch", "-D", branch).catch(() => undefined)
+      await git(root, "worktree", "add", "--detach", worktree, evidence.baseCommit)
+      await git(worktree, "switch", "-c", branch)
+      try { await git(worktree, "merge", "--no-commit", "--no-ff", evidence.taskCommit) } catch { /* conflito esperado */ }
+      const conflicts = await git(worktree, "diff", "--name-only", "--diff-filter=U")
+      const projectPath = join(worktree, projectRelative)
+      let report = "O conflito deixou de ser reproduzível; o merge normal foi revalidado contra a base atual."
+      if (conflicts.trim()) {
+        const sessionIdentity = resolutionAttemptSessionIdentity(candidate, evidence, worktree)
+        session = await this.driver.createSession({
+          agentId: this.monitorAgentId,
+          ...sessionIdentity,
+          model: this.monitorModel,
+          // Sessões normais do Console não aceitam spawnedCwd/workspacePath.
+          // O diretório autorizado é informado explicitamente na missão.
+        })
+        const sent = await this.driver.sendMessage({ session, message: buildResolutionMission(candidate, evidence, branch, projectPath), idempotencyKey: evidence.fingerprint })
+        const completion = await this.driver.waitForRunCompletion(session, sent.runId)
+        if (completion.state !== "final") return { kind: "failed", reason: "Monitor não concluiu: " + (completion.errorMessage ?? completion.state) }
+        report = completion.content ?? "Monitor resolveu o conflito e os gates passaram."
+      }
+
+      const unresolved = await git(worktree, "diff", "--name-only", "--diff-filter=U")
+      if (unresolved.trim()) return { kind: "needs_human_review", report: "Monitor concluiu sem resolver todos os arquivos: " + unresolved }
+      await git(worktree, "diff", "--check")
+      const status = await git(worktree, "status", "--porcelain")
+      if (status.trim()) await git(worktree, "add", "-A")
+      const afterAdd = await git(worktree, "status", "--porcelain")
+      if (afterAdd.trim()) await git(worktree, "commit", "--no-verify", "-m", `fix(motor): resolve conflito de promoção ${candidate.taskId}`)
+
+      for (const command of [candidate.buildCommand, candidate.testCommand].filter((value): value is string => Boolean(value?.trim()))) {
+        await execFileAsync("sh", ["-lc", command], { cwd: projectPath, timeout: 15 * 60_000, maxBuffer: 8 * 1024 * 1024 })
+      }
+      const commit = await git(worktree, "rev-parse", "HEAD")
+      return { kind: "resolved", resolutionBranch: branch, resolutionCommit: commit, report }
+    } catch (error) {
+      return { kind: "failed", reason: error instanceof Error ? error.message : String(error) }
+    } finally {
+      if (session) await this.driver.closeSession(session).catch(() => undefined)
+      await execFileAsync("git", ["merge", "--abort"], { cwd: worktree }).catch(() => undefined)
+      await execFileAsync("git", ["worktree", "remove", "--force", worktree], { cwd: root }).catch(() => undefined)
+      await rm(worktree, { recursive: true, force: true }).catch(() => undefined)
+    }
+  }
+}

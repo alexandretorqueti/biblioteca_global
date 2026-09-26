@@ -1,0 +1,15 @@
+{
+  "name": "@biblioteca-global/project-sistema-adm-global",
+  "version": "0.0.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "Projeto sistema-adm-global — Administrador Global (gestão administrativa da Global Tecnologia)",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "import:production": "tsx scripts/import-production.ts"
+  },
+  "dependencies": {
+    "@biblioteca-global/schema-tools": "*",
+    "@biblioteca-global/shared": "*"
+  }
+}

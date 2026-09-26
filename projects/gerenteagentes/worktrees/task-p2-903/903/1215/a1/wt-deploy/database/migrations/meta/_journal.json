@@ -1,0 +1,20 @@
+{
+  "version": "7",
+  "dialect": "mysql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "5",
+      "when": 1786731199541,
+      "tag": "0000_overjoyed_hydra",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1786826047999,
+      "tag": "0001_long_quentin_quire",
+      "breakpoints": true
+    }
+  ]
+}

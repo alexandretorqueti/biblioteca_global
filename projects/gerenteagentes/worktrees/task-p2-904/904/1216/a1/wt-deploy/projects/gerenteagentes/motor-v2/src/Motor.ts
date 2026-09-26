@@ -1,0 +1,101 @@
+/**
+ * Motor v2 - Entry point principal
+ */
+
+import type { Db, TaskRepository } from './shared/types/infrastructure.js'
+import { TaskCoordinator } from './coordinator/TaskCoordinator.js'
+import { ResourceLeaseService } from './resources/ResourceLeaseService.js'
+import { ResourceWaitManager } from './resources/ResourceWaitManager.js'
+import { WorkerLauncher } from './workers/WorkerLauncher.js'
+import { ExpirationReconciler } from './reconciler/ExpirationReconciler.js'
+import { MotorAPI } from './api/MotorAPI.js'
+import { resourceEventBus } from './resources/ResourceEventBus.js'
+import { executionEventBus, type ExecutionActivityBroadcaster } from './events/ExecutionEventBus.js'
+import { createLogger, describeError } from './shared/logger.js'
+
+export interface MotorConfig {
+  db: Db
+  repository: TaskRepository
+  maxWorkers?: number
+  maxWorkersPerProject?: number
+  apiPort?: number
+  reconcilerIntervalMs?: number
+  activityBroadcaster?: ExecutionActivityBroadcaster
+}
+
+export class Motor {
+  private logger = createLogger('Motor')
+  private coordinator: TaskCoordinator
+  private resourceLease: ResourceLeaseService
+  private _waitManager: ResourceWaitManager
+  private workerLauncher: WorkerLauncher
+  private reconciler: ExpirationReconciler
+  private api: MotorAPI
+  private pumpInterval: ReturnType<typeof setInterval> | null = null
+
+  constructor(config: MotorConfig) {
+    const maxWorkers = config.maxWorkers ?? 1
+    const apiPort = config.apiPort ?? 3010
+
+    this.resourceLease = new ResourceLeaseService({ 
+      db: config.db,
+      defaultLeaseMs: 600_000, // 10 minutos - tempo suficiente para chamadas LLM e testes
+      heartbeatIntervalMs: 30_000, // 30 segundos
+    })
+    this._waitManager = new ResourceWaitManager(config.db, config.repository)
+    this.workerLauncher = new WorkerLauncher()
+    this.reconciler = new ExpirationReconciler({
+      db: config.db,
+      intervalMs: config.reconcilerIntervalMs,
+      onLeaseExpired: (resourceKey, executionId) => this.coordinator.onLeaseExpired(resourceKey, executionId),
+    })
+    this.coordinator = new TaskCoordinator(config.db, config.repository, this.resourceLease, {
+      maxWorkers,
+      maxWorkersPerProject: config.maxWorkersPerProject ?? 1,
+    }, this.workerLauncher, undefined, this._waitManager)
+    this.api = new MotorAPI({ port: apiPort, coordinator: this.coordinator })
+
+    this.setupEventHandlers()
+    if (config.activityBroadcaster) {
+      executionEventBus.on((event) => {
+        void Promise.resolve(config.activityBroadcaster!.publish(event)).catch((error: unknown) => {
+          this.logger.error('Falha ao publicar atividade realtime: ' + describeError(error))
+        })
+      })
+    }
+  }
+
+  async start(): Promise<void> {
+    this.logger.info('Iniciando motor-v2...')
+    this.reconciler.start()
+    await this.api.start()
+
+    this.pumpInterval = setInterval(() => {
+      this.coordinator.pump().catch((err: Error) => this.logger.error('Erro no pump: ' + describeError(err)))
+    }, 30000)
+
+    await this.coordinator.pump()
+    this.logger.info('Motor-v2 iniciado')
+  }
+
+  async stop(): Promise<void> {
+    this.logger.info('Parando...')
+    if (this.pumpInterval) { clearInterval(this.pumpInterval); this.pumpInterval = null }
+    this.reconciler.stop()
+    await this.workerLauncher.shutdownAll()
+    await this.api.stop()
+    this.logger.info('Parado')
+  }
+
+  private setupEventHandlers(): void {
+    this.workerLauncher.on('worker_exit', (event: { executionId: string; code: number | null }) => {
+      this.logger.info(`Worker exit: ${event.executionId} (code: ${event.code})`, { executionId: event.executionId })
+    })
+    resourceEventBus.on('released', (event) => {
+      void this.coordinator.onResourceReleased(event.resourceKey)
+    })
+  }
+
+  getCoordinator(): TaskCoordinator { return this.coordinator }
+  getResourceLease(): ResourceLeaseService { return this.resourceLease }
+}

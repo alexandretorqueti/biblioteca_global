@@ -1,0 +1,37 @@
+{
+  "name": "@biblioteca-global/motor-v2",
+  "version": "0.1.0",
+  "description": "Motor v2 com suporte a paralelismo controlado",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "npx tsc",
+    "start": "node dist/start.js",
+    "dev": "npx tsc --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "recover": "node dist/scripts/recover.js",
+    "typecheck": "npx tsc --noEmit",
+    "lint": "eslint src test --ext .ts"
+  },
+  "dependencies": {
+    "mysql2": "^3.23.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "~5.9.3",
+    "vitest": "^4.1.10"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

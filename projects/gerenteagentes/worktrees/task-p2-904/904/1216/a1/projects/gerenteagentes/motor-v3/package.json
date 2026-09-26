@@ -1,0 +1,47 @@
+{
+  "name": "@biblioteca-global/motor-v3",
+  "version": "0.1.0",
+  "description": "Motor v3 — event-driven, catálogo configurável, conversa livre com verificação de realidade",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "npx tsc",
+    "start": "node dist/start.js",
+    "dev": "npx tsc --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "npx tsc --noEmit",
+    "lint": "eslint src test --ext .ts",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:bootstrap-runtime": "node dist/db/bootstrap.js",
+    "db:push": "drizzle-kit push",
+    "db:studio": "drizzle-kit studio",
+    "db:seed": "node dist/db/seed.js"
+  },
+  "dependencies": {
+    "amqplib": "^0.10.9",
+    "dotenv": "^17.4.2",
+    "drizzle-orm": "^0.44.0",
+    "mysql2": "^3.23.3"
+  },
+  "devDependencies": {
+    "@types/amqplib": "^0.10.8",
+    "@types/node": "^20.11.0",
+    "drizzle-kit": "^0.31.0",
+    "typescript": "~5.9.3",
+    "vitest": "^4.1.10"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

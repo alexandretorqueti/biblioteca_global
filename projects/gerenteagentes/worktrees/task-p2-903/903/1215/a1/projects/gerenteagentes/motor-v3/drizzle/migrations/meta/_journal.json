@@ -1,0 +1,41 @@
+{
+  "version": "7",
+  "dialect": "mysql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "5",
+      "when": 1789603203762,
+      "tag": "0000_mighty_blade",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1789851949000,
+      "tag": "0001_catalog_reconcile",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1789900000000,
+      "tag": "0002_analysis_execution_claim",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1789901000000,
+      "tag": "0003_motor_outbox",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "5",
+      "when": 1789907000000,
+      "tag": "0004_message_processing_state",
+      "breakpoints": true
+    }
+  ]
+}

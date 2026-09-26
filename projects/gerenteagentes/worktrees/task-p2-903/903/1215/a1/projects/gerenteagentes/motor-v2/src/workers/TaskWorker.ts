@@ -1,0 +1,2696 @@
+/**
+ * TaskWorker - Pipeline completo com 5 fases
+ *
+ * Fluxo:
+ * 1. ANALYZE: Chama Analista -> cria subtarefas
+ * 2. PREPARE: Confere branch base, cria branch de trabalho, checkout
+ * 3. EXECUTE: Chama Programador com subtarefa
+ * 4. VERIFY: npm run build + npm run test
+ * 5. ENTREGA: Registra o commit aprovado; a integração na branch-base é
+ *    responsabilidade do TaskCoordinator
+ */
+
+import { execFileSync, execSync } from "node:child_process"
+import { createHash } from "node:crypto"
+import { existsSync } from "node:fs"
+import { isAbsolute, relative, resolve } from "node:path"
+
+import { pathToFileURL } from "node:url"
+import { SecretProfileManager, resolveGitTopLevel } from "../workspaces/SecretProfileManager.js"
+import { DependencyInstaller, isLockfileOutOfSync, resolveInstallTimeoutMs } from "../workspaces/DependencyInstaller.js"
+import { GateFailureClassifier, type GateFailureVerdict } from "../policies/GateFailureClassifier.js"
+import { ConsoleAgentRuntimeDriver, WorkspaceBindingError, type RemoteSessionFailure, type RuntimeSession, type RuntimeSessionMessage } from "../runtime/ConsoleAgentRuntimeDriver.js"
+import type { WorkerInput, ExecutionContext, ExecutionResult, SubtaskInfo } from "../shared/types/execution.js"
+import type { CoordinatorToWorkerMessage, WorkerToCoordinatorMessage } from "./WorkerProtocol.js"
+import { defaultChain, formatTaskSessionKey, isModelUnavailableError, isModelUnavailableFailure, type ModelSelection } from "../policies/ModelTierPolicy.js"
+import { isSystemicFailure } from "../policies/SystemFailurePolicy.js"
+import { blockerEvidence, type BlockerKind } from "../policies/BlockerPolicy.js"
+import { failureFingerprint } from "../policies/SystemFailurePolicy.js"
+import { decideGateScope, isTestPath } from "../policies/GateScopePolicy.js"
+import {
+  isSetupTask,
+  isSmokeTestSubtask,
+  validateSmokeTestGate,
+  generateSmokeTestSubtask,
+  planHasSmokeTest,
+} from "../policies/SetupSmokeTest.js"
+import {
+  BASELINE_CORRECTION_CRITERION,
+  BASELINE_CORRECTION_TITLE,
+  BASELINE_FINGERPRINT_PREFIX,
+  baselineCorrectionScope,
+  isBaselineCorrection,
+  isFunctionalSpec,
+  withBaselineExcludes,
+} from "../policies/BaselinePolicy.js"
+import { hasPersistedPlan, persistPlan, type PlanCoverage } from "../planning/PlanPersistence.js"
+import { safeParseAnalystReply, type AnalystReply } from "../planning/AnalystReply.js"
+import { validatePlanQuality } from "../planning/PlanQualityPolicy.js"
+import {
+  fetchTaskClarificationHistory,
+  formatHistoryForPrompt,
+  persistTaskClarification,
+  persistTaskDeveloperClarification,
+} from "../planning/ClarificationStore.js"
+import type { Db, QueryResult } from "../shared/types/infrastructure.js"
+import { resolveProjectDatabase } from "../database/DrizzleDb.js"
+import { ModelCooldownStore } from "../database/ModelCooldownStore.js"
+import { cooldownReason } from "../policies/ModelCooldownPolicy.js"
+import mysql from "mysql2/promise"
+import { getAgentReplyFailureReason } from "../policies/NoReplyFailurePolicy.js"
+import { validatePremiseRefutation, type PremiseRefutation } from "../policies/PremiseRefutationPolicy.js"
+import { ManagedPromptResolver } from "../prompts/ManagedPromptResolver.js"
+import { outputContractDefault } from "../prompts/output-contract-catalog.js"
+import { composeDevelopmentPrompt } from "../prompts/PromptComposition.js"
+import { confirmBaselineIndependentFailure } from "../policies/BaselineConfirmation.js"
+import { digestGateFailure, formatCarryOver, type CarryOverEvent } from "../policies/CarryOverPolicy.js"
+import { getConfigNumber } from "../config/MotorConfigReader.js"
+import { formatPriorSubtaskHandoff, parseGitNameStatus, type PriorSubtaskHandoff } from "../policies/SubtaskHandoffPolicy.js"
+import { validateDatabaseMigrationPath } from "../database/ProjectDatabaseOperationExecutor.js"
+
+const COMMAND_FAILURE_LIMIT = 12_000
+const ANSI_ESCAPE_PATTERN = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g
+const DEFAULT_SESSION_RECOVERY_LIMIT = 1
+
+/**
+ * Contexto explícito para o DEV retomar a ÚLTIMA decisão respondida no chat.
+ *
+ * Não há resumo por IA: preservamos pergunta/resposta literalmente, mas nunca
+ * despejamos o histórico inteiro em todo retry. A decisão anterior já está no
+ * transcript da sessão única; este trecho existe para a retomada do worker.
+ */
+export function formatDeveloperClarificationContext(history: Parameters<typeof formatHistoryForPrompt>[0]): string {
+  let answerIndex = -1
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    if (history[index]?.role === "user") { answerIndex = index; break }
+  }
+  if (answerIndex < 0) return ""
+  let questionIndex = -1
+  for (let index = answerIndex - 1; index >= 0; index -= 1) {
+    if (history[index]?.role === "analyst") { questionIndex = index; break }
+  }
+  const answer = history[answerIndex]?.texto.trim()
+  if (!answer) return ""
+  const question = questionIndex >= 0 ? history[questionIndex]?.texto.trim() : ""
+  return [
+    "DECISÃO DO USUÁRIO — checkpoint mais recente (texto literal; não reinterpretar):",
+    ...(question ? ["Pergunta do agente:\n" + question] : []),
+    "Resposta do usuário:\n" + answer,
+  ].join("\n\n").slice(-4_000)
+}
+
+export function resolveSessionRecoveryLimit(env: NodeJS.ProcessEnv = process.env): number {
+  const configured = Number(env.MOTOR_SESSION_RECOVERY_MAX_ATTEMPTS ?? DEFAULT_SESSION_RECOVERY_LIMIT)
+  return Number.isInteger(configured) && configured >= 0 && configured <= 5
+    ? configured
+    : DEFAULT_SESSION_RECOVERY_LIMIT
+}
+
+export function resolveMaxDeliveryAttempts(value = getConfigNumber("motor.max_delivery_attempts")): number {
+  return Number.isInteger(value) && value >= 1 && value <= 200 ? value : 20
+}
+
+export function formatRemoteSessionFailure(failure: RemoteSessionFailure): string {
+  return `[${failure.code}] ${failure.message} (sessão=${failure.sessionKey}, run=${failure.runId}, ocorrido_em=${failure.occurredAt})`
+}
+
+export interface SessionFailurePersistenceDb {
+  query(sql: string, params?: unknown[]): Promise<unknown>
+}
+
+/**
+ * Assinatura estável de uma falha remota de sessão: mesmo `code`+`message`,
+ * ignorando run id e timestamp (que mudam a cada tentativa).
+ *
+ * O Console devolve apenas `status: failed` no describe — a causa real
+ * (ex.: "429 quota exhausted" do provedor) não chega ao Motor. Comparar
+ * assinaturas é o único sinal confiável de que repetir o MESMO modelo não vai
+ * resolver, e que a cadeia precisa escalar.
+ */
+export function remoteFailureSignature(code: string, message: string): string {
+  return `${code}|${message}`
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "<run>")
+    .replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z?/g, "<ts>")
+    .slice(0, 300)
+}
+
+/** SESSION_FAILED sem resposta útil não é recuperável pela mesma sessão/modelo. */
+export function shouldSkipModelAfterRemoteFailure(failure: RemoteSessionFailure, repeats: number): boolean {
+  // Timeout sem progresso é sinal do modelo/sessão atual. Repetir o mesmo
+  // modelo recria o prompt e consome uma entrega sem produzir trabalho; a
+  // sessão lógica é preservada e o Console recebe PATCH com o próximo modelo.
+  const idleTimeout = /timeout\s+por\s+inatividade|idle timeout|idle_timeout|no response from model|llm idle timeout/i.test(`${failure.code} ${failure.message}`)
+  return idleTimeout || failure.code === "SESSION_FAILED" || isModelUnavailableFailure(failure.code, failure.message) || repeats >= 2
+}
+
+/**
+ * Detecta erro de context overflow (prompt muito grande para o modelo).
+ * Quando ocorre, a sessão está contaminada com contexto acumulado e precisa
+ * ser saneada (arquivada + nova geração) antes de tentar novamente.
+ */
+export function isContextOverflowFailure(code: string, message: string): boolean {
+  const signature = `${code} ${message}`.toLowerCase()
+  return /context overflow|prompt too large|context_window_exceeded|max_tokens_exceeded|token limit/i.test(signature)
+}
+
+/**
+ * A confirmação inicial de contexto não produz trabalho aproveitável. Quando
+ * ela falha, promover o modelo é seguro e evita depender de o Console expor a
+ * causa do provedor. Falha sistêmica do Console é a única exceção: trocar de
+ * modelo não recupera uma infraestrutura compartilhada indisponível.
+ */
+export function shouldEscalateAnalysisContextFailure(
+  failure: RemoteSessionFailure | undefined,
+  errorMessage: string,
+): boolean {
+  if (failure?.classification === "systemic") return false
+  if (!failure) return true
+  return isModelUnavailableFailure(failure.code, failure.message) ||
+    failure.classification === "transient" ||
+    isModelUnavailableFailure(failure.code, errorMessage)
+}
+
+/**
+ * `motor_agent_session_failures.occurred_at` é TIMESTAMP NOT NULL e o driver
+ * não converte ISO-8601 com `T`/`Z` ("Incorrect datetime value"). Normaliza
+ * epoch/ISO para o formato MySQL, com fallback para agora.
+ */
+export function toMysqlDateTime(value: string | number | Date | undefined, now = new Date()): string {
+  const iso = (date: Date) => date.toISOString().slice(0, 19).replace("T", " ")
+  if (value === undefined || value === null || value === "") return iso(now)
+  const parsed = value instanceof Date
+    ? value
+    : new Date(typeof value === "string" && /^\d+$/.test(value) ? Number(value) : value)
+  return Number.isNaN(parsed.getTime()) ? iso(now) : iso(parsed)
+}
+
+export async function persistRemoteSessionFailure(
+  db: SessionFailurePersistenceDb,
+  taskId: string,
+  agentId: string,
+  subtaskId: number | undefined,
+  failure: RemoteSessionFailure,
+): Promise<void> {
+  // Converter taskId (string ou número) para ID numérico.
+  // O worker usa conexão mysql2 crua (devolve [rows, fields]); o restante do
+  // Motor usa o adaptador `Db` (devolve { rows }). Sem normalizar, o lookup
+  // falhava sempre e nenhuma falha de sessão era persistida.
+  const numeric = /^\d+$/.test(taskId)
+  const raw = await db.query(
+    "SELECT id FROM tarefas WHERE " + (numeric ? "(external_id = ? OR id = ?)" : "external_id = ?") + " LIMIT 1",
+    numeric ? [taskId, taskId] : [taskId],
+  ) as unknown
+  const rows = Array.isArray(raw)
+    ? ((raw[0] ?? []) as Array<{ id: number }>)
+    : (((raw as { rows?: Array<{ id: number }> } | undefined)?.rows) ?? [])
+  const tarefaId = Number(rows[0]?.id ?? 0)
+  if (!tarefaId) {
+    // Tarefa não encontrada - apenas logar e retornar sem persistir
+    console.warn(`[persistRemoteSessionFailure] Tarefa não encontrada: ${taskId}`)
+    return
+  }
+  
+  await db.query(
+    "INSERT INTO motor_agent_session_failures (tarefa_id, subtarefa_id, agent_id, session_key, runtime_session_id, run_id, code, message, occurred_at, scope, classification, classification_reason, fingerprint) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    [tarefaId, subtaskId ?? null, agentId, failure.sessionKey, failure.remoteSessionId ?? null, failure.runId, failure.code, failure.message, toMysqlDateTime(failure.occurredAt), failure.scope, failure.classification, failure.classificationReason, failure.fingerprint],
+  )
+}
+
+type IntegrationWorkspaceBaseline = {
+  path: string
+  head: string
+  status: string
+}
+
+class WrongWorkspaceError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "WrongWorkspaceError"
+  }
+}
+
+/**
+ * Limite da descrição enviada AO ANALISTA. Ele só precisa de contexto
+ * suficiente para quebrar a tarefa; a descrição integral continua chegando
+ * ao programador na fase EXECUTE (buildProgrammerPrompt injeta até 12KB).
+ * Descrições gigantes (ex.: 7KB+) faziam o analista refletir a especificação
+ * nos scopes e estourar o teto de saída do modelo no meio do JSON (2026-09-01).
+ */
+export function truncateDescriptionForAnalyst(description?: string): string {
+  const full = (description || "N/A").trim() || "N/A"
+  return full
+}
+
+/**
+ * Feedback corretivo enviado ao analista quando a resposta veio truncada ou
+ * inválida: uma única nova chance no mesmo modelo antes de escalar a escada.
+ */
+export function formatAnalystOutputContract(_contract: { instructions: string; schema: unknown | null; example: unknown | null }): string {
+  // O schema e o exemplo do plano são um protocolo do Motor, não conteúdo
+  // livre do prompt. A versão armazenada no banco continua fornecendo as
+  // instruções editáveis, mas nunca pode degradar o contrato estrutural que
+  // será enviado ao agente (incidente task-p2-780: arrays vazios no exemplo).
+  const canonical = outputContractDefault("analista.plano_ou_perguntas")
+  if (!canonical) throw new Error("Contrato canônico do analista não encontrado")
+  return [
+    "CONTRATO DE SAIDA OBRIGATORIO (use exatamente os nomes de campos abaixo):",
+    // Instruções editáveis antigas podem exigir campos fora do schema (incidente
+    // "estrategia"). O contrato canônico é a única autoridade estrutural.
+    canonical.instructions,
+    "JSON Schema completo:\n" + JSON.stringify(canonical.schema, null, 2),
+    "Exemplo completo valido:\n" + JSON.stringify(canonical.example, null, 2),
+  ].filter(Boolean).join("\n\n")
+}
+
+export function splitAnalystDescription(description?: string, chunkSize = 6_000): string[] {
+  const full = (description || "N/A").trim() || "N/A"
+  const chunks: string[] = []
+  for (let offset = 0; offset < full.length; offset += chunkSize) chunks.push(full.slice(offset, offset + chunkSize))
+  return chunks
+}
+
+export function analystCorrectiveFeedback(kind: "truncated" | "invalid", parserError: string, contract: string): string {
+  if (kind === "truncated") {
+    return [
+      "Sua resposta anterior foi cortada no meio do JSON (provavelmente atingiu o limite de saida do modelo).",
+      "Responda de novo com o MESMO formato JSON, preservando todas as subtarefas, requisitos e cobertura; torne apenas o texto mais curto, reduzindo redundancias.",
+      "Erro do parser: " + parserError,
+      "Nao omita requisitos nem etapas da descricao. Responda APENAS com o JSON.",
+      contract,
+    ].join(" ")
+  }
+  return [
+    "Sua resposta anterior nao foi reconhecida pelo Motor.",
+    "Erro do parser: " + parserError,
+    "Corrija somente o formato e os nomes dos campos. Preserve o conteudo util da resposta anterior.",
+    contract,
+    "Responda APENAS com o JSON esperado, sem texto ao redor.",
+  ].join("\n\n")
+}
+
+/** Feedback para um plano que é JSON válido, mas viola o contrato semântico. */
+export function analystPlanRejectionFeedback(reason: string, contract: string): string {
+  return [
+    "Seu plano anterior foi rejeitado pelo validador do Motor.",
+    "Erro de validação: " + reason,
+    "Corrija somente os campos, a cobertura ou a estrutura apontados pelo erro. Preserve o conteúdo útil e responda na MESMA sessão.",
+    contract,
+    "Responda APENAS com JSON válido, sem texto ao redor.",
+  ].join("\n\n")
+}
+
+type CommandFailure = {
+  stdout?: string | Buffer
+  stderr?: string | Buffer
+  message?: string
+  status?: number | null
+  signal?: NodeJS.Signals | null
+}
+
+function cleanCommandOutput(value: string | Buffer | undefined): string {
+  return (typeof value === "string" ? value : value?.toString() ?? "")
+    .replace(ANSI_ESCAPE_PATTERN, "")
+    .replace(/\r/g, "")
+    .trim()
+}
+
+/**
+ * Mantém stdout e stderr: Vitest escreve avisos React em stderr, mas a
+ * asserção e o resumo da falha em stdout. O final é mais relevante que o
+ * início porque os runners imprimem o resumo depois da execução da suíte.
+ */
+export function formatCommandFailure(error: CommandFailure, limit = COMMAND_FAILURE_LIMIT): string {
+  const stdout = cleanCommandOutput(error.stdout)
+  const stderr = cleanCommandOutput(error.stderr)
+  const metadata = [
+    error.status != null ? `exit=${error.status}` : "",
+    error.signal ? `signal=${error.signal}` : "",
+  ].filter(Boolean).join(" ")
+  const sections = [
+    metadata,
+    stdout ? `[stdout]\n${stdout}` : "",
+    stderr ? `[stderr]\n${stderr}` : "",
+    !stdout && !stderr ? cleanCommandOutput(error.message) : "",
+  ].filter(Boolean)
+  const combined = sections.join("\n\n") || "Comando encerrou sem saída diagnóstica"
+  return combined.length <= limit ? combined : "[saída truncada; exibindo o final]\n" + combined.slice(-limit)
+}
+
+export function confirmationTestCommand(originalCommand: string, failure: string): string {
+  if (!originalCommand.trim().startsWith("npm run test")) return originalCommand
+  const files = [...failure.matchAll(/(?:^|\s)((?:[\w@.-]+\/)*[\w@.-]+\.(?:test|spec)\.[cm]?[jt]sx?)/gm)]
+    .map((match) => match[1])
+    .filter((file, index, all) => all.indexOf(file) === index)
+    .slice(0, 10)
+  if (files.length === 0) return originalCommand
+  return "npm run test -- " + files.map((file) => `\"${file}\"`).join(" ")
+}
+
+function isSafeBranchName(branch: string): boolean {
+  return Boolean(
+    branch &&
+      branch.length <= 240 &&
+      /^[a-zA-Z0-9._/-]+$/.test(branch) &&
+      !branch.includes("..") &&
+      !branch.includes("@{") &&
+      !branch.startsWith("/") &&
+      !branch.endsWith("/") &&
+      !branch.endsWith(".") &&
+      !branch.endsWith(".lock"),
+  )
+}
+
+class TaskWorker {
+  private executionId: string
+  private cancelled = false
+  private heartbeatInterval: ReturnType<typeof setInterval> | null = null
+  private db: mysql.Connection | null = null
+  private integrationBaseline: IntegrationWorkspaceBaseline | null = null
+  /** Diagnóstico remoto que causou a falha terminal desta execução. */
+  private sessionFailure: RemoteSessionFailure | undefined
+  /** Ocorrências por assinatura de falha remota dentro deste worker. */
+  private readonly remoteFailureSignatures = new Map<string, number>()
+  private pendingDeveloperClarification: { questionCount: number; summary?: string } | null = null
+  private pendingInteraction: { phase: "analysis" | "development" | "verification"; summary?: string } | null = null
+
+  constructor() {
+    this.executionId = process.env.EXECUTION_ID ?? "unknown"
+  }
+
+  async start(): Promise<void> {
+    this.send({ type: "ready", workerId: this.executionId })
+
+    this.db = await mysql.createConnection({
+      host: process.env.MYSQL_HOST ?? "mysql",
+      port: Number(process.env.MYSQL_PORT ?? 3306),
+      user: process.env.MYSQL_USER ?? "root",
+      password: process.env.MYSQL_PASSWORD ?? "",
+      database: resolveProjectDatabase(),
+    })
+
+    process.on("message", async (msg: unknown) => {
+      try {
+        await this.handleMessage(msg as CoordinatorToWorkerMessage)
+      } catch (error) {
+        this.log("error", "Erro no handler de mensagem: " + (error instanceof Error ? error.message : String(error)))
+        // Envia failed para o coordenador saber que o worker travou
+        this.send({ type: "failed", executionId: this.executionId, error: error instanceof Error ? error.message : String(error) })
+        this.cleanup()
+        setTimeout(() => process.exit(1), 1000)
+      }
+    })
+
+    this.heartbeatInterval = setInterval(() => this.sendHeartbeat(), 10000)
+    process.on("SIGTERM", () => this.shutdown())
+    process.on("SIGINT", () => this.shutdown())
+  }
+
+  private async handleMessage(msg: CoordinatorToWorkerMessage): Promise<void> {
+    switch (msg.type) {
+      case "start":
+        await this.execute(msg.input)
+        break
+      case "cancel":
+        this.cancelled = true
+        this.log("warn", "Cancelamento: " + msg.reason)
+        break
+      case "shutdown":
+        this.shutdown()
+        break
+    }
+  }
+
+  private async execute(input: WorkerInput): Promise<void> {
+    const ctx = input.context
+    try {
+      this.send({ type: "started", executionId: ctx.executionId })
+      let gitCommitSha: string | undefined
+
+      if (ctx.phase === "analyze") {
+        const outcome = await this.phaseAnalyze(input)
+        if (outcome.kind === "clarifying") {
+          this.sendClarifying(ctx, outcome)
+          return
+        }
+        if (this.pendingInteraction) {
+          this.send({ type: "interaction_awaiting", executionId: ctx.executionId, ...this.pendingInteraction })
+          return
+        }
+      } else if (ctx.phase === "execute") {
+        if (this.isDevelopmentTask(input)) await this.phasePrepare(input)
+        if (this.cancelled) { this.sendFailed(ctx, "Cancelled"); return }
+        gitCommitSha = await this.phaseExecute(input)
+        if (this.pendingInteraction) {
+          this.send({ type: "interaction_awaiting", executionId: ctx.executionId, ...this.pendingInteraction })
+          return
+        }
+        if (this.pendingDeveloperClarification) {
+          this.sendClarifying(ctx, this.pendingDeveloperClarification)
+          return
+        }
+        if (this.cancelled) { this.sendFailed(ctx, "Cancelled"); return }
+        if (gitCommitSha && this.isDevelopmentTask(input)) await this.phasePublish(input, gitCommitSha)
+      }
+
+      this.sendCompleted(ctx, { ok: true, gitCommitSha })
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      this.log("error", "Erro: " + reason)
+      this.sendFailed(ctx, reason)
+    } finally {
+      if (this.db) await this.db.end().catch(() => {})
+    }
+  }
+
+  /**
+   * FASE 1: ANALYZE - Chama o Analista para criar subtarefas (ou perguntar)
+   */
+  private async phaseAnalyze(input: WorkerInput): Promise<{ kind: "done" } | { kind: "clarifying"; questionCount: number; summary?: string }> {
+    this.sessionFailure = undefined
+    this.send({ type: "progress", executionId: input.context.executionId, phase: "analyze", message: "Iniciando analise" })
+    this.log("info", "Fase ANALYZE: " + input.task.title)
+
+    const planningDb = this.planningDb()
+    if (await hasPersistedPlan(planningDb, input.task.id)) {
+      this.log("info", "Plano persistido encontrado; análise não será repetida")
+      return { kind: "done" }
+    }
+
+    // Rodada de retomada após resposta de clarificação: reinjeta o histórico
+    // (perguntas + respostas) no prompt, pois cada análise roda em sessão nova.
+    let clarificationHistory = ""
+    try {
+      const history = await fetchTaskClarificationHistory(planningDb, input.task.id)
+      clarificationHistory = formatHistoryForPrompt(history)
+      if (clarificationHistory) this.log("info", "Retomando análise com histórico de clarificação (" + history.length + " mensagens)")
+    } catch (error) {
+      this.log("warn", "Falha ao carregar histórico de clarificação: " + (error instanceof Error ? error.message : String(error)))
+    }
+
+    const driver = this.createDriver()
+    const chain = this.chainFor(input, "analysis")
+    const analystWorkspacePath = input.analystWorkspacePath ?? input.repoPath
+    const embeddedPrompt = this.buildAnalystPrompt(input.task, clarificationHistory, analystWorkspacePath)
+    const promptKey = clarificationHistory ? "analista.retomada_apos_clarificacao" : "analista.primeira_rodada_tarefa"
+    const promptResolver = new ManagedPromptResolver(planningDb)
+    const descriptionChunks = splitAnalystDescription(input.task.description)
+    const descriptionReference = `A descricao integral foi enviada anteriormente nesta sessao em ${descriptionChunks.length} bloco(s). Use todos os blocos, do INICIO ao FIM, sem omitir secoes.`
+    const resolvedPrompt = await promptResolver.resolveDetailed({ key: promptKey, values: {
+      "**TITULOTAREFA**": input.task.title,
+      "**DESCRICAOTAREFA**": descriptionReference,
+      "**TIPOTAREFA**": input.task.tipo ?? "desenvolvimento",
+      "**HISTORICOCLARIFICACAO**": clarificationHistory ?? "",
+      "**WORKSPACE**": analystWorkspacePath,
+    }, fallback: embeddedPrompt, taskId: input.task.id })
+    const fullContract = formatAnalystOutputContract(resolvedPrompt.outputContract)
+    const prompt = `${resolvedPrompt.text}\n\n${fullContract}\n\nCONFIRMACAO DE CONTEXTO: a descricao possui ${(input.task.description?.trim() || "N/A").length} caracteres e terminou no marcador FIM DA DESCRICAO. Se algum bloco ou marcador estiver ausente, responda pela forma de perguntas informando exatamente o bloco ausente.`
+    await promptResolver.recordFinalComposition(resolvedPrompt.executionId, prompt, {
+      parts: [
+        { source: "table", key: promptKey },
+        { source: "runtime", name: "task_context", descriptionLength: input.task.description?.length ?? 0, chunks: descriptionChunks.length },
+        { source: "contract", name: "full_output_contract", schemaIncluded: resolvedPrompt.outputContract.schema != null, exampleIncluded: resolvedPrompt.outputContract.example != null },
+      ],
+    })
+
+    let lastFailure: string | undefined
+    for (let modelIndex = 0; modelIndex < chain.length; modelIndex++) {
+      const model = chain[modelIndex]!
+      const sessionKey = formatTaskSessionKey(input.task.id)
+      let session
+      const executionOrder = modelIndex + 1
+
+      try {
+        session = await driver.createSession({
+          agentId: input.task.agentId,
+          key: sessionKey,
+          label: sessionKey,
+          model: model.model,
+        })
+
+        // Registra a sessão do analista no histórico persistente da tarefa.
+        // Cada modelo da escada (escalonamento) gera um registro distinto.
+        await this.openAnalystTaskSession(input.task.id, session, model.model, executionOrder)
+
+        let contextFailedDueToUnavailable = false
+        for (let chunkIndex = 0; chunkIndex < descriptionChunks.length; chunkIndex++) {
+          const chunkNumber = chunkIndex + 1
+          const contextMessage = [
+            `CONTEXTO DA TAREFA — BLOCO ${chunkNumber}/${descriptionChunks.length}`,
+            chunkNumber === 1 ? "INICIO DA DESCRICAO" : "CONTINUACAO DA DESCRICAO",
+            descriptionChunks[chunkIndex],
+            chunkNumber === descriptionChunks.length ? "FIM DA DESCRICAO" : `FIM DO BLOCO ${chunkNumber}/${descriptionChunks.length}`,
+            "Armazene este contexto. Responda somente CONTEXTO_RECEBIDO; o pedido de analise e o contrato serao enviados depois.",
+          ].join("\n\n")
+          const { runId: contextRunId } = await driver.sendMessage({ session, message: contextMessage })
+          const contextResult = await driver.waitForRunCompletion(session, contextRunId, { onActivity: () => this.sendHeartbeat() })
+          if (contextResult.state !== "final") {
+            await this.persistRemoteSessionFailure(input, undefined, contextResult.failure)
+            if (contextResult.failure) this.sessionFailure = contextResult.failure
+            
+            // Verifica se é erro de modelo indisponível (autenticação, provider, etc)
+            // Se for, escala para o próximo modelo da cadeia em vez de falhar
+            const errorMessage = contextResult.errorMessage || contextResult.state
+            const isUnavailable = shouldEscalateAnalysisContextFailure(contextResult.failure, errorMessage)
+            
+            if (isUnavailable) {
+              lastFailure = `Modelo indisponível durante contexto: ${model.model} — ${errorMessage}`
+              await this.markModelUnavailable(input.context.executionId, model.model, cooldownReason(contextResult.failure?.code, errorMessage))
+              this.send({ type: "model_unavailable", executionId: input.context.executionId, model: model.model, message: lastFailure })
+              this.log("warn", lastFailure + "; escalando para o próximo modelo da escada")
+              contextFailedDueToUnavailable = true
+              break // Sai do loop de chunks
+            }
+            
+            throw new Error(`Analista nao confirmou o bloco ${chunkNumber}/${descriptionChunks.length}: ${errorMessage}`)
+          }
+        }
+        
+        // Se o contexto falhou por modelo indisponível, pula para o próximo modelo
+        if (contextFailedDueToUnavailable) {
+          continue
+        }
+
+        await this.consumeChatAtCheckpoint(input, session, driver, "analysis")
+
+        this.log("info", "Enviando prompt para analista (modelo " + model.model + ")...")
+        const { runId } = await driver.sendMessage({ session, message: prompt })
+        this.log("info", "Analista respondendo... runId=" + runId)
+
+        const result = await driver.waitForRunCompletion(session, runId, {
+          onActivity: () => this.sendHeartbeat(),
+        })
+        const stopInfo = result.stopReason && result.stopReason !== "done" ? `, stopReason=${result.stopReason}` : ""
+        this.log("info", "Resultado do analista: state=" + result.state + ", contentLength=" + (result.content?.length || 0) + stopInfo)
+
+        if (result.state !== "final" || !result.content) {
+          await this.persistRemoteSessionFailure(input, undefined, result.failure)
+          if (result.failure) this.sessionFailure = result.failure
+          lastFailure = "Analista falhou: " + (result.errorMessage || result.state)
+          this.log("warn", lastFailure)
+          continue
+        }
+
+        let parsed = safeParseAnalystReply(result.content)
+
+        if (!parsed.ok) {
+          // Resposta truncada (teto de saida do modelo) ou invalida: falha
+          // retryavel, nao terminal. Da UMA chance extra ao mesmo modelo com
+          // feedback corretivo; se persistir, escala para o proximo modelo da
+          // escada (antes qualquer erro de parse bloqueava a tarefa).
+          this.log("warn", `Resposta do analista invalida (${parsed.failure.kind}${stopInfo}): ${parsed.failure.message}`)
+          try {
+            const { runId: retryRunId } = await driver.sendMessage({
+              session,
+              message: analystCorrectiveFeedback(parsed.failure.kind, parsed.failure.message, fullContract),
+            })
+            this.log("info", "Retry corretivo enviado ao analista (" + model.model + ")... runId=" + retryRunId)
+            const retryResult = await driver.waitForRunCompletion(session, retryRunId, {
+              onActivity: () => this.sendHeartbeat(),
+            })
+            if (retryResult.state === "final" && retryResult.content) {
+              parsed = safeParseAnalystReply(retryResult.content)
+              if (!parsed.ok) {
+                this.log("warn", "Retry corretivo tambem retornou resposta invalida (" + parsed.failure.kind + "): " + parsed.failure.message)
+              }
+            } else {
+              this.log("warn", "Retry corretivo nao retornou resultado final: " + (retryResult.errorMessage || retryResult.state))
+            }
+          } catch (retryError) {
+            this.log("warn", "Retry corretivo falhou: " + (retryError instanceof Error ? retryError.message : String(retryError)))
+          }
+        }
+
+        if (!parsed.ok) {
+          lastFailure = `Analista retornou resposta invalida (${parsed.failure.kind}): ${parsed.failure.message}`
+          this.log("warn", lastFailure + "; escalando para o proximo modelo da escada")
+          continue
+        }
+
+        const reply: AnalystReply = parsed.reply
+
+        if (reply.kind === "perguntas") {
+          // Ambiguidade: persiste as perguntas no chat da tarefa e para.
+          // A tarefa fica aguardando a resposta do dono/agente do projeto;
+          // quando ela chegar, o motor reexecuta a análise com o histórico.
+          await persistTaskClarification(planningDb, input.task.id, {
+            summary: reply.resumo,
+            questions: reply.perguntas,
+          })
+          this.log("info", "Analista pediu esclarecimentos (" + reply.perguntas.length + " perguntas); tarefa aguardando resposta")
+          return { kind: "clarifying", questionCount: reply.perguntas.length, summary: reply.resumo || undefined }
+        }
+
+        let subtarefas = reply.subtarefas
+        let coverage: PlanCoverage = {
+          requirements: [...reply.coverage.requirements],
+          coverage: reply.coverage.coverage.map((item) => ({ requirement: item.requirement, coveredBy: [...item.coveredBy] })),
+        }
+        this.log("info", "Analista criou " + subtarefas.length + " subtarefas")
+
+        let quality = validatePlanQuality(subtarefas, coverage, input.task.description)
+        if (!quality.ok) {
+          lastFailure = `Plano do analista rejeitado: ${quality.reason}`
+          this.log("warn", lastFailure)
+          try {
+            const { runId: retryRunId } = await driver.sendMessage({
+              session,
+              message: analystPlanRejectionFeedback(quality.reason, fullContract),
+            })
+            this.log("info", "Retry corretivo de qualidade enviado ao analista (" + model.model + ")... runId=" + retryRunId)
+            const retryResult = await driver.waitForRunCompletion(session, retryRunId, {
+              onActivity: () => this.sendHeartbeat(),
+            })
+            if (retryResult.state !== "final" || !retryResult.content) {
+              await this.persistRemoteSessionFailure(input, undefined, retryResult.failure)
+              lastFailure = "Retry corretivo de qualidade nao retornou resultado final: " + (retryResult.errorMessage || retryResult.state)
+              this.log("warn", lastFailure)
+              continue
+            }
+            const retryParsed = safeParseAnalystReply(retryResult.content)
+            if (!retryParsed.ok) {
+              lastFailure = `Retry corretivo de qualidade retornou resposta invalida (${retryParsed.failure.kind}): ${retryParsed.failure.message}`
+              this.log("warn", lastFailure)
+              continue
+            }
+            if (retryParsed.reply.kind === "perguntas") {
+              await persistTaskClarification(planningDb, input.task.id, {
+                summary: retryParsed.reply.resumo,
+                questions: retryParsed.reply.perguntas,
+              })
+              this.log("info", "Analista pediu esclarecimentos no retry de qualidade (" + retryParsed.reply.perguntas.length + " perguntas)")
+              return { kind: "clarifying", questionCount: retryParsed.reply.perguntas.length, summary: retryParsed.reply.resumo || undefined }
+            }
+            subtarefas = retryParsed.reply.subtarefas
+            coverage = {
+              requirements: [...retryParsed.reply.coverage.requirements],
+              coverage: retryParsed.reply.coverage.coverage.map((item) => ({ requirement: item.requirement, coveredBy: [...item.coveredBy] })),
+            }
+            quality = validatePlanQuality(subtarefas, coverage, input.task.description)
+            if (!quality.ok) {
+              lastFailure = `Plano do analista rejeitado após retry corretivo: ${quality.reason}`
+              this.log("warn", lastFailure)
+              continue
+            }
+          } catch (retryError) {
+            lastFailure = "Retry corretivo de qualidade falhou: " + (retryError instanceof Error ? retryError.message : String(retryError))
+            this.log("warn", lastFailure)
+            continue
+          }
+        }
+
+        // Smoke test obrigatório em setup de projeto novo (controle de código).
+        // Se a tarefa é de setup e o analista não incluiu a subtarefa de smoke
+        // test, o motor injeta automaticamente como última subtarefa do plano.
+        if (isSetupTask(input.task.title, input.task.description) && !planHasSmokeTest(subtarefas)) {
+          const smokeTestSeq = subtarefas.length + 1
+          const smoke = generateSmokeTestSubtask(smokeTestSeq)
+          subtarefas.push({ seq: smoke.seq, titulo: smoke.titulo, scope: smoke.scope, acceptanceCriteria: smoke.acceptance_criteria, deliverables: smoke.deliverables, requirementsCovered: smoke.requirements_covered, dependsOn: smoke.depends_on })
+          coverage.requirements.push({ id: "REQ-SMOKE", description: "Executar smoke test funcional obrigatório do setup." })
+          coverage.coverage.push({ requirement: "REQ-SMOKE", coveredBy: [smokeTestSeq] })
+          this.log("info", "Setup detectado: subtarefa de smoke test injetada (seq=" + smokeTestSeq + ")")
+        }
+
+        const persisted = await persistPlan(planningDb, input.task.id, subtarefas, coverage)
+        if (persisted === "already_persisted") {
+          this.log("info", "Plano foi persistido por outra execução; preservando-o")
+        }
+        this.log("info", "Fase ANALYZE concluida: " + subtarefas.length + " subtarefas criadas")
+        return { kind: "done" }
+      } catch (error) {
+        if (isModelUnavailableError(error)) {
+          lastFailure = `Modelo indisponível: ${model.model}`
+          await this.markModelUnavailable(input.context.executionId, model.model, cooldownReason((error as { code?: string }).code, error instanceof Error ? error.message : String(error)))
+          this.send({ type: "model_unavailable", executionId: input.context.executionId, model: model.model, message: lastFailure })
+          this.log("warn", lastFailure)
+          continue
+        }
+        throw error
+      } finally {
+        // Sessões de análise permanecem abertas para auditoria: o histórico
+        // contém o prompt e a resposta do analista, inclusive quando a
+        // análise falha. A próxima tentativa reutiliza a mesma sessão/chave,
+        // permitindo comparar as respostas. Sessões de execução continuam
+        // sendo encerradas nos respectivos finally abaixo.
+        if (session) {
+          this.log("info", "Sessão do analista preservada para auditoria: " + session.key)
+          // Persiste o histórico da sessão no banco para consulta futura,
+          // mesmo após a sessão operacional ser apagada.
+          await this.persistAnalystTaskSessionHistory(input.task.id, session, driver)
+        }
+      }
+    }
+
+    const reason = "Escada de modelos esgotada na análise: " + (lastFailure || "nenhum modelo disponível")
+    throw new Error(reason)
+  }
+
+  /**
+   * FASE 2: PREPARE - Valida o worktree exclusivo, materializa segredos e instala dependências
+   */
+  private async phasePrepare(input: WorkerInput): Promise<void> {
+    this.send({ type: "progress", executionId: input.context.executionId, phase: "prepare", message: "Preparando workspace" })
+    this.log("info", "Fase PREPARE: " + input.repoPath)
+
+    const repoPath = resolve(input.repoPath)
+    if (!existsSync(repoPath)) {
+      throw new Error("Ambiente bloqueado: diretório autorizado não encontrado: " + repoPath)
+    }
+
+    // O Motor valida o cwd antes de abrir a sessão. O prompt continua sendo
+    // uma confirmação para o agente, mas não é a única proteção contra path
+    // configurado incorretamente ou worktree montado no lugar errado.
+    const actualCwd = resolve(this.exec("pwd -P", repoPath).trim())
+    if (actualCwd !== repoPath) {
+      throw new Error(`Ambiente bloqueado: cwd do worktree divergente (esperado=${repoPath}; recebido=${actualCwd})`)
+    }
+    const gitTopLevel = resolve(this.exec("git rev-parse --show-toplevel", repoPath).trim())
+    const relativeProjectPath = relative(gitTopLevel, repoPath)
+    if (relativeProjectPath === ".." || relativeProjectPath.startsWith("../") || isAbsolute(relativeProjectPath)) {
+      throw new Error(`Ambiente bloqueado: diretório autorizado fora da raiz Git (cwd=${repoPath}; gitRoot=${gitTopLevel})`)
+    }
+
+    const workBranch = input.workBranch
+    if (!workBranch) throw new Error("Worktree isolado não fornecido")
+    const currentBranch = this.exec("git branch --show-current", repoPath).trim()
+    if (currentBranch !== workBranch) throw new Error("Worktree não está na branch exclusiva esperada")
+
+    this.log("info", `Workspace isolado validado: cwd=${repoPath}, gitRoot=${gitTopLevel}, branch=${workBranch}`)
+    this.integrationBaseline = this.captureIntegrationBaseline(repoPath)
+
+    // Materializa segredos do manifesto (task-environment.json)
+    await this.materializeSecrets(input)
+
+    // Instala dependências (npm ci) se houver package-lock.json
+    await this.installDependencies(repoPath)
+  }
+
+  /**
+   * Materializa arquivos .env no worktree a partir do manifesto task-environment.json.
+   * Resolve o toplevel git real (monorepo) para ler o manifesto.
+   * Segurança git (check-ignore + ls-files) é verificada pelo SecretProfileManager.
+   */
+  private async materializeSecrets(input: WorkerInput): Promise<void> {
+    const projectSlug = input.context.projectSlug
+    if (!projectSlug) {
+      this.log("info", "Materialização de segredos pulada: tarefa sem projectSlug")
+      return
+    }
+
+    const secretsRoot = process.env.TASK_SECRETS_ROOT
+    const environment = process.env.TASK_ENVIRONMENT ?? "development"
+
+    let gitTopLevel: string
+    try {
+      gitTopLevel = await resolveGitTopLevel(input.repoPath)
+    } catch (error) {
+      this.log("warn", "Falha ao resolver git toplevel para materialização de segredos: " + (error instanceof Error ? error.message : String(error)))
+      return
+    }
+
+    const manager = new SecretProfileManager()
+    const result = await manager.materializeManifest({
+      repoPath: input.repoPath,
+      manifestRepoPath: gitTopLevel,
+      root: secretsRoot,
+      environment,
+      projectSlug,
+    })
+
+    if (!result.ok) {
+      throw new Error("Ambiente bloqueado: falha ao materializar segredos — " + result.reason)
+    }
+
+    if (result.ok && result.keys.length > 0) {
+      this.log("info", "Segredos materializados: " + result.keys.length + " chaves (alvos: .env)")
+    } else {
+      this.log("info", "Materialização de segredos: nenhum arquivo materializado (manifesto opcional ou root ausente)")
+    }
+  }
+
+  /**
+   * Instala dependências via npm ci se houver package-lock.json na raiz do worktree.
+   * Delega ao DependencyInstaller (módulo testável com runner injetável).
+   * Salvaguarda: captura git status antes/depois; se npm ci alterar arquivo rastreado, falha.
+   * Timeout configurável via TASK_DEPENDENCY_INSTALL_TIMEOUT_MS (default 15min).
+   */
+  private async installDependencies(worktreePath: string): Promise<void> {
+    this.send({ type: "progress", executionId: this.executionId, phase: "prepare", message: "Instalando dependencias (npm ci)" })
+
+    const installer = new DependencyInstaller()
+    const result = await installer.install({
+      worktreePath,
+      timeoutMs: resolveInstallTimeoutMs(),
+    })
+
+    if (!result.ok) {
+      throw new Error("Ambiente bloqueado: " + result.reason)
+    }
+
+    if (result.skipped) {
+      this.log("info", "npm ci pulado: " + (result.reason ?? "package-lock.json ausente"))
+    } else if (result.lockfileRegenerated) {
+      this.log("warn", "Lockfile regenerado automaticamente (npm install fallback) — o agente criou pacote workspace sem sincronizar package-lock.json")
+    }
+  }
+
+  /**
+   * FASE 3: EXECUTE - Chama o Programador com a subtarefa
+   */
+  private async phaseExecute(input: WorkerInput): Promise<string | undefined> {
+    this.sessionFailure = undefined
+    this.send({ type: "progress", executionId: input.context.executionId, phase: "execute", message: "Executando subtarefa" })
+
+    const subtask = input.subtask
+    if (!subtask) {
+      throw new Error("Subtarefa nao fornecida na fase execute")
+    }
+
+    this.log("info", "Fase EXECUTE: " + subtask.titulo)
+
+    if (this.isDevelopmentTask(input)) {
+      const baselineOutcome = await this.runBaselineCheck(input, subtask)
+      if (baselineOutcome === "correction_created") {
+        this.log("warn", "Baseline vermelho: subtarefa de correção criada; execução da subtarefa adiada")
+        return undefined
+      }
+    }
+
+    const chain = this.chainFor(input, "development")
+    const developmentGitRoot = this.isDevelopmentTask(input)
+      ? await resolveGitTopLevel(input.repoPath)
+      : input.repoPath
+    // Uma retomada não pode apagar as entregas já registradas no banco.
+    let deliverCount = subtask.deliverCount
+    const maxDeliveryAttempts = resolveMaxDeliveryAttempts()
+    let lastFailure = ""
+    const modelFailures: string[] = []
+    const sessionRecoveryLimit = resolveSessionRecoveryLimit()
+
+    // P1 (Alexandre 2026-09-05): carry-over de aprendizado entre execuções.
+    // Se a subtarefa já teve entregas persistidas (rework pós-rejeição,
+    // retomada), o histórico estruturado vai no prompt do programador para
+    // que ele não repita abordagens que já falharam.
+    const carryOver = await this.buildCarryOver(subtask, input.task.id)
+    const priorHandoff = this.isDevelopmentTask(input)
+      ? await this.buildPriorSubtaskHandoff(subtask, developmentGitRoot)
+      : ""
+    // Uma continuação física só é criada quando o Motor rejeita uma alegação
+    // ambiental inválida. A tarefa/auditoria continuam sendo uma só.
+    let sessionGeneration = await this.resolveTaskSessionGeneration(input.task.id, subtask.id)
+    let freshSessionBootstrap = false
+    let invalidEnvironmentClaims = 0
+
+    modelLoop: for (let modelIndex = 0; modelIndex < chain.length; modelIndex += 1) {
+      const model = chain[modelIndex]!
+      // A recuperação de sessão é uma tentativa adicional, explicitamente
+      // limitada, e não deve ser confundida com o rework do gate.
+      let sessionRecoveryAttempts = 0
+      for (let attempt = 1; attempt <= input.task.maxRework + sessionRecoveryLimit; attempt += 1) {
+        if (deliverCount >= maxDeliveryAttempts) {
+          const reason = `Limite de entregas atingido (${maxDeliveryAttempts}) para a subtarefa #${subtask.id}; novas tentativas bloqueadas.`
+          await this.recordBlocker(subtask, "systemic_failure", reason)
+          throw new Error(reason)
+        }
+        deliverCount += 1
+        await this.db!.query(
+          "UPDATE subtarefas SET status = 'running', deliver_count = ?, resultado = NULL, updated_at = NOW() WHERE id = ?",
+          [deliverCount, subtask.id],
+        )
+        // Registra início da entrega no histórico
+        await this.recordDeliveryEvent(subtask.id, deliverCount, model.model, "delivery_started", null)
+        this.send({ type: "progress", executionId: input.context.executionId, phase: "execute", message: `Entrega ${deliverCount}, modelo ${model.model}` })
+
+        const driver = this.createDriver()
+        // A chave é estável por subtarefa+modelo. Assim um rework retorna ao
+        // mesmo contexto; uma troca de modelo abre uma sessão distinta.
+        const sessionKey = formatTaskSessionKey(input.task.id, sessionGeneration)
+        // Guarda defensiva: tarefa de desenvolvimento sem repoPath não tem como
+        // resolver o worktree — falhar aqui é mais honesto que descobrir depois.
+        const developmentWorkspace = this.isDevelopmentTask(input) ? input.repoPath : undefined
+        if (this.isDevelopmentTask(input) && !developmentWorkspace) {
+          throw new WorkspaceBindingError(
+            `Tarefa de desenvolvimento sem repoPath: impossível resolver o worktree (subtarefa ${subtask.id})`,
+          )
+        }
+        let session: RuntimeSession | undefined
+        let sessionArchived = false
+        let agentSummary: string | null = null
+        try {
+          session = await driver.createSession({
+            agentId: input.task.agentId,
+            key: sessionKey,
+            label: sessionKey,
+            model: model.model,
+            // NÃO enviamos workspacePath: o Gateway rejeita `spawnedCwd` em
+            // sessão normal (`src/gateway/sessions-patch.ts`: "spawnedCwd is
+            // only supported for subagent:* or acp:* sessions") — evidência de
+            // 2026-09-11. O caminho do worktree vai no prompt e o agente opera
+            // por caminhos absolutos a partir do workspace do agente.
+          })
+          if (this.isDevelopmentTask(input)) await this.openDeveloperSession(subtask.id, model.model, session)
+          await this.consumeChatAtCheckpoint(input, session, driver, "development", subtask.id)
+          const { header: embeddedHeader, context } = this.buildProgrammerPrompt(
+            input.task,
+            subtask,
+            input.repoPath,
+            lastFailure || undefined,
+            [priorHandoff, carryOver, agentSummary && "Relato do agente na entrega anterior: " + agentSummary].filter(Boolean).join("\n\n") || undefined,
+          )
+          const promptKey = lastFailure ? "dev.retorno_por_falha_de_gate" : "dev.primeira_rodada_tarefa"
+          const promptResolver = new ManagedPromptResolver(this.db!)
+          const resolved = await promptResolver.resolveDetailed({ key: promptKey, values: {
+            "**TITULOTAREFA**": input.task.title,
+            "**DESCRICAOTAREFA**": input.task.description ?? "",
+            "**TIPOTAREFA**": input.task.tipo ?? "desenvolvimento",
+            "**NUMSUBTAREFA**": subtask.seq,
+            "**TITULOSUBTAREFA**": subtask.titulo,
+            "**ESCOPO**": subtask.scope ?? subtask.titulo,
+            "**CRITERIOSACEITE**": subtask.acceptanceCriteria ?? [],
+            "**WORKSPACE**": input.repoPath,
+            "**ERROGATEANTERIOR**": lastFailure,
+          }, fallback: embeddedHeader, taskId: input.task.id, subtaskId: subtask.id })
+          // A sessão da tarefa é estável, inclusive após troca de modelo. Só a
+          // primeira entrega recebe a decisão mais recente do chat; retries
+          // usam o transcript já existente e não repetem toda a conversa.
+          let clarificationContext = ""
+          if (deliverCount === 1 || freshSessionBootstrap) {
+            try { clarificationContext = formatDeveloperClarificationContext(await fetchTaskClarificationHistory(this.planningDb(), input.task.id)) }
+            catch (error) { this.log("warn", "Falha ao carregar esclarecimento do chat para o DEV: " + (error instanceof Error ? error.message : String(error))) }
+          }
+          const instructionText = deliverCount > 1 && !freshSessionBootstrap
+            ? this.buildDevelopmentResumePrompt(subtask, lastFailure, [priorHandoff, carryOver].filter(Boolean).join("\n\n"))
+            : resolved.text
+          const composition = this.isDevelopmentTask(input)
+            ? composeDevelopmentPrompt(input.repoPath, developmentGitRoot, instructionText)
+            : { finalText: instructionText, parts: [{ source: "table" as const, label: deliverCount > 1 ? "Retomada incremental" : "Prompt publicado na tabela", text: instructionText }] }
+          if (resolved.contractInstructions) {
+            composition.parts.push({ source: "contract", label: "Contrato de saída vinculado", text: resolved.contractInstructions })
+          }
+          if (context) {
+            composition.parts.push({ source: "context", label: "Contexto enviado em mensagem separada", text: context })
+          }
+          const recoveryBootstrap = freshSessionBootstrap
+            ? this.buildCleanSessionBootstrap(input, subtask, lastFailure)
+            : ""
+          const header = [composition.finalText, recoveryBootstrap, clarificationContext].filter(Boolean).join("\n\n")
+          if (clarificationContext) {
+            composition.parts.push({ source: "context", label: "Esclarecimento respondido no chat da tarefa", text: clarificationContext })
+          }
+          await promptResolver.recordFinalComposition(resolved.executionId, header, composition.parts)
+          // Envia contexto separado se a missao for longa (evita truncamento no viewer)
+          if (context) {
+            await driver.sendMessage({ session, message: context })
+          }
+          const { runId } = await driver.sendMessage({ session, message: header })
+          freshSessionBootstrap = false
+          const result = await driver.waitForRunCompletion(session, runId, {
+            onActivity: () => this.sendHeartbeat(),
+            idleTimeoutMs: getConfigNumber('motor.analysis_idle_timeout_ms'),
+          })
+          const workspaceErrorAfterRun = this.isDevelopmentTask(input)
+            ? this.validateAndRepairAgentWorkspace(input)
+            : null
+          if (workspaceErrorAfterRun) {
+            lastFailure = workspaceErrorAfterRun
+            await this.db!.query(
+              "UPDATE subtarefas SET status = 'rejected', resultado = ?, finalizada_em = NULL, updated_at = NOW() WHERE id = ?",
+              [workspaceErrorAfterRun.substring(0, 2000), subtask.id],
+            )
+            await this.recordDeliveryEvent(subtask.id, deliverCount, model.model, "gate_rejected", workspaceErrorAfterRun)
+            this.log("warn", workspaceErrorAfterRun + " Entrega desfeita; reenviando ao dev.")
+            continue
+          }
+          if (result.state !== "final") {
+            await this.persistRemoteSessionFailure(input, subtask, result.failure)
+            if (result.failure) {
+              this.sessionFailure = result.failure
+              const remoteReason = formatRemoteSessionFailure(result.failure)
+              // Context overflow: a sessão acumulou contexto demais e o modelo
+              // não consegue mais processar. Saneamento automático: arquivar a
+              // sessão física e criar nova geração com contexto limpo.
+              if (isContextOverflowFailure(result.failure.code, result.failure.message)) {
+                this.log("warn", `Context overflow detectado (${model.model}): ${remoteReason}. Saneando sessão automaticamente.`)
+                try {
+                  // Registrar evento de saneamento automático
+                  await this.db!.query(
+                    "INSERT INTO subtarefas_entregas (subtarefa_id, deliver_number, model, event_type, reason) VALUES (?, ?, ?, 'auto_context_sanitization', ?)",
+                    [subtask.id, deliverCount, model.model, remoteReason.substring(0, 2000)],
+                  )
+                  // Arquivar a sessão física no Console (preserva transcript)
+                  await driver.archiveSession(session)
+                  await this.markDeveloperSessionClosed(session.key, "auto_context_sanitization")
+                  this.log("info", `Sessão arquivada para auditoria: ${session.key}`)
+                } catch (archiveError) {
+                  this.log("warn", `Falha ao arquivar sessão (continuando): ${archiveError instanceof Error ? archiveError.message : String(archiveError)}`)
+                }
+                // Incrementar geração força nova sessão física na próxima tentativa
+                sessionGeneration += 1
+                lastFailure = `Context overflow — sessão saneada automaticamente: ${remoteReason}`
+                await this.db!.query(
+                  "UPDATE subtarefas SET status = 'pending', resultado = ?, finalizada_em = NULL, updated_at = NOW() WHERE id = ?",
+                  [lastFailure.substring(0, 500), subtask.id],
+                )
+                continue
+              }
+              // Cota/limite do provedor do modelo (429, quota esgotada, chave
+              // inválida) chega como falha da sessão do Console. Ler como
+              // indisponibilidade do MODELO faz o worker escalar para o próximo
+              // da cadeia; como falha transitória ele repetiria o MESMO modelo
+              // para sempre (loop de tentativas de 2026-09-11).
+              const signature = remoteFailureSignature(result.failure.code, result.failure.message)
+              const repeats = (this.remoteFailureSignatures.get(signature) ?? 0) + 1
+              this.remoteFailureSignatures.set(signature, repeats)
+              // A primeira ocorrência ainda tenta recuperar a sessão; a segunda
+              // idêntica significa que o modelo não está entregando — escalar.
+              if (shouldSkipModelAfterRemoteFailure(result.failure, repeats)) {
+                lastFailure = `Modelo indisponível: ${model.model} — ${remoteReason}`
+                await this.markModelUnavailable(input.context.executionId, model.model, cooldownReason(result.failure.code, result.failure.message))
+                this.send({ type: "model_unavailable", executionId: input.context.executionId, model: model.model, message: lastFailure })
+                this.log("warn", lastFailure)
+                continue modelLoop
+              }
+              if (result.failure.classification === "definitive") {
+                throw new Error("Falha definitiva da sessão remota: " + remoteReason)
+              }
+              if (result.failure.classification === "systemic") {
+                throw new Error("Falha sistêmica do Console: " + remoteReason)
+              }
+              if (result.failure.classification === "transient" && sessionRecoveryAttempts < sessionRecoveryLimit) {
+                sessionRecoveryAttempts += 1
+                lastFailure = "Recuperação de sessão " + sessionRecoveryAttempts + "/" + sessionRecoveryLimit + ": " + remoteReason
+                await this.db!.query(
+                  "UPDATE subtarefas SET status = 'pending', resultado = ?, finalizada_em = NULL, updated_at = NOW() WHERE id = ?",
+                  [lastFailure.substring(0, 500), subtask.id],
+                )
+                this.log("warn", lastFailure + "; criando/retomando a sessão para nova tentativa")
+                continue
+              }
+              throw new Error("Falha transitória da sessão remota após " + sessionRecoveryAttempts + " recuperação(ões): " + remoteReason)
+            }
+            lastFailure = "Programador falhou: " + (result.errorMessage || result.state)
+            break
+          }
+          // A execução recuperou com sucesso; não contaminar uma falha
+          // posterior isolada com um diagnóstico transitório anterior.
+          this.sessionFailure = undefined
+          agentSummary = this.extractAgentSummary(result.content)
+
+          // O gateway pode usar state=final mesmo sem produzir uma resposta.
+          // Essa mensagem nunca pode atravessar o gate como entrega válida.
+          const replyFailureReason = getAgentReplyFailureReason(result.content)
+          if (replyFailureReason) {
+            // `state=final` sem texto é uma falha do runtime/modelo, não uma
+            // entrega a ser reenfileirada do zero. Retornar aqui recriava o
+            // worker com o primeiro modelo da cadeia e produzia um loop
+            // infinito no mesmo modelo. Registra a evidência e avança já para
+            // o próximo modelo desta mesma execução.
+            lastFailure = replyFailureReason
+            await this.db!.query(
+              "UPDATE subtarefas SET status = 'rejected', resultado = ?, finalizada_em = NULL, updated_at = NOW() WHERE id = ?",
+              [replyFailureReason, subtask.id],
+            )
+            await this.recordDeliveryEvent(subtask.id, deliverCount, model.model, "agent_no_reply", replyFailureReason)
+            this.log("warn", `Agente não produziu resposta verificável (${model.model}); escalando para o próximo modelo.`)
+            continue modelLoop
+          }
+
+          // Tarefas operacionais não têm artefato de código como entrega. A
+          // resposta do agente é a própria evidência e deve ser registrada no
+          // chat assim que o run termina, antes de interpretar o status dela.
+          // Isso também preserva respostas de `need_help` e
+          // `blocked_environment`, que não chegam ao bloco de sucesso abaixo.
+          if (!this.isDevelopmentTask(input)) {
+            await this.persistLightweightDelivery(input, result.content || "")
+          }
+
+          let outcome = this.classifyAgentOutcome(result.content)
+          // Alguns runtimes exibem a pergunta em uma mensagem textual da
+          // sessão e devolvem apenas o status no resultado final. Recuperamos
+          // essa pergunta do transcript antes de criar uma clarificação.
+          if (outcome.kind === "need_help" && outcome.question === DEVELOPER_QUESTION_FALLBACK) {
+            try {
+              const question = extractDeveloperQuestion(await driver.getSessionHistory(session))
+              if (question) outcome = { ...outcome, question }
+            } catch (error) {
+              this.log("warn", "Falha ao recuperar pergunta do DEV no transcript: " + (error instanceof Error ? error.message : String(error)))
+            }
+          }
+          if (outcome.kind === "blocked_environment") {
+            const actualFailure = this.verifyEnvironmentClaim(input)
+            if (actualFailure) {
+              const reason = "Ambiente bloqueado: " + actualFailure
+              await this.recordBlocker(subtask, "blocked_environment", reason, model.model)
+              throw new Error(reason)
+            }
+
+            invalidEnvironmentClaims += 1
+            const factualReason = "A alegação blocked_environment foi rejeitada pelo Motor: cwd, raiz Git e branch do worktree foram validados. A sessão anterior foi arquivada e a continuação receberá somente fatos validados."
+            await this.recordDeliveryEvent(subtask.id, deliverCount, model.model, "invalid_environment_claim", factualReason)
+            await this.db!.query(
+              "UPDATE subtarefas SET status = 'pending', resultado = ?, finalizada_em = NULL, updated_at = NOW() WHERE id = ?",
+              [factualReason, subtask.id],
+            )
+            await this.persistDeveloperSessionHistory(subtask.id, session, driver, "returnable")
+            await driver.archiveSession(session)
+            await this.markDeveloperSessionClosed(session.key, "invalid_environment_claim")
+            sessionArchived = true
+            sessionGeneration += 1
+            freshSessionBootstrap = true
+            lastFailure = factualReason
+            this.log("warn", factualReason)
+            if (invalidEnvironmentClaims >= 2) {
+              this.log("warn", `Alegação ambiental inválida repetida no modelo ${model.model}; escalando modelo.`)
+              continue modelLoop
+            }
+            continue
+          }
+          if (outcome.kind === "need_help") {
+            await persistTaskDeveloperClarification(this.planningDb(), input.task.id, {
+              summary: outcome.summary || "O desenvolvedor precisa de uma decisão ou informação para concluir a subtarefa #" + subtask.seq + ".",
+              questions: [outcome.question],
+            })
+            await this.db!.query(
+              "UPDATE subtarefas SET status = 'pending', resultado = ?, finalizada_em = NULL, updated_at = NOW() WHERE id = ?",
+              ["Aguardando esclarecimento: " + (outcome.summary || outcome.question).substring(0, 450), subtask.id],
+            )
+            this.pendingDeveloperClarification = { questionCount: 1, summary: outcome.question }
+            return undefined
+          }
+          if (outcome.kind === "database_operation") {
+            validateDatabaseMigrationPath(input.repoPath, outcome.scriptPath)
+            const evidence = `Migration criada pelo agente e deixada para revisão/aplicação no deploy; arquivo=${outcome.scriptPath}`
+            await this.recordDeliveryEvent(subtask.id, deliverCount, model.model, "database_operation", evidence)
+            this.log("info", evidence + "; o Motor não executa SQL do agente")
+          }
+          if (outcome.kind === "premise_incorrect") {
+            const validation = validatePremiseRefutation(outcome.payload, input.repoPath)
+            if (!validation.ok) {
+              lastFailure = `Refutação inválida: ${validation.reason}. Continue a execução ou apresente evidências verificáveis.`
+              continue
+            }
+            const revised = await this.rebriefRefutedSubtask(input, subtask, validation.refutation)
+            await this.replaceRefutedSubtask(subtask, validation.refutation, validation.fingerprint, model.model, revised)
+            return undefined
+          }
+
+          let gitCommitSha: string | undefined
+          try {
+            if (this.isDevelopmentTask(input)) {
+              await this.db!.query(
+                "UPDATE subtarefas SET status = 'verifying', updated_at = NOW() WHERE id = ?",
+                [subtask.id],
+              )
+              const verification = await this.phaseVerify(input)
+              if (verification.kind === "baseline_correction_created") {
+                // Falha independente das alterações confirmada via stash: a
+                // subtarefa original foi rejeitada e uma correção de baseline
+                // foi criada na posição dela. Adia a execução (o pump pega a
+                // correção); não conta como falha do agente.
+                this.log("warn", "Baseline vermelho confirmado via stash: correção criada; subtarefa original adiada")
+                return undefined
+              }
+              gitCommitSha = await this.phaseCommit(input)
+              // Uma subtarefa de desenvolvimento só pode ser verificada quando
+              // há um artefato de código rastreável. Sem mudanças no worktree,
+              // o build verde apenas prova que a base já estava verde; não é
+              // uma entrega. Trate como rejeição de gate aqui, ainda dentro da
+              // escada de modelos, para que o próximo modelo possa assumir.
+              if (!gitCommitSha) {
+                const reason = "Entrega sem evidência de código: o agente finalizou, mas não deixou alterações para commit."
+                lastFailure = reason
+                await this.db!.query(
+                  "UPDATE subtarefas SET status = 'rejected', resultado = ?, finalizada_em = NULL, updated_at = NOW() WHERE id = ?",
+                  [reason, subtask.id],
+                )
+                await this.recordDeliveryEvent(subtask.id, deliverCount, model.model, "gate_rejected", reason)
+                this.log("warn", `${reason} Reenviando pela escada de modelos.`)
+                continue
+              }
+            } else {
+              // Automação/verificação é uma entrega operacional: a resposta já
+              // foi gravada no chat acima. Não há workspace nem gates de código.
+            }
+          } catch (error) {
+            lastFailure = error instanceof Error ? error.message : String(error)
+            await this.db!.query(
+              "UPDATE subtarefas SET status = 'rejected', resultado = ?, updated_at = NOW() WHERE id = ?",
+              [lastFailure.substring(0, 500), subtask.id],
+            )
+            // Registra rejeição do gate no histórico — em formato digest para o
+            // carry-over das próximas entregas não receber ruído (HTML de
+            // componente, stack de biblioteca) no lugar da asserção real.
+            const gateDigest = digestGateFailure(lastFailure, { maxLines: 30, maxChars: 1800 })
+            await this.recordDeliveryEvent(subtask.id, deliverCount, model.model, "gate_rejected", gateDigest)
+            this.log("warn", `Gate vermelho (${model.model}, tentativa ${attempt}): ${lastFailure}`)
+            
+            // MONITORAMENTO MOTOR: classificar causa raiz antes de decidir fluxo
+            const verdict = await this.classifyGateFailure(input, subtask, model.model, modelIndex, lastFailure)
+            if (verdict) {
+              this.log("info", `Veredito do monitor: ${verdict.verdict} — ${verdict.analysis.substring(0, 200)}`)
+              
+              // Decidir fluxo baseado no veredito
+              if (verdict.verdict === "motor_issue") {
+                // Problema no motor: bloquear tarefa para intervenção
+                const blockReason = `motor_issue: ${verdict.analysis}${verdict.solution ? ` — Solução proposta: ${verdict.solution}` : ""}`
+                await this.recordBlocker(subtask, "systemic_failure", blockReason, model.model)
+                throw new Error(blockReason)
+              }
+              
+              if (verdict.verdict === "test_files_issue") {
+                // Problema nos testes: criar subtarefa de correção de testes
+                this.log("warn", `Problema em arquivos de teste detectado pelo monitor: ${verdict.analysis.substring(0, 200)}`)
+                // Continua para createCorrectionOnRepeatedGateFailure que criará subtarefa de correção
+              }
+              
+              // agent_can_solve e code_files_issue: fluxo normal (rework/escala)
+            }
+            
+            if (await this.createCorrectionOnRepeatedGateFailure(input, subtask, model.model, lastFailure)) return undefined
+            continue
+          }
+
+          // Smoke test: se a subtarefa é de smoke test, validar evidência
+          // funcional antes de marcar como verified. Controle de código —
+          // sem evidência de chamada HTTP bem-sucedida, o gate reprova.
+          if (isSmokeTestSubtask(subtask.titulo)) {
+            const smokeValidation = validateSmokeTestGate(
+              subtask.titulo,
+              result.content,
+              input.context.projectSlug,
+            )
+            if (!smokeValidation.ok) {
+              const reason = "Smoke test sem evidência funcional: " + smokeValidation.reason
+              this.log("warn", reason)
+              await this.db!.query(
+                "UPDATE subtarefas SET status = 'rejected', resultado = ?, updated_at = NOW() WHERE id = ?",
+                [reason.substring(0, 500), subtask.id],
+              )
+              lastFailure = reason
+              if (await this.createCorrectionOnRepeatedGateFailure(input, subtask, model.model, lastFailure)) return undefined
+              continue
+            }
+            this.log("info", "Smoke test validado: " + smokeValidation.evidence.url + " (status " + smokeValidation.evidence.status + ")")
+          }
+
+          if (this.isDevelopmentTask(input)) {
+            await this.db!.query(
+              "UPDATE subtarefas SET status = 'verified', deliver_count = ?, resultado = ?, finalizada_em = NOW(), updated_at = NOW() WHERE id = ?",
+              [deliverCount, result.content?.substring(0, 500) || "OK", subtask.id],
+            )
+          } else {
+            // O chat é a entrega das tarefas operacionais; não duplique a
+            // resposta em um campo estruturado de resultado.
+            await this.db!.query(
+              "UPDATE subtarefas SET status = 'verified', deliver_count = ?, resultado = NULL, finalizada_em = NOW(), updated_at = NOW() WHERE id = ?",
+              [deliverCount, subtask.id],
+            )
+          }
+          // Registra conclusão bem-sucedida no histórico
+          await this.recordDeliveryEvent(subtask.id, deliverCount, model.model, "completed", null)
+          this.log("info", "Subtarefa verificada: " + subtask.titulo)
+          return gitCommitSha
+        } catch (error) {
+          if (isModelUnavailableError(error)) {
+            lastFailure = `Modelo indisponível: ${model.model}`
+            await this.markModelUnavailable(input.context.executionId, model.model, cooldownReason((error as { code?: string }).code, error instanceof Error ? error.message : String(error)))
+            this.send({ type: "model_unavailable", executionId: input.context.executionId, model: model.model, message: lastFailure })
+            this.log("warn", lastFailure)
+            continue modelLoop
+          }
+          throw error
+        } finally {
+          if (session && this.isDevelopmentTask(input) && !sessionArchived) {
+            await this.persistDeveloperSessionHistory(subtask.id, session, driver, "active").catch((error: unknown) => {
+              this.log("warn", "Falha ao persistir histórico da sessão do desenvolvedor: " + (error instanceof Error ? error.message : String(error)))
+            })
+            // A sessão pertence à tarefa, não à subtarefa. Ela permanece viva
+            // após uma entrega aprovada para que o próximo DEV continue no
+            // mesmo contexto; o encerramento ocorre no fim da tarefa.
+          } else if (session) {
+            // Tarefas leves não retornam ao mesmo contexto de desenvolvimento.
+            await driver.closeSession(session).catch(() => {})
+          }
+        }
+      }
+      modelFailures.push(lastFailure || `Modelo ${model.model} não entregou resultado verificável`)
+      this.log("warn", `Escalando modelo após falha: ${model.model}`)
+    }
+    // Uma falha idêntica em dois modelos não encerra a escada: ainda pode
+    // haver um terceiro (ou mais) modelo capaz de concluir a subtarefa.
+    // Só classifica como sistêmica depois que todos os modelos foram tentados.
+    if (isSystemicFailure(modelFailures)) {
+      const reason = "Falha sistêmica repetida entre modelos: " + lastFailure
+      await this.recordBlocker(subtask, "systemic_failure", reason)
+      throw new Error(reason)
+    }
+    const reason = "Escada de modelos esgotada: " + (lastFailure || "subtarefa não aprovada")
+    await this.recordBlocker(subtask, "model_chain_exhausted", reason)
+    throw new Error(reason)
+  }
+
+  private async persistRemoteSessionFailure(
+    input: WorkerInput,
+    subtask: SubtaskInfo | undefined,
+    failure: RemoteSessionFailure | undefined,
+  ): Promise<void> {
+    if (!this.db || !failure) return
+    await persistRemoteSessionFailure(this.db, input.task.id, input.task.agentId, subtask?.id, failure)
+  }
+
+  /**
+   * Registra uma sessão do analista no histórico persistente da tarefa.
+   * Cada modelo da escada (escalonamento) gera um registro distinto com
+   * executionOrder sequencial, permitindo reconstruir a ordem de execução.
+   */
+  private async openAnalystTaskSession(
+    taskExternalId: string,
+    session: RuntimeSession,
+    model: string,
+    executionOrder: number,
+  ): Promise<void> {
+    if (!this.db) return
+    try {
+      // Busca o ID numérico da tarefa no banco
+      const numeric = /^\d+$/.test(taskExternalId)
+      const [rows] = await this.db.query(
+        numeric
+          ? "SELECT id FROM tarefas WHERE external_id = ? OR id = ? LIMIT 1"
+          : "SELECT id FROM tarefas WHERE external_id = ? LIMIT 1",
+        numeric ? [taskExternalId, taskExternalId] : [taskExternalId],
+      ) as unknown as [Array<{ id: number }>]
+      if (rows.length === 0) {
+        this.log("warn", "Tarefa não encontrada para registrar sessão do analista: " + taskExternalId)
+        return
+      }
+      const tarefaId = Number(rows[0]?.id)
+      
+      await this.db.query(
+        "INSERT INTO analyst_task_sessions (tarefa_id, session_key, runtime_session_id, model, execution_order, status, opened_at, last_activity_at) " +
+        "VALUES (?, ?, ?, ?, ?, 'active', NOW(), NOW()) " +
+        "ON DUPLICATE KEY UPDATE runtime_session_id = VALUES(runtime_session_id), model = VALUES(model), status = 'active', last_activity_at = NOW(), closed_at = NULL, close_reason = NULL",
+        [tarefaId, session.key, session.sessionId ?? null, model, executionOrder],
+      )
+    } catch (error) {
+      this.log("warn", "Falha ao registrar sessão do analista no histórico: " + (error instanceof Error ? error.message : String(error)))
+    }
+  }
+
+  /**
+   * Persiste as mensagens da sessão do analista no histórico da tarefa.
+   * Permite consultar a sessão mesmo após a sessão operacional ser apagada.
+   */
+  private async persistAnalystTaskSessionHistory(
+    taskId: string,
+    session: RuntimeSession,
+    driver: ConsoleAgentRuntimeDriver,
+  ): Promise<void> {
+    if (!this.db) return
+    try {
+      const messages = await driver.getSessionHistory(session)
+      // Busca o ID da sessão registrada
+      const [rows] = await this.db.query(
+        "SELECT id FROM analyst_task_sessions WHERE session_key = ? ORDER BY execution_order DESC LIMIT 1",
+        [session.key],
+      ) as unknown as [Array<Record<string, unknown>>]
+      const sessionId = Number((rows[0] as Record<string, unknown> | undefined)?.id)
+      if (!Number.isInteger(sessionId) || sessionId <= 0) {
+        this.log("warn", "Sessão do analista não encontrada para persistir histórico: " + session.key)
+        return
+      }
+      for (let index = 0; index < messages.length; index += 1) {
+        const message = messages[index]!
+        const content = this.stringifySessionContent(message.content)
+        const hash = createHash("sha256").update(content).digest("hex")
+        const messageKey = String(message.id ?? `${index}:${message.role}:${hash}`)
+        await this.db.query(
+          "INSERT INTO analyst_task_session_messages (session_id, message_key, sequence_number, role, content, content_sha256, occurred_at) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?) " +
+          "ON DUPLICATE KEY UPDATE sequence_number = VALUES(sequence_number), role = VALUES(role), content = VALUES(content), content_sha256 = VALUES(content_sha256), occurred_at = VALUES(occurred_at)",
+          [sessionId, messageKey, index, String(message.role).slice(0, 30), content, hash, this.parseSessionTimestamp(message)],
+        )
+      }
+      // Marca a sessão como closed após persistir o histórico
+      await this.db.query(
+        "UPDATE analyst_task_sessions SET status = 'closed', closed_at = NOW(), close_reason = 'completed', last_activity_at = NOW() WHERE id = ?",
+        [sessionId],
+      )
+    } catch (error) {
+      this.log("warn", "Falha ao persistir histórico da sessão do analista: " + (error instanceof Error ? error.message : String(error)))
+    }
+  }
+
+  private async openDeveloperSession(subtaskId: number, model: string, session: RuntimeSession): Promise<void> {
+    if (!this.db) return
+    await this.db.query(
+      "INSERT INTO motor_agent_sessions (subtarefa_id, agent_id, model, session_key, runtime_session_id, status, opened_at, last_activity_at) " +
+      "VALUES (?, ?, ?, ?, ?, 'active', NOW(), NOW()) " +
+      "ON DUPLICATE KEY UPDATE runtime_session_id = VALUES(runtime_session_id), status = 'active', last_activity_at = NOW(), closed_at = NULL, close_reason = NULL",
+      [subtaskId, session.agentId, model, session.key, session.sessionId ?? null],
+    )
+  }
+
+  private async persistDeveloperSessionHistory(
+    subtaskId: number,
+    session: RuntimeSession,
+    driver: ConsoleAgentRuntimeDriver,
+    status: "active" | "approved" | "returnable",
+  ): Promise<void> {
+    if (!this.db) return
+    const messages = await driver.getSessionHistory(session)
+    await this.openDeveloperSession(subtaskId, "unknown", session)
+    const [rows] = await this.db.query(
+      "SELECT id FROM motor_agent_sessions WHERE session_key = ? LIMIT 1",
+      [session.key],
+    ) as unknown as [Array<Record<string, unknown>>]
+    const sessionId = Number((rows[0] as Record<string, unknown> | undefined)?.id)
+    if (!Number.isInteger(sessionId) || sessionId <= 0) throw new Error("sessão persistida sem identificador")
+    for (let index = 0; index < messages.length; index += 1) {
+      const message = messages[index]!
+      const content = this.stringifySessionContent(message.content)
+      const hash = createHash("sha256").update(content).digest("hex")
+      const messageKey = String(message.id ?? `${index}:${message.role}:${hash}`)
+      await this.db.query(
+        "INSERT INTO motor_agent_session_messages (session_id, message_key, sequence_number, role, content, content_sha256, occurred_at) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?) " +
+        "ON DUPLICATE KEY UPDATE sequence_number = VALUES(sequence_number), role = VALUES(role), content = VALUES(content), content_sha256 = VALUES(content_sha256), occurred_at = VALUES(occurred_at)",
+        [sessionId, messageKey, index, String(message.role).slice(0, 30), content, hash, this.parseSessionTimestamp(message)],
+      )
+    }
+    await this.db.query(
+      "UPDATE motor_agent_sessions SET status = ?, last_activity_at = NOW(), approved_at = CASE WHEN ? = 'approved' THEN NOW() ELSE approved_at END WHERE id = ?",
+      [status, status, sessionId],
+    )
+  }
+
+  private async markDeveloperSessionClosed(sessionKey: string, reason: string): Promise<void> {
+    if (!this.db) return
+    await this.db.query(
+      "UPDATE motor_agent_sessions SET status = 'closed', closed_at = NOW(), close_reason = ?, last_activity_at = NOW() WHERE session_key = ?",
+      [reason, sessionKey],
+    )
+  }
+
+  /**
+   * Retoma a geração física atual. Se o processo reiniciar entre arquivar uma
+   * sessão contaminada e criar sua sucessora, não reabrimos acidentalmente o
+   * transcript contaminado.
+   */
+  private async resolveTaskSessionGeneration(taskId: string, subtaskId: number): Promise<number> {
+    if (!this.db) return 1
+    const base = formatTaskSessionKey(taskId)
+    try {
+      const [rows] = await this.db.query(
+        "SELECT session_key, close_reason FROM motor_agent_sessions WHERE subtarefa_id = ? AND session_key LIKE ? ORDER BY id DESC LIMIT 1",
+        [subtaskId, `${base}%`],
+      ) as unknown as [Array<{ session_key: string; close_reason: string | null }>]
+      const latest = rows[0]
+      if (!latest) return 1
+      const match = String(latest.session_key).match(/:g(\\d+)$/)
+      const generation = match ? Number(match[1]) : 1
+      return ["invalid_environment_claim", "manual_context_sanitization"].includes(String(latest.close_reason ?? ""))
+        ? generation + 1
+        : generation
+    } catch (error) {
+      this.log("warn", "Falha ao resolver geração da sessão; usando sessão base: " + (error instanceof Error ? error.message : String(error)))
+      return 1
+    }
+  }
+
+  private stringifySessionContent(content: unknown): string {
+    if (typeof content === "string") return content
+    try { return JSON.stringify(content) } catch { return String(content) }
+  }
+
+  private parseSessionTimestamp(message: RuntimeSessionMessage): string | null {
+    if (!message.createdAt) return null
+    const date = new Date(message.createdAt)
+    return Number.isNaN(date.getTime()) ? null : date.toISOString().slice(0, 19).replace("T", " ")
+  }
+
+  private isDevelopmentTask(input: WorkerInput): boolean {
+    return (input.task.tipo ?? "desenvolvimento") === "desenvolvimento"
+  }
+
+  /** Registra a resposta operacional no chat da tarefa para automações e verificações. */
+  private async persistLightweightDelivery(input: WorkerInput, content: string): Promise<void> {
+    if (!this.db) throw new Error("DB não conectado para registrar entrega")
+    const text = content.trim() || "Agente finalizou sem mensagem de resposta."
+    const taskId = input.task.id
+    const numeric = /^\d+$/.test(taskId)
+    await this.db.query(
+      "INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) " +
+      (numeric
+        ? "SELECT id, 'assistant', ?, NOW() FROM tarefas WHERE external_id = ? OR id = ? LIMIT 1"
+        : "SELECT id, 'assistant', ?, NOW() FROM tarefas WHERE external_id = ? LIMIT 1"),
+      numeric ? [text.substring(0, 30_000), taskId, taskId] : [text.substring(0, 30_000), taskId],
+    )
+  }
+
+  /**
+   * FASE 4: VERIFY - build + gate de testes.
+   *
+   * Gate escopado por subtarefa (2026-08-31): a suíte completa do monorepo
+   * só roda quando a alteração toca configuração transversal ou quando a
+   * subtarefa é uma correção de baseline; caso contrário rodam apenas os
+   * testes afetados pelos caminhos alterados (ou nenhum, se não houver teste
+   * afetado). Isso evita que testes flaky/alheios reprovem entregas simples.
+   */
+  private async phaseVerify(input: WorkerInput): Promise<{ kind: "verified" } | { kind: "baseline_correction_created" }> {
+    this.send({ type: "progress", executionId: input.context.executionId, phase: "verify", message: "Verificando build e teste" })
+    this.log("info", "Fase VERIFY: build + test")
+
+    this.log("info", "Executando: " + input.buildCommand)
+    try {
+      this.exec(input.buildCommand, input.repoPath, getConfigNumber("motor.build_test_timeout_ms"))
+      this.log("info", "Build OK")
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error)
+      // Auto-recovery: se o build falhou por lockfile desatualizado (agente
+      // alterou package.json sem rodar npm install), tenta npm install e
+      // roda o build novamente. Isso evita consumir tentativa do agente por
+      // problema de infraestrutura.
+      if (isLockfileOutOfSync(msg)) {
+        this.log("warn", "Build falhou com lockfile desatualizado; tentando npm install + rebuild...")
+        try {
+          this.exec("npm install", input.repoPath, getConfigNumber("motor.build_test_timeout_ms"))
+          this.exec(input.buildCommand, input.repoPath, getConfigNumber("motor.build_test_timeout_ms"))
+          this.log("info", "Build OK após npm install (lockfile regenerado)")
+        } catch (recoveryError) {
+          const recoveryMsg = recoveryError instanceof Error ? recoveryError.message : String(recoveryError)
+          // P1: build continua vermelho mesmo após recuperação de lockfile —
+          // confirmar via stash se a falha independe das alterações do agente.
+          if (input.subtask && (await this.handleIndependentGateFailure(input, input.subtask, input.buildCommand, recoveryMsg, "Build vermelho após npm install"))) {
+            return { kind: "baseline_correction_created" }
+          }
+          throw new Error("Build falhou (mesmo após npm install): " + recoveryMsg.substring(0, 500), { cause: recoveryError })
+        }
+      } else {
+        // P1 (Alexandre 2026-09-05): confirmar via git stash se o build falha
+        // MESMO SEM as alterações do agente (baseline vermelho). Se sim, não é
+        // culpa do agente: cria correção de baseline (alta confiança) ou bloqueia.
+        if (input.subtask && (await this.handleIndependentGateFailure(input, input.subtask, input.buildCommand, msg, "Build vermelho independente das alterações do agente"))) {
+          return { kind: "baseline_correction_created" }
+        }
+        throw new Error("Build falhou: " + msg.substring(0, 500), { cause: error })
+      }
+    }
+
+    const correctionFingerprint = input.subtask?.correctionFingerprint
+    const isBaselineFix = isBaselineCorrection(correctionFingerprint)
+    // Decisão 2026-09-04 (Alexandre): specs funcionais (*.functional.spec.ts)
+    // usam MySQL real + seed e não são gate automático — nem no baseline,
+    // nem no gate escopado, nem na correção de baseline. Ficam para
+    // humanos/CI via `npm run test` completo.
+    let command = withBaselineExcludes(input.testCommand)
+    let scopeLabel = "suíte completa (sem specs funcionais)"
+
+    if (!isBaselineFix) {
+      try {
+        const changed = this.listChangedPaths(input.repoPath)
+        const decision = decideGateScope(changed, this.listTestFiles(input.repoPath))
+        if (decision.kind === "skip") {
+          this.log("info", "Gate escopado: " + decision.reason)
+          return { kind: "verified" }
+        }
+        if (decision.kind === "scoped") {
+          const gateFiles = decision.files.filter((file) => !isFunctionalSpec(file))
+          const excluded = decision.files.length - gateFiles.length
+          if (gateFiles.length === 0) {
+            this.log("info", `Gate escopado: apenas specs funcionais afetadas (${excluded}); testes pulados — gate automático não cobre testes de ambiente real`)
+            return { kind: "verified" }
+          }
+          if (input.testCommand.startsWith("npm run test")) {
+            const quoted = gateFiles.map((file) => `"${file}"`).join(" ")
+            command = input.testCommand + " -- " + quoted
+            scopeLabel = decision.reason + (excluded > 0 ? ` (${excluded} spec funcional excluída do gate automático)` : "")
+          } else {
+            this.log("warn", "Comando de teste não suporta filtro de arquivos; rodando suíte completa (sem specs funcionais)")
+          }
+        } else {
+          this.log("info", "Gate escopado: " + decision.reason)
+        }
+      } catch (error) {
+        this.log("warn", "Falha ao escopar o gate (" + (error instanceof Error ? error.message : String(error)) + "); rodando suíte completa (sem specs funcionais)")
+      }
+    }
+
+    this.log("info", `Executando testes (${scopeLabel}): ` + command)
+    try {
+      this.exec(command, input.repoPath, getConfigNumber("motor.build_test_timeout_ms"))
+      this.log("info", "Testes OK")
+      return { kind: "verified" }
+    } catch (error) {
+      const firstFailure = error instanceof Error ? error.message : String(error)
+      // Confirma a falha no workspace intocado. Flake não consome uma entrega
+      // nem envia o programador para "corrigir" um teste que já voltou a passar.
+      const confirmationCommand = confirmationTestCommand(command, firstFailure)
+      this.log("warn", "Gate vermelho; confirmando falha no workspace intocado: " + confirmationCommand)
+      try {
+        this.exec(confirmationCommand, input.repoPath, getConfigNumber("motor.build_test_timeout_ms"))
+        this.log("warn", "Teste passou na repetição sem alteração do workspace; falha classificada como flaky")
+        return { kind: "verified" }
+      } catch (confirmationError) {
+        const confirmedFailure = confirmationError instanceof Error ? confirmationError.message : String(confirmationError)
+        // P1 (Alexandre 2026-09-05): a "confirmação" acima ainda roda COM as
+        // alterações do agente aplicadas. Aqui o motor faz git stash das
+        // alterações e re-executa: se a falha persiste SEM o código do agente,
+        // é baseline vermelho/ambiente — cria correção de baseline (caso de
+        // alta confiança) ou bloqueia (ambiente/correção já em curso), em vez
+        // de queimar entregas num gate impossível.
+        if (input.subtask && (await this.handleIndependentGateFailure(input, input.subtask, confirmationCommand, firstFailure + "\n--- confirmação ---\n" + confirmedFailure, "Teste vermelho independente das alterações do agente"))) {
+          return { kind: "baseline_correction_created" }
+        }
+        throw new Error(
+          "Testes falharam em duas execuções consecutivas.\n" +
+          "--- primeira execução ---\n" + firstFailure + "\n" +
+          "--- confirmação ---\n" + confirmedFailure,
+          { cause: confirmationError },
+        )
+      }
+    }
+  }
+
+  /**
+   * P1 (decisão Alexandre 2026-09-05 — correção híbrida, opção c): confirma
+   * via git stash se a falha do gate existe MESMO SEM as alterações do agente.
+   *
+   * - Falha ambiental (conexão, binário ausente...) → bloqueio `blocked_environment`.
+   * - Baseline vermelho durante a própria correção de baseline → bloqueio
+   *   `correction_failed` (anti-loop: nunca gera correção de correção).
+   * - Baseline vermelho de alta confiança (falha provada sem o código do
+   *   agente) → subtarefa de correção automática (reaproveita o mecanismo do
+   *   runBaselineCheck); retorna true para o caller adiar a subtarefa original.
+   * - Falha depende das alterações → retorna false (rejeição normal do agente).
+   */
+  private async handleIndependentGateFailure(
+    input: WorkerInput,
+    subtask: SubtaskInfo,
+    confirmationCommand: string,
+    failureText: string,
+    where: string,
+  ): Promise<boolean> {
+    if (!this.db) return false
+    let confirmation
+    try {
+      confirmation = confirmBaselineIndependentFailure({
+        repoPath: input.repoPath,
+        confirmationCommand,
+        runner: (command, cwd, timeoutMs) => this.exec(command, cwd, timeoutMs),
+        timeoutMs: getConfigNumber("motor.build_test_timeout_ms"),
+      })
+    } catch (error) {
+      // Worktree inconsistente (stash pop falhou): bloqueio ambiental — nunca
+      // atribuir ao agente.
+      const reason = error instanceof Error ? error.message : String(error)
+      await this.recordBlocker(subtask, "blocked_environment", reason)
+      throw new Error(reason)
+    }
+    if (!confirmation.baselineRed) {
+      this.log("info", "Confirmação via stash: " + confirmation.evidence)
+      return false
+    }
+    const evidence = where + ": " + confirmation.evidence + "\n" + digestGateFailure(failureText, { maxLines: 30, maxChars: 3500 })
+    if (confirmation.kind === "environment") {
+      const reason = "Ambiente bloqueado (gate falha mesmo sem alterações do agente; causa ambiental): " + evidence
+      this.log("error", reason.substring(0, 500))
+      await this.recordBlocker(subtask, "blocked_environment", reason)
+      throw new Error(reason)
+    }
+    if (isBaselineCorrection(subtask.correctionFingerprint)) {
+      const reason = "Baseline continua vermelho durante a subtarefa de correção de baseline — intervenção humana necessária: " + evidence
+      this.log("error", reason.substring(0, 500))
+      await this.recordBlocker(subtask, "correction_failed", reason)
+      throw new Error(reason)
+    }
+    this.log("warn", "Baseline vermelho confirmado via stash (alta confiança): criando correção automática — " + where)
+    await this.recordDeliveryEvent(subtask.id, subtask.deliverCount, undefined, "baseline_red", evidence.substring(0, 2000))
+    await this.createBaselineCorrection(subtask, evidence.substring(0, 2000))
+    return true
+  }
+
+  /** Caminhos alterados no workspace (git status --porcelain, incluindo não rastreados). */
+  private listChangedPaths(repoPath: string): string[] {
+    // Preserve os espaços de status da primeira linha. `trim()` remove o
+    // espaço separador de `git status --porcelain` e faz `line.slice(3)`
+    // cortar o primeiro caractere do primeiro caminho (ex.: `projects` →
+    // `rojects`), causando falso positivo de workspace incorreto.
+    const status = this.exec("git status --porcelain", repoPath, 60_000).trimEnd()
+    if (!status) return []
+    return status
+      .split("\n")
+      .map((line) => {
+        const raw = line.slice(3).trim()
+        const arrow = raw.indexOf(" -> ")
+        const path = arrow === -1 ? raw : raw.slice(arrow + 4)
+        return path.replace(/^"|"$/g, "").trim()
+      })
+      .filter((path) => path.length > 0 && !path.includes("\"") && !path.includes("'"))
+  }
+
+  /**
+   * Registra o estado da branch de integração antes de o dev começar. A
+   * integração é um worktree irmão e nunca pode ser usado pelo agente.
+   */
+  private captureIntegrationBaseline(repoPath: string): IntegrationWorkspaceBaseline | null {
+    const worktreeRoot = resolve(this.exec("git rev-parse --show-toplevel", repoPath).trim())
+    const marker = "/worktrees/"
+    const markerIndex = worktreeRoot.indexOf(marker)
+    if (markerIndex < 0) return null
+
+    const suffix = worktreeRoot.slice(markerIndex + marker.length).split("/")
+    const taskSegment = suffix[0]
+    if (!taskSegment || suffix[1] === "integracao") return null
+
+    const integrationRoot = resolve(worktreeRoot.slice(0, markerIndex), "worktrees", taskSegment, "integracao")
+    if (!existsSync(integrationRoot)) return null
+    const integrationTop = resolve(this.exec("git rev-parse --show-toplevel", integrationRoot).trim())
+    const status = this.exec("git status --porcelain --untracked-files=all", integrationTop).trim()
+    if (status) {
+      throw new WrongWorkspaceError(
+        `A branch de integração já estava alterada antes do dev começar (${integrationTop}): ${status.split("\\n")[0]}. ` +
+        "O Motor não apagará trabalho preexistente; a integração precisa ser limpa antes da retomada.",
+      )
+    }
+    const head = this.exec("git rev-parse --verify HEAD", integrationTop).trim()
+    return { path: integrationTop, head, status }
+  }
+
+  /**
+   * Confirma que a entrega ocorreu no worktree/projeto correto e que a branch
+   * de integração permaneceu intacta. Em violação, restaura apenas os
+   * worktrees dedicados desta tarefa e devolve a subtarefa ao dev.
+   */
+  private validateAndRepairAgentWorkspace(input: WorkerInput): string | null {
+    const repoPath = resolve(input.repoPath)
+    const worktreeRoot = resolve(this.exec("git rev-parse --show-toplevel", repoPath).trim())
+    const expectedBranch = input.workBranch
+    const actualBranch = this.exec("git branch --show-current", repoPath).trim()
+    if (!expectedBranch || actualBranch !== expectedBranch) {
+      return `Workspace incorreto: esperado ${repoPath} na branch ${expectedBranch ?? "não informada"}, encontrado ${actualBranch || "sem branch"}.`
+    }
+
+    const projectRelativePath = relative(worktreeRoot, repoPath)
+    if (!isAbsolute(repoPath) || projectRelativePath === ".." || projectRelativePath.startsWith("../") || isAbsolute(projectRelativePath)) {
+      return `Workspace incorreto: o caminho do projeto ${repoPath} não está dentro do worktree exclusivo ${worktreeRoot}.`
+    }
+
+    if (this.integrationBaseline) {
+      const currentStatus = this.exec("git status --porcelain --untracked-files=all", this.integrationBaseline.path).trim()
+      const currentHead = this.exec("git rev-parse --verify HEAD", this.integrationBaseline.path).trim()
+      if (currentStatus !== this.integrationBaseline.status || currentHead !== this.integrationBaseline.head) {
+        const reason = `Branch base/integração alterada durante o trabalho do dev em ${this.integrationBaseline.path}. ` +
+          "As alterações foram revertidas; a subtarefa será devolvida ao dev para refazer somente no workspace correto."
+        this.resetDedicatedWorktree(this.integrationBaseline.path, this.integrationBaseline.head)
+        this.resetDedicatedWorktree(repoPath)
+        return reason
+      }
+    }
+
+    // Correção de baseline pode alterar qualquer arquivo do repositório
+    const isBaselineCorrection = input.subtask?.correctionFingerprint?.startsWith("baseline:") ?? false
+    if (isBaselineCorrection) {
+      return null
+    }
+
+    const changed = this.listChangedPaths(repoPath)
+    const outOfProject = projectRelativePath === ""
+      ? []
+      : changed.filter((path) => path !== projectRelativePath && !path.startsWith(projectRelativePath + "/"))
+    if (outOfProject.length > 0) {
+      const reason = `Workspace incorreto: o dev alterou arquivos fora de ${repoPath}: ${outOfProject.join(", ")}.`
+      this.resetDedicatedWorktree(repoPath)
+      return reason
+    }
+    return null
+  }
+
+  /**
+   * A alegação do agente não basta para bloquear uma tarefa. O Motor mede o
+   * workspace que ele próprio criou; `null` significa ambiente válido e,
+   * consequentemente, alegação inválida.
+   */
+  private verifyEnvironmentClaim(input: WorkerInput): string | null {
+    try {
+      const repoPath = resolve(input.repoPath)
+      if (!existsSync(repoPath)) return `diretório do projeto não existe: ${repoPath}`
+      const cwd = resolve(this.exec("pwd -P", repoPath).trim())
+      if (cwd !== repoPath) return `cwd divergente: esperado ${repoPath}, encontrado ${cwd}`
+      const gitRoot = resolve(this.exec("git rev-parse --show-toplevel", repoPath).trim())
+      const projectRelativePath = relative(gitRoot, repoPath)
+      if (projectRelativePath === ".." || projectRelativePath.startsWith("../") || isAbsolute(projectRelativePath)) {
+        return `projeto fora da raiz Git: projeto=${repoPath}, raiz=${gitRoot}`
+      }
+      const branch = this.exec("git branch --show-current", repoPath).trim()
+      if (!input.workBranch || branch !== input.workBranch) {
+        return `branch divergente: esperado ${input.workBranch ?? "não informada"}, encontrado ${branch || "sem branch"}`
+      }
+      // Não exige árvore limpa: alterações legítimas da entrega são permitidas.
+      this.exec("git status --short", repoPath)
+      return null
+    } catch (error) {
+      return "sonda independente do Motor falhou: " + (error instanceof Error ? error.message : String(error)).slice(0, 1200)
+    }
+  }
+
+  /** Bootstrap factual de uma nova sessão física após contexto contaminado. */
+  private buildCleanSessionBootstrap(input: WorkerInput, subtask: SubtaskInfo, reason: string): string {
+    return [
+      "CONTINUAÇÃO LIMPA CRIADA PELO MOTOR.",
+      "A sessão anterior foi arquivada porque alegou bloqueio ambiental que a sonda independente do Motor refutou.",
+      `Fatos validados: projeto=${resolve(input.repoPath)}; branch=${input.workBranch}; subtarefa #${subtask.seq} — ${subtask.titulo}.`,
+      "Não use alegações ambientais anteriores como fatos. Inspecione somente o workspace autorizado, faça a próxima ação necessária e responda no JSON do Motor.",
+      reason ? "Registro operacional: " + reason : "",
+    ].filter(Boolean).join("\n")
+  }
+
+  private resetDedicatedWorktree(worktreePath: string, resetTo?: string): void {
+    this.exec(`git reset --hard ${resetTo ?? "HEAD"}`, worktreePath, 120_000)
+    // Não usa -x: dependências e arquivos ignorados não fazem parte da
+    // entrega e não devem ser apagados durante a recuperação.
+    this.exec("git clean -fd", worktreePath, 120_000)
+  }
+
+  /** Todos os arquivos de teste conhecidos do repositório + testes novos não rastreados. */
+  private listTestFiles(repoPath: string): string[] {
+    const listed = this.exec("git ls-files", repoPath, 60_000)
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((path) => path.length > 0 && isTestPath(path))
+    const changedTests = this.listChangedPaths(repoPath).filter((path) => isTestPath(path))
+    return [...new Set([...listed, ...changedTests])]
+  }
+
+  /**
+   * Registra o modelo como indisponível na tabela global de cooldown.
+   * Best-effort: falha de persistência nunca derruba a escalada de modelos.
+   * O motivo recebido deve ser a assinatura CRUA do provedor/sessão (não o
+   * rótulo "Modelo indisponível", que é classificado à parte).
+   */
+  private async markModelUnavailable(executionId: string, model: string, reason: string): Promise<void> {
+    const store = this.modelCooldowns()
+    if (!store) return
+    try {
+      const applied = await store.register({ model, reason })
+      this.log("warn", `Cooldown aplicado: ${applied.model} (${applied.classe}, strikes=${applied.strikes}) até ${applied.until.toISOString()}`)
+      this.send({ type: "log", executionId, level: "warn", message: `Modelo ${applied.model} em cooldown até ${applied.until.toISOString()}` })
+    } catch (error) {
+      this.log("warn", "Falha ao registrar cooldown do modelo " + model + ": " + (error instanceof Error ? error.message : String(error)))
+    }
+  }
+
+  /**
+   * Adapta a conexão mysql2 do worker ao contrato `Db` usado pelo cooldown.
+   * O worker não mantém uma instância de `Db`; a conversão fica local.
+   */
+  private modelCooldowns(): ModelCooldownStore | null {
+    const connection = this.db
+    if (!connection) return null
+    const adapt = (): Db => ({
+      query: async (sql: string, params?: unknown[]) => {
+        const [result] = await connection.query(sql, params as never)
+        if (Array.isArray(result)) return { rows: result as Record<string, unknown>[], affectedRows: 0, insertId: 0 }
+        const ok = result as { affectedRows?: number; insertId?: number } | undefined
+        return { rows: [], affectedRows: ok?.affectedRows ?? 0, insertId: ok?.insertId ?? 0 }
+      },
+      transaction: async <T>(fn: (db: Db) => Promise<T>) => fn(adapt()),
+    })
+    return new ModelCooldownStore(adapt())
+  }
+
+  /**
+   * Baseline (2026-08-31): antes da primeira subtarefa de uma tarefa (nenhuma
+   * verificada ainda), roda build + suíte completa na branch-base LIMPA. Se
+   * estiver vermelha, cria subtarefa de correção de baseline na mesma posição
+   * e adia a subtarefa original — em vez de queimar tentativas num gate
+   * impossível.
+   */
+  private async runBaselineCheck(input: WorkerInput, subtask: SubtaskInfo): Promise<"ok" | "correction_created"> {
+    if (!this.db) return "ok"
+    if (isBaselineCorrection(subtask.correctionFingerprint)) return "ok"
+    const [rows] = await this.db.query(
+      "SELECT COUNT(*) AS total FROM subtarefas WHERE tarefa_id = (SELECT tarefa_id FROM subtarefas WHERE id = ?) AND status = 'verified'",
+      [subtask.id],
+    ) as unknown as [Array<{ total: number | string }>]
+    if (Number(rows[0]?.total ?? 0) > 0) return "ok"
+
+    this.send({ type: "progress", executionId: input.context.executionId, phase: "execute", message: "Baseline: validando suíte na branch-base" })
+    const baselineTestCommand = withBaselineExcludes(input.testCommand)
+    this.log("info", "Baseline: rodando build + suíte na branch-base antes da primeira subtarefa: " + baselineTestCommand)
+    try {
+      this.exec(input.buildCommand, input.repoPath, getConfigNumber("motor.build_test_timeout_ms"))
+      this.exec(baselineTestCommand, input.repoPath, getConfigNumber("motor.build_test_timeout_ms"))
+    } catch (error) {
+      const reason = (error instanceof Error ? error.message : String(error)).substring(0, 2000)
+      await this.createBaselineCorrection(subtask, reason)
+      return "correction_created"
+    }
+    this.log("info", "Baseline verde")
+    return "ok"
+  }
+
+  /** Cria a subtarefa de correção de baseline na posição da subtarefa original. */
+  private async createBaselineCorrection(subtask: SubtaskInfo, reason: string): Promise<void> {
+    if (!this.db) throw new Error("DB não conectado para criar correção de baseline")
+    // A coluna correction_fingerprint é varchar(500). O prefixo + o fingerprint
+    // normalizado precisam caber juntos — senão o INSERT falha com "Data too long".
+    const fingerprint = (BASELINE_FINGERPRINT_PREFIX + failureFingerprint(reason)).slice(0, 500)
+    // Abre espaço na posição exata da subtarefa atual (seq -> seq+1 para >= seq).
+    await this.db.query("UPDATE subtarefas SET seq = seq + 10000 WHERE tarefa_id = (SELECT tarefa_id FROM (SELECT tarefa_id FROM subtarefas WHERE id = ?) AS source) AND seq >= ?", [subtask.id, subtask.seq])
+    await this.db.query("UPDATE subtarefas SET seq = seq - 9999 WHERE tarefa_id = (SELECT tarefa_id FROM (SELECT tarefa_id FROM subtarefas WHERE id = ?) AS source) AND seq >= ?", [subtask.id, subtask.seq + 10000])
+    await this.db.query(
+      "UPDATE subtarefas SET status = 'rejected', resultado = ?, updated_at = NOW() WHERE id = ?",
+      [("Baseline vermelho — correção automática criada: " + reason).substring(0, 500), subtask.id],
+    )
+    await this.db.query(
+      "INSERT INTO subtarefas (tarefa_id, seq, titulo, scope, acceptance_criteria, status, correction_for_subtask_id, correction_fingerprint, created_at, updated_at) " +
+      "SELECT tarefa_id, ?, ?, ?, JSON_ARRAY(?), 'pending', id, ?, NOW(), NOW() FROM subtarefas WHERE id = ?",
+      [subtask.seq, BASELINE_CORRECTION_TITLE, baselineCorrectionScope(reason, subtask.scope, subtask.titulo), BASELINE_CORRECTION_CRITERION, fingerprint, subtask.id],
+    )
+    this.log("warn", "Baseline vermelho: subtarefa de correção criada na posição da subtarefa " + subtask.id)
+  }
+
+  /**
+   * Cria o commit técnico somente depois do gate verde. O commit ocorre no
+   * worktree exclusivo; o repositório principal nunca sofre checkout, merge
+   * ou escrita nesta etapa.
+   */
+  private async phaseCommit(input: WorkerInput): Promise<string | undefined> {
+    this.send({ type: "progress", executionId: input.context.executionId, phase: "commit", message: "Registrando entrega aprovada" })
+    const status = this.exec("git status --porcelain", input.repoPath).trim()
+    if (!status) {
+      this.log("info", "Gate verde sem alterações pendentes; commit não necessário")
+      return undefined
+    }
+
+    this.exec("git add -A", input.repoPath)
+    const subtask = input.subtask
+    const message = `motor-v2: tarefa ${input.task.id}, subtarefa ${subtask?.id ?? "n/a"}`
+    try {
+      execFileSync("git", ["commit", "--no-verify", "-m", message], {
+        cwd: input.repoPath,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+        timeout: 120_000,
+      })
+    } catch (error) {
+      const details = error as { stderr?: Buffer; message?: string }
+      throw new Error("Commit técnico falhou: " + (details.stderr?.toString() || details.message || String(error)).substring(0, 500), { cause: error })
+    }
+    const commit = this.exec("git rev-parse --verify HEAD", input.repoPath).trim()
+    this.log("info", "Entrega aprovada registrada no commit " + commit)
+    return commit
+  }
+
+  /**
+   * FASE 5: PUBLISH - Publica somente o commit aprovado na branch de trabalho.
+   * Merge, deploy e limpeza do workspace permanecem fora desta etapa.
+   */
+  private async phasePublish(input: WorkerInput, commitSha: string): Promise<void> {
+    const workBranch = input.workBranch || "motor-v2/task-" + input.task.id
+    if (!isSafeBranchName(workBranch)) {
+      throw new Error("Branch de trabalho inválida para publicação")
+    }
+    if (!/^[a-f0-9]{7,40}$/i.test(commitSha)) {
+      throw new Error("Commit inválido para publicação")
+    }
+
+    this.send({
+      type: "progress",
+      executionId: input.context.executionId,
+      phase: "publish",
+      message: `Publicando branch ${workBranch}`,
+    })
+
+    try {
+      execFileSync("git", ["push", "--set-upstream", "origin", `${commitSha}:refs/heads/${workBranch}`], {
+        cwd: input.repoPath,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+        timeout: 120_000,
+      })
+    } catch (error) {
+      const details = error as { stderr?: Buffer; message?: string }
+      throw new Error(
+        "Publicação da branch falhou: " +
+          (details.stderr?.toString() || details.message || String(error)).substring(0, 500),
+        { cause: error },
+      )
+    }
+
+    this.log("info", `Branch ${workBranch} publicada com sucesso`)
+  }
+
+  // === HELPERS ===
+
+  /**
+   * Entrega mensagens humanas somente em pontos seguros do pipeline. O claim
+   * condicional impede duplicidade após retries/restarts; comandos e testes em
+   * andamento nunca são interrompidos no meio.
+   */
+  private async consumeChatAtCheckpoint(
+    input: WorkerInput,
+    session: RuntimeSession,
+    driver: ConsoleAgentRuntimeDriver,
+    phase: "analysis" | "development" | "verification",
+    subtaskId?: number,
+  ): Promise<void> {
+    if (!this.db) return
+    const db = this.planningDb()
+    const numeric = /^\d+$/.test(input.task.id)
+    const predicate = numeric ? "(t.external_id = ? OR t.id = ?)" : "t.external_id = ?"
+    const taskParams = numeric ? [input.task.id, input.task.id] : [input.task.id]
+    try {
+      const contextPhase = phase === "verification" ? "development" : phase
+      const updated = await db.query(
+        "UPDATE tarefa_contextos_execucao c JOIN tarefas t ON t.id=c.tarefa_id SET c.sessao_chave=?, c.agent_id=?, c.modelo=?, c.worktree_path=?, c.branch_name=?, c.estado='active', c.updated_at=NOW() WHERE " + predicate + " AND c.fase=? AND (c.subtarefa_id <=> ?)",
+        [session.key, input.task.agentId, input.context.modelId ?? null, input.repoPath, input.workBranch ?? null, ...taskParams, contextPhase, subtaskId ?? null],
+      )
+      if (updated.affectedRows === 0) await db.query(
+        "INSERT INTO tarefa_contextos_execucao (tarefa_id, subtarefa_id, fase, sessao_chave, agent_id, modelo, worktree_path, branch_name, estado, last_checkpoint_at, updated_at) SELECT t.id, ?, ?, ?, ?, ?, ?, ?, 'active', NOW(), NOW() FROM tarefas t WHERE " + predicate,
+        [subtaskId ?? null, contextPhase, session.key, input.task.agentId, input.context.modelId ?? null, input.repoPath, input.workBranch ?? null, ...taskParams],
+      )
+    } catch (error) {
+      this.log("warn", "Falha ao persistir contexto de execução: " + (error instanceof Error ? error.message : String(error)))
+    }
+    // MySQL não aceita ORDER BY/LIMIT nessa forma de UPDATE com JOIN. Primeiro
+    // selecionamos um lote determinístico e depois fazemos claims condicionais;
+    // a condição `estado='pending'` mantém a operação idempotente em retries.
+    const candidates = await db.query(
+      "SELECT e.id FROM tarefa_chat_entregas e JOIN tarefas t ON t.id=e.tarefa_id WHERE " + predicate + " AND e.estado='pending' ORDER BY e.id ASC LIMIT 20",
+      taskParams,
+    )
+    let claimedCount = 0
+    for (const candidate of candidates.rows as Array<{ id: number }>) {
+      const claimed = await db.query(
+        "UPDATE tarefa_chat_entregas SET estado='delivering', tentativas=tentativas+1, sessao_chave=?, fase_alvo=?, subtarefa_id=?, updated_at=NOW() WHERE id=? AND estado='pending'",
+        [session.key, phase, subtaskId ?? null, candidate.id],
+      )
+      claimedCount += claimed.affectedRows
+    }
+    if (claimedCount === 0) return
+    const pending = await db.query(
+      "SELECT e.id, e.mensagem_id, e.modo, c.texto FROM tarefa_chat_entregas e JOIN tarefa_chats c ON c.id=e.mensagem_id JOIN tarefas t ON t.id=e.tarefa_id WHERE " + predicate + " AND e.estado='delivering' AND e.sessao_chave=? ORDER BY e.id ASC LIMIT 20",
+      [...taskParams, session.key],
+    )
+    for (const row of pending.rows as Array<{ id: number; mensagem_id: number; modo: string; texto: string }>) {
+      try {
+        const sent = await driver.sendMessage({ session, message: [
+          "MENSAGEM DO RESPONSÁVEL — CHECKPOINT SEGURO",
+          `Fase: ${phase}${subtaskId ? `; subtarefa: ${subtaskId}` : ""}`,
+          "Responda primeiro no chat. Não faça commit, deploy, exclusão ou alteração irreversível sem autorização explícita.",
+          row.texto,
+        ].join("\n\n") })
+        // Guarda o run antes de esperar a resposta. Em caso de reinício ou
+        // pedido de pausa, o coordenador consegue correlacionar o checkpoint
+        // com a execução remota sem criar uma segunda sessão.
+        await db.query(
+          "UPDATE tarefa_contextos_execucao SET last_run_id=?, updated_at=NOW() WHERE sessao_chave=? AND estado IN ('active','checkpoint_requested','ready_to_resume')",
+          [sent.runId, session.key],
+        )
+        const result = await driver.waitForRunCompletion(session, sent.runId, { onActivity: () => this.sendHeartbeat() })
+        if (result.state !== "final" || !result.content?.trim()) throw new Error(result.errorMessage || "Agente não respondeu ao chat")
+        await db.query("INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) SELECT tarefa_id, 'agent', ?, NOW() FROM tarefa_chat_entregas WHERE id=?", [result.content.trim().slice(0, 20000), row.id])
+        await db.query("UPDATE tarefa_chat_entregas SET estado='consumed', consumed_at=NOW(), delivered_at=COALESCE(delivered_at,NOW()), erro=NULL, updated_at=NOW() WHERE id=? AND estado='delivering'", [row.id])
+        this.send({ type: "chat_delivery", executionId: input.context.executionId, messageId: row.mensagem_id, deliveryId: row.id, state: "consumed" })
+        if (row.modo === "solicitar_pausa") {
+          await db.query("UPDATE tarefa_contextos_execucao SET estado='awaiting_human', last_checkpoint_at=NOW(), resumo_contexto=?, updated_at=NOW() WHERE tarefa_id=(SELECT tarefa_id FROM tarefa_chat_entregas WHERE id=?) AND sessao_chave=? AND estado IN ('active','checkpoint_requested','ready_to_resume')", [result.content.trim().slice(0, 8000), row.id, session.key])
+          this.pendingInteraction = { phase, summary: result.content.trim().slice(0, 8000) }
+        }
+      } catch (error) {
+        await db.query("UPDATE tarefa_chat_entregas SET estado='failed', erro=?, updated_at=NOW() WHERE id=? AND estado='delivering'", [String(error instanceof Error ? error.message : error).slice(0, 2000), row.id])
+        this.send({ type: "chat_delivery", executionId: input.context.executionId, messageId: row.mensagem_id, deliveryId: row.id, state: "failed", error: String(error instanceof Error ? error.message : error).slice(0, 2000) })
+        this.log("warn", `Falha ao entregar mensagem de chat ${row.mensagem_id}: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  }
+
+  private createDriver(): ConsoleAgentRuntimeDriver {
+    const baseUrl = process.env.OPENCLAW_CONSOLE_URL
+    const token = process.env.OPENCLAW_CONSOLE_TOKEN
+    if (!baseUrl || !token) throw new Error("OPENCLAW_CONSOLE_URL e OPENCLAW_CONSOLE_TOKEN sao obrigatorios")
+    return new ConsoleAgentRuntimeDriver({ baseUrl, token })
+  }
+
+  private async resolveManagedPrompt(key: string, values: Record<string, unknown>, fallback: string, taskId?: string, subtaskId?: number): Promise<string> {
+    if (!this.db) return fallback
+    return new ManagedPromptResolver(this.db).resolve({ key, values, fallback, taskId, subtaskId })
+  }
+
+  /** Adapta a conexão exclusiva do worker à transação atômica do plano. */
+  private planningDb(): Db {
+    const connection = this.db
+    if (!connection) throw new Error("DB não conectado para persistir plano")
+
+    const db: Db = {
+      query: async (sql: string, params?: unknown[]): Promise<QueryResult> => {
+        const [rows] = await connection.execute(sql, params as mysql.ExecuteValues | undefined)
+        if (Array.isArray(rows)) return { rows: rows as Record<string, unknown>[], affectedRows: 0, insertId: 0 }
+        const result = rows as { affectedRows?: number; insertId?: number }
+        return { rows: [], affectedRows: result.affectedRows ?? 0, insertId: result.insertId ?? 0 }
+      },
+      transaction: async <T>(fn: (tx: Db) => Promise<T>): Promise<T> => {
+        await connection.beginTransaction()
+        try {
+          const result = await fn(db)
+          await connection.commit()
+          return result
+        } catch (error) {
+          await connection.rollback()
+          throw error
+        }
+      },
+    }
+    return db
+  }
+
+  private buildAnalystPrompt(task: { title: string; description?: string; tipo?: string }, clarificationHistory?: string, analystWorkspacePath?: string): string {
+    const lightweight = task.tipo === "automacao" || task.tipo === "verificacao"
+    const lines = [
+      lightweight
+        ? "Voce e um analista de requisitos. Recebe uma tarefa operacional e deve quebra-la em subtarefas executaveis pelo agente."
+        : "Voce e um analista de requisitos. Recebe uma tarefa e deve quebra-la em subtarefas.",
+      "",
+      "Tarefa: " + task.title,
+      "Descricao integral (nao truncar nem omitir secoes): " + (task.description?.trim() || "N/A"),
+      "Repositorio/workspace autorizado para leitura: " + (analystWorkspacePath || "N/A"),
+      "Leia primeiro docs/CONTEXTO-ANALISTA.md nesse repositorio. Ele e o contexto inicial; para a area afetada, siga as referencias dele e confirme no codigo e nos contratos vigentes.",
+      "",
+      "Responda APENAS com JSON valido, em UMA das duas formas abaixo.",
+      "",
+      "Forma 1 — quando a definicao estiver clara o suficiente, o plano:",
+      "{",
+      '  "subtarefas": [',
+      "    {",
+      '      "seq": 1,',
+      '      "titulo": "Nome da subtarefa",',
+      '      "scope": "O que deve ser feito em detalhes",',
+      '      "acceptance_criteria": ["criterio verificavel 1", "criterio verificavel 2"],',
+      '      "deliverables": ["arquivo, endpoint, migration ou documento entregue"],',
+      '      "requirements_covered": ["REQ-1"],',
+      '      "depends_on": []',
+      "    }",
+      "  ],",
+      '  "requirements": [{"id":"REQ-1","description":"Requisito identificado na descricao"}],',
+      '  "coverage": [{"requirement":"REQ-1","covered_by":[1]}]',
+      "}",
+      "",
+      "Forma 2 — quando houver ambiguidade que impeca um plano correto (escopo, objetivo, criterios, conflito de requisitos, decisao de arquitetura), NAO invente e NAO gere um plano ruim; pergunte:",
+      "{",
+      '  "kind": "perguntas",',
+      '  "resumo": "o que voce JA entendeu da tarefa",',
+      '  "perguntas": ["pergunta 1", "pergunta 2"]',
+      "}",
+      "",
+      "Regras:",
+      "- Use tantas subtarefas quantas forem necessarias para cobrir integralmente o escopo; nao minimize artificialmente nem una etapas independentes. Preserve etapas, sequencias e subtarefas explicitamente pedidas, sem passar de 10.",
+      "- titulo: curto, ate ~80 caracteres.",
+      "- scope: responsabilidade principal detalhada e executavel; nao esconda requisitos no texto generico.",
+      "- acceptance_criteria: 2 a 8 itens objetivos, verificaveis e especificos.",
+      "- deliverables: liste as entregas concretas de cada subtarefa.",
+      "- requirements_covered: referencie os IDs REQ-* cobertos pela subtarefa.",
+      "- depends_on: liste os seqs que precisam terminar antes; use [] quando nao houver dependencia.",
+      "- requirements/coverage: identifique todos os requisitos da descricao e mapeie cada REQ-* para uma ou mais subtarefas.",
+      "- Leia a descricao inteira antes de planejar. Se ela estiver incompleta, truncada ou ambigua, use a Forma 2 e explique o que falta; nunca invente nem descarte secoes.",
+      "- Antes de responder, audite: cada requisito tem cobertura, cada subtarefa tem uma responsabilidade principal, entregavel e criterio verificavel, e nenhuma etapa explicita foi unida indevidamente.",
+      "- Mantenha somente o JSON na resposta, mas nao sacrifique cobertura ou detalhe para encurta-la.",
+      "- NUNCA crie subtarefas para passos operacionais que o motor executa automaticamente: commit, push, merge, build, testes unitarios, deploy, validacao de build.",
+      lightweight
+        ? "- Em automacao/verificacao, a subtarefa deve descrever a acao ou verificacao concreta, os dados/recursos a usar e o formato da resposta. Nao crie trabalho de codigo, workspace, branch, build ou testes."
+        : "- Subtarefas devem conter apenas trabalho de codigo ou documentacao (ex.: criar schema, criar tela, escrever endpoint).",
+      "- Se o escopo incluir criacao de tabelas/schema, o proprio dev deve gerar as migrations (drizzle-kit generate) como parte do trabalho — mas NAO crie subtarefa separada para isso.",
+      "",
+      "Regras para SETUP DE PROJETO NOVO (quando a tarefa for setup de um projeto novo na plataforma):",
+      "- TELAS PERSONALIZADAS (kind: custom no config.ts) NUNCA sao subtarefas do setup. Elas viram TAREFAS VINCULADAS AO PROJETO NOVO (com auto_start=true), executadas pelo agente do projeto novo (nao pelo biblioteca-global que fez o setup).",
+      "- O setup do projeto deve APENAS: criar estrutura, config, schema, migrations, registros obrigatorios (schema-registry, front registry, seed, Dockerfiles, lockfile), e agente no gateway. NAO inclua implementacao de telas custom nas subtarefas do setup.",
+      "- Se a descricao mencionar telas personalizadas, telas custom, dashboards custom, ou funcionalidades alem do CRUD padrao, IGNORE-as no plano de subtarefas do setup — elas serao tratadas como tarefas separadas pelo motor.",
+      "- Subtarefas do setup devem focar em: estrutura de pastas, config.ts, schema.ts, migrations, registros nos Dockerfiles e registries, seed de dados iniciais, e registro do agente no gateway.",
+      "- SMOKE TEST OBRIGATORIO: a ULTIMA subtarefa do setup DEVE ser 'Smoke test funcional do projeto novo'. Ela executa uma chamada HTTP real (curl) a um endpoint CRUD do projeto novo (GET /api/<slug>/...) e grava a evidencia no resultado: {\"smoke_test\":{\"url\":\"...\",\"method\":\"GET\",\"status\":200,\"response_body\":\"...\",\"timestamp\":\"...\"}}. O gate do motor REPROVA sem essa evidencia.",
+      "",
+      "Regras da clarificacao (Forma 2):",
+      "- O campo \"resumo\" e obrigatorio: descreva o que voce ja entendeu.",
+      "- Prefira perguntas decisorias (ex.: \"prefere A ou B?\"), mas perguntas abertas sao permitidas quando necessario.",
+      "- No maximo 8 perguntas por turno; cada uma direta e especifica.",
+      "- Nao pergunte o que ja esta respondido no historico abaixo.",
+      "- Sem limite de turnos: se a resposta recebida ainda deixar ambiguidade relevante, pergunte de novo; so gere o plano quando a definicao estiver clara.",
+    ]
+    if (clarificationHistory) {
+      lines.push(
+        "",
+        "HISTORICO DE CLARIFICACAO (perguntas anteriores e respostas recebidas):",
+        clarificationHistory,
+        "",
+        "Considere este historico: nao repita perguntas ja respondidas. Se as respostas tornaram a definicao clara, responda com o plano (Forma 1).",
+      )
+    }
+    return lines.join("\n")
+  }
+
+  /**
+   * Monta a missão do programador. Se o briefing ultrapassar 12k chars,
+   * retorna em duas partes (header + contexto) para evitar truncamento
+   * no viewer da sessão do agente.
+   */
+  private buildProgrammerPrompt(task: { title: string; description?: string; tipo?: string }, subtask: SubtaskInfo, repoPath: string, reworkNote?: string, carryOver?: string): { header: string; context: string | null } {
+    const description = task.description || "N/A"
+    const lightweight = task.tipo === "automacao" || task.tipo === "verificacao"
+    const header = [
+      lightweight
+        ? "Voce e um agente operacional senior. Execute a subtarefa abaixo usando suas proprias ferramentas e recursos disponiveis."
+        : "Voce e um programador senior. Execute a subtarefa abaixo.",
+      "",
+      "Tarefa pai: " + task.title,
+      "Subtarefa #" + subtask.seq + ": " + subtask.titulo,
+      "Escopo: " + (subtask.scope || subtask.titulo),
+      "Criterios de aceite: " + JSON.stringify(subtask.acceptanceCriteria || []),
+      ...(lightweight
+        ? ["Fluxo: " + task.tipo + " (sem workspace, branch, clone, build ou testes)"]
+        : [
+            "Workspace: " + repoPath,
+            "RESTRICAO ABSOLUTA DE CAMINHO: edicao, git, build e testes devem acontecer SOMENTE dentro do Workspace acima. " +
+              "Para consultar contratos ou tipos compartilhados, e permitido ler somente arquivos sob a raiz Git do MESMO worktree, obtida com `git -C <Workspace> rev-parse --show-toplevel`. " +
+              "Essa permissao e exclusivamente de leitura: nunca modifique, commite ou execute git em outro diretorio do repositorio, em outro worktree ou em outra copia. " +
+              "Se um comando git falhar dentro do Workspace (ex.: 'not a git repository', 'dubious ownership'), NAO improvise em outro caminho: " +
+              "responda blocked_environment com o erro exato.",
+          ]),
+      "",
+      "Instrucoes:",
+      lightweight ? "1. Execute a acao/verificacao solicitada e produza uma resposta clara com as evidencias encontradas" : "1. Faca as alteracoes necessarias nos arquivos",
+      "2. Nao faca commit (o motor faz depois)",
+      lightweight
+        ? "3. Responda APENAS com JSON: {\"status\":\"done\"|\"need_help\"|\"blocked_environment\",\"summary\":\"resposta final detalhada\",\"reason\":\"...\"}"
+        : "3. Responda APENAS com JSON: {\"status\":\"done\"|\"need_help\"|\"blocked_environment\"|\"premise_incorrect\",\"summary\":\"...\",\"reason\":\"...\",\"question\":\"...\"}. Se status=need_help, question é obrigatória e deve ser objetiva; nunca responda apenas que nenhum arquivo foi alterado.",
+      ...(lightweight ? [] : ["4. Use premise_incorrect somente se a missão contradizer o repositório. Inclua claim, conflict_type, evidence:[{path,observation}] e suggested_revision; caminhos devem existir no workspace."]),
+      ...(carryOver ? ["", carryOver] : []),
+      ...(reworkNote ? ["", "Feedback do gate anterior:", digestGateFailure(reworkNote, { maxLines: 50, maxChars: 7000 })] : []),
+    ].join("\n")
+
+    // Descrição longa → mensagem separada para evitar truncamento no viewer
+    if (description.length > 12000) {
+      return { header, context: "Descrição completa da missão:\n\n" + description.substring(0, 30000) }
+    }
+    // Descrição curta → incluir no header
+    const fullHeader = header.replace(
+      "Voce e um programador senior. Execute a subtarefa abaixo.",
+      "Voce e um programador senior. Execute a subtarefa abaixo.\n\nDescrição da missão: " + description.substring(0, 12000),
+    )
+    return { header: fullHeader, context: null }
+  }
+
+  /** Retomada da mesma sessão: somente o delta, nunca a missão inteira outra vez. */
+  private buildDevelopmentResumePrompt(subtask: SubtaskInfo, lastFailure: string, carryOver: string): string {
+    return [
+      "RETOMADA INCREMENTAL DA SUBTAREFA — a missão e os critérios já estão no histórico desta sessão.",
+      `Subtarefa #${subtask.seq}: ${subtask.titulo}`,
+      lastFailure ? "Último resultado a tratar:\n" + digestGateFailure(lastFailure, { maxLines: 16, maxChars: 2_500 }) : "Continue do último ponto confirmado.",
+      carryOver ? "Fatos das tentativas anteriores:\n" + carryOver.slice(-3_000) : "",
+      "Não reanalise a tarefa inteira. Inspecione o estado atual do worktree, faça somente a próxima correção necessária e responda no JSON do Motor.",
+    ].filter(Boolean).join("\n\n")
+  }
+
+  /**
+   * P1: histórico estruturado de entregas anteriores da subtarefa (carry-over
+   * de aprendizado). Fail-open: sem histórico ou com erro de consulta, o
+   * prompt segue sem a seção.
+   */
+  private async buildCarryOver(subtask: SubtaskInfo, taskId?: string): Promise<string> {
+    if (!this.db || subtask.deliverCount <= 0) return ""
+    try {
+      const [rows] = await this.db.query(
+        "SELECT deliver_number, model, event_type, reason FROM subtarefas_entregas WHERE subtarefa_id = ? ORDER BY id ASC LIMIT 60",
+        [subtask.id],
+      ) as unknown as [Array<{ deliver_number: number | string; model: string | null; event_type: string; reason: string | null }>]
+      const events: CarryOverEvent[] = rows
+        // A invalidação permanece na auditoria, mas não atravessa para o
+        // contexto do próximo agente. O bootstrap da nova sessão traz apenas
+        // a prova objetiva atual.
+        .filter((row) => String(row.event_type ?? "") !== "invalid_environment_claim")
+        .map((row) => ({
+          deliverNumber: Number(row.deliver_number ?? 0),
+          model: row.model == null ? null : String(row.model),
+          eventType: String(row.event_type ?? ""),
+          reason: row.reason == null ? null : String(row.reason),
+        }))
+      return formatCarryOver(events, taskId)
+    } catch (error) {
+      this.log("warn", "Falha ao carregar histórico de entregas (carry-over ignorado): " + (error instanceof Error ? error.message : String(error)))
+      return ""
+    }
+  }
+
+  /** Passagem de bastão: lê commits das subtarefas anteriores, nunca texto livre. */
+  private async buildPriorSubtaskHandoff(subtask: SubtaskInfo, gitRoot: string): Promise<string> {
+    if (!this.db) return ""
+    try {
+      const [rows] = await this.db.query(
+        "SELECT anterior.seq, anterior.titulo, anterior.workspace_commit_sha, anterior.resultado FROM subtarefas anterior INNER JOIN subtarefas atual ON atual.tarefa_id = anterior.tarefa_id WHERE atual.id = ? AND anterior.seq < atual.seq AND anterior.status = 'verified' AND anterior.workspace_commit_sha IS NOT NULL ORDER BY anterior.seq ASC",
+        [subtask.id],
+      ) as unknown as [Array<{ seq: number | string; titulo: string; workspace_commit_sha: string; resultado: string | null }>]
+      const handoffs: PriorSubtaskHandoff[] = []
+      for (const row of rows) {
+        if (!/^[a-f0-9]{7,40}$/i.test(row.workspace_commit_sha)) continue
+        const output = this.exec(`git diff-tree --no-commit-id --name-status -r ${row.workspace_commit_sha}`, gitRoot, 30_000)
+        handoffs.push({ seq: Number(row.seq), title: String(row.titulo), commit: row.workspace_commit_sha, files: parseGitNameStatus(output), summary: this.extractAgentSummary(row.resultado ?? undefined) })
+      }
+      return formatPriorSubtaskHandoff(handoffs)
+    } catch (error) {
+      this.log("warn", "Falha ao montar passagem de bastão; seguindo sem contexto: " + (error instanceof Error ? error.message : String(error)))
+      return ""
+    }
+  }
+
+  /** Resumo estruturado da resposta do agente (campo `summary` do JSON). */
+  private extractAgentSummary(content?: string): string | null {
+    if (!content) return null
+    const match = content.match(/\{[\s\S]*\}/)
+    if (!match) return null
+    try {
+      const parsed = JSON.parse(match[0]) as { summary?: unknown }
+      if (typeof parsed.summary === "string" && parsed.summary.trim()) return parsed.summary.trim().substring(0, 800)
+    } catch { /* resposta em texto livre não tem summary estruturado */ }
+    return null
+  }
+
+  private chainFor(input: WorkerInput, phase: "analysis" | "development"): readonly ModelSelection[] {
+    return input.modelChain && input.modelChain.length > 0 ? input.modelChain : defaultChain(phase)
+  }
+
+  private classifyAgentOutcome(content?: string): DeveloperOutcome {
+    return classifyDeveloperOutcome(content)
+  }
+
+  private async rebriefRefutedSubtask(input: WorkerInput, subtask: SubtaskInfo, refutation: PremiseRefutation): Promise<{ title: string; scope: string; criteria: string[] }> {
+    const fallback = { title: `${subtask.titulo} (revisão)`, scope: refutation.suggestedRevision, criteria: subtask.acceptanceCriteria ?? [] }
+    for (const selection of defaultChain("analysis")) {
+      const driver = this.createDriver()
+      let session
+      try {
+        session = await driver.createSession({ agentId: input.task.agentId, key: formatTaskSessionKey(input.task.id), label: `rebrief:${input.task.id}:${subtask.id}`, model: selection.model })
+        const embedded = [
+          "Você é o analista. A premissa de uma subtarefa foi refutada com evidência validada.",
+          `Tarefa: ${input.task.title}`,
+          `Subtarefa original: ${subtask.titulo}\n${subtask.scope ?? ""}`,
+          `Refutação: ${refutation.claim}`,
+          `Evidências: ${JSON.stringify(refutation.evidence)}`,
+          `Sugestão do executor: ${refutation.suggestedRevision}`,
+          'Responda APENAS com JSON: {"titulo":"...","scope":"...","acceptance_criteria":["..."]}',
+        ].join("\n\n")
+        const prompt = await this.resolveManagedPrompt("analista.revisao_premissa_incorreta", {
+          "**TEXTOTAREFA**": input.task.title,
+          "**TEXTOSUBTAREFAORIGINAL**": `${subtask.titulo}\n${subtask.scope ?? ""}`,
+          "**ERROREPORTADOPELOAGENTEDEV**": refutation.claim,
+          "**EVIDENCIASREFUTACAO**": refutation.evidence,
+        }, embedded, input.task.id, subtask.id)
+        const sent = await driver.sendMessage({ session, message: prompt })
+        const result = await driver.waitForRunCompletion(session, sent.runId, { onActivity: () => this.sendHeartbeat() })
+        const match = result.content?.match(/\{[\s\S]*\}/)
+        if (!match) continue
+        const parsed = JSON.parse(match[0]) as { titulo?: unknown; scope?: unknown; acceptance_criteria?: unknown }
+        if (typeof parsed.titulo === "string" && typeof parsed.scope === "string" && Array.isArray(parsed.acceptance_criteria)) {
+          return { title: parsed.titulo.slice(0, 200), scope: parsed.scope, criteria: parsed.acceptance_criteria.filter((item): item is string => typeof item === "string").slice(0, 6) }
+        }
+      } catch (error) {
+        this.log("warn", "Rebriefing pelo analista indisponível; usando revisão sugerida e auditada: " + (error instanceof Error ? error.message : String(error)))
+      } finally { if (session) await driver.closeSession(session).catch(() => {}) }
+    }
+    return fallback
+  }
+
+  private async replaceRefutedSubtask(subtask: SubtaskInfo, refutation: PremiseRefutation, fingerprint: string, model: string, revised: { title: string; scope: string; criteria: string[] }): Promise<void> {
+    if (!this.db) throw new Error("DB não conectado para revisar subtarefa")
+    const [rows] = await this.db.query("SELECT tarefa_id, revision, rebrief_count, premise_fingerprint, acceptance_criteria FROM subtarefas WHERE id = ?", [subtask.id]) as unknown as [Array<Record<string, unknown>>]
+    const row = rows[0]
+    if (!row) throw new Error("Subtarefa refutada não encontrada")
+    const rebriefCount = Number(row.rebrief_count ?? 0)
+    if (rebriefCount >= 2 || row.premise_fingerprint === fingerprint) {
+      const reason = "Limite de revisões automáticas ou refutação repetida; decisão humana necessária"
+      await this.recordBlocker(subtask, "systemic_failure", reason, model)
+      throw new Error(reason)
+    }
+    await this.db.beginTransaction()
+    try {
+      const [insert] = await this.db.query(
+        "INSERT INTO subtarefas (tarefa_id, seq, titulo, scope, acceptance_criteria, status, revision, replaces_subtask_id, rebrief_count, premise_fingerprint, premise_evidence, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, NOW(), NOW())",
+        [Number(row.tarefa_id), subtask.seq, revised.title, revised.scope, JSON.stringify(revised.criteria), Number(row.revision ?? 0) + 1, subtask.id, rebriefCount + 1, fingerprint, JSON.stringify(refutation)],
+      ) as unknown as [{ insertId: number }]
+      const replacementId = Number(insert.insertId)
+      await this.db.query("UPDATE subtarefas SET status = 'superseded', superseded_by_subtask_id = ?, rebrief_count = ?, premise_fingerprint = ?, premise_evidence = ?, resultado = ?, finalizada_em = NOW(), updated_at = NOW() WHERE id = ?", [replacementId, rebriefCount + 1, fingerprint, JSON.stringify(refutation), `Premissa refutada: ${refutation.claim}`, subtask.id])
+      await this.db.query("INSERT INTO subtarefas_entregas (subtarefa_id, deliver_number, model, event_type, reason, created_at) VALUES (?, ?, ?, 'premise_refuted', ?, NOW())", [subtask.id, subtask.deliverCount, model, JSON.stringify(refutation)])
+      await this.db.commit()
+    } catch (error) { await this.db.rollback(); throw error }
+  }
+
+  /**
+   * MONITORAMENTO MOTOR: classifica a causa raiz da falha de gate consultando
+   * a sessão fixa "Monitoramento Motor". Fail-open: se o classificador falhar,
+   * retorna null e o fluxo normal continua.
+   */
+  private async classifyGateFailure(
+    input: WorkerInput,
+    subtask: SubtaskInfo,
+    model: string,
+    modelIndex: number,
+    errorMessage: string
+  ): Promise<GateFailureVerdict | null> {
+    if (!this.db) return null
+
+    try {
+      // Contar ocorrências deste erro na subtarefa
+      const [countRows] = await this.db.query(
+        "SELECT COUNT(*) AS total FROM subtask_gate_failures WHERE subtarefa_id = ? AND fingerprint = ?",
+        [subtask.id, failureFingerprint(errorMessage)]
+      ) as unknown as [Array<{ total: number | string }>]
+      const occurrence = Number(countRows[0]?.total ?? 0) + 1
+
+      const driver = this.createDriver()
+      const classifier = new GateFailureClassifier(driver, this.db)
+
+      const result = await classifier.classify({
+        taskId: input.task.id,
+        subtaskId: subtask.id,
+        subtaskTitle: subtask.titulo,
+        subtaskScope: subtask.scope,
+        acceptanceCriteria: subtask.acceptanceCriteria,
+        taskTitle: input.task.title,
+        agentId: input.task.agentId,
+        projectSlug: input.context.projectSlug,
+        repoPath: input.repoPath,
+        model,
+        modelIndex,
+        occurrence,
+        errorMessage,
+        command: input.buildCommand, // Comando que falhou (build ou teste)
+      })
+
+      if (result.kind === "verdict") {
+        return result.verdict
+      }
+
+      this.log("warn", `Classificador indisponível: ${result.error}`)
+      return null
+    } catch (error) {
+      this.log("warn", `Falha ao classificar falha de gate: ${error instanceof Error ? error.message : String(error)}`)
+      return null
+    }
+  }
+
+  private async recordBlocker(subtask: SubtaskInfo, kind: BlockerKind, reason: string, model?: string): Promise<void> {
+    if (!this.db) throw new Error("DB não conectado para registrar bloqueio")
+    const evidence = blockerEvidence(kind, reason)
+    await this.db.query(
+      "INSERT INTO bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at) " +
+      "SELECT tarefa_id, ?, ?, ?, ?, NOW() FROM subtarefas WHERE id = ?",
+      [subtask.id, evidence.kind, "motor-v2:" + evidence.fingerprint, evidence.excerpt, subtask.id],
+    )
+    this.log("warn", "Bloqueio persistido: " + evidence.kind + " (" + evidence.fingerprint + ")")
+    // Registra evento de bloqueio no histórico de entregas
+    await this.recordDeliveryEvent(subtask.id, subtask.deliverCount, model, "blocked", reason)
+  }
+
+  /**
+   * Registra um evento no histórico de entregas da subtarefa.
+   * Cada evento (entrega iniciada, gate rejeitado, retorno para rework, bloqueio, conclusão)
+   * grava uma linha nova — nunca sobrescreve o histórico anterior.
+   */
+  private async recordDeliveryEvent(
+    subtaskId: number,
+    deliverNumber: number,
+    model: string | undefined,
+    eventType: "delivery_started" | "gate_rejected" | "return_for_rework" | "blocked" | "completed" | "baseline_red" | "agent_no_reply" | "database_operation" | "invalid_environment_claim",
+    reason: string | null,
+  ): Promise<void> {
+    if (!this.db) return
+    try {
+      await this.db.query(
+        "INSERT INTO subtarefas_entregas (subtarefa_id, deliver_number, model, event_type, reason, created_at) VALUES (?, ?, ?, ?, ?, NOW())",
+        [subtaskId, deliverNumber, model ?? null, eventType, reason],
+      )
+    } catch (error) {
+      this.log("warn", "Falha ao registrar evento de entrega: " + (error instanceof Error ? error.message : String(error)))
+    }
+  }
+
+  private async createCorrectionOnRepeatedGateFailure(input: WorkerInput, subtask: SubtaskInfo, model: string, reason: string): Promise<boolean> {
+    if (!this.db) throw new Error("DB não conectado para registrar falha de gate")
+    const fingerprint = failureFingerprint(reason)
+    await this.db.query(
+      "INSERT INTO subtask_gate_failures (subtarefa_id, fingerprint, reason, model) VALUES (?, ?, ?, ?)",
+      [subtask.id, fingerprint, reason.slice(0, 4000), model],
+    )
+    const [rows] = await this.db.query(
+      "SELECT COUNT(*) AS total FROM subtask_gate_failures WHERE subtarefa_id = ? AND fingerprint = ?",
+      [subtask.id, fingerprint],
+    ) as unknown as [Array<{ total: number | string }>]
+    if (Number(rows[0]?.total ?? 0) !== 2) return false
+
+    // Correção que falha repetidamente NÃO gera outra correção (sem corrente
+    // infinita): bloqueia a tarefa inteira para intervenção humana.
+    const [parentRows] = await this.db.query(
+      "SELECT correction_for_subtask_id FROM subtarefas WHERE id = ?",
+      [subtask.id],
+    ) as unknown as [Array<{ correction_for_subtask_id: number | null }>]
+    const correctionParentId = Number(parentRows[0]?.correction_for_subtask_id ?? 0)
+    if (correctionParentId !== 0) {
+      const blockReason = "Subtarefa de correção " + subtask.id + " falhou repetidamente (corrige a subtarefa " + correctionParentId + "): " + reason
+      await this.recordBlocker(subtask, "correction_failed", blockReason, model)
+      this.log("error", "Correção falhou — bloqueando a tarefa inteira: " + blockReason)
+      throw new Error(blockReason)
+    }
+
+    const [claimed] = await this.db.query(
+      "UPDATE subtarefas SET correction_created_at = NOW(), correction_fingerprint = ? WHERE id = ? AND correction_created_at IS NULL",
+      [fingerprint, subtask.id],
+    ) as unknown as [{ affectedRows: number }]
+    if (claimed.affectedRows !== 1) return false
+    await this.db.query("UPDATE subtarefas SET seq = seq + 10000 WHERE tarefa_id = (SELECT tarefa_id FROM (SELECT tarefa_id FROM subtarefas WHERE id = ?) AS source) AND seq > ?", [subtask.id, subtask.seq])
+    await this.db.query("UPDATE subtarefas SET seq = seq - 9999 WHERE tarefa_id = (SELECT tarefa_id FROM (SELECT tarefa_id FROM subtarefas WHERE id = ?) AS source) AND seq > ?", [subtask.id, subtask.seq + 10000])
+    await this.db.query(
+      "INSERT INTO subtarefas (tarefa_id, seq, titulo, scope, acceptance_criteria, status, correction_for_subtask_id, correction_fingerprint, created_at, updated_at) " +
+      "SELECT tarefa_id, ?, ?, CONCAT(?, CHAR(10), CHAR(10), 'Escopo original da subtarefa corrigida:', CHAR(10), IFNULL(scope, titulo)), acceptance_criteria, 'pending', id, ?, NOW(), NOW() FROM subtarefas WHERE id = ?",
+      [subtask.seq + 1, "Correção: " + subtask.titulo, "Corrigir gate repetido: " + reason.slice(0, 1000), fingerprint, subtask.id],
+    )
+    // Registra retorno para rework no histórico da subtarefa original
+    await this.recordDeliveryEvent(subtask.id, subtask.deliverCount, model, "return_for_rework", "Falha repetida no gate: " + reason.slice(0, 1000))
+    this.log("warn", "Subtarefa de correção criada para falha repetida " + fingerprint + " (subtarefa " + subtask.id + ", corrige a original; tarefa bloqueia se a correção também falhar)")
+    return true
+  }
+
+  private exec(command: string, cwd: string, timeoutMs = 30000): string {
+    try {
+      return execSync(command, { cwd, timeout: timeoutMs, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] })
+    } catch (error) {
+      throw new Error(formatCommandFailure(error as CommandFailure), { cause: error })
+    }
+  }
+
+  private sendCompleted(context: ExecutionContext, result: ExecutionResult): void {
+    this.send({ type: "completed", executionId: context.executionId, result })
+    this.cleanup()
+    setTimeout(() => process.exit(0), 1000)
+  }
+
+  /** Analista pediu esclarecimentos: encerra o worker sem falha. */
+  private sendClarifying(context: ExecutionContext, info: { questionCount: number; summary?: string }): void {
+    this.send({ type: "clarifying", executionId: context.executionId, questionCount: info.questionCount, summary: info.summary })
+    this.cleanup()
+    setTimeout(() => process.exit(0), 1000)
+  }
+
+  private sendFailed(context: ExecutionContext, error: string): void {
+    this.send({ type: "failed", executionId: context.executionId, error, sessionFailure: this.sessionFailure })
+    this.cleanup()
+    setTimeout(() => process.exit(1), 1000)
+  }
+
+  private sendHeartbeat(): void {
+    this.send({
+      type: "heartbeat",
+      executionId: this.executionId,
+      cpuUsage: process.cpuUsage().user / 1000,
+      memUsage: process.memoryUsage().heapUsed / 1024 / 1024,
+    })
+  }
+
+  private log(level: "info" | "warn" | "error", message: string): void {
+    this.send({ type: "log", executionId: this.executionId, level, message })
+  }
+
+  private send(msg: WorkerToCoordinatorMessage): void {
+    if (process.send) process.send(msg)
+  }
+
+  private cleanup(): void {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval)
+      this.heartbeatInterval = null
+    }
+  }
+
+  private shutdown(): void {
+    this.log("info", "Shutdown")
+    this.cleanup()
+    process.exit(0)
+  }
+}
+
+export type DeveloperOutcome =
+  | { kind: "done" }
+  | { kind: "need_help"; summary: string; question: string }
+  | { kind: "blocked_environment"; reason: string }
+  | { kind: "database_operation"; scriptPath: string }
+  | { kind: "premise_incorrect"; payload: unknown }
+
+export const DEVELOPER_QUESTION_FALLBACK = "O desenvolvedor retornou need_help sem formular uma pergunta objetiva. Revise a resposta do agente antes de continuar."
+
+/** Interpreta o contrato JSON do DEV sem transformar um motivo em pergunta. */
+export function classifyDeveloperOutcome(content?: string): DeveloperOutcome {
+  if (!content) return { kind: "done" }
+  const match = content.match(/\{[\s\S]*\}/)
+  if (!match) return { kind: "done" }
+  try {
+    const parsed = JSON.parse(match[0]) as { status?: string; reason?: string; summary?: string; question?: string; script_path?: string }
+    if (parsed.status === "need_help") {
+      const question = typeof parsed.question === "string" ? parsed.question.trim() : ""
+      return {
+        kind: "need_help",
+        summary: typeof parsed.summary === "string" ? parsed.summary.trim() : "",
+        question: question || DEVELOPER_QUESTION_FALLBACK,
+      }
+    }
+    if (parsed.status === "blocked_environment") {
+      return { kind: "blocked_environment", reason: parsed.reason || parsed.summary || parsed.status }
+    }
+    if (parsed.status === "database_operation") {
+      return { kind: "database_operation", scriptPath: parsed.script_path || "" }
+    }
+    if (parsed.status === "premise_incorrect") return { kind: "premise_incorrect", payload: parsed }
+  } catch { /* resposta legada em texto continua compatível */ }
+  return { kind: "done" }
+}
+
+/** Extrai uma pergunta textual produzida pelo DEV antes do JSON final. */
+export function extractDeveloperQuestion(messages: RuntimeSessionMessage[]): string | null {
+  for (const message of [...messages].reverse()) {
+    if (message.role !== "assistant" || typeof message.content !== "string") continue
+    const content = message.content.trim()
+    if (!content || content.startsWith("{")) continue
+    const marked = content.match(/(?:pergunta|question)\s*:\s*([\s\S]*?\?)/i)
+    if (marked?.[1]?.trim()) return marked[1].trim()
+    const question = content.match(/([^\n?]{8,}\?)(?:\s*)$/)
+    if (question?.[1]?.trim()) return question[1].trim()
+  }
+  return null
+}
+
+// Auto-start somente quando este arquivo É o processo principal (o
+// WorkerLauncher o executa via `node TaskWorker.js`). Em imports (testes,
+// re-export do index) o worker não pode disparar sozinho.
+const isMainModule = process.argv[1] ? import.meta.url === pathToFileURL(process.argv[1]).href : false
+if (isMainModule) {
+  const worker = new TaskWorker()
+  worker.start().catch((error) => {
+    console.error("[TaskWorker] Fatal:", error)
+    process.exit(1)
+  })
+}
+
+export { TaskWorker }

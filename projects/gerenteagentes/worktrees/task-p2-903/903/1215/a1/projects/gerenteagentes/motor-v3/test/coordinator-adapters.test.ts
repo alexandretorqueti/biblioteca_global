@@ -1,0 +1,140 @@
+import { describe, expect, it, vi } from 'vitest'
+import { MySqlTaskCoordinatorRepository, WorkerAnalysisRunner } from '../src/coordinator/index.js'
+import type { TaskSnapshot } from '../src/coordinator/index.js'
+
+function task(): TaskSnapshot {
+  return {
+    taskId: 'task-1', title: 'Corrigir charset', description: 'Corrigir acentuação', taskType: 'desenvolvimento', agentId: 'agent-1',
+    projectSlug: 'biblioteca', repoPath: '/repo', status: 'planned', paused: false,
+    terminal: false, analysisStartedAt: null, subtaskCount: 0,
+  }
+}
+
+describe('coordinator adapters', () => {
+  it('faz claim e libera somente o executionId correspondente', async () => {
+    const locked = {
+      id: 42, external_id: 'task-1', status: 'planned', paused_at: null,
+      analysis_started_at: null, analysis_execution_id: null, terminal_status: null,
+      subtask_count: 0, blocked_count: 0,
+    }
+    const connection = {
+      beginTransaction: vi.fn(async () => {}),
+      rollback: vi.fn(async () => {}),
+      commit: vi.fn(async () => {}),
+      release: vi.fn(),
+      query: vi.fn()
+        .mockResolvedValueOnce([[locked], []])
+        .mockResolvedValueOnce([[], []])
+        .mockResolvedValueOnce([{ affectedRows: 1 }, []]),
+    }
+    const pool = {
+      getConnection: vi.fn(async () => connection),
+      query: vi.fn(async () => [[], []]),
+    } as any
+    const repository = new MySqlTaskCoordinatorRepository(pool)
+
+    await expect(repository.claimAnalysis('task-1', 'exec-1')).resolves.toBe(true)
+    await repository.releaseAnalysisClaim('task-1', 'exec-1')
+
+    expect(connection.commit).toHaveBeenCalledOnce()
+    expect(connection.release).toHaveBeenCalledOnce()
+    expect(pool.query).toHaveBeenCalledWith(expect.stringContaining('f.analysis_execution_id = ?'), ['task-1', 'task-1', 'exec-1'])
+  })
+
+  it('não faz claim quando a tarefa já tem análise', async () => {
+    const connection = {
+      beginTransaction: vi.fn(async () => {}),
+      rollback: vi.fn(async () => {}),
+      commit: vi.fn(async () => {}),
+      release: vi.fn(),
+      query: vi.fn(async () => [[{
+        id: 42, status: 'running', paused_at: null,
+        analysis_started_at: new Date(), analysis_execution_id: 'other-exec',
+        terminal_status: null, subtask_count: 0, blocked_count: 0,
+      }], []]),
+    }
+    const pool = { getConnection: vi.fn(async () => connection) } as any
+    const repository = new MySqlTaskCoordinatorRepository(pool)
+
+    await expect(repository.claimAnalysis('task-1', 'exec-2')).resolves.toBe(false)
+    expect(connection.rollback).toHaveBeenCalledOnce()
+    expect(connection.commit).not.toHaveBeenCalled()
+  })
+
+  it('adapta o WorkerLauncher e propaga falha da análise', async () => {
+    const consoleApi = {
+      createSession: vi.fn(async () => ({ sessionId: 'session-1', sessionKey: 'motor-v3:analysis:task-1', agentId: 'agent-1' })),
+      sendMessage: vi.fn(async () => {}),
+      getSessionStatus: vi.fn()
+        .mockResolvedValueOnce({ isComplete: false })
+        .mockResolvedValueOnce({ isComplete: true, lastResponse: 'CONTEXTO_RECEBIDO' })
+        .mockResolvedValueOnce({ isComplete: true, lastResponse: JSON.stringify({
+          subtarefas: [{ seq: 1, titulo: 'Corrigir texto', scope: 'Ajustar texto', acceptance_criteria: ['OK'], deliverables: ['Código'], requirements_covered: ['REQ-1'], depends_on: [] }],
+          requirements: [{ id: 'REQ-1', description: 'Texto correto' }], coverage: [{ requirement: 'REQ-1', covered_by: [1] }],
+        }) }),
+    }
+    const { ConsoleAnalystRunner } = await import('../src/analysis/index.js')
+    const runner = new ConsoleAnalystRunner(consoleApi, {
+      pollIntervalMs: 0,
+      modelResolver: async () => 'openai/gpt-5.6-luna',
+    })
+
+    const result = await runner.start(task(), 'exec-1')
+    expect(result.kind).toBe('plan')
+    expect(consoleApi.createSession).toHaveBeenCalledWith(expect.objectContaining({ model: 'openai/gpt-5.6-luna' }))
+    expect(consoleApi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ session: expect.objectContaining({ sessionId: 'session-1' }) }))
+  })
+
+  it('corrige uma resposta inválida antes de escalar o modelo', async () => {
+    const consoleApi = {
+      createSession: vi.fn(async () => ({ sessionId: 'session-1', sessionKey: 'key', agentId: 'agent-1' })),
+      sendMessage: vi.fn(async () => {}),
+      getSessionStatus: vi.fn()
+        .mockResolvedValueOnce({ isComplete: true, lastResponse: 'CONTEXTO_RECEBIDO' })
+        .mockResolvedValueOnce({ isComplete: true, lastResponse: '{"subtarefas":[]}' })
+        .mockResolvedValueOnce({ isComplete: true, lastResponse: JSON.stringify({
+          subtarefas: [{ seq: 1, titulo: 'Corrigir', scope: 'Escopo', acceptance_criteria: ['OK'], deliverables: ['Código'], requirements_covered: ['REQ-1'], depends_on: [] }],
+          requirements: [{ id: 'REQ-1', description: 'Requisito' }], coverage: [{ requirement_id: 'REQ-1', subtasks: [1] }],
+        }) }),
+    }
+    const { ConsoleAnalystRunner } = await import('../src/analysis/index.js')
+    const runner = new ConsoleAnalystRunner(consoleApi, {
+      pollIntervalMs: 0,
+      modelChainResolver: async () => ['openai/model-a', 'openai/model-b'],
+      promptResolver: { resolve: async () => ({ text: 'prompt', contractText: 'JSON', contractSchema: undefined }) },
+    })
+
+    await expect(runner.start(task(), 'exec-1')).resolves.toMatchObject({ kind: 'plan' })
+    expect(consoleApi.createSession).toHaveBeenCalledTimes(1)
+    expect(consoleApi.sendMessage).toHaveBeenCalledTimes(3)
+    expect(consoleApi.sendMessage.mock.calls[2][0].message).toContain('Erro de validação')
+  })
+
+  it('coloca modelo não permitido em cooldown e tenta o próximo da cadeia', async () => {
+    const consoleApi = {
+      createSession: vi.fn()
+        .mockRejectedValueOnce(new Error('Console HTTP 500: {"error":{"code":"INVALID_REQUEST","message":"model not allowed: deepseek/deepseek-v4-flash"}}'))
+        .mockResolvedValueOnce({ sessionId: 'session-2', sessionKey: 'key-2', agentId: 'agent-1' }),
+      sendMessage: vi.fn(async () => {}),
+      getSessionStatus: vi.fn()
+        .mockResolvedValueOnce({ isComplete: true, lastResponse: 'CONTEXTO_RECEBIDO' })
+        .mockResolvedValueOnce({ isComplete: true, lastResponse: JSON.stringify({
+          subtarefas: [{ seq: 1, titulo: 'Corrigir', scope: 'Escopo', acceptance_criteria: ['OK'], deliverables: ['Código'], requirements_covered: ['REQ-1'], depends_on: [] }],
+          requirements: [{ id: 'REQ-1', description: 'Requisito' }], coverage: [{ requirement_id: 'REQ-1', subtasks: [1] }],
+        }) }),
+    }
+    const recordFailure = vi.fn(async () => {})
+    const { ConsoleAnalystRunner } = await import('../src/analysis/index.js')
+    const runner = new ConsoleAnalystRunner(consoleApi, {
+      pollIntervalMs: 0,
+      modelChainResolver: async () => ['deepseek/deepseek-v4-flash', 'openai/model-b'],
+      modelFailureRecorder: recordFailure,
+    })
+
+    await expect(runner.start(task(), 'exec-1')).resolves.toMatchObject({ kind: 'plan' })
+    expect(recordFailure).toHaveBeenCalledWith('deepseek/deepseek-v4-flash', expect.objectContaining({ message: expect.stringContaining('INVALID_REQUEST') }))
+    expect(consoleApi.createSession).toHaveBeenCalledTimes(2)
+    expect(consoleApi.createSession.mock.calls[1][0]).toEqual(expect.objectContaining({ model: 'openai/model-b' }))
+  })
+})
+// @vitest-environment node

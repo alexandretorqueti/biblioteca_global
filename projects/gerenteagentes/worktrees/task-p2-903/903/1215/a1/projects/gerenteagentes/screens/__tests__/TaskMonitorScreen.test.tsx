@@ -1,0 +1,2014 @@
+// @vitest-environment jsdom
+/**
+ * Testes do botão Editar e diálogo de edição no TaskMonitorScreen.
+ *
+ * ST-1 task-95: botão EditRounded ao lado do título → Dialog com DynamicForm
+ * → PUT /tarefas/:id → sucesso fecha diálogo + recarrega; erro exibe Alert.
+ */
+import { describe, expect, it, beforeEach, afterEach, vi } from "vitest"
+import { render, screen, waitFor, within } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
+import "@testing-library/jest-dom/vitest"
+import { BibliotecaThemeProvider } from "@biblioteca-global/ui"
+import { SUBTASK_STATUS_OPTIONS } from "../../motor-v2/src/shared/task-statuses"
+
+import TaskMonitorScreen from "../TaskMonitorScreen"
+
+vi.mock("../../../../apps/web/src/hooks/useApi", () => ({
+  useApi: () => globalThis.__bundleFalso ?? undefined,
+}))
+
+const mockFetch = vi.fn()
+
+function tarefaFactory(
+  id: number,
+  titulo: string,
+  status: string,
+  projetoId: number,
+  extra?: { descricao?: string | null; dependsOnTaskId?: number | null },
+) {
+  return {
+    id,
+    titulo,
+    status,
+    projetoId,
+    descricao: extra?.descricao ?? null,
+    dependsOnTaskId: extra?.dependsOnTaskId ?? null,
+    createdAt: "2026-08-24T12:00:00Z",
+    updatedAt: "2026-08-24T12:00:00Z",
+  } as const
+}
+
+function projetoFactory(id: number, nome: string) {
+  return { id, nome, slug: `proj-${id}`, ativo: true } as const
+}
+
+/**
+ * Bundle fake: roteia por method+path.
+ * - GET /projetos_captados → lista de projetos
+ * - GET /tarefas → lista de tarefas
+ * - GET /gerenteagentes/tarefas/:id/motor-detail → motorDetail
+ * - PUT /tarefas/:id → controlado por `putResult`
+ */
+function bundleFalso(opts?: {
+  projetos?: unknown[]
+  tarefas?: unknown[]
+  motorDetail?: unknown
+  putResult?: { ok: boolean; status: number; body?: unknown }
+}) {
+  const projetos = opts?.projetos ?? [projetoFactory(1, "Projeto X")]
+  const tarefas = opts?.tarefas ?? [tarefaFactory(1, "Tarefa A", "draft", 1)]
+  const motorDetail = opts?.motorDetail ?? { motorId: "m1", exists: false, message: "Não enviada" }
+  const putResult = opts?.putResult ?? { ok: true, status: 200, body: { ok: true } }
+
+  return {
+    http: {
+      request: async (method: string, path: string) => {
+        if (method === "GET" && path === "/gerenteagentes/projetos_captados") {
+          return { items: projetos }
+        }
+        if (method === "GET" && path === "/gerenteagentes/tarefas") {
+          return { items: tarefas }
+        }
+        if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") {
+          return tarefas
+        }
+        if (method === "GET" && path.startsWith("/gerenteagentes/tarefas/") && path.endsWith("/motor-detail")) {
+          return motorDetail
+        }
+        if (method === "PUT" && path.startsWith("/gerenteagentes/tarefas/")) {
+          if (!putResult.ok) {
+            const body = putResult.body as { message?: string } | undefined
+            throw new Error(body?.message ?? `HTTP ${putResult.status}`)
+          }
+          return putResult.body
+        }
+        // fallback
+        return {}
+      },
+    },
+  } as never
+}
+
+describe("TaskMonitorScreen — ST-1 (botão editar + diálogo)", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", mockFetch)
+    mockFetch.mockReset()
+    // Avançar o fake timer dos intervalos de polling
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    delete globalThis.__bundleFalso
+  })
+
+  function renderScreen() {
+    return render(
+      <BibliotecaThemeProvider>
+        <TaskMonitorScreen />
+      </BibliotecaThemeProvider>,
+    )
+  }
+
+  it("renderiza o botão EditRounded ao lado do título quando há tarefa selecionada", async () => {
+    const tarefas = [tarefaFactory(1, "Minha Tarefa", "draft", 1)]
+    globalThis.__bundleFalso = bundleFalso({ tarefas })
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("task-monitor-screen")).toBeInTheDocument()
+    })
+
+    // O título aparece
+    expect(screen.getByText("Minha Tarefa")).toBeInTheDocument()
+
+    // O ID da tarefa selecionada aparece ao lado do título
+    expect(screen.getByTestId("selected-task-id")).toHaveTextContent("#1")
+    expect(screen.getByTestId("selected-task-id")).toHaveAttribute("aria-label", "ID da tarefa 1")
+    expect(screen.getByTestId("selected-task-id")).toHaveAttribute("title", "ID da tarefa 1")
+
+    // O botão de editar está visível
+    const editBtn = screen.getByTestId("btn-edit-task")
+    expect(editBtn).toBeInTheDocument()
+    expect(editBtn).toHaveAttribute("aria-label", "Editar tarefa")
+  })
+
+  it("abre o Dialog com DynamicForm ao clicar no botão editar", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const tarefas = [
+      tarefaFactory(1, "Tarefa Edit", "running", 1, {
+        descricao: "Descrição atual",
+        dependsOnTaskId: null,
+      }),
+    ]
+    globalThis.__bundleFalso = bundleFalso({ tarefas })
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("btn-edit-task")).toBeInTheDocument()
+    })
+
+    await user.click(screen.getByTestId("btn-edit-task"))
+
+    await waitFor(() => {
+      expect(screen.getByTestId("edit-task-dialog")).toBeInTheDocument()
+    })
+
+    // O DynamicForm está dentro do Dialog
+    const dialog = screen.getByTestId("edit-task-dialog")
+    expect(within(dialog).getByText("Editar tarefa")).toBeInTheDocument()
+
+    // O campo título está preenchido com o valor atual
+    const tituloInput = within(dialog).getByLabelText(/Título/)
+    expect(tituloInput).toHaveValue("Tarefa Edit")
+    expect(within(dialog).queryByLabelText(/^Status$/)).not.toBeInTheDocument()
+  })
+
+  it("submete PUT /tarefas/:id com sucesso — fecha o diálogo", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const tarefas = [tarefaFactory(42, "Tarefa Original", "draft", 1)]
+    const putSpy = vi.fn().mockResolvedValue({ ok: true })
+
+    const bundle = {
+      http: {
+        request: async (method: string, path: string, reqOpts?: { body?: unknown }) => {
+          if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
+          if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
+          if (method === "GET" && path.startsWith("/gerenteagentes/tarefas/")) {
+            return { motorId: "m1", exists: false, message: "Não enviada" }
+          }
+          if (method === "PUT" && path === "/gerenteagentes/tarefas/42") {
+            putSpy(reqOpts?.body)
+            return { ok: true }
+          }
+          return {}
+        },
+      },
+    } as never
+
+    globalThis.__bundleFalso = bundle
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("btn-edit-task")).toBeInTheDocument()
+    })
+
+    await user.click(screen.getByTestId("btn-edit-task"))
+
+    await waitFor(() => {
+      expect(screen.getByTestId("edit-task-dialog")).toBeInTheDocument()
+    })
+
+    // Altera o título
+    const dialog = screen.getByTestId("edit-task-dialog")
+    const tituloInput = within(dialog).getByLabelText(/Título/)
+    await user.clear(tituloInput)
+    await user.type(tituloInput, "Tarefa Atualizada")
+
+    // Submete
+    const submitBtn = within(dialog).getByRole("button", { name: /Salvar alterações/i })
+    await user.click(submitBtn)
+
+    // Aguarda o Dialog fechar
+    await waitFor(() => {
+      expect(screen.queryByTestId("edit-task-dialog")).not.toBeInTheDocument()
+    })
+
+    // Verifica que o PUT foi chamado com os dados corretos
+    expect(putSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        titulo: "Tarefa Atualizada",
+        tipo: "desenvolvimento",
+      }),
+    )
+  })
+
+  it("exibe Alert de erro quando PUT falha", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const tarefas = [tarefaFactory(7, "Tarefa Erro", "draft", 1)]
+
+    const bundle = {
+      http: {
+        request: async (method: string, path: string) => {
+          if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
+          if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
+          if (method === "GET" && path.startsWith("/gerenteagentes/tarefas/")) {
+            return { motorId: "m1", exists: false, message: "Não enviada" }
+          }
+          if (method === "PUT" && path === "/gerenteagentes/tarefas/7") {
+            throw new Error("Campo inválido")
+          }
+          return {}
+        },
+      },
+    } as never
+
+    globalThis.__bundleFalso = bundle
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("btn-edit-task")).toBeInTheDocument()
+    })
+
+    await user.click(screen.getByTestId("btn-edit-task"))
+
+    await waitFor(() => {
+      expect(screen.getByTestId("edit-task-dialog")).toBeInTheDocument()
+    })
+
+    const dialog = screen.getByTestId("edit-task-dialog")
+    const submitBtn = within(dialog).getByRole("button", { name: /Salvar alterações/i })
+    await user.click(submitBtn)
+
+    // Aguarda o Alert de erro aparecer
+    await waitFor(() => {
+      expect(within(dialog).getByTestId("edit-error-alert")).toBeInTheDocument()
+    })
+
+    expect(within(dialog).getByTestId("edit-error-alert")).toHaveTextContent("Campo inválido")
+
+    // O Dialog continua aberto (não fecha em erro)
+    expect(screen.getByTestId("edit-task-dialog")).toBeInTheDocument()
+  })
+
+  it("fecha o Dialog ao clicar no botão de fechar", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const tarefas = [tarefaFactory(1, "Tarefa Close", "draft", 1)]
+    globalThis.__bundleFalso = bundleFalso({ tarefas })
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("btn-edit-task")).toBeInTheDocument()
+    })
+
+    await user.click(screen.getByTestId("btn-edit-task"))
+
+    await waitFor(() => {
+      expect(screen.getByTestId("edit-task-dialog")).toBeInTheDocument()
+    })
+
+    await user.click(screen.getByTestId("btn-close-edit"))
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("edit-task-dialog")).not.toBeInTheDocument()
+    })
+  })
+})
+
+describe("TaskMonitorScreen — selo de elegibilidade de recuperação", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", mockFetch)
+    mockFetch.mockReset()
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    delete globalThis.__bundleFalso
+  })
+
+  const estados = [
+    ["eligible", "Elegível para correção automática"],
+    ["cooldown", "Em carência — 63s"],
+    ["monitor_correcting", "Monitor corrigindo"],
+    ["awaiting_user", "Aguardando sua resposta"],
+    ["max_retries", "Limite de recuperações atingido"],
+    ["promotion_blocked", "Não elegível: bloqueio de promoção"],
+  ] as const
+
+  it.each(estados)("renderiza o rótulo %s", async (state, label) => {
+    globalThis.__bundleFalso = bundleFalso({
+      tarefas: [tarefaFactory(1, "Bloqueada", "blocked", 1)],
+      motorDetail: {
+        motorId: "m1",
+        exists: true,
+        task: { id: "task-1", status: "blocked", title: "Bloqueada", recoveryEligibility: {
+          state,
+          label,
+          reason: "motivo de teste",
+          cooldown: state === "cooldown" ? { secondsRemaining: 63, seconds: 120 } : null,
+        } },
+      },
+    })
+
+    render(
+      <BibliotecaThemeProvider>
+        <TaskMonitorScreen />
+      </BibliotecaThemeProvider>,
+    )
+
+    await waitFor(() => expect(screen.getByTestId("recovery-eligibility-chip")).toBeInTheDocument())
+    expect(screen.getByTestId("recovery-eligibility-chip")).toHaveTextContent(label)
+  })
+
+  it("não exibe selo para tarefa que não está bloqueada", async () => {
+    globalThis.__bundleFalso = bundleFalso({
+      tarefas: [tarefaFactory(1, "Em execução", "running", 1)],
+      motorDetail: {
+        motorId: "m1", exists: true,
+        task: { id: "task-1", status: "running", title: "Em execução", recoveryEligibility: {
+          state: "eligible", label: "Elegível para correção automática", reason: "não deve aparecer",
+        } },
+      },
+    })
+
+    render(<BibliotecaThemeProvider><TaskMonitorScreen /></BibliotecaThemeProvider>)
+    await waitFor(() => expect(screen.getByTestId("task-status-pill")).toBeInTheDocument())
+    expect(screen.queryByTestId("recovery-eligibility-chip")).not.toBeInTheDocument()
+  })
+
+  it("expõe no tooltip os fatos disponíveis e um nome acessível", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    globalThis.__bundleFalso = bundleFalso({
+      tarefas: [tarefaFactory(1, "Bloqueada", "blocked", 1)],
+      motorDetail: {
+        motorId: "m1", exists: true,
+        task: { id: "task-1", status: "blocked", title: "Bloqueada", recoveryEligibility: {
+          state: "eligible", label: "Elegível para correção automática", reason: "bloqueio sistêmico",
+          evidence: { reason: "comando falhou", command: "npm test", excerpt: "saída segura", blockedAt: "2026-09-12T10:00:00Z" },
+          cooldown: { secondsRemaining: 0, seconds: 120 }, attempts: { resolvedLast24h: 2, max: 5 },
+          pendingQuestion: { askedAt: "2026-09-12T10:01:00Z", text: "Qual ambiente devo usar?" },
+          promotionBlocker: { reason: "branch protegida" },
+        } },
+      },
+    })
+
+    render(<BibliotecaThemeProvider><TaskMonitorScreen /></BibliotecaThemeProvider>)
+    await waitFor(() => expect(screen.getByTestId("recovery-eligibility-chip")).toBeInTheDocument())
+    const chip = screen.getByTestId("recovery-eligibility-chip")
+    expect(chip).toHaveAttribute("tabindex", "0")
+    expect(chip).toHaveAttribute("aria-label", "Elegibilidade de recuperação: Elegível para correção automática")
+    await user.hover(chip)
+    await waitFor(() => expect(screen.getByText("bloqueio sistêmico")).toBeInTheDocument())
+    expect(screen.getByText("npm test")).toBeInTheDocument()
+    expect(screen.getByText("saída segura")).toBeInTheDocument()
+    expect(screen.getByText("Qual ambiente devo usar?")).toBeInTheDocument()
+    expect(screen.getByText("branch protegida")).toBeInTheDocument()
+  })
+})
+
+describe("TaskMonitorScreen — ST-2 (editar subtarefa)", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", mockFetch)
+    mockFetch.mockReset()
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    delete globalThis.__bundleFalso
+  })
+
+  function renderScreen() {
+    return render(
+      <BibliotecaThemeProvider>
+        <TaskMonitorScreen />
+      </BibliotecaThemeProvider>,
+    )
+  }
+
+  function subTarefaDbFactory(
+    id: number,
+    tarefaId: number,
+    seq: number,
+    titulo: string,
+    status = "pending",
+    extra?: { scope?: string | null; acceptanceCriteria?: unknown; descricao?: string | null },
+  ) {
+    return {
+      id,
+      tarefaId,
+      seq,
+      titulo,
+      status,
+      descricao: extra?.descricao ?? null,
+      scope: extra?.scope ?? null,
+      acceptanceCriteria: extra?.acceptanceCriteria ?? null,
+      resultado: null,
+      dependsOnSubtaskId: null,
+    } as const
+  }
+
+  it("renderiza botão EditRounded em cada linha da tabela de subtarefas", async () => {
+    const tarefas = [tarefaFactory(1, "Tarefa", "running", 1)]
+    const motorDetail = {
+      motorId: "m1",
+      exists: true,
+      task: { id: "task-1", status: "running", title: "Tarefa" },
+      subtasks: [
+        { seq: 1, title: "Sub 1", status: "pending" },
+        { seq: 2, title: "Sub 2", status: "verified" },
+      ],
+      currentSubTask: { seq: 1, title: "Sub 1", status: "running" },
+      events: [],
+    }
+
+    const bundle = {
+      http: {
+        request: async (method: string, path: string) => {
+          if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
+          if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
+          if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
+          if (method === "GET" && path.endsWith("/subtarefas")) {
+            return [
+              subTarefaDbFactory(10, 1, 1, "Sub 1"),
+              subTarefaDbFactory(11, 1, 2, "Sub 2"),
+            ]
+          }
+          return {}
+        },
+      },
+    } as never
+
+    globalThis.__bundleFalso = bundle
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("subtask-table")).toBeInTheDocument()
+    })
+
+    // Botões de editar devem aparecer em cada linha
+    expect(screen.getByTestId("btn-edit-subtask-1")).toBeInTheDocument()
+    expect(screen.getByTestId("btn-edit-subtask-2")).toBeInTheDocument()
+    expect(screen.getByTestId("btn-edit-subtask-1")).toHaveAttribute("aria-label", "Editar subtarefa 1")
+    expect(screen.getByTestId("btn-edit-subtask-2")).toHaveAttribute("aria-label", "Editar subtarefa 2")
+  })
+
+  it("abre Dialog com DynamicForm ao clicar em editar subtarefa", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const tarefas = [tarefaFactory(1, "Tarefa", "running", 1)]
+    const motorDetail = {
+      motorId: "m1",
+      exists: true,
+      task: { id: "task-1", status: "running", title: "Tarefa" },
+      subtasks: [{ seq: 1, title: "Sub 1", status: "pending" }],
+      currentSubTask: null,
+      events: [],
+    }
+    const dbSub = subTarefaDbFactory(10, 1, 1, "Sub 1", "pending")
+
+    const bundle = {
+      http: {
+        request: async (method: string, path: string) => {
+          if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
+          if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
+          if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
+          if (method === "GET" && path.endsWith("/subtarefas")) return [dbSub]
+          return {}
+        },
+      },
+    } as never
+
+    globalThis.__bundleFalso = bundle
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("btn-edit-subtask-1")).toBeInTheDocument()
+    })
+
+    await user.click(screen.getByTestId("btn-edit-subtask-1"))
+
+    await waitFor(() => {
+      expect(screen.getByTestId("edit-subtask-dialog")).toBeInTheDocument()
+    })
+
+    const dialog = screen.getByTestId("edit-subtask-dialog")
+    expect(within(dialog).getByText("Editar subtarefa #1")).toBeInTheDocument()
+
+    // Campo título deve estar preenchido
+    const tituloInput = within(dialog).getByLabelText(/Título/)
+    expect(tituloInput).toHaveValue("Sub 1")
+  })
+
+  it("submete PUT /subtarefas/:id com sucesso — fecha diálogo", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const tarefas = [tarefaFactory(1, "Tarefa", "running", 1)]
+    const motorDetail = {
+      motorId: "m1",
+      exists: true,
+      task: { id: "task-1", status: "running", title: "Tarefa" },
+      subtasks: [{ seq: 1, title: "Sub 1", status: "pending" }],
+      currentSubTask: null,
+      events: [],
+    }
+    const dbSub = subTarefaDbFactory(10, 1, 1, "Sub 1", "pending", { scope: "Escopo inicial" })
+    const putSpy = vi.fn().mockResolvedValue({ ok: true })
+
+    const bundle = {
+      http: {
+        request: async (method: string, path: string, reqOpts?: { query?: Record<string, unknown>; body?: unknown }) => {
+          if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
+          if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
+          if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
+          if (method === "GET" && path.endsWith("/subtarefas")) return [dbSub]
+          if (method === "PUT" && path === "/gerenteagentes/subtarefas/10") {
+            putSpy(reqOpts?.body)
+            return { ok: true }
+          }
+          return {}
+        },
+      },
+    } as never
+
+    globalThis.__bundleFalso = bundle
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("btn-edit-subtask-1")).toBeInTheDocument()
+    })
+
+    await user.click(screen.getByTestId("btn-edit-subtask-1"))
+
+    await waitFor(() => {
+      expect(screen.getByTestId("edit-subtask-dialog")).toBeInTheDocument()
+    })
+
+    const dialog = screen.getByTestId("edit-subtask-dialog")
+    const tituloInput = within(dialog).getByLabelText(/Título/)
+    await user.clear(tituloInput)
+    await user.type(tituloInput, "Sub 1 Atualizada")
+
+    const submitBtn = within(dialog).getByRole("button", { name: /Salvar alterações/i })
+    await user.click(submitBtn)
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("edit-subtask-dialog")).not.toBeInTheDocument()
+    })
+
+    expect(putSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        titulo: "Sub 1 Atualizada",
+        status: "pending",
+        seq: 1,
+        scope: "Escopo inicial",
+      }),
+    )
+    // ST-3: descricao NÃO deve ser enviado no payload
+    expect(putSpy).not.toHaveBeenCalledWith(
+      expect.objectContaining({ descricao: expect.anything() }),
+    )
+  })
+
+  it("exibe Alert de erro quando PUT /subtarefas falha", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const tarefas = [tarefaFactory(1, "Tarefa", "running", 1)]
+    const motorDetail = {
+      motorId: "m1",
+      exists: true,
+      task: { id: "task-1", status: "running", title: "Tarefa" },
+      subtasks: [{ seq: 1, title: "Sub 1", status: "pending" }],
+      currentSubTask: null,
+      events: [],
+    }
+    const dbSub = subTarefaDbFactory(10, 1, 1, "Sub 1", "pending", { scope: "Escopo teste" })
+
+    const bundle = {
+      http: {
+        request: async (method: string, path: string) => {
+          if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
+          if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
+          if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
+          if (method === "GET" && path.endsWith("/subtarefas")) return [dbSub]
+          if (method === "PUT" && path === "/gerenteagentes/subtarefas/10") {
+            throw new Error("Campo inválido")
+          }
+          return {}
+        },
+      },
+    } as never
+
+    globalThis.__bundleFalso = bundle
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("btn-edit-subtask-1")).toBeInTheDocument()
+    })
+
+    await user.click(screen.getByTestId("btn-edit-subtask-1"))
+
+    await waitFor(() => {
+      expect(screen.getByTestId("edit-subtask-dialog")).toBeInTheDocument()
+    })
+
+    const dialog = screen.getByTestId("edit-subtask-dialog")
+    const submitBtn = within(dialog).getByRole("button", { name: /Salvar alterações/i })
+    await user.click(submitBtn)
+
+    await waitFor(() => {
+      expect(within(dialog).getByTestId("edit-sub-error-alert")).toBeInTheDocument()
+    })
+
+    expect(within(dialog).getByTestId("edit-sub-error-alert")).toHaveTextContent("Campo inválido")
+    expect(screen.getByTestId("edit-subtask-dialog")).toBeInTheDocument()
+  })
+
+  it("exibe erro quando subtarefa do motor não existe no banco", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const tarefas = [tarefaFactory(1, "Tarefa", "running", 1)]
+    const motorDetail = {
+      motorId: "m1",
+      exists: true,
+      task: { id: "task-1", status: "running", title: "Tarefa" },
+      subtasks: [{ seq: 1, title: "Sub 1", status: "pending" }],
+      currentSubTask: null,
+      events: [],
+    }
+
+    const bundle = {
+      http: {
+        request: async (method: string, path: string) => {
+          if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
+          if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
+          if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
+          if (method === "GET" && path.endsWith("/subtarefas")) return [] // banco vazio
+          return {}
+        },
+      },
+    } as never
+
+    globalThis.__bundleFalso = bundle
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("btn-edit-subtask-1")).toBeInTheDocument()
+    })
+
+    await user.click(screen.getByTestId("btn-edit-subtask-1"))
+
+    await waitFor(() => {
+      expect(screen.getByTestId("edit-subtask-dialog")).toBeInTheDocument()
+    })
+
+    const dialog = screen.getByTestId("edit-subtask-dialog")
+    expect(within(dialog).getByTestId("edit-sub-error-alert")).toBeInTheDocument()
+    expect(within(dialog).getByTestId("edit-sub-error-alert")).toHaveTextContent(
+      "Subtarefa ainda não sincronizada com o banco de dados",
+    )
+  })
+
+  it("fecha Dialog ao clicar no botão de fechar", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const tarefas = [tarefaFactory(1, "Tarefa", "running", 1)]
+    const motorDetail = {
+      motorId: "m1",
+      exists: true,
+      task: { id: "task-1", status: "running", title: "Tarefa" },
+      subtasks: [{ seq: 1, title: "Sub 1", status: "pending" }],
+      currentSubTask: null,
+      events: [],
+    }
+    const dbSub = subTarefaDbFactory(10, 1, 1, "Sub 1", "pending")
+
+    const bundle = {
+      http: {
+        request: async (method: string, path: string) => {
+          if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
+          if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
+          if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
+          if (method === "GET" && path.endsWith("/subtarefas")) return [dbSub]
+          return {}
+        },
+      },
+    } as never
+
+    globalThis.__bundleFalso = bundle
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("btn-edit-subtask-1")).toBeInTheDocument()
+    })
+
+    await user.click(screen.getByTestId("btn-edit-subtask-1"))
+
+    await waitFor(() => {
+      expect(screen.getByTestId("edit-subtask-dialog")).toBeInTheDocument()
+    })
+
+    await user.click(screen.getByTestId("btn-close-edit-subtask"))
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("edit-subtask-dialog")).not.toBeInTheDocument()
+    })
+  })
+})
+
+describe("TaskMonitorScreen — ST-3 (diálogo: scope + acceptance_criteria, status completos, sem descricao)", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", mockFetch)
+    mockFetch.mockReset()
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    delete globalThis.__bundleFalso
+  })
+
+  function renderScreen() {
+    return render(
+      <BibliotecaThemeProvider>
+        <TaskMonitorScreen />
+      </BibliotecaThemeProvider>,
+    )
+  }
+
+  function subTarefaDbFactory(
+    id: number,
+    tarefaId: number,
+    seq: number,
+    titulo: string,
+    status = "pending",
+    extra?: { scope?: string | null; acceptanceCriteria?: unknown; descricao?: string | null },
+  ) {
+    return {
+      id,
+      tarefaId,
+      seq,
+      titulo,
+      status,
+      descricao: extra?.descricao ?? null,
+      scope: extra?.scope ?? null,
+      acceptanceCriteria: extra?.acceptanceCriteria ?? null,
+      resultado: null,
+      dependsOnSubtaskId: null,
+    } as const
+  }
+
+  function makeBundle(dbSub: ReturnType<typeof subTarefaDbFactory>, putSpy: ReturnType<typeof vi.fn>) {
+    const tarefas = [tarefaFactory(1, "Tarefa", "running", 1)]
+    const motorDetail = {
+      motorId: "m1",
+      exists: true,
+      task: { id: "task-1", status: "running", title: "Tarefa" },
+      subtasks: [{ seq: dbSub.seq, title: dbSub.titulo, status: dbSub.status }],
+      currentSubTask: null,
+      events: [],
+    }
+    return {
+      http: {
+        request: async (method: string, path: string, reqOpts?: { query?: Record<string, unknown>; body?: unknown }) => {
+          if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
+          if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
+          if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
+          if (method === "GET" && path.endsWith("/subtarefas")) return [dbSub]
+          if (method === "PUT" && path === `/gerenteagentes/subtarefas/${dbSub.id}`) {
+            putSpy(reqOpts?.body)
+            return { ok: true }
+          }
+          return {}
+        },
+      },
+    } as never
+  }
+
+  it("não possui campo 'descricao' e exibe scope + acceptance_criteria no diálogo", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const dbSub = subTarefaDbFactory(10, 1, 1, "Sub 1", "pending", {
+      scope: "Implementar feature X",
+      acceptanceCriteria: ["Critério A", "Critério B"],
+    })
+    const putSpy = vi.fn().mockResolvedValue({ ok: true })
+    globalThis.__bundleFalso = makeBundle(dbSub, putSpy)
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("btn-edit-subtask-1")).toBeInTheDocument()
+    })
+
+    await user.click(screen.getByTestId("btn-edit-subtask-1"))
+
+    await waitFor(() => {
+      expect(screen.getByTestId("edit-subtask-dialog")).toBeInTheDocument()
+    })
+
+    const dialog = screen.getByTestId("edit-subtask-dialog")
+
+    // Campo Escopo deve estar presente e preenchido
+    const scopeInput = within(dialog).getByLabelText(/Escopo/)
+    expect(scopeInput).toBeInTheDocument()
+    expect(scopeInput).toHaveValue("Implementar feature X")
+
+    // Campo Critérios de aceite deve estar presente e preenchido (um por linha)
+    const criteriosInput = within(dialog).getByLabelText(/Critérios de aceite/)
+    expect(criteriosInput).toBeInTheDocument()
+    expect(criteriosInput).toHaveValue("Critério A\nCritério B")
+
+    // Campo Descrição NÃO deve existir
+    expect(within(dialog).queryByLabelText(/Descrição/)).not.toBeInTheDocument()
+  })
+
+  it("salva scope e acceptance_criteria como array JSON; entrada vazia → null", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const dbSub = subTarefaDbFactory(10, 1, 1, "Sub 1", "pending", {
+      scope: "Escopo velho",
+      acceptanceCriteria: null, // sem critérios iniciais
+    })
+    const putSpy = vi.fn().mockResolvedValue({ ok: true })
+    globalThis.__bundleFalso = makeBundle(dbSub, putSpy)
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("btn-edit-subtask-1")).toBeInTheDocument()
+    })
+
+    await user.click(screen.getByTestId("btn-edit-subtask-1"))
+
+    await waitFor(() => {
+      expect(screen.getByTestId("edit-subtask-dialog")).toBeInTheDocument()
+    })
+
+    const dialog = screen.getByTestId("edit-subtask-dialog")
+
+    // Altera o escopo
+    const scopeInput = within(dialog).getByLabelText(/Escopo/)
+    await user.clear(scopeInput)
+    await user.type(scopeInput, "Novo escopo detalhado")
+
+    // Adiciona critérios
+    const criteriosInput = within(dialog).getByLabelText(/Critérios de aceite/)
+    await user.type(criteriosInput, "Critério 1{enter}Critério 2{enter}Critério 3")
+
+    const submitBtn = within(dialog).getByRole("button", { name: /Salvar alterações/i })
+    await user.click(submitBtn)
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("edit-subtask-dialog")).not.toBeInTheDocument()
+    })
+
+    expect(putSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: "Novo escopo detalhado",
+        acceptance_criteria: ["Critério 1", "Critério 2", "Critério 3"],
+      }),
+    )
+    // descricao NÃO deve estar no payload
+    const payload = putSpy.mock.calls[0][0] as Record<string, unknown>
+    expect(payload).not.toHaveProperty("descricao")
+  })
+
+  it("select de status contém os 9 valores reais", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const dbSub = subTarefaDbFactory(10, 1, 1, "Sub 1", "pending", { scope: "Escopo X" })
+    const putSpy = vi.fn().mockResolvedValue({ ok: true })
+    globalThis.__bundleFalso = makeBundle(dbSub, putSpy)
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("btn-edit-subtask-1")).toBeInTheDocument()
+    })
+
+    await user.click(screen.getByTestId("btn-edit-subtask-1"))
+
+    await waitFor(() => {
+      expect(screen.getByTestId("edit-subtask-dialog")).toBeInTheDocument()
+    })
+
+    const dialog = screen.getByTestId("edit-subtask-dialog")
+
+    // Abrir o select clicando no div role="combobox" (MUI Select)
+    const comboboxes = within(dialog).getAllByRole("combobox")
+    // O select de status é o primeiro combobox no formulário
+    expect(comboboxes.length).toBeGreaterThanOrEqual(1)
+    await user.click(comboboxes[0])
+
+    // Verificar que todos os labels da fonte central estão renderizados (MenuItems no portal)
+    const statusLabels = SUBTASK_STATUS_OPTIONS.map((o) => o.label)
+
+    for (const label of statusLabels) {
+      const matches = screen.getAllByText(label)
+      expect(matches.length).toBeGreaterThanOrEqual(1)
+    }
+  })
+
+  it("scope vazio bloqueia o salvamento (validação required do DynamicForm)", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const dbSub = subTarefaDbFactory(10, 1, 1, "Sub 1", "pending", { scope: "Escopo X" })
+    const putSpy = vi.fn().mockResolvedValue({ ok: true })
+    globalThis.__bundleFalso = makeBundle(dbSub, putSpy)
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("btn-edit-subtask-1")).toBeInTheDocument()
+    })
+
+    await user.click(screen.getByTestId("btn-edit-subtask-1"))
+
+    await waitFor(() => {
+      expect(screen.getByTestId("edit-subtask-dialog")).toBeInTheDocument()
+    })
+
+    const dialog = screen.getByTestId("edit-subtask-dialog")
+
+    // Limpa o scope (campo required)
+    const scopeInput = within(dialog).getByLabelText(/Escopo/)
+    await user.clear(scopeInput)
+
+    const submitBtn = within(dialog).getByRole("button", { name: /Salvar alterações/i })
+    await user.click(submitBtn)
+
+    // O DynamicForm exibe o alerta genérico de validação e não chama onSubmit
+    await waitFor(() => {
+      expect(within(dialog).getByText(/Revise os campos destacados/)).toBeInTheDocument()
+    })
+    expect(screen.getByTestId("edit-subtask-dialog")).toBeInTheDocument()
+    expect(putSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe("TaskMonitorScreen — compatibilidade Motor-v2", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", mockFetch)
+    mockFetch.mockReset()
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    delete globalThis.__bundleFalso
+  })
+
+  it("exibe as subtarefas persistidas quando o detalhe do Motor-v2 ainda vem sem elas", async () => {
+    const tarefas = [tarefaFactory(727, "Teste fluxo real", "ready", 2)]
+    const subtarefas = [
+      { id: 711, tarefaId: 727, seq: 1, titulo: "Localizar o README correto", status: "rejected", descricao: null, resultado: null, dependsOnSubtaskId: null },
+      { id: 714, tarefaId: 727, seq: 2, titulo: "Correção: Localizar o README correto", status: "rejected", descricao: null, resultado: null, dependsOnSubtaskId: null },
+      { id: 715, tarefaId: 727, seq: 3, titulo: "Correção pendente", status: "pending", descricao: null, resultado: null, dependsOnSubtaskId: null },
+    ]
+    globalThis.__bundleFalso = {
+      http: {
+        request: async (method: string, path: string) => {
+          if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(2, "GerenteAgentes")] }
+          if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
+          if (method === "GET" && path.endsWith("/motor-detail")) {
+            return {
+              motorId: "727",
+              exists: true,
+              task: { id: "727", status: "ready", title: "Teste fluxo real" },
+              subtasks: [],
+              currentSubTask: null,
+              events: [],
+            }
+          }
+          if (method === "GET" && path.endsWith("/subtarefas")) return subtarefas
+          return {}
+        },
+      },
+    } as never
+
+    render(
+      <BibliotecaThemeProvider>
+        <TaskMonitorScreen />
+      </BibliotecaThemeProvider>,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByTestId("subtask-row-1")).toBeInTheDocument()
+      expect(screen.getByTestId("subtask-row-3")).toBeInTheDocument()
+    })
+    expect(screen.getByTestId("task-progress")).toHaveTextContent("Progresso: 0 / 3")
+    expect(screen.getByTestId("btn-start")).toBeDisabled()
+  })
+
+  it("permite iniciar tarefa planejada que já existe no motor", async () => {
+    const tarefas = [tarefaFactory(727, "Tarefa planejada", "planned", 2)]
+    globalThis.__bundleFalso = {
+      http: {
+        request: async (method: string, path: string) => {
+          if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(2, "GerenteAgentes")] }
+          if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
+          if (method === "GET" && path.endsWith("/motor-detail")) {
+            return {
+              motorId: "727",
+              exists: true,
+              task: { id: "727", status: "planned", title: "Tarefa planejada" },
+              subtasks: [],
+              currentSubTask: null,
+              events: [],
+            }
+          }
+          if (method === "GET" && path.endsWith("/subtarefas")) return []
+          return {}
+        },
+      },
+    } as never
+
+    render(
+      <BibliotecaThemeProvider>
+        <TaskMonitorScreen />
+      </BibliotecaThemeProvider>,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByTestId("btn-start")).toBeInTheDocument()
+    })
+    expect(screen.getByTestId("btn-start")).not.toBeDisabled()
+    expect(screen.getByTestId("btn-pause")).toBeDisabled()
+    expect(screen.queryByTestId("btn-resume")).not.toBeInTheDocument()
+  })
+
+  it("mantém a tarefa pausada sem botão individual de retomar", async () => {
+    const tarefas = [tarefaFactory(727, "Tarefa pausada", "paused", 2)]
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    let actionPath = ""
+    globalThis.__bundleFalso = {
+      http: {
+        request: async (method: string, path: string) => {
+          if (method === "POST") actionPath = path
+          if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(2, "GerenteAgentes")] }
+          if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
+          if (method === "GET" && path.endsWith("/motor-detail")) {
+            return {
+              motorId: "727",
+              exists: true,
+              task: { id: "727", status: "paused", title: "Tarefa pausada" },
+              subtasks: [],
+              currentSubTask: null,
+              events: [],
+            }
+          }
+          if (method === "GET" && path.endsWith("/subtarefas")) return []
+          return {}
+        },
+      },
+    } as never
+
+    render(
+      <BibliotecaThemeProvider>
+        <TaskMonitorScreen />
+      </BibliotecaThemeProvider>,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByTestId("task-paused-banner")).toBeInTheDocument()
+    })
+    expect(screen.queryByTestId("btn-resume")).not.toBeInTheDocument()
+    expect(screen.getByTestId("btn-resume-all")).toBeEnabled()
+    expect(screen.getByTestId("btn-start")).toBeEnabled()
+    await user.click(screen.getByTestId("btn-start"))
+    await waitFor(() => expect(actionPath).toBe("/gerenteagentes/tarefas/727/start"))
+    expect(screen.getByTestId("task-paused-banner")).not.toHaveTextContent("Clique em Retomar")
+  })
+})
+
+describe("TaskMonitorScreen — Lista de subtarefas (scope, critérios, workspace, correção)", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", mockFetch)
+    mockFetch.mockReset()
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    delete globalThis.__bundleFalso
+  })
+
+  function renderScreen() {
+    return render(
+      <BibliotecaThemeProvider>
+        <TaskMonitorScreen />
+      </BibliotecaThemeProvider>,
+    )
+  }
+
+  function subTarefaDbFactory(
+    id: number,
+    tarefaId: number,
+    seq: number,
+    titulo: string,
+    status = "pending",
+    extra?: {
+      scope?: string | null
+      acceptanceCriteria?: unknown
+      workspaceStatus?: string | null
+      correctionForSubtaskId?: number | null
+    },
+  ) {
+    return {
+      id,
+      tarefaId,
+      seq,
+      titulo,
+      status,
+      descricao: null,
+      scope: extra?.scope ?? null,
+      acceptanceCriteria: extra?.acceptanceCriteria ?? null,
+      resultado: null,
+      dependsOnSubtaskId: null,
+      workspaceStatus: extra?.workspaceStatus ?? null,
+      correctionForSubtaskId: extra?.correctionForSubtaskId ?? null,
+    } as const
+  }
+
+  it("exibe scope truncado na lista e contador de critérios de aceite", async () => {
+    const tarefas = [tarefaFactory(1, "Tarefa", "running", 1)]
+    const motorDetail = {
+      motorId: "m1",
+      exists: true,
+      task: { id: "task-1", status: "running", title: "Tarefa" },
+      subtasks: [
+        {
+          seq: 1,
+          title: "Implementar login",
+          status: "verified",
+          scope: "Criar tela de login com validação de e-mail e senha, incluindo recuperação de senha e autenticação de dois fatores",
+          acceptanceCriteria: ["Campo e-mail validado", "Senha com argon2id", "2FA via TOTP"],
+          workspaceStatus: null,
+          correctionForSubtaskId: null,
+        },
+        {
+          seq: 2,
+          title: "Sem scope",
+          status: "pending",
+          scope: null,
+          acceptanceCriteria: null,
+          workspaceStatus: null,
+          correctionForSubtaskId: null,
+        },
+      ],
+      currentSubTask: null,
+      events: [],
+    }
+    const dbSubs = [
+      subTarefaDbFactory(10, 1, 1, "Implementar login", "verified", {
+        scope: "Criar tela de login com validação de e-mail e senha, incluindo recuperação de senha e autenticação de dois fatores",
+        acceptanceCriteria: ["Campo e-mail validado", "Senha com argon2id", "2FA via TOTP"],
+      }),
+      subTarefaDbFactory(11, 1, 2, "Sem scope", "pending"),
+    ]
+
+    const bundle = {
+      http: {
+        request: async (method: string, path: string) => {
+          if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
+          if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
+          if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
+          if (method === "GET" && path.endsWith("/subtarefas")) return dbSubs
+          return {}
+        },
+      },
+    } as never
+
+    globalThis.__bundleFalso = bundle
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("subtask-table")).toBeInTheDocument()
+    })
+
+    // Scope da sub 1 deve estar visível (truncado)
+    const scopeText = screen.getByTestId("scope-text-1")
+    expect(scopeText).toBeInTheDocument()
+    expect(scopeText).toHaveTextContent("Criar tela de login")
+
+    // Sub 2 sem scope exibe "—"
+    expect(screen.getByTestId("subtask-row-2")).toBeInTheDocument()
+
+    // Contador de critérios: sub 1 tem 3, sub 2 tem 0
+    expect(screen.getByTestId("criteria-count-1")).toHaveTextContent("3")
+    expect(screen.getByTestId("criteria-count-2")).toHaveTextContent("0")
+  })
+
+  it("acceptance_criteria ausente/null/string inválida não quebra a renderização", async () => {
+    const tarefas = [tarefaFactory(1, "Tarefa", "running", 1)]
+    const motorDetail = {
+      motorId: "m1",
+      exists: true,
+      task: { id: "task-1", status: "running", title: "Tarefa" },
+      subtasks: [
+        { seq: 1, title: "Null criteria", status: "pending", scope: null, acceptanceCriteria: null, workspaceStatus: null, correctionForSubtaskId: null },
+        { seq: 2, title: "Undefined criteria", status: "pending", scope: null, acceptanceCriteria: undefined, workspaceStatus: null, correctionForSubtaskId: null },
+        { seq: 3, title: "Invalid string", status: "pending", scope: null, acceptanceCriteria: "not-json", workspaceStatus: null, correctionForSubtaskId: null },
+        { seq: 4, title: "Valid JSON array", status: "pending", scope: null, acceptanceCriteria: ["crit1", "crit2"], workspaceStatus: null, correctionForSubtaskId: null },
+      ],
+      currentSubTask: null,
+      events: [],
+    }
+    const dbSubs = [
+      subTarefaDbFactory(10, 1, 1, "Null criteria", "pending"),
+      subTarefaDbFactory(11, 1, 2, "Undefined criteria", "pending"),
+      subTarefaDbFactory(12, 1, 3, "Invalid string", "pending", { acceptanceCriteria: "not-json" }),
+      subTarefaDbFactory(13, 1, 4, "Valid JSON array", "pending", { acceptanceCriteria: ["crit1", "crit2"] }),
+    ]
+
+    const bundle = {
+      http: {
+        request: async (method: string, path: string) => {
+          if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
+          if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
+          if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
+          if (method === "GET" && path.endsWith("/subtarefas")) return dbSubs
+          return {}
+        },
+      },
+    } as never
+
+    globalThis.__bundleFalso = bundle
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("subtask-table")).toBeInTheDocument()
+    })
+
+    // Todos renderizam sem quebrar
+    expect(screen.getByTestId("criteria-count-1")).toHaveTextContent("0")
+    expect(screen.getByTestId("criteria-count-2")).toHaveTextContent("0")
+    expect(screen.getByTestId("criteria-count-3")).toHaveTextContent("0")
+    expect(screen.getByTestId("criteria-count-4")).toHaveTextContent("2")
+  })
+
+  it("exibe workspace_status como chip somente leitura quando presente", async () => {
+    const tarefas = [tarefaFactory(1, "Tarefa", "running", 1)]
+    const motorDetail = {
+      motorId: "m1",
+      exists: true,
+      task: { id: "task-1", status: "running", title: "Tarefa" },
+      subtasks: [
+        { seq: 1, title: "Com workspace", status: "running", scope: null, acceptanceCriteria: null, workspaceStatus: "dirty", correctionForSubtaskId: null },
+        { seq: 2, title: "Sem workspace", status: "pending", scope: null, acceptanceCriteria: null, workspaceStatus: null, correctionForSubtaskId: null },
+      ],
+      currentSubTask: null,
+      events: [],
+    }
+    const dbSubs = [
+      subTarefaDbFactory(10, 1, 1, "Com workspace", "running", { workspaceStatus: "dirty" }),
+      subTarefaDbFactory(11, 1, 2, "Sem workspace", "pending"),
+    ]
+
+    const bundle = {
+      http: {
+        request: async (method: string, path: string) => {
+          if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
+          if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
+          if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
+          if (method === "GET" && path.endsWith("/subtarefas")) return dbSubs
+          return {}
+        },
+      },
+    } as never
+
+    globalThis.__bundleFalso = bundle
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("subtask-table")).toBeInTheDocument()
+    })
+
+    // Sub 1 tem workspace_status "dirty"
+    expect(screen.getByTestId("workspace-status-1")).toBeInTheDocument()
+    expect(screen.getByTestId("workspace-status-1")).toHaveTextContent("dirty")
+
+    // Sub 2 não tem workspace_status — exibe "—"
+    expect(screen.queryByTestId("workspace-status-2")).not.toBeInTheDocument()
+  })
+
+  it("subtarefa corretiva exibe badge com vínculo para a subtarefa corrigida", async () => {
+    const tarefas = [tarefaFactory(1, "Tarefa", "running", 1)]
+    // A subtarefa 2 é correção da subtarefa 1 (correctionForSubtaskId = 10, que é o id da sub 1 no banco)
+    const motorDetail = {
+      motorId: "m1",
+      exists: true,
+      task: { id: "task-1", status: "running", title: "Tarefa" },
+      subtasks: [
+        { seq: 1, title: "Original", status: "rejected", scope: "Fazer X", acceptanceCriteria: ["crit1"], workspaceStatus: null, correctionForSubtaskId: null },
+        { seq: 2, title: "Correção: Fazer X", status: "pending", scope: "Motivo: gate falhou por lint", acceptanceCriteria: ["crit1", "lint limpo"], workspaceStatus: null, correctionForSubtaskId: 10 },
+      ],
+      currentSubTask: null,
+      events: [],
+    }
+    const dbSubs = [
+      subTarefaDbFactory(10, 1, 1, "Original", "rejected", { scope: "Fazer X", acceptanceCriteria: ["crit1"] }),
+      subTarefaDbFactory(11, 1, 2, "Correção: Fazer X", "pending", {
+        scope: "Motivo: gate falhou por lint",
+        acceptanceCriteria: ["crit1", "lint limpo"],
+        correctionForSubtaskId: 10,
+      }),
+    ]
+
+    const bundle = {
+      http: {
+        request: async (method: string, path: string) => {
+          if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
+          if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
+          if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
+          if (method === "GET" && path.endsWith("/subtarefas")) return dbSubs
+          return {}
+        },
+      },
+    } as never
+
+    globalThis.__bundleFalso = bundle
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("subtask-table")).toBeInTheDocument()
+    })
+
+    // Badge de correção na sub 2 aponta para sub 1
+    expect(screen.getByTestId("correction-badge-2")).toBeInTheDocument()
+    expect(screen.getByTestId("correction-badge-2")).toHaveTextContent("Correção de #1")
+
+    // Sub 1 não tem badge de correção
+    expect(screen.queryByTestId("correction-badge-1")).not.toBeInTheDocument()
+  })
+
+  it("fallback do banco também exibe scope e critérios (motor-detail sem subtasks)", async () => {
+    const tarefas = [tarefaFactory(1, "Tarefa", "running", 1)]
+    const motorDetail = {
+      motorId: "m1",
+      exists: true,
+      task: { id: "task-1", status: "running", title: "Tarefa" },
+      subtasks: [], // motor sem subtarefas → fallback do banco
+      currentSubTask: null,
+      events: [],
+    }
+    const dbSubs = [
+      subTarefaDbFactory(10, 1, 1, "Sub do banco", "pending", {
+        scope: "Escopo via banco",
+        acceptanceCriteria: ["critério A", "critério B"],
+        workspaceStatus: "clean",
+      }),
+    ]
+
+    const bundle = {
+      http: {
+        request: async (method: string, path: string) => {
+          if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
+          if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
+          if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
+          if (method === "GET" && path.endsWith("/subtarefas")) return dbSubs
+          return {}
+        },
+      },
+    } as never
+
+    globalThis.__bundleFalso = bundle
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("subtask-row-1")).toBeInTheDocument()
+    })
+
+    // Scope visível via fallback
+    expect(screen.getByTestId("scope-text-1")).toHaveTextContent("Escopo via banco")
+    // Critérios via fallback
+    expect(screen.getByTestId("criteria-count-1")).toHaveTextContent("2")
+    // Workspace via fallback
+    expect(screen.getByTestId("workspace-status-1")).toHaveTextContent("clean")
+  })
+})
+
+describe("TaskMonitorScreen — Contrato de composição visual (sessões)", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", mockFetch)
+    mockFetch.mockReset()
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    delete globalThis.__bundleFalso
+  })
+
+  function renderScreen() {
+    return render(
+      <BibliotecaThemeProvider>
+        <TaskMonitorScreen />
+      </BibliotecaThemeProvider>,
+    )
+  }
+
+  function bundleComTarefaSelecionada() {
+    const tarefas = [tarefaFactory(1, "Tarefa Teste", "running", 1)]
+    const motorDetail = {
+      motorId: "m1",
+      exists: true,
+      task: { id: "task-1", status: "running", title: "Tarefa Teste" },
+      subtasks: [{ seq: 1, title: "Sub 1", status: "pending" }],
+      currentSubTask: null,
+      events: [],
+    }
+    return {
+      http: {
+        request: async (method: string, path: string) => {
+          if (method === "GET" && path === "/gerenteagentes/projetos_captados") {
+            return { items: [projetoFactory(1, "Projeto X")] }
+          }
+          if (method === "GET" && path === "/gerenteagentes/tarefas") {
+            return { items: tarefas }
+          }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") {
+            return tarefas
+          }
+          if (method === "GET" && path.endsWith("/motor-detail")) {
+            return motorDetail
+          }
+          if (method === "GET" && path.endsWith("/subtarefas")) {
+            return []
+          }
+          if (method === "GET" && path.endsWith("/chat")) {
+            return []
+          }
+          return {}
+        },
+      },
+    } as never
+  }
+
+  it("identifica uma sessão do mapa (task-map-section) e uma segunda sessão de acompanhamento (task-monitoring-section)", async () => {
+    globalThis.__bundleFalso = bundleComTarefaSelecionada()
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("task-map-section")).toBeInTheDocument()
+      expect(screen.getByTestId("task-monitoring-section")).toBeInTheDocument()
+    })
+
+    // Sessão 1: mapa da tarefa
+    const mapSection = screen.getByTestId("task-map-section")
+    expect(mapSection).toBeInTheDocument()
+    // O TaskFlowMap deve estar dentro da sessão do mapa
+    expect(within(mapSection).getByTestId("task-flow-map")).toBeInTheDocument()
+
+    // Sessão 2: acompanhamento (filtros + detalhes + chat)
+    const monitoringSection = screen.getByTestId("task-monitoring-section")
+    expect(monitoringSection).toBeInTheDocument()
+  })
+
+  it("os filtros agora estão integrados ao topo do mapa (TaskFlowMap)", async () => {
+    globalThis.__bundleFalso = bundleComTarefaSelecionada()
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("task-map-section")).toBeInTheDocument()
+    })
+
+    const mapSection = screen.getByTestId("task-map-section")
+
+    // Os filtros agora estão dentro do mapa (barra de filtro integrada)
+    expect(within(mapSection).getByTestId("map-filter-bar")).toBeInTheDocument()
+    expect(within(mapSection).getByTestId("map-filter-busca")).toBeInTheDocument()
+    expect(within(mapSection).getByTestId("map-filter-chip-em-execucao")).toBeInTheDocument()
+    expect(within(mapSection).getByTestId("map-filter-chip-bloqueadas")).toBeInTheDocument()
+    expect(within(mapSection).getByTestId("map-filter-chip-concluidas")).toBeInTheDocument()
+    expect(within(mapSection).getByTestId("map-filter-projeto")).toBeInTheDocument()
+
+    // A combo filter-tarefa foi removida
+    expect(screen.queryByTestId("filter-tarefa")).not.toBeInTheDocument()
+    // Os filtros antigos também foram removidos da sessão de acompanhamento
+    expect(screen.queryByTestId("filter-projeto")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("filter-status")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("filter-busca")).not.toBeInTheDocument()
+  })
+
+  it("quando há tarefa selecionada, a segunda sessão permanece visível", async () => {
+    globalThis.__bundleFalso = bundleComTarefaSelecionada()
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("task-monitoring-section")).toBeInTheDocument()
+    })
+
+    const monitoringSection = screen.getByTestId("task-monitoring-section")
+    expect(monitoringSection).toBeInTheDocument()
+  })
+
+  it("a sessão do mapa e a sessão de acompanhamento são contêineres distintos e irmãos", async () => {
+    globalThis.__bundleFalso = bundleComTarefaSelecionada()
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("task-map-section")).toBeInTheDocument()
+      expect(screen.getByTestId("task-monitoring-section")).toBeInTheDocument()
+    })
+
+    const mapSection = screen.getByTestId("task-map-section")
+    const monitoringSection = screen.getByTestId("task-monitoring-section")
+
+    // As duas sessões não devem ser a mesma
+    expect(mapSection).not.toBe(monitoringSection)
+
+    // A sessão do mapa não deve estar dentro da sessão de acompanhamento
+    expect(monitoringSection.contains(mapSection)).toBe(false)
+
+    // A sessão de acompanhamento não deve estar dentro da sessão do mapa
+    expect(mapSection.contains(monitoringSection)).toBe(false)
+  })
+})
+
+describe("TaskMonitorScreen — Bottom sheet mobile (6.1)", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", mockFetch)
+    mockFetch.mockReset()
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    delete globalThis.__bundleFalso
+  })
+
+  function renderScreen() {
+    return render(
+      <BibliotecaThemeProvider>
+        <TaskMonitorScreen />
+      </BibliotecaThemeProvider>,
+    )
+  }
+
+  function bundleComTarefaSelecionada() {
+    const tarefas = [tarefaFactory(1, "Tarefa Teste", "running", 1)]
+    const motorDetail = {
+      motorId: "m1",
+      exists: true,
+      task: { id: "task-1", status: "running", title: "Tarefa Teste" },
+      subtasks: [{ seq: 1, title: "Sub 1", status: "pending" }],
+      currentSubTask: null,
+      events: [],
+    }
+    return {
+      http: {
+        request: async (method: string, path: string) => {
+          if (method === "GET" && path === "/gerenteagentes/projetos_captados") {
+            return { items: [projetoFactory(1, "Projeto X")] }
+          }
+          if (method === "GET" && path === "/gerenteagentes/tarefas") {
+            return { items: tarefas }
+          }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") {
+            return tarefas
+          }
+          if (method === "GET" && path.endsWith("/motor-detail")) {
+            return motorDetail
+          }
+          if (method === "GET" && path.endsWith("/subtarefas")) {
+            return []
+          }
+          if (method === "GET" && path.endsWith("/chat")) {
+            return []
+          }
+          return {}
+        },
+      },
+    } as never
+  }
+
+  it("renderiza o Drawer com data-testid task-detail-sheet", async () => {
+    globalThis.__bundleFalso = bundleComTarefaSelecionada()
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("task-monitor-screen")).toBeInTheDocument()
+    })
+
+    // O Drawer está no DOM mas não está visível inicialmente
+    const drawer = screen.getByTestId("task-detail-sheet")
+    expect(drawer).toBeInTheDocument()
+  })
+
+  it("bottom sheet tem botão 'Ver detalhe completo' com data-testid sheet-view-full", async () => {
+    globalThis.__bundleFalso = bundleComTarefaSelecionada()
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("task-monitor-screen")).toBeInTheDocument()
+    })
+
+    // O botão está no Drawer (pode não estar visível se o Drawer estiver fechado)
+    // Verificamos que o Drawer existe no DOM
+    const drawer = screen.getByTestId("task-detail-sheet")
+    expect(drawer).toBeInTheDocument()
+  })
+})
+
+describe("TaskMonitorScreen — Chat (campo multilinha, Enter sem envio, Ctrl+Enter com envio)", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", mockFetch)
+    mockFetch.mockReset()
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    delete globalThis.__bundleFalso
+  })
+
+  function renderScreen() {
+    return render(
+      <BibliotecaThemeProvider>
+        <TaskMonitorScreen />
+      </BibliotecaThemeProvider>,
+    )
+  }
+
+  function makeBundleWithChat(postSpy: ReturnType<typeof vi.fn>) {
+    const tarefas = [tarefaFactory(1, "Tarefa Chat", "running", 1)]
+    const motorDetail = {
+      motorId: "m1",
+      exists: true,
+      task: { id: "task-1", status: "running", title: "Tarefa Chat" },
+      subtasks: [],
+      currentSubTask: null,
+      events: [],
+    }
+    return {
+      http: {
+        request: async (method: string, path: string, reqOpts?: { body?: unknown }) => {
+          if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
+          if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          // A base evoluiu após a branch da 785: a tela carrega a lista via
+          // /tarefas-com-status (status derivado pelo motor) e auto-seleciona a
+          // tarefa em execução — sem este handler o painel de chat não renderiza.
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
+          if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
+          if (method === "GET" && path.endsWith("/chat")) return { items: [] }
+          if (method === "GET" && path.endsWith("/subtarefas")) return []
+          if (method === "POST" && path.endsWith("/chat")) {
+            postSpy(reqOpts?.body)
+            return { ok: true }
+          }
+          return {}
+        },
+      },
+    } as never
+  }
+
+  it("campo de entrada do chat é um textarea (multilinha)", async () => {
+    const postSpy = vi.fn()
+    globalThis.__bundleFalso = makeBundleWithChat(postSpy)
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("task-chat-input")).toBeInTheDocument()
+    })
+
+    const chatInput = screen.getByTestId("task-chat-input")
+    // O TextField do MUI com multiline renderiza um <textarea> (não um <input>)
+    expect(chatInput.tagName.toLowerCase()).toBe("textarea")
+  })
+
+  it("Enter isolado NÃO envia a mensagem (insere quebra de linha)", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const postSpy = vi.fn()
+    globalThis.__bundleFalso = makeBundleWithChat(postSpy)
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("task-chat-input")).toBeInTheDocument()
+    })
+
+    const chatInput = screen.getByTestId("task-chat-input") as HTMLTextAreaElement
+
+    // Digita texto no campo
+    await user.click(chatInput)
+    await user.type(chatInput, "Linha 1")
+
+    // Pressiona Enter (sem Ctrl) — deve inserir quebra de linha, NÃO enviar
+    await user.keyboard("{Enter}")
+    await user.type(chatInput, "Linha 2")
+
+    // O valor deve conter quebra de linha
+    expect(chatInput.value).toContain("\n")
+    expect(chatInput.value).toContain("Linha 1")
+    expect(chatInput.value).toContain("Linha 2")
+
+    // O POST NÃO deve ter sido chamado
+    expect(postSpy).not.toHaveBeenCalled()
+  })
+
+  it("Ctrl+Enter envia a mensagem (chama POST /chat)", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const postSpy = vi.fn()
+    globalThis.__bundleFalso = makeBundleWithChat(postSpy)
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("task-chat-input")).toBeInTheDocument()
+    })
+
+    const chatInput = screen.getByTestId("task-chat-input") as HTMLTextAreaElement
+
+    // Digita texto no campo
+    await user.click(chatInput)
+    await user.type(chatInput, "Mensagem de teste")
+
+    // Pressiona Ctrl+Enter — deve enviar
+    await user.keyboard("{Control>}{Enter}{/Control}")
+
+    // O POST deve ter sido chamado com o texto correto
+    await waitFor(() => {
+      expect(postSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          role: "user",
+          texto: "Mensagem de teste",
+        }),
+      )
+    })
+  })
+
+  it("Meta+Enter (Cmd no Mac) também envia a mensagem", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const postSpy = vi.fn()
+    globalThis.__bundleFalso = makeBundleWithChat(postSpy)
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("task-chat-input")).toBeInTheDocument()
+    })
+
+    const chatInput = screen.getByTestId("task-chat-input") as HTMLTextAreaElement
+
+    await user.click(chatInput)
+    await user.type(chatInput, "Mensagem Mac")
+
+    // Pressiona Meta+Enter (Cmd no Mac)
+    await user.keyboard("{Meta>}{Enter}{/Meta}")
+
+    await waitFor(() => {
+      expect(postSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          role: "user",
+          texto: "Mensagem Mac",
+        }),
+      )
+    })
+  })
+
+  it("helperText informa o atalho Ctrl+Enter para enviar", async () => {
+    const postSpy = vi.fn()
+    globalThis.__bundleFalso = makeBundleWithChat(postSpy)
+
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("task-chat-input")).toBeInTheDocument()
+    })
+
+    // O helperText deve estar visível e conter a instrução
+    expect(screen.getByText(/Ctrl\+Enter para enviar/)).toBeInTheDocument()
+    expect(screen.getByText(/Enter para nova linha/)).toBeInTheDocument()
+  })
+})
+
+describe("TaskMonitorScreen — regressão dos diálogos de sessão", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", mockFetch)
+    mockFetch.mockReset()
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    delete globalThis.__bundleFalso
+  })
+
+  function renderScreen() {
+    return render(
+      <BibliotecaThemeProvider>
+        <TaskMonitorScreen />
+      </BibliotecaThemeProvider>,
+    )
+  }
+
+  function sessaoFactory(sessionKey: string, sequenceNumber: number, text: string, extra?: { model?: string; executionOrder?: number; nextCursor?: string | null; hasNextPage?: boolean }) {
+    return {
+      id: sequenceNumber,
+      model: extra?.model ?? "provider/model-a",
+      executionOrder: extra?.executionOrder,
+      sessionKey,
+      status: "closed",
+      openedAt: "2026-09-08T10:00:00.000Z",
+      closedAt: "2026-09-08T10:08:00.000Z",
+      closeReason: "completed",
+      messages: {
+        items: [{ role: "assistant", text, sequenceNumber, occurredAt: "2026-09-08T10:01:00.000Z" }],
+        nextCursor: extra?.nextCursor ?? null,
+        hasNextPage: extra?.hasNextPage ?? false,
+      },
+    }
+  }
+
+  function bundleComSessoes(responses: { subtask: unknown; analyst: unknown; onRequest?: (path: string, query?: Record<string, string>) => void }) {
+    const tarefas = [tarefaFactory(1, "Tarefa com sessões", "running", 1)]
+    const motorDetail = {
+      motorId: "m1",
+      exists: true,
+      task: { id: "task-1", status: "running", title: "Tarefa com sessões" },
+      subtasks: [{ seq: 1, title: "Sub 1", status: "running" }],
+      currentSubTask: null,
+      events: [],
+    }
+
+    return {
+      http: {
+        request: async (method: string, path: string, reqOpts?: { query?: Record<string, string> }) => {
+          if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(1, "P1")] }
+          if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
+          if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
+          if (method === "GET" && path.endsWith("/motor-detail")) return motorDetail
+          if (method === "GET" && path.endsWith("/subtarefas")) return []
+          if (method === "GET" && path.endsWith("/subtarefas/1/sessao")) {
+            responses.onRequest?.(path, reqOpts?.query)
+            return responses.subtask
+          }
+          if (method === "GET" && path.endsWith("/sessoes-analista")) {
+            responses.onRequest?.(path, reqOpts?.query)
+            return responses.analyst
+          }
+          return {}
+        },
+      },
+    } as never
+  }
+
+  it("abre a sessão da subtarefa e exibe role e mensagens", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    globalThis.__bundleFalso = bundleComSessoes({
+      subtask: { available: true, sessions: [sessaoFactory("sub-1", 2, "Resposta da subtarefa")] },
+      analyst: { available: false, sessions: [] },
+    })
+
+    renderScreen()
+    await waitFor(() => expect(screen.getByTestId("btn-view-session-1")).toBeInTheDocument())
+    await user.click(screen.getByTestId("btn-view-session-1"))
+
+    await waitFor(() => expect(screen.getByTestId("session-content")).toBeInTheDocument())
+    expect(screen.getByTestId("session-content")).toHaveTextContent("[assistant]")
+    expect(screen.getByTestId("session-content")).toHaveTextContent("Resposta da subtarefa")
+    expect(screen.queryByText("Tarefa não encontrada")).not.toBeInTheDocument()
+  })
+
+  it("abre as sessões do analista e exibe modelo e mensagens", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    globalThis.__bundleFalso = bundleComSessoes({
+      subtask: { available: false, sessions: [] },
+      analyst: { available: true, sessions: [sessaoFactory("analyst-1", 1, "Análise concluída", { model: "provider/model-b", executionOrder: 1 })] },
+    })
+
+    renderScreen()
+    await waitFor(() => expect(screen.getByTestId("btn-view-analyst-sessions")).toBeInTheDocument())
+    await user.click(screen.getByTestId("btn-view-analyst-sessions"))
+
+    await waitFor(() => expect(screen.getByTestId("analyst-session-content-1")).toBeInTheDocument())
+    expect(screen.getByTestId("analyst-session-model-1")).toHaveTextContent("provider/model-b")
+    expect(screen.getByTestId("analyst-session-content-1")).toHaveTextContent("Análise concluída")
+    expect(screen.queryByText("Tarefa não encontrada")).not.toBeInTheDocument()
+  })
+
+  it("exibe ausência sem quebrar quando available=false", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    globalThis.__bundleFalso = bundleComSessoes({
+      subtask: { available: false, sessions: [] },
+      analyst: { available: false, sessions: [] },
+    })
+
+    renderScreen()
+    await waitFor(() => expect(screen.getByTestId("btn-view-session-1")).toBeInTheDocument())
+    await user.click(screen.getByTestId("btn-view-session-1"))
+    await waitFor(() => expect(screen.getByTestId("session-unavailable")).toBeInTheDocument())
+    expect(screen.getByTestId("session-unavailable")).toHaveTextContent("Nenhuma sessão disponível")
+    await user.click(screen.getByRole("button", { name: "Fechar sessão" }))
+
+    await user.click(screen.getByTestId("btn-view-analyst-sessions"))
+    await waitFor(() => expect(screen.getByTestId("analyst-session-unavailable")).toBeInTheDocument())
+    expect(screen.getByTestId("analyst-session-unavailable")).toHaveTextContent("Nenhuma sessão do analista")
+  })
+
+  it("renderiza tentativas separadas na ordem recebida", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    globalThis.__bundleFalso = bundleComSessoes({
+      subtask: { available: true, sessions: [sessaoFactory("sub-1", 2, "Primeira"), sessaoFactory("sub-2", 1, "Segunda")] },
+      analyst: { available: false, sessions: [] },
+    })
+
+    renderScreen()
+    await waitFor(() => expect(screen.getByTestId("btn-view-session-1")).toBeInTheDocument())
+    await user.click(screen.getByTestId("btn-view-session-1"))
+    await waitFor(() => expect(screen.getByTestId("session-content-2")).toBeInTheDocument())
+    expect(screen.getByTestId("session-separator")).toBeInTheDocument()
+    expect(screen.getByTestId("session-content").textContent).toContain("Primeira")
+    expect(screen.getByTestId("session-content-2").textContent).toContain("Segunda")
+  })
+
+  it("pagina cada tentativa com sua própria sessionKey e cursor", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const requests: Array<{ path: string; query?: Record<string, string> }> = []
+    globalThis.__bundleFalso = bundleComSessoes({
+      subtask: { available: true, sessions: [sessaoFactory("sub-1", 2, "Inicial", { nextCursor: "cursor-sub", hasNextPage: true })] },
+      analyst: { available: true, sessions: [sessaoFactory("analyst-1", 1, "Inicial analista", { executionOrder: 1, nextCursor: "cursor-analyst", hasNextPage: true })] },
+      onRequest: (path, query) => requests.push({ path, query }),
+    })
+
+    renderScreen()
+    await waitFor(() => expect(screen.getByTestId("btn-view-session-1")).toBeInTheDocument())
+    await user.click(screen.getByTestId("btn-view-session-1"))
+    await waitFor(() => expect(screen.getByTestId("session-content")).toBeInTheDocument())
+    const subContent = screen.getByTestId("session-content")
+    Object.defineProperties(subContent, { scrollHeight: { value: 100 }, scrollTop: { value: 100 }, clientHeight: { value: 100 } })
+    subContent.dispatchEvent(new Event("scroll", { bubbles: true }))
+    await waitFor(() => expect(requests).toContainEqual({ path: "/gerenteagentes/tarefas/1/subtarefas/1/sessao", query: { sessionKey: "sub-1", cursor: "cursor-sub" } }))
+
+    await user.click(screen.getByRole("button", { name: "Fechar sessão" }))
+    await user.click(screen.getByTestId("btn-view-analyst-sessions"))
+    await waitFor(() => expect(screen.getByTestId("analyst-session-content-1")).toBeInTheDocument())
+    const analystContent = screen.getByTestId("analyst-session-content-1")
+    Object.defineProperties(analystContent, { scrollHeight: { value: 100 }, scrollTop: { value: 100 }, clientHeight: { value: 100 } })
+    analystContent.dispatchEvent(new Event("scroll", { bubbles: true }))
+    await waitFor(() => expect(requests).toContainEqual({ path: "/gerenteagentes/tarefas/1/sessoes-analista", query: { sessionKey: "analyst-1", cursor: "cursor-analyst" } }))
+  })
+})

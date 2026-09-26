@@ -1,0 +1,48 @@
+{
+  "version": "7",
+  "dialect": "mysql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "5",
+      "when": 1786731199541,
+      "tag": "0000_overjoyed_hydra",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1786826047999,
+      "tag": "0001_long_quentin_quire",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1788518561084,
+      "tag": "0002_uneven_eternals",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1789386600000,
+      "tag": "0003_lgpd_consentimentos",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1789386601000,
+      "tag": "0004_lgpd_migracao_consentimentos",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1790276400000,
+      "tag": "0005_projetos_db_connection",
+      "breakpoints": true
+    }
+  ]
+}

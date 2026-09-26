@@ -1,0 +1,73 @@
+# Ambiente de desenvolvimento. Não alterar docker-compose.yml: ele é produção.
+name: biblioteca-global-dev
+
+services:
+  mysql:
+    image: mysql:8
+    container_name: biblioteca-global-mysql-dev
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Defina MYSQL_ROOT_PASSWORD no .env.dev.local}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-core_dev}
+      MYSQL_USER: ${MYSQL_USER:-biblioteca_dev}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Defina MYSQL_PASSWORD no .env.dev.local}
+    ports:
+      - "3310:3306"
+    volumes:
+      - biblioteca-global-mysql-dev-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  api:
+    build:
+      context: ../..
+      dockerfile: apps/api/Dockerfile
+    container_name: biblioteca-global-api-dev
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-core_dev}
+      MYSQL_USER: ${MYSQL_USER:-biblioteca_dev}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET}
+      AUTH_CODE_SECRET: ${AUTH_CODE_SECRET}
+      AUTH_CODE_DEBUG_LOG: "true"
+      SMTP_HOST: ""
+      SMTP_PORT: 587
+      SMTP_USER: ""
+      SMTP_PASSWORD: ""
+      SMTP_FROM: noreply@localhost
+      PROVISION_TOKEN: ${PROVISION_TOKEN}
+      OPENCLAW_CONSOLE_URL: ${OPENCLAW_CONSOLE_URL:-http://host.docker.internal:6290}
+      OPENCLAW_CONSOLE_TOKEN: ${OPENCLAW_CONSOLE_TOKEN}
+      MOTOR_DEV_URL: ${MOTOR_DEV_URL:-http://host.docker.internal:6283}
+      MOTOR_URL_HOST: gerente-dev.localhost
+      API_PORT: 3001
+    depends_on:
+      mysql:
+        condition: service_healthy
+    ports:
+      - "3005:3001"
+
+  web:
+    build:
+      context: ../..
+      dockerfile: apps/web/Dockerfile
+    container_name: biblioteca-global-web-dev
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_started
+    ports:
+      - "5175:80"
+
+volumes:
+  biblioteca-global-mysql-dev-data:

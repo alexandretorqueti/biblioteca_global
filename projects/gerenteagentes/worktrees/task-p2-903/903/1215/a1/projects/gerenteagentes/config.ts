@@ -1,0 +1,456 @@
+/**
+ * Config BASE versionada do projeto `gerenteagentes`.
+ *
+ * Gerenciamento de agentes de IA com fluxo completo:
+ * - Captação: contatos, projetos, definições (via Isa ou manual)
+ * - Execução: tarefas com subtarefas, chats e ações de start/pause
+ * - Geração macro: analista forte gera tarefas a partir de definições
+ *
+ * Navegação hierárquica:
+ * - Projetos → Tarefas → Subtarefas / Chats de Tarefa / Bloqueios
+ * - Projetos → Definições
+ * - Projetos → Chats de Projeto
+ *
+ * Convenções das grids (decisão 2026-08-20):
+ * - Grid enxuta: somente ID + 1-2 campos mais importantes (nome/título/status).
+ * - Campos restantes: `gridVisible: false` (aparecem apenas no formulário).
+ * - Colunas de controle do motor que não são de formulário: `hiddenColumns`.
+ * - `columnLabels` ajusta os títulos dos cabeçalhos da grid.
+ */
+import type { GeradorSistemaConfig } from "@biblioteca-global/shared"
+import {
+  TASK_STATUS_FINAIS,
+  SUBTASK_STATUS_OPTIONS,
+} from "./motor-v2/src/shared/task-statuses"
+
+export const config: GeradorSistemaConfig = {
+  app: { name: "Gerente Agentes", logo: "smart_toy" },
+  groups: [
+    {
+      id: "dashboard",
+      label: "Dashboard",
+      items: [
+        {
+          id: "dashboard-view",
+          label: "Dashboard",
+          path: "dashboard",
+          icon: "dashboard",
+          screen: {
+            kind: "custom",
+            componentId: "gerenteagentes-dashboard",
+          },
+        },
+        {
+          id: "acompanhar-view",
+          label: "Acompanhar Tarefa",
+          path: "acompanhar",
+          icon: "monitor_heart",
+          screen: {
+            kind: "custom",
+            componentId: "gerenteagentes-task-monitor",
+          },
+        },
+        {
+          id: "mapa-agentes-view",
+          label: "Mapa de agentes",
+          path: "mapa-agentes",
+          icon: "account_tree",
+          screen: {
+            kind: "custom",
+            componentId: "gerenteagentes-operation-map",
+          },
+        },
+        {
+          id: "isa-chat-view",
+          label: "Conversar com a Isa",
+          path: "isa-chat",
+          icon: "smart_toy",
+          screen: {
+            kind: "custom",
+            componentId: "gerenteagentes-isa-chat",
+          },
+        },
+      ],
+    },
+
+    {
+      id: "projetos",
+      label: "Projetos",
+      items: [
+        {
+          id: "agentes-list",
+          label: "Agentes",
+          path: "agentes",
+          icon: "smart_toy",
+          screen: {
+            kind: "cadastro",
+            resource: "agentes",
+            title: "Agentes",
+            description: "Agentes vinculados ao OpenClaw",
+            fields: [
+              { name: "nome", label: "Nome", type: "text", required: true, maxLength: 150 },
+              { name: "openclawAgentId", label: "Identificador OpenClaw", type: "text", maxLength: 150, gridVisible: true, helperText: "ID usado pelo gateway OpenClaw; não use o nome amigável." },
+              { name: "modelo", label: "Modelo", type: "text", required: true, maxLength: 100 },
+              { name: "descricao", label: "Descrição", type: "textarea", maxLength: 65535, fullWidth: true, gridVisible: false },
+              { name: "ativo", label: "Ativo", type: "switch", defaultValue: true, gridVisible: true },
+            ],
+            overrides: {
+              hiddenColumns: ["createdAt", "updatedAt"],
+              columnLabels: { id: "ID", nome: "Nome", openclawAgentId: "Identificador OpenClaw", modelo: "Modelo", descricao: "Descrição", ativo: "Ativo" },
+              newLabel: "Novo agente",
+            },
+            rowActions: [
+              {
+                id: "sincronizar-openclaw",
+                label: "Sincronizar com OpenClaw",
+                method: "POST",
+                path: "/api/gerenteagentes/agentes/sincronizar",
+                confirm: "Sincronizar os agentes registrados no OpenClaw?",
+              },
+              { id: "verificar-vinculo-openclaw", label: "Verificar vínculo", method: "GET", path: "/api/gerenteagentes/agentes/:id/vinculo" },
+            ],
+          },
+        },
+        {
+          id: "projetos-list",
+          label: "Projetos",
+          path: "projetos",
+          icon: "account_tree",
+          screen: {
+            kind: "cadastro",
+            resource: "projetos_captados",
+            title: "Projetos",
+            description: "Projetos captados pela Isa ou criados manualmente",
+            fields: [
+              { name: "nome", label: "Nome", type: "text", required: true, maxLength: 200, fullWidth: true },
+              { name: "slug", label: "Slug", type: "text", required: true, minLength: 2, maxLength: 100, helperText: "Use letras minúsculas, números e hífen.", gridVisible: false },
+              { name: "agenteId", label: "Agente vinculado", type: "multipleChoice", gridVisible: true, helperText: "Agente que executará as tarefas deste projeto. O motor usa COALESCE(openclaw_agent_id, nome) para abrir a sessão.", multipleChoice: { resource: "agentes", idField: "id", displayField: "nome" } },
+              { name: "descricao", label: "Descrição / Regras do projeto", type: "textarea", maxLength: 65535, fullWidth: true, gridVisible: false },
+              { name: "regras", label: "Regras extras (complementam a descrição)", type: "textarea", maxLength: 65535, fullWidth: true, gridVisible: false },
+              { name: "contatoId", label: "Contato responsável", type: "number", gridVisible: false, helperText: "ID do contato em projeto_640.contatos." },
+              { name: "ativo", label: "Ativo", type: "switch", defaultValue: true, gridVisible: true },
+              { name: "plataformaProjetoId", label: "ID na plataforma (core.projetos)", type: "number", gridVisible: false, helperText: "Vínculo com core.projetos.id. Usado pela biblioteca para rotear API." },
+            ],
+            overrides: {
+              hiddenColumns: ["createdAt", "updatedAt"],
+              columnLabels: {
+                id: "ID",
+                nome: "Nome",
+                slug: "Slug",
+                agenteId: "Agente",
+                descricao: "Descrição",
+                regras: "Regras",
+                contatoId: "Contato",
+                ativo: "Ativo",
+                plataformaProjetoId: "Plataforma",
+                branchTrabalho: "Branch",
+                repoPath: "Repositório",
+              },
+              newLabel: "Novo projeto",
+            },
+            rowActions: [
+              {
+                id: "iniciar-desenvolvimento",
+                label: "Iniciar Desenvolvimento",
+                method: "POST",
+                path: "/api/gerenteagentes/projetos-captados/:id/desenvolvimento",
+                confirm: "Iniciar desenvolvimento deste projeto? Isso criará o projeto na plataforma.",
+              },
+            ],
+            // Rotas filhas com contexto (navegação hierárquica)
+            childRoutes: [
+              {
+                id: "config-motor",
+                label: "Configuração do Motor",
+                icon: "settings",
+                targetResource: "projeto_motor_config",
+                filterField: "projetoId",
+                title: "Configuração Operacional do Motor",
+                fields: [
+                  { name: "repoPath", label: "Caminho do repositório", type: "text", required: true, maxLength: 500, fullWidth: true, helperText: "Caminho absoluto no host (ex.: /data/workspace/projects/codigofonte/biblioteca-global)." },
+                  { name: "branchTrabalho", label: "Branch de trabalho", type: "text", required: true, maxLength: 255, helperText: "Branch base para worktrees do motor (ex.: base-desenvolvimento)." },
+                  { name: "buildCommand", label: "Comando de build", type: "text", required: true, maxLength: 500, fullWidth: true, helperText: "Comando para build do projeto (ex.: npm run build)." },
+                  { name: "unitTestCommand", label: "Comando de testes", type: "text", required: true, maxLength: 500, fullWidth: true, helperText: "Comando para testes (ex.: npm run test)." },
+                  { name: "defaultMaxRework", label: "Máx. retrabalho", type: "number", defaultValue: 3, gridVisible: false },
+                  { name: "defaultHardTimeoutMs", label: "Timeout padrão (ms)", type: "number", defaultValue: 3600000, gridVisible: false },
+                ],
+                overrides: {
+                  hiddenColumns: ["createdAt", "updatedAt", "unitTestExclude", "projetoId"],
+                  columnLabels: {
+                    id: "ID",
+                    repoPath: "Repositório",
+                    branchTrabalho: "Branch",
+                    buildCommand: "Build",
+                    unitTestCommand: "Testes",
+                  },
+                  newLabel: "Nova configuração",
+                },
+              },
+              {
+                id: "modelos",
+                label: "Modelos",
+                icon: "model_training",
+                targetResource: "projetos_captados",
+                componentId: "gerenteagentes-model-selection",
+                filterField: "projetoId",
+                title: "Fila de Modelos",
+              },
+              {
+                id: "tarefas",
+                label: "Tarefas",
+                icon: "task_alt",
+                targetResource: "tarefas",
+                filterField: "projetoId",
+                title: "Tarefas do Projeto",
+                defaultOrderBy: [
+                  { campo: "createdAt", direction: "desc" },
+                ],
+                fields: [
+                  { name: "titulo", label: "Título", type: "text", required: true, fullWidth: true },
+                  {
+                    name: "dependsOnTaskId",
+                    label: "Depende de",
+                    type: "multipleChoice",
+                    multipleChoice: { resource: "tarefas", idField: "id", displayField: "titulo" },
+                    gridVisible: false,
+                  },
+                  // Agente e ambiente de execução (repoPath/buildCommand/unitTestCommand)
+                  // agora vivem em projetos_captados — o motor resolve via projeto.
+                  { name: "descricao", label: "Descrição", type: "textarea", fullWidth: true, gridVisible: false },
+                ],
+                overrides: {
+                  newLabel: "Nova tarefa",
+                  hiddenColumns: [
+                    "projetoId",
+                    "maxRework",
+                    "hardTimeoutMs",
+                    "dependsOnTaskId",
+                    "autoStart",
+                    "bootRetryCount",
+                    "createdAt",
+                    "updatedAt",
+                  ],
+                  columnLabels: { id: "ID", titulo: "Título" },
+                },
+                rowActions: [
+                  {
+                    id: "iniciar-tarefa",
+                    label: "Iniciar",
+                    method: "POST",
+                    path: "/api/gerenteagentes/tarefas/:id/start",
+                    confirm: "Iniciar execução desta tarefa?",
+                  },
+                  {
+                    id: "pausar-tarefa",
+                    label: "Pausar",
+                    method: "POST",
+                    path: "/api/gerenteagentes/tarefas/:id/pause",
+                    confirm: "Pausar esta tarefa?",
+                  },
+                ],
+                childRoutes: [
+                  {
+                    id: "subtarefas",
+                    label: "Subtarefas",
+                    icon: "subtasks",
+                    targetResource: "subtarefas",
+                    filterField: "tarefaId",
+                    title: "Subtarefas da Tarefa",
+                    fields: [
+                      { name: "titulo", label: "Título", type: "text", required: true, fullWidth: true },
+                      {
+                        name: "dependsOnSubtaskId",
+                        label: "Depende de",
+                        type: "multipleChoice",
+                        multipleChoice: { resource: "subtarefas", idField: "id", displayField: "titulo" },
+                        gridVisible: false,
+                      },
+                      {
+                        name: "status",
+                        label: "Status",
+                        type: "select",
+                        options: SUBTASK_STATUS_OPTIONS.map((o) => ({
+                          label: o.label.replace(/ \(.*\)$/, ""),
+                          value: o.value,
+                        })),
+                        defaultValue: "pending",
+                      },
+                      { name: "seq", label: "Ordem", type: "number", defaultValue: 0, gridVisible: false },
+                      { name: "scope", label: "Escopo", type: "textarea", fullWidth: true, gridVisible: false },
+                      { name: "acceptanceCriteria", label: "Critérios de aceite (JSON)", type: "textarea", fullWidth: true, gridVisible: false },
+                      { name: "resultado", label: "Resultado", type: "textarea", fullWidth: true, gridVisible: false },
+                    ],
+                    overrides: {
+                      newLabel: "Nova subtarefa",
+                      hiddenColumns: [
+                        "tarefaId",
+                        "descricao",
+                        "deliverCount",
+                        "duracaoSegundos",
+                        "iniciadaEm",
+                        "finalizadaEm",
+                        "workspacePath",
+                        "workspaceBranch",
+                        "workspaceBaseCommit",
+                        "workspaceCommitSha",
+                        "workspaceStatus",
+                        "workspaceCreatedAt",
+                        "workspaceCleanedAt",
+                        "correctionForSubtaskId",
+                        "correctionFingerprint",
+                        "correctionCreatedAt",
+                        "createdAt",
+                        "updatedAt",
+                      ],
+                      columnLabels: { id: "ID", titulo: "Título", status: "Status", scope: "Escopo" },
+                    },
+                  },
+                  {
+                    id: "tarefa-chats",
+                    label: "Chats da Tarefa",
+                    icon: "chat",
+                    targetResource: "tarefa_chats",
+                    filterField: "tarefaId",
+                    title: "Chats da Tarefa",
+                    fields: [
+                      {
+                        name: "role",
+                        label: "Role",
+                        type: "select",
+                        required: true,
+                        options: [
+                          { label: "User", value: "user" },
+                          { label: "Assistant", value: "assistant" },
+                          { label: "System", value: "system" },
+                          { label: "Analyst", value: "analyst" },
+                        ],
+                      },
+                      { name: "texto", label: "Mensagem", type: "textarea", required: true, fullWidth: true, gridVisible: false },
+                    ],
+                    overrides: {
+                      newLabel: "Nova mensagem",
+                      hiddenColumns: ["tarefaId", "createdAt"],
+                      columnLabels: { id: "ID", role: "Role", texto: "Mensagem" },
+                    },
+                  },
+                  {
+                    id: "bloqueios",
+                    label: "Bloqueios",
+                    icon: "block",
+                    targetResource: "bloqueios",
+                    filterField: "tarefaId",
+                    title: "Bloqueios da Tarefa",
+                    fields: [
+                      { name: "blockReason", label: "Razão do bloqueio", type: "textarea", fullWidth: true },
+                      { name: "blockCommand", label: "Comando", type: "textarea", fullWidth: true, gridVisible: false },
+                      { name: "blockExitCode", label: "Exit Code", type: "number", gridVisible: false },
+                      { name: "blockExcerpt", label: "Excerto do erro", type: "textarea", fullWidth: true, gridVisible: false },
+                      { name: "blockedAt", label: "Bloqueado em", type: "date" },
+                    ],
+                    overrides: {
+                      newLabel: "Novo bloqueio",
+                      hiddenColumns: ["tarefaId", "subtarefaId", "createdAt"],
+                      columnLabels: { id: "ID", blockReason: "Razão", blockedAt: "Bloqueado em" },
+                    },
+                  },
+                ],
+              },
+              {
+                id: "definicoes",
+                label: "Definições",
+                icon: "description",
+                targetResource: "definicoes",
+                filterField: "projetoId",
+                title: "Definições do Projeto",
+                fields: [
+                  { name: "texto", label: "Definição", type: "textarea", required: true, fullWidth: true },
+                  { name: "seq", label: "Ordem", type: "number", defaultValue: 0, gridVisible: false },
+                ],
+                overrides: {
+                  newLabel: "Nova definição",
+                  hiddenColumns: ["projetoId", "createdAt", "updatedAt"],
+                  columnLabels: { id: "ID", texto: "Definição", seq: "Ordem" },
+                },
+              },
+              {
+                id: "projeto-chats",
+                label: "Chats do Projeto",
+                icon: "chat",
+                targetResource: "projeto_chats",
+                filterField: "projetoId",
+                title: "Chats do Projeto",
+                fields: [
+                  {
+                    name: "role",
+                    label: "Role",
+                    type: "select",
+                    required: true,
+                    options: [
+                      { label: "User", value: "user" },
+                      { label: "Assistant", value: "assistant" },
+                      { label: "System", value: "system" },
+                      { label: "Analyst", value: "analyst" },
+                    ],
+                  },
+                  { name: "texto", label: "Mensagem", type: "textarea", required: true, fullWidth: true, gridVisible: false },
+                ],
+                overrides: {
+                  newLabel: "Nova mensagem",
+                  hiddenColumns: ["projetoId", "createdAt"],
+                  columnLabels: { id: "ID", role: "Role", texto: "Mensagem" },
+                },
+              },
+            ],
+          },
+        },
+      ],
+    },
+
+    {
+      id: "prompts",
+      label: "Prompts",
+      items: [
+        {
+          id: "prompts-list",
+          label: "Prompts",
+          path: "prompts",
+          icon: "edit_note",
+          screen: { kind: "custom", componentId: "gerenteagentes-prompts" },
+        },
+      ],
+    },
+    {
+      id: "motor-v3",
+      label: "Motor v3",
+      items: [
+        {
+          id: "motor-v3-tabelas",
+          label: "Regras e observabilidade",
+          path: "motor-v3",
+          icon: "account_tree",
+          screen: { kind: "custom", componentId: "gerenteagentes-motor-v3-tabelas" },
+        },
+        {
+          id: "motor-v3-test-history",
+          label: "Histórico de testes",
+          path: "motor-v3/testes",
+          icon: "fact_check",
+          screen: { kind: "custom", componentId: "gerenteagentes-test-history" },
+        },
+      ],
+    },
+    {
+      id: "configuracoes",
+      label: "CONFIGURAÇÕES",
+      items: [
+        {
+          id: "configuracoes-list",
+          label: "CONFIGURAÇÕES",
+          path: "configuracoes",
+          icon: "settings",
+          screen: { kind: "custom", componentId: "gerenteagentes-configuracoes" },
+        },
+      ],
+    },
+  ],
+}

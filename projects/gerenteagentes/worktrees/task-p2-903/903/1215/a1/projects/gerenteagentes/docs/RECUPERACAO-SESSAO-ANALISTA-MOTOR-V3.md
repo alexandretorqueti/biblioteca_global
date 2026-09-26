@@ -1,0 +1,58 @@
+# Recuperação de sessão do analista — Motor v3
+
+Decisão registrada em 2026-09-23 após a tarefa 866 permanecer em análise
+depois de reinícios do Motor.
+
+## Gatilhos
+
+- no boot, antes de iniciar consumidores da fila;
+- periodicamente (padrão: 5 minutos), para quedas do Console ou do processo
+  que não coincidam com um boot limpo.
+
+## Contrato de recuperação
+
+Uma sessão `analyst_task_sessions.status = active` sem execução viva em
+`motor_active_executions` é candidata. A análise normal registra um lease
+durável nessa tabela ao obter o claim e o renova enquanto aguarda o Console;
+o lease expira após 90 segundos sem heartbeat. Assim, o ciclo periódico nunca
+confunde uma análise normal em andamento com uma sessão caída. Para cada tarefa, apenas a sessão ativa
+mais recente pode ser retomada; as anteriores são auditadas como `superseded`.
+A sessão também precisa deter o claim vigente em `task_runtime_facts`
+(`analysis_execution_id` igual e `analysis_started_at` preenchido). Uma sessão
+substituída por tentativa posterior não pode voltar a persistir um plano.
+
+1. O Motor consulta o estado da própria sessão no Console.
+2. Se existir resposta final que atende ao parser de análise, persiste o plano
+   normalmente, libera o claim e publica `TASK_READY_FOR_PROGRAMMING` pela
+   outbox. Não reanalisa.
+3. Se ainda não houver resultado, mantém o claim e envia `[RECOVERY]` na mesma
+   `session_key`, pedindo continuidade. O contexto e o histórico permanecem
+   os da sessão original.
+4. Se o Console reportar falha — ou se ocorrer erro de rede, parser,
+   persistência ou retomada — a sessão é fechada como `failed`, o claim é
+   liberado somente se ainda pertencer ao mesmo `analysis_execution_id` e um
+   evento `analysis_recovery_failed` é registrado. Não há reprocessamento
+   imediato: uma nova análise exige ação explícita do usuário.
+
+## Isolamento de falhas
+
+Cada sessão é recuperada em uma cadeia assíncrona com captura própria. Uma
+falha de uma sessão, de sua auditoria, do Console ou do banco é registrada e
+limitada àquela sessão; não pode produzir uma rejeição não tratada nem encerrar
+o processo Node do Motor. O ciclo periódico também possui uma barreira externa:
+se a consulta inicial falhar, o Motor segue vivo e tenta novamente no próximo
+intervalo.
+
+O lease é removido ao concluir ou falhar a análise. Se o processo cair, o
+heartbeat deixa de ser renovado e o lease expira; somente então a sessão volta
+a ser elegível para a recuperação no boot ou no ciclo periódico.
+O mesmo lease é adquirido durante a própria recuperação, impedindo que um
+segundo ciclo concorra com uma retomada longa.
+
+Eventos de auditoria: `analysis_recovery_requested`,
+`analysis_recovered_completed`, `analysis_recovered_clarification` e
+`analysis_recovery_failed`.
+
+O reconciliador antigo de claims só libera claims que não possuem sessão ativa
+recuperável. Isso preserva a exclusividade e impede uma mensagem reentregue de
+iniciar uma segunda análise enquanto a recuperação está em andamento.

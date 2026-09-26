@@ -1,0 +1,41 @@
+name: Deploy Biblioteca Global - Cloudflare Pages
+
+on:
+  push:
+    branches: [base-desenvolvimento]
+  workflow_dispatch:
+
+env:
+  CLOUDFLARE_ACCOUNT_ID: 18a324c1eb5c661113310d978ffb152b
+  VITE_API_URL: https://biblioteca-api.webconnect.com.br/api
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Instalar dependencias
+        run: npm ci --include=dev
+
+      - name: Build web (Vite)
+        run: npm run build --workspace @biblioteca-global/web
+        env:
+          VITE_API_URL: ${{ env.VITE_API_URL }}
+
+      - name: Validar bundle (URL da API no build)
+        run: grep -rq "biblioteca-api.webconnect.com.br" apps/web/dist/assets/
+
+      - name: Deploy no Cloudflare Pages (producao)
+        run: npx wrangler pages deploy apps/web/dist --project-name biblioteca-global --branch master
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

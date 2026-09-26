@@ -1,0 +1,40 @@
+FROM node:22-alpine AS dependencies
+WORKDIR /app
+# Instala git, openssh e bash (necessários para o motor-v2 executar pipelines
+# de desenvolvimento e o deploy.sh do repositório)
+RUN apk add --no-cache bash git openssh-client
+# O motor-v2 opera sobre volumes montados com donos diferentes do usuário do
+# container; sem safe.directory o git falha com "dubious ownership" e toda
+# execução de subtarefa quebra ("spawn git"). Persistido na imagem para
+# sobreviver a recriações de container.
+RUN git config --global --add safe.directory '*'
+COPY package*.json ./
+COPY apps/api/package.json apps/api/package.json
+COPY apps/web/package.json apps/web/package.json
+COPY packages/api-client/package.json packages/api-client/package.json
+COPY packages/file-extract/package.json packages/file-extract/package.json
+COPY packages/schema-tools/package.json packages/schema-tools/package.json
+COPY packages/shared/package.json packages/shared/package.json
+COPY packages/ui/package.json packages/ui/package.json
+# Todos os projetos entram automaticamente no contexto de instalação. Assim,
+# adicionar projects/<slug>/package.json não exige alterar este Dockerfile.
+COPY projects ./projects
+RUN npm ci --include=dev
+# motor-v3 fica fora do workspace de primeiro nível e mantém seu próprio
+# package-lock; suas dependências (RabbitMQ e tipos) precisam existir para o
+# tsc do runtime compilar o consumidor da fila.
+RUN cd projects/gerenteagentes/motor-v3 && npm ci --include=dev
+
+FROM dependencies AS runtime
+WORKDIR /app
+COPY . .
+# Typecheck temporariamente desabilitado - imports ESM/CommonJS precisam de ajuste
+# RUN npm run typecheck --workspace @biblioteca-global/api
+RUN npx tsc -p packages/shared --noEmit false --module Node16 --moduleResolution Node16 \
+ && npx tsc -p packages/schema-tools --noEmit false \
+ && npx tsc -p database --noEmit false
+# Compila motor-v2 e motor-v3 (TypeScript → JavaScript)
+RUN cd projects/gerenteagentes/motor-v2 && npx tsc --build --force \
+ && cd ../motor-v3 && npx tsc --build --force
+EXPOSE 3001 3010
+CMD ["sh", "apps/api/docker-entrypoint.sh"]

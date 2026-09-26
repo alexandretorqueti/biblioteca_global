@@ -1,0 +1,520 @@
+/* Alpha Chat - Estilo Alphaville */
+
+:root {
+  --alpha-blue-dark: #1a3a5c;
+  --alpha-blue-medium: #2c5282;
+  --alpha-blue-soft: #e8edf4;
+  --alpha-gold: #c9a961;
+  --alpha-gold-light: #d4b87a;
+  --alpha-white: #ffffff;
+  --alpha-gray-light: #f0f2f5;
+  --alpha-gray-medium: #d8dce3;
+  --alpha-text: #2d3748;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+}
+
+#root {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+body {
+  font-family: 'Playfair Display', 'Georgia', serif;
+  background: linear-gradient(180deg, var(--alpha-blue-soft) 0%, var(--alpha-gray-light) 100%);
+  color: var(--alpha-text);
+  font-size: 18px;
+  line-height: 1.65;
+}
+
+/* Fonte confortável para o chat (MUI) */
+.alpha-chat-container [data-testid="agent-chat-root"] .MuiTypography-body2 {
+  font-size: 1.125rem !important;
+  line-height: 1.75 !important;
+}
+
+.alpha-chat-container [data-testid="agent-chat-root"] .MuiTypography-body1 {
+  font-size: 1.15rem !important;
+  line-height: 1.75 !important;
+}
+
+.alpha-chat-container [data-testid="agent-chat-root"] .MuiInputBase-input {
+  font-size: 1.1rem !important;
+}
+
+.alpha-chat-container [data-testid="agent-chat-root"] .MuiTypography-caption {
+  font-size: 0.875rem !important;
+}
+
+/* Header Alphaville */
+.alpha-header {
+  background: linear-gradient(135deg, var(--alpha-blue-dark) 0%, var(--alpha-blue-medium) 100%);
+  color: var(--alpha-white);
+  padding: 0.5rem 1.5rem;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+
+.alpha-header-content {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+}
+
+.alpha-logo {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 2px solid var(--alpha-gold);
+  object-fit: cover;
+  background: white;
+}
+
+.alpha-header-text h1 {
+  font-size: 1.5rem;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  margin-bottom: 0.15rem;
+}
+
+.alpha-header-tagline {
+  font-size: 0.95rem;
+  opacity: 0.95;
+  font-family: 'Lato', 'Helvetica', sans-serif;
+  font-weight: 400;
+  margin-bottom: 0.1rem;
+  letter-spacing: 0.3px;
+}
+
+.alpha-header-subtitle {
+  font-size: 0.8rem;
+  opacity: 0.75;
+  font-family: 'Lato', 'Helvetica', sans-serif;
+  font-weight: 300;
+}
+
+.alpha-header-badge {
+  background: var(--alpha-gold);
+  color: var(--alpha-blue-dark);
+  padding: 0.3rem 0.9rem;
+  border-radius: 16px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-family: 'Lato', sans-serif;
+  letter-spacing: 0.5px;
+}
+
+/* Container principal */
+.alpha-main {
+  flex: 1;
+  min-height: 0;
+  max-width: 1200px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 1rem 2rem;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.alpha-layout {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1rem;
+  max-width: 900px;
+  width: 100%;
+  margin: 0 auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.alpha-layout.alpha-authed {
+  grid-template-columns: 320px 1fr;
+  max-width: 1100px;
+}
+
+/* Chat container */
+.alpha-chat-container {
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 4px 24px rgba(26, 58, 92, 0.1);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.alpha-chat-container [data-testid="agent-chat-root"] {
+  height: 100% !important;
+  max-height: none !important;
+  display: flex;
+  flex-direction: column;
+}
+
+.alpha-chat-container [data-testid="agent-chat-root"] > div:nth-child(2) {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto !important;
+}
+
+.alpha-chat-container [data-testid="agent-chat-root"] > form {
+  flex-shrink: 0;
+}
+
+/* Sidebar (quando autenticado) */
+.alpha-side {
+  background: white;
+  border-radius: 12px;
+  padding: 2rem;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+  height: fit-content;
+}
+
+.alpha-side-title {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--alpha-gold);
+  font-weight: 600;
+  margin-bottom: 1.5rem;
+  font-family: 'Lato', sans-serif;
+}
+
+.alpha-side-profile {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid var(--alpha-gray-medium);
+  margin-bottom: 1.5rem;
+}
+
+.alpha-avatar-btn {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  border: 3px solid var(--alpha-gold);
+  overflow: hidden;
+  cursor: pointer;
+  position: relative;
+  background: var(--alpha-gray-light);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2rem;
+  color: var(--alpha-blue-dark);
+  font-weight: 600;
+}
+
+.alpha-avatar-btn img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.alpha-avatar-cam {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  background: var(--alpha-gold);
+  color: white;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.9rem;
+}
+
+.alpha-side-block {
+  margin-bottom: 1.5rem;
+}
+
+.alpha-side-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #718096;
+  margin-bottom: 0.5rem;
+  font-family: 'Lato', sans-serif;
+}
+
+.alpha-side-value {
+  font-size: 1.05rem;
+  color: var(--alpha-text);
+  font-weight: 500;
+}
+
+.alpha-side-name {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.alpha-edit-pencil {
+  font-size: 0.9rem;
+  opacity: 0.6;
+}
+
+.alpha-name-edit {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.alpha-name-edit input {
+  flex: 1;
+  padding: 0.5rem;
+  border: 1px solid var(--alpha-gray-medium);
+  border-radius: 6px;
+  font-size: 0.95rem;
+}
+
+.alpha-mini-btn {
+  background: var(--alpha-gray-light);
+  border: 1px solid var(--alpha-gray-medium);
+  border-radius: 4px;
+  width: 28px;
+  height: 28px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.9rem;
+}
+
+.alpha-mini-btn-ok {
+  background: var(--alpha-gold);
+  color: white;
+  border-color: var(--alpha-gold);
+}
+
+.alpha-logout-mini {
+  background: transparent;
+  border: 1px solid var(--alpha-blue-medium);
+  color: var(--alpha-blue-medium);
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-family: 'Lato', sans-serif;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+
+.alpha-logout-mini:hover {
+  background: var(--alpha-blue-medium);
+  color: white;
+}
+
+.alpha-side-definitions {
+  list-style: none;
+  counter-reset: def-counter;
+}
+
+.alpha-side-definition {
+  counter-increment: def-counter;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--alpha-gray-medium);
+  font-size: 1rem;
+  line-height: 1.6;
+}
+
+.alpha-side-definition::before {
+  content: counter(def-counter) ". ";
+  color: var(--alpha-gold);
+  font-weight: 600;
+  margin-right: 0.5rem;
+}
+
+.alpha-placeholder {
+  color: #a0aec0;
+  font-style: italic;
+}
+
+.alpha-side-status {
+  margin-top: 1.5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--alpha-gray-medium);
+}
+
+.alpha-badge {
+  display: inline-block;
+  background: var(--alpha-gold);
+  color: var(--alpha-blue-dark);
+  padding: 0.4rem 1rem;
+  border-radius: 16px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  font-family: 'Lato', sans-serif;
+}
+
+.alpha-badge-onboarding {
+  background: var(--alpha-gray-medium);
+  color: var(--alpha-text);
+}
+
+.alpha-mail-note {
+  font-size: 0.75rem;
+  color: #718096;
+  font-style: italic;
+  margin-top: 0.5rem;
+}
+
+/* Footer Alphaville */
+.alpha-footer {
+  background: var(--alpha-blue-dark);
+  color: var(--alpha-white);
+  padding: 0.4rem 1.5rem;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.alpha-footer-content {
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.alpha-footer p {
+  font-size: 0.8rem;
+  opacity: 0.8;
+  font-family: 'Lato', sans-serif;
+  margin-bottom: 0.2rem;
+}
+
+.alpha-footer a {
+  color: var(--alpha-gold);
+  text-decoration: none;
+}
+
+.alpha-footer a:hover {
+  text-decoration: underline;
+}
+
+.alpha-footer-credit {
+  font-size: 0.65rem;
+  opacity: 0.5;
+  margin-top: 0.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  font-family: 'Lato', sans-serif;
+}
+
+.alpha-footer-credit a {
+  color: var(--alpha-gold);
+  text-decoration: none;
+}
+
+.alpha-footer-credit a:hover {
+  text-decoration: underline;
+  opacity: 1;
+}
+
+.alpha-footer-logo {
+  opacity: 0.7;
+}
+
+/* Responsivo */
+@media (max-width: 1024px) {
+  .alpha-main {
+    max-width: 100%;
+    padding: 2rem 1.5rem;
+  }
+  
+  .alpha-layout {
+    max-width: 100%;
+  }
+  
+  .alpha-layout.alpha-authed {
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 768px) {
+  .alpha-layout.alpha-authed {
+    grid-template-columns: 1fr;
+  }
+  
+  .alpha-header {
+    flex-direction: column;
+    text-align: center;
+    gap: 0.5rem;
+    padding: 0.5rem 1rem;
+  }
+  
+  .alpha-header-content {
+    flex-direction: column;
+    gap: 1rem;
+  }
+  
+  .alpha-header-text h1 {
+    font-size: 1.3rem;
+  }
+  
+  .alpha-header-tagline {
+    font-size: 0.85rem;
+  }
+  
+  .alpha-header-badge {
+    font-size: 0.7rem;
+    padding: 0.25rem 0.75rem;
+  }
+  
+  .alpha-main {
+    padding: 0.75rem 1rem;
+  }
+  
+  .alpha-chat-container {
+    border-radius: 10px;
+  }
+}
+
+@media (max-width: 480px) {
+  .alpha-header {
+    padding: 0.4rem 0.75rem;
+  }
+  
+  .alpha-logo {
+    width: 38px;
+    height: 38px;
+  }
+  
+  .alpha-header-text h1 {
+    font-size: 1.2rem;
+  }
+  
+  .alpha-header-tagline {
+    font-size: 0.8rem;
+  }
+  
+  /* Em mobile, manter legível */
+  .alpha-chat-container [data-testid="agent-chat-root"] .MuiTypography-body2 {
+    font-size: 1.05rem !important;
+  }
+  
+  .alpha-chat-container [data-testid="agent-chat-root"] .MuiInputBase-input {
+    font-size: 1rem !important;
+  }
+  
+  .alpha-main {
+    padding: 0.5rem;
+  }
+}

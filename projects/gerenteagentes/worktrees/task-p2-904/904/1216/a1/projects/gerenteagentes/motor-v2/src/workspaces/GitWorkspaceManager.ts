@@ -1,0 +1,825 @@
+import { execFile } from "node:child_process"
+import { access, mkdir, rm } from "node:fs/promises"
+import { existsSync } from "node:fs"
+import { isAbsolute, relative, resolve, join } from "node:path"
+import { promisify } from "node:util"
+import { createLogger } from "../shared/logger.js"
+
+const logger = createLogger("GitWorkspaceManager")
+
+const execFileAsync = promisify(execFile)
+
+export interface GitCommandRunner {
+  run(command: readonly string[], cwd: string): Promise<{ stdout: string; stderr: string }>
+}
+
+class NodeGitCommandRunner implements GitCommandRunner {
+  async run(command: readonly string[], cwd: string): Promise<{ stdout: string; stderr: string }> {
+    const [file, ...args] = command
+    if (!file) throw new Error("comando Git vazio")
+    try {
+      const result = await execFileAsync(file, args, { cwd, timeout: 120_000 })
+      return { stdout: result.stdout, stderr: result.stderr }
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException | undefined)?.code
+      if (code === "ENOENT") {
+        throw new Error(
+          `Ambiente bloqueado: Git não conseguiu iniciar; cwd não encontrado ou inacessível: ${cwd}`,
+          { cause: error },
+        )
+      }
+      throw error
+    }
+  }
+}
+
+export interface WorkspacePreparation {
+  /** Raiz do worktree Git, usada para diff, commit e limpeza. */
+  path: string
+  /** Diretório do projeto dentro do worktree, usado pelo agente e pelos gates. */
+  projectPath: string
+  branch: string
+  baseCommit: string
+}
+
+export interface WorkspaceIntegrationInput {
+  repoPath: string
+  baseBranch: string
+  workBranch: string
+  expectedCommit: string
+}
+
+export interface WorkspaceCleanupInput {
+  repoPath: string
+  workspacePath: string
+}
+
+export interface TaskIntegrationInput {
+  repoPath: string
+  agentId: string
+  /** Branch raiz do projeto (ex.: base-desenvolvimento) de onde a branch da tarefa é criada. */
+  rootBaseBranch: string
+  taskId: string
+  /** Workspace real do agente (do Console). Se informado, worktree é criado dentro dele. */
+  agentWorkspacePath?: string
+  /** Arquivos compartilhados que fazem parte explicitamente do escopo da tarefa. */
+  sharedPaths?: readonly string[]
+}
+
+export interface TaskBranchMergeInput {
+  /** Repositório principal (fonte dos refs). */
+  repoPath: string
+  /** Worktree da branch da tarefa (cwd do merge). */
+  taskWorktreePath: string
+  workBranch: string
+  expectedCommit: string
+}
+
+export type TaskBranchMergeResult =
+  | { kind: "merged"; mergeCommit: string; preMergeHead: string }
+  | { kind: "conflict"; conflictFiles: string[]; reason: string }
+
+export interface TaskPromotionInput {
+  repoPath: string
+  baseBranch: string
+  taskBranch: string
+}
+
+export type TaskPromotionResult =
+  | { kind: "promoted"; mergeCommit: string }
+  | { kind: "conflict"; conflictFiles: string[]; reason: string }
+
+export type TaskBranchSyncResult =
+  | { kind: "up_to_date" }
+  | { kind: "merged"; mergeCommit: string }
+  | { kind: "conflict"; conflictFiles: string[]; reason: string }
+
+/**
+ * Nome da branch de integração da tarefa (P1, decisão Alexandre 2026-09-05).
+ * Não pode ser exatamente `motor-v2/<taskId>`: as branches de subtarefa
+ * (`motor-v2/<taskId>/<subtaskId>/a<N>`) ocupam esse prefixo como diretório
+ * de refs (conflito D/F no Git). O sufixo `/integracao` vive dentro do mesmo
+ * diretório e ainda é coberto pela purga `motor-v2/<taskId>/*`.
+ */
+export function taskIntegrationBranch(taskIdSegment: string): string {
+  return `motor-v2/${taskIdSegment}/integracao`
+}
+
+export interface PrepareWorkspaceInput {
+  repoPath: string
+  agentId: string
+  baseBranch: string
+  taskId: string
+  subtaskId: string
+  attempt: number
+  /** Workspace real do agente (do Console). Se informado, worktree é criado dentro dele. */
+  agentWorkspacePath?: string
+  /** Arquivos compartilhados que fazem parte explicitamente do escopo da tarefa. */
+  sharedPaths?: readonly string[]
+}
+
+export type DirtyFileClassification = "task-project" | "relevant-shared" | "external"
+
+export interface ClassifiedDirtyFile {
+  path: string
+  classification: DirtyFileClassification
+}
+
+export interface DirtyFilesReport {
+  all: ClassifiedDirtyFile[]
+  taskProject: string[]
+  relevantShared: string[]
+  external: string[]
+  /** Arquivos que efetivamente determinam a decisão do preflight. */
+  blocking: string[]
+  /** Decisão auditável: sujeira externa permite prosseguir. */
+  decision: "blocked" | "proceeded"
+}
+
+/**
+ * Erro de preflight com a classificação preservada para o chamador.
+ * O texto continua legível para logs/legado, mas o relatório não precisa ser
+ * reconstituído a partir da mensagem para persistência ou telemetria.
+ */
+export class DirtyFilesError extends Error {
+  readonly report: DirtyFilesReport
+
+  constructor(report: DirtyFilesReport) {
+    super(formatDirtyFilesReport(report))
+    this.name = "DirtyFilesError"
+    this.report = report
+  }
+}
+
+function safeSegment(value: string, label: string): string {
+  if (!value || value.length > 80 || value.includes("\0") || /[\\/\r\n]/.test(value)) throw new Error(`${label} inválido`)
+  const normalized = value.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "")
+  if (!normalized || normalized === "." || normalized === "..") throw new Error(`${label} inválido`)
+  return normalized
+}
+
+function safeBranch(branch: string): string {
+  if (!branch || branch.length > 240 || branch.includes("\0") || /[\r\n ~^:?*\\[\\]/.test(branch) || branch.includes("..") || branch.endsWith("/") || branch.startsWith("/")) {
+    throw new Error("branch inválida")
+  }
+  return branch
+}
+
+function validCommit(commit: string): boolean {
+  return /^[a-f0-9]{7,40}$/i.test(commit)
+}
+
+function inside(root: string, target: string): boolean {
+  const path = relative(root, target)
+  return path !== "" && path !== ".." && !path.startsWith(`..${"/"}`) && !isAbsolute(path)
+}
+
+function pathInsideOrEqual(root: string, target: string): boolean {
+  const path = relative(root, target)
+  return path === "" || (path !== ".." && !path.startsWith(`..${"/"}`) && !isAbsolute(path))
+}
+
+/** Classifica alterações do Git contra o projeto e compartilhamentos declarados. */
+export function classifyDirtyFiles(input: {
+  repositoryRoot: string
+  taskProjectPath: string
+  dirtyFiles: readonly string[]
+  sharedPaths?: readonly string[]
+}): DirtyFilesReport {
+  const repositoryRoot = resolve(input.repositoryRoot)
+  const taskProjectPath = resolve(input.taskProjectPath)
+  const shared = new Set((input.sharedPaths ?? []).map((path) => resolve(repositoryRoot, path)))
+  const all: ClassifiedDirtyFile[] = []
+
+  for (const rawPath of input.dirtyFiles) {
+    const path = rawPath.trim()
+    if (!path) continue
+    const absolutePath = resolve(repositoryRoot, path)
+    const classification: DirtyFileClassification = pathInsideOrEqual(taskProjectPath, absolutePath)
+      ? "task-project"
+      : shared.has(absolutePath)
+        ? "relevant-shared"
+        : "external"
+    all.push({ path, classification })
+  }
+
+  const taskProject = all.filter((item) => item.classification === "task-project").map((item) => item.path)
+  const relevantShared = all.filter((item) => item.classification === "relevant-shared").map((item) => item.path)
+  const external = all.filter((item) => item.classification === "external").map((item) => item.path)
+  const blocking = [...taskProject, ...relevantShared]
+  return {
+    all,
+    taskProject,
+    relevantShared,
+    external,
+    blocking,
+    decision: blocking.length > 0 ? "blocked" : "proceeded",
+  }
+}
+
+function formatDirtyFilesReport(report: DirtyFilesReport): string {
+  const format = (paths: readonly string[]) => paths.length > 0 ? paths.join(", ") : "(nenhum)"
+  return [
+    `preflight Git: ${report.decision}`,
+    `projeto da tarefa: ${format(report.taskProject)}`,
+    `compartilhados relevantes: ${format(report.relevantShared)}`,
+    `externos: ${format(report.external)}`,
+    `causas do bloqueio: ${format(report.blocking)}`,
+  ].join("; ")
+}
+
+/**
+ * Cria um worktree exclusivo por tentativa. O repositório principal é tratado
+ * apenas como fonte do commit-base e nunca recebe checkout, merge ou escrita.
+ */
+export class GitWorkspaceManager {
+  private readonly root: string
+  private readonly runner: GitCommandRunner
+
+  constructor(options: { root: string; runner?: GitCommandRunner }) {
+    if (!isAbsolute(options.root) || options.root.includes("\0") || /[\r\n]/.test(options.root)) throw new Error("raiz de workspaces inválida")
+    this.root = resolve(options.root)
+    this.runner = options.runner ?? new NodeGitCommandRunner()
+  }
+
+  /**
+   * O Console pode devolver um caminho válido no container do agente, mas
+   * inexistente no container da API. Worktrees físicos precisam ser criados
+   * somente em uma raiz visível pelo Motor; caso contrário execFile retorna
+   * o enganoso `spawn git ENOENT` por causa do cwd.
+   */
+  private async resolveWorkspaceRoot(agentWorkspacePath: string | undefined, agentId: string): Promise<string> {
+    if (agentWorkspacePath && isAbsolute(agentWorkspacePath)) {
+      const candidate = resolve(agentWorkspacePath)
+      try {
+        await access(candidate)
+        return candidate
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException | undefined)?.code
+        logger.warn(
+          `Workspace do agente não está acessível no container do Motor; usando raiz do Motor (path=${candidate}, code=${code ?? "unknown"})`,
+        )
+      }
+    }
+
+    const fallback = resolve(join(this.root, agentId))
+    await mkdir(fallback, { recursive: true })
+    return fallback
+  }
+
+  /**
+   * Tarefas antigas podem ter persistido repo_path no namespace do host
+   * (/home/alexandre/...). A API usa o mesmo bind mount em
+   * /data/workspace/projects; normalize antes de qualquer comando Git.
+   */
+  private normalizeRepoPath(repoPath: string): string {
+    const original = resolve(repoPath)
+    if (existsSync(original)) return original
+    const hostPrefix = "/home/alexandre/"
+    const containerPrefix = "/data/workspace/projects/"
+    if (!original.startsWith(hostPrefix)) return original
+    const mapped = resolve(containerPrefix + original.slice(hostPrefix.length))
+    if (!existsSync(mapped)) return original
+    logger.warn(`repo_path normalizado para o namespace do container: ${original} -> ${mapped}`)
+    return mapped
+  }
+
+  /** Confirma se uma branch de tarefa já foi incorporada à branch-base. */
+  async isBranchAncestor(input: { repoPath: string; branch: string; ancestor: string }): Promise<boolean> {
+    if (!isAbsolute(input.repoPath)) throw new Error("repoPath inválido para ancestralidade Git")
+    const branch = safeBranch(input.branch)
+    const ancestor = safeBranch(input.ancestor)
+    try {
+      await this.runner.run(["git", "merge-base", "--is-ancestor", branch, ancestor], this.normalizeRepoPath(input.repoPath))
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * Atualiza a branch de integração da tarefa com a base, usando a worktree
+   * dessa própria branch. Nunca executa merge em uma branch sem worktree nem
+   * descarta alterações locais.
+   */
+  async mergeBaseIntoTaskBranch(input: {
+    repoPath: string
+    baseBranch: string
+    taskBranch: string
+  }): Promise<TaskBranchSyncResult> {
+    if (!isAbsolute(input.repoPath)) throw new Error("repoPath inválido para sincronização Git")
+    const repoPath = this.normalizeRepoPath(input.repoPath)
+    const baseBranch = safeBranch(input.baseBranch)
+    const taskBranch = safeBranch(input.taskBranch)
+    if (await this.isBranchAncestor({ repoPath, branch: baseBranch, ancestor: taskBranch })) return { kind: "up_to_date" }
+
+    const worktreeList = await this.runner.run(["git", "worktree", "list", "--porcelain"], repoPath)
+    const lines = worktreeList.stdout.split("\n")
+    let worktreePath: string | undefined
+    for (let index = 0; index < lines.length; index += 1) {
+      if (lines[index] === `branch refs/heads/${taskBranch}`) {
+        const previous = lines[index - 1] ?? ""
+        if (previous.startsWith("worktree ")) worktreePath = previous.slice("worktree ".length).trim()
+        break
+      }
+    }
+    if (!worktreePath) throw new Error(`worktree da branch de integração não encontrada: ${taskBranch}`)
+
+    const dirty = await this.runner.run(["git", "status", "--porcelain"], worktreePath)
+    if (dirty.stdout.trim()) throw new Error(`branch de integração não está limpa: ${dirty.stdout.trim()}`)
+
+    try {
+      await this.runner.run(["git", "merge", "--no-ff", "--no-edit", baseBranch], worktreePath)
+      const mergeCommit = (await this.runner.run(["git", "rev-parse", "--verify", "HEAD"], worktreePath)).stdout.trim()
+      if (!validCommit(mergeCommit)) throw new Error("commit de sincronização inválido")
+      await this.runner.run(["git", "push", "origin", taskBranch], worktreePath)
+      return { kind: "merged", mergeCommit }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      const conflictFiles = await this.listConflictFiles(worktreePath)
+      await this.runner.run(["git", "merge", "--abort"], worktreePath).catch(() => {})
+      if (conflictFiles.length > 0 || /CONFLICT|Automatic merge failed/i.test(reason)) {
+        return { kind: "conflict", conflictFiles, reason: reason.slice(0, 500) }
+      }
+      throw new Error(`Sincronização da branch da tarefa falhou: ${reason}`, { cause: error })
+    }
+  }
+
+  async prepare(input: PrepareWorkspaceInput): Promise<WorkspacePreparation> {
+    if (!isAbsolute(input.repoPath) || !Number.isInteger(input.attempt) || input.attempt < 1) throw new Error("pré-condição inválida para workspace")
+    const repoPath = this.normalizeRepoPath(input.repoPath)
+    const agentId = safeSegment(input.agentId, "agentId")
+    const task = safeSegment(input.taskId, "taskId")
+    const subtask = safeSegment(input.subtaskId, "subtaskId")
+    const baseBranch = safeBranch(input.baseBranch)
+    
+    // Usa workspace do agente (do Console) se disponível; senão usa root padrão
+    const workspaceRoot = await this.resolveWorkspaceRoot(input.agentWorkspacePath, agentId)
+    const target = resolve(join(workspaceRoot, "worktrees", task, subtask, `a${input.attempt}`))
+    // Verifica contra o workspaceRoot usado (workspace do agente OU root padrão)
+    if (!inside(workspaceRoot, target)) throw new Error("workspace fora da raiz segura")
+
+    await this.markSafeDirectory(repoPath)
+    let repositoryRoot: string
+    try {
+      repositoryRoot = resolve((await this.runner.run(["git", "rev-parse", "--show-toplevel"], repoPath)).stdout.trim())
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException | undefined)?.code
+      if (code === "ENOENT") throw new Error("Ambiente bloqueado: repositório não encontrado: " + input.repoPath)
+      throw error
+    }
+    const projectRelativePath = relative(repositoryRoot, repoPath)
+    if (projectRelativePath === ".." || projectRelativePath.startsWith(`..${"/"}`) || isAbsolute(projectRelativePath)) {
+      throw new Error("repo_path fora da raiz do repositório Git")
+    }
+    const baseCommit = (await this.runner.run(["git", "rev-parse", "--verify", `${baseBranch}^{commit}`], repoPath)).stdout.trim()
+    if (!/^[a-f0-9]{7,}$/i.test(baseCommit)) throw new Error("commit-base inválido")
+
+    const branch = `motor-v2/${task}/${subtask}/a${input.attempt}`
+    await mkdir(join(this.root, task, subtask), { recursive: true })
+    // Uma tentativa anterior pode ter deixado um worktree prunable e a
+    // branch ainda registrada. Elimina somente o registro obsoleto; se o
+    // worktree continuar ativo, não toca nele e deixa o Git explicar o
+    // conflito real.
+    await this.runner.run(["git", "worktree", "prune"], repoPath).catch(() => {})
+    // Força limpeza adicional: remove entrada stale que prune não conseguiu
+    // apagar (permissão negada no container, paths diferentes, etc.)
+    await this.runner.run(["git", "worktree", "remove", "--force", target], repoPath).catch(() => {})
+    const worktrees = await this.runner.run(["git", "worktree", "list", "--porcelain"], repoPath)
+    const targetIsActive = worktrees.stdout.split("\n").some((line) => line === `worktree ${target}`)
+    if (!targetIsActive) await rm(target, { recursive: true, force: true })
+    // Branch órfã: existe mas nenhum worktree ativo aponta para ela.
+    // Típico quando tentativa anterior criou a branch mas falhou antes do merge.
+    const branchExists = await this.runner.run(["git", "show-ref", "--verify", "--quiet", `refs/heads/${branch}`], repoPath)
+      .then(() => true)
+      .catch(() => false)
+    const branchHasActiveWorktree = branchExists && worktrees.stdout.includes(branch)
+    if (branchExists && !branchHasActiveWorktree && !targetIsActive) {
+      logger.info(`Branch órfã detectada (sem worktree ativo): deletando ${branch}`, { taskId: input.taskId, subtaskId: input.subtaskId })
+      await this.runner.run(["git", "branch", "-D", branch], repoPath).catch(() => {})
+    }
+    const finalBranchExists = await this.runner.run(["git", "show-ref", "--verify", "--quiet", `refs/heads/${branch}`], repoPath)
+      .then(() => true)
+      .catch(() => false)
+    logger.info(`Criando worktree: target=${target}, baseCommit=${baseCommit}, repoPath=${input.repoPath}`, { taskId: input.taskId, subtaskId: input.subtaskId })
+    try {
+      const worktreeResult = finalBranchExists
+        ? await this.runner.run(["git", "worktree", "add", target, branch], repoPath)
+        : await this.runner.run(["git", "worktree", "add", "--detach", target, baseCommit], repoPath)
+      logger.debug(`Worktree criado: stdout=${worktreeResult.stdout.trim()}, stderr=${worktreeResult.stderr.trim()}`)
+      if (!finalBranchExists) {
+        try {
+          await this.runner.run(["git", "switch", "-c", branch, baseCommit], target)
+        } catch (switchError) {
+          // Branch pode ter sido criada entre o check e o switch (race condition).
+          // Faz checkout na branch existente ao invés de falhar.
+          if (String(switchError).includes("already exists")) {
+            await this.runner.run(["git", "switch", branch], target)
+          } else {
+            throw switchError
+          }
+        }
+      }
+      await this.markSafeDirectory(target)
+
+      // O isolamento precisa existir antes do preflight: alterações externas
+      // no monorepo não podem contaminar o workspace da tarefa. O estado da
+      // base é classificado somente depois que o worktree exclusivo foi criado.
+      const diff = await this.runner.run(["git", "diff", "--name-only", "--ignore-space-at-eol", "HEAD"], repositoryRoot)
+      const staged = await this.runner.run(["git", "diff", "--name-only", "--cached", "--ignore-space-at-eol"], repositoryRoot)
+      const dirtyFiles = [...new Set([...diff.stdout.split("\n"), ...staged.stdout.split("\n")].map((s) => s.trim()).filter(Boolean))]
+      const dirtyReport = classifyDirtyFiles({ repositoryRoot, taskProjectPath: repoPath, dirtyFiles, sharedPaths: input.sharedPaths })
+      if (dirtyReport.decision === "blocked") {
+        throw new DirtyFilesError(dirtyReport)
+      }
+      logger.info(`Preflight Git prosseguiu: ${formatDirtyFilesReport(dirtyReport)}`)
+      logger.info(`Worktree validado com sucesso: path=${target}, branch=${branch}`, { taskId: input.taskId, subtaskId: input.subtaskId })
+      return { path: target, projectPath: resolve(join(target, projectRelativePath)), branch, baseCommit }
+    } catch (error) {
+      logger.error(`Erro ao criar worktree: ${error instanceof Error ? error.message : String(error)}`, { taskId: input.taskId, subtaskId: input.subtaskId })
+      // O alvo foi criado exclusivamente por esta tentativa, sempre dentro da
+      // raiz dedicada; removê-lo evita worktree parcial sem tocar no repositório.
+      await this.runner.run(["git", "worktree", "remove", "--force", target], repoPath).catch(() => {})
+      if (!finalBranchExists) await this.runner.run(["git", "branch", "-D", branch], repoPath).catch(() => {})
+      await rm(target, { recursive: true, force: true }).catch(() => {})
+      throw error
+    }
+  }
+
+  /**
+   * Garante a branch + worktree de integração da TAREFA (P1, 2026-09-05).
+   *
+   * Arquitetura aprovada pelo Alexandre: no início da execução o motor cria
+   * uma pasta e uma branch para a tarefa; as subtarefas são criadas dessa
+   * branch (não da base) e mergeiam nela. Só quando todas as subtarefas
+   * estiverem mergeadas e a branch estiver verde é que ela vai para a base.
+   *
+   * Idempotente: se a branch/worktree já existem (retomada, próxima subtarefa),
+   * reutiliza o estado existente — nunca reseta a branch da tarefa.
+   */
+  async ensureTaskIntegration(input: TaskIntegrationInput): Promise<WorkspacePreparation> {
+    if (!isAbsolute(input.repoPath)) throw new Error("pré-condição inválida para integração da tarefa")
+    const repoPath = this.normalizeRepoPath(input.repoPath)
+    const agentId = safeSegment(input.agentId, "agentId")
+    const task = safeSegment(input.taskId, "taskId")
+    const rootBaseBranch = safeBranch(input.rootBaseBranch)
+
+    const workspaceRoot = await this.resolveWorkspaceRoot(input.agentWorkspacePath, agentId)
+    const target = resolve(join(workspaceRoot, "worktrees", task, "integracao"))
+    if (!inside(workspaceRoot, target)) throw new Error("workspace da tarefa fora da raiz segura")
+
+    await this.markSafeDirectory(repoPath)
+    const branch = taskIntegrationBranch(task)
+
+    // Estado existente: branch + worktree ativos → reutiliza (próxima subtarefa
+    // da mesma tarefa, retomada após pause, etc.).
+    await this.runner.run(["git", "worktree", "prune"], repoPath).catch(() => {})
+    const worktrees = await this.runner.run(["git", "worktree", "list", "--porcelain"], repoPath)
+    const targetIsActive = worktrees.stdout.split("\n").some((line) => line === `worktree ${target}`)
+    const branchExists = await this.runner.run(["git", "show-ref", "--verify", "--quiet", `refs/heads/${branch}`], repoPath)
+      .then(() => true)
+      .catch(() => false)
+
+    const repositoryRoot = resolve((await this.runner.run(["git", "rev-parse", "--show-toplevel"], repoPath)).stdout.trim())
+    const projectRelativePath = relative(repositoryRoot, repoPath)
+    if (projectRelativePath === ".." || projectRelativePath.startsWith(`..${"/"}`) || isAbsolute(projectRelativePath)) {
+      throw new Error("repo_path fora da raiz do repositório Git")
+    }
+
+    if (branchExists && targetIsActive) {
+      const baseCommit = (await this.runner.run(["git", "rev-parse", "--verify", `${branch}^{commit}`], repoPath)).stdout.trim()
+      if (!validCommit(baseCommit)) throw new Error("commit da branch da tarefa inválido")
+      await this.markSafeDirectory(target)
+      logger.info(`Branch de integração da tarefa reutilizada: ${branch} (${baseCommit})`, { taskId: input.taskId })
+      return { path: target, projectPath: resolve(join(target, projectRelativePath)), branch, baseCommit }
+    }
+
+    const baseCommit = (await this.runner.run(["git", "rev-parse", "--verify", `${rootBaseBranch}^{commit}`], repoPath)).stdout.trim()
+    if (!validCommit(baseCommit)) throw new Error("commit-base inválido para branch da tarefa")
+
+    if (branchExists && !targetIsActive) {
+      // Branch sobreviveu (ex.: worktree removido manualmente): reanexa sem
+      // tocar nos commits já integrados.
+      await this.runner.run(["git", "worktree", "remove", "--force", target], repoPath).catch(() => {})
+      await rm(target, { recursive: true, force: true })
+      await this.runner.run(["git", "worktree", "add", target, branch], repoPath)
+      await this.markSafeDirectory(target)
+      logger.info(`Worktree da tarefa reanexado à branch existente: ${branch}`, { taskId: input.taskId })
+      return { path: target, projectPath: resolve(join(target, projectRelativePath)), branch, baseCommit }
+    }
+
+    if (!branchExists && targetIsActive) {
+      // Worktree órfão sem branch (estado inconsistente): descarta e recria.
+      await this.runner.run(["git", "worktree", "remove", "--force", target], repoPath).catch(() => {})
+      await rm(target, { recursive: true, force: true })
+    }
+
+    await mkdir(join(workspaceRoot, "worktrees", task), { recursive: true })
+    try {
+      await this.runner.run(["git", "worktree", "add", "--detach", target, baseCommit], repoPath)
+      try {
+        await this.runner.run(["git", "switch", "-c", branch, baseCommit], target)
+      } catch (switchError) {
+        if (String(switchError).includes("already exists")) {
+          await this.runner.run(["git", "switch", branch], target)
+        } else {
+          throw switchError
+        }
+      }
+      await this.markSafeDirectory(target)
+
+      // O worktree isolado precisa existir antes do preflight. Assim, a
+      // execução já tem um contexto selecionado e um erro de criação/seleção
+      // interrompe o fluxo com o diagnóstico do Git, sem validar a tarefa no
+      // checkout compartilhado. O estado sujo é lido da raiz original para
+      // preservar a evidência das alterações existentes antes do isolamento;
+      // alterações externas continuam fora do escopo salvo declaração explícita.
+      const diff = await this.runner.run(["git", "diff", "--name-only", "--ignore-space-at-eol", "HEAD"], repositoryRoot).catch((error: unknown) => {
+        const code = (error as NodeJS.ErrnoException | undefined)?.code
+        if (code === "ENOENT") throw new Error("Ambiente bloqueado: repositório não encontrado: " + input.repoPath)
+        throw error
+      })
+      const staged = await this.runner.run(["git", "diff", "--name-only", "--cached", "--ignore-space-at-eol"], repositoryRoot)
+      const dirtyFiles = [...new Set([...diff.stdout.split("\n"), ...staged.stdout.split("\n")].map((s) => s.trim()).filter(Boolean))]
+      const dirtyReport = classifyDirtyFiles({ repositoryRoot, taskProjectPath: repoPath, dirtyFiles, sharedPaths: input.sharedPaths })
+      if (dirtyReport.decision === "blocked") {
+        throw new DirtyFilesError(dirtyReport)
+      }
+      logger.info(`Preflight Git prosseguiu: ${formatDirtyFilesReport(dirtyReport)}`, { taskId: input.taskId })
+      logger.info(`Branch de integração da tarefa criada: ${branch} a partir de ${rootBaseBranch} (${baseCommit})`, { taskId: input.taskId })
+      return { path: target, projectPath: resolve(join(target, projectRelativePath)), branch, baseCommit }
+    } catch (error) {
+      await this.runner.run(["git", "worktree", "remove", "--force", target], repoPath).catch(() => {})
+      await rm(target, { recursive: true, force: true }).catch(() => {})
+      throw error
+    }
+  }
+
+  /**
+   * Mergeia a branch aprovada de uma subtarefa NA BRANCH DA TAREFA, dentro do
+   * worktree da tarefa (o repositório principal não é tocado). Conflito é
+   * resultado de primeira classe (não exceção): o chamador decide o fluxo
+   * (agente da subtarefa resolve; escala só se falhar — decisão 2026-09-05).
+   */
+  async integrateIntoTaskBranch(input: TaskBranchMergeInput): Promise<TaskBranchMergeResult> {
+    if (!isAbsolute(input.repoPath) || !isAbsolute(input.taskWorktreePath) || !validCommit(input.expectedCommit)) {
+      throw new Error("pré-condição inválida para integração na branch da tarefa")
+    }
+    const repoPath = this.normalizeRepoPath(input.repoPath)
+    const workBranch = safeBranch(input.workBranch)
+
+    const dirty = await this.runner.run(["git", "status", "--porcelain"], input.taskWorktreePath)
+    if (dirty.stdout.trim()) {
+      throw new Error("worktree da tarefa não está limpo para integração: " + dirty.stdout.trim().split("\n")[0])
+    }
+    const workCommit = (await this.runner.run(["git", "rev-parse", "--verify", `${workBranch}^{commit}`], repoPath)).stdout.trim()
+    if (!validCommit(workCommit) || workCommit.toLowerCase() !== input.expectedCommit.toLowerCase()) {
+      throw new Error("commit da branch de trabalho não corresponde ao commit aprovado")
+    }
+
+    const preMergeHead = (await this.runner.run(["git", "rev-parse", "--verify", "HEAD"], input.taskWorktreePath)).stdout.trim()
+    if (!validCommit(preMergeHead)) throw new Error("HEAD da branch da tarefa inválido")
+
+    try {
+      await this.runner.run(["git", "merge", "--no-ff", "--no-edit", workBranch], input.taskWorktreePath)
+      const mergeCommit = (await this.runner.run(["git", "rev-parse", "--verify", "HEAD"], input.taskWorktreePath)).stdout.trim()
+      if (!validCommit(mergeCommit)) throw new Error("commit de merge inválido")
+      return { kind: "merged", mergeCommit, preMergeHead }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      const conflictFiles = await this.listConflictFiles(input.taskWorktreePath)
+      await this.runner.run(["git", "merge", "--abort"], input.taskWorktreePath).catch(() => {})
+      return { kind: "conflict", conflictFiles, reason: reason.slice(0, 500) }
+    }
+  }
+
+  /** Desfaz o merge na branch da tarefa (gate de integração vermelho). */
+  async revertTaskBranchMerge(taskWorktreePath: string, resetToCommit: string): Promise<void> {
+    if (!isAbsolute(taskWorktreePath) || !validCommit(resetToCommit)) {
+      throw new Error("pré-condição inválida para reverter merge da branch da tarefa")
+    }
+    await this.runner.run(["git", "merge", "--abort"], taskWorktreePath).catch(() => {})
+    await this.runner.run(["git", "reset", "--hard", resetToCommit], taskWorktreePath)
+  }
+
+  /**
+   * Promove a branch da tarefa para a branch-base no repositório principal
+   * (merge + push). Somente quando TODAS as subtarefas estão mergeadas e o
+   * gate de integração está verde. Conflito com a base (drift externo) é
+   * SEMPRE resolvido por humano (decisão Alexandre 2026-09-05): o merge é
+   * abortado, nada parcial é gravado, e o chamador bloqueia a tarefa.
+   */
+  async promoteTaskBranch(input: TaskPromotionInput): Promise<TaskPromotionResult> {
+    if (!isAbsolute(input.repoPath)) throw new Error("pré-condição inválida para promoção da tarefa")
+    const repoPath = this.normalizeRepoPath(input.repoPath)
+    const baseBranch = safeBranch(input.baseBranch)
+    const taskBranch = safeBranch(input.taskBranch)
+
+    const diff = await this.runner.run(["git", "diff", "--name-only", "--ignore-space-at-eol", "HEAD"], repoPath)
+    if (diff.stdout.trim()) throw new Error("repositório principal não está limpo para promoção: " + diff.stdout.trim())
+
+    const originalBranch = (await this.runner.run(["git", "symbolic-ref", "--quiet", "--short", "HEAD"], repoPath)).stdout.trim()
+    try {
+      await this.runner.run(["git", "switch", baseBranch], repoPath)
+      await this.runner.run(["git", "merge", "--no-ff", "--no-edit", taskBranch], repoPath)
+      const mergeCommit = (await this.runner.run(["git", "rev-parse", "--verify", "HEAD"], repoPath)).stdout.trim()
+      if (!validCommit(mergeCommit)) throw new Error("commit de promoção inválido")
+      await this.runner.run(["git", "push", "origin", baseBranch], repoPath)
+      // Publica também a branch da tarefa (rastreabilidade do que foi promovido).
+      await this.runner.run(["git", "push", "origin", taskBranch], repoPath).catch((error: unknown) => {
+        logger.warn("Falha ao publicar branch da tarefa (promoção mantida): " + (error instanceof Error ? error.message : String(error)))
+      })
+      return { kind: "promoted", mergeCommit }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      const conflictFiles = await this.listConflictFiles(repoPath)
+      await this.runner.run(["git", "merge", "--abort"], repoPath).catch(() => {})
+      if (originalBranch && originalBranch !== baseBranch) {
+        await this.runner.run(["git", "switch", originalBranch], repoPath).catch(() => {})
+      }
+      if (conflictFiles.length > 0 || /CONFLICT|Automatic merge failed/i.test(reason)) {
+        return { kind: "conflict", conflictFiles, reason: reason.slice(0, 500) }
+      }
+      throw new Error("Promoção da tarefa para a base falhou: " + reason, { cause: error })
+    }
+  }
+
+  /** Publica uma branch no origin (durabilidade do estado da branch da tarefa). */
+  async publishBranch(repoPath: string, branch: string): Promise<void> {
+    if (!isAbsolute(repoPath)) throw new Error("repoPath inválido para publicação")
+    const safe = safeBranch(branch)
+    // O repoPath persistido pode estar no namespace do host/console; sem
+    // normalizar, o push falha com ENOENT dentro do container da API.
+    const normalized = this.normalizeRepoPath(repoPath)
+    await this.markSafeDirectory(normalized)
+    await this.runner.run(["git", "push", "--force-with-lease", "origin", safe], normalized)
+  }
+
+  private async listConflictFiles(cwd: string): Promise<string[]> {
+    const result = await this.runner.run(["git", "diff", "--name-only", "--diff-filter=U"], cwd).catch(() => ({ stdout: "", stderr: "" }))
+    return result.stdout.split("\n").map((line) => line.trim()).filter(Boolean)
+  }
+
+  async changedPaths(workspacePath: string, baseCommit: string, commitSha: string): Promise<string[]> {
+    if (!isAbsolute(workspacePath) || !/^[a-f0-9]{7,}$/i.test(baseCommit) || !/^[a-f0-9]{7,}$/i.test(commitSha)) {
+      throw new Error("referência inválida para diff do workspace")
+    }
+    const result = await this.runner.run(["git", "diff", "--name-only", `${baseCommit}..${commitSha}`], workspacePath)
+    return result.stdout.split("\n").map((path) => path.trim()).filter(Boolean)
+  }
+
+  /**
+   * Integra uma branch aprovada na branch-base no repositório principal.
+   * O chamador deve manter o lease do projeto durante toda a operação.
+   */
+  async integrate(input: WorkspaceIntegrationInput): Promise<{ mergeCommit: string }> {
+    if (!isAbsolute(input.repoPath) || !validCommit(input.expectedCommit)) {
+      throw new Error("pré-condição inválida para integração Git")
+    }
+    const repoPath = this.normalizeRepoPath(input.repoPath)
+    const baseBranch = safeBranch(input.baseBranch)
+    const workBranch = safeBranch(input.workBranch)
+    // Untracked files não conflitam com merge; não podem travar a integração
+    // enquanto outra sessão mantém arquivos novos no repositório.
+    // Ignora whitespace-at-eol (artefato de db:migrate em _journal.json).
+    const diffIntegrate = await this.runner.run(["git", "diff", "--name-only", "--ignore-space-at-eol", "HEAD"], repoPath)
+    if (diffIntegrate.stdout.trim()) throw new Error("repositório principal não está limpo para integração: " + diffIntegrate.stdout.trim())
+
+    const workCommit = (await this.runner.run(["git", "rev-parse", "--verify", `${workBranch}^{commit}`], repoPath)).stdout.trim()
+    if (!validCommit(workCommit) || workCommit.toLowerCase() !== input.expectedCommit.toLowerCase()) {
+      throw new Error("commit da branch de trabalho não corresponde ao commit aprovado")
+    }
+
+    const originalBranch = (await this.runner.run(["git", "symbolic-ref", "--quiet", "--short", "HEAD"], repoPath)).stdout.trim()
+    try {
+      await this.runner.run(["git", "switch", baseBranch], repoPath)
+      await this.runner.run(["git", "merge", "--no-ff", "--no-edit", workBranch], repoPath)
+      const mergeCommit = (await this.runner.run(["git", "rev-parse", "--verify", "HEAD"], repoPath)).stdout.trim()
+      if (!validCommit(mergeCommit)) throw new Error("commit de merge inválido")
+      // A publicação da subtarefa envia apenas a branch temporária. Depois da
+      // integração, a branch-base também precisa ser publicada antes do deploy;
+      // caso contrário o host fica correto localmente, mas origin permanece
+      // atrasado e a próxima execução pode partir de uma base divergente.
+      await this.runner.run(["git", "push", "origin", baseBranch], repoPath)
+      return { mergeCommit }
+    } catch (error) {
+      await this.runner.run(["git", "merge", "--abort"], repoPath).catch(() => {})
+      if (originalBranch && originalBranch !== baseBranch) {
+        await this.runner.run(["git", "switch", originalBranch], repoPath).catch(() => {})
+      }
+      const reason = error instanceof Error ? error.message : String(error)
+      throw new Error("Integração Git falhou: " + reason, { cause: error })
+    }
+  }
+
+  /** Remove o worktree temporário sem tocar em outros diretórios do projeto. */
+  async cleanup(input: WorkspaceCleanupInput): Promise<void> {
+    if (!isAbsolute(input.repoPath) || !isAbsolute(input.workspacePath)) {
+      throw new Error("pré-condição inválida para limpeza do workspace")
+    }
+    const repoPath = this.normalizeRepoPath(input.repoPath)
+    const workspacePath = resolve(input.workspacePath)
+    // Verifica se está dentro de um workspace válido:
+    // - Se contém /worktrees/, extrai a raiz do próprio caminho
+    // - Senão, verifica contra this.root (comportamento original)
+    const marker = `/worktrees/`
+    const markerIndex = workspacePath.indexOf(marker)
+    if (markerIndex !== -1) {
+      const workspaceRoot = workspacePath.substring(0, markerIndex)
+      if (!inside(workspaceRoot, workspacePath)) throw new Error("workspace fora da raiz segura")
+    } else if (!inside(this.root, workspacePath)) {
+      throw new Error("workspace fora da raiz segura")
+    }
+    await this.runner.run(["git", "worktree", "remove", "--force", workspacePath], repoPath)
+    await rm(workspacePath, { recursive: true, force: true })
+  }
+
+  /**
+   * Limpa TODOS os worktrees e branches residuais de uma tarefa finalizada.
+   * Tarefas com múltiplas tentativas acumulam worktrees (a1, a2, a3...) que
+   * ocupam disco. Após completion/failure/cancel, varre e remove tudo.
+   */
+  async purgeTaskArtifacts(input: { repoPath: string; taskId: string }): Promise<{ worktreesRemoved: number; branchesRemoved: number }> {
+    if (!isAbsolute(input.repoPath)) throw new Error("repoPath inválido para purge")
+    const repoPath = this.normalizeRepoPath(input.repoPath)
+    const taskId = safeSegment(input.taskId, "taskId")
+    let worktreesRemoved = 0
+    let branchesRemoved = 0
+
+    // Listar worktrees do repositório e filtrar os que pertencem à tarefa
+    const worktreeList = await this.runner.run(["git", "worktree", "list", "--porcelain"], repoPath).catch(() => ({ stdout: "", stderr: "" }))
+    const worktreePaths: string[] = []
+    const taskDirectories = new Set<string>()
+    for (const line of worktreeList.stdout.split("\n")) {
+      if (line.startsWith("worktree ")) {
+        const wtPath = line.slice("worktree ".length).trim()
+        // Worktrees do motor seguem os padrões:
+        // - subtarefa: <workspaceRoot>/worktrees/<taskId>/<subtaskId>/a<N>
+        // - integração da tarefa (P1): <workspaceRoot>/worktrees/<taskId>/integracao
+        // O diretório da tarefa é derivado do segmento após /worktrees/ para
+        // cobrir os dois formatos (dirname duplo varreria a raiz worktrees/).
+        if (wtPath.includes(`/${taskId}/`) && this.isInsideValidWorkspace(wtPath)) {
+          worktreePaths.push(wtPath)
+          const marker = "/worktrees/"
+          const markerIndex = wtPath.indexOf(marker)
+          if (markerIndex !== -1) {
+            const firstSegment = wtPath.slice(markerIndex + marker.length).split("/")[0]
+            if (firstSegment) taskDirectories.add(resolve(wtPath.slice(0, markerIndex), "worktrees", firstSegment))
+          }
+        }
+      }
+    }
+
+    for (const wtPath of worktreePaths) {
+      try {
+        await this.runner.run(["git", "worktree", "remove", "--force", wtPath], repoPath)
+        await rm(wtPath, { recursive: true, force: true })
+        worktreesRemoved++
+      } catch {
+        // Se worktree já foi removido manualmente, apenas ignore
+        await rm(wtPath, { recursive: true, force: true }).catch(() => {})
+      }
+    }
+
+    // Listar branches do motor-v2 para esta tarefa e removê-las
+    const branchList = await this.runner.run(["git", "branch", "--list", `motor-v2/${taskId}/*`], repoPath).catch(() => ({ stdout: "", stderr: "" }))
+    for (const line of branchList.stdout.split("\n")) {
+      const branch = line.replace(/^[*\s]+/, "").trim()
+      if (!branch) continue
+      try {
+        await this.runner.run(["git", "branch", "-D", branch], repoPath)
+        branchesRemoved++
+      } catch {
+        // Branch pode já ter sido deletada; ignorar
+      }
+    }
+
+    // Limpar diretórios da tarefa dentro dos workspaces dos agentes.
+    for (const taskDir of taskDirectories) {
+      if (this.isInsideValidWorkspace(taskDir)) await rm(taskDir, { recursive: true, force: true }).catch(() => {})
+    }
+
+    return { worktreesRemoved, branchesRemoved }
+  }
+
+  /**
+   * Verifica se um caminho está dentro de um workspace válido.
+   * Workspaces válidos: MOTOR_WORKSPACE_ROOT OU workspace de agente (padrão <root>/worktrees/...).
+   */
+  private isInsideValidWorkspace(path: string): boolean {
+    const resolved = resolve(path)
+    // Padrão de worktree: <workspaceRoot>/worktrees/<taskId>/<subtaskId>/a<N>
+    const marker = "/worktrees/"
+    const markerIndex = resolved.indexOf(marker)
+    if (markerIndex !== -1) {
+      const workspaceRoot = resolved.substring(0, markerIndex)
+      return inside(workspaceRoot, resolved)
+    }
+    // Fallback: verifica contra this.root (comportamento original)
+    return inside(this.root, resolved)
+  }
+
+  private async markSafeDirectory(path: string): Promise<void> {
+    await this.runner.run(["git", "config", "--global", "--add", "safe.directory", resolve(path)], process.cwd())
+  }
+}

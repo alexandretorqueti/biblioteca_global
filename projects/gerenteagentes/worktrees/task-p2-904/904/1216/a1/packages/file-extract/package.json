@@ -1,0 +1,19 @@
+{
+  "name": "@biblioteca-global/file-extract",
+  "version": "0.0.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "Extração de texto de arquivos anexados (PDF, DOCX, texto puro)",
+  "main": "src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "mammoth": "^1.8.0",
+    "pdf-parse": "^1.1.0"
+  },
+  "devDependencies": {
+    "@types/pdf-parse": "^1.1.4"
+  }
+}

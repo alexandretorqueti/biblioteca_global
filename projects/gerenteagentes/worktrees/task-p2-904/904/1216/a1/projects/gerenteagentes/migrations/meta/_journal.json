@@ -1,0 +1,503 @@
+{
+  "version": "7",
+  "dialect": "mysql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "5",
+      "when": 1787064681606,
+      "tag": "0000_mysterious_phil_sheldon",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1787068659940,
+      "tag": "0002_oval_iron_fist",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1787218829318,
+      "tag": "0002_brief_sue_storm",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1787240425138,
+      "tag": "0003_ambiguous_true_believers",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "5",
+      "when": 1787266752005,
+      "tag": "0004_openclaw_agent_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "5",
+      "when": 1787272186886,
+      "tag": "0005_right_felicia_hardy",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "5",
+      "when": 1787576340000,
+      "tag": "0006_warm_natasha_romanoff",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "5",
+      "when": 1787678128920,
+      "tag": "0007_luxuriant_mesmero",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "5",
+      "when": 1787757650772,
+      "tag": "0008_lowly_puck",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "5",
+      "when": 1787817600000,
+      "tag": "0009_motor_model_chain",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "5",
+      "when": 1787817600001,
+      "tag": "0010_motor_execution_config",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "5",
+      "when": 1787817600002,
+      "tag": "0011_motor_workspace_metadata",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "5",
+      "when": 1787817600003,
+      "tag": "0012_motor_correction_subtasks",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "5",
+      "when": 1787817600004,
+      "tag": "0013_motor_resource_queue",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "5",
+      "when": 1788027895569,
+      "tag": "0014_parallel_trauma",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "5",
+      "when": 1788120815596,
+      "tag": "0015_natural_ted_forrester",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "5",
+      "when": 1788130405136,
+      "tag": "0016_careless_lockheed",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "5",
+      "when": 1788456311711,
+      "tag": "0017_motor_subtask_deliveries",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "5",
+      "when": 1788517641120,
+      "tag": "0018_gray_hercules",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "5",
+      "when": 1788560000000,
+      "tag": "0019_persisted_agent_prompts",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "5",
+      "when": 1788560000001,
+      "tag": "0020_prompts_versions_and_refutations",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "5",
+      "when": 1788560000002,
+      "tag": "0021_versioned_output_contracts",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "5",
+      "when": 1788778930212,
+      "tag": "0022_prompt_execution_composition",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "5",
+      "when": 1788782400000,
+      "tag": "0023_deploy_queue",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "5",
+      "when": 1788786000000,
+      "tag": "0024_analyst_plan_quality",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "5",
+      "when": 1788840000000,
+      "tag": "0025_complete_analyst_output_contract",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "5",
+      "when": 1788867000000,
+      "tag": "0026_motor_session_continuity",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "5",
+      "when": 1788867600000,
+      "tag": "0027_motor_configuracoes",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "5",
+      "when": 1788969067076,
+      "tag": "0029_task_runtime_facts",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "5",
+      "when": 1788969067077,
+      "tag": "0027_motor_session_failure_diagnostics",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "5",
+      "when": 1788969067078,
+      "tag": "0028_analyst_task_sessions",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "5",
+      "when": 1789065000000,
+      "tag": "0031_motor_active_executions",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "5",
+      "when": 1789074000000,
+      "tag": "0032_promotion_conflict_analyses",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "5",
+      "when": 1789170000000,
+      "tag": "0033_motor_max_delivery_attempts",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "5",
+      "when": 1789170060000,
+      "tag": "0034_remove_legacy_model_chain",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "5",
+      "when": 1789170120000,
+      "tag": "0035_monitor_recovery_prompt",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "5",
+      "when": 1789170180000,
+      "tag": "0036_developer_database_operation_contract",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "5",
+      "when": 1789170240000,
+      "tag": "0037_developer_database_access_guard",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "5",
+      "when": 1789170300000,
+      "tag": "0038_analyst_context_document",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "5",
+      "when": 1789170360000,
+      "tag": "0039_developer_contextual_prompt",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "5",
+      "when": 1789170420000,
+      "tag": "0040_modelo_cooldown",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "5",
+      "when": 1789170480000,
+      "tag": "0041_developer_task_description_prompt",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "5",
+      "when": 1789170720000,
+      "tag": "0046_infrastructure_config",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "5",
+      "when": 1789170780000,
+      "tag": "0047_task_events",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "5",
+      "when": 1789170840000,
+      "tag": "0048_dev_database_migration_only",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "5",
+      "when": 1789170900000,
+      "tag": "0049_task_chat_realtime_execution",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "5",
+      "when": 1789170960000,
+      "tag": "0018_remove_duplicated_fields",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "5",
+      "when": 1789171020000,
+      "tag": "0028_v4_analyst_cohesion",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "5",
+      "when": 1789171080000,
+      "tag": "0030_remove_tarefas_status",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "5",
+      "when": 1789379000000,
+      "tag": "0050_blue_green_deploy",
+      "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "5",
+      "when": 1789891200000,
+      "tag": "0051_motor_v3_runtime",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "5",
+      "when": 1789894800000,
+      "tag": "0052_motor_model_cooldown_collation",
+      "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "5",
+      "when": 1789898400000,
+      "tag": "0053_align_analyst_contract_v3",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "5",
+      "when": 1789902000000,
+      "tag": "0054_motor_command_governance",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "5",
+      "when": 1789905600000,
+      "tag": "0055_analyst_task_decomposition_policy",
+      "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "5",
+      "when": 1789920000000,
+      "tag": "0056_motor_execution_wait_queue",
+      "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "5",
+      "when": 1790006400000,
+      "tag": "0057_test_baseline_history",
+      "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "5",
+      "when": 1790010000000,
+      "tag": "0058_test_gate_hardening",
+      "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "5",
+      "when": 1790013600000,
+      "tag": "0059_message_driven_test_gates",
+      "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "5",
+      "when": 1790020800000,
+      "tag": "0060_analyst_session_correlation",
+      "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "5",
+      "when": 1790024400000,
+      "tag": "0061_motor_v3_deploy_event_driven",
+      "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "5",
+      "when": 1790028000000,
+      "tag": "0062_motor_v3_deploy_callback",
+      "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "5",
+      "when": 1790031600000,
+      "tag": "0063_motor_v3_clarification_resume",
+      "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "5",
+      "when": 1790094561603,
+      "tag": "0064_motor_v3_cancel_governance",
+      "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "5",
+      "when": 1790100000000,
+      "tag": "0065_monitor_resolucao_bloqueio_prompt",
+      "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "5",
+      "when": 1790100000001,
+      "tag": "0066_global_model_selection",
+      "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "5",
+      "when": 1790100000002,
+      "tag": "0067_inherit_global_model_selection",
+      "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "5",
+      "when": 1790100000003,
+      "tag": "0068_uniform_collation_utf8mb4_unicode_ci",
+      "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "5",
+      "when": 1790100000004,
+      "tag": "0069_adjustments_generations",
+      "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "5",
+      "when": 1790100000005,
+      "tag": "0070_motor_deploy_lock",
+      "breakpoints": true
+    },
+    {
+      "idx": 70,
+      "version": "5",
+      "when": 1790467200000,
+      "tag": "0071_motor_operation_log_deploy_phases",
+      "breakpoints": true
+    }
+  ]
+}

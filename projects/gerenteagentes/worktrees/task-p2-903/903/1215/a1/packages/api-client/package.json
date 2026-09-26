@@ -1,0 +1,15 @@
+{
+  "name": "@biblioteca-global/api-client",
+  "version": "0.0.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "Camada de transporte tipada da Biblioteca Global — única que fala HTTP",
+  "main": "src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@biblioteca-global/shared": "*"
+  }
+}

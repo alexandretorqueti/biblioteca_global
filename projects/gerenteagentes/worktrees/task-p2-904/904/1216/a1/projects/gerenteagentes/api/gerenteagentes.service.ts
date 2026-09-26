@@ -1,0 +1,2761 @@
+import { Injectable, Inject, Logger, NotFoundException, BadRequestException, Optional } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { eq, desc, and, asc, lt, or, isNull, isNotNull, sql } from 'drizzle-orm';
+import { request as httpRequest, type RequestOptions } from 'node:http';
+import { request as httpsRequest } from 'node:https';
+import { randomUUID } from 'node:crypto';
+import type {
+  ProjetoResumo,
+  ModelSelectionTipo,
+  ModelSelectionEntry,
+} from '@biblioteca-global/shared';
+import { ProjectModelSelectionSchema } from '@biblioteca-global/shared';
+import {
+  parseGlobalModelSelection,
+  type GlobalModelSelection,
+  type GlobalModelSelectionEntry,
+  type GlobalModelSelectionTipo,
+} from '../motor-v2/dist/shared/global-model-selection.js';
+import { PROJECT_DB_FACTORY, type ProjectDbFactory } from '../../../apps/api/src/modules/crud/project-db.factory';
+import { SCHEMA_REGISTRY, type SchemaRegistry } from '../../../apps/api/src/modules/crud/schema-registry';
+import {
+  tarefas,
+  subtarefas,
+  tarefaChats,
+  projetoChats,
+  projetosCaptados,
+  agentes,
+  geracoesProjeto,
+  contatos,
+  promptsAgentes,
+  promptsMascaras,
+  promptsVersoes,
+  promptsContratos,
+  promptsContratosVersoes,
+  motorAgentSessions,
+  motorAgentSessionMessages,
+  bloqueios,
+  motorConfiguracoes,
+  taskRuntimeFacts,
+  analystTaskSessions,
+  analystTaskSessionMessages,
+  tarefaEventos,
+  tarefaChatEntregas,
+  motorOutbox,
+  projetoMotorConfig,
+} from '../schema';
+import {
+  MOTOR_CONFIGURACOES,
+  configuracaoPorChave,
+  type MotorConfiguracaoResposta,
+} from './motor-configuracoes.catalog';
+import type { PromptPart } from '../motor-v2/dist/prompts/PromptComposition.js' with { "resolution-mode": "import" };
+import { ProvisionService } from '../../../apps/api/src/modules/provision/provision.service';
+import { RealtimeService } from '../../../apps/api/src/modules/realtime/realtime.service';
+import { GitInspectorService } from './git-inspector.service';
+
+const DEFAULT_SESSION_PAGE_SIZE = 50;
+const MAX_SESSION_PAGE_SIZE = 500;
+
+type SessionMessagesQuery = {
+  sessionKey?: string;
+  cursor?: string;
+  pageSize?: number;
+};
+
+type SessionCursor = { sequenceNumber: number; id: number };
+
+function normalizePageSize(value: number | undefined): number {
+  if (!Number.isFinite(value) || value === undefined) return DEFAULT_SESSION_PAGE_SIZE;
+  return Math.min(MAX_SESSION_PAGE_SIZE, Math.max(1, Math.floor(value)));
+}
+
+function decodeCursor(value: string | undefined): SessionCursor | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as Partial<SessionCursor>;
+    // Os guards `typeof number` são necessários para o narrowing do TypeScript:
+    // `Number.isSafeInteger` não é um type guard e `Partial<SessionCursor>` deixa
+    // ambos os campos como `number | undefined`.
+    if (
+      typeof parsed.sequenceNumber === 'number' && Number.isSafeInteger(parsed.sequenceNumber) &&
+      typeof parsed.id === 'number' && Number.isSafeInteger(parsed.id)
+    ) {
+      return { sequenceNumber: parsed.sequenceNumber, id: parsed.id };
+    }
+  } catch {
+    throw new BadRequestException('Cursor de sessão inválido');
+  }
+  throw new BadRequestException('Cursor de sessão inválido');
+}
+
+function encodeCursor(cursor: SessionCursor): string {
+  return Buffer.from(JSON.stringify(cursor)).toString('base64url');
+}
+
+function makeMessagesPage<T extends {
+  id: number;
+  role: string;
+  text: string;
+  sequenceNumber: number;
+  occurredAt: Date | null;
+}>(rows: T[], pageSize: number) {
+  const hasNextPage = rows.length > pageSize;
+  const items = rows.slice(0, pageSize).map(({ role, text, sequenceNumber, occurredAt }) => ({
+    role,
+    text,
+    sequenceNumber,
+    occurredAt,
+  }));
+  const last = rows[pageSize - 1];
+  return {
+    items,
+    nextCursor: hasNextPage && last ? encodeCursor({ sequenceNumber: last.sequenceNumber, id: last.id }) : null,
+    hasNextPage,
+  };
+}
+
+@Injectable()
+export class GerenteAgentesService {
+  private readonly logger = new Logger(GerenteAgentesService.name);
+  private readonly motorUrl: string;
+  private readonly motorHostHeader: string;
+  private readonly motorVersao: string;
+  private readonly motorV2Url: string;
+  private readonly consoleUrl: string;
+  private readonly consoleToken: string;
+
+  private async registrarEvento(
+    db: any,
+    tarefa: { id: number; externalId?: string | null },
+    evento: string,
+    ator: string,
+    origem: 'usuario' | 'motor',
+    payload?: unknown,
+  ): Promise<void> {
+    await db.insert(tarefaEventos).values({
+      tarefaId: Number(tarefa.id),
+      tarefaExternalId: tarefa.externalId ?? null,
+      evento,
+      ator,
+      origem,
+      payload: payload ?? null,
+    });
+  }
+
+  constructor(
+    @Inject(PROJECT_DB_FACTORY) private readonly factory: ProjectDbFactory,
+    @Inject(SCHEMA_REGISTRY) private readonly registry: SchemaRegistry,
+    @Inject(ProvisionService) private readonly provisionService: ProvisionService,
+    private readonly configService: ConfigService,
+    @Optional() private readonly realtime?: RealtimeService,
+    private readonly gitInspector?: GitInspectorService,
+  ) {
+    // Motor de execução (rodando no container openclaw:6283, exposto via proxy NPM)
+    this.motorUrl = this.configService.get<string>('MOTOR_DEV_URL') || 'http://192.168.1.16';
+    this.motorHostHeader = this.configService.get<string>('MOTOR_URL_HOST') || 'api.tarefas.localhost';
+    // Motor-v2: roda junto da API no mesmo container (entrypoint), habilitado
+    // por MOTOR_VERSION=v2. Os endpoints v2 ficam em /api/motor/* na porta
+    // MOTOR_API_PORT — sem proxy, sem Host header.
+    this.motorVersao = this.configService.get<string>('MOTOR_VERSION') || 'v1';
+    const motorV2Porta = this.configService.get<string>('MOTOR_API_PORT') || '3010';
+    this.motorV2Url = `http://127.0.0.1:${motorV2Porta}`;
+    // Console OpenClaw (fonte de agentes — st-5)
+    this.consoleUrl = this.configService.get<string>('OPENCLAW_CONSOLE_URL') || 'https://openclaw-api.webconnect.com.br';
+    this.consoleToken = this.configService.get<string>('OPENCLAW_CONSOLE_TOKEN') || '';
+  }
+
+  async listarConfiguracoesMotor(): Promise<MotorConfiguracaoResposta[]> {
+    const db = await this.dbDoMotor();
+    const rows = await db.select().from(motorConfiguracoes);
+    const persisted = new Map(rows.map((row) => [row.chave, row]));
+    return MOTOR_CONFIGURACOES.map((definition) => {
+      const row = persisted.get(definition.chave);
+      const value = row?.valor;
+      return {
+        chave: definition.chave,
+        tipo: definition.tipo,
+        valor: definition.validar(value) ? value as MotorConfiguracaoResposta['valor'] : definition.valorPadrao,
+        valorPadrao: definition.valorPadrao,
+        regraValidacao: definition.regraValidacao,
+        descricao: definition.descricao,
+        editavel: true,
+        atualizadoEm: row?.updatedAt ?? null,
+      };
+    });
+  }
+
+  async atualizarConfiguracoesMotor(valores: unknown): Promise<MotorConfiguracaoResposta[]> {
+    if (!valores || typeof valores !== 'object' || Array.isArray(valores)) {
+      throw new BadRequestException('valores deve ser um objeto chave → valor');
+    }
+    const entries = Object.entries(valores as Record<string, unknown>);
+    if (entries.length === 0) throw new BadRequestException('Informe ao menos uma configuração');
+    const db = await this.dbDoMotor();
+    for (const [chave, valor] of entries) {
+      const definition = configuracaoPorChave(chave);
+      if (!definition) throw new BadRequestException(`Configuração desconhecida: ${chave}`);
+      if (!definition.validar(valor)) {
+        throw new BadRequestException(`Valor inválido para ${chave}: ${definition.regraValidacao}`);
+      }
+      await db.insert(motorConfiguracoes).values({
+        chave,
+        tipo: definition.tipo,
+        valor,
+        valorPadrao: definition.valorPadrao,
+        regraValidacao: definition.regraValidacao,
+        descricao: definition.descricao,
+      }).onDuplicateKeyUpdate({
+        set: {
+          tipo: definition.tipo,
+          valor,
+          valorPadrao: definition.valorPadrao,
+          regraValidacao: definition.regraValidacao,
+          descricao: definition.descricao,
+          updatedAt: new Date(),
+        },
+      });
+    }
+    return this.listarConfiguracoesMotor();
+  }
+
+  /**
+   * Consulta o histórico persistido da sessão da subtarefa. A consulta não
+   * depende da sessão remota ainda existir após a aprovação.
+   */
+  async sessaoSubtarefa(
+    projeto: ProjetoResumo,
+    tarefaId: number,
+    seq: number,
+    options: SessionMessagesQuery = {},
+  ) {
+    const db = await this.dbDoMotor();
+    const [tarefa] = await db
+      .select({
+        projetoId: tarefas.projetoId,
+      })
+      .from(tarefas)
+      .where(eq(tarefas.id, tarefaId))
+      .limit(1);
+
+    if (!tarefa) throw new NotFoundException('Tarefa não encontrada');
+    // Nota: não validar tarefa.projetoId contra projeto.id — são namespaces diferentes
+    // (tarefas.projetoId → projetos_captados.id; projeto.id → core.projetos da plataforma).
+    // O banco já é tenant-scoped (dbDoMotor → projeto_640), então a existência da tarefa basta.
+    const [subtarefa] = await db
+      .select({ id: subtarefas.id })
+      .from(subtarefas)
+      .where(and(eq(subtarefas.tarefaId, tarefaId), eq(subtarefas.seq, seq)))
+      .limit(1);
+    if (!subtarefa) return { available: false, sessions: [] };
+    const pageSize = await this.resolveSessionPageSize(db, options.pageSize);
+    const sessions = await db
+      .select({
+        id: motorAgentSessions.id,
+        model: motorAgentSessions.modelo,
+        sessionKey: motorAgentSessions.sessionKey,
+        status: motorAgentSessions.status,
+        openedAt: motorAgentSessions.openedAt,
+        closedAt: motorAgentSessions.closedAt,
+        closeReason: motorAgentSessions.closeReason,
+      })
+      .from(motorAgentSessions)
+      .where(eq(motorAgentSessions.subtarefaId, subtarefa.id))
+      .orderBy(desc(motorAgentSessions.lastActivityAt), desc(motorAgentSessions.id));
+    if (sessions.length === 0) return { available: false, sessions: [] };
+
+    const selected = options.sessionKey
+      ? sessions.find((session) => session.sessionKey === options.sessionKey)
+      : undefined;
+    if (options.sessionKey && !selected) throw new NotFoundException('Sessão não encontrada');
+    const visibleSessions = selected ? [selected] : sessions;
+    const result = await Promise.all(visibleSessions.map(async (session) => {
+      const messages = await this.paginaMensagensMotor(db, session, { ...options, pageSize });
+      return {
+        id: session.id,
+        model: session.model,
+        sessionKey: session.sessionKey,
+        status: session.status,
+        openedAt: session.openedAt,
+        closedAt: session.closedAt,
+        closeReason: session.closeReason,
+        messages,
+        text: messages.items.map((message) => `[${message.role}]\n${message.text}`).join('\n\n'),
+      };
+    }));
+    return { available: true, sessions: result };
+  }
+
+  /**
+   * Consulta o histórico persistido das sessões do analista no nível da tarefa.
+   * Retorna todas as sessões em ordem de execução (escalonamentos incluídos),
+   * com o nome do modelo no início de cada registro. Funciona mesmo após a
+   * sessão operacional ser apagada, pois os dados estão persistidos em banco.
+   */
+  async sessoesAnalistaTarefa(
+    projeto: ProjetoResumo,
+    tarefaId: number,
+    options: SessionMessagesQuery = {},
+  ) {
+    const db = await this.dbDoMotor();
+    const [tarefa] = await db
+      .select({ projetoId: tarefas.projetoId })
+      .from(tarefas)
+      .where(eq(tarefas.id, tarefaId))
+      .limit(1);
+
+    if (!tarefa) throw new NotFoundException('Tarefa não encontrada');
+    if (tarefa.projetoId !== projeto.id) throw new NotFoundException('Tarefa não encontrada');
+
+    const pageSize = await this.resolveSessionPageSize(db, options.pageSize);
+    const sessions = await db
+      .select({
+        id: analystTaskSessions.id,
+        sessionKey: analystTaskSessions.sessionKey,
+        modelo: analystTaskSessions.modelo,
+        executionOrder: analystTaskSessions.executionOrder,
+        status: analystTaskSessions.status,
+        openedAt: analystTaskSessions.openedAt,
+        closedAt: analystTaskSessions.closedAt,
+        closeReason: analystTaskSessions.closeReason,
+      })
+      .from(analystTaskSessions)
+      .where(eq(analystTaskSessions.tarefaId, tarefaId))
+      .orderBy(asc(analystTaskSessions.executionOrder));
+
+    if (sessions.length === 0) {
+      return { available: false, sessions: [] };
+    }
+
+    const selected = options.sessionKey
+      ? sessions.find((session) => session.sessionKey === options.sessionKey)
+      : undefined;
+    if (options.sessionKey && !selected) throw new NotFoundException('Sessão não encontrada');
+    const visibleSessions = selected ? [selected] : sessions;
+    const result = await Promise.all(visibleSessions.map(async (session) => {
+      const messages = await this.paginaMensagensAnalista(db, session, { ...options, pageSize });
+      return {
+        id: session.id,
+        executionOrder: session.executionOrder,
+        model: session.modelo,
+        sessionKey: session.sessionKey,
+        status: session.status,
+        openedAt: session.openedAt,
+        closedAt: session.closedAt,
+        closeReason: session.closeReason,
+        messages,
+        text: messages.items.map((m) => `[${m.role}]\n${m.text}`).join('\n\n'),
+      };
+    }));
+
+    return { available: true, sessions: result };
+  }
+
+  private async resolveSessionPageSize(
+    db: Awaited<ReturnType<GerenteAgentesService['dbDoMotor']>>,
+    requested: number | undefined,
+  ): Promise<number> {
+    if (requested !== undefined) return normalizePageSize(requested);
+    const [config] = await db.select({ valor: motorConfiguracoes.valor })
+      .from(motorConfiguracoes)
+      .where(eq(motorConfiguracoes.chave, 'motor.session_history_page_size'))
+      .limit(1);
+    const definition = configuracaoPorChave('motor.session_history_page_size');
+    return definition?.validar(config?.valor)
+      ? normalizePageSize(config!.valor as number)
+      : DEFAULT_SESSION_PAGE_SIZE;
+  }
+
+  private async paginaMensagensMotor(
+    db: Awaited<ReturnType<GerenteAgentesService['dbDoMotor']>>,
+    session: { id: number; sessionKey: string },
+    options: SessionMessagesQuery,
+  ) {
+    const pageSize = normalizePageSize(options.pageSize);
+    const cursor = decodeCursor(options.cursor);
+    const where = cursor
+      ? and(eq(motorAgentSessionMessages.sessionId, session.id), or(
+        lt(motorAgentSessionMessages.sequenceNumber, cursor.sequenceNumber),
+        and(eq(motorAgentSessionMessages.sequenceNumber, cursor.sequenceNumber), lt(motorAgentSessionMessages.id, cursor.id)),
+      ))
+      : eq(motorAgentSessionMessages.sessionId, session.id);
+    const rows = await db.select({
+      id: motorAgentSessionMessages.id,
+      role: motorAgentSessionMessages.role,
+      text: motorAgentSessionMessages.content,
+      sequenceNumber: motorAgentSessionMessages.sequenceNumber,
+      occurredAt: motorAgentSessionMessages.occurredAt,
+    }).from(motorAgentSessionMessages).where(where)
+      .orderBy(desc(motorAgentSessionMessages.sequenceNumber), desc(motorAgentSessionMessages.id))
+      .limit(pageSize + 1);
+    return makeMessagesPage(rows, pageSize);
+  }
+
+  private async paginaMensagensAnalista(
+    db: Awaited<ReturnType<GerenteAgentesService['dbDoMotor']>>,
+    session: { id: number; sessionKey: string },
+    options: SessionMessagesQuery,
+  ) {
+    const pageSize = normalizePageSize(options.pageSize);
+    const cursor = decodeCursor(options.cursor);
+    const where = cursor
+      ? and(eq(analystTaskSessionMessages.sessionId, session.id), or(
+        lt(analystTaskSessionMessages.sequenceNumber, cursor.sequenceNumber),
+        and(eq(analystTaskSessionMessages.sequenceNumber, cursor.sequenceNumber), lt(analystTaskSessionMessages.id, cursor.id)),
+      ))
+      : eq(analystTaskSessionMessages.sessionId, session.id);
+    const rows = await db.select({
+      id: analystTaskSessionMessages.id,
+      role: analystTaskSessionMessages.role,
+      text: analystTaskSessionMessages.content,
+      sequenceNumber: analystTaskSessionMessages.sequenceNumber,
+      occurredAt: analystTaskSessionMessages.occurredAt,
+    }).from(analystTaskSessionMessages).where(where)
+      .orderBy(desc(analystTaskSessionMessages.sequenceNumber), desc(analystTaskSessionMessages.id))
+      .limit(pageSize + 1);
+    return makeMessagesPage(rows, pageSize);
+  }
+
+  /**
+   * Lista agentes do console OpenClaw (proxy server-side — o token do
+   * console nunca vai para o browser). Resposta: { agents: [...] } com
+   * id string (ex.: "programador-senior") e name.
+   */
+  async listarAgentesConsole(): Promise<Array<{ id: string; name: string; model?: string; status?: string }>> {
+    const url = new URL(`${this.consoleUrl}/api/agents`);
+    const isHttps = url.protocol === 'https:';
+    const options: RequestOptions = {
+      hostname: url.hostname,
+      port: url.port || (isHttps ? 443 : 80),
+      path: url.pathname,
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+        ...(this.consoleToken ? { Authorization: `Bearer ${this.consoleToken}` } : {}),
+      },
+      timeout: 10000,
+    };
+    return new Promise((resolve, reject) => {
+      const req = (isHttps ? httpsRequest : httpRequest)(options, (res) => {
+        let data = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk) => (data += chunk));
+        res.on('end', () => {
+          const status = res.statusCode ?? 0;
+          if (status < 200 || status >= 300) {
+            reject(new BadRequestException(`Console OpenClaw indisponível (${status})`));
+            return;
+          }
+          try {
+            const json = JSON.parse(data) as { agents?: Array<{ id?: string; name?: string; model?: string; status?: string }> };
+            resolve(
+              (json.agents ?? [])
+                .filter((a) => typeof a.id === "string" && a.id.length > 0)
+                .map((a) => ({
+                  id: a.id!,
+                  name: a.name ?? a.id!,
+                  ...(a.model ? { model: a.model } : {}),
+                  ...(a.status ? { status: a.status } : {}),
+                })),
+            );
+          } catch (e) {
+            reject(new BadRequestException(`Console OpenClaw: resposta inválida (${e instanceof Error ? e.message : String(e)})`));
+          }
+        });
+      });
+      req.on('timeout', () => req.destroy(new Error('timeout')));
+      req.on('error', reject);
+      req.end();
+    });
+  }
+  /**
+   * Lista modelos disponíveis no console OpenClaw (proxy server-side, mesmo
+   * padrão de `listarAgentesConsole` — o token do console nunca vai para o
+   * browser). GET `${OPENCLAW_CONSOLE_URL}/api/models` → normaliza cada entrada
+   * para `{ id, name, provider, alias? }`. O console pode responder
+   * `{ models: [...] }` ou um array direto; entradas sem `id` são descartadas.
+   */
+  async listarModelosConsole(): Promise<Array<{ id: string; name: string; provider: string; alias?: string }>> {
+    const url = new URL(`${this.consoleUrl}/api/models`);
+    const isHttps = url.protocol === 'https:';
+    const options: RequestOptions = {
+      hostname: url.hostname,
+      port: url.port || (isHttps ? 443 : 80),
+      path: url.pathname,
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+        ...(this.consoleToken ? { Authorization: `Bearer ${this.consoleToken}` } : {}),
+      },
+      timeout: 10000,
+    };
+    return new Promise((resolve, reject) => {
+      const req = (isHttps ? httpsRequest : httpRequest)(options, (res) => {
+        let data = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk) => (data += chunk));
+        res.on('end', () => {
+          const status = res.statusCode ?? 0;
+          if (status < 200 || status >= 300) {
+            reject(new BadRequestException(`Console OpenClaw indisponível (${status})`));
+            return;
+          }
+          try {
+            const json = JSON.parse(data) as { models?: unknown } | unknown[];
+            const raw = Array.isArray(json) ? json : (json.models ?? []);
+            const lista = Array.isArray(raw) ? raw : [];
+            resolve(
+              lista
+                .filter((m): m is Record<string, unknown> => typeof m === 'object' && m !== null)
+                .map((m) => ({
+                  id: String(m.id ?? ''),
+                  name: String(m.name ?? m.id ?? ''),
+                  provider: String(m.provider ?? ''),
+                  ...(m.alias ? { alias: String(m.alias) } : {}),
+                }))
+                .filter((m) => m.id.length > 0),
+            );
+          } catch (e) {
+            reject(new BadRequestException(`Console OpenClaw: resposta inválida (${e instanceof Error ? e.message : String(e)})`));
+          }
+        });
+      });
+      req.on('timeout', () => req.destroy(new Error('timeout')));
+      req.on('error', reject);
+      req.end();
+    });
+  }
+
+  /**
+   * Sincroniza agentes do OpenClaw com a tabela local.
+   * Cria/atualiza registros na tabela agentes baseado nos agentes do OpenClaw.
+   * Retorna estatísticas da sincronização (criados, atualizados, total).
+   */
+  async sincronizarAgentesOpenClaw(): Promise<{ criados: number; atualizados: number; total: number }> {
+    const agentesOpenClaw = await this.listarAgentesConsole();
+    const db = await this.dbDoMotor();
+    const ids = new Set<string>();
+    for (const agente of agentesOpenClaw) {
+      if (ids.has(agente.id)) throw new BadRequestException(`Console OpenClaw retornou identificador duplicado: ${agente.id}`);
+      ids.add(agente.id);
+    }
+
+    // Busca agentes existentes no banco
+    const agentesExistentes = await db.select().from(agentes);
+    const mapaExistentes = new Map<string, typeof agentesExistentes[number]>();
+    for (const agente of agentesExistentes) {
+      mapaExistentes.set(agente.nome, agente);
+      if (agente.openclawAgentId) mapaExistentes.set(agente.openclawAgentId, agente);
+    }
+
+    let criados = 0;
+    let atualizados = 0;
+
+    for (const agenteOpenClaw of agentesOpenClaw) {
+      const existente = mapaExistentes.get(agenteOpenClaw.id);
+      if (!existente) {
+        // Cria novo agente
+        await db.insert(agentes).values({
+          nome: agenteOpenClaw.id,
+          openclawAgentId: agenteOpenClaw.id,
+          modelo: agenteOpenClaw.model || 'unknown',
+          descricao: agenteOpenClaw.name !== agenteOpenClaw.id ? agenteOpenClaw.name : null,
+          ativo: true,
+        });
+        criados++;
+      } else {
+        // Atualiza agente existente (modelo e descrição)
+        await db.update(agentes)
+          .set({
+            modelo: agenteOpenClaw.model || existente.modelo,
+            openclawAgentId: agenteOpenClaw.id,
+            descricao: agenteOpenClaw.name !== agenteOpenClaw.id ? agenteOpenClaw.name : existente.descricao,
+          })
+          .where(eq(agentes.id, existente.id));
+        atualizados++;
+      }
+    }
+
+    this.logger.log(`Sincronização de agentes: ${criados} criados, ${atualizados} atualizados, ${agentesOpenClaw.length} total`);
+    return { criados, atualizados, total: agentesOpenClaw.length };
+  }
+
+  /** Confere o vínculo de uma linha local com o catálogo atual do OpenClaw. */
+  async diagnosticarVinculoAgente(id: number) {
+    const db = await this.dbDoMotor();
+    const [local] = await db.select().from(agentes).where(eq(agentes.id, id)).limit(1);
+    if (!local) throw new NotFoundException(`Agente local ${id} não encontrado`);
+    const openclawId = local.openclawAgentId || local.nome;
+    let remotos: Array<{ id: string; name: string; model?: string; status?: string }>;
+    try {
+      remotos = await this.listarAgentesConsole();
+    } catch (error) {
+      return { agenteId: id, openclawAgentId: openclawId, estado: 'indisponivel', inconsistencia: 'Não foi possível consultar o Console OpenClaw.', detalhe: error instanceof Error ? error.message : String(error) };
+    }
+    const remoto = remotos.find((agente) => agente.id === openclawId);
+    if (!remoto) return { agenteId: id, openclawAgentId: openclawId, estado: 'nao_encontrado', inconsistencia: 'Identificador não encontrado no OpenClaw.' };
+    const estado = remoto.status || 'desconhecido';
+    const indisponivel = ['offline', 'unavailable', 'error', 'stopped'].includes(estado.toLowerCase());
+    return { agenteId: id, openclawAgentId: openclawId, estado: indisponivel ? 'indisponivel' : estado, inconsistencia: indisponivel ? `Agente registrado, mas indisponível (${estado}).` : null, agenteOpenClaw: remoto };
+  }
+
+  /**
+   * Cria ou atualiza agente local baseado no ID do OpenClaw.
+   * Chamado pelo motor quando cria um novo agente no OpenClaw.
+   */
+  async criarOuAtualizarAgenteLocal(openclawAgentId: string, modelo?: string): Promise<void> {
+    const db = await this.dbDoMotor();
+    const { agentes } = await import('../schema.js');
+
+    const existente = await db.select().from(agentes).where(eq(agentes.nome, openclawAgentId)).limit(1);
+    if (existente.length === 0) {
+      await db.insert(agentes).values({
+        nome: openclawAgentId,
+        modelo: modelo || 'unknown',
+        ativo: true,
+      });
+      this.logger.log(`Agente local criado: ${openclawAgentId}`);
+    } else {
+      const agenteExistente = existente[0];
+      if (!agenteExistente) return;
+      await db.update(agentes)
+        .set({ modelo: modelo || agenteExistente.modelo })
+        .where(eq(agentes.id, agenteExistente.id));
+      this.logger.log(`Agente local atualizado: ${openclawAgentId}`);
+    }
+  }
+
+  private async dbDoProjeto(projeto: ProjetoResumo) {
+    return await this.factory.obter({ id: projeto.id });
+  }
+
+  /**
+   * Banco do motor (projeto_640 — GerenteAgentes).
+   * O motor-v2 busca tarefas diretamente em projeto_640.tarefas (hardcoded).
+   * Para manter consistência, todas as operações do motor (tarefas, subtarefas,
+   * chats) devem usar este banco, independente do projetoId do token.
+   */
+  private async dbDoMotor() {
+    return await this.factory.obter({ id: 640 });
+  }
+
+  /** Consulta somente leitura das tabelas de configuração/observabilidade do Motor v3. */
+  async listarTabelaMotorV3(tabela: string) {
+    const tabelas: Record<string, string> = {
+      events: 'motor_events',
+      patterns: 'motor_patterns',
+      primitives: 'motor_primitives',
+      actions: 'motor_actions',
+      reactions: 'motor_reactions',
+      occurrences: 'motor_occurrences',
+      promotionState: 'motor_promotion_state',
+      proposals: 'motor_catalog_proposals',
+      eventLog: 'motor_event_log',
+      modelCooldown: 'motor_model_cooldown',
+      testRuns: 'test_runs',
+      testFailures: 'test_failures',
+      testRecovery: 'test_recovery_attempts',
+    };
+    const nomeTabela = tabelas[tabela];
+    if (!nomeTabela) throw new BadRequestException('Tabela do Motor v3 inválida');
+    const db = await this.dbDoMotor();
+    const [rows] = await db.execute(sql.raw(`SELECT * FROM \`${nomeTabela}\` ORDER BY id DESC LIMIT 200`));
+    return { tabela, items: rows };
+  }
+
+  private async catalogEntry(chave: string) {
+    const { AGENT_PROMPT_CATALOG } = await import('../motor-v2/dist/prompts/prompt-catalog.js');
+    const entry = AGENT_PROMPT_CATALOG.find((item) => item.key === chave);
+    if (!entry) throw new BadRequestException(`Prompt desconhecido: ${chave}`);
+    return entry;
+  }
+
+  /** Sincroniza metadados canônicos sem sobrescrever textos editados. */
+  private async sincronizarCatalogoPrompts() {
+    const [{ AGENT_PROMPT_CATALOG }, { OUTPUT_CONTRACT_CATALOG }, { validatePromptTemplate }] = await Promise.all([
+      import('../motor-v2/dist/prompts/prompt-catalog.js'),
+      import('../motor-v2/dist/prompts/output-contract-catalog.js'),
+      import('../motor-v2/dist/prompts/PromptTemplateEngine.js'),
+    ]);
+    const db = await this.dbDoMotor();
+    const activeContracts = new Map<string, number>();
+    for (const entry of OUTPUT_CONTRACT_CATALOG) {
+      let [contract] = await db.select().from(promptsContratos).where(eq(promptsContratos.chave, entry.key)).limit(1);
+      if (!contract) {
+        const inserted = await db.insert(promptsContratos).values({ chave: entry.key, titulo: entry.title, descricao: entry.description, status: 'draft' });
+        [contract] = await db.select().from(promptsContratos).where(eq(promptsContratos.id, Number(inserted[0].insertId))).limit(1);
+      }
+      if (!contract) continue;
+      let activeVersionId = contract.versaoAtivaId;
+      if (!activeVersionId) {
+        const existingVersion = await db.select().from(promptsContratosVersoes).where(eq(promptsContratosVersoes.contratoId, contract.id)).orderBy(desc(promptsContratosVersoes.versao)).limit(1);
+        if (existingVersion[0]) activeVersionId = existingVersion[0].id;
+        else {
+          const insertedVersion = await db.insert(promptsContratosVersoes).values({ contratoId: contract.id, versao: 1, schemaJson: entry.schema, exemploJson: entry.example, instrucoes: entry.instructions, motivo: 'Versão inicial do catálogo embarcado', autor: 'sistema' });
+          activeVersionId = Number(insertedVersion[0].insertId);
+        }
+        await db.update(promptsContratos).set({ versaoAtivaId: activeVersionId, status: 'active' }).where(eq(promptsContratos.id, contract.id));
+      }
+      activeContracts.set(entry.key, Number(activeVersionId));
+    }
+    for (const entry of AGENT_PROMPT_CATALOG) {
+      const existing = await db.select().from(promptsAgentes).where(eq(promptsAgentes.chave, entry.key)).limit(1);
+      if (existing.length === 0) {
+        const inserted = await db.insert(promptsAgentes).values({
+          chave: entry.key,
+          tipoAgente: entry.agentType,
+          situacao: entry.situation,
+          titulo: entry.key,
+          descricao: `Compositor embarcado: ${entry.source}`,
+          status: 'draft',
+          conteudo: entry.prompt,
+          origem: entry.source,
+          marcadores: entry.markers,
+          ativo: true,
+        });
+        if (entry.prompt.trim()) {
+          const versionInsert = await db.insert(promptsVersoes).values({
+            promptId: Number(inserted[0].insertId), versao: 1, texto: entry.prompt,
+            contratoVersaoId: entry.contractKey ? activeContracts.get(entry.contractKey) : null,
+            motivo: 'Versão inicial do catálogo embarcado', autor: 'sistema',
+            validacao: validatePromptTemplate(entry.prompt, [...entry.markers, '**CONTRATOSAIDA**'], entry.contractKey ? ['**CONTRATOSAIDA**'] : []),
+          });
+          await db.update(promptsAgentes).set({ versaoAtivaId: Number(versionInsert[0].insertId), status: 'active' }).where(eq(promptsAgentes.id, Number(inserted[0].insertId)));
+        }
+      }
+      for (const marker of entry.markers) {
+        const found = await db.select().from(promptsMascaras).where(eq(promptsMascaras.nome, marker)).limit(1);
+        if (found.length === 0) {
+          await db.insert(promptsMascaras).values({
+            nome: marker,
+            descricao: `Valor dinâmico utilizado por ${entry.key}`,
+            origem: entry.source,
+            obrigatoria: false,
+          });
+        }
+      }
+      if (entry.contractKey) {
+        const contractMarker = '**CONTRATOSAIDA**';
+        const found = await db.select().from(promptsMascaras).where(eq(promptsMascaras.nome, contractMarker)).limit(1);
+        if (found.length === 0) await db.insert(promptsMascaras).values({ nome: contractMarker, descricao: 'Instruções da versão do contrato vinculada ao prompt', origem: 'Motor: contrato de saída versionado', obrigatoria: true });
+      }
+    }
+  }
+
+  async listarPrompts() {
+    await this.sincronizarCatalogoPrompts();
+    const db = await this.dbDoMotor();
+    const prompts = await db.select().from(promptsAgentes).orderBy(promptsAgentes.tipoAgente, promptsAgentes.situacao);
+    const masks = await db.select().from(promptsMascaras).where(eq(promptsMascaras.ativa, true)).orderBy(promptsMascaras.nome);
+    const versions = await db.select().from(promptsVersoes).orderBy(desc(promptsVersoes.createdAt));
+    const contracts = await db.select().from(promptsContratos).orderBy(promptsContratos.chave);
+    const contractVersions = await db.select().from(promptsContratosVersoes).orderBy(desc(promptsContratosVersoes.createdAt));
+    return {
+      prompts: await Promise.all(prompts.map(async (prompt) => {
+        const entry = await this.catalogEntry(prompt.chave);
+        return {
+          ...prompt,
+          allowedMarkers: [...entry.markers, ...(entry.contractKey ? ['**CONTRATOSAIDA**'] : [])],
+          versions: versions.filter((version) => version.promptId === prompt.id),
+        };
+      })),
+      masks,
+      contracts: contracts.map((contract) => ({ ...contract, versions: contractVersions.filter((version) => version.contratoId === contract.id) })),
+    };
+  }
+
+  async salvarRascunhoPrompt(id: number, texto: string, motivo: string | undefined, autor: string | undefined, contratoVersaoId?: number) {
+    const db = await this.dbDoMotor();
+    const [prompt] = await db.select().from(promptsAgentes).where(eq(promptsAgentes.id, id)).limit(1);
+    if (!prompt) throw new NotFoundException('Prompt não encontrado');
+    const entry = await this.catalogEntry(prompt.chave);
+    const { validatePromptTemplate } = await import('../motor-v2/dist/prompts/PromptTemplateEngine.js');
+    const allowed = [...entry.markers, ...(entry.contractKey ? ['**CONTRATOSAIDA**'] : [])];
+    const validation = validatePromptTemplate(texto, allowed, entry.contractKey ? ['**CONTRATOSAIDA**'] : []);
+    if (!validation.ok) throw new BadRequestException({ message: 'Máscaras inválidas', validation });
+    const previous = await db.select().from(promptsVersoes).where(eq(promptsVersoes.promptId, id)).orderBy(desc(promptsVersoes.versao)).limit(1);
+    const versao = (previous[0]?.versao ?? 0) + 1;
+    const result = await db.insert(promptsVersoes).values({ promptId: id, versao, texto, motivo, autor, contratoVersaoId: contratoVersaoId ?? null, validacao: validation });
+    await db.update(promptsAgentes).set({ status: prompt.versaoAtivaId ? 'active' : 'draft' }).where(eq(promptsAgentes.id, id));
+    return { id: Number(result[0].insertId), versao, validation };
+  }
+
+  async publicarVersaoPrompt(promptId: number, versionId: number) {
+    const db = await this.dbDoMotor();
+    const [version] = await db.select().from(promptsVersoes).where(and(eq(promptsVersoes.id, versionId), eq(promptsVersoes.promptId, promptId))).limit(1);
+    if (!version) throw new NotFoundException('Versão não encontrada para este prompt');
+    const [prompt] = await db.select().from(promptsAgentes).where(eq(promptsAgentes.id, promptId)).limit(1);
+    if (!prompt) throw new NotFoundException('Prompt não encontrado');
+    const entry = await this.catalogEntry(prompt.chave);
+    const { validatePromptTemplate } = await import('../motor-v2/dist/prompts/PromptTemplateEngine.js');
+    const validation = validatePromptTemplate(version.texto, [...entry.markers, ...(entry.contractKey ? ['**CONTRATOSAIDA**'] : [])], entry.contractKey ? ['**CONTRATOSAIDA**'] : []);
+    if (entry.contractKey && !version.contratoVersaoId) throw new BadRequestException('Selecione uma versão de contrato para publicar este prompt');
+    if (!validation.ok) throw new BadRequestException({ message: 'Versão inválida', validation });
+    await db.update(promptsAgentes).set({ versaoAtivaId: versionId, status: 'active' }).where(eq(promptsAgentes.id, promptId));
+    return { ok: true, promptId, versionId };
+  }
+
+  async salvarRascunhoContrato(id: number, schemaJson: unknown, exemploJson: unknown, instrucoes: string, motivo: string | undefined, autor: string | undefined) {
+    const db = await this.dbDoMotor();
+    const [contract] = await db.select().from(promptsContratos).where(eq(promptsContratos.id, id)).limit(1);
+    if (!contract) throw new NotFoundException('Contrato não encontrado');
+    if (!schemaJson || typeof schemaJson !== 'object' || !instrucoes.trim()) throw new BadRequestException('Schema JSON e instruções são obrigatórios');
+    const previous = await db.select().from(promptsContratosVersoes).where(eq(promptsContratosVersoes.contratoId, id)).orderBy(desc(promptsContratosVersoes.versao)).limit(1);
+    const versao = (previous[0]?.versao ?? 0) + 1;
+    const result = await db.insert(promptsContratosVersoes).values({ contratoId: id, versao, schemaJson, exemploJson, instrucoes, motivo, autor });
+    return { id: Number(result[0].insertId), versao };
+  }
+
+  async publicarVersaoContrato(contratoId: number, versionId: number) {
+    const db = await this.dbDoMotor();
+    const [version] = await db.select().from(promptsContratosVersoes).where(and(eq(promptsContratosVersoes.id, versionId), eq(promptsContratosVersoes.contratoId, contratoId))).limit(1);
+    if (!version) throw new NotFoundException('Versão não encontrada para este contrato');
+    await db.update(promptsContratos).set({ versaoAtivaId: versionId, status: 'active' }).where(eq(promptsContratos.id, contratoId));
+    return { ok: true, contratoId, versionId };
+  }
+
+  async preverPrompt(id: number, texto: string, values: Record<string, unknown>, contratoVersaoId?: number) {
+    const db = await this.dbDoMotor();
+    const [prompt] = await db.select().from(promptsAgentes).where(eq(promptsAgentes.id, id)).limit(1);
+    if (!prompt) throw new NotFoundException('Prompt não encontrado');
+    const entry = await this.catalogEntry(prompt.chave);
+    const { markersIn, renderPromptTemplate, validatePromptTemplate } = await import('../motor-v2/dist/prompts/PromptTemplateEngine.js');
+    const { composeDevelopmentPrompt } = await import('../motor-v2/dist/prompts/PromptComposition.js');
+    const validation = validatePromptTemplate(texto, [...entry.markers, ...(entry.contractKey ? ['**CONTRATOSAIDA**'] : [])], entry.contractKey ? ['**CONTRATOSAIDA**'] : []);
+    if (!validation.ok) return { validation, rendered: null };
+    let contractInstructions = '';
+    if (contratoVersaoId) {
+      const [contractVersion] = await db.select().from(promptsContratosVersoes).where(eq(promptsContratosVersoes.id, contratoVersaoId)).limit(1);
+      contractInstructions = contractVersion?.instrucoes ?? '';
+    }
+    const completeValues = Object.fromEntries(entry.markers.map((marker) => [marker, values[marker] ?? `<${marker.slice(2, -2)}>`]));
+    const tableRendered = renderPromptTemplate(texto, { ...completeValues, '**CONTRATOSAIDA**': contractInstructions });
+    const renderedWithContract = contractInstructions && !texto.includes('**CONTRATOSAIDA**')
+      ? `${tableRendered}\n\nCONTRATO DE SAÍDA OBRIGATÓRIO:\n${contractInstructions}`
+      : tableRendered;
+    const workspace = String(completeValues['**WORKSPACE**'] ?? '<WORKSPACE>');
+    const composition = entry.agentType === 'dev'
+      ? composeDevelopmentPrompt(workspace, '<RAIZ_GIT_DO_WORKTREE>', renderedWithContract)
+      : { finalText: renderedWithContract, parts: [{ source: 'table', label: 'Prompt publicado na tabela', text: renderedWithContract }] as PromptPart[] };
+    if (contractInstructions) composition.parts.push({ source: 'contract', label: 'Contrato de saída vinculado', text: contractInstructions });
+    return { validation, rendered: composition.finalText, parts: composition.parts, used: markersIn(texto) };
+  }
+
+  /**
+   * Faz requisição HTTP para o motor de tarefas (GerenteAgentes).
+   */
+  private motorRequest(
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
+    path: string,
+    body?: unknown,
+    baseUrl?: string,
+  ): Promise<{ ok: boolean; status: number; body: string }> {
+    // baseUrl explícito (ex.: motor-v2 local) ignora o Host header de proxy.
+    const base = baseUrl ?? this.motorUrl;
+    const url = new URL(`${base}${path}`);
+    const isHttps = url.protocol === 'https:';
+    const timeoutMs = parseInt(
+      this.configService.get<string>('MOTOR_REQUEST_TIMEOUT_MS') || '180000',
+      10,
+    );
+    const options: RequestOptions = {
+      hostname: url.hostname,
+      port: url.port || (isHttps ? 443 : 80),
+      path: url.pathname + (url.search || ''),
+      method,
+      headers: {
+        Accept: 'application/json',
+        ...(body ? { 'Content-Type': 'application/json' } : {}),
+        ...(!baseUrl && this.motorHostHeader ? { Host: this.motorHostHeader } : {}),
+      },
+      timeout: timeoutMs,
+    };
+    return new Promise((resolve, reject) => {
+      const req = (isHttps ? httpsRequest : httpRequest)(options, (res) => {
+        let data = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk) => (data += chunk));
+        res.on('end', () => {
+          const status = res.statusCode ?? 0;
+          resolve({ ok: status >= 200 && status < 300, status, body: data });
+        });
+      });
+      req.on('timeout', () => req.destroy(new Error('timeout')));
+      req.on('error', (e) => reject(new BadRequestException(`Motor request failed: ${e.message}`)));
+      if (body) {
+        req.write(JSON.stringify(body));
+      }
+      req.end();
+    });
+  }
+
+  // ============================================================================
+  // AÇÕES DE TAREFA
+  // ============================================================================
+
+  async criarTarefa(
+    projeto: ProjetoResumo,
+    input: {
+      managedProjectId?: number;
+      titulo?: string;
+      descricao?: string | null;
+      tipo?: 'desenvolvimento' | 'automacao' | 'verificacao';
+      status?: string;
+      dependsOnTaskId?: number | null;
+      autoStart?: boolean;
+      ator?: string;
+    },
+  ) {
+    // O token seleciona o banco/tenant. A FK abaixo seleciona um projeto
+    // administrado dentro desse tenant; os IDs pertencem a namespaces distintos.
+    const db = await this.dbDoProjeto(projeto);
+    const managedProjectId = Number(input.managedProjectId);
+    if (!Number.isSafeInteger(managedProjectId) || managedProjectId <= 0) {
+      throw new BadRequestException(
+        'managedProjectId inválido: informe o id de projetos_captados',
+      );
+    }
+    const titulo = input.titulo?.trim() ?? '';
+    if (!titulo) throw new BadRequestException('Título da tarefa é obrigatório');
+
+    const [managedProject] = await db
+      .select({
+        id: projetosCaptados.id,
+        slug: projetosCaptados.slug,
+        ativo: projetosCaptados.ativo,
+        agenteId: projetosCaptados.agenteId,
+      })
+      .from(projetosCaptados)
+      .where(eq(projetosCaptados.id, managedProjectId))
+      .limit(1);
+    if (!managedProject) {
+      throw new BadRequestException(
+        `managedProjectId=${managedProjectId} não encontrado em projetos_captados`,
+      );
+    }
+    if (!managedProject.ativo) {
+      throw new BadRequestException(
+        `Projeto gerenciado "${managedProject.slug}" está inativo`,
+      );
+    }
+    if (!managedProject.agenteId) {
+      throw new BadRequestException(
+        `Projeto gerenciado "${managedProject.slug}" não tem agente vinculado`,
+      );
+    }
+
+    if (input.status != null && input.status !== 'planned' && input.status !== 'draft') {
+      throw new BadRequestException('Status inicial deve ser planned');
+    }
+    if (input.dependsOnTaskId != null) {
+      const [dependency] = await db
+        .select({ id: tarefas.id, projetoId: tarefas.projetoId })
+        .from(tarefas)
+        .where(eq(tarefas.id, input.dependsOnTaskId))
+        .limit(1);
+      if (!dependency || Number(dependency.projetoId) !== managedProjectId) {
+        throw new BadRequestException(
+          'A tarefa de dependência deve pertencer ao mesmo projeto gerenciado',
+        );
+      }
+    }
+
+    return await db.transaction(async (tx: any) => {
+      const result = await tx.insert(tarefas).values({
+        projetoId: managedProjectId,
+        titulo,
+        descricao: input.descricao?.trim() || null,
+        tipo: input.tipo ?? 'desenvolvimento',
+        dependsOnTaskId: input.dependsOnTaskId ?? null,
+        autoStart: input.autoStart ?? false,
+        // Tarefas novas são criadas em PAUSA (paused_at definido).
+        // O status derivado será 'planned', mas a tarefa não executa até ser retomada.
+        pausedAt: new Date(),
+      });
+      const tarefaId = Number(result[0].insertId);
+      // IDs numéricos mantêm o external_id dentro do limite de 64 caracteres e
+      // deixam explícito que ambos pertencem ao namespace operacional.
+      const externalId = `task-p${managedProjectId}-${tarefaId}`;
+      await tx
+        .update(tarefas)
+        .set({ externalId, updatedAt: new Date() })
+        .where(eq(tarefas.id, tarefaId));
+
+      const [created] = await tx
+        .select()
+        .from(tarefas)
+        .where(eq(tarefas.id, tarefaId))
+        .limit(1);
+      if (!created) throw new BadRequestException('Falha ao criar tarefa');
+      await this.registrarEvento(tx, created, 'created', input.ator ?? 'usuario', 'usuario', { tipo: created.tipo });
+
+      // A tarefa nasce pausada, mas o Motor precisa conhecer sua existência.
+      // A mensagem fica na mesma transação da tarefa: depois do commit, o
+      // OutboxPublisher pode publicá-la mesmo que o RabbitMQ esteja indisponível.
+      const messageId = randomUUID();
+      await tx.insert(motorOutbox).values({
+        messageId,
+        type: 'TASK_CREATED',
+        taskId: externalId,
+        executionId: `exec-${externalId}-${messageId}`,
+        payloadJson: {
+          taskId: externalId,
+          taskDatabaseId: tarefaId,
+          managedProjectId,
+          status: 'planned',
+          paused: true,
+        },
+        timestamp: new Date(),
+        correlationId: messageId,
+        causationId: null,
+        status: 'pending',
+        attempt: 0,
+      });
+      return created;
+    });
+  }
+
+  async atualizarStatusTarefa(_projeto: ProjetoResumo, _tarefaId: number, _status?: string) {
+    throw new BadRequestException(
+      'Status da tarefa é derivado dos fatos operacionais e não pode ser alterado diretamente.',
+    );
+  }
+
+  /**
+   * Lista tarefas com status calculado pelo motor (via fatos operacionais).
+   * O status retornado não é o valor gravado em `tarefas.status`, mas sim o
+   * status derivado de subtarefas, bloqueios, clarificação, etc.
+   */
+  async listarTarefasComStatusCalculado(
+    projeto: ProjetoResumo,
+    filtros?: { projetoId?: number; status?: string },
+  ): Promise<Array<Record<string, unknown>>> {
+    const db = await this.dbDoMotor();
+    
+    // Busca todas as tarefas (com filtros opcionais)
+    const condicoes = [];
+    if (filtros?.projetoId) {
+      condicoes.push(eq(tarefas.projetoId, filtros.projetoId));
+    }
+    const onde = condicoes.length > 0 ? and(...condicoes) : undefined;
+    
+    const tarefasLista = await db
+      .select()
+      .from(tarefas)
+      .where(onde)
+      .orderBy(desc(tarefas.createdAt));
+    
+    // Para cada tarefa, busca o status calculado pelo motor
+    const tarefasComStatus = await Promise.all(
+      tarefasLista.map(async (tarefa) => {
+        const motorId = tarefa.externalId || `task-${tarefa.id}`;
+        try {
+          // Chama o endpoint do motor que retorna status calculado
+          const resp = await this.motorRequest(
+            'GET',
+            `/api/motor/task/${encodeURIComponent(motorId)}`,
+            null,
+            this.motorV2Url,
+          );
+          if (resp.ok) {
+            const motorTask = JSON.parse(resp.body) as { status?: string; subtasks?: unknown[]; recoveryEligibility?: unknown };
+            return {
+              ...tarefa,
+              status: motorTask.status || 'planned',
+              subtaskCount: Array.isArray(motorTask.subtasks) ? motorTask.subtasks.length : 0,
+              ...(motorTask.recoveryEligibility !== undefined ? { recoveryEligibility: motorTask.recoveryEligibility } : {}),
+            };
+          }
+        } catch {
+          // Se falhar, usa status padrão (fallback)
+        }
+        return { ...tarefa, status: 'planned', subtaskCount: 0, recoveryEligibility: null };
+      }),
+    );
+    
+    return tarefasComStatus;
+  }
+
+  /**
+   * Notifica o motor-v2 de que a resposta de clarificação chegou (a mensagem
+   * já foi gravada no chat da tarefa aqui). O motor devolve a tarefa para
+   * `planned` e reexecuta a análise com o histórico de perguntas/respostas.
+   * Com MOTOR_VERSION v1 o fluxo de clarificação não existe — ignora.
+   */
+  private async encaminharRespostaClarificacao(
+    tarefa: { id: number; externalId?: string | null },
+    texto: string,
+  ): Promise<void> {
+    if (this.motorVersao !== 'v2') return;
+    const motorId = tarefa.externalId || String(tarefa.id);
+    const resp = await this.motorRequest(
+      'POST',
+      `/api/motor/task/${encodeURIComponent(motorId)}/clarification`,
+      { texto, jaPersistida: true },
+      this.motorV2Url,
+    );
+    if (!resp.ok) {
+      throw new BadRequestException(
+        `Mensagem salva, mas o motor não retomou a análise (${resp.status}): ${resp.body.slice(0, 200)}`,
+      );
+    }
+  }
+
+  async iniciarTarefa(projeto: ProjetoResumo, tarefaId: number, ator = 'usuario') {
+    const db = await this.dbDoMotor();
+    const [tarefa] = await db
+      .select()
+      .from(tarefas)
+      .where(eq(tarefas.id, tarefaId))
+      .limit(1);
+
+    if (!tarefa) {
+      throw new NotFoundException('Tarefa não encontrada');
+    }
+
+    // Status é calculado dinamicamente pelo motor - não valida mais status materializado
+    // O motor verifica fatos operacionais (subtarefas, bloqueios, paused_at, etc.)
+
+    // ── Ponte com o motor de execução ────────────────────────────────────────
+    // Play é uma ação única: para tarefa pausada, primeiro remove a pausa e
+    // deixa o Motor retomar o ciclo; para as demais, enfileira normalmente.
+    const motorId = tarefa.externalId || `task-biblioteca-${tarefa.id}`;
+    const usarMotorV2OuV3 = this.motorVersao === 'v2' || this.motorVersao === 'v3';
+    const startPath = tarefa.pausedAt || this.motorVersao === 'v3'
+      ? `/api/motor/task/${encodeURIComponent(motorId)}/resume`
+      : (this.motorVersao === 'v2'
+        ? `/api/motor/task/${encodeURIComponent(motorId)}/enqueue`
+        : `/api/task/${encodeURIComponent(motorId)}/start`);
+    if (tarefa.pausedAt && this.motorVersao === 'v3') {
+      await db.update(tarefas).set({ pausedAt: null, updatedAt: new Date() }).where(eq(tarefas.id, tarefaId));
+    }
+    const start = await this.motorRequest('POST', startPath, undefined, usarMotorV2OuV3 ? this.motorV2Url : undefined).catch((e: unknown) => {
+      throw new BadRequestException(`Motor indisponível ao iniciar a tarefa: ${e instanceof Error ? e.message : String(e)}`);
+    });
+    if (!start.ok) {
+      throw new BadRequestException(`Motor rejeitou o início (${start.status}): ${start.body.slice(0, 200)}`);
+    }
+
+    await this.registrarEvento(db, tarefa, tarefa.pausedAt ? 'resumed' : 'started', ator, 'usuario');
+    return { id: tarefaId, message: tarefa.pausedAt ? 'Tarefa retomada no motor' : 'Tarefa iniciada no motor', motorId };
+  }
+
+  async pausarTarefa(projeto: ProjetoResumo, tarefaId: number, ator = 'usuario') {
+    const db = await this.dbDoMotor();
+    const [tarefa] = await db
+      .select()
+      .from(tarefas)
+      .where(eq(tarefas.id, tarefaId))
+      .limit(1);
+
+    if (!tarefa) {
+      throw new NotFoundException('Tarefa não encontrada');
+    }
+
+    if (tarefa.pausedAt) {
+      throw new BadRequestException('Tarefa já está pausada');
+    }
+
+    // Verifica se a tarefa está em status final (não pode pausar tarefa finalizada)
+    const [fact] = await db
+      .select({ terminalStatus: taskRuntimeFacts.terminalStatus })
+      .from(taskRuntimeFacts)
+      .where(eq(taskRuntimeFacts.tarefaId, tarefaId))
+      .limit(1);
+
+    const { TASK_STATUS_FINAIS } = await import('../motor-v2/dist/shared/task-statuses.js');
+    if (fact?.terminalStatus && TASK_STATUS_FINAIS.has(fact.terminalStatus)) {
+      throw new BadRequestException(`Não é possível pausar tarefa em status final: ${fact.terminalStatus}`);
+    }
+
+    if (this.motorVersao === 'v2' || this.motorVersao === 'v3') {
+      const motorId = tarefa.externalId || String(tarefa.id);
+      const resp = await this.motorRequest(
+        'POST',
+        `/api/motor/task/${encodeURIComponent(motorId)}/pause`,
+        undefined,
+        this.motorV2Url,
+      ).catch((e: unknown) => {
+        throw new BadRequestException(`Motor indisponível ao pausar a tarefa: ${e instanceof Error ? e.message : String(e)}`);
+      });
+      if (!resp.ok) {
+        throw new BadRequestException(`Motor rejeitou a pausa (${resp.status}): ${resp.body.slice(0, 200)}`);
+      }
+    }
+
+    if (this.motorVersao === 'v3') {
+      await db.update(tarefas).set({ pausedAt: new Date(), updatedAt: new Date() }).where(eq(tarefas.id, tarefaId));
+    }
+    await this.registrarEvento(db, tarefa, 'paused', ator, 'usuario');
+    return { id: tarefaId, paused: true, message: 'Tarefa pausada' };
+  }
+
+  async retomarTarefa(projeto: ProjetoResumo, tarefaId: number, ator = 'usuario') {
+    const db = await this.dbDoMotor();
+    const [tarefa] = await db
+      .select()
+      .from(tarefas)
+      .where(eq(tarefas.id, tarefaId))
+      .limit(1);
+
+    if (!tarefa) {
+      throw new NotFoundException('Tarefa não encontrada');
+    }
+
+    if (!tarefa.pausedAt) {
+      throw new BadRequestException('Tarefa não está pausada');
+    }
+
+    if (this.motorVersao === 'v3') {
+      await db.update(tarefas).set({ pausedAt: null, updatedAt: new Date() }).where(eq(tarefas.id, tarefaId));
+    }
+
+    if (this.motorVersao === 'v2' || this.motorVersao === 'v3') {
+      const motorId = tarefa.externalId || String(tarefa.id);
+      const resp = await this.motorRequest(
+        'POST',
+        `/api/motor/task/${encodeURIComponent(motorId)}/resume`,
+        undefined,
+        this.motorV2Url,
+      ).catch((e: unknown) => {
+        throw new BadRequestException(`Motor indisponível ao retomar a tarefa: ${e instanceof Error ? e.message : String(e)}`);
+      });
+      if (!resp.ok) {
+        throw new BadRequestException(`Motor rejeitou a retomada (${resp.status}): ${resp.body.slice(0, 200)}`);
+      }
+    }
+
+    await this.registrarEvento(db, tarefa, 'resumed', ator, 'usuario');
+    return { id: tarefaId, paused: false, message: 'Tarefa retomada' };
+  }
+
+  async cancelarTarefa(projeto: ProjetoResumo, tarefaId: number, ator = 'usuario', motivo?: string) {
+    const db = await this.dbDoMotor();
+    const [tarefa] = await db.select().from(tarefas).where(eq(tarefas.id, tarefaId)).limit(1);
+    if (!tarefa) throw new NotFoundException('Tarefa não encontrada');
+    const motorId = tarefa.externalId || String(tarefa.id);
+    const motivoNormalizado = motivo?.trim() || null;
+    const resp = await this.motorRequest(
+      'POST',
+      `/api/motor/task/${encodeURIComponent(motorId)}/cancel`,
+      { ator, motivo: motivoNormalizado },
+      this.motorV2Url,
+    );
+    if (!resp.ok) throw new BadRequestException(`Motor rejeitou o cancelamento (${resp.status}): ${resp.body.slice(0, 200)}`);
+    if (this.motorVersao === 'v3') {
+      // Motor v3: cancelamento é assíncrono (comando durável C04, 202 accepted).
+      // A Biblioteca registra a solicitação; o fato 'cancelled' é registrado
+      // pelo Motor em tarefa_eventos quando o TaskCancelConsumer persistir o
+      // terminal_status (incidente 862, item 5 — trilha honesta).
+      await this.registrarEvento(db, tarefa, 'cancel_requested', ator, 'usuario', { motivo: motivoNormalizado });
+      return { id: tarefaId, cancelled: true, message: 'Cancelamento solicitado ao motor' };
+    }
+    await this.registrarEvento(db, tarefa, 'cancelled', ator, 'usuario', { motivo: motivoNormalizado });
+    return { id: tarefaId, cancelled: true };
+  }
+
+  async excluirTarefa(projeto: ProjetoResumo, tarefaId: number, ator = 'usuario') {
+    const db = await this.dbDoMotor();
+    const [tarefa] = await db.select().from(tarefas).where(eq(tarefas.id, tarefaId)).limit(1);
+    if (!tarefa) throw new NotFoundException('Tarefa não encontrada');
+    // O evento é gravado antes da remoção e não tem FK, preservando a autoria.
+    await this.registrarEvento(db, tarefa, 'deleted', ator, 'usuario');
+    const motorId = tarefa.externalId || String(tarefa.id);
+    const resp = await this.motorRequest('DELETE', `/api/motor/task/${encodeURIComponent(motorId)}`, undefined, this.motorV2Url);
+    if (!resp.ok) throw new BadRequestException(`Motor rejeitou a exclusão (${resp.status}): ${resp.body.slice(0, 200)}`);
+    return { id: tarefaId, deleted: true };
+  }
+
+  async listarEventosTarefa(projeto: ProjetoResumo, tarefaId: number) {
+    const db = await this.dbDoMotor();
+    const rows = await db.select().from(tarefaEventos).where(eq(tarefaEventos.tarefaId, tarefaId)).orderBy(desc(tarefaEventos.createdAt));
+    return rows;
+  }
+
+  /** Timeline append-only das decisões/actions/primitivas do Motor v3. */
+  async listarOperacoesMotorTarefa(_projeto: ProjetoResumo, tarefaId: number) {
+    const db = await this.dbDoMotor();
+    const [rows] = await db.execute(sql`
+      SELECT operation_id AS operationId, sequence, phase, outcome,
+             message_id AS messageId, message_type AS messageType,
+             correlation_id AS correlationId, command_code AS commandCode,
+             policy_code AS policyCode, policy_version AS policyVersion,
+             action_code AS actionCode, primitive_code AS primitiveCode,
+             reason_code AS reasonCode, result_json AS resultJson,
+             duration_ms AS durationMs, created_at AS createdAt
+        FROM motor_operation_log
+       WHERE CAST(tarefa_id AS BINARY) = CAST(COALESCE(
+         (SELECT external_id FROM tarefas WHERE id = ${tarefaId} LIMIT 1),
+         ${String(tarefaId)}
+       ) AS BINARY)
+       ORDER BY created_at DESC, sequence DESC
+       LIMIT 500
+    `);
+    return rows;
+  }
+
+  /**
+   * Bulk: pausa todas as tarefas não-finais e não-pausadas.
+   * Consulta tarefas + fatos de runtime, filtra elegíveis e chama o motor
+   * para cada uma. Falhas individuais não abortam o lote (Promise.allSettled).
+   */
+  async pausarTodasTarefas(): Promise<{ paused: number; skipped: number }> {
+    const db = await this.dbDoMotor();
+
+    // Busca todas as tarefas
+    const todasTarefas = await db
+      .select({
+        id: tarefas.id,
+        externalId: tarefas.externalId,
+        pausedAt: tarefas.pausedAt,
+      })
+      .from(tarefas);
+
+    // Busca fatos de runtime para verificar status terminal
+    const facts = await db
+      .select({
+        tarefaId: taskRuntimeFacts.tarefaId,
+        terminalStatus: taskRuntimeFacts.terminalStatus,
+      })
+      .from(taskRuntimeFacts);
+
+    const factsMap = new Map(facts.map((f) => [f.tarefaId, f]));
+
+    // Filtra tarefas elegíveis: não-final e não-pausada
+    const elegiveis: Array<{ id: number; externalId: string | null }> = [];
+    let skipped = 0;
+
+    for (const tarefa of todasTarefas) {
+      const fact = factsMap.get(tarefa.id);
+      const statusTerminal = fact?.terminalStatus;
+
+      // Pula tarefas em status final
+      const { TASK_STATUS_FINAIS } = await import('../motor-v2/dist/shared/task-statuses.js');
+      if (statusTerminal && TASK_STATUS_FINAIS.has(statusTerminal)) {
+        skipped++;
+        continue;
+      }
+
+      // Pula tarefas já pausadas
+      if (tarefa.pausedAt) {
+        skipped++;
+        continue;
+      }
+
+      elegiveis.push({ id: tarefa.id, externalId: tarefa.externalId });
+    }
+
+    // Pausa cada tarefa elegível via motor (Promise.allSettled)
+    const resultados = await Promise.allSettled(
+      elegiveis.map(async (t) => {
+        const identificador = t.externalId || String(t.id);
+        await this.motorRequest(
+          'POST',
+          `/api/motor/task/${encodeURIComponent(identificador)}/pause`,
+          undefined,
+          this.motorV2Url,
+        );
+        // Atualiza pausedAt localmente
+        await db
+          .update(tarefas)
+          .set({ pausedAt: new Date() })
+          .where(eq(tarefas.id, t.id));
+      }),
+    );
+
+    let paused = 0;
+    for (const resultado of resultados) {
+      if (resultado.status === 'fulfilled') {
+        paused++;
+      } else {
+        this.logger.warn(`Falha ao pausar tarefa em lote: ${resultado.reason}`);
+        skipped++;
+      }
+    }
+
+    this.logger.log(`pause-all: ${paused} pausadas, ${skipped} skipadas`);
+    return { paused, skipped };
+  }
+
+  /**
+   * Bulk: retoma todas as tarefas pausadas (limpa pausedAt via drizzle).
+   * Tarefas não-pausadas são contadas como skipped.
+   */
+  async retomarTodasTarefas(): Promise<{ resumed: number; skipped: number }> {
+    const db = await this.dbDoMotor();
+
+    // Conta tarefas pausadas (pausedAt não-null)
+    const pausadas = await db
+      .select({ id: tarefas.id })
+      .from(tarefas)
+      .where(isNotNull(tarefas.pausedAt));
+
+    // Conta tarefas não-pausadas (para skipped)
+    const naoPausadas = await db
+      .select({ id: tarefas.id })
+      .from(tarefas)
+      .where(isNull(tarefas.pausedAt));
+
+    // Limpa pausedAt de todas as tarefas pausadas
+    if (pausadas.length > 0) {
+      await db
+        .update(tarefas)
+        .set({ pausedAt: null })
+        .where(isNotNull(tarefas.pausedAt));
+    }
+
+    this.logger.log(`resume-all: ${pausadas.length} retomadas, ${naoPausadas.length} skipadas`);
+    return { resumed: pausadas.length, skipped: naoPausadas.length };
+  }
+
+  /**
+   * Remove o bloqueio operacional de uma tarefa sem reabrir subtarefas que já
+   * avançaram no fluxo. Somente subtarefas efetivamente bloqueadas voltam a
+   * `pending`; a tarefa fica pronta quando há subtarefas e em rascunho quando
+   * não há nenhuma.
+   */
+  async desbloquearTarefa(projeto: ProjetoResumo, tarefaId: number) {
+    const db = await this.dbDoMotor();
+    const [tarefa] = await db
+      .select({ id: tarefas.id })
+      .from(tarefas)
+      .where(eq(tarefas.id, tarefaId))
+      .limit(1);
+
+    if (!tarefa) {
+      throw new NotFoundException('Tarefa não encontrada');
+    }
+
+    // Promoção bloqueada por checkout sujo é transitória e o Motor possui um
+    // recuperador próprio. Desbloquear aqui removeria o único gate antes de o
+    // merge real acontecer e poderia marcar a tarefa como concluída sem base.
+    const bloqueiosAtivos = await db
+      .select({ reason: bloqueios.blockReason, command: bloqueios.blockCommand, excerpt: bloqueios.blockExcerpt })
+      .from(bloqueios)
+      .where(and(eq(bloqueios.tarefaId, tarefaId), isNull(bloqueios.resolvedAt)));
+    const aguardandoPromocao = bloqueiosAtivos.some((bloqueio) =>
+      (bloqueio.command ?? '').startsWith('motor-v2:promotion-repo-dirty:') ||
+      /Falha na promoção da branch da tarefa: repositório principal não está limpo para promoção:/i.test(bloqueio.excerpt ?? ''),
+    );
+    if (aguardandoPromocao) {
+      throw new BadRequestException('A promoção está aguardando retentativa automática do Motor. Não desbloqueie esta tarefa.');
+    }
+
+    // Um bloqueio por limite de entregas é uma trava operacional, não uma
+    // evidência que deva ser apagada. Ao liberar manualmente a tarefa, reinicie
+    // somente o contador das subtarefas bloqueadas para que o Worker possa
+    // executar novamente; `subtarefas_entregas` permanece como auditoria.
+    const limiteDeEntregas = bloqueiosAtivos.some((bloqueio) =>
+      /Limite de entregas atingido/i.test(bloqueio.excerpt ?? ''),
+    );
+
+    const existentes = await db
+      .select({ id: subtarefas.id, status: subtarefas.status })
+      .from(subtarefas)
+      .where(eq(subtarefas.tarefaId, tarefaId));
+    const bloqueadas = existentes.filter((subtarefa) => subtarefa.status === 'blocked').length;
+
+    if (existentes.length > 0) {
+      await db
+        .update(subtarefas)
+        .set({
+          status: 'pending',
+          ...(limiteDeEntregas ? { deliverCount: 0 } : {}),
+          updatedAt: new Date(),
+        })
+        .where(and(eq(subtarefas.tarefaId, tarefaId), eq(subtarefas.status, 'blocked')));
+    }
+    await db
+      .update(bloqueios)
+      .set({ resolvedAt: new Date() })
+      .where(and(eq(bloqueios.tarefaId, tarefaId), isNull(bloqueios.resolvedAt)));
+
+    return {
+      id: tarefaId,
+      subtarefasDesbloqueadas: bloqueadas,
+      contadorDeEntregasZerado: limiteDeEntregas,
+      message: existentes.length > 0 ? 'Tarefa desbloqueada' : 'Bloqueio removido',
+    };
+  }
+
+  /** Arquiva a sessão física sem apagar auditoria; não desbloqueia a tarefa. */
+  async sanearSessaoTarefa(projeto: ProjetoResumo, tarefaId: number, ator = 'usuario') {
+    const db = await this.dbDoMotor();
+    const [tarefa] = await db.select().from(tarefas).where(eq(tarefas.id, tarefaId)).limit(1);
+    if (!tarefa) throw new NotFoundException('Tarefa não encontrada');
+    const motorId = tarefa.externalId || String(tarefa.id);
+    const resp = await this.motorRequest('POST', `/api/motor/task/${encodeURIComponent(motorId)}/sanitize-session`, undefined, this.motorV2Url);
+    if (!resp.ok) throw new BadRequestException(`Motor não conseguiu sanear a sessão (${resp.status}): ${resp.body.slice(0, 200)}`);
+    const result = JSON.parse(resp.body) as { sessionsArchived?: number; nextGeneration?: number };
+    await this.registrarEvento(db, tarefa, 'session_sanitized', ator, 'usuario', result);
+    return { id: tarefaId, ...result, message: 'Sessão arquivada. Desbloqueie a tarefa para retomá-la com um contexto novo.' };
+  }
+
+  async fazerDeployTarefa(projeto: ProjetoResumo, tarefaId: number, ator = 'usuario') {
+    const db = await this.dbDoMotor();
+    const [tarefa] = await db.select().from(tarefas).where(eq(tarefas.id, tarefaId)).limit(1);
+    if (!tarefa) throw new NotFoundException('Tarefa não encontrada');
+    if (tarefa.tipo !== 'desenvolvimento') {
+      throw new BadRequestException('Deploy manual disponível somente para tarefas de desenvolvimento');
+    }
+    // O Motor executa agora um gate `pre_deploy` novo no commit exato antes de
+    // aceitar a solicitação. Uma consulta antecipada aqui usaria um run antigo
+    // e impediria justamente a criação do gate autoritativo.
+    const motorId = tarefa.externalId || String(tarefa.id);
+    const resp = await this.motorRequest('POST', `/api/motor/task/${encodeURIComponent(motorId)}/deploy`, undefined, this.motorV2Url);
+    if (!resp.ok) throw new BadRequestException(`Motor rejeitou o deploy (${resp.status}): ${resp.body.slice(0, 200)}`);
+    await this.registrarEvento(db, tarefa, 'deploy_requested', ator, 'usuario');
+    return { id: tarefaId, status: 'deploy_pending', message: 'Deploy agendado para quando o Motor ficar ocioso' };
+  }
+
+  /**
+   * Solicita ajuste incremental em tarefa deployed/completed.
+   * Proxy para o motor-v3 POST /api/motor/task/:id/adjustment.
+   */
+  async solicitarAjusteTarefa(projeto: ProjetoResumo, tarefaId: number, message: string | undefined) {
+    if (!message || !message.trim()) {
+      throw new BadRequestException('message é obrigatório');
+    }
+    const db = await this.dbDoMotor();
+    const [tarefa] = await db.select().from(tarefas).where(eq(tarefas.id, tarefaId)).limit(1);
+    if (!tarefa) throw new NotFoundException('Tarefa não encontrada');
+    const motorId = tarefa.externalId || String(tarefa.id);
+    const resp = await this.motorRequest(
+      'POST',
+      `/api/motor/task/${encodeURIComponent(motorId)}/adjustment`,
+      { message: message.trim() },
+      this.motorV2Url,
+    );
+    if (!resp.ok) {
+      throw new BadRequestException(`Motor rejeitou o ajuste (${resp.status}): ${resp.body.slice(0, 200)}`);
+    }
+    try {
+      return JSON.parse(resp.body) as { ok: boolean; accepted: boolean; generation: number; messageId: string };
+    } catch {
+      return { ok: true, accepted: true, generation: 0, messageId: '' };
+    }
+  }
+
+  async atividadeMotor(projeto: ProjetoResumo) {
+    const resp = await this.motorRequest('GET', '/api/motor/stats', undefined, this.motorV2Url);
+    if (!resp.ok) throw new BadRequestException(`Motor indisponível (${resp.status}): ${resp.body.slice(0, 200)}`);
+    return JSON.parse(resp.body) as unknown;
+  }
+
+  async diagnosticoDeploy(projeto: ProjetoResumo) {
+    const resp = await this.motorRequest('GET', '/api/motor/deploy-diagnostics', undefined, this.motorV2Url);
+    // O Motor v3 ainda não expõe o diagnóstico legado de deploy. Isso não
+    // deve transformar o carregamento do Mapa de agentes em erro HTTP.
+    if (resp.status === 404) {
+      return {
+        canStart: false,
+        pendingRequests: 0,
+        reasons: ['Diagnóstico de deploy ainda não disponível no Motor v3.'],
+      };
+    }
+    if (!resp.ok) throw new BadRequestException(`Diagnóstico de deploy indisponível (${resp.status}): ${resp.body.slice(0, 200)}`);
+    return JSON.parse(resp.body) as unknown;
+  }
+
+  async listarHistoricoTestes(_projeto: ProjetoResumo, filtros: { projetoId?: number; tarefaId?: number; limit?: number }) {
+    const db = await this.dbDoMotor();
+    const limit = Math.min(Math.max(Number(filtros.limit) || 100, 1), 500);
+    const where: string[] = [];
+    if (filtros.projetoId) where.push(`tr.projeto_id = ${Number(filtros.projetoId)}`);
+    if (filtros.tarefaId) where.push(`tr.tarefa_id = ${Number(filtros.tarefaId)}`);
+    const predicate = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const [runs] = await db.execute(sql.raw(`
+      SELECT tr.*, pc.nome AS projeto_nome, t.titulo AS tarefa_titulo,
+             SUM(tf.classification = 'new') AS new_failure_count,
+             SUM(tf.classification = 'pre_existing') AS pre_existing_failure_count,
+             SUM(tf.classification = 'resolved') AS resolved_failure_count,
+             COUNT(tf.id) AS failure_count
+        FROM test_runs tr
+        LEFT JOIN projetos_captados pc ON pc.id = tr.projeto_id
+        LEFT JOIN tarefas t ON t.id = tr.tarefa_id
+        LEFT JOIN test_failures tf ON tf.test_run_id = tr.id
+        ${predicate}
+       GROUP BY tr.id, pc.nome, t.titulo
+       ORDER BY tr.started_at DESC, tr.id DESC
+       LIMIT ${limit}
+    `));
+    const ids = (runs as unknown as Array<{ id: number }>).map(run => Number(run.id)).filter(Boolean);
+    if (ids.length === 0) return { items: [] };
+    const [failures] = await db.execute(sql.raw(`
+      SELECT * FROM test_failures WHERE test_run_id IN (${ids.join(',')}) ORDER BY test_run_id DESC, id ASC
+    `));
+    const byRun = new Map<number, unknown[]>();
+    for (const failure of failures as unknown as Array<Record<string, unknown>>) {
+      const runId = Number(failure.test_run_id);
+      byRun.set(runId, [...(byRun.get(runId) ?? []), failure]);
+    }
+    return { items: (runs as unknown as Array<Record<string, unknown>>).map(run => ({ ...run, failures: byRun.get(Number(run.id)) ?? [] })) };
+  }
+
+  // ============================================================================
+  // CHAT DA TAREFA
+  // ============================================================================
+
+  async listarChatTarefa(projeto: ProjetoResumo, tarefaId: number) {
+    const db = await this.dbDoMotor();
+    
+    // Verificar se a tarefa pertence ao projeto
+    const [tarefa] = await db
+      .select()
+      .from(tarefas)
+      .where(eq(tarefas.id, tarefaId))
+      .limit(1);
+
+    if (!tarefa) {
+      throw new NotFoundException('Tarefa não encontrada');
+    }
+
+    const mensagens = await db
+      .select({
+        id: tarefaChats.id,
+        tarefaId: tarefaChats.tarefaId,
+        role: tarefaChats.role,
+        texto: tarefaChats.texto,
+        createdAt: tarefaChats.createdAt,
+        deliveryId: tarefaChatEntregas.id,
+        deliveryState: tarefaChatEntregas.estado,
+        deliveryError: tarefaChatEntregas.erro,
+      })
+      .from(tarefaChats)
+      .leftJoin(tarefaChatEntregas, eq(tarefaChatEntregas.mensagemId, tarefaChats.id))
+      .where(eq(tarefaChats.tarefaId, tarefaId))
+      .orderBy(tarefaChats.createdAt);
+
+    return mensagens;
+  }
+
+  async adicionarMensagemChatTarefa(
+    projeto: ProjetoResumo,
+    tarefaId: number,
+    texto: string,
+    modo: 'normal' | 'solicitar_pausa' = 'normal',
+    ator: { id: string; nome: string } = { id: 'usuario', nome: 'usuario' },
+  ) {
+    const db = await this.dbDoMotor();
+    const normalizedText = texto.replace(/\r\n/g, '\n').trim();
+    if (!normalizedText || normalizedText.length > 8000) {
+      throw new BadRequestException('A mensagem deve conter entre 1 e 8.000 caracteres');
+    }
+    if (modo !== 'normal' && modo !== 'solicitar_pausa') {
+      throw new BadRequestException('Modo de chat inválido');
+    }
+    
+    // Verificar se a tarefa pertence ao projeto
+    const [tarefa] = await db
+      .select()
+      .from(tarefas)
+      .where(eq(tarefas.id, tarefaId))
+      .limit(1);
+
+    if (!tarefa) {
+      throw new NotFoundException('Tarefa não encontrada');
+    }
+
+    const mensagem = await db.transaction(async (tx) => {
+      // A resposta só retoma uma análise quando a última intervenção do
+      // analista ainda está aguardando esclarecimentos. Esta leitura e a
+      // criação do comando pertencem à mesma transação da mensagem do chat.
+      const [ultima] = await tx
+        .select({ id: tarefaChats.id, role: tarefaChats.role })
+        .from(tarefaChats)
+        .where(eq(tarefaChats.tarefaId, tarefaId))
+        .orderBy(desc(tarefaChats.id))
+        .limit(1);
+      const [created] = await tx.insert(tarefaChats).values({
+        tarefaId, role: 'user', texto: normalizedText, createdAt: new Date(),
+      }).$returningId();
+      if (!created) throw new BadRequestException('Falha ao criar mensagem');
+      await tx.insert(tarefaChatEntregas).values({
+        tarefaId, mensagemId: created.id, modo, atorId: ator.id, atorNome: ator.nome,
+        estado: 'pending', tentativas: 0, createdAt: new Date(),
+      });
+      const motorId = tarefa.externalId || `task-${tarefa.id}`;
+      if (ultima?.role === 'analyst') {
+        const messageId = randomUUID();
+        await tx.insert(motorOutbox).values({
+          messageId,
+          type: 'TASK_RESUME_REQUESTED',
+          taskId: motorId,
+          executionId: `clarification-${motorId}-${created.id}`,
+          payloadJson: {
+            reason: 'clarification_response',
+            chatMessageId: created.id,
+          },
+          timestamp: new Date(),
+          correlationId: messageId,
+          causationId: `task-chat-${created.id}`,
+          status: 'pending',
+          attempt: 0,
+        });
+      }
+      return { ...created, resumeRequested: ultima?.role === 'analyst' };
+    });
+
+    if (!mensagem) {
+      throw new BadRequestException('Falha ao criar mensagem');
+    }
+
+    const createdAt = new Date();
+    this.realtime?.publicar({
+      eventId: randomUUID(),
+      occurredAt: createdAt.toISOString(),
+      source: 'gerenteagentes.chat',
+      projectId: Number(tarefa.projetoId),
+      taskId: tarefaId,
+      type: 'task.chat.message.created',
+      payload: {
+        id: mensagem.id,
+        tarefaId,
+        role: 'user',
+        texto: normalizedText,
+        createdAt: createdAt.toISOString(),
+      },
+    });
+
+    return { id: mensagem.id, tarefaId, role: 'user', texto: normalizedText, modo, estado: 'pending', resumeRequested: mensagem.resumeRequested, createdAt };
+  }
+
+  async retomarInteracaoTarefa(projeto: ProjetoResumo, tarefaId: number) {
+    const db = await this.dbDoMotor();
+    const [tarefa] = await db.select().from(tarefas).where(eq(tarefas.id, tarefaId)).limit(1);
+    if (!tarefa) throw new NotFoundException('Tarefa não encontrada');
+    const motorId = tarefa.externalId || `task-${tarefa.id}`;
+    const messageId = randomUUID();
+    await db.insert(motorOutbox).values({
+      messageId,
+      type: 'TASK_RESUME_REQUESTED',
+      taskId: motorId,
+      executionId: `manual-resume-${motorId}-${messageId}`,
+      payloadJson: { reason: 'clarification_response', requestedBy: 'user' },
+      timestamp: new Date(),
+      correlationId: messageId,
+      causationId: null,
+      status: 'pending',
+      attempt: 0,
+    });
+    return { ok: true, tarefaId, status: 'ready_to_resume' };
+  }
+
+  // ============================================================================
+  // CHAT DO PROJETO
+  // ============================================================================
+
+  async listarChatProjeto(projeto: ProjetoResumo, projetoCaptadoId: number) {
+    const db = await this.dbDoProjeto(projeto);
+    
+    // Verificar se o projeto pertence ao escopo
+    const [projetoCaptado] = await db
+      .select()
+      .from(projetosCaptados)
+      .where(eq(projetosCaptados.id, projetoCaptadoId))
+      .limit(1);
+
+    if (!projetoCaptado) {
+      throw new NotFoundException('Projeto não encontrado');
+    }
+
+    const mensagens = await db
+      .select()
+      .from(projetoChats)
+      .where(eq(projetoChats.projetoId, projetoCaptadoId))
+      .orderBy(projetoChats.createdAt);
+
+    return mensagens;
+  }
+
+  async adicionarMensagemChatProjeto(
+    projeto: ProjetoResumo,
+    projetoCaptadoId: number,
+    role: string,
+    texto: string,
+  ) {
+    const db = await this.dbDoProjeto(projeto);
+    
+    // Verificar se o projeto pertence ao escopo
+    const [projetoCaptado] = await db
+      .select()
+      .from(projetosCaptados)
+      .where(eq(projetosCaptados.id, projetoCaptadoId))
+      .limit(1);
+
+    if (!projetoCaptado) {
+      throw new NotFoundException('Projeto não encontrado');
+    }
+
+    const [mensagem] = await db
+      .insert(projetoChats)
+      .values({
+        projetoId: projetoCaptadoId,
+        role,
+        texto,
+        createdAt: new Date(),
+      })
+      .$returningId();
+
+    if (!mensagem) {
+      throw new BadRequestException('Falha ao criar mensagem');
+    }
+
+    // Clarificação interativa por projeto: resposta do dono/agente devolve a
+    // geração mais recente para `pending`, de onde o fluxo de geração retoma.
+    if (role === 'user') {
+      const [geracao] = await db
+        .select()
+        .from(geracoesProjeto)
+        .where(eq(geracoesProjeto.projetoId, projetoCaptadoId))
+        .orderBy(desc(geracoesProjeto.createdAt))
+        .limit(1);
+      if (geracao && geracao.status === 'awaiting_clarification') {
+        await db
+          .update(geracoesProjeto)
+          .set({ status: 'pending', updatedAt: new Date() })
+          .where(eq(geracoesProjeto.id, geracao.id));
+      }
+    }
+
+    return { id: mensagem.id, projetoId: projetoCaptadoId, role, texto, createdAt: new Date() };
+  }
+
+  /**
+   * Clarificação interativa por projeto: registra as perguntas do analista no
+   * chat do projeto e marca a geração mais recente como
+   * `awaiting_clarification`. Quando a resposta chegar via chat (role user),
+   * a geração volta para `pending` (ver adicionarMensagemChatProjeto).
+   */
+  async registrarClarificacaoProjeto(
+    projeto: ProjetoResumo,
+    projetoCaptadoId: number,
+    resumo: string,
+    perguntas: string[],
+  ) {
+    const db = await this.dbDoProjeto(projeto);
+
+    const [projetoCaptado] = await db
+      .select()
+      .from(projetosCaptados)
+      .where(eq(projetosCaptados.id, projetoCaptadoId))
+      .limit(1);
+
+    if (!projetoCaptado) {
+      throw new NotFoundException('Projeto não encontrado');
+    }
+
+    const [geracao] = await db
+      .select()
+      .from(geracoesProjeto)
+      .where(eq(geracoesProjeto.projetoId, projetoCaptadoId))
+      .orderBy(desc(geracoesProjeto.createdAt))
+      .limit(1);
+
+    if (!geracao) {
+      throw new NotFoundException('Nenhuma geração em andamento para este projeto');
+    }
+
+    const limpas = perguntas.map((p) => String(p).trim()).filter(Boolean);
+    if (limpas.length === 0) {
+      throw new BadRequestException('Lista de perguntas vazia');
+    }
+
+    const linhas: string[] = ['🤔 O analista precisa de esclarecimentos antes de gerar as tarefas.', ''];
+    if (resumo && resumo.trim()) {
+      linhas.push('Entendimento atual: ' + resumo.trim(), '');
+    }
+    limpas.forEach((pergunta, indice) => linhas.push(`${indice + 1}) ${pergunta}`));
+    linhas.push('', 'Responda neste chat para continuar (ex.: "1: resposta; 2: resposta").');
+
+    await db.insert(projetoChats).values({
+      projetoId: projetoCaptadoId,
+      role: 'analyst',
+      texto: linhas.join('\n'),
+      createdAt: new Date(),
+    });
+
+    await db
+      .update(geracoesProjeto)
+      .set({ status: 'awaiting_clarification', updatedAt: new Date() })
+      .where(eq(geracoesProjeto.id, geracao.id));
+
+    return { ok: true, geracaoId: geracao.id, status: 'awaiting_clarification', perguntas: limpas };
+  }
+
+  // ============================================================================
+  // GERAÇÃO MACRO (START DO PROJETO)
+  // ============================================================================
+
+  async iniciarGeracaoProjeto(projeto: ProjetoResumo, projetoCaptadoId: number) {
+    const db = await this.dbDoProjeto(projeto);
+    
+    // Verificar se o projeto pertence ao escopo
+    const [projetoCaptado] = await db
+      .select()
+      .from(projetosCaptados)
+      .where(eq(projetosCaptados.id, projetoCaptadoId))
+      .limit(1);
+
+    if (!projetoCaptado) {
+      throw new NotFoundException('Projeto não encontrado');
+    }
+
+    // Criar registro de geração
+    const [geracao] = await db
+      .insert(geracoesProjeto)
+      .values({
+        projetoId: projetoCaptadoId,
+        status: 'pending',
+        briefing: `Gerar tarefas macro para o projeto: ${projetoCaptado.nome}`,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .$returningId();
+
+    if (!geracao) {
+      throw new BadRequestException('Falha ao criar geração');
+    }
+
+    return {
+      geracaoId: geracao.id,
+      status: 'pending',
+      message: 'Geração de tarefas iniciada',
+    };
+  }
+
+  async listarGeracoesProjeto(projeto: ProjetoResumo, projetoCaptadoId: number) {
+    const db = await this.dbDoProjeto(projeto);
+    
+    // Verificar se o projeto pertence ao escopo
+    const [projetoCaptado] = await db
+      .select()
+      .from(projetosCaptados)
+      .where(eq(projetosCaptados.id, projetoCaptadoId))
+      .limit(1);
+
+    if (!projetoCaptado) {
+      throw new NotFoundException('Projeto não encontrado');
+    }
+
+    const geracoes = await db
+      .select()
+      .from(geracoesProjeto)
+      .where(eq(geracoesProjeto.projetoId, projetoCaptadoId))
+      .orderBy(desc(geracoesProjeto.createdAt));
+
+    return geracoes;
+  }
+
+  // ============================================================================
+  // SUBTAREFAS
+  // ============================================================================
+
+  /**
+   * Detail da tarefa NO MOTOR (proxy): task + subtasks + events + currentSubTask.
+   * O motor é a fonte da verdade da execução; a tabela `sub_task` do motor é
+   * separada da tabela `subtarefas` da biblioteca (Fase 3 ainda não sincroniza).
+   */
+  async motorDetailTarefa(projeto: ProjetoResumo, tarefaId: number) {
+    const db = await this.dbDoMotor();
+    const [tarefa] = await db
+      .select()
+      .from(tarefas)
+      .where(eq(tarefas.id, tarefaId))
+      .limit(1);
+    if (!tarefa) {
+      throw new NotFoundException('Tarefa não encontrada');
+    }
+    const motorId = tarefa.externalId || String(tarefa.id);
+    try {
+      // Motor-v2 usa /api/motor/task/:id (retorna dados básicos da tarefa)
+      const resp = await this.motorRequest(
+        'GET',
+        `/api/motor/task/${encodeURIComponent(motorId)}`,
+        undefined,
+        this.motorVersao === 'v2' ? this.motorV2Url : undefined,
+      );
+      if (resp.status === 404) {
+        return { motorId, exists: false, message: 'Tarefa ainda não foi enviada ao motor (clique em Iniciar).' };
+      }
+      if (!resp.ok) {
+        throw new BadRequestException(`Motor retornou ${resp.status}: ${resp.body.slice(0, 200)}`);
+      }
+      const motorTask = JSON.parse(resp.body) as {
+        id?: string;
+        title?: string;
+        status?: string;
+        description?: string;
+        errorMessage?: string;
+        subtasks?: Array<{
+          seq?: number;
+          workspaceBranch?: string | null;
+          workspaceCommitSha?: string | null;
+          deliveryHistory?: Array<{
+            id: number;
+            deliverNumber: number;
+            model: string | null;
+            eventType: string;
+            reason: string | null;
+            createdAt: string;
+          }>;
+        }>;
+        ultimoBloqueio?: {
+          kind?: string;
+          excerpt?: string;
+          blockedAt?: string;
+          subtaskId?: number | null;
+        } | null;
+        promotionConflictAnalysis?: {
+          status: string;
+          confidence: string | null;
+          recommendation: string | null;
+          report: string | null;
+          errorMessage: string | null;
+          conflictFiles: string[];
+          attempts: number;
+          updatedAt: string;
+        } | null;
+        recoveryEligibility?: unknown;
+      };
+      
+      // Busca subtarefas do banco de dados (mesma tabela projeto_640.subtarefas
+      // que o motor usa; mantém IDs reais para edição na tela)
+      const subtarefasList = await db
+        .select({
+          id: subtarefas.id,
+          seq: subtarefas.seq,
+          titulo: subtarefas.titulo,
+          status: subtarefas.status,
+          deliverCount: subtarefas.deliverCount,
+          resultado: subtarefas.resultado,
+          scope: subtarefas.scope,
+          acceptanceCriteria: subtarefas.acceptanceCriteria,
+          workspaceStatus: subtarefas.workspaceStatus,
+          workspaceBranch: subtarefas.workspaceBranch,
+          workspaceCommitSha: subtarefas.workspaceCommitSha,
+          correctionForSubtaskId: subtarefas.correctionForSubtaskId,
+        })
+        .from(subtarefas)
+        .where(eq(subtarefas.tarefaId, tarefaId))
+        .orderBy(subtarefas.seq);
+      
+      // Monta mapa de deliveryHistory vindo do motor (pass-through por seq)
+      const motorHistoryBySeq = new Map<number, Array<{
+        id: number;
+        deliverNumber: number;
+        model: string | null;
+        eventType: string;
+        reason: string | null;
+        createdAt: string;
+      }>>();
+      for (const ms of motorTask.subtasks ?? []) {
+        if (ms.seq != null && Array.isArray(ms.deliveryHistory)) {
+          motorHistoryBySeq.set(ms.seq, ms.deliveryHistory);
+        }
+      }
+
+      // Converte para o formato esperado pelo front-end
+      const subtasks = subtarefasList.map(s => ({
+        id: s.id,
+        seq: s.seq,
+        title: s.titulo,
+        status: s.status,
+        deliverCount: s.deliverCount,
+        blockInfo: s.resultado ? { reason: s.resultado } : null,
+        scope: s.scope ?? null,
+        acceptanceCriteria: s.acceptanceCriteria ?? null,
+        workspaceStatus: s.workspaceStatus ?? null,
+        workspaceBranch: s.workspaceBranch ?? null,
+        workspaceCommitSha: s.workspaceCommitSha ?? null,
+        correctionForSubtaskId: s.correctionForSubtaskId ?? null,
+        deliveryHistory: motorHistoryBySeq.get(s.seq) ?? [],
+      }));
+      
+      // Encontra subtarefa atual (running, verifying, etc)
+      const currentSubTask = subtasks.find(s => 
+        ['running', 'verifying', 'delivered', 'planning'].includes(s.status)
+      ) || null;
+      const [healthRows] = await db.execute(sql`
+        SELECT tr.status, tr.phase, tr.comparison_status AS comparisonStatus,
+               SUM(tf.classification IN ('new','worsened')) AS regressions,
+               SUM(tf.classification = 'pre_existing') AS preExisting,
+               (SELECT pr.status FROM test_runs pr WHERE pr.projeto_id=${tarefa.projetoId}
+                 ORDER BY pr.finished_at DESC,pr.id DESC LIMIT 1) AS projectStatus,
+               r.status AS recoveryStatus
+          FROM test_runs tr
+          LEFT JOIN test_failures tf ON tf.test_run_id=tr.id
+          LEFT JOIN test_recovery_attempts r ON r.id=(
+            SELECT rr.id FROM test_recovery_attempts rr
+             WHERE rr.source_tarefa_id=${tarefaId} ORDER BY rr.created_at DESC,rr.id DESC LIMIT 1
+          )
+         WHERE tr.id=(SELECT x.id FROM test_runs x WHERE x.tarefa_id=${tarefaId} ORDER BY x.finished_at DESC,x.id DESC LIMIT 1)
+         GROUP BY tr.id,r.status
+      `);
+      const testHealth = (healthRows as unknown as Array<{
+        status: string; phase: string; comparisonStatus: string;
+        regressions: number | string; preExisting: number | string; projectStatus: string | null; recoveryStatus: string | null;
+      }>)[0];
+      
+      return { 
+        motorId, 
+        exists: true, 
+        task: {
+          id: motorTask.id || String(tarefaId),
+          title: motorTask.title || tarefa.titulo,
+          // O status calculado pelo motor (via fatos operacionais) é a fonte canônica.
+          status: motorTask.status || 'pending',
+          integrationBranch: `motor-v2/${motorId}/integracao`,
+          errorMessage: motorTask.errorMessage ?? undefined,
+          blockInfo: motorTask.status === 'blocked' ? (motorTask.ultimoBloqueio ?? null) : null,
+          promotionConflictAnalysis: motorTask.promotionConflictAnalysis ?? null,
+          recoveryEligibility: motorTask.recoveryEligibility ?? null,
+          testHealth: testHealth ? {
+            delivery: motorTask.status === 'completed' || motorTask.status === 'deployed' ? 'completed' : motorTask.status,
+            verification: Number(testHealth.regressions) === 0 ? 'verified_without_regression' : 'regression',
+            projectHealth: testHealth.projectStatus === 'passed' ? 'tests_passing' : 'tests_failing',
+            deploy: testHealth.phase === 'pre_deploy' && testHealth.status === 'passed' ? 'authorized' : 'blocked',
+            recovery: testHealth.recoveryStatus ?? 'not_started',
+            preExistingFailures: Number(testHealth.preExisting ?? 0),
+            regressions: Number(testHealth.regressions ?? 0),
+          } : null,
+        },
+        subtasks,
+        currentSubTask,
+        events: [], // Motor-v2 não tem eventos detalhados ainda
+        errors: [],
+        models: [],
+      };
+    } catch (e) {
+      if (e instanceof BadRequestException) throw e;
+      throw new BadRequestException(`Motor indisponível: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  async listarSubtarefas(projeto: ProjetoResumo, tarefaId: number) {
+    const db = await this.dbDoMotor();
+    
+    // Verificar se a tarefa pertence ao projeto
+    const [tarefa] = await db
+      .select()
+      .from(tarefas)
+      .where(eq(tarefas.id, tarefaId))
+      .limit(1);
+
+    if (!tarefa) {
+      throw new NotFoundException('Tarefa não encontrada');
+    }
+
+    const subtarefasList = await db
+      .select()
+      .from(subtarefas)
+      .where(eq(subtarefas.tarefaId, tarefaId))
+      .orderBy(subtarefas.seq);
+
+    return subtarefasList;
+  }
+
+  // ============================================================================
+  // SELEÇÃO DE MODELOS (fonte operacional da Biblioteca)
+  // ============================================================================
+
+  /**
+   * Lista a seleção persistida do projeto para o tipo informado. Esta é uma
+   * configuração da Biblioteca; o Motor apenas a consome durante a execução.
+   */
+  async getModelSelection(
+    projectKey: string,
+    tipo: ModelSelectionTipo,
+  ): Promise<{ projectKey: string; tipo: ModelSelectionTipo; entries: ModelSelectionEntry[] }> {
+    const db = await this.dbDoMotor();
+    const [rows] = await db.execute(sql`
+      SELECT ordem, provider, model, enabled
+      FROM project_model_selection
+      WHERE project_slug = ${projectKey} AND tipo = ${tipo}
+      ORDER BY ordem ASC
+    `) as unknown as [Array<{ ordem: number | string; provider: string; model: string; enabled: number | boolean }>];
+    return { projectKey, tipo, entries: rows.map((row) => ({ ordem: Number(row.ordem), provider: row.provider, model: row.model, enabled: Boolean(row.enabled) })) };
+  }
+
+  /**
+   * Salva a seleção na Biblioteca. O Motor a lê como configuração de execução.
+   */
+  async saveModelSelection(
+    projectKey: string,
+    tipo: ModelSelectionTipo,
+    entries: ModelSelectionEntry[],
+  ): Promise<{ projectKey: string; tipo: ModelSelectionTipo; entries: ModelSelectionEntry[] }> {
+    // Valida localmente contra o contrato shared (strict) antes de enviar ao motor
+    const parsed = ProjectModelSelectionSchema.parse({ projectKey, tipo, entries }) as {
+      projectKey: string;
+      tipo: ModelSelectionTipo;
+      entries: ModelSelectionEntry[];
+    };
+
+    const db = await this.dbDoMotor();
+    await db.transaction(async (tx: any) => {
+      await tx.execute(sql`DELETE FROM project_model_selection WHERE project_slug = ${parsed.projectKey} AND tipo = ${tipo}`);
+      for (const entry of parsed.entries) {
+        await tx.execute(sql`INSERT INTO project_model_selection (project_slug, tipo, ordem, provider, model, enabled)
+          VALUES (${parsed.projectKey}, ${tipo}, ${entry.ordem}, ${entry.provider}, ${entry.model}, ${entry.enabled ? 1 : 0})`);
+      }
+    });
+    return { projectKey: parsed.projectKey, tipo, entries: parsed.entries };
+  }
+
+  /**
+   * Lê a configuração global de modelos da tabela global_model_selection.
+   */
+  async getGlobalModelSelection(): Promise<{ ok: boolean; configuracaoGlobal: GlobalModelSelection }> {
+    const db = await this.dbDoMotor();
+    const [rows] = await db.execute(sql`
+      SELECT tipo, ordem, provider, model, enabled
+      FROM global_model_selection
+      ORDER BY tipo, ordem ASC
+    `) as unknown as [Array<{ tipo: string; ordem: number | string; provider: string; model: string; enabled: number | boolean }>];
+    const configuracaoGlobal: GlobalModelSelection = { DEV: [], ANALYST: [], MONITOR: [] };
+    for (const row of rows) {
+      const tipo = row.tipo as GlobalModelSelectionTipo;
+      configuracaoGlobal[tipo].push({
+        ordem: Number(row.ordem),
+        provider: row.provider,
+        model: row.model,
+        enabled: Boolean(row.enabled),
+      });
+    }
+    return { ok: true, configuracaoGlobal };
+  }
+
+  /**
+   * Aplica a configuração global e propaga para todos os projetos ativos.
+   */
+  async saveGlobalModelSelection(input: unknown): Promise<{
+    configuracaoGlobal: GlobalModelSelection;
+    resultadoPropagacao: { sucesso: boolean; totalProjetos: number };
+    projetosAplicados: Array<{ projectKey: string; tipos: GlobalModelSelectionTipo[] }>;
+    errosPorProjeto: Array<{ projectKey: string; error: string }>;
+    mensagem?: string;
+  }> {
+    const configuracaoGlobal = parseGlobalModelSelection(input);
+    const db = await this.dbDoMotor();
+
+    // Salva na tabela global
+    await db.transaction(async (tx: any) => {
+      await tx.execute(sql`DELETE FROM global_model_selection`);
+      for (const tipo of ['DEV', 'ANALYST', 'MONITOR'] as GlobalModelSelectionTipo[]) {
+        for (const entry of configuracaoGlobal[tipo]) {
+          await tx.execute(sql`
+            INSERT INTO global_model_selection (tipo, ordem, provider, model, enabled)
+            VALUES (${tipo}, ${entry.ordem}, ${entry.provider}, ${entry.model}, ${entry.enabled ? 1 : 0})
+          `);
+        }
+      }
+    });
+
+    // Propaga para todos os projetos ativos
+    const [projetos] = await db.execute(sql`
+      SELECT slug FROM projetos_captados WHERE ativo = 1
+    `) as unknown as [Array<{ slug: string }>];
+
+    const projetosAplicados: Array<{ projectKey: string; tipos: GlobalModelSelectionTipo[] }> = [];
+    const errosPorProjeto: Array<{ projectKey: string; error: string }> = [];
+    const tipos: GlobalModelSelectionTipo[] = ['DEV', 'ANALYST', 'MONITOR'];
+
+    for (const projeto of projetos) {
+      try {
+        await db.transaction(async (tx: any) => {
+          for (const tipo of tipos) {
+            await tx.execute(sql`DELETE FROM project_model_selection WHERE project_slug = ${projeto.slug} AND tipo = ${tipo}`);
+            for (const entry of configuracaoGlobal[tipo]) {
+              await tx.execute(sql`
+                INSERT INTO project_model_selection (project_slug, tipo, ordem, provider, model, enabled)
+                VALUES (${projeto.slug}, ${tipo}, ${entry.ordem}, ${entry.provider}, ${entry.model}, ${entry.enabled ? 1 : 0})
+              `);
+            }
+          }
+        });
+        projetosAplicados.push({ projectKey: projeto.slug, tipos: [...tipos] });
+      } catch (e: unknown) {
+        errosPorProjeto.push({ projectKey: projeto.slug, error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+
+    const resultado = {
+      configuracaoGlobal,
+      resultadoPropagacao: { sucesso: errosPorProjeto.length === 0, totalProjetos: projetos.length },
+      projetosAplicados,
+      errosPorProjeto,
+    };
+    if (errosPorProjeto.length > 0) {
+      return {
+        ...resultado,
+        mensagem: `Configuração global salva, mas falhou em ${errosPorProjeto.length} projeto(s). Verifique errosPorProjeto e tente novamente.`,
+      };
+    }
+    return resultado;
+  }
+
+  // ============================================================================
+  // INICIAR DESENVOLVIMENTO (integração 1:1 com core)
+  // ============================================================================
+
+  async iniciarDesenvolvimento(
+    projeto: ProjetoResumo,
+    projetoCaptadoId: number,
+    emailUsuarioLogado: string,
+  ) {
+    const db = await this.dbDoProjeto(projeto);
+    
+    // Verificar se o projeto pertence ao escopo
+    const [projetoCaptado] = await db
+      .select()
+      .from(projetosCaptados)
+      .where(eq(projetosCaptados.id, projetoCaptadoId))
+      .limit(1);
+
+    if (!projetoCaptado) {
+      throw new NotFoundException('Projeto não encontrado');
+    }
+
+    // Email do CLIENTE (contato da captação) — dono do projeto na plataforma.
+    // Fallback: email do usuário logado (projeto criado manualmente sem contato).
+    let emailCliente = emailUsuarioLogado;
+    let nomeCliente: string | undefined;
+    if (projetoCaptado.contatoId) {
+      const [contato] = await db
+        .select()
+        .from(contatos)
+        .where(eq(contatos.id, projetoCaptado.contatoId))
+        .limit(1);
+      if (contato?.email) {
+        emailCliente = contato.email;
+        nomeCliente = contato.nome ?? undefined;
+      }
+    }
+
+    // Se já tem plataformaProjetoId, retornar (idempotente)
+    if (projetoCaptado.plataformaProjetoId) {
+      return {
+        projetoId: projetoCaptado.id,
+        plataformaProjetoId: projetoCaptado.plataformaProjetoId,
+        message: 'Projeto já provisionado na plataforma',
+      };
+    }
+
+    // Chamar ProvisionService para criar o projeto no core
+    // (cliente dono + dono da plataforma como admin em todos os projetos)
+    const ownerUserId = Number(this.configService.get<string>('PLATAFORMA_OWNER_USER_ID') ?? '1')
+    const provisionResult = await this.provisionService.provisionProject({
+      email: emailCliente,
+      nome: nomeCliente,
+      projetoNome: projetoCaptado.nome,
+      projetoSlug: projetoCaptado.slug,
+      extraAdminUserIds: Number.isInteger(ownerUserId) && ownerUserId > 0 ? [ownerUserId] : [],
+    });
+
+    // Atualizar o projeto_captado com o plataformaProjetoId
+    await db
+      .update(projetosCaptados)
+      .set({
+        plataformaProjetoId: provisionResult.projetoId,
+        updatedAt: new Date(),
+      })
+      .where(eq(projetosCaptados.id, projetoCaptadoId));
+
+    // Disparar a missão de setup no agente biblioteca-global (idempotente).
+    const missao = await this.dispararMissaoSetup(db, projetoCaptado, provisionResult.projetoId);
+
+    return {
+      projetoId: projetoCaptado.id,
+      plataformaProjetoId: provisionResult.projetoId,
+      usuarioId: provisionResult.usuarioId,
+      perfil: provisionResult.perfil,
+      criado: provisionResult.criado,
+      ...(missao ? { missao } : {}),
+      message: 'Desenvolvimento iniciado - projeto provisionado na plataforma',
+    };
+  }
+
+  /**
+   * Cria e enfileira a tarefa de setup do projeto no agente biblioteca-global.
+   * A missão roda no monorepo: pasta do projeto, config.ts, banco, schema,
+   * migration, push — e o gate de agente dedicado para telas além do CRUD.
+   * Idempotente por externalId.
+   */
+  private async dispararMissaoSetup(
+    db: Awaited<ReturnType<GerenteAgentesService['dbDoProjeto']>>,
+    projetoCaptado: typeof projetosCaptados.$inferSelect,
+    plataformaProjetoId: number,
+  ): Promise<{ tarefaId: number; motorId: string; nova: boolean } | null> {
+    // Projeto executor: o próprio biblioteca-global (monorepo).
+    const [executor] = await db
+      .select()
+      .from(projetosCaptados)
+      .where(eq(projetosCaptados.slug, 'biblioteca-global'))
+      .limit(1);
+
+    if (!executor) {
+      this.logger.warn('Projeto executor biblioteca-global não encontrado — missão de setup não disparada');
+      return null;
+    }
+
+    const motorId = `setup-${projetoCaptado.slug}`;
+
+    // Idempotência: missão já criada anteriormente.
+    const [existente] = await db
+      .select()
+      .from(tarefas)
+      .where(eq(tarefas.externalId, motorId))
+      .limit(1);
+
+    let tarefaId: number;
+    let nova = false;
+
+    if (existente) {
+      tarefaId = existente.id;
+    } else {
+      const descricao = this.montarMissaoSetup(projetoCaptado, plataformaProjetoId);
+      const [inserida] = await db
+        .insert(tarefas)
+        .values({
+          externalId: motorId,
+          projetoId: executor.id,
+          titulo: `Setup do projeto: ${projetoCaptado.nome}`,
+          descricao,
+        })
+        .$returningId();
+      if (!inserida) {
+        this.logger.warn('Falha ao inserir tarefa de setup — missão não disparada');
+        return null;
+      }
+      tarefaId = inserida.id;
+      nova = true;
+    }
+
+    // Enfileira no motor (v2: /api/motor/task/:id/enqueue).
+    const usarV2 = this.motorVersao === 'v2';
+    const enqueuePath = usarV2
+      ? `/api/motor/task/${encodeURIComponent(motorId)}/enqueue`
+      : `/api/task/${encodeURIComponent(motorId)}/start`;
+    const resp = await this
+      .motorRequest('POST', enqueuePath, undefined, usarV2 ? this.motorV2Url : undefined)
+      .catch((e: unknown) => {
+        this.logger.warn(`Motor indisponível ao enfileirar setup: ${e instanceof Error ? e.message : String(e)}`);
+        return null;
+      });
+
+    if (resp && !resp.ok) {
+      this.logger.warn(`Motor rejeitou o setup (${resp.status}): ${resp.body.slice(0, 200)}`);
+    }
+
+    return { tarefaId, motorId, nova };
+  }
+
+  /** Texto da missão de setup entregue ao agente biblioteca-global. */
+  private montarMissaoSetup(
+    projetoCaptado: typeof projetosCaptados.$inferSelect,
+    plataformaProjetoId: number,
+  ): string {
+    const slug = projetoCaptado.slug;
+    const linhas = [
+      `MISSÃO — Setup do projeto "${projetoCaptado.nome}" (slug: ${slug})`,
+      '',
+      'O projeto já foi provisionado na plataforma: core.projetos criado e usuários',
+      `(cliente e dono da plataforma) vinculados como admin. plataformaProjetoId = ${plataformaProjetoId}.`,
+      '',
+      'Descrição do projeto (redigida pela Isa na captação):',
+      '---',
+      projetoCaptado.descricao ?? '(sem descrição)',
+      '---',
+      '',
+      'Execute os passos abaixo, nesta ordem:',
+      '',
+      '=== PASSO 1: ESTRUTURA DO PROJETO ===',
+      `1.1. Crie a pasta do projeto em projects/${slug} neste monorepo.`,
+      '1.1.1. Crie também projects/' + slug + '/docs/CONTEXTO-ANALISTA.md a partir do modelo abaixo. O arquivo é a memória transversal do Analista do projeto; não inclua segredos nem invente arquitetura. Preencha somente nome, slug e data; mantenha as demais seções como bootstrap pendente.',
+      '     # Contexto do Analista — ' + projetoCaptado.nome,
+      '     > Status: bootstrap pendente.',
+      '     > Projeto: ' + slug,
+      '     ## Identidade técnica\n     _A preencher após inspeção inicial._\n     ## Arquitetura e módulos\n     _A preencher após inspeção inicial._\n     ## Fontes de verdade\n     _A preencher após inspeção inicial._\n     ## Decisões vigentes\n     _Nenhuma registrada._\n     ## Limitações e riscos conhecidos\n     _Nenhum registrado._\n     ## Registro confirmado por tarefa\n     _Nenhuma tarefa concluída._',
+      '1.2. Crie o config.ts do projeto com menus, telas e campos, seguindo',
+      '     docs/MANUAL_CONFIG_PROJETOS.md e a descrição acima.',
+      '1.3. Crie o schema.ts com as tabelas necessárias.',
+      `1.4. Crie o banco projeto_${plataformaProjetoId} (convenção projeto_<id do core>).`,
+      '1.5. Execute as migrations.',
+      '',
+      '=== PASSO 2: CHECKLIST DE REGISTROS OBRIGATÓRIOS ===',
+      '',
+      'Enquanto a plataforma não tiver autodescoberta automática de projetos,',
+      'CADA registro abaixo é OBRIGATÓRIO para o projeto funcionar. O gate do',
+      'motor vai validar a presença de cada um antes de declarar setup concluído.',
+      '',
+      '2.1. SCHEMA-REGISTRY DA API (backend):',
+      '     Arquivo: apps/api/src/modules/crud/schema-registry.ts',
+      `     - Importar o schema: import * as ${slug.replace(/-/g, '')}Schema from "../../../../../projects/${slug}/schema"`,
+      `     - Adicionar no Map: ["${slug}", coletarTabelas(${slug.replace(/-/g, '')}Schema)]`,
+      '',
+      '2.2. REGISTRY DO FRONT (config):',
+      '     Arquivo: apps/web/src/project/registry/projects.ts',
+      `     - Importar a config: import { config as ${slug.replace(/-/g, '')}Config } from "../../../../../projects/${slug}/config"`,
+      `     - Adicionar no projectConfigs: "${slug}": ${slug.replace(/-/g, '')}Config`,
+      '',
+      '2.3. TELAS CUSTOM DO FRONT (se houver telas com kind: "custom"):',
+      '     Arquivo: apps/web/src/project/registry/customScreens.tsx',
+      `     - Importar cada tela de projects/${slug}/screens/`,
+      '     - Registrar em registrarTelasCustom() com o MESMO componentId do config.ts',
+      '     ⚠️  componentId no config.ts DEVE BATER com o id registrado no registry',
+      '',
+      '2.4. SEED DO BANCO (se o projeto precisa de dados iniciais):',
+      '     Arquivo: database/seed.ts (ou projects/${slug}/seed-*.ts)',
+      '     - Inserir registros iniciais necessários para o projeto funcionar',
+      '     - Exemplo: projetos/gerenteagentes/seed-agentes.ts',
+      '',
+      '2.5. DOCKERFILES (COPY dos package.json):',
+      '     Arquivo: apps/api/Dockerfile',
+      `     - Adicionar: COPY projects/${slug}/package.json projects/${slug}/package.json`,
+      '     Arquivo: apps/web/Dockerfile (se existir)',
+      `     - Adicionar COPY equivalente para o front`,
+      '',
+      '2.6. LOCKFILE DA RAIZ:',
+      '     Arquivo: package-lock.json (na raiz do monorepo)',
+      '     - Executar "npm install" na raiz para atualizar o lockfile',
+      '     - O lockfile DEVE estar commitado (npm ci depende dele no Docker)',
+      '',
+      '2.7. PROJECT-DB.FACTORY (se o projeto tem banco próprio):',
+      '     Arquivo: apps/api/src/modules/crud/project-db.factory.ts',
+      '     - Verificar se o projeto está mapeado (geralmente automático via core.projetos)',
+      '',
+      '=== PASSO 3: GATE DE AGENTE DEDICADO ===',
+      '',
+      'Analise o config.ts: o projeto tem telas ALÉM do CRUD (kind: "custom")?',
+      '   - SE SIM:',
+      `     3.1. Crie o agente do projeto no OpenClaw com id = "${slug}" e workspace`,
+      `          /data/workspace/projects/agentes/${slug} (pasta com AGENTS.md, SOUL.md,`,
+      '          IDENTITY.md, USER.md, TOOLS.md);',
+      '',
+      '     3.2. REGISTRO NO GATEWAY (OBRIGATÓRIO — sem isso o motor não encontra o agente):',
+      `          Execute o comando CLI para registrar o agente no gateway:`,
+      `          openclaw agents add ${slug} --workspace /data/workspace/projects/agentes/${slug} --model <modelo> --non-interactive`,
+      '          Onde <modelo> é o modelo configurado para o agente (ex.: ollama/qwen3-coder:30b).',
+      '          Verifique o registro com: openclaw agents list',
+      '',
+      '     3.3. Delegue a configuração dos arquivos de personalidade ao agente',
+      '          definicaopersonalidadeagentes (Forjador), passando a descrição do',
+      '          projeto, e AGUARDE ele terminar;',
+      '',
+      '     3.4. Registre o agente na tabela projeto_640.agentes (espelho do OpenClaw):',
+      `          nome, modelo e openclaw_agent_id = "${slug}" (o motor resolve o agente por`,
+      '          COALESCE(openclaw_agent_id, nome));',
+      '',
+      '     3.5. Vincule o projeto ao agente: UPDATE projeto_640.projetos_captados SET',
+      `          agente_id = <id da linha de agentes> WHERE slug = "${slug}" — é esse vínculo`,
+      '          que faz o motor executar as tarefas do projeto com o agente novo;',
+      '',
+      '     3.6. TELAS PERSONALIZADAS COMO TAREFAS DO PROJETO (NÃO subtarefas do setup):',
+      '          Para cada funcionalidade NÃO compatível com o CRUD da biblioteca,',
+      '          crie UMA TAREFA (não subtarefa) no motor ligada ao projeto novo:',
+      '          - tarefas.projeto_id = id de projetos_captados do projeto novo',
+      '          - tarefas.auto_start = true (execução automática em sequência)',
+      '          - O agente que executa essas tarefas é o agente do projeto novo',
+      '            (não o biblioteca-global que fez o setup)',
+      '          - Exemplo: se o projeto tem uma tela custom de dashboard, crie a',
+      '            tarefa "Implementar tela Dashboard" vinculada ao projeto',
+      '',
+      '   - SE NÃO (só CRUD): nenhum agente dedicado é criado.',
+      '',
+      '=== PASSO 4: SMOKE TEST FUNCIONAL (OBRIGATÓRIO) ===',
+      '',
+      'A última subtarefa do setup DEVE ser o smoke test funcional. O motor',
+      'reprova o setup sem evidência de que o projeto novo responde via HTTP.',
+      '',
+      '4.1. Execute uma chamada HTTP real (curl) a um endpoint CRUD do projeto',
+      `     novo. Exemplo: curl -s http://localhost:3000/api/${slug}/`,
+      '     (use a porta e o slug corretos do projeto).',
+      '',
+      '4.2. A resposta DEVE ser 2xx (sucesso). Se retornar 404/500/timeout,',
+      '     o smoke test FALHA e o setup não pode ser concluído.',
+      '',
+      '4.3. Grave a evidência no resultado da subtarefa em formato JSON:',
+      '     {"smoke_test":{"url":"http://...","method":"GET","status":200,',
+      '      "response_body":"...","timestamp":"2026-..."}}',
+      '',
+      '     O gate do motor VALIDA essa evidência antes de marcar como verified.',
+      '     Sem ela, a subtarefa é rejeitada e o setup não fecha.',
+      '',
+      '=== PASSO 5: FINALIZAÇÃO ===',
+      '',
+      '5.1. Faça commit e push de TODAS as alterações.',
+      '5.2. NÃO publique nada por projeto: apenas a própria biblioteca é publicada',
+      '     (ela já seleciona o projeto do usuário logado).',
+      '5.3. Registre no resultado:',
+      '     - Lista de todos os registros criados (schema-registry, front registry,',
+      '       seed, Dockerfiles, lockfile, agente no gateway)',
+      '     - Lista de tarefas criadas para telas personalizadas (se houver)',
+      '     - Qualquer bloqueio ou pendência',
+      '',
+      '⚠️  O gate do motor vai verificar cada item do checklist antes de aceitar',
+      '    a tarefa como concluída. Itens faltantes = tarefa bloqueada.',
+    ];
+    return linhas.join('\n');
+  }
+
+  // ============================================================================
+  // GIT INSPECTION (ferramenta de resolução de conflitos)
+  // ============================================================================
+
+  /**
+   * Resolve repoPath e branch de integração para uma tarefa.
+   * A branch de integração segue a convenção: motor-v3-work/integration-<externalId>
+   * Se externalId não estiver disponível, usa o ID numérico.
+   */
+  private async resolverContextoGitTarefa(
+    projeto: ProjetoResumo,
+    tarefaId: number,
+  ): Promise<{ repoPath: string; integrationBranch: string; baseBranch: string; externalId: string | null }> {
+    const db = await this.dbDoMotor();
+
+    // Buscar tarefa com externalId e projetoId
+    const [tarefa] = await db
+      .select({
+        projetoId: tarefas.projetoId,
+        externalId: tarefas.externalId,
+      })
+      .from(tarefas)
+      .where(eq(tarefas.id, tarefaId))
+      .limit(1);
+
+    if (!tarefa) throw new NotFoundException('Tarefa não encontrada');
+
+    // Buscar repoPath via projeto_motor_config
+    const [config] = await db
+      .select({ repoPath: projetoMotorConfig.repoPath })
+      .from(projetoMotorConfig)
+      .where(eq(projetoMotorConfig.projetoId, tarefa.projetoId))
+      .limit(1);
+
+    if (!config) {
+      throw new NotFoundException('Configuração do motor não encontrada para o projeto da tarefa');
+    }
+
+    // Branch de integração: convenção motor-v3-work/integration-<externalId>
+    const taskIdentifier = tarefa.externalId || `task-${tarefaId}`;
+    const integrationBranch = `motor-v3-work/integration-${taskIdentifier}`;
+    const baseBranch = 'base-desenvolvimento';
+
+    return {
+      repoPath: config.repoPath,
+      integrationBranch,
+      baseBranch,
+      externalId: tarefa.externalId,
+    };
+  }
+
+  /**
+   * Lista commits entre base-desenvolvimento e a branch de integração da tarefa.
+   */
+  async listarCommitsTarefa(projeto: ProjetoResumo, tarefaId: number) {
+    if (!this.gitInspector) throw new BadRequestException('GitInspectorService não disponível');
+    const ctx = await this.resolverContextoGitTarefa(projeto, tarefaId);
+
+    // Verifica se a branch de integração existe
+    const exists = await this.gitInspector.branchExists(ctx.repoPath, ctx.integrationBranch);
+    if (!exists) {
+      throw new NotFoundException(
+        `Branch de integração '${ctx.integrationBranch}' não encontrada — tarefa ainda sem worktree ou não iniciada`,
+      );
+    }
+
+    const commits = await this.gitInspector.listCommits(ctx.repoPath, ctx.baseBranch, ctx.integrationBranch);
+    return {
+      taskId: tarefaId,
+      integrationBranch: ctx.integrationBranch,
+      baseBranch: ctx.baseBranch,
+      commits,
+    };
+  }
+
+  /**
+   * Árvore de arquivos em um ref da tarefa.
+   * Se ref não informado, usa a branch de integração.
+   */
+  async listarArvoreTarefa(projeto: ProjetoResumo, tarefaId: number, ref?: string) {
+    if (!this.gitInspector) throw new BadRequestException('GitInspectorService não disponível');
+    const ctx = await this.resolverContextoGitTarefa(projeto, tarefaId);
+
+    const targetRef = ref || ctx.integrationBranch;
+    const tree = await this.gitInspector.listTree(ctx.repoPath, targetRef);
+    return {
+      taskId: tarefaId,
+      ref: targetRef,
+      tree,
+    };
+  }
+
+  /**
+   * Conteúdo de um arquivo em um ref específico.
+   */
+  async conteudoArquivoTarefa(
+    projeto: ProjetoResumo,
+    tarefaId: number,
+    ref: string,
+    filePath: string,
+  ) {
+    if (!this.gitInspector) throw new BadRequestException('GitInspectorService não disponível');
+    if (!ref) throw new BadRequestException('Parâmetro ref é obrigatório');
+    if (!filePath) throw new BadRequestException('Parâmetro path é obrigatório');
+
+    const ctx = await this.resolverContextoGitTarefa(projeto, tarefaId);
+    const content = await this.gitInspector.getFileContent(ctx.repoPath, ref, filePath);
+    return {
+      taskId: tarefaId,
+      ref,
+      path: filePath,
+      content,
+    };
+  }
+
+  /**
+   * Diff estruturado entre dois refs.
+   */
+  async diffTarefa(
+    projeto: ProjetoResumo,
+    tarefaId: number,
+    from: string,
+    to: string,
+  ) {
+    if (!this.gitInspector) throw new BadRequestException('GitInspectorService não disponível');
+    if (!from) throw new BadRequestException('Parâmetro from é obrigatório');
+    if (!to) throw new BadRequestException('Parâmetro to é obrigatório');
+
+    const ctx = await this.resolverContextoGitTarefa(projeto, tarefaId);
+    const files = await this.gitInspector.diff(ctx.repoPath, from, to);
+    return {
+      taskId: tarefaId,
+      from,
+      to,
+      files,
+    };
+  }
+
+  /**
+   * Simulação de merge (dry-run) entre branch de integração e base-desenvolvimento.
+   */
+  async simularMergeTarefa(projeto: ProjetoResumo, tarefaId: number) {
+    if (!this.gitInspector) throw new BadRequestException('GitInspectorService não disponível');
+    const ctx = await this.resolverContextoGitTarefa(projeto, tarefaId);
+
+    // Verifica se a branch de integração existe
+    const exists = await this.gitInspector.branchExists(ctx.repoPath, ctx.integrationBranch);
+    if (!exists) {
+      throw new NotFoundException(
+        `Branch de integração '${ctx.integrationBranch}' não encontrada — tarefa ainda sem worktree ou não iniciada`,
+      );
+    }
+
+    const result = await this.gitInspector.simulateMerge(ctx.repoPath, ctx.baseBranch, ctx.integrationBranch);
+    return {
+      taskId: tarefaId,
+      ...result,
+    };
+  }
+}

@@ -1,0 +1,52 @@
+import { EventEmitter } from 'node:events'
+import type { ExecutionPhase } from '../shared/types/execution.js'
+
+export type ExecutionActivityType = 'started' | 'progress' | 'log' | 'heartbeat' | 'completed' | 'failed' | 'model_unavailable' | 'developer_branch_integrated' | 'deployed' | 'clarifying' | 'system_alert' | 'system_recovered' | 'task.chat.delivery.updated' | 'task.interaction.checkpoint_requested' | 'task.interaction.awaiting' | 'task.interaction.resumed'
+
+export interface ExecutionActivityEvent {
+  type: ExecutionActivityType
+  executionId: string
+  taskId: string
+  subtaskId?: number
+  phase: 'analyze' | 'execute'
+  executionPhase?: ExecutionPhase
+  level?: 'info' | 'warn' | 'error'
+  message?: string
+  model?: string
+  /** Correlação da indisponibilidade compartilhada do Console. */
+  agentId?: string
+  incidentId?: string
+  messageId?: number
+  deliveryId?: number
+  deliveryState?: 'pending' | 'delivering' | 'delivered' | 'consumed' | 'cancelled' | 'failed'
+  deliveryError?: string
+  interactionPhase?: 'analysis' | 'development' | 'verification'
+  interactionSummary?: string
+  timestamp: Date
+}
+
+export interface ExecutionActivityBroadcaster {
+  publish(event: ExecutionActivityEvent): void | Promise<void>
+}
+
+export class ExecutionEventBus {
+  private emitter = new EventEmitter()
+
+  constructor() {
+    this.emitter.setMaxListeners(100)
+  }
+
+  publish(event: ExecutionActivityEvent): void {
+    this.emitter.emit('activity', event)
+  }
+
+  on(handler: (event: ExecutionActivityEvent) => void | Promise<void>): void {
+    this.emitter.on('activity', handler)
+  }
+
+  off(handler: (event: ExecutionActivityEvent) => void | Promise<void>): void {
+    this.emitter.off('activity', handler)
+  }
+}
+
+export const executionEventBus = new ExecutionEventBus()
