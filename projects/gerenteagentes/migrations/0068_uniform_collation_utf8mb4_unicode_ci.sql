@@ -9,27 +9,46 @@
 -- Procedimento para converter todas as tabelas com collation utf8mb4_0900_ai_ci
 SET @db_name = DATABASE();
 
--- Cursor implícito via prepared statement para iterar sobre todas as tabelas
-SET @tables_to_convert = (
-  SELECT GROUP_CONCAT(
-    CONCAT('ALTER TABLE `', table_name, '` CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;')
-    SEPARATOR '\n'
-  )
-  FROM information_schema.tables
-  WHERE table_schema = @db_name
-    AND table_collation = 'utf8mb4_0900_ai_ci'
-);
+-- Criar procedimento armazenado para iterar sobre as tabelas
+DROP PROCEDURE IF EXISTS convert_collation;
 
--- Se houver tabelas para converter, executa dinamicamente
-SET @sql = IF(
-  @tables_to_convert IS NOT NULL AND @tables_to_convert != '',
-  @tables_to_convert,
-  'SELECT 1 AS no_tables_to_convert'
-);
+DELIMITER $$
 
-PREPARE convert_stmt FROM @sql;
-EXECUTE convert_stmt;
-DEALLOCATE PREPARE convert_stmt;
+CREATE PROCEDURE convert_collation()
+BEGIN
+    DECLARE done INT DEFAULT FALSE;
+    DECLARE table_name_var VARCHAR(255);
+    DECLARE cur CURSOR FOR 
+        SELECT table_name 
+        FROM information_schema.tables 
+        WHERE table_schema = @db_name 
+        AND table_collation = 'utf8mb4_0900_ai_ci';
+    DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = TRUE;
+    
+    OPEN cur;
+    
+    read_loop: LOOP
+        FETCH cur INTO table_name_var;
+        IF done THEN
+            LEAVE read_loop;
+        END IF;
+        
+        SET @sql = CONCAT('ALTER TABLE `', table_name_var, '` CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci');
+        PREPARE stmt FROM @sql;
+        EXECUTE stmt;
+        DEALLOCATE PREPARE stmt;
+    END LOOP;
+    
+    CLOSE cur;
+END$$
+
+DELIMITER ;
+
+-- Executar o procedimento
+CALL convert_collation();
+
+-- Remover o procedimento
+DROP PROCEDURE IF EXISTS convert_collation;
 
 -- Verificação pós-conversão: lista tabelas ainda com collation errada (deve retornar vazio)
 SELECT 

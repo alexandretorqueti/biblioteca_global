@@ -55,7 +55,20 @@ DEALLOCATE PREPARE stmt;
 -- ============================================================================
 -- 4. Constraint UNIQUE de deploy_requests: (tarefa_id) → (tarefa_id, generation)
 -- ============================================================================
--- Drop seguro: só remove se o index antigo existir
+-- Drop seguro da foreign key primeiro (necessário para dropar o index)
+SET @fk_exists = (
+  SELECT COUNT(*) FROM information_schema.table_constraints
+  WHERE table_schema = @db_name AND table_name = 'deploy_requests' AND constraint_name = 'deploy_requests_tarefa_fk'
+);
+SET @sql = IF(@fk_exists > 0,
+  'ALTER TABLE `deploy_requests` DROP FOREIGN KEY `deploy_requests_tarefa_fk`',
+  'SELECT 1 AS deploy_requests_tarefa_fk_already_dropped'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+-- Drop seguro do index antigo
 SET @idx_exists = (
   SELECT COUNT(*) FROM information_schema.statistics
   WHERE table_schema = @db_name AND table_name = 'deploy_requests' AND index_name = 'deploy_requests_tarefa_unique'
@@ -68,7 +81,7 @@ PREPARE stmt FROM @sql;
 EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 
--- Add seguro: só cria se o index novo não existir
+-- Add seguro do novo index composto
 SET @idx_exists = (
   SELECT COUNT(*) FROM information_schema.statistics
   WHERE table_schema = @db_name AND table_name = 'deploy_requests' AND index_name = 'deploy_requests_tarefa_generation_unique'
@@ -76,6 +89,19 @@ SET @idx_exists = (
 SET @sql = IF(@idx_exists = 0,
   'ALTER TABLE `deploy_requests` ADD UNIQUE INDEX `deploy_requests_tarefa_generation_unique` (`tarefa_id`, `generation`)',
   'SELECT 1 AS deploy_requests_tarefa_generation_unique_already_exists'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+-- Recriar a foreign key
+SET @fk_exists = (
+  SELECT COUNT(*) FROM information_schema.table_constraints
+  WHERE table_schema = @db_name AND table_name = 'deploy_requests' AND constraint_name = 'deploy_requests_tarefa_fk'
+);
+SET @sql = IF(@fk_exists = 0,
+  'ALTER TABLE `deploy_requests` ADD CONSTRAINT `deploy_requests_tarefa_fk` FOREIGN KEY (`tarefa_id`) REFERENCES `tarefas` (`id`) ON DELETE CASCADE',
+  'SELECT 1 AS deploy_requests_tarefa_fk_already_exists'
 );
 PREPARE stmt FROM @sql;
 EXECUTE stmt;
@@ -89,13 +115,11 @@ DEALLOCATE PREPARE stmt;
 INSERT INTO `motor_primitives` (`code`, `name`, `domain`, `description`)
 SELECT 'register_adjustment_request', 'Registrar solicitação de ajuste', 'db', 'Persiste a solicitação de ajuste e prepara a sessão de análise para a nova generation.'
 WHERE NOT EXISTS (SELECT 1 FROM `motor_primitives` WHERE `code` = 'register_adjustment_request');
---> statement-breakpoint
 
 -- Primitiva: iniciar analista para ajuste
 INSERT INTO `motor_primitives` (`code`, `name`, `domain`, `description`)
 SELECT 'start_adjustment_analyst', 'Iniciar analista para ajuste', 'control', 'Dispara o runner de análise com contexto da geração anterior e mensagem de ajuste.'
 WHERE NOT EXISTS (SELECT 1 FROM `motor_primitives` WHERE `code` = 'start_adjustment_analyst');
---> statement-breakpoint
 
 -- Ação A40_ACCEPT_ADJUSTMENT_REQUEST
 INSERT INTO `motor_actions` (`code`, `name`, `primitives_json`, `on_partial_failure`, `is_terminal`, `active`)
@@ -106,7 +130,6 @@ SELECT 'A40_ACCEPT_ADJUSTMENT_REQUEST', 'Aceitar solicitação de ajuste',
   ),
   'continue', 0, 1
 WHERE NOT EXISTS (SELECT 1 FROM `motor_actions` WHERE `code` = 'A40_ACCEPT_ADJUSTMENT_REQUEST');
---> statement-breakpoint
 
 -- Comando C20_TASK_ADJUSTMENT_REQUESTED
 INSERT INTO `motor_commands` (`code`, `message_type`, `name`, `scope`, `handler_code`, `active`, `version`)
@@ -114,7 +137,6 @@ VALUES ('C20_TASK_ADJUSTMENT_REQUESTED', 'TASK_ADJUSTMENT_REQUESTED', 'Ajuste in
 ON DUPLICATE KEY UPDATE
   `message_type` = VALUES(`message_type`), `name` = VALUES(`name`), `scope` = VALUES(`scope`),
   `handler_code` = VALUES(`handler_code`), `active` = VALUES(`active`);
---> statement-breakpoint
 
 -- Política P20_ACCEPT_ADJUSTMENT_REQUEST
 INSERT INTO `motor_command_policies`
