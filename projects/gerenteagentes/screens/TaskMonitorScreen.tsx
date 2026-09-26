@@ -874,6 +874,21 @@ export default function TaskMonitorScreen(): ReactNode {
     }
   }, [bundle, carregarTarefas])
 
+  const handleConfirmarDeploy = useCallback(async (id: number) => {
+    if (!bundle || !window.confirm("Confirmar que o deploy foi realizado com sucesso?")) return
+    setErro(null)
+    setAcao("confirm-deploy")
+    try {
+      await bundle.http.request("POST", `/gerenteagentes/tarefas/${id}/confirm-deploy`, { auth: "access" })
+      await carregarDetail(String(id))
+      await carregarTarefas()
+    } catch (e) {
+      setErro(e instanceof Error ? e.message : "Erro ao confirmar deploy")
+    } finally {
+      setAcao(null)
+    }
+  }, [bundle, carregarDetail, carregarTarefas])
+
   const handleNewTaskSubmit = useCallback(async (values: TarefaFormValues) => {
     if (!bundle) return
     setNewTaskLoading(true)
@@ -1827,6 +1842,19 @@ export default function TaskMonitorScreen(): ReactNode {
                   Solicitar Ajuste
                 </Button>
               )}
+              {statusMotor === "completed" && (
+                <Button
+                  size="small"
+                  color="success"
+                  variant="contained"
+                  startIcon={<LockOpenRounded />}
+                  disabled={acao !== null}
+                  onClick={() => void handleConfirmarDeploy(Number(tarefaId))}
+                  data-testid="btn-confirm-deploy"
+                >
+                  Confirmar Deploy
+                </Button>
+              )}
             </Stack>
           </Stack>
 
@@ -2760,6 +2788,18 @@ export default function TaskMonitorScreen(): ReactNode {
                 />
                 {tarefaSelecionada.tipo && (
                   <Chip label={TIPO_TAREFA_LABEL[tarefaSelecionada.tipo] ?? tarefaSelecionada.tipo} size="small" variant="outlined" />
+                )}
+                {tarefaSelecionada.status === "completed" && (
+                  <Button
+                    variant="contained"
+                    size="small"
+                    color="success"
+                    startIcon={<LockOpenRounded />}
+                    onClick={() => handleConfirmarDeploy(tarefaSelecionada.id)}
+                    data-testid="btn-confirmar-deploy"
+                  >
+                    Confirmar Deploy
+                  </Button>
                 )}
               </Stack>
               {tarefaSelecionada.descricao && (

@@ -43,6 +43,7 @@ import {
   tarefaChatEntregas,
   motorOutbox,
   projetoMotorConfig,
+  deployRequests,
 } from '../schema';
 import {
   MOTOR_CONFIGURACOES,
@@ -1506,6 +1507,86 @@ export class GerenteAgentesService {
     if (!resp.ok) throw new BadRequestException(`Motor rejeitou o deploy (${resp.status}): ${resp.body.slice(0, 200)}`);
     await this.registrarEvento(db, tarefa, 'deploy_requested', ator, 'usuario');
     return { id: tarefaId, status: 'deploy_pending', message: 'Deploy agendado para quando o Motor ficar ocioso' };
+  }
+
+  /**
+   * Registra que o deploy de uma tarefa concluída foi realizado fora do Motor.
+   * A confirmação é deliberadamente distinta de `fazerDeployTarefa`: ela não
+   * agenda nem executa deploy, apenas materializa o fato operacional que torna
+   * o status derivado `deployed`.
+   */
+  async confirmarDeploy(projeto: ProjetoResumo, tarefaId: number, ator = 'usuario') {
+    const db = await this.dbDoMotor();
+    const [tarefa] = await db.select().from(tarefas).where(eq(tarefas.id, tarefaId)).limit(1);
+    if (!tarefa) throw new NotFoundException('Tarefa não encontrada');
+    if (tarefa.tipo !== 'desenvolvimento') {
+      throw new BadRequestException('Confirmação de deploy disponível somente para tarefas de desenvolvimento');
+    }
+
+    const motorId = tarefa.externalId || String(tarefa.id);
+    const statusResponse = await this.motorRequest(
+      'GET',
+      `/api/motor/task/${encodeURIComponent(motorId)}`,
+      undefined,
+      this.motorV2Url,
+    ).catch((error: unknown) => {
+      throw new BadRequestException(`Motor indisponível ao confirmar o deploy: ${error instanceof Error ? error.message : String(error)}`);
+    });
+    if (!statusResponse.ok) {
+      throw new BadRequestException(`Não foi possível validar o status da tarefa (${statusResponse.status}): ${statusResponse.body.slice(0, 200)}`);
+    }
+
+    let motorStatus: string | undefined;
+    try {
+      motorStatus = String((JSON.parse(statusResponse.body) as { status?: unknown }).status ?? '');
+    } catch {
+      throw new BadRequestException('Motor devolveu uma resposta inválida ao validar o status da tarefa');
+    }
+    if (motorStatus !== 'completed') {
+      throw new BadRequestException(`Só é possível confirmar o deploy de tarefa concluída (status atual: ${motorStatus || 'desconhecido'})`);
+    }
+
+    const [config] = await db
+      .select({ repoPath: projetoMotorConfig.repoPath })
+      .from(projetoMotorConfig)
+      .where(eq(projetoMotorConfig.projetoId, tarefa.projetoId))
+      .limit(1);
+    if (!config?.repoPath) throw new BadRequestException('Projeto sem configuração de repositório para registrar o deploy');
+
+    const batchId = `manual-confirm-${randomUUID()}`;
+    const now = new Date();
+    await db.transaction(async (tx) => {
+      const [existente] = await tx
+        .select({ id: deployRequests.id, status: deployRequests.status })
+        .from(deployRequests)
+        .where(eq(deployRequests.tarefaId, tarefaId))
+        .limit(1);
+
+      if (existente?.status === 'succeeded') return;
+
+      if (existente) {
+        await tx.update(deployRequests).set({
+          status: 'succeeded',
+          batchId,
+          lastError: null,
+          finishedAt: now,
+          updatedAt: now,
+        }).where(eq(deployRequests.id, existente.id));
+      } else {
+        await tx.insert(deployRequests).values({
+          tarefaId,
+          repoPath: config.repoPath,
+          status: 'succeeded',
+          batchId,
+          requestedAt: now,
+          finishedAt: now,
+          updatedAt: now,
+        });
+      }
+      await this.registrarEvento(tx, tarefa, 'deploy_confirmed', ator, 'usuario', { batchId, manual: true });
+    });
+
+    return { id: tarefaId, status: 'deployed', batchId, message: 'Deploy confirmado' };
   }
 
   /**

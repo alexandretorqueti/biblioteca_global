@@ -130,6 +130,12 @@ export class GerenteAgentesController {
     return this.service.cancelarTarefa(projeto, id, usuario.email || usuario.username || String(usuario.id), body?.motivo);
   }
 
+  @Post('tarefas/:id/confirm-deploy')
+  @Roles('admin', 'gerente')
+  confirmarDeploy(@CurrentProject() projeto: ProjetoResumo, @CurrentUser() usuario: UsuarioAutenticado, @Param('id', ParseIntPipe) id: number) {
+    return this.service.confirmarDeploy(projeto, id, usuario.email || usuario.username || String(usuario.id));
+  }
+
   @Delete('tarefas/:id')
   @Roles('admin', 'gerente')
   excluirTarefa(@CurrentProject() projeto: ProjetoResumo, @CurrentUser() usuario: UsuarioAutenticado, @Param('id', ParseIntPipe) id: number) {
