@@ -41,7 +41,7 @@ export class MySqlOperationLogger implements OperationLogger {
 
   async append(entry: OperationLogEntry): Promise<void> {
     await this.pool.execute(
-      `INSERT INTO motor_operation_log (
+      `INSERT IGNORE INTO motor_operation_log (
         operation_id, sequence, phase, outcome, message_id, message_type,
         correlation_id, causation_id, tarefa_id, subtarefa_id, command_code,
         policy_code, policy_version, action_code, action_snapshot_json,
