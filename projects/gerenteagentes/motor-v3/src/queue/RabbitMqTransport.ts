@@ -10,12 +10,17 @@ export interface RabbitMqTransportConfig {
   retryQueue: string
   deadLetterQueue: string
   retryDelayMs: number
+  reconnectDelayMs?: number
+  maxReconnectAttempts?: number
 }
 
 /** Adaptador RabbitMQ com retry por TTL e fila de mensagens mortas. */
 export class RabbitMqTransport implements QueueTransport {
   private connection: ChannelModel | null = null
   private channel: ConfirmChannel | null = null
+  private reconnecting = false
+  private reconnectAttempts = 0
+  private consumers: Array<{ queue: string; handler: QueueDeliveryHandler }> = []
 
   constructor(private readonly config: RabbitMqTransportConfig) {}
 
@@ -23,8 +28,33 @@ export class RabbitMqTransport implements QueueTransport {
     if (this.channel) return
     this.connection = await amqp.connect(this.config.url)
     this.channel = await this.connection.createConfirmChannel()
+    
+    // Listener de erro no canal — não crasha o motor, tenta reconectar
+    this.channel.on('error', (error) => {
+      console.error('[RabbitMqTransport] Canal fechado com erro:', error.message)
+      this.scheduleReconnect()
+    })
+
+    // Listener de fechamento do canal
+    this.channel.on('close', () => {
+      console.warn('[RabbitMqTransport] Canal fechado pelo servidor')
+      this.scheduleReconnect()
+    })
+
+    // Listener de erro na conexão
+    this.connection.on('error', (error) => {
+      console.error('[RabbitMqTransport] Conexão RabbitMQ com erro:', error.message)
+    })
+
+    // Listener de fechamento da conexão
+    this.connection.on('close', () => {
+      console.warn('[RabbitMqTransport] Conexão RabbitMQ fechada')
+      this.scheduleReconnect()
+    })
+
     await this.channel.assertExchange(this.config.exchange, 'direct', { durable: true })
     await this.channel.prefetch(this.config.prefetch)
+    this.reconnectAttempts = 0 // Reset após conexão bem-sucedida
   }
 
   async publish(queue: string, message: QueueMessage, options: QueuePublishOptions = {}): Promise<void> {
@@ -48,6 +78,8 @@ export class RabbitMqTransport implements QueueTransport {
   }
 
   async consume(queue: string, handler: QueueDeliveryHandler): Promise<void> {
+    // Salva consumer para reconectar depois se necessário
+    this.consumers.push({ queue, handler })
     const channel = this.requireChannel()
     await this.ensureQueue(queue)
     await channel.consume(queue, async (raw: ConsumeMessage | null) => {
@@ -61,21 +93,36 @@ export class RabbitMqTransport implements QueueTransport {
         return
       }
       const attempt = this.retryAttempt(raw)
-      await handler({
-        message: { ...message, attempt: Math.max(message.attempt || 1, attempt) },
-        attempt,
-        redelivered: raw.fields.redelivered,
-        raw,
-      })
+      try {
+        await handler({
+          message: { ...message, attempt: Math.max(message.attempt || 1, attempt) },
+          attempt,
+          redelivered: raw.fields.redelivered,
+          raw,
+        })
+      } catch (error) {
+        console.error('[RabbitMqTransport] erro no handler da mensagem:', error)
+        // Não propaga erro — handler é responsável por fazer nack/deadLetter
+      }
     }, { noAck: false })
   }
 
   ack(delivery: QueueDelivery): void {
-    this.requireChannel().ack(delivery.raw as ConsumeMessage)
+    try {
+      this.requireChannel().ack(delivery.raw as ConsumeMessage)
+    } catch (error) {
+      console.error('[RabbitMqTransport] erro ao fazer ack:', error)
+      // Canal pode estar fechado — não propaga erro
+    }
   }
 
   nack(delivery: QueueDelivery, requeue: boolean): void {
-    this.requireChannel().nack(delivery.raw as ConsumeMessage, false, requeue)
+    try {
+      this.requireChannel().nack(delivery.raw as ConsumeMessage, false, requeue)
+    } catch (error) {
+      console.error('[RabbitMqTransport] erro ao fazer nack:', error)
+      // Canal pode estar fechado — não propaga erro
+    }
   }
 
   async deadLetter(delivery: QueueDelivery, reason: string): Promise<void> {
@@ -147,5 +194,47 @@ export class RabbitMqTransport implements QueueTransport {
       .filter(entry => entry && entry.queue === this.config.retryQueue)
       .reduce((total, entry) => total + Number(entry.count ?? 0), 0)
     return retryCount + 1
+  }
+
+  /**
+   * Agenda reconexão automática após falha do canal.
+   * Usa exponential backoff para evitar spam de reconexões.
+   */
+  private scheduleReconnect(): void {
+    if (this.reconnecting) return
+    const maxAttempts = this.config.maxReconnectAttempts ?? 10
+    if (this.reconnectAttempts >= maxAttempts) {
+      console.error(`[RabbitMqTransport] máximo de tentativas de reconexão atingido (${maxAttempts})`)
+      return
+    }
+    
+    this.reconnecting = true
+    this.reconnectAttempts++
+    const delay = this.config.reconnectDelayMs ?? 5000
+    const backoff = Math.min(delay * Math.pow(2, this.reconnectAttempts - 1), 60000)
+    
+    console.warn(`[RabbitMqTransport] reconectando em ${backoff}ms (tentativa ${this.reconnectAttempts}/${maxAttempts})`)
+    
+    setTimeout(async () => {
+      try {
+        console.log('[RabbitMqTransport] iniciando reconexão...')
+        await this.close()
+        await this.connect()
+        
+        // Re-registra todos os consumers
+        for (const consumer of this.consumers) {
+          console.log(`[RabbitMqTransport] re-registrando consumer na fila ${consumer.queue}`)
+          await this.consume(consumer.queue, consumer.handler)
+        }
+        
+        console.log('[RabbitMqTransport] reconexão bem-sucedida')
+      } catch (error) {
+        console.error('[RabbitMqTransport] falha na reconexão:', error)
+        this.reconnecting = false
+        this.scheduleReconnect() // Tenta novamente
+      } finally {
+        this.reconnecting = false
+      }
+    }, backoff)
   }
 }

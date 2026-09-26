@@ -70,6 +70,12 @@ export class WorkerLauncher {
     runDifferentialGate?: (context: PrimitiveContext, phase: 'post_dev' | 'rework') => Promise<DifferentialGateResult>,
     allowNoChanges = false,
   ): Promise<WorkerResult> {
+    // Timeout global para toda a execução do worker (25 minutos por padrão).
+    // Deve ser menor que o timeout do RabbitMQ (30 minutos) para evitar
+    // PRECONDITION_FAILED - delivery acknowledgement timed out.
+    const globalTimeoutMs = Number(process.env.MOTOR_WORKER_GLOBAL_TIMEOUT_MS ?? 1500000) // 25 min
+    const globalStartTime = Date.now()
+    
     let attempts = 0
     let lastError = 'Nenhuma tentativa foi executada'
     let lastModel: string | undefined
@@ -85,6 +91,15 @@ export class WorkerLauncher {
     const maximumAttempts = this.config.maxAttempts
 
     while (attempts < maximumAttempts) {
+      // Verifica timeout global
+      const elapsedMs = Date.now() - globalStartTime
+      if (elapsedMs > globalTimeoutMs) {
+        context.logger?.warn(`[WorkerLauncher] Timeout global atingido (${Math.round(elapsedMs / 1000)}s > ${Math.round(globalTimeoutMs / 1000)}s)`)
+        lastError = `Timeout global do worker atingido após ${Math.round(elapsedMs / 1000)}s (limite: ${Math.round(globalTimeoutMs / 1000)}s)`
+        failures.push({ attempt: attempts, ...(lastModel ? { model: lastModel } : {}), error: lastError })
+        break
+      }
+      
       const model = candidates[attempts] ?? candidates[candidates.length - 1]
       attempts++
       lastModel = model
