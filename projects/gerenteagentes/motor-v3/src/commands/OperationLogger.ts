@@ -1,6 +1,11 @@
 import type { Pool } from 'mysql2/promise'
 
-export type OperationPhase = 'received' | 'decision' | 'action' | 'primitive' | 'completed' | 'failed' | 'rejected'
+export type OperationPhase =
+  | 'received' | 'decision' | 'action' | 'primitive' | 'completed' | 'failed' | 'rejected'
+  // Fases da orquestração de deploy blue-green com lock (migration 0071).
+  // O enum do banco (motor_operation_log.phase) é a fonte da verdade: qualquer
+  // fase nova precisa entrar na migration ANTES de ser usada em código.
+  | 'deploy_lock_acquired' | 'deploy_wait_completed' | 'forced_pause_for_deploy' | 'deploy_lock_released'
 export type OperationOutcome = 'pending' | 'executed' | 'skipped' | 'rejected' | 'succeeded' | 'failed'
 
 export interface OperationLogEntry {

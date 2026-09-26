@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { promisify } from 'node:util'
-import { CommandPolicyResolver, type CommandPolicyRepository, type OperationLogger } from '../commands/index.js'
+import { CommandPolicyResolver, type CommandPolicyRepository, type OperationLogger, type OperationOutcome, type OperationPhase } from '../commands/index.js'
 import { mapHostRepoPathToContainer } from '../execution/GitWorktreePreparer.js'
 import type { QueueMessage } from '../queue/index.js'
 import { TestGateOrchestrator } from '../testing/index.js'
@@ -154,9 +154,14 @@ export class DeployConsumer {
     if (!acquired) {
       throw new Error(`Lock de deploy já adquirido por outro batch (batchId=${batch.batchId})`)
     }
-    await this.log(operationId, 1, 'deploy_lock_acquired', 'succeeded', message, { batchId: batch.batchId })
 
     try {
+      // O log pós-aquisição fica DENTRO do try: se ele (ou qualquer passo)
+      // falhar, o catch libera o lock. Antes, uma falha aqui vazava o lock
+      // permanentemente (incidente task-p2-898: 'Data truncated for column
+      // phase' travou motor_deploy_lock e todos os deploys seguintes).
+      await this.log(operationId, 1, 'deploy_lock_acquired', 'succeeded', message, { batchId: batch.batchId })
+
       // 2. Aguarda execuções ativas terminarem (timeout: 10 min)
       const waitTimeoutMs = 600_000 // 10 minutos
       const waitResult = await this.repository.waitForActiveExecutionsToComplete(waitTimeoutMs)
@@ -189,11 +194,17 @@ export class DeployConsumer {
 
       await this.removeComposedWorktree(batch.repoPath, batch.workspacePath)
     } catch (error) {
-      // Em caso de falha no deploy, libera o lock antes de propagar o erro
-      await this.repository.releaseDeployLock()
+      // Em caso de falha no deploy, libera o lock antes de propagar o erro.
+      // Liberação e log são defensivo: falha neles não pode mascarar o erro
+      // original nem impedir a liberação do lock.
+      await this.repository.releaseDeployLock().catch(releaseError => {
+        console.error('[Motor v3] Falha ao liberar lock de deploy após erro:', releaseError)
+      })
       await this.log(operationId, 99, 'deploy_lock_released', 'failed', message, {
         batchId: batch.batchId,
         error: error instanceof Error ? error.message : String(error),
+      }).catch(logError => {
+        console.error('[Motor v3] Falha ao registrar deploy_lock_released:', logError)
       })
       throw error
     }
@@ -281,5 +292,5 @@ export class DeployConsumer {
 
   private async reject(operationId: string, message: QueueMessage, reasonCode: string): Promise<void> { await this.log(operationId, 99, 'rejected', 'rejected', message, { commandCode: 'C10_DEPLOY_REQUESTED', policyCode: 'P10_DEPLOY_IF_ELIGIBLE', actionCode: 'A30_ACCEPT_DEPLOY_REQUEST', reasonCode }) }
   private async block(operationId: string, message: QueueMessage, reasonCode: string, detail: string): Promise<void> { await this.repository.blockTask(message.taskId, reasonCode, detail, message); await this.log(operationId, 99, 'failed', 'failed', message, { actionCode: 'A30_ACCEPT_DEPLOY_REQUEST', reasonCode, result: { error: detail } }) }
-  private async log(operationId: string, sequence: number, phase: any, outcome: any, message: QueueMessage, extra: Record<string, unknown>): Promise<void> { await this.logger?.append({ operationId, sequence, phase, outcome, messageId: message.messageId, messageType: message.type, correlationId: message.correlationId, causationId: message.causationId, taskId: message.taskId, ...(extra as any) }) }
+  private async log(operationId: string, sequence: number, phase: OperationPhase, outcome: OperationOutcome, message: QueueMessage, extra: Record<string, unknown>): Promise<void> { await this.logger?.append({ operationId, sequence, phase, outcome, messageId: message.messageId, messageType: message.type, correlationId: message.correlationId, causationId: message.causationId, taskId: message.taskId, ...(extra as any) }) }
 }

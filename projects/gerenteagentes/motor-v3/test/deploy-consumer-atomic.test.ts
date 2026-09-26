@@ -290,4 +290,86 @@ describe('DeployConsumer.startPreparedBatch — deploy atômico', () => {
     // Valida que o deploy foi executado após a análise terminar
     expect(remote.start).toHaveBeenCalled()
   })
+
+  /**
+   * Regressão (task-p2-898, 2026-09-26): o deploy usou fases ausentes do enum
+   * motor_operation_log.phase → MySQL "Data truncated for column 'phase'" foi
+   * lançado logo após a aquisição do lock, FORA do try → o lock vazou
+   * permanentemente e bloqueou todos os deploys seguintes. Estes testes fixam
+   * o contrato: (1) toda fase emitida precisa existir no enum do banco;
+   * (2) qualquer falha após a aquisição (inclusive o próprio log) libera o lock.
+   */
+  it('emite apenas fases existentes no enum de motor_operation_log.phase (contrato do banco)', async () => {
+    // Espelha o enum do banco após a migration 0071.
+    const dbEnum = new Set<string>([
+      'received', 'decision', 'action', 'primitive', 'completed', 'failed', 'rejected',
+      'deploy_lock_acquired', 'deploy_wait_completed', 'forced_pause_for_deploy', 'deploy_lock_released',
+    ])
+    const entries: OperationLogEntry[] = []
+    const logger: OperationLogger = {
+      async append(entry: OperationLogEntry): Promise<void> {
+        if (!dbEnum.has(entry.phase)) {
+          throw new Error(`Data truncated for column 'phase' at row 1 (phase=${entry.phase})`)
+        }
+        entries.push(entry)
+      },
+    }
+    const releaseDeployLock = vi.fn().mockResolvedValue(undefined)
+    const repository = {
+      acquireDeployLock: vi.fn().mockResolvedValue(true),
+      releaseDeployLock,
+      waitForActiveExecutionsToComplete: vi.fn().mockResolvedValue({ completed: true, forced: false }),
+      markRemoteStarted: vi.fn().mockResolvedValue(undefined),
+      enqueuePendingDispatches: vi.fn().mockResolvedValue(0),
+    } as never
+    const remote = {
+      assertReady: vi.fn().mockResolvedValue(undefined),
+      start: vi.fn().mockResolvedValue({ pid: '12345', statusPath: '/tmp/status', logPath: '/tmp/log' }),
+    } as never
+
+    const consumer = new DeployConsumer(repository, {} as never, remote, logger, undefined, '/host/repo', 'deploy.sh')
+    await (consumer as any).startPreparedBatch(makeBatch(), makeMessage())
+
+    // Se alguma fase estivesse fora do enum, o log teria lançado e o deploy falhado.
+    expect(entries.map(e => e.phase)).toContain('deploy_lock_acquired')
+    expect(entries.map(e => e.phase)).toContain('deploy_lock_released')
+    expect(remote.start).toHaveBeenCalled()
+    expect(releaseDeployLock).toHaveBeenCalled()
+  })
+
+  it('não vaza lock quando o log falha logo após a aquisição (regressão task-p2-898)', async () => {
+    const entries: OperationLogEntry[] = []
+    const logger: OperationLogger = {
+      async append(entry: OperationLogEntry): Promise<void> {
+        if (entry.phase === 'deploy_lock_acquired') {
+          throw new Error("Data truncated for column 'phase' at row 1")
+        }
+        entries.push(entry)
+      },
+    }
+    const releaseDeployLock = vi.fn().mockResolvedValue(undefined)
+    const repository = {
+      acquireDeployLock: vi.fn().mockResolvedValue(true),
+      releaseDeployLock,
+      waitForActiveExecutionsToComplete: vi.fn().mockResolvedValue({ completed: true, forced: false }),
+      markRemoteStarted: vi.fn().mockResolvedValue(undefined),
+      enqueuePendingDispatches: vi.fn().mockResolvedValue(0),
+    } as never
+    const remote = {
+      assertReady: vi.fn(),
+      start: vi.fn(),
+    } as never
+
+    const consumer = new DeployConsumer(repository, {} as never, remote, logger, undefined, '/host/repo', 'deploy.sh')
+    await expect((consumer as any).startPreparedBatch(makeBatch(), makeMessage()))
+      .rejects.toThrow("Data truncated for column 'phase' at row 1")
+
+    // O lock PRECISA ser liberado mesmo quando o próprio log falha; antes da
+    // correção ele vazava e todo deploy seguinte morria com "Lock já adquirido".
+    expect(releaseDeployLock).toHaveBeenCalled()
+    expect(remote.start).not.toHaveBeenCalled()
+    // A falha é auditada: o log defensivo do catch registra deploy_lock_released/failed
+    // sem mascarar o erro original propagado.
+    expect(entries.find(e => e.phase === 'deploy_lock_released' && e.outcome === 'failed')).toBeDefined()
+  })
 })
