@@ -28,7 +28,7 @@ import { Scheduler } from './scheduler/Scheduler.js'
 import { MonitorBridge } from './monitor-bridge/MonitorBridge.js'
 import { QueueConsumer } from './queue/QueueConsumer.js'
 import { RabbitMqTransport } from './queue/RabbitMqTransport.js'
-import { OutboxPublisher, createQueueMessage } from './queue/index.js'
+import { MotorActivityGate, OutboxPublisher, createQueueMessage } from './queue/index.js'
 import type { QueueMessage } from './queue/QueueMessage.js'
 import { TaskCoordinator, MySqlTaskCoordinatorRepository, AnalysisClaimReconciler, AnalysisSessionRecoveryReconciler, TaskCancelConsumer, MySqlTaskEventRecorder, MySqlAnalysisFailureBlocker, SanitizeSessionService } from './coordinator/index.js'
 import { ConsoleAnalystRunner } from './analysis/ConsoleAnalystRunner.js'
@@ -147,6 +147,7 @@ async function start() {
     }
 
     const repository = new MySqlTaskCoordinatorRepository(pool)
+    const motorActivityGate = new MotorActivityGate(pool)
     const consoleApi = new ConsoleHttpApi(consoleUrl, consoleToken)
     const analystSessionRows = new Map<string, number>()
     const analystSessionSequences = new Map<string, number>()
@@ -349,7 +350,7 @@ async function start() {
     const testGateConsumer = new TestGateConsumer(pool, testGateService, operationLogger, mainQueue)
     testGateQueueConsumer = new QueueConsumer(gateTransport, message => testGateConsumer.handle(message), {
       queue: gateQueue, maxAttempts: Number(process.env.MOTOR_QUEUE_MAX_ATTEMPTS || 3),
-    }, pool)
+    }, pool, motorActivityGate)
     await testGateQueueConsumer.start()
     // Jobs de gate órfãos (worker morto com job em processing/pending) travam o
     // isMotorIdle() para sempre; o reconciliador reenfileira TEST_RUN_REQUESTED
@@ -435,7 +436,7 @@ async function start() {
     }, {
       queue: process.env.MOTOR_RABBITMQ_QUEUE || 'motor.commands',
       maxAttempts: Number(process.env.MOTOR_QUEUE_MAX_ATTEMPTS || 3),
-    }, pool)
+    }, pool, motorActivityGate)
     // Claims sem sessão auditada não são recuperáveis e podem ser liberados.
     // Sessões existentes ficam sob o reconciliador abaixo, na mesma chave.
     const orphanClaims = await new AnalysisClaimReconciler(pool).reconcile()

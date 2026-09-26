@@ -1,6 +1,6 @@
 import { Injectable, Inject, Logger, NotFoundException, BadRequestException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { eq, desc, and, asc, lt, or, isNull, isNotNull, sql } from 'drizzle-orm';
+import { eq, desc, and, asc, lt, or, isNull, sql } from 'drizzle-orm';
 import { request as httpRequest, type RequestOptions } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { randomUUID } from 'node:crypto';
@@ -1295,118 +1295,41 @@ export class GerenteAgentesService {
     return rows;
   }
 
-  /**
-   * Bulk: pausa todas as tarefas não-finais e não-pausadas.
-   * Consulta tarefas + fatos de runtime, filtra elegíveis e chama o motor
-   * para cada uma. Falhas individuais não abortam o lote (Promise.allSettled).
-   */
-  async pausarTodasTarefas(): Promise<{ paused: number; skipped: number }> {
+  async obterEstadoMotor(): Promise<{ active: boolean }> {
     const db = await this.dbDoMotor();
-
-    // Busca todas as tarefas
-    const todasTarefas = await db
-      .select({
-        id: tarefas.id,
-        externalId: tarefas.externalId,
-        pausedAt: tarefas.pausedAt,
-      })
-      .from(tarefas);
-
-    // Busca fatos de runtime para verificar status terminal
-    const facts = await db
-      .select({
-        tarefaId: taskRuntimeFacts.tarefaId,
-        terminalStatus: taskRuntimeFacts.terminalStatus,
-      })
-      .from(taskRuntimeFacts);
-
-    const factsMap = new Map(facts.map((f) => [f.tarefaId, f]));
-
-    // Filtra tarefas elegíveis: não-final e não-pausada
-    const elegiveis: Array<{ id: number; externalId: string | null }> = [];
-    let skipped = 0;
-
-    for (const tarefa of todasTarefas) {
-      const fact = factsMap.get(tarefa.id);
-      const statusTerminal = fact?.terminalStatus;
-
-      // Pula tarefas em status final
-      const { TASK_STATUS_FINAIS } = await import('../motor-v2/dist/shared/task-statuses.js');
-      if (statusTerminal && TASK_STATUS_FINAIS.has(statusTerminal)) {
-        skipped++;
-        continue;
-      }
-
-      // Pula tarefas já pausadas
-      if (tarefa.pausedAt) {
-        skipped++;
-        continue;
-      }
-
-      elegiveis.push({ id: tarefa.id, externalId: tarefa.externalId });
-    }
-
-    // Pausa cada tarefa elegível via motor (Promise.allSettled)
-    const resultados = await Promise.allSettled(
-      elegiveis.map(async (t) => {
-        const identificador = t.externalId || String(t.id);
-        await this.motorRequest(
-          'POST',
-          `/api/motor/task/${encodeURIComponent(identificador)}/pause`,
-          undefined,
-          this.motorV2Url,
-        );
-        // Atualiza pausedAt localmente
-        await db
-          .update(tarefas)
-          .set({ pausedAt: new Date() })
-          .where(eq(tarefas.id, t.id));
-      }),
-    );
-
-    let paused = 0;
-    for (const resultado of resultados) {
-      if (resultado.status === 'fulfilled') {
-        paused++;
-      } else {
-        this.logger.warn(`Falha ao pausar tarefa em lote: ${resultado.reason}`);
-        skipped++;
-      }
-    }
-
-    this.logger.log(`pause-all: ${paused} pausadas, ${skipped} skipadas`);
-    return { paused, skipped };
+    const [row] = await db.select({ valor: motorConfiguracoes.valor })
+      .from(motorConfiguracoes)
+      .where(eq(motorConfiguracoes.chave, 'motor.active'))
+      .limit(1);
+    return { active: typeof row?.valor === 'boolean' ? row.valor : true };
   }
 
-  /**
-   * Bulk: retoma todas as tarefas pausadas (limpa pausedAt via drizzle).
-   * Tarefas não-pausadas são contadas como skipped.
-   */
-  async retomarTodasTarefas(): Promise<{ resumed: number; skipped: number }> {
+  /** Impede novas atividades sem alterar nem interromper tarefas em andamento. */
+  async pausarTodasTarefas(): Promise<{ active: false }> {
+    await this.definirMotorAtivo(false);
+    this.logger.log('Motor pausado: novas atividades serão adiadas; execuções em andamento continuam');
+    return { active: false };
+  }
+
+  /** Reabre o despacho de atividades adiadas pelo estado global do Motor. */
+  async retomarTodasTarefas(): Promise<{ active: true }> {
+    await this.definirMotorAtivo(true);
+    this.logger.log('Motor ativado: atividades adiadas podem voltar a ser despachadas');
+    return { active: true };
+  }
+
+  private async definirMotorAtivo(active: boolean): Promise<void> {
     const db = await this.dbDoMotor();
-
-    // Conta tarefas pausadas (pausedAt não-null)
-    const pausadas = await db
-      .select({ id: tarefas.id })
-      .from(tarefas)
-      .where(isNotNull(tarefas.pausedAt));
-
-    // Conta tarefas não-pausadas (para skipped)
-    const naoPausadas = await db
-      .select({ id: tarefas.id })
-      .from(tarefas)
-      .where(isNull(tarefas.pausedAt));
-
-    // Limpa pausedAt de todas as tarefas pausadas
-    if (pausadas.length > 0) {
-      await db
-        .update(tarefas)
-        .set({ pausedAt: null })
-        .where(isNotNull(tarefas.pausedAt));
-    }
-
-    this.logger.log(`resume-all: ${pausadas.length} retomadas, ${naoPausadas.length} skipadas`);
-    return { resumed: pausadas.length, skipped: naoPausadas.length };
+    const definition = configuracaoPorChave('motor.active');
+    if (!definition) throw new Error('Configuração motor.active ausente do catálogo');
+    await db.insert(motorConfiguracoes).values({
+      chave: definition.chave,
+      tipo: definition.tipo,
+      valor: active,
+      valorPadrao: definition.valorPadrao,
+      regraValidacao: definition.regraValidacao,
+      descricao: definition.descricao,
+    }).onDuplicateKeyUpdate({ set: { valor: active } });
   }
 
   /**

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { InMemoryQueueTransport, QueueConsumer, createQueueMessage } from '../src/queue/index.js'
+import { MotorActivityGate } from '../src/queue/MotorActivityGate.js'
 
 function createProcessingPool() {
   const records = new Map<string, { status: string; attempt: number }>()
@@ -47,8 +48,10 @@ function createConsumer(
   transport: InMemoryQueueTransport,
   handler: (message: any) => Promise<void>,
   maxAttempts = 3,
+  pool = createProcessingPool(),
+  gate?: MotorActivityGate,
 ) {
-  return new QueueConsumer(transport, handler, { queue: 'motor.commands', maxAttempts }, createProcessingPool())
+  return new QueueConsumer(transport, handler, { queue: 'motor.commands', maxAttempts }, pool, gate)
 }
 
 describe('QueueConsumer', () => {
@@ -126,6 +129,53 @@ describe('QueueConsumer', () => {
     expect(handler).toHaveBeenCalledTimes(1)
     expect(transport.pending('motor.commands')).toBe(0)
     expect(transport.deadLettered()).toHaveLength(1)
+    await consumer.stop()
+  })
+
+  it('adia atividade nova sem chamar o handler quando o Motor está inativo', async () => {
+    const transport = new InMemoryQueueTransport()
+    const handler = vi.fn(async () => {})
+    const processingPool = createProcessingPool()
+    const originalQuery = processingPool.query
+    processingPool.query = vi.fn(async (sql: string, params?: unknown[]) => {
+      if (sql.includes("chave = 'motor.active'")) return [[{ valor: false }], []]
+      if (sql.includes('INSERT INTO motor_outbox')) return [{ affectedRows: 1 }, []]
+      return originalQuery(sql, params ?? [])
+    })
+    const consumer = createConsumer(
+      transport,
+      handler,
+      3,
+      processingPool,
+      new MotorActivityGate(processingPool),
+    )
+
+    await consumer.start()
+    await transport.publish('motor.commands', createQueueMessage({
+      type: 'SUBTASK_EXECUTION_REQUESTED', taskId: 'task-paused', executionId: 'exec-paused', payload: {},
+    }))
+
+    expect(handler).not.toHaveBeenCalled()
+    expect(processingPool.query).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT INTO motor_outbox'),
+      expect.arrayContaining(['SUBTASK_EXECUTION_REQUESTED', 'motor.commands']),
+    )
+    expect(transport.pending('motor.commands')).toBe(0)
+    await consumer.stop()
+  })
+
+  it('continua processando mensagens de conclusão quando o Motor está inativo', async () => {
+    const transport = new InMemoryQueueTransport()
+    const handler = vi.fn(async () => {})
+    const pool = createProcessingPool()
+    const consumer = createConsumer(transport, handler, 3, pool, new MotorActivityGate(pool))
+
+    await consumer.start()
+    await transport.publish('motor.commands', createQueueMessage({
+      type: 'SUBTASK_EXECUTION_COMPLETED', taskId: 'task-running', executionId: 'exec-running', payload: {},
+    }))
+
+    expect(handler).toHaveBeenCalledTimes(1)
     await consumer.stop()
   })
 })

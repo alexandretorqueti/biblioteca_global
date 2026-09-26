@@ -498,6 +498,13 @@
       "when": 1790467200000,
       "tag": "0071_motor_operation_log_deploy_phases",
       "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "5",
+      "when": 1790467200001,
+      "tag": "0072_motor_active",
+      "breakpoints": true
     }
   ]
 }

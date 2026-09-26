@@ -43,6 +43,24 @@ describe('GerenteAgentesController — criação de tarefa', () => {
 });
 
 describe('GerenteAgentesController — configurações do motor', () => {
+  it('expõe e altera o estado global sem pausar tarefas individualmente', async () => {
+    const obterEstadoMotor = vi.fn().mockResolvedValue({ active: true });
+    const pausarTodasTarefas = vi.fn().mockResolvedValue({ active: false });
+    const retomarTodasTarefas = vi.fn().mockResolvedValue({ active: true });
+    const instance = new GerenteAgentesController(
+      { obterEstadoMotor, pausarTodasTarefas, retomarTodasTarefas } as never,
+      {} as never,
+      {} as never,
+    );
+
+    await expect(instance.obterEstadoMotor()).resolves.toEqual({ active: true });
+    await expect(instance.pausarTodasTarefas()).resolves.toEqual({ active: false });
+    await expect(instance.retomarTodasTarefas()).resolves.toEqual({ active: true });
+    expect(obterEstadoMotor).toHaveBeenCalledOnce();
+    expect(pausarTodasTarefas).toHaveBeenCalledOnce();
+    expect(retomarTodasTarefas).toHaveBeenCalledOnce();
+  });
+
   it('lista configurações pelo contrato protegido de leitura', async () => {
     const listarConfiguracoesMotor = vi.fn().mockResolvedValue([{ chave: 'motor.max_workers', editavel: true }]);
     const instance = new GerenteAgentesController({ listarConfiguracoesMotor } as never, {} as never);

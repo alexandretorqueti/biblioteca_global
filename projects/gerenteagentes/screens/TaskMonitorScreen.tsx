@@ -391,6 +391,7 @@ export default function TaskMonitorScreen(): ReactNode {
   const sessionPageLoadingRef = useRef(new Set<string>())
   const [pausandoTodas, setPausandoTodas] = useState(false)
   const [retomandoTodas, setRetomandoTodas] = useState(false)
+  const [motorAtivo, setMotorAtivo] = useState(true)
   const [bulkMessage, setBulkMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const [analystSessionOpen, setAnalystSessionOpen] = useState(false)
   const [analystSessionLoading, setAnalystSessionLoading] = useState(false)
@@ -475,6 +476,8 @@ export default function TaskMonitorScreen(): ReactNode {
       if (mounted.current && Array.isArray(diagnostics.reasons) && typeof diagnostics.pendingRequests === "number") {
         setDeployDiagnostics(diagnostics)
       }
+      const state = await bundle.http.request<{ active: boolean }>("GET", "/gerenteagentes/motor-state", { auth: "access" })
+      if (mounted.current && typeof state.active === "boolean") setMotorAtivo(state.active)
     } catch {
       // Atividade é complementar; não interrompe o acompanhamento se o Motor reiniciar.
     }
@@ -797,22 +800,21 @@ export default function TaskMonitorScreen(): ReactNode {
       setLoading(true)
       setBulkMessage(null)
       try {
-        const res = await bundle.http.request<{ affected?: number }>("POST", `/gerenteagentes/tarefas/${acaoNome}`, {
+        const res = await bundle.http.request<{ active: boolean }>("POST", `/gerenteagentes/tarefas/${acaoNome}`, {
           auth: "access",
         })
-        const contagem = typeof res?.affected === 'number' ? res.affected : undefined
-        const label = acaoNome === 'pause-all' ? 'pausadas' : 'retomadas'
+        setMotorAtivo(res.active)
         setBulkMessage({
           type: 'success',
-          text: contagem !== undefined
-            ? `${contagem} tarefa${contagem === 1 ? '' : 's'} ${label} com sucesso.`
-            : `Ação '${acaoNome === 'pause-all' ? 'Pausar todas' : 'Retomar todas'}' executada.`,
+          text: res.active
+            ? 'Motor ativado. Novas atividades voltarão a ser despachadas.'
+            : 'Motor pausado. Atividades em andamento continuam; novas atividades serão adiadas.',
         })
         await carregarTarefas()
       } catch (e) {
         setBulkMessage({
           type: 'error',
-          text: e instanceof Error ? e.message : `Erro ao executar ${acaoNome === 'pause-all' ? 'pausar todas' : 'retomar todas'}`,
+          text: e instanceof Error ? e.message : `Erro ao ${acaoNome === 'pause-all' ? 'pausar' : 'ativar'} o Motor`,
         })
       } finally {
         setLoading(false)
@@ -1600,31 +1602,31 @@ export default function TaskMonitorScreen(): ReactNode {
       <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" alignItems="center">
         <Typography variant="h4" fontWeight={600}>Acompanhar Tarefa</Typography>
         <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
-          <Tooltip title="Pausa todas as tarefas que não estão concluídas/deployadas">
+          <Tooltip title="Impede novas atividades sem interromper o que já está em execução">
             <span>
               <Button
                 variant="outlined"
                 startIcon={<PauseRounded />}
-                disabled={pausandoTodas || !tarefas.some((t) => !STATUS_FINAIS.has(t.status) && t.status !== 'paused')}
+                disabled={pausandoTodas || !motorAtivo}
                 loading={pausandoTodas}
                 onClick={() => void executarAcaoBulk('pause-all')}
                 data-testid="btn-pause-all"
               >
-                Pausar todas
+                Pausar Motor
               </Button>
             </span>
           </Tooltip>
-          <Tooltip title="Retoma todas as tarefas pausadas">
+          <Tooltip title="Reativa o despacho de novas atividades">
             <span>
               <Button
                 variant="outlined"
                 startIcon={<ReplayRounded />}
-                disabled={retomandoTodas || !tarefas.some((t) => t.status === 'paused')}
+                disabled={retomandoTodas || motorAtivo}
                 loading={retomandoTodas}
                 onClick={() => void executarAcaoBulk('resume-all')}
                 data-testid="btn-resume-all"
               >
-                Retomar todas
+                Ativar Motor
               </Button>
             </span>
           </Tooltip>

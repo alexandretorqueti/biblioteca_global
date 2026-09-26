@@ -1089,6 +1089,7 @@ describe("TaskMonitorScreen — compatibilidade Motor-v2", () => {
           if (method === "GET" && path === "/gerenteagentes/projetos_captados") return { items: [projetoFactory(2, "GerenteAgentes")] }
           if (method === "GET" && path === "/gerenteagentes/tarefas") return { items: tarefas }
           if (method === "GET" && path === "/gerenteagentes/tarefas-com-status") return tarefas
+          if (method === "GET" && path === "/gerenteagentes/motor-state") return { active: false }
           if (method === "GET" && path.endsWith("/motor-detail")) {
             return {
               motorId: "727",

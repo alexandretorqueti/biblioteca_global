@@ -6,6 +6,7 @@ Varredura realizada em `motor-v2/src`, `motor-v2/package.json`, `motor-v2/README
 
 | Nome estável sugerido | Valor atual | Origem | Consumidor(es) | Impacto |
 |---|---:|---|---|---|
+| `motor.active` | `true` | tabela `motor_configuracoes`; botões **Pausar Motor** / **Ativar Motor** | barreira de atividades do `QueueConsumer` no Motor-v3 | Quando `false`, novas análises, execuções DEV e missões do Monitor são adiadas de forma durável. Gates pertencentes a uma execução já iniciada, mensagens de conclusão, cancelamento, verificação e deploy continuam, permitindo que o trabalho em curso finalize sem interrupção. |
 | `motor.max_workers` | `1` | `MOTOR_MAX_WORKERS` em `src/start.ts`; fallback de `MotorConfig`/`TaskCoordinator` | `TaskCoordinator.pump`, `activeDevelopmentCount` | Limita o total de subtarefas de desenvolvimento simultâneas; é o limite global de tarefas em paralelo identificado no motor. |
 | `motor.max_workers_per_project` | `1` | `MotorConfig`, default de `TaskCoordinatorConfig` (`src/Motor.ts`, `src/coordinator/TaskCoordinator.ts`) | `canStartExecution(projectSlug)` | Limita concorrência por projeto; evita que um único projeto ocupe todo o motor. Hoje não há variável de ambiente no `start.ts`. |
 | `motor.pump_interval_ms` | `30000` | literal em `src/Motor.ts` | `setInterval` que chama `coordinator.pump()` | Latência para detectar novas tarefas e retomar fila; valores baixos aumentam consultas/carga. |
