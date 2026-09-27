@@ -268,6 +268,25 @@ describe('WorkerLauncher', () => {
     )
   })
 
+  it('entrega sessão DEV ainda ativa ao reconciliador em vez de falhar', async () => {
+    launcher = new WorkerLauncher({
+      maxAttempts: 3, timeoutMs: 1_000, globalTimeoutMs: 1_500,
+      handoffSessionOnTimeout: true, sandboxRoot: '/tmp/sandbox',
+    })
+    mocks.createSession.handler.mockImplementation(async (context: PrimitiveContext) => {
+      context.sessionId = 'sessao-longa'
+      context.sessionKey = 'dev-modelo-task-123-s456'
+      return { success: true }
+    })
+    mocks.sendMessage.handler.mockResolvedValue({ success: true })
+    mocks.waitForCompletion.handler.mockResolvedValue({ success: false, error: 'Timeout aguardando conclusão do run' })
+
+    const result = await launcher.executeTask(mockContext, 'Implementar feature X')
+
+    expect(result).toMatchObject({ success: false, sessionHandedOff: true, attempts: 1 })
+    expect(mocks.createSession.handler).toHaveBeenCalledTimes(1)
+  })
+
   it('usa o próximo modelo e uma nova geração quando a sessão remota falha', async () => {
     const attempts: Array<{ model?: string; generation: number }> = []
     mocks.createSession.handler.mockImplementation(async (context: PrimitiveContext) => {

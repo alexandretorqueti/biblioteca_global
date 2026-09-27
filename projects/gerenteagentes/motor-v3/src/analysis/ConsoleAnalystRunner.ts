@@ -19,7 +19,17 @@ export interface AnalysisPromptResolver {
 export interface AnalystConsole {
   createSession(input: { key: string; agentId: string; model?: string; metadata: Record<string, unknown> }): Promise<AnalystSession>
   sendMessage(input: { session: AnalystSession; message: string }): Promise<void>
-  getSessionStatus(session: AnalystSession): Promise<{ isComplete: boolean; isFailed?: boolean; lastResponse?: string; error?: string }>
+  getSessionStatus(session: AnalystSession): Promise<ConsoleSessionStatus>
+  archiveSession?(sessionKey: string): Promise<{ archived: boolean; error?: string }>
+  abortSession?(session: AnalystSession): Promise<{ aborted: boolean; error?: string }>
+}
+
+export interface ConsoleSessionStatus {
+  isComplete: boolean
+  isFailed?: boolean
+  lastResponse?: string
+  error?: string
+  activity?: { fingerprint?: string; repeatedToolCalls: number }
 }
 
 export interface AnalystSession {

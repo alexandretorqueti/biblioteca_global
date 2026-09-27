@@ -529,6 +529,53 @@ export class MySqlDevelopmentExecutionRepository {
     }
   }
 
+  /**
+   * Reabre somente falhas legadas causadas pelo timeout local enquanto a sessão
+   * remota sobreviveu. A mensagem de falha pendente é preservada como registro,
+   * mas terminalizada para nunca sobrescrever a recuperação posterior.
+   */
+  async reopenTimedOutExecutionForRecovery(taskId: string, subtaskId: number): Promise<boolean> {
+    const connection = await this.pool.getConnection()
+    try {
+      await connection.beginTransaction()
+      const [rows] = await connection.query<Array<RowDataPacket & { status: string; resultado: string | null }>>(
+        `SELECT status, resultado FROM subtarefas WHERE id=? LIMIT 1 FOR UPDATE`, [subtaskId],
+      )
+      const subtask = rows[0]
+      if (!subtask || subtask.status !== 'failed' || !/Timeout global do worker/i.test(String(subtask.resultado ?? ''))) {
+        await connection.rollback()
+        return false
+      }
+      const [sessions] = await connection.query<Array<RowDataPacket & { total: number | string }>>(
+        `SELECT COUNT(*) AS total FROM motor_agent_sessions
+          WHERE subtarefa_id=? AND status='active' AND runtime_session_id IS NOT NULL`, [subtaskId],
+      )
+      if (Number(sessions[0]?.total ?? 0) === 0) {
+        await connection.rollback()
+        return false
+      }
+      await connection.query(
+        `UPDATE motor_outbox
+            SET status='published', published_at=COALESCE(published_at,NOW()),
+                last_error='SUPPRESSED: superseded by surviving development session recovery'
+          WHERE task_id=? AND type='SUBTASK_EXECUTION_FAILED' AND status='pending'
+            AND CAST(JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.subtaskId')) AS UNSIGNED)=?`,
+        [taskId, subtaskId],
+      )
+      const [updated] = await connection.query<ResultSetHeader>(
+        `UPDATE subtarefas SET status='running', resultado=NULL, updated_at=NOW()
+          WHERE id=? AND status='failed'`, [subtaskId],
+      )
+      await connection.commit()
+      return updated.affectedRows === 1
+    } catch (error) {
+      await connection.rollback()
+      throw error
+    } finally {
+      connection.release()
+    }
+  }
+
   async closeDevelopmentSession(subtaskId: number, sessionKey: string | undefined, success: boolean): Promise<void> {
     if (!sessionKey) return
     await this.pool.query(

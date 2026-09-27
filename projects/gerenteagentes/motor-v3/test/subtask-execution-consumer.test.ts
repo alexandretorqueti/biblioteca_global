@@ -39,7 +39,7 @@ describe('SubtaskExecutionConsumer', () => {
       buildCommand: 'npm run build', testCommand: 'npm test',
     }), expect.objectContaining({
       header: expect.stringContaining('Workspace autorizado: /worktree'), context: null,
-    }), ['modelo-a'], expect.any(Function), undefined, false)
+    }), ['modelo-a'], expect.any(Function), undefined, false, expect.any(Number))
     expect(repository.finishExecution).toHaveBeenCalledWith(context, message, expect.objectContaining({ success: true }))
     expect(logger.append).toHaveBeenCalledTimes(4)
     expect(logger.append).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -79,7 +79,7 @@ describe('SubtaskExecutionConsumer', () => {
     expect(worker.executeTask).toHaveBeenCalledWith(expect.any(Object), expect.objectContaining({
       header: expect.not.stringContaining(longContext.taskDescription),
       context: `Descrição completa da missão:\n\n${longContext.taskDescription}`,
-    }), expect.any(Array), expect.any(Function), undefined, false)
+    }), expect.any(Array), expect.any(Function), undefined, false, expect.any(Number))
   })
 
   it('publica falha durável quando o programador esgota tentativas', async () => {
@@ -98,6 +98,29 @@ describe('SubtaskExecutionConsumer', () => {
 
     expect(repository.finishExecution).toHaveBeenCalledWith(context, message, expect.objectContaining({ success: false, error: 'timeout' }))
     expect(logger.append).toHaveBeenLastCalledWith(expect.objectContaining({ phase: 'completed', outcome: 'failed' }))
+  })
+
+  it('entrega a sessão ativa ao reconciliador sem marcar a subtarefa como falha', async () => {
+    const repository = {
+      getExecutionContext: vi.fn().mockResolvedValue(context), recordWorkspace: vi.fn(),
+      getDevelopmentModelChain: vi.fn().mockResolvedValue(['modelo-a']),
+      recordModelFailure: vi.fn().mockResolvedValue(undefined), finishExecution: vi.fn(),
+    }
+    const worktrees = { prepare: vi.fn().mockResolvedValue({ path: '/worktree', branch: 'branch', baseCommit: 'abc' }) }
+    const worker = { executeTask: vi.fn().mockImplementation(async (primitiveContext: Record<string, unknown>) => {
+      primitiveContext.sessionId = 'sessao-ainda-ativa'
+      primitiveContext.sessionKey = 'dev-modelo-a-task-p6-845-s901'
+      return { success: false, sessionHandedOff: true, error: 'Timeout aguardando conclusão do run', attempts: 1 }
+    }) }
+    const adapter = { releaseLocalOwnership: vi.fn() }
+    const logger = { append: vi.fn().mockResolvedValue(undefined) }
+    const consumer = new SubtaskExecutionConsumer(repository as never, worktrees as never, worker as never, adapter, {}, logger)
+
+    await consumer.handle(message)
+
+    expect(adapter.releaseLocalOwnership).toHaveBeenCalledWith('sessao-ainda-ativa')
+    expect(repository.finishExecution).not.toHaveBeenCalled()
+    expect(logger.append).toHaveBeenLastCalledWith(expect.objectContaining({ reasonCode: 'development_session_handed_off' }))
   })
 
   it('não deixa a subtarefa running quando a preparação do worktree falha', async () => {
@@ -171,7 +194,7 @@ describe('SubtaskExecutionConsumer', () => {
     expect(testGate.request).toHaveBeenCalledWith(expect.objectContaining({
       phase: 'baseline', workspacePath: '/repo', branchName: 'base-desenvolvimento', commitSha: 'abc',
     }), message)
-    expect(worker.executeTask).toHaveBeenCalledWith(expect.objectContaining({ baselineRunId: 51 }), expect.any(Object), ['modelo-a'], expect.any(Function), expect.any(Function), false)
+    expect(worker.executeTask).toHaveBeenCalledWith(expect.objectContaining({ baselineRunId: 51 }), expect.any(Object), ['modelo-a'], expect.any(Function), expect.any(Function), false, expect.any(Number))
     expect(repository.finishExecution).toHaveBeenCalledWith(context, message, expect.objectContaining({ success: true }))
     expect(logger.append).toHaveBeenCalledWith(expect.objectContaining({ primitiveCode: 'run_test_baseline', outcome: 'succeeded' }))
     expect(logger.append).toHaveBeenLastCalledWith(expect.objectContaining({ phase: 'completed' }))
@@ -229,7 +252,7 @@ describe('SubtaskExecutionConsumer', () => {
     await consumer.handle(message)
 
     expect(recovery.recover).toHaveBeenCalledWith(context, integration, expect.objectContaining({ id: 70 }), message)
-    expect(worker.executeTask).toHaveBeenCalledWith(expect.objectContaining({ baselineRunId: 71, baseCommitSha: 'fixed' }), expect.any(Object), ['modelo-a'], expect.any(Function), expect.any(Function), false)
+    expect(worker.executeTask).toHaveBeenCalledWith(expect.objectContaining({ baselineRunId: 71, baseCommitSha: 'fixed' }), expect.any(Object), ['modelo-a'], expect.any(Function), expect.any(Function), false, expect.any(Number))
     expect(repository.finishExecution).toHaveBeenCalledWith(context, message, expect.objectContaining({ success: true }))
   })
 })

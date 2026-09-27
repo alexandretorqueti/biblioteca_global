@@ -49,6 +49,11 @@ export class WorkerConsoleAdapter {
     return this.locallyOwned.has(sessionId)
   }
 
+  /** Entrega uma sessão longa ao reconciliador sem encerrá-la no Console. */
+  releaseLocalOwnership(sessionId: string | undefined): void {
+    if (sessionId) this.locallyOwned.delete(sessionId)
+  }
+
   async sendMessage(input: { sessionId: string; message: string }): Promise<void> {
     await this.consoleApi.sendMessage({ session: this.requireSession(input.sessionId), message: input.message })
   }

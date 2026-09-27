@@ -431,7 +431,9 @@ async function start() {
       worktreePreparer,
       new WorkerLauncher({
         maxAttempts: Number(process.env.MOTOR_WORKER_MAX_ATTEMPTS || 3),
-        timeoutMs: Number(process.env.MOTOR_WORKER_TIMEOUT_MS || 1800000),
+        timeoutMs: Number(process.env.MOTOR_WORKER_TIMEOUT_MS || 4_800_000),
+        globalTimeoutMs: Number(process.env.MOTOR_WORKER_GLOBAL_TIMEOUT_MS || 5_100_000),
+        handoffSessionOnTimeout: true,
         sandboxRoot: process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/agentes/gerenteagentes/worktrees',
       }),
       developmentConsole,
@@ -452,6 +454,7 @@ async function start() {
         taskEvents,
         intervalMs: Number(process.env.MOTOR_DEVELOPMENT_RECOVERY_INTERVAL_MS || 30000),
         staleMinutes: Number(process.env.MOTOR_DEVELOPMENT_RECOVERY_STALE_MINUTES || 35),
+        loopRepeatThreshold: Number(process.env.MOTOR_DEVELOPMENT_LOOP_REPEAT_THRESHOLD || 5),
       },
     )
     subtaskVerificationConsumer = new SubtaskVerificationConsumer(

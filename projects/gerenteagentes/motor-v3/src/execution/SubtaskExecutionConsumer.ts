@@ -22,7 +22,7 @@ export class SubtaskExecutionConsumer {
     private readonly repository: MySqlDevelopmentExecutionRepository,
     private readonly worktrees: GitWorktreePreparer,
     private readonly worker: Pick<WorkerLauncher, 'executeTask' | 'recoverCompletedTask'>,
-    private readonly consoleApi: unknown,
+    private readonly consoleApi: { releaseLocalOwnership?: (sessionId: string | undefined) => void } | unknown,
     private readonly db: unknown,
     private readonly operationLogger?: OperationLogger,
     private readonly testGate?: TestGateOrchestrator,
@@ -35,6 +35,7 @@ export class SubtaskExecutionConsumer {
 
   async handle(message: QueueMessage): Promise<void> {
     if (message.type !== SUBTASK_EXECUTION_REQUESTED) return
+    const receivedAt = Date.now()
 
     // Deploy atômico: verifica se o lock de deploy está ativo antes de processar.
     // Se locked, loga 'deploy_in_progress' e reenfileira com delay de 30s.
@@ -195,12 +196,24 @@ export class SubtaskExecutionConsumer {
       (model, error) => this.repository.recordModelFailure(model, error),
       this.testGate && !noCode ? async (gateContext, phase) => this.runDifferentialGate(execution, gateContext, phase, message) : undefined,
       noCode,
+      receivedAt
+        + Number(process.env.MOTOR_RABBITMQ_CONSUMER_TIMEOUT_MS || 5_400_000)
+        - Number(process.env.MOTOR_RABBITMQ_ACK_SAFETY_MS || 300_000),
     )
     const workerSequence = sequence
     await this.log(operationId, workerSequence, message, {
-      phase: 'primitive', outcome: result.success ? 'succeeded' : 'failed', subtaskId,
+      phase: 'primitive', outcome: result.success ? 'succeeded' : result.sessionHandedOff ? 'executed' : 'failed', subtaskId,
       primitiveCode: 'start_programmer', result: this.resultForLog(result),
     })
+    if (result.sessionHandedOff) {
+      const adapter = this.consoleApi as { releaseLocalOwnership?: (sessionId: string | undefined) => void }
+      adapter.releaseLocalOwnership?.(context.sessionId)
+      await this.log(operationId, workerSequence + 1, message, {
+        phase: 'completed', outcome: 'executed', subtaskId, reasonCode: 'development_session_handed_off',
+        result: { sessionId: context.sessionId, sessionKey: context.sessionKey, attempts: result.attempts },
+      })
+      return
+    }
     const next = result.success && noCode
       ? await this.repository.completeNoCodeExecution(execution, message, result.response ?? '')
       : await this.repository.finishExecution(execution, message, result)
@@ -388,6 +401,7 @@ export class SubtaskExecutionConsumer {
   private resultForLog(result: WorkerResult): Record<string, unknown> {
     return {
       success: result.success, attempts: result.attempts, model: result.model, failures: result.failures,
+      sessionHandedOff: result.sessionHandedOff,
       hasChanges: result.hasChanges, buildPassed: result.buildPassed, error: result.error,
       baselineRunId: result.baselineRunId, postDevRunId: result.postDevRunId,
       preExistingFailureCount: result.preExistingFailureCount, resolvedFailureCount: result.resolvedFailureCount,

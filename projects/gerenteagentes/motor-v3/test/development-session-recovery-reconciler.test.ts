@@ -12,11 +12,15 @@ const row = {
   model: 'openai/gpt-terra',
   execution_id: 'exec-905',
   baseline_run_id: 88,
+  subtask_status: 'running',
 }
 
-function setup(status: Record<string, unknown>) {
-  const pool = { query: vi.fn().mockResolvedValue([[]]).mockResolvedValueOnce([[row]]) }
-  const repository = { requeueInterruptedExecution: vi.fn().mockResolvedValue({ messageId: 'retry-1' }) }
+function setup(status: Record<string, unknown>, recoveryRow = row) {
+  const pool = { query: vi.fn().mockResolvedValue([[]]).mockResolvedValueOnce([[recoveryRow]]) }
+  const repository = {
+    requeueInterruptedExecution: vi.fn().mockResolvedValue({ messageId: 'retry-1' }),
+    reopenTimedOutExecutionForRecovery: vi.fn().mockResolvedValue(true),
+  }
   const consumer = { recoverCompletedSession: vi.fn().mockResolvedValue(undefined) }
   const consoleApi = { getSessionStatus: vi.fn().mockResolvedValue(status) }
   const adapter = { attachSession: vi.fn(), isLocallyOwned: vi.fn().mockReturnValue(false) }
@@ -40,7 +44,7 @@ describe('DevelopmentSessionRecoveryReconciler', () => {
   })
 
   it('processa a resposta concluída e retorna ao fluxo normal', async () => {
-    const { reconciler, pool, consumer, repository } = setup({ isComplete: true, lastResponse: 'Concluído ::DONE::' })
+    const { reconciler, consumer, repository } = setup({ isComplete: true, lastResponse: 'Concluído ::DONE::' })
 
     await reconciler.reconcile()
 
@@ -52,7 +56,7 @@ describe('DevelopmentSessionRecoveryReconciler', () => {
   })
 
   it('encerra o checkpoint e reenfileira quando a sessão falhou', async () => {
-    const { reconciler, pool, repository, consumer } = setup({ isComplete: false, isFailed: true, error: 'SESSION_FAILED' })
+    const { reconciler, repository, consumer } = setup({ isComplete: false, isFailed: true, error: 'SESSION_FAILED' })
 
     await reconciler.reconcile()
 
@@ -73,5 +77,31 @@ describe('DevelopmentSessionRecoveryReconciler', () => {
     expect(repository.requeueInterruptedExecution).toHaveBeenCalledWith(
       'task-p2-905', 1219, 'orphan-dev-1219', 'running_without_persisted_session',
     )
+  })
+
+  it('reabre timeout legado antes de processar a sessão concluída', async () => {
+    const legacy = { ...row, subtask_status: 'failed' }
+    const { reconciler, repository, consumer, events } = setup({ isComplete: true, lastResponse: 'Recuperado ::DONE::' }, legacy)
+
+    await reconciler.reconcile()
+
+    expect(repository.reopenTimedOutExecutionForRecovery).toHaveBeenCalledWith('task-p2-905', 1219)
+    expect(consumer.recoverCompletedSession).toHaveBeenCalledWith(expect.objectContaining({ response: 'Recuperado ::DONE::' }))
+    expect(events.record).toHaveBeenCalledWith('task-p2-905', 'development_legacy_timeout_reopened', 'motor', expect.any(Object))
+  })
+
+  it('aborta e reenfileira somente após confirmar loop de ferramentas', async () => {
+    const { reconciler, repository, consoleApi, events } = setup({
+      isComplete: false, activity: { fingerprint: 'hash-da-acao', repeatedToolCalls: 5 },
+    })
+    consoleApi.abortSession = vi.fn().mockResolvedValue({ aborted: true })
+
+    await reconciler.reconcile()
+
+    expect(consoleApi.abortSession).toHaveBeenCalledWith(expect.objectContaining({ sessionKey: row.session_key }))
+    expect(repository.requeueInterruptedExecution).toHaveBeenCalledWith(
+      'task-p2-905', 1219, 'exec-905', expect.stringContaining('development_session_loop_detected'),
+    )
+    expect(events.record).toHaveBeenCalledWith('task-p2-905', 'development_session_loop_requeued', 'motor', expect.objectContaining({ repetitions: 5 }))
   })
 })

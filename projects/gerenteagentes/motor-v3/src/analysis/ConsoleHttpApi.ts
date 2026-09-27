@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import type { AnalystConsole, AnalystSession } from './ConsoleAnalystRunner.js'
 
 export class ConsoleHttpApi implements AnalystConsole {
@@ -30,14 +31,17 @@ export class ConsoleHttpApi implements AnalystConsole {
     })
   }
 
-  async getSessionStatus(session: AnalystSession): Promise<{ isComplete: boolean; isFailed?: boolean; lastResponse?: string; error?: string }> {
+  async getSessionStatus(session: AnalystSession): Promise<import('./ConsoleAnalystRunner.js').ConsoleSessionStatus> {
     const status = await this.request<{ status?: string; state?: string; hasActiveRun?: boolean; endedAt?: unknown; errorMessage?: string; message?: string; errorCode?: string; error?: unknown; failure?: unknown; details?: unknown }>('/api/sessions/describe', {
       method: 'GET', query: { key: session.sessionKey, agentId: session.agentId },
     })
     const terminalFailure = new Set(['failed', 'error', 'timeout', 'cancelled', 'canceled'])
     const failed = terminalFailure.has(String(status.status ?? '').toLowerCase()) || terminalFailure.has(String(status.state ?? '').toLowerCase())
     const complete = !failed && (status.status === 'done' || status.status === 'idle' || status.state === 'done' || status.state === 'idle' || status.hasActiveRun === false || status.endedAt !== undefined)
-    if (!complete && !failed) return { isComplete: false }
+    if (!complete && !failed) {
+      const history = await this.history(session)
+      return { isComplete: false, activity: this.activity(history.messages ?? []) }
+    }
     const history = await this.history(session)
     const marker = this.pendingResponses.get(this.sessionKey(session))
     const assistant = [...(history.messages ?? [])].reverse().find(message =>
@@ -94,6 +98,26 @@ export class ConsoleHttpApi implements AnalystConsole {
     return typeof message.content === 'string' && message.content.trim().length > 0
   }
 
+  /** Indício conservador de loop: a mesma chamada de ferramenta repetida no fim do histórico. */
+  private activity(messages: ConsoleHistoryMessage[]): { fingerprint?: string; repeatedToolCalls: number } {
+    const actions = messages
+      .filter(message => /tool(?:use|_use)?/i.test(String(message.stopReason ?? '')))
+      .map(message => this.actionFingerprint(message))
+      .filter((value): value is string => Boolean(value))
+    const fingerprint = actions.at(-1)
+    if (!fingerprint) return { repeatedToolCalls: 0 }
+    let repeatedToolCalls = 0
+    for (let index = actions.length - 1; index >= 0 && actions[index] === fingerprint; index--) repeatedToolCalls++
+    return { fingerprint, repeatedToolCalls }
+  }
+
+  private actionFingerprint(message: ConsoleHistoryMessage): string | undefined {
+    const raw = typeof message.content === 'string' ? message.content : JSON.stringify(message.content)
+    if (!raw) return undefined
+    const normalized = raw.replace(/\b\d{3,}\b/g, '#').replace(/[a-f0-9]{16,}/gi, '#').replace(/\s+/g, ' ').trim()
+    return createHash('sha256').update(normalized).digest('hex').slice(0, 24)
+  }
+
   private stringValue(value: unknown): string | undefined {
     return typeof value === 'string' && value.trim() ? value.trim() : undefined
   }
@@ -117,6 +141,18 @@ export class ConsoleHttpApi implements AnalystConsole {
       return { archived: true }
     } catch (error) {
       return { archived: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
+  /** Interrompe o run ativo antes de permitir nova execução da subtarefa. */
+  async abortSession(session: AnalystSession): Promise<{ aborted: boolean; error?: string }> {
+    try {
+      const result = await this.request<{ aborted?: boolean; ok?: boolean }>('/api/chat/abort', {
+        method: 'POST', body: { sessionKey: session.sessionKey, agentId: session.agentId },
+      })
+      return { aborted: result.aborted === true }
+    } catch (error) {
+      return { aborted: false, error: error instanceof Error ? error.message : String(error) }
     }
   }
 

@@ -14,6 +14,10 @@ import { createSession, sendMessage, waitForCompletion, parseReply, verifyGit, r
 export interface WorkerLauncherConfig {
   maxAttempts: number // Teto de tentativas (D6: local 2, cloud 3)
   timeoutMs: number // Timeout por tentativa
+  /** Limite total da execução, sempre menor que o timeout do broker. */
+  globalTimeoutMs: number
+  /** DEV pode entregar a sessão ao reconciliador em vez de encerrá-la por timeout. */
+  handoffSessionOnTimeout: boolean
   sandboxRoot: string // Raiz de worktrees montada (opção a)
 }
 
@@ -30,6 +34,8 @@ export interface WorkerResult {
   postDevRunId?: number
   preExistingFailureCount?: number
   resolvedFailureCount?: number
+  /** A sessão remota permanece ativa e deve ser acompanhada pelo reconciliador. */
+  sessionHandedOff?: boolean
 }
 
 export interface DifferentialGateResult {
@@ -54,7 +60,9 @@ export class WorkerLauncher {
   constructor(config: Partial<WorkerLauncherConfig> = {}) {
     this.config = {
       maxAttempts: config.maxAttempts ?? 3,
-      timeoutMs: config.timeoutMs ?? 300000, // 5 minutos
+      timeoutMs: config.timeoutMs ?? 4_800_000, // 80 minutos
+      globalTimeoutMs: config.globalTimeoutMs ?? Number(process.env.MOTOR_WORKER_GLOBAL_TIMEOUT_MS ?? 5_100_000), // 85 minutos
+      handoffSessionOnTimeout: config.handoffSessionOnTimeout ?? false,
       sandboxRoot: config.sandboxRoot ?? '/data/workspace/agentes/motor-v3/worktrees',
     }
   }
@@ -69,11 +77,12 @@ export class WorkerLauncher {
     onModelFailure?: (model: string, error: string) => Promise<void>,
     runDifferentialGate?: (context: PrimitiveContext, phase: 'post_dev' | 'rework') => Promise<DifferentialGateResult>,
     allowNoChanges = false,
+    deadlineAt?: number,
   ): Promise<WorkerResult> {
-    // Timeout global para toda a execução do worker (25 minutos por padrão).
-    // Deve ser menor que o timeout do RabbitMQ (30 minutos) para evitar
-    // PRECONDITION_FAILED - delivery acknowledgement timed out.
-    const globalTimeoutMs = Number(process.env.MOTOR_WORKER_GLOBAL_TIMEOUT_MS ?? 1500000) // 25 min
+    // Deve ser menor que o timeout do RabbitMQ. A espera abaixo é limitada ao
+    // orçamento restante da entrega, incluindo preparação e baseline.
+    const externalBudgetMs = deadlineAt === undefined ? this.config.globalTimeoutMs : Math.max(1, deadlineAt - Date.now())
+    const globalTimeoutMs = Math.min(this.config.globalTimeoutMs, externalBudgetMs)
     const globalStartTime = Date.now()
     
     let attempts = 0
@@ -152,11 +161,29 @@ export class WorkerLauncher {
         }
 
         // 4. Aguardar conclusão com timeout
+        const remainingMs = globalTimeoutMs - (Date.now() - globalStartTime)
+        if (remainingMs <= 0) {
+          lastError = `Timeout global do worker atingido (limite: ${Math.round(globalTimeoutMs / 1000)}s)`
+          break
+        }
         const waitResult = await waitForCompletion.handler(context, {
-          timeoutMs: this.config.timeoutMs,
+          timeoutMs: Math.min(this.config.timeoutMs, remainingMs),
         })
 
         if (!waitResult.success) {
+          if (this.config.handoffSessionOnTimeout && /timeout aguardando conclusão/i.test(waitResult.error ?? '')) {
+            context.logger?.warn('Sessão DEV ainda ativa; transferindo acompanhamento ao reconciliador', {
+              sessionId: context.sessionId,
+              timeoutMs: Math.min(this.config.timeoutMs, remainingMs),
+            })
+            return {
+              success: false,
+              sessionHandedOff: true,
+              error: waitResult.error ?? 'Timeout aguardando conclusão do run',
+              attempts,
+              ...(model ? { model } : {}),
+            }
+          }
           context.logger?.error('Timeout ou erro ao aguardar', { error: waitResult.error })
           lastError = waitResult.error ?? 'Falha aguardando o programador'
           failures.push({ attempt: attempts, ...(model ? { model } : {}), error: lastError })

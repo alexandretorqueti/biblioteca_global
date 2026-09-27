@@ -17,11 +17,13 @@ interface RecoveryRow extends RowDataPacket {
   model: string
   execution_id: string | null
   baseline_run_id: number | null
+  subtask_status: string
 }
 
 export interface DevelopmentSessionRecoveryConfig {
   intervalMs?: number
   staleMinutes?: number
+  loopRepeatThreshold?: number
   taskEvents?: TaskEventSink
 }
 
@@ -30,6 +32,7 @@ export class DevelopmentSessionRecoveryReconciler {
   private readonly inFlight = new Set<number>()
   private readonly intervalMs: number
   private readonly staleMinutes: number
+  private readonly loopRepeatThreshold: number
   private timer: NodeJS.Timeout | null = null
 
   constructor(
@@ -42,6 +45,7 @@ export class DevelopmentSessionRecoveryReconciler {
   ) {
     this.intervalMs = config.intervalMs ?? 30_000
     this.staleMinutes = config.staleMinutes ?? 35
+    this.loopRepeatThreshold = config.loopRepeatThreshold ?? 5
   }
 
   start(): void {
@@ -58,7 +62,7 @@ export class DevelopmentSessionRecoveryReconciler {
       const [rows] = await this.pool.query<RecoveryRow[]>(`
         SELECT mas.id AS session_id, s.tarefa_id, t.external_id AS task_external_id,
                mas.subtarefa_id, mas.session_key, mas.runtime_session_id,
-               mas.agent_id, mas.model, ctx.last_run_id AS execution_id,
+               mas.agent_id, mas.model, ctx.last_run_id AS execution_id, s.status AS subtask_status,
                (SELECT tr.id FROM test_runs tr
                  WHERE tr.tarefa_id = s.tarefa_id AND tr.subtarefa_id = s.id AND tr.phase = 'baseline'
                  ORDER BY tr.finished_at DESC, tr.id DESC LIMIT 1) AS baseline_run_id
@@ -69,7 +73,8 @@ export class DevelopmentSessionRecoveryReconciler {
             ON ctx.subtarefa_id = s.id AND ctx.sessao_chave = mas.session_key
            AND ctx.fase = 'development' AND ctx.estado != 'closed'
          WHERE mas.status = 'active'
-           AND s.status = 'running'
+           AND (s.status = 'running'
+             OR (s.status = 'failed' AND s.resultado LIKE '%Timeout global do worker%'))
          ORDER BY mas.subtarefa_id, mas.opened_at DESC, mas.id DESC
       `)
       const seen = new Set<number>()
@@ -149,11 +154,24 @@ export class DevelopmentSessionRecoveryReconciler {
     } catch (error) {
       // Indisponibilidade transitória do Console não invalida o checkpoint.
       if (!/\b404\b|not found|não encontrad/i.test(this.errorMessage(error))) throw error
-      await this.requeue(row, taskId, 'development_session_missing')
+      if (row.subtask_status === 'running') await this.requeue(row, taskId, 'development_session_missing')
+      else await this.close(row, 'failed', 'legacy_development_session_missing')
       return
     }
     if (status.isFailed) {
-      await this.requeue(row, taskId, `development_session_failed:${status.error ?? 'unknown'}`)
+      if (row.subtask_status === 'running') await this.requeue(row, taskId, `development_session_failed:${status.error ?? 'unknown'}`)
+      else await this.close(row, 'failed', 'legacy_development_session_failed')
+      return
+    }
+    if (row.subtask_status === 'failed') {
+      const reopened = await this.repository.reopenTimedOutExecutionForRecovery(taskId, Number(row.subtarefa_id))
+      if (!reopened) return
+      await this.record(taskId, 'development_legacy_timeout_reopened', {
+        sessionId: row.session_id, subtaskId: row.subtarefa_id, executionId: row.execution_id,
+      })
+    }
+    if (!status.isComplete && (status.activity?.repeatedToolCalls ?? 0) >= this.loopRepeatThreshold) {
+      await this.handleLoop(row, taskId, session, status.activity?.fingerprint, status.activity?.repeatedToolCalls ?? 0)
       return
     }
     if (!status.isComplete || !status.lastResponse) {
@@ -181,6 +199,30 @@ export class DevelopmentSessionRecoveryReconciler {
       ...(row.baseline_run_id ? { baselineRunId: Number(row.baseline_run_id) } : {}),
     })
     await this.close(row, 'completed', 'development_recovered')
+  }
+
+  private async handleLoop(row: RecoveryRow, taskId: string, session: AnalystSession, fingerprint: string | undefined, repetitions: number): Promise<void> {
+    if (!this.consoleApi.abortSession) {
+      await this.record(taskId, 'development_session_loop_suspected', {
+        sessionId: row.session_id, subtaskId: row.subtarefa_id, fingerprint, repetitions, action: 'attention_only',
+      })
+      await this.touch(row.session_id)
+      return
+    }
+    const aborted = await this.consoleApi.abortSession(session)
+    if (!aborted.aborted) {
+      await this.record(taskId, 'development_session_loop_suspected', {
+        sessionId: row.session_id, subtaskId: row.subtarefa_id, fingerprint, repetitions,
+        action: 'abort_failed', error: aborted.error,
+      })
+      await this.touch(row.session_id)
+      return
+    }
+    const reason = `development_session_loop_detected:${fingerprint ?? 'unknown'}:repetitions=${repetitions}`.slice(0, 100)
+    await this.requeue(row, taskId, reason)
+    await this.record(taskId, 'development_session_loop_requeued', {
+      sessionId: row.session_id, subtaskId: row.subtarefa_id, fingerprint, repetitions,
+    })
   }
 
   private async requeue(row: RecoveryRow, taskId: string, reason: string): Promise<void> {

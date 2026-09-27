@@ -58,5 +58,29 @@ describe('ConsoleHttpApi', () => {
     await expect(api.getSessionStatus({ sessionId: 's4', sessionKey: 'agent:a:k4', agentId: 'a' }))
       .resolves.toEqual({ isComplete: false })
   })
+
+  it('expõe repetição consecutiva de ferramenta enquanto a sessão está ativa', async () => {
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ status: 'running', hasActiveRun: true }))
+      .mockResolvedValueOnce(jsonResponse({
+        messages: Array.from({ length: 5 }, (_, index) => [
+          { role: 'assistant', stopReason: 'toolUse', content: 'npm test -- --runInBand' },
+          { role: 'tool', content: `saída variável ${index}` },
+        ]).flat(),
+      })))
+    const api = new ConsoleHttpApi('http://console.local', 'token-de-teste')
+
+    await expect(api.getSessionStatus({ sessionId: 's5', sessionKey: 'agent:a:k5', agentId: 'a' }))
+      .resolves.toEqual({ isComplete: false, activity: { fingerprint: expect.stringMatching(/^[a-f0-9]{24}$/), repeatedToolCalls: 5 } })
+  })
+
+  it('interrompe o run ativo pelo endpoint de abort do Console', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ ok: true, aborted: true }))
+    vi.stubGlobal('fetch', fetchMock)
+    const api = new ConsoleHttpApi('http://console.local', 'token-de-teste')
+
+    await expect(api.abortSession({ sessionId: 's6', sessionKey: 'agent:a:k6', agentId: 'a' }))
+      .resolves.toEqual({ aborted: true })
+  })
 })
 // @vitest-environment node
