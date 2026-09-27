@@ -60,6 +60,32 @@ describe("projetoMotorConfig — schema Drizzle", () => {
     expect(metadados.notNull).toBe(true)
   })
 
+  it("possui a coluna deploy_script (varchar(500), nullable)", () => {
+    const config = getTableConfig(projetoMotorConfig)
+    const col = config.columns.find((c) => c.name === "deploy_script")
+
+    expect(col).toBeDefined()
+    expect(col!.dataType).toBe("string")
+    const metadados = col as unknown as { length: number; notNull: boolean }
+    expect(metadados.length).toBe(500)
+    // deploy_script é NULLABLE (opcional)
+    expect(metadados.notNull).toBe(false)
+    expect(projetoMotorConfig.deployScript).toBeDefined()
+  })
+
+  it("possui a coluna deploy_host_root (varchar(500), nullable)", () => {
+    const config = getTableConfig(projetoMotorConfig)
+    const col = config.columns.find((c) => c.name === "deploy_host_root")
+
+    expect(col).toBeDefined()
+    expect(col!.dataType).toBe("string")
+    const metadados = col as unknown as { length: number; notNull: boolean }
+    expect(metadados.length).toBe(500)
+    // deploy_host_root é NULLABLE (opcional)
+    expect(metadados.notNull).toBe(false)
+    expect(projetoMotorConfig.deployHostRoot).toBeDefined()
+  })
+
   it("expõe branchTrabalho na tabela Drizzle (prop TS)", () => {
     expect((projetoMotorConfig as any).branchTrabalho).toBeDefined()
   })
@@ -86,5 +112,15 @@ describe("annotations — projeto_motor_config", () => {
   it("inclui unit_test_command nas anotações", () => {
     const ann = annotations.projeto_motor_config
     expect(ann.unit_test_command).toMatchObject({ label: "Comando de testes", maxLength: 500 })
+  })
+
+  it("inclui deploy_script nas anotações", () => {
+    const ann = annotations.projeto_motor_config
+    expect(ann.deploy_script).toMatchObject({ label: "Script de deploy", fullWidth: true, maxLength: 500 })
+  })
+
+  it("inclui deploy_host_root nas anotações", () => {
+    const ann = annotations.projeto_motor_config
+    expect(ann.deploy_host_root).toMatchObject({ label: "Raiz do host de deploy", fullWidth: true, maxLength: 500 })
   })
 })
