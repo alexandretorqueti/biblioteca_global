@@ -447,6 +447,14 @@ export class DeployRepository {
     } catch (error) { await connection.rollback(); throw error } finally { connection.release() }
   }
 
+  /** Repo associado ao último pedido de deploy da tarefa (necessário para limpar worktrees pós-deploy). */
+  async repoPathForTask(taskId: string): Promise<string | null> {
+    const [rows] = await this.pool.query<Array<RowDataPacket & { repo_path: string | null }>>(
+      `SELECT dr.repo_path FROM deploy_requests dr INNER JOIN tarefas t ON t.id=dr.tarefa_id
+        WHERE t.external_id=? OR CAST(t.id AS CHAR)=? ORDER BY dr.id DESC LIMIT 1`, [taskId, taskId])
+    return rows[0]?.repo_path ? String(rows[0].repo_path) : null
+  }
+
   async completeBatch(batchId: string, success: boolean, reason: string | null, source: QueueMessage): Promise<string[]> {
     const connection = await this.pool.getConnection()
     try {

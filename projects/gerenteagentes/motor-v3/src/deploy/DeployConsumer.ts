@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { promisify } from 'node:util'
 import { CommandPolicyResolver, type CommandPolicyRepository, type OperationLogger, type OperationOutcome, type OperationPhase } from '../commands/index.js'
-import { mapHostRepoPathToContainer } from '../execution/GitWorktreePreparer.js'
+import { GitWorktreePreparer, mapHostRepoPathToContainer } from '../execution/GitWorktreePreparer.js'
 import type { QueueMessage } from '../queue/index.js'
 import { TestGateOrchestrator } from '../testing/index.js'
 import { DeployRepository, type DeployTaskContext } from './DeployRepository.js'
@@ -21,6 +21,7 @@ export class DeployConsumer {
     private readonly hostRepoRoot = process.env.DEPLOY_REPO_HOST,
     private readonly script = process.env.MOTOR_DEPLOY_SCRIPT || 'projects/gerenteagentes/motor-v2/scripts/deploy-blue-green.sh',
     private readonly timeoutMs = Number(process.env.MOTOR_DEPLOY_TIMEOUT_MS || 1_800_000),
+    private readonly worktrees: GitWorktreePreparer = new GitWorktreePreparer(process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/agentes/gerenteagentes/worktrees'),
   ) {}
 
   async handle(message: QueueMessage): Promise<void> {
@@ -111,6 +112,23 @@ export class DeployConsumer {
     const taskIds = await this.repository.completeBatch(batchId, success, success ? null : 'script blue-green informou falha', message)
     const operationId = randomUUID()
     await this.log(operationId, 1, success ? 'completed' : 'failed', success ? 'succeeded' : 'failed', message, { actionCode: 'A33_RECEIVE_DEPLOY_RESULT', primitiveCode: success ? 'complete_deploy_batch_atomic' : 'fail_deploy_batch_atomic', result: { batchId, taskIds } })
+    // Deploy bem-sucedido: os worktrees/branches da tarefa já não servem para debug e
+    // acumulam no disco. Em falha, preservamos tudo para investigação (decisão do Alexandre).
+    // Falha de limpeza é apenas warning: o deploy já está concluído e não pode ser alterado.
+    if (success) await this.cleanupWorktrees(taskIds)
+  }
+
+  /** Remove worktrees/branches das tarefas deployadas; nunca propaga erro ao fluxo do deploy. */
+  private async cleanupWorktrees(taskIds: string[]): Promise<void> {
+    for (const taskId of taskIds) {
+      try {
+        const repoPath = await this.repository.repoPathForTask(taskId)
+        if (!repoPath) throw new Error(`repo_path indisponível para a tarefa ${taskId}`)
+        await this.worktrees.cleanup(taskId, repoPath)
+      } catch (error) {
+        console.error(`[Motor v3] Falha na limpeza de worktrees da tarefa ${taskId}:`, error instanceof Error ? error.message : String(error))
+      }
+    }
   }
 
   private async afterGate(message: QueueMessage): Promise<void> {
