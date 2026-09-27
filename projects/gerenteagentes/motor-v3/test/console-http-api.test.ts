@@ -47,15 +47,25 @@ describe('ConsoleHttpApi', () => {
       .resolves.toEqual({ isComplete: false, isFailed: true, error: 'Sessão do Console terminou com status timeout' })
   })
 
-  it('não considera resposta intermediária de ferramenta como conclusão', async () => {
+  it('expõe sessão done sem resposta final para o protocolo de continuação', async () => {
     vi.stubGlobal('fetch', vi.fn()
-      .mockResolvedValueOnce(jsonResponse({ status: 'idle', hasActiveRun: false }))
+      .mockResolvedValueOnce(jsonResponse({ status: 'done', hasActiveRun: false }))
       .mockResolvedValueOnce(jsonResponse({
         messages: [{ id: 'm1', role: 'assistant', stopReason: 'toolUse', content: 'vou consultar arquivos' }],
       })))
     const api = new ConsoleHttpApi('http://console.local', 'token-de-teste')
 
     await expect(api.getSessionStatus({ sessionId: 's4', sessionKey: 'agent:a:k4', agentId: 'a' }))
+      .resolves.toEqual({ isComplete: true })
+  })
+
+  it('mantém idle sem resposta final como estado não concluído', async () => {
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ status: 'idle', hasActiveRun: false }))
+      .mockResolvedValueOnce(jsonResponse({ messages: [{ id: 'm1', role: 'assistant', stopReason: 'toolUse', content: 'vou consultar arquivos' }] })))
+    const api = new ConsoleHttpApi('http://console.local', 'token-de-teste')
+
+    await expect(api.getSessionStatus({ sessionId: 's4b', sessionKey: 'agent:a:k4b', agentId: 'a' }))
       .resolves.toEqual({ isComplete: false })
   })
 

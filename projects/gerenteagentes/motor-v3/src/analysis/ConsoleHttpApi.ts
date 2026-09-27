@@ -67,9 +67,14 @@ export class ConsoleHttpApi implements AnalystConsole {
       this.pendingResponses.delete(this.sessionKey(session))
       return { isComplete: false, isFailed: true, error: error.slice(0, 800) }
     }
-    // Estado ocioso sem uma mensagem nova ainda não é conclusão: o Console
-    // pode estar entre o envio e a criação/registro da resposta.
-    if (!assistant) return { isComplete: false }
+    // Em idle o Console pode estar entre o envio e a criação da resposta. Já
+    // um estado terminal (`done`/`endedAt`) sem assistente final significa que
+    // o agente parou após ferramenta: o reconciliador precisa vê-lo como
+    // concluído para solicitar ::DONE:: na mesma sessão.
+    if (!assistant) {
+      const terminalCompleted = status.status === 'done' || status.state === 'done' || status.endedAt !== undefined
+      return terminalCompleted ? { isComplete: true } : { isComplete: false }
+    }
     this.pendingResponses.delete(this.sessionKey(session))
     return { isComplete: true, lastResponse: String(assistant.content) }
   }
