@@ -512,6 +512,13 @@
       "when": 1790553600000,
       "tag": "0073_deploy_config_por_projeto",
       "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "5",
+      "when": 1790553600001,
+      "tag": "0074_motor_development_completion_protocol",
+      "breakpoints": true
     }
   ]
 }
