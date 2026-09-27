@@ -505,6 +505,13 @@
       "when": 1790467200001,
       "tag": "0072_motor_active",
       "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "5",
+      "when": 1790553600000,
+      "tag": "0073_deploy_config_por_projeto",
+      "breakpoints": true
     }
   ]
 }
