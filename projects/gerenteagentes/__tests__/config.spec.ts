@@ -193,4 +193,36 @@ describe("config do projeto gerenteagentes", () => {
     expect(campo!.type).toBe("text")
     expect(campo!.maxLength).toBe(255)
   })
+
+  it("exponha deployScript na childRoute config-motor com helperText para deploy padrão", () => {
+    const grupo = config.groups.find((g) => g.id === "projetos")!
+    const tela = grupo.items.find((i) => i.id === "projetos-list")!.screen as CadastroScreenConfig
+
+    const rotaConfigMotor = (tela.childRoutes ?? []).find((r) => r.id === "config-motor")
+    expect(rotaConfigMotor).toBeDefined()
+
+    const campo = (rotaConfigMotor as ChildRoute).fields!.find((f) => f.name === "deployScript")
+    expect(campo).toBeDefined()
+    expect(campo!.label).toBe("Script de deploy")
+    expect(campo!.type).toBe("text")
+    expect(campo!.maxLength).toBe(500)
+    expect(campo!.fullWidth).toBe(true)
+    expect(campo!.helperText).toContain("deixe vazio para usar o deploy padrão do Motor")
+  })
+
+  it("exponha deployHostRoot na childRoute config-motor com helperText para DEPLOY_REPO_HOST", () => {
+    const grupo = config.groups.find((g) => g.id === "projetos")!
+    const tela = grupo.items.find((i) => i.id === "projetos-list")!.screen as CadastroScreenConfig
+
+    const rotaConfigMotor = (tela.childRoutes ?? []).find((r) => r.id === "config-motor")
+    expect(rotaConfigMotor).toBeDefined()
+
+    const campo = (rotaConfigMotor as ChildRoute).fields!.find((f) => f.name === "deployHostRoot")
+    expect(campo).toBeDefined()
+    expect(campo!.label).toBe("Raiz do host de deploy")
+    expect(campo!.type).toBe("text")
+    expect(campo!.maxLength).toBe(500)
+    expect(campo!.fullWidth).toBe(true)
+    expect(campo!.helperText).toContain("deixe vazio para usar DEPLOY_REPO_HOST")
+  })
 })
