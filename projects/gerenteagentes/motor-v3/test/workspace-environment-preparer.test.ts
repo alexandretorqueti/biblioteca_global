@@ -11,7 +11,7 @@ describe('WorkspaceEnvironmentPreparer', () => {
     await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })))
   })
 
-  it('instala pacotes com lock isolado e ignora a raiz e checkouts wt-*', async () => {
+  it('instala a raiz e pacotes com lock isolado, ignorando checkouts wt-*', async () => {
     const root = await mkdtemp(resolve(tmpdir(), 'motor-v3-env-'))
     roots.push(root)
     await writePackage(root, 'root')
@@ -24,10 +24,11 @@ describe('WorkspaceEnvironmentPreparer', () => {
     const prepared = await preparer.prepare(root)
 
     expect(prepared).toEqual([
+      '.',
       'projects/gerenteagentes/motor-v2',
       'projects/gerenteagentes/motor-v3',
     ])
-    expect(install).toHaveBeenCalledTimes(2)
+    expect(install).toHaveBeenCalledTimes(3)
   })
 })
 
