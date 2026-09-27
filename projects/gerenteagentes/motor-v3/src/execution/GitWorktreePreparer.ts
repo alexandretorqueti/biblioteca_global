@@ -73,6 +73,47 @@ export class GitWorktreePreparer {
     return stdout.trim()
   }
 
+  /**
+   * Limpeza idempotente pós-deploy: remove APENAS os worktrees registrados cujo
+   * caminho está sob `{root}/{safeTaskId}/`, as branches motor-v3-work da tarefa e,
+   * por fim, o diretório da tarefa (mesmo com conteúdo não registrado pelo Git).
+   * Idempotente: worktrees/branches já removidos e diretório inexistente não lançam erro.
+   */
+  async cleanup(taskId: string, repoPath: string): Promise<{ removed: number; branches: number }> {
+    await this.assertGitAvailable()
+    const repo = await this.resolveRepoPath(repoPath)
+    const safeTaskId = taskId.replace(/[^a-zA-Z0-9._-]/g, '-')
+    const taskRoot = resolve(this.root, safeTaskId)
+    const { stdout } = await execFileAsync('git', ['worktree', 'list', '--porcelain'], { cwd: repo })
+    const underTask = stdout.split('\n')
+      .filter(line => line.startsWith('worktree '))
+      .map(line => resolve(line.slice('worktree '.length).trim()))
+      .filter(path => path === taskRoot || path.startsWith(`${taskRoot}/`))
+    let removed = 0
+    for (const path of underTask) {
+      await execFileAsync('git', ['worktree', 'remove', '--force', path], { cwd: repo })
+      removed++
+    }
+    // Git não permite refs filhas de uma branch existente; o namespace real é motor-v3-work.
+    let branches = await this.deleteBranch(repo, `motor-v3-work/integration-${safeTaskId}`)
+    const { stdout: subtaskBranches } = await execFileAsync('git', ['branch', '--list', '--format=%(refname:short)', `motor-v3-work/subtask-${safeTaskId}-*`], { cwd: repo })
+    for (const name of subtaskBranches.split('\n').map(line => line.trim()).filter(Boolean)) {
+      branches += await this.deleteBranch(repo, name)
+    }
+    await rm(taskRoot, { recursive: true, force: true })
+    console.log(`[Motor v3] Worktree cleanup taskId=${taskId} removed=${removed} branches=${branches}`)
+    return { removed, branches }
+  }
+
+  /** Remove a branch se existir; retorna 1 quando removeu, 0 quando já não existia. */
+  private async deleteBranch(repoPath: string, branch: string): Promise<number> {
+    const exists = await execFileAsync('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], { cwd: repoPath })
+      .then(() => true, () => false)
+    if (!exists) return 0
+    await execFileAsync('git', ['branch', '-D', branch], { cwd: repoPath })
+    return 1
+  }
+
   private async exists(path: string): Promise<boolean> {
     try { await stat(path); return true } catch { return false }
   }

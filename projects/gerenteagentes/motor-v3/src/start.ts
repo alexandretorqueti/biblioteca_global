@@ -290,6 +290,7 @@ async function start() {
     await outboxPublisher.start()
     const operationLogger = new MySqlOperationLogger(pool)
     const taskEvents = new MySqlTaskEventRecorder(pool)
+    const worktreePreparer = new GitWorktreePreparer(process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/agentes/gerenteagentes/worktrees')
     const deployRepository = new DeployRepository(pool, process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/agentes/gerenteagentes/worktrees')
     const coordinator = new TaskCoordinator(repository, analyst, bus, {
       commandPolicies: new MySqlCommandPolicyRepository(pool),
@@ -340,6 +341,10 @@ async function start() {
       new RemoteBlueGreenDeployer(),
       operationLogger,
       new MySqlCommandPolicyRepository(pool),
+      undefined, // hostRepoRoot: default do construtor (DEPLOY_REPO_HOST)
+      undefined, // script: default do construtor (MOTOR_DEPLOY_SCRIPT)
+      undefined, // timeoutMs: default do construtor (MOTOR_DEPLOY_TIMEOUT_MS)
+      worktreePreparer,
     )
     const gateTransport = new RabbitMqTransport({
       url: rabbitUrl, exchange: process.env.MOTOR_RABBITMQ_EXCHANGE || 'motor', prefetch: 1,
@@ -371,7 +376,6 @@ async function start() {
       operationLogger,
       deployRepository,
     )
-    const worktreePreparer = new GitWorktreePreparer(process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/agentes/gerenteagentes/worktrees')
     const environmentPreparer = new WorkspaceEnvironmentPreparer()
     const developmentConsole = new WorkerConsoleAdapter(consoleApi, {
       onSessionCreated: async (session, input) => {
