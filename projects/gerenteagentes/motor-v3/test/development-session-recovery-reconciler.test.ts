@@ -13,6 +13,8 @@ const row = {
   execution_id: 'exec-905',
   baseline_run_id: 88,
   subtask_status: 'running',
+  completion_nudge_count: 0,
+  completion_nudged_at: null,
 }
 
 function setup(status: Record<string, unknown>, recoveryRow = row) {
@@ -20,10 +22,11 @@ function setup(status: Record<string, unknown>, recoveryRow = row) {
   const repository = {
     requeueInterruptedExecution: vi.fn().mockResolvedValue({ messageId: 'retry-1' }),
     reopenTimedOutExecutionForRecovery: vi.fn().mockResolvedValue(true),
+    blockIncompleteDevelopmentSession: vi.fn().mockResolvedValue(undefined),
   }
   const consumer = { recoverCompletedSession: vi.fn().mockResolvedValue(undefined) }
   const consoleApi = { getSessionStatus: vi.fn().mockResolvedValue(status) }
-  const adapter = { attachSession: vi.fn(), isLocallyOwned: vi.fn().mockReturnValue(false) }
+  const adapter = { attachSession: vi.fn(), isLocallyOwned: vi.fn().mockReturnValue(false), sendMessage: vi.fn().mockResolvedValue(undefined) }
   const events = { record: vi.fn().mockResolvedValue(undefined) }
   const reconciler = new DevelopmentSessionRecoveryReconciler(
     pool as never, repository as never, consumer as never, consoleApi as never, adapter as never, { taskEvents: events as never },
@@ -53,6 +56,39 @@ describe('DevelopmentSessionRecoveryReconciler', () => {
       response: 'Concluído ::DONE::',
     }))
     expect(repository.requeueInterruptedExecution).not.toHaveBeenCalled()
+  })
+
+  it('pede ::DONE:: na mesma sessão quando ela encerra sem resposta final', async () => {
+    const { reconciler, adapter, consumer, pool, events } = setup({ isComplete: true })
+    pool.query.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM motor_agent_sessions mas')) return [[row]]
+      if (sql.includes('completion_nudge_count=completion_nudge_count+1')) return [{ affectedRows: 1 }]
+      return [[]]
+    })
+
+    await reconciler.reconcile()
+
+    expect(adapter.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'runtime-7', message: expect.stringContaining('::DONE::'),
+    }))
+    expect(consumer.recoverCompletedSession).not.toHaveBeenCalled()
+    expect(events.record).toHaveBeenCalledWith('task-p2-905', 'development_completion_protocol_requested', 'motor', expect.objectContaining({
+      reason: 'missing_final_response', attempt: 1,
+    }))
+  })
+
+  it('bloqueia sem criar outro DEV ao esgotar continuações sem ::DONE::', async () => {
+    const exhausted = { ...row, completion_nudge_count: 2 }
+    const { reconciler, repository, adapter, consumer, events } = setup({ isComplete: true, lastResponse: 'sem conclusão' }, exhausted)
+
+    await reconciler.reconcile()
+
+    expect(repository.blockIncompleteDevelopmentSession).toHaveBeenCalledWith(
+      'task-p2-905', 1219, 'exec-905', expect.stringContaining('intervenção humana'),
+    )
+    expect(adapter.sendMessage).not.toHaveBeenCalled()
+    expect(consumer.recoverCompletedSession).not.toHaveBeenCalled()
+    expect(events.record).toHaveBeenCalledWith('task-p2-905', 'development_completion_protocol_exhausted', 'motor', expect.any(Object))
   })
 
   it('encerra o checkpoint e reenfileira quando a sessão falhou', async () => {

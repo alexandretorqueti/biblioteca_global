@@ -1,4 +1,4 @@
-import type { Pool, RowDataPacket } from 'mysql2/promise'
+import type { Pool, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
 import type { AnalystConsole, AnalystSession } from '../analysis/ConsoleAnalystRunner.js'
 import { createQueueMessage, type QueueMessage } from '../queue/QueueMessage.js'
 import type { TaskEventSink } from '../coordinator/TaskEventRecorder.js'
@@ -18,12 +18,16 @@ interface RecoveryRow extends RowDataPacket {
   execution_id: string | null
   baseline_run_id: number | null
   subtask_status: string
+  completion_nudge_count: number | string
+  completion_nudged_at: Date | string | null
 }
 
 export interface DevelopmentSessionRecoveryConfig {
   intervalMs?: number
   staleMinutes?: number
   loopRepeatThreshold?: number
+  maxCompletionNudges?: number
+  completionNudgeCooldownMs?: number
   taskEvents?: TaskEventSink
 }
 
@@ -33,6 +37,8 @@ export class DevelopmentSessionRecoveryReconciler {
   private readonly intervalMs: number
   private readonly staleMinutes: number
   private readonly loopRepeatThreshold: number
+  private readonly maxCompletionNudges: number
+  private readonly completionNudgeCooldownSeconds: number
   private timer: NodeJS.Timeout | null = null
 
   constructor(
@@ -46,6 +52,8 @@ export class DevelopmentSessionRecoveryReconciler {
     this.intervalMs = config.intervalMs ?? 30_000
     this.staleMinutes = config.staleMinutes ?? 35
     this.loopRepeatThreshold = config.loopRepeatThreshold ?? 5
+    this.maxCompletionNudges = config.maxCompletionNudges ?? 2
+    this.completionNudgeCooldownSeconds = Math.max(1, Math.round((config.completionNudgeCooldownMs ?? 300_000) / 1000))
   }
 
   start(): void {
@@ -63,6 +71,7 @@ export class DevelopmentSessionRecoveryReconciler {
         SELECT mas.id AS session_id, s.tarefa_id, t.external_id AS task_external_id,
                mas.subtarefa_id, mas.session_key, mas.runtime_session_id,
                mas.agent_id, mas.model, ctx.last_run_id AS execution_id, s.status AS subtask_status,
+               mas.completion_nudge_count, mas.completion_nudged_at,
                (SELECT tr.id FROM test_runs tr
                  WHERE tr.tarefa_id = s.tarefa_id AND tr.subtarefa_id = s.id AND tr.phase = 'baseline'
                  ORDER BY tr.finished_at DESC, tr.id DESC LIMIT 1) AS baseline_run_id
@@ -174,8 +183,13 @@ export class DevelopmentSessionRecoveryReconciler {
       await this.handleLoop(row, taskId, session, status.activity?.fingerprint, status.activity?.repeatedToolCalls ?? 0)
       return
     }
-    if (!status.isComplete || !status.lastResponse) {
+    if (!status.isComplete) {
       await this.touch(row.session_id)
+      return
+    }
+
+    if (!status.lastResponse || !/::DONE::/i.test(status.lastResponse)) {
+      await this.requestCompletionProtocol(row, taskId, session, status.lastResponse ? 'missing_done_marker' : 'missing_final_response')
       return
     }
 
@@ -199,6 +213,65 @@ export class DevelopmentSessionRecoveryReconciler {
       ...(row.baseline_run_id ? { baselineRunId: Number(row.baseline_run_id) } : {}),
     })
     await this.close(row, 'completed', 'development_recovered')
+  }
+
+  /**
+   * Uma sessão que parou sem resposta final não perdeu seu contexto nem seu
+   * worktree. Reativa exatamente a mesma conversa e limita os lembretes
+   * persistidos para que reinícios concorrentes não criem um loop infinito.
+   */
+  private async requestCompletionProtocol(
+    row: RecoveryRow,
+    taskId: string,
+    session: AnalystSession,
+    reason: 'missing_done_marker' | 'missing_final_response',
+  ): Promise<void> {
+    if (Number(row.completion_nudge_count ?? 0) >= this.maxCompletionNudges) {
+      const message = `Sessão DEV encerrada ${this.maxCompletionNudges} vez(es) sem ::DONE:: (${reason}); intervenção humana necessária.`
+      await this.repository.blockIncompleteDevelopmentSession(taskId, Number(row.subtarefa_id), String(row.execution_id), message)
+      await this.close(row, 'failed', 'development_completion_protocol_exhausted')
+      await this.record(taskId, 'development_completion_protocol_exhausted', {
+        sessionId: row.session_id, subtaskId: row.subtarefa_id, reason, attempts: Number(row.completion_nudge_count),
+      })
+      return
+    }
+    const [claim] = await this.pool.query<ResultSetHeader>(
+      `UPDATE motor_agent_sessions
+          SET completion_nudge_count=completion_nudge_count+1,
+              completion_nudged_at=NOW(), last_activity_at=NOW()
+        WHERE id=? AND status='active'
+          AND completion_nudge_count < ?
+          AND (completion_nudged_at IS NULL OR completion_nudged_at <= DATE_SUB(NOW(), INTERVAL ? SECOND))`,
+      [row.session_id, this.maxCompletionNudges, this.completionNudgeCooldownSeconds],
+    )
+    if (claim.affectedRows !== 1) {
+      await this.touch(row.session_id)
+      return
+    }
+    try {
+      await this.consoleAdapter.sendMessage({
+        sessionId: session.sessionId,
+        message: [
+          'A execução anterior foi encerrada sem o protocolo de conclusão.',
+          'Revise o trabalho já realizado neste mesmo worktree, conclua as validações necessárias e responda com um resumo final.',
+          'Inclua obrigatoriamente o marcador ::DONE:: na resposta final.',
+        ].join('\n'),
+      })
+      await this.record(taskId, 'development_completion_protocol_requested', {
+        sessionId: row.session_id, subtaskId: row.subtarefa_id, reason,
+        attempt: Number(row.completion_nudge_count) + 1,
+      })
+    } catch (error) {
+      // A reserva evita duplicidade; em falha de transporte devolvemos a
+      // tentativa para que o próximo ciclo possa tentar a mesma sessão.
+      await this.pool.query(
+        `UPDATE motor_agent_sessions
+            SET completion_nudge_count=GREATEST(completion_nudge_count-1, 0), completion_nudged_at=NULL
+          WHERE id=? AND status='active'`,
+        [row.session_id],
+      )
+      throw error
+    }
   }
 
   private async handleLoop(row: RecoveryRow, taskId: string, session: AnalystSession, fingerprint: string | undefined, repetitions: number): Promise<void> {

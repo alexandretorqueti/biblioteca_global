@@ -529,6 +529,33 @@ export class MySqlDevelopmentExecutionRepository {
     }
   }
 
+  /** Bloqueia uma sessão que repetidamente ignora o protocolo ::DONE::. */
+  async blockIncompleteDevelopmentSession(taskId: string, subtaskId: number, executionId: string, reason: string): Promise<void> {
+    const connection = await this.pool.getConnection()
+    try {
+      await connection.beginTransaction()
+      const [rows] = await connection.query<Array<RowDataPacket & { seq: number }>>(
+        `SELECT seq FROM subtarefas WHERE id=? AND status='running' LIMIT 1 FOR UPDATE`, [subtaskId],
+      )
+      if (!rows[0]) { await connection.rollback(); return }
+      const message = createQueueMessage({
+        type: 'SUBTASK_EXECUTION_BLOCKED', taskId, executionId,
+        payload: { subtaskId, seq: Number(rows[0].seq), reason, phase: 'development_completion_protocol' },
+      })
+      const [updated] = await connection.query<ResultSetHeader>(
+        `UPDATE subtarefas SET status='blocked', resultado=?, updated_at=NOW() WHERE id=? AND status='running'`,
+        [reason.slice(0, 60_000), subtaskId],
+      )
+      if (updated.affectedRows === 1) await this.insertOutbox(connection, message)
+      await connection.commit()
+    } catch (error) {
+      await connection.rollback()
+      throw error
+    } finally {
+      connection.release()
+    }
+  }
+
   /**
    * Reabre somente falhas legadas causadas pelo timeout local enquanto a sessão
    * remota sobreviveu. A mensagem de falha pendente é preservada como registro,

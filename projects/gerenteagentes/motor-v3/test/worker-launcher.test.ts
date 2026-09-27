@@ -118,9 +118,12 @@ describe('WorkerLauncher', () => {
     expect(mocks.waitForCompletion.handler).toHaveBeenCalledTimes(1)
   })
 
-  it('should retry when no ::DONE:: marker found', async () => {
+  it('pede conclusão na mesma sessão quando não recebe ::DONE::', async () => {
     // Primeira tentativa: sem marcador
-    mocks.createSession.handler.mockResolvedValue({ success: true })
+    mocks.createSession.handler.mockImplementation(async (context: PrimitiveContext) => {
+      context.sessionId = 'sessao-original'
+      return { success: true }
+    })
     mocks.sendMessage.handler.mockResolvedValue({ success: true })
     mocks.waitForCompletion.handler.mockResolvedValue({
       success: true,
@@ -146,6 +149,8 @@ describe('WorkerLauncher', () => {
 
     expect(result.success).toBe(true)
     expect(result.attempts).toBe(2)
+    expect(mocks.createSession.handler).toHaveBeenCalledTimes(1)
+    expect(mocks.sendMessage.handler.mock.calls[1][1].message).toContain('::DONE::')
   })
 
   it('should retry when build fails', async () => {

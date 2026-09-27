@@ -90,6 +90,7 @@ export class WorkerLauncher {
     let lastModel: string | undefined
     const failures: Array<{ attempt: number; model?: string; error: string }> = []
     let correctiveContext = ''
+    let continuationPrompt: string | null = null
     let reusableSessionModel: string | undefined
     // Sem configuração explícita, preserva o comportamento do Console. Com
     // cadeia configurada, cada tentativa recebe seu modelo e sua sessão própria.
@@ -113,7 +114,7 @@ export class WorkerLauncher {
       attempts++
       lastModel = model
       context.model = model
-      const reuseSession = Boolean(correctiveContext && context.sessionId && reusableSessionModel === model)
+      const reuseSession = Boolean((correctiveContext || continuationPrompt) && context.sessionId && reusableSessionModel === model)
       if (!reuseSession) context.sessionId = undefined
 
       try {
@@ -134,7 +135,7 @@ export class WorkerLauncher {
         // 2. Contextos longos são enviados antes do comando principal, como no
         // v2. O header é a mensagem que dispara a execução do programador.
         const prompt = normalizePrompt(taskDescription)
-        if (prompt.context) {
+        if (prompt.context && !reuseSession) {
           const contextResult = await sendMessage.handler(context, { message: prompt.context })
           if (!contextResult.success) {
             context.logger?.error('Falha ao enviar contexto da tarefa', { error: contextResult.error })
@@ -147,9 +148,12 @@ export class WorkerLauncher {
         }
 
         // 3. Enviar o comando principal da tarefa
-        const sendResult = await sendMessage.handler(context, {
-          message: correctiveContext ? `${prompt.header}\n\nCORREÇÃO OBRIGATÓRIA DA TENTATIVA ANTERIOR:\n${correctiveContext}` : prompt.header,
-        })
+        const message = continuationPrompt
+          ?? (correctiveContext
+            ? `${prompt.header}\n\nCORREÇÃO OBRIGATÓRIA DA TENTATIVA ANTERIOR:\n${correctiveContext}`
+            : prompt.header)
+        const sendResult = await sendMessage.handler(context, { message })
+        continuationPrompt = null
 
         if (!sendResult.success) {
           context.logger?.error('Falha ao enviar mensagem', { error: sendResult.error })
@@ -275,10 +279,18 @@ export class WorkerLauncher {
             ...('resolvedFailureCount' in buildResult && buildResult.resolvedFailureCount ? { resolvedFailureCount: buildResult.resolvedFailureCount } : {}),
           }
         } else {
-          // Sem ::DONE::, agente ainda não terminou
-          context.logger?.info('Agente não indicou conclusão, tentando novamente', { attempts })
+          // A sessão já contém o trabalho e o contexto. Nunca abrir outro DEV
+          // apenas porque ele encerrou sem cumprir o protocolo de conclusão.
+          // A próxima tentativa envia um pedido explícito à mesma sessão.
+          context.logger?.info('Agente encerrou sem ::DONE::; solicitando conclusão na mesma sessão', { attempts })
           lastError = 'O programador encerrou sem o marcador ::DONE::'
           failures.push({ attempt: attempts, ...(model ? { model } : {}), error: lastError })
+          continuationPrompt = [
+            'A execução anterior foi encerrada sem o protocolo de conclusão.',
+            'Revise o trabalho já feito neste mesmo worktree, conclua as validações necessárias e responda com um resumo final.',
+            'Inclua obrigatoriamente o marcador ::DONE:: na resposta final.',
+          ].join('\n')
+          reusableSessionModel = model
           context.generation++
           continue
         }
