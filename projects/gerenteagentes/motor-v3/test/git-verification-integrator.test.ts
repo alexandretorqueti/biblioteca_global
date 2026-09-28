@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
@@ -22,6 +22,12 @@ describe('GitVerificationIntegrator', () => {
     await execFileAsync('git', ['commit', '-m', 'base'], { cwd: repo })
     const workspace = await preparer.prepare({ taskId: 'task-1', subtaskId: 10, repoPath: repo, baseBranch: 'base-desenvolvimento' })
     await writeFile(join(workspace.path, 'README.md'), 'alterado\n')
+    const hooksPath = join(workspace.path, '.githooks')
+    const preCommitHook = join(hooksPath, 'pre-commit')
+    await mkdir(hooksPath)
+    await writeFile(preCommitHook, '#!/bin/sh\nexit 1\n')
+    await chmod(preCommitHook, 0o755)
+    await execFileAsync('git', ['config', 'core.hooksPath', '.githooks'], { cwd: workspace.path })
 
     const context = {
       taskId: 'task-1', databaseTaskId: 1, subtaskId: 10, seq: 1,

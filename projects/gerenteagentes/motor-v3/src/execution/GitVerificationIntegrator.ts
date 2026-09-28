@@ -19,7 +19,13 @@ export class GitVerificationIntegrator {
     const { stdout: status } = await execFileAsync('git', ['status', '--porcelain'], { cwd: context.workspacePath })
     if (status.trim()) {
       await execFileAsync('git', ['add', '-A'], { cwd: context.workspacePath })
-      await execFileAsync('git', ['commit', '-m', `motor-v3: tarefa ${context.taskId}, subtarefa ${context.seq}`], { cwd: context.workspacePath })
+      // O commit técnico do Motor não pode executar hooks fornecidos pelo
+      // código ainda em avaliação. Hooks do projeto continuam ativos para
+      // commits normais e devem ser validados explicitamente pelos gates.
+      await execFileAsync('git', [
+        '-c', 'core.hooksPath=/dev/null',
+        'commit', '-m', `motor-v3: tarefa ${context.taskId}, subtarefa ${context.seq}`,
+      ], { cwd: context.workspacePath })
     }
     const { stdout: commit } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: context.workspacePath })
     if (commit.trim() === context.workspaceBaseCommit) throw new Error('Programador concluiu sem alterações no worktree')

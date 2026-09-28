@@ -244,6 +244,98 @@ describe('SubtaskExecutionConsumer', () => {
     expect(logger.append).toHaveBeenLastCalledWith(expect.objectContaining({ phase: 'completed' }))
   })
 
+  it('reinstala as dependências antes do gate pós-desenvolvimento', async () => {
+    const repository = {
+      getExecutionContext: vi.fn().mockResolvedValue(context),
+      getDevelopmentModelChain: vi.fn().mockResolvedValue(['modelo-a']),
+      recordModelFailure: vi.fn().mockResolvedValue(undefined),
+      recordWorkspace: vi.fn().mockResolvedValue(undefined),
+      finishExecution: vi.fn().mockResolvedValue({ ...message, messageId: 'completed-environment', type: 'SUBTASK_EXECUTION_COMPLETED' }),
+    }
+    const workspace = {
+      path: '/worktree', branch: 'motor-v3/task/901/a1', baseCommit: 'abc',
+      integrationPath: '/integration', integrationBranch: 'integration-task',
+    }
+    const worktrees = {
+      prepareIntegration: vi.fn().mockResolvedValue({ ...workspace, path: '/integration' }),
+      prepare: vi.fn().mockResolvedValue(workspace),
+    }
+    const environment = { prepare: vi.fn().mockResolvedValue(['.']) }
+    const testGate = {
+      request: vi.fn()
+        .mockResolvedValueOnce({ id: 80, phase: 'baseline', status: 'passed', failures: [] })
+        .mockResolvedValueOnce({
+          id: 81, phase: 'post_dev', status: 'passed', failures: [], comparisonStatus: 'no_regression',
+          newFailures: [], preExistingFailures: [], resolvedFailures: [],
+        }),
+    }
+    const worker = {
+      executeTask: vi.fn().mockImplementation(async (
+        primitiveContext: Record<string, unknown>,
+        _prompt: unknown,
+        _models: unknown,
+        _onFailure: unknown,
+        gate: ((gateContext: Record<string, unknown>, phase: 'post_dev') => Promise<unknown>) | undefined,
+      ) => {
+        await gate?.(primitiveContext, 'post_dev')
+        return { success: true, attempts: 1, postDevRunId: 81 }
+      }),
+    }
+    const consumer = new SubtaskExecutionConsumer(
+      repository as never, worktrees as never, worker as never, {}, {}, undefined,
+      testGate as never, environment as never,
+    )
+
+    await consumer.handle(message)
+
+    expect(environment.prepare).toHaveBeenCalledWith('/worktree')
+    expect(testGate.request).toHaveBeenCalledTimes(2)
+    expect(environment.prepare.mock.invocationCallOrder[1]).toBeLessThan(testGate.request.mock.invocationCallOrder[1])
+  })
+
+  it('reinstala as dependências antes do gate ao recuperar uma sessão concluída', async () => {
+    const recoveredContext = {
+      ...context,
+      workspacePath: '/worktree-recovered',
+      workspaceBranch: 'motor-v3/task/901/a1',
+      workspaceBaseCommit: 'abc',
+    }
+    const repository = {
+      getExecutionContext: vi.fn().mockResolvedValue(recoveredContext),
+      finishExecution: vi.fn().mockResolvedValue({ ...message, messageId: 'completed-recovered-session', type: 'SUBTASK_EXECUTION_COMPLETED' }),
+      closeDevelopmentSession: vi.fn().mockResolvedValue(undefined),
+    }
+    const environment = { prepare: vi.fn().mockResolvedValue(['.']) }
+    const testGate = {
+      request: vi.fn().mockResolvedValue({
+        id: 82, phase: 'post_dev', status: 'passed', failures: [], comparisonStatus: 'no_regression',
+        newFailures: [], preExistingFailures: [], resolvedFailures: [],
+      }),
+    }
+    const worker = {
+      recoverCompletedTask: vi.fn().mockImplementation(async (
+        primitiveContext: Record<string, unknown>,
+        _response: string,
+        gate: ((gateContext: Record<string, unknown>, phase: 'post_dev') => Promise<unknown>) | undefined,
+      ) => {
+        await gate?.(primitiveContext, 'post_dev')
+        return { success: true, attempts: 1, postDevRunId: 82 }
+      }),
+    }
+    const consumer = new SubtaskExecutionConsumer(
+      repository as never, {} as never, worker as never, {}, {}, undefined,
+      testGate as never, environment as never,
+    )
+
+    await consumer.recoverCompletedSession({
+      message, sessionId: 'session-recovered', sessionKey: 'dev-recovered', model: 'modelo-a',
+      response: 'Feito ::DONE::', baselineRunId: 80,
+    })
+
+    expect(environment.prepare).toHaveBeenCalledWith('/worktree-recovered')
+    expect(environment.prepare.mock.invocationCallOrder[0]).toBeLessThan(testGate.request.mock.invocationCallOrder[0])
+  })
+
   it('bloqueia antes do DEV quando o baseline ambiental permanece vermelho', async () => {
     const repository = {
       getExecutionContext: vi.fn().mockResolvedValue(context),

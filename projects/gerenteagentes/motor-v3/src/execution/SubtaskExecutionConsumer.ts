@@ -203,12 +203,19 @@ export class SubtaskExecutionConsumer {
       this.buildPrompt(execution, workspace.path),
       models,
       (model, error) => this.repository.recordModelFailure(model, error),
-      this.testGate && !noCode ? async (gateContext, phase) => this.runDifferentialGate(execution, gateContext, phase, message) : undefined,
+      this.testGate && !noCode
+        ? async (gateContext, phase) => {
+          if (this.environmentPreparer) {
+            await this.environmentPreparer.prepare(gateContext.worktreePath)
+          }
+          return this.runDifferentialGate(execution, gateContext, phase, message)
+        } : undefined,
       noCode,
       receivedAt
         + Number(process.env.MOTOR_RABBITMQ_CONSUMER_TIMEOUT_MS || 5_400_000)
         - Number(process.env.MOTOR_RABBITMQ_ACK_SAFETY_MS || 300_000),
     )
+
     const workerSequence = sequence
     await this.log(operationId, workerSequence, message, {
       phase: 'primitive', outcome: result.success ? 'succeeded' : result.sessionHandedOff ? 'executed' : 'failed', subtaskId,
@@ -280,7 +287,12 @@ export class SubtaskExecutionConsumer {
     const result = await this.worker.recoverCompletedTask(
       context,
       input.response,
-      this.testGate && !noCode ? async (gateContext, phase) => this.runDifferentialGate(execution, gateContext, phase, input.message) : undefined,
+      this.testGate && !noCode ? async (gateContext, phase) => {
+        if (this.environmentPreparer) {
+          await this.environmentPreparer.prepare(gateContext.worktreePath)
+        }
+        return this.runDifferentialGate(execution, gateContext, phase, input.message)
+      } : undefined,
       noCode,
     )
     const next = await this.repository.finishExecution(execution, input.message, result)
