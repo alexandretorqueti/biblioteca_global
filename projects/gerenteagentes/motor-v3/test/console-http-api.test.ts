@@ -69,6 +69,61 @@ describe('ConsoleHttpApi', () => {
       .resolves.toEqual({ isComplete: false })
   })
 
+  it('ignora done obsoleto até a nova execução produzir atividade', async () => {
+    const session = { sessionId: 's-race', sessionKey: 'agent:a:race', agentId: 'a' }
+    vi.stubGlobal('fetch', vi.fn()
+      // sendMessage: histórico anterior + envio aceito
+      .mockResolvedValueOnce(jsonResponse({ messages: [{ id: 'old-response', role: 'assistant', content: 'CONTEXTO_RECEBIDO', createdAt: 1 }] }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true }))
+      // Primeira consulta: describe ainda mostra o done anterior e o histórico
+      // só contém a mensagem antiga e o novo prompt do usuário.
+      .mockResolvedValueOnce(jsonResponse({ status: 'done', hasActiveRun: false, endedAt: 1 }))
+      .mockResolvedValueOnce(jsonResponse({ messages: [
+        { id: 'old-response', role: 'assistant', content: 'CONTEXTO_RECEBIDO', createdAt: 1 },
+        { id: 'new-prompt', role: 'user', content: 'Analise agora', createdAt: Date.now() },
+      ] }))
+      // Depois a execução nova aparece como running.
+      .mockResolvedValueOnce(jsonResponse({ status: 'running', hasActiveRun: true }))
+      .mockResolvedValueOnce(jsonResponse({ messages: [
+        { id: 'old-response', role: 'assistant', content: 'CONTEXTO_RECEBIDO', createdAt: 1 },
+        { id: 'new-prompt', role: 'user', content: 'Analise agora', createdAt: Date.now() },
+        { id: 'new-tool', role: 'assistant', stopReason: 'toolUse', content: 'consultando arquivos', createdAt: Date.now() },
+      ] }))
+      // E somente a resposta final nova conclui a espera.
+      .mockResolvedValueOnce(jsonResponse({ status: 'done', hasActiveRun: false, endedAt: 2 }))
+      .mockResolvedValueOnce(jsonResponse({ messages: [
+        { id: 'old-response', role: 'assistant', content: 'CONTEXTO_RECEBIDO', createdAt: 1 },
+        { id: 'new-final', role: 'assistant', stopReason: 'stop', content: '{"subtarefas":[]}', createdAt: Date.now() },
+      ] })))
+    const api = new ConsoleHttpApi('http://console.local', 'token-de-teste')
+
+    await api.sendMessage({ session, message: 'Analise agora' })
+
+    await expect(api.getSessionStatus(session)).resolves.toEqual({ isComplete: false })
+    await expect(api.getSessionStatus(session)).resolves.toEqual({
+      isComplete: false,
+      activity: { repeatedToolCalls: 1, fingerprint: expect.stringMatching(/^[a-f0-9]{24}$/) },
+    })
+    await expect(api.getSessionStatus(session)).resolves.toEqual({ isComplete: true, lastResponse: '{"subtarefas":[]}' })
+  })
+
+  it('expõe done do envio atual quando houve ferramenta nova mas faltou resposta final', async () => {
+    const session = { sessionId: 's-tool-end', sessionKey: 'agent:a:tool-end', agentId: 'a' }
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ messages: [{ id: 'old', role: 'assistant', content: 'CONTEXTO_RECEBIDO' }] }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true }))
+      .mockResolvedValueOnce(jsonResponse({ status: 'done', hasActiveRun: false, endedAt: 2 }))
+      .mockResolvedValueOnce(jsonResponse({ messages: [
+        { id: 'old', role: 'assistant', content: 'CONTEXTO_RECEBIDO' },
+        { id: 'new-tool', role: 'assistant', stopReason: 'toolUse', content: 'consultando arquivos' },
+      ] })))
+    const api = new ConsoleHttpApi('http://console.local', 'token-de-teste')
+
+    await api.sendMessage({ session, message: 'Analise agora' })
+
+    await expect(api.getSessionStatus(session)).resolves.toEqual({ isComplete: true })
+  })
+
   it('expõe repetição consecutiva de ferramenta enquanto a sessão está ativa', async () => {
     vi.stubGlobal('fetch', vi.fn()
       .mockResolvedValueOnce(jsonResponse({ status: 'running', hasActiveRun: true }))

@@ -12,6 +12,7 @@ O boot do Motor deve reconciliar trabalho interrompido sem assumir que a mensage
 - O reconciliador identifica repetição consecutiva de chamadas de ferramenta. Ao atingir o limiar, tenta abortar o run físico antes de reenfileirar; se não conseguir, registra atenção e preserva a sessão. A telemetria guarda somente o hash da ação.
 - Se uma sessão DEV encerrada não possuir resposta final ou o marcador `::DONE::`, o Motor envia uma solicitação de conclusão **na mesma sessão**, mantendo modelo, contexto e worktree. O checkpoint persiste a quantidade de solicitações e aplica intervalo mínimo para evitar duplicidade após restart. Após duas solicitações sem protocolo, a subtarefa é bloqueada para intervenção humana; ela não é reenfileirada nem recebe um segundo DEV concorrente.
 - Proteção contra recriação de sessão após DONE processado: quando uma mensagem é reenfileirada na janela entre o processamento do `::DONE::` e a transição completa da subtarefa, o Motor verifica se já existe uma sessão concluída com sucesso nos últimos 10 minutos. Se existir, rejeita a mensagem em vez de criar nova sessão concorrente.
+- Em sessões conversacionais com mais de uma mensagem (contexto → missão → correção), o estado `done` do Console só vale para o envio corrente quando existe atividade do agente posterior ao marcador persistido em memória pelo adaptador. Um `done` ainda associado à resposta anterior é tratado como estado obsoleto e o Motor continua aguardando; isso impede fallback prematuro enquanto o novo run ainda está sendo registrado.
 - `motor_operation_log` permanece trilha de auditoria; o estado recuperável vem de `motor_agent_sessions`, `tarefa_contextos_execucao`, `subtarefas` e `test_runs`.
 
 ## Invariantes
@@ -24,6 +25,7 @@ O boot do Motor deve reconciliar trabalho interrompido sem assumir que a mensage
 6. Uma subtarefa só é reenfileirada após loop quando o run remoto foi abortado com sucesso.
 7. A ausência de `::DONE::` nunca é motivo suficiente para criar uma nova sessão DEV.
 8. Uma mensagem reenfileirada nunca cria nova sessão se já existe sessão concluída com sucesso nos últimos 10 minutos.
+9. Uma resposta anterior da mesma sessão nunca satisfaz nem encerra a espera de um envio novo.
 
 ## Parâmetros operacionais
 

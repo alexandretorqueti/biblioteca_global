@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import type { AnalystConsole, AnalystSession } from './ConsoleAnalystRunner.js'
 
 export class ConsoleHttpApi implements AnalystConsole {
-  private readonly pendingResponses = new Map<string, { assistantIds: Set<string>; sentAt: number }>()
+  private readonly pendingResponses = new Map<string, { messageIds: Set<string>; sentAt: number }>()
 
   constructor(private readonly baseUrl: string, private readonly token: string) {}
 
@@ -26,7 +26,7 @@ export class ConsoleHttpApi implements AnalystConsole {
     const sentAt = Date.now()
     await this.request('/api/chat/send', { method: 'POST', body: { sessionKey: input.session.sessionKey, agentId: input.session.agentId, sessionId: input.session.sessionId, message: input.message } })
     this.pendingResponses.set(this.sessionKey(input.session), {
-      assistantIds: new Set((before.messages ?? []).filter(message => message.role === 'assistant' && message.id).map(message => String(message.id))),
+      messageIds: new Set((before.messages ?? []).filter(message => message.id).map(message => String(message.id))),
       sentAt,
     })
   }
@@ -44,7 +44,8 @@ export class ConsoleHttpApi implements AnalystConsole {
     }
     const history = await this.history(session)
     const marker = this.pendingResponses.get(this.sessionKey(session))
-    const assistant = [...(history.messages ?? [])].reverse().find(message =>
+    const messages = history.messages ?? []
+    const assistant = [...messages].reverse().find(message =>
       message.role === 'assistant' && this.isResponseAfter(message, marker) && this.isFinalAssistant(message),
     ) as
       | { role: string; content: unknown; errorCode?: unknown; errorType?: unknown; errorMessage?: unknown; stopReason?: unknown }
@@ -72,6 +73,14 @@ export class ConsoleHttpApi implements AnalystConsole {
     // o agente parou após ferramenta: o reconciliador precisa vê-lo como
     // concluído para solicitar ::DONE:: na mesma sessão.
     if (!assistant) {
+      // Logo após /api/chat/send, /sessions/describe ainda pode refletir o
+      // `done` da execução anterior. Enquanto não houver nenhuma atividade
+      // nova do agente depois do marcador, esse estado é obsoleto e não pode
+      // disparar fallback para outro modelo.
+      const hasAgentActivityAfterSend = messages.some(message =>
+        message.role !== 'user' && this.isResponseAfter(message, marker),
+      )
+      if (marker && !hasAgentActivityAfterSend) return { isComplete: false }
       const terminalCompleted = status.status === 'done' || status.state === 'done' || status.endedAt !== undefined
       return terminalCompleted ? { isComplete: true } : { isComplete: false }
     }
@@ -89,9 +98,9 @@ export class ConsoleHttpApi implements AnalystConsole {
     return `${session.agentId}:${session.sessionKey}:${session.sessionId}`
   }
 
-  private isResponseAfter(message: ConsoleHistoryMessage, marker?: { assistantIds: Set<string>; sentAt: number }): boolean {
+  private isResponseAfter(message: ConsoleHistoryMessage, marker?: { messageIds: Set<string>; sentAt: number }): boolean {
     if (!marker) return true
-    if (message.id && marker.assistantIds.has(String(message.id))) return false
+    if (message.id && marker.messageIds.has(String(message.id))) return false
     if (message.id) return true
     if (message.createdAt == null) return false
     const occurredAt = typeof message.createdAt === 'number' ? message.createdAt : Date.parse(String(message.createdAt))
