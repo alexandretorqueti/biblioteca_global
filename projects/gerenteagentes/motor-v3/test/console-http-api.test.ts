@@ -139,6 +139,22 @@ describe('ConsoleHttpApi', () => {
       .resolves.toEqual({ isComplete: false, activity: { fingerprint: expect.stringMatching(/^[a-f0-9]{24}$/), repeatedToolCalls: 5 } })
   })
 
+  it('ignora narrações variáveis e detecta chamadas tool reais repetidas como no incidente 815', async () => {
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ status: 'running', hasActiveRun: true }))
+      .mockResolvedValueOnce(jsonResponse({
+        messages: Array.from({ length: 6 }, (_, index) => [
+          { role: 'assistant', stopReason: 'toolUse', content: `Vou conferir novamente ${index}` },
+          { role: 'tool', toolName: 'process', stopReason: 'toolUse', content: 'process\n{\n  "action": "list"\n}' },
+          { role: 'tool', content: 'mild-trail completed 19s' },
+        ]).flat(),
+      })))
+    const api = new ConsoleHttpApi('http://console.local', 'token-de-teste')
+
+    await expect(api.getSessionStatus({ sessionId: 's-loop-815', sessionKey: 'agent:a:loop-815', agentId: 'a' }))
+      .resolves.toEqual({ isComplete: false, activity: { fingerprint: expect.stringMatching(/^[a-f0-9]{24}$/), repeatedToolCalls: 6 } })
+  })
+
   it('interrompe o run ativo pelo endpoint de abort do Console', async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ ok: true, aborted: true }))
     vi.stubGlobal('fetch', fetchMock)

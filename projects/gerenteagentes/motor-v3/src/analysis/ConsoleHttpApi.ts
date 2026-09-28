@@ -114,8 +114,14 @@ export class ConsoleHttpApi implements AnalystConsole {
 
   /** Indício conservador de loop: a mesma chamada de ferramenta repetida no fim do histórico. */
   private activity(messages: ConsoleHistoryMessage[]): { fingerprint?: string; repeatedToolCalls: number } {
-    const actions = messages
-      .filter(message => /tool(?:use|_use)?/i.test(String(message.stopReason ?? '')))
+    // O Console persiste a chamada efetiva como role=tool/toolName. Mensagens
+    // assistant com stopReason=toolUse contêm apenas a narração do modelo e
+    // variam entre iterações, portanto não representam a ação a comparar.
+    const explicitToolCalls = messages.filter(message => message.role === 'tool' && message.toolName)
+    const candidates = explicitToolCalls.length > 0
+      ? explicitToolCalls
+      : messages.filter(message => /tool(?:use|_use)?/i.test(String(message.stopReason ?? '')))
+    const actions = candidates
       .map(message => this.actionFingerprint(message))
       .filter((value): value is string => Boolean(value))
     const fingerprint = actions.at(-1)
@@ -193,4 +199,5 @@ type ConsoleHistoryMessage = {
   errorType?: unknown
   errorMessage?: unknown
   stopReason?: unknown
+  toolName?: unknown
 }
