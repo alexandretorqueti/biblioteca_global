@@ -6,6 +6,8 @@ import { defineConfig } from "vitest/config"
  * packages/ui na Etapa 8 (utils + componentes com jsdom).
  * e2e/ contém specs Playwright (rodados via playwright.config.ts do root),
  * que não pertencem ao vitest — excluídos daqui.
+ * worktrees/ são cópias temporárias de execução do Motor e não fazem parte
+ * da suíte do repositório; incluí-los duplica testes e mistura estados.
  * wt-deploy/ é cópia de worktree de deploy commitada — testes duplicados,
  * excluídos para não rodar (nem quebrar) a suíte em dobro (2026-08-31).
  */
@@ -17,8 +19,11 @@ export default defineConfig({
       "**/dist/**",
       "biblioteca_old/**",
       "**/e2e/**",
+      "**/worktrees/**",
       "wt-*/**",
       "**/motor-v2/**",
+      // O Motor v3 mantém sua própria configuração Node e suíte de pacote.
+      "**/motor-v3/**",
       // Integrações com MySQL real: executadas separadamente no ambiente de integração.
       "**/*.functional.spec.ts",
       "database/__tests__/seed-gerenteagentes.spec.ts",

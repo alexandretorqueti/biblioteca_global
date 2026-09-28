@@ -142,8 +142,8 @@ export class WorkerActivityService {
 
   private roleFor(agentId?: string, phase?: string, executionId?: string): WorkerRole {
     const value = `${agentId ?? ''} ${phase ?? ''} ${executionId ?? ''}`.toLowerCase()
-    if (value.includes('analys') || value.includes('analyst')) return 'analyst'
     if (value.includes('monitor') || value.includes('deploy') || value.includes('test') || value.includes('pre_deploy')) return 'manager'
+    if (value.includes('analys') || value.includes('analyst')) return 'analyst'
     return 'developer'
   }
 

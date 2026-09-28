@@ -21,7 +21,7 @@ export const createSession: PrimitiveDefinition = {
       // Fallback para console-default quando context.model estiver ausente
       const modelName = context.model ? context.model.split('/').pop()! : 'console-default'
       const sessionKey = context.sessionKind === 'monitor'
-        ? `monitor-${modelName}-${context.taskId}-b${context.monitorBlockerId ?? context.executionId}`
+        ? `analysis-monitor-${modelName}-${context.taskId}-b${context.monitorBlockerId ?? context.executionId}`
         : context.subtaskId == null
           ? (() => { throw new Error('Sessão DEV exige subtaskId') })()
           : `dev-${modelName}-${context.taskId}-s${context.subtaskId}`

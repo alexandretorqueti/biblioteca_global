@@ -12,7 +12,7 @@ describe('WorkerActivityService', () => {
     const { activity } = service([
       { executionId: 'analysis-1', taskId: 't-1', startedAt: 10, lastHeartbeat: 20, context: { agentId: 'analyst', model: 'modelo-analista', phase: 'analysis' } },
       { executionId: 'dev-1', taskId: 't-2', subtaskId: 2, startedAt: 11, lastHeartbeat: 21, context: { agentId: 'project-agent', model: 'modelo-dev', phase: 'development' } },
-      { executionId: 'monitor-1', taskId: 't-3', startedAt: 12, lastHeartbeat: 22, context: { agentId: 'motor-monitor', model: 'modelo-monitor', phase: 'testing' } },
+      { executionId: 'analysis-monitor-1', taskId: 't-3', startedAt: 12, lastHeartbeat: 22, context: { agentId: 'motor-monitor', model: 'modelo-monitor', phase: 'testing' } },
     ])
 
     const result = await activity.getActivity()

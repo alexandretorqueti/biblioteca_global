@@ -111,7 +111,7 @@ export class TaskUnblockedConsumer {
     const resume = createQueueMessage({
       type: 'TASK_RESUME_REQUESTED',
       taskId: source.taskId,
-      executionId: `monitor-resume-${databaseTaskId}-${Date.now()}`,
+      executionId: `analysis-monitor-resume-${databaseTaskId}-${Date.now()}`,
       correlationId: source.correlationId ?? source.messageId,
       causationId: source.messageId,
       payload: { resumedBy: 'monitor' },

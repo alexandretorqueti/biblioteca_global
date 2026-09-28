@@ -594,7 +594,7 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
         taskId, subtaskId: String(subtaskId), reason: String(row.block_reason ?? "bloqueio sistêmico"),
         evidence: { command: String(row.block_command ?? ""), excerpt: String(row.block_excerpt ?? "") },
       }
-      const context = { executionId: `monitor-recovery-${subtaskId}`, taskId, projectSlug: row.project_slug == null ? null : String(row.project_slug), phase: "execute" as const, fencingToken: 0, startedAt: new Date(), subtaskId: String(subtaskId) }
+      const context = { executionId: `analysis-monitor-recovery-${subtaskId}`, taskId, projectSlug: row.project_slug == null ? null : String(row.project_slug), phase: "execute" as const, fencingToken: 0, startedAt: new Date(), subtaskId: String(subtaskId) }
       // Uma mensagem comum no chat não pode ser enviada como se fosse resposta
       // do responsável: só retoma quando responde diretamente ao Monitor.
       const isMonitorReply = last?.role === "user" && previous?.role === "monitor"

@@ -70,15 +70,15 @@ describe('Session Primitives', () => {
 
   describe('createSession', () => {
     it('usa namespace próprio para sessões do Monitor', async () => {
-      const consoleApi = { createSession: vi.fn().mockResolvedValue({ sessionId: 'monitor-session' }) }
+      const consoleApi = { createSession: vi.fn().mockResolvedValue({ sessionId: 'analysis-monitor-session' }) }
       const context = { ...mockContext, sessionKind: 'monitor' as const, monitorBlockerId: 456, consoleApi }
 
       const result = await createSession.handler(context)
 
       expect(result.success).toBe(true)
-      expect(context.sessionKey).toBe('monitor-console-default-task-123-b456')
+      expect(context.sessionKey).toBe('analysis-monitor-console-default-task-123-b456')
       expect(consoleApi.createSession).toHaveBeenCalledWith(expect.objectContaining({
-        key: 'monitor-console-default-task-123-b456',
+        key: 'analysis-monitor-console-default-task-123-b456',
         metadata: expect.objectContaining({ sessionKind: 'monitor', monitorBlockerId: 456 }),
       }))
     })
