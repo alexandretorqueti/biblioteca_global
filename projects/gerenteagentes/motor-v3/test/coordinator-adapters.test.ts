@@ -85,6 +85,27 @@ describe('coordinator adapters', () => {
     expect(consoleApi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ session: expect.objectContaining({ sessionId: 'session-1' }) }))
   })
 
+  it('retoma na mesma sessão quando o Console termina sem resposta final', async () => {
+    const consoleApi = {
+      createSession: vi.fn(async () => ({ sessionId: 'session-1', sessionKey: 'motor-v3:analysis:task-1', agentId: 'agent-1' })),
+      sendMessage: vi.fn(async () => {}),
+      getSessionStatus: vi.fn()
+        .mockResolvedValueOnce({ isComplete: true, lastResponse: 'CONTEXTO_RECEBIDO' })
+        .mockResolvedValueOnce({ isComplete: true })
+        .mockResolvedValueOnce({ isComplete: true, lastResponse: JSON.stringify({
+          subtarefas: [{ seq: 1, titulo: 'Corrigir texto', scope: 'Ajustar texto', acceptance_criteria: ['OK'], deliverables: ['Código'], requirements_covered: ['REQ-1'], depends_on: [] }],
+          requirements: [{ id: 'REQ-1', description: 'Texto correto' }], coverage: [{ requirement: 'REQ-1', covered_by: [1] }],
+        }) }),
+    }
+    const { ConsoleAnalystRunner } = await import('../src/analysis/index.js')
+    const runner = new ConsoleAnalystRunner(consoleApi, { pollIntervalMs: 0 })
+
+    await expect(runner.start(task(), 'exec-1')).resolves.toMatchObject({ kind: 'plan' })
+    expect(consoleApi.createSession).toHaveBeenCalledTimes(1)
+    expect(consoleApi.sendMessage).toHaveBeenCalledTimes(3)
+    expect(consoleApi.sendMessage.mock.calls[2][0].message).toContain('CONTINUAÇÃO OBRIGATÓRIA')
+  })
+
   it('corrige uma resposta inválida antes de escalar o modelo', async () => {
     const consoleApi = {
       createSession: vi.fn(async () => ({ sessionId: 'session-1', sessionKey: 'key', agentId: 'agent-1' })),

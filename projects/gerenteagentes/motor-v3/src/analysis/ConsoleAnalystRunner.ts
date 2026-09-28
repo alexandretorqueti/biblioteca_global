@@ -121,9 +121,27 @@ export class ConsoleAnalystRunner implements AnalysisRunner {
         await this.config.onMessageSent?.(session!, message, audit(currentPhase, messageKey))
       }
       const wait = async (currentPhase: string): Promise<string> => {
-        const response = await this.waitForResult(session!, task)
-        await this.config.onResponseReceived?.(session!, response, audit(currentPhase, lastMessageKey))
-        return response
+        // O Console pode encerrar uma execução logo após uma ferramenta, sem
+        // registrar mensagem final. Isso é recuperável: a mesma sessão aceita
+        // uma nova mensagem e preserva todo o contexto já enviado. Não trate
+        // esse caso como falha do modelo nem desperdice a tentativa da tarefa.
+        let terminalRecoveryAttempted = false
+        while (true) {
+          try {
+            const response = await this.waitForResult(session!, task)
+            await this.config.onResponseReceived?.(session!, response, audit(currentPhase, lastMessageKey))
+            return response
+          } catch (error) {
+            if (terminalRecoveryAttempted || !this.isTerminalWithoutResponse(asError(error))) throw error
+            terminalRecoveryAttempted = true
+            await send(`${currentPhase}_terminal_recovery`, [
+              '[CONTINUAÇÃO OBRIGATÓRIA]',
+              'A execução anterior encerrou sem uma resposta final utilizável.',
+              'Continue nesta mesma sessão, sem reiniciar a análise, e responda agora à última solicitação pendente.',
+              'Não encerre após ferramentas: envie a resposta final completa.',
+            ].join('\n'))
+          }
+        }
       }
       try {
         session = await this.consoleApi.createSession({
@@ -270,6 +288,10 @@ export class ConsoleAnalystRunner implements AnalysisRunner {
 
   private isModelUnavailable(error: Error): boolean {
     return /(?:401|403|404|429|INVALID_REQUEST|quota|rate.limit|credit|billing|timed?.?out|indispon[ií]vel|model.+not found|model.not.allowed|not.allowed|concluiu sem resposta|sem resposta|empty response|no response)/i.test(error.message)
+  }
+
+  private isTerminalWithoutResponse(error: Error): boolean {
+    return /Analista concluiu sem resposta/i.test(error.message)
   }
 
   private prompt(task: TaskSnapshot, description: string): string {
