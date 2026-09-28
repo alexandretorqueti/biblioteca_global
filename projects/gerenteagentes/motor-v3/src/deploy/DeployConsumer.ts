@@ -250,6 +250,13 @@ export class DeployConsumer {
     const repo = stdout.trim(); const path = `${repo}/.motor-v3-deploy-${batchId.replace(/[^a-zA-Z0-9_-]/g, '_')}`
     await execFileAsync('git', ['worktree', 'add', '--detach', path, baseBranch], { cwd: repo })
     try {
+      // O worktree é destacado e pode ter sido criado a partir de uma referência
+      // remota. Nesse caso, o nome baseBranch não necessariamente é resolvível
+      // dentro dele, embora o commit-base usado para criá-lo esteja correto.
+      // Capture o commit efetivo do HEAD antes de listar o intervalo.
+      const { stdout: baseCommitOutput } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: path, encoding: 'utf8' })
+      const baseCommit = baseCommitOutput.trim()
+      if (!/^[a-f0-9]{7,64}$/i.test(baseCommit)) throw new Error('Commit-base do worktree de deploy inválido')
       // Para cada commit de integração, listar TODOS os commits entre baseBranch e o commit,
       // não apenas o HEAD. Isso garante que todas as subtarefas sejam incluídas no deploy.
       const allCommitsToCherryPick: string[] = []
@@ -259,7 +266,7 @@ export class DeployConsumer {
         if (contained) continue
         // Listar todos os commits entre baseBranch e commit (exclusivo baseBranch, inclusivo commit)
         // Ordem reversa (mais antigo primeiro) para cherry-pick na ordem correta
-        const { stdout: logOutput } = await execFileAsync('git', ['rev-list', '--reverse', `${baseBranch}..${commit}`], { cwd: path })
+        const { stdout: logOutput } = await execFileAsync('git', ['rev-list', '--reverse', `${baseCommit}..${commit}`], { cwd: path })
         const commitRange = logOutput.trim().split('\n').filter(Boolean)
         for (const c of commitRange) {
           if (!allCommitsToCherryPick.includes(c)) {
