@@ -15,10 +15,10 @@ const execFileAsync = promisify(execFile)
 export class WorkspaceEnvironmentPreparer {
   constructor(
     private readonly install: (directory: string) => Promise<void> = async directory => {
-      await execFileAsync('npm', ['ci', '--include=dev', '--prefer-offline', '--no-audit', '--no-fund'], {
+      await execFileAsync('npm', ['ci', '--include=dev', '--prefer-offline', '--no-audit', '--no-fund', '--loglevel=error'], {
         cwd: directory,
         timeout: 300_000,
-        maxBuffer: 10 * 1024 * 1024,
+        maxBuffer: 50 * 1024 * 1024,
       })
     },
   ) {}
