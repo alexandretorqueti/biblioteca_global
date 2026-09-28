@@ -302,7 +302,7 @@ export class DeployRepository {
            NOW(),NOW())
          ON DUPLICATE KEY UPDATE repo_path=VALUES(repo_path),requested_commit=VALUES(requested_commit),base_branch=VALUES(base_branch),
            generation=VALUES(generation),parent_generation=VALUES(parent_generation),
-           status=IF(status IN ('succeeded','running'),status,'pending'),last_error=NULL,updated_at=NOW()`,
+           status=IF(status IN ('succeeded','running'),status,'pending'),batch_id=IF(status IN ('succeeded','running'),batch_id,NULL),last_error=NULL,updated_at=NOW()`,
         [context.databaseTaskId, context.repoPath, context.integrationCommit, context.baseBranch,
          context.databaseTaskId, context.databaseTaskId],
       )
