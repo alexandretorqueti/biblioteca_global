@@ -11,15 +11,18 @@ REPO_ROOT=$(git rev-parse --show-toplevel)
 cd "$REPO_ROOT"
 
 # Verifica antes se há alterações no schema
-if git diff --cached --quiet projects/gerenteagentes/schema.ts 2>/dev/null; then
+git diff --cached --quiet projects/gerenteagentes/schema.ts 2>/dev/null
+if [ $? -eq 0 ]; then
     echo "✅ Schema não alterado. Nenhuma migration necessária."
     exit 0
 fi
 
 echo "📦 Schema alterado. Gerando migrations..."
 
-# Usar a interface pública definida pelo monorepo. O ambiente da tarefa é
-# preparado com npm ci antes do gate, portanto o drizzle-kit estará disponível.
+# Rodar o generate em modo não-interativo
+export HUSKY_SKIP_HOOKS=1
+export DRIZZLE_KIT_NON_INTERACTIVE=1
+
 npm run db:generate:gerenteagentes
 
 # Adiciona somente os arquivos de migrations ao commit
