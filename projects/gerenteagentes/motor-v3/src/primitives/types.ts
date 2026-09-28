@@ -19,6 +19,10 @@ export interface PrimitiveContext {
   testCommand?: string
   /** Modelo escolhido pela política de execução para esta tentativa. */
   model?: string
+  /** Namespace da sessão no Console. DEV e Monitor não compartilham o mesmo formato. */
+  sessionKind?: 'dev' | 'monitor'
+  /** Incidente que originou uma sessão do Monitor. */
+  monitorBlockerId?: number
   sessionId?: string
   sessionKey?: string
   agentId: string

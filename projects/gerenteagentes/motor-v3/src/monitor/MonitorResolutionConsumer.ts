@@ -132,6 +132,8 @@ export class MonitorResolutionConsumer {
         databaseTaskId: Number(context.database_task_id),
         projectId: Number(context.projeto_id),
         subtaskId: blocker.subtarefa_id != null ? Number(blocker.subtarefa_id) : undefined,
+        sessionKind: 'monitor',
+        monitorBlockerId: Number(blocker.id),
         executionId: message.executionId,
         generation: 1,
         projectSlug: context.project_slug,

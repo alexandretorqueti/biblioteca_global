@@ -150,7 +150,32 @@ describe('WorkerLauncher', () => {
     expect(result.success).toBe(true)
     expect(result.attempts).toBe(2)
     expect(mocks.createSession.handler).toHaveBeenCalledTimes(1)
+    expect(mocks.sendMessage.handler.mock.calls[1][1].message).toContain('Implementar feature X')
+    expect(mocks.sendMessage.handler.mock.calls[1][1].message).toContain('/tmp/worktree')
     expect(mocks.sendMessage.handler.mock.calls[1][1].message).toContain('::DONE::')
+  })
+
+  it('preserva contexto e cabeçalho longos na solicitação de continuidade', async () => {
+    mocks.createSession.handler.mockImplementation(async (context: PrimitiveContext) => {
+      context.sessionId = 'sessao-original'
+      return { success: true }
+    })
+    mocks.sendMessage.handler.mockResolvedValue({ success: true })
+    mocks.waitForCompletion.handler.mockResolvedValue({ success: true, data: { response: 'Ainda trabalhando...' } })
+    mocks.parseReply.handler
+      .mockResolvedValueOnce({ success: true, data: { hasDoneMarker: false } })
+      .mockResolvedValueOnce({ success: true, data: { hasDoneMarker: true } })
+    mocks.verifyGit.handler.mockResolvedValue({ success: true, data: { hasChanges: true } })
+    mocks.runBuild.handler.mockResolvedValue({ success: true })
+
+    await launcher.executeTask(mockContext, {
+      context: 'Contexto original da tarefa',
+      header: 'Execute a alteração solicitada',
+    })
+
+    const continuation = mocks.sendMessage.handler.mock.calls[2][1].message
+    expect(continuation).toContain('Contexto original da tarefa')
+    expect(continuation).toContain('Execute a alteração solicitada')
   })
 
   it('should retry when build fails', async () => {

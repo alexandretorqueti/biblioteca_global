@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { parseReply, incrementGeneration } from '../src/primitives/session.js'
+import { createSession, parseReply, incrementGeneration } from '../src/primitives/session.js'
 import type { PrimitiveContext } from '../src/primitives/types.js'
 
 describe('Session Primitives', () => {
@@ -65,6 +65,32 @@ describe('Session Primitives', () => {
       
       expect(result.success).toBe(false)
       expect(result.error).toBe('Parâmetro "response" inválido')
+    })
+  })
+
+  describe('createSession', () => {
+    it('usa namespace próprio para sessões do Monitor', async () => {
+      const consoleApi = { createSession: vi.fn().mockResolvedValue({ sessionId: 'monitor-session' }) }
+      const context = { ...mockContext, sessionKind: 'monitor' as const, monitorBlockerId: 456, consoleApi }
+
+      const result = await createSession.handler(context)
+
+      expect(result.success).toBe(true)
+      expect(context.sessionKey).toBe('monitor-console-default-task-123-b456')
+      expect(consoleApi.createSession).toHaveBeenCalledWith(expect.objectContaining({
+        key: 'monitor-console-default-task-123-b456',
+        metadata: expect.objectContaining({ sessionKind: 'monitor', monitorBlockerId: 456 }),
+      }))
+    })
+
+    it('recusa sessão DEV sem subtaskId em vez de criar sundefined', async () => {
+      const context = { ...mockContext, subtaskId: undefined, consoleApi: { createSession: vi.fn() } }
+
+      const result = await createSession.handler(context)
+
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('Sessão DEV exige subtaskId')
+      expect(context.consoleApi.createSession).not.toHaveBeenCalled()
     })
   })
 

@@ -20,7 +20,11 @@ export const createSession: PrimitiveDefinition = {
       // Extrai nome do modelo removendo prefixo do provider (ex.: openai/gpt-5.6-luna → gpt-5.6-luna)
       // Fallback para console-default quando context.model estiver ausente
       const modelName = context.model ? context.model.split('/').pop()! : 'console-default'
-      const sessionKey = `dev-${modelName}-${context.taskId}-s${context.subtaskId}`
+      const sessionKey = context.sessionKind === 'monitor'
+        ? `monitor-${modelName}-${context.taskId}-b${context.monitorBlockerId ?? context.executionId}`
+        : context.subtaskId == null
+          ? (() => { throw new Error('Sessão DEV exige subtaskId') })()
+          : `dev-${modelName}-${context.taskId}-s${context.subtaskId}`
       
       const response = await context.consoleApi.createSession({
         key: sessionKey,
@@ -30,6 +34,8 @@ export const createSession: PrimitiveDefinition = {
           taskId: context.taskId,
           databaseTaskId: context.databaseTaskId,
           subtaskId: context.subtaskId,
+          sessionKind: context.sessionKind,
+          monitorBlockerId: context.monitorBlockerId,
           executionId: context.executionId,
           generation: context.generation,
           baselineRunId: context.baselineRunId,

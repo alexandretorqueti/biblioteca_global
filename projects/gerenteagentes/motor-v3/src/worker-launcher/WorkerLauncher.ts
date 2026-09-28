@@ -285,11 +285,15 @@ export class WorkerLauncher {
           context.logger?.info('Agente encerrou sem ::DONE::; solicitando conclusão na mesma sessão', { attempts })
           lastError = 'O programador encerrou sem o marcador ::DONE::'
           failures.push({ attempt: attempts, ...(model ? { model } : {}), error: lastError })
+          const originalPrompt = normalizePrompt(taskDescription)
           continuationPrompt = [
+            originalPrompt.context,
+            originalPrompt.header,
+            '',
             'A execução anterior foi encerrada sem o protocolo de conclusão.',
-            'Revise o trabalho já feito neste mesmo worktree, conclua as validações necessárias e responda com um resumo final.',
+            `Revise o trabalho já feito no workspace ${context.worktreePath}, conclua as validações necessárias e responda com um resumo final.`,
             'Inclua obrigatoriamente o marcador ::DONE:: na resposta final.',
-          ].join('\n')
+          ].filter((part): part is string => Boolean(part)).join('\n')
           reusableSessionModel = model
           context.generation++
           continue
