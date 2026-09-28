@@ -276,6 +276,13 @@ export class DeployConsumer {
       }
       // Fazer cherry-pick de todos os commits na ordem
       for (const c of allCommitsToCherryPick) {
+        // O SHA pode ser diferente quando a mesma subtarefa foi integrada
+        // anteriormente por outro worktree. O cherry-pick falha como
+        // add/add nesse caso, embora o patch já esteja na base.
+        const { stdout: pendingPatch } = await execFileAsync('git', [
+          'log', '--cherry-pick', '--right-only', '--no-merges', '--format=%H', `HEAD...${c}`,
+        ], { cwd: path, encoding: 'utf8' })
+        if (!pendingPatch.split('\n').map(value => value.trim()).includes(c)) continue
         try {
           await execFileAsync('git', ['cherry-pick', c], { cwd: path })
         } catch (error) {
