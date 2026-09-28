@@ -257,17 +257,24 @@ export class DeployConsumer {
       const { stdout: baseCommitOutput } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: path, encoding: 'utf8' })
       const baseCommit = baseCommitOutput.trim()
       if (!/^[a-f0-9]{7,64}$/i.test(baseCommit)) throw new Error('Commit-base do worktree de deploy inválido')
-      // Para cada commit de integração, listar TODOS os commits entre baseBranch e o commit,
-      // não apenas o HEAD. Isso garante que todas as subtarefas sejam incluídas no deploy.
+      // Para cada integração, selecione somente os commits cujo patch ainda não
+      // existe na base. `rev-list` não distingue commits equivalentes: depois de
+      // um revert/reaplicação, ele devolve commits que o cherry-pick não consegue
+      // aplicar novamente e pode deixar o lote em conflito.
       const allCommitsToCherryPick: string[] = []
       for (const commit of [...new Set(commits)]) {
         if (!/^[a-f0-9]{7,64}$/i.test(commit)) throw new Error(`Commit de integração inválido: ${commit}`)
         const contained = await execFileAsync('git', ['merge-base', '--is-ancestor', commit, 'HEAD'], { cwd: path }).then(() => true, () => false)
         if (contained) continue
-        // Listar todos os commits entre baseBranch e commit (exclusivo baseBranch, inclusivo commit)
-        // Ordem reversa (mais antigo primeiro) para cherry-pick na ordem correta
-        const { stdout: logOutput } = await execFileAsync('git', ['rev-list', '--reverse', `${baseCommit}..${commit}`], { cwd: path })
-        const commitRange = logOutput.trim().split('\n').filter(Boolean)
+        // `git cherry` preserva a ordem topológica e marca `+` somente para
+        // patches ausentes na base; linhas `-` já estão representadas nela.
+        const { stdout: cherryOutput } = await execFileAsync('git', ['cherry', baseCommit, commit], { cwd: path, encoding: 'utf8' })
+        const commitRange = cherryOutput
+          .split('\n')
+          .map(line => line.trim().split(/\s+/))
+          .filter(parts => parts[0] === '+' && /^[a-f0-9]{7,64}$/i.test(parts[1] ?? ''))
+          .map(parts => parts[1])
+          .filter((value): value is string => Boolean(value))
         for (const c of commitRange) {
           if (!allCommitsToCherryPick.includes(c)) {
             allCommitsToCherryPick.push(c)
@@ -276,13 +283,6 @@ export class DeployConsumer {
       }
       // Fazer cherry-pick de todos os commits na ordem
       for (const c of allCommitsToCherryPick) {
-        // O SHA pode ser diferente quando a mesma subtarefa foi integrada
-        // anteriormente por outro worktree. O cherry-pick falha como
-        // add/add nesse caso, embora o patch já esteja na base.
-        const { stdout: pendingPatch } = await execFileAsync('git', [
-          'log', '--cherry-pick', '--right-only', '--no-merges', '--format=%H', `HEAD...${c}`,
-        ], { cwd: path, encoding: 'utf8' })
-        if (!pendingPatch.split('\n').map(value => value.trim()).includes(c)) continue
         try {
           await execFileAsync('git', ['cherry-pick', c], { cwd: path })
         } catch (error) {

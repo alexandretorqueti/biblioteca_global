@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 const calls: Array<{ command: string; args: string[] }> = []
 let headReads = 0
-let equivalentPatch = false
+let cherryOutput = '+ cccccccccccccccccccccccccccccccccccc\n'
 
 vi.mock('node:child_process', () => ({
   execFile: vi.fn((command: string, args: string[], _options: unknown, callback: Function) => {
@@ -13,8 +13,7 @@ vi.mock('node:child_process', () => ({
       return callback(null, { stdout: `${headReads === 1 ? 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' : 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'}\n`, stderr: '' })
     }
     if (command === 'git' && args[0] === 'merge-base') return callback(new Error('commit is not contained'), { stdout: '', stderr: '' })
-    if (command === 'git' && args[0] === 'rev-list') return callback(null, { stdout: 'cccccccccccccccccccccccccccccccccccc\n', stderr: '' })
-    if (command === 'git' && args[0] === 'log') return callback(null, { stdout: equivalentPatch ? '' : 'cccccccccccccccccccccccccccccccccccc\n', stderr: '' })
+    if (command === 'git' && args[0] === 'cherry') return callback(null, { stdout: cherryOutput, stderr: '' })
     return callback(null, { stdout: '', stderr: '' })
   }),
 }))
@@ -22,27 +21,29 @@ vi.mock('node:child_process', () => ({
 import { DeployConsumer } from '../src/deploy/DeployConsumer.js'
 
 describe('DeployConsumer.composeBatch', () => {
-  it('usa o commit efetivo do worktree como base do rev-list', async () => {
+  it('usa o commit efetivo do worktree para comparar patches', async () => {
     calls.length = 0
     headReads = 0
-    equivalentPatch = false
+    cherryOutput = '+ cccccccccccccccccccccccccccccccccccc\n'
     const consumer = new DeployConsumer({} as never, {} as never, {} as never)
 
     await (consumer as any).composeBatch('/repo', 'base-desenvolvimento', 'batch-1', [
       'dddddddddddddddddddddddddddddddddddd',
     ])
 
-    const revList = calls.find(call => call.command === 'git' && call.args[0] === 'rev-list')
-    expect(revList?.args).toEqual([
-      'rev-list', '--reverse',
-      'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa..dddddddddddddddddddddddddddddddddddd',
+    const cherry = calls.find(call => call.command === 'git' && call.args[0] === 'cherry')
+    expect(cherry?.args).toEqual([
+      'cherry',
+      'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      'dddddddddddddddddddddddddddddddddddd',
     ])
+    expect(calls.some(call => call.command === 'git' && call.args[0] === 'cherry-pick')).toBe(true)
   })
 
   it('não reaplica um commit cujo patch equivalente já está na base', async () => {
     calls.length = 0
     headReads = 0
-    equivalentPatch = true
+    cherryOutput = '- cccccccccccccccccccccccccccccccccccc\n'
 
     const consumer = new DeployConsumer({} as never, {} as never, {} as never)
     await (consumer as any).composeBatch('/repo', 'base-desenvolvimento', 'batch-equivalent', [
@@ -50,6 +51,6 @@ describe('DeployConsumer.composeBatch', () => {
     ])
 
     expect(calls.some(call => call.command === 'git' && call.args[0] === 'cherry-pick')).toBe(false)
-    expect(calls.some(call => call.command === 'git' && call.args[0] === 'log' && call.args.includes('HEAD...cccccccccccccccccccccccccccccccccccc'))).toBe(true)
+    expect(calls.some(call => call.command === 'git' && call.args[0] === 'cherry' && call.args.includes('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'))).toBe(true)
   })
 })
