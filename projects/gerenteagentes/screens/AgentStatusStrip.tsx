@@ -102,6 +102,21 @@ export default function AgentStatusStrip({ motorActive, motorStatus = "idle", mo
     return [analystStatus, developerStatus, monitorStatusAgent]
   }, [monitorStatus, monitorTaskInfo, monitorModel, workers])
 
+  // Determinar estado do motor (ícone e texto)
+  const motorState = useMemo(() => {
+    if (!motorActive) {
+      return { icon: PauseRounded, text: "Motor pausado", color: "text.secondary" }
+    }
+    switch (motorStatus) {
+      case "deploying":
+        return { icon: ModelTrainingRounded, text: "Deploy em andamento", color: "primary.main" }
+      case "working":
+        return { icon: PlayArrowRounded, text: "Operando", color: "success.main" }
+      default:
+        return { icon: PlayArrowRounded, text: "Aguardando atividade", color: "text.secondary" }
+    }
+  }, [motorActive, motorStatus])
+
   return (
     <Paper
       variant="outlined"
