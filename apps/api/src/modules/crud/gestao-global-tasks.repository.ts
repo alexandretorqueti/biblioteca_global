@@ -46,7 +46,7 @@ export class GestaoGlobalTasksRepository {
   }
 
   private tituloDoErro(endpoint: string): string {
-    return `Erro de API: ${endpoint}`
+    return `Detecção automática de Erro: ${endpoint}`
   }
 
   /** Consulta somente uma ocorrência ainda ativa no projeto informado. */
