@@ -1,1 +1,0 @@
-ALTER TABLE `clientes` ADD `instagram` varchar(200);
