@@ -30,6 +30,23 @@ describe('WorkspaceEnvironmentPreparer', () => {
     ])
     expect(install).toHaveBeenCalledTimes(3)
   })
+
+  it('tenta limpar workspace antes de instalar (git checkout em package.json/lock)', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'motor-v3-env-clean-'))
+    roots.push(root)
+    await writePackage(root, 'root')
+    const install = vi.fn<(directory: string) => Promise<void>>().mockResolvedValue(undefined)
+    const preparer = new WorkspaceEnvironmentPreparer(install)
+
+    // O prepare() deve tentar git status e git checkout antes de install
+    // Em um diretório não-git, o ensureCleanWorkspace falha silenciosamente
+    // e o install continua normalmente
+    const prepared = await preparer.prepare(root)
+
+    expect(prepared).toEqual(['.'])
+    expect(install).toHaveBeenCalledTimes(1)
+    expect(install).toHaveBeenCalledWith(root)
+  })
 })
 
 async function writePackage(directory: string, name: string): Promise<void> {

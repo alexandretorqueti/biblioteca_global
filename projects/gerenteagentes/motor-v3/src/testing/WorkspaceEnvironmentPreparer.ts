@@ -6,6 +6,38 @@ import { promisify } from 'node:util'
 const execFileAsync = promisify(execFile)
 
 /**
+ * Verifica se o diretório git tem modificações locais que podem causar
+ * falha no npm ci (package.json ou package-lock.json modificados).
+ * Se houver, faz git checkout para limpar.
+ */
+async function ensureCleanWorkspace(directory: string): Promise<void> {
+  try {
+    const { stdout } = await execFileAsync('git', ['status', '--porcelain'], {
+      cwd: directory,
+      timeout: 10_000,
+    })
+    const changes = stdout.trim()
+    if (!changes) return
+
+    // Verifica se há mudanças em package.json ou package-lock.json
+    const hasPackageChanges = changes.split('\n').some(line => {
+      const file = line.slice(3).trim()
+      return file === 'package.json' || file === 'package-lock.json'
+    })
+
+    if (hasPackageChanges) {
+      // Limpa modificações locais para evitar dessincronização no npm ci
+      await execFileAsync('git', ['checkout', '--', 'package.json', 'package-lock.json'], {
+        cwd: directory,
+        timeout: 10_000,
+      })
+    }
+  } catch {
+    // Se não for um repo git ou falhar, continua sem limpar
+  }
+}
+
+/**
  * Materializa dependências de pacotes isolados que não pertencem aos
  * workspaces npm da raiz. O build configurado continua responsável pelo
  * `npm ci` da raiz e package-locks aninhados usados pelos testes do monorepo
@@ -28,6 +60,9 @@ export class WorkspaceEnvironmentPreparer {
     const prepared: string[] = []
     for (const lockfile of lockfiles) {
       const directory = dirname(lockfile)
+      // Garante que o worktree está limpo antes de npm ci
+      // (modificações locais em package.json/lock causam EUSAGE)
+      await ensureCleanWorkspace(directory)
       await this.install(directory)
       prepared.push(relative(workspacePath, directory) || '.')
     }
