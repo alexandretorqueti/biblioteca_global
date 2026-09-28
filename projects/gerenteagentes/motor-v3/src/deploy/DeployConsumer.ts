@@ -289,6 +289,11 @@ export class DeployConsumer {
           const message = error instanceof Error ? error.message : String(error)
           if (message.includes('empty')) {
             await execFileAsync('git', ['cherry-pick', '--skip'], { cwd: path })
+          } else if (await this.skipNoopCherryPickConflict(path)) {
+            // O patch pode conflitar apenas porque a base já contém o
+            // resultado final por outra sequência de commits. Nesse caso,
+            // preservar a base é equivalente a um cherry-pick vazio.
+            await execFileAsync('git', ['cherry-pick', '--skip'], { cwd: path })
           } else {
             throw error
           }
@@ -302,6 +307,14 @@ export class DeployConsumer {
       await this.removeComposedWorktree(repo, path)
       throw error
     }
+  }
+
+  private async skipNoopCherryPickConflict(path: string): Promise<boolean> {
+    const { stdout: conflicts } = await execFileAsync('git', ['diff', '--name-only', '--diff-filter=U'], { cwd: path, encoding: 'utf8' })
+    if (!conflicts.trim()) return false
+    await execFileAsync('git', ['checkout', '--ours', '--', '.'], { cwd: path })
+    await execFileAsync('git', ['add', '--update', '--', '.'], { cwd: path })
+    return execFileAsync('git', ['diff', '--cached', '--quiet', 'HEAD'], { cwd: path }).then(() => true, () => false)
   }
 
   private async removeComposedWorktree(repoPath: string, path: string): Promise<void> {
