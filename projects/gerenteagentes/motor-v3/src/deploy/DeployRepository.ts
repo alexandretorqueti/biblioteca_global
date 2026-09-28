@@ -366,10 +366,10 @@ export class DeployRepository {
       if (Number(busy[0]?.total ?? 0) > 0) { await connection.rollback(); return null }
       const [requests] = await connection.query<Array<RowDataPacket & { id: number; task_id: number; external_id: string | null; requested_commit: string; project_id: number; build_command: string | null; test_command: string | null }>>(
         `SELECT dr.id,dr.tarefa_id AS task_id,t.external_id,dr.requested_commit,t.projeto_id AS project_id,pmc.build_command,pmc.unit_test_command AS test_command
-           FROM deploy_requests dr INNER JOIN tarefas t ON t.id=dr.tarefa_id
-           LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id=t.projeto_id
-          WHERE dr.repo_path=? AND dr.base_branch=? AND dr.status='pending'
-          ORDER BY dr.id FOR UPDATE`, [repoPath, baseBranch])
+          FROM deploy_requests dr INNER JOIN tarefas t ON t.id=dr.tarefa_id
+          LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id=t.projeto_id
+          WHERE dr.repo_path=? AND dr.base_branch=? AND dr.status='pending' AND dr.requested_commit=?
+          ORDER BY dr.id FOR UPDATE`, [repoPath, baseBranch, expectedCommit])
       if (requests.length === 0) { await connection.rollback(); return null }
       if (requests.some(row => !row.requested_commit || !row.build_command || !row.test_command)) throw new Error('Pedido de deploy sem commit ou comandos de gate')
       const batchId = `deploy-${randomUUID()}`
