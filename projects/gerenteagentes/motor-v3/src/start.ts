@@ -35,6 +35,7 @@ import { ConsoleAnalystRunner } from './analysis/ConsoleAnalystRunner.js'
 import { ConsoleHttpApi } from './analysis/ConsoleHttpApi.js'
 import { ManagedAnalysisPromptResolver } from './analysis/ManagedAnalysisPromptResolver.js'
 import { DerivedTaskStatusResolver } from './status/DerivedTaskStatus.js'
+import { WorkerActivityService } from './status/WorkerActivity.js'
 import { MySqlCommandPolicyRepository, MySqlOperationLogger } from './commands/index.js'
 import { DevelopmentExecutionConsumer, DevelopmentSessionRecoveryReconciler, GitVerificationIntegrator, GitWorktreePreparer, MySqlDevelopmentExecutionRepository, SubtaskExecutionConsumer, SubtaskVerificationConsumer, WorkerConsoleAdapter } from './execution/index.js'
 import { WorkerLauncher } from './worker-launcher/WorkerLauncher.js'
@@ -132,6 +133,10 @@ async function start() {
   scheduler = new Scheduler(bus)
   scheduler.start()
   console.log('[Motor v3] Scheduler inicializado')
+  // A mesma fonte é usada pelo endpoint de compatibilidade e pelo endpoint
+  // dedicado, para que o Mapa não observe dois estados diferentes.
+  const motorActivityGate = new MotorActivityGate(pool)
+  const workerActivityService = new WorkerActivityService(pool, () => scheduler?.getActiveExecutions() ?? [], motorActivityGate)
 
   // 7. Inicializa Monitor Bridge
   console.log('[Motor v3] Inicializando Monitor Bridge...')
@@ -148,7 +153,6 @@ async function start() {
     }
 
     const repository = new MySqlTaskCoordinatorRepository(pool)
-    const motorActivityGate = new MotorActivityGate(pool)
     const consoleApi = new ConsoleHttpApi(consoleUrl, consoleToken)
     const analystSessionRows = new Map<string, number>()
     const analystSessionSequences = new Map<string, number>()
@@ -588,13 +592,24 @@ async function start() {
       
       // Stats
       if (path === '/api/motor/stats' && req.method === 'GET') {
+        const workerActivity = await workerActivityService.getActivity()
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({
           activeExecutions: scheduler?.getActiveExecutions().length ?? 0,
           pendingProposals: monitorBridge.getPendingProposals().length,
           catalogEvents: (await catalogLoader.getAllEvents()).length,
           catalogActions: (await catalogLoader.getAllActions()).length,
+          // Campo adicional e aditivo: os quatro campos históricos acima
+          // continuam presentes para os consumidores existentes.
+          workerActivity,
         }))
+        return
+      }
+
+      // Worker activity
+      if (path === '/api/motor/worker-activity' && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify(await workerActivityService.getActivity()))
         return
       }
 

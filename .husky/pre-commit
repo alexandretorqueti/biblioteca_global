@@ -1,0 +1,31 @@
+#!/bin/sh
+. "$(dirname "$0")/_/husky.sh"
+
+# Hook de geração automática de migrations para o projeto gerenteagentes
+# Roda o drizzle-kit generate e adiciona as migrations ao commit se houver alterações
+
+echo "⚙️ Verificando schema e gerando migrations para gerenteagentes..."
+
+# Obtém o diretório raiz do repositório
+REPO_ROOT=$(git rev-parse --show-toplevel)
+cd "$REPO_ROOT"
+
+# Verifica antes se há alterações no schema
+git diff --cached --quiet projects/gerenteagentes/schema.ts 2>/dev/null
+if [ $? -eq 0 ]; then
+    echo "✅ Schema não alterado. Nenhuma migration necessária."
+    exit 0
+fi
+
+echo "📦 Schema alterado. Gerando migrations..."
+
+# Rodar o generate em modo não-interativo
+export HUSKY_SKIP_HOOKS=1
+export DRIZZLE_KIT_NON_INTERACTIVE=1
+
+npm run db:generate:gerenteagentes
+
+# Adiciona somente os arquivos de migrations ao commit
+git add projects/gerenteagentes/migrations/ || true
+
+echo "✅ Migrations geradas e adicionadas ao commit"

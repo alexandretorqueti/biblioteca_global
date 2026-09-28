@@ -24,6 +24,7 @@ function setup(status: Record<string, unknown>, recoveryRow = row) {
     requeueInterruptedExecution: vi.fn().mockResolvedValue({ messageId: 'retry-1' }),
     reopenTimedOutExecutionForRecovery: vi.fn().mockResolvedValue(true),
     blockIncompleteDevelopmentSession: vi.fn().mockResolvedValue(undefined),
+    claimPendingExecutionForRecovery: vi.fn().mockResolvedValue(true),
   }
   const consumer = { recoverCompletedSession: vi.fn().mockResolvedValue(undefined) }
   const consoleApi = { getSessionStatus: vi.fn().mockResolvedValue(status) }
@@ -100,6 +101,33 @@ describe('DevelopmentSessionRecoveryReconciler', () => {
     expect(repository.requeueInterruptedExecution).toHaveBeenCalledWith(
       'task-p2-905', 1219, 'exec-905', expect.stringContaining('SESSION_FAILED'),
     )
+    expect(consumer.recoverCompletedSession).not.toHaveBeenCalled()
+  })
+
+  it('reassume subtarefa pending com sessão ativa e processa a conclusão', async () => {
+    const pendingRow = { ...row, subtask_status: 'pending' }
+    const { reconciler, repository, consumer, events } = setup({ isComplete: true, lastResponse: 'Concluído ::DONE::' }, pendingRow)
+
+    await reconciler.reconcile()
+
+    expect(repository.claimPendingExecutionForRecovery).toHaveBeenCalledWith(1219)
+    expect(consumer.recoverCompletedSession).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'runtime-7', response: 'Concluído ::DONE::',
+    }))
+    expect(events.record).toHaveBeenCalledWith(
+      'task-p2-905', 'development_pending_session_reclaimed', 'motor',
+      expect.objectContaining({ subtaskId: 1219, executionId: 'exec-905' }),
+    )
+  })
+
+  it('não recupera sessão pending se o claim falhar', async () => {
+    const pendingRow = { ...row, subtask_status: 'pending' }
+    const { reconciler, repository, consumer } = setup({ isComplete: true, lastResponse: 'Concluído ::DONE::' }, pendingRow)
+    repository.claimPendingExecutionForRecovery.mockResolvedValue(false)
+
+    await reconciler.reconcile()
+
+    expect(repository.claimPendingExecutionForRecovery).toHaveBeenCalledWith(1219)
     expect(consumer.recoverCompletedSession).not.toHaveBeenCalled()
   })
 

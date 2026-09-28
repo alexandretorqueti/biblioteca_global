@@ -1,7 +1,0 @@
-# Credenciais e configurações sensíveis
-.env
-.env.local
-.env.*.local
-
-# Arquivos gerados
-*.log

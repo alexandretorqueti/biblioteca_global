@@ -8,10 +8,17 @@
   "scripts": {
     "pretest": "cd motor-v2 && ([ -d node_modules ] || npm install --include=dev)",
     "test": "npm --prefix ./motor-v2 test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "db:generate": "cd ../.. && drizzle-kit generate --config projects/gerenteagentes/drizzle.config.ts"
+  },
+  "devDependencies": {
+    "drizzle-kit": "^0.31.10",
+    "typescript": "^6.0.3"
   },
   "dependencies": {
     "@biblioteca-global/schema-tools": "*",
-    "@biblioteca-global/shared": "*"
+    "@biblioteca-global/shared": "*",
+    "drizzle-orm": "^0.45.2",
+    "mysql2": "^3.23.3"
   }
 }

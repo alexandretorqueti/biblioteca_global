@@ -74,7 +74,7 @@ function bundleFalso(tarefas: TarefaFake[]) {
         if (path === "/gerenteagentes/projetos_captados") {
           return { items: [{ id: 1, nome: "Projeto X" }] }
         }
-        if (path === "/gerenteagentes/motor-activity") return { activities: [] }
+        if (path === "/gerenteagentes/motor-activity") return { activities: [], workers: [] }
         if (path === "/gerenteagentes/motor-deploy-diagnostics") {
           return { canStart: true, reasons: [], pendingRequests: 0 }
         }

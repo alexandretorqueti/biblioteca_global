@@ -135,6 +135,25 @@ describe('ExternalResolutionHandler (camada C — resolução externa governada)
     expect(fake.connection.rollback).toHaveBeenCalled()
   })
 
+  it('sem subtarefas (total=0) retoma a análise em vez de disparar programação', async () => {
+    const fake = fakePool({ blockersResolved: 1, counts: { total: 0, finais: 0 } })
+    const handler = new ExternalResolutionHandler(fake.pool as never)
+
+    const result = await handler.handle({
+      taskId: 'task-p2-899', motivo: 'analista não gerou plano', resolvedBy: 'teste',
+    })
+
+    expect(result.completed).toBe(false)
+    expect(result.requeued).toBe(true)
+    const messages = fake.outboxMessages()
+    const types = messages.map(message => message.type)
+    expect(types).toContain('TASK_RESUME_REQUESTED')
+    expect(types).not.toContain('TASK_READY_FOR_PROGRAMMING')
+    const resume = messages.find(message => message.type === 'TASK_RESUME_REQUESTED')
+    expect(resume?.payload.resumeAnalysis).toBe(true)
+    expect(resume?.payload.reason).toBe('external_resolution')
+  })
+
   it('retorna not_found para tarefa inexistente', async () => {
     const fake = fakePool({ task: null })
     const handler = new ExternalResolutionHandler(fake.pool as never)

@@ -1,0 +1,45 @@
+name: CI - Migrations Check
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  migrations-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Gera as migrations a partir do schema TypeScript do projeto gerenteagentes.
+      # O `npm run db:generate` do workspace roda o drizzle-kit generate com
+      # config própria do projeto (projects/gerenteagentes/drizzle.config.ts).
+      - name: Run db:generate for gerenteagentes
+        working-directory: projects/gerenteagentes
+        run: npm run db:generate
+
+      # Gate de sincronização: se o schema.ts mudou sem regeneração de migrations,
+      # o diff acima aparece aqui e o CI falha.
+      - name: Verify migrations are up to date
+        run: |
+          if ! git diff --exit-code projects/gerenteagentes/migrations/; then
+            echo "Migrations desatualizadas. Rode npm run db:generate e commit as mudanças."
+            exit 1
+          fi
+
+      - name: Build and test
+        run: npm run build

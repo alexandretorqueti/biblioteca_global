@@ -13,7 +13,7 @@ import {
 } from "@mui/material"
 import { useTheme } from "@mui/material/styles"
 import {
-  AddTaskRounded, CloseRounded, CodeRounded, DeleteRounded, EditRounded, ExpandMoreRounded, ExpandLessRounded,
+  AddTaskRounded, CloseRounded, CodeRounded, EditRounded, ExpandMoreRounded, ExpandLessRounded,
   LockOpenRounded, PauseRounded, PlayArrowRounded, PsychologyRounded, ReplayRounded,
   SendRounded, VisibilityRounded,
 } from "@mui/icons-material"
@@ -25,7 +25,6 @@ import { resolveApiBaseUrl, resolveRealtimeUrl } from "../../../apps/web/src/api
 import TarefaForm, { type TarefaFormValues } from "./TarefaForm"
 import OperationMapCanvas from "./OperationMapCanvas"
 import { recoveryEligibilityLabel, RecoveryEligibilityTooltipContent, type FiltrosMapa, type FlowTask, type MotorActivity, type RecoveryEligibility } from "./TaskFlowMap"
-import AgentStatusStrip, { type AgentStatusStripProps } from "./AgentStatusStrip"
 import { SUBTASK_STATUS_OPTIONS, TASK_STATUS_EXECUTING, TASK_STATUS_FINAIS, TASK_STATUS_PAUSABLE, TASK_STATUS_STARTABLE, taskStatusColor, taskStatusLabel } from "../motor-v2/src/shared/task-statuses"
 import TaskCodeViewer from "./TaskCodeViewer"
 
@@ -87,15 +86,10 @@ export default function OperationMapScreen() {
   const activeTask = useRef<number | "">(""); const requestId = useRef(0)
   const initialSelectionDone = useRef(false)
 
-  // Estado do status do motor
-  const [motorStatus, setMotorStatus] = useState<"idle" | "working" | "deploying">("idle")
-  const [motorModel, setMotorModel] = useState<string | null>(null)
-  const [motorTaskInfo, setMotorTaskInfo] = useState<{ taskId: number; title: string } | null>(null)
-
   const loadTasks = useCallback(async () => { if (!bundle) { setTasksLoading(false); setTasksError("A conexão com a API ainda não está disponível."); return } setTasksLoading(true); setTasksError(null); try { const result = await bundle.http.request<Task[] | { items?: Task[] }>("GET", "/gerenteagentes/tarefas-com-status", { query: { pageSize: 100 }, auth: "access" }); const payload = Array.isArray(result) ? result : (result.items ?? []); const list = payload.sort((a, b) => new Date(b.updatedAt ?? b.createdAt ?? 0).getTime() - new Date(a.updatedAt ?? a.createdAt ?? 0).getTime()); setTasks(list); setSelectedId(current => { if (current !== "" && list.some(t => t.id === current)) return current; if (!initialSelectionDone.current) { initialSelectionDone.current = true; return selectInitialTask(list) } return list.find(t => !FINAL_STATUSES.has(t.status) && t.status !== "draft")?.id ?? list[0]?.id ?? "" }) } catch (e) { setTasksError(e instanceof Error ? e.message : "Não foi possível carregar as tarefas do mapa.") } finally { setTasksLoading(false) } }, [bundle])
   const loadProjects = useCallback(async () => { if (!bundle) return; try { const result = await bundle.http.request<{ items: Array<{ id: number; nome: string }> }>("GET", "/gerenteagentes/projetos_captados", { query: { pageSize: 100 }, auth: "access" }); setProjects(result.items ?? []) } catch { setProjects([]) } }, [bundle])
   const [motorActive, setMotorActive] = useState(true)
-  const loadActivity = useCallback(async () => { if (!bundle) return; try { const result = await bundle.http.request<{ activities?: MotorActivity[], motorStatus?: "idle" | "working" | "deploying", motorModel?: string | null, motorTaskInfo?: { taskId: number; title: string }, workers?: Array<{ role: "analyst" | "developer" | "manager", active: boolean, model?: string | null, taskId?: string | null, phase?: string | null }> }>("GET", "/gerenteagentes/motor-activity", { auth: "access" }); setActivities(result.activities ?? []); if (result.motorStatus) setMotorStatus(result.motorStatus); if (result.motorModel) setMotorModel(result.motorModel); if (result.motorTaskInfo) setMotorTaskInfo(result.motorTaskInfo); // Workers são usados pelo AgentStatusStrip para mostrar status dos agentes const workers = result.workers ?? [] } catch { setActivities([]) } }, [bundle])
+  const loadActivity = useCallback(async () => { if (!bundle) return; try { const result = await bundle.http.request<{ activities?: MotorActivity[] }>("GET", "/gerenteagentes/motor-activity", { auth: "access" }); setActivities(result.activities ?? []); const deploy = await bundle.http.request<DeployDiagnostics>("GET", "/gerenteagentes/motor-deploy-diagnostics", { auth: "access" }); setDiagnostics(deploy); const state = await bundle.http.request<MotorState>("GET", "/gerenteagentes/motor-state", { auth: "access" }); if (typeof state.active === "boolean") setMotorActive(state.active) } catch { setActivities([]) } }, [bundle])
   const loadDetail = useCallback(async (id: number) => { if (!bundle) return; try { const result = await bundle.http.request<Detail>("GET", `/gerenteagentes/tarefas/${id}/motor-detail`, { auth: "access" }); setDetail(result) } catch (e) { setError(e instanceof Error ? e.message : "Não foi possível carregar os detalhes.") } }, [bundle])
   const loadOperations = useCallback(async (id: number) => { if (!bundle) return; try { const result = await bundle.http.request<MotorOperation[]>("GET", `/gerenteagentes/tarefas/${id}/operacoes-motor`, { auth: "access" }); setOperations(Array.isArray(result) ? result : []) } catch { setOperations([]) } }, [bundle])
   const loadSubtasks = useCallback(async (id: number) => { if (!bundle) return; try { const result = await bundle.http.request<DbSubtask[]>("GET", `/gerenteagentes/tarefas/${id}/subtarefas`, { auth: "access" }); setDbSubtasks(Array.isArray(result) ? result : []) } catch { setDbSubtasks([]) } }, [bundle])
@@ -121,32 +115,6 @@ export default function OperationMapScreen() {
   const bulk = async (action: "pause-all" | "resume-all") => { if (!bundle) return; setBulkAction(action); setBulkMessage(null); try { const result = await bundle.http.request<MotorState>("POST", `/gerenteagentes/tarefas/${action}`, { auth: "access" }); setMotorActive(result.active); setBulkMessage(result.active ? "Motor ativado. Novas atividades voltarão a ser despachadas." : "Motor pausado. Atividades em andamento continuam; novas atividades serão adiadas."); } catch (e) { setBulkMessage(e instanceof Error ? e.message : "Não foi possível alterar o estado do Motor.") } finally { setBulkAction(null) } }
   const sendChat = async (modo: "normal" | "solicitar_pausa" = "normal") => { const text = chatInput.trim(); if (!bundle || selectedId === "" || !text || chatSending) return; const id = selectedId; setChatSending(true); setChatWaiting(true); setChatError(null); try { await bundle.http.request("POST", `/gerenteagentes/tarefas/${id}/chat`, { body: { texto: text, modo }, auth: "access" }); if (selectedId === id) { setChatInput(""); await loadChat(id) } } catch (e) { if (selectedId === id) { setChatWaiting(false); setChatError(e instanceof Error ? e.message : "Não foi possível enviar a mensagem.") } } finally { setChatSending(false) } }
   const resumeInteraction = async () => { if (!bundle || selectedId === "") return; setChatSending(true); setChatError(null); try { await bundle.http.request("POST", `/gerenteagentes/tarefas/${selectedId}/interacao/retomar`, { auth: "access" }); await refreshSelected(selectedId) } catch (e) { setChatError(e instanceof Error ? e.message : "Não foi possível retomar a execução.") } finally { setChatSending(false) } }
-
-  const renderHeaderActions = (isWide: boolean) => (
-    <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
-      <Tooltip title="Iniciar tarefa"><span><IconButton size="small" variant="contained" disabled={!canStart} onClick={() => void execute("start")} data-testid="header-btn-start"><PlayArrowRounded /></IconButton></span></Tooltip>
-      <Tooltip title="Pausar tarefa"><span><IconButton size="small" variant="outlined" disabled={!canPause} onClick={() => void execute("pause")} data-testid="header-btn-pause"><PauseRounded /></IconButton></span></Tooltip>
-      <Tooltip title="Retomar tarefa"><span><IconButton size="small" variant="outlined" disabled={status !== "paused"} onClick={() => void execute("resume")} data-testid="header-btn-resume"><ReplayRounded /></IconButton></span></Tooltip>
-      <Tooltip title="Desbloquear tarefa"><span><IconButton size="small" variant="outlined" disabled={status !== "blocked"} onClick={() => void execute("unlock")} data-testid="header-btn-unlock"><LockOpenRounded /></IconButton></span></Tooltip>
-      <Tooltip title="Sanear sessão do agente"><span><IconButton size="small" variant="outlined" disabled={TASK_STATUS_EXECUTING.has(status)} onClick={() => void execute("sanitize-session")} data-testid="header-btn-sanitize"><ReplayRounded /></IconButton></span></Tooltip>
-      {status === "completed" && <Tooltip title="Confirmar deploy"><span><IconButton size="small" color="success" variant="contained" disabled={acaoTarefa !== null} onClick={() => void confirmarDeploy(selected.id)} data-testid="header-btn-confirm-deploy"><LockOpenRounded /></IconButton></span></Tooltip>}
-      <Tooltip title="Cancelar tarefa"><span><IconButton size="small" color="error" variant="outlined" disabled={acaoTarefa !== null || FINAL_STATUSES.has(status) || status === "cancelled"} onClick={() => void cancelarTarefa(selected.id)} data-testid="header-btn-cancel"><CloseRounded /></IconButton></span></Tooltip>
-      <Tooltip title="Excluir tarefa"><span><IconButton size="small" color="error" variant="text" disabled={acaoTarefa !== null || TASK_STATUS_EXECUTING.has(status)} onClick={() => void excluirTarefa(selected.id)} data-testid="header-btn-delete"><DeleteRounded /></IconButton></span></Tooltip>
-      <Tooltip title="Editar tarefa"><IconButton size="small" aria-label="Editar tarefa" onClick={() => setEditOpen(true)}><EditRounded /></IconButton></Tooltip>
-      <Tooltip title="Visualizar sessões do analista"><IconButton size="small" aria-label="Visualizar sessões do analista" onClick={() => void openSessions()}><PsychologyRounded /></IconButton></Tooltip>
-      {detail?.exists && <Tooltip title="Ver código da tarefa"><IconButton size="small" aria-label="Ver código da tarefa" onClick={() => setCodeViewerOpen(true)}><CodeRounded /></IconButton></Tooltip>}
-    </Stack>
-  )
-
-  const renderSummaryTab = () => (
-    <Stack spacing={1.5}>
-      <Typography color="text.secondary" sx={{ whiteSpace: "pre-wrap" }}>{selected.descricao || "Sem descrição"}</Typography>
-      {detail?.task?.blockInfo && <Alert severity="error"><b>Bloqueio:</b> {detail.task.blockInfo.excerpt || detail.task.blockInfo.kind || detail.task.errorMessage}</Alert>}
-      {detail && !detail.exists && <Alert severity="info">{detail.message ?? "Tarefa ainda não enviada ao motor."}</Alert>}
-      {renderHeaderActions(false)}
-    </Stack>
-  )
-
   const openTask = (id: number) => { setSelectedId(id); setDrawerOpen(true); setTab(0); setDetailMinimized(false) }
   const createTask = async (values: TarefaFormValues) => { if (!bundle) return; setNewTaskLoading(true); setNewTaskError(null); try { await bundle.http.request("POST", "/gerenteagentes/tarefas", { body: { projeto_id: Number(values.projetoId), titulo: values.titulo, descricao: values.descricao || null, tipo: values.tipo }, auth: "access" }); setNewTaskOpen(false); await loadTasks() } catch (e) { setNewTaskError(e instanceof Error ? e.message : "Erro ao criar tarefa"); throw e } finally { setNewTaskLoading(false) } }
   const getLoadOptions = useCallback((resource: string) => async (search: string) => { if (!bundle) return []; try { const result = await bundle.http.request<{ items: Array<Record<string, unknown>> }>("GET", `/${resource}`, { query: search ? { search, pageSize: 50 } : { pageSize: 100 }, auth: "access" }); return result.items ?? [] } catch { return [] } }, [bundle])
@@ -165,8 +133,6 @@ export default function OperationMapScreen() {
       <Box><Typography variant="h4" fontWeight={750}>Mapa de agentes</Typography><Typography variant="body2" color="text.secondary">Controle operacional em tempo real</Typography></Box>
       <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap><Typography variant="caption" color={realtime === "open" ? "success.main" : "warning.main"}>● {realtime === "open" ? "Tempo real conectado" : "Reconectando…"}</Typography><Typography variant="body2"><b>{tasks.length}</b> tarefas</Typography><Typography variant="body2" color="primary.main"><b>{tasks.filter(t => ["running", "analyzing", "motor_fix"].includes(t.status)).length}</b> executando</Typography><Tooltip title="Impede novas atividades sem interromper o que já está em execução"><span><Button size="small" variant="outlined" startIcon={<PauseRounded />} disabled={bulkAction !== null || !motorActive} onClick={() => void bulk("pause-all")}>Pausar Motor</Button></span></Tooltip><Tooltip title="Reativa o despacho de novas atividades"><span><Button size="small" variant="outlined" startIcon={<ReplayRounded />} disabled={bulkAction !== null || motorActive} onClick={() => void bulk("resume-all")}>Ativar Motor</Button></span></Tooltip><Button variant="contained" size="small" startIcon={<AddTaskRounded />} onClick={() => setNewTaskOpen(true)}>Nova tarefa</Button></Stack>
     </Stack>
-    {/* Faixa de status dos agentes */}
-    <AgentStatusStrip motorActive={motorActive} motorStatus={motorStatus} motorTaskInfo={motorTaskInfo} motorModel={motorModel} activities={activities} workers={workers} />
     {tasksError && <Alert severity="error" onClose={() => setTasksError(null)}>Não foi possível carregar as tarefas do mapa: {tasksError}</Alert>}{!tasksLoading && !tasksError && tasks.length === 0 && <Alert severity="info">Nenhuma tarefa encontrada.</Alert>}{error && <Alert severity="error" onClose={() => setError(null)}>{error}</Alert>}{bulkMessage && <Alert severity="info" onClose={() => setBulkMessage(null)}>{bulkMessage}</Alert>}{diagnostics && <Tooltip title={diagnostics.reasons.join(" · ")}><Alert severity={diagnostics.canStart ? "success" : diagnostics.pendingRequests ? "warning" : "info"} sx={{ py: 0.5 }}>{diagnostics.canStart ? "Deploy pronto para iniciar" : diagnostics.reasons[0] ?? "Deploy aguardando condições operacionais"}{diagnostics.pendingRequests > 0 ? ` · ${diagnostics.pendingRequests} pendente(s)` : ""}</Alert></Tooltip>}
     <OperationMapCanvas tarefas={mapped} selectedTaskId={selectedId} motorActivities={activities} projetos={projects} filtros={filters} onFiltrosChange={setFilters} onSelectTask={openTask} />
     </Stack>

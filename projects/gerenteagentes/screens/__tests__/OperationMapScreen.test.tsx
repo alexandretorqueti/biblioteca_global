@@ -76,7 +76,7 @@ function bundleFalso(tarefas: TarefaFake[], chamadas: string[]) {
         if (path === "/gerenteagentes/projetos_captados") {
           return { items: [{ id: 1, nome: "Projeto X" }] }
         }
-        if (path === "/gerenteagentes/motor-activity") return { activities: [] }
+        if (path === "/gerenteagentes/motor-activity") return { activities: [], workers: [] }
         if (path === "/gerenteagentes/motor-deploy-diagnostics") {
           return { canStart: true, reasons: [], pendingRequests: 0 }
         }
@@ -248,7 +248,7 @@ describe("OperationMapScreen — resultado da subtarefa na aba Execução", () =
         request: async (method: string, path: string) => {
           if (path === "/gerenteagentes/tarefas-com-status") return [tarefaFactory(tarefaId, "Tarefa com resultado", "running")]
           if (path === "/gerenteagentes/projetos_captados") return { items: [{ id: 1, nome: "Projeto X" }] }
-          if (path === "/gerenteagentes/motor-activity") return { activities: [] }
+          if (path === "/gerenteagentes/motor-activity") return { activities: [], workers: [] }
           if (path === "/gerenteagentes/motor-deploy-diagnostics") return { canStart: true, reasons: [], pendingRequests: 0 }
           if (path.endsWith("/motor-detail")) {
             return {
