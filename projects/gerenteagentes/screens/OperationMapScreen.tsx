@@ -87,10 +87,9 @@ export default function OperationMapScreen() {
   const activeTask = useRef<number | "">(""); const requestId = useRef(0)
   const initialSelectionDone = useRef(false)
 
-  // Estado do status do motor
-  const [motorStatus, setMotorStatus] = useState<"idle" | "working" | "deploying">("idle")
-  const [motorModel, setMotorModel] = useState<string | null>(null)
-  const [motorTaskInfo, setMotorTaskInfo] = useState<{ taskId: number; title: string } | null>(null)
+  // Estado do motor — contrato real do motor-v3 (WorkerActivityResponse)
+  const [motorIsRunning, setMotorIsRunning] = useState(false)
+  const [motorActivity, setMotorActivity] = useState<AgentStatusStripProps["motorActivity"]>(null)
   const [workers, setWorkers] = useState<AgentStatusStripProps["workers"]>([])
 
   const loadTasks = useCallback(async () => { if (!bundle) { setTasksLoading(false); setTasksError("A conexão com a API ainda não está disponível."); return } setTasksLoading(true); setTasksError(null); try { const result = await bundle.http.request<Task[] | { items?: Task[] }>("GET", "/gerenteagentes/tarefas-com-status", { query: { pageSize: 100 }, auth: "access" }); const payload = Array.isArray(result) ? result : (result.items ?? []); const list = payload.sort((a, b) => new Date(b.updatedAt ?? b.createdAt ?? 0).getTime() - new Date(a.updatedAt ?? a.createdAt ?? 0).getTime()); setTasks(list); setSelectedId(current => { if (current !== "" && list.some(t => t.id === current)) return current; if (!initialSelectionDone.current) { initialSelectionDone.current = true; return selectInitialTask(list) } return list.find(t => !FINAL_STATUSES.has(t.status) && t.status !== "draft")?.id ?? list[0]?.id ?? "" }) } catch (e) { setTasksError(e instanceof Error ? e.message : "Não foi possível carregar as tarefas do mapa.") } finally { setTasksLoading(false) } }, [bundle])
@@ -100,19 +99,20 @@ export default function OperationMapScreen() {
     if (!bundle) return
     try {
       const result = await bundle.http.request<{
-        activities?: MotorActivity[]
-        motorStatus?: "idle" | "working" | "deploying"
-        motorModel?: string | null
-        motorTaskInfo?: { taskId: number; title: string }
+        motor?: {
+          isActive?: boolean
+          isRunning?: boolean
+          activity?: { kind: "testing" | "worktree" | "deploying" | "executing"; message: string; taskIds: string[] } | null
+        }
         workers?: AgentStatusStripProps["workers"]
       }>("GET", "/gerenteagentes/motor-activity", { auth: "access" })
-      setActivities(result.activities ?? [])
-      setMotorStatus(result.motorStatus ?? "idle")
-      setMotorModel(result.motorModel ?? null)
-      setMotorTaskInfo(result.motorTaskInfo ?? null)
+      setMotorActive(result.motor?.isActive ?? true)
+      setMotorIsRunning(result.motor?.isRunning ?? false)
+      setMotorActivity(result.motor?.activity ?? null)
       setWorkers(result.workers ?? [])
     } catch {
-      setActivities([])
+      setMotorIsRunning(false)
+      setMotorActivity(null)
       setWorkers([])
     }
   }, [bundle])
@@ -186,7 +186,7 @@ export default function OperationMapScreen() {
       <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap><Typography variant="caption" color={realtime === "open" ? "success.main" : "warning.main"}>● {realtime === "open" ? "Tempo real conectado" : "Reconectando…"}</Typography><Typography variant="body2"><b>{tasks.length}</b> tarefas</Typography><Typography variant="body2" color="primary.main"><b>{tasks.filter(t => ["running", "analyzing", "motor_fix"].includes(t.status)).length}</b> executando</Typography><Tooltip title="Impede novas atividades sem interromper o que já está em execução"><span><Button size="small" variant="outlined" startIcon={<PauseRounded />} disabled={bulkAction !== null || !motorActive} onClick={() => void bulk("pause-all")}>Pausar Motor</Button></span></Tooltip><Tooltip title="Reativa o despacho de novas atividades"><span><Button size="small" variant="outlined" startIcon={<ReplayRounded />} disabled={bulkAction !== null || motorActive} onClick={() => void bulk("resume-all")}>Ativar Motor</Button></span></Tooltip><Button variant="contained" size="small" startIcon={<AddTaskRounded />} onClick={() => setNewTaskOpen(true)}>Nova tarefa</Button></Stack>
     </Stack>
     {/* Faixa de status dos agentes */}
-    <AgentStatusStrip motorActive={motorActive} motorStatus={motorStatus} motorTaskInfo={motorTaskInfo} motorModel={motorModel} activities={activities} workers={workers} />
+    <AgentStatusStrip motorActive={motorActive} motorIsRunning={motorIsRunning} motorActivity={motorActivity} workers={workers} />
     {tasksError && <Alert severity="error" onClose={() => setTasksError(null)}>Não foi possível carregar as tarefas do mapa: {tasksError}</Alert>}{!tasksLoading && !tasksError && tasks.length === 0 && <Alert severity="info">Nenhuma tarefa encontrada.</Alert>}{error && <Alert severity="error" onClose={() => setError(null)}>{error}</Alert>}{bulkMessage && <Alert severity="info" onClose={() => setBulkMessage(null)}>{bulkMessage}</Alert>}{diagnostics && <Tooltip title={diagnostics.reasons.join(" · ")}><Alert severity={diagnostics.canStart ? "success" : diagnostics.pendingRequests ? "warning" : "info"} sx={{ py: 0.5 }}>{diagnostics.canStart ? "Deploy pronto para iniciar" : diagnostics.reasons[0] ?? "Deploy aguardando condições operacionais"}{diagnostics.pendingRequests > 0 ? ` · ${diagnostics.pendingRequests} pendente(s)` : ""}</Alert></Tooltip>}
     <OperationMapCanvas tarefas={mapped} selectedTaskId={selectedId} motorActivities={activities} projetos={projects} filtros={filters} onFiltrosChange={setFilters} onSelectTask={openTask} />
     </Stack>

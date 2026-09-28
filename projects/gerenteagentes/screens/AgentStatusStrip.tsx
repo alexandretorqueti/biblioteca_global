@@ -1,6 +1,14 @@
 /**
  * Faixa de status dos agentes — representação visual animada dos três agentes
- * (Analista, Desenvolvedor e Gerente/Monitor) no Mapa de agentes.
+ * (Analista, Desenvolvedor e Monitor) no Mapa de agentes.
+ *
+ * Contrato (GET /gerenteagentes/motor-activity → motor-v3 /api/motor/stats):
+ *   motor: { isActive, isRunning, activity: { kind, message, taskIds[] } | null }
+ *   workers: Array<{ role, active, model, taskId, subtaskId, phase }>
+ *
+ * Cada agente (Analista, Desenvolvedor, Monitor) exibe o código da tarefa em
+ * tratamento (#taskId) e da subtarefa (·SsubtaskId) quando ativo. A seção do
+ * Motor exibe os códigos de todas as tarefas da leva de deploy (taskIds).
  */
 import React, { useMemo } from "react"
 import {
@@ -10,7 +18,22 @@ import {
 import {
   Box, Chip, Paper, Stack, Typography, useMediaQuery, useTheme
 } from "@mui/material"
-import type { MotorActivity } from "./TaskFlowMap"
+
+/** Descrição de atividade do motor (kind + taskIds da leva). */
+export interface MotorActivityInfo {
+  kind: "testing" | "worktree" | "deploying" | "executing"
+  message: string
+  taskIds: string[]
+}
+
+export interface WorkerInfo {
+  role: "analyst" | "developer" | "manager"
+  active: boolean
+  model?: string | null
+  taskId?: string | null
+  subtaskId?: number | null
+  phase?: string | null
+}
 
 export interface AgentStatus {
   id: string
@@ -19,32 +42,28 @@ export interface AgentStatus {
   icon: React.ComponentType<{ sx?: object }>
   model?: string | null
   status: "idle" | "working" | "deploying"
-  taskInfo?: { taskId: number; title: string } | null
+  taskId?: string | null
+  subtaskId?: number | null
 }
 
 export interface AgentStatusStripProps {
   motorActive: boolean
-  motorStatus?: "idle" | "working" | "deploying"
-  motorTaskInfo?: { taskId: number; title: string } | null
-  motorModel?: string | null
-  activities?: MotorActivity[]
-  workers?: Array<{ role: "analyst" | "developer" | "manager", active: boolean, model?: string | null, taskId?: string | null, phase?: string | null }>
+  motorIsRunning?: boolean
+  motorActivity?: MotorActivityInfo | null
+  workers?: WorkerInfo[]
 }
 
-function getAgentStatus(agentId: string, workers: Array<{ role: "analyst" | "developer" | "manager", active: boolean, model?: string | null, taskId?: string | null, phase?: string | null }>): AgentStatus {
-  // Buscar o worker correspondente a este agente
+function getAgentStatus(agentId: string, workers: WorkerInfo[]): AgentStatus {
   const worker = workers.find(w => w.role === agentId)
-
-  // Determinar status do agente baseado na atividade do worker
   let status: AgentStatus["status"] = "idle"
-  let taskInfo = null
-  let model = worker?.model ?? null
+  let taskId: string | null = null
+  let subtaskId: number | null = null
+  const model = worker?.model ?? null
 
   if (worker?.active) {
     status = worker.phase?.toLowerCase().includes('deploy') ? "deploying" : "working"
-    if (worker.taskId) {
-      taskInfo = { taskId: Number(worker.taskId), title: `Tarefa #${worker.taskId}` }
-    }
+    taskId = worker.taskId ?? null
+    subtaskId = worker.subtaskId ?? null
   }
 
   return {
@@ -53,12 +72,13 @@ function getAgentStatus(agentId: string, workers: Array<{ role: "analyst" | "dev
     role: agentId === "analyst" ? "Analista" : agentId === "developer" ? "Desenvolvedor" : "Gerente",
     icon: agentId === "analyst" ? AccountCircleRounded : agentId === "developer" ? CodeRounded : SupervisedUserCircleRounded,
     status,
-    taskInfo,
+    taskId,
+    subtaskId,
     model
   }
 }
 
-export default function AgentStatusStrip({ motorActive, motorStatus = "idle", motorTaskInfo, motorModel, activities = [], workers = [] }: AgentStatusStripProps) {
+export default function AgentStatusStrip({ motorActive, motorIsRunning = false, motorActivity = null, workers = [] }: AgentStatusStripProps) {
   const theme = useTheme()
   const isXs = useMediaQuery(theme.breakpoints.down("sm"))
   const isSm = useMediaQuery(theme.breakpoints.down("md"))
@@ -68,39 +88,26 @@ export default function AgentStatusStrip({ motorActive, motorStatus = "idle", mo
     if (!motorActive) {
       return { icon: PauseRounded, text: "Motor pausado", color: "text.secondary" }
     }
-    switch (motorStatus) {
-      case "deploying":
-        return { icon: ModelTrainingRounded, text: "Deploy em andamento", color: "primary.main" }
-      case "working":
-        return { icon: PlayArrowRounded, text: "Operando", color: "success.main" }
-      default:
-        return { icon: PlayArrowRounded, text: "Aguardando atividade", color: "text.secondary" }
+    if (motorActivity?.kind === "deploying") {
+      return { icon: ModelTrainingRounded, text: "Deploy em andamento", color: "primary.main" }
     }
-  }, [motorActive, motorStatus])
+    if (motorIsRunning) {
+      return { icon: PlayArrowRounded, text: "Operando", color: "success.main" }
+    }
+    return { icon: PlayArrowRounded, text: "Aguardando atividade", color: "text.secondary" }
+  }, [motorActive, motorIsRunning, motorActivity])
 
-  // Definir o status do agente Monitor baseado no estado do motor
-  const monitorStatus: AgentStatus["status"] = motorActive
-    ? motorStatus === "deploying" ? "deploying" : "working"
-    : "idle"
-
-  const monitorTaskInfo = motorActive && motorTaskInfo ? motorTaskInfo : null
-  const monitorModel = motorModel
-
-  // Definir os três agentes com seus status baseados nos workers
+  // Os três agentes: Analista e Desenvolvedor dos workers; Monitor do worker 'manager'
   const agents: AgentStatus[] = useMemo(() => {
-    const analystStatus: AgentStatus = getAgentStatus("analyst", workers)
-    const developerStatus: AgentStatus = getAgentStatus("developer", workers)
-    const monitorStatusAgent: AgentStatus = {
-      id: "monitor",
-      name: "Monitor",
-      role: "Gerente",
-      icon: SupervisedUserCircleRounded,
-      status: monitorStatus,
-      taskInfo: monitorTaskInfo,
-      model: monitorModel
-    }
-    return [analystStatus, developerStatus, monitorStatusAgent]
-  }, [monitorStatus, monitorTaskInfo, monitorModel, workers])
+    return [
+      getAgentStatus("analyst", workers),
+      getAgentStatus("developer", workers),
+      getAgentStatus("manager", workers),
+    ]
+  }, [workers])
+
+  // TaskIds da leva de deploy (exibidos como chips na seção do Motor)
+  const deployTaskIds = motorActivity?.kind === "deploying" ? motorActivity.taskIds : []
 
   return (
     <Paper
@@ -129,6 +136,7 @@ export default function AgentStatusStrip({ motorActive, motorStatus = "idle", mo
 
         {/* Estado do motor */}
         <Box
+          data-testid="motor-state-box"
           sx={{
             display: "flex",
             alignItems: "center",
@@ -145,14 +153,16 @@ export default function AgentStatusStrip({ motorActive, motorStatus = "idle", mo
           <Typography variant="caption" fontWeight={700} sx={{ color: motorState.color, whiteSpace: "nowrap" }}>
             {motorState.text}
           </Typography>
-          {motorActive && motorTaskInfo && (
+          {deployTaskIds.map((id) => (
             <Chip
+              key={`deploy-${id}`}
               size="small"
-              label={`#${motorTaskInfo.taskId}`}
+              label={`#${id}`}
               variant="outlined"
-              sx={{ ml: 0.5 }}
+              sx={{ ml: 0.25 }}
+              data-testid={`motor-deploy-task-${id}`}
             />
-          )}
+          ))}
         </Box>
       </Stack>
     </Paper>
@@ -232,7 +242,24 @@ function AgentStatusItem({ agent, compact }: AgentStatusItemProps) {
         >
           {agent.name}
         </Typography>
-        {agent.model && (
+        {isWorking && agent.taskId && (
+          <Typography
+            variant="caption"
+            data-testid={`agent-task-code-${agent.id}`}
+            sx={{
+              fontSize: 10,
+              lineHeight: 1.1,
+              color: "primary.main",
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              fontWeight: 600
+            }}
+          >
+            #{agent.taskId}{agent.subtaskId != null ? ` · S${agent.subtaskId}` : ""}
+          </Typography>
+        )}
+        {!isWorking && agent.model && (
           <Typography
             variant="caption"
             sx={{
