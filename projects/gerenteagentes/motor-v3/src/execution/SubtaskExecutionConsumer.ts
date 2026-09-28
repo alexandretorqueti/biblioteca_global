@@ -67,6 +67,15 @@ export class SubtaskExecutionConsumer {
       })
       return
     }
+    // Proteção contra recriação de sessão após DONE processado.
+    // Se uma sessão foi concluída com sucesso nos últimos 10 minutos,
+    // rejeita a mensagem em vez de criar nova sessão concorrente.
+    if (await this.repository.hasRecentCompletedDevelopmentSession?.(subtaskId)) {
+      await this.log(operationId, 2, message, {
+        phase: 'rejected', outcome: 'skipped', subtaskId, reasonCode: 'development_session_already_completed',
+      })
+      return
+    }
     try {
       this.validateContext(execution)
     } catch (error) {

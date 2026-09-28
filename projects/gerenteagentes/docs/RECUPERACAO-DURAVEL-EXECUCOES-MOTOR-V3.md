@@ -11,6 +11,7 @@ O boot do Motor deve reconciliar trabalho interrompido sem assumir que a mensage
 - Falhas legadas com a assinatura `Timeout global do worker`, sessão persistida ativa e resposta remota válida são reabertas atomicamente; o evento de falha pendente é suprimido antes de retornar a subtarefa para `running`.
 - O reconciliador identifica repetição consecutiva de chamadas de ferramenta. Ao atingir o limiar, tenta abortar o run físico antes de reenfileirar; se não conseguir, registra atenção e preserva a sessão. A telemetria guarda somente o hash da ação.
 - Se uma sessão DEV encerrada não possuir resposta final ou o marcador `::DONE::`, o Motor envia uma solicitação de conclusão **na mesma sessão**, mantendo modelo, contexto e worktree. O checkpoint persiste a quantidade de solicitações e aplica intervalo mínimo para evitar duplicidade após restart. Após duas solicitações sem protocolo, a subtarefa é bloqueada para intervenção humana; ela não é reenfileirada nem recebe um segundo DEV concorrente.
+- Proteção contra recriação de sessão após DONE processado: quando uma mensagem é reenfileirada na janela entre o processamento do `::DONE::` e a transição completa da subtarefa, o Motor verifica se já existe uma sessão concluída com sucesso nos últimos 10 minutos. Se existir, rejeita a mensagem em vez de criar nova sessão concorrente.
 - `motor_operation_log` permanece trilha de auditoria; o estado recuperável vem de `motor_agent_sessions`, `tarefa_contextos_execucao`, `subtarefas` e `test_runs`.
 
 ## Invariantes
@@ -22,6 +23,7 @@ O boot do Motor deve reconciliar trabalho interrompido sem assumir que a mensage
 5. Falha de auditoria não pode impedir a transição durável da subtarefa.
 6. Uma subtarefa só é reenfileirada após loop quando o run remoto foi abortado com sucesso.
 7. A ausência de `::DONE::` nunca é motivo suficiente para criar uma nova sessão DEV.
+8. Uma mensagem reenfileirada nunca cria nova sessão se já existe sessão concluída com sucesso nos últimos 10 minutos.
 
 ## Parâmetros operacionais
 

@@ -61,6 +61,50 @@ describe('SubtaskExecutionConsumer', () => {
     expect(logger.append).toHaveBeenLastCalledWith(expect.objectContaining({ reasonCode: 'subtask_not_running' }))
   })
 
+  it('rejeita a mensagem quando já existe sessão concluída com sucesso recentemente', async () => {
+    const repository = {
+      getExecutionContext: vi.fn().mockResolvedValue(context),
+      hasActiveDevelopmentSession: vi.fn().mockResolvedValue(false),
+      hasRecentCompletedDevelopmentSession: vi.fn().mockResolvedValue(true),
+      getDevelopmentModelChain: vi.fn(),
+    }
+    const worktrees = { prepare: vi.fn() }
+    const worker = { executeTask: vi.fn() }
+    const logger = { append: vi.fn().mockResolvedValue(undefined) }
+    const consumer = new SubtaskExecutionConsumer(repository as never, worktrees as never, worker as never, {}, {}, logger)
+
+    await consumer.handle(message)
+
+    expect(repository.hasRecentCompletedDevelopmentSession).toHaveBeenCalledWith(901)
+    expect(worktrees.prepare).not.toHaveBeenCalled()
+    expect(worker.executeTask).not.toHaveBeenCalled()
+    expect(logger.append).toHaveBeenLastCalledWith(expect.objectContaining({
+      phase: 'rejected', outcome: 'skipped', reasonCode: 'development_session_already_completed',
+    }))
+  })
+
+  it('permite nova execução quando não há sessão concluída recentemente', async () => {
+    const repository = {
+      getExecutionContext: vi.fn().mockResolvedValue(context),
+      hasActiveDevelopmentSession: vi.fn().mockResolvedValue(false),
+      hasRecentCompletedDevelopmentSession: vi.fn().mockResolvedValue(false),
+      getDevelopmentModelChain: vi.fn().mockResolvedValue(['modelo-a']),
+      recordModelFailure: vi.fn().mockResolvedValue(undefined),
+      recordWorkspace: vi.fn().mockResolvedValue(undefined),
+      finishExecution: vi.fn().mockResolvedValue({ ...message, messageId: 'completed-no-recent', type: 'SUBTASK_EXECUTION_COMPLETED' }),
+    }
+    const worktrees = { prepare: vi.fn().mockResolvedValue({ path: '/worktree', branch: 'branch', baseCommit: 'abc' }) }
+    const worker = { executeTask: vi.fn().mockResolvedValue({ success: true, response: '::DONE::', attempts: 1 }) }
+    const logger = { append: vi.fn().mockResolvedValue(undefined) }
+    const consumer = new SubtaskExecutionConsumer(repository as never, worktrees as never, worker as never, {}, {}, logger)
+
+    await consumer.handle(message)
+
+    expect(repository.hasRecentCompletedDevelopmentSession).toHaveBeenCalledWith(901)
+    expect(worker.executeTask).toHaveBeenCalled()
+    expect(repository.finishExecution).toHaveBeenCalledWith(context, message, expect.objectContaining({ success: true }))
+  })
+
   it('separa a descrição longa do header enviado ao programador', async () => {
     const longContext = { ...context, taskDescription: 'D'.repeat(12_001) }
     const repository = {

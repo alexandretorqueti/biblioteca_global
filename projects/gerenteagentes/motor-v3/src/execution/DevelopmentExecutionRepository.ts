@@ -377,6 +377,24 @@ export class MySqlDevelopmentExecutionRepository {
     return Number(rows[0]?.total ?? 0) > 0
   }
 
+  /**
+   * Proteção contra recriação de sessão após DONE processado.
+   * Verifica se existe uma sessão concluída com sucesso nos últimos 10 minutos.
+   * Isso evita que mensagens reenfileiradas na janela entre DONE e transição
+   * completa da subtarefa criem uma segunda sessão concorrente.
+   */
+  async hasRecentCompletedDevelopmentSession(subtaskId: number): Promise<boolean> {
+    const [rows] = await this.pool.query<Array<RowDataPacket & { total: number | string }>>(
+      `SELECT COUNT(*) AS total FROM motor_agent_sessions
+        WHERE subtarefa_id=?
+          AND status='completed'
+          AND close_reason='development_completed'
+          AND closed_at >= DATE_SUB(NOW(), INTERVAL 10 MINUTE)`,
+      [subtaskId],
+    )
+    return Number(rows[0]?.total ?? 0) > 0
+  }
+
   async requestVerification(context: SubtaskExecutionContext, source: QueueMessage): Promise<QueueMessage> {
     return this.transitionWithMessage(context, source, 'delivered', 'verifying', 'SUBTASK_VERIFICATION_REQUESTED', {
       subtaskId: context.subtaskId, seq: context.seq,
