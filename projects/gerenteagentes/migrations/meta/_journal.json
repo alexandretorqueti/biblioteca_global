@@ -519,6 +519,13 @@
       "when": 1790553600001,
       "tag": "0074_motor_development_completion_protocol",
       "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "5",
+      "when": 1790611090329,
+      "tag": "0075_motor_terminal_verification_failure_catalog",
+      "breakpoints": true
     }
   ]
 }

@@ -6,3 +6,9 @@ export { MotorActivityGate } from './MotorActivityGate.js'
 export { insertOutboxMessage } from './outboxInsert.js'
 export { createQueueMessage, type QueueDelivery, type QueueMessage, type QueuePublishOptions } from './QueueMessage.js'
 export type { QueueTransport, QueueDeliveryHandler } from './QueueTransport.js'
+export {
+  TerminalFailureRouter,
+  type TerminalFailureContext,
+  type TerminalFailureHandler,
+  type TerminalFailureMessageHandler,
+} from './TerminalFailureHandler.js'
