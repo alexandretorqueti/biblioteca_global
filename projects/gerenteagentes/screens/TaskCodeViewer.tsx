@@ -644,15 +644,18 @@ export default function TaskCodeViewer({
                     </Stack>
 
                     {/* Diff do arquivo selecionado */}
-                    {selectedDiffFile && (
-                      <DiffViewer
-                        oldValue={""}
-                        newValue={selectedDiffFile.patch}
-                        fileName={selectedDiffFile.path}
-                        splitView
-                        maxHeight="calc(100vh - 260px)"
-                      />
-                    )}
+                    {selectedDiffFile && (() => {
+                      const { oldValue, newValue } = DiffViewer.parsePatchToOldNew(selectedDiffFile.patch)
+                      return (
+                        <DiffViewer
+                          oldValue={oldValue}
+                          newValue={newValue}
+                          fileName={selectedDiffFile.path}
+                          splitView
+                          maxHeight="calc(100vh - 260px)"
+                        />
+                      )
+                    })()}
                   </Stack>
                 )}
                 {!diffLoading && selectedCommit && diffFiles.length === 0 && (
