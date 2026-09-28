@@ -392,6 +392,8 @@ export default function TaskMonitorScreen(): ReactNode {
   const [pausandoTodas, setPausandoTodas] = useState(false)
   const [retomandoTodas, setRetomandoTodas] = useState(false)
   const [motorAtivo, setMotorAtivo] = useState(true)
+  const [monitorAtivo, setMonitorAtivo] = useState(true)
+  const [alterandoMonitor, setAlterandoMonitor] = useState(false)
   const [bulkMessage, setBulkMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const [analystSessionOpen, setAnalystSessionOpen] = useState(false)
   const [analystSessionLoading, setAnalystSessionLoading] = useState(false)
@@ -476,8 +478,9 @@ export default function TaskMonitorScreen(): ReactNode {
       if (mounted.current && Array.isArray(diagnostics.reasons) && typeof diagnostics.pendingRequests === "number") {
         setDeployDiagnostics(diagnostics)
       }
-      const state = await bundle.http.request<{ active: boolean }>("GET", "/gerenteagentes/motor-state", { auth: "access" })
+      const state = await bundle.http.request<{ active: boolean; monitorActive?: boolean }>("GET", "/gerenteagentes/motor-state", { auth: "access" })
       if (mounted.current && typeof state.active === "boolean") setMotorAtivo(state.active)
+      if (mounted.current && typeof state.monitorActive === "boolean") setMonitorAtivo(state.monitorActive)
     } catch {
       // Atividade é complementar; não interrompe o acompanhamento se o Motor reiniciar.
     }
@@ -822,6 +825,21 @@ export default function TaskMonitorScreen(): ReactNode {
     },
     [bundle, carregarTarefas],
   )
+
+  const executarAcaoMonitor = useCallback(async (acaoNome: 'pause-monitor' | 'resume-monitor') => {
+    if (!bundle) return
+    setAlterandoMonitor(true)
+    setBulkMessage(null)
+    try {
+      const res = await bundle.http.request<{ active: boolean }>("POST", `/gerenteagentes/tarefas/${acaoNome}`, { auth: "access" })
+      setMonitorAtivo(res.active)
+      setBulkMessage({ type: 'success', text: res.active ? 'Monitor ativado. Novas missões voltarão a ser despachadas.' : 'Monitor pausado. Missões em andamento continuam.' })
+    } catch (e) {
+      setBulkMessage({ type: 'error', text: e instanceof Error ? e.message : 'Não foi possível alterar o estado do Monitor.' })
+    } finally {
+      setAlterandoMonitor(false)
+    }
+  }, [bundle])
 
   const iniciarTarefaId = useCallback(
     async (id: number) => {
@@ -1627,6 +1645,20 @@ export default function TaskMonitorScreen(): ReactNode {
                 data-testid="btn-resume-all"
               >
                 Ativar Motor
+              </Button>
+            </span>
+          </Tooltip>
+          <Tooltip title="Impede novas missões do Monitor sem interromper uma missão já iniciada">
+            <span>
+              <Button variant="outlined" startIcon={<PauseRounded />} disabled={alterandoMonitor || !monitorAtivo} loading={alterandoMonitor} onClick={() => void executarAcaoMonitor('pause-monitor')} data-testid="btn-pause-monitor">
+                Pausar Monitor
+              </Button>
+            </span>
+          </Tooltip>
+          <Tooltip title="Reativa o despacho de novas missões do Monitor">
+            <span>
+              <Button variant="outlined" startIcon={<ReplayRounded />} disabled={alterandoMonitor || monitorAtivo} loading={alterandoMonitor} onClick={() => void executarAcaoMonitor('resume-monitor')} data-testid="btn-resume-monitor">
+                Ativar Monitor
               </Button>
             </span>
           </Tooltip>

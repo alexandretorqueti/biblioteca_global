@@ -526,6 +526,13 @@
       "when": 1790611090329,
       "tag": "0075_motor_terminal_verification_failure_catalog",
       "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "5",
+      "when": 1790630000000,
+      "tag": "0076_motor_monitor_active",
+      "breakpoints": true
     }
   ]
 }

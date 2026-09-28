@@ -1295,13 +1295,22 @@ export class GerenteAgentesService {
     return rows;
   }
 
-  async obterEstadoMotor(): Promise<{ active: boolean }> {
+  async obterEstadoMotor(): Promise<{ active: boolean; monitorActive: boolean }> {
     const db = await this.dbDoMotor();
-    const [row] = await db.select({ valor: motorConfiguracoes.valor })
-      .from(motorConfiguracoes)
-      .where(eq(motorConfiguracoes.chave, 'motor.active'))
-      .limit(1);
-    return { active: typeof row?.valor === 'boolean' ? row.valor : true };
+    const [motorRows, monitorRows] = await Promise.all([
+      db.select({ valor: motorConfiguracoes.valor })
+        .from(motorConfiguracoes)
+        .where(eq(motorConfiguracoes.chave, 'motor.active'))
+        .limit(1),
+      db.select({ valor: motorConfiguracoes.valor })
+        .from(motorConfiguracoes)
+        .where(eq(motorConfiguracoes.chave, 'motor.monitor.active'))
+        .limit(1),
+    ]);
+    return {
+      active: typeof motorRows[0]?.valor === 'boolean' ? motorRows[0].valor : true,
+      monitorActive: typeof monitorRows[0]?.valor === 'boolean' ? monitorRows[0].valor : true,
+    };
   }
 
   /** Impede novas atividades sem alterar nem interromper tarefas em andamento. */
@@ -1318,10 +1327,26 @@ export class GerenteAgentesService {
     return { active: true };
   }
 
+  async pausarMonitor(): Promise<{ active: false }> {
+    await this.definirConfiguracaoBoolean('motor.monitor.active', false);
+    this.logger.log('Monitor pausado: novas missões serão adiadas; missões em andamento continuam');
+    return { active: false };
+  }
+
+  async retomarMonitor(): Promise<{ active: true }> {
+    await this.definirConfiguracaoBoolean('motor.monitor.active', true);
+    this.logger.log('Monitor ativado: novas missões podem voltar a ser despachadas');
+    return { active: true };
+  }
+
   private async definirMotorAtivo(active: boolean): Promise<void> {
+    await this.definirConfiguracaoBoolean('motor.active', active);
+  }
+
+  private async definirConfiguracaoBoolean(chave: string, active: boolean): Promise<void> {
     const db = await this.dbDoMotor();
-    const definition = configuracaoPorChave('motor.active');
-    if (!definition) throw new Error('Configuração motor.active ausente do catálogo');
+    const definition = configuracaoPorChave(chave);
+    if (!definition) throw new Error(`Configuração ${chave} ausente do catálogo`);
     await db.insert(motorConfiguracoes).values({
       chave: definition.chave,
       tipo: definition.tipo,

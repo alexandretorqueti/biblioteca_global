@@ -55,6 +55,10 @@ export class QueueConsumer {
       await this.deferUntilMotorIsActive(delivery)
       return
     }
+    if (this.activityGate?.isMonitorActivityStart(message.type) && !(await this.activityGate.isMonitorActive())) {
+      await this.deferUntilMotorIsActive(delivery)
+      return
+    }
     if (message.attempt > this.config.maxAttempts) {
       await this.transport.deadLetter(delivery, 'max-attempts-exceeded')
       return

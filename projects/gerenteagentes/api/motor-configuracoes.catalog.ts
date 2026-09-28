@@ -27,6 +27,7 @@ const inteiroPositivo = (valor: unknown, max: number): valor is number =>
 
 export const MOTOR_CONFIGURACOES: readonly MotorConfiguracaoDefinicao[] = [
   { chave: "motor.active", tipo: "boolean", valorPadrao: true, regraValidacao: "booleano", descricao: "Controla se o Motor pode iniciar novas atividades. Atividades já iniciadas continuam até o próximo ponto de despacho.", validar: (v) => typeof v === "boolean" },
+  { chave: "motor.monitor.active", tipo: "boolean", valorPadrao: true, regraValidacao: "booleano", descricao: "Controla se o Monitor pode iniciar novas missões. Missões já iniciadas continuam até terminar.", validar: (v) => typeof v === "boolean" },
   { chave: "motor.max_workers", tipo: "number", valorPadrao: 1, regraValidacao: "inteiro entre 1 e 100", descricao: "Número máximo global de tarefas de desenvolvimento em paralelo.", validar: (v) => inteiroPositivo(v, 100) },
   { chave: "motor.max_workers_per_project", tipo: "number", valorPadrao: 1, regraValidacao: "inteiro entre 1 e 100", descricao: "Número máximo de tarefas em paralelo por projeto.", validar: (v) => inteiroPositivo(v, 100) },
   { chave: "motor.max_delivery_attempts", tipo: "number", valorPadrao: 20, regraValidacao: "inteiro entre 1 e 200", descricao: "Número máximo de entregas por subtarefa antes de bloqueá-la por excesso de tentativas.", validar: (v) => inteiroPositivo(v, 200) },

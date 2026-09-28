@@ -19,9 +19,24 @@ export class MotorActivityGate {
     return ACTIVITY_START_MESSAGES.has(messageType)
   }
 
+  isMonitorActivityStart(messageType: string): boolean {
+    return messageType === 'TASK_BLOCKED'
+  }
+
   async isActive(): Promise<boolean> {
     const [rows] = await this.pool.query<ActiveRow[]>(
       `SELECT valor FROM motor_configuracoes WHERE chave = 'motor.active' LIMIT 1`,
+    )
+    const value = rows[0]?.valor
+    if (value == null) return true
+    if (typeof value === 'boolean') return value
+    if (typeof value === 'number') return value !== 0
+    return value === 'true' || value === '1'
+  }
+
+  async isMonitorActive(): Promise<boolean> {
+    const [rows] = await this.pool.query<ActiveRow[]>(
+      `SELECT valor FROM motor_configuracoes WHERE chave = 'motor.monitor.active' LIMIT 1`,
     )
     const value = rows[0]?.valor
     if (value == null) return true
