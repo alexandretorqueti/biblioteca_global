@@ -184,6 +184,12 @@ export class Scheduler {
    * Lista execuções ativas (para debug)
    */
   getActiveExecutions(): ActiveExecution[] {
-    return Array.from(this.activeExecutions.values())
+    const now = Date.now()
+    // A leitura de diagnóstico não deve aguardar o próximo tick de
+    // reconciliação para deixar de exibir um worker expirado.
+    return Array.from(this.activeExecutions.values()).filter(execution =>
+      now - execution.startedAt <= this.config.executionTimeoutMs &&
+      now - execution.lastHeartbeat <= this.config.silenceTimeoutMs,
+    )
   }
 }

@@ -1543,7 +1543,15 @@ export class GerenteAgentesService {
   async atividadeMotor(projeto: ProjetoResumo) {
     const resp = await this.motorRequest('GET', '/api/motor/stats', undefined, this.motorV2Url);
     if (!resp.ok) throw new BadRequestException(`Motor indisponível (${resp.status}): ${resp.body.slice(0, 200)}`);
-    return JSON.parse(resp.body) as unknown;
+    const payload = JSON.parse(resp.body) as Record<string, unknown>;
+    // O contrato histórico de /motor-activity era o retorno direto de /stats.
+    // A atividade dos workers chega em um campo aditivo e é projetada no topo
+    // para o Mapa, sem remover nem renomear nenhum dado legado.
+    const workerActivity = payload.workerActivity;
+    if (workerActivity && typeof workerActivity === 'object' && !Array.isArray(workerActivity)) {
+      return { ...payload, ...(workerActivity as Record<string, unknown>) };
+    }
+    return payload;
   }
 
   async diagnosticoDeploy(projeto: ProjetoResumo) {
