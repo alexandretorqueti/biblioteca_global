@@ -52,7 +52,7 @@ export const contatos = mysqlTable("contatos", {
   nome: varchar("nome", { length: 150 }),
   email: varchar("email", { length: 200 }).notNull(),
   telefone: varchar("telefone", { length: 50 }),
-  origem: varchar("origem", { length: 100 }), // site, whatsapp, etc.
+  origem: varchar("origem", { length: 300 }).notNull(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at")
     .notNull()
