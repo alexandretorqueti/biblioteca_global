@@ -7,11 +7,7 @@
  * (ENOENT). Mesma correção já aplicada em database/drizzle.config.ts.
  */
 import { defineConfig } from "drizzle-kit"
-import { loadEnv } from "../../database/env.js"
 
-const env = loadEnv()
-// O Motor persiste no schema isolado do projeto, não no schema core da
-// Biblioteca. Permite override explícito apenas para homologação isolada.
 const gerenteAgentesDatabase = process.env.GERENTE_AGENTES_DATABASE ?? "projeto_640"
 
 export default defineConfig({
@@ -19,10 +15,10 @@ export default defineConfig({
   schema: "projects/gerenteagentes/schema.ts",
   out: "projects/gerenteagentes/migrations",
   dbCredentials: {
-    host: env.MYSQL_HOST,
-    port: Number(env.MYSQL_PORT),
-    user: env.MYSQL_USER,
-    password: env.MYSQL_PASSWORD,
+    host: process.env.MYSQL_HOST || "localhost",
+    port: Number(process.env.MYSQL_PORT) || 3308,
+    user: process.env.MYSQL_USER || "biblioteca",
+    password: process.env.MYSQL_PASSWORD || "",
     database: gerenteAgentesDatabase,
   },
 })
