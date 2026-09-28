@@ -13,7 +13,7 @@ import {
 } from "@mui/material"
 import { useTheme } from "@mui/material/styles"
 import {
-  AddTaskRounded, CloseRounded, CodeRounded, DeleteRounded, EditRounded, ExpandMoreRounded, ExpandLessRounded,
+  AddTaskRounded, CloseRounded, CodeRounded, EditRounded, ExpandMoreRounded, ExpandLessRounded,
   LockOpenRounded, PauseRounded, PlayArrowRounded, PsychologyRounded, ReplayRounded,
   SendRounded, VisibilityRounded,
 } from "@mui/icons-material"
@@ -115,32 +115,6 @@ export default function OperationMapScreen() {
   const bulk = async (action: "pause-all" | "resume-all") => { if (!bundle) return; setBulkAction(action); setBulkMessage(null); try { const result = await bundle.http.request<MotorState>("POST", `/gerenteagentes/tarefas/${action}`, { auth: "access" }); setMotorActive(result.active); setBulkMessage(result.active ? "Motor ativado. Novas atividades voltarão a ser despachadas." : "Motor pausado. Atividades em andamento continuam; novas atividades serão adiadas."); } catch (e) { setBulkMessage(e instanceof Error ? e.message : "Não foi possível alterar o estado do Motor.") } finally { setBulkAction(null) } }
   const sendChat = async (modo: "normal" | "solicitar_pausa" = "normal") => { const text = chatInput.trim(); if (!bundle || selectedId === "" || !text || chatSending) return; const id = selectedId; setChatSending(true); setChatWaiting(true); setChatError(null); try { await bundle.http.request("POST", `/gerenteagentes/tarefas/${id}/chat`, { body: { texto: text, modo }, auth: "access" }); if (selectedId === id) { setChatInput(""); await loadChat(id) } } catch (e) { if (selectedId === id) { setChatWaiting(false); setChatError(e instanceof Error ? e.message : "Não foi possível enviar a mensagem.") } } finally { setChatSending(false) } }
   const resumeInteraction = async () => { if (!bundle || selectedId === "") return; setChatSending(true); setChatError(null); try { await bundle.http.request("POST", `/gerenteagentes/tarefas/${selectedId}/interacao/retomar`, { auth: "access" }); await refreshSelected(selectedId) } catch (e) { setChatError(e instanceof Error ? e.message : "Não foi possível retomar a execução.") } finally { setChatSending(false) } }
-
-  const renderHeaderActions = (isWide: boolean) => (
-    <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
-      <Tooltip title="Iniciar tarefa"><span><IconButton size="small" variant="contained" disabled={!canStart} onClick={() => void execute("start")} data-testid="header-btn-start"><PlayArrowRounded /></IconButton></span></Tooltip>
-      <Tooltip title="Pausar tarefa"><span><IconButton size="small" variant="outlined" disabled={!canPause} onClick={() => void execute("pause")} data-testid="header-btn-pause"><PauseRounded /></IconButton></span></Tooltip>
-      <Tooltip title="Retomar tarefa"><span><IconButton size="small" variant="outlined" disabled={status !== "paused"} onClick={() => void execute("resume")} data-testid="header-btn-resume"><ReplayRounded /></IconButton></span></Tooltip>
-      <Tooltip title="Desbloquear tarefa"><span><IconButton size="small" variant="outlined" disabled={status !== "blocked"} onClick={() => void execute("unlock")} data-testid="header-btn-unlock"><LockOpenRounded /></IconButton></span></Tooltip>
-      <Tooltip title="Sanear sessão do agente"><span><IconButton size="small" variant="outlined" disabled={TASK_STATUS_EXECUTING.has(status)} onClick={() => void execute("sanitize-session")} data-testid="header-btn-sanitize"><ReplayRounded /></IconButton></span></Tooltip>
-      {status === "completed" && <Tooltip title="Confirmar deploy"><span><IconButton size="small" color="success" variant="contained" disabled={acaoTarefa !== null} onClick={() => void confirmarDeploy(selected.id)} data-testid="header-btn-confirm-deploy"><LockOpenRounded /></IconButton></span></Tooltip>}
-      <Tooltip title="Cancelar tarefa"><span><IconButton size="small" color="error" variant="outlined" disabled={acaoTarefa !== null || FINAL_STATUSES.has(status) || status === "cancelled"} onClick={() => void cancelarTarefa(selected.id)} data-testid="header-btn-cancel"><CloseRounded /></IconButton></span></Tooltip>
-      <Tooltip title="Excluir tarefa"><span><IconButton size="small" color="error" variant="text" disabled={acaoTarefa !== null || TASK_STATUS_EXECUTING.has(status)} onClick={() => void excluirTarefa(selected.id)} data-testid="header-btn-delete"><DeleteRounded /></IconButton></span></Tooltip>
-      <Tooltip title="Editar tarefa"><IconButton size="small" aria-label="Editar tarefa" onClick={() => setEditOpen(true)}><EditRounded /></IconButton></Tooltip>
-      <Tooltip title="Visualizar sessões do analista"><IconButton size="small" aria-label="Visualizar sessões do analista" onClick={() => void openSessions()}><PsychologyRounded /></IconButton></Tooltip>
-      {detail?.exists && <Tooltip title="Ver código da tarefa"><IconButton size="small" aria-label="Ver código da tarefa" onClick={() => setCodeViewerOpen(true)}><CodeRounded /></IconButton></Tooltip>}
-    </Stack>
-  )
-
-  const renderSummaryTab = () => (
-    <Stack spacing={1.5}>
-      <Typography color="text.secondary" sx={{ whiteSpace: "pre-wrap" }}>{selected.descricao || "Sem descrição"}</Typography>
-      {detail?.task?.blockInfo && <Alert severity="error"><b>Bloqueio:</b> {detail.task.blockInfo.excerpt || detail.task.blockInfo.kind || detail.task.errorMessage}</Alert>}
-      {detail && !detail.exists && <Alert severity="info">{detail.message ?? "Tarefa ainda não enviada ao motor."}</Alert>}
-      {renderHeaderActions(false)}
-    </Stack>
-  )
-
   const openTask = (id: number) => { setSelectedId(id); setDrawerOpen(true); setTab(0); setDetailMinimized(false) }
   const createTask = async (values: TarefaFormValues) => { if (!bundle) return; setNewTaskLoading(true); setNewTaskError(null); try { await bundle.http.request("POST", "/gerenteagentes/tarefas", { body: { projeto_id: Number(values.projetoId), titulo: values.titulo, descricao: values.descricao || null, tipo: values.tipo }, auth: "access" }); setNewTaskOpen(false); await loadTasks() } catch (e) { setNewTaskError(e instanceof Error ? e.message : "Erro ao criar tarefa"); throw e } finally { setNewTaskLoading(false) } }
   const getLoadOptions = useCallback((resource: string) => async (search: string) => { if (!bundle) return []; try { const result = await bundle.http.request<{ items: Array<Record<string, unknown>> }>("GET", `/${resource}`, { query: search ? { search, pageSize: 50 } : { pageSize: 100 }, auth: "access" }); return result.items ?? [] } catch { return [] } }, [bundle])
