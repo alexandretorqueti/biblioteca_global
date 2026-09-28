@@ -266,3 +266,30 @@ describe('DeployRepository — deploy lock', () => {
     })
   })
 })
+
+describe('DeployRepository — isolamento do lote', () => {
+  it('não mistura pedidos com outro commit no mesmo repositório e branch', async () => {
+    const connection = createMockConnection()
+    connection.query
+      .mockResolvedValueOnce([[{ total: 0 }], []]) // nenhum lote ativo
+      .mockResolvedValueOnce([[{
+        id: 10, task_id: 902, external_id: 'task-p2-902', requested_commit: 'commit-902',
+        project_id: 1, build_command: 'npm run build', test_command: 'npm test',
+      }], []])
+      .mockResolvedValueOnce([{ affectedRows: 1, insertId: 1 }, []])
+      .mockResolvedValueOnce([{ affectedRows: 1 }, []])
+    const pool = createMockPool()
+    pool.query.mockResolvedValue([[{ active: 0 }], []])
+    pool.getConnection.mockResolvedValue(connection)
+    const repo = new DeployRepository(pool as never, '/tmp/worktrees')
+
+    const result = await repo.claimBatch({ payload: {
+      repository: '/repo', baseBranch: 'base-desenvolvimento', expectedCommit: 'commit-902',
+    }} as never)
+
+    expect(result?.members.map(member => member.requestedCommit)).toEqual(['commit-902'])
+    const requestQuery = connection.query.mock.calls[1]
+    expect(requestQuery[0]).toContain('dr.requested_commit=?')
+    expect(requestQuery[1]).toEqual(['/repo', 'base-desenvolvimento', 'commit-902'])
+  })
+})
