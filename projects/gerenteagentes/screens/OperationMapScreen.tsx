@@ -91,11 +91,31 @@ export default function OperationMapScreen() {
   const [motorStatus, setMotorStatus] = useState<"idle" | "working" | "deploying">("idle")
   const [motorModel, setMotorModel] = useState<string | null>(null)
   const [motorTaskInfo, setMotorTaskInfo] = useState<{ taskId: number; title: string } | null>(null)
+  const [workers, setWorkers] = useState<AgentStatusStripProps["workers"]>([])
 
   const loadTasks = useCallback(async () => { if (!bundle) { setTasksLoading(false); setTasksError("A conexão com a API ainda não está disponível."); return } setTasksLoading(true); setTasksError(null); try { const result = await bundle.http.request<Task[] | { items?: Task[] }>("GET", "/gerenteagentes/tarefas-com-status", { query: { pageSize: 100 }, auth: "access" }); const payload = Array.isArray(result) ? result : (result.items ?? []); const list = payload.sort((a, b) => new Date(b.updatedAt ?? b.createdAt ?? 0).getTime() - new Date(a.updatedAt ?? a.createdAt ?? 0).getTime()); setTasks(list); setSelectedId(current => { if (current !== "" && list.some(t => t.id === current)) return current; if (!initialSelectionDone.current) { initialSelectionDone.current = true; return selectInitialTask(list) } return list.find(t => !FINAL_STATUSES.has(t.status) && t.status !== "draft")?.id ?? list[0]?.id ?? "" }) } catch (e) { setTasksError(e instanceof Error ? e.message : "Não foi possível carregar as tarefas do mapa.") } finally { setTasksLoading(false) } }, [bundle])
   const loadProjects = useCallback(async () => { if (!bundle) return; try { const result = await bundle.http.request<{ items: Array<{ id: number; nome: string }> }>("GET", "/gerenteagentes/projetos_captados", { query: { pageSize: 100 }, auth: "access" }); setProjects(result.items ?? []) } catch { setProjects([]) } }, [bundle])
   const [motorActive, setMotorActive] = useState(true)
-  const loadActivity = useCallback(async () => { if (!bundle) return; try { const result = await bundle.http.request<{ activities?: MotorActivity[], motorStatus?: "idle" | "working" | "deploying", motorModel?: string | null, motorTaskInfo?: { taskId: number; title: string }, workers?: Array<{ role: "analyst" | "developer" | "manager", active: boolean, model?: string | null, taskId?: string | null, phase?: string | null }> }>("GET", "/gerenteagentes/motor-activity", { auth: "access" }); setActivities(result.activities ?? []); if (result.motorStatus) setMotorStatus(result.motorStatus); if (result.motorModel) setMotorModel(result.motorModel); if (result.motorTaskInfo) setMotorTaskInfo(result.motorTaskInfo); // Workers são usados pelo AgentStatusStrip para mostrar status dos agentes const workers = result.workers ?? [] } catch { setActivities([]) } }, [bundle])
+  const loadActivity = useCallback(async () => {
+    if (!bundle) return
+    try {
+      const result = await bundle.http.request<{
+        activities?: MotorActivity[]
+        motorStatus?: "idle" | "working" | "deploying"
+        motorModel?: string | null
+        motorTaskInfo?: { taskId: number; title: string }
+        workers?: AgentStatusStripProps["workers"]
+      }>("GET", "/gerenteagentes/motor-activity", { auth: "access" })
+      setActivities(result.activities ?? [])
+      setMotorStatus(result.motorStatus ?? "idle")
+      setMotorModel(result.motorModel ?? null)
+      setMotorTaskInfo(result.motorTaskInfo ?? null)
+      setWorkers(result.workers ?? [])
+    } catch {
+      setActivities([])
+      setWorkers([])
+    }
+  }, [bundle])
   const loadDetail = useCallback(async (id: number) => { if (!bundle) return; try { const result = await bundle.http.request<Detail>("GET", `/gerenteagentes/tarefas/${id}/motor-detail`, { auth: "access" }); setDetail(result) } catch (e) { setError(e instanceof Error ? e.message : "Não foi possível carregar os detalhes.") } }, [bundle])
   const loadOperations = useCallback(async (id: number) => { if (!bundle) return; try { const result = await bundle.http.request<MotorOperation[]>("GET", `/gerenteagentes/tarefas/${id}/operacoes-motor`, { auth: "access" }); setOperations(Array.isArray(result) ? result : []) } catch { setOperations([]) } }, [bundle])
   const loadSubtasks = useCallback(async (id: number) => { if (!bundle) return; try { const result = await bundle.http.request<DbSubtask[]>("GET", `/gerenteagentes/tarefas/${id}/subtarefas`, { auth: "access" }); setDbSubtasks(Array.isArray(result) ? result : []) } catch { setDbSubtasks([]) } }, [bundle])
