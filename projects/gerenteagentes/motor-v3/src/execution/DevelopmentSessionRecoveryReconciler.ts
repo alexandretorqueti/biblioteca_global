@@ -82,7 +82,7 @@ export class DevelopmentSessionRecoveryReconciler {
             ON ctx.subtarefa_id = s.id AND ctx.sessao_chave = mas.session_key
            AND ctx.fase = 'development' AND ctx.estado != 'closed'
          WHERE mas.status = 'active'
-           AND (s.status = 'running'
+           AND (s.status IN ('pending', 'running')
              OR (s.status = 'failed' AND s.resultado LIKE '%Timeout global do worker%'))
          ORDER BY mas.subtarefa_id, mas.opened_at DESC, mas.id DESC
       `)
@@ -151,6 +151,14 @@ export class DevelopmentSessionRecoveryReconciler {
 
   private async recover(row: RecoveryRow): Promise<void> {
     const taskId = String(row.task_external_id ?? row.tarefa_id)
+    if (row.subtask_status === 'pending') {
+      const claimed = await this.repository.claimPendingExecutionForRecovery(Number(row.subtarefa_id))
+      if (!claimed) return
+      row.subtask_status = 'running'
+      await this.record(taskId, 'development_pending_session_reclaimed', {
+        sessionId: row.session_id, subtaskId: row.subtarefa_id, executionId: row.execution_id,
+      })
+    }
     const session: AnalystSession = {
       sessionId: String(row.runtime_session_id),
       sessionKey: String(row.session_key),

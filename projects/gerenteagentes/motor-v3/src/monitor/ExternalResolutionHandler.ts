@@ -195,11 +195,12 @@ export class ExternalResolutionHandler {
 
         await connection.query('DELETE FROM motor_execution_wait_queue WHERE tarefa_id = ?', [databaseTaskId])
       } else {
-        // Tarefa ainda tem trabalho pendente: devolve ao fluxo normal.
+        // Sem subtarefas ainda não existe plano executável: retome a análise.
+        const nextType = total === 0 ? 'TASK_RESUME_REQUESTED' : 'TASK_READY_FOR_PROGRAMMING'
         const ready = createQueueMessage({
-          type: 'TASK_READY_FOR_PROGRAMMING', taskId,
+          type: nextType, taskId,
           executionId: `exec-external-resolution-${taskId}-${Date.now()}`,
-          payload: { reason: 'external_resolution', resolvedBy },
+          payload: { reason: 'external_resolution', resolvedBy, resumeAnalysis: total === 0 },
         })
         await insertOutboxMessage(connection, ready)
         messageIds.push(ready.messageId)

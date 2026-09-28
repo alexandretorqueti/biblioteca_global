@@ -621,6 +621,23 @@ export class MySqlDevelopmentExecutionRepository {
     }
   }
 
+  /** Reassume uma subtarefa pending que ainda possui sessão DEV ativa. */
+  async claimPendingExecutionForRecovery(subtaskId: number): Promise<boolean> {
+    const [updated] = await this.pool.query<ResultSetHeader>(
+      `UPDATE subtarefas s
+          SET s.status='running', s.updated_at=NOW()
+        WHERE s.id=? AND s.status='pending'
+          AND EXISTS (
+            SELECT 1 FROM motor_agent_sessions mas
+             WHERE mas.subtarefa_id=s.id
+               AND mas.status='active'
+               AND mas.runtime_session_id IS NOT NULL
+          )`,
+      [subtaskId],
+    )
+    return updated.affectedRows === 1
+  }
+
   async closeDevelopmentSession(subtaskId: number, sessionKey: string | undefined, success: boolean): Promise<void> {
     if (!sessionKey) return
     await this.pool.query(
