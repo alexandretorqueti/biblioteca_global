@@ -2307,6 +2307,7 @@ export default function TaskMonitorScreen(): ReactNode {
                             <span>
                               <IconButton
                                 size="small"
+                                aria-label={`Editar subtarefa ${s.seq}`}
                                 onClick={() => abrirEdicaoSubtarefa(s)}
                                 data-testid={`btn-edit-subtask-${s.seq}`}
                               >

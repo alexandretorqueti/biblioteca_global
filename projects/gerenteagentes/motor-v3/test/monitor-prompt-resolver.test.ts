@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it, vi } from 'vitest'
 import type { Pool } from 'mysql2/promise'
 import { MonitorPromptResolver, MONITOR_RESOLUTION_PROMPT_KEY } from '../src/monitor/index.js'

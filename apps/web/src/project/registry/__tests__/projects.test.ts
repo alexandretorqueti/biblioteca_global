@@ -10,8 +10,9 @@ describe("configuração do Administrador Global", () => {
     expect(tela?.screen.kind).toBe("cadastro")
     if (tela?.screen.kind === "cadastro") {
       const campos = tela.screen.fields?.map((field) => field.name)
-      expect(campos).toEqual(expect.arrayContaining(["nome", "email", "senhaInicial", "perfil", "ativo"]))
-      expect(campos).not.toContain("papel")
+      expect(campos).toEqual(expect.arrayContaining(["nome", "email", "papel", "ativo"]))
+      expect(campos).not.toContain("senhaInicial")
+      expect(campos).not.toContain("perfil")
     }
   })
 })

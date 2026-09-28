@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it, vi } from 'vitest'
 import { DeployRepository } from '../src/deploy/DeployRepository.js'
 import { createTaskBlockedMessage, TASK_BLOCKED_EVENT_TYPE } from '../src/monitor/index.js'

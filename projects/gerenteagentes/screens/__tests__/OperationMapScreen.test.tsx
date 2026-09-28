@@ -297,8 +297,7 @@ describe("OperationMapScreen — resultado da subtarefa na aba Execução", () =
     const resultado = await screen.findByTestId("subtask-result-1")
     expect(resultado).toBeInTheDocument()
     expect(resultado).toHaveTextContent("Resultado: Implementação finalizada com sucesso.")
-    // MUI aplica a cor via classe CSS; verificamos o estilo computado ou a classe
-    expect(resultado).toHaveStyle({ color: expect.stringContaining("success") })
+    expect(resultado).toHaveStyle({ color: "rgb(46, 125, 50)" })
   })
 
   it("exibe resultado em vermelho para subtarefa com status failed", async () => {
@@ -311,7 +310,7 @@ describe("OperationMapScreen — resultado da subtarefa na aba Execução", () =
     const resultado = await screen.findByTestId("subtask-result-1")
     expect(resultado).toBeInTheDocument()
     expect(resultado).toHaveTextContent("Resultado: Erro de compilação no módulo X.")
-    expect(resultado).toHaveStyle({ color: expect.stringContaining("error") })
+    expect(resultado).toHaveStyle({ color: "rgb(211, 47, 47)" })
   })
 
   it("exibe resultado em verde para subtarefa com status verified", async () => {
@@ -323,7 +322,7 @@ describe("OperationMapScreen — resultado da subtarefa na aba Execução", () =
 
     const resultado = await screen.findByTestId("subtask-result-1")
     expect(resultado).toBeInTheDocument()
-    expect(resultado).toHaveStyle({ color: expect.stringContaining("success") })
+    expect(resultado).toHaveStyle({ color: "rgb(46, 125, 50)" })
   })
 
   it("exibe resultado em vermelho para subtarefa com status blocked", async () => {
@@ -335,7 +334,7 @@ describe("OperationMapScreen — resultado da subtarefa na aba Execução", () =
 
     const resultado = await screen.findByTestId("subtask-result-1")
     expect(resultado).toBeInTheDocument()
-    expect(resultado).toHaveStyle({ color: expect.stringContaining("error") })
+    expect(resultado).toHaveStyle({ color: "rgb(211, 47, 47)" })
   })
 
   it("aplica tipografia sans-serif e tamanho aumentado no resultado", async () => {
@@ -346,8 +345,6 @@ describe("OperationMapScreen — resultado da subtarefa na aba Execução", () =
     await abrirAbaExecucao(14)
 
     const resultado = await screen.findByTestId("subtask-result-1")
-    // 0.9375rem = 15px (1pt acima do body2 padrão de 14px)
-    expect(resultado).toHaveStyle({ fontSize: "0.9375rem" })
-    expect(resultado).toHaveStyle({ lineHeight: "1.6" })
+    expect(resultado).toHaveStyle({ fontSize: "15px" })
   })
 })

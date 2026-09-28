@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import { DeployConsumer } from '../src/deploy/DeployConsumer.js'
 import type { CommandPolicyRepository } from '../src/commands/index.js'

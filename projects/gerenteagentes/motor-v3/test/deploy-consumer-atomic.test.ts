@@ -1,11 +1,13 @@
+// @vitest-environment node
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 
 // Mock node:child_process para evitar chamadas reais ao git no promote()
-vi.mock('node:child_process', () => ({
-  execFile: vi.fn((_cmd: string, _args: string[], _opts: unknown, cb?: Function) => {
+vi.mock('node:child_process', () => {
+  const execFile = vi.fn((_cmd: string, _args: string[], _opts: unknown, cb?: Function) => {
     if (cb) cb(null, { stdout: '', stderr: '' })
-  }),
-}))
+  })
+  return { default: { execFile }, execFile }
+})
 
 import { DeployConsumer } from '../src/deploy/DeployConsumer.js'
 import type { OperationLogEntry, OperationLogger } from '../src/commands/index.js'

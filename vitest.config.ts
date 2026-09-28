@@ -18,6 +18,9 @@ export default defineConfig({
       "biblioteca_old/**",
       "**/e2e/**",
       "wt-*/**",
+      // Worktrees de tarefas podem existir dentro de projetos; são cópias de
+      // outros repositórios e não fazem parte da suíte desta integração.
+      "**/worktrees/**",
       "**/motor-v2/**",
       // Integrações com MySQL real: executadas separadamente no ambiente de integração.
       "**/*.functional.spec.ts",

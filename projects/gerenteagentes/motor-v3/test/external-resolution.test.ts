@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it, vi } from 'vitest'
 import { ExternalResolutionError, ExternalResolutionHandler } from '../src/monitor/ExternalResolutionHandler.js'
 

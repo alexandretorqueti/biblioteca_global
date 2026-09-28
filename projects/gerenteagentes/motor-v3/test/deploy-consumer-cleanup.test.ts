@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it, vi } from 'vitest'
 import { DeployConsumer } from '../src/deploy/DeployConsumer.js'
 import type { OperationLogEntry, OperationLogger } from '../src/commands/index.js'
