@@ -1,91 +1,73 @@
 # Projeto GerenteAgentes
 
-Projeto piloto para gerenciamento de agentes de IA da Global Tecnologia.
+Pacote Drizzle ORM do projeto GerenteAgentes — fonte única do schema e migrations.
+
+## Arquitetura
+
+- **Source of Truth:** `schema.ts` (Drizzle) → gera migrations SQL + `_journal.json`
+- **Banco:** MySQL 8
+- **Commit gate:** `.husky/pre-commit` gera migrations automaticamente ao commitar `schema.ts`
+- **CI gate:** `.github/workflows/ci.yml` falha se as migrations estiverem desatualizadas
+
+## Como funciona o commit hook
+
+Antes de fazer `git commit`, o hook `.husky/pre-commit` verifica:
+
+1. Se `projects/gerenteagentes/schema.ts` foi alterado → roda `npm run db:generate`
+2. Adiciona automaticamente `projects/gerenteagentes/migrations/` ao commit
+
+Assim, schema e migrations nunca ficam dessincronizados.
+
+### Bypass do hook (exceções)
+
+```bash
+git commit --no-verify -m "sua mensagem"
+```
+
+Use com responsabilidade — migrations fora de sincronia causam falhas no deploy.
+
+### CI: validação de migrations
+
+No CI (GitHub Actions), o workflow `.github/workflows/ci.yml` roda:
+
+```bash
+# dentro de projects/gerenteagentes/
+npm run db:generate
+# e depois, na raiz do repo:
+git diff --exit-code projects/gerenteagentes/migrations/
+```
+
+Se houver divergência entre o `schema.ts` commitado e as migrations versionadas, o gate falha com a mensagem exata:
+
+> Migrations desatualizadas. Rode npm run db:generate e commit as mudanças.
+
+#### Como resolver falha por migrations desatualizadas
+
+1. Rode localmente no diretório do projeto: `cd projects/gerenteagentes && npm run db:generate`
+2. Commit as mudanças: `git add projects/gerenteagentes/migrations/ && git commit`
+3. Push novamente
+
+## Scripts
+
+| Script | Descrição |
+|--------|-----------|
+| `npm run db:generate` (no diretório do projeto) | Gera migrations a partir do `schema.ts` (drizzle-kit; SQL + `_journal.json`) |
+| `npm run db:generate:gerenteagentes` (na raiz do repo) | Equivalente ao anterior, executado da raiz do monorepo |
 
 ## Estrutura
 
-- `motor-v2` — motor de execução de tarefas (TypeScript)
-- `motor-v3` — motor v3 integrado ao Banco de Dados (NestJS)
-- `src` — código compartilhado entre os motores
-- `migrations` — arquivos SQL gerados automaticamente a partir do schema TypeScript
-
-## Configuração
-
-### Variáveis de ambiente
-
-Copie `.env.example` para `.env` e ajuste as variáveis em `projects/gerenteagentes/.env.example`.
-
-### Database
-
-Este projeto usa Drizzle ORM com MySQL. O schema está em `schema.ts` e as migrations em `migrations/`.
-
-## Comandos
-
-### Geração de migrations
-
-A cada alteração em `schema.ts`, as migrations devem ser geradas automaticamente pelo hook de pre-commit (Husky). O hook:
-
-1. Verifica se houve alterações em `schema.ts`
-2. Se sim, gera as migrations SQL com `drizzle-kit generate`
-3. Adiciona o diretório `migrations/` ao commit
-
-#### Bypass excepcional
-
-Se necessário, execute `git commit --no-verify` para pular o hook (use com cuidado).
-
-#### Verificação manual
-
-```bash
-# Gerar migrations manualmente
-npm run db:generate:gerenteagentes
-
-# Aplicar migrations ao banco
-npm run db:migrate:gerenteagentes
+```
+projects/gerenteagentes/
+  schema.ts          # Schema Drizzle (fonte única)
+  drizzle.config.ts  # Configuração do drizzle-kit
+  migrations/        # SQL versionado (auto-gerado)
+    meta/_journal.json  # Registro de migrations (não editar manualmente)
 ```
 
-### CI / CD
+## Consequências de ignorar o hook
 
-No workflow de CI, há uma verificação automática:
+- ❌ Deploy roda mas migrations não são aplicadas
+- ❌ Erro silencioso: schema no código ≠ schema no banco
+- ❌ Tarefa "zumbi" travada em `ready` (ver `MEMORY.md`)
 
-- Roda `db:generate:gerenteagentes`
-- Verifica se há diferenças em `migrations/`
-- Se houver, o commit falha com mensagem: "Migrations desatualizadas. Rode `npm run db:generate:gerenteagentes` e commit as mudanças."
-
-### Solução de problemas
-
-**Erro: "Migrations desatualizadas" no CI**
-
-1. Rodar localmente:
-   ```bash
-   npm run db:generate:gerenteagentes
-   git add projects/gerenteagentes/migrations/
-   git commit -m "chore(migrations): atualizar após schema change"
-   git push
-   ```
-
-2. Verificar se o hook de pre-commit está funcionando:
-   ```bash
-   # Verificar se o arquivo existe e é executável
-   ls -la .husky/pre-commit
-   
-   # Testar manualmente
-   .husky/pre-commit
-   ```
-
-## Schema
-
-O schema TypeScript está em `projects/gerenteagentes/schema.ts`. Ele define:
-
-- Tabelas para captação (Isa): contatos, projetos_captados, definicoes, chats, chat_mensagens
-- Tabelas para execução (motor): tarefas, subtarefas, tarefa_chats, projeto_chats, geracoes_projeto, bloqueios
-- Tabelas para agentes: agentes, prompts_agentes
-
-Cada alteração no schema gera automaticamente um arquivo SQL em `migrations/` com o padrão `00XX_*.sql` e atualiza o `migrations/meta/_journal.json`.
-
-## Deploy
-
-O deploy usa o `ApplyProjectMigrationsCli` que lê o `migrations/meta/_journal.json` e aplica as migrations na ordem correta.
-
-## License
-
-MIT
+**Regra de ouro:** Nunca commitar `schema.ts` sem rodar `db:generate` primeiro.
