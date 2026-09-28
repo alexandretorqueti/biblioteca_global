@@ -508,6 +508,7 @@ async function start() {
       taskEvents,
       intervalMs: Number(process.env.MOTOR_ANALYSIS_RECOVERY_INTERVAL_MS || 300000),
       leaseTtlMs: Number(process.env.MOTOR_ANALYSIS_LEASE_TTL_MS || 90000),
+      motorActivityGate,
       publishTaskReady: async (taskId, executionId, subtaskCount) => {
         if (!outboxPublisher) throw new Error('Outbox indisponível para recuperação de análise')
         await outboxPublisher.enqueue(createQueueMessage({

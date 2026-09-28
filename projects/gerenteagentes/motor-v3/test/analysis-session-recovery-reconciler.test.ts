@@ -3,6 +3,7 @@ import type { Pool } from 'mysql2/promise'
 import { AnalysisSessionRecoveryReconciler } from '../src/coordinator/index.js'
 import type { TaskCoordinatorRepository, TaskSnapshot } from '../src/coordinator/TaskCoordinator.js'
 import type { AnalystConsole, ConsoleAnalystRunner } from '../src/analysis/ConsoleAnalystRunner.js'
+import type { MotorActivityGate } from '../src/queue/index.js'
 
 const task: TaskSnapshot = {
   taskId: 'task-p6-868', title: 'Tarefa', description: 'Descrição', taskType: 'desenvolvimento',
@@ -33,7 +34,7 @@ describe('AnalysisSessionRecoveryReconciler', () => {
         if (/f\.analysis_started_at IS NULL OR f\.analysis_execution_id != s\.analysis_execution_id/i.test(sqlStr)) {
           return [[]]
         }
-        // Default para UPDATEs e outras queries
+        // Default para UPDATEs e otras queries
         return [{ affectedRows: 1 }]
       }),
     } as unknown as Pool
@@ -102,7 +103,7 @@ describe('AnalysisSessionRecoveryReconciler', () => {
         if (/f\.analysis_started_at IS NULL OR f\.analysis_execution_id != s\.analysis_execution_id/i.test(sqlStr)) {
           return [[orphanRow]]
         }
-        // Default para UPDATEs e outras queries
+        // Default para UPDATEs e otras queries
         return [{ affectedRows: 1 }]
       }),
     } as unknown as Pool
@@ -231,5 +232,78 @@ describe('AnalysisSessionRecoveryReconciler', () => {
 
     // Mas TASK_RESUME_REQUESTED NÃO foi disparado porque tem subtarefas
     expect(publishTaskResume).not.toHaveBeenCalled()
+  })
+
+  it('skipa ciclo reconciliador quando motor.pausado === false', async () => {
+    const queries: Array<{ sql: string; params: unknown[] }> = []
+    const pool = {
+      query: vi.fn(async (sql: string, params: unknown[] = []) => {
+        queries.push({ sql: String(sql), params })
+        const sqlStr = String(sql)
+        if (/LEFT JOIN motor_active_executions/i.test(sqlStr)) {
+          return [[recoveryRow]]
+        }
+        if (/f\.analysis_started_at IS NULL OR f\.analysis_execution_id != s\.analysis_execution_id/i.test(sqlStr)) {
+          return [[]]
+        }
+        return [{ affectedRows: 1 }]
+      }),
+    } as unknown as Pool
+    const repository = {} as TaskCoordinatorRepository
+    const runner = {} as ConsoleAnalystRunner
+    const consoleApi = {} as AnalystConsole
+    const events = { record: vi.fn(async () => undefined) }
+    const motorActivityGate = { isActive: vi.fn(async () => false) } as unknown as MotorActivityGate
+    const reconciler = new AnalysisSessionRecoveryReconciler(pool, repository, runner, consoleApi, {
+      taskEvents: events,
+      publishTaskReady: vi.fn(async () => undefined),
+      motorActivityGate,
+    })
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+
+    await expect(reconciler.reconcile()).resolves.toBeUndefined()
+
+    // Não deve haver queries de recovery ou órfãs
+    expect(queries).toHaveLength(0)
+    expect(motorActivityGate.isActive).toHaveBeenCalledTimes(1)
+    expect(logSpy).toHaveBeenCalledWith('[Motor v3] Reconciliador de sessões de análise: motor pausado, ciclo ignorado')
+  })
+
+  it('executa ciclo completo quando motor.ativo === true', async () => {
+    const queries: Array<{ sql: string; params: unknown[] }> = []
+    const pool = {
+      query: vi.fn(async (sql: string, params: unknown[] = []) => {
+        queries.push({ sql: String(sql), params })
+        const sqlStr = String(sql)
+        if (/LEFT JOIN motor_active_executions/i.test(sqlStr)) {
+          return [[recoveryRow]]
+        }
+        if (/f\.analysis_started_at IS NULL OR f\.analysis_execution_id != s\.analysis_execution_id/i.test(sqlStr)) {
+          return [[]]
+        }
+        return [{ affectedRows: 1 }]
+      }),
+    } as unknown as Pool
+    const repository = {
+      getTask: vi.fn(async () => task),
+    } as unknown as TaskCoordinatorRepository
+    const runner = { resume: vi.fn(async () => ({ kind: 'completion', response: 'ok' })) } as unknown as ConsoleAnalystRunner
+    const consoleApi = { getSessionStatus: vi.fn(async () => ({ isComplete: false, isFailed: false })) } as unknown as AnalystConsole
+    const events = { record: vi.fn(async () => undefined) }
+    const publishTaskReady = vi.fn(async () => undefined)
+    const motorActivityGate = { isActive: vi.fn(async () => true) } as unknown as MotorActivityGate
+    const reconciler = new AnalysisSessionRecoveryReconciler(pool, repository, runner, consoleApi, {
+      taskEvents: events,
+      publishTaskReady,
+      motorActivityGate,
+    })
+
+    await expect(reconciler.reconcile()).resolves.toBeUndefined()
+
+    // Queries devem ser chamadas (recovery)
+    expect(queries.some(q => q.sql.includes('SELECT') && q.sql.includes('analyst_task_sessions'))).toBe(true)
+    expect(motorActivityGate.isActive).toHaveBeenCalledTimes(1)
+    expect(repository.getTask).toHaveBeenCalledWith(task.taskId)
   })
 })

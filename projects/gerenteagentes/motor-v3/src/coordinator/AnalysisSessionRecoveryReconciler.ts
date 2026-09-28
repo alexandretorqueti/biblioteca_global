@@ -3,6 +3,7 @@ import { parseAnalystReply, type AnalysisOutcome } from '../analysis/AnalystRepl
 import type { AnalystConsole, AnalystSession, ConsoleAnalystRunner } from '../analysis/ConsoleAnalystRunner.js'
 import type { AnalysisExecutionLeaseRepository, TaskCoordinatorRepository, TaskSnapshot } from './TaskCoordinator.js'
 import type { TaskEventSink } from './TaskEventRecorder.js'
+import type { MotorActivityGate } from '../queue/MotorActivityGate.js'
 
 interface RecoveryRow extends RowDataPacket {
   session_id: number; tarefa_id: number; task_external_id: string | null; session_key: string
@@ -35,6 +36,11 @@ export interface AnalysisSessionRecoveryConfig {
   taskEvents?: TaskEventSink
   intervalMs?: number
   leaseTtlMs?: number
+  /**
+   * Gate de atividade do motor. Se presente, o reconciliador verifica isActive()
+   * antes de iniciar cada ciclo; se motor.pausado (false), o ciclo é interrompido.
+   */
+  motorActivityGate?: MotorActivityGate
 }
 
 /**
@@ -48,6 +54,7 @@ export class AnalysisSessionRecoveryReconciler {
   private readonly intervalMs: number
   private readonly leaseTtlMs: number
   private readonly leaseRepository?: AnalysisExecutionLeaseRepository
+  private readonly motorActivityGate?: MotorActivityGate
 
   constructor(
     private readonly pool: Pool,
@@ -59,6 +66,7 @@ export class AnalysisSessionRecoveryReconciler {
     this.intervalMs = config.intervalMs ?? 300_000
     this.leaseTtlMs = config.leaseTtlMs ?? 90_000
     this.leaseRepository = this.hasAnalysisLease(repository) ? repository : undefined
+    this.motorActivityGate = config.motorActivityGate
   }
 
   start(): void {
@@ -72,6 +80,11 @@ export class AnalysisSessionRecoveryReconciler {
 
   async reconcile(): Promise<void> {
     try {
+      // Verificar se o motor está ativo antes de iniciar o ciclo
+      if (this.motorActivityGate && !(await this.motorActivityGate.isActive())) {
+        console.log('[Motor v3] Reconciliador de sessões de análise: motor pausado, ciclo ignorado')
+        return
+      }
       await this.reconcileOnce()
     } catch (error) {
       // Falha de leitura/escrita do reconciliador é operacional; o próximo
