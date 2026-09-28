@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 const calls: Array<{ command: string; args: string[] }> = []
 let headReads = 0
+let equivalentPatch = false
 
 vi.mock('node:child_process', () => ({
   execFile: vi.fn((command: string, args: string[], _options: unknown, callback: Function) => {
@@ -13,6 +14,7 @@ vi.mock('node:child_process', () => ({
     }
     if (command === 'git' && args[0] === 'merge-base') return callback(new Error('commit is not contained'), { stdout: '', stderr: '' })
     if (command === 'git' && args[0] === 'rev-list') return callback(null, { stdout: 'cccccccccccccccccccccccccccccccccccc\n', stderr: '' })
+    if (command === 'git' && args[0] === 'log') return callback(null, { stdout: equivalentPatch ? '' : 'cccccccccccccccccccccccccccccccccccc\n', stderr: '' })
     return callback(null, { stdout: '', stderr: '' })
   }),
 }))
@@ -23,6 +25,7 @@ describe('DeployConsumer.composeBatch', () => {
   it('usa o commit efetivo do worktree como base do rev-list', async () => {
     calls.length = 0
     headReads = 0
+    equivalentPatch = false
     const consumer = new DeployConsumer({} as never, {} as never, {} as never)
 
     await (consumer as any).composeBatch('/repo', 'base-desenvolvimento', 'batch-1', [
@@ -34,5 +37,19 @@ describe('DeployConsumer.composeBatch', () => {
       'rev-list', '--reverse',
       'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa..dddddddddddddddddddddddddddddddddddd',
     ])
+  })
+
+  it('não reaplica um commit cujo patch equivalente já está na base', async () => {
+    calls.length = 0
+    headReads = 0
+    equivalentPatch = true
+
+    const consumer = new DeployConsumer({} as never, {} as never, {} as never)
+    await (consumer as any).composeBatch('/repo', 'base-desenvolvimento', 'batch-equivalent', [
+      'dddddddddddddddddddddddddddddddddddd',
+    ])
+
+    expect(calls.some(call => call.command === 'git' && call.args[0] === 'cherry-pick')).toBe(false)
+    expect(calls.some(call => call.command === 'git' && call.args[0] === 'log' && call.args.includes('HEAD...cccccccccccccccccccccccccccccccccccc'))).toBe(true)
   })
 })

@@ -276,11 +276,23 @@ export class DeployConsumer {
       }
       // Fazer cherry-pick de todos os commits na ordem
       for (const c of allCommitsToCherryPick) {
+        // O SHA pode ser diferente quando a mesma subtarefa foi integrada
+        // anteriormente por outro worktree. O cherry-pick falha como
+        // add/add nesse caso, embora o patch já esteja na base.
+        const { stdout: pendingPatch } = await execFileAsync('git', [
+          'log', '--cherry-pick', '--right-only', '--no-merges', '--format=%H', `HEAD...${c}`,
+        ], { cwd: path, encoding: 'utf8' })
+        if (!pendingPatch.split('\n').map(value => value.trim()).includes(c)) continue
         try {
           await execFileAsync('git', ['cherry-pick', c], { cwd: path })
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
           if (message.includes('empty')) {
+            await execFileAsync('git', ['cherry-pick', '--skip'], { cwd: path })
+          } else if (await this.skipNoopCherryPickConflict(path)) {
+            // O patch pode conflitar apenas porque a base já contém o
+            // resultado final por outra sequência de commits. Nesse caso,
+            // preservar a base é equivalente a um cherry-pick vazio.
             await execFileAsync('git', ['cherry-pick', '--skip'], { cwd: path })
           } else {
             throw error
@@ -295,6 +307,14 @@ export class DeployConsumer {
       await this.removeComposedWorktree(repo, path)
       throw error
     }
+  }
+
+  private async skipNoopCherryPickConflict(path: string): Promise<boolean> {
+    const { stdout: conflicts } = await execFileAsync('git', ['diff', '--name-only', '--diff-filter=U'], { cwd: path, encoding: 'utf8' })
+    if (!conflicts.trim()) return false
+    await execFileAsync('git', ['checkout', '--ours', '--', '.'], { cwd: path })
+    await execFileAsync('git', ['add', '--update', '--', '.'], { cwd: path })
+    return execFileAsync('git', ['diff', '--cached', '--quiet', 'HEAD'], { cwd: path }).then(() => true, () => false)
   }
 
   private async removeComposedWorktree(repoPath: string, path: string): Promise<void> {
