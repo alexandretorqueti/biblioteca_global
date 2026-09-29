@@ -82,6 +82,8 @@ export class MonitorResolutionConsumer {
 
   private async runMission(message: QueueMessage, blocker: ActiveBlockerRow): Promise<void> {
     const taskId = message.taskId
+    const monitorExecutionId = `monitor-${blocker.id}-${Date.now()}`
+    let registered = false
     try {
       const context = await this.loadContext(taskId)
       if (!context) {
@@ -127,6 +129,10 @@ export class MonitorResolutionConsumer {
         `🔧 Monitor: investigando bloqueio \`${blocker.block_reason}\`.`,
         blocker.block_excerpt ? `Evidência: ${String(blocker.block_excerpt).slice(0, 500)}` : null,
       ].filter(Boolean).join('\n'))
+      // Registra a execução do monitor em motor_active_executions para que
+      // o WorkerActivityService possa reportar o Monitor como ativo.
+      await this.registerMonitorExecution(monitorExecutionId, Number(context.database_task_id), blocker.subtarefa_id)
+      registered = true
       const execution: PrimitiveContext = {
         taskId: context.task_id,
         databaseTaskId: Number(context.database_task_id),
@@ -169,6 +175,43 @@ export class MonitorResolutionConsumer {
         blockReason: blocker.block_reason,
         error: error instanceof Error ? error.message : String(error),
       })
+    } finally {
+      // Remove o registro do monitor em motor_active_executions
+      if (registered) {
+        await this.unregisterMonitorExecution(monitorExecutionId)
+      }
+    }
+  }
+
+  /**
+   * Registra a execução do monitor em motor_active_executions para que o
+   * WorkerActivityService possa reportar o Monitor como ativo no Mapa.
+   */
+  private async registerMonitorExecution(executionId: string, databaseTaskId: number, subtaskId: number | null | undefined): Promise<void> {
+    try {
+      await this.pool.query(
+        `INSERT INTO motor_active_executions (execution_id, tarefa_id, subtarefa_id, phase, started_at, heartbeat_at, expires_at)
+         VALUES (?, ?, ?, 'monitor', NOW(), NOW(), DATE_ADD(NOW(), INTERVAL 10 MINUTE))`,
+        [executionId, databaseTaskId, subtaskId ?? null]
+      )
+    } catch (error) {
+      // Falha no registro não deve bloquear a execução do monitor
+      console.warn('[MonitorResolutionConsumer] Falha ao registrar execução:', error)
+    }
+  }
+
+  /**
+   * Remove o registro da execução do monitor de motor_active_executions.
+   */
+  private async unregisterMonitorExecution(executionId: string): Promise<void> {
+    try {
+      await this.pool.query(
+        'DELETE FROM motor_active_executions WHERE execution_id = ?',
+        [executionId]
+      )
+    } catch (error) {
+      // Falha na remoção não é crítica
+      console.warn('[MonitorResolutionConsumer] Falha ao remover registro:', error)
     }
   }
 
