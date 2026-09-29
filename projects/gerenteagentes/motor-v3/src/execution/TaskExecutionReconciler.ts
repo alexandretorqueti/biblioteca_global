@@ -232,11 +232,11 @@ export class TaskExecutionReconciler {
            ) COLLATE utf8mb4_unicode_ci
          )
          AND (
-           o.status IN ('pending', 'published')
+           o.status = 'pending'
            OR EXISTS (
              SELECT 1 FROM motor_message_processing_state mps
               WHERE mps.message_id COLLATE utf8mb4_unicode_ci = o.message_id COLLATE utf8mb4_unicode_ci
-                AND mps.status IN ('processing', 'completed')
+                AND mps.status = 'processing'
            )
          )
     `, [type, taskId, taskId])
