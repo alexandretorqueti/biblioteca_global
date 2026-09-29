@@ -60,6 +60,10 @@ interface PersistedExecution extends RowDataPacket {
   heartbeat_at: Date | string
 }
 
+interface DeployActivityRow extends RowDataPacket {
+  task_id: string
+}
+
 const ROLES: WorkerRole[] = ['analyst', 'developer', 'manager']
 
 function epoch(value: Date | string | number | null | undefined): number | null {
@@ -83,7 +87,11 @@ export class WorkerActivityService {
     const isActive = await this.readMotorState()
     const schedulerExecutions = this.schedulerActiveExecutions()
     const persistedExecutions = await this.readPersistedExecutions()
-    const allExecutions = [...schedulerExecutions.map(execution => this.fromScheduler(execution)), ...persistedExecutions.map(execution => this.fromPersisted(execution))]
+    const deployTaskIds = await this.readDeployTaskIds()
+    const deployExecution = deployTaskIds.length > 0
+      ? [this.makeWorker('manager', `deploy-activity-${deployTaskIds.join('-')}`, deployTaskIds[0]!, null, 'deploying', null, Date.now(), Date.now())]
+      : []
+    const allExecutions = [...schedulerExecutions.map(execution => this.fromScheduler(execution)), ...persistedExecutions.map(execution => this.fromPersisted(execution)), ...deployExecution]
     const executions = [...new Map(allExecutions.map(execution => [execution.executionId, execution])).values()]
 
     const workers = new Map<WorkerRole, WorkerActivity>(ROLES.map(role => [role, emptyWorker(role)]))
@@ -93,7 +101,7 @@ export class WorkerActivityService {
       if (!previous?.active || (execution.startedAt ?? 0) > (previous.startedAt ?? 0)) workers.set(execution.role, execution)
     }
     const activeWorkers = [...workers.values()].filter(worker => worker.active)
-    const activity = this.describeActivity(activeWorkers)
+    const activity = this.describeActivity(activeWorkers, deployTaskIds)
 
     return {
       motor: { isActive, isRunning: executions.length > 0, activeExecutionsCount: executions.length, activity },
@@ -127,6 +135,28 @@ export class WorkerActivityService {
     }
   }
 
+  /**
+   * Deploy remoto não ocupa uma sessão de worker em motor_active_executions.
+   * O lote e o lock são a fonte persistente da atividade durante essa fase.
+   * O lock cobre a preparação; status=running cobre o deploy.sh destacado,
+   * inclusive depois que o lock é liberado.
+   */
+  private async readDeployTaskIds(): Promise<string[]> {
+    try {
+      const [rows] = await this.pool.query<DeployActivityRow[]>(`
+        SELECT DISTINCT CAST(COALESCE(t.external_id, t.id) AS CHAR) AS task_id
+          FROM deploy_batches db
+          INNER JOIN deploy_requests dr ON dr.batch_id = db.batch_id
+          INNER JOIN tarefas t ON t.id = dr.tarefa_id
+          LEFT JOIN motor_deploy_lock mdl ON mdl.id = 1
+         WHERE db.status = 'running'
+            OR (db.status = 'pending' AND mdl.locked = TRUE)`)
+      return (rows ?? []).map(row => String(row.task_id)).filter(Boolean)
+    } catch {
+      return []
+    }
+  }
+
   private fromScheduler(execution: ExecutionLike): WorkerActivity {
     const context = execution.context ?? {}
     return this.makeWorker(this.roleFor(context.agentId, context.phase, execution.executionId), execution.executionId, execution.taskId, execution.subtaskId ?? null, context.phase ?? null, context.model ?? null, execution.startedAt, execution.lastHeartbeat)
@@ -147,12 +177,14 @@ export class WorkerActivityService {
     return 'developer'
   }
 
-  private describeActivity(workers: WorkerActivity[]): MotorActivityDescription | null {
+  private describeActivity(workers: WorkerActivity[], deployTaskIds: string[] = []): MotorActivityDescription | null {
     if (!workers.length) return null
     const manager = workers.find(worker => worker.role === 'manager')
     const developer = workers.find(worker => worker.role === 'developer')
     const source = (manager ?? developer ?? workers[0])!
-    const taskIds = [...new Set(workers.map(worker => worker.taskId).filter((taskId): taskId is string => Boolean(taskId)))]
+    const taskIds = deployTaskIds.length > 0
+      ? deployTaskIds
+      : [...new Set(workers.map(worker => worker.taskId).filter((taskId): taskId is string => Boolean(taskId)))]
     const phase = `${source.phase ?? ''}`.toLowerCase()
     if (phase.includes('test') || phase.includes('verify')) return { kind: 'testing', message: `testando tarefa ${source.taskId ?? ''}`.trim(), taskIds }
     if (phase.includes('worktree')) return { kind: 'worktree', message: `criando worktree da tarefa ${source.taskId ?? ''}`.trim(), taskIds }

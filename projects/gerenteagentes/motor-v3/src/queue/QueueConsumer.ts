@@ -56,6 +56,13 @@ export class QueueConsumer {
       return
     }
     if (this.activityGate?.isMonitorActivityStart(message.type) && !(await this.activityGate.isMonitorActive())) {
+      // TASK_BLOCKED com monitor inativo: ack silencioso sem re-enfileirar.
+      // O bloqueio já está persistido na tabela `bloqueios`; o monitor vai
+      // re-processar quando for reativado. Re-enfileirar causaria loop infinito.
+      if (message.type === 'TASK_BLOCKED') {
+        this.transport.ack(delivery)
+        return
+      }
       await this.deferUntilMotorIsActive(delivery)
       return
     }

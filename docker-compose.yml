@@ -16,7 +16,7 @@ services:
       # Porta do HOST: 3307 ja e usada pelo MySQL do Recrescer (ver INFRA.md).
       - "3308:3306"
     volumes:
-      - mysql-data:/var/lib/mysql
+      - biblioteca-global_mysql-data:/var/lib/mysql
     healthcheck:
       test:
         - CMD
@@ -108,6 +108,8 @@ services:
       # Caminhos fixos dentro do container: o banco guarda paths do namespace
       # do OpenClaw, que precisam existir também no slot blue/green.
       - ${REPO_PATH:-/run/media/alexandre/12T/codigofonte/biblioteca-global}:/data/workspace/projects/codigofonte/biblioteca-global:rw
+      # Repos de outros projetos para o motor-v3 trabalhar
+      - /home/alexandre/codigofonte/openclaw-console:/data/workspace/projects/codigofonte/openclaw-console:rw
       # Workspace do agente (para worktrees do motor-v2).
       - ${AGENTS_WORKSPACE_PATH_HOST:-/home/alexandre/agentes}:/data/workspace/projects/agentes:rw
       # Chave SSH do GitHub para a fase PUBLISH do motor-v2 (somente leitura)
@@ -190,7 +192,8 @@ services:
     # Usa a rede Docker padrão para resolver nomes dos containers
 
 volumes:
-  mysql-data:
+  biblioteca-global_mysql-data:
+    external: true
 
 networks:
   openclaw_default:

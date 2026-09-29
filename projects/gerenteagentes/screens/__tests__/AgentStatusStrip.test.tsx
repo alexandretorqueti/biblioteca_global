@@ -148,4 +148,18 @@ describe("AgentStatusStrip — Motor: leva de deploy", () => {
 
     expect(screen.getByTestId("motor-state-box")).toHaveTextContent("Motor pausado")
   })
+
+  it.each([
+    ["deploying", "Realizando deploy"],
+    ["worktree", "Criando worktree"],
+    ["testing", "Testando trabalho do desenvolvedor"],
+    ["executing", "Executando tarefa"],
+  ] as const)("exibe o rótulo específico para %s", (kind, label) => {
+    renderStrip({
+      motorIsRunning: true,
+      motorActivity: { kind, message: "atividade", taskIds: ["909"] },
+    })
+
+    expect(screen.getByTestId("motor-state-box")).toHaveTextContent(label)
+  })
 })

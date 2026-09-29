@@ -53,6 +53,13 @@ export interface AgentStatusStripProps {
   workers?: WorkerInfo[]
 }
 
+function activityLabel(kind: MotorActivityInfo["kind"]): string {
+  if (kind === "deploying") return "Realizando deploy"
+  if (kind === "worktree") return "Criando worktree"
+  if (kind === "testing") return "Testando trabalho do desenvolvedor"
+  return "Executando tarefa"
+}
+
 function getAgentStatus(agentId: string, workers: WorkerInfo[]): AgentStatus {
   const worker = workers.find(w => w.role === agentId)
   let status: AgentStatus["status"] = "idle"
@@ -88,8 +95,12 @@ export default function AgentStatusStrip({ motorActive, motorIsRunning = false, 
     if (!motorActive) {
       return { icon: PauseRounded, text: "Motor pausado", color: "text.secondary" }
     }
-    if (motorActivity?.kind === "deploying") {
-      return { icon: ModelTrainingRounded, text: "Deploy em andamento", color: "primary.main" }
+    if (motorActivity) {
+      return {
+        icon: ModelTrainingRounded,
+        text: activityLabel(motorActivity.kind),
+        color: "primary.main",
+      }
     }
     if (motorIsRunning) {
       return { icon: PlayArrowRounded, text: "Operando", color: "success.main" }

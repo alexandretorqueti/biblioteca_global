@@ -8,7 +8,7 @@ set -eu
 SOURCE_DIR=""
 for candidato in "${REPO_PATH:-}" \
   "/home/alexandre/codigofonte/biblioteca-global" \
-  "/run/media/alexandre/12T/codigofonte/biblioteca-global"; do
+  "/data/workspace/projects/codigofonte/biblioteca-global"; do
   if [ -n "$candidato" ] && [ -f "$candidato/package.json" ]; then
     SOURCE_DIR="$candidato"
     break
@@ -26,7 +26,7 @@ fi
 git config --global user.email "motor-v2@globaltecnologia.local"
 git config --global user.name "Motor v2"
 git config --global --add safe.directory "$SOURCE_DIR"
-git config --global --add safe.directory /run/media/alexandre/12T/codigofonte/biblioteca-global
+git config --global --add safe.directory /data/workspace/projects/codigofonte/biblioteca-global
 git config --global --add safe.directory /run/media/alexandre/12T/codigofonte/GerenteAgentes
 mkdir -p /root/.ssh
 # A API faz deploy por SSH no próprio ServerIA. A chave pública do host fica

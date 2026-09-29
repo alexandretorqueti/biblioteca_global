@@ -300,7 +300,14 @@ export class DeployConsumer {
         }
       }
       await execFileAsync('npm', ['ci', '--prefer-offline', '--no-audit', '--no-fund'], { cwd: path })
-      await execFileAsync('npm', ['ci', '--prefer-offline', '--no-audit', '--no-fund'], { cwd: `${path}/projects/gerenteagentes/motor-v3` })
+      // O motor-v3 só existe na biblioteca global; outros projetos não têm esse subdiretório.
+      const motorV3Path = `${path}/projects/gerenteagentes/motor-v3`
+      try {
+        await execFileAsync('test', ['-d', motorV3Path])
+        await execFileAsync('npm', ['ci', '--prefer-offline', '--no-audit', '--no-fund'], { cwd: motorV3Path })
+      } catch {
+        // Diretório não existe (projeto que não é a biblioteca) — pular npm ci do motor-v3
+      }
       const { stdout: composed } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: path, encoding: 'utf8' })
       return { path, commit: composed.trim() }
     } catch (error) {

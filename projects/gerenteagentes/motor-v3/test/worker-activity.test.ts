@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { WorkerActivityService } from '../src/status/WorkerActivity.js'
 
 function service(executions: any[] = [], rows: any[] = []) {
-  const pool = { query: vi.fn().mockResolvedValue([rows]) }
+  const pool = { query: vi.fn().mockImplementation((sql: string) => [sql.includes('deploy_batches') ? rows : []]) }
   const gate = { isActive: vi.fn().mockResolvedValue(true) }
   return { activity: new WorkerActivityService(pool as any, () => executions, gate), pool, gate }
 }
@@ -43,5 +43,23 @@ describe('WorkerActivityService', () => {
 
     expect(result.workers.find(worker => worker.role === 'developer')?.model).toBeNull()
     expect(result.motor.isRunning).toBe(false)
+  })
+
+  it('mantém o motor ativo e exibe deploy enquanto há lote de deploy running', async () => {
+    const { activity } = service([], [{ task_id: 'task-p12-909' }])
+
+    const result = await activity.getActivity()
+
+    expect(result.motor).toMatchObject({ isRunning: true, activeExecutionsCount: 1 })
+    expect(result.motor.activity).toEqual({
+      kind: 'deploying',
+      message: 'fazendo deploy das tarefas task-p12-909',
+      taskIds: ['task-p12-909'],
+    })
+    expect(result.workers.find(worker => worker.role === 'manager')).toMatchObject({
+      active: true,
+      phase: 'deploying',
+      taskId: 'task-p12-909',
+    })
   })
 })
