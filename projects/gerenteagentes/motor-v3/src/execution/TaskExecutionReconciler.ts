@@ -37,7 +37,10 @@ export class TaskExecutionReconciler {
 
   async reconcileAll(): Promise<number> {
     const [rows] = await this.pool.query<Array<RowDataPacket & { task_id: string }>>(`
-      SELECT COALESCE(t.external_id, CAST(t.id AS CHAR)) AS task_id
+      SELECT COALESCE(
+               t.external_id,
+               CAST(t.id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci
+             ) AS task_id
         FROM tarefas t
        WHERE t.paused_at IS NULL
        ORDER BY t.id ASC
