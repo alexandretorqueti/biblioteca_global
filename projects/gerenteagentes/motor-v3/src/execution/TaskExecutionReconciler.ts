@@ -166,6 +166,15 @@ export class TaskExecutionReconciler {
              SELECT 1 FROM motor_agent_sessions active_session
               WHERE active_session.subtarefa_id = s.id
                 AND active_session.status = 'active'
+                AND (
+                  NOT EXISTS (
+                    SELECT 1 FROM motor_agent_sessions failed_session
+                     WHERE failed_session.subtarefa_id = s.id
+                       AND failed_session.status = 'failed'
+                       AND failed_session.closed_at IS NOT NULL
+                  )
+                  OR active_session.last_activity_at >= DATE_SUB(NOW(), INTERVAL 35 MINUTE)
+                )
            )
            AND NOT EXISTS (
              SELECT 1 FROM subtarefas previous
@@ -186,6 +195,23 @@ export class TaskExecutionReconciler {
 
       const hasSubtasks = Number(task.subtask_count) > 0
       if (subtasks[0]) {
+        // Uma tentativa falha pode deixar sessões anteriores sem fechamento.
+        // Elas só são encerradas se estiverem obsoletas; uma sessão recente
+        // continuaria bloqueando a seleção acima.
+        await connection.query(
+          `UPDATE motor_agent_sessions active_session
+             INNER JOIN motor_agent_sessions failed_session
+                ON failed_session.subtarefa_id = active_session.subtarefa_id
+               AND failed_session.status = 'failed'
+               AND failed_session.closed_at IS NOT NULL
+              SET active_session.status = 'failed',
+                  active_session.close_reason = 'superseded_after_failed_execution',
+                  active_session.closed_at = NOW(), active_session.last_activity_at = NOW()
+            WHERE active_session.subtarefa_id = ?
+              AND active_session.status = 'active'
+              AND active_session.last_activity_at < DATE_SUB(NOW(), INTERVAL 35 MINUTE)`,
+          [subtasks[0].id],
+        )
         const duplicate = await this.hasUnfinishedCommand(connection, canonicalTaskId, 'TASK_READY_FOR_PROGRAMMING')
         if (duplicate) return this.finish(connection, { enqueued: false, reason: 'command_already_pending', taskId: canonicalTaskId })
         const message = createQueueMessage({

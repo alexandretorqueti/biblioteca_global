@@ -38,7 +38,7 @@ function makePool(options: Options = {}) {
       inserted.push({ params })
       return [{ affectedRows: 1 }]
     }
-    if (normalized.startsWith("UPDATE motor_agent_sessions SET status = 'failed'")) {
+    if (normalized.startsWith('UPDATE motor_agent_sessions')) {
       updated.push({ params })
       return [{ affectedRows: 1 }]
     }
