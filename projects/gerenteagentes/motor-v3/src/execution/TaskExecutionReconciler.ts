@@ -77,16 +77,24 @@ export class TaskExecutionReconciler {
              SELECT MAX(s2.generation) FROM subtarefas s2 WHERE s2.tarefa_id = s.tarefa_id
            )
            AND (
-             EXISTS (
+             NOT EXISTS (
                SELECT 1 FROM motor_agent_sessions mas
                 WHERE mas.subtarefa_id = s.id
-                  AND mas.status = 'failed'
-                  AND mas.closed_at IS NOT NULL
+                AND mas.status = 'active'
              )
-             OR NOT EXISTS (
-               SELECT 1 FROM motor_agent_sessions mas
-                WHERE mas.subtarefa_id = s.id
-                  AND mas.status = 'active'
+             OR (
+               EXISTS (
+                 SELECT 1 FROM motor_agent_sessions mas
+                  WHERE mas.subtarefa_id = s.id
+                    AND mas.status = 'failed'
+                    AND mas.closed_at IS NOT NULL
+               )
+               AND NOT EXISTS (
+                 SELECT 1 FROM motor_agent_sessions mas
+                  WHERE mas.subtarefa_id = s.id
+                    AND mas.status = 'active'
+                    AND mas.last_activity_at >= DATE_SUB(NOW(), INTERVAL 35 MINUTE)
+               )
              )
            )
            AND NOT EXISTS (
@@ -108,6 +116,15 @@ export class TaskExecutionReconciler {
 
       if (orphanRunning[0]) {
         // Subtarefa running órfã: resetar para pending e reenfileirar
+        await connection.query(
+          `UPDATE motor_agent_sessions
+              SET status = 'failed', close_reason = 'superseded_after_failed_execution',
+                  closed_at = NOW(), last_activity_at = NOW()
+            WHERE subtarefa_id = ?
+              AND status = 'active'
+              AND last_activity_at < DATE_SUB(NOW(), INTERVAL 35 MINUTE)`,
+          [orphanRunning[0].id],
+        )
         const duplicate = await this.hasUnfinishedCommand(connection, canonicalTaskId, 'TASK_READY_FOR_PROGRAMMING')
         if (duplicate) {
           // Mesmo com comando pendente, reseta a subtarefa para pending

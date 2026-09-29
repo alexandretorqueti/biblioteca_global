@@ -38,6 +38,10 @@ function makePool(options: Options = {}) {
       inserted.push({ params })
       return [{ affectedRows: 1 }]
     }
+    if (normalized.startsWith("UPDATE motor_agent_sessions SET status = 'failed'")) {
+      updated.push({ params })
+      return [{ affectedRows: 1 }]
+    }
     if (normalized.startsWith('UPDATE subtarefas SET status')) {
       updated.push({ params })
       return [{ affectedRows: 1 }]
@@ -114,8 +118,9 @@ describe('TaskExecutionReconciler', () => {
     const result = await new TaskExecutionReconciler(fixture.pool).reconcileTask('task-p2-828')
 
     expect(result).toMatchObject({ enqueued: true, type: 'TASK_READY_FOR_PROGRAMMING', taskId: 'task-p2-828' })
-    expect(fixture.updated.length).toBe(1)
+    expect(fixture.updated.length).toBe(2)
     expect(fixture.updated[0].params).toEqual([1101])
+    expect(fixture.updated[1].params).toEqual([1101])
     expect(fixture.inserted.length).toBe(1)
   })
 
@@ -125,7 +130,7 @@ describe('TaskExecutionReconciler', () => {
     const result = await new TaskExecutionReconciler(fixture.pool).reconcileTask('task-p2-828')
 
     expect(result).toMatchObject({ enqueued: false, reason: 'command_already_pending', taskId: 'task-p2-828' })
-    expect(fixture.updated.length).toBe(1) // reseta para pending mesmo assim
+    expect(fixture.updated.length).toBe(2) // encerra sessão obsoleta e reseta para pending
     expect(fixture.inserted.length).toBe(0) // mas não enfileira novo comando
   })
 
