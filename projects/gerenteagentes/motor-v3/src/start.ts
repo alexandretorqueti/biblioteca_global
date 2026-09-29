@@ -34,10 +34,11 @@ import { TaskCoordinator, MySqlTaskCoordinatorRepository, AnalysisClaimReconcile
 import { ConsoleAnalystRunner } from './analysis/ConsoleAnalystRunner.js'
 import { ConsoleHttpApi } from './analysis/ConsoleHttpApi.js'
 import { ManagedAnalysisPromptResolver } from './analysis/ManagedAnalysisPromptResolver.js'
+import { ManagedDevelopmentPromptResolver } from './analysis/ManagedDevelopmentPromptResolver.js'
 import { DerivedTaskStatusResolver } from './status/DerivedTaskStatus.js'
 import { WorkerActivityService } from './status/WorkerActivity.js'
 import { MySqlCommandPolicyRepository, MySqlOperationLogger } from './commands/index.js'
-import { DevelopmentExecutionConsumer, DevelopmentSessionRecoveryReconciler, GitVerificationIntegrator, GitWorktreePreparer, MySqlDevelopmentExecutionRepository, SubtaskExecutionConsumer, SubtaskVerificationConsumer, WorkerConsoleAdapter } from './execution/index.js'
+import { DevelopmentExecutionConsumer, DevelopmentSessionRecoveryReconciler, GitVerificationIntegrator, GitWorktreePreparer, MySqlDevelopmentExecutionRepository, SubtaskExecutionConsumer, SubtaskVerificationConsumer, TaskExecutionReconciler, WorkerConsoleAdapter } from './execution/index.js'
 import { WorkerLauncher } from './worker-launcher/WorkerLauncher.js'
 import { getDeployDiagnostics } from './deploy/DeployDiagnostics.js'
 import { DeployConsumer } from './deploy/DeployConsumer.js'
@@ -447,6 +448,7 @@ async function start() {
       environmentPreparer,
       baselineRecovery,
       deployRepository,
+      new ManagedDevelopmentPromptResolver(pool),
     )
     developmentSessionRecovery = new DevelopmentSessionRecoveryReconciler(
       pool,
@@ -537,6 +539,13 @@ async function start() {
     // ao reconciliador e não criam um segundo worker.
     void developmentSessionRecovery.reconcile()
     developmentSessionRecovery.start()
+    // Reconciliação única no boot: reenfileira tarefas/subtarefas pendentes
+    // que não têm mensagem equivalente na fila (incidente 828).
+    const taskReconciler = new TaskExecutionReconciler(pool)
+    const reconciledCount = await taskReconciler.reconcileAll()
+    if (reconciledCount > 0) {
+      console.log(`[Motor v3] Reconciliação no boot: ${reconciledCount} mensagem(ens) enfileirada(s)`)
+    }
     await queueConsumer.start()
     // Recuperação única de fatos duráveis após boot. O fluxo normal avança
     // exclusivamente por mensagens/eventos; não há timer de deploy.
