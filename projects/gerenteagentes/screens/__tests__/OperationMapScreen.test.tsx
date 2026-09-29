@@ -16,7 +16,7 @@ import userEvent from "@testing-library/user-event"
 import "@testing-library/jest-dom/vitest"
 import { BibliotecaThemeProvider } from "@biblioteca-global/ui"
 
-import OperationMapScreen, { resultadoCor } from "../OperationMapScreen"
+import OperationMapScreen from "../OperationMapScreen"
 
 vi.mock("../../../../apps/web/src/hooks/useApi", () => ({
   useApi: () => globalThis.__bundleMapa ?? undefined,
@@ -215,26 +215,6 @@ describe("OperationMapScreen — tarefas enfileiradas", () => {
   })
 })
 
-describe("resultadoCor", () => {
-  it("retorna success para status de sucesso", () => {
-    expect(resultadoCor("verified")).toBe("success")
-    expect(resultadoCor("completed")).toBe("success")
-    expect(resultadoCor("delivered")).toBe("success")
-  })
-
-  it("retorna error para status de falha/bloqueio/rejeição", () => {
-    expect(resultadoCor("rejected")).toBe("error")
-    expect(resultadoCor("blocked")).toBe("error")
-    expect(resultadoCor("failed")).toBe("error")
-  })
-
-  it("retorna text.secondary para demais status", () => {
-    expect(resultadoCor("running")).toBe("text.secondary")
-    expect(resultadoCor("pending")).toBe("text.secondary")
-    expect(resultadoCor("analyzing")).toBe("text.secondary")
-  })
-})
-
 describe("OperationMapScreen — resultado da subtarefa na aba Execução", () => {
   afterEach(() => {
     vi.restoreAllMocks()
@@ -287,7 +267,7 @@ describe("OperationMapScreen — resultado da subtarefa na aba Execução", () =
     fireEvent.click(tabs[2])
   }
 
-  it("exibe resultado em verde para subtarefa com status completed", async () => {
+  it("exibe resultado em branco dentro de uma caixa rolável", async () => {
     globalThis.__bundleMapa = bundleComSubtarefas(10, [
       { seq: 1, titulo: "Subtarefa concluída", status: "completed", resultado: "Implementação finalizada com sucesso." },
     ])
@@ -297,11 +277,15 @@ describe("OperationMapScreen — resultado da subtarefa na aba Execução", () =
     const resultado = await screen.findByTestId("subtask-result-1")
     expect(resultado).toBeInTheDocument()
     expect(resultado).toHaveTextContent("Resultado: Implementação finalizada com sucesso.")
-    // MUI resolve o token do tema para a cor RGB no DOM de teste.
-    expect(getComputedStyle(resultado).color).toBe("rgb(46, 125, 50)")
+    const estilo = getComputedStyle(resultado)
+    expect(estilo.color).toBe("rgb(255, 255, 255)")
+    expect(estilo.maxHeight).toBe("220px")
+    expect(estilo.overflowY).toBe("auto")
+    expect(estilo.borderTopWidth).toBe("1px")
+    expect(estilo.borderTopStyle).toBe("solid")
   })
 
-  it("exibe resultado em vermelho para subtarefa com status failed", async () => {
+  it("mantém o resultado branco quando a subtarefa falha", async () => {
     globalThis.__bundleMapa = bundleComSubtarefas(11, [
       { seq: 1, titulo: "Subtarefa com falha", status: "failed", resultado: "Erro de compilação no módulo X." },
     ])
@@ -311,10 +295,10 @@ describe("OperationMapScreen — resultado da subtarefa na aba Execução", () =
     const resultado = await screen.findByTestId("subtask-result-1")
     expect(resultado).toBeInTheDocument()
     expect(resultado).toHaveTextContent("Resultado: Erro de compilação no módulo X.")
-    expect(getComputedStyle(resultado).color).toBe("rgb(211, 47, 47)")
+    expect(getComputedStyle(resultado).color).toBe("rgb(255, 255, 255)")
   })
 
-  it("exibe resultado em verde para subtarefa com status verified", async () => {
+  it("mantém o resultado branco quando a subtarefa é verificada", async () => {
     globalThis.__bundleMapa = bundleComSubtarefas(12, [
       { seq: 1, titulo: "Subtarefa verificada", status: "verified", resultado: "Testes passaram, revisão aprovada." },
     ])
@@ -323,10 +307,10 @@ describe("OperationMapScreen — resultado da subtarefa na aba Execução", () =
 
     const resultado = await screen.findByTestId("subtask-result-1")
     expect(resultado).toBeInTheDocument()
-    expect(getComputedStyle(resultado).color).toBe("rgb(46, 125, 50)")
+    expect(getComputedStyle(resultado).color).toBe("rgb(255, 255, 255)")
   })
 
-  it("exibe resultado em vermelho para subtarefa com status blocked", async () => {
+  it("mantém o resultado branco quando a subtarefa está bloqueada", async () => {
     globalThis.__bundleMapa = bundleComSubtarefas(13, [
       { seq: 1, titulo: "Subtarefa bloqueada", status: "blocked", resultado: "Dependência externa não disponível." },
     ])
@@ -335,7 +319,7 @@ describe("OperationMapScreen — resultado da subtarefa na aba Execução", () =
 
     const resultado = await screen.findByTestId("subtask-result-1")
     expect(resultado).toBeInTheDocument()
-    expect(getComputedStyle(resultado).color).toBe("rgb(211, 47, 47)")
+    expect(getComputedStyle(resultado).color).toBe("rgb(255, 255, 255)")
   })
 
   it("aplica tipografia sans-serif e tamanho aumentado no resultado", async () => {

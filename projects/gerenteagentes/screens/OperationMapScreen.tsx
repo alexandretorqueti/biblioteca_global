@@ -31,20 +31,6 @@ import TaskCodeViewer from "./TaskCodeViewer"
 
 export const componentId = "gerenteagentes-operation-map"
 
-/**
- * Determina a cor do texto de resultado da subtarefa com base no status.
- * - Verde (sucesso): verified, completed, delivered
- * - Vermelho (erro): rejected, blocked, failed
- * - Herda do tema para demais status.
- */
-export function resultadoCor(status: string): "success" | "error" | "text.secondary" {
-  const sucesso = new Set(["verified", "completed", "delivered"])
-  const erro = new Set(["rejected", "blocked", "failed"])
-  if (sucesso.has(status)) return "success"
-  if (erro.has(status)) return "error"
-  return "text.secondary"
-}
-
 interface Task { id: number; titulo: string; descricao?: string | null; tipo?: string | null; status: string; projetoId: number; dependsOnTaskId?: number | null; createdAt?: string; updatedAt?: string; subtaskCount?: number; recoveryEligibility?: RecoveryEligibility | null }
 interface DbSubtask { id: number; seq: number; titulo: string; descricao?: string | null; scope?: string | null; acceptanceCriteria?: unknown; status: string; resultado?: string | null; dependsOnSubtaskId?: number | null; workspaceStatus?: string | null; correctionForSubtaskId?: number | null }
 interface MotorSubtask { id?: number; seq: number; title: string; status: string; deliverCount?: number; blockInfo?: { reason?: string; command?: string; exitCode?: number | null } | null; scope?: string | null; acceptanceCriteria?: unknown; resultado?: string | null; dependsOnSubtaskId?: number | null; workspaceStatus?: string | null; correctionForSubtaskId?: number | null; deliveryHistory?: Array<{ id: number; deliverNumber: number; model: string | null; eventType: string; reason: string | null; createdAt: string }> }
@@ -233,9 +219,15 @@ export default function OperationMapScreen() {
             <Typography
               variant="body2"
               data-testid={`subtask-result-${sub.seq}`}
-              color={resultadoCor(sub.status)}
               sx={{
                 mt: 1,
+                maxHeight: "220px",
+                overflowY: "auto",
+                p: 1.25,
+                color: "#fff",
+                bgcolor: "rgba(255, 255, 255, 0.08)",
+                border: "1px solid rgba(255, 255, 255, 0.24)",
+                borderRadius: 1,
                 fontSize: "0.9375rem",
                 fontFamily: '"Inter", "Roboto", "Helvetica Neue", Arial, sans-serif',
                 lineHeight: 1.6,
