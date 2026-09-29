@@ -39,7 +39,7 @@ export class GitWorktreePreparer {
     const path = resolve(this.root, safeTaskId, String(input.subtaskId), 'a1')
     await mkdir(dirname(path), { recursive: true })
 
-    const existingCommit = await this.existingWorktreeCommit(repoPath, path)
+    const existingCommit = await this.existingWorktreeCommit(repoPath, path, branch)
     if (existingCommit) return { path, branch, baseCommit: existingCommit, integrationPath, integrationBranch: taskBranch }
 
     const { stdout } = await execFileAsync('git', ['rev-parse', taskBranch], { cwd: repoPath })
@@ -60,7 +60,7 @@ export class GitWorktreePreparer {
 
   private async prepareNamedWorktree(repoPath: string, baseRef: string, branch: string, path: string): Promise<string> {
     await mkdir(dirname(path), { recursive: true })
-    const existingCommit = await this.existingWorktreeCommit(repoPath, path)
+    const existingCommit = await this.existingWorktreeCommit(repoPath, path, branch)
     if (existingCommit) return existingCommit
     const branchExists = await execFileAsync('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], { cwd: repoPath })
       .then(() => true, () => false)
@@ -118,14 +118,33 @@ export class GitWorktreePreparer {
     try { await stat(path); return true } catch { return false }
   }
 
-  /** Remove somente diretório incompleto que não está registrado pelo Git. */
-  private async existingWorktreeCommit(repoPath: string, path: string): Promise<string | null> {
+  /**
+   * Verifica se um worktree já existe e retorna o commit atual.
+   *
+   * Se o worktree estiver detached (HEAD não aponta para nenhuma branch),
+   * faz checkout da branch esperada para garantir consistência. Isso evita
+   * que o deploy capture commits incorretos quando o worktree ficou em
+   * estado detached por crash/interrupção anterior.
+   */
+  private async existingWorktreeCommit(repoPath: string, path: string, expectedBranch?: string): Promise<string | null> {
     if (!await this.exists(path)) return null
     const { stdout } = await execFileAsync('git', ['worktree', 'list', '--porcelain'], { cwd: repoPath })
     const registered = stdout.split('\n').some(line => line === `worktree ${path}`)
     if (!registered) {
       await rm(path, { recursive: true, force: true })
       return null
+    }
+    // Verificar se está na branch esperada ou detached
+    if (expectedBranch) {
+      const { stdout: headRef } = await execFileAsync('git', ['symbolic-ref', '-q', 'HEAD'], { cwd: path })
+        .catch(() => ({ stdout: '' }))
+      const currentBranch = headRef.trim()
+      const expectedRef = `refs/heads/${expectedBranch}`
+      if (currentBranch !== expectedRef) {
+        // Worktree está detached ou em branch errada — fazer checkout
+        console.warn(`[GitWorktreePreparer] Worktree ${path} está em "${currentBranch || 'detached'}", esperado "${expectedBranch}" — fazendo checkout`)
+        await execFileAsync('git', ['checkout', expectedBranch], { cwd: path })
+      }
     }
     const { stdout: commit } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: path })
     return commit.trim()

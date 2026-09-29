@@ -12,6 +12,7 @@ import type {
   TestRunResult,
   WorkspaceEnvironmentPreparer,
 } from '../testing/index.js'
+import type { ManagedDevelopmentPromptResolver } from '../analysis/ManagedDevelopmentPromptResolver.js'
 
 export const SUBTASK_EXECUTION_REQUESTED = 'SUBTASK_EXECUTION_REQUESTED'
 
@@ -29,6 +30,7 @@ export class SubtaskExecutionConsumer {
     private readonly environmentPreparer?: WorkspaceEnvironmentPreparer,
     private readonly baselineRecovery?: BaselinePreflightRecovery,
     deployLock?: { isDeployLocked(): Promise<boolean>; requeueForDeployRetry(message: QueueMessage, reason: string): Promise<void> },
+    private readonly promptResolver?: ManagedDevelopmentPromptResolver,
   ) {
     this.deployLock = deployLock
   }
@@ -200,7 +202,7 @@ export class SubtaskExecutionConsumer {
     }
     const result = await this.worker.executeTask(
       context,
-      this.buildPrompt(execution, workspace.path),
+      await this.buildPrompt(execution, workspace.path),
       models,
       (model, error) => this.repository.recordModelFailure(model, error),
       this.testGate && !noCode
@@ -385,7 +387,39 @@ export class SubtaskExecutionConsumer {
     if (missing.length > 0) throw new Error(`Contexto de execução incompleto: ${missing.join(', ')}`)
   }
 
-  private buildPrompt(context: SubtaskExecutionContext, workspacePath: string): DevelopmentPrompt {
+  private async buildPrompt(context: SubtaskExecutionContext, workspacePath: string): Promise<DevelopmentPrompt> {
+    const hardcoded = this.buildHardcodedPrompt(context, workspacePath)
+
+    if (this.promptResolver) {
+      try {
+        const values: Record<string, string> = {
+          '**TITULOTAREFA**': context.taskTitle,
+          '**DESCRICAOTAREFA**': context.taskDescription || '',
+          '**NUMSUBTAREFA**': String(context.seq),
+          '**TITULOSUBTAREFA**': context.title,
+          '**ESCOPO**': context.scope,
+          '**CRITERIOSACEITE**': context.acceptanceCriteria.join('; ') || 'validar o resultado solicitado',
+          '**WORKSPACE**': workspacePath,
+        }
+        const resolved = await this.promptResolver.resolve({
+          key: 'dev.primeira_rodada_tarefa',
+          values,
+          fallback: hardcoded.header,
+          taskId: context.taskId,
+          subtaskId: context.subtaskId,
+        })
+        if (resolved.text) {
+          return { header: resolved.text, context: hardcoded.context }
+        }
+      } catch (error) {
+        // Resolver failure — fall through to hardcoded prompt
+      }
+    }
+
+    return hardcoded
+  }
+
+  private buildHardcodedPrompt(context: SubtaskExecutionContext, workspacePath: string): DevelopmentPrompt {
     const description = context.taskDescription || 'N/A'
     const generation = context.generation ?? 1
     const generationNote = generation > 1
@@ -408,8 +442,6 @@ export class SubtaskExecutionConsumer {
         ? ['Esta subtarefa é analítica/sem alteração de código. Entregue o resultado solicitado sem modificar o Git.'] : []),
       'Ao terminar e validar, inclua o marcador ::DONE:: na resposta final.',
     ].join('\n')
-    // O viewer/sessão do agente pode truncar uma missão longa. Mantemos o
-    // mesmo limite do v2: até 12k no header; acima, contexto separado até 30k.
     if (description.length > 12_000) {
       return { header, context: `Descrição completa da missão:\n\n${description.substring(0, 30_000)}` }
     }

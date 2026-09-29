@@ -73,6 +73,7 @@ export class CrudService {
   // ── Virtual resource: agentes do OpenClaw (Console OpenClaw) ─────────────
   private readonly consoleUrl: string
   private readonly consoleToken: string
+  private readonly motorReconciliationUrl: string
   private consoleAgentesCache: { at: number; agents: Record<string, unknown>[] } | null = null
   private static readonly CONSOLE_CACHE_TTL_MS = 60_000
 
@@ -86,6 +87,11 @@ export class CrudService {
       this.configService.get<string>("OPENCLAW_CONSOLE_URL") ||
       "https://openclaw-api.webconnect.com.br"
     this.consoleToken = (this.configService.get<string>("OPENCLAW_CONSOLE_TOKEN") || "").trim()
+    this.motorReconciliationUrl = (
+      this.configService.get<string>("MOTOR_RECONCILIATION_URL") ||
+      this.configService.get<string>("MOTOR_DEV_URL") ||
+      ""
+    ).replace(/\/$/, "")
   }
 
   /** Resolve a tabela na whitelist do projeto; 404 fora dela. */
@@ -534,29 +540,31 @@ export class CrudService {
     operacao: "created" | "updated" | "deleted",
     linha: Record<string, unknown>,
   ): Promise<void> {
-    if (!this.realtime || (resource !== "tarefas" && resource !== "subtarefas")) return
+    if (resource !== "tarefas" && resource !== "subtarefas") return
 
     const id = Number(linha.id)
     if (!Number.isSafeInteger(id) || id <= 0) return
 
     if (resource === "tarefas") {
       const projetoId = Number(linha.projetoId ?? linha.projeto_id)
-      if (!Number.isSafeInteger(projetoId) || projetoId <= 0) return
-      this.realtime.publicar({
-        eventId: randomUUID(),
-        occurredAt: new Date().toISOString(),
-        source: "crud",
-        projectId: projetoId,
-        taskId: id,
-        type: `task.${operacao}`,
-        payload: {
-          id,
-          titulo: String(linha.titulo ?? ""),
-          status: String(linha.status ?? ""),
-          projetoId,
-          updatedAt: this.dataParaEvento(linha.updatedAt ?? linha.updated_at),
-        },
-      })
+      if (this.realtime && Number.isSafeInteger(projetoId) && projetoId > 0) {
+        this.realtime.publicar({
+          eventId: randomUUID(),
+          occurredAt: new Date().toISOString(),
+          source: "crud",
+          projectId: projetoId,
+          taskId: id,
+          type: `task.${operacao}`,
+          payload: {
+            id,
+            titulo: String(linha.titulo ?? ""),
+            status: String(linha.status ?? ""),
+            projetoId,
+            updatedAt: this.dataParaEvento(linha.updatedAt ?? linha.updated_at),
+          },
+        })
+      }
+      await this.solicitarReconciliação(String(id))
       return
     }
 
@@ -565,9 +573,15 @@ export class CrudService {
     // Subtarefas não carregam projetoId: o escopo realtime é o projeto da
     // tarefa pai, que é resolvido no banco do projeto da sessão.
     const tarefa = this.registry.tabelasDoProjeto(projeto.slug)?.tarefas
-    if (!tarefa) return
+    if (!tarefa) {
+      await this.solicitarReconciliação(String(tarefaId))
+      return
+    }
     const colunasTarefa = getTableColumns(tarefa) as Record<string, Column>
-    if (!colunasTarefa.projetoId) return
+    if (!colunasTarefa.projetoId) {
+      await this.solicitarReconciliação(String(tarefaId))
+      return
+    }
     const db = await this.dbDoProjeto(projeto)
     const pai = await db
       .select({ projetoId: colunasTarefa.projetoId as MySqlColumn })
@@ -575,23 +589,47 @@ export class CrudService {
       .where(eq(this.colunaId(tarefa) as never, tarefaId as never))
       .limit(1)
     const projetoId = Number(pai.at(0)?.projetoId)
-    if (!Number.isSafeInteger(projetoId) || projetoId <= 0) return
-    this.realtime.publicar({
-      eventId: randomUUID(),
-      occurredAt: new Date().toISOString(),
-      source: "crud",
-      projectId: projetoId,
-      taskId: tarefaId,
-      type: `subtask.${operacao}`,
-      payload: {
-        id,
-        tarefaId,
-        seq: Number(linha.seq),
-        titulo: String(linha.titulo ?? ""),
-        status: String(linha.status ?? ""),
-        resultado: linha.resultado ?? null,
-      },
-    })
+    if (this.realtime && Number.isSafeInteger(projetoId) && projetoId > 0) {
+      this.realtime.publicar({
+        eventId: randomUUID(),
+        occurredAt: new Date().toISOString(),
+        source: "crud",
+        projectId: projetoId,
+        taskId: tarefaId,
+        type: `subtask.${operacao}`,
+        payload: {
+          id,
+          tarefaId,
+          seq: Number(linha.seq),
+          titulo: String(linha.titulo ?? ""),
+          status: String(linha.status ?? ""),
+          resultado: linha.resultado ?? null,
+        },
+      })
+    }
+    await this.solicitarReconciliação(String(tarefaId))
+  }
+
+  /**
+   * A mutação CRUD é a borda durável da alteração de tarefa/subtarefa. O
+   * Motor recebe um sinal best-effort; a decisão e a deduplicação continuam
+   * no reconciliador transacional do próprio Motor.
+   */
+  private async solicitarReconciliação(taskId: string): Promise<void> {
+    if (!this.motorReconciliationUrl) return
+    try {
+      const response = await fetch(
+        `${this.motorReconciliationUrl}/api/motor/reconcile/task/${encodeURIComponent(taskId)}`,
+        { method: "POST", signal: AbortSignal.timeout(3_000) },
+      )
+      if (!response.ok) {
+        console.warn(`[CrudService] Motor não aceitou reconciliação da tarefa ${taskId}: HTTP ${response.status}`)
+      }
+    } catch (erro) {
+      // A alteração CRUD já foi concluída. O boot seguinte do Motor fará a
+      // varredura de segurança caso o processo esteja temporariamente fora.
+      console.warn(`[CrudService] Falha ao solicitar reconciliação da tarefa ${taskId}:`, erro instanceof Error ? erro.message : String(erro))
+    }
   }
 
   private dataParaEvento(valor: unknown): unknown {

@@ -230,6 +230,17 @@ export class DeployConsumer {
 
   private async integrationContext(raw: Omit<DeployTaskContext, 'integrationPath' | 'integrationBranch' | 'integrationCommit'>): Promise<DeployTaskContext> {
     const interim = this.repository.withIntegration(raw, '')
+    // Verificação defensiva: garantir que o worktree está na branch de integração
+    // (não detached). Se estiver detached, fazer checkout para evitar capturar
+    // commits incorretos que levam a deploy com requested_commit errado.
+    const { stdout: headRef } = await execFileAsync('git', ['symbolic-ref', '-q', 'HEAD'], { cwd: interim.integrationPath, encoding: 'utf8' })
+      .catch(() => ({ stdout: '' }))
+    const currentBranch = headRef.trim()
+    const expectedRef = `refs/heads/${interim.integrationBranch}`
+    if (currentBranch !== expectedRef) {
+      console.warn(`[DeployConsumer] Worktree de integração está em "${currentBranch || 'detached'}", esperado "${interim.integrationBranch}" — fazendo checkout`)
+      await execFileAsync('git', ['checkout', interim.integrationBranch], { cwd: interim.integrationPath, encoding: 'utf8' })
+    }
     const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: interim.integrationPath, encoding: 'utf8' })
     const commit = stdout.trim(); if (!/^[a-f0-9]{7,64}$/i.test(commit)) throw new Error('Commit da integração inválido')
     return { ...interim, repoPath: mapHostRepoPathToContainer(interim.repoPath) ?? interim.repoPath, integrationCommit: commit }
