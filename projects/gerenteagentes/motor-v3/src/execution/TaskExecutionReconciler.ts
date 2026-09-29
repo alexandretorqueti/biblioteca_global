@@ -224,12 +224,18 @@ export class TaskExecutionReconciler {
       SELECT COUNT(*) AS total
         FROM motor_outbox o
        WHERE o.type = ?
-         AND (o.task_id = ? OR o.task_id = CAST((SELECT id FROM tarefas WHERE external_id = ? LIMIT 1) AS CHAR))
+         AND (
+           o.task_id COLLATE utf8mb4_unicode_ci = ? COLLATE utf8mb4_unicode_ci
+           OR o.task_id COLLATE utf8mb4_unicode_ci = CAST(
+             (SELECT id FROM tarefas WHERE external_id = ? COLLATE utf8mb4_unicode_ci LIMIT 1)
+             AS CHAR CHARACTER SET utf8mb4
+           ) COLLATE utf8mb4_unicode_ci
+         )
          AND (
            o.status IN ('pending', 'published')
            OR EXISTS (
              SELECT 1 FROM motor_message_processing_state mps
-              WHERE mps.message_id = o.message_id
+              WHERE mps.message_id COLLATE utf8mb4_unicode_ci = o.message_id COLLATE utf8mb4_unicode_ci
                 AND mps.status IN ('processing', 'completed')
            )
          )
