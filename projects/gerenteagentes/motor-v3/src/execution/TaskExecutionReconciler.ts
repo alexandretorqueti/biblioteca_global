@@ -64,6 +64,64 @@ export class TaskExecutionReconciler {
       }
       if (Number(task.blocked) !== 0) return this.finish(connection, { enqueued: false, reason: 'blocked', taskId: canonicalTaskId })
 
+      // Primeiro: verificar se há subtarefa running órfã (sessão failed ou stale)
+      const [orphanRunning] = await connection.query<Array<RowDataPacket & { id: number; seq: number; titulo: string }>>(`
+        SELECT s.id, s.seq, s.titulo
+          FROM subtarefas s
+         WHERE s.tarefa_id = ?
+           AND s.status = 'running'
+           AND s.generation = (
+             SELECT MAX(s2.generation) FROM subtarefas s2 WHERE s2.tarefa_id = s.tarefa_id
+           )
+           AND (
+             EXISTS (
+               SELECT 1 FROM motor_agent_sessions mas
+                WHERE mas.subtarefa_id = s.id
+                  AND mas.status = 'failed'
+                  AND mas.closed_at IS NOT NULL
+             )
+             OR NOT EXISTS (
+               SELECT 1 FROM motor_agent_sessions mas
+                WHERE mas.subtarefa_id = s.id
+                  AND mas.status = 'active'
+             )
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM motor_outbox o
+              WHERE o.task_id = ?
+                AND o.type IN ('SUBTASK_EXECUTION_REQUESTED', 'SUBTASK_EXECUTION_COMPLETED')
+                AND o.status IN ('pending', 'published')
+           )
+         ORDER BY s.seq ASC
+         LIMIT 1
+      `, [task.id, canonicalTaskId])
+
+      if (orphanRunning[0]) {
+        // Subtarefa running órfã: resetar para pending e reenfileirar
+        const duplicate = await this.hasUnfinishedCommand(connection, canonicalTaskId, 'TASK_READY_FOR_PROGRAMMING')
+        if (duplicate) {
+          // Mesmo com comando pendente, reseta a subtarefa para pending
+          // para que o consumer existente possa processá-la
+          await connection.query(
+            'UPDATE subtarefas SET status = \'pending\' WHERE id = ?',
+            [orphanRunning[0].id]
+          )
+          return this.finish(connection, { enqueued: false, reason: 'command_already_pending', taskId: canonicalTaskId })
+        }
+        await connection.query(
+          'UPDATE subtarefas SET status = \'pending\' WHERE id = ?',
+          [orphanRunning[0].id]
+        )
+        const message = createQueueMessage({
+          type: 'TASK_READY_FOR_PROGRAMMING',
+          taskId: canonicalTaskId,
+          executionId: `reconcile-orphan-${orphanRunning[0].id}-${Date.now()}`,
+          payload: { reason: 'orphan_running_subtask', subtaskId: Number(orphanRunning[0].id), seq: Number(orphanRunning[0].seq), recovered: true },
+        })
+        await insertOutboxMessage(connection, message)
+        return this.finish(connection, { enqueued: true, type: 'TASK_READY_FOR_PROGRAMMING', taskId: canonicalTaskId })
+      }
+
       const [subtasks] = await connection.query<SubtaskRow[]>(`
         SELECT s.id, s.seq, s.titulo, s.scope
           FROM subtarefas s
