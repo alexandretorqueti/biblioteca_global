@@ -92,13 +92,10 @@ export class TaskExecutionReconciler {
                 AND o.type IN ('SUBTASK_EXECUTION_REQUESTED', 'SUBTASK_EXECUTION_COMPLETED')
                 AND (
                   o.status = 'pending'
-                  OR (
-                    o.status = 'published'
-                    AND NOT EXISTS (
-                      SELECT 1 FROM motor_message_processing_state mps
-                       WHERE mps.message_id = o.message_id
-                         AND mps.status IN ('completed', 'failed')
-                    )
+                  OR EXISTS (
+                    SELECT 1 FROM motor_message_processing_state mps
+                     WHERE mps.message_id = o.message_id
+                       AND mps.status = 'processing'
                   )
                 )
            )
