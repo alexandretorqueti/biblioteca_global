@@ -60,7 +60,19 @@ export class RealtimeGateway {
       return
     }
     const message: RealtimeClientMessage = parsed.data
-    if (message.taskId <= 0 || session.projetoId <= 0) {
+    if (session.projetoId <= 0) {
+      client.send(JSON.stringify({ type: "error", code: "INVALID_SUBSCRIPTION", message: "Tarefa inválida" }))
+      return
+    }
+    if (message.channel === "project-feed") {
+      const result = this.realtime.inscreverFeed(session.projetoId, client, message.lastSequence)
+      if (!result.replayAvailable) {
+        client.send(JSON.stringify({ type: "feed_replay_unavailable", currentSequence: result.currentSequence }))
+      }
+      client.send(JSON.stringify({ type: "feed_subscribed", currentSequence: result.currentSequence }))
+      return
+    }
+    if (message.taskId <= 0) {
       client.send(JSON.stringify({ type: "error", code: "INVALID_SUBSCRIPTION", message: "Tarefa inválida" }))
       return
     }

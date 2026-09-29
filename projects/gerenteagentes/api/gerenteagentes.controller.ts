@@ -22,6 +22,7 @@ import { ModelSelectionTipoSchema } from '@biblioteca-global/shared';
 import { GerenteAgentesService } from './gerenteagentes.service';
 import { TaskStatusPollerService } from './task-status-poller.service';
 import { GitInspectorService } from './git-inspector.service';
+import { OperationalFeedService } from './operational-feed';
 
 @Controller('gerenteagentes')
 @UseGuards(JwtAuthGuard, ProjectScopeGuard, RolesGuard)
@@ -30,7 +31,22 @@ export class GerenteAgentesController {
     @Inject(GerenteAgentesService) private readonly service: GerenteAgentesService,
     private readonly poller: TaskStatusPollerService,
     private readonly gitInspector: GitInspectorService,
+    private readonly operationalFeed: OperationalFeedService,
   ) {}
+
+  /** Recorte somente leitura do quadro inferior do mapa de agentes. */
+  @Get('operational-feed')
+  @Roles('admin', 'gerente', 'operador')
+  operationalFeedSnapshot(
+    @CurrentProject() projeto: ProjetoResumo,
+    @Query('limit') limit?: string,
+    @Query('lastSequence') lastSequence?: string,
+  ) {
+    return this.operationalFeed.snapshot(projeto.id, {
+      limit: limit ? Number(limit) : undefined,
+      lastSequence: lastSequence ? Number(lastSequence) : undefined,
+    });
+  }
 
   // ============================================================================
   // AÇÕES DE TAREFA

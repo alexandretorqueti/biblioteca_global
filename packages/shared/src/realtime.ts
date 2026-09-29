@@ -44,14 +44,17 @@ export type TaskEventEnvelope = z.infer<typeof taskEventEnvelopeSchema>
 
 export const realtimeClientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("subscribe"), channel: z.literal("task"), taskId: z.number().int().positive(), lastSequence: z.number().int().nonnegative().optional() }),
+  z.object({ type: z.literal("subscribe"), channel: z.literal("project-feed"), lastSequence: z.number().int().nonnegative().optional() }),
   z.object({ type: z.literal("ping") }),
 ])
 export type RealtimeClientMessage = z.infer<typeof realtimeClientMessageSchema>
 
 export const realtimeServerMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("subscribed"), taskId: z.number().int().positive(), currentSequence: z.number().int().nonnegative() }),
+  z.object({ type: z.literal("feed_subscribed"), currentSequence: z.number().int().nonnegative() }),
   z.object({ type: z.literal("event"), event: taskEventEnvelopeSchema }),
   z.object({ type: z.literal("replay_unavailable"), taskId: z.number().int().positive(), currentSequence: z.number().int().nonnegative() }),
+  z.object({ type: z.literal("feed_replay_unavailable"), currentSequence: z.number().int().nonnegative() }),
   z.object({ type: z.literal("pong") }),
   z.object({ type: z.literal("error"), code: z.string(), message: z.string() }),
 ])

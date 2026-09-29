@@ -11,7 +11,9 @@ export class RealtimeService {
   // limite de conexões para evitar crescimento de memória (demanda registrada).
   private readonly sequencias = new Map<number, number>()
   private readonly eventos = new Map<string, TaskEventEnvelope[]>()
+  private readonly eventosPorProjeto = new Map<number, TaskEventEnvelope[]>()
   private readonly inscritos = new Map<string, Map<WebSocket, number>>()
+  private readonly inscritosFeed = new Map<number, Map<WebSocket, number>>()
   private readonly eventosRecebidos = new Set<string>()
 
   publicar(evento: unknown): TaskEventEnvelope {
@@ -30,6 +32,11 @@ export class RealtimeService {
     if (lista.length > LIMITE_EVENTOS_POR_TAREFA) lista.splice(0, lista.length - LIMITE_EVENTOS_POR_TAREFA)
     this.eventos.set(chave, lista)
     this.enviar(chave, { type: "event", event: envelope })
+    const feed = this.eventosPorProjeto.get(envelope.projectId) ?? []
+    feed.push(envelope)
+    if (feed.length > LIMITE_EVENTOS_POR_TAREFA * 10) feed.splice(0, feed.length - LIMITE_EVENTOS_POR_TAREFA * 10)
+    this.eventosPorProjeto.set(envelope.projectId, feed)
+    this.enviarFeed(envelope.projectId, { type: "event", event: envelope })
     return envelope
   }
 
@@ -59,6 +66,24 @@ export class RealtimeService {
       inscritos.delete(client)
       if (inscritos.size === 0) this.inscritos.delete(taskId)
     }
+    for (const [projectId, inscritos] of this.inscritosFeed) {
+      inscritos.delete(client)
+      if (inscritos.size === 0) this.inscritosFeed.delete(projectId)
+    }
+  }
+
+  inscreverFeed(projectId: number, client: WebSocket, lastSequence?: number): { currentSequence: number; replayAvailable: boolean } {
+    const inscritos = this.inscritosFeed.get(projectId) ?? new Map<WebSocket, number>()
+    inscritos.set(client, projectId)
+    this.inscritosFeed.set(projectId, inscritos)
+    const lista = this.eventosPorProjeto.get(projectId) ?? []
+    const atual = this.sequencias.get(projectId) ?? 0
+    if (lastSequence !== undefined) {
+      const primeiro = lista[0]?.sequence
+      if (primeiro !== undefined && lastSequence < primeiro - 1) return { currentSequence: atual, replayAvailable: false }
+      for (const event of lista) if (event.sequence > lastSequence) this.enviarPara(client, { type: "event", event })
+    }
+    return { currentSequence: atual, replayAvailable: true }
   }
 
   private chave(projectId: number, taskId: number): string {
@@ -67,6 +92,10 @@ export class RealtimeService {
 
   private enviar(chave: string, message: RealtimeServerMessage): void {
     for (const client of this.inscritos.get(chave)?.keys() ?? []) this.enviarPara(client, message)
+  }
+
+  private enviarFeed(projectId: number, message: RealtimeServerMessage): void {
+    for (const client of this.inscritosFeed.get(projectId)?.keys() ?? []) this.enviarPara(client, message)
   }
 
   private enviarPara(client: WebSocket, message: RealtimeServerMessage): void {

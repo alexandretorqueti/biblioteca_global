@@ -7,6 +7,7 @@ import { AuthModule } from '../../../apps/api/src/modules/auth/auth.module';
 import { ProvisionModule } from '../../../apps/api/src/modules/provision/provision.module';
 import { IsaChatController, IsaChatService, IsaChatBridgeService } from './isa-chat';
 import { RealtimeModule } from '../../../apps/api/src/modules/realtime/realtime.module';
+import { OperationalFeedService } from './operational-feed';
 
 @Module({
   imports: [AuthModule, ProvisionModule, RealtimeModule],
@@ -17,6 +18,7 @@ import { RealtimeModule } from '../../../apps/api/src/modules/realtime/realtime.
     GitInspectorService,
     IsaChatService,
     IsaChatBridgeService,
+    OperationalFeedService,
   ],
   exports: [
     GerenteAgentesService,
@@ -24,6 +26,7 @@ import { RealtimeModule } from '../../../apps/api/src/modules/realtime/realtime.
     GitInspectorService,
     IsaChatService,
     IsaChatBridgeService,
+    OperationalFeedService,
   ],
 })
 export class GerenteAgentesModule implements OnModuleInit {
