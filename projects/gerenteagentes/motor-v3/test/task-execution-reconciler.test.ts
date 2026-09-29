@@ -4,6 +4,7 @@ import { TaskExecutionReconciler } from '../src/execution/TaskExecutionReconcile
 type Options = {
   task?: Record<string, unknown> | null
   subtasks?: Array<Record<string, unknown>>
+  orphanRunning?: Array<Record<string, unknown>>
   unfinishedCommands?: number
 }
 
@@ -22,16 +23,23 @@ function makePool(options: Options = {}) {
       }
     : options.task
   const subtasks = options.subtasks ?? []
+  const orphanRunning = options.orphanRunning ?? []
   const queries: Array<{ sql: string; params?: unknown[] }> = []
   const inserted: Array<{ params?: unknown[] }> = []
+  const updated: Array<{ params?: unknown[] }> = []
   const query = vi.fn(async (sql: string, params?: unknown[]) => {
     const normalized = sql.replace(/\s+/g, ' ').trim()
     queries.push({ sql: normalized, params })
     if (normalized.includes('FROM tarefas t') && normalized.includes('FOR UPDATE')) return [task ? [task] : []]
+    if (normalized.includes('FROM subtarefas s') && normalized.includes("s.status = 'running'")) return [orphanRunning]
     if (normalized.includes('FROM subtarefas s') && normalized.includes("s.status = 'pending'")) return [subtasks]
     if (normalized.includes('FROM motor_outbox o')) return [[{ total: options.unfinishedCommands ?? 0 }]]
     if (normalized.includes('INSERT INTO motor_outbox')) {
       inserted.push({ params })
+      return [{ affectedRows: 1 }]
+    }
+    if (normalized.startsWith('UPDATE subtarefas SET status')) {
+      updated.push({ params })
       return [{ affectedRows: 1 }]
     }
     throw new Error(`SQL inesperado: ${normalized}`)
@@ -48,6 +56,7 @@ function makePool(options: Options = {}) {
     connection,
     queries,
     inserted,
+    updated,
   }
 }
 
@@ -97,6 +106,27 @@ describe('TaskExecutionReconciler', () => {
     await expect(new TaskExecutionReconciler(paused.pool).reconcileTask('828')).resolves.toMatchObject({ enqueued: false, reason: 'paused' })
     await expect(new TaskExecutionReconciler(blocked.pool).reconcileTask('828')).resolves.toMatchObject({ enqueued: false, reason: 'blocked' })
     await expect(new TaskExecutionReconciler(missing.pool).reconcileTask('828')).resolves.toMatchObject({ enqueued: false, reason: 'task_not_found' })
+  })
+
+  it('recupera subtarefa running órfã (sessão failed) e enfileira nova execução', async () => {
+    const fixture = makePool({ task: { id: 828, external_id: 'task-p2-828', paused_at: null, terminal_status: null, blocked: 0, subtask_count: 6 }, orphanRunning: [{ id: 1101, seq: 6, titulo: 'Validação integrada' }] })
+
+    const result = await new TaskExecutionReconciler(fixture.pool).reconcileTask('task-p2-828')
+
+    expect(result).toMatchObject({ enqueued: true, type: 'TASK_READY_FOR_PROGRAMMING', taskId: 'task-p2-828' })
+    expect(fixture.updated.length).toBe(1)
+    expect(fixture.updated[0].params).toEqual([1101])
+    expect(fixture.inserted.length).toBe(1)
+  })
+
+  it('não enfileira subtarefa running órfã se já existe comando pendente, mas reseta status', async () => {
+    const fixture = makePool({ task: { id: 828, external_id: 'task-p2-828', paused_at: null, terminal_status: null, blocked: 0, subtask_count: 6 }, orphanRunning: [{ id: 1101, seq: 6, titulo: 'Validação integrada' }], unfinishedCommands: 1 })
+
+    const result = await new TaskExecutionReconciler(fixture.pool).reconcileTask('task-p2-828')
+
+    expect(result).toMatchObject({ enqueued: false, reason: 'command_already_pending', taskId: 'task-p2-828' })
+    expect(fixture.updated.length).toBe(1) // reseta para pending mesmo assim
+    expect(fixture.inserted.length).toBe(0) // mas não enfileira novo comando
   })
 
   it('consulta sessões ativas antes de considerar a subtarefa elegível', async () => {
