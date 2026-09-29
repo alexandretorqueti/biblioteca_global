@@ -28,6 +28,8 @@ import { recoveryEligibilityLabel, RecoveryEligibilityTooltipContent, type Filtr
 import AgentStatusStrip, { type AgentStatusStripProps } from "./AgentStatusStrip"
 import { SUBTASK_STATUS_OPTIONS, TASK_STATUS_EXECUTING, TASK_STATUS_FINAIS, TASK_STATUS_PAUSABLE, TASK_STATUS_STARTABLE, taskStatusColor, taskStatusLabel } from "../motor-v2/src/shared/task-statuses"
 import TaskCodeViewer from "./TaskCodeViewer"
+import OperationalFeedPanel from "./OperationalFeedPanel"
+import { feedItemFromEnvelope, mergeFeedItem, normalizeFeedSnapshot } from "./operational-feed-adapter"
 
 export const componentId = "gerenteagentes-operation-map"
 
@@ -77,6 +79,10 @@ export default function OperationMapScreen() {
   const [motorIsRunning, setMotorIsRunning] = useState(false)
   const [motorActivity, setMotorActivity] = useState<AgentStatusStripProps["motorActivity"]>(null)
   const [workers, setWorkers] = useState<AgentStatusStripProps["workers"]>([])
+  const [operationalFeed, setOperationalFeed] = useState<import("../api/operational-feed").OperationalFeedItem[]>([])
+  const [feedRealtime, setFeedRealtime] = useState<"connecting" | "open" | "closed">("closed")
+  const [feedRecovered, setFeedRecovered] = useState(false)
+  const feedProjectRef = useRef<number | null>(null)
 
   const loadTasks = useCallback(async () => { if (!bundle) { setTasksLoading(false); setTasksError("A conexão com a API ainda não está disponível."); return } setTasksLoading(true); setTasksError(null); try { const result = await bundle.http.request<Task[] | { items?: Task[] }>("GET", "/gerenteagentes/tarefas-com-status", { query: { pageSize: 100 }, auth: "access" }); const payload = Array.isArray(result) ? result : (result.items ?? []); const list = payload.sort((a, b) => new Date(b.updatedAt ?? b.createdAt ?? 0).getTime() - new Date(a.updatedAt ?? a.createdAt ?? 0).getTime()); setTasks(list); setSelectedId(current => { if (current !== "" && list.some(t => t.id === current)) return current; if (!initialSelectionDone.current) { initialSelectionDone.current = true; return selectInitialTask(list) } return list.find(t => !FINAL_STATUSES.has(t.status) && t.status !== "draft")?.id ?? list[0]?.id ?? "" }) } catch (e) { setTasksError(e instanceof Error ? e.message : "Não foi possível carregar as tarefas do mapa.") } finally { setTasksLoading(false) } }, [bundle])
   const loadProjects = useCallback(async () => { if (!bundle) return; try { const result = await bundle.http.request<{ items: Array<{ id: number; nome: string }> }>("GET", "/gerenteagentes/projetos_captados", { query: { pageSize: 100 }, auth: "access" }); setProjects(result.items ?? []) } catch { setProjects([]) } }, [bundle])
@@ -102,6 +108,19 @@ export default function OperationMapScreen() {
       setWorkers([])
     }
   }, [bundle])
+  const feedProjectId = tasks.find(task => task.id === selectedId)?.projetoId ?? tasks[0]?.projetoId ?? null
+  const loadOperationalFeed = useCallback(async (projectId: number) => {
+    if (!bundle) return
+    try {
+      const result = await bundle.http.request<import("../api/operational-feed").OperationalFeedSnapshot>("GET", "/gerenteagentes/operational-feed", { query: { limit: 100 }, auth: "access" })
+      if (feedProjectRef.current === projectId) {
+        setOperationalFeed(normalizeFeedSnapshot(result))
+        setFeedRecovered(true)
+      }
+    } catch {
+      if (feedProjectRef.current === projectId) setFeedRecovered(false)
+    }
+  }, [bundle])
   const loadDetail = useCallback(async (id: number) => { if (!bundle) return; try { const result = await bundle.http.request<Detail>("GET", `/gerenteagentes/tarefas/${id}/motor-detail`, { auth: "access" }); setDetail(result) } catch (e) { setError(e instanceof Error ? e.message : "Não foi possível carregar os detalhes.") } }, [bundle])
   const loadOperations = useCallback(async (id: number) => { if (!bundle) return; try { const result = await bundle.http.request<MotorOperation[]>("GET", `/gerenteagentes/tarefas/${id}/operacoes-motor`, { auth: "access" }); setOperations(Array.isArray(result) ? result : []) } catch { setOperations([]) } }, [bundle])
   const loadSubtasks = useCallback(async (id: number) => { if (!bundle) return; try { const result = await bundle.http.request<DbSubtask[]>("GET", `/gerenteagentes/tarefas/${id}/subtarefas`, { auth: "access" }); setDbSubtasks(Array.isArray(result) ? result : []) } catch { setDbSubtasks([]) } }, [bundle])
@@ -110,6 +129,33 @@ export default function OperationMapScreen() {
 
   useEffect(() => { void loadTasks(); void loadProjects(); void loadActivity(); const timer = window.setInterval(() => { void loadTasks(); void loadActivity(); if (selectedId !== "") void refreshSelected(selectedId) }, 5000); return () => window.clearInterval(timer) }, [loadTasks, loadProjects, loadActivity, refreshSelected, selectedId])
   useEffect(() => { if (!bundle || selectedId === "") { activeTask.current = ""; setRealtime("closed"); return } activeTask.current = selectedId; setRealtime("connecting"); setChat([]); setDetail(null); setOperations([]); setDbSubtasks([]); void refreshSelected(selectedId); const client = new RealtimeClient({ url: resolveRealtimeUrl(), baseUrl: resolveApiBaseUrl(), taskId: selectedId, getAccessToken: () => bundle.getAccessToken(), onStatusChange: status => { if (activeTask.current === selectedId) setRealtime(status) }, onMessage: message => { if (activeTask.current !== selectedId) return; if (message.type === "replay_unavailable") { void refreshSelected(selectedId); return } if (message.type === "error") { setChatError(message.message); return } if (message.type !== "event") return; const payload = message.event.payload; if (message.event.type.includes("chat")) { const id = Number(payload.id); const texto = typeof payload.texto === "string" ? payload.texto : ""; if (id && texto) { setChat(old => old.some(m => m.id === id) ? old : [...old, { id, tarefaId: selectedId, role: String(payload.role ?? "assistant"), texto, createdAt: String(payload.createdAt ?? message.event.occurredAt) }]); if (String(payload.role) !== "user") setChatWaiting(false) } else void loadChat(selectedId) } if (message.event.type === "task.status.changed" && typeof payload.status === "string") setTasks(old => old.map(t => t.id === selectedId ? { ...t, status: String(payload.status) } : t)); if (message.event.type.startsWith("task.") || message.event.type.startsWith("subtask.")) { void loadTasks(); void loadDetail(selectedId); void loadOperations(selectedId); void loadSubtasks(selectedId) } } }); void client.connect(); return () => { if (activeTask.current === selectedId) activeTask.current = ""; client.close() } }, [bundle, selectedId, refreshSelected, loadChat, loadTasks, loadDetail, loadOperations, loadSubtasks])
+
+  // O quadro inferior acompanha o projeto inteiro. Ele não é resetado quando
+  // o usuário troca a tarefa no drawer, evitando misturar históricos de seleção.
+  useEffect(() => {
+    if (!bundle || feedProjectId == null) { setFeedRealtime("closed"); return }
+    const projectId = feedProjectId
+    feedProjectRef.current = projectId
+    setOperationalFeed([])
+    setFeedRecovered(false)
+    setFeedRealtime("connecting")
+    let disposed = false
+    const client = new RealtimeClient({
+      url: resolveRealtimeUrl(), baseUrl: resolveApiBaseUrl(), channel: "project-feed",
+      getAccessToken: () => bundle.getAccessToken(),
+      onStatusChange: status => { if (!disposed && feedProjectRef.current === projectId) setFeedRealtime(status) },
+      onMessage: message => {
+        if (disposed || feedProjectRef.current !== projectId) return
+        if (message.type === "feed_replay_unavailable") { void loadOperationalFeed(projectId); return }
+        if (message.type === "event") {
+          const item = feedItemFromEnvelope(message.event)
+          if (item && item.projectId === projectId) setOperationalFeed(old => mergeFeedItem(old, item))
+        }
+      },
+    })
+    void (async () => { await loadOperationalFeed(projectId); if (!disposed) await client.connect() })()
+    return () => { disposed = true; client.close() }
+  }, [bundle, feedProjectId, loadOperationalFeed])
 
   const selected = tasks.find(t => t.id === selectedId); const mapped = useMemo<FlowTask[]>(() => tasks.map(t => ({ ...t, createdAt: t.createdAt ?? null, updatedAt: t.updatedAt ?? null, projetoNome: projects.find(p => p.id === t.projetoId)?.nome ?? null })), [tasks, projects]); const subtasks = detail?.subtasks?.length ? detail.subtasks : dbSubtasks.map(s => ({ id: s.id, seq: s.seq, title: s.titulo, status: s.status, scope: s.scope, acceptanceCriteria: s.acceptanceCriteria, resultado: s.resultado, workspaceStatus: s.workspaceStatus, correctionForSubtaskId: s.correctionForSubtaskId })); const status = detail?.task?.status ?? selected?.status ?? ""; const canStart = status === "paused" || TASK_STATUS_STARTABLE.has(status); const canPause = TASK_STATUS_PAUSABLE.has(status)
   const execute = useCallback(async (action: "start" | "pause" | "resume" | "unlock" | "sanitize-session", id = selectedId) => { if (!bundle || id === "") return; if (action === "sanitize-session" && !window.confirm("Arquivar a sessão atual do agente e preparar uma continuação com contexto limpo? O histórico será preservado. Depois, desbloqueie a tarefa para retomá-la.")) return; setError(null); try { await bundle.http.request("POST", `/gerenteagentes/tarefas/${id}/${action}`, { auth: "access" }); await loadTasks(); if (id === selectedId) await refreshSelected(id) } catch (e) { setError(e instanceof Error ? e.message : `Erro ao ${action} a tarefa.`) } }, [bundle, selectedId, loadTasks, refreshSelected])
@@ -175,6 +221,7 @@ export default function OperationMapScreen() {
     <AgentStatusStrip motorActive={motorActive} motorIsRunning={motorIsRunning} motorActivity={motorActivity} workers={workers} />
     {tasksError && <Alert severity="error" onClose={() => setTasksError(null)}>Não foi possível carregar as tarefas do mapa: {tasksError}</Alert>}{!tasksLoading && !tasksError && tasks.length === 0 && <Alert severity="info">Nenhuma tarefa encontrada.</Alert>}{error && <Alert severity="error" onClose={() => setError(null)}>{error}</Alert>}{bulkMessage && <Alert severity="info" onClose={() => setBulkMessage(null)}>{bulkMessage}</Alert>}{diagnostics && <Tooltip title={diagnostics.reasons.join(" · ")}><Alert severity={diagnostics.canStart ? "success" : diagnostics.pendingRequests ? "warning" : "info"} sx={{ py: 0.5 }}>{diagnostics.canStart ? "Deploy pronto para iniciar" : diagnostics.reasons[0] ?? "Deploy aguardando condições operacionais"}{diagnostics.pendingRequests > 0 ? ` · ${diagnostics.pendingRequests} pendente(s)` : ""}</Alert></Tooltip>}
     <OperationMapCanvas tarefas={mapped} selectedTaskId={selectedId} motorActivities={activities} projetos={projects} filtros={filters} onFiltrosChange={setFilters} onSelectTask={openTask} />
+    <OperationalFeedPanel items={operationalFeed} connection={feedRealtime} recovered={feedRecovered} onSelectTask={openTask} />
     </Stack>
 
     {isWideScreen && selected && (

@@ -26,7 +26,7 @@ export class RealtimeClient {
       // A troca de tarefa pode fechar o cliente enquanto o ticket ainda está
       // sendo obtido. Não crie um socket órfão quando essa chamada terminar.
       if (this.stopped || generation !== this.connectionGeneration) return
-      const query = new URLSearchParams({ ticket, taskId: String(this.options.taskId) })
+      const query = new URLSearchParams({ ticket })
       if (this.lastSequence !== undefined) query.set("lastSequence", String(this.lastSequence))
       const socket = this.factory(`${this.options.url}?${query.toString()}`)
       this.conectarSocket(socket)
@@ -52,7 +52,11 @@ export class RealtimeClient {
     this.socket = socket
     socket.onopen = () => {
       this.options.onStatusChange?.("open")
-      socket.send(JSON.stringify({ type: "subscribe", channel: "task", taskId: this.options.taskId, lastSequence: this.lastSequence }))
+      const channel = this.options.channel ?? "task"
+      const subscribe = channel === "project-feed"
+        ? { type: "subscribe", channel, lastSequence: this.lastSequence }
+        : { type: "subscribe", channel, taskId: this.options.taskId, lastSequence: this.lastSequence }
+      socket.send(JSON.stringify(subscribe))
     }
     socket.onmessage = (event) => {
       try {

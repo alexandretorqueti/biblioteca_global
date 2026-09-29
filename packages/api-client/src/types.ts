@@ -40,7 +40,10 @@ export interface RealtimeClientOptions {
   url: string
   /** URL base da API para solicitar ticket (ex.: https://biblioteca-api.webconnect.com.br/api). */
   baseUrl: string
-  taskId: number
+  /** Canal de inscrição após abrir a conexão. Padrão: "task" (canal por tarefa). */
+  channel?: "task" | "project-feed"
+  /** Obrigatório no canal "task"; ignorado no canal "project-feed". */
+  taskId?: number
   lastSequence?: number
   /** Retorna o access token atual (necessário para solicitar ticket). */
   getAccessToken(): string | null
