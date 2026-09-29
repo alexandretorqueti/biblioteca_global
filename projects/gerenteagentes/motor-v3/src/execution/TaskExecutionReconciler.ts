@@ -90,7 +90,17 @@ export class TaskExecutionReconciler {
              SELECT 1 FROM motor_outbox o
               WHERE o.task_id = ?
                 AND o.type IN ('SUBTASK_EXECUTION_REQUESTED', 'SUBTASK_EXECUTION_COMPLETED')
-                AND o.status IN ('pending', 'published')
+                AND (
+                  o.status = 'pending'
+                  OR (
+                    o.status = 'published'
+                    AND NOT EXISTS (
+                      SELECT 1 FROM motor_message_processing_state mps
+                       WHERE mps.message_id = o.message_id
+                         AND mps.status IN ('completed', 'failed')
+                    )
+                  )
+                )
            )
          ORDER BY s.seq ASC
          LIMIT 1

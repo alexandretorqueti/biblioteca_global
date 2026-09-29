@@ -95,7 +95,7 @@ describe('TaskExecutionReconciler', () => {
     expect(result).toEqual({ enqueued: false, reason: 'command_already_pending', taskId: 'task-p1-828' })
     expect(fixture.inserted).toHaveLength(0)
     expect(fixture.queries.find((item) => item.sql.includes('FROM motor_outbox o'))?.sql)
-      .toContain("o.status IN ('pending', 'published')")
+      .toContain('motor_message_processing_state')
   })
 
   it('não enfileira tarefa pausada, bloqueada ou inexistente', async () => {
