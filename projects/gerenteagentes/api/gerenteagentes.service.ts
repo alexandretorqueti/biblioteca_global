@@ -2099,7 +2099,7 @@ export class GerenteAgentesService {
         title: s.titulo,
         status: s.status,
         deliverCount: s.deliverCount,
-        blockInfo: s.resultado ? { reason: s.resultado } : null,
+        blockInfo: null, // bloqueios reais vêm da tabela `bloqueios` (tarefa nível), não do resultado
         scope: s.scope ?? null,
         acceptanceCriteria: s.acceptanceCriteria ?? null,
         workspaceStatus: s.workspaceStatus ?? null,
