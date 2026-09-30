@@ -180,11 +180,14 @@ if [ -n "$EXPECTED_DEPLOY_COMMIT" ]; then
   git fetch origin
   git reset --hard origin/$(git rev-parse --abbrev-ref HEAD)
   ACTUAL_DEPLOY_COMMIT="$(git rev-parse HEAD)"
-  if [ "$ACTUAL_DEPLOY_COMMIT" != "$EXPECTED_DEPLOY_COMMIT" ]; then
-    echo "[deploy-blue-green] commit divergente: esperado=$EXPECTED_DEPLOY_COMMIT atual=$ACTUAL_DEPLOY_COMMIT" >&2
+  # O deploy pode encontrar uma base que avançou depois do gate, desde que o
+  # commit validado continue no histórico. Exigir igualdade bloquearia um
+  # merge posterior legítimo e classificaria incorretamente o caso como falha.
+  if ! git merge-base --is-ancestor "$EXPECTED_DEPLOY_COMMIT" "$ACTUAL_DEPLOY_COMMIT"; then
+    echo "[deploy-blue-green] histórico divergente: esperado=$EXPECTED_DEPLOY_COMMIT não é ancestral de atual=$ACTUAL_DEPLOY_COMMIT" >&2
     exit 1
   fi
-  echo "[deploy-blue-green] commit pré-validado: $EXPECTED_DEPLOY_COMMIT"
+  echo "[deploy-blue-green] commit pré-validado: esperado=$EXPECTED_DEPLOY_COMMIT atual=$ACTUAL_DEPLOY_COMMIT"
 fi
 
 echo "[deploy-blue-green] ativo=$active; subindo $target em $NEW_PROJECT"
