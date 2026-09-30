@@ -62,6 +62,8 @@ export interface TaskCodeViewerProps {
   hasIntegrationBranch: boolean
   open: boolean
   onClose: () => void
+  /** Dados persistidos de conflito de promoção (quando disponíveis) */
+  persistedConflictData?: import('./ConflictViewer').PromotionConflictData | null
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -186,6 +188,7 @@ export default function TaskCodeViewer({
   hasIntegrationBranch,
   open,
   onClose,
+  persistedConflictData,
 }: TaskCodeViewerProps) {
   const bundle = useApi()
 
@@ -210,6 +213,9 @@ export default function TaskCodeViewer({
   const [mergeResult, setMergeResult] = useState<MergeSimulationResult | null>(null)
   const [mergeLoading, setMergeLoading] = useState(false)
   const [mergeError, setMergeError] = useState<string | null>(null)
+
+  // Estado local de resoluções (para atualizar UI após resolver)
+  const [localResolutions, setLocalResolutions] = useState<Record<string, 'ours' | 'theirs' | 'both'>>({})
 
   // Tab do painel direito
   const [rightTab, setRightTab] = useState(0) // 0=file, 1=commit diff, 2=conflicts
@@ -316,6 +322,12 @@ export default function TaskCodeViewer({
     setMergeLoading(true)
     setMergeError(null)
     try {
+      // Se há dados persistidos de conflito, usar eles em vez de simular do zero
+      if (persistedConflictData) {
+        setMergeResult(null) // Usar persistedData no ConflictViewer
+        setRightTab(2)
+        return
+      }
       const result = await bundle.http.request<MergeSimulationResult>(
         "POST",
         `/gerenteagentes/tarefas/${taskId}/git/merge-simulation`,
@@ -327,6 +339,24 @@ export default function TaskCodeViewer({
       setMergeError(e instanceof Error ? e.message : "Erro ao simular merge")
     } finally {
       setMergeLoading(false)
+    }
+  }, [bundle, taskId, persistedConflictData])
+
+  const handleResolveConflict = useCallback(async (path: string, decision: 'ours' | 'theirs' | 'both') => {
+    if (!bundle) return
+    try {
+      await bundle.http.request(
+        "POST",
+        `/gerenteagentes/tarefas/${taskId}/promotion-conflict-analysis/resolve`,
+        {
+          body: { resolutions: [{ path, decision }] },
+          auth: "access",
+        },
+      )
+      // Atualizar estado local para refletir na UI
+      setLocalResolutions((prev) => ({ ...prev, [path]: decision }))
+    } catch (e) {
+      throw new Error(e instanceof Error ? e.message : "Erro ao resolver conflito")
     }
   }, [bundle, taskId])
 
@@ -670,8 +700,16 @@ export default function TaskCodeViewer({
             {rightTab === 2 && (
               <ConflictViewer
                 result={mergeResult}
+                persistedData={persistedConflictData ? {
+                  ...persistedConflictData,
+                  evidence: persistedConflictData.evidence ? {
+                    ...persistedConflictData.evidence,
+                    resolutions: { ...persistedConflictData.evidence.resolutions, ...localResolutions },
+                  } : null,
+                } : null}
                 loading={mergeLoading}
                 error={mergeError}
+                onResolveConflict={handleResolveConflict}
               />
             )}
           </Box>

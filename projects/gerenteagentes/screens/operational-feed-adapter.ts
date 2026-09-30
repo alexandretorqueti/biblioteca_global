@@ -61,6 +61,29 @@ export function feedItemFromEnvelope(envelope: TaskEventEnvelope): OperationalFe
       occurredAt: typeof payload.occurredAt === 'string' ? payload.occurredAt : envelope.occurredAt,
     }
   }
+  // Tratamento especial para merge_conflict
+  if (envelope.type === 'task.blocked' && payload.blockReason === 'merge_conflict') {
+    const conflictFiles = Array.isArray(payload.conflictFiles) ? payload.conflictFiles.map(String) : []
+    const baseBranch = str(payload.baseBranch) ?? 'base-desenvolvimento'
+    const taskBranch = str(payload.taskBranch) ?? 'unknown'
+    const taskCommit = str(payload.taskCommit) ?? 'unknown'
+    const summary = `Conflito de merge: ${conflictFiles.length} arquivo(s) conflitante(s) ao integrar ${taskBranch} → ${baseBranch}`
+    return {
+      id: payload.id != null ? `event:${String(payload.id)}` : `event:${envelope.eventId}`,
+      type: 'event', ...base,
+      event: 'merge_conflict',
+      reason: summary,
+      payload: {
+        blockReason: 'merge_conflict',
+        conflictFiles,
+        baseBranch,
+        taskBranch,
+        taskCommit,
+        command: str(payload.blockCommand),
+      },
+      occurredAt: envelope.occurredAt,
+    }
+  }
   return {
     id: payload.id != null ? `event:${String(payload.id)}` : `event:${envelope.eventId}`,
     type: 'event', ...base,

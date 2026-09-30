@@ -36,7 +36,7 @@ export const componentId = "gerenteagentes-operation-map"
 interface Task { id: number; titulo: string; descricao?: string | null; tipo?: string | null; status: string; projetoId: number; dependsOnTaskId?: number | null; createdAt?: string; updatedAt?: string; subtaskCount?: number; recoveryEligibility?: RecoveryEligibility | null }
 interface DbSubtask { id: number; seq: number; titulo: string; descricao?: string | null; scope?: string | null; acceptanceCriteria?: unknown; status: string; resultado?: string | null; dependsOnSubtaskId?: number | null; workspaceStatus?: string | null; correctionForSubtaskId?: number | null }
 interface MotorSubtask { id?: number; seq: number; title: string; status: string; deliverCount?: number; blockInfo?: { reason?: string; command?: string; exitCode?: number | null } | null; scope?: string | null; acceptanceCriteria?: unknown; resultado?: string | null; dependsOnSubtaskId?: number | null; workspaceStatus?: string | null; correctionForSubtaskId?: number | null; deliveryHistory?: Array<{ id: number; deliverNumber: number; model: string | null; eventType: string; reason: string | null; createdAt: string }> }
-interface Detail { motorId?: string; exists: boolean; message?: string; task?: { status: string; title: string; errorMessage?: string; blockInfo?: { kind?: string; excerpt?: string; blockedAt?: string; subtaskId?: number | null } | null; recoveryEligibility?: RecoveryEligibility | null }; subtasks?: MotorSubtask[]; currentSubTask?: MotorSubtask | null; events?: Array<{ at: string; type: string; payload?: Record<string, unknown> }> }
+interface Detail { motorId?: string; exists: boolean; message?: string; task?: { status: string; title: string; errorMessage?: string; blockInfo?: { kind?: string; excerpt?: string; blockedAt?: string; subtaskId?: number | null } | null; promotionConflictAnalysis?: import('./ConflictViewer').PromotionConflictData | null; recoveryEligibility?: RecoveryEligibility | null }; subtasks?: MotorSubtask[]; currentSubTask?: MotorSubtask | null; events?: Array<{ at: string; type: string; payload?: Record<string, unknown> }> }
 interface MotorOperation { operationId: string; sequence: number; phase: string; outcome: string; messageType: string; commandCode?: string | null; policyCode?: string | null; policyVersion?: number | null; actionCode?: string | null; primitiveCode?: string | null; reasonCode?: string | null; resultJson?: unknown; durationMs?: number | null; createdAt: string }
 interface ChatMessage { id: number; tarefaId?: number; role: string; texto: string; createdAt: string; deliveryId?: number | null; deliveryState?: string | null; deliveryError?: string | null }
 interface Session { sessionKey: string; model?: string; status?: string; executionOrder?: number; openedAt?: string; closedAt?: string | null; closeReason?: string | null; messages: { items: Array<{ role: string; text: string; sequenceNumber: number }>; nextCursor?: string | null; hasNextPage?: boolean } }
@@ -190,13 +190,63 @@ export default function OperationMapScreen() {
     </Stack>
   )
 
-  const renderSummaryTab = () => (
-    <Stack spacing={1.5}>
-      <Typography color="text.secondary" sx={{ whiteSpace: "pre-wrap" }}>{selected.descricao || "Sem descrição"}</Typography>
-      {detail?.task?.blockInfo && <Alert severity="error"><b>Bloqueio:</b> {detail.task.blockInfo.excerpt || detail.task.blockInfo.kind || detail.task.errorMessage}</Alert>}
-      {detail && !detail.exists && <Alert severity="info">{detail.message ?? "Tarefa ainda não enviada ao motor."}</Alert>}
-    </Stack>
-  )
+  const renderSummaryTab = () => {
+    const blockInfo = detail?.task?.blockInfo
+    const conflictData = detail?.task?.promotionConflictAnalysis
+    const isMergeConflict = blockInfo?.kind === 'merge_conflict' && conflictData
+
+    return (
+      <Stack spacing={1.5}>
+        <Typography color="text.secondary" sx={{ whiteSpace: "pre-wrap" }}>{selected.descricao || "Sem descrição"}</Typography>
+        {blockInfo && !isMergeConflict && <Alert severity="error"><b>Bloqueio:</b> {blockInfo.excerpt || blockInfo.kind || detail?.task?.errorMessage}</Alert>}
+        {isMergeConflict && conflictData && (
+          <Alert severity="error" sx={{ p: 1.5 }}>
+            <Typography variant="subtitle2" gutterBottom>
+              <strong>Conflito de merge detectado no deploy</strong>
+            </Typography>
+            <Typography variant="body2" sx={{ mt: 0.5 }}>
+              <strong>O que aconteceu:</strong> O motor tentou promover o commit para a branch {conflictData.baseBranch}, mas encontrou conflitos reais com mudanças na base.
+            </Typography>
+            <Typography variant="body2" sx={{ mt: 0.5 }}>
+              <strong>Etapa:</strong> Promoção para branch de integração (git merge)
+            </Typography>
+            <Typography variant="body2" sx={{ mt: 0.5 }}>
+              <strong>Branch de origem:</strong> <code>{conflictData.taskBranch}</code>
+            </Typography>
+            <Typography variant="body2" sx={{ mt: 0.5 }}>
+              <strong>Branch de destino:</strong> <code>{conflictData.baseBranch}</code>
+            </Typography>
+            <Typography variant="body2" sx={{ mt: 0.5 }}>
+              <strong>Commit da tarefa:</strong> <code>{conflictData.taskCommit.slice(0, 8)}</code>
+            </Typography>
+            <Typography variant="body2" sx={{ mt: 0.5 }}>
+              <strong>Arquivos conflitantes ({conflictData.conflictFiles.length}):</strong>
+            </Typography>
+            <Box component="ul" sx={{ ml: 2, mt: 0.5, mb: 0.5 }}>
+              {conflictData.conflictFiles.map((file) => (
+                <Box component="li" key={file}>
+                  <Typography variant="caption" component="code" sx={{ fontSize: '0.7rem' }}>{file}</Typography>
+                </Box>
+              ))}
+            </Box>
+            <Typography variant="body2" sx={{ mt: 0.5 }}>
+              <strong>Ação necessária:</strong> Rebase ou merge manual da branch {conflictData.baseBranch} na branch de trabalho, resolvendo os conflitos nos arquivos listados.
+            </Typography>
+            <Button
+              size="small"
+              variant="outlined"
+              startIcon={<CodeRounded />}
+              onClick={() => setCodeViewerOpen(true)}
+              sx={{ mt: 1 }}
+            >
+              Ver Conflitos
+            </Button>
+          </Alert>
+        )}
+        {detail && !detail.exists && <Alert severity="info">{detail.message ?? "Tarefa ainda não enviada ao motor."}</Alert>}
+      </Stack>
+    )
+  }
 
   const openTask = (id: number) => {
     if (id === selectedId) {
@@ -314,6 +364,7 @@ export default function OperationMapScreen() {
       hasIntegrationBranch={detail?.exists ?? false}
       open={codeViewerOpen}
       onClose={() => setCodeViewerOpen(false)}
+      persistedConflictData={detail?.task?.promotionConflictAnalysis ?? null}
     />
   )}
   </Box>
