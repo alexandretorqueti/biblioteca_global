@@ -198,7 +198,16 @@ export default function OperationMapScreen() {
     </Stack>
   )
 
-  const openTask = (id: number) => { setSelectedId(id); setDrawerOpen(true); setTab(0); setDetailMinimized(false) }
+  const openTask = (id: number) => {
+    if (id === selectedId) {
+      if (!drawerOpen) setDrawerOpen(true)
+      return
+    }
+    setSelectedId(id)
+    setDrawerOpen(true)
+    setTab(0)
+    setDetailMinimized(false)
+  }
   const createTask = async (values: TarefaFormValues) => { if (!bundle) return; setNewTaskLoading(true); setNewTaskError(null); try { await bundle.http.request("POST", "/gerenteagentes/tarefas", { body: { projeto_id: Number(values.projetoId), titulo: values.titulo, descricao: values.descricao || null, tipo: values.tipo }, auth: "access" }); setNewTaskOpen(false); await loadTasks() } catch (e) { setNewTaskError(e instanceof Error ? e.message : "Erro ao criar tarefa"); throw e } finally { setNewTaskLoading(false) } }
   const getLoadOptions = useCallback((resource: string) => async (search: string) => { if (!bundle) return []; try { const result = await bundle.http.request<{ items: Array<Record<string, unknown>> }>("GET", `/${resource}`, { query: search ? { search, pageSize: 50 } : { pageSize: 100 }, auth: "access" }); return result.items ?? [] } catch { return [] } }, [bundle])
   const editFields: DynamicField[] = useMemo(() => [{ name: "titulo", label: "Título", type: "text", required: true, maxLength: 200, fullWidth: true }, { name: "descricao", label: "Descrição", type: "textarea", fullWidth: true }, { name: "tipo", label: "Tipo de tarefa", type: "select", options: [{ value: "desenvolvimento", label: "Desenvolvimento" }, { value: "automacao", label: "Automação" }, { value: "verificacao", label: "Verificação" }] }, { name: "dependsOnTaskId", label: "Depende da tarefa", type: "multipleChoice", multipleChoice: { resource: "tarefas", idField: "id", displayField: "titulo", loadOptions: getLoadOptions("tarefas") } }], [getLoadOptions])
