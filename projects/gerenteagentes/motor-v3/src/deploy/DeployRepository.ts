@@ -351,7 +351,13 @@ export class DeployRepository {
     } catch (error) { await connection.rollback(); throw error } finally { connection.release() }
   }
 
-  /** Claim do lote por repositório/branch; os commits são compostos pelo consumidor antes do gate final. */
+  /**
+   * Claim de todas as solicitações compatíveis do mesmo repositório/branch.
+   *
+   * O artefato implantado é a branch-base composta, não um commit de uma
+   * tarefa isolada. O primeiro comando apenas desperta o lote; os commits de
+   * todas as tarefas pendentes e compatíveis são compostos e validados juntos.
+   */
   async claimBatch(source: QueueMessage): Promise<{ batch: DeployBatch; members: DeployBatchMember[] } | null> {
     const repoPath = String(source.payload.repository ?? '')
     const baseBranch = String(source.payload.baseBranch ?? '')
@@ -364,12 +370,22 @@ export class DeployRepository {
       const [busy] = await connection.query<Array<RowDataPacket & { total: number | string }>>(
         `SELECT COUNT(*) AS total FROM deploy_batches WHERE repo_path=? AND status IN ('pending','running') FOR UPDATE`, [repoPath])
       if (Number(busy[0]?.total ?? 0) > 0) { await connection.rollback(); return null }
+      const [seedRows] = await connection.query<Array<RowDataPacket & { build_command: string | null; test_command: string | null }>>(
+        `SELECT pmc.build_command,pmc.unit_test_command AS test_command
+           FROM deploy_requests dr INNER JOIN tarefas t ON t.id=dr.tarefa_id
+           LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id=t.projeto_id
+          WHERE dr.repo_path=? AND dr.base_branch=? AND dr.status='pending' AND dr.requested_commit=?
+          LIMIT 1 FOR UPDATE`, [repoPath, baseBranch, expectedCommit])
+      const seed = seedRows[0]
+      if (!seed) { await connection.rollback(); return null }
+      if (!seed.build_command || !seed.test_command) throw new Error('Pedido de deploy sem comandos de gate')
       const [requests] = await connection.query<Array<RowDataPacket & { id: number; task_id: number; external_id: string | null; requested_commit: string; project_id: number; build_command: string | null; test_command: string | null }>>(
         `SELECT dr.id,dr.tarefa_id AS task_id,t.external_id,dr.requested_commit,t.projeto_id AS project_id,pmc.build_command,pmc.unit_test_command AS test_command
           FROM deploy_requests dr INNER JOIN tarefas t ON t.id=dr.tarefa_id
           LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id=t.projeto_id
-          WHERE dr.repo_path=? AND dr.base_branch=? AND dr.status='pending' AND dr.requested_commit=?
-          ORDER BY dr.id FOR UPDATE`, [repoPath, baseBranch, expectedCommit])
+          WHERE dr.repo_path=? AND dr.base_branch=? AND dr.status='pending'
+            AND pmc.build_command=? AND pmc.unit_test_command=?
+          ORDER BY dr.id FOR UPDATE`, [repoPath, baseBranch, seed.build_command, seed.test_command])
       if (requests.length === 0) { await connection.rollback(); return null }
       if (requests.some(row => !row.requested_commit || !row.build_command || !row.test_command)) throw new Error('Pedido de deploy sem commit ou comandos de gate')
       const batchId = `deploy-${randomUUID()}`

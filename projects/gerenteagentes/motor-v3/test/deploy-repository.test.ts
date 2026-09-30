@@ -267,13 +267,19 @@ describe('DeployRepository — deploy lock', () => {
   })
 })
 
-describe('DeployRepository — isolamento do lote', () => {
-  it('não mistura pedidos com outro commit no mesmo repositório e branch', async () => {
+describe('DeployRepository — composição do lote', () => {
+  it('reúne commits pendentes compatíveis do mesmo repositório e branch', async () => {
     const connection = createMockConnection()
     connection.query
       .mockResolvedValueOnce([[{ total: 0 }], []]) // nenhum lote ativo
       .mockResolvedValueOnce([[{
+        build_command: 'npm run build', test_command: 'npm test',
+      }], []])
+      .mockResolvedValueOnce([[{
         id: 10, task_id: 902, external_id: 'task-p2-902', requested_commit: 'commit-902',
+        project_id: 1, build_command: 'npm run build', test_command: 'npm test',
+      }, {
+        id: 11, task_id: 903, external_id: 'task-p2-903', requested_commit: 'commit-903',
         project_id: 1, build_command: 'npm run build', test_command: 'npm test',
       }], []])
       .mockResolvedValueOnce([{ affectedRows: 1, insertId: 1 }, []])
@@ -287,9 +293,10 @@ describe('DeployRepository — isolamento do lote', () => {
       repository: '/repo', baseBranch: 'base-desenvolvimento', expectedCommit: 'commit-902',
     }} as never)
 
-    expect(result?.members.map(member => member.requestedCommit)).toEqual(['commit-902'])
-    const requestQuery = connection.query.mock.calls[1]
-    expect(requestQuery[0]).toContain('dr.requested_commit=?')
-    expect(requestQuery[1]).toEqual(['/repo', 'base-desenvolvimento', 'commit-902'])
+    expect(result?.members.map(member => member.requestedCommit)).toEqual(['commit-902', 'commit-903'])
+    const compatibleRequestsQuery = connection.query.mock.calls[2]
+    expect(compatibleRequestsQuery[0]).toContain('pmc.build_command=?')
+    expect(compatibleRequestsQuery[0]).toContain('pmc.unit_test_command=?')
+    expect(compatibleRequestsQuery[1]).toEqual(['/repo', 'base-desenvolvimento', 'npm run build', 'npm test'])
   })
 })

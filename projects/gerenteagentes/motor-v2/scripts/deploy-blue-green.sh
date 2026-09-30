@@ -52,16 +52,34 @@ slot_values() {
 }
 
 read_active_slot() {
+  # O arquivo de estado só é confiável quando a stack que ele aponta ainda
+  # está em execução. Após falha ou limpeza parcial, ele pode apontar para um
+  # slot inexistente e escolher a porta ocupada pela stack legada.
   if [ -s "$STATE_FILE" ]; then
-    sed -n 's/^active=//p' "$STATE_FILE" | head -1
-    return 0
+    local recorded
+    recorded="$(sed -n 's/^active=//p' "$STATE_FILE" | head -1)"
+    case "$recorded" in
+      blue|green)
+        if docker inspect -f '{{.State.Running}}' "biblioteca-${recorded}-api-1" 2>/dev/null | grep -qx true; then
+          echo "$recorded"
+          return 0
+        fi
+        echo "[deploy-blue-green] estado persistido ativo=$recorded está obsoleto; slot não está em execução" >&2
+        ;;
+    esac
   fi
   # Migração do deploy legado, que usa as portas públicas. O Compose moderno
   # acrescenta "-1" ao nome do container; ambos os formatos representam a
   # mesma stack legada e devem levar o próximo deploy ao slot green.
   for container in biblioteca-global-api biblioteca-global-web biblioteca-global-api-1 biblioteca-global-web-1; do
-    if docker inspect "$container" >/dev/null 2>&1; then
+    if docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null | grep -qx true; then
       echo legacy
+      return 0
+    fi
+  done
+  for slot in blue green; do
+    if docker inspect -f '{{.State.Running}}' "biblioteca-${slot}-api-1" 2>/dev/null | grep -qx true; then
+      echo "$slot"
       return 0
     fi
   done
@@ -211,6 +229,11 @@ for motor in motor-v2 motor-v3; do
 done
 docker rm "$MOTOR_DIST_CONTAINER" >/dev/null
 echo "[deploy-blue-green] dist dos motores v2/v3 materializados a partir da imagem $target"
+
+# Um deploy anterior pode ter falhado entre a criação e a inicialização do
+# slot inativo. Remover somente esse projeto antes de reutilizar os nomes dos
+# containers evita colisão; o slot ativo nunca é o alvo deste comando.
+docker compose -p "$NEW_PROJECT" -f "$COMPOSE_FILE" down --remove-orphans || true
 
 echo "[deploy-blue-green] iniciando $NEW_PROJECT (MySQL compartilhado em $MYSQL_HOST_BLUEGREEN:$MYSQL_PORT_BLUEGREEN)..."
 MYSQL_HOST="$MYSQL_HOST_BLUEGREEN" MYSQL_PORT="$MYSQL_PORT_BLUEGREEN" \
