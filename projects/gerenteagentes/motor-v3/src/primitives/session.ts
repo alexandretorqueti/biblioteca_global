@@ -226,8 +226,13 @@ export const parseReply: PrimitiveDefinition = {
       const donePattern = /::DONE::/i
       const hasDoneMarker = donePattern.test(response)
 
+      // Detecta marcador ::NO_CHANGES:: — o DEV informa que a tarefa não exigiu alterações de código
+      const noChangesPattern = /::NO_CHANGES::/i
+      const noChangesNeeded = noChangesPattern.test(response)
+
       context.logger?.info('Resposta parseada', {
         hasDoneMarker,
+        noChangesNeeded,
         responseLength: response.length,
       })
 
@@ -235,6 +240,7 @@ export const parseReply: PrimitiveDefinition = {
         success: true,
         data: {
           hasDoneMarker,
+          noChangesNeeded,
           response,
         },
       }

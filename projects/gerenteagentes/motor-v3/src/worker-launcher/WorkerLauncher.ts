@@ -36,6 +36,8 @@ export interface WorkerResult {
   resolvedFailureCount?: number
   /** A sessão remota permanece ativa e deve ser acompanhada pelo reconciliador. */
   sessionHandedOff?: boolean
+  /** O DEV informou explicitamente que a tarefa não exigiu alterações de código (::NO_CHANGES::). */
+  noChangesNeeded?: boolean
 }
 
 export interface DifferentialGateResult {
@@ -210,6 +212,7 @@ export class WorkerLauncher {
         }
 
         const hasDoneMarker = parseResult.data?.hasDoneMarker ?? false
+        const noChangesNeeded = parseResult.data?.noChangesNeeded ?? false
 
         // 6. Verificação de realidade (se tiver ::DONE::)
         if (hasDoneMarker) {
@@ -225,8 +228,13 @@ export class WorkerLauncher {
 
           const hasChanges = verifyResult.data?.hasChanges ?? false
 
-          // Se não tem mudanças, falha (agente mentiu ou não fez nada)
+          // Se não tem mudanças, verifica se o DEV informou explicitamente ::NO_CHANGES::
           if (!hasChanges) {
+            // DEV informou que a tarefa não exigiu alterações de código — sucesso mesmo sem mudanças
+            if (noChangesNeeded) {
+              context.logger?.info('DEV informou ::NO_CHANGES:: — tarefa não exigiu alterações de código', { attempts })
+              return { success: true, response, hasChanges: false, noChangesNeeded: true, buildPassed: true, attempts, ...(model ? { model } : {}) }
+            }
             if (allowNoChanges) {
               return { success: true, response, hasChanges: false, buildPassed: true, attempts, ...(model ? { model } : {}) }
             }
@@ -338,6 +346,7 @@ export class WorkerLauncher {
         ...(context.model ? { model: context.model } : {}),
       }
     }
+    const noChangesNeeded = parseResult.data?.noChangesNeeded ?? false
 
     const verifyResult = await verifyGit.handler(context, {})
     if (!verifyResult.success) {
@@ -349,6 +358,11 @@ export class WorkerLauncher {
       }
     }
     const hasChanges = verifyResult.data?.hasChanges ?? false
+
+    // DEV informou ::NO_CHANGES:: — tarefa não exigiu alterações de código
+    if (!hasChanges && noChangesNeeded) {
+      return { success: true, response, attempts: 1, hasChanges: false, noChangesNeeded: true, buildPassed: true, ...(context.model ? { model: context.model } : {}) }
+    }
     if (!hasChanges && !allowNoChanges) {
       return {
         success: false,
