@@ -287,7 +287,7 @@ export class ConsoleAnalystRunner implements AnalysisRunner {
   }
 
   private isModelUnavailable(error: Error): boolean {
-    return /(?:401|403|404|429|INVALID_REQUEST|quota|rate.limit|credit|billing|timed?.?out|indispon[ií]vel|model.+not found|model.not.allowed|not.allowed|concluiu sem resposta|sem resposta|empty response|no response)/i.test(error.message)
+    return /(?:401|403|404|429|INVALID_REQUEST|quota|rate.limit|credit|billing|timed?.?out|indispon[ií]vel|model.+not found|model.not.allowed|not.allowed|concluiu sem resposta|sem resposta|empty response|no response|vazamento de reasoning)/i.test(error.message)
   }
 
   private isTerminalWithoutResponse(error: Error): boolean {

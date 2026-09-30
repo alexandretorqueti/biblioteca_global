@@ -18,9 +18,38 @@ export type AnalysisOutcome =
   | { kind: 'plan'; subtasks: PlannedSubtask[]; coverage: PlanCoverage }
   | { kind: 'questions'; summary: string; questions: string[] }
 
+/**
+ * Remove blocos de reasoning/thinking que modelos de linguagem podem vazar
+ * na resposta (ex.: gpt-5.6-terra com reasoning ativo). Os formatos cobertos
+ * são tags XML (`<thinking>...</thinking>`, `<reasoning>...</reasoning>`) e
+ * blocos Markdown fenced (```thinking ... ```, ```reasoning ... ```).
+ *
+ * A sanitização é conservadora: remove SOMENTE blocos estruturados conhecidos.
+ * Texto livre de reasoning sem marcadores não é removido — nesse caso, o
+ * parser de JSON já falha naturalmente e a falha é classificada pelo
+ * `isModelUnavailable` do ConsoleAnalystRunner.
+ */
+export function sanitizeModelResponse(content: string): string {
+  let cleaned = content
+  // Tags XML de reasoning/thinking (com ou sem atributos)
+  cleaned = cleaned.replace(/<(?:thinking|reasoning|internal_reasoning|chain_of_thought)\b[^>]*>[\s\S]*?<\/(?:thinking|reasoning|internal_reasoning|chain_of_thought)>/gi, '')
+  // Blocos Markdown fenced de reasoning/thinking
+  cleaned = cleaned.replace(/```(?:thinking|reasoning|internal)\b[\s\S]*?```/gi, '')
+  // Normaliza quebras de linha excessivas após remoção de blocos
+  cleaned = cleaned.replace(/\n{3,}/g, '\n\n')
+  return cleaned.trim()
+}
+
 export function parseAnalystReply(content: string, contractSchema?: unknown): AnalysisOutcome {
-  const candidates = extractJsonObjects(content)
-  if (candidates.length === 0) throw new Error('Resposta do analista não contém JSON')
+  const candidates = extractJsonObjects(sanitizeModelResponse(content))
+  if (candidates.length === 0) {
+    // Diagnóstico: a resposta pode ser puramente reasoning/thinking sem JSON
+    const trimmed = content.trim()
+    if (trimmed.length > 0 && candidates.length === 0) {
+      throw new Error(`Resposta do analista não contém JSON (conteúdo recebido: ${trimmed.length} caracteres, possível vazamento de reasoning/thinking do modelo)`)
+    }
+    throw new Error('Resposta do analista não contém JSON')
+  }
   let parsed: unknown
   let lastParseError: unknown
   // A resposta pode mencionar objetos/código antes do contrato final. Prefira
