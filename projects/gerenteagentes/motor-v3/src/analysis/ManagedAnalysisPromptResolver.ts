@@ -44,7 +44,9 @@ export class ManagedAnalysisPromptResolver {
        ORDER BY c.id ASC`, [task.taskId, task.taskId],
     )
     const clarificationHistory = chatRows
-      .map(chat => `[${String(chat.role)}] ${String(chat.texto)}`)
+      .map(chat => String(chat.role) === 'user'
+        ? `Mensagem do usuário: ${String(chat.texto)}`
+        : `[${String(chat.role)}] ${String(chat.texto)}`)
       .join('\n')
     const instructions = String(row.instrucoes ?? '').trim()
     const schema = jsonValue(row.schema_json)

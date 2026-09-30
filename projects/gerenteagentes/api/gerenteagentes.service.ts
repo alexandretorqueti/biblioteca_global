@@ -66,6 +66,13 @@ type SessionMessagesQuery = {
 
 type SessionCursor = { sequenceNumber: number; id: number };
 
+type ConsoleChatMessage = {
+  id?: string | number;
+  role?: string;
+  content?: unknown;
+  createdAt?: string | number;
+};
+
 function normalizePageSize(value: number | undefined): number {
   if (!Number.isFinite(value) || value === undefined) return DEFAULT_SESSION_PAGE_SIZE;
   return Math.min(MAX_SESSION_PAGE_SIZE, Math.max(1, Math.floor(value)));
@@ -1754,7 +1761,108 @@ export class GerenteAgentesService {
       },
     });
 
+    // Entrega best-effort na sessão já aberta pelo analista. Fica fora do
+    // request para uma falha do Console não impedir o registro da mensagem.
+    void this.entregarMensagemAoAnalista(tarefa, mensagem.id, normalizedText).catch(async (error) => {
+      const erro = String(error instanceof Error ? error.message : error).slice(0, 2000);
+      const entregaDb = await this.dbDoMotor().catch(() => undefined);
+      await entregaDb?.update(tarefaChatEntregas).set({ estado: 'failed', erro, updatedAt: new Date() })
+        .where(eq(tarefaChatEntregas.mensagemId, mensagem.id)).catch(() => undefined);
+      this.logger.warn(`Falha na entrega do chat da tarefa ${tarefaId}: ${error instanceof Error ? error.message : String(error)}`);
+    });
+
     return { id: mensagem.id, tarefaId, role: 'user', texto: normalizedText, modo, estado: 'pending', resumeRequested: mensagem.resumeRequested, createdAt };
+  }
+
+  private async entregarMensagemAoAnalista(
+    tarefa: typeof tarefas.$inferSelect,
+    mensagemId: number,
+    texto: string,
+  ): Promise<void> {
+    const db = await this.dbDoMotor();
+    const [sessao] = await db.select({
+      id: analystTaskSessions.id,
+      sessionKey: analystTaskSessions.sessionKey,
+      runtimeSessionId: analystTaskSessions.runtimeSessionId,
+    }).from(analystTaskSessions)
+      .where(eq(analystTaskSessions.tarefaId, tarefa.id))
+      .orderBy(desc(analystTaskSessions.executionOrder), desc(analystTaskSessions.id)).limit(1);
+    if (!sessao) return;
+
+    const [projeto] = await db.select({ agenteId: projetosCaptados.agenteId })
+      .from(projetosCaptados).where(eq(projetosCaptados.id, tarefa.projetoId)).limit(1);
+    const [agente] = projeto?.agenteId
+      ? await db.select({ openclawAgentId: agentes.openclawAgentId })
+        .from(agentes).where(eq(agentes.id, projeto.agenteId)).limit(1)
+      : [];
+    const agentId = agente?.openclawAgentId;
+    if (!agentId) throw new Error('Agente OpenClaw não encontrado para o projeto da tarefa');
+
+    const historyQuery = { sessionKey: sessao.sessionKey, agentId };
+    const describeQuery = { key: sessao.sessionKey, agentId };
+    const antes = await this.consoleRequest<{ messages?: ConsoleChatMessage[] }>('/api/chat/history', 'GET', historyQuery);
+    const sentAt = Date.now();
+    await this.consoleRequest('/api/chat/send', 'POST', undefined, {
+      sessionKey: sessao.sessionKey, agentId,
+      ...(sessao.runtimeSessionId ? { sessionId: sessao.runtimeSessionId } : {}), message: texto,
+    });
+    await db.update(tarefaChatEntregas).set({
+      estado: 'delivered', sessaoChave: sessao.sessionKey, deliveredAt: new Date(), updatedAt: new Date(), erro: null,
+    }).where(eq(tarefaChatEntregas.mensagemId, mensagemId));
+
+    const idsAntes = new Set((antes.messages ?? []).map((message) => String(message.id ?? '')));
+    const deadline = Date.now() + 5 * 60 * 1000;
+    while (Date.now() < deadline) {
+      await this.consoleRequest('/api/sessions/describe', 'GET', describeQuery).catch(() => undefined);
+      const historico = await this.consoleRequest<{ messages?: ConsoleChatMessage[] }>('/api/chat/history', 'GET', historyQuery);
+      const resposta = [...(historico.messages ?? [])].reverse().find((message) => {
+        if (String(message.role).toLowerCase() !== 'assistant') return false;
+        const content = typeof message.content === 'string' ? message.content.trim() : '';
+        if (!content || (message.id !== undefined && idsAntes.has(String(message.id)))) return false;
+        if (message.id !== undefined) return true;
+        const createdAt = typeof message.createdAt === 'number' ? message.createdAt : Date.parse(String(message.createdAt ?? ''));
+        return Number.isFinite(createdAt) && createdAt >= sentAt;
+      });
+      if (resposta) {
+        const respostaTexto = String(resposta.content).trim();
+        const [created] = await db.insert(tarefaChats).values({ tarefaId: tarefa.id, role: 'analyst', texto: respostaTexto, createdAt: new Date() }).$returningId();
+        if (created) {
+          const createdAt = new Date();
+          this.realtime?.publicar({
+            eventId: randomUUID(), occurredAt: createdAt.toISOString(), source: 'gerenteagentes.chat',
+            projectId: Number(tarefa.projetoId), taskId: tarefa.id, type: 'task.chat.message.created',
+            payload: { id: created.id, tarefaId: tarefa.id, role: 'analyst', texto: respostaTexto, createdAt: createdAt.toISOString() },
+          });
+        }
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+    this.logger.warn(`Timeout de 5 minutos aguardando resposta do analista na tarefa ${tarefa.id}`);
+  }
+
+  private consoleRequest<T = unknown>(path: string, method: 'GET' | 'POST', query?: Record<string, string>, body?: Record<string, unknown>): Promise<T> {
+    const url = new URL(`${this.consoleUrl}${path}`);
+    for (const [key, value] of Object.entries(query ?? {})) url.searchParams.set(key, value);
+    const isHttps = url.protocol === 'https:';
+    const payload = body ? JSON.stringify(body) : undefined;
+    const options: RequestOptions = {
+      hostname: url.hostname, port: url.port || (isHttps ? 443 : 80), path: `${url.pathname}${url.search}`, method,
+      headers: { Accept: 'application/json', ...(payload ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } : {}), ...(this.consoleToken ? { Authorization: `Bearer ${this.consoleToken}` } : {}) }, timeout: 10000,
+    };
+    return new Promise((resolve, reject) => {
+      const req = (isHttps ? httpsRequest : httpRequest)(options, (res) => {
+        let data = ''; res.setEncoding('utf8'); res.on('data', (chunk) => (data += chunk));
+        res.on('end', () => {
+          const status = res.statusCode ?? 0;
+          if (status < 200 || status >= 300) return reject(new Error(`Console OpenClaw indisponível (${status})`));
+          if (!data.trim()) return resolve(undefined as T);
+          try { resolve(JSON.parse(data) as T); } catch (error) { reject(new Error(`Resposta inválida do Console: ${error instanceof Error ? error.message : String(error)}`)); }
+        });
+      });
+      req.on('timeout', () => req.destroy(new Error('timeout'))); req.on('error', reject);
+      if (payload) req.write(payload); req.end();
+    });
   }
 
   async retomarInteracaoTarefa(projeto: ProjetoResumo, tarefaId: number) {
