@@ -10,12 +10,16 @@ import type {
   ModelSelectionEntry,
 } from '@biblioteca-global/shared';
 import { ProjectModelSelectionSchema } from '@biblioteca-global/shared';
-import {
-  parseGlobalModelSelection,
-  type GlobalModelSelection,
-  type GlobalModelSelectionEntry,
-  type GlobalModelSelectionTipo,
-} from '../motor-v2/src/shared/global-model-selection.js';
+type GlobalModelSelectionTipo = 'DEV' | 'ANALYST' | 'MONITOR';
+type GlobalModelSelectionEntry = { ordem: number; provider: string; model: string; enabled: boolean };
+type GlobalModelSelection = Record<GlobalModelSelectionTipo, GlobalModelSelectionEntry[]>;
+
+// A API é CommonJS e executa o código-fonte montado pelo host. O módulo do
+// motor é ESM e seu .js compilado fica oculto pelo bind-mount; carregar o .ts
+// pelo registrador SWC preserva um único validador em runtime.
+const { parseGlobalModelSelection } = require('../motor-v2/src/shared/global-model-selection.ts') as {
+  parseGlobalModelSelection(input: unknown): GlobalModelSelection;
+};
 import { PROJECT_DB_FACTORY, type ProjectDbFactory } from '../../../apps/api/src/modules/crud/project-db.factory';
 import { SCHEMA_REGISTRY, type SchemaRegistry } from '../../../apps/api/src/modules/crud/schema-registry';
 import {
