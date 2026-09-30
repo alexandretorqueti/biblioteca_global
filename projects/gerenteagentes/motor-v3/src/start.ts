@@ -1001,6 +1001,34 @@ async function start() {
           return
         }
 
+        const [activeSubtaskRows] = await pool.query<any[]>(
+          `SELECT id
+             FROM subtarefas
+            WHERE tarefa_id = ?
+              AND status IN ('running', 'delivered', 'verifying')`,
+          [task.id],
+        )
+        if (activeSubtaskRows.length > 0) {
+          res.writeHead(400, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: false, error: 'Tarefa possui subtarefas em execução; cancele antes de excluir' }))
+          return
+        }
+
+        await pool.query('DELETE FROM motor_active_executions WHERE tarefa_id = ?', [task.id])
+        await pool.query(
+          `UPDATE motor_agent_sessions
+              SET status = 'closed', closed_at = NOW(), close_reason = 'task_deleted'
+            WHERE subtarefa_id IN (SELECT id FROM subtarefas WHERE tarefa_id = ?)
+              AND status = 'active'`,
+          [task.id],
+        )
+        await pool.query(
+          `UPDATE subtarefas
+              SET status = 'cancelled'
+            WHERE tarefa_id = ?
+              AND status IN ('pending', 'running')`,
+          [task.id],
+        )
         await pool.query('DELETE FROM tarefas WHERE id = ?', [task.id])
         console.log(`[Motor v3] Task ${taskId} deleted`)
         res.writeHead(200, { 'Content-Type': 'application/json' })
