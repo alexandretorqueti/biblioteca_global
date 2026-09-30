@@ -719,7 +719,7 @@ export class GerenteAgentesService {
             promptId: Number(inserted[0].insertId), versao: 1, texto: entry.prompt,
             contratoVersaoId: entry.contractKey ? activeContracts.get(entry.contractKey) : null,
             motivo: 'Versão inicial do catálogo embarcado', autor: 'sistema',
-            validacao: validatePromptTemplate(entry.prompt, [...entry.markers, '**CONTRATOSAIDA**'], entry.contractKey ? ['**CONTRATOSAIDA**'] : []),
+            validacao: validatePromptTemplate(entry.prompt, [...entry.markers, ...(entry.contractKey ? ['**CONTRATOSAIDA**'] : [])], entry.contractKey ? ['**CONTRATOSAIDA**'] : []),
           });
           await db.update(promptsAgentes).set({ versaoAtivaId: Number(versionInsert[0].insertId), status: 'active' }).where(eq(promptsAgentes.id, Number(inserted[0].insertId)));
         }

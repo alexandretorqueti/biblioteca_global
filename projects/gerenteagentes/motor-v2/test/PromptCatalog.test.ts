@@ -34,4 +34,11 @@ describe("catálogo de prompts dos agentes", () => {
     expect(prompts).toContain("**CONTRATOSAIDA**")
     expect(prompts).not.toContain("git rev-parse --show-toplevel")
   })
+
+  it("usa ::DONE:: no prompt inicial DEV sem acoplar o contrato JSON legado", () => {
+    const prompt = AGENT_PROMPT_CATALOG.find((entry) => entry.key === "dev.primeira_rodada_tarefa")
+    expect(prompt?.contractKey).toBeUndefined()
+    expect(prompt?.prompt).toContain("Ao finalizar responda apenas com ::DONE::")
+    expect(prompt?.prompt).not.toContain("**CONTRATOSAIDA**")
+  })
 })
