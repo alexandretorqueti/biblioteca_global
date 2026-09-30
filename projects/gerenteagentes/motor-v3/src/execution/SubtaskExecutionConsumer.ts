@@ -441,7 +441,11 @@ export class SubtaskExecutionConsumer {
       'Preserve mudanças existentes, não altere outros projetos e não faça push ou deploy.',
       ...generationNote,
       ...(['analysis', 'no_code_change', 'external_operation'].includes(context.completionKind ?? '')
-        ? ['Esta subtarefa é analítica/sem alteração de código. Entregue o resultado solicitado sem modificar o Git.'] : []),
+        ? [
+            'Esta subtarefa é analítica/sem alteração de código. Entregue o resultado solicitado sem modificar o Git.',
+            'Quando a subtarefa não exigir alteração no código-fonte (ex: apenas executar testes, verificar configuração, confirmar comportamento), use ::DONE:: acompanhado de ::NO_CHANGES:: na resposta final.',
+          ]
+        : []),
       'Ao terminar e validar, inclua o marcador ::DONE:: na resposta final.',
     ].join('\n')
     if (description.length > 12_000) {

@@ -22,7 +22,8 @@ SELECT c.id, COALESCE(MAX(v.versao), 0) + 1,
                 'acceptance_criteria', JSON_OBJECT('type', 'array', 'minItems', 1, 'items', JSON_OBJECT('type', 'string')),
                 'deliverables', JSON_OBJECT('type', 'array', 'minItems', 1, 'items', JSON_OBJECT('type', 'string')),
                 'requirements_covered', JSON_OBJECT('type', 'array', 'minItems', 1, 'items', JSON_OBJECT('type', 'string')),
-                'depends_on', JSON_OBJECT('type', 'array', 'items', JSON_OBJECT('type', 'integer'))
+                'depends_on', JSON_OBJECT('type', 'array', 'items', JSON_OBJECT('type', 'integer')),
+                'completion_kind', JSON_OBJECT('type', 'string', 'enum', JSON_ARRAY('code_change', 'no_code_change', 'analysis', 'external_operation'))
               )
             )
           ),
