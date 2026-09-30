@@ -32,6 +32,12 @@ export interface ActionResult {
   compensated: boolean
 }
 
+export interface PrimitiveCatalogValidation {
+  actionCode: string
+  primitive: string
+  registered: boolean
+}
+
 export class ActionExecutor {
   private db: MySql2Database<typeof schema>
   private loader: CatalogLoader
@@ -229,5 +235,18 @@ export class ActionExecutor {
    */
   getRegisteredPrimitives(): string[] {
     return Array.from(this.primitives.keys())
+  }
+
+  /**
+   * Compara o catálogo ativo com o registro de código. Não executa ações nem
+   * acessa a rede; é usado no boot e nos endpoints de saúde.
+   */
+  async validateCatalogPrimitives(): Promise<PrimitiveCatalogValidation[]> {
+    const catalog = await this.loader.load()
+    return catalog.actions.flatMap(action => action.primitives.map(call => ({
+      actionCode: action.code,
+      primitive: call.primitive,
+      registered: this.primitives.has(call.primitive),
+    }))).filter(item => !item.registered)
   }
 }

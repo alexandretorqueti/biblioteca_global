@@ -26,6 +26,7 @@ import { ActionExecutor } from './executor/ActionExecutor.js'
 import { registerAllPrimitives } from './primitives/index.js'
 import { Scheduler } from './scheduler/Scheduler.js'
 import { MonitorBridge } from './monitor-bridge/MonitorBridge.js'
+import { GovernedFailureHandler } from './governance/GovernedFailureHandler.js'
 import { QueueConsumer } from './queue/QueueConsumer.js'
 import { RabbitMqTransport } from './queue/RabbitMqTransport.js'
 import { OutboxPublisher, createQueueMessage } from './queue/index.js'
@@ -98,7 +99,7 @@ async function start() {
 
   // 3. Carrega catálogo
   console.log('[Motor v3] Carregando catálogo...')
-  const catalogLoader = new CatalogLoader(db)
+  const catalogLoader = new CatalogLoader(db, bus)
   await catalogLoader.load()
   console.log('[Motor v3] Catálogo carregado')
 
@@ -106,6 +107,10 @@ async function start() {
   console.log('[Motor v3] Registrando primitivas...')
   const executor = new ActionExecutor(db, catalogLoader)
   registerAllPrimitives(executor)
+  const primitiveDivergences = await executor.validateCatalogPrimitives()
+  if (primitiveDivergences.length > 0) {
+    console.error('[Motor v3] Catálogo referencia primitivas não registradas:', primitiveDivergences)
+  }
   console.log('[Motor v3] Primitivas registradas')
 
   // 5. Inicializa EventClassifier
@@ -121,7 +126,9 @@ async function start() {
 
   // 7. Inicializa Monitor Bridge
   console.log('[Motor v3] Inicializando Monitor Bridge...')
-  const monitorBridge = new MonitorBridge(bus, catalogLoader, classifier)
+  const monitorBridge = new MonitorBridge(bus, catalogLoader, classifier, { db })
+  const governedFailureHandler = new GovernedFailureHandler(classifier, executor, { monitor: monitorBridge })
+  void governedFailureHandler
   console.log('[Motor v3] Monitor Bridge inicializado')
 
   // 8. Fila durável e coordenador (opt-in até RabbitMQ/outbox estarem ativos)
@@ -500,6 +507,7 @@ async function start() {
           pendingProposals: monitorBridge.getPendingProposals().length,
           catalogEvents: (await catalogLoader.getAllEvents()).length,
           catalogActions: (await catalogLoader.getAllActions()).length,
+          primitiveDivergences,
         }))
         return
       }
