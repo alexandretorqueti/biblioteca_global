@@ -84,3 +84,17 @@ describe('hasRecentCompletedDevelopmentSession', () => {
     )
   })
 })
+
+describe('closeDevelopmentSession', () => {
+  it('fecha pela runtime_session_id, pois a chave persistida pode receber prefixo do agente', async () => {
+    const { pool } = makePool()
+    const repository = new MySqlDevelopmentExecutionRepository(pool as never)
+
+    await repository.closeDevelopmentSession(901, 'runtime-123', 'dev-gpt-task-901-s901', true)
+
+    expect(pool.query).toHaveBeenCalledWith(
+      expect.stringContaining('runtime_session_id=?'),
+      ['completed', 'development_completed', 901, 'runtime-123', 'dev-gpt-task-901-s901', 'dev-gpt-task-901-s901'],
+    )
+  })
+})

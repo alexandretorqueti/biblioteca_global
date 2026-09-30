@@ -638,14 +638,28 @@ export class MySqlDevelopmentExecutionRepository {
     return updated.affectedRows === 1
   }
 
-  async closeDevelopmentSession(subtaskId: number, sessionKey: string | undefined, success: boolean): Promise<void> {
-    if (!sessionKey) return
+  async closeDevelopmentSession(
+    subtaskId: number,
+    runtimeSessionId: string | undefined,
+    sessionKey: string | undefined,
+    success: boolean,
+  ): Promise<void> {
+    if (!runtimeSessionId && !sessionKey) return
     await this.pool.query(
       `UPDATE motor_agent_sessions
           SET status=?, close_reason=?, closed_at=NOW(), last_activity_at=NOW()
-        WHERE subtarefa_id=? AND session_key=? AND status='active'`,
-      [success ? 'completed' : 'failed', success ? 'development_completed' : 'development_failed', subtaskId, sessionKey],
+        WHERE subtarefa_id=? AND status='active'
+          AND (runtime_session_id=? OR (? IS NOT NULL AND session_key=?))`,
+      [
+        success ? 'completed' : 'failed',
+        success ? 'development_completed' : 'development_failed',
+        subtaskId,
+        runtimeSessionId ?? null,
+        sessionKey ?? null,
+        sessionKey ?? null,
+      ],
     )
+    if (!sessionKey) return
     await this.pool.query(
       `UPDATE tarefa_contextos_execucao
           SET estado='closed', closed_at=NOW(), updated_at=NOW()

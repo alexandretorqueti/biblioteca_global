@@ -235,7 +235,7 @@ export class SubtaskExecutionConsumer {
     const next = result.success && noCode
       ? await this.repository.completeNoCodeExecution(execution, message, result.response ?? '')
       : await this.repository.finishExecution(execution, message, result)
-    await this.repository.closeDevelopmentSession?.(subtaskId, context.sessionKey, result.success)
+    await this.repository.closeDevelopmentSession?.(subtaskId, context.sessionId, context.sessionKey, result.success)
     await this.log(operationId, workerSequence + 1, message, {
       phase: 'completed', outcome: result.success ? 'succeeded' : 'failed', subtaskId,
       result: { nextMessageId: next.messageId, nextMessageType: next.type, attempts: result.attempts },
@@ -298,7 +298,7 @@ export class SubtaskExecutionConsumer {
       noCode,
     )
     const next = await this.repository.finishExecution(execution, input.message, result)
-    await this.repository.closeDevelopmentSession?.(subtaskId, input.sessionKey, result.success)
+    await this.repository.closeDevelopmentSession?.(subtaskId, input.sessionId, input.sessionKey, result.success)
     await this.log(operationId, 2, input.message, {
       phase: 'completed', outcome: result.success ? 'succeeded' : 'failed', subtaskId,
       result: { recovered: true, nextMessageId: next.messageId, nextMessageType: next.type },
