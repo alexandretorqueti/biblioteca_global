@@ -6,6 +6,7 @@ import type { GitWorktreePreparer } from '../execution/GitWorktreePreparer.js'
 import { GitVerificationIntegrator } from '../execution/GitVerificationIntegrator.js'
 import type { SubtaskExecutionContext } from '../execution/DevelopmentExecutionRepository.js'
 import type { TestGateOrchestrator } from './TestGateOrchestrator.js'
+import type { GovernedFailureHandler } from '../governance/GovernedFailureHandler.js'
 
 interface RecoveryRow extends RowDataPacket {
   recovery_id: number
@@ -31,6 +32,7 @@ export class TestRecoveryConsumer {
     private readonly consoleApi: unknown,
     private readonly db: unknown,
     private readonly testGate: TestGateOrchestrator,
+    private readonly governedFailureHandler?: GovernedFailureHandler,
   ) {}
 
   async handle(message: QueueMessage): Promise<void> {
@@ -71,7 +73,10 @@ export class TestRecoveryConsumer {
           ...(run.status === 'passed' ? {} : { error: `O gate completo ainda possui ${run.failures.length} falha(s):\n${run.failures.map((failure, index) => `${index + 1}. ${failure.suite}: ${failure.normalizedMessage}`).join('\n')}` }),
         }
       })
-      if (!result.success) return await this.fail(recovery, result.error ?? 'Monitor esgotou as tentativas sem deixar o gate verde')
+      if (!result.success) {
+        await this.routeRecoveryFailure(recovery, message, result.error ?? 'Monitor esgotou as tentativas sem deixar o gate verde')
+        return await this.fail(recovery, result.error ?? 'Monitor esgotou as tentativas sem deixar o gate verde')
+      }
       const integrator = new GitVerificationIntegrator(this.worktrees)
       await integrator.verifyAndIntegrate(this.integrationContext(recovery, workspace))
       await this.pool.query(
@@ -151,5 +156,26 @@ export class TestRecoveryConsumer {
       `UPDATE test_recovery_attempts SET status='awaiting_user', diagnosis=?, user_message_id=?, finished_at=NOW(3), updated_at=NOW(3) WHERE id=?`,
       [diagnosis.slice(0, 60_000), inserted.insertId ?? null, recovery.recovery_id],
     )
+  }
+
+  private async routeRecoveryFailure(recovery: RecoveryRow, message: QueueMessage, reason: string): Promise<void> {
+    if (!this.governedFailureHandler) return
+    try {
+      await this.governedFailureHandler.handleFailure('monitor_recovery_failed', {
+        taskId: recovery.task_id,
+        subtaskId: recovery.recovery_id,
+        executionId: message.executionId,
+        generation: 1,
+        repoPath: recovery.repo_path,
+        agentId: recovery.agent_id,
+        metadata: { phase: 'monitor_recovery', sourceTestRunId: recovery.source_test_run_id },
+      }, {
+        code: 'BASELINE_RED',
+        message: reason,
+        actionResult: JSON.stringify({ sourceTestRunId: recovery.source_test_run_id }),
+      })
+    } catch (error) {
+      console.warn('[TestRecoveryConsumer] falha ao rotear recuperação de testes pelo catálogo:', error instanceof Error ? error.message : String(error))
+    }
   }
 }

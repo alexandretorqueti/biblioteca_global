@@ -10,11 +10,14 @@
 
 import type { PrimitiveContext } from '../primitives/types.js'
 import { createSession, sendMessage, waitForCompletion, parseReply, verifyGit, runBuild } from '../primitives/index.js'
+import type { GovernedFailureHandler } from '../governance/GovernedFailureHandler.js'
 
 export interface WorkerLauncherConfig {
   maxAttempts: number // Teto de tentativas (D6: local 2, cloud 3)
   timeoutMs: number // Timeout por tentativa
   sandboxRoot: string // Raiz de worktrees montada (opção a)
+  /** Roteia a decisão terminal H6/H7 pelo catálogo quando fornecido. */
+  governedFailureHandler?: GovernedFailureHandler
 }
 
 export interface WorkerResult {
@@ -56,6 +59,7 @@ export class WorkerLauncher {
       maxAttempts: config.maxAttempts ?? 3,
       timeoutMs: config.timeoutMs ?? 300000, // 5 minutos
       sandboxRoot: config.sandboxRoot ?? '/data/workspace/agentes/motor-v3/worktrees',
+      governedFailureHandler: config.governedFailureHandler,
     }
   }
 
@@ -251,12 +255,48 @@ export class WorkerLauncher {
 
     // Esgotou tentativas
     context.logger?.error('Esgotado número máximo de tentativas', { maxAttempts: maximumAttempts })
+    await this.routeExhaustedFailure(context, lastError, attempts, maximumAttempts)
     return {
       success: false,
       error: `Esgotado número máximo de tentativas (${maximumAttempts}): ${lastError}`,
       attempts,
       ...(lastModel ? { model: lastModel } : {}),
       failures,
+    }
+  }
+
+  private async routeExhaustedFailure(
+    context: PrimitiveContext,
+    errorMessage: string,
+    attempts: number,
+    maxAttempts: number,
+  ): Promise<void> {
+    const handler = this.config.governedFailureHandler
+    if (!handler) return
+    try {
+      await handler.handleFailure('worker_exhausted', {
+        taskId: context.taskId,
+        subtaskId: context.subtaskId ?? null,
+        executionId: context.executionId,
+        generation: context.generation,
+        repoPath: context.repoPath,
+        model: context.model,
+        metadata: {
+          attempts,
+          maxAttempts,
+          phase: attempts > 1 ? 'rework' : 'worker',
+        },
+      }, {
+        code: 'WORKER_EXHAUSTED',
+        message: errorMessage,
+        actionResult: JSON.stringify({ attempts, maxAttempts }),
+      })
+    } catch (error) {
+      // O roteamento governado é best-effort; o resultado de falha do worker
+      // continua sendo devolvido ao consumidor para preservar a paridade.
+      context.logger?.warn('Falha ao rotear esgotamento do worker pelo catálogo', {
+        error: error instanceof Error ? error.message : String(error),
+      })
     }
   }
 

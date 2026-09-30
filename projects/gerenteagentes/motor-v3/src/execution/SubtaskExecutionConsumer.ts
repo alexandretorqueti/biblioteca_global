@@ -12,6 +12,7 @@ import type {
   TestRunResult,
   WorkspaceEnvironmentPreparer,
 } from '../testing/index.js'
+import type { GovernedFailureHandler } from '../governance/GovernedFailureHandler.js'
 
 export const SUBTASK_EXECUTION_REQUESTED = 'SUBTASK_EXECUTION_REQUESTED'
 
@@ -26,6 +27,7 @@ export class SubtaskExecutionConsumer {
     private readonly testGate?: TestGateOrchestrator,
     private readonly environmentPreparer?: WorkspaceEnvironmentPreparer,
     private readonly baselineRecovery?: BaselinePreflightRecovery,
+    private readonly governedFailureHandler?: GovernedFailureHandler,
   ) {}
 
   async handle(message: QueueMessage): Promise<void> {
@@ -88,6 +90,8 @@ export class SubtaskExecutionConsumer {
       }
       if (baseline.status !== 'passed') {
         if (this.isEnvironmentFailure(baseline)) {
+          await this.routeBaselineFailure(execution, message, baseline,
+            'O ambiente do baseline não pôde ser preparado automaticamente')
           await this.finishPreflightBlock(operationId, sequence, message, execution,
             `O ambiente do baseline não pôde ser preparado automaticamente: ${this.failureSummary(baseline)}`)
           return
@@ -104,6 +108,8 @@ export class SubtaskExecutionConsumer {
           result: { success: recovered.success, testRunId: recovered.baseline?.id, integrationCommit: recovered.integrationCommit, error: recovered.error },
         })
         if (!recovered.success || !recovered.baseline) {
+          await this.routeBaselineFailure(execution, message, baseline,
+            recovered.error ?? 'Monitor não deixou o baseline verde')
           await this.finishPreflightBlock(operationId, sequence, message, execution,
             recovered.error ?? 'Monitor não deixou o baseline verde')
           return
@@ -228,6 +234,36 @@ export class SubtaskExecutionConsumer {
     })
   }
 
+  private async routeBaselineFailure(
+    execution: SubtaskExecutionContext,
+    message: QueueMessage,
+    baseline: TestRunResult,
+    reason: string,
+  ): Promise<void> {
+    if (!this.governedFailureHandler) return
+    try {
+      await this.governedFailureHandler.handleFailure('baseline_red', {
+        taskId: execution.taskId,
+        subtaskId: execution.subtaskId,
+        executionId: message.executionId,
+        generation: 1,
+        repoPath: execution.repoPath,
+        agentId: execution.agentId,
+        metadata: {
+          phase: 'baseline',
+          testRunId: baseline.id,
+          failureCount: baseline.failures.length,
+        },
+      }, {
+        code: 'BASELINE_RED',
+        message: reason,
+        actionResult: JSON.stringify({ testRunId: baseline.id, failureCount: baseline.failures.length }),
+      })
+    } catch (error) {
+      console.warn('[SubtaskExecutionConsumer] falha ao rotear baseline vermelho pelo catálogo:', error instanceof Error ? error.message : String(error))
+    }
+  }
+
   private async runDifferentialGate(
     execution: SubtaskExecutionContext,
     context: PrimitiveContext,
@@ -243,6 +279,9 @@ export class SubtaskExecutionConsumer {
     }, source)
     const success = run.comparisonStatus === 'no_regression'
     const inconclusive = run.comparisonStatus === 'inconclusive'
+    if (!success) {
+      await this.routeGateFailure(execution, source, context, run, phase)
+    }
     return {
       success, runId: run.id, newFailureCount: run.newFailures.length,
       preExistingFailureCount: run.preExistingFailures.length, resolvedFailureCount: run.resolvedFailures.length,
@@ -255,6 +294,40 @@ export class SubtaskExecutionConsumer {
             '',
             `As ${run.preExistingFailures.length} falha(s) preexistente(s) permanecem fora do seu escopo e não devem ser corrigidas neste rework.`,
           ].join('\n') }),
+    }
+  }
+
+  private async routeGateFailure(
+    execution: SubtaskExecutionContext,
+    source: QueueMessage,
+    context: PrimitiveContext,
+    run: TestRunResult,
+    phase: Exclude<TestRunPhase, 'baseline' | 'monitor_recovery' | 'pre_deploy'>,
+  ): Promise<void> {
+    if (!this.governedFailureHandler) return
+    try {
+      await this.governedFailureHandler.handleFailure('gate_result', {
+        taskId: execution.taskId,
+        subtaskId: execution.subtaskId,
+        executionId: source.executionId,
+        generation: context.generation,
+        repoPath: execution.repoPath,
+        agentId: execution.agentId,
+        metadata: {
+          phase,
+          testRunId: run.id,
+          comparisonStatus: run.comparisonStatus,
+          newFailureCount: run.newFailures.length,
+        },
+      }, {
+        code: 'integration_gate_failed',
+        message: run.comparisonStatus === 'inconclusive'
+          ? 'Gate diferencial inconclusivo'
+          : `Gate diferencial acusou ${run.newFailures.length} regressão(ões)`,
+        actionResult: JSON.stringify({ testRunId: run.id, phase, comparisonStatus: run.comparisonStatus }),
+      })
+    } catch (error) {
+      console.warn('[SubtaskExecutionConsumer] falha ao rotear resultado do gate pelo catálogo:', error instanceof Error ? error.message : String(error))
     }
   }
 

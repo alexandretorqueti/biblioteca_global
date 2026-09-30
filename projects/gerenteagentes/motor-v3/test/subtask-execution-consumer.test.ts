@@ -193,7 +193,8 @@ describe('SubtaskExecutionConsumer', () => {
     const failure = { fingerprint: 'missing-package', suite: 'queue.test.ts', errorType: 'Error', normalizedMessage: "Cannot find package 'amqplib'", rawExcerpt: '', occurrenceCount: 1, classification: 'unclassified' }
     const testGate = { request: vi.fn().mockResolvedValue({ id: 60, phase: 'baseline', status: 'failed', failures: [failure] }) }
     const environment = { prepare: vi.fn().mockResolvedValue(['projects/gerenteagentes/motor-v3']) }
-    const consumer = new SubtaskExecutionConsumer(repository as never, worktrees as never, worker as never, {}, {}, logger, testGate as never, environment as never)
+    const governedFailureHandler = { handleFailure: vi.fn().mockResolvedValue({ governed: true }) }
+    const consumer = new SubtaskExecutionConsumer(repository as never, worktrees as never, worker as never, {}, {}, logger, testGate as never, environment as never, undefined, governedFailureHandler as never)
 
     await consumer.handle(message)
 
@@ -201,6 +202,11 @@ describe('SubtaskExecutionConsumer', () => {
     expect(worktrees.prepare).not.toHaveBeenCalled()
     expect(worker.executeTask).not.toHaveBeenCalled()
     expect(repository.blockExecution).toHaveBeenCalledWith(context, message, expect.stringContaining('ambiente do baseline'))
+    expect(governedFailureHandler.handleFailure).toHaveBeenCalledWith(
+      'baseline_red',
+      expect.objectContaining({ taskId: context.taskId, subtaskId: context.subtaskId }),
+      expect.objectContaining({ code: 'BASELINE_RED' }),
+    )
   })
 
   it('aciona o Monitor na integração e libera o DEV somente após recuperação verde', async () => {
@@ -231,6 +237,37 @@ describe('SubtaskExecutionConsumer', () => {
     expect(recovery.recover).toHaveBeenCalledWith(context, integration, expect.objectContaining({ id: 70 }), message)
     expect(worker.executeTask).toHaveBeenCalledWith(expect.objectContaining({ baselineRunId: 71, baseCommitSha: 'fixed' }), expect.any(Object), ['modelo-a'], expect.any(Function), expect.any(Function), false)
     expect(repository.finishExecution).toHaveBeenCalledWith(context, message, expect.objectContaining({ success: true }))
+  })
+
+  it('classifica regressão do gate no catálogo e preserva o rework', async () => {
+    const repository = {
+      getExecutionContext: vi.fn().mockResolvedValue(context),
+      getDevelopmentModelChain: vi.fn().mockResolvedValue(['modelo-a']),
+      recordModelFailure: vi.fn().mockResolvedValue(undefined), recordWorkspace: vi.fn().mockResolvedValue(undefined),
+      finishExecution: vi.fn().mockResolvedValue({ ...message, messageId: 'failed-gate', type: 'SUBTASK_EXECUTION_FAILED' }),
+    }
+    const worktrees = { prepare: vi.fn().mockResolvedValue({ path: '/worktree', branch: 'dev', baseCommit: 'abc' }) }
+    const worker = { executeTask: vi.fn() }
+    const logger = { append: vi.fn().mockResolvedValue(undefined) }
+    const testGate = { request: vi.fn() }
+    const governedFailureHandler = { handleFailure: vi.fn().mockResolvedValue({ governed: true }) }
+    const consumer = new SubtaskExecutionConsumer(repository as never, worktrees as never, worker as never, {}, {}, logger, testGate as never, undefined, undefined, governedFailureHandler as never)
+    const gateContext = {
+      taskId: context.taskId, databaseTaskId: context.databaseTaskId, projectId: context.projectId,
+      subtaskId: context.subtaskId, executionId: message.executionId, generation: 1,
+      projectSlug: context.projectSlug, repoPath: context.repoPath, worktreePath: '/worktree', branchName: 'dev',
+      baseCommitSha: 'abc', baselineRunId: 10, buildCommand: context.buildCommand, testCommand: context.testCommand,
+      agentId: context.agentId, db: {}, consoleApi: {}, logger: console,
+    }
+    testGate.request.mockResolvedValue({ id: 11, comparisonStatus: 'regression', newFailures: [{ suite: 'new.test.ts', normalizedMessage: 'boom' }], preExistingFailures: [], resolvedFailures: [] })
+
+    const result = await (consumer as any).runDifferentialGate(context, gateContext, 'rework', message)
+
+    expect(result.success).toBe(false)
+    expect(governedFailureHandler.handleFailure).toHaveBeenCalledWith(
+      'gate_result', expect.objectContaining({ metadata: expect.objectContaining({ phase: 'rework', testRunId: 11 }) }),
+      expect.objectContaining({ code: 'integration_gate_failed' }),
+    )
   })
 })
 // @vitest-environment node

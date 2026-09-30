@@ -366,6 +366,7 @@ async function start() {
       maxAttempts: Number(process.env.MOTOR_MONITOR_MAX_ATTEMPTS || 2),
       timeoutMs: Number(process.env.MOTOR_WORKER_TIMEOUT_MS || 1800000),
       sandboxRoot: process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/agentes/gerenteagentes/worktrees',
+      governedFailureHandler,
     })
     const baselineRecovery = new BaselinePreflightRecovery(
       pool, monitorWorker, new WorkerConsoleAdapter(consoleApi), db, testGate,
@@ -377,6 +378,7 @@ async function start() {
         maxAttempts: Number(process.env.MOTOR_WORKER_MAX_ATTEMPTS || 3),
         timeoutMs: Number(process.env.MOTOR_WORKER_TIMEOUT_MS || 1800000),
         sandboxRoot: process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/agentes/gerenteagentes/worktrees',
+        governedFailureHandler,
       }),
       new WorkerConsoleAdapter(consoleApi),
       db,
@@ -384,6 +386,7 @@ async function start() {
       testGate,
       environmentPreparer,
       baselineRecovery,
+      governedFailureHandler,
     )
     subtaskVerificationConsumer = new SubtaskVerificationConsumer(
       developmentRepository,
@@ -394,6 +397,7 @@ async function start() {
       pool, worktreePreparer,
       monitorWorker,
       new WorkerConsoleAdapter(consoleApi), db, testGate,
+      governedFailureHandler,
     )
     // Monitor-Resolvedor de bloqueios (docs/MONITOR-RESOLVEDOR-DE-BLOQUEIOS.md):
     // missão longa (pode corrigir o motor, mergear na base e rodar deploy) —
