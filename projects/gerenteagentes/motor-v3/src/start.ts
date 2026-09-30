@@ -21,6 +21,7 @@ import * as schema from './db/schema.js'
 import { MessageBus } from './bus/MessageBus.js'
 import { EventLogger } from './bus/EventLogger.js'
 import { CatalogLoader } from './catalog/CatalogLoader.js'
+import { CatalogAdminService, CatalogNotFoundError, CatalogValidationError, type CatalogEntity } from './catalog/CatalogAdminService.js'
 import { EventClassifier } from './classifier/EventClassifier.js'
 import { ActionExecutor } from './executor/ActionExecutor.js'
 import { registerAllPrimitives } from './primitives/index.js'
@@ -107,6 +108,7 @@ async function start() {
   console.log('[Motor v3] Registrando primitivas...')
   const executor = new ActionExecutor(db, catalogLoader)
   registerAllPrimitives(executor)
+  const catalogAdmin = new CatalogAdminService(db, catalogLoader, executor, bus)
   const primitiveDivergences = await executor.validateCatalogPrimitives()
   if (primitiveDivergences.length > 0) {
     console.error('[Motor v3] Catálogo referencia primitivas não registradas:', primitiveDivergences)
@@ -528,19 +530,61 @@ async function start() {
         return
       }
       
-      // Catalog endpoints (leitura)
-      if (path === '/api/motor/catalog/events' && req.method === 'GET') {
+      // Catálogo governável: GET/POST/PATCH/DELETE. DELETE é sempre soft delete.
+      const catalogRoute = path.match(/^\/(?:api\/motor\/catalog|gerenteagentes\/motor-v3\/tabelas)\/([^/]+)(?:\/(\d+))?$/)
+      const catalogEntityName = catalogRoute?.[1]?.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`)
+      const catalogEntity = catalogEntityName && ['events', 'patterns', 'actions', 'reactions'].includes(catalogEntityName) ? catalogEntityName as CatalogEntity : undefined
+      if (catalogEntity) {
+        const id = catalogRoute?.[2] ? Number(catalogRoute[2]) : undefined
+        if (req.method === 'GET') {
+          const rows = id === undefined ? await catalogAdmin.list(catalogEntity) : [await catalogAdmin.get(catalogEntity, id)]
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify(path.startsWith('/gerenteagentes/') ? { items: rows } : rows))
+          return
+        }
+        if (req.method === 'POST' && id === undefined) {
+          let body = ''
+          req.on('data', chunk => body += chunk)
+          await new Promise(resolve => req.on('end', resolve))
+          const payload = body ? JSON.parse(body) : {}
+          const actor = String(req.headers['x-actor'] ?? req.headers['x-user-id'] ?? payload.actor ?? 'unknown')
+          delete payload.actor
+          const created = await catalogAdmin.create(catalogEntity, payload, actor)
+          res.writeHead(201, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify(created))
+          return
+        }
+        if ((req.method === 'PATCH' || req.method === 'PUT') && id !== undefined) {
+          let body = ''
+          req.on('data', chunk => body += chunk)
+          await new Promise(resolve => req.on('end', resolve))
+          const payload = body ? JSON.parse(body) : {}
+          const actor = String(req.headers['x-actor'] ?? req.headers['x-user-id'] ?? payload.actor ?? 'unknown')
+          delete payload.actor
+          const updated = await catalogAdmin.update(catalogEntity, id, payload, actor)
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify(updated))
+          return
+        }
+        if (req.method === 'DELETE' && id !== undefined) {
+          const actor = String(req.headers['x-actor'] ?? req.headers['x-user-id'] ?? 'unknown')
+          const deactivated = await catalogAdmin.deactivate(catalogEntity, id, actor)
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify(deactivated))
+          return
+        }
+      }
+
+      if ((path === '/api/motor/catalog/simular' || path === '/gerenteagentes/motor-v3/simular') && req.method === 'POST') {
+        let body = ''
+        req.on('data', chunk => body += chunk)
+        await new Promise(resolve => req.on('end', resolve))
+        const result = await catalogAdmin.simulate(body ? JSON.parse(body) : {})
         res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify(await catalogLoader.getAllEvents()))
+        res.end(JSON.stringify(result))
         return
       }
-      
-      if (path === '/api/motor/catalog/actions' && req.method === 'GET') {
-        res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify(await catalogLoader.getAllActions()))
-        return
-      }
-      
+
       if (path === '/api/motor/catalog/primitives' && req.method === 'GET') {
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify(executor.getRegisteredPrimitives()))
@@ -803,7 +847,8 @@ async function start() {
       res.writeHead(404, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: 'Not found' }))
     } catch (err: any) {
-      res.writeHead(500, { 'Content-Type': 'application/json' })
+      const statusCode = err instanceof CatalogValidationError || err instanceof CatalogNotFoundError ? err.statusCode : 500
+      res.writeHead(statusCode, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: err.message }))
     }
   })
