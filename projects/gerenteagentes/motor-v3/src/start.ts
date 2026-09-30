@@ -28,6 +28,7 @@ import { registerAllPrimitives } from './primitives/index.js'
 import { Scheduler } from './scheduler/Scheduler.js'
 import { MonitorBridge } from './monitor-bridge/MonitorBridge.js'
 import { GovernedFailureHandler } from './governance/GovernedFailureHandler.js'
+import { createGovernanceFlagResolver } from './governance/RolloutPolicy.js'
 import { QueueConsumer } from './queue/QueueConsumer.js'
 import { RabbitMqTransport } from './queue/RabbitMqTransport.js'
 import { OutboxPublisher, createQueueMessage } from './queue/index.js'
@@ -129,8 +130,13 @@ async function start() {
   // 7. Inicializa Monitor Bridge
   console.log('[Motor v3] Inicializando Monitor Bridge...')
   const monitorBridge = new MonitorBridge(bus, catalogLoader, classifier, { db })
-  const governedFailureHandler = new GovernedFailureHandler(classifier, executor, { monitor: monitorBridge })
-  void governedFailureHandler
+  const governedFailureHandler = new GovernedFailureHandler(classifier, executor, {
+    monitor: monitorBridge,
+    // O catálogo só assume autoridade quando a flag correspondente está
+    // explicitamente ligada em motor_configuracoes. Ausência/erro de leitura
+    // preserva o fallback legado e permite rollback sem restart.
+    flagResolver: createGovernanceFlagResolver(pool),
+  })
   console.log('[Motor v3] Monitor Bridge inicializado')
 
   // 8. Fila durável e coordenador (opt-in até RabbitMQ/outbox estarem ativos)
@@ -162,6 +168,7 @@ async function start() {
       // para que a entrega possa ser rejeitada/repetida sem fechar o canal.
       timeoutMs: Number(process.env.MOTOR_ANALYSIS_TIMEOUT_MS || 1500000),
       pollIntervalMs: Number(process.env.MOTOR_ANALYSIS_POLL_INTERVAL_MS || 5000),
+      governedFailureHandler,
       promptResolver: new ManagedAnalysisPromptResolver(pool),
       modelChainResolver: async (task) => {
         if (!task.projectSlug) return []
@@ -288,6 +295,7 @@ async function start() {
       commandPolicies: new MySqlCommandPolicyRepository(pool),
       operationLogger,
       taskEvents,
+      governedFailureHandler,
       analysisFailure: new MySqlAnalysisFailureBlocker(pool),
       maxAnalysisAttempts: Number(process.env.MOTOR_QUEUE_MAX_ATTEMPTS || 3),
       publishTaskReady: async (source, payload) => {
