@@ -251,7 +251,23 @@ export class DeployConsumer {
     if (await execFileAsync('git', ['merge-base', '--is-ancestor', expectedCommit, baseBranch], { cwd: repo }).then(() => true, () => false)) return
     const path = `${repo}/.motor-v3-deploy-${expectedCommit.slice(0, 12)}`
     await execFileAsync('git', ['worktree', 'add', '--detach', path, baseBranch], { cwd: repo })
-    try { await execFileAsync('git', ['merge', '--ff-only', expectedCommit], { cwd: path }); await execFileAsync('git', ['push', 'origin', `HEAD:${baseBranch}`], { cwd: path }) }
+    try {
+      // A base pode avançar entre o gate do lote e a promoção. Fast-forward
+      // rejeita até integrações independentes; um merge explícito preserva as
+      // duas linhas de histórico e só falha se houver conflito real.
+      await execFileAsync('git', ['merge', '--no-ff', '--no-commit', expectedCommit], { cwd: path })
+      await execFileAsync('git', ['diff', '--check'], { cwd: path })
+      await execFileAsync('git', ['commit', '--no-edit'], { cwd: path })
+      await execFileAsync('git', ['push', 'origin', `HEAD:${baseBranch}`], { cwd: path })
+    } catch (error) {
+      const { stdout: conflictOutput } = await execFileAsync('git', ['diff', '--name-only', '--diff-filter=U'], { cwd: path, encoding: 'utf8' }).catch(() => ({ stdout: '' }))
+      await execFileAsync('git', ['merge', '--abort'], { cwd: path }).catch(() => undefined)
+      const conflicts = conflictOutput.trim().split('\n').filter(Boolean)
+      if (conflicts.length > 0) {
+        throw new Error(`Conflito de merge ao promover ${expectedCommit}: ${conflicts.join(', ')}`)
+      }
+      throw error
+    }
     finally { await execFileAsync('git', ['worktree', 'remove', '--force', path], { cwd: repo }).catch(() => undefined) }
   }
 

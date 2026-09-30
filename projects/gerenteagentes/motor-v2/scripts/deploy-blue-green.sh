@@ -56,12 +56,16 @@ read_active_slot() {
     sed -n 's/^active=//p' "$STATE_FILE" | head -1
     return 0
   fi
-  # Migração do deploy legado, que usava nomes fixos e as portas principais.
-  if docker inspect biblioteca-global-api >/dev/null 2>&1 || docker inspect biblioteca-global-web >/dev/null 2>&1; then
-    echo legacy
-  else
-    echo none
-  fi
+  # Migração do deploy legado, que usa as portas públicas. O Compose moderno
+  # acrescenta "-1" ao nome do container; ambos os formatos representam a
+  # mesma stack legada e devem levar o próximo deploy ao slot green.
+  for container in biblioteca-global-api biblioteca-global-web biblioteca-global-api-1 biblioteca-global-web-1; do
+    if docker inspect "$container" >/dev/null 2>&1; then
+      echo legacy
+      return 0
+    fi
+  done
+  echo none
 }
 
 write_active_slot() {
@@ -322,7 +326,7 @@ trap - ERR
 
 case "$active" in
   legacy)
-    docker rm -f biblioteca-global-api biblioteca-global-web >/dev/null 2>&1 || true
+    docker rm -f biblioteca-global-api biblioteca-global-web biblioteca-global-api-1 biblioteca-global-web-1 >/dev/null 2>&1 || true
     ;;
   blue|green)
     old_project="biblioteca-$active"
