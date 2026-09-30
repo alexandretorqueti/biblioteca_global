@@ -25,7 +25,7 @@ import {
 } from "@mui/icons-material"
 import { SimpleTreeView, TreeItem } from "@mui/x-tree-view"
 import { useApi } from "../../../apps/web/src/hooks/useApi"
-import DiffViewer from "./DiffViewer"
+import DiffViewer, { parsePatchToOldNew } from "./DiffViewer"
 import ConflictViewer, { type MergeSimulationResult } from "./ConflictViewer"
 
 // ─── Tipos ──────────────────────────────────────────────────────────────────
@@ -645,7 +645,7 @@ export default function TaskCodeViewer({
 
                     {/* Diff do arquivo selecionado */}
                     {selectedDiffFile && (() => {
-                      const { oldValue, newValue } = DiffViewer.parsePatchToOldNew(selectedDiffFile.patch)
+                      const { oldValue, newValue } = parsePatchToOldNew(selectedDiffFile.patch)
                       return (
                         <DiffViewer
                           oldValue={oldValue}

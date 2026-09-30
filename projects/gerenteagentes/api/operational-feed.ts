@@ -139,7 +139,7 @@ export class OperationalFeedService {
       FROM tarefa_eventos WHERE tarefa_id IS NOT NULL ORDER BY created_at DESC, id DESC LIMIT 500`)
     const [actions] = await db.execute(`SELECT id, CAST(task_id AS UNSIGNED) AS taskId, type AS actionType, 0 AS priority, status AS state,
       last_error AS lastError, created_at AS occurredAt FROM motor_outbox WHERE status = 'pending'
-      UNION ALL SELECT id, CAST(task_id AS UNSIGNED), message_type, 0, status, error_message, created_at
+      UNION ALL SELECT message_id AS id, CAST(task_id AS UNSIGNED), message_type, 0, status, error_message, created_at
       FROM motor_message_processing_state WHERE status IN ('pending','processing') ORDER BY occurredAt DESC LIMIT 500`)
     const items = aggregateOperationalFeed({ projectId, messages: messages as unknown as Record<string, unknown>[], events: events as unknown as Record<string, unknown>[], actions: actions as unknown as Record<string, unknown>[] }, options.limit)
     return {
