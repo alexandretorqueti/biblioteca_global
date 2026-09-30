@@ -37,6 +37,7 @@ export interface CatalogAction {
   onPartialFailure: 'continue' | 'compensate' | 'mark_dirty'
   compensationActionId: number | null
   isTerminal: boolean
+  version: number
   active: boolean
 }
 
@@ -46,6 +47,8 @@ export interface CatalogReaction {
   occurrence: number
   actionId: number
   params?: Record<string, any>
+  condition?: Record<string, any>
+  version: number
   active: boolean
 }
 
@@ -124,6 +127,7 @@ export class CatalogLoader {
         onPartialFailure: a.onPartialFailure,
         compensationActionId: a.compensationActionId,
         isTerminal: a.isTerminal === 1,
+        version: a.version,
         active: a.active === 1,
       })),
       reactions: reactions.map(r => ({
@@ -132,6 +136,8 @@ export class CatalogLoader {
         occurrence: r.occurrence,
         actionId: r.actionId,
         params: r.paramsJson ?? undefined,
+        condition: r.conditionJson ?? undefined,
+        version: r.version,
         active: r.active === 1,
       })),
       loadedAt: new Date(),
