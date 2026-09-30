@@ -27,6 +27,7 @@ export class RealtimeClient {
       // sendo obtido. Não crie um socket órfão quando essa chamada terminar.
       if (this.stopped || generation !== this.connectionGeneration) return
       const query = new URLSearchParams({ ticket })
+      if (this.options.taskId !== undefined) query.set("taskId", String(this.options.taskId))
       if (this.lastSequence !== undefined) query.set("lastSequence", String(this.lastSequence))
       const socket = this.factory(`${this.options.url}?${query.toString()}`)
       this.conectarSocket(socket)
