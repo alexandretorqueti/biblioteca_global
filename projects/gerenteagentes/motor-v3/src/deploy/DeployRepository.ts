@@ -268,6 +268,149 @@ export class DeployRepository {
     } catch (error) { await connection.rollback(); throw error } finally { connection.release() }
   }
 
+  /**
+   * Bloqueia todas as tarefas de um lote por conflito de merge com diagnóstico estruturado.
+   * Persiste em bloqueios (merge_conflict), promotion_conflict_analyses e tarefa_chats.
+   */
+  async blockBatchForMergeConflict(
+    batchId: string,
+    conflictData: {
+      baseBranch: string
+      taskBranch: string
+      baseCommit: string
+      taskCommit: string
+      mergeBaseCommit: string
+      conflictFiles: string[]
+      command: string
+    },
+    source: QueueMessage,
+  ): Promise<void> {
+    const connection = await this.pool.getConnection()
+    try {
+      await connection.beginTransaction()
+      
+      // Marcar batch como failed
+      await connection.query(
+        `UPDATE deploy_batches SET status='failed', last_error=?, finished_at=NOW(), updated_at=NOW() WHERE batch_id=? AND status IN ('pending','running')`,
+        [`Conflito de merge: ${conflictData.conflictFiles.join(', ')}`, batchId]
+      )
+      
+      // Atualizar deploy_requests para failed
+      await connection.query(
+        `UPDATE deploy_requests SET status='failed', last_error=?, finished_at=NOW(), updated_at=NOW() WHERE batch_id=? AND status='running'`,
+        [`Conflito de merge: ${conflictData.conflictFiles.join(', ')}`, batchId]
+      )
+      
+      // Buscar tarefas do lote
+      const [requests] = await connection.query<Array<RowDataPacket & { external_id: string | null; task_id: number }>>(
+        `SELECT t.external_id, dr.tarefa_id AS task_id FROM deploy_requests dr INNER JOIN tarefas t ON t.id=dr.tarefa_id WHERE dr.batch_id=? FOR UPDATE`,
+        [batchId]
+      )
+      
+      // Gerar fingerprint único para o conflito
+      const fingerprint = `conflict:${batchId}:${conflictData.taskCommit.slice(0, 12)}`
+      
+      // Preparar JSON de arquivos conflitantes
+      const conflictFilesJson = JSON.stringify(conflictData.conflictFiles)
+      
+      // Preparar evidência estruturada
+      const evidenceJson = JSON.stringify({
+        type: 'merge_conflict',
+        baseBranch: conflictData.baseBranch,
+        taskBranch: conflictData.taskBranch,
+        baseCommit: conflictData.baseCommit,
+        taskCommit: conflictData.taskCommit,
+        mergeBaseCommit: conflictData.mergeBaseCommit,
+        conflictFiles: conflictData.conflictFiles,
+        command: conflictData.command,
+        batchId,
+      })
+      
+      // Mensagem descritiva para o chat da tarefa
+      const chatMessage = `⚠️ **Conflito de merge detectado no deploy**
+
+**O que aconteceu:** O motor tentou promover seu commit para a branch ${conflictData.baseBranch}, mas encontrou conflitos reais com mudanças que ocorreram na base enquanto você desenvolvia.
+
+**Etapa:** Promoção para branch de integração (git merge)
+
+**Arquivos conflitantes (${conflictData.conflictFiles.length}):**
+${conflictData.conflictFiles.map(f => `- \`${f}\``).join('\n')}
+
+**Commit da tarefa:** \`${conflictData.taskCommit.slice(0, 8)}\`
+**Branch de destino:** \`${conflictData.baseBranch}\`
+**Comando que falhou:** \`${conflictData.command}\`
+
+**Ação necessária:** Rebase ou merge manual da branch ${conflictData.baseBranch} na sua branch de trabalho, resolvendo os conflitos nos arquivos listados. Após resolver, o deploy será tentado novamente.`
+      
+      for (const request of requests) {
+        const taskId = String(request.external_id ?? request.task_id)
+        const databaseTaskId = Number(request.task_id)
+        
+        // 1. Inserir bloqueio com merge_conflict
+        const [bloqueioInsert] = await connection.query<ResultSetHeader>(
+          `INSERT INTO bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at)
+           VALUES (?, NULL, 'merge_conflict', ?, ?, NOW())`,
+          [databaseTaskId, conflictData.command, `Conflito de merge: ${conflictData.conflictFiles.join(', ')}`.slice(0, 500)]
+        )
+        const bloqueioId = Number(bloqueioInsert.insertId)
+        
+        // 2. Inserir em promotion_conflict_analyses
+        await connection.query(
+          `INSERT INTO promotion_conflict_analyses (
+            tarefa_id, bloqueio_id, fingerprint, base_branch, task_branch,
+            base_commit, task_commit, merge_base_commit, conflict_files_json,
+            evidence_json, status, confidence, recommendation, started_at, created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'high', 'manual_rebase', NOW(), NOW())`,
+          [
+            databaseTaskId,
+            bloqueioId,
+            fingerprint,
+            conflictData.baseBranch,
+            conflictData.taskBranch,
+            conflictData.baseCommit || 'unknown',
+            conflictData.taskCommit,
+            conflictData.mergeBaseCommit || 'unknown',
+            conflictFilesJson,
+            evidenceJson,
+          ]
+        )
+        
+        // 3. Inserir mensagem no chat da tarefa
+        await connection.query(
+          `INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) VALUES (?, 'assistant', ?, NOW())`,
+          [databaseTaskId, chatMessage]
+        )
+        
+        // 4. Publicar evento TASK_BLOCKED no outbox (feed operacional)
+        const blocked = createTaskBlockedMessage({
+          taskId,
+          executionId: `${source.executionId}-merge-conflict-${batchId}`,
+          correlationId: source.correlationId ?? source.messageId,
+          causationId: source.messageId,
+          payload: {
+            blockReason: 'merge_conflict',
+            blockCommand: conflictData.command,
+            blockExcerpt: `Conflito de merge: ${conflictData.conflictFiles.join(', ')}`.slice(0, 500),
+            batchId,
+            databaseTaskId,
+            conflictFiles: conflictData.conflictFiles,
+            baseBranch: conflictData.baseBranch,
+            taskBranch: conflictData.taskBranch,
+            taskCommit: conflictData.taskCommit,
+          },
+        })
+        await this.insertOutbox(connection, blocked)
+      }
+      
+      await connection.commit()
+    } catch (error) {
+      await connection.rollback()
+      throw error
+    } finally {
+      connection.release()
+    }
+  }
+
   withIntegration(context: Omit<DeployTaskContext, 'integrationPath' | 'integrationBranch' | 'integrationCommit'>, integrationCommit: string): DeployTaskContext {
     const safeTask = context.taskId.replace(/[^a-zA-Z0-9._-]/g, '-')
     return {
