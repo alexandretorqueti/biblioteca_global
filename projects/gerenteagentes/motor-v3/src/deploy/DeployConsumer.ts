@@ -74,10 +74,13 @@ export class DeployConsumer {
       const composed = await this.composeBatch(claimed.batch.repoPath, claimed.batch.baseBranch, claimed.batch.batchId, claimed.members.map(member => member.requestedCommit))
       try {
         const primary = claimed.members[0]!
-        if (claimed.members.some(member => member.buildCommand !== primary.buildCommand || member.testCommand !== primary.testCommand)) {
-          throw new Error('Lote reúne projetos com comandos de gate incompatíveis')
-        }
-        const gateJobId = await this.gate.enqueue({ projectId: primary.projectId, taskDatabaseId: primary.databaseTaskId, phase: 'pre_deploy', commitSha: composed.commit, baseCommitSha: claimed.batch.baseBranch, branchName: claimed.batch.baseBranch, workspacePath: composed.path, buildCommand: primary.buildCommand, testCommand: primary.testCommand }, message)
+        // Um único artefato pode reunir tarefas que definem contratos de gate
+        // distintos. Validamos todos, em sequência, antes de permitir o único
+        // deploy do lote; rejeitar a composição apenas por haver comandos
+        // diferentes levaria a deploys redundantes por tarefa.
+        const buildCommand = [...new Set(claimed.members.map(member => member.buildCommand))].join(' && ')
+        const testCommand = [...new Set(claimed.members.map(member => member.testCommand))].join(' && ')
+        const gateJobId = await this.gate.enqueue({ projectId: primary.projectId, taskDatabaseId: primary.databaseTaskId, phase: 'pre_deploy', commitSha: composed.commit, baseCommitSha: claimed.batch.baseBranch, branchName: claimed.batch.baseBranch, workspacePath: composed.path, buildCommand, testCommand }, message)
         await this.repository.setBatchPrepared(claimed.batch.batchId, composed.commit, composed.path, gateJobId)
         await this.log(operationId, 3, 'completed', 'succeeded', message, { actionCode: 'A31_DISPATCH_DEPLOY_BATCH', result: { batchId: claimed.batch.batchId, gateJobId, expectedCommit: composed.commit, memberCount: claimed.members.length } })
       } catch (error) {
@@ -229,7 +232,12 @@ export class DeployConsumer {
   }
 
   private async integrationContext(raw: Omit<DeployTaskContext, 'integrationPath' | 'integrationBranch' | 'integrationCommit'>): Promise<DeployTaskContext> {
-    const interim = this.repository.withIntegration(raw, '')
+    // Configurações de projeto podem apontar para um subdiretório do mesmo
+    // monorepo. O batch precisa usar a raiz Git canônica para não fragmentar
+    // o mesmo deploy em grupos artificiais.
+    const { stdout: rootOutput } = await execFileAsync('git', ['rev-parse', '--show-toplevel'], { cwd: raw.repoPath, encoding: 'utf8' })
+    const repoPath = mapHostRepoPathToContainer(rootOutput.trim()) ?? rootOutput.trim()
+    const interim = this.repository.withIntegration({ ...raw, repoPath }, '')
     // Verificação defensiva: garantir que o worktree está na branch de integração
     // (não detached). Se estiver detached, fazer checkout para evitar capturar
     // commits incorretos que levam a deploy com requested_commit errado.
@@ -243,7 +251,7 @@ export class DeployConsumer {
     }
     const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: interim.integrationPath, encoding: 'utf8' })
     const commit = stdout.trim(); if (!/^[a-f0-9]{7,64}$/i.test(commit)) throw new Error('Commit da integração inválido')
-    return { ...interim, repoPath: mapHostRepoPathToContainer(interim.repoPath) ?? interim.repoPath, integrationCommit: commit }
+    return { ...interim, repoPath, integrationCommit: commit }
   }
 
   private async promote(repoPath: string, baseBranch: string, expectedCommit: string): Promise<void> {
