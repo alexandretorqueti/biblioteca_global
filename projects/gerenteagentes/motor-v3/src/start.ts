@@ -330,6 +330,10 @@ async function start() {
       new RemoteBlueGreenDeployer(),
       operationLogger,
       new MySqlCommandPolicyRepository(pool),
+      undefined,
+      undefined,
+      undefined,
+      governedFailureHandler,
     )
     const gateTransport = new RabbitMqTransport({
       url: rabbitUrl, exchange: process.env.MOTOR_RABBITMQ_EXCHANGE || 'motor', prefetch: 1,
@@ -341,7 +345,7 @@ async function start() {
     const testGateConsumer = new TestGateConsumer(pool, testGateService, operationLogger, mainQueue)
     testGateQueueConsumer = new QueueConsumer(gateTransport, message => testGateConsumer.handle(message), {
       queue: gateQueue, maxAttempts: Number(process.env.MOTOR_QUEUE_MAX_ATTEMPTS || 3),
-    }, pool)
+    }, pool, governedFailureHandler)
     await testGateQueueConsumer.start()
     // Jobs de gate órfãos (worker morto com job em processing/pending) travam o
     // isMotorIdle() para sempre; o reconciliador reenfileira TEST_RUN_REQUESTED
@@ -427,7 +431,7 @@ async function start() {
     }, {
       queue: process.env.MOTOR_RABBITMQ_QUEUE || 'motor.commands',
       maxAttempts: Number(process.env.MOTOR_QUEUE_MAX_ATTEMPTS || 3),
-    }, pool)
+    }, pool, governedFailureHandler)
     // Claims sem sessão auditada não são recuperáveis e podem ser liberados.
     // Sessões existentes ficam sob o reconciliador abaixo, na mesma chave.
     const orphanClaims = await new AnalysisClaimReconciler(pool).reconcile()
