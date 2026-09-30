@@ -41,7 +41,8 @@ const itemDescription = (item: OperationalFeedItem) => {
 
 function FeedItem({ item, onSelectTask }: { item: OperationalFeedItem; onSelectTask: (taskId: number) => void }) {
   const state = itemState(item)
-  const title = item.type === "message" ? `Mensagem ${stateLabel[item.state] ?? item.state}` : item.type === "pending_action" ? item.actionType : item.event
+  const eventLabel = item.type === "message" ? `Mensagem ${stateLabel[item.state] ?? item.state}` : item.type === "pending_action" ? item.actionType : item.event
+  const title = item.taskTitle?.trim() || eventLabel
   return <Paper component="button" type="button" variant="outlined" onClick={() => onSelectTask(item.taskId)} data-testid={`operational-feed-item-${item.id}`} sx={{ textAlign: "left", display: "block", width: "100%", p: 1, borderRadius: 1.5, cursor: "pointer", bgcolor: item.type === "pending_action" ? "warning.50" : "background.paper", "&:hover": { borderColor: "primary.main", bgcolor: "action.hover" } }}>
     <Stack direction="row" spacing={1} alignItems="flex-start" sx={{ minWidth: 0 }}>
       <Box sx={{ flex: 1, minWidth: 0 }}>
@@ -49,7 +50,7 @@ function FeedItem({ item, onSelectTask }: { item: OperationalFeedItem; onSelectT
           <Typography variant="body2" fontWeight={700} noWrap>{title}</Typography>
           <Chip size="small" label={stateLabel[state] ?? state} color={statusColor(state)} sx={{ height: 20 }} />
         </Stack>
-        <Typography variant="caption" color="text.secondary" noWrap display="block">Tarefa #{item.taskId} · {item.taskTitle || "sem título"} · {item.agentId || "Motor"}</Typography>
+        <Typography variant="caption" color="text.secondary" noWrap display="block">{eventLabel} · Tarefa #{item.taskId} · {item.agentId || "Motor"}</Typography>
         <Typography variant="body2" sx={{ mt: .25, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{itemDescription(item)}</Typography>
       </Box>
       <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: "nowrap" }}>{dateLabel(item.occurredAt)}</Typography>

@@ -130,17 +130,43 @@ export class OperationalFeedService {
   /** Leitura tenant-scoped: o banco é derivado do projeto autenticado. */
   async snapshot(projectId: number, options: { limit?: number; lastSequence?: number } = {}): Promise<OperationalFeedSnapshot> {
     const db = await this.factory.obter({ id: projectId })
-    const [messages] = await db.execute(`SELECT c.id, c.tarefa_id AS taskId, c.role, c.texto AS text, c.created_at AS createdAt,
+    const [messages] = await db.execute(`SELECT c.id, c.tarefa_id AS taskId, t.titulo AS taskTitle,
+      COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), pc.slug, '') AS agentId,
+      c.role, c.texto AS text, c.created_at AS createdAt,
       e.estado AS deliveryState, e.erro AS deliveryError, e.updated_at AS updatedAt
       FROM tarefa_chats c LEFT JOIN tarefa_chat_entregas e ON e.mensagem_id = c.id
-      JOIN tarefas t ON t.id = c.tarefa_id WHERE t.projeto_id IS NOT NULL
+      JOIN tarefas t ON t.id = c.tarefa_id
+      LEFT JOIN projetos_captados pc ON pc.id = t.projeto_id
+      LEFT JOIN agentes a ON a.id = pc.agente_id
+      WHERE t.projeto_id IS NOT NULL
       ORDER BY c.created_at DESC, c.id DESC LIMIT 500`)
-    const [events] = await db.execute(`SELECT id, tarefa_id AS taskId, evento AS event, payload, created_at AS createdAt
-      FROM tarefa_eventos WHERE tarefa_id IS NOT NULL ORDER BY created_at DESC, id DESC LIMIT 500`)
-    const [actions] = await db.execute(`SELECT id, CAST(task_id AS UNSIGNED) AS taskId, type AS actionType, 0 AS priority, status AS state,
-      last_error AS lastError, created_at AS occurredAt FROM motor_outbox WHERE status = 'pending'
-      UNION ALL SELECT message_id AS id, CAST(task_id AS UNSIGNED), message_type, 0, status, error_message, created_at
-      FROM motor_message_processing_state WHERE status IN ('pending','processing') ORDER BY occurredAt DESC LIMIT 500`)
+    const [events] = await db.execute(`SELECT e.id, e.tarefa_id AS taskId, t.titulo AS taskTitle,
+      COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), pc.slug, '') AS agentId,
+      JSON_UNQUOTE(JSON_EXTRACT(e.payload, '$.phase')) AS phase,
+      e.evento AS event, e.payload, e.created_at AS createdAt
+      FROM tarefa_eventos e
+      JOIN tarefas t ON t.id = e.tarefa_id
+      LEFT JOIN projetos_captados pc ON pc.id = t.projeto_id
+      LEFT JOIN agentes a ON a.id = pc.agente_id
+      WHERE e.tarefa_id IS NOT NULL AND e.origem = 'motor'
+      ORDER BY e.created_at DESC, e.id DESC LIMIT 500`)
+    const [actions] = await db.execute(`SELECT o.id, CAST(o.task_id AS UNSIGNED) AS taskId, t.titulo AS taskTitle,
+      COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), pc.slug, '') AS agentId,
+      o.type AS actionType, 0 AS priority, o.status AS state,
+      o.last_error AS lastError, o.created_at AS occurredAt
+      FROM motor_outbox o
+      LEFT JOIN tarefas t ON CAST(t.id AS CHAR) = o.task_id OR t.external_id = o.task_id
+      LEFT JOIN projetos_captados pc ON pc.id = t.projeto_id
+      LEFT JOIN agentes a ON a.id = pc.agente_id
+      WHERE o.status = 'pending'
+      UNION ALL SELECT s.message_id AS id, CAST(s.task_id AS UNSIGNED), t.titulo,
+      COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), pc.slug, ''),
+      s.message_type, 0, s.status, s.error_message, s.created_at
+      FROM motor_message_processing_state s
+      LEFT JOIN tarefas t ON CAST(t.id AS CHAR) = s.task_id OR t.external_id = s.task_id
+      LEFT JOIN projetos_captados pc ON pc.id = t.projeto_id
+      LEFT JOIN agentes a ON a.id = pc.agente_id
+      WHERE s.status IN ('pending','processing') ORDER BY occurredAt DESC LIMIT 500`)
     const items = aggregateOperationalFeed({ projectId, messages: messages as unknown as Record<string, unknown>[], events: events as unknown as Record<string, unknown>[], actions: actions as unknown as Record<string, unknown>[] }, options.limit)
     return {
       items, nextCursor: null, hasMore: items.length >= (options.limit ?? OPERATIONAL_FEED_LIMIT),
