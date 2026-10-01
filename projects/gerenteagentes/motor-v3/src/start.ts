@@ -81,6 +81,7 @@ let testGateQueueConsumer: QueueConsumer | null = null
 let testGateOutboxPublisher: OutboxPublisher | null = null
 let testGateJobReconciler: TestGateJobReconciler | null = null
 let deployConsumer: DeployConsumer | null = null
+let deployOrphanBatchReconcilerTimer: NodeJS.Timeout | null = null
 let cancelConsumer: TaskCancelConsumer | null = null
 let analysisSessionRecovery: AnalysisSessionRecoveryReconciler | null = null
 let developmentSessionRecovery: DevelopmentSessionRecoveryReconciler | null = null
@@ -560,8 +561,26 @@ async function start() {
     await monitorBlockerReconciler.reconcile()
     monitorBlockerReconciler.start()
     // Recuperação única de fatos duráveis após boot. O fluxo normal avança
-    // exclusivamente por mensagens/eventos; não há timer de deploy.
+    // por mensagens/eventos; o timer abaixo só reconcilia batches órfãos.
     await deployConsumer.recoverPendingWork()
+    let deployOrphanBatchReconcilerRunning = false
+    deployOrphanBatchReconcilerTimer = setInterval(() => {
+      if (deployOrphanBatchReconcilerRunning || !deployConsumer) return
+      deployOrphanBatchReconcilerRunning = true
+      void (async () => {
+        try {
+          const cleaned = await deployConsumer!.reconcileOrphanPendingBatches()
+          if (cleaned > 0) await deployConsumer!.enqueuePendingDispatches()
+        } catch (error) {
+          console.error(JSON.stringify({
+            event: 'deploy_orphan_pending_batches_cycle_failed',
+            error: error instanceof Error ? error.message : String(error),
+          }))
+        } finally {
+          deployOrphanBatchReconcilerRunning = false
+        }
+      })()
+    }, 300000)
     await deployConsumer.requestReconciliation()
     console.log('[Motor v3] QueueConsumer + TaskCoordinator inicializados')
   } else {
@@ -1083,6 +1102,11 @@ async function start() {
 
 async function shutdown() {
   console.log('[Motor v3] Encerrando...')
+
+  if (deployOrphanBatchReconcilerTimer) {
+    clearInterval(deployOrphanBatchReconcilerTimer)
+    deployOrphanBatchReconcilerTimer = null
+  }
 
   if (queueConsumer) {
     await queueConsumer.stop()

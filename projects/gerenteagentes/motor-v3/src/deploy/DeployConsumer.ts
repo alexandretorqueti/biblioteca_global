@@ -34,7 +34,26 @@ export class DeployConsumer {
   }
 
   async requestReconciliation(): Promise<number> { return this.repository.enqueueReconciliationForRunning() }
+  async reconcileOrphanPendingBatches(): Promise<number> {
+    try {
+      const cleaned = await this.repository.reconcileOrphanPendingBatches()
+      console.log(JSON.stringify({ event: 'deploy_orphan_pending_batches_reconciled', cleanedBatches: cleaned }))
+      return cleaned
+    } catch (error) {
+      console.error(JSON.stringify({
+        event: 'deploy_orphan_pending_batches_reconciliation_failed',
+        error: error instanceof Error ? error.message : String(error),
+      }))
+      return 0
+    }
+  }
+
+  async enqueuePendingDispatches(): Promise<number> {
+    return this.repository.enqueuePendingDispatches()
+  }
+
   async recoverPendingWork(): Promise<number> {
+    await this.reconcileOrphanPendingBatches()
     const recovered = await this.repository.enqueueCompletedRecoveries()
     const dispatches = await this.repository.enqueuePendingDispatches()
     return recovered + dispatches
