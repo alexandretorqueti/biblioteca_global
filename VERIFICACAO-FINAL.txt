@@ -1,0 +1,24 @@
+VERIFICAÇÃO FINAL — Subtarefa 1
+================================
+
+1. resolverContextoGitTarefa retorna projectSubdir?
+      repoPath: repoRoot,
+      integrationBranch,
+--
+    return { repoRoot, projectSubdir: normalizedSubdir };
+  }
+
+
+2. listTree aceita parametro subdir?
+  async listTree(repoPath: string, ref?: string, subdir?: string): Promise<GitTreeEntry[]> {
+
+3. listTree usa git ls-tree com subdir?
+    if (subdir) {
+      args.push('--', subdir);
+    }
+
+4. conteudoArquivoTarefa constroi fullPath?
+    const fullPath = ctx.projectSubdir ? `${ctx.projectSubdir}/${filePath}` : filePath;
+
+5. resolverRepoRootESubdir existe?
+  private async resolverRepoRootESubdir(repoPath: string): Promise<{ repoRoot: string; projectSubdir: string }> {
