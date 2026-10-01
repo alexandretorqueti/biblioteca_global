@@ -45,7 +45,7 @@ import { DeployConsumer } from './deploy/DeployConsumer.js'
 import { DeployRepository } from './deploy/DeployRepository.js'
 import { RemoteBlueGreenDeployer } from './deploy/RemoteBlueGreenDeployer.js'
 import { BaselinePreflightRecovery, TestGateConsumer, TestGateJobReconciler, TestGateOrchestrator, TestGateService, TestRecoveryConsumer, WorkspaceEnvironmentPreparer } from './testing/index.js'
-import { ConsoleHumanNotifier, ExternalResolutionError, ExternalResolutionHandler, MonitorPromptResolver, MonitorResolutionConsumer, TaskUnblockedConsumer, createTaskBlockedMessage, loadActiveBlocker } from './monitor/index.js'
+import { ConsoleHumanNotifier, ExternalResolutionError, ExternalResolutionHandler, MonitorBlockerReconciler, MonitorPromptResolver, MonitorResolutionConsumer, TaskUnblockedConsumer, createTaskBlockedMessage, loadActiveBlocker } from './monitor/index.js'
 import { TaskAdjustmentConsumer, TASK_ADJUSTMENT_REQUESTED } from './adjustment/index.js'
 import { ensureCompletionTrigger } from './db/ensureTriggers.js'
 
@@ -75,6 +75,7 @@ let subtaskExecutionConsumer: SubtaskExecutionConsumer | null = null
 let subtaskVerificationConsumer: SubtaskVerificationConsumer | null = null
 let testRecoveryConsumer: TestRecoveryConsumer | null = null
 let monitorResolutionConsumer: MonitorResolutionConsumer | null = null
+let monitorBlockerReconciler: MonitorBlockerReconciler | null = null
 let taskUnblockedConsumer: TaskUnblockedConsumer | null = null
 let testGateQueueConsumer: QueueConsumer | null = null
 let testGateOutboxPublisher: OutboxPublisher | null = null
@@ -490,6 +491,11 @@ async function start() {
       taskEvents, new WorkerConsoleAdapter(consoleApi), db, new ConsoleHumanNotifier(),
     )
     taskUnblockedConsumer = new TaskUnblockedConsumer(pool, taskEvents)
+    monitorBlockerReconciler = new MonitorBlockerReconciler(pool, {
+      enqueue: message => monitorOutbox!.enqueue(message),
+      destinationQueue: monitorQueue,
+      intervalMs: Number(process.env.MOTOR_MONITOR_BLOCKER_RECONCILIATION_INTERVAL_MS || 30000),
+    })
 
     cancelConsumer = new TaskCancelConsumer(pool, operationLogger, new MySqlCommandPolicyRepository(pool), taskEvents)
     taskAdjustmentConsumer = new TaskAdjustmentConsumer(pool, analyst, operationLogger)
@@ -551,6 +557,8 @@ async function start() {
       console.log(`[Motor v3] Reconciliação no boot: ${reconciledCount} mensagem(ens) enfileirada(s)`)
     }
     await queueConsumer.start()
+    await monitorBlockerReconciler.reconcile()
+    monitorBlockerReconciler.start()
     // Recuperação única de fatos duráveis após boot. O fluxo normal avança
     // exclusivamente por mensagens/eventos; não há timer de deploy.
     await deployConsumer.recoverPendingWork()
@@ -1088,6 +1096,7 @@ async function shutdown() {
     console.log('[Motor v3] OutboxPublisher parado')
   }
   if (monitorOutbox) await monitorOutbox.stop()
+  monitorBlockerReconciler?.stop()
   testGateJobReconciler?.stop()
   if (testGateOutboxPublisher) await testGateOutboxPublisher.stop()
 
