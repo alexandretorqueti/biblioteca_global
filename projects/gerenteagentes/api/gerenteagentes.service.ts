@@ -1674,7 +1674,7 @@ export class GerenteAgentesService {
       .where(eq(tarefaChats.tarefaId, tarefaId))
       .orderBy(tarefaChats.createdAt);
 
-    return mensagens;
+    return mensagens.filter((mensagem) => mensagem.texto.trim() !== 'NO_REPLY');
   }
 
   async adicionarMensagemChatTarefa(
