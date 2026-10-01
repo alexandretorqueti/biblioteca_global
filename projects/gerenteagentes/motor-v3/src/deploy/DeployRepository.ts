@@ -463,6 +463,63 @@ export class DeployRepository {
     } catch (error) { await connection.rollback(); throw error } finally { connection.release() }
   }
 
+  /**
+   * Libera batches que ficaram pendentes antes de receber um gate.
+   * O próximo ciclo de insertPendingDispatches reenfileira os pedidos
+   * devolvidos a pending.
+   */
+  async reconcileOrphanPendingBatches(): Promise<number> {
+    const connection = await this.pool.getConnection()
+    try {
+      await connection.beginTransaction()
+      const [orphanRows] = await connection.query<Array<RowDataPacket & { batch_id: string }>>(
+        `SELECT batch_id
+           FROM deploy_batches
+          WHERE status='pending'
+            AND gate_job_id IS NULL
+            AND created_at < DATE_SUB(NOW(), INTERVAL 30 MINUTE)
+          FOR UPDATE`,
+      )
+      const batchIds = orphanRows.map(row => String(row.batch_id))
+      if (batchIds.length === 0) {
+        await connection.commit()
+        return 0
+      }
+
+      const placeholders = batchIds.map(() => '?').join(',')
+      await connection.query(
+        `UPDATE deploy_batches
+            SET status='failed',
+                last_error='Batch órfão: pending há mais de 30 minutos sem processamento',
+                finished_at=NOW(),
+                updated_at=NOW()
+          WHERE batch_id IN (${placeholders})
+            AND status='pending'
+            AND gate_job_id IS NULL`,
+        batchIds,
+      )
+      await connection.query(
+        `UPDATE deploy_requests
+            SET status='pending',
+                batch_id=NULL,
+                started_at=NULL,
+                finished_at=NULL,
+                last_error=NULL,
+                updated_at=NOW()
+          WHERE batch_id IN (${placeholders})
+            AND status='running'`,
+        batchIds,
+      )
+      await connection.commit()
+      return batchIds.length
+    } catch (error) {
+      await connection.rollback()
+      throw error
+    } finally {
+      connection.release()
+    }
+  }
+
   /** Repo associado ao último pedido de deploy da tarefa (necessário para limpar worktrees pós-deploy). */
   async repoPathForTask(taskId: string): Promise<string | null> {
     const [rows] = await this.pool.query<Array<RowDataPacket & { repo_path: string | null }>>(
