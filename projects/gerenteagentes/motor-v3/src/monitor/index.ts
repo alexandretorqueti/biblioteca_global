@@ -15,6 +15,7 @@ export {
   type ResolvedMonitorPrompt,
 } from './MonitorPromptResolver.js'
 export { MonitorResolutionConsumer } from './MonitorResolutionConsumer.js'
+export { MonitorBlockerReconciler, type MonitorBlockerReconcilerConfig } from './MonitorBlockerReconciler.js'
 export { TaskUnblockedConsumer } from './TaskUnblockedConsumer.js'
 export {
   ExternalResolutionHandler,

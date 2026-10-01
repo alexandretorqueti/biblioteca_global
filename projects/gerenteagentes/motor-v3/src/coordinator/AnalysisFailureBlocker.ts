@@ -79,7 +79,7 @@ export class MySqlAnalysisFailureBlocker implements AnalysisFailureSink {
           databaseTaskId: rows[0]?.tarefa_id != null ? Number(rows[0].tarefa_id) : null,
         },
       })
-      await insertOutboxMessage(connection, blocked)
+      await insertOutboxMessage(connection, blocked, 'motor.monitor')
       await connection.commit()
     } catch (error) {
       await connection.rollback()

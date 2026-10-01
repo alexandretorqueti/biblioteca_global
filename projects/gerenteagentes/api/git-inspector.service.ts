@@ -120,12 +120,13 @@ export class GitInspectorService {
       };
     });
   }
-
   /**
    * Lista arquivos (árvore) em um ref (branch, tag ou commit).
    * Se ref não informado, usa HEAD.
+   * Se subdir informado, filtra apenas arquivos dentro desse subdiretório
+   * e remove o prefixo dos paths retornados.
    */
-  async listTree(repoPath: string, ref?: string): Promise<GitTreeEntry[]> {
+  async listTree(repoPath: string, ref?: string, subdir?: string): Promise<GitTreeEntry[]> {
     const target = ref || 'HEAD';
     // Verifica se o ref existe
     try {
@@ -133,26 +134,45 @@ export class GitInspectorService {
     } catch {
       throw new NotFoundException(`Ref '${target}' não encontrado`);
     }
-    const stdout = await this.git(repoPath, [
-      'ls-tree', '-r', '-l', '--full-tree', target,
-    ]);
+    
+    // Se houver subdir, usar ls-tree com o path específico
+    const args = ['ls-tree', '-r', '-l', '--full-tree', target];
+    if (subdir) {
+      args.push('--', subdir);
+    }
+    
+    const stdout = await this.git(repoPath, args);
     if (!stdout.trim()) return [];
+    
     // Formato: mode type hash size\tpath
     // size pode ser "-" para trees
-    return stdout.trim().split('\n').map((line) => {
+    const entries = stdout.trim().split('\n').map((line) => {
       const [meta = '', path = ''] = line.split('\t');
       const parts = meta.split(/\s+/);
       const mode = parts[0] || '';
       const type = (parts[1] || 'blob') as 'blob' | 'tree';
       const sizeStr = parts[3];
+      
+      // Se houver subdir, remover o prefixo do path
+      let relativePath = path;
+      if (subdir && path.startsWith(subdir + '/')) {
+        relativePath = path.slice(subdir.length + 1);
+      } else if (subdir && path === subdir) {
+        relativePath = '';
+      }
+      
       return {
-        path,
+        path: relativePath,
         type,
         size: sizeStr && sizeStr !== '-' ? parseInt(sizeStr, 10) : undefined,
         mode,
       };
     });
+    
+    // Filtrar entradas vazias (se o subdir itself foi listado)
+    return entries.filter(e => e.path !== '');
   }
+
 
   /**
    * Retorna o conteúdo de um arquivo em um ref específico.

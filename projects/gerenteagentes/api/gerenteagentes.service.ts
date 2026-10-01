@@ -1674,7 +1674,7 @@ export class GerenteAgentesService {
       .where(eq(tarefaChats.tarefaId, tarefaId))
       .orderBy(tarefaChats.createdAt);
 
-    return mensagens;
+    return mensagens.filter((mensagem) => mensagem.texto.trim() !== 'NO_REPLY');
   }
 
   async adicionarMensagemChatTarefa(
@@ -1722,6 +1722,12 @@ export class GerenteAgentesService {
         tarefaId, mensagemId: created.id, modo, atorId: ator.id, atorNome: ator.nome,
         estado: 'pending', tentativas: 0, createdAt: new Date(),
       });
+      // Limpar o flag de clarificação pendente: a resposta do usuário resolve
+      // qualquer pergunta em aberto do analista. O status awaiting_clarification
+      // passa a depender exclusivamente de clarification_pending_at IS NOT NULL.
+      await tx.update(taskRuntimeFacts)
+        .set({ clarificationPendingAt: null, updatedAt: new Date() })
+        .where(eq(taskRuntimeFacts.tarefaId, tarefaId));
       const motorId = tarefa.externalId || `task-${tarefa.id}`;
       if (ultima?.role === 'analyst') {
         const messageId = randomUUID();
@@ -2756,11 +2762,17 @@ export class GerenteAgentesService {
    * Resolve repoPath e branch de integração para uma tarefa.
    * A branch de integração segue a convenção: motor-v3-work/integration-<externalId>
    * Se externalId não estiver disponível, usa o ID numérico.
+   * 
+   * Resolve o repoPath para a raiz do repositório git e calcula o subdiretório
+   * do projeto dentro do monorepo. Isso é necessário porque:
+   * - O repoPath armazenado pode apontar para um subdiretório do projeto (ex: projects/gerenteagentes)
+   * - Os comandos git precisam ser executados a partir da raiz do repositório
+   * - A listagem de arquivos deve ser filtrada pelo subdiretório do projeto
    */
   private async resolverContextoGitTarefa(
     projeto: ProjetoResumo,
     tarefaId: number,
-  ): Promise<{ repoPath: string; integrationBranch: string; baseBranch: string; externalId: string | null }> {
+  ): Promise<{ repoPath: string; integrationBranch: string; baseBranch: string; externalId: string | null; projectSubdir: string }> {
     const db = await this.dbDoMotor();
 
     // Buscar tarefa com externalId e projetoId
@@ -2786,17 +2798,76 @@ export class GerenteAgentesService {
       throw new NotFoundException('Configuração do motor não encontrada para o projeto da tarefa');
     }
 
+    // Resolver repoPath para a raiz do repositório
+    const { repoRoot, projectSubdir } = await this.resolverRepoRootESubdir(config.repoPath);
+
     // Branch de integração: convenção motor-v3-work/integration-<externalId>
     const taskIdentifier = tarefa.externalId || `task-${tarefaId}`;
     const integrationBranch = `motor-v3-work/integration-${taskIdentifier}`;
     const baseBranch = 'base-desenvolvimento';
 
     return {
-      repoPath: config.repoPath,
+      repoPath: repoRoot,
       integrationBranch,
       baseBranch,
       externalId: tarefa.externalId,
+      projectSubdir,
     };
+  }
+
+  /**
+   * Resolve o caminho do repositório para a raiz do git e calcula o subdiretório.
+   * Tenta primeiro o caminho original; se falhar, tenta o mapeamento host→container.
+   */
+  private async resolverRepoRootESubdir(repoPath: string): Promise<{ repoRoot: string; projectSubdir: string }> {
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const { resolve, relative } = await import('node:path');
+    const execFileAsync = promisify(execFile);
+
+    // Função auxiliar para tentar resolver a raiz do repo
+    const tentarResolverRaiz = async (caminho: string): Promise<string | null> => {
+      try {
+        const { stdout } = await execFileAsync('git', ['rev-parse', '--show-toplevel'], {
+          cwd: caminho,
+          timeout: 5000,
+        });
+        return stdout.trim();
+      } catch {
+        return null;
+      }
+    };
+
+    // Tentar com o caminho original
+    let repoRoot = await tentarResolverRaiz(repoPath);
+    
+    // Se falhou, tentar mapeamento host→container
+    if (!repoRoot) {
+      const hostPrefix = '/home/alexandre/codigofonte/';
+      const containerPrefix = '/data/workspace/projects/codigofonte/';
+      if (repoPath.startsWith(hostPrefix)) {
+        const mappedPath = containerPrefix + repoPath.slice(hostPrefix.length);
+        repoRoot = await tentarResolverRaiz(mappedPath);
+        if (repoRoot) {
+          this.logger.log(`repoPath original inacessível, usando mapeamento: ${repoPath} → ${repoRoot}`);
+        }
+      }
+    }
+
+    if (!repoRoot) {
+      throw new BadRequestException(`Não foi possível resolver a raiz do repositório para: ${repoPath}`);
+    }
+
+    // Calcular o subdiretório relativo à raiz
+    const absoluteRepoPath = resolve(repoPath.startsWith('/home/alexandre/') 
+      ? '/data/workspace/projects/codigofonte/' + repoPath.slice('/home/alexandre/codigofonte/'.length)
+      : repoPath);
+    const projectSubdir = relative(repoRoot, absoluteRepoPath);
+    
+    // Se o subdiretório for vazio ou '.', o projeto está na raiz
+    const normalizedSubdir = (!projectSubdir || projectSubdir === '.') ? '' : projectSubdir;
+
+    return { repoRoot, projectSubdir: normalizedSubdir };
   }
 
   /**
@@ -2819,6 +2890,7 @@ export class GerenteAgentesService {
       taskId: tarefaId,
       integrationBranch: ctx.integrationBranch,
       baseBranch: ctx.baseBranch,
+      projectSubdir: ctx.projectSubdir,
       commits,
     };
   }
@@ -2826,22 +2898,26 @@ export class GerenteAgentesService {
   /**
    * Árvore de arquivos em um ref da tarefa.
    * Se ref não informado, usa a branch de integração.
+   * Filtra pelo subdiretório do projeto para mostrar apenas arquivos relevantes.
    */
   async listarArvoreTarefa(projeto: ProjetoResumo, tarefaId: number, ref?: string) {
     if (!this.gitInspector) throw new BadRequestException('GitInspectorService não disponível');
     const ctx = await this.resolverContextoGitTarefa(projeto, tarefaId);
 
     const targetRef = ref || ctx.integrationBranch;
-    const tree = await this.gitInspector.listTree(ctx.repoPath, targetRef);
+    const tree = await this.gitInspector.listTree(ctx.repoPath, targetRef, ctx.projectSubdir);
     return {
       taskId: tarefaId,
       ref: targetRef,
+      projectSubdir: ctx.projectSubdir,
       tree,
     };
   }
 
   /**
    * Conteúdo de um arquivo em um ref específico.
+   * O filePath é relativo ao subdiretório do projeto; constrói o path completo
+   * relativo à raiz do repo antes de chamar getFileContent.
    */
   async conteudoArquivoTarefa(
     projeto: ProjetoResumo,
@@ -2854,11 +2930,14 @@ export class GerenteAgentesService {
     if (!filePath) throw new BadRequestException('Parâmetro path é obrigatório');
 
     const ctx = await this.resolverContextoGitTarefa(projeto, tarefaId);
-    const content = await this.gitInspector.getFileContent(ctx.repoPath, ref, filePath);
+    // Construir o path relativo à raiz do repo: projectSubdir + filePath
+    const fullPath = ctx.projectSubdir ? `${ctx.projectSubdir}/${filePath}` : filePath;
+    const content = await this.gitInspector.getFileContent(ctx.repoPath, ref, fullPath);
     return {
       taskId: tarefaId,
       ref,
       path: filePath,
+      fullPath,
       content,
     };
   }
@@ -2882,6 +2961,7 @@ export class GerenteAgentesService {
       taskId: tarefaId,
       from,
       to,
+      projectSubdir: ctx.projectSubdir,
       files,
     };
   }
@@ -2904,6 +2984,7 @@ export class GerenteAgentesService {
     const result = await this.gitInspector.simulateMerge(ctx.repoPath, ctx.baseBranch, ctx.integrationBranch);
     return {
       taskId: tarefaId,
+      projectSubdir: ctx.projectSubdir,
       ...result,
     };
   }
