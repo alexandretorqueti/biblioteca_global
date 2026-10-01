@@ -69,6 +69,7 @@ let scheduler: Scheduler | null = null
 let bus: MessageBus | null = null
 let queueConsumer: QueueConsumer | null = null
 let outboxPublisher: OutboxPublisher | null = null
+let monitorOutbox: OutboxPublisher | null = null
 let developmentConsumer: DevelopmentExecutionConsumer | null = null
 let subtaskExecutionConsumer: SubtaskExecutionConsumer | null = null
 let subtaskVerificationConsumer: SubtaskVerificationConsumer | null = null
@@ -290,9 +291,12 @@ async function start() {
       retryDelayMs: Number(process.env.MOTOR_RABBITMQ_RETRY_DELAY_MS || 30000),
     })
     const mainQueue = process.env.MOTOR_RABBITMQ_QUEUE || 'motor.commands'
+    const monitorQueue = process.env.MOTOR_MONITOR_QUEUE || 'motor.monitor'
     const gateQueue = process.env.MOTOR_TEST_GATE_QUEUE || 'motor.test-gates'
     outboxPublisher = new OutboxPublisher(pool, transport, mainQueue, mainQueue)
     await outboxPublisher.start()
+    monitorOutbox = new OutboxPublisher(pool, transport, monitorQueue, monitorQueue)
+    await monitorOutbox.start()
     const operationLogger = new MySqlOperationLogger(pool)
     const taskEvents = new MySqlTaskEventRecorder(pool)
     const worktreePreparer = new GitWorktreePreparer(process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/agentes/gerenteagentes/worktrees')
@@ -317,10 +321,10 @@ async function start() {
       },
       // Etapa 6: resume de tarefa bloqueada reemite TASK_BLOCKED → Monitor-Resolvedor.
       publishTaskBlocked: async (source, reason) => {
-        if (!outboxPublisher) throw new Error('Outbox indisponível para TASK_BLOCKED')
+        if (!monitorOutbox) throw new Error('Outbox do monitor indisponível para TASK_BLOCKED')
         const blocker = await loadActiveBlocker(pool, source.taskId)
         if (!blocker) return
-        await outboxPublisher.enqueue(createTaskBlockedMessage({
+        await monitorOutbox.enqueue(createTaskBlockedMessage({
           taskId: source.taskId,
           executionId: `${source.executionId}-resume-block-${blocker.id}`,
           correlationId: source.correlationId ?? source.messageId,
@@ -1083,6 +1087,7 @@ async function shutdown() {
     await outboxPublisher.stop()
     console.log('[Motor v3] OutboxPublisher parado')
   }
+  if (monitorOutbox) await monitorOutbox.stop()
   testGateJobReconciler?.stop()
   if (testGateOutboxPublisher) await testGateOutboxPublisher.stop()
 

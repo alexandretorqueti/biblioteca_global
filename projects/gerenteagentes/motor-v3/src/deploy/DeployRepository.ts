@@ -575,7 +575,7 @@ export class DeployRepository {
   }
 
   private async insertOutbox(connection: PoolConnection, message: QueueMessage): Promise<void> {
-    await insertOutboxMessage(connection, message)
+    await insertOutboxMessage(connection, message, message.type === 'TASK_BLOCKED' ? 'motor.monitor' : 'motor.commands')
   }
 
   private async insertPendingDispatches(connection: PoolConnection): Promise<number> {
