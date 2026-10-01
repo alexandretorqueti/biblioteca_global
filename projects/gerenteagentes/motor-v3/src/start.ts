@@ -1036,6 +1036,24 @@ async function start() {
         return
       }
       
+      // POST /api/motor/reconcile/task/:taskId
+      // Chamado pelo CRUD da API após mutações em tarefas/subtarefas.
+      // Verifica o estado da tarefa e reenfilera se houver subtarefas pendentes.
+      if (req.method === 'POST' && path.startsWith('/api/motor/reconcile/task/')) {
+        const reconcileTaskId = path.split('/').pop()
+        if (!reconcileTaskId) {
+          res.writeHead(400, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: 'Task ID required' }))
+          return
+        }
+        console.log(`[Motor v3] Reconcile requested for task ${reconcileTaskId}`)
+        const reconciler = new TaskExecutionReconciler(pool)
+        const result = await reconciler.reconcileTask(reconcileTaskId, 'crud_mutation')
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: true, ...result }))
+        return
+      }
+      
       // 404
       res.writeHead(404, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: 'Not found' }))
