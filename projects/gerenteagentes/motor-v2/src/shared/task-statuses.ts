@@ -136,6 +136,7 @@ export const TASK_STATUS_EXECUTING = new Set<string>([
 
 /** Status que permitem ação "pause" (pausar). */
 export const TASK_STATUS_PAUSABLE = new Set<string>([
+  "planned",
   "analyzing",
   "awaiting_clarification",
   "awaiting_interaction",
