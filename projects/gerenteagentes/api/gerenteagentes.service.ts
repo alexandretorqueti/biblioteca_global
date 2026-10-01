@@ -1722,6 +1722,12 @@ export class GerenteAgentesService {
         tarefaId, mensagemId: created.id, modo, atorId: ator.id, atorNome: ator.nome,
         estado: 'pending', tentativas: 0, createdAt: new Date(),
       });
+      // Limpar o flag de clarificação pendente: a resposta do usuário resolve
+      // qualquer pergunta em aberto do analista. O status awaiting_clarification
+      // passa a depender exclusivamente de clarification_pending_at IS NOT NULL.
+      await tx.update(taskRuntimeFacts)
+        .set({ clarificationPendingAt: null, updatedAt: new Date() })
+        .where(eq(taskRuntimeFacts.tarefaId, tarefaId));
       const motorId = tarefa.externalId || `task-${tarefa.id}`;
       if (ultima?.role === 'analyst') {
         const messageId = randomUUID();

@@ -12,7 +12,6 @@ interface TaskFactsRow extends RowDataPacket {
   analysis_started_at: Date | string | null
   clarification_pending_at: Date | string | null
   terminal_status: string | null
-  last_clarification_role: string | null
   awaiting_interaction: number | string
   has_active_blocker: number | string
   deploy_succeeded: number | string
@@ -33,9 +32,6 @@ export class DerivedTaskStatusResolver {
       SELECT
         t.id, t.paused_at, t.resource_wait_key,
         f.analysis_started_at, f.clarification_pending_at, f.terminal_status,
-        (SELECT c.role FROM tarefa_chats c
-          WHERE c.tarefa_id = t.id AND c.role IN ('analyst', 'user')
-          ORDER BY c.id DESC LIMIT 1) AS last_clarification_role,
         EXISTS(SELECT 1 FROM tarefa_contextos_execucao cix
           WHERE cix.tarefa_id = t.id AND cix.estado = 'awaiting_human') AS awaiting_interaction,
         EXISTS(SELECT 1 FROM bloqueios b
@@ -69,7 +65,7 @@ export class DerivedTaskStatusResolver {
       return 'paused'
     }
     if (task.analysis_started_at && subtaskStatuses.length === 0) return 'analyzing'
-    if (task.last_clarification_role === 'analyst' || task.clarification_pending_at) return 'awaiting_clarification'
+    if (task.clarification_pending_at) return 'awaiting_clarification'
     if (Number(task.awaiting_interaction) === 1) return 'awaiting_interaction'
     // Um bloqueio operacional (inclusive deploy) nunca pode ser escondido
     // pela projeção de integração concluída abaixo.

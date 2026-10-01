@@ -124,10 +124,16 @@ export class TaskAdjustmentConsumer {
         [context.databaseTaskId, `Ajuste generation ${context.nextGeneration}: ${outcome.subtasks.length} subtarefas criadas.\n${summary}`],
       )
     } else {
-      // Perguntas — registrar no chat
+      // Perguntas — registrar no chat e marcar clarificação pendente
       await this.pool.query(
         `INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) VALUES (?, 'analyst', ?, NOW())`,
         [context.databaseTaskId, JSON.stringify({ summary: outcome.summary, questions: outcome.questions })],
+      )
+      await this.pool.query(
+        `UPDATE task_runtime_facts
+            SET clarification_pending_at = NOW(), updated_at = NOW()
+          WHERE tarefa_id = ?`,
+        [context.databaseTaskId],
       )
     }
 
