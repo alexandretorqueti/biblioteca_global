@@ -15,6 +15,17 @@ Plataforma monorepo TypeScript que gera sistemas configuráveis. Fontes principa
 - Antes de alterar contrato compartilhado, localizar consumidores em API, web e projetos.
 - Leia `config.ts`, `schema.ts`, migrations e testes da área afetada.
 
+## Classificação de subtarefas por `completion_kind`
+
+O contrato do analista inclui o campo opcional `completion_kind` para cada subtarefa, com os seguintes valores:
+
+- **`code_change`** (padrão quando omitido): subtarefa que exige alteração no código-fonte.
+- **`no_code_change`**: subtarefa que NÃO exige alteração no código-fonte. Exemplos: executar testes, verificar configuração, confirmar comportamento, validar migração já existente, inspeção manual. O DEV deve usar os marcadores `::DONE::` e `::NO_CHANGES::` na resposta final.
+- **`analysis`**: subtarefa puramente analítica (documentação, planejamento, investigação).
+- **`external_operation`**: subtarefa que depende de operação externa (deploy, configuração de infraestrutura, intervenção manual).
+
+**Quando usar `no_code_change`:** se a subtarefa pode ser concluída sem modificar nenhum arquivo do repositório (apenas leitura, execução de testes, validação de estado), classifique como `no_code_change`. Isso evita que o Motor bloqueie a subtarefa por ausência de alterações no Git.
+
 ## Registro confirmado por tarefa
 
 _Contexto inicial curado em 2026-09-13._

@@ -763,7 +763,7 @@ export class MySqlDevelopmentExecutionRepository {
       await connection.query('SET @motor_completing := 1')
       const [updated] = await connection.query<ResultSetHeader>(
         `UPDATE subtarefas SET status='verified',resultado=?,workspace_status='approved',finalizada_em=NOW(),updated_at=NOW()
-         WHERE id=? AND status='running' AND completion_kind IN ('analysis','no_code_change','external_operation')`,
+         WHERE id=? AND status='running' AND completion_kind IN ('analysis','no_code_change','external_operation','code_change')`,
         [result, context.subtaskId],
       )
       if (updated.affectedRows !== 1) throw new Error(`Subtarefa analítica ${context.subtaskId} não está em execução`)

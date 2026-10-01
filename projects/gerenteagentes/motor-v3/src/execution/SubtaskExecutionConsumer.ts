@@ -232,7 +232,7 @@ export class SubtaskExecutionConsumer {
       })
       return
     }
-    const next = result.success && noCode
+    const next = (result.success && noCode) || (result.success && result.noChangesNeeded)
       ? await this.repository.completeNoCodeExecution(execution, message, result.response ?? '')
       : await this.repository.finishExecution(execution, message, result)
     await this.repository.closeDevelopmentSession?.(subtaskId, context.sessionId, context.sessionKey, result.success)
@@ -297,7 +297,9 @@ export class SubtaskExecutionConsumer {
       } : undefined,
       noCode,
     )
-    const next = await this.repository.finishExecution(execution, input.message, result)
+    const next = (result.success && noCode) || (result.success && result.noChangesNeeded)
+      ? await this.repository.completeNoCodeExecution(execution, input.message, input.response)
+      : await this.repository.finishExecution(execution, input.message, result)
     await this.repository.closeDevelopmentSession?.(subtaskId, input.sessionId, input.sessionKey, result.success)
     await this.log(operationId, 2, input.message, {
       phase: 'completed', outcome: result.success ? 'succeeded' : 'failed', subtaskId,
@@ -439,7 +441,11 @@ export class SubtaskExecutionConsumer {
       'Preserve mudanças existentes, não altere outros projetos e não faça push ou deploy.',
       ...generationNote,
       ...(['analysis', 'no_code_change', 'external_operation'].includes(context.completionKind ?? '')
-        ? ['Esta subtarefa é analítica/sem alteração de código. Entregue o resultado solicitado sem modificar o Git.'] : []),
+        ? [
+            'Esta subtarefa é analítica/sem alteração de código. Entregue o resultado solicitado sem modificar o Git.',
+            'Quando a subtarefa não exigir alteração no código-fonte (ex: apenas executar testes, verificar configuração, confirmar comportamento), use ::DONE:: acompanhado de ::NO_CHANGES:: na resposta final.',
+          ]
+        : []),
       'Ao terminar e validar, inclua o marcador ::DONE:: na resposta final.',
     ].join('\n')
     if (description.length > 12_000) {
