@@ -15,9 +15,12 @@ export type GlobalModelSelection = {
 }
 
 export class GlobalModelSelectionValidationError extends Error {
-  constructor(readonly issues: readonly string[]) {
+  readonly issues: readonly string[]
+
+  constructor(issues: readonly string[]) {
     super(`Configuração global de modelos inválida: ${issues.join("; ")}`)
     this.name = "GlobalModelSelectionValidationError"
+    this.issues = issues
   }
 }
 
