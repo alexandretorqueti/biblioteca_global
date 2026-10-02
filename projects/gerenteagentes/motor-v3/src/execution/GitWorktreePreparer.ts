@@ -5,6 +5,17 @@ import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
 
+/**
+ * Erro lançado quando a branch de integração não existe e não pode ser recriada.
+ * O motor deve tratar isso como "resetar subtarefas para pendente e tarefa para pronta".
+ */
+export class IntegrationBranchMissingError extends Error {
+  constructor(public readonly taskId: string, public readonly branch: string) {
+    super(`Branch de integração inexistente: ${branch} para tarefa ${taskId}`)
+    this.name = 'IntegrationBranchMissingError'
+  }
+}
+
 export interface PreparedWorktree {
   path: string
   branch: string
@@ -54,23 +65,63 @@ export class GitWorktreePreparer {
     const safeTaskId = input.taskId.replace(/[^a-zA-Z0-9._-]/g, '-')
     const branch = `motor-v3-work/integration-${safeTaskId}`
     const path = resolve(this.root, safeTaskId, 'integration')
-    const baseCommit = await this.prepareNamedWorktree(repoPath, input.baseBranch, branch, path)
+    const baseCommit = await this.prepareNamedWorktree(repoPath, input.baseBranch, branch, path, input.taskId)
     return { path, branch, baseCommit, integrationPath: path, integrationBranch: branch }
   }
 
-  private async prepareNamedWorktree(repoPath: string, baseRef: string, branch: string, path: string): Promise<string> {
+  private async prepareNamedWorktree(repoPath: string, baseRef: string, branch: string, path: string, taskId?: string): Promise<string> {
     await mkdir(dirname(path), { recursive: true })
     const existingCommit = await this.existingWorktreeCommit(repoPath, path, branch)
     if (existingCommit) return existingCommit
     const branchExists = await execFileAsync('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], { cwd: repoPath })
       .then(() => true, () => false)
-    if (branchExists) {
-      await execFileAsync('git', ['worktree', 'add', path, branch], { cwd: repoPath })
-    } else {
-      await execFileAsync('git', ['worktree', 'add', '-b', branch, path, baseRef], { cwd: repoPath })
+    // Se a branch não existe e não é uma branch de integração nova (baseRef não é uma branch válida),
+    // significa que o ambiente foi perdido e não pode ser recriado
+    if (!branchExists && taskId && branch.includes('integration')) {
+      // Verificar se a baseRef também não existe (ambiente completamente perdido)
+      const baseExists = await execFileAsync('git', ['show-ref', '--verify', '--quiet', `refs/heads/${baseRef}`], { cwd: repoPath })
+        .then(() => true, () => false)
+      if (!baseExists) {
+        throw new IntegrationBranchMissingError(taskId, branch)
+      }
+    }
+    try {
+      if (branchExists) {
+        await execFileAsync('git', ['worktree', 'add', path, branch], { cwd: repoPath })
+      } else {
+        await execFileAsync('git', ['worktree', 'add', '-b', branch, path, baseRef], { cwd: repoPath })
+      }
+    } catch (error: any) {
+      const message = String(error?.stderr ?? error?.message ?? '')
+      // Worktree registrado mas pasta física ausente (foi deletada manualmente)
+      if (/missing but already registered worktree|already registered worktree/i.test(message)) {
+        console.warn(`[GitWorktreePreparer] Worktree órfão detectado: ${path} — removendo registro e recriando`)
+        await this.removeOrphanedWorktree(repoPath, path)
+        // Tentar novamente após limpar o registro órfão
+        if (branchExists) {
+          await execFileAsync('git', ['worktree', 'add', path, branch], { cwd: repoPath })
+        } else {
+          await execFileAsync('git', ['worktree', 'add', '-b', branch, path, baseRef], { cwd: repoPath })
+        }
+      } else {
+        throw error
+      }
     }
     const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: path })
     return stdout.trim()
+  }
+
+  /**
+   * Remove um worktree órfão (registrado mas com pasta física ausente).
+   * Usa `git worktree remove --force` que limpa tanto o registro quanto o caminho (se existir).
+   */
+  private async removeOrphanedWorktree(repoPath: string, path: string): Promise<void> {
+    try {
+      await execFileAsync('git', ['worktree', 'remove', '--force', path], { cwd: repoPath })
+    } catch {
+      // Se o worktree remove falhar (caminho já não existe), tentar prune
+      await execFileAsync('git', ['worktree', 'prune'], { cwd: repoPath })
+    }
   }
 
   /**

@@ -267,6 +267,9 @@ export class TestGateService {
     for (let index = 0; index < lines.length; index += 1) {
       if (consumed.has(index)) continue
       const line = lines[index]!.trim()
+      // Ignorar logs de aplicação que estão testando comportamento de erro
+      // Padrões: [OutboxPublisher], [QueueConsumer], [Motor v3], etc.
+      if (this.isApplicationLog(line)) continue
       const fail = line.match(/^FAIL\s+(.+?)(?:\s+\[.*)?$/)
       const importFailure = line.match(/^(?:Error:\s*)?Failed to resolve import\s+["']([^"']+)["']\s+from\s+["']([^"']+)["']/i)
       const generic = line.match(/^(TypeError|ReferenceError|AssertionError|Error):\s+(.+)$/)
@@ -282,6 +285,8 @@ export class TestGateService {
         testCase = parts.join(' > ').trim() || undefined
         for (let cursor = index + 1; cursor < Math.min(lines.length, index + 12); cursor += 1) {
           const candidate = lines[cursor]!.trim()
+          // Ignorar logs de aplicação no stack trace
+          if (this.isApplicationLog(candidate)) continue
           const error = candidate.match(/^(TypeError|ReferenceError|AssertionError|Error):\s+(.+)$/)
           if (error) { errorType = error[1]!; message = error[2]!; consumed.add(cursor); break }
         }
@@ -301,11 +306,28 @@ export class TestGateService {
       })
     }
     if (found.size === 0 && /command failed|npm error|cannot find module/i.test(text)) {
-      const message = this.normalizeMessage(lines.find(line => /command failed|npm error|cannot find module/i.test(line)) ?? 'Test command failed')
+      // Verificar se é apenas log de aplicação antes de marcar como SetupFailure
+      const failureLine = lines.find(line => /command failed|npm error|cannot find module/i.test(line))
+      if (failureLine && this.isApplicationLog(failureLine)) return []
+      const message = this.normalizeMessage(failureLine ?? 'Test command failed')
       const fingerprint = createHash('sha256').update(`setup|${message}`).digest('hex')
       found.set(fingerprint, { fingerprint, suite: 'test-setup', errorType: 'SetupFailure', normalizedMessage: message, rawExcerpt: text.slice(-4000), occurrenceCount: 1, classification: 'unclassified' })
     }
     return [...found.values()]
+  }
+
+  /**
+   * Detecta logs de aplicação que estão testando comportamento de erro.
+   * Padrões: [OutboxPublisher], [QueueConsumer], [Motor v3], [ActionExecutor], etc.
+   */
+  private isApplicationLog(line: string): boolean {
+    // Logs que começam com [ComponentName] são logs de aplicação
+    if (/^\[[\w\s-]+\]/.test(line)) return true
+    // Logs do vitest que indicam stderr esperado
+    if (line.startsWith('stderr |')) return true
+    // Mensagens de erro dentro de stack traces de testes
+    if (/at\s+[\w.]+\s+\(/.test(line)) return true
+    return false
   }
 
   private async environment(workspace: string, buildCommand: string, testCommand: string) {

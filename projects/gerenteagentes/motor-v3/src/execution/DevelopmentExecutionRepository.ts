@@ -1032,4 +1032,62 @@ export class MySqlDevelopmentExecutionRepository {
         message.correlationId ?? null, message.causationId ?? null],
     )
   }
+
+  /**
+   * Reseta todas as subtarefas de uma tarefa para 'pending' e a tarefa para 'ready'.
+   * Usado quando o ambiente de trabalho (worktrees/branches) foi perdido e não pode ser recriado.
+   */
+  async resetTaskToReady(taskId: string): Promise<void> {
+    const connection = await this.pool.getConnection()
+    try {
+      await connection.beginTransaction()
+      // Buscar o database_id da tarefa
+      const [taskRows] = await connection.query<Array<RowDataPacket & { id: number; external_id: string | null }>>(
+        `SELECT id, external_id FROM tarefas WHERE external_id = ? OR id = ? LIMIT 1`,
+        [taskId, isNaN(Number(taskId)) ? -1 : Number(taskId)],
+      )
+      if (taskRows.length === 0) {
+        console.warn(`[Motor v3] resetTaskToReady: tarefa ${taskId} não encontrada`)
+        return
+      }
+      const databaseId = taskRows[0]!.id
+      // Resetar todas as subtarefas para 'pending'
+      await connection.query(
+        `UPDATE subtarefas SET status = 'pending', resultado = NULL, updated_at = NOW()
+          WHERE tarefa_id = ? AND status IN ('running', 'delivered', 'verifying', 'failed', 'blocked')`,
+        [databaseId],
+      )
+      // Remover bloqueios ativos
+      await connection.query(
+        `UPDATE bloqueios SET resolved_at = NOW() WHERE tarefa_id = ? AND resolved_at IS NULL`,
+        [databaseId],
+      )
+      // Resetar task_runtime_facts
+      await connection.query(
+        `UPDATE task_runtime_facts SET terminal_status = NULL, clarification_pending_at = NULL
+          WHERE tarefa_id = ?`,
+        [databaseId],
+      )
+      // Resetar paused_at se não houver resource_wait_key
+      await connection.query(
+        `UPDATE tarefas SET paused_at = NULL WHERE id = ? AND resource_wait_key IS NULL`,
+        [databaseId],
+      )
+      // Inserir evento no outbox para reprocessamento
+      const message = createQueueMessage({
+        type: 'TASK_READY_FOR_PROGRAMMING',
+        taskId,
+        executionId: `exec-reset-${taskId}-${Date.now()}`,
+        payload: { reason: 'environment_lost_reset' },
+      })
+      await this.insertOutbox(connection, message)
+      await connection.commit()
+      console.log(`[Motor v3] Tarefa ${taskId} resetada para pronta (ambiente perdido)`)
+    } catch (error) {
+      await connection.rollback()
+      throw error
+    } finally {
+      connection.release()
+    }
+  }
 }

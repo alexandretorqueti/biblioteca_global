@@ -4,7 +4,7 @@ import type { OperationLogEntry, OperationLogger } from '../commands/OperationLo
 import type { PrimitiveContext } from '../primitives/types.js'
 import type { DevelopmentPrompt, WorkerLauncher, WorkerResult } from '../worker-launcher/WorkerLauncher.js'
 import type { MySqlDevelopmentExecutionRepository, SubtaskExecutionContext } from './DevelopmentExecutionRepository.js'
-import type { GitWorktreePreparer } from './GitWorktreePreparer.js'
+import { GitWorktreePreparer, IntegrationBranchMissingError } from './GitWorktreePreparer.js'
 import type {
   BaselinePreflightRecovery,
   TestGateOrchestrator,
@@ -161,6 +161,18 @@ export class SubtaskExecutionConsumer {
       })
       if (this.environmentPreparer && !noCode) await this.environmentPreparer.prepare(workspace.path)
     } catch (error) {
+      // Se a branch de integração não existe (ambiente completamente perdido),
+      // resetar subtarefas para pendente e tarefa para pronta
+      if (error instanceof IntegrationBranchMissingError) {
+        console.warn(`[Motor v3] Ambiente perdido para tarefa ${error.taskId}: branch ${error.branch} inexistente — resetando para pronta`)
+        await this.repository.resetTaskToReady(execution.taskId)
+        await this.log(operationId, sequence++, message, {
+          phase: 'primitive', outcome: 'failed', subtaskId,
+          primitiveCode: 'prepare_worktree',
+          result: { error: error.message, action: 'reset_to_ready' },
+        })
+        return
+      }
       await this.finishPreparationFailure(operationId, message, execution, error)
       return
     }
