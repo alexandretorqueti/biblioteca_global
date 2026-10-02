@@ -29,6 +29,13 @@
       "when": 1790222400000,
       "tag": "0003_cargos",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "5",
+      "when": 1727845500000,
+      "tag": "0004_legado_mirror",
+      "breakpoints": true
     }
   ]
 }
