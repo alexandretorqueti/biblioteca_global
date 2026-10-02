@@ -19,6 +19,66 @@ Plataforma monorepo TypeScript que gera sistemas configuráveis. Fontes principa
 
 _Contexto inicial curado em 2026-09-13._
 
+### Tarefa task-p2-832: Mapa de Agentes - Atualização por WebSocket (validado 2026-10-02)
+
+**Objetivo:** Substituir o polling de 5 segundos por WebSocket para atualizar todas as informações da tela Mapa de Agentes em tempo real.
+
+**Decisões estruturais confirmadas (implementadas nas subtarefas 1-4):**
+
+1. **Contratos (packages/shared/src/realtime.ts):**
+   - Catálogo completo de eventos realtime: `task.created`, `task.updated`, `task.deleted`, `task.status.changed`, `task.counters.updated`, `subtask.*`, `activity.*`, `chat.*`, `history.*`, `deploy.diagnostics.updated`
+   - Schemas Zod para snapshots (`agentMapSnapshotSchema`, `taskDetailSnapshotSchema`) e envelopes (`taskEventEnvelopeSchema`)
+   - Mensagens cliente/servidor validadas: `subscribe` (canais: `task`, `map`, `project-feed`), `ping/pong`, `subscribed`, `*_snapshot`, `replay_unavailable`
+   - Validação de inscrição: canal `task` exige `taskId`; canais `map` e `project-feed` não exigem `taskId`
+
+2. **Backend/Broadcaster (apps/api/src/modules/realtime/):**
+   - `RealtimeGateway`: WebSocket em `/api/realtime/ws` com autenticação via ticket temporário ou cookie
+   - `RealtimeService`: buffer circular por tarefa (500 eventos) e por projeto (5000 eventos), deduplicação por `eventId`, sequência monotonamente crescente por projeto
+   - `LibraryRealtimeBroadcaster` (motor-v2): publica eventos do motor no RealtimeGateway via HTTP interno com idempotency-key
+   - Validação de escopo: `authRepository.resolveScope()` verifica permissão do usuário no projeto
+   - Rejeição de inscrições inválidas: taskId ausente/inválido, canal desconhecido, token incorreto
+
+3. **Cliente (packages/api-client/src/realtime.ts):**
+   - `RealtimeClient`: conexão WebSocket com reconexão automática (1s para close, 5s para falha de conexão)
+   - Deduplicação por `eventId` e `sequence` para evitar eventos duplicados na reconexão
+   - Suporte a três canais: `task` (detalhe), `map` (lista de tarefas), `project-feed` (feed operacional)
+   - Solicitação de ticket temporário via HTTP antes de abrir WebSocket (cross-origin support)
+
+4. **Tela (projects/gerenteagentes/screens/OperationMapScreen.tsx):**
+   - **Ausência de polling:** zero `setInterval`, zero `setTimeout` com intervalos de 5s/10s/15s/30s
+   - Carga inicial via REST (uma única vez no mount): `loadTasks()`, `loadProjects()`, `loadActivity()`
+   - Três conexões WebSocket simultâneas:
+     - Canal `map`: atualiza lista de tarefas e contadores (eventos `task.*`)
+     - Canal `task`: atualiza detalhe da tarefa selecionada (eventos `subtask.*`, `chat.*`, `activity.*`, `history.*`)
+     - Canal `project-feed`: atualiza feed operacional inferior
+   - Reconexão e replay indisponível: uma única reconciliação REST (sem iniciar polling)
+   - Ações do usuário (start/pause/cancel/delete) não chamam `loadTasks()` — o evento `task.status.changed` atualiza o estado local via WebSocket
+
+5. **Proteções contra duplicação:**
+   - `receivedEventIds` no `RealtimeClient`: deduplica eventos recebidos
+   - `eventosRecebidos` no `RealtimeService`: deduplica eventos publicados (idempotency)
+   - `lastSequence` tracking: cliente e servidor rastreiam último evento processado
+   - Snapshots iniciais: `map_snapshot` e `task_snapshot` substituem o estado local completamente
+
+**Validação executada (2026-10-02):**
+- **Build web:** OK (`apps/web`).
+- **Typecheck:** `packages/api-client` e `packages/shared` passam; `apps/api` ainda falha por erros existentes em `projects/gerenteagentes/api/gerenteagentes.service.ts`/integração do `motor-v2` e `projects/gerenteagentes/api/isa-chat/isa-chat.service.ts`, não relacionados ao mapa.
+- **Testes realtime e tela:** 7 arquivos, 67 testes passam, cobrindo contratos, cliente (deduplicação/reconexão/canais), serviço (publicação/replay/mapa), broadcaster e telas.
+- **Inspeção estática:** `OperationMapScreen.tsx` não contém `setInterval`, `setTimeout` nem intervalos `5000/10000/15000/30000`; as chamadas REST posteriores à carga inicial aparecem somente em reconciliação de `replay_unavailable` ou em resposta a eventos WebSocket.
+- **`git diff --check`:** passa sem erros de whitespace.
+- **Não confirmado:** o gateway ainda contém TODO para validar se `taskId` pertence ao projeto da sessão, portanto rejeição de inscrição fora de escopo não está demonstrada.
+- **Não confirmado:** não há evidência/teste de publicação condicionada ao commit da transação; o broadcaster publica via `ExecutionEventBus` de forma assíncrona.
+
+**Arquivos modificados (subtarefas 1-4):**
+- `packages/shared/src/realtime.ts` — schemas e contratos
+- `packages/api-client/src/realtime.ts` — RealtimeClient
+- `apps/api/src/modules/realtime/realtime.gateway.ts` — WebSocket gateway
+- `apps/api/src/modules/realtime/realtime.service.ts` — buffer e inscrição
+- `projects/gerenteagentes/motor-v2/src/events/LibraryRealtimeBroadcaster.ts` — broadcaster do motor
+- `projects/gerenteagentes/screens/OperationMapScreen.tsx` — migração de polling para WebSocket
+
+**Status:** Remoção do polling e atualização realtime foram confirmadas por inspeção e testes. A validação integrada permanece pendente quanto à autorização por tarefa/projeto e à garantia de publicação após commit.
+
 ### Tarefa task-p2-835: Melhorias de layout em Mapa de Agentes
 
 #### Subtarefa 7: Revisão de melhorias adicionais e validação do layout integrado (2026-09-25)
