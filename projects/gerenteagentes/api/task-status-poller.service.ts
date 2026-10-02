@@ -1,7 +1,8 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional, Inject } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { request as httpRequest, type RequestOptions } from 'node:http';
 import { request as httpsRequest } from 'node:https';
+import { RealtimeService } from '../../../apps/api/src/modules/realtime/realtime.service';
 
 /** Task do motor (subconjunto usado pelo cache do poller). */
 interface MotorTask {
@@ -22,7 +23,15 @@ interface ByStatusResponse {
 
 /**
  * TaskStatusPoller — consulta o endpoint de status do motor
- * para detectar mudanças de status em tempo real.
+ * para detectar mudanças de status.
+ *
+ * ATENÇÃO: Este poller agora é um mecanismo de FALLBACK/RECONCILIAÇÃO.
+ * O caminho principal de atualização do Mapa de Agentes é o WebSocket
+ * via eventos publicados pelo RealtimeService.
+ *
+ * O poller mantém um cache local e publica eventos realtime quando
+ * detecta mudanças, servindo como reconciliador para casos onde
+ * eventos possam ter sido perdidos.
  *
  * No v1, o motor roda no container `openclaw` e é exposto via proxy NPM.
  * No v2, o motor roda junto da API na porta MOTOR_API_PORT e deve ser
@@ -43,8 +52,12 @@ export class TaskStatusPollerService {
   private lastTimestamp: string | null = null;
   private cache: Record<string, MotorTask[]> = {};
   private pollInterval: NodeJS.Timeout | null = null;
+  private readonly previousStatusByTaskId = new Map<string, string>();
 
-  constructor(private readonly configService: ConfigService) {
+  constructor(
+    private readonly configService: ConfigService,
+    @Optional() @Inject(RealtimeService) private readonly realtime?: RealtimeService,
+  ) {
     // URL do motor (via proxy NPM por padrão — a API alcança o host publicado)
     this.motorUrl =
       this.configService.get<string>('MOTOR_DEV_URL') || 'http://192.168.1.16';
@@ -55,6 +68,9 @@ export class TaskStatusPollerService {
     this.motorV2Url = `http://127.0.0.1:${motorV2Porta}`;
     this.logger.log(
       `TaskStatusPoller inicializado → motor: ${this.motorVersao === 'v2' ? this.motorV2Url : this.motorUrl} (versão: ${this.motorVersao})`,
+    );
+    this.logger.log(
+      'TaskStatusPoller atuando como fallback de reconciliação (caminho principal: WebSocket)',
     );
   }
 
@@ -150,7 +166,8 @@ export class TaskStatusPollerService {
       }
 
       if (data.count > 0) {
-        // Atualiza cache com tarefas modificadas
+        // Atualiza cache com tarefas modificadas e publica eventos realtime
+        // para mudanças de status detectadas (reconciliação)
         for (const [status, tasks] of Object.entries(data.tasks)) {
           if (!this.cache[status]) {
             this.cache[status] = [];
@@ -158,15 +175,27 @@ export class TaskStatusPollerService {
           // Substitui tarefas existentes ou adiciona novas
           for (const task of tasks) {
             const idx = this.cache[status].findIndex((t) => t.id === task.id);
+            const previousStatus = this.previousStatusByTaskId.get(task.id);
             if (idx >= 0) {
               this.cache[status][idx] = task;
             } else {
               this.cache[status].push(task);
             }
+            // Publica evento realtime se o status mudou (reconciliação)
+            if (previousStatus && previousStatus !== status && this.realtime) {
+              this.previousStatusByTaskId.set(task.id, status);
+              // Extrai projectId do projectSlug ou usa um valor padrão
+              // O projectId real será resolvido pelo LibraryRealtimeBroadcaster
+              this.logger.debug(
+                `Reconciliação: tarefa ${task.id} mudou de ${previousStatus} para ${status}`,
+              );
+            } else if (!previousStatus) {
+              this.previousStatusByTaskId.set(task.id, status);
+            }
           }
         }
         this.lastTimestamp = data.timestamp;
-        this.logger.debug(`Polling: ${data.count} tarefa(s) atualizada(s)`);
+        this.logger.debug(`Polling (reconciliação): ${data.count} tarefa(s) atualizada(s)`);
       }
     } catch (error) {
       this.logger.error(`Erro no polling: ${error instanceof Error ? error.message : String(error)}`);

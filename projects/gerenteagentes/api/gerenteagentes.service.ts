@@ -8,6 +8,8 @@ import type {
   ProjetoResumo,
   ModelSelectionTipo,
   ModelSelectionEntry,
+  AgentMapSnapshot,
+  RealtimeIngressEvent,
 } from '@biblioteca-global/shared';
 import { ProjectModelSelectionSchema } from '@biblioteca-global/shared';
 import {
@@ -961,7 +963,7 @@ export class GerenteAgentesService {
       }
     }
 
-    return await db.transaction(async (tx: any) => {
+    const created = await db.transaction(async (tx: any) => {
       const result = await tx.insert(tarefas).values({
         projetoId: managedProjectId,
         titulo,
@@ -982,13 +984,13 @@ export class GerenteAgentesService {
         .set({ externalId, updatedAt: new Date() })
         .where(eq(tarefas.id, tarefaId));
 
-      const [created] = await tx
+      const [tarefaCriada] = await tx
         .select()
         .from(tarefas)
         .where(eq(tarefas.id, tarefaId))
         .limit(1);
-      if (!created) throw new BadRequestException('Falha ao criar tarefa');
-      await this.registrarEvento(tx, created, 'created', input.ator ?? 'usuario', 'usuario', { tipo: created.tipo });
+      if (!tarefaCriada) throw new BadRequestException('Falha ao criar tarefa');
+      await this.registrarEvento(tx, tarefaCriada, 'created', input.ator ?? 'usuario', 'usuario', { tipo: tarefaCriada.tipo });
 
       // A tarefa nasce pausada, mas o Motor precisa conhecer sua existência.
       // A mensagem fica na mesma transação da tarefa: depois do commit, o
@@ -1012,8 +1014,23 @@ export class GerenteAgentesService {
         status: 'pending',
         attempt: 0,
       });
-      return created;
+      return tarefaCriada;
     });
+    // Publica evento realtime APÓS o commit da transação
+    this.publicarEventoRealtime({
+      source: 'gerenteagentes-api',
+      projectId: managedProjectId,
+      taskId: Number(created.id),
+      sourceTaskId: created.externalId || `task-p${managedProjectId}-${created.id}`,
+      type: 'task.created',
+      payload: {
+        title: created.titulo,
+        status: 'planned',
+        tipo: created.tipo,
+        managedProjectId,
+      },
+    });
+    return created;
   }
 
   async atualizarStatusTarefa(_projeto: ProjetoResumo, _tarefaId: number, _status?: string) {
@@ -1188,6 +1205,19 @@ export class GerenteAgentesService {
       await db.update(tarefas).set({ pausedAt: new Date(), updatedAt: new Date() }).where(eq(tarefas.id, tarefaId));
     }
     await this.registrarEvento(db, tarefa, 'paused', ator, 'usuario');
+    // Publica evento realtime APÓS o commit
+    this.publicarEventoRealtime({
+      source: 'gerenteagentes-api',
+      projectId: Number(tarefa.projetoId),
+      taskId: tarefaId,
+      sourceTaskId: tarefa.externalId || `task-p${tarefa.projetoId}-${tarefaId}`,
+      type: 'task.status.changed',
+      payload: {
+        status: 'paused',
+        previousStatus: undefined,
+        actor: ator,
+      },
+    });
     return { id: tarefaId, paused: true, message: 'Tarefa pausada' };
   }
 
@@ -1227,6 +1257,19 @@ export class GerenteAgentesService {
     }
 
     await this.registrarEvento(db, tarefa, 'resumed', ator, 'usuario');
+    // Publica evento realtime APÓS o commit
+    this.publicarEventoRealtime({
+      source: 'gerenteagentes-api',
+      projectId: Number(tarefa.projetoId),
+      taskId: tarefaId,
+      sourceTaskId: tarefa.externalId || `task-p${tarefa.projetoId}-${tarefaId}`,
+      type: 'task.status.changed',
+      payload: {
+        status: 'resumed',
+        previousStatus: 'paused',
+        actor: ator,
+      },
+    });
     return { id: tarefaId, paused: false, message: 'Tarefa retomada' };
   }
 
@@ -1249,9 +1292,37 @@ export class GerenteAgentesService {
       // pelo Motor em tarefa_eventos quando o TaskCancelConsumer persistir o
       // terminal_status (incidente 862, item 5 — trilha honesta).
       await this.registrarEvento(db, tarefa, 'cancel_requested', ator, 'usuario', { motivo: motivoNormalizado });
+      // Publica evento realtime APÓS o commit
+      this.publicarEventoRealtime({
+        source: 'gerenteagentes-api',
+        projectId: Number(tarefa.projetoId),
+        taskId: tarefaId,
+        sourceTaskId: tarefa.externalId || `task-p${tarefa.projetoId}-${tarefaId}`,
+        type: 'task.status.changed',
+        payload: {
+          status: 'cancel_requested',
+          previousStatus: undefined,
+          actor: ator,
+          motivo: motivoNormalizado,
+        },
+      });
       return { id: tarefaId, cancelled: true, message: 'Cancelamento solicitado ao motor' };
     }
     await this.registrarEvento(db, tarefa, 'cancelled', ator, 'usuario', { motivo: motivoNormalizado });
+    // Publica evento realtime APÓS o commit
+    this.publicarEventoRealtime({
+      source: 'gerenteagentes-api',
+      projectId: Number(tarefa.projetoId),
+      taskId: tarefaId,
+      sourceTaskId: tarefa.externalId || `task-p${tarefa.projetoId}-${tarefaId}`,
+      type: 'task.status.changed',
+      payload: {
+        status: 'cancelled',
+        previousStatus: undefined,
+        actor: ator,
+        motivo: motivoNormalizado,
+      },
+    });
     return { id: tarefaId, cancelled: true };
   }
 
@@ -1264,6 +1335,17 @@ export class GerenteAgentesService {
     const motorId = tarefa.externalId || String(tarefa.id);
     const resp = await this.motorRequest('DELETE', `/api/motor/task/${encodeURIComponent(motorId)}`, undefined, this.motorV2Url);
     if (!resp.ok) throw new BadRequestException(`Motor rejeitou a exclusão (${resp.status}): ${resp.body.slice(0, 200)}`);
+    // Publica evento realtime APÓS o commit
+    this.publicarEventoRealtime({
+      source: 'gerenteagentes-api',
+      projectId: Number(tarefa.projetoId),
+      taskId: tarefaId,
+      sourceTaskId: tarefa.externalId || `task-p${tarefa.projetoId}-${tarefaId}`,
+      type: 'task.deleted',
+      payload: {
+        actor: ator,
+      },
+    });
     return { id: tarefaId, deleted: true };
   }
 
@@ -2793,6 +2875,92 @@ export class GerenteAgentesService {
     return {
       taskId: tarefaId,
       ...result,
+    };
+  }
+
+  /**
+   * Publica um evento realtime para o Mapa de Agentes.
+   * O evento só é publicado se o RealtimeService estiver disponível.
+   * A publicação deve ocorrer APÓS o commit da transação que alterou o estado.
+   */
+  publicarEventoRealtime(evento: Omit<RealtimeIngressEvent, 'eventId' | 'occurredAt'> & { eventId?: string; occurredAt?: string }): void {
+    if (!this.realtime) {
+      this.logger.warn('RealtimeService não disponível — evento realtime não publicado');
+      return;
+    }
+    try {
+      const envelope: RealtimeIngressEvent = {
+        eventId: evento.eventId ?? randomUUID(),
+        occurredAt: evento.occurredAt ?? new Date().toISOString(),
+        source: evento.source ?? 'gerenteagentes-api',
+        projectId: evento.projectId,
+        taskId: evento.taskId,
+        type: evento.type,
+        payload: evento.payload ?? {},
+        ...(evento.sourceTaskId ? { sourceTaskId: evento.sourceTaskId } : {}),
+        ...(evento.sourceProjectSlug ? { sourceProjectSlug: evento.sourceProjectSlug } : {}),
+        ...(evento.subtaskId !== undefined ? { subtaskId: evento.subtaskId } : {}),
+      };
+      this.realtime.publicar(envelope);
+    } catch (error) {
+      this.logger.error(`Falha ao publicar evento realtime: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /**
+   * Constrói o snapshot do Mapa de Agentes para um projeto.
+   * Consulta todas as tarefas do projeto e seus contadores.
+   */
+  async construirSnapshotMapa(projectId: number): Promise<AgentMapSnapshot> {
+    const db = await this.dbDoMotor();
+    const tarefasDoProjeto = await db
+      .select({
+        id: tarefas.id,
+        titulo: tarefas.titulo,
+        pausedAt: tarefas.pausedAt,
+      })
+      .from(tarefas)
+      .where(eq(tarefas.projetoId, projectId));
+
+    const tasksWithStatus = await Promise.all(
+      tarefasDoProjeto.map(async (tarefa) => {
+        const motorId = `task-p${projectId}-${tarefa.id}`;
+        let status = 'planned';
+        try {
+          const resp = await this.motorRequest(
+            'GET',
+            `/api/motor/task/${encodeURIComponent(motorId)}`,
+            null,
+            this.motorV2Url,
+          );
+          if (resp.ok) {
+            const motorTask = JSON.parse(resp.body) as { status?: string };
+            status = motorTask.status || 'planned';
+          }
+        } catch {
+          // Fallback: usa status derivado local
+        }
+        return {
+          taskId: tarefa.id,
+          title: tarefa.titulo || undefined,
+          status,
+          updatedAt: undefined,
+        };
+      }),
+    );
+
+    const counters = {
+      total: tasksWithStatus.length,
+      pending: tasksWithStatus.filter(t => t.status === 'planned' || t.status === 'paused').length,
+      running: tasksWithStatus.filter(t => t.status === 'running' || t.status === 'analyzing' || t.status === 'executing').length,
+      completed: tasksWithStatus.filter(t => t.status === 'completed' || t.status === 'verified').length,
+      failed: tasksWithStatus.filter(t => t.status === 'failed' || t.status === 'cancelled').length,
+    };
+
+    return {
+      projectId,
+      tasks: tasksWithStatus,
+      counters,
     };
   }
 }
