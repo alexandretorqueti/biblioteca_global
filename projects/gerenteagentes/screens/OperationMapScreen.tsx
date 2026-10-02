@@ -83,6 +83,11 @@ export default function OperationMapScreen() {
   const [feedRealtime, setFeedRealtime] = useState<"connecting" | "open" | "closed">("closed")
   const [feedRecovered, setFeedRecovered] = useState(false)
   const feedProjectRef = useRef<number | null>(null)
+  // Estado do canal "map" — atualização da lista de tarefas por WebSocket
+  const [mapRealtime, setMapRealtime] = useState<"connecting" | "open" | "closed">("closed")
+  const [mapRecovered, setMapRecovered] = useState(false)
+  const mapProjectRef = useRef<number | null>(null)
+  const mapLastSequenceRef = useRef<number | undefined>(undefined)
 
   const loadTasks = useCallback(async () => { if (!bundle) { setTasksLoading(false); setTasksError("A conexão com a API ainda não está disponível."); return } setTasksLoading(true); setTasksError(null); try { const result = await bundle.http.request<Task[] | { items?: Task[] }>("GET", "/gerenteagentes/tarefas-com-status", { query: { pageSize: 100 }, auth: "access" }); const payload = Array.isArray(result) ? result : (result.items ?? []); const list = payload.sort((a, b) => new Date(b.updatedAt ?? b.createdAt ?? 0).getTime() - new Date(a.updatedAt ?? a.createdAt ?? 0).getTime()); setTasks(list); setSelectedId(current => { if (current !== "" && list.some(t => t.id === current)) return current; if (!initialSelectionDone.current) { initialSelectionDone.current = true; return selectInitialTask(list) } return list.find(t => !FINAL_STATUSES.has(t.status) && t.status !== "draft")?.id ?? list[0]?.id ?? "" }) } catch (e) { setTasksError(e instanceof Error ? e.message : "Não foi possível carregar as tarefas do mapa.") } finally { setTasksLoading(false) } }, [bundle])
   const loadProjects = useCallback(async () => { if (!bundle) return; try { const result = await bundle.http.request<{ items: Array<{ id: number; nome: string }> }>("GET", "/gerenteagentes/projetos_captados", { query: { pageSize: 100 }, auth: "access" }); setProjects(result.items ?? []) } catch { setProjects([]) } }, [bundle])
@@ -127,8 +132,225 @@ export default function OperationMapScreen() {
   const loadChat = useCallback(async (id: number) => { if (!bundle) return; const current = ++requestId.current; setChatLoading(true); setChatError(null); try { const result = await bundle.http.request<ChatMessage[] | { items?: ChatMessage[] }>("GET", `/gerenteagentes/tarefas/${id}/chat`, { auth: "access" }); if (current === requestId.current) { const incoming = Array.isArray(result) ? result : result.items ?? []; setChat(old => [...new Map([...incoming, ...old].map(m => [m.id, m])).values()].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())); if (incoming.some(m => ["assistant", "agent", "analyst"].includes(m.role))) setChatWaiting(false) } } catch (e) { if (current === requestId.current) setChatError(e instanceof Error ? e.message : "Não foi possível carregar o chat.") } finally { if (current === requestId.current) setChatLoading(false) } }, [bundle])
   const refreshSelected = useCallback(async (id: number) => { await Promise.all([loadDetail(id), loadOperations(id), loadSubtasks(id), loadChat(id)]) }, [loadDetail, loadOperations, loadSubtasks, loadChat])
 
-  useEffect(() => { void loadTasks(); void loadProjects(); void loadActivity(); const timer = window.setInterval(() => { void loadTasks(); void loadActivity(); if (selectedId !== "") void refreshSelected(selectedId) }, 5000); return () => window.clearInterval(timer) }, [loadTasks, loadProjects, loadActivity, refreshSelected, selectedId])
-  useEffect(() => { if (!bundle || selectedId === "") { activeTask.current = ""; setRealtime("closed"); return } activeTask.current = selectedId; setRealtime("connecting"); setChat([]); setDetail(null); setOperations([]); setDbSubtasks([]); void refreshSelected(selectedId); const client = new RealtimeClient({ url: resolveRealtimeUrl(), baseUrl: resolveApiBaseUrl(), taskId: selectedId, getAccessToken: () => bundle.getAccessToken(), onStatusChange: status => { if (activeTask.current === selectedId) setRealtime(status) }, onMessage: message => { if (activeTask.current !== selectedId) return; if (message.type === "replay_unavailable") { void refreshSelected(selectedId); return } if (message.type === "error") { setChatError(message.message); return } if (message.type !== "event") return; const payload = message.event.payload; if (message.event.type.includes("chat")) { const id = Number(payload.id); const texto = typeof payload.texto === "string" ? payload.texto : ""; if (id && texto) { setChat(old => old.some(m => m.id === id) ? old : [...old, { id, tarefaId: selectedId, role: String(payload.role ?? "assistant"), texto, createdAt: String(payload.createdAt ?? message.event.occurredAt) }]); if (String(payload.role) !== "user") setChatWaiting(false) } else void loadChat(selectedId) } if (message.event.type === "task.status.changed" && typeof payload.status === "string") setTasks(old => old.map(t => t.id === selectedId ? { ...t, status: String(payload.status) } : t)); if (message.event.type.startsWith("task.") || message.event.type.startsWith("subtask.")) { void loadTasks(); void loadDetail(selectedId); void loadOperations(selectedId); void loadSubtasks(selectedId) } } }); void client.connect(); return () => { if (activeTask.current === selectedId) activeTask.current = ""; client.close() } }, [bundle, selectedId, refreshSelected, loadChat, loadTasks, loadDetail, loadOperations, loadSubtasks])
+  // Carga inicial (REST) — projetos, tarefas, atividade do motor
+  // A atualização posterior acontece exclusivamente por WebSocket.
+  useEffect(() => { void loadTasks(); void loadProjects(); void loadActivity() }, [loadTasks, loadProjects, loadActivity])
+
+  // Canal "map" — atualização da lista de tarefas e contadores por WebSocket
+  // Substitui o polling de 5s. O snapshot inicial vem do servidor; eventos
+  // subsequentes atualizam a lista localmente. replay_unavailable dispara
+  // uma única reconciliação REST (sem iniciar polling).
+  const mapProjectId = tasks.find(task => task.id === selectedId)?.projetoId ?? tasks[0]?.projetoId ?? null
+  useEffect(() => {
+    if (!bundle || mapProjectId == null) { setMapRealtime("closed"); return }
+    const projectId = mapProjectId
+    mapProjectRef.current = projectId
+    setMapRealtime("connecting")
+    let disposed = false
+    const client = new RealtimeClient({
+      url: resolveRealtimeUrl(), baseUrl: resolveApiBaseUrl(), channel: "map",
+      lastSequence: mapLastSequenceRef.current,
+      getAccessToken: () => bundle.getAccessToken(),
+      onStatusChange: status => { if (!disposed && mapProjectRef.current === projectId) setMapRealtime(status) },
+      onMessage: message => {
+        if (disposed || mapProjectRef.current !== projectId) return
+        if (message.type === "map_replay_unavailable") {
+          // Reconciliação controlada: uma única chamada REST para restaurar o estado
+          void loadTasks()
+          setMapRecovered(true)
+          return
+        }
+        if (message.type === "map_snapshot") {
+          // Snapshot inicial do mapa — converte para o formato local de tarefas
+          const snapshotTasks = message.snapshot.tasks ?? []
+          const list: Task[] = snapshotTasks.map(st => ({
+            id: st.taskId,
+            titulo: st.title ?? `Tarefa ${st.taskId}`,
+            status: st.status,
+            projetoId: message.snapshot.projectId,
+            updatedAt: st.updatedAt,
+            subtaskCount: st.counters?.total,
+          }))
+          setTasks(prev => {
+            // Preserva seleção atual se ainda existir
+            const merged = list.length > 0 ? list : prev
+            setSelectedId(current => {
+              if (current !== "" && merged.some(t => t.id === current)) return current
+              if (!initialSelectionDone.current) { initialSelectionDone.current = true; return selectInitialTask(merged) }
+              return merged.find(t => !FINAL_STATUSES.has(t.status) && t.status !== "draft")?.id ?? merged[0]?.id ?? ""
+            })
+            return merged
+          })
+          setMapRecovered(true)
+          return
+        }
+        if (message.type === "event") {
+          const event = message.event
+          const payload = event.payload
+          // Atualiza lista de tarefas conforme o tipo de evento
+          if (event.type === "task.created") {
+            const newTask: Task = {
+              id: event.taskId,
+              titulo: String(payload.titulo ?? payload.title ?? `Tarefa ${event.taskId}`),
+              status: String(payload.status ?? "draft"),
+              projetoId: event.projectId,
+              updatedAt: event.occurredAt,
+              createdAt: event.occurredAt,
+            }
+            setTasks(prev => {
+              if (prev.some(t => t.id === event.taskId)) return prev
+              return [newTask, ...prev].sort((a, b) => new Date(b.updatedAt ?? b.createdAt ?? 0).getTime() - new Date(a.updatedAt ?? a.createdAt ?? 0).getTime())
+            })
+          } else if (event.type === "task.updated") {
+            setTasks(prev => prev.map(t => t.id === event.taskId ? {
+              ...t,
+              titulo: String(payload.titulo ?? payload.title ?? t.titulo),
+              status: String(payload.status ?? t.status),
+              updatedAt: event.occurredAt,
+            } : t))
+          } else if (event.type === "task.deleted") {
+            setTasks(prev => prev.filter(t => t.id !== event.taskId))
+            setSelectedId(current => current === event.taskId ? "" : current)
+          } else if (event.type === "task.status.changed") {
+            const newStatus = String(payload.status ?? "")
+            if (newStatus) {
+              setTasks(prev => prev.map(t => t.id === event.taskId ? { ...t, status: newStatus, updatedAt: event.occurredAt } : t))
+            }
+          } else if (event.type === "task.counters.updated") {
+            setTasks(prev => prev.map(t => t.id === event.taskId ? {
+              ...t,
+              subtaskCount: typeof payload.total === "number" ? payload.total : t.subtaskCount,
+              updatedAt: event.occurredAt,
+            } : t))
+          }
+          // Se o evento é da tarefa selecionada, atualiza o detalhe
+          if (event.taskId === selectedId && (event.type.startsWith("task.") || event.type.startsWith("subtask."))) {
+            void loadDetail(selectedId)
+            void loadOperations(selectedId)
+            void loadSubtasks(selectedId)
+          }
+        }
+      },
+    })
+    void client.connect()
+    return () => { disposed = true; client.close() }
+  }, [bundle, mapProjectId, loadTasks, loadDetail, loadOperations, loadSubtasks, selectedId])
+  // Canal "task" — atualização do detalhe da tarefa selecionada por WebSocket
+  // Eventos de subtarefas, chat, atividades e histórico são aplicados localmente.
+  // replay_unavailable dispara uma única reconciliação REST (sem polling).
+  useEffect(() => {
+    if (!bundle || selectedId === "") {
+      activeTask.current = ""
+      setRealtime("closed")
+      return
+    }
+    activeTask.current = selectedId
+    setRealtime("connecting")
+    setChat([])
+    setDetail(null)
+    setOperations([])
+    setDbSubtasks([])
+    // Carga inicial do detalhe (REST) — o WebSocket assumirá depois
+    void refreshSelected(selectedId)
+    const client = new RealtimeClient({
+      url: resolveRealtimeUrl(),
+      baseUrl: resolveApiBaseUrl(),
+      taskId: selectedId,
+      getAccessToken: () => bundle.getAccessToken(),
+      onStatusChange: status => {
+        if (activeTask.current === selectedId) setRealtime(status)
+      },
+      onMessage: message => {
+        if (activeTask.current !== selectedId) return
+        // replay_unavailable: reconciliação controlada (uma única chamada REST)
+        if (message.type === "replay_unavailable") {
+          void refreshSelected(selectedId)
+          return
+        }
+        // task_snapshot: snapshot completo do detalhe (aplica diretamente)
+        if (message.type === "task_snapshot") {
+          const snap = message.snapshot
+          setDetail({
+            exists: true,
+            task: snap.task as Detail["task"],
+            subtasks: snap.subtasks as MotorSubtask[],
+            events: snap.history as Detail["events"],
+          })
+          if (Array.isArray(snap.chat)) {
+            setChat(snap.chat as ChatMessage[])
+          }
+          return
+        }
+        if (message.type === "error") {
+          setChatError(message.message)
+          return
+        }
+        if (message.type !== "event") return
+        const payload = message.event.payload
+        const eventType = message.event.type
+        // Chat — aplica diretamente sem recarregar
+        if (eventType.includes("chat")) {
+          const id = Number(payload.id)
+          const texto = typeof payload.texto === "string" ? payload.texto : ""
+          if (id && texto) {
+            setChat(old => old.some(m => m.id === id) ? old : [...old, {
+              id,
+              tarefaId: selectedId,
+              role: String(payload.role ?? "assistant"),
+              texto,
+              createdAt: String(payload.createdAt ?? message.event.occurredAt),
+            }])
+            if (String(payload.role) !== "user") setChatWaiting(false)
+          } else {
+            void loadChat(selectedId)
+          }
+          return
+        }
+        // Status da tarefa — atualiza a lista local (map channel também faz, mas aqui garante consistência)
+        if (eventType === "task.status.changed" && typeof payload.status === "string") {
+          setTasks(old => old.map(t => t.id === selectedId ? { ...t, status: String(payload.status) } : t))
+        }
+        // Subtarefas — aplica eventos diretamente quando possível
+        if (eventType === "subtask.created" || eventType === "subtask.updated" || eventType === "subtask.deleted") {
+          void loadSubtasks(selectedId)
+        }
+        // Atividades e operações — recarrega para manter consistência
+        if (eventType === "activity.created" || eventType === "activity.updated") {
+          void loadOperations(selectedId)
+        }
+        // Histórico — adiciona ao estado local
+        if (eventType === "history.entry.created") {
+          setDetail(prev => {
+            if (!prev) return prev
+            const newEvent = {
+              at: message.event.occurredAt,
+              type: String(payload.type ?? eventType),
+              payload: payload as Record<string, unknown>,
+            }
+            return { ...prev, events: [...(prev.events ?? []), newEvent] }
+          })
+        }
+        // Deploy diagnostics
+        if (eventType === "deploy.diagnostics.updated") {
+          setDiagnostics(prev => ({
+            canStart: typeof payload.canStart === "boolean" ? payload.canStart : prev?.canStart ?? true,
+            reasons: Array.isArray(payload.reasons) ? payload.reasons.map(String) : prev?.reasons ?? [],
+            pendingRequests: typeof payload.pendingRequests === "number" ? payload.pendingRequests : prev?.pendingRequests ?? 0,
+          }))
+        }
+        // Eventos genéricos de tarefa/subtarefa — recarrega o detalhe
+        if ((eventType.startsWith("task.") || eventType.startsWith("subtask.")) &&
+            !["task.status.changed", "subtask.created", "subtask.updated", "subtask.deleted"].includes(eventType)) {
+          void loadDetail(selectedId)
+        }
+      },
+    })
+    void client.connect()
+    return () => {
+      if (activeTask.current === selectedId) activeTask.current = ""
+      client.close()
+    }
+  }, [bundle, selectedId, refreshSelected, loadChat, loadDetail, loadOperations, loadSubtasks])
 
   // O quadro inferior acompanha o projeto inteiro. Ele não é resetado quando
   // o usuário troca a tarefa no drawer, evitando misturar históricos de seleção.
@@ -158,18 +380,70 @@ export default function OperationMapScreen() {
   }, [bundle, feedProjectId, loadOperationalFeed])
 
   const selected = tasks.find(t => t.id === selectedId); const mapped = useMemo<FlowTask[]>(() => tasks.map(t => ({ ...t, createdAt: t.createdAt ?? null, updatedAt: t.updatedAt ?? null, projetoNome: projects.find(p => p.id === t.projetoId)?.nome ?? null })), [tasks, projects]); const subtasks = detail?.subtasks?.length ? detail.subtasks : dbSubtasks.map(s => ({ id: s.id, seq: s.seq, title: s.titulo, status: s.status, scope: s.scope, acceptanceCriteria: s.acceptanceCriteria, resultado: s.resultado, workspaceStatus: s.workspaceStatus, correctionForSubtaskId: s.correctionForSubtaskId })); const status = detail?.task?.status ?? selected?.status ?? ""; const canStart = status === "paused" || TASK_STATUS_STARTABLE.has(status); const canPause = TASK_STATUS_PAUSABLE.has(status)
-  const execute = useCallback(async (action: "start" | "pause" | "resume" | "unlock" | "sanitize-session", id = selectedId) => { if (!bundle || id === "") return; if (action === "sanitize-session" && !window.confirm("Arquivar a sessão atual do agente e preparar uma continuação com contexto limpo? O histórico será preservado. Depois, desbloqueie a tarefa para retomá-la.")) return; setError(null); try { await bundle.http.request("POST", `/gerenteagentes/tarefas/${id}/${action}`, { auth: "access" }); await loadTasks(); if (id === selectedId) await refreshSelected(id) } catch (e) { setError(e instanceof Error ? e.message : `Erro ao ${action} a tarefa.`) } }, [bundle, selectedId, loadTasks, refreshSelected])
+  const execute = useCallback(async (action: "start" | "pause" | "resume" | "unlock" | "sanitize-session", id = selectedId) => {
+    if (!bundle || id === "") return
+    if (action === "sanitize-session" && !window.confirm("Arquivar a sessão atual do agente e preparar uma continuação com contexto limpo? O histórico será preservado. Depois, desbloqueie a tarefa para retomá-la.")) return
+    setError(null)
+    try {
+      await bundle.http.request("POST", `/gerenteagentes/tarefas/${id}/${action}`, { auth: "access" })
+      // A atualização da lista e do detalhe acontece via WebSocket (canal "map" e "task")
+      // Não chama loadTasks() aqui — o evento task.status.changed atualizará o estado local.
+    } catch (e) {
+      setError(e instanceof Error ? e.message : `Erro ao ${action} a tarefa.`)
+    }
+  }, [bundle, selectedId])
   /**
    * Cancelamento imediato da tarefa. O motor interrompe a execução no próximo
    * ponto seguro e registra o evento em `tarefa_eventos` (trilha de auditoria).
    */
-  const cancelarTarefa = useCallback(async (id: number) => { if (!bundle || acaoTarefa !== null) return; if (!window.confirm("Cancelar esta tarefa imediatamente? A execução será interrompida.")) return; const motivo = window.prompt("Motivo do cancelamento (opcional):")?.trim() || undefined; setAcaoTarefa("cancel"); setError(null); try { await bundle.http.request("POST", `/gerenteagentes/tarefas/${id}/cancel`, { body: { motivo }, auth: "access" }); await loadTasks(); if (id === selectedId) await refreshSelected(id) } catch (e) { setError(e instanceof Error ? e.message : "Erro ao cancelar a tarefa.") } finally { setAcaoTarefa(null) } }, [bundle, acaoTarefa, selectedId, loadTasks, refreshSelected])
+  const cancelarTarefa = useCallback(async (id: number) => {
+    if (!bundle || acaoTarefa !== null) return
+    if (!window.confirm("Cancelar esta tarefa imediatamente? A execução será interrompida.")) return
+    const motivo = window.prompt("Motivo do cancelamento (opcional):")?.trim() || undefined
+    setAcaoTarefa("cancel")
+    setError(null)
+    try {
+      await bundle.http.request("POST", `/gerenteagentes/tarefas/${id}/cancel`, { body: { motivo }, auth: "access" })
+      // A atualização acontece via WebSocket (evento task.status.changed no canal "map")
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Erro ao cancelar a tarefa.")
+    } finally {
+      setAcaoTarefa(null)
+    }
+  }, [bundle, acaoTarefa])
   /**
    * Exclusão definitiva da tarefa e dos dados operacionais vinculados
    * (subtarefas, sessões, eventos). Irreversível — exige confirmação explícita.
    */
-  const excluirTarefa = useCallback(async (id: number) => { if (!bundle || acaoTarefa !== null) return; if (!window.confirm("Excluir esta tarefa e seus dados operacionais? Esta ação não pode ser desfeita.")) return; setAcaoTarefa("delete"); setError(null); try { await bundle.http.request("DELETE", `/gerenteagentes/tarefas/${id}`, { auth: "access" }); setDrawerOpen(false); setSelectedId(""); await loadTasks() } catch (e) { setError(e instanceof Error ? e.message : "Erro ao excluir a tarefa.") } finally { setAcaoTarefa(null) } }, [bundle, acaoTarefa, loadTasks])
-  const confirmarDeploy = useCallback(async (id: number) => { if (!bundle || !window.confirm("Confirmar que o deploy foi realizado com sucesso?")) return; setError(null); setAcaoTarefa("confirm-deploy"); try { await bundle.http.request("POST", `/gerenteagentes/tarefas/${id}/confirm-deploy`, { auth: "access" }); await loadTasks(); if (id === selectedId) await refreshSelected(id) } catch (e) { setError(e instanceof Error ? e.message : "Erro ao confirmar deploy.") } finally { setAcaoTarefa(null) } }, [bundle, selectedId, loadTasks, refreshSelected])
+  const excluirTarefa = useCallback(async (id: number) => {
+    if (!bundle || acaoTarefa !== null) return
+    if (!window.confirm("Excluir esta tarefa e seus dados operacionais? Esta ação não pode ser desfeita.")) return
+    setAcaoTarefa("delete")
+    setError(null)
+    try {
+      await bundle.http.request("DELETE", `/gerenteagentes/tarefas/${id}`, { auth: "access" })
+      setDrawerOpen(false)
+      setSelectedId("")
+      // A atualização da lista acontece via WebSocket (evento task.deleted no canal "map")
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Erro ao excluir a tarefa.")
+    } finally {
+      setAcaoTarefa(null)
+    }
+  }, [bundle, acaoTarefa])
+  const confirmarDeploy = useCallback(async (id: number) => {
+    if (!bundle || !window.confirm("Confirmar que o deploy foi realizado com sucesso?")) return
+    setError(null)
+    setAcaoTarefa("confirm-deploy")
+    try {
+      await bundle.http.request("POST", `/gerenteagentes/tarefas/${id}/confirm-deploy`, { auth: "access" })
+      // A atualização acontece via WebSocket (evento task.status.changed no canal "map")
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Erro ao confirmar deploy.")
+    } finally {
+      setAcaoTarefa(null)
+    }
+  }, [bundle])
   const bulk = async (action: "pause-all" | "resume-all") => { if (!bundle) return; setBulkAction(action); setBulkMessage(null); try { const result = await bundle.http.request<MotorState>("POST", `/gerenteagentes/tarefas/${action}`, { auth: "access" }); setMotorActive(result.active); setBulkMessage(result.active ? "Motor ativado. Novas atividades voltarão a ser despachadas." : "Motor pausado. Atividades em andamento continuam; novas atividades serão adiadas."); } catch (e) { setBulkMessage(e instanceof Error ? e.message : "Não foi possível alterar o estado do Motor.") } finally { setBulkAction(null) } }
   const sendChat = async (modo: "normal" | "solicitar_pausa" = "normal") => { const text = chatInput.trim(); if (!bundle || selectedId === "" || !text || chatSending) return; const id = selectedId; setChatSending(true); setChatWaiting(true); setChatError(null); try { await bundle.http.request("POST", `/gerenteagentes/tarefas/${id}/chat`, { body: { texto: text, modo }, auth: "access" }); if (selectedId === id) { setChatInput(""); await loadChat(id) } } catch (e) { if (selectedId === id) { setChatWaiting(false); setChatError(e instanceof Error ? e.message : "Não foi possível enviar a mensagem.") } } finally { setChatSending(false) } }
   const resumeInteraction = async () => { if (!bundle || selectedId === "") return; setChatSending(true); setChatError(null); try { await bundle.http.request("POST", `/gerenteagentes/tarefas/${selectedId}/interacao/retomar`, { auth: "access" }); await refreshSelected(selectedId) } catch (e) { setChatError(e instanceof Error ? e.message : "Não foi possível retomar a execução.") } finally { setChatSending(false) } }
@@ -200,15 +474,80 @@ export default function OperationMapScreen() {
   )
 
   const openTask = (id: number) => { setSelectedId(id); setDrawerOpen(true); setTab(0); setDetailMinimized(false) }
-  const createTask = async (values: TarefaFormValues) => { if (!bundle) return; setNewTaskLoading(true); setNewTaskError(null); try { await bundle.http.request("POST", "/gerenteagentes/tarefas", { body: { projeto_id: Number(values.projetoId), titulo: values.titulo, descricao: values.descricao || null, tipo: values.tipo }, auth: "access" }); setNewTaskOpen(false); await loadTasks() } catch (e) { setNewTaskError(e instanceof Error ? e.message : "Erro ao criar tarefa"); throw e } finally { setNewTaskLoading(false) } }
+  const createTask = async (values: TarefaFormValues) => {
+    if (!bundle) return
+    setNewTaskLoading(true)
+    setNewTaskError(null)
+    try {
+      await bundle.http.request("POST", "/gerenteagentes/tarefas", {
+        body: { projeto_id: Number(values.projetoId), titulo: values.titulo, descricao: values.descricao || null, tipo: values.tipo },
+        auth: "access",
+      })
+      setNewTaskOpen(false)
+      // A atualização da lista acontece via WebSocket (evento task.created no canal "map")
+    } catch (e) {
+      setNewTaskError(e instanceof Error ? e.message : "Erro ao criar tarefa")
+      throw e
+    } finally {
+      setNewTaskLoading(false)
+    }
+  }
   const getLoadOptions = useCallback((resource: string) => async (search: string) => { if (!bundle) return []; try { const result = await bundle.http.request<{ items: Array<Record<string, unknown>> }>("GET", `/${resource}`, { query: search ? { search, pageSize: 50 } : { pageSize: 100 }, auth: "access" }); return result.items ?? [] } catch { return [] } }, [bundle])
   const editFields: DynamicField[] = useMemo(() => [{ name: "titulo", label: "Título", type: "text", required: true, maxLength: 200, fullWidth: true }, { name: "descricao", label: "Descrição", type: "textarea", fullWidth: true }, { name: "tipo", label: "Tipo de tarefa", type: "select", options: [{ value: "desenvolvimento", label: "Desenvolvimento" }, { value: "automacao", label: "Automação" }, { value: "verificacao", label: "Verificação" }] }, { name: "dependsOnTaskId", label: "Depende da tarefa", type: "multipleChoice", multipleChoice: { resource: "tarefas", idField: "id", displayField: "titulo", loadOptions: getLoadOptions("tarefas") } }], [getLoadOptions])
-  const editTask = async (values: DynamicFormValues) => { if (!bundle || !selected) return; setEditLoading(true); setEditError(null); try { await bundle.http.request("PUT", `/gerenteagentes/tarefas/${selected.id}`, { body: { titulo: String(values.titulo ?? "").trim(), descricao: values.descricao ? String(values.descricao).trim() : null, tipo: String(values.tipo ?? "desenvolvimento"), dependsOnTaskId: values.dependsOnTaskId !== "" && values.dependsOnTaskId != null ? Number(values.dependsOnTaskId) : null }, auth: "access" }); setEditOpen(false); await loadTasks(); await refreshSelected(selected.id) } catch (e) { setEditError(e instanceof Error ? e.message : "Erro ao editar tarefa") } finally { setEditLoading(false) } }
+  const editTask = async (values: DynamicFormValues) => {
+    if (!bundle || !selected) return
+    setEditLoading(true)
+    setEditError(null)
+    try {
+      await bundle.http.request("PUT", `/gerenteagentes/tarefas/${selected.id}`, {
+        body: {
+          titulo: String(values.titulo ?? "").trim(),
+          descricao: values.descricao ? String(values.descricao).trim() : null,
+          tipo: String(values.tipo ?? "desenvolvimento"),
+          dependsOnTaskId: values.dependsOnTaskId !== "" && values.dependsOnTaskId != null ? Number(values.dependsOnTaskId) : null,
+        },
+        auth: "access",
+      })
+      setEditOpen(false)
+      // A atualização acontece via WebSocket (evento task.updated no canal "map")
+    } catch (e) {
+      setEditError(e instanceof Error ? e.message : "Erro ao editar tarefa")
+    } finally {
+      setEditLoading(false)
+    }
+  }
   const openSessions = async (subtask?: MotorSubtask) => { if (!bundle || selectedId === "") return; setSessionSubtaskSeq(subtask?.seq ?? null); setSessionTitle(subtask ? `Sessão da subtarefa #${subtask.seq}` : "Sessões do analista"); setSessionOpen(true); setSessionLoading(true); setSessionError(null); setSessionPageLoading(new Set()); setSessionPageErrors({}); sessionPageLoadingRef.current.clear(); try { const path = subtask ? `/gerenteagentes/tarefas/${selectedId}/subtarefas/${subtask.seq}/sessao` : `/gerenteagentes/tarefas/${selectedId}/sessoes-analista`; const result = await bundle.http.request<SessionsResponse>("GET", path, { auth: "access" }); setSessions(result.sessions ?? []) } catch (e) { setSessionError(e instanceof Error ? e.message : "Não foi possível carregar as sessões.") } finally { setSessionLoading(false) } }
   const loadMoreSession = useCallback(async (session: Session) => { if (!bundle || selectedId === "" || !session.messages.hasNextPage || !session.messages.nextCursor || sessionPageLoadingRef.current.has(session.sessionKey)) return; const key = session.sessionKey; sessionPageLoadingRef.current.add(key); setSessionPageLoading(old => new Set(old).add(key)); setSessionPageErrors(old => { const next = { ...old }; delete next[key]; return next }); try { const path = sessionSubtaskSeq == null ? `/gerenteagentes/tarefas/${selectedId}/sessoes-analista` : `/gerenteagentes/tarefas/${selectedId}/subtarefas/${sessionSubtaskSeq}/sessao`; const result = await bundle.http.request<SessionsResponse>("GET", path, { query: { sessionKey: key, cursor: session.messages.nextCursor }, auth: "access" }); const page = result.sessions.find(item => item.sessionKey === key)?.messages; if (page) setSessions(old => old.map(item => item.sessionKey === key ? { ...item, messages: { ...item.messages, items: [...item.messages.items, ...page.items].sort((a, b) => b.sequenceNumber - a.sequenceNumber), nextCursor: page.nextCursor, hasNextPage: page.hasNextPage } } : item)) } catch (e) { setSessionPageErrors(old => ({ ...old, [key]: e instanceof Error ? e.message : "Não foi possível carregar mais mensagens." })) } finally { sessionPageLoadingRef.current.delete(key); setSessionPageLoading(old => { const next = new Set(old); next.delete(key); return next }) } }, [bundle, selectedId, sessionSubtaskSeq])
   const handleSessionScroll = useCallback((event: React.UIEvent<HTMLElement>, session: Session) => { const element = event.currentTarget; if (element.scrollHeight - element.scrollTop - element.clientHeight < 48) void loadMoreSession(session) }, [loadMoreSession])
   const editSubFields: DynamicField[] = useMemo(() => [{ name: "titulo", label: "Título", type: "text", required: true, fullWidth: true }, { name: "status", label: "Status", type: "select", options: SUBTASK_STATUS_OPTIONS }, { name: "seq", label: "Ordem", type: "number", min: 0 }, { name: "scope", label: "Escopo", type: "textarea", required: true, fullWidth: true }, { name: "acceptance_criteria", label: "Critérios de aceite (um por linha)", type: "textarea", fullWidth: true }, { name: "resultado", label: "Resultado", type: "textarea", fullWidth: true }, { name: "dependsOnSubtaskId", label: "Depende da subtarefa", type: "multipleChoice", multipleChoice: { resource: "subtarefas", idField: "id", displayField: "titulo", loadOptions: getLoadOptions("subtarefas") } }], [getLoadOptions])
-  const saveSubtask = async (values: DynamicFormValues) => { if (!bundle || !editingSub) return; const scope = String(values.scope ?? "").trim(); if (!scope) { setEditSubError("O escopo é obrigatório."); return } setEditSubLoading(true); setEditSubError(null); try { await bundle.http.request("PUT", `/gerenteagentes/subtarefas/${editingSub.id}`, { body: { titulo: String(values.titulo ?? "").trim(), status: String(values.status ?? editingSub.status), seq: Number(values.seq ?? editingSub.seq), scope, acceptance_criteria: String(values.acceptance_criteria ?? "").split("\n").map(s => s.trim()).filter(Boolean), resultado: values.resultado ? String(values.resultado).trim() : null, dependsOnSubtaskId: values.dependsOnSubtaskId !== "" && values.dependsOnSubtaskId != null ? Number(values.dependsOnSubtaskId) : null }, auth: "access" }); setEditSubOpen(false); setEditingSub(null); await refreshSelected(selectedId as number) } catch (e) { setEditSubError(e instanceof Error ? e.message : "Erro ao editar subtarefa") } finally { setEditSubLoading(false) } }
+  const saveSubtask = async (values: DynamicFormValues) => {
+    if (!bundle || !editingSub) return
+    const scope = String(values.scope ?? "").trim()
+    if (!scope) { setEditSubError("O escopo é obrigatório."); return }
+    setEditSubLoading(true)
+    setEditSubError(null)
+    try {
+      await bundle.http.request("PUT", `/gerenteagentes/subtarefas/${editingSub.id}`, {
+        body: {
+          titulo: String(values.titulo ?? "").trim(),
+          status: String(values.status ?? editingSub.status),
+          seq: Number(values.seq ?? editingSub.seq),
+          scope,
+          acceptance_criteria: String(values.acceptance_criteria ?? "").split("\n").map(s => s.trim()).filter(Boolean),
+          resultado: values.resultado ? String(values.resultado).trim() : null,
+          dependsOnSubtaskId: values.dependsOnSubtaskId !== "" && values.dependsOnSubtaskId != null ? Number(values.dependsOnSubtaskId) : null,
+        },
+        auth: "access",
+      })
+      setEditSubOpen(false)
+      setEditingSub(null)
+      // A atualização acontece via WebSocket (evento subtask.updated no canal "task")
+    } catch (e) {
+      setEditSubError(e instanceof Error ? e.message : "Erro ao editar subtarefa")
+    } finally {
+      setEditSubLoading(false)
+    }
+  }
 
   if (tasksLoading && tasks.length === 0) return <Box data-testid="operation-map-screen" sx={{ width: "100%", display: "flex", justifyContent: "center", p: 4 }}><CircularProgress aria-label="Carregando tarefas" /></Box>
   return <Box data-testid="operation-map-screen" sx={{ width: "100%", maxWidth: 1800, mx: "auto", display: "flex", flexDirection: { xs: "column", lg: "row" }, gap: 2, alignItems: "flex-start", position: "relative" }}>

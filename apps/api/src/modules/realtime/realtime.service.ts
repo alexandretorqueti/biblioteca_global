@@ -45,6 +45,7 @@ export class RealtimeService {
     if (feed.length > LIMITE_EVENTOS_POR_TAREFA * 10) feed.splice(0, feed.length - LIMITE_EVENTOS_POR_TAREFA * 10)
     this.eventosPorProjeto.set(envelope.projectId, feed)
     this.enviarFeed(envelope.projectId, { type: "event", event: envelope })
+    this.enviarMapa(envelope.projectId, { type: "event", event: envelope })
     return envelope
   }
 
@@ -133,6 +134,10 @@ export class RealtimeService {
 
   private enviarFeed(projectId: number, message: RealtimeServerMessage): void {
     for (const client of this.inscritosFeed.get(projectId)?.keys() ?? []) this.enviarPara(client, message)
+  }
+
+  private enviarMapa(projectId: number, message: RealtimeServerMessage): void {
+    for (const client of this.inscritosMapa.get(projectId)?.keys() ?? []) this.enviarPara(client, message)
   }
 
   private enviarPara(client: WebSocket, message: RealtimeServerMessage): void {

@@ -103,4 +103,18 @@ describe('RealtimeService — canal do mapa', () => {
     service.publicar({ eventId: 'event-new', occurredAt: '2026-09-29T10:00:00.000Z', source: 'test', projectId: 7, taskId: 1, type: 'task.started', payload: {} })
     expect(client2.sent).toHaveLength(1)
   })
+
+  it('broadcast de eventos para inscritos no mapa quando publicar', () => {
+    const service = new RealtimeService()
+    const mapClient = client()
+    const snapshot = { projectId: 7, tasks: [], counters: { total: 0 } }
+    service.inscreverMapa(7, mapClient as never, snapshot)
+    // Publicar evento deve enviar para o cliente do mapa
+    service.publicar({ eventId: 'event-map-1', occurredAt: '2026-09-29T10:00:00.000Z', source: 'test', projectId: 7, taskId: 1, type: 'task.created', payload: { titulo: 'Nova tarefa' } })
+    // mapClient deve receber snapshot + evento
+    expect(mapClient.sent).toHaveLength(2)
+    expect(JSON.parse(mapClient.sent[0]!).type).toBe('map_snapshot')
+    expect(JSON.parse(mapClient.sent[1]!).type).toBe('event')
+    expect(JSON.parse(mapClient.sent[1]!).event.type).toBe('task.created')
+  })
 })
