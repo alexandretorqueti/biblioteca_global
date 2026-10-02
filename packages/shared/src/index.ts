@@ -138,6 +138,9 @@ export {
 // Eventos de execução em tempo real
 export {
   taskExecutionEventSchema,
+  realtimeEventTypeSchema,
+  agentMapSnapshotSchema,
+  taskDetailSnapshotSchema,
   realtimeIngressEventSchema,
   taskEventEnvelopeSchema,
   realtimeClientMessageSchema,
@@ -145,11 +148,15 @@ export {
 } from "./realtime"
 export type {
   TaskExecutionEvent,
+  RealtimeEventType,
+  AgentMapSnapshot,
+  TaskDetailSnapshot,
   RealtimeIngressEvent,
   TaskEventEnvelope,
   RealtimeClientMessage,
   RealtimeServerMessage,
 } from "./realtime"
+export { REALTIME_REPLAY_UNAVAILABLE_CODE } from "./realtime"
 export type {
   ModelSelectionTipo,
   ModelSelectionEntry,

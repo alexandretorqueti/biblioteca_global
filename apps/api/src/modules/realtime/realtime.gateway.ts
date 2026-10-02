@@ -3,23 +3,30 @@ import { JwtService } from "@nestjs/jwt"
 import { WebSocketGateway, SubscribeMessage, MessageBody, ConnectedSocket } from "@nestjs/websockets"
 import type { IncomingMessage } from "node:http"
 import type { WebSocket } from "ws"
-import { realtimeClientMessageSchema, type RealtimeClientMessage } from "@biblioteca-global/shared"
+import { realtimeClientMessageSchema, type RealtimeClientMessage, type AgentMapSnapshot } from "@biblioteca-global/shared"
 import { AUTH_REPOSITORY, type AuthRepository } from "../auth/auth.repository"
 import { RealtimeService } from "./realtime.service"
 
 interface SocketSession { projetoId: number }
+
+export type MapSnapshotProvider = (projectId: number) => Promise<AgentMapSnapshot> | AgentMapSnapshot
 
 @Injectable()
 @WebSocketGateway({ path: "/api/realtime/ws" })
 export class RealtimeGateway {
   private readonly logger = new Logger(RealtimeGateway.name)
   private readonly sessoes = new WeakMap<WebSocket, SocketSession>()
+  private mapSnapshotProvider: MapSnapshotProvider | null = null
 
   constructor(
     @Inject(JwtService) private readonly jwt: JwtService,
     @Inject(AUTH_REPOSITORY) private readonly authRepository: AuthRepository,
     @Inject(RealtimeService) private readonly realtime: RealtimeService,
   ) {}
+
+  setMapSnapshotProvider(provider: MapSnapshotProvider | null): void {
+    this.mapSnapshotProvider = provider
+  }
 
   async handleConnection(client: WebSocket, request: IncomingMessage): Promise<void> {
     try {
@@ -72,15 +79,40 @@ export class RealtimeGateway {
       client.send(JSON.stringify({ type: "feed_subscribed", currentSequence: result.currentSequence }))
       return
     }
-    if (message.taskId <= 0) {
-      client.send(JSON.stringify({ type: "error", code: "INVALID_SUBSCRIPTION", message: "Tarefa inválida" }))
+    if (message.channel === "map") {
+      void this.handleMapSubscription(client, session.projetoId, message.lastSequence)
       return
     }
-    const result = this.realtime.inscrever(message.taskId, session.projetoId, client, message.lastSequence)
-    if (!result.replayAvailable) {
-      client.send(JSON.stringify({ type: "replay_unavailable", taskId: message.taskId, currentSequence: result.currentSequence }))
+    if (message.channel === "task") {
+      if (!message.taskId || message.taskId <= 0) {
+        client.send(JSON.stringify({ type: "error", code: "INVALID_SUBSCRIPTION", message: "Tarefa inválida" }))
+        return
+      }
+      const result = this.realtime.inscrever(message.taskId, session.projetoId, client, message.lastSequence)
+      if (!result.replayAvailable) {
+        client.send(JSON.stringify({ type: "replay_unavailable", taskId: message.taskId, currentSequence: result.currentSequence }))
+      }
+      client.send(JSON.stringify({ type: "subscribed", taskId: message.taskId, currentSequence: result.currentSequence }))
+      return
     }
-    client.send(JSON.stringify({ type: "subscribed", taskId: message.taskId, currentSequence: result.currentSequence }))
+    client.send(JSON.stringify({ type: "error", code: "INVALID_SUBSCRIPTION", message: "Canal inválido" }))
+  }
+
+  private async handleMapSubscription(client: WebSocket, projectId: number, lastSequence?: number): Promise<void> {
+    if (!this.mapSnapshotProvider) {
+      client.send(JSON.stringify({ type: "error", code: "MAP_SNAPSHOT_UNAVAILABLE", message: "Snapshot do mapa indisponível" }))
+      return
+    }
+    try {
+      const snapshot = await this.mapSnapshotProvider(projectId)
+      const result = this.realtime.inscreverMapa(projectId, client, snapshot, lastSequence)
+      if (!result.replayAvailable) {
+        client.send(JSON.stringify({ type: "map_replay_unavailable", projectId, currentSequence: result.currentSequence }))
+      }
+      client.send(JSON.stringify({ type: "map_subscribed", projectId, currentSequence: result.currentSequence }))
+    } catch {
+      client.send(JSON.stringify({ type: "error", code: "MAP_SNAPSHOT_FAILED", message: "Falha ao obter snapshot do mapa" }))
+    }
   }
 
   @SubscribeMessage("ping")

@@ -341,6 +341,27 @@ describe("RealtimeClient", () => {
     client.close()
   })
 
+  it("descarta evento desconhecido, duplicado e fora de sequência", async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ ticket: "ticket-dedup" }) })
+    const client = new RealtimeClient(options)
+    void client.connect()
+    await vi.waitFor(() => expect(sockets[0]).toBeDefined())
+    const ws = sockets[0]!
+    ws.simulateOpen()
+    const event = {
+      type: "event", event: {
+        eventId: "dedup-1", occurredAt: "2026-09-01T10:00:00Z", source: "motor",
+        projectId: 1, taskId: 123, type: "task.updated", sequence: 2, payload: {},
+      },
+    }
+    ws.simulateMessage({ type: "event", event: { ...event.event, type: "future.event" } })
+    ws.simulateMessage(event)
+    ws.simulateMessage(event)
+    ws.simulateMessage({ ...event, event: { ...event.event, eventId: "old", sequence: 1 } })
+    expect(options.onMessage).toHaveBeenCalledTimes(1)
+    client.close()
+  })
+
   it("inclui lastSequence inicial (do construtor) no subscribe", async () => {
     fetchMock.mockResolvedValue({
       ok: true,
@@ -356,6 +377,105 @@ describe("RealtimeClient", () => {
 
     const subscribeMsg = JSON.parse(sockets[0]!.sent[0]!)
     expect(subscribeMsg.lastSequence).toBe(42)
+
+    client.close()
+  })
+
+  // --------------------------------------------------------------------------
+  // Canal "map" (st-5)
+  // --------------------------------------------------------------------------
+
+  it("canal 'map' envia subscribe sem taskId", async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ ticket: "ticket-map" }),
+    })
+
+    options.channel = "map"
+    options.taskId = undefined
+    const client = new RealtimeClient(options)
+    void client.connect()
+
+    await vi.waitFor(() => expect(sockets[0]).toBeDefined())
+    sockets[0]!.simulateOpen()
+
+    const subscribeMsg = JSON.parse(sockets[0]!.sent[0]!)
+    expect(subscribeMsg.type).toBe("subscribe")
+    expect(subscribeMsg.channel).toBe("map")
+    expect(subscribeMsg.taskId).toBeUndefined()
+
+    client.close()
+  })
+
+  it("canal 'map' processa map_snapshot e atualiza lastSequence", async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ ticket: "ticket-map-snapshot" }),
+    })
+
+    options.channel = "map"
+    options.taskId = undefined
+    const client = new RealtimeClient(options)
+    void client.connect()
+
+    await vi.waitFor(() => expect(sockets[0]).toBeDefined())
+    sockets[0]!.simulateOpen()
+
+    // Simular recebimento de map_snapshot
+    sockets[0]!.simulateMessage({
+      type: "map_snapshot",
+      projectId: 7,
+      currentSequence: 10,
+      snapshot: { projectId: 7, tasks: [], counters: { total: 0 } },
+    })
+
+    expect(options.onMessage).toHaveBeenCalledWith({
+      type: "map_snapshot",
+      projectId: 7,
+      currentSequence: 10,
+      snapshot: { projectId: 7, tasks: [], counters: { total: 0 } },
+    })
+
+    // Queda + reconexão deve incluir lastSequence=10
+    sockets[0]!.simulateClose()
+
+    // Aguardar reconexão (backoff de 1s)
+    await new Promise(resolve => setTimeout(resolve, 1100))
+
+    await vi.waitFor(() => expect(sockets[1]).toBeDefined())
+    sockets[1]!.simulateOpen()
+
+    const subscribeMsg = JSON.parse(sockets[1]!.sent[0]!)
+    expect(subscribeMsg.lastSequence).toBe(10)
+
+    client.close()
+  })
+
+  it("canal 'map' processa map_replay_unavailable", async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ ticket: "ticket-map-replay" }),
+    })
+
+    options.channel = "map"
+    options.taskId = undefined
+    const client = new RealtimeClient(options)
+    void client.connect()
+
+    await vi.waitFor(() => expect(sockets[0]).toBeDefined())
+    sockets[0]!.simulateOpen()
+
+    sockets[0]!.simulateMessage({
+      type: "map_replay_unavailable",
+      projectId: 7,
+      currentSequence: 15,
+    })
+
+    expect(options.onMessage).toHaveBeenCalledWith({
+      type: "map_replay_unavailable",
+      projectId: 7,
+      currentSequence: 15,
+    })
 
     client.close()
   })
