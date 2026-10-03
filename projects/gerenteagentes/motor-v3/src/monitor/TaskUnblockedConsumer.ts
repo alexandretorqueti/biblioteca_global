@@ -73,18 +73,80 @@ export class TaskUnblockedConsumer {
     const connection: PoolConnection = await this.pool.getConnection()
     try {
       await connection.beginTransaction()
-      await connection.query<ResultSetHeader>(
-        `UPDATE deploy_requests
-            SET status='pending', last_error=NULL, started_at=NULL, finished_at=NULL, updated_at=NOW()
-          WHERE tarefa_id=? AND status='failed'`,
+      // O bloqueio é emitido por membro, mas a unidade de reentrada é o lote.
+      // Primeiro localizamos e bloqueamos todos os membros; só depois alteramos
+      // qualquer pedido. Isso evita que o primeiro TASK_UNBLOCKED crie um lote
+      // concorrente enquanto os demais membros ainda apontam para o lote falho.
+      const [seedRows] = await connection.query<Array<RowDataPacket & {
+        batch_id: string | null
+        repo_path: string
+        base_branch: string
+        requested_commit: string
+      }>>(
+        `SELECT dr.batch_id,dr.repo_path,dr.base_branch,dr.requested_commit
+           FROM deploy_requests dr
+          WHERE dr.tarefa_id=? AND dr.status='failed'
+          ORDER BY dr.id DESC LIMIT 1 FOR UPDATE`,
         [databaseTaskId],
       )
+      const batchId = seedRows[0]?.batch_id ? String(seedRows[0].batch_id) : null
+      let memberTaskIds = [databaseTaskId]
+      if (batchId) {
+        const [memberRows] = await connection.query<Array<RowDataPacket & { tarefa_id: number }>>(
+          `SELECT dr.id,dr.tarefa_id,dr.repo_path,dr.base_branch,dr.requested_commit
+             FROM deploy_requests dr
+            WHERE dr.batch_id=?
+            ORDER BY dr.id FOR UPDATE`,
+          [batchId],
+        )
+        const ids = memberRows.map(row => Number(row.tarefa_id)).filter(Number.isInteger)
+        if (ids.length > 0) memberTaskIds = ids
+        // O lote falho deixa de ser reutilizável. Seus membros voltam a ser
+        // pedidos novos; o registro do lote e last_error permanecem como
+        // diagnóstico histórico. O UPDATE condicionado torna a operação
+        // idempotente para redelivery e para desbloqueios de outros membros.
+      }
+      const [reset] = await connection.query<ResultSetHeader>(
+        `UPDATE deploy_requests
+            SET status='pending', batch_id=NULL, started_at=NULL, finished_at=NULL, updated_at=NOW()
+          WHERE ${batchId ? 'batch_id=?' : 'tarefa_id=?'} AND status='failed'`,
+        [batchId ?? databaseTaskId],
+      )
+      if (Number(reset.affectedRows ?? 0) === 0) {
+        await connection.commit()
+        return 0
+      }
+      if (batchId) {
+        // Nenhum gate/dispatch órfão do lote pode reacender a execução antiga.
+        // Eventos históricos e o diagnóstico do lote não são removidos.
+        await connection.query(
+          `UPDATE test_gate_jobs SET status='failed',finished_at=COALESCE(finished_at,NOW(3)),
+                  updated_at=NOW(3),error_message=COALESCE(error_message,?)
+             WHERE id=(SELECT gate_job_id FROM deploy_batches WHERE batch_id=? LIMIT 1)
+               AND status IN ('pending','processing')`,
+          ['Gate invalidado pela recuperação idempotente do lote', batchId],
+        )
+        await connection.query(
+          `DELETE FROM motor_outbox
+             WHERE status='pending'
+               AND type IN ('DEPLOY_BATCH_DISPATCH_REQUESTED','DEPLOY_RECONCILIATION_REQUESTED')
+               AND JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.batchId'))=?`,
+          [batchId],
+        )
+        // Só o dono do lote pode liberar o lock; um desbloqueio atrasado não
+        // pode liberar o lock de um deploy concorrente.
+        await connection.query(
+          `UPDATE motor_deploy_lock SET locked=FALSE,locked_at=NULL,locked_by=NULL,reason=NULL
+             WHERE id=1 AND locked_by=?`,
+          [batchId],
+        )
+      }
       const [groups] = await connection.query<Array<RowDataPacket & { repo_path: string; base_branch: string; requested_commit: string }>>(
         `SELECT repo_path, base_branch, requested_commit
            FROM deploy_requests
-          WHERE tarefa_id=? AND status='pending'
+          WHERE tarefa_id IN (${memberTaskIds.map(() => '?').join(',')}) AND status='pending'
           GROUP BY repo_path, base_branch, requested_commit`,
-        [databaseTaskId],
+        memberTaskIds,
       )
       for (const group of groups) {
         const dispatch = createQueueMessage({
@@ -95,7 +157,23 @@ export class TaskUnblockedConsumer {
           causationId: source.messageId,
           payload: { repository: group.repo_path, baseBranch: group.base_branch, expectedCommit: group.requested_commit },
         })
-        await insertOutboxMessage(connection, dispatch)
+        // A segunda entrega de TASK_UNBLOCKED encontra affectedRows=0 acima.
+        // Ainda assim, o predicado protege contra boot/reconciliador concorrente.
+        await connection.query(
+          `INSERT INTO motor_outbox (message_id,type,destination_queue,task_id,execution_id,payload_json,timestamp,correlation_id,causation_id,status,attempt)
+           SELECT ?,?,?, ?,?,?,NOW(),?,?,'pending',0
+             FROM DUAL
+            WHERE NOT EXISTS (
+              SELECT 1 FROM motor_outbox
+               WHERE status='pending' AND type='DEPLOY_BATCH_DISPATCH_REQUESTED'
+                 AND JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.repository'))=?
+                 AND JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.baseBranch'))=?
+                 AND JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.expectedCommit'))=?
+            )`,
+          [dispatch.messageId, dispatch.type, 'motor.commands', dispatch.taskId, dispatch.executionId,
+            JSON.stringify(dispatch.payload), dispatch.correlationId ?? null, dispatch.causationId ?? null,
+            group.repo_path, group.base_branch, group.requested_commit],
+        )
       }
       await connection.commit()
       return groups.length
