@@ -120,12 +120,16 @@ export class DeployConsumer {
     const batch = (await this.repository.runningBatches()).find(item => item.batchId === batchId); if (!batch) return
     const operationId = randomUUID(); await this.log(operationId, 1, 'received', 'executed', message, { commandCode: 'C12_DEPLOY_RECONCILIATION_REQUESTED' })
     if (!await this.govern(operationId, message, 'A32_RECONCILE_DEPLOY_BATCH')) return
-    const status = batch.remoteStatusPath ? await this.remote.status(batch.remoteStatusPath) : null
+    const remoteResult = batch.remoteStatusPath ? await this.remote.status(batch.remoteStatusPath, batch.remotePid) : { state: 'absent' as const, status: null, diagnostic: 'marcador remoto ausente' }
     const timedOut = batch.startedAt && Date.now() - new Date(batch.startedAt).getTime() > this.timeoutMs
-    if (status === 'success' || status?.startsWith('failed:') || timedOut) {
-      const success = status === 'success'; const reason = success ? null : status?.startsWith('failed:') ? `script blue-green retornou ${status}` : 'processo remoto não produziu resultado dentro do timeout'
+    if (remoteResult.state === 'success' || remoteResult.state === 'failed' || remoteResult.state === 'invalid' || remoteResult.state === 'absent' && timedOut) {
+      const success = remoteResult.state === 'success'
+      const reason = success ? null : [
+        remoteResult.state === 'failed' ? `script blue-green retornou ${remoteResult.status}` : remoteResult.state === 'invalid' ? `status remoto inválido: ${remoteResult.status}` : 'processo remoto não produziu resultado dentro do timeout',
+        remoteResult.diagnostic,
+      ].filter(Boolean).join('; ')
       const taskIds = await this.repository.completeBatch(batchId, success, reason, message)
-      await this.log(operationId, 3, success ? 'completed' : 'failed', success ? 'succeeded' : 'failed', message, { actionCode: 'A32_RECONCILE_DEPLOY_BATCH', primitiveCode: success ? 'complete_deploy_batch_atomic' : 'fail_deploy_batch_atomic', result: { batchId, taskIds, reason } })
+      await this.log(operationId, 3, success ? 'completed' : 'failed', success ? 'succeeded' : 'failed', message, { actionCode: 'A32_RECONCILE_DEPLOY_BATCH', primitiveCode: success ? 'complete_deploy_batch_atomic' : 'fail_deploy_batch_atomic', result: { batchId, taskIds, reason, remoteState: remoteResult.state, diagnostic: remoteResult.diagnostic } })
     }
   }
 

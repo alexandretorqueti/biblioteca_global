@@ -5,6 +5,11 @@ const execFileAsync = promisify(execFile)
 
 export interface RemoteDeploymentStart { batchId: string; expectedCommit: string; hostRepoRoot: string; deployScript: string }
 export interface RemoteDeploymentHandle { pid: string; statusPath: string; logPath: string }
+export type RemoteDeploymentStatus =
+  | { state: 'active'; status: null; diagnostic: string | null }
+  | { state: 'success'; status: 'success'; diagnostic: string | null }
+  | { state: 'failed'; status: `failed:${number}`; diagnostic: string | null }
+  | { state: 'absent' | 'invalid'; status: string | null; diagnostic: string }
 
 /** Adaptador de infraestrutura: SSH e quoting nunca vazam para o domínio. */
 export class RemoteBlueGreenDeployer {
@@ -22,7 +27,7 @@ export class RemoteBlueGreenDeployer {
     const statusPath = `/tmp/biblioteca-global-${safeBatch}.status`
     const logPath = `/tmp/biblioteca-global-${safeBatch}.log`
     const script = `${input.hostRepoRoot.replace(/\/$/, '')}/${input.deployScript.replace(/^\//, '')}`
-    const run = `EXPECTED_DEPLOY_COMMIT=${quote(input.expectedCommit)} bash ${quote(script)} ${quote(input.hostRepoRoot)} ${quote(input.expectedCommit)} ${quote(safeBatch)}`
+    const run = `MOTOR_DEPLOY_STATUS_FILE=${quote(statusPath)} MOTOR_DEPLOY_LOG_FILE=${quote(logPath)} EXPECTED_DEPLOY_COMMIT=${quote(input.expectedCommit)} bash ${quote(script)} ${quote(input.hostRepoRoot)} ${quote(input.expectedCommit)} ${quote(safeBatch)}`
     const wrapped = `(${run}; code=$?; if [ $code -eq 0 ]; then status=success; else status=failed:$code; fi; printf '%s' "$status" > ${quote(statusPath)}; exit $code)`
     const { stdout } = await this.ssh(`nohup bash -lc ${quote(wrapped)} > ${quote(logPath)} 2>&1 < /dev/null & echo $!`)
     const pid = stdout.trim()
@@ -30,10 +35,21 @@ export class RemoteBlueGreenDeployer {
     return { pid, statusPath, logPath }
   }
 
-  async status(statusPath: string): Promise<string | null> {
+  async status(statusPath: string, pid?: string | null): Promise<RemoteDeploymentStatus> {
     if (!/^\/tmp\/biblioteca-global-[A-Za-z0-9_-]+\.status$/.test(statusPath)) throw new Error('Caminho de status remoto inválido')
-    const { stdout } = await this.ssh(`if [ -f ${quote(statusPath)} ]; then cat ${quote(statusPath)}; fi`)
-    return stdout.trim() || null
+    if (pid != null && !/^\d+$/.test(pid)) throw new Error('PID remoto inválido')
+    const logPath = statusPath.replace(/\.status$/, '.log')
+    const pidCheck = pid ? `if kill -0 ${quote(pid)} 2>/dev/null; then printf 'active'; else printf 'absent'; fi` : "printf 'absent'"
+    const { stdout } = await this.ssh(`printf 'process='; ${pidCheck}; printf '\\nstatus='; if [ -f ${quote(statusPath)} ]; then cat ${quote(statusPath)}; fi; printf '\\nlog='; if [ -f ${quote(logPath)} ]; then tail -n 40 ${quote(logPath)}; fi`)
+    const process = stdout.match(/(?:^|\n)process=([^\n]*)/)?.[1] ?? 'absent'
+    const rawStatus = stdout.match(/(?:^|\n)status=([^\n]*)/)?.[1]?.trim() || null
+    const rawLog = stdout.match(/(?:^|\n)log=([\s\S]*)/)?.[1] ?? ''
+    const diagnostic = limitDiagnostic(rawLog)
+    if (rawStatus === 'success') return { state: 'success', status: 'success', diagnostic }
+    if (/^failed:[1-9]\d*$/.test(rawStatus ?? '')) return { state: 'failed', status: rawStatus as `failed:${number}`, diagnostic }
+    if (process === 'active') return { state: 'active', status: null, diagnostic: diagnostic || (rawStatus ? `status ainda não terminal: ${rawStatus}` : null) }
+    if (!rawStatus) return { state: 'absent', status: null, diagnostic: diagnostic || 'processo remoto ausente sem status terminal' }
+    return { state: 'invalid', status: rawStatus, diagnostic: diagnostic || `status remoto inválido: ${rawStatus}` }
   }
 
   private async ssh(command: string): Promise<{ stdout: string; stderr: string }> {
@@ -42,3 +58,9 @@ export class RemoteBlueGreenDeployer {
   }
 }
 function quote(value: string): string { return `'${value.replace(/'/g, `'"'"'`)}'` }
+
+function limitDiagnostic(value: string): string | null {
+  const normalized = value.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').trim()
+  if (!normalized) return null
+  return normalized.slice(-4000)
+}

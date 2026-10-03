@@ -39,4 +39,12 @@ describe("deploy de produção isolado do banco", () => {
     expect(script).toContain('callback_port="$NEW_MOTOR_PORT"')
     expect(script).toContain('callback_port="$(motor_port_for_slot "$active")"')
   })
+
+  it("grava a evidência antes do callback e limita a notificação", () => {
+    expect(script).toContain('write_deploy_status "$status"')
+    expect(script.indexOf('write_deploy_status "$status"')).toBeLessThan(script.indexOf('notify_deploy_result "$status"'))
+    expect(script).toContain('--connect-timeout "${MOTOR_DEPLOY_CALLBACK_CONNECT_TIMEOUT_SECONDS:-2}"')
+    expect(script).toContain('--max-time "${MOTOR_DEPLOY_CALLBACK_TIMEOUT_SECONDS:-15}"')
+    expect(script).toContain('--retry 2')
+  })
 })
