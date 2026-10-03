@@ -38,8 +38,13 @@ MOTOR_PORT=3010
 ## Migração e bootstrap automáticos
 
 O deploy blue-green aplica migrations pendentes dos projetos ativos no slot
-novo, antes da troca de tráfego. O desenvolvedor só versiona o arquivo da
-migration; a aplicação usa credencial privilegiada, lock MySQL e Drizzle.
+novo, antes da troca de tráfego. Além disso, o próprio runtime do Motor v3 faz
+um preflight obrigatório antes de carregar o catálogo ou iniciar qualquer
+consumidor, scheduler ou HTTP. O preflight lê o journal em
+`motor-v3/drizzle/migrations/meta/_journal.json`, aplica somente as migrations
+ausentes no banco configurado e valida as colunas exigidas pelo catálogo.
+O desenvolvedor só versiona o arquivo da migration; a aplicação usa
+credencial privilegiada, advisory lock MySQL e o journal Drizzle isolado.
 
 O container da API executa, nesta ordem:
 
@@ -49,9 +54,13 @@ O container da API executa, nesta ordem:
 3. inicialização do processo do Motor v3.
 
 O bootstrap usa um advisory lock MySQL para suportar blue/green. Em banco
-existente, apenas valida o catálogo. Em banco vazio, cria as dez tabelas do
-catálogo e popula os dados canônicos. Se encontrar schema ou catálogo
-parcialmente criado, encerra o boot com diagnóstico e não apaga nem reconstrói
+existente, adota o estado de migrations já refletido no schema e aplica apenas
+o restante; em banco vazio, cria as dez tabelas do catálogo, popula os dados
+canônicos e registra o journal. A validação final identifica a migration que
+deveria fornecer o objeto ausente (por exemplo,
+`motor_actions.description` → `0005_action_descriptions`). Qualquer falha ao
+ler, aplicar ou validar o journal/schema encerra o processo antes do boot dos
+componentes operacionais, com diagnóstico explícito; não apaga nem reconstrói
 dados automaticamente.
 
 Não executar `motor-v3 npm run db:migrate` no deploy. O histórico Drizzle

@@ -1,6 +1,8 @@
 import 'dotenv/config'
+import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
-import mysql, { type Connection, type RowDataPacket } from 'mysql2/promise'
+import { fileURLToPath } from 'node:url'
+import mysql, { type Connection, type Pool, type RowDataPacket } from 'mysql2/promise'
 
 const CATALOG_TABLES = [
   'motor_actions', 'motor_catalog_proposals', 'motor_event_log', 'motor_events',
@@ -12,13 +14,26 @@ const CONFIG_TABLES = [
   'motor_events', 'motor_patterns', 'motor_primitives', 'motor_actions', 'motor_reactions',
 ] as const
 
+const REQUIRED_COLUMNS: Record<string, string[]> = {
+  motor_actions: ['id', 'code', 'name', 'description', 'primitives_json', 'on_partial_failure', 'is_terminal', 'active'],
+  motor_events: ['id', 'code', 'name', 'category', 'scope', 'priority', 'active'],
+  motor_patterns: ['id', 'event_id', 'pattern', 'match_type', 'match_target', 'active'],
+  motor_primitives: ['id', 'code', 'name', 'domain'],
+  motor_reactions: ['id', 'event_id', 'occurrence', 'action_id', 'active'],
+}
+
+const MIGRATION_LOCK = 'gerenteagentes_motor_v3_schema_preflight'
+const MIGRATION_TABLE = '__drizzle_migrations'
+type RuntimeConnection = Connection | Pool
+type RuntimeMigration = { tag: string; when: number; hash: string; sql: string[] }
+
 /**
  * Adota ou inicializa o catálogo v3 sem reexecutar a migration destrutiva em
  * bancos existentes. O lock protege dois containers blue/green iniciando ao
  * mesmo tempo.
  */
-export async function bootstrapMotorV3Catalog(): Promise<void> {
-  const connection = await mysql.createConnection({
+export async function bootstrapMotorV3Catalog(existingConnection?: RuntimeConnection): Promise<void> {
+  const connection = existingConnection ?? await mysql.createConnection({
     host: process.env.MOTOR_MYSQL_HOST || process.env.MYSQL_HOST || 'host.docker.internal',
     port: Number(process.env.MOTOR_MYSQL_PORT || process.env.MYSQL_PORT || 3308),
     user: process.env.MOTOR_MYSQL_USER || process.env.MYSQL_USER || 'biblioteca',
@@ -27,13 +42,18 @@ export async function bootstrapMotorV3Catalog(): Promise<void> {
     charset: 'utf8mb4',
     multipleStatements: true,
   })
+  const ownsConnection = !existingConnection
   let locked = false
   try {
     const [lockRows] = await connection.query<RowDataPacket[]>(
-      "SELECT GET_LOCK('gerenteagentes_motor_v3_catalog_bootstrap', 30) AS acquired",
+      `SELECT GET_LOCK('${MIGRATION_LOCK}', 30) AS acquired`,
     )
     locked = Number(lockRows[0]?.acquired) === 1
-    if (!locked) throw new Error('timeout adquirindo lock de bootstrap do catálogo v3')
+    if (!locked) throw new Error(`timeout adquirindo advisory lock ${MIGRATION_LOCK}`)
+
+    const migrations = await readRuntimeMigrations()
+    await ensureMigrationTable(connection)
+    const applied = await readAppliedMigrations(connection)
 
     const placeholders = CATALOG_TABLES.map(() => '?').join(',')
     const [tableRows] = await connection.query<RowDataPacket[]>(
@@ -47,9 +67,11 @@ export async function bootstrapMotorV3Catalog(): Promise<void> {
       throw new Error(`schema parcial do catálogo v3; tabelas ausentes: ${missing.join(', ')}`)
     }
     if (existing.size === 0) {
-      await connection.query(await migrationSql('0000_mighty_blade.sql'))
+      await applyMigration(connection, migrations[0]!, applied)
       console.log('[Motor v3 bootstrap] Schema do catálogo criado')
     }
+
+    await adoptLegacyMigrations(connection, migrations, applied, existing.size !== 0)
 
     const counts = new Map<string, number>()
     for (const table of CONFIG_TABLES) {
@@ -65,9 +87,15 @@ export async function bootstrapMotorV3Catalog(): Promise<void> {
       // ações. Em instalação nova esses slots ainda não existem; criá-los
       // explicitamente torna a mesma reconciliação válida em banco vazio.
       await seedLegacyCatalogSlots(connection)
-      await connection.query(await migrationSql('0001_catalog_reconcile.sql'))
+      await applyMigration(connection, migrations[1]!, applied)
       console.log('[Motor v3 bootstrap] Catálogo canônico populado')
     }
+
+    for (const migration of migrations) {
+      if (!applied.has(migration.hash)) await applyMigration(connection, migration, applied)
+    }
+
+    await validateRuntimeSchema(connection)
 
     const minimums: Record<string, number> = {
       motor_events: 35,
@@ -83,12 +111,89 @@ export async function bootstrapMotorV3Catalog(): Promise<void> {
     }
     console.log('[Motor v3 bootstrap] Catálogo validado')
   } finally {
-    if (locked) await connection.query("SELECT RELEASE_LOCK('gerenteagentes_motor_v3_catalog_bootstrap')")
-    await connection.end()
+    if (locked) await connection.query(`SELECT RELEASE_LOCK('${MIGRATION_LOCK}')`)
+    if (ownsConnection) await connection.end()
   }
 }
 
-async function seedLegacyCatalogSlots(connection: Connection): Promise<void> {
+async function readRuntimeMigrations(): Promise<RuntimeMigration[]> {
+  const journalUrl = new URL('../../drizzle/migrations/meta/_journal.json', import.meta.url)
+  const journal = JSON.parse(await readFile(journalUrl, 'utf8')) as { entries: Array<{ tag: string; when: number }> }
+  return Promise.all(journal.entries.map(async entry => {
+    const sqlText = await readFile(new URL(`../../drizzle/migrations/${entry.tag}.sql`, import.meta.url), 'utf8')
+    return {
+      tag: entry.tag,
+      when: entry.when,
+      hash: createHash('sha256').update(sqlText).digest('hex'),
+      sql: sqlText.split('--> statement-breakpoint'),
+    }
+  }))
+}
+
+async function ensureMigrationTable(connection: RuntimeConnection): Promise<void> {
+  await connection.query(`CREATE TABLE IF NOT EXISTS \`${MIGRATION_TABLE}\` (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    hash TEXT NOT NULL,
+    created_at BIGINT
+  )`)
+}
+
+async function readAppliedMigrations(connection: RuntimeConnection): Promise<Set<string>> {
+  const [rows] = await connection.query<RowDataPacket[]>(`SELECT hash FROM \`${MIGRATION_TABLE}\``)
+  return new Set(rows.map(row => String(row.hash)))
+}
+
+async function applyMigration(connection: RuntimeConnection, migration: RuntimeMigration, applied: Set<string>): Promise<void> {
+  if (applied.has(migration.hash)) return
+  try {
+    for (const statement of migration.sql) {
+      if (statement.trim()) await connection.query(statement)
+    }
+    await connection.query(`INSERT INTO \`${MIGRATION_TABLE}\` (hash, created_at) VALUES (?, ?)`, [migration.hash, migration.when])
+    applied.add(migration.hash)
+    console.log(`[Motor v3 bootstrap] Migration ${migration.tag} aplicada`)
+  } catch (error) {
+    throw new Error(`falha aplicando migration ${migration.tag} (schema esperado: runtime do Motor v3): ${error instanceof Error ? error.message : String(error)}`, { cause: error })
+  }
+}
+
+async function adoptLegacyMigrations(connection: RuntimeConnection, migrations: RuntimeMigration[], applied: Set<string>, legacyCatalog: boolean): Promise<void> {
+  if (!legacyCatalog) return
+  const checks: Record<string, string> = {
+    '0000_mighty_blade': 'SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = \'motor_actions\'',
+    '0001_catalog_reconcile': 'SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = \'motor_reactions\'',
+    '0002_analysis_execution_claim': 'SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = \'task_runtime_facts\' AND column_name = \'analysis_execution_id\'',
+    '0003_motor_outbox': 'SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = \'motor_outbox\'',
+    '0004_message_processing_state': 'SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = \'motor_message_processing_state\'',
+    '0005_action_descriptions': 'SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = \'motor_actions\' AND column_name = \'description\'',
+  }
+  for (const migration of migrations) {
+    if (applied.has(migration.hash) || !checks[migration.tag]) continue
+    const [rows] = await connection.query<RowDataPacket[]>(checks[migration.tag]!)
+    if (rows.length > 0) {
+      await connection.query(`INSERT INTO \`${MIGRATION_TABLE}\` (hash, created_at) VALUES (?, ?)`, [migration.hash, migration.when])
+      applied.add(migration.hash)
+    }
+  }
+}
+
+async function validateRuntimeSchema(connection: RuntimeConnection): Promise<void> {
+  for (const [table, columns] of Object.entries(REQUIRED_COLUMNS)) {
+    const placeholders = columns.map(() => '?').join(',')
+    const [rows] = await connection.query<RowDataPacket[]>(
+      `SELECT column_name FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name IN (${placeholders})`,
+      [table, ...columns],
+    )
+    const present = new Set(rows.map(row => String(row.COLUMN_NAME ?? row.column_name)))
+    const missing = columns.filter(column => !present.has(column))
+    if (missing.length > 0) {
+      const expectedMigration = missing.includes('description') ? '0005_action_descriptions' : 'migration anterior do catálogo'
+      throw new Error(`schema incompatível do Motor v3: ${table}.${missing.join(', ')} ausente(s); esperado por ${expectedMigration}`)
+    }
+  }
+}
+
+async function seedLegacyCatalogSlots(connection: RuntimeConnection): Promise<void> {
   const eventValues = Array.from({ length: 10 }, (_, index) => {
     const id = index + 1
     return `(${id}, 'LEGACY_EVENT_${id}', 'Slot legado ${id}', 'erro', 'subtarefa', ${id * 10}, 1)`
@@ -101,16 +206,13 @@ async function seedLegacyCatalogSlots(connection: Connection): Promise<void> {
     return `(${id}, 'LEGACY_ACTION_${id}', 'Slot legado ${id}', NULL, JSON_ARRAY(), 'continue', 0, 1)`
   }).join(',')
   await connection.query(
-    `INSERT INTO motor_actions (id, code, name, description, primitives_json, on_partial_failure, is_terminal, active) VALUES ${actionValues}`,
+    `INSERT INTO motor_actions (id, code, name, primitives_json, on_partial_failure, is_terminal, active) VALUES ${actionValues}`,
   )
 }
 
-async function migrationSql(file: string): Promise<string> {
-  const url = new URL(`../../drizzle/migrations/${file}`, import.meta.url)
-  return (await readFile(url, 'utf8')).replaceAll('--> statement-breakpoint', '')
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  bootstrapMotorV3Catalog().catch(error => {
+    console.error('[Motor v3 bootstrap] Falha:', error instanceof Error ? error.message : String(error))
+    process.exitCode = 1
+  })
 }
-
-bootstrapMotorV3Catalog().catch(error => {
-  console.error('[Motor v3 bootstrap] Falha:', error instanceof Error ? error.message : String(error))
-  process.exitCode = 1
-})

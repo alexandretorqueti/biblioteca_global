@@ -345,9 +345,7 @@ export class DeployConsumer {
           await execFileAsync('git', ['cherry-pick', c], { cwd: path })
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
-          if (await this.operationState.detect(path)) {
-            await this.operationState.recover(path)
-          } else if (message.includes('empty')) {
+          if (message.includes('empty')) {
             await execFileAsync('git', ['cherry-pick', '--skip'], { cwd: path })
           } else if (await this.skipNoopCherryPickConflict(path)) {
             // O patch pode conflitar apenas porque a base já contém o
@@ -355,6 +353,10 @@ export class DeployConsumer {
             // preservar a base é equivalente a um cherry-pick vazio.
             await execFileAsync('git', ['cherry-pick', '--skip'], { cwd: path })
           } else {
+            // Falha real: aborta o estado Git antes de propagar o erro. O
+            // consumidor de dispatch registra o lote como failed e emite o
+            // bloqueio causal; nunca seguimos com um worktree em MERGING.
+            if (await this.operationState.detect(path)) await this.operationState.recover(path)
             throw error
           }
         }

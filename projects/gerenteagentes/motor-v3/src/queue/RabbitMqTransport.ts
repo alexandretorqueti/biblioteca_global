@@ -14,13 +14,25 @@ export interface RabbitMqTransportConfig {
   maxReconnectAttempts?: number
 }
 
+/** RabbitMQ com prefetch 1 permite que um handler bloqueado segure a fila.
+ * O mínimo é deliberado: filas de comando e de gates continuam separadas,
+ * mas nenhuma delas pode voltar ao comportamento serial por configuração.
+ */
+export const MIN_RABBITMQ_PREFETCH = 4
+
+export function normalizeRabbitMqPrefetch(value: number | string | undefined, fallback = 5): number {
+  const parsed = typeof value === 'string' ? Number(value) : value
+  const candidate = Number.isFinite(parsed) ? Math.trunc(parsed as number) : Math.trunc(fallback)
+  return Math.max(MIN_RABBITMQ_PREFETCH, candidate)
+}
+
 /** Adaptador RabbitMQ com retry por TTL e fila de mensagens mortas. */
 export class RabbitMqTransport implements QueueTransport {
   private connection: ChannelModel | null = null
   private channel: ConfirmChannel | null = null
   private reconnecting = false
   private reconnectAttempts = 0
-  private consumers: Array<{ queue: string; handler: QueueDeliveryHandler }> = []
+  private consumers = new Map<string, QueueDeliveryHandler>()
 
   constructor(private readonly config: RabbitMqTransportConfig) {}
 
@@ -53,7 +65,7 @@ export class RabbitMqTransport implements QueueTransport {
     })
 
     await this.channel.assertExchange(this.config.exchange, 'direct', { durable: true })
-    await this.channel.prefetch(this.config.prefetch)
+    await this.channel.prefetch(normalizeRabbitMqPrefetch(this.config.prefetch))
     this.reconnectAttempts = 0 // Reset após conexão bem-sucedida
   }
 
@@ -79,7 +91,9 @@ export class RabbitMqTransport implements QueueTransport {
 
   async consume(queue: string, handler: QueueDeliveryHandler): Promise<void> {
     // Salva consumer para reconectar depois se necessário
-    this.consumers.push({ queue, handler })
+    // Reconexões podem chamar consume novamente. A chave da fila torna o
+    // registro idempotente e evita duas entregas para o mesmo handler.
+    this.consumers.set(queue, handler)
     const channel = this.requireChannel()
     await this.ensureQueue(queue)
     await channel.consume(queue, async (raw: ConsumeMessage | null) => {
@@ -222,9 +236,9 @@ export class RabbitMqTransport implements QueueTransport {
         await this.connect()
         
         // Re-registra todos os consumers
-        for (const consumer of this.consumers) {
-          console.log(`[RabbitMqTransport] re-registrando consumer na fila ${consumer.queue}`)
-          await this.consume(consumer.queue, consumer.handler)
+        for (const [queue, handler] of this.consumers) {
+          console.log(`[RabbitMqTransport] re-registrando consumer na fila ${queue}`)
+          await this.consume(queue, handler)
         }
         
         console.log('[RabbitMqTransport] reconexão bem-sucedida')

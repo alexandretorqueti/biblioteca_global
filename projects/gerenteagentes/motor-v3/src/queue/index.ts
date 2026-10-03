@@ -1,6 +1,11 @@
 export { QueueConsumer, type QueueConsumerConfig, type QueueMessageHandler } from './QueueConsumer.js'
 export { InMemoryQueueTransport } from './InMemoryQueueTransport.js'
-export { RabbitMqTransport, type RabbitMqTransportConfig } from './RabbitMqTransport.js'
+export {
+  RabbitMqTransport,
+  MIN_RABBITMQ_PREFETCH,
+  normalizeRabbitMqPrefetch,
+  type RabbitMqTransportConfig,
+} from './RabbitMqTransport.js'
 export { OutboxPublisher } from './OutboxPublisher.js'
 export { MotorActivityGate } from './MotorActivityGate.js'
 export { insertOutboxMessage } from './outboxInsert.js'

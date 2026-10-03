@@ -42,7 +42,18 @@ export class TestGateConsumer {
       const connection = await this.pool.getConnection()
       try {
         await connection.beginTransaction()
-        await connection.query(`UPDATE test_gate_jobs SET status='completed',test_run_id=?,result_json=?,completion_message_id=?,finished_at=NOW(3),updated_at=NOW(3) WHERE id=?`, [result.id, JSON.stringify(durableResult), completed.messageId, jobId])
+        const [updated] = await connection.query<ResultSetHeader>(
+          `UPDATE test_gate_jobs SET status='completed',test_run_id=?,result_json=?,completion_message_id=?,finished_at=NOW(3),updated_at=NOW(3)
+           WHERE id=? AND status='processing'`,
+          [result.id, JSON.stringify(durableResult), completed.messageId, jobId],
+        )
+        // Um timeout/recovery pode ter fechado o job enquanto o runner ainda
+        // terminava. Nunca publique uma conclusão para uma execução que não
+        // possui mais a claim; isso evita transições duplicadas.
+        if (updated.affectedRows !== 1) {
+          await connection.rollback()
+          return
+        }
         await connection.query(`INSERT INTO motor_outbox (message_id,type,destination_queue,task_id,execution_id,payload_json,timestamp,correlation_id,causation_id,status,attempt) VALUES (?,?,?,?,?,?,NOW(),?,?,'pending',0)`, [completed.messageId, completed.type, this.mainQueue, completed.taskId, completed.executionId, JSON.stringify(completed.payload), completed.correlationId ?? null, completed.causationId ?? null])
         await connection.commit()
       } catch (error) { await connection.rollback(); throw error } finally { connection.release() }

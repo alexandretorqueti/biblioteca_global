@@ -27,7 +27,7 @@ import { registerAllPrimitives } from './primitives/index.js'
 import { Scheduler } from './scheduler/Scheduler.js'
 import { MonitorBridge } from './monitor-bridge/MonitorBridge.js'
 import { QueueConsumer } from './queue/QueueConsumer.js'
-import { RabbitMqTransport } from './queue/RabbitMqTransport.js'
+import { RabbitMqTransport, normalizeRabbitMqPrefetch } from './queue/RabbitMqTransport.js'
 import { MotorActivityGate, OutboxPublisher, createQueueMessage } from './queue/index.js'
 import type { QueueMessage } from './queue/QueueMessage.js'
 import { TaskCoordinator, MySqlTaskCoordinatorRepository, AnalysisClaimReconciler, AnalysisSessionRecoveryReconciler, TaskCancelConsumer, MySqlTaskEventRecorder, MySqlAnalysisFailureBlocker, SanitizeSessionService } from './coordinator/index.js'
@@ -48,6 +48,7 @@ import { BaselinePreflightRecovery, TestGateConsumer, TestGateJobReconciler, Tes
 import { ConsoleHumanNotifier, ExternalResolutionError, ExternalResolutionHandler, MonitorBlockerReconciler, MonitorPromptResolver, MonitorResolutionConsumer, TaskUnblockedConsumer, createTaskBlockedMessage, loadActiveBlocker } from './monitor/index.js'
 import { TaskAdjustmentConsumer, TASK_ADJUSTMENT_REQUESTED } from './adjustment/index.js'
 import { ensureCompletionTrigger } from './db/ensureTriggers.js'
+import { bootstrapMotorV3Catalog } from './db/bootstrap.js'
 
 // Config
 const PORT = parseInt(process.env.MOTOR_PORT || '3010')
@@ -61,6 +62,7 @@ const DB_CONFIG = {
   password: process.env.MOTOR_MYSQL_PASSWORD || process.env.MYSQL_PASSWORD || '',
   database: process.env.MOTOR_MYSQL_DATABASE || process.env.MYSQL_DATABASE || 'projeto_640',
   charset: 'utf8mb4',
+  multipleStatements: true,
 }
 
 // Estado global (para graceful shutdown)
@@ -97,6 +99,12 @@ async function start() {
   const db = drizzle(pool, { schema, mode: 'default' })
   const statusResolver = new DerivedTaskStatusResolver(pool)
   const externalResolutionHandler = new ExternalResolutionHandler(pool)
+
+  // O preflight precisa terminar antes de trigger, consumidores, scheduler,
+  // HTTP e, principalmente, antes de o CatalogLoader compilar suas queries.
+  console.log('[Motor v3] Validando schema e migrations runtime...')
+  await bootstrapMotorV3Catalog(pool)
+  console.log('[Motor v3] Preflight de schema concluído')
 
   // Camada A do invariante de conclusão: trigger de rede de segurança para
   // escritas externas em subtarefas. Falha não derruba o boot (camadas B/C
@@ -286,7 +294,7 @@ async function start() {
     const transport = new RabbitMqTransport({
       url: rabbitUrl,
       exchange: process.env.MOTOR_RABBITMQ_EXCHANGE || 'motor',
-      prefetch: Number(process.env.MOTOR_RABBITMQ_PREFETCH || 5),
+      prefetch: normalizeRabbitMqPrefetch(process.env.MOTOR_RABBITMQ_PREFETCH, 5),
       queue: process.env.MOTOR_RABBITMQ_QUEUE || 'motor.commands',
       retryQueue: process.env.MOTOR_RABBITMQ_RETRY_QUEUE || 'motor.commands.retry',
       deadLetterQueue: process.env.MOTOR_RABBITMQ_DLQ || 'motor.commands.dlq',
@@ -358,7 +366,8 @@ async function start() {
       worktreePreparer,
     )
     const gateTransport = new RabbitMqTransport({
-      url: rabbitUrl, exchange: process.env.MOTOR_RABBITMQ_EXCHANGE || 'motor', prefetch: 1,
+      url: rabbitUrl, exchange: process.env.MOTOR_RABBITMQ_EXCHANGE || 'motor',
+      prefetch: normalizeRabbitMqPrefetch(process.env.MOTOR_TEST_GATE_PREFETCH ?? process.env.MOTOR_RABBITMQ_PREFETCH, 5),
       queue: gateQueue, retryQueue: `${gateQueue}.retry`, deadLetterQueue: `${gateQueue}.dlq`,
       retryDelayMs: Number(process.env.MOTOR_RABBITMQ_RETRY_DELAY_MS || 30000),
     })
