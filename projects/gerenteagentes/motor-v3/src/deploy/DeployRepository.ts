@@ -103,6 +103,17 @@ export class DeployRepository {
     } catch (error) { await connection.rollback(); throw error } finally { connection.release() }
   }
 
+  /** Fecha um pedido aceito quando o gate não pôde ser enfileirado. */
+  async failPendingRequest(taskId: string, reason: string): Promise<boolean> {
+    const [result] = await this.pool.query<ResultSetHeader>(
+      `UPDATE deploy_requests dr INNER JOIN tarefas t ON t.id=dr.tarefa_id
+          SET dr.status='failed',dr.last_error=?,dr.finished_at=NOW(),dr.updated_at=NOW()
+        WHERE (t.external_id=? OR CAST(t.id AS CHAR)=?) AND dr.status='pending'`,
+      [reason, taskId, taskId],
+    )
+    return Number(result.affectedRows ?? 0) > 0
+  }
+
   /** A ociosidade vem de fatos persistidos, nunca de memória do processo. */
   async isMotorIdle(): Promise<boolean> {
     const [rows] = await this.pool.query<Array<RowDataPacket & { active: number | string }>>(`
@@ -158,11 +169,16 @@ export class DeployRepository {
    * Libera o lock de deploy. Limpa metadados (locked_at, locked_by, reason).
    * Idempotente: se já está unlocked, não faz nada.
    */
-  async releaseDeployLock(): Promise<void> {
-    await this.pool.query(
-      `UPDATE motor_deploy_lock
-       SET locked = FALSE, locked_at = NULL, locked_by = NULL, reason = NULL
-       WHERE id = 1`
+  async releaseDeployLock(ownerBatchId?: string): Promise<void> {
+    await this.pool.query<ResultSetHeader>(
+      ownerBatchId
+        ? `UPDATE motor_deploy_lock
+           SET locked = FALSE, locked_at = NULL, locked_by = NULL, reason = NULL
+           WHERE id = 1 AND locked_by = ?`
+        : `UPDATE motor_deploy_lock
+           SET locked = FALSE, locked_at = NULL, locked_by = NULL, reason = NULL
+           WHERE id = 1`,
+      ownerBatchId ? [ownerBatchId] : [],
     )
   }
 
@@ -338,8 +354,12 @@ export class DeployRepository {
       // Bloquear aqui criaria bloqueio espúrio em tarefa já implantada.
       if (!request) { await connection.commit(); return { accepted: false, reason: 'deploy_request_not_pending' } }
       if (run.status !== 'passed' || Number(run.failures) > 0) {
+        const reason = `Gate pre_deploy falhou (status=${run.status}, falhas=${Number(run.failures)})`
+        await connection.query(`UPDATE deploy_requests dr INNER JOIN tarefas t ON t.id=dr.tarefa_id
+          SET dr.status='failed',dr.last_error=?,dr.finished_at=NOW(),dr.updated_at=NOW()
+          WHERE (t.external_id=? OR CAST(t.id AS CHAR)=?) AND dr.status='pending'`, [reason, taskId, taskId])
         await connection.commit()
-        await this.blockTask(taskId, 'pre_deploy_gate_failed', 'Gate pre_deploy falhou', source)
+        await this.blockTask(taskId, 'pre_deploy_gate_failed', reason, source)
         return { accepted: false, reason: 'pre_deploy_gate_failed' }
       }
       const dispatch = createQueueMessage({ type: 'DEPLOY_BATCH_DISPATCH_REQUESTED', taskId, executionId: `deploy-dispatch-${taskId}-${source.messageId}`,
@@ -584,6 +604,12 @@ export class DeployRepository {
         }
       }
       await this.insertPendingDispatches(connection)
+      // Recupera o intervalo em que o processo morreu depois de adquirir o
+      // lock. A condição impede remover o lock de outro batch.
+      await connection.query(
+        `UPDATE motor_deploy_lock SET locked=FALSE,locked_at=NULL,locked_by=NULL,reason=NULL
+          WHERE id=1 AND locked_by=?`, [batchId],
+      )
       await connection.commit()
       return requests.map(row => String(row.external_id ?? row.task_id))
     } catch (error) { await connection.rollback(); throw error } finally { connection.release() }

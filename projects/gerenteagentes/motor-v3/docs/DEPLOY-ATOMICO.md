@@ -230,7 +230,17 @@ docker exec biblioteca-global-mysql-1 mysql -u root -proot projeto_640 \
   -e "UPDATE motor_deploy_lock SET locked = FALSE WHERE locked_by = '<batch_obsoleto>';"
 ```
 
-**Prevenção:** Implementar reconciliador que verifica se `locked_by` ainda existe (feature futura).
+**Prevenção:** No boot e a cada ciclo de recuperação, o motor reemite
+`DEPLOY_RECONCILIATION_REQUESTED` para todos os batches `running`. O consumidor
+consulta o status file e o processo remoto; `success`, `failed:N`, status inválido
+ou processo ausente após timeout finalizam o batch uma única vez. A finalização
+preserva o diagnóstico em `deploy_batches.last_error` e `deploy_requests.last_error`,
+cria o bloqueio causal em `bloqueios` quando necessário e só libera o lock se
+`locked_by` ainda for o batch reconciliado. Callbacks repetidos são inócuos.
+
+Pedidos cujo gate `pre_deploy` falha também são marcados como `failed` antes do
+bloqueio, evitando requests `pending` órfãos. Após cada reconciliação, pedidos
+compatíveis que continuam `pending` recebem novo dispatch automaticamente.
 
 ## Testes de Integração
 

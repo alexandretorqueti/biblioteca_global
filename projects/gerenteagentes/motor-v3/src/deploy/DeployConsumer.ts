@@ -72,14 +72,19 @@ export class DeployConsumer {
       return this.reject(operationId, message, error instanceof Error ? error.message : 'deploy_not_eligible')
     }
     if (!raw) return this.reject(operationId, message, 'task_not_found')
+    let acceptedRequestId: number | null = null
     try {
       const context = await this.integrationContext(raw)
       const accepted = await this.repository.acceptRequest(context, message)
+      acceptedRequestId = accepted.requestId
       const jobId = await this.gate.enqueue({ projectId: context.projectId, taskDatabaseId: context.databaseTaskId, phase: 'pre_deploy', commitSha: context.integrationCommit, baseCommitSha: context.integrationCommit, branchName: context.integrationBranch, workspacePath: context.integrationPath, buildCommand: context.buildCommand, testCommand: context.testCommand }, message)
       await this.log(operationId, 3, 'primitive', 'succeeded', message, { primitiveCode: 'upsert_deploy_request', result: { requestId: accepted.requestId, gateJobId: jobId } })
       await this.log(operationId, 4, 'completed', 'succeeded', message, { actionCode: 'A30_ACCEPT_DEPLOY_REQUEST', result: { requestId: accepted.requestId, gateJobId: jobId } })
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error)
+      if (acceptedRequestId !== null) {
+        await this.repository.failPendingRequest(message.taskId, detail).catch(() => undefined)
+      }
       await this.block(operationId, message, 'deploy_preparation_failed', detail)
     }
   }
@@ -232,7 +237,7 @@ export class DeployConsumer {
       await this.repository.markRemoteStarted(batch.batchId, remote.pid, remote.statusPath, message)
 
       // 4. Libera lock de deploy
-      await this.repository.releaseDeployLock()
+      await this.repository.releaseDeployLock(batch.batchId)
       await this.log(operationId, 4, 'deploy_lock_released', 'succeeded', message, { batchId: batch.batchId })
 
       // 5. Retoma tarefas adiadas (enqueue pending dispatches)
@@ -243,7 +248,7 @@ export class DeployConsumer {
       // Em caso de falha no deploy, libera o lock antes de propagar o erro.
       // Liberação e log são defensivo: falha neles não pode mascarar o erro
       // original nem impedir a liberação do lock.
-      await this.repository.releaseDeployLock().catch(releaseError => {
+      await this.repository.releaseDeployLock(batch.batchId).catch(releaseError => {
         console.error('[Motor v3] Falha ao liberar lock de deploy após erro:', releaseError)
       })
       await this.log(operationId, 99, 'deploy_lock_released', 'failed', message, {
