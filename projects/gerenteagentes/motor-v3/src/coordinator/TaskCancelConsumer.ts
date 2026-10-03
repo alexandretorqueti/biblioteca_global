@@ -35,8 +35,9 @@ interface CancelTaskRow extends RowDataPacket {
  * condicional e uma queda no meio é corrigida pela reentrega.
  *
  * Limitação conhecida: workers de desenvolvimento ativos não são interrompidos
- * (o Scheduler v3 não expõe parada por tarefa); com `MOTOR_RABBITMQ_PREFETCH=1`
- * o consumo é serial e o cancelamento é processado entre execuções.
+ * (o Scheduler v3 não expõe parada por tarefa). O consumidor principal usa
+ * prefetch > 1 por padrão, então o cancelamento pode ser processado em paralelo
+ * com outras mensagens independentes.
  */
 export class TaskCancelConsumer {
   constructor(

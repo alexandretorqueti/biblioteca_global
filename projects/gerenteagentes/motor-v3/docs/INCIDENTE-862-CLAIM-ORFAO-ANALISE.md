@@ -81,7 +81,7 @@ atômico é refeito sem duplicação.
 ### Item 1 — cancel real via catálogo (C04/A22/P04)
 
 - Migração `0064_motor_v3_cancel_governance.sql`: primitivas (`release_analysis_claim`, `resolve_task_blockers`, `mark_task_cancelled`, `record_task_event`, `block_task_for_analysis_failure`, `release_orphan_analysis_claim`), ação `A22_CANCEL_TASK` (terminal), comando `C04_TASK_CANCEL_REQUESTED`, política `P04_CANCEL_IF_NOT_TERMINAL` (`task_not_terminal`).
-- Novo `TaskCancelConsumer` (padrão DeployConsumer): governado por política, executa as 4 primitivas idempotentes com trilha completa no operation log; rejeita tarefa terminal/inexistente. Limitação conhecida: não interrompe workers de desenvolvimento ativos (Scheduler v3 sem parada por tarefa; com `MOTOR_RABBITMQ_PREFETCH=1` o consumo é serial).
+- Novo `TaskCancelConsumer` (padrão DeployConsumer): governado por política, executa as 4 primitivas idempotentes com trilha completa no operation log; rejeita tarefa terminal/inexistente. Limitação conhecida: não interrompe workers de desenvolvimento ativos (Scheduler v3 sem parada por tarefa). O consumidor principal usa `MOTOR_RABBITMQ_PREFETCH=5` por padrão, permitindo processar mensagens independentes em paralelo; um override explícito menor pode voltar a limitar o consumo.
 - Endpoint `POST /api/motor/task/:id/cancel` aceita body `{ator, motivo}` e despacha no payload do comando.
 
 ### Item 5 — contrato honesto

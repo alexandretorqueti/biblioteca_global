@@ -31,6 +31,7 @@ export interface OperationalFeedEvent {
   agentId?: string | null
   phase?: string | null
   event: string
+  description?: string | null
   reason?: string | null
   payload?: Record<string, unknown> | null
   occurredAt: string
@@ -43,6 +44,7 @@ export interface OperationalPendingAction {
   taskId: number
   taskTitle?: string | null
   actionType: string
+  description?: string | null
   priority: number
   state: string
   occurredAt: string
@@ -99,7 +101,7 @@ export function aggregateOperationalFeed(sources: OperationalFeedSources, limit 
     items.push({
       id: `event:${row.id}`, type: 'event', projectId: sources.projectId, taskId,
       taskTitle: text(row.taskTitle), agentId: text(row.agentId), phase: text(row.phase),
-      event: String(row.event ?? row.evento ?? 'operational'), reason: text(row.reason ?? row.motivo),
+      event: String(row.event ?? row.evento ?? 'operational'), description: text(row.description), reason: text(row.reason ?? row.motivo),
       payload: (row.payload as Record<string, unknown> | null | undefined) ?? null, occurredAt: iso(row.createdAt ?? row.occurredAt),
     })
   }
@@ -109,6 +111,7 @@ export function aggregateOperationalFeed(sources: OperationalFeedSources, limit 
     items.push({
       id: `action:${row.id}`, type: 'pending_action', projectId: sources.projectId, taskId,
       taskTitle: text(row.taskTitle), actionType: String(row.actionType ?? row.type ?? 'pending'),
+      description: text(row.description),
       priority: number(row.priority ?? 0), state: String(row.state ?? row.status ?? 'pending'),
       reason: text(row.reason ?? row.lastError), occurredAt: iso(row.occurredAt ?? row.createdAt),
     })
@@ -143,26 +146,31 @@ export class OperationalFeedService {
     const [events] = await db.execute(`SELECT e.id, e.tarefa_id AS taskId, t.titulo AS taskTitle,
       COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), pc.slug, '') AS agentId,
       JSON_UNQUOTE(JSON_EXTRACT(e.payload, '$.phase')) AS phase,
-      e.evento AS event, e.payload, e.created_at AS createdAt
+      e.evento AS event, me.name AS description, e.payload, e.created_at AS createdAt
       FROM tarefa_eventos e
       JOIN tarefas t ON t.id = e.tarefa_id
       LEFT JOIN projetos_captados pc ON pc.id = t.projeto_id
       LEFT JOIN agentes a ON a.id = pc.agente_id
+      LEFT JOIN motor_events me ON me.code = e.evento
       WHERE e.tarefa_id IS NOT NULL AND e.origem = 'motor'
       ORDER BY e.created_at DESC, e.id DESC LIMIT 500`)
     const [actions] = await db.execute(`SELECT o.id, CAST(o.task_id AS UNSIGNED) AS taskId, t.titulo AS taskTitle,
       COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), pc.slug, '') AS agentId,
-      o.type AS actionType, 0 AS priority, o.status AS state,
+      o.type AS actionType, COALESCE(NULLIF(ma.description, ''), NULLIF(ma.name, '')) AS description,
+      0 AS priority, o.status AS state,
       o.last_error AS lastError, o.created_at AS occurredAt
       FROM motor_outbox o
+      LEFT JOIN motor_actions ma ON ma.code = o.type
       LEFT JOIN tarefas t ON CAST(t.id AS CHAR) = o.task_id OR t.external_id = o.task_id
       LEFT JOIN projetos_captados pc ON pc.id = t.projeto_id
       LEFT JOIN agentes a ON a.id = pc.agente_id
       WHERE o.status = 'pending'
       UNION ALL SELECT s.message_id AS id, CAST(s.task_id AS UNSIGNED), t.titulo,
       COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), pc.slug, ''),
-      s.message_type, 0, s.status, s.error_message, s.created_at
+      s.message_type, COALESCE(NULLIF(ma.description, ''), NULLIF(ma.name, '')),
+      0, s.status, s.error_message, s.created_at
       FROM motor_message_processing_state s
+      LEFT JOIN motor_actions ma ON ma.code = s.message_type
       LEFT JOIN tarefas t ON CAST(t.id AS CHAR) = s.task_id OR t.external_id = s.task_id
       LEFT JOIN projetos_captados pc ON pc.id = t.projeto_id
       LEFT JOIN agentes a ON a.id = pc.agente_id

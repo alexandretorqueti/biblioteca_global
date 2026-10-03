@@ -235,13 +235,20 @@ ainda depende de boot ou novo enqueue quando o broker está indisponível.
 
 Variáveis opcionais:
 
+`MOTOR_RABBITMQ_PREFETCH` usa `5` por padrão para que o consumidor receba
+mensagens independentes enquanto uma análise de longa duração está em
+execução, permitindo paralelismo entre análise, desenvolvimento e deploy.
+O valor pode ser reduzido ou aumentado explicitamente conforme a capacidade
+do ambiente; o claim atômico de análise continua impedindo duas análises da
+mesma tarefa.
+
 ```text
 MOTOR_RABBITMQ_EXCHANGE=motor
 MOTOR_RABBITMQ_QUEUE=motor.commands
 MOTOR_RABBITMQ_RETRY_QUEUE=motor.commands.retry
 MOTOR_RABBITMQ_DLQ=motor.commands.dlq
 MOTOR_RABBITMQ_RETRY_DELAY_MS=30000
-MOTOR_RABBITMQ_PREFETCH=1
+MOTOR_RABBITMQ_PREFETCH=5
 MOTOR_QUEUE_MAX_ATTEMPTS=3
 MOTOR_ANALYSIS_TIMEOUT_MS=1800000
 MOTOR_ANALYSIS_POLL_INTERVAL_MS=5000

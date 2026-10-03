@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import type { SubtaskExecutionContext } from './DevelopmentExecutionRepository.js'
 import type { GitWorktreePreparer } from './GitWorktreePreparer.js'
+import { GitOperationStateDetector } from './GitOperationStateDetector.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -9,7 +10,7 @@ export interface VerificationResult { commitSha: string; integrationCommitSha: s
 
 /** Verifica, commita e integra sem alterar o checkout base nem publicar branches. */
 export class GitVerificationIntegrator {
-  constructor(private readonly worktrees: GitWorktreePreparer) {}
+  constructor(private readonly worktrees: GitWorktreePreparer, private readonly operationState = new GitOperationStateDetector()) {}
 
   async verifyAndIntegrate(context: SubtaskExecutionContext): Promise<VerificationResult> {
     if (!context.workspacePath || !context.workspaceBranch || !context.workspaceBaseCommit) throw new Error('Subtarefa sem workspace persistido')
@@ -37,7 +38,15 @@ export class GitVerificationIntegrator {
     // o patch equivalente e evita repetir um cherry-pick idempotente.
     const patchAlreadyIntegrated = !alreadyIntegrated && await execFileAsync('git', ['cherry', 'HEAD', commit.trim()], { cwd: integration.path })
       .then(({ stdout }) => stdout.split('\n').some(line => line.startsWith('- ')), () => false)
-    if (!alreadyIntegrated && !patchAlreadyIntegrated) await execFileAsync('git', ['cherry-pick', commit.trim()], { cwd: integration.path })
+    if (!alreadyIntegrated && !patchAlreadyIntegrated) {
+      await this.operationState.recover(integration.path)
+      try {
+        await execFileAsync('git', ['cherry-pick', commit.trim()], { cwd: integration.path })
+      } catch (error) {
+        await this.operationState.recover(integration.path)
+        throw error
+      }
+    }
     const { stdout: integrated } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: integration.path })
     return { commitSha: commit.trim(), integrationCommitSha: integrated.trim() }
   }

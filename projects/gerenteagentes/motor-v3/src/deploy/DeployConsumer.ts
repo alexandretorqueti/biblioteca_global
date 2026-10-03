@@ -7,6 +7,7 @@ import type { QueueMessage } from '../queue/index.js'
 import { TestGateOrchestrator } from '../testing/index.js'
 import { DeployRepository, type DeployTaskContext } from './DeployRepository.js'
 import { RemoteBlueGreenDeployer } from './RemoteBlueGreenDeployer.js'
+import { GitOperationStateDetector } from '../execution/GitOperationStateDetector.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -22,6 +23,7 @@ export class DeployConsumer {
     private readonly script = process.env.MOTOR_DEPLOY_SCRIPT || 'projects/gerenteagentes/motor-v2/scripts/deploy-blue-green.sh',
     private readonly timeoutMs = Number(process.env.MOTOR_DEPLOY_TIMEOUT_MS || 1_800_000),
     private readonly worktrees: GitWorktreePreparer = new GitWorktreePreparer(process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/agentes/gerenteagentes/worktrees'),
+    private readonly operationState: GitOperationStateDetector = new GitOperationStateDetector(),
   ) {}
 
   async handle(message: QueueMessage): Promise<void> {
@@ -282,6 +284,7 @@ export class DeployConsumer {
       // A base pode avançar entre o gate do lote e a promoção. Fast-forward
       // rejeita até integrações independentes; um merge explícito preserva as
       // duas linhas de histórico e só falha se houver conflito real.
+      await this.operationState.recover(path)
       await execFileAsync('git', ['merge', '--no-ff', '--no-commit', expectedCommit], { cwd: path })
       await execFileAsync('git', ['diff', '--check'], { cwd: path })
       await execFileAsync('git', ['commit', '--no-edit'], { cwd: path })
@@ -337,11 +340,14 @@ export class DeployConsumer {
       }
       // Fazer cherry-pick de todos os commits na ordem
       for (const c of allCommitsToCherryPick) {
+        await this.operationState.recover(path)
         try {
           await execFileAsync('git', ['cherry-pick', c], { cwd: path })
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
-          if (message.includes('empty')) {
+          if (await this.operationState.detect(path)) {
+            await this.operationState.recover(path)
+          } else if (message.includes('empty')) {
             await execFileAsync('git', ['cherry-pick', '--skip'], { cwd: path })
           } else if (await this.skipNoopCherryPickConflict(path)) {
             // O patch pode conflitar apenas porque a base já contém o

@@ -35,8 +35,8 @@ const statusColor = (state: string): "default" | "success" | "warning" | "error"
 const itemState = (item: OperationalFeedItem) => item.type === "message" ? item.state : item.type === "pending_action" ? item.state : "activity"
 const itemDescription = (item: OperationalFeedItem) => {
   if (item.type === "message") return item.text
-  if (item.type === "pending_action") return item.reason || `Ação ${item.actionType} aguardando processamento`
-  return item.reason || `Atividade: ${item.event}`
+  if (item.type === "pending_action") return item.description || item.reason || `Ação ${item.actionType} aguardando processamento`
+  return item.description || item.reason || `Atividade: ${item.event}`
 }
 
 function FeedItem({ item, onSelectTask }: { item: OperationalFeedItem; onSelectTask: (taskId: number) => void }) {

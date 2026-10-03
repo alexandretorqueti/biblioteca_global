@@ -58,6 +58,7 @@ export const motorActions: any = mysqlTable('motor_actions', {
   id: int('id').primaryKey().autoincrement(),
   code: varchar('code', { length: 100 }).notNull().unique(),
   name: varchar('name', { length: 255 }).notNull(),
+  description: text('description'),
   primitivesJson: json('primitives_json').$type<Array<{ primitive: string; params?: Record<string, any> }>>().notNull(),
   onPartialFailure: mysqlEnum('on_partial_failure', ['continue', 'compensate', 'mark_dirty']).notNull().default('continue'),
   compensationActionId: int('compensation_action_id').references(() => motorActions.id, { onDelete: 'set null' }),

@@ -33,6 +33,7 @@ export interface CatalogAction {
   id: number
   code: string
   name: string
+  description: string | null
   primitives: Array<{ primitive: string; params?: Record<string, any> }>
   onPartialFailure: 'continue' | 'compensate' | 'mark_dirty'
   compensationActionId: number | null
@@ -93,7 +94,17 @@ export class CatalogLoader {
     console.log(`[CatalogLoader] Loaded ${events.length} events`)
     const patterns = await this.db.select().from(schema.motorPatterns).where(eq(schema.motorPatterns.active, 1))
     console.log(`[CatalogLoader] Loaded ${patterns.length} patterns`)
-    const actions = await this.db.select().from(schema.motorActions).where(eq(schema.motorActions.active, 1))
+    const actions = await this.db.select({
+      id: schema.motorActions.id,
+      code: schema.motorActions.code,
+      name: schema.motorActions.name,
+      description: schema.motorActions.description,
+      primitivesJson: schema.motorActions.primitivesJson,
+      onPartialFailure: schema.motorActions.onPartialFailure,
+      compensationActionId: schema.motorActions.compensationActionId,
+      isTerminal: schema.motorActions.isTerminal,
+      active: schema.motorActions.active,
+    }).from(schema.motorActions).where(eq(schema.motorActions.active, 1))
     console.log(`[CatalogLoader] Loaded ${actions.length} actions`)
     const reactions = await this.db.select().from(schema.motorReactions).where(eq(schema.motorReactions.active, 1))
     console.log(`[CatalogLoader] Loaded ${reactions.length} reactions`)
@@ -120,6 +131,7 @@ export class CatalogLoader {
         id: a.id,
         code: a.code,
         name: a.name,
+        description: a.description,
         primitives: a.primitivesJson ?? [],
         onPartialFailure: a.onPartialFailure,
         compensationActionId: a.compensationActionId,

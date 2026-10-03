@@ -98,10 +98,10 @@ async function seedLegacyCatalogSlots(connection: Connection): Promise<void> {
   )
   const actionValues = Array.from({ length: 5 }, (_, index) => {
     const id = index + 1
-    return `(${id}, 'LEGACY_ACTION_${id}', 'Slot legado ${id}', JSON_ARRAY(), 'continue', 0, 1)`
+    return `(${id}, 'LEGACY_ACTION_${id}', 'Slot legado ${id}', NULL, JSON_ARRAY(), 'continue', 0, 1)`
   }).join(',')
   await connection.query(
-    `INSERT INTO motor_actions (id, code, name, primitives_json, on_partial_failure, is_terminal, active) VALUES ${actionValues}`,
+    `INSERT INTO motor_actions (id, code, name, description, primitives_json, on_partial_failure, is_terminal, active) VALUES ${actionValues}`,
   )
 }
 
