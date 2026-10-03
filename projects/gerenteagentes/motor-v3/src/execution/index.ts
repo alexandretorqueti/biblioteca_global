@@ -5,5 +5,6 @@ export { GitWorktreePreparer, mapHostRepoPathToContainer, type PreparedWorktree 
 export { WorkerConsoleAdapter } from './WorkerConsoleAdapter.js'
 export { DevelopmentSessionRecoveryReconciler } from './DevelopmentSessionRecoveryReconciler.js'
 export { GitVerificationIntegrator, type VerificationResult } from './GitVerificationIntegrator.js'
+export { GitOperationStateDetector, GitOperationBlockedError, type GitOperation, type GitOperationMarker, type GitOperationState } from './GitOperationStateDetector.js'
 export { SubtaskVerificationConsumer } from './SubtaskVerificationConsumer.js'
 export { TaskExecutionReconciler, type ReconciliationResult } from './TaskExecutionReconciler.js'
