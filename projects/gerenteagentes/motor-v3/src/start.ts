@@ -286,7 +286,7 @@ async function start() {
     const transport = new RabbitMqTransport({
       url: rabbitUrl,
       exchange: process.env.MOTOR_RABBITMQ_EXCHANGE || 'motor',
-      prefetch: Number(process.env.MOTOR_RABBITMQ_PREFETCH || 1),
+      prefetch: Number(process.env.MOTOR_RABBITMQ_PREFETCH || 5),
       queue: process.env.MOTOR_RABBITMQ_QUEUE || 'motor.commands',
       retryQueue: process.env.MOTOR_RABBITMQ_RETRY_QUEUE || 'motor.commands.retry',
       deadLetterQueue: process.env.MOTOR_RABBITMQ_DLQ || 'motor.commands.dlq',
