@@ -36,6 +36,13 @@
       "when": 1789907000000,
       "tag": "0004_message_processing_state",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "5",
+      "when": 1790985600000,
+      "tag": "0005_action_descriptions",
+      "breakpoints": true
     }
   ]
 }
