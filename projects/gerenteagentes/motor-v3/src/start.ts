@@ -578,6 +578,10 @@ async function start() {
       deployOrphanBatchReconcilerRunning = true
       void (async () => {
         try {
+          // Reemite a reconciliação de todos os batches running em cada ciclo;
+          // o callback remoto é apenas uma otimização, nunca a única fonte de
+          // conclusão do deploy.
+          await deployConsumer!.requestReconciliation()
           const cleaned = await deployConsumer!.reconcileOrphanPendingBatches()
           if (cleaned > 0) await deployConsumer!.enqueuePendingDispatches()
         } catch (error) {

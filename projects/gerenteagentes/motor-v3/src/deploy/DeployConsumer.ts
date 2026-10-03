@@ -72,14 +72,19 @@ export class DeployConsumer {
       return this.reject(operationId, message, error instanceof Error ? error.message : 'deploy_not_eligible')
     }
     if (!raw) return this.reject(operationId, message, 'task_not_found')
+    let acceptedRequestId: number | null = null
     try {
       const context = await this.integrationContext(raw)
       const accepted = await this.repository.acceptRequest(context, message)
+      acceptedRequestId = accepted.requestId
       const jobId = await this.gate.enqueue({ projectId: context.projectId, taskDatabaseId: context.databaseTaskId, phase: 'pre_deploy', commitSha: context.integrationCommit, baseCommitSha: context.integrationCommit, branchName: context.integrationBranch, workspacePath: context.integrationPath, buildCommand: context.buildCommand, testCommand: context.testCommand }, message)
       await this.log(operationId, 3, 'primitive', 'succeeded', message, { primitiveCode: 'upsert_deploy_request', result: { requestId: accepted.requestId, gateJobId: jobId } })
       await this.log(operationId, 4, 'completed', 'succeeded', message, { actionCode: 'A30_ACCEPT_DEPLOY_REQUEST', result: { requestId: accepted.requestId, gateJobId: jobId } })
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error)
+      if (acceptedRequestId !== null) {
+        await this.repository.failPendingRequest(message.taskId, detail).catch(() => undefined)
+      }
       await this.block(operationId, message, 'deploy_preparation_failed', detail)
     }
   }
@@ -120,12 +125,16 @@ export class DeployConsumer {
     const batch = (await this.repository.runningBatches()).find(item => item.batchId === batchId); if (!batch) return
     const operationId = randomUUID(); await this.log(operationId, 1, 'received', 'executed', message, { commandCode: 'C12_DEPLOY_RECONCILIATION_REQUESTED' })
     if (!await this.govern(operationId, message, 'A32_RECONCILE_DEPLOY_BATCH')) return
-    const status = batch.remoteStatusPath ? await this.remote.status(batch.remoteStatusPath) : null
+    const remoteResult = batch.remoteStatusPath ? await this.remote.status(batch.remoteStatusPath, batch.remotePid) : { state: 'absent' as const, status: null, diagnostic: 'marcador remoto ausente' }
     const timedOut = batch.startedAt && Date.now() - new Date(batch.startedAt).getTime() > this.timeoutMs
-    if (status === 'success' || status?.startsWith('failed:') || timedOut) {
-      const success = status === 'success'; const reason = success ? null : status?.startsWith('failed:') ? `script blue-green retornou ${status}` : 'processo remoto não produziu resultado dentro do timeout'
+    if (remoteResult.state === 'success' || remoteResult.state === 'failed' || remoteResult.state === 'invalid' || remoteResult.state === 'absent' && timedOut) {
+      const success = remoteResult.state === 'success'
+      const reason = success ? null : [
+        remoteResult.state === 'failed' ? `script blue-green retornou ${remoteResult.status}` : remoteResult.state === 'invalid' ? `status remoto inválido: ${remoteResult.status}` : 'processo remoto não produziu resultado dentro do timeout',
+        remoteResult.diagnostic,
+      ].filter(Boolean).join('; ')
       const taskIds = await this.repository.completeBatch(batchId, success, reason, message)
-      await this.log(operationId, 3, success ? 'completed' : 'failed', success ? 'succeeded' : 'failed', message, { actionCode: 'A32_RECONCILE_DEPLOY_BATCH', primitiveCode: success ? 'complete_deploy_batch_atomic' : 'fail_deploy_batch_atomic', result: { batchId, taskIds, reason } })
+      await this.log(operationId, 3, success ? 'completed' : 'failed', success ? 'succeeded' : 'failed', message, { actionCode: 'A32_RECONCILE_DEPLOY_BATCH', primitiveCode: success ? 'complete_deploy_batch_atomic' : 'fail_deploy_batch_atomic', result: { batchId, taskIds, reason, remoteState: remoteResult.state, diagnostic: remoteResult.diagnostic } })
     }
   }
 
@@ -228,7 +237,7 @@ export class DeployConsumer {
       await this.repository.markRemoteStarted(batch.batchId, remote.pid, remote.statusPath, message)
 
       // 4. Libera lock de deploy
-      await this.repository.releaseDeployLock()
+      await this.repository.releaseDeployLock(batch.batchId)
       await this.log(operationId, 4, 'deploy_lock_released', 'succeeded', message, { batchId: batch.batchId })
 
       // 5. Retoma tarefas adiadas (enqueue pending dispatches)
@@ -239,7 +248,7 @@ export class DeployConsumer {
       // Em caso de falha no deploy, libera o lock antes de propagar o erro.
       // Liberação e log são defensivo: falha neles não pode mascarar o erro
       // original nem impedir a liberação do lock.
-      await this.repository.releaseDeployLock().catch(releaseError => {
+      await this.repository.releaseDeployLock(batch.batchId).catch(releaseError => {
         console.error('[Motor v3] Falha ao liberar lock de deploy após erro:', releaseError)
       })
       await this.log(operationId, 99, 'deploy_lock_released', 'failed', message, {

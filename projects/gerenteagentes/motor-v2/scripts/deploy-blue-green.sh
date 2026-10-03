@@ -154,7 +154,10 @@ notify_deploy_result() {
     return 1
   }
   payload="$(printf '{\"status\":\"%s\"}' "$status")"
-  curl --fail --silent --show-error --retry 5 --retry-delay 2 \
+  # O callback é uma notificação best-effort. Seus limites não podem impedir
+  # a gravação do marcador local nem prolongar o deploy indefinidamente.
+  curl --fail --silent --show-error --connect-timeout "${MOTOR_DEPLOY_CALLBACK_CONNECT_TIMEOUT_SECONDS:-2}" \
+    --max-time "${MOTOR_DEPLOY_CALLBACK_TIMEOUT_SECONDS:-15}" --retry 2 --retry-delay 1 \
     -X POST -H 'Content-Type: application/json' \
     -H "X-Motor-Deploy-Token: $MOTOR_DEPLOY_CALLBACK_TOKEN" \
     --data "$payload" \
@@ -171,19 +174,23 @@ notify_deploy_on_exit() {
     status=failed
     callback_port="$(motor_port_for_slot "$active")"
   fi
+  write_deploy_status "$status" || echo "[deploy-blue-green] não foi possível gravar o marcador de resultado" >&2
   notify_deploy_result "$status" "$callback_port" || {
     echo "[deploy-blue-green] não foi possível entregar o resultado do lote $DEPLOY_BATCH_ID ao Motor" >&2
   }
   exit "$code"
 }
 
+write_deploy_status() {
+  local status="$1" tmp
+  [ -n "${MOTOR_DEPLOY_STATUS_FILE:-}" ] || return 0
+  tmp="${MOTOR_DEPLOY_STATUS_FILE}.tmp.$$"
+  printf '%s' "$status" > "$tmp" && mv -f "$tmp" "$MOTOR_DEPLOY_STATUS_FILE"
+}
+
 if [ -n "$DEPLOY_BATCH_ID" ]; then
   [[ "$DEPLOY_BATCH_ID" =~ ^[A-Za-z0-9_-]+$ ]] || {
     echo "[deploy-blue-green] batch de deploy inválido: $DEPLOY_BATCH_ID" >&2
-    exit 1
-  }
-  [ -n "${MOTOR_DEPLOY_CALLBACK_TOKEN:-}" ] || {
-    echo "[deploy-blue-green] MOTOR_DEPLOY_CALLBACK_TOKEN não configurado" >&2
     exit 1
   }
   trap notify_deploy_on_exit EXIT
