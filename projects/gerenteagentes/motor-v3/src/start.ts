@@ -48,6 +48,7 @@ import { BaselinePreflightRecovery, TestGateConsumer, TestGateJobReconciler, Tes
 import { ConsoleHumanNotifier, ExternalResolutionError, ExternalResolutionHandler, MonitorBlockerReconciler, MonitorPromptResolver, MonitorResolutionConsumer, TaskUnblockedConsumer, createTaskBlockedMessage, loadActiveBlocker } from './monitor/index.js'
 import { TaskAdjustmentConsumer, TASK_ADJUSTMENT_REQUESTED } from './adjustment/index.js'
 import { ensureCompletionTrigger } from './db/ensureTriggers.js'
+import { bootstrapMotorV3Catalog } from './db/bootstrap.js'
 
 // Config
 const PORT = parseInt(process.env.MOTOR_PORT || '3010')
@@ -61,6 +62,7 @@ const DB_CONFIG = {
   password: process.env.MOTOR_MYSQL_PASSWORD || process.env.MYSQL_PASSWORD || '',
   database: process.env.MOTOR_MYSQL_DATABASE || process.env.MYSQL_DATABASE || 'projeto_640',
   charset: 'utf8mb4',
+  multipleStatements: true,
 }
 
 // Estado global (para graceful shutdown)
@@ -97,6 +99,12 @@ async function start() {
   const db = drizzle(pool, { schema, mode: 'default' })
   const statusResolver = new DerivedTaskStatusResolver(pool)
   const externalResolutionHandler = new ExternalResolutionHandler(pool)
+
+  // O preflight precisa terminar antes de trigger, consumidores, scheduler,
+  // HTTP e, principalmente, antes de o CatalogLoader compilar suas queries.
+  console.log('[Motor v3] Validando schema e migrations runtime...')
+  await bootstrapMotorV3Catalog(pool)
+  console.log('[Motor v3] Preflight de schema concluído')
 
   // Camada A do invariante de conclusão: trigger de rede de segurança para
   // escritas externas em subtarefas. Falha não derruba o boot (camadas B/C
