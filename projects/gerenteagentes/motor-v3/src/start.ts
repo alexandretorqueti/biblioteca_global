@@ -27,7 +27,7 @@ import { registerAllPrimitives } from './primitives/index.js'
 import { Scheduler } from './scheduler/Scheduler.js'
 import { MonitorBridge } from './monitor-bridge/MonitorBridge.js'
 import { QueueConsumer } from './queue/QueueConsumer.js'
-import { RabbitMqTransport } from './queue/RabbitMqTransport.js'
+import { RabbitMqTransport, normalizeRabbitMqPrefetch } from './queue/RabbitMqTransport.js'
 import { MotorActivityGate, OutboxPublisher, createQueueMessage } from './queue/index.js'
 import type { QueueMessage } from './queue/QueueMessage.js'
 import { TaskCoordinator, MySqlTaskCoordinatorRepository, AnalysisClaimReconciler, AnalysisSessionRecoveryReconciler, TaskCancelConsumer, MySqlTaskEventRecorder, MySqlAnalysisFailureBlocker, SanitizeSessionService } from './coordinator/index.js'
@@ -294,7 +294,7 @@ async function start() {
     const transport = new RabbitMqTransport({
       url: rabbitUrl,
       exchange: process.env.MOTOR_RABBITMQ_EXCHANGE || 'motor',
-      prefetch: Number(process.env.MOTOR_RABBITMQ_PREFETCH || 5),
+      prefetch: normalizeRabbitMqPrefetch(process.env.MOTOR_RABBITMQ_PREFETCH, 5),
       queue: process.env.MOTOR_RABBITMQ_QUEUE || 'motor.commands',
       retryQueue: process.env.MOTOR_RABBITMQ_RETRY_QUEUE || 'motor.commands.retry',
       deadLetterQueue: process.env.MOTOR_RABBITMQ_DLQ || 'motor.commands.dlq',
@@ -366,7 +366,8 @@ async function start() {
       worktreePreparer,
     )
     const gateTransport = new RabbitMqTransport({
-      url: rabbitUrl, exchange: process.env.MOTOR_RABBITMQ_EXCHANGE || 'motor', prefetch: 1,
+      url: rabbitUrl, exchange: process.env.MOTOR_RABBITMQ_EXCHANGE || 'motor',
+      prefetch: normalizeRabbitMqPrefetch(process.env.MOTOR_TEST_GATE_PREFETCH ?? process.env.MOTOR_RABBITMQ_PREFETCH, 5),
       queue: gateQueue, retryQueue: `${gateQueue}.retry`, deadLetterQueue: `${gateQueue}.dlq`,
       retryDelayMs: Number(process.env.MOTOR_RABBITMQ_RETRY_DELAY_MS || 30000),
     })
