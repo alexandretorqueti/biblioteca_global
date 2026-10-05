@@ -3156,4 +3156,123 @@ export class GerenteAgentesService {
       counters,
     };
   }
+
+  /**
+   * Retorna a análise de conflito de promoção persistida para a tarefa,
+   * incluindo evidência completa (branches, commits, arquivos com excerpts).
+   */
+  async getPromotionConflictAnalysis(projeto: ProjetoResumo, tarefaId: number) {
+    const db = this.dbForProject(projeto);
+    const [rows] = await db.execute(
+      `SELECT p.id, p.status, p.confidence, p.recommendation, p.report, p.error_message,
+              p.base_branch, p.task_branch, p.base_commit, p.task_commit, p.merge_base_commit,
+              p.conflict_files_json, p.evidence_json, p.attempts, p.created_at, p.updated_at
+         FROM promotion_conflict_analyses p
+         INNER JOIN tarefas t ON t.id = p.tarefa_id
+        WHERE t.id = ?
+        ORDER BY p.created_at DESC
+        LIMIT 1`,
+      [tarefaId]
+    );
+    const row = (rows as any[])[0];
+    if (!row) return null;
+
+    // Parse evidence_json para extrair dados estruturados
+    let evidence: any = null;
+    try {
+      evidence = typeof row.evidence_json === 'string' ? JSON.parse(row.evidence_json) : row.evidence_json;
+    } catch {
+      evidence = null;
+    }
+
+    // Parse conflict_files_json
+    let conflictFiles: string[] = [];
+    try {
+      const raw = row.conflict_files_json;
+      conflictFiles = Array.isArray(raw) ? raw.map(String) : typeof raw === 'string' ? JSON.parse(raw) as string[] : [];
+    } catch {
+      conflictFiles = [];
+    }
+
+    return {
+      id: row.id,
+      status: row.status,
+      confidence: row.confidence,
+      recommendation: row.recommendation,
+      report: row.report,
+      errorMessage: row.error_message,
+      baseBranch: row.base_branch,
+      taskBranch: row.task_branch,
+      baseCommit: row.base_commit,
+      taskCommit: row.task_commit,
+      mergeBaseCommit: row.merge_base_commit,
+      conflictFiles,
+      evidence,
+      attempts: row.attempts,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  /**
+   * Persiste a decisão de resolução de conflito por arquivo (ours/theirs/both).
+   */
+  async resolvePromotionConflict(
+    projeto: ProjetoResumo,
+    tarefaId: number,
+    resolutions: Array<{ path: string; decision: 'ours' | 'theirs' | 'both' }>,
+  ) {
+    if (!Array.isArray(resolutions) || resolutions.length === 0) {
+      throw new BadRequestException('resolutions é obrigatório e deve ser um array não vazio');
+    }
+
+    const db = this.dbForProject(projeto);
+    
+    // Buscar a análise mais recente
+    const [rows] = await db.execute(
+      `SELECT p.id, p.evidence_json
+         FROM promotion_conflict_analyses p
+         INNER JOIN tarefas t ON t.id = p.tarefa_id
+        WHERE t.id = ?
+        ORDER BY p.created_at DESC
+        LIMIT 1`,
+      [tarefaId]
+    );
+    const row = (rows as any[])[0];
+    if (!row) {
+      throw new NotFoundException('Nenhuma análise de conflito encontrada para esta tarefa');
+    }
+
+    // Parse evidence_json para validar arquivos
+    let evidence: any = null;
+    try {
+      evidence = typeof row.evidence_json === 'string' ? JSON.parse(row.evidence_json) : row.evidence_json;
+    } catch {
+      evidence = null;
+    }
+
+    // Persistir resoluções como JSON no evidence
+    const updatedEvidence = {
+      ...evidence,
+      resolutions: resolutions.reduce((acc, r) => {
+        acc[r.path] = r.decision;
+        return acc;
+      }, {} as Record<string, string>),
+      resolvedAt: new Date().toISOString(),
+    };
+
+    await db.execute(
+      `UPDATE promotion_conflict_analyses
+          SET evidence_json = ?, status = 'resolved', updated_at = NOW()
+        WHERE id = ?`,
+      [JSON.stringify(updatedEvidence), row.id]
+    );
+
+    return {
+      success: true,
+      analysisId: row.id,
+      resolutions,
+      resolvedAt: updatedEvidence.resolvedAt,
+    };
+  }
 }

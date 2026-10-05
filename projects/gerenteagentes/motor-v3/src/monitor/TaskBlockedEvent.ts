@@ -27,6 +27,11 @@ export interface TaskBlockedPayload {
   blockId?: number | null
   /** Presente quando o evento é reemissão de um resume de tarefa bloqueada (etapa 6). */
   resumeReason?: string
+  /** Dados estruturados de conflito de merge (quando blockReason='merge_conflict'). */
+  conflictFiles?: string[]
+  baseBranch?: string
+  taskBranch?: string
+  taskCommit?: string
 }
 
 export interface TaskBlockedMessageInput {

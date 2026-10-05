@@ -667,4 +667,30 @@ export class GerenteAgentesController {
   ) {
     return this.service.simularMergeTarefa(projeto, id);
   }
+
+  /**
+   * Retorna a análise de conflito de promoção persistida para a tarefa,
+   * incluindo evidência completa (branches, commits, arquivos com excerpts).
+   */
+  @Get('tarefas/:id/promotion-conflict-analysis')
+  @Roles('admin', 'gerente', 'operador')
+  async getPromotionConflictAnalysis(
+    @CurrentProject() projeto: ProjetoResumo,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    return this.service.getPromotionConflictAnalysis(projeto, id);
+  }
+
+  /**
+   * Persiste a decisão de resolução de conflito por arquivo (ours/theirs/both).
+   */
+  @Post('tarefas/:id/promotion-conflict-analysis/resolve')
+  @Roles('admin', 'gerente', 'operador')
+  async resolvePromotionConflict(
+    @CurrentProject() projeto: ProjetoResumo,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { resolutions: Array<{ path: string; decision: 'ours' | 'theirs' | 'both' }> },
+  ) {
+    return this.service.resolvePromotionConflict(projeto, id, body.resolutions);
+  }
 }

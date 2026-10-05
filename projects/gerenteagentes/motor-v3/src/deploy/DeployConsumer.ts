@@ -237,7 +237,21 @@ export class DeployConsumer {
 
       // 3. Executa o deploy
       await this.remote.assertReady()
-      await this.promote(batch.repoPath, batch.baseBranch, batch.expectedCommit)
+      try {
+        await this.promote(batch.repoPath, batch.baseBranch, batch.expectedCommit)
+      } catch (error) {
+        // Verificar se é um conflito de merge estruturado
+        const conflictError = error as Error & { isMergeConflict?: boolean; conflictData?: any }
+        if (conflictError.isMergeConflict && conflictError.conflictData) {
+          // Bloquear tarefas do lote com diagnóstico completo de conflito
+          await this.repository.blockBatchForMergeConflict(batch.batchId, conflictError.conflictData, message)
+          // Limpar worktree do lote
+          if (batch.workspacePath) await this.removeComposedWorktree(batch.repoPath, batch.workspacePath)
+          // Não propagar o erro — o bloqueio já foi registrado
+          return
+        }
+        throw error
+      }
       if (!this.hostRepoRoot) throw new Error('DEPLOY_REPO_HOST não configurado')
       const remote = await this.remote.start({ batchId: batch.batchId, expectedCommit: batch.expectedCommit, hostRepoRoot: this.hostRepoRoot, deployScript: this.script })
       await this.repository.markRemoteStarted(batch.batchId, remote.pid, remote.statusPath, message)
@@ -306,10 +320,45 @@ export class DeployConsumer {
       await execFileAsync('git', ['push', 'origin', `HEAD:${baseBranch}`], { cwd: path })
     } catch (error) {
       const { stdout: conflictOutput } = await execFileAsync('git', ['diff', '--name-only', '--diff-filter=U'], { cwd: path, encoding: 'utf8' }).catch(() => ({ stdout: '' }))
-      await execFileAsync('git', ['merge', '--abort'], { cwd: path }).catch(() => undefined)
       const conflicts = conflictOutput.trim().split('\n').filter(Boolean)
+      
+      // Capturar dados estruturados do conflito antes do abort
+      let baseCommit = ''
+      let mergeBaseCommit = ''
+      try {
+        const { stdout: baseCommitOut } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: path, encoding: 'utf8' })
+        baseCommit = baseCommitOut.trim()
+        const { stdout: mergeBaseOut } = await execFileAsync('git', ['merge-base', 'HEAD', expectedCommit], { cwd: path, encoding: 'utf8' })
+        mergeBaseCommit = mergeBaseOut.trim()
+      } catch { /* ignore */ }
+      
+      await execFileAsync('git', ['merge', '--abort'], { cwd: path }).catch(() => undefined)
+      
       if (conflicts.length > 0) {
-        throw new Error(`Conflito de merge ao promover ${expectedCommit}: ${conflicts.join(', ')}`)
+        // Criar erro estruturado com dados do conflito
+        const conflictError = new Error(`Conflito de merge ao promover ${expectedCommit}: ${conflicts.join(', ')}`) as Error & {
+          isMergeConflict?: boolean
+          conflictData?: {
+            baseBranch: string
+            taskBranch: string
+            baseCommit: string
+            taskCommit: string
+            mergeBaseCommit: string
+            conflictFiles: string[]
+            command: string
+          }
+        }
+        conflictError.isMergeConflict = true
+        conflictError.conflictData = {
+          baseBranch,
+          taskBranch: `motor-v3-work/integration-${expectedCommit.slice(0, 12)}`,
+          baseCommit,
+          taskCommit: expectedCommit,
+          mergeBaseCommit,
+          conflictFiles: conflicts,
+          command: `git merge --no-ff --no-commit ${expectedCommit}`,
+        }
+        throw conflictError
       }
       throw error
     }
