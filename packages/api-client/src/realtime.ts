@@ -9,6 +9,7 @@ export class RealtimeClient {
   private readonly fetchImpl: typeof fetch
   private lastSequence: number | undefined
   private connectionGeneration = 0
+  private readonly receivedEventIds = new Set<string>()
 
   constructor(private readonly options: RealtimeClientOptions) {
     this.factory = options.webSocketFactory ?? ((url) => new WebSocket(url))
@@ -27,7 +28,9 @@ export class RealtimeClient {
       // sendo obtido. Não crie um socket órfão quando essa chamada terminar.
       if (this.stopped || generation !== this.connectionGeneration) return
       const query = new URLSearchParams({ ticket })
-      if (this.options.taskId !== undefined) query.set("taskId", String(this.options.taskId))
+      if ((this.options.channel ?? "task") === "task" && this.options.taskId !== undefined) {
+        query.set("taskId", String(this.options.taskId))
+      }
       if (this.lastSequence !== undefined) query.set("lastSequence", String(this.lastSequence))
       const socket = this.factory(`${this.options.url}?${query.toString()}`)
       this.conectarSocket(socket)
@@ -54,7 +57,7 @@ export class RealtimeClient {
     socket.onopen = () => {
       this.options.onStatusChange?.("open")
       const channel = this.options.channel ?? "task"
-      const subscribe = channel === "project-feed"
+      const subscribe = channel === "project-feed" || channel === "map"
         ? { type: "subscribe", channel, lastSequence: this.lastSequence }
         : { type: "subscribe", channel, taskId: this.options.taskId, lastSequence: this.lastSequence }
       socket.send(JSON.stringify(subscribe))
@@ -64,7 +67,16 @@ export class RealtimeClient {
         const parsed: unknown = JSON.parse(String(event.data))
         const result = realtimeServerMessageSchema.safeParse(parsed)
         if (result.success) {
-          if (result.data.type === "event") this.lastSequence = Math.max(this.lastSequence ?? 0, result.data.event.sequence)
+          if (result.data.type === "event") {
+            // A reconexão pode repetir a última mensagem. Deduplicar antes de
+            // entregar ao Mapa evita contadores e atividades duplicados.
+            if (this.receivedEventIds.has(result.data.event.eventId)) return
+            if (this.lastSequence !== undefined && result.data.event.sequence <= this.lastSequence) return
+            this.receivedEventIds.add(result.data.event.eventId)
+            this.lastSequence = Math.max(this.lastSequence ?? 0, result.data.event.sequence)
+          } else if (result.data.type === "map_snapshot" || result.data.type === "task_snapshot") {
+            this.lastSequence = Math.max(this.lastSequence ?? 0, result.data.currentSequence)
+          }
           this.options.onMessage(result.data)
         }
       } catch { /* mensagens inválidas são descartadas pelo cliente */ }

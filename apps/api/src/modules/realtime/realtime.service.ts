@@ -1,7 +1,7 @@
 import { Injectable } from "@nestjs/common"
 import { randomUUID } from "node:crypto"
 import type { WebSocket } from "ws"
-import { realtimeIngressEventSchema, type RealtimeServerMessage, type TaskEventEnvelope, type RealtimeIngressEvent } from "@biblioteca-global/shared"
+import { realtimeIngressEventSchema, type AgentMapSnapshot, type RealtimeServerMessage, type TaskEventEnvelope, type RealtimeIngressEvent, type TaskDetailSnapshot } from "@biblioteca-global/shared"
 
 const LIMITE_EVENTOS_POR_TAREFA = 500
 
@@ -14,18 +14,26 @@ export class RealtimeService {
   private readonly eventosPorProjeto = new Map<number, TaskEventEnvelope[]>()
   private readonly inscritos = new Map<string, Map<WebSocket, number>>()
   private readonly inscritosFeed = new Map<number, Map<WebSocket, number>>()
+  private readonly inscritosMapa = new Map<number, Map<WebSocket, number>>()
   private readonly eventosRecebidos = new Set<string>()
+  private readonly envelopesPorId = new Map<string, TaskEventEnvelope>()
 
   publicar(evento: unknown): TaskEventEnvelope {
     const parsed = realtimeIngressEventSchema.safeParse(evento)
     if (!parsed.success) throw new Error("Evento realtime inválido")
     const input: RealtimeIngressEvent = parsed.data
+    const anterior = this.envelopesPorId.get(input.eventId)
+    if (anterior) return anterior
+    // A entrada é idempotente por eventId. O conjunto também protege contra
+    // uma segunda entrega enquanto o envelope ainda está sendo indexado.
+    if (!this.aceitarUmaVez(input.eventId)) throw new Error("Evento realtime duplicado")
     const atual = this.sequencias.get(input.projectId) ?? 0
     const envelope: TaskEventEnvelope = {
       ...input,
       sequence: atual + 1,
     }
     this.sequencias.set(envelope.projectId, envelope.sequence)
+    this.envelopesPorId.set(envelope.eventId, envelope)
     const chave = this.chave(envelope.projectId, envelope.taskId)
     const lista = this.eventos.get(chave) ?? []
     lista.push(envelope)
@@ -37,6 +45,7 @@ export class RealtimeService {
     if (feed.length > LIMITE_EVENTOS_POR_TAREFA * 10) feed.splice(0, feed.length - LIMITE_EVENTOS_POR_TAREFA * 10)
     this.eventosPorProjeto.set(envelope.projectId, feed)
     this.enviarFeed(envelope.projectId, { type: "event", event: envelope })
+    this.enviarMapa(envelope.projectId, { type: "event", event: envelope })
     return envelope
   }
 
@@ -70,6 +79,10 @@ export class RealtimeService {
       inscritos.delete(client)
       if (inscritos.size === 0) this.inscritosFeed.delete(projectId)
     }
+    for (const [projectId, inscritos] of this.inscritosMapa) {
+      inscritos.delete(client)
+      if (inscritos.size === 0) this.inscritosMapa.delete(projectId)
+    }
   }
 
   inscreverFeed(projectId: number, client: WebSocket, lastSequence?: number): { currentSequence: number; replayAvailable: boolean } {
@@ -86,6 +99,31 @@ export class RealtimeService {
     return { currentSequence: atual, replayAvailable: true }
   }
 
+  inscreverMapa(projectId: number, client: WebSocket, snapshot: AgentMapSnapshot, lastSequence?: number): { currentSequence: number; replayAvailable: boolean } {
+    const inscritos = this.inscritosMapa.get(projectId) ?? new Map<WebSocket, number>()
+    inscritos.set(client, projectId)
+    this.inscritosMapa.set(projectId, inscritos)
+    const lista = this.eventosPorProjeto.get(projectId) ?? []
+    const atual = this.sequencias.get(projectId) ?? 0
+    // Envia snapshot inicial imediatamente
+    this.enviarPara(client, { type: "map_snapshot", projectId, currentSequence: atual, snapshot })
+    if (lastSequence !== undefined) {
+      const primeiro = lista[0]?.sequence
+      if (primeiro !== undefined && lastSequence < primeiro - 1) return { currentSequence: atual, replayAvailable: false }
+      for (const event of lista) if (event.sequence > lastSequence) this.enviarPara(client, { type: "event", event })
+    }
+    return { currentSequence: atual, replayAvailable: true }
+  }
+
+  obterSnapshotDetalhe(taskId: number, projectId: number, snapshot: TaskDetailSnapshot): void {
+    // Envia snapshot de detalhe para todos os inscritos na tarefa específica
+    const chave = this.chave(projectId, taskId)
+    for (const client of this.inscritos.get(chave)?.keys() ?? []) {
+      const atual = this.sequencias.get(projectId) ?? 0
+      this.enviarPara(client, { type: "task_snapshot", taskId: taskId, currentSequence: atual, snapshot })
+    }
+  }
+
   private chave(projectId: number, taskId: number): string {
     return `${projectId}:${taskId}`
   }
@@ -96,6 +134,10 @@ export class RealtimeService {
 
   private enviarFeed(projectId: number, message: RealtimeServerMessage): void {
     for (const client of this.inscritosFeed.get(projectId)?.keys() ?? []) this.enviarPara(client, message)
+  }
+
+  private enviarMapa(projectId: number, message: RealtimeServerMessage): void {
+    for (const client of this.inscritosMapa.get(projectId)?.keys() ?? []) this.enviarPara(client, message)
   }
 
   private enviarPara(client: WebSocket, message: RealtimeServerMessage): void {
