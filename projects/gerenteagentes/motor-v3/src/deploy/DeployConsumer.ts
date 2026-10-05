@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import { existsSync } from 'node:fs'
 import { promisify } from 'node:util'
 import { CommandPolicyResolver, type CommandPolicyRepository, type OperationLogger, type OperationOutcome, type OperationPhase } from '../commands/index.js'
 import { GitWorktreePreparer, mapHostRepoPathToContainer } from '../execution/GitWorktreePreparer.js'
@@ -285,7 +286,17 @@ export class DeployConsumer {
     // Configurações de projeto podem apontar para um subdiretório do mesmo
     // monorepo. O batch precisa usar a raiz Git canônica para não fragmentar
     // o mesmo deploy em grupos artificiais.
-    const { stdout: rootOutput } = await execFileAsync('git', ['rev-parse', '--show-toplevel'], { cwd: raw.repoPath, encoding: 'utf8' })
+    // repo_path pode ser um caminho do host (/home/alexandre/...) que não
+    // existe dentro do container do Motor; usar esse cwd diretamente faz o
+    // spawn do git falhar com ENOENT (incidente task-p6-929). Resolver o
+    // caminho acessível antes de qualquer chamada git.
+    const mappedRepoPath = mapHostRepoPathToContainer(raw.repoPath)
+    const accessibleRepoPath = existsSync(raw.repoPath)
+      ? raw.repoPath
+      : mappedRepoPath && existsSync(mappedRepoPath)
+        ? mappedRepoPath
+        : raw.repoPath
+    const { stdout: rootOutput } = await execFileAsync('git', ['rev-parse', '--show-toplevel'], { cwd: accessibleRepoPath, encoding: 'utf8' })
     const repoPath = mapHostRepoPathToContainer(rootOutput.trim()) ?? rootOutput.trim()
     const interim = this.repository.withIntegration({ ...raw, repoPath }, '')
     // Verificação defensiva: garantir que o worktree está na branch de integração
