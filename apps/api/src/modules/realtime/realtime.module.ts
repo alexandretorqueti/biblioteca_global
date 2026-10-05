@@ -6,5 +6,5 @@ import { RealtimeController } from "./realtime.controller"
 import { RealtimeTicketController } from "./realtime-ticket.controller"
 import { RealtimeIngressGuard } from "./realtime-ingress.guard"
 
-@Module({ imports: [AuthModule], controllers: [RealtimeController, RealtimeTicketController], providers: [RealtimeService, RealtimeGateway, RealtimeIngressGuard], exports: [RealtimeService] })
+@Module({ imports: [AuthModule], controllers: [RealtimeController, RealtimeTicketController], providers: [RealtimeService, RealtimeGateway, RealtimeIngressGuard], exports: [RealtimeService, RealtimeGateway] })
 export class RealtimeModule {}

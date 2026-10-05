@@ -307,8 +307,8 @@ docker exec "$NEW_API_CONTAINER" node -e '
 echo "[deploy-blue-green] Console OpenClaw acessível"
 
 if ! wait_http "http://127.0.0.1:$NEW_WEB_PORT/health" 30 "web-$target" \
-   || ! wait_http "http://127.0.0.1:$NEW_API_PORT/api/auth/me" 40 "api-$target" \
-   || ! wait_http "http://127.0.0.1:$NEW_MOTOR_PORT/api/motor/health" 40 "motor-$target"; then
+   || ! wait_http "http://127.0.0.1:$NEW_API_PORT/api/auth/me" 100 "api-$target" \
+   || ! wait_http "http://127.0.0.1:$NEW_MOTOR_PORT/api/motor/health" 100 "motor-$target"; then
   echo "[deploy-blue-green] nova stack não ficou saudável; tráfego antigo preservado" >&2
   exit 1
 fi
