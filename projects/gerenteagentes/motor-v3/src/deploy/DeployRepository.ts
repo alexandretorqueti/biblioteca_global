@@ -38,6 +38,13 @@ export interface DeployBatchMember {
   testCommand: string
 }
 
+/** Branch de integração que deve receber a base recém implantada. */
+export interface IntegrationBranchSyncTarget {
+  taskId: string
+  repoPath: string
+  baseBranch: string
+}
+
 interface ContextRow extends RowDataPacket {
   id: number; external_id: string | null; projeto_id: number; tipo: string | null
   repo_path: string | null; branch_trabalho: string | null
@@ -689,6 +696,46 @@ ${conflictData.conflictFiles.map(f => `- \`${f}\``).join('\n')}
       `SELECT dr.repo_path FROM deploy_requests dr INNER JOIN tarefas t ON t.id=dr.tarefa_id
         WHERE t.external_id=? OR CAST(t.id AS CHAR)=? ORDER BY dr.id DESC LIMIT 1`, [taskId, taskId])
     return rows[0]?.repo_path ? String(rows[0].repo_path) : null
+  }
+
+  /**
+   * Tarefas interrompidas que pertencem ao mesmo repositório/branch do lote.
+   * A confirmação do worktree e da ref local é deliberadamente feita pela
+   * camada Git: dados persistidos não provam que os artefatos ainda existem.
+   */
+  async integrationBranchesAwaitingBaseSync(batchId: string): Promise<IntegrationBranchSyncTarget[]> {
+    const [rows] = await this.pool.query<Array<RowDataPacket & { external_id: string | null; id: number; repo_path: string; base_branch: string }>>(
+      `SELECT t.id,t.external_id,pmc.repo_path,b.base_branch
+         FROM deploy_batches b
+         INNER JOIN tarefas t
+           ON t.projeto_id IN (
+             SELECT deployed.projeto_id
+               FROM deploy_requests dr
+               INNER JOIN tarefas deployed ON deployed.id=dr.tarefa_id
+              WHERE dr.batch_id=b.batch_id
+           )
+         INNER JOIN projeto_motor_config pmc ON pmc.projeto_id=t.projeto_id
+         LEFT JOIN task_runtime_facts f ON f.tarefa_id=t.id
+        WHERE b.batch_id=?
+          AND pmc.repo_path=b.repo_path
+          AND pmc.branch_trabalho=b.base_branch
+          AND (
+            (t.paused_at IS NOT NULL AND t.resource_wait_key IS NULL)
+            OR f.clarification_pending_at IS NOT NULL
+            OR EXISTS(SELECT 1 FROM tarefa_contextos_execucao cix
+                        WHERE cix.tarefa_id=t.id AND cix.estado='awaiting_human')
+            OR EXISTS(SELECT 1 FROM bloqueios bl
+                        WHERE bl.tarefa_id=t.id AND bl.resolved_at IS NULL)
+            OR EXISTS(SELECT 1 FROM subtarefas s
+                        WHERE s.tarefa_id=t.id AND s.status='blocked')
+          )`,
+      [batchId],
+    )
+    return rows.map(row => ({
+      taskId: String(row.external_id ?? row.id),
+      repoPath: String(row.repo_path),
+      baseBranch: String(row.base_branch),
+    }))
   }
 
   async completeBatch(batchId: string, success: boolean, reason: string | null, source: QueueMessage): Promise<string[]> {

@@ -24,6 +24,12 @@ export interface PreparedWorktree {
   integrationBranch: string
 }
 
+export interface IntegrationBranchSyncInput {
+  taskId: string
+  repoPath: string
+  baseBranch: string
+}
+
 export function mapHostRepoPathToContainer(repoPath: string): string | null {
   const original = resolve(repoPath)
   const hostPrefix = '/home/alexandre/codigofonte/'
@@ -156,6 +162,45 @@ export class GitWorktreePreparer {
     return { removed, branches }
   }
 
+  /**
+   * Atualiza uma integração interrompida a partir da base já promovida.
+   * Não recria artefatos: sem worktree registrado ou sem branch, a tarefa é
+   * ignorada. O merge acontece no worktree exclusivo da integração, jamais no
+   * checkout compartilhado da base, e é abortado se qualquer etapa falhar.
+   */
+  async syncIntegrationBranch(input: IntegrationBranchSyncInput): Promise<'merged' | 'up_to_date' | 'skipped'> {
+    await this.assertGitAvailable()
+    const repo = await this.resolveRepoPath(input.repoPath)
+    const safeTaskId = input.taskId.replace(/[^a-zA-Z0-9._-]/g, '-')
+    const branch = `motor-v3-work/integration-${safeTaskId}`
+    const path = resolve(this.root, safeTaskId, 'integration')
+    const branchExists = await execFileAsync('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], { cwd: repo })
+      .then(() => true, () => false)
+    if (!branchExists || !await this.isRegisteredWorktree(repo, path) || !await this.exists(path)) return 'skipped'
+
+    // A promoção faz push a partir de um worktree destacado e não movimenta a
+    // ref local da base. Atualizar apenas a tracking ref preserva o checkout
+    // compartilhado, mas garante que o merge usa a base realmente implantada.
+    await execFileAsync('git', ['fetch', 'origin', input.baseBranch], { cwd: repo })
+    const baseRef = `origin/${input.baseBranch}`
+    const { stdout: headRef } = await execFileAsync('git', ['symbolic-ref', '-q', 'HEAD'], { cwd: path }).catch(() => ({ stdout: '' }))
+    if (headRef.trim() !== `refs/heads/${branch}`) await execFileAsync('git', ['checkout', branch], { cwd: path })
+
+    const baseAlreadyMerged = await execFileAsync('git', ['merge-base', '--is-ancestor', baseRef, branch], { cwd: repo })
+      .then(() => true, () => false)
+    if (baseAlreadyMerged) return 'up_to_date'
+
+    try {
+      await execFileAsync('git', ['merge', '--no-ff', '--no-commit', baseRef], { cwd: path })
+      await execFileAsync('git', ['diff', '--check'], { cwd: path })
+      await execFileAsync('git', ['commit', '--no-edit'], { cwd: path })
+      return 'merged'
+    } catch (error) {
+      await execFileAsync('git', ['merge', '--abort'], { cwd: path }).catch(() => undefined)
+      throw error
+    }
+  }
+
   /** Remove a branch se existir; retorna 1 quando removeu, 0 quando já não existia. */
   private async deleteBranch(repoPath: string, branch: string): Promise<number> {
     const exists = await execFileAsync('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], { cwd: repoPath })
@@ -167,6 +212,11 @@ export class GitWorktreePreparer {
 
   private async exists(path: string): Promise<boolean> {
     try { await stat(path); return true } catch { return false }
+  }
+
+  private async isRegisteredWorktree(repoPath: string, path: string): Promise<boolean> {
+    const { stdout } = await execFileAsync('git', ['worktree', 'list', '--porcelain'], { cwd: repoPath })
+    return stdout.split('\n').some(line => line === `worktree ${path}`)
   }
 
   /**

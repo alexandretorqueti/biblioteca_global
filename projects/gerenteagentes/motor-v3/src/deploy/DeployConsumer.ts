@@ -154,7 +154,29 @@ export class DeployConsumer {
     // Deploy bem-sucedido: os worktrees/branches da tarefa já não servem para debug e
     // acumulam no disco. Em falha, preservamos tudo para investigação (decisão do Alexandre).
     // Falha de limpeza é apenas warning: o deploy já está concluído e não pode ser alterado.
-    if (success) await this.cleanupWorktrees(taskIds)
+    if (success) {
+      await this.syncInterruptedIntegrations(batchId)
+      await this.cleanupWorktrees(taskIds)
+    }
+  }
+
+  /** Sincronização best-effort: uma integração problemática não invalida o deploy confirmado. */
+  private async syncInterruptedIntegrations(batchId: string): Promise<void> {
+    let targets: Awaited<ReturnType<DeployRepository['integrationBranchesAwaitingBaseSync']>>
+    try {
+      targets = await this.repository.integrationBranchesAwaitingBaseSync(batchId)
+    } catch (error) {
+      console.error('[Motor v3] Falha ao consultar integrações interrompidas após deploy:', error instanceof Error ? error.message : String(error))
+      return
+    }
+    for (const target of targets) {
+      try {
+        const outcome = await this.worktrees.syncIntegrationBranch(target)
+        console.log(JSON.stringify({ event: 'integration_branch_base_synced', taskId: target.taskId, baseBranch: target.baseBranch, outcome }))
+      } catch (error) {
+        console.error(`[Motor v3] Falha ao sincronizar a integração da tarefa ${target.taskId}:`, error instanceof Error ? error.message : String(error))
+      }
+    }
   }
 
   /** Remove worktrees/branches das tarefas deployadas; nunca propaga erro ao fluxo do deploy. */

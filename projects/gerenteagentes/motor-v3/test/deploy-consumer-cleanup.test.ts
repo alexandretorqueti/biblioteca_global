@@ -28,6 +28,7 @@ describe('DeployConsumer.receiveResult — cleanup de worktrees pós-deploy', ()
     const repository = {
       completeBatch: vi.fn(async () => ['task-1', 'task-2']),
       repoPathForTask,
+      integrationBranchesAwaitingBaseSync: vi.fn(async () => []),
     } as never
     const consumer = new DeployConsumer(repository, {} as never, {} as never, logger, undefined, undefined, undefined, undefined, { cleanup } as never)
 
@@ -45,6 +46,7 @@ describe('DeployConsumer.receiveResult — cleanup de worktrees pós-deploy', ()
     const repository = {
       completeBatch: vi.fn(async () => ['task-1']),
       repoPathForTask: vi.fn(async () => '/repo'),
+      integrationBranchesAwaitingBaseSync: vi.fn(async () => []),
     } as never
     const consumer = new DeployConsumer(repository, {} as never, {} as never, logger, undefined, undefined, undefined, undefined, { cleanup } as never)
 
@@ -61,6 +63,7 @@ describe('DeployConsumer.receiveResult — cleanup de worktrees pós-deploy', ()
     const repository = {
       completeBatch: vi.fn(async () => ['task-1']),
       repoPathForTask: vi.fn(async () => '/repo'),
+      integrationBranchesAwaitingBaseSync: vi.fn(async () => []),
     } as never
     const consumer = new DeployConsumer(repository, {} as never, {} as never, logger, undefined, undefined, undefined, undefined, { cleanup } as never)
 
@@ -69,6 +72,35 @@ describe('DeployConsumer.receiveResult — cleanup de worktrees pós-deploy', ()
     expect(cleanup).toHaveBeenCalledTimes(1)
     expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Falha na limpeza de worktrees da tarefa task-1'), 'git worktree remove falhou')
     expect(entries.some(entry => entry.phase === 'completed' && entry.outcome === 'succeeded')).toBe(true)
+    errorSpy.mockRestore()
+  })
+
+  it('sincroniza integrações interrompidas antes da limpeza e isola falhas por branch', async () => {
+    const { logger } = captureLogger()
+    const callOrder: string[] = []
+    const syncIntegrationBranch = vi.fn(async ({ taskId }: { taskId: string }) => {
+      callOrder.push(`sync:${taskId}`)
+      if (taskId === 'task-bloqueada') throw new Error('conflito')
+      return 'merged'
+    })
+    const cleanup = vi.fn(async () => { callOrder.push('cleanup'); return { removed: 1, branches: 1 } })
+    const repository = {
+      completeBatch: vi.fn(async () => ['task-deploy']),
+      repoPathForTask: vi.fn(async () => '/repo'),
+      integrationBranchesAwaitingBaseSync: vi.fn(async () => [
+        { taskId: 'task-pausada', repoPath: '/repo', baseBranch: 'base-desenvolvimento' },
+        { taskId: 'task-bloqueada', repoPath: '/repo', baseBranch: 'base-desenvolvimento' },
+      ]),
+    } as never
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const consumer = new DeployConsumer(repository, {} as never, {} as never, logger, undefined, undefined, undefined, undefined, { cleanup, syncIntegrationBranch } as never)
+
+    await expect(consumer.handle(makeMessage('success'))).resolves.toBeUndefined()
+
+    expect(syncIntegrationBranch).toHaveBeenCalledTimes(2)
+    expect(cleanup).toHaveBeenCalledTimes(1)
+    expect(callOrder).toEqual(['sync:task-pausada', 'sync:task-bloqueada', 'cleanup'])
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Falha ao sincronizar a integração da tarefa task-bloqueada'), 'conflito')
     errorSpy.mockRestore()
   })
 })
