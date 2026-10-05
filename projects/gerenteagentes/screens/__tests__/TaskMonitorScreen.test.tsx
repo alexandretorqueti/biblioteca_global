@@ -1074,7 +1074,8 @@ describe("TaskMonitorScreen — compatibilidade Motor-v2", () => {
       expect(screen.getByTestId("btn-start")).toBeInTheDocument()
     })
     expect(screen.getByTestId("btn-start")).not.toBeDisabled()
-    expect(screen.getByTestId("btn-pause")).toBeDisabled()
+    // task-p2-932: pausar tarefa planejada é permitido (volta para rascunhos)
+    expect(screen.getByTestId("btn-pause")).not.toBeDisabled()
     expect(screen.queryByTestId("btn-resume")).not.toBeInTheDocument()
   })
 
