@@ -49,7 +49,7 @@ export class WorkspaceEnvironmentPreparer {
     private readonly install: (directory: string) => Promise<void> = async directory => {
       await execFileAsync('npm', ['ci', '--include=dev', '--prefer-offline', '--no-audit', '--no-fund', '--loglevel=error'], {
         cwd: directory,
-        timeout: 300_000,
+        timeout: Number(process.env.MOTOR_TEST_GATE_INSTALL_TIMEOUT_MS || 900_000),
         maxBuffer: 50 * 1024 * 1024,
       })
     },

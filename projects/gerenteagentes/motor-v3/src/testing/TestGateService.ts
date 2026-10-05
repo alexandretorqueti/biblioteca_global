@@ -9,6 +9,11 @@ import type { Pool, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
 
 const execAsync = promisify(exec)
 const gzipAsync = promisify(gzipCallback)
+// O monorepo da Biblioteca Global leva >5min no suite completo; timeouts curtos
+// matavam o processo e o gate falhava sem nenhuma falha de teste registrada
+// (incidente task-p6-929). Configuráveis via env para outros projetos.
+const GATE_BUILD_TIMEOUT_MS = Number(process.env.MOTOR_TEST_GATE_BUILD_TIMEOUT_MS || 900_000)
+const GATE_TEST_TIMEOUT_MS = Number(process.env.MOTOR_TEST_GATE_TEST_TIMEOUT_MS || 1_800_000)
 const ANSI = /\u001b\[[0-9;]*m/g
 
 export type TestRunPhase = 'baseline' | 'post_dev' | 'rework' | 'monitor_recovery' | 'pre_deploy'
@@ -88,10 +93,10 @@ export class TestGateService {
     let stderr = ''
     let exitCode = 0
     try {
-      const build = await execAsync(input.buildCommand, { cwd: input.workspacePath, timeout: 300_000, maxBuffer: 20 * 1024 * 1024 })
+      const build = await execAsync(input.buildCommand, { cwd: input.workspacePath, timeout: GATE_BUILD_TIMEOUT_MS, maxBuffer: 20 * 1024 * 1024 })
       stdout += build.stdout
       stderr += build.stderr
-      const tests = await execAsync(input.testCommand, { cwd: input.workspacePath, timeout: 300_000, maxBuffer: 30 * 1024 * 1024 })
+      const tests = await execAsync(input.testCommand, { cwd: input.workspacePath, timeout: GATE_TEST_TIMEOUT_MS, maxBuffer: 30 * 1024 * 1024 })
       stdout += tests.stdout
       stderr += tests.stderr
     } catch (error: any) {
@@ -349,7 +354,7 @@ export class TestGateService {
 
   private async confirmFailures(input: TestGateInput): Promise<TestFailureRecord[]> {
     try {
-      const result = await execAsync(input.testCommand, { cwd: input.workspacePath, timeout: 300_000, maxBuffer: 30 * 1024 * 1024 })
+      const result = await execAsync(input.testCommand, { cwd: input.workspacePath, timeout: GATE_TEST_TIMEOUT_MS, maxBuffer: 30 * 1024 * 1024 })
       return this.parseFailures(`${result.stdout}\n${result.stderr}`)
     } catch (error: any) {
       return this.parseFailures(`${String(error?.stdout ?? '')}\n${String(error?.stderr ?? error?.message ?? '')}`)
