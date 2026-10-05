@@ -21,6 +21,9 @@ export default defineConfig({
       "**/e2e/**",
       "**/worktrees/**",
       "wt-*/**",
+      // Worktrees de tarefas podem existir dentro de projetos; são cópias de
+      // outros repositórios e não fazem parte da suíte desta integração.
+      "**/worktrees/**",
       "**/motor-v2/**",
       // O Motor v3 mantém sua própria configuração Node e suíte de pacote.
       "**/motor-v3/**",

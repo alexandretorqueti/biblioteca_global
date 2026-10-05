@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it, vi } from 'vitest'
 import type { Pool } from 'mysql2/promise'
 import { MonitorResolutionConsumer, TASK_BLOCKED_EVENT_TYPE } from '../src/monitor/index.js'

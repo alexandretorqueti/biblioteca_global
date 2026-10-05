@@ -14,6 +14,7 @@ describe("configuração do Administrador Global", () => {
       // usuário; `senhaInicial` não é um campo persistido do cadastro.
       expect(campos).toEqual(expect.arrayContaining(["nome", "email", "papel", "ativo"]))
       expect(campos).not.toContain("senhaInicial")
+      expect(campos).not.toContain("perfil")
     }
   })
 })

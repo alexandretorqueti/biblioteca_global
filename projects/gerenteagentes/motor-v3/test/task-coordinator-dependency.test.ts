@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it, vi } from 'vitest'
 import { MessageBus } from '../src/bus/MessageBus.js'
 import { TaskCoordinator, type TaskCoordinatorConfig, type TaskCoordinatorRepository, type TaskSnapshot } from '../src/coordinator/index.js'

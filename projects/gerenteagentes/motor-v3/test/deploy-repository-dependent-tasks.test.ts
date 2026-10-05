@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { DeployRepository } from '../src/deploy/DeployRepository.js'
 import type { Pool, PoolConnection } from 'mysql2/promise'

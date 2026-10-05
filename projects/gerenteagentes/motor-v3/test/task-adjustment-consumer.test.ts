@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it, vi } from 'vitest'
 import { TaskAdjustmentConsumer, TASK_ADJUSTMENT_REQUESTED } from '../src/adjustment/TaskAdjustmentConsumer.js'
 import type { QueueMessage } from '../src/queue/QueueMessage.js'

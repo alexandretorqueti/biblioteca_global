@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it, vi } from 'vitest'
 import { DeployConsumer } from '../src/deploy/DeployConsumer.js'
 import { DeployRepository } from '../src/deploy/DeployRepository.js'
