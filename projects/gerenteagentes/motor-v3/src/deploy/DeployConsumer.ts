@@ -24,7 +24,7 @@ export class DeployConsumer {
     private readonly hostRepoRoot = process.env.DEPLOY_REPO_HOST,
     private readonly script = process.env.MOTOR_DEPLOY_SCRIPT || 'projects/gerenteagentes/motor-v2/scripts/deploy-blue-green.sh',
     private readonly timeoutMs = Number(process.env.MOTOR_DEPLOY_TIMEOUT_MS || 1_800_000),
-    private readonly worktrees: GitWorktreePreparer = new GitWorktreePreparer(process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/agentes/gerenteagentes/worktrees'),
+    private readonly worktrees: GitWorktreePreparer = new GitWorktreePreparer(process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/codigofonte/biblioteca-global/.motor-v3-worktrees'),
     private readonly operationState: GitOperationStateDetector = new GitOperationStateDetector(),
     private readonly governedFailureHandler?: GovernedFailureHandler,
   ) {}

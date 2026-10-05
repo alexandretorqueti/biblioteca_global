@@ -325,8 +325,8 @@ async function start() {
     await monitorOutbox.start()
     const operationLogger = new MySqlOperationLogger(pool)
     const taskEvents = new MySqlTaskEventRecorder(pool)
-    const worktreePreparer = new GitWorktreePreparer(process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/agentes/gerenteagentes/worktrees')
-    const deployRepository = new DeployRepository(pool, process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/agentes/gerenteagentes/worktrees')
+    const worktreePreparer = new GitWorktreePreparer(process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/codigofonte/biblioteca-global/.motor-v3-worktrees')
+    const deployRepository = new DeployRepository(pool, process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/codigofonte/biblioteca-global/.motor-v3-worktrees')
     const coordinator = new TaskCoordinator(repository, analyst, bus, {
       commandPolicies: new MySqlCommandPolicyRepository(pool),
       operationLogger,
@@ -460,7 +460,7 @@ async function start() {
     const monitorWorker = new WorkerLauncher({
       maxAttempts: Number(process.env.MOTOR_MONITOR_MAX_ATTEMPTS || 2),
       timeoutMs: Number(process.env.MOTOR_WORKER_TIMEOUT_MS || 1800000),
-      sandboxRoot: process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/agentes/gerenteagentes/worktrees',
+      sandboxRoot: process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/codigofonte/biblioteca-global/.motor-v3-worktrees',
       governedFailureHandler,
     })
     const baselineRecovery = new BaselinePreflightRecovery(
@@ -474,7 +474,7 @@ async function start() {
         timeoutMs: Number(process.env.MOTOR_WORKER_TIMEOUT_MS || 4_800_000),
         globalTimeoutMs: Number(process.env.MOTOR_WORKER_GLOBAL_TIMEOUT_MS || 5_100_000),
         handoffSessionOnTimeout: true,
-        sandboxRoot: process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/agentes/gerenteagentes/worktrees',
+        sandboxRoot: process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/codigofonte/biblioteca-global/.motor-v3-worktrees',
         governedFailureHandler,
       }),
       developmentConsole,
@@ -517,7 +517,7 @@ async function start() {
     const monitorResolutionWorker = new WorkerLauncher({
       maxAttempts: Number(process.env.MOTOR_MONITOR_RESOLUTION_MAX_ATTEMPTS || 2),
       timeoutMs: Number(process.env.MOTOR_MONITOR_RESOLUTION_TIMEOUT_MS || 3600000),
-      sandboxRoot: process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/agentes/gerenteagentes/worktrees',
+      sandboxRoot: process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/codigofonte/biblioteca-global/.motor-v3-worktrees',
     })
     monitorResolutionConsumer = new MonitorResolutionConsumer(
       pool, worktreePreparer, monitorResolutionWorker, new MonitorPromptResolver(pool),

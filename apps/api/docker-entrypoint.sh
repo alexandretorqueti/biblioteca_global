@@ -77,7 +77,7 @@ elif [ "${MOTOR_VERSION:-v1}" = "v3" ]; then
   export MOTOR_MYSQL_DATABASE="${MOTOR_MYSQL_DATABASE:-projeto_640}"
   export MOTOR_MYSQL_USER="${MOTOR_MYSQL_USER:-${MYSQL_USER:-biblioteca}}"
   export MOTOR_MYSQL_PASSWORD="${MOTOR_MYSQL_PASSWORD:-${MYSQL_PASSWORD:-}}"
-  export MOTOR_WORKTREE_ROOT="${MOTOR_WORKTREE_ROOT:-/data/workspace/projects/agentes/gerenteagentes/worktrees}"
+  export MOTOR_WORKTREE_ROOT="${MOTOR_WORKTREE_ROOT:-/data/workspace/projects/codigofonte/biblioteca-global/.motor-v3-worktrees}"
   mkdir -p "$MOTOR_WORKTREE_ROOT"
   if [ ! -w "$MOTOR_WORKTREE_ROOT" ]; then
     echo "[entrypoint] Motor-v3 bloqueado: MOTOR_WORKTREE_ROOT sem permissão de escrita: $MOTOR_WORKTREE_ROOT" >&2

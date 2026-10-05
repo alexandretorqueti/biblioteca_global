@@ -27,3 +27,4 @@ biblioteca_old/**/node_modules/
 # Testbed E2E (descontinuado)
 .motor-v2-e2e-*
 projects/gerenteagentes/motor-v2/scripts/
+.motor-v3-worktrees/
