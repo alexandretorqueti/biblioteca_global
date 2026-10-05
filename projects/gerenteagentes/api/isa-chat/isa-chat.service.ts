@@ -304,7 +304,7 @@ export class IsaChatService {
     if (contatoResult.length === 0) {
       const [inserted] = await db
         .insert(contatos)
-        .values({ email, nome: nome || null })
+        .values({ email, nome: nome || null, origem: "isa-chat" })
         .$returningId()
       contatoId = inserted!.id
     } else {
@@ -725,7 +725,7 @@ export class IsaChatService {
     if (contatoResult.length === 0) {
       const [inserted] = await db
         .insert(contatos)
-        .values({ email: normalizedEmail, nome: chat.visitorName })
+        .values({ email: normalizedEmail, nome: chat.visitorName, origem: "isa-chat" })
         .$returningId()
       contatoId = inserted!.id
     } else {

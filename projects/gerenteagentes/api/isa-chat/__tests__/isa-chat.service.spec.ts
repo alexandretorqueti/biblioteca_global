@@ -6,6 +6,7 @@
  * Não depende de banco real, BFF real ou OpenClaw real.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest"
+import { createHash } from "node:crypto"
 import { IsaChatService, getWelcomeMessage, isValidEmail, isValidBrPhone } from "../isa-chat.service"
 
 // Mock do file-extract
@@ -27,6 +28,9 @@ describe("IsaChatService", () => {
 
   // Mock chainable query builder simplificado
   const createMockQueryBuilder = () => {
+    const values = vi.fn().mockReturnValue({
+      $returningId: vi.fn().mockResolvedValue([{ id: 1 }]),
+    })
     const chain: Record<string, unknown> = {
       select: vi.fn(),
       from: vi.fn(),
@@ -34,11 +38,8 @@ describe("IsaChatService", () => {
       innerJoin: vi.fn(),
       orderBy: vi.fn(),
       limit: vi.fn().mockResolvedValue([]),
-      insert: vi.fn().mockReturnValue({
-        values: vi.fn().mockReturnValue({
-          $returningId: vi.fn().mockResolvedValue([{ id: 1 }]),
-        }),
-      }),
+      insert: vi.fn().mockReturnValue({ values }),
+      values,
       update: vi.fn().mockReturnValue({
         set: vi.fn().mockReturnValue({
           where: vi.fn().mockResolvedValue(undefined),
@@ -129,6 +130,42 @@ describe("IsaChatService", () => {
 
       expect(result.ok).toBe(true)
       expect(mockBridge.resolveSession).not.toHaveBeenCalled()
+    })
+  })
+
+  describe("criação de contatos", () => {
+    it("deve persistir origem isa-chat ao criar contato pela sessão legada", async () => {
+      await service.createSession({ email: "Cliente@Teste.com", nome: "Cliente" })
+
+      expect(mockDb.values).toHaveBeenCalledWith({
+        email: "cliente@teste.com",
+        nome: "Cliente",
+        origem: "isa-chat",
+      })
+    })
+
+    it("deve persistir origem isa-chat ao criar contato após verificar o email", async () => {
+      const code = "123456"
+      const email = "cliente@teste.com"
+      const codeHash = createHash("sha256")
+        .update(`${code}::${email}::test-secret`)
+        .digest("hex")
+
+      ;(mockDb.limit as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce([{ id: 42, visitorName: "Cliente" }])
+        .mockResolvedValueOnce([
+          { codeHash, expiresAt: new Date(Date.now() + 60_000), attempts: 0, id: 7 },
+        ])
+        .mockResolvedValueOnce([])
+
+      const result = await service.verifyEmailCode("42", email, code)
+
+      expect(result).toEqual({ ok: true })
+      expect(mockDb.values).toHaveBeenCalledWith({
+        email,
+        nome: "Cliente",
+        origem: "isa-chat",
+      })
     })
   })
 
