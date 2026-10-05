@@ -30,6 +30,8 @@ export interface MotorContext {
   errorMessage?: string
   errorStack?: string
   actionResult?: string
+  consoleApi?: any
+  agentId?: string
 
   // Metadados adicionais
   metadata?: Record<string, any>

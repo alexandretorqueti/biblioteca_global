@@ -38,6 +38,7 @@ export interface CatalogAction {
   onPartialFailure: 'continue' | 'compensate' | 'mark_dirty'
   compensationActionId: number | null
   isTerminal: boolean
+  version: number
   active: boolean
 }
 
@@ -47,6 +48,8 @@ export interface CatalogReaction {
   occurrence: number
   actionId: number
   params?: Record<string, any>
+  condition?: Record<string, any>
+  version: number
   active: boolean
 }
 
@@ -103,6 +106,7 @@ export class CatalogLoader {
       onPartialFailure: schema.motorActions.onPartialFailure,
       compensationActionId: schema.motorActions.compensationActionId,
       isTerminal: schema.motorActions.isTerminal,
+      version: schema.motorActions.version,
       active: schema.motorActions.active,
     }).from(schema.motorActions).where(eq(schema.motorActions.active, 1))
     console.log(`[CatalogLoader] Loaded ${actions.length} actions`)
@@ -136,6 +140,7 @@ export class CatalogLoader {
         onPartialFailure: a.onPartialFailure,
         compensationActionId: a.compensationActionId,
         isTerminal: a.isTerminal === 1,
+        version: a.version,
         active: a.active === 1,
       })),
       reactions: reactions.map(r => ({
@@ -144,6 +149,8 @@ export class CatalogLoader {
         occurrence: r.occurrence,
         actionId: r.actionId,
         params: r.paramsJson ?? undefined,
+        condition: r.conditionJson ?? undefined,
+        version: r.version,
         active: r.active === 1,
       })),
       loadedAt: new Date(),

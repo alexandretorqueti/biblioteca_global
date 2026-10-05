@@ -8,6 +8,7 @@ import { TestGateOrchestrator } from '../testing/index.js'
 import { DeployRepository, type DeployTaskContext } from './DeployRepository.js'
 import { RemoteBlueGreenDeployer } from './RemoteBlueGreenDeployer.js'
 import { GitOperationStateDetector } from '../execution/GitOperationStateDetector.js'
+import type { GovernedFailureHandler } from '../governance/GovernedFailureHandler.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -24,6 +25,7 @@ export class DeployConsumer {
     private readonly timeoutMs = Number(process.env.MOTOR_DEPLOY_TIMEOUT_MS || 1_800_000),
     private readonly worktrees: GitWorktreePreparer = new GitWorktreePreparer(process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/agentes/gerenteagentes/worktrees'),
     private readonly operationState: GitOperationStateDetector = new GitOperationStateDetector(),
+    private readonly governedFailureHandler?: GovernedFailureHandler,
   ) {}
 
   async handle(message: QueueMessage): Promise<void> {
@@ -115,7 +117,8 @@ export class DeployConsumer {
       }
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error)
-      await this.repository.completeBatch(claimed.batch.batchId, false, reason, message)
+      const taskIds = await this.repository.completeBatch(claimed.batch.batchId, false, reason, message)
+      if (taskIds.length > 0) await this.routeGovernedFailure(message, this.isPromotionFailure(reason) ? 'promotion_conflict' : 'deploy_dispatch_failed', this.isPromotionFailure(reason) ? 'PROMOTION_CONFLICT' : 'DEPLOY_FAILED', reason)
       await this.log(operationId, 4, 'failed', 'failed', message, { actionCode: 'A31_DISPATCH_DEPLOY_BATCH', reasonCode: 'dispatch_failed', result: { error: reason } }); throw error
     }
   }
@@ -134,6 +137,7 @@ export class DeployConsumer {
         remoteResult.diagnostic,
       ].filter(Boolean).join('; ')
       const taskIds = await this.repository.completeBatch(batchId, success, reason, message)
+      if (!success && taskIds.length > 0) await this.routeGovernedFailure(message, 'deploy_failed', 'DEPLOY_FAILED', reason ?? 'Falha no deploy')
       await this.log(operationId, 3, success ? 'completed' : 'failed', success ? 'succeeded' : 'failed', message, { actionCode: 'A32_RECONCILE_DEPLOY_BATCH', primitiveCode: success ? 'complete_deploy_batch_atomic' : 'fail_deploy_batch_atomic', result: { batchId, taskIds, reason, remoteState: remoteResult.state, diagnostic: remoteResult.diagnostic } })
     }
   }
@@ -143,6 +147,7 @@ export class DeployConsumer {
     const success = message.payload.status === 'success'
     if (!batchId || (message.payload.status !== 'success' && message.payload.status !== 'failed')) throw new Error('Resultado de deploy inválido')
     const taskIds = await this.repository.completeBatch(batchId, success, success ? null : 'script blue-green informou falha', message)
+    if (!success && taskIds.length > 0) await this.routeGovernedFailure(message, 'deploy_failed', 'DEPLOY_FAILED', 'script blue-green informou falha')
     const operationId = randomUUID()
     await this.log(operationId, 1, success ? 'completed' : 'failed', success ? 'succeeded' : 'failed', message, { actionCode: 'A33_RECEIVE_DEPLOY_RESULT', primitiveCode: success ? 'complete_deploy_batch_atomic' : 'fail_deploy_batch_atomic', result: { batchId, taskIds } })
     // Deploy bem-sucedido: os worktrees/branches da tarefa já não servem para debug e
@@ -184,7 +189,8 @@ export class DeployConsumer {
       await this.startPreparedBatch(batch, message)
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error)
-      await this.repository.completeBatch(batch.batchId, false, reason, message)
+      const taskIds = await this.repository.completeBatch(batch.batchId, false, reason, message)
+      if (taskIds.length > 0) await this.routeGovernedFailure(message, this.isPromotionFailure(reason) ? 'promotion_conflict' : 'deploy_pre_gate_failed', this.isPromotionFailure(reason) ? 'PROMOTION_CONFLICT' : 'DEPLOY_FAILED', reason)
       if (batch.workspacePath) await this.removeComposedWorktree(batch.repoPath, batch.workspacePath)
       throw error
     }
@@ -308,6 +314,30 @@ export class DeployConsumer {
       throw error
     }
     finally { await execFileAsync('git', ['worktree', 'remove', '--force', path], { cwd: repo }).catch(() => undefined) }
+  }
+
+  private async routeGovernedFailure(message: QueueMessage, point: string, code: string, detail: string): Promise<void> {
+    if (!this.governedFailureHandler) return
+    try {
+      await this.governedFailureHandler.handleFailure(point, {
+        taskId: message.taskId,
+        subtaskId: this.subtaskId(message),
+        executionId: message.executionId,
+        generation: message.attempt,
+        metadata: { ...message.payload, point },
+      }, { code, message: detail })
+    } catch (error) {
+      console.warn('[DeployConsumer] falha ao rotear erro pelo catálogo:', error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  private subtaskId(message: QueueMessage): number | null {
+    const value = Number(message.payload.subtaskId)
+    return Number.isInteger(value) && value > 0 ? value : null
+  }
+
+  private isPromotionFailure(reason: string): boolean {
+    return /promotion|conflict|dirty|not clean|diverg|merge/i.test(reason)
   }
 
   /** Compõe patches das integrações pendentes sobre a branch-base em worktree exclusivo do lote. */

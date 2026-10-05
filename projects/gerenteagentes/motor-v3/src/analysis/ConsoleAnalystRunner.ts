@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { AnalysisRunner, TaskSnapshot } from '../coordinator/TaskCoordinator.js'
+import type { GovernedFailureHandler } from '../governance/GovernedFailureHandler.js'
 import { parseAnalystReply, type AnalysisOutcome } from './AnalystReply.js'
 import {
   buildAnalysisContextConfirmation,
@@ -55,6 +56,8 @@ export interface ConsoleAnalystRunnerConfig {
   modelChainResolver?: (task: TaskSnapshot) => Promise<readonly string[]>
   promptResolver?: AnalysisPromptResolver
   modelFailureRecorder?: (model: string, error: Error) => Promise<void>
+  /** Roteia falhas H2/H3/H4 pelo catálogo quando a flag correspondente está ativa. */
+  governedFailureHandler?: GovernedFailureHandler
   onSessionCreated?: (session: AnalystSession, context: AnalystSessionAuditContext) => Promise<void>
   /** Vincula uma sessão já persistida antes de uma retomada pós-restart. */
   onSessionResumed?: (session: AnalystSession, context: AnalystSessionAuditContext) => Promise<void>
@@ -75,6 +78,7 @@ export class ConsoleAnalystRunner implements AnalysisRunner {
       modelChainResolver: config.modelChainResolver,
       promptResolver: config.promptResolver,
       modelFailureRecorder: config.modelFailureRecorder,
+      governedFailureHandler: config.governedFailureHandler,
       onSessionCreated: config.onSessionCreated,
       onSessionResumed: config.onSessionResumed,
       onMessageSent: config.onMessageSent,
@@ -179,7 +183,9 @@ export class ConsoleAnalystRunner implements AnalysisRunner {
       } catch (error) {
         lastError = this.annotateError(asError(error), { task, executionId, analysisAttemptId, modelAttempt, model, phase })
         await this.config.onSessionFailure?.(session, lastError, audit(phase))
-        if (model && this.isModelUnavailable(lastError)) await this.config.modelFailureRecorder?.(model, lastError)
+        const governed = await this.handleGovernedFailure(task, executionId, analysisAttemptId, modelAttempt, model, session, phase, lastError)
+        if (governed?.terminal) break
+        if (model && this.isModelUnavailable(lastError) && !governed?.handled) await this.config.modelFailureRecorder?.(model, lastError)
       }
     }
     throw lastError ?? new Error(`Nenhum modelo configurado para análise da tarefa ${task.taskId}`)
@@ -292,6 +298,54 @@ export class ConsoleAnalystRunner implements AnalysisRunner {
 
   private isTerminalWithoutResponse(error: Error): boolean {
     return /Analista concluiu sem resposta/i.test(error.message)
+  }
+
+  private async handleGovernedFailure(
+    task: TaskSnapshot,
+    executionId: string,
+    analysisAttemptId: string,
+    modelAttempt: number,
+    model: string | undefined,
+    session: AnalystSession | undefined,
+    phase: string,
+    error: Error,
+  ): Promise<{ handled: boolean; terminal: boolean } | undefined> {
+    const handler = this.config.governedFailureHandler
+    if (!handler) return undefined
+
+    const timeout = /timeout/i.test(error.message)
+    const invalidReply = phase === 'corrected_response' || /invalid|contract|json/i.test(error.message)
+    const code = invalidReply ? 'invalid_json' : timeout ? 'model_timeout' : 'model_unavailable'
+    const message = timeout && !/idle timeout/i.test(error.message)
+      ? `${error.message}; LLM idle timeout`
+      : error.message
+    const point = invalidReply
+      ? 'analysis_invalid_reply'
+      : timeout
+        ? 'analysis_timeout'
+        : 'analysis_model_fallback'
+    const context = {
+      taskId: task.taskId,
+      subtaskId: null,
+      executionId,
+      generation: modelAttempt,
+      sessionId: session?.sessionId,
+      sessionKey: session?.sessionKey,
+      model,
+      agentId: task.agentId,
+      repoPath: task.repoPath,
+      metadata: { analysisAttemptId, modelAttempt, phase },
+    }
+
+    try {
+      const result = await handler.handleFailure(point, context, { code, message, stack: error.stack })
+      const handled = Boolean(result.governed && result.action?.success)
+      const terminal = Boolean(handled && result.classification?.action.isTerminal)
+      return { handled, terminal }
+    } catch (handlerError) {
+      console.warn('[ConsoleAnalystRunner] falha no roteamento governado da análise:', handlerError instanceof Error ? handlerError.message : String(handlerError))
+      return { handled: false, terminal: false }
+    }
   }
 
   private prompt(task: TaskSnapshot, description: string): string {

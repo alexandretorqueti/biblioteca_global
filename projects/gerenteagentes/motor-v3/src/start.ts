@@ -21,11 +21,14 @@ import * as schema from './db/schema.js'
 import { MessageBus } from './bus/MessageBus.js'
 import { EventLogger } from './bus/EventLogger.js'
 import { CatalogLoader } from './catalog/CatalogLoader.js'
+import { CatalogAdminService, CatalogNotFoundError, CatalogValidationError, type CatalogEntity } from './catalog/CatalogAdminService.js'
 import { EventClassifier } from './classifier/EventClassifier.js'
 import { ActionExecutor } from './executor/ActionExecutor.js'
 import { registerAllPrimitives } from './primitives/index.js'
 import { Scheduler } from './scheduler/Scheduler.js'
 import { MonitorBridge } from './monitor-bridge/MonitorBridge.js'
+import { GovernedFailureHandler } from './governance/GovernedFailureHandler.js'
+import { createGovernanceFlagResolver } from './governance/RolloutPolicy.js'
 import { QueueConsumer } from './queue/QueueConsumer.js'
 import { RabbitMqTransport, normalizeRabbitMqPrefetch } from './queue/RabbitMqTransport.js'
 import { MotorActivityGate, OutboxPublisher, createQueueMessage } from './queue/index.js'
@@ -125,7 +128,7 @@ async function start() {
 
   // 3. Carrega catálogo
   console.log('[Motor v3] Carregando catálogo...')
-  const catalogLoader = new CatalogLoader(db)
+  const catalogLoader = new CatalogLoader(db, bus)
   await catalogLoader.load()
   console.log('[Motor v3] Catálogo carregado')
 
@@ -133,6 +136,11 @@ async function start() {
   console.log('[Motor v3] Registrando primitivas...')
   const executor = new ActionExecutor(db, catalogLoader)
   registerAllPrimitives(executor)
+  const catalogAdmin = new CatalogAdminService(db, catalogLoader, executor, bus)
+  const primitiveDivergences = await executor.validateCatalogPrimitives()
+  if (primitiveDivergences.length > 0) {
+    console.error('[Motor v3] Catálogo referencia primitivas não registradas:', primitiveDivergences)
+  }
   console.log('[Motor v3] Primitivas registradas')
 
   // 5. Inicializa EventClassifier
@@ -152,7 +160,14 @@ async function start() {
 
   // 7. Inicializa Monitor Bridge
   console.log('[Motor v3] Inicializando Monitor Bridge...')
-  const monitorBridge = new MonitorBridge(bus, catalogLoader, classifier)
+  const monitorBridge = new MonitorBridge(bus, catalogLoader, classifier, { db })
+  const governedFailureHandler = new GovernedFailureHandler(classifier, executor, {
+    monitor: monitorBridge,
+    // O catálogo só assume autoridade quando a flag correspondente está
+    // explicitamente ligada em motor_configuracoes. Ausência/erro de leitura
+    // preserva o fallback legado e permite rollback sem restart.
+    flagResolver: createGovernanceFlagResolver(pool),
+  })
   console.log('[Motor v3] Monitor Bridge inicializado')
 
   // 8. Fila durável e coordenador (opt-in até RabbitMQ/outbox estarem ativos)
@@ -184,6 +199,7 @@ async function start() {
       // para que a entrega possa ser rejeitada/repetida sem fechar o canal.
       timeoutMs: Number(process.env.MOTOR_ANALYSIS_TIMEOUT_MS || 1500000),
       pollIntervalMs: Number(process.env.MOTOR_ANALYSIS_POLL_INTERVAL_MS || 5000),
+      governedFailureHandler,
       promptResolver: new ManagedAnalysisPromptResolver(pool),
       modelChainResolver: async (task) => {
         if (!task.projectSlug) return []
@@ -315,6 +331,7 @@ async function start() {
       commandPolicies: new MySqlCommandPolicyRepository(pool),
       operationLogger,
       taskEvents,
+      governedFailureHandler,
       analysisFailure: new MySqlAnalysisFailureBlocker(pool),
       maxAnalysisAttempts: Number(process.env.MOTOR_QUEUE_MAX_ATTEMPTS || 3),
       deployLock: deployRepository,
@@ -364,6 +381,8 @@ async function start() {
       undefined, // script: default do construtor (MOTOR_DEPLOY_SCRIPT)
       undefined, // timeoutMs: default do construtor (MOTOR_DEPLOY_TIMEOUT_MS)
       worktreePreparer,
+      undefined, // operationState: default do construtor
+      governedFailureHandler,
     )
     const gateTransport = new RabbitMqTransport({
       url: rabbitUrl, exchange: process.env.MOTOR_RABBITMQ_EXCHANGE || 'motor',
@@ -376,7 +395,7 @@ async function start() {
     const testGateConsumer = new TestGateConsumer(pool, testGateService, operationLogger, mainQueue)
     testGateQueueConsumer = new QueueConsumer(gateTransport, message => testGateConsumer.handle(message), {
       queue: gateQueue, maxAttempts: Number(process.env.MOTOR_QUEUE_MAX_ATTEMPTS || 3),
-    }, pool, motorActivityGate)
+    }, pool, motorActivityGate, governedFailureHandler)
     await testGateQueueConsumer.start()
     // Jobs de gate órfãos (worker morto com job em processing/pending) travam o
     // isMotorIdle() para sempre; o reconciliador reenfileira TEST_RUN_REQUESTED
@@ -442,6 +461,7 @@ async function start() {
       maxAttempts: Number(process.env.MOTOR_MONITOR_MAX_ATTEMPTS || 2),
       timeoutMs: Number(process.env.MOTOR_WORKER_TIMEOUT_MS || 1800000),
       sandboxRoot: process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/agentes/gerenteagentes/worktrees',
+      governedFailureHandler,
     })
     const baselineRecovery = new BaselinePreflightRecovery(
       pool, monitorWorker, new WorkerConsoleAdapter(consoleApi), db, testGate,
@@ -455,6 +475,7 @@ async function start() {
         globalTimeoutMs: Number(process.env.MOTOR_WORKER_GLOBAL_TIMEOUT_MS || 5_100_000),
         handoffSessionOnTimeout: true,
         sandboxRoot: process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/agentes/gerenteagentes/worktrees',
+        governedFailureHandler,
       }),
       developmentConsole,
       db,
@@ -464,6 +485,7 @@ async function start() {
       baselineRecovery,
       deployRepository,
       new ManagedDevelopmentPromptResolver(pool),
+      governedFailureHandler,
     )
     developmentSessionRecovery = new DevelopmentSessionRecoveryReconciler(
       pool,
@@ -487,6 +509,7 @@ async function start() {
       pool, worktreePreparer,
       monitorWorker,
       new WorkerConsoleAdapter(consoleApi), db, testGate,
+      governedFailureHandler,
     )
     // Monitor-Resolvedor de bloqueios (docs/MONITOR-RESOLVEDOR-DE-BLOQUEIOS.md):
     // missão longa (pode corrigir o motor, mergear na base e rodar deploy) —
@@ -523,7 +546,7 @@ async function start() {
     }, {
       queue: process.env.MOTOR_RABBITMQ_QUEUE || 'motor.commands',
       maxAttempts: Number(process.env.MOTOR_QUEUE_MAX_ATTEMPTS || 3),
-    }, pool, motorActivityGate)
+    }, pool, motorActivityGate, governedFailureHandler)
     // Claims sem sessão auditada não são recuperáveis e podem ser liberados.
     // Sessões existentes ficam sob o reconciliador abaixo, na mesma chave.
     const orphanClaims = await new AnalysisClaimReconciler(pool).reconcile()
@@ -655,6 +678,7 @@ async function start() {
           // Campo adicional e aditivo: os quatro campos históricos acima
           // continuam presentes para os consumidores existentes.
           workerActivity,
+          primitiveDivergences,
         }))
         return
       }
@@ -674,19 +698,61 @@ async function start() {
         return
       }
       
-      // Catalog endpoints (leitura)
-      if (path === '/api/motor/catalog/events' && req.method === 'GET') {
+      // Catálogo governável: GET/POST/PATCH/DELETE. DELETE é sempre soft delete.
+      const catalogRoute = path.match(/^\/(?:api\/motor\/catalog|gerenteagentes\/motor-v3\/tabelas)\/([^/]+)(?:\/(\d+))?$/)
+      const catalogEntityName = catalogRoute?.[1]?.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`)
+      const catalogEntity = catalogEntityName && ['events', 'patterns', 'actions', 'reactions'].includes(catalogEntityName) ? catalogEntityName as CatalogEntity : undefined
+      if (catalogEntity) {
+        const id = catalogRoute?.[2] ? Number(catalogRoute[2]) : undefined
+        if (req.method === 'GET') {
+          const rows = id === undefined ? await catalogAdmin.list(catalogEntity) : [await catalogAdmin.get(catalogEntity, id)]
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify(path.startsWith('/gerenteagentes/') ? { items: rows } : rows))
+          return
+        }
+        if (req.method === 'POST' && id === undefined) {
+          let body = ''
+          req.on('data', chunk => body += chunk)
+          await new Promise(resolve => req.on('end', resolve))
+          const payload = body ? JSON.parse(body) : {}
+          const actor = String(req.headers['x-actor'] ?? req.headers['x-user-id'] ?? payload.actor ?? 'unknown')
+          delete payload.actor
+          const created = await catalogAdmin.create(catalogEntity, payload, actor)
+          res.writeHead(201, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify(created))
+          return
+        }
+        if ((req.method === 'PATCH' || req.method === 'PUT') && id !== undefined) {
+          let body = ''
+          req.on('data', chunk => body += chunk)
+          await new Promise(resolve => req.on('end', resolve))
+          const payload = body ? JSON.parse(body) : {}
+          const actor = String(req.headers['x-actor'] ?? req.headers['x-user-id'] ?? payload.actor ?? 'unknown')
+          delete payload.actor
+          const updated = await catalogAdmin.update(catalogEntity, id, payload, actor)
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify(updated))
+          return
+        }
+        if (req.method === 'DELETE' && id !== undefined) {
+          const actor = String(req.headers['x-actor'] ?? req.headers['x-user-id'] ?? 'unknown')
+          const deactivated = await catalogAdmin.deactivate(catalogEntity, id, actor)
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify(deactivated))
+          return
+        }
+      }
+
+      if ((path === '/api/motor/catalog/simular' || path === '/gerenteagentes/motor-v3/simular') && req.method === 'POST') {
+        let body = ''
+        req.on('data', chunk => body += chunk)
+        await new Promise(resolve => req.on('end', resolve))
+        const result = await catalogAdmin.simulate(body ? JSON.parse(body) : {})
         res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify(await catalogLoader.getAllEvents()))
+        res.end(JSON.stringify(result))
         return
       }
-      
-      if (path === '/api/motor/catalog/actions' && req.method === 'GET') {
-        res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify(await catalogLoader.getAllActions()))
-        return
-      }
-      
+
       if (path === '/api/motor/catalog/primitives' && req.method === 'GET') {
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify(executor.getRegisteredPrimitives()))
@@ -1102,7 +1168,8 @@ async function start() {
       res.writeHead(404, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: 'Not found' }))
     } catch (err: any) {
-      res.writeHead(500, { 'Content-Type': 'application/json' })
+      const statusCode = err instanceof CatalogValidationError || err instanceof CatalogNotFoundError ? err.statusCode : 500
+      res.writeHead(statusCode, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: err.message }))
     }
   })

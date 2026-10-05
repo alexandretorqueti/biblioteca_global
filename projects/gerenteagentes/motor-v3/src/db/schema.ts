@@ -63,6 +63,7 @@ export const motorActions: any = mysqlTable('motor_actions', {
   onPartialFailure: mysqlEnum('on_partial_failure', ['continue', 'compensate', 'mark_dirty']).notNull().default('continue'),
   compensationActionId: int('compensation_action_id').references(() => motorActions.id, { onDelete: 'set null' }),
   isTerminal: tinyint('is_terminal').notNull().default(0),
+  version: int('version').notNull().default(1),
   active: tinyint('active').notNull().default(1),
   createdAt: timestamp('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp('updated_at').notNull().default(sql`CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP`),
@@ -77,6 +78,8 @@ export const motorReactions = mysqlTable('motor_reactions', {
   occurrence: int('occurrence').notNull(),
   actionId: int('action_id').notNull().references(() => motorActions.id, { onDelete: 'cascade' }),
   paramsJson: json('params_json').$type<Record<string, any>>(),
+  conditionJson: json('condition_json').$type<Record<string, any>>(),
+  version: int('version').notNull().default(1),
   active: tinyint('active').notNull().default(1),
   createdAt: timestamp('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
 })

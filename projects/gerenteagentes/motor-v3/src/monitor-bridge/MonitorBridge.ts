@@ -21,11 +21,20 @@ import type { MessageBus } from '../bus/index.js'
 import type { CatalogLoader } from '../catalog/index.js'
 import type { EventClassifier } from '../classifier/index.js'
 import type { PrimitiveContext } from '../primitives/types.js'
+import type { MySql2Database } from 'drizzle-orm/mysql2'
+import { sql } from 'drizzle-orm'
+import * as schema from '../db/schema.js'
 
 export interface MonitorBridgeConfig {
   monitorModel: string // Modelo caro para Monitor (ex: gpt-5.6-sol)
   telegramTarget: string // Target para notificações (ex: 7147090795)
   autoActivateCaseA: boolean // Auto-ativar Caso A (D4)
+  monitorInvoker?: MonitorInvoker
+  db?: MySql2Database<typeof schema>
+}
+
+export interface MonitorInvoker {
+  invoke(input: { model: string; prompt: string; context: PrimitiveContext }): Promise<Partial<MonitorProposal>>
 }
 
 export interface MonitorProposal {
@@ -89,6 +98,8 @@ export class MonitorBridge {
       monitorModel: config.monitorModel ?? 'gpt-5.6-sol',
       telegramTarget: config.telegramTarget ?? '7147090795',
       autoActivateCaseA: config.autoActivateCaseA ?? true,
+      monitorInvoker: config.monitorInvoker,
+      db: config.db,
     }
   }
 
@@ -97,14 +108,15 @@ export class MonitorBridge {
    */
   async handleUncataloguedError(
     context: PrimitiveContext,
-    error: { code?: string; message?: string; stack?: string }
+    error: { code?: string; message?: string; stack?: string; actionResult?: string },
+    alreadyClassifiedAsUncatalogued = false,
   ): Promise<{ proposalId: string; case: 'A' | 'B' | 'C' }> {
     // 1. Classifica erro (retorna null se não catalogado)
-    const classification = await this.classifier.classify(
+    const classification = alreadyClassifiedAsUncatalogued ? null : await this.classifier.classify(
       context.taskId,
       context.subtaskId ?? null,
       context.generation,
-      error
+      error,
     )
 
     if (classification !== null) {
@@ -121,19 +133,13 @@ export class MonitorBridge {
     return { proposalId, case: proposal.case }
   }
 
-  /**
-   * Invoca Monitor para análise (TODO: implementação real com LLM)
-   */
+  /** Invoca o Monitor configurado; na ausência dele cria apenas proposta segura. */
   private async invokeMonitor(
     context: PrimitiveContext,
-    error: { code?: string; message?: string; stack?: string }
+    error: { code?: string; message?: string; stack?: string; actionResult?: string }
   ): Promise<MonitorProposal> {
-    // TODO: Implementar chamada real ao Monitor via Console API
-    // Por enquanto, simula proposta de Caso B (evento novo)
-    
     const proposalId = `proposal-${++this.proposalCounter}-${Date.now()}`
-    
-    return {
+    const safeProposal: MonitorProposal = {
       id: proposalId,
       case: 'B',
       error,
@@ -163,6 +169,71 @@ export class MonitorBridge {
       status: 'pending',
       createdAt: new Date(),
     }
+    const invoker = this.config.monitorInvoker ?? this.consoleInvoker(context)
+    if (!invoker) return safeProposal
+
+    try {
+      const answer = await invoker.invoke({
+        model: this.config.monitorModel,
+        context,
+        prompt: this.monitorPrompt(context, error),
+      })
+      return {
+        ...safeProposal,
+        ...answer,
+        id: answer.id ?? proposalId,
+        error,
+        taskId: context.taskId,
+        subtaskId: context.subtaskId,
+        status: answer.status ?? 'pending',
+        createdAt: answer.createdAt ?? new Date(),
+      }
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause)
+      return { ...safeProposal, diagnosis: `${safeProposal.diagnosis}; Monitor indisponível: ${message.slice(0, 300)}` }
+    }
+  }
+
+  private monitorPrompt(context: PrimitiveContext, error: Record<string, unknown>): string {
+    return [
+      'Você é o Monitor do Motor v3. Responda SOMENTE JSON válido.',
+      'A proposta nunca executa código; casos B/C permanecem pendentes de revisão humana.',
+      'Formato: {"case":"A|B|C","diagnosis":"...","proposal":{...}}',
+      `context=${JSON.stringify({ taskId: context.taskId, subtaskId: context.subtaskId, generation: context.generation })}`,
+      `error=${JSON.stringify(error)}`,
+    ].join('\n')
+  }
+
+  private consoleInvoker(context: PrimitiveContext): MonitorInvoker | undefined {
+    const consoleApi = context.consoleApi
+    if (!consoleApi || typeof consoleApi.createSession !== 'function' || typeof consoleApi.sendMessage !== 'function' || typeof consoleApi.getSessionStatus !== 'function') return undefined
+    return {
+      invoke: async ({ model, prompt }) => {
+        const session = await consoleApi.createSession({
+          key: `monitor-${context.taskId}-${Date.now()}`,
+          agentId: context.agentId,
+          model,
+          metadata: { taskId: context.taskId, executionId: context.executionId, phase: 'monitor_catalog_proposal' },
+        })
+        await consoleApi.sendMessage({ session, message: prompt })
+        const deadline = Date.now() + 120_000
+        while (Date.now() < deadline) {
+          const status = await consoleApi.getSessionStatus(session)
+          if (status.isFailed) throw new Error(status.error ?? 'Monitor session failed')
+          if (status.isComplete && status.lastResponse) return this.parseMonitorResponse(status.lastResponse)
+          await new Promise(resolve => setTimeout(resolve, 1_000))
+        }
+        throw new Error('Monitor session timeout')
+      },
+    }
+  }
+
+  private parseMonitorResponse(response: string): Partial<MonitorProposal> {
+    const fenced = response.match(/```(?:json)?\s*([\s\S]*?)\s*```/i)?.[1] ?? response
+    const parsed = JSON.parse(fenced) as Partial<MonitorProposal>
+    if (parsed.case !== 'A' && parsed.case !== 'B' && parsed.case !== 'C') throw new Error('Monitor response has invalid case')
+    if (!parsed.proposal || typeof parsed.proposal !== 'object') throw new Error('Monitor response has no proposal')
+    return parsed
   }
 
   /**
@@ -234,7 +305,21 @@ export class MonitorBridge {
     }
 
     this.proposals.set(proposalId, proposal)
+    await this.persistProposal(proposal)
     return proposalId
+  }
+
+  private async persistProposal(proposal: MonitorProposal): Promise<void> {
+    if (!this.config.db) return
+    await (this.config.db as any).insert(schema.motorCatalogProposals).values({
+      source: 'monitor',
+      status: proposal.status === 'auto_activated' ? 'auto_activated' : 'pending_review',
+      eventId: proposal.proposal.eventId ?? null,
+      diagnosis: proposal.diagnosis,
+      proposalJson: proposal,
+      tarefaId: proposal.taskId,
+      subtarefaId: proposal.subtaskId ?? null,
+    })
   }
 
   /**
@@ -249,6 +334,7 @@ export class MonitorBridge {
     proposal.status = 'approved'
     proposal.reviewedAt = new Date()
     proposal.reviewedBy = reviewedBy
+    await this.persistReview(proposal)
 
     // TODO: Implementar update real no banco (active=1)
     // await db.update(motorEvents).set({ active: 1 }).where(...)
@@ -276,6 +362,7 @@ export class MonitorBridge {
     proposal.status = 'rejected'
     proposal.reviewedAt = new Date()
     proposal.reviewedBy = reviewedBy
+    await this.persistReview(proposal, reason)
 
     // TODO: Implementar delete real no banco
     // await db.delete(motorEvents).where(...)
@@ -289,6 +376,13 @@ export class MonitorBridge {
       payload: { proposalId, reviewedBy, reason },
       timestamp: new Date().toISOString(),
     })
+  }
+
+  private async persistReview(proposal: MonitorProposal, reason?: string): Promise<void> {
+    if (!this.config.db) return
+    await (this.config.db as any).update(schema.motorCatalogProposals)
+      .set({ status: proposal.status, reviewedBy: proposal.reviewedBy, reviewNotes: reason ?? null, updatedAt: new Date() })
+      .where(sql`JSON_UNQUOTE(JSON_EXTRACT(proposal_json, '$.id')) = ${proposal.id}`)
   }
 
   /**

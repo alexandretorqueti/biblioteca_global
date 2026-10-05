@@ -283,6 +283,24 @@ describe('WorkerLauncher', () => {
     expect(result.error).toContain('Esgotado número máximo de tentativas (3)')
   })
 
+  it('roteia o esgotamento do worker pelo catálogo sem alterar o resultado de falha', async () => {
+    mocks.createSession.handler.mockResolvedValue({ success: true })
+    mocks.sendMessage.handler.mockResolvedValue({ success: true })
+    mocks.waitForCompletion.handler.mockResolvedValue({ success: true, data: { response: 'Ainda trabalhando...' } })
+    mocks.parseReply.handler.mockResolvedValue({ success: true, data: { hasDoneMarker: false } })
+    const governedFailureHandler = { handleFailure: vi.fn().mockResolvedValue({ governed: true }) }
+    launcher = new WorkerLauncher({ maxAttempts: 2, governedFailureHandler: governedFailureHandler as any })
+
+    const result = await launcher.executeTask(mockContext, 'Implementar feature X')
+
+    expect(result).toMatchObject({ success: false, attempts: 2 })
+    expect(governedFailureHandler.handleFailure).toHaveBeenCalledWith(
+      'worker_exhausted',
+      expect.objectContaining({ taskId: 'task-123', subtaskId: 456, metadata: expect.objectContaining({ maxAttempts: 2 }) }),
+      expect.objectContaining({ code: 'WORKER_EXHAUSTED' }),
+    )
+  })
+
   it('should handle session creation failure', async () => {
     mocks.createSession.handler.mockResolvedValue({
       success: false,

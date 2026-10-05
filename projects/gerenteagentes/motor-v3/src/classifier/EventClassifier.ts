@@ -12,6 +12,8 @@ import type { MySql2Database } from 'drizzle-orm/mysql2'
 import { sql, and, eq } from 'drizzle-orm'
 import type { CatalogLoader, CatalogEvent, CatalogReaction, CatalogAction } from '../catalog/CatalogLoader.js'
 import * as schema from '../db/schema.js'
+import { RuleEvaluator, type RuleContext } from '../governance/RuleEvaluator.js'
+import type { MotorContext } from '../shared/context.js'
 
 export interface ErrorInput {
   code?: string
@@ -44,7 +46,8 @@ export class EventClassifier {
     taskId: string,
     subtaskId: number | null,
     generation: number,
-    error: ErrorInput
+    error: ErrorInput,
+    context?: MotorContext,
   ): Promise<ClassificationResult | null> {
     const catalog = await this.loader.load()
 
@@ -65,11 +68,18 @@ export class EventClassifier {
 
           // Busca reação correspondente
           const reactions = await this.loader.getReactionsForEvent(event.id)
-          const reaction = reactions.find(r => r.occurrence === occurrence)
+          const ruleContext: RuleContext = {
+            ...(context?.metadata ?? {}),
+            error: error as unknown as Record<string, unknown>,
+            context: context as unknown as Record<string, unknown> | undefined,
+            occurrence,
+          }
+          const matchingReactions = reactions.filter(reaction => new RuleEvaluator().evaluate(reaction.condition, ruleContext))
+          const reaction = matchingReactions.find(r => r.occurrence === occurrence)
 
           if (!reaction) {
             // Nenhuma reação definida para essa ocorrência — fallback para última
-            const lastReaction = reactions[reactions.length - 1]
+            const lastReaction = matchingReactions[matchingReactions.length - 1]
             if (!lastReaction) {
               // Evento sem reações — logar warning
               console.warn(`[EventClassifier] Event ${event.code} has no reactions defined`)

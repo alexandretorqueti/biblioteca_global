@@ -6,6 +6,8 @@ import { randomUUID } from 'node:crypto'
 import { CommandPolicyResolver, type CommandPolicyRepository, type OperationLogger } from '../commands/index.js'
 import type { TaskEventSink } from './TaskEventRecorder.js'
 import type { AnalysisFailureSink } from './AnalysisFailureBlocker.js'
+import type { GovernedFailureHandler } from '../governance/GovernedFailureHandler.js'
+import type { ErrorInput } from '../classifier/EventClassifier.js'
 
 export type TaskLifecycleStatus = DerivedTaskStatus
 
@@ -82,6 +84,11 @@ export interface TaskCoordinatorConfig {
    * rejeita com reasonCode 'deploy_in_progress' e emite TASK_IGNORED.
    */
   deployLock?: { isDeployLocked(): Promise<boolean>; requeueForDeployRetry(message: QueueMessage, reason: string): Promise<void> }
+  /**
+   * Roteador opcional do catálogo para falhas de análise. Quando ausente, o
+   * coordenador mantém integralmente o comportamento legado.
+   */
+  governedFailureHandler?: GovernedFailureHandler
 }
 
 // Criar/enfileirar apenas registra a tarefa. Toda tarefa nasce pausada e a
@@ -108,6 +115,7 @@ export class TaskCoordinator {
   private readonly analysisLease?: AnalysisExecutionLeaseRepository
   private readonly analysisLeaseTtlMs: number
   private readonly deployLock?: { isDeployLocked(): Promise<boolean>; requeueForDeployRetry(message: QueueMessage, reason: string): Promise<void> }
+  private readonly governedFailureHandler?: GovernedFailureHandler
 
   constructor(
     private readonly repository: TaskCoordinatorRepository,
@@ -126,6 +134,7 @@ export class TaskCoordinator {
     this.analysisLease = this.hasAnalysisLease(repository) ? repository : undefined
     this.analysisLeaseTtlMs = config.analysisLeaseTtlMs ?? 90_000
     this.deployLock = config.deployLock
+    this.governedFailureHandler = config.governedFailureHandler
   }
 
   async handle(message: QueueMessage): Promise<void> {
@@ -275,7 +284,10 @@ export class TaskCoordinator {
       // (estação Atenção) em vez de voltar silenciosamente para `planned`.
       // Tentativas anteriores seguem para o retry do broker sem bloqueio.
       const finalAttempt = analysisAttempt >= this.maxAnalysisAttempts
-      if (finalAttempt && this.analysisFailure) {
+      const governedTerminal = finalAttempt
+        ? await this.handleGovernedFailure(task, executionId, analysisAttempt, errorMessage)
+        : false
+      if (finalAttempt && !governedTerminal && this.analysisFailure) {
         try {
           await this.analysisFailure.blockForAnalysisFailure(task.taskId, { executionId, attempt: analysisAttempt, error: errorMessage })
           await this.log(operationId, sequence++, 'primitive', 'succeeded', message, { primitiveCode: 'block_task_for_analysis_failure', result: { executionId, analysisAttempt } })
@@ -301,6 +313,42 @@ export class TaskCoordinator {
           console.warn(`[TaskCoordinator] falha ao remover lease de análise ${executionId}:`, this.errorMessage(leaseError))
         })
       }
+    }
+  }
+
+  /**
+   * Entrega somente a falha terminal ao catálogo. A ação governada só
+   * substitui o bloqueio legado quando é uma ação terminal bem-sucedida;
+   * reações intermediárias continuam permitindo o fallback seguro do H1.
+   */
+  private async handleGovernedFailure(
+    task: TaskSnapshot,
+    executionId: string,
+    attempt: number,
+    errorMessage: string,
+  ): Promise<boolean> {
+    if (!this.governedFailureHandler) return false
+
+    const context = {
+      taskId: task.taskId,
+      subtaskId: null,
+      executionId,
+      generation: attempt,
+      agentId: task.agentId,
+      repoPath: task.repoPath,
+      metadata: { analysisAttempt: attempt, taskType: task.taskType },
+    }
+    const error: ErrorInput = {
+      code: 'ANALYSIS_FAILED',
+      message: errorMessage,
+    }
+
+    try {
+      const result = await this.governedFailureHandler.handleFailure('analysis_terminal', context, error)
+      return Boolean(result.governed && result.action?.success && result.classification?.action.isTerminal)
+    } catch (handlerError) {
+      console.warn('[TaskCoordinator] falha no roteamento governado da análise:', handlerError instanceof Error ? handlerError.message : String(handlerError))
+      return false
     }
   }
 

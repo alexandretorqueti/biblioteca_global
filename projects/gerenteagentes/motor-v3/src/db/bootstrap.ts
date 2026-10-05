@@ -98,11 +98,11 @@ export async function bootstrapMotorV3Catalog(existingConnection?: RuntimeConnec
     await validateRuntimeSchema(connection)
 
     const minimums: Record<string, number> = {
-      motor_events: 35,
-      motor_patterns: 18,
+      motor_events: 41,
+      motor_patterns: 29,
       motor_primitives: 32,
       motor_actions: 20,
-      motor_reactions: 21,
+      motor_reactions: 38,
     }
     for (const [table, minimum] of Object.entries(minimums)) {
       const [rows] = await connection.query<RowDataPacket[]>(`SELECT COUNT(*) AS total FROM ${table}`)
