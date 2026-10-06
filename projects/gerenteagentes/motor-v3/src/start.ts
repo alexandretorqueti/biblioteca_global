@@ -407,6 +407,9 @@ async function start() {
       worktreePreparer,
       undefined, // operationState: default do construtor
       governedFailureHandler,
+      undefined, // githubKnownHostsPath: default do construtor
+      undefined, // githubPreflightTimeoutMs: default do construtor
+      taskEvents,
     )
     const gateTransport = new RabbitMqTransport({
       url: rabbitUrl, exchange: process.env.MOTOR_RABBITMQ_EXCHANGE || 'motor',
@@ -549,6 +552,7 @@ async function start() {
       deployRepository,
       new ManagedDevelopmentPromptResolver(pool),
       governedFailureHandler,
+      taskEvents,
     )
     developmentSessionRecovery = new DevelopmentSessionRecoveryReconciler(
       pool,
@@ -567,6 +571,7 @@ async function start() {
       developmentRepository,
       new GitVerificationIntegrator(worktreePreparer),
       operationLogger,
+      taskEvents,
     )
     testRecoveryConsumer = new TestRecoveryConsumer(
       pool, worktreePreparer,

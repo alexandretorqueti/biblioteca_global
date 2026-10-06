@@ -15,6 +15,7 @@ import type {
 } from '../testing/index.js'
 import type { ManagedDevelopmentPromptResolver } from '../analysis/ManagedDevelopmentPromptResolver.js'
 import type { GovernedFailureHandler } from '../governance/GovernedFailureHandler.js'
+import type { TaskEventSink } from '../coordinator/TaskEventRecorder.js'
 
 export const SUBTASK_EXECUTION_REQUESTED = 'SUBTASK_EXECUTION_REQUESTED'
 
@@ -34,6 +35,7 @@ export class SubtaskExecutionConsumer {
     deployLock?: { isDeployLocked(): Promise<boolean>; requeueForDeployRetry(message: QueueMessage, reason: string): Promise<void> },
     private readonly promptResolver?: ManagedDevelopmentPromptResolver,
     private readonly governedFailureHandler?: GovernedFailureHandler,
+    private readonly taskEvents?: TaskEventSink,
   ) {
     this.deployLock = deployLock
   }
@@ -56,6 +58,7 @@ export class SubtaskExecutionConsumer {
 
     const subtaskId = Number(message.payload.subtaskId)
     if (!Number.isInteger(subtaskId) || subtaskId <= 0) throw new Error('SUBTASK_EXECUTION_REQUESTED sem subtaskId válido')
+    await this.recordEvent(message.taskId, SUBTASK_EXECUTION_REQUESTED, { subtaskId, executionId: message.executionId })
     const operationId = randomUUID()
     await this.log(operationId, 1, message, { phase: 'received', outcome: 'executed', subtaskId })
 
@@ -267,6 +270,7 @@ export class SubtaskExecutionConsumer {
     const next = (result.success && noCode) || (result.success && result.noChangesNeeded)
       ? await this.repository.completeNoCodeExecution(execution, message, result.response ?? '', result.legacyNoCodeChange === true)
       : await this.repository.finishExecution(execution, message, result)
+    await this.recordEvent(message.taskId, next.type, { subtaskId, executionId: message.executionId, success: result.success })
     await this.repository.closeDevelopmentSession?.(subtaskId, context.sessionId, context.sessionKey, result.success)
     await this.log(operationId, workerSequence + 1, message, {
       phase: 'completed', outcome: result.success ? 'succeeded' : 'failed', subtaskId,
@@ -334,6 +338,7 @@ export class SubtaskExecutionConsumer {
     const next = (result.success && noCode) || (result.success && result.noChangesNeeded)
       ? await this.repository.completeNoCodeExecution(execution, input.message, input.response, result.legacyNoCodeChange === true)
       : await this.repository.finishExecution(execution, input.message, result)
+    await this.recordEvent(input.message.taskId, next.type, { subtaskId, executionId: input.message.executionId, success: result.success, recovered: true })
     await this.repository.closeDevelopmentSession?.(subtaskId, input.sessionId, input.sessionKey, result.success)
     await this.log(operationId, 2, input.message, {
       phase: 'completed', outcome: result.success ? 'succeeded' : 'failed', subtaskId,
@@ -611,6 +616,7 @@ export class SubtaskExecutionConsumer {
       primitiveCode: 'start_programmer', reasonCode: 'no_development_model', result: this.resultForLog(result),
     })
     const next = await this.repository.finishExecution(execution, message, result)
+    await this.recordEvent(message.taskId, next.type, { subtaskId: execution.subtaskId, executionId: message.executionId, success: false })
     await this.log(operationId, sequence + 1, message, {
       phase: 'completed', outcome: 'failed', subtaskId: execution.subtaskId,
       result: { nextMessageId: next.messageId, nextMessageType: next.type, attempts: 0 },
@@ -631,6 +637,7 @@ export class SubtaskExecutionConsumer {
       primitiveCode: 'prepare_worktree', result: this.resultForLog(result),
     })
     const next = await this.repository.finishExecution(execution, message, result)
+    await this.recordEvent(message.taskId, next.type, { subtaskId: execution.subtaskId, executionId: message.executionId, success: false })
     await this.log(operationId, 3, message, {
       phase: 'completed', outcome: 'failed', subtaskId: execution.subtaskId,
       result: { nextMessageId: next.messageId, nextMessageType: next.type, attempts: result.attempts },
@@ -665,5 +672,14 @@ export class SubtaskExecutionConsumer {
       })
     }
     return sequence
+  }
+
+  /** Auditoria best-effort: indisponibilidade do quadro não interrompe execução. */
+  private async recordEvent(taskId: string, event: string, payload: Record<string, unknown>): Promise<void> {
+    try {
+      await this.taskEvents?.record(taskId, event, 'motor', payload)
+    } catch (error) {
+      console.warn(`[Motor v3] Falha ao registrar ${event}:`, error instanceof Error ? error.message : String(error))
+    }
   }
 }
