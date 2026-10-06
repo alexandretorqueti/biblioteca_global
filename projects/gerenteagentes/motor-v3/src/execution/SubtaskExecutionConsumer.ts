@@ -5,6 +5,7 @@ import type { PrimitiveContext } from '../primitives/types.js'
 import type { DevelopmentPrompt, WorkerLauncher, WorkerResult } from '../worker-launcher/WorkerLauncher.js'
 import type { MySqlDevelopmentExecutionRepository, SubtaskExecutionContext } from './DevelopmentExecutionRepository.js'
 import { GitWorktreePreparer, IntegrationBranchMissingError } from './GitWorktreePreparer.js'
+import type { PreparedWorktree } from './GitWorktreePreparer.js'
 import type {
   BaselinePreflightRecovery,
   TestGateOrchestrator,
@@ -102,6 +103,7 @@ export class SubtaskExecutionConsumer {
           phase: 'primitive', outcome: 'succeeded', subtaskId, primitiveCode: 'prepare_integration_worktree',
           result: { workspacePath: integration.integrationPath, branch: integration.integrationBranch, baseCommit: integration.baseCommit },
         })
+        sequence = await this.logWorktreeRecoveries(operationId, sequence, message, subtaskId, integration.recoveries ?? [])
         if (this.environmentPreparer) {
           const packages = await this.environmentPreparer.prepare(integration.integrationPath)
           await this.log(operationId, sequence++, message, {
@@ -157,7 +159,7 @@ export class SubtaskExecutionConsumer {
       baselineRunId = baseline.id
     }
 
-    let workspace: { path: string; branch: string; baseCommit: string; integrationPath: string; integrationBranch: string }
+    let workspace: PreparedWorktree
     try {
       workspace = await this.worktrees.prepare({
         taskId: execution.taskId,
@@ -187,6 +189,7 @@ export class SubtaskExecutionConsumer {
       phase: 'primitive', outcome: 'succeeded', subtaskId, primitiveCode: 'prepare_worktree',
       result: { workspacePath: workspace.path, branch: workspace.branch, baseCommit: workspace.baseCommit },
     })
+    sequence = await this.logWorktreeRecoveries(operationId, sequence, message, subtaskId, workspace.recoveries ?? [])
 
     const context: PrimitiveContext = {
       taskId: execution.taskId,
@@ -314,6 +317,7 @@ export class SubtaskExecutionConsumer {
         return this.runDifferentialGate(execution, gateContext, phase, input.message)
       } : undefined,
       noCode,
+      this.scopeEvidence(execution),
     )
     const next = (result.success && noCode) || (result.success && result.noChangesNeeded)
       ? await this.repository.completeNoCodeExecution(execution, input.message, input.response)
@@ -496,7 +500,7 @@ export class SubtaskExecutionConsumer {
           subtaskId: context.subtaskId,
         })
         if (resolved.text) {
-          return { header: resolved.text, context: hardcoded.context }
+          return { header: resolved.text, context: hardcoded.context, scopeEvidence: this.scopeEvidence(context) }
         }
       } catch (error) {
         // Resolver failure — fall through to hardcoded prompt
@@ -523,6 +527,7 @@ export class SubtaskExecutionConsumer {
       `Entregáveis: ${context.deliverables.join('; ') || 'conforme o escopo'}`,
       `Critérios de aceite: ${context.acceptanceCriteria.join('; ') || 'validar o resultado solicitado'}`,
       `Workspace autorizado: ${workspacePath}`,
+      `Edite exclusivamente o workspace autorizado acima. É proibido editar o checkout principal em ${context.repoPath}.`,
       'Preserve mudanças existentes, não altere outros projetos e não faça push ou deploy.',
       ...generationNote,
       ...(['analysis', 'no_code_change', 'external_operation'].includes(context.completionKind ?? '')
@@ -534,12 +539,17 @@ export class SubtaskExecutionConsumer {
       'Ao terminar e validar, inclua o marcador ::DONE:: na resposta final.',
     ].join('\n')
     if (description.length > 12_000) {
-      return { header, context: `Descrição completa da missão:\n\n${description.substring(0, 30_000)}` }
+      return { header, context: `Descrição completa da missão:\n\n${description.substring(0, 30_000)}`, scopeEvidence: this.scopeEvidence(context) }
     }
     return {
       header: `${header}\nDescrição da missão: ${description.substring(0, 12_000)}`,
       context: null,
+      scopeEvidence: this.scopeEvidence(context),
     }
+  }
+
+  private scopeEvidence(context: SubtaskExecutionContext): string[] {
+    return [context.scope, context.taskDescription, ...context.acceptanceCriteria, ...context.deliverables]
   }
 
   private resultForLog(result: WorkerResult): Record<string, unknown> {
@@ -547,6 +557,7 @@ export class SubtaskExecutionConsumer {
       success: result.success, attempts: result.attempts, model: result.model, failures: result.failures,
       sessionHandedOff: result.sessionHandedOff,
       hasChanges: result.hasChanges, buildPassed: result.buildPassed, error: result.error,
+      wrongCheckoutDiagnostic: result.wrongCheckoutDiagnostic,
       baselineRunId: result.baselineRunId, postDevRunId: result.postDevRunId,
       preExistingFailureCount: result.preExistingFailureCount, resolvedFailureCount: result.resolvedFailureCount,
     }
@@ -602,5 +613,22 @@ export class SubtaskExecutionConsumer {
       correlationId: message.correlationId, causationId: message.causationId,
       taskId: message.taskId, ...data,
     })
+  }
+
+  private async logWorktreeRecoveries(
+    operationId: string,
+    sequence: number,
+    message: QueueMessage,
+    subtaskId: number,
+    recoveries: Array<{ reasonCode: string; path: string; action: string; branch?: string; quarantinePath?: string }>,
+  ): Promise<number> {
+    for (const recovery of recoveries) {
+      await this.log(operationId, sequence++, message, {
+        phase: 'primitive', outcome: 'succeeded', subtaskId,
+        primitiveCode: 'recover_worktree', reasonCode: recovery.reasonCode,
+        result: recovery,
+      })
+    }
+    return sequence
   }
 }

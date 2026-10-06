@@ -11,6 +11,10 @@
 import type { PrimitiveContext } from '../primitives/types.js'
 import { createSession, sendMessage, waitForCompletion, parseReply, verifyGit, runBuild } from '../primitives/index.js'
 import type { GovernedFailureHandler } from '../governance/GovernedFailureHandler.js'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+
+const execFileAsync = promisify(execFile)
 
 export interface WorkerLauncherConfig {
   maxAttempts: number // Teto de tentativas (D6: local 2, cloud 3)
@@ -41,6 +45,14 @@ export interface WorkerResult {
   sessionHandedOff?: boolean
   /** O DEV informou explicitamente que a tarefa não exigiu alterações de código (::NO_CHANGES::). */
   noChangesNeeded?: boolean
+  wrongCheckoutDiagnostic?: WrongCheckoutDiagnostic
+}
+
+export interface WrongCheckoutDiagnostic {
+  kind: 'main_repo_related_changes' | 'main_repo_unrelated_changes'
+  files: string[]
+  summary: string
+  diffSummary: string
 }
 
 export interface DifferentialGateResult {
@@ -57,6 +69,7 @@ export interface DifferentialGateResult {
 export interface DevelopmentPrompt {
   header: string
   context: string | null
+  scopeEvidence?: string[]
 }
 
 export class WorkerLauncher {
@@ -97,6 +110,7 @@ export class WorkerLauncher {
     const failures: Array<{ attempt: number; model?: string; error: string }> = []
     let correctiveContext = ''
     let continuationPrompt: string | null = null
+    let wrongCheckoutDiagnostic: WrongCheckoutDiagnostic | undefined
     let reusableSessionModel: string | undefined
     // Sem configuração explícita, preserva o comportamento do Console. Com
     // cadeia configurada, cada tentativa recebe seu modelo e sua sessão própria.
@@ -243,8 +257,13 @@ export class WorkerLauncher {
               return { success: true, response, hasChanges: false, buildPassed: true, attempts, ...(model ? { model } : {}) }
             }
             context.logger?.warn('Agente disse ::DONE:: mas não há mudanças no git')
-            lastError = 'O programador declarou conclusão, mas não alterou o worktree autorizado'
+            wrongCheckoutDiagnostic = await inspectMainRepository(context, normalizePrompt(taskDescription))
+            lastError = wrongCheckoutDiagnostic?.summary
+              ?? 'O programador declarou conclusão, mas não alterou o worktree autorizado'
             failures.push({ attempt: attempts, ...(model ? { model } : {}), error: lastError })
+            correctiveContext = wrongCheckoutDiagnostic
+              ? `${lastError}\nMova ou refaça as alterações exclusivamente no worktree autorizado: ${context.worktreePath}. Não edite o checkout principal (${context.repoPath}).`
+              : ''
             context.generation++
             continue
           }
@@ -321,13 +340,14 @@ export class WorkerLauncher {
 
     // Esgotou tentativas
     context.logger?.error('Esgotado número máximo de tentativas', { maxAttempts: maximumAttempts })
-    await this.routeExhaustedFailure(context, lastError, attempts, maximumAttempts)
+    await this.routeExhaustedFailure(context, lastError, attempts, maximumAttempts, wrongCheckoutDiagnostic)
     return {
       success: false,
       error: `Esgotado número máximo de tentativas (${maximumAttempts}): ${lastError}`,
       attempts,
       ...(lastModel ? { model: lastModel } : {}),
       failures,
+      ...(wrongCheckoutDiagnostic ? { wrongCheckoutDiagnostic } : {}),
     }
   }
 
@@ -341,6 +361,7 @@ export class WorkerLauncher {
     response: string,
     runDifferentialGate?: (context: PrimitiveContext, phase: 'post_dev' | 'rework') => Promise<DifferentialGateResult>,
     allowNoChanges = false,
+    scopeEvidence: string[] = [],
   ): Promise<WorkerResult> {
     const parseResult = await parseReply.handler(context, { response })
     if (!parseResult.success || !parseResult.data?.hasDoneMarker) {
@@ -369,11 +390,13 @@ export class WorkerLauncher {
       return { success: true, response, attempts: 1, hasChanges: false, noChangesNeeded: true, buildPassed: true, ...(context.model ? { model: context.model } : {}) }
     }
     if (!hasChanges && !allowNoChanges) {
+      const wrongCheckoutDiagnostic = await inspectMainRepository(context, { header: '', context: null, scopeEvidence })
       return {
         success: false,
-        error: 'A sessão recuperada declarou conclusão, mas não alterou o worktree autorizado',
+        error: wrongCheckoutDiagnostic?.summary ?? 'A sessão recuperada declarou conclusão, mas não alterou o worktree autorizado',
         attempts: 1,
         hasChanges: false,
+        ...(wrongCheckoutDiagnostic ? { wrongCheckoutDiagnostic } : {}),
         ...(context.model ? { model: context.model } : {}),
       }
     }
@@ -414,6 +437,7 @@ export class WorkerLauncher {
     errorMessage: string,
     attempts: number,
     maxAttempts: number,
+    wrongCheckoutDiagnostic?: WrongCheckoutDiagnostic,
   ): Promise<void> {
     const handler = this.config.governedFailureHandler
     if (!handler) return
@@ -429,11 +453,12 @@ export class WorkerLauncher {
           attempts,
           maxAttempts,
           phase: attempts > 1 ? 'rework' : 'worker',
+          wrongCheckout: wrongCheckoutDiagnostic,
         },
       }, {
-        code: 'WORKER_EXHAUSTED',
+        code: wrongCheckoutDiagnostic?.kind === 'main_repo_related_changes' ? 'INVALID_DELIVERY_WRONG_CHECKOUT' : 'WORKER_EXHAUSTED',
         message: errorMessage,
-        actionResult: JSON.stringify({ attempts, maxAttempts }),
+        actionResult: JSON.stringify({ attempts, maxAttempts, wrongCheckout: wrongCheckoutDiagnostic }),
       })
     } catch (error) {
       // O roteamento governado é best-effort; o resultado de falha do worker
@@ -464,4 +489,40 @@ export class WorkerLauncher {
 
 function normalizePrompt(prompt: string | DevelopmentPrompt): DevelopmentPrompt {
   return typeof prompt === 'string' ? { header: prompt, context: null } : prompt
+}
+
+const DIAGNOSTIC_LIMIT = 4_000
+
+/**
+ * Inspeção deliberadamente somente leitura. Falhas de git não mascaram a
+ * falha original de entrega: apenas deixam de acrescentar evidência.
+ */
+async function inspectMainRepository(context: PrimitiveContext, prompt: DevelopmentPrompt): Promise<WrongCheckoutDiagnostic | undefined> {
+  if (!context.repoPath || context.repoPath === context.worktreePath) return undefined
+  try {
+    const [{ stdout: status }, { stdout: diff }] = await Promise.all([
+      execFileAsync('git', ['status', '--porcelain'], { cwd: context.repoPath, maxBuffer: DIAGNOSTIC_LIMIT }),
+      execFileAsync('git', ['diff', '--stat'], { cwd: context.repoPath, maxBuffer: DIAGNOSTIC_LIMIT }),
+    ])
+    const files = status.split('\n').map(line => line.slice(3).trim().replace(/^.* -> /, '')).filter(Boolean).slice(0, 40)
+    if (files.length === 0) return undefined
+    const citedPaths = extractCitedPaths([prompt.header, prompt.context ?? '', ...(prompt.scopeEvidence ?? [])].join('\n'))
+    const related = files.filter(file => citedPaths.some(path => file === path || file.endsWith(`/${path}`) || path.endsWith(`/${file}`)))
+    const listed = (related.length > 0 ? related : files).join(', ')
+    const kind = related.length > 0 ? 'main_repo_related_changes' : 'main_repo_unrelated_changes'
+    return {
+      kind,
+      files,
+      diffSummary: diff.slice(0, DIAGNOSTIC_LIMIT),
+      summary: related.length > 0
+        ? `O programador declarou conclusão, mas não alterou o worktree autorizado. ALTERAÇÕES ENCONTRADAS NO REPOSITÓRIO PRINCIPAL: ${listed} — agente editou o caminho errado. Diff resumido: ${diff.slice(0, 1_500)}`
+        : `O programador declarou conclusão, mas não alterou o worktree autorizado. O repositório principal possui alterações não relacionadas ao escopo identificado: ${listed}. Diff resumido: ${diff.slice(0, 1_500)}`,
+    }
+  } catch {
+    return undefined
+  }
+}
+
+function extractCitedPaths(text: string): string[] {
+  return [...new Set((text.match(/(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+\.[A-Za-z0-9_.-]+/g) ?? []).map(path => path.replace(/^\.\//, '')))]
 }
