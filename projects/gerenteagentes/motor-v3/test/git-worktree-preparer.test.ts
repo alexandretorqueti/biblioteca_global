@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { access, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { access, mkdtemp, mkdir, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
@@ -47,6 +47,82 @@ describe('GitWorktreePreparer', () => {
     await expect(preparer.prepare({
       taskId: 'task-1', subtaskId: 10, repoPath: '/home/alexandre/codigofonte/inexistente', baseBranch: 'base-desenvolvimento',
     })).rejects.toThrow('Repositório inacessível no container do Motor')
+  })
+
+  it('recupera diretório de subtarefa corrompido e reaproveita a branch residual válida', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'motor-v3-retry-'))
+    temporaryPaths.push(root)
+    const repository = join(root, 'repo')
+    const worktrees = join(root, 'worktrees')
+    await execFileAsync('git', ['init', '-b', 'base-desenvolvimento', repository])
+    await execFileAsync('git', ['config', 'user.email', 'test@example.invalid'], { cwd: repository })
+    await execFileAsync('git', ['config', 'user.name', 'Motor v3 test'], { cwd: repository })
+    await writeFile(join(repository, 'README.md'), 'base\n')
+    await execFileAsync('git', ['add', 'README.md'], { cwd: repository })
+    await execFileAsync('git', ['commit', '-m', 'base'], { cwd: repository })
+
+    const preparer = new GitWorktreePreparer(worktrees)
+    const integration = await preparer.prepareIntegration({ taskId: 'task-retry', repoPath: repository, baseBranch: 'base-desenvolvimento' })
+    const path = join(worktrees, 'task-retry', '42', 'a1')
+    const branch = 'motor-v3-work/subtask-task-retry-42-a1'
+    await mkdir(path, { recursive: true })
+    await writeFile(join(path, '.git'), 'gitdir: /lost/.git/worktrees/a171\n')
+    await execFileAsync('git', ['branch', branch, integration.baseCommit], { cwd: repository })
+
+    const prepared = await preparer.prepare({ taskId: 'task-retry', subtaskId: 42, repoPath: repository, baseBranch: 'base-desenvolvimento' })
+
+    expect(prepared.recoveries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ reasonCode: 'corrupt_subtask_worktree', action: 'removed_and_pruned' }),
+      expect.objectContaining({ reasonCode: 'reused_residual_branch', action: 'reused_branch', branch }),
+    ]))
+    await expect(execFileAsync('git', ['status', '--porcelain'], { cwd: prepared.path })).resolves.toMatchObject({ stdout: '' })
+    const { stdout } = await execFileAsync('git', ['worktree', 'list', '--porcelain'], { cwd: repository })
+    expect(stdout).toContain(`worktree ${path}`)
+    expect(stdout).toContain(`branch refs/heads/${branch}`)
+  })
+
+  it('reutiliza worktree íntegro sem recuperação', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'motor-v3-reuse-'))
+    temporaryPaths.push(root)
+    const repository = join(root, 'repo')
+    const worktrees = join(root, 'worktrees')
+    await execFileAsync('git', ['init', '-b', 'base-desenvolvimento', repository])
+    await execFileAsync('git', ['config', 'user.email', 'test@example.invalid'], { cwd: repository })
+    await execFileAsync('git', ['config', 'user.name', 'Motor v3 test'], { cwd: repository })
+    await writeFile(join(repository, 'README.md'), 'base\n')
+    await execFileAsync('git', ['add', 'README.md'], { cwd: repository })
+    await execFileAsync('git', ['commit', '-m', 'base'], { cwd: repository })
+
+    const preparer = new GitWorktreePreparer(worktrees)
+    const first = await preparer.prepare({ taskId: 'task-reuse', subtaskId: 12, repoPath: repository, baseBranch: 'base-desenvolvimento' })
+    const second = await preparer.prepare({ taskId: 'task-reuse', subtaskId: 12, repoPath: repository, baseBranch: 'base-desenvolvimento' })
+
+    expect(second.baseCommit).toBe(first.baseCommit)
+    expect(second.recoveries).toEqual([])
+  })
+
+  it('coloca diretório órfão da integração em quarentena antes de recriá-lo', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'motor-v3-integration-orphan-'))
+    temporaryPaths.push(root)
+    const repository = join(root, 'repo')
+    const worktrees = join(root, 'worktrees')
+    await execFileAsync('git', ['init', '-b', 'base-desenvolvimento', repository])
+    await execFileAsync('git', ['config', 'user.email', 'test@example.invalid'], { cwd: repository })
+    await execFileAsync('git', ['config', 'user.name', 'Motor v3 test'], { cwd: repository })
+    await writeFile(join(repository, 'README.md'), 'base\n')
+    await execFileAsync('git', ['add', 'README.md'], { cwd: repository })
+    await execFileAsync('git', ['commit', '-m', 'base'], { cwd: repository })
+    const orphan = join(worktrees, 'task-orphan', 'integration')
+    await mkdir(orphan, { recursive: true })
+    await writeFile(join(orphan, 'audit.txt'), 'preserve me\n')
+
+    const prepared = await new GitWorktreePreparer(worktrees).prepareIntegration({ taskId: 'task-orphan', repoPath: repository, baseBranch: 'base-desenvolvimento' })
+
+    const recovery = prepared.recoveries.find(item => item.reasonCode === 'orphan_integration_directory')
+    expect(recovery?.quarantinePath).toMatch(/integration\.orphan-\d+$/)
+    await expect(access(join(recovery!.quarantinePath!, 'audit.txt'))).resolves.toBeUndefined()
+    await expect(execFileAsync('git', ['status', '--porcelain'], { cwd: prepared.path })).resolves.toMatchObject({ stdout: '' })
+    expect((await readdir(join(worktrees, 'task-orphan'))).some(name => name.startsWith('integration.orphan-'))).toBe(true)
   })
 
   it('cleanup remove somente os worktrees/branches da tarefa e o diretório da tarefa', async () => {

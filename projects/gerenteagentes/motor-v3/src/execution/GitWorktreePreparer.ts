@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { access, mkdir, rm, stat } from 'node:fs/promises'
+import { access, mkdir, rename, rm, stat } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { promisify } from 'node:util'
 
@@ -22,6 +22,15 @@ export interface PreparedWorktree {
   baseCommit: string
   integrationPath: string
   integrationBranch: string
+  recoveries?: WorktreeRecovery[]
+}
+
+export interface WorktreeRecovery {
+  reasonCode: 'corrupt_subtask_worktree' | 'orphan_integration_directory' | 'orphan_worktree_registration' | 'reused_residual_branch' | 'discarded_residual_branch'
+  path: string
+  action: 'removed_and_pruned' | 'quarantined' | 'reused_branch' | 'deleted_branch'
+  branch?: string
+  quarantinePath?: string
 }
 
 export interface IntegrationBranchSyncInput {
@@ -51,18 +60,36 @@ export class GitWorktreePreparer {
     // uma branch existente (`motor-v3/...`). O runtime usa namespace próprio.
     const taskBranch = `motor-v3-work/integration-${safeTaskId}`
     const integrationPath = resolve(this.root, safeTaskId, 'integration')
-    await this.prepareNamedWorktree(repoPath, input.baseBranch, taskBranch, integrationPath)
+    const integration = await this.prepareNamedWorktree(repoPath, input.baseBranch, taskBranch, integrationPath)
     const branch = `motor-v3-work/subtask-${safeTaskId}-${input.subtaskId}-a1`
     const path = resolve(this.root, safeTaskId, String(input.subtaskId), 'a1')
     await mkdir(dirname(path), { recursive: true })
 
+    const recoveries = [...integration.recoveries]
     const existingCommit = await this.existingWorktreeCommit(repoPath, path, branch)
-    if (existingCommit) return { path, branch, baseCommit: existingCommit, integrationPath, integrationBranch: taskBranch }
+    if (existingCommit) return { path, branch, baseCommit: existingCommit, integrationPath, integrationBranch: taskBranch, recoveries }
+    if (await this.exists(path) || await this.isRegisteredWorktree(repoPath, path)) {
+      await this.removeBrokenSubtaskWorktree(repoPath, path)
+      recoveries.push({ reasonCode: 'corrupt_subtask_worktree', path, action: 'removed_and_pruned', branch })
+    }
 
     const { stdout } = await execFileAsync('git', ['rev-parse', taskBranch], { cwd: repoPath })
     const baseCommit = stdout.trim()
-    await execFileAsync('git', ['worktree', 'add', '-b', branch, path, baseCommit], { cwd: repoPath })
-    return { path, branch, baseCommit, integrationPath, integrationBranch: taskBranch }
+    const branchExists = await this.branchExists(repoPath, branch)
+    if (branchExists) {
+      if (await this.branchHasWorktree(repoPath, branch) || !await this.branchResolvesToCommit(repoPath, branch)) {
+        await this.removeBranchWorktrees(repoPath, branch)
+        await this.deleteBranch(repoPath, branch)
+        recoveries.push({ reasonCode: 'discarded_residual_branch', path, action: 'deleted_branch', branch })
+        await execFileAsync('git', ['worktree', 'add', '-b', branch, path, baseCommit], { cwd: repoPath })
+      } else {
+        await execFileAsync('git', ['worktree', 'add', path, branch], { cwd: repoPath })
+        recoveries.push({ reasonCode: 'reused_residual_branch', path, action: 'reused_branch', branch })
+      }
+    } else {
+      await execFileAsync('git', ['worktree', 'add', '-b', branch, path, baseCommit], { cwd: repoPath })
+    }
+    return { path, branch, baseCommit, integrationPath, integrationBranch: taskBranch, recoveries }
   }
 
   async prepareIntegration(input: { taskId: string; repoPath: string; baseBranch: string }): Promise<PreparedWorktree> {
@@ -71,16 +98,24 @@ export class GitWorktreePreparer {
     const safeTaskId = input.taskId.replace(/[^a-zA-Z0-9._-]/g, '-')
     const branch = `motor-v3-work/integration-${safeTaskId}`
     const path = resolve(this.root, safeTaskId, 'integration')
-    const baseCommit = await this.prepareNamedWorktree(repoPath, input.baseBranch, branch, path, input.taskId)
-    return { path, branch, baseCommit, integrationPath: path, integrationBranch: branch }
+    const prepared = await this.prepareNamedWorktree(repoPath, input.baseBranch, branch, path, input.taskId)
+    return { path, branch, baseCommit: prepared.commit, integrationPath: path, integrationBranch: branch, recoveries: prepared.recoveries }
   }
 
-  private async prepareNamedWorktree(repoPath: string, baseRef: string, branch: string, path: string, taskId?: string): Promise<string> {
+  private async prepareNamedWorktree(repoPath: string, baseRef: string, branch: string, path: string, taskId?: string): Promise<{ commit: string; recoveries: WorktreeRecovery[] }> {
     await mkdir(dirname(path), { recursive: true })
+    const recoveries: WorktreeRecovery[] = []
     const existingCommit = await this.existingWorktreeCommit(repoPath, path, branch)
-    if (existingCommit) return existingCommit
-    const branchExists = await execFileAsync('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], { cwd: repoPath })
-      .then(() => true, () => false)
+    if (existingCommit) return { commit: existingCommit, recoveries }
+    if (await this.exists(path)) {
+      const quarantinePath = await this.quarantine(path)
+      recoveries.push({ reasonCode: 'orphan_integration_directory', path, action: 'quarantined', branch, quarantinePath })
+    }
+    if (await this.isRegisteredWorktree(repoPath, path)) {
+      await this.removeOrphanedWorktree(repoPath, path)
+      recoveries.push({ reasonCode: 'orphan_worktree_registration', path, action: 'removed_and_pruned', branch })
+    }
+    const branchExists = await this.branchExists(repoPath, branch)
     // Se a branch não existe e não é uma branch de integração nova (baseRef não é uma branch válida),
     // significa que o ambiente foi perdido e não pode ser recriado
     if (!branchExists && taskId && branch.includes('integration')) {
@@ -114,7 +149,7 @@ export class GitWorktreePreparer {
       }
     }
     const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: path })
-    return stdout.trim()
+    return { commit: stdout.trim(), recoveries }
   }
 
   /**
@@ -128,6 +163,21 @@ export class GitWorktreePreparer {
       // Se o worktree remove falhar (caminho já não existe), tentar prune
       await execFileAsync('git', ['worktree', 'prune'], { cwd: repoPath })
     }
+  }
+
+  private async removeBrokenSubtaskWorktree(repoPath: string, path: string): Promise<void> {
+    await this.removeOrphanedWorktree(repoPath, path)
+    await rm(path, { recursive: true, force: true })
+    await execFileAsync('git', ['worktree', 'prune'], { cwd: repoPath })
+  }
+
+  private async quarantine(path: string): Promise<string> {
+    const candidate = `${path}.orphan-${Date.now()}`
+    let quarantinePath = candidate
+    let suffix = 0
+    while (await this.exists(quarantinePath)) quarantinePath = `${candidate}-${++suffix}`
+    await rename(path, quarantinePath)
+    return quarantinePath
   }
 
   /**
@@ -210,6 +260,32 @@ export class GitWorktreePreparer {
     return 1
   }
 
+  private async branchExists(repoPath: string, branch: string): Promise<boolean> {
+    return execFileAsync('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], { cwd: repoPath })
+      .then(() => true, () => false)
+  }
+
+  private async branchResolvesToCommit(repoPath: string, branch: string): Promise<boolean> {
+    return execFileAsync('git', ['rev-parse', '--verify', `${branch}^{commit}`], { cwd: repoPath })
+      .then(() => true, () => false)
+  }
+
+  private async branchHasWorktree(repoPath: string, branch: string): Promise<boolean> {
+    const { stdout } = await execFileAsync('git', ['worktree', 'list', '--porcelain'], { cwd: repoPath })
+    return stdout.split('\n\n').some(entry => entry.split('\n').includes(`branch refs/heads/${branch}`))
+  }
+
+  /** Libera uma branch de subtarefa que ainda ficou presa a um registro residual. */
+  private async removeBranchWorktrees(repoPath: string, branch: string): Promise<void> {
+    const { stdout } = await execFileAsync('git', ['worktree', 'list', '--porcelain'], { cwd: repoPath })
+    const paths = stdout.split('\n\n').flatMap(entry => {
+      const lines = entry.split('\n')
+      const worktree = lines.find(line => line.startsWith('worktree '))?.slice('worktree '.length)
+      return worktree && lines.includes(`branch refs/heads/${branch}`) ? [worktree] : []
+    })
+    for (const path of paths) await this.removeBrokenSubtaskWorktree(repoPath, path)
+  }
+
   private async exists(path: string): Promise<boolean> {
     try { await stat(path); return true } catch { return false }
   }
@@ -231,24 +307,25 @@ export class GitWorktreePreparer {
     if (!await this.exists(path)) return null
     const { stdout } = await execFileAsync('git', ['worktree', 'list', '--porcelain'], { cwd: repoPath })
     const registered = stdout.split('\n').some(line => line === `worktree ${path}`)
-    if (!registered) {
-      await rm(path, { recursive: true, force: true })
-      return null
-    }
-    // Verificar se está na branch esperada ou detached
+    if (!registered) return null
+    const [gitDir, commonDir] = await Promise.all([
+      execFileAsync('git', ['-C', path, 'rev-parse', '--git-dir']).then(result => resolve(path, result.stdout.trim()), () => null),
+      execFileAsync('git', ['-C', repoPath, 'rev-parse', '--git-common-dir']).then(result => resolve(repoPath, result.stdout.trim()), () => null),
+    ])
+    if (!gitDir || !commonDir || !gitDir.startsWith(`${commonDir}/worktrees/`) || !await this.exists(gitDir)) return null
+    // Um worktree reutilizável precisa estar explicitamente na branch esperada.
+    // Não fazemos checkout corretivo aqui: um retry não pode movimentar um
+    // worktree cujo estado já divergiu do contrato da subtarefa.
     if (expectedBranch) {
       const { stdout: headRef } = await execFileAsync('git', ['symbolic-ref', '-q', 'HEAD'], { cwd: path })
         .catch(() => ({ stdout: '' }))
       const currentBranch = headRef.trim()
       const expectedRef = `refs/heads/${expectedBranch}`
-      if (currentBranch !== expectedRef) {
-        // Worktree está detached ou em branch errada — fazer checkout
-        console.warn(`[GitWorktreePreparer] Worktree ${path} está em "${currentBranch || 'detached'}", esperado "${expectedBranch}" — fazendo checkout`)
-        await execFileAsync('git', ['checkout', expectedBranch], { cwd: path })
-      }
+      if (currentBranch !== expectedRef) return null
     }
-    const { stdout: commit } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: path })
-    return commit.trim()
+    const { stdout: commit } = await execFileAsync('git', ['rev-parse', '--verify', 'HEAD^{commit}'], { cwd: path })
+      .catch(() => ({ stdout: '' }))
+    return commit.trim() || null
   }
 
   /** Converte o caminho persistido pelo host para o bind visível na API. */

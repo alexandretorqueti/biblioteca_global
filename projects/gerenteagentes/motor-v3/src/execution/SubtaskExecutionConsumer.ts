@@ -5,6 +5,7 @@ import type { PrimitiveContext } from '../primitives/types.js'
 import type { DevelopmentPrompt, WorkerLauncher, WorkerResult } from '../worker-launcher/WorkerLauncher.js'
 import type { MySqlDevelopmentExecutionRepository, SubtaskExecutionContext } from './DevelopmentExecutionRepository.js'
 import { GitWorktreePreparer, IntegrationBranchMissingError } from './GitWorktreePreparer.js'
+import type { PreparedWorktree } from './GitWorktreePreparer.js'
 import type {
   BaselinePreflightRecovery,
   TestGateOrchestrator,
@@ -102,6 +103,7 @@ export class SubtaskExecutionConsumer {
           phase: 'primitive', outcome: 'succeeded', subtaskId, primitiveCode: 'prepare_integration_worktree',
           result: { workspacePath: integration.integrationPath, branch: integration.integrationBranch, baseCommit: integration.baseCommit },
         })
+        sequence = await this.logWorktreeRecoveries(operationId, sequence, message, subtaskId, integration.recoveries ?? [])
         if (this.environmentPreparer) {
           const packages = await this.environmentPreparer.prepare(integration.integrationPath)
           await this.log(operationId, sequence++, message, {
@@ -157,7 +159,7 @@ export class SubtaskExecutionConsumer {
       baselineRunId = baseline.id
     }
 
-    let workspace: { path: string; branch: string; baseCommit: string; integrationPath: string; integrationBranch: string }
+    let workspace: PreparedWorktree
     try {
       workspace = await this.worktrees.prepare({
         taskId: execution.taskId,
@@ -187,6 +189,7 @@ export class SubtaskExecutionConsumer {
       phase: 'primitive', outcome: 'succeeded', subtaskId, primitiveCode: 'prepare_worktree',
       result: { workspacePath: workspace.path, branch: workspace.branch, baseCommit: workspace.baseCommit },
     })
+    sequence = await this.logWorktreeRecoveries(operationId, sequence, message, subtaskId, workspace.recoveries ?? [])
 
     const context: PrimitiveContext = {
       taskId: execution.taskId,
@@ -602,5 +605,22 @@ export class SubtaskExecutionConsumer {
       correlationId: message.correlationId, causationId: message.causationId,
       taskId: message.taskId, ...data,
     })
+  }
+
+  private async logWorktreeRecoveries(
+    operationId: string,
+    sequence: number,
+    message: QueueMessage,
+    subtaskId: number,
+    recoveries: Array<{ reasonCode: string; path: string; action: string; branch?: string; quarantinePath?: string }>,
+  ): Promise<number> {
+    for (const recovery of recoveries) {
+      await this.log(operationId, sequence++, message, {
+        phase: 'primitive', outcome: 'succeeded', subtaskId,
+        primitiveCode: 'recover_worktree', reasonCode: recovery.reasonCode,
+        result: recovery,
+      })
+    }
+    return sequence
   }
 }
