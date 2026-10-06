@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { execFileSync } from 'node:child_process'
 import { WorkerLauncher } from '../src/worker-launcher/WorkerLauncher.js'
 import type { PrimitiveContext } from '../src/primitives/types.js'
 
@@ -249,6 +252,36 @@ describe('WorkerLauncher', () => {
     expect(mockContext.logger?.warn).toHaveBeenCalledWith(
       'Agente disse ::DONE:: mas não há mudanças no git'
     )
+  })
+
+  it('diagnostica diff relacionado no checkout principal sem modificar arquivos', async () => {
+    const repo = mkdtempSync(`${tmpdir()}/motor-wrong-checkout-`)
+    try {
+      mkdirSync(`${repo}/src`)
+      writeFileSync(`${repo}/src/Worker.ts`, 'export const value = 1\n')
+      execFileSync('git', ['init'], { cwd: repo })
+      execFileSync('git', ['add', '.'], { cwd: repo })
+      execFileSync('git', ['-c', 'user.name=test', '-c', 'user.email=test@example.com', 'commit', '-m', 'base'], { cwd: repo })
+      writeFileSync(`${repo}/src/Worker.ts`, 'export const value = 2\n')
+      launcher = new WorkerLauncher({ maxAttempts: 1 })
+      mockContext.repoPath = repo
+      mockContext.worktreePath = `${repo}-worktree`
+      mocks.createSession.handler.mockResolvedValue({ success: true })
+      mocks.sendMessage.handler.mockResolvedValue({ success: true })
+      mocks.waitForCompletion.handler.mockResolvedValue({ success: true, data: { response: 'Feito ::DONE::' } })
+      mocks.parseReply.handler.mockResolvedValue({ success: true, data: { hasDoneMarker: true } })
+      mocks.verifyGit.handler.mockResolvedValue({ success: true, data: { hasChanges: false } })
+
+      const result = await launcher.executeTask(mockContext, {
+        header: 'Altere src/Worker.ts', context: null, scopeEvidence: ['src/Worker.ts'],
+      })
+
+      expect(result.error).toContain('ALTERAÇÕES ENCONTRADAS NO REPOSITÓRIO PRINCIPAL: src/Worker.ts')
+      expect(result.wrongCheckoutDiagnostic).toMatchObject({ kind: 'main_repo_related_changes', files: ['src/Worker.ts'] })
+      expect(execFileSync('git', ['status', '--porcelain'], { cwd: repo }).toString()).toContain('src/Worker.ts')
+    } finally {
+      rmSync(repo, { recursive: true, force: true })
+    }
   })
 
   it('conclui análise sem alteração Git quando o contrato permite no_code_change', async () => {

@@ -671,7 +671,7 @@ export class MySqlDevelopmentExecutionRepository {
   async finishExecution(
     context: SubtaskExecutionContext,
     source: QueueMessage,
-    result: { success: boolean; response?: string; error?: string; attempts: number },
+    result: { success: boolean; response?: string; error?: string; attempts: number; wrongCheckoutDiagnostic?: unknown },
   ): Promise<QueueMessage> {
     const connection = await this.pool.getConnection()
     try {
@@ -685,6 +685,7 @@ export class MySqlDevelopmentExecutionRepository {
         attempts: result.attempts,
         response: result.response ?? '',
         error: result.error ?? '',
+        ...(result.wrongCheckoutDiagnostic ? { wrongCheckoutDiagnostic: result.wrongCheckoutDiagnostic } : {}),
       }
       const message = createQueueMessage({
         type: nextType,
