@@ -175,7 +175,6 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
         [taskId, taskId, executionId],
       )
       const databaseTaskId = taskRows[0]?.id
-      const taskType = String(taskRows[0]?.tipo ?? '')
       if (!databaseTaskId) throw new Error(`Claim de análise não encontrado para ${taskId}`)
 
       if (outcome.kind === 'questions') {
@@ -203,10 +202,20 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NOW(), NOW())`,
               [databaseTaskId, subtask.seq, subtask.titulo, subtask.scope,
                 JSON.stringify(subtask.acceptanceCriteria), JSON.stringify(subtask.deliverables),
-                JSON.stringify(subtask.requirementsCovered), JSON.stringify([]),
-                subtask.completionKind ?? (taskType === 'verificacao' ? 'analysis' : null)],
+                JSON.stringify(subtask.requirementsCovered), JSON.stringify([]), subtask.completionKind],
             )
             ids.set(subtask.seq, result.insertId)
+            if (subtask.completionKindInference) {
+              await connection.query(
+                `INSERT INTO tarefa_eventos (tarefa_id, tarefa_external_id, evento, ator, origem, payload, created_at)
+                 VALUES (?, ?, 'completion_kind_inferred', 'motor-v3', 'motor', ?, NOW())`,
+                [databaseTaskId, taskId, JSON.stringify({
+                  subtask: { seq: subtask.seq, titulo: subtask.titulo },
+                  completionKind: subtask.completionKind,
+                  reason: subtask.completionKindInference.reason,
+                })],
+              )
+            }
           }
           for (const subtask of outcome.subtasks) {
             const dependencyIds = subtask.dependsOn.map(seq => ids.get(seq)).filter((id): id is number => Boolean(id))

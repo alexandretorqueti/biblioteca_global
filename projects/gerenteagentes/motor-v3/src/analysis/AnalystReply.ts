@@ -6,8 +6,13 @@ export interface PlannedSubtask {
   deliverables: string[]
   requirementsCovered: string[]
   dependsOn: number[]
-  completionKind?: 'code_change' | 'analysis' | 'external_operation' | 'no_code_change'
+  completionKind: CompletionKind
+  completionKindInference?: { reason: string }
 }
+
+export type CompletionKind = 'code_change' | 'analysis' | 'external_operation' | 'no_code_change'
+
+const validationVerb = /\b(?:validar|verificar|checar|conferir|testar)\b/i
 
 export interface PlanCoverage {
   requirements: Array<{ id: string; description: string }>
@@ -69,6 +74,7 @@ export function parseAnalystReply(content: string, contractSchema?: unknown): An
     throw new Error(`JSON do analista inválido: ${lastParseError instanceof Error ? lastParseError.message : 'nenhum objeto possui a assinatura esperada'}`)
   }
   if (!isRecord(parsed)) throw new Error('Resposta do analista não é um objeto JSON')
+  inferMissingCompletionKinds(parsed)
   if (contractSchema) validateJsonSchema(parsed, contractSchema)
 
   if (parsed.kind === 'perguntas' || Array.isArray(parsed.perguntas)) {
@@ -91,8 +97,9 @@ export function parseAnalystReply(content: string, contractSchema?: unknown): An
     return {
       seq: integer(value.seq, index + 1), titulo, scope, acceptanceCriteria,
       deliverables, requirementsCovered, dependsOn: integers(value.depends_on),
-      ...(typeof value.completion_kind === 'string' && ['code_change', 'analysis', 'external_operation', 'no_code_change'].includes(value.completion_kind)
-        ? { completionKind: value.completion_kind as PlannedSubtask['completionKind'] } : {}),
+      completionKind: value.completion_kind as CompletionKind,
+      ...(typeof value.completion_kind_inference_reason === 'string'
+        ? { completionKindInference: { reason: value.completion_kind_inference_reason } } : {}),
     }
   })
 
@@ -125,6 +132,21 @@ export function parseAnalystReply(content: string, contractSchema?: unknown): An
     throw new Error('Matriz de cobertura não cobre todos os requisitos')
   }
   return { kind: 'plan', subtasks, coverage: { requirements, coverage } }
+}
+
+/** Compatibiliza respostas de contratos anteriores sem aceitar classificação inválida. */
+function inferMissingCompletionKinds(reply: Record<string, any>): void {
+  if (!Array.isArray(reply.subtarefas)) return
+  for (const value of reply.subtarefas) {
+    if (!isRecord(value) || Object.prototype.hasOwnProperty.call(value, 'completion_kind')) continue
+    const normalizedText = `${String(value.titulo ?? '')} ${String(value.scope ?? '')}`
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    const isValidation = validationVerb.test(normalizedText)
+    value.completion_kind = isValidation ? 'analysis' : 'code_change'
+    value.completion_kind_inference_reason = isValidation
+      ? 'completion_kind ausente; título ou scope contém verbo de validação'
+      : 'completion_kind ausente; título e scope não contêm verbo de validação'
+  }
 }
 
 /** Extrai todos os objetos balanceados; o chamador escolhe a assinatura válida. */
@@ -174,6 +196,9 @@ function isAnalysisReply(value: Record<string, any>): boolean {
 /** Validador do subconjunto de JSON Schema usado pelos contratos publicados. */
 function validateJsonSchema(value: unknown, schema: unknown, path = '$'): void {
   if (!isRecord(schema)) return
+  if (Array.isArray(schema.enum) && !schema.enum.some(item => item === value)) {
+    throw new Error(`${path} deve ser um dos valores permitidos`)
+  }
   if (Array.isArray(schema.oneOf)) {
     const errors: string[] = []
     for (const option of schema.oneOf) {
