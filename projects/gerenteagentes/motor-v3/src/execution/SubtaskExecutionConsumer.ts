@@ -247,6 +247,7 @@ export class SubtaskExecutionConsumer {
       receivedAt
         + Number(process.env.MOTOR_RABBITMQ_CONSUMER_TIMEOUT_MS || 5_400_000)
         - Number(process.env.MOTOR_RABBITMQ_ACK_SAFETY_MS || 300_000),
+      execution.completionKind === null,
     )
 
     const workerSequence = sequence
@@ -264,7 +265,7 @@ export class SubtaskExecutionConsumer {
       return
     }
     const next = (result.success && noCode) || (result.success && result.noChangesNeeded)
-      ? await this.repository.completeNoCodeExecution(execution, message, result.response ?? '')
+      ? await this.repository.completeNoCodeExecution(execution, message, result.response ?? '', result.legacyNoCodeChange === true)
       : await this.repository.finishExecution(execution, message, result)
     await this.repository.closeDevelopmentSession?.(subtaskId, context.sessionId, context.sessionKey, result.success)
     await this.log(operationId, workerSequence + 1, message, {
@@ -328,9 +329,10 @@ export class SubtaskExecutionConsumer {
       } : undefined,
       noCode,
       this.scopeEvidence(execution),
+      execution.completionKind === null,
     )
     const next = (result.success && noCode) || (result.success && result.noChangesNeeded)
-      ? await this.repository.completeNoCodeExecution(execution, input.message, input.response)
+      ? await this.repository.completeNoCodeExecution(execution, input.message, input.response, result.legacyNoCodeChange === true)
       : await this.repository.finishExecution(execution, input.message, result)
     await this.repository.closeDevelopmentSession?.(subtaskId, input.sessionId, input.sessionKey, result.success)
     await this.log(operationId, 2, input.message, {
