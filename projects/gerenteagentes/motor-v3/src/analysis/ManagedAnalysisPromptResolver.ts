@@ -1,6 +1,7 @@
 import type { Pool, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
 import type { TaskSnapshot } from '../coordinator/TaskCoordinator.js'
 import { ContractArtifactStore } from './ContractArtifactStore.js'
+import type { ConsoleHttpApi } from './ConsoleHttpApi.js'
 
 export interface ResolvedAnalysisPrompt {
   text: string
@@ -20,7 +21,7 @@ export interface AnalysisPromptContext {
 export class ManagedAnalysisPromptResolver {
   constructor(
     private readonly pool: Pool,
-    private readonly artifacts = new ContractArtifactStore(process.env.MOTOR_AGENT_WORKSPACES_ROOT),
+    private readonly artifacts: ContractArtifactStore,
   ) {}
 
   async resolve(task: TaskSnapshot, executionId: string, context?: AnalysisPromptContext): Promise<ResolvedAnalysisPrompt> {

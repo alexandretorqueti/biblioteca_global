@@ -36,6 +36,7 @@ import type { QueueMessage } from './queue/QueueMessage.js'
 import { TaskCoordinator, MySqlTaskCoordinatorRepository, AnalysisClaimReconciler, AnalysisSessionRecoveryReconciler, TaskCancelConsumer, MySqlTaskEventRecorder, MySqlAnalysisFailureBlocker, SanitizeSessionService } from './coordinator/index.js'
 import { ConsoleAnalystRunner } from './analysis/ConsoleAnalystRunner.js'
 import { ConsoleHttpApi } from './analysis/ConsoleHttpApi.js'
+import { ContractArtifactStore } from './analysis/ContractArtifactStore.js'
 import { ManagedAnalysisPromptResolver } from './analysis/ManagedAnalysisPromptResolver.js'
 import { ManagedDevelopmentPromptResolver } from './analysis/ManagedDevelopmentPromptResolver.js'
 import { DerivedTaskStatusResolver } from './status/DerivedTaskStatus.js'
@@ -181,6 +182,7 @@ async function start() {
 
     const repository = new MySqlTaskCoordinatorRepository(pool)
     const consoleApi = new ConsoleHttpApi(consoleUrl, consoleToken)
+    const contractArtifactStore = new ContractArtifactStore(process.env.MOTOR_AGENT_WORKSPACES_ROOT, consoleApi)
     const analystSessionRows = new Map<string, number>()
     const analystSessionSequences = new Map<string, number>()
     const resolveTaskNumericId = async (taskId: string): Promise<number | null> => {
@@ -200,7 +202,7 @@ async function start() {
       timeoutMs: Number(process.env.MOTOR_ANALYSIS_TIMEOUT_MS || 1500000),
       pollIntervalMs: Number(process.env.MOTOR_ANALYSIS_POLL_INTERVAL_MS || 5000),
       governedFailureHandler,
-      promptResolver: new ManagedAnalysisPromptResolver(pool),
+      promptResolver: new ManagedAnalysisPromptResolver(pool, contractArtifactStore),
       modelChainResolver: async (task) => {
         if (!task.projectSlug) return []
         const [rows] = await pool.query<any[]>(

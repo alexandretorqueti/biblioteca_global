@@ -176,6 +176,19 @@ export class ConsoleHttpApi implements AnalystConsole {
     }
   }
 
+  /** Lista todos os agentes configurados no OpenClaw, incluindo seus workspaces. */
+  async listAgents(): Promise<Array<{ id: string; workspace?: string }>> {
+    try {
+      const result = await this.request<{ agents?: Array<{ id: string; workspace?: string }> }>('/api/agents', {
+        method: 'GET',
+      })
+      return result.agents ?? []
+    } catch (error) {
+      console.warn('[ConsoleHttpApi] Erro ao listar agentes:', error)
+      return []
+    }
+  }
+
   private async request<T = unknown>(path: string, options: { method: 'GET' | 'POST'; body?: Record<string, unknown>; query?: Record<string, string | number> }): Promise<T> {
     const url = new URL(path, this.baseUrl.endsWith('/') ? this.baseUrl : `${this.baseUrl}/`)
     for (const [key, value] of Object.entries(options.query ?? {})) url.searchParams.set(key, String(value))
