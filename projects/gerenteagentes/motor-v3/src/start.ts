@@ -81,6 +81,7 @@ let subtaskExecutionConsumer: SubtaskExecutionConsumer | null = null
 let subtaskVerificationConsumer: SubtaskVerificationConsumer | null = null
 let testRecoveryConsumer: TestRecoveryConsumer | null = null
 let monitorResolutionConsumer: MonitorResolutionConsumer | null = null
+let monitorQueueConsumer: QueueConsumer | null = null
 let monitorBlockerReconciler: MonitorBlockerReconciler | null = null
 let taskUnblockedConsumer: TaskUnblockedConsumer | null = null
 let testGateQueueConsumer: QueueConsumer | null = null
@@ -563,6 +564,23 @@ async function start() {
       pool, worktreePreparer, monitorResolutionWorker, new MonitorPromptResolver(pool),
       taskEvents, new WorkerConsoleAdapter(consoleApi), db, new ConsoleHumanNotifier(),
     )
+    const monitorTransport = new RabbitMqTransport({
+      url: rabbitUrl, exchange: process.env.MOTOR_RABBITMQ_EXCHANGE || 'motor',
+      prefetch: normalizeRabbitMqPrefetch(process.env.MOTOR_MONITOR_PREFETCH ?? process.env.MOTOR_RABBITMQ_PREFETCH, 5),
+      queue: monitorQueue, retryQueue: `${monitorQueue}.retry`, deadLetterQueue: `${monitorQueue}.dlq`,
+      retryDelayMs: Number(process.env.MOTOR_RABBITMQ_RETRY_DELAY_MS || 30000),
+    })
+    monitorQueueConsumer = new QueueConsumer(
+      monitorTransport,
+      message => monitorResolutionConsumer!.handle(message),
+      {
+        queue: monitorQueue,
+        maxAttempts: Number(process.env.MOTOR_QUEUE_MAX_ATTEMPTS || 3),
+      },
+      pool,
+      motorActivityGate,
+      governedFailureHandler,
+    )
     taskUnblockedConsumer = new TaskUnblockedConsumer(pool, taskEvents)
     monitorBlockerReconciler = new MonitorBlockerReconciler(pool, {
       enqueue: message => monitorOutbox!.enqueue(message),
@@ -630,6 +648,7 @@ async function start() {
       console.log(`[Motor v3] Reconciliação no boot: ${reconciledCount} mensagem(ens) enfileirada(s)`)
     }
     await queueConsumer.start()
+    await monitorQueueConsumer.start()
     await monitorBlockerReconciler.reconcile()
     monitorBlockerReconciler.start()
     // Recuperação única de fatos duráveis após boot. O fluxo normal avança
@@ -1232,6 +1251,8 @@ async function shutdown() {
     await queueConsumer.stop()
     console.log('[Motor v3] QueueConsumer parado')
   }
+
+  if (monitorQueueConsumer) await monitorQueueConsumer.stop()
 
   if (testGateQueueConsumer) await testGateQueueConsumer.stop()
 
