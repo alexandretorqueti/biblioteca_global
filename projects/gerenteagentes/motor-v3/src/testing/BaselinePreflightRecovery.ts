@@ -16,6 +16,7 @@ export interface PreflightRecoveryResult {
   baseline?: TestRunResult
   integrationCommit?: string
   error?: string
+  sessionHandedOff?: boolean
 }
 
 /** Corrige um baseline vermelho na integração antes de qualquer sessão DEV. */
@@ -43,6 +44,7 @@ export class BaselinePreflightRecovery {
       subtaskId: execution.subtaskId,
       executionId: source.executionId,
       generation: 1,
+      sessionKind: 'baseline_fix',
       projectSlug: execution.projectSlug,
       repoPath: execution.repoPath,
       worktreePath: integration.integrationPath,
@@ -57,7 +59,7 @@ export class BaselinePreflightRecovery {
     }
     const result = await this.worker.executeTask(
       context,
-      this.prompt(execution, integration, failedBaseline),
+      await this.prompt(execution, integration, failedBaseline),
       models,
       undefined,
       async gateContext => {
@@ -83,7 +85,28 @@ export class BaselinePreflightRecovery {
         }
       },
     )
+    if (result.sessionHandedOff) return { success: false, sessionHandedOff: true, error: result.error }
     if (!result.success) return { success: false, error: result.error ?? 'Monitor não deixou o baseline verde' }
+
+    const completed = await this.complete(execution, integration, source)
+    await this.closeSession(context.sessionKey, completed.success)
+    return completed
+  }
+
+  /** Pós-processamento idempotente da sessão entregue ao reconciliador. */
+  async completeHandoff(
+    execution: SubtaskExecutionContext,
+    integration: PreparedWorktree,
+    source: QueueMessage,
+  ): Promise<PreflightRecoveryResult> {
+    return this.complete(execution, integration, source)
+  }
+
+  private async complete(
+    execution: SubtaskExecutionContext,
+    integration: PreparedWorktree,
+    source: QueueMessage,
+  ): Promise<PreflightRecoveryResult> {
 
     await execFileAsync('git', ['add', '-A'], { cwd: integration.integrationPath })
     const { stdout: staged } = await execFileAsync('git', ['diff', '--cached', '--name-only'], { cwd: integration.integrationPath })
@@ -115,7 +138,8 @@ export class BaselinePreflightRecovery {
     return rows.map(row => String(row.model)).filter(Boolean)
   }
 
-  private prompt(execution: SubtaskExecutionContext, integration: PreparedWorktree, baseline: TestRunResult): string {
+  private async prompt(execution: SubtaskExecutionContext, integration: PreparedWorktree, baseline: TestRunResult): Promise<string> {
+    const { stdout: dirty } = await execFileAsync('git', ['status', '--short'], { cwd: integration.integrationPath })
     return [
       'Corrija o baseline antes de o programador receber a subtarefa funcional.',
       `Tarefa: ${execution.taskTitle} (${execution.taskId})`,
@@ -125,6 +149,10 @@ export class BaselinePreflightRecovery {
       `Build: ${execution.buildCommand}`,
       `Testes: ${execution.testCommand}`,
       'Trabalhe exclusivamente na integração acima. Não implemente o requisito funcional da subtarefa.',
+      ...(dirty.trim() ? [
+        'ATENÇÃO: o worktree já contém mudanças não commitadas de uma tentativa anterior. Preserve-as e continue sobre esse estado; não descarte nem sobrescreva cegamente.',
+        `Mudanças existentes:\n${dirty.trim()}`,
+      ] : []),
       'Faça a menor correção segura para deixar o gate completo verde. Não faça push nem deploy.',
       this.failureSummary(baseline),
       'Ao deixar o gate verde, responda com ::DONE::.',
@@ -135,5 +163,15 @@ export class BaselinePreflightRecovery {
     return run.failures.length === 0
       ? 'O comando de baseline falhou sem falhas estruturadas; inspecione a saída completa no workspace.'
       : run.failures.map((failure, index) => `${index + 1}. ${failure.suite}: ${failure.normalizedMessage}`).join('\n')
+  }
+
+  private async closeSession(sessionKey: string | undefined, success: boolean): Promise<void> {
+    if (!sessionKey) return
+    await this.pool.query(
+      `UPDATE motor_agent_sessions
+          SET status=?, close_reason=?, closed_at=NOW(), last_activity_at=NOW()
+        WHERE session_key=? AND purpose='baseline_fix' AND status='active'`,
+      [success ? 'completed' : 'failed', success ? 'baseline_fix_completed' : 'baseline_fix_failed', sessionKey],
+    )
   }
 }

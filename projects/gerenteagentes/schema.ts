@@ -516,6 +516,7 @@ export const motorAgentSessions = mysqlTable("motor_agent_sessions", {
   sessionKey: varchar("session_key", { length: 300 }).notNull().unique(),
   runtimeSessionId: varchar("runtime_session_id", { length: 300 }),
   status: varchar("status", { length: 30 }).notNull(),
+  purpose: varchar("purpose", { length: 30 }).notNull().default("development"),
   openedAt: timestamp("opened_at").notNull(),
   lastActivityAt: timestamp("last_activity_at").notNull(),
   approvedAt: timestamp("approved_at"),

@@ -15,6 +15,7 @@ interface RecoveryRow extends RowDataPacket {
   runtime_session_id: string | null
   agent_id: string
   model: string
+  purpose: 'development' | 'baseline_fix'
   execution_id: string | null
   baseline_run_id: number | null
   subtask_status: string
@@ -70,7 +71,7 @@ export class DevelopmentSessionRecoveryReconciler {
       const [rows] = await this.pool.query<RecoveryRow[]>(`
         SELECT mas.id AS session_id, s.tarefa_id, t.external_id AS task_external_id,
                mas.subtarefa_id, mas.session_key, mas.runtime_session_id,
-               mas.agent_id, mas.model, ctx.last_run_id AS execution_id, s.status AS subtask_status,
+               mas.agent_id, mas.model, mas.purpose, ctx.last_run_id AS execution_id, s.status AS subtask_status,
                mas.completion_nudge_count, mas.completion_nudged_at,
                (SELECT tr.id FROM test_runs tr
                  WHERE tr.tarefa_id = s.tarefa_id AND tr.subtarefa_id = s.id AND tr.phase = 'baseline'
@@ -80,8 +81,9 @@ export class DevelopmentSessionRecoveryReconciler {
           INNER JOIN tarefas t ON t.id = s.tarefa_id
           LEFT JOIN tarefa_contextos_execucao ctx
             ON ctx.subtarefa_id = s.id AND ctx.sessao_chave = mas.session_key
-           AND ctx.fase = 'development' AND ctx.estado != 'closed'
+           AND ctx.fase = mas.purpose AND ctx.estado != 'closed'
          WHERE mas.status = 'active'
+           AND mas.purpose IN ('development', 'baseline_fix')
            AND (s.status IN ('pending', 'running')
              OR (s.status = 'failed' AND s.resultado LIKE '%Timeout global do worker%'))
          ORDER BY mas.subtarefa_id, mas.opened_at DESC, mas.id DESC
@@ -207,6 +209,16 @@ export class DevelopmentSessionRecoveryReconciler {
       executionId: String(row.execution_id),
       payload: { subtaskId: Number(row.subtarefa_id), recoveredSession: true },
     })
+    if (row.purpose === 'baseline_fix') {
+      const baselineConsumer = this.consumer as typeof this.consumer & { recoverBaselineFixSession?: (input: { message: QueueMessage; response: string }) => Promise<void> }
+      if (!baselineConsumer.recoverBaselineFixSession) throw new Error('Consumidor não suporta recuperação baseline_fix')
+      await this.record(taskId, 'baseline_fix_session_recovery_completed', {
+        sessionId: row.session_id, subtaskId: row.subtarefa_id, executionId: row.execution_id,
+      })
+      await baselineConsumer.recoverBaselineFixSession({ message, response: status.lastResponse })
+      await this.close(row, 'completed', 'baseline_fix_recovered')
+      return
+    }
     await this.record(taskId, 'development_session_recovery_completed', {
       sessionId: row.session_id,
       subtaskId: row.subtarefa_id,

@@ -9,6 +9,7 @@ export interface WorkerSessionMetadata {
   baselineRunId?: number
   worktreePath?: string
   branchName?: string
+  sessionKind?: 'dev' | 'monitor' | 'baseline_fix'
 }
 
 export interface WorkerConsoleAdapterHooks {

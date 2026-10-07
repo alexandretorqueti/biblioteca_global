@@ -60,6 +60,19 @@ describe('DevelopmentSessionRecoveryReconciler', () => {
     expect(repository.requeueInterruptedExecution).not.toHaveBeenCalled()
   })
 
+  it('roteia uma sessão baseline_fix concluída ao pós-processamento de baseline, não ao DEV', async () => {
+    const baseline = { ...row, purpose: 'baseline_fix' as const, session_key: 'baseline-fix-terra-task-p2-905-s1219' }
+    const { reconciler, consumer } = setup({ isComplete: true, lastResponse: 'Baseline corrigido ::DONE::' }, baseline)
+    ;(consumer as Record<string, unknown>).recoverBaselineFixSession = vi.fn().mockResolvedValue(undefined)
+
+    await reconciler.reconcile()
+
+    expect((consumer as Record<string, ReturnType<typeof vi.fn>>).recoverBaselineFixSession).toHaveBeenCalledWith(expect.objectContaining({
+      response: 'Baseline corrigido ::DONE::',
+    }))
+    expect(consumer.recoverCompletedSession).not.toHaveBeenCalled()
+  })
+
   it('pede ::DONE:: na mesma sessão quando ela encerra sem resposta final', async () => {
     const { reconciler, adapter, consumer, pool, events } = setup({ isComplete: true })
     pool.query.mockImplementation(async (sql: string) => {
