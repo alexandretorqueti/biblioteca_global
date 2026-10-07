@@ -20,7 +20,7 @@ export interface PrimitiveContext {
   /** Modelo escolhido pela política de execução para esta tentativa. */
   model?: string
   /** Namespace da sessão no Console. DEV e Monitor não compartilham o mesmo formato. */
-  sessionKind?: 'dev' | 'monitor'
+  sessionKind?: 'dev' | 'monitor' | 'baseline_fix'
   /** Incidente que originou uma sessão do Monitor. */
   monitorBlockerId?: number
   sessionId?: string

@@ -371,7 +371,7 @@ export class MySqlDevelopmentExecutionRepository {
   async hasActiveDevelopmentSession(subtaskId: number): Promise<boolean> {
     const [rows] = await this.pool.query<Array<RowDataPacket & { total: number | string }>>(
       `SELECT COUNT(*) AS total FROM motor_agent_sessions
-        WHERE subtarefa_id=? AND status='active' AND runtime_session_id IS NOT NULL`,
+        WHERE subtarefa_id=? AND status='active' AND purpose='development' AND runtime_session_id IS NOT NULL`,
       [subtaskId],
     )
     return Number(rows[0]?.total ?? 0) > 0

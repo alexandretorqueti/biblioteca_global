@@ -459,12 +459,50 @@ async function start() {
     })
     const monitorWorker = new WorkerLauncher({
       maxAttempts: Number(process.env.MOTOR_MONITOR_MAX_ATTEMPTS || 2),
-      timeoutMs: Number(process.env.MOTOR_WORKER_TIMEOUT_MS || 1800000),
+      // Baseline pode executar npm ci e a suíte inteira; não compartilha o
+      // orçamento curto do monitor periódico.
+      timeoutMs: Number(process.env.MOTOR_BASELINE_FIX_TIMEOUT_MS || 3600000),
+      handoffSessionOnTimeout: true,
       sandboxRoot: process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/codigofonte/biblioteca-global/.motor-v3-worktrees',
       governedFailureHandler,
     })
+    const baselineConsole = new WorkerConsoleAdapter(consoleApi, {
+      onSessionCreated: async (session, input) => {
+        const metadata = input.metadata
+        if (!metadata.databaseTaskId || !metadata.subtaskId || !metadata.executionId) {
+          throw new Error('Sessão baseline-fix sem contexto durável completo')
+        }
+        const connection = await pool.getConnection()
+        try {
+          await connection.beginTransaction()
+          await connection.query(
+            `INSERT INTO motor_agent_sessions
+              (subtarefa_id, agent_id, model, session_key, runtime_session_id, status, purpose, opened_at, last_activity_at)
+             VALUES (?, ?, ?, ?, ?, 'active', 'baseline_fix', NOW(), NOW())
+             ON DUPLICATE KEY UPDATE runtime_session_id=VALUES(runtime_session_id), model=VALUES(model),
+               agent_id=VALUES(agent_id), status='active', purpose='baseline_fix', opened_at=NOW(), last_activity_at=NOW(),
+               closed_at=NULL, close_reason=NULL`,
+            [metadata.subtaskId, session.agentId, input.model ?? 'console-default', session.sessionKey, session.sessionId],
+          )
+          await connection.query(
+            `UPDATE tarefa_contextos_execucao SET estado='closed', closed_at=NOW(), updated_at=NOW()
+              WHERE subtarefa_id=? AND fase='baseline_fix' AND estado!='closed'`, [metadata.subtaskId],
+          )
+          await connection.query(
+            `INSERT INTO tarefa_contextos_execucao
+              (tarefa_id, subtarefa_id, fase, sessao_chave, agent_id, modelo, worktree_path,
+               branch_name, estado, last_run_id, last_checkpoint_at, resumo_contexto, created_at, updated_at)
+             VALUES (?, ?, 'baseline_fix', ?, ?, ?, ?, ?, 'active', ?, NOW(), ?, NOW(), NOW())`,
+            [metadata.databaseTaskId, metadata.subtaskId, session.sessionKey, session.agentId,
+              input.model ?? null, metadata.worktreePath ?? null, metadata.branchName ?? null,
+              metadata.executionId, JSON.stringify({ baselineRunId: metadata.baselineRunId ?? null, generation: metadata.generation ?? 1 })],
+          )
+          await connection.commit()
+        } catch (error) { await connection.rollback(); throw error } finally { connection.release() }
+      },
+    })
     const baselineRecovery = new BaselinePreflightRecovery(
-      pool, monitorWorker, new WorkerConsoleAdapter(consoleApi), db, testGate,
+      pool, monitorWorker, baselineConsole, db, testGate,
     )
     subtaskExecutionConsumer = new SubtaskExecutionConsumer(
       developmentRepository,

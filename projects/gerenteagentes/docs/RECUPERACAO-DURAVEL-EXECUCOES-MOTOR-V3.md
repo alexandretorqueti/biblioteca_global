@@ -31,6 +31,7 @@ O boot do Motor deve reconciliar trabalho interrompido sem assumir que a mensage
 
 - RabbitMQ: policy `motor-consumer-timeout-90m` nas filas `^motor\.` com `consumer-timeout=5400000` (90 minutos).
 - DEV: `MOTOR_WORKER_TIMEOUT_MS=4800000` e `MOTOR_WORKER_GLOBAL_TIMEOUT_MS=5100000`.
+- Baseline-fix: `MOTOR_BASELINE_FIX_TIMEOUT_MS=3600000`. Ao exceder esse prazo, a sessão `purpose='baseline_fix'` continua no Console e é reconciliada antes de qualquer sessão DEV.
 - Entrega: `MOTOR_RABBITMQ_CONSUMER_TIMEOUT_MS=5400000` e `MOTOR_RABBITMQ_ACK_SAFETY_MS=300000`; baseline e preparação consomem o mesmo orçamento.
 - Loop: `MOTOR_DEVELOPMENT_LOOP_REPEAT_THRESHOLD=5`.
 - Conclusão DEV: no máximo duas solicitações persistidas, com cooldown de cinco minutos entre elas.

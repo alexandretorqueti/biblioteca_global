@@ -147,6 +147,16 @@ export class SubtaskExecutionConsumer {
           primitiveCode: 'recover_baseline_before_development',
           result: { success: recovered.success, testRunId: recovered.baseline?.id, integrationCommit: recovered.integrationCommit, error: recovered.error },
         })
+        // O timeout local não encerra o baseline-fix: a sessão já foi
+        // persistida e o reconciliador fará o pós-processamento quando o
+        // Console concluir o mesmo run remoto.
+        if (recovered.sessionHandedOff) {
+          await this.log(operationId, sequence++, message, {
+            phase: 'completed', outcome: 'executed', subtaskId, reasonCode: 'baseline_fix_session_handed_off',
+            result: { integrationPath: integration.integrationPath },
+          })
+          return
+        }
         if (!recovered.success || !recovered.baseline) {
           await this.routeBaselineFailure(execution, message, baseline,
             recovered.error ?? 'Monitor não deixou o baseline verde')
@@ -327,6 +337,29 @@ export class SubtaskExecutionConsumer {
       phase: 'completed', outcome: result.success ? 'succeeded' : 'failed', subtaskId,
       result: { recovered: true, nextMessageId: next.messageId, nextMessageType: next.type },
     })
+  }
+
+  /** Conclui uma sessão de correção de baseline entregue pelo timeout local. */
+  async recoverBaselineFixSession(input: { message: QueueMessage; response: string }): Promise<void> {
+    const subtaskId = Number(input.message.payload.subtaskId)
+    const execution = await this.repository.getExecutionContext(input.message.taskId, subtaskId)
+    if (!execution || !this.baselineRecovery) return
+    this.validateContext(execution)
+    const integration = await this.worktrees.prepareIntegration({
+      taskId: execution.taskId, repoPath: execution.repoPath, baseBranch: execution.baseBranch,
+    })
+    const recovered = await this.baselineRecovery.completeHandoff(execution, integration, input.message)
+    if (!recovered.success || !recovered.baseline) {
+      await this.routeBaselineFailure(execution, input.message, recovered.baseline ?? {
+        id: 0, phase: 'baseline', status: 'failed', comparisonStatus: 'inconclusive', exitCode: 1,
+        failures: [], newFailures: [], preExistingFailures: [], resolvedFailures: [], stdout: '', stderr: '',
+      }, recovered.error ?? 'Sessão baseline-fix concluída sem deixar o gate verde')
+      await this.repository.blockExecution(execution, input.message, recovered.error ?? 'Sessão baseline-fix inválida')
+      return
+    }
+    // O baseline agora está verde; reentra no fluxo normal, que prepara o
+    // worktree funcional sem criar uma sessão DEV enquanto esta ainda existe.
+    await this.handle(input.message)
   }
 
   private async runBaseline(
