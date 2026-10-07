@@ -196,7 +196,31 @@ export class RabbitMqTransport implements QueueTransport {
       await channel.bindQueue(this.config.retryQueue, this.config.exchange, this.config.retryQueue)
       await channel.bindQueue(this.config.deadLetterQueue, this.config.exchange, this.config.deadLetterQueue)
     } else {
-      await channel.assertQueue(queue, { durable: true })
+      // Publicação cruzada (ex.: TASK_BLOCKED em motor.monitor a partir do
+      // transport de commands/outbox): declarar com a MESMA topologia DLX
+      // padronizada do ramo de consumo. Assert plain contra fila que já tem
+      // x-dead-letter-exchange fecha o canal com 406 PRECONDITION_FAILED —
+      // incidente 2026-10-07: após o consumer da task-p2-949 recriar
+      // motor.monitor com DLX, o canal do publisher (green e blue) morreu na
+      // primeira publicação, matando junto consumers e batch de deploy.
+      await channel.assertQueue(queue, {
+        durable: true,
+        arguments: {
+          'x-dead-letter-exchange': this.config.exchange,
+          'x-dead-letter-routing-key': `${queue}.retry`,
+        },
+      })
+      await channel.assertQueue(`${queue}.retry`, {
+        durable: true,
+        arguments: {
+          'x-message-ttl': this.config.retryDelayMs,
+          'x-dead-letter-exchange': this.config.exchange,
+          'x-dead-letter-routing-key': queue,
+        },
+      })
+      await channel.assertQueue(`${queue}.dlq`, { durable: true })
+      await channel.bindQueue(`${queue}.retry`, this.config.exchange, `${queue}.retry`)
+      await channel.bindQueue(`${queue}.dlq`, this.config.exchange, `${queue}.dlq`)
     }
     await channel.bindQueue(queue, this.config.exchange, queue)
   }
