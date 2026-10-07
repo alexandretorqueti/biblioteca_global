@@ -827,7 +827,12 @@ export class MySqlDevelopmentExecutionRepository {
     }
   }
 
-  async completeNoCodeExecution(context: SubtaskExecutionContext, source: QueueMessage, result: string): Promise<QueueMessage> {
+  async completeNoCodeExecution(
+    context: SubtaskExecutionContext,
+    source: QueueMessage,
+    result: string,
+    inferLegacyNoCodeChange = false,
+  ): Promise<QueueMessage> {
     const connection = await this.pool.getConnection()
     try {
       await connection.beginTransaction()
@@ -835,15 +840,18 @@ export class MySqlDevelopmentExecutionRepository {
       // caminho canônico e já grava fatos + outbox de conclusão por conta própria.
       await connection.query('SET @motor_completing := 1')
       const [updated] = await connection.query<ResultSetHeader>(
-        `UPDATE subtarefas SET status='verified',resultado=?,workspace_status='approved',finalizada_em=NOW(),updated_at=NOW()
-         WHERE id=? AND status='running' AND completion_kind IN ('analysis','no_code_change','external_operation','code_change')`,
-        [result, context.subtaskId],
+        `UPDATE subtarefas
+            SET status='verified',resultado=?,workspace_status='approved',finalizada_em=NOW(),updated_at=NOW(),
+                completion_kind=CASE WHEN completion_kind IS NULL THEN 'no_code_change' ELSE completion_kind END
+          WHERE id=? AND status='running'
+            AND (completion_kind IN ('analysis','no_code_change','external_operation','code_change') OR (? = 1 AND completion_kind IS NULL))`,
+        [result, context.subtaskId, inferLegacyNoCodeChange ? 1 : 0],
       )
       if (updated.affectedRows !== 1) throw new Error(`Subtarefa analítica ${context.subtaskId} não está em execução`)
       const completed = createQueueMessage({
         type: 'SUBTASK_NO_CODE_COMPLETED', taskId: context.taskId, executionId: source.executionId,
         correlationId: source.correlationId ?? source.messageId, causationId: source.messageId,
-        payload: { subtaskId: context.subtaskId, seq: context.seq, completionKind: context.completionKind ?? 'analysis' },
+        payload: { subtaskId: context.subtaskId, seq: context.seq, completionKind: inferLegacyNoCodeChange ? 'no_code_change' : context.completionKind ?? 'analysis', legacyInferred: inferLegacyNoCodeChange },
       })
       await this.insertOutbox(connection, completed)
       const reserved = await this.reserveNextSubtaskInTransaction(connection, context.databaseTaskId, context.taskId, completed)
@@ -864,7 +872,7 @@ export class MySqlDevelopmentExecutionRepository {
       const taskCompleted = createQueueMessage({
         type: 'TASK_EXECUTION_COMPLETED', taskId: context.taskId, executionId: source.executionId,
         correlationId: source.correlationId ?? source.messageId, causationId: completed.messageId,
-        payload: { completionKind: context.completionKind ?? 'analysis', noCodeChange: true },
+        payload: { completionKind: inferLegacyNoCodeChange ? 'no_code_change' : context.completionKind ?? 'analysis', noCodeChange: true, legacyInferred: inferLegacyNoCodeChange },
       })
       await this.insertOutbox(connection, taskCompleted)
       await this.wakeCapacityWaiters(connection, taskCompleted)

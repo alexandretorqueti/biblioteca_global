@@ -45,6 +45,8 @@ export interface WorkerResult {
   sessionHandedOff?: boolean
   /** O DEV informou explicitamente que a tarefa não exigiu alterações de código (::NO_CHANGES::). */
   noChangesNeeded?: boolean
+  /** Fallback legado: completion_kind ausente foi confirmado como sem alteração de código. */
+  legacyNoCodeChange?: boolean
   wrongCheckoutDiagnostic?: WrongCheckoutDiagnostic
 }
 
@@ -97,6 +99,7 @@ export class WorkerLauncher {
     runDifferentialGate?: (context: PrimitiveContext, phase: 'post_dev' | 'rework') => Promise<DifferentialGateResult>,
     allowNoChanges = false,
     deadlineAt?: number,
+    allowLegacyNoCodeEvidence = false,
   ): Promise<WorkerResult> {
     // Deve ser menor que o timeout do RabbitMQ. A espera abaixo é limitada ao
     // orçamento restante da entrega, incluindo preparação e baseline.
@@ -112,6 +115,7 @@ export class WorkerLauncher {
     let continuationPrompt: string | null = null
     let wrongCheckoutDiagnostic: WrongCheckoutDiagnostic | undefined
     let reusableSessionModel: string | undefined
+    let legacyEvidenceRebriefIssued = false
     // Sem configuração explícita, preserva o comportamento do Console. Com
     // cadeia configurada, cada tentativa recebe seu modelo e sua sessão própria.
     const candidates = models.length > 0 ? models : [undefined]
@@ -256,8 +260,30 @@ export class WorkerLauncher {
             if (allowNoChanges) {
               return { success: true, response, hasChanges: false, buildPassed: true, attempts, ...(model ? { model } : {}) }
             }
-            context.logger?.warn('Agente disse ::DONE:: mas não há mudanças no git')
             wrongCheckoutDiagnostic = await inspectMainRepository(context, normalizePrompt(taskDescription))
+            // completion_kind NULL é legado. Só permite a conclusão sem diff
+            // quando o checkout principal também está limpo e o DEV documenta
+            // a validação na própria sessão (um único re-brief sem tentativa).
+            if (allowLegacyNoCodeEvidence && !wrongCheckoutDiagnostic && await isMainRepositoryClean(context)) {
+              if (!legacyEvidenceRebriefIssued) {
+                legacyEvidenceRebriefIssued = true
+                attempts--
+                continuationPrompt = [
+                  'A subtarefa legada não possui completion_kind e não houve alteração de código.',
+                  'Relate agora, de forma objetiva, os comandos de validação executados e os respectivos resultados.',
+                  'Não altere o código apenas para produzir diff. Inclua ::DONE:: ao final.',
+                ].join('\n')
+                reusableSessionModel = model
+                continue
+              }
+              if (hasValidationEvidence(response)) {
+                return {
+                  success: true, response, hasChanges: false, noChangesNeeded: true, legacyNoCodeChange: true,
+                  buildPassed: true, attempts, ...(model ? { model } : {}),
+                }
+              }
+            }
+            context.logger?.warn('Agente disse ::DONE:: mas não há mudanças no git')
             lastError = wrongCheckoutDiagnostic?.summary
               ?? 'O programador declarou conclusão, mas não alterou o worktree autorizado'
             failures.push({ attempt: attempts, ...(model ? { model } : {}), error: lastError })
@@ -362,6 +388,7 @@ export class WorkerLauncher {
     runDifferentialGate?: (context: PrimitiveContext, phase: 'post_dev' | 'rework') => Promise<DifferentialGateResult>,
     allowNoChanges = false,
     scopeEvidence: string[] = [],
+    allowLegacyNoCodeEvidence = false,
   ): Promise<WorkerResult> {
     const parseResult = await parseReply.handler(context, { response })
     if (!parseResult.success || !parseResult.data?.hasDoneMarker) {
@@ -391,6 +418,12 @@ export class WorkerLauncher {
     }
     if (!hasChanges && !allowNoChanges) {
       const wrongCheckoutDiagnostic = await inspectMainRepository(context, { header: '', context: null, scopeEvidence })
+      if (allowLegacyNoCodeEvidence && !wrongCheckoutDiagnostic && await isMainRepositoryClean(context) && hasValidationEvidence(response)) {
+        return {
+          success: true, response, attempts: 1, hasChanges: false, noChangesNeeded: true, legacyNoCodeChange: true,
+          buildPassed: true, ...(context.model ? { model: context.model } : {}),
+        }
+      }
       return {
         success: false,
         error: wrongCheckoutDiagnostic?.summary ?? 'A sessão recuperada declarou conclusão, mas não alterou o worktree autorizado',
@@ -521,6 +554,23 @@ async function inspectMainRepository(context: PrimitiveContext, prompt: Developm
   } catch {
     return undefined
   }
+}
+
+async function isMainRepositoryClean(context: PrimitiveContext): Promise<boolean> {
+  if (!context.repoPath || context.repoPath === context.worktreePath) return false
+  try {
+    const { stdout } = await execFileAsync('git', ['status', '--porcelain'], { cwd: context.repoPath, maxBuffer: DIAGNOSTIC_LIMIT })
+    return stdout.trim().length === 0
+  } catch {
+    return false
+  }
+}
+
+function hasValidationEvidence(response: string): boolean {
+  const hasCommand = /\b(?:npx|npm|pnpm|yarn|git|node|tsc|vitest|docker|curl|make|pytest|go test|cargo)\b/i.test(response)
+    || /`(?:npx|npm|pnpm|yarn|git|node|tsc|vitest|docker|curl|make|pytest|go test|cargo)\b/i.test(response)
+  const hasResult = /\b(?:pass(?:ou|ed)?|ok|sucesso|succeeded|resultado|exit\s*(?:code)?\s*0|sem erros?|falhou|failed)\b/i.test(response)
+  return hasCommand && hasResult
 }
 
 function extractCitedPaths(text: string): string[] {

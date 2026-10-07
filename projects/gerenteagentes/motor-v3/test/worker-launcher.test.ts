@@ -274,7 +274,7 @@ describe('WorkerLauncher', () => {
 
       const result = await launcher.executeTask(mockContext, {
         header: 'Altere src/Worker.ts', context: null, scopeEvidence: ['src/Worker.ts'],
-      })
+      }, [], undefined, undefined, false, undefined, true)
 
       expect(result.error).toContain('ALTERAÇÕES ENCONTRADAS NO REPOSITÓRIO PRINCIPAL: src/Worker.ts')
       expect(result.wrongCheckoutDiagnostic).toMatchObject({ kind: 'main_repo_related_changes', files: ['src/Worker.ts'] })
@@ -282,6 +282,48 @@ describe('WorkerLauncher', () => {
     } finally {
       rmSync(repo, { recursive: true, force: true })
     }
+  })
+
+  it('pede uma única evidência sem consumir tentativa para completion_kind legado sem diff', async () => {
+    const repo = mkdtempSync(`${tmpdir()}/motor-legacy-no-code-`)
+    try {
+      execFileSync('git', ['init'], { cwd: repo })
+      mockContext.repoPath = repo
+      mockContext.worktreePath = `${repo}-worktree`
+      mocks.createSession.handler.mockImplementation(async (primitiveContext: PrimitiveContext) => {
+        primitiveContext.sessionId = 'legacy-evidence-session'
+        return { success: true }
+      })
+      mocks.sendMessage.handler.mockResolvedValue({ success: true })
+      mocks.waitForCompletion.handler
+        .mockResolvedValueOnce({ success: true, data: { response: 'Validação concluída ::DONE::' } })
+        .mockResolvedValueOnce({ success: true, data: { response: 'Comando: npx vitest run\nResultado: 12 testes passaram. ::DONE::' } })
+      mocks.parseReply.handler.mockResolvedValue({ success: true, data: { hasDoneMarker: true } })
+      mocks.verifyGit.handler.mockResolvedValue({ success: true, data: { hasChanges: false } })
+
+      const result = await launcher.executeTask(mockContext, 'Validar migration', [], undefined, undefined, false, undefined, true)
+
+      expect(result).toMatchObject({ success: true, attempts: 1, hasChanges: false, legacyNoCodeChange: true, noChangesNeeded: true })
+      expect(mocks.createSession.handler).toHaveBeenCalledTimes(1)
+      expect(mocks.sendMessage.handler).toHaveBeenCalledTimes(2)
+      expect(mocks.sendMessage.handler.mock.calls[1][1].message).toContain('comandos de validação executados e os respectivos resultados')
+    } finally {
+      rmSync(repo, { recursive: true, force: true })
+    }
+  })
+
+  it('mantém a falha por ausência de diff para code_change explícito', async () => {
+    launcher = new WorkerLauncher({ maxAttempts: 1 })
+    mocks.createSession.handler.mockResolvedValue({ success: true })
+    mocks.sendMessage.handler.mockResolvedValue({ success: true })
+    mocks.waitForCompletion.handler.mockResolvedValue({ success: true, data: { response: 'Pronto ::DONE::' } })
+    mocks.parseReply.handler.mockResolvedValue({ success: true, data: { hasDoneMarker: true } })
+    mocks.verifyGit.handler.mockResolvedValue({ success: true, data: { hasChanges: false } })
+
+    const result = await launcher.executeTask(mockContext, 'Implementar alteração code_change')
+
+    expect(result.success).toBe(false)
+    expect(mocks.sendMessage.handler).toHaveBeenCalledTimes(1)
   })
 
   it('conclui análise sem alteração Git quando o contrato permite no_code_change', async () => {

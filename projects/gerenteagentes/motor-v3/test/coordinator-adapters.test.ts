@@ -11,6 +11,36 @@ function task(): TaskSnapshot {
 }
 
 describe('coordinator adapters', () => {
+  it('persiste a classificação explícita e audita somente o fallback inferido', async () => {
+    const connection = {
+      beginTransaction: vi.fn(async () => {}), rollback: vi.fn(async () => {}), commit: vi.fn(async () => {}), release: vi.fn(),
+      query: vi.fn()
+        .mockResolvedValueOnce([[{ id: 42, tipo: 'desenvolvimento' }], []])
+        .mockResolvedValueOnce([[], []])
+        .mockResolvedValueOnce([{ insertId: 100 }, []])
+        .mockResolvedValueOnce([{}, []])
+        .mockResolvedValueOnce([{ insertId: 101 }, []])
+        .mockResolvedValueOnce([{}, []])
+        .mockResolvedValueOnce([{}, []])
+        .mockResolvedValueOnce([{}, []]),
+    }
+    const repository = new MySqlTaskCoordinatorRepository({ getConnection: vi.fn(async () => connection) } as any)
+    await repository.persistAnalysis('task-1', 'exec-1', {
+      kind: 'plan',
+      subtasks: [
+        { seq: 1, titulo: 'Implementar', scope: 'Alterar código', acceptanceCriteria: ['OK'], deliverables: ['Código'], requirementsCovered: ['REQ-1'], dependsOn: [], completionKind: 'external_operation' },
+        { seq: 2, titulo: 'Validar', scope: 'Testar fluxo', acceptanceCriteria: ['OK'], deliverables: ['Evidência'], requirementsCovered: ['REQ-1'], dependsOn: [1], completionKind: 'analysis', completionKindInference: { reason: 'completion_kind ausente; título ou scope contém verbo de validação' } },
+      ],
+      coverage: { requirements: [{ id: 'REQ-1', description: 'Requisito' }], coverage: [{ requirement: 'REQ-1', coveredBy: [1, 2] }] },
+    })
+
+    const inserts = connection.query.mock.calls.filter(([sql]: [string]) => sql.includes('INSERT INTO subtarefas'))
+    expect(inserts.map(([, params]: [string, unknown[]]) => params[8])).toEqual(['external_operation', 'analysis'])
+    const audit = connection.query.mock.calls.find(([sql]: [string]) => sql.includes('completion_kind_inferred'))
+    expect(audit?.[1][2]).toContain('"completionKind":"analysis"')
+    expect(connection.commit).toHaveBeenCalledOnce()
+  })
+
   it('faz claim e libera somente o executionId correspondente', async () => {
     const locked = {
       id: 42, external_id: 'task-1', status: 'planned', paused_at: null,

@@ -39,12 +39,35 @@ describe('SubtaskExecutionConsumer', () => {
       buildCommand: 'npm run build', testCommand: 'npm test',
     }), expect.objectContaining({
       header: expect.stringContaining('Workspace autorizado: /worktree'), context: null,
-    }), ['modelo-a'], expect.any(Function), undefined, false, expect.any(Number))
+    }), ['modelo-a'], expect.any(Function), undefined, false, expect.any(Number), false)
     expect(repository.finishExecution).toHaveBeenCalledWith(context, message, expect.objectContaining({ success: true }))
     expect(logger.append).toHaveBeenCalledTimes(4)
     expect(logger.append).toHaveBeenLastCalledWith(expect.objectContaining({
       phase: 'completed', outcome: 'succeeded', result: expect.objectContaining({ nextMessageType: 'SUBTASK_EXECUTION_COMPLETED' }),
     }))
+  })
+
+  it('persiste o fallback legado como no_code_change após evidência validada', async () => {
+    const legacyContext = { ...context, completionKind: null }
+    const repository = {
+      getExecutionContext: vi.fn().mockResolvedValue(legacyContext),
+      getDevelopmentModelChain: vi.fn().mockResolvedValue(['modelo-a']),
+      recordModelFailure: vi.fn().mockResolvedValue(undefined),
+      recordWorkspace: vi.fn().mockResolvedValue(undefined),
+      completeNoCodeExecution: vi.fn().mockResolvedValue({ ...message, messageId: 'legacy-completed', type: 'SUBTASK_NO_CODE_COMPLETED' }),
+      closeDevelopmentSession: vi.fn().mockResolvedValue(undefined),
+    }
+    const worktrees = { prepare: vi.fn().mockResolvedValue({ path: '/worktree', branch: 'branch', baseCommit: 'abc' }) }
+    const worker = { executeTask: vi.fn().mockResolvedValue({
+      success: true, response: 'npx vitest run: 12 passed ::DONE::', attempts: 1,
+      noChangesNeeded: true, legacyNoCodeChange: true,
+    }) }
+    const consumer = new SubtaskExecutionConsumer(repository as never, worktrees as never, worker as never, {}, {})
+
+    await consumer.handle(message)
+
+    expect(worker.executeTask).toHaveBeenLastCalledWith(expect.any(Object), expect.any(Object), ['modelo-a'], expect.any(Function), undefined, false, expect.any(Number), true)
+    expect(repository.completeNoCodeExecution).toHaveBeenCalledWith(legacyContext, message, 'npx vitest run: 12 passed ::DONE::', true)
   })
 
   it('registra rejeição idempotente quando a subtarefa não está mais running', async () => {
@@ -123,7 +146,7 @@ describe('SubtaskExecutionConsumer', () => {
     expect(worker.executeTask).toHaveBeenCalledWith(expect.any(Object), expect.objectContaining({
       header: expect.not.stringContaining(longContext.taskDescription),
       context: `Descrição completa da missão:\n\n${longContext.taskDescription}`,
-    }), expect.any(Array), expect.any(Function), undefined, false, expect.any(Number))
+    }), expect.any(Array), expect.any(Function), undefined, false, expect.any(Number), false)
   })
 
   it('publica falha durável quando o programador esgota tentativas', async () => {
@@ -238,7 +261,7 @@ describe('SubtaskExecutionConsumer', () => {
     expect(testGate.request).toHaveBeenCalledWith(expect.objectContaining({
       phase: 'baseline', workspacePath: '/repo', branchName: 'base-desenvolvimento', commitSha: 'abc',
     }), message)
-    expect(worker.executeTask).toHaveBeenCalledWith(expect.objectContaining({ baselineRunId: 51 }), expect.any(Object), ['modelo-a'], expect.any(Function), expect.any(Function), false, expect.any(Number))
+    expect(worker.executeTask).toHaveBeenCalledWith(expect.objectContaining({ baselineRunId: 51 }), expect.any(Object), ['modelo-a'], expect.any(Function), expect.any(Function), false, expect.any(Number), false)
     expect(repository.finishExecution).toHaveBeenCalledWith(context, message, expect.objectContaining({ success: true }))
     expect(logger.append).toHaveBeenCalledWith(expect.objectContaining({ primitiveCode: 'run_test_baseline', outcome: 'succeeded' }))
     expect(logger.append).toHaveBeenLastCalledWith(expect.objectContaining({ phase: 'completed' }))
@@ -394,7 +417,7 @@ describe('SubtaskExecutionConsumer', () => {
     await consumer.handle(message)
 
     expect(recovery.recover).toHaveBeenCalledWith(context, integration, expect.objectContaining({ id: 70 }), message)
-    expect(worker.executeTask).toHaveBeenCalledWith(expect.objectContaining({ baselineRunId: 71, baseCommitSha: 'fixed' }), expect.any(Object), ['modelo-a'], expect.any(Function), expect.any(Function), false, expect.any(Number))
+    expect(worker.executeTask).toHaveBeenCalledWith(expect.objectContaining({ baselineRunId: 71, baseCommitSha: 'fixed' }), expect.any(Object), ['modelo-a'], expect.any(Function), expect.any(Function), false, expect.any(Number), false)
     expect(repository.finishExecution).toHaveBeenCalledWith(context, message, expect.objectContaining({ success: true }))
   })
 
