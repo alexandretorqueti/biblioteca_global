@@ -1,5 +1,7 @@
 import type { Pool, PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
 import { createQueueMessage, type QueueMessage } from '../queue/QueueMessage.js'
+import { createTaskBlockedMessage } from '../monitor/TaskBlockedEvent.js'
+import { insertOutboxMessage } from '../queue/outboxInsert.js'
 
 export interface ReservedSubtask {
   message: QueueMessage<{ subtaskId: number; seq: number; title: string; scope: string }>
@@ -710,6 +712,9 @@ export class MySqlDevelopmentExecutionRepository {
           JSON.stringify(message.payload), new Date(message.timestamp).toISOString().slice(0, 19).replace('T', ' '),
           message.correlationId ?? null, message.causationId ?? null],
       )
+      if (!result.success && this.isExhaustedWorkerFailure(result.error)) {
+        await this.persistExhaustedWorkerBlocker(connection, context, source, result)
+      }
       if (!result.success) await this.wakeCapacityWaiters(connection, message)
       await connection.commit()
       return message
@@ -719,6 +724,73 @@ export class MySqlDevelopmentExecutionRepository {
     } finally {
       connection.release()
     }
+  }
+
+  /**
+   * A falha terminal do DEV não pode deixar a tarefa sem próximo trabalho e
+   * sem estado observável. O catálogo governado pode ter criado uma corretiva
+   * antes de chegarmos aqui; nesse caso ela tem precedência. Sem corretiva,
+   * persistimos o bloqueio e o TASK_BLOCKED na mesma transação da falha.
+   */
+  private async persistExhaustedWorkerBlocker(
+    connection: PoolConnection,
+    context: SubtaskExecutionContext,
+    source: QueueMessage,
+    result: { error?: string; attempts: number },
+  ): Promise<void> {
+    const [correctiveRows] = await connection.query<Array<RowDataPacket & { id: number }>>(
+      `SELECT id FROM subtarefas
+        WHERE tarefa_id = ? AND correction_for_subtask_id = ?
+          AND status IN ('pending', 'running', 'delivered', 'verifying')
+        LIMIT 1 FOR UPDATE`,
+      [context.databaseTaskId, context.subtaskId],
+    )
+    if (correctiveRows.length > 0) return
+
+    const reason = result.error ?? 'Esgotado número máximo de tentativas do programador'
+    const excerpt = JSON.stringify({
+      subtaskId: context.subtaskId,
+      attempts: result.attempts,
+      error: reason.slice(0, 4_000),
+    })
+    const [inserted] = await connection.query<ResultSetHeader>(
+      `INSERT INTO bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at)
+       SELECT ?, ?, 'worker_exhausted', 'SUBTASK_EXECUTION_FAILED', ?, NOW()
+        WHERE NOT EXISTS (
+          SELECT 1 FROM bloqueios
+           WHERE tarefa_id = ? AND subtarefa_id = ?
+             AND block_reason = 'worker_exhausted' AND resolved_at IS NULL
+        )`,
+      [context.databaseTaskId, context.subtaskId, excerpt, context.databaseTaskId, context.subtaskId],
+    )
+    if (inserted.affectedRows === 0) return
+
+    const [blockRows] = await connection.query<Array<RowDataPacket & { id: number }>>(
+      `SELECT id FROM bloqueios
+        WHERE tarefa_id = ? AND subtarefa_id = ?
+          AND block_reason = 'worker_exhausted' AND resolved_at IS NULL
+        ORDER BY id DESC LIMIT 1 FOR UPDATE`,
+      [context.databaseTaskId, context.subtaskId],
+    )
+    const blocked = createTaskBlockedMessage({
+      taskId: context.taskId,
+      executionId: `${source.executionId}-worker-exhausted-block`,
+      correlationId: source.correlationId ?? source.messageId,
+      causationId: source.messageId,
+      payload: {
+        blockReason: 'worker_exhausted',
+        blockCommand: 'SUBTASK_EXECUTION_FAILED',
+        blockExcerpt: excerpt.slice(0, 500),
+        subtaskId: context.subtaskId,
+        databaseTaskId: context.databaseTaskId,
+        blockId: Number(blockRows[0]?.id),
+      },
+    })
+    await insertOutboxMessage(connection, blocked, 'motor.monitor')
+  }
+
+  private isExhaustedWorkerFailure(error: string | undefined): boolean {
+    return /^Esgotado n(?:ú|u)mero m[aá]ximo de tentativas\b/i.test(error ?? '')
   }
 
   async blockExecution(
