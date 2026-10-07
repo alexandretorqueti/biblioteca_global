@@ -40,7 +40,7 @@ function tarefaFactory(id: number, titulo: string, status: string): TarefaFake {
   }
 }
 
-function renderCanvas(tarefas: FlowTask[] = [], viewportWidth: number = 1024) {
+function renderCanvas(tarefas: FlowTask[] = [], viewportWidth: number = 1024, selectedTaskId: number | "" = "") {
   // Mock do window.innerWidth para simular diferentes tamanhos de tela
   Object.defineProperty(window, "innerWidth", {
     writable: true,
@@ -52,7 +52,7 @@ function renderCanvas(tarefas: FlowTask[] = [], viewportWidth: number = 1024) {
     <BibliotecaThemeProvider>
       <OperationMapCanvas
         tarefas={tarefas}
-        selectedTaskId=""
+        selectedTaskId={selectedTaskId}
         projetos={[{ id: 1, nome: "Projeto X" }]}
         motorActivities={[]}
         onSelectTask={() => {}}
@@ -187,6 +187,22 @@ describe("OperationMapCanvas — responsividade", () => {
     // O marcador da tarefa deve estar presente e clicável
     const marker = screen.getByTestId("operation-map-task-1")
     expect(marker).toBeInTheDocument()
+  })
+
+  it("destaca a borda do marcador da tarefa selecionada", () => {
+    const tarefas = [
+      tarefaFactory(1, "Tarefa selecionada", "draft"),
+      tarefaFactory(2, "Tarefa não selecionada", "draft"),
+    ]
+    renderCanvas(tarefas as FlowTask[], 1024, 1)
+
+    const selectedMarker = screen.getByTestId("operation-map-task-1")
+    const unselectedMarker = screen.getByTestId("operation-map-task-2")
+
+    expect(selectedMarker).toHaveAttribute("data-selection-border-width", "4")
+    expect(selectedMarker).toHaveAttribute("data-selection-border-color", "secondary.main")
+    expect(unselectedMarker).toHaveAttribute("data-selection-border-width", "0")
+    expect(unselectedMarker).not.toHaveAttribute("data-selection-border-color")
   })
 
   it("permite expansão de estações em telas pequenas", async () => {
