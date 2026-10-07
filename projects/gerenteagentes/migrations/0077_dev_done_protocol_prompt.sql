@@ -1,8 +1,9 @@
 -- O prompt inicial de desenvolvimento usa o protocolo ::DONE:: interpretado
 -- pelo WorkerLauncher. Ele não pode carregar o contrato JSON legado, pois os
 -- dois protocolos são mutuamente exclusivos.
-SET NAMES utf8mb4;
---> statement-breakpoint
+-- Nota: sem "SET NAMES" — drizzle-kit executa migrations via prepared
+-- statements, que não aceitam SET NAMES (exit 1 silencioso). A conexão já é
+-- utf8mb4 pela config do drizzle.
 
 INSERT INTO `prompts_versoes`
   (`prompt_id`, `versao`, `texto`, `contrato_versao_id`, `motivo`, `autor`, `validacao`)

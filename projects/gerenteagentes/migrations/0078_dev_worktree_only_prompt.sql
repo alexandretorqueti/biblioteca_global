@@ -1,5 +1,6 @@
 -- O workspace informado é absoluto e é o único checkout autorizado ao DEV.
-SET NAMES utf8mb4;
+-- Nota: sem "SET NAMES" — drizzle-kit executa migrations via prepared
+-- statements, que não aceitam SET NAMES (exit 1 silencioso).
 
 UPDATE prompts_agentes p
 JOIN prompts_versoes v ON v.id=p.versao_ativa_id
