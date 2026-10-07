@@ -533,6 +533,20 @@
       "when": 1790630000000,
       "tag": "0076_motor_monitor_active",
       "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "5",
+      "when": 1791100000000,
+      "tag": "0077_dev_done_protocol_prompt",
+      "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "5",
+      "when": 1791100001000,
+      "tag": "0078_dev_worktree_only_prompt",
+      "breakpoints": true
     }
   ]
 }
