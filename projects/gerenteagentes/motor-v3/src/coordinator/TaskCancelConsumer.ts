@@ -3,6 +3,7 @@ import type { Pool, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
 import { CommandPolicyResolver, type CommandPolicyRepository, type OperationLogger } from '../commands/index.js'
 import type { QueueMessage } from '../queue/index.js'
 import type { TaskEventSink } from './TaskEventRecorder.js'
+import { cancelUnstartedDeployRequests } from '../deploy/DeployRequestFinalizer.js'
 
 export const CANCEL_COMMAND_CODE = 'C04_TASK_CANCEL_REQUESTED'
 export const CANCEL_ACTION_CODE = 'A22_CANCEL_TASK'
@@ -31,8 +32,8 @@ interface CancelTaskRow extends RowDataPacket {
  * 4. `record_task_event` — trilha imutável em `tarefa_eventos`.
  *
  * As primitivas são idempotentes e a mensagem pode ser reentregue (retry/DLQ)
- * sem efeitos duplicados. Execução fora de transação proposital: cada passo é
- * condicional e uma queda no meio é corrigida pela reentrega.
+ * sem efeitos duplicados. A marca terminal e a dispensa da fila de deploy são
+ * atômicas: nenhum pedido antigo sobrevive a um cancelamento confirmado.
  *
  * Limitação conhecida: workers de desenvolvimento ativos não são interrompidos
  * (o Scheduler v3 não expõe parada por tarefa). O consumidor principal usa
@@ -94,36 +95,53 @@ export class TaskCancelConsumer {
     const ator = typeof message.payload?.ator === 'string' && message.payload.ator.trim() ? message.payload.ator.trim() : 'motor'
     const motivo = typeof message.payload?.motivo === 'string' && message.payload.motivo.trim() ? message.payload.motivo.trim().slice(0, 500) : null
 
-    const [claimResult] = await this.pool.query<ResultSetHeader>(
-      `UPDATE task_runtime_facts
-       SET analysis_started_at = NULL, analysis_execution_id = NULL, updated_at = NOW()
-       WHERE tarefa_id = ? AND analysis_started_at IS NOT NULL`,
-      [task.id],
-    )
-    await this.log(operationId, sequence++, 'primitive', 'succeeded', message, { primitiveCode: 'release_analysis_claim', result: { released: claimResult.affectedRows } })
-
-    const [blockersResult] = await this.pool.query<ResultSetHeader>(
-      `UPDATE bloqueios SET resolved_at = NOW() WHERE tarefa_id = ? AND resolved_at IS NULL`,
-      [task.id],
-    )
-    await this.log(operationId, sequence++, 'primitive', 'succeeded', message, { primitiveCode: 'resolve_task_blockers', result: { resolved: blockersResult.affectedRows } })
-
-    await this.pool.query(
-      `INSERT INTO task_runtime_facts (tarefa_id, terminal_status, terminal_at, created_at, updated_at)
-       VALUES (?, 'cancelled', NOW(), NOW(), NOW())
-       ON DUPLICATE KEY UPDATE
-         terminal_status = 'cancelled', terminal_at = NOW(),
-         analysis_started_at = NULL, analysis_execution_id = NULL,
-         clarification_pending_at = NULL, updated_at = NOW()`,
-      [task.id],
-    )
+    const connection = await this.pool.getConnection()
+    let claimResult: ResultSetHeader
+    let blockersResult: ResultSetHeader
+    let cancelledDeploys: { cancelled: number; activeRunning: number }
+    try {
+      await connection.beginTransaction()
+      ;[claimResult] = await connection.query<ResultSetHeader>(
+        `UPDATE task_runtime_facts
+         SET analysis_started_at = NULL, analysis_execution_id = NULL, updated_at = NOW()
+         WHERE tarefa_id = ? AND analysis_started_at IS NOT NULL`,
+        [task.id],
+      )
+      ;[blockersResult] = await connection.query<ResultSetHeader>(
+        `UPDATE bloqueios SET resolved_at = NOW() WHERE tarefa_id = ? AND resolved_at IS NULL`,
+        [task.id],
+      )
+      cancelledDeploys = await cancelUnstartedDeployRequests(connection, task.id, {
+        blocker: 'task_cancelled', resolvedBy: ator, motivo: motivo ?? 'Tarefa cancelada administrativamente',
+      })
+      await connection.query(
+        `INSERT INTO task_runtime_facts (tarefa_id, terminal_status, terminal_at, created_at, updated_at)
+         VALUES (?, 'cancelled', NOW(), NOW(), NOW())
+         ON DUPLICATE KEY UPDATE
+           terminal_status = 'cancelled', terminal_at = NOW(),
+           analysis_started_at = NULL, analysis_execution_id = NULL,
+           clarification_pending_at = NULL, updated_at = NOW()`,
+        [task.id],
+      )
+      await connection.commit()
+    } catch (error) {
+      await connection.rollback()
+      throw error
+    } finally {
+      connection.release()
+    }
+    await this.log(operationId, sequence++, 'primitive', 'succeeded', message, { primitiveCode: 'release_analysis_claim', result: { released: claimResult!.affectedRows } })
+    await this.log(operationId, sequence++, 'primitive', 'succeeded', message, { primitiveCode: 'resolve_task_blockers', result: { resolved: blockersResult!.affectedRows } })
+    await this.log(operationId, sequence++, 'primitive', 'succeeded', message, { primitiveCode: 'cancel_pending_deploy_requests', result: cancelledDeploys! })
     await this.log(operationId, sequence++, 'primitive', 'succeeded', message, { primitiveCode: 'mark_task_cancelled', result: { tarefaId: task.id } })
 
     if (this.taskEvents) {
       await this.taskEvents.record(message.taskId, 'cancelled', ator, {
         motivo,
-        claimsReleased: claimResult.affectedRows,
-        blockersResolved: blockersResult.affectedRows,
+        claimsReleased: claimResult!.affectedRows,
+        blockersResolved: blockersResult!.affectedRows,
+        deployRequestsCancelled: cancelledDeploys!.cancelled,
+        activeDeployRequestsPreserved: cancelledDeploys!.activeRunning,
         sourceMessageId: message.messageId,
       })
       await this.log(operationId, sequence++, 'primitive', 'succeeded', message, { primitiveCode: 'record_task_event', result: { evento: 'cancelled', ator } })

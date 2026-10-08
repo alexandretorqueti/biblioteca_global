@@ -9,8 +9,7 @@ interface QueryRecord { sql: string; params: unknown[] }
 
 function fakePool(taskRow: Record<string, unknown> | null) {
   const queries: QueryRecord[] = []
-  const pool = {
-    query: vi.fn(async (sql: string, params?: unknown[]) => {
+  const query = vi.fn(async (sql: string, params?: unknown[]) => {
       const normalized = String(sql).replace(/\s+/g, ' ').trim()
       queries.push({ sql: normalized, params: params ?? [] })
       if (normalized.startsWith('SELECT t.id, t.external_id, f.terminal_status')) {
@@ -19,10 +18,21 @@ function fakePool(taskRow: Record<string, unknown> | null) {
       if (normalized.startsWith('UPDATE task_runtime_facts')) return [{ affectedRows: 1 }]
       if (normalized.startsWith('UPDATE bloqueios')) return [{ affectedRows: 2 }]
       if (normalized.startsWith('INSERT INTO task_runtime_facts')) return [{ affectedRows: 1 }]
+      if (normalized.startsWith('SELECT COUNT(*) AS total FROM deploy_requests')) return [[{ total: 0 }]]
       return [{ affectedRows: 0 }]
-    }),
+    })
+  const connection = {
+    query,
+    beginTransaction: vi.fn(async () => undefined),
+    commit: vi.fn(async () => undefined),
+    rollback: vi.fn(async () => undefined),
+    release: vi.fn(),
+  }
+  const pool = {
+    query,
+    getConnection: vi.fn(async () => connection),
   } as unknown as Pool
-  return { pool, queries }
+  return { pool, queries, connection }
 }
 
 function policies(): CommandPolicyRepository {
@@ -76,12 +86,27 @@ describe('TaskCancelConsumer (incidente 862, item 1)', () => {
     expect(events[0]).toMatchObject({ taskId: 'task-p6-862', evento: 'cancelled', ator: 'alexandre' })
     expect(events[0].payload).toMatchObject({ motivo: 'Tarefa obsoleta' })
 
-    expect(entries.map(e => e.phase)).toEqual(['received', 'decision', 'action', 'primitive', 'primitive', 'primitive', 'primitive', 'completed'])
+    expect(entries.map(e => e.phase)).toEqual(['received', 'decision', 'action', 'primitive', 'primitive', 'primitive', 'primitive', 'primitive', 'completed'])
     expect(entries.filter(e => e.phase === 'primitive').map(e => e.primitiveCode)).toEqual([
-      'release_analysis_claim', 'resolve_task_blockers', 'mark_task_cancelled', 'record_task_event',
+      'release_analysis_claim', 'resolve_task_blockers', 'cancel_pending_deploy_requests', 'mark_task_cancelled', 'record_task_event',
     ])
     const sequences = entries.map(e => e.sequence)
     expect(new Set(sequences).size).toBe(sequences.length)
+  })
+
+  it('cancela pedidos pendentes na mesma transação do estado terminal e preserva deploy já iniciado', async () => {
+    const { pool, queries, connection } = fakePool(cancelableTask)
+    const consumer = new TaskCancelConsumer(pool)
+
+    await consumer.handle(cancelMessage({ ator: 'alexandre', motivo: 'dispensada' }))
+
+    const cancellation = queries.find(q => q.sql.startsWith('UPDATE deploy_requests dr'))
+    expect(cancellation?.sql).toContain("dr.status='cancelled'")
+    expect(cancellation?.sql).toContain("db.status='pending'")
+    expect(cancellation?.params?.[0]).toContain('blocker=task_cancelled')
+    expect(cancellation?.params?.[0]).toContain('resolvedBy=alexandre')
+    expect(connection.beginTransaction).toHaveBeenCalled()
+    expect(connection.commit).toHaveBeenCalled()
   })
 
   it('rejeita tarefa já terminal via política P04 sem tocar no banco', async () => {

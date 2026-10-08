@@ -30,6 +30,7 @@ houve mudança de status, não restam subtarefas não-finalizadas e não há
 `terminal_status` gravado, o trigger:
 
 - grava `task_runtime_facts` (`completed` + `integration_confirmed_at`) via upsert;
+- cancela pedidos de deploy pendentes legados antes de publicar a nova intenção;
 - insere `DEPLOY_REQUESTED` no outbox com **message_id determinístico**
   (`deploy-completed-trigger-<tarefa_id>`; `INSERT IGNORE` no UNIQUE deduplica re-disparos),
   somente para `tipo='desenvolvimento'` e tarefa não pausada.
@@ -91,6 +92,8 @@ Tudo em uma transação, com `@motor_completing := 1` (suprime o trigger):
 3. se todas as subtarefas ficaram finais: grava facts de conclusão
    (`completed` + `integration_confirmed_at`), emite `TASK_EXECUTION_COMPLETED`,
    emite `DEPLOY_REQUESTED` apenas com `requestDeploy:true`, remove zumbi da wait queue;
+   com `requestDeploy:false`, cancela pedidos pendentes (inclusive lote ainda não
+   iniciado) com motivo/auditoria para que a recuperação de boot não os reenfileire;
    senão: emite `TASK_READY_FOR_PROGRAMMING` (devolve ao fluxo normal);
 4. havendo bloqueios resolvidos: emite `TASK_UNBLOCKED` (auditoria/retomada do monitor);
 5. grava auditoria em `tarefa_eventos` (`evento='external_resolution'`, `ator=resolvedBy`).

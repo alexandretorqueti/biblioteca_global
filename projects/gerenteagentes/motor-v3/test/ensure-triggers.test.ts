@@ -28,6 +28,8 @@ describe('ensureCompletionTrigger (camada A)', () => {
     expect(create).toContain('@motor_completing IS NULL')
     expect(create).toContain("NEW.status IN ('verified', 'superseded')")
     expect(create).toContain('task_runtime_facts')
+    expect(create).toContain("dr.status = 'cancelled'")
+    expect(create).toContain('resolvedBy=motor-v3-trigger')
     expect(create).toContain('deploy-completed-trigger-')
     expect(create).toContain("t.tipo = 'desenvolvimento'")
     expect(create).toContain('t.paused_at IS NULL')

@@ -95,6 +95,24 @@ describe('ExternalResolutionHandler (camada C — resolução externa governada)
     expect(types).toContain('TASK_EXECUTION_COMPLETED')
   })
 
+  it('dispensa deploys antigos sem requestDeploy e preserva o fluxo explícito quando solicitado', async () => {
+    const withoutDeploy = fakePool({ counts: { total: 1, finais: 1 } })
+    await new ExternalResolutionHandler(withoutDeploy.pool as never).handle({
+      taskId: 'task-p2-820', motivo: 'já deployada externamente', resolvedBy: 'monitor',
+    })
+    const cancelled = withoutDeploy.calls.find(call => /UPDATE deploy_requests dr/.test(call.sql))
+    expect(cancelled?.sql).toContain("dr.status='cancelled'")
+    expect(cancelled?.params[0]).toContain('blocker=external_resolution')
+    expect(cancelled?.params[0]).toContain('resolvedBy=monitor')
+    expect(withoutDeploy.calls.some(call => /SELECT COUNT\(\*\) AS total[\s\S]*deploy_requests/.test(call.sql))).toBe(true)
+
+    const withDeploy = fakePool({ counts: { total: 1, finais: 1 } })
+    await new ExternalResolutionHandler(withDeploy.pool as never).handle({
+      taskId: 'task-p2-820', motivo: 'deploy explícito', resolvedBy: 'monitor', requestDeploy: true,
+    })
+    expect(withDeploy.calls.some(call => /UPDATE deploy_requests dr/.test(call.sql))).toBe(false)
+  })
+
   it('devolve a tarefa ao fluxo normal quando ainda há subtarefas pendentes', async () => {
     const fake = fakePool({ blockersResolved: 2, counts: { total: 5, finais: 2 } })
     const handler = new ExternalResolutionHandler(fake.pool as never)

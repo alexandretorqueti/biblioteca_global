@@ -1,6 +1,7 @@
 import type { Pool, PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
 import { createQueueMessage, insertOutboxMessage, type QueueMessage } from '../queue/index.js'
 import { createTaskUnblockedMessage } from './TaskBlockedEvent.js'
+import { cancelUnstartedDeployRequests } from '../deploy/DeployRequestFinalizer.js'
 
 /**
  * Resolução externa governada (camada C do invariante de conclusão).
@@ -164,6 +165,13 @@ export class ExternalResolutionHandler {
           [databaseTaskId],
         )
         const alreadyTerminal = factRows.length > 0 && factRows[0]?.terminal_status != null
+        if (input.requestDeploy !== true) {
+          await cancelUnstartedDeployRequests(connection, databaseTaskId, {
+            blocker: blockIds && blockIds.length > 0 ? blockIds.join(',') : 'external_resolution',
+            resolvedBy,
+            motivo,
+          })
+        }
         await connection.query(
           `INSERT INTO task_runtime_facts (tarefa_id, terminal_status, terminal_at, integration_confirmed_at, created_at, updated_at)
            VALUES (?, 'completed', NOW(), NOW(), NOW(), NOW())
