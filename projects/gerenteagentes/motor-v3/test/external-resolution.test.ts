@@ -105,12 +105,21 @@ describe('ExternalResolutionHandler (camada C — resolução externa governada)
     expect(cancelled?.params[0]).toContain('blocker=external_resolution')
     expect(cancelled?.params[0]).toContain('resolvedBy=monitor')
     expect(withoutDeploy.calls.some(call => /SELECT COUNT\(\*\) AS total[\s\S]*deploy_requests/.test(call.sql))).toBe(true)
+    // Incidente 911: sem request prévio, a adjudicação precisa materializar um
+    // tombeau cancelled na mesma transação para falhar o NOT EXISTS do recovery.
+    const tombstones = withoutDeploy.calls.filter(call => /INSERT INTO deploy_requests/.test(call.sql))
+    expect(tombstones).toHaveLength(1)
+    expect(tombstones[0]?.sql).toContain("'cancelled'")
+    expect(tombstones[0]?.sql).toContain('COALESCE(pmc.repo_path')
+    expect(tombstones[0]?.params[0]).toContain('Adjudicação administrativa sem deploy')
+    expect(tombstones[0]?.params[0]).toContain('blocker=external_resolution')
 
     const withDeploy = fakePool({ counts: { total: 1, finais: 1 } })
     await new ExternalResolutionHandler(withDeploy.pool as never).handle({
       taskId: 'task-p2-820', motivo: 'deploy explícito', resolvedBy: 'monitor', requestDeploy: true,
     })
     expect(withDeploy.calls.some(call => /UPDATE deploy_requests dr/.test(call.sql))).toBe(false)
+    expect(withDeploy.calls.some(call => /INSERT INTO deploy_requests/.test(call.sql))).toBe(false)
   })
 
   it('devolve a tarefa ao fluxo normal quando ainda há subtarefas pendentes', async () => {

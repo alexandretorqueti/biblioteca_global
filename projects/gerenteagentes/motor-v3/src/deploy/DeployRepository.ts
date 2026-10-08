@@ -93,10 +93,17 @@ export class DeployRepository {
    * request original (pendente, em andamento ou final) é a fonte de verdade;
    * somente a primeira mensagem, sem request persistido, pode prepará-lo.
    */
-  async needsRequestPreparation(databaseTaskId: number): Promise<boolean> {
-    const [rows] = await this.pool.query<Array<RowDataPacket & { total: number | string }>>(
-      `SELECT COUNT(*) AS total FROM deploy_requests WHERE tarefa_id=?`, [databaseTaskId],
+  async needsRequestPreparation(databaseTaskId: number): Promise<boolean | 'administratively_cancelled'> {
+    const [rows] = await this.pool.query<Array<RowDataPacket & { total: number | string; administrative_tombstone: number | string }>>(
+      `SELECT COUNT(*) AS total,
+              EXISTS(
+                SELECT 1 FROM deploy_requests
+                 WHERE tarefa_id=? AND status='cancelled'
+                   AND last_error LIKE 'Adjudicação administrativa sem deploy%'
+              ) AS administrative_tombstone
+         FROM deploy_requests WHERE tarefa_id=?`, [databaseTaskId, databaseTaskId],
     )
+    if (Number(rows[0]?.administrative_tombstone ?? 0) !== 0) return 'administratively_cancelled'
     return Number(rows[0]?.total ?? 0) === 0
   }
 

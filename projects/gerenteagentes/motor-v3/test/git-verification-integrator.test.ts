@@ -46,5 +46,28 @@ describe('GitVerificationIntegrator', () => {
     expect(retried).toEqual(result)
     expect((await execFileAsync('git', ['branch', '--show-current'], { cwd: repo })).stdout.trim()).toBe('base-desenvolvimento')
   })
+
+  it('rejeita no gate uma migration adicionada sem entrada no journal', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'motor-v3-integrator-journal-'))
+    const repo = join(root, 'repo')
+    const preparer = new GitWorktreePreparer(join(root, 'worktrees'))
+    await execFileAsync('git', ['init', '-b', 'base-desenvolvimento', repo])
+    await execFileAsync('git', ['config', 'user.email', 'motor@example.test'], { cwd: repo })
+    await execFileAsync('git', ['config', 'user.name', 'Motor Test'], { cwd: repo })
+    await mkdir(join(repo, 'projects/alpha/migrations/meta'), { recursive: true })
+    await writeFile(join(repo, 'projects/alpha/migrations/meta/_journal.json'), JSON.stringify({ entries: [] }))
+    await execFileAsync('git', ['add', '.'], { cwd: repo })
+    await execFileAsync('git', ['commit', '-m', 'base'], { cwd: repo })
+    const workspace = await preparer.prepare({ taskId: 'task-journal', subtaskId: 11, repoPath: repo, baseBranch: 'base-desenvolvimento' })
+    await writeFile(join(workspace.path, 'projects/alpha/migrations/0001_orphan.sql'), '-- orphan')
+    const context = {
+      taskId: 'task-journal', databaseTaskId: 1, subtaskId: 11, seq: 1,
+      taskTitle: 'T', taskDescription: '', title: 'S', scope: '', acceptanceCriteria: [], deliverables: [],
+      projectSlug: 'alpha', repoPath: repo, baseBranch: 'base-desenvolvimento', buildCommand: 'true', testCommand: 'true',
+      agentId: 'a', workspacePath: workspace.path, workspaceBranch: workspace.branch, workspaceBaseCommit: workspace.baseCommit,
+    }
+
+    await expect(new GitVerificationIntegrator(preparer).verifyAndIntegrate(context)).rejects.toThrow('0001_orphan.sql')
+  })
 })
 // @vitest-environment node

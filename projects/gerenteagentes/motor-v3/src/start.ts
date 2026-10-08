@@ -53,6 +53,7 @@ import { ConsoleHumanNotifier, ExternalResolutionError, ExternalResolutionHandle
 import { TaskAdjustmentConsumer, TASK_ADJUSTMENT_REQUESTED } from './adjustment/index.js'
 import { ensureCompletionTrigger } from './db/ensureTriggers.js'
 import { bootstrapMotorV3Catalog } from './db/bootstrap.js'
+import { warnOnMigrationJournalIntegrity } from './migrations/MigrationJournalIntegrity.js'
 
 // Config
 const PORT = parseInt(process.env.MOTOR_PORT || '3010')
@@ -96,6 +97,10 @@ let taskAdjustmentConsumer: TaskAdjustmentConsumer | null = null
 
 async function start() {
   console.log('[Motor v3] Iniciando...')
+
+  // Não bloqueia o boot: há pendências históricas legítimas, mas o aviso
+  // estruturado torna qualquer divergência entre SQL e journal observável.
+  await warnOnMigrationJournalIntegrity()
 
   // 1. Conecta ao MySQL
   console.log('[Motor v3] Conectando ao MySQL...')

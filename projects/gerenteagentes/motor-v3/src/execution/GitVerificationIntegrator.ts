@@ -3,6 +3,7 @@ import { promisify } from 'node:util'
 import type { SubtaskExecutionContext } from './DevelopmentExecutionRepository.js'
 import type { GitWorktreePreparer } from './GitWorktreePreparer.js'
 import { GitOperationStateDetector } from './GitOperationStateDetector.js'
+import { assertAddedMigrationsHaveJournalEntries } from '../migrations/MigrationJournalIntegrity.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -14,6 +15,9 @@ export class GitVerificationIntegrator {
 
   async verifyAndIntegrate(context: SubtaskExecutionContext): Promise<VerificationResult> {
     if (!context.workspacePath || !context.workspaceBranch || !context.workspaceBaseCommit) throw new Error('Subtarefa sem workspace persistido')
+    // Gate diferencial adicional: uma migration introduzida pela entrega só
+    // pode seguir para integração se o journal do mesmo projeto tiver a tag.
+    await assertAddedMigrationsHaveJournalEntries(context.workspacePath, context.workspaceBaseCommit)
     // O gate já foi executado e comparado com o baseline antes da transição
     // para `delivered`. Reexecutá-lo aqui perderia a semântica diferencial e
     // voltaria a reprovar a tarefa por falhas preexistentes.

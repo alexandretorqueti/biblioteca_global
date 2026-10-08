@@ -170,6 +170,7 @@ export class ExternalResolutionHandler {
             blocker: blockIds && blockIds.length > 0 ? blockIds.join(',') : 'external_resolution',
             resolvedBy,
             motivo,
+            createTombstone: true,
           })
         }
         await connection.query(
