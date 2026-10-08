@@ -88,13 +88,80 @@ elif [ "${MOTOR_VERSION:-v1}" = "v3" ]; then
   git config --global --add safe.directory /data/workspace/projects/codigofonte/biblioteca-global
   echo "[entrypoint] Validando/bootstrap do catálogo motor-v3..."
   npm --prefix projects/gerenteagentes/motor-v3 run db:bootstrap-runtime
+
+  # No modo v3 este shell precisa continuar como PID 1.  A API e o Motor são
+  # processos independentes; fazer exec da API aqui deixaria uma janela em que
+  # uma falha do Motor sinaliza o shell (que não tem trap) e a API segue viva.
+  # HUP é reservado para a notificação interna de que o Motor encerrou.
+  ENTRYPOINT_PID=$$
+  API_PID=""
+  MOTOR_PID=""
+
+  stop_child() {
+    child_pid="$1"
+    if [ -n "$child_pid" ] && kill -0 "$child_pid" 2>/dev/null; then
+      kill -TERM "$child_pid" 2>/dev/null || true
+    fi
+  }
+
+  wait_child() {
+    child_pid="$1"
+    if [ -n "$child_pid" ]; then
+      wait "$child_pid" 2>/dev/null || true
+    fi
+  }
+
+  shutdown_after_motor_failure() {
+    trap - HUP TERM INT
+    echo "[entrypoint] Motor-v3 encerrou; encerrando API e container para recuperação pelo Docker" >&2
+    stop_child "$API_PID"
+    stop_child "$MOTOR_PID"
+    wait_child "$API_PID"
+    wait_child "$MOTOR_PID"
+    exit 1
+  }
+
+  shutdown_after_signal() {
+    signal_name="$1"
+    trap - HUP TERM INT
+    echo "[entrypoint] Recebido $signal_name; encerrando API e Motor-v3" >&2
+    stop_child "$API_PID"
+    stop_child "$MOTOR_PID"
+    wait_child "$API_PID"
+    wait_child "$MOTOR_PID"
+    if [ "$signal_name" = "INT" ]; then
+      exit 130
+    fi
+    exit 143
+  }
+
+  trap 'shutdown_after_motor_failure' HUP
+  trap 'shutdown_after_signal TERM' TERM
+  trap 'shutdown_after_signal INT' INT
+
   echo "[entrypoint] Iniciando motor-v3 em background..."
   (
-    set +e
-    node projects/gerenteagentes/motor-v3/dist/start.js
-    status=$?
+    motor_child_pid=""
+
+    forward_signal_to_motor() {
+      trap - HUP TERM INT
+      if [ -n "$motor_child_pid" ] && kill -0 "$motor_child_pid" 2>/dev/null; then
+        kill -TERM "$motor_child_pid" 2>/dev/null || true
+      fi
+      wait "$motor_child_pid" 2>/dev/null || true
+      exit 0
+    }
+
+    trap 'forward_signal_to_motor' HUP TERM INT
+    node projects/gerenteagentes/motor-v3/dist/start.js &
+    motor_child_pid=$!
+    if wait "$motor_child_pid"; then
+      status=0
+    else
+      status=$?
+    fi
     echo "[entrypoint] Motor-v3 encerrou inesperadamente (status=$status); encerrando API para recuperação pelo Docker" >&2
-    kill -TERM 1 2>/dev/null || true
+    kill -HUP "$ENTRYPOINT_PID" 2>/dev/null || true
     exit "$status"
   ) &
   MOTOR_PID=$!
@@ -103,4 +170,21 @@ elif [ "${MOTOR_VERSION:-v1}" = "v3" ]; then
 fi
 
 cd apps/api
+if [ "${MOTOR_VERSION:-v1}" = "v3" ]; then
+  node -r @swc-node/register src/main.ts &
+  API_PID=$!
+  echo "[entrypoint] API PID: $API_PID"
+
+  # Se a API sair por qualquer motivo, não deixe o Motor-v3 órfão.
+  if wait "$API_PID"; then
+    api_status=0
+  else
+    api_status=$?
+  fi
+  trap - HUP TERM INT
+  stop_child "$MOTOR_PID"
+  wait_child "$MOTOR_PID"
+  exit "$api_status"
+fi
+
 exec node -r @swc-node/register src/main.ts
