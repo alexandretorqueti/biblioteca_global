@@ -2,6 +2,9 @@ export { QueueConsumer, type QueueConsumerConfig, type QueueMessageHandler } fro
 export { InMemoryQueueTransport } from './InMemoryQueueTransport.js'
 export {
   RabbitMqTransport,
+  DEFAULT_RABBITMQ_INITIAL_CONNECT_MAX_RETRY_DELAY_MS,
+  DEFAULT_RABBITMQ_INITIAL_CONNECT_RETRY_DELAY_MS,
+  DEFAULT_RABBITMQ_INITIAL_CONNECT_TIMEOUT_MS,
   MIN_RABBITMQ_PREFETCH,
   normalizeRabbitMqPrefetch,
   type RabbitMqTransportConfig,

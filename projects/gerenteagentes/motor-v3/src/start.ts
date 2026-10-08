@@ -181,6 +181,15 @@ async function start() {
       throw new Error('MOTOR_QUEUE_ENABLED exige MOTOR_RABBITMQ_URL, OPENCLAW_CONSOLE_URL e OPENCLAW_CONSOLE_TOKEN')
     }
 
+    // O RabbitMQ pode ficar pronto alguns segundos após o container do Motor.
+    // Compartilhar o orçamento entre todos os transports evita que uma fila
+    // auxiliar ainda derrube o boot enquanto o broker está subindo.
+    const rabbitMqBootstrapConfig = {
+      initialConnectTimeoutMs: Number(process.env.MOTOR_RABBITMQ_BOOTSTRAP_TIMEOUT_MS || 150000),
+      initialConnectRetryDelayMs: Number(process.env.MOTOR_RABBITMQ_BOOTSTRAP_RETRY_DELAY_MS || 1000),
+      initialConnectMaxRetryDelayMs: Number(process.env.MOTOR_RABBITMQ_BOOTSTRAP_MAX_RETRY_DELAY_MS || 10000),
+    }
+
     const repository = new MySqlTaskCoordinatorRepository(pool)
     const consoleApi = new ConsoleHttpApi(consoleUrl, consoleToken)
     const contractArtifactStore = new ContractArtifactStore(process.env.MOTOR_AGENT_WORKSPACES_ROOT, consoleApi)
@@ -318,6 +327,7 @@ async function start() {
       retryQueue: process.env.MOTOR_RABBITMQ_RETRY_QUEUE || 'motor.commands.retry',
       deadLetterQueue: process.env.MOTOR_RABBITMQ_DLQ || 'motor.commands.dlq',
       retryDelayMs: Number(process.env.MOTOR_RABBITMQ_RETRY_DELAY_MS || 30000),
+      ...rabbitMqBootstrapConfig,
     })
     const mainQueue = process.env.MOTOR_RABBITMQ_QUEUE || 'motor.commands'
     const monitorQueue = process.env.MOTOR_MONITOR_QUEUE || 'motor.monitor'
@@ -392,6 +402,7 @@ async function start() {
       prefetch: normalizeRabbitMqPrefetch(process.env.MOTOR_TEST_GATE_PREFETCH ?? process.env.MOTOR_RABBITMQ_PREFETCH, 5),
       queue: gateQueue, retryQueue: `${gateQueue}.retry`, deadLetterQueue: `${gateQueue}.dlq`,
       retryDelayMs: Number(process.env.MOTOR_RABBITMQ_RETRY_DELAY_MS || 30000),
+      ...rabbitMqBootstrapConfig,
     })
     testGateOutboxPublisher = new OutboxPublisher(pool, gateTransport, gateQueue, gateQueue)
     await testGateOutboxPublisher.start()
@@ -569,6 +580,7 @@ async function start() {
       prefetch: normalizeRabbitMqPrefetch(process.env.MOTOR_MONITOR_PREFETCH ?? process.env.MOTOR_RABBITMQ_PREFETCH, 5),
       queue: monitorQueue, retryQueue: `${monitorQueue}.retry`, deadLetterQueue: `${monitorQueue}.dlq`,
       retryDelayMs: Number(process.env.MOTOR_RABBITMQ_RETRY_DELAY_MS || 30000),
+      ...rabbitMqBootstrapConfig,
     })
     monitorQueueConsumer = new QueueConsumer(
       monitorTransport,
