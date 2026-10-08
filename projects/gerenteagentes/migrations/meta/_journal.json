@@ -547,6 +547,20 @@
       "when": 1791100001000,
       "tag": "0078_dev_worktree_only_prompt",
       "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "5",
+      "when": 1791475200000,
+      "tag": "0079_analyst_completion_kind_required",
+      "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "5",
+      "when": 1791475201000,
+      "tag": "0080_deploy_request_cancelled",
+      "breakpoints": true
     }
   ]
 }
