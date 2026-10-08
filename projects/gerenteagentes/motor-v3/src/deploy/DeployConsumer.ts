@@ -75,8 +75,13 @@ export class DeployConsumer {
       return this.reject(operationId, message, error instanceof Error ? error.message : 'deploy_not_eligible')
     }
     if (!raw) return this.reject(operationId, message, 'task_not_found')
-    if (!await this.repository.needsRequestPreparation(raw.databaseTaskId)) {
-      return this.log(operationId, 3, 'completed', 'skipped', message, { reasonCode: 'deploy_request_already_persisted' })
+    const preparation = await this.repository.needsRequestPreparation(raw.databaseTaskId)
+    if (preparation !== true) {
+      return this.log(operationId, 3, 'completed', 'skipped', message, {
+        reasonCode: preparation === 'administratively_cancelled'
+          ? 'deploy_administratively_dispensed'
+          : 'deploy_request_already_persisted',
+      })
     }
     let acceptedRequestId: number | null = null
     try {

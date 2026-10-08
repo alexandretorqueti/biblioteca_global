@@ -93,7 +93,10 @@ Tudo em uma transação, com `@motor_completing := 1` (suprime o trigger):
    (`completed` + `integration_confirmed_at`), emite `TASK_EXECUTION_COMPLETED`,
    emite `DEPLOY_REQUESTED` apenas com `requestDeploy:true`, remove zumbi da wait queue;
    com `requestDeploy:false`, cancela pedidos pendentes (inclusive lote ainda não
-   iniciado) com motivo/auditoria para que a recuperação de boot não os reenfileire;
+   iniciado) com motivo/auditoria. Se não existia pedido algum, cria na mesma
+   transação um tombeau `deploy_requests.status='cancelled'`, com a adjudicação
+   (blocker, resolvedBy e motivo), para que a recuperação de boot não os
+   reenfileire;
    senão: emite `TASK_READY_FOR_PROGRAMMING` (devolve ao fluxo normal);
 4. havendo bloqueios resolvidos: emite `TASK_UNBLOCKED` (auditoria/retomada do monitor);
 5. grava auditoria em `tarefa_eventos` (`evento='external_resolution'`, `ator=resolvedBy`).

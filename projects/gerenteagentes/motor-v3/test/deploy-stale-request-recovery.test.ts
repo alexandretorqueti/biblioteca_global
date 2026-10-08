@@ -61,4 +61,23 @@ describe('proteção contra recovery de deploy obsoleto', () => {
     expect(repository.needsRequestPreparation).toHaveBeenCalledWith(815)
     expect(logger.append).toHaveBeenLastCalledWith(expect.objectContaining({ outcome: 'skipped', reasonCode: 'deploy_request_already_persisted' }))
   })
+
+  it('mensagem concorrente do recovery é dispensada pela adjudicação administrativa sem preparar Git (caso 911)', async () => {
+    const raw = { ...context }
+    delete (raw as Partial<DeployTaskContext>).integrationPath
+    delete (raw as Partial<DeployTaskContext>).integrationBranch
+    delete (raw as Partial<DeployTaskContext>).integrationCommit
+    const repository = {
+      getEligibleTask: vi.fn(async () => raw),
+      needsRequestPreparation: vi.fn(async () => 'administratively_cancelled' as const),
+    } as never
+    const logger = { append: vi.fn(async () => {}) }
+    const consumer = new DeployConsumer(repository, {} as never, {} as never, logger)
+    const message = createQueueMessage({ type: 'DEPLOY_REQUESTED', taskId: '911', executionId: 'recovery-911-race' })
+
+    await expect(consumer.handle(message)).resolves.toBeUndefined()
+    expect(logger.append).toHaveBeenLastCalledWith(expect.objectContaining({
+      outcome: 'skipped', reasonCode: 'deploy_administratively_dispensed',
+    }))
+  })
 })

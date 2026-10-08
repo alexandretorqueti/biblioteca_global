@@ -869,6 +869,7 @@ export class MySqlDevelopmentExecutionRepository {
       if (Number(pending[0]?.total ?? 0) > 0) throw new Error('Existem subtarefas analíticas não concluídas sem dependência elegível')
       await cancelUnstartedDeployRequests(connection, context.databaseTaskId, {
         blocker: 'task_completed', resolvedBy: 'motor-v3', motivo: 'Conclusão da tarefa; pedidos de deploy anteriores foram dispensados.',
+        createTombstone: true,
       })
       await connection.query(
         `INSERT INTO task_runtime_facts (tarefa_id,terminal_status,terminal_at,integration_confirmed_at,created_at,updated_at)

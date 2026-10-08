@@ -98,7 +98,7 @@ export class TaskCancelConsumer {
     const connection = await this.pool.getConnection()
     let claimResult: ResultSetHeader
     let blockersResult: ResultSetHeader
-    let cancelledDeploys: { cancelled: number; activeRunning: number }
+    let cancelledDeploys: { cancelled: number; activeRunning: number; tombstoneCreated: number }
     try {
       await connection.beginTransaction()
       ;[claimResult] = await connection.query<ResultSetHeader>(
@@ -113,6 +113,7 @@ export class TaskCancelConsumer {
       )
       cancelledDeploys = await cancelUnstartedDeployRequests(connection, task.id, {
         blocker: 'task_cancelled', resolvedBy: ator, motivo: motivo ?? 'Tarefa cancelada administrativamente',
+        createTombstone: true,
       })
       await connection.query(
         `INSERT INTO task_runtime_facts (tarefa_id, terminal_status, terminal_at, created_at, updated_at)
@@ -141,6 +142,7 @@ export class TaskCancelConsumer {
         claimsReleased: claimResult!.affectedRows,
         blockersResolved: blockersResult!.affectedRows,
         deployRequestsCancelled: cancelledDeploys!.cancelled,
+        deployRequestTombstoneCreated: cancelledDeploys!.tombstoneCreated,
         activeDeployRequestsPreserved: cancelledDeploys!.activeRunning,
         sourceMessageId: message.messageId,
       })
