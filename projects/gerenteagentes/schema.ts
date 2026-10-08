@@ -366,7 +366,7 @@ export const deployRequests = mysqlTable("deploy_requests", {
     .notNull()
     .references(() => tarefas.id, { onDelete: "cascade" }),
   repoPath: varchar("repo_path", { length: 1000 }).notNull(),
-  status: mysqlEnum("status", ["pending", "running", "succeeded", "failed"])
+  status: mysqlEnum("status", ["pending", "running", "succeeded", "failed", "cancelled"])
     .notNull()
     .default("pending"),
   batchId: varchar("batch_id", { length: 100 }),

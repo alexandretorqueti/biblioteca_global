@@ -12,6 +12,10 @@ export interface RabbitMqTransportConfig {
   retryDelayMs: number
   reconnectDelayMs?: number
   maxReconnectAttempts?: number
+  /** Orçamento para o RabbitMQ ficar disponível durante o boot do Motor. */
+  initialConnectTimeoutMs?: number
+  initialConnectRetryDelayMs?: number
+  initialConnectMaxRetryDelayMs?: number
 }
 
 /** RabbitMQ com prefetch 1 permite que um handler bloqueado segure a fila.
@@ -19,6 +23,9 @@ export interface RabbitMqTransportConfig {
  * mas nenhuma delas pode voltar ao comportamento serial por configuração.
  */
 export const MIN_RABBITMQ_PREFETCH = 4
+export const DEFAULT_RABBITMQ_INITIAL_CONNECT_TIMEOUT_MS = 150_000
+export const DEFAULT_RABBITMQ_INITIAL_CONNECT_RETRY_DELAY_MS = 1_000
+export const DEFAULT_RABBITMQ_INITIAL_CONNECT_MAX_RETRY_DELAY_MS = 10_000
 
 export function normalizeRabbitMqPrefetch(value: number | string | undefined, fallback = 5): number {
   const parsed = typeof value === 'string' ? Number(value) : value
@@ -33,40 +40,88 @@ export class RabbitMqTransport implements QueueTransport {
   private reconnecting = false
   private reconnectAttempts = 0
   private consumers = new Map<string, QueueDeliveryHandler>()
+  private connectPromise: Promise<void> | null = null
 
   constructor(private readonly config: RabbitMqTransportConfig) {}
 
   async connect(): Promise<void> {
     if (this.channel) return
-    this.connection = await amqp.connect(this.config.url)
-    this.channel = await this.connection.createConfirmChannel()
-    
-    // Listener de erro no canal — não crasha o motor, tenta reconectar
-    this.channel.on('error', (error) => {
+    if (this.connectPromise) return this.connectPromise
+
+    this.connectPromise = this.connectWithRetry().finally(() => {
+      this.connectPromise = null
+    })
+    return this.connectPromise
+  }
+
+  private async connectWithRetry(): Promise<void> {
+    const timeoutMs = this.config.initialConnectTimeoutMs ?? DEFAULT_RABBITMQ_INITIAL_CONNECT_TIMEOUT_MS
+    const retryDelayMs = this.config.initialConnectRetryDelayMs ?? DEFAULT_RABBITMQ_INITIAL_CONNECT_RETRY_DELAY_MS
+    const maxRetryDelayMs = this.config.initialConnectMaxRetryDelayMs ?? DEFAULT_RABBITMQ_INITIAL_CONNECT_MAX_RETRY_DELAY_MS
+    const startedAt = Date.now()
+    let attempt = 0
+
+    while (true) {
+      attempt++
+      try {
+        await this.connectOnce()
+        this.reconnectAttempts = 0
+        return
+      } catch (error) {
+        const elapsedMs = Date.now() - startedAt
+        const remainingMs = timeoutMs - elapsedMs
+        if (remainingMs <= 0) throw error
+
+        const delayMs = Math.min(
+          retryDelayMs * Math.pow(2, attempt - 1),
+          maxRetryDelayMs,
+          remainingMs,
+        )
+        console.warn(`[RabbitMqTransport] RabbitMQ indisponível no boot; nova tentativa em ${delayMs}ms (tentativa ${attempt})`)
+        await new Promise<void>(resolve => setTimeout(resolve, delayMs))
+      }
+    }
+  }
+
+  private async connectOnce(): Promise<void> {
+    const connection = await amqp.connect(this.config.url)
+    let channel: ConfirmChannel | null = null
+    try {
+      channel = await connection.createConfirmChannel()
+      await channel.assertExchange(this.config.exchange, 'direct', { durable: true })
+      await channel.prefetch(normalizeRabbitMqPrefetch(this.config.prefetch))
+
+      this.connection = connection
+      this.channel = channel
+
+      // Listener de erro no canal — não crasha o motor, tenta reconectar
+      channel.on('error', (error) => {
       console.error('[RabbitMqTransport] Canal fechado com erro:', error.message)
       this.scheduleReconnect()
     })
 
-    // Listener de fechamento do canal
-    this.channel.on('close', () => {
+      // Listener de fechamento do canal
+      channel.on('close', () => {
       console.warn('[RabbitMqTransport] Canal fechado pelo servidor')
       this.scheduleReconnect()
     })
 
-    // Listener de erro na conexão
-    this.connection.on('error', (error) => {
+      // Listener de erro na conexão
+      connection.on('error', (error) => {
       console.error('[RabbitMqTransport] Conexão RabbitMQ com erro:', error.message)
     })
 
-    // Listener de fechamento da conexão
-    this.connection.on('close', () => {
+      // Listener de fechamento da conexão
+      connection.on('close', () => {
       console.warn('[RabbitMqTransport] Conexão RabbitMQ fechada')
       this.scheduleReconnect()
     })
 
-    await this.channel.assertExchange(this.config.exchange, 'direct', { durable: true })
-    await this.channel.prefetch(normalizeRabbitMqPrefetch(this.config.prefetch))
-    this.reconnectAttempts = 0 // Reset após conexão bem-sucedida
+    } catch (error) {
+      await channel?.close().catch(() => undefined)
+      await connection.close().catch(() => undefined)
+      throw error
+    }
   }
 
   async publish(queue: string, message: QueueMessage, options: QueuePublishOptions = {}): Promise<void> {

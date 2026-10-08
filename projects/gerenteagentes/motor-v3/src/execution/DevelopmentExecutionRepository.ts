@@ -2,6 +2,7 @@ import type { Pool, PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql
 import { createQueueMessage, type QueueMessage } from '../queue/QueueMessage.js'
 import { createTaskBlockedMessage } from '../monitor/TaskBlockedEvent.js'
 import { insertOutboxMessage } from '../queue/outboxInsert.js'
+import { cancelUnstartedDeployRequests } from '../deploy/DeployRequestFinalizer.js'
 
 export interface ReservedSubtask {
   message: QueueMessage<{ subtaskId: number; seq: number; title: string; scope: string }>
@@ -452,6 +453,9 @@ export class MySqlDevelopmentExecutionRepository {
             WHERE tarefa_id = ? AND status NOT IN ('verified', 'superseded')`, [context.databaseTaskId],
         )
         if (Number(pending[0]?.total ?? 0) > 0) throw new Error('Existem subtarefas não concluídas, mas nenhuma está elegível')
+        await cancelUnstartedDeployRequests(connection, context.databaseTaskId, {
+          blocker: 'task_completed', resolvedBy: 'motor-v3', motivo: 'Conclusão normal da tarefa; pedidos anteriores foram substituídos pelo deploy atual.',
+        })
         await connection.query(
           `INSERT INTO task_runtime_facts (tarefa_id, terminal_status, terminal_at, integration_confirmed_at, created_at, updated_at)
            VALUES (?, 'completed', NOW(), NOW(), NOW(), NOW())
@@ -863,6 +867,9 @@ export class MySqlDevelopmentExecutionRepository {
         `SELECT COUNT(*) total FROM subtarefas WHERE tarefa_id=? AND status NOT IN ('verified','superseded')`, [context.databaseTaskId],
       )
       if (Number(pending[0]?.total ?? 0) > 0) throw new Error('Existem subtarefas analíticas não concluídas sem dependência elegível')
+      await cancelUnstartedDeployRequests(connection, context.databaseTaskId, {
+        blocker: 'task_completed', resolvedBy: 'motor-v3', motivo: 'Conclusão da tarefa; pedidos de deploy anteriores foram dispensados.',
+      })
       await connection.query(
         `INSERT INTO task_runtime_facts (tarefa_id,terminal_status,terminal_at,integration_confirmed_at,created_at,updated_at)
          VALUES (?,'completed',NOW(),NOW(),NOW(),NOW())
@@ -1006,6 +1013,9 @@ export class MySqlDevelopmentExecutionRepository {
     )
     if (factRows.length > 0 && factRows[0]?.terminal_status != null) return null
 
+    await cancelUnstartedDeployRequests(connection, task.id, {
+      blocker: 'task_completed', resolvedBy: 'motor-v3', motivo: 'Conclusão reconciliada; pedidos de deploy anteriores foram substituídos pelo fluxo atual.',
+    })
     await connection.query(
       `INSERT INTO task_runtime_facts (tarefa_id, terminal_status, terminal_at, integration_confirmed_at, created_at, updated_at)
        VALUES (?, 'completed', NOW(), NOW(), NOW(), NOW())

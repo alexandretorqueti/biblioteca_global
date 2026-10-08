@@ -61,6 +61,21 @@ BEGIN
        LIMIT 1;
 
       IF v_terminal IS NULL THEN
+        -- Um writer fora do Motor também passa por esta camada. Antes de
+        -- publicar a nova intenção legítima, descarte pendências antigas; um
+        -- batch já iniciado continua intocado.
+        UPDATE deploy_requests dr
+        LEFT JOIN deploy_batches db ON db.batch_id = dr.batch_id
+           SET dr.status = 'cancelled',
+               dr.last_error = 'Cancelamento administrativo de deploy; blocker=task_completed; resolvedBy=motor-v3-trigger; motivo=Conclusão pela rede de segurança',
+               dr.finished_at = NOW(),
+               dr.updated_at = NOW()
+         WHERE dr.tarefa_id = NEW.tarefa_id
+           AND (
+             dr.status = 'pending'
+             OR (dr.status = 'running' AND db.status = 'pending' AND db.started_at IS NULL)
+           );
+
         INSERT INTO task_runtime_facts
           (tarefa_id, terminal_status, terminal_at, integration_confirmed_at, created_at, updated_at)
         VALUES

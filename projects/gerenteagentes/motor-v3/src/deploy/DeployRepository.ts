@@ -88,6 +88,18 @@ export class DeployRepository {
     }
   }
 
+  /**
+   * Uma reentrega de DEPLOY_REQUESTED não pode refazer a preparação Git. O
+   * request original (pendente, em andamento ou final) é a fonte de verdade;
+   * somente a primeira mensagem, sem request persistido, pode prepará-lo.
+   */
+  async needsRequestPreparation(databaseTaskId: number): Promise<boolean> {
+    const [rows] = await this.pool.query<Array<RowDataPacket & { total: number | string }>>(
+      `SELECT COUNT(*) AS total FROM deploy_requests WHERE tarefa_id=?`, [databaseTaskId],
+    )
+    return Number(rows[0]?.total ?? 0) === 0
+  }
+
   /** Recupera tarefas concluídas sem deploy ativo/sucedido no mesmo banco/outbox. */
   async enqueueCompletedRecoveries(): Promise<number> {
     const connection = await this.pool.getConnection()
@@ -98,7 +110,7 @@ export class DeployRepository {
         INNER JOIN task_runtime_facts f ON f.tarefa_id=t.id AND f.terminal_status='completed' AND f.integration_confirmed_at IS NOT NULL
         WHERE t.tipo='desenvolvimento'
           AND NOT EXISTS (SELECT 1 FROM bloqueios b WHERE b.tarefa_id=t.id AND b.resolved_at IS NULL)
-          AND NOT EXISTS (SELECT 1 FROM deploy_requests d WHERE d.tarefa_id=t.id AND d.status IN ('pending','running','succeeded'))
+          AND NOT EXISTS (SELECT 1 FROM deploy_requests d WHERE d.tarefa_id=t.id)
         FOR UPDATE`)
       for (const task of tasks) {
         const taskId = String(task.external_id ?? task.id)
@@ -455,7 +467,7 @@ ${conflictData.conflictFiles.map(f => `- \`${f}\``).join('\n')}
   }
 
   /** Persiste pedido e comando de lote na mesma transação. */
-  async acceptRequest(context: DeployTaskContext, source: QueueMessage): Promise<{ requestId: number }> {
+  async acceptRequest(context: DeployTaskContext, source: QueueMessage): Promise<{ requestId: number; accepted: boolean }> {
     const connection = await this.pool.getConnection()
     try {
       await connection.beginTransaction()
@@ -466,18 +478,30 @@ ${conflictData.conflictFiles.map(f => `- \`${f}\``).join('\n')}
            (SELECT COALESCE(MAX(s.generation), 1) FROM subtarefas s WHERE s.tarefa_id = ?),
            (SELECT CASE WHEN COALESCE(MAX(s.generation), 1) > 1 THEN MAX(s.generation) - 1 ELSE NULL END FROM subtarefas s WHERE s.tarefa_id = ?),
            NOW(),NOW())
-         ON DUPLICATE KEY UPDATE repo_path=VALUES(repo_path),requested_commit=VALUES(requested_commit),base_branch=VALUES(base_branch),
-           generation=VALUES(generation),parent_generation=VALUES(parent_generation),
-           status=IF(status IN ('succeeded','running'),status,'pending'),batch_id=IF(status IN ('succeeded','running'),batch_id,NULL),last_error=NULL,updated_at=NOW()`,
+         ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id),
+           repo_path=IF(status='pending',VALUES(repo_path),repo_path),
+           requested_commit=IF(status='pending',VALUES(requested_commit),requested_commit),
+           base_branch=IF(status='pending',VALUES(base_branch),base_branch),
+           generation=IF(status='pending',VALUES(generation),generation),
+           parent_generation=IF(status='pending',VALUES(parent_generation),parent_generation),
+           updated_at=IF(status='pending',NOW(),updated_at)`,
         [context.databaseTaskId, context.repoPath, context.integrationCommit, context.baseBranch,
          context.databaseTaskId, context.databaseTaskId],
       )
+      const requestId = Number(insert.insertId)
+      const [requests] = await connection.query<Array<RowDataPacket & { status: string }>>(
+        `SELECT status FROM deploy_requests WHERE id=? FOR UPDATE`, [requestId],
+      )
+      if (requests[0]?.status !== 'pending') {
+        await connection.commit()
+        return { requestId, accepted: false }
+      }
       const accepted = createQueueMessage({ type: 'DEPLOY_REQUEST_ACCEPTED', taskId: context.taskId, executionId: source.executionId,
         correlationId: source.correlationId ?? source.messageId, causationId: source.messageId,
         payload: { requestId: Number(insert.insertId), expectedCommit: context.integrationCommit } })
       await this.insertOutbox(connection, accepted)
       await connection.commit()
-      return { requestId: Number(insert.insertId) }
+      return { requestId, accepted: true }
     } catch (error) { await connection.rollback(); throw error } finally { connection.release() }
   }
 
@@ -563,7 +587,13 @@ ${conflictData.conflictFiles.map(f => `- \`${f}\``).join('\n')}
         `INSERT INTO deploy_batches (batch_id,repo_path,base_branch,expected_commit,status,created_at,updated_at)
          VALUES (?,?,?,?, 'pending',NOW(),NOW())`, [batchId, repoPath, baseBranch, expectedCommit])
       const ids = requests.map(row => row.id)
-      await connection.query(`UPDATE deploy_requests SET status='running',batch_id=?,started_at=NOW(),last_error=NULL,updated_at=NOW() WHERE id IN (${ids.map(() => '?').join(',')}) AND status='pending'`, [batchId, ...ids])
+      const [claimed] = await connection.query<ResultSetHeader>(`UPDATE deploy_requests SET status='running',batch_id=?,started_at=NOW(),last_error=NULL,updated_at=NOW() WHERE id IN (${ids.map(() => '?').join(',')}) AND status='pending'`, [batchId, ...ids])
+      // Uma resolução concorrente pode ter finalizado um request entre a
+      // composição do grupo e o claim. Não forme batch parcial nem execute Git.
+      if (claimed.affectedRows != null && Number(claimed.affectedRows) !== ids.length) {
+        await connection.rollback()
+        return null
+      }
       await connection.commit()
       return {
         batch: { batchId, repoPath, baseBranch, expectedCommit, status: 'pending', remotePid: null, remoteStatusPath: null, startedAt: null, workspacePath: null, gateJobId: null },
@@ -677,7 +707,17 @@ ${conflictData.conflictFiles.map(f => `- \`${f}\``).join('\n')}
                 last_error=NULL,
                 updated_at=NOW()
           WHERE batch_id IN (${placeholders})
-            AND status='running'`,
+            AND status='running'
+            AND NOT EXISTS (
+              SELECT 1 FROM bloqueios b
+               WHERE b.tarefa_id=deploy_requests.tarefa_id
+                 AND b.resolved_at IS NULL
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM task_runtime_facts f
+               WHERE f.tarefa_id=deploy_requests.tarefa_id
+                 AND f.terminal_status IN ('completed','cancelled')
+            )`,
         batchIds,
       )
       await connection.commit()
@@ -855,7 +895,12 @@ ${conflictData.conflictFiles.map(f => `- \`${f}\``).join('\n')}
     const [groups] = await connection.query<Array<RowDataPacket & { repo_path: string; base_branch: string; requested_commit: string; task_id: string }>>(`
       SELECT dr.repo_path,dr.base_branch,dr.requested_commit,MIN(t.id) AS task_id
         FROM deploy_requests dr INNER JOIN tarefas t ON t.id=dr.tarefa_id
-       WHERE dr.status='pending' GROUP BY dr.repo_path,dr.base_branch,dr.requested_commit`)
+       WHERE dr.status='pending'
+         AND NOT EXISTS (
+           SELECT 1 FROM bloqueios b
+            WHERE b.tarefa_id=dr.tarefa_id AND b.resolved_at IS NULL
+         )
+       GROUP BY dr.repo_path,dr.base_branch,dr.requested_commit`)
     for (const group of groups) {
       const message = createQueueMessage({ type: 'DEPLOY_BATCH_DISPATCH_REQUESTED', taskId: String(group.task_id),
         executionId: `deploy-dispatch-recovery-${Date.now()}-${randomUUID()}`, payload: { repository: group.repo_path, baseBranch: group.base_branch, expectedCommit: group.requested_commit } })

@@ -284,7 +284,7 @@ describe('DeployRepository — composição do lote', () => {
         project_id: 1, build_command: 'npm run build', test_command: 'npm test',
       }], []])
       .mockResolvedValueOnce([{ affectedRows: 1, insertId: 1 }, []])
-      .mockResolvedValueOnce([{ affectedRows: 1 }, []])
+      .mockResolvedValueOnce([{ affectedRows: 2 }, []])
     const pool = createMockPool()
     pool.query.mockResolvedValue([[{ active: 0 }], []])
     pool.getConnection.mockResolvedValue(connection)

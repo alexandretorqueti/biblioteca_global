@@ -75,10 +75,16 @@ export class DeployConsumer {
       return this.reject(operationId, message, error instanceof Error ? error.message : 'deploy_not_eligible')
     }
     if (!raw) return this.reject(operationId, message, 'task_not_found')
+    if (!await this.repository.needsRequestPreparation(raw.databaseTaskId)) {
+      return this.log(operationId, 3, 'completed', 'skipped', message, { reasonCode: 'deploy_request_already_persisted' })
+    }
     let acceptedRequestId: number | null = null
     try {
       const context = await this.integrationContext(raw)
       const accepted = await this.repository.acceptRequest(context, message)
+      if (!accepted.accepted) {
+        return this.log(operationId, 3, 'completed', 'skipped', message, { reasonCode: 'deploy_request_not_pending', result: { requestId: accepted.requestId } })
+      }
       acceptedRequestId = accepted.requestId
       const jobId = await this.gate.enqueue({ projectId: context.projectId, taskDatabaseId: context.databaseTaskId, phase: 'pre_deploy', commitSha: context.integrationCommit, baseCommitSha: context.integrationCommit, branchName: context.integrationBranch, workspacePath: context.integrationPath, buildCommand: context.buildCommand, testCommand: context.testCommand }, message)
       await this.log(operationId, 3, 'primitive', 'succeeded', message, { primitiveCode: 'upsert_deploy_request', result: { requestId: accepted.requestId, gateJobId: jobId } })
