@@ -41,7 +41,7 @@ async function ensureCleanWorkspace(directory: string): Promise<void> {
  * Materializa dependências de pacotes isolados que não pertencem aos
  * workspaces npm da raiz. O build configurado continua responsável pelo
  * `npm ci` da raiz e package-locks aninhados usados pelos testes do monorepo
- * (por exemplo, motor-v2/motor-v3). O Motor roda com NODE_ENV=production em
+ * (por exemplo, motor-v3). O Motor roda com NODE_ENV=production em
  * alguns ambientes, mas os gates exigem runners e tipos de devDependencies.
  */
 export class WorkspaceEnvironmentPreparer {
