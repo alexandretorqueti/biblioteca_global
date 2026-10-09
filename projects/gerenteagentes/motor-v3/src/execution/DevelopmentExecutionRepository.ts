@@ -867,10 +867,19 @@ export class MySqlDevelopmentExecutionRepository {
         `SELECT COUNT(*) total FROM subtarefas WHERE tarefa_id=? AND status NOT IN ('verified','superseded')`, [context.databaseTaskId],
       )
       if (Number(pending[0]?.total ?? 0) > 0) throw new Error('Existem subtarefas analíticas não concluídas sem dependência elegível')
-      await cancelUnstartedDeployRequests(connection, context.databaseTaskId, {
-        blocker: 'task_completed', resolvedBy: 'motor-v3', motivo: 'Conclusão da tarefa; pedidos de deploy anteriores foram dispensados.',
-        createTombstone: true,
-      })
+      // A natureza da última subtarefa não decide a intenção de deploy: uma
+      // entrega analítica pode encerrar uma tarefa que já integrou código.
+      const hasIntegratedCode = await this.hasIntegratedCodeSubtask(connection, context.databaseTaskId)
+      await cancelUnstartedDeployRequests(connection, context.databaseTaskId, hasIntegratedCode
+        ? {
+            blocker: 'task_completed', resolvedBy: 'motor-v3',
+            motivo: 'Conclusão normal da tarefa; pedidos anteriores foram substituídos pelo deploy atual.',
+          }
+        : {
+            blocker: 'task_completed', resolvedBy: 'motor-v3',
+            motivo: 'Conclusão da tarefa; pedidos de deploy anteriores foram dispensados.',
+            createTombstone: true,
+          })
       await connection.query(
         `INSERT INTO task_runtime_facts (tarefa_id,terminal_status,terminal_at,integration_confirmed_at,created_at,updated_at)
          VALUES (?,'completed',NOW(),NOW(),NOW(),NOW())
@@ -880,9 +889,20 @@ export class MySqlDevelopmentExecutionRepository {
       const taskCompleted = createQueueMessage({
         type: 'TASK_EXECUTION_COMPLETED', taskId: context.taskId, executionId: source.executionId,
         correlationId: source.correlationId ?? source.messageId, causationId: completed.messageId,
-        payload: { completionKind: inferLegacyNoCodeChange ? 'no_code_change' : context.completionKind ?? 'analysis', noCodeChange: true, legacyInferred: inferLegacyNoCodeChange },
+        payload: {
+          completionKind: inferLegacyNoCodeChange ? 'no_code_change' : context.completionKind ?? 'analysis',
+          ...(hasIntegratedCode ? { integratedCode: true } : { noCodeChange: true, legacyInferred: inferLegacyNoCodeChange }),
+        },
       })
       await this.insertOutbox(connection, taskCompleted)
+      if (hasIntegratedCode) {
+        const deployRequest = createQueueMessage({
+          type: 'DEPLOY_REQUESTED', taskId: context.taskId, executionId: source.executionId,
+          correlationId: source.correlationId ?? source.messageId, causationId: taskCompleted.messageId,
+          payload: { completionKind: context.completionKind ?? 'analysis', integratedCode: true },
+        })
+        await this.insertOutbox(connection, deployRequest)
+      }
       await this.wakeCapacityWaiters(connection, taskCompleted)
       await connection.commit()
       return taskCompleted
@@ -1014,9 +1034,17 @@ export class MySqlDevelopmentExecutionRepository {
     )
     if (factRows.length > 0 && factRows[0]?.terminal_status != null) return null
 
-    await cancelUnstartedDeployRequests(connection, task.id, {
-      blocker: 'task_completed', resolvedBy: 'motor-v3', motivo: 'Conclusão reconciliada; pedidos de deploy anteriores foram substituídos pelo fluxo atual.',
-    })
+    const hasIntegratedCode = await this.hasIntegratedCodeSubtask(connection, task.id)
+    await cancelUnstartedDeployRequests(connection, task.id, hasIntegratedCode
+      ? {
+          blocker: 'task_completed', resolvedBy: 'motor-v3',
+          motivo: 'Conclusão reconciliada; pedidos de deploy anteriores foram substituídos pelo fluxo atual.',
+        }
+      : {
+          blocker: 'task_completed', resolvedBy: 'motor-v3',
+          motivo: 'Conclusão reconciliada sem código integrado; pedidos de deploy anteriores foram dispensados.',
+          createTombstone: true,
+        })
     await connection.query(
       `INSERT INTO task_runtime_facts (tarefa_id, terminal_status, terminal_at, integration_confirmed_at, created_at, updated_at)
        VALUES (?, 'completed', NOW(), NOW(), NOW(), NOW())
@@ -1030,11 +1058,13 @@ export class MySqlDevelopmentExecutionRepository {
       type: 'TASK_EXECUTION_COMPLETED', taskId,
       executionId: `exec-reconciled-completion-${taskId}-${Date.now()}`,
       correlationId: source.correlationId ?? source.messageId, causationId: source.messageId,
-      payload: { reason: 'reconciled_completion', recovered: true },
+      payload: hasIntegratedCode
+        ? { reason: 'reconciled_completion', recovered: true, integratedCode: true }
+        : { reason: 'reconciled_completion', recovered: true, noCodeChange: true },
     })
     await this.insertOutbox(connection, taskCompleted)
 
-    if (String(task.tipo ?? '') === 'desenvolvimento') {
+    if (String(task.tipo ?? '') === 'desenvolvimento' && hasIntegratedCode) {
       const deployRequest = createQueueMessage({
         type: 'DEPLOY_REQUESTED', taskId,
         executionId: `deploy-reconciled-${taskId}-${Date.now()}`,
@@ -1047,6 +1077,20 @@ export class MySqlDevelopmentExecutionRepository {
     await connection.query('DELETE FROM motor_execution_wait_queue WHERE tarefa_id = ?', [task.id])
     await this.wakeCapacityWaiters(connection, taskCompleted)
     return { kind: 'task_completed', message: taskCompleted }
+  }
+
+  /** Código integrado é um fato da tarefa inteira, não da última subtarefa. */
+  private async hasIntegratedCodeSubtask(connection: PoolConnection, taskId: number): Promise<boolean> {
+    const [rows] = await connection.query<Array<RowDataPacket & { has_integrated_code: number | string }>>(
+      `SELECT EXISTS(
+          SELECT 1 FROM subtarefas
+           WHERE tarefa_id = ?
+             AND status = 'verified'
+             AND (completion_kind = 'code_change' OR workspace_status = 'integrated')
+        ) AS has_integrated_code`,
+      [taskId],
+    )
+    return Number(rows[0]?.has_integrated_code ?? 0) !== 0
   }
 
   /** Libera a supressão do trigger (camada A); variável de sessão é por conexão. */
