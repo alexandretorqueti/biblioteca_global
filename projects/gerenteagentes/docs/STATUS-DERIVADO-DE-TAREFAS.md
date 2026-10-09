@@ -63,6 +63,7 @@ o estado apresentado pela API e pela tela.
    - todas as subtarefas estão em `verified` ou `superseded`;
    - a integração foi confirmada;
    - todas possuem `completion_kind` explícito diferente de `code_change` e nenhuma possui `workspace_status='integrated'`;
+   - ou o deploy foi dispensado administrativamente: existe `deploy_request` com `status='cancelled'` e `last_error` iniciado por `Adjudicação administrativa sem deploy`; essa adjudicação encerra a tarefa mesmo se houve código integrado;
    - representa encerramento sem deploy e não permite nova execução nem confirmação manual de deploy.
 
 8. `completed` (deploy falhou)
@@ -187,6 +188,6 @@ anteriores à migration.
 ## Estados finais
 
 - `completed`: há código integrado e a entrega aguarda deploy.
-- `closed`: as subtarefas aprovadas são explicitamente sem alteração de código; não há deploy pendente.
+- `closed`: as subtarefas aprovadas são explicitamente sem alteração de código, ou o deploy foi dispensado por adjudicação administrativa registrada; não há deploy pendente.
 - `deployed`: o deploy foi confirmado com sucesso.
 - `cancelled`: cancelamento administrativo; o legado `aborted` aparece no quadro **Canceladas**. Nenhum desses estados é materializado em `tarefas.status`.

@@ -2,7 +2,7 @@ import type { Pool, RowDataPacket } from 'mysql2/promise'
 
 export type DerivedTaskStatus =
   | 'draft' | 'planned' | 'analyzing' | 'awaiting_clarification' | 'awaiting_interaction'
-  | 'ready' | 'running' | 'paused' | 'completed' | 'deployed'
+  | 'ready' | 'running' | 'paused' | 'completed' | 'closed' | 'deployed'
   | 'blocked' | 'motor_fix' | 'failed' | 'cancelled'
 
 interface TaskFactsRow extends RowDataPacket {
@@ -11,12 +11,16 @@ interface TaskFactsRow extends RowDataPacket {
   resource_wait_key: string | null
   analysis_started_at: Date | string | null
   clarification_pending_at: Date | string | null
+  integration_confirmed_at: Date | string | null
   terminal_status: string | null
   awaiting_interaction: number | string
   has_active_blocker: number | string
   deploy_succeeded: number | string
   deploy_failed: number | string
+  administrative_deploy_cancelled: number | string
 }
+
+const NON_CODE_COMPLETION_KINDS = new Set(['analysis', 'no_code_change', 'external_operation'])
 
 /**
  * Projeção canônica do estado operacional da tarefa.
@@ -31,7 +35,7 @@ export class DerivedTaskStatusResolver {
     const [rows] = await this.pool.query<TaskFactsRow[]>(`
       SELECT
         t.id, t.paused_at, t.resource_wait_key,
-        f.analysis_started_at, f.clarification_pending_at, f.terminal_status,
+        f.analysis_started_at, f.clarification_pending_at, f.integration_confirmed_at, f.terminal_status,
         EXISTS(SELECT 1 FROM tarefa_contextos_execucao cix
           WHERE cix.tarefa_id = t.id AND cix.estado = 'awaiting_human') AS awaiting_interaction,
         EXISTS(SELECT 1 FROM bloqueios b
@@ -39,7 +43,10 @@ export class DerivedTaskStatusResolver {
         EXISTS(SELECT 1 FROM deploy_requests d
           WHERE d.tarefa_id = t.id AND d.status = 'succeeded') AS deploy_succeeded,
         EXISTS(SELECT 1 FROM deploy_requests d
-          WHERE d.tarefa_id = t.id AND d.status = 'failed') AS deploy_failed
+          WHERE d.tarefa_id = t.id AND d.status = 'failed') AS deploy_failed,
+        EXISTS(SELECT 1 FROM deploy_requests d
+          WHERE d.tarefa_id = t.id AND d.status = 'cancelled'
+            AND d.last_error LIKE 'Adjudicação administrativa sem deploy%') AS administrative_deploy_cancelled
       FROM tarefas t
       LEFT JOIN task_runtime_facts f ON f.tarefa_id = t.id
       WHERE t.external_id = ? OR CAST(t.id AS CHAR) = ?
@@ -50,7 +57,7 @@ export class DerivedTaskStatusResolver {
     if (!task) return 'planned'
 
     const [subtaskRows] = await this.pool.query<RowDataPacket[]>(
-      'SELECT status FROM subtarefas WHERE tarefa_id = ?', [task.id],
+      'SELECT status, completion_kind, workspace_status FROM subtarefas WHERE tarefa_id = ?', [task.id],
     )
     const subtaskStatuses = subtaskRows.map(row => String(row.status ?? ''))
     const terminal = String(task.terminal_status ?? '').toLowerCase()
@@ -60,7 +67,8 @@ export class DerivedTaskStatusResolver {
     if (terminal === 'cancelled' || terminal === 'failed' || terminal === 'motor_fix') return terminal
     if (task.paused_at && !task.resource_wait_key) {
       if (Number(task.deploy_succeeded) === 1) return 'deployed'
-      if (allApproved && (Number(task.deploy_failed) === 1 || await this.integrationConfirmed(task.id))) return 'completed'
+      if (allApproved && task.integration_confirmed_at != null) return this.completedStatus(subtaskRows, task)
+      if (allApproved && Number(task.deploy_failed) === 1) return 'completed'
       if (!hasSubtasks) return 'draft'
       return 'paused'
     }
@@ -75,15 +83,21 @@ export class DerivedTaskStatusResolver {
     if (subtaskStatuses.some(status => ['running', 'delivered', 'verifying'].includes(status))) return 'running'
     if (Number(task.deploy_succeeded) === 1) return 'deployed'
 
-    if (allApproved && (Number(task.deploy_failed) === 1 || await this.integrationConfirmed(task.id))) return 'completed'
+    if (allApproved && task.integration_confirmed_at != null) return this.completedStatus(subtaskRows, task)
+    if (allApproved && Number(task.deploy_failed) === 1) return 'completed'
     if (task.paused_at && !task.resource_wait_key) return 'paused'
     return hasSubtasks ? 'ready' : 'planned'
   }
 
-  private async integrationConfirmed(taskId: number): Promise<boolean> {
-    const [rows] = await this.pool.query<RowDataPacket[]>(
-      'SELECT integration_confirmed_at FROM task_runtime_facts WHERE tarefa_id = ? LIMIT 1', [taskId],
+  private completedStatus(subtasks: readonly RowDataPacket[], task: TaskFactsRow): 'completed' | 'closed' {
+    if (Number(task.administrative_deploy_cancelled) === 1) return 'closed'
+
+    const hasIntegratedCode = subtasks.some(subtask =>
+      subtask.completion_kind === 'code_change' || subtask.workspace_status === 'integrated',
     )
-    return rows[0]?.integration_confirmed_at != null
+    const allExplicitlyNonCode = subtasks.every(subtask =>
+      subtask.completion_kind != null && NON_CODE_COMPLETION_KINDS.has(String(subtask.completion_kind)),
+    )
+    return !hasIntegratedCode && allExplicitlyNonCode ? 'closed' : 'completed'
   }
 }
