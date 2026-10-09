@@ -34,6 +34,18 @@ function view(items = tarefas, onSelectTask = vi.fn(), filtros?: FiltrosMapa, on
 }
 
 describe("TaskFlowMap", () => {
+  it("separa Encerradas sem deploy de Canceladas", () => {
+    view([
+      { id: 801, titulo: "Validação", status: "closed", projetoId: 1 },
+      { id: 802, titulo: "Cancelada", status: "cancelled", projetoId: 1 },
+      { id: 803, titulo: "Abortada", status: "aborted", projetoId: 1 },
+    ])
+    expect(screen.getByTestId("flow-station-closed")).toHaveTextContent("Encerradas")
+    expect(screen.getByTestId("flow-count-closed")).toHaveTextContent("1")
+    expect(screen.getByTestId("flow-station-cancelled")).toHaveTextContent("Canceladas")
+    expect(screen.getByTestId("flow-count-cancelled")).toHaveTextContent("2")
+  })
+
   it("exibe o selo de recuperação somente para tarefas bloqueadas", () => {
     const eligibility = {
       state: "eligible" as const,
@@ -453,7 +465,7 @@ describe("TaskFlowMap — Legenda interativa", () => {
 })
 
 describe("TaskFlowMap — Estações com identidade visual (1.2)", () => {
-  it("renderiza 11 estações com ícones representativos", () => {
+  it("renderiza 12 estações com ícones representativos", () => {
     view()
     // Main flow: draft, planned, analyzing, ready, running, completed, deployed (7)
     // Side flow: waiting, repair, attention, closed (4)
@@ -469,6 +481,7 @@ describe("TaskFlowMap — Estações com identidade visual (1.2)", () => {
     expect(screen.getByTestId("flow-station-repair")).toBeInTheDocument()
     expect(screen.getByTestId("flow-station-attention")).toBeInTheDocument()
     expect(screen.getByTestId("flow-station-closed")).toBeInTheDocument()
+    expect(screen.getByTestId("flow-station-cancelled")).toBeInTheDocument()
   })
 
   it("contador em cada estação com badge circular (flow-count-*)", () => {
@@ -781,9 +794,9 @@ describe("TaskFlowMap — Cards informativos (1.3)", () => {
 describe("TaskFlowMap — Conectores SVG animados (2.1)", () => {
   it("renderiza conectores SVG horizontais entre estações (sem ArrowForwardRounded)", () => {
     view()
-    // 6 conectores no MAIN_FLOW (7 estações) + 3 no SIDE_FLOW (4 estações) = 9 total
+    // 6 conectores no MAIN_FLOW (7 estações) + 4 no SIDE_FLOW (5 estações) = 10 total
     const horizontalConnectors = screen.getAllByTestId("flow-connector-horizontal")
-    expect(horizontalConnectors).toHaveLength(9)
+    expect(horizontalConnectors).toHaveLength(10)
   })
 
   it("renderiza conector SVG vertical entre MAIN_FLOW e SIDE_FLOW (sem ArrowDownwardRounded)", () => {

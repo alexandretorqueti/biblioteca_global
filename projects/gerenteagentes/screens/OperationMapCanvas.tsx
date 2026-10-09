@@ -50,18 +50,19 @@ const EXCEPTION_STATIONS: Station[] = [
   { id: "waiting", label: "Aguardando", description: "resposta humana", statuses: ["awaiting_clarification", "paused"], tone: "warning" },
   { id: "repair", label: "Correção do motor", description: "motor corrigindo", statuses: ["motor_fix"], tone: "active" },
   { id: "attention", label: "Atenção", description: "intervenção necessária", statuses: ["blocked", "failed"], tone: "danger" },
-  { id: "closed", label: "Encerradas", description: "canceladas ou abortadas", statuses: ["cancelled", "aborted"], tone: "neutral" },
+  { id: "closed", label: "Encerradas", description: "finalizadas sem deploy", statuses: ["closed"], tone: "success" },
+  { id: "cancelled", label: "Canceladas", description: "canceladas ou abortadas", statuses: ["cancelled", "aborted"], tone: "neutral" },
 ]
 const ALL_STATIONS = [...MAIN_STATIONS, ...EXCEPTION_STATIONS]
 const STATUS_FILTERS = [
   { value: "active", label: "Em execução", statuses: ["running", "analyzing", "motor_fix"] },
   { value: "attention", label: "Atenção", statuses: ["blocked", "failed", "awaiting_clarification"] },
-  { value: "done", label: "Concluídas", statuses: ["completed", "finalizada", "deployed", "deployada"] },
+  { value: "done", label: "Concluídas", statuses: ["completed", "closed", "finalizada", "deployed", "deployada"] },
 ]
 const ICONS: Record<string, React.ComponentType<{ sx?: object }>> = {
   draft: EditNoteRounded, planned: ContentPasteRounded, analyzing: SearchRounded, ready: HourglassBottomRounded,
   running: SettingsRounded, completed: CheckCircleRounded, deployed: RocketLaunchRounded, waiting: PauseCircleRounded,
-  repair: BuildRounded, attention: WarningAmberRounded, closed: CheckCircleRounded,
+  repair: BuildRounded, attention: WarningAmberRounded, closed: CheckCircleRounded, cancelled: CheckCircleRounded,
 }
 
 const toneColor = (tone: StationTone): "text.disabled" | "primary.main" | "success.main" | "warning.main" | "error.main" => ({

@@ -166,7 +166,8 @@ export const SIDE_FLOW: FlowStation[] = [
   { id: "waiting", label: "Aguardando", subtitle: "pausa ou resposta humana", statuses: ["awaiting_clarification", "paused"], tone: "warning" },
   { id: "repair", label: "Correção do motor", subtitle: "IA corrigindo o fluxo", statuses: ["motor_fix"], tone: "active" },
   { id: "attention", label: "Atenção", subtitle: "exige intervenção", statuses: ["blocked", "failed"], tone: "danger" },
-  { id: "closed", label: "Encerradas", subtitle: "canceladas ou abortadas", statuses: ["cancelled", "aborted"], tone: "neutral" },
+  { id: "closed", label: "Encerradas", subtitle: "finalizadas sem deploy", statuses: ["closed"], tone: "success" },
+  { id: "cancelled", label: "Canceladas", subtitle: "canceladas ou abortadas", statuses: ["cancelled", "aborted"], tone: "neutral" },
 ]
 
 // Ícones representativos por estação (1.2)
@@ -182,6 +183,7 @@ const STATION_ICONS: Record<string, React.ComponentType<{ sx?: object }>> = {
   repair: BuildRounded,
   attention: WarningAmberRounded,
   closed: CancelRounded,
+  cancelled: CancelRounded,
 }
 
 const ACTIVE_AI_STATUSES = new Set(["analyzing", "running", "motor_fix"])
@@ -190,7 +192,7 @@ const ACTIVE_AI_STATUSES = new Set(["analyzing", "running", "motor_fix"])
 const STATUS_CHIP_GROUPS = {
   "em-execucao": { label: "Em execução", statuses: ["running", "analyzing", "motor_fix"] },
   "bloqueadas": { label: "Bloqueadas", statuses: ["blocked", "failed"] },
-  "concluidas": { label: "Concluídas", statuses: ["completed", "finalizada", "deployed", "deployada"] },
+  "concluidas": { label: "Concluídas", statuses: ["completed", "closed", "finalizada", "deployed", "deployada"] },
 } as const
 
 // Legenda interativa — mapeia tone para cor e emoji

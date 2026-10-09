@@ -71,7 +71,7 @@ export class TaskFactsStore {
     // teste: em produção, uma tarefa existente sempre retorna `id` aqui.
     if (!row || row.id == null) return legacyFallback ?? "planned"
     const { rows: subtaskRows } = await this.db.query(
-      "SELECT s.status FROM subtarefas s WHERE s.tarefa_id = ?",
+      "SELECT s.status, s.completion_kind, s.workspace_status FROM subtarefas s WHERE s.tarefa_id = ?",
       [Number(row.id)],
     )
     const facts: DerivedTaskStatusFacts = {
@@ -82,6 +82,8 @@ export class TaskFactsStore {
       analysisInProgress: row.analysis_started_at != null,
       hasPersistedPlan: subtaskRows.length > 0,
       subtaskStatuses: subtaskRows.map((subtask) => String(subtask.status)),
+      subtaskCompletionKinds: subtaskRows.map((subtask) => subtask.completion_kind == null ? null : String(subtask.completion_kind)),
+      subtaskWorkspaceStatuses: subtaskRows.map((subtask) => subtask.workspace_status == null ? null : String(subtask.workspace_status)),
       deploySucceeded: Number(row.deploy_succeeded ?? 0) === 1,
       deployFailed: Number(row.deploy_failed ?? 0) === 1,
       integrationConfirmed: row.integration_confirmed_at != null,

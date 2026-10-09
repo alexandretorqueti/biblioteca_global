@@ -37,7 +37,7 @@ import { sql } from "drizzle-orm"
 // Helper text espelhando motor-v2/src/shared/task-statuses.ts (fonte canônica).
 // Não importar de motor-v2 aqui: aquele pacote é ESM e este schema é CJS.
 const taskStatusesHelperText = (): string =>
-  "draft | planned | analyzing | awaiting_clarification | ready | running | paused | completed | deployed | blocked | motor_fix | failed | cancelled"
+  "draft | planned | analyzing | awaiting_clarification | ready | running | paused | completed | closed | deployed | blocked | motor_fix | failed | cancelled"
 const subtaskStatusesHelperText = (): string =>
   "pending | delivered | running | verifying | verified | rejected | blocked | completed | failed | skipped | rework | superseded"
 

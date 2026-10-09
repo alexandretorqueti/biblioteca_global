@@ -97,6 +97,24 @@ describe("deriveTaskStatus", () => {
     }))).toBe("completed")
   })
 
+  it("retorna closed para encerramento aprovado sem código integrado", () => {
+    expect(deriveTaskStatus(facts({
+      subtaskStatuses: ["verified", "superseded"],
+      subtaskCompletionKinds: ["analysis", "no_code_change"],
+      subtaskWorkspaceStatuses: ["approved", "approved"],
+      integrationConfirmed: true,
+    }))).toBe("closed")
+  })
+
+  it("mantém completed com código integrado, mesmo se a última subtarefa for analítica", () => {
+    expect(deriveTaskStatus(facts({
+      subtaskStatuses: ["verified", "verified"],
+      subtaskCompletionKinds: ["code_change", "analysis"],
+      subtaskWorkspaceStatuses: ["integrated", "approved"],
+      integrationConfirmed: true,
+    }))).toBe("completed")
+  })
+
   it("retorna ready quando há pendência, inclusive dependência aguardando", () => {
     expect(deriveTaskStatus(facts({
       hasPersistedPlan: true,

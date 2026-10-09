@@ -19,7 +19,7 @@ interface OperationalFeedPanelProps {
 const stateLabel: Record<string, string> = {
   sent: "enviada", received: "recebida", pending: "pendente", deferred: "adiada",
   delivered: "entregue", consumed: "consumida", failed: "falhou", running: "em execução",
-  blocked: "bloqueada", completed: "concluída", cancelled: "cancelada",
+  blocked: "bloqueada", completed: "concluída", closed: "encerrada", cancelled: "cancelada",
 }
 const categoryLabel: Record<FeedCategory, string> = { all: "Tudo", message: "Mensagens", event: "Atividades", pending_action: "Pendências" }
 const dateLabel = (value: string) => {

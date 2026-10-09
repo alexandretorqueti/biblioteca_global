@@ -56,29 +56,36 @@ o estado apresentado pela API e pela tela.
 6. `completed`
    - todas as subtarefas estão em `verified` ou `superseded`;
    - a integração necessária foi confirmada;
+   - existe subtarefa com `completion_kind='code_change'` ou `workspace_status='integrated'`;
    - ainda não há deploy confirmado.
 
-7. `completed` (deploy falhou)
+7. `closed`
+   - todas as subtarefas estão em `verified` ou `superseded`;
+   - a integração foi confirmada;
+   - todas possuem `completion_kind` explícito diferente de `code_change` e nenhuma possui `workspace_status='integrated'`;
+   - representa encerramento sem deploy e não permite nova execução nem confirmação manual de deploy.
+
+8. `completed` (deploy falhou)
    - todas as subtarefas estão em `verified` ou `superseded`;
    - o deploy foi solicitado mas falhou;
    - o desenvolvimento foi concluído; o deploy é etapa operacional separada.
 
-8. `blocked`
+9. `blocked`
    - existe bloqueio ativo e não resolvido que impede o fluxo.
    - não se aplica quando todas as subtarefas estão aprovadas (desenvolvimento
      concluído) — nesse caso, retorna `completed`.
 
-9. `paused`
+10. `paused`
     - o campo `paused_at` está preenchido e não há `resource_wait_key`;
     - a pausa não mascara estados finais já confirmados (`completed` ou
       `deployed`);
     - quando `resource_wait_key` está preenchido, segue para as regras abaixo.
 
-10. `ready`
+11. `ready`
     - há ao menos uma subtarefa pendente elegível ou aguardando dependências;
     - não existe subtarefa ativa, bloqueio ou clarificação pendente.
 
-11. `planned`
+12. `planned`
     - não há subtarefas e a tarefa ainda não iniciou análise;
     - ou não existe plano executável após edição administrativa do plano.
 
@@ -88,7 +95,7 @@ Pausa é um status de negócio para tarefas não finais.
 
 O campo factual `paused_at` impede a fila de selecionar a tarefa e faz o
 status calculado retornar `paused` enquanto a tarefa não tiver um estado final
-confirmado. Estados `completed` e `deployed` permanecem visíveis mesmo que uma
+confirmado. Estados `completed`, `closed` e `deployed` permanecem visíveis mesmo que uma
 pausa antiga ainda esteja registrada. Clarificação pendente, subtarefa bloqueada
 ou análise ativa continuam tendo precedência operacional sobre a pausa.
 
@@ -176,3 +183,10 @@ possuem `resolved_at`. O coordenador, a fila, a recuperação de deploys e o
 reconciliador usam esses fatos e não persistem mais transições em
 `tarefas.status`. O campo legado permanece apenas para leitura de registros
 anteriores à migration.
+
+## Estados finais
+
+- `completed`: há código integrado e a entrega aguarda deploy.
+- `closed`: as subtarefas aprovadas são explicitamente sem alteração de código; não há deploy pendente.
+- `deployed`: o deploy foi confirmado com sucesso.
+- `cancelled`: cancelamento administrativo; o legado `aborted` aparece no quadro **Canceladas**. Nenhum desses estados é materializado em `tarefas.status`.

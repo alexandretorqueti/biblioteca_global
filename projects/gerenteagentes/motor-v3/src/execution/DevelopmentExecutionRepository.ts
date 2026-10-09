@@ -3,6 +3,7 @@ import { createQueueMessage, type QueueMessage } from '../queue/QueueMessage.js'
 import { createTaskBlockedMessage } from '../monitor/TaskBlockedEvent.js'
 import { insertOutboxMessage } from '../queue/outboxInsert.js'
 import { cancelUnstartedDeployRequests } from '../deploy/DeployRequestFinalizer.js'
+import type { RealtimeMutationPublisher } from '../realtime/RealtimeMutationPublisher.js'
 
 export interface ReservedSubtask {
   message: QueueMessage<{ subtaskId: number; seq: number; title: string; scope: string }>
@@ -107,7 +108,7 @@ interface ActiveDevelopmentCountRow extends RowDataPacket {
  * transação. Assim, não existe o estado "subtarefa running sem mensagem".
  */
 export class MySqlDevelopmentExecutionRepository {
-  constructor(private readonly pool: Pool) {}
+  constructor(private readonly pool: Pool, private readonly realtime?: RealtimeMutationPublisher) {}
 
   /** Cadeia de modelos do programador, administrada pela Biblioteca. */
   async getDevelopmentModelChain(projectSlug: string): Promise<string[]> {
@@ -314,6 +315,7 @@ export class MySqlDevelopmentExecutionRepository {
       )
 
       await connection.commit()
+      await this.realtime?.publishSubtask(Number(task.id), Number(subtask.id), 'subtask.status.changed', 'pending')
       return { message, subtaskId: Number(subtask.id), seq: Number(subtask.seq) }
     } catch (error) {
       await connection.rollback()
@@ -422,6 +424,7 @@ export class MySqlDevelopmentExecutionRepository {
     evidence: { commitSha: string; integrationCommitSha: string },
   ): Promise<{ verified: QueueMessage; next: QueueMessage }> {
     const connection = await this.pool.getConnection()
+    let taskReachedTerminal = false
     try {
       await connection.beginTransaction()
       // Suprime a rede de segurança do trigger (camada A): esta transação é o
@@ -462,6 +465,7 @@ export class MySqlDevelopmentExecutionRepository {
            ON DUPLICATE KEY UPDATE terminal_status = 'completed', terminal_at = NOW(), integration_confirmed_at = NOW(), updated_at = NOW()`,
           [context.databaseTaskId],
         )
+        taskReachedTerminal = true
         next = createQueueMessage({
           type: 'TASK_EXECUTION_COMPLETED', taskId: context.taskId, executionId: source.executionId,
           correlationId: source.correlationId ?? source.messageId, causationId: verified.messageId,
@@ -504,6 +508,8 @@ export class MySqlDevelopmentExecutionRepository {
         await this.wakeCapacityWaiters(connection, next)
       }
       await connection.commit()
+      await this.realtime?.publishSubtask(context.databaseTaskId, context.subtaskId, 'subtask.status.changed', 'verifying')
+      if (taskReachedTerminal) await this.realtime?.publishTask(context.databaseTaskId, 'task.status.changed', { status: 'completed' })
       return { verified, next }
     } catch (error) {
       await connection.rollback()
@@ -721,6 +727,7 @@ export class MySqlDevelopmentExecutionRepository {
       }
       if (!result.success) await this.wakeCapacityWaiters(connection, message)
       await connection.commit()
+      await this.realtime?.publishSubtask(context.databaseTaskId, context.subtaskId, 'subtask.status.changed', 'running')
       return message
     } catch (error) {
       await connection.rollback()
@@ -838,6 +845,7 @@ export class MySqlDevelopmentExecutionRepository {
     inferLegacyNoCodeChange = false,
   ): Promise<QueueMessage> {
     const connection = await this.pool.getConnection()
+    let taskReachedTerminal = false
     try {
       await connection.beginTransaction()
       // Suprime a rede de segurança do trigger (camada A): esta transação é o
@@ -886,6 +894,7 @@ export class MySqlDevelopmentExecutionRepository {
          ON DUPLICATE KEY UPDATE terminal_status='completed',terminal_at=NOW(),integration_confirmed_at=NOW(),updated_at=NOW()`,
         [context.databaseTaskId],
       )
+      taskReachedTerminal = true
       const taskCompleted = createQueueMessage({
         type: 'TASK_EXECUTION_COMPLETED', taskId: context.taskId, executionId: source.executionId,
         correlationId: source.correlationId ?? source.messageId, causationId: completed.messageId,
@@ -905,6 +914,8 @@ export class MySqlDevelopmentExecutionRepository {
       }
       await this.wakeCapacityWaiters(connection, taskCompleted)
       await connection.commit()
+      await this.realtime?.publishSubtask(context.databaseTaskId, context.subtaskId, 'subtask.status.changed', 'running')
+      if (taskReachedTerminal) await this.realtime?.publishTask(context.databaseTaskId, 'task.status.changed', { status: 'completed' })
       return taskCompleted
     } catch (error) {
       await connection.rollback()
@@ -943,6 +954,7 @@ export class MySqlDevelopmentExecutionRepository {
       })
       await this.insertOutbox(connection, message)
       await connection.commit()
+      await this.realtime?.publishSubtask(context.databaseTaskId, context.subtaskId, 'subtask.status.changed', from)
       return message
     } catch (error) {
       await connection.rollback()

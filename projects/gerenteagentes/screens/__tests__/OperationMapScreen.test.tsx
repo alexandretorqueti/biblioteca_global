@@ -221,7 +221,7 @@ describe("OperationMapScreen — resultado da subtarefa na aba Execução", () =
     delete globalThis.__bundleMapa
   })
 
-  function bundleComSubtarefas(tarefaId: number, subtarefas: Array<{ seq: number; titulo: string; status: string; resultado: string | null }>) {
+  function bundleComSubtarefas(tarefaId: number, subtarefas: Array<{ seq: number; titulo: string; status: string; resultado: string | null; blockInfo?: { reason: string } | null }>) {
     return {
       getAccessToken: () => "token-de-teste",
       http: {
@@ -240,6 +240,7 @@ describe("OperationMapScreen — resultado da subtarefa na aba Execução", () =
                 title: s.titulo,
                 status: s.status,
                 resultado: s.resultado,
+                blockInfo: s.blockInfo,
                 deliverCount: 1,
                 scope: "Escopo",
                 acceptanceCriteria: [],
@@ -320,6 +321,19 @@ describe("OperationMapScreen — resultado da subtarefa na aba Execução", () =
     const resultado = await screen.findByTestId("subtask-result-1")
     expect(resultado).toBeInTheDocument()
     expect(getComputedStyle(resultado).color).toBe("rgb(255, 255, 255)")
+  })
+
+  it("exibe o motivo do bloqueio ativo abaixo da subtarefa", async () => {
+    globalThis.__bundleMapa = bundleComSubtarefas(15, [
+      { seq: 1, titulo: "Subtarefa bloqueada", status: "blocked", resultado: null, blockInfo: { reason: "Aguardando credencial do ambiente." } },
+      { seq: 2, titulo: "Outra subtarefa", status: "pending", resultado: null },
+    ])
+    renderScreen()
+    await abrirAbaExecucao(15)
+
+    expect(await screen.findByTestId("subtask-block-1")).toHaveTextContent("Motivo do bloqueio: Aguardando credencial do ambiente.")
+    expect(screen.queryByTestId("subtask-block-2")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("subtask-result-1")).not.toBeInTheDocument()
   })
 
   it("aplica tipografia sans-serif e tamanho aumentado no resultado", async () => {
