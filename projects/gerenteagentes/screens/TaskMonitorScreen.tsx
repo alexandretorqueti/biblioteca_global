@@ -1844,7 +1844,7 @@ export default function TaskMonitorScreen(): ReactNode {
                 color="error"
                 variant="outlined"
                 startIcon={<CloseRounded />}
-                disabled={acao !== null || statusMotor === "cancelled" || statusMotor === "completed" || statusMotor === "deployed"}
+                disabled={acao !== null || statusMotor === "cancelled" || statusMotor === "closed" || statusMotor === "completed" || statusMotor === "deployed"}
                 onClick={() => void cancelarTarefaId(Number(tarefaId))}
                 data-testid="btn-cancel"
               >

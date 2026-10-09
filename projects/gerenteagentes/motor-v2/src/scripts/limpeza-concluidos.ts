@@ -98,16 +98,16 @@ export async function selecionar(db: Db): Promise<SelectedTask[]> {
     "LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id=t.projeto_id " +
     "LEFT JOIN task_runtime_facts f ON f.tarefa_id=t.id ORDER BY t.id",
   )
-  const subtasks = await db.query("SELECT tarefa_id, status FROM subtarefas ORDER BY tarefa_id, id")
-  const byTask = new Map<string, string[]>()
+  const subtasks = await db.query("SELECT tarefa_id, status, completion_kind, workspace_status FROM subtarefas ORDER BY tarefa_id, id")
+  const byTask = new Map<string, Array<{ status: string; completionKind: string | null; workspaceStatus: string | null }>>()
   for (const row of subtasks.rows) {
     const key = String(row.tarefa_id)
     const values = byTask.get(key) ?? []
-    values.push(String(row.status))
+    values.push({ status: String(row.status), completionKind: row.completion_kind == null ? null : String(row.completion_kind), workspaceStatus: row.workspace_status == null ? null : String(row.workspace_status) })
     byTask.set(key, values)
   }
   return result.rows.map((row) => {
-    const statuses = byTask.get(String(row.id)) ?? []
+    const taskSubtasks = byTask.get(String(row.id)) ?? []
     const facts: DerivedTaskStatusFacts = {
       terminalStatus: row.terminal_status == null ? null : String(row.terminal_status),
       hasPendingClarification: row.last_clarification_role === "analyst",
@@ -115,7 +115,9 @@ export async function selecionar(db: Db): Promise<SelectedTask[]> {
       hasActiveBlocker: flag(row, "active_blocker"),
       analysisInProgress: row.analysis_started_at != null,
       hasPersistedPlan: flag(row, "has_subtasks"),
-      subtaskStatuses: statuses,
+      subtaskStatuses: taskSubtasks.map((subtask) => subtask.status),
+      subtaskCompletionKinds: taskSubtasks.map((subtask) => subtask.completionKind),
+      subtaskWorkspaceStatuses: taskSubtasks.map((subtask) => subtask.workspaceStatus),
       deploySucceeded: flag(row, "deploy_succeeded"),
       deployFailed: flag(row, "deploy_failed"),
       integrationConfirmed: row.integration_confirmed_at != null,

@@ -50,6 +50,7 @@ const STATUS_TAREFA_LABEL: Record<string, string> = {
   running: "Em execução",
   paused: "Pausada",
   completed: "Concluída",
+  closed: "Encerrada",
   failed: "Falhou",
   cancelled: "Cancelada",
 }
@@ -60,6 +61,7 @@ const STATUS_CHIP: Record<string, "default" | "success" | "warning" | "error" | 
   running: "warning",
   paused: "default",
   completed: "success",
+  closed: "success",
   failed: "error",
   cancelled: "error",
 }

@@ -32,6 +32,7 @@ describe("deriveTaskPriority", () => {
     expect(deriveTaskPriority("draft")).toBe("baixa")
     expect(deriveTaskPriority("planned")).toBe("baixa")
     expect(deriveTaskPriority("completed")).toBe("baixa")
+    expect(deriveTaskPriority("closed")).toBe("baixa")
     expect(deriveTaskPriority("deployed")).toBe("baixa")
     expect(deriveTaskPriority("cancelled")).toBe("baixa")
     expect(deriveTaskPriority("finalizada")).toBe("baixa")
@@ -176,9 +177,10 @@ describe("calcularMetricas", () => {
       { id: 4, status: "deployada", projetoId: 1, updatedAt: "2026-09-10T08:00:00Z" },
       { id: 5, status: "completed", projetoId: 1, updatedAt: "2026-09-09T10:00:00Z" }, // ontem
       { id: 6, status: "running", projetoId: 1, updatedAt: "2026-09-10T10:00:00Z" }, // não concluída
+      { id: 7, status: "closed", projetoId: 1, updatedAt: "2026-09-10T10:00:00Z" },
     ]
     const metricas = calcularMetricas(tarefas, agora)
-    expect(metricas.concluidasHoje).toBe(4)
+    expect(metricas.concluidasHoje).toBe(5)
   })
 
   it("calcula tarefas bloqueadas (blocked/failed)", () => {
@@ -234,6 +236,8 @@ describe("calcularMetricas", () => {
     expect(metricas.porEstacao.analyzing).toBe(1)
     expect(metricas.porEstacao.running).toBe(1)
     expect(metricas.porEstacao.completed).toBe(1)
+    expect(metricas.porEstacao.closed).toBe(0)
+    expect(metricas.porEstacao.cancelled).toBe(0)
     expect(metricas.porEstacao.attention).toBe(1)
     expect(metricas.porEstacao.deployed).toBe(0)
   })

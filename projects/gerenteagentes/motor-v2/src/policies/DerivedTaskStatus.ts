@@ -17,6 +17,9 @@ export interface DerivedTaskStatusFacts {
   analysisInProgress: boolean
   hasPersistedPlan: boolean
   subtaskStatuses: readonly string[]
+  /** Fatos canônicos das subtarefas, usados para decidir se há entrega de código. */
+  subtaskCompletionKinds?: readonly (string | null | undefined)[]
+  subtaskWorkspaceStatuses?: readonly (string | null | undefined)[]
   deploySucceeded: boolean
   deployFailed: boolean
   integrationConfirmed: boolean
@@ -28,11 +31,20 @@ const APPROVED_SUBTASK_STATUSES = new Set(["verified", "superseded"])
 const ACTIVE_SUBTASK_STATUSES = new Set(["running", "delivered", "verifying"])
 const BLOCKED_SUBTASK_STATUSES = new Set(["blocked"])
 const FAILED_SUBTASK_STATUSES = new Set(["failed"])
+const NON_CODE_COMPLETION_KINDS = new Set(["analysis", "no_code_change", "external_operation"])
 const ADMINISTRATIVE_TERMINAL_STATUSES = new Set<TaskStatus>([
   "cancelled",
   "failed",
   "motor_fix",
 ])
+
+function completedStatus(facts: DerivedTaskStatusFacts): "completed" | "closed" {
+  const hasIntegratedCode = facts.subtaskCompletionKinds?.some((kind) => kind === "code_change") ||
+    facts.subtaskWorkspaceStatuses?.some((status) => status === "integrated")
+  const allSubtasksExplicitlyNonCode = facts.subtaskCompletionKinds?.length === facts.subtaskStatuses.length &&
+    facts.subtaskCompletionKinds.every((kind) => kind != null && NON_CODE_COMPLETION_KINDS.has(kind))
+  return !hasIntegratedCode && allSubtasksExplicitlyNonCode ? "closed" : "completed"
+}
 
 /**
  * Calcula o status visível da tarefa a partir dos fatos persistidos.
@@ -51,7 +63,8 @@ export function deriveTaskStatus(facts: DerivedTaskStatusFacts): TaskStatus {
   // esconder uma conclusão ou deploy já confirmado.
   if (facts.pausedAt && !facts.resourceWaitKey) {
     if (facts.deploySucceeded) return "deployed"
-    if (allSubtasksApproved && (facts.integrationConfirmed || facts.deployFailed)) return "completed"
+    if (allSubtasksApproved && facts.integrationConfirmed) return completedStatus(facts)
+    if (allSubtasksApproved && facts.deployFailed) return "completed"
     if (!hasSubtasks) return "draft"
     return "paused"
   }
@@ -66,7 +79,7 @@ export function deriveTaskStatus(facts: DerivedTaskStatusFacts): TaskStatus {
   if (facts.subtaskStatuses.some((status) => ACTIVE_SUBTASK_STATUSES.has(status))) return "running"
   if (facts.deploySucceeded) return "deployed"
 
-  if (allSubtasksApproved && facts.integrationConfirmed) return "completed"
+  if (allSubtasksApproved && facts.integrationConfirmed) return completedStatus(facts)
 
   // Bug 801: Se todas as subtarefas estão aprovadas mas o deploy falhou,
   // o desenvolvimento foi concluído — retornar "completed" (deploy é etapa

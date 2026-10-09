@@ -27,6 +27,7 @@ export const TASK_STATUSES = [
   "running",
   "paused",
   "completed",
+  "closed",
   "deployed",
   "blocked",
   "motor_fix",
@@ -67,6 +68,7 @@ export const TASK_STATUS_LABELS: Record<string, string> = {
   running: "Em execução",
   paused: "Pausada",
   completed: "Concluída",
+  closed: "Encerrada",
   deployed: "Deployada",
   blocked: "Bloqueada",
   motor_fix: "Correção do motor",
@@ -85,6 +87,7 @@ export const TASK_STATUS_COLORS: Record<
 > = {
   // Sucesso (finalizados com êxito)
   completed: "success",
+  closed: "success",
   deployed: "success",
   finalizada: "success",
   deployada: "success",
@@ -110,6 +113,7 @@ export const TASK_STATUS_COLORS: Record<
 /** Status finais — tarefa não executa mais. */
 export const TASK_STATUS_FINAIS = new Set<string>([
   "completed",
+  "closed",
   "deployed",
   "cancelled",
   "failed",

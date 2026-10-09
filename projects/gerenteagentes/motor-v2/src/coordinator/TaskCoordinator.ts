@@ -2486,7 +2486,7 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
     const task = await this.repository.getTask(taskId)
     if (!task) throw new Error("Tarefa " + taskId + " nao encontrada")
     const status = await this.facts.derive(taskId)
-    if (status === "completed" || status === "cancelled") {
+    if (status === "completed" || status === "closed" || status === "cancelled") {
       throw new Error("Tarefa " + taskId + " ja esta " + status)
     }
     for (const [executionId, worker] of this.activeWorkers.entries()) {
@@ -3021,7 +3021,7 @@ export class TaskCoordinator implements PromotionConflictPromoterPort, Promotion
   /** Fecha a sessão principal somente quando a tarefa inteira chegou a estado final. */
   private async closeTaskSessionIfTerminal(taskId: string): Promise<void> {
     const task = await this.repository.getTask(taskId)
-    if (!task || !["completed", "deployed", "failed", "cancelled", "finalizada", "deployada", "aborted"].includes(String(task.status))) return
+    if (!task || !["completed", "closed", "deployed", "failed", "cancelled", "finalizada", "deployada", "aborted"].includes(String(task.status))) return
     const lookup = taskIdentifierLookup(taskId, "t")
     const { rows } = await this.db.query(
       "SELECT sessao_chave, agent_id FROM tarefa_contextos_execucao WHERE tarefa_id=(SELECT t.id FROM tarefas t WHERE " + lookup.sql + " LIMIT 1) AND sessao_chave LIKE 'dev-motor:tarefa:%' ORDER BY updated_at DESC LIMIT 1",

@@ -50,7 +50,7 @@ export interface TarefaParaMetricas {
  * Estratégia:
  * - alta: status que exigem ação imediata (blocked, failed, motor_fix)
  * - media: status em andamento ou aguardando (analyzing, running, paused, awaiting_clarification, ready)
- * - baixa: status finais ou iniciais (draft, planned, completed, deployed, cancelled, finalizada, deployada, aborted)
+ * - baixa: status finais ou iniciais (draft, planned, completed, closed, deployed, cancelled, finalizada, deployada, aborted)
  */
 export const PRIORIDADE_POR_STATUS: Record<string, Prioridade> = {
   // Status atuais (TASK_STATUSES)
@@ -65,6 +65,7 @@ export const PRIORIDADE_POR_STATUS: Record<string, Prioridade> = {
   running: "media",
   paused: "media",
   completed: "baixa",
+  closed: "baixa",
   deployed: "baixa",
   blocked: "alta",
   motor_fix: "alta",
@@ -177,7 +178,7 @@ const STATUS_EM_ANDAMENTO = new Set(["analyzing", "running", "motor_fix"])
 /**
  * Status que indicam tarefa concluída hoje.
  */
-const STATUS_CONCLUIDOS = new Set(["completed", "finalizada", "deployed", "deployada"])
+const STATUS_CONCLUIDOS = new Set(["completed", "closed", "finalizada", "deployed", "deployada"])
 
 /**
  * Status que indicam tarefa bloqueada.
@@ -194,11 +195,12 @@ const ESTACOES = {
   ready: ["ready"],
   running: ["running"],
   completed: ["completed", "finalizada"],
+  closed: ["closed"],
   deployed: ["deployed", "deployada"],
   waiting: ["awaiting_clarification", "paused"],
   repair: ["motor_fix"],
   attention: ["blocked", "failed"],
-  closed: ["cancelled", "aborted"],
+  cancelled: ["cancelled", "aborted"],
 } as const
 
 /**
@@ -245,7 +247,7 @@ function formatDuracao(minutos: number): string {
  *
  * - total: total de tarefas
  * - emAndamento: tarefas em analyzing/running/motor_fix
- * - concluidasHoje: tarefas completed/finalizada/deployed/deployada com updatedAt no dia
+ * - concluidasHoje: tarefas completed/closed/finalizada/deployed/deployada com updatedAt no dia
  * - bloqueadas: tarefas blocked/failed
  * - tempoMedioExecucao: média de updatedAt-createdAt das concluídas (formato "2h 15min" ou "—")
  * - porEstacao: contagem por id de estação

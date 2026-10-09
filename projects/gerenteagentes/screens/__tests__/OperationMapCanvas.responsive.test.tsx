@@ -93,6 +93,7 @@ describe("OperationMapCanvas — responsividade", () => {
     expect(screen.getByTestId("operation-station-repair")).toBeInTheDocument()
     expect(screen.getByTestId("operation-station-attention")).toBeInTheDocument()
     expect(screen.getByTestId("operation-station-closed")).toBeInTheDocument()
+    expect(screen.getByTestId("operation-station-cancelled")).toBeInTheDocument()
   })
 
   it("renderiza todas as estações em telas pequenas (768px) sem overflow horizontal", () => {
@@ -146,6 +147,18 @@ describe("OperationMapCanvas — responsividade", () => {
     expect(screen.getByTestId("operation-count-draft")).toHaveTextContent("2")
     expect(screen.getByTestId("operation-count-running")).toHaveTextContent("1")
     expect(screen.getByTestId("operation-count-completed")).toHaveTextContent("1")
+  })
+
+  it("separa tarefas encerradas sem deploy das canceladas", () => {
+    renderCanvas([
+      tarefaFactory(1, "Verificação", "closed"),
+      tarefaFactory(2, "Cancelada", "cancelled"),
+      tarefaFactory(3, "Abortada", "aborted"),
+    ] as FlowTask[], 1280)
+    expect(screen.getByTestId("operation-station-closed")).toHaveTextContent("Encerradas")
+    expect(screen.getByTestId("operation-count-closed")).toHaveTextContent("1")
+    expect(screen.getByTestId("operation-station-cancelled")).toHaveTextContent("Canceladas")
+    expect(screen.getByTestId("operation-count-cancelled")).toHaveTextContent("2")
   })
 
   it("mantém conectores visíveis entre estações em telas largas", () => {
