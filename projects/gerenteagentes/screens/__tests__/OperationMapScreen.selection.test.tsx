@@ -65,7 +65,7 @@ function tarefaFactory(
   }
 }
 
-function bundleFalso(tarefas: TarefaFake[]) {
+function bundleFalso(tarefas: TarefaFake[], subtasks: unknown[] = []) {
   return {
     getAccessToken: () => "token-de-teste",
     http: {
@@ -79,7 +79,9 @@ function bundleFalso(tarefas: TarefaFake[]) {
           return { canStart: true, reasons: [], pendingRequests: 0 }
         }
         if (path.endsWith("/motor-detail")) {
-          return { motorId: "m1", exists: false, message: "Não enviada" }
+          return subtasks.length
+            ? { motorId: "m1", exists: true, task: { status: "running", title: "Tarefa" }, subtasks }
+            : { motorId: "m1", exists: false, message: "Não enviada" }
         }
         if (path.endsWith("/subtarefas")) return []
         if (path.endsWith("/chat")) return []
@@ -217,6 +219,22 @@ describe("OperationMapScreen — comportamento do detalhe em telas pequenas e la
     vi.restoreAllMocks()
     delete globalThis.__bundleMapa
     mockIsWideScreen = false
+  })
+
+  it("exibe bloqueio e resultado no painel amplo", async () => {
+    mockIsWideScreen = true
+    globalThis.__bundleMapa = bundleFalso(
+      [tarefaFactory(1, "Tarefa", "running")],
+      [{ seq: 1, title: "Subtarefa", status: "blocked", resultado: "Resultado persistido", blockInfo: { reason: "Bloqueio ativo" } }],
+    )
+    renderScreen()
+
+    await screen.findByTestId("detail-content")
+    await waitFor(() => {
+      fireEvent.click(screen.getByRole("tab", { name: "Execução" }))
+      expect(screen.getByTestId("subtask-block-1")).toHaveTextContent("Bloqueio ativo")
+    })
+    expect(screen.getByTestId("subtask-result-1")).toHaveTextContent("Resultado persistido")
   })
 
   it("em telas largas (>= 1280px), detalhe aparece como coluna lateral", async () => {

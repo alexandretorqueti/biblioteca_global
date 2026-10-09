@@ -2276,6 +2276,30 @@ export class GerenteAgentesService {
         .from(subtarefas)
         .where(eq(subtarefas.tarefaId, tarefaId))
         .orderBy(subtarefas.seq);
+
+      // `bloqueios` é a fonte canônica para bloqueios. Só os ainda ativos e
+      // associados explicitamente a uma subtarefa devem aparecer no seu item;
+      // bloqueios da tarefa (subtarefa_id NULL) não pertencem a nenhuma delas.
+      const bloqueiosAtivos = await db
+        .select({
+          subtarefaId: bloqueios.subtarefaId,
+          reason: bloqueios.blockReason,
+          command: bloqueios.blockCommand,
+          exitCode: bloqueios.blockExitCode,
+          excerpt: bloqueios.blockExcerpt,
+        })
+        .from(bloqueios)
+        .where(and(
+          eq(bloqueios.tarefaId, tarefaId),
+          isNull(bloqueios.resolvedAt),
+        ))
+        .orderBy(desc(bloqueios.blockedAt), desc(bloqueios.createdAt));
+      const bloqueioAtivoPorSubtarefa = new Map<number, typeof bloqueiosAtivos[number]>();
+      for (const bloqueio of bloqueiosAtivos) {
+        if (bloqueio.subtarefaId != null && !bloqueioAtivoPorSubtarefa.has(bloqueio.subtarefaId)) {
+          bloqueioAtivoPorSubtarefa.set(bloqueio.subtarefaId, bloqueio);
+        }
+      }
       
       // Monta mapa de deliveryHistory vindo do motor (pass-through por seq)
       const motorHistoryBySeq = new Map<number, Array<{
@@ -2293,13 +2317,20 @@ export class GerenteAgentesService {
       }
 
       // Converte para o formato esperado pelo front-end
-      const subtasks = subtarefasList.map(s => ({
+      const subtasks = subtarefasList.map(s => {
+        const bloqueio = bloqueioAtivoPorSubtarefa.get(s.id);
+        return {
         id: s.id,
         seq: s.seq,
         title: s.titulo,
         status: s.status,
         deliverCount: s.deliverCount,
-        blockInfo: null, // bloqueios reais vêm da tabela `bloqueios` (tarefa nível), não do resultado
+        resultado: s.resultado ?? null,
+        blockInfo: bloqueio ? {
+          reason: bloqueio.reason ?? bloqueio.excerpt ?? 'Subtarefa bloqueada',
+          command: bloqueio.command ?? undefined,
+          exitCode: bloqueio.exitCode ?? null,
+        } : null,
         scope: s.scope ?? null,
         acceptanceCriteria: s.acceptanceCriteria ?? null,
         workspaceStatus: s.workspaceStatus ?? null,
@@ -2307,7 +2338,8 @@ export class GerenteAgentesService {
         workspaceCommitSha: s.workspaceCommitSha ?? null,
         correctionForSubtaskId: s.correctionForSubtaskId ?? null,
         deliveryHistory: motorHistoryBySeq.get(s.seq) ?? [],
-      }));
+        };
+      });
       
       // Encontra subtarefa atual (running, verifying, etc)
       const currentSubTask = subtasks.find(s => 
