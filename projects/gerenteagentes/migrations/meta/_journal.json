@@ -568,6 +568,13 @@
       "when": 1791475201001,
       "tag": "0069_motor_v3_governance_conditions",
       "breakpoints": true
+    },
+    {
+      "idx": 81,
+      "version": "5",
+      "when": 1791600000000,
+      "tag": "0081_deploy_script_relocation",
+      "breakpoints": true
     }
   ]
 }

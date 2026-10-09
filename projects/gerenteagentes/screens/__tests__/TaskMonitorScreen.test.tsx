@@ -10,7 +10,7 @@ import { render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import "@testing-library/jest-dom/vitest"
 import { BibliotecaThemeProvider } from "@biblioteca-global/ui"
-import { SUBTASK_STATUS_OPTIONS } from "../../motor-v2/src/shared/task-statuses"
+import { SUBTASK_STATUS_OPTIONS } from "../../src/shared/task-statuses"
 
 import TaskMonitorScreen from "../TaskMonitorScreen"
 

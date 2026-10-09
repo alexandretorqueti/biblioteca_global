@@ -12,16 +12,8 @@ import type {
   RealtimeIngressEvent,
 } from '@biblioteca-global/shared';
 import { ProjectModelSelectionSchema } from '@biblioteca-global/shared';
-type GlobalModelSelectionTipo = 'DEV' | 'ANALYST' | 'MONITOR';
-type GlobalModelSelectionEntry = { ordem: number; provider: string; model: string; enabled: boolean };
-type GlobalModelSelection = Record<GlobalModelSelectionTipo, GlobalModelSelectionEntry[]>;
-
-// A API é CommonJS e executa o código-fonte montado pelo host. O módulo do
-// motor é ESM e seu .js compilado fica oculto pelo bind-mount; carregar o .ts
-// pelo registrador SWC preserva um único validador em runtime.
-const { parseGlobalModelSelection } = require('../motor-v2/src/shared/global-model-selection.ts') as {
-  parseGlobalModelSelection(input: unknown): GlobalModelSelection;
-};
+import { parseGlobalModelSelection, type GlobalModelSelection, type GlobalModelSelectionTipo } from '../src/shared/global-model-selection';
+import { TASK_STATUS_FINAIS } from '../src/shared/task-statuses';
 import { PROJECT_DB_FACTORY, type ProjectDbFactory } from '../../../apps/api/src/modules/crud/project-db.factory';
 import { SCHEMA_REGISTRY, type SchemaRegistry } from '../../../apps/api/src/modules/crud/schema-registry';
 import {
@@ -56,7 +48,7 @@ import {
   configuracaoPorChave,
   type MotorConfiguracaoResposta,
 } from './motor-configuracoes.catalog';
-import type { PromptPart } from '../motor-v2/dist/prompts/PromptComposition.js' with { "resolution-mode": "import" };
+import type { PromptPart } from '../src/prompts/PromptComposition';
 import { ProvisionService } from '../../../apps/api/src/modules/provision/provision.service';
 import { RealtimeService } from '../../../apps/api/src/modules/realtime/realtime.service';
 import { GitInspectorService } from './git-inspector.service';
@@ -678,7 +670,7 @@ export class GerenteAgentesService {
   }
 
   private async catalogEntry(chave: string) {
-    const { AGENT_PROMPT_CATALOG } = await import('../motor-v2/dist/prompts/prompt-catalog.js');
+    const { AGENT_PROMPT_CATALOG } = await import('../src/prompts/prompt-catalog');
     const entry = AGENT_PROMPT_CATALOG.find((item) => item.key === chave);
     if (!entry) throw new BadRequestException(`Prompt desconhecido: ${chave}`);
     return entry;
@@ -687,9 +679,9 @@ export class GerenteAgentesService {
   /** Sincroniza metadados canônicos sem sobrescrever textos editados. */
   private async sincronizarCatalogoPrompts() {
     const [{ AGENT_PROMPT_CATALOG }, { OUTPUT_CONTRACT_CATALOG }, { validatePromptTemplate }] = await Promise.all([
-      import('../motor-v2/dist/prompts/prompt-catalog.js'),
-      import('../motor-v2/dist/prompts/output-contract-catalog.js'),
-      import('../motor-v2/dist/prompts/PromptTemplateEngine.js'),
+      import('../src/prompts/prompt-catalog'),
+      import('../src/prompts/output-contract-catalog'),
+      import('../src/prompts/PromptTemplateEngine'),
     ]);
     const db = await this.dbDoMotor();
     const activeContracts = new Map<string, number>();
@@ -783,7 +775,7 @@ export class GerenteAgentesService {
     const [prompt] = await db.select().from(promptsAgentes).where(eq(promptsAgentes.id, id)).limit(1);
     if (!prompt) throw new NotFoundException('Prompt não encontrado');
     const entry = await this.catalogEntry(prompt.chave);
-    const { validatePromptTemplate } = await import('../motor-v2/dist/prompts/PromptTemplateEngine.js');
+    const { validatePromptTemplate } = await import('../src/prompts/PromptTemplateEngine');
     const allowed = [...entry.markers, ...(entry.contractKey ? ['**CONTRATOSAIDA**'] : [])];
     const validation = validatePromptTemplate(texto, allowed, entry.contractKey ? ['**CONTRATOSAIDA**'] : []);
     if (!validation.ok) throw new BadRequestException({ message: 'Máscaras inválidas', validation });
@@ -801,7 +793,7 @@ export class GerenteAgentesService {
     const [prompt] = await db.select().from(promptsAgentes).where(eq(promptsAgentes.id, promptId)).limit(1);
     if (!prompt) throw new NotFoundException('Prompt não encontrado');
     const entry = await this.catalogEntry(prompt.chave);
-    const { validatePromptTemplate } = await import('../motor-v2/dist/prompts/PromptTemplateEngine.js');
+    const { validatePromptTemplate } = await import('../src/prompts/PromptTemplateEngine');
     const validation = validatePromptTemplate(version.texto, [...entry.markers, ...(entry.contractKey ? ['**CONTRATOSAIDA**'] : [])], entry.contractKey ? ['**CONTRATOSAIDA**'] : []);
     if (entry.contractKey && !version.contratoVersaoId) throw new BadRequestException('Selecione uma versão de contrato para publicar este prompt');
     if (!validation.ok) throw new BadRequestException({ message: 'Versão inválida', validation });
@@ -833,8 +825,8 @@ export class GerenteAgentesService {
     const [prompt] = await db.select().from(promptsAgentes).where(eq(promptsAgentes.id, id)).limit(1);
     if (!prompt) throw new NotFoundException('Prompt não encontrado');
     const entry = await this.catalogEntry(prompt.chave);
-    const { markersIn, renderPromptTemplate, validatePromptTemplate } = await import('../motor-v2/dist/prompts/PromptTemplateEngine.js');
-    const { composeDevelopmentPrompt } = await import('../motor-v2/dist/prompts/PromptComposition.js');
+    const { markersIn, renderPromptTemplate, validatePromptTemplate } = await import('../src/prompts/PromptTemplateEngine');
+    const { composeDevelopmentPrompt } = await import('../src/prompts/PromptComposition');
     const validation = validatePromptTemplate(texto, [...entry.markers, ...(entry.contractKey ? ['**CONTRATOSAIDA**'] : [])], entry.contractKey ? ['**CONTRATOSAIDA**'] : []);
     if (!validation.ok) return { validation, rendered: null };
     let contractInstructions = '';
@@ -1192,7 +1184,6 @@ export class GerenteAgentesService {
       .where(eq(taskRuntimeFacts.tarefaId, tarefaId))
       .limit(1);
 
-    const { TASK_STATUS_FINAIS } = await import('../motor-v2/dist/shared/task-statuses.js');
     if (fact?.terminalStatus && TASK_STATUS_FINAIS.has(fact.terminalStatus)) {
       throw new BadRequestException(`Não é possível pausar tarefa em status final: ${fact.terminalStatus}`);
     }

@@ -21,7 +21,7 @@ import type { GeradorSistemaConfig } from "@biblioteca-global/shared"
 import {
   TASK_STATUS_FINAIS,
   SUBTASK_STATUS_OPTIONS,
-} from "./motor-v2/src/shared/task-statuses"
+} from "./src/shared/task-statuses"
 
 export const config: GeradorSistemaConfig = {
   app: { name: "Gerente Agentes", logo: "smart_toy" },

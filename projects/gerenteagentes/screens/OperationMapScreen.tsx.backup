@@ -25,7 +25,7 @@ import { resolveApiBaseUrl, resolveRealtimeUrl } from "../../../apps/web/src/api
 import TarefaForm, { type TarefaFormValues } from "./TarefaForm"
 import OperationMapCanvas from "./OperationMapCanvas"
 import { recoveryEligibilityLabel, RecoveryEligibilityTooltipContent, type FiltrosMapa, type FlowTask, type MotorActivity, type RecoveryEligibility } from "./TaskFlowMap"
-import { SUBTASK_STATUS_OPTIONS, TASK_STATUS_EXECUTING, TASK_STATUS_FINAIS, TASK_STATUS_PAUSABLE, TASK_STATUS_STARTABLE, taskStatusColor, taskStatusLabel } from "../motor-v2/src/shared/task-statuses"
+import { SUBTASK_STATUS_OPTIONS, TASK_STATUS_EXECUTING, TASK_STATUS_FINAIS, TASK_STATUS_PAUSABLE, TASK_STATUS_STARTABLE, taskStatusColor, taskStatusLabel } from "../src/shared/task-statuses"
 import TaskCodeViewer from "./TaskCodeViewer"
 
 export const componentId = "gerenteagentes-operation-map"

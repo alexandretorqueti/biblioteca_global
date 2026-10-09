@@ -8,7 +8,7 @@
  * - Calcular métricas consolidadas do mapa
  */
 
-import { ALL_TASK_STATUSES } from "../motor-v2/src/shared/task-statuses"
+import { ALL_TASK_STATUSES } from "../src/shared/task-statuses"
 
 // ============================================================================
 // TIPOS
