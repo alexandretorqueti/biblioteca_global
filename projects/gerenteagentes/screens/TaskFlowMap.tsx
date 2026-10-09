@@ -25,7 +25,7 @@ import {
 } from "@mui/icons-material"
 import { Avatar, Box, Button, Chip, Collapse, FormControl, IconButton, InputLabel, LinearProgress, MenuItem, Paper, Select, Skeleton, Stack, TextField, Tooltip, Typography, useMediaQuery } from "@mui/material"
 import { useTheme } from "@mui/material/styles"
-import { TASK_STATUS_EXECUTING, TASK_STATUS_PAUSABLE, TASK_STATUS_STARTABLE, taskStatusLabel } from "../motor-v2/src/shared/task-statuses"
+import { TASK_STATUS_EXECUTING, TASK_STATUS_PAUSABLE, TASK_STATUS_STARTABLE, taskStatusLabel } from "../src/shared/task-statuses"
 import { calcularMetricas, deriveTaskPriority, formatTempoRelativo, projetoAvatar, type Prioridade } from "./taskFlowHelpers"
 
 export type RecoveryEligibilityState =

@@ -12,16 +12,8 @@ import type {
   RealtimeIngressEvent,
 } from '@biblioteca-global/shared';
 import { ProjectModelSelectionSchema } from '@biblioteca-global/shared';
-type GlobalModelSelectionTipo = 'DEV' | 'ANALYST' | 'MONITOR';
-type GlobalModelSelectionEntry = { ordem: number; provider: string; model: string; enabled: boolean };
-type GlobalModelSelection = Record<GlobalModelSelectionTipo, GlobalModelSelectionEntry[]>;
-
-// A API é CommonJS e executa o código-fonte montado pelo host. O módulo do
-// motor é ESM e seu .js compilado fica oculto pelo bind-mount; carregar o .ts
-// pelo registrador SWC preserva um único validador em runtime.
-const { parseGlobalModelSelection } = require('../motor-v2/src/shared/global-model-selection.ts') as {
-  parseGlobalModelSelection(input: unknown): GlobalModelSelection;
-};
+import { parseGlobalModelSelection, type GlobalModelSelection, type GlobalModelSelectionTipo } from '../src/shared/global-model-selection';
+import { TASK_STATUS_FINAIS } from '../src/shared/task-statuses';
 import { PROJECT_DB_FACTORY, type ProjectDbFactory } from '../../../apps/api/src/modules/crud/project-db.factory';
 import { SCHEMA_REGISTRY, type SchemaRegistry } from '../../../apps/api/src/modules/crud/schema-registry';
 import {
@@ -1192,7 +1184,6 @@ export class GerenteAgentesService {
       .where(eq(taskRuntimeFacts.tarefaId, tarefaId))
       .limit(1);
 
-    const { TASK_STATUS_FINAIS } = await import('../motor-v2/dist/shared/task-statuses.js');
     if (fact?.terminalStatus && TASK_STATUS_FINAIS.has(fact.terminalStatus)) {
       throw new BadRequestException(`Não é possível pausar tarefa em status final: ${fact.terminalStatus}`);
     }

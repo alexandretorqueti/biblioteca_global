@@ -54,7 +54,7 @@ import {
   SUBTASK_STATUS_OPTIONS,
   taskStatusColor,
   taskStatusLabel,
-} from "../motor-v2/src/shared/task-statuses"
+} from "../src/shared/task-statuses"
 
 export const componentId = "gerenteagentes-task-monitor"
 
@@ -101,7 +101,7 @@ interface ProjetoCaptado {
   nome: string
 }
 
-/** Status conhecidos — fonte única em ../motor-v2/src/shared/task-statuses */
+/** Status conhecidos — fonte única em ../src/shared/task-statuses */
 
 interface DeliveryHistoryEntry {
   id: number
