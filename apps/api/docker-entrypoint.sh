@@ -28,19 +28,64 @@ git config --global user.name "Motor v2"
 git config --global --add safe.directory "$SOURCE_DIR"
 git config --global --add safe.directory /data/workspace/projects/codigofonte/biblioteca-global
 git config --global --add safe.directory /run/media/alexandre/12T/codigofonte/GerenteAgentes
-mkdir -p /root/.ssh
+SSH_DIRECTORY="${ENTRYPOINT_SSH_DIRECTORY:-/root/.ssh}"
+KNOWN_HOSTS="$SSH_DIRECTORY/known_hosts"
+mkdir -p "$SSH_DIRECTORY"
 # A API faz deploy por SSH no próprio ServerIA. A chave pública do host fica
 # versionada no repositório montado, para sobreviver à recriação do container;
 # não aceite uma chave nova silenciosamente nesse caminho de deploy.
 SERVERIA_KNOWN_HOSTS="$SOURCE_DIR/apps/api/serveria_known_hosts"
 if [ -f "$SERVERIA_KNOWN_HOSTS" ]; then
-  install -m 600 "$SERVERIA_KNOWN_HOSTS" /root/.ssh/known_hosts
+  install -m 600 "$SERVERIA_KNOWN_HOSTS" "$KNOWN_HOSTS"
 else
-  : > /root/.ssh/known_hosts
-  chmod 600 /root/.ssh/known_hosts
+  : > "$KNOWN_HOSTS"
+  chmod 600 "$KNOWN_HOSTS"
   echo "[entrypoint] serveria_known_hosts ausente; deploy SSH será bloqueado pelo preflight" >&2
 fi
-ssh-keyscan github.com >> /root/.ssh/known_hosts 2>/dev/null || true
+
+# A disponibilidade de DNS/rede pode atrasar após o boot do host. A chave do
+# GitHub não deve atrasar a API, mas também não pode falhar silenciosamente:
+# tenta por cerca de dois minutos e preserva uma entrada já existente.
+prepare_github_known_hosts() {
+  max_attempts=7
+  attempt=1
+  delay=2
+
+  while [ "$attempt" -le "$max_attempts" ]; do
+    if ssh-keygen -F github.com -f "$KNOWN_HOSTS" >/dev/null 2>&1; then
+      echo "[entrypoint] github.com já está configurado em known_hosts"
+      return 0
+    fi
+
+    keyscan_output=$(mktemp)
+    if ssh-keyscan -T 5 github.com > "$keyscan_output" && [ -s "$keyscan_output" ]; then
+      if ssh-keygen -F github.com -f "$KNOWN_HOSTS" >/dev/null 2>&1; then
+        echo "[entrypoint] github.com já foi configurado em known_hosts"
+      else
+        cat "$keyscan_output" >> "$KNOWN_HOSTS"
+        echo "[entrypoint] github.com adicionado a known_hosts"
+      fi
+      rm -f "$keyscan_output"
+      return 0
+    fi
+    rm -f "$keyscan_output"
+
+    if [ "$attempt" -ge "$max_attempts" ]; then
+      echo "[entrypoint] esgotadas as tentativas para configurar github.com em known_hosts" >&2
+      return 1
+    fi
+
+    echo "[entrypoint] ssh-keyscan github.com falhou (tentativa $attempt/$max_attempts); nova tentativa em ${delay}s" >&2
+    sleep "$delay"
+    delay=$((delay * 2))
+    if [ "$delay" -gt 30 ]; then
+      delay=30
+    fi
+    attempt=$((attempt + 1))
+  done
+}
+
+prepare_github_known_hosts &
 
 attempt=0
 until npm run db:migrate; do
