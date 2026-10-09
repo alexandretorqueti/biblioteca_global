@@ -14,16 +14,27 @@ const temporaryDirectories: string[] = []
 type EntrypointFixture = {
   events: string
   motorPid: string
+  repository: string
+  sshDirectory: string
   temporaryDirectory: string
 }
 
-async function createFixture(): Promise<EntrypointFixture> {
+async function createFixture(serveriaKnownHosts?: string): Promise<EntrypointFixture> {
   const temporaryDirectory = await mkdtemp(resolve(tmpdir(), "api-entrypoint-"))
   temporaryDirectories.push(temporaryDirectory)
   const bin = resolve(temporaryDirectory, "bin")
   const events = resolve(temporaryDirectory, "events.log")
   const motorPid = resolve(temporaryDirectory, "motor.pid")
+  const repository = resolve(temporaryDirectory, "repository")
+  const sshDirectory = resolve(temporaryDirectory, "ssh")
   await mkdir(bin)
+  await mkdir(resolve(repository, "apps/api"), { recursive: true })
+  await mkdir(resolve(repository, "projects/gerenteagentes/motor-v3"), { recursive: true })
+  await writeFile(resolve(repository, "package.json"), "{}\n")
+  await writeFile(
+    resolve(repository, "apps/api/serveria_known_hosts"),
+    serveriaKnownHosts ?? (await readFile(resolve(apiDirectory, "serveria_known_hosts"), "utf8")),
+  )
 
   const writeExecutable = async (name: string, content: string) => {
     const path = resolve(bin, name)
@@ -33,7 +44,13 @@ async function createFixture(): Promise<EntrypointFixture> {
 
   await writeExecutable("npm", "#!/bin/sh\nexit 0\n")
   await writeExecutable("git", "#!/bin/sh\nexit 0\n")
-  await writeExecutable("ssh-keyscan", "#!/bin/sh\nexit 0\n")
+  await writeExecutable(
+    "ssh-keyscan",
+    `#!/bin/sh
+echo "github-keyscan" >> "$ENTRYPOINT_TEST_EVENTS"
+printf '%s\\n' 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDOMecXLXUjZfcJAtEaykBerYEqxwDfGvdP8jd0kVaUP'
+`,
+  )
   await writeExecutable(
     "node",
     `#!/bin/sh
@@ -52,7 +69,7 @@ while :; do sleep 0.05; done
 `,
   )
 
-  return { events, motorPid, temporaryDirectory }
+  return { events, motorPid, repository, sshDirectory, temporaryDirectory }
 }
 
 function startEntrypoint(fixture: EntrypointFixture, motorMode: "early-fail" | "running") {
@@ -65,8 +82,9 @@ function startEntrypoint(fixture: EntrypointFixture, motorMode: "early-fail" | "
       ENTRYPOINT_TEST_MOTOR_PID: fixture.motorPid,
       MOTOR_VERSION: "v3",
       MOTOR_WORKTREE_ROOT: resolve(fixture.temporaryDirectory, "worktrees"),
+      ENTRYPOINT_SSH_DIRECTORY: fixture.sshDirectory,
       PATH: `${resolve(fixture.temporaryDirectory, "bin")}:${process.env.PATH}`,
-      REPO_PATH: repository,
+      REPO_PATH: fixture.repository,
     },
     stdio: "ignore",
   })
@@ -96,6 +114,37 @@ afterEach(async () => {
 })
 
 describe("supervisor do docker-entrypoint para motor-v3", () => {
+  it("prepara github.com em background sem atrasar o boot da API", async () => {
+    const fixture = await createFixture()
+    const entrypointProcess = startEntrypoint(fixture, "running")
+
+    await waitForFile(fixture.events, "api-started")
+    await waitForFile(resolve(fixture.sshDirectory, "known_hosts"), "github.com")
+
+    entrypointProcess.kill("SIGTERM")
+    await expect(exits(entrypointProcess)).resolves.toMatchObject({ code: 143 })
+  }, 10_000)
+
+  it("não duplica github.com em execuções repetidas", async () => {
+    const githubKnownHost = "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDOMecXLXUjZfcJAtEaykBerYEqxwDfGvdP8jd0kVaUP\n"
+    const fixture = await createFixture(githubKnownHost)
+
+    const firstEntrypoint = startEntrypoint(fixture, "running")
+    await waitForFile(fixture.events, "api-started")
+    firstEntrypoint.kill("SIGTERM")
+    await expect(exits(firstEntrypoint)).resolves.toMatchObject({ code: 143 })
+    await writeFile(fixture.events, "")
+
+    const secondEntrypoint = startEntrypoint(fixture, "running")
+    await waitForFile(fixture.events, "api-started")
+    secondEntrypoint.kill("SIGTERM")
+    await expect(exits(secondEntrypoint)).resolves.toMatchObject({ code: 143 })
+
+    const knownHosts = await readFile(resolve(fixture.sshDirectory, "known_hosts"), "utf8")
+    expect(knownHosts.match(/^github\.com /gm)).toHaveLength(1)
+    await expect(readFile(fixture.events, "utf8")).resolves.not.toContain("github-keyscan")
+  }, 10_000)
+
   it("encerra antes de iniciar a API quando o Motor morre na janela de boot", async () => {
     const fixture = await createFixture()
     const entrypointProcess = startEntrypoint(fixture, "early-fail")
