@@ -99,8 +99,32 @@ done
 
 # O catálogo do Motor vive em projeto_640. Migra e popula defaults canônicos
 # antes de iniciar o Motor/API; não depende de alguém abrir a tela Prompts.
-npm run db:migrate:gerenteagentes
-npm run db:bootstrap:gerenteagentes
+# Retry: protege contra falhas transitórias (ex.: lock-wait InnoDB durante
+# blue-green deploy). Espelho do padrão db:migrate global acima.
+attempt=0
+until npm run db:migrate:gerenteagentes; do
+  attempt=$((attempt + 1))
+  if [ "$attempt" -ge 30 ]; then
+    echo "[entrypoint] db:migrate:gerenteagentes indisponível após 30 tentativas" >&2
+    exit 1
+  fi
+  echo "[entrypoint] db:migrate:gerenteagentes falhou (tentativa $attempt/30); nova tentativa em 2s" >&2
+  sleep 2
+done
+
+# Bootstrap: seed de prompts canônicos. Depende do banco disponível (mesmo
+# perfil de falha transitória que a migration). Protegido com o mesmo padrão
+# de retry; falha definitiva encerra o entrypoint para recuperação pelo Docker.
+attempt=0
+until npm run db:bootstrap:gerenteagentes; do
+  attempt=$((attempt + 1))
+  if [ "$attempt" -ge 30 ]; then
+    echo "[entrypoint] db:bootstrap:gerenteagentes indisponível após 30 tentativas" >&2
+    exit 1
+  fi
+  echo "[entrypoint] db:bootstrap:gerenteagentes falhou (tentativa $attempt/30); nova tentativa em 2s" >&2
+  sleep 2
+done
 
 # Seed temporariamente desabilitado - migrations já aplicadas
 # npm run db:seed
