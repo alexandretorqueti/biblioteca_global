@@ -575,6 +575,20 @@
       "when": 1791600000000,
       "tag": "0081_deploy_script_relocation",
       "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "5",
+      "when": 1791584762097,
+      "tag": "0082_postdeploy_verifications",
+      "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "5",
+      "when": 1791584762098,
+      "tag": "0083_postdeploy_verification_prompt",
+      "breakpoints": true
     }
   ]
 }
