@@ -18,12 +18,13 @@ CREATE TABLE IF NOT EXISTS `motor_postdeploy_verifications` (
 
 -- Seed: flag de ativação da verificação pós-deploy (default true).
 -- Independente de motor.monitor.active.
-INSERT INTO `motor_configuracoes` (`chave`, `valor`, `descricao`, `created_at`, `updated_at`)
+INSERT INTO `motor_configuracoes` (`chave`, `tipo`, `valor`, `valor_padrao`, `regra_validacao`, `descricao`)
 VALUES (
   'motor.postdeploy_verification.active',
+  'boolean',
   'true',
-  'Ativa/desativa a verificação semântica pós-deploy pelo Monitor (tarefa 971)',
-  NOW(),
-  NOW()
+  'true',
+  '',
+  'Ativa/desativa a verificação semântica pós-deploy pelo Monitor (tarefa 971)'
 )
 ON DUPLICATE KEY UPDATE `descricao` = VALUES(`descricao`), `updated_at` = NOW();
