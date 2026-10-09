@@ -16,6 +16,7 @@ function makePool(options: {
   projectCount?: number
   reconciledCount?: { total: number; finais: number | null }
   factRow?: Array<Record<string, unknown>>
+  hasIntegratedCode?: boolean
 } = {}) {
   const taskRow = options.taskRow ?? [{ id: 100, external_id: 'task-p1-100', projeto_id: 1, tipo: 'desenvolvimento' }]
   const subtaskRows = options.subtaskRows ?? [{ id: 501, seq: 1, titulo: 'Subtask 1', scope: 'scope' }]
@@ -27,6 +28,7 @@ function makePool(options: {
   const projectCount = options.projectCount ?? 0
   const reconciledCount = options.reconciledCount ?? { total: 0, finais: null }
   const factRow = options.factRow ?? []
+  const hasIntegratedCode = options.hasIntegratedCode ?? false
 
   const queries: Array<{ sql: string; params: unknown[] }> = []
 
@@ -45,6 +47,9 @@ function makePool(options: {
     // Fact check for reconciliation
     if (normalizedSql.includes('terminal_status') && normalizedSql.includes('task_runtime_facts') && normalizedSql.includes('FOR UPDATE')) {
       return [factRow]
+    }
+    if (normalizedSql.includes('AS has_integrated_code')) {
+      return [[{ has_integrated_code: hasIntegratedCode ? 1 : 0 }]]
     }
     // Limit rows
     if (normalizedSql.includes('motor_configuracoes') && normalizedSql.includes('FOR UPDATE')) {
@@ -152,5 +157,33 @@ describe('reserveNextSubtask — filtro de generation', () => {
     const result = await repo.reserveNextSubtask('task-p1-100', source)
 
     expect(result).toBeNull()
+  })
+
+  it('na reconciliação, só solicita deploy se houver código integrado', async () => {
+    const { pool, queries } = makePool({
+      reconciledCount: { total: 2, finais: 2 }, hasIntegratedCode: true,
+    })
+
+    const result = await new MySqlDevelopmentExecutionRepository(pool).reserveNextSubtask('task-p1-100', source)
+
+    expect(result).toMatchObject({ kind: 'task_completed' })
+    const outboxTypes = queries
+      .filter(query => query.sql.includes('INSERT INTO motor_outbox'))
+      .map(query => String(query.params[1]))
+    expect(outboxTypes).toEqual(expect.arrayContaining(['TASK_EXECUTION_COMPLETED', 'DEPLOY_REQUESTED']))
+    expect(queries.some(query => query.sql.includes('INSERT INTO deploy_requests'))).toBe(false)
+  })
+
+  it('na reconciliação, cria tombstone para tarefa integralmente sem código', async () => {
+    const { pool, queries } = makePool({ reconciledCount: { total: 2, finais: 2 } })
+
+    await new MySqlDevelopmentExecutionRepository(pool).reserveNextSubtask('task-p1-100', source)
+
+    const outboxTypes = queries
+      .filter(query => query.sql.includes('INSERT INTO motor_outbox'))
+      .map(query => String(query.params[1]))
+    expect(outboxTypes).toContain('TASK_EXECUTION_COMPLETED')
+    expect(outboxTypes).not.toContain('DEPLOY_REQUESTED')
+    expect(queries.some(query => query.sql.includes('INSERT INTO deploy_requests'))).toBe(true)
   })
 })
