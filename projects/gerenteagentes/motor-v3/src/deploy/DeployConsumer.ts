@@ -1,6 +1,8 @@
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
+import { appendFile, mkdir } from 'node:fs/promises'
+import { dirname } from 'node:path'
 import { promisify } from 'node:util'
 import { CommandPolicyResolver, type CommandPolicyRepository, type OperationLogger, type OperationOutcome, type OperationPhase } from '../commands/index.js'
 import { GitWorktreePreparer, mapHostRepoPathToContainer } from '../execution/GitWorktreePreparer.js'
@@ -27,6 +29,8 @@ export class DeployConsumer {
     private readonly worktrees: GitWorktreePreparer = new GitWorktreePreparer(process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/codigofonte/biblioteca-global/.motor-v3-worktrees'),
     private readonly operationState: GitOperationStateDetector = new GitOperationStateDetector(),
     private readonly governedFailureHandler?: GovernedFailureHandler,
+    private readonly githubKnownHostsPath = process.env.GITHUB_KNOWN_HOSTS_PATH || '/root/.ssh/known_hosts',
+    private readonly githubPreflightTimeoutMs = Number(process.env.MOTOR_GITHUB_PREFLIGHT_TIMEOUT_MS || 10_000),
   ) {}
 
   async handle(message: QueueMessage): Promise<void> {
@@ -361,6 +365,7 @@ export class DeployConsumer {
       await execFileAsync('git', ['merge', '--no-ff', '--no-commit', expectedCommit], { cwd: path })
       await execFileAsync('git', ['diff', '--check'], { cwd: path })
       await execFileAsync('git', ['commit', '--no-edit'], { cwd: path })
+      await this.preflightGithubRemote(path)
       await execFileAsync('git', ['push', 'origin', `HEAD:${baseBranch}`], { cwd: path })
     } catch (error) {
       const { stdout: conflictOutput } = await execFileAsync('git', ['diff', '--name-only', '--diff-filter=U'], { cwd: path, encoding: 'utf8' }).catch(() => ({ stdout: '' }))
@@ -407,6 +412,81 @@ export class DeployConsumer {
       throw error
     }
     finally { await execFileAsync('git', ['worktree', 'remove', '--force', path], { cwd: repo }).catch(() => undefined) }
+  }
+
+  /**
+   * Confirma a conectividade SSH com o remote antes de alterar a branch-base.
+   * Um container recém-iniciado pode ainda não ter recebido github.com no
+   * known_hosts; neste caso, tentamos repará-lo uma única vez e falhamos antes
+   * do push se a conexão não puder ser estabelecida.
+   */
+  private async preflightGithubRemote(repoPath: string): Promise<void> {
+    const firstAttempt = await this.verifyGithubRemote(repoPath)
+    if (firstAttempt.ok) return
+
+    const repair = await this.repairGithubKnownHosts()
+    const secondAttempt = await this.verifyGithubRemote(repoPath)
+    if (secondAttempt.ok) return
+
+    const diagnostic = [firstAttempt.detail, repair.detail, secondAttempt.detail]
+      .filter(Boolean)
+      .join('; ')
+    const reason = this.githubFailureReason(diagnostic)
+    throw new Error(`${reason}: preflight do remote GitHub falhou após autocura (${diagnostic || 'sem diagnóstico'})`)
+  }
+
+  private async verifyGithubRemote(repoPath: string): Promise<{ ok: true; detail: '' } | { ok: false; detail: string }> {
+    try {
+      await execFileAsync('git', ['ls-remote', 'origin', 'HEAD'], {
+        cwd: repoPath,
+        encoding: 'utf8',
+        timeout: this.githubPreflightTimeoutMs,
+      })
+      return { ok: true, detail: '' }
+    } catch (error) {
+      return { ok: false, detail: this.commandErrorDetail(error) }
+    }
+  }
+
+  /** Acrescenta a chave somente quando github.com ainda não está conhecido. */
+  private async repairGithubKnownHosts(): Promise<{ detail: string }> {
+    try {
+      if (await this.githubKnownHostExists()) return { detail: 'github.com já presente em known_hosts' }
+      await mkdir(dirname(this.githubKnownHostsPath), { recursive: true, mode: 0o700 })
+      const { stdout } = await execFileAsync('ssh-keyscan', ['github.com'], {
+        encoding: 'utf8',
+        timeout: this.githubPreflightTimeoutMs,
+      })
+      if (!stdout.trim()) return { detail: 'ssh-keyscan github.com não retornou chave' }
+      // Reconfere depois do scan para não duplicar a entrada se outro processo
+      // (por exemplo o entrypoint) a tiver gravado durante a consulta.
+      if (await this.githubKnownHostExists()) return { detail: 'github.com já foi adicionado a known_hosts' }
+      await appendFile(this.githubKnownHostsPath, stdout.endsWith('\n') ? stdout : `${stdout}\n`, { mode: 0o600 })
+      return { detail: 'github.com adicionado a known_hosts' }
+    } catch (error) {
+      return { detail: `autocura known_hosts falhou: ${this.commandErrorDetail(error)}` }
+    }
+  }
+
+  private async githubKnownHostExists(): Promise<boolean> {
+    return execFileAsync('ssh-keygen', ['-F', 'github.com', '-f', this.githubKnownHostsPath], {
+      encoding: 'utf8',
+      timeout: this.githubPreflightTimeoutMs,
+    }).then(() => true, () => false)
+  }
+
+  private githubFailureReason(diagnostic: string): 'host_key_verification' | 'github_unreachable' {
+    return /host key verification failed|known_hosts|no .*host.* key/i.test(diagnostic)
+      ? 'host_key_verification'
+      : 'github_unreachable'
+  }
+
+  private commandErrorDetail(error: unknown): string {
+    if (error instanceof Error) {
+      const commandError = error as Error & { stderr?: string; stdout?: string }
+      return [commandError.message, commandError.stderr, commandError.stdout].filter(Boolean).join(' ').trim()
+    }
+    return String(error)
   }
 
   private async routeGovernedFailure(message: QueueMessage, point: string, code: string, detail: string): Promise<void> {
