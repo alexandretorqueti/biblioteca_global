@@ -8,6 +8,7 @@ export {
   type TaskSnapshot,
 } from './TaskCoordinator.js'
 export { MySqlTaskCoordinatorRepository } from './MySqlTaskCoordinatorRepository.js'
+export { RealtimeMutationPublisher, type RealtimeMutationPublisherConfig, type DeletedTaskRealtimeIdentity } from '../realtime/RealtimeMutationPublisher.js'
 export { AnalysisClaimReconciler, type OrphanAnalysisClaim } from './AnalysisClaimReconciler.js'
 export { AnalysisSessionRecoveryReconciler, type AnalysisSessionRecoveryConfig, type OrphanSessionRow } from './AnalysisSessionRecoveryReconciler.js'
 export { TaskCancelConsumer, CANCEL_COMMAND_CODE, CANCEL_ACTION_CODE } from './TaskCancelConsumer.js'

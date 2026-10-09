@@ -223,12 +223,8 @@ export default function OperationMapScreen() {
               updatedAt: event.occurredAt,
             } : t))
           }
-          // Se o evento é da tarefa selecionada, atualiza o detalhe
-          if (event.taskId === selectedId && (event.type.startsWith("task.") || event.type.startsWith("subtask."))) {
-            void loadDetail(selectedId)
-            void loadOperations(selectedId)
-            void loadSubtasks(selectedId)
-          }
+          // O detalhe possui seu próprio canal; o mapa não faz reconciliação
+          // REST para eventos normais (somente replay indisponível acima).
         }
       },
     })
@@ -314,6 +310,19 @@ export default function OperationMapScreen() {
         if (eventType === "subtask.created" || eventType === "subtask.updated" || eventType === "subtask.deleted") {
           void loadSubtasks(selectedId)
         }
+        if (eventType === "subtask.status.changed") {
+          const subtaskId = Number(message.event.subtaskId ?? payload.id)
+          const status = typeof payload.status === "string" ? payload.status : null
+          if (subtaskId && status) {
+            setDetail(prev => prev ? {
+              ...prev,
+              subtasks: prev.subtasks?.map(subtask => subtask.id === subtaskId ? { ...subtask, status } : subtask),
+            } : prev)
+            setDbSubtasks(prev => prev.map(subtask => subtask.id === subtaskId ? { ...subtask, status } : subtask))
+          } else {
+            void loadSubtasks(selectedId)
+          }
+        }
         // Atividades e operações — recarrega para manter consistência
         if (eventType === "activity.created" || eventType === "activity.updated") {
           void loadOperations(selectedId)
@@ -340,7 +349,7 @@ export default function OperationMapScreen() {
         }
         // Eventos genéricos de tarefa/subtarefa — recarrega o detalhe
         if ((eventType.startsWith("task.") || eventType.startsWith("subtask.")) &&
-            !["task.status.changed", "subtask.created", "subtask.updated", "subtask.deleted"].includes(eventType)) {
+            !["task.status.changed", "subtask.created", "subtask.updated", "subtask.deleted", "subtask.status.changed"].includes(eventType)) {
           void loadDetail(selectedId)
         }
       },

@@ -2,6 +2,7 @@ import type { Pool, PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql
 import type { AnalysisExecutionLeaseRepository, TaskCoordinatorRepository, TaskLifecycleStatus, TaskSnapshot } from './TaskCoordinator.js'
 import type { AnalysisOutcome } from '../analysis/AnalystReply.js'
 import { DerivedTaskStatusResolver } from '../status/DerivedTaskStatus.js'
+import type { RealtimeMutationPublisher } from '../realtime/RealtimeMutationPublisher.js'
 
 interface TaskRow extends RowDataPacket {
   id: number
@@ -30,7 +31,7 @@ interface TaskRow extends RowDataPacket {
 export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository, AnalysisExecutionLeaseRepository {
   private readonly statusResolver: DerivedTaskStatusResolver
 
-  constructor(private readonly pool: Pool) {
+  constructor(private readonly pool: Pool, private readonly realtime?: RealtimeMutationPublisher) {
     this.statusResolver = new DerivedTaskStatusResolver(pool)
   }
 
@@ -164,6 +165,8 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
 
   async persistAnalysis(taskId: string, executionId: string, outcome: AnalysisOutcome): Promise<void> {
     const connection = await this.pool.getConnection()
+    let createdSubtaskIds: number[] = []
+    let committedTaskId: number | null = null
     try {
       await connection.beginTransaction()
       const [taskRows] = await connection.query<TaskRow[]>(
@@ -176,6 +179,7 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
       )
       const databaseTaskId = taskRows[0]?.id
       if (!databaseTaskId) throw new Error(`Claim de análise não encontrado para ${taskId}`)
+      committedTaskId = databaseTaskId
 
       if (outcome.kind === 'questions') {
         await connection.query(
@@ -205,6 +209,7 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
                 JSON.stringify(subtask.requirementsCovered), JSON.stringify([]), subtask.completionKind],
             )
             ids.set(subtask.seq, result.insertId)
+            createdSubtaskIds.push(result.insertId)
             if (subtask.completionKindInference) {
               await connection.query(
                 `INSERT INTO tarefa_eventos (tarefa_id, tarefa_external_id, evento, ator, origem, payload, created_at)
@@ -229,6 +234,11 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
         }
       }
       await connection.commit()
+      // A publicação ocorre estritamente após o commit; o adaptador absorve
+      // indisponibilidade temporária do gateway sem desfazer a análise.
+      if (createdSubtaskIds.length > 0 && committedTaskId != null) {
+        await this.realtime?.publishAnalysisCreated(committedTaskId, createdSubtaskIds)
+      }
     } catch (error) {
       await connection.rollback()
       throw error

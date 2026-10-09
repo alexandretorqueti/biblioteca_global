@@ -33,7 +33,7 @@ import { QueueConsumer } from './queue/QueueConsumer.js'
 import { RabbitMqTransport, normalizeRabbitMqPrefetch } from './queue/RabbitMqTransport.js'
 import { MotorActivityGate, OutboxPublisher, createQueueMessage } from './queue/index.js'
 import type { QueueMessage } from './queue/QueueMessage.js'
-import { TaskCoordinator, MySqlTaskCoordinatorRepository, AnalysisClaimReconciler, AnalysisSessionRecoveryReconciler, TaskCancelConsumer, MySqlTaskEventRecorder, MySqlAnalysisFailureBlocker, SanitizeSessionService } from './coordinator/index.js'
+import { TaskCoordinator, MySqlTaskCoordinatorRepository, AnalysisClaimReconciler, AnalysisSessionRecoveryReconciler, TaskCancelConsumer, MySqlTaskEventRecorder, MySqlAnalysisFailureBlocker, SanitizeSessionService, RealtimeMutationPublisher } from './coordinator/index.js'
 import { ConsoleAnalystRunner } from './analysis/ConsoleAnalystRunner.js'
 import { ConsoleHttpApi } from './analysis/ConsoleHttpApi.js'
 import { ContractArtifactStore } from './analysis/ContractArtifactStore.js'
@@ -109,6 +109,11 @@ async function start() {
   const db = drizzle(pool, { schema, mode: 'default' })
   const statusResolver = new DerivedTaskStatusResolver(pool)
   const externalResolutionHandler = new ExternalResolutionHandler(pool)
+  const realtime = new RealtimeMutationPublisher(pool, {
+    // Mesmo ingresso autenticado já utilizado pelo Motor v2.
+    endpoint: process.env.LIBRARY_REALTIME_EVENTS_URL ?? 'http://localhost:3001/internal/realtime/events',
+    token: process.env.LIBRARY_REALTIME_EVENTS_TOKEN,
+  })
 
   // O preflight precisa terminar antes de trigger, consumidores, scheduler,
   // HTTP e, principalmente, antes de o CatalogLoader compilar suas queries.
@@ -195,7 +200,7 @@ async function start() {
       initialConnectMaxRetryDelayMs: Number(process.env.MOTOR_RABBITMQ_BOOTSTRAP_MAX_RETRY_DELAY_MS || 10000),
     }
 
-    const repository = new MySqlTaskCoordinatorRepository(pool)
+    const repository = new MySqlTaskCoordinatorRepository(pool, realtime)
     const consoleApi = new ConsoleHttpApi(consoleUrl, consoleToken)
     const contractArtifactStore = new ContractArtifactStore(process.env.MOTOR_AGENT_WORKSPACES_ROOT, consoleApi)
     const analystSessionRows = new Map<string, number>()
@@ -386,7 +391,7 @@ async function start() {
         }))
       },
     })
-    const developmentRepository = new MySqlDevelopmentExecutionRepository(pool)
+    const developmentRepository = new MySqlDevelopmentExecutionRepository(pool, realtime)
     const testGateService = new TestGateService(pool)
     const testGate = new TestGateOrchestrator(pool, gateQueue)
     deployConsumer = new DeployConsumer(
@@ -1163,11 +1168,12 @@ async function start() {
       // usada pela API para remover a tarefa e suas relações em cascata.
       if (req.method === 'DELETE' && taskId && !taskAction) {
         const [taskRows] = await pool.query<any[]>(
-          `SELECT t.id, t.external_id,
+          `SELECT t.id, t.external_id, t.projeto_id, t.titulo, pc.slug AS project_slug,
                   COALESCE(f.terminal_status, '') AS terminal_status,
                   f.analysis_started_at,
                   (SELECT COUNT(*) FROM subtarefas s WHERE s.tarefa_id = t.id) AS subtask_count
              FROM tarefas t
+             LEFT JOIN projetos_captados pc ON pc.id = t.projeto_id
              LEFT JOIN task_runtime_facts f ON f.tarefa_id = t.id
             WHERE t.external_id = ? OR CAST(t.id AS CHAR) = ?
             LIMIT 1`,
@@ -1216,6 +1222,10 @@ async function start() {
           [task.id],
         )
         await pool.query('DELETE FROM tarefas WHERE id = ?', [task.id])
+        await realtime.publishDeletedTask({
+          taskId: Number(task.id), projectId: Number(task.projeto_id), sourceTaskId: String(task.external_id ?? task.id),
+          projectSlug: task.project_slug ? String(task.project_slug) : null, title: String(task.titulo ?? ''),
+        })
         console.log(`[Motor v3] Task ${taskId} deleted`)
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ ok: true }))
