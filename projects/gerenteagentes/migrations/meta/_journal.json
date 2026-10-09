@@ -568,6 +568,20 @@
       "when": 1791475201001,
       "tag": "0069_motor_v3_governance_conditions",
       "breakpoints": true
+    },
+    {
+      "idx": 81,
+      "version": "5",
+      "when": 1791584159109,
+      "tag": "0081_postdeploy_verifications",
+      "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "5",
+      "when": 1791584159110,
+      "tag": "0082_postdeploy_verification_prompt",
+      "breakpoints": true
     }
   ]
 }

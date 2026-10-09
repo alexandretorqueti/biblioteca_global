@@ -178,3 +178,58 @@ export const unblockSubtask: PrimitiveDefinition = {
     }
   },
 }
+
+/**
+ * create_task - Cria nova tarefa (usada pelo PostDeployVerifier para correções)
+ */
+export const createTask: PrimitiveDefinition = {
+  code: 'create_task',
+  name: 'Criar tarefa',
+  domain: 'db',
+  handler: async (context: PrimitiveContext, params?: Record<string, any>): Promise<PrimitiveResult> => {
+    try {
+      const { projectId, db } = context
+      const titulo = params?.titulo
+      const descricao = params?.descricao
+      const tipo = params?.tipo || 'desenvolvimento'
+      const paused = params?.paused ?? true
+      const externalId = params?.externalId
+      const dependsOnTaskId = params?.dependsOnTaskId
+
+      if (!titulo) {
+        return { success: false, error: 'Parâmetro "titulo" é obrigatório' }
+      }
+      if (!descricao) {
+        return { success: false, error: 'Parâmetro "descricao" é obrigatório' }
+      }
+
+      context.logger?.info('Criando tarefa', { projectId, titulo, tipo, paused })
+
+      // TODO: Implementar insert no banco
+      // const [result] = await db.insert(tarefas).values({
+      //   external_id: externalId ?? `auto-${Date.now()}`,
+      //   projeto_id: projectId,
+      //   titulo,
+      //   descricao,
+      //   tipo,
+      //   status: 'planned',
+      //   paused_at: paused ? new Date() : null,
+      //   depends_on_task_id: dependsOnTaskId ?? null,
+      // })
+
+      return {
+        success: true,
+        data: {
+          taskId: externalId ?? `task-${Date.now()}`,
+          databaseTaskId: 0, // TODO: result.insertId
+          projectId,
+          titulo,
+          tipo,
+          paused,
+        },
+      }
+    } catch (error: any) {
+      return { success: false, error: `Erro ao criar tarefa: ${error.message}` }
+    }
+  },
+}

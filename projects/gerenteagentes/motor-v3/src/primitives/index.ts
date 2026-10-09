@@ -13,11 +13,11 @@ import { setFlag, log } from './control.js'
 import { createSession, archiveSession, incrementGeneration, sendMessage, sendFeedback, waitForCompletion, parseReply } from './session.js'
 import { cooldownModel, escalateModel } from './model.js'
 import { createWorktree, removeWorktree, installDependencies, verifyGit, runBuild, commitChanges, mergeBranch, revertMerge, publishBranch, promoteToBase, checkPaths } from './git.js'
-import { persistPlan, createSubtasks, checkCommits, blockTask, blockSubtask, persistBlocker, unblockSubtask } from './db.js'
+import { persistPlan, createSubtasks, checkCommits, blockTask, blockSubtask, persistBlocker, unblockSubtask, createTask } from './db.js'
 import { pauseAgentQueue, resumeAgentQueue, enqueueDeploy } from './queue.js'
 
 /**
- * Lista completa de todas as 32 primitivas
+ * Lista completa de todas as 33 primitivas
  */
 export const ALL_PRIMITIVES: PrimitiveDefinition[] = [
   // Controle (2)
@@ -50,7 +50,7 @@ export const ALL_PRIMITIVES: PrimitiveDefinition[] = [
   promoteToBase,
   checkPaths,
   
-  // Banco (7)
+  // Banco (8)
   persistPlan,
   createSubtasks,
   checkCommits,
@@ -58,6 +58,7 @@ export const ALL_PRIMITIVES: PrimitiveDefinition[] = [
   blockSubtask,
   persistBlocker,
   unblockSubtask,
+  createTask,
   
   // Fila (3)
   pauseAgentQueue,

@@ -32,3 +32,6 @@ export {
 } from './MonitorVerdictParser.js'
 export { ConsoleHumanNotifier, type MonitorHumanNotifier } from './HumanNotifier.js'
 export { loadActiveBlocker, type ActiveBlockerRow, type ActiveBlockerFilter } from './ActiveBlockerLookup.js'
+export { PostDeployVerifier } from './PostDeployVerifier.js'
+export { PostDeployPromptResolver, POSTDEPLOY_VERIFICATION_PROMPT_KEY, type PostDeployPromptMarkers, type ResolvedPostDeployPrompt } from './PostDeployPromptResolver.js'
+export { parsePostDeployVerdict, type PostDeployVerdict, type PostDeployVerdictStatus, type PostDeployFinding, type PostDeployFindingSeverity } from './PostDeployVerdictParser.js'
