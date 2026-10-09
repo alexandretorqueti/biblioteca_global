@@ -49,6 +49,8 @@ export interface DeletedTaskRealtimeIdentity {
  */
 export class RealtimeMutationPublisher {
   private readonly fetchImpl: typeof fetch
+  private consecutiveFailures = 0
+  private persistentAlertEmitted = false
 
   constructor(private readonly pool: Pool, private readonly config: RealtimeMutationPublisherConfig = {}) {
     this.fetchImpl = config.fetchImpl ?? fetch
@@ -56,7 +58,7 @@ export class RealtimeMutationPublisher {
 
   async publishTask(taskId: number, type: Extract<RealtimeMutationType, `task.${string}`>, payload: Record<string, unknown> = {}): Promise<void> {
     const identity = await this.taskIdentity(taskId)
-    if (!identity) return this.warn(`tarefa ${taskId} não encontrada após mutação`)
+    if (!identity) return this.logError(`tarefa ${taskId} não encontrada após mutação`)
     await this.send(identity, type, payload)
   }
 
@@ -74,7 +76,7 @@ export class RealtimeMutationPublisher {
     previousStatus?: string,
   ): Promise<void> {
     const identity = await this.taskIdentity(taskId)
-    if (!identity) return this.warn(`tarefa ${taskId} não encontrada após mutação de subtarefa`)
+    if (!identity) return this.logError(`tarefa ${taskId} não encontrada após mutação de subtarefa`)
     const [rows] = await this.pool.query<SubtaskState[]>(
       'SELECT id, seq, titulo, status FROM subtarefas WHERE id = ? AND tarefa_id = ? LIMIT 1', [subtaskId, taskId],
     )
@@ -132,13 +134,32 @@ export class RealtimeMutationPublisher {
           ...(subtaskId ? { subtaskId } : {}), type, payload,
         }),
       })
-      if (!response.ok) this.warn(`ingresso recusou ${type} (${response.status})`)
+      if (!response.ok) {
+        this.logError(`ingresso recusou ${type} — status ${response.status} — endpoint ${endpoint}`)
+        this.recordFailure()
+      } else {
+        this.resetFailureCounter()
+      }
     } catch (error) {
-      this.warn(`falha ao publicar ${type}: ${error instanceof Error ? error.message : String(error)}`)
+      this.logError(`falha ao publicar ${type} — endpoint ${endpoint}: ${error instanceof Error ? error.message : String(error)}`)
+      this.recordFailure()
     }
   }
 
-  private warn(message: string): void {
-    console.warn(`[Motor v3] realtime: ${message}`)
+  private recordFailure(): void {
+    this.consecutiveFailures++
+    if (this.consecutiveFailures >= 5 && !this.persistentAlertEmitted) {
+      console.error('[Motor v3] realtime: ingresso realtime inalcançável de forma persistente — atualizações do Mapa de Agentes NÃO estão chegando ao front')
+      this.persistentAlertEmitted = true
+    }
+  }
+
+  private resetFailureCounter(): void {
+    this.consecutiveFailures = 0
+    this.persistentAlertEmitted = false
+  }
+
+  private logError(message: string): void {
+    console.error(`[Motor v3] realtime: ${message}`)
   }
 }

@@ -111,7 +111,7 @@ async function start() {
   const externalResolutionHandler = new ExternalResolutionHandler(pool)
   const realtime = new RealtimeMutationPublisher(pool, {
     // Mesmo ingresso autenticado já utilizado pelo Motor v2.
-    endpoint: process.env.LIBRARY_REALTIME_EVENTS_URL ?? 'http://localhost:3001/internal/realtime/events',
+    endpoint: process.env.LIBRARY_REALTIME_EVENTS_URL ?? 'http://localhost:3001/api/internal/realtime/events',
     token: process.env.LIBRARY_REALTIME_EVENTS_TOKEN,
   })
 
