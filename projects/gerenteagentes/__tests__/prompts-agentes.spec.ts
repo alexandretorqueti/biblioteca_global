@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import { getTableConfig } from "drizzle-orm/mysql-core"
 import { promptsAgentes } from "../schema"
 import { PROMPTS_AGENTES_SEED } from "../seed-prompts"
-import { AGENT_PROMPT_CATALOG } from "../motor-v2/src/prompts/prompt-catalog"
+import { AGENT_PROMPT_CATALOG } from "../src/prompts/prompt-catalog"
 
 describe("prompts_agentes", () => {
   it("possui tipo, situação e conteúdo persistidos", () => {

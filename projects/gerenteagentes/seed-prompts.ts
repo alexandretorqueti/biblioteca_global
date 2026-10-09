@@ -1,4 +1,4 @@
-import { AGENT_PROMPT_CATALOG } from "./motor-v2/src/prompts/prompt-catalog"
+import { AGENT_PROMPT_CATALOG } from "./src/prompts/prompt-catalog"
 
 /**
  * Carga inicial do catálogo persistido.
