@@ -48,6 +48,8 @@ export interface ExternalResolutionResult {
   completed: boolean
   deployRequested: boolean
   requeued: boolean
+  /** Tarefa 972: indica se um request failed foi reativado para pending. */
+  failedRequestReactivated: boolean
   messageIds: string[]
 }
 
@@ -158,6 +160,7 @@ export class ExternalResolutionHandler {
       let completed = false
       let deployRequested = false
       let requeued = false
+      let failedRequestReactivated = false
 
       if (total > 0 && finais === total) {
         const [factRows] = await connection.query<Array<RowDataPacket & { terminal_status: string | null }>>(
@@ -191,15 +194,80 @@ export class ExternalResolutionHandler {
         messageIds.push(taskCompleted.messageId)
 
         if (input.requestDeploy === true && String(task.tipo ?? '') === 'desenvolvimento') {
-          const deployRequest = createQueueMessage({
-            type: 'DEPLOY_REQUESTED', taskId,
-            executionId: `deploy-external-${taskId}-${Date.now()}`,
-            causationId: taskCompleted.messageId,
-            payload: { reason: 'external_resolution', resolvedBy },
-          })
-          await insertOutboxMessage(connection, deployRequest)
-          messageIds.push(deployRequest.messageId)
-          deployRequested = true
+          // Tarefa 972: Verificar se existe request failed para reativar
+          const [failedRequests] = await connection.query<Array<RowDataPacket & {
+            id: number
+            status: string
+            last_error: string | null
+            batch_id: string | null
+            repo_path: string
+            base_branch: string
+            requested_commit: string
+          }>>(
+            `SELECT id, status, last_error, batch_id, repo_path, base_branch, requested_commit
+               FROM deploy_requests
+              WHERE tarefa_id = ? AND status = 'failed'
+              ORDER BY id DESC LIMIT 1
+              FOR UPDATE`,
+            [databaseTaskId],
+          )
+
+          // Verificar se existe tombstone administrativo (cancelled com adjudicação)
+          const [tombstoneCheck] = await connection.query<Array<RowDataPacket & { has_tombstone: number | string }>>(
+            `SELECT EXISTS(
+               SELECT 1 FROM deploy_requests
+                WHERE tarefa_id = ? AND status = 'cancelled'
+                  AND last_error LIKE 'Adjudicação administrativa sem deploy%'
+             ) AS has_tombstone`,
+            [databaseTaskId],
+          )
+          const hasTombstone = Number(tombstoneCheck[0]?.has_tombstone ?? 0) !== 0
+
+          if (failedRequests.length > 0 && !hasTombstone) {
+            // Reativar request failed para pending
+            const failedRequest = failedRequests[0]!
+            await connection.query(
+              `UPDATE deploy_requests
+                  SET status = 'pending',
+                      last_error = NULL,
+                      finished_at = NULL,
+                      updated_at = NOW()
+                WHERE id = ?`,
+              [failedRequest.id],
+            )
+            failedRequestReactivated = true
+
+            // Enfileirar dispatch diretamente (não depende de novo DEPLOY_REQUESTED)
+            const dispatchMessage = createQueueMessage({
+              type: 'DEPLOY_BATCH_DISPATCH_REQUESTED',
+              taskId,
+              executionId: `deploy-reactivation-${taskId}-${Date.now()}`,
+              causationId: taskCompleted.messageId,
+              payload: {
+                reason: 'external_resolution_retry',
+                resolvedBy,
+                repository: failedRequest.repo_path,
+                baseBranch: failedRequest.base_branch,
+                expectedCommit: failedRequest.requested_commit,
+                reactivatedFromFailed: true,
+              },
+            })
+            await insertOutboxMessage(connection, dispatchMessage, 'motor.commands')
+            messageIds.push(dispatchMessage.messageId)
+            deployRequested = true
+          } else if (!hasTombstone) {
+            // Sem request failed, emitir DEPLOY_REQUESTED normal
+            const deployRequest = createQueueMessage({
+              type: 'DEPLOY_REQUESTED', taskId,
+              executionId: `deploy-external-${taskId}-${Date.now()}`,
+              causationId: taskCompleted.messageId,
+              payload: { reason: 'external_resolution', resolvedBy },
+            })
+            await insertOutboxMessage(connection, deployRequest)
+            messageIds.push(deployRequest.messageId)
+            deployRequested = true
+          }
+          // Se hasTombstone=true, não faz nada (preserva adjudicação administrativa)
         }
 
         await connection.query('DELETE FROM motor_execution_wait_queue WHERE tarefa_id = ?', [databaseTaskId])
@@ -240,14 +308,14 @@ export class ExternalResolutionHandler {
           JSON.stringify({
             motivo: motivo.slice(0, 500), resolvedBy, blockIds: blockIds ?? null,
             subtaskId: input.subtaskId ?? null, blockersResolved, subtaskVerified,
-            completed, deployRequested, requeued, messageIds,
+            completed, deployRequested, requeued, failedRequestReactivated, messageIds,
           })],
       )
 
       await connection.commit()
       return {
         ok: true, taskId, databaseTaskId, blockersResolved, subtaskVerified,
-        completed, deployRequested, requeued, messageIds,
+        completed, deployRequested, requeued, failedRequestReactivated, messageIds,
       }
     } catch (error) {
       await connection.rollback()

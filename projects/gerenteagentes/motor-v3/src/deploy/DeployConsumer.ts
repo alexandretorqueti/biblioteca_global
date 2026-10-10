@@ -8,7 +8,7 @@ import { CommandPolicyResolver, type CommandPolicyRepository, type OperationLogg
 import { GitWorktreePreparer, mapHostRepoPathToContainer } from '../execution/GitWorktreePreparer.js'
 import type { QueueMessage } from '../queue/index.js'
 import { TestGateOrchestrator } from '../testing/index.js'
-import { DeployRepository, type DeployTaskContext } from './DeployRepository.js'
+import { DeployRepository, type DeployTaskContext, type MemberConflictResult } from './DeployRepository.js'
 import { RemoteBlueGreenDeployer } from './RemoteBlueGreenDeployer.js'
 import { GitOperationStateDetector } from '../execution/GitOperationStateDetector.js'
 import type { GovernedFailureHandler } from '../governance/GovernedFailureHandler.js'
@@ -115,7 +115,55 @@ export class DeployConsumer {
     // (operation_id, sequence) e transformaria o skip benigno em retry infinito.
     if (!claimed) return this.log(operationId, 3, 'completed', 'skipped', message, { reasonCode: 'motor_busy_or_no_compatible_pending_batch' })
     try {
-      const composed = await this.composeBatch(claimed.batch.repoPath, claimed.batch.baseBranch, claimed.batch.batchId, claimed.members.map(member => member.requestedCommit))
+      const composed = await this.composeBatch(
+        claimed.batch.repoPath,
+        claimed.batch.baseBranch,
+        claimed.batch.batchId,
+        claimed.members.map((member, index) => ({
+          requestedCommit: member.requestedCommit,
+          taskId: member.taskId,
+          databaseTaskId: member.databaseTaskId,
+          index,
+        })),
+      )
+      // --- Governança de conflito entre membros do batch (Subtarefa 1) ---
+      // Se algum membro teve conflito real de cherry-pick, isolar esse membro
+      // (request volta a pending, bloqueio deploy_member_conflict, análise
+      // gravada em promotion_conflict_analyses) e seguir com os compatíveis.
+      if (composed.conflicts.length > 0) {
+        const compatibleMembers = claimed.members.filter((_, i) => !composed.conflicts.some(conflict => conflict.index === i))
+        if (compatibleMembers.length === 0) {
+          // Todos os membros conflitaram: falhar o batch pelo fluxo vigente
+          for (const conflict of composed.conflicts) {
+            await this.repository.recordMemberConflictAnalysis({
+              databaseTaskId: conflict.databaseTaskId,
+              batchId: claimed.batch.batchId,
+              baseBranch: claimed.batch.baseBranch,
+              taskCommit: conflict.taskCommit,
+              conflictFiles: conflict.conflictFiles,
+              conflictExcerpt: conflict.conflictExcerpt,
+            })
+          }
+          await this.removeComposedWorktree(claimed.batch.repoPath, composed.path)
+          throw new Error(`Todos os ${composed.conflicts.length} membros do lote conflitaram no compose: ${composed.conflicts.map(c => c.taskId).join(', ')}`)
+        }
+        // Isolar membros conflitantes atomicamente
+        await this.repository.isolateConflictingMembers(
+          claimed.batch.batchId,
+          composed.conflicts,
+          message,
+        )
+        await this.log(operationId, 3, 'primitive', 'succeeded', message, {
+          primitiveCode: 'isolate_conflicting_batch_members',
+          result: {
+            isolatedCount: composed.conflicts.length,
+            isolatedTasks: composed.conflicts.map(c => c.taskId),
+            compatibleCount: compatibleMembers.length,
+          },
+        })
+        // Reajustar membros ativos do lote para gate e deploy
+        claimed.members = compatibleMembers
+      }
       try {
         const primary = claimed.members[0]!
         // Um único artefato pode reunir tarefas que definem contratos de gate
@@ -126,7 +174,7 @@ export class DeployConsumer {
         const testCommand = [...new Set(claimed.members.map(member => member.testCommand))].join(' && ')
         const gateJobId = await this.gate.enqueue({ projectId: primary.projectId, taskDatabaseId: primary.databaseTaskId, phase: 'pre_deploy', commitSha: composed.commit, baseCommitSha: claimed.batch.baseBranch, branchName: claimed.batch.baseBranch, workspacePath: composed.path, buildCommand, testCommand }, message)
         await this.repository.setBatchPrepared(claimed.batch.batchId, composed.commit, composed.path, gateJobId)
-        await this.log(operationId, 3, 'completed', 'succeeded', message, { actionCode: 'A31_DISPATCH_DEPLOY_BATCH', result: { batchId: claimed.batch.batchId, gateJobId, expectedCommit: composed.commit, memberCount: claimed.members.length } })
+        await this.log(operationId, 4, 'completed', 'succeeded', message, { actionCode: 'A31_DISPATCH_DEPLOY_BATCH', result: { batchId: claimed.batch.batchId, gateJobId, expectedCommit: composed.commit, memberCount: claimed.members.length, isolatedCount: composed.conflicts.length } })
       } catch (error) {
         await this.removeComposedWorktree(claimed.batch.repoPath, composed.path)
         throw error
@@ -513,11 +561,24 @@ export class DeployConsumer {
     return /promotion|conflict|dirty|not clean|diverg|merge/i.test(reason)
   }
 
-  /** Compõe patches das integrações pendentes sobre a branch-base em worktree exclusivo do lote. */
-  private async composeBatch(repoPath: string, baseBranch: string, batchId: string, commits: string[]): Promise<{ path: string; commit: string }> {
+  /**
+   * Compõe patches das integrações pendentes sobre a branch-base em worktree
+   * exclusivo do lote. Quando recebe membros com metadados (taskId, index),
+   * isola conflitos reais por membro: o cherry-pick do commit conflitante é
+   * abortado, o membro é registrado em `conflicts` e os demais seguem.
+   * Conflitos noop (a base já contém o resultado final) continuam sendo
+   * ignorados silenciosamente, sem bloqueio ou análise.
+   */
+  private async composeBatch(
+    repoPath: string,
+    baseBranch: string,
+    batchId: string,
+    commitsOrMembers: (string | { requestedCommit: string; taskId: string; databaseTaskId: number; index: number })[],
+  ): Promise<{ path: string; commit: string; conflicts: MemberConflictResult[] }> {
     const { stdout } = await execFileAsync('git', ['rev-parse', '--show-toplevel'], { cwd: repoPath, encoding: 'utf8' })
     const repo = stdout.trim(); const path = `${repo}/.motor-v3-deploy-${batchId.replace(/[^a-zA-Z0-9_-]/g, '_')}`
     await execFileAsync('git', ['worktree', 'add', '--detach', path, baseBranch], { cwd: repo })
+    const conflicts: MemberConflictResult[] = []
     try {
       // O worktree é destacado e pode ter sido criado a partir de uma referência
       // remota. Nesse caso, o nome baseBranch não necessariamente é resolvível
@@ -530,14 +591,24 @@ export class DeployConsumer {
       // existe na base. `rev-list` não distingue commits equivalentes: depois de
       // um revert/reaplicação, ele devolve commits que o cherry-pick não consegue
       // aplicar novamente e pode deixar o lote em conflito.
-      const allCommitsToCherryPick: string[] = []
-      for (const commit of [...new Set(commits)]) {
-        if (!/^[a-f0-9]{7,64}$/i.test(commit)) throw new Error(`Commit de integração inválido: ${commit}`)
-        const contained = await execFileAsync('git', ['merge-base', '--is-ancestor', commit, 'HEAD'], { cwd: path }).then(() => true, () => false)
+      //
+      // Mantemos a associação membro→commits para poder isolar o membro
+      // responsável quando um cherry-pick falhar com conflito real.
+      type MemberCommitEntry = { memberIndex: number; taskId: string; databaseTaskId: number; commit: string }
+      const allCommitsToCherryPick: MemberCommitEntry[] = []
+      const normalizedMembers = commitsOrMembers.map((entry, fallbackIndex) => {
+        if (typeof entry === 'string') {
+          return { requestedCommit: entry, taskId: '', databaseTaskId: 0, index: fallbackIndex }
+        }
+        return entry
+      })
+      for (const member of normalizedMembers) {
+        if (!/^[a-f0-9]{7,64}$/i.test(member.requestedCommit)) throw new Error(`Commit de integração inválido: ${member.requestedCommit}`)
+        const contained = await execFileAsync('git', ['merge-base', '--is-ancestor', member.requestedCommit, 'HEAD'], { cwd: path }).then(() => true, () => false)
         if (contained) continue
         // `git cherry` preserva a ordem topológica e marca `+` somente para
         // patches ausentes na base; linhas `-` já estão representadas nela.
-        const { stdout: cherryOutput } = await execFileAsync('git', ['cherry', baseCommit, commit], { cwd: path, encoding: 'utf8' })
+        const { stdout: cherryOutput } = await execFileAsync('git', ['cherry', baseCommit, member.requestedCommit], { cwd: path, encoding: 'utf8' })
         const commitRange = cherryOutput
           .split('\n')
           .map(line => line.trim().split(/\s+/))
@@ -545,33 +616,65 @@ export class DeployConsumer {
           .map(parts => parts[1])
           .filter((value): value is string => Boolean(value))
         for (const c of commitRange) {
-          if (!allCommitsToCherryPick.includes(c)) {
-            allCommitsToCherryPick.push(c)
+          if (!allCommitsToCherryPick.some(entry => entry.commit === c)) {
+            allCommitsToCherryPick.push({ memberIndex: member.index, taskId: member.taskId, databaseTaskId: member.databaseTaskId, commit: c })
           }
         }
       }
-      // Fazer cherry-pick de todos os commits na ordem
-      for (const c of allCommitsToCherryPick) {
+      // Cherry-pick por membro: ao falhar com conflito real, aborta SOMENTE o
+      // commit em conflito, remove todos os demais commits do mesmo membro da
+      // fila e continua com os membros compatíveis.
+      const skippedMemberIndexes = new Set<number>()
+      for (const entry of allCommitsToCherryPick) {
+        if (skippedMemberIndexes.has(entry.memberIndex)) continue
         await this.operationState.recover(path)
         try {
-          await execFileAsync('git', ['cherry-pick', c], { cwd: path })
+          await execFileAsync('git', ['cherry-pick', entry.commit], { cwd: path })
         } catch (error) {
-          const message = error instanceof Error ? error.message : String(error)
-          if (message.includes('empty')) {
+          const errorMessage = error instanceof Error ? error.message : String(error)
+          if (errorMessage.includes('empty')) {
             await execFileAsync('git', ['cherry-pick', '--skip'], { cwd: path })
           } else if (await this.skipNoopCherryPickConflict(path)) {
             // O patch pode conflitar apenas porque a base já contém o
             // resultado final por outra sequência de commits. Nesse caso,
             // preservar a base é equivalente a um cherry-pick vazio.
+            // Conflito noop: ignora sem bloqueio ou análise.
             await execFileAsync('git', ['cherry-pick', '--skip'], { cwd: path })
           } else {
-            // Falha real: aborta o estado Git antes de propagar o erro. O
-            // consumidor de dispatch registra o lote como failed e emite o
-            // bloqueio causal; nunca seguimos com um worktree em MERGING.
-            if (await this.operationState.detect(path)) await this.operationState.recover(path)
-            throw error
+            // Conflito REAL: captura diagnóstico antes de abortar
+            let conflictFiles: string[] = []
+            try {
+              const { stdout: diffOutput } = await execFileAsync('git', ['diff', '--name-only', '--diff-filter=U'], { cwd: path, encoding: 'utf8' })
+              conflictFiles = diffOutput.split('\n').map(f => f.trim()).filter(Boolean)
+            } catch { /* best-effort */ }
+            // Aborta SOMENTE o cherry-pick em conflito (não o worktree inteiro)
+            await execFileAsync('git', ['cherry-pick', '--abort'], { cwd: path }).catch(() => {
+              // Fallback: se cherry-pick --abort falhar, tenta limpar o estado
+              return this.operationState.recover(path)
+            })
+            // Se temos metadados do membro, isolar; se não, propagar erro (legacy)
+            if (entry.taskId) {
+              conflicts.push({
+                index: entry.memberIndex,
+                taskId: entry.taskId,
+                databaseTaskId: entry.databaseTaskId,
+                conflictFiles,
+                conflictExcerpt: errorMessage.slice(0, 500),
+                taskCommit: entry.commit,
+              })
+              skippedMemberIndexes.add(entry.memberIndex)
+            } else {
+              // Sem metadados de membro (chamada legacy): comportamento antigo
+              if (await this.operationState.detect(path)) await this.operationState.recover(path)
+              throw error
+            }
           }
         }
+      }
+      // Se todos os membros conflitaram, não há sentido em npm ci
+      if (normalizedMembers.length > 0 && skippedMemberIndexes.size === normalizedMembers.length) {
+        const { stdout: composed } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: path, encoding: 'utf8' })
+        return { path, commit: composed.trim(), conflicts }
       }
       await execFileAsync('npm', ['ci', '--prefer-offline', '--no-audit', '--no-fund'], { cwd: path })
       // O motor-v3 só existe na biblioteca global; outros projetos não têm esse subdiretório.
@@ -583,7 +686,7 @@ export class DeployConsumer {
         // Diretório não existe (projeto que não é a biblioteca) — pular npm ci do motor-v3
       }
       const { stdout: composed } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: path, encoding: 'utf8' })
-      return { path, commit: composed.trim() }
+      return { path, commit: composed.trim(), conflicts }
     } catch (error) {
       await this.removeComposedWorktree(repo, path)
       throw error

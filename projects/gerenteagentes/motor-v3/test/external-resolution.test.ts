@@ -10,6 +10,12 @@ interface FakeOptions {
   counts?: { total: number; finais: number | null }
   terminalStatus?: string | null
   factsRowExists?: boolean
+  /** Tarefa 972: request failed existente para reativação. */
+  failedRequest?: { id: number; repo_path: string; base_branch: string; requested_commit: string } | null
+  /** Tarefa 972: tombstone administrativo existente. */
+  hasTombstone?: boolean
+  /** Tarefa 972: idempotência — request já pending existe. */
+  hasPendingRequest?: boolean
 }
 
 function fakePool(options: FakeOptions = {}) {
@@ -39,6 +45,29 @@ function fakePool(options: FakeOptions = {}) {
       if (/SELECT terminal_status FROM task_runtime_facts/.test(sql)) {
         if (options.factsRowExists === false) return [[]]
         return [[{ terminal_status: options.terminalStatus ?? null }]]
+      }
+      // Tarefa 972: query de request failed para reativação
+      if (/FROM deploy_requests[\s\S]*status = 'failed'/.test(sql)) {
+        if (options.failedRequest) {
+          return [[{
+            id: options.failedRequest.id,
+            status: 'failed',
+            last_error: 'Deploy failed: merge conflict',
+            batch_id: 'batch-123',
+            repo_path: options.failedRequest.repo_path,
+            base_branch: options.failedRequest.base_branch,
+            requested_commit: options.failedRequest.requested_commit,
+          }]]
+        }
+        return [[]]
+      }
+      // Tarefa 972: query de tombstone administrativo
+      if (/Adjudicação administrativa sem deploy/.test(sql)) {
+        return [[{ has_tombstone: options.hasTombstone ? 1 : 0 }]]
+      }
+      // Tarefa 972: UPDATE deploy_requests para reativação
+      if (/UPDATE deploy_requests[\s\S]*SET status = 'pending'/.test(sql)) {
+        return [{ affectedRows: 1 }]
       }
       return [{ affectedRows: 1 }]
     }),
@@ -199,5 +228,189 @@ describe('ExternalResolutionHandler (camada C — resolução externa governada)
       .rejects.toMatchObject({ code: 'invalid_input' })
     await expect(handler.handle({ taskId: 'task-p2-820', motivo: 'ok', resolvedBy: '' }))
       .rejects.toMatchObject({ code: 'invalid_input' })
+  })
+
+  // === Tarefa 972: retry governado de request failed ===
+
+  it('972: reativa request failed para pending com requestDeploy=true e enfileira dispatch', async () => {
+    const fake = fakePool({
+      counts: { total: 3, finais: 3 },
+      failedRequest: {
+        id: 42,
+        repo_path: '/home/alexandre/codigofonte/biblioteca-global',
+        base_branch: 'main',
+        requested_commit: 'abc123def456',
+      },
+      hasTombstone: false,
+    })
+    const handler = new ExternalResolutionHandler(fake.pool as never)
+
+    const result = await handler.handle({
+      taskId: 'task-p2-966',
+      motivo: 'Conflito resolvido manualmente pelo Monitor',
+      resolvedBy: 'monitor',
+      requestDeploy: true,
+    })
+
+    expect(result.ok).toBe(true)
+    expect(result.completed).toBe(true)
+    expect(result.deployRequested).toBe(true)
+    expect(result.failedRequestReactivated).toBe(true)
+
+    // Verificar UPDATE do deploy_request para pending
+    const updateCall = fake.calls.find(call => /UPDATE deploy_requests[\s\S]*SET status = 'pending'/.test(call.sql))
+    expect(updateCall).toBeDefined()
+    expect(updateCall?.sql).toContain("last_error = NULL")
+    expect(updateCall?.sql).toContain("finished_at = NULL")
+    expect(updateCall?.params[0]).toBe(42)
+
+    // Verificar dispatch enfileirado (não DEPLOY_REQUESTED, mas DEPLOY_BATCH_DISPATCH_REQUESTED)
+    const messages = fake.outboxMessages()
+    const types = messages.map(m => m.type)
+    expect(types).toContain('DEPLOY_BATCH_DISPATCH_REQUESTED')
+    expect(types).not.toContain('DEPLOY_REQUESTED') // não emite novo DEPLOY_REQUESTED
+
+    const dispatch = messages.find(m => m.type === 'DEPLOY_BATCH_DISPATCH_REQUESTED')
+    expect(dispatch?.payload.reason).toBe('external_resolution_retry')
+    expect(dispatch?.payload.reactivatedFromFailed).toBe(true)
+    expect(dispatch?.payload.repository).toBe('/home/alexandre/codigofonte/biblioteca-global')
+    expect(dispatch?.payload.baseBranch).toBe('main')
+    expect(dispatch?.payload.expectedCommit).toBe('abc123def456')
+
+    // Auditoria inclui failedRequestReactivated
+    const auditCall = fake.calls.find(call => /INSERT INTO tarefa_eventos/.test(call.sql))
+    const auditPayload = JSON.parse(String(auditCall?.params[3]))
+    expect(auditPayload.failedRequestReactivated).toBe(true)
+
+    expect(fake.connection.commit).toHaveBeenCalled()
+  })
+
+  it('972: NÃO reativa request quando existe tombstone administrativo (cancelled)', async () => {
+    const fake = fakePool({
+      counts: { total: 2, finais: 2 },
+      failedRequest: {
+        id: 50,
+        repo_path: '/repo',
+        base_branch: 'main',
+        requested_commit: 'xyz789',
+      },
+      hasTombstone: true, // Adjudicação administrativa existe
+    })
+    const handler = new ExternalResolutionHandler(fake.pool as never)
+
+    const result = await handler.handle({
+      taskId: 'task-p2-955',
+      motivo: 'Tentativa de retry sobre adjudicação',
+      resolvedBy: 'monitor',
+      requestDeploy: true,
+    })
+
+    expect(result.ok).toBe(true)
+    expect(result.completed).toBe(true)
+    // Tombstone preservado — nem reativação nem dispatch
+    expect(result.failedRequestReactivated).toBe(false)
+    expect(result.deployRequested).toBe(false)
+
+    // Nenhum UPDATE deploy_requests para pending
+    const updateCall = fake.calls.find(call => /UPDATE deploy_requests[\s\S]*SET status = 'pending'/.test(call.sql))
+    expect(updateCall).toBeUndefined()
+
+    // Nenhum dispatch enfileirado
+    const messages = fake.outboxMessages()
+    const types = messages.map(m => m.type)
+    expect(types).not.toContain('DEPLOY_BATCH_DISPATCH_REQUESTED')
+    expect(types).not.toContain('DEPLOY_REQUESTED')
+  })
+
+  it('972: sem request failed e sem tombstone, emite DEPLOY_REQUESTED normalmente', async () => {
+    const fake = fakePool({
+      counts: { total: 2, finais: 2 },
+      failedRequest: null, // nenhum request failed
+      hasTombstone: false,
+    })
+    const handler = new ExternalResolutionHandler(fake.pool as never)
+
+    const result = await handler.handle({
+      taskId: 'task-p2-820',
+      motivo: 'Deploy explícito',
+      resolvedBy: 'monitor',
+      requestDeploy: true,
+    })
+
+    expect(result.ok).toBe(true)
+    expect(result.deployRequested).toBe(true)
+    expect(result.failedRequestReactivated).toBe(false)
+
+    const messages = fake.outboxMessages()
+    const types = messages.map(m => m.type)
+    expect(types).toContain('DEPLOY_REQUESTED') // caminho normal
+    expect(types).not.toContain('DEPLOY_BATCH_DISPATCH_REQUESTED')
+  })
+
+  it('972: sem requestDeploy mantém semântica de cancelamento e tombstone', async () => {
+    const fake = fakePool({
+      counts: { total: 2, finais: 2 },
+      failedRequest: {
+        id: 60,
+        repo_path: '/repo',
+        base_branch: 'main',
+        requested_commit: 'aaa111',
+      },
+      hasTombstone: false,
+    })
+    const handler = new ExternalResolutionHandler(fake.pool as never)
+
+    const result = await handler.handle({
+      taskId: 'task-p2-820',
+      motivo: 'Conclusão sem deploy',
+      resolvedBy: 'monitor',
+      // requestDeploy ausente
+    })
+
+    expect(result.ok).toBe(true)
+    expect(result.deployRequested).toBe(false)
+    expect(result.failedRequestReactivated).toBe(false)
+
+    // cancelUnstartedDeployRequests deve ser chamado (UPDATE deploy_requests ... cancelled)
+    const cancelCall = fake.calls.find(call => /UPDATE deploy_requests dr/.test(call.sql))
+    expect(cancelCall).toBeDefined()
+    expect(cancelCall?.sql).toContain("dr.status='cancelled'")
+
+    // Tombstone criado
+    const tombstoneCall = fake.calls.find(call => /INSERT INTO deploy_requests[\s\S]*'cancelled'/.test(call.sql))
+    expect(tombstoneCall).toBeDefined()
+  })
+
+  it('972: rollback em falha de atualização do deploy_request', async () => {
+    const fake = fakePool({
+      counts: { total: 2, finais: 2 },
+      failedRequest: {
+        id: 70,
+        repo_path: '/repo',
+        base_branch: 'main',
+        requested_commit: 'bbb222',
+      },
+      hasTombstone: false,
+    })
+    // Simular falha no UPDATE deploy_requests
+    const originalQuery = fake.connection.query.getMockImplementation()
+    fake.connection.query.mockImplementation(async (sql: string, params: unknown[] = []) => {
+      if (/UPDATE deploy_requests[\s\S]*SET status = 'pending'/.test(sql)) {
+        throw new Error('DB connection lost')
+      }
+      return originalQuery!(sql, params)
+    })
+
+    const handler = new ExternalResolutionHandler(fake.pool as never)
+
+    await expect(handler.handle({
+      taskId: 'task-p2-820',
+      motivo: 'Retry com falha de DB',
+      resolvedBy: 'monitor',
+      requestDeploy: true,
+    })).rejects.toThrow('DB connection lost')
+
+    expect(fake.connection.rollback).toHaveBeenCalled()
+    expect(fake.connection.commit).not.toHaveBeenCalled()
   })
 })
