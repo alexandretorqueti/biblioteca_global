@@ -41,16 +41,6 @@ export const config: GeradorSistemaConfig = {
           },
         },
         {
-          id: "acompanhar-view",
-          label: "Acompanhar Tarefa",
-          path: "acompanhar",
-          icon: "monitor_heart",
-          screen: {
-            kind: "custom",
-            componentId: "gerenteagentes-task-monitor",
-          },
-        },
-        {
           id: "mapa-agentes-view",
           label: "Mapa de agentes",
           path: "mapa-agentes",
