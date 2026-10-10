@@ -16,10 +16,18 @@ export class RealtimeController {
     if (idempotencyKey && idempotencyKey !== eventId) {
       throw new BadRequestException("Idempotency-Key divergente do eventId")
     }
-    if (!this.realtime.aceitarUmaVez(eventId)) {
-      return { ok: true, duplicate: true, eventId }
+    // publicar() já é idempotente por eventId (retorna envelope anterior via
+    // envelopesPorId). Não chamar aceitarUmaVez aqui para evitar dedup duplo.
+    try {
+      const evento = this.realtime.publicar(parsed.data)
+      return { ok: true, duplicate: false, eventId: evento.eventId, sequence: evento.sequence }
+    } catch (err) {
+      // Corrida de entrega dupla simultânea: publicar lança 'Evento realtime
+      // duplicado' na janela entre aceitarUmaVez interno e envelopesPorId.set.
+      if (err instanceof Error && err.message === "Evento realtime duplicado") {
+        return { ok: true, duplicate: true, eventId }
+      }
+      throw err
     }
-    const evento = this.realtime.publicar(parsed.data)
-    return { ok: true, duplicate: false, eventId: evento.eventId, sequence: evento.sequence }
   }
 }
