@@ -3,7 +3,6 @@ import IsaChatScreen, { componentId as isaChatId } from "./IsaChatScreen"
 import ModelSelectionScreen, { componentId as modelSelectionId } from "./ModelSelectionScreen"
 import NovaTarefaScreen, { componentId as novaTarefaId } from "./NovaTarefaScreen"
 import PromptsScreen, { componentId as promptsId } from "./PromptsScreen"
-import TaskMonitorScreen, { componentId as taskMonitorId } from "./TaskMonitorScreen"
 import OperationMapScreen, { componentId as operationMapId } from "./OperationMapScreen"
 import ConfiguracoesScreen, { componentId as configuracoesId } from "./ConfiguracoesScreen"
 import MotorV3TablesScreen, { componentId as motorV3TablesId } from "./MotorV3TablesScreen"
@@ -16,7 +15,6 @@ export const customScreens = {
   [modelSelectionId]: ModelSelectionScreen,
   [novaTarefaId]: NovaTarefaScreen,
   [promptsId]: PromptsScreen,
-  [taskMonitorId]: TaskMonitorScreen,
   [operationMapId]: OperationMapScreen,
   [configuracoesId]: ConfiguracoesScreen,
   [motorV3TablesId]: MotorV3TablesScreen,

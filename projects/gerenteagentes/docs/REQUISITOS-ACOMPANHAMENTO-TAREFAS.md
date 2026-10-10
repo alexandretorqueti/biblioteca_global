@@ -2,6 +2,27 @@
 
 Registro de 2026-09-03 para as tarefas do projeto `biblioteca-global`.
 
+## ⚠️ TaskMonitorScreen removido (2026-10-10, tarefa p2-978)
+
+> **Decisão de 2026-09-26:** `TaskMonitorScreen` (Acompanhar Tarefa) é **legado**.
+> A operação principal de acompanhamento passou para o **Mapa de agentes**
+> (`OperationMapScreen`, rota `/mapa-agentes`).
+>
+> **Motivo da remoção:** testes flaky com timeouts intermitentes derrubaram gates
+> e deploys repetidamente:
+> - test_run 462 (06/10): timeout em assert de btn-pause (~L1077)
+> - test_run 464 (06/10): timeout em userEvent+advanceTimers (~L867), bloqueou subtarefa 1273 e a tarefa 939
+> - test_run 514 (08/10): mesmo teste ~L866, contribuiu para falha do batch de deploy 815+934
+>
+> **Arquivos removidos:**
+> - `screens/TaskMonitorScreen.tsx`
+> - `screens/__tests__/TaskMonitorScreen.test.tsx`
+> - Entrada `acompanhar-view` no `config.ts` (componentId `gerenteagentes-task-monitor`)
+> - Registro no `screens/registry.ts`
+>
+> **Preservados:** `src/shared/task-statuses.ts`, `TaskFlowMap.tsx`,
+> `subtaskCount.integration.test.tsx` — usados por `OperationMapScreen`/Dashboard.
+
 ## Atualização em tempo real
 
 Tarefa `#761` (`task-biblioteca-761`): substituir o polling periódico da tela

@@ -66,7 +66,6 @@ describe("registry de telas custom", () => {
     expect(ids).toEqual([
       "documentation",
       "gerenteagentes-dashboard",
-      "gerenteagentes-task-monitor",
       "gerenteagentes-operation-map",
       "gerenteagentes-isa-chat",
       "gerenteagentes-model-selection",
