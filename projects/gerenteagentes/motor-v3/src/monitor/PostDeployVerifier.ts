@@ -73,8 +73,6 @@ interface CorrectionCount extends RowDataPacket {
  * - Flag independente: motor.postdeploy_verification.active
  */
 export class PostDeployVerifier {
-  private readonly inFlight = new Set<string>()
-
   constructor(
     private readonly pool: Pool,
     private readonly worker: Pick<WorkerLauncher, 'executeTask'>,
@@ -101,39 +99,32 @@ export class PostDeployVerifier {
       return
     }
 
-    // Idempotência: verifica se já existe verificação para este batch
-    const existing = await this.findVerification(batchId)
-    if (existing) {
-      await this.logOperation(batchId, 'decision', 'skipped', message, { 
-        reasonCode: 'postdeploy_already_verified',
-        result: { verificationId: existing.id, status: existing.status },
+    // Claim atômico: INSERT IGNORE com status pending. Outra instância ou
+    // chamada concorrente/repetida não executa segunda verificação.
+    const claimed = await this.claimVerification(batchId)
+    if (!claimed) {
+      const existing = await this.findVerification(batchId)
+      await this.logOperation(batchId, 'decision', 'skipped', message, {
+        reasonCode: 'postdeploy_already_claimed',
+        result: existing ? { verificationId: existing.id, status: existing.status } : {},
       })
       return
     }
 
-    // Anti-concorrência: instância única (mesma premissa de activeWorkers)
-    if (this.inFlight.has(batchId)) {
-      await this.logOperation(batchId, 'decision', 'skipped', message, { reasonCode: 'postdeploy_in_flight' })
-      return
-    }
-
-    this.inFlight.add(batchId)
     const operationId = randomUUID()
     try {
       await this.logOperation(batchId, 'received', 'executed', message, { operationId })
       await this.runVerification(batchId, message, operationId)
     } catch (error) {
-      // Falha do verificador NUNCA bloqueia o pipeline
+      // Falha do verificador NUNCA bloqueia o pipeline — estado terminal failed.
       const detail = error instanceof Error ? error.message : String(error)
       console.error(`[PostDeployVerifier] Falha na verificação do batch ${batchId}:`, detail)
-      await this.logOperation(batchId, 'failed', 'failed', message, { 
+      await this.logOperation(batchId, 'failed', 'failed', message, {
         operationId,
         reasonCode: 'postdeploy_verification_failed',
         result: { error: detail },
       })
       await this.persistVerification(batchId, 'failed', null, 0)
-    } finally {
-      this.inFlight.delete(batchId)
     }
   }
 
@@ -465,6 +456,105 @@ export class PostDeployVerifier {
       [batchId],
     )
     return rows[0] ?? null
+  }
+
+  /**
+   * Claim atômico de verificação para um batch_id.
+   *
+   * Usa INSERT IGNORE apoiado na unique key uk_batch_id: se nenhuma linha
+   * existir, insere com status='pending' (claim bem-sucedido); se já existir
+   * (outra instância ou verificação completa), não altera nada e retorna false.
+   *
+   * Isso substitui a janela consulta-antes-de-inserção que permitia race
+   * condition entre findVerification() e persistVerification().
+   */
+  private async claimVerification(batchId: string): Promise<boolean> {
+    try {
+      const [result] = await this.pool.query<ResultSetHeader>(
+        `INSERT IGNORE INTO motor_postdeploy_verifications
+           (batch_id, status, created_at, updated_at)
+         VALUES (?, 'pending', NOW(), NOW())`,
+        [batchId],
+      )
+      return result.affectedRows > 0
+    } catch (error) {
+      console.error('[PostDeployVerifier] Falha no claim atômico:', error)
+      return false
+    }
+  }
+
+  /**
+   * Boot scan — varredura de batches succeeded sem verificação.
+   *
+   * Executado no start do motor para cobrir o gap do swap de container:
+   * quando o swap acontece, o motor ANTIGO processa o evento de sucesso
+   * do próprio batch — o motor NOVO que sobe já contém o verifier mas
+   * nunca recebe o evento daquele batch.
+   *
+   * Busca em deploy_batches os batches com status='succeeded' finalizados
+   * nas últimas 48 horas SEM linha em motor_postdeploy_verifications e
+   * dispara verificação pendente para cada um.
+   *
+   * Idempotente: cada batch é reivindicado via claimVerification() antes
+   * de processar. Duas instâncias iniciando simultaneamente não processam
+   * o mesmo batch.
+   */
+  async bootScan(): Promise<void> {
+    if (!await this.isActive()) return
+
+    try {
+      const [rows] = await this.pool.query<Array<RowDataPacket & { batch_id: string }>>(
+        `SELECT db.batch_id
+           FROM deploy_batches db
+           LEFT JOIN motor_postdeploy_verifications pv ON pv.batch_id = db.batch_id
+          WHERE db.status = 'succeeded'
+            AND db.finished_at >= DATE_SUB(NOW(), INTERVAL 48 HOUR)
+            AND pv.id IS NULL`,
+      )
+
+      if (rows.length === 0) return
+
+      console.log(`[PostDeployVerifier] Boot scan: ${rows.length} batch(es) succeeded sem verificação`)
+
+      for (const row of rows) {
+        const batchId = String(row.batch_id)
+
+        // Claim atômico — se outra instância já reivindicou, ignora
+        const claimed = await this.claimVerification(batchId)
+        if (!claimed) continue
+
+        const operationId = randomUUID()
+        const syntheticMessage = createQueueMessage({
+          type: 'DEPLOY_BATCH_SUCCEEDED',
+          taskId: '',
+          executionId: `boot-scan-${batchId}`,
+          correlationId: undefined,
+          causationId: undefined,
+          payload: { batchId, source: 'boot_scan' },
+        })
+
+        try {
+          await this.logOperation(batchId, 'received', 'executed', syntheticMessage, {
+            operationId,
+            source: 'boot_scan',
+          })
+          await this.runVerification(batchId, syntheticMessage, operationId)
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error)
+          console.error(`[PostDeployVerifier] Boot scan — falha na verificação do batch ${batchId}:`, detail)
+          await this.persistVerification(batchId, 'failed', null, 0)
+          await this.logOperation(batchId, 'failed', 'failed', syntheticMessage, {
+            operationId,
+            reasonCode: 'postdeploy_boot_scan_failed',
+            result: { error: detail },
+            source: 'boot_scan',
+          })
+        }
+      }
+    } catch (error) {
+      // Boot scan nunca derruba o startup
+      console.error('[PostDeployVerifier] Boot scan falhou:', error)
+    }
   }
 
   private async loadBatchTasks(batchId: string): Promise<BatchTaskContext[]> {
