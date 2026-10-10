@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS `motor_postdeploy_verifications` (
   KEY `idx_status` (`status`),
   KEY `idx_created_at` (`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
+--> statement-breakpoint
 -- Seed: flag de ativação da verificação pós-deploy (default true).
 -- Independente de motor.monitor.active.
 INSERT INTO `motor_configuracoes` (`chave`, `tipo`, `valor`, `valor_padrao`, `regra_validacao`, `descricao`)
