@@ -190,8 +190,8 @@ Quando **todas as fases anteriores passarem**:
 Se o motor-v3 falhar em produção:
 
 1. Parar motor-v3
-2. Religar motor-v2 (APENAS SE ALEXANDRE AUTORIZAR)
-   - `ssh -i /root/.ssh/id_ed25519 alexandre@host.docker.internal 'docker exec biblioteca-green-api-1 bash -c "MOTOR_VERSION=v2 node projects/gerenteagentes/motor-v2/dist/start.js &"'`
+2. Religar motor-v3 (APENAS SE ALEXANDRE AUTORIZAR)
+   - `ssh -i /root/.ssh/id_ed25519 alexandre@host.docker.internal 'docker exec biblioteca-green-api-1 bash -c "MOTOR_VERSION=v2 node projects/gerenteagentes/motor-v3/dist/start.js &"'`
 3. Investigar falha no motor-v3
 4. Corrigir e testar novamente
 
@@ -276,6 +276,6 @@ curl -X POST http://localhost:3010/api/motor/catalog/reject/<proposalId> \
 ## Referências
 
 - **Spec completa:** `docs/ESPECIFICACAO.md` (18 seções)
-- **Mapeamento v2→v3:** `docs/MOTOR-V2-SIMULACAO-TEXTUAL.md`
+- **Mapeamento v2→v3:** `docs/ESPECIFICACAO.md`
 - **Log de desenvolvimento:** `docs/MOTOR-V3-LOG.md`
 - **Catálogo de eventos:** `docs/CATALOGO-EVENTOS-REACOES.md`

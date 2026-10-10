@@ -16,7 +16,7 @@ describe('ConflictViewer', () => {
     report: null,
     errorMessage: null,
     baseBranch: 'base-desenvolvimento',
-    taskBranch: 'motor-v2/task-123/integracao',
+    taskBranch: 'motor/task-123/integracao',
     baseCommit: 'abc123',
     taskCommit: 'def456',
     mergeBaseCommit: 'ghi789',
@@ -50,7 +50,7 @@ describe('ConflictViewer', () => {
     
     expect(screen.getByText(/2 conflito\(s\)/)).toBeInTheDocument()
     expect(screen.getByText('base-desenvolvimento')).toBeInTheDocument()
-    expect(screen.getByText('motor-v2/task-123/integracao')).toBeInTheDocument()
+    expect(screen.getByText('motor/task-123/integracao')).toBeInTheDocument()
   })
 
   it('exibe botões de resolução quando onResolveConflict é fornecido', () => {

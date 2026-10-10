@@ -66,7 +66,7 @@ Parse tolerante: aceita `kind` explícito ou apenas a presença do array
 
 ## 4. Endpoints
 
-### Motor-v2 (porta 3010, mesmo container da biblioteca)
+### Motor (porta 3010, mesmo container da biblioteca)
 
 - `POST /api/motor/task/:id/clarification`
   Body: `{ "texto": string, "jaPersistida"?: boolean }`
@@ -90,7 +90,7 @@ Parse tolerante: aceita `kind` explícito ou apenas a presença do array
 
 ## 5. Código
 
-### Motor-v2 (`projects/gerenteagentes/motor-v2`)
+### Motor (`projects/gerenteagentes/motor-v3`)
 
 - `src/shared/types/index.ts` — status novo `awaiting_clarification`.
 - `src/policies/TaskStateMachine.ts` — transições `await_clarification`
@@ -121,16 +121,16 @@ Parse tolerante: aceita `kind` explícito ou apenas a presença do array
 
 ### Testes
 
-- `motor-v2/test/AnalystReply.test.ts` (9 casos)
-- `motor-v2/test/ClarificationStore.test.ts` (6 casos)
-- `motor-v2/test/TaskStateMachine.test.ts` (+6 casos de clarificação)
+- `motor-v3/test/AnalystReply.test.ts` (9 casos)
+- `motor-v3/test/ClarificationStore.test.ts` (6 casos)
+- `motor-v3/test/TaskStateMachine.test.ts` (+6 casos de clarificação)
 
 ## 6. Pontos futuros (fora desta entrega)
 
 - Entrega de notificação **Telegram** de fato (hoje o evento `clarifying` sai
   pelo barramento/realtime; o disparo para o canal entra com a automação).
 - Consumo da clarificação **por projeto**: o executor da geração de tarefas
-  macro (analista forte) ainda não existe no motor-v2 — os endpoints e o
+  macro (analista forte) ainda não existe no motor — os endpoints e o
   status estão prontos para ele (`registrarClarificacaoProjeto` + geração em
   `awaiting_clarification`).
 - Autoria fina da resposta (registrar qual agente respondeu): hoje a resposta

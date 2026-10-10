@@ -17,9 +17,9 @@ cadeia para selecionar o modelo a ser usado em cada fase da execução.
 
 | Camada | Evidência | Uso |
 | --- | --- | --- |
-| Motor — execução | `motor-v2/src/coordinator/TaskCoordinator.ts:1464-1474` | Faz `SELECT provider, model, ordem ... WHERE project_slug = ? AND tipo = ? AND enabled = 1 ORDER BY ordem ASC` para montar a cadeia de modelos. |
-| Motor — API | `motor-v2/src/api/MotorAPI.ts:207-212` | Lê as entradas para o endpoint `GET /api/model-selection/:projectKey/:tipo`. |
-| Motor — API | `motor-v2/src/api/MotorAPI.ts:267-278` | Remove e insere as entradas no endpoint `PUT /api/model-selection/:projectKey/:tipo`. |
+| Motor — execução | `motor-v3/src/coordinator/TaskCoordinator.ts:1464-1474` | Faz `SELECT provider, model, ordem ... WHERE project_slug = ? AND tipo = ? AND enabled = 1 ORDER BY ordem ASC` para montar a cadeia de modelos. |
+| Motor — API | `motor-v3/src/api/MotorAPI.ts:207-212` | Lê as entradas para o endpoint `GET /api/model-selection/:projectKey/:tipo`. |
+| Motor — API | `motor-v3/src/api/MotorAPI.ts:267-278` | Remove e insere as entradas no endpoint `PUT /api/model-selection/:projectKey/:tipo`. |
 | API do projeto | `api/gerenteagentes.service.ts:901-955` e `api/gerenteagentes.controller.ts:209-217` | Expõe os endpoints da Biblioteca como proxy para o motor e valida o contrato de seleção. |
 | Interface | `screens/ModelSelectionScreen.tsx:2-16, 105-219` | Carrega e salva a seleção por projeto/tipo, permitindo editar ordem, provider, modelo e habilitação. |
 | Testes | `api/__tests__/gerenteagentes.service.model-selection.spec.ts:97-149` e `screens/__tests__/ModelSelectionScreen.test.tsx:114-402` | Cobrem o proxy e o fluxo de leitura, edição e gravação da seleção. |

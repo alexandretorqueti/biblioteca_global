@@ -138,13 +138,13 @@ Esses componentes são insuficientes para equivalência funcional com o v2:
 
 ## Evidências consultadas
 
-- `motor-v2/src/coordinator/TaskCoordinator.ts` — seleção, lease, transições,
+- `motor-v3/src/coordinator/TaskCoordinator.ts` — seleção, lease, transições,
   cadeia de modelos e finalização.
-- `motor-v2/src/workers/TaskWorker.ts` — análise, sessão, retries, fallback,
+- `motor-v3/src/workers/TaskWorker.ts` — análise, sessão, retries, fallback,
   esclarecimento e validação de qualidade.
-- `motor-v2/src/prompts/ManagedPromptResolver.ts` — prompts/contratos
+- `motor-v3/src/prompts/ManagedPromptResolver.ts` — prompts/contratos
   versionados e auditoria de composição.
-- `motor-v2/src/planning/PlanPersistence.ts` — persistência idempotente do
+- `motor-v3/src/planning/PlanPersistence.ts` — persistência idempotente do
   plano.
 - `motor-v3/src/analysis/ConsoleAnalystRunner.ts` e `AnalystReply.ts` —
   prompt fixo e parser atual.

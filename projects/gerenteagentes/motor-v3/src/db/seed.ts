@@ -8,7 +8,7 @@
  * - motor_patterns (patterns para erros)
  * - motor_reactions (reações progressivas)
  * 
- * Baseado em: docs/MOTOR-V2-SIMULACAO-TEXTUAL.md §2-§3 e docs/ESPECIFICACAO.md §18
+ * Baseado em: docs/MOTOR-SIMULACAO-TEXTUAL.md §2-§3 e docs/ESPECIFICACAO.md §18
  */
 
 import 'dotenv/config'

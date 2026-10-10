@@ -105,7 +105,7 @@ O projeto TaQui (caso de teste do motor) expôs falhas no fluxo de setup de proj
 
 ### 8. Briefing do Analista (buildAnalystPrompt)
 
-**Onde:** `projects/gerenteagentes/motor-v2/src/workers/TaskWorker.ts` → `buildAnalystPrompt()`
+**Onde:** `projects/gerenteagentes/motor-v3/src/workers/TaskWorker.ts` → `buildAnalystPrompt()`
 
 **O que:** Prompt do analista atualizado com o fluxo oficial:
 - **Telas personalizadas de projeto novo NUNCA são subtarefa do setup**
@@ -176,7 +176,7 @@ Os **controles de código** (itens 2, 3, 4, 5, 6b, 7) são implementados em subt
 | Arquivo | Mudança |
 |---------|---------|
 | `projects/gerenteagentes/api/gerenteagentes.service.ts` | `montarMissaoSetup()` reescrito com checklist explícito e CLI de registro no gateway |
-| `projects/gerenteagentes/motor-v2/src/workers/TaskWorker.ts` | `buildAnalystPrompt()` com regras para setup de projeto novo |
+| `projects/gerenteagentes/motor-v3/src/workers/TaskWorker.ts` | `buildAnalystPrompt()` com regras para setup de projeto novo |
 
 ## Próximas Subtarefas
 

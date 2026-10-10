@@ -4,7 +4,7 @@
 
 ## O que é
 
-Camada de **autocorreção da promoção** do Motor-v2. Em vez de resolver conflitos
+Camada de **autocorreção da promoção** do Motor. Em vez de resolver conflitos
 de merge na mão, o motor revisa pendências de promoção no boot/pump e reage:
 
 - `PromotionGateRecoveryOrchestrator` — revisa pendências no boot/pump.
@@ -26,11 +26,11 @@ de merge na mão, o motor revisa pendências de promoção no boot/pump e reage:
 ```sql
 ... WHERE t.status = 'blocked' ...
   AND NOT EXISTS (SELECT 1 FROM bloqueios b WHERE b.tarefa_id = t.id AND b.resolved_at IS NULL
-        AND (b.block_command LIKE 'motor-v2:promotion-conflict:%' OR b.block_command LIKE 'motor-v2:promotion-repo-dirty:%'))
+        AND (b.block_command LIKE 'motor:promotion-conflict:%' OR b.block_command LIKE 'motor:promotion-repo-dirty:%'))
 ORDER BY t.updated_at ASC LIMIT 1
 ```
 
-Branch verificada: `motor-v2/<external_id>/integracao`.
+Branch verificada: `motor/<external_id>/integracao`.
 
 ## ⚠️ Duplamente errado (descoberto 2026-09-11)
 
@@ -38,7 +38,7 @@ Branch verificada: `motor-v2/<external_id>/integracao`.
 
 A tabela `tarefas` do banco real do motor (**schema `projeto_640`**) **não tem
 coluna `status`**. O status é **derivado** (`TaskFactsStore.derive()` →
-`deriveTaskStatus()`, ver `motor-v2/src/policies/DerivedTaskStatus.ts`), a partir
+`deriveTaskStatus()`, ver `motor-v3/src/policies/DerivedTaskStatus.ts`), a partir
 de `task_runtime_facts`, `subtarefas`, `bloqueios`, `deploy_requests`,
 `tarefa_chats` e `paused_at`. A query falha imediatamente:
 
@@ -53,15 +53,15 @@ existe, em schemas legados) não reflete o estado operacional real.
 
 ### 2. Filtro de bloqueio por LIKE ad-hoc, divergente dos formatos reais
 
-O `NOT EXISTS` só reconhece `block_command LIKE 'motor-v2:promotion-conflict:%'`
-e `'motor-v2:promotion-repo-dirty:%'`. Na prática existem **três gerações** de
+O `NOT EXISTS` só reconhece `block_command LIKE 'motor:promotion-conflict:%'`
+e `'motor:promotion-repo-dirty:%'`. Na prática existem **três gerações** de
 registro, tratadas de forma diferente por cada componente:
 
 | origem | formato | quem reconhece |
 |---|---|---|
-| conflito estruturado (atual) | `block_command = motor-v2:promotion-conflict:<base>:<branch>:<fp>` | Orchestrator, PromotionConflictDetector/Repository |
-| repo sujo (atual) | `block_command = motor-v2:promotion-repo-dirty:<base>:<branch>:<n>` | Orchestrator, PromotionRetryDetector/Repository |
-| conflito legado | `block_command = motor-v2:conflito no merge da branch da tarefa para a base ...` (texto) | só `PromotionConflictRepository` (via `block_excerpt LIKE 'Conflito no merge da branch da tarefa para a base%'`) |
+| conflito estruturado (atual) | `block_command = motor:promotion-conflict:<base>:<branch>:<fp>` | Orchestrator, PromotionConflictDetector/Repository |
+| repo sujo (atual) | `block_command = motor:promotion-repo-dirty:<base>:<branch>:<n>` | Orchestrator, PromotionRetryDetector/Repository |
+| conflito legado | `block_command = motor:conflito no merge da branch da tarefa para a base ...` (texto) | só `PromotionConflictRepository` (via `block_excerpt LIKE 'Conflito no merge da branch da tarefa para a base%'`) |
 | repo sujo legado | `block_excerpt LIKE 'Falha na promoção da branch da tarefa: repositório principal não está limpo para promoção:%'` | só `PromotionRetryRepository` (via `block_excerpt`) |
 
 Resultado: o Orchestrator **não** exclui os bloqueios legados → risco de
@@ -191,7 +191,7 @@ depois #780 e #792 — exatamente as pendências de promoção.
   (`bash deploy.sh`).
 - **O gate pescou a #793**: criou a corretiva idempotente (subtarefa 1008, seq 11,
   `correction_fingerprint = promotion-gate:migration-not-journaled:0029_plan_proposals|…`)
-  e devolveu a tarefa ao fluxo (`blocked → ready`, origem `motor-v2:subtasks_pending`)
+  e devolveu a tarefa ao fluxo (`blocked → ready`, origem `motor:subtasks_pending`)
   às 16:39:41 UTC. Na janela seguinte pescou a #780 (corretiva 1009, seq 9).
 - Uma pendência por ciclo, sob o lock global `motor:promotion-gate-recovery`.
 

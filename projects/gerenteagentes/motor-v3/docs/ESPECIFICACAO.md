@@ -2,14 +2,14 @@
 
 > **Status:** esqueleto inicial (FASE 1 do LOG); preencher seções em ciclos sucessivos.
 > **Branch:** `motor-v3` | **Pasta:** `projects/gerenteagentes/motor-v3/`
-> **Decisões de desenho:** `docs/MOTOR-V2-SIMULACAO-TEXTUAL.md` §9/§9.5/§10.3
+> **Decisões de desenho:** `docs/ESPECIFICACAO.md` §9/§9.5/§10.3
 > **Padrão da arquitetura:** `docs/MOTOR-V3-EVENT-DRIVEN.md`
 
 ---
 
 ## 1. Objetivo
 
-Substituir o Motor-v2 por um motor **event-driven**, com:
+Substituir o Motor por um motor **event-driven**, com:
 
 - Catálogo de eventos/reações **configurável em banco** (zero ifs hardcoded para erro/recuperação).
 - **Conversa livre** com o agente (em substituição ao contrato JSON de auto-relato); verificação de realidade pelo motor.

@@ -159,7 +159,7 @@ página.
 - Analista: `schema.ts`/migração `0028_analyst_task_sessions.sql`,
   `analystTaskSessions` e `analystTaskSessionMessages`.
 - Configuração: `api/motor-configuracoes.catalog.ts` e
-  `motor-v2/src/config/motor-configuracoes.catalog.ts` registram
+  `motor-v3/src/config/motor-configuracoes.catalog.ts` registram
   `motor.session_history_page_size`, padrão 50 e limite 1–500. O service
   resolve o valor persistido em `resolveSessionPageSize` e normaliza qualquer
   `pageSize` solicitado.
@@ -221,13 +221,13 @@ sessão persistida.
 
 ## Validação
 
-`npm test` passou na suíte do Motor-v2: 64 arquivos e 562 testes. Ela cobre os
+`npm test` passou na suíte do Motor: 64 arquivos e 562 testes. Ela cobre os
 testes de configuração do Motor, inclusive o catálogo e o limite de página.
 O typecheck raiz não pôde ser executado porque o workspace não tem `tsc`
 instalado (`sh: 1: tsc: not found`). Também não há script/configuração de
 runner no pacote raiz para executar `api/__tests__` e
 `screens/__tests__`; o único `vitest.config.ts` encontrado inclui apenas
-`motor-v2/test/**/*.test.ts`. Esses bloqueios ambientais devem ser resolvidos
+`motor-v3/test/**/*.test.ts`. Esses bloqueios ambientais devem ser resolvidos
 no workspace que fornece as dependências Nest/React antes de declarar essas
 duas suítes validadas.
 

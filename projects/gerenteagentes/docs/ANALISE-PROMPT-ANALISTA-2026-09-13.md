@@ -4,7 +4,7 @@ Registro de 2026-09-13, solicitado por Alexandre. Este documento é uma análise
 
 ## Fonte analisada
 
-- `motor-v2/src/workers/TaskWorker.ts` (`buildAnalystPrompt`), fallback executável;
+- `motor-v3/src/workers/TaskWorker.ts` (`buildAnalystPrompt`), fallback executável;
 - `docs/MAPEAMENTO_PROMPTS_AGENTES.md`;
 - `docs/ANALISTA_INTERATIVO_CHAT.md`;
 - `docs/P2-PROMPTS-E-REFUTACAO-DE-PREMISSA.md`;

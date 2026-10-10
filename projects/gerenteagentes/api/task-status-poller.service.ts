@@ -45,10 +45,8 @@ interface ByStatusResponse {
 @Injectable()
 export class TaskStatusPollerService {
   private readonly logger = new Logger(TaskStatusPollerService.name);
-  private readonly motorUrl: string;
-  private readonly motorHostHeader: string;
   private readonly motorVersao: string;
-  private readonly motorV2Url: string;
+  private readonly motorHttpUrl: string;
   private lastTimestamp: string | null = null;
   private cache: Record<string, MotorTask[]> = {};
   private pollInterval: NodeJS.Timeout | null = null;
@@ -58,16 +56,11 @@ export class TaskStatusPollerService {
     private readonly configService: ConfigService,
     @Optional() @Inject(RealtimeService) private readonly realtime?: RealtimeService,
   ) {
-    // URL do motor (via proxy NPM por padrão — a API alcança o host publicado)
-    this.motorUrl =
-      this.configService.get<string>('MOTOR_DEV_URL') || 'http://192.168.1.16';
-    this.motorHostHeader =
-      this.configService.get<string>('MOTOR_URL_HOST') || 'api.tarefas.localhost';
-    this.motorVersao = this.configService.get<string>('MOTOR_VERSION') || 'v1';
-    const motorV2Porta = this.configService.get<string>('MOTOR_API_PORT') || '3010';
-    this.motorV2Url = `http://127.0.0.1:${motorV2Porta}`;
+    this.motorVersao = this.configService.get<string>('MOTOR_VERSION') || 'v3';
+    const motorPorta = this.configService.get<string>('MOTOR_API_PORT') || '3010';
+    this.motorHttpUrl = `http://127.0.0.1:${motorPorta}`;
     this.logger.log(
-      `TaskStatusPoller inicializado → motor: ${this.motorVersao === 'v2' ? this.motorV2Url : this.motorUrl} (versão: ${this.motorVersao})`,
+      `TaskStatusPoller inicializado → motor: ${this.motorHttpUrl} (versão: ${this.motorVersao})`,
     );
     this.logger.log(
       'TaskStatusPoller atuando como fallback de reconciliação (caminho principal: WebSocket)',
@@ -104,8 +97,7 @@ export class TaskStatusPollerService {
    */
   private motorGet(path: string): Promise<{ ok: boolean; status: number; body: string }> {
     return new Promise((resolve, reject) => {
-      const usarV2 = this.motorVersao === 'v2';
-      const url = new URL(`${usarV2 ? this.motorV2Url : this.motorUrl}${path}`);
+      const url = new URL(`${this.motorHttpUrl}${path}`);
       const isHttps = url.protocol === 'https:';
       const options: RequestOptions = {
         hostname: url.hostname,
@@ -114,7 +106,7 @@ export class TaskStatusPollerService {
         method: 'GET',
         headers: {
           Accept: 'application/json',
-          ...(!usarV2 && this.motorHostHeader ? { Host: this.motorHostHeader } : {}),
+
         },
         timeout: 5000,
       };
@@ -137,8 +129,7 @@ export class TaskStatusPollerService {
    */
   async poll(): Promise<void> {
     try {
-      // v2 e v3 expõem o endpoint sob /api/motor; /api/tasks é legado v1.
-      const prefixo = this.motorVersao === 'v1' ? '/api/tasks/by-status' : '/api/motor/tasks/by-status';
+      const prefixo = '/api/motor/tasks/by-status';
       const path = this.lastTimestamp
         ? `${prefixo}?since=${encodeURIComponent(this.lastTimestamp)}`
         : prefixo;

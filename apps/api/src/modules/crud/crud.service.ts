@@ -697,7 +697,7 @@ export class CrudService {
       const insertId = resultado[0].insertId
 
       // Pós-processamento: preencher external_id automaticamente para tarefas
-      // O motor-v2 busca tarefas por external_id; se o CRUD não preenche, o botão
+      // O motor busca tarefas por external_id; se o CRUD não preenche, o botão
       // Start falha com "Tarefa nao encontrada". Gera task-biblioteca-{id} se não
       // foi fornecido explicitamente.
       if (resource === "tarefas" && !valores.external_id) {

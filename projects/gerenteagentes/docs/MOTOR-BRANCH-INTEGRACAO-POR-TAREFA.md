@@ -1,4 +1,4 @@
-# Motor-v2 — Branch de integração por tarefa + P1 (baseline stash, carry-over)
+# Motor — Branch de integração por tarefa + P1 (baseline stash, carry-over)
 
 > Status: **implementado** na branch `feature/motor-p1-baseline-integracao` (empilhada
 > sobre o P0 `feature/motor-p0-classificador-gate`, commit `a1fc09b`).
@@ -9,17 +9,17 @@
 
 ```
 base-desenvolvimento (branch raiz do projeto, pmc.branch_trabalho)
-  └── motor-v2/<tarefa_id>/integracao          ← branch da TAREFA (worktree próprio)
-        ├── motor-v2/<tarefa_id>/<subtask>/a1  ← subtarefa, tentativa 1
-        ├── motor-v2/<tarefa_id>/<subtask>/a2  ← tentativa 2 (rework)
+  └── motor/<tarefa_id>/integracao          ← branch da TAREFA (worktree próprio)
+        ├── motor/<tarefa_id>/<subtask>/a1  ← subtarefa, tentativa 1
+        ├── motor/<tarefa_id>/<subtask>/a2  ← tentativa 2 (rework)
         └── ...
 ```
 
 - **Worktree da tarefa:** `<workspaceRaiz>/worktrees/<tarefa_id>/integracao` — criado no
   START da primeira subtarefa (`ensureTaskIntegration`, idempotente: retomadas reutilizam).
-- **Por que `/integracao` no nome?** `motor-v2/<tarefa_id>` puro colidiria com as branches
+- **Por que `/integracao` no nome?** `motor/<tarefa_id>` puro colidiria com as branches
   de subtarefa (conflito D/F de refs no Git: não dá para ter o ref `X` e o diretório `X/`).
-  O sufixo vive dentro do mesmo diretório e continua coberto pela purga `motor-v2/<tarefa_id>/*`.
+  O sufixo vive dentro do mesmo diretório e continua coberto pela purga `motor/<tarefa_id>/*`.
 - **Subtarefas branqueiam da branch da tarefa**, não da base. O worktree da tentativa já
   contém tudo que as subtarefas anteriores integraram.
 - **Baseline do gate** passa a ser relativo à branch da tarefa (mais preciso: inclui o
@@ -36,7 +36,7 @@ base-desenvolvimento (branch raiz do projeto, pmc.branch_trabalho)
    `node_modules` ausente ou o merge tocou `package.json`/`package-lock.json`.
 4. Branch da tarefa publicada no origin a cada merge (durabilidade + visibilidade).
 5. Quando TODAS as subtarefas estão integradas e a validação de promoção passa:
-   **promoção** — merge `motor-v2/<tarefa_id>/integracao` → base no repositório principal +
+   **promoção** — merge `motor/<tarefa_id>/integracao` → base no repositório principal +
    push (`promoteTaskBranch`). Só então: `execution_completed`, deploy e purga.
 
 ### Regras de conflito (decisão Alexandre 2026-09-05 07:35)

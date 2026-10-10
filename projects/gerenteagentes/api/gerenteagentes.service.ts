@@ -124,10 +124,8 @@ function makeMessagesPage<T extends {
 @Injectable()
 export class GerenteAgentesService {
   private readonly logger = new Logger(GerenteAgentesService.name);
-  private readonly motorUrl: string;
-  private readonly motorHostHeader: string;
   private readonly motorVersao: string;
-  private readonly motorV2Url: string;
+  private readonly motorHttpUrl: string;
   private readonly consoleUrl: string;
   private readonly consoleToken: string;
 
@@ -157,15 +155,11 @@ export class GerenteAgentesService {
     @Optional() private readonly realtime?: RealtimeService,
     private readonly gitInspector?: GitInspectorService,
   ) {
-    // Motor de execução (rodando no container openclaw:6283, exposto via proxy NPM)
-    this.motorUrl = this.configService.get<string>('MOTOR_DEV_URL') || 'http://192.168.1.16';
-    this.motorHostHeader = this.configService.get<string>('MOTOR_URL_HOST') || 'api.tarefas.localhost';
-    // Motor-v2: roda junto da API no mesmo container (entrypoint), habilitado
-    // por MOTOR_VERSION=v2. Os endpoints v2 ficam em /api/motor/* na porta
-    // MOTOR_API_PORT — sem proxy, sem Host header.
-    this.motorVersao = this.configService.get<string>('MOTOR_VERSION') || 'v1';
-    const motorV2Porta = this.configService.get<string>('MOTOR_API_PORT') || '3010';
-    this.motorV2Url = `http://127.0.0.1:${motorV2Porta}`;
+    // Motor: roda junto da API no mesmo container (entrypoint). Os endpoints
+    // ficam em /api/motor/* na porta MOTOR_API_PORT — sem proxy, sem Host header.
+    this.motorVersao = this.configService.get<string>('MOTOR_VERSION') || 'v3';
+    const motorPorta = this.configService.get<string>('MOTOR_API_PORT') || '3010';
+    this.motorHttpUrl = `http://127.0.0.1:${motorPorta}`;
     // Console OpenClaw (fonte de agentes — st-5)
     this.consoleUrl = this.configService.get<string>('OPENCLAW_CONSOLE_URL') || 'https://openclaw-api.webconnect.com.br';
     this.consoleToken = this.configService.get<string>('OPENCLAW_CONSOLE_TOKEN') || '';
@@ -637,7 +631,7 @@ export class GerenteAgentesService {
 
   /**
    * Banco do motor (projeto_640 — GerenteAgentes).
-   * O motor-v2 busca tarefas diretamente em projeto_640.tarefas (hardcoded).
+   * O motor busca tarefas diretamente em projeto_640.tarefas (hardcoded).
    * Para manter consistência, todas as operações do motor (tarefas, subtarefas,
    * chats) devem usar este banco, independente do projetoId do token.
    */
@@ -856,8 +850,8 @@ export class GerenteAgentesService {
     body?: unknown,
     baseUrl?: string,
   ): Promise<{ ok: boolean; status: number; body: string }> {
-    // baseUrl explícito (ex.: motor-v2 local) ignora o Host header de proxy.
-    const base = baseUrl ?? this.motorUrl;
+    // baseUrl explícito ignora o Host header de proxy.
+    const base = baseUrl ?? this.motorHttpUrl;
     const url = new URL(`${base}${path}`);
     const isHttps = url.protocol === 'https:';
     const timeoutMs = parseInt(
@@ -872,7 +866,6 @@ export class GerenteAgentesService {
       headers: {
         Accept: 'application/json',
         ...(body ? { 'Content-Type': 'application/json' } : {}),
-        ...(!baseUrl && this.motorHostHeader ? { Host: this.motorHostHeader } : {}),
       },
       timeout: timeoutMs,
     };
@@ -1076,7 +1069,7 @@ export class GerenteAgentesService {
             'GET',
             `/api/motor/task/${encodeURIComponent(motorId)}`,
             null,
-            this.motorV2Url,
+            this.motorHttpUrl,
           );
           if (resp.ok) {
             const motorTask = JSON.parse(resp.body) as { status?: string; subtasks?: unknown[]; recoveryEligibility?: unknown };
@@ -1098,22 +1091,22 @@ export class GerenteAgentesService {
   }
 
   /**
-   * Notifica o motor-v2 de que a resposta de clarificação chegou (a mensagem
+   * Notifica o motor de que a resposta de clarificação chegou (a mensagem
    * já foi gravada no chat da tarefa aqui). O motor devolve a tarefa para
    * `planned` e reexecuta a análise com o histórico de perguntas/respostas.
-   * Com MOTOR_VERSION v1 o fluxo de clarificação não existe — ignora.
+   * Nota: o motor-v3 utiliza o outbox (TASK_RESUME_REQUESTED) para este
+   * fluxo; este método permanece como caminho HTTP alternativo.
    */
   private async encaminharRespostaClarificacao(
     tarefa: { id: number; externalId?: string | null },
     texto: string,
   ): Promise<void> {
-    if (this.motorVersao !== 'v2') return;
     const motorId = tarefa.externalId || String(tarefa.id);
     const resp = await this.motorRequest(
       'POST',
       `/api/motor/task/${encodeURIComponent(motorId)}/clarification`,
       { texto, jaPersistida: true },
-      this.motorV2Url,
+      this.motorHttpUrl,
     );
     if (!resp.ok) {
       throw new BadRequestException(
@@ -1141,16 +1134,13 @@ export class GerenteAgentesService {
     // Play é uma ação única: para tarefa pausada, primeiro remove a pausa e
     // deixa o Motor retomar o ciclo; para as demais, enfileira normalmente.
     const motorId = tarefa.externalId || `task-biblioteca-${tarefa.id}`;
-    const usarMotorV2OuV3 = this.motorVersao === 'v2' || this.motorVersao === 'v3';
     const startPath = tarefa.pausedAt || this.motorVersao === 'v3'
       ? `/api/motor/task/${encodeURIComponent(motorId)}/resume`
-      : (this.motorVersao === 'v2'
-        ? `/api/motor/task/${encodeURIComponent(motorId)}/enqueue`
-        : `/api/task/${encodeURIComponent(motorId)}/start`);
+      : `/api/motor/task/${encodeURIComponent(motorId)}/enqueue`;
     if (tarefa.pausedAt && this.motorVersao === 'v3') {
       await db.update(tarefas).set({ pausedAt: null, updatedAt: new Date() }).where(eq(tarefas.id, tarefaId));
     }
-    const start = await this.motorRequest('POST', startPath, undefined, usarMotorV2OuV3 ? this.motorV2Url : undefined).catch((e: unknown) => {
+    const start = await this.motorRequest('POST', startPath, undefined, this.motorHttpUrl).catch((e: unknown) => {
       throw new BadRequestException(`Motor indisponível ao iniciar a tarefa: ${e instanceof Error ? e.message : String(e)}`);
     });
     if (!start.ok) {
@@ -1194,7 +1184,7 @@ export class GerenteAgentesService {
         'POST',
         `/api/motor/task/${encodeURIComponent(motorId)}/pause`,
         undefined,
-        this.motorV2Url,
+        this.motorHttpUrl,
       ).catch((e: unknown) => {
         throw new BadRequestException(`Motor indisponível ao pausar a tarefa: ${e instanceof Error ? e.message : String(e)}`);
       });
@@ -1249,7 +1239,7 @@ export class GerenteAgentesService {
         'POST',
         `/api/motor/task/${encodeURIComponent(motorId)}/resume`,
         undefined,
-        this.motorV2Url,
+        this.motorHttpUrl,
       ).catch((e: unknown) => {
         throw new BadRequestException(`Motor indisponível ao retomar a tarefa: ${e instanceof Error ? e.message : String(e)}`);
       });
@@ -1285,7 +1275,7 @@ export class GerenteAgentesService {
       'POST',
       `/api/motor/task/${encodeURIComponent(motorId)}/cancel`,
       { ator, motivo: motivoNormalizado },
-      this.motorV2Url,
+      this.motorHttpUrl,
     );
     if (!resp.ok) throw new BadRequestException(`Motor rejeitou o cancelamento (${resp.status}): ${resp.body.slice(0, 200)}`);
     if (this.motorVersao === 'v3') {
@@ -1335,7 +1325,7 @@ export class GerenteAgentesService {
     // O evento é gravado antes da remoção e não tem FK, preservando a autoria.
     await this.registrarEvento(db, tarefa, 'deleted', ator, 'usuario');
     const motorId = tarefa.externalId || String(tarefa.id);
-    const resp = await this.motorRequest('DELETE', `/api/motor/task/${encodeURIComponent(motorId)}`, undefined, this.motorV2Url);
+    const resp = await this.motorRequest('DELETE', `/api/motor/task/${encodeURIComponent(motorId)}`, undefined, this.motorHttpUrl);
     if (!resp.ok) throw new BadRequestException(`Motor rejeitou a exclusão (${resp.status}): ${resp.body.slice(0, 200)}`);
     // Publica evento realtime APÓS o commit
     this.publicarEventoRealtime({
@@ -1517,7 +1507,7 @@ export class GerenteAgentesService {
     const [tarefa] = await db.select().from(tarefas).where(eq(tarefas.id, tarefaId)).limit(1);
     if (!tarefa) throw new NotFoundException('Tarefa não encontrada');
     const motorId = tarefa.externalId || String(tarefa.id);
-    const resp = await this.motorRequest('POST', `/api/motor/task/${encodeURIComponent(motorId)}/sanitize-session`, undefined, this.motorV2Url);
+    const resp = await this.motorRequest('POST', `/api/motor/task/${encodeURIComponent(motorId)}/sanitize-session`, undefined, this.motorHttpUrl);
     if (!resp.ok) throw new BadRequestException(`Motor não conseguiu sanear a sessão (${resp.status}): ${resp.body.slice(0, 200)}`);
     const result = JSON.parse(resp.body) as { sessionsArchived?: number; nextGeneration?: number };
     await this.registrarEvento(db, tarefa, 'session_sanitized', ator, 'usuario', result);
@@ -1535,7 +1525,7 @@ export class GerenteAgentesService {
     // aceitar a solicitação. Uma consulta antecipada aqui usaria um run antigo
     // e impediria justamente a criação do gate autoritativo.
     const motorId = tarefa.externalId || String(tarefa.id);
-    const resp = await this.motorRequest('POST', `/api/motor/task/${encodeURIComponent(motorId)}/deploy`, undefined, this.motorV2Url);
+    const resp = await this.motorRequest('POST', `/api/motor/task/${encodeURIComponent(motorId)}/deploy`, undefined, this.motorHttpUrl);
     if (!resp.ok) throw new BadRequestException(`Motor rejeitou o deploy (${resp.status}): ${resp.body.slice(0, 200)}`);
     await this.registrarEvento(db, tarefa, 'deploy_requested', ator, 'usuario');
     return { id: tarefaId, status: 'deploy_pending', message: 'Deploy agendado para quando o Motor ficar ocioso' };
@@ -1560,7 +1550,7 @@ export class GerenteAgentesService {
       'GET',
       `/api/motor/task/${encodeURIComponent(motorId)}`,
       undefined,
-      this.motorV2Url,
+      this.motorHttpUrl,
     ).catch((error: unknown) => {
       throw new BadRequestException(`Motor indisponível ao confirmar o deploy: ${error instanceof Error ? error.message : String(error)}`);
     });
@@ -1637,7 +1627,7 @@ export class GerenteAgentesService {
       'POST',
       `/api/motor/task/${encodeURIComponent(motorId)}/adjustment`,
       { message: message.trim() },
-      this.motorV2Url,
+      this.motorHttpUrl,
     );
     if (!resp.ok) {
       throw new BadRequestException(`Motor rejeitou o ajuste (${resp.status}): ${resp.body.slice(0, 200)}`);
@@ -1650,7 +1640,7 @@ export class GerenteAgentesService {
   }
 
   async atividadeMotor(projeto: ProjetoResumo) {
-    const resp = await this.motorRequest('GET', '/api/motor/stats', undefined, this.motorV2Url);
+    const resp = await this.motorRequest('GET', '/api/motor/stats', undefined, this.motorHttpUrl);
     if (!resp.ok) throw new BadRequestException(`Motor indisponível (${resp.status}): ${resp.body.slice(0, 200)}`);
     const payload = JSON.parse(resp.body) as Record<string, unknown>;
     // O contrato histórico de /motor-activity era o retorno direto de /stats.
@@ -1664,7 +1654,7 @@ export class GerenteAgentesService {
   }
 
   async diagnosticoDeploy(projeto: ProjetoResumo) {
-    const resp = await this.motorRequest('GET', '/api/motor/deploy-diagnostics', undefined, this.motorV2Url);
+    const resp = await this.motorRequest('GET', '/api/motor/deploy-diagnostics', undefined, this.motorHttpUrl);
     // O Motor v3 ainda não expõe o diagnóstico legado de deploy. Isso não
     // deve transformar o carregamento do Mapa de agentes em erro HTTP.
     if (resp.status === 404) {
@@ -2226,12 +2216,11 @@ export class GerenteAgentesService {
     }
     const motorId = tarefa.externalId || String(tarefa.id);
     try {
-      // Motor-v2 usa /api/motor/task/:id (retorna dados básicos da tarefa)
       const resp = await this.motorRequest(
         'GET',
         `/api/motor/task/${encodeURIComponent(motorId)}`,
         undefined,
-        this.motorVersao === 'v2' ? this.motorV2Url : undefined,
+        this.motorHttpUrl,
       );
       if (resp.status === 404) {
         return { motorId, exists: false, message: 'Tarefa ainda não foi enviada ao motor (clique em Iniciar).' };
@@ -2395,7 +2384,7 @@ export class GerenteAgentesService {
           title: motorTask.title || tarefa.titulo,
           // O status calculado pelo motor (via fatos operacionais) é a fonte canônica.
           status: motorTask.status || 'pending',
-          integrationBranch: `motor-v2/${motorId}/integracao`,
+          integrationBranch: `motor/${motorId}/integracao`,
           errorMessage: motorTask.errorMessage ?? undefined,
           blockInfo: motorTask.status === 'blocked' ? (motorTask.ultimoBloqueio ?? null) : null,
           promotionConflictAnalysis: motorTask.promotionConflictAnalysis ?? null,
@@ -2412,7 +2401,7 @@ export class GerenteAgentesService {
         },
         subtasks,
         currentSubTask,
-        events: [], // Motor-v2 não tem eventos detalhados ainda
+        events: [], // Motor não tem eventos detalhados ainda
         errors: [],
         models: [],
       };
@@ -2722,13 +2711,10 @@ export class GerenteAgentesService {
       nova = true;
     }
 
-    // Enfileira no motor (v2: /api/motor/task/:id/enqueue).
-    const usarV2 = this.motorVersao === 'v2';
-    const enqueuePath = usarV2
-      ? `/api/motor/task/${encodeURIComponent(motorId)}/enqueue`
-      : `/api/task/${encodeURIComponent(motorId)}/start`;
+    // Enfileira no motor via /api/motor/task/:id/enqueue (v2 e v3).
+    const enqueuePath = `/api/motor/task/${encodeURIComponent(motorId)}/enqueue`;
     const resp = await this
-      .motorRequest('POST', enqueuePath, undefined, usarV2 ? this.motorV2Url : undefined)
+      .motorRequest('POST', enqueuePath, undefined, this.motorHttpUrl)
       .catch((e: unknown) => {
         this.logger.warn(`Motor indisponível ao enfileirar setup: ${e instanceof Error ? e.message : String(e)}`);
         return null;
@@ -3177,7 +3163,7 @@ export class GerenteAgentesService {
             'GET',
             `/api/motor/task/${encodeURIComponent(motorId)}`,
             null,
-            this.motorV2Url,
+            this.motorHttpUrl,
           );
           if (resp.ok) {
             const motorTask = JSON.parse(resp.body) as { status?: string };

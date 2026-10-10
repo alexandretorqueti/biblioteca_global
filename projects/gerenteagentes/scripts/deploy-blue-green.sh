@@ -229,13 +229,13 @@ docker image inspect "$NEW_API_IMAGE" >/dev/null 2>&1 || {
 }
 MOTOR_DIST_CONTAINER="biblioteca-global-motor-dist-$$"
 docker create --name "$MOTOR_DIST_CONTAINER" "$NEW_API_IMAGE" >/dev/null
-for motor in motor-v2 motor-v3; do
+for motor in motor-v3; do
   mkdir -p "projects/gerenteagentes/$motor"
   rm -rf "projects/gerenteagentes/$motor/dist"
   docker cp "$MOTOR_DIST_CONTAINER:/app/projects/gerenteagentes/$motor/dist" "projects/gerenteagentes/$motor/"
 done
 docker rm "$MOTOR_DIST_CONTAINER" >/dev/null
-echo "[deploy-blue-green] dist dos motores v2/v3 materializados a partir da imagem $target"
+echo "[deploy-blue-green] dist do motor v3 materializado a partir da imagem $target"
 
 # Um deploy anterior pode ter falhado entre a criação e a inicialização do
 # slot inativo. Remover somente esse projeto antes de reutilizar os nomes dos

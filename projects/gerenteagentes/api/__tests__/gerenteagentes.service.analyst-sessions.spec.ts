@@ -43,7 +43,7 @@ function criarServiceComDb(dbMock: Record<string, unknown>) {
     get: (chave: string) => {
       const env: Record<string, string> = {
         MOTOR_DEV_URL: "http://localhost:3010",
-        MOTOR_VERSION: "v2",
+        MOTOR_VERSION: "v3",
         MOTOR_API_PORT: "3010",
       };
       return env[chave];

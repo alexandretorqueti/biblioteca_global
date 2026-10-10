@@ -34,8 +34,8 @@ import {
 import type { FormAnnotationsPorTabela } from "@biblioteca-global/schema-tools"
 import { sql } from "drizzle-orm"
 
-// Helper text espelhando motor-v2/src/shared/task-statuses.ts (fonte canônica).
-// Não importar de motor-v2 aqui: aquele pacote é ESM e este schema é CJS.
+// Helper text espelhando motor-v3/src/status/DerivedTaskStatus.ts (fonte canônica).
+// Não importar do motor aqui: o pacote é ESM e este schema é CJS.
 const taskStatusesHelperText = (): string =>
   "draft | planned | analyzing | awaiting_clarification | ready | running | paused | completed | closed | deployed | blocked | motor_fix | failed | cancelled"
 const subtaskStatusesHelperText = (): string =>
@@ -134,7 +134,7 @@ export const projetosCaptados = mysqlTable("projetos_captados", {
     .onUpdateNow(),
 })
 
-/** Configuração operacional explícita usada pelo Motor-v2. */
+/** Configuração operacional explícita usada pelo Motor. */
 export const projetoMotorConfig = mysqlTable("projeto_motor_config", {
   id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
   projetoId: bigint("projeto_id", { mode: "number", unsigned: true })
@@ -328,7 +328,7 @@ export const tarefas = mysqlTable("tarefas", {
   ultimaMensagemErro: text("ultima_mensagem_erro"),
   // REMOVIDO: status era materializado aqui, mas agora é calculado dinamicamente
   // pelo motor via fatos operacionais (task_runtime_facts, subtarefas, bloqueios, etc.)
-  // Ver motor-v2/src/policies/DerivedTaskStatus.ts para o calculador central.
+  // Ver motor-v3/src/status/DerivedTaskStatus.ts para o calculador central.
   maxRework: int("max_rework").notNull().default(3),
   hardTimeoutMs: bigint("hard_timeout_ms", { mode: "number" }),
   dependsOnTaskId: bigint("depends_on_task_id", { mode: "number", unsigned: true }),

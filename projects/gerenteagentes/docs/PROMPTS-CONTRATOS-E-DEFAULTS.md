@@ -44,6 +44,6 @@ Depois de publicar e validar os prompts/contratos na tela, execute na raiz:
 npm run prompts:export-defaults
 ```
 
-O comando lê apenas versões ativas, gera `motor-v2/src/prompts/prompt-defaults.generated.ts` e não faz commit. Revise o diff, rode typecheck/testes e versione o arquivo. A partir desse commit, o mesmo conteúdo passa a ser o fallback sem banco e o bootstrap de instalações novas.
+O comando lê apenas versões ativas, gera `motor-v3/src/prompts/prompt-defaults.generated.ts` e não faz commit. Revise o diff, rode typecheck/testes e versione o arquivo. A partir desse commit, o mesmo conteúdo passa a ser o fallback sem banco e o bootstrap de instalações novas.
 
 Migrations históricas nunca são reescritas. Mudanças de estrutura recebem nova migration; mudanças de conteúdo entram no snapshot canônico versionado.

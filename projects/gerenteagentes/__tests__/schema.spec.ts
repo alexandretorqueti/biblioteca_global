@@ -7,7 +7,7 @@
  * campos obrigatórios sobrevivam a re-generações de migration sem desaparecer.
  *
  * NOTA (2026-09-03): repo_path e branch_trabalho foram movidos de projetos_captados
- * para projeto_motor_config (configuração operacional do Motor-v2).
+ * para projeto_motor_config (configuração operacional do Motor).
  */
 import { describe, expect, it } from "vitest"
 import { getTableConfig } from "drizzle-orm/mysql-core"

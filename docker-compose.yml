@@ -73,7 +73,7 @@ services:
       DEPLOY_REPO_HOST: ${DEPLOY_REPO_HOST:-/home/alexandre/codigofonte/biblioteca-global}
       MOTOR_DEPLOY_SSH_TARGET: ${MOTOR_DEPLOY_SSH_TARGET:-alexandre@host.docker.internal}
       MOTOR_DEPLOY_SSH_IDENTITY: ${MOTOR_DEPLOY_SSH_IDENTITY:-/root/.ssh/id_ed25519}
-      MOTOR_DEPLOY_SCRIPT: ${MOTOR_DEPLOY_SCRIPT:-projects/gerenteagentes/motor-v2/scripts/deploy-blue-green.sh}
+      MOTOR_DEPLOY_SCRIPT: ${MOTOR_DEPLOY_SCRIPT:-projects/gerenteagentes/scripts/deploy-blue-green.sh}
       # Realtime: ingresso de eventos do motor-v3 -> API -> WebSocket do front.
       # O token precisa ser igual no guard (API) e no publisher (motor) — mesmo container.
       LIBRARY_REALTIME_EVENTS_TOKEN: ${LIBRARY_REALTIME_EVENTS_TOKEN:-}
