@@ -694,11 +694,30 @@ export class DeployConsumer {
   }
 
   private async skipNoopCherryPickConflict(path: string): Promise<boolean> {
-    const { stdout: conflicts } = await execFileAsync('git', ['diff', '--name-only', '--diff-filter=U'], { cwd: path, encoding: 'utf8' })
-    if (!conflicts.trim()) return false
-    await execFileAsync('git', ['checkout', '--ours', '--', '.'], { cwd: path })
-    await execFileAsync('git', ['add', '--update', '--', '.'], { cwd: path })
-    return execFileAsync('git', ['diff', '--cached', '--quiet', 'HEAD'], { cwd: path }).then(() => true, () => false)
+    try {
+      const { stdout: conflicts } = await execFileAsync('git', ['diff', '--name-only', '--diff-filter=U'], { cwd: path, encoding: 'utf8' })
+      const unmergedPaths = conflicts.split('\n').map(f => f.trim()).filter(Boolean)
+      if (unmergedPaths.length === 0) return false
+
+      // Resolver cada caminho individualmente para tolerar conflitos modify/delete
+      for (const filePath of unmergedPaths) {
+        try {
+          // Tenta checkout --ours: preserva a versão "ours" do arquivo
+          await execFileAsync('git', ['checkout', '--ours', '--', filePath], { cwd: path })
+        } catch {
+          // Se falhar (arquivo não existe em ours = conflito modify/delete),
+          // preserva a remoção com git rm
+          await execFileAsync('git', ['rm', '--', filePath], { cwd: path })
+        }
+      }
+
+      await execFileAsync('git', ['add', '--update', '--', '.'], { cwd: path })
+      return execFileAsync('git', ['diff', '--cached', '--quiet', 'HEAD'], { cwd: path }).then(() => true, () => false)
+    } catch {
+      // Falha inesperada na resolução noop: degrada para false (conflito real)
+      // e permite que composeBatch isole o membro sem derrubar o batch inteiro
+      return false
+    }
   }
 
   private async removeComposedWorktree(repoPath: string, path: string): Promise<void> {
