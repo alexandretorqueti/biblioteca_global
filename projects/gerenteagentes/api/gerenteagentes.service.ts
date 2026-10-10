@@ -1678,12 +1678,30 @@ export class GerenteAgentesService {
     return JSON.parse(resp.body) as unknown;
   }
 
-  async listarHistoricoTestes(_projeto: ProjetoResumo, filtros: { projetoId?: number; tarefaId?: number; limit?: number }) {
+  async listarHistoricoTestes(_projeto: ProjetoResumo, filtros: { projetoId?: number; tarefaId?: number; limit?: number; data?: string }) {
     const db = await this.dbDoMotor();
     const limit = Math.min(Math.max(Number(filtros.limit) || 100, 1), 500);
     const where: string[] = [];
     if (filtros.projetoId) where.push(`tr.projeto_id = ${Number(filtros.projetoId)}`);
     if (filtros.tarefaId) where.push(`tr.tarefa_id = ${Number(filtros.tarefaId)}`);
+    // Validação estrita do parâmetro de data: aceita somente YYYY-MM-DD
+    if (filtros.data !== undefined && filtros.data !== '') {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(filtros.data)) {
+        throw new BadRequestException(`Parâmetro 'data' inválido: '${filtros.data}'. Formato esperado: YYYY-MM-DD.`);
+      }
+      const partes = filtros.data.split('-');
+      const ano = Number(partes[0]);
+      const mes = Number(partes[1]);
+      const dia = Number(partes[2]);
+      const dt = new Date(ano, mes - 1, dia);
+      if (dt.getFullYear() !== ano || dt.getMonth() !== mes - 1 || dt.getDate() !== dia) {
+        throw new BadRequestException(`Parâmetro 'data' inválido: '${filtros.data}' não é uma data real.`);
+      }
+      const inicio = `${filtros.data} 00:00:00`;
+      const diaSeguinte = new Date(ano, mes - 1, dia + 1);
+      const fim = `${diaSeguinte.getFullYear().toString().padStart(4, '0')}-${(diaSeguinte.getMonth() + 1).toString().padStart(2, '0')}-${diaSeguinte.getDate().toString().padStart(2, '0')} 00:00:00`;
+      where.push(`tr.started_at >= '${inicio}' AND tr.started_at < '${fim}'`);
+    }
     const predicate = where.length ? `WHERE ${where.join(' AND ')}` : '';
     const [runs] = await db.execute(sql.raw(`
       SELECT tr.*, pc.nome AS projeto_nome, t.titulo AS tarefa_titulo,
@@ -1700,8 +1718,17 @@ export class GerenteAgentesService {
        ORDER BY tr.started_at DESC, tr.id DESC
        LIMIT ${limit}
     `));
+    // Contagem total sem LIMIT (respeitando os mesmos filtros)
+    const [countRows] = await db.execute(sql.raw(`
+      SELECT COUNT(*) AS total
+        FROM (SELECT tr.id
+                FROM test_runs tr
+                ${predicate}
+               GROUP BY tr.id) AS sub
+    `));
+    const total = Number((countRows as unknown as Array<{ total: number }>)[0]?.total ?? 0);
     const ids = (runs as unknown as Array<{ id: number }>).map(run => Number(run.id)).filter(Boolean);
-    if (ids.length === 0) return { items: [] };
+    if (ids.length === 0) return { items: [], total };
     const [failures] = await db.execute(sql.raw(`
       SELECT * FROM test_failures WHERE test_run_id IN (${ids.join(',')}) ORDER BY test_run_id DESC, id ASC
     `));
@@ -1710,7 +1737,10 @@ export class GerenteAgentesService {
       const runId = Number(failure.test_run_id);
       byRun.set(runId, [...(byRun.get(runId) ?? []), failure]);
     }
-    return { items: (runs as unknown as Array<Record<string, unknown>>).map(run => ({ ...run, failures: byRun.get(Number(run.id)) ?? [] })) };
+    return {
+      items: (runs as unknown as Array<Record<string, unknown>>).map(run => ({ ...run, failures: byRun.get(Number(run.id)) ?? [] })),
+      total,
+    };
   }
 
   // ============================================================================

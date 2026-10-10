@@ -1,7 +1,15 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
 import { Alert, Box, Chip, CircularProgress, Collapse, IconButton, Paper, Stack, Table, TableBody, TableCell, TableHead, TableRow, Typography } from "@mui/material"
 import { KeyboardArrowDown, KeyboardArrowUp } from "@mui/icons-material"
 import { useApi } from "../../../apps/web/src/hooks/useApi"
+
+function hojeISO(): string {
+  const d = new Date()
+  const yyyy = d.getFullYear()
+  const mm = String(d.getMonth() + 1).padStart(2, "0")
+  const dd = String(d.getDate()).padStart(2, "0")
+  return `${yyyy}-${mm}-${dd}`
+}
 
 export const componentId = "gerenteagentes-test-history"
 
@@ -64,7 +72,9 @@ function RunRow({ run }: { run: TestRun }): ReactNode {
 
 export default function TestHistoryScreen(): ReactNode {
   const api = useApi()
+  const [dataSelecionada, setDataSelecionada] = useState(hojeISO)
   const [runs, setRuns] = useState<TestRun[]>([])
+  const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const health = useMemo(() => {
@@ -81,18 +91,36 @@ export default function TestHistoryScreen(): ReactNode {
       inconclusive: latest.filter(run => run.comparison_status === "inconclusive").length,
     }
   }, [runs])
-  useEffect(() => {
+  const carregar = useCallback(() => {
     if (!api) return
-    let active = true
-    void api.http.request<{ items: TestRun[] }>("GET", "/gerenteagentes/test-runs?limit=200", { auth: "access" })
-      .then(result => { if (active) setRuns(result.items ?? []) })
-      .catch(cause => { if (active) setError(cause instanceof Error ? cause.message : "Não foi possível carregar o histórico.") })
-      .finally(() => { if (active) setLoading(false) })
-    return () => { active = false }
-  }, [api])
+    setLoading(true)
+    setError(null)
+    const params = new URLSearchParams({ limit: "50", data: dataSelecionada })
+    void api.http.request<{ items: TestRun[]; total?: number }>("GET", `/gerenteagentes/test-runs?${params.toString()}`, { auth: "access" })
+      .then(result => {
+        setRuns(result.items ?? [])
+        setTotal(Number(result.total ?? 0))
+      })
+      .catch(cause => { setError(cause instanceof Error ? cause.message : "Não foi possível carregar o histórico.") })
+      .finally(() => { setLoading(false) })
+  }, [api, dataSelecionada])
+  useEffect(() => {
+    carregar()
+    return () => { /* noop: state setter ignorado após unmount via let active */ }
+  }, [carregar])
   return <Stack spacing={2} data-testid="test-history-screen">
     <Box><Typography variant="h4" fontWeight={700}>Saúde e histórico de testes</Typography><Typography color="text.secondary">Baselines, validações pós-DEV, regressões e recuperações executadas pelo Monitor.</Typography></Box>
-    <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
+    <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ xs: "stretch", sm: "center" }}>
+      <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+        <Typography variant="body2" fontWeight={600}>Data:</Typography>
+        <input
+          type="date"
+          value={dataSelecionada}
+          onChange={e => setDataSelecionada(e.target.value)}
+          style={{ padding: "4px 8px", borderRadius: 4, border: "1px solid #ccc", fontFamily: "inherit", fontSize: 14 }}
+          aria-label="Filtrar por data"
+        />
+      </Box>
       <Chip label={`Projetos observados: ${health.projects}`} />
       <Chip color="success" label={`Gate verde: ${health.healthy}`} />
       <Chip color="error" label={`Deploy bloqueado: ${health.blocked}`} />
@@ -100,8 +128,11 @@ export default function TestHistoryScreen(): ReactNode {
     </Stack>
     {error && <Alert severity="error">{error}</Alert>}
     <Paper variant="outlined" sx={{ overflow: "auto" }}>
-      {loading ? <Box sx={{ display: "grid", placeItems: "center", p: 5 }}><CircularProgress /></Box> : runs.length === 0 ? <Typography sx={{ p: 3 }} color="text.secondary">Nenhuma execução registrada.</Typography> :
+      {loading ? <Box sx={{ display: "grid", placeItems: "center", p: 5 }}><CircularProgress /></Box> : runs.length === 0 ? <Typography sx={{ p: 3 }} color="text.secondary">Nenhuma execução registrada para a data selecionada.</Typography> :
         <Table size="small"><TableHead><TableRow><TableCell /><TableCell>Início</TableCell><TableCell>Projeto</TableCell><TableCell>Tarefa</TableCell><TableCell>Fase</TableCell><TableCell>Status</TableCell><TableCell>Comparação</TableCell><TableCell>Passou / falhou</TableCell><TableCell>Commit</TableCell></TableRow></TableHead><TableBody>{runs.map(run => <RunRow key={run.id} run={run} />)}</TableBody></Table>}
     </Paper>
+    <Typography variant="body2" color="text.secondary">
+      Testes exibidos: {runs.length}; Total de testes do filtro: {total}
+    </Typography>
   </Stack>
 }

@@ -243,11 +243,13 @@ export class GerenteAgentesController {
     @Query('projetoId') projetoId?: string,
     @Query('tarefaId') tarefaId?: string,
     @Query('limit') limit?: string,
+    @Query('data') data?: string,
   ) {
     return this.service.listarHistoricoTestes(projeto, {
       projetoId: projetoId ? Number(projetoId) : undefined,
       tarefaId: tarefaId ? Number(tarefaId) : undefined,
       limit: limit ? Number(limit) : undefined,
+      data,
     });
   }
 

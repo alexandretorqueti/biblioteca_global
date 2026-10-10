@@ -564,10 +564,11 @@ export class MySqlDevelopmentExecutionRepository {
     const connection = await this.pool.getConnection()
     try {
       await connection.beginTransaction()
-      const [rows] = await connection.query<Array<RowDataPacket & { seq: number }>>(
-        `SELECT seq FROM subtarefas WHERE id=? AND status='running' LIMIT 1 FOR UPDATE`, [subtaskId],
+      const [rows] = await connection.query<Array<RowDataPacket & { seq: number; tarefa_id: number }>>(
+        `SELECT seq, tarefa_id FROM subtarefas WHERE id=? AND status='running' LIMIT 1 FOR UPDATE`, [subtaskId],
       )
       if (!rows[0]) { await connection.rollback(); return }
+      const databaseTaskId = Number(rows[0].tarefa_id)
       const message = createQueueMessage({
         type: 'SUBTASK_EXECUTION_BLOCKED', taskId, executionId,
         payload: { subtaskId, seq: Number(rows[0].seq), reason, phase: 'development_completion_protocol' },
@@ -576,7 +577,23 @@ export class MySqlDevelopmentExecutionRepository {
         `UPDATE subtarefas SET status='blocked', resultado=?, updated_at=NOW() WHERE id=? AND status='running'`,
         [reason.slice(0, 60_000), subtaskId],
       )
-      if (updated.affectedRows === 1) await this.insertOutbox(connection, message)
+      if (updated.affectedRows === 1) {
+        await this.persistBlockerAndNotifyMonitor(connection, {
+          databaseTaskId,
+          subtaskId,
+          blockReason: 'development_completion_protocol_exhausted',
+          blockCommand: 'SUBTASK_EXECUTION_BLOCKED',
+          blockExcerpt: JSON.stringify({
+            phase: 'development_completion_protocol',
+            executionId,
+            subtaskId,
+            error: reason.slice(0, 4_000),
+          }),
+          taskId,
+          executionId,
+        })
+        await this.insertOutbox(connection, message)
+      }
       await connection.commit()
     } catch (error) {
       await connection.rollback()
@@ -800,6 +817,71 @@ export class MySqlDevelopmentExecutionRepository {
     await insertOutboxMessage(connection, blocked, 'motor.monitor')
   }
 
+  /**
+   * Helper transacional genérico: insere linha em `bloqueios` com guarda de
+   * idempotência (NOT EXISTS de bloqueio ativo da mesma tarefa/subtarefa/motivo)
+   * e publica TASK_BLOCKED em motor.monitor na mesma transação.
+   *
+   * Retornar `true` quando o bloqueio foi criado; `false` quando já existia
+   * (redelivery seguro — nenhum TASK_BLOCKED duplicado é publicado).
+   *
+   * Padrão extraído de persistExhaustedWorkerBlocker (incidente 939/1273).
+   */
+  private async persistBlockerAndNotifyMonitor(
+    connection: PoolConnection,
+    params: {
+      databaseTaskId: number
+      subtaskId: number
+      blockReason: string
+      blockCommand: string
+      blockExcerpt: string
+      taskId: string
+      executionId: string
+      correlationId?: string | null
+      causationId?: string | null
+    },
+  ): Promise<boolean> {
+    const [inserted] = await connection.query<ResultSetHeader>(
+      `INSERT INTO bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at)
+       SELECT ?, ?, ?, ?, ?, NOW()
+        WHERE NOT EXISTS (
+          SELECT 1 FROM bloqueios
+           WHERE tarefa_id = ? AND subtarefa_id = ?
+             AND block_reason = ? AND resolved_at IS NULL
+        )`,
+      [
+        params.databaseTaskId, params.subtaskId, params.blockReason,
+        params.blockCommand, params.blockExcerpt,
+        params.databaseTaskId, params.subtaskId, params.blockReason,
+      ],
+    )
+    if (inserted.affectedRows === 0) return false
+
+    const [blockRows] = await connection.query<Array<RowDataPacket & { id: number }>>(
+      `SELECT id FROM bloqueios
+        WHERE tarefa_id = ? AND subtarefa_id = ?
+          AND block_reason = ? AND resolved_at IS NULL
+        ORDER BY id DESC LIMIT 1 FOR UPDATE`,
+      [params.databaseTaskId, params.subtaskId, params.blockReason],
+    )
+    const blocked = createTaskBlockedMessage({
+      taskId: params.taskId,
+      executionId: `${params.executionId}-block-${params.blockReason}`,
+      correlationId: params.correlationId ?? undefined,
+      causationId: params.causationId ?? undefined,
+      payload: {
+        blockReason: params.blockReason,
+        blockCommand: params.blockCommand,
+        blockExcerpt: params.blockExcerpt.slice(0, 500),
+        subtaskId: params.subtaskId,
+        databaseTaskId: params.databaseTaskId,
+        blockId: Number(blockRows[0]?.id),
+      },
+    })
+    await insertOutboxMessage(connection, blocked, 'motor.monitor')
+    return true
+  }
+
   private isExhaustedWorkerFailure(error: string | undefined): boolean {
     return /^Esgotado n(?:ú|u)mero m[aá]ximo de tentativas\b/i.test(error ?? '')
   }
@@ -826,6 +908,22 @@ export class MySqlDevelopmentExecutionRepository {
         [reason.slice(0, 60_000), context.subtaskId],
       )
       if (updated.affectedRows !== 1) throw new Error(`Subtarefa ${context.subtaskId} não está em execução`)
+      await this.persistBlockerAndNotifyMonitor(connection, {
+        databaseTaskId: context.databaseTaskId,
+        subtaskId: context.subtaskId,
+        blockReason: 'baseline_preflight_failed',
+        blockCommand: 'SUBTASK_EXECUTION_BLOCKED',
+        blockExcerpt: JSON.stringify({
+          phase: 'baseline_preflight',
+          executionId: source.executionId,
+          subtaskId: context.subtaskId,
+          error: reason.slice(0, 4_000),
+        }),
+        taskId: context.taskId,
+        executionId: source.executionId,
+        correlationId: source.correlationId ?? source.messageId,
+        causationId: source.messageId,
+      })
       await this.insertOutbox(connection, message)
       await this.wakeCapacityWaiters(connection, message)
       await connection.commit()
