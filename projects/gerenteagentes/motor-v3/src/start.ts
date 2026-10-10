@@ -49,7 +49,7 @@ import { DeployConsumer } from './deploy/DeployConsumer.js'
 import { DeployRepository } from './deploy/DeployRepository.js'
 import { RemoteBlueGreenDeployer } from './deploy/RemoteBlueGreenDeployer.js'
 import { BaselinePreflightRecovery, TestGateConsumer, TestGateJobReconciler, TestGateOrchestrator, TestGateService, TestRecoveryConsumer, WorkspaceEnvironmentPreparer } from './testing/index.js'
-import { ConsoleHumanNotifier, ExternalResolutionError, ExternalResolutionHandler, MonitorBlockerReconciler, MonitorPromptResolver, MonitorResolutionConsumer, TaskUnblockedConsumer, createTaskBlockedMessage, loadActiveBlocker } from './monitor/index.js'
+import { ConsoleHumanNotifier, ExternalResolutionError, ExternalResolutionHandler, MonitorBlockerReconciler, MonitorPromptResolver, MonitorResolutionConsumer, PostDeployPromptResolver, PostDeployVerifier, TaskUnblockedConsumer, createTaskBlockedMessage, loadActiveBlocker } from './monitor/index.js'
 import { TaskAdjustmentConsumer, TASK_ADJUSTMENT_REQUESTED } from './adjustment/index.js'
 import { ensureCompletionTrigger } from './db/ensureTriggers.js'
 import { bootstrapMotorV3Catalog } from './db/bootstrap.js'
@@ -94,6 +94,7 @@ let cancelConsumer: TaskCancelConsumer | null = null
 let analysisSessionRecovery: AnalysisSessionRecoveryReconciler | null = null
 let developmentSessionRecovery: DevelopmentSessionRecoveryReconciler | null = null
 let taskAdjustmentConsumer: TaskAdjustmentConsumer | null = null
+let postDeployVerifier: PostDeployVerifier | null = null
 
 async function start() {
   console.log('[Motor v3] Iniciando...')
@@ -612,6 +613,22 @@ async function start() {
 
     cancelConsumer = new TaskCancelConsumer(pool, operationLogger, new MySqlCommandPolicyRepository(pool), taskEvents)
     taskAdjustmentConsumer = new TaskAdjustmentConsumer(pool, analyst, operationLogger)
+    // PostDeployVerifier (tarefa 976): verificação semântica pós-deploy.
+    // Instanciado com WorkerLauncher dedicado (timeout próprio, 15 min default)
+    // e conectado à fila motor.commands — recebe DEPLOY_BATCH_SUCCEEDED.
+    const postDeployWorker = new WorkerLauncher({
+      maxAttempts: Number(process.env.MOTOR_POSTDEPLOY_MAX_ATTEMPTS || 1),
+      timeoutMs: Number(process.env.MOTOR_POSTDEPLOY_TIMEOUT_MS || 900_000),
+      sandboxRoot: process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/codigofonte/biblioteca-global/.motor-v3-worktrees',
+    })
+    postDeployVerifier = new PostDeployVerifier(
+      pool,
+      postDeployWorker,
+      new PostDeployPromptResolver(pool),
+      taskEvents,
+      new ConsoleHumanNotifier(),
+      operationLogger,
+    )
     queueConsumer = new QueueConsumer(transport, async message => {
       await coordinator.handle(message)
       await cancelConsumer?.handle(message)
@@ -623,6 +640,12 @@ async function start() {
       await monitorResolutionConsumer?.handle(message)
       await taskUnblockedConsumer?.handle(message)
       await deployConsumer?.handle(message)
+      // PostDeployVerifier: fire-and-forget protegido por log.
+      // Nunca propaga erro ao pipeline — a verificação é assíncrona e
+      // idempotente por batch_id (claim atômico na tabela).
+      try { await postDeployVerifier?.handle(message) } catch (error) {
+        console.error('[Motor v3] PostDeployVerifier.handle falha inesperada:', error instanceof Error ? error.message : String(error))
+      }
     }, {
       queue: process.env.MOTOR_RABBITMQ_QUEUE || 'motor.commands',
       maxAttempts: Number(process.env.MOTOR_QUEUE_MAX_ATTEMPTS || 3),
@@ -676,6 +699,12 @@ async function start() {
     // Recuperação única de fatos duráveis após boot. O fluxo normal avança
     // por mensagens/eventos; o timer abaixo só reconcilia batches órfãos.
     await deployConsumer.recoverPendingWork()
+    // Boot scan do PostDeployVerifier (tarefa 976): cobre o gap do swap —
+    // o motor NOVO verifica batches succeeded que o motor ANTIGO não verificou.
+    // Fire-and-forget: falha individual é logada e nunca impede o boot.
+    void postDeployVerifier.bootScan().catch(error => {
+      console.error('[Motor v3] PostDeployVerifier.bootScan falha inesperada:', error instanceof Error ? error.message : String(error))
+    })
     let deployOrphanBatchReconcilerRunning = false
     deployOrphanBatchReconcilerTimer = setInterval(() => {
       if (deployOrphanBatchReconcilerRunning || !deployConsumer) return
