@@ -13,9 +13,19 @@ export interface MigrationJournalProblem {
   expectedTag: string
 }
 
+export interface MigrationJournalMonotonicityViolation {
+  project: string
+  entryTag: string
+  entryIndex: number
+  currentWhen: number
+  previousWhen: number
+  previousTag: string
+}
+
 export interface MigrationJournalInspection {
   project: string
   orphaned: MigrationJournalProblem[]
+  monotonicityViolations: MigrationJournalMonotonicityViolation[]
   issue?: 'journal_missing' | 'journal_unreadable' | 'journal_invalid_json' | 'journal_invalid_structure'
 }
 
@@ -27,6 +37,19 @@ export class MigrationJournalIntegrityError extends Error {
       'Gere/atualize o journal junto com cada migration antes de concluir a entrega.',
     ].join('\n'))
     this.name = 'MigrationJournalIntegrityError'
+  }
+}
+
+export class MigrationJournalMonotonicityError extends Error {
+  constructor(readonly violations: MigrationJournalMonotonicityViolation[], readonly inspections: MigrationJournalInspection[]) {
+    super([
+      'Journal de migrations com valores "when" não monotônicos (devem ser estritamente crescentes):',
+      ...violations.map(violation =>
+        `- projects/${violation.project}/migrations/meta/_journal.json: entrada ${violation.entryIndex} (tag "${violation.entryTag}") tem when=${violation.currentWhen}, mas a entrada anterior (tag "${violation.previousTag}") tem when=${violation.previousWhen}. Orientação: use when=${violation.previousWhen + 1000} ou superior.`
+      ),
+      'Corrija os timestamps do journal antes de concluir a entrega.',
+    ].join('\n'))
+    this.name = 'MigrationJournalMonotonicityError'
   }
 }
 
@@ -49,14 +72,17 @@ export async function inspectProjectMigrationJournal(
     return {
       project,
       orphaned: names.map(migration => problem(project, migration)),
+      monotonicityViolations: [],
       issue: code === 'ENOENT' ? 'journal_missing' : error instanceof SyntaxError ? 'journal_invalid_json' : 'journal_unreadable',
     }
   }
   if (!isJournal(journal)) {
-    return { project, orphaned: names.map(migration => problem(project, migration)), issue: 'journal_invalid_structure' }
+    return { project, orphaned: names.map(migration => problem(project, migration)), monotonicityViolations: [], issue: 'journal_invalid_structure' }
   }
   const tags = new Set(journal.entries.map(entry => entry.tag))
-  return { project, orphaned: names.filter(name => !tags.has(tagFor(name))).map(migration => problem(project, migration)) }
+  const orphaned = names.filter(name => !tags.has(tagFor(name))).map(migration => problem(project, migration))
+  const monotonicityViolations = validateMonotonicity(project, journal.entries)
+  return { project, orphaned, monotonicityViolations }
 }
 
 /** Varre todos os projetos acessíveis. Diretórios sem migrations são ignorados. */
@@ -91,18 +117,27 @@ export async function assertAddedMigrationsHaveJournalEntries(workspacePath: str
   ))
   const problems = inspections.flatMap(inspection => inspection.orphaned)
   if (problems.length > 0) throw new MigrationJournalIntegrityError(problems, inspections)
+  const monotonicityViolations = inspections.flatMap(inspection => inspection.monotonicityViolations)
+  if (monotonicityViolations.length > 0) throw new MigrationJournalMonotonicityError(monotonicityViolations, inspections)
 }
 
 /** Preflight observável e deliberadamente não fatal para pendências históricas. */
 export async function warnOnMigrationJournalIntegrity(repositoryRoot = defaultRepositoryRoot): Promise<MigrationJournalInspection[]> {
   const inspections = await inspectMigrationJournals(repositoryRoot)
   for (const inspection of inspections) {
-    if (inspection.orphaned.length === 0 && !inspection.issue) continue
+    if (inspection.orphaned.length === 0 && inspection.monotonicityViolations.length === 0 && !inspection.issue) continue
     console.warn(JSON.stringify({
       event: 'migration_journal_integrity_warning',
       project: inspection.project,
       issue: inspection.issue ?? null,
       orphanedMigrations: inspection.orphaned.map(orphan => ({ file: orphan.migration, expectedTag: orphan.expectedTag })),
+      monotonicityViolations: inspection.monotonicityViolations.map(violation => ({
+        entryTag: violation.entryTag,
+        entryIndex: violation.entryIndex,
+        currentWhen: violation.currentWhen,
+        previousWhen: violation.previousWhen,
+        previousTag: violation.previousTag,
+      })),
       fatal: false,
     }))
   }
@@ -125,8 +160,31 @@ function tagFor(migration: string): string { return migration.slice(0, -'.sql'.l
 function problem(project: string, migration: string): MigrationJournalProblem {
   return { project, migration, expectedTag: tagFor(migration) }
 }
-function isJournal(value: unknown): value is { entries: Array<{ tag: string }> } {
+function isJournal(value: unknown): value is { entries: Array<{ tag: string; when: number }> } {
   return typeof value === 'object' && value !== null
     && Array.isArray((value as { entries?: unknown }).entries)
-    && (value as { entries: unknown[] }).entries.every(entry => typeof entry === 'object' && entry !== null && typeof (entry as { tag?: unknown }).tag === 'string')
+    && (value as { entries: unknown[] }).entries.every(entry =>
+      typeof entry === 'object' && entry !== null
+      && typeof (entry as { tag?: unknown }).tag === 'string'
+      && typeof (entry as { when?: unknown }).when === 'number'
+    )
+}
+
+function validateMonotonicity(project: string, entries: Array<{ tag: string; when: number }>): MigrationJournalMonotonicityViolation[] {
+  const violations: MigrationJournalMonotonicityViolation[] = []
+  for (let index = 1; index < entries.length; index++) {
+    const current = entries[index]!
+    const previous = entries[index - 1]!
+    if (current.when <= previous.when) {
+      violations.push({
+        project,
+        entryTag: current.tag,
+        entryIndex: index,
+        currentWhen: current.when,
+        previousWhen: previous.when,
+        previousTag: previous.tag,
+      })
+    }
+  }
+  return violations
 }
