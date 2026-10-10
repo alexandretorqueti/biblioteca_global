@@ -38,6 +38,16 @@ export interface DeployBatchMember {
   testCommand: string
 }
 
+/** Resultado de conflito real de cherry-pick para um membro específico do batch. */
+export interface MemberConflictResult {
+  index: number
+  taskId: string
+  databaseTaskId: number
+  conflictFiles: string[]
+  conflictExcerpt: string
+  taskCommit: string
+}
+
 /** Branch de integração que deve receber a base recém implantada. */
 export interface IntegrationBranchSyncTarget {
   taskId: string
@@ -451,6 +461,151 @@ ${conflictData.conflictFiles.map(f => `- \`${f}\``).join('\n')}
     } finally {
       connection.release()
     }
+  }
+
+  /**
+   * Isola membros conflitantes do batch: devolve o request a pending (sem batch_id),
+   * grava bloqueio deploy_member_conflict e promotion_conflict_analyses.
+   * Operação atômica — todas as alterações persistem ou nenhuma.
+   */
+  async isolateConflictingMembers(
+    batchId: string,
+    conflicts: MemberConflictResult[],
+    source: QueueMessage,
+  ): Promise<void> {
+    if (conflicts.length === 0) return
+    const connection = await this.pool.getConnection()
+    try {
+      await connection.beginTransaction()
+      for (const conflict of conflicts) {
+        // 1. Devolver request a pending e desassociar do batch
+        await connection.query(
+          `UPDATE deploy_requests
+             SET status='pending', batch_id=NULL, last_error=NULL,
+                 finished_at=NULL, updated_at=NOW()
+           WHERE batch_id=? AND tarefa_id=? AND status IN ('pending','running')`,
+          [batchId, conflict.databaseTaskId],
+        )
+        // 2. Gravar bloqueio informativo deploy_member_conflict
+        const excerpt = `Conflito de cherry-pick no compose do batch ${batchId}: ${conflict.conflictFiles.length > 0 ? conflict.conflictFiles.join(', ') : conflict.conflictExcerpt}`
+        const [bloqueioResult] = await connection.query<ResultSetHeader>(
+          `INSERT INTO bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at)
+           VALUES (?, NULL, 'deploy_member_conflict', ?, ?, NOW())`,
+          [conflict.databaseTaskId, `motor-v3:composeBatch:${batchId}`, excerpt.slice(0, 500)],
+        )
+        const bloqueioId = Number(bloqueioResult.insertId)
+        // 3. Gravar promotion_conflict_analyses (idempotente por fingerprint)
+        // char(64): prefixo curto + batchId truncado + commit garante unicidade dentro do limite
+        const fingerprint = `mc:${batchId.slice(0, 36)}:${conflict.taskCommit.slice(0, 12)}`.slice(0, 64)
+        const conflictFilesJson = JSON.stringify(conflict.conflictFiles)
+        const evidenceJson = JSON.stringify({
+          type: 'cherry_pick_conflict',
+          batchId,
+          taskCommit: conflict.taskCommit,
+          conflictFiles: conflict.conflictFiles,
+          conflictExcerpt: conflict.conflictExcerpt,
+        })
+        // INSERT IGNORE garante idempotência: se fingerprint já existe, não duplica
+        await connection.query(
+          `INSERT IGNORE INTO promotion_conflict_analyses (
+            tarefa_id, bloqueio_id, fingerprint, base_branch, task_branch,
+            base_commit, task_commit, merge_base_commit, conflict_files_json,
+            evidence_json, status, confidence, recommendation, started_at, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'high', 'rebase_integration', NOW(), NOW())`,
+          [
+            conflict.databaseTaskId,
+            bloqueioId,
+            fingerprint,
+            'base-desenvolvimento',
+            `integration-${conflict.taskId}`,
+            'unknown',
+            conflict.taskCommit,
+            'unknown',
+            conflictFilesJson,
+            evidenceJson,
+          ],
+        )
+        // 4. Mensagem no chat da tarefa para visibilidade
+        const chatMessage = `⚠️ **Conflito isolado no compose do batch de deploy**\n\n` +
+          `Seu commit \`${conflict.taskCommit.slice(0, 8)}\` conflitou com outro membro do lote durante o cherry-pick.\n\n` +
+          `**Arquivos conflitantes (${conflict.conflictFiles.length}):**\n${conflict.conflictFiles.map(f => `- \`${f}\``).join('\n') || '- (não identificados)'}\n\n` +
+          `**O que acontece agora:** Seu deploy foi separado do lote e retornará à fila após a resolução do conflito. ` +
+          `Os demais membros do lote seguem normalmente.\n\n` +
+          `**Ação necessária:** Rebase da branch de integração sobre a base atualizada para resolver o conflito.`
+        await connection.query(
+          `INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) VALUES (?, 'assistant', ?, NOW())`,
+          [conflict.databaseTaskId, chatMessage],
+        )
+        // 5. Evento TASK_BLOCKED no outbox para o feed operacional
+        const blocked = createTaskBlockedMessage({
+          taskId: conflict.taskId,
+          executionId: `${source.executionId}-member-conflict-${batchId}`,
+          correlationId: source.correlationId ?? source.messageId,
+          causationId: source.messageId,
+          payload: {
+            blockReason: 'deploy_member_conflict',
+            blockCommand: `motor-v3:composeBatch:${batchId}`,
+            blockExcerpt: excerpt.slice(0, 500),
+          },
+        })
+        await this.insertOutbox(connection, blocked)
+      }
+      await connection.commit()
+    } catch (error) {
+      await connection.rollback()
+      throw error
+    } finally {
+      connection.release()
+    }
+  }
+
+  /**
+   * Grava promotion_conflict_analyses para um membro isolado (usada quando
+   * TODOS os membros conflitam e o batch falha — sem isolateConflictingMembers).
+   * Idempotente por fingerprint (INSERT IGNORE).
+   */
+  async recordMemberConflictAnalysis(params: {
+    databaseTaskId: number
+    batchId: string
+    baseBranch: string
+    taskCommit: string
+    conflictFiles: string[]
+    conflictExcerpt: string
+  }): Promise<void> {
+    const fingerprint = `mc:${params.batchId.slice(0, 36)}:${params.taskCommit.slice(0, 12)}`.slice(0, 64)
+    const conflictFilesJson = JSON.stringify(params.conflictFiles)
+    const evidenceJson = JSON.stringify({
+      type: 'cherry_pick_conflict',
+      batchId: params.batchId,
+      taskCommit: params.taskCommit,
+      conflictFiles: params.conflictFiles,
+      conflictExcerpt: params.conflictExcerpt,
+    })
+    // Inserir bloqueio primeiro (promotion_conflict_analyses referencia bloqueio_id)
+    const [bloqueioResult] = await this.pool.query<ResultSetHeader>(
+      `INSERT INTO bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at)
+       VALUES (?, NULL, 'deploy_member_conflict', ?, ?, NOW())`,
+      [params.databaseTaskId, `motor-v3:composeBatch:${params.batchId}`, params.conflictExcerpt.slice(0, 500)],
+    )
+    await this.pool.query(
+      `INSERT IGNORE INTO promotion_conflict_analyses (
+        tarefa_id, bloqueio_id, fingerprint, base_branch, task_branch,
+        base_commit, task_commit, merge_base_commit, conflict_files_json,
+        evidence_json, status, confidence, recommendation, started_at, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'high', 'rebase_integration', NOW(), NOW())`,
+      [
+        params.databaseTaskId,
+        Number(bloqueioResult.insertId),
+        fingerprint,
+        params.baseBranch,
+        `integration-task-${params.databaseTaskId}`,
+        'unknown',
+        params.taskCommit,
+        'unknown',
+        conflictFilesJson,
+        evidenceJson,
+      ],
+    )
   }
 
   withIntegration(context: Omit<DeployTaskContext, 'integrationPath' | 'integrationBranch' | 'integrationCommit'>, integrationCommit: string): DeployTaskContext {
