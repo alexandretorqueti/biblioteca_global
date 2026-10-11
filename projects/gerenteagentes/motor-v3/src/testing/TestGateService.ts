@@ -6,6 +6,7 @@ import { resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { gzip as gzipCallback } from 'node:zlib'
 import type { Pool, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
+import { MigrationDryRunExecutor, MigrationDryRunError } from '../migrations/MigrationDryRunExecutor.js'
 
 const execAsync = promisify(exec)
 const gzipAsync = promisify(gzipCallback)
@@ -88,6 +89,19 @@ export class TestGateService {
     if (input.phase === 'baseline') {
       const reused = await this.reuseBaseline(input, environment.fingerprint)
       if (reused) return reused
+    }
+    // Dry-run de migrations: valida SQL adicionado em tabelas scratch antes de build/test.
+    // Somente em pre_deploy e quando há baseCommitSha distinto do commitSha.
+    if (input.phase === 'pre_deploy' && input.baseCommitSha && input.baseCommitSha !== input.commitSha) {
+      try {
+        const dryRun = new MigrationDryRunExecutor(this.pool, input.taskDatabaseId)
+        await dryRun.execute(input.workspacePath, input.baseCommitSha)
+      } catch (error) {
+        if (error instanceof MigrationDryRunError) {
+          return this.failWithMigrationDryRunError(input, error, startedAt, environment)
+        }
+        throw error
+      }
     }
     let stdout = ''
     let stderr = ''
@@ -181,6 +195,54 @@ export class TestGateService {
       ...(row.source_line ? { sourceLine: Number(row.source_line) } : {}),
       rawExcerpt: row.raw_excerpt ?? '', occurrenceCount: Number(row.occurrence_count), classification: 'unclassified',
     }))
+  }
+
+  /**
+   * Registra falha do dry-run de migrations como um test_run durável.
+   * As violações são gravadas como test_failures individuais.
+   */
+  private async failWithMigrationDryRunError(
+    input: TestGateInput,
+    error: MigrationDryRunError,
+    startedAt: Date,
+    environment: { fingerprint: string; evidence: Record<string, unknown> },
+  ): Promise<TestRunResult> {
+    const finishedAt = new Date()
+    const failures: TestFailureRecord[] = error.violations.map(violation => ({
+      fingerprint: createHash('sha256')
+        .update(`migration-dry-run|${violation.project}|${violation.migration}|${violation.statementIndex}|${violation.mysqlMessage}`)
+        .digest('hex'),
+      suite: `migration-dry-run/${violation.project}`,
+      testCase: `${violation.migration} (statement ${violation.statementIndex})`,
+      errorType: 'MigrationDryRunError',
+      normalizedMessage: violation.mysqlMessage.slice(0, 2000),
+      sourceFile: `projects/${violation.project}/migrations/${violation.migration}`,
+      sourceLine: violation.statementLine,
+      rawExcerpt: error.message.slice(0, 4000),
+      occurrenceCount: 1,
+      classification: 'new',
+    }))
+    const stderrContent = error.message
+    const [inserted] = await this.pool.execute<ResultSetHeader>(
+      `INSERT INTO test_runs
+        (projeto_id, tarefa_id, subtarefa_id, phase, baseline_run_id, commit_sha, base_commit_sha,
+         branch_name, workspace_path, build_command, test_command, environment_fingerprint,
+         environment_json, node_version, started_at, finished_at, exit_code, status,
+         comparison_status, passed_count, failed_count, stdout, stderr)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [input.projectId, input.taskDatabaseId, input.subtaskId ?? null, input.phase, input.baselineRunId ?? null,
+        input.commitSha, input.baseCommitSha ?? null, input.branchName, input.workspacePath,
+        input.buildCommand, input.testCommand, environment.fingerprint, JSON.stringify(environment.evidence), process.version,
+        startedAt, finishedAt, 1, 'failed', 'not_compared', 0, failures.length,
+        '', stderrContent.slice(-20_000)],
+    )
+    const runId = inserted.insertId
+    for (const failure of failures) await this.insertFailure(runId, failure)
+    return {
+      id: runId, phase: input.phase, status: 'failed', comparisonStatus: 'not_compared',
+      exitCode: 1, failures, newFailures: failures, preExistingFailures: [], resolvedFailures: [],
+      stdout: '', stderr: stderrContent,
+    }
   }
 
   private async reuseBaseline(input: TestGateInput, environmentFingerprint: string): Promise<TestRunResult | null> {

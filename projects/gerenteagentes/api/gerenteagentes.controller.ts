@@ -486,6 +486,18 @@ export class GerenteAgentesController {
     return this.service.atualizarConfiguracoesMotor(body?.valores);
   }
 
+  /**
+   * Leitura do fuso horário efetivo — acessível a qualquer usuário autenticado
+   * com escopo no projeto (admin, gerente, operador ou visualizador).
+   * Telas operacionais usam este endpoint para formatar datas sem precisar
+   * de acesso às configurações completas do Motor.
+   */
+  @Get('timezone')
+  @Roles('admin', 'gerente', 'operador', 'visualizador')
+  obterTimezone() {
+    return this.service.obterTimezoneEfetivo();
+  }
+
   @Put('model-selection/:projectKey/:tipo')
   @Roles('admin', 'gerente', 'operador')
   saveModelSelection(

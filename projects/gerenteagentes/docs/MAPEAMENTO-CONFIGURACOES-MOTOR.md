@@ -40,6 +40,12 @@ Varredura realizada em `motor/src`, `motor-v3/package.json`, `motor-v3/README.md
 | `motor.config_lint_max_depth` | `5` | `MAX_DEPTH` em `ConfigLintPolicy` | varredura de arquivos do lint | Profundidade máxima inspecionada. |
 | `motor.config_lint_max_files` | `100` | `MAX_FILES` em `ConfigLintPolicy` | varredura de arquivos do lint | Proteção contra varredura excessiva. |
 
+## Configurações globais de apresentação
+
+| Nome estável | Valor atual | Origem | Consumidor(es) | Impacto |
+|---|---|---|---|---|
+| `motor.timezone` | `America/Sao_Paulo` | tabela `motor_configuracoes`; seletor na tela CONFIGURAÇÕES (aba Parâmetros) | telas operacionais (via `GET /api/gerenteagentes/timezone`), utilitário `resolveTimezone()` em `src/shared/timezone.ts` | Fuso horário usado para apresentação de datas e regras de calendário nas telas. O valor é um identificador IANA validado por `isValidTimezone()` (Intl.DateTimeFormat). Na ausência de valor persistido, o sistema usa `America/Sao_Paulo`. A API rejeita fusos inválidos (BadRequestException). O endpoint de leitura (`GET /api/gerenteagentes/timezone`) é acessível a qualquer usuário autenticado com escopo no projeto (admin, gerente, operador, visualizador), sem expor as demais configurações do Motor. |
+
 ## Configurações por tarefa/projeto já persistidas
 
 Estas não são defaults globais da tela; são valores de domínio que o motor já lê e deve continuar priorizando sobre defaults globais:

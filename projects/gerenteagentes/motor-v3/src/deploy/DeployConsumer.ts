@@ -103,7 +103,11 @@ export class DeployConsumer {
       }
       acceptedRequestId = accepted.requestId
       await this.recordEvent(message.taskId, 'DEPLOY_REQUEST_ACCEPTED', { executionId: message.executionId, requestId: accepted.requestId })
-      const jobId = await this.gate.enqueue({ projectId: context.projectId, taskDatabaseId: context.databaseTaskId, phase: 'pre_deploy', commitSha: context.integrationCommit, baseCommitSha: context.integrationCommit, branchName: context.integrationBranch, workspacePath: context.integrationPath, buildCommand: context.buildCommand, testCommand: context.testCommand }, message)
+      // Resolver baseBranch para commit SHA: o dry-run de migrations precisa comparar
+      // com o commit-base real (não o commit candidato da integração).
+      const { stdout: baseCommitOutput } = await execFileAsync('git', ['rev-parse', context.baseBranch], { cwd: context.integrationPath, encoding: 'utf8' }).catch(() => ({ stdout: context.integrationCommit }))
+      const baseCommitSha = baseCommitOutput.trim() || context.integrationCommit
+      const jobId = await this.gate.enqueue({ projectId: context.projectId, taskDatabaseId: context.databaseTaskId, phase: 'pre_deploy', commitSha: context.integrationCommit, baseCommitSha, branchName: context.integrationBranch, workspacePath: context.integrationPath, buildCommand: context.buildCommand, testCommand: context.testCommand }, message)
       await this.recordEvent(message.taskId, 'TEST_RUN_REQUESTED', { executionId: message.executionId, jobId, phase: 'pre_deploy' })
       await this.log(operationId, 3, 'primitive', 'succeeded', message, { primitiveCode: 'upsert_deploy_request', result: { requestId: accepted.requestId, gateJobId: jobId } })
       await this.log(operationId, 4, 'completed', 'succeeded', message, { actionCode: 'A30_ACCEPT_DEPLOY_REQUEST', result: { requestId: accepted.requestId, gateJobId: jobId } })
@@ -181,7 +185,11 @@ export class DeployConsumer {
         // diferentes levaria a deploys redundantes por tarefa.
         const buildCommand = [...new Set(claimed.members.map(member => member.buildCommand))].join(' && ')
         const testCommand = [...new Set(claimed.members.map(member => member.testCommand))].join(' && ')
-        const gateJobId = await this.gate.enqueue({ projectId: primary.projectId, taskDatabaseId: primary.databaseTaskId, phase: 'pre_deploy', commitSha: composed.commit, baseCommitSha: claimed.batch.baseBranch, branchName: claimed.batch.baseBranch, workspacePath: composed.path, buildCommand, testCommand }, message)
+        // Resolver baseBranch para commit SHA: o dry-run de migrations precisa comparar
+        // com o commit-base real (não o nome da branch).
+        const { stdout: batchBaseCommitOutput } = await execFileAsync('git', ['rev-parse', claimed.batch.baseBranch], { cwd: composed.path, encoding: 'utf8' }).catch(() => ({ stdout: composed.commit }))
+        const batchBaseCommitSha = batchBaseCommitOutput.trim() || composed.commit
+        const gateJobId = await this.gate.enqueue({ projectId: primary.projectId, taskDatabaseId: primary.databaseTaskId, phase: 'pre_deploy', commitSha: composed.commit, baseCommitSha: batchBaseCommitSha, branchName: claimed.batch.baseBranch, workspacePath: composed.path, buildCommand, testCommand }, message)
         await this.repository.setBatchPrepared(claimed.batch.batchId, composed.commit, composed.path, gateJobId)
         await this.log(operationId, 4, 'completed', 'succeeded', message, { actionCode: 'A31_DISPATCH_DEPLOY_BATCH', result: { batchId: claimed.batch.batchId, gateJobId, expectedCommit: composed.commit, memberCount: claimed.members.length, isolatedCount: composed.conflicts.length } })
       } catch (error) {

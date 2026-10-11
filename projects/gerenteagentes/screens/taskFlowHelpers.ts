@@ -9,6 +9,7 @@
  */
 
 import { ALL_TASK_STATUSES } from "../src/shared/task-statuses"
+import { DEFAULT_TIMEZONE, isHojeNoFuso } from "../src/shared/timezone"
 
 // ============================================================================
 // TIPOS
@@ -216,17 +217,16 @@ export function getEffectiveStatusForMetrics(task: TarefaParaMetricas): string {
 }
 
 /**
- * Verifica se uma data ISO é do dia atual.
+ * Verifica se uma data ISO é do dia atual no fuso horário configurado.
+ * Usa comparação de data civil (YYYY-MM-DD) projetada no fuso, evitando
+ * erros próximos à meia-noite e em transições de offset.
  */
-function isHoje(data?: string | null, agora: Date = new Date()): boolean {
-  if (!data) return false
-  const dataObj = new Date(data)
-  if (isNaN(dataObj.getTime())) return false
-  return (
-    dataObj.getFullYear() === agora.getFullYear() &&
-    dataObj.getMonth() === agora.getMonth() &&
-    dataObj.getDate() === agora.getDate()
-  )
+function isHoje(
+  data?: string | null,
+  agora: Date = new Date(),
+  timezone: string = DEFAULT_TIMEZONE,
+): boolean {
+  return isHojeNoFuso(data, timezone, agora)
 }
 
 /**
@@ -254,12 +254,13 @@ function formatDuracao(minutos: number): string {
  */
 export function calcularMetricas(
   tarefas: TarefaParaMetricas[],
-  agora: Date = new Date()
+  agora: Date = new Date(),
+  timezone: string = DEFAULT_TIMEZONE,
 ): MetricasMapa {
   const total = tarefas.length
   const emAndamento = tarefas.filter((t) => STATUS_EM_ANDAMENTO.has(t.status)).length
   const concluidasHoje = tarefas.filter(
-    (t) => STATUS_CONCLUIDOS.has(t.status) && isHoje(t.updatedAt, agora)
+    (t) => STATUS_CONCLUIDOS.has(t.status) && isHoje(t.updatedAt, agora, timezone)
   ).length
   const bloqueadas = tarefas.filter((t) => STATUS_BLOQUEADAS.has(t.status)).length
 

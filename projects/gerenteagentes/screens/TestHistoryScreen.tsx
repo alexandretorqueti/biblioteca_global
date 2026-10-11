@@ -2,14 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import { Alert, Box, Chip, CircularProgress, Collapse, IconButton, Paper, Stack, Table, TableBody, TableCell, TableHead, TableRow, Typography } from "@mui/material"
 import { KeyboardArrowDown, KeyboardArrowUp } from "@mui/icons-material"
 import { useApi } from "../../../apps/web/src/hooks/useApi"
-
-function hojeISO(): string {
-  const d = new Date()
-  const yyyy = d.getFullYear()
-  const mm = String(d.getMonth() + 1).padStart(2, "0")
-  const dd = String(d.getDate()).padStart(2, "0")
-  return `${yyyy}-${mm}-${dd}`
-}
+import { DEFAULT_TIMEZONE, formatarDataHora, hojeNoFuso, resolveTimezone } from "../src/shared/timezone"
 
 export const componentId = "gerenteagentes-test-history"
 
@@ -42,12 +35,12 @@ type TestRun = {
 const classificationColor = (value: Failure["classification"]): "error" | "warning" | "success" | "default" =>
   value === "new" || value === "worsened" ? "error" : value === "pre_existing" ? "warning" : value === "resolved" ? "success" : "default"
 
-function RunRow({ run }: { run: TestRun }): ReactNode {
+function RunRow({ run, timezone }: { run: TestRun; timezone?: string }): ReactNode {
   const [open, setOpen] = useState(false)
   return <>
     <TableRow hover>
       <TableCell><IconButton size="small" onClick={() => setOpen(value => !value)} aria-label="Detalhar execução">{open ? <KeyboardArrowUp /> : <KeyboardArrowDown />}</IconButton></TableCell>
-      <TableCell>{new Date(run.started_at).toLocaleString("pt-BR")}</TableCell>
+      <TableCell>{formatarDataHora(run.started_at, timezone)}</TableCell>
       <TableCell>{run.projeto_nome ?? "—"}</TableCell>
       <TableCell>{run.tarefa_titulo ?? "—"}</TableCell>
       <TableCell><Chip size="small" label={run.phase} /></TableCell>
@@ -72,7 +65,8 @@ function RunRow({ run }: { run: TestRun }): ReactNode {
 
 export default function TestHistoryScreen(): ReactNode {
   const api = useApi()
-  const [dataSelecionada, setDataSelecionada] = useState(hojeISO)
+  const [timezone, setTimezone] = useState<string>(DEFAULT_TIMEZONE)
+  const [dataSelecionada, setDataSelecionada] = useState(() => hojeNoFuso(DEFAULT_TIMEZONE))
   const [runs, setRuns] = useState<TestRun[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -91,6 +85,17 @@ export default function TestHistoryScreen(): ReactNode {
       inconclusive: latest.filter(run => run.comparison_status === "inconclusive").length,
     }
   }, [runs])
+  // Carrega o fuso horário efetivo ao montar
+  useEffect(() => {
+    if (!api) return
+    void api.http.request<{ timezone: string; persistido: boolean }>("GET", "/gerenteagentes/timezone", { auth: "access" })
+      .then(result => {
+        const tz = resolveTimezone(result?.timezone)
+        setTimezone(tz)
+        setDataSelecionada(hojeNoFuso(tz))
+      })
+      .catch(() => { /* mantém o padrão */ })
+  }, [api])
   const carregar = useCallback(() => {
     if (!api) return
     setLoading(true)
@@ -129,7 +134,7 @@ export default function TestHistoryScreen(): ReactNode {
     {error && <Alert severity="error">{error}</Alert>}
     <Paper variant="outlined" sx={{ overflow: "auto" }}>
       {loading ? <Box sx={{ display: "grid", placeItems: "center", p: 5 }}><CircularProgress /></Box> : runs.length === 0 ? <Typography sx={{ p: 3 }} color="text.secondary">Nenhuma execução registrada para a data selecionada.</Typography> :
-        <Table size="small"><TableHead><TableRow><TableCell /><TableCell>Início</TableCell><TableCell>Projeto</TableCell><TableCell>Tarefa</TableCell><TableCell>Fase</TableCell><TableCell>Status</TableCell><TableCell>Comparação</TableCell><TableCell>Passou / falhou</TableCell><TableCell>Commit</TableCell></TableRow></TableHead><TableBody>{runs.map(run => <RunRow key={run.id} run={run} />)}</TableBody></Table>}
+        <Table size="small"><TableHead><TableRow><TableCell /><TableCell>Início</TableCell><TableCell>Projeto</TableCell><TableCell>Tarefa</TableCell><TableCell>Fase</TableCell><TableCell>Status</TableCell><TableCell>Comparação</TableCell><TableCell>Passou / falhou</TableCell><TableCell>Commit</TableCell></TableRow></TableHead><TableBody>{runs.map(run => <RunRow key={run.id} run={run} timezone={timezone} />)}</TableBody></Table>}
     </Paper>
     <Typography variant="body2" color="text.secondary">
       Testes exibidos: {runs.length}; Total de testes do filtro: {total}

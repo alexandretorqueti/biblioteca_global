@@ -5,6 +5,7 @@ import {
 } from "@mui/material"
 import { PreviewRounded, PublishRounded, SaveRounded, RestoreRounded } from "@mui/icons-material"
 import { useApi } from "../../../apps/web/src/hooks/useApi"
+import { DEFAULT_TIMEZONE, formatarDataHora, resolveTimezone } from "../src/shared/timezone"
 
 export const componentId = "gerenteagentes-prompts"
 
@@ -37,6 +38,7 @@ export default function PromptsScreen(): ReactNode {
   const [contractSchema, setContractSchema] = useState("")
   const [contractExample, setContractExample] = useState("")
   const [contractInstructions, setContractInstructions] = useState("")
+  const [timezone, setTimezone] = useState<string>(DEFAULT_TIMEZONE)
 
   const selected = useMemo(() => catalog.prompts.find((prompt) => prompt.id === selectedId) ?? null, [catalog, selectedId])
   const masks = useMemo(() => catalog.masks.filter((mask) => selected?.allowedMarkers.includes(mask.nome)), [catalog, selected])
@@ -59,6 +61,12 @@ export default function PromptsScreen(): ReactNode {
   }, [api, selectedId])
 
   useEffect(() => { void load() }, [api])
+  useEffect(() => {
+    if (!api) return
+    void api.http.request<{ timezone: string; persistido: boolean }>("GET", "/gerenteagentes/timezone", { auth: "access" })
+      .then(result => setTimezone(resolveTimezone(result?.timezone)))
+      .catch(() => { /* mantém o padrão */ })
+  }, [api])
 
   const choose = (prompt: Prompt) => {
     setSelectedId(prompt.id)
@@ -135,7 +143,7 @@ export default function PromptsScreen(): ReactNode {
           <Stack direction="row" spacing={1}><Button variant="contained" startIcon={<SaveRounded />} disabled={busy || !text.trim()} onClick={() => void save()}>Salvar rascunho</Button><Button startIcon={<PreviewRounded />} disabled={busy || !text.trim()} onClick={() => void renderPreview()}>Pré-visualizar</Button></Stack>
         </Stack></Paper>
         {preview && <Paper variant="outlined" sx={{ p: 2 }}><Stack spacing={2}><Box><Typography variant="subtitle1" fontWeight={700}>Prompt final efetivamente enviado</Typography><Typography variant="body2" color="text.secondary">Inclui as regras fixas do Motor, o texto da tabela e o contrato de saída selecionado.</Typography></Box>{previewParts.map((part, index) => <Box key={`${part.source}-${index}`} sx={{ border: 1, borderColor: "divider", borderRadius: 1, p: 1.5 }}><Chip size="small" label={`${part.source.toUpperCase()} · ${part.label}`} color={part.source === "system" ? "warning" : part.source === "table" ? "primary" : "default"} sx={{ mb: 1 }} /><Box component="pre" sx={{ m: 0, whiteSpace: "pre-wrap", overflow: "auto" }}>{part.text}</Box></Box>)}</Stack></Paper>}
-        <Paper variant="outlined" sx={{ p: 2 }}><Typography variant="h6">Histórico de versões</Typography><Stack divider={<Divider />} spacing={1}>{selected?.versions.map((version) => <Box key={version.id} sx={{ py: 1 }}><Stack direction="row" justifyContent="space-between" alignItems="center"><Box><Typography fontWeight={600}>Versão {version.versao}{version.id === selected.versaoAtivaId ? " · ativa" : ""}</Typography><Typography variant="caption">{version.autor || "sistema"} · {new Date(version.createdAt).toLocaleString("pt-BR")}</Typography></Box><Stack direction="row"><Button size="small" onClick={() => setText(version.texto)}>Carregar</Button>{version.id === selected.versaoAtivaId ? null : <Button size="small" startIcon={selected.versaoAtivaId ? <RestoreRounded /> : <PublishRounded />} onClick={() => void publish(version.id, Boolean(selected.versaoAtivaId))}>{selected.versaoAtivaId ? "Restaurar" : "Publicar"}</Button>}</Stack></Stack></Box>)}</Stack></Paper>
+        <Paper variant="outlined" sx={{ p: 2 }}><Typography variant="h6">Histórico de versões</Typography><Stack divider={<Divider />} spacing={1}>{selected?.versions.map((version) => <Box key={version.id} sx={{ py: 1 }}><Stack direction="row" justifyContent="space-between" alignItems="center"><Box><Typography fontWeight={600}>Versão {version.versao}{version.id === selected.versaoAtivaId ? " · ativa" : ""}</Typography><Typography variant="caption">{version.autor || "sistema"} · {formatarDataHora(version.createdAt, timezone)}</Typography></Box><Stack direction="row"><Button size="small" onClick={() => setText(version.texto)}>Carregar</Button>{version.id === selected.versaoAtivaId ? null : <Button size="small" startIcon={selected.versaoAtivaId ? <RestoreRounded /> : <PublishRounded />} onClick={() => void publish(version.id, Boolean(selected.versaoAtivaId))}>{selected.versaoAtivaId ? "Restaurar" : "Publicar"}</Button>}</Stack></Stack></Box>)}</Stack></Paper>
       </Stack>
       <Paper variant="outlined" sx={{ p: 2 }}><Typography variant="h6">Máscaras disponíveis</Typography><Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>Clique para inserir no cursor.</Typography><Stack spacing={1}>{masks.map((mask) => <Box key={mask.id}><Button size="small" variant="outlined" onClick={() => setText((current) => current + mask.nome)}>{mask.nome}</Button><Typography variant="caption" display="block">{mask.descricao}</Typography></Box>)}</Stack></Paper>
     </Box>

@@ -5,6 +5,7 @@ import {
 } from "@mui/material"
 import { ExpandLessRounded, ExpandMoreRounded, RadioButtonCheckedRounded } from "@mui/icons-material"
 import type { OperationalFeedItem, OperationalFeedMessage, OperationalPendingAction } from "../api/operational-feed"
+import { DEFAULT_TIMEZONE, formatarDataHora } from "../src/shared/timezone"
 
 export type FeedConnection = "connecting" | "open" | "closed"
 export type FeedCategory = "all" | "message" | "event" | "pending_action"
@@ -14,6 +15,8 @@ interface OperationalFeedPanelProps {
   connection: FeedConnection
   recovered: boolean
   onSelectTask: (taskId: number) => void
+  /** Fuso horário IANA para formatação de datas (padrão: America/Sao_Paulo) */
+  timezone?: string
 }
 
 const stateLabel: Record<string, string> = {
@@ -22,9 +25,9 @@ const stateLabel: Record<string, string> = {
   blocked: "bloqueada", completed: "concluída", closed: "encerrada", cancelled: "cancelada",
 }
 const categoryLabel: Record<FeedCategory, string> = { all: "Tudo", message: "Mensagens", event: "Atividades", pending_action: "Pendências" }
-const dateLabel = (value: string) => {
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? "horário indisponível" : date.toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })
+const dateLabel = (value: string, timezone?: string) => {
+  const formatted = formatarDataHora(value, timezone, { dateStyle: "short", timeStyle: "short" } as Intl.DateTimeFormatOptions)
+  return formatted || "horário indisponível"
 }
 const statusColor = (state: string): "default" | "success" | "warning" | "error" | "info" => {
   if (["failed", "blocked"].includes(state)) return "error"
@@ -39,7 +42,7 @@ const itemDescription = (item: OperationalFeedItem) => {
   return item.description || item.reason || `Atividade: ${item.event}`
 }
 
-function FeedItem({ item, onSelectTask }: { item: OperationalFeedItem; onSelectTask: (taskId: number) => void }) {
+function FeedItem({ item, onSelectTask, timezone }: { item: OperationalFeedItem; onSelectTask: (taskId: number) => void; timezone?: string }) {
   const state = itemState(item)
   const eventLabel = item.type === "message" ? `Mensagem ${stateLabel[item.state] ?? item.state}` : item.type === "pending_action" ? item.actionType : item.event
   const title = item.taskTitle?.trim() || eventLabel
@@ -53,12 +56,12 @@ function FeedItem({ item, onSelectTask }: { item: OperationalFeedItem; onSelectT
         <Typography variant="caption" color="text.secondary" noWrap display="block">{eventLabel} · Tarefa #{item.taskId} · {item.agentId || "Motor"}</Typography>
         <Typography variant="body2" sx={{ mt: .25, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{itemDescription(item)}</Typography>
       </Box>
-      <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: "nowrap" }}>{dateLabel(item.occurredAt)}</Typography>
+      <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: "nowrap" }}>{dateLabel(item.occurredAt, timezone)}</Typography>
     </Stack>
   </Paper>
 }
 
-export default function OperationalFeedPanel({ items, connection, recovered, onSelectTask }: OperationalFeedPanelProps) {
+export default function OperationalFeedPanel({ items, connection, recovered, onSelectTask, timezone }: OperationalFeedPanelProps) {
   const [collapsed, setCollapsed] = useState(false)
   const [category, setCategory] = useState<FeedCategory>("all")
   const [state, setState] = useState("all")
@@ -83,8 +86,8 @@ export default function OperationalFeedPanel({ items, connection, recovered, onS
         <Typography variant="caption" color="text.secondary" sx={{ alignSelf: "center" }}>{items.filter(item => item.type === "message").length} mensagens · {items.filter(item => item.type === "event").length} atividades · {pending.length} pendências</Typography>
       </Stack>
       <Stack direction={{ xs: "column", lg: "row" }} spacing={1.5} sx={{ px: 1.5, pb: 1.5 }}>
-        <Box sx={{ flex: 1, minWidth: 0 }}><Typography variant="overline" color="text.secondary">Linha do tempo</Typography><Stack spacing={.75} sx={{ maxHeight: 250, overflow: "auto", pr: .25 }}>{visible.filter(item => item.type !== "pending_action").map(item => <FeedItem key={item.id} item={item} onSelectTask={onSelectTask} />)}{!visible.some(item => item.type !== "pending_action") && <Typography variant="body2" color="text.secondary" sx={{ py: 2 }}>Nenhuma mensagem ou atividade para estes filtros.</Typography>}</Stack></Box>
-        <Box sx={{ width: { xs: "100%", lg: "38%" }, minWidth: 0, borderLeft: { lg: "1px solid" }, borderColor: "divider", pl: { lg: 1.5 } }}><Typography variant="overline" color="warning.main">Ações pendentes</Typography><Stack spacing={.75} sx={{ maxHeight: 250, overflow: "auto", pr: .25 }}>{(category === "all" || category === "pending_action" ? visiblePending : []).map(item => <FeedItem key={item.id} item={item} onSelectTask={onSelectTask} />)}{!visiblePending.length && <Typography variant="body2" color="text.secondary" sx={{ py: 2 }}>Nenhuma ação pendente.</Typography>}</Stack></Box>
+        <Box sx={{ flex: 1, minWidth: 0 }}><Typography variant="overline" color="text.secondary">Linha do tempo</Typography><Stack spacing={.75} sx={{ maxHeight: 250, overflow: "auto", pr: .25 }}>{visible.filter(item => item.type !== "pending_action").map(item => <FeedItem key={item.id} item={item} onSelectTask={onSelectTask} timezone={timezone} />)}{!visible.some(item => item.type !== "pending_action") && <Typography variant="body2" color="text.secondary" sx={{ py: 2 }}>Nenhuma mensagem ou atividade para estes filtros.</Typography>}</Stack></Box>
+        <Box sx={{ width: { xs: "100%", lg: "38%" }, minWidth: 0, borderLeft: { lg: "1px solid" }, borderColor: "divider", pl: { lg: 1.5 } }}><Typography variant="overline" color="warning.main">Ações pendentes</Typography><Stack spacing={.75} sx={{ maxHeight: 250, overflow: "auto", pr: .25 }}>{(category === "all" || category === "pending_action" ? visiblePending : []).map(item => <FeedItem key={item.id} item={item} onSelectTask={onSelectTask} timezone={timezone} />)}{!visiblePending.length && <Typography variant="body2" color="text.secondary" sx={{ py: 2 }}>Nenhuma ação pendente.</Typography>}</Stack></Box>
       </Stack>
     </Collapse>
   </Paper>

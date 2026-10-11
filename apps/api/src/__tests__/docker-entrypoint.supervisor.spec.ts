@@ -6,6 +6,13 @@ import { tmpdir } from "node:os"
 import { resolve } from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 
+/** Coleta stderr de um ChildProcess em memória. */
+function collectStderr(child: ChildProcess): { readonly text: string } {
+  const buffer: string[] = []
+  child.stderr?.on("data", (chunk: Buffer) => buffer.push(chunk.toString()))
+  return { get text() { return buffer.join("") } }
+}
+
 const apiDirectory = resolve(__dirname, "../..")
 const entrypoint = resolve(apiDirectory, "docker-entrypoint.sh")
 const repository = resolve(apiDirectory, "../..")
@@ -113,6 +120,117 @@ afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { force: true, recursive: true })))
 })
 
+/** Número de falhas simuladas para db:migrate:gerenteagentes (ajustado por teste). */
+let failCount = 0
+
+/**
+ * Cria fixture com mock de npm que falha controladamente para
+ * db:migrate:gerenteagentes. Usa arquivo contador para determinar
+ * quantas falhas produzir antes de succeeding.
+ */
+async function createMigrateFixture(failCount: number) {
+  const temporaryDirectory = await mkdtemp(resolve(tmpdir(), "api-migrate-"))
+  temporaryDirectories.push(temporaryDirectory)
+  const bin = resolve(temporaryDirectory, "bin")
+  const events = resolve(temporaryDirectory, "events.log")
+  const motorPid = resolve(temporaryDirectory, "motor.pid")
+  const migrateCount = resolve(temporaryDirectory, "migrate.count")
+  const repository = resolve(temporaryDirectory, "repository")
+  const sshDirectory = resolve(temporaryDirectory, "ssh")
+  await mkdir(bin)
+  await mkdir(resolve(repository, "apps/api"), { recursive: true })
+  await mkdir(resolve(repository, "projects/gerenteagentes/motor-v3"), { recursive: true })
+  await writeFile(resolve(repository, "package.json"), "{}\n")
+  await writeFile(
+    resolve(repository, "apps/api/serveria_known_hosts"),
+    await readFile(resolve(apiDirectory, "serveria_known_hosts"), "utf8"),
+  )
+
+  const writeExecutable = async (name: string, content: string) => {
+    const path = resolve(bin, name)
+    await writeFile(path, content)
+    await chmod(path, 0o755)
+  }
+
+  // npm mock: falha para db:migrate:gerenteagentes até failCount chamadas;
+  // demais comandos (db:migrate global, db:bootstrap, etc.) sempre succeedem.
+  await writeExecutable(
+    "npm",
+    `#!/bin/sh
+case "$*" in
+  "run db:migrate:gerenteagentes")
+    count=0
+    if [ -f "$ENTRYPOINT_TEST_MIGRATE_COUNT" ]; then
+      count=$(cat "$ENTRYPOINT_TEST_MIGRATE_COUNT")
+    fi
+    count=$((count + 1))
+    printf '%s' "$count" > "$ENTRYPOINT_TEST_MIGRATE_COUNT"
+    if [ "$count" -le "$ENTRYPOINT_TEST_MIGRATE_FAIL_COUNT" ]; then
+      echo "Error: ER_PARSE_ERROR (1064)" >&2
+      echo "  You have an error in your SQL syntax; check the manual" >&2
+      echo "  at line 42: CREATE TABLE sem statement-breakpoint" >&2
+      echo "  at file: 0082_postdeploy_verifications.sql" >&2
+      exit 1
+    fi
+    echo "migrate-gerenteagentes-ok" >> "$ENTRYPOINT_TEST_EVENTS"
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+  )
+  await writeFile(migrateCount, "0")
+
+  await writeExecutable("git", "#!/bin/sh\nexit 0\n")
+  await writeExecutable(
+    "ssh-keyscan",
+    `#!/bin/sh
+printf '%s\\n' 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDOMecXLXUjZfcJAtEaykBerYEqxwDfGvdP8jd0kVaUP'
+`,
+  )
+  await writeExecutable(
+    "node",
+    `#!/bin/sh
+if [ "$1" = "projects/gerenteagentes/motor-v3/dist/start.js" ]; then
+  echo "motor-started" >> "$ENTRYPOINT_TEST_EVENTS"
+  echo "$$" > "$ENTRYPOINT_TEST_MOTOR_PID"
+  trap 'echo "motor-terminated" >> "$ENTRYPOINT_TEST_EVENTS"; exit 0' TERM INT
+  while :; do sleep 0.05; done
+fi
+echo "api-started" >> "$ENTRYPOINT_TEST_EVENTS"
+trap 'echo "api-terminated" >> "$ENTRYPOINT_TEST_EVENTS"; exit 0' TERM INT
+while :; do sleep 0.05; done
+`,
+  )
+
+  return { events, migrateCount, motorPid, repository, sshDirectory, temporaryDirectory }
+}
+
+function startEntrypointMigrate(fixture: Awaited<ReturnType<typeof createMigrateFixture>>) {
+  const child = spawn("sh", [entrypoint], {
+    cwd: repository,
+    env: {
+      ...process.env,
+      ENTRYPOINT_TEST_EVENTS: fixture.events,
+      ENTRYPOINT_TEST_MIGRATE_COUNT: fixture.migrateCount,
+      ENTRYPOINT_TEST_MIGRATE_FAIL_COUNT: String(failCount),
+      ENTRYPOINT_TEST_MOTOR_MODE: "running",
+      ENTRYPOINT_TEST_MOTOR_PID: fixture.motorPid,
+      ENTRYPOINT_MIGRATE_MAX_ATTEMPTS: "3",
+      ENTRYPOINT_MIGRATE_SLEEP_SECONDS: "0",
+      MOTOR_VERSION: "v3",
+      MOTOR_WORKTREE_ROOT: resolve(fixture.temporaryDirectory, "worktrees"),
+      ENTRYPOINT_SSH_DIRECTORY: fixture.sshDirectory,
+      PATH: `${resolve(fixture.temporaryDirectory, "bin")}:${process.env.PATH}`,
+      REPO_PATH: fixture.repository,
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  })
+  return child
+}
+
 describe("supervisor do docker-entrypoint para motor-v3", () => {
   it("prepara github.com em background sem atrasar o boot da API", async () => {
     const fixture = await createFixture()
@@ -176,4 +294,70 @@ describe("supervisor do docker-entrypoint para motor-v3", () => {
     await waitForFile(fixture.events, "api-terminated")
     await waitForFile(fixture.events, "motor-terminated")
   }, 10_000)
+})
+
+describe("entrypoint: visibilidade de erro SQL no db:migrate:gerenteagentes", () => {
+  it("exibe o erro SQL completo no stderr na primeira falha e recupera em tentativa posterior", async () => {
+    failCount = 1
+    const fixture = await createMigrateFixture(failCount)
+    const child = startEntrypointMigrate(fixture)
+    const stderr = collectStderr(child)
+
+    // Aguarda a API subir — significa que o migrate eventualmente succeeded
+    await waitForFile(fixture.events, "api-started")
+
+    // O erro SQL deve aparecer no stderr (visível na primeira falha)
+    expect(stderr.text).toContain("ER_PARSE_ERROR")
+    expect(stderr.text).toContain("0082_postdeploy_verifications.sql")
+    expect(stderr.text).toContain("falhou (tentativa 1/")
+    expect(stderr.text).toContain("saída do comando")
+
+    // O contador deve ter sido incrementado (tentativa 1 falhou, 2 succeeded)
+    const finalCount = Number((await readFile(fixture.migrateCount, "utf8")).trim())
+    expect(finalCount).toBe(2)
+
+    child.kill("SIGTERM")
+    await exits(child)
+  }, 15_000)
+
+  it("esgota as tentativas e encerra com código 1 mantendo o erro visível", async () => {
+    failCount = 99 // Sempre falha; max attempts = 3
+    const fixture = await createMigrateFixture(failCount)
+    const child = startEntrypointMigrate(fixture)
+    const stderr = collectStderr(child)
+
+    const result = await exits(child)
+    expect(result.code).toBe(1)
+
+    // Todas as 3 tentativas devem ter registrado erro SQL no stderr
+    expect(stderr.text).toContain("ER_PARSE_ERROR")
+    expect(stderr.text).toContain("tentativa 1/3")
+    expect(stderr.text).toContain("tentativa 2/3")
+    expect(stderr.text).toContain("tentativa 3/3")
+    expect(stderr.text).toContain("indisponível após 3 tentativas")
+
+    // A API não deve ter subido
+    const eventsContent = await readFile(fixture.events, "utf8").catch(() => "")
+    expect(eventsContent).not.toContain("api-started")
+  }, 15_000)
+
+  it("succeede na primeira tentativa sem produzir saída de erro", async () => {
+    failCount = 0
+    const fixture = await createMigrateFixture(failCount)
+    const child = startEntrypointMigrate(fixture)
+    const stderr = collectStderr(child)
+
+    await waitForFile(fixture.events, "api-started")
+
+    // Nenhuma mensagem de falha no stderr
+    expect(stderr.text).not.toContain("ER_PARSE_ERROR")
+    expect(stderr.text).not.toContain("falhou")
+
+    // Contador = 1 (succeede na primeira)
+    const finalCount = Number((await readFile(fixture.migrateCount, "utf8")).trim())
+    expect(finalCount).toBe(1)
+
+    child.kill("SIGTERM")
+    await exits(child)
+  }, 15_000)
 })

@@ -1,3 +1,5 @@
+import { DEFAULT_TIMEZONE, isValidTimezone } from "../src/shared/timezone"
+
 export type MotorConfiguracaoTipo = "number" | "string" | "boolean"
 
 export type MotorConfiguracaoValor = number | string | boolean
@@ -47,6 +49,7 @@ export const MOTOR_CONFIGURACOES: readonly MotorConfiguracaoDefinicao[] = [
   { chave: "motor.baseline_confirmation_timeout_ms", tipo: "number", valorPadrao: 300000, regraValidacao: "inteiro entre 10000 e 3600000", descricao: "Tempo máximo para confirmar o baseline.", validar: (v) => inteiroPositivo(v, 3600000) && v >= 10000 },
   { chave: "motor.build_test_timeout_ms", tipo: "number", valorPadrao: 300000, regraValidacao: "inteiro entre 60000 e 3600000", descricao: "Tempo máximo para execução de build e testes unitários.", validar: (v) => inteiroPositivo(v, 3600000) && v >= 60000 },
   { chave: "motor.session_history_page_size", tipo: "number", valorPadrao: 50, regraValidacao: "inteiro entre 1 e 500", descricao: "Número de linhas do histórico de sessão carregadas por página.", validar: (v) => inteiroPositivo(v, 500) },
+  { chave: "motor.timezone", tipo: "string", valorPadrao: DEFAULT_TIMEZONE, regraValidacao: "identificador IANA de fuso horário", descricao: "Fuso horário usado para apresentação de datas e regras de calendário nas telas operacionais. Padrão: America/Sao_Paulo.", validar: isValidTimezone },
 ]
 
 export function configuracaoPorChave(chave: string): MotorConfiguracaoDefinicao | undefined {

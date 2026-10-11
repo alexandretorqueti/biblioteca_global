@@ -101,16 +101,33 @@ done
 # antes de iniciar o Motor/API; não depende de alguém abrir a tela Prompts.
 # Retry: protege contra falhas transitórias (ex.: lock-wait InnoDB durante
 # blue-green deploy). Espelho do padrão db:migrate global acima.
+#
+# Captura de saída: o drizzle-kit CLI em non-TTY (container sem pseudo-terminal)
+# engole a mensagem de erro SQL — o log mostra apenas "falhou (tentativa N/30)"
+# e o operador fica sem diagnóstico. Referência: incidente 2026-10-09/10
+# (migration 0082 sem statement-breakpoint, três deploys em cascata).
+# A saída real (stdout+stderr) é capturada em arquivo temporário e despejada
+# no stderr do container a cada falha, garantindo visibilidade imediata.
+MIGRATE_MAX_ATTEMPTS="${ENTRYPOINT_MIGRATE_MAX_ATTEMPTS:-30}"
+MIGRATE_SLEEP="${ENTRYPOINT_MIGRATE_SLEEP_SECONDS:-2}"
+migrate_output=$(mktemp)
+trap 'rm -f "$migrate_output"' EXIT
+
 attempt=0
-until npm run db:migrate:gerenteagentes; do
+until npm run db:migrate:gerenteagentes >"$migrate_output" 2>&1; do
   attempt=$((attempt + 1))
-  if [ "$attempt" -ge 30 ]; then
-    echo "[entrypoint] db:migrate:gerenteagentes indisponível após 30 tentativas" >&2
+  echo "[entrypoint] db:migrate:gerenteagentes falhou (tentativa $attempt/$MIGRATE_MAX_ATTEMPTS) — saída do comando:" >&2
+  cat "$migrate_output" >&2
+  if [ "$attempt" -ge "$MIGRATE_MAX_ATTEMPTS" ]; then
+    echo "[entrypoint] db:migrate:gerenteagentes indisponível após $MIGRATE_MAX_ATTEMPTS tentativas" >&2
     exit 1
   fi
-  echo "[entrypoint] db:migrate:gerenteagentes falhou (tentativa $attempt/30); nova tentativa em 2s" >&2
-  sleep 2
+  echo "[entrypoint] nova tentativa em ${MIGRATE_SLEEP}s..." >&2
+  sleep "$MIGRATE_SLEEP"
+  : > "$migrate_output"
 done
+rm -f "$migrate_output"
+trap - EXIT
 
 # Bootstrap: seed de prompts canônicos. Depende do banco disponível (mesmo
 # perfil de falha transitória que a migration). Protegido com o mesmo padrão

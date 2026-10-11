@@ -25,6 +25,7 @@ import {
 } from "@mui/icons-material"
 import { SimpleTreeView, TreeItem } from "@mui/x-tree-view"
 import { useApi } from "../../../apps/web/src/hooks/useApi"
+import { DEFAULT_TIMEZONE, formatarDataHora, resolveTimezone } from "../src/shared/timezone"
 import DiffViewer, { parsePatchToOldNew } from "./DiffViewer"
 import ConflictViewer, { type MergeSimulationResult } from "./ConflictViewer"
 
@@ -166,18 +167,14 @@ function fileStatusColor(status: string): "success" | "error" | "warning" | "def
   }
 }
 
-function formatDate(iso: string): string {
-  try {
-    return new Date(iso).toLocaleString("pt-BR", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    })
-  } catch {
-    return iso
-  }
+function formatDate(iso: string, timezone?: string): string {
+  return formatarDataHora(iso, timezone, {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }) || iso
 }
 
 // ─── Componente principal ───────────────────────────────────────────────────
@@ -191,6 +188,15 @@ export default function TaskCodeViewer({
   persistedConflictData,
 }: TaskCodeViewerProps) {
   const bundle = useApi()
+  const [timezone, setTimezone] = useState<string>(DEFAULT_TIMEZONE)
+
+  // Carrega o fuso horário efetivo ao montar
+  useEffect(() => {
+    if (!bundle) return
+    void bundle.http.request<{ timezone: string; persistido: boolean }>("GET", "/gerenteagentes/timezone", { auth: "access" })
+      .then(result => setTimezone(resolveTimezone(result?.timezone)))
+      .catch(() => { /* mantém o padrão */ })
+  }, [bundle])
 
   // Estado dos dados
   const [treeEntries, setTreeEntries] = useState<GitTreeEntry[]>([])
@@ -550,7 +556,7 @@ export default function TaskCodeViewer({
                       {commit.shortHash}
                     </Typography>
                     <Typography variant="caption" color="text.secondary" sx={{ ml: "auto", fontSize: "0.6rem" }}>
-                      {formatDate(commit.date)}
+                      {formatDate(commit.date, timezone)}
                     </Typography>
                   </Stack>
                   <Typography variant="body2" noWrap sx={{ fontSize: "0.75rem" }}>
