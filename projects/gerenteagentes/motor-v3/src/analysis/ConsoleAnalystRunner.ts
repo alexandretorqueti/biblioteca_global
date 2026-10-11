@@ -3,6 +3,7 @@ import type { AnalysisRunner, TaskSnapshot } from '../coordinator/TaskCoordinato
 import type { GovernedFailureHandler } from '../governance/GovernedFailureHandler.js'
 import { parseAnalystReply, type AnalysisOutcome } from './AnalystReply.js'
 import {
+  buildAnalysisAcknowledgementCorrection,
   buildAnalysisContextConfirmation,
   buildAnalysisContextMessage,
   buildAnalysisDescriptionReference,
@@ -261,9 +262,16 @@ export class ConsoleAnalystRunner implements AnalysisRunner {
   private async sendDescriptionContext(session: AnalystSession, task: TaskSnapshot, chunks: readonly string[], send: (phase: string, message: string) => Promise<void>, wait: (phase: string) => Promise<string>): Promise<void> {
     for (const [index, chunk] of chunks.entries()) {
       await send('context', buildAnalysisContextMessage(chunk, index, chunks.length))
-      const acknowledgement = await wait('context_acknowledgement')
+      let acknowledgement = await wait('context_acknowledgement')
       if (!isContextAcknowledgement(acknowledgement)) {
-        throw new Error(`Analista não confirmou o bloco ${index + 1}/${chunks.length}: resposta recebida: ${acknowledgement.slice(0, 200) || '(vazia)'}`)
+        // Modelos mais fracos podem antecipar a análise já no bloco de contexto
+        // (incidente task-p2-984/attempt-3). Uma única correção de protocolo na
+        // mesma sessão recupera a tentativa sem queimar o modelo inteiro.
+        await send('context_ack_correction', buildAnalysisAcknowledgementCorrection(index, chunks.length))
+        acknowledgement = await wait('context_acknowledgement_retry')
+        if (!isContextAcknowledgement(acknowledgement)) {
+          throw new Error(`Analista não confirmou o bloco ${index + 1}/${chunks.length}: resposta recebida: ${acknowledgement.slice(0, 200) || '(vazia)'}`)
+        }
       }
     }
   }
@@ -276,9 +284,13 @@ export class ConsoleAnalystRunner implements AnalysisRunner {
     }
     for (const [index, chunk] of chunks.entries()) {
       await send('prompt_context', buildAnalysisPromptBlock(chunk, index, chunks.length))
-      const acknowledgement = await wait('prompt_context_acknowledgement')
+      let acknowledgement = await wait('prompt_context_acknowledgement')
       if (!isContextAcknowledgement(acknowledgement)) {
-        throw new Error(`Analista não confirmou o bloco de instruções ${index + 1}/${chunks.length}: resposta recebida: ${acknowledgement.slice(0, 200) || '(vazia)'}`)
+        await send('prompt_context_ack_correction', buildAnalysisAcknowledgementCorrection(index, chunks.length))
+        acknowledgement = await wait('prompt_context_acknowledgement_retry')
+        if (!isContextAcknowledgement(acknowledgement)) {
+          throw new Error(`Analista não confirmou o bloco de instruções ${index + 1}/${chunks.length}: resposta recebida: ${acknowledgement.slice(0, 200) || '(vazia)'}`)
+        }
       }
     }
     await send('prompt', buildAnalysisPromptActivation(chunks.length))

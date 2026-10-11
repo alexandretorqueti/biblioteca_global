@@ -79,12 +79,22 @@ describe('ConsoleAnalystRunner — contexto em etapas', () => {
     ])
   })
 
-  it('não envia o prompt final quando a confirmação de um bloco é inválida', async () => {
-    const api = consoleWithResponses(['Entendi o contexto'])
+  it('não envia o prompt final quando a confirmação de um bloco é inválida mesmo após a correção', async () => {
+    const api = consoleWithResponses(['Entendi o contexto', 'Agora vou analisar'])
     const runner = new ConsoleAnalystRunner(api, { pollIntervalMs: 1 })
 
     await expect(runner.start(task('descrição'), 'execution-1')).rejects.toThrow('não confirmou o bloco 1/1')
-    expect(api.sendMessage).toHaveBeenCalledTimes(1)
+    expect(api.sendMessage).toHaveBeenCalledTimes(2)
+    expect(api.sendMessage.mock.calls[1]![0].message).toContain('[PROTOCOLO]')
+  })
+
+  it('recupera confirmação inválida com uma única correção de protocolo na mesma sessão', async () => {
+    const api = consoleWithResponses(['```json\n{ "subtarefas": [] }\n```', 'CONTEXTO_RECEBIDO', plan])
+    const runner = new ConsoleAnalystRunner(api, { pollIntervalMs: 1 })
+
+    await expect(runner.start(task('descrição'), 'execution-1')).resolves.toMatchObject({ kind: 'plan' })
+    expect(api.sendMessage).toHaveBeenCalledTimes(3)
+    expect(api.sendMessage.mock.calls[1]![0].message).toContain('[PROTOCOLO]')
   })
 
   it('envia prompt grande em blocos confirmados antes da ativação', async () => {
