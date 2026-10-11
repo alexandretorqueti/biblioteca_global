@@ -1,4 +1,5 @@
 import { configuracaoPorChave, MOTOR_CONFIGURACOES } from "../api/motor-configuracoes.catalog"
+import { DEFAULT_TIMEZONE } from "../src/shared/timezone"
 
 describe("catálogo de configurações do motor", () => {
   it("tem chaves únicas e defaults válidos", () => {
@@ -33,5 +34,33 @@ describe("catálogo de configurações do motor", () => {
       config.chave.startsWith("motor.") &&
       ["number", "string", "boolean"].includes(config.tipo),
     )).toBe(true)
+  })
+
+  describe("motor.timezone", () => {
+    it("existe no catálogo com padrão America/Sao_Paulo", () => {
+      const config = configuracaoPorChave("motor.timezone")!
+      expect(config).toBeDefined()
+      expect(config.chave).toBe("motor.timezone")
+      expect(config.tipo).toBe("string")
+      expect(config.valorPadrao).toBe(DEFAULT_TIMEZONE)
+      expect(config.regraValidacao).toContain("IANA")
+    })
+
+    it("aceita identificadores IANA válidos", () => {
+      const config = configuracaoPorChave("motor.timezone")!
+      expect(config.validar("America/Sao_Paulo")).toBe(true)
+      expect(config.validar("America/New_York")).toBe(true)
+      expect(config.validar("Europe/London")).toBe(true)
+      expect(config.validar("UTC")).toBe(true)
+    })
+
+    it("rejeita valores inválidos", () => {
+      const config = configuracaoPorChave("motor.timezone")!
+      expect(config.validar("")).toBe(false)
+      expect(config.validar("Invalid/Zone")).toBe(false)
+      expect(config.validar(42)).toBe(false)
+      expect(config.validar(null)).toBe(false)
+      expect(config.validar(undefined)).toBe(false)
+    })
   })
 })

@@ -220,6 +220,29 @@ export class GerenteAgentesService {
   }
 
   /**
+   * Retorna o fuso horário efetivo do sistema: valor persistido em
+   * `motor_configuracoes` (chave `motor.timezone`) ou o padrão
+   * `America/Sao_Paulo`. Leitura leve — uma única query filtrada por chave.
+   */
+  async obterTimezoneEfetivo(): Promise<{ timezone: string; persistido: boolean }> {
+    const definition = configuracaoPorChave('motor.timezone');
+    if (!definition) {
+      // Impossível em runtime normal (catálogo estático), mas seguro contra regressão.
+      return { timezone: 'America/Sao_Paulo', persistido: false };
+    }
+    const db = await this.dbDoMotor();
+    const [row] = await db
+      .select()
+      .from(motorConfiguracoes)
+      .where(eq(motorConfiguracoes.chave, 'motor.timezone'))
+      .limit(1);
+    if (row && definition.validar(row.valor)) {
+      return { timezone: row.valor as string, persistido: true };
+    }
+    return { timezone: definition.valorPadrao as string, persistido: false };
+  }
+
+  /**
    * Consulta o histórico persistido da sessão da subtarefa. A consulta não
    * depende da sessão remota ainda existir após a aprovação.
    */

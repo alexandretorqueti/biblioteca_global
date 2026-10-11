@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
-import { Alert, Box, Button, Chip, CircularProgress, Divider, FormControl, FormControlLabel, InputLabel, MenuItem, Paper, Select, Stack, Switch, Tab, Tabs, TextField, Typography } from "@mui/material"
+import { Autocomplete, Alert, Box, Button, Chip, CircularProgress, Divider, FormControl, FormControlLabel, InputLabel, MenuItem, Paper, Select, Stack, Switch, Tab, Tabs, TextField, Typography } from "@mui/material"
 import { AddRounded, ArrowDownwardRounded, ArrowUpwardRounded, DeleteRounded, SaveRounded } from "@mui/icons-material"
 import { useApi } from "../../../apps/web/src/hooks/useApi"
+import { getSupportedTimezones } from "../src/shared/timezone"
 
 export const componentId = "gerenteagentes-configuracoes"
 
@@ -352,9 +353,11 @@ export default function ConfiguracoesScreen(): ReactNode {
         {configuracoes.map((config) => {
           const bounds = limites(config.regraValidacao)
           const value = valores[config.chave]
-          return <Box key={config.chave} data-testid={`configuracao-${config.chave}`} sx={{ display: "grid", gap: 1, gridTemplateColumns: { xs: "1fr", md: "minmax(0, 1fr) 260px" }, alignItems: "center" }}>
+          const isTimezone = config.chave === "motor.timezone"
+          return <Box key={config.chave} data-testid={`configuracao-${config.chave}`} sx={{ display: "grid", gap: 1, gridTemplateColumns: { xs: "1fr", md: "minmax(0, 1fr) 320px" }, alignItems: "center" }}>
             <Box><Typography fontWeight={600}>{config.chave}</Typography><Typography variant="body2" color="text.secondary">{config.descricao}</Typography><Typography variant="caption" color="text.secondary">Padrão: {String(config.valorPadrao)} · Regra: {config.regraValidacao}{unidade(config.chave) ? ` · Unidade: ${unidade(config.chave)}` : ""}</Typography></Box>
-            {config.tipo === "boolean" ? <FormControlLabel control={<Switch data-testid={`config-input-${config.chave}`} checked={value === true} onChange={(event) => atualizar(config, event.target.checked)} disabled={!config.editavel || busy} />} label={value === true ? "Ativado" : "Desativado"} /> : <TextField data-testid={`config-input-${config.chave}`} label="Valor atual" type={config.tipo === "number" ? "number" : "text"} value={value ?? ""} onChange={(event) => atualizar(config, event.target.value)} inputProps={{ min: bounds.min, max: bounds.max, step: config.tipo === "number" ? 1 : undefined }} disabled={!config.editavel || busy} fullWidth />}
+            {config.tipo === "boolean" ? <FormControlLabel control={<Switch data-testid={`config-input-${config.chave}`} checked={value === true} onChange={(event) => atualizar(config, event.target.checked)} disabled={!config.editavel || busy} />} label={value === true ? "Ativado" : "Desativado"} /> : isTimezone ? <Autocomplete data-testid={`config-input-${config.chave}`} options={getSupportedTimezones()} value={typeof value === "string" ? value : ""} onChange={(_event, newValue) => atualizar(config, newValue ?? "")} disabled={!config.editavel || busy} size="small" renderInput={(params) => <TextField {...params} label="Fuso horário" placeholder="Selecione um fuso IANA" fullWidth />} />
+            : <TextField data-testid={`config-input-${config.chave}`} label="Valor atual" type={config.tipo === "number" ? "number" : "text"} value={value ?? ""} onChange={(event) => atualizar(config, event.target.value)} inputProps={{ min: bounds.min, max: bounds.max, step: config.tipo === "number" ? 1 : undefined }} disabled={!config.editavel || busy} fullWidth />}
           </Box>
         })}
         <Button variant="contained" startIcon={<SaveRounded />} onClick={() => void salvar()} disabled={busy || configuracoes.length === 0} data-testid="configuracoes-save">Salvar configurações</Button>
