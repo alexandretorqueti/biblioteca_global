@@ -147,6 +147,26 @@ export const motorEventLog = mysqlTable('motor_event_log', {
   createdAt: timestamp('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
 })
 
+/** Outbox compartilhado com a API para eventos realtime do Mapa. */
+export const realtimeEventOutbox = mysqlTable('realtime_event_outbox', {
+  id: bigint('id', { mode: 'number', unsigned: true }).primaryKey().autoincrement(),
+  eventId: varchar('event_id', { length: 36 }).notNull().unique(),
+  taskId: bigint('task_id', { mode: 'number', unsigned: true }).notNull(),
+  sourceTaskId: varchar('source_task_id', { length: 64 }),
+  projectId: bigint('project_id', { mode: 'number', unsigned: true }).notNull(),
+  subtaskId: bigint('subtask_id', { mode: 'number', unsigned: true }),
+  type: varchar('type', { length: 100 }).notNull(),
+  previousStatus: varchar('previous_status', { length: 40 }),
+  status: varchar('status', { length: 40 }),
+  payload: json('payload').notNull(),
+  perTaskSeq: bigint('per_task_seq', { mode: 'number', unsigned: true }).notNull(),
+  deliveryStatus: mysqlEnum('delivery_status', ['pending', 'published', 'failed']).notNull().default('pending'),
+  attempts: int('attempts').notNull().default(0),
+  lastError: text('last_error'),
+  createdAt: timestamp('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
+  publishedAt: timestamp('published_at'),
+})
+
 // ============================================================
 // motor_model_cooldown — herdada do v2 (cooldown global de modelos)
 // ============================================================

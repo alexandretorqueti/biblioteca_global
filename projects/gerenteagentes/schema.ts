@@ -412,6 +412,33 @@ export const motorOutbox = mysqlTable("motor_outbox", {
   updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
 })
 
+/**
+ * Outbox do contrato realtime. Não é o motor_outbox: este registro precisa
+ * preservar a ordenação por tarefa e o mesmo event_id em cada reenvio.
+ */
+export const realtimeEventOutbox = mysqlTable("realtime_event_outbox", {
+  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+  eventId: varchar("event_id", { length: 36 }).notNull().unique(),
+  taskId: bigint("task_id", { mode: "number", unsigned: true }).notNull(),
+  sourceTaskId: varchar("source_task_id", { length: 64 }),
+  projectId: bigint("project_id", { mode: "number", unsigned: true }).notNull(),
+  subtaskId: bigint("subtask_id", { mode: "number", unsigned: true }),
+  type: varchar("type", { length: 100 }).notNull(),
+  previousStatus: varchar("previous_status", { length: 40 }),
+  status: varchar("status", { length: 40 }),
+  payload: json("payload").notNull(),
+  perTaskSeq: bigint("per_task_seq", { mode: "number", unsigned: true }).notNull(),
+  deliveryStatus: mysqlEnum("delivery_status", ["pending", "published", "failed"])
+    .notNull().default("pending"),
+  attempts: int("attempts").notNull().default(0),
+  lastError: text("last_error"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  publishedAt: timestamp("published_at"),
+}, (table) => ({
+  taskOrderIdx: index("realtime_event_outbox_task_order_idx").on(table.taskId, table.perTaskSeq),
+  pendingIdx: index("realtime_event_outbox_pending_idx").on(table.deliveryStatus, table.taskId, table.perTaskSeq),
+}))
+
 /** Claim idempotente das mensagens consumidas pelo Motor v3. */
 export const motorMessageProcessingState = mysqlTable("motor_message_processing_state", {
   messageId: varchar("message_id", { length: 200 }).primaryKey(),
