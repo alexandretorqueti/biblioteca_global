@@ -3,6 +3,8 @@ import { ConfigService } from '@nestjs/config';
 import { request as httpRequest, type RequestOptions } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { RealtimeService } from '../../../apps/api/src/modules/realtime/realtime.service';
+import { PROJECT_DB_FACTORY, type ProjectDbFactory } from '../../../apps/api/src/modules/crud/project-db.factory';
+import { RealtimeMutationBoundaryService } from './realtime-mutation-boundary.service';
 
 /** Task do motor (subconjunto usado pelo cache do poller). */
 interface MotorTask {
@@ -55,6 +57,8 @@ export class TaskStatusPollerService {
   constructor(
     private readonly configService: ConfigService,
     @Optional() @Inject(RealtimeService) private readonly realtime?: RealtimeService,
+    @Optional() @Inject(PROJECT_DB_FACTORY) private readonly factory?: ProjectDbFactory,
+    @Optional() private readonly boundary?: RealtimeMutationBoundaryService,
   ) {
     this.motorVersao = this.configService.get<string>('MOTOR_VERSION') || 'v3';
     const motorPorta = this.configService.get<string>('MOTOR_API_PORT') || '3010';
@@ -173,13 +177,25 @@ export class TaskStatusPollerService {
               this.cache[status].push(task);
             }
             // Publica evento realtime se o status mudou (reconciliação)
-            if (previousStatus && previousStatus !== status && this.realtime) {
+            if (previousStatus && previousStatus !== status) {
               this.previousStatusByTaskId.set(task.id, status);
-              // Extrai projectId do projectSlug ou usa um valor padrão
-              // O projectId real será resolvido pelo LibraryRealtimeBroadcaster
               this.logger.debug(
                 `Reconciliação: tarefa ${task.id} mudou de ${previousStatus} para ${status}`,
               );
+              // O reconciliador não publica diretamente: a fronteira relê o
+              // estado canônico e grava o evento no outbox antes do despacho.
+              const numericId = Number(task.id);
+              if (this.factory && this.boundary && Number.isSafeInteger(numericId)) {
+                try {
+                  const db = await this.factory.obter({ id: 640 });
+                  await this.boundary.executar(db, numericId, async () => undefined, {
+                    force: true,
+                    previousStatus,
+                  });
+                } catch (error: unknown) {
+                  this.logger.error(`Falha ao reconciliar tarefa ${task.id}: ${error instanceof Error ? error.message : String(error)}`);
+                }
+              }
             } else if (!previousStatus) {
               this.previousStatusByTaskId.set(task.id, status);
             }

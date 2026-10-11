@@ -9,6 +9,7 @@ import { IsaChatController, IsaChatService, IsaChatBridgeService } from './isa-c
 import { RealtimeModule } from '../../../apps/api/src/modules/realtime/realtime.module';
 import { RealtimeGateway } from '../../../apps/api/src/modules/realtime/realtime.gateway';
 import { OperationalFeedService } from './operational-feed';
+import { RealtimeMutationBoundaryService } from './realtime-mutation-boundary.service';
 
 @Module({
   imports: [AuthModule, ProvisionModule, RealtimeModule],
@@ -20,6 +21,7 @@ import { OperationalFeedService } from './operational-feed';
     IsaChatService,
     IsaChatBridgeService,
     OperationalFeedService,
+    RealtimeMutationBoundaryService,
   ],
   exports: [
     GerenteAgentesService,
@@ -28,6 +30,7 @@ import { OperationalFeedService } from './operational-feed';
     IsaChatService,
     IsaChatBridgeService,
     OperationalFeedService,
+    RealtimeMutationBoundaryService,
   ],
 })
 export class GerenteAgentesModule implements OnModuleInit {
