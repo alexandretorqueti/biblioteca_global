@@ -1457,7 +1457,6 @@ export class GerenteAgentesService {
       .from(bloqueios)
       .where(and(eq(bloqueios.tarefaId, tarefaId), isNull(bloqueios.resolvedAt)));
     const aguardandoPromocao = bloqueiosAtivos.some((bloqueio) =>
-      (bloqueio.command ?? '').startsWith('motor-v2:promotion-repo-dirty:') ||
       /Falha na promoção da branch da tarefa: repositório principal não está limpo para promoção:/i.test(bloqueio.excerpt ?? ''),
     );
     if (aguardandoPromocao) {

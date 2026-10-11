@@ -751,7 +751,7 @@ export const geracoesProjeto = mysqlTable("geracoes_projeto", {
 })
 
 // ============================================================================
-// PARALELISMO (Motor v2)
+// PARALELISMO DO MOTOR
 // ============================================================================
 
 export const executionResources = mysqlTable("execution_resources", {

@@ -1,4 +1,4 @@
-# Mapeamento de configurações do Motor v2
+# Mapeamento de configurações do Motor v3
 
 Varredura realizada em `motor/src`, `motor-v3/package.json`, `motor-v3/README.md` e migrations do projeto. O valor indicado é o default/fallback efetivo quando não existe valor específico da tarefa ou do projeto.
 

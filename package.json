@@ -11,7 +11,7 @@
   ],
   "scripts": {
     "dev": "npm run dev --workspaces --if-present",
-    "dev:api": "cd projects/gerenteagentes/motor-v2 && npm run build && cd ../motor-v3 && npm run build && cd ../../../apps/api && npm run dev",
+    "dev:api": "cd projects/gerenteagentes/motor-v3 && npm run build && cd ../../../apps/api && npm run dev",
     "build": "npm run build --workspaces --if-present",
     "test": "node scripts/run-vitest.mjs",
     "lint": "eslint .",
@@ -22,9 +22,9 @@
     "db:generate:documentacao": "drizzle-kit generate --config projects/documentacao/drizzle.config.ts",
     "db:generate:gerenteagentes": "drizzle-kit generate --config projects/gerenteagentes/drizzle.config.ts",
     "db:migrate:gerenteagentes": "drizzle-kit migrate --config projects/gerenteagentes/drizzle.config.ts",
-    "db:bootstrap:gerenteagentes": "tsx projects/gerenteagentes/motor-v2/src/scripts/prompt-defaults.ts",
-    "prompts:bootstrap": "tsx projects/gerenteagentes/motor-v2/src/scripts/prompt-defaults.ts",
-    "prompts:export-defaults": "tsx projects/gerenteagentes/motor-v2/src/scripts/prompt-defaults.ts --export"
+    "db:bootstrap:gerenteagentes": "tsx projects/gerenteagentes/src/scripts/prompt-defaults.ts",
+    "prompts:bootstrap": "tsx projects/gerenteagentes/src/scripts/prompt-defaults.ts",
+    "prompts:export-defaults": "tsx projects/gerenteagentes/src/scripts/prompt-defaults.ts --export"
   },
   "engines": {
     "node": ">=22"

@@ -78,8 +78,8 @@ services:
       OPENCLAW_CONSOLE_TOKEN: ${OPENCLAW_CONSOLE_TOKEN}
       MOTOR_DEV_URL: ${MOTOR_DEV_URL:-http://192.168.64.1:6282}
       MOTOR_URL_HOST: ${MOTOR_URL_HOST:-api.tarefas.localhost}
-      # Motor-v2 executa as tarefas do projeto captado em background.
-      MOTOR_VERSION: ${MOTOR_VERSION:-v2}
+      # Motor v3 executa as tarefas do projeto captado em background.
+      MOTOR_VERSION: ${MOTOR_VERSION:-v3}
       MOTOR_PROJECT_ID: ${MOTOR_PROJECT_ID:-640}
       MOTOR_MAX_WORKERS: ${MOTOR_MAX_WORKERS:-1}
       MOTOR_API_PORT: ${MOTOR_API_PORT:-3010}
@@ -89,7 +89,7 @@ services:
         condition: service_healthy
     ports:
       - "${API_HOST_PORT:-3003}:3001"
-      - "${MOTOR_V2_HOST_PORT:-3010}:3010"
+      - "${MOTOR_V3_HOST_PORT:-3010}:3010"
     volumes:
       # O motor executa o pipeline no workspace do repositório.
       # REPO_PATH é um caminho do host e deve ser configurado no .env local.

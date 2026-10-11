@@ -1,10 +1,10 @@
 # Procedimento Operacional — Configurações do Motor
 
-Este documento descreve o procedimento para alterar configurações operacionais do Motor v2 através da tela CONFIGURAÇÕES.
+Este documento descreve o procedimento para alterar configurações operacionais do Motor v3 através da tela CONFIGURAÇÕES.
 
 ## Visão Geral
 
-O Motor v2 possui parâmetros operacionais configuráveis que controlam comportamento como:
+O Motor v3 possui parâmetros operacionais configuráveis que controlam comportamento como:
 - Limite de tarefas em paralelo (global e por projeto)
 - Timeouts de execução (workers, build, testes, Console)
 - Intervalos de polling e reconciliação

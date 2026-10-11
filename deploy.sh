@@ -7,7 +7,7 @@ SSH_USER="alexandre"
 SSH_KEY="/root/.ssh/id_ed25519"
 REPO_HOST="${DEPLOY_REPO_HOST:-/home/alexandre/codigofonte/biblioteca-global}"
 BASE_BRANCH="${DEPLOY_BASE_BRANCH:-base-desenvolvimento}"
-DEPLOY_SCRIPT="projects/gerenteagentes/motor-v2/scripts/deploy-blue-green.sh"
+DEPLOY_SCRIPT="projects/gerenteagentes/scripts/deploy-blue-green.sh"
 
 ssh_host() {
   ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \

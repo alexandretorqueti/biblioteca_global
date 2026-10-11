@@ -1,9 +1,9 @@
 FROM node:22-alpine AS dependencies
 WORKDIR /app
-# Instala git, openssh e bash (necessários para o motor-v2 executar pipelines
+# Instala git, openssh e bash (necessários para o Motor executar pipelines
 # de desenvolvimento e o deploy.sh do repositório)
 RUN apk add --no-cache bash git openssh-client
-# O motor-v2 opera sobre volumes montados com donos diferentes do usuário do
+# O Motor opera sobre volumes montados com donos diferentes do usuário do
 # container; sem safe.directory o git falha com "dubious ownership" e toda
 # execução de subtarefa quebra ("spawn git"). Persistido na imagem para
 # sobreviver a recriações de container.
@@ -33,8 +33,7 @@ COPY . .
 RUN npx tsc -p packages/shared --noEmit false --module Node16 --moduleResolution Node16 \
  && npx tsc -p packages/schema-tools --noEmit false \
  && npx tsc -p database --noEmit false
-# Compila motor-v2 e motor-v3 (TypeScript → JavaScript)
-RUN cd projects/gerenteagentes/motor-v2 && npx tsc --build --force \
- && cd ../motor-v3 && npx tsc --build --force
+# Compila o Motor v3 (TypeScript → JavaScript)
+RUN cd projects/gerenteagentes/motor-v3 && npx tsc --build --force
 EXPOSE 3001 3010
 CMD ["sh", "apps/api/docker-entrypoint.sh"]

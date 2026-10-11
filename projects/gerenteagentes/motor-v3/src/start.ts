@@ -111,7 +111,7 @@ async function start() {
   const statusResolver = new DerivedTaskStatusResolver(pool)
   const externalResolutionHandler = new ExternalResolutionHandler(pool)
   const realtime = new RealtimeMutationPublisher(pool, {
-    // Mesmo ingresso autenticado já utilizado pelo Motor v2.
+    // Ingresso autenticado para publicação de eventos em tempo real.
     endpoint: process.env.LIBRARY_REALTIME_EVENTS_URL ?? 'http://localhost:3001/api/internal/realtime/events',
     token: process.env.LIBRARY_REALTIME_EVENTS_TOKEN,
   })
@@ -1197,8 +1197,7 @@ async function start() {
       }
 
       // DELETE /api/motor/task/:id
-      // Mantém a compatibilidade com o contrato do motor v2. A exclusão
-      // definitiva é feita aqui porque esta é a origem de verdade operacional
+      // A exclusão definitiva é feita aqui porque esta é a origem de verdade operacional
       // usada pela API para remover a tarefa e suas relações em cascata.
       if (req.method === 'DELETE' && taskId && !taskAction) {
         const [taskRows] = await pool.query<any[]>(

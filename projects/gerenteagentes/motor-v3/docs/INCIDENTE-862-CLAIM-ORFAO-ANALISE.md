@@ -42,7 +42,7 @@ reentrega, nada liberava o claim. Não havia reconciliação no boot.
 5. **Comandos zumbis:** `TASK_CREATED`, `TASK_ENQUEUED`, `PUMP_TRIGGERED` são despachados e ackados sem efeito — poluem outbox/fila e mascaram o bug 1 (tudo parece "completed").
 6. **Contrato desonesto:** cancel/pause assíncronos deveriam responder `202 accepted` (como o endpoint de deploy result), não `200 {ok:true}`.
 
-> Observação: o motor-v3 possui bug análogo (`saveTaskTransition` case `"fail"` não chama `facts.record(taskId, "failed")`), mas o v2 não está em produção (MOTOR_VERSION=v3) — não foi causa deste incidente.
+> Observação: o Motor v3 possui bug análogo (`saveTaskTransition` case `"fail"` não chama `facts.record(taskId, "failed")`), mas esse caminho não foi a causa deste incidente.
 
 ## Correções implementadas neste ciclo (somente itens 3+4 da auditoria, aprovados por Alexandre em 2026-09-22)
 

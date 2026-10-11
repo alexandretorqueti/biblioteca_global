@@ -24,7 +24,7 @@ fi
 
 # Configura git (necessário para o motor fazer commits)
 git config --global user.email "motor@globaltecnologia.local"
-git config --global user.name "Motor v2"
+git config --global user.name "Motor v3"
 git config --global --add safe.directory "$SOURCE_DIR"
 git config --global --add safe.directory /data/workspace/projects/codigofonte/biblioteca-global
 git config --global --add safe.directory /run/media/alexandre/12T/codigofonte/GerenteAgentes
