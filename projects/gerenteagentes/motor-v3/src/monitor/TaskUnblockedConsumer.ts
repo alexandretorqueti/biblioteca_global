@@ -45,8 +45,8 @@ export class TaskUnblockedConsumer {
     const reason = payload.blockReason ?? ''
     try {
       if (reason === 'deploy_member_conflict') {
-        await this.enqueueFreshDeployRequest(message)
-        await this.safeRecord(message.taskId, 'task_resumed_by_monitor', { blockReason: reason, action: 'deploy_request_refreshed' })
+        const staleRemoved = await this.enqueueFreshDeployRequest(message, databaseTaskId)
+        await this.safeRecord(message.taskId, 'task_resumed_by_monitor', { blockReason: reason, action: 'deploy_request_refreshed', staleRequestsRemoved: staleRemoved })
         return
       }
       if (DEPLOY_BLOCK_REASONS.has(reason)) {
@@ -72,10 +72,22 @@ export class TaskUnblockedConsumer {
 
   /**
    * Conflito de membro invalida o SHA persistido no pedido anterior: a branch
-   * pode ter sido rebaseada durante a resolução. Um novo DEPLOY_REQUESTED faz
-   * o fluxo normal reler a branch de integração e atualizar requested_commit.
+   * de integração normalmente é rebaseada durante a resolução. Um novo
+   * DEPLOY_REQUESTED faz o fluxo normal reler a branch de integração — mas
+   * somente se não houver pedido persistido: `needsRequestPreparation` pula a
+   * preparação quando já existe request (skip `deploy_request_already_persisted`),
+   * e o `isolateConflictingMembers` devolve o request a `pending` PRESERVANDO o
+   * `requested_commit` obsoleto. Sem remover esse pedido, o dispatch seguinte
+   * recompõe o lote com o SHA antigo e o mesmo conflito ressurge em loop
+   * (incidente task-p2-979: unblock 15:26 → compose 15:30 com commit obsoleto).
+   *
+   * Por isso, na mesma transação do novo DEPLOY_REQUESTED, removemos o pedido
+   * `pending` sem lote da tarefa: ele não carrega valor durável (o prepare o
+   * recria com o HEAD atual da integração, gate pre_deploy novo e geração
+   * corrente). Pedidos `running`/com `batch_id` não são tocados — há dispatch
+   * em andamento e o fluxo do lote segue responsável por eles.
    */
-  private async enqueueFreshDeployRequest(source: QueueMessage): Promise<void> {
+  private async enqueueFreshDeployRequest(source: QueueMessage, databaseTaskId: number): Promise<number> {
     const request = createQueueMessage({
       type: 'DEPLOY_REQUESTED',
       taskId: source.taskId,
@@ -84,7 +96,33 @@ export class TaskUnblockedConsumer {
       causationId: source.messageId,
       payload: { reason: 'deploy_member_conflict_resolved', resumedBy: 'monitor' },
     })
-    await insertOutboxMessage(this.pool, request)
+    const connection: PoolConnection = await this.pool.getConnection()
+    try {
+      await connection.beginTransaction()
+      const [removed] = await connection.query<ResultSetHeader>(
+        `DELETE FROM deploy_requests
+          WHERE tarefa_id=? AND status='pending' AND batch_id IS NULL`,
+        [databaseTaskId],
+      )
+      // Dispatches órfãos com o SHA obsoleto não podem vencer a corrida contra
+      // o novo prepare: sem pedido pending o claim não os aproveita, e a
+      // remoção evita que um dispatch antigo reacenda após o re-prepare.
+      await connection.query(
+        `DELETE FROM motor_outbox
+          WHERE status='pending'
+            AND type='DEPLOY_BATCH_DISPATCH_REQUESTED'
+            AND task_id=?`,
+        [source.taskId],
+      )
+      await insertOutboxMessage(connection, request)
+      await connection.commit()
+      return Number(removed.affectedRows ?? 0)
+    } catch (error) {
+      await connection.rollback()
+      throw error
+    } finally {
+      connection.release()
+    }
   }
 
   /**
