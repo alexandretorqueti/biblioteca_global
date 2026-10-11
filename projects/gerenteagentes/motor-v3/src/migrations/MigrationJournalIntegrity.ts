@@ -22,6 +22,14 @@ export interface MigrationJournalMonotonicityViolation {
   previousTag: string
 }
 
+export interface StatementBreakpointViolation {
+  project: string
+  migration: string
+  orphanedStatementLine: number
+  statementCount: number
+  breakpointCount: number
+}
+
 export interface MigrationJournalInspection {
   project: string
   orphaned: MigrationJournalProblem[]
@@ -50,6 +58,19 @@ export class MigrationJournalMonotonicityError extends Error {
       'Corrija os timestamps do journal antes de concluir a entrega.',
     ].join('\n'))
     this.name = 'MigrationJournalMonotonicityError'
+  }
+}
+
+export class MigrationStatementBreakpointError extends Error {
+  constructor(readonly violations: StatementBreakpointViolation[]) {
+    super([
+      'Migrations SQL com múltiplos statements sem o separador "--> statement-breakpoint":',
+      ...violations.map(violation =>
+        `- projects/${violation.project}/migrations/${violation.migration}: ${violation.statementCount} statements encontrados, ${violation.breakpointCount} breakpoint(s). Statement órfão inicia na linha ${violation.orphanedStatementLine}. Adicione "--> statement-breakpoint" entre statements consecutivos (referência: 0027_motor_configuracoes.sql).`
+      ),
+      'O drizzle-kit CLI envia cada bloco como query única sem multipleStatements — múltiplos statements sem separador causam erro de sintaxe no deploy.',
+    ].join('\n'))
+    this.name = 'MigrationStatementBreakpointError'
   }
 }
 
@@ -105,12 +126,14 @@ export async function inspectMigrationJournals(repositoryRoot = defaultRepositor
 export async function assertAddedMigrationsHaveJournalEntries(workspacePath: string, baseCommit: string): Promise<void> {
   const added = await addedMigrationPaths(workspacePath, baseCommit)
   const byProject = new Map<string, string[]>()
+  const addedSqlPaths: Array<{ project: string; migration: string; path: string }> = []
   for (const path of added) {
     const match = migrationPath.exec(path)
     if (!match) continue
     const [, project, migration] = match
     if (!project || !migration) continue
     byProject.set(project, [...(byProject.get(project) ?? []), migration])
+    addedSqlPaths.push({ project, migration, path })
   }
   const inspections = await Promise.all([...byProject.entries()].map(([project, migrations]) =>
     inspectProjectMigrationJournal(workspacePath, project, migrations),
@@ -119,6 +142,10 @@ export async function assertAddedMigrationsHaveJournalEntries(workspacePath: str
   if (problems.length > 0) throw new MigrationJournalIntegrityError(problems, inspections)
   const monotonicityViolations = inspections.flatMap(inspection => inspection.monotonicityViolations)
   if (monotonicityViolations.length > 0) throw new MigrationJournalMonotonicityError(monotonicityViolations, inspections)
+  // Gate de statement-breakpoint: verifica se migrations com múltiplos statements
+  // adicionadas desde o commit-base possuem o separador "--> statement-breakpoint".
+  const breakpointViolations = await inspectAddedMigrationStatementBreakpoints(workspacePath, addedSqlPaths)
+  if (breakpointViolations.length > 0) throw new MigrationStatementBreakpointError(breakpointViolations)
 }
 
 /** Preflight observável e deliberadamente não fatal para pendências históricas. */
@@ -183,6 +210,263 @@ function validateMonotonicity(project: string, entries: Array<{ tag: string; whe
         currentWhen: current.when,
         previousWhen: previous.when,
         previousTag: previous.tag,
+      })
+    }
+  }
+  return violations
+}
+
+/**
+ * Analisa migrations SQL adicionadas e exige `--> statement-breakpoint` entre
+ * statements consecutivos. Somente arquivos novos desde o commit-base são
+ * verificados (gate diferencial).
+ */
+async function inspectAddedMigrationStatementBreakpoints(
+  workspacePath: string,
+  addedSqlPaths: Array<{ project: string; migration: string; path: string }>,
+): Promise<StatementBreakpointViolation[]> {
+  const violations: StatementBreakpointViolation[] = []
+  for (const { project, migration, path } of addedSqlPaths) {
+    let content: string
+    try {
+      content = await readFile(resolve(workspacePath, path), 'utf8')
+    } catch {
+      continue
+    }
+    const result = analyzeStatementBreakpoints(content)
+    if (result.violationLine !== null) {
+      violations.push({
+        project,
+        migration,
+        orphanedStatementLine: result.violationLine,
+        statementCount: result.statementCount,
+        breakpointCount: result.breakpointCount,
+      })
+    }
+  }
+  return violations
+}
+
+/**
+ * Conta statements top-level e breakpoints em conteúdo SQL.
+ * Retorna `violationLine` (linha 1-indexed do statement órfão) ou null se OK.
+ *
+ * Um statement é terminado por `;` fora de strings, identificadores delimitados
+ * ou comentários. O marcador `--> statement-breakpoint` separa blocos; cada
+ * bloco deve conter no máximo 1 statement.
+ */
+export function analyzeStatementBreakpoints(sqlContent: string): {
+  statementCount: number
+  breakpointCount: number
+  violationLine: number | null
+} {
+  const lines = sqlContent.split(/\r?\n/)
+  let statementCount = 0
+  let breakpointCount = 0
+  let violationLine: number | null = null
+
+  // State machine: track whether we're inside a string/comment
+  let inSingleQuote = false
+  let inDoubleQuote = false
+  let inBacktick = false
+  let inLineComment = false
+  let inBlockComment = false
+
+  // Track statements within segments separated by breakpoints.
+  // After a semicolon ends a statement, the next non-whitespace content
+  // without an intervening breakpoint is a violation.
+  let statementsSinceLastBreakpoint = 0
+  let awaitingNextStatement = false // true after a semicolon, before next content
+  let nextContentLine: number | null = null // line where next statement would start
+
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+    const line = lines[lineIndex]!
+    const lineNumber = lineIndex + 1
+
+    // Check if this line is a statement-breakpoint marker
+    const trimmedLine = line.trim()
+    if (trimmedLine === '--> statement-breakpoint') {
+      breakpointCount++
+      // Reset the segment counter — new segment starts after breakpoint
+      statementsSinceLastBreakpoint = 0
+      awaitingNextStatement = false
+      nextContentLine = null
+      // Skip processing this line as SQL content
+      continue
+    }
+
+    inLineComment = false // line comments reset at each new line
+
+    for (let col = 0; col < line.length; col++) {
+      const ch = line[col]!
+      const next = col + 1 < line.length ? line[col + 1] : ''
+
+      // Handle block comment state
+      if (inBlockComment) {
+        if (ch === '*' && next === '/') {
+          inBlockComment = false
+          col++ // skip '/'
+        }
+        continue
+      }
+
+      // Handle line comment state
+      if (inLineComment) {
+        continue // rest of line is comment
+      }
+
+      // Handle string states
+      if (inSingleQuote) {
+        if (ch === '\\') {
+          col++ // skip escaped character
+          continue
+        }
+        if (ch === "'" && next === "'") {
+          col++ // skip escaped quote ('')
+          continue
+        }
+        if (ch === "'") {
+          inSingleQuote = false
+        }
+        continue
+      }
+
+      if (inDoubleQuote) {
+        if (ch === '\\') {
+          col++ // skip escaped character
+          continue
+        }
+        if (ch === '"' && next === '"') {
+          col++ // skip escaped quote ("")
+          continue
+        }
+        if (ch === '"') {
+          inDoubleQuote = false
+        }
+        continue
+      }
+
+      if (inBacktick) {
+        if (ch === '`' && next === '`') {
+          col++ // skip escaped backtick (``)
+          continue
+        }
+        if (ch === '`') {
+          inBacktick = false
+        }
+        continue
+      }
+
+      // Normal state — detect transitions
+      if (ch === '-' && next === '-') {
+        inLineComment = true
+        continue
+      }
+
+      if (ch === '/' && next === '*') {
+        inBlockComment = true
+        col++ // skip '*'
+        continue
+      }
+
+      if (ch === "'") {
+        inSingleQuote = true
+        // This is content — track for next-statement detection
+        if (awaitingNextStatement && nextContentLine === null) {
+          nextContentLine = lineNumber
+        }
+        continue
+      }
+
+      if (ch === '"') {
+        inDoubleQuote = true
+        if (awaitingNextStatement && nextContentLine === null) {
+          nextContentLine = lineNumber
+        }
+        continue
+      }
+
+      if (ch === '`') {
+        inBacktick = true
+        if (awaitingNextStatement && nextContentLine === null) {
+          nextContentLine = lineNumber
+        }
+        continue
+      }
+
+      if (ch === ';') {
+        // End of a statement
+        statementCount++
+        statementsSinceLastBreakpoint++
+        awaitingNextStatement = true
+        nextContentLine = null
+        continue
+      }
+
+      // Any non-whitespace character is content
+      if (!/\s/.test(ch)) {
+        if (awaitingNextStatement && nextContentLine === null) {
+          nextContentLine = lineNumber
+        }
+      }
+    }
+
+    // After processing the line, check if we found content after a semicolon
+    // without an intervening breakpoint
+    if (awaitingNextStatement && nextContentLine !== null && nextContentLine === lineNumber) {
+      // There is content on this line after a semicolon — check if there was a
+      // semicolon earlier on THIS line that ended a statement, and this content
+      // starts a new one. But we need to be careful: the semicolon and the new
+      // content are on the same line.
+      // Actually, the simpler check: after processing the whole line, if
+      // statementsSinceLastBreakpoint > 1, we have a violation.
+    }
+
+    // Check for multi-statement violation within this segment.
+    // If we've seen > 1 statement since the last breakpoint, the 2nd statement
+    // is orphaned.
+    if (statementsSinceLastBreakpoint > 1 && violationLine === null) {
+      // The orphaned statement starts at nextContentLine (the first content
+      // after the first semicolon in this segment).
+      violationLine = nextContentLine ?? lineNumber
+    }
+  }
+
+  return { statementCount, breakpointCount, violationLine }
+}
+
+/**
+ * Função pública para inspecionar breakpoints em um arquivo SQL individual.
+ * Útil para testes e para o preflight não-fatal.
+ */
+export async function inspectMigrationStatementBreakpoints(
+  repositoryRoot: string,
+  project: string,
+  migrations?: string[],
+): Promise<StatementBreakpointViolation[]> {
+  const migrationDirectory = resolve(repositoryRoot, 'projects', project, 'migrations')
+  let names: string[]
+  if (migrations) {
+    names = migrations
+  } else {
+    names = await sqlMigrations(migrationDirectory)
+  }
+  const violations: StatementBreakpointViolation[] = []
+  for (const migration of names) {
+    let content: string
+    try {
+      content = await readFile(resolve(migrationDirectory, migration), 'utf8')
+    } catch {
+      continue
+    }
+    const result = analyzeStatementBreakpoints(content)
+    if (result.violationLine !== null) {
+      violations.push({
+        project,
+        migration,
+        orphanedStatementLine: result.violationLine,
+        statementCount: result.statementCount,
+        breakpointCount: result.breakpointCount,
       })
     }
   }

@@ -5,11 +5,14 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  analyzeStatementBreakpoints,
   assertAddedMigrationsHaveJournalEntries,
   inspectMigrationJournals,
+  inspectMigrationStatementBreakpoints,
   inspectProjectMigrationJournal,
   MigrationJournalIntegrityError,
   MigrationJournalMonotonicityError,
+  MigrationStatementBreakpointError,
   warnOnMigrationJournalIntegrity,
 } from '../src/migrations/MigrationJournalIntegrity.js'
 
@@ -137,6 +140,51 @@ describe('MigrationJournalIntegrity', () => {
     await expect(assertAddedMigrationsHaveJournalEntries(root, base)).rejects.toThrow(/when=1500.*when=2000.*use when=3000/)
   })
 
+  it('gate reprova migration adicionada com múltiplos statements sem breakpoint', async () => {
+    const root = await fixture({
+      alpha: {
+        migrations: ['0001_ok.sql'],
+        tags: ['0001_ok'],
+        whens: [1000],
+      },
+    })
+    await git(root, ['init', '-b', 'base-desenvolvimento'])
+    await git(root, ['config', 'user.email', 'motor@example.test'])
+    await git(root, ['config', 'user.name', 'Motor Test'])
+    await git(root, ['add', '.'])
+    await git(root, ['commit', '-m', 'baseline'])
+    const base = (await git(root, ['rev-parse', 'HEAD'])).trim()
+
+    await expect(assertAddedMigrationsHaveJournalEntries(root, base)).resolves.toBeUndefined()
+
+    // Migration com 2 statements sem breakpoint (reproduz o incidente 0082)
+    const brokenSql = [
+      'CREATE TABLE IF NOT EXISTS `motor_postdeploy_verifications` (',
+      '  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,',
+      '  PRIMARY KEY (`id`)',
+      ');',
+      'INSERT INTO `motor_configuracoes` (`chave`, `tipo`, `valor`, `valor_padrao`, `regra_validacao`, `descricao`)',
+      "VALUES ('motor.postdeploy.active', 'boolean', 'true', 'true', '', 'Ativa verificação');",
+    ].join('\n')
+    await writeFile(join(root, 'projects/alpha/migrations/0002_broken.sql'), brokenSql)
+    // Atualizar journal para não falhar no journal check primeiro
+    const journalPath = join(root, 'projects/alpha/migrations/meta/_journal.json')
+    const journal = JSON.parse(await readFile(journalPath, 'utf8'))
+    journal.entries.push({ tag: '0002_broken', when: 2000 })
+    await writeFile(journalPath, JSON.stringify(journal))
+
+    await expect(assertAddedMigrationsHaveJournalEntries(root, base)).rejects.toMatchObject({
+      name: 'MigrationStatementBreakpointError',
+      violations: [{
+        project: 'alpha',
+        migration: '0002_broken.sql',
+        statementCount: 2,
+        breakpointCount: 0,
+      }],
+    })
+    await expect(assertAddedMigrationsHaveJournalEntries(root, base)).rejects.toThrow(/statement-breakpoint.*0027_motor_configuracoes\.sql/)
+  })
+
   it('preflight avisa sem falhar e separa múltiplos projetos', async () => {
     const root = await fixture({
       alpha: { migrations: ['0001_orphan.sql'], tags: [], whens: [] },
@@ -168,6 +216,204 @@ describe('MigrationJournalIntegrity', () => {
     ]))
     warning.mockRestore()
     await expect(inspectMigrationJournals(root)).resolves.toHaveLength(4)
+  })
+})
+
+describe('analyzeStatementBreakpoints', () => {
+  it('detecta dois statements sem breakpoint como violação', () => {
+    const sql = [
+      'CREATE TABLE `teste` (',
+      '  `id` INT NOT NULL,',
+      '  PRIMARY KEY (`id`)',
+      ');',
+      'INSERT INTO `teste` (`id`) VALUES (1);',
+    ].join('\n')
+    const result = analyzeStatementBreakpoints(sql)
+    expect(result.statementCount).toBe(2)
+    expect(result.breakpointCount).toBe(0)
+    expect(result.violationLine).toBe(5) // INSERT começa na linha 5
+  })
+
+  it('aceita dois statements separados por breakpoint', () => {
+    const sql = [
+      'CREATE TABLE `teste` (',
+      '  `id` INT NOT NULL,',
+      '  PRIMARY KEY (`id`)',
+      ');',
+      '--> statement-breakpoint',
+      'INSERT INTO `teste` (`id`) VALUES (1);',
+    ].join('\n')
+    const result = analyzeStatementBreakpoints(sql)
+    expect(result.statementCount).toBe(2)
+    expect(result.breakpointCount).toBe(1)
+    expect(result.violationLine).toBeNull()
+  })
+
+  it('aceita migration com um único statement', () => {
+    const sql = [
+      'CREATE TABLE `teste` (',
+      '  `id` INT NOT NULL,',
+      '  PRIMARY KEY (`id`)',
+      ');',
+    ].join('\n')
+    const result = analyzeStatementBreakpoints(sql)
+    expect(result.statementCount).toBe(1)
+    expect(result.breakpointCount).toBe(0)
+    expect(result.violationLine).toBeNull()
+  })
+
+  it('ignora ponto-e-vírgula dentro de comentários de linha', () => {
+    const sql = [
+      '-- Este comentário tem um ; no meio',
+      'CREATE TABLE `teste` (',
+      '  `id` INT NOT NULL',
+      ');',
+    ].join('\n')
+    const result = analyzeStatementBreakpoints(sql)
+    expect(result.statementCount).toBe(1)
+    expect(result.breakpointCount).toBe(0)
+    expect(result.violationLine).toBeNull()
+  })
+
+  it('ignora ponto-e-vírgula dentro de comentários de bloco', () => {
+    const sql = [
+      '/* este bloco tem ; e ; vários ; */',
+      'CREATE TABLE `teste` (',
+      '  `id` INT NOT NULL',
+      ');',
+    ].join('\n')
+    const result = analyzeStatementBreakpoints(sql)
+    expect(result.statementCount).toBe(1)
+    expect(result.violationLine).toBeNull()
+  })
+
+  it('ignora ponto-e-vírgula dentro de strings single-quoted', () => {
+    const sql = [
+      "INSERT INTO `teste` (`valor`) VALUES ('hello;world');",
+    ].join('\n')
+    const result = analyzeStatementBreakpoints(sql)
+    expect(result.statementCount).toBe(1)
+    expect(result.violationLine).toBeNull()
+  })
+
+  it('ignora ponto-e-vírgula dentro de strings double-quoted', () => {
+    const sql = [
+      'INSERT INTO `teste` (`valor`) VALUES ("hello;world");',
+    ].join('\n')
+    const result = analyzeStatementBreakpoints(sql)
+    expect(result.statementCount).toBe(1)
+    expect(result.violationLine).toBeNull()
+  })
+
+  it('ignora ponto-e-vírgula dentro de identificadores backtick', () => {
+    const sql = [
+      'CREATE TABLE `hello;world` (',
+      '  `id` INT NOT NULL',
+      ');',
+    ].join('\n')
+    const result = analyzeStatementBreakpoints(sql)
+    expect(result.statementCount).toBe(1)
+    expect(result.violationLine).toBeNull()
+  })
+
+  it('aceita três statements com dois breakpoints (padrão 0027)', () => {
+    const sql = [
+      'CREATE TABLE `t1` (`id` INT NOT NULL);',
+      '--> statement-breakpoint',
+      'CREATE TABLE `t2` (`id` INT NOT NULL);',
+      '--> statement-breakpoint',
+      'INSERT INTO `t1` (`id`) VALUES (1);',
+    ].join('\n')
+    const result = analyzeStatementBreakpoints(sql)
+    expect(result.statementCount).toBe(3)
+    expect(result.breakpointCount).toBe(2)
+    expect(result.violationLine).toBeNull()
+  })
+
+  it('detecta violação quando breakpoint está presente mas falta um', () => {
+    const sql = [
+      'CREATE TABLE `t1` (`id` INT NOT NULL);',
+      '--> statement-breakpoint',
+      'CREATE TABLE `t2` (`id` INT NOT NULL);',
+      'INSERT INTO `t1` (`id`) VALUES (1);',
+    ].join('\n')
+    const result = analyzeStatementBreakpoints(sql)
+    expect(result.statementCount).toBe(3)
+    expect(result.breakpointCount).toBe(1)
+    expect(result.violationLine).toBe(4) // INSERT na linha 4
+  })
+
+  it('ignora conteúdo vazio ou apenas comentários', () => {
+    const sql = [
+      '-- Apenas um comentário',
+      '/* e um bloco */',
+      '',
+    ].join('\n')
+    const result = analyzeStatementBreakpoints(sql)
+    expect(result.statementCount).toBe(0)
+    expect(result.breakpointCount).toBe(0)
+    expect(result.violationLine).toBeNull()
+  })
+
+  it('reporta a linha correta do statement órfão', () => {
+    const sql = [
+      '-- Migration: teste',
+      '',
+      'CREATE TABLE `teste` (',
+      '  `id` INT NOT NULL,',
+      '  PRIMARY KEY (`id`)',
+      ');',
+      'INSERT INTO `teste` (`id`) VALUES (1);',
+    ].join('\n')
+    const result = analyzeStatementBreakpoints(sql)
+    expect(result.statementCount).toBe(2)
+    expect(result.violationLine).toBe(7) // INSERT na linha 7
+  })
+
+  it('trata string com escape de aspas duplicadas', () => {
+    const sql = [
+      "INSERT INTO `teste` (`valor`) VALUES ('it''s a ;test');",
+    ].join('\n')
+    const result = analyzeStatementBreakpoints(sql)
+    expect(result.statementCount).toBe(1)
+    expect(result.violationLine).toBeNull()
+  })
+})
+
+describe('inspectMigrationStatementBreakpoints', () => {
+  it('detecta violações em migrations de um projeto', async () => {
+    const root = await fixture({ alpha: { migrations: ['0001_ok.sql'], tags: ['0001_ok'], whens: [1000] } })
+    // Sobrescrever o conteúdo com SQL válido e SQL quebrado
+    const okSql = 'CREATE TABLE `t1` (`id` INT NOT NULL);'
+    const brokenSql = [
+      'CREATE TABLE `t2` (`id` INT NOT NULL);',
+      'INSERT INTO `t2` (`id`) VALUES (1);',
+    ].join('\n')
+    await writeFile(join(root, 'projects/alpha/migrations/0001_ok.sql'), okSql)
+    await writeFile(join(root, 'projects/alpha/migrations/0002_broken.sql'), brokenSql)
+
+    const violations = await inspectMigrationStatementBreakpoints(root, 'alpha')
+    expect(violations).toHaveLength(1)
+    expect(violations[0]).toMatchObject({
+      project: 'alpha',
+      migration: '0002_broken.sql',
+      statementCount: 2,
+      breakpointCount: 0,
+    })
+    expect(violations[0]!.orphanedStatementLine).toBe(2)
+  })
+
+  it('retorna array vazio quando todas as migrations estão corretas', async () => {
+    const root = await fixture({ alpha: { migrations: ['0001_ok.sql'], tags: ['0001_ok'], whens: [1000] } })
+    const okSql = [
+      'CREATE TABLE `t1` (`id` INT NOT NULL);',
+      '--> statement-breakpoint',
+      'INSERT INTO `t1` (`id`) VALUES (1);',
+    ].join('\n')
+    await writeFile(join(root, 'projects/alpha/migrations/0001_ok.sql'), okSql)
+
+    const violations = await inspectMigrationStatementBreakpoints(root, 'alpha', ['0001_ok.sql'])
+    expect(violations).toEqual([])
   })
 })
 
