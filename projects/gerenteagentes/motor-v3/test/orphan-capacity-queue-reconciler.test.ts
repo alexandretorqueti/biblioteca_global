@@ -479,6 +479,26 @@ describe('OrphanCapacityQueueReconciler — repetição de ciclos', () => {
     )
     expect(insertCalls).toHaveLength(0)
   })
+
+  it('não referencia a coluna inexistente q.reason de motor_execution_wait_queue', async () => {
+    // Regressão do incidente de 2026-10-11: o SELECT da fila de capacidade
+    // referenciava `q.reason`, coluna que nunca existiu no schema. O erro era
+    // engolido pelo catch do ciclo e o reconciliador de órfãos/fila morria em
+    // produção a cada minuto sem limpá-los. O mock não valida SQL contra o
+    // schema real, então o contrato é verificado sobre o texto da query.
+    const queryMock = vi.fn()
+      .mockResolvedValueOnce([[]])  // orphan sessions
+      .mockResolvedValueOnce([[]])  // stale queue SELECT
+    const reconciler = new OrphanCapacityQueueReconciler(buildPool(queryMock))
+
+    await reconciler.reconcile()
+
+    const selectCall = queryMock.mock.calls.find(
+      (call: any[]) => typeof call[0] === 'string' && call[0].includes('FROM motor_execution_wait_queue'),
+    )
+    expect(selectCall).toBeDefined()
+    expect(selectCall![0]).not.toMatch(/q\.reason/)
+  })
 })
 
 // ---------------------------------------------------------------------------

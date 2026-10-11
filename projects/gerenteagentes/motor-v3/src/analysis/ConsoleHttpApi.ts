@@ -51,6 +51,19 @@ export class ConsoleHttpApi implements AnalystConsole {
       | { role: string; content: unknown; errorCode?: unknown; errorType?: unknown; errorMessage?: unknown; stopReason?: unknown }
       | undefined
     if (failed) {
+      // Corrida de status obsoleto (incidente task-p2-981/subtarefa 1336):
+      // entre o envio da nova mensagem e o início do novo run, o describe pode
+      // continuar expondo o `failed` terminal do run ANTERIOR. Sem atividade do
+      // agente depois do marcador, a falha é obsoleta e não pode consumir a
+      // tentativa — o mesmo tratamento já dado a `done`/`idle` obsoletos. O
+      // timeout do waitForCompletion continua sendo a rede de proteção para o
+      // caso de o novo run nunca começar.
+      if (marker) {
+        const hasAgentActivityAfterSend = messages.some(message =>
+          message.role !== 'user' && this.isResponseAfter(message, marker),
+        )
+        if (!hasAgentActivityAfterSend) return { isComplete: false }
+      }
       // O Console por vezes expõe apenas status=failed. O histórico pode trazer
       // o detalhe do provedor ou apenas uma falha genérica com stopReason=error.
       const detail = this.failureText(status.error) ?? this.failureText(status.failure) ?? this.failureText(status.details)

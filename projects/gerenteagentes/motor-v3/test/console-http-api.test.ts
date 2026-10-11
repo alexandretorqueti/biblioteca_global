@@ -107,6 +107,42 @@ describe('ConsoleHttpApi', () => {
     await expect(api.getSessionStatus(session)).resolves.toEqual({ isComplete: true, lastResponse: '{"subtarefas":[]}' })
   })
 
+  it('ignora failed obsoleto entre o envio e o início do novo run (incidente 1336)', async () => {
+    const session = { sessionId: 's-failed-race', sessionKey: 'agent:a:failed-race', agentId: 'a' }
+    const oldError = { id: 'old-error', role: 'assistant', stopReason: 'error', content: 'falha anterior', errorMessage: '400 data_inspection_failed', createdAt: 1 }
+    vi.stubGlobal('fetch', vi.fn()
+      // sendMessage: histórico anterior (com o erro do run antigo) + envio aceito
+      .mockResolvedValueOnce(jsonResponse({ messages: [oldError] }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true }))
+      // Primeira consulta: describe ainda expõe o failed do run ANTERIOR e o
+      // histórico não tem atividade do agente depois do marcador.
+      .mockResolvedValueOnce(jsonResponse({ status: 'failed' }))
+      .mockResolvedValueOnce(jsonResponse({ messages: [
+        oldError,
+        { id: 'new-prompt', role: 'user', content: 'Continue o trabalho', createdAt: Date.now() },
+      ] }))
+      // Segunda consulta: o novo run falhou de verdade — a mensagem de erro
+      // nova (depois do marcador) deve ser reportada como falha real.
+      .mockResolvedValueOnce(jsonResponse({ status: 'failed' }))
+      .mockResolvedValueOnce(jsonResponse({ messages: [
+        oldError,
+        { id: 'new-prompt', role: 'user', content: 'Continue o trabalho', createdAt: Date.now() },
+        { id: 'new-error', role: 'assistant', stopReason: 'error', content: 'falha nova', errorMessage: '500 provider_error', createdAt: Date.now() },
+      ] })))
+    const api = new ConsoleHttpApi('http://console.local', 'token-de-teste')
+
+    await api.sendMessage({ session, message: 'Continue o trabalho' })
+
+    // Failed obsoleto não pode consumir a tentativa: segue aguardando.
+    await expect(api.getSessionStatus(session)).resolves.toEqual({ isComplete: false })
+    // Failed do run atual (atividade nova depois do envio) é falha real.
+    await expect(api.getSessionStatus(session)).resolves.toEqual({
+      isComplete: false,
+      isFailed: true,
+      error: '500 provider_error',
+    })
+  })
+
   it('expõe done do envio atual quando houve ferramenta nova mas faltou resposta final', async () => {
     const session = { sessionId: 's-tool-end', sessionKey: 'agent:a:tool-end', agentId: 'a' }
     vi.stubGlobal('fetch', vi.fn()
