@@ -4,6 +4,8 @@ import { createTaskBlockedMessage } from '../monitor/TaskBlockedEvent.js'
 import { insertOutboxMessage } from '../queue/outboxInsert.js'
 import { cancelUnstartedDeployRequests } from '../deploy/DeployRequestFinalizer.js'
 import type { RealtimeMutationPublisher } from '../realtime/RealtimeMutationPublisher.js'
+import { RealtimeMutationBoundary } from '../realtime/RealtimeMutationBoundary.js'
+import { DerivedTaskStatusResolver, type DerivedTaskStatus } from '../status/DerivedTaskStatus.js'
 
 export interface ReservedSubtask {
   message: QueueMessage<{ subtaskId: number; seq: number; title: string; scope: string }>
@@ -108,7 +110,19 @@ interface ActiveDevelopmentCountRow extends RowDataPacket {
  * transação. Assim, não existe o estado "subtarefa running sem mensagem".
  */
 export class MySqlDevelopmentExecutionRepository {
-  constructor(private readonly pool: Pool, private readonly realtime?: RealtimeMutationPublisher) {}
+  private readonly realtime: RealtimeMutationBoundary
+  constructor(private readonly pool: Pool, realtime?: RealtimeMutationBoundary | RealtimeMutationPublisher) {
+    // O segundo argumento legado é aceito para não alterar os consumidores;
+    // a escrita canônica usa exclusivamente o outbox transacional.
+    this.realtime = realtime instanceof RealtimeMutationBoundary ? realtime : new RealtimeMutationBoundary(pool)
+  }
+
+  private async taskStatus(connection: PoolConnection, taskId: number): Promise<DerivedTaskStatus> {
+    const [rows] = await connection.query<Array<RowDataPacket & { external_id: string | null }>>(
+      'SELECT external_id FROM tarefas WHERE id = ? LIMIT 1', [taskId],
+    )
+    return new DerivedTaskStatusResolver(connection).resolve(String(rows[0]?.external_id ?? taskId))
+  }
 
   /** Cadeia de modelos do programador, administrada pela Biblioteca. */
   async getDevelopmentModelChain(projectSlug: string): Promise<string[]> {
@@ -173,6 +187,7 @@ export class MySqlDevelopmentExecutionRepository {
         await connection.rollback()
         return null
       }
+      const beforeStatus = await this.taskStatus(connection, task.id)
 
       // Camada B do invariante de conclusão: se todas as subtarefas já estão
       // finais mas a tarefa não tem terminal_status (escrita externa/bypass),
@@ -314,8 +329,11 @@ export class MySqlDevelopmentExecutionRepository {
         ],
       )
 
+      await this.realtime.append(connection, Number(task.id), beforeStatus, {
+        type: 'subtask.status.changed', subtaskId: Number(subtask.id),
+        previousSubtaskStatus: 'pending', subtaskStatus: 'running',
+      })
       await connection.commit()
-      await this.realtime?.publishSubtask(Number(task.id), Number(subtask.id), 'subtask.status.changed', 'pending')
       return { message, subtaskId: Number(subtask.id), seq: Number(subtask.seq) }
     } catch (error) {
       await connection.rollback()
@@ -427,6 +445,7 @@ export class MySqlDevelopmentExecutionRepository {
     let taskReachedTerminal = false
     try {
       await connection.beginTransaction()
+      const beforeStatus = await this.taskStatus(connection, context.databaseTaskId)
       // Suprime a rede de segurança do trigger (camada A): esta transação é o
       // caminho canônico e já grava fatos + outbox de conclusão por conta própria.
       await connection.query('SET @motor_completing := 1')
@@ -450,6 +469,10 @@ export class MySqlDevelopmentExecutionRepository {
       let next: QueueMessage
       if (reserved) {
         next = reserved.message
+        await this.realtime.append(connection, context.databaseTaskId, beforeStatus, {
+          type: 'subtask.status.changed', subtaskId: reserved.subtaskId,
+          previousSubtaskStatus: 'pending', subtaskStatus: 'running', after: beforeStatus,
+        })
       } else {
         const [pending] = await connection.query<RowDataPacket[]>(
           `SELECT COUNT(*) AS total FROM subtarefas
@@ -507,9 +530,12 @@ export class MySqlDevelopmentExecutionRepository {
         }
         await this.wakeCapacityWaiters(connection, next)
       }
+      await this.realtime.append(connection, context.databaseTaskId, beforeStatus, {
+        type: 'subtask.status.changed', subtaskId: context.subtaskId,
+        previousSubtaskStatus: 'verifying', subtaskStatus: 'verified',
+        after: await this.taskStatus(connection, context.databaseTaskId),
+      })
       await connection.commit()
-      await this.realtime?.publishSubtask(context.databaseTaskId, context.subtaskId, 'subtask.status.changed', 'verifying')
-      if (taskReachedTerminal) await this.realtime?.publishTask(context.databaseTaskId, 'task.status.changed', { status: 'completed' })
       return { verified, next }
     } catch (error) {
       await connection.rollback()
@@ -705,6 +731,7 @@ export class MySqlDevelopmentExecutionRepository {
     const connection = await this.pool.getConnection()
     try {
       await connection.beginTransaction()
+      const beforeStatus = await this.taskStatus(connection, context.databaseTaskId)
       const nextType = result.success ? 'SUBTASK_EXECUTION_COMPLETED' : 'SUBTASK_EXECUTION_FAILED'
       const nextStatus = result.success ? 'delivered' : 'failed'
       const payload = {
@@ -743,8 +770,12 @@ export class MySqlDevelopmentExecutionRepository {
         await this.persistExhaustedWorkerBlocker(connection, context, source, result)
       }
       if (!result.success) await this.wakeCapacityWaiters(connection, message)
+      await this.realtime.append(connection, context.databaseTaskId, beforeStatus, {
+        type: 'subtask.status.changed', subtaskId: context.subtaskId,
+        previousSubtaskStatus: 'running', subtaskStatus: nextStatus,
+        after: await this.taskStatus(connection, context.databaseTaskId),
+      })
       await connection.commit()
-      await this.realtime?.publishSubtask(context.databaseTaskId, context.subtaskId, 'subtask.status.changed', 'running')
       return message
     } catch (error) {
       await connection.rollback()
@@ -894,6 +925,7 @@ export class MySqlDevelopmentExecutionRepository {
     const connection = await this.pool.getConnection()
     try {
       await connection.beginTransaction()
+      const beforeStatus = await this.taskStatus(connection, context.databaseTaskId)
       const message = createQueueMessage({
         type: 'SUBTASK_EXECUTION_BLOCKED',
         taskId: context.taskId,
@@ -926,6 +958,11 @@ export class MySqlDevelopmentExecutionRepository {
       })
       await this.insertOutbox(connection, message)
       await this.wakeCapacityWaiters(connection, message)
+      await this.realtime.append(connection, context.databaseTaskId, beforeStatus, {
+        type: 'subtask.status.changed', subtaskId: context.subtaskId,
+        previousSubtaskStatus: 'running', subtaskStatus: 'blocked',
+        after: await this.taskStatus(connection, context.databaseTaskId),
+      })
       await connection.commit()
       return message
     } catch (error) {
@@ -946,6 +983,7 @@ export class MySqlDevelopmentExecutionRepository {
     let taskReachedTerminal = false
     try {
       await connection.beginTransaction()
+      const beforeStatus = await this.taskStatus(connection, context.databaseTaskId)
       // Suprime a rede de segurança do trigger (camada A): esta transação é o
       // caminho canônico e já grava fatos + outbox de conclusão por conta própria.
       await connection.query('SET @motor_completing := 1')
@@ -966,6 +1004,14 @@ export class MySqlDevelopmentExecutionRepository {
       await this.insertOutbox(connection, completed)
       const reserved = await this.reserveNextSubtaskInTransaction(connection, context.databaseTaskId, context.taskId, completed)
       if (reserved) {
+        await this.realtime.append(connection, context.databaseTaskId, beforeStatus, {
+          type: 'subtask.status.changed', subtaskId: context.subtaskId,
+          previousSubtaskStatus: 'running', subtaskStatus: 'verified', after: beforeStatus,
+        })
+        await this.realtime.append(connection, context.databaseTaskId, beforeStatus, {
+          type: 'subtask.status.changed', subtaskId: reserved.subtaskId,
+          previousSubtaskStatus: 'pending', subtaskStatus: 'running', after: beforeStatus,
+        })
         await connection.commit()
         return reserved.message
       }
@@ -1011,9 +1057,12 @@ export class MySqlDevelopmentExecutionRepository {
         await this.insertOutbox(connection, deployRequest)
       }
       await this.wakeCapacityWaiters(connection, taskCompleted)
+      await this.realtime.append(connection, context.databaseTaskId, beforeStatus, {
+        type: 'subtask.status.changed', subtaskId: context.subtaskId,
+        previousSubtaskStatus: 'running', subtaskStatus: 'verified',
+        after: await this.taskStatus(connection, context.databaseTaskId),
+      })
       await connection.commit()
-      await this.realtime?.publishSubtask(context.databaseTaskId, context.subtaskId, 'subtask.status.changed', 'running')
-      if (taskReachedTerminal) await this.realtime?.publishTask(context.databaseTaskId, 'task.status.changed', { status: 'completed' })
       return taskCompleted
     } catch (error) {
       await connection.rollback()
@@ -1041,6 +1090,7 @@ export class MySqlDevelopmentExecutionRepository {
     const connection = await this.pool.getConnection()
     try {
       await connection.beginTransaction()
+      const beforeStatus = await this.taskStatus(connection, context.databaseTaskId)
       const [updated] = await connection.query<ResultSetHeader>(
         'UPDATE subtarefas SET status = ?, updated_at = NOW() WHERE id = ? AND status = ?',
         [to, context.subtaskId, from],
@@ -1051,8 +1101,12 @@ export class MySqlDevelopmentExecutionRepository {
         correlationId: source.correlationId ?? source.messageId, causationId: source.messageId, payload,
       })
       await this.insertOutbox(connection, message)
+      await this.realtime.append(connection, context.databaseTaskId, beforeStatus, {
+        type: 'subtask.status.changed', subtaskId: context.subtaskId,
+        previousSubtaskStatus: from, subtaskStatus: to,
+        after: await this.taskStatus(connection, context.databaseTaskId),
+      })
       await connection.commit()
-      await this.realtime?.publishSubtask(context.databaseTaskId, context.subtaskId, 'subtask.status.changed', from)
       return message
     } catch (error) {
       await connection.rollback()
@@ -1126,6 +1180,7 @@ export class MySqlDevelopmentExecutionRepository {
     task: TaskRow,
     source: QueueMessage,
   ): Promise<TaskCompletedByReconciliation | null> {
+    const beforeStatus = await this.taskStatus(connection, task.id)
     const [countRows] = await connection.query<Array<RowDataPacket & { total: number | string; finais: number | string | null }>>(
       `SELECT COUNT(*) AS total,
               SUM(status IN ('verified', 'superseded')) AS finais
@@ -1186,6 +1241,9 @@ export class MySqlDevelopmentExecutionRepository {
 
     await connection.query('DELETE FROM motor_execution_wait_queue WHERE tarefa_id = ?', [task.id])
     await this.wakeCapacityWaiters(connection, taskCompleted)
+    await this.realtime.append(connection, task.id, beforeStatus, {
+      after: await this.taskStatus(connection, task.id),
+    })
     return { kind: 'task_completed', message: taskCompleted }
   }
 

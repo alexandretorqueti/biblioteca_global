@@ -41,6 +41,7 @@ import {
   tarefaEventos,
   tarefaChatEntregas,
   motorOutbox,
+  realtimeEventOutbox,
   projetoMotorConfig,
   deployRequests,
 } from '../schema';
@@ -53,6 +54,7 @@ import type { PromptPart } from '../src/prompts/PromptComposition';
 import { ProvisionService } from '../../../apps/api/src/modules/provision/provision.service';
 import { RealtimeService } from '../../../apps/api/src/modules/realtime/realtime.service';
 import { GitInspectorService } from './git-inspector.service';
+import { RealtimeMutationBoundaryService } from './realtime-mutation-boundary.service';
 
 const DEFAULT_SESSION_PAGE_SIZE = 50;
 const MAX_SESSION_PAGE_SIZE = 500;
@@ -155,6 +157,7 @@ export class GerenteAgentesService {
     private readonly configService: ConfigService,
     @Optional() private readonly realtime?: RealtimeService,
     private readonly gitInspector?: GitInspectorService,
+    private readonly realtimeBoundary?: RealtimeMutationBoundaryService,
   ) {
     // Motor: roda junto da API no mesmo container (entrypoint). Os endpoints
     // ficam em /api/motor/* na porta MOTOR_API_PORT — sem proxy, sem Host header.
@@ -983,6 +986,7 @@ export class GerenteAgentesService {
       }
     }
 
+    let realtimeEventId: string | undefined;
     const created = await db.transaction(async (tx: any) => {
       const result = await tx.insert(tarefas).values({
         projetoId: managedProjectId,
@@ -1034,22 +1038,24 @@ export class GerenteAgentesService {
         status: 'pending',
         attempt: 0,
       });
+      realtimeEventId = randomUUID();
+      await tx.insert(realtimeEventOutbox).values({
+        eventId: realtimeEventId,
+        taskId: tarefaId,
+        sourceTaskId: externalId,
+        projectId: managedProjectId,
+        subtaskId: null,
+        type: 'task.created',
+        previousStatus: null,
+        status: 'draft',
+        payload: { title: tarefaCriada.titulo, status: 'draft', tipo: tarefaCriada.tipo, managedProjectId },
+        perTaskSeq: 1,
+        deliveryStatus: 'pending',
+        attempts: 0,
+      });
       return tarefaCriada;
     });
-    // Publica evento realtime APÓS o commit da transação
-    this.publicarEventoRealtime({
-      source: 'gerenteagentes-api',
-      projectId: managedProjectId,
-      taskId: Number(created.id),
-      sourceTaskId: created.externalId || `task-p${managedProjectId}-${created.id}`,
-      type: 'task.created',
-      payload: {
-        title: created.titulo,
-        status: 'planned',
-        tipo: created.tipo,
-        managedProjectId,
-      },
-    });
+    if (realtimeEventId && this.realtimeBoundary) await this.realtimeBoundary.despachar(db, Number(created.id), [realtimeEventId]);
     return created;
   }
 
@@ -1158,10 +1164,18 @@ export class GerenteAgentesService {
     // Play é uma ação única: para tarefa pausada, primeiro remove a pausa e
     // deixa o Motor retomar o ciclo; para as demais, enfileira normalmente.
     const motorId = tarefa.externalId || `task-biblioteca-${tarefa.id}`;
+    const estavaPausada = Boolean(tarefa.pausedAt);
     const startPath = tarefa.pausedAt || this.motorVersao === 'v3'
       ? `/api/motor/task/${encodeURIComponent(motorId)}/resume`
       : `/api/motor/task/${encodeURIComponent(motorId)}/enqueue`;
-    if (tarefa.pausedAt && this.motorVersao === 'v3') {
+    // A transição é confirmada e despachada antes do comando ao Motor. Assim,
+    // o Mapa nunca observa o resume sem antes receber draft/paused -> planned.
+    if (estavaPausada && this.motorVersao === 'v3' && this.realtimeBoundary) {
+      await this.realtimeBoundary.executar(db, tarefaId, async (tx, atual) => {
+        await tx.update(tarefas).set({ pausedAt: null, updatedAt: new Date() }).where(eq(tarefas.id, tarefaId));
+        await this.registrarEvento(tx, atual, 'resumed', ator, 'usuario');
+      });
+    } else if (estavaPausada && this.motorVersao === 'v3') {
       await db.update(tarefas).set({ pausedAt: null, updatedAt: new Date() }).where(eq(tarefas.id, tarefaId));
     }
     const start = await this.motorRequest('POST', startPath, undefined, this.motorHttpUrl).catch((e: unknown) => {
@@ -1171,8 +1185,8 @@ export class GerenteAgentesService {
       throw new BadRequestException(`Motor rejeitou o início (${start.status}): ${start.body.slice(0, 200)}`);
     }
 
-    await this.registrarEvento(db, tarefa, tarefa.pausedAt ? 'resumed' : 'started', ator, 'usuario');
-    return { id: tarefaId, message: tarefa.pausedAt ? 'Tarefa retomada no motor' : 'Tarefa iniciada no motor', motorId };
+    await this.registrarEvento(db, tarefa, estavaPausada ? 'resumed' : 'started', ator, 'usuario');
+    return { id: tarefaId, message: estavaPausada ? 'Tarefa retomada no motor' : 'Tarefa iniciada no motor', motorId };
   }
 
   async pausarTarefa(projeto: ProjetoResumo, tarefaId: number, ator = 'usuario') {
@@ -1217,23 +1231,15 @@ export class GerenteAgentesService {
       }
     }
 
-    if (this.motorVersao === 'v3') {
-      await db.update(tarefas).set({ pausedAt: new Date(), updatedAt: new Date() }).where(eq(tarefas.id, tarefaId));
+    if (this.motorVersao === 'v3' && this.realtimeBoundary) {
+      await this.realtimeBoundary.executar(db, tarefaId, async (tx, atual) => {
+        await tx.update(tarefas).set({ pausedAt: new Date(), updatedAt: new Date() }).where(eq(tarefas.id, tarefaId));
+        await this.registrarEvento(tx, atual, 'paused', ator, 'usuario');
+      });
+    } else {
+      if (this.motorVersao === 'v3') await db.update(tarefas).set({ pausedAt: new Date(), updatedAt: new Date() }).where(eq(tarefas.id, tarefaId));
+      await this.registrarEvento(db, tarefa, 'paused', ator, 'usuario');
     }
-    await this.registrarEvento(db, tarefa, 'paused', ator, 'usuario');
-    // Publica evento realtime APÓS o commit
-    this.publicarEventoRealtime({
-      source: 'gerenteagentes-api',
-      projectId: Number(tarefa.projetoId),
-      taskId: tarefaId,
-      sourceTaskId: tarefa.externalId || `task-p${tarefa.projetoId}-${tarefaId}`,
-      type: 'task.status.changed',
-      payload: {
-        status: 'paused',
-        previousStatus: undefined,
-        actor: ator,
-      },
-    });
     return { id: tarefaId, paused: true, message: 'Tarefa pausada' };
   }
 
@@ -1253,7 +1259,12 @@ export class GerenteAgentesService {
       throw new BadRequestException('Tarefa não está pausada');
     }
 
-    if (this.motorVersao === 'v3') {
+    if (this.motorVersao === 'v3' && this.realtimeBoundary) {
+      await this.realtimeBoundary.executar(db, tarefaId, async (tx, atual) => {
+        await tx.update(tarefas).set({ pausedAt: null, updatedAt: new Date() }).where(eq(tarefas.id, tarefaId));
+        await this.registrarEvento(tx, atual, 'resumed', ator, 'usuario');
+      });
+    } else if (this.motorVersao === 'v3') {
       await db.update(tarefas).set({ pausedAt: null, updatedAt: new Date() }).where(eq(tarefas.id, tarefaId));
     }
 
@@ -1272,20 +1283,9 @@ export class GerenteAgentesService {
       }
     }
 
-    await this.registrarEvento(db, tarefa, 'resumed', ator, 'usuario');
-    // Publica evento realtime APÓS o commit
-    this.publicarEventoRealtime({
-      source: 'gerenteagentes-api',
-      projectId: Number(tarefa.projetoId),
-      taskId: tarefaId,
-      sourceTaskId: tarefa.externalId || `task-p${tarefa.projetoId}-${tarefaId}`,
-      type: 'task.status.changed',
-      payload: {
-        status: 'resumed',
-        previousStatus: 'paused',
-        actor: ator,
-      },
-    });
+    if (!(this.motorVersao === 'v3' && this.realtimeBoundary)) {
+      await this.registrarEvento(db, tarefa, 'resumed', ator, 'usuario');
+    }
     return { id: tarefaId, paused: false, message: 'Tarefa retomada' };
   }
 
@@ -1307,38 +1307,23 @@ export class GerenteAgentesService {
       // A Biblioteca registra a solicitação; o fato 'cancelled' é registrado
       // pelo Motor em tarefa_eventos quando o TaskCancelConsumer persistir o
       // terminal_status (incidente 862, item 5 — trilha honesta).
-      await this.registrarEvento(db, tarefa, 'cancel_requested', ator, 'usuario', { motivo: motivoNormalizado });
-      // Publica evento realtime APÓS o commit
-      this.publicarEventoRealtime({
-        source: 'gerenteagentes-api',
-        projectId: Number(tarefa.projetoId),
-        taskId: tarefaId,
-        sourceTaskId: tarefa.externalId || `task-p${tarefa.projetoId}-${tarefaId}`,
-        type: 'task.status.changed',
-        payload: {
-          status: 'cancel_requested',
-          previousStatus: undefined,
-          actor: ator,
-          motivo: motivoNormalizado,
-        },
-      });
+      if (this.realtimeBoundary) {
+        // cancel_requested é auditoria; não é status canônico do Mapa.
+        await this.realtimeBoundary.executar(db, tarefaId, async (tx, atual) => {
+          await this.registrarEvento(tx, atual, 'cancel_requested', ator, 'usuario', { motivo: motivoNormalizado });
+        });
+      } else {
+        await this.registrarEvento(db, tarefa, 'cancel_requested', ator, 'usuario', { motivo: motivoNormalizado });
+      }
       return { id: tarefaId, cancelled: true, message: 'Cancelamento solicitado ao motor' };
     }
-    await this.registrarEvento(db, tarefa, 'cancelled', ator, 'usuario', { motivo: motivoNormalizado });
-    // Publica evento realtime APÓS o commit
-    this.publicarEventoRealtime({
-      source: 'gerenteagentes-api',
-      projectId: Number(tarefa.projetoId),
-      taskId: tarefaId,
-      sourceTaskId: tarefa.externalId || `task-p${tarefa.projetoId}-${tarefaId}`,
-      type: 'task.status.changed',
-      payload: {
-        status: 'cancelled',
-        previousStatus: undefined,
-        actor: ator,
-        motivo: motivoNormalizado,
-      },
-    });
+    if (this.realtimeBoundary) {
+      await this.realtimeBoundary.executar(db, tarefaId, async (tx, atual) => {
+        await this.registrarEvento(tx, atual, 'cancelled', ator, 'usuario', { motivo: motivoNormalizado });
+      });
+    } else {
+      await this.registrarEvento(db, tarefa, 'cancelled', ator, 'usuario', { motivo: motivoNormalizado });
+    }
     return { id: tarefaId, cancelled: true };
   }
 
@@ -1347,21 +1332,16 @@ export class GerenteAgentesService {
     const [tarefa] = await db.select().from(tarefas).where(eq(tarefas.id, tarefaId)).limit(1);
     if (!tarefa) throw new NotFoundException('Tarefa não encontrada');
     // O evento é gravado antes da remoção e não tem FK, preservando a autoria.
-    await this.registrarEvento(db, tarefa, 'deleted', ator, 'usuario');
+    if (this.realtimeBoundary) {
+      await this.realtimeBoundary.executar(db, tarefaId, async (tx, atual) => {
+        await this.registrarEvento(tx, atual, 'deleted', ator, 'usuario');
+      }, { type: 'task.deleted', force: true, payload: { actor: ator } });
+    } else {
+      await this.registrarEvento(db, tarefa, 'deleted', ator, 'usuario');
+    }
     const motorId = tarefa.externalId || String(tarefa.id);
     const resp = await this.motorRequest('DELETE', `/api/motor/task/${encodeURIComponent(motorId)}`, undefined, this.motorHttpUrl);
     if (!resp.ok) throw new BadRequestException(`Motor rejeitou a exclusão (${resp.status}): ${resp.body.slice(0, 200)}`);
-    // Publica evento realtime APÓS o commit
-    this.publicarEventoRealtime({
-      source: 'gerenteagentes-api',
-      projectId: Number(tarefa.projetoId),
-      taskId: tarefaId,
-      sourceTaskId: tarefa.externalId || `task-p${tarefa.projetoId}-${tarefaId}`,
-      type: 'task.deleted',
-      payload: {
-        actor: ator,
-      },
-    });
     return { id: tarefaId, deleted: true };
   }
 

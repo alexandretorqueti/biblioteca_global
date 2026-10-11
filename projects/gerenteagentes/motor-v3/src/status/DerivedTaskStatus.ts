@@ -1,5 +1,9 @@
 import type { Pool, RowDataPacket } from 'mysql2/promise'
 
+export interface SqlQueryable {
+  query: Pool['query']
+}
+
 export type DerivedTaskStatus =
   | 'draft' | 'planned' | 'analyzing' | 'awaiting_clarification' | 'awaiting_interaction'
   | 'ready' | 'running' | 'paused' | 'completed' | 'closed' | 'deployed'
@@ -29,7 +33,7 @@ const NON_CODE_COMPLETION_KINDS = new Set(['analysis', 'no_code_change', 'extern
  * status de negócio. A ordem preserva a precedência histórica dos estados.
  */
 export class DerivedTaskStatusResolver {
-  constructor(private readonly pool: Pool) {}
+  constructor(private readonly pool: SqlQueryable) {}
 
   async resolve(taskId: string): Promise<DerivedTaskStatus> {
     const [rows] = await this.pool.query<TaskFactsRow[]>(`

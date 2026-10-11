@@ -65,5 +65,12 @@
       "tag": "0007_motor_baseline_fix_sessions",
       "breakpoints": true
     }
+    ,{
+      "idx": 9,
+      "version": "5",
+      "when": 1791678000002,
+      "tag": "0008_realtime_event_outbox",
+      "breakpoints": true
+    }
   ]
 }
