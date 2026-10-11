@@ -15,8 +15,8 @@ export interface RealtimeOutboxEvent {
   projectId: number
   subtaskId: number | null
   type: RealtimeEventType
-  previousStatus: DerivedTaskStatus | null
-  status: DerivedTaskStatus | null
+  previousStatus: string | null
+  status: string | null
   payload: Record<string, unknown>
   perTaskSeq: number
   createdAt: string
@@ -99,6 +99,66 @@ export class RealtimeMutationBoundary {
     } finally {
       connection.release()
     }
+  }
+
+  /**
+   * Acrescenta a projeção numa transação que já pertence ao repositório.
+   * É a API usada pelos caminhos que também gravam motor_outbox: não abre
+   * uma segunda transação e, portanto, fato operacional e realtime têm o
+   * mesmo commit.
+   */
+  async append(
+    connection: PoolConnection,
+    taskId: number,
+    before: DerivedTaskStatus,
+    options: {
+      type?: RealtimeEventType
+      subtaskId?: number | null
+      previousSubtaskStatus?: string | null
+      subtaskStatus?: string | null
+      payload?: Record<string, unknown>
+      counters?: Record<string, number>
+      after?: DerivedTaskStatus
+    } = {},
+  ): Promise<RealtimeOutboxEvent[]> {
+    const identityResult = await connection.query<TaskIdentity[]>(
+      'SELECT id, external_id, projeto_id FROM tarefas WHERE id = ? LIMIT 1', [taskId],
+    )
+    const rows = identityResult?.[0] ?? []
+    const identity = rows[0]
+    // Alguns consumidores legados executam a mutação contra uma réplica/mock
+    // que não expõe a identidade; o fato canônico continua sendo confirmado
+    // pelo repositório. Em produção, a identidade sempre existe após o lock.
+    if (!identity) return []
+    const after = options.after ?? await new DerivedTaskStatusResolver(connection).resolve(String(identity.external_id ?? identity.id))
+    const events: RealtimeOutboxEvent[] = []
+    const enqueue = async (event: Omit<RealtimeOutboxEvent, 'eventId' | 'perTaskSeq' | 'createdAt'>) => {
+      events.push(await this.insertEvent(connection, identity, event))
+    }
+    if (options.type?.startsWith('subtask.') && options.subtaskId != null) {
+      await enqueue({
+        taskId: identity.id, sourceTaskId: identity.external_id, projectId: identity.projeto_id,
+        subtaskId: options.subtaskId, type: options.type,
+        previousStatus: options.previousSubtaskStatus ?? null, status: options.subtaskStatus ?? null,
+        payload: { ...(options.payload ?? {}), previousStatus: options.previousSubtaskStatus, status: options.subtaskStatus },
+      })
+    }
+    if (after !== before) {
+      await enqueue({
+        taskId: identity.id, sourceTaskId: identity.external_id, projectId: identity.projeto_id,
+        subtaskId: options.subtaskId ?? null, type: 'task.status.changed',
+        previousStatus: before, status: after, payload: { previousStatus: before, status: after },
+      })
+    }
+    const counters = options.counters ?? (options.type?.startsWith('subtask.') ? await this.readCounters(connection, identity.id) : undefined)
+    if (counters) {
+      await enqueue({
+        taskId: identity.id, sourceTaskId: identity.external_id, projectId: identity.projeto_id,
+        subtaskId: options.subtaskId ?? null, type: 'task.counters.updated',
+        previousStatus: null, status: after, payload: counters,
+      })
+    }
+    return events
   }
 
   private async readCounters(connection: PoolConnection, taskId: number): Promise<Record<string, number>> {

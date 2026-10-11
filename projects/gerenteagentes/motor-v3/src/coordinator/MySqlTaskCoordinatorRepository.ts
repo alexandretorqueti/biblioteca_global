@@ -2,6 +2,7 @@ import type { Pool, PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql
 import type { AnalysisExecutionLeaseRepository, TaskCoordinatorRepository, TaskLifecycleStatus, TaskSnapshot } from './TaskCoordinator.js'
 import type { AnalysisOutcome } from '../analysis/AnalystReply.js'
 import { DerivedTaskStatusResolver } from '../status/DerivedTaskStatus.js'
+import { RealtimeMutationBoundary } from '../realtime/RealtimeMutationBoundary.js'
 import type { RealtimeMutationPublisher } from '../realtime/RealtimeMutationPublisher.js'
 
 interface TaskRow extends RowDataPacket {
@@ -31,7 +32,9 @@ interface TaskRow extends RowDataPacket {
 export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository, AnalysisExecutionLeaseRepository {
   private readonly statusResolver: DerivedTaskStatusResolver
 
-  constructor(private readonly pool: Pool, private readonly realtime?: RealtimeMutationPublisher) {
+  private readonly realtime: RealtimeMutationBoundary
+  constructor(private readonly pool: Pool, realtime?: RealtimeMutationBoundary | RealtimeMutationPublisher) {
+    this.realtime = realtime instanceof RealtimeMutationBoundary ? realtime : new RealtimeMutationBoundary(pool)
     this.statusResolver = new DerivedTaskStatusResolver(pool)
   }
 
@@ -90,6 +93,10 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
         await connection.rollback()
         return false
       }
+      // cannotStart() proves the canonical pre-claim projection is planned;
+      // keeping this read-free also preserves the claim's single atomic SQL
+      // update as the only conditional write.
+      const before = 'planned' as const
 
       await connection.query(
         `INSERT INTO task_runtime_facts (tarefa_id, created_at, updated_at)
@@ -109,6 +116,8 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
         await connection.rollback()
         return false
       }
+      const after = 'analyzing' as const
+      await this.realtime.append(connection, row.id, before, { after })
       await connection.commit()
       return true
     } catch (error) {
@@ -180,6 +189,8 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
       const databaseTaskId = taskRows[0]?.id
       if (!databaseTaskId) throw new Error(`Claim de análise não encontrado para ${taskId}`)
       committedTaskId = databaseTaskId
+      // persistAnalysis is invoked only after a successful analysis claim.
+      const before = 'analyzing' as const
 
       if (outcome.kind === 'questions') {
         await connection.query(
@@ -231,14 +242,16 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
             )
           }
           await connection.query('UPDATE tarefas SET plan_coverage = ? WHERE id = ?', [JSON.stringify(outcome.coverage), databaseTaskId])
+          const afterPlan = 'ready' as const
+          for (const subtaskId of createdSubtaskIds) {
+            await this.realtime.append(connection, databaseTaskId, before, {
+              type: 'subtask.created', subtaskId, subtaskStatus: 'pending', after: before,
+            })
+          }
+          await this.realtime.append(connection, databaseTaskId, before, { after: afterPlan })
         }
       }
       await connection.commit()
-      // A publicação ocorre estritamente após o commit; o adaptador absorve
-      // indisponibilidade temporária do gateway sem desfazer a análise.
-      if (createdSubtaskIds.length > 0 && committedTaskId != null) {
-        await this.realtime?.publishAnalysisCreated(committedTaskId, createdSubtaskIds)
-      }
     } catch (error) {
       await connection.rollback()
       throw error
