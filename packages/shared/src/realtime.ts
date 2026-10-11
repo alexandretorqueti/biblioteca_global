@@ -26,7 +26,7 @@ const taskExecutionPayloadSchema = z.discriminatedUnion("type", [
 export const realtimeEventTypeSchema = z.enum([
   "task.created", "task.updated", "task.deleted", "task.status.changed", "task.counters.updated",
   "task.started", "task.error", "task.timeout", "task.command.started", "task.command.output", "task.command.finished",
-  "task.activity.created", "task.chat.delivery.updated", "task.interaction.checkpoint_requested",
+  "task.activity.created", "task.chat.delivery.updated", "task.chat.message.created", "task.interaction.checkpoint_requested",
   "task.interaction.awaiting", "task.interaction.resumed",
   "subtask.created", "subtask.updated", "subtask.deleted", "subtask.status.changed",
   "activity.created", "activity.updated", "deploy.diagnostics.updated", "history.entry.created",

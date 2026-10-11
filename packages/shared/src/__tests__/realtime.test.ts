@@ -85,6 +85,21 @@ describe("contrato realtime do Mapa de Agentes", () => {
     }
   })
 
+  it("aceita evento de chat da tarefa (task.chat.message.created)", () => {
+    const chatEvent = {
+      ...envelope,
+      type: "task.chat.message.created",
+      payload: {
+        id: 453,
+        tarefaId: 42,
+        role: "user",
+        texto: "Mensagem de teste",
+        createdAt: "2026-10-11T10:00:00.000Z",
+      },
+    }
+    expect(realtimeIngressEventSchema.safeParse(chatEvent).success).toBe(true)
+  })
+
   it("rejeita evento desconhecido (fora do catálogo)", () => {
     expect(realtimeIngressEventSchema.safeParse({ ...envelope, type: "unknown.event" }).success).toBe(false)
     expect(realtimeIngressEventSchema.safeParse({ ...envelope, type: "future.feature" }).success).toBe(false)

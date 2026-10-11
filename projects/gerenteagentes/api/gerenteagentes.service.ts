@@ -1875,21 +1875,25 @@ export class GerenteAgentesService {
     }
 
     const createdAt = new Date();
-    this.realtime?.publicar({
-      eventId: randomUUID(),
-      occurredAt: createdAt.toISOString(),
-      source: 'gerenteagentes.chat',
-      projectId: Number(tarefa.projetoId),
-      taskId: tarefaId,
-      type: 'task.chat.message.created',
-      payload: {
-        id: mensagem.id,
-        tarefaId,
-        role: 'user',
-        texto: normalizedText,
-        createdAt: createdAt.toISOString(),
-      },
-    });
+    try {
+      this.realtime?.publicar({
+        eventId: randomUUID(),
+        occurredAt: createdAt.toISOString(),
+        source: 'gerenteagentes.chat',
+        projectId: Number(tarefa.projetoId),
+        taskId: tarefaId,
+        type: 'task.chat.message.created',
+        payload: {
+          id: mensagem.id,
+          tarefaId,
+          role: 'user',
+          texto: normalizedText,
+          createdAt: createdAt.toISOString(),
+        },
+      });
+    } catch (error) {
+      this.logger.warn(`Falha ao publicar evento realtime do chat da tarefa ${tarefaId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
 
     // Entrega best-effort na sessão já aberta pelo analista. Fica fora do
     // request para uma falha do Console não impedir o registro da mensagem.
@@ -1958,11 +1962,15 @@ export class GerenteAgentesService {
         const [created] = await db.insert(tarefaChats).values({ tarefaId: tarefa.id, role: 'analyst', texto: respostaTexto, createdAt: new Date() }).$returningId();
         if (created) {
           const createdAt = new Date();
-          this.realtime?.publicar({
-            eventId: randomUUID(), occurredAt: createdAt.toISOString(), source: 'gerenteagentes.chat',
-            projectId: Number(tarefa.projetoId), taskId: tarefa.id, type: 'task.chat.message.created',
-            payload: { id: created.id, tarefaId: tarefa.id, role: 'analyst', texto: respostaTexto, createdAt: createdAt.toISOString() },
-          });
+          try {
+            this.realtime?.publicar({
+              eventId: randomUUID(), occurredAt: createdAt.toISOString(), source: 'gerenteagentes.chat',
+              projectId: Number(tarefa.projetoId), taskId: tarefa.id, type: 'task.chat.message.created',
+              payload: { id: created.id, tarefaId: tarefa.id, role: 'analyst', texto: respostaTexto, createdAt: createdAt.toISOString() },
+            });
+          } catch (error) {
+            this.logger.warn(`Falha ao publicar evento realtime da resposta do analista na tarefa ${tarefa.id}: ${error instanceof Error ? error.message : String(error)}`);
+          }
         }
         return;
       }
