@@ -20,6 +20,7 @@ import {
 import { DynamicForm } from "@biblioteca-global/ui"
 import type { DynamicField, DynamicFormValues } from "@biblioteca-global/ui"
 import { RealtimeClient } from "@biblioteca-global/api-client"
+import { normalizeChatContent } from "@biblioteca-global/shared"
 import { useApi } from "../../../apps/web/src/hooks/useApi"
 import { resolveApiBaseUrl, resolveRealtimeUrl } from "../../../apps/web/src/api/client"
 import TarefaForm, { type TarefaFormValues } from "./TarefaForm"
