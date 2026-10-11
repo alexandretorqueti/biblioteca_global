@@ -48,7 +48,7 @@ export class ConsoleHttpApi implements AnalystConsole {
     const assistant = [...messages].reverse().find(message =>
       message.role === 'assistant' && this.isResponseAfter(message, marker) && this.isFinalAssistant(message),
     ) as
-      | { role: string; content: unknown; errorCode?: unknown; errorType?: unknown; errorMessage?: unknown; stopReason?: unknown }
+      | { id?: unknown; role: string; content: unknown; errorCode?: unknown; errorType?: unknown; errorMessage?: unknown; stopReason?: unknown }
       | undefined
     if (failed) {
       // Corrida de status obsoleto (incidente task-p2-981/subtarefa 1336):
@@ -98,7 +98,44 @@ export class ConsoleHttpApi implements AnalystConsole {
       return terminalCompleted ? { isComplete: true } : { isComplete: false }
     }
     this.pendingResponses.delete(this.sessionKey(session))
-    return { isComplete: true, lastResponse: String(assistant.content) }
+    let lastResponse = String(assistant.content)
+    // O Gateway trunca o texto do histórico em 8.000 caracteres (sufixo
+    // `...(truncated)...`) e o endpoint de histórico do Console não encaminha
+    // `maxChars`. Respostas finais longas (ex.: JSON do analista) chegariam
+    // cortadas e falhariam no parser (incidente task-p2-984). O endpoint
+    // `/api/chat/message` aceita `maxChars` e devolve a mensagem integral pelo
+    // id canônico persistido no histórico.
+    if (this.isHistoryTruncated(lastResponse)) {
+      const messageId = typeof assistant.id === 'string' || typeof assistant.id === 'number' ? String(assistant.id) : undefined
+      const full = messageId ? await this.fetchFullMessageContent(session, messageId) : undefined
+      if (full !== undefined) lastResponse = full
+    }
+    return { isComplete: true, lastResponse }
+  }
+
+  /** Detecta o sufixo de truncamento aplicado pelo Gateway no histórico. */
+  private isHistoryTruncated(content: string): boolean {
+    return content.includes('...(truncated)...')
+  }
+
+  /**
+   * Recupera o conteúdo integral de uma mensagem pelo id canônico do Gateway.
+   * Falhas são degradadas para `undefined`: o chamador mantém o texto truncado
+   * e o fluxo existente de correção/fallback continua responsável por tratar.
+   */
+  private async fetchFullMessageContent(session: AnalystSession, messageId: string): Promise<string | undefined> {
+    try {
+      const result = await this.request<{ ok?: boolean; message?: { content?: unknown }; unavailableReason?: unknown }>('/api/chat/message', {
+        method: 'GET',
+        query: { sessionKey: session.sessionKey, agentId: session.agentId, messageId, maxChars: 500_000 },
+      })
+      const content = result.message?.content
+      if (result.ok !== true || typeof content !== 'string' || content.trim().length === 0) return undefined
+      // Se nem o message.get devolver o texto completo (>500k), mantém o original.
+      return this.isHistoryTruncated(content) ? undefined : content
+    } catch {
+      return undefined
+    }
   }
 
   private async history(session: AnalystSession): Promise<{ messages?: ConsoleHistoryMessage[] }> {

@@ -199,5 +199,55 @@ describe('ConsoleHttpApi', () => {
     await expect(api.abortSession({ sessionId: 's6', sessionKey: 'agent:a:k6', agentId: 'a' }))
       .resolves.toEqual({ aborted: true })
   })
+
+  it('busca a resposta final integral via /api/chat/message quando o histórico vem truncado (incidente task-p2-984)', async () => {
+    const truncated = `{"subtarefas":[{"seq":1,${'"x":"y",'.repeat(2000)}`.padEnd(8000, 'z') + '\n...(truncated)...'
+    const full = `{"subtarefas":[{"seq":1,"titulo":"t"}]}`
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ status: 'done', hasActiveRun: false, endedAt: 1 }))
+      .mockResolvedValueOnce(jsonResponse({ messages: [
+        { id: 'msg-final', role: 'assistant', stopReason: 'stop', content: truncated },
+      ] }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true, message: { id: 'msg-final', role: 'assistant', content: full } }))
+    vi.stubGlobal('fetch', fetchMock)
+    const api = new ConsoleHttpApi('http://console.local', 'token-de-teste')
+
+    const status = await api.getSessionStatus({ sessionId: 's7', sessionKey: 'agent:a:k7', agentId: 'a' })
+
+    expect(status).toEqual({ isComplete: true, lastResponse: full })
+    const messageCall = new URL(fetchMock.mock.calls[2]![0] as string)
+    expect(messageCall.pathname).toBe('/api/chat/message')
+    expect(messageCall.searchParams.get('messageId')).toBe('msg-final')
+    expect(Number(messageCall.searchParams.get('maxChars'))).toBeGreaterThan(8_000)
+  })
+
+  it('mantém o conteúdo truncado quando a mensagem integral não está disponível', async () => {
+    const truncated = 'resposta longa '.repeat(700) + '\n...(truncated)...'
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ status: 'done', hasActiveRun: false, endedAt: 1 }))
+      .mockResolvedValueOnce(jsonResponse({ messages: [
+        { id: 'msg-final', role: 'assistant', stopReason: 'stop', content: truncated },
+      ] }))
+      .mockResolvedValueOnce(jsonResponse({ ok: false, unavailableReason: 'not_found' }))
+    vi.stubGlobal('fetch', fetchMock)
+    const api = new ConsoleHttpApi('http://console.local', 'token-de-teste')
+
+    await expect(api.getSessionStatus({ sessionId: 's8', sessionKey: 'agent:a:k8', agentId: 'a' }))
+      .resolves.toEqual({ isComplete: true, lastResponse: truncated })
+  })
+
+  it('não chama /api/chat/message quando a resposta final não está truncada', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ status: 'done', hasActiveRun: false, endedAt: 1 }))
+      .mockResolvedValueOnce(jsonResponse({ messages: [
+        { id: 'msg-ok', role: 'assistant', stopReason: 'stop', content: '{"subtarefas":[]}' },
+      ] }))
+    vi.stubGlobal('fetch', fetchMock)
+    const api = new ConsoleHttpApi('http://console.local', 'token-de-teste')
+
+    await expect(api.getSessionStatus({ sessionId: 's9', sessionKey: 'agent:a:k9', agentId: 'a' }))
+      .resolves.toEqual({ isComplete: true, lastResponse: '{"subtarefas":[]}' })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
 })
 // @vitest-environment node

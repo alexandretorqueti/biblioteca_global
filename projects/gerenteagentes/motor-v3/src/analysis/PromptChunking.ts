@@ -37,6 +37,19 @@ export function isContextAcknowledgement(content: string): boolean {
   return /^CONTEXTO_RECEBIDO[.!]*$/i.test(content.trim())
 }
 
+/**
+ * Correção de protocolo enviada quando o analista não responde exatamente
+ * CONTEXTO_RECEBIDO a um bloco (ex.: antecipa o JSON final). Usada uma única
+ * vez por bloco antes de falhar a tentativa do modelo.
+ */
+export function buildAnalysisAcknowledgementCorrection(index: number, total: number): string {
+  return [
+    `[PROTOCOLO] Sua resposta anterior não seguiu o protocolo de confirmação do bloco ${index + 1}/${total}.`,
+    'Não execute a análise ainda, não gere JSON nem plano: o pedido de análise e o contrato serão enviados depois.',
+    'Responda somente CONTEXTO_RECEBIDO.',
+  ].join('\n')
+}
+
 export function splitAnalysisPrompt(prompt: string, chunkSize = DEFAULT_CHUNK_SIZE): string[] {
   if (!Number.isInteger(chunkSize) || chunkSize <= 0) throw new Error('chunkSize deve ser um inteiro positivo')
   if (prompt.length <= chunkSize) return [prompt]
