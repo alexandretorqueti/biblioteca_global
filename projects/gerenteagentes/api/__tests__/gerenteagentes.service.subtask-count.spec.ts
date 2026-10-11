@@ -110,7 +110,7 @@ describe('GerenteAgentesService — subtaskCount em tarefas-com-status', () => {
   it('retorna subtaskCount = 0 quando a tarefa não possui subtarefas', async () => {
     // Motor retorna tarefa sem array de subtasks
     responseBody = JSON.stringify({ status: 'paused' });
-    const { service } = novoService({ MOTOR_VERSION: 'v2', MOTOR_API_PORT: '3010' });
+    const { service } = novoService({ MOTOR_VERSION: 'v3', MOTOR_API_PORT: '3010' });
 
     const resultado = await service.listarTarefasComStatusCalculado(
       { id: 640, slug: 'gerenteagentes' } as never,
@@ -131,7 +131,7 @@ describe('GerenteAgentesService — subtaskCount em tarefas-com-status', () => {
         { seq: 3, status: 'pending' },
       ],
     });
-    const { service } = novoService({ MOTOR_VERSION: 'v2', MOTOR_API_PORT: '3010' });
+    const { service } = novoService({ MOTOR_VERSION: 'v3', MOTOR_API_PORT: '3010' });
 
     const resultado = await service.listarTarefasComStatusCalculado(
       { id: 640, slug: 'gerenteagentes' } as never,
@@ -146,7 +146,7 @@ describe('GerenteAgentesService — subtaskCount em tarefas-com-status', () => {
     // Simula falha no motor (response não-ok)
     responseStatus = 500;
     responseBody = 'Internal Server Error';
-    const { service } = novoService({ MOTOR_VERSION: 'v2', MOTOR_API_PORT: '3010' });
+    const { service } = novoService({ MOTOR_VERSION: 'v3', MOTOR_API_PORT: '3010' });
 
     const resultado = await service.listarTarefasComStatusCalculado(
       { id: 640, slug: 'gerenteagentes' } as never,
@@ -160,7 +160,7 @@ describe('GerenteAgentesService — subtaskCount em tarefas-com-status', () => {
 
   it('retorna subtaskCount = 0 quando subtasks é null/undefined no motor', async () => {
     responseBody = JSON.stringify({ status: 'pending', subtasks: null });
-    const { service } = novoService({ MOTOR_VERSION: 'v2', MOTOR_API_PORT: '3010' });
+    const { service } = novoService({ MOTOR_VERSION: 'v3', MOTOR_API_PORT: '3010' });
 
     const resultado = await service.listarTarefasComStatusCalculado(
       { id: 640, slug: 'gerenteagentes' } as never,

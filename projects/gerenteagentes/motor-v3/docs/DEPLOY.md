@@ -2,17 +2,12 @@
 
 ## Pré-requisitos
 
-1. **Motor v2 PARADO** (decisão D1 — não religar NUNCA)
-   - Verificar: `curl http://host.docker.internal:3010/api/motor/health` deve falhar
-   - Se estiver rodando: `ssh -i /root/.ssh/id_ed25519 alexandre@host.docker.internal 'docker exec biblioteca-green-api-1 kill -TERM <pid>'`
-   - Verificar PID: `docker exec biblioteca-green-api-1 ps aux | grep start.js`
-
-2. **Banco MySQL acessível**
+1. **Banco MySQL acessível**
    - Container: `biblioteca-global-mysql`
    - Porta: 3308 (host)
    - Database: `projeto_640`
 
-3. **Branch `motor-v3`** com código atualizado
+2. **Branch `motor-v3`** com código atualizado
    - Repo: `/data/workspace/projects/codigofonte/biblioteca-global`
    - Path: `projects/gerenteagentes/motor-v3/`
 
@@ -187,15 +182,9 @@ Quando **todas as fases anteriores passarem**:
 
 ## Rollback (se necessário)
 
-Se o motor-v3 falhar em produção:
-
-1. Parar motor-v3
-2. Religar motor-v2 (APENAS SE ALEXANDRE AUTORIZAR)
-   - `ssh -i /root/.ssh/id_ed25519 alexandre@host.docker.internal 'docker exec biblioteca-green-api-1 bash -c "MOTOR_VERSION=v2 node projects/gerenteagentes/motor-v2/dist/start.js &"'`
-3. Investigar falha no motor-v3
-4. Corrigir e testar novamente
-
-**Nota:** Rollback para v2 é último recurso. Preferir corrigir o v3.
+Se o Motor v3 falhar em produção, interromper o slot defeituoso, restaurar a
+revisão anterior da branch base pelo fluxo blue-green e investigar a falha antes
+de uma nova tentativa. Não existe runtime alternativo dentro do projeto.
 
 ## Monitoramento
 
@@ -276,6 +265,6 @@ curl -X POST http://localhost:3010/api/motor/catalog/reject/<proposalId> \
 ## Referências
 
 - **Spec completa:** `docs/ESPECIFICACAO.md` (18 seções)
-- **Mapeamento v2→v3:** `docs/MOTOR-V2-SIMULACAO-TEXTUAL.md`
+- **Mapeamento v2→v3:** `docs/ESPECIFICACAO.md`
 - **Log de desenvolvimento:** `docs/MOTOR-V3-LOG.md`
 - **Catálogo de eventos:** `docs/CATALOGO-EVENTOS-REACOES.md`

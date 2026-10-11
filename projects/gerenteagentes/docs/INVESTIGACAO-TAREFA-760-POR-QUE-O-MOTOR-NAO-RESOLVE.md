@@ -92,7 +92,7 @@ Cada entrega cria sessão nova (`formatSessionKey(..., generation)`). O único c
   padrão (decisão Alexandre: projeto sem modelos cadastrados não usa default),
   regressão do `[object Object]` coberta por teste; specs funcionais fora do gate
   automático em todos os caminhos (escopado, suíte cheia, correção de baseline).
-  Suíte do motor-v2: 367 testes passando.
+  Suíte do motor: 367 testes passando.
 - **MotorMonitorStep** (`src/steps/MotorMonitorStep.ts`) tem a MESMA query legado
   (`projeto_model_chain`) mas não é usado no fluxo v2 (apenas exportado) — corrigir
   quando for ativado.
@@ -133,7 +133,7 @@ Cada entrega cria sessão nova (`formatSessionKey(..., generation)`). O único c
 
 - **Notificação proativa: ADIADA.** Por enquanto basta bloquear a tarefa; o Alexandre acompanha pelo chat/tela. (Item 2 da decisão anterior fica postergado.)
 - **NOVA ARQUITETURA — branch de integração por tarefa (aprovada em conceito):**
-  1. No START da tarefa, o motor cria uma **pasta (worktree) e uma branch DA TAREFA** (ex.: `motor-v2/<tarefa_id>`), saindo da base.
+  1. No START da tarefa, o motor cria uma **pasta (worktree) e uma branch DA TAREFA** (ex.: `motor/<tarefa_id>`), saindo da base.
   2. As subtarefas são criadas **da branch da tarefa**, não da base.
   3. Quando TODAS as subtarefas estiverem mergeadas na branch da tarefa e ela estiver verde (gate completo), o motor faz o merge para a base.
   4. **Havendo qualquer conflito** (entre subtarefas ou no merge final com a base): a tarefa fica **bloqueada** pedindo resolução humana (Alexandre) e o **merge é cancelado** — nada parcial.
@@ -144,7 +144,7 @@ Cada entrega cria sessão nova (`formatSessionKey(..., generation)`). O único c
 
 Correção importante: a regra "conflito → bloqueia + Alexandre resolve + cancela merge" vale para o merge **tarefa → base** (drift externo), NÃO para subtarefa → tarefa.
 
-1. **START da tarefa:** motor cria worktree + branch da tarefa (`motor-v2/<tarefa_id>`) a partir da base.
+1. **START da tarefa:** motor cria worktree + branch da tarefa (`motor/<tarefa_id>`) a partir da base.
 2. **Subtarefas:** branqueiam da branch da tarefa; gate roda no worktree da subtarefa.
 3. **Merge subtarefa → branch da tarefa:** após cada merge, **gate de integração na branch da tarefa** (pega quebra de integração na subtarefa culpada, não só no final).
 4. **Conflito subtarefa → tarefa:** resolve o **agente da subtarefa** (integra a branch da tarefa no próprio worktree, resolve o conflito, re-roda o gate). Só escala para humano se o agente falhar em resolver.
@@ -163,7 +163,7 @@ acima). Detalhes completos: `docs/MOTOR-BRANCH-INTEGRACAO-POR-TAREFA.md`.
 - **Carry-over de aprendizado** (`CarryOverPolicy.ts`): digest das falhas de gate (remove
   ruído HTML, mantém asserções), histórico estruturado de entregas no prompt e relato do
   agente da entrega anterior.
-- **Branch de integração por tarefa**: `motor-v2/<tarefa>/integracao`; subtarefas derivam
+- **Branch de integração por tarefa**: `motor/<tarefa>/integracao`; subtarefas derivam
   dela; gate de integração após cada merge; promoção para a base só no fim, com conflito →
   bloqueio humano (merge cancelado, artefatos preservados).
 - Validação: typecheck limpo, build OK, **396 testes passando** (38 arquivos; 4 arquivos de

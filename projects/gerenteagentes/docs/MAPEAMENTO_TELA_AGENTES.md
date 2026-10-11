@@ -40,7 +40,7 @@ COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), pc.slug)
 ```
 
 Esse campo `openclaw_agent_id` aparece nas migrations e nas queries do
-`motor-v2`, mas não está declarado no objeto `agentes` de `schema.ts`. Portanto,
+`motor`, mas não está declarado no objeto `agentes` de `schema.ts`. Portanto,
 a tela não deve inventar ou editar esse campo até o schema/migration canônico
 ser alinhado.
 
@@ -95,7 +95,7 @@ Há documentação histórica conflitante com o estado atual:
 
 Para a implementação da Tela de Agentes, a premissa adotada neste mapeamento é
 o estado executável atual (resource local + sincronização server-side), por ser
-o que `config.ts`, `schema.ts`, `api/` e `motor-v2/` efetivamente consomem.
+o que `config.ts`, `schema.ts`, `api/` e `motor/` efetivamente consomem.
 
 ## Escopo da próxima subtarefa
 

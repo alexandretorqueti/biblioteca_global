@@ -43,7 +43,7 @@ function novoService(): GerenteAgentesService {
     }) }) }),
     execute: vi.fn().mockResolvedValue([[], []]),
   };
-  const config = { get: (key: string) => key === 'MOTOR_VERSION' ? 'v2' : undefined } as unknown as ConfigService;
+  const config = { get: (key: string) => key === 'MOTOR_VERSION' ? 'v3' : undefined } as unknown as ConfigService;
   return new GerenteAgentesService({ obter: () => Promise.resolve(db) } as never, {} as never, {} as never, config);
 }
 

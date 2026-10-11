@@ -2,7 +2,7 @@
 set -eu
 
 # Usa o bind-mount do host (código-fonte vivo) em vez do /app da imagem Docker.
-# Sem isso, alterações no motor-v2 ou na API só entram em produção após rebuild da imagem.
+# Sem isso, alterações no motor ou na API só entram em produção após rebuild da imagem.
 # Ordem de preferência: $REPO_PATH (compose), bind atual (/home/alexandre/codigofonte),
 # bind antigo (12T) e, por último, /app (imagem Docker).
 SOURCE_DIR=""
@@ -22,9 +22,9 @@ else
   echo "[entrypoint] Bind-mount não encontrado, usando /app (imagem Docker)"
 fi
 
-# Configura git (necessário para o motor-v2 fazer commits)
-git config --global user.email "motor-v2@globaltecnologia.local"
-git config --global user.name "Motor v2"
+# Configura git (necessário para o motor fazer commits)
+git config --global user.email "motor@globaltecnologia.local"
+git config --global user.name "Motor v3"
 git config --global --add safe.directory "$SOURCE_DIR"
 git config --global --add safe.directory /data/workspace/projects/codigofonte/biblioteca-global
 git config --global --add safe.directory /run/media/alexandre/12T/codigofonte/GerenteAgentes
@@ -129,14 +129,8 @@ done
 # Seed temporariamente desabilitado - migrations já aplicadas
 # npm run db:seed
 
-# Inicia motor-v2 ou motor-v3 em background (dependendo da versão) — depois do migrate para garantir DNS
-if [ "${MOTOR_VERSION:-v1}" = "v2" ]; then
-  echo "[entrypoint] Iniciando motor-v2 em background..."
-  node projects/gerenteagentes/motor-v2/dist/start.js &
-  MOTOR_PID=$!
-  echo "[entrypoint] Motor-v2 PID: $MOTOR_PID"
-  sleep 2
-elif [ "${MOTOR_VERSION:-v1}" = "v3" ]; then
+# Inicia motor-v3 em background — depois do migrate para garantir DNS
+if [ "${MOTOR_VERSION:-v3}" = "v3" ]; then
   if ! command -v git >/dev/null 2>&1; then
     echo "[entrypoint] Motor-v3 bloqueado: imagem sem executável git" >&2
     exit 1

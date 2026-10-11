@@ -2,7 +2,7 @@
 
 **Estado:** proposta de implementação  
 **Objetivo:** entregar ao Motor v3 as capacidades de promoção e deploy
-blue-green do Motor v2, preservando a arquitetura do v3: comandos recebidos,
+blue-green, preservando sua arquitetura: comandos recebidos,
 políticas, actions, primitives protegidas, outbox transacional, RabbitMQ,
 eventos de domínio e reconciliação idempotente.
 
@@ -442,5 +442,5 @@ negócio.
 
 - Alterar `compose.yaml`, configuração do Gateway ou topologia do OpenClaw.
 - Reescrever o script blue-green sem necessidade comprovada.
-- Retomar o Motor v2 como executor de deploy para tarefas v3.
+- Retomar um executor legado de deploy para tarefas v3.
 - Substituir o relay transacional do outbox por CDC/binlog nesta etapa.

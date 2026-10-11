@@ -1,6 +1,6 @@
-# Mapeamento de configurações do Motor v2
+# Mapeamento de configurações do Motor v3
 
-Varredura realizada em `motor-v2/src`, `motor-v2/package.json`, `motor-v2/README.md` e migrations do projeto. O valor indicado é o default/fallback efetivo quando não existe valor específico da tarefa ou do projeto.
+Varredura realizada em `motor/src`, `motor-v3/package.json`, `motor-v3/README.md` e migrations do projeto. O valor indicado é o default/fallback efetivo quando não existe valor específico da tarefa ou do projeto.
 
 ## Parâmetros operacionais candidatos à tela CONFIGURAÇÕES
 
@@ -55,7 +55,7 @@ Estas não são defaults globais da tela; são valores de domínio que o motor j
 
 ## Configurações de ambiente e infraestrutura (visualização, não edição operacional)
 
-Foram encontrados: `MOTOR_PROJECT_ID` (default `640`), `MYSQL_HOST` (varia: `localhost`/`mysql`), `MYSQL_PORT` (`3308` no `DrizzleDb`, `3306` nos scripts/worker), `MYSQL_USER`, `MYSQL_PASSWORD`, `GERENTE_AGENTES_DATABASE` (default `projeto_640`), `MOTOR_WORKSPACE_ROOT` (default `/tmp/motor-v2-workspaces`), `DEPLOY_REPO_HOST`, `TASK_SECRETS_ROOT`, `TASK_ENVIRONMENT` (default `development`), `OPENCLAW_CONSOLE_URL`, `OPENCLAW_CONSOLE_TOKEN`, `LIBRARY_REALTIME_EVENTS_URL` e `LIBRARY_REALTIME_EVENTS_TOKEN`, além de `MOTOR_LOG_LEVEL`, `MOTOR_LOG_FILE` e `MOTOR_LOG_FORMAT`.
+Foram encontrados: `MOTOR_PROJECT_ID` (default `640`), `MYSQL_HOST` (varia: `localhost`/`mysql`), `MYSQL_PORT` (`3308` no `DrizzleDb`, `3306` nos scripts/worker), `MYSQL_USER`, `MYSQL_PASSWORD`, `GERENTE_AGENTES_DATABASE` (default `projeto_640`), `MOTOR_WORKSPACE_ROOT` (default `/tmp/motor-workspaces`), `DEPLOY_REPO_HOST`, `TASK_SECRETS_ROOT`, `TASK_ENVIRONMENT` (default `development`), `OPENCLAW_CONSOLE_URL`, `OPENCLAW_CONSOLE_TOKEN`, `LIBRARY_REALTIME_EVENTS_URL` e `LIBRARY_REALTIME_EVENTS_TOKEN`, além de `MOTOR_LOG_LEVEL`, `MOTOR_LOG_FILE` e `MOTOR_LOG_FORMAT`.
 
 Esses valores podem ser exibidos como diagnóstico (com segredos mascarados), mas não devem ser editáveis pela tela de configurações operacionais: credenciais, endpoints, caminhos de host, banco e segredos pertencem ao deploy/ambiente e uma alteração em runtime pode interromper o motor ou expor dados.
 

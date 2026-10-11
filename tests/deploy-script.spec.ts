@@ -4,7 +4,7 @@ import { resolve } from "node:path"
 import { describe, expect, it } from "vitest"
 
 const script = readFileSync(
-  resolve(process.cwd(), "projects/gerenteagentes/motor-v2/scripts/deploy-blue-green.sh"),
+  resolve(process.cwd(), "projects/gerenteagentes/scripts/deploy-blue-green.sh"),
   "utf8",
 )
 

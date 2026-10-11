@@ -1,4 +1,4 @@
-# Concorrência e Locks do Motor-v2
+# Concorrência e Locks do Motor
 
 > Criado em 2026-09-10 após auditoria de condições de corrida nas correções do dia
 > (leitura dinâmica de config, pause, remoção do lease de execução por projeto,
@@ -6,7 +6,7 @@
 
 ## ⚠️ Premissa estrutural: INSTÂNCIA ÚNICA
 
-**O motor-v2 foi desenhado para rodar em UMA única instância** (container
+**O motor foi desenhado para rodar em UMA única instância** (container
 `biblioteca-global-api`, serviço `api` do compose da biblioteca-global).
 
 Vários guardas de concorrência são **em memória** e só funcionam dentro de um

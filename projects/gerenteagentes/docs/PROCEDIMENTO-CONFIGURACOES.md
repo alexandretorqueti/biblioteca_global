@@ -1,10 +1,10 @@
 # Procedimento Operacional — Configurações do Motor
 
-Este documento descreve o procedimento para alterar configurações operacionais do Motor v2 através da tela CONFIGURAÇÕES.
+Este documento descreve o procedimento para alterar configurações operacionais do Motor v3 através da tela CONFIGURAÇÕES.
 
 ## Visão Geral
 
-O Motor v2 possui parâmetros operacionais configuráveis que controlam comportamento como:
+O Motor v3 possui parâmetros operacionais configuráveis que controlam comportamento como:
 - Limite de tarefas em paralelo (global e por projeto)
 - Timeouts de execução (workers, build, testes, Console)
 - Intervalos de polling e reconciliação
@@ -239,12 +239,12 @@ Motor / TaskCoordinator / ResourceLeaseService / ConsoleAgentRuntimeDriver / Wor
 
 ### Componentes
 
-- **Catálogo:** `api/motor-configuracoes.catalog.ts` e `motor-v2/src/config/motor-configuracoes.catalog.ts`
+- **Catálogo:** `api/motor-configuracoes.catalog.ts` e `motor-v3/src/config/motor-configuracoes.catalog.ts`
 - **Schema:** `schema.ts` (tabela `motor_configuracoes`)
 - **Migration:** `migrations/0027_motor_configuracoes.sql`
 - **Service:** `api/gerenteagentes.service.ts` (métodos `listarConfiguracoesMotor` e `atualizarConfiguracoesMotor`)
 - **Controller:** `api/gerenteagentes.controller.ts` (endpoints `GET /configuracoes` e `PUT /configuracoes`)
-- **Reader:** `motor-v2/src/config/MotorConfigReader.ts` (cache com refresh periódico)
+- **Reader:** `motor-v3/src/config/MotorConfigReader.ts` (cache com refresh periódico)
 - **Tela:** `screens/ConfiguracoesScreen.tsx`
 - **Consumidores:** `Motor.ts`, `TaskCoordinator.ts`, `ResourceLeaseService.ts`, `ConsoleAgentRuntimeDriver.ts`, `WorkerLauncher.ts`, `DependencyInstaller.ts`, `TaskWorker.ts`
 

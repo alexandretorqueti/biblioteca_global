@@ -21,7 +21,7 @@ const taskExecutionPayloadSchema = z.discriminatedUnion("type", [
 /**
  * Catálogo de eventos consumidos pelo Mapa de Agentes. Eventos do motor sem
  * prefixo (started/progress/...) são mantidos para compatibilidade com o
- * LibraryRealtimeBroadcaster do motor-v2.
+ * LibraryRealtimeBroadcaster do motor.
  */
 export const realtimeEventTypeSchema = z.enum([
   "task.created", "task.updated", "task.deleted", "task.status.changed", "task.counters.updated",

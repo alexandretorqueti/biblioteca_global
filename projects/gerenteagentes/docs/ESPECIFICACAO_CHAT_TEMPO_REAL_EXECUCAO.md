@@ -2,7 +2,7 @@
 
 **Status:** primeira entrega implementada em `exec/chat-tempo-real-execucao`, aguardando code review.  
 **Data:** 2026-09-13  
-**Escopo:** Motor-v2 e o detalhe da tarefa no **Mapa de agentes**. Não altera
+**Escopo:** Motor e o detalhe da tarefa no **Mapa de agentes**. Não altera
 configuração do OpenClaw, não faz commit nem deploy.
 
 ## 1. Objetivo
@@ -255,7 +255,7 @@ incluindo no prompt o `resumo_contexto`, o diff e o histórico do chat.
 - A rota atual `clarification` continua para compatibilidade, mas passa a ser
   uma especialização do mecanismo de entregas, não um caminho paralelo.
 
-### Motor-v2
+### Motor
 
 - `TaskCoordinator`: fila, seleção de contexto, transições
   `checkpoint_requested`/`awaiting_interaction`, reconciliação e liberação de

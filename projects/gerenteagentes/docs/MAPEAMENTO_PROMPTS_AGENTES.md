@@ -2,7 +2,7 @@
 
 Este documento registra os pontos em que o GerenteAgentes compõe uma mensagem
 de missão antes de chamar um agente. O catálogo executável correspondente está
-em `motor-v2/src/prompts/prompt-catalog.ts`; ele será a fonte de identificação
+em `motor-v3/src/prompts/prompt-catalog.ts`; ele será a fonte de identificação
 da futura tabela editável de prompts.
 
 ## Situações mapeadas

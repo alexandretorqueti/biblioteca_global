@@ -10,7 +10,7 @@ import {
 const envelope = {
   eventId: "evt-1",
   occurredAt: "2026-09-30T10:00:00.000Z",
-  source: "motor-v2",
+  source: "motor-v3",
   projectId: 7,
   taskId: 42,
   type: "task.counters.updated",
@@ -42,7 +42,7 @@ describe("contrato realtime do Mapa de Agentes", () => {
     const validEnvelope = {
       eventId: "evt-123",
       occurredAt: "2026-09-30T10:00:00.000Z",
-      source: "motor-v2",
+      source: "motor-v3",
       projectId: 7,
       taskId: 42,
       type: "task.created",

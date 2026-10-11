@@ -145,7 +145,7 @@ Atualizado em 2026-09-21 após o endurecimento do fluxo.
 
 - Aplicar `migrations/0058_test_gate_hardening.sql`.
 - Aplicar `migrations/0059_message_driven_test_gates.sql`.
-- Compilar Motor v2, Motor v3 e aplicação antes do deploy.
+- Compilar o Motor v3 e a aplicação antes do deploy.
 - O diretório padrão de artefatos é o volume persistente do workspace em `/data/workspace/projects/agentes/gerenteagentes/artifacts/test-runs`; `MOTOR_TEST_ARTIFACTS_DIR` permite substituí-lo sem alterar código.
 - Executar uma tarefa nova de ponta a ponta; a tarefa 855 não possui baseline retroativo porque falhou antes da implantação do mecanismo.
 

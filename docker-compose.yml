@@ -66,14 +66,14 @@ services:
       MOTOR_DEV_URL: ${MOTOR_DEV_URL:-http://localhost:3010}
       MOTOR_URL_HOST: ${MOTOR_URL_HOST:-api.tarefas.localhost}
       API_PORT: 3001
-      # Motor-v3 (integrado na API) - substitui motor-v2
+      # Motor v3 integrado à API
       MOTOR_VERSION: v3
       MOTOR_API_PORT: 3010
       MOTOR_DEPLOY_CALLBACK_TOKEN: ${MOTOR_DEPLOY_CALLBACK_TOKEN:-}
       DEPLOY_REPO_HOST: ${DEPLOY_REPO_HOST:-/home/alexandre/codigofonte/biblioteca-global}
       MOTOR_DEPLOY_SSH_TARGET: ${MOTOR_DEPLOY_SSH_TARGET:-alexandre@host.docker.internal}
       MOTOR_DEPLOY_SSH_IDENTITY: ${MOTOR_DEPLOY_SSH_IDENTITY:-/root/.ssh/id_ed25519}
-      MOTOR_DEPLOY_SCRIPT: ${MOTOR_DEPLOY_SCRIPT:-projects/gerenteagentes/motor-v2/scripts/deploy-blue-green.sh}
+      MOTOR_DEPLOY_SCRIPT: ${MOTOR_DEPLOY_SCRIPT:-projects/gerenteagentes/scripts/deploy-blue-green.sh}
       # Realtime: ingresso de eventos do motor-v3 -> API -> WebSocket do front.
       # O token precisa ser igual no guard (API) e no publisher (motor) — mesmo container.
       LIBRARY_REALTIME_EVENTS_TOKEN: ${LIBRARY_REALTIME_EVENTS_TOKEN:-}
@@ -114,9 +114,9 @@ services:
       - ${REPO_PATH:-/run/media/alexandre/12T/codigofonte/biblioteca-global}:/data/workspace/projects/codigofonte/biblioteca-global:rw
       # Repos de outros projetos para o motor-v3 trabalhar
       - /home/alexandre/codigofonte/openclaw-console:/data/workspace/projects/codigofonte/openclaw-console:rw
-      # Workspace do agente (para worktrees do motor-v2).
+      # Workspace do agente para worktrees do Motor.
       - ${AGENTS_WORKSPACE_PATH_HOST:-/home/alexandre/agentes}:/data/workspace/projects/agentes:rw
-      # Chave SSH do GitHub para a fase PUBLISH do motor-v2 (somente leitura)
+      # Chave SSH do GitHub para a fase PUBLISH do Motor (somente leitura)
       - ${GITHUB_SSH_KEY_HOST:-/home/alexandre/secrets/biblioteca-global-api/github_id_ed25519}:/root/.ssh/github_id_ed25519:ro
       # Chave SSH do host para o deploy.sh recriar os containers no ServerIA
       - /home/alexandre/.ssh/id_ed25519:/root/.ssh/id_ed25519:ro

@@ -15,7 +15,6 @@ describe('WorkspaceEnvironmentPreparer', () => {
     const root = await mkdtemp(resolve(tmpdir(), 'motor-v3-env-'))
     roots.push(root)
     await writePackage(root, 'root')
-    await writePackage(resolve(root, 'projects/gerenteagentes/motor-v2'), 'motor-v2')
     await writePackage(resolve(root, 'projects/gerenteagentes/motor-v3'), 'motor-v3')
     await writePackage(resolve(root, 'wt-antigo/projeto'), 'ignorado')
     const install = vi.fn<(directory: string) => Promise<void>>().mockResolvedValue(undefined)
@@ -25,10 +24,9 @@ describe('WorkspaceEnvironmentPreparer', () => {
 
     expect(prepared).toEqual([
       '.',
-      'projects/gerenteagentes/motor-v2',
       'projects/gerenteagentes/motor-v3',
     ])
-    expect(install).toHaveBeenCalledTimes(3)
+    expect(install).toHaveBeenCalledTimes(2)
   })
 
   it('tenta limpar workspace antes de instalar (git checkout em package.json/lock)', async () => {

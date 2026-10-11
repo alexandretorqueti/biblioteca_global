@@ -2,14 +2,14 @@
 
 > **Status:** esqueleto inicial (FASE 1 do LOG); preencher seções em ciclos sucessivos.
 > **Branch:** `motor-v3` | **Pasta:** `projects/gerenteagentes/motor-v3/`
-> **Decisões de desenho:** `docs/MOTOR-V2-SIMULACAO-TEXTUAL.md` §9/§9.5/§10.3
+> **Decisões de desenho:** `docs/ESPECIFICACAO.md` §9/§9.5/§10.3
 > **Padrão da arquitetura:** `docs/MOTOR-V3-EVENT-DRIVEN.md`
 
 ---
 
 ## 1. Objetivo
 
-Substituir o Motor-v2 por um motor **event-driven**, com:
+Substituir o Motor por um motor **event-driven**, com:
 
 - Catálogo de eventos/reações **configurável em banco** (zero ifs hardcoded para erro/recuperação).
 - **Conversa livre** com o agente (em substituição ao contrato JSON de auto-relato); verificação de realidade pelo motor.
@@ -19,13 +19,13 @@ Substituir o Motor-v2 por um motor **event-driven**, com:
 
 ## 2. Princípios de Design (síntese das decisões D1–D9)
 
-1. **BIG BANG** (D1): pasta/branch novas; v2 parado durante o desenvolvimento; rollback possível via `MOTOR_VERSION`.
+1. **BIG BANG** (D1): Motor v3 como runtime único; rollback por revisão anterior no fluxo blue-green.
 2. **Sandbox opção (a)** (D2): raiz de worktrees montada, opção (b) runner descartável só se precisar.
 3. **"Terminei" híbrido** (D3): marcador mínimo + verificação de realidade sempre decide.
 4. **Monitor auto-ativa Caso A** (D4): log + pendente revisão humana.
 5. **Reset de ocorrências** (D5): tarefa+subtarefa+geração de worktree.
 6. **Liberdade igual, teto diferente** (D6): local 2 tentativas, cloud 3.
-7. **Só v3** (D7): zero remendos no v2.
+7. **Runtime único** (D7): toda correção pertence ao Motor v3.
 8. **Quem desenvolve:** este agente, não via tarefas do motor (D8).
 9. **Plano de validação** (D9): trivial → complexa → verificação → automação, tudo logado.
 
@@ -242,19 +242,18 @@ Push/merge/publish/promote/deploy são ações do MOTOR, executadas FORA do sand
 
 ### 8.1 Big Bang (D1)
 
-- Motor v2 PARADO (processo morto via SIGTERM; se o container recriar, verificar e derrubar de novo).
 - Motor v3 sobe em branch `motor-v3` + pasta `projects/gerenteagentes/motor-v3/`.
 - `MOTOR_VERSION` no container: `v3` quando pronto.
 
 ### 8.2 Migração de dados
 
 - Tabelas novas criadas via migration Drizzle (`db:migrate:gerenteagentes`).
-- Seed do catálogo: eventos/ações/patterns base (herdados do v2, documentados no doc 2).
+- Seed do catálogo: eventos/ações/patterns base documentados no doc 2.
 - Dados de `tarefas`/`subtarefas` permanecem.
 
 ### 8.3 Rollback
 
-- `MOTOR_VERSION=v2` (volta o processo antigo; tabelas novas ficam inertes).
+- Restaurar a revisão anterior da branch base pelo fluxo blue-green.
 - Rollback de dados: não aplicável (as tabelas novas não foram preenchidas pelas tarefas em andamento).
 
 ## 9. Plano de Testes
@@ -332,8 +331,6 @@ Push/merge/publish/promote/deploy são ações do MOTOR, executadas FORA do sand
 | Risco | Mitigação |
 |-------|-----------|
 | Motor v3 não cobre todas as situações do v2 | Piloto D9 com tarefa real antes de aposentadoria |
-| Zombie `[node]` no container da API (motor v2 morto) | Inócuo; some no próximo restart; LOG monitora |
-| Container recriado → motor v2 ressurge (entrypoint) | Cron horário verifica 3010 e mata de novo |
 | SSH volta a falhar (DHCP) | Usar `host.docker.internal` (imune); .8 é fixo por decisão do Alexandre |
 | Sandbox limita ferramenta legítima | Lista de allowed_paths declarada na criação da tarefa |
 | Monitor propõe reação destrutiva por engano | Travas D4 (log + pendente revisão + nunca cria microcomando) |

@@ -17,7 +17,7 @@ As fontes compartilhadas da seleção e da auditoria são:
 - `task_runtime_facts`: integração confirmada e terminais administrativos;
 - `subtarefas`: todas em `verified` ou `superseded`;
 - `deploy_requests`: histórico de deploy e exclusão de itens já sucedidos;
-- Git do `repo_path`: branch `motor-v2/<task-id>/integracao` ancestral à
+- Git do `repo_path`: branch `motor/<task-id>/integracao` ancestral à
   `branch_trabalho`.
 
 Uma tarefa só pode ser confirmada quando a consulta derivada indicar
@@ -65,10 +65,10 @@ repositório oficial do projeto.
 
 | tarefa | external_id | status de deploy | bloqueio ativo | branch de integração | HEAD da branch | ancestral da base | classificação |
 |---:|---|---|---:|---|---|---|---|
-| 758 | `taqui-quick-actions-20260903-06` | `failed` | sim | `motor-v2/taqui-quick-actions-20260903-06/integracao` | `507cd23b2a5a596e3e765f4b549ee86da4f17b21` | sim | conflito histórico |
-| 779 | `task-p2-779` | `failed` | sim | `motor-v2/task-p2-779/integracao` | `0b6071bd5f4dddcf12cc3ba493f44f239af522af` | sim | conflito |
-| 787 | `task-p2-787` | `failed` | sim | `motor-v2/task-p2-787/integracao` | `4586a50cfc5b42e88675d73b08f1a227cafb132e` | sim | conflito |
-| 795 | `task-p6-795` | `failed` | sim | `motor-v2/task-p6-795/integracao` | `4fbf04081575d3e3cca589ec92b53cbf3cd5e46d` | sim | conflito |
+| 758 | `taqui-quick-actions-20260903-06` | `failed` | sim | `motor/taqui-quick-actions-20260903-06/integracao` | `507cd23b2a5a596e3e765f4b549ee86da4f17b21` | sim | conflito histórico |
+| 779 | `task-p2-779` | `failed` | sim | `motor/task-p2-779/integracao` | `0b6071bd5f4dddcf12cc3ba493f44f239af522af` | sim | conflito |
+| 787 | `task-p2-787` | `failed` | sim | `motor/task-p2-787/integracao` | `4586a50cfc5b42e88675d73b08f1a227cafb132e` | sim | conflito |
+| 795 | `task-p6-795` | `failed` | sim | `motor/task-p6-795/integracao` | `4fbf04081575d3e3cca589ec92b53cbf3cd5e46d` | sim | conflito |
 
 Na leitura atual, a tarefa 758 é `completed` pelo cálculo derivado (sete
 subtarefas aprovadas, integração confirmada e deploy falho), e sua branch agora

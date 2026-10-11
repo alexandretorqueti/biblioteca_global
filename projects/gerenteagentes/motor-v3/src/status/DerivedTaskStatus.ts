@@ -26,7 +26,7 @@ const NON_CODE_COMPLETION_KINDS = new Set(['analysis', 'no_code_change', 'extern
  * Projeção canônica do estado operacional da tarefa.
  *
  * `queueStatus` descreve a entrega/consumo da mensagem; não substitui este
- * status de negócio. A ordem acompanha o calculador histórico do Motor v2.
+ * status de negócio. A ordem preserva a precedência histórica dos estados.
  */
 export class DerivedTaskStatusResolver {
   constructor(private readonly pool: Pool) {}
