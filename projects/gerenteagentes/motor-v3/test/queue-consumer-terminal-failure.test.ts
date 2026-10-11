@@ -62,6 +62,7 @@ describe('QueueConsumer — TerminalFailureHandler integration', () => {
       { queue: 'motor.commands', maxAttempts: 3 },
       pool,
       undefined,
+      undefined,
       terminalHandler,
     )
 
@@ -97,6 +98,7 @@ describe('QueueConsumer — TerminalFailureHandler integration', () => {
       { queue: 'motor.commands', maxAttempts: 3 },
       pool,
       undefined,
+      undefined,
       terminalHandler,
     )
 
@@ -124,6 +126,7 @@ describe('QueueConsumer — TerminalFailureHandler integration', () => {
       async () => { throw new Error('transient error') },
       { queue: 'motor.commands', maxAttempts: 3 },
       pool,
+      undefined,
       undefined,
       terminalHandler,
     )
@@ -179,6 +182,7 @@ describe('QueueConsumer — TerminalFailureHandler integration', () => {
       async () => { /* não deve ser chamado */ },
       { queue: 'motor.commands', maxAttempts: 3 },
       pool,
+      undefined,
       undefined,
       terminalHandler,
     )
