@@ -58,9 +58,14 @@ export class RealtimeClient {
       this.options.onStatusChange?.("open")
       const channel = this.options.channel ?? "task"
       const subscribe = channel === "project-feed" || channel === "map"
-        ? { type: "subscribe", channel, lastSequence: this.lastSequence }
-        : { type: "subscribe", channel, taskId: this.options.taskId, lastSequence: this.lastSequence }
-      socket.send(JSON.stringify(subscribe))
+        ? { type: "subscribe" as const, channel, lastSequence: this.lastSequence }
+        : { type: "subscribe" as const, channel, taskId: this.options.taskId, lastSequence: this.lastSequence }
+      // O WsAdapter padrão do NestJS roteia mensagens pelo campo "event".
+      // Envelopar a inscrição no formato {"event":"subscribe","data":<payload>}
+      // para que o @SubscribeMessage("subscribe") do RealtimeGateway seja acionado.
+      // Mensagens servidor→cliente permanecem em JSON simples (campo "type").
+      const envelope = { event: "subscribe", data: subscribe }
+      socket.send(JSON.stringify(envelope))
     }
     socket.onmessage = (event) => {
       try {
