@@ -19,7 +19,8 @@ interface StaleQueueRow extends RowDataPacket {
   id: number
   tarefa_id: number
   task_external_id: string | null
-  reason: string
+  source_message_id: string
+  status: string
   terminal_status: string | null
   paused_at: Date | string | null
   has_active_block: number | string
@@ -194,7 +195,8 @@ export class OrphanCapacityQueueReconciler {
     const [rows] = await this.pool.query<StaleQueueRow[]>(`
       SELECT q.id, q.tarefa_id,
              COALESCE(t.external_id, CAST(t.id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci) AS task_external_id,
-             q.reason,
+             q.source_message_id,
+             q.status,
              f.terminal_status,
              t.paused_at,
              EXISTS(SELECT 1 FROM bloqueios b WHERE b.tarefa_id = t.id AND b.resolved_at IS NULL) AS has_active_block,
@@ -246,7 +248,8 @@ export class OrphanCapacityQueueReconciler {
           const taskId = String(row.task_external_id ?? row.tarefa_id)
           await this.record(taskId, 'stale_capacity_wait_removed', {
             tarefaId: row.tarefa_id,
-            reason: row.reason,
+            sourceMessageId: row.source_message_id,
+            queueStatus: row.status,
             dominatedReason: dominated.reason,
           })
         }

@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { OrphanCapacityQueueReconciler } from '../src/execution/OrphanCapacityQueueReconciler.js'
 
 // ---------------------------------------------------------------------------
@@ -150,7 +152,8 @@ describe('OrphanCapacityQueueReconciler — fila de capacidade', () => {
     id: 1,
     tarefa_id: 300,
     task_external_id: 'task-p1-300',
-    reason: 'global_limit',
+    source_message_id: 'msg-abc-123',
+    status: 'waiting',
     terminal_status: null,
     paused_at: null,
     has_active_block: 0,
@@ -177,8 +180,15 @@ describe('OrphanCapacityQueueReconciler — fila de capacidade', () => {
     )
     expect(events.record).toHaveBeenCalledWith(
       'task-p1-300', 'stale_capacity_wait_removed', 'motor',
-      expect.objectContaining({ dominatedReason: 'terminal_task' }),
+      expect.objectContaining({
+        dominatedReason: 'terminal_task',
+        sourceMessageId: 'msg-abc-123',
+        queueStatus: 'waiting',
+      }),
     )
+    // Garante que 'reason' não está mais no payload (coluna removida)
+    const lastPayload = events.record.mock.calls[0][3] as Record<string, unknown>
+    expect(lastPayload).not.toHaveProperty('reason')
   })
 
   it('remove entrada de fila quando tarefa está paused', async () => {
@@ -323,7 +333,8 @@ describe('OrphanCapacityQueueReconciler — ciclo combinado', () => {
       id: 5,
       tarefa_id: 500,
       task_external_id: 'task-p1-500',
-      reason: 'project_limit',
+      source_message_id: 'msg-def-456',
+      status: 'waiting',
       terminal_status: 'failed',
       paused_at: null,
       has_active_block: 0,
@@ -404,7 +415,8 @@ describe('OrphanCapacityQueueReconciler — repetição de ciclos', () => {
     }
     const queueRow = {
       id: 10, tarefa_id: 800, task_external_id: 'task-p1-800',
-      reason: 'global_limit', terminal_status: 'completed',
+      source_message_id: 'msg-ghi-789', status: 'waiting',
+      terminal_status: 'completed',
       paused_at: null, has_active_block: 0,
       has_pending_subtask: 0, has_running_subtask: 0, has_pending_outbox: 0,
     }
@@ -445,7 +457,8 @@ describe('OrphanCapacityQueueReconciler — repetição de ciclos', () => {
     // fila mas NÃO insere outbox (evita duplicar).
     const queueRow = {
       id: 11, tarefa_id: 900, task_external_id: 'task-p1-900',
-      reason: 'project_limit', terminal_status: null,
+      source_message_id: 'msg-jkl-012', status: 'waiting',
+      terminal_status: null,
       paused_at: null, has_active_block: 0,
       has_pending_subtask: 1, has_running_subtask: 0,
       has_pending_outbox: 1,
@@ -480,5 +493,49 @@ describe('OrphanCapacityQueueReconciler — lifecycle', () => {
     // Não crasha
     reconciler.stop()
     reconciler.stop() // Duplo stop não crasha
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Regressão: colunas do SELECT vs. schema real (migration 0056)
+// ---------------------------------------------------------------------------
+
+describe('OrphanCapacityQueueReconciler — regressão schema', () => {
+  it('todas as colunas q.* no SELECT de cleanStaleCapacityQueue existem em motor_execution_wait_queue (migration 0056)', () => {
+    const srcPath = resolve(
+      __dirname,
+      '../src/execution/OrphanCapacityQueueReconciler.ts',
+    )
+    const migrationPath = resolve(
+      __dirname,
+      '../../migrations/0056_motor_execution_wait_queue.sql',
+    )
+    const source = readFileSync(srcPath, 'utf-8')
+    const migration = readFileSync(migrationPath, 'utf-8')
+
+    // Extrai todas as colunas q.* referenciadas no SELECT de
+    // cleanStaleCapacityQueue (qualquer q.identificador fora de
+    // subqueries — o FROM principal usa alias q).
+    const qColumnRefs = [...source.matchAll(/\bq\.(\w+)/g)].map(m => m[1])
+    const uniqueQCols = [...new Set(qColumnRefs)]
+
+    // Colunas definidas na migration 0056 (CREATE TABLE motor_execution_wait_queue).
+    const columnBlock = migration.match(
+      /CREATE TABLE[^;]+/s,
+    )?.[0] ?? ''
+    const definedColumns = [
+      ...columnBlock.matchAll(
+        /^\s*`(\w+)`\s+\w+/gm,
+      ),
+    ].map(m => m[1])
+
+    expect(definedColumns.length).toBeGreaterThan(0)
+
+    for (const col of uniqueQCols) {
+      expect(
+        definedColumns,
+        `Coluna q.${col} referenciada no SELECT não existe em motor_execution_wait_queue (migration 0056)`,
+      ).toContain(col)
+    }
   })
 })
