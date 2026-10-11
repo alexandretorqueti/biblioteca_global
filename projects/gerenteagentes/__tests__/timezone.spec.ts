@@ -5,6 +5,10 @@ import {
   isValidTimezone,
   getSupportedTimezones,
   resolveTimezone,
+  formatarDataHora,
+  hojeNoFuso,
+  isHojeNoFuso,
+  limitesDoDiaCivilUTC,
 } from "../src/shared/timezone"
 
 describe("utilitários de fuso horário", () => {
@@ -76,6 +80,124 @@ describe("utilitários de fuso horário", () => {
       expect(resolveTimezone("")).toBe(DEFAULT_TIMEZONE)
       expect(resolveTimezone("Invalid/Zone")).toBe(DEFAULT_TIMEZONE)
       expect(resolveTimezone(42)).toBe(DEFAULT_TIMEZONE)
+    })
+  })
+
+  describe("formatarDataHora", () => {
+    it("formata ISO string em pt-BR no fuso informado", () => {
+      // 2026-10-11T03:00:00Z = meia-noite em America/Sao_Paulo (UTC-3)
+      const result = formatarDataHora("2026-10-11T03:00:00Z", "America/Sao_Paulo")
+      expect(result).toMatch(/11\/10\/2026.*00:00/)
+    })
+
+    it("formata no fuso UTC quando especificado", () => {
+      const result = formatarDataHora("2026-10-11T03:00:00Z", "UTC")
+      expect(result).toMatch(/11\/10\/2026.*03:00/)
+    })
+
+    it("retorna string vazia para null/undefined/vazio", () => {
+      expect(formatarDataHora(null)).toBe("")
+      expect(formatarDataHora(undefined)).toBe("")
+      expect(formatarDataHora("")).toBe("")
+    })
+
+    it("retorna string vazia para data inválida", () => {
+      expect(formatarDataHora("not-a-date")).toBe("")
+    })
+
+    it("usa o fuso padrão quando timezone é inválido", () => {
+      const result = formatarDataHora("2026-10-11T03:00:00Z", "Invalid/Zone")
+      expect(result).toMatch(/11\/10\/2026.*00:00/) // America/Sao_Paulo
+    })
+
+    it("aceita Date e epoch ms", () => {
+      const date = new Date("2026-10-11T03:00:00Z")
+      expect(formatarDataHora(date, "America/Sao_Paulo")).toMatch(/11\/10\/2026.*00:00/)
+      expect(formatarDataHora(date.getTime(), "America/Sao_Paulo")).toMatch(/11\/10\/2026.*00:00/)
+    })
+  })
+
+  describe("hojeNoFuso", () => {
+    it("retorna a data civil no fuso informado", () => {
+      // 2026-10-11T02:00:00Z = 2026-10-10 23:00 em Sao Paulo (UTC-3)
+      const agora = new Date("2026-10-11T02:00:00Z")
+      expect(hojeNoFuso("America/Sao_Paulo", agora)).toBe("2026-10-10")
+    })
+
+    it("retorna a data civil em UTC", () => {
+      const agora = new Date("2026-10-11T02:00:00Z")
+      expect(hojeNoFuso("UTC", agora)).toBe("2026-10-11")
+    })
+
+    it("mesmo instante resulta em dias diferentes em fusos diferentes", () => {
+      // 2026-10-11T01:00:00Z = 2026-10-10 22:00 em Sao Paulo, 2026-10-11 01:00 em UTC
+      const agora = new Date("2026-10-11T01:00:00Z")
+      expect(hojeNoFuso("America/Sao_Paulo", agora)).toBe("2026-10-10")
+      expect(hojeNoFuso("UTC", agora)).toBe("2026-10-11")
+    })
+  })
+
+  describe("isHojeNoFuso", () => {
+    it("classifica corretamente perto da meia-noite em Sao Paulo", () => {
+      // 2026-10-11T02:59:00Z = 2026-10-10 23:59 em Sao Paulo
+      const agora = new Date("2026-10-11T02:59:00Z")
+      const evento = "2026-10-10T23:30:00-03:00" // 2026-10-11T02:30:00Z
+      // Evento é 10/10 23:30 em Sao Paulo; agora é 10/10 23:59 em Sao Paulo
+      expect(isHojeNoFuso(evento, "America/Sao_Paulo", agora)).toBe(true)
+    })
+
+    it("detecta diferença de dia civil entre UTC e Sao Paulo", () => {
+      // 2026-10-11T01:00:00Z = 2026-10-10 22:00 em Sao Paulo
+      const agora = new Date("2026-10-11T01:00:00Z")
+      const eventoUTC = "2026-10-11T00:30:00Z" // dia 11 em UTC
+      // Em Sao Paulo, evento é 10/10 21:30 e agora é 10/10 22:00
+      expect(isHojeNoFuso(eventoUTC, "America/Sao_Paulo", agora)).toBe(true)
+      // Em UTC, evento é 11/10 00:30 e agora é 11/10 01:00
+      expect(isHojeNoFuso(eventoUTC, "UTC", agora)).toBe(true)
+    })
+
+    it("retorna false para data em dia diferente", () => {
+      const agora = new Date("2026-10-11T15:00:00Z")
+      expect(isHojeNoFuso("2026-10-09T12:00:00Z", "America/Sao_Paulo", agora)).toBe(false)
+    })
+
+    it("retorna false para valores nulos/inválidos", () => {
+      expect(isHojeNoFuso(null)).toBe(false)
+      expect(isHojeNoFuso(undefined)).toBe(false)
+      expect(isHojeNoFuso("")).toBe(false)
+      expect(isHojeNoFuso("not-a-date")).toBe(false)
+    })
+  })
+
+  describe("limitesDoDiaCivilUTC", () => {
+    it("converte dia civil em Sao Paulo para limites UTC corretos", () => {
+      // 2026-10-11 em America/Sao_Paulo (UTC-3):
+      // inicio = 2026-10-11 00:00 -03:00 = 2026-10-11 03:00 UTC
+      // fim    = 2026-10-12 00:00 -03:00 = 2026-10-12 03:00 UTC
+      const { inicio, fim } = limitesDoDiaCivilUTC("2026-10-11", "America/Sao_Paulo")
+      expect(inicio).toBe("2026-10-11 03:00:00")
+      expect(fim).toBe("2026-10-12 03:00:00")
+    })
+
+    it("em UTC os limites coincidem com meia-noite UTC", () => {
+      const { inicio, fim } = limitesDoDiaCivilUTC("2026-10-11", "UTC")
+      expect(inicio).toBe("2026-10-11 00:00:00")
+      expect(fim).toBe("2026-10-12 00:00:00")
+    })
+
+    it("fusos positivos (leste) deslocam para o dia anterior em UTC", () => {
+      // 2026-10-11 em Asia/Tokyo (UTC+9):
+      // inicio = 2026-10-11 00:00 +09:00 = 2026-10-10 15:00 UTC
+      // fim    = 2026-10-12 00:00 +09:00 = 2026-10-11 15:00 UTC
+      const { inicio, fim } = limitesDoDiaCivilUTC("2026-10-11", "Asia/Tokyo")
+      expect(inicio).toBe("2026-10-10 15:00:00")
+      expect(fim).toBe("2026-10-11 15:00:00")
+    })
+
+    it("usa o fuso padrão quando timezone é inválido", () => {
+      const { inicio, fim } = limitesDoDiaCivilUTC("2026-10-11", "Invalid/Zone")
+      expect(inicio).toBe("2026-10-11 03:00:00")
+      expect(fim).toBe("2026-10-12 03:00:00")
     })
   })
 })

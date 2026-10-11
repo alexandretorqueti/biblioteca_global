@@ -26,6 +26,7 @@ import {
 import { Avatar, Box, Button, Chip, Collapse, FormControl, IconButton, InputLabel, LinearProgress, MenuItem, Paper, Select, Skeleton, Stack, TextField, Tooltip, Typography, useMediaQuery } from "@mui/material"
 import { useTheme } from "@mui/material/styles"
 import { TASK_STATUS_EXECUTING, TASK_STATUS_PAUSABLE, TASK_STATUS_STARTABLE, taskStatusLabel } from "../src/shared/task-statuses"
+import { DEFAULT_TIMEZONE, formatarDataHora } from "../src/shared/timezone"
 import { calcularMetricas, deriveTaskPriority, formatTempoRelativo, projetoAvatar, type Prioridade } from "./taskFlowHelpers"
 
 export type RecoveryEligibilityState =
@@ -77,7 +78,7 @@ function recoveryFact(label: string, value: unknown) {
   return <Typography variant="caption" component="div"><b>{label}:</b> {safeValue}</Typography>
 }
 
-export function RecoveryEligibilityTooltipContent({ eligibility }: { eligibility: RecoveryEligibility }) {
+export function RecoveryEligibilityTooltipContent({ eligibility, timezone = DEFAULT_TIMEZONE }: { eligibility: RecoveryEligibility; timezone?: string }) {
   return (
     <Box sx={{ maxWidth: { xs: 280, sm: 420 }, overflowWrap: "anywhere" }}>
       <Typography variant="body2" sx={{ fontWeight: 700, mb: 0.5 }}>{recoveryEligibilityLabel(eligibility)}</Typography>
@@ -85,12 +86,12 @@ export function RecoveryEligibilityTooltipContent({ eligibility }: { eligibility
       {recoveryFact("Motivo do bloqueio", eligibility.evidence?.reason)}
       {recoveryFact("Comando", eligibility.evidence?.command)}
       {recoveryFact("Evidência", eligibility.evidence?.excerpt)}
-      {recoveryFact("Data do bloqueio", eligibility.evidence?.blockedAt ? new Date(eligibility.evidence.blockedAt).toLocaleString("pt-BR") : null)}
+      {recoveryFact("Data do bloqueio", eligibility.evidence?.blockedAt ? formatarDataHora(eligibility.evidence.blockedAt, timezone) : null)}
       {recoveryFact("Carência", eligibility.cooldown ? `${eligibility.cooldown.secondsRemaining ?? 0}s restantes (de ${eligibility.cooldown.seconds ?? 0}s)` : null)}
       {recoveryFact("Tentativas", eligibility.attempts ? `${eligibility.attempts.resolvedLast24h ?? 0} de ${eligibility.attempts.max ?? 0}` : null)}
-      {recoveryFact("Estado do Monitor", eligibility.lease ? `corrigindo${eligibility.lease.expiresAt ? ` (expira em ${new Date(eligibility.lease.expiresAt).toLocaleString("pt-BR")})` : ""}` : null)}
+      {recoveryFact("Estado do Monitor", eligibility.lease ? `corrigindo${eligibility.lease.expiresAt ? ` (expira em ${formatarDataHora(eligibility.lease.expiresAt, timezone)})` : ""}` : null)}
       {recoveryFact("Pergunta pendente", eligibility.pendingQuestion?.text ?? (eligibility.pendingQuestion ? "aguardando resposta" : null))}
-      {recoveryFact("Pergunta feita em", eligibility.pendingQuestion?.askedAt ? new Date(eligibility.pendingQuestion.askedAt).toLocaleString("pt-BR") : null)}
+      {recoveryFact("Pergunta feita em", eligibility.pendingQuestion?.askedAt ? formatarDataHora(eligibility.pendingQuestion.askedAt, timezone) : null)}
       {recoveryFact("Bloqueio de promoção", eligibility.promotionBlocker?.reason)}
       {recoveryFact("Comando de promoção", eligibility.promotionBlocker?.command)}
       {recoveryFact("Evidência da promoção", eligibility.promotionBlocker?.excerpt)}
@@ -142,6 +143,8 @@ interface TaskFlowMapProps {
   carregando?: boolean
   onStartTask?: (id: number) => void
   onPauseTask?: (id: number) => void
+  /** Fuso horário IANA para formatação de datas (padrão: America/Sao_Paulo) */
+  timezone?: string
 }
 
 interface FlowStation {
@@ -403,7 +406,7 @@ export function getEffectiveStatus(task: FlowTask): string {
 
 const PAGE_SIZE = 10
 
-function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, movingIds, compacto, onSelectTask, taskMatchesLegenda, onStartTask, onPauseTask }: {
+function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, movingIds, compacto, onSelectTask, taskMatchesLegenda, onStartTask, onPauseTask, timezone }: {
   station: FlowStation
   tarefas: FlowTask[]
   tarefasFiltradas: FlowTask[]
@@ -415,6 +418,7 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, m
   taskMatchesLegenda: (task: FlowTask, station: FlowStation) => boolean
   onStartTask?: (id: number) => void
   onPauseTask?: (id: number) => void
+  timezone?: string
 }) {
   const [expandida, setExpandida] = useState(false)
   const [compactoLocal, setCompactoLocal] = useState<boolean>(true)
@@ -570,7 +574,7 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, m
           const progressoPct = showProgresso ? Math.round((task.progresso!.verified / task.progresso!.total) * 100) : 0
           const projetoLabel = task.projetoNome && task.projetoNome.trim() ? task.projetoNome.trim() : `Projeto #${task.projetoId}`
           const ultimaAtualizacao = (task.updatedAt ?? task.createdAt)
-            ? new Date((task.updatedAt ?? task.createdAt)!).toLocaleString("pt-BR")
+            ? formatarDataHora(task.updatedAt ?? task.createdAt, timezone)
             : "—"
           const showRecovery = task.status === "blocked" && task.recoveryEligibility != null
           const recoveryLabel = showRecovery ? recoveryEligibilityLabel(task.recoveryEligibility!) : ""
@@ -668,7 +672,7 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, m
                   {station.tone === "danger" && <ErrorOutlineRounded sx={{ flexShrink: 0, fontSize: 17, color: "error.main" }} />}
                   <Typography variant="caption" fontWeight={700} noWrap sx={{ minWidth: 0, flex: 1 }}>#{task.id} {task.titulo}</Typography>
                   {showRecovery && (
-                    <Tooltip title={<RecoveryEligibilityTooltipContent eligibility={task.recoveryEligibility!} />} arrow placement="top-start">
+                    <Tooltip title={<RecoveryEligibilityTooltipContent eligibility={task.recoveryEligibility!} timezone={timezone} />} arrow placement="top-start">
                       <Chip
                         component="span"
                         tabIndex={0}
@@ -789,7 +793,7 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, m
   )
 }
 
-export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", motorActivities = [], onSelectTask, projetos = [], filtros: filtrosExternos, onFiltrosChange, aoVivo = true, carregando = false, onStartTask, onPauseTask }: TaskFlowMapProps) {
+export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", motorActivities = [], onSelectTask, projetos = [], filtros: filtrosExternos, onFiltrosChange, aoVivo = true, carregando = false, onStartTask, onPauseTask, timezone }: TaskFlowMapProps) {
   // Injeta keyframes globais na primeira renderização
   ensureKeyframes()
 
@@ -873,7 +877,7 @@ export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", moto
   const activeAiCount = useMemo(() => tarefas.filter((task) => ACTIVE_AI_STATUSES.has(task.status)).length, [tarefas])
 
   // Métricas consolidadas para o cabeçalho e dashboard
-  const metricas = useMemo(() => calcularMetricas(tarefas), [tarefas])
+  const metricas = useMemo(() => calcularMetricas(tarefas, undefined, timezone), [tarefas, timezone])
 
   // Filtra tarefas baseado nos filtros ativos
   const tarefasFiltradas = useMemo(() => {
@@ -1314,6 +1318,7 @@ export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", moto
                   taskMatchesLegenda={taskMatchesLegenda}
                   onStartTask={onStartTask}
                   onPauseTask={onPauseTask}
+                  timezone={timezone}
                 />
               </Box>
               {index < MAIN_FLOW.length - 1 && <FlowConnector direction="horizontal" hasMovement={movingIds.size > 0} />}
@@ -1366,6 +1371,7 @@ export default function TaskFlowMap({ tarefas, selectedTaskId, search = "", moto
                   taskMatchesLegenda={taskMatchesLegenda}
                   onStartTask={onStartTask}
                   onPauseTask={onPauseTask}
+                  timezone={timezone}
                 />
               </Box>
               {index < SIDE_FLOW.length - 1 && <FlowConnector direction="horizontal" hasMovement={movingIds.size > 0} />}

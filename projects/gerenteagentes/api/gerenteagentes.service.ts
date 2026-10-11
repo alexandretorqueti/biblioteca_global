@@ -4,6 +4,7 @@ import { eq, desc, and, asc, lt, or, isNull, sql } from 'drizzle-orm';
 import { request as httpRequest, type RequestOptions } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { randomUUID } from 'node:crypto';
+import { limitesDoDiaCivilUTC, resolveTimezone } from '../src/shared/timezone';
 import type {
   ProjetoResumo,
   ModelSelectionTipo,
@@ -1705,13 +1706,17 @@ export class GerenteAgentesService {
       const ano = Number(partes[0]);
       const mes = Number(partes[1]);
       const dia = Number(partes[2]);
-      const dt = new Date(ano, mes - 1, dia);
-      if (dt.getFullYear() !== ano || dt.getMonth() !== mes - 1 || dt.getDate() !== dia) {
+      // Validação de data real usando UTC (evita ambiguidade de fuso)
+      const dt = new Date(Date.UTC(ano, mes - 1, dia));
+      if (dt.getUTCFullYear() !== ano || dt.getUTCMonth() !== mes - 1 || dt.getUTCDate() !== dia) {
         throw new BadRequestException(`Parâmetro 'data' inválido: '${filtros.data}' não é uma data real.`);
       }
-      const inicio = `${filtros.data} 00:00:00`;
-      const diaSeguinte = new Date(ano, mes - 1, dia + 1);
-      const fim = `${diaSeguinte.getFullYear().toString().padStart(4, '0')}-${(diaSeguinte.getMonth() + 1).toString().padStart(2, '0')}-${diaSeguinte.getDate().toString().padStart(2, '0')} 00:00:00`;
+      // Converte o dia civil em limites UTC usando o fuso horário configurado.
+      // Os timestamps do banco são persistidos em UTC; o filtro deve considerar
+      // o dia civil no fuso escolhido pelo usuário.
+      const tzInfo = await this.obterTimezoneEfetivo();
+      const tz = resolveTimezone(tzInfo.timezone);
+      const { inicio, fim } = limitesDoDiaCivilUTC(filtros.data, tz);
       where.push(`tr.started_at >= '${inicio}' AND tr.started_at < '${fim}'`);
     }
     const predicate = where.length ? `WHERE ${where.join(' AND ')}` : '';
