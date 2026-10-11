@@ -5,6 +5,7 @@ import type { Pool } from 'mysql2/promise'
 import { randomUUID } from 'node:crypto'
 import type { MotorActivityGate } from './MotorActivityGate.js'
 import type { GovernedFailureHandler } from '../governance/GovernedFailureHandler.js'
+import type { TerminalFailureHandler } from './TerminalFailureHandler.js'
 
 export interface QueueConsumerConfig {
   queue: string
@@ -30,6 +31,7 @@ export class QueueConsumer {
     private readonly pool: Pool,
     private readonly activityGate?: MotorActivityGate,
     private readonly governedFailureHandler?: GovernedFailureHandler,
+    private readonly terminalFailureHandler?: TerminalFailureHandler,
   ) {
     this.processingState = new MessageProcessingState(pool)
   }
@@ -73,6 +75,7 @@ export class QueueConsumer {
     }
     if (message.attempt > this.config.maxAttempts) {
       await this.routeGovernedFailure(message, 'queue_max_attempts', 'QUEUE_DLQ', 'max-attempts-exceeded')
+      await this.invokeTerminalFailureHandler(message, delivery.attempt ?? message.attempt, 'max-attempts-exceeded', new Error('max-attempts-exceeded'))
       await this.transport.deadLetter(delivery, 'max-attempts-exceeded')
       return
     }
@@ -118,12 +121,35 @@ export class QueueConsumer {
       // Se atingiu o limite de tentativas, enviar para DLQ
       if (attempt >= this.config.maxAttempts) {
         await this.routeGovernedFailure(message, 'queue_max_attempts', 'QUEUE_DLQ', 'max-attempts-exceeded')
+        await this.invokeTerminalFailureHandler(message, attempt, 'max-attempts-exceeded', error instanceof Error ? error : new Error(String(error)))
         await this.transport.deadLetter(delivery, 'max-attempts-exceeded')
       } else {
         // Liberar o estado para retry (outro consumo pegará)
         await this.processingState.incrementAttempt(message.messageId)
         this.transport.nack(delivery, false)
       }
+    }
+  }
+
+  /**
+   * Invoca o handler de falha terminal antes do envio à DLQ.
+   * Nunca mascara a falha original: se o próprio handler falhar, loga e
+   * prossegue com o deadLetter normalmente.
+   */
+  private async invokeTerminalFailureHandler(
+    message: QueueMessage,
+    attempt: number,
+    reason: string,
+    error: Error,
+  ): Promise<void> {
+    if (!this.terminalFailureHandler) return
+    try {
+      await this.terminalFailureHandler.handle({ message, attempt, reason, error })
+    } catch (handlerError) {
+      console.error(
+        `[QueueConsumer] falha no TerminalFailureHandler para ${message.messageId} (${message.type}):`,
+        handlerError,
+      )
     }
   }
 

@@ -10,7 +10,11 @@ if (process.platform === "linux" && !existsSync("/.dockerenv") && (!env.MYSQL_HO
   env.MYSQL_HOST = "127.0.0.1"
 }
 
-const vitest = spawn(process.execPath, ["node_modules/vitest/vitest.mjs", "run", "--passWithNoTests"], {
+// Node 22.6+ habilita `--experimental-strip-types` por padrão, o que impede
+// o carregamento de arquivos .ts com parameter properties ou decorators
+// (ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX). O Vitest usa o pipeline Vite/esbuild
+// para transformar TypeScript; desativar o strip nativo evita o conflito.
+const vitest = spawn(process.execPath, ["--no-experimental-strip-types", "node_modules/vitest/vitest.mjs", "run", "--passWithNoTests"], {
   env,
   stdio: "inherit",
 })

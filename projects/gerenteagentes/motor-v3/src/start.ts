@@ -31,7 +31,8 @@ import { GovernedFailureHandler } from './governance/GovernedFailureHandler.js'
 import { createGovernanceFlagResolver } from './governance/RolloutPolicy.js'
 import { QueueConsumer } from './queue/QueueConsumer.js'
 import { RabbitMqTransport, normalizeRabbitMqPrefetch } from './queue/RabbitMqTransport.js'
-import { MotorActivityGate, OutboxPublisher, createQueueMessage } from './queue/index.js'
+import { MotorActivityGate, OutboxPublisher, TerminalFailureRouter, createQueueMessage } from './queue/index.js'
+import { SUBTASK_EXECUTION_REQUESTED } from './execution/SubtaskExecutionConsumer.js'
 import type { QueueMessage } from './queue/QueueMessage.js'
 import { TaskCoordinator, MySqlTaskCoordinatorRepository, AnalysisClaimReconciler, AnalysisSessionRecoveryReconciler, TaskCancelConsumer, MySqlTaskEventRecorder, MySqlAnalysisFailureBlocker, SanitizeSessionService, RealtimeMutationPublisher } from './coordinator/index.js'
 import { ConsoleAnalystRunner } from './analysis/ConsoleAnalystRunner.js'
@@ -42,7 +43,7 @@ import { ManagedDevelopmentPromptResolver } from './analysis/ManagedDevelopmentP
 import { DerivedTaskStatusResolver } from './status/DerivedTaskStatus.js'
 import { WorkerActivityService } from './status/WorkerActivity.js'
 import { MySqlCommandPolicyRepository, MySqlOperationLogger } from './commands/index.js'
-import { DevelopmentExecutionConsumer, DevelopmentSessionRecoveryReconciler, GitVerificationIntegrator, GitWorktreePreparer, MySqlDevelopmentExecutionRepository, SubtaskExecutionConsumer, SubtaskVerificationConsumer, TaskExecutionReconciler, WorkerConsoleAdapter } from './execution/index.js'
+import { DevelopmentExecutionConsumer, DevelopmentSessionRecoveryReconciler, GitVerificationIntegrator, GitWorktreePreparer, MySqlDevelopmentExecutionRepository, SubtaskExecutionConsumer, SubtaskTerminalFailureBlocker, SubtaskVerificationConsumer, TaskExecutionReconciler, WorkerConsoleAdapter } from './execution/index.js'
 import { WorkerLauncher } from './worker-launcher/WorkerLauncher.js'
 import { getDeployDiagnostics } from './deploy/DeployDiagnostics.js'
 import { DeployConsumer } from './deploy/DeployConsumer.js'
@@ -634,6 +635,10 @@ async function start() {
       new ConsoleHumanNotifier(),
       operationLogger,
     )
+    const subtaskTerminalBlocker = new SubtaskTerminalFailureBlocker(pool)
+    const terminalFailureRouter = new TerminalFailureRouter(
+      { [SUBTASK_EXECUTION_REQUESTED]: subtaskTerminalBlocker.handle },
+    )
     queueConsumer = new QueueConsumer(transport, async message => {
       await coordinator.handle(message)
       await cancelConsumer?.handle(message)
@@ -654,7 +659,7 @@ async function start() {
     }, {
       queue: process.env.MOTOR_RABBITMQ_QUEUE || 'motor.commands',
       maxAttempts: Number(process.env.MOTOR_QUEUE_MAX_ATTEMPTS || 3),
-    }, pool, motorActivityGate, governedFailureHandler)
+    }, pool, motorActivityGate, governedFailureHandler, terminalFailureRouter)
     // Claims sem sessão auditada não são recuperáveis e podem ser liberados.
     // Sessões existentes ficam sob o reconciliador abaixo, na mesma chave.
     const orphanClaims = await new AnalysisClaimReconciler(pool).reconcile()
