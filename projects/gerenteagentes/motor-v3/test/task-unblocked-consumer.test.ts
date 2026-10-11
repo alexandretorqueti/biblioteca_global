@@ -93,6 +93,24 @@ describe('TaskUnblockedConsumer', () => {
     }
   })
 
+  it('deploy_member_conflict solicita novo deploy para reler o SHA da integração', async () => {
+    const env = fakeEnvironment()
+
+    await env.consumer.handle(unblockedMessage({ blockReason: 'deploy_member_conflict' }))
+
+    const requests = env.outbox('DEPLOY_REQUESTED')
+    expect(requests).toHaveLength(1)
+    expect(requests[0].via).toBe('pool')
+    expect(requests[0].params[3]).toBe('task-p1-886')
+    expect(JSON.parse(requests[0].params[5] as string)).toMatchObject({
+      reason: 'deploy_member_conflict_resolved',
+      resumedBy: 'monitor',
+    })
+    expect(env.outbox('DEPLOY_BATCH_DISPATCH_REQUESTED')).toHaveLength(0)
+    expect(env.events.find(e => e.evento === 'task_resumed_by_monitor')!.payload)
+      .toMatchObject({ action: 'deploy_request_refreshed' })
+  })
+
   it('sem pedidos pending após reset: não enfileira dispatch mas registra retomada', async () => {
     const env = fakeEnvironment({ pendingGroups: [] })
 

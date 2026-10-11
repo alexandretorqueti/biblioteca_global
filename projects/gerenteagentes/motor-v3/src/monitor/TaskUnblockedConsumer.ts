@@ -44,6 +44,11 @@ export class TaskUnblockedConsumer {
     }
     const reason = payload.blockReason ?? ''
     try {
+      if (reason === 'deploy_member_conflict') {
+        await this.enqueueFreshDeployRequest(message)
+        await this.safeRecord(message.taskId, 'task_resumed_by_monitor', { blockReason: reason, action: 'deploy_request_refreshed' })
+        return
+      }
       if (DEPLOY_BLOCK_REASONS.has(reason)) {
         const dispatched = await this.retryDeploy(databaseTaskId, message)
         await this.safeRecord(message.taskId, 'task_resumed_by_monitor', { blockReason: reason, action: 'deploy_requeued', dispatched })
@@ -63,6 +68,23 @@ export class TaskUnblockedConsumer {
         error: error instanceof Error ? error.message : String(error),
       })
     }
+  }
+
+  /**
+   * Conflito de membro invalida o SHA persistido no pedido anterior: a branch
+   * pode ter sido rebaseada durante a resolução. Um novo DEPLOY_REQUESTED faz
+   * o fluxo normal reler a branch de integração e atualizar requested_commit.
+   */
+  private async enqueueFreshDeployRequest(source: QueueMessage): Promise<void> {
+    const request = createQueueMessage({
+      type: 'DEPLOY_REQUESTED',
+      taskId: source.taskId,
+      executionId: `deploy-member-conflict-resume-${Date.now()}-${randomUUID()}`,
+      correlationId: source.correlationId ?? source.messageId,
+      causationId: source.messageId,
+      payload: { reason: 'deploy_member_conflict_resolved', resumedBy: 'monitor' },
+    })
+    await insertOutboxMessage(this.pool, request)
   }
 
   /**
