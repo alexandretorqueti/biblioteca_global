@@ -12,6 +12,7 @@ import { DeployRepository, type DeployTaskContext, type MemberConflictResult } f
 import { RemoteBlueGreenDeployer } from './RemoteBlueGreenDeployer.js'
 import { GitOperationStateDetector } from '../execution/GitOperationStateDetector.js'
 import type { GovernedFailureHandler } from '../governance/GovernedFailureHandler.js'
+import type { TaskEventSink } from '../coordinator/TaskEventRecorder.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -31,6 +32,7 @@ export class DeployConsumer {
     private readonly governedFailureHandler?: GovernedFailureHandler,
     private readonly githubKnownHostsPath = process.env.GITHUB_KNOWN_HOSTS_PATH || '/root/.ssh/known_hosts',
     private readonly githubPreflightTimeoutMs = Number(process.env.MOTOR_GITHUB_PREFLIGHT_TIMEOUT_MS || 10_000),
+    private readonly taskEvents?: TaskEventSink,
   ) {}
 
   async handle(message: QueueMessage): Promise<void> {
@@ -39,7 +41,11 @@ export class DeployConsumer {
     if (message.type === 'DEPLOY_RECONCILIATION_REQUESTED') return this.reconcile(message)
     if (message.type === 'DEPLOY_BATCH_RESULT_RECEIVED') return this.receiveResult(message)
     if (message.type === 'TEST_RUN_COMPLETED') return this.afterGate(message)
-    if (message.type === 'TASK_EXECUTION_COMPLETED') { await this.repository.enqueuePendingDispatches(); return }
+    if (message.type === 'TASK_EXECUTION_COMPLETED') {
+      await this.recordEvent(message.taskId, 'TASK_EXECUTION_COMPLETED', { executionId: message.executionId })
+      await this.repository.enqueuePendingDispatches()
+      return
+    }
   }
 
   async requestReconciliation(): Promise<number> { return this.repository.enqueueReconciliationForRunning() }
@@ -69,6 +75,7 @@ export class DeployConsumer {
   }
 
   private async accept(message: QueueMessage): Promise<void> {
+    await this.recordEvent(message.taskId, 'DEPLOY_REQUESTED', { executionId: message.executionId })
     const operationId = randomUUID()
     await this.log(operationId, 1, 'received', 'executed', message, { commandCode: 'C10_DEPLOY_REQUESTED' })
     if (!await this.govern(operationId, message, 'A30_ACCEPT_DEPLOY_REQUEST')) return
@@ -95,7 +102,9 @@ export class DeployConsumer {
         return this.log(operationId, 3, 'completed', 'skipped', message, { reasonCode: 'deploy_request_not_pending', result: { requestId: accepted.requestId } })
       }
       acceptedRequestId = accepted.requestId
+      await this.recordEvent(message.taskId, 'DEPLOY_REQUEST_ACCEPTED', { executionId: message.executionId, requestId: accepted.requestId })
       const jobId = await this.gate.enqueue({ projectId: context.projectId, taskDatabaseId: context.databaseTaskId, phase: 'pre_deploy', commitSha: context.integrationCommit, baseCommitSha: context.integrationCommit, branchName: context.integrationBranch, workspacePath: context.integrationPath, buildCommand: context.buildCommand, testCommand: context.testCommand }, message)
+      await this.recordEvent(message.taskId, 'TEST_RUN_REQUESTED', { executionId: message.executionId, jobId, phase: 'pre_deploy' })
       await this.log(operationId, 3, 'primitive', 'succeeded', message, { primitiveCode: 'upsert_deploy_request', result: { requestId: accepted.requestId, gateJobId: jobId } })
       await this.log(operationId, 4, 'completed', 'succeeded', message, { actionCode: 'A30_ACCEPT_DEPLOY_REQUEST', result: { requestId: accepted.requestId, gateJobId: jobId } })
     } catch (error) {
@@ -257,6 +266,9 @@ export class DeployConsumer {
 
   private async afterGate(message: QueueMessage): Promise<void> {
     if (message.payload.phase !== 'pre_deploy') return
+    await this.recordEvent(message.taskId, 'TEST_RUN_COMPLETED', {
+      executionId: message.executionId, jobId: message.payload.jobId, testRunId: message.payload.testRunId, status: message.payload.status,
+    })
     const testRunId = Number(message.payload.testRunId)
     if (!Number.isInteger(testRunId) || testRunId <= 0) throw new Error('TEST_RUN_COMPLETED pre_deploy sem testRunId')
     const result = await this.repository.continueAfterPreDeployGate(message.taskId, testRunId, message)
@@ -741,4 +753,13 @@ export class DeployConsumer {
   private async reject(operationId: string, message: QueueMessage, reasonCode: string): Promise<void> { await this.log(operationId, 99, 'rejected', 'rejected', message, { commandCode: 'C10_DEPLOY_REQUESTED', policyCode: 'P10_DEPLOY_IF_ELIGIBLE', actionCode: 'A30_ACCEPT_DEPLOY_REQUEST', reasonCode }) }
   private async block(operationId: string, message: QueueMessage, reasonCode: string, detail: string): Promise<void> { await this.repository.blockTask(message.taskId, reasonCode, detail, message); await this.log(operationId, 99, 'failed', 'failed', message, { actionCode: 'A30_ACCEPT_DEPLOY_REQUEST', reasonCode, result: { error: detail } }) }
   private async log(operationId: string, sequence: number, phase: OperationPhase, outcome: OperationOutcome, message: QueueMessage, extra: Record<string, unknown>): Promise<void> { await this.logger?.append({ operationId, sequence, phase, outcome, messageId: message.messageId, messageType: message.type, correlationId: message.correlationId, causationId: message.causationId, taskId: message.taskId, ...(extra as any) }) }
+
+  /** Auditoria best-effort: indisponibilidade do quadro não interrompe deploy. */
+  private async recordEvent(taskId: string, event: string, payload: Record<string, unknown>): Promise<void> {
+    try {
+      await this.taskEvents?.record(taskId, event, 'motor', payload)
+    } catch (error) {
+      console.warn(`[Motor v3] Falha ao registrar ${event}:`, error instanceof Error ? error.message : String(error))
+    }
+  }
 }

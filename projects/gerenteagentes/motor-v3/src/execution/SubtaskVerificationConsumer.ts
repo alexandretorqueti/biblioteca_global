@@ -3,6 +3,7 @@ import type { OperationLogEntry, OperationLogger } from '../commands/OperationLo
 import type { QueueMessage } from '../queue/QueueMessage.js'
 import type { MySqlDevelopmentExecutionRepository } from './DevelopmentExecutionRepository.js'
 import type { GitVerificationIntegrator } from './GitVerificationIntegrator.js'
+import type { TaskEventSink } from '../coordinator/TaskEventRecorder.js'
 
 const EXECUTION_COMPLETED = 'SUBTASK_EXECUTION_COMPLETED'
 const VERIFICATION_REQUESTED = 'SUBTASK_VERIFICATION_REQUESTED'
@@ -12,6 +13,7 @@ export class SubtaskVerificationConsumer {
     private readonly repository: MySqlDevelopmentExecutionRepository,
     private readonly integrator: GitVerificationIntegrator,
     private readonly operationLogger?: OperationLogger,
+    private readonly taskEvents?: TaskEventSink,
   ) {}
 
   async handle(message: QueueMessage): Promise<void> {
@@ -29,6 +31,7 @@ export class SubtaskVerificationConsumer {
       return
     }
     const next = await this.repository.requestVerification(context, message)
+    await this.recordEvent(message.taskId, next.type, { subtaskId, executionId: message.executionId })
     await this.log(operationId, 2, message, {
       phase: 'completed', outcome: 'succeeded', subtaskId,
       result: { nextMessageId: next.messageId, nextMessageType: next.type },
@@ -51,6 +54,8 @@ export class SubtaskVerificationConsumer {
         phase: 'primitive', outcome: 'succeeded', subtaskId, primitiveCode: 'verify_commit_integrate', result: { ...evidence },
       })
       const messages = await this.repository.completeVerification(context, message, evidence)
+      await this.recordEvent(message.taskId, messages.verified.type, { subtaskId, executionId: message.executionId, ...evidence })
+      await this.recordEvent(message.taskId, messages.next.type, { subtaskId, executionId: message.executionId })
       await this.log(operationId, 3, message, {
         phase: 'completed', outcome: 'succeeded', subtaskId,
         result: { verifiedMessageId: messages.verified.messageId, nextMessageId: messages.next.messageId, nextMessageType: messages.next.type },
@@ -78,5 +83,14 @@ export class SubtaskVerificationConsumer {
       operationId, sequence, messageId: message.messageId, messageType: message.type,
       correlationId: message.correlationId, causationId: message.causationId, taskId: message.taskId, ...data,
     })
+  }
+
+  /** Auditoria best-effort: indisponibilidade do quadro não interrompe verificação. */
+  private async recordEvent(taskId: string, event: string, payload: Record<string, unknown>): Promise<void> {
+    try {
+      await this.taskEvents?.record(taskId, event, 'motor', payload)
+    } catch (error) {
+      console.warn(`[Motor v3] Falha ao registrar ${event}:`, error instanceof Error ? error.message : String(error))
+    }
   }
 }
