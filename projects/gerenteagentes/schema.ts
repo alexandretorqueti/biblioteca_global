@@ -699,7 +699,7 @@ export const tarefaContextosExecucao = mysqlTable("tarefa_contextos_execucao", {
   id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
   tarefaId: bigint("tarefa_id", { mode: "number", unsigned: true }).notNull().references(() => tarefas.id, { onDelete: "cascade" }),
   subtarefaId: bigint("subtarefa_id", { mode: "number", unsigned: true }),
-  fase: mysqlEnum("fase", ["analysis", "development"]).notNull(),
+  fase: mysqlEnum("fase", ["analysis", "development", "baseline_fix"]).notNull(),
   sessaoChave: varchar("sessao_chave", { length: 200 }).notNull(),
   agentId: varchar("agent_id", { length: 200 }).notNull(),
   modelo: varchar("modelo", { length: 160 }),
