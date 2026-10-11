@@ -9,3 +9,4 @@ export { GitOperationStateDetector, GitOperationBlockedError, type GitOperation,
 export { SubtaskVerificationConsumer } from './SubtaskVerificationConsumer.js'
 export { TaskExecutionReconciler, type ReconciliationResult } from './TaskExecutionReconciler.js'
 export { SubtaskTerminalFailureBlocker } from './SubtaskTerminalFailureBlocker.js'
+export { OrphanCapacityQueueReconciler, type OrphanCleanupSummary } from './OrphanCapacityQueueReconciler.js'
