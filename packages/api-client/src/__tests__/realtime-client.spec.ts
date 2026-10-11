@@ -86,9 +86,17 @@ describe("RealtimeClient", () => {
     ws.simulateOpen()
     await connectPromise
 
-    // Verifica que enviou subscribe
-    expect(ws.sent[0]).toContain('"type":"subscribe"')
-    expect(ws.sent[0]).toContain('"taskId":123')
+    // Verifica que enviou subscribe no envelope do WsAdapter do Nest
+    const envelope = JSON.parse(ws.sent[0]!)
+    expect(envelope).toEqual({
+      event: "subscribe",
+      data: {
+        type: "subscribe",
+        channel: "task",
+        taskId: 123,
+        lastSequence: undefined,
+      },
+    })
   })
 
   it("inclui Authorization Bearer no request do ticket", async () => {
@@ -313,9 +321,12 @@ describe("RealtimeClient", () => {
     await vi.waitFor(() => expect(sockets[1]).toBeDefined())
     sockets[1]!.simulateOpen()
 
-    // O subscribe da reconexão deve incluir lastSequence=7.
-    const subscribeMsg = JSON.parse(sockets[1]!.sent[0]!)
-    expect(subscribeMsg.lastSequence).toBe(7)
+    // O subscribe da reconexão deve incluir lastSequence=7 no envelope do WsAdapter.
+    const envelope = JSON.parse(sockets[1]!.sent[0]!)
+    expect(envelope.event).toBe("subscribe")
+    expect(envelope.data.lastSequence).toBe(7)
+    expect(envelope.data.channel).toBe("task")
+    expect(envelope.data.taskId).toBe(123)
 
     client.close()
     vi.useRealTimers()
@@ -375,8 +386,9 @@ describe("RealtimeClient", () => {
     await vi.waitFor(() => expect(sockets[0]).toBeDefined())
     sockets[0]!.simulateOpen()
 
-    const subscribeMsg = JSON.parse(sockets[0]!.sent[0]!)
-    expect(subscribeMsg.lastSequence).toBe(42)
+    const envelope = JSON.parse(sockets[0]!.sent[0]!)
+    expect(envelope.event).toBe("subscribe")
+    expect(envelope.data.lastSequence).toBe(42)
 
     client.close()
   })
@@ -385,7 +397,7 @@ describe("RealtimeClient", () => {
   // Canal "map" (st-5)
   // --------------------------------------------------------------------------
 
-  it("canal 'map' envia subscribe sem taskId", async () => {
+  it("canal 'map' envia subscribe sem taskId no envelope do WsAdapter", async () => {
     fetchMock.mockResolvedValue({
       ok: true,
       json: async () => ({ ticket: "ticket-map" }),
@@ -399,10 +411,16 @@ describe("RealtimeClient", () => {
     await vi.waitFor(() => expect(sockets[0]).toBeDefined())
     sockets[0]!.simulateOpen()
 
-    const subscribeMsg = JSON.parse(sockets[0]!.sent[0]!)
-    expect(subscribeMsg.type).toBe("subscribe")
-    expect(subscribeMsg.channel).toBe("map")
-    expect(subscribeMsg.taskId).toBeUndefined()
+    const envelope = JSON.parse(sockets[0]!.sent[0]!)
+    expect(envelope).toEqual({
+      event: "subscribe",
+      data: {
+        type: "subscribe",
+        channel: "map",
+        lastSequence: undefined,
+      },
+    })
+    expect(envelope.data.taskId).toBeUndefined()
 
     client.close()
   })
@@ -445,8 +463,10 @@ describe("RealtimeClient", () => {
     await vi.waitFor(() => expect(sockets[1]).toBeDefined())
     sockets[1]!.simulateOpen()
 
-    const subscribeMsg = JSON.parse(sockets[1]!.sent[0]!)
-    expect(subscribeMsg.lastSequence).toBe(10)
+    const envelope = JSON.parse(sockets[1]!.sent[0]!)
+    expect(envelope.event).toBe("subscribe")
+    expect(envelope.data.lastSequence).toBe(10)
+    expect(envelope.data.channel).toBe("map")
 
     client.close()
   })
@@ -478,5 +498,149 @@ describe("RealtimeClient", () => {
     })
 
     client.close()
+  })
+
+  // --------------------------------------------------------------------------
+  // Canal "project-feed"
+  // --------------------------------------------------------------------------
+
+  it("canal 'project-feed' envia subscribe sem taskId no envelope do WsAdapter", async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ ticket: "ticket-feed" }),
+    })
+
+    options.channel = "project-feed"
+    options.taskId = undefined
+    const client = new RealtimeClient(options)
+    void client.connect()
+
+    await vi.waitFor(() => expect(sockets[0]).toBeDefined())
+    sockets[0]!.simulateOpen()
+
+    const envelope = JSON.parse(sockets[0]!.sent[0]!)
+    expect(envelope).toEqual({
+      event: "subscribe",
+      data: {
+        type: "subscribe",
+        channel: "project-feed",
+        lastSequence: undefined,
+      },
+    })
+    expect(envelope.data.taskId).toBeUndefined()
+
+    client.close()
+  })
+
+  it("canal 'project-feed' processa feed_subscribed", async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ ticket: "ticket-feed-sub" }),
+    })
+
+    options.channel = "project-feed"
+    options.taskId = undefined
+    const client = new RealtimeClient(options)
+    void client.connect()
+
+    await vi.waitFor(() => expect(sockets[0]).toBeDefined())
+    sockets[0]!.simulateOpen()
+
+    sockets[0]!.simulateMessage({
+      type: "feed_subscribed",
+      currentSequence: 25,
+    })
+
+    expect(options.onMessage).toHaveBeenCalledWith({
+      type: "feed_subscribed",
+      currentSequence: 25,
+    })
+
+    client.close()
+  })
+
+  // --------------------------------------------------------------------------
+  // Envelope WsAdapter — verificação completa dos 3 canais
+  // --------------------------------------------------------------------------
+
+  it("todos os canais enviam o envelope correto do WsAdapter (event + data)", async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ ticket: "ticket-envelope" }),
+    })
+
+    // Canal task
+    const taskClient = new RealtimeClient({ ...options, channel: "task", taskId: 456 })
+    void taskClient.connect()
+    await vi.waitFor(() => expect(sockets[0]).toBeDefined())
+    sockets[0]!.simulateOpen()
+    const taskEnv = JSON.parse(sockets[0]!.sent[0]!)
+    expect(taskEnv.event).toBe("subscribe")
+    expect(taskEnv.data).toEqual({ type: "subscribe", channel: "task", taskId: 456, lastSequence: undefined })
+    taskClient.close()
+
+    // Canal map
+    sockets.length = 0
+    const mapClient = new RealtimeClient({ ...options, channel: "map", taskId: undefined })
+    void mapClient.connect()
+    await vi.waitFor(() => expect(sockets[0]).toBeDefined())
+    sockets[0]!.simulateOpen()
+    const mapEnv = JSON.parse(sockets[0]!.sent[0]!)
+    expect(mapEnv.event).toBe("subscribe")
+    expect(mapEnv.data).toEqual({ type: "subscribe", channel: "map", lastSequence: undefined })
+    mapClient.close()
+
+    // Canal project-feed
+    sockets.length = 0
+    const feedClient = new RealtimeClient({ ...options, channel: "project-feed", taskId: undefined })
+    void feedClient.connect()
+    await vi.waitFor(() => expect(sockets[0]).toBeDefined())
+    sockets[0]!.simulateOpen()
+    const feedEnv = JSON.parse(sockets[0]!.sent[0]!)
+    expect(feedEnv.event).toBe("subscribe")
+    expect(feedEnv.data).toEqual({ type: "subscribe", channel: "project-feed", lastSequence: undefined })
+    feedClient.close()
+  })
+
+  it("reconexão com lastSequence preserva o envelope do WsAdapter", async () => {
+    vi.useFakeTimers()
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ ticket: "ticket-reconnect" }),
+    })
+
+    options.channel = "project-feed"
+    options.taskId = undefined
+    options.lastSequence = 99
+    const client = new RealtimeClient(options)
+    void client.connect()
+
+    await vi.waitFor(() => expect(sockets[0]).toBeDefined())
+    sockets[0]!.simulateOpen()
+
+    // Verifica envelope inicial com lastSequence=99
+    const env1 = JSON.parse(sockets[0]!.sent[0]!)
+    expect(env1.event).toBe("subscribe")
+    expect(env1.data.lastSequence).toBe(99)
+    expect(env1.data.channel).toBe("project-feed")
+
+    // Queda + reconexão
+    sockets[0]!.simulateClose()
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ ticket: "ticket-reconnect-2" }),
+    })
+    await vi.advanceTimersByTimeAsync(1000)
+
+    await vi.waitFor(() => expect(sockets[1]).toBeDefined())
+    sockets[1]!.simulateOpen()
+
+    const env2 = JSON.parse(sockets[1]!.sent[0]!)
+    expect(env2.event).toBe("subscribe")
+    expect(env2.data.lastSequence).toBe(99)
+    expect(env2.data.channel).toBe("project-feed")
+
+    client.close()
+    vi.useRealTimers()
   })
 })
