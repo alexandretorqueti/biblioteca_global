@@ -179,6 +179,9 @@ export {
   sendChatMessageResultSchema,
 } from "./chat"
 
+// Normalizador de conteúdo de chat (JSON → texto legível)
+export { normalizeChatContent } from "./chat-normalizer"
+
 // HelpDesk persistido no core
 export {
   helpDeskSessionStatusSchema,
