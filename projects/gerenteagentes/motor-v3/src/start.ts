@@ -31,7 +31,8 @@ import { GovernedFailureHandler } from './governance/GovernedFailureHandler.js'
 import { createGovernanceFlagResolver } from './governance/RolloutPolicy.js'
 import { QueueConsumer } from './queue/QueueConsumer.js'
 import { RabbitMqTransport, normalizeRabbitMqPrefetch } from './queue/RabbitMqTransport.js'
-import { MotorActivityGate, OutboxPublisher, createQueueMessage } from './queue/index.js'
+import { MotorActivityGate, OutboxPublisher, TerminalFailureRouter, createQueueMessage } from './queue/index.js'
+import { SUBTASK_EXECUTION_REQUESTED } from './execution/SubtaskExecutionConsumer.js'
 import type { QueueMessage } from './queue/QueueMessage.js'
 import { TaskCoordinator, MySqlTaskCoordinatorRepository, AnalysisClaimReconciler, AnalysisSessionRecoveryReconciler, TaskCancelConsumer, MySqlTaskEventRecorder, MySqlAnalysisFailureBlocker, SanitizeSessionService, RealtimeMutationPublisher } from './coordinator/index.js'
 import { ConsoleAnalystRunner } from './analysis/ConsoleAnalystRunner.js'
@@ -42,7 +43,7 @@ import { ManagedDevelopmentPromptResolver } from './analysis/ManagedDevelopmentP
 import { DerivedTaskStatusResolver } from './status/DerivedTaskStatus.js'
 import { WorkerActivityService } from './status/WorkerActivity.js'
 import { MySqlCommandPolicyRepository, MySqlOperationLogger } from './commands/index.js'
-import { DevelopmentExecutionConsumer, DevelopmentSessionRecoveryReconciler, GitVerificationIntegrator, GitWorktreePreparer, MySqlDevelopmentExecutionRepository, SubtaskExecutionConsumer, SubtaskVerificationConsumer, TaskExecutionReconciler, WorkerConsoleAdapter } from './execution/index.js'
+import { DevelopmentExecutionConsumer, DevelopmentSessionRecoveryReconciler, GitVerificationIntegrator, GitWorktreePreparer, MySqlDevelopmentExecutionRepository, OrphanCapacityQueueReconciler, SubtaskExecutionConsumer, SubtaskTerminalFailureBlocker, SubtaskVerificationConsumer, TaskExecutionReconciler, WorkerConsoleAdapter } from './execution/index.js'
 import { WorkerLauncher } from './worker-launcher/WorkerLauncher.js'
 import { getDeployDiagnostics } from './deploy/DeployDiagnostics.js'
 import { DeployConsumer } from './deploy/DeployConsumer.js'
@@ -95,6 +96,7 @@ let analysisSessionRecovery: AnalysisSessionRecoveryReconciler | null = null
 let developmentSessionRecovery: DevelopmentSessionRecoveryReconciler | null = null
 let taskAdjustmentConsumer: TaskAdjustmentConsumer | null = null
 let postDeployVerifier: PostDeployVerifier | null = null
+let orphanCapacityQueueReconciler: OrphanCapacityQueueReconciler | null = null
 
 async function start() {
   console.log('[Motor v3] Iniciando...')
@@ -634,6 +636,10 @@ async function start() {
       new ConsoleHumanNotifier(),
       operationLogger,
     )
+    const subtaskTerminalBlocker = new SubtaskTerminalFailureBlocker(pool)
+    const terminalFailureRouter = new TerminalFailureRouter(
+      { [SUBTASK_EXECUTION_REQUESTED]: subtaskTerminalBlocker.handle },
+    )
     queueConsumer = new QueueConsumer(transport, async message => {
       await coordinator.handle(message)
       await cancelConsumer?.handle(message)
@@ -654,7 +660,7 @@ async function start() {
     }, {
       queue: process.env.MOTOR_RABBITMQ_QUEUE || 'motor.commands',
       maxAttempts: Number(process.env.MOTOR_QUEUE_MAX_ATTEMPTS || 3),
-    }, pool, motorActivityGate, governedFailureHandler)
+    }, pool, motorActivityGate, governedFailureHandler, terminalFailureRouter)
     // Claims sem sessão auditada não são recuperáveis e podem ser liberados.
     // Sessões existentes ficam sob o reconciliador abaixo, na mesma chave.
     const orphanClaims = await new AnalysisClaimReconciler(pool).reconcile()
@@ -690,6 +696,14 @@ async function start() {
     // ao reconciliador e não criam um segundo worker.
     void developmentSessionRecovery.reconcile()
     developmentSessionRecovery.start()
+    // Reconcilia sessões órfãs (subtarefa terminal) e limpa entradas
+    // obsoletas da fila de capacidade — complementar ao recovery acima.
+    orphanCapacityQueueReconciler = new OrphanCapacityQueueReconciler(pool, {
+      taskEvents,
+      intervalMs: Number(process.env.MOTOR_ORPHAN_QUEUE_INTERVAL_MS || 60000),
+    })
+    await orphanCapacityQueueReconciler.reconcile()
+    orphanCapacityQueueReconciler.start()
     // Reconciliação única no boot: reenfileira tarefas/subtarefas pendentes
     // que não têm mensagem equivalente na fila (incidente 828).
     const taskReconciler = new TaskExecutionReconciler(pool)
@@ -1332,6 +1346,7 @@ async function shutdown() {
   }
   analysisSessionRecovery?.stop()
   developmentSessionRecovery?.stop()
+  orphanCapacityQueueReconciler?.stop()
 
   // Fecha servidor HTTP
   if (server) {
