@@ -150,7 +150,9 @@ export class MigrationDryRunExecutor {
 
   /**
    * Extrai nomes de tabelas referenciadas nos statements.
-   * Detecta CREATE TABLE, ALTER TABLE, INSERT INTO, UPDATE, DELETE FROM.
+   * Detecta CREATE TABLE, ALTER TABLE, INSERT INTO, UPDATE, DELETE FROM,
+   * FROM e JOIN (tabelas lidas por UPDATE/INSERT ... SELECT também precisam
+   * ser clonadas e reescritas para o dry-run não tocar tabelas reais).
    */
   private extractTableNames(statements: string[]): Set<string> {
     const tables = new Set<string>()
@@ -160,6 +162,8 @@ export class MigrationDryRunExecutor {
       /INSERT\s+INTO\s+`?(\w+)`?/gi,
       /UPDATE\s+`?(\w+)`?/gi,
       /DELETE\s+FROM\s+`?(\w+)`?/gi,
+      /\bFROM\s+`?(\w+)`?/gi,
+      /\bJOIN\s+`?(\w+)`?/gi,
     ]
     for (const statement of statements) {
       for (const pattern of patterns) {
@@ -176,26 +180,76 @@ export class MigrationDryRunExecutor {
    * Clona a estrutura das tabelas tocadas para versões scratch prefixadas.
    * Tabelas que ainda não existem são registradas mas não clonadas — o dry-run
    * validará a sintaxe do CREATE TABLE original durante a execução.
+   *
+   * Incidente task-p2-989 (2026-10-12): o clone reexecutava o SHOW CREATE TABLE
+   * com as CONSTRAINTs de FOREIGN KEY nomeadas — no MySQL o nome da FK é único
+   * por schema, então o clone falhava com errno 1826 e o `catch {}` engolia o
+   * erro. O statement seguinte falhava com 1146 (scratch inexistente), um
+   * sintoma enganoso que reprovava qualquer migration sobre tabela com FK.
+   * Agora: FKs são removidas do clone (integridade referencial é irrelevante
+   * para o dry-run de sintaxe) e falhas de clone não são mais silenciosas —
+   * apenas "tabela não existe" (1146/1051) e "clone já criado nesta execução"
+   * (1050, migrations do mesmo dry-run tocando a mesma tabela) são tolerados.
    */
   private async cloneTableStructures(tables: Set<string>): Promise<void> {
     for (const tableName of tables) {
       const scratchName = `${this.scratchPrefix}${tableName}`
       this.scratchTables.push(scratchName)
+      let createStatement: string | undefined
       try {
         const [rows] = await this.pool.query<RowDataPacket[]>(
           `SHOW CREATE TABLE \`${tableName}\``,
         )
-        if (!rows[0]) continue
-        const createStatement = rows[0]['Create Table'] as string
-        const rewritten = createStatement
-          .replace(new RegExp(`CREATE TABLE \`${tableName}\``, 'i'), `CREATE TABLE \`${scratchName}\``)
-          .replace(/AUTO_INCREMENT=\d+/gi, 'AUTO_INCREMENT=1')
-        await this.pool.query(rewritten)
-      } catch {
+        createStatement = rows[0]?.['Create Table'] as string | undefined
+      } catch (error) {
         // Tabela pode não existir ainda (primeira migration que a cria).
         // Nesse caso, o dry-run validará a sintaxe do CREATE TABLE original.
+        if (MigrationDryRunExecutor.isMissingTableError(error)) continue
+        throw error
+      }
+      if (!createStatement) continue
+      const rewritten = this.buildScratchCreateStatement(createStatement, tableName, scratchName)
+      try {
+        await this.pool.query(rewritten)
+      } catch (error) {
+        // Duas migrations do mesmo dry-run podem tocar a mesma tabela: o clone
+        // da segunda encontra a scratch já criada (1050) — não é falha.
+        if ((error as { errno?: number })?.errno === 1050) continue
+        throw new MigrationDryRunError([{
+          project: 'scratch-clone',
+          migration: tableName,
+          statementIndex: 0,
+          statementLine: 0,
+          mysqlMessage: `Falha ao clonar estrutura de \`${tableName}\` para \`${scratchName}\`: ${(error as Error)?.message ?? String(error)}`,
+          mysqlErrno: (error as { errno?: number })?.errno,
+          mysqlState: (error as { sqlState?: string })?.sqlState,
+        }])
       }
     }
+  }
+
+  /** 1146 = table doesn't exist; 1051 = unknown table (DROP). */
+  private static isMissingTableError(error: unknown): boolean {
+    const errno = (error as { errno?: number })?.errno
+    return errno === 1146 || errno === 1051
+  }
+
+  /**
+   * Reescreve o SHOW CREATE TABLE para o nome scratch, removendo FOREIGN KEYs
+   * nomeadas (duplicariam o nome da constraint no schema) e normalizando o
+   * AUTO_INCREMENT. O formato do SHOW CREATE TABLE coloca cada constraint em
+   * uma linha própria, então a remoção é linha a linha + ajuste da vírgula
+   * pendurada antes do fechamento.
+   */
+  private buildScratchCreateStatement(createStatement: string, tableName: string, scratchName: string): string {
+    const withoutForeignKeys = createStatement
+      .split('\n')
+      .filter(line => !/^\s*(?:CONSTRAINT\s+`[^`]*`\s+)?FOREIGN\s+KEY\b/i.test(line))
+      .join('\n')
+      .replace(/,(\s*\))/g, '$1')
+    return withoutForeignKeys
+      .replace(new RegExp(`CREATE TABLE \`${tableName}\``, 'i'), `CREATE TABLE \`${scratchName}\``)
+      .replace(/AUTO_INCREMENT=\d+/gi, 'AUTO_INCREMENT=1')
   }
 
   /**
