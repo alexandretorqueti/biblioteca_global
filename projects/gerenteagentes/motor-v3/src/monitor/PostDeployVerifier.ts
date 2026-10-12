@@ -20,6 +20,33 @@ interface BatchTaskContext extends RowDataPacket {
   criterios_aceite: string | null
 }
 
+/**
+ * SQL do contexto das tarefas do lote. Exportado para teste de contrato
+ * (test/postdeploy-verifier-task-columns-contract.test.ts): toda referência
+ * `t.<coluna>` deve existir no schema de `tarefas`.
+ *
+ * HISTÓRICO (incidente task-p2-984, mesma classe do incidente 912): a query
+ * original selecionava `t.criterios_aceite`, coluna que NUNCA existiu no
+ * schema/migrations — toda verificação pós-deploy falhava com
+ * "Unknown column 't.criterios_aceite' in 'field list'" desde task-p2-971/976,
+ * sem bloquear nada (falha silenciosa). Enquanto não houver coluna canônica
+ * de critérios de aceite, o campo vai como NULL e o prompt exibe '—'.
+ */
+export const BATCH_TASKS_SQL = `
+      SELECT t.id AS database_task_id,
+              COALESCE(NULLIF(t.external_id,''), CAST(t.id AS CHAR)) AS task_id,
+              t.titulo,
+              t.descricao,
+              t.projeto_id,
+              pc.slug AS project_slug,
+              pmc.repo_path,
+              NULL AS criterios_aceite
+         FROM deploy_requests dr
+         JOIN tarefas t ON t.id = dr.tarefa_id
+         JOIN projetos_captados pc ON pc.id = t.projeto_id
+         JOIN projeto_motor_config pmc ON pmc.projeto_id = t.projeto_id
+        WHERE dr.batch_id = ?`
+
 interface SubtaskRow extends RowDataPacket {
   id: number
   titulo: string
@@ -558,22 +585,7 @@ export class PostDeployVerifier {
   }
 
   private async loadBatchTasks(batchId: string): Promise<BatchTaskContext[]> {
-    const [rows] = await this.pool.query<BatchTaskContext[]>(
-      `SELECT t.id AS database_task_id,
-              COALESCE(NULLIF(t.external_id,''), CAST(t.id AS CHAR)) AS task_id,
-              t.titulo,
-              t.descricao,
-              t.projeto_id,
-              pc.slug AS project_slug,
-              pmc.repo_path,
-              t.criterios_aceite
-         FROM deploy_requests dr
-         JOIN tarefas t ON t.id = dr.tarefa_id
-         JOIN projetos_captados pc ON pc.id = t.projeto_id
-         JOIN projeto_motor_config pmc ON pmc.projeto_id = t.projeto_id
-        WHERE dr.batch_id = ?`,
-      [batchId],
-    )
+    const [rows] = await this.pool.query<BatchTaskContext[]>(BATCH_TASKS_SQL, [batchId])
     return rows
   }
 

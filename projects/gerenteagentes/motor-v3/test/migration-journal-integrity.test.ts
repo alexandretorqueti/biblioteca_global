@@ -185,6 +185,49 @@ describe('MigrationJournalIntegrity', () => {
     await expect(assertAddedMigrationsHaveJournalEntries(root, base)).rejects.toThrow(/statement-breakpoint.*0027_motor_configuracoes\.sql/)
   })
 
+  it('gate reprova migration adicionada com breakpoint pendurado no fim (incidente task-p2-984)', async () => {
+    const root = await fixture({
+      alpha: {
+        migrations: ['0001_ok.sql'],
+        tags: ['0001_ok'],
+        whens: [1000],
+      },
+    })
+    await git(root, ['init', '-b', 'base-desenvolvimento'])
+    await git(root, ['config', 'user.email', 'motor@example.test'])
+    await git(root, ['config', 'user.name', 'Motor Test'])
+    await git(root, ['add', '.'])
+    await git(root, ['commit', '-m', 'baseline'])
+    const base = (await git(root, ['rev-parse', 'HEAD'])).trim()
+
+    // Migration com CREATE TABLE + breakpoint pendurado no fim do arquivo
+    // (formato exato do incidente 0085_realtime_event_outbox.sql)
+    const danglingSql = [
+      'CREATE TABLE `realtime_event_outbox` (',
+      '  `id` BIGINT NOT NULL AUTO_INCREMENT,',
+      '  PRIMARY KEY (`id`)',
+      ');',
+      '--> statement-breakpoint',
+      '',
+    ].join('\n')
+    await writeFile(join(root, 'projects/alpha/migrations/0002_dangling.sql'), danglingSql)
+    const journalPath = join(root, 'projects/alpha/migrations/meta/_journal.json')
+    const journal = JSON.parse(await readFile(journalPath, 'utf8'))
+    journal.entries.push({ tag: '0002_dangling', when: 2000 })
+    await writeFile(journalPath, JSON.stringify(journal))
+
+    await expect(assertAddedMigrationsHaveJournalEntries(root, base)).rejects.toMatchObject({
+      name: 'MigrationStatementBreakpointError',
+      violations: [{
+        project: 'alpha',
+        migration: '0002_dangling.sql',
+        kind: 'empty_segment',
+        orphanedStatementLine: 5,
+      }],
+    })
+    await expect(assertAddedMigrationsHaveJournalEntries(root, base)).rejects.toThrow(/bloco VAZIO/)
+  })
+
   it('preflight avisa sem falhar e separa múltiplos projetos', async () => {
     const root = await fixture({
       alpha: { migrations: ['0001_orphan.sql'], tags: [], whens: [] },
@@ -378,6 +421,47 @@ describe('analyzeStatementBreakpoints', () => {
     expect(result.statementCount).toBe(1)
     expect(result.violationLine).toBeNull()
   })
+
+  it('detecta breakpoint pendurado no fim do arquivo (reproduz incidente 0085/task-p2-984)', () => {
+    const sql = [
+      '-- comentário',
+      'CREATE TABLE `realtime_event_outbox` (',
+      '  `id` BIGINT NOT NULL AUTO_INCREMENT,',
+      '  PRIMARY KEY (`id`)',
+      ') ENGINE=InnoDB;',
+      '--> statement-breakpoint',
+      '',
+    ].join('\n')
+    const result = analyzeStatementBreakpoints(sql)
+    expect(result.statementCount).toBe(1)
+    expect(result.breakpointCount).toBe(1)
+    expect(result.violationLine).toBeNull()
+    expect(result.emptySegmentLine).toBe(6) // linha do marcador pendurado
+  })
+
+  it('detecta breakpoints consecutivos (bloco vazio entre marcadores)', () => {
+    const sql = [
+      'CREATE TABLE `t1` (`id` INT NOT NULL);',
+      '--> statement-breakpoint',
+      '--> statement-breakpoint',
+      'INSERT INTO `t1` (`id`) VALUES (1);',
+    ].join('\n')
+    const result = analyzeStatementBreakpoints(sql)
+    expect(result.statementCount).toBe(2)
+    expect(result.breakpointCount).toBe(2)
+    expect(result.emptySegmentLine).toBe(2) // primeiro marcador do par consecutivo
+  })
+
+  it('não marca segmento vazio em arquivo bem formado com múltiplos blocos', () => {
+    const sql = [
+      'CREATE TABLE `t1` (`id` INT NOT NULL);',
+      '--> statement-breakpoint',
+      'INSERT INTO `t1` (`id`) VALUES (1);',
+    ].join('\n')
+    const result = analyzeStatementBreakpoints(sql)
+    expect(result.violationLine).toBeNull()
+    expect(result.emptySegmentLine).toBeNull()
+  })
 })
 
 describe('inspectMigrationStatementBreakpoints', () => {
@@ -414,6 +498,25 @@ describe('inspectMigrationStatementBreakpoints', () => {
 
     const violations = await inspectMigrationStatementBreakpoints(root, 'alpha', ['0001_ok.sql'])
     expect(violations).toEqual([])
+  })
+
+  it('detecta bloco vazio por breakpoint pendurado no fim do arquivo', async () => {
+    const root = await fixture({ alpha: { migrations: ['0001_ok.sql'], tags: ['0001_ok'], whens: [1000] } })
+    const danglingSql = [
+      'CREATE TABLE `t1` (`id` INT NOT NULL);',
+      '--> statement-breakpoint',
+      '',
+    ].join('\n')
+    await writeFile(join(root, 'projects/alpha/migrations/0001_ok.sql'), danglingSql)
+
+    const violations = await inspectMigrationStatementBreakpoints(root, 'alpha', ['0001_ok.sql'])
+    expect(violations).toHaveLength(1)
+    expect(violations[0]).toMatchObject({
+      project: 'alpha',
+      migration: '0001_ok.sql',
+      kind: 'empty_segment',
+      orphanedStatementLine: 2,
+    })
   })
 })
 
