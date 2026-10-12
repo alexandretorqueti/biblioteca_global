@@ -113,6 +113,8 @@ async function start() {
   const db = drizzle(pool, { schema, mode: 'default' })
   const statusResolver = new DerivedTaskStatusResolver(pool)
   const externalResolutionHandler = new ExternalResolutionHandler(pool)
+  const motorActivityGate = new MotorActivityGate(pool)
+  const workerActivityService = new WorkerActivityService(pool, () => scheduler?.getActiveExecutions() ?? [], motorActivityGate)
   const realtime = new RealtimeMutationPublisher(pool, {
     // Ingresso autenticado para publicação de eventos em tempo real.
     endpoint: process.env.LIBRARY_REALTIME_EVENTS_URL ?? 'http://localhost:3001/api/internal/realtime/events',
@@ -128,6 +130,8 @@ async function start() {
   realtimeOutboxDispatcher = new RealtimeOutboxDispatcher(pool, {
     endpoint: process.env.LIBRARY_REALTIME_EVENTS_URL ?? 'http://localhost:3001/api/internal/realtime/events',
     token: process.env.LIBRARY_REALTIME_EVENTS_TOKEN,
+    activityProvider: () => workerActivityService.getActivity(),
+    activityProjectId: Number(process.env.MOTOR_REALTIME_TENANT_PROJECT_ID ?? 640),
   })
   realtimeOutboxDispatcher.start()
 
@@ -177,8 +181,6 @@ async function start() {
   console.log('[Motor v3] Scheduler inicializado')
   // A mesma fonte é usada pelo endpoint de compatibilidade e pelo endpoint
   // dedicado, para que o Mapa não observe dois estados diferentes.
-  const motorActivityGate = new MotorActivityGate(pool)
-  const workerActivityService = new WorkerActivityService(pool, () => scheduler?.getActiveExecutions() ?? [], motorActivityGate)
 
   // 7. Inicializa Monitor Bridge
   console.log('[Motor v3] Inicializando Monitor Bridge...')

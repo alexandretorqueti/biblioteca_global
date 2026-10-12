@@ -1,5 +1,8 @@
+import { randomUUID } from 'node:crypto'
 import type { Pool, RowDataPacket, ResultSetHeader } from 'mysql2/promise'
 import type { RealtimeOutboxEvent, RealtimeEventType } from './RealtimeMutationBoundary.js'
+import type { WorkerActivityResponse } from '../status/WorkerActivity.js'
+import { workerActivitySignature } from '../status/WorkerActivity.js'
 
 interface OutboxRow extends RowDataPacket {
   event_id: string
@@ -23,6 +26,8 @@ export interface RealtimeOutboxDispatcherConfig {
   fetchImpl?: typeof fetch
   intervalMs?: number
   maxAttemptsBeforeAlert?: number
+  activityProvider?: () => Promise<WorkerActivityResponse>
+  activityProjectId?: number
 }
 
 /** Drena eventos depois do commit, sem deixar a indisponibilidade do WS
@@ -33,6 +38,7 @@ export class RealtimeOutboxDispatcher {
   private consecutiveFailures = 0
   private alertEmitted = false
   private readonly fetchImpl: typeof fetch
+  private lastActivitySignature: string | null = null
 
   constructor(private readonly pool: Pool, private readonly config: RealtimeOutboxDispatcherConfig = {}) {
     this.fetchImpl = config.fetchImpl ?? fetch
@@ -54,6 +60,7 @@ export class RealtimeOutboxDispatcher {
     if (this.flushing) return
     this.flushing = true
     try {
+      await this.flushActivity()
       const [rows] = await this.pool.query<OutboxRow[]>(
         `SELECT o.event_id, o.task_id, o.source_task_id, o.project_id, o.subtask_id, o.type,
                 o.previous_status, o.status, o.payload, o.per_task_seq, o.attempts, o.created_at
@@ -74,9 +81,33 @@ export class RealtimeOutboxDispatcher {
     }
   }
 
+  private async flushActivity(): Promise<void> {
+    if (!this.config.activityProvider) return
+    let snapshot: WorkerActivityResponse
+    try { snapshot = await this.config.activityProvider() } catch { return }
+    const signature = workerActivitySignature(snapshot)
+    if (signature === this.lastActivitySignature) return
+    const eventId = randomUUID()
+    const projectId = this.config.activityProjectId ?? 640
+    // Atividade é uma projeção do motor, não de uma tarefa específica. O
+    // task_id zero mantém sua sequência isolada; o envelope usa 1 abaixo por
+    // compatibilidade com o contrato compartilhado, que exige taskId positivo.
+    await this.pool.query<ResultSetHeader>(
+      `INSERT INTO realtime_event_outbox
+       (event_id, task_id, source_task_id, project_id, subtask_id, type,
+        previous_status, status, payload, per_task_seq, delivery_status, attempts, created_at)
+       VALUES (?, 0, 'motor', ?, NULL, 'motor.activity.updated', NULL, NULL, ?,
+               (SELECT COALESCE(MAX(seq), 0) + 1 FROM
+                 (SELECT per_task_seq AS seq FROM realtime_event_outbox WHERE task_id = 0) AS activity_seq),
+               'pending', 0, NOW())`,
+      [eventId, projectId, JSON.stringify(snapshot)],
+    )
+    this.lastActivitySignature = signature
+  }
+
   private async publishRow(row: OutboxRow): Promise<void> {
     const event: RealtimeOutboxEvent = {
-      eventId: row.event_id, taskId: Number(row.task_id), sourceTaskId: row.source_task_id,
+      eventId: row.event_id, taskId: Number(row.task_id) || 1, sourceTaskId: row.source_task_id,
       projectId: Number(row.project_id), subtaskId: row.subtask_id == null ? null : Number(row.subtask_id),
       type: row.type, previousStatus: row.previous_status as RealtimeOutboxEvent['previousStatus'],
       status: row.status as RealtimeOutboxEvent['status'],

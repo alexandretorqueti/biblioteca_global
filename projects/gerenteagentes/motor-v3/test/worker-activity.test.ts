@@ -62,4 +62,15 @@ describe('WorkerActivityService', () => {
       taskId: 'task-p12-909',
     })
   })
+
+  it.each(['git_merge', 'integration_promotion', 'baseline_fix'])('classifica a fase %s como git e preserva taskIds', async phase => {
+    const { activity } = service([
+      { executionId: 'git-1', taskId: 'task-p12-909', startedAt: 10, lastHeartbeat: 20,
+        context: { agentId: 'project-agent', phase } },
+    ])
+
+    const result = await activity.getActivity()
+
+    expect(result.motor.activity).toEqual(expect.objectContaining({ kind: 'git', taskIds: ['task-p12-909'] }))
+  })
 })
