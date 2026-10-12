@@ -19,6 +19,20 @@ export interface PreflightRecoveryResult {
   sessionHandedOff?: boolean
 }
 
+export async function persistBaselineCorrection(
+  integrationPath: string,
+  baseCommit: string,
+  message: string,
+): Promise<string | null> {
+  await execFileAsync('git', ['add', '-A'], { cwd: integrationPath })
+  const { stdout: staged } = await execFileAsync('git', ['diff', '--cached', '--name-only'], { cwd: integrationPath })
+  if (staged.trim()) await execFileAsync('git', ['commit', '-m', message], { cwd: integrationPath })
+
+  const { stdout: commit } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: integrationPath })
+  const integrationCommit = commit.trim()
+  return integrationCommit === baseCommit ? null : integrationCommit
+}
+
 /** Corrige um baseline vermelho na integração antes de qualquer sessão DEV. */
 export class BaselinePreflightRecovery {
   constructor(
@@ -108,12 +122,12 @@ export class BaselinePreflightRecovery {
     source: QueueMessage,
   ): Promise<PreflightRecoveryResult> {
 
-    await execFileAsync('git', ['add', '-A'], { cwd: integration.integrationPath })
-    const { stdout: staged } = await execFileAsync('git', ['diff', '--cached', '--name-only'], { cwd: integration.integrationPath })
-    if (!staged.trim()) return { success: false, error: 'Monitor informou conclusão, mas não produziu correção na integração' }
-    await execFileAsync('git', ['commit', '-m', `motor-v3: corrigir baseline da tarefa ${execution.taskId}`], { cwd: integration.integrationPath })
-    const { stdout: commit } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: integration.integrationPath })
-    const integrationCommit = commit.trim()
+    const integrationCommit = await persistBaselineCorrection(
+      integration.integrationPath,
+      integration.baseCommit,
+      `motor-v3: corrigir baseline da tarefa ${execution.taskId}`,
+    )
+    if (!integrationCommit) return { success: false, error: 'Monitor informou conclusão, mas não produziu correção na integração' }
     const baseline = await this.testGate.request({
       projectId: execution.projectId,
       taskDatabaseId: execution.databaseTaskId,
