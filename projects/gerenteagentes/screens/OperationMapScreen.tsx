@@ -304,6 +304,7 @@ export default function OperationMapScreen() {
     setDetail(null)
     setOperations([])
     setDbSubtasks([])
+    setCodeViewerOpen(false)
     // Carga inicial do detalhe (REST) — o WebSocket assumirá depois
     void refreshSelected(selectedId)
     const client = new RealtimeClient({

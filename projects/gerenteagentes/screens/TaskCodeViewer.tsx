@@ -14,7 +14,7 @@
  * - GET  /gerenteagentes/tarefas/:id/git/diff?from=...&to=...
  * - POST /gerenteagentes/tarefas/:id/git/merge-simulation
  */
-import React, { useCallback, useEffect, useMemo, useState } from "react"
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   Alert, Box, Button, Chip, CircularProgress, Divider, IconButton,
   Paper, Stack, Tab, Tabs, Tooltip, Typography,
@@ -236,11 +236,39 @@ export default function TaskCodeViewer({
   // Integration branch name (convenção)
   const [gitRef, setGitRef] = useState<string | null>(null)
   const [baseRef, setBaseRef] = useState<string | null>(null)
+  const loadGeneration = useRef(0)
+
+  // Cada troca de tarefa, fechamento ou reabertura invalida respostas pendentes
+  // e remove todo o conteúdo que pertencia à tarefa anterior.
+  useEffect(() => {
+    loadGeneration.current += 1
+    setTreeEntries([])
+    setCommits([])
+    setTreeLoading(false)
+    setCommitsLoading(false)
+    setTreeError(null)
+    setCommitsError(null)
+    setSelectedFile(null)
+    setSelectedCommit(null)
+    setFileContent(null)
+    setFileLoading(false)
+    setDiffFiles([])
+    setDiffLoading(false)
+    setSelectedDiffFile(null)
+    setMergeResult(null)
+    setMergeLoading(false)
+    setMergeError(null)
+    setLocalResolutions({})
+    setRightTab(0)
+    setGitRef(null)
+    setBaseRef(null)
+  }, [taskId, open])
 
   // ─── Loaders ────────────────────────────────────────────────────────────
 
   const loadTree = useCallback(async () => {
     if (!bundle) return
+    const generation = loadGeneration.current
     setTreeLoading(true)
     setTreeError(null)
     try {
@@ -249,18 +277,22 @@ export default function TaskCodeViewer({
         `/gerenteagentes/tarefas/${taskId}/git/tree`,
         { auth: "access" },
       )
+      if (generation !== loadGeneration.current) return
       setTreeEntries(result.tree ?? [])
       if (result.ref) setGitRef(result.ref)
       if (result.baseCommitSha) setBaseRef(result.baseCommitSha)
     } catch (e) {
+      if (generation !== loadGeneration.current) return
+      setTreeEntries([])
       setTreeError(e instanceof Error ? e.message : "Erro ao carregar árvore de arquivos")
     } finally {
-      setTreeLoading(false)
+      if (generation === loadGeneration.current) setTreeLoading(false)
     }
   }, [bundle, taskId])
 
   const loadCommits = useCallback(async () => {
     if (!bundle) return
+    const generation = loadGeneration.current
     setCommitsLoading(true)
     setCommitsError(null)
     try {
@@ -269,37 +301,44 @@ export default function TaskCodeViewer({
         `/gerenteagentes/tarefas/${taskId}/git/commits`,
         { auth: "access" },
       )
+      if (generation !== loadGeneration.current) return
       setCommits(result.commits ?? [])
       if (result.ref) setGitRef(result.ref)
       if (result.baseCommitSha) setBaseRef(result.baseCommitSha)
     } catch (e) {
+      if (generation !== loadGeneration.current) return
+      setCommits([])
       setCommitsError(e instanceof Error ? e.message : "Erro ao carregar commits")
     } finally {
-      setCommitsLoading(false)
+      if (generation === loadGeneration.current) setCommitsLoading(false)
     }
   }, [bundle, taskId])
 
   const loadFileContent = useCallback(async (filePath: string, ref?: string) => {
     if (!bundle) return
+    const targetRef = ref || gitRef
+    if (!targetRef) return
+    const generation = loadGeneration.current
     setFileLoading(true)
     try {
-      const targetRef = ref || gitRef
-      if (!targetRef) return
       const result = await bundle.http.request<{ content: string }>(
         "GET",
         `/gerenteagentes/tarefas/${taskId}/git/file`,
         { query: { ref: targetRef, path: filePath }, auth: "access" },
       )
-      setFileContent(result.content ?? "")
+      if (generation === loadGeneration.current) setFileContent(result.content ?? "")
     } catch (e) {
-      setFileContent(`Erro ao carregar arquivo: ${e instanceof Error ? e.message : String(e)}`)
+      if (generation === loadGeneration.current) {
+        setFileContent(`Erro ao carregar arquivo: ${e instanceof Error ? e.message : String(e)}`)
+      }
     } finally {
-      setFileLoading(false)
+      if (generation === loadGeneration.current) setFileLoading(false)
     }
   }, [bundle, taskId, gitRef])
 
   const loadCommitDiff = useCallback(async (commit: GitCommit) => {
     if (!bundle) return
+    const generation = loadGeneration.current
     setDiffLoading(true)
     setSelectedDiffFile(null)
     try {
@@ -311,11 +350,13 @@ export default function TaskCodeViewer({
         `/gerenteagentes/tarefas/${taskId}/git/diff`,
         { query: { from, to }, auth: "access" },
       )
+      if (generation !== loadGeneration.current) return
       setDiffFiles(result.files ?? [])
       if (result.files?.length) {
         setSelectedDiffFile(result.files[0]!)
       }
     } catch (e) {
+      if (generation !== loadGeneration.current) return
       // Commit inicial não tem pai — tentar diff contra base
       try {
         const result = await bundle.http.request<{ files: GitDiffFile[] }>(
@@ -323,25 +364,31 @@ export default function TaskCodeViewer({
           `/gerenteagentes/tarefas/${taskId}/git/diff`,
           { query: { from: baseRef ?? "", to: commit.hash }, auth: "access" },
         )
+        if (generation !== loadGeneration.current) return
         setDiffFiles(result.files ?? [])
         if (result.files?.length) {
           setSelectedDiffFile(result.files[0]!)
         }
       } catch {
-        setDiffFiles([])
+        if (generation === loadGeneration.current) {
+          setDiffFiles([])
+          setSelectedDiffFile(null)
+        }
       }
     } finally {
-      setDiffLoading(false)
+      if (generation === loadGeneration.current) setDiffLoading(false)
     }
   }, [bundle, taskId, baseRef])
 
   const loadMergeSimulation = useCallback(async () => {
     if (!bundle) return
+    const generation = loadGeneration.current
     setMergeLoading(true)
     setMergeError(null)
     try {
       // Se há dados persistidos de conflito, usar eles em vez de simular do zero
       if (persistedConflictData) {
+        if (generation !== loadGeneration.current) return
         setMergeResult(null) // Usar persistedData no ConflictViewer
         setRightTab(2)
         return
@@ -351,12 +398,13 @@ export default function TaskCodeViewer({
         `/gerenteagentes/tarefas/${taskId}/git/merge-simulation`,
         { auth: "access" },
       )
+      if (generation !== loadGeneration.current) return
       setMergeResult(result)
       setRightTab(2)
     } catch (e) {
-      setMergeError(e instanceof Error ? e.message : "Erro ao simular merge")
+      if (generation === loadGeneration.current) setMergeError(e instanceof Error ? e.message : "Erro ao simular merge")
     } finally {
-      setMergeLoading(false)
+      if (generation === loadGeneration.current) setMergeLoading(false)
     }
   }, [bundle, taskId, persistedConflictData])
 
