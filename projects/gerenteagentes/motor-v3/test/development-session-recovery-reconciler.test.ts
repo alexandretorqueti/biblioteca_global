@@ -61,7 +61,7 @@ describe('DevelopmentSessionRecoveryReconciler', () => {
   })
 
   it('roteia uma sessão baseline_fix concluída ao pós-processamento de baseline, não ao DEV', async () => {
-    const baseline = { ...row, purpose: 'baseline_fix' as const, session_key: 'baseline-fix-terra-task-p2-905-s1219' }
+    const baseline = { ...row, purpose: 'baseline_fix' as const, session_key: 'analysis-baseline-fix-terra-task-p2-905-s1219' }
     const { reconciler, consumer } = setup({ isComplete: true, lastResponse: 'Baseline corrigido ::DONE::' }, baseline)
     ;(consumer as Record<string, unknown>).recoverBaselineFixSession = vi.fn().mockResolvedValue(undefined)
 
