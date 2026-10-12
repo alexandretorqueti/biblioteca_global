@@ -56,6 +56,13 @@ interface GitDiffFile {
   deletions: number
 }
 
+interface GitInspectionRefs {
+  ref?: string
+  integrationCommitSha?: string | null
+  baseCommitSha?: string | null
+  mergeCommitSha?: string | null
+}
+
 export interface TaskCodeViewerProps {
   taskId: number
   taskTitle: string
@@ -227,8 +234,8 @@ export default function TaskCodeViewer({
   const [rightTab, setRightTab] = useState(0) // 0=file, 1=commit diff, 2=conflicts
 
   // Integration branch name (convenção)
-  const integrationBranch = useMemo(() => `motor-v3-work/integration-task-${taskId}`, [taskId])
-  const baseBranch = "base-desenvolvimento"
+  const [gitRef, setGitRef] = useState<string | null>(null)
+  const [baseRef, setBaseRef] = useState<string | null>(null)
 
   // ─── Loaders ────────────────────────────────────────────────────────────
 
@@ -237,12 +244,14 @@ export default function TaskCodeViewer({
     setTreeLoading(true)
     setTreeError(null)
     try {
-      const result = await bundle.http.request<{ tree: GitTreeEntry[] }>(
+      const result = await bundle.http.request<{ tree: GitTreeEntry[] } & GitInspectionRefs>(
         "GET",
         `/gerenteagentes/tarefas/${taskId}/git/tree`,
         { auth: "access" },
       )
       setTreeEntries(result.tree ?? [])
+      if (result.ref) setGitRef(result.ref)
+      if (result.baseCommitSha) setBaseRef(result.baseCommitSha)
     } catch (e) {
       setTreeError(e instanceof Error ? e.message : "Erro ao carregar árvore de arquivos")
     } finally {
@@ -255,12 +264,14 @@ export default function TaskCodeViewer({
     setCommitsLoading(true)
     setCommitsError(null)
     try {
-      const result = await bundle.http.request<{ commits: GitCommit[] }>(
+      const result = await bundle.http.request<{ commits: GitCommit[] } & GitInspectionRefs>(
         "GET",
         `/gerenteagentes/tarefas/${taskId}/git/commits`,
         { auth: "access" },
       )
       setCommits(result.commits ?? [])
+      if (result.ref) setGitRef(result.ref)
+      if (result.baseCommitSha) setBaseRef(result.baseCommitSha)
     } catch (e) {
       setCommitsError(e instanceof Error ? e.message : "Erro ao carregar commits")
     } finally {
@@ -272,7 +283,8 @@ export default function TaskCodeViewer({
     if (!bundle) return
     setFileLoading(true)
     try {
-      const targetRef = ref || integrationBranch
+      const targetRef = ref || gitRef
+      if (!targetRef) return
       const result = await bundle.http.request<{ content: string }>(
         "GET",
         `/gerenteagentes/tarefas/${taskId}/git/file`,
@@ -284,7 +296,7 @@ export default function TaskCodeViewer({
     } finally {
       setFileLoading(false)
     }
-  }, [bundle, taskId, integrationBranch])
+  }, [bundle, taskId, gitRef])
 
   const loadCommitDiff = useCallback(async (commit: GitCommit) => {
     if (!bundle) return
@@ -309,7 +321,7 @@ export default function TaskCodeViewer({
         const result = await bundle.http.request<{ files: GitDiffFile[] }>(
           "GET",
           `/gerenteagentes/tarefas/${taskId}/git/diff`,
-          { query: { from: baseBranch, to: commit.hash }, auth: "access" },
+          { query: { from: baseRef ?? "", to: commit.hash }, auth: "access" },
         )
         setDiffFiles(result.files ?? [])
         if (result.files?.length) {
@@ -321,7 +333,7 @@ export default function TaskCodeViewer({
     } finally {
       setDiffLoading(false)
     }
-  }, [bundle, taskId, baseBranch])
+  }, [bundle, taskId, baseRef])
 
   const loadMergeSimulation = useCallback(async () => {
     if (!bundle) return
@@ -370,6 +382,8 @@ export default function TaskCodeViewer({
 
   useEffect(() => {
     if (open && hasIntegrationBranch) {
+      setGitRef(null)
+      setBaseRef(null)
       void loadTree()
       void loadCommits()
     }
@@ -445,7 +459,7 @@ export default function TaskCodeViewer({
           </Typography>
           <Chip
             size="small"
-            label={integrationBranch}
+            label={gitRef ?? "ref da tarefa"}
             variant="outlined"
             sx={{ fontSize: "0.65rem", height: 20 }}
           />

@@ -345,6 +345,11 @@ export class DeployConsumer {
       await this.remote.assertReady()
       try {
         await this.promote(batch.repoPath, batch.baseBranch, batch.expectedCommit)
+        const mergeCommitSha = await this.promotedBaseCommit(batch.repoPath, batch.baseBranch)
+        if (/^[a-f0-9]{7,64}$/i.test(mergeCommitSha)
+          && typeof (this.repository as DeployRepository & { recordBatchMergeCommit?: unknown }).recordBatchMergeCommit === 'function') {
+          await this.repository.recordBatchMergeCommit(batch.batchId, mergeCommitSha)
+        }
       } catch (error) {
         // Verificar se é um conflito de merge estruturado
         const conflictError = error as Error & { isMergeConflict?: boolean; conflictData?: any }
@@ -422,7 +427,9 @@ export class DeployConsumer {
 
   private async promote(repoPath: string, baseBranch: string, expectedCommit: string): Promise<void> {
     const { stdout } = await execFileAsync('git', ['rev-parse', '--show-toplevel'], { cwd: repoPath, encoding: 'utf8' }); const repo = stdout.trim()
-    if (await execFileAsync('git', ['merge-base', '--is-ancestor', expectedCommit, baseBranch], { cwd: repo }).then(() => true, () => false)) return
+    if (await execFileAsync('git', ['merge-base', '--is-ancestor', expectedCommit, baseBranch], { cwd: repo }).then(() => true, () => false)) {
+      return
+    }
     const path = `${repo}/.motor-v3-deploy-${expectedCommit.slice(0, 12)}`
     await execFileAsync('git', ['worktree', 'add', '--detach', path, baseBranch], { cwd: repo })
     try {
@@ -480,6 +487,11 @@ export class DeployConsumer {
       throw error
     }
     finally { await execFileAsync('git', ['worktree', 'remove', '--force', path], { cwd: repo }).catch(() => undefined) }
+  }
+
+  private async promotedBaseCommit(repoPath: string, baseBranch: string): Promise<string> {
+    const { stdout } = await execFileAsync('git', ['rev-parse', baseBranch], { cwd: repoPath, encoding: 'utf8' })
+    return stdout.trim()
   }
 
   /**

@@ -483,10 +483,14 @@ export class MySqlDevelopmentExecutionRepository {
           blocker: 'task_completed', resolvedBy: 'motor-v3', motivo: 'Conclusão normal da tarefa; pedidos anteriores foram substituídos pelo deploy atual.',
         })
         await connection.query(
-          `INSERT INTO task_runtime_facts (tarefa_id, terminal_status, terminal_at, integration_confirmed_at, created_at, updated_at)
-           VALUES (?, 'completed', NOW(), NOW(), NOW(), NOW())
-           ON DUPLICATE KEY UPDATE terminal_status = 'completed', terminal_at = NOW(), integration_confirmed_at = NOW(), updated_at = NOW()`,
-          [context.databaseTaskId],
+          `INSERT INTO task_runtime_facts
+             (tarefa_id, terminal_status, terminal_at, integration_confirmed_at,
+              integration_commit_sha, base_commit_sha, created_at, updated_at)
+           VALUES (?, 'completed', NOW(), NOW(), ?, ?, NOW(), NOW())
+           ON DUPLICATE KEY UPDATE terminal_status = 'completed', terminal_at = NOW(),
+             integration_confirmed_at = NOW(), integration_commit_sha = VALUES(integration_commit_sha),
+             base_commit_sha = VALUES(base_commit_sha), updated_at = NOW()`,
+          [context.databaseTaskId, evidence.integrationCommitSha, context.workspaceBaseCommit],
         )
         taskReachedTerminal = true
         next = createQueueMessage({

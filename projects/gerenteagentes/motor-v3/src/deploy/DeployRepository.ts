@@ -788,6 +788,24 @@ ${conflictData.conflictFiles.map(f => `- \`${f}\``).join('\n')}
     } catch (error) { await connection.rollback(); throw error } finally { connection.release() }
   }
 
+  /** Persiste o commit promovido na base para cada tarefa do lote. */
+  async recordBatchMergeCommit(batchId: string, mergeCommitSha: string): Promise<void> {
+    const connection = await this.pool.getConnection()
+    try {
+      await connection.beginTransaction()
+      await connection.query(
+        `UPDATE task_runtime_facts f
+           INNER JOIN deploy_requests dr ON dr.tarefa_id = f.tarefa_id
+          SET f.merge_commit_sha = ?, f.updated_at = NOW()
+        WHERE dr.batch_id = ?`, [mergeCommitSha, batchId],
+      )
+      await connection.commit()
+    } catch (error) {
+      await connection.rollback()
+      throw error
+    } finally { connection.release() }
+  }
+
   async runningBatches(): Promise<DeployBatch[]> {
     const [rows] = await this.pool.query<BatchRow[]>(`SELECT batch_id,repo_path,base_branch,expected_commit,status,remote_pid,remote_status_path,started_at,workspace_path,gate_job_id FROM deploy_batches WHERE status='running' ORDER BY started_at`)
     return rows.map(row => this.mapBatch(row))

@@ -527,7 +527,7 @@ export default function OperationMapScreen() {
       <span data-testid="header-btn-delete"><Button size="small" color="error" variant="text" startIcon={<DeleteRounded />} disabled={acaoTarefa !== null || TASK_STATUS_EXECUTING.has(status)} onClick={() => void excluirTarefa(selected.id)} data-testid="btn-delete">Excluir</Button></span>
       <Button size="small" variant="text" startIcon={<EditRounded />} onClick={() => setEditOpen(true)}>Editar</Button>
       <Button size="small" variant="text" startIcon={<PsychologyRounded />} onClick={() => void openSessions()}>Sessões</Button>
-      {detail?.exists && <Button size="small" variant="text" startIcon={<CodeRounded />} onClick={() => setCodeViewerOpen(true)}>Ver código</Button>}
+      {(detail?.exists || status === "completed") && <Button size="small" variant="text" startIcon={<CodeRounded />} onClick={() => setCodeViewerOpen(true)}>Ver código</Button>}
     </Stack>
   )
 
