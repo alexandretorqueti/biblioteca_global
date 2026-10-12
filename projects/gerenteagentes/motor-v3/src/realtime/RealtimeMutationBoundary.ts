@@ -7,6 +7,7 @@ export type RealtimeEventType =
   | 'task.status.changed' | 'task.counters.updated'
   | 'task.created' | 'task.updated' | 'task.deleted'
   | 'subtask.created' | 'subtask.updated' | 'subtask.deleted' | 'subtask.status.changed'
+  | 'motor.activity.updated'
 
 export interface RealtimeOutboxEvent {
   eventId: string

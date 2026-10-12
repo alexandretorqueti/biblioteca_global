@@ -30,6 +30,7 @@ export const realtimeEventTypeSchema = z.enum([
   "task.interaction.awaiting", "task.interaction.resumed",
   "subtask.created", "subtask.updated", "subtask.deleted", "subtask.status.changed",
   "activity.created", "activity.updated", "deploy.diagnostics.updated", "history.entry.created",
+  "motor.activity.updated",
   "chat.message.created", "chat.message.updated",
   "started", "progress", "log", "heartbeat", "completed", "failed", "model_unavailable",
   "developer_branch_integrated", "deployed", "clarifying", "system_alert", "system_recovered",

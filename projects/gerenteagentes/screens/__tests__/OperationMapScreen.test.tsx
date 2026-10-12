@@ -28,6 +28,12 @@ vi.mock("../../../../apps/web/src/hooks/useApi", () => ({
  */
 vi.mock("@biblioteca-global/api-client", () => ({
   RealtimeClient: class {
+    options: { channel?: string; onMessage?: (message: unknown) => void }
+    constructor(options: { channel?: string; onMessage?: (message: unknown) => void }) {
+      this.options = options
+      const state = globalThis as typeof globalThis & { __mapRealtimeInstances?: Array<{ options: typeof options }> }
+      ;(state.__mapRealtimeInstances ??= []).push({ options })
+    }
     connect(): void {
       /* no-op nos testes */
     }
@@ -212,6 +218,49 @@ describe("OperationMapScreen — tarefas enfileiradas", () => {
       expect(screen.getByTestId("operation-map-task-88")).toBeInTheDocument()
       expect(screen.getByTestId("operation-count-planned")).toHaveTextContent("1")
     })
+  })
+})
+
+describe("OperationMapScreen — atividade do motor via WebSocket", () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+    delete globalThis.__bundleMapa
+    delete (globalThis as typeof globalThis & { __mapRealtimeInstances?: unknown }).__mapRealtimeInstances
+  })
+
+  it("atualiza os quatro quadros ao receber motor.activity.updated no canal map", async () => {
+    globalThis.__bundleMapa = bundleFalso([tarefaFactory(42, "Tarefa realtime", "running")], [])
+    renderScreen()
+
+    await waitFor(() => {
+      const instances = (globalThis as typeof globalThis & { __mapRealtimeInstances?: Array<{ options: { channel?: string; onMessage?: (message: unknown) => void } }> }).__mapRealtimeInstances ?? []
+      expect(instances.some(instance => instance.options.channel === "map")).toBe(true)
+    })
+    const mapInstance = ((globalThis as typeof globalThis & { __mapRealtimeInstances: Array<{ options: { channel?: string; onMessage?: (message: unknown) => void } }> }).__mapRealtimeInstances).findLast(instance => instance.options.channel === "map")!
+    mapInstance.options.onMessage?.({
+      type: "event",
+      event: {
+        type: "motor.activity.updated",
+        payload: {
+          motor: {
+            isActive: true,
+            isRunning: true,
+            activity: { kind: "git", message: "operação git da tarefa 42", taskIds: ["42", "43"] },
+          },
+          workers: [
+            { role: "analyst", active: true, taskId: "42", subtaskId: 7, phase: "analysis" },
+            { role: "developer", active: true, taskId: "43", subtaskId: 8, phase: "executing" },
+            { role: "manager", active: true, taskId: "44", subtaskId: null, phase: "monitor" },
+          ],
+        },
+      }})
+
+    expect(await screen.findByTestId("agent-task-code-analyst")).toHaveTextContent("#42 · S7")
+    expect(screen.getByTestId("agent-task-code-developer")).toHaveTextContent("#43 · S8")
+    expect(screen.getByTestId("agent-task-code-manager")).toHaveTextContent("#44")
+    expect(screen.getByTestId("motor-state-box")).toHaveTextContent("Realizando operações git")
+    expect(screen.getByTestId("motor-git-task-42")).toBeInTheDocument()
+    expect(screen.getByTestId("motor-git-task-43")).toBeInTheDocument()
   })
 })
 
