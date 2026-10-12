@@ -298,4 +298,137 @@ describe('MigrationDryRunExecutor', () => {
       expect(createCall![0]).not.toContain('AUTO_INCREMENT=100')
     })
   })
+
+  describe('clone de tabelas com FOREIGN KEY (incidente task-p2-989)', () => {
+    const fkCreateStatement = [
+      'CREATE TABLE `task_runtime_facts` (',
+      '  `tarefa_id` bigint unsigned NOT NULL,',
+      '  `terminal_status` varchar(30) COLLATE utf8mb4_unicode_ci DEFAULT NULL,',
+      '  PRIMARY KEY (`tarefa_id`),',
+      '  KEY `task_runtime_facts_terminal_idx` (`terminal_status`),',
+      '  CONSTRAINT `task_runtime_facts_tarefa_fk` FOREIGN KEY (`tarefa_id`) REFERENCES `tarefas` (`id`) ON DELETE CASCADE',
+      ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
+    ].join('\n')
+
+    it('remove FOREIGN KEYs nomeadas do clone scratch (errno 1826 no clone real)', async () => {
+      const ws = await createWorkspace()
+      await mkdir(join(ws, 'projects/alpha/migrations'), { recursive: true })
+      await git(ws, ['commit', '-m', 'baseline', '--allow-empty'])
+      const baseCommit = (await git(ws, ['rev-parse', 'HEAD'])).trim()
+
+      await writeFile(
+        join(ws, 'projects/alpha/migrations/0001_alter_fk_table.sql'),
+        'ALTER TABLE `task_runtime_facts` ADD COLUMN `integration_commit_sha` varchar(64) NULL;',
+      )
+
+      querySpy.mockResolvedValueOnce([[{ 'Create Table': fkCreateStatement }]])
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // CREATE scratch
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // ALTER reescrito
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // cleanup
+
+      const executor = new MigrationDryRunExecutor(mockPool, 989)
+      await executor.execute(ws, baseCommit)
+
+      const createCall = querySpy.mock.calls[1]![0] as string
+      expect(createCall).toContain('CREATE TABLE `gate_scratch_989_task_runtime_facts`')
+      expect(createCall).not.toMatch(/FOREIGN\s+KEY/i)
+      expect(createCall).not.toMatch(/CONSTRAINT/i)
+      // vírgula pendurada antes do fechamento não pode sobrar
+      expect(createCall).not.toMatch(/,\s*\)\s*ENGINE/i)
+    })
+
+    it('propaga falha de clone que não seja tabela ausente, em vez de silenciar', async () => {
+      const ws = await createWorkspace()
+      await mkdir(join(ws, 'projects/alpha/migrations'), { recursive: true })
+      await git(ws, ['commit', '-m', 'baseline', '--allow-empty'])
+      const baseCommit = (await git(ws, ['rev-parse', 'HEAD'])).trim()
+
+      await writeFile(
+        join(ws, 'projects/alpha/migrations/0001_alter_fk_table.sql'),
+        'ALTER TABLE `task_runtime_facts` ADD COLUMN `x` varchar(64) NULL;',
+      )
+
+      querySpy.mockResolvedValueOnce([[{ 'Create Table': fkCreateStatement }]])
+      const cloneError = Object.assign(
+        new Error("Duplicate foreign key constraint name 'task_runtime_facts_tarefa_fk'"),
+        { errno: 1826, sqlState: 'HY000' },
+      )
+      querySpy.mockRejectedValueOnce(cloneError) // CREATE scratch falha
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // cleanup
+
+      const executor = new MigrationDryRunExecutor(mockPool, 989)
+      await expect(executor.execute(ws, baseCommit)).rejects.toMatchObject({
+        name: 'MigrationDryRunError',
+        violations: [{ mysqlErrno: 1826 }],
+      })
+      // O ALTER não pode ser executado sem a scratch existir (evita errno 1146 enganoso)
+      const alterCall = querySpy.mock.calls.find(call =>
+        typeof call[0] === 'string' && call[0].includes('ADD COLUMN')
+      )
+      expect(alterCall).toBeUndefined()
+    })
+
+    it('tolera tabela ausente no SHOW CREATE (errno 1146) e segue o dry-run', async () => {
+      const ws = await createWorkspace()
+      await mkdir(join(ws, 'projects/alpha/migrations'), { recursive: true })
+      await git(ws, ['commit', '-m', 'baseline', '--allow-empty'])
+      const baseCommit = (await git(ws, ['rev-parse', 'HEAD'])).trim()
+
+      await writeFile(
+        join(ws, 'projects/alpha/migrations/0001_create_new.sql'),
+        'CREATE TABLE `brand_new` (`id` INT);',
+      )
+
+      const missing = Object.assign(new Error("Table 'brand_new' doesn't exist"), { errno: 1146, sqlState: '42S02' })
+      querySpy.mockRejectedValueOnce(missing) // SHOW CREATE TABLE rejeita
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // CREATE reescrito
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // cleanup
+
+      const executor = new MigrationDryRunExecutor(mockPool, 989)
+      await expect(executor.execute(ws, baseCommit)).resolves.toBeUndefined()
+      const createCall = querySpy.mock.calls.find(call =>
+        typeof call[0] === 'string' && call[0].includes('CREATE TABLE `gate_scratch_989_brand_new`')
+      )
+      expect(createCall).toBeDefined()
+    })
+
+    it('clona e reescreve tabelas referenciadas via JOIN em UPDATE', async () => {
+      const ws = await createWorkspace()
+      await mkdir(join(ws, 'projects/alpha/migrations'), { recursive: true })
+      await git(ws, ['commit', '-m', 'baseline', '--allow-empty'])
+      const baseCommit = (await git(ws, ['rev-parse', 'HEAD'])).trim()
+
+      const backfill = [
+        'ALTER TABLE `facts` ADD COLUMN `sha` varchar(64) NULL;',
+        '--> statement-breakpoint',
+        'UPDATE `facts` f',
+        'INNER JOIN `requests` d ON d.tarefa_id = f.tarefa_id',
+        'SET f.sha = d.commit',
+        'WHERE f.sha IS NULL;',
+      ].join('\n')
+      await writeFile(join(ws, 'projects/alpha/migrations/0001_backfill.sql'), backfill)
+
+      // Clone (1x por migration, tabelas na ordem do Set: facts, requests)
+      querySpy.mockResolvedValueOnce([[{ 'Create Table': 'CREATE TABLE `facts` (`id` INT)' }]]) // SHOW facts
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // CREATE scratch facts
+      querySpy.mockResolvedValueOnce([[{ 'Create Table': 'CREATE TABLE `requests` (`id` INT)' }]]) // SHOW requests
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // CREATE scratch requests
+      // Execução dos statements (ALTER + UPDATE reescritos)
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader])
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader])
+      // cleanup
+      querySpy.mockResolvedValue([{} as ResultSetHeader])
+
+      const executor = new MigrationDryRunExecutor(mockPool, 555)
+      await executor.execute(ws, baseCommit)
+
+      const updateCall = querySpy.mock.calls.find(call =>
+        typeof call[0] === 'string' && call[0].includes('UPDATE')
+      )
+      expect(updateCall).toBeDefined()
+      expect(updateCall![0]).toContain('gate_scratch_555_facts')
+      expect(updateCall![0]).toContain('gate_scratch_555_requests')
+      expect(updateCall![0]).not.toMatch(/`facts`|`requests`/)
+    })
+  })
 })
