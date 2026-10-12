@@ -97,6 +97,27 @@ export class GitInspectorService {
     }
   }
 
+  /** Verifica se sha aponta para um objeto commit existente, sem alterar o repo. */
+  async commitExists(repoPath: string, sha: string): Promise<boolean> {
+    if (!/^[a-f0-9]{7,64}$/i.test(sha)) return false;
+    try {
+      await this.git(repoPath, ['cat-file', '-e', `${sha}^{commit}`]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Retorna true quando ancestor é ancestral de descendant. */
+  async isAncestor(repoPath: string, ancestor: string, descendant: string): Promise<boolean> {
+    try {
+      await this.git(repoPath, ['merge-base', '--is-ancestor', ancestor, descendant]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /**
    * Lista commits entre baseBranch e taskBranch (exclusive base, inclusive task).
    * Formato: hash|shortHash|author|email|date|message

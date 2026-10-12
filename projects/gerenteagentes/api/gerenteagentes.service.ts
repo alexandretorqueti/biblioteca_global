@@ -2910,7 +2910,18 @@ export class GerenteAgentesService {
   private async resolverContextoGitTarefa(
     projeto: ProjetoResumo,
     tarefaId: number,
-  ): Promise<{ repoPath: string; integrationBranch: string; baseBranch: string; externalId: string | null; projectSubdir: string }> {
+  ): Promise<{
+    repoPath: string;
+    integrationBranch: string;
+    baseBranch: string;
+    taskRef: string;
+    branchExists: boolean;
+    externalId: string | null;
+    projectSubdir: string;
+    integrationCommitSha: string | null;
+    baseCommitSha: string | null;
+    mergeCommitSha: string | null;
+  }> {
     const db = await this.dbDoMotor();
 
     // Buscar tarefa com externalId e projetoId
@@ -2944,12 +2955,49 @@ export class GerenteAgentesService {
     const integrationBranch = `motor-v3-work/integration-${taskIdentifier}`;
     const baseBranch = 'base-desenvolvimento';
 
+    const [facts] = await db
+      .select({
+        integrationCommitSha: taskRuntimeFacts.integrationCommitSha,
+        baseCommitSha: taskRuntimeFacts.baseCommitSha,
+        mergeCommitSha: taskRuntimeFacts.mergeCommitSha,
+      })
+      .from(taskRuntimeFacts)
+      .where(eq(taskRuntimeFacts.tarefaId, tarefaId))
+      .limit(1);
+
+    const branchExists = this.gitInspector
+      ? await this.gitInspector.branchExists(repoRoot, integrationBranch)
+      : false;
+    const integrationCommitSha = facts?.integrationCommitSha ?? null;
+    const baseCommitSha = facts?.baseCommitSha ?? null;
+    const mergeCommitSha = facts?.mergeCommitSha ?? null;
+
+    // A branch temporária é preferida enquanto existe. Depois da limpeza,
+    // o commit persistido é a referência permanente da tarefa.
+    let taskRef = integrationBranch;
+    if (!branchExists) {
+      const evidenceExists = integrationCommitSha && this.gitInspector
+        ? await this.gitInspector.commitExists(repoRoot, integrationCommitSha)
+        : false;
+      if (!evidenceExists) {
+        throw new NotFoundException(
+          `Branch de integração '${integrationBranch}' não encontrada e não há evidência de commit integrada para a tarefa`,
+        );
+      }
+      taskRef = integrationCommitSha!;
+    }
+
     return {
       repoPath: repoRoot,
       integrationBranch,
       baseBranch,
+      taskRef,
+      branchExists,
       externalId: tarefa.externalId,
       projectSubdir,
+      integrationCommitSha,
+      baseCommitSha,
+      mergeCommitSha,
     };
   }
 
@@ -3015,19 +3063,16 @@ export class GerenteAgentesService {
     if (!this.gitInspector) throw new BadRequestException('GitInspectorService não disponível');
     const ctx = await this.resolverContextoGitTarefa(projeto, tarefaId);
 
-    // Verifica se a branch de integração existe
-    const exists = await this.gitInspector.branchExists(ctx.repoPath, ctx.integrationBranch);
-    if (!exists) {
-      throw new NotFoundException(
-        `Branch de integração '${ctx.integrationBranch}' não encontrada — tarefa ainda sem worktree ou não iniciada`,
-      );
-    }
-
-    const commits = await this.gitInspector.listCommits(ctx.repoPath, ctx.baseBranch, ctx.integrationBranch);
+    const fromRef = ctx.branchExists ? ctx.baseBranch : (ctx.baseCommitSha ?? ctx.baseBranch);
+    const commits = await this.gitInspector.listCommits(ctx.repoPath, fromRef, ctx.taskRef);
     return {
       taskId: tarefaId,
       integrationBranch: ctx.integrationBranch,
       baseBranch: ctx.baseBranch,
+      ref: ctx.taskRef,
+      integrationCommitSha: ctx.integrationCommitSha,
+      baseCommitSha: ctx.baseCommitSha,
+      mergeCommitSha: ctx.mergeCommitSha,
       projectSubdir: ctx.projectSubdir,
       commits,
     };
@@ -3042,11 +3087,14 @@ export class GerenteAgentesService {
     if (!this.gitInspector) throw new BadRequestException('GitInspectorService não disponível');
     const ctx = await this.resolverContextoGitTarefa(projeto, tarefaId);
 
-    const targetRef = ref || ctx.integrationBranch;
+    const targetRef = ref || ctx.taskRef;
     const tree = await this.gitInspector.listTree(ctx.repoPath, targetRef, ctx.projectSubdir);
     return {
       taskId: tarefaId,
       ref: targetRef,
+      integrationCommitSha: ctx.integrationCommitSha,
+      baseCommitSha: ctx.baseCommitSha,
+      mergeCommitSha: ctx.mergeCommitSha,
       projectSubdir: ctx.projectSubdir,
       tree,
     };
@@ -3074,6 +3122,9 @@ export class GerenteAgentesService {
     return {
       taskId: tarefaId,
       ref,
+      integrationCommitSha: ctx.integrationCommitSha,
+      baseCommitSha: ctx.baseCommitSha,
+      mergeCommitSha: ctx.mergeCommitSha,
       path: filePath,
       fullPath,
       content,
@@ -3099,6 +3150,10 @@ export class GerenteAgentesService {
       taskId: tarefaId,
       from,
       to,
+      ref: ctx.taskRef,
+      integrationCommitSha: ctx.integrationCommitSha,
+      baseCommitSha: ctx.baseCommitSha,
+      mergeCommitSha: ctx.mergeCommitSha,
       projectSubdir: ctx.projectSubdir,
       files,
     };
@@ -3111,11 +3166,27 @@ export class GerenteAgentesService {
     if (!this.gitInspector) throw new BadRequestException('GitInspectorService não disponível');
     const ctx = await this.resolverContextoGitTarefa(projeto, tarefaId);
 
-    // Verifica se a branch de integração existe
-    const exists = await this.gitInspector.branchExists(ctx.repoPath, ctx.integrationBranch);
-    if (!exists) {
+    if (!ctx.branchExists) {
+      const integrated = await this.gitInspector.isAncestor(
+        ctx.repoPath,
+        ctx.taskRef,
+        ctx.baseBranch,
+      );
+      if (integrated) {
+        return {
+          taskId: tarefaId,
+          projectSubdir: ctx.projectSubdir,
+          status: 'already_integrated',
+          message: `Tarefa já integrada em ${ctx.baseBranch}`,
+          ref: ctx.taskRef,
+          integrationCommitSha: ctx.integrationCommitSha,
+          baseCommitSha: ctx.baseCommitSha,
+          mergeCommitSha: ctx.mergeCommitSha,
+          mergeCommitShaEffective: ctx.mergeCommitSha ?? ctx.integrationCommitSha,
+        };
+      }
       throw new NotFoundException(
-        `Branch de integração '${ctx.integrationBranch}' não encontrada — tarefa ainda sem worktree ou não iniciada`,
+        `Branch de integração '${ctx.integrationBranch}' não encontrada e o commit persistido ainda não foi integrado em '${ctx.baseBranch}'`,
       );
     }
 
@@ -3123,6 +3194,11 @@ export class GerenteAgentesService {
     return {
       taskId: tarefaId,
       projectSubdir: ctx.projectSubdir,
+      status: 'pending',
+      ref: ctx.taskRef,
+      integrationCommitSha: ctx.integrationCommitSha,
+      baseCommitSha: ctx.baseCommitSha,
+      mergeCommitSha: ctx.mergeCommitSha,
       ...result,
     };
   }
