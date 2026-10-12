@@ -7,7 +7,7 @@
  * alinhados horizontalmente.
  */
 import { afterEach, describe, expect, it } from "vitest"
-import { render, screen } from "@testing-library/react"
+import { render, screen, within } from "@testing-library/react"
 import "@testing-library/jest-dom/vitest"
 import { BibliotecaThemeProvider } from "@biblioteca-global/ui"
 
@@ -147,6 +147,27 @@ describe("OperationMapCanvas — responsividade", () => {
     expect(screen.getByTestId("operation-count-draft")).toHaveTextContent("2")
     expect(screen.getByTestId("operation-count-running")).toHaveTextContent("1")
     expect(screen.getByTestId("operation-count-completed")).toHaveTextContent("1")
+  })
+
+  it("exibe os marcadores do quadro em ordem numérica decrescente", () => {
+    renderCanvas([
+      tarefaFactory(2, "Tarefa 2", "draft"),
+      tarefaFactory(100, "Tarefa 100", "draft"),
+      tarefaFactory(10, "Tarefa 10", "draft"),
+      tarefaFactory(1, "Tarefa 1", "draft"),
+      tarefaFactory(20, "Tarefa 20", "draft"),
+      tarefaFactory(3, "Tarefa 3", "draft"),
+    ] as FlowTask[])
+
+    const markers = within(screen.getByTestId("operation-station-draft")).getAllByTestId(/operation-map-task-/)
+    expect(markers.map(marker => marker.getAttribute("data-testid"))).toEqual([
+      "operation-map-task-100",
+      "operation-map-task-20",
+      "operation-map-task-10",
+      "operation-map-task-3",
+      "operation-map-task-2",
+    ])
+    expect(screen.queryByTestId("operation-map-task-1")).not.toBeInTheDocument()
   })
 
   it("separa tarefas encerradas sem deploy das canceladas", () => {

@@ -110,7 +110,7 @@ export default function OperationMapCanvas({ tarefas, selectedTaskId, projetos, 
   }), [tarefas, filters])
   const activeFilters = filters.busca || filters.projetoId !== "" || filters.prioridade || filters.status.length > 0
   const taskStation = (task: FlowTask) => ALL_STATIONS.find(station => station.statuses.includes(task.status)) ?? EXCEPTION_STATIONS[2]
-  const byStation = (station: Station) => filtered.filter(task => station.statuses.includes(task.status))
+  const byStation = (station: Station) => filtered.filter(task => station.statuses.includes(task.status)).sort((a, b) => b.id - a.id)
   const updateFilters = (next: Partial<FiltrosMapa>) => setFilters({ ...filters, ...next })
   const toggleStatus = (value: string) => updateFilters({ status: filters.status.includes(value) ? filters.status.filter(item => item !== value) : [...filters.status, value] })
   const activityCount = new Set(motorActivities.map(activity => activity.taskId)).size
