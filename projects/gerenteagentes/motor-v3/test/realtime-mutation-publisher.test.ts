@@ -31,7 +31,7 @@ describe('RealtimeMutationPublisher', () => {
 
     expect(fetchImpl).toHaveBeenCalledTimes(2)
     const event = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body))
-    expect(event).toMatchObject({ projectId: 7, taskId: 31, sourceTaskId: 'task-p2-31', subtaskId: 44, type: 'subtask.status.changed', payload: { seq: 2, title: 'Emitir eventos', status: 'running', previousStatus: 'pending' } })
+    expect(event).toMatchObject({ projectId: 640, taskId: 31, sourceTaskId: 'task-p2-31', subtaskId: 44, type: 'subtask.status.changed', payload: { seq: 2, title: 'Emitir eventos', status: 'running', previousStatus: 'pending' } })
     expect(event.eventId).toEqual(expect.any(String))
     const counters = JSON.parse(String(fetchImpl.mock.calls[1]?.[1]?.body))
     expect(counters).toMatchObject({ type: 'task.counters.updated', payload: { total: 2, pending: 1, running: 1 } })
