@@ -23,6 +23,9 @@ export interface RealtimeMutationResult {
 
 type TaskRow = { id: number; externalId: string | null; projetoId: number; pausedAt: Date | null };
 
+/** O WebSocket é roteado pelo tenant da Biblioteca, não pelo projeto gerenciado. */
+const REALTIME_TENANT_PROJECT_ID = 640;
+
 /**
  * Fronteira da API: mutação/fato e outbox são gravados pelo mesmo tx Drizzle.
  * A publicação é deliberadamente feita somente depois que transaction() retorna.
@@ -70,7 +73,7 @@ export class RealtimeMutationBoundaryService {
           eventId,
           taskId,
           sourceTaskId: tarefa.externalId,
-          projectId: Number(tarefa.projetoId),
+          projectId: REALTIME_TENANT_PROJECT_ID,
           subtaskId: null,
           type: options.type ?? 'task.status.changed',
           previousStatus,
@@ -78,6 +81,7 @@ export class RealtimeMutationBoundaryService {
           payload: {
             previousStatus,
             status: after,
+            managedProjectId: Number(tarefa.projetoId),
             ...(options.payload ?? {}),
           },
           perTaskSeq: Number(last?.seq ?? 0) + 1,

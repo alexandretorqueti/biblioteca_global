@@ -34,7 +34,7 @@ import { RabbitMqTransport, normalizeRabbitMqPrefetch } from './queue/RabbitMqTr
 import { MotorActivityGate, OutboxPublisher, TerminalFailureRouter, createQueueMessage } from './queue/index.js'
 import { SUBTASK_EXECUTION_REQUESTED } from './execution/SubtaskExecutionConsumer.js'
 import type { QueueMessage } from './queue/QueueMessage.js'
-import { TaskCoordinator, MySqlTaskCoordinatorRepository, AnalysisClaimReconciler, AnalysisSessionRecoveryReconciler, TaskCancelConsumer, MySqlTaskEventRecorder, MySqlAnalysisFailureBlocker, SanitizeSessionService, RealtimeMutationPublisher } from './coordinator/index.js'
+import { TaskCoordinator, MySqlTaskCoordinatorRepository, AnalysisClaimReconciler, AnalysisSessionRecoveryReconciler, TaskCancelConsumer, MySqlTaskEventRecorder, MySqlAnalysisFailureBlocker, SanitizeSessionService, RealtimeMutationPublisher, RealtimeOutboxDispatcher } from './coordinator/index.js'
 import { ConsoleAnalystRunner } from './analysis/ConsoleAnalystRunner.js'
 import { ConsoleHttpApi } from './analysis/ConsoleHttpApi.js'
 import { ContractArtifactStore } from './analysis/ContractArtifactStore.js'
@@ -78,6 +78,7 @@ let bus: MessageBus | null = null
 let queueConsumer: QueueConsumer | null = null
 let outboxPublisher: OutboxPublisher | null = null
 let monitorOutbox: OutboxPublisher | null = null
+let realtimeOutboxDispatcher: RealtimeOutboxDispatcher | null = null
 let developmentConsumer: DevelopmentExecutionConsumer | null = null
 let subtaskExecutionConsumer: SubtaskExecutionConsumer | null = null
 let subtaskVerificationConsumer: SubtaskVerificationConsumer | null = null
@@ -116,6 +117,7 @@ async function start() {
     // Ingresso autenticado para publicação de eventos em tempo real.
     endpoint: process.env.LIBRARY_REALTIME_EVENTS_URL ?? 'http://localhost:3001/api/internal/realtime/events',
     token: process.env.LIBRARY_REALTIME_EVENTS_TOKEN,
+    tenantProjectId: Number(process.env.MOTOR_REALTIME_TENANT_PROJECT_ID ?? 640),
   })
 
   // O preflight precisa terminar antes de trigger, consumidores, scheduler,
@@ -123,6 +125,11 @@ async function start() {
   console.log('[Motor v3] Validando schema e migrations runtime...')
   await bootstrapMotorV3Catalog(pool)
   console.log('[Motor v3] Preflight de schema concluído')
+  realtimeOutboxDispatcher = new RealtimeOutboxDispatcher(pool, {
+    endpoint: process.env.LIBRARY_REALTIME_EVENTS_URL ?? 'http://localhost:3001/api/internal/realtime/events',
+    token: process.env.LIBRARY_REALTIME_EVENTS_TOKEN,
+  })
+  realtimeOutboxDispatcher.start()
 
   // Camada A do invariante de conclusão: trigger de rede de segurança para
   // escritas externas em subtarefas. Falha não derruba o boot (camadas B/C
@@ -1335,6 +1342,7 @@ async function shutdown() {
     console.log('[Motor v3] OutboxPublisher parado')
   }
   if (monitorOutbox) await monitorOutbox.stop()
+  realtimeOutboxDispatcher?.stop()
   monitorBlockerReconciler?.stop()
   testGateJobReconciler?.stop()
   if (testGateOutboxPublisher) await testGateOutboxPublisher.stop()

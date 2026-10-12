@@ -50,6 +50,8 @@ interface TaskIdentity extends RowDataPacket {
  */
 export class RealtimeMutationBoundary {
   private readonly resolver: DerivedTaskStatusResolver
+  /** O Motor opera no tenant GerenteAgentes; projetos captados são metadados. */
+  private readonly realtimeTenantProjectId = Number(process.env.MOTOR_REALTIME_TENANT_PROJECT_ID ?? 640)
 
   constructor(private readonly pool: Pool, resolver?: DerivedTaskStatusResolver) {
     this.resolver = resolver ?? new DerivedTaskStatusResolver(pool)
@@ -76,7 +78,7 @@ export class RealtimeMutationBoundary {
 
       if (context.after !== before) {
         await context.enqueue({
-          taskId: identity.id, sourceTaskId: identity.external_id, projectId: identity.projeto_id,
+          taskId: identity.id, sourceTaskId: identity.external_id, projectId: this.realtimeTenantProjectId,
           subtaskId: mutation.subtaskId ?? null, type: 'task.status.changed',
           previousStatus: before, status: context.after,
           payload: { previousStatus: before, status: context.after },
@@ -86,7 +88,7 @@ export class RealtimeMutationBoundary {
         ?? (context.after !== before ? await this.readCounters(connection, identity.id) : undefined)
       if (counters) {
         await context.enqueue({
-          taskId: identity.id, sourceTaskId: identity.external_id, projectId: identity.projeto_id,
+          taskId: identity.id, sourceTaskId: identity.external_id, projectId: this.realtimeTenantProjectId,
           subtaskId: mutation.subtaskId ?? null, type: 'task.counters.updated',
           previousStatus: null, status: context.after, payload: { ...counters },
         })
@@ -137,7 +139,7 @@ export class RealtimeMutationBoundary {
     }
     if (options.type?.startsWith('subtask.') && options.subtaskId != null) {
       await enqueue({
-        taskId: identity.id, sourceTaskId: identity.external_id, projectId: identity.projeto_id,
+        taskId: identity.id, sourceTaskId: identity.external_id, projectId: this.realtimeTenantProjectId,
         subtaskId: options.subtaskId, type: options.type,
         previousStatus: options.previousSubtaskStatus ?? null, status: options.subtaskStatus ?? null,
         payload: { ...(options.payload ?? {}), previousStatus: options.previousSubtaskStatus, status: options.subtaskStatus },
@@ -145,7 +147,7 @@ export class RealtimeMutationBoundary {
     }
     if (after !== before) {
       await enqueue({
-        taskId: identity.id, sourceTaskId: identity.external_id, projectId: identity.projeto_id,
+        taskId: identity.id, sourceTaskId: identity.external_id, projectId: this.realtimeTenantProjectId,
         subtaskId: options.subtaskId ?? null, type: 'task.status.changed',
         previousStatus: before, status: after, payload: { previousStatus: before, status: after },
       })
@@ -153,7 +155,7 @@ export class RealtimeMutationBoundary {
     const counters = options.counters ?? (options.type?.startsWith('subtask.') ? await this.readCounters(connection, identity.id) : undefined)
     if (counters) {
       await enqueue({
-        taskId: identity.id, sourceTaskId: identity.external_id, projectId: identity.projeto_id,
+        taskId: identity.id, sourceTaskId: identity.external_id, projectId: this.realtimeTenantProjectId,
         subtaskId: options.subtaskId ?? null, type: 'task.counters.updated',
         previousStatus: null, status: after, payload: counters,
       })
@@ -195,15 +197,16 @@ export class RealtimeMutationBoundary {
     const perTaskSeq = Number(sequenceRows[0]?.next_seq ?? 1)
     const eventId = randomUUID()
     const createdAt = new Date().toISOString()
+    const payload = { ...event.payload, managedProjectId: Number(identity.projeto_id) }
     await connection.query<ResultSetHeader>(
       `INSERT INTO realtime_event_outbox
        (event_id, task_id, source_task_id, project_id, subtask_id, type, previous_status, status,
         payload, per_task_seq, delivery_status, attempts, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, NOW())`,
       [eventId, event.taskId, event.sourceTaskId, event.projectId, event.subtaskId, event.type,
-        event.previousStatus, event.status, JSON.stringify(event.payload), perTaskSeq],
+        event.previousStatus, event.status, JSON.stringify(payload), perTaskSeq],
     )
-    return { ...event, eventId, perTaskSeq, createdAt }
+    return { ...event, payload, eventId, perTaskSeq, createdAt }
   }
 }
 

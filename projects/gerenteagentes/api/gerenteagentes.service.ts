@@ -1043,7 +1043,9 @@ export class GerenteAgentesService {
         eventId: realtimeEventId,
         taskId: tarefaId,
         sourceTaskId: externalId,
-        projectId: managedProjectId,
+        // `projectId` roteia o WebSocket do tenant; o projeto gerenciado
+        // continua explícito no payload como `managedProjectId`.
+        projectId: Number(projeto.id),
         subtaskId: null,
         type: 'task.created',
         previousStatus: null,
@@ -3164,14 +3166,15 @@ export class GerenteAgentesService {
       .select({
         id: tarefas.id,
         titulo: tarefas.titulo,
+        externalId: tarefas.externalId,
         pausedAt: tarefas.pausedAt,
+        updatedAt: tarefas.updatedAt,
       })
-      .from(tarefas)
-      .where(eq(tarefas.projetoId, projectId));
+      .from(tarefas);
 
     const tasksWithStatus = await Promise.all(
       tarefasDoProjeto.map(async (tarefa) => {
-        const motorId = `task-p${projectId}-${tarefa.id}`;
+        const motorId = tarefa.externalId || `task-${tarefa.id}`;
         let status = 'planned';
         try {
           const resp = await this.motorRequest(
@@ -3191,7 +3194,7 @@ export class GerenteAgentesService {
           taskId: tarefa.id,
           title: tarefa.titulo || undefined,
           status,
-          updatedAt: undefined,
+          updatedAt: tarefa.updatedAt?.toISOString(),
         };
       }),
     );

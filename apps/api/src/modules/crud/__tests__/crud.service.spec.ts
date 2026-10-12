@@ -267,7 +267,7 @@ describe("CrudService — whitelist e validação", () => {
       const ingressos = [p1.mock.calls[0]![0] as RealtimeIngressEvent, p2.mock.calls[0]![0] as RealtimeIngressEvent]
       for (const e of ingressos) {
         expect(e.type).toBe("task.created")
-        expect(e.projectId).toBe(1)
+        expect(e.projectId).toBe(640)
       }
     })
 
@@ -798,7 +798,7 @@ describe("CrudService — eventos realtime no CRUD de tarefas/subtarefas", () =>
       expect(ingress).toMatchObject({
         type: "task.created",
         source: "crud",
-        projectId: 1,
+        projectId: 640,
         taskId: 55,
       })
       expect(ingress).toHaveProperty("eventId", expect.any(String))
@@ -807,7 +807,7 @@ describe("CrudService — eventos realtime no CRUD de tarefas/subtarefas", () =>
         id: 55,
         titulo: "Nova tarefa",
         status: "draft",
-        projetoId: 1,
+        managedProjectId: 1,
         updatedAt: "2026-09-04T13:00:00.000Z",
       })
       expect(envelope).toHaveProperty("sequence", 1)
@@ -833,7 +833,7 @@ describe("CrudService — eventos realtime no CRUD de tarefas/subtarefas", () =>
       const { ingress } = unicoEvento(publicar)
       expect(ingress).toMatchObject({
         type: "task.updated",
-        projectId: 1,
+        projectId: 640,
         taskId: 55,
       })
       expect(ingress).toHaveProperty("payload.titulo", "Tarefa atualizada")
@@ -857,7 +857,7 @@ describe("CrudService — eventos realtime no CRUD de tarefas/subtarefas", () =>
       const { ingress } = unicoEvento(publicar)
       expect(ingress).toMatchObject({
         type: "task.deleted",
-        projectId: 1,
+        projectId: 640,
         taskId: 55,
       })
       expect(ingress).toHaveProperty("payload.id", 55)
@@ -889,7 +889,7 @@ describe("CrudService — eventos realtime no CRUD de tarefas/subtarefas", () =>
         expect(publicar).toHaveBeenCalledTimes(1)
         const ingress = unicoEvento(publicar).ingress
         expect(ingress.type).toBe("task.created")
-        expect(ingress.projectId).toBe(1)
+        expect(ingress.projectId).toBe(640)
         expect(ingress.taskId).toBe(70)
       },
     )
@@ -920,7 +920,7 @@ describe("CrudService — eventos realtime no CRUD de tarefas/subtarefas", () =>
         expect(publicar).toHaveBeenCalledTimes(1)
         const ingress = unicoEvento(publicar).ingress
         expect(ingress.type).toBe("task.created")
-        expect(ingress.projectId).toBe(1)
+        expect(ingress.projectId).toBe(640)
         expect(ingress.taskId).toBe(71)
       },
     )
@@ -1053,7 +1053,7 @@ describe("CrudService — eventos realtime no CRUD de tarefas/subtarefas", () =>
   })
 
   describe("subtarefas", () => {
-    it("criar publica subtask.created com projetoId/taskId da tarefa pai", async () => {
+    it("criar publica subtask.created no tenant da sessão", async () => {
       const linhaSub = {
         id: 42,
         tarefaId: 7,
@@ -1081,7 +1081,7 @@ describe("CrudService — eventos realtime no CRUD de tarefas/subtarefas", () =>
       expect(ingress).toMatchObject({
         type: "subtask.created",
         source: "crud",
-        projectId: 3,
+        projectId: 640,
         taskId: 7,
       })
       expect(ingress).toHaveProperty("payload", {
@@ -1091,6 +1091,7 @@ describe("CrudService — eventos realtime no CRUD de tarefas/subtarefas", () =>
         titulo: "Sub X",
         status: "pending",
         resultado: null,
+        managedProjectId: 3,
       })
       expect(envelope).toHaveProperty("sequence", 1)
     })
@@ -1120,7 +1121,7 @@ describe("CrudService — eventos realtime no CRUD de tarefas/subtarefas", () =>
       const { ingress } = unicoEvento(publicar)
       expect(ingress).toMatchObject({
         type: "subtask.updated",
-        projectId: 3,
+        projectId: 640,
         taskId: 7,
       })
       expect(ingress).toHaveProperty("payload", {
@@ -1130,6 +1131,7 @@ describe("CrudService — eventos realtime no CRUD de tarefas/subtarefas", () =>
         titulo: "Sub X",
         status: "verified",
         resultado: "entregue",
+        managedProjectId: 3,
       })
     })
 
@@ -1155,7 +1157,7 @@ describe("CrudService — eventos realtime no CRUD de tarefas/subtarefas", () =>
       const { ingress } = unicoEvento(publicar)
       expect(ingress).toMatchObject({
         type: "subtask.deleted",
-        projectId: 3,
+        projectId: 640,
         taskId: 7,
       })
       expect(ingress).toHaveProperty("payload.id", 42)

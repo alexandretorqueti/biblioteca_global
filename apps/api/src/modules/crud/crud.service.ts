@@ -546,20 +546,20 @@ export class CrudService {
     if (!Number.isSafeInteger(id) || id <= 0) return
 
     if (resource === "tarefas") {
-      const projetoId = Number(linha.projetoId ?? linha.projeto_id)
-      if (this.realtime && Number.isSafeInteger(projetoId) && projetoId > 0) {
+      const managedProjectId = Number(linha.projetoId ?? linha.projeto_id)
+      if (this.realtime && Number.isSafeInteger(managedProjectId) && managedProjectId > 0) {
         this.realtime.publicar({
           eventId: randomUUID(),
           occurredAt: new Date().toISOString(),
           source: "crud",
-          projectId: projetoId,
+          projectId: projeto.id,
           taskId: id,
           type: `task.${operacao}`,
           payload: {
             id,
             titulo: String(linha.titulo ?? ""),
             status: String(linha.status ?? ""),
-            projetoId,
+            managedProjectId,
             updatedAt: this.dataParaEvento(linha.updatedAt ?? linha.updated_at),
           },
         })
@@ -588,13 +588,13 @@ export class CrudService {
       .from(tarefa)
       .where(eq(this.colunaId(tarefa) as never, tarefaId as never))
       .limit(1)
-    const projetoId = Number(pai.at(0)?.projetoId)
-    if (this.realtime && Number.isSafeInteger(projetoId) && projetoId > 0) {
+    const managedProjectId = Number(pai.at(0)?.projetoId)
+    if (this.realtime && Number.isSafeInteger(managedProjectId) && managedProjectId > 0) {
       this.realtime.publicar({
         eventId: randomUUID(),
         occurredAt: new Date().toISOString(),
         source: "crud",
-        projectId: projetoId,
+        projectId: projeto.id,
         taskId: tarefaId,
         type: `subtask.${operacao}`,
         payload: {
@@ -604,6 +604,7 @@ export class CrudService {
           titulo: String(linha.titulo ?? ""),
           status: String(linha.status ?? ""),
           resultado: linha.resultado ?? null,
+          managedProjectId,
         },
       })
     }

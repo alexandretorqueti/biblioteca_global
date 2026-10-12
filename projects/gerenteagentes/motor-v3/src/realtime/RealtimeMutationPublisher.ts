@@ -33,6 +33,8 @@ export interface RealtimeMutationPublisherConfig {
   endpoint?: string
   token?: string
   fetchImpl?: typeof fetch
+  /** Projeto/tenant da Biblioteca usado para rotear o WebSocket. */
+  tenantProjectId?: number
 }
 
 export interface DeletedTaskRealtimeIdentity {
@@ -128,10 +130,11 @@ export class RealtimeMutationPublisher {
         headers: { authorization: `Bearer ${this.config.token ?? ''}`, 'content-type': 'application/json', 'idempotency-key': eventId },
         body: JSON.stringify({
           eventId, occurredAt: new Date().toISOString(), source: 'gerenteagentes-motor-v3',
-          projectId: Number(identity.project_id), taskId: Number(identity.task_id),
+          projectId: Number(this.config.tenantProjectId ?? 640), taskId: Number(identity.task_id),
           sourceTaskId: String(identity.source_task_id ?? identity.task_id),
           ...(identity.project_slug ? { sourceProjectSlug: String(identity.project_slug) } : {}),
-          ...(subtaskId ? { subtaskId } : {}), type, payload,
+          ...(subtaskId ? { subtaskId } : {}), type,
+          payload: { ...payload, managedProjectId: Number(identity.project_id) },
         }),
       })
       if (!response.ok) {

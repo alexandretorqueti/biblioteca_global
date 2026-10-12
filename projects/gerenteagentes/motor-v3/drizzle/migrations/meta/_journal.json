@@ -71,6 +71,13 @@
       "when": 1791678000002,
       "tag": "0008_realtime_event_outbox",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "5",
+      "when": 1791810000000,
+      "tag": "0009_realtime_tenant_routing",
+      "breakpoints": true
     }
   ]
 }
