@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Pool, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
-import { MigrationDryRunError, MigrationDryRunExecutor } from '../src/migrations/MigrationDryRunExecutor.js'
+import { MigrationDryRunError, MigrationDryRunExecutor, MigrationWatermarkError } from '../src/migrations/MigrationDryRunExecutor.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -429,6 +429,103 @@ describe('MigrationDryRunExecutor', () => {
       expect(updateCall![0]).toContain('gate_scratch_555_facts')
       expect(updateCall![0]).toContain('gate_scratch_555_requests')
       expect(updateCall![0]).not.toMatch(/`facts`|`requests`/)
+    })
+  })
+
+  describe('validação de watermark do journal (incidente task-p2-989)', () => {
+    async function createWorkspaceWithJournal(newWhen: number, opts?: { skipJournalEntry?: boolean }): Promise<{ ws: string; baseCommit: string }> {
+      const ws = await createWorkspace()
+      await mkdir(join(ws, 'projects/alpha/migrations/meta'), { recursive: true })
+      await writeFile(join(ws, 'projects/alpha/migrations/0001_initial.sql'), 'CREATE TABLE `t1` (`id` INT);')
+      await writeFile(join(ws, 'projects/alpha/migrations/meta/_journal.json'), JSON.stringify({
+        version: '5', dialect: 'mysql', entries: [
+          { idx: 0, version: '5', when: 1000, tag: '0001_initial', breakpoints: true },
+        ],
+      }))
+      await git(ws, ['add', '.'])
+      await git(ws, ['commit', '-m', 'baseline'])
+      const baseCommit = (await git(ws, ['rev-parse', 'HEAD'])).trim()
+
+      await writeFile(join(ws, 'projects/alpha/migrations/0002_new.sql'), 'CREATE TABLE `t2` (`id` INT);')
+      const entries = [{ idx: 0, version: '5', when: 1000, tag: '0001_initial', breakpoints: true }]
+      if (!opts?.skipJournalEntry) {
+        entries.push({ idx: 1, version: '5', when: newWhen, tag: '0002_new', breakpoints: true })
+      }
+      await writeFile(join(ws, 'projects/alpha/migrations/meta/_journal.json'), JSON.stringify({
+        version: '5', dialect: 'mysql', entries,
+      }))
+      return { ws, baseCommit }
+    }
+
+    it('reprova migration com when abaixo do watermark (skip silencioso do drizzle)', async () => {
+      const { ws, baseCommit } = await createWorkspaceWithJournal(1500)
+      querySpy.mockResolvedValueOnce([[{ watermark: 2000 }]]) // SELECT MAX(created_at)
+
+      const executor = new MigrationDryRunExecutor(mockPool, 777)
+      await expect(executor.execute(ws, baseCommit)).rejects.toThrow(MigrationWatermarkError)
+      // Falhou antes de clonar/executar qualquer statement
+      expect(querySpy).toHaveBeenCalledTimes(1)
+      expect(String(querySpy.mock.calls[0]![0])).toContain('__drizzle_migrations')
+    })
+
+    it('reprova when igual ao watermark (colisao entre folders compartilhando a tabela)', async () => {
+      const { ws, baseCommit } = await createWorkspaceWithJournal(2000)
+      querySpy.mockResolvedValueOnce([[{ watermark: '2000' }]])
+
+      const executor = new MigrationDryRunExecutor(mockPool, 777)
+      await expect(executor.execute(ws, baseCommit)).rejects.toThrow(/watermark=2000/)
+    })
+
+    it('aceita when acima do watermark e segue com o dry-run', async () => {
+      const { ws, baseCommit } = await createWorkspaceWithJournal(3000)
+      querySpy.mockResolvedValueOnce([[{ watermark: 2000 }]]) // SELECT MAX(created_at)
+      querySpy.mockResolvedValueOnce([[]]) // SHOW CREATE TABLE (tabela nao existe)
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // execucao do CREATE reescrito
+      querySpy.mockResolvedValue([{} as ResultSetHeader]) // cleanup
+
+      const executor = new MigrationDryRunExecutor(mockPool, 777)
+      await executor.execute(ws, baseCommit)
+
+      const createCall = querySpy.mock.calls.find(call =>
+        typeof call[0] === 'string' && call[0].includes('CREATE TABLE') && !call[0].includes('SHOW')
+      )
+      expect(createCall).toBeDefined()
+      expect(createCall![0]).toContain('gate_scratch_777_t2')
+    })
+
+    it('ignora validacao quando __drizzle_migrations nao existe (banco novo)', async () => {
+      const { ws, baseCommit } = await createWorkspaceWithJournal(1500)
+      const missingTable = Object.assign(new Error("Table 'db.__drizzle_migrations' doesn't exist"), { errno: 1146 })
+      querySpy.mockRejectedValueOnce(missingTable) // SELECT MAX → 1146
+      querySpy.mockResolvedValueOnce([[]]) // SHOW CREATE TABLE (tabela nao existe)
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // execucao do CREATE reescrito
+      querySpy.mockResolvedValue([{} as ResultSetHeader]) // cleanup
+
+      const executor = new MigrationDryRunExecutor(mockPool, 777)
+      await expect(executor.execute(ws, baseCommit)).resolves.toBeUndefined()
+    })
+
+    it('nao consulta watermark quando a migration adicionada nao tem entrada no journal', async () => {
+      const { ws, baseCommit } = await createWorkspaceWithJournal(1500, { skipJournalEntry: true })
+      querySpy.mockResolvedValueOnce([[]]) // direto para SHOW CREATE TABLE
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader])
+      querySpy.mockResolvedValue([{} as ResultSetHeader])
+
+      const executor = new MigrationDryRunExecutor(mockPool, 777)
+      await executor.execute(ws, baseCommit)
+
+      expect(querySpy.mock.calls.every(call => !String(call[0]).includes('__drizzle_migrations'))).toBe(true)
+    })
+
+    it('watermark NULL (tabela vazia) nao bloqueia', async () => {
+      const { ws, baseCommit } = await createWorkspaceWithJournal(1500)
+      querySpy.mockResolvedValueOnce([[{ watermark: null }]]) // tabela existe, vazia
+      querySpy.mockResolvedValueOnce([[]])
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader])
+      querySpy.mockResolvedValue([{} as ResultSetHeader])
+
+      const executor = new MigrationDryRunExecutor(mockPool, 777)
+      await expect(executor.execute(ws, baseCommit)).resolves.toBeUndefined()
     })
   })
 })

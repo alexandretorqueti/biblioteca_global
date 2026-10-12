@@ -16,6 +16,38 @@ export interface MigrationDryRunViolation {
   mysqlState?: string
 }
 
+export interface MigrationWatermarkViolation {
+  project: string
+  migration: string
+  entryWhen: number
+  databaseWatermark: number
+}
+
+/**
+ * Incidente task-p2-989 (2026-10-12): `projects/gerenteagentes/migrations` e
+ * `projects/gerenteagentes/motor-v3/drizzle/migrations` compartilham a mesma
+ * tabela `__drizzle_migrations` no banco do projeto. O migrator do drizzle-kit
+ * aplica apenas entradas com `when > MAX(created_at)` (watermark); a migration
+ * interna 0009 (when=1791810000000) elevou o watermark acima da 0086 do
+ * projeto (when=1791678000002, colidindo ainda com o when da 0008) e o
+ * drizzle-kit PULOU a 0086 em silêncio — o deploy "sucedeu" sem as colunas
+ * novas e o código que as escreve foi ao ar. Este erro reprova o gate quando
+ * uma migration adicionada tem `when` <= watermark atual do banco alvo.
+ */
+export class MigrationWatermarkError extends Error {
+  constructor(readonly violations: MigrationWatermarkViolation[]) {
+    super([
+      'Migrations com `when` <= watermark de __drizzle_migrations — o drizzle-kit PULARIA a aplicação em silêncio:',
+      ...violations.map(v =>
+        `- projects/${v.project}/migrations/${v.migration} (when=${v.entryWhen} <= watermark=${v.databaseWatermark})`,
+      ),
+      'Ajuste o `when` da entrada no meta/_journal.json para um valor MAIOR que o watermark atual do banco.',
+      'Causa típica: dois folders de migration compartilham __drizzle_migrations no mesmo banco (incidente task-p2-989).',
+    ].join('\n'))
+    this.name = 'MigrationWatermarkError'
+  }
+}
+
 export class MigrationDryRunError extends Error {
   constructor(readonly violations: MigrationDryRunViolation[]) {
     super([
@@ -63,6 +95,8 @@ export class MigrationDryRunExecutor {
   ): Promise<void> {
     const addedMigrations = await this.discoverAddedMigrations(workspacePath, baseCommitSha)
     if (addedMigrations.length === 0) return
+
+    await this.validateJournalWatermarks(workspacePath, addedMigrations)
 
     try {
       for (const { project, migration, path } of addedMigrations) {
@@ -127,6 +161,67 @@ export class MigrationDryRunExecutor {
       }
     }
     return migrations
+  }
+
+  /**
+   * Valida o `when` das entradas de journal das migrations adicionadas contra o
+   * watermark atual (MAX(created_at)) de `__drizzle_migrations` no banco alvo.
+   * O migrator do drizzle aplica apenas entradas com when > watermark; quando
+   <= watermark a migration é PULADA em silêncio (incidente task-p2-989).
+   * Entradas sem journal/sem tag correspondente são ignoradas aqui — o gate
+   * MigrationJournalIntegrity já as reprova em separado.
+   */
+  private async validateJournalWatermarks(
+    workspacePath: string,
+    addedMigrations: Array<{ project: string; migration: string; path: string }>,
+  ): Promise<void> {
+    interface JournalEntry { tag: string; when: number }
+    const entriesByProject = new Map<string, JournalEntry[]>()
+    const candidates: Array<{ project: string; migration: string; when: number }> = []
+    for (const added of addedMigrations) {
+      let entries = entriesByProject.get(added.project)
+      if (entries === undefined) {
+        entries = []
+        try {
+          const journalPath = resolve(workspacePath, 'projects', added.project, 'migrations', 'meta', '_journal.json')
+          const journal = JSON.parse(await readFile(journalPath, 'utf8')) as { entries?: JournalEntry[] }
+          if (Array.isArray(journal.entries)) entries = journal.entries
+        } catch {
+          // journal ausente/ilegível: MigrationJournalIntegrity reprova em separado.
+        }
+        entriesByProject.set(added.project, entries)
+      }
+      const tag = added.migration.replace(/\.sql$/, '')
+      const entry = entries.find(candidate => candidate.tag === tag)
+      if (entry && Number.isFinite(entry.when)) {
+        candidates.push({ project: added.project, migration: added.migration, when: entry.when })
+      }
+    }
+    if (candidates.length === 0) return
+
+    let watermark: number | null = null
+    try {
+      const [rows] = await this.pool.query<RowDataPacket[]>(
+        'SELECT MAX(created_at) AS watermark FROM `__drizzle_migrations`',
+      )
+      const raw = rows[0]?.['watermark']
+      watermark = raw === null || raw === undefined ? null : Number(raw)
+    } catch (error) {
+      // Tabela ainda não existe (banco novo): não há watermark, nada a validar.
+      if (MigrationDryRunExecutor.isMissingTableError(error)) return
+      throw error
+    }
+    if (watermark === null) return
+
+    const violations = candidates
+      .filter(candidate => candidate.when <= watermark)
+      .map(candidate => ({
+        project: candidate.project,
+        migration: candidate.migration,
+        entryWhen: candidate.when,
+        databaseWatermark: watermark as number,
+      }))
+    if (violations.length > 0) throw new MigrationWatermarkError(violations)
   }
 
   /**
