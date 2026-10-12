@@ -197,7 +197,15 @@ export default function OperationMapScreen() {
           }))
           setTasks(prev => {
             // Preserva seleção atual se ainda existir
-            const merged = list.length > 0 ? list : prev
+            const previousById = new Map(prev.map(task => [task.id, task]))
+            const merged = list.length > 0
+              ? list.map(task => ({
+                ...previousById.get(task.id),
+                ...task,
+                // O snapshot do mapa não carrega a descrição; ela vem da carga REST.
+                descricao: task.descricao ?? previousById.get(task.id)?.descricao ?? null,
+              }))
+              : prev
             setSelectedId(current => {
               if (current !== "" && merged.some(t => t.id === current)) return current
               if (!initialSelectionDone.current) { initialSelectionDone.current = true; return selectInitialTask(merged) }

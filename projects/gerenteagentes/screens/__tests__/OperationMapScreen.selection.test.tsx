@@ -20,10 +20,23 @@ vi.mock("../../../../apps/web/src/hooks/useApi", () => ({
 
 vi.mock("@biblioteca-global/api-client", () => ({
   RealtimeClient: class {
+    private readonly options: { channel?: string; onMessage?: (message: unknown) => void }
+    constructor(options: { channel?: string; onMessage?: (message: unknown) => void }) {
+      this.options = options
+      realtimeClients.items.push(this.options)
+    }
     connect(): void { /* no-op */ }
     close(): void { /* no-op */ }
   },
 }))
+
+const realtimeClients = vi.hoisted(() => ({
+  items: [] as Array<{ channel?: string; onMessage?: (message: unknown) => void }>,
+}))
+
+beforeEach(() => {
+  realtimeClients.items.length = 0
+})
 
 // Mock do useMediaQuery para controlar resposta nos testes
 let mockIsWideScreen = false
@@ -211,6 +224,36 @@ describe("OperationMapScreen — preservação de seleção em atualizações", 
       const detailContent = screen.getByTestId("detail-content")
       expect(detailContent).toHaveTextContent("Tarefa 1")
     }, { timeout: 5000 })
+  })
+
+  it("preserva a descrição carregada pelo REST após receber map_snapshot", async () => {
+    mockIsWideScreen = true
+    const tarefa = tarefaFactory(1, "Tarefa com descrição", "paused")
+    tarefa.descricao = "Descrição persistida da tarefa"
+    globalThis.__bundleMapa = bundleFalso([tarefa])
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("detail-content")).toHaveTextContent("Descrição persistida da tarefa")
+    })
+
+    const mapClient = realtimeClients.items.find(client => client.channel === "map")
+    expect(mapClient?.onMessage).toBeDefined()
+    mapClient?.onMessage?.({
+      type: "map_snapshot",
+      projectId: 1,
+      currentSequence: 1,
+      snapshot: {
+        projectId: 1,
+        tasks: [{ taskId: 1, title: "Título atualizado", status: "running", updatedAt: "2026-09-14T12:00:00Z", counters: { total: 4 } }],
+        counters: { total: 1 },
+      },
+    })
+
+    await waitFor(() => {
+      expect(screen.getByTestId("detail-content")).toHaveTextContent("Descrição persistida da tarefa")
+      expect(screen.getByTestId("detail-content")).toHaveTextContent("Título atualizado")
+    })
   })
 })
 
