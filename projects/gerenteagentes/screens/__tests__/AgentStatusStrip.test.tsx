@@ -6,7 +6,7 @@
  * Valida:
  * - Ícone ativo exibe o código da tarefa (#taskId) e subtarefa (·SsubtaskId)
  * - Ícone inativo não exibe código
- * - Motor em deploy exibe múltiplos taskIds como chips
+ * - Motor em qualquer atividade exibe taskIds como chips
  * - Motor ocioso não exibe códigos de tarefa
  */
 import { describe, expect, it } from "vitest"
@@ -122,7 +122,7 @@ describe("AgentStatusStrip — Motor: leva de deploy", () => {
     expect(screen.queryByTestId("motor-deploy-task-912")).not.toBeInTheDocument()
   })
 
-  it("não exibe chips de taskId quando o motor está executando (não-deploy)", () => {
+  it("exibe chips de taskId quando o motor está executando", () => {
     renderStrip({
       motorActive: true,
       motorIsRunning: true,
@@ -134,8 +134,7 @@ describe("AgentStatusStrip — Motor: leva de deploy", () => {
       workers: [],
     })
 
-    // taskIds só aparecem como chips quando kind === 'deploying'
-    expect(screen.queryByTestId("motor-deploy-task-886")).not.toBeInTheDocument()
+    expect(screen.getByTestId("motor-executing-task-886")).toBeInTheDocument()
   })
 
   it("exibe 'Motor pausado' quando motorActive é false", () => {
@@ -152,6 +151,7 @@ describe("AgentStatusStrip — Motor: leva de deploy", () => {
   it.each([
     ["deploying", "Realizando deploy"],
     ["worktree", "Criando worktree"],
+    ["git", "Realizando operações git"],
     ["testing", "Testando trabalho do desenvolvedor"],
     ["executing", "Executando tarefa"],
   ] as const)("exibe o rótulo específico para %s", (kind, label) => {

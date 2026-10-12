@@ -122,7 +122,7 @@ export default function OperationMapScreen() {
         motor?: {
           isActive?: boolean
           isRunning?: boolean
-          activity?: { kind: "testing" | "worktree" | "deploying" | "executing"; message: string; taskIds: string[] } | null
+          activity?: { kind: "testing" | "worktree" | "git" | "deploying" | "executing"; message: string; taskIds: string[] } | null
         }
         workers?: AgentStatusStripProps["workers"]
       }>("GET", "/gerenteagentes/motor-activity", { auth: "access" })
@@ -180,6 +180,7 @@ export default function OperationMapScreen() {
         if (message.type === "map_replay_unavailable") {
           // Reconciliação controlada: uma única chamada REST para restaurar o estado
           void loadTasks()
+          void loadActivity()
           setMapRecovered(true)
           return
         }
@@ -210,6 +211,32 @@ export default function OperationMapScreen() {
         if (message.type === "event") {
           const event = message.event
           const payload = event.payload
+          if (event.type === "motor.activity.updated") {
+            const motor = payload.motor as {
+              isActive?: unknown
+              isRunning?: unknown
+              activity?: unknown
+            } | undefined
+            const activity = motor?.activity as {
+              kind?: unknown
+              message?: unknown
+              taskIds?: unknown
+            } | null | undefined
+            const validKinds = new Set(["testing", "worktree", "git", "deploying", "executing"])
+            setMotorActive(typeof motor?.isActive === "boolean" ? motor.isActive : true)
+            setMotorIsRunning(typeof motor?.isRunning === "boolean" ? motor.isRunning : false)
+            setMotorActivity(
+              activity && validKinds.has(String(activity.kind)) && typeof activity.message === "string" && Array.isArray(activity.taskIds)
+                ? {
+                    kind: String(activity.kind) as NonNullable<AgentStatusStripProps["motorActivity"]>["kind"],
+                    message: activity.message,
+                    taskIds: activity.taskIds.map(String),
+                  }
+                : null,
+            )
+            setWorkers(Array.isArray(payload.workers) ? payload.workers as AgentStatusStripProps["workers"] : [])
+            return
+          }
           // Atualiza lista de tarefas conforme o tipo de evento
           if (event.type === "task.created") {
             const newTask: Task = {
@@ -253,7 +280,7 @@ export default function OperationMapScreen() {
     })
     void client.connect()
     return () => { disposed = true; client.close() }
-  }, [bundle, mapProjectId, loadTasks, loadDetail, loadOperations, loadSubtasks, selectedId])
+  }, [bundle, mapProjectId, loadTasks, loadActivity, loadDetail, loadOperations, loadSubtasks, selectedId])
   // Canal "task" — atualização do detalhe da tarefa selecionada por WebSocket
   // Eventos de subtarefas, chat, atividades e histórico são aplicados localmente.
   // replay_unavailable dispara uma única reconciliação REST (sem polling).
