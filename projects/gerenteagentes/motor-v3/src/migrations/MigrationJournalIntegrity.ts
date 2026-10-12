@@ -28,6 +28,14 @@ export interface StatementBreakpointViolation {
   orphanedStatementLine: number
   statementCount: number
   breakpointCount: number
+  /**
+   * `missing_breakpoint`: 2+ statements no mesmo bloco sem separador (incidente 0082).
+   * `empty_segment`: separador pendurado/consecutivo gera bloco vazio — o drizzle
+   * executa uma query vazia, a migration falha DEPOIS do DDL já aplicado (commit
+   * implícito do MySQL) e não é registrada: retry vira loop de "table already
+   * exists" (incidente task-p2-984, migration 0085).
+   */
+  kind: 'missing_breakpoint' | 'empty_segment'
 }
 
 export interface MigrationJournalInspection {
@@ -64,11 +72,12 @@ export class MigrationJournalMonotonicityError extends Error {
 export class MigrationStatementBreakpointError extends Error {
   constructor(readonly violations: StatementBreakpointViolation[]) {
     super([
-      'Migrations SQL com múltiplos statements sem o separador "--> statement-breakpoint":',
-      ...violations.map(violation =>
-        `- projects/${violation.project}/migrations/${violation.migration}: ${violation.statementCount} statements encontrados, ${violation.breakpointCount} breakpoint(s). Statement órfão inicia na linha ${violation.orphanedStatementLine}. Adicione "--> statement-breakpoint" entre statements consecutivos (referência: 0027_motor_configuracoes.sql).`
+      'Migrations SQL com blocos malformados (separator "--> statement-breakpoint"): ',
+      ...violations.map(violation => violation.kind === 'empty_segment'
+        ? `- projects/${violation.project}/migrations/${violation.migration}: "--> statement-breakpoint" na linha ${violation.orphanedStatementLine} gera um bloco VAZIO (pendurado no fim do arquivo ou consecutivo). O drizzle executa uma query vazia, a migration falha depois do DDL já aplicado (commit implícito do MySQL) e não é registrada — o retry vira loop de "table already exists" no deploy. Remova o separador excedente; o arquivo deve terminar com o ";" do último statement.`
+        : `- projects/${violation.project}/migrations/${violation.migration}: ${violation.statementCount} statements encontrados, ${violation.breakpointCount} breakpoint(s). Statement órfão inicia na linha ${violation.orphanedStatementLine}. Adicione "--> statement-breakpoint" entre statements consecutivos (referência: 0027_motor_configuracoes.sql).`
       ),
-      'O drizzle-kit CLI envia cada bloco como query única sem multipleStatements — múltiplos statements sem separador causam erro de sintaxe no deploy.',
+      'O drizzle-kit CLI envia cada bloco como query única sem multipleStatements — blocos com múltiplos statements OU blocos vazios causam falha no deploy.',
     ].join('\n'))
     this.name = 'MigrationStatementBreakpointError'
   }
@@ -233,37 +242,37 @@ async function inspectAddedMigrationStatementBreakpoints(
     } catch {
       continue
     }
-    const result = analyzeStatementBreakpoints(content)
-    if (result.violationLine !== null) {
-      violations.push({
-        project,
-        migration,
-        orphanedStatementLine: result.violationLine,
-        statementCount: result.statementCount,
-        breakpointCount: result.breakpointCount,
-      })
-    }
+    violations.push(...statementBreakpointViolationsFor(project, migration, analyzeStatementBreakpoints(content)))
   }
   return violations
 }
 
 /**
  * Conta statements top-level e breakpoints em conteúdo SQL.
- * Retorna `violationLine` (linha 1-indexed do statement órfão) ou null se OK.
+ * Retorna `violationLine` (linha 1-indexed do statement órfão) ou null se OK,
+ * e `emptySegmentLine` (linha do marcador que inicia um bloco vazio — pendurado
+ * no fim do arquivo, consecutivo ou antes do primeiro statement) ou null se OK.
  *
  * Um statement é terminado por `;` fora de strings, identificadores delimitados
  * ou comentários. O marcador `--> statement-breakpoint` separa blocos; cada
- * bloco deve conter no máximo 1 statement.
+ * bloco deve conter exatamente 1 statement.
  */
 export function analyzeStatementBreakpoints(sqlContent: string): {
   statementCount: number
   breakpointCount: number
   violationLine: number | null
+  emptySegmentLine: number | null
 } {
   const lines = sqlContent.split(/\r?\n/)
   let statementCount = 0
   let breakpointCount = 0
   let violationLine: number | null = null
+  // Linha do último marcador de breakpoint visto (início do segmento corrente).
+  let lastBreakpointLine: number | null = null
+  // Linha de um segmento vazio (entre breakpoints consecutivos, antes do
+  // primeiro breakpoint sem statement anterior, ou após o último breakpoint
+  // no fim do arquivo) — o drizzle executaria uma query vazia e falharia.
+  let emptySegmentLine: number | null = null
 
   // State machine: track whether we're inside a string/comment
   let inSingleQuote = false
@@ -287,6 +296,12 @@ export function analyzeStatementBreakpoints(sqlContent: string): {
     const trimmedLine = line.trim()
     if (trimmedLine === '--> statement-breakpoint') {
       breakpointCount++
+      // Segmento que termina neste marcador não contém nenhum statement:
+      // bloco vazio (breakpoint pendurado/consecutivo) → query vazia no drizzle.
+      if (statementsSinceLastBreakpoint === 0 && emptySegmentLine === null) {
+        emptySegmentLine = lastBreakpointLine ?? lineNumber
+      }
+      lastBreakpointLine = lineNumber
       // Reset the segment counter — new segment starts after breakpoint
       statementsSinceLastBreakpoint = 0
       awaitingNextStatement = false
@@ -432,7 +447,14 @@ export function analyzeStatementBreakpoints(sqlContent: string): {
     }
   }
 
-  return { statementCount, breakpointCount, violationLine }
+  // Breakpoint no fim do arquivo: o segmento final (após o último marcador)
+  // não tem statements → o drizzle executa uma query vazia e a migration
+  // falha sem ser registrada (incidente task-p2-984, migration 0085).
+  if (breakpointCount > 0 && statementsSinceLastBreakpoint === 0 && emptySegmentLine === null) {
+    emptySegmentLine = lastBreakpointLine ?? lines.length
+  }
+
+  return { statementCount, breakpointCount, violationLine, emptySegmentLine }
 }
 
 /**
@@ -459,16 +481,37 @@ export async function inspectMigrationStatementBreakpoints(
     } catch {
       continue
     }
-    const result = analyzeStatementBreakpoints(content)
-    if (result.violationLine !== null) {
-      violations.push({
-        project,
-        migration,
-        orphanedStatementLine: result.violationLine,
-        statementCount: result.statementCount,
-        breakpointCount: result.breakpointCount,
-      })
-    }
+    violations.push(...statementBreakpointViolationsFor(project, migration, analyzeStatementBreakpoints(content)))
+  }
+  return violations
+}
+
+/** Converte o resultado do analyzer em violações tipadas (um push por problema). */
+function statementBreakpointViolationsFor(
+  project: string,
+  migration: string,
+  result: ReturnType<typeof analyzeStatementBreakpoints>,
+): StatementBreakpointViolation[] {
+  const violations: StatementBreakpointViolation[] = []
+  if (result.violationLine !== null) {
+    violations.push({
+      project,
+      migration,
+      orphanedStatementLine: result.violationLine,
+      statementCount: result.statementCount,
+      breakpointCount: result.breakpointCount,
+      kind: 'missing_breakpoint',
+    })
+  }
+  if (result.emptySegmentLine !== null) {
+    violations.push({
+      project,
+      migration,
+      orphanedStatementLine: result.emptySegmentLine,
+      statementCount: result.statementCount,
+      breakpointCount: result.breakpointCount,
+      kind: 'empty_segment',
+    })
   }
   return violations
 }
