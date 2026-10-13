@@ -230,9 +230,15 @@ docker image inspect "$NEW_API_IMAGE" >/dev/null 2>&1 || {
 MOTOR_DIST_CONTAINER="biblioteca-global-motor-dist-$$"
 docker create --name "$MOTOR_DIST_CONTAINER" "$NEW_API_IMAGE" >/dev/null
 for motor in motor-v3; do
-  mkdir -p "projects/gerenteagentes/$motor"
-  rm -rf "projects/gerenteagentes/$motor/dist"
-  docker cp "$MOTOR_DIST_CONTAINER:/app/projects/gerenteagentes/$motor/dist" "projects/gerenteagentes/$motor/"
+  MOTOR_DIR="projects/gerenteagentes/$motor"
+  mkdir -p "$MOTOR_DIR"
+  # `docker cp` preserva uid 0 dos arquivos da imagem. O deploy seguinte roda
+  # como o usuário do host e não conseguiria remover esse dist. A limpeza via
+  # contêiner também recupera diretórios root-owned deixados por versões antigas.
+  docker run --rm -v "$PWD/$MOTOR_DIR:/motor" "$NEW_API_IMAGE" rm -rf /motor/dist
+  mkdir -p "$MOTOR_DIR/dist"
+  docker cp "$MOTOR_DIST_CONTAINER:/app/projects/gerenteagentes/$motor/dist/." - \
+    | tar --no-same-owner -xf - -C "$MOTOR_DIR/dist"
 done
 docker rm "$MOTOR_DIST_CONTAINER" >/dev/null
 echo "[deploy-blue-green] dist do motor v3 materializado a partir da imagem $target"
