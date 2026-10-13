@@ -131,6 +131,38 @@ describe('MigrationDryRunExecutor', () => {
       expect(insertCall).toBeDefined()
       expect(insertCall[0]).toContain('gate_scratch_456_users')
     })
+
+    it('preserva CURRENT_TIMESTAMP em cláusulas ON UPDATE de CREATE TABLE', async () => {
+      const ws = await createWorkspace()
+      await mkdir(join(ws, 'projects/alpha/migrations'), { recursive: true })
+      await git(ws, ['commit', '-m', 'baseline', '--allow-empty'])
+      const baseCommit = (await git(ws, ['rev-parse', 'HEAD'])).trim()
+
+      await writeFile(
+        join(ws, 'projects/alpha/migrations/0001_timestamps.sql'),
+        [
+          'CREATE TABLE `provider_limits` (',
+          '  `id` INT NOT NULL,',
+          '  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,',
+          '  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP',
+          ');',
+        ].join('\n'),
+      )
+
+      querySpy.mockResolvedValueOnce([[]]) // SHOW CREATE TABLE: tabela nova
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // CREATE reescrito
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // cleanup
+
+      const executor = new MigrationDryRunExecutor(mockPool, 995)
+      await executor.execute(ws, baseCommit)
+
+      const createCall = querySpy.mock.calls.find(call =>
+        typeof call[0] === 'string' && call[0].includes('CREATE TABLE `gate_scratch_995_provider_limits`')
+      )
+      expect(createCall).toBeDefined()
+      expect(createCall![0]).toContain('DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP')
+      expect(createCall![0]).not.toContain('gate_scratch_995_CURRENT_TIMESTAMP')
+    })
   })
 
   describe('execução ordenada', () => {
