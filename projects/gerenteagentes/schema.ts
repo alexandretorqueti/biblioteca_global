@@ -412,6 +412,7 @@ export const taskRuntimeFacts = mysqlTable("task_runtime_facts", {
     .references(() => tarefas.id, { onDelete: "cascade" }),
   analysisStartedAt: timestamp("analysis_started_at"),
   analysisExecutionId: varchar("analysis_execution_id", { length: 200 }),
+  provider: varchar("provider", { length: 100 }),
   clarificationPendingAt: timestamp("clarification_pending_at"),
   integrationConfirmedAt: timestamp("integration_confirmed_at"),
   integrationCommitSha: varchar("integration_commit_sha", { length: 64 }),
@@ -503,6 +504,7 @@ export const subtarefas = mysqlTable("subtarefas", {
   requirementsCovered: json("requirements_covered"), // IDs REQ-* cobertos
   descricao: text("descricao"),
   status: varchar("status", { length: 50 }).notNull().default("pending"), // pending, running, verified, failed
+  provider: varchar("provider", { length: 100 }),
   // Contador de entregas (uma entrega por vez).
   deliverCount: int("deliver_count").notNull().default(0),
   // Encadeamento: subtarefa depende de outra subtarefa da mesma tarefa.
@@ -833,6 +835,7 @@ export const motorActiveExecutions = mysqlTable("motor_active_executions", {
   subtarefaId: bigint("subtarefa_id", { mode: "number", unsigned: true })
     .references(() => subtarefas.id, { onDelete: "cascade" }),
   phase: varchar("phase", { length: 20 }).notNull(),
+  provider: varchar("provider", { length: 100 }),
   startedAt: timestamp("started_at").notNull().defaultNow(),
   heartbeatAt: timestamp("heartbeat_at").notNull().defaultNow(),
   expiresAt: timestamp("expires_at").notNull(),
