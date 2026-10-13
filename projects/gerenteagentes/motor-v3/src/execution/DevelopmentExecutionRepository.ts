@@ -6,6 +6,7 @@ import { cancelUnstartedDeployRequests } from '../deploy/DeployRequestFinalizer.
 import type { RealtimeMutationPublisher } from '../realtime/RealtimeMutationPublisher.js'
 import { RealtimeMutationBoundary } from '../realtime/RealtimeMutationBoundary.js'
 import { DerivedTaskStatusResolver, type DerivedTaskStatus } from '../status/DerivedTaskStatus.js'
+import { providerFromModel, providerHasCapacity } from './ProviderCapacity.js'
 
 export interface ReservedSubtask {
   message: QueueMessage<{ subtaskId: number; seq: number; title: string; scope: string }>
@@ -16,7 +17,7 @@ export interface ReservedSubtask {
 /** A tarefa permanece em fila; uma liberação de capacidade publicará novo gatilho. */
 export interface CapacityWaiting {
   kind: 'capacity_waiting'
-  reason: 'global_limit' | 'project_limit'
+  reason: 'global_limit' | 'project_limit' | 'provider_limit'
 }
 
 /**
@@ -212,6 +213,12 @@ export class MySqlDevelopmentExecutionRepository {
       const limits = new Map(limitRows.map(row => [row.chave, Math.max(1, Number(row.limite ?? 1))]))
       const maxWorkers = limits.get('motor.max_workers') ?? 1
       const maxWorkersPerProject = limits.get('motor.max_workers_per_project') ?? 1
+      const [modelRows] = await connection.query<Array<RowDataPacket & { model: string; provider: string | null }>>(
+        `SELECT model, provider FROM project_model_selection
+          WHERE project_slug = (SELECT slug FROM projetos_captados WHERE id = ?)
+            AND tipo = 'DEV' AND enabled = 1 ORDER BY ordem ASC LIMIT 1`, [task.projeto_id],
+      )
+      const developmentProvider = modelRows[0]?.provider || providerFromModel(modelRows[0]?.model)
 
       const [globalRows] = await connection.query<ActiveDevelopmentCountRow[]>(
         `SELECT COUNT(*) AS total
@@ -239,6 +246,11 @@ export class MySqlDevelopmentExecutionRepository {
         await this.enqueueCapacityWait(connection, task, source)
         await connection.commit()
         return { kind: 'capacity_waiting', reason: 'project_limit' }
+      }
+      if (!await providerHasCapacity(connection, developmentProvider, 'development')) {
+        await this.enqueueCapacityWait(connection, task, source)
+        await connection.commit()
+        return { kind: 'capacity_waiting', reason: 'provider_limit' }
       }
 
       const [subtaskRows] = await connection.query<SubtaskRow[]>(
@@ -298,9 +310,9 @@ export class MySqlDevelopmentExecutionRepository {
 
       const [updated] = await connection.query<ResultSetHeader>(
         `UPDATE subtarefas
-            SET status = 'running', updated_at = NOW()
+            SET status = 'running', provider = ?, updated_at = NOW()
           WHERE id = ? AND status = 'pending'`,
-        [subtask.id],
+        [developmentProvider, subtask.id],
       )
       if (updated.affectedRows !== 1) {
         await connection.rollback()

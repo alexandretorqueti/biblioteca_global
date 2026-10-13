@@ -486,6 +486,27 @@ export class GerenteAgentesController {
     return this.service.atualizarConfiguracoesMotor(body?.valores);
   }
 
+  // ============================================================================
+  // LIMITES DE PARALELISMO POR PROVIDER (aba PROVIDERS da tela CONFIGURAÇÕES)
+  // ============================================================================
+
+  /** Providers da tela de modelos, cada um com os três limites atuais (null = sem restrição). */
+  @Get('providers-limites')
+  @Roles('admin', 'gerente')
+  listarProvidersLimites() {
+    return this.service.listarLimitesProviders();
+  }
+
+  /** Salva os três limites de um provider (inteiro 1–100 ou null). */
+  @Put('providers-limites/:provider')
+  @Roles('admin', 'gerente')
+  salvarProviderLimite(
+    @Param('provider') provider: string,
+    @Body() body: unknown,
+  ) {
+    return this.service.salvarLimiteProvider(provider, body);
+  }
+
   /**
    * Leitura do fuso horário efetivo — acessível a qualquer usuário autenticado
    * com escopo no projeto (admin, gerente, operador ou visualizador).

@@ -1,6 +1,6 @@
 import { Injectable, Inject, Logger, NotFoundException, BadRequestException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { eq, desc, and, asc, lt, or, isNull, sql } from 'drizzle-orm';
+import { eq, desc, and, asc, lt, or, isNull, inArray, sql } from 'drizzle-orm';
 import { request as httpRequest, type RequestOptions } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { randomUUID } from 'node:crypto';
@@ -44,6 +44,7 @@ import {
   realtimeEventOutbox,
   projetoMotorConfig,
   deployRequests,
+  motorProviderLimits,
 } from '../schema';
 import {
   MOTOR_CONFIGURACOES,
@@ -551,6 +552,128 @@ export class GerenteAgentesService {
       req.on('error', reject);
       req.end();
     });
+  }
+
+  /**
+   * Providers distintos na ordem de aparição dos modelos do Console — a MESMA
+   * fonte/derivação da tela de modelos (ConfiguracoesScreen `providersDe`),
+   * que lista os providers do GET /modelos-console.
+   */
+  private providersDeModelosConsole(
+    modelos: ReadonlyArray<{ provider: string }>,
+  ): string[] {
+    const vistos = new Set<string>();
+    const ordenados: string[] = [];
+    for (const m of modelos) {
+      if (!m.provider || vistos.has(m.provider)) continue;
+      vistos.add(m.provider);
+      ordenados.push(m.provider);
+    }
+    return ordenados;
+  }
+
+  /**
+   * Lista os limites de paralelismo por provider (aba PROVIDERS da tela
+   * CONFIGURAÇÕES). Um item por provider exibido na tela de modelos do
+   * projeto (mesma fonte: service.listarModelosConsole); limites null quando
+   * não configurados. Persistência em motor_provider_limits (banco do Motor).
+   */
+  async listarLimitesProviders(): Promise<Array<{
+    provider: string;
+    limiteExecucaoTotal: number | null;
+    limiteAnalises: number | null;
+    limiteDesenvolvimento: number | null;
+  }>> {
+    const modelos = await this.listarModelosConsole();
+    const providers = this.providersDeModelosConsole(modelos);
+    const db = await this.dbDoMotor();
+    const limites = new Map<string, { limiteExecucaoTotal: number | null; limiteAnalises: number | null; limiteDesenvolvimento: number | null }>();
+    if (providers.length > 0) {
+      const rows = await db
+        .select({
+          provider: motorProviderLimits.provider,
+          limiteExecucaoTotal: motorProviderLimits.limiteExecucaoTotal,
+          limiteAnalises: motorProviderLimits.limiteAnalises,
+          limiteDesenvolvimento: motorProviderLimits.limiteDesenvolvimento,
+        })
+        .from(motorProviderLimits)
+        .where(inArray(motorProviderLimits.provider, providers));
+      for (const row of rows) {
+        limites.set(row.provider, {
+          limiteExecucaoTotal: row.limiteExecucaoTotal ?? null,
+          limiteAnalises: row.limiteAnalises ?? null,
+          limiteDesenvolvimento: row.limiteDesenvolvimento ?? null,
+        });
+      }
+    }
+    return providers.map((provider) => ({
+      provider,
+      limiteExecucaoTotal: limites.get(provider)?.limiteExecucaoTotal ?? null,
+      limiteAnalises: limites.get(provider)?.limiteAnalises ?? null,
+      limiteDesenvolvimento: limites.get(provider)?.limiteDesenvolvimento ?? null,
+    }));
+  }
+
+  /**
+   * Persiste os três limites de um provider. Validação espelha o padrão das
+   * configurações do Motor: inteiro entre 1 e 100, NULL = sem restrição.
+   * Provider fora da fonte (catálogo do Console) é rejeitado — mesma lista
+   * exibida na tela de modelos.
+   */
+  async salvarLimiteProvider(provider: string, body: unknown): Promise<{
+    provider: string;
+    limiteExecucaoTotal: number | null;
+    limiteAnalises: number | null;
+    limiteDesenvolvimento: number | null;
+  }> {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      throw new BadRequestException('Body inválido — esperado objeto com limiteExecucaoTotal, limiteAnalises e limiteDesenvolvimento');
+    }
+    const payload = body as Record<string, unknown>;
+    const campos = ['limiteExecucaoTotal', 'limiteAnalises', 'limiteDesenvolvimento'] as const;
+    for (const campo of campos) {
+      if (!(campo in payload)) {
+        throw new BadRequestException(`Campo ausente: ${campo} (use null para remover a restrição)`);
+      }
+    }
+    const valores: Record<(typeof campos)[number], number | null> = {
+      limiteExecucaoTotal: null,
+      limiteAnalises: null,
+      limiteDesenvolvimento: null,
+    };
+    for (const campo of campos) {
+      const valor = payload[campo];
+      if (valor === null) {
+        valores[campo] = null;
+        continue;
+      }
+      if (typeof valor !== 'number' || !Number.isInteger(valor) || valor < 1 || valor > 100) {
+        throw new BadRequestException(`Valor inválido para ${campo}: inteiro entre 1 e 100, ou null para remover a restrição`);
+      }
+      valores[campo] = valor;
+    }
+
+    // O provider precisa existir na fonte da tela de modelos (catálogo do Console).
+    const modelos = await this.listarModelosConsole();
+    const providers = this.providersDeModelosConsole(modelos);
+    if (!providers.includes(provider)) {
+      throw new BadRequestException(`Provider desconhecido: ${provider}. Providers válidos: ${providers.join(', ')}`);
+    }
+
+    const db = await this.dbDoMotor();
+    await db
+      .insert(motorProviderLimits)
+      .values({ provider, ...valores })
+      .onDuplicateKeyUpdate({
+        set: {
+          limiteExecucaoTotal: valores.limiteExecucaoTotal,
+          limiteAnalises: valores.limiteAnalises,
+          limiteDesenvolvimento: valores.limiteDesenvolvimento,
+          updatedAt: new Date(),
+        },
+      });
+
+    return { provider, ...valores };
   }
 
   /**
