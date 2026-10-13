@@ -234,24 +234,36 @@ export class SubtaskExecutionConsumer {
       )
       return
     }
-    const result = await this.worker.executeTask(
-      context,
-      await this.buildPrompt(execution, workspace.path),
-      models,
-      (model, error) => this.repository.recordModelFailure(model, error),
-      this.testGate && !noCode
-        ? async (gateContext, phase) => {
-          if (this.environmentPreparer) {
-            await this.environmentPreparer.prepare(gateContext.worktreePath)
-          }
-          return this.runDifferentialGate(execution, gateContext, phase, message)
-        } : undefined,
-      noCode,
-      receivedAt
-        + Number(process.env.MOTOR_RABBITMQ_CONSUMER_TIMEOUT_MS || 5_400_000)
-        - Number(process.env.MOTOR_RABBITMQ_ACK_SAFETY_MS || 300_000),
-      execution.completionKind === null,
-    )
+    const leaseTtlMs = Number(process.env.MOTOR_DEVELOPMENT_LEASE_TTL_MS || 120000)
+    const leaseHeartbeat = setInterval(() => {
+      void this.repository.heartbeatDevelopmentLease?.(message.executionId, leaseTtlMs).catch(error => {
+        console.warn('[SubtaskExecutionConsumer] falha ao renovar lease DEV:', error instanceof Error ? error.message : String(error))
+      })
+    }, Math.max(1000, Math.floor(leaseTtlMs / 3)))
+    leaseHeartbeat.unref?.()
+    let result: WorkerResult
+    try {
+      result = await this.worker.executeTask(
+        context,
+        await this.buildPrompt(execution, workspace.path),
+        models,
+        (model, error) => this.repository.recordModelFailure(model, error),
+        this.testGate && !noCode
+          ? async (gateContext, phase) => {
+            if (this.environmentPreparer) {
+              await this.environmentPreparer.prepare(gateContext.worktreePath)
+            }
+            return this.runDifferentialGate(execution, gateContext, phase, message)
+          } : undefined,
+        noCode,
+        receivedAt
+          + Number(process.env.MOTOR_RABBITMQ_CONSUMER_TIMEOUT_MS || 5_400_000)
+          - Number(process.env.MOTOR_RABBITMQ_ACK_SAFETY_MS || 300_000),
+        execution.completionKind === null,
+      )
+    } finally {
+      clearInterval(leaseHeartbeat)
+    }
 
     const workerSequence = sequence
     await this.log(operationId, workerSequence, message, {

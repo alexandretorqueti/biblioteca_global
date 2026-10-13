@@ -359,3 +359,77 @@ describe("OperationMapScreen — comportamento do detalhe em telas pequenas e la
     })
   })
 })
+
+describe("OperationMapScreen — descrição na aba Resumo (tarefa 993)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+    delete globalThis.__bundleMapa
+    mockIsWideScreen = false
+  })
+
+  it("exibe a descrição do evento task.created no Resumo sem recarregar a página", async () => {
+    mockIsWideScreen = true
+    // Lista inicial: tarefa existente sem descrição; a nova chega só via WebSocket.
+    globalThis.__bundleMapa = bundleFalso([tarefaFactory(1, "Tarefa antiga", "running")])
+    renderScreen()
+
+    await waitFor(() => {
+      expect(realtimeClients.items.some(client => client.channel === "map")).toBe(true)
+    })
+    const mapClient = realtimeClients.items.find(client => client.channel === "map")!
+    mapClient.onMessage?.({
+      type: "event",
+      event: {
+        type: "task.created",
+        taskId: 77,
+        projectId: 1,
+        occurredAt: "2026-10-12T18:00:00Z",
+        payload: { title: "Tarefa recém-criada", descricao: "Descrição digitada na criação", status: "draft" },
+      },
+    })
+
+    await screen.findByTestId("operation-map-task-77")
+    fireEvent.click(screen.getByTestId("operation-map-task-77"))
+
+    await waitFor(() => {
+      expect(screen.getByTestId("detail-content")).toHaveTextContent("Descrição digitada na criação")
+    })
+  })
+
+  it("usa a descrição do motor-detail quando a lista local não a possui", async () => {
+    mockIsWideScreen = true
+    const bundle = {
+      getAccessToken: () => "token-de-teste",
+      http: {
+        request: async (_method: string, path: string) => {
+          if (path === "/gerenteagentes/tarefas-com-status") return [tarefaFactory(5, "Tarefa do mapa", "paused")]
+          if (path === "/gerenteagentes/projetos_captados") return { items: [{ id: 1, nome: "Projeto X" }] }
+          if (path === "/gerenteagentes/motor-activity") return { activities: [], workers: [] }
+          if (path === "/gerenteagentes/motor-deploy-diagnostics") return { canStart: true, reasons: [], pendingRequests: 0 }
+          if (path.endsWith("/motor-detail")) {
+            return { motorId: "m1", exists: true, task: { status: "paused", title: "Tarefa do mapa", descricao: "Descrição persistida via motor-detail" }, subtasks: [] }
+          }
+          if (path.endsWith("/subtarefas")) return []
+          if (path.endsWith("/chat")) return []
+          return {}
+        },
+      },
+    }
+    globalThis.__bundleMapa = bundle
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("detail-content")).toHaveTextContent("Descrição persistida via motor-detail")
+    })
+  })
+
+  it("mantém o fallback 'Sem descrição' quando descrição é nula na lista e no detalhe", async () => {
+    mockIsWideScreen = true
+    globalThis.__bundleMapa = bundleFalso([tarefaFactory(9, "Tarefa sem descrição", "paused")])
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("detail-content")).toHaveTextContent("Sem descrição")
+    })
+  })
+})

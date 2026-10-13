@@ -370,6 +370,7 @@ async function start() {
       analysisFailure: new MySqlAnalysisFailureBlocker(pool),
       maxAnalysisAttempts: Number(process.env.MOTOR_QUEUE_MAX_ATTEMPTS || 3),
       deployLock: deployRepository,
+      analysisCapacity: deployRepository,
       publishTaskReady: async (source, payload) => {
         if (!outboxPublisher) throw new Error('Outbox indisponível para TASK_READY_FOR_PROGRAMMING')
         await outboxPublisher.enqueue(createQueueMessage({
@@ -473,6 +474,12 @@ async function start() {
                closed_at=NULL, close_reason=NULL`,
             [metadata.subtaskId, session.agentId, input.model ?? 'console-default', session.sessionKey, session.sessionId],
           )
+          await developmentRepository.registerDevelopmentLease({
+            executionId: metadata.executionId,
+            taskDatabaseId: metadata.databaseTaskId,
+            subtaskId: metadata.subtaskId,
+            ttlMs: Number(process.env.MOTOR_DEVELOPMENT_LEASE_TTL_MS || 120000),
+          })
           await connection.query(
             `UPDATE tarefa_contextos_execucao SET estado='closed', closed_at=NOW(), updated_at=NOW()
               WHERE subtarefa_id=? AND fase='development' AND estado!='closed'`,

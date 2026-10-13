@@ -38,7 +38,7 @@ export const componentId = "gerenteagentes-operation-map"
 interface Task { id: number; titulo: string; descricao?: string | null; tipo?: string | null; status: string; projetoId: number; dependsOnTaskId?: number | null; createdAt?: string; updatedAt?: string; subtaskCount?: number; recoveryEligibility?: RecoveryEligibility | null }
 interface DbSubtask { id: number; seq: number; titulo: string; descricao?: string | null; scope?: string | null; acceptanceCriteria?: unknown; status: string; resultado?: string | null; dependsOnSubtaskId?: number | null; workspaceStatus?: string | null; correctionForSubtaskId?: number | null }
 interface MotorSubtask { id?: number; seq: number; title: string; status: string; deliverCount?: number; blockInfo?: { reason?: string; command?: string; exitCode?: number | null } | null; scope?: string | null; acceptanceCriteria?: unknown; resultado?: string | null; dependsOnSubtaskId?: number | null; workspaceStatus?: string | null; correctionForSubtaskId?: number | null; deliveryHistory?: Array<{ id: number; deliverNumber: number; model: string | null; eventType: string; reason: string | null; createdAt: string }> }
-interface Detail { motorId?: string; exists: boolean; message?: string; task?: { status: string; title: string; errorMessage?: string; blockInfo?: { kind?: string; excerpt?: string; blockedAt?: string; subtaskId?: number | null } | null; promotionConflictAnalysis?: import('./ConflictViewer').PromotionConflictData | null; recoveryEligibility?: RecoveryEligibility | null }; subtasks?: MotorSubtask[]; currentSubTask?: MotorSubtask | null; events?: Array<{ at: string; type: string; payload?: Record<string, unknown> }> }
+interface Detail { motorId?: string; exists: boolean; message?: string; task?: { status: string; title: string; descricao?: string | null; errorMessage?: string; blockInfo?: { kind?: string; excerpt?: string; blockedAt?: string; subtaskId?: number | null } | null; promotionConflictAnalysis?: import('./ConflictViewer').PromotionConflictData | null; recoveryEligibility?: RecoveryEligibility | null }; subtasks?: MotorSubtask[]; currentSubTask?: MotorSubtask | null; events?: Array<{ at: string; type: string; payload?: Record<string, unknown> }> }
 interface MotorOperation { operationId: string; sequence: number; phase: string; outcome: string; messageType: string; commandCode?: string | null; policyCode?: string | null; policyVersion?: number | null; actionCode?: string | null; primitiveCode?: string | null; reasonCode?: string | null; resultJson?: unknown; durationMs?: number | null; createdAt: string }
 interface ChatMessage { id: number; tarefaId?: number; role: string; texto: string; createdAt: string; deliveryId?: number | null; deliveryState?: string | null; deliveryError?: string | null }
 interface Session { sessionKey: string; model?: string; status?: string; executionOrder?: number; openedAt?: string; closedAt?: string | null; closeReason?: string | null; messages: { items: Array<{ role: string; text: string; sequenceNumber: number }>; nextCursor?: string | null; hasNextPage?: boolean } }
@@ -57,6 +57,38 @@ function selectInitialTask(tasks: Task[]): number | "" {
   const completed = tasks.filter(t => FINAL_STATUSES.has(t.status)).sort((a, b) => { const au = new Date(a.updatedAt ?? 0).getTime(); const bu = new Date(b.updatedAt ?? 0).getTime(); if (au !== bu) return bu - au; return new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime() })
   if (completed.length) return completed[0].id
   return tasks.find(t => !FINAL_STATUSES.has(t.status) && t.status !== "draft")?.id ?? tasks[0]?.id ?? ""
+}
+
+/**
+ * Normaliza a linha retornada pelo POST /gerenteagentes/tarefas (criarTarefa da
+ * API devolve o registro criado, incluindo `id`) para o formato local `Task`.
+ * Drizzle entrega chaves camelCase; o fallback snake_case protege contra
+ * mudanças de serialização. Tarefa recém-criada nasce com status "draft" —
+ * o mesmo valor publicado no evento `task.created` do outbox realtime.
+ */
+function taskFromCreatedRow(
+  row: Record<string, unknown> | null | undefined,
+  fallbacks: { titulo: string; projetoId: number; tipo: string },
+): Task | null {
+  const id = Number(row?.id ?? 0)
+  if (!Number.isSafeInteger(id) || id <= 0) return null
+  const text = (v: unknown): string | undefined => (typeof v === "string" && v ? v : undefined)
+  const now = new Date().toISOString()
+  const createdAt = text(row?.createdAt ?? row?.created_at) ?? now
+  const updatedAt = text(row?.updatedAt ?? row?.updated_at) ?? createdAt
+  const depends = Number(row?.dependsOnTaskId ?? row?.depends_on_task_id ?? 0)
+  const descricao = row && typeof row.descricao === "string" ? row.descricao : null
+  return {
+    id,
+    titulo: text(row?.titulo) ?? fallbacks.titulo,
+    descricao,
+    tipo: text(row?.tipo) ?? fallbacks.tipo,
+    status: text(row?.status) ?? "draft",
+    projetoId: Number(row?.projetoId ?? row?.projeto_id ?? fallbacks.projetoId),
+    dependsOnTaskId: Number.isSafeInteger(depends) && depends > 0 ? depends : null,
+    createdAt,
+    updatedAt,
+  }
 }
 
 function eventLabel(type: string) { return ({ task_started: "Tarefa iniciada", task_completed: "Tarefa concluída", task_deployada: "Deploy realizado", task_status_changed: "Status alterado", task_blocked_baseline: "Bloqueada na triagem", subtask_started: "Subtarefa iniciada", subtask_delivered: "Subtarefa entregue", subtask_verified: "Subtarefa verificada", model_escalated: "Modelo escalado" } as Record<string, string>)[type] ?? type }
@@ -250,6 +282,7 @@ export default function OperationMapScreen() {
             const newTask: Task = {
               id: event.taskId,
               titulo: String(payload.titulo ?? payload.title ?? `Tarefa ${event.taskId}`),
+              descricao: payload.descricao != null ? String(payload.descricao) : null,
               status: String(payload.status ?? "draft"),
               projetoId: event.projectId,
               updatedAt: event.occurredAt,
@@ -539,7 +572,7 @@ export default function OperationMapScreen() {
 
     return (
       <Stack spacing={1.5}>
-        <Typography color="text.secondary" sx={{ whiteSpace: "pre-wrap" }}>{selected.descricao || "Sem descrição"}</Typography>
+        <Typography color="text.secondary" sx={{ whiteSpace: "pre-wrap" }}>{selected.descricao || detail?.task?.descricao || "Sem descrição"}</Typography>
         {blockInfo && !isMergeConflict && <Alert severity="error"><b>Bloqueio:</b> {blockInfo.excerpt || blockInfo.kind || detail?.task?.errorMessage}</Alert>}
         {isMergeConflict && conflictData && (
           <Alert severity="error" sx={{ p: 1.5 }}>
@@ -605,15 +638,30 @@ export default function OperationMapScreen() {
     setNewTaskLoading(true)
     setNewTaskError(null)
     try {
-      await bundle.http.request("POST", "/gerenteagentes/tarefas", {
+      const created = await bundle.http.request<Record<string, unknown>>("POST", "/gerenteagentes/tarefas", {
         body: { projeto_id: Number(values.projetoId), titulo: values.titulo, descricao: values.descricao || null, tipo: values.tipo },
         auth: "access",
       })
       setNewTaskOpen(false)
-      // A atualização da lista acontece via WebSocket (evento task.created no canal "map")
+      // Auto-seleção da tarefa recém-criada (REQ: "Seleção automática de tarefa nova"):
+      // aplica a seleção exatamente como um clique na tarefa, usando o fluxo openTask,
+      // que dispara o efeito de selectedId (loadDetail/loadSubtasks/loadOperations/loadChat).
+      const newTask = taskFromCreatedRow(created, { titulo: values.titulo, projetoId: Number(values.projetoId), tipo: values.tipo })
+      if (newTask) {
+        // Insere na lista local imediatamente para vencer a corrida com o evento
+        // task.created; o handler WebSocket já deduplica por id (REQ-2 preservado).
+        setTasks(prev => prev.some(t => t.id === newTask.id)
+          ? prev
+          : [newTask, ...prev].sort((a, b) => new Date(b.updatedAt ?? b.createdAt ?? 0).getTime() - new Date(a.updatedAt ?? a.createdAt ?? 0).getTime()))
+        openTask(newTask.id)
+      }
+      // Atualizações seguintes continuam vindo via WebSocket (task.created/task.updated no canal "map")
     } catch (e) {
       setNewTaskError(e instanceof Error ? e.message : "Erro ao criar tarefa")
-      throw e
+      // Padrão do TarefaForm (mesma semântica de NovaTarefaScreen.enviar):
+      // retornar false mantém os campos preenchidos sem gerar promise rejection
+      // não tratada no onClick — comportamento visível inalterado em caso de erro.
+      return false
     } finally {
       setNewTaskLoading(false)
     }

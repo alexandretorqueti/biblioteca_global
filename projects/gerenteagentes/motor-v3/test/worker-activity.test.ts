@@ -2,7 +2,13 @@ import { describe, expect, it, vi } from 'vitest'
 import { WorkerActivityService } from '../src/status/WorkerActivity.js'
 
 function service(executions: any[] = [], rows: any[] = []) {
-  const pool = { query: vi.fn().mockImplementation((sql: string) => [sql.includes('deploy_batches') ? rows : []]) }
+  const pool = { query: vi.fn().mockImplementation((sql: string) => [
+    sql.includes('deploy_batches')
+      ? rows.filter(row => row.task_id != null && row.execution_id == null)
+      : sql.includes('motor_active_executions')
+        ? rows.filter(row => row.execution_id != null)
+        : [],
+  ]) }
   const gate = { isActive: vi.fn().mockResolvedValue(true) }
   return { activity: new WorkerActivityService(pool as any, () => executions, gate), pool, gate }
 }
@@ -43,6 +49,26 @@ describe('WorkerActivityService', () => {
 
     expect(result.workers.find(worker => worker.role === 'developer')?.model).toBeNull()
     expect(result.motor.isRunning).toBe(false)
+  })
+
+  it('ativa o desenvolvedor a partir do lease persistido e o desativa quando o lease some', async () => {
+    const persisted = [{
+      execution_id: 'dev-persisted', task_id: 'task-dev', subtask_id: 7, phase: 'development',
+      model: 'modelo-dev', agent_id: 'project-agent', started_at: new Date(1000), heartbeat_at: new Date(2000),
+    }]
+    const active = service([], persisted)
+    await expect(active.activity.getActivity()).resolves.toEqual(expect.objectContaining({
+      motor: expect.objectContaining({ isRunning: true }),
+      workers: expect.arrayContaining([expect.objectContaining({
+        role: 'developer', active: true, taskId: 'task-dev', subtaskId: 7, model: 'modelo-dev',
+      })]),
+    }))
+
+    const inactive = service([], [])
+    await expect(inactive.activity.getActivity()).resolves.toEqual(expect.objectContaining({
+      motor: expect.objectContaining({ isRunning: false }),
+      workers: expect.arrayContaining([expect.objectContaining({ role: 'developer', active: false })]),
+    }))
   })
 
   it('mantém o motor ativo e exibe deploy enquanto há lote de deploy running', async () => {
