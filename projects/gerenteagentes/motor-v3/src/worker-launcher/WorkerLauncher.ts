@@ -248,7 +248,8 @@ export class WorkerLauncher {
             continue
           }
 
-          const hasChanges = verifyResult.data?.hasChanges ?? false
+          const hasChanges = (verifyResult.data?.hasChanges ?? false)
+            || await hasCommittedBaselineCorrection(context)
 
           // Se não tem mudanças, verifica se o DEV informou explicitamente ::NO_CHANGES::
           if (!hasChanges) {
@@ -410,7 +411,8 @@ export class WorkerLauncher {
         ...(context.model ? { model: context.model } : {}),
       }
     }
-    const hasChanges = verifyResult.data?.hasChanges ?? false
+    const hasChanges = (verifyResult.data?.hasChanges ?? false)
+      || await hasCommittedBaselineCorrection(context)
 
     // DEV informou ::NO_CHANGES:: — tarefa não exigiu alterações de código
     if (!hasChanges && noChangesNeeded) {
@@ -571,6 +573,25 @@ function hasValidationEvidence(response: string): boolean {
     || /`(?:npx|npm|pnpm|yarn|git|node|tsc|vitest|docker|curl|make|pytest|go test|cargo)\b/i.test(response)
   const hasResult = /\b(?:pass(?:ou|ed)?|ok|sucesso|succeeded|resultado|exit\s*(?:code)?\s*0|sem erros?|falhou|failed)\b/i.test(response)
   return hasCommand && hasResult
+}
+
+/**
+ * O Monitor de baseline trabalha diretamente na integração e pode cumprir a
+ * orientação "não faça push" deixando a correção já commitada. Nesse caso o
+ * verify_git não encontra diff no worktree, mas HEAD diferente do commit-base
+ * continua sendo uma entrega válida e será validada pelo gate normalmente.
+ */
+async function hasCommittedBaselineCorrection(context: PrimitiveContext): Promise<boolean> {
+  if (context.sessionKind !== 'baseline_fix' || !context.baseCommitSha) return false
+  try {
+    const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], {
+      cwd: context.worktreePath,
+      maxBuffer: DIAGNOSTIC_LIMIT,
+    })
+    return stdout.trim() !== context.baseCommitSha.trim()
+  } catch {
+    return false
+  }
 }
 
 function extractCitedPaths(text: string): string[] {
