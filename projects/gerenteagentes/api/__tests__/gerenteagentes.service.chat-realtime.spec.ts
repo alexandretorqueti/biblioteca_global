@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { GerenteAgentesService } from '../gerenteagentes.service';
+import { REALTIME_TENANT_PROJECT_ID } from '../realtime-mutation-boundary.service';
 
 describe('GerenteAgentesService — chat da tarefa e publicação realtime', () => {
   let service: GerenteAgentesService;
@@ -132,19 +133,55 @@ describe('GerenteAgentesService — chat da tarefa e publicação realtime', () 
       texto,
     );
 
-    // Verifica que publicar foi chamado com o tipo correto
+    // Verifica que publicar foi chamado com o tipo correto e roteamento pelo tenant
     expect(mockRealtime.publicar).toHaveBeenCalledWith(
       expect.objectContaining({
         type: 'task.chat.message.created',
         taskId: tarefaId,
+        projectId: REALTIME_TENANT_PROJECT_ID,
         payload: expect.objectContaining({
           id: 453,
           role: 'user',
           texto: 'Mensagem de teste',
+          managedProjectId: 2,
         }),
       }),
     );
 
     expect(resultado.id).toBe(453);
+  });
+
+  it('não usa o projeto gerenciado como projectId de roteamento (padrão tenant)', async () => {
+    const projeto = { id: 2, slug: 'gerenteagentes' };
+    const tarefaId = 975;
+
+    const tarefaMock = { id: tarefaId, projetoId: 2, externalId: 'task-975' };
+    mockDb.select.mockReturnValueOnce({
+      from: vi.fn().mockReturnValueOnce({
+        where: vi.fn().mockReturnValueOnce({
+          limit: vi.fn().mockResolvedValueOnce([tarefaMock]),
+        }),
+      }),
+    });
+
+    mockDb.transaction.mockImplementation(async () => ({ id: 454, resumeRequested: false }));
+    mockRealtime.publicar.mockImplementation(() => {});
+    vi.spyOn(service as any, 'entregarMensagemAoAnalista').mockResolvedValue(undefined);
+
+    await service.adicionarMensagemChatTarefa(projeto as any, tarefaId, 'Outra mensagem');
+
+    expect(REALTIME_TENANT_PROJECT_ID).toBe(640);
+    expect(mockRealtime.publicar).toHaveBeenCalledTimes(1);
+    const ingress = mockRealtime.publicar.mock.calls[0]![0] as any;
+    expect(ingress.projectId).toBe(640);
+    expect(ingress.projectId).not.toBe(Number(tarefaMock.projetoId));
+    expect(ingress.type).toBe('task.chat.message.created');
+    expect(ingress.payload).toMatchObject({
+      id: 454,
+      tarefaId,
+      role: 'user',
+      managedProjectId: 2,
+    });
+    expect(typeof ingress.payload.createdAt).toBe('string');
   });
 });

@@ -150,6 +150,10 @@ describe('DeployRepository.blockBatchForMergeConflict', () => {
     queryMock.mockResolvedValueOnce([{ insertId: 200 }])
     // Simular INSERT INTO tarefa_chats
     queryMock.mockResolvedValueOnce([{ insertId: 300 }])
+    // Simular identidade, sequência e INSERT do evento realtime de chat
+    queryMock.mockResolvedValueOnce([[{ id: 1, external_id: 'task-p1-1', projeto_id: 7 }]])
+    queryMock.mockResolvedValueOnce([[{ next_seq: 1 }]])
+    queryMock.mockResolvedValueOnce([{ affectedRows: 1 }])
     // Simular insertOutbox (não faz query direta, mas precisa de mock para não quebrar)
     
     const mockPool = {

@@ -194,6 +194,9 @@ describe('DeployRepository.isolateConflictingMembers', () => {
       queryMock.mockResolvedValueOnce([{ insertId: 100 + i }]) // INSERT bloqueios
       queryMock.mockResolvedValueOnce([{ affectedRows: 1 }]) // INSERT IGNORE promotion_conflict_analyses
       queryMock.mockResolvedValueOnce([{ insertId: 300 + i }]) // INSERT tarefa_chats
+      queryMock.mockResolvedValueOnce([[{ id: 2 + i * 2, external_id: `task-${2 + i * 2}`, projeto_id: 7 }]]) // identidade realtime
+      queryMock.mockResolvedValueOnce([[{ next_seq: 1 }]]) // sequência realtime
+      queryMock.mockResolvedValueOnce([{ affectedRows: 1 }]) // INSERT realtime_event_outbox
       queryMock.mockResolvedValueOnce([{ insertId: 400 + i }]) // INSERT motor_outbox (TASK_BLOCKED)
     }
 
@@ -301,6 +304,9 @@ describe('DeployRepository.isolateConflictingMembers', () => {
     queryMock.mockResolvedValueOnce([{ insertId: 100 }])
     queryMock.mockResolvedValueOnce([{ affectedRows: 0 }]) // INSERT IGNORE não insere (fingerprint duplicado)
     queryMock.mockResolvedValueOnce([{ insertId: 300 }])
+    queryMock.mockResolvedValueOnce([[{ id: 1, external_id: 'task-1', projeto_id: 7 }]]) // identidade realtime
+    queryMock.mockResolvedValueOnce([[{ next_seq: 1 }]]) // sequência realtime
+    queryMock.mockResolvedValueOnce([{ affectedRows: 1 }]) // INSERT realtime_event_outbox
     queryMock.mockResolvedValueOnce([{ insertId: 400 }])
 
     const mockPool = {
