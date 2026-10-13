@@ -76,3 +76,12 @@ describe("migration 0087_motor_provider_limits", () => {
     expect(sql).toMatch(/`updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP/)
   })
 })
+
+describe("migration 0088_motor_provider_activity", () => {
+  const sql = readFileSync(new URL("../migrations/0088_motor_provider_activity.sql", import.meta.url), "utf8")
+
+  it("separa os três ALTER TABLE em statements executáveis pelo Drizzle", () => {
+    expect(sql.match(/--> statement-breakpoint/g)).toHaveLength(2)
+    expect(sql.trimEnd()).not.toMatch(/--> statement-breakpoint$/)
+  })
+})
