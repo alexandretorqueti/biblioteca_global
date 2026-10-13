@@ -255,7 +255,10 @@ export class MigrationDryRunExecutor {
       /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`?(\w+)`?/gi,
       /ALTER\s+TABLE\s+`?(\w+)`?/gi,
       /INSERT\s+INTO\s+`?(\w+)`?/gi,
-      /UPDATE\s+`?(\w+)`?/gi,
+      // UPDATE precisa iniciar uma instrução/linha. Sem a âncora, o trecho
+      // `ON UPDATE CURRENT_TIMESTAMP` de uma coluna era interpretado como se
+      // CURRENT_TIMESTAMP fosse uma tabela e acabava reescrito para scratch.
+      /^\s*UPDATE\s+`?(\w+)`?/gim,
       /DELETE\s+FROM\s+`?(\w+)`?/gi,
       /\bFROM\s+`?(\w+)`?/gi,
       /\bJOIN\s+`?(\w+)`?/gi,
