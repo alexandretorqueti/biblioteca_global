@@ -7,7 +7,7 @@ export type RealtimeEventType =
   | 'task.status.changed' | 'task.counters.updated'
   | 'task.created' | 'task.updated' | 'task.deleted'
   | 'subtask.created' | 'subtask.updated' | 'subtask.deleted' | 'subtask.status.changed'
-  | 'motor.activity.updated'
+  | 'motor.activity.updated' | 'task.chat.message.created'
 
 export interface RealtimeOutboxEvent {
   eventId: string
@@ -162,6 +162,44 @@ export class RealtimeMutationBoundary {
       })
     }
     return events
+  }
+
+  /** Enfileira uma mensagem de chat sem recalcular status nem contadores. */
+  async appendChatMessage(
+    connection: PoolConnection,
+    taskId: number,
+    message: { id: number; role: string; texto: string; createdAt?: string },
+  ): Promise<RealtimeOutboxEvent | null> {
+    const [rows] = await connection.query<TaskIdentity[]>(
+      'SELECT id, external_id, projeto_id FROM tarefas WHERE id = ? LIMIT 1', [taskId],
+    )
+    const identity = rows[0]
+    if (!identity) return null
+    const createdAt = message.createdAt ?? new Date().toISOString()
+    return this.insertEvent(connection, identity, {
+      taskId: identity.id, sourceTaskId: identity.external_id, projectId: this.realtimeTenantProjectId,
+      subtaskId: null, type: 'task.chat.message.created', previousStatus: null, status: null,
+      payload: { id: Number(message.id), role: message.role, texto: message.texto, createdAt },
+    })
+  }
+
+  /** Variante para inserts já confirmados fora de uma transação do consumidor. */
+  async enqueueChatMessage(
+    taskId: number,
+    message: { id: number; role: string; texto: string; createdAt?: string },
+  ): Promise<RealtimeOutboxEvent | null> {
+    const connection = await this.pool.getConnection()
+    try {
+      await connection.beginTransaction()
+      const event = await this.appendChatMessage(connection, taskId, message)
+      await connection.commit()
+      return event
+    } catch (error) {
+      await connection.rollback()
+      throw error
+    } finally {
+      connection.release()
+    }
   }
 
   private async readCounters(connection: PoolConnection, taskId: number): Promise<Record<string, number>> {

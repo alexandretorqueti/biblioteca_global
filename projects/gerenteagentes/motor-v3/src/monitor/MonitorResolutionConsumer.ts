@@ -14,6 +14,7 @@ import {
   createTaskUnblockedMessage,
   type TaskBlockedPayload,
 } from './TaskBlockedEvent.js'
+import { RealtimeMutationBoundary } from '../realtime/RealtimeMutationBoundary.js'
 
 interface TaskContextRow extends RowDataPacket {
   database_task_id: number
@@ -53,6 +54,7 @@ interface TaskContextRow extends RowDataPacket {
  */
 export class MonitorResolutionConsumer {
   private readonly inFlight = new Set<number>()
+  private readonly realtime: RealtimeMutationBoundary
 
   constructor(
     private readonly pool: Pool,
@@ -63,7 +65,9 @@ export class MonitorResolutionConsumer {
     private readonly consoleApi: unknown,
     private readonly db: unknown,
     private readonly notifier: MonitorHumanNotifier = new ConsoleHumanNotifier(),
-  ) {}
+  ) {
+    this.realtime = new RealtimeMutationBoundary(pool)
+  }
 
   async handle(message: QueueMessage): Promise<void> {
     if (message.type !== TASK_BLOCKED_EVENT_TYPE) return
@@ -304,10 +308,14 @@ export class MonitorResolutionConsumer {
   /** Mensagem no chat da tarefa (mesmo padrão do TestRecoveryConsumer). */
   private async safePostChat(databaseTaskId: number, texto: string): Promise<void> {
     try {
-      await this.pool.query(
+      const chatText = texto.slice(0, 8000)
+      const [chatInsert] = await this.pool.query<ResultSetHeader>(
         `INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) VALUES (?, 'assistant', ?, NOW())`,
-        [databaseTaskId, texto.slice(0, 8000)],
+        [databaseTaskId, chatText],
       )
+      await this.realtime.enqueueChatMessage(databaseTaskId, {
+        id: Number(chatInsert.insertId), role: 'assistant', texto: chatText,
+      })
     } catch {
       // Chat nunca derruba o fluxo principal; o evento de auditoria permanece.
     }

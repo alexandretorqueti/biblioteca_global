@@ -55,6 +55,7 @@ import { TaskAdjustmentConsumer, TASK_ADJUSTMENT_REQUESTED } from './adjustment/
 import { ensureCompletionTrigger } from './db/ensureTriggers.js'
 import { bootstrapMotorV3Catalog } from './db/bootstrap.js'
 import { warnOnMigrationJournalIntegrity } from './migrations/MigrationJournalIntegrity.js'
+import { RealtimeMutationBoundary } from './realtime/RealtimeMutationBoundary.js'
 
 // Config
 const PORT = parseInt(process.env.MOTOR_PORT || '3010')
@@ -121,6 +122,7 @@ async function start() {
     token: process.env.LIBRARY_REALTIME_EVENTS_TOKEN,
     tenantProjectId: Number(process.env.MOTOR_REALTIME_TENANT_PROJECT_ID ?? 640),
   })
+  const realtimeBoundary = new RealtimeMutationBoundary(pool)
 
   // O preflight precisa terminar antes de trigger, consumidores, scheduler,
   // HTTP e, principalmente, antes de o CatalogLoader compilar suas queries.
@@ -1159,10 +1161,13 @@ async function start() {
         )
         const nextGeneration = Number(genRows[0]?.max_generation ?? 0) + 1
         // Registrar mensagem do usuário no chat
-        await pool.query(
+        const [chatInsert] = await pool.query<any>(
           `INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) VALUES (?, 'user', ?, NOW())`,
           [databaseTaskId, message],
         )
+        await realtimeBoundary.enqueueChatMessage(databaseTaskId, {
+          id: Number(chatInsert.insertId), role: 'user', texto: message,
+        })
         // Enfileirar TASK_ADJUSTMENT_REQUESTED
         if (!outboxPublisher) {
           res.writeHead(503, { 'Content-Type': 'application/json' })

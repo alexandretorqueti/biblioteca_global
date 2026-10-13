@@ -235,11 +235,16 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
       const before = 'analyzing' as const
 
       if (outcome.kind === 'questions') {
-        await connection.query(
+        const chatText = JSON.stringify({ summary: outcome.summary, questions: outcome.questions })
+        const createdAt = new Date().toISOString()
+        const [chatInsert] = await connection.query<ResultSetHeader>(
           `INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at)
            VALUES (?, 'analyst', ?, NOW())`,
-          [databaseTaskId, JSON.stringify({ summary: outcome.summary, questions: outcome.questions })],
+          [databaseTaskId, chatText],
         )
+        await this.realtime.appendChatMessage(connection, databaseTaskId, {
+          id: Number(chatInsert.insertId), role: 'analyst', texto: chatText, createdAt,
+        })
         await connection.query(
           `UPDATE task_runtime_facts
              SET clarification_pending_at = NOW(), updated_at = NOW()

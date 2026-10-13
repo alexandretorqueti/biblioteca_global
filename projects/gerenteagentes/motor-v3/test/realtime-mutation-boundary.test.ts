@@ -5,10 +5,10 @@ import { RealtimeOutboxDispatcher } from '../src/realtime/RealtimeOutboxDispatch
 function transactionStub() {
   let analysisStarted = false
   let nextSeq = 1
-  const connection = {
+    const connection = {
     beginTransaction: vi.fn(), commit: vi.fn(), rollback: vi.fn(), release: vi.fn(),
     query: vi.fn(async (sql: string) => {
-      if (sql.includes('FROM tarefas') && sql.includes('FOR UPDATE')) return [[{ id: 10, external_id: 'task-10', projeto_id: 7 }]]
+      if (sql.includes('SELECT id, external_id, projeto_id FROM tarefas')) return [[{ id: 10, external_id: 'task-10', projeto_id: 7 }]]
       if (sql.includes('f.analysis_started_at')) return [[{
         id: 10, paused_at: null, resource_wait_key: null, analysis_started_at: analysisStarted ? new Date() : null,
         clarification_pending_at: null, integration_confirmed_at: null, terminal_status: null,
@@ -26,6 +26,23 @@ function transactionStub() {
 }
 
 describe('RealtimeMutationBoundary', () => {
+  it('enfileira chat no tenant com payload durável e managedProjectId', async () => {
+    const stub = transactionStub()
+    const boundary = new RealtimeMutationBoundary(stub.pool as never)
+    const event = await boundary.appendChatMessage(stub.connection as never, 10, {
+      id: 44, role: 'analyst', texto: '{"questions":["Q1"]}', createdAt: '2026-10-13T14:00:00.000Z',
+    })
+
+    expect(event).toMatchObject({
+      taskId: 10, projectId: 640, type: 'task.chat.message.created', perTaskSeq: 1,
+      payload: {
+        id: 44, role: 'analyst', texto: '{"questions":["Q1"]}',
+        createdAt: '2026-10-13T14:00:00.000Z', managedProjectId: 7,
+      },
+    })
+    expect(event?.eventId).toEqual(expect.any(String))
+  })
+
   it('calcula previousStatus/status e grava o evento dentro do mesmo commit', async () => {
     const stub = transactionStub()
     const boundary = new RealtimeMutationBoundary(stub.pool as never)

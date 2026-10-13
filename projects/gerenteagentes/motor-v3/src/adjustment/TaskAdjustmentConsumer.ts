@@ -5,6 +5,7 @@ import { createQueueMessage, insertOutboxMessage } from '../queue/index.js'
 import type { AnalysisRunner, TaskSnapshot } from '../coordinator/TaskCoordinator.js'
 import type { OperationLogger } from '../commands/OperationLogger.js'
 import type { AnalysisOutcome } from '../analysis/AnalystReply.js'
+import { RealtimeMutationBoundary } from '../realtime/RealtimeMutationBoundary.js'
 
 export const TASK_ADJUSTMENT_REQUESTED = 'TASK_ADJUSTMENT_REQUESTED'
 
@@ -36,11 +37,15 @@ export interface AdjustmentTaskContext {
  * criadas com generation = nextGeneration.
  */
 export class TaskAdjustmentConsumer {
+  private readonly realtime: RealtimeMutationBoundary
+
   constructor(
     private readonly pool: Pool,
     private readonly analyst: AnalysisRunner,
     private readonly logger?: OperationLogger,
-  ) {}
+  ) {
+    this.realtime = new RealtimeMutationBoundary(pool)
+  }
 
   async handle(message: QueueMessage): Promise<void> {
     if (message.type !== TASK_ADJUSTMENT_REQUESTED) return
@@ -62,10 +67,14 @@ export class TaskAdjustmentConsumer {
     const prompt = this.buildAdjustmentPrompt(context, adjustmentMessage)
 
     // 3. Registrar mensagem do usuário no chat da tarefa
-    await this.pool.query(
+    const userChatText = adjustmentMessage
+    const [userChatInsert] = await this.pool.query<ResultSetHeader>(
       `INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) VALUES (?, 'user', ?, NOW())`,
-      [context.databaseTaskId, adjustmentMessage],
+      [context.databaseTaskId, userChatText],
     )
+    await this.realtime.enqueueChatMessage(context.databaseTaskId, {
+      id: Number(userChatInsert.insertId), role: 'user', texto: userChatText,
+    })
 
     // 4. Construir snapshot da tarefa para o analista
     const snapshot: TaskSnapshot = {
@@ -119,16 +128,24 @@ export class TaskAdjustmentConsumer {
 
       // Registrar resposta do analista no chat
       const summary = outcome.subtasks.map(s => `${s.seq}. ${s.titulo}`).join('\n')
-      await this.pool.query(
+      const analystChatText = `Ajuste generation ${context.nextGeneration}: ${outcome.subtasks.length} subtarefas criadas.\n${summary}`
+      const [analystChatInsert] = await this.pool.query<ResultSetHeader>(
         `INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) VALUES (?, 'analyst', ?, NOW())`,
-        [context.databaseTaskId, `Ajuste generation ${context.nextGeneration}: ${outcome.subtasks.length} subtarefas criadas.\n${summary}`],
+        [context.databaseTaskId, analystChatText],
       )
+      await this.realtime.enqueueChatMessage(context.databaseTaskId, {
+        id: Number(analystChatInsert.insertId), role: 'analyst', texto: analystChatText,
+      })
     } else {
       // Perguntas — registrar no chat e marcar clarificação pendente
-      await this.pool.query(
+      const analystChatText = JSON.stringify({ summary: outcome.summary, questions: outcome.questions })
+      const [analystChatInsert] = await this.pool.query<ResultSetHeader>(
         `INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) VALUES (?, 'analyst', ?, NOW())`,
-        [context.databaseTaskId, JSON.stringify({ summary: outcome.summary, questions: outcome.questions })],
+        [context.databaseTaskId, analystChatText],
       )
+      await this.realtime.enqueueChatMessage(context.databaseTaskId, {
+        id: Number(analystChatInsert.insertId), role: 'analyst', texto: analystChatText,
+      })
       await this.pool.query(
         `UPDATE task_runtime_facts
             SET clarification_pending_at = NOW(), updated_at = NOW()
