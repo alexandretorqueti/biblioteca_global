@@ -55,6 +55,8 @@ describe('coordinator adapters', () => {
       query: vi.fn()
         .mockResolvedValueOnce([[locked], []])
         .mockResolvedValueOnce([[], []])
+        .mockResolvedValueOnce([[{ total: 0 }], []])
+        .mockResolvedValueOnce([[], []])
         .mockResolvedValueOnce([{ affectedRows: 1 }, []]),
     }
     const pool = {
@@ -87,6 +89,26 @@ describe('coordinator adapters', () => {
     const repository = new MySqlTaskCoordinatorRepository(pool)
 
     await expect(repository.claimAnalysis('task-1', 'exec-2')).resolves.toBe(false)
+    expect(connection.rollback).toHaveBeenCalledOnce()
+    expect(connection.commit).not.toHaveBeenCalled()
+  })
+
+  it('adia o claim quando o limite global de análise está ocupado', async () => {
+    const connection = {
+      beginTransaction: vi.fn(async () => {}), rollback: vi.fn(async () => {}), commit: vi.fn(async () => {}), release: vi.fn(),
+      query: vi.fn()
+        .mockResolvedValueOnce([[{
+          id: 42, external_id: 'task-1', projeto_id: 7, paused_at: null,
+          analysis_started_at: null, analysis_execution_id: null, terminal_status: null,
+          subtask_count: 0, blocked_count: 0,
+        }], []])
+        .mockResolvedValueOnce([[{ chave: 'motor.max_workers', limite: 1 }, { chave: 'motor.max_workers_per_project', limite: 1 }], []])
+        .mockResolvedValueOnce([[{ total: 1 }], []]),
+    }
+    const repository = new MySqlTaskCoordinatorRepository({ getConnection: vi.fn(async () => connection) } as any)
+
+    await expect(repository.claimAnalysis('task-1', 'exec-2')).resolves.toBe('capacity_waiting')
+    expect(connection.query.mock.calls[1][0]).toContain('FOR UPDATE')
     expect(connection.rollback).toHaveBeenCalledOnce()
     expect(connection.commit).not.toHaveBeenCalled()
   })

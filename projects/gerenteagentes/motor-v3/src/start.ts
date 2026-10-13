@@ -370,6 +370,7 @@ async function start() {
       analysisFailure: new MySqlAnalysisFailureBlocker(pool),
       maxAnalysisAttempts: Number(process.env.MOTOR_QUEUE_MAX_ATTEMPTS || 3),
       deployLock: deployRepository,
+      analysisCapacity: deployRepository,
       publishTaskReady: async (source, payload) => {
         if (!outboxPublisher) throw new Error('Outbox indisponível para TASK_READY_FOR_PROGRAMMING')
         await outboxPublisher.enqueue(createQueueMessage({
