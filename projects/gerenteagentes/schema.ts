@@ -208,6 +208,32 @@ export const projectModelSelection = mysqlTable(
   }),
 )
 
+/**
+ * Limites de paralelismo por provider (aba PROVIDERS da tela CONFIGURAÇÕES).
+ * `provider` usa o mesmo domínio de valor da coluna `provider` de
+ * global_model_selection/project_model_selection e do catálogo do Console
+ * (fonte: service.listarModelosConsole). Limites NULL = sem restrição pelo
+ * provider; a aplicação (menor valor entre geral e provider, com limite de
+ * provider absoluto compartilhado entre análise/desenvolvimento) é do Motor.
+ */
+export const motorProviderLimits = mysqlTable(
+  "motor_provider_limits",
+  {
+    id: bigint("id", { mode: "number", unsigned: true })
+      .primaryKey()
+      .autoincrement(),
+    provider: varchar("provider", { length: 100 }).notNull(),
+    limiteExecucaoTotal: int("limite_execucao_total", { unsigned: true }),
+    limiteAnalises: int("limite_analises", { unsigned: true }),
+    limiteDesenvolvimento: int("limite_desenvolvimento", { unsigned: true }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    providerUq: uniqueIndex("motor_provider_limits_provider_uq").on(table.provider),
+  }),
+)
+
 export const definicoes = mysqlTable("definicoes", {
   id: bigint("id", { mode: "number", unsigned: true })
     .primaryKey()
