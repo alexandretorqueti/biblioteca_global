@@ -1,0 +1,160 @@
+Tabelas no schema.ts: usuarios, clientes, responsaveis, contratos, api_contatosite_contatos, circular, departamentos, cargos, colaboradores, config_empresa
+
+==== usuarios ====
+  colunas schema.ts: 9 | legado: 9
+   • created_at: schema=nullable, legado=NOT NULL (def=CURRENT_TIMESTAMP)  [datetime]
+   • updated_at: schema=nullable, legado=NOT NULL (def=CURRENT_TIMESTAMP)  [datetime]
+  id int(11) null=NO def=null [auto_increment]
+  nome varchar(100) null=YES def=null
+  email varchar(150) null=NO def=null
+  senha varchar(255) null=YES def=null
+  papel varchar(50) null=YES def=null
+  ativo tinyint(1) null=YES def="1"
+  primeiro_acesso tinyint(1) null=YES def="1"
+  created_at datetime null=NO def="CURRENT_TIMESTAMP"
+  updated_at datetime null=NO def="CURRENT_TIMESTAMP" [on update CURRENT_TIMESTAMP]
+
+==== clientes ====
+  colunas schema.ts: 21 | legado: 21
+  id int(11) null=NO def=null [auto_increment]
+  nome_fantasia varchar(100) null=YES def=null
+  razao_social varchar(100) null=YES def=null
+  cnpj varchar(20) null=YES def=null
+  inscricao_municipal varchar(50) null=YES def=null
+  inscricao_estadual varchar(50) null=YES def=null
+  logradouro varchar(100) null=YES def=null
+  numero varchar(10) null=YES def=null
+  complemento varchar(50) null=YES def=null
+  cidade varchar(50) null=YES def=null
+  bairro varchar(50) null=YES def=null
+  uf char(2) null=YES def=null
+  cep varchar(10) null=YES def=null
+  telefone varchar(20) null=YES def=null
+  ramal varchar(10) null=YES def=null
+  email varchar(100) null=YES def=null
+  ativo tinyint(1) null=YES def="1"
+  usuario varchar(50) null=YES def=null
+  data datetime null=YES def="CURRENT_TIMESTAMP"
+  data_edicao datetime null=YES def="CURRENT_TIMESTAMP" [on update CURRENT_TIMESTAMP]
+  instagram varchar(200) null=YES def=null
+
+==== responsaveis ====
+  colunas schema.ts: 16 | legado: 16
+  id int(11) null=NO def=null [auto_increment]
+  cliente_id int(11) null=YES def=null
+  nome varchar(100) null=YES def=null
+  cargo varchar(100) null=YES def=null
+  cpf varchar(14) null=YES def=null
+  logradouro varchar(100) null=YES def=null
+  numero varchar(10) null=YES def=null
+  complemento varchar(50) null=YES def=null
+  cidade varchar(50) null=YES def=null
+  bairro varchar(50) null=YES def=null
+  uf char(2) null=YES def=null
+  cep varchar(10) null=YES def=null
+  telefone varchar(20) null=YES def=null
+  ramal varchar(10) null=YES def=null
+  email varchar(100) null=YES def=null
+  data datetime null=YES def="CURRENT_TIMESTAMP"
+
+==== contratos ====
+  colunas schema.ts: 10 | legado: 10
+   • ativo: schema=nullable, legado=NOT NULL (def=1)  [tinyint(1)]
+  id int(11) null=NO def=null [auto_increment]
+  cliente_id int(11) null=YES def=null
+  numerocontrato varchar(50) null=YES def=null
+  linkcontrato varchar(255) null=YES def=null
+  descricao text null=YES def=null
+  data datetime null=YES def="CURRENT_TIMESTAMP"
+  valor varchar(30) null=YES def=null
+  inicio varchar(10) null=YES def=null
+  fim varchar(10) null=YES def=null
+  ativo tinyint(1) null=NO def="1"
+
+==== api_contatosite_contatos ====
+  colunas schema.ts: 11 | legado: 11
+  id int(11) null=NO def=null [auto_increment]
+  site_id int(11) null=NO def=null
+  nome varchar(100) null=NO def=null
+  email varchar(150) null=NO def=null
+  telefone varchar(20) null=YES def=null
+  assunto varchar(150) null=NO def=""
+  mensagem text null=NO def=null
+  ip varchar(45) null=YES def=null
+  user_agent varchar(500) null=YES def=null
+  origem varchar(200) null=YES def=null
+  data_envio datetime null=YES def="CURRENT_TIMESTAMP"
+
+==== circular ====
+  colunas schema.ts: 7 | legado: 7
+   • id: schema=nullable, legado=NOT NULL (def=null)  [int(11)]
+  id int(11) null=NO def=null
+  titulo varchar(200) null=NO def=null
+  conteudo text null=NO def=null
+  autor varchar(100) null=YES def=null
+  publicado_em datetime null=YES def=null
+  image_url varchar(500) null=YES def=null
+  ativo bit(1) null=YES def="b'1'"
+
+==== departamentos ====
+  colunas schema.ts: 4 | legado: 4
+   • created_at: schema=nullable, legado=NOT NULL (def=CURRENT_TIMESTAMP)  [datetime]
+   • updated_at: schema=nullable, legado=NOT NULL (def=CURRENT_TIMESTAMP)  [datetime]
+  id int(11) null=NO def=null [auto_increment]
+  nome varchar(100) null=NO def=null
+  created_at datetime null=NO def="CURRENT_TIMESTAMP"
+  updated_at datetime null=NO def="CURRENT_TIMESTAMP" [on update CURRENT_TIMESTAMP]
+
+==== cargos ====
+  colunas schema.ts: 4 | legado: 4
+   • created_at: schema=nullable, legado=NOT NULL (def=CURRENT_TIMESTAMP)  [datetime]
+   • updated_at: schema=nullable, legado=NOT NULL (def=CURRENT_TIMESTAMP)  [datetime]
+  id int(11) null=NO def=null [auto_increment]
+  nome varchar(100) null=NO def=null
+  created_at datetime null=NO def="CURRENT_TIMESTAMP"
+  updated_at datetime null=NO def="CURRENT_TIMESTAMP" [on update CURRENT_TIMESTAMP]
+
+==== colaboradores ====
+  colunas schema.ts: 23 | legado: 23
+   • ativo: schema=nullable, legado=NOT NULL (def=1)  [tinyint(1)]
+   • created_at: schema=nullable, legado=NOT NULL (def=CURRENT_TIMESTAMP)  [datetime]
+   • updated_at: schema=nullable, legado=NOT NULL (def=CURRENT_TIMESTAMP)  [datetime]
+  id int(11) null=NO def=null [auto_increment]
+  nome_completo varchar(200) null=NO def=null
+  cpf varchar(14) null=NO def=null
+  rg varchar(20) null=YES def=null
+  email varchar(200) null=NO def=null
+  telefone varchar(30) null=NO def=null
+  data_nascimento varchar(10) null=NO def=null
+  cargo_id int(11) null=NO def=null
+  departamento_id int(11) null=YES def=null
+  data_admissao varchar(10) null=NO def=null
+  tipo_vinculo enum('clt','pj','estagio','temporario','apprentiz') null=NO def="clt"
+  logradouro varchar(200) null=YES def=null
+  numero varchar(20) null=YES def=null
+  complemento varchar(100) null=YES def=null
+  bairro varchar(100) null=YES def=null
+  cidade varchar(100) null=YES def=null
+  uf varchar(2) null=YES def=null
+  cep varchar(10) null=YES def=null
+  contato_emergencia_nome varchar(200) null=YES def=null
+  contato_emergencia_telefone varchar(30) null=YES def=null
+  ativo tinyint(1) null=NO def="1"
+  created_at datetime null=NO def="CURRENT_TIMESTAMP"
+  updated_at datetime null=NO def="CURRENT_TIMESTAMP" [on update CURRENT_TIMESTAMP]
+
+==== config_empresa ====
+  colunas schema.ts: 6 | legado: 6
+   • id: schema=nullable, legado=NOT NULL (def=null)  [int(11)]
+  id int(11) null=NO def=null
+  nome varchar(100) null=YES def=null
+  logo_url varchar(255) null=YES def=null
+  endereco varchar(255) null=YES def=null
+  cnpj varchar(18) null=YES def=null
+  telefone varchar(20) null=YES def=null
+
+==== FKs (KEY_COLUMN_USAGE com REFERENCED) ====
+  api_contatosite_contatos.site_id -> api_contatosite_sites.id (api_contatosite_contatos_ibfk_1)
+  contratos.cliente_id -> clientes.id (contratos_ibfk_1)
+  responsaveis.cliente_id -> clientes.id (responsaveis_ibfk_1)
+  tabelas SEM FK no legado: usuarios, clientes, circular, departamentos, cargos, colaboradores, config_empresa
