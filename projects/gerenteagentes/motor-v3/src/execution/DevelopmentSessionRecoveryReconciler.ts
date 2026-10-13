@@ -341,6 +341,14 @@ export class DevelopmentSessionRecoveryReconciler {
 
   private async touch(sessionId: number): Promise<void> {
     await this.pool.query('UPDATE motor_agent_sessions SET last_activity_at=NOW() WHERE id=? AND status=\'active\'', [sessionId])
+    const ttlSeconds = Math.max(1, Math.ceil(Number(process.env.MOTOR_DEVELOPMENT_LEASE_TTL_MS || 120000) / 1000))
+    await this.pool.query(
+      `UPDATE motor_active_executions e
+          INNER JOIN motor_agent_sessions s ON s.subtarefa_id=e.subtarefa_id
+         SET e.heartbeat_at=NOW(), e.expires_at=DATE_ADD(NOW(), INTERVAL ? SECOND)
+       WHERE s.id=? AND s.status='active' AND e.phase='development'`,
+      [ttlSeconds, sessionId],
+    )
   }
 
   private async record(taskId: string, event: string, payload: Record<string, unknown>): Promise<void> {

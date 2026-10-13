@@ -718,12 +718,50 @@ export class MySqlDevelopmentExecutionRepository {
         sessionKey ?? null,
       ],
     )
+    await this.pool.query(
+      `DELETE FROM motor_active_executions
+        WHERE subtarefa_id=? AND phase='development'`,
+      [subtaskId],
+    )
     if (!sessionKey) return
     await this.pool.query(
       `UPDATE tarefa_contextos_execucao
           SET estado='closed', closed_at=NOW(), updated_at=NOW()
         WHERE subtarefa_id=? AND sessao_chave=? AND estado!='closed'`,
       [subtaskId, sessionKey],
+    )
+  }
+
+  async registerDevelopmentLease(input: {
+    executionId: string
+    taskDatabaseId: number
+    subtaskId: number
+    ttlMs: number
+  }): Promise<void> {
+    const ttlSeconds = Math.max(1, Math.ceil(input.ttlMs / 1000))
+    await this.pool.query(
+      `INSERT INTO motor_active_executions
+        (execution_id, tarefa_id, subtarefa_id, phase, started_at, heartbeat_at, expires_at)
+       VALUES (?, ?, ?, 'development', NOW(), NOW(), DATE_ADD(NOW(), INTERVAL ? SECOND))
+       ON DUPLICATE KEY UPDATE heartbeat_at=NOW(), expires_at=VALUES(expires_at), phase='development'`,
+      [input.executionId, input.taskDatabaseId, input.subtaskId, ttlSeconds],
+    )
+  }
+
+  async heartbeatDevelopmentLease(executionId: string, ttlMs: number): Promise<void> {
+    const ttlSeconds = Math.max(1, Math.ceil(ttlMs / 1000))
+    await this.pool.query(
+      `UPDATE motor_active_executions
+          SET heartbeat_at=NOW(), expires_at=DATE_ADD(NOW(), INTERVAL ? SECOND)
+        WHERE execution_id=? AND phase='development'`,
+      [ttlSeconds, executionId],
+    )
+  }
+
+  async releaseDevelopmentLease(executionId: string): Promise<void> {
+    await this.pool.query(
+      `DELETE FROM motor_active_executions WHERE execution_id=? AND phase='development'`,
+      [executionId],
     )
   }
 
