@@ -254,6 +254,37 @@ describe('WorkerLauncher', () => {
     )
   })
 
+  it('aceita correção de baseline já commitada no worktree autorizado', async () => {
+    const repo = mkdtempSync(`${tmpdir()}/motor-baseline-committed-`)
+    try {
+      writeFileSync(`${repo}/baseline.txt`, 'red\n')
+      execFileSync('git', ['init'], { cwd: repo })
+      execFileSync('git', ['add', '.'], { cwd: repo })
+      execFileSync('git', ['-c', 'user.name=test', '-c', 'user.email=test@example.com', 'commit', '-m', 'base'], { cwd: repo })
+      const baseCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo }).toString().trim()
+      writeFileSync(`${repo}/baseline.txt`, 'green\n')
+      execFileSync('git', ['add', '.'], { cwd: repo })
+      execFileSync('git', ['-c', 'user.name=test', '-c', 'user.email=test@example.com', 'commit', '-m', 'monitor correction'], { cwd: repo })
+
+      mockContext.worktreePath = repo
+      mockContext.sessionKind = 'baseline_fix'
+      mockContext.baseCommitSha = baseCommit
+      mocks.createSession.handler.mockResolvedValue({ success: true })
+      mocks.sendMessage.handler.mockResolvedValue({ success: true })
+      mocks.waitForCompletion.handler.mockResolvedValue({ success: true, data: { response: 'Baseline corrigido ::DONE::' } })
+      mocks.parseReply.handler.mockResolvedValue({ success: true, data: { hasDoneMarker: true } })
+      mocks.verifyGit.handler.mockResolvedValue({ success: true, data: { hasChanges: false } })
+      mocks.runBuild.handler.mockResolvedValue({ success: true })
+
+      const result = await launcher.executeTask(mockContext, 'Corrigir baseline')
+
+      expect(result).toMatchObject({ success: true, attempts: 1, hasChanges: true, buildPassed: true })
+      expect(mocks.runBuild.handler).toHaveBeenCalledTimes(1)
+    } finally {
+      rmSync(repo, { recursive: true, force: true })
+    }
+  })
+
   it('diagnostica diff relacionado no checkout principal sem modificar arquivos', async () => {
     const repo = mkdtempSync(`${tmpdir()}/motor-wrong-checkout-`)
     try {
