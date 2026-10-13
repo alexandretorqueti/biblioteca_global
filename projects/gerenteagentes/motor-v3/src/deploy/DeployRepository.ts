@@ -3,6 +3,7 @@ import type { Pool, PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql
 import { createQueueMessage, insertOutboxMessage, type QueueMessage } from '../queue/index.js'
 import { createTaskBlockedMessage } from '../monitor/index.js'
 import { RealtimeMutationBoundary } from '../realtime/RealtimeMutationBoundary.js'
+import { buildRetryExecutionId } from './retryExecutionId.js'
 
 export interface DeployTaskContext {
   taskId: string
@@ -263,7 +264,7 @@ export class DeployRepository {
 
   async requeueDispatch(source: QueueMessage, reason: string): Promise<void> {
     const message = createQueueMessage({ type: 'DEPLOY_BATCH_DISPATCH_REQUESTED', taskId: source.taskId,
-      executionId: `${source.executionId}-retry-${Date.now()}`, correlationId: source.correlationId ?? source.messageId,
+      executionId: buildRetryExecutionId(source.executionId, 'retry'), correlationId: source.correlationId ?? source.messageId,
       causationId: source.messageId, payload: { ...source.payload, deferredReason: reason } })
     const connection = await this.pool.getConnection()
     try { await connection.beginTransaction(); await this.insertOutbox(connection, message); await connection.commit() }
@@ -281,7 +282,7 @@ export class DeployRepository {
     const retryMessage = createQueueMessage({
       type: source.type,
       taskId: source.taskId,
-      executionId: `${source.executionId}-deploy-retry-${Date.now()}`,
+      executionId: buildRetryExecutionId(source.executionId, 'deploy-retry'),
       correlationId: source.correlationId ?? source.messageId,
       causationId: source.messageId,
       payload: { ...source.payload, deferredReason: reason, retryAfter: '30s' },
