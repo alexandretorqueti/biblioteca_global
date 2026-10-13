@@ -113,6 +113,48 @@ describe('QueueConsumer', () => {
     await consumer.stop()
   })
 
+  it('adia redelivery com claim ativo sem consumir tentativas em hot-loop', async () => {
+    const transport = new InMemoryQueueTransport()
+    const handler = vi.fn(async () => {})
+    const pool = createProcessingPool()
+    const originalQuery = pool.query
+    let statusReads = 0
+    pool.query = vi.fn(async (sql: string, params?: unknown[]) => {
+      if (sql.includes('SELECT status FROM motor_message_processing_state')) {
+        statusReads += 1
+        return statusReads === 1 ? [[{ status: 'processing' }], []] : originalQuery(sql, params ?? [])
+      }
+      if (sql.includes('INSERT INTO motor_outbox')) return [{ affectedRows: 1 }, []]
+      return originalQuery(sql, params ?? [])
+    })
+    const consumer = createConsumer(transport, handler, 3, pool)
+    const message = createQueueMessage({
+      type: 'SUBTASK_EXECUTION_REQUESTED', taskId: 'task-restart', executionId: 'exec-restart', payload: { subtaskId: 42 },
+    })
+
+    // Simula o claim persistido pelo slot anterior do blue/green.
+    await pool.execute(
+      'INSERT INTO motor_message_processing_state (message_id, task_id, message_type, status, attempt, created_at) VALUES (?, ?, ?, ?, 1, NOW())',
+      [message.messageId, message.taskId, message.type, 'processing'],
+    )
+    await pool.execute(
+      "UPDATE motor_message_processing_state SET status='processing' WHERE message_id=?",
+      [message.messageId],
+    )
+
+    await consumer.start()
+    await transport.publish('motor.commands', message)
+
+    expect(handler).not.toHaveBeenCalled()
+    expect(pool.query).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT INTO motor_outbox'),
+      expect.arrayContaining([message.type, 'motor.commands', message.taskId, message.executionId]),
+    )
+    expect(transport.pending('motor.commands')).toBe(0)
+    expect(transport.deadLettered()).toHaveLength(0)
+    await consumer.stop()
+  })
+
   it('encaminha falha para a DLQ quando atinge o limite', async () => {
     const transport = new InMemoryQueueTransport()
     const handler = vi.fn(async () => { throw new Error('falha permanente') })
