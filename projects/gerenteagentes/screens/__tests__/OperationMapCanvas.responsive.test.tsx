@@ -6,7 +6,7 @@
  * sem causar overflow horizontal, e que em telas largas os quadros permanecem
  * alinhados horizontalmente.
  */
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { render, screen, within } from "@testing-library/react"
 import "@testing-library/jest-dom/vitest"
 import { BibliotecaThemeProvider } from "@biblioteca-global/ui"
@@ -63,6 +63,7 @@ function renderCanvas(tarefas: FlowTask[] = [], viewportWidth: number = 1024, se
 
 describe("OperationMapCanvas — responsividade", () => {
   afterEach(() => {
+    vi.restoreAllMocks()
     // Restaura o window.innerWidth
     Object.defineProperty(window, "innerWidth", {
       writable: true,
@@ -248,5 +249,53 @@ describe("OperationMapCanvas — responsividade", () => {
     // A estação draft deve ter um botão de expansão
     const expandButton = screen.getByText("+ 5")
     expect(expandButton).toBeInTheDocument()
+  })
+
+  it("anima o marcador quando a tarefa muda de estação", () => {
+    const animate = vi.fn(() => ({ cancel: vi.fn() }) as unknown as Animation)
+    Object.defineProperty(HTMLElement.prototype, "animate", { configurable: true, value: animate })
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function () {
+      const station = this.closest("[data-testid^='operation-station-']")?.getAttribute("data-testid")
+      const left = station === "operation-station-running" ? 100 : station === "operation-station-completed" ? 300 : 0
+      return { left, top: 0, right: left + 30, bottom: 30, width: 30, height: 30, x: left, y: 0, toJSON: () => ({}) } as DOMRect
+    })
+
+    const initialTask = tarefaFactory(1, "Tarefa em movimento", "running")
+    const view = renderCanvas([initialTask as FlowTask])
+    expect(animate).not.toHaveBeenCalled()
+
+    view.rerender(<BibliotecaThemeProvider><OperationMapCanvas
+      tarefas={[{ ...initialTask, status: "completed" } as FlowTask]}
+      selectedTaskId=""
+      projetos={[{ id: 1, nome: "Projeto X" }]}
+      motorActivities={[]}
+      onSelectTask={() => {}}
+    /></BibliotecaThemeProvider>)
+
+    expect(animate).toHaveBeenCalledWith(
+      [{ transform: "translate(-200px, 0px)" }, { transform: "translate(0px, 0px)" }],
+      { duration: 450, easing: "ease-out", fill: "both" },
+    )
+  })
+
+  it("não anima na montagem inicial nem com reduced-motion", () => {
+    const animate = vi.fn(() => ({ cancel: vi.fn() }) as unknown as Animation)
+    Object.defineProperty(HTMLElement.prototype, "animate", { configurable: true, value: animate })
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: vi.fn(() => ({ matches: true, media: "(prefers-reduced-motion: reduce)" })),
+    })
+
+    const initialTask = tarefaFactory(1, "Tarefa", "running")
+    const view = renderCanvas([initialTask as FlowTask])
+    expect(animate).not.toHaveBeenCalled()
+    view.rerender(<BibliotecaThemeProvider><OperationMapCanvas
+      tarefas={[{ ...initialTask, status: "completed" } as FlowTask]}
+      selectedTaskId=""
+      projetos={[{ id: 1, nome: "Projeto X" }]}
+      motorActivities={[]}
+      onSelectTask={() => {}}
+    /></BibliotecaThemeProvider>)
+    expect(animate).not.toHaveBeenCalled()
   })
 })

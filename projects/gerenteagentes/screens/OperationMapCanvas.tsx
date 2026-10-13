@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react"
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import {
   AccountTreeRounded,
   BuildRounded,
@@ -94,6 +94,12 @@ export interface OperationMapCanvasProps {
 }
 
 export default function OperationMapCanvas({ tarefas, selectedTaskId, projetos, motorActivities = [], filtros: externalFilters, onFiltrosChange, onSelectTask }: OperationMapCanvasProps) {
+  const mapContainerRef = useRef<HTMLDivElement | null>(null)
+  const markerElementsRef = useRef(new Map<number, HTMLElement>())
+  const markerRectsRef = useRef(new Map<number, DOMRect>())
+  const previousMarkerRectsRef = useRef(new Map<number, DOMRect>())
+  const previousStatusesRef = useRef(new Map<number, string>())
+  const animationsRef = useRef(new Map<number, Animation>())
   const [internalFilters, setInternalFilters] = useState(EMPTY_FILTERS)
   const [view, setView] = useState<"map" | "list">("map")
   const [filtersOpen, setFiltersOpen] = useState(true)
@@ -115,13 +121,51 @@ export default function OperationMapCanvas({ tarefas, selectedTaskId, projetos, 
   const toggleStatus = (value: string) => updateFilters({ status: filters.status.includes(value) ? filters.status.filter(item => item !== value) : [...filters.status, value] })
   const activityCount = new Set(motorActivities.map(activity => activity.taskId)).size
 
+  useLayoutEffect(() => {
+    const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
+    const containerRect = mapContainerRef.current?.getBoundingClientRect()
+
+    if (!reducedMotion && containerRect) {
+      tarefas.forEach(task => {
+        const previousStatus = previousStatusesRef.current.get(task.id)
+        const previousRect = previousMarkerRectsRef.current.get(task.id)
+        const marker = markerElementsRef.current.get(task.id)
+        const destinationRect = markerRectsRef.current.get(task.id)
+        if (!previousStatus || previousStatus === task.status || !previousRect || !destinationRect || !marker) return
+
+        const deltaX = (previousRect.left - containerRect.left) - (destinationRect.left - containerRect.left)
+        const deltaY = (previousRect.top - containerRect.top) - (destinationRect.top - containerRect.top)
+        animationsRef.current.get(task.id)?.cancel()
+        animationsRef.current.set(task.id, marker.animate(
+          [
+            { transform: `translate(${deltaX}px, ${deltaY}px)` },
+            { transform: "translate(0px, 0px)" },
+          ],
+          { duration: 450, easing: "ease-out", fill: "both" },
+        ))
+      })
+    }
+
+    previousMarkerRectsRef.current = new Map(markerRectsRef.current)
+    previousStatusesRef.current = new Map(tarefas.map(task => [task.id, task.status]))
+  }, [tarefas])
+
+  useEffect(() => () => {
+    animationsRef.current.forEach(animation => animation.cancel())
+    animationsRef.current.clear()
+  }, [])
+
   const Marker = ({ task, station }: { task: FlowTask; station: Station }) => {
     const selected = task.id === selectedTaskId
     const priority = deriveTaskPriority(task.status)
     const priorityColor: Record<Prioridade, "error.main" | "warning.main" | "success.main"> = { alta: "error.main", media: "warning.main", baixa: "success.main" }
     const label = `#${task.id}`
     return <Tooltip title={<Box><Typography variant="caption" display="block" fontWeight={700}>#{task.id} {task.titulo}</Typography><Typography variant="caption" display="block">{station.label} · Projeto {task.projetoNome ?? task.projetoId}</Typography></Box>} arrow>
-      <IconButton size="small" onClick={() => onSelectTask(task.id)} aria-label={`Abrir tarefa ${task.id}: ${task.titulo}`} data-testid={`operation-map-task-${task.id}`} data-selection-border-width={selected ? 4 : 0} data-selection-border-color={selected ? "secondary.main" : undefined} sx={{ p: 0, color: priorityColor[priority], border: selected ? 4 : 0, borderColor: "secondary.main", borderRadius: "50%", '&:hover': { bgcolor: "action.hover" } }}>
+      <IconButton ref={(element: HTMLButtonElement | null) => {
+        if (!element) return
+        markerElementsRef.current.set(task.id, element)
+        markerRectsRef.current.set(task.id, element.getBoundingClientRect())
+      }} size="small" onClick={() => onSelectTask(task.id)} aria-label={`Abrir tarefa ${task.id}: ${task.titulo}`} data-testid={`operation-map-task-${task.id}`} data-selection-border-width={selected ? 4 : 0} data-selection-border-color={selected ? "secondary.main" : undefined} sx={{ p: 0, color: priorityColor[priority], border: selected ? 4 : 0, borderColor: "secondary.main", borderRadius: "50%", '&:hover': { bgcolor: "action.hover" } }}>
         <Box sx={{ width: 30, height: 30, borderRadius: "50%", bgcolor: "currentColor", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: station.tone === "active" ? "0 0 0 3px color-mix(in srgb, currentColor 18%, transparent)" : undefined }}>
           <Typography component="span" sx={{ fontSize: 10, fontWeight: 700, lineHeight: 1, color: "white", userSelect: "none", whiteSpace: "nowrap" }}>{label}</Typography>
         </Box>
@@ -141,7 +185,7 @@ export default function OperationMapCanvas({ tarefas, selectedTaskId, projetos, 
     </Paper>
   }
 
-  return <Paper variant="outlined" data-testid="operation-map-canvas" sx={{ overflow: "hidden" }}>
+  return <Paper ref={mapContainerRef} variant="outlined" data-testid="operation-map-canvas" sx={{ overflow: "hidden" }}>
     <Stack spacing={1.5} sx={{ p: { xs: 1.5, md: 2 } }}>
       <Stack direction={{ xs: "column", md: "row" }} justifyContent="space-between" alignItems={{ xs: "stretch", md: "center" }} spacing={1}>
         <Stack direction="row" spacing={1} alignItems="center"><AccountTreeRounded color="primary" /><Box><Typography variant="h6" fontWeight={800}>Mapa da operação</Typography><Typography variant="body2" color="text.secondary">Fluxo vivo de tarefas e intervenções</Typography></Box></Stack>
