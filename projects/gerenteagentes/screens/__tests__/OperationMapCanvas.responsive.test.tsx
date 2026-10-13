@@ -278,6 +278,27 @@ describe("OperationMapCanvas — responsividade", () => {
     )
   })
 
+  it("mantém o mapa funcional quando Web Animations API não está disponível", () => {
+    const animateDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "animate")
+    Reflect.deleteProperty(HTMLElement.prototype, "animate")
+
+    try {
+      const initialTask = tarefaFactory(1, "Tarefa sem animação", "running")
+      const view = renderCanvas([initialTask as FlowTask])
+
+      expect(() => view.rerender(<BibliotecaThemeProvider><OperationMapCanvas
+        tarefas={[{ ...initialTask, status: "completed" } as FlowTask]}
+        selectedTaskId=""
+        projetos={[{ id: 1, nome: "Projeto X" }]}
+        motorActivities={[]}
+        onSelectTask={() => {}}
+      /></BibliotecaThemeProvider>)).not.toThrow()
+      expect(screen.getByTestId("operation-map-task-1")).toBeInTheDocument()
+    } finally {
+      if (animateDescriptor) Object.defineProperty(HTMLElement.prototype, "animate", animateDescriptor)
+    }
+  })
+
   it("não anima na montagem inicial nem com reduced-motion", () => {
     const animate = vi.fn(() => ({ cancel: vi.fn() }) as unknown as Animation)
     Object.defineProperty(HTMLElement.prototype, "animate", { configurable: true, value: animate })
