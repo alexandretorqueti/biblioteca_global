@@ -131,7 +131,7 @@ export default function OperationMapCanvas({ tarefas, selectedTaskId, projetos, 
         const previousRect = previousMarkerRectsRef.current.get(task.id)
         const marker = markerElementsRef.current.get(task.id)
         const destinationRect = markerRectsRef.current.get(task.id)
-        if (!previousStatus || previousStatus === task.status || !previousRect || !destinationRect || !marker) return
+        if (!previousStatus || previousStatus === task.status || !previousRect || !destinationRect || !marker || typeof marker.animate !== "function") return
 
         const deltaX = (previousRect.left - containerRect.left) - (destinationRect.left - containerRect.left)
         const deltaY = (previousRect.top - containerRect.top) - (destinationRect.top - containerRect.top)
