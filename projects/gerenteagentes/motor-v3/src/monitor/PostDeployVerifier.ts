@@ -6,6 +6,7 @@ import type { WorkerLauncher } from '../worker-launcher/WorkerLauncher.js'
 import type { TaskEventSink } from '../coordinator/TaskEventRecorder.js'
 import type { ConsoleHumanNotifier, MonitorHumanNotifier } from './HumanNotifier.js'
 import { PostDeployPromptResolver } from './PostDeployPromptResolver.js'
+import { providerHasCapacity } from '../execution/ProviderCapacity.js'
 import { parsePostDeployVerdict, type PostDeployVerdict, type PostDeployFinding } from './PostDeployVerdictParser.js'
 import type { OperationLogger, OperationOutcome, OperationPhase } from '../commands/index.js'
 
@@ -183,7 +184,8 @@ export class PostDeployVerifier {
 
     // Registra execução ativa do monitor
     const monitorExecutionId = `postdeploy-${batchId}-${Date.now()}`
-    await this.registerMonitorExecution(monitorExecutionId, tasks[0]!.database_task_id)
+    const provider = await this.monitorProvider(tasks[0]!.project_slug)
+    if (!await this.registerMonitorExecution(monitorExecutionId, tasks[0]!.database_task_id, provider)) return
 
     try {
       // Carrega cadeia MONITOR do projeto
@@ -643,15 +645,44 @@ export class PostDeployVerifier {
     return rows.map(row => String(row.model)).filter(Boolean)
   }
 
-  private async registerMonitorExecution(executionId: string, databaseTaskId: number): Promise<void> {
-    try {
+  private async registerMonitorExecution(executionId: string, databaseTaskId: number, provider: string | null): Promise<boolean> {
+    // Alguns adaptadores de teste/boot não expõem conexão transacional; mantêm
+    // o contrato legado e não podem impedir a verificação por infraestrutura
+    // de capacidade ausente.
+    if (typeof (this.pool as any).getConnection !== 'function') {
       await this.pool.query(
-        `INSERT INTO motor_active_executions (execution_id, tarefa_id, subtarefa_id, phase, started_at, heartbeat_at, expires_at)
-         VALUES (?, ?, NULL, 'postdeploy_monitor', NOW(), NOW(), DATE_ADD(NOW(), INTERVAL 20 MINUTE))`,
-        [executionId, databaseTaskId],
+        `INSERT INTO motor_active_executions (execution_id, tarefa_id, subtarefa_id, phase, provider, started_at, heartbeat_at, expires_at)
+         VALUES (?, ?, NULL, 'postdeploy_monitor', ?, NOW(), NOW(), DATE_ADD(NOW(), INTERVAL 20 MINUTE))`,
+        [executionId, databaseTaskId, provider],
       )
+      return true
+    }
+    const connection = await this.pool.getConnection()
+    if (!connection) {
+      await this.pool.query(
+        `INSERT INTO motor_active_executions (execution_id, tarefa_id, subtarefa_id, phase, provider, started_at, heartbeat_at, expires_at)
+         VALUES (?, ?, NULL, 'postdeploy_monitor', ?, NOW(), NOW(), DATE_ADD(NOW(), INTERVAL 20 MINUTE))`,
+        [executionId, databaseTaskId, provider],
+      )
+      return true
+    }
+    try {
+      await connection.beginTransaction()
+      await connection.query(`SELECT chave FROM motor_configuracoes WHERE chave IN ('motor.max_workers', 'motor.max_workers_per_project') ORDER BY chave FOR UPDATE`)
+      if (!await providerHasCapacity(connection, provider, 'monitor')) { await connection.rollback(); return false }
+      await connection.query(
+        `INSERT INTO motor_active_executions (execution_id, tarefa_id, subtarefa_id, phase, provider, started_at, heartbeat_at, expires_at)
+         VALUES (?, ?, NULL, 'postdeploy_monitor', ?, NOW(), NOW(), DATE_ADD(NOW(), INTERVAL 20 MINUTE))`,
+        [executionId, databaseTaskId, provider],
+      )
+      await connection.commit()
+      return true
     } catch (error) {
+      await connection.rollback()
       console.warn('[PostDeployVerifier] Falha ao registrar execução:', error)
+      return false
+    } finally {
+      connection.release()
     }
   }
 
@@ -664,6 +695,16 @@ export class PostDeployVerifier {
     } catch (error) {
       console.warn('[PostDeployVerifier] Falha ao remover registro:', error)
     }
+  }
+
+  private async monitorProvider(projectSlug: string): Promise<string | null> {
+    const [rows] = await this.pool.query<Array<RowDataPacket & { provider: string | null; model: string }>>(
+      `SELECT provider, model FROM project_model_selection WHERE project_slug=? AND tipo='MONITOR' AND enabled=1 ORDER BY ordem LIMIT 1`, [projectSlug],
+    )
+    if (rows[0]?.provider) return String(rows[0].provider)
+    const model = String(rows[0]?.model ?? '')
+    const slash = model.indexOf('/')
+    return slash > 0 ? model.slice(0, slash) : null
   }
 
   private async isActive(): Promise<boolean> {

@@ -4,6 +4,7 @@ import type { AnalysisOutcome } from '../analysis/AnalystReply.js'
 import { DerivedTaskStatusResolver } from '../status/DerivedTaskStatus.js'
 import { RealtimeMutationBoundary } from '../realtime/RealtimeMutationBoundary.js'
 import type { RealtimeMutationPublisher } from '../realtime/RealtimeMutationPublisher.js'
+import { providerFromModel, providerHasCapacity } from '../execution/ProviderCapacity.js'
 
 interface TaskRow extends RowDataPacket {
   id: number
@@ -135,6 +136,24 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
           return 'capacity_waiting'
         }
       }
+      // Só resolve provider depois dos tetos gerais. Além de evitar trabalho
+      // quando a vaga global já está ocupada, isso preserva a ordem histórica
+      // das consultas para adaptadores legados sem configuração de projetos.
+      let analysisProvider: string | null = null
+      if (row.projeto_id != null) {
+        const [modelRows] = await connection.query<Array<RowDataPacket & { model: string; provider: string | null }>>(
+          `SELECT selection.model, selection.provider
+             FROM tarefas t JOIN projetos_captados pc ON pc.id = t.projeto_id
+             LEFT JOIN project_model_selection selection
+               ON selection.project_slug = pc.slug AND selection.tipo = 'ANALYST' AND selection.enabled = 1
+            WHERE t.id = ? ORDER BY selection.ordem ASC LIMIT 1`, [row.id],
+        )
+        analysisProvider = modelRows[0]?.provider || providerFromModel(modelRows[0]?.model)
+      }
+      if (!await providerHasCapacity(connection, analysisProvider, 'analysis')) {
+        await connection.rollback()
+        return 'capacity_waiting'
+      }
       // cannotStart() proves the canonical pre-claim projection is planned;
       // keeping this read-free also preserves the claim's single atomic SQL
       // update as the only conditional write.
@@ -148,10 +167,10 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
       )
       const [result] = await connection.query<ResultSetHeader>(
         `UPDATE task_runtime_facts
-         SET analysis_started_at = NOW(), analysis_execution_id = ?, clarification_pending_at = NULL, updated_at = NOW()
+         SET analysis_started_at = NOW(), analysis_execution_id = ?, provider = ?, clarification_pending_at = NULL, updated_at = NOW()
          WHERE tarefa_id = ? AND analysis_started_at IS NULL
            AND analysis_execution_id IS NULL AND terminal_status IS NULL`,
-        [executionId, row.id],
+        [executionId, analysisProvider, row.id],
       )
 
       if (result.affectedRows !== 1) {

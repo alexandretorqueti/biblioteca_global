@@ -48,6 +48,22 @@ Varredura realizada em `motor/src`, `motor-v3/package.json`, `motor-v3/README.md
 
 ## Configurações por tarefa/projeto já persistidas
 
+## Limites por provider
+
+| Campo | Escopo | Contabilidade |
+|---|---|---|
+| `limite_execucao_total` | pool absoluto do provider | análise ativa + DEV `running`/`delivered`/`verifying` + missões MONITOR ativas |
+| `limite_analises` | fase ANALYST | análises ativas no provider |
+| `limite_desenvolvimento` | fase DEV | subtarefas ativas no provider |
+
+Os limites ficam em `motor_provider_limits`; ausência da linha ou valor `NULL`
+significa sem restrição nova. O motor sempre aplica o menor teto entre os
+limites gerais (`motor.max_workers` e `motor.max_workers_per_project`) e o
+provider. `limite_execucao_total` é absoluto e cross-fase: com valor `1`, uma
+análise em `ollama` impede DEV ou MONITOR em `ollama` até a liberação da vaga.
+O provider do primeiro modelo elegível é persistido na atividade e não muda
+para contornar capacidade durante escalonamento por falha/cooldown.
+
 Estas não são defaults globais da tela; são valores de domínio que o motor já lê e deve continuar priorizando sobre defaults globais:
 
 | Nome | Valor inicial/atual | Origem | Consumidores |
