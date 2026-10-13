@@ -1050,7 +1050,7 @@ export class GerenteAgentesService {
         type: 'task.created',
         previousStatus: null,
         status: 'draft',
-        payload: { title: tarefaCriada.titulo, status: 'draft', tipo: tarefaCriada.tipo, managedProjectId },
+        payload: { title: tarefaCriada.titulo, descricao: tarefaCriada.descricao ?? null, status: 'draft', tipo: tarefaCriada.tipo, managedProjectId },
         perTaskSeq: 1,
         deliveryStatus: 'pending',
         attempts: 0,
@@ -2399,6 +2399,8 @@ export class GerenteAgentesService {
         task: {
           id: motorTask.id || String(tarefaId),
           title: motorTask.title || tarefa.titulo,
+          // A descrição persistida em `tarefas.descricao` é a fonte canônica para a aba Resumo.
+          descricao: tarefa.descricao ?? null,
           // O status calculado pelo motor (via fatos operacionais) é a fonte canônica.
           status: motorTask.status || 'pending',
           integrationBranch: `motor/${motorId}/integracao`,
