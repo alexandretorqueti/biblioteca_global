@@ -24,7 +24,7 @@ export interface RealtimeMutationResult {
 type TaskRow = { id: number; externalId: string | null; projetoId: number; pausedAt: Date | null };
 
 /** O WebSocket é roteado pelo tenant da Biblioteca, não pelo projeto gerenciado. */
-const REALTIME_TENANT_PROJECT_ID = 640;
+export const REALTIME_TENANT_PROJECT_ID = 640;
 
 /**
  * Fronteira da API: mutação/fato e outbox são gravados pelo mesmo tx Drizzle.

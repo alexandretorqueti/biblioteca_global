@@ -54,7 +54,7 @@ import type { PromptPart } from '../src/prompts/PromptComposition';
 import { ProvisionService } from '../../../apps/api/src/modules/provision/provision.service';
 import { RealtimeService } from '../../../apps/api/src/modules/realtime/realtime.service';
 import { GitInspectorService } from './git-inspector.service';
-import { RealtimeMutationBoundaryService } from './realtime-mutation-boundary.service';
+import { RealtimeMutationBoundaryService, REALTIME_TENANT_PROJECT_ID } from './realtime-mutation-boundary.service';
 
 const DEFAULT_SESSION_PAGE_SIZE = 50;
 const MAX_SESSION_PAGE_SIZE = 500;
@@ -1862,7 +1862,9 @@ export class GerenteAgentesService {
         eventId: randomUUID(),
         occurredAt: createdAt.toISOString(),
         source: 'gerenteagentes.chat',
-        projectId: Number(tarefa.projetoId),
+        // `projectId` roteia o WebSocket do tenant; o projeto gerenciado
+        // continua explícito no payload como `managedProjectId`.
+        projectId: REALTIME_TENANT_PROJECT_ID,
         taskId: tarefaId,
         type: 'task.chat.message.created',
         payload: {
@@ -1871,6 +1873,7 @@ export class GerenteAgentesService {
           role: 'user',
           texto: normalizedText,
           createdAt: createdAt.toISOString(),
+          managedProjectId: Number(tarefa.projetoId),
         },
       });
     } catch (error) {
@@ -1947,8 +1950,9 @@ export class GerenteAgentesService {
           try {
             this.realtime?.publicar({
               eventId: randomUUID(), occurredAt: createdAt.toISOString(), source: 'gerenteagentes.chat',
-              projectId: Number(tarefa.projetoId), taskId: tarefa.id, type: 'task.chat.message.created',
-              payload: { id: created.id, tarefaId: tarefa.id, role: 'analyst', texto: respostaTexto, createdAt: createdAt.toISOString() },
+              // Roteamento pelo tenant da Biblioteca; projeto gerenciado no payload.
+              projectId: REALTIME_TENANT_PROJECT_ID, taskId: tarefa.id, type: 'task.chat.message.created',
+              payload: { id: created.id, tarefaId: tarefa.id, role: 'analyst', texto: respostaTexto, createdAt: createdAt.toISOString(), managedProjectId: Number(tarefa.projetoId) },
             });
           } catch (error) {
             this.logger.warn(`Falha ao publicar evento realtime da resposta do analista na tarefa ${tarefa.id}: ${error instanceof Error ? error.message : String(error)}`);
