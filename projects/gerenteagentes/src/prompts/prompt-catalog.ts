@@ -49,7 +49,7 @@ export const AGENT_PROMPT_CATALOG: readonly AgentPromptCatalogEntry[] = [
     situation: "primeira_rodada_tarefa",
     source: "motor-v3/src/analysis/ManagedAnalysisPromptResolver.ts#resolve",
     markers: ["**TITULOTAREFA**", "**DESCRICAOTAREFA**", "**TIPOTAREFA**"],
-    prompt: "Você é o analista responsável por transformar a tarefa **TITULOTAREFA** em um plano completo, executável e verificável. Tipo: **TIPOTAREFA**. Leia integralmente a descrição abaixo, preserve todos os requisitos, etapas numeradas, sequência e definição de pronto. Não minimize artificialmente a quantidade de subtarefas nem una etapas independentes. Cada subtarefa deve ter uma responsabilidade principal, escopo detalhado, entregáveis concretos, critérios objetivos e requisitos cobertos. Identifique todos os requisitos como REQ-* e forneça a matriz de cobertura. Se a descrição estiver truncada, incompleta ou ambígua, não invente um plano: peça esclarecimentos. Descrição integral: **DESCRICAOTAREFA**\n\n**CONTRATOSAIDA**",
+    prompt: "Você é o analista responsável por analisar a tarefa **TITULOTAREFA**. Tipo: **TIPOTAREFA**. Se o tipo for verificacao e a solicitação estiver clara, faça a verificação diretamente, consulte o código/documentação necessários e retorne o parecer no contrato de verificação; não crie subtarefas, não acione DEV e não crie worktree. Se houver dúvida ou ambiguidade, faça perguntas objetivas e aguarde a resposta no chat da tarefa. Para os demais tipos, transforme a tarefa em plano completo, executável e verificável. Descrição integral: **DESCRICAOTAREFA**\n\n**CONTRATOSAIDA**",
     contractKey: "analista.plano_ou_perguntas",
   },
   {
@@ -58,7 +58,7 @@ export const AGENT_PROMPT_CATALOG: readonly AgentPromptCatalogEntry[] = [
     situation: "retomada_apos_clarificacao",
     source: "motor-v3/src/analysis/ManagedAnalysisPromptResolver.ts#resolve",
     markers: ["**TITULOTAREFA**", "**DESCRICAOTAREFA**", "**HISTORICOCLARIFICACAO**"],
-    prompt: "Reanalise **TITULOTAREFA** usando a descrição integral: **DESCRICAOTAREFA**. Histórico já respondido: **HISTORICOCLARIFICACAO**. Preserve todos os requisitos e etapas, não una responsabilidades independentes, e não repita perguntas respondidas. Quando estiver claro, devolva plano completo com requisitos e matriz de cobertura; caso contrário, faça perguntas objetivas.\n\n**CONTRATOSAIDA**",
+    prompt: "Reanalise **TITULOTAREFA** usando a descrição integral: **DESCRICAOTAREFA**. Histórico já respondido: **HISTORICOCLARIFICACAO**. Se o tipo for verificacao e estiver claro, faça a verificação diretamente e retorne o parecer no contrato, sem criar subtarefas, DEV ou worktree. Se ainda houver dúvida, faça perguntas objetivas. Para os demais tipos, devolva plano completo com requisitos e matriz de cobertura.\n\n**CONTRATOSAIDA**",
     contractKey: "analista.plano_ou_perguntas",
   },
   {

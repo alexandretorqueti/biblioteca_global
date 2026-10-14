@@ -270,8 +270,10 @@ export class AnalysisSessionRecoveryReconciler {
     if (outcome.kind === 'plan') {
       await this.record(task.taskId, 'analysis_recovered_completed', { sessionId: row.session_id, executionId, subtaskCount: outcome.subtasks.length })
       await this.config.publishTaskReady(task.taskId, executionId, outcome.subtasks.length)
-    } else {
+    } else if (outcome.kind === 'questions') {
       await this.record(task.taskId, 'analysis_recovered_clarification', { sessionId: row.session_id, executionId, questionCount: outcome.questions.length })
+    } else {
+      await this.record(task.taskId, 'verification_recovered_completed', { sessionId: row.session_id, executionId, verdict: outcome.verdict })
     }
   }
 

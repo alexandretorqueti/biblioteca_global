@@ -2,6 +2,21 @@ import { describe, expect, it } from 'vitest'
 import { parseAnalystReply } from '../src/analysis/AnalystReply.js'
 
 describe('parseAnalystReply completion_kind', () => {
+  it('retorna parecer estruturado direto para verificacao clara', () => {
+    expect(parseAnalystReply(JSON.stringify({
+      kind: 'verification', verdict: 'Confirmado', summary: 'Fluxo validado sem alteracoes.', evidence: ['Leitura do contrato'],
+    }), undefined, 'verificacao')).toEqual({
+      kind: 'verification', verdict: 'Confirmado', summary: 'Fluxo validado sem alteracoes.', evidence: ['Leitura do contrato'],
+    })
+  })
+
+  it('recusa plano para verificacao clara', () => {
+    expect(() => parseAnalystReply(JSON.stringify({
+      subtarefas: [{ seq: 1, titulo: 'Verificar', scope: 'Conferir', acceptance_criteria: ['OK'], deliverables: ['Parecer'], requirements_covered: ['REQ-1'], depends_on: [], completion_kind: 'analysis' }],
+      requirements: [{ id: 'REQ-1', description: 'Verificar' }], coverage: [{ requirement: 'REQ-1', covered_by: [1] }],
+    }), undefined, 'verificacao')).toThrow('resultado direto')
+  })
+
   it('preserva subtarefa analítica sem alteração de código', () => {
     const result = parseAnalystReply(JSON.stringify({
       subtarefas: [{

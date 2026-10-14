@@ -2,6 +2,17 @@ import { describe, expect, it, vi } from 'vitest'
 import { DerivedTaskStatusResolver } from '../src/status/DerivedTaskStatus.js'
 
 describe('DerivedTaskStatusResolver', () => {
+  it('deriva closed para verificacao direta sem subtarefas', async () => {
+    const query = vi.fn()
+      .mockResolvedValueOnce([[{
+        id: 970, task_type: 'verificacao', paused_at: null, resource_wait_key: null,
+        analysis_started_at: null, clarification_pending_at: null, integration_confirmed_at: new Date(), terminal_status: 'completed',
+        awaiting_interaction: 0, has_active_blocker: 0, deploy_succeeded: 0, deploy_failed: 0, administrative_deploy_cancelled: 0,
+      }]])
+      .mockResolvedValueOnce([[]])
+    await expect(new DerivedTaskStatusResolver({ query } as never).resolve('task-p1-970')).resolves.toBe('closed')
+  })
+
   it('expõe motor_fix somente enquanto há execução ativa de correção do Monitor', async () => {
     const query = vi.fn()
       .mockResolvedValueOnce([[{

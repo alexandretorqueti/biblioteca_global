@@ -624,6 +624,13 @@
       "when": 1791901151482,
       "tag": "0088_motor_provider_activity",
       "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "5",
+      "when": 1792000000000,
+      "tag": "0089_direct_verification_analysis",
+      "breakpoints": true
     }
   ]
 }

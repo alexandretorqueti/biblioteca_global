@@ -136,7 +136,7 @@ export class TaskAdjustmentConsumer {
       await this.realtime.enqueueChatMessage(context.databaseTaskId, {
         id: Number(analystChatInsert.insertId), role: 'analyst', texto: analystChatText,
       })
-    } else {
+    } else if (outcome.kind === 'questions') {
       // Perguntas — registrar no chat e marcar clarificação pendente
       const analystChatText = JSON.stringify({ summary: outcome.summary, questions: outcome.questions })
       const [analystChatInsert] = await this.pool.query<ResultSetHeader>(
@@ -152,6 +152,8 @@ export class TaskAdjustmentConsumer {
           WHERE tarefa_id = ?`,
         [context.databaseTaskId],
       )
+    } else {
+      throw new Error('Verificação direta não é suportada para ajustes incrementais')
     }
 
     // 8. Liberar o claim de análise para o fluxo normal continuar

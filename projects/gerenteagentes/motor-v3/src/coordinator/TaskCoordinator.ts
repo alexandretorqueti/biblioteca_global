@@ -278,6 +278,11 @@ export class TaskCoordinator {
       if (outcome.kind === 'questions') {
         await this.emit('ANALYSIS_CLARIFICATION_REQUESTED', message, { executionId, analysisAttempt, questionCount: outcome.questions.length })
         await this.recordEvent(task.taskId, 'analysis_clarification', { executionId, attempt: analysisAttempt, questionCount: outcome.questions.length })
+      } else if (outcome.kind === 'verification') {
+        await this.emit('ANALYSIS_COMPLETED', message, { executionId, analysisAttempt, outcome: 'verification' })
+        await this.recordEvent(task.taskId, 'verification_completed', {
+          executionId, attempt: analysisAttempt, verdict: outcome.verdict, evidenceCount: outcome.evidence.length,
+        })
       } else {
         await this.emit('ANALYSIS_COMPLETED', message, { executionId, analysisAttempt, subtaskCount: outcome.subtasks.length })
         await this.recordEvent(task.taskId, 'analysis_completed', { executionId, attempt: analysisAttempt, subtaskCount: outcome.subtasks.length })

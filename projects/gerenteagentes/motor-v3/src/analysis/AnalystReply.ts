@@ -21,6 +21,7 @@ export interface PlanCoverage {
 
 export type AnalysisOutcome =
   | { kind: 'plan'; subtasks: PlannedSubtask[]; coverage: PlanCoverage }
+  | { kind: 'verification'; verdict: string; summary: string; evidence: string[] }
   | { kind: 'questions'; summary: string; questions: string[] }
 
 /**
@@ -45,7 +46,7 @@ export function sanitizeModelResponse(content: string): string {
   return cleaned.trim()
 }
 
-export function parseAnalystReply(content: string, contractSchema?: unknown): AnalysisOutcome {
+export function parseAnalystReply(content: string, contractSchema?: unknown, taskType?: string): AnalysisOutcome {
   const candidates = extractJsonObjects(sanitizeModelResponse(content))
   if (candidates.length === 0) {
     // Diagnóstico: a resposta pode ser puramente reasoning/thinking sem JSON
@@ -81,6 +82,18 @@ export function parseAnalystReply(content: string, contractSchema?: unknown): An
     const questions = Array.isArray(parsed.perguntas) ? parsed.perguntas.map(String).map(value => value.trim()).filter(Boolean) : []
     if (questions.length === 0) throw new Error('Analista pediu clarificação sem perguntas válidas')
     return { kind: 'questions', summary: typeof parsed.resumo === 'string' ? parsed.resumo.trim() : '', questions }
+  }
+
+  if (parsed.kind === 'verification' || parsed.kind === 'verificacao') {
+    const verdict = String(parsed.verdict ?? parsed.parecer ?? '').trim()
+    const summary = String(parsed.summary ?? parsed.resumo ?? '').trim()
+    const evidence = strings(parsed.evidence ?? parsed.evidencias)
+    if (!verdict || !summary) throw new Error('Resultado de verificação incompleto')
+    return { kind: 'verification', verdict, summary, evidence }
+  }
+
+  if (normalizeTaskType(taskType) === 'verificacao') {
+    throw new Error('Tarefa de verificação clara deve retornar resultado direto, não subtarefas')
   }
 
   if (!Array.isArray(parsed.subtarefas) || parsed.subtarefas.length === 0) throw new Error('Analista não retornou subtarefas')
@@ -190,7 +203,12 @@ function extractJsonObjects(content: string): string[] {
 }
 
 function isAnalysisReply(value: Record<string, any>): boolean {
-  return value.kind === 'perguntas' || Array.isArray(value.perguntas) || Array.isArray(value.subtarefas)
+  return value.kind === 'perguntas' || value.kind === 'verification' || value.kind === 'verificacao'
+    || Array.isArray(value.perguntas) || Array.isArray(value.subtarefas)
+}
+
+function normalizeTaskType(value: string | undefined): string {
+  return String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim()
 }
 
 /** Validador do subconjunto de JSON Schema usado pelos contratos publicados. */

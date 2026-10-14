@@ -167,7 +167,7 @@ export class ConsoleAnalystRunner implements AnalysisRunner {
         phase = 'response'
         const content = await wait(phase)
         try {
-          const outcome = parseAnalystReply(content, resolvedPrompt.contractSchema)
+          const outcome = parseAnalystReply(content, resolvedPrompt.contractSchema, task.taskType)
           await this.config.onSessionCompleted?.(session, audit('completed', lastMessageKey))
           return outcome
         } catch (parseError) {
@@ -177,7 +177,7 @@ export class ConsoleAnalystRunner implements AnalysisRunner {
           phase = 'correction'
           await send(phase, this.correctiveFeedback(error, resolvedPrompt.contractText))
           phase = 'corrected_response'
-          const outcome = parseAnalystReply(await wait(phase), resolvedPrompt.contractSchema)
+          const outcome = parseAnalystReply(await wait(phase), resolvedPrompt.contractSchema, task.taskType)
           await this.config.onSessionCompleted?.(session, audit('completed', lastMessageKey))
           return outcome
         }
@@ -218,14 +218,14 @@ export class ConsoleAnalystRunner implements AnalysisRunner {
       let response = await this.waitForResult(session, task)
       await this.config.onResponseReceived?.(session, response, audit('recovery_response', messageKey))
       try {
-        const outcome = parseAnalystReply(response, resolvedPrompt.contractSchema)
+        const outcome = parseAnalystReply(response, resolvedPrompt.contractSchema, task.taskType)
         await this.config.onSessionCompleted?.(session, audit('completed', messageKey))
         return outcome
       } catch (error) {
         messageKey = await send('recovery_correction', this.correctiveFeedback(asError(error), resolvedPrompt.contractText))
         response = await this.waitForResult(session, task)
         await this.config.onResponseReceived?.(session, response, audit('recovery_corrected_response', messageKey))
-        const outcome = parseAnalystReply(response, resolvedPrompt.contractSchema)
+        const outcome = parseAnalystReply(response, resolvedPrompt.contractSchema, task.taskType)
         await this.config.onSessionCompleted?.(session, audit('completed', messageKey))
         return outcome
       }
