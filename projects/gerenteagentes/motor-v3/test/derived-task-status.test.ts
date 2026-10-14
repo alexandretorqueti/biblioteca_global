@@ -2,6 +2,35 @@ import { describe, expect, it, vi } from 'vitest'
 import { DerivedTaskStatusResolver } from '../src/status/DerivedTaskStatus.js'
 
 describe('DerivedTaskStatusResolver', () => {
+  it('expõe motor_fix somente enquanto há execução ativa de correção do Monitor', async () => {
+    const query = vi.fn()
+      .mockResolvedValueOnce([[{
+        id: 854, paused_at: null, resource_wait_key: null,
+        analysis_started_at: null, clarification_pending_at: null, integration_confirmed_at: null, terminal_status: null,
+        awaiting_interaction: 0, has_active_blocker: 1, deploy_succeeded: 0, deploy_failed: 0,
+        administrative_deploy_cancelled: 0, active_monitor_fix: 1,
+      }]])
+      .mockResolvedValueOnce([[{ status: 'blocked' }]])
+    const resolver = new DerivedTaskStatusResolver({ query } as never)
+
+    await expect(resolver.resolve('task-p6-854')).resolves.toBe('motor_fix')
+    expect(query.mock.calls[0]?.[0]).toContain("mae.phase = 'monitor'")
+  })
+
+  it('não persiste motor_fix como estado terminal após a limpeza da execução', async () => {
+    const query = vi.fn()
+      .mockResolvedValueOnce([[{
+        id: 856, paused_at: null, resource_wait_key: null,
+        analysis_started_at: null, clarification_pending_at: null, integration_confirmed_at: null, terminal_status: 'motor_fix',
+        awaiting_interaction: 0, has_active_blocker: 0, deploy_succeeded: 0, deploy_failed: 0,
+        administrative_deploy_cancelled: 0, active_monitor_fix: 0,
+      }]])
+      .mockResolvedValueOnce([[{ status: 'verified' }]])
+    const resolver = new DerivedTaskStatusResolver({ query } as never)
+
+    await expect(resolver.resolve('task-p6-856')).resolves.toBe('ready')
+  })
+
   it('deriva failed quando qualquer subtarefa falhou definitivamente', async () => {
     const query = vi.fn()
       .mockResolvedValueOnce([[{
