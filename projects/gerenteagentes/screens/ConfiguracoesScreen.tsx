@@ -33,6 +33,11 @@ function limites(regra: string): { min?: number; max?: number } {
  * Aba "MODELOS": configuração GLOBAL da fila de modelos — mesma estrutura da
  * tela de modelos do projeto, porém ao salvar propaga para todos os projetos.
  * A edição individual por projeto continua disponível na tela de cada projeto.
+ * Aba "Providers": limites máximos de paralelismo por provider (execuções,
+ * análises e desenvolvimentos). A lista de providers é a mesma da tela de
+ * modelos do projeto (fonte: catálogo do Console via /providers-limites).
+ * Permissões: os endpoints exigem admin/gerente (mesma RBAC das demais abas);
+ * o painel exibe o erro devolvido pela API quando o usuário não pode gravar.
  */
 
 // ── MODELOS (configuração global) ────────────────────────────────────────────
@@ -288,9 +293,161 @@ function GlobalModelSelectionPanel(): ReactNode {
   </Stack>
 }
 
+// ── PROVIDERS (limites de paralelismo por provider) ─────────────────────────
+
+type ProviderLimite = {
+  provider: string
+  limiteExecucaoTotal: number | null
+  limiteAnalises: number | null
+  limiteDesenvolvimento: number | null
+}
+
+type ProviderLinhaEditavel = {
+  provider: string
+  limiteExecucaoTotal: string
+  limiteAnalises: string
+  limiteDesenvolvimento: string
+}
+
+const CAMPOS_LIMITE = ["limiteExecucaoTotal", "limiteAnalises", "limiteDesenvolvimento"] as const
+type CampoLimite = (typeof CAMPOS_LIMITE)[number]
+
+const CAMPO_LIMITE_LABEL: Record<CampoLimite, string> = {
+  limiteExecucaoTotal: "Execuções paralelas (máx.)",
+  limiteAnalises: "Análises paralelas (máx.)",
+  limiteDesenvolvimento: "Desenvolvimentos paralelos (máx.)",
+}
+
+/** Id seguro para data-testid (nomes de provider podem conter pontos, barras etc.). */
+function providerTestId(provider: string): string {
+  return provider.replace(/[^a-zA-Z0-9_-]/g, "-")
+}
+
+function numeroParaRaw(valor: number | null | undefined): string {
+  return valor === null || valor === undefined ? "" : String(valor)
+}
+
+function linhaParaEditavel(item: ProviderLimite): ProviderLinhaEditavel {
+  return {
+    provider: item.provider,
+    limiteExecucaoTotal: numeroParaRaw(item.limiteExecucaoTotal),
+    limiteAnalises: numeroParaRaw(item.limiteAnalises),
+    limiteDesenvolvimento: numeroParaRaw(item.limiteDesenvolvimento),
+  }
+}
+
+/** Converte o texto do campo para o envio: vazio = null (sem restrição); inválido = undefined. */
+function limiteParaEnvio(raw: string): number | null | undefined {
+  const texto = raw.trim()
+  if (texto === "") return null
+  const numero = Number(texto)
+  if (!Number.isInteger(numero) || numero < 1 || numero > 100) return undefined
+  return numero
+}
+
+function ProvidersLimitesPanel(): ReactNode {
+  const api = useApi()
+  const [linhas, setLinhas] = useState<ProviderLinhaEditavel[]>([])
+  const [loading, setLoading] = useState(true)
+  const [salvandoProvider, setSalvandoProvider] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+
+  const carregar = useCallback(async () => {
+    if (!api) return
+    setLoading(true); setError(null)
+    try {
+      const resposta = await api.http.request<ProviderLimite[]>("GET", "/gerenteagentes/providers-limites", { auth: "access" })
+      setLinhas((resposta ?? []).map(linhaParaEditavel))
+    } catch (e) { setError(e instanceof Error ? e.message : "Falha ao carregar limites por provider") }
+    finally { setLoading(false) }
+  }, [api])
+
+  useEffect(() => { void carregar() }, [carregar])
+
+  const atualizarCampo = useCallback((provider: string, campo: CampoLimite, raw: string) => {
+    setLinhas((atual) => atual.map((l) => (l.provider === provider ? { ...l, [campo]: raw } : l)))
+  }, [])
+
+  const salvar = useCallback(async (provider: string) => {
+    if (!api) return
+    const linha = linhas.find((l) => l.provider === provider)
+    if (!linha) return
+    setError(null); setNotice(null)
+    const valores = {} as Record<CampoLimite, number | null>
+    for (const campo of CAMPOS_LIMITE) {
+      const enviado = limiteParaEnvio(linha[campo])
+      if (enviado === undefined) {
+        setError(`Valor inválido para "${CAMPO_LIMITE_LABEL[campo]}" do provider ${provider}: use um inteiro entre 1 e 100, ou deixe vazio para sem restrição.`)
+        return
+      }
+      valores[campo] = enviado
+    }
+    setSalvandoProvider(provider)
+    try {
+      const resposta = await api.http.request<ProviderLimite>("PUT", `/gerenteagentes/providers-limites/${encodeURIComponent(provider)}`, { auth: "access", body: valores })
+      setLinhas((atual) => atual.map((l) => (l.provider === resposta.provider ? linhaParaEditavel(resposta) : l)))
+      setNotice(`Limites do provider ${provider} salvos.`)
+    } catch (e) { setError(e instanceof Error ? e.message : `Falha ao salvar limites do provider ${provider}`) }
+    finally { setSalvandoProvider(null) }
+  }, [api, linhas])
+
+  if (loading) return <Box sx={{ display: "grid", placeItems: "center", minHeight: 200 }} data-testid="providers-loading"><CircularProgress /></Box>
+
+  return <Stack spacing={2} data-testid="configuracoes-providers">
+    <Box>
+      <Typography variant="h6" fontWeight={700}>Providers</Typography>
+      <Typography color="text.secondary">Limites máximos de paralelismo por provider. Vale sempre o menor limite entre as configurações gerais (total e por projeto) e o limite do provider; quando o limite que vale é o do provider, ele é absoluto entre todas as fases — por exemplo, com limite 1 o desenvolvimento não roda em paralelo com uma análise do mesmo provider. Campo vazio = sem restrição.</Typography>
+    </Box>
+    {error && <Alert severity="error" data-testid="providers-error">{error}</Alert>}
+    {notice && <Alert severity="success" data-testid="providers-success">{notice}</Alert>}
+
+    <Paper variant="outlined" sx={{ p: 2 }} data-testid="providers-rows-panel">
+      {linhas.length === 0 ? (
+        <Alert severity="info" data-testid="providers-empty">Nenhum provider disponível — verifique se o Console OpenClaw está acessível.</Alert>
+      ) : (
+        <Stack spacing={0}>
+          {linhas.map((linha, i) => {
+            const tid = providerTestId(linha.provider)
+            return <Box key={linha.provider}>
+              {i > 0 && <Divider sx={{ mt: 1 }} />}
+              <Box data-testid={`providers-row-${tid}`} sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", md: "minmax(110px, 1fr) repeat(3, minmax(0, 1.4fr)) auto" }, gap: 1.5, alignItems: "center", py: 1 }}>
+                <Typography fontWeight={600} data-testid={`providers-nome-${tid}`}>{linha.provider}</Typography>
+                {CAMPOS_LIMITE.map((campo) => (
+                  <TextField
+                    key={campo}
+                    size="small"
+                    label={CAMPO_LIMITE_LABEL[campo]}
+                    type="number"
+                    value={linha[campo]}
+                    onChange={(event) => atualizarCampo(linha.provider, campo, event.target.value)}
+                    inputProps={{ min: 1, max: 100, step: 1, "data-testid": `providers-input-${campo}-${tid}`, "aria-label": `${CAMPO_LIMITE_LABEL[campo]} — ${linha.provider}` }}
+                    disabled={salvandoProvider === linha.provider}
+                    fullWidth
+                  />
+                ))}
+                <Button
+                  variant="contained"
+                  size="small"
+                  startIcon={<SaveRounded />}
+                  disabled={salvandoProvider !== null}
+                  onClick={() => void salvar(linha.provider)}
+                  data-testid={`providers-btn-salvar-${tid}`}
+                >
+                  {salvandoProvider === linha.provider ? "Salvando..." : "Salvar"}
+                </Button>
+              </Box>
+            </Box>
+          })}
+        </Stack>
+      )}
+    </Paper>
+  </Stack>
+}
+
 export default function ConfiguracoesScreen(): ReactNode {
   const api = useApi()
-  const [aba, setAba] = useState<"parametros" | "modelos">("parametros")
+  const [aba, setAba] = useState<"parametros" | "modelos" | "providers">("parametros")
   const [configuracoes, setConfiguracoes] = useState<Configuracao[]>([])
   const [valores, setValores] = useState<Record<string, number | string | boolean>>({})
   const [loading, setLoading] = useState(true)
@@ -338,13 +495,16 @@ export default function ConfiguracoesScreen(): ReactNode {
 
   if (loading) return <Box sx={{ display: "grid", placeItems: "center", minHeight: 300 }} data-testid="configuracoes-loading"><CircularProgress /></Box>
   return <Stack spacing={2} data-testid="configuracoes-screen">
-    <Box><Typography variant="h4" fontWeight={700}>Configurações</Typography><Typography color="text.secondary">Parâmetros operacionais usados pelo Motor e configuração global da fila de modelos.</Typography></Box>
-    <Tabs value={aba} onChange={(_e, valor: "parametros" | "modelos") => setAba(valor)} data-testid="configuracoes-tabs">
+    <Box><Typography variant="h4" fontWeight={700}>Configurações</Typography><Typography color="text.secondary">Parâmetros operacionais usados pelo Motor, configuração global da fila de modelos e limites de paralelismo por provider.</Typography></Box>
+    <Tabs value={aba} onChange={(_e, valor: "parametros" | "modelos" | "providers") => setAba(valor)} data-testid="configuracoes-tabs">
       <Tab value="parametros" label="Parâmetros" data-testid="aba-parametros" />
       <Tab value="modelos" label="MODELOS" data-testid="aba-modelos" />
+      <Tab value="providers" label="Providers" data-testid="aba-providers" />
     </Tabs>
 
     {aba === "modelos" && <GlobalModelSelectionPanel />}
+
+    {aba === "providers" && <ProvidersLimitesPanel />}
 
     {aba === "parametros" && <Stack spacing={2}>
       {error && <Alert severity="error" data-testid="configuracoes-error">{error}</Alert>}

@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto'
 import type { Pool, PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
 import { createQueueMessage, insertOutboxMessage, type QueueMessage } from '../queue/index.js'
 import { createTaskBlockedMessage } from '../monitor/index.js'
+import { RealtimeMutationBoundary } from '../realtime/RealtimeMutationBoundary.js'
+import { buildRetryExecutionId } from './retryExecutionId.js'
 
 export interface DeployTaskContext {
   taskId: string
@@ -73,7 +75,11 @@ interface BatchRow extends RowDataPacket {
  * protege claim, criação de lote e outbox contra reentrega do RabbitMQ.
  */
 export class DeployRepository {
-  constructor(private readonly pool: Pool, private readonly worktreeRoot: string) {}
+  private readonly realtime: RealtimeMutationBoundary
+
+  constructor(private readonly pool: Pool, private readonly worktreeRoot: string) {
+    this.realtime = new RealtimeMutationBoundary(pool)
+  }
 
   async getEligibleTask(taskId: string): Promise<Omit<DeployTaskContext, 'integrationPath' | 'integrationBranch' | 'integrationCommit'> | null> {
     const [rows] = await this.pool.query<ContextRow[]>(`
@@ -258,7 +264,7 @@ export class DeployRepository {
 
   async requeueDispatch(source: QueueMessage, reason: string): Promise<void> {
     const message = createQueueMessage({ type: 'DEPLOY_BATCH_DISPATCH_REQUESTED', taskId: source.taskId,
-      executionId: `${source.executionId}-retry-${Date.now()}`, correlationId: source.correlationId ?? source.messageId,
+      executionId: buildRetryExecutionId(source.executionId, 'retry'), correlationId: source.correlationId ?? source.messageId,
       causationId: source.messageId, payload: { ...source.payload, deferredReason: reason } })
     const connection = await this.pool.getConnection()
     try { await connection.beginTransaction(); await this.insertOutbox(connection, message); await connection.commit() }
@@ -276,7 +282,7 @@ export class DeployRepository {
     const retryMessage = createQueueMessage({
       type: source.type,
       taskId: source.taskId,
-      executionId: `${source.executionId}-deploy-retry-${Date.now()}`,
+      executionId: buildRetryExecutionId(source.executionId, 'deploy-retry'),
       correlationId: source.correlationId ?? source.messageId,
       causationId: source.messageId,
       payload: { ...source.payload, deferredReason: reason, retryAfter: '30s' },
@@ -428,10 +434,13 @@ ${conflictData.conflictFiles.map(f => `- \`${f}\``).join('\n')}
         )
         
         // 3. Inserir mensagem no chat da tarefa
-        await connection.query(
+        const [chatInsert] = await connection.query<ResultSetHeader>(
           `INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) VALUES (?, 'assistant', ?, NOW())`,
           [databaseTaskId, chatMessage]
         )
+        await this.realtime.appendChatMessage(connection, databaseTaskId, {
+          id: Number(chatInsert.insertId), role: 'assistant', texto: chatMessage,
+        })
         
         // 4. Publicar evento TASK_BLOCKED no outbox (feed operacional)
         const blocked = createTaskBlockedMessage({
@@ -532,10 +541,13 @@ ${conflictData.conflictFiles.map(f => `- \`${f}\``).join('\n')}
           `**O que acontece agora:** Seu deploy foi separado do lote e retornará à fila após a resolução do conflito. ` +
           `Os demais membros do lote seguem normalmente.\n\n` +
           `**Ação necessária:** Rebase da branch de integração sobre a base atualizada para resolver o conflito.`
-        await connection.query(
+        const [chatInsert] = await connection.query<ResultSetHeader>(
           `INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) VALUES (?, 'assistant', ?, NOW())`,
           [conflict.databaseTaskId, chatMessage],
         )
+        await this.realtime.appendChatMessage(connection, conflict.databaseTaskId, {
+          id: Number(chatInsert.insertId), role: 'assistant', texto: chatMessage,
+        })
         // 5. Evento TASK_BLOCKED no outbox para o feed operacional
         const blocked = createTaskBlockedMessage({
           taskId: conflict.taskId,
@@ -786,6 +798,24 @@ ${conflictData.conflictFiles.map(f => `- \`${f}\``).join('\n')}
       await connection.commit()
       return reconcile
     } catch (error) { await connection.rollback(); throw error } finally { connection.release() }
+  }
+
+  /** Persiste o commit promovido na base para cada tarefa do lote. */
+  async recordBatchMergeCommit(batchId: string, mergeCommitSha: string): Promise<void> {
+    const connection = await this.pool.getConnection()
+    try {
+      await connection.beginTransaction()
+      await connection.query(
+        `UPDATE task_runtime_facts f
+           INNER JOIN deploy_requests dr ON dr.tarefa_id = f.tarefa_id
+          SET f.merge_commit_sha = ?, f.updated_at = NOW()
+        WHERE dr.batch_id = ?`, [mergeCommitSha, batchId],
+      )
+      await connection.commit()
+    } catch (error) {
+      await connection.rollback()
+      throw error
+    } finally { connection.release() }
   }
 
   async runningBatches(): Promise<DeployBatch[]> {

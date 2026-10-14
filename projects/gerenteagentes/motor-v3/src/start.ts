@@ -55,6 +55,7 @@ import { TaskAdjustmentConsumer, TASK_ADJUSTMENT_REQUESTED } from './adjustment/
 import { ensureCompletionTrigger } from './db/ensureTriggers.js'
 import { bootstrapMotorV3Catalog } from './db/bootstrap.js'
 import { warnOnMigrationJournalIntegrity } from './migrations/MigrationJournalIntegrity.js'
+import { RealtimeMutationBoundary } from './realtime/RealtimeMutationBoundary.js'
 
 // Config
 const PORT = parseInt(process.env.MOTOR_PORT || '3010')
@@ -113,12 +114,15 @@ async function start() {
   const db = drizzle(pool, { schema, mode: 'default' })
   const statusResolver = new DerivedTaskStatusResolver(pool)
   const externalResolutionHandler = new ExternalResolutionHandler(pool)
+  const motorActivityGate = new MotorActivityGate(pool)
+  const workerActivityService = new WorkerActivityService(pool, () => scheduler?.getActiveExecutions() ?? [], motorActivityGate)
   const realtime = new RealtimeMutationPublisher(pool, {
     // Ingresso autenticado para publicação de eventos em tempo real.
     endpoint: process.env.LIBRARY_REALTIME_EVENTS_URL ?? 'http://localhost:3001/api/internal/realtime/events',
     token: process.env.LIBRARY_REALTIME_EVENTS_TOKEN,
     tenantProjectId: Number(process.env.MOTOR_REALTIME_TENANT_PROJECT_ID ?? 640),
   })
+  const realtimeBoundary = new RealtimeMutationBoundary(pool)
 
   // O preflight precisa terminar antes de trigger, consumidores, scheduler,
   // HTTP e, principalmente, antes de o CatalogLoader compilar suas queries.
@@ -128,6 +132,8 @@ async function start() {
   realtimeOutboxDispatcher = new RealtimeOutboxDispatcher(pool, {
     endpoint: process.env.LIBRARY_REALTIME_EVENTS_URL ?? 'http://localhost:3001/api/internal/realtime/events',
     token: process.env.LIBRARY_REALTIME_EVENTS_TOKEN,
+    activityProvider: () => workerActivityService.getActivity(),
+    activityProjectId: Number(process.env.MOTOR_REALTIME_TENANT_PROJECT_ID ?? 640),
   })
   realtimeOutboxDispatcher.start()
 
@@ -177,8 +183,6 @@ async function start() {
   console.log('[Motor v3] Scheduler inicializado')
   // A mesma fonte é usada pelo endpoint de compatibilidade e pelo endpoint
   // dedicado, para que o Mapa não observe dois estados diferentes.
-  const motorActivityGate = new MotorActivityGate(pool)
-  const workerActivityService = new WorkerActivityService(pool, () => scheduler?.getActiveExecutions() ?? [], motorActivityGate)
 
   // 7. Inicializa Monitor Bridge
   console.log('[Motor v3] Inicializando Monitor Bridge...')
@@ -368,6 +372,7 @@ async function start() {
       analysisFailure: new MySqlAnalysisFailureBlocker(pool),
       maxAnalysisAttempts: Number(process.env.MOTOR_QUEUE_MAX_ATTEMPTS || 3),
       deployLock: deployRepository,
+      analysisCapacity: deployRepository,
       publishTaskReady: async (source, payload) => {
         if (!outboxPublisher) throw new Error('Outbox indisponível para TASK_READY_FOR_PROGRAMMING')
         await outboxPublisher.enqueue(createQueueMessage({
@@ -471,6 +476,12 @@ async function start() {
                closed_at=NULL, close_reason=NULL`,
             [metadata.subtaskId, session.agentId, input.model ?? 'console-default', session.sessionKey, session.sessionId],
           )
+          await developmentRepository.registerDevelopmentLease({
+            executionId: metadata.executionId,
+            taskDatabaseId: metadata.databaseTaskId,
+            subtaskId: metadata.subtaskId,
+            ttlMs: Number(process.env.MOTOR_DEVELOPMENT_LEASE_TTL_MS || 120000),
+          })
           await connection.query(
             `UPDATE tarefa_contextos_execucao SET estado='closed', closed_at=NOW(), updated_at=NOW()
               WHERE subtarefa_id=? AND fase='development' AND estado!='closed'`,
@@ -1150,10 +1161,13 @@ async function start() {
         )
         const nextGeneration = Number(genRows[0]?.max_generation ?? 0) + 1
         // Registrar mensagem do usuário no chat
-        await pool.query(
+        const [chatInsert] = await pool.query<any>(
           `INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) VALUES (?, 'user', ?, NOW())`,
           [databaseTaskId, message],
         )
+        await realtimeBoundary.enqueueChatMessage(databaseTaskId, {
+          id: Number(chatInsert.insertId), role: 'user', texto: message,
+        })
         // Enfileirar TASK_ADJUSTMENT_REQUESTED
         if (!outboxPublisher) {
           res.writeHead(503, { 'Content-Type': 'application/json' })

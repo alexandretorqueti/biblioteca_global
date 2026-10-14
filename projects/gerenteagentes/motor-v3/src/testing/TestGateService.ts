@@ -6,7 +6,7 @@ import { resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { gzip as gzipCallback } from 'node:zlib'
 import type { Pool, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
-import { MigrationDryRunExecutor, MigrationDryRunError } from '../migrations/MigrationDryRunExecutor.js'
+import { MigrationDryRunError, MigrationDryRunExecutor, MigrationWatermarkError } from '../migrations/MigrationDryRunExecutor.js'
 
 const execAsync = promisify(exec)
 const gzipAsync = promisify(gzipCallback)
@@ -99,6 +99,9 @@ export class TestGateService {
       } catch (error) {
         if (error instanceof MigrationDryRunError) {
           return this.failWithMigrationDryRunError(input, error, startedAt, environment)
+        }
+        if (error instanceof MigrationWatermarkError) {
+          return this.failWithMigrationWatermarkError(input, error, startedAt, environment)
         }
         throw error
       }
@@ -207,7 +210,6 @@ export class TestGateService {
     startedAt: Date,
     environment: { fingerprint: string; evidence: Record<string, unknown> },
   ): Promise<TestRunResult> {
-    const finishedAt = new Date()
     const failures: TestFailureRecord[] = error.violations.map(violation => ({
       fingerprint: createHash('sha256')
         .update(`migration-dry-run|${violation.project}|${violation.migration}|${violation.statementIndex}|${violation.mysqlMessage}`)
@@ -222,7 +224,45 @@ export class TestGateService {
       occurrenceCount: 1,
       classification: 'new',
     }))
-    const stderrContent = error.message
+    return this.recordMigrationGateFailure(input, failures, error.message, startedAt, environment)
+  }
+
+  /**
+   * Falha estruturada para `when` de journal abaixo/igual ao watermark de
+   * __drizzle_migrations (incidente task-p2-989): o drizzle-kit pularia a
+   * migration em silêncio e o deploy subiria sem o schema novo.
+   */
+  private async failWithMigrationWatermarkError(
+    input: TestGateInput,
+    error: MigrationWatermarkError,
+    startedAt: Date,
+    environment: { fingerprint: string; evidence: Record<string, unknown> },
+  ): Promise<TestRunResult> {
+    const failures: TestFailureRecord[] = error.violations.map(violation => ({
+      fingerprint: createHash('sha256')
+        .update(`migration-watermark|${violation.project}|${violation.migration}|${violation.entryWhen}|${violation.databaseWatermark}`)
+        .digest('hex'),
+      suite: `migration-watermark/${violation.project}`,
+      testCase: `${violation.migration} (when=${violation.entryWhen})`,
+      errorType: 'MigrationWatermarkError',
+      normalizedMessage: `when=${violation.entryWhen} <= watermark=${violation.databaseWatermark}: o drizzle-kit PULARIA esta migration em silêncio. Aumente o when no meta/_journal.json.`.slice(0, 2000),
+      sourceFile: `projects/${violation.project}/migrations/meta/_journal.json`,
+      sourceLine: 0,
+      rawExcerpt: error.message.slice(0, 4000),
+      occurrenceCount: 1,
+      classification: 'new',
+    }))
+    return this.recordMigrationGateFailure(input, failures, error.message, startedAt, environment)
+  }
+
+  private async recordMigrationGateFailure(
+    input: TestGateInput,
+    failures: TestFailureRecord[],
+    stderrContent: string,
+    startedAt: Date,
+    environment: { fingerprint: string; evidence: Record<string, unknown> },
+  ): Promise<TestRunResult> {
+    const finishedAt = new Date()
     const [inserted] = await this.pool.execute<ResultSetHeader>(
       `INSERT INTO test_runs
         (projeto_id, tarefa_id, subtarefa_id, phase, baseline_run_id, commit_sha, base_commit_sha,

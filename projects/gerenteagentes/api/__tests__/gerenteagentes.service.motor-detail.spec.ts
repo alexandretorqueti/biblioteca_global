@@ -25,9 +25,9 @@ function requestMock(): ReturnType<typeof vi.fn> {
   });
 }
 
-function novoService(): GerenteAgentesService {
+function novoService(tarefaRow?: Record<string, unknown>): GerenteAgentesService {
   let orderedSelects = 0;
-  const task = { id: 1, externalId: 'task-1', titulo: 'Tarefa' };
+  const task = { id: 1, externalId: 'task-1', titulo: 'Tarefa', ...(tarefaRow ?? {}) };
   const subtaskRows = [
     { id: 10, seq: 1, titulo: 'Bloqueada', status: 'blocked', deliverCount: 0, resultado: null, scope: null, acceptanceCriteria: null, workspaceStatus: null, workspaceBranch: null, workspaceCommitSha: null, correctionForSubtaskId: null },
     { id: 11, seq: 2, titulo: 'Concluída', status: 'completed', deliverCount: 1, resultado: 'Entrega persistida', scope: null, acceptanceCriteria: null, workspaceStatus: null, workspaceBranch: null, workspaceCommitSha: null, correctionForSubtaskId: null },
@@ -68,5 +68,17 @@ describe('GerenteAgentesService — motor-detail', () => {
       blockInfo: null,
       resultado: 'Entrega persistida',
     });
+  });
+
+  it('expõe a descrição persistida em tarefas.descricao no objeto task da resposta', async () => {
+    const detail = await novoService({ descricao: 'Descrição persistida da tarefa' }).motorDetailTarefa({} as never, 1);
+
+    expect(detail.task).toMatchObject({ descricao: 'Descrição persistida da tarefa' });
+  });
+
+  it('expõe descricao null quando a tarefa não tem descrição persistida', async () => {
+    const detail = await novoService({ descricao: null }).motorDetailTarefa({} as never, 1);
+
+    expect(detail.task).toMatchObject({ descricao: null });
   });
 });

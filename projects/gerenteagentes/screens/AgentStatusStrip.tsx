@@ -21,7 +21,7 @@ import {
 
 /** Descrição de atividade do motor (kind + taskIds da leva). */
 export interface MotorActivityInfo {
-  kind: "testing" | "worktree" | "deploying" | "executing"
+  kind: "testing" | "worktree" | "git" | "deploying" | "executing"
   message: string
   taskIds: string[]
 }
@@ -56,6 +56,7 @@ export interface AgentStatusStripProps {
 function activityLabel(kind: MotorActivityInfo["kind"]): string {
   if (kind === "deploying") return "Realizando deploy"
   if (kind === "worktree") return "Criando worktree"
+  if (kind === "git") return "Realizando operações git"
   if (kind === "testing") return "Testando trabalho do desenvolvedor"
   return "Executando tarefa"
 }
@@ -117,8 +118,9 @@ export default function AgentStatusStrip({ motorActive, motorIsRunning = false, 
     ]
   }, [workers])
 
-  // TaskIds da leva de deploy (exibidos como chips na seção do Motor)
-  const deployTaskIds = motorActivity?.kind === "deploying" ? motorActivity.taskIds : []
+  // Os ids acompanham qualquer atividade operacional do motor, inclusive
+  // operações git, testes e deploys em leva.
+  const activityTaskIds = motorActivity?.taskIds ?? []
 
   return (
     <Paper
@@ -164,16 +166,27 @@ export default function AgentStatusStrip({ motorActive, motorIsRunning = false, 
           <Typography variant="caption" fontWeight={700} sx={{ color: motorState.color, whiteSpace: "nowrap" }}>
             {motorState.text}
           </Typography>
-          {deployTaskIds.map((id) => (
+          {activityTaskIds.map((id) => (
             <Chip
-              key={`deploy-${id}`}
+              key={`motor-${id}`}
               size="small"
               label={`#${id}`}
               variant="outlined"
               sx={{ ml: 0.25 }}
-              data-testid={`motor-deploy-task-${id}`}
+              data-testid={motorActivity?.kind === "deploying"
+                ? `motor-deploy-task-${id}`
+                : `motor-${motorActivity?.kind ?? "activity"}-task-${id}`}
             />
           ))}
+          {motorActivity && (
+            <Typography
+              variant="caption"
+              data-testid="motor-activity-message"
+              sx={{ width: "100%", color: "text.secondary" }}
+            >
+              {motorActivity.message}
+            </Typography>
+          )}
         </Box>
       </Stack>
     </Paper>

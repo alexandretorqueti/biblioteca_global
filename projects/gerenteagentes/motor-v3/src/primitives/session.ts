@@ -23,7 +23,7 @@ export const createSession: PrimitiveDefinition = {
       const sessionKey = context.sessionKind === 'monitor'
         ? `analysis-monitor-${modelName}-${context.taskId}-b${context.monitorBlockerId ?? context.executionId}`
         : context.sessionKind === 'baseline_fix'
-          ? `baseline-fix-${modelName}-${context.taskId}-s${context.subtaskId ?? context.executionId}`
+          ? `analysis-baseline-fix-${modelName}-${context.taskId}-s${context.subtaskId ?? context.executionId}`
         : context.subtaskId == null
           ? (() => { throw new Error('Sessão DEV exige subtaskId') })()
           : `dev-${modelName}-${context.taskId}-s${context.subtaskId}`

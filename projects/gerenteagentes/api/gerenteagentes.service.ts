@@ -1,6 +1,6 @@
 import { Injectable, Inject, Logger, NotFoundException, BadRequestException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { eq, desc, and, asc, lt, or, isNull, sql } from 'drizzle-orm';
+import { eq, desc, and, asc, lt, or, isNull, inArray, sql } from 'drizzle-orm';
 import { request as httpRequest, type RequestOptions } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { randomUUID } from 'node:crypto';
@@ -44,6 +44,7 @@ import {
   realtimeEventOutbox,
   projetoMotorConfig,
   deployRequests,
+  motorProviderLimits,
 } from '../schema';
 import {
   MOTOR_CONFIGURACOES,
@@ -54,7 +55,7 @@ import type { PromptPart } from '../src/prompts/PromptComposition';
 import { ProvisionService } from '../../../apps/api/src/modules/provision/provision.service';
 import { RealtimeService } from '../../../apps/api/src/modules/realtime/realtime.service';
 import { GitInspectorService } from './git-inspector.service';
-import { RealtimeMutationBoundaryService } from './realtime-mutation-boundary.service';
+import { RealtimeMutationBoundaryService, REALTIME_TENANT_PROJECT_ID } from './realtime-mutation-boundary.service';
 
 const DEFAULT_SESSION_PAGE_SIZE = 50;
 const MAX_SESSION_PAGE_SIZE = 500;
@@ -554,6 +555,128 @@ export class GerenteAgentesService {
   }
 
   /**
+   * Providers distintos na ordem de aparição dos modelos do Console — a MESMA
+   * fonte/derivação da tela de modelos (ConfiguracoesScreen `providersDe`),
+   * que lista os providers do GET /modelos-console.
+   */
+  private providersDeModelosConsole(
+    modelos: ReadonlyArray<{ provider: string }>,
+  ): string[] {
+    const vistos = new Set<string>();
+    const ordenados: string[] = [];
+    for (const m of modelos) {
+      if (!m.provider || vistos.has(m.provider)) continue;
+      vistos.add(m.provider);
+      ordenados.push(m.provider);
+    }
+    return ordenados;
+  }
+
+  /**
+   * Lista os limites de paralelismo por provider (aba PROVIDERS da tela
+   * CONFIGURAÇÕES). Um item por provider exibido na tela de modelos do
+   * projeto (mesma fonte: service.listarModelosConsole); limites null quando
+   * não configurados. Persistência em motor_provider_limits (banco do Motor).
+   */
+  async listarLimitesProviders(): Promise<Array<{
+    provider: string;
+    limiteExecucaoTotal: number | null;
+    limiteAnalises: number | null;
+    limiteDesenvolvimento: number | null;
+  }>> {
+    const modelos = await this.listarModelosConsole();
+    const providers = this.providersDeModelosConsole(modelos);
+    const db = await this.dbDoMotor();
+    const limites = new Map<string, { limiteExecucaoTotal: number | null; limiteAnalises: number | null; limiteDesenvolvimento: number | null }>();
+    if (providers.length > 0) {
+      const rows = await db
+        .select({
+          provider: motorProviderLimits.provider,
+          limiteExecucaoTotal: motorProviderLimits.limiteExecucaoTotal,
+          limiteAnalises: motorProviderLimits.limiteAnalises,
+          limiteDesenvolvimento: motorProviderLimits.limiteDesenvolvimento,
+        })
+        .from(motorProviderLimits)
+        .where(inArray(motorProviderLimits.provider, providers));
+      for (const row of rows) {
+        limites.set(row.provider, {
+          limiteExecucaoTotal: row.limiteExecucaoTotal ?? null,
+          limiteAnalises: row.limiteAnalises ?? null,
+          limiteDesenvolvimento: row.limiteDesenvolvimento ?? null,
+        });
+      }
+    }
+    return providers.map((provider) => ({
+      provider,
+      limiteExecucaoTotal: limites.get(provider)?.limiteExecucaoTotal ?? null,
+      limiteAnalises: limites.get(provider)?.limiteAnalises ?? null,
+      limiteDesenvolvimento: limites.get(provider)?.limiteDesenvolvimento ?? null,
+    }));
+  }
+
+  /**
+   * Persiste os três limites de um provider. Validação espelha o padrão das
+   * configurações do Motor: inteiro entre 1 e 100, NULL = sem restrição.
+   * Provider fora da fonte (catálogo do Console) é rejeitado — mesma lista
+   * exibida na tela de modelos.
+   */
+  async salvarLimiteProvider(provider: string, body: unknown): Promise<{
+    provider: string;
+    limiteExecucaoTotal: number | null;
+    limiteAnalises: number | null;
+    limiteDesenvolvimento: number | null;
+  }> {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      throw new BadRequestException('Body inválido — esperado objeto com limiteExecucaoTotal, limiteAnalises e limiteDesenvolvimento');
+    }
+    const payload = body as Record<string, unknown>;
+    const campos = ['limiteExecucaoTotal', 'limiteAnalises', 'limiteDesenvolvimento'] as const;
+    for (const campo of campos) {
+      if (!(campo in payload)) {
+        throw new BadRequestException(`Campo ausente: ${campo} (use null para remover a restrição)`);
+      }
+    }
+    const valores: Record<(typeof campos)[number], number | null> = {
+      limiteExecucaoTotal: null,
+      limiteAnalises: null,
+      limiteDesenvolvimento: null,
+    };
+    for (const campo of campos) {
+      const valor = payload[campo];
+      if (valor === null) {
+        valores[campo] = null;
+        continue;
+      }
+      if (typeof valor !== 'number' || !Number.isInteger(valor) || valor < 1 || valor > 100) {
+        throw new BadRequestException(`Valor inválido para ${campo}: inteiro entre 1 e 100, ou null para remover a restrição`);
+      }
+      valores[campo] = valor;
+    }
+
+    // O provider precisa existir na fonte da tela de modelos (catálogo do Console).
+    const modelos = await this.listarModelosConsole();
+    const providers = this.providersDeModelosConsole(modelos);
+    if (!providers.includes(provider)) {
+      throw new BadRequestException(`Provider desconhecido: ${provider}. Providers válidos: ${providers.join(', ')}`);
+    }
+
+    const db = await this.dbDoMotor();
+    await db
+      .insert(motorProviderLimits)
+      .values({ provider, ...valores })
+      .onDuplicateKeyUpdate({
+        set: {
+          limiteExecucaoTotal: valores.limiteExecucaoTotal,
+          limiteAnalises: valores.limiteAnalises,
+          limiteDesenvolvimento: valores.limiteDesenvolvimento,
+          updatedAt: new Date(),
+        },
+      });
+
+    return { provider, ...valores };
+  }
+
+  /**
    * Sincroniza agentes do OpenClaw com a tabela local.
    * Cria/atualiza registros na tabela agentes baseado nos agentes do OpenClaw.
    * Retorna estatísticas da sincronização (criados, atualizados, total).
@@ -1050,7 +1173,7 @@ export class GerenteAgentesService {
         type: 'task.created',
         previousStatus: null,
         status: 'draft',
-        payload: { title: tarefaCriada.titulo, status: 'draft', tipo: tarefaCriada.tipo, managedProjectId },
+        payload: { title: tarefaCriada.titulo, descricao: tarefaCriada.descricao ?? null, status: 'draft', tipo: tarefaCriada.tipo, managedProjectId },
         perTaskSeq: 1,
         deliveryStatus: 'pending',
         attempts: 0,
@@ -1862,7 +1985,9 @@ export class GerenteAgentesService {
         eventId: randomUUID(),
         occurredAt: createdAt.toISOString(),
         source: 'gerenteagentes.chat',
-        projectId: Number(tarefa.projetoId),
+        // `projectId` roteia o WebSocket do tenant; o projeto gerenciado
+        // continua explícito no payload como `managedProjectId`.
+        projectId: REALTIME_TENANT_PROJECT_ID,
         taskId: tarefaId,
         type: 'task.chat.message.created',
         payload: {
@@ -1871,6 +1996,7 @@ export class GerenteAgentesService {
           role: 'user',
           texto: normalizedText,
           createdAt: createdAt.toISOString(),
+          managedProjectId: Number(tarefa.projetoId),
         },
       });
     } catch (error) {
@@ -1947,8 +2073,9 @@ export class GerenteAgentesService {
           try {
             this.realtime?.publicar({
               eventId: randomUUID(), occurredAt: createdAt.toISOString(), source: 'gerenteagentes.chat',
-              projectId: Number(tarefa.projetoId), taskId: tarefa.id, type: 'task.chat.message.created',
-              payload: { id: created.id, tarefaId: tarefa.id, role: 'analyst', texto: respostaTexto, createdAt: createdAt.toISOString() },
+              // Roteamento pelo tenant da Biblioteca; projeto gerenciado no payload.
+              projectId: REALTIME_TENANT_PROJECT_ID, taskId: tarefa.id, type: 'task.chat.message.created',
+              payload: { id: created.id, tarefaId: tarefa.id, role: 'analyst', texto: respostaTexto, createdAt: createdAt.toISOString(), managedProjectId: Number(tarefa.projetoId) },
             });
           } catch (error) {
             this.logger.warn(`Falha ao publicar evento realtime da resposta do analista na tarefa ${tarefa.id}: ${error instanceof Error ? error.message : String(error)}`);
@@ -2399,6 +2526,8 @@ export class GerenteAgentesService {
         task: {
           id: motorTask.id || String(tarefaId),
           title: motorTask.title || tarefa.titulo,
+          // A descrição persistida em `tarefas.descricao` é a fonte canônica para a aba Resumo.
+          descricao: tarefa.descricao ?? null,
           // O status calculado pelo motor (via fatos operacionais) é a fonte canônica.
           status: motorTask.status || 'pending',
           integrationBranch: `motor/${motorId}/integracao`,
@@ -2910,7 +3039,18 @@ export class GerenteAgentesService {
   private async resolverContextoGitTarefa(
     projeto: ProjetoResumo,
     tarefaId: number,
-  ): Promise<{ repoPath: string; integrationBranch: string; baseBranch: string; externalId: string | null; projectSubdir: string }> {
+  ): Promise<{
+    repoPath: string;
+    integrationBranch: string;
+    baseBranch: string;
+    taskRef: string;
+    branchExists: boolean;
+    externalId: string | null;
+    projectSubdir: string;
+    integrationCommitSha: string | null;
+    baseCommitSha: string | null;
+    mergeCommitSha: string | null;
+  }> {
     const db = await this.dbDoMotor();
 
     // Buscar tarefa com externalId e projetoId
@@ -2944,12 +3084,49 @@ export class GerenteAgentesService {
     const integrationBranch = `motor-v3-work/integration-${taskIdentifier}`;
     const baseBranch = 'base-desenvolvimento';
 
+    const [facts] = await db
+      .select({
+        integrationCommitSha: taskRuntimeFacts.integrationCommitSha,
+        baseCommitSha: taskRuntimeFacts.baseCommitSha,
+        mergeCommitSha: taskRuntimeFacts.mergeCommitSha,
+      })
+      .from(taskRuntimeFacts)
+      .where(eq(taskRuntimeFacts.tarefaId, tarefaId))
+      .limit(1);
+
+    const branchExists = this.gitInspector
+      ? await this.gitInspector.branchExists(repoRoot, integrationBranch)
+      : false;
+    const integrationCommitSha = facts?.integrationCommitSha ?? null;
+    const baseCommitSha = facts?.baseCommitSha ?? null;
+    const mergeCommitSha = facts?.mergeCommitSha ?? null;
+
+    // A branch temporária é preferida enquanto existe. Depois da limpeza,
+    // o commit persistido é a referência permanente da tarefa.
+    let taskRef = integrationBranch;
+    if (!branchExists) {
+      const evidenceExists = integrationCommitSha && this.gitInspector
+        ? await this.gitInspector.commitExists(repoRoot, integrationCommitSha)
+        : false;
+      if (!evidenceExists) {
+        throw new NotFoundException(
+          `Branch de integração '${integrationBranch}' não encontrada e não há evidência de commit integrada para a tarefa`,
+        );
+      }
+      taskRef = integrationCommitSha!;
+    }
+
     return {
       repoPath: repoRoot,
       integrationBranch,
       baseBranch,
+      taskRef,
+      branchExists,
       externalId: tarefa.externalId,
       projectSubdir,
+      integrationCommitSha,
+      baseCommitSha,
+      mergeCommitSha,
     };
   }
 
@@ -3015,19 +3192,16 @@ export class GerenteAgentesService {
     if (!this.gitInspector) throw new BadRequestException('GitInspectorService não disponível');
     const ctx = await this.resolverContextoGitTarefa(projeto, tarefaId);
 
-    // Verifica se a branch de integração existe
-    const exists = await this.gitInspector.branchExists(ctx.repoPath, ctx.integrationBranch);
-    if (!exists) {
-      throw new NotFoundException(
-        `Branch de integração '${ctx.integrationBranch}' não encontrada — tarefa ainda sem worktree ou não iniciada`,
-      );
-    }
-
-    const commits = await this.gitInspector.listCommits(ctx.repoPath, ctx.baseBranch, ctx.integrationBranch);
+    const fromRef = ctx.branchExists ? ctx.baseBranch : (ctx.baseCommitSha ?? ctx.baseBranch);
+    const commits = await this.gitInspector.listCommits(ctx.repoPath, fromRef, ctx.taskRef);
     return {
       taskId: tarefaId,
       integrationBranch: ctx.integrationBranch,
       baseBranch: ctx.baseBranch,
+      ref: ctx.taskRef,
+      integrationCommitSha: ctx.integrationCommitSha,
+      baseCommitSha: ctx.baseCommitSha,
+      mergeCommitSha: ctx.mergeCommitSha,
       projectSubdir: ctx.projectSubdir,
       commits,
     };
@@ -3042,11 +3216,14 @@ export class GerenteAgentesService {
     if (!this.gitInspector) throw new BadRequestException('GitInspectorService não disponível');
     const ctx = await this.resolverContextoGitTarefa(projeto, tarefaId);
 
-    const targetRef = ref || ctx.integrationBranch;
+    const targetRef = ref || ctx.taskRef;
     const tree = await this.gitInspector.listTree(ctx.repoPath, targetRef, ctx.projectSubdir);
     return {
       taskId: tarefaId,
       ref: targetRef,
+      integrationCommitSha: ctx.integrationCommitSha,
+      baseCommitSha: ctx.baseCommitSha,
+      mergeCommitSha: ctx.mergeCommitSha,
       projectSubdir: ctx.projectSubdir,
       tree,
     };
@@ -3074,6 +3251,9 @@ export class GerenteAgentesService {
     return {
       taskId: tarefaId,
       ref,
+      integrationCommitSha: ctx.integrationCommitSha,
+      baseCommitSha: ctx.baseCommitSha,
+      mergeCommitSha: ctx.mergeCommitSha,
       path: filePath,
       fullPath,
       content,
@@ -3099,6 +3279,10 @@ export class GerenteAgentesService {
       taskId: tarefaId,
       from,
       to,
+      ref: ctx.taskRef,
+      integrationCommitSha: ctx.integrationCommitSha,
+      baseCommitSha: ctx.baseCommitSha,
+      mergeCommitSha: ctx.mergeCommitSha,
       projectSubdir: ctx.projectSubdir,
       files,
     };
@@ -3111,11 +3295,27 @@ export class GerenteAgentesService {
     if (!this.gitInspector) throw new BadRequestException('GitInspectorService não disponível');
     const ctx = await this.resolverContextoGitTarefa(projeto, tarefaId);
 
-    // Verifica se a branch de integração existe
-    const exists = await this.gitInspector.branchExists(ctx.repoPath, ctx.integrationBranch);
-    if (!exists) {
+    if (!ctx.branchExists) {
+      const integrated = await this.gitInspector.isAncestor(
+        ctx.repoPath,
+        ctx.taskRef,
+        ctx.baseBranch,
+      );
+      if (integrated) {
+        return {
+          taskId: tarefaId,
+          projectSubdir: ctx.projectSubdir,
+          status: 'already_integrated',
+          message: `Tarefa já integrada em ${ctx.baseBranch}`,
+          ref: ctx.taskRef,
+          integrationCommitSha: ctx.integrationCommitSha,
+          baseCommitSha: ctx.baseCommitSha,
+          mergeCommitSha: ctx.mergeCommitSha,
+          mergeCommitShaEffective: ctx.mergeCommitSha ?? ctx.integrationCommitSha,
+        };
+      }
       throw new NotFoundException(
-        `Branch de integração '${ctx.integrationBranch}' não encontrada — tarefa ainda sem worktree ou não iniciada`,
+        `Branch de integração '${ctx.integrationBranch}' não encontrada e o commit persistido ainda não foi integrado em '${ctx.baseBranch}'`,
       );
     }
 
@@ -3123,6 +3323,11 @@ export class GerenteAgentesService {
     return {
       taskId: tarefaId,
       projectSubdir: ctx.projectSubdir,
+      status: 'pending',
+      ref: ctx.taskRef,
+      integrationCommitSha: ctx.integrationCommitSha,
+      baseCommitSha: ctx.baseCommitSha,
+      mergeCommitSha: ctx.mergeCommitSha,
       ...result,
     };
   }

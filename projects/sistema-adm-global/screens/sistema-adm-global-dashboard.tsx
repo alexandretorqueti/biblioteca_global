@@ -30,12 +30,14 @@ import { useApi } from "../../../apps/web/src/hooks/useApi"
 import { useAuth } from "../../../apps/web/src/auth/AuthContext"
 export const componentId = "sistema-adm-global-dashboard"
 
+// O CRUD devolve as linhas do Drizzle com as propriedades TS do schema
+// (camelCase): imageUrl/publicadoEm. A tela lê exatamente essas chaves.
 interface Circular {
   id: number
   titulo: string
-  image_url?: string | null
+  imageUrl?: string | null
   conteudo: string
-  publicado_em: string | null
+  publicadoEm: string | null
   autor?: string | null
   ativo?: boolean | null
 }
@@ -72,7 +74,8 @@ export default function SistemaAdmGlobalDashboard(): ReactNode {
     try {
       const resultado = await bundle.http.request<PaginatedResult<Circular>>(
         "GET",
-        `/${projeto.slug}/circulares`,
+        // Resource físico da tabela circular (whitelist do DynamicSchemaRegistry).
+        `/${projeto.slug}/circular`,
         { query: { pageSize: 100 }, auth: "access" },
       )
       setCirculares(resultado.items ?? [])
@@ -324,11 +327,11 @@ export default function SistemaAdmGlobalDashboard(): ReactNode {
                     },
                   }}
                 >
-                  {circular.image_url ? (
+                  {circular.imageUrl ? (
                     <CardMedia
                       component="img"
                       height="160"
-                      image={circular.image_url}
+                      image={circular.imageUrl}
                       alt=""
                       sx={{
                         objectFit: "cover",
@@ -379,7 +382,7 @@ export default function SistemaAdmGlobalDashboard(): ReactNode {
                       color="text.secondary"
                       sx={{ fontVariantNumeric: "tabular-nums" }}
                     >
-                      {circular.publicado_em ? formatarData(circular.publicado_em) : "—"}
+                      {circular.publicadoEm ? formatarData(circular.publicadoEm) : "—"}
                     </Typography>
                   </CardContent>
                   <CardActions sx={{ px: 2, pb: 2, pt: 0 }}>
@@ -438,10 +441,10 @@ export default function SistemaAdmGlobalDashboard(): ReactNode {
               <CloseRounded />
             </IconButton>
             <DialogContent dividers sx={{ p: { xs: 2, sm: 3 } }}>
-              {circularAberta.image_url ? (
+              {circularAberta.imageUrl ? (
                 <Box
                   component="img"
-                  src={circularAberta.image_url}
+                  src={circularAberta.imageUrl}
                   alt=""
                   sx={{
                     width: "100%",
@@ -475,7 +478,7 @@ export default function SistemaAdmGlobalDashboard(): ReactNode {
                   fontVariantNumeric: "tabular-nums",
                 }}
               >
-                Publicado em: {circularAberta.publicado_em ? formatarData(circularAberta.publicado_em, true) : "—"}
+                Publicado em: {circularAberta.publicadoEm ? formatarData(circularAberta.publicadoEm, true) : "—"}
               </Typography>
             </DialogContent>
             <DialogActions sx={{ px: 3, py: 2 }}>

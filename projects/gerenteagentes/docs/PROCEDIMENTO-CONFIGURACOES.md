@@ -24,12 +24,12 @@ Esses parâmetros são editáveis através da tela **CONFIGURAÇÕES** no painel
 
 | Chave | Padrão | Regra | Descrição |
 |---|---:|---|---|
-| `motor.max_workers` | `1` | inteiro entre 1 e 100 | Número máximo global de tarefas de desenvolvimento em paralelo. |
-| `motor.max_workers_per_project` | `1` | inteiro entre 1 e 100 | Número máximo de tarefas em paralelo por projeto. |
+| `motor.max_workers` | `1` | inteiro entre 1 e 100 | Número máximo global de análises e, independentemente, de execuções DEV em paralelo. |
+| `motor.max_workers_per_project` | `1` | inteiro entre 1 e 100 | Número máximo de análises e, independentemente, de execuções DEV por projeto em paralelo. |
 
 **Impacto operacional:**
-- `max_workers`: controla quantas subtarefas de desenvolvimento podem executar simultaneamente no motor. Valores maiores aumentam throughput mas consomem mais recursos (vRAM para modelos locais, CPU, memória).
-- `max_workers_per_project`: evita que um único projeto ocupe todas as vagas do motor. Útil quando há múltiplos projetos ativos.
+- `max_workers`: controla separadamente quantas análises e subtarefas de desenvolvimento podem executar simultaneamente no motor. Valores maiores aumentam throughput mas consomem mais recursos (vRAM para modelos locais, CPU, memória).
+- `max_workers_per_project`: limita cada tipo de trabalho por projeto; a análise e o DEV têm vagas independentes. Quando não há vaga de análise, a retomada é reenfileirada automaticamente por 30s, sem bloquear a tarefa nem consumir tentativa.
 
 **Recomendação:** para ambientes com modelos locais, manter `max_workers` baixo (1-2) para evitar estouro de vRAM. Para ambientes com APIs remotas, pode aumentar para 3-5 conforme capacidade do host.
 

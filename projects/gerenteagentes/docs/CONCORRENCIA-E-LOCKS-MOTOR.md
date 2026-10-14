@@ -27,6 +27,20 @@ em `execution_resources`) antes de escalar.
 
 ## Locks de banco (ResourceLeaseService)
 
+### Limites independentes de análise e DEV
+
+`motor.max_workers` e `motor.max_workers_per_project` são lidos no momento de
+cada reserva/claim. A reserva de subtarefa DEV conta somente subtarefas DEV
+ativas; o claim de análise conta somente `task_runtime_facts` com
+`analysis_started_at`/`analysis_execution_id` ativos. Portanto, uma análise e
+uma execução DEV podem ocupar uma vaga de cada grupo simultaneamente.
+
+O claim de análise bloqueia, em uma única transação, as duas linhas de
+`motor_configuracoes` com `SELECT ... FOR UPDATE` antes de contar as análises.
+Se o limite global ou por projeto estiver cheio, não faz claim: cria uma nova
+mensagem no `motor_outbox` com atraso de 30s (`requeueForDeployRetry`). A
+retomada permanece planejada e volta automaticamente quando houver vaga.
+
 | Recurso | Chave | Onde é usado |
 |---|---|---|
 | Análise (global, exclusivo) | `motor:analysis` | `startTaskAnalysis` — apenas uma análise por vez no motor |

@@ -17,7 +17,7 @@ export interface WorkerActivity {
 }
 
 export interface MotorActivityDescription {
-  kind: 'testing' | 'worktree' | 'deploying' | 'executing'
+  kind: 'testing' | 'worktree' | 'deploying' | 'executing' | 'git'
   message: string
   taskIds: string[]
 }
@@ -187,8 +187,17 @@ export class WorkerActivityService {
       : [...new Set(workers.map(worker => worker.taskId).filter((taskId): taskId is string => Boolean(taskId)))]
     const phase = `${source.phase ?? ''}`.toLowerCase()
     if (phase.includes('test') || phase.includes('verify')) return { kind: 'testing', message: `testando tarefa ${source.taskId ?? ''}`.trim(), taskIds }
-    if (phase.includes('worktree')) return { kind: 'worktree', message: `criando worktree da tarefa ${source.taskId ?? ''}`.trim(), taskIds }
+    if (phase.includes('worktree') || phase.includes('workspace') || phase.includes('prepare_worktree')) return { kind: 'worktree', message: `criando worktree da tarefa ${source.taskId ?? ''}`.trim(), taskIds }
     if (phase.includes('deploy')) return { kind: 'deploying', message: `fazendo deploy das tarefas ${taskIds.join(', ')}`, taskIds }
+    if (phase.includes('git') || phase.includes('integrat') || phase.includes('promot') || phase.includes('merg') || phase.includes('cherry') || phase.includes('rebas') || phase.includes('baseline')) {
+      return { kind: 'git', message: `operação git da tarefa ${source.taskId ?? ''}`.trim(), taskIds
+      }
+    }
     return { kind: 'executing', message: `motor executando tarefa ${source.taskId ?? ''}`.trim(), taskIds }
   }
+}
+
+/** Assinatura estável usada pelo dispatcher para não publicar snapshots iguais. */
+export function workerActivitySignature(snapshot: WorkerActivityResponse): string {
+  return JSON.stringify({ motor: snapshot.motor, workers: snapshot.workers })
 }

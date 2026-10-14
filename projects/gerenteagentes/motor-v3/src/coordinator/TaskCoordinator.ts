@@ -10,6 +10,7 @@ import type { GovernedFailureHandler } from '../governance/GovernedFailureHandle
 import type { ErrorInput } from '../classifier/EventClassifier.js'
 
 export type TaskLifecycleStatus = DerivedTaskStatus
+export type AnalysisClaimResult = boolean | 'capacity_waiting'
 
 export interface TaskSnapshot {
   taskId: string
@@ -42,7 +43,7 @@ export interface TaskSnapshot {
  */
 export interface TaskCoordinatorRepository {
   getTask(taskId: string): Promise<TaskSnapshot | null>
-  claimAnalysis(taskId: string, executionId: string): Promise<boolean>
+  claimAnalysis(taskId: string, executionId: string): Promise<AnalysisClaimResult>
   releaseAnalysisClaim(taskId: string, executionId: string): Promise<void>
   persistAnalysis(taskId: string, executionId: string, outcome: AnalysisOutcome): Promise<void>
 }
@@ -84,6 +85,8 @@ export interface TaskCoordinatorConfig {
    * rejeita com reasonCode 'deploy_in_progress' e emite TASK_IGNORED.
    */
   deployLock?: { isDeployLocked(): Promise<boolean>; requeueForDeployRetry(message: QueueMessage, reason: string): Promise<void> }
+  /** Requeue durável quando não há vaga de análise, sem consumir tentativa do broker. */
+  analysisCapacity?: { requeueForDeployRetry(message: QueueMessage, reason: string): Promise<void> }
   /**
    * Roteador opcional do catálogo para falhas de análise. Quando ausente, o
    * coordenador mantém integralmente o comportamento legado.
@@ -115,6 +118,7 @@ export class TaskCoordinator {
   private readonly analysisLease?: AnalysisExecutionLeaseRepository
   private readonly analysisLeaseTtlMs: number
   private readonly deployLock?: { isDeployLocked(): Promise<boolean>; requeueForDeployRetry(message: QueueMessage, reason: string): Promise<void> }
+  private readonly analysisCapacity?: { requeueForDeployRetry(message: QueueMessage, reason: string): Promise<void> }
   private readonly governedFailureHandler?: GovernedFailureHandler
 
   constructor(
@@ -134,6 +138,7 @@ export class TaskCoordinator {
     this.analysisLease = this.hasAnalysisLease(repository) ? repository : undefined
     this.analysisLeaseTtlMs = config.analysisLeaseTtlMs ?? 90_000
     this.deployLock = config.deployLock
+    this.analysisCapacity = config.analysisCapacity
     this.governedFailureHandler = config.governedFailureHandler
   }
 
@@ -239,6 +244,11 @@ export class TaskCoordinator {
     const executionId = this.executionIdFactory(message)
     const analysisAttempt = message.attempt || 1
     const claimed = await this.repository.claimAnalysis(task.taskId, executionId)
+    if (claimed === 'capacity_waiting') {
+      await this.log(operationId, sequence++, 'rejected', 'rejected', message, { reasonCode: 'analysis_capacity_waiting' })
+      await (this.analysisCapacity ?? this.deployLock)?.requeueForDeployRetry(message, 'analysis_capacity_waiting')
+      return
+    }
     await this.log(operationId, sequence++, 'primitive', claimed ? 'succeeded' : 'rejected', message, { primitiveCode: 'claim_analysis_atomic', result: { executionId, analysisAttempt }, reasonCode: claimed ? undefined : 'analysis_already_claimed' })
     if (!claimed) {
       await this.emit('TASK_IGNORED', message, { reason: 'analysis_already_claimed', executionId, analysisAttempt })

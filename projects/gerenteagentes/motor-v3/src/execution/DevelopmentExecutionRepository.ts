@@ -6,6 +6,7 @@ import { cancelUnstartedDeployRequests } from '../deploy/DeployRequestFinalizer.
 import type { RealtimeMutationPublisher } from '../realtime/RealtimeMutationPublisher.js'
 import { RealtimeMutationBoundary } from '../realtime/RealtimeMutationBoundary.js'
 import { DerivedTaskStatusResolver, type DerivedTaskStatus } from '../status/DerivedTaskStatus.js'
+import { providerFromModel, providerHasCapacity } from './ProviderCapacity.js'
 
 export interface ReservedSubtask {
   message: QueueMessage<{ subtaskId: number; seq: number; title: string; scope: string }>
@@ -16,7 +17,7 @@ export interface ReservedSubtask {
 /** A tarefa permanece em fila; uma liberação de capacidade publicará novo gatilho. */
 export interface CapacityWaiting {
   kind: 'capacity_waiting'
-  reason: 'global_limit' | 'project_limit'
+  reason: 'global_limit' | 'project_limit' | 'provider_limit'
 }
 
 /**
@@ -212,6 +213,12 @@ export class MySqlDevelopmentExecutionRepository {
       const limits = new Map(limitRows.map(row => [row.chave, Math.max(1, Number(row.limite ?? 1))]))
       const maxWorkers = limits.get('motor.max_workers') ?? 1
       const maxWorkersPerProject = limits.get('motor.max_workers_per_project') ?? 1
+      const [modelRows] = await connection.query<Array<RowDataPacket & { model: string; provider: string | null }>>(
+        `SELECT model, provider FROM project_model_selection
+          WHERE project_slug = (SELECT slug FROM projetos_captados WHERE id = ?)
+            AND tipo = 'DEV' AND enabled = 1 ORDER BY ordem ASC LIMIT 1`, [task.projeto_id],
+      )
+      const developmentProvider = modelRows[0]?.provider || providerFromModel(modelRows[0]?.model)
 
       const [globalRows] = await connection.query<ActiveDevelopmentCountRow[]>(
         `SELECT COUNT(*) AS total
@@ -239,6 +246,11 @@ export class MySqlDevelopmentExecutionRepository {
         await this.enqueueCapacityWait(connection, task, source)
         await connection.commit()
         return { kind: 'capacity_waiting', reason: 'project_limit' }
+      }
+      if (!await providerHasCapacity(connection, developmentProvider, 'development')) {
+        await this.enqueueCapacityWait(connection, task, source)
+        await connection.commit()
+        return { kind: 'capacity_waiting', reason: 'provider_limit' }
       }
 
       const [subtaskRows] = await connection.query<SubtaskRow[]>(
@@ -298,9 +310,9 @@ export class MySqlDevelopmentExecutionRepository {
 
       const [updated] = await connection.query<ResultSetHeader>(
         `UPDATE subtarefas
-            SET status = 'running', updated_at = NOW()
+            SET status = 'running', provider = ?, updated_at = NOW()
           WHERE id = ? AND status = 'pending'`,
-        [subtask.id],
+        [developmentProvider, subtask.id],
       )
       if (updated.affectedRows !== 1) {
         await connection.rollback()
@@ -483,10 +495,14 @@ export class MySqlDevelopmentExecutionRepository {
           blocker: 'task_completed', resolvedBy: 'motor-v3', motivo: 'Conclusão normal da tarefa; pedidos anteriores foram substituídos pelo deploy atual.',
         })
         await connection.query(
-          `INSERT INTO task_runtime_facts (tarefa_id, terminal_status, terminal_at, integration_confirmed_at, created_at, updated_at)
-           VALUES (?, 'completed', NOW(), NOW(), NOW(), NOW())
-           ON DUPLICATE KEY UPDATE terminal_status = 'completed', terminal_at = NOW(), integration_confirmed_at = NOW(), updated_at = NOW()`,
-          [context.databaseTaskId],
+          `INSERT INTO task_runtime_facts
+             (tarefa_id, terminal_status, terminal_at, integration_confirmed_at,
+              integration_commit_sha, base_commit_sha, created_at, updated_at)
+           VALUES (?, 'completed', NOW(), NOW(), ?, ?, NOW(), NOW())
+           ON DUPLICATE KEY UPDATE terminal_status = 'completed', terminal_at = NOW(),
+             integration_confirmed_at = NOW(), integration_commit_sha = VALUES(integration_commit_sha),
+             base_commit_sha = VALUES(base_commit_sha), updated_at = NOW()`,
+          [context.databaseTaskId, evidence.integrationCommitSha, context.workspaceBaseCommit],
         )
         taskReachedTerminal = true
         next = createQueueMessage({
@@ -714,12 +730,50 @@ export class MySqlDevelopmentExecutionRepository {
         sessionKey ?? null,
       ],
     )
+    await this.pool.query(
+      `DELETE FROM motor_active_executions
+        WHERE subtarefa_id=? AND phase='development'`,
+      [subtaskId],
+    )
     if (!sessionKey) return
     await this.pool.query(
       `UPDATE tarefa_contextos_execucao
           SET estado='closed', closed_at=NOW(), updated_at=NOW()
         WHERE subtarefa_id=? AND sessao_chave=? AND estado!='closed'`,
       [subtaskId, sessionKey],
+    )
+  }
+
+  async registerDevelopmentLease(input: {
+    executionId: string
+    taskDatabaseId: number
+    subtaskId: number
+    ttlMs: number
+  }): Promise<void> {
+    const ttlSeconds = Math.max(1, Math.ceil(input.ttlMs / 1000))
+    await this.pool.query(
+      `INSERT INTO motor_active_executions
+        (execution_id, tarefa_id, subtarefa_id, phase, started_at, heartbeat_at, expires_at)
+       VALUES (?, ?, ?, 'development', NOW(), NOW(), DATE_ADD(NOW(), INTERVAL ? SECOND))
+       ON DUPLICATE KEY UPDATE heartbeat_at=NOW(), expires_at=VALUES(expires_at), phase='development'`,
+      [input.executionId, input.taskDatabaseId, input.subtaskId, ttlSeconds],
+    )
+  }
+
+  async heartbeatDevelopmentLease(executionId: string, ttlMs: number): Promise<void> {
+    const ttlSeconds = Math.max(1, Math.ceil(ttlMs / 1000))
+    await this.pool.query(
+      `UPDATE motor_active_executions
+          SET heartbeat_at=NOW(), expires_at=DATE_ADD(NOW(), INTERVAL ? SECOND)
+        WHERE execution_id=? AND phase='development'`,
+      [ttlSeconds, executionId],
+    )
+  }
+
+  async releaseDevelopmentLease(executionId: string): Promise<void> {
+    await this.pool.query(
+      `DELETE FROM motor_active_executions WHERE execution_id=? AND phase='development'`,
+      [executionId],
     )
   }
 

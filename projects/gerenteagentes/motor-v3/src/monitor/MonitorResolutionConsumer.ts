@@ -8,12 +8,14 @@ import type { TaskEventSink } from '../coordinator/TaskEventRecorder.js'
 import { loadActiveBlocker, type ActiveBlockerRow } from './ActiveBlockerLookup.js'
 import { ConsoleHumanNotifier, type MonitorHumanNotifier } from './HumanNotifier.js'
 import { MonitorPromptResolver } from './MonitorPromptResolver.js'
+import { providerHasCapacity } from '../execution/ProviderCapacity.js'
 import { parseMonitorVerdict, type MonitorVerdict } from './MonitorVerdictParser.js'
 import {
   TASK_BLOCKED_EVENT_TYPE,
   createTaskUnblockedMessage,
   type TaskBlockedPayload,
 } from './TaskBlockedEvent.js'
+import { RealtimeMutationBoundary } from '../realtime/RealtimeMutationBoundary.js'
 
 interface TaskContextRow extends RowDataPacket {
   database_task_id: number
@@ -53,6 +55,7 @@ interface TaskContextRow extends RowDataPacket {
  */
 export class MonitorResolutionConsumer {
   private readonly inFlight = new Set<number>()
+  private readonly realtime: RealtimeMutationBoundary
 
   constructor(
     private readonly pool: Pool,
@@ -63,7 +66,9 @@ export class MonitorResolutionConsumer {
     private readonly consoleApi: unknown,
     private readonly db: unknown,
     private readonly notifier: MonitorHumanNotifier = new ConsoleHumanNotifier(),
-  ) {}
+  ) {
+    this.realtime = new RealtimeMutationBoundary(pool)
+  }
 
   async handle(message: QueueMessage): Promise<void> {
     if (message.type !== TASK_BLOCKED_EVENT_TYPE) return
@@ -131,7 +136,11 @@ export class MonitorResolutionConsumer {
       ].filter(Boolean).join('\n'))
       // Registra a execução do monitor em motor_active_executions para que
       // o WorkerActivityService possa reportar o Monitor como ativo.
-      await this.registerMonitorExecution(monitorExecutionId, Number(context.database_task_id), blocker.subtarefa_id)
+      const provider = await this.monitorProvider(context.project_slug)
+      if (!await this.registerMonitorExecution(monitorExecutionId, Number(context.database_task_id), blocker.subtarefa_id, provider)) {
+        await this.safeRecord(taskId, 'monitor_resolution_capacity_waiting', { blockId: blocker.id, provider })
+        return
+      }
       registered = true
       const execution: PrimitiveContext = {
         taskId: context.task_id,
@@ -187,16 +196,26 @@ export class MonitorResolutionConsumer {
    * Registra a execução do monitor em motor_active_executions para que o
    * WorkerActivityService possa reportar o Monitor como ativo no Mapa.
    */
-  private async registerMonitorExecution(executionId: string, databaseTaskId: number, subtaskId: number | null | undefined): Promise<void> {
+  private async registerMonitorExecution(executionId: string, databaseTaskId: number, subtaskId: number | null | undefined, provider: string | null): Promise<boolean> {
+    const connection = await this.pool.getConnection()
     try {
-      await this.pool.query(
-        `INSERT INTO motor_active_executions (execution_id, tarefa_id, subtarefa_id, phase, started_at, heartbeat_at, expires_at)
-         VALUES (?, ?, ?, 'monitor', NOW(), NOW(), DATE_ADD(NOW(), INTERVAL 10 MINUTE))`,
-        [executionId, databaseTaskId, subtaskId ?? null]
+      await connection.beginTransaction()
+      await connection.query(`SELECT chave FROM motor_configuracoes WHERE chave IN ('motor.max_workers', 'motor.max_workers_per_project') ORDER BY chave FOR UPDATE`)
+      if (!await providerHasCapacity(connection, provider, 'monitor')) { await connection.rollback(); return false }
+      await connection.query(
+        `INSERT INTO motor_active_executions (execution_id, tarefa_id, subtarefa_id, phase, provider, started_at, heartbeat_at, expires_at)
+         VALUES (?, ?, ?, 'monitor', ?, NOW(), NOW(), DATE_ADD(NOW(), INTERVAL 10 MINUTE))`,
+        [executionId, databaseTaskId, subtaskId ?? null, provider]
       )
+      await connection.commit()
+      return true
     } catch (error) {
+      await connection.rollback()
       // Falha no registro não deve bloquear a execução do monitor
       console.warn('[MonitorResolutionConsumer] Falha ao registrar execução:', error)
+      return false
+    } finally {
+      connection.release()
     }
   }
 
@@ -304,10 +323,14 @@ export class MonitorResolutionConsumer {
   /** Mensagem no chat da tarefa (mesmo padrão do TestRecoveryConsumer). */
   private async safePostChat(databaseTaskId: number, texto: string): Promise<void> {
     try {
-      await this.pool.query(
+      const chatText = texto.slice(0, 8000)
+      const [chatInsert] = await this.pool.query<ResultSetHeader>(
         `INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) VALUES (?, 'assistant', ?, NOW())`,
-        [databaseTaskId, texto.slice(0, 8000)],
+        [databaseTaskId, chatText],
       )
+      await this.realtime.enqueueChatMessage(databaseTaskId, {
+        id: Number(chatInsert.insertId), role: 'assistant', texto: chatText,
+      })
     } catch {
       // Chat nunca derruba o fluxo principal; o evento de auditoria permanece.
     }
@@ -350,6 +373,16 @@ export class MonitorResolutionConsumer {
       [projectSlug],
     )
     return rows.map(row => String(row.model)).filter(Boolean)
+  }
+
+  private async monitorProvider(projectSlug: string): Promise<string | null> {
+    const [rows] = await this.pool.query<Array<RowDataPacket & { provider: string | null; model: string }>>(
+      `SELECT provider, model FROM project_model_selection WHERE project_slug=? AND tipo='MONITOR' AND enabled=1 ORDER BY ordem LIMIT 1`, [projectSlug],
+    )
+    if (rows[0]?.provider) return String(rows[0].provider)
+    const model = String(rows[0]?.model ?? '')
+    const slash = model.indexOf('/')
+    return slash > 0 ? model.slice(0, slash) : null
   }
 
   /** Branches de trabalho das subtarefas (contexto para o prompt). */

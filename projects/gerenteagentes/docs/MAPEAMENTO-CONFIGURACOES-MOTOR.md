@@ -7,8 +7,8 @@ Varredura realizada em `motor/src`, `motor-v3/package.json`, `motor-v3/README.md
 | Nome estável sugerido | Valor atual | Origem | Consumidor(es) | Impacto |
 |---|---:|---|---|---|
 | `motor.active` | `true` | tabela `motor_configuracoes`; botões **Pausar Motor** / **Ativar Motor** | barreira de atividades do `QueueConsumer` e `AnalysisSessionRecoveryReconciler` no Motor-v3 | Quando `false`, novas análises, execuções DEV, missões do Monitor e reconciliação de sessões de análise são interrompidas. Gates pertencentes a uma execução já iniciada, mensagens de conclusão, cancelamento, verificação e deploy continuam, permitindo que o trabalho em curso finalize sem interrupção. A barreira é verificada em cada ciclo do reconciliador, logo uma pausa iniciada após o boot passa a suprimir os ciclos subsequentes sem reiniciar o motor. |
-| `motor.max_workers` | `1` | `MOTOR_MAX_WORKERS` em `src/start.ts`; fallback de `MotorConfig`/`TaskCoordinator` | `TaskCoordinator.pump`, `activeDevelopmentCount` | Limita o total de subtarefas de desenvolvimento simultâneas; é o limite global de tarefas em paralelo identificado no motor. |
-| `motor.max_workers_per_project` | `1` | `MotorConfig`, default de `TaskCoordinatorConfig` (`src/Motor.ts`, `src/coordinator/TaskCoordinator.ts`) | `canStartExecution(projectSlug)` | Limita concorrência por projeto; evita que um único projeto ocupe todo o motor. Hoje não há variável de ambiente no `start.ts`. |
+| `motor.max_workers` | `1` | tabela `motor_configuracoes`, lida em tempo de reserva/claim | reserva de subtarefas DEV e claim de análise (`TaskCoordinator`) | Limita separadamente o total de execuções DEV e o total de análises simultâneas; uma análise não consome vaga DEV e vice-versa. |
+| `motor.max_workers_per_project` | `1` | tabela `motor_configuracoes`, lida em tempo de reserva/claim | reserva DEV e claim de análise (`TaskCoordinator`) | Limita separadamente a concorrência DEV e de análise por projeto; tarefa sem projeto fica sujeita apenas ao limite global. |
 | `motor.pump_interval_ms` | `30000` | literal em `src/Motor.ts` | `setInterval` que chama `coordinator.pump()` | Latência para detectar novas tarefas e retomar fila; valores baixos aumentam consultas/carga. |
 | `motor.reconciler_interval_ms` | `30000` | argumento fixo em `src/start.ts` e fallback de `ExpirationReconciler` | `ExpirationReconciler.start()` | Frequência de limpeza de leases expirados, órfãos e inconsistências. |
 | `motor.reconciler_max_staleness_ms` | `120000` | fallback em `src/reconciler/ExpirationReconciler.ts` | campo `maxStalenessMs` (atualmente armazenado, sem uso efetivo no fluxo) | Deve ser exposto somente após ligar o campo ao critério de reconciliação; hoje é configuração inerte. |
@@ -47,6 +47,22 @@ Varredura realizada em `motor/src`, `motor-v3/package.json`, `motor-v3/README.md
 | `motor.timezone` | `America/Sao_Paulo` | tabela `motor_configuracoes`; seletor na tela CONFIGURAÇÕES (aba Parâmetros) | telas operacionais (via `GET /api/gerenteagentes/timezone`), utilitário `resolveTimezone()` em `src/shared/timezone.ts` | Fuso horário usado para apresentação de datas e regras de calendário nas telas. O valor é um identificador IANA validado por `isValidTimezone()` (Intl.DateTimeFormat). Na ausência de valor persistido, o sistema usa `America/Sao_Paulo`. A API rejeita fusos inválidos (BadRequestException). O endpoint de leitura (`GET /api/gerenteagentes/timezone`) é acessível a qualquer usuário autenticado com escopo no projeto (admin, gerente, operador, visualizador), sem expor as demais configurações do Motor. |
 
 ## Configurações por tarefa/projeto já persistidas
+
+## Limites por provider
+
+| Campo | Escopo | Contabilidade |
+|---|---|---|
+| `limite_execucao_total` | pool absoluto do provider | análise ativa + DEV `running`/`delivered`/`verifying` + missões MONITOR ativas |
+| `limite_analises` | fase ANALYST | análises ativas no provider |
+| `limite_desenvolvimento` | fase DEV | subtarefas ativas no provider |
+
+Os limites ficam em `motor_provider_limits`; ausência da linha ou valor `NULL`
+significa sem restrição nova. O motor sempre aplica o menor teto entre os
+limites gerais (`motor.max_workers` e `motor.max_workers_per_project`) e o
+provider. `limite_execucao_total` é absoluto e cross-fase: com valor `1`, uma
+análise em `ollama` impede DEV ou MONITOR em `ollama` até a liberação da vaga.
+O provider do primeiro modelo elegível é persistido na atividade e não muda
+para contornar capacidade durante escalonamento por falha/cooldown.
 
 Estas não são defaults globais da tela; são valores de domínio que o motor já lê e deve continuar priorizando sobre defaults globais:
 

@@ -96,9 +96,14 @@ export class QueueConsumer {
     }
 
     if (claimResult.alreadyProcessing) {
-      // Pode ser uma entrega recuperada logo após a queda do processo. Não
-      // confirme: passe pelo retry até o lease de processamento expirar.
-      this.transport.nack(delivery, false)
+      // Pode ser uma entrega recuperada logo após a queda do processo (caso
+      // típico durante o blue/green). Um nack imediato cria um hot-loop no
+      // RabbitMQ: o contador de entregas alcança maxAttempts muito antes do
+      // lease de processamento expirar e produz uma falha terminal falsa.
+      // Confirme esta duplicata e agende uma nova mensagem para depois do
+      // lease. Se o dono original concluir, o handler futuro será um noop; se
+      // ele morreu, a nova mensagem recupera o trabalho com outro messageId.
+      await this.deferUntilProcessingLeaseExpires(delivery)
       return
     }
 
@@ -166,6 +171,22 @@ export class QueueConsumer {
         JSON.stringify(message.payload), delaySeconds, message.correlationId ?? message.messageId, message.messageId],
     )
     console.info(`[QueueConsumer] Motor inativo; atividade ${message.type} adiada por ${delaySeconds}s`)
+    this.transport.ack(delivery)
+  }
+
+  private async deferUntilProcessingLeaseExpires(delivery: QueueDelivery): Promise<void> {
+    const message = delivery.message
+    const deferredMessageId = randomUUID()
+    const delaySeconds = Math.max(1, Number(process.env.MOTOR_MESSAGE_PROCESSING_TIMEOUT_SECONDS || 300))
+    await this.pool.query(
+      `INSERT INTO motor_outbox
+        (message_id,type,destination_queue,task_id,execution_id,payload_json,timestamp,
+         correlation_id,causation_id,status,attempt)
+       VALUES (?,?,?,?,?,?,DATE_ADD(NOW(), INTERVAL ? SECOND),?,?,'pending',0)`,
+      [deferredMessageId, message.type, this.config.queue, message.taskId, message.executionId,
+        JSON.stringify(message.payload), delaySeconds, message.correlationId ?? message.messageId, message.messageId],
+    )
+    console.info(`[QueueConsumer] Mensagem ${message.messageId} já está em processamento; recuperação adiada por ${delaySeconds}s`)
     this.transport.ack(delivery)
   }
 

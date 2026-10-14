@@ -110,6 +110,25 @@ O Mapa de Agentes utiliza WebSocket para receber atualizações em tempo real, e
 | `clarifying` | Agente solicitando esclarecimento | `message` |
 | `system_alert` | Alerta do sistema | `message` |
 | `system_recovered` | Sistema recuperado | `message` |
+| `motor.activity.updated` | Snapshot da atividade do motor para os quadros superiores | `motor`, `workers` |
+
+O evento `motor.activity.updated` é publicado no canal `map` somente quando a
+assinatura do snapshot muda. Seu payload é o snapshot completo, sem credenciais:
+
+```json
+{
+  "motor": {
+    "isActive": true,
+    "isRunning": true,
+    "activeExecutionsCount": 1,
+    "activity": { "kind": "git", "message": "operação git da tarefa task-1", "taskIds": ["task-1"] }
+  },
+  "workers": []
+}
+```
+
+O Motor grava o evento na `realtime_event_outbox` e o dispatcher o publica após
+a confirmação da gravação. O roteamento usa o tenant GerenteAgentes `640`.
 
 ### 3.4 Eventos de Chat e Interação
 

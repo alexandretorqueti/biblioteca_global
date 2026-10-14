@@ -52,6 +52,21 @@ function setupGoverned(snapshot: TaskSnapshot | null = task()) {
 }
 
 describe('TaskCoordinator', () => {
+  it('reenfileira análise quando o limite de capacidade está ocupado', async () => {
+    const { coordinator, repository, runner } = setup()
+    vi.mocked(repository.claimAnalysis).mockResolvedValue('capacity_waiting')
+    const requeue = vi.fn(async () => {})
+    const limited = new TaskCoordinator(repository, runner, new MessageBus(), {
+      analysisCapacity: { requeueForDeployRetry: requeue },
+    })
+
+    await limited.handle(command())
+
+    expect(requeue).toHaveBeenCalledWith(expect.objectContaining({ taskId: 'task-1' }), 'analysis_capacity_waiting')
+    expect(runner.start).not.toHaveBeenCalled()
+    expect(repository.releaseAnalysisClaim).not.toHaveBeenCalled()
+  })
+
   it('seleciona e inicia uma análise para tarefa planejada', async () => {
     const { coordinator, repository, runner, bus } = setup()
     const events: string[] = []

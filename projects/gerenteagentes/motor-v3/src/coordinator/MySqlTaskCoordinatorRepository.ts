@@ -1,9 +1,10 @@
 import type { Pool, PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
-import type { AnalysisExecutionLeaseRepository, TaskCoordinatorRepository, TaskLifecycleStatus, TaskSnapshot } from './TaskCoordinator.js'
+import type { AnalysisClaimResult, AnalysisExecutionLeaseRepository, TaskCoordinatorRepository, TaskLifecycleStatus, TaskSnapshot } from './TaskCoordinator.js'
 import type { AnalysisOutcome } from '../analysis/AnalystReply.js'
 import { DerivedTaskStatusResolver } from '../status/DerivedTaskStatus.js'
 import { RealtimeMutationBoundary } from '../realtime/RealtimeMutationBoundary.js'
 import type { RealtimeMutationPublisher } from '../realtime/RealtimeMutationPublisher.js'
+import { providerFromModel, providerHasCapacity } from '../execution/ProviderCapacity.js'
 
 interface TaskRow extends RowDataPacket {
   id: number
@@ -17,6 +18,7 @@ interface TaskRow extends RowDataPacket {
   paused_at: Date | string | null
   analysis_started_at: Date | string | null
   analysis_execution_id: string | null
+  projeto_id: number | null
   terminal_status: string | null
   subtask_count: number | string
   blocked_count: number | string
@@ -84,7 +86,7 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
     }
   }
 
-  async claimAnalysis(taskId: string, executionId: string): Promise<boolean> {
+  async claimAnalysis(taskId: string, executionId: string): Promise<AnalysisClaimResult> {
     const connection = await this.pool.getConnection()
     try {
       await connection.beginTransaction()
@@ -92,6 +94,65 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
       if (!row || this.cannotStart(row)) {
         await connection.rollback()
         return false
+      }
+
+      // A mesma serialização usada pela reserva do DEV: as duas linhas de
+      // configuração são bloqueadas antes de contar e fazer o claim. Assim,
+      // duas retomadas concorrentes não conseguem observar a mesma vaga.
+      const [limitRows] = await connection.query<Array<RowDataPacket & { chave: string; limite: number | string }>>(
+        `SELECT chave, CAST(JSON_UNQUOTE(valor) AS UNSIGNED) AS limite
+           FROM motor_configuracoes
+          WHERE chave IN ('motor.max_workers', 'motor.max_workers_per_project')
+          ORDER BY chave
+          FOR UPDATE`,
+      )
+      const limits = new Map(limitRows.map(limit => [limit.chave, Math.max(1, Number(limit.limite ?? 1))]))
+      const maxWorkers = limits.get('motor.max_workers') ?? 1
+      const maxWorkersPerProject = limits.get('motor.max_workers_per_project') ?? 1
+      const [globalRows] = await connection.query<Array<RowDataPacket & { total: number | string }>>(
+        `SELECT COUNT(*) AS total
+           FROM task_runtime_facts f
+          WHERE f.analysis_started_at IS NOT NULL
+            AND f.analysis_execution_id IS NOT NULL
+            AND f.terminal_status IS NULL`,
+      )
+      if (Number(globalRows[0]?.total ?? 0) >= maxWorkers) {
+        await connection.rollback()
+        return 'capacity_waiting'
+      }
+      if (row.projeto_id != null) {
+        const [projectRows] = await connection.query<Array<RowDataPacket & { total: number | string }>>(
+          `SELECT COUNT(*) AS total
+             FROM task_runtime_facts f
+             INNER JOIN tarefas active_task ON active_task.id = f.tarefa_id
+            WHERE f.analysis_started_at IS NOT NULL
+              AND f.analysis_execution_id IS NOT NULL
+              AND f.terminal_status IS NULL
+              AND active_task.projeto_id = ?`,
+          [row.projeto_id],
+        )
+        if (Number(projectRows[0]?.total ?? 0) >= maxWorkersPerProject) {
+          await connection.rollback()
+          return 'capacity_waiting'
+        }
+      }
+      // Só resolve provider depois dos tetos gerais. Além de evitar trabalho
+      // quando a vaga global já está ocupada, isso preserva a ordem histórica
+      // das consultas para adaptadores legados sem configuração de projetos.
+      let analysisProvider: string | null = null
+      if (row.projeto_id != null) {
+        const [modelRows] = await connection.query<Array<RowDataPacket & { model: string; provider: string | null }>>(
+          `SELECT selection.model, selection.provider
+             FROM tarefas t JOIN projetos_captados pc ON pc.id = t.projeto_id
+             LEFT JOIN project_model_selection selection
+               ON selection.project_slug = pc.slug AND selection.tipo = 'ANALYST' AND selection.enabled = 1
+            WHERE t.id = ? ORDER BY selection.ordem ASC LIMIT 1`, [row.id],
+        )
+        analysisProvider = modelRows[0]?.provider || providerFromModel(modelRows[0]?.model)
+      }
+      if (!await providerHasCapacity(connection, analysisProvider, 'analysis')) {
+        await connection.rollback()
+        return 'capacity_waiting'
       }
       // cannotStart() proves the canonical pre-claim projection is planned;
       // keeping this read-free also preserves the claim's single atomic SQL
@@ -106,10 +167,10 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
       )
       const [result] = await connection.query<ResultSetHeader>(
         `UPDATE task_runtime_facts
-         SET analysis_started_at = NOW(), analysis_execution_id = ?, clarification_pending_at = NULL, updated_at = NOW()
+         SET analysis_started_at = NOW(), analysis_execution_id = ?, provider = ?, clarification_pending_at = NULL, updated_at = NOW()
          WHERE tarefa_id = ? AND analysis_started_at IS NULL
            AND analysis_execution_id IS NULL AND terminal_status IS NULL`,
-        [executionId, row.id],
+        [executionId, analysisProvider, row.id],
       )
 
       if (result.affectedRows !== 1) {
@@ -193,11 +254,16 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
       const before = 'analyzing' as const
 
       if (outcome.kind === 'questions') {
-        await connection.query(
+        const chatText = JSON.stringify({ summary: outcome.summary, questions: outcome.questions })
+        const createdAt = new Date().toISOString()
+        const [chatInsert] = await connection.query<ResultSetHeader>(
           `INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at)
            VALUES (?, 'analyst', ?, NOW())`,
-          [databaseTaskId, JSON.stringify({ summary: outcome.summary, questions: outcome.questions })],
+          [databaseTaskId, chatText],
         )
+        await this.realtime.appendChatMessage(connection, databaseTaskId, {
+          id: Number(chatInsert.insertId), role: 'analyst', texto: chatText, createdAt,
+        })
         await connection.query(
           `UPDATE task_runtime_facts
              SET clarification_pending_at = NOW(), updated_at = NOW()
@@ -263,7 +329,7 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
   private async lockTask(connection: PoolConnection, taskId: string): Promise<TaskRow | null> {
     const [rows] = await connection.query<TaskRow[]>(`
       SELECT
-        t.id, t.external_id, t.paused_at,
+        t.id, t.external_id, t.projeto_id, t.paused_at,
         f.analysis_started_at, f.analysis_execution_id, f.terminal_status,
         (SELECT COUNT(*) FROM subtarefas s WHERE s.tarefa_id = t.id) AS subtask_count,
         (SELECT COUNT(*) FROM bloqueios b

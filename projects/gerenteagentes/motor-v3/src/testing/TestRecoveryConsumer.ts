@@ -7,6 +7,7 @@ import { GitVerificationIntegrator } from '../execution/GitVerificationIntegrato
 import type { SubtaskExecutionContext } from '../execution/DevelopmentExecutionRepository.js'
 import type { TestGateOrchestrator } from './TestGateOrchestrator.js'
 import type { GovernedFailureHandler } from '../governance/GovernedFailureHandler.js'
+import { RealtimeMutationBoundary } from '../realtime/RealtimeMutationBoundary.js'
 
 interface RecoveryRow extends RowDataPacket {
   recovery_id: number
@@ -25,6 +26,8 @@ interface RecoveryRow extends RowDataPacket {
 }
 
 export class TestRecoveryConsumer {
+  private readonly realtime: RealtimeMutationBoundary
+
   constructor(
     private readonly pool: Pool,
     private readonly worktrees: GitWorktreePreparer,
@@ -33,7 +36,9 @@ export class TestRecoveryConsumer {
     private readonly db: unknown,
     private readonly testGate: TestGateOrchestrator,
     private readonly governedFailureHandler?: GovernedFailureHandler,
-  ) {}
+  ) {
+    this.realtime = new RealtimeMutationBoundary(pool)
+  }
 
   async handle(message: QueueMessage): Promise<void> {
     if (message.type !== 'TEST_BASELINE_RECOVERY_REQUESTED') return
@@ -152,6 +157,9 @@ export class TestRecoveryConsumer {
       'A tarefa funcional permanece concluída, porém o deploy está bloqueado até que o gate de testes seja aprovado.',
     ].join('\n')
     const [inserted] = await this.pool.query<any>(`INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) VALUES (?, 'assistant', ?, NOW())`, [recovery.task_database_id, message])
+    await this.realtime.enqueueChatMessage(recovery.task_database_id, {
+      id: Number(inserted.insertId), role: 'assistant', texto: message,
+    })
     await this.pool.query(
       `UPDATE test_recovery_attempts SET status='awaiting_user', diagnosis=?, user_message_id=?, finished_at=NOW(3), updated_at=NOW(3) WHERE id=?`,
       [diagnosis.slice(0, 60_000), inserted.insertId ?? null, recovery.recovery_id],

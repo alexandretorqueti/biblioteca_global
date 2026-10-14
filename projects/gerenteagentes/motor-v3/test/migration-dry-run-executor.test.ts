@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Pool, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
-import { MigrationDryRunError, MigrationDryRunExecutor } from '../src/migrations/MigrationDryRunExecutor.js'
+import { MigrationDryRunError, MigrationDryRunExecutor, MigrationWatermarkError } from '../src/migrations/MigrationDryRunExecutor.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -130,6 +130,38 @@ describe('MigrationDryRunExecutor', () => {
       const insertCall = querySpy.mock.calls[2] // [0]=SHOW, [1]=CREATE scratch, [2]=INSERT
       expect(insertCall).toBeDefined()
       expect(insertCall[0]).toContain('gate_scratch_456_users')
+    })
+
+    it('preserva CURRENT_TIMESTAMP em cláusulas ON UPDATE de CREATE TABLE', async () => {
+      const ws = await createWorkspace()
+      await mkdir(join(ws, 'projects/alpha/migrations'), { recursive: true })
+      await git(ws, ['commit', '-m', 'baseline', '--allow-empty'])
+      const baseCommit = (await git(ws, ['rev-parse', 'HEAD'])).trim()
+
+      await writeFile(
+        join(ws, 'projects/alpha/migrations/0001_timestamps.sql'),
+        [
+          'CREATE TABLE `provider_limits` (',
+          '  `id` INT NOT NULL,',
+          '  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,',
+          '  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP',
+          ');',
+        ].join('\n'),
+      )
+
+      querySpy.mockResolvedValueOnce([[]]) // SHOW CREATE TABLE: tabela nova
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // CREATE reescrito
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // cleanup
+
+      const executor = new MigrationDryRunExecutor(mockPool, 995)
+      await executor.execute(ws, baseCommit)
+
+      const createCall = querySpy.mock.calls.find(call =>
+        typeof call[0] === 'string' && call[0].includes('CREATE TABLE `gate_scratch_995_provider_limits`')
+      )
+      expect(createCall).toBeDefined()
+      expect(createCall![0]).toContain('DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP')
+      expect(createCall![0]).not.toContain('gate_scratch_995_CURRENT_TIMESTAMP')
     })
   })
 
@@ -296,6 +328,236 @@ describe('MigrationDryRunExecutor', () => {
       expect(createCall).toBeDefined()
       expect(createCall![0]).toContain('AUTO_INCREMENT=1')
       expect(createCall![0]).not.toContain('AUTO_INCREMENT=100')
+    })
+  })
+
+  describe('clone de tabelas com FOREIGN KEY (incidente task-p2-989)', () => {
+    const fkCreateStatement = [
+      'CREATE TABLE `task_runtime_facts` (',
+      '  `tarefa_id` bigint unsigned NOT NULL,',
+      '  `terminal_status` varchar(30) COLLATE utf8mb4_unicode_ci DEFAULT NULL,',
+      '  PRIMARY KEY (`tarefa_id`),',
+      '  KEY `task_runtime_facts_terminal_idx` (`terminal_status`),',
+      '  CONSTRAINT `task_runtime_facts_tarefa_fk` FOREIGN KEY (`tarefa_id`) REFERENCES `tarefas` (`id`) ON DELETE CASCADE',
+      ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
+    ].join('\n')
+
+    it('remove FOREIGN KEYs nomeadas do clone scratch (errno 1826 no clone real)', async () => {
+      const ws = await createWorkspace()
+      await mkdir(join(ws, 'projects/alpha/migrations'), { recursive: true })
+      await git(ws, ['commit', '-m', 'baseline', '--allow-empty'])
+      const baseCommit = (await git(ws, ['rev-parse', 'HEAD'])).trim()
+
+      await writeFile(
+        join(ws, 'projects/alpha/migrations/0001_alter_fk_table.sql'),
+        'ALTER TABLE `task_runtime_facts` ADD COLUMN `integration_commit_sha` varchar(64) NULL;',
+      )
+
+      querySpy.mockResolvedValueOnce([[{ 'Create Table': fkCreateStatement }]])
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // CREATE scratch
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // ALTER reescrito
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // cleanup
+
+      const executor = new MigrationDryRunExecutor(mockPool, 989)
+      await executor.execute(ws, baseCommit)
+
+      const createCall = querySpy.mock.calls[1]![0] as string
+      expect(createCall).toContain('CREATE TABLE `gate_scratch_989_task_runtime_facts`')
+      expect(createCall).not.toMatch(/FOREIGN\s+KEY/i)
+      expect(createCall).not.toMatch(/CONSTRAINT/i)
+      // vírgula pendurada antes do fechamento não pode sobrar
+      expect(createCall).not.toMatch(/,\s*\)\s*ENGINE/i)
+    })
+
+    it('propaga falha de clone que não seja tabela ausente, em vez de silenciar', async () => {
+      const ws = await createWorkspace()
+      await mkdir(join(ws, 'projects/alpha/migrations'), { recursive: true })
+      await git(ws, ['commit', '-m', 'baseline', '--allow-empty'])
+      const baseCommit = (await git(ws, ['rev-parse', 'HEAD'])).trim()
+
+      await writeFile(
+        join(ws, 'projects/alpha/migrations/0001_alter_fk_table.sql'),
+        'ALTER TABLE `task_runtime_facts` ADD COLUMN `x` varchar(64) NULL;',
+      )
+
+      querySpy.mockResolvedValueOnce([[{ 'Create Table': fkCreateStatement }]])
+      const cloneError = Object.assign(
+        new Error("Duplicate foreign key constraint name 'task_runtime_facts_tarefa_fk'"),
+        { errno: 1826, sqlState: 'HY000' },
+      )
+      querySpy.mockRejectedValueOnce(cloneError) // CREATE scratch falha
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // cleanup
+
+      const executor = new MigrationDryRunExecutor(mockPool, 989)
+      await expect(executor.execute(ws, baseCommit)).rejects.toMatchObject({
+        name: 'MigrationDryRunError',
+        violations: [{ mysqlErrno: 1826 }],
+      })
+      // O ALTER não pode ser executado sem a scratch existir (evita errno 1146 enganoso)
+      const alterCall = querySpy.mock.calls.find(call =>
+        typeof call[0] === 'string' && call[0].includes('ADD COLUMN')
+      )
+      expect(alterCall).toBeUndefined()
+    })
+
+    it('tolera tabela ausente no SHOW CREATE (errno 1146) e segue o dry-run', async () => {
+      const ws = await createWorkspace()
+      await mkdir(join(ws, 'projects/alpha/migrations'), { recursive: true })
+      await git(ws, ['commit', '-m', 'baseline', '--allow-empty'])
+      const baseCommit = (await git(ws, ['rev-parse', 'HEAD'])).trim()
+
+      await writeFile(
+        join(ws, 'projects/alpha/migrations/0001_create_new.sql'),
+        'CREATE TABLE `brand_new` (`id` INT);',
+      )
+
+      const missing = Object.assign(new Error("Table 'brand_new' doesn't exist"), { errno: 1146, sqlState: '42S02' })
+      querySpy.mockRejectedValueOnce(missing) // SHOW CREATE TABLE rejeita
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // CREATE reescrito
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // cleanup
+
+      const executor = new MigrationDryRunExecutor(mockPool, 989)
+      await expect(executor.execute(ws, baseCommit)).resolves.toBeUndefined()
+      const createCall = querySpy.mock.calls.find(call =>
+        typeof call[0] === 'string' && call[0].includes('CREATE TABLE `gate_scratch_989_brand_new`')
+      )
+      expect(createCall).toBeDefined()
+    })
+
+    it('clona e reescreve tabelas referenciadas via JOIN em UPDATE', async () => {
+      const ws = await createWorkspace()
+      await mkdir(join(ws, 'projects/alpha/migrations'), { recursive: true })
+      await git(ws, ['commit', '-m', 'baseline', '--allow-empty'])
+      const baseCommit = (await git(ws, ['rev-parse', 'HEAD'])).trim()
+
+      const backfill = [
+        'ALTER TABLE `facts` ADD COLUMN `sha` varchar(64) NULL;',
+        '--> statement-breakpoint',
+        'UPDATE `facts` f',
+        'INNER JOIN `requests` d ON d.tarefa_id = f.tarefa_id',
+        'SET f.sha = d.commit',
+        'WHERE f.sha IS NULL;',
+      ].join('\n')
+      await writeFile(join(ws, 'projects/alpha/migrations/0001_backfill.sql'), backfill)
+
+      // Clone (1x por migration, tabelas na ordem do Set: facts, requests)
+      querySpy.mockResolvedValueOnce([[{ 'Create Table': 'CREATE TABLE `facts` (`id` INT)' }]]) // SHOW facts
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // CREATE scratch facts
+      querySpy.mockResolvedValueOnce([[{ 'Create Table': 'CREATE TABLE `requests` (`id` INT)' }]]) // SHOW requests
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // CREATE scratch requests
+      // Execução dos statements (ALTER + UPDATE reescritos)
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader])
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader])
+      // cleanup
+      querySpy.mockResolvedValue([{} as ResultSetHeader])
+
+      const executor = new MigrationDryRunExecutor(mockPool, 555)
+      await executor.execute(ws, baseCommit)
+
+      const updateCall = querySpy.mock.calls.find(call =>
+        typeof call[0] === 'string' && call[0].includes('UPDATE')
+      )
+      expect(updateCall).toBeDefined()
+      expect(updateCall![0]).toContain('gate_scratch_555_facts')
+      expect(updateCall![0]).toContain('gate_scratch_555_requests')
+      expect(updateCall![0]).not.toMatch(/`facts`|`requests`/)
+    })
+  })
+
+  describe('validação de watermark do journal (incidente task-p2-989)', () => {
+    async function createWorkspaceWithJournal(newWhen: number, opts?: { skipJournalEntry?: boolean }): Promise<{ ws: string; baseCommit: string }> {
+      const ws = await createWorkspace()
+      await mkdir(join(ws, 'projects/alpha/migrations/meta'), { recursive: true })
+      await writeFile(join(ws, 'projects/alpha/migrations/0001_initial.sql'), 'CREATE TABLE `t1` (`id` INT);')
+      await writeFile(join(ws, 'projects/alpha/migrations/meta/_journal.json'), JSON.stringify({
+        version: '5', dialect: 'mysql', entries: [
+          { idx: 0, version: '5', when: 1000, tag: '0001_initial', breakpoints: true },
+        ],
+      }))
+      await git(ws, ['add', '.'])
+      await git(ws, ['commit', '-m', 'baseline'])
+      const baseCommit = (await git(ws, ['rev-parse', 'HEAD'])).trim()
+
+      await writeFile(join(ws, 'projects/alpha/migrations/0002_new.sql'), 'CREATE TABLE `t2` (`id` INT);')
+      const entries = [{ idx: 0, version: '5', when: 1000, tag: '0001_initial', breakpoints: true }]
+      if (!opts?.skipJournalEntry) {
+        entries.push({ idx: 1, version: '5', when: newWhen, tag: '0002_new', breakpoints: true })
+      }
+      await writeFile(join(ws, 'projects/alpha/migrations/meta/_journal.json'), JSON.stringify({
+        version: '5', dialect: 'mysql', entries,
+      }))
+      return { ws, baseCommit }
+    }
+
+    it('reprova migration com when abaixo do watermark (skip silencioso do drizzle)', async () => {
+      const { ws, baseCommit } = await createWorkspaceWithJournal(1500)
+      querySpy.mockResolvedValueOnce([[{ watermark: 2000 }]]) // SELECT MAX(created_at)
+
+      const executor = new MigrationDryRunExecutor(mockPool, 777)
+      await expect(executor.execute(ws, baseCommit)).rejects.toThrow(MigrationWatermarkError)
+      // Falhou antes de clonar/executar qualquer statement
+      expect(querySpy).toHaveBeenCalledTimes(1)
+      expect(String(querySpy.mock.calls[0]![0])).toContain('__drizzle_migrations')
+    })
+
+    it('reprova when igual ao watermark (colisao entre folders compartilhando a tabela)', async () => {
+      const { ws, baseCommit } = await createWorkspaceWithJournal(2000)
+      querySpy.mockResolvedValueOnce([[{ watermark: '2000' }]])
+
+      const executor = new MigrationDryRunExecutor(mockPool, 777)
+      await expect(executor.execute(ws, baseCommit)).rejects.toThrow(/watermark=2000/)
+    })
+
+    it('aceita when acima do watermark e segue com o dry-run', async () => {
+      const { ws, baseCommit } = await createWorkspaceWithJournal(3000)
+      querySpy.mockResolvedValueOnce([[{ watermark: 2000 }]]) // SELECT MAX(created_at)
+      querySpy.mockResolvedValueOnce([[]]) // SHOW CREATE TABLE (tabela nao existe)
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // execucao do CREATE reescrito
+      querySpy.mockResolvedValue([{} as ResultSetHeader]) // cleanup
+
+      const executor = new MigrationDryRunExecutor(mockPool, 777)
+      await executor.execute(ws, baseCommit)
+
+      const createCall = querySpy.mock.calls.find(call =>
+        typeof call[0] === 'string' && call[0].includes('CREATE TABLE') && !call[0].includes('SHOW')
+      )
+      expect(createCall).toBeDefined()
+      expect(createCall![0]).toContain('gate_scratch_777_t2')
+    })
+
+    it('ignora validacao quando __drizzle_migrations nao existe (banco novo)', async () => {
+      const { ws, baseCommit } = await createWorkspaceWithJournal(1500)
+      const missingTable = Object.assign(new Error("Table 'db.__drizzle_migrations' doesn't exist"), { errno: 1146 })
+      querySpy.mockRejectedValueOnce(missingTable) // SELECT MAX → 1146
+      querySpy.mockResolvedValueOnce([[]]) // SHOW CREATE TABLE (tabela nao existe)
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // execucao do CREATE reescrito
+      querySpy.mockResolvedValue([{} as ResultSetHeader]) // cleanup
+
+      const executor = new MigrationDryRunExecutor(mockPool, 777)
+      await expect(executor.execute(ws, baseCommit)).resolves.toBeUndefined()
+    })
+
+    it('nao consulta watermark quando a migration adicionada nao tem entrada no journal', async () => {
+      const { ws, baseCommit } = await createWorkspaceWithJournal(1500, { skipJournalEntry: true })
+      querySpy.mockResolvedValueOnce([[]]) // direto para SHOW CREATE TABLE
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader])
+      querySpy.mockResolvedValue([{} as ResultSetHeader])
+
+      const executor = new MigrationDryRunExecutor(mockPool, 777)
+      await executor.execute(ws, baseCommit)
+
+      expect(querySpy.mock.calls.every(call => !String(call[0]).includes('__drizzle_migrations'))).toBe(true)
+    })
+
+    it('watermark NULL (tabela vazia) nao bloqueia', async () => {
+      const { ws, baseCommit } = await createWorkspaceWithJournal(1500)
+      querySpy.mockResolvedValueOnce([[{ watermark: null }]]) // tabela existe, vazia
+      querySpy.mockResolvedValueOnce([[]])
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader])
+      querySpy.mockResolvedValue([{} as ResultSetHeader])
+
+      const executor = new MigrationDryRunExecutor(mockPool, 777)
+      await expect(executor.execute(ws, baseCommit)).resolves.toBeUndefined()
     })
   })
 })

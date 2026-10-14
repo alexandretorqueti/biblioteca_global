@@ -12,8 +12,8 @@
  * Menus: Início | Administrativo | RH | Configurações Admin
  * Telas: 4 custom (dashboard + 3 hubs de navegação) + CRUDs cadastro
  *
- * A tela Usuários é CRUD local (tabela usuarios no database do projeto).
- * Schema espelha o banco legado bdportalemp.
+ * A tela Usuários usa o módulo central da Biblioteca Global e mantém o
+ * vínculo com este projeto pelo escopo do token.
  */
 import type { GeradorSistemaConfig } from "@biblioteca-global/shared"
 
@@ -310,21 +310,37 @@ export const config: GeradorSistemaConfig = {
             title: "Usuários do Sistema",
             description: "Gerenciamento de usuários e permissões",
             fields: [
-              { name: "nome", label: "Nome", type: "text", maxLength: 100, fullWidth: true },
-              { name: "email", label: "E-mail", type: "email", required: true, maxLength: 150, fullWidth: true },
-              { name: "papel", label: "Perfil", type: "text", maxLength: 50 },
-              { name: "ativo", label: "Ativo", type: "switch", defaultValue: true },
+              { name: "nome", label: "Nome", type: "text", required: true, fullWidth: true },
+              { name: "username", label: "Usuário", type: "text", gridVisible: false },
+              { name: "email", label: "E-mail", type: "email" },
+              { name: "telefone", label: "Telefone", type: "text", gridVisible: false },
+              { name: "cpf", label: "CPF", type: "text", gridVisible: false },
+              { name: "senhaInicial", label: "Senha inicial", type: "text", required: true, minLength: 8, helperText: "Informe uma senha com pelo menos 8 caracteres", gridVisible: false },
+              {
+                name: "perfil",
+                label: "Perfil",
+                type: "select",
+                options: [
+                  { label: "Administrador", value: "admin" },
+                  { label: "Gerente", value: "gerente" },
+                  { label: "Operador", value: "operador" },
+                  { label: "Visualizador", value: "visualizador" },
+                ],
+                gridVisible: false,
+              },
+              { name: "ativo", label: "Ativo", type: "switch", defaultValue: true, gridVisible: false },
             ],
             overrides: {
-              hiddenColumns: ["senha", "primeiro_acesso", "createdAt", "updatedAt"],
+              hiddenColumns: ["passwordHash", "createdAt", "updatedAt"],
               columnLabels: {
                 id: "ID",
                 nome: "Nome",
                 email: "E-mail",
-                papel: "Perfil",
+                perfil: "Perfil",
                 ativo: "Status",
               },
-              newLabel: "Novo Usuário",
+              columns: 2,
+              newLabel: "Novo usuário",
             },
           },
         },
