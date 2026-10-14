@@ -29,12 +29,13 @@ export const OUTPUT_CONTRACT_CATALOG: readonly OutputContractDefault[] = [
     description: "Resposta da análise inicial e da retomada após esclarecimentos.",
     schema: {
       oneOf: [
+        { type: "object", additionalProperties: false, required: ["kind", "verdict", "summary", "evidence"], properties: { kind: { enum: ["verification", "verificacao"] }, verdict: { type: "string", minLength: 1 }, summary: { type: "string", minLength: 1 }, evidence: { type: "array", items: { type: "string" } } } },
         { type: "object", additionalProperties: false, required: ["subtarefas", "requirements", "coverage"], properties: { subtarefas: { type: "array", minItems: 1, maxItems: 10, items: subtask }, requirements: { type: "array", minItems: 1, items: { type: "object", additionalProperties: false, required: ["id", "description"], properties: { id: { type: "string", pattern: "^REQ-[A-Z0-9_-]+$" }, description: { type: "string", minLength: 1 } } } }, coverage: { type: "array", minItems: 1, items: { type: "object", additionalProperties: false, required: ["requirement", "covered_by"], properties: { requirement: { type: "string" }, covered_by: { type: "array", minItems: 1, items: { type: "integer", minimum: 1 } } } } } } },
         { type: "object", additionalProperties: false, required: ["kind", "resumo", "perguntas"], properties: { kind: { const: "perguntas" }, resumo: { type: "string" }, perguntas: { type: "array", minItems: 1, maxItems: 8, items: { type: "string" } } } },
       ],
     },
-    example: { subtarefas: [{ seq: 1, titulo: "Persistir dados e validar migração", scope: "Criar a persistência necessária e validar a migração no banco do projeto.", acceptance_criteria: ["Migration aplicada sem erro", "Dados persistidos podem ser lidos"], deliverables: ["migration", "teste de persistência"], requirements_covered: ["REQ-1"], depends_on: [] }], requirements: [{ id: "REQ-1", description: "Persistência do recurso" }], coverage: [{ requirement: "REQ-1", covered_by: [1] }] },
-    instructions: 'Responda somente com JSON. Um plano exige subtarefas detalhadas e os campos requirements e coverage. Cada subtarefa exige seq, titulo, scope, acceptance_criteria, deliverables, requirements_covered e depends_on. Identifique todos os requisitos como REQ-* e cubra cada um na matriz. Quando faltar decisão, use {"kind":"perguntas","resumo":"...","perguntas":["..."]}.',
+    example: { kind: "verification", verdict: "Confirmado", summary: "Avaliacao concluida diretamente pelo Analista.", evidence: ["Comando ou artefato consultado"] },
+    instructions: 'Responda somente com JSON. Para tarefa do tipo verificacao clara, faça a verificação diretamente, sem criar subtarefas: use {"kind":"verification","verdict":"...","summary":"...","evidence":["..."]}. Se faltar decisão ou houver ambiguidade, use {"kind":"perguntas","resumo":"...","perguntas":["..."]}. Para os demais tipos, um plano exige subtarefas detalhadas e os campos requirements e coverage.',
   },
   {
     key: "dev.resultado_execucao",

@@ -270,6 +270,26 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
            WHERE tarefa_id = ?`,
           [databaseTaskId],
         )
+      } else if (outcome.kind === 'verification') {
+        const chatText = JSON.stringify({ kind: 'verification', verdict: outcome.verdict, summary: outcome.summary, evidence: outcome.evidence })
+        const createdAt = new Date().toISOString()
+        const [chatInsert] = await connection.query<ResultSetHeader>(
+          `INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at)
+           VALUES (?, 'analyst', ?, NOW())`,
+          [databaseTaskId, chatText],
+        )
+        await this.realtime.appendChatMessage(connection, databaseTaskId, {
+          id: Number(chatInsert.insertId), role: 'analyst', texto: chatText, createdAt,
+        })
+        await connection.query(
+          `INSERT INTO task_runtime_facts
+             (tarefa_id, terminal_status, terminal_at, integration_confirmed_at, created_at, updated_at)
+           VALUES (?, 'completed', NOW(), NOW(), NOW(), NOW())
+           ON DUPLICATE KEY UPDATE terminal_status='completed', terminal_at=NOW(),
+             integration_confirmed_at=NOW(), updated_at=NOW()`,
+          [databaseTaskId],
+        )
+        await this.realtime.append(connection, databaseTaskId, before, { after: 'closed' })
       } else {
         const [existing] = await connection.query<RowDataPacket[]>(
           'SELECT id FROM subtarefas WHERE tarefa_id = ? LIMIT 1 FOR UPDATE', [databaseTaskId],

@@ -11,6 +11,7 @@ export type DerivedTaskStatus =
 
 interface TaskFactsRow extends RowDataPacket {
   id: number
+  task_type: string
   paused_at: Date | string | null
   resource_wait_key: string | null
   analysis_started_at: Date | string | null
@@ -40,6 +41,7 @@ export class DerivedTaskStatusResolver {
     const [rows] = await this.pool.query<TaskFactsRow[]>(`
       SELECT
         t.id, t.paused_at, t.resource_wait_key,
+        t.tipo AS task_type,
         f.analysis_started_at, f.clarification_pending_at, f.integration_confirmed_at, f.terminal_status,
         EXISTS(SELECT 1 FROM tarefa_contextos_execucao cix
           WHERE cix.tarefa_id = t.id AND cix.estado = 'awaiting_human') AS awaiting_interaction,
@@ -72,6 +74,9 @@ export class DerivedTaskStatusResolver {
     const allApproved = hasSubtasks && subtaskStatuses.every(status => ['verified', 'superseded'].includes(status))
 
     if (terminal === 'cancelled' || terminal === 'failed') return terminal
+    // Verificações diretas não criam subtarefas: o parecer do Analista já é a
+    // entrega final e o runtime fact registra o encerramento transacional.
+    if (terminal === 'completed' && !hasSubtasks && String(task.task_type).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase() === 'verificacao') return 'closed'
     // `motor_fix` é transitório: a execução registrada pelo Monitor é a fonte
     // de verdade e a limpeza do lease devolve a tarefa ao status normal.
     if (Number(task.active_monitor_fix) === 1) return 'motor_fix'
