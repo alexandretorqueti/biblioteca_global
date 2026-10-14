@@ -274,7 +274,7 @@ describe("OperationMapCanvas — responsividade", () => {
 
     expect(animate).toHaveBeenCalledWith(
       [{ transform: "translate(-200px, 0px)" }, { transform: "translate(0px, 0px)" }],
-      { duration: 450, easing: "ease-out", fill: "both" },
+      { duration: 1000, easing: "ease-out", fill: "both" },
     )
   })
 
