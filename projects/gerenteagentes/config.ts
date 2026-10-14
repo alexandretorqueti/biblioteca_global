@@ -202,8 +202,8 @@ export const config: GeradorSistemaConfig = {
                 fields: [
                   { name: "titulo", label: "Título", type: "text", required: true, fullWidth: true },
                   {
-                    name: "dependsOnTaskId",
-                    label: "Depende de",
+                    name: "dependsOnTaskIds",
+                    label: "Depende das tarefas",
                     type: "multipleChoice",
                     multipleChoice: { resource: "tarefas", idField: "id", displayField: "titulo" },
                     gridVisible: false,
@@ -219,6 +219,7 @@ export const config: GeradorSistemaConfig = {
                     "maxRework",
                     "hardTimeoutMs",
                     "dependsOnTaskId",
+                    "dependsOnTaskIds",
                     "autoStart",
                     "bootRetryCount",
                     "createdAt",

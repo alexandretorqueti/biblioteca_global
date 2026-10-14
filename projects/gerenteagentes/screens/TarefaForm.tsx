@@ -12,7 +12,9 @@ export interface TarefaFormValues {
   titulo: string
   descricao: string
   tipo: "desenvolvimento" | "automacao" | "verificacao"
+  dependsOnTaskIds: number[]
 }
+export interface TarefaFormTask { id: number; titulo: string; projetoId: number }
 
 export const TIPO_TAREFA_OPTIONS = [
   { value: "desenvolvimento", label: "Desenvolvimento" },
@@ -27,6 +29,7 @@ interface TarefaFormProps {
   success?: string | null
   submitLabel?: string
   onSubmit: (values: TarefaFormValues) => void | boolean | Promise<void | boolean>
+  tarefas?: TarefaFormTask[]
 }
 
 /** Formulário único de criação de tarefa, usado em tela e em modais. */
@@ -37,11 +40,13 @@ export default function TarefaForm({
   success = null,
   submitLabel = "Criar Tarefa",
   onSubmit,
+  tarefas = [],
 }: TarefaFormProps): ReactNode {
   const [projetoId, setProjetoId] = useState("")
   const [titulo, setTitulo] = useState("")
   const [descricao, setDescricao] = useState("")
   const [tipo, setTipo] = useState<TarefaFormValues["tipo"]>("desenvolvimento")
+  const [dependsOnTaskIds, setDependsOnTaskIds] = useState<number[]>([])
 
   const errosCampos = useMemo(() => {
     const erros: string[] = []
@@ -52,12 +57,13 @@ export default function TarefaForm({
 
   const submit = async () => {
     if (errosCampos.length > 0 || loading) return
-    const result = await onSubmit({ projetoId, titulo: titulo.trim(), descricao: descricao.trim(), tipo })
+    const result = await onSubmit({ projetoId, titulo: titulo.trim(), descricao: descricao.trim(), tipo, dependsOnTaskIds })
     if (result === false) return
     setProjetoId("")
     setTitulo("")
     setDescricao("")
     setTipo("desenvolvimento")
+    setDependsOnTaskIds([])
   }
 
   return (
@@ -86,6 +92,9 @@ export default function TarefaForm({
         label="Título" value={titulo} onChange={(e) => setTitulo(e.target.value)} required fullWidth
         error={!titulo.trim() && titulo.length > 0} inputProps={{ "data-testid": "input-titulo" }}
       />
+      <TextField select SelectProps={{ multiple: true }} label="Depende das tarefas" value={dependsOnTaskIds.map(String)} onChange={(e) => setDependsOnTaskIds((e.target.value as unknown as string[]).map(Number).filter((id) => Number.isSafeInteger(id)))} fullWidth helperText="Todas as dependências precisam estar no mesmo projeto.">
+        {tarefas.filter((tarefa) => String(tarefa.projetoId) === projetoId).map((tarefa) => <MenuItem key={tarefa.id} value={String(tarefa.id)}>{tarefa.titulo} (#{tarefa.id})</MenuItem>)}
+      </TextField>
       <TextField
         label="Descrição" value={descricao} onChange={(e) => setDescricao(e.target.value)}
         multiline rows={3} fullWidth inputProps={{ "data-testid": "input-descricao" }}

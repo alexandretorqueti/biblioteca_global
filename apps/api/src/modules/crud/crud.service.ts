@@ -18,7 +18,7 @@ import {
   Optional,
 } from "@nestjs/common"
 import { ConfigService } from "@nestjs/config"
-import { and, asc, desc, eq, getTableColumns, like, or, sql, type Column } from "drizzle-orm"
+import { and, asc, desc, eq, getTableColumns, inArray, like, or, sql, type Column } from "drizzle-orm"
 import type { MySqlColumn, MySqlTable } from "drizzle-orm/mysql-core"
 import type { CrudOrderByItem, PaginatedResult, ProjetoResumo } from "@biblioteca-global/shared"
 import { request as httpNodeRequest } from "node:http"
@@ -31,7 +31,7 @@ import {
 import { PROJECT_DB_FACTORY, type ProjectDbFactory } from "./project-db.factory"
 import { SCHEMA_REGISTRY, type SchemaRegistry } from "./schema-registry"
 import { zodParaInsert, zodParaUpdate } from "@biblioteca-global/schema-tools"
-import { projetosCaptados } from "../../../../../projects/gerenteagentes/schema"
+import { projetosCaptados, tarefas, tarefaDependencias } from "../../../../../projects/gerenteagentes/schema"
 import { RealtimeService } from "../realtime/realtime.service"
 
 /** Nomes que pertencem ao core/módulos específicos — nunca genéricos. */
@@ -451,8 +451,11 @@ export class CrudService {
           : baseQuery.limit(pageSize).offset((page - 1) * pageSize)
       )
 
+      const itemsNormalizados = resource === "tarefas"
+        ? await this.anexarDependencias(db, items as Record<string, unknown>[])
+        : items as Record<string, unknown>[]
       return {
-        items: items as Record<string, unknown>[],
+        items: itemsNormalizados,
         total: Number(total.at(0)?.quantidade ?? 0),
         page,
         pageSize,
@@ -481,7 +484,8 @@ export class CrudService {
     if (!linha) {
       throw new NotFoundException("Registro não encontrado")
     }
-    return linha as Record<string, unknown>
+    const resultado = linha as Record<string, unknown>
+    return resource === "tarefas" ? (await this.anexarDependencias(db, [resultado]))[0]! : resultado
   }
 
   /**
@@ -637,14 +641,77 @@ export class CrudService {
     return valor instanceof Date ? valor.toISOString() : valor
   }
 
+  /** Extrai o contrato novo sem deixar a lista chegar ao Zod derivado da tabela. */
+  private normalizarDependencias(corpo: unknown): { payload: Record<string, unknown>; ids?: number[] } {
+    if (typeof corpo !== "object" || corpo === null || Array.isArray(corpo)) return { payload: corpo as Record<string, unknown> }
+    const original = corpo as Record<string, unknown>
+    const payload = { ...original }
+    const lista = original.dependsOnTaskIds ?? original.depends_on_task_ids
+    const singular = original.dependsOnTaskId ?? original.depends_on_task_id
+    if (lista !== undefined || singular !== undefined) {
+      const valores = lista !== undefined ? lista : (singular == null || singular === "" ? [] : [singular])
+      if (!Array.isArray(valores)) throw new BadRequestException("dependsOnTaskIds deve ser um array")
+      const ids = valores.map((id) => typeof id === "number" ? id : Number(id))
+      payload.dependsOnTaskId = ids[0] ?? null
+      delete payload.dependsOnTaskIds
+      delete payload.depends_on_task_ids
+      return { payload, ids }
+    }
+    return { payload }
+  }
+
+  private async validarDependenciasTarefa(db: any, projetoId: number, tarefaId: number | null, ids: number[]): Promise<void> {
+    if (ids.some((id) => !Number.isSafeInteger(id) || id <= 0) || new Set(ids).size !== ids.length) {
+      throw new BadRequestException("dependsOnTaskIds deve conter IDs positivos, inteiros e sem repetição")
+    }
+    if (tarefaId != null && ids.includes(tarefaId)) throw new BadRequestException("Uma tarefa não pode depender dela mesma")
+    const tarefasValidas = ids.length === 0 ? [] : await db.select({ id: tarefas.id, projetoId: tarefas.projetoId }).from(tarefas).where(inArray(tarefas.id, ids))
+    if (tarefasValidas.length !== ids.length || tarefasValidas.some((row: { projetoId: number }) => Number(row.projetoId) !== projetoId)) {
+      throw new BadRequestException("Toda dependência deve existir e pertencer ao mesmo projeto")
+    }
+    if (tarefaId == null || ids.length === 0) return
+    const todos = await db.select({ id: tarefas.id, projetoId: tarefas.projetoId, legacy: tarefas.dependsOnTaskId }).from(tarefas).where(eq(tarefas.projetoId, projetoId))
+    const ligacoes = await db.select({ tarefaId: tarefaDependencias.tarefaId, dependeDeTarefaId: tarefaDependencias.dependeDeTarefaId }).from(tarefaDependencias)
+    const edges = new Map<number, number[]>()
+    for (const row of todos) edges.set(Number(row.id), row.legacy == null ? [] : [Number(row.legacy)])
+    for (const row of ligacoes) {
+      const origem = Number(row.tarefaId)
+      if (edges.has(origem)) edges.set(origem, [...(edges.get(origem) ?? []), Number(row.dependeDeTarefaId)])
+    }
+    edges.set(tarefaId, ids)
+    const visiting = new Set<number>(), visited = new Set<number>()
+    const visit = (node: number): boolean => {
+      if (visiting.has(node)) return true
+      if (visited.has(node)) return false
+      visiting.add(node)
+      for (const next of edges.get(node) ?? []) if (visit(next)) return true
+      visiting.delete(node); visited.add(node); return false
+    }
+    if ([...edges.keys()].some(visit)) throw new BadRequestException("A dependência informada forma um ciclo")
+  }
+
+  private async anexarDependencias(db: any, linhas: Record<string, unknown>[]): Promise<Record<string, unknown>[]> {
+    if (linhas.length === 0) return linhas
+    const ids = linhas.map((linha) => Number(linha.id)).filter((id) => Number.isSafeInteger(id) && id > 0)
+    const ligacoes = ids.length === 0 ? [] : await db.select({ tarefaId: tarefaDependencias.tarefaId, dependeDeTarefaId: tarefaDependencias.dependeDeTarefaId }).from(tarefaDependencias).where(inArray(tarefaDependencias.tarefaId, ids))
+    const porTarefa = new Map<number, number[]>()
+    for (const ligacao of ligacoes) porTarefa.set(Number(ligacao.tarefaId), [...(porTarefa.get(Number(ligacao.tarefaId)) ?? []), Number(ligacao.dependeDeTarefaId)])
+    return linhas.map((linha) => {
+      const legado = linha.dependsOnTaskId == null ? [] : [Number(linha.dependsOnTaskId)]
+      const dependencias = [...new Set([...(porTarefa.get(Number(linha.id)) ?? []), ...legado])]
+      return { ...linha, dependsOnTaskIds: dependencias, dependsOnTaskId: dependencias[0] ?? null }
+    })
+  }
+
   async criar(
     projeto: ProjetoResumo,
     resource: string,
     corpo: unknown,
   ): Promise<Record<string, unknown>> {
     const tabela = this.resolverTabela(projeto, resource)
+    const dependencia = resource === "tarefas" ? this.normalizarDependencias(corpo) : { payload: corpo as Record<string, unknown> }
     const { insert } = this.schemasDe(projeto, resource)
-    const parse = insert.safeParse(this.normalizarChaves(tabela, corpo))
+    const parse = insert.safeParse(this.normalizarChaves(tabela, dependencia.payload))
     if (!parse.success) {
       throw new BadRequestException({
         message: "Registro inválido",
@@ -693,9 +760,13 @@ export class CrudService {
             `mas o escopo atual é "${projeto.slug}". Use o projeto_id correto de projetos_captados.`,
           )
         }
+        if (dependencia.ids !== undefined) await this.validarDependenciasTarefa(db, projetoId, null, dependencia.ids)
       }
       const resultado = await db.insert(tabela).values(valores)
       const insertId = resultado[0].insertId
+      if (resource === "tarefas" && dependencia.ids !== undefined && dependencia.ids.length > 0) {
+        await db.insert(tarefaDependencias).values(dependencia.ids.map((dependeDeTarefaId) => ({ tarefaId: Number(insertId), dependeDeTarefaId })))
+      }
 
       // Pós-processamento: preencher external_id automaticamente para tarefas
       // O motor busca tarefas por external_id; se o CRUD não preenche, o botão
@@ -729,8 +800,9 @@ export class CrudService {
     corpo: unknown,
   ): Promise<Record<string, unknown>> {
     const tabela = this.resolverTabela(projeto, resource)
+    const dependencia = resource === "tarefas" ? this.normalizarDependencias(corpo) : { payload: corpo as Record<string, unknown> }
     const { update } = this.schemasDe(projeto, resource)
-    const parse = update.safeParse(this.normalizarChaves(tabela, corpo))
+    const parse = update.safeParse(this.normalizarChaves(tabela, dependencia.payload))
     if (!parse.success) {
       throw new BadRequestException({
         message: "Registro inválido",
@@ -749,7 +821,10 @@ export class CrudService {
     }
 
     // Existe? (404 antes de atualizar)
-    await this.detalhar(projeto, resource, id)
+    const atual = await this.detalhar(projeto, resource, id)
+    if (resource === "tarefas" && dependencia.ids !== undefined) {
+      await this.validarDependenciasTarefa(await this.dbDoProjeto(projeto), Number(atual.projetoId ?? atual.projeto_id), id, dependencia.ids)
+    }
 
     const db = await this.dbDoProjeto(projeto)
     try {
@@ -757,6 +832,10 @@ export class CrudService {
         .update(tabela)
         .set(campos)
         .where(eq(this.colunaId(tabela) as never, id as never))
+      if (resource === "tarefas" && dependencia.ids !== undefined) {
+        await db.delete(tarefaDependencias).where(eq(tarefaDependencias.tarefaId, id))
+        if (dependencia.ids.length > 0) await db.insert(tarefaDependencias).values(dependencia.ids.map((dependeDeTarefaId) => ({ tarefaId: id, dependeDeTarefaId })))
+      }
       const linha = await this.detalhar(projeto, resource, id)
       await this.publicarEventoCrud(projeto, resource, "updated", linha)
       return linha

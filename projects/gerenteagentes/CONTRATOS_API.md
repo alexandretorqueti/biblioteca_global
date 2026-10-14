@@ -329,7 +329,8 @@ compatibilidade temporária com o cadastro hierárquico.
   "managedProjectId": 2,
   "titulo": "Implementar autenticação",
   "descricao": "Criar sistema de login com email/senha",
-  "dependsOnTaskId": null,
+  "dependsOnTaskIds": [12, 13],
+  "dependsOnTaskId": 12,
   "autoStart": false
 }
 
@@ -342,7 +343,8 @@ compatibilidade temporária com o cadastro hierárquico.
   "status": "draft",
   "maxRework": 3,
   "hardTimeoutMs": null,
-  "dependsOnTaskId": null,
+  "dependsOnTaskIds": [12, 13],
+  "dependsOnTaskId": 12,
   "autoStart": false,
   "bootRetryCount": 0,
   "createdAt": "2026-08-18T14:30:00Z",
@@ -352,6 +354,13 @@ compatibilidade temporária com o cadastro hierárquico.
 
 **GET /api/gerenteagentes/tarefas?projetoId=:managedProjectId**
 Lista tarefas do projeto gerenciado.
+
+`dependsOnTaskIds` é a lista canônica de dependências. Durante a transição,
+`dependsOnTaskId` continua aceito como alias singular e é devolvido como a
+primeira dependência. Cada ID deve existir no mesmo `managedProjectId`; a API
+rejeita IDs repetidos, autorreferência e ciclos. A edição usa o mesmo contrato
+no `PUT`; enviar uma lista vazia remove todas as dependências. Dados antigos de
+`depends_on_task_id` são migrados para `tarefa_dependencias` sem perda.
 
 **GET /api/gerenteagentes/tarefas/:id**
 Retorna tarefa específica com subtarefas e bloqueios.
