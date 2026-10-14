@@ -22,6 +22,7 @@ interface TaskFactsRow extends RowDataPacket {
   deploy_succeeded: number | string
   deploy_failed: number | string
   administrative_deploy_cancelled: number | string
+  active_monitor_fix: number | string
 }
 
 const NON_CODE_COMPLETION_KINDS = new Set(['analysis', 'no_code_change', 'external_operation'])
@@ -50,7 +51,9 @@ export class DerivedTaskStatusResolver {
           WHERE d.tarefa_id = t.id AND d.status = 'failed') AS deploy_failed,
         EXISTS(SELECT 1 FROM deploy_requests d
           WHERE d.tarefa_id = t.id AND d.status = 'cancelled'
-            AND d.last_error LIKE 'Adjudicação administrativa sem deploy%') AS administrative_deploy_cancelled
+            AND d.last_error LIKE 'Adjudicação administrativa sem deploy%') AS administrative_deploy_cancelled,
+        EXISTS(SELECT 1 FROM motor_active_executions mae
+          WHERE mae.tarefa_id = t.id AND mae.phase = 'monitor' AND mae.expires_at > NOW()) AS active_monitor_fix
       FROM tarefas t
       LEFT JOIN task_runtime_facts f ON f.tarefa_id = t.id
       WHERE t.external_id = ? OR CAST(t.id AS CHAR) = ?
@@ -68,7 +71,10 @@ export class DerivedTaskStatusResolver {
     const hasSubtasks = subtaskStatuses.length > 0
     const allApproved = hasSubtasks && subtaskStatuses.every(status => ['verified', 'superseded'].includes(status))
 
-    if (terminal === 'cancelled' || terminal === 'failed' || terminal === 'motor_fix') return terminal
+    if (terminal === 'cancelled' || terminal === 'failed') return terminal
+    // `motor_fix` é transitório: a execução registrada pelo Monitor é a fonte
+    // de verdade e a limpeza do lease devolve a tarefa ao status normal.
+    if (Number(task.active_monitor_fix) === 1) return 'motor_fix'
     if (task.paused_at && !task.resource_wait_key) {
       if (Number(task.deploy_succeeded) === 1) return 'deployed'
       if (allApproved && task.integration_confirmed_at != null) return this.completedStatus(subtaskRows, task)

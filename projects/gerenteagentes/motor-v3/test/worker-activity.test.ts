@@ -71,6 +71,26 @@ describe('WorkerActivityService', () => {
     }))
   })
 
+  it('mantém o Monitor ativo durante a verificação pós-deploy e limpa o snapshot ao finalizar', async () => {
+    const postDeploy = service([], [{
+      execution_id: 'postdeploy-batch-1', task_id: 'task-deployed', subtask_id: null,
+      phase: 'postdeploy_monitor', model: 'modelo-monitor', agent_id: 'monitor-pos-deploy',
+      started_at: new Date(1000), heartbeat_at: new Date(2000),
+    }])
+    await expect(postDeploy.activity.getActivity()).resolves.toEqual(expect.objectContaining({
+      motor: expect.objectContaining({ isRunning: true, activeExecutionsCount: 1 }),
+      workers: expect.arrayContaining([expect.objectContaining({
+        role: 'manager', active: true, phase: 'postdeploy_monitor', taskId: 'task-deployed',
+      })]),
+    }))
+
+    const finished = service([], [])
+    await expect(finished.activity.getActivity()).resolves.toEqual(expect.objectContaining({
+      motor: expect.objectContaining({ isRunning: false, activeExecutionsCount: 0, activity: null }),
+      workers: expect.arrayContaining([expect.objectContaining({ role: 'manager', active: false })]),
+    }))
+  })
+
   it('mantém o motor ativo e exibe deploy enquanto há lote de deploy running', async () => {
     const { activity } = service([], [{ task_id: 'task-p12-909' }])
 
