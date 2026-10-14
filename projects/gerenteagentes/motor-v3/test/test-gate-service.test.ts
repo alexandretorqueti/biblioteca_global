@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { TestGateService } from '../src/testing/TestGateService.js'
+import type { TestGateInput, TestRunResult } from '../src/testing/TestGateService.js'
 
 describe('TestGateService', () => {
   const service = new TestGateService({} as never)
@@ -40,6 +41,31 @@ describe('TestGateService', () => {
     const result = service.compare(after, baseline)
     expect(result.newFailures).toHaveLength(1)
     expect(result.newFailures[0]?.classification).toBe('worsened')
+  })
+
+  it('serializa execuções que usam o mesmo workspace', async () => {
+    const entered: string[] = []
+    let releaseFirst!: () => void
+    const firstBlocked = new Promise<void>(resolve => { releaseFirst = resolve })
+    class ObservableGate extends TestGateService {
+      protected override async runExclusive(input: TestGateInput): Promise<TestRunResult> {
+        entered.push(input.phase)
+        if (input.phase === 'baseline') await firstBlocked
+        return { id: 1, phase: input.phase, status: 'passed', comparisonStatus: 'not_compared', exitCode: 0,
+          failures: [], newFailures: [], preExistingFailures: [], resolvedFailures: [], stdout: '', stderr: '' }
+      }
+    }
+    const gate = new ObservableGate({} as never)
+    const input = { projectId: 1, taskDatabaseId: 1, commitSha: 'abc', branchName: 'test',
+      workspacePath: '/tmp/shared-worktree', buildCommand: 'npm ci', testCommand: 'npm test' } as const
+    const first = gate.run({ ...input, phase: 'baseline' })
+    await Promise.resolve()
+    const second = gate.run({ ...input, phase: 'monitor_recovery' })
+    await Promise.resolve()
+    expect(entered).toEqual(['baseline'])
+    releaseFirst()
+    await Promise.all([first, second])
+    expect(entered).toEqual(['baseline', 'monitor_recovery'])
   })
 })
 // @vitest-environment node
