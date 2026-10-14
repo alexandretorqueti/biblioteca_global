@@ -10,11 +10,28 @@ describe("configuração do Administrador Global", () => {
     expect(tela?.screen.kind).toBe("cadastro")
     if (tela?.screen.kind === "cadastro") {
       const campos = tela.screen.fields?.map((field) => field.name)
-      // O schema atual do projeto usa `papel` para representar o perfil do
-      // usuário; `senhaInicial` não é um campo persistido do cadastro.
-      expect(campos).toEqual(expect.arrayContaining(["nome", "email", "papel", "ativo"]))
-      expect(campos).not.toContain("senhaInicial")
-      expect(campos).not.toContain("perfil")
+      expect(campos).toEqual(expect.arrayContaining([
+        "nome",
+        "username",
+        "email",
+        "telefone",
+        "cpf",
+        "senhaInicial",
+        "perfil",
+        "ativo",
+      ]))
+      expect(campos).not.toContain("papel")
+
+      const perfil = tela.screen.fields?.find((field) => field.name === "perfil")
+      expect(perfil).toMatchObject({ type: "select" })
+      expect(perfil?.options).toEqual([
+        { label: "Administrador", value: "admin" },
+        { label: "Gerente", value: "gerente" },
+        { label: "Operador", value: "operador" },
+        { label: "Visualizador", value: "visualizador" },
+      ])
+      expect(tela.screen.fields?.find((field) => field.name === "senhaInicial"))
+        .toMatchObject({ required: true })
     }
   })
 })
