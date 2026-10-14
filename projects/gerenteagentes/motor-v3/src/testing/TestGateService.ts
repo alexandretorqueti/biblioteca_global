@@ -81,9 +81,30 @@ interface FailureComparison {
 }
 
 export class TestGateService {
+  private static readonly workspaceRuns = new Map<string, Promise<void>>()
+
   constructor(private readonly pool: Pool) {}
 
   async run(input: TestGateInput): Promise<TestRunResult> {
+    const workspaceKey = resolve(input.workspacePath)
+    const previous = TestGateService.workspaceRuns.get(workspaceKey) ?? Promise.resolve()
+    let release!: () => void
+    const current = new Promise<void>(resolveRun => { release = resolveRun })
+    const queued = previous.catch(() => undefined).then(() => current)
+    TestGateService.workspaceRuns.set(workspaceKey, queued)
+    await previous.catch(() => undefined)
+    try {
+      return await this.runExclusive(input)
+    } finally {
+      release()
+      if (TestGateService.workspaceRuns.get(workspaceKey) === queued) {
+        TestGateService.workspaceRuns.delete(workspaceKey)
+      }
+    }
+  }
+
+  /** Mantém build/test destrutivos (como npm ci) exclusivos por worktree. */
+  protected async runExclusive(input: TestGateInput): Promise<TestRunResult> {
     const startedAt = new Date()
     const environment = await this.environment(input.workspacePath, input.buildCommand, input.testCommand)
     if (input.phase === 'baseline') {
