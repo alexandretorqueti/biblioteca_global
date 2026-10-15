@@ -15,7 +15,7 @@ function fakeEnvironment(options: FakeOptions = {}) {
   const record = (via: 'pool' | 'connection') => async (sql: string, params?: unknown[]) => {
     const normalized = String(sql).replace(/\s+/g, ' ').trim()
     queries.push({ sql: normalized, params: params ?? [], via })
-    if (normalized.startsWith('DELETE FROM deploy_requests')) {
+    if (normalized.startsWith('DELETE dr FROM deploy_requests')) {
       return [{ affectedRows: options.stalePendingRequests ?? 1 }, []]
     }
     if (normalized.includes('FROM tarefas')) {
@@ -105,7 +105,7 @@ describe('TaskUnblockedConsumer', () => {
     // O pedido pending com requested_commit obsoleto precisa ser removido,
     // senão needsRequestPreparation pula o novo DEPLOY_REQUESTED
     // (deploy_request_already_persisted) e o compose repete o conflito em loop.
-    const stale = env.queries.find(q => q.sql.includes('DELETE FROM deploy_requests'))
+    const stale = env.queries.find(q => q.sql.includes('DELETE dr FROM deploy_requests'))
     expect(stale).toBeDefined()
     expect(stale!.via).toBe('connection')
     expect(stale!.sql).toContain("status='pending'")
@@ -139,6 +139,25 @@ describe('TaskUnblockedConsumer', () => {
     expect(env.outbox('DEPLOY_REQUESTED')).toHaveLength(1)
     expect(env.events.find(e => e.evento === 'task_resumed_by_monitor')!.payload)
       .toMatchObject({ action: 'deploy_request_refreshed', staleRequestsRemoved: 0 })
+  })
+
+  it('deploy_member_conflict remove pedido failed de lote terminado (todos os membros conflitaram)', async () => {
+    const env = fakeEnvironment()
+
+    await env.consumer.handle(unblockedMessage({ blockReason: 'deploy_member_conflict' }))
+
+    // Quando TODOS os membros conflitam, o batch falha e o pedido permanece
+    // `failed` com requested_commit obsoleto. Sem removê-lo, o accept do novo
+    // DEPLOY_REQUESTED pula (deploy_request_already_persisted) e a retomada é
+    // no-op — incidente task-p2-1011.
+    const stale = env.queries.find(q => q.sql.includes('DELETE dr FROM deploy_requests'))
+    expect(stale).toBeDefined()
+    expect(stale!.sql).toContain("dr.status='failed'")
+    // Pedidos failed atrelados a lote ainda em andamento NÃO podem ser removidos
+    expect(stale!.sql).toContain('NOT EXISTS')
+    expect(stale!.sql).toContain('deploy_batches')
+    expect(stale!.sql).toMatch(/b\.status IN \('pending','running'\)/)
+    expect(env.outbox('DEPLOY_REQUESTED')).toHaveLength(1)
   })
 
   it('sem pedidos pending após reset: não enfileira dispatch mas registra retomada', async () => {

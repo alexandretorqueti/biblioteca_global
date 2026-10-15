@@ -84,8 +84,17 @@ export class TaskUnblockedConsumer {
    * Por isso, na mesma transação do novo DEPLOY_REQUESTED, removemos o pedido
    * `pending` sem lote da tarefa: ele não carrega valor durável (o prepare o
    * recria com o HEAD atual da integração, gate pre_deploy novo e geração
-   * corrente). Pedidos `running`/com `batch_id` não são tocados — há dispatch
-   * em andamento e o fluxo do lote segue responsável por eles.
+   * corrente). Pedidos `running`/com lote `pending`/`running` não são tocados —
+   * há dispatch em andamento e o fluxo do lote segue responsável por eles.
+   *
+   * Pedidos `failed` cujo lote já terminou (ou nem existe) também são
+   * removidos: quando TODOS os membros do lote conflitam, o batch falha e o
+   * pedido permanece `failed` com `requested_commit` obsoleto. Sem removê-lo,
+   * o novo DEPLOY_REQUESTED é ignorado no accept (`needsRequestPreparation`
+   * encontra pedido existente → skip `deploy_request_already_persisted`) e a
+   * retomada vira no-op — incidente task-p2-1011 (2026-10-15): o operador foi
+   * obrigado a atualizar `requested_commit` via SQL direto e resolver por
+   * `external-resolution`, contornando o fluxo canônico.
    */
   private async enqueueFreshDeployRequest(source: QueueMessage, databaseTaskId: number): Promise<number> {
     const request = createQueueMessage({
@@ -100,8 +109,14 @@ export class TaskUnblockedConsumer {
     try {
       await connection.beginTransaction()
       const [removed] = await connection.query<ResultSetHeader>(
-        `DELETE FROM deploy_requests
-          WHERE tarefa_id=? AND status='pending' AND batch_id IS NULL`,
+        `DELETE dr FROM deploy_requests dr
+          WHERE dr.tarefa_id=?
+            AND (
+              (dr.status='pending' AND dr.batch_id IS NULL)
+              OR (dr.status='failed' AND (dr.batch_id IS NULL OR NOT EXISTS (
+                    SELECT 1 FROM deploy_batches b
+                     WHERE b.batch_id=dr.batch_id AND b.status IN ('pending','running'))))
+            )`,
         [databaseTaskId],
       )
       // Dispatches órfãos com o SHA obsoleto não podem vencer a corrida contra
