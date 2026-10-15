@@ -32,7 +32,7 @@ import {
   Typography,
 } from "@mui/material"
 import { deriveTaskPriority, type Prioridade } from "./taskFlowHelpers"
-import type { FiltrosMapa, FlowTask, MotorActivity } from "./TaskFlowMap"
+import { capacityWaitMessage, type FiltrosMapa, type FlowTask, type MotorActivity } from "./TaskFlowMap"
 
 type StationTone = "neutral" | "active" | "success" | "warning" | "danger"
 type Station = { id: string; label: string; description: string; statuses: string[]; tone: StationTone }
@@ -160,14 +160,14 @@ export default function OperationMapCanvas({ tarefas, selectedTaskId, projetos, 
     const priority = deriveTaskPriority(task.status)
     const priorityColor: Record<Prioridade, "error.main" | "warning.main" | "success.main"> = { alta: "error.main", media: "warning.main", baixa: "success.main" }
     const label = `#${task.id}`
-    return <Tooltip title={<Box><Typography variant="caption" display="block" fontWeight={700}>#{task.id} {task.titulo}</Typography><Typography variant="caption" display="block">{station.label} · Projeto {task.projetoNome ?? task.projetoId}</Typography></Box>} arrow>
+    return <Tooltip title={<Box><Typography variant="caption" display="block" fontWeight={700}>#{task.id} {task.titulo}</Typography><Typography variant="caption" display="block">{station.label} · Projeto {task.projetoNome ?? task.projetoId}</Typography>{task.capacityWait && <Typography variant="caption" display="block" fontWeight={700} data-testid={`operation-map-task-capacity-wait-tooltip-${task.id}`}>{capacityWaitMessage(task.capacityWait)}</Typography>}</Box>} arrow>
       <IconButton ref={(element: HTMLButtonElement | null) => {
         if (!element) return
         markerElementsRef.current.set(task.id, element)
         markerRectsRef.current.set(task.id, element.getBoundingClientRect())
-      }} size="small" onClick={() => onSelectTask(task.id)} aria-label={`Abrir tarefa ${task.id}: ${task.titulo}`} data-testid={`operation-map-task-${task.id}`} data-selection-border-width={selected ? 4 : 0} data-selection-border-color={selected ? "secondary.main" : undefined} sx={{ p: 0, color: priorityColor[priority], border: selected ? 4 : 0, borderColor: "secondary.main", borderRadius: "50%", '&:hover': { bgcolor: "action.hover" } }}>
+      }} size="small" onClick={() => onSelectTask(task.id)} aria-label={`Abrir tarefa ${task.id}: ${task.titulo}`} data-testid={`operation-map-task-${task.id}`} data-selection-border-width={selected ? 4 : 0} data-selection-border-color={selected ? "secondary.main" : undefined} sx={{ p: 0, color: priorityColor[priority], border: selected ? 4 : 0, borderColor: "secondary.main", borderRadius: "50%", outline: task.capacityWait ? "2px dashed" : undefined, outlineColor: task.capacityWait ? "warning.main" : undefined, '&:hover': { bgcolor: "action.hover" } }}>
         <Box sx={{ width: 30, height: 30, borderRadius: "50%", bgcolor: "currentColor", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: station.tone === "active" ? "0 0 0 3px color-mix(in srgb, currentColor 18%, transparent)" : undefined }}>
-          <Typography component="span" sx={{ fontSize: 10, fontWeight: 700, lineHeight: 1, color: "white", userSelect: "none", whiteSpace: "nowrap" }}>{label}</Typography>
+          {task.capacityWait ? <HourglassBottomRounded data-testid={`operation-map-task-capacity-wait-${task.id}`} aria-label="Aguardando capacidade" sx={{ fontSize: 18, color: "white" }} /> : <Typography component="span" sx={{ fontSize: 10, fontWeight: 700, lineHeight: 1, color: "white", userSelect: "none", whiteSpace: "nowrap" }}>{label}</Typography>}
         </Box>
       </IconButton>
     </Tooltip>

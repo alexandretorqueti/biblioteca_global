@@ -46,12 +46,21 @@ const taskCountersSchema = z.object({
   failed: z.number().int().nonnegative().optional(),
 })
 
+const capacityWaitSchema = z.object({
+  phase: z.enum(["analysis", "development"]),
+  reasonCode: z.enum(["global_limit", "project_limit", "provider_limit"]),
+  limitScope: z.enum(["global", "project", "provider"]),
+  limitValue: z.number().int().nonnegative(),
+  provider: z.string().nullable(),
+})
+
 const taskSummarySchema = z.object({
   taskId: z.number().int().positive(),
   title: z.string().optional(),
   status: z.string(),
   counters: taskCountersSchema.optional(),
   updatedAt: z.string().datetime().optional(),
+  capacityWait: capacityWaitSchema.nullable().optional(),
 })
 
 export const agentMapSnapshotSchema = z.object({

@@ -1253,18 +1253,19 @@ export class GerenteAgentesService {
             this.motorHttpUrl,
           );
           if (resp.ok) {
-            const motorTask = JSON.parse(resp.body) as { status?: string; subtasks?: unknown[]; recoveryEligibility?: unknown };
+            const motorTask = JSON.parse(resp.body) as { status?: string; subtasks?: unknown[]; recoveryEligibility?: unknown; capacityWait?: unknown };
             return {
               ...tarefa,
               status: motorTask.status || 'planned',
               subtaskCount: Array.isArray(motorTask.subtasks) ? motorTask.subtasks.length : 0,
               ...(motorTask.recoveryEligibility !== undefined ? { recoveryEligibility: motorTask.recoveryEligibility } : {}),
+              ...(motorTask.capacityWait !== undefined ? { capacityWait: motorTask.capacityWait } : {}),
             };
           }
         } catch {
           // Se falhar, usa status padrão (fallback)
         }
-        return { ...tarefa, status: 'planned', subtaskCount: 0, recoveryEligibility: null };
+        return { ...tarefa, status: 'planned', subtaskCount: 0, recoveryEligibility: null, capacityWait: null };
       }),
     );
     
@@ -2434,6 +2435,7 @@ export class GerenteAgentesService {
           updatedAt: string;
         } | null;
         recoveryEligibility?: unknown;
+        capacityWait?: unknown;
       };
       
       // Busca subtarefas do banco de dados (mesma tabela projeto_640.subtarefas
@@ -2561,6 +2563,7 @@ export class GerenteAgentesService {
           blockInfo: motorTask.status === 'blocked' ? (motorTask.ultimoBloqueio ?? null) : null,
           promotionConflictAnalysis: motorTask.promotionConflictAnalysis ?? null,
           recoveryEligibility: motorTask.recoveryEligibility ?? null,
+          capacityWait: motorTask.capacityWait ?? null,
           testHealth: testHealth ? {
             delivery: motorTask.status === 'completed' || motorTask.status === 'deployed' ? 'completed' : motorTask.status,
             verification: Number(testHealth.regressions) === 0 ? 'verified_without_regression' : 'regression',
@@ -3415,8 +3418,18 @@ export class GerenteAgentesService {
             this.motorHttpUrl,
           );
           if (resp.ok) {
-            const motorTask = JSON.parse(resp.body) as { status?: string };
+            const motorTask = JSON.parse(resp.body) as {
+              status?: string;
+              capacityWait?: NonNullable<AgentMapSnapshot['tasks'][number]['capacityWait']> | null;
+            };
             status = motorTask.status || 'planned';
+            return {
+              taskId: tarefa.id,
+              title: tarefa.titulo || undefined,
+              status,
+              updatedAt: tarefa.updatedAt?.toISOString(),
+              capacityWait: motorTask.capacityWait ?? null,
+            };
           }
         } catch {
           // Fallback: usa status derivado local
@@ -3426,6 +3439,7 @@ export class GerenteAgentesService {
           title: tarefa.titulo || undefined,
           status,
           updatedAt: tarefa.updatedAt?.toISOString(),
+          capacityWait: null,
         };
       }),
     );

@@ -13,7 +13,7 @@ import {
 } from "@mui/material"
 import { useTheme } from "@mui/material/styles"
 import {
-  AddTaskRounded, CloseRounded, CodeRounded, DeleteRounded, EditRounded, ExpandMoreRounded, ExpandLessRounded,
+  AddTaskRounded, CloseRounded, CodeRounded, DeleteRounded, EditRounded, ExpandMoreRounded, ExpandLessRounded, HourglassBottomRounded,
   LockOpenRounded, PauseRounded, PlayArrowRounded, PsychologyRounded, ReplayRounded,
   SendRounded, VisibilityRounded,
 } from "@mui/icons-material"
@@ -25,7 +25,7 @@ import { useApi } from "../../../apps/web/src/hooks/useApi"
 import { resolveApiBaseUrl, resolveRealtimeUrl } from "../../../apps/web/src/api/client"
 import TarefaForm, { type TarefaFormValues } from "./TarefaForm"
 import OperationMapCanvas from "./OperationMapCanvas"
-import { recoveryEligibilityLabel, RecoveryEligibilityTooltipContent, type FiltrosMapa, type FlowTask, type MotorActivity, type RecoveryEligibility } from "./TaskFlowMap"
+import { capacityWaitMessage, recoveryEligibilityLabel, RecoveryEligibilityTooltipContent, type CapacityWaitProjection, type FiltrosMapa, type FlowTask, type MotorActivity, type RecoveryEligibility } from "./TaskFlowMap"
 import AgentStatusStrip, { type AgentStatusStripProps } from "./AgentStatusStrip"
 import { SUBTASK_STATUS_OPTIONS, TASK_STATUS_EXECUTING, TASK_STATUS_FINAIS, TASK_STATUS_PAUSABLE, TASK_STATUS_STARTABLE, taskStatusColor, taskStatusLabel } from "../src/shared/task-statuses"
 import { DEFAULT_TIMEZONE, formatarDataHora, resolveTimezone } from "../src/shared/timezone"
@@ -35,10 +35,10 @@ import { feedItemFromEnvelope, mergeFeedItem, normalizeFeedSnapshot } from "./op
 
 export const componentId = "gerenteagentes-operation-map"
 
-interface Task { id: number; titulo: string; descricao?: string | null; tipo?: string | null; status: string; projetoId: number; dependsOnTaskId?: number | null; dependsOnTaskIds?: number[]; createdAt?: string; updatedAt?: string; subtaskCount?: number; recoveryEligibility?: RecoveryEligibility | null }
+interface Task { id: number; titulo: string; descricao?: string | null; tipo?: string | null; status: string; projetoId: number; dependsOnTaskId?: number | null; dependsOnTaskIds?: number[]; createdAt?: string; updatedAt?: string; subtaskCount?: number; recoveryEligibility?: RecoveryEligibility | null; capacityWait?: CapacityWaitProjection | null }
 interface DbSubtask { id: number; seq: number; titulo: string; descricao?: string | null; scope?: string | null; acceptanceCriteria?: unknown; status: string; resultado?: string | null; dependsOnSubtaskId?: number | null; workspaceStatus?: string | null; correctionForSubtaskId?: number | null }
 interface MotorSubtask { id?: number; seq: number; title: string; status: string; deliverCount?: number; blockInfo?: { reason?: string; command?: string; exitCode?: number | null } | null; scope?: string | null; acceptanceCriteria?: unknown; resultado?: string | null; dependsOnSubtaskId?: number | null; workspaceStatus?: string | null; correctionForSubtaskId?: number | null; deliveryHistory?: Array<{ id: number; deliverNumber: number; model: string | null; eventType: string; reason: string | null; createdAt: string }> }
-interface Detail { motorId?: string; exists: boolean; message?: string; task?: { status: string; title: string; descricao?: string | null; tipo?: string | null; dependsOnTaskIds?: number[]; errorMessage?: string; blockInfo?: { kind?: string; excerpt?: string; blockedAt?: string; subtaskId?: number | null } | null; promotionConflictAnalysis?: import('./ConflictViewer').PromotionConflictData | null; recoveryEligibility?: RecoveryEligibility | null }; subtasks?: MotorSubtask[]; currentSubTask?: MotorSubtask | null; events?: Array<{ at: string; type: string; payload?: Record<string, unknown> }> }
+interface Detail { motorId?: string; exists: boolean; message?: string; task?: { status: string; title: string; descricao?: string | null; tipo?: string | null; dependsOnTaskIds?: number[]; errorMessage?: string; blockInfo?: { kind?: string; excerpt?: string; blockedAt?: string; subtaskId?: number | null } | null; promotionConflictAnalysis?: import('./ConflictViewer').PromotionConflictData | null; recoveryEligibility?: RecoveryEligibility | null; capacityWait?: CapacityWaitProjection | null }; subtasks?: MotorSubtask[]; currentSubTask?: MotorSubtask | null; events?: Array<{ at: string; type: string; payload?: Record<string, unknown> }> }
 interface MotorOperation { operationId: string; sequence: number; phase: string; outcome: string; messageType: string; commandCode?: string | null; policyCode?: string | null; policyVersion?: number | null; actionCode?: string | null; primitiveCode?: string | null; reasonCode?: string | null; resultJson?: unknown; durationMs?: number | null; createdAt: string }
 interface ChatMessage { id: number; tarefaId?: number; role: string; texto: string; createdAt: string; deliveryId?: number | null; deliveryState?: string | null; deliveryError?: string | null }
 interface Session { sessionKey: string; model?: string; status?: string; executionOrder?: number; openedAt?: string; closedAt?: string | null; closeReason?: string | null; messages: { items: Array<{ role: string; text: string; sequenceNumber: number }>; nextCursor?: string | null; hasNextPage?: boolean } }
@@ -106,6 +106,7 @@ function applyTaskUpdate(task: Task, payload: Record<string, unknown>, occurredA
     descricao: has("descricao") || has("description") ? (payload.descricao ?? payload.description) == null ? null : String(payload.descricao ?? payload.description) : task.descricao,
     tipo: has("tipo") || has("taskType") ? String(payload.tipo ?? payload.taskType ?? "") : task.tipo,
     status,
+    capacityWait: payload.capacityWait !== undefined ? (payload.capacityWait as CapacityWaitProjection | null) : task.capacityWait,
     dependsOnTaskIds: dependencies,
     dependsOnTaskId: dependencies?.[0] ?? (Array.isArray(dependencyPayload) ? null : task.dependsOnTaskId),
     updatedAt: String(payload.updatedAt ?? occurredAt),
@@ -259,6 +260,7 @@ export default function OperationMapScreen() {
             projetoId: message.snapshot.projectId,
             updatedAt: st.updatedAt,
             subtaskCount: st.counters?.total,
+            capacityWait: st.capacityWait ?? null,
           }))
           setTasks(prev => {
             // Preserva seleção atual se ainda existir
@@ -350,7 +352,7 @@ export default function OperationMapScreen() {
           } else if (event.type === "task.status.changed") {
             const newStatus = String(payload.status ?? "")
             if (newStatus) {
-              setTasks(prev => prev.map(t => t.id === event.taskId ? { ...t, status: newStatus, updatedAt: event.occurredAt } : t))
+              setTasks(prev => prev.map(t => t.id === event.taskId ? { ...t, status: newStatus, capacityWait: payload.capacityWait !== undefined ? payload.capacityWait as CapacityWaitProjection | null : t.capacityWait, updatedAt: event.occurredAt } : t))
             }
           } else if (event.type === "task.counters.updated") {
             setTasks(prev => prev.map(t => t.id === event.taskId ? {
@@ -816,6 +818,7 @@ export default function OperationMapScreen() {
                 {selected.tipo && <Chip size="small" variant="outlined" label={selected.tipo} />}
                 {status === "awaiting_clarification" && <Chip size="small" color="warning" label="Resposta necessária" />}
                 {status === "blocked" && (detail?.task?.recoveryEligibility ?? selected.recoveryEligibility) && <Tooltip title={<RecoveryEligibilityTooltipContent eligibility={(detail?.task?.recoveryEligibility ?? selected.recoveryEligibility)!} timezone={timezone} />}><Chip size="small" color="warning" label={recoveryEligibilityLabel((detail?.task?.recoveryEligibility ?? selected.recoveryEligibility)!)} /></Tooltip>}
+                {(detail?.task?.capacityWait ?? selected.capacityWait) && <Tooltip title={(capacityWaitMessage((detail?.task?.capacityWait ?? selected.capacityWait)!))} arrow><Chip size="small" color="warning" variant="outlined" icon={<HourglassBottomRounded />} label="Aguardando capacidade" data-testid={`task-detail-capacity-wait-${selected.id}`} /></Tooltip>}
               </Stack>
             </Box>
           </Stack>

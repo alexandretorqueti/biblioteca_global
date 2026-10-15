@@ -58,6 +58,20 @@ export interface RecoveryEligibility {
   promotionBlocker?: RecoveryEvidence | null
 }
 
+export interface CapacityWaitProjection {
+  phase: "analysis" | "development"
+  reasonCode: "global_limit" | "project_limit" | "provider_limit"
+  limitScope: "global" | "project" | "provider"
+  limitValue: number
+  provider: string | null
+}
+
+export function capacityWaitMessage(wait: CapacityWaitProjection): string {
+  const scope = wait.limitScope === "global" ? "global" : wait.limitScope === "project" ? "por projeto" : "do provider"
+  const provider = wait.limitScope === "provider" && wait.provider ? ` (${wait.provider})` : ""
+  return `Aguardando limite ${scope}${provider}: ${wait.limitValue} tarefa${wait.limitValue === 1 ? "" : "s"} por vez.`
+}
+
 export function recoveryEligibilityLabel(eligibility: RecoveryEligibility): string {
   const labels: Record<RecoveryEligibilityState, string> = {
     eligible: "Elegível para correção automática",
@@ -111,6 +125,7 @@ export interface FlowTask {
   progresso?: { verified: number; total: number } | null
   subtaskCount?: number
   recoveryEligibility?: RecoveryEligibility | null
+  capacityWait?: CapacityWaitProjection | null
 }
 
 export interface MotorActivity {
@@ -578,6 +593,7 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, m
             : "—"
           const showRecovery = task.status === "blocked" && task.recoveryEligibility != null
           const recoveryLabel = showRecovery ? recoveryEligibilityLabel(task.recoveryEligibility!) : ""
+          const waitingForCapacity = task.capacityWait != null
 
           // Tooltip rico (1.3e): descrição + projeto + prioridade + atualização
           // Nota: campo responsável omitido — backend ainda não expõe essa informação.
@@ -610,6 +626,7 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, m
               <Typography variant="caption" display="block" sx={{ opacity: 0.7, color: "common.white" }}>
                 Atualizado: {ultimaAtualizacao}
               </Typography>
+              {waitingForCapacity && <Typography variant="caption" display="block" sx={{ mt: 0.25, color: "common.white", fontWeight: 700 }}>{capacityWaitMessage(task.capacityWait!)}</Typography>}
             </Box>
           )
 
@@ -636,6 +653,8 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, m
                   p: 0.8,
                   border: 0,
                   borderLeft: `4px solid ${prioridadeCor}`,
+                  borderTop: waitingForCapacity ? "2px dashed" : undefined,
+                  borderTopColor: waitingForCapacity ? "warning.main" : undefined,
                   textAlign: "left",
                   cursor: "pointer",
                   bgcolor: isSelected ? "action.selected" : "background.paper",
@@ -669,6 +688,7 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, m
                     {avatar.letra}
                   </Avatar>
                   {aiActive && <SettingsRounded aria-label="IA trabalhando" sx={{ flexShrink: 0, fontSize: 18, color: "warning.main", animation: "gear-spin 2s linear infinite", "@keyframes gear-spin": { to: { transform: "rotate(360deg)" } } }} />}
+                  {waitingForCapacity && <Tooltip title={capacityWaitMessage(task.capacityWait!)} arrow><HourglassBottomRounded aria-label="Aguardando capacidade" data-testid={`flow-task-capacity-wait-${task.id}`} sx={{ flexShrink: 0, fontSize: 17, color: "warning.main" }} /></Tooltip>}
                   {station.tone === "danger" && <ErrorOutlineRounded sx={{ flexShrink: 0, fontSize: 17, color: "error.main" }} />}
                   <Typography variant="caption" fontWeight={700} noWrap sx={{ minWidth: 0, flex: 1 }}>#{task.id} {task.titulo}</Typography>
                   {showRecovery && (
