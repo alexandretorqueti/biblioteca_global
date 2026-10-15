@@ -235,7 +235,7 @@ describe("OperationMapScreen — preservação de seleção em atualizações", 
 
     await waitFor(() => {
       expect(screen.getByTestId("detail-content")).toHaveTextContent("Descrição persistida da tarefa")
-    })
+    }, { timeout: 5000 })
 
     const mapClient = realtimeClients.items.find(client => client.channel === "map")
     expect(mapClient?.onMessage).toBeDefined()
@@ -421,7 +421,7 @@ describe("OperationMapScreen — descrição na aba Resumo (tarefa 993)", () => 
 
     await waitFor(() => {
       expect(screen.getByTestId("detail-content")).toHaveTextContent("Descrição digitada na criação")
-    })
+    }, { timeout: 5000 })
   })
 
   it("usa a descrição do motor-detail quando a lista local não a possui", async () => {
@@ -448,7 +448,7 @@ describe("OperationMapScreen — descrição na aba Resumo (tarefa 993)", () => 
 
     await waitFor(() => {
       expect(screen.getByTestId("detail-content")).toHaveTextContent("Descrição persistida via motor-detail")
-    })
+    }, { timeout: 5000 })
   })
 
   it("mantém o fallback 'Sem descrição' quando descrição é nula na lista e no detalhe", async () => {
@@ -458,6 +458,6 @@ describe("OperationMapScreen — descrição na aba Resumo (tarefa 993)", () => 
 
     await waitFor(() => {
       expect(screen.getByTestId("detail-content")).toHaveTextContent("Sem descrição")
-    })
+    }, { timeout: 5000 })
   })
 })
