@@ -9,6 +9,7 @@ interface MockClient {
   send: (value: string) => void
   sent: string[]
   closed: boolean
+  close: (code?: number, reason?: string) => void
   closeCode?: number
   closeReason?: string
 }
@@ -342,6 +343,44 @@ describe("RealtimeGateway — formato de inscrição WsAdapter", () => {
       expect(client.sent).toHaveLength(1)
       const response = JSON.parse(client.sent[0]!)
       expect(response.type).toBe("pong")
+    })
+  })
+
+  describe("subscribe — canal helpdesk", () => {
+    it("envia snapshot e replay somente para a sessão do usuário/projeto", async () => {
+      ;(gateway as unknown as { sessoes: WeakMap<WebSocket, { projetoId: number; usuarioId: number }> })
+        .sessoes.set(client as unknown as WebSocket, { projetoId: projectId, usuarioId: 11 })
+      gateway.setHelpDeskSnapshotProvider(() => ({
+        sessaoId: 91,
+        usuarioId: 11,
+        projetoId: projectId,
+        mensagens: [],
+      }))
+      service.publicarHelpDesk({ projectId, userId: 11, sessionId: 91, type: "helpdesk.processing.changed", payload: { processing: true, responded: false } })
+
+      await gateway.subscribe(client as unknown as WebSocket, { type: "subscribe", channel: "helpdesk", sessaoId: 91, lastSequence: 0 })
+
+      const responses = client.sent.map((entry) => JSON.parse(entry))
+      expect(responses.some((entry) => entry.type === "helpdesk_snapshot")).toBe(true)
+      expect(responses.some((entry) => entry.type === "event" && entry.event.type === "helpdesk.processing.changed")).toBe(true)
+      expect(responses.at(-1)).toEqual({ type: "helpdesk_subscribed", sessaoId: 91, currentSequence: 1 })
+    })
+
+    it("nega sessão de outro usuário ou projeto antes de registrar inscrição", async () => {
+      ;(gateway as unknown as { sessoes: WeakMap<WebSocket, { projetoId: number; usuarioId: number }> })
+        .sessoes.set(client as unknown as WebSocket, { projetoId: projectId, usuarioId: 11 })
+      gateway.setHelpDeskSnapshotProvider(() => ({
+        sessaoId: 92,
+        usuarioId: 99,
+        projetoId: 999,
+        mensagens: [],
+      }))
+
+      await gateway.subscribe(client as unknown as WebSocket, { type: "subscribe", channel: "helpdesk", sessaoId: 92 })
+
+      expect(JSON.parse(client.sent[0]!)).toEqual({ type: "error", code: "FORBIDDEN_SUBSCRIPTION", message: "Sessão HelpDesk não pertence ao escopo autenticado" })
+      service.publicarHelpDesk({ projectId, userId: 11, sessionId: 92, type: "helpdesk.processing.changed", payload: { processing: false, responded: true } })
+      expect(client.sent).toHaveLength(1)
     })
   })
 })

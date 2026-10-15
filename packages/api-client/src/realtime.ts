@@ -59,6 +59,8 @@ export class RealtimeClient {
       const channel = this.options.channel ?? "task"
       const subscribe = channel === "project-feed" || channel === "map"
         ? { type: "subscribe" as const, channel, lastSequence: this.lastSequence }
+        : channel === "helpdesk"
+          ? { type: "subscribe" as const, channel, sessaoId: this.options.sessaoId, lastSequence: this.lastSequence }
         : { type: "subscribe" as const, channel, taskId: this.options.taskId, lastSequence: this.lastSequence }
       // O WsAdapter padrão do NestJS roteia mensagens pelo campo "event".
       // Envelopar a inscrição no formato {"event":"subscribe","data":<payload>}
@@ -79,7 +81,7 @@ export class RealtimeClient {
             if (this.lastSequence !== undefined && result.data.event.sequence <= this.lastSequence) return
             this.receivedEventIds.add(result.data.event.eventId)
             this.lastSequence = Math.max(this.lastSequence ?? 0, result.data.event.sequence)
-          } else if (result.data.type === "map_snapshot" || result.data.type === "task_snapshot") {
+          } else if (result.data.type === "map_snapshot" || result.data.type === "task_snapshot" || result.data.type === "helpdesk_snapshot") {
             this.lastSequence = Math.max(this.lastSequence ?? 0, result.data.currentSequence)
           }
           this.options.onMessage(result.data)

@@ -34,6 +34,7 @@ export const realtimeEventTypeSchema = z.enum([
   "chat.message.created", "chat.message.updated",
   "started", "progress", "log", "heartbeat", "completed", "failed", "model_unavailable",
   "developer_branch_integrated", "deployed", "clarifying", "system_alert", "system_recovered",
+  "helpdesk.message.created", "helpdesk.processing.changed",
 ])
 export type RealtimeEventType = z.infer<typeof realtimeEventTypeSchema>
 
@@ -72,6 +73,34 @@ export const taskDetailSnapshotSchema = z.object({
 })
 export type TaskDetailSnapshot = z.infer<typeof taskDetailSnapshotSchema>
 
+export const helpDeskRealtimeMessageSchema = z.object({
+  id: z.number().int().positive(),
+  sessaoId: z.number().int().positive(),
+  role: z.enum(["agent", "user", "system"]),
+  text: z.string(),
+  createdAt: z.string().datetime({ offset: true }),
+})
+export type HelpDeskRealtimeMessage = z.infer<typeof helpDeskRealtimeMessageSchema>
+
+export const helpDeskRealtimeSnapshotSchema = z.object({
+  sessaoId: z.number().int().positive(),
+  usuarioId: z.number().int().positive(),
+  projetoId: z.number().int().positive(),
+  mensagens: z.array(helpDeskRealtimeMessageSchema),
+})
+export type HelpDeskRealtimeSnapshot = z.infer<typeof helpDeskRealtimeSnapshotSchema>
+
+export const helpDeskRealtimeEventSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("helpdesk.message.created"),
+    payload: helpDeskRealtimeMessageSchema,
+  }),
+  z.object({
+    type: z.literal("helpdesk.processing.changed"),
+    payload: z.object({ processing: z.boolean(), responded: z.boolean() }),
+  }),
+])
+
 export const taskExecutionEventSchema = taskExecutionPayloadSchema
 export type TaskExecutionEvent = z.infer<typeof taskExecutionEventSchema>
 
@@ -99,12 +128,13 @@ export type TaskEventEnvelope = z.infer<typeof taskEventEnvelopeSchema>
 export const realtimeClientMessageSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("subscribe"),
-    channel: z.union([z.literal("task"), z.literal("project-feed"), z.literal("map")]),
+    channel: z.union([z.literal("task"), z.literal("project-feed"), z.literal("map"), z.literal("helpdesk")]),
     taskId: z.number().int().positive().optional(),
+    sessaoId: z.number().int().positive().optional(),
     lastSequence: z.number().int().nonnegative().optional(),
   }).refine(
-    (data) => data.channel === "task" ? data.taskId !== undefined : true,
-    { message: "taskId é obrigatório para canal 'task'" }
+    (data) => data.channel === "task" ? data.taskId !== undefined : data.channel === "helpdesk" ? data.sessaoId !== undefined : true,
+    { message: "taskId ou sessaoId é obrigatório para o canal" }
   ),
   z.object({ type: z.literal("ping") }),
 ])
@@ -117,6 +147,9 @@ export const realtimeServerMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("event"), event: taskEventEnvelopeSchema }),
   z.object({ type: z.literal("map_snapshot"), projectId: z.number().int().positive(), currentSequence: z.number().int().nonnegative(), snapshot: agentMapSnapshotSchema }),
   z.object({ type: z.literal("task_snapshot"), taskId: z.number().int().positive(), currentSequence: z.number().int().nonnegative(), snapshot: taskDetailSnapshotSchema }),
+  z.object({ type: z.literal("helpdesk_subscribed"), sessaoId: z.number().int().positive(), currentSequence: z.number().int().nonnegative() }),
+  z.object({ type: z.literal("helpdesk_snapshot"), sessaoId: z.number().int().positive(), currentSequence: z.number().int().nonnegative(), snapshot: helpDeskRealtimeSnapshotSchema }),
+  z.object({ type: z.literal("helpdesk_replay_unavailable"), sessaoId: z.number().int().positive(), currentSequence: z.number().int().nonnegative() }),
   z.object({ type: z.literal("replay_unavailable"), taskId: z.number().int().positive(), currentSequence: z.number().int().nonnegative() }),
   z.object({ type: z.literal("feed_replay_unavailable"), currentSequence: z.number().int().nonnegative() }),
   z.object({ type: z.literal("map_replay_unavailable"), projectId: z.number().int().positive(), currentSequence: z.number().int().nonnegative() }),

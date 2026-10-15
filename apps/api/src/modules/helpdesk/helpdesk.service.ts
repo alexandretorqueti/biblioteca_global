@@ -5,7 +5,7 @@
  * do projeto (projetosCaptados.agenteId + project_model_selection) e ponte com o
  * BFF OpenClaw (HelpDeskBridgeService).
  */
-import { Injectable, Inject, Logger } from "@nestjs/common"
+import { Injectable, Inject, Logger, Optional } from "@nestjs/common"
 import { eq, desc, asc, and } from "drizzle-orm"
 import { sql } from "drizzle-orm"
 import { PROJECT_DB_FACTORY, type ProjectDbFactory } from "../crud/project-db.factory"
@@ -13,6 +13,7 @@ import { CORE_DB, type CoreDb } from "../../database/database.module"
 import * as coreSchema from "../../../../../database/schema"
 import { agentes, projetosCaptados } from "../../../../../projects/gerenteagentes/schema"
 import { HelpDeskBridgeService } from "./helpdesk.bridge"
+import { RealtimeService } from "../realtime/realtime.service"
 
 const { helpdeskSessoes: helpDeskSessionTable, helpdeskMensagens: helpDeskMessageTable } = coreSchema
 /** O catálogo de agentes/modelos do GerenteAgentes vive em projeto_640. */
@@ -27,7 +28,19 @@ export class HelpDeskService {
     @Inject(PROJECT_DB_FACTORY) private readonly factory: ProjectDbFactory,
     @Inject(CORE_DB) private readonly coreDb: CoreDb,
     private readonly bridge: HelpDeskBridgeService,
-  ) {}
+    @Optional() private readonly realtime?: RealtimeService,
+  ) {
+    this.realtime?.setHelpDeskSnapshotProvider(async ({ sessionId, userId, projectId }) => {
+      const history = await this.obterHistorico(sessionId, userId)
+      if (history.sessao.usuarioId !== userId || history.sessao.projetoId !== projectId) return null
+      return {
+        sessaoId: sessionId,
+        usuarioId: userId,
+        projetoId: projectId,
+        mensagens: history.mensagens,
+      }
+    })
+  }
 
   private async getCoreDb(): Promise<CoreDb> {
     return this.coreDb
@@ -128,11 +141,12 @@ export class HelpDeskService {
     }
 
     // Persiste mensagem do usuário ANTES de enviar ao agente
-    await db.insert(helpDeskMessageTable).values({
+    const [userMessage] = await db.insert(helpDeskMessageTable).values({
       sessaoId: input.sessaoId,
       role: "user",
       text: input.text.trim(),
-    })
+    }).$returningId()
+    if (userMessage) this.publicarMensagem(sessao.projetoId, input.usuarioId, input.sessaoId, userMessage.id, "user", input.text.trim())
 
     // Registra a solicitação antes de chamar o agente. O agente nunca deve
     // executar alterações diretamente; o motor recebe a solicitação em draft.
@@ -165,14 +179,16 @@ export class HelpDeskService {
 
     if (sendResult.ok) {
       if (sendResult.processing) {
+        this.realtime?.publicarHelpDesk({ projectId: sessao.projetoId, userId: input.usuarioId, sessionId: input.sessaoId, type: "helpdesk.processing.changed", payload: { processing: true, responded: false } })
         return { ok: true, messageId: sendResult.runId, processing: true }
       }
       const respostaAgente = sendResult.responseText ?? ""
-      await db.insert(helpDeskMessageTable).values({
+      const [agentMessage] = await db.insert(helpDeskMessageTable).values({
         sessaoId: input.sessaoId,
         role: "agent",
         text: respostaAgente,
-      })
+      }).$returningId()
+      if (agentMessage) this.publicarMensagem(sessao.projetoId, input.usuarioId, input.sessaoId, agentMessage.id, "agent", respostaAgente)
 
       return { ok: true, messageId: sendResult.runId }
     }
@@ -228,20 +244,34 @@ export class HelpDeskService {
         .limit(1)
 
       if (!jaPersistida) {
-        await db.insert(helpDeskMessageTable).values({
+        const [agentMessage] = await db.insert(helpDeskMessageTable).values({
           sessaoId: input.sessaoId,
           role: "agent",
           text: resposta,
-        })
+        }).$returningId()
+        if (agentMessage) this.publicarMensagem(sessao.projetoId, input.usuarioId, input.sessaoId, agentMessage.id, "agent", resposta)
       }
+      this.realtime?.publicarHelpDesk({ projectId: sessao.projetoId, userId: input.usuarioId, sessionId: input.sessaoId, type: "helpdesk.processing.changed", payload: { processing: false, responded: true } })
       return { ok: true, processing: false, responded: true }
     }
 
+    const processing = await this.bridge.sessaoEmProcessamento(resolved.sessionKey)
+    this.realtime?.publicarHelpDesk({ projectId: sessao.projetoId, userId: input.usuarioId, sessionId: input.sessaoId, type: "helpdesk.processing.changed", payload: { processing, responded: false } })
     return {
       ok: true,
-      processing: await this.bridge.sessaoEmProcessamento(resolved.sessionKey),
+      processing,
       responded: false,
     }
+  }
+
+  private publicarMensagem(projetoId: number, usuarioId: number, sessaoId: number, id: number, role: "user" | "agent", text: string): void {
+    this.realtime?.publicarHelpDesk({
+      projectId: projetoId,
+      userId: usuarioId,
+      sessionId: sessaoId,
+      type: "helpdesk.message.created",
+      payload: { id, sessaoId, role, text, createdAt: new Date().toISOString() },
+    })
   }
 
   // ===========================================================================
