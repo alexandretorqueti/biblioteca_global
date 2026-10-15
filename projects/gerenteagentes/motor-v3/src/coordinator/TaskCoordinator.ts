@@ -12,6 +12,13 @@ import type { ErrorInput } from '../classifier/EventClassifier.js'
 export type TaskLifecycleStatus = DerivedTaskStatus
 export type AnalysisClaimResult = boolean | 'capacity_waiting'
 
+export interface TaskDependencySnapshot {
+  taskId: string
+  taskType: string | null
+  terminalStatus: string | null
+  deployStatus: string | null
+}
+
 export interface TaskSnapshot {
   taskId: string
   title: string
@@ -32,6 +39,8 @@ export interface TaskSnapshot {
   dependencyTerminalStatus?: string | null
   dependencyDeployStatus?: string | null
   dependencyTaskType?: string | null
+  /** Todas as dependências N:N; o trio acima é mantido para o legado. */
+  dependencies?: TaskDependencySnapshot[]
 }
 
 /**
@@ -206,16 +215,19 @@ export class TaskCoordinator {
       return
     }
 
-    const dependencyCheck = this.checkDependencySatisfied(task)
+    const dependencyCheck = this.checkDependenciesSatisfied(task)
     if (!dependencyCheck.satisfied) {
+      const first = dependencyCheck.blocking[0]
+      const dependencyDetails = task.dependencies && task.dependencies.length > 1 ? { dependencies: dependencyCheck.blocking } : {}
       await this.log(operationId, sequence++, 'rejected', 'rejected', message, {
         reasonCode: 'dependency_not_met',
-        result: { dependencyTaskId: dependencyCheck.dependencyTaskId, dependencyStatus: dependencyCheck.dependencyStatus, dependencyDeployStatus: dependencyCheck.dependencyDeployStatus },
+        result: { dependencyTaskId: first?.taskId ?? null, dependencyStatus: first?.terminalStatus ?? null, dependencyDeployStatus: first?.deployStatus ?? null, ...dependencyDetails },
       })
       await this.recordEvent(task.taskId, 'dependency_not_met', {
-        dependencyTaskId: dependencyCheck.dependencyTaskId,
-        dependencyStatus: dependencyCheck.dependencyStatus,
-        dependencyDeployStatus: dependencyCheck.dependencyDeployStatus,
+        dependencyTaskId: first?.taskId ?? null,
+        dependencyStatus: first?.terminalStatus ?? null,
+        dependencyDeployStatus: first?.deployStatus ?? null,
+        ...dependencyDetails,
       })
       await this.emit('TASK_IGNORED', message, { reason: 'dependency_not_met' })
       return
@@ -428,38 +440,22 @@ export class TaskCoordinator {
    * - dependência do tipo 'verificacao' ou 'automacao' → exige apenas terminal_status='completed'
    * - dependência não encontrada (dependencyTaskType null) → não satisfeita
    */
-  private checkDependencySatisfied(task: TaskSnapshot): {
+  private checkDependenciesSatisfied(task: TaskSnapshot): {
     satisfied: boolean
-    dependencyTaskId: string | null
-    dependencyStatus: string | null
-    dependencyDeployStatus: string | null
+    blocking: TaskDependencySnapshot[]
   } {
-    const dependencyTaskId = task.dependsOnTaskId ?? null
-    if (!dependencyTaskId) {
-      return { satisfied: true, dependencyTaskId: null, dependencyStatus: null, dependencyDeployStatus: null }
-    }
-
-    const dependencyTaskType = task.dependencyTaskType ?? null
-    const dependencyStatus = task.dependencyTerminalStatus ?? null
-    const dependencyDeployStatus = task.dependencyDeployStatus ?? null
-
-    if (!dependencyTaskType) {
-      return { satisfied: false, dependencyTaskId, dependencyStatus, dependencyDeployStatus }
-    }
-
-    const isCompleted = dependencyStatus === 'completed'
-
-    if (dependencyTaskType === 'desenvolvimento') {
-      const satisfied = isCompleted && dependencyDeployStatus === 'succeeded'
-      return { satisfied, dependencyTaskId, dependencyStatus, dependencyDeployStatus }
-    }
-
-    if (dependencyTaskType === 'verificacao' || dependencyTaskType === 'automacao') {
-      return { satisfied: isCompleted, dependencyTaskId, dependencyStatus, dependencyDeployStatus }
-    }
-
-    // Tipo desconhecido: não satisfeita por segurança
-    return { satisfied: false, dependencyTaskId, dependencyStatus, dependencyDeployStatus }
+    const dependencies = task.dependencies?.length
+      ? task.dependencies
+      : task.dependsOnTaskId
+        ? [{ taskId: task.dependsOnTaskId, taskType: task.dependencyTaskType ?? null, terminalStatus: task.dependencyTerminalStatus ?? null, deployStatus: task.dependencyDeployStatus ?? null }]
+        : []
+    const blocking = dependencies.filter(dependency => {
+      if (!dependency.taskType || dependency.terminalStatus !== 'completed') return true
+      if (dependency.taskType === 'desenvolvimento') return dependency.deployStatus !== 'succeeded'
+      if (dependency.taskType === 'verificacao' || dependency.taskType === 'automacao') return false
+      return true
+    })
+    return { satisfied: blocking.length === 0, blocking }
   }
 
   private async emit(eventName: string, source: QueueMessage, payload: Record<string, unknown>): Promise<void> {

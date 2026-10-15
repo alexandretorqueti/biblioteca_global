@@ -1,5 +1,5 @@
 import type { Pool, PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
-import type { AnalysisClaimResult, AnalysisExecutionLeaseRepository, TaskCoordinatorRepository, TaskLifecycleStatus, TaskSnapshot } from './TaskCoordinator.js'
+import type { AnalysisClaimResult, AnalysisExecutionLeaseRepository, TaskCoordinatorRepository, TaskLifecycleStatus, TaskSnapshot, TaskDependencySnapshot } from './TaskCoordinator.js'
 import type { AnalysisOutcome } from '../analysis/AnalystReply.js'
 import { DerivedTaskStatusResolver } from '../status/DerivedTaskStatus.js'
 import { RealtimeMutationBoundary } from '../realtime/RealtimeMutationBoundary.js'
@@ -25,6 +25,14 @@ interface TaskRow extends RowDataPacket {
   depends_on_task_id: number | string | null
   dependency_external_id: string | null
   dependency_id: number | null
+  dependency_tipo: string | null
+  dependency_terminal_status: string | null
+  dependency_deploy_status: string | null
+}
+
+interface DependencyRow extends RowDataPacket {
+  dependency_external_id: string | null
+  dependency_id: number
   dependency_tipo: string | null
   dependency_terminal_status: string | null
   dependency_deploy_status: string | null
@@ -74,6 +82,36 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
 
     const row = rows[0]
     if (!row) return null
+    const [dependencyRows] = await this.pool.query<DependencyRow[]>(`
+      SELECT dep.external_id AS dependency_external_id, dep.id AS dependency_id,
+             dep.tipo AS dependency_tipo, dep_f.terminal_status AS dependency_terminal_status,
+             (SELECT CASE
+                WHEN EXISTS(SELECT 1 FROM deploy_requests dr WHERE dr.tarefa_id = dep.id AND dr.status = 'succeeded') THEN 'succeeded'
+                WHEN EXISTS(SELECT 1 FROM deploy_requests dr WHERE dr.tarefa_id = dep.id AND dr.status = 'failed') THEN 'failed'
+                WHEN EXISTS(SELECT 1 FROM deploy_requests dr WHERE dr.tarefa_id = dep.id AND dr.status IN ('pending','running')) THEN 'pending'
+                ELSE NULL
+              END) AS dependency_deploy_status
+        FROM tarefa_dependencias td
+        INNER JOIN tarefas dep ON dep.id = td.depende_de_tarefa_id
+        LEFT JOIN task_runtime_facts dep_f ON dep_f.tarefa_id = dep.id
+       WHERE td.tarefa_id = ?
+       ORDER BY td.id ASC`, [row.id])
+    const dependencies: TaskDependencySnapshot[] = dependencyRows.map(dependency => ({
+      taskId: String(dependency.dependency_external_id ?? dependency.dependency_id),
+      taskType: dependency.dependency_tipo ? String(dependency.dependency_tipo) : null,
+      terminalStatus: dependency.dependency_terminal_status ? String(dependency.dependency_terminal_status) : null,
+      deployStatus: dependency.dependency_deploy_status ? String(dependency.dependency_deploy_status) : null,
+    }))
+    // Instalações anteriores à tabela N:N continuam funcionando enquanto a
+    // coluna legada existir; a migration 0090 já a espelha na primeira linha.
+    if (dependencies.length === 0 && row.depends_on_task_id != null) {
+      dependencies.push({
+        taskId: String(row.dependency_external_id ?? row.dependency_id ?? row.depends_on_task_id),
+        taskType: row.dependency_tipo ? String(row.dependency_tipo) : null,
+        terminalStatus: row.dependency_terminal_status ? String(row.dependency_terminal_status) : null,
+        deployStatus: row.dependency_deploy_status ? String(row.dependency_deploy_status) : null,
+      })
+    }
     return {
       ...this.mapTask(row),
       status: await this.statusResolver.resolve(String(row.external_id ?? row.id)),
@@ -83,6 +121,7 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
       dependencyTerminalStatus: row.dependency_terminal_status ? String(row.dependency_terminal_status) : null,
       dependencyDeployStatus: row.dependency_deploy_status ? String(row.dependency_deploy_status) : null,
       dependencyTaskType: row.dependency_tipo ? String(row.dependency_tipo) : null,
+      dependencies,
     }
   }
 

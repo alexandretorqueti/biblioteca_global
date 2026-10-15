@@ -1110,6 +1110,7 @@ export class MySqlDevelopmentExecutionRepository {
         })
         await this.insertOutbox(connection, deployRequest)
       }
+      if (!hasIntegratedCode) await this.enqueueSatisfiedDependentResumes(connection, context.databaseTaskId, taskCompleted)
       await this.wakeCapacityWaiters(connection, taskCompleted)
       await this.realtime.append(connection, context.databaseTaskId, beforeStatus, {
         type: 'subtask.status.changed', subtaskId: context.subtaskId,
@@ -1389,6 +1390,60 @@ export class MySqlDevelopmentExecutionRepository {
         new Date(message.timestamp).toISOString().slice(0, 19).replace('T', ' '),
         message.correlationId ?? null, message.causationId ?? null],
     )
+  }
+
+  /** A conclusão sem deploy pode liberar dependentes do tipo verificacao/automacao. */
+  private async enqueueSatisfiedDependentResumes(connection: PoolConnection, completedTaskId: number, source: QueueMessage): Promise<void> {
+    const [result] = await connection.query<Array<RowDataPacket & { id: number; external_id: string | null }>>(
+      `SELECT dependent.id, dependent.external_id
+         FROM tarefas dependent
+        WHERE EXISTS (
+          SELECT 1 FROM tarefa_dependencias completed_link
+           WHERE completed_link.tarefa_id = dependent.id
+             AND completed_link.depende_de_tarefa_id = ?
+        )
+          AND NOT EXISTS (
+            SELECT 1
+              FROM tarefa_dependencias pending_link
+              INNER JOIN tarefas dependency ON dependency.id = pending_link.depende_de_tarefa_id
+              LEFT JOIN task_runtime_facts dependency_f ON dependency_f.tarefa_id = dependency.id
+             WHERE pending_link.tarefa_id = dependent.id
+               AND (
+                 dependency.tipo IS NULL
+                 OR dependency_f.terminal_status IS NULL
+                 OR dependency_f.terminal_status <> 'completed'
+                 OR (dependency.tipo = 'desenvolvimento' AND NOT EXISTS (
+                       SELECT 1 FROM deploy_requests dependency_deploy
+                        WHERE dependency_deploy.tarefa_id = dependency.id
+                          AND dependency_deploy.status = 'succeeded'
+                    ))
+                 OR dependency.tipo NOT IN ('desenvolvimento', 'verificacao', 'automacao')
+               )
+          )
+          AND dependent.paused_at IS NULL
+          AND NOT EXISTS (SELECT 1 FROM task_runtime_facts f WHERE f.tarefa_id = dependent.id AND (f.terminal_status IS NOT NULL OR f.analysis_started_at IS NOT NULL))
+          AND (SELECT COUNT(*) FROM subtarefas s WHERE s.tarefa_id = dependent.id) = 0
+          AND NOT EXISTS (
+            SELECT 1 FROM motor_outbox o
+             WHERE o.task_id COLLATE utf8mb4_unicode_ci = COALESCE(dependent.external_id, CAST(dependent.id AS CHAR))
+               AND o.type = 'TASK_RESUME_REQUESTED'
+               AND JSON_UNQUOTE(JSON_EXTRACT(o.payload_json, '$.reason')) = 'dependency_completion'
+          )`, [completedTaskId],
+    )
+    // Alguns adaptadores legados retornam apenas ResultSetHeader para
+    // consultas não reconhecidas; isso não pode transformar uma conclusão
+    // válida em falha nem emitir retomadas indevidas.
+    const rows = Array.isArray(result) ? result : []
+    for (const dependent of rows) {
+      await this.insertOutbox(connection, createQueueMessage({
+        type: 'TASK_RESUME_REQUESTED',
+        taskId: String(dependent.external_id ?? dependent.id),
+        executionId: `completion-resume-${source.messageId}-${dependent.id}`,
+        correlationId: source.correlationId ?? source.messageId,
+        causationId: source.messageId,
+        payload: { reason: 'dependency_completion', dependencyTaskId: String(completedTaskId) },
+      }))
+    }
   }
 
   /**
