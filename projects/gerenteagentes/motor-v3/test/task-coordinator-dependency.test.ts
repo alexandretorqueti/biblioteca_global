@@ -141,6 +141,34 @@ describe('TaskCoordinator — gate de dependência entre tarefas', () => {
     expect(runner.start).not.toHaveBeenCalled()
   })
 
+  it('exige todas as dependências e registra as que ainda bloqueiam', async () => {
+    const { coordinator, repository, runner, eventos } = setup(task({
+      dependencies: [
+        { taskId: 'dep-1', taskType: 'verificacao', terminalStatus: 'completed', deployStatus: null },
+        { taskId: 'dep-2', taskType: 'desenvolvimento', terminalStatus: 'completed', deployStatus: null },
+      ],
+    }))
+
+    await coordinator.handle(command())
+
+    expect(repository.claimAnalysis).not.toHaveBeenCalled()
+    expect(runner.start).not.toHaveBeenCalled()
+    expect(eventos.find(e => e.evento === 'dependency_not_met')?.payload).toMatchObject({
+      dependencies: [{ taskId: 'dep-2', terminalStatus: 'completed', deployStatus: null }],
+    })
+  })
+
+  it('não libera dependência de tipo desconhecido mesmo concluída', async () => {
+    const { coordinator, repository, runner } = setup(task({
+      dependencies: [{ taskId: 'dep-1', taskType: 'tipo_novo', terminalStatus: 'completed', deployStatus: null }],
+    }))
+
+    await coordinator.handle(command())
+
+    expect(repository.claimAnalysis).not.toHaveBeenCalled()
+    expect(runner.start).not.toHaveBeenCalled()
+  })
+
   it('mensagem TASK_RESUME_REQUESTED é consumida sem retry quando dependência não satisfeita', async () => {
     const { coordinator, bus, runner } = setup(task({
       dependsOnTaskId: 'dep-1',

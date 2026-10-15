@@ -372,6 +372,31 @@ export const tarefas = mysqlTable("tarefas", {
     .onUpdateNow(),
 })
 
+/** Dependências N:N entre tarefas do mesmo projeto.
+ * `tarefas.depends_on_task_id` permanece durante a transição e espelha a
+ * primeira dependência para consumidores legados.
+ */
+export const tarefaDependencias = mysqlTable(
+  "tarefa_dependencias",
+  {
+    id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+    tarefaId: bigint("tarefa_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => tarefas.id, { onDelete: "cascade" }),
+    dependeDeTarefaId: bigint("depende_de_tarefa_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => tarefas.id, { onDelete: "cascade" }),
+  },
+  (table) => ({
+    tarefaDependenciaUnica: uniqueIndex("tarefa_dependencias_tarefa_depende_unica").on(
+      table.tarefaId,
+      table.dependeDeTarefaId,
+    ),
+    tarefaIdx: index("tarefa_dependencias_tarefa_idx").on(table.tarefaId),
+    dependeDeIdx: index("tarefa_dependencias_depende_de_idx").on(table.dependeDeTarefaId),
+  }),
+)
+
 /** Trilha imutável de ações sobre tarefas, inclusive após exclusão. */
 export const tarefaEventos = mysqlTable("tarefa_eventos", {
   id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
@@ -996,6 +1021,7 @@ export const annotations = {
     max_rework: { label: "Máx. Retrabalho" },
     hard_timeout_ms: { label: "Timeout (ms)" },
     depends_on_task_id: { label: "Depende de" },
+    depends_on_task_ids: { label: "Depende das tarefas" },
     auto_start: { label: "Início Automático" },
     boot_retry_count: { label: "Tentativas de Boot" },
   },

@@ -19,6 +19,7 @@ import { PROJECT_DB_FACTORY, type ProjectDbFactory } from '../../../apps/api/src
 import { SCHEMA_REGISTRY, type SchemaRegistry } from '../../../apps/api/src/modules/crud/schema-registry';
 import {
   tarefas,
+  tarefaDependencias,
   subtarefas,
   tarefaChats,
   projetoChats,
@@ -127,6 +128,11 @@ function makeMessagesPage<T extends {
 
 @Injectable()
 export class GerenteAgentesService {
+  private validarListaDependencias(ids: number[]): void {
+    if (ids.some((id) => !Number.isSafeInteger(id) || id <= 0) || new Set(ids).size !== ids.length) {
+      throw new BadRequestException('dependsOnTaskIds deve conter IDs positivos, inteiros e sem repetição');
+    }
+  }
   private readonly logger = new Logger(GerenteAgentesService.name);
   private readonly motorVersao: string;
   private readonly motorHttpUrl: string;
@@ -1051,6 +1057,7 @@ export class GerenteAgentesService {
       tipo?: 'desenvolvimento' | 'automacao' | 'verificacao';
       status?: string;
       dependsOnTaskId?: number | null;
+      dependsOnTaskIds?: number[];
       autoStart?: boolean;
       ator?: string;
     },
@@ -1096,17 +1103,15 @@ export class GerenteAgentesService {
     if (input.status != null && input.status !== 'planned' && input.status !== 'draft') {
       throw new BadRequestException('Status inicial deve ser planned');
     }
-    if (input.dependsOnTaskId != null) {
-      const [dependency] = await db
-        .select({ id: tarefas.id, projetoId: tarefas.projetoId })
-        .from(tarefas)
-        .where(eq(tarefas.id, input.dependsOnTaskId))
-        .limit(1);
-      if (!dependency || Number(dependency.projetoId) !== managedProjectId) {
-        throw new BadRequestException(
-          'A tarefa de dependência deve pertencer ao mesmo projeto gerenciado',
-        );
-      }
+    const dependencyIds = input.dependsOnTaskIds ??
+      (input.dependsOnTaskId == null ? [] : [input.dependsOnTaskId]);
+    this.validarListaDependencias(dependencyIds);
+    const dependencies = dependencyIds.length === 0 ? [] : await db
+      .select({ id: tarefas.id, projetoId: tarefas.projetoId })
+      .from(tarefas)
+      .where(inArray(tarefas.id, dependencyIds));
+    if (dependencies.length !== dependencyIds.length || dependencies.some((d) => Number(d.projetoId) !== managedProjectId)) {
+      throw new BadRequestException('Todas as tarefas de dependência devem existir no mesmo projeto gerenciado');
     }
 
     let realtimeEventId: string | undefined;
@@ -1116,13 +1121,16 @@ export class GerenteAgentesService {
         titulo,
         descricao: input.descricao?.trim() || null,
         tipo: input.tipo ?? 'desenvolvimento',
-        dependsOnTaskId: input.dependsOnTaskId ?? null,
+        dependsOnTaskId: dependencyIds[0] ?? null,
         autoStart: input.autoStart ?? false,
         // Tarefas novas são criadas em PAUSA (paused_at definido).
         // O status derivado será 'planned', mas a tarefa não executa até ser retomada.
         pausedAt: new Date(),
       });
       const tarefaId = Number(result[0].insertId);
+      if (dependencyIds.length > 0) {
+        await tx.insert(tarefaDependencias).values(dependencyIds.map((dependeDeTarefaId) => ({ tarefaId, dependeDeTarefaId })));
+      }
       // IDs numéricos mantêm o external_id dentro do limite de 64 caracteres e
       // deixam explícito que ambos pertencem ao namespace operacional.
       const externalId = `task-p${managedProjectId}-${tarefaId}`;
@@ -1178,7 +1186,7 @@ export class GerenteAgentesService {
         deliveryStatus: 'pending',
         attempts: 0,
       });
-      return tarefaCriada;
+      return { ...tarefaCriada, dependsOnTaskIds: dependencyIds };
     });
     if (realtimeEventId && this.realtimeBoundary) await this.realtimeBoundary.despachar(db, Number(created.id), [realtimeEventId]);
     return created;

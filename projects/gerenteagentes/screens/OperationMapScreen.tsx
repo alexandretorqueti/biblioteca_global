@@ -35,7 +35,7 @@ import { feedItemFromEnvelope, mergeFeedItem, normalizeFeedSnapshot } from "./op
 
 export const componentId = "gerenteagentes-operation-map"
 
-interface Task { id: number; titulo: string; descricao?: string | null; tipo?: string | null; status: string; projetoId: number; dependsOnTaskId?: number | null; createdAt?: string; updatedAt?: string; subtaskCount?: number; recoveryEligibility?: RecoveryEligibility | null }
+interface Task { id: number; titulo: string; descricao?: string | null; tipo?: string | null; status: string; projetoId: number; dependsOnTaskId?: number | null; dependsOnTaskIds?: number[]; createdAt?: string; updatedAt?: string; subtaskCount?: number; recoveryEligibility?: RecoveryEligibility | null }
 interface DbSubtask { id: number; seq: number; titulo: string; descricao?: string | null; scope?: string | null; acceptanceCriteria?: unknown; status: string; resultado?: string | null; dependsOnSubtaskId?: number | null; workspaceStatus?: string | null; correctionForSubtaskId?: number | null }
 interface MotorSubtask { id?: number; seq: number; title: string; status: string; deliverCount?: number; blockInfo?: { reason?: string; command?: string; exitCode?: number | null } | null; scope?: string | null; acceptanceCriteria?: unknown; resultado?: string | null; dependsOnSubtaskId?: number | null; workspaceStatus?: string | null; correctionForSubtaskId?: number | null; deliveryHistory?: Array<{ id: number; deliverNumber: number; model: string | null; eventType: string; reason: string | null; createdAt: string }> }
 interface Detail { motorId?: string; exists: boolean; message?: string; task?: { status: string; title: string; descricao?: string | null; errorMessage?: string; blockInfo?: { kind?: string; excerpt?: string; blockedAt?: string; subtaskId?: number | null } | null; promotionConflictAnalysis?: import('./ConflictViewer').PromotionConflictData | null; recoveryEligibility?: RecoveryEligibility | null }; subtasks?: MotorSubtask[]; currentSubTask?: MotorSubtask | null; events?: Array<{ at: string; type: string; payload?: Record<string, unknown> }> }
@@ -77,6 +77,7 @@ function taskFromCreatedRow(
   const createdAt = text(row?.createdAt ?? row?.created_at) ?? now
   const updatedAt = text(row?.updatedAt ?? row?.updated_at) ?? createdAt
   const depends = Number(row?.dependsOnTaskId ?? row?.depends_on_task_id ?? 0)
+  const dependsOnTaskIds = Array.isArray(row?.dependsOnTaskIds) ? row.dependsOnTaskIds.map(Number).filter((value) => Number.isSafeInteger(value) && value > 0) : (Number.isSafeInteger(depends) && depends > 0 ? [depends] : [])
   const descricao = row && typeof row.descricao === "string" ? row.descricao : null
   return {
     id,
@@ -86,6 +87,7 @@ function taskFromCreatedRow(
     status: text(row?.status) ?? "draft",
     projetoId: Number(row?.projetoId ?? row?.projeto_id ?? fallbacks.projetoId),
     dependsOnTaskId: Number.isSafeInteger(depends) && depends > 0 ? depends : null,
+    dependsOnTaskIds,
     createdAt,
     updatedAt,
   }
@@ -639,7 +641,7 @@ export default function OperationMapScreen() {
     setNewTaskError(null)
     try {
       const created = await bundle.http.request<Record<string, unknown>>("POST", "/gerenteagentes/tarefas", {
-        body: { projeto_id: Number(values.projetoId), titulo: values.titulo, descricao: values.descricao || null, tipo: values.tipo },
+        body: { projeto_id: Number(values.projetoId), titulo: values.titulo, descricao: values.descricao || null, tipo: values.tipo, dependsOnTaskIds: values.dependsOnTaskIds },
         auth: "access",
       })
       setNewTaskOpen(false)
@@ -667,7 +669,7 @@ export default function OperationMapScreen() {
     }
   }
   const getLoadOptions = useCallback((resource: string) => async (search: string) => { if (!bundle) return []; try { const result = await bundle.http.request<{ items: Array<Record<string, unknown>> }>("GET", `/${resource}`, { query: search ? { search, pageSize: 50 } : { pageSize: 100 }, auth: "access" }); return result.items ?? [] } catch { return [] } }, [bundle])
-  const editFields: DynamicField[] = useMemo(() => [{ name: "titulo", label: "Título", type: "text", required: true, maxLength: 200, fullWidth: true }, { name: "descricao", label: "Descrição", type: "textarea", fullWidth: true }, { name: "tipo", label: "Tipo de tarefa", type: "select", options: [{ value: "desenvolvimento", label: "Desenvolvimento" }, { value: "automacao", label: "Automação" }, { value: "verificacao", label: "Verificação" }] }, { name: "dependsOnTaskId", label: "Depende da tarefa", type: "multipleChoice", multipleChoice: { resource: "tarefas", idField: "id", displayField: "titulo", loadOptions: getLoadOptions("tarefas") } }], [getLoadOptions])
+  const editFields: DynamicField[] = useMemo(() => [{ name: "titulo", label: "Título", type: "text", required: true, maxLength: 200, fullWidth: true }, { name: "descricao", label: "Descrição", type: "textarea", fullWidth: true }, { name: "tipo", label: "Tipo de tarefa", type: "select", options: [{ value: "desenvolvimento", label: "Desenvolvimento" }, { value: "automacao", label: "Automação" }, { value: "verificacao", label: "Verificação" }] }, { name: "dependsOnTaskIds", label: "Depende das tarefas", type: "multipleChoice", multipleChoice: { resource: "tarefas", idField: "id", displayField: "titulo", loadOptions: getLoadOptions("tarefas") } }], [getLoadOptions])
   const editTask = async (values: DynamicFormValues) => {
     if (!bundle || !selected) return
     setEditLoading(true)
@@ -678,7 +680,7 @@ export default function OperationMapScreen() {
           titulo: String(values.titulo ?? "").trim(),
           descricao: values.descricao ? String(values.descricao).trim() : null,
           tipo: String(values.tipo ?? "desenvolvimento"),
-          dependsOnTaskId: values.dependsOnTaskId !== "" && values.dependsOnTaskId != null ? Number(values.dependsOnTaskId) : null,
+          dependsOnTaskIds: Array.isArray(values.dependsOnTaskIds) ? values.dependsOnTaskIds.map(Number) : [],
         },
         auth: "access",
       })
@@ -784,8 +786,8 @@ export default function OperationMapScreen() {
       </Box></Stack>}
   </Drawer>
 
-  <Dialog open={newTaskOpen} onClose={() => !newTaskLoading && setNewTaskOpen(false)} fullWidth maxWidth="md"><DialogTitle>Nova tarefa</DialogTitle><DialogContent><TarefaForm projetos={projects} loading={newTaskLoading} error={newTaskError} onSubmit={createTask} /></DialogContent></Dialog>
-  <Dialog open={editOpen} onClose={() => !editLoading && setEditOpen(false)} fullWidth maxWidth="md"><DialogTitle>Editar tarefa</DialogTitle><DialogContent>{editError && <Alert severity="error">{editError}</Alert>}{selected && <DynamicForm key={selected.id} fields={editFields} initialValues={{ titulo: selected.titulo, descricao: selected.descricao ?? "", tipo: selected.tipo ?? "desenvolvimento", dependsOnTaskId: selected.dependsOnTaskId ?? "" }} loading={editLoading} actionState="update" submitLabel="Salvar alterações" onSubmit={editTask} onCancel={() => setEditOpen(false)} />}</DialogContent></Dialog>
+  <Dialog open={newTaskOpen} onClose={() => !newTaskLoading && setNewTaskOpen(false)} fullWidth maxWidth="md"><DialogTitle>Nova tarefa</DialogTitle><DialogContent><TarefaForm projetos={projects} tarefas={tasks} loading={newTaskLoading} error={newTaskError} onSubmit={createTask} /></DialogContent></Dialog>
+  <Dialog open={editOpen} onClose={() => !editLoading && setEditOpen(false)} fullWidth maxWidth="md"><DialogTitle>Editar tarefa</DialogTitle><DialogContent>{editError && <Alert severity="error">{editError}</Alert>}{selected && <DynamicForm key={selected.id} fields={editFields} initialValues={{ titulo: selected.titulo, descricao: selected.descricao ?? "", tipo: selected.tipo ?? "desenvolvimento", dependsOnTaskIds: selected.dependsOnTaskIds ?? (selected.dependsOnTaskId != null ? [selected.dependsOnTaskId] : []) }} loading={editLoading} actionState="update" submitLabel="Salvar alterações" onSubmit={editTask} onCancel={() => setEditOpen(false)} />}</DialogContent></Dialog>
   <Dialog open={sessionOpen} onClose={() => !sessionLoading && setSessionOpen(false)} fullWidth maxWidth="lg"><DialogTitle>{sessionTitle}</DialogTitle><DialogContent>{sessionLoading && <CircularProgress size={22} />}{sessionError && <Alert severity="error">{sessionError}</Alert>}{!sessionLoading && !sessionError && !sessions.length && <Typography color="text.secondary">Nenhuma sessão disponível.</Typography>}{sessions.map((session, index) => <Paper key={session.sessionKey} variant="outlined" sx={{ p: 1.5, mb: 1.5 }}><Stack direction="row" spacing={1} alignItems="center"><Typography fontWeight={700}>{session.model ?? `Sessão ${index + 1}`}</Typography>{session.status && <Chip size="small" label={session.status} />}</Stack><Box component="pre" onScroll={event => handleSessionScroll(event, session)} sx={{ whiteSpace: "pre-wrap", maxHeight: "45vh", overflow: "auto", bgcolor: "action.hover", p: 1 }}>{session.messages.items.slice().sort((a, b) => b.sequenceNumber - a.sequenceNumber).map(m => `[${m.role}]\n${m.text}\n`).join("\n")}</Box>{sessionPageErrors[session.sessionKey] && <Alert severity="error" sx={{ mt: 1 }}>{sessionPageErrors[session.sessionKey]}</Alert>}{sessionPageLoading.has(session.sessionKey) && <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1 }}><CircularProgress size={16} /><Typography variant="caption">Carregando mensagens…</Typography></Stack>}</Paper>)}</DialogContent></Dialog>
   <Dialog open={editSubOpen} onClose={() => !editSubLoading && setEditSubOpen(false)} fullWidth maxWidth="md"><DialogTitle>Editar subtarefa</DialogTitle><DialogContent>{editSubError && <Alert severity="error">{editSubError}</Alert>}{editingSub && <DynamicForm key={editingSub.id} fields={editSubFields} initialValues={{ titulo: editingSub.titulo, status: editingSub.status, seq: editingSub.seq, scope: editingSub.scope ?? "", acceptance_criteria: criteria(editingSub.acceptanceCriteria).join("\n"), resultado: editingSub.resultado ?? "", dependsOnSubtaskId: editingSub.dependsOnSubtaskId ?? "" }} loading={editSubLoading} actionState="update" submitLabel="Salvar alterações" onSubmit={saveSubtask} onCancel={() => setEditSubOpen(false)} />}</DialogContent></Dialog>
 

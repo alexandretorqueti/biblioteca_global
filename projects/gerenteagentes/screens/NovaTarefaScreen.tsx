@@ -12,7 +12,7 @@ import {
   Typography,
   Paper,
 } from "@mui/material"
-import TarefaForm, { type TarefaFormValues } from "./TarefaForm"
+import TarefaForm, { type TarefaFormValues, type TarefaFormTask } from "./TarefaForm"
 import { AddTaskRounded } from "@mui/icons-material"
 export const componentId = "gerenteagentes-nova-tarefa"
 
@@ -36,6 +36,7 @@ export default function NovaTarefaScreen(): ReactNode {
   const [enviando, setEnviando] = useState(false)
   const [sucesso, setSucesso] = useState(false)
   const [erro, setErro] = useState<string | null>(null)
+  const [tarefas, setTarefas] = useState<TarefaFormTask[]>([])
 
   const carregarOpcoes = useCallback(async () => {
     const token = obterAccessToken()
@@ -45,6 +46,11 @@ export default function NovaTarefaScreen(): ReactNode {
       if (projsRes.ok) {
         const data = await projsRes.json()
         setProjetos((data.items ?? data).filter((p: Projeto & { ativo?: boolean }) => p.ativo !== false))
+        const listas = await Promise.all((data.items ?? data).map(async (p: Projeto) => {
+          const resposta = await fetch(`/api/gerenteagentes/tarefas-com-status?projetoId=${p.id}`, { headers })
+          return resposta.ok ? resposta.json() : []
+        }))
+        setTarefas(listas.flat().map((t: TarefaFormTask) => ({ id: Number(t.id), titulo: t.titulo, projetoId: Number(t.projetoId) })))
       }
     } catch {
       // silencioso — combos ficam vazios
@@ -77,6 +83,7 @@ export default function NovaTarefaScreen(): ReactNode {
           titulo: values.titulo,
           descricao: values.descricao || null,
           tipo: values.tipo,
+          dependsOnTaskIds: values.dependsOnTaskIds,
         }),
       })
 
@@ -103,7 +110,7 @@ export default function NovaTarefaScreen(): ReactNode {
 
       <Paper variant="outlined" sx={{ p: 3 }}>
         <Stack spacing={2}>
-          <TarefaForm projetos={projetos} loading={enviando} error={erro} success={sucesso ? "Tarefa criada com sucesso!" : null} onSubmit={enviar} />
+        <TarefaForm projetos={projetos} tarefas={tarefas} loading={enviando} error={erro} success={sucesso ? "Tarefa criada com sucesso!" : null} onSubmit={enviar} />
         </Stack>
       </Paper>
     </Stack>

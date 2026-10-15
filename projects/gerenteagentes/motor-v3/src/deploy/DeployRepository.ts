@@ -1038,9 +1038,11 @@ ${conflictData.conflictFiles.map(f => `- \`${f}\``).join('\n')}
   }
 
   /**
-   * Busca tarefas dependentes elegíveis para retomada automática após deploy bem-sucedido.
-   * Critérios: depends_on_task_id aponta para uma das tarefas do lote, paused_at IS NULL,
-   * terminal_status IS NULL, analysis_started_at IS NULL, subtask_count = 0.
+   * Busca tarefas dependentes elegíveis para retomada automática após deploy
+   * bem-sucedido. Todas as dependências N:N precisam estar satisfeitas: uma
+   * dependência de desenvolvimento requer deploy succeeded; tipos sem deploy
+   * requerem apenas terminal_status completed. Tipo ausente/desconhecido fica
+   * bloqueado por segurança.
    * Idempotente: exclui tarefas que já possuem TASK_RESUME_REQUESTED no outbox para este batch.
    */
   private async findDependentTasks(
@@ -1053,10 +1055,30 @@ ${conflictData.conflictFiles.map(f => `- \`${f}\``).join('\n')}
     const [rows] = await connection.query<Array<RowDataPacket & { id: number; external_id: string | null }>>(
       `SELECT t.id, t.external_id
          FROM tarefas t
-         INNER JOIN tarefas dependency ON dependency.id = t.depends_on_task_id
          LEFT JOIN task_runtime_facts f ON f.tarefa_id = t.id
-        WHERE t.depends_on_task_id IN (${placeholders})
-          AND dependency.projeto_id = t.projeto_id
+        WHERE (t.depends_on_task_id IN (${placeholders}) OR EXISTS (
+                 SELECT 1 FROM tarefa_dependencias ready_link
+                  WHERE ready_link.tarefa_id = t.id
+                    AND ready_link.depende_de_tarefa_id IN (${placeholders})
+               ))
+          AND NOT EXISTS (
+            SELECT 1
+              FROM tarefa_dependencias pending_link
+              INNER JOIN tarefas dependency ON dependency.id = pending_link.depende_de_tarefa_id
+              LEFT JOIN task_runtime_facts dependency_f ON dependency_f.tarefa_id = dependency.id
+             WHERE pending_link.tarefa_id = t.id
+               AND (
+                 dependency.tipo IS NULL
+                 OR dependency_f.terminal_status IS NULL
+                 OR dependency_f.terminal_status <> 'completed'
+                 OR (dependency.tipo = 'desenvolvimento' AND NOT EXISTS (
+                       SELECT 1 FROM deploy_requests dependency_deploy
+                        WHERE dependency_deploy.tarefa_id = dependency.id
+                          AND dependency_deploy.status = 'succeeded'
+                    ))
+                 OR dependency.tipo NOT IN ('desenvolvimento', 'verificacao', 'automacao')
+               )
+          )
           AND t.paused_at IS NULL
           AND (f.terminal_status IS NULL)
           AND (f.analysis_started_at IS NULL)
@@ -1067,7 +1089,7 @@ ${conflictData.conflictFiles.map(f => `- \`${f}\``).join('\n')}
                AND o.type = 'TASK_RESUME_REQUESTED'
                AND JSON_UNQUOTE(JSON_EXTRACT(o.payload_json, '$.batchId')) = ?
           )
-      `, [...deployedTaskIds, batchId])
+      `, [...deployedTaskIds, ...deployedTaskIds, batchId])
     return rows
   }
 

@@ -69,6 +69,7 @@ export class GerenteAgentesController {
       tipo?: 'desenvolvimento' | 'automacao' | 'verificacao';
       status?: string;
       dependsOnTaskId?: number | null;
+      dependsOnTaskIds?: number[];
       autoStart?: boolean;
     },
     @CurrentUser() usuario?: UsuarioAutenticado,
@@ -80,6 +81,7 @@ export class GerenteAgentesController {
       tipo: body.tipo,
       status: body.status,
       dependsOnTaskId: body.dependsOnTaskId,
+      dependsOnTaskIds: body.dependsOnTaskIds,
       autoStart: body.autoStart,
       ator: usuario?.email || usuario?.username || String(usuario?.id ?? 'usuario'),
     });
