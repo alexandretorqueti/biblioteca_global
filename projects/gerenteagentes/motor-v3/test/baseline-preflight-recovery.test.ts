@@ -56,4 +56,34 @@ describe('persistBaselineCorrection', () => {
     await expect(persistBaselineCorrection(repo.path, repo.baseCommit, 'motor correction'))
       .resolves.toBeNull()
   })
+
+  it('aceita a correção já commitada quando o re-preparo usou o HEAD como commit-base', async () => {
+    const repo = await repository()
+    const { stdout: baseBranch } = await execFileAsync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repo.path })
+    // Topologia real: a integração vive numa branch própria cortada da base.
+    await execFileAsync('git', ['checkout', '-b', 'integracao'], { cwd: repo.path })
+    // Sessão anterior commitou a correção; o re-preparo derivou baseCommit do HEAD atual.
+    await writeFile(join(repo.path, 'baseline.txt'), 'green\n')
+    await execFileAsync('git', ['add', '.'], { cwd: repo.path })
+    await execFileAsync('git', ['commit', '-m', 'monitor correction'], { cwd: repo.path })
+    const { stdout: repreparedBase } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: repo.path })
+
+    await expect(persistBaselineCorrection(repo.path, repreparedBase.trim(), 'motor correction', baseBranch.trim()))
+      .resolves.toBe(repreparedBase.trim())
+  })
+
+  it('rejeita conclusão sem correção mesmo conhecendo a branch base', async () => {
+    const repo = await repository()
+    const { stdout: baseBranch } = await execFileAsync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repo.path })
+
+    await expect(persistBaselineCorrection(repo.path, repo.baseCommit, 'motor correction', baseBranch.trim()))
+      .resolves.toBeNull()
+  })
+
+  it('rejeita conclusão sem correção quando a branch base não existe', async () => {
+    const repo = await repository()
+
+    await expect(persistBaselineCorrection(repo.path, repo.baseCommit, 'motor correction', 'branch-inexistente'))
+      .resolves.toBeNull()
+  })
 })

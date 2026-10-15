@@ -23,6 +23,7 @@ export async function persistBaselineCorrection(
   integrationPath: string,
   baseCommit: string,
   message: string,
+  baseBranch?: string,
 ): Promise<string | null> {
   await execFileAsync('git', ['add', '-A'], { cwd: integrationPath })
   const { stdout: staged } = await execFileAsync('git', ['diff', '--cached', '--name-only'], { cwd: integrationPath })
@@ -30,7 +31,22 @@ export async function persistBaselineCorrection(
 
   const { stdout: commit } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: integrationPath })
   const integrationCommit = commit.trim()
-  return integrationCommit === baseCommit ? null : integrationCommit
+  if (integrationCommit !== baseCommit) return integrationCommit
+  // O re-preparo do worktree registra como commit-base o HEAD atual, que pode
+  // já conter a correção commitada por uma sessão anterior (handoff). Se a
+  // branch de integração está adiante da branch base da tarefa, a correção
+  // existe; o gate de baseline a seguir continua validando o estado real.
+  if (baseBranch && await isAheadOfBaseBranch(integrationPath, baseBranch)) return integrationCommit
+  return null
+}
+
+async function isAheadOfBaseBranch(integrationPath: string, baseBranch: string): Promise<boolean> {
+  try {
+    const { stdout } = await execFileAsync('git', ['rev-list', '--count', `${baseBranch}..HEAD`], { cwd: integrationPath })
+    return Number(stdout.trim()) > 0
+  } catch {
+    return false
+  }
 }
 
 /** Corrige um baseline vermelho na integração antes de qualquer sessão DEV. */
@@ -126,6 +142,7 @@ export class BaselinePreflightRecovery {
       integration.integrationPath,
       integration.baseCommit,
       `motor-v3: corrigir baseline da tarefa ${execution.taskId}`,
+      execution.baseBranch,
     )
     if (!integrationCommit) return { success: false, error: 'Monitor informou conclusão, mas não produziu correção na integração' }
     const baseline = await this.testGate.request({
