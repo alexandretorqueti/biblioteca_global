@@ -255,6 +255,34 @@ describe("OperationMapScreen — preservação de seleção em atualizações", 
       expect(screen.getByTestId("detail-content")).toHaveTextContent("Título atualizado")
     })
   })
+
+  it("aplica task.updated ao detalhe e preserva o status quando o evento não o informa", async () => {
+    mockIsWideScreen = true
+    const tarefa = tarefaFactory(1, "Título antigo", "draft")
+    tarefa.descricao = "Descrição antiga"
+    globalThis.__bundleMapa = bundleFalso([tarefa])
+    renderScreen()
+
+    await screen.findByTestId("detail-content")
+    const mapClient = realtimeClients.items.find(client => client.channel === "map")
+    mapClient?.onMessage?.({
+      type: "event",
+      event: {
+        type: "task.updated",
+        taskId: 1,
+        occurredAt: "2026-09-14T12:00:00Z",
+        payload: { title: "Título novo", descricao: "Descrição nova", tipo: "automacao", dependsOnTaskIds: [2], status: "" },
+      },
+    })
+
+    await waitFor(() => {
+      const detail = screen.getByTestId("detail-content")
+      expect(detail).toHaveTextContent("Título novo")
+      expect(detail).toHaveTextContent("Descrição nova")
+      expect(detail).toHaveTextContent("automacao")
+      expect(detail).toHaveTextContent("Rascunho")
+    })
+  })
 })
 
 describe("OperationMapScreen — comportamento do detalhe em telas pequenas e largas", () => {

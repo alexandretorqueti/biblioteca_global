@@ -813,6 +813,8 @@ describe("CrudService — eventos realtime no CRUD de tarefas/subtarefas", () =>
         id: 55,
         titulo: "Nova tarefa",
         status: "draft",
+        descricao: null,
+        dependsOnTaskIds: [],
         managedProjectId: 1,
         updatedAt: "2026-09-04T13:00:00.000Z",
       })
@@ -820,15 +822,22 @@ describe("CrudService — eventos realtime no CRUD de tarefas/subtarefas", () =>
     })
 
     it("atualizar publica task.updated com o estado pós-edição", async () => {
+      // Tabela pós-migração: `tarefas.status` não existe mais — o status
+      // canônico é derivado pelo Motor. O evento deve trazer os campos
+      // efetivamente persistidos (descrição, tipo, dependências) sem status.
       const linhaAtualizada = {
         id: 55,
         titulo: "Tarefa atualizada",
-        status: "running",
+        descricao: "Descrição editada pelo mapa",
+        tipo: "verificacao",
         projetoId: 1,
         updatedAt,
       }
       const { service, publicar } = montar({
-        linhasPorTabela: { tarefas: [linhaAtualizada] },
+        linhasPorTabela: {
+          tarefas: [linhaAtualizada],
+          tarefa_dependencias: [{ tarefaId: 55, dependeDeTarefaId: 12 }],
+        },
       })
 
       await service.atualizar(projetoGerente, "tarefas", 55, {
@@ -842,7 +851,40 @@ describe("CrudService — eventos realtime no CRUD de tarefas/subtarefas", () =>
         projectId: 640,
         taskId: 55,
       })
-      expect(ingress).toHaveProperty("payload.titulo", "Tarefa atualizada")
+      expect(ingress).toHaveProperty("payload", {
+        id: 55,
+        titulo: "Tarefa atualizada",
+        descricao: "Descrição editada pelo mapa",
+        tipo: "verificacao",
+        dependsOnTaskIds: [12],
+        managedProjectId: 1,
+        updatedAt: "2026-09-04T13:00:00.000Z",
+      })
+      expect(ingress.payload).not.toHaveProperty("status")
+    })
+
+    it("evento de tarefa não serializa status vazio", async () => {
+      // Regressão: `String(linha.status ?? "")` publicava "" e sobrescrevia
+      // no front o status derivado exibido no Mapa de Agentes.
+      const { service, publicar } = montar()
+      await publicarEvento(service)(projetoGerente, "tarefas", "updated", {
+        id: 55,
+        titulo: "X",
+        status: "",
+        projetoId: 1,
+      })
+      expect(publicar).toHaveBeenCalledTimes(1)
+      const { ingress } = unicoEvento(publicar)
+      expect(ingress.type).toBe("task.updated")
+      expect(ingress.payload).not.toHaveProperty("status")
+      expect(ingress).toHaveProperty("payload", {
+        id: 55,
+        titulo: "X",
+        descricao: null,
+        dependsOnTaskIds: [],
+        managedProjectId: 1,
+        updatedAt: undefined,
+      })
     })
 
     it("remover publica task.deleted com os dados do registro removido", async () => {

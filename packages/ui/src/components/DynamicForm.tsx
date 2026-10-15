@@ -91,7 +91,7 @@ export default function DynamicForm({
 
   const updateValue = (
     name: string,
-    value: string | number | boolean,
+    value: DynamicFormValues[string],
   ) => {
     setValues((current) => ({ ...current, [name]: value }))
     setErrors((current) => {

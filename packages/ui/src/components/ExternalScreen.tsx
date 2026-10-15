@@ -9,7 +9,7 @@
  */
 import { useEffect, useMemo, useState } from "react"
 import { Alert, Box, Button, IconButton, Paper, Stack, Typography } from "@mui/material"
-import type { CustomAction, DynamicFieldConfig, EntityRecord } from "../types"
+import type { CustomAction, DynamicFieldConfig, DynamicFormValues, EntityRecord } from "../types"
 import type { JsonRecord } from "./JsonGrid"
 import JsonGrid from "./JsonGrid"
 import TaskChat from "./TaskChat"
@@ -246,7 +246,7 @@ export default function ExternalScreen({
   }
 
   /** Callback: monta URL, envia PUT/PATCH com values e recarrega a grid. */
-  const salvarEdicao = async (values: Record<string, string | number | boolean>) => {
+  const salvarEdicao = async (values: DynamicFormValues) => {
     if (!edit || !editRowData) return
 
     // Montar URL: baseUrl + pathTemplate interpolado com o id da linha.
@@ -537,7 +537,7 @@ export default function ExternalScreen({
 
   // Modo edit — renderiza formulário preenchido com os dados da linha
   if (viewMode === "edit" && edit && editRowData) {
-    const initialValues: Record<string, string | number | boolean> = {}
+    const initialValues: DynamicFormValues = {}
     for (const field of edit.fields) {
       const valor = editRowData[field.name]
       if (valor !== undefined && valor !== null) {

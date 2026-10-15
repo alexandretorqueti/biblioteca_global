@@ -12,12 +12,12 @@ import type {
 interface FieldMultipleChoiceProps {
   name: string
   label: string
-  value: string | number
+  value: string | number | Array<string | number>
   config: MultipleChoiceConfig
   required?: boolean
   helperText?: string
   disabled?: boolean
-  onChange: (name: string, value: string | number) => void
+  onChange: (name: string, value: string | number | Array<string | number>) => void
 }
 
 export default function FieldMultipleChoice({
@@ -79,15 +79,15 @@ export default function FieldMultipleChoice({
     inputValue,
   ])
 
-  const selectedOption =
-    options.find(
-      (option) => String(option[config.idField]) === String(value),
-    ) ?? null
+  const selectedOption = config.multiple
+    ? options.filter((option) => Array.isArray(value) && value.some((item) => String(option[config.idField]) === String(item)))
+    : options.find((option) => String(option[config.idField]) === String(value)) ?? null
 
   return (
-    <Autocomplete<EntityRecord, false, false, false>
+    <Autocomplete<EntityRecord, boolean, false, false>
       options={options}
       value={selectedOption}
+      multiple={Boolean(config.multiple)}
       inputValue={inputValue}
       loading={loading}
       disabled={disabled}
@@ -110,7 +110,14 @@ export default function FieldMultipleChoice({
       }
       onInputChange={(_event, nextValue) => setInputValue(nextValue)}
       onChange={(_event, option) => {
-        const nextValue = option?.[config.idField]
+        if (config.multiple) {
+          const values = Array.isArray(option)
+            ? option.map((item) => item[config.idField]).filter((item): item is string | number => typeof item === "string" || typeof item === "number")
+            : []
+          onChange(name, values)
+          return
+        }
+        const nextValue = !Array.isArray(option) ? option?.[config.idField] : undefined
 
         if (
           typeof nextValue === "string" ||
