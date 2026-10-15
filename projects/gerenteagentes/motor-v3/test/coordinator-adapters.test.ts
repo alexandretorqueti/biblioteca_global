@@ -109,8 +109,8 @@ describe('coordinator adapters', () => {
 
     await expect(repository.claimAnalysis('task-1', 'exec-2')).resolves.toBe('capacity_waiting')
     expect(connection.query.mock.calls[1][0]).toContain('FOR UPDATE')
-    expect(connection.rollback).toHaveBeenCalledOnce()
-    expect(connection.commit).not.toHaveBeenCalled()
+    expect(connection.commit).toHaveBeenCalledOnce()
+    expect(connection.rollback).not.toHaveBeenCalled()
   })
 
   it('adapta o WorkerLauncher e propaga falha da análise', async () => {

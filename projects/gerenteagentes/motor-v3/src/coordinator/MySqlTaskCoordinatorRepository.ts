@@ -1,10 +1,10 @@
 import type { Pool, PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
-import type { AnalysisClaimResult, AnalysisExecutionLeaseRepository, TaskCoordinatorRepository, TaskLifecycleStatus, TaskSnapshot, TaskDependencySnapshot } from './TaskCoordinator.js'
+import type { AnalysisClaimResult, AnalysisExecutionLeaseRepository, TaskCoordinatorRepository, TaskLifecycleStatus, TaskSnapshot, TaskDependencySnapshot, CapacityWaitProjection } from './TaskCoordinator.js'
 import type { AnalysisOutcome } from '../analysis/AnalystReply.js'
 import { DerivedTaskStatusResolver } from '../status/DerivedTaskStatus.js'
 import { RealtimeMutationBoundary } from '../realtime/RealtimeMutationBoundary.js'
 import type { RealtimeMutationPublisher } from '../realtime/RealtimeMutationPublisher.js'
-import { providerFromModel, providerHasCapacity } from '../execution/ProviderCapacity.js'
+import { providerFromModel, providerCapacityDecision } from '../execution/ProviderCapacity.js'
 
 interface TaskRow extends RowDataPacket {
   id: number
@@ -28,6 +28,11 @@ interface TaskRow extends RowDataPacket {
   dependency_tipo: string | null
   dependency_terminal_status: string | null
   dependency_deploy_status: string | null
+  capacity_wait_phase: 'analysis' | 'development' | null
+  capacity_wait_reason_code: 'global_limit' | 'project_limit' | 'provider_limit' | null
+  capacity_wait_limit_scope: 'global' | 'project' | 'provider' | null
+  capacity_wait_limit_value: number | string | null
+  capacity_wait_provider: string | null
 }
 
 interface DependencyRow extends RowDataPacket {
@@ -56,6 +61,8 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
         COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), pc.slug, '') AS agente_id,
         pc.slug AS project_slug,
         f.analysis_started_at, f.analysis_execution_id, f.terminal_status,
+        f.capacity_wait_phase, f.capacity_wait_reason_code, f.capacity_wait_limit_scope,
+        f.capacity_wait_limit_value, f.capacity_wait_provider,
         (SELECT COUNT(*) FROM subtarefas s WHERE s.tarefa_id = t.id) AS subtask_count,
         (SELECT COUNT(*) FROM bloqueios b
           WHERE b.tarefa_id = t.id AND b.resolved_at IS NULL) AS blocked_count,
@@ -122,6 +129,7 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
       dependencyDeployStatus: row.dependency_deploy_status ? String(row.dependency_deploy_status) : null,
       dependencyTaskType: row.dependency_tipo ? String(row.dependency_tipo) : null,
       dependencies,
+      capacityWait: this.capacityWait(row),
     }
   }
 
@@ -156,7 +164,8 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
             AND f.terminal_status IS NULL`,
       )
       if (Number(globalRows[0]?.total ?? 0) >= maxWorkers) {
-        await connection.rollback()
+        await this.recordCapacityWait(connection, row.id, 'analysis', 'global_limit', 'global', maxWorkers, null)
+        await connection.commit()
         return 'capacity_waiting'
       }
       if (row.projeto_id != null) {
@@ -171,7 +180,8 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
           [row.projeto_id],
         )
         if (Number(projectRows[0]?.total ?? 0) >= maxWorkersPerProject) {
-          await connection.rollback()
+          await this.recordCapacityWait(connection, row.id, 'analysis', 'project_limit', 'project', maxWorkersPerProject, null)
+          await connection.commit()
           return 'capacity_waiting'
         }
       }
@@ -189,8 +199,10 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
         )
         analysisProvider = modelRows[0]?.provider || providerFromModel(modelRows[0]?.model)
       }
-      if (!await providerHasCapacity(connection, analysisProvider, 'analysis')) {
-        await connection.rollback()
+      const providerDecision = await providerCapacityDecision(connection, analysisProvider, 'analysis')
+      if (!providerDecision.available) {
+        await this.recordCapacityWait(connection, row.id, 'analysis', 'provider_limit', 'provider', providerDecision.limitValue ?? 0, analysisProvider)
+        await connection.commit()
         return 'capacity_waiting'
       }
       // cannotStart() proves the canonical pre-claim projection is planned;
@@ -206,7 +218,9 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
       )
       const [result] = await connection.query<ResultSetHeader>(
         `UPDATE task_runtime_facts
-         SET analysis_started_at = NOW(), analysis_execution_id = ?, provider = ?, clarification_pending_at = NULL, updated_at = NOW()
+         SET analysis_started_at = NOW(), analysis_execution_id = ?, provider = ?, clarification_pending_at = NULL,
+             capacity_wait_phase = NULL, capacity_wait_reason_code = NULL, capacity_wait_limit_scope = NULL,
+             capacity_wait_limit_value = NULL, capacity_wait_provider = NULL, updated_at = NOW()
          WHERE tarefa_id = ? AND analysis_started_at IS NULL
            AND analysis_execution_id IS NULL AND terminal_status IS NULL`,
         [executionId, analysisProvider, row.id],
@@ -436,6 +450,33 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
       analysisExecutionId: row.analysis_execution_id ? String(row.analysis_execution_id) : null,
       subtaskCount: Number(row.subtask_count ?? 0),
     }
+  }
+
+  private capacityWait(row: TaskRow): CapacityWaitProjection | null {
+    if (!row.capacity_wait_phase || !row.capacity_wait_reason_code || !row.capacity_wait_limit_scope || row.capacity_wait_limit_value == null) return null
+    return {
+      phase: row.capacity_wait_phase,
+      reasonCode: row.capacity_wait_reason_code,
+      limitScope: row.capacity_wait_limit_scope,
+      limitValue: Number(row.capacity_wait_limit_value),
+      provider: row.capacity_wait_provider ? String(row.capacity_wait_provider) : null,
+    }
+  }
+
+  private async recordCapacityWait(
+    connection: PoolConnection, taskId: number, phase: 'analysis' | 'development',
+    reasonCode: 'global_limit' | 'project_limit' | 'provider_limit',
+    limitScope: 'global' | 'project' | 'provider', limitValue: number, provider: string | null,
+  ): Promise<void> {
+    await connection.query(
+      `INSERT INTO task_runtime_facts (tarefa_id, created_at, updated_at)
+       VALUES (?, NOW(), NOW()) ON DUPLICATE KEY UPDATE tarefa_id = VALUES(tarefa_id)`, [taskId],
+    )
+    await connection.query(
+      `UPDATE task_runtime_facts SET capacity_wait_phase=?, capacity_wait_reason_code=?,
+       capacity_wait_limit_scope=?, capacity_wait_limit_value=?, capacity_wait_provider=?, updated_at=NOW()
+       WHERE tarefa_id=?`, [phase, reasonCode, limitScope, limitValue, provider, taskId],
+    )
   }
 
   private mapStatus(value: string | null): TaskLifecycleStatus {

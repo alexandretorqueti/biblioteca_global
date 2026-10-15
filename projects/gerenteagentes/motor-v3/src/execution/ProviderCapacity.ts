@@ -2,6 +2,12 @@ import type { PoolConnection, RowDataPacket } from 'mysql2/promise'
 
 export type ProviderPhase = 'analysis' | 'development' | 'monitor'
 
+export interface ProviderCapacityDecision {
+  available: boolean
+  limitScope: 'provider' | null
+  limitValue: number | null
+}
+
 export function providerFromModel(model: string | null | undefined): string | null {
   const value = String(model ?? '').trim()
   const slash = value.indexOf('/')
@@ -18,7 +24,15 @@ export async function providerHasCapacity(
   provider: string | null,
   phase: ProviderPhase,
 ): Promise<boolean> {
-  if (!provider) return true
+  return (await providerCapacityDecision(connection, provider, phase)).available
+}
+
+export async function providerCapacityDecision(
+  connection: PoolConnection,
+  provider: string | null,
+  phase: ProviderPhase,
+): Promise<ProviderCapacityDecision> {
+  if (!provider) return { available: true, limitScope: null, limitValue: null }
   const [limitRows] = await connection.query<Array<RowDataPacket & {
     limite_execucao_total: number | string | null
     limite_analises: number | string | null
@@ -28,7 +42,7 @@ export async function providerHasCapacity(
        FROM motor_provider_limits WHERE provider = ? LIMIT 1 FOR UPDATE`, [provider],
   )
   const limit = limitRows[0]
-  if (!limit) return true
+  if (!limit) return { available: true, limitScope: null, limitValue: null }
   const phaseLimit = phase === 'analysis' ? limit.limite_analises : phase === 'development' ? limit.limite_desenvolvimento : null
   const [rows] = await connection.query<Array<RowDataPacket & { analysis_count: number | string; development_count: number | string; monitor_count: number | string }>>(
     `SELECT
@@ -47,10 +61,10 @@ export async function providerHasCapacity(
   const monitor = Number(counts.monitor_count ?? 0)
   const total = analysis + development + monitor
   const totalLimit = limit.limite_execucao_total == null ? null : Number(limit.limite_execucao_total)
-  if (totalLimit != null && total >= totalLimit) return false
+  if (totalLimit != null && total >= totalLimit) return { available: false, limitScope: 'provider', limitValue: totalLimit }
   if (phaseLimit != null) {
     const current = phase === 'analysis' ? analysis : phase === 'development' ? development : monitor
-    if (current >= Number(phaseLimit)) return false
+    if (current >= Number(phaseLimit)) return { available: false, limitScope: 'provider', limitValue: Number(phaseLimit) }
   }
-  return true
+  return { available: true, limitScope: null, limitValue: null }
 }

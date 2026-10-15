@@ -993,12 +993,22 @@ async function start() {
 
           const execution = scheduler?.getActiveExecutions().find(e => e.taskId === taskId)
           const status = await statusResolver.resolve(taskId)
+          const [capacityWaitRows] = await pool.query(
+            `SELECT capacity_wait_phase AS phase, capacity_wait_reason_code AS reasonCode,
+                    capacity_wait_limit_scope AS limitScope, capacity_wait_limit_value AS limitValue,
+                    capacity_wait_provider AS provider
+               FROM task_runtime_facts WHERE tarefa_id = ? LIMIT 1`, [tarefa.id],
+          ) as any[]
+          const capacityWait = capacityWaitRows?.[0]?.phase
+            ? { ...capacityWaitRows[0], limitValue: Number(capacityWaitRows[0].limitValue) }
+            : null
 
           res.writeHead(200, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({
             exists: true,
             ...tarefa,
             status,
+            capacityWait,
             queueStatus: execution ? 'processing' : 'queued',
             subtasks: subtasksRows || [],
             recoveryEligibility: null, // O motor-v3 não tem dados de recuperação ainda
@@ -1032,6 +1042,13 @@ async function start() {
       // continua sendo gravado pela Biblioteca antes do evento de auditoria.
       if (req.method === 'POST' && taskId && taskAction === 'pause') {
         console.log(`[Motor v3] Task ${taskId} pause requested`)
+        await pool.query(
+          `UPDATE task_runtime_facts f INNER JOIN tarefas t ON t.id = f.tarefa_id
+              SET f.capacity_wait_phase = NULL, f.capacity_wait_reason_code = NULL,
+                  f.capacity_wait_limit_scope = NULL, f.capacity_wait_limit_value = NULL,
+                  f.capacity_wait_provider = NULL, f.updated_at = NOW()
+            WHERE t.external_id = ? OR CAST(t.id AS CHAR) = ?`, [taskId, taskId],
+        )
         const message = await dispatchCommand('TASK_PAUSE_REQUESTED', taskId, taskId, {})
         res.writeHead(202, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ ok: true, accepted: true, taskId, messageId: message.messageId }))

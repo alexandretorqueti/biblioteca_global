@@ -6,7 +6,7 @@ import { cancelUnstartedDeployRequests } from '../deploy/DeployRequestFinalizer.
 import type { RealtimeMutationPublisher } from '../realtime/RealtimeMutationPublisher.js'
 import { RealtimeMutationBoundary } from '../realtime/RealtimeMutationBoundary.js'
 import { DerivedTaskStatusResolver, type DerivedTaskStatus } from '../status/DerivedTaskStatus.js'
-import { providerFromModel, providerHasCapacity } from './ProviderCapacity.js'
+import { providerFromModel, providerCapacityDecision } from './ProviderCapacity.js'
 
 export interface ReservedSubtask {
   message: QueueMessage<{ subtaskId: number; seq: number; title: string; scope: string }>
@@ -228,7 +228,7 @@ export class MySqlDevelopmentExecutionRepository {
             AND s.status IN ('running', 'delivered', 'verifying')`,
       )
       if (Number(globalRows[0]?.total ?? 0) >= maxWorkers) {
-        await this.enqueueCapacityWait(connection, task, source)
+        await this.enqueueCapacityWait(connection, task, source, 'global_limit', maxWorkers, null)
         await connection.commit()
         return { kind: 'capacity_waiting', reason: 'global_limit' }
       }
@@ -243,12 +243,13 @@ export class MySqlDevelopmentExecutionRepository {
         [task.projeto_id],
       )
       if (Number(projectRows[0]?.total ?? 0) >= maxWorkersPerProject) {
-        await this.enqueueCapacityWait(connection, task, source)
+        await this.enqueueCapacityWait(connection, task, source, 'project_limit', maxWorkersPerProject, null)
         await connection.commit()
         return { kind: 'capacity_waiting', reason: 'project_limit' }
       }
-      if (!await providerHasCapacity(connection, developmentProvider, 'development')) {
-        await this.enqueueCapacityWait(connection, task, source)
+      const providerDecision = await providerCapacityDecision(connection, developmentProvider, 'development')
+      if (!providerDecision.available) {
+        await this.enqueueCapacityWait(connection, task, source, 'provider_limit', providerDecision.limitValue ?? 0, developmentProvider)
         await connection.commit()
         return { kind: 'capacity_waiting', reason: 'provider_limit' }
       }
@@ -323,6 +324,7 @@ export class MySqlDevelopmentExecutionRepository {
         'DELETE FROM motor_execution_wait_queue WHERE tarefa_id = ?',
         [task.id],
       )
+      await this.clearCapacityWait(connection, task.id)
 
       await connection.query(
         `INSERT INTO motor_outbox
@@ -1209,6 +1211,9 @@ export class MySqlDevelopmentExecutionRepository {
     connection: PoolConnection,
     task: TaskRow,
     source: QueueMessage,
+    reasonCode: 'global_limit' | 'project_limit' | 'provider_limit',
+    limitValue: number,
+    provider: string | null,
   ): Promise<void> {
     await connection.query(
       `INSERT INTO motor_execution_wait_queue
@@ -1219,6 +1224,24 @@ export class MySqlDevelopmentExecutionRepository {
          source_message_id = VALUES(source_message_id),
          status = 'waiting'`,
       [task.id, task.projeto_id, source.messageId],
+    )
+    await connection.query(
+      `INSERT INTO task_runtime_facts (tarefa_id, created_at, updated_at)
+       VALUES (?, NOW(), NOW()) ON DUPLICATE KEY UPDATE tarefa_id = VALUES(tarefa_id)`, [task.id],
+    )
+    await connection.query(
+      `UPDATE task_runtime_facts SET capacity_wait_phase='development', capacity_wait_reason_code=?,
+       capacity_wait_limit_scope=?, capacity_wait_limit_value=?, capacity_wait_provider=?, updated_at=NOW()
+       WHERE tarefa_id=?`,
+      [reasonCode, reasonCode === 'global_limit' ? 'global' : reasonCode === 'project_limit' ? 'project' : 'provider', limitValue, provider, task.id],
+    )
+  }
+
+  private async clearCapacityWait(connection: PoolConnection, taskId: number): Promise<void> {
+    await connection.query(
+      `UPDATE task_runtime_facts SET capacity_wait_phase=NULL, capacity_wait_reason_code=NULL,
+       capacity_wait_limit_scope=NULL, capacity_wait_limit_value=NULL, capacity_wait_provider=NULL,
+       updated_at=NOW() WHERE tarefa_id=?`, [taskId],
     )
   }
 
@@ -1295,6 +1318,7 @@ export class MySqlDevelopmentExecutionRepository {
     }
 
     await connection.query('DELETE FROM motor_execution_wait_queue WHERE tarefa_id = ?', [task.id])
+    await this.clearCapacityWait(connection, task.id)
     await this.wakeCapacityWaiters(connection, taskCompleted)
     await this.realtime.append(connection, task.id, beforeStatus, {
       after: await this.taskStatus(connection, task.id),
@@ -1478,6 +1502,9 @@ export class MySqlDevelopmentExecutionRepository {
       // Resetar task_runtime_facts
       await connection.query(
         `UPDATE task_runtime_facts SET terminal_status = NULL, clarification_pending_at = NULL
+          , capacity_wait_phase = NULL, capacity_wait_reason_code = NULL,
+          capacity_wait_limit_scope = NULL, capacity_wait_limit_value = NULL,
+          capacity_wait_provider = NULL
           WHERE tarefa_id = ?`,
         [databaseId],
       )

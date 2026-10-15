@@ -12,6 +12,14 @@ import type { ErrorInput } from '../classifier/EventClassifier.js'
 export type TaskLifecycleStatus = DerivedTaskStatus
 export type AnalysisClaimResult = boolean | 'capacity_waiting'
 
+export interface CapacityWaitProjection {
+  phase: 'analysis' | 'development'
+  reasonCode: 'global_limit' | 'project_limit' | 'provider_limit'
+  limitScope: 'global' | 'project' | 'provider'
+  limitValue: number
+  provider: string | null
+}
+
 export interface TaskDependencySnapshot {
   taskId: string
   taskType: string | null
@@ -41,6 +49,7 @@ export interface TaskSnapshot {
   dependencyTaskType?: string | null
   /** Todas as dependências N:N; o trio acima é mantido para o legado. */
   dependencies?: TaskDependencySnapshot[]
+  capacityWait?: CapacityWaitProjection | null
 }
 
 /**

@@ -103,7 +103,10 @@ export class TaskCancelConsumer {
       await connection.beginTransaction()
       ;[claimResult] = await connection.query<ResultSetHeader>(
         `UPDATE task_runtime_facts
-         SET analysis_started_at = NULL, analysis_execution_id = NULL, updated_at = NOW()
+         SET analysis_started_at = NULL, analysis_execution_id = NULL,
+             capacity_wait_phase = NULL, capacity_wait_reason_code = NULL,
+             capacity_wait_limit_scope = NULL, capacity_wait_limit_value = NULL,
+             capacity_wait_provider = NULL, updated_at = NOW()
          WHERE tarefa_id = ? AND analysis_started_at IS NOT NULL`,
         [task.id],
       )
@@ -121,7 +124,10 @@ export class TaskCancelConsumer {
          ON DUPLICATE KEY UPDATE
            terminal_status = 'cancelled', terminal_at = NOW(),
            analysis_started_at = NULL, analysis_execution_id = NULL,
-           clarification_pending_at = NULL, updated_at = NOW()`,
+           clarification_pending_at = NULL, capacity_wait_phase = NULL,
+           capacity_wait_reason_code = NULL, capacity_wait_limit_scope = NULL,
+           capacity_wait_limit_value = NULL, capacity_wait_provider = NULL,
+           updated_at = NOW()`,
         [task.id],
       )
       await connection.commit()
