@@ -71,6 +71,9 @@ interface UIMessage {
 type HelpDeskMessagePayload = { id: number; role: "agent" | "user" | "system"; text: string; createdAt: string }
 type HelpDeskProcessingPayload = { processing: boolean; responded: boolean }
 
+const POLL_INTERVAL_MS = 1_000
+const POLL_RETRY_INTERVAL_MS = 3_000
+
 export default function HelpDeskWidget({
   client,
 }: HelpDeskWidgetProps) {
@@ -85,6 +88,96 @@ export default function HelpDeskWidget({
   const chatBottomRef = useRef<HTMLDivElement>(null)
   const realtimeRef = useRef<{ close(): void } | null>(null)
   const replayReconciledRef = useRef(false)
+  const sessionIdRef = useRef<number | null>(null)
+  const mountedRef = useRef(true)
+  const pollingRef = useRef<{ timer: ReturnType<typeof setTimeout> | null; generation: number; inFlight: boolean; controller: AbortController | null }>({
+    timer: null,
+    generation: 0,
+    inFlight: false,
+    controller: null,
+  })
+
+  const stopPolling = useCallback(() => {
+    const polling = pollingRef.current
+    polling.generation += 1
+    polling.inFlight = false
+    polling.controller?.abort()
+    polling.controller = null
+    if (polling.timer !== null) clearTimeout(polling.timer)
+    polling.timer = null
+  }, [])
+
+  const applyHistory = useCallback((history: Awaited<ReturnType<HelpDeskDriver["obterHistorico"]>>) => {
+    const persisted = history.mensagens.map((item) => ({
+      id: `server-${item.id}`,
+      role: item.role === "user" ? "user" as const : "agent" as const,
+      text: item.text,
+      createdAt: item.createdAt,
+    }))
+    setMessages((previous) => {
+      // O histórico é a fonte autoritativa. A remoção dos locais também
+      // reconcilia a mensagem otimista com o ID persistido, sem duplicá-la.
+      const persistedTexts = new Set(persisted.filter((item) => item.role === "user").map((item) => item.text))
+      const locals = previous.filter((item) => item.id.startsWith("local-") && !persistedTexts.has(item.text))
+      return [...persisted, ...locals]
+    })
+  }, [])
+
+  const reconcileResponse = useCallback(async (sessaoId: number, generation: number) => {
+    try {
+      const history = await client.obterHistorico(sessaoId)
+      if (!mountedRef.current || pollingRef.current.generation !== generation) return
+      applyHistory(history)
+      setWaitingForAgent(false)
+      setSending(false)
+      stopPolling()
+    } catch {
+      // O polling seguinte tentará novamente; a resposta realtime continua
+      // sendo o caminho primário e não deve ser apagada por uma falha REST.
+    }
+  }, [applyHistory, client, stopPolling])
+
+  const pollStatus = useCallback(async (sessaoId: number, generation: number): Promise<void> => {
+    const polling = pollingRef.current
+    if (!mountedRef.current || polling.generation !== generation || polling.inFlight) return
+    polling.inFlight = true
+    const controller = new AbortController()
+    polling.controller = controller
+    let delay = POLL_INTERVAL_MS
+    try {
+      const status = await client.consultarStatus(sessaoId, controller.signal)
+      if (!mountedRef.current || polling.generation !== generation) return
+      if (status.sessionInvalid) {
+        setWaitingForAgent(false)
+        setSending(false)
+        stopPolling()
+        return
+      }
+      if (status.responded) {
+        await reconcileResponse(sessaoId, generation)
+        return
+      }
+    } catch {
+      // Indisponibilidade temporária não encerra a espera; reagenda a consulta.
+      delay = POLL_RETRY_INTERVAL_MS
+    } finally {
+      polling.inFlight = false
+      if (polling.controller === controller) polling.controller = null
+    }
+    if (mountedRef.current && pollingRef.current.generation === generation && pollingRef.current.timer === null) {
+      pollingRef.current.timer = setTimeout(() => {
+        pollingRef.current.timer = null
+        void pollStatus(sessaoId, generation)
+      }, delay)
+    }
+  }, [client, reconcileResponse, stopPolling])
+
+  const startPolling = useCallback((sessaoId: number) => {
+    const polling = pollingRef.current
+    if (polling.inFlight || polling.timer !== null) return
+    const generation = polling.generation
+    void pollStatus(sessaoId, generation)
+  }, [pollStatus])
 
   // Auto-scroll para a última mensagem
   useEffect(() => {
@@ -95,6 +188,8 @@ export default function HelpDeskWidget({
 
   const initSession = useCallback(async () => {
     setChatState("conectando")
+    stopPolling()
+    sessionIdRef.current = null
     replayReconciledRef.current = false
     realtimeRef.current?.close()
     realtimeRef.current = null
@@ -107,14 +202,8 @@ export default function HelpDeskWidget({
         // Carrega histórico da sessão existente.
         const history = await client.obterHistorico(sessao.sessaoId)
         setAgentName(sessao.agenteId)
-        setMessages(
-          history.mensagens.map((m, i) => ({
-            id: `server-${m.id}-${i}`,
-            role: m.role === "user" ? "user" : "agent",
-            text: m.text,
-            createdAt: m.createdAt,
-          })),
-        )
+        sessionIdRef.current = sessao.sessaoId
+        applyHistory(history)
         const onRealtimeMessage = (message: RealtimeServerMessage): void => {
           if (message.type === "helpdesk_snapshot") {
             setMessages(message.snapshot.mensagens.map((item) => ({
@@ -151,8 +240,12 @@ export default function HelpDeskWidget({
               }])
           } else if (message.event.type === "helpdesk.processing.changed") {
             const state = message.event.payload as unknown as HelpDeskProcessingPayload
-            setWaitingForAgent(state.processing)
-            if (!state.processing) setSending(false)
+            if (state.responded) {
+              void reconcileResponse(sessao.sessaoId, pollingRef.current.generation)
+            } else {
+              setWaitingForAgent(state.processing)
+              if (!state.processing) setSending(false)
+            }
           }
         }
         realtimeRef.current = client.assinarRealtime?.({
@@ -170,11 +263,19 @@ export default function HelpDeskWidget({
       setChatState("offline")
       setOfflineMessage("Suporte indisponível no momento — tente novamente mais tarde")
     }
-  }, [client, chatState])
+  }, [applyHistory, client, reconcileResponse, stopPolling])
+
+  useEffect(() => {
+    if (waitingForAgent && sessionIdRef.current !== null) startPolling(sessionIdRef.current)
+    if (!waitingForAgent) stopPolling()
+  }, [startPolling, stopPolling, waitingForAgent])
 
   useEffect(() => () => {
+    mountedRef.current = false
+    stopPolling()
     realtimeRef.current?.close()
     realtimeRef.current = null
+    sessionIdRef.current = null
   }, [client])
 
   // ---- ao abrir o painel, inicializa a sessão ----
@@ -182,9 +283,16 @@ export default function HelpDeskWidget({
   const handleToggle = useCallback(() => {
     if (!open) {
       initSession()
+    } else {
+      stopPolling()
+      realtimeRef.current?.close()
+      realtimeRef.current = null
+      sessionIdRef.current = null
+      setWaitingForAgent(false)
+      setSending(false)
     }
     setOpen((v) => !v)
-  }, [open, initSession])
+  }, [open, initSession, stopPolling])
 
   // ---- envio de mensagem ----
 
@@ -192,7 +300,7 @@ export default function HelpDeskWidget({
     async (e?: FormEvent) => {
       e?.preventDefault()
       const text = draft.trim()
-      if (!text || sending || chatState !== "online") return
+      if (!text || sending || waitingForAgent || chatState !== "online") return
 
       const optimistic: UIMessage = {
         id: `local-${Date.now()}`,
@@ -229,7 +337,7 @@ export default function HelpDeskWidget({
 
       setSending(false)
     },
-    [draft, sending, chatState, client],
+    [draft, sending, waitingForAgent, chatState, client],
   )
 
   // ---- renderização do widget flutuante (botão) ----
@@ -385,10 +493,10 @@ export default function HelpDeskWidget({
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 placeholder="Digite sua mensagem..."
-                disabled={sending}
+                disabled={sending || waitingForAgent}
                 inputProps={{ "aria-label": "Mensagem" }}
               />
-              <IconButton type="submit" color="primary" disabled={sending || !draft.trim()}>
+              <IconButton aria-label="Enviar" type="submit" color="primary" disabled={sending || waitingForAgent || !draft.trim()}>
                 {sending ? <CircularProgress size={20} /> : <SendIcon />}
               </IconButton>
             </Stack>

@@ -25,6 +25,7 @@ export type FetchFn = (
     method: string
     headers: Record<string, string>
     body?: string
+    signal?: AbortSignal
   },
 ) => Promise<{ status: number; json(): Promise<unknown> }>
 
