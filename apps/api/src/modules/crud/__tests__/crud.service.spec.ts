@@ -69,9 +69,12 @@ describe("CrudService — whitelist e validação", () => {
     return {
       select: () => ({
         from: (tabela: MySqlTable) => ({
-          where: () => ({
-            limit: async () => linhas[getTableName(tabela)] ?? [],
-          }),
+          where: () => {
+            const resultado = linhas[getTableName(tabela)] ?? []
+            return Object.assign(Promise.resolve(resultado), {
+              limit: async () => resultado,
+            })
+          },
         }),
       }),
       insert: () => ({
@@ -694,9 +697,12 @@ describe("CrudService — eventos realtime no CRUD de tarefas/subtarefas", () =>
     return {
       select: () => ({
         from: (tabela: MySqlTable) => ({
-          where: () => ({
-            limit: async () => linhas[getTableName(tabela)] ?? [],
-          }),
+          where: () => {
+            const resultado = linhas[getTableName(tabela)] ?? []
+            return Object.assign(Promise.resolve(resultado), {
+              limit: async () => resultado,
+            })
+          },
         }),
       }),
       insert: () => ({
