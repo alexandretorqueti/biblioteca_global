@@ -552,6 +552,24 @@ export class CrudService {
     if (resource === "tarefas") {
       const managedProjectId = Number(linha.projetoId ?? linha.projeto_id)
       if (this.realtime && Number.isSafeInteger(managedProjectId) && managedProjectId > 0) {
+        // `tarefas.status` não existe mais: o status canônico é derivado pelo
+        // Motor. Serializar status vazio sobrescreveria (ou esvaziaria) o
+        // status exibido no Mapa de Agentes; o campo só sai no evento quando
+        // há um valor real persistente.
+        const status = typeof linha.status === "string" ? linha.status.trim() : ""
+        const dependencias = Array.isArray(linha.dependsOnTaskIds)
+          ? (linha.dependsOnTaskIds as unknown[]).map((valor) => Number(valor))
+          : []
+        const payload: Record<string, unknown> = {
+          id,
+          titulo: String(linha.titulo ?? ""),
+          descricao: linha.descricao == null ? null : String(linha.descricao),
+          dependsOnTaskIds: dependencias,
+          managedProjectId,
+          updatedAt: this.dataParaEvento(linha.updatedAt ?? linha.updated_at),
+        }
+        if (linha.tipo != null) payload.tipo = String(linha.tipo)
+        if (status) payload.status = status
         this.realtime.publicar({
           eventId: randomUUID(),
           occurredAt: new Date().toISOString(),
@@ -559,13 +577,7 @@ export class CrudService {
           projectId: projeto.id,
           taskId: id,
           type: `task.${operacao}`,
-          payload: {
-            id,
-            titulo: String(linha.titulo ?? ""),
-            status: String(linha.status ?? ""),
-            managedProjectId,
-            updatedAt: this.dataParaEvento(linha.updatedAt ?? linha.updated_at),
-          },
+          payload,
         })
       }
       await this.solicitarReconciliação(String(id))
