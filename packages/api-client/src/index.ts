@@ -42,4 +42,5 @@ export type {
   HelpDeskDriver,
   HelpDeskSendResult,
   HelpDeskSessionInfo,
+  HelpDeskRealtimeSubscription,
 } from "./helpdesk-client"

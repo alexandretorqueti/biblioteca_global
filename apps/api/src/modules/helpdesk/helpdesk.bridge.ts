@@ -4,10 +4,11 @@
  * Segue o padrão isa-chat.bridge.ts: comunicação HTTP pura com o BFF,
  * usando OPENCLAW_CONSOLE_URL + token via ConfigService.
  */
-import { Injectable, Logger } from "@nestjs/common"
+import { Injectable, Logger, Optional } from "@nestjs/common"
 import { ConfigService } from "@nestjs/config"
 import { request as httpRequest, type RequestOptions } from "node:http"
 import { request as httpsRequest } from "node:https"
+import { GerenteAgentesService } from "../../../../../projects/gerenteagentes/api/gerenteagentes.service"
 
 const DEFAULT_TIMEOUT = 10_000
 
@@ -107,7 +108,10 @@ export class HelpDeskBridgeService {
   private readonly baseUrl: string
   private readonly token: string | undefined
 
-  constructor(private readonly configService: ConfigService) {
+  constructor(
+    private readonly configService: ConfigService,
+    @Optional() private readonly gerenteAgentes?: GerenteAgentesService,
+  ) {
     this.baseUrl = this.configService.get<string>("OPENCLAW_CONSOLE_URL") || ""
     this.token = this.configService.get<string>("OPENCLAW_CONSOLE_TOKEN")
   }
@@ -131,22 +135,30 @@ export class HelpDeskBridgeService {
     const key = `agent:${input.agenteId}:${chatKey}`
 
     try {
+      const existing = await this.sessaoJaExiste(key)
+      const existingPrompt = existing ? null : await this.resolverPromptAtendimento()
       const res = await bffFetch(this.baseUrl, this.token, "/api/sessions", {
         method: "POST",
         body: {
           key,
           agentId: input.agenteId,
           label: `helpdesk:${input.projetoId}:${input.usuarioId}`,
-          task: HELPDESK_AGENT_INSTRUCTIONS,
+          // O BFF preserva o prompt no provisionamento. Não o reenviamos ao
+          // retomar uma sessão, pois isso duplicaria a instrução a cada fala.
+          ...(existingPrompt ? { task: existingPrompt.text } : {}),
           ...(input.model ? { model: input.model } : {}),
         },
       })
 
       if (res.ok) {
         const data = await res.json() as BffSessionResult
+        const sessionExisting = existing || Boolean(data.existing)
+        // A API do BFF recebe a instrução somente na criação. Em instalações
+        // que aceitam atualização no mesmo POST, removemos a chave ao retomar
+        // para preservar a semântica de início único.
         return {
           sessionKey: data.key ?? key,
-          existing: Boolean(data.existing),
+          existing: sessionExisting,
         }
       }
       this.logger.warn(`resolveSession fallback: status=${res.status}`)
@@ -155,6 +167,28 @@ export class HelpDeskBridgeService {
       this.logger.warn(`resolveSession failed: ${err}`)
       return { sessionKey: key, existing: false }
     }
+  }
+
+  private async sessaoJaExiste(key: string): Promise<boolean> {
+    try {
+      const query = new URLSearchParams({ key })
+      const res = await bffFetch(this.baseUrl, this.token, `/api/sessions/describe?${query.toString()}`)
+      if (!res.ok) return false
+      const data = await res.json() as Record<string, unknown>
+      return data.status !== "not_found" && data.exists !== false
+    } catch {
+      return false
+    }
+  }
+
+  private async resolverPromptAtendimento(): Promise<{ text: string }> {
+    try {
+      const text = await this.gerenteAgentes?.resolverPromptAtendimentoHelpDesk()
+      if (text) return { text }
+    } catch (error) {
+      this.logger.warn(`Prompt HelpDesk persistido indisponível: ${error}`)
+    }
+    return { text: HELPDESK_AGENT_INSTRUCTIONS }
   }
 
   /**

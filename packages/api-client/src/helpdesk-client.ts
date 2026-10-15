@@ -9,10 +9,12 @@ import {
   helpDeskHistorySchema,
   type HelpDeskHistory,
   type HelpDeskSendMessageInput,
+  type RealtimeServerMessage,
 } from "@biblioteca-global/shared"
 
 import { ApiClientError } from "./errors"
 import type { ApiHttpClient } from "./http"
+import { RealtimeClient } from "./realtime"
 
 // ── Tipos públicos ─────────────────────────────────────────────────────
 
@@ -42,6 +44,15 @@ export interface HelpDeskDriver {
   enviarMensagem(input: HelpDeskSendMessageInput): Promise<HelpDeskSendResult>
   consultarStatus(sessaoId: number): Promise<HelpDeskProcessingStatus>
   obterHistorico(sessaoId: number): Promise<HelpDeskHistory>
+  assinarRealtime?(input: {
+    sessaoId: number
+    onMessage(message: RealtimeServerMessage): void
+    onStatusChange?(status: "connecting" | "open" | "closed"): void
+  }): HelpDeskRealtimeSubscription
+}
+
+export interface HelpDeskRealtimeSubscription {
+  close(): void
 }
 
 // ── Opções de configuração ─────────────────────────────────────────────
@@ -50,6 +61,11 @@ export interface HelpDeskClientOptions {
   http: ApiHttpClient
   /** Rota base; padrão `/helpdesk`. */
   basePath?: string
+  realtime?: {
+    url: string
+    baseUrl: string
+    getAccessToken(): string | null
+  }
 }
 
 const DEFAULT_BASE_PATH = "/helpdesk"
@@ -159,6 +175,23 @@ export function createHelpDeskClient(options: HelpDeskClientOptions): HelpDeskDr
     return parsed.data
   }
 
+  function assinarRealtime(input: {
+    sessaoId: number
+    onMessage(message: RealtimeServerMessage): void
+    onStatusChange?(status: "connecting" | "open" | "closed"): void
+  }): HelpDeskRealtimeSubscription {
+    if (!options.realtime) return { close: () => undefined }
+    const realtime = new RealtimeClient({
+      ...options.realtime,
+      channel: "helpdesk",
+      sessaoId: input.sessaoId,
+      onMessage: input.onMessage,
+      onStatusChange: input.onStatusChange,
+    })
+    void realtime.connect()
+    return { close: () => realtime.close() }
+  }
+
   return {
     get sessaoId() { return cachedSessao?.sessaoId ?? null },
     get agenteId() { return cachedSessao?.agenteId ?? "" },
@@ -167,5 +200,6 @@ export function createHelpDeskClient(options: HelpDeskClientOptions): HelpDeskDr
     enviarMensagem,
     consultarStatus,
     obterHistorico,
+    assinarRealtime,
   }
 }

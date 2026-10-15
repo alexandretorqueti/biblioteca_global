@@ -13,6 +13,7 @@ import { Box, IconButton, Paper, Stack, TextField, Typography, CircularProgress,
 import CloseIcon from "@mui/icons-material/Close"
 import SendIcon from "@mui/icons-material/Send"
 import type { HelpDeskDriver } from "@biblioteca-global/api-client"
+import type { RealtimeServerMessage } from "@biblioteca-global/shared"
 
 /** SVG inline do robô animado — sem dependência de asset pipeline. */
 const ROBOT_SVG = `
@@ -67,6 +68,9 @@ interface UIMessage {
   createdAt: string
 }
 
+type HelpDeskMessagePayload = { id: number; role: "agent" | "user" | "system"; text: string; createdAt: string }
+type HelpDeskProcessingPayload = { processing: boolean; responded: boolean }
+
 export default function HelpDeskWidget({
   client,
 }: HelpDeskWidgetProps) {
@@ -79,6 +83,8 @@ export default function HelpDeskWidget({
   const [offlineMessage, setOfflineMessage] = useState<string | null>(null)
   const [agentName, setAgentName] = useState<string>("")
   const chatBottomRef = useRef<HTMLDivElement>(null)
+  const realtimeRef = useRef<{ close(): void } | null>(null)
+  const replayReconciledRef = useRef(false)
 
   // Auto-scroll para a última mensagem
   useEffect(() => {
@@ -89,6 +95,9 @@ export default function HelpDeskWidget({
 
   const initSession = useCallback(async () => {
     setChatState("conectando")
+    replayReconciledRef.current = false
+    realtimeRef.current?.close()
+    realtimeRef.current = null
 
     try {
       const sessao = await client.obterSessao()
@@ -106,12 +115,66 @@ export default function HelpDeskWidget({
             createdAt: m.createdAt,
           })),
         )
+        const onRealtimeMessage = (message: RealtimeServerMessage): void => {
+          if (message.type === "helpdesk_snapshot") {
+            setMessages(message.snapshot.mensagens.map((item) => ({
+              id: `server-${item.id}`,
+              role: item.role === "user" ? "user" : "agent",
+              text: item.text,
+              createdAt: item.createdAt,
+            })))
+            return
+          }
+          if (message.type === "helpdesk_replay_unavailable") {
+            if (replayReconciledRef.current) return
+            replayReconciledRef.current = true
+            void client.obterHistorico(sessao.sessaoId).then((reconciled) => {
+              setMessages(reconciled.mensagens.map((item) => ({
+                id: `server-${item.id}`,
+                role: item.role === "user" ? "user" : "agent",
+                text: item.text,
+                createdAt: item.createdAt,
+              })))
+            }).catch(() => undefined)
+            return
+          }
+          if (message.type !== "event") return
+          if (message.event.type === "helpdesk.message.created") {
+            const item = message.event.payload as unknown as HelpDeskMessagePayload
+            setMessages((previous) => previous.some((entry) => entry.id === `server-${item.id}`)
+              ? previous
+              : [...previous.filter((entry) => !(item.role === "user" && entry.id.startsWith("local-") && entry.text === item.text)), {
+                id: `server-${item.id}`,
+                role: item.role === "user" ? "user" : "agent",
+                text: item.text,
+                createdAt: item.createdAt,
+              }])
+          } else if (message.event.type === "helpdesk.processing.changed") {
+            const state = message.event.payload as unknown as HelpDeskProcessingPayload
+            setWaitingForAgent(state.processing)
+            if (!state.processing) setSending(false)
+          }
+        }
+        realtimeRef.current = client.assinarRealtime?.({
+          sessaoId: sessao.sessaoId,
+          onMessage: onRealtimeMessage,
+          onStatusChange: (status) => {
+            if (status === "closed" && chatState !== "offline") {
+              setOfflineMessage("A conexão realtime foi interrompida; tentando reconectar…")
+            }
+          },
+        }) ?? null
       }
       setChatState("online")
     } catch {
       setChatState("offline")
       setOfflineMessage("Suporte indisponível no momento — tente novamente mais tarde")
     }
+  }, [client, chatState])
+
+  useEffect(() => () => {
+    realtimeRef.current?.close()
+    realtimeRef.current = null
   }, [client])
 
   // ---- ao abrir o painel, inicializa a sessão ----
@@ -160,40 +223,11 @@ export default function HelpDeskWidget({
           setOfflineMessage("Falha ao enviar a mensagem.")
         }
       } else {
-        if (result.processing) {
-          setWaitingForAgent(true)
-          setOfflineMessage(null)
-          let status = await client.consultarStatus(sessaoId)
-          while (status.processing) {
-            await new Promise<void>((resolve) => setTimeout(resolve, 2_000))
-            status = await client.consultarStatus(sessaoId)
-          }
-          if (!status.responded) {
-            setOfflineMessage("O agente encerrou a execução sem enviar uma resposta.")
-          }
-        }
-        // Busca a resposta do agente.
-        try {
-          const history = await client.obterHistorico(sessaoId)
-          const novaMsg = history.mensagens[history.mensagens.length - 1]
-          if (novaMsg && novaMsg.role === "agent") {
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: `server-${novaMsg.id}-${Date.now()}`,
-                role: "agent",
-                text: novaMsg.text,
-                createdAt: novaMsg.createdAt,
-              },
-            ])
-          }
-        } catch {
-          /* silencioso */
-        }
+        setWaitingForAgent(result.processing === true)
+        setOfflineMessage(null)
       }
 
       setSending(false)
-      setWaitingForAgent(false)
     },
     [draft, sending, chatState, client],
   )

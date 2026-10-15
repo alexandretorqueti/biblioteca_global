@@ -920,6 +920,22 @@ export class GerenteAgentesService {
     };
   }
 
+  /** Resolve o prompt ativo do atendimento HelpDesk no catálogo persistido. */
+  async resolverPromptAtendimentoHelpDesk(): Promise<string | null> {
+    await this.sincronizarCatalogoPrompts();
+    const db = await this.dbDoMotor();
+    const [row] = await db
+      .select({ texto: promptsVersoes.texto })
+      .from(promptsAgentes)
+      .innerJoin(promptsVersoes, eq(promptsVersoes.id, promptsAgentes.versaoAtivaId))
+      .where(and(
+        eq(promptsAgentes.chave, 'biblioteca-global.helpdesk_atendimento'),
+        eq(promptsAgentes.status, 'active'),
+      ))
+      .limit(1);
+    return row?.texto?.trim() || null;
+  }
+
   async salvarRascunhoPrompt(id: number, texto: string, motivo: string | undefined, autor: string | undefined, contratoVersaoId?: number) {
     const db = await this.dbDoMotor();
     const [prompt] = await db.select().from(promptsAgentes).where(eq(promptsAgentes.id, id)).limit(1);
