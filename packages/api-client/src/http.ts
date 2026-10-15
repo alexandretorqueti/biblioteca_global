@@ -14,6 +14,7 @@ export type AuthMode = "access" | "refresh" | "none"
 
 export interface RequestOptions {
   body?: unknown
+  signal?: AbortSignal
   query?: Record<string, string | number | boolean | undefined>
   auth?: AuthMode
   /** Headers adicionais (ex.: Authorization com token de serviço). */
@@ -106,6 +107,7 @@ export class ApiHttpClient {
       method,
       headers,
       body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+      signal: opts.signal,
     })
 
     if (

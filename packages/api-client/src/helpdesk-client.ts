@@ -34,6 +34,8 @@ export interface HelpDeskSendResult {
 export interface HelpDeskProcessingStatus {
   processing: boolean
   responded: boolean
+  /** A sessão deixou de ser válida; o widget deve parar a reconciliação. */
+  sessionInvalid?: boolean
 }
 
 export interface HelpDeskDriver {
@@ -42,7 +44,7 @@ export interface HelpDeskDriver {
   obterSessao(): Promise<HelpDeskSessionInfo | null>
   criarSessao(usuarioId: number, projetoId: number): Promise<HelpDeskSessionInfo>
   enviarMensagem(input: HelpDeskSendMessageInput): Promise<HelpDeskSendResult>
-  consultarStatus(sessaoId: number): Promise<HelpDeskProcessingStatus>
+  consultarStatus(sessaoId: number, signal?: AbortSignal): Promise<HelpDeskProcessingStatus>
   obterHistorico(sessaoId: number): Promise<HelpDeskHistory>
   assinarRealtime?(input: {
     sessaoId: number
@@ -142,8 +144,16 @@ export function createHelpDeskClient(options: HelpDeskClientOptions): HelpDeskDr
     }
   }
 
-  async function consultarStatus(sessaoId: number): Promise<HelpDeskProcessingStatus> {
-    const data = await options.http.request<unknown>("GET", `${base}/${sessaoId}/status`)
+  async function consultarStatus(sessaoId: number, signal?: AbortSignal): Promise<HelpDeskProcessingStatus> {
+    let data: unknown
+    try {
+      data = await options.http.request<unknown>("GET", `${base}/${sessaoId}/status`, { signal })
+    } catch (error) {
+      if (error instanceof ApiClientError && error.status === 404) {
+        return { processing: false, responded: false, sessionInvalid: true }
+      }
+      throw error
+    }
     const result = data as { processing?: unknown; responded?: unknown } | null
     return {
       processing: result?.processing === true,
