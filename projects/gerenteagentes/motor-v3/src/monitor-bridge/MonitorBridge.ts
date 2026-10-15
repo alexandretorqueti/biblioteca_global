@@ -26,7 +26,7 @@ import { sql } from 'drizzle-orm'
 import * as schema from '../db/schema.js'
 
 export interface MonitorBridgeConfig {
-  monitorModel: string // Modelo caro para Monitor (ex: gpt-5.6-sol)
+  monitorModel: string // Modelo caro para Monitor (ex: gpt-6.1-sol)
   telegramTarget: string // Target para notificações (ex: 7147090795)
   autoActivateCaseA: boolean // Auto-ativar Caso A (D4)
   monitorInvoker?: MonitorInvoker
@@ -95,7 +95,7 @@ export class MonitorBridge {
     this.loader = loader
     this.classifier = classifier
     this.config = {
-      monitorModel: config.monitorModel ?? 'gpt-5.6-sol',
+      monitorModel: config.monitorModel ?? 'gpt-6.1-sol',
       telegramTarget: config.telegramTarget ?? '7147090795',
       autoActivateCaseA: config.autoActivateCaseA ?? true,
       monitorInvoker: config.monitorInvoker,
