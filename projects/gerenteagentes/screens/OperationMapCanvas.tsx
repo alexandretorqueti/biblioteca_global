@@ -141,7 +141,7 @@ export default function OperationMapCanvas({ tarefas, selectedTaskId, projetos, 
             { transform: `translate(${deltaX}px, ${deltaY}px)` },
             { transform: "translate(0px, 0px)" },
           ],
-          { duration: 1000, easing: "ease-out", fill: "both" },
+          { duration: 3000, easing: "ease-out", fill: "both" },
         ))
       })
     }

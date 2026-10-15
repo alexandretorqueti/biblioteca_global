@@ -274,7 +274,53 @@ describe("OperationMapCanvas — responsividade", () => {
 
     expect(animate).toHaveBeenCalledWith(
       [{ transform: "translate(-200px, 0px)" }, { transform: "translate(0px, 0px)" }],
-      { duration: 1000, easing: "ease-out", fill: "both" },
+      { duration: 3000, easing: "ease-out", fill: "both" },
+    )
+  })
+
+  it("anima transições entre quadros principal e de exceção", () => {
+    const firstCancel = vi.fn()
+    const secondCancel = vi.fn()
+    const animate = vi.fn()
+      .mockImplementationOnce(() => ({ cancel: firstCancel }) as unknown as Animation)
+      .mockImplementationOnce(() => ({ cancel: secondCancel }) as unknown as Animation)
+    Object.defineProperty(HTMLElement.prototype, "animate", { configurable: true, value: animate })
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function () {
+      const station = this.closest("[data-testid^='operation-station-']")?.getAttribute("data-testid")
+      const left = station === "operation-station-running" ? 100 : station === "operation-station-waiting" ? 500 : 0
+      return { left, top: 0, right: left + 30, bottom: 30, width: 30, height: 30, x: left, y: 0, toJSON: () => ({}) } as DOMRect
+    })
+
+    const initialTask = tarefaFactory(1, "Tarefa em movimento", "running")
+    const view = renderCanvas([initialTask as FlowTask])
+
+    view.rerender(<BibliotecaThemeProvider><OperationMapCanvas
+      tarefas={[{ ...initialTask, status: "awaiting_clarification" } as FlowTask]}
+      selectedTaskId=""
+      projetos={[{ id: 1, nome: "Projeto X" }]}
+      motorActivities={[]}
+      onSelectTask={() => {}}
+    /></BibliotecaThemeProvider>)
+
+    view.rerender(<BibliotecaThemeProvider><OperationMapCanvas
+      tarefas={[{ ...initialTask, status: "completed" } as FlowTask]}
+      selectedTaskId=""
+      projetos={[{ id: 1, nome: "Projeto X" }]}
+      motorActivities={[]}
+      onSelectTask={() => {}}
+    /></BibliotecaThemeProvider>)
+
+    expect(animate).toHaveBeenCalledTimes(2)
+    expect(firstCancel).toHaveBeenCalledOnce()
+    expect(animate).toHaveBeenNthCalledWith(
+      1,
+      [{ transform: "translate(-400px, 0px)" }, { transform: "translate(0px, 0px)" }],
+      { duration: 3000, easing: "ease-out", fill: "both" },
+    )
+    expect(animate).toHaveBeenNthCalledWith(
+      2,
+      [{ transform: "translate(500px, 0px)" }, { transform: "translate(0px, 0px)" }],
+      { duration: 3000, easing: "ease-out", fill: "both" },
     )
   })
 
