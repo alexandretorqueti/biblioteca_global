@@ -38,7 +38,7 @@ export const componentId = "gerenteagentes-operation-map"
 interface Task { id: number; titulo: string; descricao?: string | null; tipo?: string | null; status: string; projetoId: number; dependsOnTaskId?: number | null; dependsOnTaskIds?: number[]; createdAt?: string; updatedAt?: string; subtaskCount?: number; recoveryEligibility?: RecoveryEligibility | null }
 interface DbSubtask { id: number; seq: number; titulo: string; descricao?: string | null; scope?: string | null; acceptanceCriteria?: unknown; status: string; resultado?: string | null; dependsOnSubtaskId?: number | null; workspaceStatus?: string | null; correctionForSubtaskId?: number | null }
 interface MotorSubtask { id?: number; seq: number; title: string; status: string; deliverCount?: number; blockInfo?: { reason?: string; command?: string; exitCode?: number | null } | null; scope?: string | null; acceptanceCriteria?: unknown; resultado?: string | null; dependsOnSubtaskId?: number | null; workspaceStatus?: string | null; correctionForSubtaskId?: number | null; deliveryHistory?: Array<{ id: number; deliverNumber: number; model: string | null; eventType: string; reason: string | null; createdAt: string }> }
-interface Detail { motorId?: string; exists: boolean; message?: string; task?: { status: string; title: string; descricao?: string | null; errorMessage?: string; blockInfo?: { kind?: string; excerpt?: string; blockedAt?: string; subtaskId?: number | null } | null; promotionConflictAnalysis?: import('./ConflictViewer').PromotionConflictData | null; recoveryEligibility?: RecoveryEligibility | null }; subtasks?: MotorSubtask[]; currentSubTask?: MotorSubtask | null; events?: Array<{ at: string; type: string; payload?: Record<string, unknown> }> }
+interface Detail { motorId?: string; exists: boolean; message?: string; task?: { status: string; title: string; descricao?: string | null; tipo?: string | null; dependsOnTaskIds?: number[]; errorMessage?: string; blockInfo?: { kind?: string; excerpt?: string; blockedAt?: string; subtaskId?: number | null } | null; promotionConflictAnalysis?: import('./ConflictViewer').PromotionConflictData | null; recoveryEligibility?: RecoveryEligibility | null }; subtasks?: MotorSubtask[]; currentSubTask?: MotorSubtask | null; events?: Array<{ at: string; type: string; payload?: Record<string, unknown> }> }
 interface MotorOperation { operationId: string; sequence: number; phase: string; outcome: string; messageType: string; commandCode?: string | null; policyCode?: string | null; policyVersion?: number | null; actionCode?: string | null; primitiveCode?: string | null; reasonCode?: string | null; resultJson?: unknown; durationMs?: number | null; createdAt: string }
 interface ChatMessage { id: number; tarefaId?: number; role: string; texto: string; createdAt: string; deliveryId?: number | null; deliveryState?: string | null; deliveryError?: string | null }
 interface Session { sessionKey: string; model?: string; status?: string; executionOrder?: number; openedAt?: string; closedAt?: string | null; closeReason?: string | null; messages: { items: Array<{ role: string; text: string; sequenceNumber: number }>; nextCursor?: string | null; hasNextPage?: boolean } }
@@ -90,6 +90,25 @@ function taskFromCreatedRow(
     dependsOnTaskIds,
     createdAt,
     updatedAt,
+  }
+}
+
+function applyTaskUpdate(task: Task, payload: Record<string, unknown>, occurredAt: string): Task {
+  const has = (key: string) => Object.prototype.hasOwnProperty.call(payload, key)
+  const dependencyPayload = payload.dependsOnTaskIds ?? payload.depends_on_task_ids
+  const dependencies = Array.isArray(dependencyPayload)
+    ? dependencyPayload.map(Number).filter((id) => Number.isSafeInteger(id) && id > 0)
+    : task.dependsOnTaskIds
+  const status = typeof payload.status === "string" && payload.status.trim() ? payload.status : task.status
+  return {
+    ...task,
+    titulo: has("titulo") || has("title") ? String(payload.titulo ?? payload.title ?? "") : task.titulo,
+    descricao: has("descricao") || has("description") ? (payload.descricao ?? payload.description) == null ? null : String(payload.descricao ?? payload.description) : task.descricao,
+    tipo: has("tipo") || has("taskType") ? String(payload.tipo ?? payload.taskType ?? "") : task.tipo,
+    status,
+    dependsOnTaskIds: dependencies,
+    dependsOnTaskId: dependencies?.[0] ?? (Array.isArray(dependencyPayload) ? null : task.dependsOnTaskId),
+    updatedAt: String(payload.updatedAt ?? occurredAt),
   }
 }
 
@@ -307,12 +326,24 @@ export default function OperationMapScreen() {
               return [newTask, ...prev].sort((a, b) => new Date(b.updatedAt ?? b.createdAt ?? 0).getTime() - new Date(a.updatedAt ?? a.createdAt ?? 0).getTime())
             })
           } else if (event.type === "task.updated") {
-            setTasks(prev => prev.map(t => t.id === event.taskId ? {
-              ...t,
-              titulo: String(payload.titulo ?? payload.title ?? t.titulo),
-              status: String(payload.status ?? t.status),
-              updatedAt: event.occurredAt,
-            } : t))
+            setTasks(prev => prev.map(t => t.id === event.taskId ? applyTaskUpdate(t, payload, event.occurredAt) : t))
+            if (event.taskId === selectedId) {
+              setDetail(prev => prev?.task ? {
+                ...prev,
+                task: {
+                  ...prev.task,
+                  title: String(payload.titulo ?? payload.title ?? prev.task.title),
+                  ...(Object.prototype.hasOwnProperty.call(payload, "descricao") || Object.prototype.hasOwnProperty.call(payload, "description")
+                    ? { descricao: (payload.descricao ?? payload.description) == null ? null : String(payload.descricao ?? payload.description) }
+                    : {}),
+                  ...(Object.prototype.hasOwnProperty.call(payload, "tipo") || Object.prototype.hasOwnProperty.call(payload, "taskType")
+                    ? { tipo: String(payload.tipo ?? payload.taskType ?? "") }
+                    : {}),
+                  ...(typeof payload.status === "string" && payload.status.trim() ? { status: payload.status } : {}),
+                  ...(Array.isArray(payload.dependsOnTaskIds) ? { dependsOnTaskIds: payload.dependsOnTaskIds.map(Number) } : {}),
+                },
+              } : prev)
+            }
           } else if (event.type === "task.deleted") {
             setTasks(prev => prev.filter(t => t.id !== event.taskId))
             setSelectedId(current => current === event.taskId ? "" : current)
@@ -409,8 +440,22 @@ export default function OperationMapScreen() {
           return
         }
         // Status da tarefa — atualiza a lista local (map channel também faz, mas aqui garante consistência)
-        if (eventType === "task.status.changed" && typeof payload.status === "string") {
+        if (eventType === "task.status.changed" && typeof payload.status === "string" && payload.status.trim()) {
           setTasks(old => old.map(t => t.id === selectedId ? { ...t, status: String(payload.status) } : t))
+        }
+        if (eventType === "task.updated") {
+          setTasks(old => old.map(t => t.id === selectedId ? applyTaskUpdate(t, payload, message.event.occurredAt) : t))
+          setDetail(prev => prev?.task ? {
+            ...prev,
+            task: {
+              ...prev.task,
+              title: String(payload.titulo ?? payload.title ?? prev.task.title),
+              ...(Object.prototype.hasOwnProperty.call(payload, "descricao") || Object.prototype.hasOwnProperty.call(payload, "description") ? { descricao: (payload.descricao ?? payload.description) == null ? null : String(payload.descricao ?? payload.description) } : {}),
+              ...(Object.prototype.hasOwnProperty.call(payload, "tipo") || Object.prototype.hasOwnProperty.call(payload, "taskType") ? { tipo: String(payload.tipo ?? payload.taskType ?? "") } : {}),
+              ...(typeof payload.status === "string" && payload.status.trim() ? { status: payload.status } : {}),
+              ...(Array.isArray(payload.dependsOnTaskIds) ? { dependsOnTaskIds: payload.dependsOnTaskIds.map(Number) } : {}),
+            },
+          } : prev)
         }
         // Subtarefas — aplica eventos diretamente quando possível
         if (eventType === "subtask.created" || eventType === "subtask.updated" || eventType === "subtask.deleted") {
@@ -455,7 +500,7 @@ export default function OperationMapScreen() {
         }
         // Eventos genéricos de tarefa/subtarefa — recarrega o detalhe
         if ((eventType.startsWith("task.") || eventType.startsWith("subtask.")) &&
-            !["task.status.changed", "subtask.created", "subtask.updated", "subtask.deleted", "subtask.status.changed"].includes(eventType)) {
+            !["task.updated", "task.status.changed", "subtask.created", "subtask.updated", "subtask.deleted", "subtask.status.changed"].includes(eventType)) {
           void loadDetail(selectedId)
         }
       },
@@ -681,7 +726,16 @@ export default function OperationMapScreen() {
     }
   }
   const getLoadOptions = useCallback((resource: string) => async (search: string) => { if (!bundle) return []; try { const result = await bundle.http.request<{ items: Array<Record<string, unknown>> }>("GET", `/${resource}`, { query: search ? { search, pageSize: 50 } : { pageSize: 100 }, auth: "access" }); return result.items ?? [] } catch { return [] } }, [bundle])
-  const editFields: DynamicField[] = useMemo(() => [{ name: "titulo", label: "Título", type: "text", required: true, maxLength: 200, fullWidth: true }, { name: "descricao", label: "Descrição", type: "textarea", fullWidth: true }, { name: "tipo", label: "Tipo de tarefa", type: "select", options: [{ value: "desenvolvimento", label: "Desenvolvimento" }, { value: "automacao", label: "Automação" }, { value: "verificacao", label: "Verificação" }] }, { name: "dependsOnTaskIds", label: "Depende das tarefas", type: "multipleChoice", multipleChoice: { resource: "tarefas", idField: "id", displayField: "titulo", loadOptions: getLoadOptions("tarefas") } }], [getLoadOptions])
+  const loadTaskDependencyOptions = useCallback(async (search: string) => {
+    if (!bundle || !selected) return []
+    try {
+      const result = await bundle.http.request<Task[] | { items?: Task[] }>("GET", "/gerenteagentes/tarefas-com-status", { query: { projetoId: selected.projetoId }, auth: "access" })
+      const options = Array.isArray(result) ? result : (result.items ?? [])
+      const query = search.trim().toLocaleLowerCase()
+      return options.filter(task => task.id !== selected.id && !["completed", "cancelled", "closed"].includes(task.status) && (!query || `${task.titulo} ${task.id}`.toLocaleLowerCase().includes(query)))
+    } catch { return [] }
+  }, [bundle, selected])
+  const editFields: DynamicField[] = useMemo(() => [{ name: "titulo", label: "Título", type: "text", required: true, maxLength: 200, fullWidth: true }, { name: "descricao", label: "Descrição", type: "textarea", fullWidth: true }, { name: "tipo", label: "Tipo de tarefa", type: "select", options: [{ value: "desenvolvimento", label: "Desenvolvimento" }, { value: "automacao", label: "Automação" }, { value: "verificacao", label: "Verificação" }] }, { name: "dependsOnTaskIds", label: "Depende das tarefas", type: "multipleChoice", multipleChoice: { resource: "tarefas", idField: "id", displayField: "titulo", multiple: true, loadOptions: loadTaskDependencyOptions } }], [loadTaskDependencyOptions])
   const editTask = async (values: DynamicFormValues) => {
     if (!bundle || !selected) return
     setEditLoading(true)

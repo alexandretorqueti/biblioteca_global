@@ -52,6 +52,7 @@ export const multipleChoiceFieldConfigSchema = z
     resource: z.string().regex(RESOURCE_NAME_REGEX).optional(),
     idField: z.string().min(1),
     displayField: z.string().min(1),
+    multiple: z.boolean().optional(),
     minimumSearchLength: z.number().int().nonnegative().optional(),
     debounceMs: z.number().int().nonnegative().optional(),
     noOptionsText: z.string().optional(),

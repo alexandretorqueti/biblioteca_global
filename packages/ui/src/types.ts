@@ -49,7 +49,8 @@ export type MultipleChoiceConfig = MultipleChoiceFieldConfig & {
 }
 
 /** Valores de formulário (iguais à v1). */
-export type DynamicFormValues = Record<string, string | number | boolean>
+export type DynamicFormValue = string | number | boolean | Array<string | number>
+export type DynamicFormValues = Record<string, DynamicFormValue>
 
 /**
  * Retorno de uma ação customizada executada pelo runtime.

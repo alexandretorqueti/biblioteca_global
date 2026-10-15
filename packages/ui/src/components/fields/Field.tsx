@@ -22,7 +22,7 @@ import FieldJson from "./FieldJson"
 
 interface FieldProps {
   field: DynamicField
-  value: string | number | boolean
+  value: string | number | boolean | Array<string | number>
   error?: string
   loading?: boolean
   onChange: (
@@ -46,7 +46,7 @@ export default function Field({
       <FieldText
         name={field.name}
         label={field.label}
-        value={typeof value === "boolean" ? "" : value}
+        value={typeof value === "boolean" || Array.isArray(value) ? "" : value}
         required={field.required}
         placeholder={field.placeholder}
         helperText={field.helperText}
@@ -81,7 +81,7 @@ export default function Field({
       <FieldMoney
         name={field.name}
         label={field.label}
-        value={typeof value === "boolean" ? "" : value}
+        value={typeof value === "boolean" || Array.isArray(value) ? "" : value}
         required={field.required}
         helperText={helperText}
         disabled={disabled}
