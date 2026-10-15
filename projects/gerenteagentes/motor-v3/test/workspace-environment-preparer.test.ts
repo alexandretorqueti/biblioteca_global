@@ -45,6 +45,49 @@ describe('WorkspaceEnvironmentPreparer', () => {
     expect(install).toHaveBeenCalledTimes(1)
     expect(install).toHaveBeenCalledWith(root)
   })
+
+  it('serializa instalações concorrentes do mesmo worktree entre preparadores', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'motor-v3-env-lock-'))
+    roots.push(root)
+    await writePackage(root, 'root')
+    let active = 0
+    let maximumActive = 0
+    let releaseFirst!: () => void
+    const firstStarted = new Promise<void>(resolveStarted => { releaseFirst = resolveStarted })
+    let continueFirst!: () => void
+    const firstCanFinish = new Promise<void>(resolveFinish => { continueFirst = resolveFinish })
+    const install = vi.fn(async () => {
+      active++
+      maximumActive = Math.max(maximumActive, active)
+      if (install.mock.calls.length === 1) {
+        releaseFirst()
+        await firstCanFinish
+      }
+      active--
+    })
+    const first = new WorkspaceEnvironmentPreparer(install).prepare(root)
+    await firstStarted
+    const second = new WorkspaceEnvironmentPreparer(install).prepare(root)
+    await new Promise(resolveWait => setTimeout(resolveWait, 20))
+
+    expect(install).toHaveBeenCalledTimes(1)
+    continueFirst()
+    await Promise.all([first, second])
+    expect(install).toHaveBeenCalledTimes(2)
+    expect(maximumActive).toBe(1)
+  })
+
+  it('libera o lock quando a instalação falha', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'motor-v3-env-unlock-'))
+    roots.push(root)
+    await writePackage(root, 'root')
+    const failing = new WorkspaceEnvironmentPreparer(vi.fn().mockRejectedValueOnce(new Error('falha npm')))
+    await expect(failing.prepare(root)).rejects.toThrow('falha npm')
+
+    const install = vi.fn().mockResolvedValue(undefined)
+    await expect(new WorkspaceEnvironmentPreparer(install).prepare(root)).resolves.toEqual(['.'])
+    expect(install).toHaveBeenCalledOnce()
+  })
 })
 
 async function writePackage(directory: string, name: string): Promise<void> {
