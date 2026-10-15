@@ -45,7 +45,7 @@ describe('MonitorBridge', () => {
     } as any
 
     monitorBridge = new MonitorBridge(mockBus, mockLoader, mockClassifier, {
-      monitorModel: 'gpt-5.6-sol',
+      monitorModel: 'gpt-6.1-sol',
       telegramTarget: '7147090795',
       autoActivateCaseA: true,
     })
