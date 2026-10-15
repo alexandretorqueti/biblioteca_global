@@ -15,8 +15,8 @@ const DEFAULT_TIMEOUT = 10_000
  * Regras do agente no atendimento ao usuário final.
  *
  * O BFF não possui um campo de system prompt no endpoint de chat. Por isso,
- * estas instruções são enviadas na criação da sessão e também em cada envio,
- * cobrindo sessões novas e sessões já existentes.
+ * Estas instruções são enviadas somente no POST de provisionamento da sessão.
+ * O histórico remoto permanece como fonte do contexto das mensagens seguintes.
  */
 export const HELPDESK_AGENT_INSTRUCTIONS = [
   "Você é o agente de atendimento do HelpDesk do sistema.",
@@ -166,8 +166,6 @@ export class HelpDeskBridgeService {
     text: string
     modelChain: Array<{ modelo: string }>
   }): Promise<BridgeSendResult> {
-    const agentMessage = `${HELPDESK_AGENT_INSTRUCTIONS}\n\nMENSAGEM DO USUÁRIO:\n${input.text}`
-
     for (const entry of input.modelChain) {
       try {
         this.logger.log(
@@ -179,7 +177,7 @@ export class HelpDeskBridgeService {
           method: "POST",
           body: {
             sessionKey: input.sessionKey,
-            message: agentMessage,
+            message: input.text,
             ...(agentId ? { agentId } : {}),
           },
         })
@@ -187,7 +185,7 @@ export class HelpDeskBridgeService {
         if (res.ok) {
           const data = await res.json() as Record<string, unknown>
           const runId = typeof data.runId === "string" ? data.runId : undefined
-          const responseText = await this.aguardarResposta(input.sessionKey, agentMessage)
+          const responseText = await this.aguardarResposta(input.sessionKey, input.text)
           if (!responseText) {
             this.logger.warn(`Execução ${runId ?? "sem-id"} ainda está sem resposta textual`)
             return { ok: true, runId, processing: true, retryable: true }

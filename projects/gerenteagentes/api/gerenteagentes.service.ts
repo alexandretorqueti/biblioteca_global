@@ -1060,11 +1060,13 @@ export class GerenteAgentesService {
       dependsOnTaskIds?: number[];
       autoStart?: boolean;
       ator?: string;
+      /** Banco operacional quando a chamada vem de um tenant externo (HelpDesk). */
+      databaseProjectId?: number;
     },
   ) {
     // O token seleciona o banco/tenant. A FK abaixo seleciona um projeto
     // administrado dentro desse tenant; os IDs pertencem a namespaces distintos.
-    const db = await this.dbDoProjeto(projeto);
+    const db = await this.factory.obter({ id: input.databaseProjectId ?? projeto.id });
     const managedProjectId = Number(input.managedProjectId);
     if (!Number.isSafeInteger(managedProjectId) || managedProjectId <= 0) {
       throw new BadRequestException(

@@ -14,6 +14,7 @@ import * as coreSchema from "../../../../../database/schema"
 import { agentes, projetosCaptados } from "../../../../../projects/gerenteagentes/schema"
 import { HelpDeskBridgeService } from "./helpdesk.bridge"
 import { RealtimeService } from "../realtime/realtime.service"
+import { GerenteAgentesService } from "../../../../../projects/gerenteagentes/api/gerenteagentes.service"
 
 const { helpdeskSessoes: helpDeskSessionTable, helpdeskMensagens: helpDeskMessageTable } = coreSchema
 /** O catálogo de agentes/modelos do GerenteAgentes vive em projeto_640. */
@@ -28,6 +29,7 @@ export class HelpDeskService {
     @Inject(PROJECT_DB_FACTORY) private readonly factory: ProjectDbFactory,
     @Inject(CORE_DB) private readonly coreDb: CoreDb,
     private readonly bridge: HelpDeskBridgeService,
+    @Optional() private readonly gerenteAgentes?: GerenteAgentesService,
     @Optional() private readonly realtime?: RealtimeService,
   ) {
     this.realtime?.setHelpDeskSnapshotProvider(async ({ sessionId, userId, projectId }) => {
@@ -90,7 +92,7 @@ export class HelpDeskService {
   }
 
   /** Obtém a sessão ativa (para verificação rápida). */
-  async obterSessaoAtiva(input: { usuarioId: number }): Promise<
+  async obterSessaoAtiva(input: { usuarioId: number; projetoId: number }): Promise<
     | { ok: true; sessaoId: number; agenteId: string; projetoId: number }
     | { ok: false; reason: "not_found" }
   > {
@@ -104,7 +106,10 @@ export class HelpDeskService {
         status: helpDeskSessionTable.status,
       })
       .from(helpDeskSessionTable)
-      .where(eq(helpDeskSessionTable.usuarioId, input.usuarioId))
+      .where(and(
+        eq(helpDeskSessionTable.usuarioId, input.usuarioId),
+        eq(helpDeskSessionTable.projetoId, input.projetoId),
+      ))
       .orderBy(desc(helpDeskSessionTable.updatedAt))
       .limit(1)
 
@@ -123,6 +128,7 @@ export class HelpDeskService {
     sessaoId: number
     text: string
     usuarioId: number
+    projetoId: number
   }): Promise<{ ok: boolean; messageId?: string; processing?: boolean; reason?: "offline" | "session_not_found"; retryable?: boolean }> {
     const db = await this.getCoreDb()
 
@@ -136,7 +142,7 @@ export class HelpDeskService {
       return { ok: false, reason: "session_not_found" }
     }
 
-    if (sessao.usuarioId !== input.usuarioId) {
+    if (sessao.usuarioId !== input.usuarioId || sessao.projetoId !== input.projetoId) {
       return { ok: false, reason: "session_not_found" }
     }
 
@@ -150,7 +156,7 @@ export class HelpDeskService {
 
     // Registra a solicitação antes de chamar o agente. O agente nunca deve
     // executar alterações diretamente; o motor recebe a solicitação em draft.
-    await this.detectarECriarTarefa(sessao.projetoId, input.text.trim())
+    const tarefa = await this.detectarECriarTarefa(sessao.projetoId, input.text.trim())
 
     if (!this.bridge.isConfigured()) {
       return { ok: false, reason: "offline" }
@@ -182,7 +188,7 @@ export class HelpDeskService {
         this.realtime?.publicarHelpDesk({ projectId: sessao.projetoId, userId: input.usuarioId, sessionId: input.sessaoId, type: "helpdesk.processing.changed", payload: { processing: true, responded: false } })
         return { ok: true, messageId: sendResult.runId, processing: true }
       }
-      const respostaAgente = sendResult.responseText ?? ""
+      const respostaAgente = this.confirmarTarefa(sendResult.responseText ?? "", tarefa)
       const [agentMessage] = await db.insert(helpDeskMessageTable).values({
         sessaoId: input.sessaoId,
         role: "agent",
@@ -196,7 +202,7 @@ export class HelpDeskService {
     return { ok: false, reason: "offline", retryable: false }
   }
 
-  async consultarProcessamento(input: { sessaoId: number; usuarioId: number }): Promise<{
+  async consultarProcessamento(input: { sessaoId: number; usuarioId: number; projetoId: number }): Promise<{
     ok: true
     processing: boolean
     responded: boolean
@@ -208,7 +214,7 @@ export class HelpDeskService {
       .where(eq(helpDeskSessionTable.id, input.sessaoId))
       .limit(1)
 
-    if (!sessao || sessao.usuarioId !== input.usuarioId) {
+    if (!sessao || sessao.usuarioId !== input.usuarioId || sessao.projetoId !== input.projetoId) {
       return { ok: false, reason: "session_not_found" }
     }
 
@@ -278,7 +284,7 @@ export class HelpDeskService {
   // HISTÓRICO
   // ===========================================================================
 
-  async obterHistorico(sessaoId: number, usuarioId: number): Promise<{
+  async obterHistorico(sessaoId: number, usuarioId: number, projetoId?: number): Promise<{
     sessao: {
       id: number
       usuarioId: number
@@ -304,7 +310,7 @@ export class HelpDeskService {
       .where(eq(helpDeskSessionTable.id, sessaoId))
       .limit(1)
 
-    if (!sessao || sessao.usuarioId !== usuarioId) {
+    if (!sessao || sessao.usuarioId !== usuarioId || (projetoId !== undefined && sessao.projetoId !== projetoId)) {
       return {
         sessao: { id: sessaoId, usuarioId: 0, projetoId: 0, agenteId: "", status: "closed", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
         mensagens: [],
@@ -405,11 +411,11 @@ export class HelpDeskService {
   // DETECÇÃO + CRIAÇÃO DE TAREFA NO PROJETO (draft)
   // ===========================================================================
 
-  private async detectarECriarTarefa(projetoId: number, textoUsuario: string): Promise<void> {
+  private async detectarECriarTarefa(projetoId: number, textoUsuario: string): Promise<{ id: number; externalId: string; status: string } | null> {
     const solicitacoes = this.detectarSolicitacao(textoUsuario)
-    if (solicitacoes.length === 0) return
+    if (solicitacoes.length === 0) return null
 
-    await this.criarTarefaDraft(projetoId, textoUsuario, solicitacoes[0]!)
+    return this.criarTarefaDraft(projetoId, textoUsuario, solicitacoes[0]!)
   }
 
   private detectarSolicitacao(texto: string): string[] {
@@ -423,33 +429,48 @@ export class HelpDeskService {
       return []
     }
 
-    // Fora de uma pergunta informativa, qualquer mensagem não trivial é
-    // tratada como solicitação e registrada como tarefa draft. Isso evita
-    // depender de uma lista incompleta de verbos para proteger alterações.
-    return texto.trim() ? [texto.trim()] : []
+    const pedidoDeAlteracao = /\b(crie|criar|implemente|implementar|altere|alterar|corrija|corrigir|adicione|adicionar|remova|remover|mude|mudar|ajuste|ajustar|solicito|preciso que|quero que|gostaria que|faça|faca)\b/.test(t)
+    return pedidoDeAlteracao && texto.trim() ? [texto.trim()] : []
   }
 
-  private async criarTarefaDraft(projetoId: number, textoOriginal: string, solicitacao: string): Promise<void> {
+  private async criarTarefaDraft(projetoId: number, textoOriginal: string, solicitacao: string): Promise<{ id: number; externalId: string; status: string } | null> {
     try {
       const projetoCaptado = await this.obterProjetoCaptado(projetoId)
       if (!projetoCaptado) {
         this.logger.warn(`Não foi possível criar tarefa draft: projeto ${projetoId} não está cadastrado em projetos_captados`)
-        return
+        return null
       }
 
       // `projetoId` é o ID do projeto da plataforma (ex.: TaQui = 6611),
       // enquanto tarefas e projetos_captados vivem no database do Gerente de
       // Agentes (projeto_640). Usar projetoId aqui tentava inserir em
       // projeto_6611, que não possui a tabela operacional `tarefas`.
-      const db = await this.factory.obter({ id: GERENTE_AGENTES_PROJECT_ID })
       const titulo = `[HelpDesk] ${solicitacao.substring(0, 100)}`
-      await db.execute(
-        sql`INSERT INTO tarefas (projeto_id, titulo, descricao, status, tipo, auto_start, created_at, updated_at) VALUES (${projetoCaptado.id}, ${titulo}, ${textoOriginal}, 'draft', 'desenvolvimento', false, NOW(), NOW())`,
-      )
+      if (!this.gerenteAgentes) throw new Error("GerenteAgentes indisponível")
+      const tarefa = await this.gerenteAgentes.criarTarefa(
+        { id: projetoId, nome: "HelpDesk", slug: "helpdesk", perfil: "admin" },
+        {
+          managedProjectId: projetoCaptado.id,
+          titulo,
+          descricao: textoOriginal,
+          tipo: "desenvolvimento",
+          status: "draft",
+          autoStart: false,
+          ator: `helpdesk:${projetoId}`,
+          databaseProjectId: GERENTE_AGENTES_PROJECT_ID,
+        },
+      ) as { id: number; externalId?: string; status?: string }
       this.logger.log(`Tarefa draft criada no projeto ${projetoId}: "${solicitacao.substring(0, 80)}..."`)
+      return { id: Number(tarefa.id), externalId: tarefa.externalId ?? `task-${tarefa.id}`, status: tarefa.status ?? "draft" }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err)
       this.logger.warn(`Não foi possível criar tarefa no projeto ${projetoId}: ${msg}`)
+      return null
     }
+  }
+
+  private confirmarTarefa(resposta: string, tarefa: { id: number; externalId: string; status: string } | null): string {
+    if (!tarefa) return resposta
+    return `${resposta}\n\nSolicitação registrada como tarefa draft ${tarefa.externalId} (id ${tarefa.id}). Estado atual: ${tarefa.status}. Você pode perguntar por esse identificador para acompanhar o andamento.`
   }
 }

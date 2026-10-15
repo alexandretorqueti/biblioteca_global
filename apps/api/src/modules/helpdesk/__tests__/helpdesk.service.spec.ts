@@ -5,7 +5,6 @@ import type { ProjectDbFactory } from "../../crud/project-db.factory"
 
 describe("HelpDeskService — criação de tarefa draft", () => {
   it("usa o database do Gerente de Agentes para um projeto da plataforma", async () => {
-    const execute = vi.fn().mockResolvedValue([])
     const catalogDb = {
       select: () => ({
         from: () => ({
@@ -14,7 +13,6 @@ describe("HelpDeskService — criação de tarefa draft", () => {
           }),
         }),
       }),
-      execute,
     }
     const factory = {
       obter: vi.fn(async ({ id }: { id: number }) => {
@@ -24,10 +22,11 @@ describe("HelpDeskService — criação de tarefa draft", () => {
     } as unknown as ProjectDbFactory
     const coreDb = {} as never
     const bridge = {} as never
-    const service = new HelpDeskService(factory, coreDb, bridge)
+    const criarTarefa = vi.fn().mockResolvedValue({ id: 77, externalId: "task-p7-77", status: "planned" })
+    const service = new HelpDeskService(factory, coreDb, bridge, { criarTarefa } as never)
 
     await (service as unknown as {
-      criarTarefaDraft(projetoId: number, textoOriginal: string, solicitacao: string): Promise<void>
+      criarTarefaDraft(projetoId: number, textoOriginal: string, solicitacao: string): Promise<unknown>
     }).criarTarefaDraft(
       6611,
       "Ao incluir um morador, a unidade não aparece na combo",
@@ -36,6 +35,9 @@ describe("HelpDeskService — criação de tarefa draft", () => {
 
     expect(factory.obter).toHaveBeenCalledWith({ id: 640 })
     expect(factory.obter).not.toHaveBeenCalledWith({ id: 6611 })
-    expect(execute).toHaveBeenCalledOnce()
+    expect(criarTarefa).toHaveBeenCalledWith(
+      { id: 6611, nome: "HelpDesk", slug: "helpdesk", perfil: "admin" },
+      expect.objectContaining({ managedProjectId: 7, databaseProjectId: 640, status: "draft" }),
+    )
   })
 })

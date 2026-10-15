@@ -8,9 +8,10 @@ import { HelpDeskBridgeService } from "./helpdesk.bridge"
 import { CrudModule } from "../crud/crud.module"
 import { AuthModule } from "../auth/auth.module"
 import { RealtimeModule } from "../realtime/realtime.module"
+import { GerenteAgentesModule } from "../../../../../projects/gerenteagentes/api/gerenteagentes.module"
 
 @Module({
-  imports: [AuthModule, CrudModule, RealtimeModule],
+  imports: [AuthModule, CrudModule, RealtimeModule, GerenteAgentesModule],
   controllers: [HelpDeskController],
   providers: [HelpDeskService, HelpDeskBridgeService],
   exports: [HelpDeskService],
