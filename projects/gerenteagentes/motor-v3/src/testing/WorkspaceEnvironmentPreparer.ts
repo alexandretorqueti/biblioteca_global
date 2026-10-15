@@ -1,9 +1,44 @@
 import { execFile } from 'node:child_process'
-import { readdir, readFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rm } from 'node:fs/promises'
 import { dirname, relative, resolve } from 'node:path'
 import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
+const INSTALL_LOCK_DIRECTORY = '.motor-v3-npm-install.lock'
+const INSTALL_LOCK_POLL_MS = Number(process.env.MOTOR_TEST_GATE_INSTALL_LOCK_POLL_MS || 250)
+const INSTALL_LOCK_TIMEOUT_MS = Number(process.env.MOTOR_TEST_GATE_INSTALL_LOCK_TIMEOUT_MS || 900_000)
+
+async function wait(milliseconds: number): Promise<void> {
+  await new Promise(resolveWait => setTimeout(resolveWait, milliseconds))
+}
+
+/**
+ * `npm ci` não tolera duas instalações no mesmo worktree: ambas removem e
+ * recriam os links dos workspaces e uma delas termina com EEXIST. O lock usa
+ * mkdir (atômico no filesystem compartilhado) para coordenar inclusive os
+ * dois processos blue/green do Motor.
+ */
+async function withWorkspaceInstallLock<T>(workspacePath: string, operation: () => Promise<T>): Promise<T> {
+  const lockPath = resolve(workspacePath, INSTALL_LOCK_DIRECTORY)
+  const deadline = Date.now() + INSTALL_LOCK_TIMEOUT_MS
+  while (true) {
+    try {
+      await mkdir(lockPath)
+      break
+    } catch (error: any) {
+      if (error?.code !== 'EEXIST') throw error
+      if (Date.now() >= deadline) {
+        throw new Error(`Timeout aguardando lock de instalação do worktree: ${lockPath}`)
+      }
+      await wait(INSTALL_LOCK_POLL_MS)
+    }
+  }
+  try {
+    return await operation()
+  } finally {
+    await rm(lockPath, { recursive: true, force: true })
+  }
+}
 
 /**
  * Verifica se o diretório git tem modificações locais que podem causar
@@ -56,17 +91,19 @@ export class WorkspaceEnvironmentPreparer {
   ) {}
 
   async prepare(workspacePath: string): Promise<string[]> {
-    const lockfiles = await this.findLockfiles(workspacePath)
-    const prepared: string[] = []
-    for (const lockfile of lockfiles) {
-      const directory = dirname(lockfile)
-      // Garante que o worktree está limpo antes de npm ci
-      // (modificações locais em package.json/lock causam EUSAGE)
-      await ensureCleanWorkspace(directory)
-      await this.install(directory)
-      prepared.push(relative(workspacePath, directory) || '.')
-    }
-    return prepared
+    return withWorkspaceInstallLock(workspacePath, async () => {
+      const lockfiles = await this.findLockfiles(workspacePath)
+      const prepared: string[] = []
+      for (const lockfile of lockfiles) {
+        const directory = dirname(lockfile)
+        // Garante que o worktree está limpo antes de npm ci
+        // (modificações locais em package.json/lock causam EUSAGE)
+        await ensureCleanWorkspace(directory)
+        await this.install(directory)
+        prepared.push(relative(workspacePath, directory) || '.')
+      }
+      return prepared
+    })
   }
 
   private async findLockfiles(workspacePath: string): Promise<string[]> {
