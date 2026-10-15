@@ -459,9 +459,12 @@ export default function OperationMapScreen() {
             },
           } : prev)
         }
-        // Subtarefas — aplica eventos diretamente quando possível
+        // Subtarefas — o payload do evento não traz scope/critérios/seq; recarrega
+        // as duas fontes de estado (dbSubtasks e detail.subtasks, que alimenta a
+        // lista exibida) para que edições no drawer apareçam sem refresh manual.
         if (eventType === "subtask.created" || eventType === "subtask.updated" || eventType === "subtask.deleted") {
           void loadSubtasks(selectedId)
+          void loadDetail(selectedId)
         }
         if (eventType === "subtask.status.changed") {
           const subtaskId = Number(message.event.subtaskId ?? payload.id)
