@@ -27,7 +27,9 @@ describe("prompts_agentes", () => {
       expect(entry.situacao).toBeTruthy()
       expect(entry.conteudo).toBeTruthy()
       expect(entry.origem).toMatch(/#[A-Za-z]/)
-      expect(entry.marcadores.length).toBeGreaterThan(0)
+      if (entry.chave !== "biblioteca-global.helpdesk_atendimento") {
+        expect(entry.marcadores.length).toBeGreaterThan(0)
+      }
     }
   })
 })

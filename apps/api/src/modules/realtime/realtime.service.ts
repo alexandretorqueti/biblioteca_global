@@ -1,9 +1,10 @@
 import { Injectable } from "@nestjs/common"
 import { randomUUID } from "node:crypto"
 import type { WebSocket } from "ws"
-import { realtimeIngressEventSchema, type AgentMapSnapshot, type RealtimeServerMessage, type TaskEventEnvelope, type RealtimeIngressEvent, type TaskDetailSnapshot } from "@biblioteca-global/shared"
+import { realtimeIngressEventSchema, type AgentMapSnapshot, type RealtimeServerMessage, type TaskEventEnvelope, type RealtimeIngressEvent, type TaskDetailSnapshot, type HelpDeskRealtimeSnapshot, type HelpDeskRealtimeMessage } from "@biblioteca-global/shared"
 
 const LIMITE_EVENTOS_POR_TAREFA = 500
+const LIMITE_EVENTOS_HELPDESK = 500
 
 @Injectable()
 export class RealtimeService {
@@ -17,6 +18,10 @@ export class RealtimeService {
   private readonly inscritosMapa = new Map<number, Map<WebSocket, number>>()
   private readonly eventosRecebidos = new Set<string>()
   private readonly envelopesPorId = new Map<string, TaskEventEnvelope>()
+  private helpDeskSnapshotProvider: ((input: { sessionId: number; userId: number; projectId: number }) => Promise<HelpDeskRealtimeSnapshot | null> | HelpDeskRealtimeSnapshot | null) | null = null
+  private readonly helpdeskSequencias = new Map<string, number>()
+  private readonly helpdeskEventos = new Map<string, Array<{ eventId: string; sequence: number; occurredAt: string; type: "helpdesk.message.created" | "helpdesk.processing.changed"; payload: Record<string, unknown> }>>()
+  private readonly helpdeskInscritos = new Map<string, Map<WebSocket, number>>()
 
   publicar(evento: unknown): TaskEventEnvelope {
     const parsed = realtimeIngressEventSchema.safeParse(evento)
@@ -83,6 +88,47 @@ export class RealtimeService {
       inscritos.delete(client)
       if (inscritos.size === 0) this.inscritosMapa.delete(projectId)
     }
+    for (const [key, inscritos] of this.helpdeskInscritos) {
+      inscritos.delete(client)
+      if (inscritos.size === 0) this.helpdeskInscritos.delete(key)
+    }
+  }
+
+  inscreverHelpDesk(projectId: number, userId: number, sessionId: number, client: WebSocket, snapshot: HelpDeskRealtimeSnapshot, lastSequence?: number): { currentSequence: number; replayAvailable: boolean } {
+    const key = this.helpDeskKey(projectId, userId, sessionId)
+    const inscritos = this.helpdeskInscritos.get(key) ?? new Map<WebSocket, number>()
+    inscritos.set(client, userId)
+    this.helpdeskInscritos.set(key, inscritos)
+    const atual = this.helpdeskSequencias.get(key) ?? 0
+    this.enviarPara(client, { type: "helpdesk_snapshot", sessaoId: sessionId, currentSequence: atual, snapshot })
+    const lista = this.helpdeskEventos.get(key) ?? []
+    if (lastSequence !== undefined) {
+      const primeiro = lista[0]?.sequence
+      if (primeiro !== undefined && lastSequence < primeiro - 1) return { currentSequence: atual, replayAvailable: false }
+      for (const event of lista) if (event.sequence > lastSequence) this.enviarPara(client, { type: "event", event: { ...event, projectId, taskId: sessionId, source: "helpdesk", organizationId: undefined } })
+    }
+    return { currentSequence: atual, replayAvailable: true }
+  }
+
+  publicarHelpDesk(input: { projectId: number; userId: number; sessionId: number; type: "helpdesk.message.created" | "helpdesk.processing.changed"; payload: Record<string, unknown> }): void {
+    const key = this.helpDeskKey(input.projectId, input.userId, input.sessionId)
+    const event = { eventId: randomUUID(), sequence: (this.helpdeskSequencias.get(key) ?? 0) + 1, occurredAt: new Date().toISOString(), type: input.type, payload: input.payload }
+    this.helpdeskSequencias.set(key, event.sequence)
+    const lista = this.helpdeskEventos.get(key) ?? []
+    lista.push(event)
+    if (lista.length > LIMITE_EVENTOS_HELPDESK) lista.splice(0, lista.length - LIMITE_EVENTOS_HELPDESK)
+    this.helpdeskEventos.set(key, lista)
+    for (const client of this.helpdeskInscritos.get(key)?.keys() ?? []) {
+      this.enviarPara(client, { type: "event", event: { ...event, projectId: input.projectId, taskId: input.sessionId, source: "helpdesk", organizationId: undefined } })
+    }
+  }
+
+  setHelpDeskSnapshotProvider(provider: ((input: { sessionId: number; userId: number; projectId: number }) => Promise<HelpDeskRealtimeSnapshot | null> | HelpDeskRealtimeSnapshot | null) | null): void {
+    this.helpDeskSnapshotProvider = provider
+  }
+
+  obterHelpDeskSnapshot(input: { sessionId: number; userId: number; projectId: number }): Promise<HelpDeskRealtimeSnapshot | null> | HelpDeskRealtimeSnapshot | null {
+    return this.helpDeskSnapshotProvider?.(input) ?? null
   }
 
   inscreverFeed(projectId: number, client: WebSocket, lastSequence?: number): { currentSequence: number; replayAvailable: boolean } {
@@ -126,6 +172,10 @@ export class RealtimeService {
 
   private chave(projectId: number, taskId: number): string {
     return `${projectId}:${taskId}`
+  }
+
+  private helpDeskKey(projectId: number, userId: number, sessionId: number): string {
+    return `${projectId}:${userId}:${sessionId}`
   }
 
   private enviar(chave: string, message: RealtimeServerMessage): void {

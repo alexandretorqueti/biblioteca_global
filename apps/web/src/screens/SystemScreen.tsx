@@ -24,6 +24,7 @@ import {
 import { GeradorSistema } from "@biblioteca-global/ui"
 import { HelpDeskWidget } from "@biblioteca-global/ui"
 import { createHelpDeskClient } from "@biblioteca-global/api-client"
+import { resolveApiBaseUrl, resolveRealtimeUrl } from "../api/client"
 import { useAuth } from "../auth/AuthContext"
 import { useProject } from "../project/ProjectContext"
 import { useThemeSetting } from "../theme/ThemeContext"
@@ -92,6 +93,11 @@ export default function SystemScreen(): ReactNode {
     if (!projeto?.id) return null
     return createHelpDeskClient({
       http: bundle.http,
+      realtime: {
+        url: resolveRealtimeUrl(),
+        baseUrl: resolveApiBaseUrl(),
+        getAccessToken: bundle.getAccessToken,
+      },
     })
   }, [bundle.http, projeto?.id])
 

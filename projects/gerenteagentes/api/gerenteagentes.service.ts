@@ -920,6 +920,22 @@ export class GerenteAgentesService {
     };
   }
 
+  /** Resolve o prompt ativo do atendimento HelpDesk no catálogo persistido. */
+  async resolverPromptAtendimentoHelpDesk(): Promise<string | null> {
+    await this.sincronizarCatalogoPrompts();
+    const db = await this.dbDoMotor();
+    const [row] = await db
+      .select({ texto: promptsVersoes.texto })
+      .from(promptsAgentes)
+      .innerJoin(promptsVersoes, eq(promptsVersoes.id, promptsAgentes.versaoAtivaId))
+      .where(and(
+        eq(promptsAgentes.chave, 'biblioteca-global.helpdesk_atendimento'),
+        eq(promptsAgentes.status, 'active'),
+      ))
+      .limit(1);
+    return row?.texto?.trim() || null;
+  }
+
   async salvarRascunhoPrompt(id: number, texto: string, motivo: string | undefined, autor: string | undefined, contratoVersaoId?: number) {
     const db = await this.dbDoMotor();
     const [prompt] = await db.select().from(promptsAgentes).where(eq(promptsAgentes.id, id)).limit(1);
@@ -1060,11 +1076,13 @@ export class GerenteAgentesService {
       dependsOnTaskIds?: number[];
       autoStart?: boolean;
       ator?: string;
+      /** Banco operacional quando a chamada vem de um tenant externo (HelpDesk). */
+      databaseProjectId?: number;
     },
   ) {
     // O token seleciona o banco/tenant. A FK abaixo seleciona um projeto
     // administrado dentro desse tenant; os IDs pertencem a namespaces distintos.
-    const db = await this.dbDoProjeto(projeto);
+    const db = await this.factory.obter({ id: input.databaseProjectId ?? projeto.id });
     const managedProjectId = Number(input.managedProjectId);
     if (!Number.isSafeInteger(managedProjectId) || managedProjectId <= 0) {
       throw new BadRequestException(

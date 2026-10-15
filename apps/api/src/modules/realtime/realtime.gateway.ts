@@ -3,13 +3,14 @@ import { JwtService } from "@nestjs/jwt"
 import { WebSocketGateway, SubscribeMessage, MessageBody, ConnectedSocket } from "@nestjs/websockets"
 import type { IncomingMessage } from "node:http"
 import type { WebSocket } from "ws"
-import { realtimeClientMessageSchema, type RealtimeClientMessage, type AgentMapSnapshot } from "@biblioteca-global/shared"
+import { realtimeClientMessageSchema, type RealtimeClientMessage, type AgentMapSnapshot, type HelpDeskRealtimeSnapshot } from "@biblioteca-global/shared"
 import { AUTH_REPOSITORY, type AuthRepository } from "../auth/auth.repository"
 import { RealtimeService } from "./realtime.service"
 
-interface SocketSession { projetoId: number }
+interface SocketSession { projetoId: number; usuarioId: number }
 
 export type MapSnapshotProvider = (projectId: number) => Promise<AgentMapSnapshot> | AgentMapSnapshot
+export type HelpDeskSnapshotProvider = (input: { sessionId: number; userId: number; projectId: number }) => Promise<HelpDeskRealtimeSnapshot | null> | HelpDeskRealtimeSnapshot | null
 
 @Injectable()
 @WebSocketGateway({ path: "/api/realtime/ws" })
@@ -17,6 +18,7 @@ export class RealtimeGateway {
   private readonly logger = new Logger(RealtimeGateway.name)
   private readonly sessoes = new WeakMap<WebSocket, SocketSession>()
   private mapSnapshotProvider: MapSnapshotProvider | null = null
+  private helpDeskSnapshotProvider: HelpDeskSnapshotProvider | null = null
 
   constructor(
     @Inject(JwtService) private readonly jwt: JwtService,
@@ -26,6 +28,11 @@ export class RealtimeGateway {
 
   setMapSnapshotProvider(provider: MapSnapshotProvider | null): void {
     this.mapSnapshotProvider = provider
+  }
+
+  setHelpDeskSnapshotProvider(provider: HelpDeskSnapshotProvider | null): void {
+    this.helpDeskSnapshotProvider = provider
+    this.realtime.setHelpDeskSnapshotProvider(provider)
   }
 
   async handleConnection(client: WebSocket, request: IncomingMessage): Promise<void> {
@@ -44,7 +51,7 @@ export class RealtimeGateway {
       if (!kindOk) throw new Error("tipo de token incorreto")
       const scope = await this.authRepository.resolveScope(claims.sub as number, claims.projetoId as number)
       if (!scope) throw new Error("escopo inválido")
-      this.sessoes.set(client, { projetoId: claims.projetoId as number })
+      this.sessoes.set(client, { projetoId: claims.projetoId as number, usuarioId: claims.sub as number })
     } catch {
       this.logger.warn("Conexão realtime rejeitada")
       client.close(1008, "Não autorizado")
@@ -57,9 +64,7 @@ export class RealtimeGateway {
   }
 
   @SubscribeMessage("subscribe")
-  subscribe(@ConnectedSocket() client: WebSocket, @MessageBody() raw: unknown): void {
-    // TODO(security): validar a existência/permissão da tarefa no projeto
-    // antes de aceitar a inscrição (demanda registrada).
+  async subscribe(@ConnectedSocket() client: WebSocket, @MessageBody() raw: unknown): Promise<void> {
     const session = this.sessoes.get(client)
     const parsed = realtimeClientMessageSchema.safeParse(raw)
     if (!session || !parsed.success || parsed.data.type !== "subscribe") {
@@ -93,6 +98,21 @@ export class RealtimeGateway {
         client.send(JSON.stringify({ type: "replay_unavailable", taskId: message.taskId, currentSequence: result.currentSequence }))
       }
       client.send(JSON.stringify({ type: "subscribed", taskId: message.taskId, currentSequence: result.currentSequence }))
+      return
+    }
+    if (message.channel === "helpdesk") {
+      if (!message.sessaoId) {
+        client.send(JSON.stringify({ type: "error", code: "INVALID_SUBSCRIPTION", message: "Sessão HelpDesk inválida" }))
+        return
+      }
+      const snapshot = await this.realtime.obterHelpDeskSnapshot({ sessionId: message.sessaoId, userId: session.usuarioId, projectId: session.projetoId })
+      if (!snapshot || snapshot.usuarioId !== session.usuarioId || snapshot.projetoId !== session.projetoId || snapshot.sessaoId !== message.sessaoId) {
+        client.send(JSON.stringify({ type: "error", code: "FORBIDDEN_SUBSCRIPTION", message: "Sessão HelpDesk não pertence ao escopo autenticado" }))
+        return
+      }
+      const result = this.realtime.inscreverHelpDesk(session.projetoId, session.usuarioId, message.sessaoId, client, snapshot, message.lastSequence)
+      if (!result.replayAvailable) client.send(JSON.stringify({ type: "helpdesk_replay_unavailable", sessaoId: message.sessaoId, currentSequence: result.currentSequence }))
+      client.send(JSON.stringify({ type: "helpdesk_subscribed", sessaoId: message.sessaoId, currentSequence: result.currentSequence }))
       return
     }
     client.send(JSON.stringify({ type: "error", code: "INVALID_SUBSCRIPTION", message: "Canal inválido" }))

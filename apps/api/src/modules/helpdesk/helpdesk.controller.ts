@@ -55,8 +55,9 @@ export class HelpDeskController {
     }
 
     const usuarioId = req.authClaims?.sub ?? 0
-    if (!usuarioId) throw new BadRequestException("Usuário autenticado ausente")
-    return this.service.enviarMensagem({ sessaoId, text, usuarioId })
+    const projetoId = req.authClaims?.projetoId ?? 0
+    if (!usuarioId || !projetoId) throw new BadRequestException("Usuário e projeto autenticados são obrigatórios")
+    return this.service.enviarMensagem({ sessaoId, text, usuarioId, projetoId })
   }
 
   @Get(":sessaoId/history")
@@ -70,7 +71,9 @@ export class HelpDeskController {
     }
     const usuarioId = req.authClaims?.sub ?? 0
     if (!usuarioId) throw new BadRequestException("Usuário autenticado ausente")
-    return this.service.obterHistorico(sessaoId, usuarioId)
+    const projetoId = req.authClaims?.projetoId ?? 0
+    if (!projetoId) throw new BadRequestException("Projeto autenticado ausente")
+    return this.service.obterHistorico(sessaoId, usuarioId, projetoId)
   }
 
   @Get(":sessaoId/status")
@@ -80,9 +83,10 @@ export class HelpDeskController {
   ) {
     const sessaoId = Number(sessaoIdParam)
     const usuarioId = req.authClaims?.sub ?? 0
-    if (!Number.isInteger(sessaoId) || sessaoId <= 0 || !usuarioId) {
+    const projetoId = req.authClaims?.projetoId ?? 0
+    if (!Number.isInteger(sessaoId) || sessaoId <= 0 || !usuarioId || !projetoId) {
       throw new BadRequestException("sessaoId e usuário autenticado são obrigatórios")
     }
-    return this.service.consultarProcessamento({ sessaoId, usuarioId })
+    return this.service.consultarProcessamento({ sessaoId, usuarioId, projetoId })
   }
 }
