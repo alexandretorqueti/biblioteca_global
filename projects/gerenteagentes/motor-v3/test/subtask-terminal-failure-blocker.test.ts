@@ -173,4 +173,147 @@ describe('SubtaskTerminalFailureBlocker', () => {
     expect(typeof blocker.handle).toBe('function')
     await expect(blocker.handle(makeContext())).resolves.toBeUndefined()
   })
+
+  it('usa block_reason dedicado para SUBTASK_VERIFICATION_REQUESTED', async () => {
+    const { pool, queries } = mockPool()
+    const blocker = new SubtaskTerminalFailureBlocker(pool as never)
+
+    await blocker.blockForTerminalFailure(makeContext({ messageType: 'SUBTASK_VERIFICATION_REQUESTED' }))
+
+    const insertQuery = queries.find(q => /INSERT INTO bloqueios/i.test(q.sql))
+    expect(insertQuery).toBeDefined()
+    expect(insertQuery!.params).toContain('subtask_verification_failed')
+    expect(insertQuery!.params).not.toContain('subtask_terminal_failure')
+
+    // block_command e excerpt refletem o tipo real da mensagem
+    expect(insertQuery!.params[1]).toBe('motor-v3:terminal:SUBTASK_VERIFICATION_REQUESTED')
+    const excerpt = JSON.parse(insertQuery!.params[2] as string)
+    expect(excerpt.messageType).toBe('SUBTASK_VERIFICATION_REQUESTED')
+
+    const outboxQuery = queries.find(q => /INSERT INTO motor_outbox/i.test(q.sql))
+    expect(outboxQuery).toBeDefined()
+    expect(outboxQuery!.params[2]).toBe('motor.monitor')
+    const payload = JSON.parse(outboxQuery!.params[5] as string)
+    expect(payload.blockReason).toBe('subtask_verification_failed')
+  })
+
+  it('mantém block_reason de execução para SUBTASK_EXECUTION_REQUESTED', async () => {
+    const { pool, queries } = mockPool()
+    const blocker = new SubtaskTerminalFailureBlocker(pool as never)
+
+    await blocker.blockForTerminalFailure(makeContext({ messageType: 'SUBTASK_EXECUTION_REQUESTED' }))
+
+    const insertQuery = queries.find(q => /INSERT INTO bloqueios/i.test(q.sql))
+    expect(insertQuery!.params).toContain('subtask_terminal_failure')
+    expect(insertQuery!.params).not.toContain('subtask_verification_failed')
+  })
+
+  it('UPDATE de bloqueio cobre subtarefa em status verifying', async () => {
+    const { pool, queries } = mockPool()
+    const blocker = new SubtaskTerminalFailureBlocker(pool as never)
+
+    await blocker.blockForTerminalFailure(makeContext({ messageType: 'SUBTASK_VERIFICATION_REQUESTED' }))
+
+    const updateQuery = queries.find(q => /UPDATE subtarefas/i.test(q.sql))
+    expect(updateQuery).toBeDefined()
+    expect(updateQuery!.sql).toContain("'running'")
+    expect(updateQuery!.sql).toContain("'pending'")
+    expect(updateQuery!.sql).toContain("'verifying'")
+    expect(updateQuery!.sql).toContain("SET status='blocked'")
+  })
+
+  it('extrai diagnóstico estruturado de MigrationJournalIntegrityError no block_excerpt', async () => {
+    const { pool, queries } = mockPool()
+    const blocker = new SubtaskTerminalFailureBlocker(pool as never)
+
+    class FakeJournalError extends Error {
+      readonly problems = [
+        { project: 'gerenteagentes', migration: '0090_algo_novo.sql', expectedTag: '0090' },
+        { project: 'outro-projeto', migration: '0011_x.sql', expectedTag: '0011' },
+      ]
+      readonly inspections = [{ project: 'gerenteagentes', issue: 'journal_missing' }]
+      constructor() {
+        super('Migrations SQL adicionadas sem a tag correspondente no meta/_journal.json')
+        this.name = 'MigrationJournalIntegrityError'
+      }
+    }
+
+    await blocker.blockForTerminalFailure(makeContext({
+      messageType: 'SUBTASK_VERIFICATION_REQUESTED',
+      error: new FakeJournalError(),
+    }))
+
+    const insertQuery = queries.find(q => /INSERT INTO bloqueios/i.test(q.sql))
+    const excerpt = JSON.parse(insertQuery!.params[2] as string)
+    expect(excerpt.errorName).toBe('MigrationJournalIntegrityError')
+    expect(excerpt.migrationDiagnostics).toBeDefined()
+    expect(excerpt.migrationDiagnostics.errorType).toBe('MigrationJournalIntegrityError')
+    expect(excerpt.migrationDiagnostics.journalIssue).toBe('journal_missing')
+    expect(excerpt.migrationDiagnostics.orphanedMigrations).toEqual([
+      { project: 'gerenteagentes', migration: '0090_algo_novo.sql', expectedTag: '0090' },
+      { project: 'outro-projeto', migration: '0011_x.sql', expectedTag: '0011' },
+    ])
+  })
+
+  it('extrai violações de monotonicidade do journal', async () => {
+    const { pool, queries } = mockPool()
+    const blocker = new SubtaskTerminalFailureBlocker(pool as never)
+
+    class FakeMonotonicityError extends Error {
+      readonly violations = [{
+        project: 'gerenteagentes', entryTag: '0086', entryIndex: 86,
+        currentWhen: 1000, previousWhen: 1000, previousTag: '0085',
+      }]
+      constructor() {
+        super('Journal de migrations com valores "when" não monotônicos')
+        this.name = 'MigrationJournalMonotonicityError'
+      }
+    }
+
+    await blocker.blockForTerminalFailure(makeContext({
+      messageType: 'SUBTASK_VERIFICATION_REQUESTED',
+      error: new FakeMonotonicityError(),
+    }))
+
+    const insertQuery = queries.find(q => /INSERT INTO bloqueios/i.test(q.sql))
+    const excerpt = JSON.parse(insertQuery!.params[2] as string)
+    expect(excerpt.errorName).toBe('MigrationJournalMonotonicityError')
+    expect(excerpt.migrationDiagnostics.monotonicityViolations[0].entryTag).toBe('0086')
+    expect(excerpt.migrationDiagnostics.monotonicityViolations[0].previousTag).toBe('0085')
+  })
+
+  it('não inclui migrationDiagnostics para erros comuns', async () => {
+    const { pool, queries } = mockPool()
+    const blocker = new SubtaskTerminalFailureBlocker(pool as never)
+
+    await blocker.blockForTerminalFailure(makeContext({
+      messageType: 'SUBTASK_VERIFICATION_REQUESTED',
+      error: new Error('HTTP 504: Gateway Timeout'),
+    }))
+
+    const insertQuery = queries.find(q => /INSERT INTO bloqueios/i.test(q.sql))
+    const excerpt = JSON.parse(insertQuery!.params[2] as string)
+    expect(excerpt.errorName).toBe('Error')
+    expect(excerpt.migrationDiagnostics).toBeUndefined()
+  })
+
+  it('redelivery com bloqueio ativo do mesmo motivo não duplica nem reabre (NOT EXISTS + UPDATE condicional)', async () => {
+    const { pool, connection, queries } = mockPool()
+    // Simula NOT EXISTS ativo: INSERT não inseriu (bloqueio já existe com resolved_at IS NULL)
+    connection.query.mockImplementation((sql: string) => {
+      if (/INSERT INTO bloqueios/i.test(sql)) return [{ affectedRows: 0 }]
+      return [{}]
+    })
+    const blocker = new SubtaskTerminalFailureBlocker(pool as never)
+
+    await blocker.blockForTerminalFailure(makeContext({ messageType: 'SUBTASK_VERIFICATION_REQUESTED' }))
+
+    // Commit sem UPDATE nem outbox: subtarefa já blocked não é reaberta,
+    // bloqueio 'subtask_verification_failed' não é duplicado.
+    expect(connection.commit).toHaveBeenCalled()
+    expect(queries.find(q => /UPDATE subtarefas/i.test(q.sql))).toBeUndefined()
+    expect(queries.find(q => /INSERT INTO motor_outbox/i.test(q.sql))).toBeUndefined()
+
+    // O NOT EXISTS do INSERT usa block_reason + subtarefa ativa (resolved_at IS NULL)
+  })
 })

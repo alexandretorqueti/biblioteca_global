@@ -33,6 +33,7 @@ import { QueueConsumer } from './queue/QueueConsumer.js'
 import { RabbitMqTransport, normalizeRabbitMqPrefetch } from './queue/RabbitMqTransport.js'
 import { MotorActivityGate, OutboxPublisher, TerminalFailureRouter, createQueueMessage } from './queue/index.js'
 import { SUBTASK_EXECUTION_REQUESTED } from './execution/SubtaskExecutionConsumer.js'
+import { SUBTASK_VERIFICATION_REQUESTED } from './execution/SubtaskVerificationConsumer.js'
 import type { QueueMessage } from './queue/QueueMessage.js'
 import { TaskCoordinator, MySqlTaskCoordinatorRepository, AnalysisClaimReconciler, AnalysisSessionRecoveryReconciler, TaskCancelConsumer, MySqlTaskEventRecorder, MySqlAnalysisFailureBlocker, SanitizeSessionService, RealtimeMutationPublisher, RealtimeOutboxDispatcher } from './coordinator/index.js'
 import { ConsoleAnalystRunner } from './analysis/ConsoleAnalystRunner.js'
@@ -657,8 +658,15 @@ async function start() {
       operationLogger,
     )
     const subtaskTerminalBlocker = new SubtaskTerminalFailureBlocker(pool)
+    // Execução usa 'subtask_terminal_failure'; verificação usa
+    // 'subtask_verification_failed' (reason escolhido pelo blocker pelo tipo
+    // da mensagem). Sem isso, falha terminal de verificação ia à DLQ deixando
+    // a subtarefa em 'verifying' sem heartbeat nem bloqueio (incidente 1017).
     const terminalFailureRouter = new TerminalFailureRouter(
-      { [SUBTASK_EXECUTION_REQUESTED]: subtaskTerminalBlocker.handle },
+      {
+        [SUBTASK_EXECUTION_REQUESTED]: subtaskTerminalBlocker.handle,
+        [SUBTASK_VERIFICATION_REQUESTED]: subtaskTerminalBlocker.handle,
+      },
     )
     queueConsumer = new QueueConsumer(transport, async message => {
       await coordinator.handle(message)

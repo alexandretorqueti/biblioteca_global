@@ -6,7 +6,7 @@ import type { GitVerificationIntegrator } from './GitVerificationIntegrator.js'
 import type { TaskEventSink } from '../coordinator/TaskEventRecorder.js'
 
 const EXECUTION_COMPLETED = 'SUBTASK_EXECUTION_COMPLETED'
-const VERIFICATION_REQUESTED = 'SUBTASK_VERIFICATION_REQUESTED'
+export const SUBTASK_VERIFICATION_REQUESTED = 'SUBTASK_VERIFICATION_REQUESTED'
 
 export class SubtaskVerificationConsumer {
   constructor(
@@ -18,7 +18,7 @@ export class SubtaskVerificationConsumer {
 
   async handle(message: QueueMessage): Promise<void> {
     if (message.type === EXECUTION_COMPLETED) return this.requestVerification(message)
-    if (message.type === VERIFICATION_REQUESTED) return this.verify(message)
+    if (message.type === SUBTASK_VERIFICATION_REQUESTED) return this.verify(message)
   }
 
   private async requestVerification(message: QueueMessage): Promise<void> {

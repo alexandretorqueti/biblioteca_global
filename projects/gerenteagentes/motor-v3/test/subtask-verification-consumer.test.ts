@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { SubtaskVerificationConsumer } from '../src/execution/SubtaskVerificationConsumer.js'
+import { SubtaskVerificationConsumer, SUBTASK_VERIFICATION_REQUESTED } from '../src/execution/SubtaskVerificationConsumer.js'
 import type { QueueMessage } from '../src/queue/QueueMessage.js'
 
 const base: QueueMessage = {
@@ -47,6 +47,35 @@ describe('SubtaskVerificationConsumer', () => {
     expect(logger.append).toHaveBeenLastCalledWith(expect.objectContaining({
       phase: 'completed', result: expect.objectContaining({ nextMessageType: 'TASK_EXECUTION_COMPLETED' }),
     }))
+  })
+
+  it('propaga falha do gate de verificação para o retry/terminal da fila (MigrationJournalIntegrityError)', async () => {
+    // O consumidor NUNCA engole o erro: é a propagação que faz o QueueConsumer
+    // contar tentativas e, esgotado o maxAttempts, rotear a falha terminal ao
+    // SubtaskTerminalFailureBlocker (bloqueio + 'verifying' → 'blocked').
+    const message = { ...base, messageId: 'verify-err-1', type: SUBTASK_VERIFICATION_REQUESTED }
+    const journalError = new Error('Migrations SQL adicionadas sem a tag correspondente no meta/_journal.json')
+    journalError.name = 'MigrationJournalIntegrityError'
+    const repository = {
+      getExecutionContext: vi.fn().mockResolvedValue(context),
+      assertDifferentialGate: vi.fn().mockRejectedValue(journalError),
+    }
+    const integrator = { verifyAndIntegrate: vi.fn() }
+    const logger = { append: vi.fn().mockResolvedValue(undefined) }
+    const consumer = new SubtaskVerificationConsumer(repository as never, integrator as never, logger)
+
+    await expect(consumer.handle(message)).rejects.toThrow(journalError)
+    expect(repository.assertDifferentialGate).toHaveBeenCalledWith(context)
+    expect(integrator.verifyAndIntegrate).not.toHaveBeenCalled()
+    expect(logger.append).toHaveBeenLastCalledWith(expect.objectContaining({
+      phase: 'failed', outcome: 'failed', reasonCode: 'verification_or_integration_failed',
+      result: { error: journalError.message },
+    }))
+  })
+
+  it('exporta o tipo roteável ao TerminalFailureRouter', () => {
+    // start.ts usa esta constante no wiring do router de falha terminal.
+    expect(SUBTASK_VERIFICATION_REQUESTED).toBe('SUBTASK_VERIFICATION_REQUESTED')
   })
 })
 // @vitest-environment node
