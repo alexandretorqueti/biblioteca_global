@@ -738,7 +738,11 @@ export default function OperationMapScreen() {
       const options = Array.isArray(result) ? result : (result.items ?? [])
       const query = search.trim().toLocaleLowerCase()
       return options.filter(task => task.id !== selected.id && !["completed", "cancelled", "closed"].includes(task.status) && (!query || `${task.titulo} ${task.id}`.toLocaleLowerCase().includes(query)))
-    } catch { return [] }
+    } catch (error) {
+      throw error instanceof Error
+        ? error
+        : new Error("Não foi possível carregar as tarefas do projeto.")
+    }
   }, [bundle, selected])
   const editFields: DynamicField[] = useMemo(() => [{ name: "titulo", label: "Título", type: "text", required: true, maxLength: 200, fullWidth: true }, { name: "descricao", label: "Descrição", type: "textarea", fullWidth: true }, { name: "tipo", label: "Tipo de tarefa", type: "select", options: [{ value: "desenvolvimento", label: "Desenvolvimento" }, { value: "automacao", label: "Automação" }, { value: "verificacao", label: "Verificação" }] }, { name: "dependsOnTaskIds", label: "Depende das tarefas", type: "multipleChoice", multipleChoice: { resource: "tarefas", idField: "id", displayField: "titulo", multiple: true, loadOptions: loadTaskDependencyOptions } }], [loadTaskDependencyOptions])
   const editTask = async (values: DynamicFormValues) => {

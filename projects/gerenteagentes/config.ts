@@ -205,7 +205,8 @@ export const config: GeradorSistemaConfig = {
                     name: "dependsOnTaskIds",
                     label: "Depende das tarefas",
                     type: "multipleChoice",
-                    multipleChoice: { resource: "tarefas", idField: "id", displayField: "titulo" },
+                    // Fonte única neste projeto: não existe config.json para sincronizar.
+                    multipleChoice: { resource: "tarefas", idField: "id", displayField: "titulo", multiple: true },
                     gridVisible: false,
                   },
                   // Agente e ambiente de execução (repoPath/buildCommand/unitTestCommand)

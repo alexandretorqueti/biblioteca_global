@@ -139,6 +139,27 @@ describe("OperationMapScreen — cancelar e excluir tarefa", () => {
     expect(screen.getByTestId("btn-delete")).toBeEnabled()
   })
 
+  it("exibe erro quando as opções de dependência falham", async () => {
+    let statusCalls = 0
+    globalThis.__bundleMapa = {
+      ...bundleFalso([tarefaFactory(7, "Tarefa do mapa", "paused")], []),
+      http: {
+        request: async (method: string, path: string, config?: { body?: unknown }) => {
+          if (path === "/gerenteagentes/tarefas-com-status") {
+            statusCalls += 1
+            if (statusCalls > 1) throw new Error("Falha ao consultar dependências")
+          }
+          return bundleFalso([tarefaFactory(7, "Tarefa do mapa", "paused")], []).http.request(method, path, config)
+        },
+      },
+    }
+    renderScreen()
+    await abrirDetalhe(7)
+    await userEvent.click(screen.getByText("Editar"))
+
+    expect(await screen.findByText("Falha ao consultar dependências")).toBeInTheDocument()
+  })
+
   it("Cancelar chama POST /cancel com o motivo informado", async () => {
     const chamadas: string[] = []
     globalThis.__bundleMapa = bundleFalso(

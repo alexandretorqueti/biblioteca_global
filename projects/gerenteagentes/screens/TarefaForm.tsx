@@ -14,7 +14,9 @@ export interface TarefaFormValues {
   tipo: "desenvolvimento" | "automacao" | "verificacao"
   dependsOnTaskIds: number[]
 }
-export interface TarefaFormTask { id: number; titulo: string; projetoId: number }
+export interface TarefaFormTask { id: number; titulo: string; projetoId: number; status?: string }
+
+const STATUS_FINAIS = new Set(["completed", "cancelled", "closed"])
 
 export const TIPO_TAREFA_OPTIONS = [
   { value: "desenvolvimento", label: "Desenvolvimento" },
@@ -27,6 +29,7 @@ interface TarefaFormProps {
   loading?: boolean
   error?: string | null
   success?: string | null
+  dependencyError?: string | null
   submitLabel?: string
   onSubmit: (values: TarefaFormValues) => void | boolean | Promise<void | boolean>
   tarefas?: TarefaFormTask[]
@@ -38,6 +41,7 @@ export default function TarefaForm({
   loading = false,
   error = null,
   success = null,
+  dependencyError = null,
   submitLabel = "Criar Tarefa",
   onSubmit,
   tarefas = [],
@@ -92,8 +96,8 @@ export default function TarefaForm({
         label="Título" value={titulo} onChange={(e) => setTitulo(e.target.value)} required fullWidth
         error={!titulo.trim() && titulo.length > 0} inputProps={{ "data-testid": "input-titulo" }}
       />
-      <TextField select SelectProps={{ multiple: true }} label="Depende das tarefas" value={dependsOnTaskIds.map(String)} onChange={(e) => setDependsOnTaskIds((e.target.value as unknown as string[]).map(Number).filter((id) => Number.isSafeInteger(id)))} fullWidth helperText="Todas as dependências precisam estar no mesmo projeto.">
-        {tarefas.filter((tarefa) => String(tarefa.projetoId) === projetoId).map((tarefa) => <MenuItem key={tarefa.id} value={String(tarefa.id)}>{tarefa.titulo} (#{tarefa.id})</MenuItem>)}
+      <TextField select SelectProps={{ multiple: true }} label="Depende das tarefas" value={dependsOnTaskIds.map(String)} onChange={(e) => setDependsOnTaskIds((e.target.value as unknown as string[]).map(Number).filter((id) => Number.isSafeInteger(id)))} fullWidth error={Boolean(dependencyError)} helperText={dependencyError || "Todas as dependências precisam estar no mesmo projeto."}>
+        {tarefas.filter((tarefa) => String(tarefa.projetoId) === projetoId && !STATUS_FINAIS.has(tarefa.status ?? "")).map((tarefa) => <MenuItem key={tarefa.id} value={String(tarefa.id)}>{tarefa.titulo} (#{tarefa.id})</MenuItem>)}
       </TextField>
       <TextField
         label="Descrição" value={descricao} onChange={(e) => setDescricao(e.target.value)}
