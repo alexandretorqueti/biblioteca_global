@@ -645,6 +645,13 @@
       "when": 1792100000001,
       "tag": "0091_motor_capacity_wait_fact",
       "breakpoints": true
+    },
+    {
+      "idx": 92,
+      "version": "5",
+      "when": 1792330800000,
+      "tag": "0092_motor_development_recovery_no_progress",
+      "breakpoints": true
     }
   ]
 }

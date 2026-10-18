@@ -36,24 +36,27 @@ export default function NovaTarefaScreen(): ReactNode {
   const [enviando, setEnviando] = useState(false)
   const [sucesso, setSucesso] = useState(false)
   const [erro, setErro] = useState<string | null>(null)
+  const [erroDependencias, setErroDependencias] = useState<string | null>(null)
   const [tarefas, setTarefas] = useState<TarefaFormTask[]>([])
 
   const carregarOpcoes = useCallback(async () => {
     const token = obterAccessToken()
     const headers: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {}
+    setErroDependencias(null)
     try {
       const projsRes = await fetch("/api/gerenteagentes/projetos_captados", { headers })
-      if (projsRes.ok) {
-        const data = await projsRes.json()
-        setProjetos((data.items ?? data).filter((p: Projeto & { ativo?: boolean }) => p.ativo !== false))
-        const listas = await Promise.all((data.items ?? data).map(async (p: Projeto) => {
-          const resposta = await fetch(`/api/gerenteagentes/tarefas-com-status?projetoId=${p.id}`, { headers })
-          return resposta.ok ? resposta.json() : []
-        }))
-        setTarefas(listas.flat().map((t: TarefaFormTask) => ({ id: Number(t.id), titulo: t.titulo, projetoId: Number(t.projetoId) })))
-      }
-    } catch {
-      // silencioso — combos ficam vazios
+      if (!projsRes.ok) throw new Error(`Não foi possível carregar os projetos (HTTP ${projsRes.status}).`)
+      const data = await projsRes.json()
+      const projetosAtivos = (data.items ?? data).filter((p: Projeto & { ativo?: boolean }) => p.ativo !== false)
+      setProjetos(projetosAtivos)
+      const listas = await Promise.all(projetosAtivos.map(async (p: Projeto) => {
+        const resposta = await fetch(`/api/gerenteagentes/tarefas-com-status?projetoId=${p.id}`, { headers })
+        if (!resposta.ok) throw new Error(`Não foi possível carregar as tarefas do projeto ${p.nome} (HTTP ${resposta.status}).`)
+        return resposta.json()
+      }))
+      setTarefas(listas.flat().map((t: TarefaFormTask) => ({ id: Number(t.id), titulo: t.titulo, projetoId: Number(t.projetoId), status: t.status })))
+    } catch (e) {
+      setErroDependencias(e instanceof Error ? `Não foi possível carregar as opções de dependência: ${e.message}` : "Não foi possível carregar as opções de dependência.")
     }
   }, [])
 
@@ -110,7 +113,7 @@ export default function NovaTarefaScreen(): ReactNode {
 
       <Paper variant="outlined" sx={{ p: 3 }}>
         <Stack spacing={2}>
-        <TarefaForm projetos={projetos} tarefas={tarefas} loading={enviando} error={erro} success={sucesso ? "Tarefa criada com sucesso!" : null} onSubmit={enviar} />
+        <TarefaForm projetos={projetos} tarefas={tarefas} loading={enviando} error={erro} dependencyError={erroDependencias} success={sucesso ? "Tarefa criada com sucesso!" : null} onSubmit={enviar} />
         </Stack>
       </Paper>
     </Stack>
