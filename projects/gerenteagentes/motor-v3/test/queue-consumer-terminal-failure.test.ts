@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import { QueueConsumer } from '../src/queue/QueueConsumer.js'
+import { TerminalFailureRouter } from '../src/queue/TerminalFailureHandler.js'
+import { SubtaskTerminalFailureBlocker } from '../src/execution/SubtaskTerminalFailureBlocker.js'
+import { SUBTASK_EXECUTION_REQUESTED } from '../src/execution/SubtaskExecutionConsumer.js'
+import { SUBTASK_VERIFICATION_REQUESTED } from '../src/execution/SubtaskVerificationConsumer.js'
 import type { QueueMessage, QueueDelivery } from '../src/queue/QueueMessage.js'
 import type { TerminalFailureHandler } from '../src/queue/TerminalFailureHandler.js'
 
@@ -200,5 +204,93 @@ describe('QueueConsumer — TerminalFailureHandler integration', () => {
       reason: 'max-attempts-exceeded',
     }))
     expect(transport.deadLetter).toHaveBeenCalledWith(delivery, 'max-attempts-exceeded')
+  })
+
+  it('rotea SUBTASK_VERIFICATION_REQUESTED ao bloqueador terminal antes da DLQ (paridade com execução)', async () => {
+    const transport = mockTransport()
+    const pool = mockPool()
+    const blockerPoolQueries: string[] = []
+    const blockerConnection = {
+      beginTransaction: vi.fn().mockResolvedValue(undefined),
+      commit: vi.fn().mockResolvedValue(undefined),
+      rollback: vi.fn().mockResolvedValue(undefined),
+      release: vi.fn(),
+      query: vi.fn().mockImplementation((sql: string) => {
+        blockerPoolQueries.push(sql)
+        if (/INSERT INTO bloqueios/i.test(sql)) return [{ affectedRows: 1 }]
+        if (/UPDATE subtarefas/i.test(sql)) return [{ affectedRows: 1 }]
+        if (/SELECT b\.id, b\.tarefa_id/i.test(sql)) return [[{ id: 7, tarefa_id: 1017 }]]
+        return [{ affectedRows: 1 }]
+      }),
+    }
+    const blocker = new SubtaskTerminalFailureBlocker({
+      getConnection: vi.fn().mockResolvedValue(blockerConnection),
+    } as never)
+    // Wiring idêntico ao start.ts: router com os dois tipos de mensagem.
+    const router = new TerminalFailureRouter({
+      [SUBTASK_EXECUTION_REQUESTED]: blocker.handle,
+      [SUBTASK_VERIFICATION_REQUESTED]: blocker.handle,
+    })
+
+    pool.execute.mockResolvedValue([{ affectedRows: 1 }])
+    pool.query.mockResolvedValue([[]])
+
+    const consumer = new QueueConsumer(
+      transport,
+      async () => { throw new Error('MigrationJournalIntegrityError: migrations sem tag no journal') },
+      { queue: 'motor.commands', maxAttempts: 3 },
+      pool,
+      undefined,
+      undefined,
+      router,
+    )
+
+    const message = makeMessage({
+      messageId: 'msg-verify-1',
+      type: SUBTASK_VERIFICATION_REQUESTED,
+      attempt: 3,
+    })
+    const delivery = makeDelivery(message, 3)
+
+    await consumer.start()
+    const cb = transport.consume.mock.calls[0][1]
+    await cb(delivery)
+
+    // Bloqueio persistido antes da DLQ, com reason dedicado à verificação
+    const insert = blockerPoolQueries.find(sql => /INSERT INTO bloqueios/i.test(sql))
+    expect(insert).toBeDefined()
+    // Subtarefa transiciona de 'verifying' para 'blocked' na mesma transação
+    const update = blockerPoolQueries.find(sql => /UPDATE subtarefas/i.test(sql))
+    expect(update).toContain("'verifying'")
+    // TASK_BLOCKED publicado no outbox motor.monitor
+    const outbox = blockerPoolQueries.find(sql => /INSERT INTO motor_outbox/i.test(sql))
+    expect(outbox).toBeDefined()
+    expect(blockerConnection.commit).toHaveBeenCalled()
+    // DLQ ainda acontece após o bloqueio
+    expect(transport.deadLetter).toHaveBeenCalledWith(delivery, 'max-attempts-exceeded')
+  })
+
+  it('TerminalFailureRouter não invoca handler para tipo não roteado', async () => {
+    const handler = vi.fn().mockResolvedValue(undefined)
+    const router = new TerminalFailureRouter({
+      [SUBTASK_EXECUTION_REQUESTED]: handler,
+      [SUBTASK_VERIFICATION_REQUESTED]: handler,
+    })
+
+    await router.handle({
+      message: makeMessage({ type: 'DEPLOY_REQUESTED' }),
+      attempt: 3,
+      reason: 'max-attempts-exceeded',
+      error: new Error('boom'),
+    })
+    expect(handler).not.toHaveBeenCalled()
+
+    await router.handle({
+      message: makeMessage({ type: SUBTASK_VERIFICATION_REQUESTED }),
+      attempt: 3,
+      reason: 'max-attempts-exceeded',
+      error: new Error('boom'),
+    })
+    expect(handler).toHaveBeenCalledOnce()
   })
 })

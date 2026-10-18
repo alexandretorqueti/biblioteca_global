@@ -2,20 +2,27 @@ import type { Pool, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
 import type { TerminalFailureContext, TerminalFailureMessageHandler } from '../queue/TerminalFailureHandler.js'
 import { insertOutboxMessage } from '../queue/outboxInsert.js'
 import { createTaskBlockedMessage } from '../monitor/index.js'
+import { SUBTASK_VERIFICATION_REQUESTED } from './SubtaskVerificationConsumer.js'
 
 /**
  * Persiste bloqueio idempotente quando uma subtarefa atinge falha terminal
  * na fila (ex.: HTTP 504 do Console, timeout do worker, erro de preparação
- * recorrente).
+ * recorrente, falha definitiva de verificação como
+ * `MigrationJournalIntegrityError`).
  *
  * Padrão derivado do `MySqlAnalysisFailureBlocker`:
  * - INSERT em `bloqueios` com NOT EXISTS para evitar duplicatas
  * - UPDATE da subtarefa para `blocked` na mesma transação
+ *   (cobre `running`/`pending` no fluxo de execução e `verifying` no fluxo
+ *   de verificação)
  * - Emissão de `TASK_BLOCKED` via outbox para o Monitor-Resolvedor
- * - Diagnóstico acionável em `block_excerpt` (origem, executionId, tentativa, erro)
+ * - Diagnóstico acionável em `block_excerpt` (origem, executionId, tentativa,
+ *   erro; para falhas do gate de migrations, inclui a lista de migrations
+ *   órfãs/tags esperadas e violações de monotonicidade do journal)
  *
  * Idempotência: redelivery da mesma mensagem não cria bloqueio duplicado
- * (NOT EXISTS em `bloqueios` por `block_reason` + `subtarefa_id`).
+ * (NOT EXISTS em `bloqueios` por `block_reason` + `subtarefa_id` ativa),
+ * respeitando o mesmo `block_reason` dedicado ao fluxo da mensagem.
  */
 export class SubtaskTerminalFailureBlocker {
   constructor(private readonly pool: Pool) {}
@@ -39,14 +46,23 @@ export class SubtaskTerminalFailureBlocker {
     }
 
     const errorMessage = error instanceof Error ? error.message : String(error)
-    const blockReason = 'subtask_terminal_failure'
+    const errorName = error instanceof Error && error.name ? error.name : 'Error'
+    // Motivo dedicado por fluxo: verificação usa 'subtask_verification_failed'
+    // e não colide com bloqueios de execução; os demais tipos (ex.:
+    // SUBTASK_EXECUTION_REQUESTED) mantêm 'subtask_terminal_failure'.
+    const blockReason = message.type === SUBTASK_VERIFICATION_REQUESTED
+      ? 'subtask_verification_failed'
+      : 'subtask_terminal_failure'
     const blockCommand = `motor-v3:terminal:${message.type}`
+    const migrationDiagnostics = extractMigrationDiagnostics(error)
     const blockExcerpt = JSON.stringify({
       messageType: message.type,
       executionId: message.executionId,
       attempt,
       reason: reason.slice(0, 500),
-      error: errorMessage.slice(0, 1800),
+      error: errorMessage.slice(0, 1400),
+      errorName,
+      ...(migrationDiagnostics ? { migrationDiagnostics } : {}),
       messageId: message.messageId,
     })
 
@@ -77,10 +93,14 @@ export class SubtaskTerminalFailureBlocker {
         return
       }
 
-      // 2. Atualizar status da subtarefa para 'blocked' (se ainda running)
+      // 2. Atualizar status da subtarefa para 'blocked' (se ainda ativa:
+      //    running/pending no fluxo de execução; verifying no fluxo de
+      //    verificação — falha terminal da verificação não pode deixar
+      //    trabalho em 'verifying' sem heartbeat). Subtarefas já finalizadas
+      //    ou blocked não são reabertas.
       await connection.query(
         `UPDATE subtarefas SET status='blocked', resultado=?, updated_at=NOW()
-          WHERE id=? AND status IN ('running','pending')`,
+          WHERE id=? AND status IN ('running','pending','verifying')`,
         [errorMessage.slice(0, 60_000), subtaskId],
       )
 
@@ -118,4 +138,75 @@ export class SubtaskTerminalFailureBlocker {
       connection.release()
     }
   }
+}
+
+interface MigrationProblemDiag {
+  project: string
+  migration: string
+  expectedTag: string
+}
+
+interface MonotonicityViolationDiag {
+  project: string
+  entryTag: string
+  entryIndex: number
+  currentWhen: number
+  previousWhen: number
+  previousTag: string
+}
+
+interface MigrationDiagnostics {
+  errorType: string
+  journalIssue?: string | null
+  orphanedMigrations?: MigrationProblemDiag[]
+  monotonicityViolations?: MonotonicityViolationDiag[]
+  violations?: Array<{ project: string; migration: string; orphanedStatementLine: number; kind: string }>
+}
+
+/**
+ * Estrutura os problemas do gate de migrations (erros de
+ * `MigrationJournalIntegrity.ts`) no `block_excerpt`, para que o
+ * Monitor-Resolvedor tenha a lista de migrations/journal problemática sem
+ * depender de parser do texto livre da mensagem.
+ *
+ * Detecção duck-typed: evita import circular (o módulo de migrations puxa
+ * fs/child_process) e cobre os três erros do gate diferencial.
+ */
+function extractMigrationDiagnostics(error: unknown): MigrationDiagnostics | null {
+  if (!(error instanceof Error)) return null
+  const err = error as unknown as Record<string, unknown>
+  const name = error.name
+
+  if (name === 'MigrationJournalIntegrityError' && Array.isArray(err.problems)) {
+    const problems = err.problems as MigrationProblemDiag[]
+    const inspections = Array.isArray(err.inspections) ? (err.inspections as Array<{ issue?: unknown }>) : []
+    return {
+      errorType: name,
+      journalIssue: inspections.find(i => typeof i?.issue === 'string')?.issue as string ?? null,
+      orphanedMigrations: problems.slice(0, 50).map(p => ({
+        project: String(p.project), migration: String(p.migration), expectedTag: String(p.expectedTag),
+      })),
+    }
+  }
+  if (name === 'MigrationJournalMonotonicityError' && Array.isArray(err.violations)) {
+    const violations = err.violations as MonotonicityViolationDiag[]
+    return {
+      errorType: name,
+      monotonicityViolations: violations.slice(0, 50).map(v => ({
+        project: String(v.project), entryTag: String(v.entryTag), entryIndex: Number(v.entryIndex),
+        currentWhen: Number(v.currentWhen), previousWhen: Number(v.previousWhen), previousTag: String(v.previousTag),
+      })),
+    }
+  }
+  if (name === 'MigrationStatementBreakpointError' && Array.isArray(err.violations)) {
+    const violations = err.violations as Array<Record<string, unknown>>
+    return {
+      errorType: name,
+      violations: violations.slice(0, 50).map(v => ({
+        project: String(v.project), migration: String(v.migration),
+        orphanedStatementLine: Number(v.orphanedStatementLine), kind: String(v.kind),
+      })),
+    }
+  }
+  return null
 }

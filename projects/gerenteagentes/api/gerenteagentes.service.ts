@@ -1239,6 +1239,32 @@ export class GerenteAgentesService {
       .from(tarefas)
       .where(onde)
       .orderBy(desc(tarefas.createdAt));
+
+    // A lista do mapa precisa expor o mesmo contrato de dependências do CRUD:
+    // vínculos novos em tarefaDependencias unidos ao campo legado singular.
+    const idsTarefas = tarefasLista.map((tarefa) => Number(tarefa.id));
+    const ligacoes = idsTarefas.length === 0
+      ? []
+      : await db
+        .select({ tarefaId: tarefaDependencias.tarefaId, dependeDeTarefaId: tarefaDependencias.dependeDeTarefaId })
+        .from(tarefaDependencias)
+        .where(inArray(tarefaDependencias.tarefaId, idsTarefas));
+    const dependenciasPorTarefa = new Map<number, number[]>();
+    for (const ligacao of ligacoes) {
+      const tarefaId = Number(ligacao.tarefaId);
+      dependenciasPorTarefa.set(tarefaId, [
+        ...(dependenciasPorTarefa.get(tarefaId) ?? []),
+        Number(ligacao.dependeDeTarefaId),
+      ]);
+    }
+    const anexarDependencias = (tarefa: typeof tarefasLista[number]) => {
+      const legado = tarefa.dependsOnTaskId == null ? [] : [Number(tarefa.dependsOnTaskId)];
+      const dependsOnTaskIds = [...new Set([
+        ...(dependenciasPorTarefa.get(Number(tarefa.id)) ?? []),
+        ...legado,
+      ])];
+      return { ...tarefa, dependsOnTaskIds, dependsOnTaskId: dependsOnTaskIds[0] ?? null };
+    };
     
     // Para cada tarefa, busca o status calculado pelo motor
     const tarefasComStatus = await Promise.all(
@@ -1255,7 +1281,7 @@ export class GerenteAgentesService {
           if (resp.ok) {
             const motorTask = JSON.parse(resp.body) as { status?: string; subtasks?: unknown[]; recoveryEligibility?: unknown; capacityWait?: unknown };
             return {
-              ...tarefa,
+              ...anexarDependencias(tarefa),
               status: motorTask.status || 'planned',
               subtaskCount: Array.isArray(motorTask.subtasks) ? motorTask.subtasks.length : 0,
               ...(motorTask.recoveryEligibility !== undefined ? { recoveryEligibility: motorTask.recoveryEligibility } : {}),
@@ -1265,7 +1291,7 @@ export class GerenteAgentesService {
         } catch {
           // Se falhar, usa status padrão (fallback)
         }
-        return { ...tarefa, status: 'planned', subtaskCount: 0, recoveryEligibility: null, capacityWait: null };
+        return { ...anexarDependencias(tarefa), status: 'planned', subtaskCount: 0, recoveryEligibility: null, capacityWait: null };
       }),
     );
     
