@@ -66,12 +66,12 @@ export class RealtimeOutboxDispatcher {
                 o.previous_status, o.status, o.payload, o.per_task_seq, o.attempts, o.created_at
            FROM realtime_event_outbox o
           WHERE o.delivery_status IN ('pending', 'failed')
-            AND NOT EXISTS (
+            AND (o.task_id = 0 OR NOT EXISTS (
               SELECT 1 FROM realtime_event_outbox earlier
                WHERE earlier.task_id = o.task_id
                  AND earlier.per_task_seq < o.per_task_seq
                  AND earlier.delivery_status <> 'published'
-            )
+            ))
           ORDER BY o.task_id ASC, o.per_task_seq ASC
           LIMIT 100`,
       )

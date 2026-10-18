@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { InMemoryQueueTransport, OutboxPublisher, createQueueMessage } from '../src/queue/index.js'
+import { RealtimeOutboxDispatcher } from '../src/realtime/RealtimeOutboxDispatcher.js'
 
 describe('OutboxPublisher', () => {
   it('recupera claims abandonados antes de processar o outbox no início', async () => {
@@ -93,6 +94,62 @@ describe('OutboxPublisher', () => {
     expect(transport.pending('motor.test-gates')).toBe(1)
     expect(pool.query).toHaveBeenCalledWith(expect.stringContaining('destination_queue = ?'), ['motor.test-gates'])
     await publisher.stop()
+  })
+})
+
+describe('RealtimeOutboxDispatcher', () => {
+  it('publica a limpeza mesmo quando um snapshot anterior da atividade ficou failed', async () => {
+    const rows: any[] = [{
+      event_id: 'activity-deploy', task_id: 0, source_task_id: 'motor', project_id: 640,
+      subtask_id: null, type: 'motor.activity.updated', previous_status: null, status: null,
+      payload: JSON.stringify({ motor: { isActive: true, isRunning: true, activity: { kind: 'deploying', message: 'deploy', taskIds: ['42'] } }, workers: [] }),
+      per_task_seq: 1, attempts: 1, created_at: new Date(0), delivery_status: 'failed',
+    }]
+    const published: any[] = []
+    const pool = {
+      query: vi.fn(async (sql: string, params?: unknown[]) => {
+        if (sql.includes('INSERT INTO realtime_event_outbox')) {
+          rows.push({
+            event_id: String(params?.[0]), task_id: 0, source_task_id: 'motor', project_id: 640,
+            subtask_id: null, type: 'motor.activity.updated', previous_status: null, status: null,
+            payload: String(params?.[2]), per_task_seq: 2, attempts: 0, created_at: new Date(), delivery_status: 'pending',
+          })
+          return [{ affectedRows: 1 }, []]
+        }
+        if (sql.includes('SELECT o.event_id')) {
+          const pending = rows.filter(row => row.delivery_status !== 'published')
+          // Reproduz a ordenação SQL: sem a exceção para task_id=0, o
+          // snapshot novo ficaria bloqueado pelo snapshot failed anterior.
+          return [sql.includes('o.task_id = 0 OR NOT EXISTS') ? pending : pending.slice(0, 1), []]
+        }
+        if (sql.includes("SET delivery_status = 'published'")) {
+          const row = rows.find(item => item.event_id === params?.[0])
+          if (row) row.delivery_status = 'published'
+          return [{ affectedRows: 1 }, []]
+        }
+        if (sql.includes("SET delivery_status = 'failed'")) return [{ affectedRows: 1 }, []]
+        throw new Error(`SQL inesperado: ${sql}`)
+      }),
+    } as any
+    const dispatcher = new RealtimeOutboxDispatcher(pool, {
+      activityProvider: vi.fn().mockResolvedValue({
+        motor: { isActive: true, isRunning: false, activeExecutionsCount: 0, activity: null },
+        workers: [
+          { role: 'analyst', active: false, model: null, executionId: null, taskId: null, subtaskId: null, phase: null, startedAt: null, lastHeartbeat: null },
+          { role: 'developer', active: false, model: null, executionId: null, taskId: null, subtaskId: null, phase: null, startedAt: null, lastHeartbeat: null },
+          { role: 'manager', active: false, model: null, executionId: null, taskId: null, subtaskId: null, phase: null, startedAt: null, lastHeartbeat: null },
+        ],
+      }),
+      publish: async event => { published.push(event) },
+    })
+
+    await dispatcher.flush()
+
+    expect(published).toHaveLength(2)
+    expect(published[1]).toMatchObject({ type: 'motor.activity.updated', taskId: 1 })
+    expect(JSON.parse(JSON.stringify(published[1].payload)).motor.activity).toBeNull()
+    expect(published[1].payload.workers.every((worker: any) => worker.active === false)).toBe(true)
+    expect(pool.query.mock.calls.find(([sql]) => String(sql).includes('SELECT o.event_id'))?.[0]).toContain('o.task_id = 0 OR NOT EXISTS')
   })
 })
 // @vitest-environment node
