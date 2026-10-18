@@ -16,9 +16,10 @@ const row = {
   subtask_status: 'running',
   completion_nudge_count: 0,
   completion_nudged_at: null,
+  no_progress_touch_count: 0,
 }
 
-function setup(status: Record<string, unknown>, recoveryRow = row) {
+function setup(status: Record<string, unknown>, recoveryRow = row, config: Record<string, unknown> = {}) {
   const pool = { query: vi.fn().mockResolvedValue([[]]).mockResolvedValueOnce([[recoveryRow]]) }
   const repository = {
     requeueInterruptedExecution: vi.fn().mockResolvedValue({ messageId: 'retry-1' }),
@@ -31,14 +32,16 @@ function setup(status: Record<string, unknown>, recoveryRow = row) {
   const adapter = { attachSession: vi.fn(), isLocallyOwned: vi.fn().mockReturnValue(false), sendMessage: vi.fn().mockResolvedValue(undefined) }
   const events = { record: vi.fn().mockResolvedValue(undefined) }
   const reconciler = new DevelopmentSessionRecoveryReconciler(
-    pool as never, repository as never, consumer as never, consoleApi as never, adapter as never, { taskEvents: events as never },
+    pool as never, repository as never, consumer as never, consoleApi as never, adapter as never, { taskEvents: events as never, ...config },
   )
   return { reconciler, pool, repository, consumer, consoleApi, adapter, events }
 }
 
 describe('DevelopmentSessionRecoveryReconciler', () => {
   it('mantém a mesma sessão quando o run ainda está ativo', async () => {
-    const { reconciler, pool, consumer, repository, adapter } = setup({ isComplete: false })
+    const { reconciler, pool, consumer, repository, adapter } = setup({
+      isComplete: false, activity: { repeatedToolCalls: 0, hasNewActivity: true },
+    })
 
     await reconciler.reconcile()
 
@@ -181,5 +184,59 @@ describe('DevelopmentSessionRecoveryReconciler', () => {
       'task-p2-905', 1219, 'exec-905', expect.stringContaining('development_session_loop_detected'),
     )
     expect(events.record).toHaveBeenCalledWith('task-p2-905', 'development_session_loop_requeued', 'motor', expect.objectContaining({ repetitions: 5 }))
+  })
+
+  it('fecha e reencaminha no teto de ciclos sem progresso', async () => {
+    const { reconciler, pool, repository } = setup({ isComplete: false }, row, {
+      maxNoProgressTouches: 3, noProgressAlertThreshold: 2,
+    })
+    let noProgressCount = 0
+    pool.query.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM motor_agent_sessions mas')) {
+        return [[{ ...row, no_progress_touch_count: noProgressCount }]]
+      }
+      if (sql.includes('no_progress_touch_count=no_progress_touch_count+1')) {
+        noProgressCount++
+        return [{ affectedRows: 1 }]
+      }
+      return [[]]
+    })
+
+    await reconciler.reconcile()
+    await reconciler.reconcile()
+    await reconciler.reconcile()
+
+    expect(repository.requeueInterruptedExecution).toHaveBeenCalledWith(
+      'task-p2-905', 1219, 'exec-905', 'development_session_no_progress_limit:3',
+    )
+    expect(pool.query).toHaveBeenCalledWith(expect.stringContaining('SET status=?'), [
+      'failed', 'development_session_no_progress_limit:3', 7,
+    ])
+  })
+
+  it('zera o contador e renova o lease quando há atividade nova', async () => {
+    const recoveryRow = { ...row, no_progress_touch_count: 2 }
+    const { reconciler, pool } = setup({
+      isComplete: false, activity: { repeatedToolCalls: 0, hasNewActivity: true },
+    }, recoveryRow)
+
+    await reconciler.reconcile()
+
+    expect(pool.query).toHaveBeenCalledWith(expect.stringContaining('SET no_progress_touch_count=0'), [7])
+    expect(pool.query).toHaveBeenCalledWith(expect.stringContaining('last_activity_at=NOW()'), [7])
+  })
+
+  it('emite alerta antes de atingir o teto de ciclos sem progresso', async () => {
+    const recoveryRow = { ...row, no_progress_touch_count: 1 }
+    const { reconciler, events, pool } = setup({ isComplete: false }, recoveryRow, {
+      maxNoProgressTouches: 4, noProgressAlertThreshold: 2,
+    })
+
+    await reconciler.reconcile()
+
+    expect(events.record).toHaveBeenCalledWith('task-p2-905', 'development_session_touch_no_progress', 'motor', {
+      sessionId: 7, subtaskId: 1219, count: 2,
+    })
+    expect(pool.query).not.toHaveBeenCalledWith(expect.stringContaining('last_activity_at=NOW()'), [7])
   })
 })

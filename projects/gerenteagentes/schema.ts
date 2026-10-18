@@ -602,6 +602,7 @@ export const motorAgentSessions = mysqlTable("motor_agent_sessions", {
   purpose: varchar("purpose", { length: 30 }).notNull().default("development"),
   openedAt: timestamp("opened_at").notNull(),
   lastActivityAt: timestamp("last_activity_at").notNull(),
+  noProgressTouchCount: int("no_progress_touch_count", { unsigned: true }).notNull().default(0),
   approvedAt: timestamp("approved_at"),
   closedAt: timestamp("closed_at"),
   closeReason: varchar("close_reason", { length: 100 }),

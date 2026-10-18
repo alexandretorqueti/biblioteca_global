@@ -585,6 +585,8 @@ async function start() {
         intervalMs: Number(process.env.MOTOR_DEVELOPMENT_RECOVERY_INTERVAL_MS || 30000),
         staleMinutes: Number(process.env.MOTOR_DEVELOPMENT_RECOVERY_STALE_MINUTES || 35),
         loopRepeatThreshold: Number(process.env.MOTOR_DEVELOPMENT_LOOP_REPEAT_THRESHOLD || 5),
+        maxNoProgressTouches: Number(process.env.MOTOR_DEVELOPMENT_RECOVERY_MAX_NO_PROGRESS_TOUCHES || 30),
+        noProgressAlertThreshold: Number(process.env.MOTOR_DEVELOPMENT_RECOVERY_NO_PROGRESS_ALERT_THRESHOLD || 5),
       },
     )
     subtaskVerificationConsumer = new SubtaskVerificationConsumer(

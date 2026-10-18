@@ -21,6 +21,7 @@ interface RecoveryRow extends RowDataPacket {
   subtask_status: string
   completion_nudge_count: number | string
   completion_nudged_at: Date | string | null
+  no_progress_touch_count: number | string
 }
 
 export interface DevelopmentSessionRecoveryConfig {
@@ -29,6 +30,8 @@ export interface DevelopmentSessionRecoveryConfig {
   loopRepeatThreshold?: number
   maxCompletionNudges?: number
   completionNudgeCooldownMs?: number
+  maxNoProgressTouches?: number
+  noProgressAlertThreshold?: number
   taskEvents?: TaskEventSink
 }
 
@@ -40,6 +43,8 @@ export class DevelopmentSessionRecoveryReconciler {
   private readonly loopRepeatThreshold: number
   private readonly maxCompletionNudges: number
   private readonly completionNudgeCooldownSeconds: number
+  private readonly maxNoProgressTouches: number
+  private readonly noProgressAlertThreshold: number
   private timer: NodeJS.Timeout | null = null
 
   constructor(
@@ -55,6 +60,11 @@ export class DevelopmentSessionRecoveryReconciler {
     this.loopRepeatThreshold = config.loopRepeatThreshold ?? 5
     this.maxCompletionNudges = config.maxCompletionNudges ?? 2
     this.completionNudgeCooldownSeconds = Math.max(1, Math.round((config.completionNudgeCooldownMs ?? 300_000) / 1000))
+    this.maxNoProgressTouches = Math.max(1, Math.floor(config.maxNoProgressTouches ?? 30))
+    this.noProgressAlertThreshold = Math.min(
+      this.maxNoProgressTouches,
+      Math.max(1, Math.floor(config.noProgressAlertThreshold ?? 5)),
+    )
   }
 
   start(): void {
@@ -72,7 +82,7 @@ export class DevelopmentSessionRecoveryReconciler {
         SELECT mas.id AS session_id, s.tarefa_id, t.external_id AS task_external_id,
                mas.subtarefa_id, mas.session_key, mas.runtime_session_id,
                mas.agent_id, mas.model, mas.purpose, ctx.last_run_id AS execution_id, s.status AS subtask_status,
-               mas.completion_nudge_count, mas.completion_nudged_at,
+               mas.completion_nudge_count, mas.completion_nudged_at, mas.no_progress_touch_count,
                (SELECT tr.id FROM test_runs tr
                  WHERE tr.tarefa_id = s.tarefa_id AND tr.subtarefa_id = s.id AND tr.phase = 'baseline'
                  ORDER BY tr.finished_at DESC, tr.id DESC LIMIT 1) AS baseline_run_id
@@ -194,7 +204,12 @@ export class DevelopmentSessionRecoveryReconciler {
       return
     }
     if (!status.isComplete) {
-      await this.touch(row.session_id)
+      if (this.hasNewAgentActivity(status)) {
+        await this.resetNoProgress(row.session_id)
+        await this.touch(row.session_id)
+      } else {
+        await this.handleNoProgress(row, taskId)
+      }
       return
     }
 
@@ -316,6 +331,53 @@ export class DevelopmentSessionRecoveryReconciler {
     await this.record(taskId, 'development_session_loop_requeued', {
       sessionId: row.session_id, subtaskId: row.subtarefa_id, fingerprint, repetitions,
     })
+  }
+
+  /**
+   * O Console precisa informar explicitamente que a atividade observada é
+   * posterior ao marcador do envio. Quando o adaptador ainda não fornece
+   * esse booleano, a presença de `activity` é o contrato legado de atividade
+   * observada; falhas terminais sem atividade continuam sem renovar lease.
+   * Os aliases mantêm compatibilidade com as formas usadas pelos adaptadores.
+   */
+  private hasNewAgentActivity(status: Awaited<ReturnType<AnalystConsole['getSessionStatus']>>): boolean {
+    const activity = status.activity as (typeof status.activity & {
+      hasNewActivity?: boolean
+      isNew?: boolean
+      newActivity?: boolean
+    }) | undefined
+    const explicit = activity?.hasNewActivity ?? activity?.isNew ?? activity?.newActivity
+    return explicit === undefined ? activity !== undefined : explicit
+  }
+
+  private async handleNoProgress(row: RecoveryRow, taskId: string): Promise<void> {
+    const count = Number(row.no_progress_touch_count ?? 0) + 1
+    await this.pool.query(
+      `UPDATE motor_agent_sessions
+          SET no_progress_touch_count=no_progress_touch_count+1
+        WHERE id=? AND status='active'`,
+      [row.session_id],
+    )
+
+    if (count >= this.noProgressAlertThreshold) {
+      const payload = { sessionId: row.session_id, subtaskId: row.subtarefa_id, count }
+      console.warn(`[Motor v3] Sessão DEV ${row.session_id} sem progresso por ${count} ciclos`)
+      if (count === this.noProgressAlertThreshold) {
+        await this.record(taskId, 'development_session_touch_no_progress', payload)
+      }
+    }
+
+    if (count < this.maxNoProgressTouches) return
+    const reason = `development_session_no_progress_limit:${this.maxNoProgressTouches}`
+    await this.requeue(row, taskId, reason)
+  }
+
+  private async resetNoProgress(sessionId: number): Promise<void> {
+    await this.pool.query(
+      `UPDATE motor_agent_sessions SET no_progress_touch_count=0
+        WHERE id=? AND status='active'`,
+      [sessionId],
+    )
   }
 
   private async requeue(row: RecoveryRow, taskId: string, reason: string): Promise<void> {
