@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto'
 import type { AnalystConsole, AnalystSession } from './ConsoleAnalystRunner.js'
 
+const DEFAULT_STALE_FAILED_GRACE_MS = 60_000
+
 export class ConsoleHttpApi implements AnalystConsole {
   private readonly pendingResponses = new Map<string, { messageIds: Set<string>; sentAt: number }>()
 
@@ -62,7 +64,12 @@ export class ConsoleHttpApi implements AnalystConsole {
         const hasAgentActivityAfterSend = messages.some(message =>
           message.role !== 'user' && this.isResponseAfter(message, marker),
         )
-        if (!hasAgentActivityAfterSend) return { isComplete: false }
+        const withinStaleFailedGrace = Date.now() - marker.sentAt <= this.staleFailedGraceMs()
+        // O describe pode continuar expondo a falha do run anterior durante
+        // uma janela curta após o envio. Depois dela, sem atividade nova do
+        // agente, a falha terminal é real e precisa ser consumida; caso
+        // contrário o marker ficaria retido indefinidamente.
+        if (hasAgentActivityAfterSend || withinStaleFailedGrace) return { isComplete: false }
       }
       // O Console por vezes expõe apenas status=failed. O histórico pode trazer
       // o detalhe do provedor ou apenas uma falha genérica com stopReason=error.
@@ -146,6 +153,11 @@ export class ConsoleHttpApi implements AnalystConsole {
 
   private sessionKey(session: AnalystSession): string {
     return `${session.agentId}:${session.sessionKey}:${session.sessionId}`
+  }
+
+  private staleFailedGraceMs(): number {
+    const configured = Number(process.env.MOTOR_CONSOLE_STALE_FAILED_GRACE_MS)
+    return Number.isFinite(configured) && configured >= 0 ? configured : DEFAULT_STALE_FAILED_GRACE_MS
   }
 
   private isResponseAfter(message: ConsoleHistoryMessage, marker?: { messageIds: Set<string>; sentAt: number }): boolean {

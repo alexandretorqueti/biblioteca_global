@@ -7,7 +7,11 @@ const jsonResponse = (body: unknown) => new Response(JSON.stringify(body), {
 })
 
 describe('ConsoleHttpApi', () => {
-  afterEach(() => vi.unstubAllGlobals())
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.unstubAllEnvs()
+    vi.useRealTimers()
+  })
 
   it('transforma falha genérica do histórico em assinatura recuperável', async () => {
     vi.stubGlobal('fetch', vi.fn()
@@ -121,8 +125,8 @@ describe('ConsoleHttpApi', () => {
         oldError,
         { id: 'new-prompt', role: 'user', content: 'Continue o trabalho', createdAt: Date.now() },
       ] }))
-      // Segunda consulta: o novo run falhou de verdade — a mensagem de erro
-      // nova (depois do marcador) deve ser reportada como falha real.
+      // Segunda consulta: enquanto há atividade nova após o marcador, o
+      // describe ainda pode refletir o failed terminal do run anterior.
       .mockResolvedValueOnce(jsonResponse({ status: 'failed' }))
       .mockResolvedValueOnce(jsonResponse({ messages: [
         oldError,
@@ -135,12 +139,82 @@ describe('ConsoleHttpApi', () => {
 
     // Failed obsoleto não pode consumir a tentativa: segue aguardando.
     await expect(api.getSessionStatus(session)).resolves.toEqual({ isComplete: false })
-    // Failed do run atual (atividade nova depois do envio) é falha real.
+    // Atividade nova mantém a proteção contra o failed obsoleto.
+    await expect(api.getSessionStatus(session)).resolves.toEqual({ isComplete: false })
+  })
+
+  it('consome failed além da tolerância sem atividade nova e remove o marker', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(100_000)
+    vi.stubEnv('MOTOR_CONSOLE_STALE_FAILED_GRACE_MS', '1000')
+    const session = { sessionId: 's-failed-expired', sessionKey: 'agent:a:failed-expired', agentId: 'a' }
+    const oldError = { id: 'old-error', role: 'assistant', stopReason: 'error', content: 'falha anterior', createdAt: 1 }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ messages: [oldError] }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true }))
+      .mockResolvedValueOnce(jsonResponse({ status: 'failed', errorMessage: 'falha terminal' }))
+      .mockResolvedValueOnce(jsonResponse({ messages: [oldError, { id: 'new-prompt', role: 'user', content: 'continue' }] }))
+      // Se o marker não fosse removido, a consulta seguinte ainda seria
+      // tratada como uma corrida dentro da tolerância.
+      .mockResolvedValueOnce(jsonResponse({ status: 'failed', errorMessage: 'falha terminal' }))
+      .mockResolvedValueOnce(jsonResponse({ messages: [oldError, { id: 'new-prompt', role: 'user', content: 'continue' }] }))
+    vi.stubGlobal('fetch', fetchMock)
+    const api = new ConsoleHttpApi('http://console.local', 'token-de-teste')
+
+    await api.sendMessage({ session, message: 'continue' })
+    vi.setSystemTime(102_000)
+
     await expect(api.getSessionStatus(session)).resolves.toEqual({
       isComplete: false,
       isFailed: true,
-      error: '500 provider_error',
+      error: 'falha terminal',
     })
+    await expect(api.getSessionStatus(session)).resolves.toEqual({
+      isComplete: false,
+      isFailed: true,
+      error: 'falha terminal',
+    })
+  })
+
+  it('preserva failed dentro da tolerância sem atividade nova', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(100_000)
+    vi.stubEnv('MOTOR_CONSOLE_STALE_FAILED_GRACE_MS', '1000')
+    const session = { sessionId: 's-failed-grace', sessionKey: 'agent:a:failed-grace', agentId: 'a' }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ messages: [] }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true }))
+      .mockResolvedValueOnce(jsonResponse({ status: 'failed', endedAt: 99_000 }))
+      .mockResolvedValueOnce(jsonResponse({ messages: [{ id: 'new-prompt', role: 'user', content: 'continue' }] }))
+    vi.stubGlobal('fetch', fetchMock)
+    const api = new ConsoleHttpApi('http://console.local', 'token-de-teste')
+
+    await api.sendMessage({ session, message: 'continue' })
+    vi.setSystemTime(100_500)
+
+    await expect(api.getSessionStatus(session)).resolves.toEqual({ isComplete: false })
+  })
+
+  it('preserva failed antigo quando houve atividade nova após o marker', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(100_000)
+    vi.stubEnv('MOTOR_CONSOLE_STALE_FAILED_GRACE_MS', '0')
+    const session = { sessionId: 's-failed-activity', sessionKey: 'agent:a:failed-activity', agentId: 'a' }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ messages: [] }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true }))
+      .mockResolvedValueOnce(jsonResponse({ status: 'failed', endedAt: 99_000 }))
+      .mockResolvedValueOnce(jsonResponse({ messages: [
+        { id: 'new-prompt', role: 'user', content: 'continue' },
+        { id: 'new-tool', role: 'assistant', stopReason: 'toolUse', content: 'consultando arquivos' },
+      ] }))
+    vi.stubGlobal('fetch', fetchMock)
+    const api = new ConsoleHttpApi('http://console.local', 'token-de-teste')
+
+    await api.sendMessage({ session, message: 'continue' })
+    vi.setSystemTime(100_500)
+
+    await expect(api.getSessionStatus(session)).resolves.toEqual({ isComplete: false })
   })
 
   it('expõe done do envio atual quando houve ferramenta nova mas faltou resposta final', async () => {
