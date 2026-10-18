@@ -4,6 +4,7 @@ import type { QueueMessage } from '../queue/index.js'
 import { createQueueMessage, insertOutboxMessage } from '../queue/index.js'
 import type { TaskEventSink } from '../coordinator/TaskEventRecorder.js'
 import { TASK_UNBLOCKED_EVENT_TYPE, type TaskUnblockedPayload } from './TaskBlockedEvent.js'
+import { SUBTASK_VERIFICATION_REQUESTED } from '../execution/SubtaskVerificationConsumer.js'
 
 /** Motivos de bloqueio cuja retomada é refazer o deploy da tarefa. */
 const DEPLOY_BLOCK_REASONS = new Set([
@@ -11,6 +12,7 @@ const DEPLOY_BLOCK_REASONS = new Set([
   'pre_deploy_gate_failed',
   'deploy_preparation_failed',
 ])
+const SUBTASK_VERIFICATION_BLOCK_REASON = 'subtask_verification_failed'
 
 /**
  * Retomada automática após desbloqueio — o elo que faltava no incidente da
@@ -22,11 +24,16 @@ const DEPLOY_BLOCK_REASONS = new Set([
  *   `DEPLOY_BATCH_DISPATCH_REQUESTED` é enfileirado (mesma transação);
  * - `analysis_failed` → `TASK_RESUME_REQUESTED` para o TaskCoordinator
  *   reabrir a análise (claim atômico já protege contra duplicidade);
+ * - `subtask_verification_failed` → subtarefas bloqueadas voltam a
+ *   `verifying` e recebem `SUBTASK_VERIFICATION_REQUESTED`;
  * - demais motivos → apenas auditoria (o fluxo normal já sabe retomar).
  *
  * Idempotente: redelivery não duplica dispatch (UPDATE ... WHERE status='failed'
  * não re-reseta pedidos já retomados; dispatch de pending é deduplicado pelo
  * claim de lote do DeployConsumer).
+ *
+ * Intervenções externas permanecem restritas à API oficial de resolução; não
+ * há suporte a SQL direto para alterar bloqueios, subtarefas ou o outbox.
  */
 export class TaskUnblockedConsumer {
   constructor(
@@ -59,6 +66,13 @@ export class TaskUnblockedConsumer {
         await this.safeRecord(message.taskId, 'task_resumed_by_monitor', { blockReason: reason, action: 'analysis_resume_enqueued' })
         return
       }
+      if (reason === SUBTASK_VERIFICATION_BLOCK_REASON) {
+        const requeued = await this.retrySubtaskVerification(message, databaseTaskId)
+        await this.safeRecord(message.taskId, 'task_resumed_by_monitor', {
+          blockReason: reason, action: 'subtask_verification_requeued', requeued,
+        })
+        return
+      }
       await this.safeRecord(message.taskId, 'task_resumed_by_monitor', { blockReason: reason || null, action: 'noop' })
     } catch (error) {
       // Não propaga para a fila: a retomada pode ser refeita manualmente ou
@@ -67,6 +81,73 @@ export class TaskUnblockedConsumer {
         blockReason: reason || null,
         error: error instanceof Error ? error.message : String(error),
       })
+    }
+  }
+
+  /**
+   * Reabre somente subtarefas ainda bloqueadas pelo motivo de falha terminal
+   * da verificação e publica o pedido na mesma transação do fato. O UPDATE
+   * condicionado a `blocked` torna redelivery idempotente: uma subtarefa já
+   * reaberta (ou já `verified`) não recebe outro pedido pendente.
+   */
+  private async retrySubtaskVerification(source: QueueMessage, databaseTaskId: number): Promise<number> {
+    const connection: PoolConnection = await this.pool.getConnection()
+    try {
+      await connection.beginTransaction()
+      const blockId = Number((source.payload as Partial<TaskUnblockedPayload>).blockId)
+      const hasBlockId = Number.isInteger(blockId) && blockId > 0
+      const [rows] = await connection.query<Array<RowDataPacket & { id: number; seq: number }>>(
+        `SELECT s.id, s.seq
+           FROM subtarefas s
+           INNER JOIN bloqueios b ON b.subtarefa_id = s.id
+          WHERE s.tarefa_id = ?
+            AND s.status = 'blocked'
+            AND b.block_reason = ?
+            AND (${hasBlockId ? 'b.id = ?' : '1=1'})
+          FOR UPDATE`,
+        hasBlockId ? [databaseTaskId, SUBTASK_VERIFICATION_BLOCK_REASON, blockId] : [databaseTaskId, SUBTASK_VERIFICATION_BLOCK_REASON],
+      )
+
+      let requeued = 0
+      for (const row of rows) {
+        const [updated] = await connection.query<ResultSetHeader>(
+          `UPDATE subtarefas SET status='verifying', resultado=NULL, updated_at=NOW()
+             WHERE id=? AND status='blocked'`,
+          [Number(row.id)],
+        )
+        if (Number(updated.affectedRows ?? 0) !== 1) continue
+
+        const verification = createQueueMessage({
+          type: SUBTASK_VERIFICATION_REQUESTED,
+          taskId: source.taskId,
+          executionId: `verification-resume-${Number(row.id)}-${Date.now()}-${randomUUID()}`,
+          correlationId: source.correlationId ?? source.messageId,
+          causationId: source.messageId,
+          payload: { subtaskId: Number(row.id), seq: Number(row.seq), resumedBy: 'monitor' },
+        })
+        await connection.query(
+          `INSERT INTO motor_outbox (message_id,type,destination_queue,task_id,execution_id,payload_json,timestamp,correlation_id,causation_id,status,attempt)
+           SELECT ?,?,?, ?,?,?,NOW(),?,?,'pending',0
+             FROM DUAL
+            WHERE NOT EXISTS (
+              SELECT 1 FROM motor_outbox
+               WHERE status='pending' AND type=?
+                 AND task_id=?
+                 AND JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.subtaskId'))=?
+            )`,
+          [verification.messageId, verification.type, 'motor.commands', verification.taskId, verification.executionId,
+            JSON.stringify(verification.payload), verification.correlationId ?? null, verification.causationId ?? null,
+            SUBTASK_VERIFICATION_REQUESTED, source.taskId, Number(row.id)],
+        )
+        requeued++
+      }
+      await connection.commit()
+      return requeued
+    } catch (error) {
+      await connection.rollback()
+      throw error
+    } finally {
+      connection.release()
     }
   }
 

@@ -8,6 +8,8 @@ interface FakeOptions {
   taskIdResolvable?: boolean
   pendingGroups?: Array<{ repo_path: string; base_branch: string; requested_commit: string }>
   stalePendingRequests?: number
+  verificationSubtasks?: Array<{ id: number; seq: number }>
+  verificationUpdateAffectedRows?: number[]
 }
 
 function fakeEnvironment(options: FakeOptions = {}) {
@@ -17,6 +19,12 @@ function fakeEnvironment(options: FakeOptions = {}) {
     queries.push({ sql: normalized, params: params ?? [], via })
     if (normalized.startsWith('DELETE dr FROM deploy_requests')) {
       return [{ affectedRows: options.stalePendingRequests ?? 1 }, []]
+    }
+    if (normalized.startsWith('SELECT s.id, s.seq FROM subtarefas')) {
+      return [options.verificationSubtasks ?? [], []]
+    }
+    if (normalized.startsWith("UPDATE subtarefas SET status='verifying'")) {
+      return [{ affectedRows: options.verificationUpdateAffectedRows?.shift() ?? 1 }, []]
     }
     if (normalized.includes('FROM tarefas')) {
       return [options.taskIdResolvable === false ? [] : [{ id: 886 }], []]
@@ -181,6 +189,40 @@ describe('TaskUnblockedConsumer', () => {
     expect(JSON.parse(resumes[0].params[5] as string)).toMatchObject({ resumedBy: 'monitor' })
     expect(env.events.find(e => e.evento === 'task_resumed_by_monitor')!.payload)
       .toMatchObject({ action: 'analysis_resume_enqueued' })
+  })
+
+  it('subtask_verification_failed: reabre subtarefa e enfileira verificação na mesma transação', async () => {
+    const env = fakeEnvironment({ verificationSubtasks: [{ id: 901, seq: 3 }] })
+
+    await env.consumer.handle(unblockedMessage({ blockReason: 'subtask_verification_failed' }))
+
+    const update = env.queries.find(q => q.sql.startsWith("UPDATE subtarefas SET status='verifying'"))
+    expect(update).toBeDefined()
+    expect(update!.via).toBe('connection')
+    expect(update!.sql).toContain("status='blocked'")
+
+    const verifications = env.outbox('SUBTASK_VERIFICATION_REQUESTED')
+    expect(verifications).toHaveLength(1)
+    expect(verifications[0].via).toBe('connection')
+    expect(verifications[0].params[2]).toBe('motor.commands')
+    expect(JSON.parse(verifications[0].params[5] as string)).toMatchObject({
+      subtaskId: 901, seq: 3, resumedBy: 'monitor',
+    })
+    expect(env.connection.commit).toHaveBeenCalledOnce()
+  })
+
+  it('redelivery do desbloqueio não duplica pedido de verificação', async () => {
+    const env = fakeEnvironment({
+      verificationSubtasks: [{ id: 901, seq: 3 }],
+      verificationUpdateAffectedRows: [1, 0],
+    })
+    const message = unblockedMessage({ blockReason: 'subtask_verification_failed' })
+
+    await env.consumer.handle(message)
+    await env.consumer.handle(message)
+
+    expect(env.outbox('SUBTASK_VERIFICATION_REQUESTED')).toHaveLength(1)
+    expect(env.connection.commit).toHaveBeenCalledTimes(2)
   })
 
   it('outros motivos: apenas auditoria (noop)', async () => {
