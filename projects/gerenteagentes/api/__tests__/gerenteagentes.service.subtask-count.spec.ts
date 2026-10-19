@@ -66,20 +66,26 @@ function novoService(env: Record<string, string> = {}): { service: GerenteAgente
     get: (chave: string) => env[chave],
   } as unknown as ConfigService;
 
-  // Mock do factory de banco — retorna um drizzle-like com select() que devolve tarefas fake
+  // Mock do factory de banco — devolve tarefas e nenhuma ligação de dependência.
   const fakeDb = {
-    select: () => ({
-      from: () => ({
-        where: () => ({
-          orderBy: () =>
-            Promise.resolve([
-              { id: 1, externalId: 'task-1', titulo: 'Tarefa com subtarefas', status: 'running' },
-              { id: 2, externalId: 'task-2', titulo: 'Tarefa sem subtarefas', status: 'paused' },
-              { id: 3, externalId: 'task-3', titulo: 'Tarefa fallback (motor offline)', status: 'pending' },
-            ]),
-        }),
-      }),
-    }),
+    select: (campos?: Record<string, unknown>) => campos
+      ? {
+          from: () => ({
+            where: () => Promise.resolve([]),
+          }),
+        }
+      : {
+          from: () => ({
+            where: () => ({
+              orderBy: () =>
+                Promise.resolve([
+                  { id: 1, externalId: 'task-1', titulo: 'Tarefa com subtarefas', status: 'running' },
+                  { id: 2, externalId: 'task-2', titulo: 'Tarefa sem subtarefas', status: 'paused' },
+                  { id: 3, externalId: 'task-3', titulo: 'Tarefa fallback (motor offline)', status: 'pending' },
+                ]),
+            }),
+          }),
+        },
   };
 
   const factory = {
