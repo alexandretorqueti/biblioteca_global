@@ -98,6 +98,8 @@ Entrada mínima: `chatKey` **ou** `email` (senão `400 "chatKey ou email é obri
 
 No front, enquanto não há envio, o `AgentChat` mostra apenas uma saudação **local** (a mesma mensagem) e o `api-client` nem chama `/session` nem `/history` — `loadHistory` retorna vazio sem tocar a rede enquanto a sessão local não começou. `POST /api/session` é a rota que materializa/recupera o chat local quando o cliente decide iniciar a sessão (no primeiro envio, §6).
 
+> Nota (tarefa 1019): quando o histórico do servidor contém alguma mensagem de agente (a saudação persistida — inclusive a personalizada do modo legado), o `mergeHistory` do `AgentChat` descarta a saudação local de placeholder, evitando que ela reapareça no rodapé a cada envio.
+
 ### 5.2 Modo legado (`{ email, nome? }`) — descrito na §8
 
 ## 6. Etapa 2 — Primeira mensagem e sessão OpenClaw (`POST /api/chat/send`)

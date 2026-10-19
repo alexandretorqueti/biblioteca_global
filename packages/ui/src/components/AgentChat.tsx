@@ -79,8 +79,18 @@ function mergeHistory(serverMessages: ChatMessage[], current: ChatMessage[]): Ch
   const serverUserTexts = new Set(
     serverMessages.filter((message) => message.role === "user").map((message) => message.text),
   )
+  // Regra 1019: quando o servidor já traz alguma mensagem de agente (a saudação
+  // persistida no banco — inclusive a personalizada do modo legado e-mail), a
+  // saudação local de placeholder (id `local-`, role !== "user") é descartada no
+  // merge. Sem isso ela seria concatenada no rodapé a cada load(), reaparecendo
+  // abaixo de cada resposta. Sem mensagem de agente no histórico (estado inicial,
+  // sessão ainda não criada), a saudação local permanece visível.
+  const serverHasAgentMessage = serverMessages.some((message) => message.role !== "user" && !message.id.startsWith("local-"))
   const optimistic = current.filter(
-    (message) => message.id.startsWith("local-") && !(message.role === "user" && serverUserTexts.has(message.text)),
+    (message) =>
+      message.id.startsWith("local-") &&
+      !(message.role === "user" && serverUserTexts.has(message.text)) &&
+      !(serverHasAgentMessage && message.role !== "user"),
   )
   return [...serverMessages, ...optimistic]
 }
