@@ -16,6 +16,7 @@ interface FakeOptions {
   hasTombstone?: boolean
   /** Tarefa 972: idempotência — request já pending existe. */
   hasPendingRequest?: boolean
+  blocks?: Array<{ id: number; subtarefa_id: number | null; block_reason: string }>
 }
 
 function fakePool(options: FakeOptions = {}) {
@@ -32,6 +33,9 @@ function fakePool(options: FakeOptions = {}) {
           ? { id: 820, external_id: 'task-p2-820', tipo: 'desenvolvimento' }
           : options.task
         return [task ? [task] : []]
+      }
+      if (/SELECT id, subtarefa_id, block_reason FROM bloqueios/.test(sql)) {
+        return [options.blocks ?? []]
       }
       if (/UPDATE bloqueios/.test(sql)) return [{ affectedRows: options.blockersResolved ?? 0 }]
       if (/UPDATE subtarefas/.test(sql)) return [{ affectedRows: options.subtaskUpdateAffected ?? 1 }]
@@ -167,6 +171,27 @@ describe('ExternalResolutionHandler (camada C — resolução externa governada)
     expect(types).toContain('TASK_UNBLOCKED')
     expect(types).not.toContain('TASK_EXECUTION_COMPLETED')
     expect(fake.calls.some(call => /INSERT INTO task_runtime_facts/.test(call.sql))).toBe(false)
+  })
+
+  it('reabre a subtarefa bloqueada quando resolve falha de baseline', async () => {
+    const fake = fakePool({
+      blockersResolved: 0,
+      counts: { total: 4, finais: 0 },
+      blocks: [{ id: 3370, subtarefa_id: 1394, block_reason: 'baseline_preflight_failed' }],
+    })
+
+    const result = await new ExternalResolutionHandler(fake.pool as never).handle({
+      taskId: 'task-p2-829',
+      motivo: 'baseline corrigido',
+      resolvedBy: 'monitor',
+      blockIds: [3370],
+    })
+
+    expect(result.requeued).toBe(true)
+    const reopen = fake.calls.find(call => /UPDATE subtarefas[\s\S]*status = 'pending'/.test(call.sql))
+    expect(reopen).toBeDefined()
+    expect(reopen?.params).toEqual([820, 1394])
+    expect(fake.outboxMessages().map(message => message.type)).toContain('TASK_READY_FOR_PROGRAMMING')
   })
 
   it('marca a subtarefa informada como verified de forma idempotente', async () => {

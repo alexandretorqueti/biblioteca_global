@@ -104,6 +104,25 @@ export class ExternalResolutionHandler {
       const messageIds: string[] = []
 
       // 1) Bloqueios
+      // Guarde o vínculo com a subtarefa antes de resolver. Para bloqueios de
+      // baseline, resolver apenas `bloqueios.resolved_at` deixava a subtarefa
+      // em `blocked`; o TASK_READY seguinte não encontrava trabalho elegível.
+      // IDs explícitos também permitem repetir idempotentemente uma resolução
+      // que foi parcialmente aplicada por uma versão anterior do motor.
+      const [selectedBlocks] = await connection.query<Array<RowDataPacket & {
+        id: number
+        subtarefa_id: number | null
+        block_reason: string
+      }>>(
+        blockIds && blockIds.length > 0
+          ? `SELECT id, subtarefa_id, block_reason FROM bloqueios
+              WHERE tarefa_id = ? AND id IN (${blockIds.map(() => '?').join(',')})
+              FOR UPDATE`
+          : `SELECT id, subtarefa_id, block_reason FROM bloqueios
+              WHERE tarefa_id = ? AND resolved_at IS NULL
+              FOR UPDATE`,
+        blockIds && blockIds.length > 0 ? [databaseTaskId, ...blockIds] : [databaseTaskId],
+      )
       const [blockers] = await connection.query<ResultSetHeader>(
         blockIds && blockIds.length > 0
           ? `UPDATE bloqueios SET resolved_at = NOW()
@@ -112,6 +131,20 @@ export class ExternalResolutionHandler {
         blockIds && blockIds.length > 0 ? [databaseTaskId, ...blockIds] : [databaseTaskId],
       )
       const blockersResolved = Number(blockers?.affectedRows ?? 0)
+
+      const baselineSubtaskIds = [...new Set(selectedBlocks
+        .filter(block => block.block_reason === 'baseline_preflight_failed' && block.subtarefa_id != null)
+        .map(block => Number(block.subtarefa_id))
+        .filter(id => Number.isInteger(id) && id > 0))]
+      if (baselineSubtaskIds.length > 0) {
+        await connection.query(
+          `UPDATE subtarefas
+              SET status = 'pending', resultado = NULL, updated_at = NOW()
+            WHERE tarefa_id = ? AND status = 'blocked'
+              AND id IN (${baselineSubtaskIds.map(() => '?').join(',')})`,
+          [databaseTaskId, ...baselineSubtaskIds],
+        )
+      }
 
       // 2) Subtarefa (opcional)
       let subtaskVerified = false
