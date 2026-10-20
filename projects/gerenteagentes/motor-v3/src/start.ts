@@ -51,7 +51,7 @@ import { DeployConsumer } from './deploy/DeployConsumer.js'
 import { DeployRepository } from './deploy/DeployRepository.js'
 import { RemoteBlueGreenDeployer } from './deploy/RemoteBlueGreenDeployer.js'
 import { BaselinePreflightRecovery, TestGateConsumer, TestGateJobReconciler, TestGateOrchestrator, TestGateService, TestRecoveryConsumer, WorkspaceEnvironmentPreparer } from './testing/index.js'
-import { ConsoleHumanNotifier, ExternalResolutionError, ExternalResolutionHandler, MonitorBlockerReconciler, MonitorPromptResolver, MonitorResolutionConsumer, PostDeployPromptResolver, PostDeployVerifier, TaskUnblockedConsumer, createTaskBlockedMessage, loadActiveBlocker } from './monitor/index.js'
+import { ConsoleHumanNotifier, ExternalResolutionError, ExternalResolutionHandler, MonitorBlockerReconciler, MonitorPromptResolver, MonitorResolutionConsumer, PostDeployPromptResolver, PostDeployVerifier, TaskUnblockedConsumer, createTaskBlockedMessage, loadActiveBlocker, ActiveExecutionSweeper } from './monitor/index.js'
 import { TaskAdjustmentConsumer, TASK_ADJUSTMENT_REQUESTED } from './adjustment/index.js'
 import { ensureCompletionTrigger } from './db/ensureTriggers.js'
 import { bootstrapMotorV3Catalog } from './db/bootstrap.js'
@@ -100,6 +100,7 @@ let developmentSessionRecovery: DevelopmentSessionRecoveryReconciler | null = nu
 let taskAdjustmentConsumer: TaskAdjustmentConsumer | null = null
 let postDeployVerifier: PostDeployVerifier | null = null
 let orphanCapacityQueueReconciler: OrphanCapacityQueueReconciler | null = null
+let activeExecutionSweeper: ActiveExecutionSweeper | null = null
 
 async function start() {
   console.log('[Motor v3] Iniciando...')
@@ -732,6 +733,18 @@ async function start() {
     })
     await orphanCapacityQueueReconciler.reconcile()
     orphanCapacityQueueReconciler.start()
+    // Sweeper de execuções expiradas de monitor/postdeploy_monitor (tarefa 1026):
+    // essas fases têm TTL fixo e DELETE apenas no finally/unregister do próprio
+    // processo; quedas no meio da execução deixavam linhas vencidas para sempre
+    // na tabela. A passada do boot expurga as linhas legadas; o timer periódico
+    // cobre as futuras. Restrito às duas fases com TTL — nunca toca leases de
+    // analysis/development (geridos por heartbeat pelos reconciliadores próprios).
+    activeExecutionSweeper = new ActiveExecutionSweeper(pool, {
+      intervalMs: Number(process.env.MOTOR_ACTIVE_EXECUTION_SWEEP_INTERVAL_MS || 300000),
+    })
+    const bootSweep = await activeExecutionSweeper.reconcile()
+    console.log(`[Motor v3] Sweep no boot de execuções expiradas (monitor/postdeploy_monitor): removidas=${bootSweep.swept} restantes=${bootSweep.remainingExpired}`)
+    activeExecutionSweeper.start()
     // Reconciliação única no boot: reenfileira tarefas/subtarefas pendentes
     // que não têm mensagem equivalente na fila (incidente 828).
     const taskReconciler = new TaskExecutionReconciler(pool)
@@ -1396,6 +1409,7 @@ async function shutdown() {
   analysisSessionRecovery?.stop()
   developmentSessionRecovery?.stop()
   orphanCapacityQueueReconciler?.stop()
+  activeExecutionSweeper?.stop()
 
   // Fecha servidor HTTP
   if (server) {
