@@ -5,6 +5,8 @@ import { DerivedTaskStatusResolver } from '../status/DerivedTaskStatus.js'
 import { RealtimeMutationBoundary } from '../realtime/RealtimeMutationBoundary.js'
 import type { RealtimeMutationPublisher } from '../realtime/RealtimeMutationPublisher.js'
 import { providerFromModel, providerCapacityDecision } from '../execution/ProviderCapacity.js'
+import { validateProjectSetupEvidence } from '../setup/ProjectSetupGate.js'
+import { createQueueMessage, insertOutboxMessage } from '../queue/index.js'
 
 interface TaskRow extends RowDataPacket {
   id: number
@@ -19,6 +21,8 @@ interface TaskRow extends RowDataPacket {
   analysis_started_at: Date | string | null
   analysis_execution_id: string | null
   projeto_id: number | null
+  auto_start: number | boolean
+  setup_status: string | null
   terminal_status: string | null
   subtask_count: number | string
   blocked_count: number | string
@@ -57,6 +61,7 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
     const [rows] = await this.pool.query<TaskRow[]>(`
       SELECT
         t.id, t.external_id, t.titulo, t.descricao, t.tipo, pmc.repo_path, t.paused_at,
+        t.auto_start, pc.setup_status,
         t.depends_on_task_id,
         COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), pc.slug, '') AS agente_id,
         pc.slug AS project_slug,
@@ -140,6 +145,11 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
       const row = await this.lockTask(connection, taskId)
       if (!row || this.cannotStart(row)) {
         await connection.rollback()
+        return false
+      }
+      if (this.setupBlocksTask(row)) {
+        await this.persistSetupBlock(connection, row)
+        await connection.commit()
         return false
       }
 
@@ -293,7 +303,7 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
     try {
       await connection.beginTransaction()
       const [taskRows] = await connection.query<TaskRow[]>(
-        `SELECT t.id, t.tipo FROM tarefas t
+        `SELECT t.id, t.tipo, t.external_id, t.projeto_id FROM tarefas t
          INNER JOIN task_runtime_facts f ON f.tarefa_id = t.id
          WHERE (t.external_id = ? OR CAST(t.id AS CHAR) = ?)
            AND f.analysis_execution_id = ?
@@ -324,6 +334,25 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
           [databaseTaskId],
         )
       } else if (outcome.kind === 'verification') {
+        if (String(taskRows[0]?.external_id ?? taskId).startsWith('setup-')) {
+          const candidate = outcome.evidence.map(value => {
+            try { return JSON.parse(value) as unknown } catch { return null }
+          }).find(value => value !== null)
+          const gate = validateProjectSetupEvidence(candidate)
+          if (!gate.ok) {
+            await connection.query(
+              `UPDATE projetos_captados SET setup_status='failed', setup_error=?, updated_at=NOW()
+                WHERE id=?`, [`Setup rejeitado pelo gate: ${gate.reasons.join('; ')}`, taskRows[0]?.projeto_id],
+            )
+            throw new Error(`Setup rejeitado pelo gate: ${gate.reasons.join('; ')}`)
+          }
+          await connection.query(
+            `UPDATE projetos_captados SET setup_status='verified', setup_error=NULL,
+                    setup_verified_at=NOW(), setup_evidence=?, updated_at=NOW()
+              WHERE slug = ?`, [JSON.stringify(gate.evidence), String(taskId).replace(/^setup-/, '')],
+          )
+          await this.releaseProjectTasksAfterSetup(connection, Number(taskRows[0]?.projeto_id), String(taskId).replace(/^setup-/, ''))
+        }
         const chatText = JSON.stringify({ kind: 'verification', verdict: outcome.verdict, summary: outcome.summary, evidence: outcome.evidence })
         const createdAt = new Date().toISOString()
         const [chatInsert] = await connection.query<ResultSetHeader>(
@@ -402,12 +431,13 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
   private async lockTask(connection: PoolConnection, taskId: string): Promise<TaskRow | null> {
     const [rows] = await connection.query<TaskRow[]>(`
       SELECT
-        t.id, t.external_id, t.projeto_id, t.paused_at,
+        t.id, t.external_id, t.projeto_id, t.paused_at, t.auto_start, pc.setup_status,
         f.analysis_started_at, f.analysis_execution_id, f.terminal_status,
         (SELECT COUNT(*) FROM subtarefas s WHERE s.tarefa_id = t.id) AS subtask_count,
         (SELECT COUNT(*) FROM bloqueios b
           WHERE b.tarefa_id = t.id AND b.resolved_at IS NULL) AS blocked_count
       FROM tarefas t
+      LEFT JOIN projetos_captados pc ON pc.id = t.projeto_id
       LEFT JOIN task_runtime_facts f ON f.tarefa_id = t.id
       WHERE t.external_id = ? OR CAST(t.id AS CHAR) = ?
       LIMIT 1
@@ -423,6 +453,49 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
       || row.terminal_status != null
       || Number(row.subtask_count) > 0
       || Number(row.blocked_count) > 0
+  }
+
+  private setupBlocksTask(row: Pick<TaskRow, 'auto_start' | 'setup_status' | 'external_id'>): boolean {
+    return Boolean(row.auto_start) && !String(row.external_id ?? '').startsWith('setup-') && row.setup_status !== 'verified'
+  }
+
+  private async persistSetupBlock(connection: PoolConnection, row: Pick<TaskRow, 'id' | 'setup_status'>): Promise<void> {
+    const reason = `setup_not_verified: status=${row.setup_status ?? 'pending'}`
+    await connection.query(
+      `INSERT INTO bloqueios (tarefa_id, block_reason, block_excerpt, blocked_at, created_at)
+       SELECT ?, ?, ?, NOW(), NOW()
+        WHERE NOT EXISTS (
+          SELECT 1 FROM bloqueios WHERE tarefa_id = ? AND resolved_at IS NULL AND block_reason LIKE 'setup_not_verified:%'
+        )`, [row.id, reason, 'Tarefa auto_start retida até setup do projeto ser verificado', row.id],
+    )
+  }
+
+  /** Libera os auto_start retidos e reemite o comando de análise de forma durável. */
+  private async releaseProjectTasksAfterSetup(connection: PoolConnection, projectId: number, projectSlug: string): Promise<void> {
+    if (!Number.isInteger(projectId) || projectId <= 0) return
+    const [rows] = await connection.query<Array<RowDataPacket & { id: number; external_id: string | null }>>(
+      `SELECT t.id, t.external_id
+         FROM tarefas t
+        WHERE t.projeto_id = ? AND t.auto_start = 1
+          AND t.external_id IS NOT NULL
+          AND t.external_id <> ?
+          AND EXISTS (
+            SELECT 1 FROM bloqueios b
+             WHERE b.tarefa_id = t.id AND b.resolved_at IS NULL
+               AND b.block_reason LIKE 'setup_not_verified:%'
+          )`, [projectId, `setup-${projectSlug}`],
+    )
+    for (const row of rows) {
+      await connection.query(
+        `UPDATE bloqueios SET resolved_at=NOW()
+          WHERE tarefa_id=? AND resolved_at IS NULL AND block_reason LIKE 'setup_not_verified:%'`, [row.id],
+      )
+      const message = createQueueMessage({
+        type: 'TASK_RESUME_REQUESTED', taskId: String(row.external_id), executionId: `setup-approved-${projectSlug}-${row.id}`,
+        payload: { reason: 'project_setup_verified', projectSlug },
+      })
+      await insertOutboxMessage(connection, message, 'motor.commands')
+    }
   }
 
   private mapTask(row: TaskRow): TaskSnapshot {

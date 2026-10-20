@@ -314,6 +314,14 @@ export class TaskCoordinator {
       await this.repository.releaseAnalysisClaim(task.taskId, executionId)
       const errorMessage = error instanceof Error ? error.message : String(error)
       await this.log(operationId, sequence++, 'primitive', 'failed', message, { primitiveCode: 'start_analyst', result: { executionId, analysisAttempt, error: errorMessage }, reasonCode: 'analyst_failed' })
+      if (errorMessage.includes('project_setup_preflight_failed')) {
+        const recordSetupFailure = this.analysisFailure?.recordProjectSetupFailure
+        if (recordSetupFailure) {
+          await recordSetupFailure.call(this.analysisFailure, task.taskId, { executionId, attempt: analysisAttempt, error: errorMessage }).catch(recordError => {
+            console.warn(`[TaskCoordinator] falha ao persistir erro de setup do projeto ${task.taskId}:`, this.errorMessage(recordError))
+          })
+        }
+      }
 
       // Incidente 862 (item 2): na tentativa final (a próxima parada é a DLQ),
       // a falha precisa virar bloqueio persistente — status derivado `blocked`

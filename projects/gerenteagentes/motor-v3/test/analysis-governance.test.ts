@@ -47,7 +47,7 @@ describe('governança do fluxo de análise', () => {
       { isComplete: true, lastResponse: plan },
     ])
     const modelFailureRecorder = vi.fn(async () => undefined)
-    const runner = new ConsoleAnalystRunner(api, {
+    const runner = new ConsoleAnalystRunner(api, { workspacePreflight: false,
       modelChainResolver: async () => ['model-a', 'model-b'],
       modelFailureRecorder,
       pollIntervalMs: 1,
@@ -66,7 +66,7 @@ describe('governança do fluxo de análise', () => {
     ])
     const handler = { handleFailure: vi.fn(async () => nonTerminalGovernedResult()) }
     const modelFailureRecorder = vi.fn(async () => undefined)
-    const runner = new ConsoleAnalystRunner(api, {
+    const runner = new ConsoleAnalystRunner(api, { workspacePreflight: false,
       modelChainResolver: async () => ['model-a', 'model-b'],
       modelFailureRecorder,
       governedFailureHandler: handler as unknown as GovernedFailureHandler,
@@ -87,7 +87,7 @@ describe('governança do fluxo de análise', () => {
       { isComplete: true, lastResponse: plan },
     ])
     const handler = { handleFailure: vi.fn(async () => nonTerminalGovernedResult()) }
-    const runner = new ConsoleAnalystRunner(api, {
+    const runner = new ConsoleAnalystRunner(api, { workspacePreflight: false,
       modelChainResolver: async () => ['model-a', 'model-b'],
       governedFailureHandler: handler as unknown as GovernedFailureHandler,
       pollIntervalMs: 1,
@@ -109,7 +109,7 @@ describe('governança do fluxo de análise', () => {
         action: { actionCode: 'A03', success: true, primitivesExecuted: ['block_task'], compensated: false },
       })),
     }
-    const runner = new ConsoleAnalystRunner(api, {
+    const runner = new ConsoleAnalystRunner(api, { workspacePreflight: false,
       modelChainResolver: async () => ['model-a', 'model-b'],
       governedFailureHandler: handler as unknown as GovernedFailureHandler,
       pollIntervalMs: 1,

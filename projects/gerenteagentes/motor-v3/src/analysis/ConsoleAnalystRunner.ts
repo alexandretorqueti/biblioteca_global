@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto'
+import { access, stat } from 'node:fs/promises'
+import { resolve } from 'node:path'
 import type { AnalysisRunner, TaskSnapshot } from '../coordinator/TaskCoordinator.js'
 import type { GovernedFailureHandler } from '../governance/GovernedFailureHandler.js'
 import { parseAnalystReply, type AnalysisOutcome } from './AnalystReply.js'
@@ -53,6 +55,7 @@ export interface AnalystSessionAuditContext {
 export interface ConsoleAnalystRunnerConfig {
   timeoutMs: number
   pollIntervalMs: number
+  workspacePreflight: boolean
   modelResolver?: (task: TaskSnapshot) => Promise<string | undefined>
   modelChainResolver?: (task: TaskSnapshot) => Promise<readonly string[]>
   promptResolver?: AnalysisPromptResolver
@@ -75,6 +78,9 @@ export class ConsoleAnalystRunner implements AnalysisRunner {
     this.config = {
       timeoutMs: config.timeoutMs ?? 30 * 60 * 1000,
       pollIntervalMs: config.pollIntervalMs ?? 5_000,
+      // Os testes unitários usam workspaces sintéticos; o processo real liga
+      // explicitamente o gate na montagem do Motor.
+      workspacePreflight: config.workspacePreflight ?? true,
       modelResolver: config.modelResolver,
       modelChainResolver: config.modelChainResolver,
       promptResolver: config.promptResolver,
@@ -90,6 +96,7 @@ export class ConsoleAnalystRunner implements AnalysisRunner {
   }
 
   async start(task: TaskSnapshot, executionId: string): Promise<AnalysisOutcome> {
+    if (this.config.workspacePreflight) await this.preflightWorkspace(task)
     // Uma nova entrega da mensagem pode reutilizar o mesmo executionId. O
     // identificador abaixo impede que o Console devolva uma sessão/histórico
     // de uma tentativa anterior como se fosse desta execução.
@@ -190,6 +197,27 @@ export class ConsoleAnalystRunner implements AnalysisRunner {
       }
     }
     throw lastError ?? new Error(`Nenhum modelo configurado para análise da tarefa ${task.taskId}`)
+  }
+
+  /**
+   * O contexto do projeto é um pré-requisito do Analista, não uma pergunta
+   * de produto. Falhe antes de resolver prompt ou criar sessão quando o
+   * projeto ainda não foi materializado.
+   */
+  private async preflightWorkspace(task: TaskSnapshot): Promise<void> {
+    const workspace = (task.repoPath ?? '').trim()
+    const fail = (reason: string): never => {
+      throw new Error(`project_setup_preflight_failed: projeto sem setup concluído (${reason})`)
+    }
+    if (!workspace) fail('repoPath/workspace vazio')
+    try {
+      if (!(await stat(workspace)).isDirectory()) fail('repoPath/workspace não é um diretório')
+      await access(resolve(workspace, 'docs', 'CONTEXTO-ANALISTA.md'))
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('project_setup_preflight_failed:')) throw error
+      const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : 'inacessível'
+      fail(code === 'ENOENT' ? 'repoPath/workspace inexistente ou sem docs/CONTEXTO-ANALISTA.md' : `repoPath/workspace inacessível (${code})`)
+    }
   }
 
   /**

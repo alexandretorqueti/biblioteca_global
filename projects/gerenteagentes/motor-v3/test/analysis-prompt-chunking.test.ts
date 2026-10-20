@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
+import { mkdtemp, mkdir, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { ConsoleAnalystRunner, type AnalystConsole, type AnalystSession } from '../src/analysis/ConsoleAnalystRunner.js'
 import {
   buildAnalysisContextMessage,
@@ -59,13 +62,38 @@ describe('PromptChunking', () => {
 })
 
 describe('ConsoleAnalystRunner — contexto em etapas', () => {
+  it.each([
+    ['repoPath/workspace vazio', ''],
+    ['repoPath/workspace inexistente', '/tmp/motor-v3-preflight-inexistente'],
+  ])('recusa pré-voo quando %s antes de criar sessão', async (_reason, repoPath) => {
+    const api = consoleWithResponses([])
+    const runner = new ConsoleAnalystRunner(api, { workspacePreflight: true })
+    await expect(runner.start({ ...task('descrição'), repoPath }, 'execution-1'))
+      .rejects.toThrow('project_setup_preflight_failed')
+    expect(api.createSession).not.toHaveBeenCalled()
+  })
+
+  it('recusa pré-voo quando falta docs/CONTEXTO-ANALISTA.md', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'motor-v3-preflight-'))
+    try {
+      await mkdir(join(workspace, 'docs'))
+      const api = consoleWithResponses([])
+      const runner = new ConsoleAnalystRunner(api, { workspacePreflight: true })
+      await expect(runner.start({ ...task('descrição'), repoPath: workspace }, 'execution-1'))
+        .rejects.toThrow('project_setup_preflight_failed')
+      expect(api.createSession).not.toHaveBeenCalled()
+    } finally {
+      await rm(workspace, { recursive: true, force: true })
+    }
+  })
+
   it('envia cada bloco, aguarda confirmação e somente depois envia o prompt final', async () => {
     const api = consoleWithResponses(['CONTEXTO_RECEBIDO', 'CONTEXTO_RECEBIDO', plan])
     const resolver = { resolve: vi.fn(async (_task: TaskSnapshot, _executionId: string, context?: { descriptionReference: string; confirmation: string; chunkCount: number; descriptionLength: number }) => ({
       text: `Prompt final\n${context?.descriptionReference}\n${context?.confirmation}`,
       contractText: '', contractSchema: undefined,
     })) }
-    const runner = new ConsoleAnalystRunner(api, { pollIntervalMs: 1, promptResolver: resolver })
+    const runner = new ConsoleAnalystRunner(api, { workspacePreflight: false, pollIntervalMs: 1, promptResolver: resolver })
     const description = 'A'.repeat(6_000) + 'FIM'
 
     const result = await runner.start(task(description), 'execution-1')
@@ -81,7 +109,7 @@ describe('ConsoleAnalystRunner — contexto em etapas', () => {
 
   it('não envia o prompt final quando a confirmação de um bloco é inválida mesmo após a correção', async () => {
     const api = consoleWithResponses(['Entendi o contexto', 'Agora vou analisar'])
-    const runner = new ConsoleAnalystRunner(api, { pollIntervalMs: 1 })
+    const runner = new ConsoleAnalystRunner(api, { workspacePreflight: false, pollIntervalMs: 1 })
 
     await expect(runner.start(task('descrição'), 'execution-1')).rejects.toThrow('não confirmou o bloco 1/1')
     expect(api.sendMessage).toHaveBeenCalledTimes(2)
@@ -90,7 +118,7 @@ describe('ConsoleAnalystRunner — contexto em etapas', () => {
 
   it('recupera confirmação inválida com uma única correção de protocolo na mesma sessão', async () => {
     const api = consoleWithResponses(['```json\n{ "subtarefas": [] }\n```', 'CONTEXTO_RECEBIDO', plan])
-    const runner = new ConsoleAnalystRunner(api, { pollIntervalMs: 1 })
+    const runner = new ConsoleAnalystRunner(api, { workspacePreflight: false, pollIntervalMs: 1 })
 
     await expect(runner.start(task('descrição'), 'execution-1')).resolves.toMatchObject({ kind: 'plan' })
     expect(api.sendMessage).toHaveBeenCalledTimes(3)
@@ -102,7 +130,7 @@ describe('ConsoleAnalystRunner — contexto em etapas', () => {
     const resolver = { resolve: vi.fn(async () => ({
       text: 'P'.repeat(6_001), contractText: '', contractSchema: undefined,
     })) }
-    const runner = new ConsoleAnalystRunner(api, { pollIntervalMs: 1, promptResolver: resolver })
+    const runner = new ConsoleAnalystRunner(api, { workspacePreflight: false, pollIntervalMs: 1, promptResolver: resolver })
 
     await expect(runner.start(task('descrição'), 'execution-1')).resolves.toMatchObject({ kind: 'plan' })
     expect(api.sendMessage.mock.calls.map(([input]) => input.message)).toEqual([
@@ -116,7 +144,7 @@ describe('ConsoleAnalystRunner — contexto em etapas', () => {
   it('retoma a sessão existente sem criar sessão ou reenviar o contexto', async () => {
     const api = consoleWithResponses([plan])
     const resumed = vi.fn(async () => {})
-    const runner = new ConsoleAnalystRunner(api, { pollIntervalMs: 1, onSessionResumed: resumed })
+    const runner = new ConsoleAnalystRunner(api, { workspacePreflight: false, pollIntervalMs: 1, onSessionResumed: resumed })
     const existing: AnalystSession = { sessionId: 'persistida-1', sessionKey: 'agent:agent-1:existente', agentId: 'agent-1' }
 
     await expect(runner.resume(task('descrição'), 'execution-1', existing, {

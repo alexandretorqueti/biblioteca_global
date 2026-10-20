@@ -11,6 +11,7 @@ export interface AnalysisFailureInfo {
 /** Porta de persistência do bloqueio de falha definitiva de análise. */
 export interface AnalysisFailureSink {
   blockForAnalysisFailure(taskId: string, info: AnalysisFailureInfo): Promise<void>
+  recordProjectSetupFailure?(taskId: string, info: AnalysisFailureInfo): Promise<void>
 }
 
 /**
@@ -28,6 +29,16 @@ export interface AnalysisFailureSink {
  */
 export class MySqlAnalysisFailureBlocker implements AnalysisFailureSink {
   constructor(private readonly pool: Pool) {}
+
+  async recordProjectSetupFailure(taskId: string, info: AnalysisFailureInfo): Promise<void> {
+    await this.pool.query(
+      `UPDATE projetos_captados pc
+         INNER JOIN tarefas t ON t.projeto_id = pc.id
+          SET pc.setup_status='failed', pc.setup_error=?, pc.updated_at=NOW()
+       WHERE t.external_id = ? OR CAST(t.id AS CHAR) = ?`,
+      [info.error.slice(0, 1800), taskId, taskId],
+    )
+  }
 
   async blockForAnalysisFailure(taskId: string, info: AnalysisFailureInfo): Promise<void> {
     const numeric = /^\d+$/.test(taskId)
