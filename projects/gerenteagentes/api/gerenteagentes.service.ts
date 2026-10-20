@@ -2815,9 +2815,14 @@ export class GerenteAgentesService {
 
     // Se já tem plataformaProjetoId, retornar (idempotente)
     if (projetoCaptado.plataformaProjetoId) {
+      // Provisionamento pode ter sido concluído antes de uma queda entre o
+      // commit do projeto e a criação da missão. Reconciliar o setup aqui
+      // mantém o caminho idempotente sem deixar projeto órfão.
+      const missao = await this.dispararMissaoSetup(db, projetoCaptado, Number(projetoCaptado.plataformaProjetoId));
       return {
         projetoId: projetoCaptado.id,
         plataformaProjetoId: projetoCaptado.plataformaProjetoId,
+        ...(missao ? { missao } : {}),
         message: 'Projeto já provisionado na plataforma',
       };
     }
@@ -2866,7 +2871,33 @@ export class GerenteAgentesService {
     db: Awaited<ReturnType<GerenteAgentesService['dbDoProjeto']>>,
     projetoCaptado: typeof projetosCaptados.$inferSelect,
     plataformaProjetoId: number,
-  ): Promise<{ tarefaId: number; motorId: string; nova: boolean } | null> {
+  ): Promise<{ tarefaId: number; motorId: string; nova: boolean }> {
+    const motorId = `setup-${projetoCaptado.slug}`;
+    const registrarFalha = async (mensagem: string): Promise<never> => {
+      await db.update(projetosCaptados).set({
+        setupStatus: 'failed',
+        setupError: mensagem.slice(0, 2000),
+        setupAttempts: sql`${projetosCaptados.setupAttempts} + 1`,
+        setupLastAttemptAt: new Date(),
+        updatedAt: new Date(),
+      }).where(eq(projetosCaptados.id, projetoCaptado.id));
+      throw new BadRequestException(`Setup do projeto ${projetoCaptado.slug} não foi enfileirado: ${mensagem}`);
+    };
+
+    if (projetoCaptado.setupStatus === 'verified') {
+      const [verificada] = await db.select({ id: tarefas.id }).from(tarefas)
+        .where(eq(tarefas.externalId, motorId)).limit(1);
+      if (verificada) return { tarefaId: verificada.id, motorId, nova: false };
+    }
+
+    await db.update(projetosCaptados).set({
+      setupStatus: 'queued',
+      setupError: null,
+      setupAttempts: sql`${projetosCaptados.setupAttempts} + 1`,
+      setupLastAttemptAt: new Date(),
+      updatedAt: new Date(),
+    }).where(eq(projetosCaptados.id, projetoCaptado.id));
+
     // Projeto executor: o próprio biblioteca-global (monorepo).
     const [executor] = await db
       .select()
@@ -2875,11 +2906,8 @@ export class GerenteAgentesService {
       .limit(1);
 
     if (!executor) {
-      this.logger.warn('Projeto executor biblioteca-global não encontrado — missão de setup não disparada');
-      return null;
+      return registrarFalha('Projeto executor biblioteca-global não encontrado');
     }
-
-    const motorId = `setup-${projetoCaptado.slug}`;
 
     // Idempotência: missão já criada anteriormente.
     const [existente] = await db
@@ -2895,18 +2923,22 @@ export class GerenteAgentesService {
       tarefaId = existente.id;
     } else {
       const descricao = this.montarMissaoSetup(projetoCaptado, plataformaProjetoId);
-      const [inserida] = await db
-        .insert(tarefas)
-        .values({
-          externalId: motorId,
-          projetoId: executor.id,
-          titulo: `Setup do projeto: ${projetoCaptado.nome}`,
-          descricao,
-        })
-        .$returningId();
+      let inserida: { id: number } | undefined;
+      try {
+        [inserida] = await db
+          .insert(tarefas)
+          .values({
+            externalId: motorId,
+            projetoId: executor.id,
+            titulo: `Setup do projeto: ${projetoCaptado.nome}`,
+            descricao,
+          })
+          .$returningId();
+      } catch (error) {
+        return registrarFalha(`Falha ao inserir tarefa de setup: ${error instanceof Error ? error.message : String(error)}`);
+      }
       if (!inserida) {
-        this.logger.warn('Falha ao inserir tarefa de setup — missão não disparada');
-        return null;
+        return registrarFalha('Falha ao inserir tarefa de setup');
       }
       tarefaId = inserida.id;
       nova = true;
@@ -2914,16 +2946,12 @@ export class GerenteAgentesService {
 
     // Enfileira no motor via /api/motor/task/:id/enqueue (v2 e v3).
     const enqueuePath = `/api/motor/task/${encodeURIComponent(motorId)}/enqueue`;
-    const resp = await this
-      .motorRequest('POST', enqueuePath, undefined, this.motorHttpUrl)
-      .catch((e: unknown) => {
-        this.logger.warn(`Motor indisponível ao enfileirar setup: ${e instanceof Error ? e.message : String(e)}`);
-        return null;
-      });
+    const resp = await this.motorRequest('POST', enqueuePath, undefined, this.motorHttpUrl)
+      .catch((e: unknown) => registrarFalha(`Motor indisponível: ${e instanceof Error ? e.message : String(e)}`));
+    if (!resp.ok) return registrarFalha(`Motor rejeitou (${resp.status}): ${resp.body.slice(0, 500)}`);
 
-    if (resp && !resp.ok) {
-      this.logger.warn(`Motor rejeitou o setup (${resp.status}): ${resp.body.slice(0, 200)}`);
-    }
+    await db.update(projetosCaptados).set({ setupStatus: 'queued', updatedAt: new Date() })
+      .where(eq(projetosCaptados.id, projetoCaptado.id));
 
     return { tarefaId, motorId, nova };
   }

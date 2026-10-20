@@ -126,6 +126,14 @@ export const projetosCaptados = mysqlTable("projetos_captados", {
     mode: "number",
     unsigned: true,
   }),
+  /** Estado durável do setup obrigatório do projeto no Motor v3. */
+  setupStatus: mysqlEnum("setup_status", ["pending", "queued", "running", "verified", "failed", "blocked"])
+    .notNull().default("pending"),
+  setupError: text("setup_error"),
+  setupAttempts: int("setup_attempts").notNull().default(0),
+  setupLastAttemptAt: timestamp("setup_last_attempt_at"),
+  setupVerifiedAt: timestamp("setup_verified_at"),
+  setupEvidence: json("setup_evidence"),
   // repo_path e branch_trabalho movidos para projeto_motor_config (evitar duplicação)
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at")
