@@ -126,7 +126,7 @@ describe('coordinator adapters', () => {
         }) }),
     }
     const { ConsoleAnalystRunner } = await import('../src/analysis/index.js')
-    const runner = new ConsoleAnalystRunner(consoleApi, {
+    const runner = new ConsoleAnalystRunner(consoleApi, { workspacePreflight: false,
       pollIntervalMs: 0,
       modelResolver: async () => 'openai/gpt-5.6-luna',
     })
@@ -150,7 +150,7 @@ describe('coordinator adapters', () => {
         }) }),
     }
     const { ConsoleAnalystRunner } = await import('../src/analysis/index.js')
-    const runner = new ConsoleAnalystRunner(consoleApi, { pollIntervalMs: 0 })
+    const runner = new ConsoleAnalystRunner(consoleApi, { workspacePreflight: false, pollIntervalMs: 0 })
 
     await expect(runner.start(task(), 'exec-1')).resolves.toMatchObject({ kind: 'plan' })
     expect(consoleApi.createSession).toHaveBeenCalledTimes(1)
@@ -171,7 +171,7 @@ describe('coordinator adapters', () => {
         }) }),
     }
     const { ConsoleAnalystRunner } = await import('../src/analysis/index.js')
-    const runner = new ConsoleAnalystRunner(consoleApi, {
+    const runner = new ConsoleAnalystRunner(consoleApi, { workspacePreflight: false,
       pollIntervalMs: 0,
       modelChainResolver: async () => ['openai/model-a', 'openai/model-b'],
       promptResolver: { resolve: async () => ({ text: 'prompt', contractText: 'JSON', contractSchema: undefined }) },
@@ -198,7 +198,7 @@ describe('coordinator adapters', () => {
     }
     const recordFailure = vi.fn(async () => {})
     const { ConsoleAnalystRunner } = await import('../src/analysis/index.js')
-    const runner = new ConsoleAnalystRunner(consoleApi, {
+    const runner = new ConsoleAnalystRunner(consoleApi, { workspacePreflight: false,
       pollIntervalMs: 0,
       modelChainResolver: async () => ['deepseek/deepseek-v4-flash', 'openai/model-b'],
       modelFailureRecorder: recordFailure,

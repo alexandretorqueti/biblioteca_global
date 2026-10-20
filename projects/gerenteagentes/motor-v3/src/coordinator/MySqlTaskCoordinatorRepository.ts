@@ -6,6 +6,7 @@ import { RealtimeMutationBoundary } from '../realtime/RealtimeMutationBoundary.j
 import type { RealtimeMutationPublisher } from '../realtime/RealtimeMutationPublisher.js'
 import { providerFromModel, providerCapacityDecision } from '../execution/ProviderCapacity.js'
 import { validateProjectSetupEvidence } from '../setup/ProjectSetupGate.js'
+import { createQueueMessage, insertOutboxMessage } from '../queue/index.js'
 
 interface TaskRow extends RowDataPacket {
   id: number
@@ -350,6 +351,7 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
                     setup_verified_at=NOW(), setup_evidence=?, updated_at=NOW()
               WHERE slug = ?`, [JSON.stringify(gate.evidence), String(taskId).replace(/^setup-/, '')],
           )
+          await this.releaseProjectTasksAfterSetup(connection, Number(taskRows[0]?.projeto_id), String(taskId).replace(/^setup-/, ''))
         }
         const chatText = JSON.stringify({ kind: 'verification', verdict: outcome.verdict, summary: outcome.summary, evidence: outcome.evidence })
         const createdAt = new Date().toISOString()
@@ -466,6 +468,34 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
           SELECT 1 FROM bloqueios WHERE tarefa_id = ? AND resolved_at IS NULL AND block_reason LIKE 'setup_not_verified:%'
         )`, [row.id, reason, 'Tarefa auto_start retida até setup do projeto ser verificado', row.id],
     )
+  }
+
+  /** Libera os auto_start retidos e reemite o comando de análise de forma durável. */
+  private async releaseProjectTasksAfterSetup(connection: PoolConnection, projectId: number, projectSlug: string): Promise<void> {
+    if (!Number.isInteger(projectId) || projectId <= 0) return
+    const [rows] = await connection.query<Array<RowDataPacket & { id: number; external_id: string | null }>>(
+      `SELECT t.id, t.external_id
+         FROM tarefas t
+        WHERE t.projeto_id = ? AND t.auto_start = 1
+          AND t.external_id IS NOT NULL
+          AND t.external_id <> ?
+          AND EXISTS (
+            SELECT 1 FROM bloqueios b
+             WHERE b.tarefa_id = t.id AND b.resolved_at IS NULL
+               AND b.block_reason LIKE 'setup_not_verified:%'
+          )`, [projectId, `setup-${projectSlug}`],
+    )
+    for (const row of rows) {
+      await connection.query(
+        `UPDATE bloqueios SET resolved_at=NOW()
+          WHERE tarefa_id=? AND resolved_at IS NULL AND block_reason LIKE 'setup_not_verified:%'`, [row.id],
+      )
+      const message = createQueueMessage({
+        type: 'TASK_RESUME_REQUESTED', taskId: String(row.external_id), executionId: `setup-approved-${projectSlug}-${row.id}`,
+        payload: { reason: 'project_setup_verified', projectSlug },
+      })
+      await insertOutboxMessage(connection, message, 'motor.commands')
+    }
   }
 
   private mapTask(row: TaskRow): TaskSnapshot {

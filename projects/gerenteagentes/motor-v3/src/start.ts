@@ -233,6 +233,7 @@ async function start() {
       }
     }
     const analyst = new ConsoleAnalystRunner(consoleApi, {
+      workspacePreflight: true,
       // Margem antes do consumer_timeout padrão do RabbitMQ (30 minutos),
       // para que a entrega possa ser rejeitada/repetida sem fechar o canal.
       timeoutMs: Number(process.env.MOTOR_ANALYSIS_TIMEOUT_MS || 1500000),
