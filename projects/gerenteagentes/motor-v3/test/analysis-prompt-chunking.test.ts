@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { mkdtemp, mkdir, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ConsoleAnalystRunner, type AnalystConsole, type AnalystSession } from '../src/analysis/ConsoleAnalystRunner.js'
@@ -82,6 +82,26 @@ describe('ConsoleAnalystRunner — contexto em etapas', () => {
       await expect(runner.start({ ...task('descrição'), repoPath: workspace }, 'execution-1'))
         .rejects.toThrow('project_setup_preflight_failed')
       expect(api.createSession).not.toHaveBeenCalled()
+    } finally {
+      await rm(workspace, { recursive: true, force: true })
+    }
+  })
+
+  it('aceita o workspace mapeado quando o repoPath pertence ao namespace do host', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'motor-v3-preflight-mapped-'))
+    try {
+      await mkdir(join(workspace, 'docs'))
+      await writeFile(join(workspace, 'docs', 'CONTEXTO-ANALISTA.md'), '# Contexto')
+      const api = consoleWithResponses(['CONTEXTO_RECEBIDO', plan])
+      const runner = new ConsoleAnalystRunner(api, {
+        workspacePreflight: true,
+        pollIntervalMs: 1,
+        workspacePathMapper: repoPath => repoPath === '/host/repos/projeto' ? workspace : null,
+      })
+
+      await expect(runner.start({ ...task('descrição'), repoPath: '/host/repos/projeto' }, 'execution-1'))
+        .resolves.toMatchObject({ kind: 'plan' })
+      expect(api.createSession).toHaveBeenCalledOnce()
     } finally {
       await rm(workspace, { recursive: true, force: true })
     }
