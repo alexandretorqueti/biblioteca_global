@@ -51,11 +51,19 @@ export class MonitorBlockerReconciler {
            INNER JOIN tarefas t ON t.id = b.tarefa_id
           WHERE b.resolved_at IS NULL
             AND NOT EXISTS (
-              SELECT 1 FROM motor_outbox o
+              SELECT 1
+                FROM motor_outbox o
+                LEFT JOIN motor_message_processing_state state
+                  ON state.message_id COLLATE utf8mb4_unicode_ci = o.message_id COLLATE utf8mb4_unicode_ci
                WHERE o.type = 'TASK_BLOCKED'
                  AND o.destination_queue = ?
-                 AND o.status = 'pending'
                  AND JSON_UNQUOTE(JSON_EXTRACT(o.payload_json, '$.blockId')) = CAST(b.id AS CHAR)
+                 -- Uma mensagem publicada enquanto o Monitor estava pausado
+                 -- não cria processing_state (o consumer faz ack antes do
+                 -- claim) e deve ser reenviada na reativação. Porém, depois
+                 -- de já ser consumida, não podemos recriar uma mensagem a
+                 -- cada 30 s para o mesmo bloqueio.
+                 AND (o.status = 'pending' OR state.status IN ('pending', 'processing', 'completed'))
             )
           ORDER BY b.id`,
         [this.destinationQueue],

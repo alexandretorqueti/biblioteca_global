@@ -49,7 +49,7 @@ describe('MonitorBlockerReconciler', () => {
     })
   })
 
-  it('é idempotente por bloqueio: a consulta exclui mensagem pendente do outbox', async () => {
+  it('é idempotente por bloqueio: a consulta exclui mensagem pendente ou já consumida', async () => {
     const env = fakePool(true, [])
     const enqueue = vi.fn()
     const reconciler = new MonitorBlockerReconciler(env.pool, {
@@ -61,6 +61,8 @@ describe('MonitorBlockerReconciler', () => {
     expect(enqueue).not.toHaveBeenCalled()
     expect(env.queries[1]?.params).toEqual(['motor.monitor.custom'])
     expect(env.queries[1]?.sql).toContain("o.status = 'pending'")
+    expect(env.queries[1]?.sql).toContain("state.status IN ('pending', 'processing', 'completed')")
+    expect(env.queries[1]?.sql).toContain('motor_message_processing_state state')
     expect(env.queries[1]?.sql).toContain("JSON_EXTRACT(o.payload_json, '$.blockId')")
   })
 
