@@ -71,6 +71,41 @@ describe("formatação de telefone", () => {
   it("retorna +55 quando vazio", () => {
     expect(formatTelefone("")).toBe("+55")
   })
+
+  it("mantém um único +55 quando a entrada já traz o prefixo renderizado", () => {
+    expect(formatTelefone("+5521999998888")).toBe("+55 (21) 99999-8888")
+    expect(formatTelefone("+55 (21) 99999-8888")).toBe("+55 (21) 99999-8888")
+    expect(formatTelefone("+55 2133334444")).toBe("+55 (21) 3333-4444")
+  })
+
+  it("não duplica o prefixo nem cria DDD (55) na digitação progressiva a partir de +55", () => {
+    // Reproduz a sequência controlada do bug: campo com defaultValue "+55"
+    // e o usuário digitando o DDD em seguida.
+    expect(formatTelefone("+55")).toBe("+55")
+    expect(formatTelefone("+552")).toBe("+55 2")
+    expect(formatTelefone("+5521")).toBe("+55 21")
+    expect(formatTelefone("+55219")).toBe("+55 (21) 9")
+    expect(formatTelefone("+552199")).toBe("+55 (21) 99")
+    expect(formatTelefone("+5521999")).toBe("+55 (21) 999")
+    expect(formatTelefone("+55219999")).toBe("+55 (21) 9999")
+    expect(formatTelefone("+552199999")).toBe("+55 (21) 9999-9")
+    expect(formatTelefone("+5521999998")).toBe("+55 (21) 9999-98")
+    expect(formatTelefone("+55219999988")).toBe("+55 (21) 9999-988")
+    expect(formatTelefone("+552199999888")).toBe("+55 (21) 9999-9888")
+    expect(formatTelefone("+5521999998888")).toBe("+55 (21) 99999-8888")
+  })
+
+  it("preserva DDD 55 digitado após o prefixo +55", () => {
+    expect(formatTelefone("+555533334444")).toBe("+55 (55) 3333-4444")
+    expect(formatTelefone("+5555999998888")).toBe("+55 (55) 99999-8888")
+  })
+
+  it("não remove 55 progressivo sem marcação de código do país", () => {
+    // Sem "+", dois dígitos "55" são tratados como DDD parcial, não prefixo.
+    expect(formatTelefone("55")).toBe("+55 55")
+    expect(formatTelefone("552")).toBe("+55 (55) 2")
+    expect(formatTelefone("5533334444")).toBe("+55 (55) 3333-4444")
+  })
 })
 
 describe("máscara e validação de CEP", () => {
