@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { access, stat } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import type { AnalysisRunner, TaskSnapshot } from '../coordinator/TaskCoordinator.js'
+import { mapHostRepoPathToContainer } from '../execution/GitWorktreePreparer.js'
 import type { GovernedFailureHandler } from '../governance/GovernedFailureHandler.js'
 import { parseAnalystReply, type AnalysisOutcome } from './AnalystReply.js'
 import {
@@ -56,6 +57,7 @@ export interface ConsoleAnalystRunnerConfig {
   timeoutMs: number
   pollIntervalMs: number
   workspacePreflight: boolean
+  workspacePathMapper?: (repoPath: string) => string | null
   modelResolver?: (task: TaskSnapshot) => Promise<string | undefined>
   modelChainResolver?: (task: TaskSnapshot) => Promise<readonly string[]>
   promptResolver?: AnalysisPromptResolver
@@ -81,6 +83,7 @@ export class ConsoleAnalystRunner implements AnalysisRunner {
       // Os testes unitários usam workspaces sintéticos; o processo real liga
       // explicitamente o gate na montagem do Motor.
       workspacePreflight: config.workspacePreflight ?? true,
+      workspacePathMapper: config.workspacePathMapper ?? mapHostRepoPathToContainer,
       modelResolver: config.modelResolver,
       modelChainResolver: config.modelChainResolver,
       promptResolver: config.promptResolver,
@@ -210,14 +213,20 @@ export class ConsoleAnalystRunner implements AnalysisRunner {
       throw new Error(`project_setup_preflight_failed: projeto sem setup concluído (${reason})`)
     }
     if (!workspace) fail('repoPath/workspace vazio')
-    try {
-      if (!(await stat(workspace)).isDirectory()) fail('repoPath/workspace não é um diretório')
-      await access(resolve(workspace, 'docs', 'CONTEXTO-ANALISTA.md'))
-    } catch (error) {
-      if (error instanceof Error && error.message.startsWith('project_setup_preflight_failed:')) throw error
-      const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : 'inacessível'
-      fail(code === 'ENOENT' ? 'repoPath/workspace inexistente ou sem docs/CONTEXTO-ANALISTA.md' : `repoPath/workspace inacessível (${code})`)
+    const mappedWorkspace = this.config.workspacePathMapper?.(workspace)
+    const candidates = [...new Set([workspace, mappedWorkspace].filter((path): path is string => Boolean(path)))]
+    let lastError: unknown
+    for (const candidate of candidates) {
+      try {
+        if (!(await stat(candidate)).isDirectory()) continue
+        await access(resolve(candidate, 'docs', 'CONTEXTO-ANALISTA.md'))
+        return
+      } catch (error) {
+        lastError = error
+      }
     }
+    const code = lastError && typeof lastError === 'object' && 'code' in lastError ? String(lastError.code) : 'inacessível'
+    fail(code === 'ENOENT' ? 'repoPath/workspace inexistente ou sem docs/CONTEXTO-ANALISTA.md' : `repoPath/workspace inacessível (${code})`)
   }
 
   /**
