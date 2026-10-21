@@ -73,6 +73,7 @@ describe("registry de telas custom", () => {
       "gerenteagentes-motor-v3-tabelas",
       "gerenteagentes-test-history",
       "gerenteagentes-configuracoes",
+      "gestao-de-tarefas-global-dashboard",
       "sistema-adm-global-dashboard",
       "sistema-adm-global-hub-administrativo",
       "sistema-adm-global-hub-rh",
