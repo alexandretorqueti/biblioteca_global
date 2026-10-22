@@ -9,6 +9,8 @@
 import {
   ApiHttpClient,
   AuthClient,
+  createLogsLoginClient,
+  type LogsLoginClient,
 } from "@biblioteca-global/api-client"
 
 /** Base url resolvida: protocolo+host atuais + /api (proxy dev / deploy). */
@@ -30,6 +32,7 @@ export function resolveRealtimeUrl(): string {
 export interface ApiClientBundle {
   http: ApiHttpClient
   auth: AuthClient
+  logsLogin: LogsLoginClient
   /** Retorna o access token atual (para WebSocket ticket). */
   getAccessToken(): string | null
 }
@@ -45,5 +48,10 @@ export function createApiClient(tokens: {
     baseUrl: resolveApiBaseUrl(),
     tokens,
   })
-  return { http, auth: new AuthClient(http), getAccessToken: () => tokens.getAccessToken() }
+  return {
+    http,
+    auth: new AuthClient(http),
+    logsLogin: createLogsLoginClient(http),
+    getAccessToken: () => tokens.getAccessToken(),
+  }
 }

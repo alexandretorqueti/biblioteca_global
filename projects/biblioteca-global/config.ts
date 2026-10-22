@@ -85,6 +85,13 @@ export const config: GeradorSistemaConfig = {
             },
           },
         },
+        {
+          id: "logs-login",
+          label: "Log de Logins",
+          path: "logs-login",
+          icon: "history",
+          screen: { kind: "custom", componentId: "biblioteca-global-logs-login" },
+        },
       ],
     },
   ],
