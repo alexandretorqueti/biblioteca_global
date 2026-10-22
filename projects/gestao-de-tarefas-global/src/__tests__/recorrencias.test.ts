@@ -8,7 +8,11 @@ import {
   isTimezoneIana,
   validarConfiguracaoSistema,
   validarRegraRecorrencia,
+  calcularPrimeiraOcorrenciaFutura,
+  ProcessadorRecorrencias,
+  tarefaRecorrenteAtiva,
 } from "../recorrencias"
+import type { NovaTarefaRecorrente, OcorrenciaRecorrente, RepositorioRecorrencias, TarefaRecorrente } from "../recorrencias"
 
 describe("timezone IANA do sistema", () => {
   it("aceita timezones IANA válidos", () => {
@@ -130,5 +134,47 @@ describe("identidade determinística da ocorrência", () => {
   it("chave cabe no varchar(160) persistido", () => {
     const k = chaveOcorrenciaDeterministica(Number.MAX_SAFE_INTEGER, "2026-10-22T12:00:00.000Z")
     expect(k.length).toBeLessThanOrEqual(160)
+  })
+})
+
+describe("cálculo e processamento de ocorrências", () => {
+  it("calcula a primeira ocorrência estritamente futura no timezone global", () => {
+    const regra = { frequencia: "diaria" as const, horaExecucao: "09:00" }
+    expect(calcularPrimeiraOcorrenciaFutura(regra, "America/Sao_Paulo", new Date("2026-10-22T12:00:00Z")).toISOString()).toBe("2026-10-23T12:00:00.000Z")
+    expect(calcularPrimeiraOcorrenciaFutura(regra, "America/New_York", new Date("2026-03-08T06:00:00Z")).toISOString()).toBe("2026-03-08T13:00:00.000Z")
+  })
+
+  it("suporta múltiplos dias semanais, mensal e anual", () => {
+    const agora = new Date("2026-10-22T12:00:00Z") // quinta-feira
+    expect(calcularPrimeiraOcorrenciaFutura({ frequencia: "semanal", horaExecucao: "09:00", diasSemana: [1, 5] }, "America/Sao_Paulo", agora).toISOString()).toBe("2026-10-23T12:00:00.000Z")
+    expect(calcularPrimeiraOcorrenciaFutura({ frequencia: "mensal", horaExecucao: "09:00", diaMes: 1 }, "America/Sao_Paulo", agora).toISOString()).toBe("2026-11-01T12:00:00.000Z")
+    expect(calcularPrimeiraOcorrenciaFutura({ frequencia: "anual", horaExecucao: "09:00", diaMes: 1, mes: 1 }, "America/Sao_Paulo", agora).toISOString()).toBe("2027-01-01T12:00:00.000Z")
+  })
+
+  it("mantém aguardando como tarefa ativa", () => {
+    expect(tarefaRecorrenteAtiva("aguardando")).toBe(true)
+    expect(tarefaRecorrenteAtiva("concluida")).toBe(false)
+    expect(tarefaRecorrenteAtiva("cancelada")).toBe(false)
+  })
+
+  it("bloqueia tarefa ativa e copia dados seletivamente após encerramento", async () => {
+    let ativa = { id: 10, areaId: 2, criadoPorId: 7, titulo: "Base", descricao: "desc", prioridade: "alta" as const, createdAt: new Date("2026-10-22T12:00:00Z"), prazo: new Date("2026-10-23T12:00:00Z"), responsavelId: 8, tagIds: [3, 4], anexos: [{ nome: "nao copiar" }] }
+    let ocorrencia: OcorrenciaRecorrente | undefined
+    let geradas = 0
+    const repo: RepositorioRecorrencias = {
+      buscarTarefaBase: async (): Promise<TarefaRecorrente | null> => ativa,
+      buscarTarefaAtiva: async (): Promise<TarefaRecorrente | null> => ativa,
+      buscarRegra: async () => ({ frequencia: "diaria" as const, horaExecucao: "09:00" }),
+      buscarOuCriarOcorrencia: async (valor: OcorrenciaRecorrente) => (ocorrencia ??= valor),
+      criarTarefa: async (valor: NovaTarefaRecorrente) => { geradas += 1; expect(valor.tagIds).toEqual([3, 4]); expect(valor).not.toHaveProperty("anexos"); return { id: 20 } },
+      marcarOcorrenciaGerada: async (_chave: string, tarefaId: number) => { if (ocorrencia) ocorrencia = { ...ocorrencia, status: "gerada", tarefaGeradaId: tarefaId } },
+    }
+    const processador = new ProcessadorRecorrencias(repo, "America/Sao_Paulo")
+    expect((await processador.processar(5, new Date("2026-10-22T12:00:00Z"))).criada).toBe(false)
+    ativa = { ...ativa, id: 10, status: undefined } as typeof ativa
+    repo.buscarTarefaAtiva = async (): Promise<TarefaRecorrente | null> => null
+    expect((await processador.processar(5, new Date("2026-10-22T12:00:00Z"))).criada).toBe(true)
+    expect((await processador.processar(5, new Date("2026-10-22T12:00:00Z"))).criada).toBe(false)
+    expect(geradas).toBe(1)
   })
 })
