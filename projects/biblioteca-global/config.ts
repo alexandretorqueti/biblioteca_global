@@ -1,6 +1,6 @@
 /**
  * Config BASE versionada do projeto biblioteca-global (admin global —
- * PoC §9.1): CRUD de usuários multi-projeto + CRUD de projetos com editor
+ * PoC §9.1): tela custom de usuários multi-projeto + CRUD de projetos com editor
  * de config. Resources atendidos pelos módulos específicos do core.
  */
 import type { GeradorSistemaConfig } from "@biblioteca-global/shared"
@@ -18,36 +18,8 @@ export const config: GeradorSistemaConfig = {
           path: "usuarios",
           icon: "people",
           screen: {
-            kind: "cadastro",
-            resource: "usuarios",
-            title: "Usuários",
-            description: "Gerenciamento global de usuários e vínculos",
-            fields: [
-              { name: "nome", label: "Nome", type: "text", required: true, fullWidth: true },
-              { name: "username", label: "Usuário", type: "text", gridVisible: false },
-              { name: "email", label: "E-mail", type: "email" },
-              { name: "telefone", label: "Telefone", type: "text", gridVisible: false },
-              { name: "cpf", label: "CPF", type: "text", gridVisible: false },
-              { name: "senhaInicial", label: "Senha inicial", type: "text", minLength: 8, helperText: "Deixe em branco para manter a senha atual", gridVisible: false },
-              {
-                name: "perfil",
-                label: "Perfil",
-                type: "select",
-                options: [
-                  { label: "Administrador", value: "admin" },
-                  { label: "Gerente", value: "gerente" },
-                  { label: "Operador", value: "operador" },
-                  { label: "Visualizador", value: "visualizador" },
-                ],
-                gridVisible: false,
-              },
-              { name: "ativo", label: "Ativo", type: "switch", defaultValue: true, gridVisible: false },
-            ],
-            overrides: {
-              hiddenColumns: ["createdAt", "updatedAt"],
-              columns: 2,
-              newLabel: "Novo usuário",
-            },
+            kind: "custom",
+            componentId: "biblioteca-global-usuarios-gerais",
           },
         },
         {
