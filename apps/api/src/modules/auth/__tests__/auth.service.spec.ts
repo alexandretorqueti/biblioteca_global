@@ -33,8 +33,25 @@ class FakeAuthRepository implements AuthRepository {
   refreshTokens: (RefreshTokenRow & { tokenHash: string })[] = []
   emailVerifications: (EmailVerificationRow & { codeHash: string })[] = []
   consentimentos: { usuarioId: number; versaoPolitica: string; data: Date; ip: string | null }[] = []
+  logsLogin: {
+    usuarioId: number
+    email: string
+    metodo: "senha" | "codigo_email"
+    codigo: string | null
+    ip: string | null
+  }[] = []
   private proximoTokenId = 1
   private proximaVerificacaoId = 1
+
+  async registrarLogLogin(row: {
+    usuarioId: number
+    email: string
+    metodo: "senha" | "codigo_email"
+    codigo: string | null
+    ip: string | null
+  }): Promise<void> {
+    this.logsLogin.push(row)
+  }
 
   async findUsuarioByIdentifier(
     identifierType: LoginIdentifierType,
@@ -275,7 +292,7 @@ describe("AuthService", () => {
   })
 
   describe("login", () => {
-    it("aceita credencial válida e devolve refresh + projetos", async () => {
+    it("aceita credencial válida, devolve refresh + projetos e grava log sem código", async () => {
       const resposta = await service.login({
         identifier: "alexandre",
         password: SENHA,
@@ -288,6 +305,13 @@ describe("AuthService", () => {
       expect(resposta.projetos.map((p) => p.slug).sort()).toEqual(
         ["biblioteca-global", "documentacao", "gerenteagentes"],
       )
+      expect(repo.logsLogin).toEqual([{
+        usuarioId: 1,
+        email: "alexandre@globaltecnologia.com.br",
+        metodo: "senha",
+        codigo: null,
+        ip: null,
+      }])
     })
 
     it("rejeita senha errada", async () => {
@@ -298,6 +322,7 @@ describe("AuthService", () => {
           identifierType: "username",
         }),
       ).rejects.toBeInstanceOf(UnauthorizedException)
+      expect(repo.logsLogin).toHaveLength(0)
     })
 
     it("rejeita usuário inativo", async () => {
@@ -537,6 +562,13 @@ describe("AuthService", () => {
         expect(resposta.refreshToken).toBeTruthy()
         expect(resposta.usuario.email).toBe(EMAIL)
         expect(resposta.projetos).toHaveLength(0)
+        expect(repo.logsLogin).toEqual([{
+          usuarioId: 20,
+          email: EMAIL,
+          metodo: "codigo_email",
+          codigo: CODIGO,
+          ip: null,
+        }])
       })
 
       it("código errado → 401 e incrementa tentativas", async () => {
@@ -546,6 +578,7 @@ describe("AuthService", () => {
         ).rejects.toBeInstanceOf(UnauthorizedException)
         expect(repo.emailVerifications[0]?.attempts).toBe(1)
         expect(repo.emailVerifications[0]?.usedAt).toBeNull()
+        expect(repo.logsLogin).toHaveLength(0)
       })
 
       it("estouro de tentativas (5ª) invalida o código", async () => {
