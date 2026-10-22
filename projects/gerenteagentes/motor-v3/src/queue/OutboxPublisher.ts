@@ -83,9 +83,9 @@ export class OutboxPublisher {
       `INSERT INTO motor_outbox
         (message_id, type, destination_queue, task_id, execution_id, payload_json, timestamp, correlation_id, causation_id, status, attempt)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0)
-       ON DUPLICATE KEY UPDATE message_id = VALUES(message_id)`,
+       ON DUPLICATE KEY UPDATE message_id = message_id`,
       [message.messageId, message.type, destinationQueue, message.taskId, message.executionId,
-        JSON.stringify(message.payload), toMysqlDateTime(message.timestamp), message.correlationId ?? null,
+        JSON.stringify(message.payload), toMysqlDateTime(message.timestamp), message.correlationId ?? message.messageId,
         message.causationId ?? null],
     )
     if (this.started) await this.flush()

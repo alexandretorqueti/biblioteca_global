@@ -65,6 +65,15 @@ exactly-once para efeitos externos: se o processo cair depois de executar o
 efeito e antes de marcar `completed`, o efeito precisa ser idempotente por sua
 própria chave de negócio.
 
+Quando o Motor está inativo, atividades de início são confirmadas no broker e
+adiadas no `motor_outbox` com o mesmo `message_id` e `correlation_id` (o
+`message_id` é o fallback quando a correlação está ausente). A chave lógica
+`(type, task_id, correlation_id)` é única, portanto entregas concorrentes
+atualizam a mesma linha. O `defer_count` é separado de `attempt`: começa em
+zero para publicação e só conta adiamentos. O próximo atraso usa backoff de
+15s, 30s, 60s... até o teto de 5 minutos. Assim, a inatividade não consome as
+tentativas de processamento nem cria cópias da mesma atividade.
+
 Na inicialização, antes de drenar o outbox, o Motor reabre claims `processing`
 com mais de cinco minutos: muda-os para `pending` e republica a mensagem
 original a partir do `motor_outbox`. Assim, uma interrupção do processo não

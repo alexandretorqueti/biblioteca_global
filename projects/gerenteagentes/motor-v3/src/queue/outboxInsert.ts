@@ -15,8 +15,9 @@ export async function insertOutboxMessage(
 ): Promise<void> {
   await queryable.query(
     `INSERT INTO motor_outbox (message_id,type,destination_queue,task_id,execution_id,payload_json,timestamp,correlation_id,causation_id,status,attempt)
-     VALUES (?,?, ?,?,?,?,NOW(),?,?,'pending',0)`,
+     VALUES (?,?, ?,?,?,?,NOW(),?,?,'pending',0)
+     ON DUPLICATE KEY UPDATE message_id = message_id`,
     [message.messageId, message.type, destinationQueue, message.taskId, message.executionId,
-      JSON.stringify(message.payload), message.correlationId ?? null, message.causationId ?? null],
+      JSON.stringify(message.payload), message.correlationId ?? message.messageId, message.causationId ?? null],
   )
 }

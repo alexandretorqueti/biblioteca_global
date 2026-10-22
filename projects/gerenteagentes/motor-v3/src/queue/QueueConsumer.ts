@@ -160,17 +160,24 @@ export class QueueConsumer {
 
   private async deferUntilMotorIsActive(delivery: QueueDelivery): Promise<void> {
     const message = delivery.message
-    const deferredMessageId = randomUUID()
-    const delaySeconds = Math.max(1, Number(process.env.MOTOR_INACTIVE_RETRY_SECONDS || 15))
+    const correlationId = message.correlationId ?? message.messageId
+    const configuredDelaySeconds = Number(process.env.MOTOR_INACTIVE_RETRY_SECONDS || 15)
+    const initialDelaySeconds = Number.isFinite(configuredDelaySeconds)
+      ? Math.min(300, Math.max(15, configuredDelaySeconds))
+      : 15
     await this.pool.query(
       `INSERT INTO motor_outbox
         (message_id,type,destination_queue,task_id,execution_id,payload_json,timestamp,
-         correlation_id,causation_id,status,attempt)
-       VALUES (?,?,?,?,?,?,DATE_ADD(NOW(), INTERVAL ? SECOND),?,?,'pending',0)`,
-      [deferredMessageId, message.type, this.config.queue, message.taskId, message.executionId,
-        JSON.stringify(message.payload), delaySeconds, message.correlationId ?? message.messageId, message.messageId],
+         correlation_id,causation_id,status,attempt,defer_count)
+       VALUES (?,?,?,?,?,?,DATE_ADD(NOW(), INTERVAL ? SECOND),?,?,'pending',0,1)
+       ON DUPLICATE KEY UPDATE
+         timestamp = DATE_ADD(NOW(), INTERVAL LEAST(POW(2, defer_count) * 15, 300) SECOND),
+         defer_count = defer_count + 1,
+         updated_at = NOW()`,
+      [message.messageId, message.type, this.config.queue, message.taskId, message.executionId,
+        JSON.stringify(message.payload), initialDelaySeconds, correlationId, message.messageId],
     )
-    console.info(`[QueueConsumer] Motor inativo; atividade ${message.type} adiada por ${delaySeconds}s`)
+    console.info(`[QueueConsumer] Motor inativo; atividade ${message.type} adiada com backoff limitado`)
     this.transport.ack(delivery)
   }
 

@@ -206,6 +206,46 @@ describe('QueueConsumer', () => {
     await consumer.stop()
   })
 
+  it('coalesce adiamentos inativos preservando a identidade e o backoff', async () => {
+    const transport = new InMemoryQueueTransport()
+    const handler = vi.fn(async () => {})
+    const processingPool = createProcessingPool()
+    const deferredQueries: Array<{ sql: string; params: unknown[] }> = []
+    const originalQuery = processingPool.query
+    processingPool.query = vi.fn(async (sql: string, params?: unknown[]) => {
+      if (sql.includes("chave = 'motor.active'")) return [[{ valor: false }], []]
+      if (sql.includes('INSERT INTO motor_outbox')) {
+        deferredQueries.push({ sql, params: params ?? [] })
+        return [{ affectedRows: 1 }, []]
+      }
+      return originalQuery(sql, params ?? [])
+    })
+    const consumer = createConsumer(
+      transport,
+      handler,
+      3,
+      processingPool,
+      new MotorActivityGate(processingPool),
+    )
+    const message = createQueueMessage({
+      type: 'SUBTASK_EXECUTION_REQUESTED', taskId: 'task-coalesced', executionId: 'exec-coalesced', payload: {},
+    })
+
+    await consumer.start()
+    await transport.publish('motor.commands', message)
+    await transport.publish('motor.commands', message)
+    await transport.publish('motor.commands', message)
+
+    expect(deferredQueries).toHaveLength(3)
+    expect(deferredQueries.every(({ params }) => params[0] === message.messageId)).toBe(true)
+    expect(deferredQueries.every(({ params }) => params[7] === message.messageId)).toBe(true)
+    expect(deferredQueries[0].sql).toContain('ON DUPLICATE KEY UPDATE')
+    expect(deferredQueries[0].sql).toContain('defer_count = defer_count + 1')
+    expect(deferredQueries[0].sql).toContain('LEAST(POW(2, defer_count) * 15, 300)')
+    expect(handler).not.toHaveBeenCalled()
+    await consumer.stop()
+  })
+
   it('continua processando mensagens de conclusão quando o Motor está inativo', async () => {
     const transport = new InMemoryQueueTransport()
     const handler = vi.fn(async () => {})

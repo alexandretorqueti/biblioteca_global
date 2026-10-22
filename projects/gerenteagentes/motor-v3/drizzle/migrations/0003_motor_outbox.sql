@@ -10,12 +10,14 @@ CREATE TABLE IF NOT EXISTS `motor_outbox` (
   `causation_id` varchar(200) NULL,
   `status` enum('pending', 'published') NOT NULL DEFAULT 'pending',
   `attempt` int NOT NULL DEFAULT 0,
+  `defer_count` int NOT NULL DEFAULT 0,
   `last_error` text NULL,
   `published_at` timestamp NULL,
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `motor_outbox_message_id_unique` (`message_id`),
+  UNIQUE KEY `motor_outbox_logical_key_unique` (`type`, `task_id`, `correlation_id`),
   KEY `motor_outbox_pending_idx` (`status`, `id`),
   KEY `motor_outbox_task_idx` (`task_id`, `created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
