@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { TestGateService } from '../src/testing/TestGateService.js'
 import type { TestGateInput, TestRunResult } from '../src/testing/TestGateService.js'
+import type { Pool, RowDataPacket } from 'mysql2/promise'
 
 describe('TestGateService', () => {
   const service = new TestGateService({} as never)
@@ -66,6 +67,66 @@ describe('TestGateService', () => {
     releaseFirst()
     await Promise.all([first, second])
     expect(entered).toEqual(['baseline', 'monitor_recovery'])
+  })
+
+  describe('dryRunTargetPool (incidente tarefa 1023: dry-run no banco do projeto)', () => {
+    class ExposedGate extends TestGateService {
+      public resolveTargetPool(projectId: number) {
+        return this.dryRunTargetPool(projectId)
+      }
+    }
+
+    function mockMotorPool(responses: unknown[][]): { pool: Pool; query: ReturnType<typeof vi.fn> } {
+      const query = vi.fn()
+      for (const response of responses) query.mockResolvedValueOnce([response, []] as [RowDataPacket[], unknown])
+      return { pool: { query } as unknown as Pool, query }
+    }
+
+    it('usa o banco do projeto quando há mapeamento e schema provisionado', async () => {
+      const { pool, query } = mockMotorPool([
+        [{ plataforma_projeto_id: 8496 }],
+        [{ SCHEMA_NAME: 'projeto_8496' }],
+      ])
+      const gate = new ExposedGate(pool)
+      const target = await gate.resolveTargetPool(13)
+      try {
+        expect(target.owned).toBe(true)
+        expect(target.pool).not.toBe(pool)
+        const config = (target.pool as unknown as { pool: { config: { connectionConfig: { database: string } } } }).pool.config.connectionConfig
+        expect(config.database).toBe('projeto_8496')
+        expect(query.mock.calls[0]![0]).toContain('projetos_captados')
+        expect(query.mock.calls[0]![1]).toEqual([13])
+      } finally {
+        if (target.owned) await target.pool.end().catch(() => undefined)
+      }
+    })
+
+    it('mantém o pool do motor quando o projeto não tem plataforma_projeto_id', async () => {
+      const { pool } = mockMotorPool([[{ plataforma_projeto_id: null }]])
+      const gate = new ExposedGate(pool)
+      const target = await gate.resolveTargetPool(12)
+      expect(target.owned).toBe(false)
+      expect(target.pool).toBe(pool)
+    })
+
+    it('mantém o pool do motor quando o banco do projeto ainda não foi provisionado', async () => {
+      const { pool } = mockMotorPool([
+        [{ plataforma_projeto_id: 9999 }],
+        [],
+      ])
+      const gate = new ExposedGate(pool)
+      const target = await gate.resolveTargetPool(99)
+      expect(target.owned).toBe(false)
+      expect(target.pool).toBe(pool)
+    })
+
+    it('mantém o pool do motor quando o projeto não existe em projetos_captados', async () => {
+      const { pool } = mockMotorPool([[]])
+      const gate = new ExposedGate(pool)
+      const target = await gate.resolveTargetPool(1234)
+      expect(target.owned).toBe(false)
+      expect(target.pool).toBe(pool)
+    })
   })
 })
 // @vitest-environment node

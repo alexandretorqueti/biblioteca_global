@@ -5,6 +5,7 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { gzip as gzipCallback } from 'node:zlib'
+import mysql from 'mysql2/promise'
 import type { Pool, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
 import { MigrationDryRunError, MigrationDryRunExecutor, MigrationWatermarkError } from '../migrations/MigrationDryRunExecutor.js'
 
@@ -113,9 +114,14 @@ export class TestGateService {
     }
     // Dry-run de migrations: valida SQL adicionado em tabelas scratch antes de build/test.
     // Somente em pre_deploy e quando há baseCommitSha distinto do commitSha.
+    // O dry-run roda no BANCO DO PROJETO (projeto_<plataforma_projeto_id>), não no
+    // pool do motor — incidente tarefa 1023 (2026-10-22): ALTER TABLE sobre tabela
+    // criada em migration anterior falhava com errno 1146 porque a estrutura real
+    // só existe no banco do projeto (o mesmo alvo do ApplyProjectMigrationsCli).
     if (input.phase === 'pre_deploy' && input.baseCommitSha && input.baseCommitSha !== input.commitSha) {
+      const dryRunTarget = await this.dryRunTargetPool(input.projectId)
       try {
-        const dryRun = new MigrationDryRunExecutor(this.pool, input.taskDatabaseId)
+        const dryRun = new MigrationDryRunExecutor(dryRunTarget.pool, input.taskDatabaseId)
         await dryRun.execute(input.workspacePath, input.baseCommitSha)
       } catch (error) {
         if (error instanceof MigrationDryRunError) {
@@ -125,6 +131,8 @@ export class TestGateService {
           return this.failWithMigrationWatermarkError(input, error, startedAt, environment)
         }
         throw error
+      } finally {
+        if (dryRunTarget.owned) await dryRunTarget.pool.end().catch(() => undefined)
       }
     }
     let stdout = ''
@@ -202,6 +210,48 @@ export class TestGateService {
       preExistingFailures: compared.preExistingFailures, resolvedFailures: compared.resolvedFailures,
       stdout, stderr,
     }
+  }
+
+  /**
+   * Resolve o pool alvo do dry-run de migrations: o banco do projeto
+   * (`projeto_<plataforma_projeto_id>`, mapeado em `projetos_captados`), que é
+   * onde o deploy aplica as migrations (ApplyProjectMigrationsCli) e onde as
+   * tabelas de migrations anteriores realmente existem.
+   *
+   * Incidente tarefa 1023 (2026-10-22): o dry-run usava o pool do motor
+   * (projeto_640). `lembretes` (criada na 0000, já aplicada no banco do
+   * projeto) não existe lá; o clone tolerou a ausência e o `ALTER TABLE`
+   * reescrito para scratch falhou com errno 1146 — reprovação falsa de uma
+   * migration válida. Migrations só com CREATE TABLE passavam por acidente,
+   * o que manteve o bug latente até o primeiro ALTER.
+   *
+   * Sem mapeamento (plataforma_projeto_id nulo) ou banco ainda não
+   * provisionado: mantém o pool do motor (comportamento legado — o dry-run
+   * continua validando a sintaxe dos CREATE TABLE).
+   */
+  protected async dryRunTargetPool(projectId: number): Promise<{ pool: Pool; owned: boolean }> {
+    const [rows] = await this.pool.query<RowDataPacket[]>(
+      'SELECT plataforma_projeto_id FROM projetos_captados WHERE id = ?', [projectId],
+    )
+    const plataformaProjetoId = Number(rows[0]?.['plataforma_projeto_id'] ?? 0)
+    if (!Number.isInteger(plataformaProjetoId) || plataformaProjetoId <= 0) {
+      return { pool: this.pool, owned: false }
+    }
+    const database = `projeto_${plataformaProjetoId}`
+    const [schemas] = await this.pool.query<RowDataPacket[]>(
+      'SELECT SCHEMA_NAME FROM information_schema.schemata WHERE SCHEMA_NAME = ?', [database],
+    )
+    if (schemas.length === 0) return { pool: this.pool, owned: false }
+    const pool = mysql.createPool({
+      host: process.env.MOTOR_MYSQL_HOST || process.env.MYSQL_HOST || 'host.docker.internal',
+      port: Number(process.env.MOTOR_MYSQL_PORT || process.env.MYSQL_PORT || 3308),
+      user: process.env.MOTOR_MYSQL_USER || process.env.MYSQL_USER || 'biblioteca',
+      password: process.env.MOTOR_MYSQL_PASSWORD || process.env.MYSQL_PASSWORD || '',
+      database,
+      charset: 'utf8mb4',
+      connectionLimit: 2,
+    })
+    return { pool, owned: true }
   }
 
   async failuresForRun(runId: number): Promise<TestFailureRecord[]> {
