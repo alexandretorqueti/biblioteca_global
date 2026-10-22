@@ -273,6 +273,7 @@ export class SubtaskExecutionConsumer {
           + Number(process.env.MOTOR_RABBITMQ_CONSUMER_TIMEOUT_MS || 5_400_000)
           - Number(process.env.MOTOR_RABBITMQ_ACK_SAFETY_MS || 300_000),
         execution.completionKind === null,
+        ...(execution.completionKind ? [execution.completionKind] : []),
       )
     } finally {
       clearInterval(leaseHeartbeat)
@@ -359,6 +360,7 @@ export class SubtaskExecutionConsumer {
       noCode,
       this.scopeEvidence(execution),
       execution.completionKind === null,
+      ...(execution.completionKind ? [execution.completionKind] : []),
     )
     const next = (result.success && noCode) || (result.success && result.noChangesNeeded)
       ? await this.repository.completeNoCodeExecution(execution, input.message, input.response, result.legacyNoCodeChange === true)
@@ -556,6 +558,7 @@ export class SubtaskExecutionConsumer {
           '**ESCOPO**': context.scope,
           '**CRITERIOSACEITE**': context.acceptanceCriteria.join('; ') || 'validar o resultado solicitado',
           '**WORKSPACE**': workspacePath,
+          '**COMPLETION_KIND**': context.completionKind ?? 'legado/ausente',
         }
         const resolved = await this.promptResolver.resolve({
           key: 'dev.primeira_rodada_tarefa',
@@ -595,11 +598,18 @@ export class SubtaskExecutionConsumer {
       `Edite exclusivamente o workspace autorizado acima. É proibido editar o checkout principal em ${context.repoPath}.`,
       'Preserve mudanças existentes, não altere outros projetos e não faça push ou deploy.',
       ...generationNote,
-      ...(['analysis', 'no_code_change', 'external_operation'].includes(context.completionKind ?? '')
+      `Classificação da subtarefa (completion_kind): ${context.completionKind ?? 'legado/ausente'}`,
+      ...(['analysis', 'no_code_change'].includes(context.completionKind ?? '')
         ? [
             'Esta subtarefa é analítica/sem alteração de código. Entregue o resultado solicitado sem modificar o Git.',
             'Quando a subtarefa não exigir alteração no código-fonte (ex: apenas executar testes, verificar configuração, confirmar comportamento), use ::DONE:: acompanhado de ::NO_CHANGES:: na resposta final.',
           ]
+        : context.completionKind === 'external_operation'
+          ? [
+              'Esta subtarefa depende de uma operação externa e não exige diff Git.',
+              'Antes de ::DONE::, responda obrigatoriamente com evidência estruturada em duas linhas: "O que foi feito: <ação executada>" e "Como verificar: <passos, comando, URL, estado ou outro critério observável>".',
+              '::DONE:: sozinho, ou sem os dois campos preenchidos, será recusado e a subtarefa será reenviada para retry.',
+            ]
         : []),
       'Ao terminar e validar, inclua o marcador ::DONE:: na resposta final.',
     ].join('\n')

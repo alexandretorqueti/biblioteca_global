@@ -370,6 +370,46 @@ describe('WorkerLauncher', () => {
     expect(mocks.runBuild.handler).not.toHaveBeenCalled()
   })
 
+  it('recusa ::DONE:: seco para external_operation', async () => {
+    launcher = new WorkerLauncher({ maxAttempts: 1 })
+    mocks.createSession.handler.mockResolvedValue({ success: true })
+    mocks.sendMessage.handler.mockResolvedValue({ success: true })
+    mocks.waitForCompletion.handler.mockResolvedValue({ success: true, data: { response: '::DONE::' } })
+    mocks.parseReply.handler.mockResolvedValue({ success: true, data: { hasDoneMarker: true } })
+    mocks.verifyGit.handler.mockResolvedValue({ success: true, data: { hasChanges: false } })
+
+    const result = await launcher.executeTask(mockContext, 'Executar operação externa', [], undefined, undefined, true, undefined, false, 'external_operation')
+
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('external_operation exige evidência estruturada')
+    expect(mocks.verifyGit.handler).not.toHaveBeenCalled()
+  })
+
+  it('aceita external_operation com o que foi feito e como verificar, sem diff Git', async () => {
+    mocks.createSession.handler.mockResolvedValue({ success: true })
+    mocks.sendMessage.handler.mockResolvedValue({ success: true })
+    mocks.waitForCompletion.handler.mockResolvedValue({
+      success: true,
+      data: { response: 'O que foi feito: configurei a integração externa.\nComo verificar: consultar o estado da integração no painel.\n::DONE::' },
+    })
+    mocks.parseReply.handler.mockResolvedValue({ success: true, data: { hasDoneMarker: true } })
+    mocks.verifyGit.handler.mockResolvedValue({ success: true, data: { hasChanges: false } })
+
+    const result = await launcher.executeTask(mockContext, 'Executar operação externa', [], undefined, undefined, true, undefined, false, 'external_operation')
+
+    expect(result).toMatchObject({ success: true, hasChanges: false, buildPassed: true, attempts: 1 })
+  })
+
+  it('recusa external_operation sem evidência também na recuperação de sessão', async () => {
+    mocks.parseReply.handler.mockResolvedValue({ success: true, data: { hasDoneMarker: true } })
+
+    const result = await launcher.recoverCompletedTask(mockContext, '::DONE::', undefined, true, [], false, 'external_operation')
+
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('external_operation exige evidência estruturada')
+    expect(mocks.verifyGit.handler).not.toHaveBeenCalled()
+  })
+
   it('should exhaust max attempts and fail', async () => {
     mocks.createSession.handler.mockResolvedValue({ success: true })
     mocks.sendMessage.handler.mockResolvedValue({ success: true })

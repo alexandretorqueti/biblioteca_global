@@ -680,6 +680,13 @@
       "when": 1792900000002,
       "tag": "0096_analysis_clarification_checkpoints",
       "breakpoints": true
+    },
+    {
+      "idx": 97,
+      "version": "5",
+      "when": 1792900000003,
+      "tag": "0097_external_operation_evidence_prompt",
+      "breakpoints": true
     }
   ]
 }
