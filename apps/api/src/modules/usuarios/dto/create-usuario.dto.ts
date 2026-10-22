@@ -60,3 +60,43 @@ export class CreateUsuarioDto {
   @IsBoolean()
   ativo?: boolean
 }
+
+/**
+ * Criação no cadastro geral: cria somente a conta global. O vínculo com
+ * qualquer projeto é uma operação separada de administração.
+ */
+export class CreateUsuarioGlobalDto {
+  @IsDefined()
+  @IsString()
+  @IsNotEmpty()
+  nome!: string
+
+  @IsDefined()
+  @IsString()
+  @MinLength(8)
+  senhaInicial!: string
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  username?: string
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  email?: string
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  telefone?: string
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  cpf?: string
+
+  @IsOptional()
+  @IsBoolean()
+  ativo?: boolean
+}

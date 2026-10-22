@@ -24,8 +24,8 @@ import { ProjectScopeGuard } from "../../common/guards/project-scope.guard"
 import { RolesGuard } from "../../common/guards/roles.guard"
 import type { ProjectScope } from "../../common/types"
 // DTOs com import de VALOR (o ValidationPipe resolve a classe em runtime).
-import { CreateUsuarioDto } from "./dto/create-usuario.dto"
-import { ListUsuariosQueryDto } from "./dto/list-usuarios-query.dto"
+import { CreateUsuarioDto, CreateUsuarioGlobalDto } from "./dto/create-usuario.dto"
+import { ListUsuariosGlobaisQueryDto, ListUsuariosQueryDto } from "./dto/list-usuarios-query.dto"
 import { UpdateUsuarioDto } from "./dto/update-usuario.dto"
 import { VincularDto } from "./dto/vincular.dto"
 import { UsuariosService } from "./usuarios.service"
@@ -43,6 +43,74 @@ export class UsuariosController {
   constructor(
     @Inject(UsuariosService) private readonly service: UsuariosService,
   ) {}
+
+  @Get(["gerais", "globais"])
+  @UseGuards(GlobalAdminGuard, RolesGuard)
+  @Roles("admin")
+  listarGlobais(
+    @CurrentUser() usuario: ProjectScope["usuario"],
+    @CurrentProject() projeto: ProjectScope["projeto"],
+    @Query() query: ListUsuariosGlobaisQueryDto,
+  ) {
+    return this.service.listarGlobais(escopoDe(usuario, projeto), query)
+  }
+
+  @Post(["gerais", "globais"])
+  @UseGuards(GlobalAdminGuard, RolesGuard)
+  @Roles("admin")
+  criarGlobal(
+    @CurrentUser() usuario: ProjectScope["usuario"],
+    @CurrentProject() projeto: ProjectScope["projeto"],
+    @Body() dto: CreateUsuarioGlobalDto,
+  ) {
+    return this.service.criarGlobal(escopoDe(usuario, projeto), dto)
+  }
+
+  @Put(["gerais/:id", "globais/:id"])
+  @UseGuards(GlobalAdminGuard, RolesGuard)
+  @Roles("admin")
+  editarGlobal(
+    @CurrentUser() usuario: ProjectScope["usuario"],
+    @CurrentProject() projeto: ProjectScope["projeto"],
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: UpdateUsuarioDto,
+  ) {
+    return this.service.editarGlobal(escopoDe(usuario, projeto), id, dto)
+  }
+
+  @Delete(["gerais/:id", "globais/:id"])
+  @UseGuards(GlobalAdminGuard, RolesGuard)
+  @Roles("admin")
+  async excluirGlobal(
+    @CurrentUser() usuario: ProjectScope["usuario"],
+    @CurrentProject() projeto: ProjectScope["projeto"],
+    @Param("id", ParseIntPipe) id: number,
+  ): Promise<{ ok: boolean }> {
+    await this.service.excluirGlobal(escopoDe(usuario, projeto), id)
+    return { ok: true }
+  }
+
+  @Get(":id/vinculos")
+  @UseGuards(GlobalAdminGuard, RolesGuard)
+  @Roles("admin")
+  vinculos(
+    @CurrentUser() usuario: ProjectScope["usuario"],
+    @CurrentProject() projeto: ProjectScope["projeto"],
+    @Param("id", ParseIntPipe) id: number,
+  ) {
+    return this.service.detalharVinculos(escopoDe(usuario, projeto), id)
+  }
+
+  @Get(["gerais/:id", "globais/:id"])
+  @UseGuards(GlobalAdminGuard, RolesGuard)
+  @Roles("admin")
+  detalheGlobal(
+    @CurrentUser() usuario: ProjectScope["usuario"],
+    @CurrentProject() projeto: ProjectScope["projeto"],
+    @Param("id", ParseIntPipe) id: number,
+  ) {
+    return this.service.detalharVinculos(escopoDe(usuario, projeto), id)
+  }
 
   @Get()
   listar(
@@ -81,6 +149,18 @@ export class UsuariosController {
   @UseGuards(GlobalAdminGuard, RolesGuard)
   @Roles("admin")
   vincular(
+    @CurrentUser() usuario: ProjectScope["usuario"],
+    @CurrentProject() projeto: ProjectScope["projeto"],
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: VincularDto,
+  ) {
+    return this.service.vincular(escopoDe(usuario, projeto), id, dto)
+  }
+
+  @Put(":id/vinculos")
+  @UseGuards(GlobalAdminGuard, RolesGuard)
+  @Roles("admin")
+  vincularAlias(
     @CurrentUser() usuario: ProjectScope["usuario"],
     @CurrentProject() projeto: ProjectScope["projeto"],
     @Param("id", ParseIntPipe) id: number,

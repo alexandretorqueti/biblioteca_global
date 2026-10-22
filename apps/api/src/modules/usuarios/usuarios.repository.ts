@@ -26,6 +26,17 @@ export interface UsuarioListItem {
   updatedAt: Date
 }
 
+export type UsuarioGlobalListItem = Omit<UsuarioListItem, "perfil"> & {
+  perfil: null
+}
+
+export interface UsuarioVinculo {
+  projetoId: number
+  projetoNome: string
+  projetoSlug: string
+  perfil: Perfil
+}
+
 export interface ListarUsuariosFiltros {
   search?: string
   page: number
@@ -37,8 +48,16 @@ export interface UsuariosRepository {
     projetoId: number,
     filtros: ListarUsuariosFiltros,
   ): Promise<{ items: UsuarioListItem[]; total: number }>
+  listarTodos(
+    filtros: ListarUsuariosFiltros,
+  ): Promise<{ items: UsuarioGlobalListItem[]; total: number }>
   findById(id: number): Promise<UsuarioRow | undefined>
   findByEmail(email: string): Promise<UsuarioRow | undefined>
+  findByIdentificador(
+    campo: "username" | "email" | "telefone" | "cpf",
+    valor: string,
+  ): Promise<UsuarioRow | undefined>
+  listarVinculos(usuarioId: number): Promise<UsuarioVinculo[]>
   findVinculo(usuarioId: number, projetoId: number): Promise<Perfil | undefined>
   criarUsuario(row: {
     nome: string
@@ -141,6 +160,42 @@ export class DrizzleUsuariosRepository implements UsuariosRepository {
     return linhas.at(0)
   }
 
+  async listarTodos(
+    filtros: ListarUsuariosFiltros,
+  ): Promise<{ items: UsuarioGlobalListItem[]; total: number }> {
+    const busca = filtros.search?.trim()
+    const onde = busca
+      ? or(
+          like(usuarios.nome, `%${busca}%`),
+          like(usuarios.username, `%${busca}%`),
+          like(usuarios.email, `%${busca}%`),
+        )
+      : undefined
+    const total = await this.db
+      .select({ quantidade: sql<number>`count(*)` })
+      .from(usuarios)
+      .where(onde)
+    const linhas = await this.db
+      .select({
+        id: usuarios.id,
+        nome: usuarios.nome,
+        username: usuarios.username,
+        email: usuarios.email,
+        telefone: usuarios.telefone,
+        cpf: usuarios.cpf,
+        ativo: usuarios.ativo,
+        perfil: sql<null>`NULL`,
+        createdAt: usuarios.createdAt,
+        updatedAt: usuarios.updatedAt,
+      })
+      .from(usuarios)
+      .where(onde)
+      .orderBy(usuarios.nome)
+      .limit(filtros.pageSize)
+      .offset((filtros.page - 1) * filtros.pageSize)
+    return { items: linhas, total: Number(total.at(0)?.quantidade ?? 0) }
+  }
+
   async findByEmail(email: string): Promise<UsuarioRow | undefined> {
     const linhas = await this.db
       .select()
@@ -148,6 +203,33 @@ export class DrizzleUsuariosRepository implements UsuariosRepository {
       .where(eq(usuarios.email, email))
       .limit(1)
     return linhas.at(0)
+  }
+
+  async findByIdentificador(
+    campo: "username" | "email" | "telefone" | "cpf",
+    valor: string,
+  ): Promise<UsuarioRow | undefined> {
+    const coluna = usuarios[campo]
+    const linhas = await this.db
+      .select()
+      .from(usuarios)
+      .where(eq(coluna, valor))
+      .limit(1)
+    return linhas.at(0)
+  }
+
+  async listarVinculos(usuarioId: number): Promise<UsuarioVinculo[]> {
+    return this.db
+      .select({
+        projetoId: projetos.id,
+        projetoNome: projetos.nome,
+        projetoSlug: projetos.slug,
+        perfil: projetosUsuarios.perfil,
+      })
+      .from(projetosUsuarios)
+      .innerJoin(projetos, eq(projetos.id, projetosUsuarios.projetoId))
+      .where(eq(projetosUsuarios.usuarioId, usuarioId))
+      .orderBy(projetos.nome)
   }
 
   async findVinculo(

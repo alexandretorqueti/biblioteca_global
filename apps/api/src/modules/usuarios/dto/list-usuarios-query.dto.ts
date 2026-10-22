@@ -27,3 +27,23 @@ export class ListUsuariosQueryDto {
   @IsPositive()
   projetoId?: number
 }
+
+/** Filtros da listagem global, que não depende de vínculos. */
+export class ListUsuariosGlobaisQueryDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @IsPositive()
+  page?: number
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @IsPositive()
+  @Max(100)
+  pageSize?: number
+
+  @IsOptional()
+  @IsString()
+  search?: string
+}
