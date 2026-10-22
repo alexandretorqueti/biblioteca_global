@@ -4,6 +4,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises
 import { spawn, type ChildProcess } from "node:child_process"
 import { tmpdir } from "node:os"
 import { resolve } from "node:path"
+import { execPath } from "node:process"
 import { afterEach, describe, expect, it } from "vitest"
 
 /** Coleta stderr de um ChildProcess em memória. */
@@ -60,19 +61,22 @@ printf '%s\\n' 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDOMecXLXUjZfcJAt
   )
   await writeExecutable(
     "node",
-    `#!/bin/sh
-if [ "$1" = "projects/gerenteagentes/motor-v3/dist/start.js" ]; then
-  echo "motor-started" >> "$ENTRYPOINT_TEST_EVENTS"
-  echo "$$" > "$ENTRYPOINT_TEST_MOTOR_PID"
-  if [ "$ENTRYPOINT_TEST_MOTOR_MODE" = "early-fail" ]; then
-    exit 23
-  fi
-  trap 'echo "motor-terminated" >> "$ENTRYPOINT_TEST_EVENTS"; exit 0' TERM INT
-  while :; do sleep 0.05; done
-fi
-echo "api-started" >> "$ENTRYPOINT_TEST_EVENTS"
-trap 'echo "api-terminated" >> "$ENTRYPOINT_TEST_EVENTS"; exit 0' TERM INT
-while :; do sleep 0.05; done
+    `#!${execPath}
+const { appendFileSync, writeFileSync } = require("node:fs")
+const isMotor = process.argv[2] === "projects/gerenteagentes/motor-v3/dist/start.js"
+const role = isMotor ? "motor" : "api"
+appendFileSync(process.env.ENTRYPOINT_TEST_EVENTS, role + "-started\\n")
+if (isMotor) {
+  writeFileSync(process.env.ENTRYPOINT_TEST_MOTOR_PID, String(process.pid))
+  if (process.env.ENTRYPOINT_TEST_MOTOR_MODE === "early-fail") process.exit(23)
+}
+const terminate = () => {
+  appendFileSync(process.env.ENTRYPOINT_TEST_EVENTS, role + "-terminated\\n")
+  process.exit(0)
+}
+process.on("SIGTERM", terminate)
+process.on("SIGINT", terminate)
+setInterval(() => {}, 1_000)
 `,
   )
 
@@ -192,16 +196,19 @@ printf '%s\\n' 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDOMecXLXUjZfcJAt
   )
   await writeExecutable(
     "node",
-    `#!/bin/sh
-if [ "$1" = "projects/gerenteagentes/motor-v3/dist/start.js" ]; then
-  echo "motor-started" >> "$ENTRYPOINT_TEST_EVENTS"
-  echo "$$" > "$ENTRYPOINT_TEST_MOTOR_PID"
-  trap 'echo "motor-terminated" >> "$ENTRYPOINT_TEST_EVENTS"; exit 0' TERM INT
-  while :; do sleep 0.05; done
-fi
-echo "api-started" >> "$ENTRYPOINT_TEST_EVENTS"
-trap 'echo "api-terminated" >> "$ENTRYPOINT_TEST_EVENTS"; exit 0' TERM INT
-while :; do sleep 0.05; done
+    `#!${execPath}
+const { appendFileSync, writeFileSync } = require("node:fs")
+const isMotor = process.argv[2] === "projects/gerenteagentes/motor-v3/dist/start.js"
+const role = isMotor ? "motor" : "api"
+appendFileSync(process.env.ENTRYPOINT_TEST_EVENTS, role + "-started\\n")
+if (isMotor) writeFileSync(process.env.ENTRYPOINT_TEST_MOTOR_PID, String(process.pid))
+const terminate = () => {
+  appendFileSync(process.env.ENTRYPOINT_TEST_EVENTS, role + "-terminated\\n")
+  process.exit(0)
+}
+process.on("SIGTERM", terminate)
+process.on("SIGINT", terminate)
+setInterval(() => {}, 1_000)
 `,
   )
 
