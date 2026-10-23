@@ -8,6 +8,7 @@ import type { TaskEventSink } from './TaskEventRecorder.js'
 import type { AnalysisFailureSink } from './AnalysisFailureBlocker.js'
 import type { GovernedFailureHandler } from '../governance/GovernedFailureHandler.js'
 import type { ErrorInput } from '../classifier/EventClassifier.js'
+import type { ClarificationCheckpointStore, ClarificationResumeInput } from './ClarificationCheckpoints.js'
 
 export type TaskLifecycleStatus = DerivedTaskStatus
 export type AnalysisClaimResult = boolean | 'capacity_waiting'
@@ -79,6 +80,15 @@ export interface AnalysisRunner {
   start(task: TaskSnapshot, executionId: string): Promise<AnalysisOutcome>
 }
 
+/**
+ * Capacidade opcional do runner: retomar a análise na MESMA sessão do
+ * analista a partir de um checkpoint de clarificação, sem reenviar a
+ * investigação integral (tarefa task-p2-1040).
+ */
+export interface ClarificationResumeRunner {
+  resumeClarification(task: TaskSnapshot, executionId: string, input: ClarificationResumeInput): Promise<AnalysisOutcome>
+}
+
 export interface TaskCoordinatorConfig {
   analysisExecutionId?: (message: QueueMessage) => string
   commandPolicies?: CommandPolicyRepository
@@ -107,6 +117,12 @@ export interface TaskCoordinatorConfig {
   deployLock?: { isDeployLocked(): Promise<boolean>; requeueForDeployRetry(message: QueueMessage, reason: string): Promise<void> }
   /** Requeue durável quando não há vaga de análise, sem consumir tentativa do broker. */
   analysisCapacity?: { requeueForDeployRetry(message: QueueMessage, reason: string): Promise<void> }
+  /**
+   * Checkpoints de clarificação. Quando presente (e o runner suporta
+   * `resumeClarification`), uma resposta de clarificação retoma a análise na
+   * sessão anterior em vez de reiniciar a investigação.
+   */
+  checkpoints?: ClarificationCheckpointStore
   /**
    * Roteador opcional do catálogo para falhas de análise. Quando ausente, o
    * coordenador mantém integralmente o comportamento legado.
@@ -140,6 +156,7 @@ export class TaskCoordinator {
   private readonly deployLock?: { isDeployLocked(): Promise<boolean>; requeueForDeployRetry(message: QueueMessage, reason: string): Promise<void> }
   private readonly analysisCapacity?: { requeueForDeployRetry(message: QueueMessage, reason: string): Promise<void> }
   private readonly governedFailureHandler?: GovernedFailureHandler
+  private readonly checkpoints?: ClarificationCheckpointStore
 
   constructor(
     private readonly repository: TaskCoordinatorRepository,
@@ -160,6 +177,7 @@ export class TaskCoordinator {
     this.deployLock = config.deployLock
     this.analysisCapacity = config.analysisCapacity
     this.governedFailureHandler = config.governedFailureHandler
+    this.checkpoints = config.checkpoints
   }
 
   async handle(message: QueueMessage): Promise<void> {
@@ -291,11 +309,22 @@ export class TaskCoordinator {
       // A projeção do status pode já enxergar a última mensagem do usuário e
       // retornar `planned`. O comando durável é a fonte de verdade de que esta
       // execução é uma retomada; preserve isso para o resolvedor do prompt.
-      const analysisTask = message.payload.reason === 'clarification_response'
+      const isClarificationResponse = message.payload.reason === 'clarification_response'
+      const analysisTask = isClarificationResponse
         ? { ...task, status: 'awaiting_clarification' as const }
         : task
-      const outcome = await this.runner.start(analysisTask, executionId)
-      await this.log(operationId, sequence++, 'primitive', 'succeeded', message, { primitiveCode: 'start_analyst', result: { executionId, analysisAttempt, outcome: outcome.kind } })
+      // Retomada incremental (task-p2-1040): com checkpoint válido, continua
+      // na mesma sessão do analista em vez de reiniciar a investigação.
+      const clarificationResume = isClarificationResponse
+        ? await this.prepareClarificationResume(task, executionId, message)
+        : null
+      const outcome = clarificationResume
+        ? await (this.runner as unknown as ClarificationResumeRunner).resumeClarification(analysisTask, executionId, clarificationResume)
+        : await this.runner.start(analysisTask, executionId)
+      await this.log(operationId, sequence++, 'primitive', 'succeeded', message, { primitiveCode: clarificationResume ? 'resume_analyst_clarification' : 'start_analyst', result: { executionId, analysisAttempt, outcome: outcome.kind, ...(clarificationResume ? { checkpointId: clarificationResume.checkpointId, roundNumber: clarificationResume.roundNumber } : {}) } })
+      if (clarificationResume) {
+        await this.checkpoints?.consumeClarificationCheckpoint(clarificationResume.checkpointId, executionId)
+      }
       await this.repository.persistAnalysis(task.taskId, executionId, outcome)
       await this.repository.releaseAnalysisClaim(task.taskId, executionId)
       if (outcome.kind === 'questions') {
@@ -359,6 +388,67 @@ export class TaskCoordinator {
           console.warn(`[TaskCoordinator] falha ao remover lease de análise ${executionId}:`, this.errorMessage(leaseError))
         })
       }
+    }
+  }
+
+  /**
+   * Prepara a retomada incremental de uma resposta de clarificação.
+   *
+   * Retorna `null` (com justificativa auditada em `tarefa_eventos`) quando o
+   * fluxo incremental não está disponível — runner sem suporte, checkpoint
+   * inexistente/inválido ou conflito de reivindicação. Nesses casos o
+   * coordenador recai na análise completa (`runner.start`), que reinjeta o
+   * histórico do chat no prompt de retomada.
+   */
+  private async prepareClarificationResume(task: TaskSnapshot, executionId: string, message: QueueMessage): Promise<ClarificationResumeInput | null> {
+    const store = this.checkpoints
+    if (!store || typeof (this.runner as Partial<ClarificationResumeRunner>).resumeClarification !== 'function') return null
+    const checkpoint = await store.findPendingClarificationCheckpoint(task.taskId)
+    if (!checkpoint) {
+      await this.recordEvent(task.taskId, 'analysis_clarification_checkpoint_missing', {
+        executionId,
+        justification: 'nenhum checkpoint awaiting_response válido; retomada via análise completa com histórico do chat',
+      })
+      return null
+    }
+    if (!checkpoint.sessionKey || !checkpoint.runtimeSessionId) {
+      await this.recordEvent(task.taskId, 'analysis_clarification_checkpoint_unusable', {
+        executionId,
+        checkpointId: checkpoint.id,
+        justification: 'checkpoint sem sessão/runtime vinculada; retomada via análise completa com histórico do chat',
+      })
+      return null
+    }
+    const rawChatMessageId = Number(message.payload.chatMessageId ?? Number.NaN)
+    const answer = await store.findClarificationAnswer(task.taskId, Number.isInteger(rawChatMessageId) ? rawChatMessageId : null)
+    const claimed = await store.claimClarificationCheckpoint(checkpoint.id, executionId, answer?.chatMessageId ?? null)
+    if (!claimed) {
+      await this.recordEvent(task.taskId, 'analysis_clarification_resume_conflict', {
+        executionId,
+        checkpointId: checkpoint.id,
+        justification: 'checkpoint indisponível para reivindicação (consumido, superado ou reivindicado por outra execução)',
+      })
+      return null
+    }
+    await this.recordEvent(task.taskId, 'analysis_clarification_resumed', {
+      executionId,
+      checkpointId: checkpoint.id,
+      roundNumber: checkpoint.roundNumber,
+      sessionKey: checkpoint.sessionKey,
+      runtimeSessionId: checkpoint.runtimeSessionId,
+      analysisExecutionId: checkpoint.analysisExecutionId,
+      answerChatMessageId: answer?.chatMessageId ?? null,
+    })
+    return {
+      checkpointId: checkpoint.id,
+      roundNumber: checkpoint.roundNumber,
+      sessionKey: checkpoint.sessionKey,
+      runtimeSessionId: checkpoint.runtimeSessionId,
+      model: checkpoint.model,
+      modelAttempt: checkpoint.modelAttempt,
+      analysisAttemptId: checkpoint.analysisAttemptId,
+      questions: checkpoint.questions,
+      answer,
     }
   }
 

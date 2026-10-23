@@ -284,14 +284,37 @@ async function start() {
         analystSessionRows.set(session.sessionId, Number(result.insertId))
         analystSessionSequences.set(session.sessionId, 0)
       }),
-      onSessionResumed: async (session) => auditAnalyst(async () => {
+      onSessionResumed: async (session, context) => auditAnalyst(async () => {
         const [rows] = await pool.query<any[]>(`SELECT s.id, COALESCE(MAX(m.sequence_number), 0) AS last_sequence
           FROM analyst_task_sessions s LEFT JOIN analyst_task_session_messages m ON m.session_id = s.id
-          WHERE s.runtime_session_id = ? AND s.status = 'active' GROUP BY s.id ORDER BY s.id DESC LIMIT 1`, [session.sessionId])
+          WHERE s.runtime_session_id = ? AND s.status IN ('active', 'awaiting_clarification') GROUP BY s.id ORDER BY s.id DESC LIMIT 1`, [session.sessionId])
         if (!rows[0]?.id) return
         analystSessionRows.set(session.sessionId, Number(rows[0].id))
         analystSessionSequences.set(session.sessionId, Number(rows[0].last_sequence ?? 0))
-        await pool.query('UPDATE analyst_task_sessions SET last_activity_at = NOW() WHERE id = ?', [rows[0].id])
+        // Retomada (recovery ou clarificação) religa a sessão à execução atual:
+        // o reconciliador de recuperação e o WorkerActivity correlacionam por
+        // analysis_execution_id, que precisa refletir o claim vigente.
+        await pool.query(
+          `UPDATE analyst_task_sessions
+              SET status = 'active',
+                  analysis_execution_id = COALESCE(?, analysis_execution_id),
+                  analysis_attempt_id = COALESCE(?, analysis_attempt_id),
+                  model_attempt = COALESCE(?, model_attempt),
+                  close_reason = NULL, closed_at = NULL, last_activity_at = NOW()
+            WHERE id = ?`,
+          [context.executionId ?? null, context.analysisAttemptId ?? null, context.modelAttempt ?? null, rows[0].id],
+        )
+      }),
+      onClarificationCheckpoint: async (session) => auditAnalyst(async () => {
+        // Perguntas emitidas: a sessão permanece aberta aguardando a resposta
+        // do usuário; o reconciliador de órfãs só trata status='active'.
+        const sessionRowId = analystSessionRows.get(session.sessionId)
+        if (sessionRowId) await pool.query(
+          `UPDATE analyst_task_sessions
+              SET status = 'awaiting_clarification', close_reason = NULL, closed_at = NULL, last_activity_at = NOW()
+            WHERE id = ? AND status IN ('active', 'awaiting_clarification')`,
+          [sessionRowId],
+        )
       }),
       onMessageSent: async (session, message, context) => auditAnalyst(async () => {
         const sessionRowId = analystSessionRows.get(session.sessionId)
@@ -376,6 +399,9 @@ async function start() {
       maxAnalysisAttempts: Number(process.env.MOTOR_QUEUE_MAX_ATTEMPTS || 3),
       deployLock: deployRepository,
       analysisCapacity: deployRepository,
+      // Retomada incremental de clarificação (task-p2-1040): o repositório
+      // persiste/localiza checkpoints com fencing por executionId.
+      checkpoints: repository,
       publishTaskReady: async (source, payload) => {
         if (!outboxPublisher) throw new Error('Outbox indisponível para TASK_READY_FOR_PROGRAMMING')
         await outboxPublisher.enqueue(createQueueMessage({

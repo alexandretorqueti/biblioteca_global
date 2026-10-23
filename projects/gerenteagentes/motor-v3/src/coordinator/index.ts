@@ -2,11 +2,24 @@ export {
   TaskCoordinator,
   type AnalysisRunner,
   type AnalysisExecutionLeaseRepository,
+  type ClarificationResumeRunner,
   type TaskCoordinatorConfig,
   type TaskCoordinatorRepository,
   type TaskLifecycleStatus,
   type TaskSnapshot,
 } from './TaskCoordinator.js'
+export {
+  insertClarificationCheckpoint,
+  supersedePendingClarificationCheckpoints,
+  parseCheckpointQuestions,
+  type CheckpointQueryable,
+  type ClarificationAnswer,
+  type ClarificationCheckpointOutcome,
+  type ClarificationCheckpointRecord,
+  type ClarificationCheckpointStatus,
+  type ClarificationCheckpointStore,
+  type ClarificationResumeInput,
+} from './ClarificationCheckpoints.js'
 export { MySqlTaskCoordinatorRepository } from './MySqlTaskCoordinatorRepository.js'
 export { RealtimeMutationPublisher, type RealtimeMutationPublisherConfig, type DeletedTaskRealtimeIdentity } from '../realtime/RealtimeMutationPublisher.js'
 export { RealtimeMutationBoundary } from '../realtime/RealtimeMutationBoundary.js'

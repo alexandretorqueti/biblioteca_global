@@ -70,3 +70,59 @@ export function buildAnalysisPromptBlock(chunk: string, index: number, total: nu
 export function buildAnalysisPromptActivation(total: number): string {
   return `Todos os ${total} blocos das instruções foram enviados. Agora execute a análise usando a descrição e todos os blocos recebidos. Responda somente no formato exigido pelo contrato indicado.`
 }
+
+/**
+ * Referência de descrição para retomada incremental de clarificação: a
+ * descrição integral já foi enviada na sessão anterior e NÃO é reenviada.
+ */
+export function buildClarificationDescriptionReference(): string {
+  return 'A descrição integral já foi enviada nesta sessão na rodada anterior de análise (retomada incremental após clarificação). Não reenviada; use o contexto já memorizado, do INÍCIO ao FIM DA DESCRIÇÃO.'
+}
+
+/**
+ * Confirmação anexada ao prompt de retomada: pergunta(s) pendente(s) da
+ * rodada e a resposta do usuário, com a instrução de continuação contextual
+ * sem repetição de perguntas já respondidas (salvo justificativa explícita).
+ */
+export function buildClarificationAnswerConfirmation(input: {
+  roundNumber: number
+  questions: string[]
+  answer: { chatMessageId: number | null; texto: string } | null
+}): string {
+  const lines = [
+    `[RETOMADA DE CLARIFICAÇÃO — RODADA ${input.roundNumber}]`,
+    'Perguntas que estavam pendentes nesta sessão:',
+    ...input.questions.map((question, index) => `${index + 1}. ${question}`),
+    '',
+    input.answer
+      ? `Resposta do usuário${input.answer.chatMessageId != null ? ` (mensagem de chat #${input.answer.chatMessageId})` : ''}: ${input.answer.texto}`
+      : 'Nenhuma resposta nova foi registrada; considere o histórico de esclarecimentos já presente nesta sessão e no histórico acima.',
+    '',
+    'Continue a análise a partir do contexto já investigado nesta sessão, sem reiniciar a investigação e sem reler a descrição integral.',
+    'Não repita perguntas já respondidas; se precisar repetir alguma, registre a justificativa explícita no resumo da resposta.',
+  ]
+  return lines.join('\n')
+}
+
+/**
+ * Prompt de continuação usado quando não há resolvedor de prompt gerenciado
+ * (testes/fallback). Mantém a mesma semântica da versão gerenciada.
+ */
+export function buildClarificationContinuation(
+  task: { title: string; taskId: string; taskType: string },
+  input: {
+    roundNumber: number
+    questions: string[]
+    answer: { chatMessageId: number | null; texto: string } | null
+  },
+): string {
+  return [
+    `[RETOMADA DE CLARIFICAÇÃO — RODADA ${input.roundNumber}]`,
+    `Continue a análise da tarefa "${task.title}" (ID: ${task.taskId}, tipo: ${task.taskType}) nesta mesma sessão.`,
+    'Não reinicie a investigação nem releia a descrição integral: use o contexto já enviado e memorizado nesta sessão.',
+    '',
+    buildClarificationAnswerConfirmation(input),
+    '',
+    'Responda somente com o JSON final conforme o contrato de análise: plano completo com requisitos e matriz de cobertura, verificação direta (quando aplicável) ou novas perguntas objetivas (kind="perguntas") apenas se indispensáveis.',
+  ].join('\n')
+}

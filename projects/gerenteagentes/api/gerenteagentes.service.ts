@@ -39,6 +39,7 @@ import {
   taskRuntimeFacts,
   analystTaskSessions,
   analystTaskSessionMessages,
+  analysisClarificationCheckpoints,
   tarefaEventos,
   tarefaChatEntregas,
   motorOutbox,
@@ -2075,6 +2076,25 @@ export class GerenteAgentesService {
     texto: string,
   ): Promise<void> {
     const db = await this.dbDoMotor();
+    // Retomada incremental (task-p2-1040): quando há checkpoint de
+    // clarificação pendente, o Motor é o dono da retomada — ele entrega a
+    // resposta na mesma sessão do analista com o contrato de análise. A
+    // entrega direta aqui concorreria com a retomada na mesma sessão.
+    const [checkpointPendente] = await db.select({ id: analysisClarificationCheckpoints.id })
+      .from(analysisClarificationCheckpoints)
+      .where(and(
+        eq(analysisClarificationCheckpoints.tarefaId, tarefa.id),
+        eq(analysisClarificationCheckpoints.status, 'awaiting_response'),
+      ))
+      .limit(1);
+    if (checkpointPendente) {
+      await db.update(tarefaChatEntregas).set({
+        estado: 'cancelled',
+        erro: 'Entrega direta ignorada: retomada incremental gerenciada pelo Motor (checkpoint de clarificação pendente)',
+        updatedAt: new Date(),
+      }).where(eq(tarefaChatEntregas.mensagemId, mensagemId)).catch(() => undefined);
+      return;
+    }
     const [sessao] = await db.select({
       id: analystTaskSessions.id,
       sessionKey: analystTaskSessions.sessionKey,

@@ -266,7 +266,14 @@ export class AnalysisSessionRecoveryReconciler {
     const executionId = String(row.analysis_execution_id)
     await this.repository.persistAnalysis(task.taskId, executionId, outcome)
     await this.repository.releaseAnalysisClaim(task.taskId, executionId)
-    await this.pool.query(`UPDATE analyst_task_sessions SET status='completed', close_reason='analysis_recovered', closed_at=NOW(), last_activity_at=NOW() WHERE id=? AND status='active'`, [row.session_id])
+    if (outcome.kind === 'questions') {
+      // A sessão fica aberta aguardando a resposta do usuário; o checkpoint
+      // persistido pelo persistAnalysis permite a retomada incremental na
+      // mesma sessão (task-p2-1040).
+      await this.pool.query(`UPDATE analyst_task_sessions SET status='awaiting_clarification', close_reason=NULL, closed_at=NULL, last_activity_at=NOW() WHERE id=? AND status='active'`, [row.session_id])
+    } else {
+      await this.pool.query(`UPDATE analyst_task_sessions SET status='completed', close_reason='analysis_recovered', closed_at=NOW(), last_activity_at=NOW() WHERE id=? AND status='active'`, [row.session_id])
+    }
     if (outcome.kind === 'plan') {
       await this.record(task.taskId, 'analysis_recovered_completed', { sessionId: row.session_id, executionId, subtaskCount: outcome.subtasks.length })
       await this.config.publishTaskReady(task.taskId, executionId, outcome.subtasks.length)

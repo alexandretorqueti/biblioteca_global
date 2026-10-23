@@ -12,4 +12,7 @@ export {
   splitAnalysisPrompt,
   buildAnalysisPromptBlock,
   buildAnalysisPromptActivation,
+  buildClarificationDescriptionReference,
+  buildClarificationAnswerConfirmation,
+  buildClarificationContinuation,
 } from './PromptChunking.js'

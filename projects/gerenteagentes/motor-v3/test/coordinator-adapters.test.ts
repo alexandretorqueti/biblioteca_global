@@ -16,6 +16,8 @@ describe('coordinator adapters', () => {
       beginTransaction: vi.fn(async () => {}), rollback: vi.fn(async () => {}), commit: vi.fn(async () => {}), release: vi.fn(),
       query: vi.fn()
         .mockResolvedValueOnce([[{ id: 42, tipo: 'desenvolvimento' }], []])
+        // supersede de checkpoints de clarificação pendentes (task-p2-1040)
+        .mockResolvedValueOnce([{}, []])
         .mockResolvedValueOnce([[], []])
         .mockResolvedValueOnce([{ insertId: 100 }, []])
         .mockResolvedValueOnce([{}, []])
