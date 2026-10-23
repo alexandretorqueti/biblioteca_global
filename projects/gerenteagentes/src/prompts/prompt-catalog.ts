@@ -78,8 +78,8 @@ export const AGENT_PROMPT_CATALOG: readonly AgentPromptCatalogEntry[] = [
     agentType: "analista",
     situation: "retomada_apos_clarificacao",
     source: "motor-v3/src/analysis/ManagedAnalysisPromptResolver.ts#resolve",
-    markers: ["**TITULOTAREFA**", "**DESCRICAOTAREFA**", "**HISTORICOCLARIFICACAO**"],
-    prompt: "Reanalise **TITULOTAREFA** usando a descrição integral: **DESCRICAOTAREFA**. Histórico já respondido: **HISTORICOCLARIFICACAO**. Se o tipo for verificacao e estiver claro, faça a verificação diretamente e retorne o parecer no contrato, sem criar subtarefas, DEV ou worktree. Se ainda houver dúvida, faça perguntas objetivas. Para os demais tipos, devolva plano completo com requisitos e matriz de cobertura.\n\n**CONTRATOSAIDA**",
+    markers: ["**TITULOTAREFA**", "**IDTAREFA**", "**TIPOTAREFA**", "**DESCRICAOTAREFA**", "**HISTORICOCLARIFICACAO**"],
+    prompt: "Continue a análise da tarefa **TITULOTAREFA** (ID: **IDTAREFA**, tipo: **TIPOTAREFA**) a partir do contexto já investigado nesta sessão. Esta é uma retomada incremental após clarificação: NÃO reinicie a investigação, NÃO releia nem solicite o reenvio da descrição integral (ela já foi enviada nesta sessão; referência: **DESCRICAOTAREFA**) e NÃO repita análises já realizadas.\n\nHistórico completo de perguntas e respostas: **HISTORICOCLARIFICACAO**.\n\nIncorpore as novas respostas e continue de onde parou. Não repita perguntas já respondidas; só volte a perguntar algo já respondido se houver justificativa explícita registrada no resumo (por exemplo, resposta contraditória ou insuficiente). Novas perguntas somente se indispensáveis.\n\nSe o tipo for verificacao e a solicitação estiver clara, faça a verificação diretamente e retorne o parecer no contrato de verificação, sem criar subtarefas, sem acionar DEV e sem worktree. Caso contrário, devolva plano completo, executável e verificável, com requisitos e matriz de cobertura, preservando todos os requisitos e etapas.\n\n**CONTRATOSAIDA**",
     contractKey: "analista.plano_ou_perguntas",
   },
   {

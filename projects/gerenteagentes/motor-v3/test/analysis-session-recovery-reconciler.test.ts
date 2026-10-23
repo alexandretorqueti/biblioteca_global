@@ -307,4 +307,52 @@ describe('AnalysisSessionRecoveryReconciler', () => {
     expect(motorActivityGate.isActive).toHaveBeenCalledTimes(1)
     expect(repository.getTask).toHaveBeenCalledWith(task.taskId)
   })
+  it('perguntas recuperadas mantêm a sessão em awaiting_clarification para retomada incremental', async () => {
+    const questionsJson = JSON.stringify({ kind: 'perguntas', resumo: 'preciso confirmar', perguntas: ['Prefere A ou B?'] })
+    const queries: Array<{ sql: string; params: unknown[] }> = []
+    const pool = {
+      query: vi.fn(async (sql: string, params: unknown[] = []) => {
+        queries.push({ sql: String(sql), params })
+        const sqlStr = String(sql)
+        if (/LEFT JOIN motor_active_executions/i.test(sqlStr)) {
+          return [[recoveryRow]]
+        }
+        if (/f\.analysis_started_at IS NULL OR f\.analysis_execution_id != s\.analysis_execution_id/i.test(sqlStr)) {
+          return [[]]
+        }
+        return [{ affectedRows: 1 }]
+      }),
+    } as unknown as Pool
+    const repository = {
+      getTask: vi.fn(async () => task),
+      persistAnalysis: vi.fn(async () => undefined),
+      releaseAnalysisClaim: vi.fn(async () => undefined),
+      claimAnalysis: vi.fn(),
+      acquireAnalysisLease: vi.fn(async () => undefined),
+      heartbeatAnalysisLease: vi.fn(async () => undefined),
+      releaseAnalysisLease: vi.fn(async () => undefined),
+    } as unknown as TaskCoordinatorRepository
+    const runner = { resume: vi.fn() } as unknown as ConsoleAnalystRunner
+    const consoleApi = { getSessionStatus: vi.fn(async () => ({ isComplete: true, lastResponse: questionsJson })) } as unknown as AnalystConsole
+    const events = { record: vi.fn(async () => undefined) }
+    const publishTaskReady = vi.fn(async () => undefined)
+    const reconciler = new AnalysisSessionRecoveryReconciler(pool, repository, runner, consoleApi, {
+      taskEvents: events,
+      publishTaskReady,
+    })
+
+    await expect(reconciler.reconcile()).resolves.toBeUndefined()
+    await vi.waitFor(() => expect(events.record).toHaveBeenCalledWith(task.taskId, 'analysis_recovered_clarification', 'motor', expect.objectContaining({ sessionId: 55, executionId: 'exec-recovery-868', questionCount: 1 })))
+
+    // A análise recuperada é persistida e o claim liberado com fencing.
+    expect(repository.persistAnalysis).toHaveBeenCalledWith(task.taskId, 'exec-recovery-868', expect.objectContaining({ kind: 'questions' }))
+    expect(repository.releaseAnalysisClaim).toHaveBeenCalledWith(task.taskId, 'exec-recovery-868')
+    // A sessão NÃO é concluída: fica aguardando a resposta do usuário para a
+    // retomada incremental na mesma sessão (task-p2-1040).
+    const awaiting = queries.find(query => query.sql.includes("status='awaiting_clarification'"))
+    expect(awaiting?.params).toEqual([55])
+    expect(queries.some(query => query.sql.includes("close_reason='analysis_recovered'"))).toBe(false)
+    expect(runner.resume).not.toHaveBeenCalled()
+    expect(publishTaskReady).not.toHaveBeenCalled()
+  })
 })

@@ -674,6 +674,35 @@ export const analystTaskSessionMessages = mysqlTable("analyst_task_session_messa
 })
 
 /**
+ * Checkpoints de clarificação da análise (task-p2-1040). Uma linha por rodada
+ * de perguntas do analista, vinculando sessão/runtime, execuções de análise e
+ * retomada, pergunta(s), resposta e evidências. Append-only: rodadas antigas
+ * viram 'superseded'/'consumed', nunca são apagadas.
+ */
+export const analysisClarificationCheckpoints = mysqlTable("analysis_clarification_checkpoints", {
+  id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+  tarefaId: bigint("tarefa_id", { mode: "number", unsigned: true }).notNull().references(() => tarefas.id, { onDelete: "cascade" }),
+  roundNumber: int("round_number").notNull().default(1),
+  sessionKey: varchar("session_key", { length: 300 }),
+  runtimeSessionId: varchar("runtime_session_id", { length: 300 }),
+  model: varchar("model", { length: 200 }),
+  modelAttempt: int("model_attempt").notNull().default(1),
+  analysisAttemptId: varchar("analysis_attempt_id", { length: 100 }),
+  analysisExecutionId: varchar("analysis_execution_id", { length: 200 }).notNull(),
+  resumeExecutionId: varchar("resume_execution_id", { length: 200 }),
+  analystSessionId: bigint("analyst_session_id", { mode: "number", unsigned: true }),
+  questions: json("questions").$type<string[]>().notNull(),
+  summary: text("summary"),
+  evidence: json("evidence").$type<string[]>(),
+  answerChatMessageId: bigint("answer_chat_message_id", { mode: "number", unsigned: true }),
+  status: varchar("status", { length: 30 }).notNull().default("awaiting_response"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  answeredAt: timestamp("answered_at"),
+  consumedAt: timestamp("consumed_at"),
+  updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+})
+
+/**
  * Histórico de entregas/erros/retornos por subtarefa.
  * Cada evento relevante (entrega iniciada, gate rejeitado, retorno para rework,
  * bloqueio, conclusão) grava uma linha nova — nunca sobrescreve o histórico anterior.

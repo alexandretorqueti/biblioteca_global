@@ -114,6 +114,21 @@ export class TaskCancelConsumer {
         `UPDATE bloqueios SET resolved_at = NOW() WHERE tarefa_id = ? AND resolved_at IS NULL`,
         [task.id],
       )
+      // Cancelamento invalida checkpoints de clarificação pendentes e fecha
+      // sessões do analista que aguardavam resposta (append-only: nada é
+      // apagado; o histórico permanece auditável).
+      await connection.query(
+        `UPDATE analysis_clarification_checkpoints
+            SET status = 'superseded', updated_at = NOW()
+          WHERE tarefa_id = ? AND status IN ('awaiting_response', 'answered')`,
+        [task.id],
+      )
+      await connection.query(
+        `UPDATE analyst_task_sessions
+            SET status = 'superseded', close_reason = 'task_cancelled', closed_at = NOW(), last_activity_at = NOW()
+          WHERE tarefa_id = ? AND status = 'awaiting_clarification'`,
+        [task.id],
+      )
       cancelledDeploys = await cancelUnstartedDeployRequests(connection, task.id, {
         blocker: 'task_cancelled', resolvedBy: ator, motivo: motivo ?? 'Tarefa cancelada administrativamente',
         createTombstone: true,

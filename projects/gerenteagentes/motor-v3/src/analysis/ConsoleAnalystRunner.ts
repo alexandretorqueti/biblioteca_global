@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { access, stat } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import type { AnalysisRunner, TaskSnapshot } from '../coordinator/TaskCoordinator.js'
+import type { ClarificationResumeInput } from '../coordinator/ClarificationCheckpoints.js'
 import { mapHostRepoPathToContainer } from '../execution/GitWorktreePreparer.js'
 import type { GovernedFailureHandler } from '../governance/GovernedFailureHandler.js'
 import { parseAnalystReply, type AnalysisOutcome } from './AnalystReply.js'
@@ -12,6 +13,9 @@ import {
   buildAnalysisDescriptionReference,
   buildAnalysisPromptActivation,
   buildAnalysisPromptBlock,
+  buildClarificationAnswerConfirmation,
+  buildClarificationContinuation,
+  buildClarificationDescriptionReference,
   isContextAcknowledgement,
   splitAnalysisDescription,
   splitAnalysisPrompt,
@@ -71,6 +75,13 @@ export interface ConsoleAnalystRunnerConfig {
   onResponseReceived?: (session: AnalystSession, response: string, context: AnalystSessionAuditContext) => Promise<void>
   onSessionCompleted?: (session: AnalystSession, context: AnalystSessionAuditContext) => Promise<void>
   onSessionFailure?: (session: AnalystSession | undefined, error: Error, context: AnalystSessionAuditContext) => Promise<void>
+  /**
+   * Emitido quando o analista devolve perguntas: a sessão permanece aberta
+   * aguardando a resposta do usuário (checkpoint de clarificação) em vez de
+   * ser concluída. A persistência do checkpoint em si acontece no
+   * repositório (persistAnalysis), na mesma transação do chat.
+   */
+  onClarificationCheckpoint?: (session: AnalystSession, outcome: { summary: string; questions: string[] }, context: AnalystSessionAuditContext) => Promise<void>
 }
 
 export class ConsoleAnalystRunner implements AnalysisRunner {
@@ -95,6 +106,7 @@ export class ConsoleAnalystRunner implements AnalysisRunner {
       onResponseReceived: config.onResponseReceived,
       onSessionCompleted: config.onSessionCompleted,
       onSessionFailure: config.onSessionFailure,
+      onClarificationCheckpoint: config.onClarificationCheckpoint,
     }
   }
 
@@ -178,7 +190,7 @@ export class ConsoleAnalystRunner implements AnalysisRunner {
         const content = await wait(phase)
         try {
           const outcome = parseAnalystReply(content, resolvedPrompt.contractSchema, task.taskType)
-          await this.config.onSessionCompleted?.(session, audit('completed', lastMessageKey))
+          await this.announceOutcome(session, outcome, audit, lastMessageKey)
           return outcome
         } catch (parseError) {
           // Mesmo modelo recebe uma única oportunidade de reparar a resposta
@@ -188,7 +200,7 @@ export class ConsoleAnalystRunner implements AnalysisRunner {
           await send(phase, this.correctiveFeedback(error, resolvedPrompt.contractText))
           phase = 'corrected_response'
           const outcome = parseAnalystReply(await wait(phase), resolvedPrompt.contractSchema, task.taskType)
-          await this.config.onSessionCompleted?.(session, audit('completed', lastMessageKey))
+          await this.announceOutcome(session, outcome, audit, lastMessageKey)
           return outcome
         }
       } catch (error) {
@@ -256,14 +268,14 @@ export class ConsoleAnalystRunner implements AnalysisRunner {
       await this.config.onResponseReceived?.(session, response, audit('recovery_response', messageKey))
       try {
         const outcome = parseAnalystReply(response, resolvedPrompt.contractSchema, task.taskType)
-        await this.config.onSessionCompleted?.(session, audit('completed', messageKey))
+        await this.announceOutcome(session, outcome, audit, messageKey)
         return outcome
       } catch (error) {
         messageKey = await send('recovery_correction', this.correctiveFeedback(asError(error), resolvedPrompt.contractText))
         response = await this.waitForResult(session, task)
         await this.config.onResponseReceived?.(session, response, audit('recovery_corrected_response', messageKey))
         const outcome = parseAnalystReply(response, resolvedPrompt.contractSchema, task.taskType)
-        await this.config.onSessionCompleted?.(session, audit('completed', messageKey))
+        await this.announceOutcome(session, outcome, audit, messageKey)
         return outcome
       }
     } catch (error) {
@@ -271,6 +283,81 @@ export class ConsoleAnalystRunner implements AnalysisRunner {
       await this.config.onSessionFailure?.(session, failure, audit('recovery'))
       throw failure
     }
+  }
+
+  /**
+   * Retomada incremental após clarificação (task-p2-1040): continua a análise
+   * NA MESMA sessão do analista a partir do checkpoint persistido, sem
+   * recriar sessão nem reenviar os blocos de descrição/investigação. A
+   * mensagem de retomada instrui a continuação contextual e veda a repetição
+   * de perguntas já respondidas, salvo justificativa explícita.
+   */
+  async resumeClarification(task: TaskSnapshot, executionId: string, input: ClarificationResumeInput): Promise<AnalysisOutcome> {
+    const session: AnalystSession = { sessionId: input.runtimeSessionId, sessionKey: input.sessionKey, agentId: task.agentId }
+    const analysisAttemptId = input.analysisAttemptId ?? randomUUID()
+    const modelAttempt = Number(input.modelAttempt) || 1
+    const baseContext: AnalystSessionAuditContext = {
+      taskId: task.taskId, executionId, analysisAttemptId, modelAttempt,
+      ...(input.model ? { model: input.model } : {}), phase: 'clarification_resume',
+    }
+    let sequence = 0
+    let lastMessageKey: string | undefined
+    const audit = (phase: string, messageKey?: string): AnalystSessionAuditContext => ({ ...baseContext, phase, ...(messageKey ? { messageKey } : {}) })
+    const send = async (phase: string, message: string): Promise<string> => {
+      const messageKey = `${analysisAttemptId}:clarification:${++sequence}`
+      lastMessageKey = messageKey
+      await this.consoleApi.sendMessage({ session, message })
+      await this.config.onMessageSent?.(session, message, audit(phase, messageKey))
+      return messageKey
+    }
+    try {
+      await this.config.onSessionResumed?.(session, audit('clarification_resume_claimed'))
+      const resolvedPrompt = this.config.promptResolver
+        ? await this.config.promptResolver.resolve(task, executionId, {
+            descriptionReference: buildClarificationDescriptionReference(),
+            confirmation: buildClarificationAnswerConfirmation(input),
+            chunkCount: 0,
+            descriptionLength: (task.description || '').trim().length,
+          })
+        : { text: buildClarificationContinuation(task, input), contractText: '', contractSchema: undefined }
+      let messageKey = await send('clarification_resume', resolvedPrompt.text)
+      let response = await this.waitForResult(session, task)
+      await this.config.onResponseReceived?.(session, response, audit('clarification_response', messageKey))
+      let outcome: AnalysisOutcome
+      try {
+        outcome = parseAnalystReply(response, resolvedPrompt.contractSchema, task.taskType)
+      } catch (parseError) {
+        messageKey = await send('clarification_correction', this.correctiveFeedback(asError(parseError), resolvedPrompt.contractText))
+        response = await this.waitForResult(session, task)
+        await this.config.onResponseReceived?.(session, response, audit('clarification_corrected_response', messageKey))
+        outcome = parseAnalystReply(response, resolvedPrompt.contractSchema, task.taskType)
+      }
+      await this.announceOutcome(session, outcome, audit, lastMessageKey)
+      return outcome
+    } catch (error) {
+      const failure = this.annotateError(asError(error), { task, executionId, analysisAttemptId, modelAttempt, model: input.model ?? undefined, phase: 'clarification_resume' })
+      await this.config.onSessionFailure?.(session, failure, audit('clarification_resume'))
+      throw failure
+    }
+  }
+
+  /**
+   * Desfecho da análise: perguntas mantêm a sessão aberta aguardando resposta
+   * (checkpoint de clarificação); plano/verificação concluem a sessão. Sem o
+   * callback de checkpoint (consumidores legados), preserva o comportamento
+   * anterior de concluir a sessão.
+   */
+  private async announceOutcome(
+    session: AnalystSession,
+    outcome: AnalysisOutcome,
+    audit: (phase: string, messageKey?: string) => AnalystSessionAuditContext,
+    messageKey?: string,
+  ): Promise<void> {
+    if (outcome.kind === 'questions' && this.config.onClarificationCheckpoint) {
+      await this.config.onClarificationCheckpoint(session, { summary: outcome.summary, questions: outcome.questions }, audit('clarification_checkpoint', messageKey))
+      return
+    }
+    await this.config.onSessionCompleted?.(session, audit('completed', messageKey))
   }
 
   private async waitForResult(session: AnalystSession, task: TaskSnapshot): Promise<string> {

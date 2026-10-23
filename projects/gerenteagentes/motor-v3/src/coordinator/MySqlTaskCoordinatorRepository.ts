@@ -1,6 +1,14 @@
 import type { Pool, PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
 import type { AnalysisClaimResult, AnalysisExecutionLeaseRepository, TaskCoordinatorRepository, TaskLifecycleStatus, TaskSnapshot, TaskDependencySnapshot, CapacityWaitProjection } from './TaskCoordinator.js'
 import type { AnalysisOutcome } from '../analysis/AnalystReply.js'
+import {
+  insertClarificationCheckpoint,
+  parseCheckpointQuestions,
+  supersedePendingClarificationCheckpoints,
+  type ClarificationAnswer,
+  type ClarificationCheckpointRecord,
+  type ClarificationCheckpointStore,
+} from './ClarificationCheckpoints.js'
 import { DerivedTaskStatusResolver } from '../status/DerivedTaskStatus.js'
 import { RealtimeMutationBoundary } from '../realtime/RealtimeMutationBoundary.js'
 import type { RealtimeMutationPublisher } from '../realtime/RealtimeMutationPublisher.js'
@@ -49,7 +57,7 @@ interface DependencyRow extends RowDataPacket {
 }
 
 /** Repositório MySQL do claim inicial de análise. */
-export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository, AnalysisExecutionLeaseRepository {
+export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository, AnalysisExecutionLeaseRepository, ClarificationCheckpointStore {
   private readonly statusResolver: DerivedTaskStatusResolver
 
   private readonly realtime: RealtimeMutationBoundary
@@ -334,7 +342,17 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
            WHERE tarefa_id = ?`,
           [databaseTaskId],
         )
+        // Checkpoint de clarificação (task-p2-1040): rodadas anteriores são
+        // superadas e a rodada atual fica vinculada à sessão/executionId para
+        // retomada incremental. Append-only: nada é apagado.
+        await supersedePendingClarificationCheckpoints(connection, databaseTaskId)
+        await insertClarificationCheckpoint(connection, {
+          tarefaId: databaseTaskId,
+          executionId,
+          outcome: { summary: outcome.summary, questions: outcome.questions },
+        })
       } else if (outcome.kind === 'verification') {
+        await supersedePendingClarificationCheckpoints(connection, databaseTaskId)
         if (String(taskRows[0]?.external_id ?? taskId).startsWith('setup-')) {
           const candidate = outcome.evidence.map(value => {
             try { return JSON.parse(value) as unknown } catch { return null }
@@ -374,6 +392,7 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
         )
         await this.realtime.append(connection, databaseTaskId, before, { after: 'closed' })
       } else {
+        await supersedePendingClarificationCheckpoints(connection, databaseTaskId)
         const [existing] = await connection.query<RowDataPacket[]>(
           'SELECT id FROM subtarefas WHERE tarefa_id = ? LIMIT 1 FOR UPDATE', [databaseTaskId],
         )
@@ -472,6 +491,113 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
   }
 
   /** Libera os auto_start retidos e reemite o comando de análise de forma durável. */
+  // ==========================================================================
+  // ClarificationCheckpointStore (task-p2-1040) — retomada incremental da
+  // análise após clarificação, com fencing por executionId e auditoria.
+  // ==========================================================================
+
+  async findPendingClarificationCheckpoint(taskId: string): Promise<ClarificationCheckpointRecord | null> {
+    const [rows] = await this.pool.query<RowDataPacket[]>(
+      `SELECT c.id, c.round_number, c.session_key, c.runtime_session_id, c.model, c.model_attempt,
+              c.analysis_attempt_id, c.analysis_execution_id, c.questions, c.summary,
+              COALESCE(t.external_id, CAST(t.id AS CHAR)) AS task_external_id
+         FROM analysis_clarification_checkpoints c
+        INNER JOIN tarefas t ON t.id = c.tarefa_id
+        WHERE (t.external_id = ? OR CAST(t.id AS CHAR) = ?)
+          AND c.status = 'awaiting_response'
+        ORDER BY c.round_number DESC, c.id DESC
+        LIMIT 1`,
+      [taskId, taskId],
+    )
+    const row = rows[0]
+    if (!row) return null
+    return {
+      id: Number(row.id),
+      taskId: String(row.task_external_id),
+      roundNumber: Number(row.round_number ?? 1),
+      sessionKey: row.session_key != null ? String(row.session_key) : null,
+      runtimeSessionId: row.runtime_session_id != null ? String(row.runtime_session_id) : null,
+      model: row.model != null ? String(row.model) : null,
+      modelAttempt: Number(row.model_attempt ?? 1),
+      analysisAttemptId: row.analysis_attempt_id != null ? String(row.analysis_attempt_id) : null,
+      analysisExecutionId: String(row.analysis_execution_id),
+      questions: parseCheckpointQuestions(row.questions),
+      summary: row.summary != null ? String(row.summary) : null,
+    }
+  }
+
+  async claimClarificationCheckpoint(checkpointId: number, resumeExecutionId: string, answerChatMessageId: number | null): Promise<boolean> {
+    const connection = await this.pool.getConnection()
+    try {
+      await connection.beginTransaction()
+      const [rows] = await connection.query<RowDataPacket[]>(
+        'SELECT status FROM analysis_clarification_checkpoints WHERE id = ? FOR UPDATE',
+        [checkpointId],
+      )
+      const status = rows[0]?.status != null ? String(rows[0].status) : null
+      if (status !== 'awaiting_response' && status !== 'answered') {
+        await connection.rollback()
+        return false
+      }
+      // `answered` é re-reivindicável: cobre o retry do broker e o restart do
+      // Motor entre a reivindicação e a conclusão da retomada. O fencing fica
+      // no registro do resumeExecutionId mais recente.
+      await connection.query(
+        `UPDATE analysis_clarification_checkpoints
+            SET status = 'answered',
+                resume_execution_id = ?,
+                answer_chat_message_id = COALESCE(?, answer_chat_message_id),
+                answered_at = COALESCE(answered_at, NOW()),
+                updated_at = NOW()
+          WHERE id = ?`,
+        [resumeExecutionId, answerChatMessageId, checkpointId],
+      )
+      await connection.commit()
+      return true
+    } catch (error) {
+      await connection.rollback()
+      throw error
+    } finally {
+      connection.release()
+    }
+  }
+
+  async consumeClarificationCheckpoint(checkpointId: number, resumeExecutionId: string): Promise<void> {
+    await this.pool.query(
+      `UPDATE analysis_clarification_checkpoints
+          SET status = 'consumed', consumed_at = NOW(), updated_at = NOW()
+        WHERE id = ? AND resume_execution_id = ? AND status = 'answered'`,
+      [checkpointId, resumeExecutionId],
+    )
+  }
+
+  async findClarificationAnswer(taskId: string, chatMessageId?: number | null): Promise<ClarificationAnswer | null> {
+    if (chatMessageId != null) {
+      const [rows] = await this.pool.query<RowDataPacket[]>(
+        `SELECT c.id, c.texto
+           FROM tarefa_chats c
+          INNER JOIN tarefas t ON t.id = c.tarefa_id
+          WHERE (t.external_id = ? OR CAST(t.id AS CHAR) = ?)
+            AND c.id = ? AND c.role = 'user'
+          LIMIT 1`,
+        [taskId, taskId, chatMessageId],
+      )
+      if (rows[0]) return { chatMessageId: Number(rows[0].id), texto: String(rows[0].texto ?? '') }
+    }
+    const [rows] = await this.pool.query<RowDataPacket[]>(
+      `SELECT c.id, c.texto
+         FROM tarefa_chats c
+        INNER JOIN tarefas t ON t.id = c.tarefa_id
+        WHERE (t.external_id = ? OR CAST(t.id AS CHAR) = ?)
+          AND c.role = 'user'
+        ORDER BY c.id DESC
+        LIMIT 1`,
+      [taskId, taskId],
+    )
+    if (!rows[0]) return null
+    return { chatMessageId: Number(rows[0].id), texto: String(rows[0].texto ?? '') }
+  }
+
   private async releaseProjectTasksAfterSetup(connection: PoolConnection, projectId: number, projectSlug: string): Promise<void> {
     if (!Number.isInteger(projectId) || projectId <= 0) return
     const [rows] = await connection.query<Array<RowDataPacket & { id: number; external_id: string | null }>>(

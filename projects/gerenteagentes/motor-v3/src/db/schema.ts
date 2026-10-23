@@ -216,3 +216,31 @@ export const analystTaskSessionMessages = mysqlTable('analyst_task_session_messa
   occurredAt: timestamp('occurred_at'),
   createdAt: timestamp('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
 })
+
+// ============================================================
+// analysis_clarification_checkpoints — retomada incremental da análise
+// após clarificação (task-p2-1040). Append-only: rodadas antigas viram
+// 'superseded'/'consumed', nunca são apagadas.
+// ============================================================
+export const analysisClarificationCheckpoints = mysqlTable('analysis_clarification_checkpoints', {
+  id: bigint('id', { mode: 'number' }).primaryKey().autoincrement(),
+  tarefaId: bigint('tarefa_id', { mode: 'number' }).notNull(),
+  roundNumber: int('round_number').notNull().default(1),
+  sessionKey: varchar('session_key', { length: 300 }),
+  runtimeSessionId: varchar('runtime_session_id', { length: 300 }),
+  model: varchar('model', { length: 200 }),
+  modelAttempt: int('model_attempt').notNull().default(1),
+  analysisAttemptId: varchar('analysis_attempt_id', { length: 100 }),
+  analysisExecutionId: varchar('analysis_execution_id', { length: 200 }).notNull(),
+  resumeExecutionId: varchar('resume_execution_id', { length: 200 }),
+  analystSessionId: bigint('analyst_session_id', { mode: 'number' }),
+  questions: json('questions').$type<string[]>().notNull(),
+  summary: text('summary'),
+  evidence: json('evidence').$type<string[]>(),
+  answerChatMessageId: bigint('answer_chat_message_id', { mode: 'number' }),
+  status: varchar('status', { length: 30 }).notNull().default('awaiting_response'),
+  createdAt: timestamp('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
+  answeredAt: timestamp('answered_at'),
+  consumedAt: timestamp('consumed_at'),
+  updatedAt: timestamp('updated_at').notNull().default(sql`CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP`),
+})

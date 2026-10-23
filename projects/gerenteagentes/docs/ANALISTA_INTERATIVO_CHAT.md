@@ -136,3 +136,106 @@ Parse tolerante: aceita `kind` explícito ou apenas a presença do array
 - Autoria fina da resposta (registrar qual agente respondeu): hoje a resposta
   entra como `role=user`; a identificação do agente atende via chat do
   próprio projeto.
+
+## 7. Clarificação incremental — checkpoint e retomada na mesma sessão (task-p2-1040, 2026-10)
+
+> Substitui o comportamento da seção 3 em que "a cada nova rodada de análise o
+> histórico é reinjetado e a análise recomeça do zero". Desde a task-p2-1040 a
+> retomada após clarificação é **incremental**: continua na mesma sessão do
+> analista, sem reenviar a investigação integral (incidente da tarefa 1022:
+> três análises completas para duas respostas de esclarecimento).
+
+### Checkpoint de clarificação (`analysis_clarification_checkpoints`, migration 0094)
+
+- Quando o analista devolve `kind="perguntas"`, o `persistAnalysis` grava na
+  mesma transação: chat (`tarefa_chats`, append-only), `clarification_pending_at`
+  e um **checkpoint** com `session_key`/`runtime_session_id`/`model`,
+  `analysis_execution_id` (execução que perguntou), `round_number`, perguntas,
+  resumo e evidências (quando houver).
+- A sessão do analista em `analyst_task_sessions` passa a
+  `status='awaiting_clarification'` (não é mais `completed`) — o reconciliador
+  de órfãs só trata `status='active'`, portanto a sessão aguarda intacta até a
+  resposta, inclusive sobrevive a restart do Motor.
+- Tabela **append-only**: rodadas antigas transitam para `superseded` (nova
+  rodada, plano concluído, verificação ou cancelamento) ou `consumed`
+  (resposta processada pela retomada). Nada é apagado.
+
+### Retomada (resposta no chat)
+
+1. `adicionarMensagemChatTarefa` grava a resposta, limpa
+   `clarification_pending_at` e enfileira `TASK_RESUME_REQUESTED`
+   (`reason='clarification_response'`, `chatMessageId`). A **entrega direta**
+   na sessão (`entregarMensagemAoAnalista`) é **ignorada** quando há
+   checkpoint pendente (entrega marcada `cancelled`) — o Motor é o dono da
+   retomada, evitando duas continuações concorrentes na mesma sessão.
+2. `TaskCoordinator` faz o claim normal de análise (novo `executionId`) e,
+   sendo `clarification_response`, localiza o checkpoint `awaiting_response`
+   mais recente e o **reivindica com fencing** (`claimClarificationCheckpoint`
+   grava `resume_execution_id` + `answer_chat_message_id`; `FOR UPDATE`;
+   `answered` é re-reivindicável para cobrir retry/restart).
+3. `ConsoleAnalystRunner.resumeClarification` continua **na mesma sessão**
+   (`runtime_session_id` do checkpoint): sem `createSession`, sem blocos de
+   descrição. Envia somente o prompt de retomada
+   (`analista.retomada_apos_clarificacao`, nova versão na migration 0094) com
+   referência compacta da descrição, histórico do chat e a resposta do
+   usuário, instruindo: *não reiniciar a investigação e não repetir perguntas
+   já respondidas, salvo justificativa explícita no resumo*.
+4. Sucesso → `consumeClarificationCheckpoint` (fencing por
+   `resume_execution_id`) → `persistAnalysis` normal. Novas perguntas geram
+   **rodada 2** do checkpoint na mesma sessão. Plano/verificação superam
+   checkpoints pendentes.
+5. Sem checkpoint válido (inexistente, sem sessão vinculada ou conflito de
+   reivindicação) → fallback na análise completa anterior, **com
+   justificativa auditada** em `tarefa_eventos`
+   (`analysis_clarification_checkpoint_missing` /
+   `analysis_clarification_checkpoint_unusable` /
+   `analysis_clarification_resume_conflict`). Retomada efetiva registra
+   `analysis_clarification_resumed` com `checkpointId`, `roundNumber`,
+   `sessionKey`, `runtimeSessionId`, `analysisExecutionId` e
+   `answerChatMessageId`.
+
+### Restart do Motor
+
+- **Entre pergunta e resposta:** checkpoint e sessão ficam no banco
+  (`awaiting_response` / `awaiting_clarification`); a resposta posterior
+  encontra o checkpoint e retoma com fencing — coberto por teste.
+- **Durante a retomada:** `onSessionResumed` religa a sessão ao
+  `analysis_execution_id` vigente (`status='active'`) e o
+  `AnalysisSessionRecoveryReconciler` recupera pelo caminho já existente.
+- Perguntas recuperadas pelo reconciliador (`complete()` com
+  `kind='questions'`) também mantêm a sessão em `awaiting_clarification`.
+
+### Auditoria
+
+Cadeia consultável: `tarefa_chats` (perguntas/respostas) ↔
+`analysis_clarification_checkpoints` (rodada, sessões, executions de análise e
+retomada, mensagem de resposta) ↔ `analyst_task_sessions` /
+`analyst_task_session_messages` (transcript append-only, `message_key`
+`<attemptId>:clarification:<seq>`) ↔ `prompts_execucoes` (prompt de retomada
+composto) ↔ `tarefa_eventos` (eventos acima).
+
+### Código (task-p2-1040)
+
+- `motor-v3/src/coordinator/ClarificationCheckpoints.ts` — tipos + helpers SQL.
+- `motor-v3/src/coordinator/TaskCoordinator.ts` — `prepareClarificationResume`,
+  config `checkpoints`, consume pós-retomada.
+- `motor-v3/src/coordinator/MySqlTaskCoordinatorRepository.ts` —
+  `ClarificationCheckpointStore` + persistAnalysis (supersede/insert).
+- `motor-v3/src/analysis/ConsoleAnalystRunner.ts` — `resumeClarification`,
+  `onClarificationCheckpoint`, `announceOutcome`.
+- `motor-v3/src/analysis/PromptChunking.ts` — builders da continuação.
+- `motor-v3/src/coordinator/AnalysisSessionRecoveryReconciler.ts` — perguntas
+  recuperadas mantêm sessão aberta.
+- `motor-v3/src/coordinator/TaskCancelConsumer.ts` — cancelamento supercede
+  checkpoints e fecha sessões em espera.
+- `motor-v3/src/start.ts` — wiring (`checkpoints`, `onClarificationCheckpoint`,
+  `onSessionResumed` com religação de execução).
+- `migrations/0094_analysis_clarification_checkpoints.sql` — tabela + nova
+  versão do prompt de retomada.
+- `api/gerenteagentes.service.ts` — skip da entrega direta com checkpoint
+  pendente.
+- Testes: `motor-v3/test/analysis-clarification-resume.test.ts`,
+  `motor-v3/test/clarification-checkpoint-repository.test.ts`,
+  `motor-v3/test/analysis-session-recovery-reconciler.test.ts` (+1),
+  `motor-v3/test/managed-analysis-prompt-resolver.test.ts` (+1),
+  `api/__tests__/gerenteagentes.service.clarification-checkpoint.spec.ts`.
