@@ -68,6 +68,44 @@ describe('RealtimeMutationBoundary', () => {
     expect(stub.connection.rollback).toHaveBeenCalledOnce()
     expect(stub.connection.commit).not.toHaveBeenCalled()
   })
+
+  it('projeta closed no evento realtime quando o fato terminal completed é gravado sem subtarefas (tarefa 1029)', async () => {
+    // A fronteira realtime usa o MESMO resolvedor canônico do polling: o fato
+    // terminal_status='completed' sem subtarefas deve projetar `closed` aqui
+    // também, inclusive com tipo='desenvolvimento'.
+    let terminal = false
+    let nextSeq = 1
+    const connection = {
+      beginTransaction: vi.fn(), commit: vi.fn(), rollback: vi.fn(), release: vi.fn(),
+      query: vi.fn(async (sql: string) => {
+        if (sql.includes('SELECT id, external_id, projeto_id FROM tarefas')) return [[{ id: 1029, external_id: 'task-p2-1029', projeto_id: 7 }]]
+        if (sql.includes('f.analysis_started_at')) return [[{
+          id: 1029, task_type: 'desenvolvimento', paused_at: null, resource_wait_key: null,
+          analysis_started_at: null, clarification_pending_at: null, integration_confirmed_at: null,
+          terminal_status: terminal ? 'completed' : null,
+          awaiting_interaction: 0, has_active_blocker: 0, deploy_succeeded: 0, deploy_failed: 0,
+          administrative_deploy_cancelled: 0, active_monitor_fix: 0,
+        }]]
+        if (sql.includes('SELECT status, completion_kind')) return [[]]
+        if (sql.includes('UPDATE task_runtime_facts')) { terminal = true; return [{ affectedRows: 1 }] }
+        if (sql.includes('MAX(per_task_seq)')) return [[{ next_seq: nextSeq++ }]]
+        if (sql.includes('COUNT(*) AS total')) return [[{ total: 0, pending: 0, running: 0, completed: 0, failed: 0 }]]
+        return [{ affectedRows: 1, insertId: 1 }]
+      }),
+    }
+    const pool = { getConnection: vi.fn(async () => connection) }
+    const boundary = new RealtimeMutationBoundary(pool as never)
+
+    const events = await boundary.executar(1029, {
+      apply: async ({ connection: tx }) => {
+        await tx.query("UPDATE task_runtime_facts SET terminal_status = 'completed' WHERE tarefa_id = ?", [1029])
+      },
+    })
+
+    const statusChanged = events.find(event => event.type === 'task.status.changed')
+    expect(statusChanged).toMatchObject({ previousStatus: 'planned', status: 'closed' })
+    expect(connection.commit).toHaveBeenCalledOnce()
+  })
 })
 
 describe('RealtimeOutboxDispatcher', () => {
