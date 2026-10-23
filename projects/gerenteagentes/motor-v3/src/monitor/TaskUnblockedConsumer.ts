@@ -15,6 +15,31 @@ const DEPLOY_BLOCK_REASONS = new Set([
 const SUBTASK_VERIFICATION_BLOCK_REASON = 'subtask_verification_failed'
 
 /**
+ * Motivos de falha terminal de subtarefa (tarefa 1043): `worker_exhausted`
+ * marca a subtarefa como 'failed' (completeExecution) e `subtask_terminal_failure`
+ * como 'blocked' (SubtaskTerminalFailureBlocker). Resolver o bloqueio precisa
+ * reabrir exatamente a subtarefa afetada — sem isso, a tarefa fica inerte com
+ * as subtarefas seguintes pendentes (incidente 1403/1404/1405).
+ */
+const SUBTASK_TERMINAL_BLOCK_REASONS = new Set([
+  'worker_exhausted',
+  'subtask_terminal_failure',
+])
+
+/**
+ * Comando durável de retomada da programação. Literal local (mesmo padrão de
+ * 'DEPLOY_REQUESTED'/'TASK_RESUME_REQUESTED' neste arquivo) para evitar ciclo
+ * de import com src/execution.
+ */
+const TASK_READY_FOR_PROGRAMMING = 'TASK_READY_FOR_PROGRAMMING'
+
+/** Resultado da retomada de bloqueio por falha terminal de subtarefa. */
+type TerminalReopenOutcome =
+  | { action: 'subtask_reopened_for_programming'; subtaskId: number; reopened: true }
+  | { action: 'task_ready_for_programming_enqueued'; subtaskId: null; reopened: false }
+  | { action: 'subtask_not_reopenable'; subtaskId: number | null; reopened: false }
+
+/**
  * Retomada automática após desbloqueio — o elo que faltava no incidente da
  * tarefa 886: desbloquear sem retomar deixava a tarefa "concluída" para
  * sempre sem deploy.
@@ -26,6 +51,10 @@ const SUBTASK_VERIFICATION_BLOCK_REASON = 'subtask_verification_failed'
  *   reabrir a análise (claim atômico já protege contra duplicidade);
  * - `subtask_verification_failed` → subtarefas bloqueadas voltam a
  *   `verifying` e recebem `SUBTASK_VERIFICATION_REQUESTED`;
+ * - `worker_exhausted`/`subtask_terminal_failure` → a subtarefa `failed`/
+ *   `blocked` do bloqueio volta a `pending` (resultado limpo) e a tarefa
+ *   recebe `TASK_READY_FOR_PROGRAMMING` na mesma transação, para o
+ *   `reserveNextSubtask` retomar exatamente da subtarefa reaberta;
  * - demais motivos → apenas auditoria (o fluxo normal já sabe retomar).
  *
  * Idempotente: redelivery não duplica dispatch (UPDATE ... WHERE status='failed'
@@ -70,6 +99,16 @@ export class TaskUnblockedConsumer {
         const requeued = await this.retrySubtaskVerification(message, databaseTaskId)
         await this.safeRecord(message.taskId, 'task_resumed_by_monitor', {
           blockReason: reason, action: 'subtask_verification_requeued', requeued,
+        })
+        return
+      }
+      if (SUBTASK_TERMINAL_BLOCK_REASONS.has(reason)) {
+        const outcome = await this.reopenTerminalFailedSubtask(message, databaseTaskId, reason)
+        await this.safeRecord(message.taskId, 'task_resumed_by_monitor', {
+          blockReason: reason,
+          action: outcome.action,
+          subtaskId: outcome.subtaskId ?? null,
+          reopened: outcome.reopened,
         })
         return
       }
@@ -149,6 +188,152 @@ export class TaskUnblockedConsumer {
     } finally {
       connection.release()
     }
+  }
+
+  /**
+   * Retomada de falha terminal de subtarefa (tarefa 1043): reabre a subtarefa
+   * do bloqueio (`failed` no `worker_exhausted`, `blocked` no
+   * `subtask_terminal_failure`) para `pending` com resultado limpo e publica
+   * `TASK_READY_FOR_PROGRAMMING` na mesma transação.
+   *
+   * Por que `TASK_READY_FOR_PROGRAMMING` e não `SUBTASK_EXECUTION_REQUESTED`
+   * direto: o `SubtaskExecutionConsumer` só aceita subtarefa `running`
+   * (`getExecutionContext(expectedStatus='running')`) — um pedido direto contra
+   * subtarefa `pending` seria descartado como `subtask_not_running` e a
+   * retomada nunca aconteceria. O `TASK_READY_FOR_PROGRAMMING` segue o padrão
+   * canônico do `TaskExecutionReconciler` (reset de órfã → pending + READY):
+   * o `reserveNextSubtask` faz o claim atômico `pending → running`, respeita
+   * deploy lock, limites de capacidade, tarefa pausada/bloqueada e emite o
+   * `SUBTASK_EXECUTION_REQUESTED` — recomeçando exatamente da subtarefa
+   * reaberta (menor seq entre as pendentes elegíveis; ex.: 1403), enquanto
+   * 1404/1405 seguem na sequência normal.
+   *
+   * Regras de segurança:
+   * - Nunca reabre `verified`/`superseded` nem geração antiga (o fluxo de
+   *   conclusão/verificação já faz o sequenciamento via
+   *   `reserveNextSubtaskInTransaction`);
+   * - Redelivery é idempotente: UPDATE condicionado a `status IN
+   *   ('failed','blocked')` + subtarefa já `pending`/`running` não republica;
+   * - Sem `subtaskId` utilizável (payload sem subtaskId e bloqueio sem
+   *   subtarefa), cai no fallback durável: `TASK_READY_FOR_PROGRAMMING` sem
+   *   subtaskId, com auditoria em `tarefa_eventos` via `task_resumed_by_monitor`.
+   */
+  private async reopenTerminalFailedSubtask(
+    source: QueueMessage,
+    databaseTaskId: number,
+    reason: string,
+  ): Promise<TerminalReopenOutcome> {
+    const payload = (source.payload ?? {}) as Partial<TaskUnblockedPayload> & { subtaskId?: unknown }
+    const connection: PoolConnection = await this.pool.getConnection()
+    try {
+      await connection.beginTransaction()
+
+      // 1. Resolver a subtarefa afetada: subtaskId do payload quando presente;
+      //    senão via bloqueios (blockId do payload tem precedência; sem blockId,
+      //    bloqueio mais recente do mesmo motivo).
+      let subtaskId = Number(payload.subtaskId)
+      if (!Number.isInteger(subtaskId) || subtaskId <= 0) {
+        const blockId = Number(payload.blockId)
+        const hasBlockId = Number.isInteger(blockId) && blockId > 0
+        const [blockRows] = await connection.query<Array<RowDataPacket & { subtarefa_id: number | null }>>(
+          `SELECT subtarefa_id FROM bloqueios
+            WHERE tarefa_id = ? AND ${hasBlockId ? 'id = ?' : 'block_reason = ?'}
+            ORDER BY id DESC LIMIT 1`,
+          hasBlockId ? [databaseTaskId, blockId] : [databaseTaskId, reason],
+        )
+        subtaskId = Number(blockRows[0]?.subtarefa_id ?? NaN)
+      }
+
+      if (Number.isInteger(subtaskId) && subtaskId > 0) {
+        const [rows] = await connection.query<Array<RowDataPacket & { id: number; seq: number; status: string; generation: number }>>(
+          `SELECT s.id, s.seq, s.status, s.generation
+             FROM subtarefas s
+            WHERE s.id = ? AND s.tarefa_id = ?
+            LIMIT 1 FOR UPDATE`,
+          [subtaskId, databaseTaskId],
+        )
+        const row = rows[0]
+        if (row) {
+          const [genRows] = await connection.query<Array<RowDataPacket & { max_generation: number }>>(
+            'SELECT MAX(generation) AS max_generation FROM subtarefas WHERE tarefa_id = ?',
+            [databaseTaskId],
+          )
+          const status = String(row.status)
+          const currentGeneration = Number(row.generation ?? 1) === Number(genRows[0]?.max_generation ?? 1)
+          if (['failed', 'blocked'].includes(status) && currentGeneration) {
+            const [updated] = await connection.query<ResultSetHeader>(
+              `UPDATE subtarefas SET status='pending', resultado=NULL, updated_at=NOW()
+                WHERE id=? AND status IN ('failed','blocked')`,
+              [subtaskId],
+            )
+            if (Number(updated.affectedRows ?? 0) === 1) {
+              await this.enqueueReadyForProgramming(connection, source, {
+                reason, subtaskId, seq: Number(row.seq),
+              })
+              await connection.commit()
+              return { action: 'subtask_reopened_for_programming', subtaskId, reopened: true }
+            }
+          }
+          if (['pending', 'running', 'delivered', 'verifying', 'verified', 'superseded'].includes(status)) {
+            // Redelivery (já reaberta/claimada) ou subtarefa finalizada: não
+            // reabre nem publica — verified/superseded já tiveram a sequência
+            // avançada pelo fluxo de conclusão.
+            await connection.commit()
+            return { action: 'subtask_not_reopenable', subtaskId, reopened: false }
+          }
+        }
+        // Subtarefa inexistente ou de geração antiga: não há retomada direta
+        // possível; segue para o fallback durável abaixo.
+      }
+
+      // 2. Fallback durável: sem subtaskId utilizável, o TASK_READY_FOR_PROGRAMMING
+      //    faz o reserveNextSubtask escolher o próximo trabalho correto.
+      await this.enqueueReadyForProgramming(connection, source, { reason })
+      await connection.commit()
+      return { action: 'task_ready_for_programming_enqueued', subtaskId: null, reopened: false }
+    } catch (error) {
+      await connection.rollback()
+      throw error
+    } finally {
+      connection.release()
+    }
+  }
+
+  /**
+   * Publica `TASK_READY_FOR_PROGRAMMING` com guarda de deduplicação
+   * (NOT EXISTS de mensagem pendente do mesmo tipo/tarefa) — redelivery ou
+   * reconciliador concorrente não duplicam o comando.
+   */
+  private async enqueueReadyForProgramming(
+    connection: PoolConnection,
+    source: QueueMessage,
+    extra: { reason: string; subtaskId?: number; seq?: number },
+  ): Promise<void> {
+    const ready = createQueueMessage({
+      type: TASK_READY_FOR_PROGRAMMING,
+      taskId: source.taskId,
+      executionId: `unblock-resume-${extra.subtaskId ?? 'task'}-${Date.now()}-${randomUUID()}`,
+      correlationId: source.correlationId ?? source.messageId,
+      causationId: source.messageId,
+      payload: {
+        reason: `unblocked_${extra.reason}`,
+        blockReason: extra.reason,
+        resumedBy: 'monitor',
+        ...(extra.subtaskId != null ? { subtaskId: extra.subtaskId, seq: extra.seq } : {}),
+      },
+    })
+    await connection.query(
+      `INSERT INTO motor_outbox (message_id,type,destination_queue,task_id,execution_id,payload_json,timestamp,correlation_id,causation_id,status,attempt)
+       SELECT ?,?,?, ?,?,?,NOW(),?,?,'pending',0
+         FROM DUAL
+        WHERE NOT EXISTS (
+          SELECT 1 FROM motor_outbox
+           WHERE status='pending' AND type=? AND task_id=?
+        )`,
+      [ready.messageId, ready.type, 'motor.commands', ready.taskId, ready.executionId,
+        JSON.stringify(ready.payload), ready.correlationId ?? null, ready.causationId ?? null,
+        TASK_READY_FOR_PROGRAMMING, source.taskId],
+    )
   }
 
   /**
