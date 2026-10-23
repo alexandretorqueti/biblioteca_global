@@ -100,6 +100,7 @@ export class WorkerLauncher {
     allowNoChanges = false,
     deadlineAt?: number,
     allowLegacyNoCodeEvidence = false,
+    completionKind: string | null = null,
   ): Promise<WorkerResult> {
     // Deve ser menor que o timeout do RabbitMQ. A espera abaixo é limitada ao
     // orçamento restante da entrega, incluindo preparação e baseline.
@@ -238,6 +239,14 @@ export class WorkerLauncher {
 
         // 6. Verificação de realidade (se tiver ::DONE::)
         if (hasDoneMarker) {
+          if (completionKind === 'external_operation' && !hasExternalOperationEvidence(response)) {
+            lastError = 'external_operation exige evidência estruturada: informe “O que foi feito” e “Como verificar”.'
+            failures.push({ attempt: attempts, ...(model ? { model } : {}), error: lastError })
+            correctiveContext = lastError
+            reusableSessionModel = model
+            context.generation++
+            continue
+          }
           const verifyResult = await verifyGit.handler(context, {})
 
           if (!verifyResult.success) {
@@ -390,12 +399,21 @@ export class WorkerLauncher {
     allowNoChanges = false,
     scopeEvidence: string[] = [],
     allowLegacyNoCodeEvidence = false,
+    completionKind: string | null = null,
   ): Promise<WorkerResult> {
     const parseResult = await parseReply.handler(context, { response })
     if (!parseResult.success || !parseResult.data?.hasDoneMarker) {
       return {
         success: false,
         error: parseResult.error ?? 'A sessão recuperada terminou sem o marcador ::DONE::',
+        attempts: 1,
+        ...(context.model ? { model: context.model } : {}),
+      }
+    }
+    if (completionKind === 'external_operation' && !hasExternalOperationEvidence(response)) {
+      return {
+        success: false,
+        error: 'external_operation exige evidência estruturada: informe “O que foi feito” e “Como verificar”.',
         attempts: 1,
         ...(context.model ? { model: context.model } : {}),
       }
@@ -520,6 +538,17 @@ export class WorkerLauncher {
       console.warn('Falha ao registrar cooldown do modelo', { model, error: reason })
     }
   }
+}
+
+/**
+ * external_operation não produz diff Git: a conclusão precisa deixar um fato
+ * auditável e um caminho independente para conferi-lo. Os rótulos tornam a
+ * evidência estruturada e evitam que ::DONE:: isolado seja aceito.
+ */
+export function hasExternalOperationEvidence(response: string): boolean {
+  const what = response.match(/(?:^|\n)\s*(?:O que foi feito|What was done)\s*:\s*([\s\S]*?)(?=\n\s*(?:Como verificar|How to verify)\s*:|$)/i)?.[1]?.trim()
+  const how = response.match(/(?:^|\n)\s*(?:Como verificar|How to verify)\s*:\s*([\s\S]*)$/i)?.[1]?.trim()
+  return Boolean(what && how && !/^::DONE::$/i.test(what) && !/^::DONE::$/i.test(how))
 }
 
 function normalizePrompt(prompt: string | DevelopmentPrompt): DevelopmentPrompt {
