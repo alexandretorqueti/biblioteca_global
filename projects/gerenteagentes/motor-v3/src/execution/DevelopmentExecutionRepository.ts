@@ -17,7 +17,7 @@ export interface ReservedSubtask {
 /** A tarefa permanece em fila; uma liberação de capacidade publicará novo gatilho. */
 export interface CapacityWaiting {
   kind: 'capacity_waiting'
-  reason: 'global_limit' | 'project_limit' | 'provider_limit'
+  reason: 'global_limit' | 'project_limit' | 'provider_limit' | 'model_cooldown'
 }
 
 /**
@@ -107,6 +107,18 @@ interface ActiveDevelopmentCountRow extends RowDataPacket {
 }
 
 /**
+ * Disponibilidade da cadeia de modelos DEV do projeto: distingue ausência
+ * permanente (nenhum modelo habilitado/configurado) de ausência temporária
+ * (modelos configurados, porém integralmente em cooldown).
+ */
+export interface DevelopmentModelAvailability {
+  enabledCount: number
+  availableCount: number
+  /** Instante previsto (ISO) em que o primeiro modelo em cooldown volta a ficar elegível. */
+  nextAvailableAt: string | null
+}
+
+/**
  * Reserva a próxima subtarefa e grava o comando seguinte no outbox na mesma
  * transação. Assim, não existe o estado "subtarefa running sem mensagem".
  */
@@ -141,6 +153,49 @@ export class MySqlDevelopmentExecutionRepository {
       [projectSlug],
     )
     return rows.map(row => String(row.model)).filter(Boolean)
+  }
+
+  /**
+   * Disponibilidade da cadeia DEV fora da transação de reserva (usada pelo
+   * consumer para decidir entre espera de capacidade e falha terminal).
+   */
+  async getDevelopmentModelAvailability(projectSlug: string): Promise<DevelopmentModelAvailability> {
+    if (!projectSlug) return { enabledCount: 0, availableCount: 0, nextAvailableAt: null }
+    const [rows] = await this.pool.query<Array<RowDataPacket & { enabled_total: number | string; available_total: number | string }>>(
+      `SELECT COUNT(*) AS enabled_total,
+              COALESCE(SUM(NOT EXISTS (
+                SELECT 1 FROM motor_model_cooldown cooldown
+                 WHERE cooldown.model COLLATE utf8mb4_unicode_ci = selection.model COLLATE utf8mb4_unicode_ci
+                   AND cooldown.until > NOW()
+              )), 0) AS available_total
+         FROM project_model_selection selection
+        WHERE selection.project_slug = ? AND selection.tipo = 'DEV' AND selection.enabled = 1`,
+      [projectSlug],
+    )
+    const enabledCount = Number(rows[0]?.enabled_total ?? 0)
+    const availableCount = Number(rows[0]?.available_total ?? 0)
+    if (enabledCount === 0 || availableCount > 0) {
+      return { enabledCount, availableCount, nextAvailableAt: null }
+    }
+    return { enabledCount, availableCount, nextAvailableAt: await this.nextDevelopmentModelAvailability(projectSlug) }
+  }
+
+  /** Instante previsto (ISO) em que o primeiro modelo DEV habilitado sai do cooldown, ou null. */
+  async nextDevelopmentModelAvailability(projectSlug: string): Promise<string | null> {
+    if (!projectSlug) return null
+    const [rows] = await this.pool.query<Array<RowDataPacket & { next_available_at: Date | string | null }>>(
+      `SELECT MIN(cooldown.until) AS next_available_at
+         FROM motor_model_cooldown cooldown
+        WHERE cooldown.until > NOW()
+          AND EXISTS (
+            SELECT 1 FROM project_model_selection selection
+             WHERE selection.project_slug = ? AND selection.tipo = 'DEV' AND selection.enabled = 1
+               AND selection.model COLLATE utf8mb4_unicode_ci = cooldown.model COLLATE utf8mb4_unicode_ci
+          )`,
+      [projectSlug],
+    )
+    const value = rows[0]?.next_available_at
+    return value ? new Date(value).toISOString() : null
   }
 
   /** Evita desperdiçar entregas com um modelo cuja cota/serviço acabou de falhar. */
@@ -254,6 +309,44 @@ export class MySqlDevelopmentExecutionRepository {
         return { kind: 'capacity_waiting', reason: 'provider_limit' }
       }
 
+      // Cooldown integral da cadeia DEV é espera de capacidade recuperável:
+      // havendo ao menos um modelo habilitado, mas todos em cooldown, a
+      // subtarefa permanece pending e a espera é persistida com motivo e prazo
+      // de nova elegibilidade — sem iniciar worktree/sessão DEV. A ausência
+      // permanente (nenhum modelo habilitado/configurado) NÃO entra aqui e
+      // segue terminal no SubtaskExecutionConsumer, com diagnóstico explícito.
+      const [availabilityRows] = await connection.query<Array<RowDataPacket & { enabled_total: number | string; available_total: number | string }>>(
+        `SELECT COUNT(*) AS enabled_total,
+                COALESCE(SUM(NOT EXISTS (
+                  SELECT 1 FROM motor_model_cooldown cooldown
+                   WHERE cooldown.model COLLATE utf8mb4_unicode_ci = selection.model COLLATE utf8mb4_unicode_ci
+                     AND cooldown.until > NOW()
+                )), 0) AS available_total
+           FROM project_model_selection selection
+          WHERE selection.project_slug = (SELECT slug FROM projetos_captados WHERE id = ?)
+            AND selection.tipo = 'DEV' AND selection.enabled = 1`,
+        [task.projeto_id],
+      )
+      const enabledModels = Number(availabilityRows[0]?.enabled_total ?? 0)
+      const availableModels = Number(availabilityRows[0]?.available_total ?? 0)
+      if (enabledModels > 0 && availableModels === 0) {
+        const [untilRows] = await connection.query<Array<RowDataPacket & { next_available_at: Date | string | null }>>(
+          `SELECT MIN(cooldown.until) AS next_available_at
+             FROM motor_model_cooldown cooldown
+            WHERE cooldown.until > NOW()
+              AND EXISTS (
+                SELECT 1 FROM project_model_selection selection
+                 WHERE selection.project_slug = (SELECT slug FROM projetos_captados WHERE id = ?)
+                   AND selection.tipo = 'DEV' AND selection.enabled = 1
+                   AND selection.model COLLATE utf8mb4_unicode_ci = cooldown.model COLLATE utf8mb4_unicode_ci
+              )`,
+          [task.projeto_id],
+        )
+        await this.enqueueCapacityWait(connection, task, source, 'model_cooldown', 0, null, untilRows[0]?.next_available_at ?? null)
+        await connection.commit()
+        return { kind: 'capacity_waiting', reason: 'model_cooldown' }
+      }
+
       const [subtaskRows] = await connection.query<SubtaskRow[]>(
         `SELECT s.id, s.seq, s.titulo, s.scope
            FROM subtarefas s
@@ -349,6 +442,70 @@ export class MySqlDevelopmentExecutionRepository {
       })
       await connection.commit()
       return { message, subtaskId: Number(subtask.id), seq: Number(subtask.seq) }
+    } catch (error) {
+      await connection.rollback()
+      throw error
+    } finally {
+      connection.release()
+    }
+  }
+
+  /**
+   * Ausência temporária de modelo DEV durante a execução (a cadeia entrou em
+   * cooldown entre a reserva e o consumo): devolve a subtarefa para pending e
+   * persiste a espera de capacidade com motivo e prazo na mesma transação.
+   * Não cria sessão DEV, não toca em worktree e não emite comando de execução —
+   * a retomada passa pelo claim atômico (reserveNextSubtask) quando houver
+   * modelo elegível. Idempotente: se a subtarefa já não está running, não muda
+   * nada e retorna false.
+   */
+  async parkSubtaskForModelCooldown(
+    context: SubtaskExecutionContext,
+    source: QueueMessage,
+    nextAvailableAt: string | null,
+  ): Promise<boolean> {
+    const connection = await this.pool.getConnection()
+    try {
+      await connection.beginTransaction()
+      const [taskRows] = await connection.query<TaskRow[]>(
+        'SELECT t.id, t.external_id, t.projeto_id, t.tipo FROM tarefas t WHERE t.id = ? LIMIT 1 FOR UPDATE',
+        [context.databaseTaskId],
+      )
+      const task = taskRows[0]
+      if (!task) {
+        await connection.rollback()
+        return false
+      }
+      // Sessão DEV ativa pertence ao reconciliador de recuperação; não parkir
+      // por cima de uma execução concorrente.
+      const [sessionRows] = await connection.query<Array<RowDataPacket & { total: number | string }>>(
+        `SELECT COUNT(*) AS total FROM motor_agent_sessions
+          WHERE subtarefa_id = ? AND status = 'active' AND purpose = 'development' AND runtime_session_id IS NOT NULL`,
+        [context.subtaskId],
+      )
+      if (Number(sessionRows[0]?.total ?? 0) > 0) {
+        await connection.rollback()
+        return false
+      }
+      const beforeStatus = await this.taskStatus(connection, Number(task.id))
+      const [updated] = await connection.query<ResultSetHeader>(
+        `UPDATE subtarefas
+            SET status = 'pending', provider = NULL, updated_at = NOW()
+          WHERE id = ? AND status = 'running'`,
+        [context.subtaskId],
+      )
+      if (updated.affectedRows !== 1) {
+        await connection.rollback()
+        return false
+      }
+      await this.enqueueCapacityWait(connection, task, source, 'model_cooldown', 0, null, nextAvailableAt)
+      await this.realtime.append(connection, Number(task.id), beforeStatus, {
+        type: 'subtask.status.changed', subtaskId: context.subtaskId,
+        previousSubtaskStatus: 'running', subtaskStatus: 'pending',
+        after: await this.taskStatus(connection, Number(task.id)),
+      })
+      await connection.commit()
+      return true
     } catch (error) {
       await connection.rollback()
       throw error
@@ -1211,9 +1368,10 @@ export class MySqlDevelopmentExecutionRepository {
     connection: PoolConnection,
     task: TaskRow,
     source: QueueMessage,
-    reasonCode: 'global_limit' | 'project_limit' | 'provider_limit',
+    reasonCode: 'global_limit' | 'project_limit' | 'provider_limit' | 'model_cooldown',
     limitValue: number,
     provider: string | null,
+    retryAt: Date | string | null = null,
   ): Promise<void> {
     await connection.query(
       `INSERT INTO motor_execution_wait_queue
@@ -1229,11 +1387,21 @@ export class MySqlDevelopmentExecutionRepository {
       `INSERT INTO task_runtime_facts (tarefa_id, created_at, updated_at)
        VALUES (?, NOW(), NOW()) ON DUPLICATE KEY UPDATE tarefa_id = VALUES(tarefa_id)`, [task.id],
     )
+    // capacity_wait_since/capacity_wait_alert_at: o relógio e o alerta único
+    // sobrevivem a reentradas pelo MESMO motivo; troca de motivo reinicia ambos.
+    // (Atribuições do MySQL leem o valor anterior para colunas ainda não
+    // atualizadas na mesma lista SET.)
     await connection.query(
-      `UPDATE task_runtime_facts SET capacity_wait_phase='development', capacity_wait_reason_code=?,
-       capacity_wait_limit_scope=?, capacity_wait_limit_value=?, capacity_wait_provider=?, updated_at=NOW()
-       WHERE tarefa_id=?`,
-      [reasonCode, reasonCode === 'global_limit' ? 'global' : reasonCode === 'project_limit' ? 'project' : 'provider', limitValue, provider, task.id],
+      `UPDATE task_runtime_facts
+          SET capacity_wait_since = IF(capacity_wait_reason_code <=> ? AND capacity_wait_since IS NOT NULL, capacity_wait_since, NOW()),
+              capacity_wait_alert_at = IF(capacity_wait_reason_code <=> ?, capacity_wait_alert_at, NULL),
+              capacity_wait_phase = 'development', capacity_wait_reason_code = ?,
+              capacity_wait_limit_scope = ?, capacity_wait_limit_value = ?, capacity_wait_provider = ?,
+              capacity_wait_retry_at = ?, updated_at = NOW()
+        WHERE tarefa_id = ?`,
+      [reasonCode, reasonCode, reasonCode,
+       reasonCode === 'global_limit' ? 'global' : reasonCode === 'project_limit' ? 'project' : reasonCode === 'model_cooldown' ? 'model' : 'provider',
+       limitValue, provider, retryAt ? new Date(retryAt) : null, task.id],
     )
   }
 
@@ -1241,6 +1409,7 @@ export class MySqlDevelopmentExecutionRepository {
     await connection.query(
       `UPDATE task_runtime_facts SET capacity_wait_phase=NULL, capacity_wait_reason_code=NULL,
        capacity_wait_limit_scope=NULL, capacity_wait_limit_value=NULL, capacity_wait_provider=NULL,
+       capacity_wait_since=NULL, capacity_wait_retry_at=NULL, capacity_wait_alert_at=NULL,
        updated_at=NOW() WHERE tarefa_id=?`, [taskId],
     )
   }
@@ -1352,14 +1521,21 @@ export class MySqlDevelopmentExecutionRepository {
   /**
    * Publica sinais após uma vaga ser liberada. Cada consumidor ainda disputa
    * o claim atômico, por isso acordar mais de uma tarefa não ultrapassa limites.
+   * Esperas por cooldown de modelo DEV cujo prazo ainda não venceu são puladas:
+   * a retomada delas é temporal (OrphanCapacityQueueReconciler), não por
+   * liberação de vaga.
    */
   private async wakeCapacityWaiters(connection: PoolConnection, source: QueueMessage): Promise<void> {
     const [rows] = await connection.query<Array<RowDataPacket & { tarefa_id: number; task_id: string }>>(
       `SELECT q.tarefa_id, COALESCE(t.external_id, CAST(t.id AS CHAR)) AS task_id
          FROM motor_execution_wait_queue q
          INNER JOIN tarefas t ON t.id = q.tarefa_id
+         LEFT JOIN task_runtime_facts wf ON wf.tarefa_id = q.tarefa_id
         WHERE q.status = 'waiting'
           AND t.paused_at IS NULL
+          AND NOT (wf.capacity_wait_reason_code = 'model_cooldown'
+                   AND wf.capacity_wait_retry_at IS NOT NULL
+                   AND wf.capacity_wait_retry_at > NOW())
           AND NOT EXISTS (
             SELECT 1 FROM bloqueios b WHERE b.tarefa_id = t.id AND b.resolved_at IS NULL
           )
@@ -1504,7 +1680,8 @@ export class MySqlDevelopmentExecutionRepository {
         `UPDATE task_runtime_facts SET terminal_status = NULL, clarification_pending_at = NULL
           , capacity_wait_phase = NULL, capacity_wait_reason_code = NULL,
           capacity_wait_limit_scope = NULL, capacity_wait_limit_value = NULL,
-          capacity_wait_provider = NULL
+          capacity_wait_provider = NULL, capacity_wait_since = NULL,
+          capacity_wait_retry_at = NULL, capacity_wait_alert_at = NULL
           WHERE tarefa_id = ?`,
         [databaseId],
       )

@@ -10,6 +10,10 @@ import { OrphanCapacityQueueReconciler } from '../src/execution/OrphanCapacityQu
 type QueryMock = ReturnType<typeof vi.fn>
 
 function buildPool(queryMock: QueryMock) {
+  // Fallback após os once-mocks do ciclo se esgotarem: o passo de espera por
+  // cooldown de modelo DEV executa uma consulta adicional por ciclo; listas
+  // vazias mantêm o resultado estável sem ruído de mock esgotado.
+  queryMock.mockResolvedValue([[]])
   return { query: queryMock } as any
 }
 

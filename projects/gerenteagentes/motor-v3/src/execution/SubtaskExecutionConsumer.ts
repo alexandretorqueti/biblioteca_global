@@ -91,6 +91,29 @@ export class SubtaskExecutionConsumer {
       return
     }
 
+    // Cadeia de modelos DEV antes de qualquer preparação: cooldown integral é
+    // espera de capacidade recuperável (subtarefa volta a pending, sem worktree
+    // nem sessão DEV); ausência permanente de configuração segue terminal.
+    const models = await this.repository.getDevelopmentModelChain(execution.projectSlug)
+    if (models.length === 0) {
+      const availability = await this.repository.getDevelopmentModelAvailability?.(execution.projectSlug)
+      if (availability && availability.enabledCount > 0 && availability.availableCount === 0) {
+        const parked = await this.repository.parkSubtaskForModelCooldown?.(execution, message, availability.nextAvailableAt) ?? false
+        await this.log(operationId, 2, message, {
+          phase: 'rejected', outcome: 'skipped', subtaskId, reasonCode: 'dev_model_cooldown',
+          result: { queue: 'motor_execution_wait_queue', parked, nextAvailableAt: availability.nextAvailableAt },
+        })
+        return
+      }
+      await this.finishExecutionFailure(
+        operationId,
+        message,
+        execution,
+        'Nenhum modelo DEV habilitado/configurado para o projeto (configuração ausente: sem registro tipo=DEV habilitado em project_model_selection)',
+      )
+      return
+    }
+
     const noCode = ['analysis', 'no_code_change', 'external_operation'].includes(execution.completionKind ?? '')
     let baselineRunId: number | undefined
     let sequence = 2
@@ -223,16 +246,6 @@ export class SubtaskExecutionConsumer {
       db: this.db,
       consoleApi: this.consoleApi,
       logger: console,
-    }
-    const models = await this.repository.getDevelopmentModelChain(execution.projectSlug)
-    if (models.length === 0) {
-      await this.finishExecutionFailure(
-        operationId,
-        message,
-        execution,
-        'Nenhum modelo DEV habilitado e disponível para o projeto (todos ausentes ou em cooldown)',
-      )
-      return
     }
     const leaseTtlMs = Number(process.env.MOTOR_DEVELOPMENT_LEASE_TTL_MS || 120000)
     const leaseHeartbeat = setInterval(() => {

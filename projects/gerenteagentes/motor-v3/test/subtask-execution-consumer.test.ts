@@ -193,7 +193,7 @@ describe('SubtaskExecutionConsumer', () => {
   it('não deixa a subtarefa running quando a preparação do worktree falha', async () => {
     const repository = {
       getExecutionContext: vi.fn().mockResolvedValue(context),
-      getDevelopmentModelChain: vi.fn(),
+      getDevelopmentModelChain: vi.fn().mockResolvedValue(['modelo-a']),
       finishExecution: vi.fn().mockResolvedValue({ ...message, messageId: 'failed-prepare', type: 'SUBTASK_EXECUTION_FAILED' }),
     }
     const worktrees = { prepare: vi.fn().mockRejectedValue(new Error('spawn git ENOENT')) }
@@ -229,6 +229,60 @@ describe('SubtaskExecutionConsumer', () => {
       success: false, attempts: 0, error: expect.stringContaining('Nenhum modelo DEV'),
     }))
     expect(logger.append).toHaveBeenCalledWith(expect.objectContaining({ reasonCode: 'no_development_model' }))
+  })
+
+  it('ausência permanente de configuração DEV falha terminal com diagnóstico explícito, sem worktree', async () => {
+    const repository = {
+      getExecutionContext: vi.fn().mockResolvedValue(context), recordWorkspace: vi.fn(),
+      getDevelopmentModelChain: vi.fn().mockResolvedValue([]),
+      getDevelopmentModelAvailability: vi.fn().mockResolvedValue({ enabledCount: 0, availableCount: 0, nextAvailableAt: null }),
+      parkSubtaskForModelCooldown: vi.fn(),
+      recordModelFailure: vi.fn(),
+      finishExecution: vi.fn().mockResolvedValue({ ...message, messageId: 'failed-config', type: 'SUBTASK_EXECUTION_FAILED' }),
+    }
+    const worktrees = { prepare: vi.fn(), prepareIntegration: vi.fn() }
+    const worker = { executeTask: vi.fn() }
+    const logger = { append: vi.fn().mockResolvedValue(undefined) }
+    const consumer = new SubtaskExecutionConsumer(repository as never, worktrees as never, worker as never, {}, {}, logger)
+
+    await consumer.handle(message)
+
+    expect(repository.parkSubtaskForModelCooldown).not.toHaveBeenCalled()
+    expect(worktrees.prepare).not.toHaveBeenCalled()
+    expect(worker.executeTask).not.toHaveBeenCalled()
+    expect(repository.finishExecution).toHaveBeenCalledWith(context, message, expect.objectContaining({
+      success: false, error: expect.stringContaining('configuração ausente'),
+    }))
+    expect(logger.append).toHaveBeenCalledWith(expect.objectContaining({ reasonCode: 'no_development_model' }))
+  })
+
+  it('cadeia DEV integralmente em cooldown vira espera durável de capacidade, não falha terminal', async () => {
+    const nextAvailableAt = new Date(Date.now() + 5 * 60_000).toISOString()
+    const repository = {
+      getExecutionContext: vi.fn().mockResolvedValue(context), recordWorkspace: vi.fn(),
+      getDevelopmentModelChain: vi.fn().mockResolvedValue([]),
+      getDevelopmentModelAvailability: vi.fn().mockResolvedValue({ enabledCount: 2, availableCount: 0, nextAvailableAt }),
+      parkSubtaskForModelCooldown: vi.fn().mockResolvedValue(true),
+      recordModelFailure: vi.fn(),
+      finishExecution: vi.fn(),
+    }
+    const worktrees = { prepare: vi.fn(), prepareIntegration: vi.fn() }
+    const worker = { executeTask: vi.fn() }
+    const logger = { append: vi.fn().mockResolvedValue(undefined) }
+    const consumer = new SubtaskExecutionConsumer(repository as never, worktrees as never, worker as never, {}, {}, logger)
+
+    await consumer.handle(message)
+
+    // Sem falha terminal, sem worktree, sem sessão DEV: espera persistida com prazo
+    expect(repository.finishExecution).not.toHaveBeenCalled()
+    expect(worktrees.prepare).not.toHaveBeenCalled()
+    expect(worktrees.prepareIntegration).not.toHaveBeenCalled()
+    expect(worker.executeTask).not.toHaveBeenCalled()
+    expect(repository.parkSubtaskForModelCooldown).toHaveBeenCalledWith(context, message, nextAvailableAt)
+    expect(logger.append).toHaveBeenLastCalledWith(expect.objectContaining({
+      phase: 'rejected', outcome: 'skipped', reasonCode: 'dev_model_cooldown',
+      result: expect.objectContaining({ queue: 'motor_execution_wait_queue', parked: true, nextAvailableAt }),
+    }))
   })
 
   it('só encaminha a tarefa ao DEV depois de um baseline verde', async () => {
@@ -362,7 +416,7 @@ describe('SubtaskExecutionConsumer', () => {
   it('bloqueia antes do DEV quando o baseline ambiental permanece vermelho', async () => {
     const repository = {
       getExecutionContext: vi.fn().mockResolvedValue(context),
-      recordWorkspace: vi.fn(), getDevelopmentModelChain: vi.fn(),
+      recordWorkspace: vi.fn(), getDevelopmentModelChain: vi.fn().mockResolvedValue(['modelo-a']),
       blockExecution: vi.fn().mockResolvedValue({ ...message, messageId: 'blocked-1', type: 'SUBTASK_EXECUTION_BLOCKED' }),
     }
     const integration = {

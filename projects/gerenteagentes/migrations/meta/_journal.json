@@ -666,6 +666,13 @@
       "when": 1792627200000,
       "tag": "0094_motor_outbox_deferred_idempotency",
       "breakpoints": true
+    },
+    {
+      "idx": 95,
+      "version": "5",
+      "when": 1792900000001,
+      "tag": "0095_motor_capacity_wait_cooldown",
+      "breakpoints": true
     }
   ]
 }

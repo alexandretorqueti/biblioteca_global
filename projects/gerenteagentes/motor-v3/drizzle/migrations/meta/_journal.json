@@ -92,6 +92,13 @@
       "when": 1792627200000,
       "tag": "0011_motor_outbox_deferred_idempotency",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "5",
+      "when": 1792900000002,
+      "tag": "0012_dev_model_cooldown_wait",
+      "breakpoints": true
     }
   ]
 }
