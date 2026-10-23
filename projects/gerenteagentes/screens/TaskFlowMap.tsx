@@ -60,13 +60,18 @@ export interface RecoveryEligibility {
 
 export interface CapacityWaitProjection {
   phase: "analysis" | "development"
-  reasonCode: "global_limit" | "project_limit" | "provider_limit"
-  limitScope: "global" | "project" | "provider"
+  reasonCode: "global_limit" | "project_limit" | "provider_limit" | "model_cooldown"
+  limitScope: "global" | "project" | "provider" | "model"
   limitValue: number
   provider: string | null
+  retryAt?: string | null
 }
 
 export function capacityWaitMessage(wait: CapacityWaitProjection): string {
+  if (wait.reasonCode === "model_cooldown" || wait.limitScope === "model") {
+    const retry = wait.retryAt ? ` Nova tentativa prevista para ${new Date(wait.retryAt).toLocaleString("pt-BR")}.` : ""
+    return `Aguardando capacidade de modelo DEV (todos os modelos habilitados em cooldown).${retry}`
+  }
   const scope = wait.limitScope === "global" ? "global" : wait.limitScope === "project" ? "por projeto" : "do provider"
   const provider = wait.limitScope === "provider" && wait.provider ? ` (${wait.provider})` : ""
   return `Aguardando limite ${scope}${provider}: ${wait.limitValue} tarefa${wait.limitValue === 1 ? "" : "s"} por vez.`

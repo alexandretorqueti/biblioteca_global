@@ -14,10 +14,12 @@ export type AnalysisClaimResult = boolean | 'capacity_waiting'
 
 export interface CapacityWaitProjection {
   phase: 'analysis' | 'development'
-  reasonCode: 'global_limit' | 'project_limit' | 'provider_limit'
-  limitScope: 'global' | 'project' | 'provider'
+  reasonCode: 'global_limit' | 'project_limit' | 'provider_limit' | 'model_cooldown'
+  limitScope: 'global' | 'project' | 'provider' | 'model'
   limitValue: number
   provider: string | null
+  /** Instante previsto (ISO) de nova elegibilidade — usado no cooldown de modelo DEV. */
+  retryAt?: string | null
 }
 
 export interface TaskDependencySnapshot {

@@ -48,10 +48,11 @@ const taskCountersSchema = z.object({
 
 const capacityWaitSchema = z.object({
   phase: z.enum(["analysis", "development"]),
-  reasonCode: z.enum(["global_limit", "project_limit", "provider_limit"]),
-  limitScope: z.enum(["global", "project", "provider"]),
+  reasonCode: z.enum(["global_limit", "project_limit", "provider_limit", "model_cooldown"]),
+  limitScope: z.enum(["global", "project", "provider", "model"]),
   limitValue: z.number().int().nonnegative(),
   provider: z.string().nullable(),
+  retryAt: z.string().nullable().optional(),
 })
 
 const taskSummarySchema = z.object({

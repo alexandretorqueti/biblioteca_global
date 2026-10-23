@@ -33,10 +33,11 @@ interface TaskRow extends RowDataPacket {
   dependency_terminal_status: string | null
   dependency_deploy_status: string | null
   capacity_wait_phase: 'analysis' | 'development' | null
-  capacity_wait_reason_code: 'global_limit' | 'project_limit' | 'provider_limit' | null
-  capacity_wait_limit_scope: 'global' | 'project' | 'provider' | null
+  capacity_wait_reason_code: 'global_limit' | 'project_limit' | 'provider_limit' | 'model_cooldown' | null
+  capacity_wait_limit_scope: 'global' | 'project' | 'provider' | 'model' | null
   capacity_wait_limit_value: number | string | null
   capacity_wait_provider: string | null
+  capacity_wait_retry_at: Date | string | null
 }
 
 interface DependencyRow extends RowDataPacket {
@@ -67,7 +68,7 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
         pc.slug AS project_slug,
         f.analysis_started_at, f.analysis_execution_id, f.terminal_status,
         f.capacity_wait_phase, f.capacity_wait_reason_code, f.capacity_wait_limit_scope,
-        f.capacity_wait_limit_value, f.capacity_wait_provider,
+        f.capacity_wait_limit_value, f.capacity_wait_provider, f.capacity_wait_retry_at,
         (SELECT COUNT(*) FROM subtarefas s WHERE s.tarefa_id = t.id) AS subtask_count,
         (SELECT COUNT(*) FROM bloqueios b
           WHERE b.tarefa_id = t.id AND b.resolved_at IS NULL) AS blocked_count,
@@ -533,6 +534,7 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
       limitScope: row.capacity_wait_limit_scope,
       limitValue: Number(row.capacity_wait_limit_value),
       provider: row.capacity_wait_provider ? String(row.capacity_wait_provider) : null,
+      retryAt: row.capacity_wait_retry_at ? new Date(row.capacity_wait_retry_at).toISOString() : null,
     }
   }
 

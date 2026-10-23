@@ -1,5 +1,6 @@
-import type { Pool, RowDataPacket } from 'mysql2/promise'
+import type { Pool, PoolConnection, RowDataPacket } from 'mysql2/promise'
 import type { TaskEventSink } from '../coordinator/TaskEventRecorder.js'
+import { createQueueMessage, insertOutboxMessage } from '../queue/index.js'
 
 // ---------------------------------------------------------------------------
 // Row interfaces
@@ -29,6 +30,17 @@ interface StaleQueueRow extends RowDataPacket {
   has_pending_outbox: number | string
 }
 
+interface CooldownWaitRow extends RowDataPacket {
+  tarefa_id: number
+  projeto_id: number
+  task_external_id: string | null
+  project_slug: string | null
+  wait_since: Date | string | null
+  requested_at: Date | string | null
+  retry_at: Date | string | null
+  alert_at: Date | string | null
+}
+
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -36,12 +48,19 @@ interface StaleQueueRow extends RowDataPacket {
 export interface OrphanCapacityQueueReconcilerConfig {
   intervalMs?: number
   taskEvents?: TaskEventSink
+  /**
+   * Limite (ms) de indisponibilidade prolongada de modelo DEV antes de emitir
+   * um único alerta durável. Padrão: 30 minutos.
+   */
+  cooldownAlertMs?: number
 }
 
 export interface OrphanCleanupSummary {
   orphanSessionsClosed: number
   staleQueueEntriesRemoved: number
   duplicateCommandsSuppressed: number
+  cooldownWaitsResumed: number
+  cooldownAlertsEmitted: number
 }
 
 /**
@@ -66,9 +85,16 @@ export interface OrphanCleanupSummary {
  * 3. **Deduplicação** — toda transição que gera comando (`TASK_READY_FOR_
  *    PROGRAMMING`) passa pela verificação de outbox/processing state, de
  *    forma que ciclos repetidos não produzam mensagens duplicadas.
+ *
+ * 4. **Espera por cooldown de modelo DEV** — reanima tarefas cuja espera tem
+ *    motivo `model_cooldown` assim que um modelo volta a ficar elegível
+ *    (retomada temporal: nenhuma liberação de vaga dispara esse gatilho) e
+ *    emite um único alerta durável quando a indisponibilidade excede o limite
+ *    configurado, sem transformar a espera temporária em falha.
  */
 export class OrphanCapacityQueueReconciler {
   private readonly intervalMs: number
+  private readonly cooldownAlertMs: number
   private timer: NodeJS.Timeout | null = null
 
   constructor(
@@ -76,6 +102,7 @@ export class OrphanCapacityQueueReconciler {
     private readonly config: OrphanCapacityQueueReconcilerConfig = {},
   ) {
     this.intervalMs = config.intervalMs ?? 60_000
+    this.cooldownAlertMs = config.cooldownAlertMs ?? 1_800_000
   }
 
   start(): void {
@@ -92,12 +119,17 @@ export class OrphanCapacityQueueReconciler {
       orphanSessionsClosed: 0,
       staleQueueEntriesRemoved: 0,
       duplicateCommandsSuppressed: 0,
+      cooldownWaitsResumed: 0,
+      cooldownAlertsEmitted: 0,
     }
     try {
       summary.orphanSessionsClosed = await this.closeOrphanedTerminalSessions()
       const queueResult = await this.cleanStaleCapacityQueue()
       summary.staleQueueEntriesRemoved = queueResult.removed
       summary.duplicateCommandsSuppressed = queueResult.suppressed
+      const cooldownResult = await this.resumeDevModelCooldownWaits()
+      summary.cooldownWaitsResumed = cooldownResult.resumed
+      summary.cooldownAlertsEmitted = cooldownResult.alerts
     } catch (error) {
       console.error('[Motor v3] Falha no ciclo de reconciliação de órfãos e fila:', this.errorMessage(error))
     }
@@ -291,6 +323,210 @@ export class OrphanCapacityQueueReconciler {
       return { stale: true, reason: 'duplicate_command' }
     }
     return { stale: false }
+  }
+
+  // ---------------------------------------------------------------------------
+  // 3. Espera de capacidade por cooldown de modelo DEV
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Retoma tarefas em espera por capacidade de modelo DEV assim que ao menos
+   * um modelo habilitado sai do cooldown, e emite um único alerta durável
+   * quando a indisponibilidade excede o limite configurado.
+   *
+   * A retomada NÃO transiciona a subtarefa para running: ela apenas reemite o
+   * gatilho `TASK_READY_FOR_PROGRAMMING` (deduplicado contra outbox/processing
+   * state), e o claim atômico em `reserveNextSubtask` continua sendo a única
+   * transição para running — logo não existe execução concorrente. Se o
+   * cooldown persistir na re-reserva, a espera é gravada novamente com novo
+   * prazo (uma única entrada por tarefa, garantida pelo UNIQUE de
+   * `motor_execution_wait_queue`).
+   */
+  private async resumeDevModelCooldownWaits(): Promise<{ resumed: number; alerts: number }> {
+    const [rows] = await this.pool.query<CooldownWaitRow[]>(`
+      SELECT q.tarefa_id, q.projeto_id, q.requested_at,
+             COALESCE(t.external_id, CAST(t.id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci) AS task_external_id,
+             pc.slug AS project_slug,
+             f.capacity_wait_since AS wait_since,
+             f.capacity_wait_retry_at AS retry_at,
+             f.capacity_wait_alert_at AS alert_at
+        FROM motor_execution_wait_queue q
+        INNER JOIN tarefas t ON t.id = q.tarefa_id
+        INNER JOIN task_runtime_facts f ON f.tarefa_id = t.id
+        LEFT JOIN projetos_captados pc ON pc.id = t.projeto_id
+       WHERE q.status = 'waiting'
+         AND f.capacity_wait_reason_code = 'model_cooldown'
+         AND f.terminal_status IS NULL
+         AND t.paused_at IS NULL
+         AND NOT EXISTS (SELECT 1 FROM bloqueios b WHERE b.tarefa_id = t.id AND b.resolved_at IS NULL)
+       ORDER BY q.requested_at ASC, q.id ASC
+    `)
+    let resumed = 0
+    let alerts = 0
+    for (const row of rows) {
+      try {
+        const slug = String(row.project_slug ?? '')
+        const eligible = slug ? await this.hasEligibleDevelopmentModel(slug) : false
+        if (eligible) {
+          if (await this.requeueCooldownWait(row)) resumed++
+          continue
+        }
+        if (slug) await this.refreshCooldownRetryAt(row, slug)
+        if (await this.maybeAlertProlongedCooldownWait(row)) alerts++
+      } catch (error) {
+        console.error(`[Motor v3] Falha ao retomar espera de cooldown da tarefa ${row.tarefa_id}:`, this.errorMessage(error))
+      }
+    }
+    return { resumed, alerts }
+  }
+
+  /** Existe ao menos um modelo DEV habilitado fora de cooldown para o projeto? */
+  private async hasEligibleDevelopmentModel(projectSlug: string): Promise<boolean> {
+    const [rows] = await this.pool.query<Array<RowDataPacket & { available: number | string }>>(`
+      SELECT EXISTS(
+        SELECT 1 FROM project_model_selection sel
+         WHERE sel.project_slug = ? AND sel.tipo = 'DEV' AND sel.enabled = 1
+           AND NOT EXISTS (
+             SELECT 1 FROM motor_model_cooldown cooldown
+              WHERE cooldown.model COLLATE utf8mb4_unicode_ci = sel.model COLLATE utf8mb4_unicode_ci
+                AND cooldown.until > NOW()
+           )
+      ) AS available
+    `, [projectSlug])
+    return Number(rows[0]?.available ?? 0) !== 0
+  }
+
+  /**
+   * Reemite o gatilho de programação em transação, deduplicando contra o
+   * outbox e o estado de processamento. Idempotente: ciclos repetidos com o
+   * comando ainda pendente não produzem nova mensagem.
+   */
+  private async requeueCooldownWait(row: CooldownWaitRow): Promise<boolean> {
+    const connection = await this.pool.getConnection()
+    try {
+      await connection.beginTransaction()
+      const [taskRows] = await connection.query<Array<RowDataPacket & {
+        id: number; external_id: string | null; paused_at: unknown; terminal_status: unknown
+      }>>(`
+        SELECT t.id, t.external_id, t.paused_at, f.terminal_status
+          FROM tarefas t
+          LEFT JOIN task_runtime_facts f ON f.tarefa_id = t.id
+         WHERE t.id = ?
+         LIMIT 1 FOR UPDATE
+      `, [row.tarefa_id])
+      const task = taskRows[0]
+      if (!task || task.paused_at || task.terminal_status) {
+        await connection.rollback()
+        return false
+      }
+      if (await this.hasUnfinishedReadyCommand(connection, task)) {
+        await connection.rollback()
+        return false
+      }
+      const taskId = String(task.external_id ?? task.id)
+      const message = createQueueMessage({
+        type: 'TASK_READY_FOR_PROGRAMMING',
+        taskId,
+        executionId: `exec-cooldown-${task.id}-${Date.now()}`,
+        payload: { reason: 'dev_model_cooldown_expired', recovered: true },
+      })
+      await insertOutboxMessage(connection, message)
+      await connection.query(
+        `UPDATE motor_execution_wait_queue
+            SET wake_count = wake_count + 1, last_woken_at = NOW()
+          WHERE tarefa_id = ?`,
+        [row.tarefa_id],
+      )
+      await connection.commit()
+      await this.record(taskId, 'dev_model_cooldown_resumed', {
+        reasonCode: 'model_cooldown',
+        messageId: message.messageId,
+        queueStatus: row.status,
+      })
+      return true
+    } catch (error) {
+      await connection.rollback()
+      throw error
+    } finally {
+      connection.release()
+    }
+  }
+
+  private async hasUnfinishedReadyCommand(
+    connection: PoolConnection,
+    task: { id: number; external_id: string | null },
+  ): Promise<boolean> {
+    const [rows] = await connection.query<Array<RowDataPacket & { total: number | string }>>(`
+      SELECT COUNT(*) AS total
+        FROM motor_outbox o
+       WHERE o.type = 'TASK_READY_FOR_PROGRAMMING'
+         AND (o.task_id COLLATE utf8mb4_unicode_ci = COALESCE(?, CAST(? AS CHAR CHARACTER SET utf8mb4)) COLLATE utf8mb4_unicode_ci
+           OR o.task_id COLLATE utf8mb4_unicode_ci = CAST(? AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci)
+         AND (
+           o.status = 'pending'
+           OR EXISTS (
+             SELECT 1 FROM motor_message_processing_state mps
+              WHERE mps.message_id COLLATE utf8mb4_unicode_ci = o.message_id COLLATE utf8mb4_unicode_ci
+                AND mps.status = 'processing'
+           )
+         )
+    `, [task.external_id, task.id, task.id])
+    return Number(rows[0]?.total ?? 0) > 0
+  }
+
+  /** Mantém o prazo previsto de nova elegibilidade sincronizado com o cooldown vigente. */
+  private async refreshCooldownRetryAt(row: CooldownWaitRow, projectSlug: string): Promise<void> {
+    const [rows] = await this.pool.query<Array<RowDataPacket & { next_available_at: Date | string | null }>>(`
+      SELECT MIN(cooldown.until) AS next_available_at
+        FROM motor_model_cooldown cooldown
+       WHERE cooldown.until > NOW()
+         AND EXISTS (
+           SELECT 1 FROM project_model_selection sel
+            WHERE sel.project_slug = ? AND sel.tipo = 'DEV' AND sel.enabled = 1
+              AND sel.model COLLATE utf8mb4_unicode_ci = cooldown.model COLLATE utf8mb4_unicode_ci
+         )
+    `, [projectSlug])
+    const next = rows[0]?.next_available_at ? new Date(rows[0].next_available_at) : null
+    await this.pool.query(
+      `UPDATE task_runtime_facts
+          SET capacity_wait_retry_at = ?, updated_at = NOW()
+        WHERE tarefa_id = ?
+          AND capacity_wait_reason_code = 'model_cooldown'
+          AND NOT (capacity_wait_retry_at <=> ?)`,
+      [next, row.tarefa_id, next],
+    )
+  }
+
+  /**
+   * Alerta único e durável para indisponibilidade prolongada: o controle fica
+   * em `capacity_wait_alert_at` e o UPDATE condicional (`IS NULL`) torna a
+   * emissão idempotente mesmo entre instâncias/ciclos concorrentes.
+   */
+  private async maybeAlertProlongedCooldownWait(row: CooldownWaitRow): Promise<boolean> {
+    if (row.alert_at) return false
+    const since = row.wait_since ?? row.requested_at
+    if (!since) return false
+    const waitedMs = Date.now() - new Date(since).getTime()
+    if (!Number.isFinite(waitedMs) || waitedMs < this.cooldownAlertMs) return false
+    const [result] = await this.pool.query<RowDataPacket[]>(
+      `UPDATE task_runtime_facts
+          SET capacity_wait_alert_at = NOW(), updated_at = NOW()
+        WHERE tarefa_id = ?
+          AND capacity_wait_reason_code = 'model_cooldown'
+          AND capacity_wait_alert_at IS NULL`,
+      [row.tarefa_id],
+    )
+    if (Number((result as { affectedRows?: number | string }).affectedRows ?? 0) === 0) return false
+    const taskId = String(row.task_external_id ?? row.tarefa_id)
+    const payload = {
+      reasonCode: 'model_cooldown',
+      waitedMs,
+      limitMs: this.cooldownAlertMs,
+      retryAt: row.retry_at ? new Date(row.retry_at).toISOString() : null,
+    }
+    console.warn(`[Motor v3] Tarefa ${taskId} aguardando modelo DEV há ${Math.round(waitedMs / 60_000)} min (limite ${Math.round(this.cooldownAlertMs / 60_000)} min); próxima elegibilidade prevista: ${payload.retryAt ?? 'desconhecida'}`)
+    await this.record(taskId, 'dev_model_capacity_alert', payload)
+    return true
   }
 
   // ---------------------------------------------------------------------------

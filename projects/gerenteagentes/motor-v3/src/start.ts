@@ -731,6 +731,7 @@ async function start() {
     orphanCapacityQueueReconciler = new OrphanCapacityQueueReconciler(pool, {
       taskEvents,
       intervalMs: Number(process.env.MOTOR_ORPHAN_QUEUE_INTERVAL_MS || 60000),
+      cooldownAlertMs: Number(process.env.MOTOR_DEV_MODEL_COOLDOWN_ALERT_MS || 1_800_000),
     })
     await orphanCapacityQueueReconciler.reconcile()
     orphanCapacityQueueReconciler.start()
@@ -1020,11 +1021,15 @@ async function start() {
           const [capacityWaitRows] = await pool.query(
             `SELECT capacity_wait_phase AS phase, capacity_wait_reason_code AS reasonCode,
                     capacity_wait_limit_scope AS limitScope, capacity_wait_limit_value AS limitValue,
-                    capacity_wait_provider AS provider
+                    capacity_wait_provider AS provider, capacity_wait_retry_at AS retryAt
                FROM task_runtime_facts WHERE tarefa_id = ? LIMIT 1`, [tarefa.id],
           ) as any[]
           const capacityWait = capacityWaitRows?.[0]?.phase
-            ? { ...capacityWaitRows[0], limitValue: Number(capacityWaitRows[0].limitValue) }
+            ? {
+              ...capacityWaitRows[0],
+              limitValue: Number(capacityWaitRows[0].limitValue),
+              retryAt: capacityWaitRows[0].retryAt ? new Date(capacityWaitRows[0].retryAt).toISOString() : null,
+            }
             : null
 
           res.writeHead(200, { 'Content-Type': 'application/json' })
