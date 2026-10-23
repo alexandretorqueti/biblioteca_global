@@ -3,6 +3,7 @@ import { createQueueMessage, type QueueMessage } from '../queue/QueueMessage.js'
 import { createTaskBlockedMessage } from '../monitor/TaskBlockedEvent.js'
 import { insertOutboxMessage } from '../queue/outboxInsert.js'
 import { cancelUnstartedDeployRequests } from '../deploy/DeployRequestFinalizer.js'
+import { insertBlockerChatAlert, insertDeduplicatedChatMessage, recommendedActionForBlockReason } from './blockerChatAlert.js'
 import type { RealtimeMutationPublisher } from '../realtime/RealtimeMutationPublisher.js'
 import { RealtimeMutationBoundary } from '../realtime/RealtimeMutationBoundary.js'
 import { DerivedTaskStatusResolver, type DerivedTaskStatus } from '../status/DerivedTaskStatus.js'
@@ -792,6 +793,7 @@ export class MySqlDevelopmentExecutionRepository {
           }),
           taskId,
           executionId,
+          alertCause: reason,
         })
         await this.insertOutbox(connection, message)
       }
@@ -979,8 +981,11 @@ export class MySqlDevelopmentExecutionRepository {
           JSON.stringify(message.payload), new Date(message.timestamp).toISOString().slice(0, 19).replace('T', ' '),
           message.correlationId ?? null, message.causationId ?? null],
       )
-      if (!result.success && this.isExhaustedWorkerFailure(result.error)) {
-        await this.persistExhaustedWorkerBlocker(connection, context, source, result)
+      // QUALQUER falha terminal (preparação, falta de modelos DEV, falha
+      // comum do worker, esgotamento) persiste bloqueio + alerta ao operador
+      // na mesma transação da marcação 'failed' (tarefa 1043).
+      if (!result.success) {
+        await this.persistTerminalFailureBlocker(connection, context, source, result)
       }
       if (!result.success) await this.wakeCapacityWaiters(connection, message)
       await this.realtime.append(connection, context.databaseTaskId, beforeStatus, {
@@ -1002,9 +1007,14 @@ export class MySqlDevelopmentExecutionRepository {
    * A falha terminal do DEV não pode deixar a tarefa sem próximo trabalho e
    * sem estado observável. O catálogo governado pode ter criado uma corretiva
    * antes de chegarmos aqui; nesse caso ela tem precedência. Sem corretiva,
-   * persistimos o bloqueio e o TASK_BLOCKED na mesma transação da falha.
+   * persistimos o bloqueio, o alerta deduplicado no chat da tarefa e o
+   * TASK_BLOCKED na mesma transação da falha — para QUALQUER erro terminal
+   * (preparação de worktree/ambiente, falta de modelos DEV, falha comum do
+   * worker ou esgotamento de tentativas), não apenas o esgotamento.
+   * Incidente task-p2-1043: falha da subtarefa 1403 deixou 1404/1405
+   * pendentes sem bloqueio nem notificação.
    */
-  private async persistExhaustedWorkerBlocker(
+  private async persistTerminalFailureBlocker(
     connection: PoolConnection,
     context: SubtaskExecutionContext,
     source: QueueMessage,
@@ -1019,46 +1029,33 @@ export class MySqlDevelopmentExecutionRepository {
     )
     if (correctiveRows.length > 0) return
 
-    const reason = result.error ?? 'Esgotado número máximo de tentativas do programador'
+    const exhausted = this.isExhaustedWorkerFailure(result.error)
+    const blockReason = exhausted ? 'worker_exhausted' : 'subtask_terminal_failure'
+    const reason = result.error
+      ?? (exhausted
+        ? 'Esgotado número máximo de tentativas do programador'
+        : 'Falha terminal do programador sem erro registrado')
     const excerpt = JSON.stringify({
+      messageType: source.type,
+      executionId: source.executionId,
       subtaskId: context.subtaskId,
       attempts: result.attempts,
       error: reason.slice(0, 4_000),
+      recommendedAction: recommendedActionForBlockReason(blockReason),
     })
-    const [inserted] = await connection.query<ResultSetHeader>(
-      `INSERT INTO bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at)
-       SELECT ?, ?, 'worker_exhausted', 'SUBTASK_EXECUTION_FAILED', ?, NOW()
-        WHERE NOT EXISTS (
-          SELECT 1 FROM bloqueios
-           WHERE tarefa_id = ? AND subtarefa_id = ?
-             AND block_reason = 'worker_exhausted' AND resolved_at IS NULL
-        )`,
-      [context.databaseTaskId, context.subtaskId, excerpt, context.databaseTaskId, context.subtaskId],
-    )
-    if (inserted.affectedRows === 0) return
-
-    const [blockRows] = await connection.query<Array<RowDataPacket & { id: number }>>(
-      `SELECT id FROM bloqueios
-        WHERE tarefa_id = ? AND subtarefa_id = ?
-          AND block_reason = 'worker_exhausted' AND resolved_at IS NULL
-        ORDER BY id DESC LIMIT 1 FOR UPDATE`,
-      [context.databaseTaskId, context.subtaskId],
-    )
-    const blocked = createTaskBlockedMessage({
+    await this.persistBlockerAndNotifyMonitor(connection, {
+      databaseTaskId: context.databaseTaskId,
+      subtaskId: context.subtaskId,
+      blockReason,
+      blockCommand: 'SUBTASK_EXECUTION_FAILED',
+      blockExcerpt: excerpt,
       taskId: context.taskId,
-      executionId: `${source.executionId}-worker-exhausted-block`,
+      executionId: source.executionId,
+      executionIdSuffix: exhausted ? 'worker-exhausted-block' : 'terminal-block',
       correlationId: source.correlationId ?? source.messageId,
       causationId: source.messageId,
-      payload: {
-        blockReason: 'worker_exhausted',
-        blockCommand: 'SUBTASK_EXECUTION_FAILED',
-        blockExcerpt: excerpt.slice(0, 500),
-        subtaskId: context.subtaskId,
-        databaseTaskId: context.databaseTaskId,
-        blockId: Number(blockRows[0]?.id),
-      },
+      alertCause: reason,
     })
-    await insertOutboxMessage(connection, blocked, 'motor.monitor')
   }
 
   /**
@@ -1081,8 +1078,12 @@ export class MySqlDevelopmentExecutionRepository {
       blockExcerpt: string
       taskId: string
       executionId: string
+      /** Sufixo do executionId do TASK_BLOCKED (default: `block-<blockReason>`). */
+      executionIdSuffix?: string
       correlationId?: string | null
       causationId?: string | null
+      /** Causa legível para o alerta ao operador no chat da tarefa. */
+      alertCause?: string
     },
   ): Promise<boolean> {
     const [inserted] = await connection.query<ResultSetHeader>(
@@ -1108,9 +1109,10 @@ export class MySqlDevelopmentExecutionRepository {
         ORDER BY id DESC LIMIT 1 FOR UPDATE`,
       [params.databaseTaskId, params.subtaskId, params.blockReason],
     )
+    const blockId = Number(blockRows[0]?.id)
     const blocked = createTaskBlockedMessage({
       taskId: params.taskId,
-      executionId: `${params.executionId}-block-${params.blockReason}`,
+      executionId: `${params.executionId}-${params.executionIdSuffix ?? `block-${params.blockReason}`}`,
       correlationId: params.correlationId ?? undefined,
       causationId: params.causationId ?? undefined,
       payload: {
@@ -1119,10 +1121,27 @@ export class MySqlDevelopmentExecutionRepository {
         blockExcerpt: params.blockExcerpt.slice(0, 500),
         subtaskId: params.subtaskId,
         databaseTaskId: params.databaseTaskId,
-        blockId: Number(blockRows[0]?.id),
+        blockId,
       },
     })
     await insertOutboxMessage(connection, blocked, 'motor.monitor')
+
+    // Alerta ao operador no chat da tarefa, na mesma transação do bloqueio e
+    // idempotente pelo marcador do blockId (redelivery não duplica).
+    const alert = await insertBlockerChatAlert(connection, {
+      databaseTaskId: params.databaseTaskId,
+      blockId,
+      taskId: params.taskId,
+      subtaskId: params.subtaskId,
+      blockReason: params.blockReason,
+      cause: params.alertCause ?? params.blockExcerpt,
+      evidence: params.blockExcerpt,
+    })
+    if (alert) {
+      await this.realtime.appendChatMessage(connection, params.databaseTaskId, {
+        id: alert.id, role: 'assistant', texto: alert.texto,
+      })
+    }
     return true
   }
 
@@ -1168,6 +1187,7 @@ export class MySqlDevelopmentExecutionRepository {
         executionId: source.executionId,
         correlationId: source.correlationId ?? source.messageId,
         causationId: source.messageId,
+        alertCause: reason,
       })
       await this.insertOutbox(connection, message)
       await this.wakeCapacityWaiters(connection, message)
@@ -1649,8 +1669,11 @@ export class MySqlDevelopmentExecutionRepository {
   /**
    * Reseta todas as subtarefas de uma tarefa para 'pending' e a tarefa para 'ready'.
    * Usado quando o ambiente de trabalho (worktrees/branches) foi perdido e não pode ser recriado.
+   * Política automática de recuperação aceita, mas NUNCA silenciosa: grava
+   * mensagem de auditoria no chat da tarefa (causa + subtarefas reabertas)
+   * na mesma transação do reset (tarefa 1043).
    */
-  async resetTaskToReady(taskId: string): Promise<void> {
+  async resetTaskToReady(taskId: string, reason?: string): Promise<void> {
     const connection = await this.pool.getConnection()
     try {
       await connection.beginTransaction()
@@ -1664,6 +1687,17 @@ export class MySqlDevelopmentExecutionRepository {
         return
       }
       const databaseId = taskRows[0]!.id
+      const resetCause = (reason && reason.trim() ? reason.trim() : 'Ambiente de trabalho perdido (worktrees/branches não recriáveis)').slice(0, 500)
+      // Coletar as subtarefas que serão reabertas para a auditoria no chat.
+      const [reopenRows] = await connection.query<Array<RowDataPacket & { id: number; seq: number; titulo: string | null; status: string }>>(
+        `SELECT id, seq, titulo, status FROM subtarefas
+          WHERE tarefa_id = ? AND status IN ('running', 'delivered', 'verifying', 'failed', 'blocked')
+          ORDER BY seq ASC FOR UPDATE`,
+        [databaseId],
+      )
+      const reopenedSubtasks = (Array.isArray(reopenRows) ? reopenRows : []).map(row => ({
+        id: Number(row.id), seq: Number(row.seq), titulo: row.titulo != null ? String(row.titulo) : '', status: String(row.status),
+      }))
       // Resetar todas as subtarefas para 'pending'
       await connection.query(
         `UPDATE subtarefas SET status = 'pending', resultado = NULL, updated_at = NOW()
@@ -1698,8 +1732,31 @@ export class MySqlDevelopmentExecutionRepository {
         payload: { reason: 'environment_lost_reset' },
       })
       await this.insertOutbox(connection, message)
+      // Auditoria no chat da tarefa: o reset automático nunca é silencioso.
+      const reopenedDescription = reopenedSubtasks.length > 0
+        ? reopenedSubtasks
+          .map(subtask => `#${subtask.id} (seq ${subtask.seq}, estava '${subtask.status}')${subtask.titulo ? ` — ${subtask.titulo}` : ''}`)
+          .join('; ')
+        : 'nenhuma subtarefa ativa precisou ser reaberta'
+      const resetMarker = `[motor-v3:reset:${message.executionId}]`
+      const auditText = [
+        '♻️ **Reset automático — ambiente perdido**',
+        '',
+        `**Tarefa:** ${taskId} (id ${databaseId})`,
+        `**Causa:** ${resetCause}`,
+        `**Ação:** política automática de recuperação do motor — subtarefas reabertas como pendentes e bloqueios ativos resolvidos: ${reopenedDescription}.`,
+        '**Próximo passo:** o motor reprocessará a tarefa a partir da primeira subtarefa pendente. Se o reset se repetir, investigue a persistência do ambiente (worktrees/branches).',
+        '',
+        resetMarker,
+      ].join('\n')
+      const audit = await insertDeduplicatedChatMessage(connection, databaseId, resetMarker, auditText)
+      if (audit) {
+        await this.realtime.appendChatMessage(connection, databaseId, {
+          id: audit.id, role: 'assistant', texto: audit.texto,
+        })
+      }
       await connection.commit()
-      console.log(`[Motor v3] Tarefa ${taskId} resetada para pronta (ambiente perdido)`)
+      console.log(`[Motor v3] Tarefa ${taskId} resetada para pronta (ambiente perdido); auditoria gravada no chat da tarefa`)
     } catch (error) {
       await connection.rollback()
       throw error

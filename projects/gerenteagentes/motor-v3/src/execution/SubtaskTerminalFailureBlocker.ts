@@ -2,6 +2,8 @@ import type { Pool, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
 import type { TerminalFailureContext, TerminalFailureMessageHandler } from '../queue/TerminalFailureHandler.js'
 import { insertOutboxMessage } from '../queue/outboxInsert.js'
 import { createTaskBlockedMessage } from '../monitor/index.js'
+import type { RealtimeMutationBoundary } from '../realtime/RealtimeMutationBoundary.js'
+import { insertBlockerChatAlert, recommendedActionForBlockReason } from './blockerChatAlert.js'
 import { SUBTASK_VERIFICATION_REQUESTED } from './SubtaskVerificationConsumer.js'
 
 /**
@@ -16,16 +18,23 @@ import { SUBTASK_VERIFICATION_REQUESTED } from './SubtaskVerificationConsumer.js
  *   (cobre `running`/`pending` no fluxo de execução e `verifying` no fluxo
  *   de verificação)
  * - Emissão de `TASK_BLOCKED` via outbox para o Monitor-Resolvedor
- * - Diagnóstico acionável em `block_excerpt` (origem, executionId, tentativa,
- *   erro; para falhas do gate de migrations, inclui a lista de migrations
- *   órfãs/tags esperadas e violações de monotonicidade do journal)
+ * - Diagnóstico acionável em `block_excerpt` (origem, executionId, subtarefa,
+ *   tentativa, erro; para falhas do gate de migrations, inclui a lista de
+ *   migrations órfãs/tags esperadas e violações de monotonicidade do journal)
+ * - Alerta ao operador em `tarefa_chats` na mesma transação do bloqueio,
+ *   idempotente por marcador do blockId no texto da mensagem (tarefa 1043:
+ *   falha terminal não pode ficar sem notificação humana)
  *
  * Idempotência: redelivery da mesma mensagem não cria bloqueio duplicado
  * (NOT EXISTS em `bloqueios` por `block_reason` + `subtarefa_id` ativa),
  * respeitando o mesmo `block_reason` dedicado ao fluxo da mensagem.
  */
 export class SubtaskTerminalFailureBlocker {
-  constructor(private readonly pool: Pool) {}
+  constructor(
+    private readonly pool: Pool,
+    /** Fronteira realtime opcional para publicar a mensagem de chat criada. */
+    private readonly realtime?: RealtimeMutationBoundary,
+  ) {}
 
   /**
    * Handler compatível com `TerminalFailureMessageHandler` — chamado pelo
@@ -58,6 +67,7 @@ export class SubtaskTerminalFailureBlocker {
     const blockExcerpt = JSON.stringify({
       messageType: message.type,
       executionId: message.executionId,
+      subtaskId,
       attempt,
       reason: reason.slice(0, 500),
       error: errorMessage.slice(0, 1400),
@@ -129,6 +139,27 @@ export class SubtaskTerminalFailureBlocker {
         },
       })
       await insertOutboxMessage(connection, blocked, 'motor.monitor')
+
+      // 5. Alerta ao operador no chat da tarefa, na mesma transação e
+      //    idempotente pelo marcador do blockId (redelivery não duplica).
+      if (blockRow?.id != null && blockRow?.tarefa_id != null) {
+        const databaseTaskId = Number(blockRow.tarefa_id)
+        const alert = await insertBlockerChatAlert(connection, {
+          databaseTaskId,
+          blockId: Number(blockRow.id),
+          taskId: String(message.taskId),
+          subtaskId,
+          blockReason,
+          cause: errorMessage,
+          evidence: blockExcerpt,
+          nextStep: recommendedActionForBlockReason(blockReason),
+        })
+        if (alert && this.realtime) {
+          await this.realtime.appendChatMessage(connection, databaseTaskId, {
+            id: alert.id, role: 'assistant', texto: alert.texto,
+          })
+        }
+      }
 
       await connection.commit()
     } catch (err) {

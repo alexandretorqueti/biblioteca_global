@@ -687,7 +687,7 @@ async function start() {
       new ConsoleHumanNotifier(),
       operationLogger,
     )
-    const subtaskTerminalBlocker = new SubtaskTerminalFailureBlocker(pool)
+    const subtaskTerminalBlocker = new SubtaskTerminalFailureBlocker(pool, realtimeBoundary)
     // Execução usa 'subtask_terminal_failure'; verificação usa
     // 'subtask_verification_failed' (reason escolhido pelo blocker pelo tipo
     // da mensagem). Sem isso, falha terminal de verificação ia à DLQ deixando

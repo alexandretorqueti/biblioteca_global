@@ -209,7 +209,10 @@ export class SubtaskExecutionConsumer {
       // resetar subtarefas para pendente e tarefa para pronta
       if (error instanceof IntegrationBranchMissingError) {
         console.warn(`[Motor v3] Ambiente perdido para tarefa ${error.taskId}: branch ${error.branch} inexistente — resetando para pronta`)
-        await this.repository.resetTaskToReady(execution.taskId)
+        // Política automática de recuperação aceita, mas nunca silenciosa:
+        // o repositório grava auditoria (causa + subtarefas reabertas) no
+        // chat da tarefa na mesma transação do reset.
+        await this.repository.resetTaskToReady(execution.taskId, error.message)
         await this.log(operationId, sequence++, message, {
           phase: 'primitive', outcome: 'failed', subtaskId,
           primitiveCode: 'prepare_worktree',
