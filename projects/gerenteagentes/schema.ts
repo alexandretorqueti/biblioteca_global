@@ -469,11 +469,18 @@ export const motorOutbox = mysqlTable("motor_outbox", {
   causationId: varchar("causation_id", { length: 200 }),
   status: mysqlEnum("status", ["pending", "published"]).notNull().default("pending"),
   attempt: int("attempt").notNull().default(0),
+  deferCount: int("defer_count").notNull().default(0),
   lastError: text("last_error"),
   publishedAt: timestamp("published_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
-})
+}, (table) => ({
+  logicalKeyUnique: uniqueIndex("motor_outbox_logical_key_unique").on(
+    table.type,
+    table.taskId,
+    table.correlationId,
+  ),
+}))
 
 /**
  * Outbox do contrato realtime. Não é o motor_outbox: este registro precisa
