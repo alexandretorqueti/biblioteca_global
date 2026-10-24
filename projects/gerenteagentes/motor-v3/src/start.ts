@@ -78,6 +78,8 @@ let server: any = null
 let scheduler: Scheduler | null = null
 let bus: MessageBus | null = null
 let queueConsumer: QueueConsumer | null = null
+/** Profundidade recente das DLQs (varredura a cada 5 min); exposta no /api/motor/stats. */
+let dlqDepths: Record<string, number | null> = {}
 let outboxPublisher: OutboxPublisher | null = null
 let monitorOutbox: OutboxPublisher | null = null
 let realtimeOutboxDispatcher: RealtimeOutboxDispatcher | null = null
@@ -794,6 +796,14 @@ async function start() {
       console.error('[Motor v3] PostDeployVerifier.bootScan falha inesperada:', error instanceof Error ? error.message : String(error))
     })
     let deployOrphanBatchReconcilerRunning = false
+    // Alvo da observabilidade de DLQ: filas mortas acumulam em silêncio
+    // (incidente 2026-10-23: 45 mensagens em motor.commands.dlq sem alerta).
+    const dlqWatchTargets: Array<{ name: string; probe: RabbitMqTransport }> = [
+      { name: process.env.MOTOR_RABBITMQ_DLQ || 'motor.commands.dlq', probe: transport },
+      { name: `${gateQueue}.dlq`, probe: gateTransport },
+      { name: `${monitorQueue}.dlq`, probe: monitorTransport },
+    ]
+    let lastDlqDepths: Record<string, number | null> = {}
     deployOrphanBatchReconcilerTimer = setInterval(() => {
       if (deployOrphanBatchReconcilerRunning || !deployConsumer) return
       deployOrphanBatchReconcilerRunning = true
@@ -812,6 +822,22 @@ async function start() {
           }))
         } finally {
           deployOrphanBatchReconcilerRunning = false
+        }
+      })()
+      // Varredura de DLQ independente do ciclo de batches (best-effort).
+      void (async () => {
+        try {
+          const depths: Record<string, number | null> = {}
+          for (const target of dlqWatchTargets) depths[target.name] = await target.probe.queueDepth(target.name)
+          dlqDepths = depths
+          const total = Object.values(depths).reduce<number>((sum, depth) => sum + (depth ?? 0), 0)
+          const grew = Object.entries(depths).some(([name, depth]) => (depth ?? 0) > (lastDlqDepths[name] ?? 0))
+          if (total > 0) {
+            console.log(JSON.stringify({ event: grew ? 'dlq_depth_warning' : 'dlq_depth', depths, total }))
+          }
+          lastDlqDepths = depths
+        } catch (error) {
+          console.error(JSON.stringify({ event: 'dlq_depth_sweep_failed', error: error instanceof Error ? error.message : String(error) }))
         }
       })()
     }, 300000)
@@ -877,6 +903,8 @@ async function start() {
           // continuam presentes para os consumidores existentes.
           workerActivity,
           primitiveDivergences,
+          // Observabilidade de DLQ (varredura a cada 5 min; null = não medido).
+          dlqDepths,
         }))
         return
       }

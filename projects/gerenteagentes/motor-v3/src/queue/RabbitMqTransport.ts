@@ -224,6 +224,26 @@ export class RabbitMqTransport implements QueueTransport {
     this.connection = null
   }
 
+  /**
+   * Profundidade atual de uma fila (observabilidade de DLQ). Usa um canal
+   * temporário: checkQueue em fila inexistente (404) fecha o canal, e o canal
+   * principal é compartilhado com o consumo. Retorna null quando não é possível
+   * medir (desconectado/fila ausente) — nunca lança.
+   */
+  async queueDepth(queue: string): Promise<number | null> {
+    if (!this.connection) return null
+    let probe: Awaited<ReturnType<ChannelModel['createChannel']>> | null = null
+    try {
+      probe = await this.connection.createChannel()
+      const result = await probe.checkQueue(queue)
+      return result.messageCount
+    } catch {
+      return null
+    } finally {
+      await probe?.close().catch(() => undefined)
+    }
+  }
+
   private requireChannel(): ConfirmChannel {
     if (!this.channel) throw new Error('RabbitMqTransport não conectado')
     return this.channel

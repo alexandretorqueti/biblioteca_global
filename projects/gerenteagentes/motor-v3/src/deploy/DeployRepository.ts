@@ -620,6 +620,178 @@ ${conflictData.conflictFiles.map(f => `- \`${f}\``).join('\n')}
     )
   }
 
+  /**
+   * Evidência completa da falha de um gate (test_runs + test_failures).
+   * Incidente 2026-10-23: a mensagem TEST_RUN_COMPLETED viajava com stdout/stderr
+   * vazios e o bloqueio ficava sem diagnóstico; a evidência real está no banco.
+   */
+  async loadGateFailureEvidence(testRunId: number): Promise<{
+    exitCode: number | null
+    status: string
+    stdout: string
+    stderr: string
+    buildCommand: string | null
+    testCommand: string | null
+    sourceFiles: string[]
+  } | null> {
+    const [runRows] = await this.pool.query<Array<RowDataPacket & {
+      exit_code: number | null; status: string; stdout: string | null; stderr: string | null
+      build_command: string | null; test_command: string | null
+    }>>(
+      `SELECT exit_code, status, stdout, stderr, build_command, test_command FROM test_runs WHERE id=? LIMIT 1`,
+      [testRunId],
+    )
+    const run = runRows[0]
+    if (!run) return null
+    const [failureRows] = await this.pool.query<Array<RowDataPacket & { source_file: string | null }>>(
+      `SELECT source_file FROM test_failures WHERE test_run_id=? AND source_file IS NOT NULL`,
+      [testRunId],
+    )
+    return {
+      exitCode: run.exit_code == null ? null : Number(run.exit_code),
+      status: String(run.status),
+      stdout: String(run.stdout ?? ''),
+      stderr: String(run.stderr ?? ''),
+      buildCommand: run.build_command ?? null,
+      testCommand: run.test_command ?? null,
+      sourceFiles: failureRows.map(row => String(row.source_file)).filter(Boolean),
+    }
+  }
+
+  /** Membros ativos de um batch (requests ainda associados ao lote). */
+  async batchMembers(batchId: string): Promise<Array<{ databaseTaskId: number; taskId: string; requestedCommit: string }>> {
+    const [rows] = await this.pool.query<Array<RowDataPacket & { tarefa_id: number; external_id: string | null; requested_commit: string | null }>>(
+      `SELECT dr.tarefa_id, t.external_id, dr.requested_commit
+         FROM deploy_requests dr INNER JOIN tarefas t ON t.id = dr.tarefa_id
+        WHERE dr.batch_id=? AND dr.status IN ('pending','running')`,
+      [batchId],
+    )
+    return rows.map(row => ({
+      databaseTaskId: Number(row.tarefa_id),
+      taskId: String(row.external_id ?? row.tarefa_id),
+      requestedCommit: String(row.requested_commit ?? ''),
+    }))
+  }
+
+  /**
+   * Isola os membros culpados por falha do gate pre_deploy do commit composto
+   * e devolve os inocentes à fila para re-composição (incidente 2026-10-23:
+   * 1 membro com migration quebrada/erro de build bloqueava o batch inteiro).
+   *
+   * Transação única: culpados → request failed + bloqueio
+   * `deploy_pre_gate_member_failed` + TASK_BLOCKED; inocentes → request volta a
+   * pending sem batch; batch → failed; outbox DEPLOY_BATCH_FAILED;
+   * insertPendingDispatches para re-compor os inocentes no próximo ciclo.
+   */
+  async isolateGateFailureMembers(params: {
+    batchId: string
+    culprits: Array<{ databaseTaskId: number; taskId: string }>
+    reason: string
+    excerpt: string
+    evidence: Array<{ databaseTaskId: number; evidencePath: string; memberFile: string }>
+    source: QueueMessage
+  }): Promise<{ isolated: number; recomposed: number }> {
+    const { batchId, culprits, reason, excerpt, evidence, source } = params
+    if (culprits.length === 0) return { isolated: 0, recomposed: 0 }
+    const culpritIds = culprits.map(member => member.databaseTaskId)
+    const connection = await this.pool.getConnection()
+    try {
+      await connection.beginTransaction()
+      const placeholders = culpritIds.map(() => '?').join(',')
+      // 1. Culpados: request falha + bloqueio individual com evidência
+      await connection.query(
+        `UPDATE deploy_requests
+            SET status='failed', last_error=?, finished_at=NOW(), updated_at=NOW()
+          WHERE batch_id=? AND tarefa_id IN (${placeholders}) AND status IN ('pending','running')`,
+        [reason.slice(0, 500), batchId, ...culpritIds],
+      )
+      // 2. Inocentes: request volta a pending, fora do batch (re-composição)
+      const [recomposed] = await connection.query<ResultSetHeader>(
+        `UPDATE deploy_requests
+            SET status='pending', batch_id=NULL, last_error=NULL,
+                started_at=NULL, finished_at=NULL, updated_at=NOW()
+          WHERE batch_id=? AND status IN ('pending','running') AND tarefa_id NOT IN (${placeholders})`,
+        [batchId, ...culpritIds],
+      )
+      // 3. Batch falha com o motivo do isolamento
+      await connection.query(
+        `UPDATE deploy_batches
+            SET status='failed', last_error=?, finished_at=NOW(), updated_at=NOW()
+          WHERE batch_id=? AND status IN ('pending','running')`,
+        [reason.slice(0, 500), batchId],
+      )
+      for (const culprit of culprits) {
+        const memberEvidence = evidence.filter(item => item.databaseTaskId === culprit.databaseTaskId)
+        const detail = [
+          excerpt,
+          memberEvidence.length > 0
+            ? `Evidência: ${memberEvidence.map(item => `${item.evidencePath} (em ${item.memberFile})`).join('; ')}`
+            : '',
+        ].filter(Boolean).join('\n')
+        const [bloqueioResult] = await connection.query<ResultSetHeader>(
+          `INSERT INTO bloqueios (tarefa_id, subtarefa_id, block_reason, block_command, block_excerpt, blocked_at)
+           VALUES (?, NULL, 'deploy_pre_gate_member_failed', ?, ?, NOW())`,
+          [culprit.databaseTaskId, `motor-v3:gate:${batchId}`, detail.slice(0, 500)],
+        )
+        // 4. Mensagem no chat da tarefa para visibilidade
+        const chatMessage = `⚠️ **Gate pre_deploy do lote falhou — sua tarefa foi isolada**\n\n` +
+          `O gate do commit composto do batch \`${batchId}\` falhou e a evidência aponta para arquivos da sua tarefa:\n` +
+          `${memberEvidence.map(item => `- \`${item.evidencePath}\``).join('\n') || '- (ver resumo do gate)'}\n\n` +
+          `**Resumo da falha:** ${excerpt.slice(0, 300)}\n\n` +
+          `**O que acontece agora:** somente a sua tarefa foi bloqueada; os demais membros do lote voltaram à fila e serão re-compostos sem ela. ` +
+          `Corrija a causa (build/teste/migration) e desbloqueie a tarefa para novo deploy.`
+        const [chatInsert] = await connection.query<ResultSetHeader>(
+          `INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at) VALUES (?, 'assistant', ?, NOW())`,
+          [culprit.databaseTaskId, chatMessage],
+        )
+        await this.realtime.appendChatMessage(connection, culprit.databaseTaskId, {
+          id: Number(chatInsert.insertId), role: 'assistant', texto: chatMessage,
+        })
+        // 5. Eventos canônicos no outbox (feed operacional + Monitor-Resolvedor)
+        const blocked = createTaskBlockedMessage({
+          taskId: culprit.taskId,
+          executionId: `${source.executionId}-gate-member-${batchId}`,
+          correlationId: source.correlationId ?? source.messageId,
+          causationId: source.messageId,
+          payload: {
+            blockReason: 'deploy_pre_gate_member_failed',
+            blockCommand: `motor-v3:gate:${batchId}`,
+            blockExcerpt: detail.slice(0, 500),
+            blockId: Number(bloqueioResult.insertId),
+            batchId,
+            databaseTaskId: culprit.databaseTaskId,
+          },
+        })
+        await this.insertOutbox(connection, blocked)
+        await this.insertOutbox(connection, createQueueMessage({
+          type: 'TASK_DEPLOY_BLOCKED',
+          taskId: culprit.taskId,
+          executionId: source.executionId,
+          correlationId: source.correlationId ?? source.messageId,
+          causationId: source.messageId,
+          payload: { batchId, reason: reason.slice(0, 500) },
+        }))
+      }
+      await this.insertOutbox(connection, createQueueMessage({
+        type: 'DEPLOY_BATCH_FAILED',
+        taskId: source.taskId,
+        executionId: source.executionId,
+        correlationId: source.correlationId ?? source.messageId,
+        causationId: source.messageId,
+        payload: { batchId, reason: reason.slice(0, 500), isolatedMembers: culprits.map(member => member.taskId) },
+      }))
+      // 6. Re-composição: devolve dispatch aos inocentes
+      await this.insertPendingDispatches(connection)
+      await connection.commit()
+      return { isolated: culprits.length, recomposed: Number(recomposed.affectedRows ?? 0) }
+    } catch (error) {
+      await connection.rollback()
+      throw error
+    } finally {
+      connection.release()
+    }
+  }
+
   withIntegration(context: Omit<DeployTaskContext, 'integrationPath' | 'integrationBranch' | 'integrationCommit'>, integrationCommit: string): DeployTaskContext {
     const safeTask = context.taskId.replace(/[^a-zA-Z0-9._-]/g, '-')
     return {

@@ -1,14 +1,16 @@
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { appendFile, mkdir } from 'node:fs/promises'
+import { appendFile, mkdir, rename as fsRename, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { promisify } from 'node:util'
 import { CommandPolicyResolver, type CommandPolicyRepository, type OperationLogger, type OperationOutcome, type OperationPhase } from '../commands/index.js'
 import { GitWorktreePreparer, mapHostRepoPathToContainer } from '../execution/GitWorktreePreparer.js'
 import type { QueueMessage } from '../queue/index.js'
 import { TestGateOrchestrator } from '../testing/index.js'
-import { DeployRepository, type DeployTaskContext, type MemberConflictResult } from './DeployRepository.js'
+import { DeployRepository, type DeployBatch, type DeployTaskContext, type MemberConflictResult } from './DeployRepository.js'
+import { attributeGateFailure, extractFailurePaths } from './GateFailureAttribution.js'
+import { mergeJournals } from './MigrationJournalMerge.js'
 import { RemoteBlueGreenDeployer } from './RemoteBlueGreenDeployer.js'
 import { GitOperationStateDetector } from '../execution/GitOperationStateDetector.js'
 import type { GovernedFailureHandler } from '../governance/GovernedFailureHandler.js'
@@ -291,7 +293,22 @@ export class DeployConsumer {
     const batch = await this.repository.findPendingBatchByGateJob(jobId)
     if (!batch) return
     try {
-      if (message.payload.status !== 'passed') throw new Error('Gate pre_deploy do commit composto falhou')
+      if (message.payload.status !== 'passed') {
+        // Falha do gate composto: tentar isolar somente os membros culpados e
+        // re-compor o lote com os inocentes (incidente 2026-10-23: 1 membro com
+        // migration quebrada/erro de build bloqueava o batch inteiro).
+        const outcome = await this.handleComposedGateFailure(batch, testRunId, message)
+        if (outcome.isolated) {
+          await this.log(randomUUID(), 1, 'completed', 'succeeded', message, {
+            actionCode: 'A30_ACCEPT_DEPLOY_REQUEST', primitiveCode: 'isolate_gate_failure_members',
+            reasonCode: 'composed_gate_failure_isolated', result: { batchId: batch.batchId, testRunId },
+          })
+          if (batch.workspacePath) await this.removeComposedWorktree(batch.repoPath, batch.workspacePath)
+          await this.repository.enqueuePendingDispatches()
+          return
+        }
+        throw new Error(outcome.reason)
+      }
       await this.startPreparedBatch(batch, message)
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error)
@@ -300,6 +317,86 @@ export class DeployConsumer {
       if (batch.workspacePath) await this.removeComposedWorktree(batch.repoPath, batch.workspacePath)
       throw error
     }
+  }
+
+  /**
+   * Falha do gate pre_deploy do commit composto:
+   * 1. enriquece o motivo com a evidência real do banco (exit code + cauda do
+   *    stdout/stderr — a mensagem TEST_RUN_COMPLETED viaja sem esses campos);
+   * 2. tenta atribuir a falha a membros específicos cruzando caminhos de
+   *    evidência com os arquivos alterados por membro; se houver culpados E
+   *    inocentes inequívocos, isola os culpados e devolve os inocentes à fila.
+   * Regra conservadora: qualquer ambiguidade → comportamento histórico
+   * (bloquear o batch inteiro), apenas com diagnóstico melhor.
+   */
+  private async handleComposedGateFailure(batch: DeployBatch, testRunId: number, message: QueueMessage): Promise<{ isolated: boolean; reason: string }> {
+    const baseReason = 'Gate pre_deploy do commit composto falhou'
+    const evidence = await this.repository.loadGateFailureEvidence(testRunId).catch(() => null)
+    let reason = baseReason
+    if (evidence) {
+      const tail = (text: string): string => text.trim().slice(-400)
+      const details: string[] = []
+      if (evidence.exitCode != null) details.push(`exit=${evidence.exitCode}`)
+      const outputTail = tail(evidence.stderr) || tail(evidence.stdout)
+      if (outputTail) details.push(outputTail.replace(/\s+/g, ' '))
+      if (details.length > 0) reason = `${baseReason} (${details.join(' | ')})`
+    }
+    if (!evidence) return { isolated: false, reason }
+    const members = await this.repository.batchMembers(batch.batchId).catch(() => [])
+    // Membro único: bloquear a tarefa é exatamente o comportamento desejado.
+    if (members.length < 2) return { isolated: false, reason }
+    const evidencePaths = [...new Set([
+      ...evidence.sourceFiles,
+      ...extractFailurePaths({
+        stdout: evidence.stdout,
+        stderr: evidence.stderr,
+        buildCommand: evidence.buildCommand,
+        testCommand: evidence.testCommand,
+      }),
+    ])]
+    if (evidencePaths.length === 0) return { isolated: false, reason }
+    // Arquivos alterados por membro (diff merge-base..commit do membro).
+    const workdir = batch.workspacePath && existsSync(batch.workspacePath)
+      ? batch.workspacePath
+      : mapHostRepoPathToContainer(batch.repoPath)
+    if (!workdir) return { isolated: false, reason }
+    const memberFiles = new Map<number, string[]>()
+    try {
+      for (const member of members) {
+        if (!/^[a-f0-9]{7,64}$/i.test(member.requestedCommit)) return { isolated: false, reason }
+        const { stdout: mergeBase } = await execFileAsync('git', ['merge-base', 'HEAD', member.requestedCommit], { cwd: workdir, encoding: 'utf8' })
+        const { stdout: files } = await execFileAsync('git', ['diff', '--name-only', `${mergeBase.trim()}..${member.requestedCommit}`], { cwd: workdir, encoding: 'utf8' })
+        memberFiles.set(member.databaseTaskId, files.split('\n').map(file => file.trim()).filter(Boolean))
+      }
+    } catch {
+      // Sem arquivos por membro não há atribuição segura: mantém o bloqueio total.
+      return { isolated: false, reason }
+    }
+    const attribution = attributeGateFailure(memberFiles, evidencePaths)
+    if (!attribution) return { isolated: false, reason }
+    const culprits = members
+      .filter(member => attribution.culprits.includes(member.databaseTaskId))
+      .map(member => ({ databaseTaskId: member.databaseTaskId, taskId: member.taskId }))
+    if (culprits.length === 0) return { isolated: false, reason }
+    const result = await this.repository.isolateGateFailureMembers({
+      batchId: batch.batchId,
+      culprits,
+      reason,
+      excerpt: reason.slice(0, 500),
+      evidence: attribution.matches,
+      source: message,
+    })
+    console.log(JSON.stringify({
+      event: 'composed_gate_failure_isolated_members',
+      batchId: batch.batchId,
+      testRunId,
+      culprits: culprits.map(culprit => culprit.taskId),
+      isolated: result.isolated,
+      recomposed: result.recomposed,
+      evidencePaths,
+      matches: attribution.matches,
+    }))
+    return { isolated: true, reason }
   }
 
   /**
@@ -679,6 +776,14 @@ export class DeployConsumer {
               const { stdout: diffOutput } = await execFileAsync('git', ['diff', '--name-only', '--diff-filter=U'], { cwd: path, encoding: 'utf8' })
               conflictFiles = diffOutput.split('\n').map(f => f.trim()).filter(Boolean)
             } catch { /* best-effort */ }
+            // Colisão de índice de migration (5 casos em 2026-10-23): quando o
+            // conflito é SOMENTE no _journal.json, renumera automaticamente a
+            // migration do membro para o próximo idx livre e continua o lote.
+            const journalOnlyConflict = conflictFiles.length > 0
+              && conflictFiles.every(file => /(^|\/)migrations\/meta\/_journal\.json$/.test(file))
+            if (journalOnlyConflict && entry.taskId && await this.autoResolveMigrationJournalConflicts(path, conflictFiles, batchId, entry.taskId, entry.commit)) {
+              continue
+            }
             // Aborta SOMENTE o cherry-pick em conflito (não o worktree inteiro)
             await execFileAsync('git', ['cherry-pick', '--abort'], { cwd: path }).catch(() => {
               // Fallback: se cherry-pick --abort falhar, tenta limpar o estado
@@ -722,6 +827,78 @@ export class DeployConsumer {
     } catch (error) {
       await this.removeComposedWorktree(repo, path)
       throw error
+    }
+  }
+
+  /**
+   * Resolução automática de conflito de cherry-pick causado por colisão de
+   * índice de migration (mesmo `_journal.json`). Renomeia a migration do membro
+   * para o próximo idx livre (arquivo .sql + snapshot + journal) e conclui o
+   * cherry-pick. Qualquer falha → aborta o pick e devolve false para o fluxo
+   * normal de isolamento do membro.
+   */
+  private async autoResolveMigrationJournalConflicts(
+    path: string,
+    journalFiles: string[],
+    batchId: string,
+    taskId: string,
+    commit: string,
+  ): Promise<boolean> {
+    try {
+      for (const journalPath of journalFiles) {
+        const showStage = async (stage: number): Promise<string | null> =>
+          execFileAsync('git', ['show', `:${stage}:${journalPath}`], { cwd: path, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 })
+            .then(result => result.stdout)
+            .catch(() => null)
+        const [baseRaw, oursRaw, theirsRaw] = [await showStage(1), await showStage(2), await showStage(3)]
+        const merged = mergeJournals(oursRaw, baseRaw, theirsRaw)
+        if (!merged) return false
+        const metaDir = dirname(journalPath)
+        const migrationsDir = dirname(metaDir)
+        for (const rename of merged.renames) {
+          const oldPrefix = /^(\d+)/.exec(rename.from)?.[1] ?? String(rename.oldIdx).padStart(4, '0')
+          const pairs: Array<[string, string]> = [
+            [`${migrationsDir}/${rename.from}.sql`, `${migrationsDir}/${rename.to}.sql`],
+            [`${metaDir}/${oldPrefix}_snapshot.json`, `${metaDir}/${String(rename.newIdx).padStart(4, '0')}_snapshot.json`],
+          ]
+          for (const [oldPath, newPath] of pairs) {
+            if (oldPath === newPath) continue
+            if (existsSync(`${path}/${newPath}`)) {
+              // Alvo ocupado: renumeração não é segura; deixa o isolamento agir.
+              return false
+            }
+            if (!existsSync(`${path}/${oldPath}`)) {
+              // Arquivo esperado do membro ausente no worktree: estado inesperado.
+              return false
+            }
+            await fsRename(`${path}/${oldPath}`, `${path}/${newPath}`)
+          }
+        }
+        await writeFile(`${path}/${journalPath}`, `${JSON.stringify(merged.journal, null, 2)}\n`)
+        await execFileAsync('git', ['add', '-A', '--', migrationsDir], { cwd: path })
+      }
+      await execFileAsync('git', ['-c', 'core.editor=true', 'cherry-pick', '--continue'], {
+        cwd: path,
+        env: { ...process.env, GIT_EDITOR: 'true' },
+      })
+      console.log(JSON.stringify({
+        event: 'migration_journal_auto_renumbered',
+        batchId,
+        taskId,
+        commit,
+        journals: journalFiles,
+      }))
+      return true
+    } catch (error) {
+      await execFileAsync('git', ['cherry-pick', '--abort'], { cwd: path }).catch(() => this.operationState.recover(path))
+      console.error(JSON.stringify({
+        event: 'migration_journal_auto_renumber_failed',
+        batchId,
+        taskId,
+        commit,
+        error: error instanceof Error ? error.message : String(error),
+      }))
+      return false
     }
   }
 
