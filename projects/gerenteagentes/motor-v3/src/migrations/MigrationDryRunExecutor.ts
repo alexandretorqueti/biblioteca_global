@@ -88,6 +88,14 @@ export class MigrationDryRunExecutor {
   /**
    * Executa dry-run das migrations adicionadas desde baseCommitSha.
    * Descobre, clona estrutura, reescreve SQL, executa e limpa em finally.
+   *
+   * Banco alvo vazio (projeto novo, nunca deployado — incidente 2026-10-23,
+   * gestao-de-tarefas-global): o modo diferencial falha com errno 1146 porque
+   * as migrations anteriores (que criam as tabelas referenciadas) nunca foram
+   * aplicadas. Nesse caso o dry-run reinicia simulando a CADEIA COMPLETA do
+   * projeto em scratch, na ordem do journal — exatamente o que o deploy
+   * aplicaria. O fallback só dispara com falha 1146 + banco comprovadamente
+   * vazio; qualquer outro erro preserva o comportamento histórico.
    */
   async execute(
     workspacePath: string,
@@ -99,36 +107,143 @@ export class MigrationDryRunExecutor {
     await this.validateJournalWatermarks(workspacePath, addedMigrations)
 
     try {
-      for (const { project, migration, path } of addedMigrations) {
-        const content = await readFile(resolve(workspacePath, path), 'utf8')
-        const statements = this.splitStatements(content)
-        if (statements.length === 0) continue
-
-        const touchedTables = this.extractTableNames(statements)
-        await this.cloneTableStructures(touchedTables)
-
-        for (let statementIndex = 0; statementIndex < statements.length; statementIndex++) {
-          const statement = statements[statementIndex]!
-          const rewritten = this.rewriteTableReferences(statement, touchedTables)
-          const statementLine = this.findStatementLine(content, statement)
-
-          try {
-            await this.pool.query(rewritten)
-          } catch (error: any) {
-            throw new MigrationDryRunError([{
-              project,
-              migration,
-              statementIndex: statementIndex + 1,
-              statementLine,
-              mysqlMessage: error.message || String(error),
-              mysqlErrno: error.errno,
-              mysqlState: error.sqlState,
-            }])
-          }
+      try {
+        await this.executeDifferential(workspacePath, addedMigrations)
+      } catch (error) {
+        const missingScratch = error instanceof MigrationDryRunError
+          && error.violations.length > 0
+          && error.violations.every(violation => violation.mysqlErrno === 1146)
+        if (!missingScratch || !await this.isFreshTargetDatabase()) throw error
+        // Banco vazio: limpa resquícios do modo diferencial e simula a cadeia
+        // completa (as migrations anteriores criarão as tabelas em scratch).
+        await this.cleanupScratchTables()
+        this.scratchTables.length = 0
+        const projects = [...new Set(addedMigrations.map(migration => migration.project))]
+        for (const project of projects) {
+          await this.executeFullChain(workspacePath, project, addedMigrations.filter(migration => migration.project === project))
         }
       }
     } finally {
       await this.cleanupScratchTables()
+    }
+  }
+
+  /** Modo diferencial histórico: somente as migrations adicionadas, com clone das tabelas reais tocadas. */
+  private async executeDifferential(
+    workspacePath: string,
+    addedMigrations: Array<{ project: string; migration: string; path: string }>,
+  ): Promise<void> {
+    for (const { project, migration, path } of addedMigrations) {
+      const content = await readFile(resolve(workspacePath, path), 'utf8')
+      const statements = this.splitStatements(content)
+      if (statements.length === 0) continue
+
+      const touchedTables = this.extractTableNames(statements)
+      await this.cloneTableStructures(touchedTables)
+
+      for (let statementIndex = 0; statementIndex < statements.length; statementIndex++) {
+        const statement = statements[statementIndex]!
+        const rewritten = this.rewriteTableReferences(statement, touchedTables)
+        const statementLine = this.findStatementLine(content, statement)
+
+        try {
+          await this.pool.query(rewritten)
+        } catch (error: any) {
+          throw new MigrationDryRunError([{
+            project,
+            migration,
+            statementIndex: statementIndex + 1,
+            statementLine,
+            mysqlMessage: error.message || String(error),
+            mysqlErrno: error.errno,
+            mysqlState: error.sqlState,
+          }])
+        }
+      }
+    }
+  }
+
+  /**
+   * Banco alvo totalmente vazio (nenhuma tabela): primeiro deploy do projeto.
+   * Indeterminável por erro de consulta → falso (mantém o modo diferencial,
+   * comportamento histórico).
+   */
+  private async isFreshTargetDatabase(): Promise<boolean> {
+    try {
+      const [rows] = await this.pool.query<RowDataPacket[]>(
+        'SELECT COUNT(*) AS total FROM information_schema.tables WHERE table_schema = DATABASE()',
+      )
+      return Number(rows[0]?.['total'] ?? -1) === 0
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * Simula a cadeia completa de migrations do projeto (journal, ordem por idx)
+   * em tabelas scratch, sem clonar do banco real (vazio). Erros de estrutura
+   * já existente na própria cadeia (1050) e de nome de FK já usado na cadeia
+   * (1826) são tolerados — o objetivo é validar o encadeamento até as
+   * migrations adicionadas, não duplicar validações de unicidade do drizzle.
+   * Journal ausente/ilegível → degrada para as migrations adicionadas.
+   */
+  private async executeFullChain(
+    workspacePath: string,
+    project: string,
+    addedForProject: Array<{ project: string; migration: string; path: string }>,
+  ): Promise<void> {
+    let chain: Array<{ project: string; migration: string; path: string }> = []
+    try {
+      const journalPath = resolve(workspacePath, 'projects', project, 'migrations', 'meta', '_journal.json')
+      const journal = JSON.parse(await readFile(journalPath, 'utf8')) as { entries?: Array<{ idx: number; tag: string }> }
+      if (Array.isArray(journal.entries)) {
+        chain = [...journal.entries]
+          .sort((a, b) => a.idx - b.idx)
+          .map(entry => ({
+            project,
+            migration: `${entry.tag}.sql`,
+            path: `projects/${project}/migrations/${entry.tag}.sql`,
+          }))
+      }
+    } catch {
+      chain = []
+    }
+    const migrations = chain.length > 0 ? chain : addedForProject
+    for (const { migration, path } of migrations) {
+      let content: string
+      try {
+        content = await readFile(resolve(workspacePath, path), 'utf8')
+      } catch {
+        // Arquivo ausente (lacuna do journal): nada a simular.
+        continue
+      }
+      const statements = this.splitStatements(content)
+      if (statements.length === 0) continue
+      const touchedTables = this.extractTableNames(statements)
+      // Sem clone do banco real (vazio): registra scratch para o cleanup.
+      for (const tableName of touchedTables) {
+        const scratchName = `${this.scratchPrefix}${tableName}`
+        if (!this.scratchTables.includes(scratchName)) this.scratchTables.push(scratchName)
+      }
+      for (let statementIndex = 0; statementIndex < statements.length; statementIndex++) {
+        const statement = statements[statementIndex]!
+        const rewritten = this.rewriteTableReferences(statement, touchedTables)
+        const statementLine = this.findStatementLine(content, statement)
+        try {
+          await this.pool.query(rewritten)
+        } catch (error: any) {
+          if (error?.errno === 1050 || error?.errno === 1826) continue
+          throw new MigrationDryRunError([{
+            project,
+            migration,
+            statementIndex: statementIndex + 1,
+            statementLine,
+            mysqlMessage: error.message || String(error),
+            mysqlErrno: error.errno,
+            mysqlState: error.sqlState,
+          }])
+        }
+      }
     }
   }
 

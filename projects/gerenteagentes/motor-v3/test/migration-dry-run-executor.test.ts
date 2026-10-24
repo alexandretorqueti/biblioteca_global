@@ -560,4 +560,123 @@ describe('MigrationDryRunExecutor', () => {
       await expect(executor.execute(ws, baseCommit)).resolves.toBeUndefined()
     })
   })
+
+  describe('banco alvo vazio: fallback para cadeia completa (incidente 2026-10-23)', () => {
+    /**
+     * Cenário real: projeto gestao-de-tarefas-global com banco provisionado mas
+     * NUNCA deployado (0 tabelas). A migration 0001 referencia `recorrencias`
+     * (criada pela 0000, ainda não aplicada). O modo diferencial falha com 1146;
+     * o executor deve simular a cadeia completa (0000 + 0001) em scratch.
+     */
+    async function createFreshProjectWorkspace(): Promise<{ ws: string; baseCommit: string }> {
+      const ws = await createWorkspace()
+      await mkdir(join(ws, 'projects/novo/migrations/meta'), { recursive: true })
+      await writeFile(join(ws, 'projects/novo/migrations/0000_base.sql'), 'CREATE TABLE `recorrencias` (`id` INT);')
+      await writeFile(join(ws, 'projects/novo/migrations/meta/_journal.json'), JSON.stringify({
+        version: '7', dialect: 'mysql', entries: [
+          { idx: 0, version: '5', when: 1000, tag: '0000_base', breakpoints: true },
+        ],
+      }))
+      await git(ws, ['add', '.'])
+      await git(ws, ['commit', '-m', 'baseline'])
+      const baseCommit = (await git(ws, ['rev-parse', 'HEAD'])).trim()
+
+      await writeFile(join(ws, 'projects/novo/migrations/0001_update.sql'), "UPDATE `recorrencias` SET `id` = `id`;")
+      await writeFile(join(ws, 'projects/novo/migrations/meta/_journal.json'), JSON.stringify({
+        version: '7', dialect: 'mysql', entries: [
+          { idx: 0, version: '5', when: 1000, tag: '0000_base', breakpoints: true },
+          { idx: 1, version: '5', when: 2000, tag: '0001_update', breakpoints: true },
+        ],
+      }))
+      return { ws, baseCommit }
+    }
+
+    function mockFreshDatabase(totalTables: number): { updateCalls: () => number; createChainCalls: () => string[] } {
+      let updateCalls = 0
+      const createChainCalls: string[] = []
+      querySpy.mockImplementation(async (sql: unknown) => {
+        const q = String(sql)
+        if (q.includes('information_schema.tables')) return [[{ total: totalTables }]]
+        if (q.includes('__drizzle_migrations')) {
+          const error = new Error("Table '__drizzle_migrations' doesn't exist") as Error & { errno: number }
+          error.errno = 1146
+          throw error
+        }
+        if (q.startsWith('SHOW CREATE TABLE')) {
+          const error = new Error("Table 'recorrencias' doesn't exist") as Error & { errno: number }
+          error.errno = 1146
+          throw error
+        }
+        if (q.includes('UPDATE') && q.includes('gate_scratch_555_recorrencias')) {
+          updateCalls += 1
+          if (updateCalls === 1) {
+            const error = new Error("Table 'x.gate_scratch_555_recorrencias' doesn't exist") as Error & { errno: number }
+            error.errno = 1146
+            throw error
+          }
+          return [{} as ResultSetHeader]
+        }
+        if (q.includes('CREATE TABLE') && q.includes('gate_scratch_555_recorrencias')) createChainCalls.push(q)
+        return [{} as ResultSetHeader]
+      })
+      return { updateCalls: () => updateCalls, createChainCalls: () => createChainCalls }
+    }
+
+    it('banco vazio + falha 1146 → simula a cadeia completa em scratch e passa', async () => {
+      const { ws, baseCommit } = await createFreshProjectWorkspace()
+      const counters = mockFreshDatabase(0)
+
+      const executor = new MigrationDryRunExecutor(mockPool, 555)
+      await expect(executor.execute(ws, baseCommit)).resolves.toBeUndefined()
+
+      // Cadeia completa: 0000 criou a scratch antes do UPDATE da 0001
+      expect(counters.createChainCalls()).toHaveLength(1)
+      expect(counters.updateCalls()).toBe(2) // 1ª falha (diferencial), 2ª passa (cadeia)
+    })
+
+    it('banco com tabelas + falha 1146 → mantém erro original (sem fallback)', async () => {
+      const { ws, baseCommit } = await createFreshProjectWorkspace()
+      const counters = mockFreshDatabase(7)
+
+      const executor = new MigrationDryRunExecutor(mockPool, 555)
+      await expect(executor.execute(ws, baseCommit)).rejects.toMatchObject({
+        name: 'MigrationDryRunError',
+        violations: [{ mysqlErrno: 1146 }],
+      })
+      expect(counters.createChainCalls()).toHaveLength(0)
+      expect(counters.updateCalls()).toBe(1)
+    })
+
+    it('falha que não é 1146 → não dispara fallback', async () => {
+      const { ws, baseCommit } = await createFreshProjectWorkspace()
+      querySpy.mockImplementation(async (sql: unknown) => {
+        const q = String(sql)
+        if (q.includes('information_schema.tables')) return [[{ total: 0 }]]
+        if (q.includes('__drizzle_migrations')) {
+          const error = new Error('ausente') as Error & { errno: number }
+          error.errno = 1146
+          throw error
+        }
+        if (q.startsWith('SHOW CREATE TABLE')) {
+          const error = new Error('ausente') as Error & { errno: number }
+          error.errno = 1146
+          throw error
+        }
+        if (q.includes('UPDATE')) {
+          const error = new Error('You have an error in your SQL syntax') as Error & { errno: number }
+          error.errno = 1064
+          throw error
+        }
+        return [{} as ResultSetHeader]
+      })
+
+      const executor = new MigrationDryRunExecutor(mockPool, 555)
+      await expect(executor.execute(ws, baseCommit)).rejects.toMatchObject({
+        name: 'MigrationDryRunError',
+        violations: [{ mysqlErrno: 1064 }],
+      })
+      // Nenhuma consulta de freshness (fallback nem avaliado)
+      expect(querySpy.mock.calls.every(call => !String(call[0]).includes('information_schema.tables'))).toBe(true)
+    })
+  })
 })
