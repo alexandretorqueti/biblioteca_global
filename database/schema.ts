@@ -122,6 +122,29 @@ export const emailVerifications = mysqlTable(
   (t) => [index("idx_email_verifications_email").on(t.email)],
 )
 
+/** Auditoria dos logins bem-sucedidos (senha ou código enviado por e-mail). */
+export const logsLogin = mysqlTable(
+  "logs_login",
+  {
+    id: bigint("id", { mode: "number", unsigned: true })
+      .primaryKey()
+      .autoincrement(),
+    usuarioId: bigint("usuario_id", { mode: "number", unsigned: true }).references(
+      () => usuarios.id,
+      { onDelete: "set null" },
+    ),
+    email: varchar("email", { length: 255 }).notNull(),
+    metodo: mysqlEnum("metodo", ["senha", "codigo_email"]).notNull(),
+    codigo: varchar("codigo", { length: 10 }),
+    ip: varchar("ip", { length: 45 }),
+    timestamp: timestamp("timestamp").notNull().defaultNow(),
+  },
+  (t) => [
+    index("idx_logs_login_timestamp").on(t.timestamp),
+    index("idx_logs_login_usuario_id").on(t.usuarioId),
+  ],
+)
+
 export const refreshTokens = mysqlTable(
   "refresh_tokens",
   {

@@ -14,6 +14,7 @@ import type {
 } from "@biblioteca-global/shared"
 import {
   emailVerifications,
+  logsLogin,
   consentimentos,
   projetos,
   projetosUsuarios,
@@ -39,6 +40,13 @@ export interface ResolvedScope {
 }
 
 export interface AuthRepository {
+  registrarLogLogin(row: {
+    usuarioId: number
+    email: string
+    metodo: "senha" | "codigo_email"
+    codigo: string | null
+    ip: string | null
+  }): Promise<void>
   findConsentimentoAtual(usuarioId: number): Promise<{
     versaoPolitica: string
     data: Date
@@ -117,6 +125,16 @@ export function toUsuarioAutenticado(
 @Injectable()
 export class DrizzleAuthRepository implements AuthRepository {
   constructor(@Inject(CORE_DB) private readonly db: CoreDb) {}
+
+  async registrarLogLogin(row: {
+    usuarioId: number
+    email: string
+    metodo: "senha" | "codigo_email"
+    codigo: string | null
+    ip: string | null
+  }): Promise<void> {
+    await this.db.insert(logsLogin).values(row)
+  }
 
   async findUsuarioByIdentifier(
     identifierType: LoginIdentifierType,

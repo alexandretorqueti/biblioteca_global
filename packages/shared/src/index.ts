@@ -128,6 +128,10 @@ export type {
 // Entidades do core
 export type { Usuario, Projeto, ProjetoUsuario } from "./core"
 
+// Auditoria dos logins bem-sucedidos.
+export { logLoginMetodoSchema, logLoginSchema } from "./logs-login"
+export type { LogLoginMetodo, LogLogin, LogsLoginPage } from "./logs-login"
+
 // Seleção de modelos de IA por projeto/tipo de agente (espelha o contrato do motor)
 export {
   ModelSelectionTipoSchema,

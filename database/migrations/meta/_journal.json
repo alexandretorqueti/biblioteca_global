@@ -43,6 +43,13 @@
       "when": 1790276400000,
       "tag": "0005_projetos_db_connection",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1792669414000,
+      "tag": "0006_logs_login",
+      "breakpoints": true
     }
   ]
 }

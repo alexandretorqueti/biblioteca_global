@@ -38,6 +38,7 @@ function makeRequest(authorization?: string): ApiRequest {
 /** Fake mínimo do repositório para os guards. */
 function makeRepo(scope: ResolvedScope | undefined): AuthRepository {
   return {
+    registrarLogLogin: async () => undefined,
     findUsuarioByIdentifier: async () => undefined,
     findUsuarioById: async () => undefined,
     listProjetosDoUsuario: async () => [],
