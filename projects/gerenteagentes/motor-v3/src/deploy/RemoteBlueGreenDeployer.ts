@@ -3,7 +3,7 @@ import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
 
-export interface RemoteDeploymentStart { batchId: string; expectedCommit: string; hostRepoRoot: string; deployScript: string }
+export interface RemoteDeploymentStart { batchId: string; expectedCommit: string; baseBranch: string; hostRepoRoot: string; deployScript: string }
 export interface RemoteDeploymentHandle { pid: string; statusPath: string; logPath: string }
 export type RemoteDeploymentStatus =
   | { state: 'active'; status: null; diagnostic: string | null }
@@ -27,7 +27,7 @@ export class RemoteBlueGreenDeployer {
     const statusPath = `/tmp/biblioteca-global-${safeBatch}.status`
     const logPath = `/tmp/biblioteca-global-${safeBatch}.log`
     const script = `${input.hostRepoRoot.replace(/\/$/, '')}/${input.deployScript.replace(/^\//, '')}`
-    const run = `MOTOR_DEPLOY_STATUS_FILE=${quote(statusPath)} MOTOR_DEPLOY_LOG_FILE=${quote(logPath)} EXPECTED_DEPLOY_COMMIT=${quote(input.expectedCommit)} bash ${quote(script)} ${quote(input.hostRepoRoot)} ${quote(input.expectedCommit)} ${quote(safeBatch)}`
+    const run = `MOTOR_DEPLOY_STATUS_FILE=${quote(statusPath)} MOTOR_DEPLOY_LOG_FILE=${quote(logPath)} EXPECTED_DEPLOY_COMMIT=${quote(input.expectedCommit)} bash ${quote(script)} ${quote(input.hostRepoRoot)} ${quote(input.expectedCommit)} ${quote(safeBatch)} ${quote(input.baseBranch)}`
     const wrapped = `(${run}; code=$?; if [ $code -eq 0 ]; then status=success; else status=failed:$code; fi; printf '%s' "$status" > ${quote(statusPath)}; exit $code)`
     const { stdout } = await this.ssh(`nohup bash -lc ${quote(wrapped)} > ${quote(logPath)} 2>&1 < /dev/null & echo $!`)
     const pid = stdout.trim()

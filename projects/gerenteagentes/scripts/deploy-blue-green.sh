@@ -9,6 +9,9 @@ set -euo pipefail
 REPO_ROOT="${1:?informe a raiz do repositório}"
 EXPECTED_DEPLOY_COMMIT="${2:-${EXPECTED_DEPLOY_COMMIT:-}}"
 DEPLOY_BATCH_ID="${3:-}"
+# Compatibilidade de bootstrap: o motor anterior ainda não envia o quarto
+# argumento durante o primeiro deploy desta correção.
+BASE_BRANCH="${4:-base-desenvolvimento}"
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml}"
 NGINX_CONTAINER="${NGINX_CONTAINER:-meu-servidor-nginx}"
 NGINX_CONFIG="${NGINX_CONFIG:-/home/alexandre/containers/nginx/conf/default.conf}"
@@ -202,8 +205,8 @@ if [ -n "$EXPECTED_DEPLOY_COMMIT" ]; then
   echo "[deploy-blue-green] sincronizando com origin..."
   # Contornar problema de permissão no known_hosts do usuário alexandre
   export GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
-  git fetch origin
-  git reset --hard origin/$(git rev-parse --abbrev-ref HEAD)
+  git fetch origin "$BASE_BRANCH"
+  git reset --hard "origin/$BASE_BRANCH"
   ACTUAL_DEPLOY_COMMIT="$(git rev-parse HEAD)"
   # O deploy pode encontrar uma base que avançou depois do gate, desde que o
   # commit validado continue no histórico. Exigir igualdade bloquearia um

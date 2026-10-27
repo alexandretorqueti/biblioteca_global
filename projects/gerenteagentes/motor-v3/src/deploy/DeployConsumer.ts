@@ -461,7 +461,7 @@ export class DeployConsumer {
         throw error
       }
       if (!this.hostRepoRoot) throw new Error('DEPLOY_REPO_HOST não configurado')
-      const remote = await this.remote.start({ batchId: batch.batchId, expectedCommit: batch.expectedCommit, hostRepoRoot: this.hostRepoRoot, deployScript: this.script })
+      const remote = await this.remote.start({ batchId: batch.batchId, expectedCommit: batch.expectedCommit, baseBranch: batch.baseBranch, hostRepoRoot: this.hostRepoRoot, deployScript: this.script })
       await this.repository.markRemoteStarted(batch.batchId, remote.pid, remote.statusPath, message)
 
       // 4. Libera lock de deploy

@@ -9,7 +9,7 @@ describe('RemoteBlueGreenDeployer.status', () => {
   beforeEach(() => execFile.mockReset())
 
   function probe(output: string) {
-    execFile.mockImplementationOnce((_file: string, _args: string[], _options: unknown, callback: Function) => callback(null, { stdout: output, stderr: '' }))
+    execFile.mockImplementationOnce((_file: string, _args: string[], _options: unknown, callback: (error: Error | null, result: { stdout: string; stderr: string }) => void) => callback(null, { stdout: output, stderr: '' }))
     return new RemoteBlueGreenDeployer('deploy@host').status('/tmp/biblioteca-global-deploy-5cc1529b.status', '1234')
   }
 
@@ -30,5 +30,18 @@ describe('RemoteBlueGreenDeployer.status', () => {
   it('limita o diagnóstico remoto', async () => {
     const result = await probe(`process=absent\nstatus=failed:1\nlog=${'x'.repeat(5000)}`)
     expect(result.diagnostic).toHaveLength(4000)
+  })
+
+  it('envia a branch base explicitamente ao script remoto', async () => {
+    execFile.mockImplementationOnce((_file: string, _args: string[], _options: unknown, callback: (error: Error | null, result: { stdout: string; stderr: string }) => void) => callback(null, { stdout: '1234\n', stderr: '' }))
+    await new RemoteBlueGreenDeployer('deploy@host').start({
+      batchId: 'deploy-1',
+      expectedCommit: 'abcdef1',
+      baseBranch: 'base-desenvolvimento',
+      hostRepoRoot: '/repo',
+      deployScript: 'deploy.sh',
+    })
+    const command = execFile.mock.calls[0]?.[1]?.at(-1)
+    expect(command).toContain("'base-desenvolvimento'")
   })
 })
