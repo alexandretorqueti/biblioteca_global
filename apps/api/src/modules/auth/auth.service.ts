@@ -167,6 +167,13 @@ export class AuthService {
     await this.validarConsentimento(usuario, dto.consentimentoAceito, ip)
 
     if (!usuario.passwordHash) {
+      await this.repo.registrarLogLogin({
+        usuarioId: usuario.id,
+        email,
+        metodo: "codigo_email",
+        codigo: dto.code,
+        ip,
+      })
       const verificationToken = await this.jwt.signAsync(
         { sub: usuario.id },
         {
@@ -177,6 +184,13 @@ export class AuthService {
     }
 
     const refreshToken = await this.issueRefreshToken(usuario.id)
+    await this.repo.registrarLogLogin({
+      usuarioId: usuario.id,
+      email,
+      metodo: "codigo_email",
+      codigo: dto.code,
+      ip,
+    })
     const projetos = await this.repo.listProjetosDoUsuario(usuario.id)
     return {
       primeiraVez: false,
@@ -232,6 +246,13 @@ export class AuthService {
     await this.validarConsentimento(usuario, dto.consentimentoAceito, ip)
 
     const refreshToken = await this.issueRefreshToken(usuario.id)
+    await this.repo.registrarLogLogin({
+      usuarioId: usuario.id,
+      email: usuario.email ?? dto.identifier,
+      metodo: "senha",
+      codigo: null,
+      ip,
+    })
     const projetos = await this.repo.listProjetosDoUsuario(usuario.id)
     return {
       refreshToken,

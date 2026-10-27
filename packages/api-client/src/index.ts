@@ -44,3 +44,4 @@ export type {
   HelpDeskSessionInfo,
   HelpDeskRealtimeSubscription,
 } from "./helpdesk-client"
+export { LogsLoginClient, createLogsLoginClient } from "./logs-login-client"
