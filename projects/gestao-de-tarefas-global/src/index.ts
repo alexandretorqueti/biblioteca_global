@@ -1,2 +1,2 @@
-/** Ponto de entrada reservado para o workspace do projeto. */
-export {}
+/** Ponto de entrada do workspace do projeto — contratos de domínio. */
+export * from "./recorrencias"
