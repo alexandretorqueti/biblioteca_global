@@ -19,40 +19,51 @@ export class TestGateOrchestrator {
 
   /** Enfileira sem esperar: continuação deve reagir a TEST_RUN_COMPLETED. */
   async enqueue(input: TestGateInput, source: QueueMessage): Promise<number> {
-    const message = createQueueMessage({
-      // A mesma mensagem de origem + fase representa a mesma continuação.
-      // Reentrega/recovery não pode criar um segundo job de gate.
-      messageId: `${source.messageId}:${input.phase}:${input.subtaskId ?? 'task'}`.slice(0, 100),
-      type: 'TEST_RUN_REQUESTED', taskId: source.taskId, executionId: source.executionId,
-      correlationId: source.correlationId ?? source.messageId, causationId: source.messageId,
-      payload: { input },
-    })
+    // A mesma mensagem de origem + fase representa a mesma continuação.
+    // Reentrega/recovery não pode criar um segundo job de gate.
+    const requestMessageId = `${source.messageId}:${input.phase}:${input.subtaskId ?? 'task'}`.slice(0, 100)
     const connection = await this.pool.getConnection()
     try {
       await connection.beginTransaction()
       const [job] = await connection.query<ResultSetHeader>(
         `INSERT IGNORE INTO test_gate_jobs (request_message_id,tarefa_id,subtarefa_id,phase,status,input_json)
          VALUES (?,?,?,?, 'pending', ?)`,
-        [message.messageId, input.taskDatabaseId, input.subtaskId ?? null, input.phase, JSON.stringify(input)],
+        [requestMessageId, input.taskDatabaseId, input.subtaskId ?? null, input.phase, JSON.stringify(input)],
       )
       let jobId = Number(job.insertId)
       if (!jobId) {
         const [existing] = await connection.query<Array<RowDataPacket & { id: number }>>(
-          'SELECT id FROM test_gate_jobs WHERE request_message_id=? FOR UPDATE', [message.messageId],
+          'SELECT id FROM test_gate_jobs WHERE request_message_id=? FOR UPDATE', [requestMessageId],
         )
         jobId = Number(existing[0]?.id)
       }
-      if (!jobId) throw new Error(`Não foi possível localizar o job de gate da continuação ${message.messageId}`)
+      if (!jobId) throw new Error(`Não foi possível localizar o job de gate da continuação ${requestMessageId}`)
       // Só a primeira inserção publica o comando. Recovery/reentrega observa
       // o mesmo job e deixa o reconciliador cuidar de uma mensagem órfã.
       if (Number(job.affectedRows) === 1) {
-      await connection.query(
-        `INSERT INTO motor_outbox
-          (message_id,type,destination_queue,task_id,execution_id,payload_json,timestamp,correlation_id,causation_id,status,attempt)
-         VALUES (?,?,?,?,?,?,NOW(),?,?,'pending',0)`,
-        [message.messageId, message.type, this.gateQueue, message.taskId, message.executionId,
-          JSON.stringify({ jobId }), message.correlationId ?? null, message.causationId ?? null],
-      )
+        // Correlation por job: o fluxo de deploy enfileira legitimamente DOIS
+        // gates pre_deploy para a mesma tarefa dentro da mesma correlação
+        // (accept do pedido + batch composto) porque TEST_RUN_COMPLETED e o
+        // dispatch herdam o correlationId da cadeia. A chave lógica do outbox
+        // (type, task_id, correlation_id) rejeitaria o segundo INSERT com
+        // ER_DUP_ENTRY e falharia o lote (incidente 2026-10-27: tarefa
+        // custom-gestao-recorrencias, batch deploy-5ecea42f). O sufixo :gate:<jobId>
+        // mantém a rastreabilidade da correlação original e garante unicidade
+        // por job; a deduplicação de reentrega segue com request_message_id.
+        const message = createQueueMessage({
+          messageId: requestMessageId,
+          type: 'TEST_RUN_REQUESTED', taskId: source.taskId, executionId: source.executionId,
+          correlationId: `${(source.correlationId ?? source.messageId).slice(0, 180)}:gate:${jobId}`.slice(0, 200),
+          causationId: source.messageId,
+          payload: { input },
+        })
+        await connection.query(
+          `INSERT INTO motor_outbox
+            (message_id,type,destination_queue,task_id,execution_id,payload_json,timestamp,correlation_id,causation_id,status,attempt)
+          VALUES (?,?,?,?,?,?,NOW(),?,?,'pending',0)`,
+          [message.messageId, message.type, this.gateQueue, message.taskId, message.executionId,
+            JSON.stringify({ jobId }), message.correlationId ?? null, message.causationId ?? null],
+        )
       }
       await connection.commit()
       return jobId
