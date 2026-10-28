@@ -12,7 +12,9 @@ import type { UsuarioRow } from "../../auth/auth.repository"
 import { UsuariosService } from "../usuarios.service"
 import type {
   ListarUsuariosFiltros,
+  UsuarioGlobalListItem,
   UsuarioListItem,
+  UsuarioVinculo,
   UsuariosRepository,
 } from "../usuarios.repository"
 
@@ -49,6 +51,28 @@ class FakeUsuariosRepository implements UsuariosRepository {
     return { items, total: items.length }
   }
 
+  async listarTodos(
+    filtros: ListarUsuariosFiltros,
+  ): Promise<{ items: UsuarioGlobalListItem[]; total: number }> {
+    void filtros
+    const ids = [...new Set([...this.vinculos.map((v) => v.usuarioId), 3])]
+    return {
+      items: ids.map((id) => ({
+        id,
+        nome: `usuario-${id}`,
+        username: null,
+        email: null,
+        telefone: null,
+        cpf: null,
+        ativo: true,
+        perfil: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })),
+      total: ids.length,
+    }
+  }
+
   async findById(id: number): Promise<UsuarioRow | undefined> {
     if (id <= 0 || id > 100) return undefined
     return {
@@ -69,6 +93,25 @@ class FakeUsuariosRepository implements UsuariosRepository {
   async findByEmail(email: string): Promise<UsuarioRow | undefined> {
     if (email !== this.usuarioExistentePorEmail?.email) return undefined
     return this.usuarioExistentePorEmail
+  }
+
+  async findByIdentificador(
+    campo: "username" | "email" | "telefone" | "cpf",
+    valor: string,
+  ): Promise<UsuarioRow | undefined> {
+    const usuario = await this.findById(1)
+    return campo === "username" && usuario?.username === valor ? usuario : undefined
+  }
+
+  async listarVinculos(usuarioId: number): Promise<UsuarioVinculo[]> {
+    return this.vinculos
+      .filter((v) => v.usuarioId === usuarioId)
+      .map((v) => ({
+        projetoId: v.projetoId,
+        projetoNome: `projeto-${v.projetoId}`,
+        projetoSlug: `projeto-${v.projetoId}`,
+        perfil: v.perfil,
+      }))
   }
 
   async findVinculo(
@@ -194,6 +237,41 @@ describe("UsuariosService", () => {
           projetoId: 999,
         }),
       ).rejects.toBeInstanceOf(NotFoundException)
+    })
+  })
+
+  describe("operações globais", () => {
+    it("lista usuários globais uma vez, inclusive sem vínculo", async () => {
+      const resultado = await service.listarGlobais(
+        escopo("biblioteca-global", 1, "admin"),
+        {},
+      )
+      expect(resultado.items.map((item) => item.id)).toEqual([1, 2, 3])
+      expect(resultado.items.every((item) => item.perfil === null)).toBe(true)
+    })
+
+    it("cria usuário global sem criar vínculo implícito", async () => {
+      const resultado = await service.criarGlobal(
+        escopo("biblioteca-global", 1, "admin"),
+        {
+          nome: "Sem Projeto",
+          senhaInicial: "senha-inicial-123",
+          email: "sem-projeto@exemplo.com",
+        },
+      )
+      expect(resultado.id).toBe(42)
+      expect(repo.chamadas.some((chamada) => chamada.startsWith("criarVinculo"))).toBe(false)
+    })
+
+    it("nega operações globais para perfil não admin", async () => {
+      await expect(
+        service.listarGlobais(escopo("biblioteca-global", 1, "gerente"), {}),
+      ).rejects.toBeInstanceOf(ForbiddenException)
+      await expect(
+        service.criarGlobal(escopo("documentacao", 2, "admin"), {
+          ...DTO_CRIAR,
+        }),
+      ).rejects.toBeInstanceOf(ForbiddenException)
     })
   })
 

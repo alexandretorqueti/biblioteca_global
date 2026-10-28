@@ -64,6 +64,7 @@ describe("registry de telas custom", () => {
     ]
 
     expect(ids).toEqual([
+      "biblioteca-global-usuarios-gerais",
       "biblioteca-global-logs-login",
       "documentation",
       "gerenteagentes-dashboard",

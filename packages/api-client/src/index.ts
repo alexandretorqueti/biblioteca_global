@@ -45,3 +45,5 @@ export type {
   HelpDeskRealtimeSubscription,
 } from "./helpdesk-client"
 export { LogsLoginClient, createLogsLoginClient } from "./logs-login-client"
+export { GlobalUsersClient, ProjectsClient } from "./global-users-client"
+export type { CreateGlobalUserInput, GlobalUser, GlobalUserDetail, GlobalUserLink, GlobalUserLinkChanges, UpdateGlobalUserInput } from "./global-users-client"

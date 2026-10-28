@@ -20,12 +20,14 @@ import { ehErroDuplicado } from "../../common/erros"
 import { SLUG_ADMIN_GLOBAL } from "../../common/guards/global-admin.guard"
 import type { ProjectScope } from "../../common/types"
 import type { CreateUsuarioDto } from "./dto/create-usuario.dto"
-import type { ListUsuariosQueryDto } from "./dto/list-usuarios-query.dto"
+import type { CreateUsuarioGlobalDto } from "./dto/create-usuario.dto"
+import type { ListUsuariosGlobaisQueryDto, ListUsuariosQueryDto } from "./dto/list-usuarios-query.dto"
 import type { UpdateUsuarioDto } from "./dto/update-usuario.dto"
 import type { VincularDto } from "./dto/vincular.dto"
 import {
   USUARIOS_REPOSITORY,
   type UsuarioListItem,
+  type UsuarioVinculo,
   type UsuariosRepository,
 } from "./usuarios.repository"
 import type { UsuarioRow } from "../auth/auth.repository"
@@ -44,6 +46,10 @@ export interface UsuarioPublico {
 
 export interface UsuarioDetalhe extends UsuarioPublico {
   perfilNoProjeto: Perfil | null
+}
+
+export interface UsuarioGlobalDetalhe extends UsuarioPublico {
+  vinculos: UsuarioVinculo[]
 }
 
 function ehAdminGlobal(scope: ProjectScope): boolean {
@@ -70,13 +76,107 @@ export class UsuariosService {
     @Inject(USUARIOS_REPOSITORY) private readonly repo: UsuariosRepository,
   ) {}
 
+  private exigirAdminGlobal(scope: ProjectScope): void {
+    if (!ehAdminGlobal(scope) || scope.projeto.perfil !== "admin") {
+      throw new ForbiddenException(
+        "Operação exclusiva do admin global do projeto biblioteca-global",
+      )
+    }
+  }
+
+  async listarGlobais(
+    scope: ProjectScope,
+    query: ListUsuariosGlobaisQueryDto,
+  ): Promise<PaginatedResult<import("./usuarios.repository").UsuarioGlobalListItem>> {
+    this.exigirAdminGlobal(scope)
+    const page = query.page ?? 1
+    const pageSize = query.pageSize ?? 20
+    const resultado = await this.repo.listarTodos({
+      search: query.search,
+      page,
+      pageSize,
+    })
+    return {
+      ...resultado,
+      items: resultado.items.map((item) => ({ ...item, cpf: mascararCpf(item.cpf) })),
+      page,
+      pageSize,
+    }
+  }
+
+  async criarGlobal(
+    scope: ProjectScope,
+    dto: CreateUsuarioGlobalDto,
+  ): Promise<UsuarioPublico> {
+    this.exigirAdminGlobal(scope)
+    const identificadores = [
+      ["username", dto.username],
+      ["email", dto.email],
+      ["telefone", dto.telefone],
+      ["cpf", dto.cpf],
+    ] as const
+    if (!identificadores.some(([, valor]) => valor)) {
+      throw new BadRequestException(
+        "Informe ao menos um identificador (username, email, telefone ou cpf)",
+      )
+    }
+    for (const [campo, valor] of identificadores) {
+      if (valor !== undefined && (await this.repo.findByIdentificador(campo, valor))) {
+        throw new ConflictException("Identificador já cadastrado")
+      }
+    }
+    const passwordHash = await argon2.hash(dto.senhaInicial, { type: argon2.argon2id })
+    let usuarioId: number
+    try {
+      usuarioId = await this.repo.criarUsuario({
+        nome: dto.nome,
+        username: dto.username,
+        email: dto.email,
+        telefone: dto.telefone,
+        cpf: dto.cpf,
+        passwordHash,
+      })
+    } catch (erro: unknown) {
+      if (ehErroDuplicado(erro)) throw new ConflictException("Identificador já cadastrado")
+      throw erro
+    }
+    if (dto.ativo === false) await this.repo.atualizarUsuario(usuarioId, { ativo: false })
+    const usuario = await this.repo.findById(usuarioId)
+    if (!usuario) throw new Error("usuário não encontrado após a criação")
+    return semHash(usuario)
+  }
+
+  async detalharVinculos(
+    scope: ProjectScope,
+    usuarioId: number,
+  ): Promise<UsuarioGlobalDetalhe> {
+    this.exigirAdminGlobal(scope)
+    const usuario = await this.repo.findById(usuarioId)
+    if (!usuario) throw new NotFoundException("Usuário não encontrado")
+    return { ...semHash(usuario), vinculos: await this.repo.listarVinculos(usuarioId) }
+  }
+
+  async editarGlobal(
+    scope: ProjectScope,
+    usuarioId: number,
+    dto: UpdateUsuarioDto,
+  ): Promise<UsuarioDetalhe> {
+    this.exigirAdminGlobal(scope)
+    return this.editar(scope, usuarioId, dto)
+  }
+
+  async excluirGlobal(scope: ProjectScope, usuarioId: number): Promise<void> {
+    this.exigirAdminGlobal(scope)
+    return this.excluir(scope, usuarioId)
+  }
+
   async listar(
     scope: ProjectScope,
     query: ListUsuariosQueryDto,
   ): Promise<PaginatedResult<UsuarioListItem>> {
     let projetoAlvo = scope.projeto.id
     if (query.projetoId !== undefined) {
-      if (!ehAdminGlobal(scope)) {
+      if (!ehAdminGlobal(scope) || scope.projeto.perfil !== "admin") {
         throw new ForbiddenException(
           "Filtro por projeto é exclusivo do admin global",
         )
@@ -113,6 +213,7 @@ export class UsuariosService {
     }
 
     if (ehAdminGlobal(scope)) {
+      this.exigirAdminGlobal(scope)
       const perfil = await this.repo.findVinculo(usuarioId, scope.projeto.id)
       return { ...semHash(usuario), perfilNoProjeto: perfil ?? null }
     }
@@ -206,6 +307,8 @@ export class UsuariosService {
       throw new NotFoundException("Usuário não encontrado")
     }
 
+    if (ehAdminGlobal(scope)) this.exigirAdminGlobal(scope)
+
     const perfilAtual = await this.repo.findVinculo(
       usuarioId,
       scope.projeto.id,
@@ -270,11 +373,7 @@ export class UsuariosService {
     }
 
     if (ehAdminGlobal(scope)) {
-      if (scope.projeto.perfil !== "admin") {
-        throw new ForbiddenException(
-          "Somente admin desativa usuários em modo global",
-        )
-      }
+      this.exigirAdminGlobal(scope)
       await this.repo.removerTodosVinculos(usuarioId)
       await this.repo.atualizarUsuario(usuarioId, { ativo: false })
       return
@@ -297,6 +396,7 @@ export class UsuariosService {
     if (!usuario) {
       throw new NotFoundException("Usuário não encontrado")
     }
+    this.exigirAdminGlobal(scope)
     const temOperacao =
       (dto.adicionar?.length ?? 0) > 0 || (dto.remover?.length ?? 0) > 0
     if (!temOperacao) {
