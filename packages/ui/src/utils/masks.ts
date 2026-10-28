@@ -94,13 +94,26 @@ export const isValidCpf = (value: string): boolean => {
  * Formata telefone brasileiro progressivamente: +55 (21) 99999-9999
  * Aceita 10 dígitos (fixo) ou 11 dígitos (celular).
  * Sempre inclui o prefixo +55 (código do Brasil).
+ * Reconhece e remove o prefixo nacional já renderizado na entrada (ex.: "+55"
+ * inicial de campos com defaultValue "+55" ou código do país digitado),
+ * evitando duplicar o "+55" ou transformá-lo em DDD "(55)" durante a digitação.
  */
 export const formatTelefone = (value: string): string => {
-  const digits = onlyDigits(value).slice(0, 13)
+  const digits = onlyDigits(value)
 
-  // Remove o 55 inicial se presente para normalizar
-  let normalized = digits
-  if (normalized.startsWith("55") && normalized.length > 10) {
+  // Remove o prefixo nacional (+55/55) já presente antes da formatação.
+  // A marcação "+55" na entrada é removida sem condição de tamanho; "55"
+  // puro só é tratado como código do país quando há número suficiente para
+  // DDD + telefone (> 11 dígitos). Menos que isso, "55" é DDD ou dígitos
+  // parciais em digitação progressiva e é preservado.
+  const hasCountryMark = /^\s*\+/.test(value)
+  let normalized =
+    hasCountryMark && digits.startsWith("55") ? digits.slice(2) : digits
+  if (
+    !hasCountryMark &&
+    normalized.startsWith("55") &&
+    normalized.length > 11
+  ) {
     normalized = normalized.slice(2)
   }
   normalized = normalized.slice(0, 11)

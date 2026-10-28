@@ -14,6 +14,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useState,
   type ReactNode,
@@ -64,6 +65,13 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     () => (projectSlug ? parseConfig(getProjectConfig(projectSlug)) : undefined),
     [projectSlug, reloadTick],
   )
+
+  // Título da aba do navegador segue o nome do projeto (config.app.name).
+  // Sem projeto/config (login, seleção), mantém o fallback da plataforma —
+  // mesmo valor estático de index.html (fallback de pré-hidratação).
+  useEffect(() => {
+    document.title = config?.app.name ?? "Biblioteca Global"
+  }, [config])
 
   // Executa uma ação customizada (iniciar tarefa, pausar, retomar, etc.)
   const executeAction = useCallback<ExecuteAction>(
