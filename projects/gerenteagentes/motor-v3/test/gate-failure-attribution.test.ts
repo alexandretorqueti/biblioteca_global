@@ -71,6 +71,48 @@ describe('extractFailurePaths', () => {
   })
 })
 
+/**
+ * Incidente 2026-10-29 (batch deploy-bbc579dd): a saída do gate pre_deploy é
+ * gravada com códigos ANSI. `FAIL\x1b[22m\x1b[49m test/x.test.ts` não casava com
+ * nenhum padrão → evidencePaths vazio → attribution nula → o batch inteiro foi
+ * bloqueado (1039/1044 inocentes) por uma falha de teste do membro 1043.
+ */
+describe('extractFailurePaths — saída com ANSI (incidente batch 161)', () => {
+  const testCommand = 'cd projects/gerenteagentes/motor-v3 && npx vitest run'
+  // Réplica fiel (bytes reais do test_run 986) do bloco de falha do vitest.
+  const ansiStderr = [
+    '\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m test/terminal-failure-blocker-alert.test.ts\u001b[2m > \u001b[22mresetTaskToReady > SubtaskExecutionConsumer repassa a causa\u001b[0m',
+    'TypeError: this.repository.getDevelopmentModelChain is not a function',
+    ' \u001b[2m❯\u001b[22m src/execution/SubtaskExecutionConsumer.ts\u001b[2m:\u001b[22m97\u001b[2m:\u001b[22m42\u001b[22m',
+    ' \u001b[2m❯\u001b[22m test/terminal-failure-blocker-alert.test.ts\u001b[2m:\u001b[22m379\u001b[2m:\u001b[22m5\u001b[22m',
+  ].join('\n')
+
+  it('FAIL com códigos ANSI ao redor extrai o caminho do teste', () => {
+    const paths = extractFailurePaths({ stdout: '', stderr: ansiStderr, testCommand })
+    expect(paths).toContain('projects/gerenteagentes/motor-v3/test/terminal-failure-blocker-alert.test.ts')
+  })
+
+  it('frame ❯ arquivo:linha:col extrai o caminho sem o sufixo', () => {
+    const paths = extractFailurePaths({ stdout: '', stderr: ansiStderr, testCommand })
+    expect(paths).toContain('projects/gerenteagentes/motor-v3/src/execution/SubtaskExecutionConsumer.ts')
+  })
+
+  it('cenário completo do incidente: isola o membro culpado e preserva inocentes', () => {
+    const memberFiles = new Map<number, string[]>([
+      [1039, ['apps/web/src/projects/gerenteagentes/screens/OperationMapScreen.tsx']],
+      [1044, ['projects/gerenteagentes/motor-v3/src/coordinator/CancelTerminalGuard.ts']],
+      [1043, [
+        'projects/gerenteagentes/motor-v3/test/terminal-failure-blocker-alert.test.ts',
+        'projects/gerenteagentes/motor-v3/src/execution/SubtaskExecutionConsumer.ts',
+      ]],
+    ])
+    const evidencePaths = extractFailurePaths({ stdout: '', stderr: ansiStderr, testCommand })
+    const attribution = attributeGateFailure(memberFiles, evidencePaths)
+    expect(attribution).not.toBeNull()
+    expect(attribution!.culprits).toEqual([1043])
+  })
+})
+
 describe('pathsMatch', () => {
   it('match por sufixo com fronteira de diretório', () => {
     expect(pathsMatch('projects/motor-v3/src/start.ts', 'src/start.ts')).toBe(true)
