@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { mkdir, readdir, readFile, rm } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rename, rm, stat, utimes } from 'node:fs/promises'
 import { dirname, relative, resolve } from 'node:path'
 import { promisify } from 'node:util'
 
@@ -7,16 +7,41 @@ const execFileAsync = promisify(execFile)
 const INSTALL_LOCK_DIRECTORY = '.motor-v3-npm-install.lock'
 const INSTALL_LOCK_POLL_MS = Number(process.env.MOTOR_TEST_GATE_INSTALL_LOCK_POLL_MS || 250)
 const INSTALL_LOCK_TIMEOUT_MS = Number(process.env.MOTOR_TEST_GATE_INSTALL_LOCK_TIMEOUT_MS || 900_000)
+const INSTALL_LOCK_STALE_MS = Number(process.env.MOTOR_TEST_GATE_INSTALL_LOCK_STALE_MS || 120_000)
+const INSTALL_LOCK_HEARTBEAT_MS = Number(process.env.MOTOR_TEST_GATE_INSTALL_LOCK_HEARTBEAT_MS || 15_000)
 
 async function wait(milliseconds: number): Promise<void> {
   await new Promise(resolveWait => setTimeout(resolveWait, milliseconds))
 }
 
 /**
+ * Retoma um lock órfão: se o detentor morreu (troca de container no deploy
+ * blue-green, crash, SIGKILL), o diretório do lock permanece e bloquearia o
+ * worktree para sempre — todo attempt seguinte morreria em timeout.
+ * O detentor vivo faz heartbeat no mtime do diretório; lock sem heartbeat há
+ * mais de INSTALL_LOCK_STALE_MS é considerado órfão e retomado via rename
+ * atômico (apenas um concorrente vence o rename; os demais caem no catch e
+ * seguem o polling normal).
+ */
+async function reclaimStaleInstallLock(lockPath: string): Promise<void> {
+  try {
+    const stats = await stat(lockPath)
+    if (Date.now() - stats.mtimeMs <= INSTALL_LOCK_STALE_MS) return
+    const takeoverPath = `${lockPath}.stale-${process.pid}-${Date.now()}`
+    await rename(lockPath, takeoverPath)
+    await rm(takeoverPath, { recursive: true, force: true })
+  } catch {
+    // Lock recém-removido/renomeado por outro concorrente ou ainda fresco:
+    // nada a fazer, o polling continua.
+  }
+}
+
+/**
  * `npm ci` não tolera duas instalações no mesmo worktree: ambas removem e
  * recriam os links dos workspaces e uma delas termina com EEXIST. O lock usa
  * mkdir (atômico no filesystem compartilhado) para coordenar inclusive os
- * dois processos blue/green do Motor.
+ * dois processos blue/green do Motor. O detentor faz heartbeat periódico no
+ * mtime do lock para que locks órfãos (detentor morto) possam ser retomados.
  */
 async function withWorkspaceInstallLock<T>(workspacePath: string, operation: () => Promise<T>): Promise<T> {
   const lockPath = resolve(workspacePath, INSTALL_LOCK_DIRECTORY)
@@ -25,17 +50,24 @@ async function withWorkspaceInstallLock<T>(workspacePath: string, operation: () 
     try {
       await mkdir(lockPath)
       break
-    } catch (error: any) {
-      if (error?.code !== 'EEXIST') throw error
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== 'EEXIST') throw error
       if (Date.now() >= deadline) {
-        throw new Error(`Timeout aguardando lock de instalação do worktree: ${lockPath}`)
+        throw new Error(`Timeout aguardando lock de instalação do worktree: ${lockPath}`, { cause: error })
       }
+      await reclaimStaleInstallLock(lockPath)
       await wait(INSTALL_LOCK_POLL_MS)
     }
   }
+  const heartbeat = setInterval(() => {
+    const now = new Date()
+    utimes(lockPath, now, now).catch(() => {})
+  }, INSTALL_LOCK_HEARTBEAT_MS)
+  if (typeof heartbeat.unref === 'function') heartbeat.unref()
   try {
     return await operation()
   } finally {
+    clearInterval(heartbeat)
     await rm(lockPath, { recursive: true, force: true })
   }
 }
