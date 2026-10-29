@@ -362,6 +362,9 @@ describe('resetTaskToReady — política automática de recuperação nunca sile
     }
     const repository = {
       getExecutionContext: vi.fn().mockResolvedValue(executionContext),
+      // A base atual exige a cadeia de modelos DEV antes da preparação de worktree
+      // (SubtaskExecutionConsumer.handle); sem ela o mock quebra com TypeError.
+      getDevelopmentModelChain: vi.fn().mockResolvedValue(['modelo-dev']),
       resetTaskToReady: vi.fn().mockResolvedValue(undefined),
     }
     const worktrees = {
