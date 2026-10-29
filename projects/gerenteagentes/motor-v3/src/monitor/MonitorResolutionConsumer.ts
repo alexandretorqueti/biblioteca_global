@@ -6,7 +6,7 @@ import type { WorkerLauncher } from '../worker-launcher/WorkerLauncher.js'
 import type { GitWorktreePreparer } from '../execution/GitWorktreePreparer.js'
 import type { TaskEventSink } from '../coordinator/TaskEventRecorder.js'
 import { loadActiveBlocker, type ActiveBlockerRow } from './ActiveBlockerLookup.js'
-import { ConsoleHumanNotifier, type MonitorHumanNotifier } from './HumanNotifier.js'
+import { TaskChatHumanNotifier, type MonitorHumanNotifier } from './HumanNotifier.js'
 import { MonitorPromptResolver } from './MonitorPromptResolver.js'
 import { providerHasCapacity } from '../execution/ProviderCapacity.js'
 import { parseMonitorVerdict, type MonitorVerdict } from './MonitorVerdictParser.js'
@@ -56,6 +56,7 @@ interface TaskContextRow extends RowDataPacket {
 export class MonitorResolutionConsumer {
   private readonly inFlight = new Set<number>()
   private readonly realtime: RealtimeMutationBoundary
+  private readonly notifier: MonitorHumanNotifier
 
   constructor(
     private readonly pool: Pool,
@@ -65,9 +66,12 @@ export class MonitorResolutionConsumer {
     private readonly events: TaskEventSink,
     private readonly consoleApi: unknown,
     private readonly db: unknown,
-    private readonly notifier: MonitorHumanNotifier = new ConsoleHumanNotifier(),
+    notifier?: MonitorHumanNotifier,
   ) {
     this.realtime = new RealtimeMutationBoundary(pool)
+    // Notificador humano real (tarefa 1043): alerta deduplicado no chat da
+    // tarefa; plugável via injeção (testes/outros canais).
+    this.notifier = notifier ?? new TaskChatHumanNotifier(pool)
   }
 
   async handle(message: QueueMessage): Promise<void> {
@@ -104,8 +108,15 @@ export class MonitorResolutionConsumer {
       const models = await this.monitorModels(context.project_slug)
       if (models.length === 0) {
         // Sem cadeia MONITOR configurada o bloqueio permanece e o humano é a
-        // última ratio (notificação entra na etapa 4).
+        // última ratio: além da auditoria, o alerta vai para o chat da tarefa
+        // (tarefa 1043 — sem_modelos_monitor não pode ficar só em tarefa_eventos).
         await this.safeRecord(taskId, 'monitor_resolution_skipped', { blockId: blocker.id, reason: 'sem_modelos_monitor' })
+        await this.safeNotify(
+          taskId,
+          blocker.block_reason,
+          `Nenhuma cadeia de modelos MONITOR habilitada para o projeto ${context.project_slug}: o bloqueio não foi investigado automaticamente.`,
+          blocker.id,
+        )
         return
       }
       const devBranch = await this.devBranches(Number(blocker.tarefa_id))
@@ -179,11 +190,19 @@ export class MonitorResolutionConsumer {
     } catch (error) {
       // Falha da missão não propaga para a fila (evita loop de redelivery):
       // o bloqueio permanece ativo e o evento registra a causa.
+      const errorMessage = error instanceof Error ? error.message : String(error)
       await this.safeRecord(taskId, 'monitor_resolution_failed', {
         blockId: blocker.id,
         blockReason: blocker.block_reason,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage,
       })
+      // Falha final do Monitor também notifica o humano via chat (tarefa 1043).
+      await this.safeNotify(
+        taskId,
+        blocker.block_reason,
+        `A missão do Monitor falhou antes de produzir veredito: ${errorMessage.slice(0, 500)}`,
+        blocker.id,
+      )
     } finally {
       // Remove o registro do monitor em motor_active_executions
       if (registered) {
@@ -254,7 +273,7 @@ export class MonitorResolutionConsumer {
         summary,
         'O bloqueio permanece ativo para revisão.',
       ].join('\n'))
-      await this.safeNotify(taskId, blocker.block_reason, summary)
+      await this.safeNotify(taskId, blocker.block_reason, summary, blocker.id)
       await this.safeRecord(taskId, 'monitor_resolution_kept_blocked', { blockId: blocker.id, reason: 'worker_sem_sucesso' })
       return
     }
@@ -277,7 +296,7 @@ export class MonitorResolutionConsumer {
       verdict.chatMessage,
       verdict.resumption ? `Retomada: ${verdict.resumption}` : null,
     ].filter(Boolean).join('\n\n'))
-    await this.safeNotify(taskId, blocker.block_reason, `status=${verdict.status} origem=${verdict.origin} parseable=${verdict.parseable}. ${verdict.cause || verdict.chatMessage}`.slice(0, 1000))
+    await this.safeNotify(taskId, blocker.block_reason, `status=${verdict.status} origem=${verdict.origin} parseable=${verdict.parseable}. ${verdict.cause || verdict.chatMessage}`.slice(0, 1000), blocker.id)
     await this.safeRecord(taskId, 'monitor_resolution_kept_blocked', {
       blockId: blocker.id, status: verdict.status, origin: verdict.origin, parseable: verdict.parseable,
     })
@@ -337,9 +356,9 @@ export class MonitorResolutionConsumer {
   }
 
   /** Notificação humana quando o Monitor não resolve; nunca derruba o fluxo. */
-  private async safeNotify(taskId: string, blockReason: string, summary: string): Promise<void> {
+  private async safeNotify(taskId: string, blockReason: string, summary: string, blockId?: number | string | null): Promise<void> {
     try {
-      await this.notifier.notify({ taskId, blockReason, summary })
+      await this.notifier.notify({ taskId, blockReason, summary, blockId: blockId ?? null })
     } catch {
       // Notificação é melhor-esforço.
     }

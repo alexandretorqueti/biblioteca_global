@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest'
 import type { Pool } from 'mysql2/promise'
-import { MonitorResolutionConsumer, TASK_BLOCKED_EVENT_TYPE } from '../src/monitor/index.js'
+import { MonitorResolutionConsumer, TASK_BLOCKED_EVENT_TYPE, TaskChatHumanNotifier } from '../src/monitor/index.js'
 import type { MonitorPromptMarkers } from '../src/monitor/index.js'
 import { createQueueMessage, type QueueMessage } from '../src/queue/index.js'
 
@@ -200,6 +200,54 @@ describe('MonitorResolutionConsumer', () => {
     expect(env.events[0].payload).toMatchObject({ reason: 'sem_modelos_monitor' })
   })
 
+  it('sem_modelos_monitor também notifica o humano (não apenas tarefa_eventos)', async () => {
+    const env = fakeEnvironment({ models: [] })
+
+    await env.consumer.handle(blockedMessage())
+
+    expect(env.notifier.notify).toHaveBeenCalledOnce()
+    expect(env.notifier.notify.mock.calls[0][0]).toMatchObject({
+      taskId: 'task-p1-886',
+      blockReason: 'deploy_failed',
+      blockId: 45,
+    })
+    expect(String(env.notifier.notify.mock.calls[0][0].summary)).toContain('MONITOR')
+  })
+
+  it('falha final da missão do Monitor notifica o humano com o blockId', async () => {
+    const env = fakeEnvironment({ workerError: new Error('console 504') })
+
+    await env.consumer.handle(blockedMessage())
+
+    expect(env.events.map(e => e.evento)).toContain('monitor_resolution_failed')
+    expect(env.notifier.notify).toHaveBeenCalledOnce()
+    expect(env.notifier.notify.mock.calls[0][0]).toMatchObject({
+      taskId: 'task-p1-886',
+      blockReason: 'deploy_failed',
+      blockId: 45,
+    })
+    expect(String(env.notifier.notify.mock.calls[0][0].summary)).toContain('console 504')
+  })
+
+  it('notificador padrão é o TaskChatHumanNotifier real (alerta no chat da tarefa)', () => {
+    const env = fakeEnvironment()
+    const consumer = new MonitorResolutionConsumer(
+      env.pool,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      env.worktrees as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      env.worker as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      env.prompts as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      env.eventsSink as any,
+      undefined,
+      undefined,
+    )
+    const notifier = (consumer as unknown as { notifier: unknown }).notifier
+    expect(notifier).toBeInstanceOf(TaskChatHumanNotifier)
+  })
+
   it('registra skipped quando a tarefa não é encontrada', async () => {
     const env = fakeEnvironment({ context: null })
 
@@ -335,9 +383,9 @@ describe('MonitorResolutionConsumer — chat da tarefa e desbloqueio (etapa 4)',
     expect(chat!.texto).toContain('banco externo está indisponível')
     expect(chat!.texto).toContain('Retomada: reexecutar o deploy')
     expect(env.events.map(e => e.evento)).toContain('monitor_resolution_kept_blocked')
-    // Humano notificado quando o Monitor não resolve
+    // Humano notificado quando o Monitor não resolve (com blockId para deduplicação)
     expect(env.notifier.notify).toHaveBeenCalledOnce()
-    expect(env.notifier.notify.mock.calls[0][0]).toMatchObject({ taskId: 'task-p1-886', blockReason: 'deploy_failed' })
+    expect(env.notifier.notify.mock.calls[0][0]).toMatchObject({ taskId: 'task-p1-886', blockReason: 'deploy_failed', blockId: 45 })
   })
 
   it('veredito PARCIALMENTE_RESOLVIDO mantém o bloqueio (conservador)', async () => {
@@ -374,6 +422,7 @@ describe('MonitorResolutionConsumer — chat da tarefa e desbloqueio (etapa 4)',
     expect(chat!.texto).toContain('timeout após 3 tentativas')
     expect(env.events.map(e => e.evento)).toContain('monitor_resolution_kept_blocked')
     expect(env.notifier.notify).toHaveBeenCalledOnce()
+    expect(env.notifier.notify.mock.calls[0][0]).toMatchObject({ taskId: 'task-p1-886', blockReason: 'deploy_failed', blockId: 45 })
   })
 
   it('corrida benigna: bloqueio já resolvido por outro fluxo não emite TASK_UNBLOCKED duplicado', async () => {

@@ -30,7 +30,14 @@ export {
   type MonitorVerdictStatus,
   type MonitorVerdictOrigin,
 } from './MonitorVerdictParser.js'
-export { ConsoleHumanNotifier, type MonitorHumanNotifier } from './HumanNotifier.js'
+export {
+  ConsoleHumanNotifier,
+  TaskChatHumanNotifier,
+  buildMonitorAlertText,
+  monitorNotifyMarker,
+  type MonitorHumanNotifier,
+  type MonitorHumanNotifyInput,
+} from './HumanNotifier.js'
 export { loadActiveBlocker, type ActiveBlockerRow, type ActiveBlockerFilter } from './ActiveBlockerLookup.js'
 export { PostDeployVerifier } from './PostDeployVerifier.js'
 export {

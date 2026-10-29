@@ -10,6 +10,14 @@ interface FakeOptions {
   stalePendingRequests?: number
   verificationSubtasks?: Array<{ id: number; seq: number }>
   verificationUpdateAffectedRows?: number[]
+  /** Subtarefa do bloqueio terminal (SELECT ... FROM subtarefas s WHERE s.id = ?). */
+  terminalSubtask?: { id: number; seq: number; status: string; generation?: number } | null
+  /** Geração máxima das subtarefas da tarefa. */
+  maxGeneration?: number
+  /** subtarefa_id retornado pela resolução via bloqueios. */
+  blockSubtaskId?: number | null
+  /** affectedRows do UPDATE de reabertura (failed/blocked → pending). */
+  pendingUpdateAffectedRows?: number[]
 }
 
 function fakeEnvironment(options: FakeOptions = {}) {
@@ -19,6 +27,24 @@ function fakeEnvironment(options: FakeOptions = {}) {
     queries.push({ sql: normalized, params: params ?? [], via })
     if (normalized.startsWith('DELETE dr FROM deploy_requests')) {
       return [{ affectedRows: options.stalePendingRequests ?? 1 }, []]
+    }
+    if (normalized.startsWith('SELECT subtarefa_id FROM bloqueios')) {
+      const subtarefaId = options.blockSubtaskId ?? null
+      return [subtarefaId == null ? [] : [{ subtarefa_id: subtarefaId }], []]
+    }
+    if (normalized.startsWith('SELECT s.id, s.seq, s.status, s.generation')) {
+      return [options.terminalSubtask == null ? [] : [{
+        id: options.terminalSubtask.id,
+        seq: options.terminalSubtask.seq,
+        status: options.terminalSubtask.status,
+        generation: options.terminalSubtask.generation ?? 1,
+      }], []]
+    }
+    if (normalized.startsWith('SELECT MAX(generation) AS max_generation')) {
+      return [[{ max_generation: options.maxGeneration ?? 1 }], []]
+    }
+    if (normalized.startsWith("UPDATE subtarefas SET status='pending'")) {
+      return [{ affectedRows: options.pendingUpdateAffectedRows?.shift() ?? 1 }, []]
     }
     if (normalized.startsWith('SELECT s.id, s.seq FROM subtarefas')) {
       return [options.verificationSubtasks ?? [], []]
@@ -262,5 +288,173 @@ describe('TaskUnblockedConsumer', () => {
 
     expect(env.connection.rollback).toHaveBeenCalledOnce()
     expect(env.events.find(e => e.evento === 'task_resume_failed')!.payload).toMatchObject({ error: 'db instável' })
+  })
+})
+
+describe('TaskUnblockedConsumer — retomada de falha terminal de subtarefa (tarefa 1043)', () => {
+  it("worker_exhausted: reverte a subtarefa 'failed' do bloqueio para 'pending' e emite pedido de execução na mesma transação", async () => {
+    const env = fakeEnvironment({ terminalSubtask: { id: 1403, seq: 3, status: 'failed' } })
+
+    await env.consumer.handle(unblockedMessage({ blockReason: 'worker_exhausted', subtaskId: 1403 }))
+
+    // Reabertura condicionada a failed/blocked com resultado limpo (redelivery idempotente)
+    const update = env.queries.find(q => q.sql.startsWith("UPDATE subtarefas SET status='pending'"))
+    expect(update).toBeDefined()
+    expect(update!.via).toBe('connection')
+    expect(update!.sql).toContain("status IN ('failed','blocked')")
+    expect(update!.sql).toContain('resultado=NULL')
+    expect(update!.params).toEqual([1403])
+
+    // Pedido durável de retomada na mesma transação (reserveNextSubtask faz o
+    // claim pending → running e emite SUBTASK_EXECUTION_REQUESTED)
+    const ready = env.outbox('TASK_READY_FOR_PROGRAMMING')
+    expect(ready).toHaveLength(1)
+    expect(ready[0].via).toBe('connection')
+    expect(ready[0].params[2]).toBe('motor.commands')
+    expect(ready[0].params[3]).toBe('task-p1-886')
+    expect(JSON.parse(ready[0].params[5] as string)).toMatchObject({
+      subtaskId: 1403, seq: 3, blockReason: 'worker_exhausted', resumedBy: 'monitor',
+    })
+    expect(ready[0].sql).toContain('NOT EXISTS')
+    expect(env.connection.commit).toHaveBeenCalledOnce()
+    expect(env.events.find(e => e.evento === 'task_resumed_by_monitor')!.payload)
+      .toMatchObject({ blockReason: 'worker_exhausted', action: 'subtask_reopened_for_programming', subtaskId: 1403, reopened: true })
+  })
+
+  it("subtask_terminal_failure: reverte a subtarefa 'blocked' para 'pending' e emite pedido de execução", async () => {
+    const env = fakeEnvironment({ terminalSubtask: { id: 1403, seq: 3, status: 'blocked' } })
+
+    await env.consumer.handle(unblockedMessage({ blockReason: 'subtask_terminal_failure', subtaskId: 1403 }))
+
+    const update = env.queries.find(q => q.sql.startsWith("UPDATE subtarefas SET status='pending'"))
+    expect(update).toBeDefined()
+    expect(update!.params).toEqual([1403])
+    expect(env.outbox('TASK_READY_FOR_PROGRAMMING')).toHaveLength(1)
+    expect(env.events.find(e => e.evento === 'task_resumed_by_monitor')!.payload)
+      .toMatchObject({ blockReason: 'subtask_terminal_failure', action: 'subtask_reopened_for_programming', reopened: true })
+  })
+
+  it('resolve a subtarefa via bloqueios pelo blockId do payload quando não há subtaskId', async () => {
+    const env = fakeEnvironment({
+      blockSubtaskId: 1403,
+      terminalSubtask: { id: 1403, seq: 3, status: 'failed' },
+    })
+
+    await env.consumer.handle(unblockedMessage({ blockReason: 'worker_exhausted', blockId: 77 }))
+
+    const blockSelect = env.queries.find(q => q.sql.startsWith('SELECT subtarefa_id FROM bloqueios'))
+    expect(blockSelect).toBeDefined()
+    expect(blockSelect!.sql).toContain('id = ?')
+    expect(blockSelect!.params).toEqual([886, 77])
+
+    expect(env.outbox('TASK_READY_FOR_PROGRAMMING')).toHaveLength(1)
+    expect(JSON.parse(env.outbox('TASK_READY_FOR_PROGRAMMING')[0].params[5] as string)).toMatchObject({ subtaskId: 1403 })
+  })
+
+  it('sem blockId no payload: resolve pelo bloqueio mais recente do mesmo motivo', async () => {
+    const env = fakeEnvironment({
+      blockSubtaskId: 1403,
+      terminalSubtask: { id: 1403, seq: 3, status: 'blocked' },
+    })
+
+    await env.consumer.handle(unblockedMessage({ blockReason: 'subtask_terminal_failure', blockId: undefined }))
+
+    const blockSelect = env.queries.find(q => q.sql.startsWith('SELECT subtarefa_id FROM bloqueios'))
+    expect(blockSelect).toBeDefined()
+    expect(blockSelect!.sql).toContain('block_reason = ?')
+    expect(blockSelect!.params).toEqual([886, 'subtask_terminal_failure'])
+    expect(env.outbox('TASK_READY_FOR_PROGRAMMING')).toHaveLength(1)
+  })
+
+  it('redelivery da mesma TASK_UNBLOCKED não duplica pedidos nem reabre subtarefa já pendente', async () => {
+    const options = { terminalSubtask: { id: 1403, seq: 3, status: 'failed' } }
+    const env = fakeEnvironment(options)
+    const message = unblockedMessage({ blockReason: 'worker_exhausted', subtaskId: 1403 })
+
+    await env.consumer.handle(message)
+    expect(env.outbox('TASK_READY_FOR_PROGRAMMING')).toHaveLength(1)
+
+    // Primeira entrega reabriu: a subtarefa agora está pendente (ou já claimada)
+    options.terminalSubtask = { id: 1403, seq: 3, status: 'pending' }
+    await env.consumer.handle(message)
+
+    expect(env.outbox('TASK_READY_FOR_PROGRAMMING')).toHaveLength(1)
+    const updates = env.queries.filter(q => q.sql.startsWith("UPDATE subtarefas SET status='pending'"))
+    expect(updates).toHaveLength(1)
+    expect(env.events.at(-1)!.payload).toMatchObject({ action: 'subtask_not_reopenable', reopened: false })
+  })
+
+  it('não reabre subtarefa verified/superseded nem publica pedido', async () => {
+    for (const status of ['verified', 'superseded']) {
+      const env = fakeEnvironment({ terminalSubtask: { id: 1403, seq: 3, status } })
+
+      await env.consumer.handle(unblockedMessage({ blockReason: 'worker_exhausted', subtaskId: 1403 }))
+
+      expect(env.queries.find(q => q.sql.startsWith("UPDATE subtarefas SET status='pending'"))).toBeUndefined()
+      expect(env.outbox('TASK_READY_FOR_PROGRAMMING')).toHaveLength(0)
+      expect(env.events.find(e => e.evento === 'task_resumed_by_monitor')!.payload)
+        .toMatchObject({ action: 'subtask_not_reopenable', reopened: false })
+    }
+  })
+
+  it('subtarefa de geração antiga: não reabre e cai no fallback durável', async () => {
+    const env = fakeEnvironment({
+      terminalSubtask: { id: 1403, seq: 3, status: 'failed', generation: 1 },
+      maxGeneration: 2,
+    })
+
+    await env.consumer.handle(unblockedMessage({ blockReason: 'worker_exhausted', subtaskId: 1403 }))
+
+    expect(env.queries.find(q => q.sql.startsWith("UPDATE subtarefas SET status='pending'"))).toBeUndefined()
+    const ready = env.outbox('TASK_READY_FOR_PROGRAMMING')
+    expect(ready).toHaveLength(1)
+    expect(JSON.parse(ready[0].params[5] as string)).not.toHaveProperty('subtaskId')
+    expect(env.events.find(e => e.evento === 'task_resumed_by_monitor')!.payload)
+      .toMatchObject({ action: 'task_ready_for_programming_enqueued' })
+  })
+
+  it('bloqueio sem subtaskId utilizável: fallback TASK_READY_FOR_PROGRAMMING com auditoria', async () => {
+    const env = fakeEnvironment({ blockSubtaskId: null })
+
+    await env.consumer.handle(unblockedMessage({ blockReason: 'worker_exhausted', blockId: 77 }))
+
+    const ready = env.outbox('TASK_READY_FOR_PROGRAMMING')
+    expect(ready).toHaveLength(1)
+    expect(ready[0].via).toBe('connection')
+    const payload = JSON.parse(ready[0].params[5] as string)
+    expect(payload).toMatchObject({ reason: 'unblocked_worker_exhausted', blockReason: 'worker_exhausted', resumedBy: 'monitor' })
+    expect(payload).not.toHaveProperty('subtaskId')
+    expect(ready[0].sql).toContain('NOT EXISTS')
+    // Auditoria em tarefa_eventos via TaskEventSink
+    expect(env.events.find(e => e.evento === 'task_resumed_by_monitor')!.payload)
+      .toMatchObject({ blockReason: 'worker_exhausted', action: 'task_ready_for_programming_enqueued', subtaskId: null, reopened: false })
+    expect(env.connection.commit).toHaveBeenCalledOnce()
+  })
+
+  it('cenário 1403: falha → bloqueio → resolução retoma exatamente pela subtarefa 1403', async () => {
+    // 1403 falhou (worker_exhausted → status 'failed', bloqueio id 77);
+    // 1404/1405 seguem pendentes e não podem ser tocadas — a retomada passa
+    // pelo reserveNextSubtask a partir da subtarefa reaberta.
+    const env = fakeEnvironment({
+      blockSubtaskId: 1403,
+      terminalSubtask: { id: 1403, seq: 3, status: 'failed' },
+    })
+
+    await env.consumer.handle(unblockedMessage({ blockReason: 'worker_exhausted', blockId: 77 }))
+
+    // Somente 1403 é reaberta; nenhuma outra subtarefa é atualizada
+    const updates = env.queries.filter(q => q.sql.startsWith('UPDATE subtarefas'))
+    expect(updates).toHaveLength(1)
+    expect(updates[0].params).toEqual([1403])
+
+    // O pedido de retomada carrega a subtarefa bloqueada (1403) como ponto de reinício
+    const ready = env.outbox('TASK_READY_FOR_PROGRAMMING')
+    expect(ready).toHaveLength(1)
+    expect(JSON.parse(ready[0].params[5] as string)).toMatchObject({ subtaskId: 1403, seq: 3 })
+
+    // Nenhum outro fluxo (verificação/deploy) é acionado por este motivo
+    expect(env.outbox('SUBTASK_VERIFICATION_REQUESTED')).toHaveLength(0)
+    expect(env.outbox('DEPLOY_BATCH_DISPATCH_REQUESTED')).toHaveLength(0)
+    expect(env.outbox('TASK_RESUME_REQUESTED')).toHaveLength(0)
   })
 })

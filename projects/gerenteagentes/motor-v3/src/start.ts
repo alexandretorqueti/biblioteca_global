@@ -51,7 +51,7 @@ import { DeployConsumer } from './deploy/DeployConsumer.js'
 import { DeployRepository } from './deploy/DeployRepository.js'
 import { RemoteBlueGreenDeployer } from './deploy/RemoteBlueGreenDeployer.js'
 import { BaselinePreflightRecovery, TestGateConsumer, TestGateJobReconciler, TestGateOrchestrator, TestGateService, TestRecoveryConsumer, WorkspaceEnvironmentPreparer } from './testing/index.js'
-import { ConsoleHumanNotifier, ExternalResolutionError, ExternalResolutionHandler, MonitorBlockerReconciler, MonitorPromptResolver, MonitorResolutionConsumer, PostDeployPromptResolver, PostDeployVerifier, TaskUnblockedConsumer, createTaskBlockedMessage, loadActiveBlocker, ActiveExecutionSweeper } from './monitor/index.js'
+import { TaskChatHumanNotifier, ExternalResolutionError, ExternalResolutionHandler, MonitorBlockerReconciler, MonitorPromptResolver, MonitorResolutionConsumer, PostDeployPromptResolver, PostDeployVerifier, TaskUnblockedConsumer, createTaskBlockedMessage, loadActiveBlocker, ActiveExecutionSweeper } from './monitor/index.js'
 import { TaskAdjustmentConsumer, TASK_ADJUSTMENT_REQUESTED } from './adjustment/index.js'
 import { ensureCompletionTrigger } from './db/ensureTriggers.js'
 import { bootstrapMotorV3Catalog } from './db/bootstrap.js'
@@ -642,7 +642,7 @@ async function start() {
     })
     monitorResolutionConsumer = new MonitorResolutionConsumer(
       pool, worktreePreparer, monitorResolutionWorker, new MonitorPromptResolver(pool),
-      taskEvents, new WorkerConsoleAdapter(consoleApi), db, new ConsoleHumanNotifier(),
+      taskEvents, new WorkerConsoleAdapter(consoleApi), db, new TaskChatHumanNotifier(pool),
     )
     const monitorTransport = new RabbitMqTransport({
       url: rabbitUrl, exchange: process.env.MOTOR_RABBITMQ_EXCHANGE || 'motor',
@@ -684,10 +684,10 @@ async function start() {
       postDeployWorker,
       new PostDeployPromptResolver(pool),
       taskEvents,
-      new ConsoleHumanNotifier(),
+      new TaskChatHumanNotifier(pool),
       operationLogger,
     )
-    const subtaskTerminalBlocker = new SubtaskTerminalFailureBlocker(pool)
+    const subtaskTerminalBlocker = new SubtaskTerminalFailureBlocker(pool, realtimeBoundary)
     // Execução usa 'subtask_terminal_failure'; verificação usa
     // 'subtask_verification_failed' (reason escolhido pelo blocker pelo tipo
     // da mensagem). Sem isso, falha terminal de verificação ia à DLQ deixando
