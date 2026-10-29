@@ -35,6 +35,15 @@ export interface AttributionResult {
 const ROOT_DIRS = ['projects/', 'apps/', 'packages/', 'infra/', 'scripts/', 'docs/', 'tools/']
 
 /**
+ * Códigos de escape ANSI (cores). O vitest/tsc emite sequências de cor mesmo
+ * com saída redirecionada; sem removê-las, os padrões abaixo não casam
+ * (incidente 2026-10-29 batch 161: `FAIL\x1b[22m\x1b[49m test/x.test.ts` não
+ * extraía caminho algum → attribution nula → batch inteiro bloqueado,
+ * incluindo inocentes).
+ */
+const ANSI_ESCAPE = /\u001b\[[0-9;]*m/g
+
+/**
  * Extrai o prefixo `cd <dir> &&` dos comandos de gate: erros de compiladores
  * (tsc, esbuild) saem relativos ao cwd do comando, não à raiz do repositório.
  */
@@ -80,15 +89,15 @@ export function resolveEvidencePath(path: string, cwdPrefixes: string[]): string
  */
 export function extractFailurePaths(input: GateEvidenceInput): string[] {
   const cwdPrefixes = extractCwdPrefixes([input.buildCommand, input.testCommand])
-  const text = `${input.stdout}\n${input.stderr}`
+  const text = `${input.stdout}\n${input.stderr}`.replace(ANSI_ESCAPE, '')
   const raw = new Set<string>()
 
   // tsc: caminho(line,col): error|warning
   for (const match of text.matchAll(/(?:^|\n)\s*([^\s:()]+\.(?:tsx?|mts|cts|jsx?|mjs|cjs))\((\d+),(\d+)\):\s*(?:error|warning)/g)) {
     raw.add(match[1]!)
   }
-  // vitest/jest: FAIL <arquivo> (com ou sem suíte entre >)
-  for (const match of text.matchAll(/(?:FAIL|❯|✗|×)\s+([^\s>]+\.(?:tsx?|jsx?|mjs|cjs))(?:\s|$|>)/gm)) {
+  // vitest/jest: FAIL <arquivo> (com ou sem suíte entre >) e frames `❯ arquivo:linha:col`
+  for (const match of text.matchAll(/(?:FAIL|❯|✗|×)\s+([^\s>:]+\.(?:tsx?|jsx?|mjs|cjs))(?::\d+(?::\d+)?)?(?=\s|$|>)/gm)) {
     raw.add(match[1]!)
   }
   // Bullet de dry-run de migration / listas `- projects/...sql`

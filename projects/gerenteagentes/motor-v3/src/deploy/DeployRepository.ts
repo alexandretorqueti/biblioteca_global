@@ -643,8 +643,8 @@ ${conflictData.conflictFiles.map(f => `- \`${f}\``).join('\n')}
     )
     const run = runRows[0]
     if (!run) return null
-    const [failureRows] = await this.pool.query<Array<RowDataPacket & { source_file: string | null }>>(
-      `SELECT source_file FROM test_failures WHERE test_run_id=? AND source_file IS NOT NULL`,
+    const [failureRows] = await this.pool.query<Array<RowDataPacket & { source_file: string | null; suite: string | null }>>(
+      `SELECT source_file, suite FROM test_failures WHERE test_run_id=? AND (source_file IS NOT NULL OR suite IS NOT NULL)`,
       [testRunId],
     )
     return {
@@ -654,7 +654,14 @@ ${conflictData.conflictFiles.map(f => `- \`${f}\``).join('\n')}
       stderr: String(run.stderr ?? ''),
       buildCommand: run.build_command ?? null,
       testCommand: run.test_command ?? null,
-      sourceFiles: failureRows.map(row => String(row.source_file)).filter(Boolean),
+      // `suite` frequentemente carrega o caminho do arquivo de teste (o parser
+      // do gate preenche `source_file` só para falhas de import). Sem ele, a
+      // atribuição de culpa ficava sem evidência estruturada (incidente
+      // 2026-10-29 batch 161). Filtra valores que parecem caminho de código.
+      sourceFiles: failureRows
+        .flatMap(row => [row.source_file, row.suite])
+        .map(value => (value == null ? '' : String(value)))
+        .filter(value => /\.(?:tsx?|jsx?|mjs|cjs|sql)$/.test(value)),
     }
   }
 
