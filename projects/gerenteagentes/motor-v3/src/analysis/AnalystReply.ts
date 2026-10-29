@@ -12,6 +12,30 @@ export interface PlannedSubtask {
 
 export type CompletionKind = 'code_change' | 'analysis' | 'external_operation' | 'no_code_change'
 
+/**
+ * Limite da coluna `subtarefas.titulo` (varchar(200)). Títulos maiores que o
+ * limite fazem o INSERT do plano falhar com ER_DATA_TOO_LONG e derrubam a
+ * análise inteira (todas as tentativas), mesmo com plano válido.
+ */
+export const SUBTASK_TITLE_MAX_LENGTH = 200
+
+/**
+ * Garante que o título de subtarefa caiba em `subtarefas.titulo`.
+ * Corta em limite de palavra (quando possível) e sufixa com reticência.
+ * A contagem usa code points (spread), alinhada à semântica de caracteres
+ * do varchar utf8mb4 no MySQL.
+ */
+export function clampSubtaskTitle(titulo: string, maxLength: number = SUBTASK_TITLE_MAX_LENGTH): string {
+  const normalized = titulo.trim().replace(/\s+/g, ' ')
+  const characters = [...normalized]
+  if (characters.length <= maxLength) return normalized
+  const budget = maxLength - 1 // reserva 1 caractere para a reticência
+  let cut = characters.slice(0, budget).join('')
+  const lastSpace = cut.lastIndexOf(' ')
+  if (lastSpace >= Math.floor(budget / 2)) cut = cut.slice(0, lastSpace)
+  return `${cut.trimEnd()}…`
+}
+
 const validationVerb = /\b(?:validar|verificar|checar|conferir|testar)\b/i
 
 export interface PlanCoverage {
@@ -99,7 +123,7 @@ export function parseAnalystReply(content: string, contractSchema?: unknown, tas
   if (!Array.isArray(parsed.subtarefas) || parsed.subtarefas.length === 0) throw new Error('Analista não retornou subtarefas')
   const subtasks = parsed.subtarefas.map((value, index) => {
     if (!isRecord(value)) throw new Error(`Subtarefa ${index + 1} inválida`)
-    const titulo = typeof value.titulo === 'string' ? value.titulo.trim() : ''
+    const titulo = typeof value.titulo === 'string' ? clampSubtaskTitle(value.titulo) : ''
     const scope = typeof value.scope === 'string' ? value.scope.trim() : ''
     const acceptanceCriteria = strings(value.acceptance_criteria)
     const deliverables = strings(value.deliverables)
