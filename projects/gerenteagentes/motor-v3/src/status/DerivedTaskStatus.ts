@@ -74,9 +74,11 @@ export class DerivedTaskStatusResolver {
     const allApproved = hasSubtasks && subtaskStatuses.every(status => ['verified', 'superseded'].includes(status))
 
     if (terminal === 'cancelled' || terminal === 'failed') return terminal
-    // Verificações diretas não criam subtarefas: o parecer do Analista já é a
-    // entrega final e o runtime fact registra o encerramento transacional.
-    if (terminal === 'completed' && !hasSubtasks && String(task.task_type).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase() === 'verificacao') return 'closed'
+    // `terminal_status='completed'` sem subtarefas é fato terminal independente
+    // do `tipo` da tarefa (incidente da tarefa 1029: verificação direta
+    // cadastrada como desenvolvimento caía no fallback `planned`). Não há
+    // subtarefas nem código integrável → estação terminal sem deploy: `closed`.
+    if (terminal === 'completed' && !hasSubtasks) return 'closed'
     // `motor_fix` é transitório: a execução registrada pelo Monitor é a fonte
     // de verdade e a limpeza do lease devolve a tarefa ao status normal.
     if (Number(task.active_monitor_fix) === 1) return 'motor_fix'

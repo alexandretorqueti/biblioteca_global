@@ -50,6 +50,19 @@ const EMPTY_FILTERS: FiltrosMapa = { busca: "", status: [], projetoId: "", prior
 const FINAL_STATUSES = TASK_STATUS_FINAIS
 const AWAITING_STATUSES = new Set(["awaiting_clarification", "paused"])
 
+/**
+ * A projeção de espera de capacidade é escrita pelo motor ANTES de a tarefa
+ * entrar em execução e só é limpa no banco quando a vaga é liberada. Uma
+ * tarefa com status de execução (running/analyzing) nunca está aguardando
+ * capacidade: se um evento não traz `capacityWait` explícito, a projeção local
+ * obsoleta é descartada imediatamente (tarefa 1039 — ícone de aguarde que
+ * persistia após a tarefa passar para "em execução").
+ */
+function nextCapacityWait(projection: CapacityWaitProjection | null | undefined, status: string): CapacityWaitProjection | null {
+  if (TASK_STATUS_EXECUTING.has(status)) return null
+  return projection ?? null
+}
+
 function selectInitialTask(tasks: Task[]): number | "" {
   if (!tasks.length) return ""
   const awaiting = tasks.filter(t => AWAITING_STATUSES.has(t.status)).sort((a, b) => new Date(b.updatedAt ?? b.createdAt ?? 0).getTime() - new Date(a.updatedAt ?? a.createdAt ?? 0).getTime())
@@ -106,7 +119,7 @@ function applyTaskUpdate(task: Task, payload: Record<string, unknown>, occurredA
     descricao: has("descricao") || has("description") ? (payload.descricao ?? payload.description) == null ? null : String(payload.descricao ?? payload.description) : task.descricao,
     tipo: has("tipo") || has("taskType") ? String(payload.tipo ?? payload.taskType ?? "") : task.tipo,
     status,
-    capacityWait: payload.capacityWait !== undefined ? (payload.capacityWait as CapacityWaitProjection | null) : task.capacityWait,
+    capacityWait: payload.capacityWait !== undefined ? nextCapacityWait(payload.capacityWait as CapacityWaitProjection | null, status) : nextCapacityWait(task.capacityWait, status),
     dependsOnTaskIds: dependencies,
     dependsOnTaskId: dependencies?.[0] ?? (Array.isArray(dependencyPayload) ? null : task.dependsOnTaskId),
     updatedAt: String(payload.updatedAt ?? occurredAt),
@@ -260,7 +273,7 @@ export default function OperationMapScreen() {
             projetoId: message.snapshot.projectId,
             updatedAt: st.updatedAt,
             subtaskCount: st.counters?.total,
-            capacityWait: st.capacityWait ?? null,
+            capacityWait: nextCapacityWait(st.capacityWait ?? null, st.status),
           }))
           setTasks(prev => {
             // Preserva seleção atual se ainda existir
@@ -352,7 +365,7 @@ export default function OperationMapScreen() {
           } else if (event.type === "task.status.changed") {
             const newStatus = String(payload.status ?? "")
             if (newStatus) {
-              setTasks(prev => prev.map(t => t.id === event.taskId ? { ...t, status: newStatus, capacityWait: payload.capacityWait !== undefined ? payload.capacityWait as CapacityWaitProjection | null : t.capacityWait, updatedAt: event.occurredAt } : t))
+              setTasks(prev => prev.map(t => t.id === event.taskId ? { ...t, status: newStatus, capacityWait: payload.capacityWait !== undefined ? nextCapacityWait(payload.capacityWait as CapacityWaitProjection | null, newStatus) : nextCapacityWait(t.capacityWait, newStatus), updatedAt: event.occurredAt } : t))
             }
           } else if (event.type === "task.counters.updated") {
             setTasks(prev => prev.map(t => t.id === event.taskId ? {
@@ -385,7 +398,9 @@ export default function OperationMapScreen() {
     setOperations([])
     setDbSubtasks([])
     setCodeViewerOpen(false)
-    // Carga inicial do detalhe (REST) — o WebSocket assumirá depois
+    // A aba ativa do detalhe é preservada ao trocar de tarefa (tarefa 1039):
+    // quem abre em contexto novo (seleção inicial, tarefa recém-criada) define
+    // a aba como Resumo explicitamente via openTask(id, { resetTab: true }).
     void refreshSelected(selectedId)
     const client = new RealtimeClient({
       url: resolveRealtimeUrl(),
@@ -443,7 +458,18 @@ export default function OperationMapScreen() {
         }
         // Status da tarefa — atualiza a lista local (map channel também faz, mas aqui garante consistência)
         if (eventType === "task.status.changed" && typeof payload.status === "string" && payload.status.trim()) {
-          setTasks(old => old.map(t => t.id === selectedId ? { ...t, status: String(payload.status) } : t))
+          const newStatus = String(payload.status)
+          setTasks(old => old.map(t => t.id === selectedId ? { ...t, status: newStatus, capacityWait: payload.capacityWait !== undefined ? nextCapacityWait(payload.capacityWait as CapacityWaitProjection | null, newStatus) : nextCapacityWait(t.capacityWait, newStatus) } : t))
+          // O chip "Aguardando capacidade" do detalhe lê detail.task.capacityWait; sem
+          // esta atualização, a projeção obsoleta permaneceria após passar a execução.
+          setDetail(prev => prev?.task ? {
+            ...prev,
+            task: {
+              ...prev.task,
+              status: newStatus,
+              capacityWait: payload.capacityWait !== undefined ? nextCapacityWait(payload.capacityWait as CapacityWaitProjection | null, newStatus) : nextCapacityWait(prev.task.capacityWait, newStatus),
+            },
+          } : prev)
         }
         if (eventType === "task.updated") {
           setTasks(old => old.map(t => t.id === selectedId ? applyTaskUpdate(t, payload, message.event.occurredAt) : t))
@@ -451,6 +477,10 @@ export default function OperationMapScreen() {
             ...prev,
             task: {
               ...prev.task,
+              status: typeof payload.status === "string" && payload.status.trim() ? payload.status : prev.task.status,
+              capacityWait: payload.capacityWait !== undefined
+                ? nextCapacityWait(payload.capacityWait as CapacityWaitProjection | null, typeof payload.status === "string" && payload.status.trim() ? payload.status : prev.task.status)
+                : nextCapacityWait(prev.task.capacityWait, typeof payload.status === "string" && payload.status.trim() ? payload.status : prev.task.status),
               title: String(payload.titulo ?? payload.title ?? prev.task.title),
               ...(Object.prototype.hasOwnProperty.call(payload, "descricao") || Object.prototype.hasOwnProperty.call(payload, "description") ? { descricao: (payload.descricao ?? payload.description) == null ? null : String(payload.descricao ?? payload.description) } : {}),
               ...(Object.prototype.hasOwnProperty.call(payload, "tipo") || Object.prototype.hasOwnProperty.call(payload, "taskType") ? { tipo: String(payload.tipo ?? payload.taskType ?? "") } : {}),
@@ -687,14 +717,16 @@ export default function OperationMapScreen() {
     )
   }
 
-  const openTask = (id: number) => {
+  const openTask = (id: number, options?: { resetTab?: boolean }) => {
     if (id === selectedId) {
       if (!drawerOpen) setDrawerOpen(true)
       return
     }
     setSelectedId(id)
     setDrawerOpen(true)
-    setTab(0)
+    // A troca de tarefa mantém a aba atualmente selecionada (tarefa 1039).
+    // A seleção de contexto novo (criação de tarefa) volta para Resumo (aba 0).
+    if (options?.resetTab) setTab(0)
     setDetailMinimized(false)
   }
   const createTask = async (values: TarefaFormValues) => {
@@ -717,7 +749,7 @@ export default function OperationMapScreen() {
         setTasks(prev => prev.some(t => t.id === newTask.id)
           ? prev
           : [newTask, ...prev].sort((a, b) => new Date(b.updatedAt ?? b.createdAt ?? 0).getTime() - new Date(a.updatedAt ?? a.createdAt ?? 0).getTime()))
-        openTask(newTask.id)
+        openTask(newTask.id, { resetTab: true })
       }
       // Atualizações seguintes continuam vindo via WebSocket (task.created/task.updated no canal "map")
     } catch (e) {

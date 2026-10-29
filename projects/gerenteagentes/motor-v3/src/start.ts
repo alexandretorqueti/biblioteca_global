@@ -35,7 +35,7 @@ import { MotorActivityGate, OutboxPublisher, TerminalFailureRouter, createQueueM
 import { SUBTASK_EXECUTION_REQUESTED } from './execution/SubtaskExecutionConsumer.js'
 import { SUBTASK_VERIFICATION_REQUESTED } from './execution/SubtaskVerificationConsumer.js'
 import type { QueueMessage } from './queue/QueueMessage.js'
-import { TaskCoordinator, MySqlTaskCoordinatorRepository, AnalysisClaimReconciler, AnalysisSessionRecoveryReconciler, TaskCancelConsumer, MySqlTaskEventRecorder, MySqlAnalysisFailureBlocker, SanitizeSessionService, RealtimeMutationPublisher, RealtimeOutboxDispatcher } from './coordinator/index.js'
+import { TaskCoordinator, MySqlTaskCoordinatorRepository, AnalysisClaimReconciler, AnalysisSessionRecoveryReconciler, TaskCancelConsumer, MySqlTaskEventRecorder, MySqlAnalysisFailureBlocker, SanitizeSessionService, RealtimeMutationPublisher, RealtimeOutboxDispatcher, inspectCancelTerminalState, buildAlreadyTerminalCancelResponse } from './coordinator/index.js'
 import { ConsoleAnalystRunner } from './analysis/ConsoleAnalystRunner.js'
 import { ConsoleHttpApi } from './analysis/ConsoleHttpApi.js'
 import { ContractArtifactStore } from './analysis/ContractArtifactStore.js'
@@ -1151,6 +1151,10 @@ async function start() {
       // Assíncrono via comando durável C04 (consumidor TaskCancelConsumer):
       // 202 accepted reflete que o cancelamento foi ACEITO para processamento,
       // não que o fato já foi persistido (item 5 da auditoria do incidente 862).
+      // Tarefa já terminal (terminal_status preenchido) NÃO recebe comando: o
+      // consumidor rejeitaria com task_terminal e a interface registraria um
+      // cancel_requested enganoso (tarefa 1029). A resposta é idempotente e
+      // explícita sobre o estado terminal.
       if (req.method === 'POST' && taskId && taskAction === 'cancel') {
         let cancelBody = ''
         req.on('data', chunk => cancelBody += chunk)
@@ -1158,6 +1162,13 @@ async function start() {
         const cancelPayload = cancelBody ? JSON.parse(cancelBody) : {}
         const ator = typeof cancelPayload.ator === 'string' ? cancelPayload.ator.slice(0, 255) : undefined
         const motivo = typeof cancelPayload.motivo === 'string' ? cancelPayload.motivo.slice(0, 500) : undefined
+        const terminalState = await inspectCancelTerminalState(pool, taskId)
+        if (terminalState.found && terminalState.terminalStatus) {
+          console.log(`[Motor v3] Task ${taskId} cancel skipped: already terminal (${terminalState.terminalStatus})`)
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify(buildAlreadyTerminalCancelResponse(taskId, terminalState.terminalStatus)))
+          return
+        }
         console.log(`[Motor v3] Task ${taskId} cancel requested`)
         const message = await dispatchCommand('TASK_CANCEL_REQUESTED', taskId, taskId, { ator, motivo })
         res.writeHead(202, { 'Content-Type': 'application/json' })

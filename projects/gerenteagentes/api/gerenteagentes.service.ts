@@ -1482,6 +1482,27 @@ export class GerenteAgentesService {
     );
     if (!resp.ok) throw new BadRequestException(`Motor rejeitou o cancelamento (${resp.status}): ${resp.body.slice(0, 200)}`);
     if (this.motorVersao === 'v3') {
+      // O motor responde 200 { alreadyTerminal: true } quando a tarefa já tem
+      // terminal_status preenchido (tarefa 1029): nenhum comando foi enfileirado.
+      // Resposta idempotente/explicativa — NÃO registrar cancel_requested,
+      // que seria auditoria enganosa de uma solicitação que não existe.
+      let motorCancel: { alreadyTerminal?: boolean; terminalStatus?: string | null; message?: string } = {};
+      try {
+        motorCancel = JSON.parse(resp.body) as typeof motorCancel;
+      } catch {
+        // Corpo não-JSON: mantém o fluxo assíncrono existente.
+      }
+      if (motorCancel.alreadyTerminal === true) {
+        const terminalStatus = motorCancel.terminalStatus ?? null;
+        return {
+          id: tarefaId,
+          cancelled: false,
+          alreadyTerminal: true,
+          terminalStatus,
+          message: motorCancel.message
+            ?? `Tarefa já está em estado terminal${terminalStatus ? ` (${terminalStatus})` : ''}; cancelamento não enfileirado`,
+        };
+      }
       // Motor v3: cancelamento é assíncrono (comando durável C04, 202 accepted).
       // A Biblioteca registra a solicitação; o fato 'cancelled' é registrado
       // pelo Motor em tarefa_eventos quando o TaskCancelConsumer persistir o

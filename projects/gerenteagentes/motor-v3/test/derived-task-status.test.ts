@@ -13,6 +13,65 @@ describe('DerivedTaskStatusResolver', () => {
     await expect(new DerivedTaskStatusResolver({ query } as never).resolve('task-p1-970')).resolves.toBe('closed')
   })
 
+  it('deriva closed para a combinação factual da tarefa 1029 (desenvolvimento, completed, sem subtarefas)', async () => {
+    const query = vi.fn()
+      .mockResolvedValueOnce([[{
+        id: 1029, task_type: 'desenvolvimento', paused_at: null, resource_wait_key: null,
+        analysis_started_at: null, clarification_pending_at: null, integration_confirmed_at: null, terminal_status: 'completed',
+        awaiting_interaction: 0, has_active_blocker: 0, deploy_succeeded: 0, deploy_failed: 0, administrative_deploy_cancelled: 0,
+        active_monitor_fix: 0,
+      }]])
+      .mockResolvedValueOnce([[]])
+    const resolver = new DerivedTaskStatusResolver({ query } as never)
+
+    // Nunca `planned`: terminal_status='completed' sem subtarefas é fato
+    // terminal independentemente do tipo da tarefa.
+    await expect(resolver.resolve('task-p2-1029')).resolves.toBe('closed')
+  })
+
+  it('deriva closed para completed sem subtarefas mesmo com análise iniciada', async () => {
+    const query = vi.fn()
+      .mockResolvedValueOnce([[{
+        id: 1030, task_type: 'desenvolvimento', paused_at: null, resource_wait_key: null,
+        analysis_started_at: new Date(), clarification_pending_at: null, integration_confirmed_at: null, terminal_status: 'completed',
+        awaiting_interaction: 0, has_active_blocker: 0, deploy_succeeded: 0, deploy_failed: 0, administrative_deploy_cancelled: 0,
+        active_monitor_fix: 0,
+      }]])
+      .mockResolvedValueOnce([[]])
+    const resolver = new DerivedTaskStatusResolver({ query } as never)
+
+    // O fato terminal precede `analyzing`: encerramento transacional vence.
+    await expect(resolver.resolve('task-p2-1030')).resolves.toBe('closed')
+  })
+
+  it('deriva cancelled para terminal_status=cancelled sem subtarefas', async () => {
+    const query = vi.fn()
+      .mockResolvedValueOnce([[{
+        id: 1031, task_type: 'desenvolvimento', paused_at: null, resource_wait_key: null,
+        analysis_started_at: null, clarification_pending_at: null, integration_confirmed_at: null, terminal_status: 'cancelled',
+        awaiting_interaction: 0, has_active_blocker: 0, deploy_succeeded: 0, deploy_failed: 0, administrative_deploy_cancelled: 0,
+        active_monitor_fix: 0,
+      }]])
+      .mockResolvedValueOnce([[]])
+    const resolver = new DerivedTaskStatusResolver({ query } as never)
+
+    await expect(resolver.resolve('task-p2-1031')).resolves.toBe('cancelled')
+  })
+
+  it('deriva failed para terminal_status=failed sem subtarefas', async () => {
+    const query = vi.fn()
+      .mockResolvedValueOnce([[{
+        id: 1032, task_type: 'verificacao', paused_at: null, resource_wait_key: null,
+        analysis_started_at: null, clarification_pending_at: null, integration_confirmed_at: null, terminal_status: 'failed',
+        awaiting_interaction: 0, has_active_blocker: 0, deploy_succeeded: 0, deploy_failed: 0, administrative_deploy_cancelled: 0,
+        active_monitor_fix: 0,
+      }]])
+      .mockResolvedValueOnce([[]])
+    const resolver = new DerivedTaskStatusResolver({ query } as never)
+
+    await expect(resolver.resolve('task-p2-1032')).resolves.toBe('failed')
+  })
+
   it('expõe motor_fix somente enquanto há execução ativa de correção do Monitor', async () => {
     const query = vi.fn()
       .mockResolvedValueOnce([[{
