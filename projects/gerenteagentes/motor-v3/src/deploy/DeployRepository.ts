@@ -272,11 +272,21 @@ export class DeployRepository {
   }
 
   /**
-   * Reenfileira mensagem rejeitada por deploy lock com delay de 30s.
-   * Insere no outbox com timestamp futuro (NOW() + 30s); o OutboxPublisher
-   * só publica mensagens cujo timestamp <= NOW(), garantindo o delay.
-   * A mensagem original é acked pelo consumidor; esta nova mensagem será
-   * publicada automaticamente após o deploy terminar (ou após 30s).
+   * Reenfileira mensagem rejeitada por deploy lock/capacidade de análise com
+   * delay de 30s. Insere no outbox com timestamp futuro (NOW() + 30s); o
+   * OutboxPublisher só publica mensagens cujo timestamp <= NOW(), garantindo
+   * o delay. A mensagem original é acked pelo consumidor; esta nova mensagem
+   * será publicada automaticamente após o deploy terminar (ou após 30s).
+   *
+   * Idempotência (incidente task-p2-1047): o retry reusa o correlation_id da
+   * origem — o mesmo triple (type, task_id, correlation_id) da linha do
+   * outbox da mensagem original (insertOutboxMessage faz fallback de
+   * correlation_id para message_id). Sem o upsert, o INSERT colidia com
+   * `motor_outbox_logical_key_unique` (errno 1062), o consumidor falhava e a
+   * mensagem ia para a DLQ após maxAttempts — a tarefa ficava órfã de comando
+   * em espera de capacidade. No conflito, a linha existente é REARMADA com a
+   * nova identidade (message_id/execution_id frescos evitam o dedupe do
+   * consumidor) e novo delay, mantendo uma única linha por comando lógico.
    */
   async requeueForDeployRetry(source: QueueMessage, reason: string): Promise<void> {
     const retryMessage = createQueueMessage({
@@ -293,7 +303,19 @@ export class DeployRepository {
       // Insere com timestamp futuro (NOW() + 30s) para delay no publish
       await connection.query(
         `INSERT INTO motor_outbox (message_id, type, destination_queue, task_id, execution_id, payload_json, timestamp, correlation_id, causation_id, status, attempt)
-         VALUES (?, ?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 30 SECOND), ?, ?, 'pending', 0)`,
+         VALUES (?, ?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 30 SECOND), ?, ?, 'pending', 0) AS requeue_row
+         ON DUPLICATE KEY UPDATE
+           message_id = requeue_row.message_id,
+           destination_queue = requeue_row.destination_queue,
+           execution_id = requeue_row.execution_id,
+           payload_json = requeue_row.payload_json,
+           timestamp = requeue_row.timestamp,
+           causation_id = requeue_row.causation_id,
+           status = 'pending',
+           attempt = 0,
+           published_at = NULL,
+           defer_count = defer_count + 1,
+           updated_at = NOW()`,
         [retryMessage.messageId, retryMessage.type, 'motor.commands', retryMessage.taskId, retryMessage.executionId,
           JSON.stringify(retryMessage.payload), retryMessage.correlationId ?? null, retryMessage.causationId ?? null],
       )
