@@ -187,6 +187,25 @@ export class GerenteAgentesController {
     return this.service.retomarTodasTarefas();
   }
 
+  /**
+   * Pausa novas missões do monitor-resolvedor de bloqueios sem interromper as
+   * atividades em andamento. A lógica já existia no service (pausarMonitor),
+   * mas não havia rota exposta — o operador não tinha como desligar o monitor
+   * (incidente 2026-10-29: "desliguei os dois" sem efeito no monitor).
+   */
+  @Post('motor-monitor/pause')
+  @Roles('admin', 'gerente', 'operador')
+  pausarMonitor() {
+    return this.service.pausarMonitor();
+  }
+
+  /** Reativa o despacho de missões do monitor-resolvedor. */
+  @Post('motor-monitor/resume')
+  @Roles('admin', 'gerente', 'operador')
+  retomarMonitor() {
+    return this.service.retomarMonitor();
+  }
+
   @Post('tarefas/:id/unlock')
   @Roles('admin', 'gerente', 'operador')
   desbloquearTarefa(
