@@ -33,6 +33,26 @@ export interface TaskCompletedByReconciliation {
 
 export type ReserveNextSubtaskResult = ReservedSubtask | CapacityWaiting | TaskCompletedByReconciliation | null
 
+/**
+ * Correlação escopada por subtarefa para SUBTASK_EXECUTION_REQUESTED.
+ *
+ * A chave lógica do outbox (type, task_id, correlation_id) é única e a
+ * correlação herda da cadeia (TASK_RESUME/TASK_READY → SER → SVR → VERIFIED).
+ * Uma tarefa enfileira legitimamente UM SER por subtarefa dentro da MESMA
+ * correlação: sem escopo, o SER da subtarefa seguinte colide com o da
+ * anterior (ER_DUP_ENTRY → rollback do completeVerification → retries →
+ * bloqueio terminal; incidente task-p2-1048/subtarefa 1447 em 2026-10-29).
+ * O sufixo `:sub:<subtaskId>` sobre a RAIZ da correlação mantém a
+ * rastreabilidade do fluxo e garante unicidade por subtarefa — mesmo padrão
+ * do `:gate:<jobId>` do TestGateOrchestrator (incidente 2026-10-27). A raiz é
+ * extraída com split(':')[0] para não acumular sufixos ao longo da cadeia
+ * (o campo tem 200 caracteres).
+ */
+export function subtaskExecutionCorrelation(source: { correlationId?: string | null; messageId: string }, subtaskId: number): string {
+  const root = String(source.correlationId ?? source.messageId).split(':')[0]
+  return `${root}:sub:${subtaskId}`.slice(0, 200)
+}
+
 export interface SubtaskExecutionContext {
   taskId: string
   databaseTaskId: number
@@ -398,7 +418,7 @@ export class MySqlDevelopmentExecutionRepository {
         type: 'SUBTASK_EXECUTION_REQUESTED',
         taskId: String(task.external_id ?? task.id),
         executionId,
-        correlationId: source.correlationId ?? source.messageId,
+        correlationId: subtaskExecutionCorrelation(source, Number(subtask.id)),
         causationId: source.messageId,
         payload: executionPayload,
       }) as QueueMessage<typeof executionPayload>
@@ -1374,7 +1394,7 @@ export class MySqlDevelopmentExecutionRepository {
     const message = createQueueMessage({
       type: 'SUBTASK_EXECUTION_REQUESTED', taskId,
       executionId: `exec-subtask-${taskId}-${subtask.id}-${Date.now()}`,
-      correlationId: source.correlationId ?? source.messageId, causationId: source.messageId, payload,
+      correlationId: subtaskExecutionCorrelation(source, Number(subtask.id)), causationId: source.messageId, payload,
     }) as QueueMessage<typeof payload>
     const [updated] = await connection.query<ResultSetHeader>(
       `UPDATE subtarefas SET status = 'running', updated_at = NOW() WHERE id = ? AND status = 'pending'`, [subtask.id],
