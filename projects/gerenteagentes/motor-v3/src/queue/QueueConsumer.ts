@@ -189,7 +189,19 @@ export class QueueConsumer {
       `INSERT INTO motor_outbox
         (message_id,type,destination_queue,task_id,execution_id,payload_json,timestamp,
          correlation_id,causation_id,status,attempt)
-       VALUES (?,?,?,?,?,?,DATE_ADD(NOW(), INTERVAL ? SECOND),?,?,'pending',0)`,
+       VALUES (?,?,?,?,?,?,DATE_ADD(NOW(), INTERVAL ? SECOND),?,?,'pending',0) AS deferred_row
+       ON DUPLICATE KEY UPDATE
+         message_id = deferred_row.message_id,
+         destination_queue = deferred_row.destination_queue,
+         execution_id = deferred_row.execution_id,
+         payload_json = deferred_row.payload_json,
+         timestamp = deferred_row.timestamp,
+         causation_id = deferred_row.causation_id,
+         status = 'pending',
+         attempt = 0,
+         published_at = NULL,
+         defer_count = defer_count + 1,
+         updated_at = NOW()`,
       [deferredMessageId, message.type, this.config.queue, message.taskId, message.executionId,
         JSON.stringify(message.payload), delaySeconds, message.correlationId ?? message.messageId, message.messageId],
     )

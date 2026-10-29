@@ -450,6 +450,34 @@ describe('DeployRepository — execution_id de retry limitado no reenfileirament
     expect(inserted.causationId).toBe(source.messageId)
   })
 
+  it('requeueForDeployRetry: rearma a linha existente via upsert em vez de falhar com duplicate key (incidente task-p2-1047)', async () => {
+    const { repo, connection } = createRequeueMocks()
+    const source = createQueueMessage({
+      type: 'TASK_RESUME_REQUESTED', taskId: 'task-p2-1047', executionId: 'exec-external-resolution-task-p2-1047',
+      payload: { reason: 'external_resolution', resumeAnalysis: true },
+    })
+
+    await repo.requeueForDeployRetry(source, 'analysis_capacity_waiting')
+
+    const inserted = capturedOutboxInsert(connection)
+    // O retry reusa o correlation_id da origem — o mesmo triple lógico
+    // (type, task_id, correlation_id) da linha original do outbox. Sem upsert,
+    // o INSERT colidia com motor_outbox_logical_key_unique (errno 1062),
+    // o consumidor falhava e a mensagem ia para a DLQ, travando a tarefa.
+    expect(inserted.correlationId).toBe(source.messageId)
+    expect(inserted.sql).toMatch(/ON DUPLICATE KEY UPDATE/i)
+    // rearme com identidade fresca (evita o dedupe do consumidor) e novo delay
+    expect(inserted.sql).toContain('message_id = requeue_row.message_id')
+    expect(inserted.sql).toContain('execution_id = requeue_row.execution_id')
+    expect(inserted.sql).toContain('timestamp = requeue_row.timestamp')
+    expect(inserted.sql).toMatch(/status = 'pending'/)
+    expect(inserted.sql).toContain('published_at = NULL')
+    expect(inserted.sql).toContain('defer_count = defer_count + 1')
+    expect(inserted.sql).toContain('DATE_ADD(NOW(), INTERVAL 30 SECOND)')
+    // um único statement por retry (INSERT ... ON DUPLICATE KEY UPDATE)
+    expect(connection.query).toHaveBeenCalledTimes(1)
+  })
+
   it('requeueDispatch: retries encadeados mantêm ≤200 caracteres, sem acúmulo e com correlação preservada', async () => {
     vi.useFakeTimers()
     try {
