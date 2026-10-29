@@ -500,6 +500,7 @@ export class ConsoleAnalystRunner implements AnalysisRunner {
       'Responda somente em JSON. Se estiver claro, retorne subtarefas, requirements, coverage e estrategia.',
       'Se faltar informação, retorne kind="perguntas", resumo e perguntas.',
       'Cada subtarefa deve conter seq, titulo, scope, acceptance_criteria, deliverables, requirements_covered e depends_on.',
+      'O titulo de cada subtarefa deve ser curto e direto: no máximo 200 caracteres (títulos maiores são truncados).',
     ].join('\n')
   }
 }
