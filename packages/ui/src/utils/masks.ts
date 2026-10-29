@@ -109,11 +109,13 @@ export const formatTelefone = (value: string): string => {
   const hasCountryMark = /^\s*\+/.test(value)
   let normalized =
     hasCountryMark && digits.startsWith("55") ? digits.slice(2) : digits
-  if (
-    !hasCountryMark &&
-    normalized.startsWith("55") &&
-    normalized.length > 11
-  ) {
+  // Self-heal do código do país digitado manualmente ("55" sem "+"): o
+  // "+55" renderizado é removido acima, mas o "55" digitado sobra como DDD
+  // falso e trava a exibição em "+55 (55) ...". Quando o resto ainda começa
+  // com "55" e excede 11 dígitos (número nacional completo + país manual),
+  // remove o "55" nacional de novo — a partir do 12º dígito. DDD 55 legítimo
+  // tem no máximo 11 dígitos e é preservado.
+  if (normalized.startsWith("55") && normalized.length > 11) {
     normalized = normalized.slice(2)
   }
   normalized = normalized.slice(0, 11)
