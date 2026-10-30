@@ -31,7 +31,7 @@ import { GovernedFailureHandler } from './governance/GovernedFailureHandler.js'
 import { createGovernanceFlagResolver } from './governance/RolloutPolicy.js'
 import { QueueConsumer } from './queue/QueueConsumer.js'
 import { RabbitMqTransport, normalizeRabbitMqPrefetch } from './queue/RabbitMqTransport.js'
-import { MotorActivityGate, OutboxPublisher, TerminalFailureRouter, createQueueMessage } from './queue/index.js'
+import { MotorActivityGate, OutboxPublisher, TerminalFailureRouter, createQueueMessage, DlqReconciler, TelegramDlqAlertSender } from './queue/index.js'
 import { SUBTASK_EXECUTION_REQUESTED } from './execution/SubtaskExecutionConsumer.js'
 import { SUBTASK_VERIFICATION_REQUESTED } from './execution/SubtaskVerificationConsumer.js'
 import type { QueueMessage } from './queue/QueueMessage.js'
@@ -80,6 +80,7 @@ let bus: MessageBus | null = null
 let queueConsumer: QueueConsumer | null = null
 /** Profundidade recente das DLQs (varredura a cada 5 min); exposta no /api/motor/stats. */
 let dlqDepths: Record<string, number | null> = {}
+let dlqReconciler: DlqReconciler | null = null
 let outboxPublisher: OutboxPublisher | null = null
 let monitorOutbox: OutboxPublisher | null = null
 let realtimeOutboxDispatcher: RealtimeOutboxDispatcher | null = null
@@ -820,6 +821,24 @@ async function start() {
       { name: `${gateQueue}.dlq`, probe: gateTransport },
       { name: `${monitorQueue}.dlq`, probe: monitorTransport },
     ]
+    // DlqReconciler (incidentes 2026-09-25/2026-10-29): DLQ não é mais
+    // buraco negro — re-enfileira recuperáveis, arquiva obsoletas em
+    // motor_dlq_archive e alerta (Telegram quando configurado). Compartilha
+    // os mesmos alvos da observabilidade de profundidade.
+    dlqReconciler = new DlqReconciler({
+      pool,
+      targets: [
+        { dlq: process.env.MOTOR_RABBITMQ_DLQ || 'motor.commands.dlq', origin: mainQueue, family: 'commands', transport },
+        { dlq: `${gateQueue}.dlq`, origin: gateQueue, family: 'test-gates', transport: gateTransport },
+        { dlq: `${monitorQueue}.dlq`, origin: monitorQueue, family: 'monitor', transport: monitorTransport },
+      ],
+      intervalMs: Number(process.env.MOTOR_DLQ_RECONCILER_INTERVAL_MS || 300000),
+      maxPerCyclePerQueue: Number(process.env.MOTOR_DLQ_RECONCILER_MAX_PER_CYCLE || 50),
+      maxRequeuesPerMessage: Number(process.env.MOTOR_DLQ_RECONCILER_MAX_REQUEUES || 2),
+      alertCooldownMinutes: Number(process.env.MOTOR_DLQ_ALERT_COOLDOWN_MINUTES || 60),
+      alertSender: new TelegramDlqAlertSender(process.env.TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_DLQ_CHAT_ID),
+    })
+    dlqReconciler.start()
     let lastDlqDepths: Record<string, number | null> = {}
     deployOrphanBatchReconcilerTimer = setInterval(() => {
       if (deployOrphanBatchReconcilerRunning || !deployConsumer) return
@@ -1487,6 +1506,7 @@ async function shutdown() {
   realtimeOutboxDispatcher?.stop()
   monitorBlockerReconciler?.stop()
   monitorMissionRecoveryReconciler?.stop()
+  dlqReconciler?.stop()
   testGateJobReconciler?.stop()
   if (testGateOutboxPublisher) await testGateOutboxPublisher.stop()
 

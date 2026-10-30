@@ -8,7 +8,19 @@ export {
   MIN_RABBITMQ_PREFETCH,
   normalizeRabbitMqPrefetch,
   type RabbitMqTransportConfig,
+  type DeadLetterVerdict,
+  type DeadLetterVisit,
 } from './RabbitMqTransport.js'
+export {
+  DlqReconciler,
+  TelegramDlqAlertSender,
+  type DlqAlertSender,
+  type DlqCycleSummary,
+  type DlqFamily,
+  type DlqReconcilerConfig,
+  type DlqTarget,
+  type DlqTransport,
+} from './DlqReconciler.js'
 export { OutboxPublisher } from './OutboxPublisher.js'
 export { MotorActivityGate } from './MotorActivityGate.js'
 export { insertOutboxMessage } from './outboxInsert.js'

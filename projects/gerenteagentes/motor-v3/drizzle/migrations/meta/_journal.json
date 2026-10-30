@@ -64,8 +64,8 @@
       "when": 1791100101000,
       "tag": "0007_motor_baseline_fix_sessions",
       "breakpoints": true
-    }
-    ,{
+    },
+    {
       "idx": 9,
       "version": "5",
       "when": 1791678000002,
@@ -98,6 +98,13 @@
       "version": "5",
       "when": 1792900000002,
       "tag": "0012_dev_model_cooldown_wait",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "5",
+      "when": 1793324381715,
+      "tag": "0013_motor_dlq_archive",
       "breakpoints": true
     }
   ]
