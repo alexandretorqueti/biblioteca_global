@@ -51,7 +51,7 @@ import { DeployConsumer } from './deploy/DeployConsumer.js'
 import { DeployRepository } from './deploy/DeployRepository.js'
 import { RemoteBlueGreenDeployer } from './deploy/RemoteBlueGreenDeployer.js'
 import { BaselinePreflightRecovery, TestGateConsumer, TestGateJobReconciler, TestGateOrchestrator, TestGateService, TestRecoveryConsumer, WorkspaceEnvironmentPreparer } from './testing/index.js'
-import { TaskChatHumanNotifier, ExternalResolutionError, ExternalResolutionHandler, MonitorBlockerReconciler, MonitorPromptResolver, MonitorResolutionConsumer, PostDeployPromptResolver, PostDeployVerifier, TaskUnblockedConsumer, createTaskBlockedMessage, loadActiveBlocker, ActiveExecutionSweeper } from './monitor/index.js'
+import { TaskChatHumanNotifier, ExternalResolutionError, ExternalResolutionHandler, MonitorBlockerReconciler, MonitorMissionRecoveryReconciler, MonitorPromptResolver, MonitorResolutionConsumer, PostDeployPromptResolver, PostDeployVerifier, TaskUnblockedConsumer, createTaskBlockedMessage, loadActiveBlocker, ActiveExecutionSweeper } from './monitor/index.js'
 import { TaskAdjustmentConsumer, TASK_ADJUSTMENT_REQUESTED } from './adjustment/index.js'
 import { ensureCompletionTrigger } from './db/ensureTriggers.js'
 import { bootstrapMotorV3Catalog } from './db/bootstrap.js'
@@ -90,6 +90,7 @@ let testRecoveryConsumer: TestRecoveryConsumer | null = null
 let monitorResolutionConsumer: MonitorResolutionConsumer | null = null
 let monitorQueueConsumer: QueueConsumer | null = null
 let monitorBlockerReconciler: MonitorBlockerReconciler | null = null
+let monitorMissionRecoveryReconciler: MonitorMissionRecoveryReconciler | null = null
 let taskUnblockedConsumer: TaskUnblockedConsumer | null = null
 let testGateQueueConsumer: QueueConsumer | null = null
 let testGateOutboxPublisher: OutboxPublisher | null = null
@@ -668,6 +669,20 @@ async function start() {
       destinationQueue: monitorQueue,
       intervalMs: Number(process.env.MOTOR_MONITOR_BLOCKER_RECONCILIATION_INTERVAL_MS || 30000),
     })
+    // Recuperação de missões órfãs do Monitor (incidente 2026-10-29): o
+    // consumidor faz ack antes de executar e o container pode morrer no meio
+    // (troca blue-green) — a correção chega ao git, mas o bloqueio nunca é
+    // fechado. Este reconciliador reemite o TASK_BLOCKED de missões que
+    // morreram sem evento terminal, com escalada humana após N tentativas.
+    monitorMissionRecoveryReconciler = new MonitorMissionRecoveryReconciler(pool, {
+      enqueue: message => monitorOutbox!.enqueue(message),
+      destinationQueue: monitorQueue,
+      events: taskEvents,
+      notifier: new TaskChatHumanNotifier(pool),
+      intervalMs: Number(process.env.MOTOR_MONITOR_MISSION_RECOVERY_INTERVAL_MS || 300000),
+      graceMinutes: Number(process.env.MOTOR_MONITOR_MISSION_GRACE_MINUTES || 5),
+      maxMissionsPerBlock: Number(process.env.MOTOR_MONITOR_MISSION_MAX_PER_BLOCK || 3),
+    })
 
     cancelConsumer = new TaskCancelConsumer(pool, operationLogger, new MySqlCommandPolicyRepository(pool), taskEvents)
     taskAdjustmentConsumer = new TaskAdjustmentConsumer(pool, analyst, operationLogger)
@@ -786,6 +801,8 @@ async function start() {
     await monitorQueueConsumer.start()
     await monitorBlockerReconciler.reconcile()
     monitorBlockerReconciler.start()
+    await monitorMissionRecoveryReconciler.reconcile()
+    monitorMissionRecoveryReconciler.start()
     // Recuperação única de fatos duráveis após boot. O fluxo normal avança
     // por mensagens/eventos; o timer abaixo só reconcilia batches órfãos.
     await deployConsumer.recoverPendingWork()
@@ -1469,6 +1486,7 @@ async function shutdown() {
   if (monitorOutbox) await monitorOutbox.stop()
   realtimeOutboxDispatcher?.stop()
   monitorBlockerReconciler?.stop()
+  monitorMissionRecoveryReconciler?.stop()
   testGateJobReconciler?.stop()
   if (testGateOutboxPublisher) await testGateOutboxPublisher.stop()
 
