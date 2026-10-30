@@ -1,6 +1,7 @@
 import type { Pool, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
 import type { TerminalFailureContext, TerminalFailureMessageHandler } from '../queue/TerminalFailureHandler.js'
 import { insertOutboxMessage } from '../queue/outboxInsert.js'
+import { classifyMotorErrorDetail } from '../queue/ErrorTaxonomy.js'
 import { createTaskBlockedMessage } from '../monitor/index.js'
 import type { RealtimeMutationBoundary } from '../realtime/RealtimeMutationBoundary.js'
 import { insertBlockerChatAlert, recommendedActionForBlockReason } from './blockerChatAlert.js'
@@ -8,9 +9,13 @@ import { SUBTASK_VERIFICATION_REQUESTED } from './SubtaskVerificationConsumer.js
 
 /**
  * Persiste bloqueio idempotente quando uma subtarefa atinge falha terminal
- * na fila (ex.: HTTP 504 do Console, timeout do worker, erro de preparação
- * recorrente, falha definitiva de verificação como
- * `MigrationJournalIntegrityError`).
+ * na fila (ex.: timeout do worker, erro de preparação recorrente, falha
+ * definitiva de verificação como `MigrationJournalIntegrityError`).
+ *
+ * Taxonomia (melhoria #4): erros de INFRA/capacidade são adiados com backoff
+ * no `QueueConsumer` e normalmente não chegam aqui; se um erro de infra
+ * chegar (caminho legado), o bloqueio é omitido — bloqueio é exceção, só
+ * problema real de TRABALHO bloqueia.
  *
  * Padrão derivado do `MySqlAnalysisFailureBlocker`:
  * - INSERT em `bloqueios` com NOT EXISTS para evitar duplicatas
@@ -46,6 +51,22 @@ export class SubtaskTerminalFailureBlocker {
 
   async blockForTerminalFailure(context: TerminalFailureContext): Promise<void> {
     const { message, attempt, reason, error } = context
+
+    // Defesa em profundidade da taxonomia (melhoria #4): erro de INFRA do
+    // motor NUNCA vira bloqueio — "bloqueio é exceção". O fluxo normal já
+    // adia infra/capacity no QueueConsumer sem consumir attempt; se um erro
+    // de infra ainda assim chegar aqui (ex.: caminho legado), a mensagem
+    // segue para a DLQ e o DlqReconciler + alerta cuidam da superfície para
+    // o operador. Capacity mantém o comportamento histórico neste ponto
+    // terminal (só chega aqui por caminhos fora da fila).
+    const classification = classifyMotorErrorDetail(error)
+    if (classification.kind === 'infra') {
+      console.warn(
+        `[SubtaskTerminalFailureBlocker] ${message.messageId} (${message.type}): erro infra não gera bloqueio (evidência: ${classification.evidence ?? 'n/d'}); DLQ/alerta sem TASK_BLOCKED`,
+      )
+      return
+    }
+
     const subtaskId = Number(message.payload?.subtaskId)
     if (!Number.isInteger(subtaskId) || subtaskId <= 0) {
       // Mensagem sem subtaskId válido — não há o que bloquear.

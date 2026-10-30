@@ -24,6 +24,13 @@ export {
 export { OutboxPublisher } from './OutboxPublisher.js'
 export { MotorActivityGate } from './MotorActivityGate.js'
 export { insertOutboxMessage } from './outboxInsert.js'
+export {
+  classifyMotorError,
+  classifyMotorErrorDetail,
+  isTransientMotorError,
+  type MotorErrorClassification,
+  type MotorErrorKind,
+} from './ErrorTaxonomy.js'
 export { createQueueMessage, type QueueDelivery, type QueueMessage, type QueuePublishOptions } from './QueueMessage.js'
 export type { QueueTransport, QueueDeliveryHandler } from './QueueTransport.js'
 export {
