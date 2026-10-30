@@ -99,6 +99,67 @@ write_active_slot() {
   mv "$tmp" "$STATE_FILE"
 }
 
+# ---------------------------------------------------------------------------
+# Melhoria #5 (ciclo 2026-10-29): logs de execução persistentes.
+# A auditoria de tentativas não pode depender da vida do container: o swap
+# blue-green removia a stack antiga e levava junto o histórico (incidente
+# 2026-10-29: tentativas 1–2 da subtarefa 1447 inauditáveis). Todo dump é
+# best-effort — NUNCA pode falhar o deploy.
+# Diretório padrão: /home/alexandre/containers/biblioteca-global/logs
+# (mesma base do STATE_FILE; fora dos containers, sobrevive ao swap).
+# Retenção: últimos BLUE_GREEN_LOG_KEEP dumps (padrão 20).
+# ---------------------------------------------------------------------------
+LOG_DUMP_ROOT="${BLUE_GREEN_LOG_DIR:-/home/alexandre/containers/biblioteca-global/logs}"
+LOG_DUMP_KEEP="${BLUE_GREEN_LOG_KEEP:-20}"
+
+dump_container_logs() {
+  # $1 = diretório de destino; $2.. = nomes de containers
+  local dir="$1"; shift
+  local container
+  for container in "$@"; do
+    [ -n "$container" ] || continue
+    docker inspect "$container" >/dev/null 2>&1 || continue
+    docker logs --timestamps "$container" > "$dir/${container}.log" 2>&1 || true
+    gzip -f "$dir/${container}.log" 2>/dev/null || true
+  done
+}
+
+prune_log_dumps() {
+  [ -d "$LOG_DUMP_ROOT" ] || return 0
+  local keep="$LOG_DUMP_KEEP"
+  [[ "$keep" =~ ^[0-9]+$ ]] && [ "$keep" -gt 0 ] || keep=20
+  ls -1dt "$LOG_DUMP_ROOT"/*/ 2>/dev/null | tail -n +$((keep + 1)) | while IFS= read -r old; do
+    rm -rf "$old" || true
+  done || true
+}
+
+dump_project_logs() {
+  # $1 = rótulo do dump; $2 = projeto compose (containers descobertos por label)
+  local label="$1" compose_project="$2" dir ts
+  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+  dir="$LOG_DUMP_ROOT/${ts}-${label}"
+  mkdir -p "$dir" 2>/dev/null || return 0
+  {
+    echo "dumped_at=$ts"
+    echo "label=$label"
+    echo "compose_project=$compose_project"
+    echo "git_commit=$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+    [ -n "$DEPLOY_BATCH_ID" ] && echo "deploy_batch_id=$DEPLOY_BATCH_ID"
+    echo "active_slot=$active"
+    echo "target_slot=$target"
+  } > "$dir/dump-info.txt" 2>/dev/null || true
+  local containers
+  containers="$(docker ps -aq --filter "label=com.docker.compose.project=$compose_project" 2>/dev/null || true)"
+  if [ -n "$containers" ]; then
+    # shellcheck disable=SC2086
+    dump_container_logs "$dir" $containers
+  else
+    dump_container_logs "$dir" "${compose_project}-api-1" "${compose_project}-web-1"
+  fi
+  prune_log_dumps
+  echo "[deploy-blue-green] logs de $label preservados em $dir"
+}
+
 update_nginx() {
   local web_port="$1" api_port="$2"
   [ -f "$NGINX_TEMPLATE" ] || { echo "template Nginx ausente: $NGINX_TEMPLATE" >&2; return 1; }
@@ -249,6 +310,10 @@ echo "[deploy-blue-green] dist do motor v3 materializado a partir da imagem $tar
 # Um deploy anterior pode ter falhado entre a criação e a inicialização do
 # slot inativo. Remover somente esse projeto antes de reutilizar os nomes dos
 # containers evita colisão; o slot ativo nunca é o alvo deste comando.
+# Melhoria #5: se houver containers residuais, preservar seus logs antes.
+if [ -n "$(docker ps -aq --filter "label=com.docker.compose.project=$NEW_PROJECT" 2>/dev/null)" ]; then
+  dump_project_logs "${NEW_PROJECT}-residual" "$NEW_PROJECT" || true
+fi
 docker compose -p "$NEW_PROJECT" -f "$COMPOSE_FILE" down --remove-orphans || true
 
 echo "[deploy-blue-green] iniciando $NEW_PROJECT (MySQL compartilhado em $MYSQL_HOST_BLUEGREEN:$MYSQL_PORT_BLUEGREEN)..."
@@ -276,6 +341,9 @@ MYSQL_HOST="$MYSQL_HOST_BLUEGREEN" MYSQL_PORT="$MYSQL_PORT_BLUEGREEN" \
   docker compose -p "$NEW_PROJECT" -f "$COMPOSE_FILE" up -d --no-deps web
 
 cleanup_new() {
+  # Melhoria #5: os logs da stack nova que falhou são a principal evidência
+  # de auditoria do deploy — dump antes do down (best-effort, nunca aborta).
+  dump_project_logs "${NEW_PROJECT}-failed" "$NEW_PROJECT" || true
   MYSQL_HOST="$MYSQL_HOST_BLUEGREEN" MYSQL_PORT="$MYSQL_PORT_BLUEGREEN" \
   API_HOST_PORT="$NEW_API_PORT" MOTOR_HOST_PORT="$NEW_MOTOR_PORT" WEB_HOST_PORT="$NEW_WEB_PORT" \
     docker compose -p "$NEW_PROJECT" -f "$COMPOSE_FILE" down --remove-orphans || true
@@ -368,10 +436,17 @@ trap - ERR
 
 case "$active" in
   legacy)
+    legacy_dir="$LOG_DUMP_ROOT/$(date -u +%Y%m%dT%H%M%SZ)-legacy-removido"
+    if mkdir -p "$legacy_dir" 2>/dev/null; then
+      dump_container_logs "$legacy_dir" biblioteca-global-api biblioteca-global-web biblioteca-global-api-1 biblioteca-global-web-1 || true
+      prune_log_dumps || true
+      echo "[deploy-blue-green] logs da stack legada preservados em $legacy_dir"
+    fi
     docker rm -f biblioteca-global-api biblioteca-global-web biblioteca-global-api-1 biblioteca-global-web-1 >/dev/null 2>&1 || true
     ;;
   blue|green)
     old_project="biblioteca-$active"
+    dump_project_logs "${old_project}-removido" "$old_project" || true
     docker compose -p "$old_project" -f "$COMPOSE_FILE" down --remove-orphans || true
     ;;
 esac
