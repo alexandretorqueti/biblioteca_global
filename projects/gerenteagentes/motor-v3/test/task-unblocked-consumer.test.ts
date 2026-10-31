@@ -18,6 +18,10 @@ interface FakeOptions {
   blockSubtaskId?: number | null
   /** affectedRows do UPDATE de reabertura (failed/blocked → pending). */
   pendingUpdateAffectedRows?: number[]
+  /** Runner Git injetado no consumidor (refresh do requested_commit obsoleto). */
+  git?: (args: string[], cwd: string) => Promise<{ ok: boolean; stdout: string }>
+  /** Linha retornada pelo SELECT seed de pedidos `failed` (padrão: primeiro grupo pending). */
+  failedSeed?: { repo_path: string; base_branch: string; requested_commit: string; batch_id?: string | null } | null
 }
 
 function fakeEnvironment(options: FakeOptions = {}) {
@@ -59,6 +63,13 @@ function fakeEnvironment(options: FakeOptions = {}) {
       const groups = options.pendingGroups ?? [
         { repo_path: '/repo/biblioteca-global', base_branch: 'base-desenvolvimento', requested_commit: 'abc123' },
       ]
+      // O SELECT seed (pedidos `failed` FOR UPDATE) e o SELECT de grupos
+      // (pedidos `pending`) compartilham o padrão; distinguir pelo filtro de
+      // status permite simular o refresh do requested_commit entre os dois.
+      if (normalized.includes("dr.status='failed'")) {
+        const seed = options.failedSeed !== undefined ? options.failedSeed : groups[0] ?? null
+        return [seed ? [seed] : [], []]
+      }
       return [groups, []]
     }
     return [{ affectedRows: 1 }, []]
@@ -76,7 +87,9 @@ function fakeEnvironment(options: FakeOptions = {}) {
   } as unknown as Pool
   const events: Array<{ taskId: string; evento: string; payload: unknown }> = []
   const eventsSink = { record: vi.fn(async (taskId: string, evento: string, _ator?: string, payload?: unknown) => { events.push({ taskId, evento, payload }) }) }
-  const consumer = new TaskUnblockedConsumer(pool, eventsSink)
+  const consumer = options.git
+    ? new TaskUnblockedConsumer(pool, eventsSink, options.git)
+    : new TaskUnblockedConsumer(pool, eventsSink)
   const outbox = (type: string) => queries.filter(q => q.sql.includes('INSERT INTO motor_outbox') && q.params[1] === type)
   return { consumer, pool, connection, queries, outbox, events }
 }
@@ -456,5 +469,89 @@ describe('TaskUnblockedConsumer — retomada de falha terminal de subtarefa (tar
     expect(env.outbox('SUBTASK_VERIFICATION_REQUESTED')).toHaveLength(0)
     expect(env.outbox('DEPLOY_BATCH_DISPATCH_REQUESTED')).toHaveLength(0)
     expect(env.outbox('TASK_RESUME_REQUESTED')).toHaveLength(0)
+  })
+
+  // Regressão task-p2-1047 (2026-10-31): gate pre_deploy reprovado, Monitor
+  // commita a correção na branch de integração; o dispatch com o
+  // `requested_commit` obsoleto recompunha a cadeia ANTIGA e o gate reprovava
+  // de novo no mesmo motivo (loop — família dos incidentes 979/1011).
+  describe('refresh do requested_commit obsoleto (fast-forward da integração)', () => {
+    function gitStub(handlers: { revParse?: { ok: boolean; stdout: string }; ancestor?: boolean }) {
+      const calls: Array<{ args: string[]; cwd: string }> = []
+      const runner = async (args: string[], cwd: string) => {
+        calls.push({ args, cwd })
+        if (args[0] === 'rev-parse') return handlers.revParse ?? { ok: false, stdout: '' }
+        if (args[0] === 'merge-base') return handlers.ancestor === false ? { ok: false, stdout: '' } : { ok: true, stdout: '' }
+        return { ok: false, stdout: '' }
+      }
+      return { runner, calls }
+    }
+
+    it('HEAD da integração descendente do commit obsoleto → atualiza o pedido e despacha o HEAD novo', async () => {
+      const git = gitStub({ revParse: { ok: true, stdout: 'fff999aaa\n' } })
+      const env = fakeEnvironment({
+        git: git.runner,
+        failedSeed: { repo_path: '/repo/biblioteca-global', base_branch: 'base-desenvolvimento', requested_commit: 'abc1234', batch_id: null },
+        // Após o UPDATE, o SELECT de grupos já enxerga o commit novo.
+        pendingGroups: [{ repo_path: '/repo/biblioteca-global', base_branch: 'base-desenvolvimento', requested_commit: 'fff999aaa' }],
+      })
+
+      await env.consumer.handle(unblockedMessage({ blockReason: 'pre_deploy_gate_failed' }))
+
+      expect(git.calls[0].args).toEqual(['rev-parse', '--verify', 'motor-v3-work/integration-task-p1-886^{commit}'])
+      expect(git.calls[1].args).toEqual(['merge-base', '--is-ancestor', 'abc1234', 'fff999aaa'])
+      const refresh = env.queries.find(q => q.sql.includes('SET requested_commit=?'))
+      expect(refresh).toBeDefined()
+      expect(refresh!.via).toBe('connection')
+      expect(refresh!.params).toEqual(['fff999aaa', 886, 'abc1234'])
+      const dispatch = JSON.parse(env.outbox('DEPLOY_BATCH_DISPATCH_REQUESTED')[0].params[5] as string)
+      expect(dispatch.expectedCommit).toBe('fff999aaa')
+      const refreshed = env.events.find(e => e.evento === 'task_resume_deploy_commit_refreshed')
+      expect(refreshed!.payload).toMatchObject({ staleCommit: 'abc1234', headCommit: 'fff999aaa' })
+    })
+
+    it('branch divergente (não descendente) → mantém o commit gravado', async () => {
+      const git = gitStub({ revParse: { ok: true, stdout: 'fff999aaa\n' }, ancestor: false })
+      const env = fakeEnvironment({
+        git: git.runner,
+        failedSeed: { repo_path: '/repo/biblioteca-global', base_branch: 'base-desenvolvimento', requested_commit: 'abc1234', batch_id: null },
+        pendingGroups: [{ repo_path: '/repo/biblioteca-global', base_branch: 'base-desenvolvimento', requested_commit: 'abc1234' }],
+      })
+
+      await env.consumer.handle(unblockedMessage({ blockReason: 'pre_deploy_gate_failed' }))
+
+      expect(git.calls[1].args).toEqual(['merge-base', '--is-ancestor', 'abc1234', 'fff999aaa'])
+      expect(env.queries.find(q => q.sql.includes('SET requested_commit=?'))).toBeUndefined()
+      const dispatch = JSON.parse(env.outbox('DEPLOY_BATCH_DISPATCH_REQUESTED')[0].params[5] as string)
+      expect(dispatch.expectedCommit).toBe('abc1234')
+    })
+
+    it('HEAD igual ao commit gravado → não consulta ancestralidade nem atualiza', async () => {
+      const git = gitStub({ revParse: { ok: true, stdout: 'abc1234\n' } })
+      const env = fakeEnvironment({
+        git: git.runner,
+        failedSeed: { repo_path: '/repo/biblioteca-global', base_branch: 'base-desenvolvimento', requested_commit: 'abc1234', batch_id: null },
+        pendingGroups: [{ repo_path: '/repo/biblioteca-global', base_branch: 'base-desenvolvimento', requested_commit: 'abc1234' }],
+      })
+
+      await env.consumer.handle(unblockedMessage({ blockReason: 'pre_deploy_gate_failed' }))
+
+      expect(git.calls).toHaveLength(1)
+      expect(env.queries.find(q => q.sql.includes('SET requested_commit=?'))).toBeUndefined()
+    })
+
+    it('falha de Git (branch/repo inacessível) → degrada para o comportamento histórico', async () => {
+      const git = gitStub({ revParse: { ok: false, stdout: '' } })
+      const env = fakeEnvironment({
+        git: git.runner,
+        failedSeed: { repo_path: '/repo/biblioteca-global', base_branch: 'base-desenvolvimento', requested_commit: 'abc1234', batch_id: null },
+        pendingGroups: [{ repo_path: '/repo/biblioteca-global', base_branch: 'base-desenvolvimento', requested_commit: 'abc1234' }],
+      })
+
+      await env.consumer.handle(unblockedMessage({ blockReason: 'pre_deploy_gate_failed' }))
+
+      expect(env.queries.find(q => q.sql.includes('SET requested_commit=?'))).toBeUndefined()
+      expect(env.outbox('DEPLOY_BATCH_DISPATCH_REQUESTED')).toHaveLength(1)
+    })
   })
 })
