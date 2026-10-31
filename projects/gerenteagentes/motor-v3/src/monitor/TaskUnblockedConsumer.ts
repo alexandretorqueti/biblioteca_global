@@ -1,10 +1,35 @@
+import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import { existsSync } from 'node:fs'
+import { promisify } from 'node:util'
 import type { Pool, PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
 import type { QueueMessage } from '../queue/index.js'
 import { createQueueMessage, insertOutboxMessage } from '../queue/index.js'
 import type { TaskEventSink } from '../coordinator/TaskEventRecorder.js'
 import { TASK_UNBLOCKED_EVENT_TYPE, type TaskUnblockedPayload } from './TaskBlockedEvent.js'
 import { SUBTASK_VERIFICATION_REQUESTED } from '../execution/SubtaskVerificationConsumer.js'
+import { mapHostRepoPathToContainer } from '../execution/GitWorktreePreparer.js'
+
+const execFileAsync = promisify(execFile)
+
+/**
+ * Runner Git mínimo (args, cwd) → resultado. Injetável para testes; a
+ * implementação padrão degrada para `{ ok: false }` em qualquer falha
+ * (branch inexistente, repo inacessível, não-ancestralidade), preservando o
+ * comportamento histórico de manter o `requested_commit` gravado.
+ */
+export interface GitRunner {
+  (args: string[], cwd: string): Promise<{ ok: boolean; stdout: string }>
+}
+
+const defaultGitRunner: GitRunner = async (args, cwd) => {
+  try {
+    const { stdout } = await execFileAsync('git', args, { cwd, encoding: 'utf8' })
+    return { ok: true, stdout }
+  } catch {
+    return { ok: false, stdout: '' }
+  }
+}
 
 /** Motivos de bloqueio cuja retomada é refazer o deploy da tarefa. */
 const DEPLOY_BLOCK_REASONS = new Set([
@@ -68,6 +93,7 @@ export class TaskUnblockedConsumer {
   constructor(
     private readonly pool: Pool,
     private readonly events: TaskEventSink,
+    private readonly git: GitRunner = defaultGitRunner,
   ) {}
 
   async handle(message: QueueMessage): Promise<void> {
@@ -337,6 +363,49 @@ export class TaskUnblockedConsumer {
   }
 
   /**
+   * Atualiza o `requested_commit` do pedido reativado para o HEAD atual da
+   * branch de integração quando ele avançou em fast-forward (descendente do
+   * commit obsoleto) — o padrão do Monitor é commitar a correção diretamente
+   * na branch de integração após a falha do gate pre_deploy.
+   *
+   * Branch divergente (rebase/força) ou qualquer falha de Git mantém o commit
+   * gravado (comportamento histórico): conflitos de composição continuam
+   * tratados pelo fluxo `deploy_member_conflict`. A atualização ocorre na
+   * MESMA transação da reativação failed→pending, então o dispatch seguinte
+   * (SELECT de grupos logo após) já enxerga o commit novo.
+   */
+  private async refreshStaleRequestedCommit(
+    connection: PoolConnection,
+    databaseTaskId: number,
+    taskId: string,
+    repoPath: string | null,
+    staleCommit: string | null,
+  ): Promise<void> {
+    if (!repoPath || !staleCommit || !/^[a-f0-9]{7,64}$/i.test(staleCommit)) return
+    const safeTask = String(taskId).replace(/[^a-zA-Z0-9._-]/g, '-')
+    const branch = `motor-v3-work/integration-${safeTask}`
+    const mappedRepoPath = mapHostRepoPathToContainer(repoPath)
+    const cwd = existsSync(repoPath)
+      ? repoPath
+      : mappedRepoPath && existsSync(mappedRepoPath)
+        ? mappedRepoPath
+        : repoPath
+    const head = await this.git(['rev-parse', '--verify', `${branch}^{commit}`], cwd)
+    const headCommit = head.stdout.trim()
+    if (!head.ok || !/^[a-f0-9]{7,64}$/i.test(headCommit) || headCommit === staleCommit) return
+    const ancestor = await this.git(['merge-base', '--is-ancestor', staleCommit, headCommit], cwd)
+    if (!ancestor.ok) return
+    await connection.query<ResultSetHeader>(
+      `UPDATE deploy_requests SET requested_commit=?, updated_at=NOW()
+        WHERE tarefa_id=? AND status='pending' AND requested_commit=?`,
+      [headCommit, databaseTaskId, staleCommit],
+    )
+    await this.safeRecord(String(taskId), 'task_resume_deploy_commit_refreshed', {
+      staleCommit, headCommit, branch,
+    })
+  }
+
+  /**
    * Conflito de membro invalida o SHA persistido no pedido anterior: a branch
    * de integração normalmente é rebaseada durante a resolução. Um novo
    * DEPLOY_REQUESTED faz o fluxo normal reler a branch de integração — mas
@@ -457,6 +526,16 @@ export class TaskUnblockedConsumer {
         await connection.commit()
         return 0
       }
+      // Fast-forward do `requested_commit` obsoleto ANTES de ler os grupos de
+      // dispatch abaixo: se o Monitor commitou a correção na branch de
+      // integração após a falha do gate, o dispatch precisa carregar o HEAD
+      // atual — senão o compose recompõe a cadeia antiga e o gate reprova de
+      // novo no mesmo motivo, em loop (família dos incidentes task-p2-979/
+      // task-p2-1011; caso task-p2-1047, migration-watermark).
+      await this.refreshStaleRequestedCommit(
+        connection, databaseTaskId, source.taskId,
+        seedRows[0]?.repo_path ?? null, seedRows[0]?.requested_commit ?? null,
+      )
       if (batchId) {
         // Nenhum gate/dispatch órfão do lote pode reacender a execução antiga.
         // Eventos históricos e o diagnóstico do lote não são removidos.
