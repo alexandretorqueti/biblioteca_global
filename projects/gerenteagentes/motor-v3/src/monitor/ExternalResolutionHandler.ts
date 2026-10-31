@@ -317,20 +317,39 @@ export class ExternalResolutionHandler {
         requeued = true
       }
 
-      // 4) TASK_UNBLOCKED para o fluxo de auditoria/retomada do monitor
-      if (blockersResolved > 0) {
-        const unblocked = createTaskUnblockedMessage({
-          taskId,
-          executionId: `external-resolution-${taskId}-${Date.now()}`,
-          payload: {
-            blockId: blockIds && blockIds.length > 0 ? blockIds[0]! : 0,
-            blockReason: 'external_resolution',
-            databaseTaskId,
-            resolvedBy: 'usuario',
-          },
-        })
-        await insertOutboxMessage(connection, unblocked)
-        messageIds.push(unblocked.messageId)
+      // 4) TASK_UNBLOCKED para o fluxo de auditoria/retomada do monitor.
+      // Bug do noop (incidente 1047, 2026-10-31): o payload usava
+      // blockReason='external_resolution', mas o TaskUnblockedConsumer
+      // despacha a retomada pelo motivo ORIGINAL do bloqueio
+      // (subtask_terminal_failure → reabre subtarefa failed; deploy_* →
+      // re-enfileira deploy; etc.). Com o motivo perdido, a retomada caía
+      // no ramo noop e a tarefa seguia presa. Agora emite UMA mensagem por
+      // motivo distinto dos bloqueios selecionados, com o blockId e o
+      // resolvedBy reais. Emitimos mesmo quando blockersResolved=0 em
+      // chamada repetida com blockIds explícitos (retomada idempotente:
+      // os ramos do consumidor são condicionais — UPDATE ... WHERE
+      // status='failed' não duplica trabalho).
+      if (selectedBlocks.length > 0) {
+        const seenReasons = new Map<string, number>()
+        for (const block of selectedBlocks) {
+          const originalReason = String(block.block_reason ?? '') || 'external_resolution'
+          if (!seenReasons.has(originalReason)) seenReasons.set(originalReason, Number(block.id))
+        }
+        for (const [originalReason, blockId] of seenReasons) {
+          const unblocked = createTaskUnblockedMessage({
+            taskId,
+            executionId: `external-resolution-${taskId}-${blockId}-${Date.now()}`,
+            payload: {
+              blockId,
+              blockReason: originalReason,
+              databaseTaskId,
+              resolvedBy: 'usuario',
+              verdictOrigin: `external_resolution:${resolvedBy}`.slice(0, 255),
+            },
+          })
+          await insertOutboxMessage(connection, unblocked)
+          messageIds.push(unblocked.messageId)
+        }
       }
 
       // 5) Auditoria na trilha da tarefa (mesma transação)
