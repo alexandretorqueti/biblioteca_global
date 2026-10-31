@@ -40,6 +40,19 @@ export type { RealtimeOutboxDispatcherConfig } from '../realtime/RealtimeOutboxD
 export { AnalysisClaimReconciler, type OrphanAnalysisClaim } from './AnalysisClaimReconciler.js'
 export { AnalysisSessionRecoveryReconciler, type AnalysisSessionRecoveryConfig, type OrphanSessionRow } from './AnalysisSessionRecoveryReconciler.js'
 export { TaskCancelConsumer, CANCEL_COMMAND_CODE, CANCEL_ACTION_CODE } from './TaskCancelConsumer.js'
+export { TaskEnqueuedConsumer, ENQUEUED_COMMAND_TYPE } from './TaskEnqueuedConsumer.js'
+export {
+  inspectResumeTerminalState,
+  deriveResumeRejection,
+  buildAlreadyTerminalResumeResponse,
+  buildResumeRejectionChatText,
+  resumeRejectionMarker,
+  MySqlResumeRejectionNotifier,
+  type ResumeRejectionNotifier,
+  type ResumeRejectionPool,
+  type ResumeTerminalState,
+  type ResumeTerminalGuardQueryable,
+} from './ResumeTerminalGuard.js'
 export { inspectCancelTerminalState, buildAlreadyTerminalCancelResponse, type CancelTerminalState, type CancelTerminalGuardQueryable } from './CancelTerminalGuard.js'
 export { MySqlTaskEventRecorder, type TaskEventSink } from './TaskEventRecorder.js'
 export { MySqlAnalysisFailureBlocker, type AnalysisFailureSink, type AnalysisFailureInfo } from './AnalysisFailureBlocker.js'

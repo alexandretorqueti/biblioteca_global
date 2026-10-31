@@ -35,7 +35,7 @@ import { MotorActivityGate, OutboxPublisher, TerminalFailureRouter, createQueueM
 import { SUBTASK_EXECUTION_REQUESTED } from './execution/SubtaskExecutionConsumer.js'
 import { SUBTASK_VERIFICATION_REQUESTED } from './execution/SubtaskVerificationConsumer.js'
 import type { QueueMessage } from './queue/QueueMessage.js'
-import { TaskCoordinator, MySqlTaskCoordinatorRepository, AnalysisClaimReconciler, AnalysisSessionRecoveryReconciler, TaskCancelConsumer, MySqlTaskEventRecorder, MySqlAnalysisFailureBlocker, SanitizeSessionService, RealtimeMutationPublisher, RealtimeOutboxDispatcher, inspectCancelTerminalState, buildAlreadyTerminalCancelResponse } from './coordinator/index.js'
+import { TaskCoordinator, MySqlTaskCoordinatorRepository, AnalysisClaimReconciler, AnalysisSessionRecoveryReconciler, TaskCancelConsumer, TaskEnqueuedConsumer, MySqlTaskEventRecorder, MySqlAnalysisFailureBlocker, MySqlResumeRejectionNotifier, SanitizeSessionService, RealtimeMutationPublisher, RealtimeOutboxDispatcher, inspectCancelTerminalState, buildAlreadyTerminalCancelResponse, inspectResumeTerminalState, buildAlreadyTerminalResumeResponse } from './coordinator/index.js'
 import { ConsoleAnalystRunner } from './analysis/ConsoleAnalystRunner.js'
 import { ConsoleHttpApi } from './analysis/ConsoleHttpApi.js'
 import { ContractArtifactStore } from './analysis/ContractArtifactStore.js'
@@ -100,6 +100,9 @@ let testGateJobReconciler: TestGateJobReconciler | null = null
 let deployConsumer: DeployConsumer | null = null
 let deployOrphanBatchReconcilerTimer: NodeJS.Timeout | null = null
 let cancelConsumer: TaskCancelConsumer | null = null
+// TASK_ENQUEUED tem consumo real (setup de projeto da Biblioteca) e não pode
+// ser despachado sem consumidor (task-p2-1047, subtarefa 3).
+let taskEnqueuedConsumer: TaskEnqueuedConsumer | null = null
 let analysisSessionRecovery: AnalysisSessionRecoveryReconciler | null = null
 let developmentSessionRecovery: DevelopmentSessionRecoveryReconciler | null = null
 let taskAdjustmentConsumer: TaskAdjustmentConsumer | null = null
@@ -402,6 +405,10 @@ async function start() {
       operationLogger,
       taskEvents,
       governedFailureHandler,
+      // Resume de tarefa terminal (incluindo closed = completed sem subtarefas)
+      // gera rejeição explícita: evento resume_rejected_terminal + chat legível
+      // (task-p2-1047, subtarefa 3; nunca no-op silencioso).
+      resumeRejectionNotifier: new MySqlResumeRejectionNotifier(pool),
       analysisFailure: new MySqlAnalysisFailureBlocker(pool),
       maxAnalysisAttempts: Number(process.env.MOTOR_QUEUE_MAX_ATTEMPTS || 3),
       deployLock: deployRepository,
@@ -689,6 +696,7 @@ async function start() {
     })
 
     cancelConsumer = new TaskCancelConsumer(pool, operationLogger, new MySqlCommandPolicyRepository(pool), taskEvents)
+    taskEnqueuedConsumer = new TaskEnqueuedConsumer(pool, operationLogger, taskEvents, mainQueue)
     taskAdjustmentConsumer = new TaskAdjustmentConsumer(pool, analyst, operationLogger)
     // PostDeployVerifier (tarefa 976): verificação semântica pós-deploy.
     // Instanciado com WorkerLauncher dedicado (timeout próprio, 15 min default)
@@ -720,6 +728,7 @@ async function start() {
     queueConsumer = new QueueConsumer(transport, async message => {
       await coordinator.handle(message)
       await cancelConsumer?.handle(message)
+      await taskEnqueuedConsumer?.handle(message)
       await taskAdjustmentConsumer?.handle(message)
       await developmentConsumer?.handle(message)
       await subtaskExecutionConsumer?.handle(message)
@@ -1158,6 +1167,11 @@ async function start() {
       }
       
       // POST /api/motor/task/:id/enqueue
+      // TASK_ENQUEUED tem consumidor registrado no v3 (TaskEnqueuedConsumer,
+      // task-p2-1047 subtarefa 3): comando auditado e convertido para o
+      // caminho canônico TASK_RESUME_REQUESTED via outbox. Uso real: fluxo de
+      // setup de projeto da Biblioteca Global. Nenhuma mensagem de comando é
+      // despachada sem consumidor.
       if (req.method === 'POST' && taskId && taskAction === 'enqueue') {
         let body = ''
         req.on('data', chunk => body += chunk)
@@ -1192,7 +1206,23 @@ async function start() {
       }
       
       // POST /api/motor/task/:id/resume
+      // Guarda de tarefa terminal (task-p2-1047, subtarefa 3 — padrão do guarda
+      // de cancel da tarefa 1029): resume de tarefa terminal (em especial
+      // completed + 0 subtarefas = status derivado `closed`, encerrada por
+      // veredito da análise) NÃO recebe comando — era no-op silencioso com
+      // `{ok:true}` enganoso. A rejeição é explícita: resposta idempotente
+      // `alreadyTerminal` + evento `resume_rejected_terminal` em tarefa_eventos
+      // + mensagem legível no chat da tarefa. O TaskCoordinator cobre o mesmo
+      // caso no caminho durável (mensagem já despachada antes da terminalidade).
       if (req.method === 'POST' && taskId && taskAction === 'resume') {
+        const terminalState = await inspectResumeTerminalState(pool, taskId)
+        if (terminalState.found && terminalState.terminalStatus) {
+          console.log(`[Motor v3] Task ${taskId} resume rejected: already terminal (${terminalState.terminalStatus}, subtasks=${terminalState.subtaskCount})`)
+          await new MySqlResumeRejectionNotifier(pool).notifyResumeRejected(taskId, terminalState.terminalStatus, terminalState.subtaskCount)
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify(buildAlreadyTerminalResumeResponse(taskId, terminalState.terminalStatus, terminalState.subtaskCount)))
+          return
+        }
         console.log(`[Motor v3] Task ${taskId} resume requested`)
         await dispatchCommand('TASK_RESUME_REQUESTED', taskId, taskId, {})
         res.writeHead(200, { 'Content-Type': 'application/json' })
