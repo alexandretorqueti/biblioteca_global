@@ -21,6 +21,17 @@ export {
   type ClarificationResumeInput,
 } from './ClarificationCheckpoints.js'
 export { MySqlTaskCoordinatorRepository } from './MySqlTaskCoordinatorRepository.js'
+export {
+  applyVerificationRouting,
+  buildRoutedTaskDescription,
+  buildRoutedTaskTitle,
+  buildVerificationChatText,
+  insertVerificationChatMessage,
+  routedTaskExternalId,
+  verificationChatMarker,
+  type VerificationRoutingInput,
+  type VerificationRoutingResult,
+} from './VerificationRouting.js'
 export { RealtimeMutationPublisher, type RealtimeMutationPublisherConfig, type DeletedTaskRealtimeIdentity } from '../realtime/RealtimeMutationPublisher.js'
 export { RealtimeMutationBoundary } from '../realtime/RealtimeMutationBoundary.js'
 export type { RealtimeEventType, RealtimeOutboxEvent, RealtimeMutation, RealtimeMutationContext } from '../realtime/RealtimeMutationBoundary.js'
