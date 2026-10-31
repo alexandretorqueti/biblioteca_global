@@ -139,6 +139,18 @@ invariante por construção.
   limitação de prepared statements — precisa do mesmo tratamento de boot se algum dia
   for aplicada).
 - `PUMP_TRIGGERED` não tem consumidor no motor-v3 (dead letter).
+- ~~`TASK_ENQUEUED` sem consumidor no v3~~ — **resolvido (task-p2-1047,
+  31/10/2026):** `TaskEnqueuedConsumer` registrado (ponte auditada para
+  `TASK_RESUME_REQUESTED`); ver
+  [SEMANTICA-CLOSED-E-VEREDITO-CROSS-PROJECT.md](./SEMANTICA-CLOSED-E-VEREDITO-CROSS-PROJECT.md) § 4.
+
+## Relacionados
+
+- [SEMANTICA-CLOSED-E-VEREDITO-CROSS-PROJECT.md](./SEMANTICA-CLOSED-E-VEREDITO-CROSS-PROJECT.md)
+  (task-p2-1047): semântica da estação terminal `closed` (`completed` + 0
+  subtarefas, sem deploy), fluxo de veredito cross-project do analista
+  (contrato v13, campo `routing`), rejeição explícita de resume em tarefa
+  terminal e consumidor `TASK_ENQUEUED`.
 
 ## Testes
 
