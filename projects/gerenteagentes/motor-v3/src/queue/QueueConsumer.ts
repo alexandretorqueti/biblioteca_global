@@ -1,7 +1,8 @@
 import type { QueueDelivery, QueueMessage } from './QueueMessage.js'
 import type { QueueTransport } from './QueueTransport.js'
 import { MessageProcessingState } from './MessageProcessingState.js'
-import type { Pool } from 'mysql2/promise'
+import { classifyMotorErrorDetail } from './ErrorTaxonomy.js'
+import type { Pool, RowDataPacket } from 'mysql2/promise'
 import { randomUUID } from 'node:crypto'
 import type { MotorActivityGate } from './MotorActivityGate.js'
 import type { GovernedFailureHandler } from '../governance/GovernedFailureHandler.js'
@@ -123,6 +124,15 @@ export class QueueConsumer {
       console.error(`[QueueConsumer] falha ao processar ${message.messageId}:`, error)
       await this.processingState.markFailed(message.messageId, (error as Error).message)
 
+      // Taxonomia (melhoria #4, princípio "bloqueio é exceção"): erro de
+      // INFRAESTRUTURA ou CAPACIDADE não é falha do trabalho — adia a
+      // mensagem com backoff sem consumir attempt e sem caminho terminal.
+      const classification = classifyMotorErrorDetail(error)
+      if (classification.kind !== 'work') {
+        await this.deferTransientFailure(delivery, classification.kind, classification.evidence)
+        return
+      }
+
       // Se atingiu o limite de tentativas, enviar para DLQ
       if (attempt >= this.config.maxAttempts) {
         await this.routeGovernedFailure(message, 'queue_max_attempts', 'QUEUE_DLQ', 'max-attempts-exceeded')
@@ -133,6 +143,63 @@ export class QueueConsumer {
         await this.processingState.incrementAttempt(message.messageId)
         this.transport.nack(delivery, false)
       }
+    }
+  }
+
+  /**
+   * Adiamento transparente para erros transitórios (infra/capacity).
+   *
+   * - NÃO consome attempt (a linha do outbox preserva o attempt original);
+   * - backoff exponencial via `defer_count` (5s·2^n, teto 300s) — mesmo
+   *   padrão do adiamento por motor inativo;
+   * - após `MOTOR_TRANSIENT_MAX_DEFERS` (padrão 40) adiamentos consecutivos
+   *   a mensagem vai para a DLQ com reason próprio — SEM TerminalFailureHandler,
+   *   portanto SEM bloqueio. A superfície para o operador é o DlqReconciler +
+   *   alerta de DLQ (melhoria #3), nunca a estação de bloqueios.
+   * - se o próprio adiamento falhar (ex.: banco fora), nack devolve ao broker
+   *   para redelivery (o broker é o último recurso durável).
+   */
+  private async deferTransientFailure(delivery: QueueDelivery, kind: 'infra' | 'capacity', evidence?: string): Promise<void> {
+    const message = delivery.message
+    const maxDefers = Number(process.env.MOTOR_TRANSIENT_MAX_DEFERS || 40)
+    const exhaustedReason = `${kind}-retry-exhausted`
+    try {
+      const [rows] = await this.pool.query<Array<RowDataPacket & { defer_count: number }>>(
+        'SELECT defer_count FROM motor_outbox WHERE message_id = ?',
+        [message.messageId],
+      )
+      const deferCount = Number(rows[0]?.defer_count ?? 0)
+      if (Number.isFinite(maxDefers) && maxDefers > 0 && deferCount >= maxDefers) {
+        console.error(
+          `[QueueConsumer] ${message.messageId}: erro ${kind} persistente após ${deferCount} adiamentos (evidência: ${evidence ?? 'n/d'}); DLQ SEM bloqueio`,
+        )
+        await this.routeGovernedFailure(message, `queue_${kind}_exhausted`, 'QUEUE_DLQ', exhaustedReason)
+        await this.transport.deadLetter(delivery, exhaustedReason)
+        return
+      }
+      await this.pool.query(
+        `INSERT INTO motor_outbox
+          (message_id,type,destination_queue,task_id,execution_id,payload_json,timestamp,
+           correlation_id,causation_id,status,attempt,defer_count,last_error)
+         VALUES (?,?,?,?,?,?,DATE_ADD(NOW(), INTERVAL 5 SECOND),?,?,'pending',?,1,?)
+         ON DUPLICATE KEY UPDATE
+           timestamp = DATE_ADD(NOW(), INTERVAL LEAST(POW(2, defer_count) * 5, 300) SECOND),
+           status = 'pending',
+           published_at = NULL,
+           defer_count = defer_count + 1,
+           last_error = VALUES(last_error),
+           updated_at = NOW()`,
+        [message.messageId, message.type, this.config.queue, message.taskId, message.executionId,
+          JSON.stringify(message.payload), message.correlationId ?? message.messageId, message.causationId ?? message.messageId,
+          Math.max(0, (message.attempt ?? 1) - 1), `Erro ${kind} (adiado; não consome tentativa): ${evidence ?? ''}`.slice(0, 500)],
+      )
+      console.warn(
+        `[QueueConsumer] ${message.messageId} adiado com backoff por erro ${kind} (attempt preservado; evidência: ${evidence ?? 'n/d'})`,
+      )
+      this.transport.ack(delivery)
+    } catch (deferError) {
+      console.error(`[QueueConsumer] falha ao adiar ${message.messageId} (${kind}); devolvendo ao broker:`, deferError)
+      this.transport.nack(delivery, false)
     }
   }
 

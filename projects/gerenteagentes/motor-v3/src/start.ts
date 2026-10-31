@@ -31,7 +31,7 @@ import { GovernedFailureHandler } from './governance/GovernedFailureHandler.js'
 import { createGovernanceFlagResolver } from './governance/RolloutPolicy.js'
 import { QueueConsumer } from './queue/QueueConsumer.js'
 import { RabbitMqTransport, normalizeRabbitMqPrefetch } from './queue/RabbitMqTransport.js'
-import { MotorActivityGate, OutboxPublisher, TerminalFailureRouter, createQueueMessage } from './queue/index.js'
+import { MotorActivityGate, OutboxPublisher, TerminalFailureRouter, createQueueMessage, DlqReconciler, TelegramDlqAlertSender } from './queue/index.js'
 import { SUBTASK_EXECUTION_REQUESTED } from './execution/SubtaskExecutionConsumer.js'
 import { SUBTASK_VERIFICATION_REQUESTED } from './execution/SubtaskVerificationConsumer.js'
 import type { QueueMessage } from './queue/QueueMessage.js'
@@ -51,7 +51,7 @@ import { DeployConsumer } from './deploy/DeployConsumer.js'
 import { DeployRepository } from './deploy/DeployRepository.js'
 import { RemoteBlueGreenDeployer } from './deploy/RemoteBlueGreenDeployer.js'
 import { BaselinePreflightRecovery, TestGateConsumer, TestGateJobReconciler, TestGateOrchestrator, TestGateService, TestRecoveryConsumer, WorkspaceEnvironmentPreparer } from './testing/index.js'
-import { TaskChatHumanNotifier, ExternalResolutionError, ExternalResolutionHandler, MonitorBlockerReconciler, MonitorPromptResolver, MonitorResolutionConsumer, PostDeployPromptResolver, PostDeployVerifier, TaskUnblockedConsumer, createTaskBlockedMessage, loadActiveBlocker, ActiveExecutionSweeper } from './monitor/index.js'
+import { TaskChatHumanNotifier, ExternalResolutionError, ExternalResolutionHandler, MonitorBlockerReconciler, MonitorMissionRecoveryReconciler, MonitorPromptResolver, MonitorResolutionConsumer, PostDeployPromptResolver, PostDeployVerifier, TaskUnblockedConsumer, createTaskBlockedMessage, loadActiveBlocker, ActiveExecutionSweeper } from './monitor/index.js'
 import { TaskAdjustmentConsumer, TASK_ADJUSTMENT_REQUESTED } from './adjustment/index.js'
 import { ensureCompletionTrigger } from './db/ensureTriggers.js'
 import { bootstrapMotorV3Catalog } from './db/bootstrap.js'
@@ -80,6 +80,7 @@ let bus: MessageBus | null = null
 let queueConsumer: QueueConsumer | null = null
 /** Profundidade recente das DLQs (varredura a cada 5 min); exposta no /api/motor/stats. */
 let dlqDepths: Record<string, number | null> = {}
+let dlqReconciler: DlqReconciler | null = null
 let outboxPublisher: OutboxPublisher | null = null
 let monitorOutbox: OutboxPublisher | null = null
 let realtimeOutboxDispatcher: RealtimeOutboxDispatcher | null = null
@@ -90,6 +91,7 @@ let testRecoveryConsumer: TestRecoveryConsumer | null = null
 let monitorResolutionConsumer: MonitorResolutionConsumer | null = null
 let monitorQueueConsumer: QueueConsumer | null = null
 let monitorBlockerReconciler: MonitorBlockerReconciler | null = null
+let monitorMissionRecoveryReconciler: MonitorMissionRecoveryReconciler | null = null
 let taskUnblockedConsumer: TaskUnblockedConsumer | null = null
 let testGateQueueConsumer: QueueConsumer | null = null
 let testGateOutboxPublisher: OutboxPublisher | null = null
@@ -668,6 +670,20 @@ async function start() {
       destinationQueue: monitorQueue,
       intervalMs: Number(process.env.MOTOR_MONITOR_BLOCKER_RECONCILIATION_INTERVAL_MS || 30000),
     })
+    // Recuperação de missões órfãs do Monitor (incidente 2026-10-29): o
+    // consumidor faz ack antes de executar e o container pode morrer no meio
+    // (troca blue-green) — a correção chega ao git, mas o bloqueio nunca é
+    // fechado. Este reconciliador reemite o TASK_BLOCKED de missões que
+    // morreram sem evento terminal, com escalada humana após N tentativas.
+    monitorMissionRecoveryReconciler = new MonitorMissionRecoveryReconciler(pool, {
+      enqueue: message => monitorOutbox!.enqueue(message),
+      destinationQueue: monitorQueue,
+      events: taskEvents,
+      notifier: new TaskChatHumanNotifier(pool),
+      intervalMs: Number(process.env.MOTOR_MONITOR_MISSION_RECOVERY_INTERVAL_MS || 300000),
+      graceMinutes: Number(process.env.MOTOR_MONITOR_MISSION_GRACE_MINUTES || 5),
+      maxMissionsPerBlock: Number(process.env.MOTOR_MONITOR_MISSION_MAX_PER_BLOCK || 3),
+    })
 
     cancelConsumer = new TaskCancelConsumer(pool, operationLogger, new MySqlCommandPolicyRepository(pool), taskEvents)
     taskAdjustmentConsumer = new TaskAdjustmentConsumer(pool, analyst, operationLogger)
@@ -786,6 +802,8 @@ async function start() {
     await monitorQueueConsumer.start()
     await monitorBlockerReconciler.reconcile()
     monitorBlockerReconciler.start()
+    await monitorMissionRecoveryReconciler.reconcile()
+    monitorMissionRecoveryReconciler.start()
     // Recuperação única de fatos duráveis após boot. O fluxo normal avança
     // por mensagens/eventos; o timer abaixo só reconcilia batches órfãos.
     await deployConsumer.recoverPendingWork()
@@ -803,6 +821,24 @@ async function start() {
       { name: `${gateQueue}.dlq`, probe: gateTransport },
       { name: `${monitorQueue}.dlq`, probe: monitorTransport },
     ]
+    // DlqReconciler (incidentes 2026-09-25/2026-10-29): DLQ não é mais
+    // buraco negro — re-enfileira recuperáveis, arquiva obsoletas em
+    // motor_dlq_archive e alerta (Telegram quando configurado). Compartilha
+    // os mesmos alvos da observabilidade de profundidade.
+    dlqReconciler = new DlqReconciler({
+      pool,
+      targets: [
+        { dlq: process.env.MOTOR_RABBITMQ_DLQ || 'motor.commands.dlq', origin: mainQueue, family: 'commands', transport },
+        { dlq: `${gateQueue}.dlq`, origin: gateQueue, family: 'test-gates', transport: gateTransport },
+        { dlq: `${monitorQueue}.dlq`, origin: monitorQueue, family: 'monitor', transport: monitorTransport },
+      ],
+      intervalMs: Number(process.env.MOTOR_DLQ_RECONCILER_INTERVAL_MS || 300000),
+      maxPerCyclePerQueue: Number(process.env.MOTOR_DLQ_RECONCILER_MAX_PER_CYCLE || 50),
+      maxRequeuesPerMessage: Number(process.env.MOTOR_DLQ_RECONCILER_MAX_REQUEUES || 2),
+      alertCooldownMinutes: Number(process.env.MOTOR_DLQ_ALERT_COOLDOWN_MINUTES || 60),
+      alertSender: new TelegramDlqAlertSender(process.env.TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_DLQ_CHAT_ID),
+    })
+    dlqReconciler.start()
     let lastDlqDepths: Record<string, number | null> = {}
     deployOrphanBatchReconcilerTimer = setInterval(() => {
       if (deployOrphanBatchReconcilerRunning || !deployConsumer) return
@@ -1469,6 +1505,8 @@ async function shutdown() {
   if (monitorOutbox) await monitorOutbox.stop()
   realtimeOutboxDispatcher?.stop()
   monitorBlockerReconciler?.stop()
+  monitorMissionRecoveryReconciler?.stop()
+  dlqReconciler?.stop()
   testGateJobReconciler?.stop()
   if (testGateOutboxPublisher) await testGateOutboxPublisher.stop()
 

@@ -8,10 +8,29 @@ export {
   MIN_RABBITMQ_PREFETCH,
   normalizeRabbitMqPrefetch,
   type RabbitMqTransportConfig,
+  type DeadLetterVerdict,
+  type DeadLetterVisit,
 } from './RabbitMqTransport.js'
+export {
+  DlqReconciler,
+  TelegramDlqAlertSender,
+  type DlqAlertSender,
+  type DlqCycleSummary,
+  type DlqFamily,
+  type DlqReconcilerConfig,
+  type DlqTarget,
+  type DlqTransport,
+} from './DlqReconciler.js'
 export { OutboxPublisher } from './OutboxPublisher.js'
 export { MotorActivityGate } from './MotorActivityGate.js'
 export { insertOutboxMessage } from './outboxInsert.js'
+export {
+  classifyMotorError,
+  classifyMotorErrorDetail,
+  isTransientMotorError,
+  type MotorErrorClassification,
+  type MotorErrorKind,
+} from './ErrorTaxonomy.js'
 export { createQueueMessage, type QueueDelivery, type QueueMessage, type QueuePublishOptions } from './QueueMessage.js'
 export type { QueueTransport, QueueDeliveryHandler } from './QueueTransport.js'
 export {

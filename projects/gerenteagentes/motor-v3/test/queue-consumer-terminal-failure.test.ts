@@ -62,7 +62,7 @@ describe('QueueConsumer — TerminalFailureHandler integration', () => {
 
     const consumer = new QueueConsumer(
       transport,
-      async () => { throw new Error('HTTP 504: Gateway Timeout') },
+      async () => { throw new Error('verificação falhou: schema incompatível (work error)') },
       { queue: 'motor.commands', maxAttempts: 3 },
       pool,
       undefined,
@@ -98,7 +98,7 @@ describe('QueueConsumer — TerminalFailureHandler integration', () => {
 
     const consumer = new QueueConsumer(
       transport,
-      async () => { throw new Error('HTTP 504: Gateway Timeout') },
+      async () => { throw new Error('verificação falhou: schema incompatível (work error)') },
       { queue: 'motor.commands', maxAttempts: 3 },
       pool,
       undefined,

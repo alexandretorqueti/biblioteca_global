@@ -44,7 +44,7 @@ interface ChatMessage { id: number; tarefaId?: number; role: string; texto: stri
 interface Session { sessionKey: string; model?: string; status?: string; executionOrder?: number; openedAt?: string; closedAt?: string | null; closeReason?: string | null; messages: { items: Array<{ role: string; text: string; sequenceNumber: number }>; nextCursor?: string | null; hasNextPage?: boolean } }
 interface SessionsResponse { available: boolean; sessions: Session[] }
 interface DeployDiagnostics { canStart: boolean; reasons: string[]; pendingRequests: number }
-interface MotorState { active: boolean }
+interface MotorState { active: boolean; monitorActive?: boolean }
 
 const EMPTY_FILTERS: FiltrosMapa = { busca: "", status: [], projetoId: "", prioridade: "" }
 const FINAL_STATUSES = TASK_STATUS_FINAIS
@@ -183,6 +183,23 @@ export default function OperationMapScreen() {
   const loadTasks = useCallback(async () => { if (!bundle) { setTasksLoading(false); setTasksError("A conexão com a API ainda não está disponível."); setNewTaskDependencyError("Não foi possível carregar as opções de dependência: a conexão com a API ainda não está disponível."); return } setTasksLoading(true); setTasksError(null); setNewTaskDependencyError(null); try { const result = await bundle.http.request<Task[] | { items?: Task[] }>("GET", "/gerenteagentes/tarefas-com-status", { query: { pageSize: 100 }, auth: "access" }); const payload = Array.isArray(result) ? result : (result.items ?? []); const list = payload.sort((a, b) => new Date(b.updatedAt ?? b.createdAt ?? 0).getTime() - new Date(a.updatedAt ?? a.createdAt ?? 0).getTime()); setTasks(list); setSelectedId(current => { if (current !== "" && list.some(t => t.id === current)) return current; if (!initialSelectionDone.current) { initialSelectionDone.current = true; return selectInitialTask(list) } return list.find(t => !FINAL_STATUSES.has(t.status) && t.status !== "draft")?.id ?? list[0]?.id ?? "" }) } catch (e) { const message = e instanceof Error ? e.message : "Não foi possível carregar as tarefas do mapa."; setTasksError(message); setNewTaskDependencyError(`Não foi possível carregar as opções de dependência: ${message}`) } finally { setTasksLoading(false) } }, [bundle])
   const loadProjects = useCallback(async () => { if (!bundle) return; try { const result = await bundle.http.request<{ items: Array<{ id: number; nome: string }> }>("GET", "/gerenteagentes/projetos_captados", { query: { pageSize: 100 }, auth: "access" }); setProjects(result.items ?? []) } catch (e) { setProjects([]); setNewTaskDependencyError(`Não foi possível carregar as opções de dependência: ${e instanceof Error ? e.message : "erro desconhecido"}`) } }, [bundle])
   const [motorActive, setMotorActive] = useState(true)
+  const [monitorActive, setMonitorActive] = useState(true)
+  /**
+   * Carrega o estado persistido do Motor E do monitor (motor_configuracoes).
+   * motorActive também vem de /motor-activity (loadActivity), mas aqui
+   * garantimos a fonte de verdade única para os dois interruptores do operador.
+   */
+  const loadMotorState = useCallback(async () => {
+    if (!bundle) return
+    try {
+      const state = await bundle.http.request<MotorState>("GET", "/gerenteagentes/motor-state", { auth: "access" })
+      setMotorActive(state.active)
+      setMonitorActive(state.monitorActive ?? true)
+    } catch {
+      // mantém o último estado conhecido; o badge de tempo real já sinaliza reconexão
+    }
+  }, [bundle])
+  const bulkMonitor = async (action: "pause" | "resume") => { if (!bundle) return; setBulkAction(`monitor-${action}`); setBulkMessage(null); try { const result = await bundle.http.request<{ active: boolean }>("POST", `/gerenteagentes/motor-monitor/${action}`, { auth: "access" }); setMonitorActive(result.active); setBulkMessage(result.active ? "Monitor ativado. Novas missões de resolução voltarão a ser despachadas." : "Monitor pausado. Missões em andamento continuam; novas resoluções serão adiadas."); } catch (e) { setBulkMessage(e instanceof Error ? e.message : "Não foi possível alterar o estado do Monitor.") } finally { setBulkAction(null) } }
   const loadActivity = useCallback(async () => {
     if (!bundle) return
     try {
@@ -236,7 +253,7 @@ export default function OperationMapScreen() {
 
   // Carga inicial (REST) — projetos, tarefas, atividade do motor
   // A atualização posterior acontece exclusivamente por WebSocket.
-  useEffect(() => { void loadTasks(); void loadProjects(); void loadActivity(); void loadTimezone() }, [loadTasks, loadProjects, loadActivity, loadTimezone])
+  useEffect(() => { void loadTasks(); void loadProjects(); void loadActivity(); void loadMotorState(); void loadTimezone() }, [loadTasks, loadProjects, loadActivity, loadMotorState, loadTimezone])
 
   // Canal "map" — atualização da lista de tarefas e contadores por WebSocket
   // Substitui o polling de 5s. O snapshot inicial vem do servidor; eventos
@@ -838,7 +855,7 @@ export default function OperationMapScreen() {
     <Stack spacing={1.5} sx={{ flex: 1, minWidth: 0, width: "100%" }}>
     <Stack direction={{ xs: "column", md: "row" }} justifyContent="space-between" alignItems={{ xs: "flex-start", md: "center" }}>
       <Box><Typography variant="h4" fontWeight={750}>Mapa de agentes</Typography><Typography variant="body2" color="text.secondary">Controle operacional em tempo real</Typography></Box>
-      <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap><Typography variant="caption" color={realtime === "open" ? "success.main" : "warning.main"}>● {realtime === "open" ? "Tempo real conectado" : "Reconectando…"}</Typography><Typography variant="body2"><b>{tasks.length}</b> tarefas</Typography><Typography variant="body2" color="primary.main"><b>{tasks.filter(t => ["running", "analyzing", "motor_fix"].includes(t.status)).length}</b> executando</Typography><Tooltip title="Impede novas atividades sem interromper o que já está em execução"><span><Button size="small" variant="outlined" startIcon={<PauseRounded />} disabled={bulkAction !== null || !motorActive} onClick={() => void bulk("pause-all")}>Pausar Motor</Button></span></Tooltip><Tooltip title="Reativa o despacho de novas atividades"><span><Button size="small" variant="outlined" startIcon={<ReplayRounded />} disabled={bulkAction !== null || motorActive} onClick={() => void bulk("resume-all")}>Ativar Motor</Button></span></Tooltip><Button variant="contained" size="small" startIcon={<AddTaskRounded />} onClick={() => setNewTaskOpen(true)}>Nova tarefa</Button></Stack>
+      <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap><Typography variant="caption" color={realtime === "open" ? "success.main" : "warning.main"}>● {realtime === "open" ? "Tempo real conectado" : "Reconectando…"}</Typography><Typography variant="body2"><b>{tasks.length}</b> tarefas</Typography><Typography variant="body2" color="primary.main"><b>{tasks.filter(t => ["running", "analyzing", "motor_fix"].includes(t.status)).length}</b> executando</Typography><Tooltip title="Impede novas atividades sem interromper o que já está em execução"><span><Button size="small" variant="outlined" startIcon={<PauseRounded />} disabled={bulkAction !== null || !motorActive} onClick={() => void bulk("pause-all")}>Pausar Motor</Button></span></Tooltip><Tooltip title="Reativa o despacho de novas atividades"><span><Button size="small" variant="outlined" startIcon={<ReplayRounded />} disabled={bulkAction !== null || motorActive} onClick={() => void bulk("resume-all")}>Ativar Motor</Button></span></Tooltip><Typography variant="caption" color={monitorActive ? "text.secondary" : "warning.main"} data-testid="monitor-state-label">Monitor: {monitorActive ? "ativo" : "pausado"}</Typography><Tooltip title="Impede novas missões do monitor-resolvedor de bloqueios sem interromper as em andamento"><span><Button size="small" variant="outlined" startIcon={<PauseRounded />} disabled={bulkAction !== null || !monitorActive} onClick={() => void bulkMonitor("pause")} data-testid="btn-monitor-pause">Pausar Monitor</Button></span></Tooltip><Tooltip title="Reativa o despacho de missões do monitor-resolvedor"><span><Button size="small" variant="outlined" startIcon={<ReplayRounded />} disabled={bulkAction !== null || monitorActive} onClick={() => void bulkMonitor("resume")} data-testid="btn-monitor-resume">Ativar Monitor</Button></span></Tooltip><Button variant="contained" size="small" startIcon={<AddTaskRounded />} onClick={() => setNewTaskOpen(true)}>Nova tarefa</Button></Stack>
     </Stack>
     {/* Faixa de status dos agentes */}
     <AgentStatusStrip motorActive={motorActive} motorIsRunning={motorIsRunning} motorActivity={motorActivity} workers={workers} />

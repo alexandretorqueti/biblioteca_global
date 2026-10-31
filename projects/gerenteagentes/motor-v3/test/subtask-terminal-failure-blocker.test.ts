@@ -316,4 +316,28 @@ describe('SubtaskTerminalFailureBlocker', () => {
 
     // O NOT EXISTS do INSERT usa block_reason + subtarefa ativa (resolved_at IS NULL)
   })
+
+  it('erro de INFRA não gera bloqueio (defesa em profundidade da taxonomia — bloqueio é exceção)', async () => {
+    const { pool, connection, queries } = mockPool()
+    const blocker = new SubtaskTerminalFailureBlocker(pool as never)
+    const error = new Error('Deadlock found when trying to get lock') as Error & { code: string }
+    error.code = 'ER_LOCK_DEADLOCK'
+
+    await blocker.blockForTerminalFailure(makeContext({ error }))
+
+    expect(connection.beginTransaction).not.toHaveBeenCalled()
+    expect(queries.length).toBe(0)
+  })
+
+  it('erro de infra embrulhado em cause também é omitido', async () => {
+    const { pool, connection } = mockPool()
+    const blocker = new SubtaskTerminalFailureBlocker(pool as never)
+    const inner = new Error('publish failed') as Error & { code: string }
+    inner.code = 'PROTOCOL_CONNECTION_LOST'
+    const wrapped = new Error('falha ao concluir verificação', { cause: inner })
+
+    await blocker.blockForTerminalFailure(makeContext({ error: wrapped }))
+
+    expect(connection.beginTransaction).not.toHaveBeenCalled()
+  })
 })

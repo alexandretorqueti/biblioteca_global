@@ -33,6 +33,15 @@ export function normalizeRabbitMqPrefetch(value: number | string | undefined, fa
   return Math.max(MIN_RABBITMQ_PREFETCH, candidate)
 }
 
+/** Decisão do visitor de DLQ: remover da fila ('ack') ou devolver ('retry'). */
+export type DeadLetterVerdict = 'ack' | 'retry'
+
+export interface DeadLetterVisit {
+  message: QueueMessage
+  /** Soma dos counts de x-death (quantas vezes o broker já matou a mensagem). */
+  deathCount: number
+}
+
 /** Adaptador RabbitMQ com retry por TTL e fila de mensagens mortas. */
 export class RabbitMqTransport implements QueueTransport {
   private connection: ChannelModel | null = null
@@ -242,6 +251,65 @@ export class RabbitMqTransport implements QueueTransport {
     } finally {
       await probe?.close().catch(() => undefined)
     }
+  }
+
+  /**
+   * Percorre até `max` mensagens de uma fila (uso previsto: DLQs) com
+   * `basic.get` em canal temporário — mesmo padrão de `queueDepth`, não
+   * interfere no consumo principal. O visitor decide o destino de cada
+   * mensagem: 'ack' (remove da fila) ou 'retry' (devolve e INTERROMPE o
+   * ciclo — falha de infraestrutura não deve varrer o resto da fila).
+   * Mensagem com JSON ilegível nunca é descartada: volta para a fila e o
+   * ciclo encerra (cabeça-de-fila envenenada fica visível em log).
+   */
+  async visitDeadLetters(
+    queue: string,
+    max: number,
+    visitor: (visit: DeadLetterVisit) => Promise<DeadLetterVerdict>,
+  ): Promise<{ acked: number; retried: number }> {
+    const outcome = { acked: 0, retried: 0 }
+    if (!this.connection) return outcome
+    let probe: Awaited<ReturnType<ChannelModel['createChannel']>> | null = null
+    try {
+      probe = await this.connection.createChannel()
+      for (let i = 0; i < Math.max(1, Math.trunc(max)); i++) {
+        const raw = await probe.get(queue, { noAck: false })
+        if (!raw) break
+        let message: QueueMessage
+        try {
+          message = JSON.parse(raw.content.toString('utf8')) as QueueMessage
+        } catch (error) {
+          console.error(`[RabbitMqTransport] ${queue}: mensagem ilegível mantida na fila:`, error instanceof Error ? error.message : error)
+          probe.nack(raw, false, true)
+          outcome.retried += 1
+          break
+        }
+        const deaths = raw.properties.headers?.['x-death']
+        const deathCount = Array.isArray(deaths)
+          ? deaths.reduce<number>((sum, death) => sum + Number((death as { count?: unknown })?.count ?? 0), 0)
+          : 0
+        let verdict: DeadLetterVerdict
+        try {
+          verdict = await visitor({ message, deathCount })
+        } catch (error) {
+          verdict = 'retry'
+          console.error(`[RabbitMqTransport] ${queue}: visitor falhou, mensagem devolvida:`, error instanceof Error ? error.message : error)
+        }
+        if (verdict === 'ack') {
+          probe.ack(raw)
+          outcome.acked += 1
+        } else {
+          probe.nack(raw, false, true)
+          outcome.retried += 1
+          break
+        }
+      }
+    } catch (error) {
+      console.error(`[RabbitMqTransport] visita à fila ${queue} falhou:`, error instanceof Error ? error.message : error)
+    } finally {
+      await probe?.close().catch(() => undefined)
+    }
+    return outcome
   }
 
   private requireChannel(): ConfirmChannel {
