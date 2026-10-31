@@ -156,7 +156,14 @@ describe('ExternalResolutionHandler (camada C — resolução externa governada)
   })
 
   it('devolve a tarefa ao fluxo normal quando ainda há subtarefas pendentes', async () => {
-    const fake = fakePool({ blockersResolved: 2, counts: { total: 5, finais: 2 } })
+    const fake = fakePool({
+      blockersResolved: 2,
+      counts: { total: 5, finais: 2 },
+      blocks: [
+        { id: 3400, subtarefa_id: null, block_reason: 'deploy_failed' },
+        { id: 3401, subtarefa_id: 1400, block_reason: 'subtask_terminal_failure' },
+      ],
+    })
     const handler = new ExternalResolutionHandler(fake.pool as never)
 
     const result = await handler.handle({
@@ -166,11 +173,74 @@ describe('ExternalResolutionHandler (camada C — resolução externa governada)
     expect(result.completed).toBe(false)
     expect(result.requeued).toBe(true)
     expect(result.blockersResolved).toBe(2)
-    const types = fake.outboxMessages().map(message => message.type)
+    const messages = fake.outboxMessages()
+    const types = messages.map(message => message.type)
     expect(types).toContain('TASK_READY_FOR_PROGRAMMING')
     expect(types).toContain('TASK_UNBLOCKED')
     expect(types).not.toContain('TASK_EXECUTION_COMPLETED')
+    // Uma mensagem por motivo distinto, com o motivo ORIGINAL de cada bloqueio
+    const unblocked = messages.filter(message => message.type === 'TASK_UNBLOCKED')
+    expect(unblocked).toHaveLength(2)
+    expect(unblocked.map(message => message.payload.blockReason).sort()).toEqual(['deploy_failed', 'subtask_terminal_failure'])
     expect(fake.calls.some(call => /INSERT INTO task_runtime_facts/.test(call.sql))).toBe(false)
+  })
+
+  it('bug 1047: TASK_UNBLOCKED carrega o motivo original do bloqueio (retomada não pode cair no noop)', async () => {
+    const fake = fakePool({
+      blockersResolved: 1,
+      counts: { total: 5, finais: 0 },
+      blocks: [{ id: 3456, subtarefa_id: 1441, block_reason: 'subtask_terminal_failure' }],
+    })
+
+    await new ExternalResolutionHandler(fake.pool as never).handle({
+      taskId: 'task-p2-1047',
+      motivo: 'causa raiz corrigida (lock órfão)',
+      resolvedBy: 'alexandre-via-gerente-agentes',
+      blockIds: [3456],
+    })
+
+    const unblocked = fake.outboxMessages().find(message => message.type === 'TASK_UNBLOCKED')
+    expect(unblocked).toBeDefined()
+    expect(unblocked!.payload.blockReason).toBe('subtask_terminal_failure')
+    expect(unblocked!.payload.blockId).toBe(3456)
+    expect(unblocked!.payload.databaseTaskId).toBe(820)
+    expect(String(unblocked!.payload.verdictOrigin)).toBe('external_resolution:alexandre-via-gerente-agentes')
+  })
+
+  it('chamada repetida com blockIds explícitos reemite a retomada mesmo com bloqueio já resolvido (idempotente)', async () => {
+    const fake = fakePool({
+      blockersResolved: 0, // UPDATE não conta: já estava resolvido
+      counts: { total: 5, finais: 0 },
+      blocks: [{ id: 3456, subtarefa_id: 1441, block_reason: 'subtask_terminal_failure' }],
+    })
+
+    const result = await new ExternalResolutionHandler(fake.pool as never).handle({
+      taskId: 'task-p2-1047', motivo: 'retomada', resolvedBy: 'teste', blockIds: [3456],
+    })
+
+    expect(result.blockersResolved).toBe(0)
+    const unblocked = fake.outboxMessages().filter(message => message.type === 'TASK_UNBLOCKED')
+    expect(unblocked).toHaveLength(1)
+    expect(unblocked[0]!.payload.blockReason).toBe('subtask_terminal_failure')
+  })
+
+  it('bloqueios duplicados do mesmo motivo geram uma única mensagem de retomada', async () => {
+    const fake = fakePool({
+      blockersResolved: 2,
+      counts: { total: 5, finais: 0 },
+      blocks: [
+        { id: 3500, subtarefa_id: 1500, block_reason: 'subtask_terminal_failure' },
+        { id: 3501, subtarefa_id: 1501, block_reason: 'subtask_terminal_failure' },
+      ],
+    })
+
+    await new ExternalResolutionHandler(fake.pool as never).handle({
+      taskId: 'task-p2-829', motivo: 'motivo único', resolvedBy: 'teste',
+    })
+
+    const unblocked = fake.outboxMessages().filter(message => message.type === 'TASK_UNBLOCKED')
+    expect(unblocked).toHaveLength(1)
+    expect(unblocked[0]!.payload.blockId).toBe(3500)
   })
 
   it('reabre a subtarefa bloqueada quando resolve falha de baseline', async () => {
