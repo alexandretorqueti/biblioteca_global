@@ -1,6 +1,6 @@
 // @vitest-environment node
-import { mkdtemp, mkdir, readdir, rm, utimes, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { mkdtemp, mkdir, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises'
+import { hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
  */
 
 const LOCK_DIR = '.motor-v3-npm-install.lock'
+const OWNER_FILE = 'owner.json'
 const ENV_KEYS = [
   'MOTOR_TEST_GATE_INSTALL_LOCK_POLL_MS',
   'MOTOR_TEST_GATE_INSTALL_LOCK_TIMEOUT_MS',
@@ -41,6 +42,27 @@ async function importPreparer() {
   vi.resetModules()
   const mod = await import('../src/testing/WorkspaceEnvironmentPreparer.js')
   return mod.WorkspaceEnvironmentPreparer
+}
+
+/** Localiza um PID inexistente (ESRCH) para simular detentor morto. */
+function findDeadPid(): number {
+  for (let pid = process.pid + 1; pid < process.pid + 200_000; pid++) {
+    try {
+      process.kill(pid, 0)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ESRCH') return pid
+    }
+  }
+  throw new Error('não foi encontrado um PID morto para o teste')
+}
+
+async function writeOwner(lockPath: string, owner: Record<string, unknown>): Promise<void> {
+  await writeFile(join(lockPath, OWNER_FILE), JSON.stringify(owner))
+}
+
+function collectingLogger() {
+  const entries: Array<Record<string, unknown>> = []
+  return { entries, logger: { log: (entry: Record<string, unknown>) => { entries.push(entry) } } }
 }
 
 beforeEach(() => {
@@ -146,5 +168,176 @@ describe('WorkspaceEnvironmentPreparer — lock de instalação', () => {
     expect(events).toEqual(['holder-start', 'holder-end', 'waiter-run'])
     const remaining = await readdir(ws)
     expect(remaining).not.toContain(LOCK_DIR)
+  })
+})
+
+describe('WorkspaceEnvironmentPreparer — lock com proprietário (owner.json)', () => {
+  it('retoma imediatamente lock cujo owner tem PID morto no mesmo host (sem esperar idade stale)', async () => {
+    const ws = await makeWorkspace()
+    const lockPath = join(ws, LOCK_DIR)
+    await mkdir(lockPath)
+    // Lock FRESCO (idade não autorizaria retomada: stale = 10 min) mas o
+    // owner.json aponta um PID morto no host atual → retomada imediata.
+    const deadPid = findDeadPid()
+    await writeOwner(lockPath, {
+      pid: deadPid,
+      hostname: hostname(),
+      acquiredAt: new Date().toISOString(),
+      heartbeatAt: new Date().toISOString(),
+    })
+
+    process.env.MOTOR_TEST_GATE_INSTALL_LOCK_POLL_MS = '20'
+    process.env.MOTOR_TEST_GATE_INSTALL_LOCK_TIMEOUT_MS = '5000'
+    process.env.MOTOR_TEST_GATE_INSTALL_LOCK_STALE_MS = '600000'
+    const { entries, logger } = collectingLogger()
+    const install = vi.fn(async () => {})
+    const preparer = new (await importPreparer())(install, logger)
+
+    const prepared = await preparer.prepare(ws)
+
+    expect(prepared).toEqual(['.'])
+    expect(install).toHaveBeenCalledTimes(1)
+    const reclaimed = entries.find(entry => entry.event === 'lock_stale_reclaimed')
+    expect(reclaimed).toBeDefined()
+    expect(reclaimed!.reason).toBe('dead_pid')
+    expect((reclaimed!.owner as Record<string, unknown>)?.pid).toBe(deadPid)
+    const remaining = await readdir(ws)
+    expect(remaining).not.toContain(LOCK_DIR)
+  })
+
+  it('não retoma lock com PID vivo no mesmo host mesmo com heartbeat antigo limítrofe', async () => {
+    const ws = await makeWorkspace()
+    const lockPath = join(ws, LOCK_DIR)
+    await mkdir(lockPath)
+    // Heartbeat "limítrofe": 59s de idade com stale = 60s → abaixo do limiar.
+    await writeOwner(lockPath, {
+      pid: process.pid, // vivo
+      hostname: hostname(),
+      acquiredAt: new Date(Date.now() - 59_000).toISOString(),
+      heartbeatAt: new Date(Date.now() - 59_000).toISOString(),
+    })
+    const past = new Date(Date.now() - 59_000)
+    await utimes(lockPath, past, past)
+
+    process.env.MOTOR_TEST_GATE_INSTALL_LOCK_POLL_MS = '25'
+    process.env.MOTOR_TEST_GATE_INSTALL_LOCK_TIMEOUT_MS = '300'
+    process.env.MOTOR_TEST_GATE_INSTALL_LOCK_STALE_MS = '60000'
+    const install = vi.fn(async () => {})
+    const preparer = new (await importPreparer())(install, collectingLogger().logger)
+
+    await expect(preparer.prepare(ws)).rejects.toThrow(/Timeout aguardando lock de instalação/)
+    expect(install).not.toHaveBeenCalled()
+    const remaining = await readdir(ws)
+    expect(remaining).toContain(LOCK_DIR)
+    // O owner.json do detentor vivo permanece intacto.
+    const owner = JSON.parse(await readFile(join(lockPath, OWNER_FILE), 'utf8')) as { pid: number }
+    expect(owner.pid).toBe(process.pid)
+  })
+
+  it('não retoma lock de outro host com heartbeat fresco (PID externo não é verificável)', async () => {
+    const ws = await makeWorkspace()
+    const lockPath = join(ws, LOCK_DIR)
+    await mkdir(lockPath)
+    await writeOwner(lockPath, {
+      pid: 424242,
+      hostname: 'outro-container-blue-green',
+      acquiredAt: new Date().toISOString(),
+      heartbeatAt: new Date().toISOString(),
+    })
+
+    process.env.MOTOR_TEST_GATE_INSTALL_LOCK_POLL_MS = '25'
+    process.env.MOTOR_TEST_GATE_INSTALL_LOCK_TIMEOUT_MS = '300'
+    process.env.MOTOR_TEST_GATE_INSTALL_LOCK_STALE_MS = '600000'
+    const install = vi.fn(async () => {})
+    const preparer = new (await importPreparer())(install, collectingLogger().logger)
+
+    await expect(preparer.prepare(ws)).rejects.toThrow(/Timeout aguardando lock de instalação/)
+    expect(install).not.toHaveBeenCalled()
+    expect(await readdir(ws)).toContain(LOCK_DIR)
+  })
+
+  it('owner.json ilegível degrada com segurança para o critério de idade (stale → retomado)', async () => {
+    const ws = await makeWorkspace()
+    const lockPath = join(ws, LOCK_DIR)
+    await mkdir(lockPath)
+    await writeFile(join(lockPath, OWNER_FILE), '{"pid": "QUEBRADO"')
+    const past = new Date(Date.now() - 10 * 60_000)
+    await utimes(lockPath, past, past)
+
+    process.env.MOTOR_TEST_GATE_INSTALL_LOCK_POLL_MS = '20'
+    process.env.MOTOR_TEST_GATE_INSTALL_LOCK_TIMEOUT_MS = '5000'
+    const { entries, logger } = collectingLogger()
+    const install = vi.fn(async () => {})
+    const preparer = new (await importPreparer())(install, logger)
+
+    await expect(preparer.prepare(ws)).resolves.toEqual(['.'])
+    const reclaimed = entries.find(entry => entry.event === 'lock_stale_reclaimed')
+    expect(reclaimed).toBeDefined()
+    expect(reclaimed!.reason).toBe('stale_heartbeat')
+    expect(reclaimed!.owner).toBeNull()
+  })
+
+  it('grava owner.json na aquisição (pid/host/timestamps) e o heartbeat atualiza heartbeatAt', async () => {
+    const ws = await makeWorkspace()
+    const lockPath = join(ws, LOCK_DIR)
+    process.env.MOTOR_TEST_GATE_INSTALL_LOCK_POLL_MS = '20'
+    process.env.MOTOR_TEST_GATE_INSTALL_LOCK_TIMEOUT_MS = '5000'
+    process.env.MOTOR_TEST_GATE_INSTALL_LOCK_HEARTBEAT_MS = '30'
+    const { entries, logger } = collectingLogger()
+    let duringOperation: { pid: number; hostname: string; acquiredAt: string; heartbeatAt: string } | undefined
+    let afterHeartbeats: { heartbeatAt: string } | undefined
+    const preparer = new (await importPreparer())(async () => {
+      duringOperation = JSON.parse(await readFile(join(lockPath, OWNER_FILE), 'utf8'))
+      await new Promise(resolveWait => setTimeout(resolveWait, 150))
+      afterHeartbeats = JSON.parse(await readFile(join(lockPath, OWNER_FILE), 'utf8'))
+    }, logger)
+
+    await preparer.prepare(ws)
+
+    expect(duringOperation).toBeDefined()
+    expect(duringOperation!.pid).toBe(process.pid)
+    expect(duringOperation!.hostname).toBe(hostname())
+    expect(duringOperation!.acquiredAt).toBeTruthy()
+    expect(afterHeartbeats).toBeDefined()
+    expect(afterHeartbeats!.heartbeatAt).not.toBe(duringOperation!.heartbeatAt)
+    const acquired = entries.find(entry => entry.event === 'lock_acquired')
+    expect(acquired).toBeDefined()
+    expect((acquired!.owner as Record<string, unknown>).pid).toBe(process.pid)
+    expect((acquired!.owner as Record<string, unknown>).hostname).toBe(hostname())
+    // Após a liberação, o lock (e o owner.json dentro dele) não permanecem.
+    expect(await readdir(ws)).not.toContain(LOCK_DIR)
+  })
+
+  it('varre resíduos .stale-* idempotentemente na aquisição', async () => {
+    const ws = await makeWorkspace()
+    await mkdir(join(ws, `${LOCK_DIR}.stale-999-1700000000000`))
+    await mkdir(join(ws, `${LOCK_DIR}.stale-888-1700000000001`, 'node_modules'), { recursive: true })
+
+    process.env.MOTOR_TEST_GATE_INSTALL_LOCK_POLL_MS = '20'
+    process.env.MOTOR_TEST_GATE_INSTALL_LOCK_TIMEOUT_MS = '5000'
+    const preparer = new (await importPreparer())(async () => {}, collectingLogger().logger)
+
+    await expect(preparer.prepare(ws)).resolves.toEqual(['.'])
+    const remaining = await readdir(ws)
+    expect(remaining.some(entry => entry.startsWith(`${LOCK_DIR}.stale-`))).toBe(false)
+  })
+
+  it('logger que lança não quebra a preparação (falha de log é engolida)', async () => {
+    const ws = await makeWorkspace()
+    const lockPath = join(ws, LOCK_DIR)
+    await mkdir(lockPath)
+    const past = new Date(Date.now() - 10 * 60_000)
+    await utimes(lockPath, past, past)
+
+    process.env.MOTOR_TEST_GATE_INSTALL_LOCK_POLL_MS = '20'
+    process.env.MOTOR_TEST_GATE_INSTALL_LOCK_TIMEOUT_MS = '5000'
+    const explodingLogger = {
+      log: () => {
+        throw new Error('logger explodiu')
+      },
+    }
+    const preparer = new (await importPreparer())(async () => {}, explodingLogger)
+
+    await expect(preparer.prepare(ws)).resolves.toEqual(['.'])
   })
 })
