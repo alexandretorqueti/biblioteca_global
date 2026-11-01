@@ -12,6 +12,9 @@ const calls: Array<{ command: string; args: string[] }> = []
 let cherryPickFailCommits: Set<string> = new Set()
 let conflictFileList: string[] = []
 let occupiedTargets = false
+let memberHasSnapshot = true
+let stagedQuietSucceeds = false
+let noopJournalScenario = false
 
 const renames: Array<[string, string]> = []
 const writes: Array<{ path: string; content: string }> = []
@@ -46,8 +49,11 @@ vi.mock('node:fs', () => ({
     if (typeof path !== 'string') return false
     // Alvos novos da renumeração: livres (false) ou ocupados (true)
     if (path.includes('0095_deploy_execution_audit.sql') || path.includes('0095_snapshot.json')) return occupiedTargets
-    // Arquivos do membro vindos no cherry-pick: presentes
-    if (path.includes('0094_deploy_execution_audit.sql') || path.includes('0094_snapshot.json')) return true
+    // Arquivos do membro vindos no cherry-pick: SQL sempre presente; snapshot
+    // é opcional (migrations manuais do gerenteagentes não geram snapshot
+    // desde 0018 — incidente task-p2-1047).
+    if (path.includes('0094_deploy_execution_audit.sql')) return true
+    if (path.includes('0094_snapshot.json')) return memberHasSnapshot
     return false
   }),
 }))
@@ -79,7 +85,10 @@ vi.mock('node:child_process', () => ({
     }
     if (command === 'git' && args[0] === 'show' && String(args[1]).includes(JOURNAL_PATH)) {
       const stage = String(args[1]).split(':')[1]
-      const content = stage === '1' ? baseJournal : stage === '2' ? oursJournal : theirsJournal
+      // Cenário noop: o commit do membro só ajusta o `when` de uma tag que já
+      // existe no base do pick (ex.: 384dfa22 após renumeração) → stage 1
+      // contém as mesmas tags do theirs → memberNew vazio → journal = ours.
+      const content = stage === '1' ? (noopJournalScenario ? theirsJournal : baseJournal) : stage === '2' ? oursJournal : theirsJournal
       return callback(null, { stdout: content, stderr: '' })
     }
     if (command === 'git' && args[0] === 'cherry-pick' && args.includes('--continue')) {
@@ -101,8 +110,9 @@ vi.mock('node:child_process', () => ({
       return callback(null, { stdout: conflictFileList.join('\n') + '\n', stderr: '' })
     }
     if (command === 'git' && args[0] === 'diff' && args.includes('--cached') && args.includes('--quiet')) {
-      // Conflito REAL (não noop): há mudanças staged após checkout --ours
-      return callback(new Error('has changes'), { stdout: '', stderr: '' })
+      // noop: índice idêntico ao HEAD após resolver o journal; senão, há
+      // mudanças staged (conflito REAL não noop).
+      return stagedQuietSucceeds ? callback(null, { stdout: '', stderr: '' }) : callback(new Error('has changes'), { stdout: '', stderr: '' })
     }
     if (command === 'git' && args[0] === 'checkout') {
       return callback(null, { stdout: '', stderr: '' })
@@ -130,6 +140,9 @@ describe('DeployConsumer.composeBatch — auto-renumeration de migration em coli
     cherryPickFailCommits = new Set()
     conflictFileList = []
     occupiedTargets = false
+    memberHasSnapshot = true
+    stagedQuietSucceeds = false
+    noopJournalScenario = false
   })
 
   const members = [
@@ -188,5 +201,59 @@ describe('DeployConsumer.composeBatch — auto-renumeration de migration em coli
 
     expect(result.conflicts).toHaveLength(1)
     expect(calls.some(c => c.command === 'git' && c.args.includes('--continue'))).toBe(false)
+  })
+
+  it('membro SEM snapshot (migrations manuais) → renumera SQL+journal e segue sem isolar', async () => {
+    cherryPickFailCommits.add(cherryForCommit('b'.repeat(40)))
+    conflictFileList = [JOURNAL_PATH]
+    memberHasSnapshot = false
+
+    const consumer = new DeployConsumer({} as never, {} as never, {} as never)
+    const result = await (consumer as any).composeBatch('/repo', 'base-desenvolvimento', 'batch-test', members)
+
+    // Incidente task-p2-1047: a ausência do snapshot do membro fazia o
+    // auto-renumber devolver false e isolar o membro.
+    expect(result.conflicts).toHaveLength(0)
+    expect(renames).toEqual([
+      [`/repo/.motor-v3-deploy-batch-test/${MIG_DIR}/0094_deploy_execution_audit.sql`, `/repo/.motor-v3-deploy-batch-test/${MIG_DIR}/0095_deploy_execution_audit.sql`],
+    ])
+    expect(calls.some(c => c.command === 'git' && c.args.includes('--continue'))).toBe(true)
+    expect(writes).toHaveLength(1)
+    const journal = JSON.parse(writes[0]!.content)
+    expect(journal.entries.map((entry: { tag: string }) => entry.tag)).toContain('0095_deploy_execution_audit')
+  })
+
+  it('pick journal-only noop (ajuste de when já absorvido) → --skip sem isolar e sem --continue', async () => {
+    cherryPickFailCommits.add(cherryForCommit('b'.repeat(40)))
+    conflictFileList = [JOURNAL_PATH]
+    noopJournalScenario = true
+    stagedQuietSucceeds = true
+
+    const consumer = new DeployConsumer({} as never, {} as never, {} as never)
+    const result = await (consumer as any).composeBatch('/repo', 'base-desenvolvimento', 'batch-test', members)
+
+    expect(result.conflicts).toHaveLength(0)
+    expect(renames).toHaveLength(0)
+    expect(calls.some(c => c.command === 'git' && c.args[0] === 'cherry-pick' && c.args[1] === '--skip')).toBe(true)
+    expect(calls.some(c => c.command === 'git' && c.args.includes('--continue'))).toBe(false)
+    expect(calls.some(c => c.command === 'git' && c.args[0] === 'cherry-pick' && c.args[1] === '--abort')).toBe(false)
+  })
+
+  it('conflito journal-only → auto-renumber roda ANTES do skipNoop (stages intactos)', async () => {
+    cherryPickFailCommits.add(cherryForCommit('b'.repeat(40)))
+    conflictFileList = [JOURNAL_PATH]
+
+    const consumer = new DeployConsumer({} as never, {} as never, {} as never)
+    const result = await (consumer as any).composeBatch('/repo', 'base-desenvolvimento', 'batch-test', members)
+
+    expect(result.conflicts).toHaveLength(0)
+    // Bug de produção (task-p2-1047): skipNoop resolvia com `checkout --ours`
+    // + `git add` antes do diagnóstico, apagando os stages :1:/:2:/:3: que o
+    // auto-renumber precisa. Com a ordem correta, o autoResolve lê os stages
+    // e o skipNoop nem chega a rodar.
+    const showStageIdx = calls.findIndex(c => c.command === 'git' && c.args[0] === 'show' && String(c.args[1]).startsWith(':1:'))
+    const checkoutOursIdx = calls.findIndex(c => c.command === 'git' && c.args[0] === 'checkout' && c.args.includes('--ours'))
+    expect(showStageIdx).toBeGreaterThanOrEqual(0)
+    expect(checkoutOursIdx).toBe(-1)
   })
 })
