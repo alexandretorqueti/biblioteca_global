@@ -163,6 +163,55 @@ describe('MigrationDryRunExecutor', () => {
       expect(createCall![0]).toContain('DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP')
       expect(createCall![0]).not.toContain('gate_scratch_995_CURRENT_TIMESTAMP')
     })
+
+    it('não extrai nomes de tabela de comentários SQL (incidente task-p2-1056)', async () => {
+      const ws = await createWorkspace()
+      await mkdir(join(ws, 'projects/alpha/migrations'), { recursive: true })
+      await git(ws, ['commit', '-m', 'baseline', '--allow-empty'])
+      const baseCommit = (await git(ws, ['rev-parse', 'HEAD'])).trim()
+
+      await writeFile(
+        join(ws, 'projects/alpha/migrations/0001_comentario.sql'),
+        [
+          '-- Migration estritamente ADITIVA: CREATE TABLE + ALTER TABLE ADD COLUMN.',
+          '-- Nenhum DROP de colunas existentes.',
+          'CREATE TABLE `lacunas` (',
+          '  `id` INT NOT NULL,',
+          '  `geracao_id` INT NOT NULL',
+          ');',
+          '--> statement-breakpoint',
+          '-- 2) geracoes: colunas de lease do worker.',
+          'ALTER TABLE `geracoes`',
+          '  ADD COLUMN `worker_id` varchar(200) NULL, # comentário inline',
+          '  ADD COLUMN `feedback` text NULL;',
+        ].join('\n'),
+      )
+
+      querySpy.mockResolvedValueOnce([[]]) // SHOW CREATE TABLE lacunas: não existe
+      querySpy.mockResolvedValueOnce([[{ 'Create Table': 'CREATE TABLE `geracoes` (`id` INT NOT NULL)' }]]) // SHOW CREATE geracoes
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // CREATE geracoes scratch
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // CREATE lacunas reescrito
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // ALTER reescrito
+      querySpy.mockResolvedValue([{} as ResultSetHeader]) // cleanup (DROPs)
+
+      const executor = new MigrationDryRunExecutor(mockPool, 1056)
+      await executor.execute(ws, baseCommit)
+
+      const alterCall = querySpy.mock.calls.find(call =>
+        typeof call[0] === 'string' && call[0].includes('ALTER TABLE `gate_scratch_1056_geracoes`')
+      )
+      expect(alterCall).toBeDefined()
+      expect(alterCall![0]).toContain('ALTER TABLE `gate_scratch_1056_geracoes`')
+      expect(alterCall![0]).toContain('ADD COLUMN `worker_id` varchar(200) NULL')
+      expect(alterCall![0]).not.toContain('gate_scratch_1056_ADD')
+      // Palavras de comentários não viram tabelas scratch
+      for (const call of querySpy.mock.calls) {
+        if (typeof call[0] === 'string') {
+          expect(call[0]).not.toContain('gate_scratch_1056_COLUMN')
+          expect(call[0]).not.toContain('gate_scratch_1056_DROP')
+        }
+      }
+    })
   })
 
   describe('execução ordenada', () => {

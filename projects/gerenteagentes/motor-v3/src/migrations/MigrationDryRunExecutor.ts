@@ -366,6 +366,12 @@ export class MigrationDryRunExecutor {
    */
   private extractTableNames(statements: string[]): Set<string> {
     const tables = new Set<string>()
+    // Incidente task-p2-1056 (2026-11-01): comentário de migration contendo
+    // "CREATE TABLE + ALTER TABLE ADD COLUMN" fazia o padrão ALTER capturar
+    // "ADD" como nome de tabela; o rewrite então corrompia todo `ADD COLUMN`
+    // do statement seguinte (gate reprovava SQL válido com errno 1064).
+    // Extração sempre opera sobre o SQL sem comentários.
+    statements = statements.map(statement => this.stripSqlComments(statement))
     const patterns = [
       /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`?(\w+)`?/gi,
       /ALTER\s+TABLE\s+`?(\w+)`?/gi,
@@ -387,6 +393,45 @@ export class MigrationDryRunExecutor {
       }
     }
     return tables
+  }
+
+  /**
+   * Remove comentários SQL (linhas `--`/`#` e blocos de comentário) para
+   * análise estática (extração de nomes de tabela). Respeita string literals
+   * (aspas simples/duplas) e identificadores com backtick: `--`/`#` dentro
+   * de strings não iniciam comentário. `--` só comenta quando seguido de
+   * espaço/fim-de-linha (sintaxe MySQL). O texto retornado é usado apenas
+   * para extração — o statement executado preserva o conteúdo original.
+   */
+  private stripSqlComments(sql: string): string {
+    const withoutBlockComments = sql.replace(/\/\*[\s\S]*?\*\//g, ' ')
+    const lines: string[] = []
+    for (const line of withoutBlockComments.split('\n')) {
+      const trimmed = line.trimStart()
+      if (trimmed.startsWith('--') || trimmed.startsWith('#')) continue
+      lines.push(this.cutInlineComment(line))
+    }
+    return lines.join('\n')
+  }
+
+  /** Corta comentário de linha (`-- ` ou `#`) fora de strings/backticks. */
+  private cutInlineComment(line: string): string {
+    let inSingle = false
+    let inDouble = false
+    let inBacktick = false
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i]!
+      if (ch === '\\' && (inSingle || inDouble)) { i++; continue }
+      if (!inDouble && !inBacktick && ch === "'") { inSingle = !inSingle; continue }
+      if (!inSingle && !inBacktick && ch === '"') { inDouble = !inDouble; continue }
+      if (!inSingle && !inDouble && ch === '`') { inBacktick = !inBacktick; continue }
+      if (inSingle || inDouble || inBacktick) continue
+      if (ch === '#') return line.slice(0, i)
+      if (ch === '-' && line[i + 1] === '-' && (line[i + 2] === undefined || /\s/.test(line[i + 2]!))) {
+        return line.slice(0, i)
+      }
+    }
+    return line
   }
 
   /**
