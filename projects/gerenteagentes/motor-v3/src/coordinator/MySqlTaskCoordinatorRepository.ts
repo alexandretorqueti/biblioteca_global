@@ -41,7 +41,7 @@ interface TaskRow extends RowDataPacket {
   dependency_terminal_status: string | null
   dependency_deploy_status: string | null
   capacity_wait_phase: 'analysis' | 'development' | null
-  capacity_wait_reason_code: 'global_limit' | 'project_limit' | 'provider_limit' | 'model_cooldown' | null
+  capacity_wait_reason_code: 'global_limit' | 'project_limit' | 'provider_limit' | 'model_cooldown' | 'setup_not_verified' | null
   capacity_wait_limit_scope: 'global' | 'project' | 'provider' | 'model' | null
   capacity_wait_limit_value: number | string | null
   capacity_wait_provider: string | null
@@ -157,9 +157,16 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
         return false
       }
       if (this.setupBlocksTask(row)) {
-        await this.persistSetupBlock(connection, row)
+        // Gate de setup (task-p2-1056 subtarefa 6): espera de CAPACIDADE, nunca
+        // bloqueio — docs/TAXONOMIA-ERROS-MOTOR.md reserva a tabela bloqueios
+        // exclusivamente ao caminho 'work'. O claim retorna 'capacity_waiting'
+        // e o TaskCoordinator re-enfileira a mensagem com backoff de 30s
+        // (requeueForDeployRetry 'analysis_capacity_waiting') sem consumir
+        // attempt; quando o setup é verificado, o próximo retry reclama a
+        // tarefa normalmente, sem intervenção manual.
+        await this.recordCapacityWait(connection, row.id, 'analysis', 'setup_not_verified', 'project', 0, null)
         await connection.commit()
-        return false
+        return 'capacity_waiting'
       }
 
       // A mesma serialização usada pela reserva do DEV: as duas linhas de
@@ -475,22 +482,32 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
       || Number(row.blocked_count) > 0
   }
 
-  private setupBlocksTask(row: Pick<TaskRow, 'auto_start' | 'setup_status' | 'external_id'>): boolean {
-    return Boolean(row.auto_start) && !String(row.external_id ?? '').startsWith('setup-') && row.setup_status !== 'verified'
+  /**
+   * Gate de execução (task-p2-1056 subtarefa 6): tarefa de projeto com
+   * setup_status != 'verified' NÃO é despachada — exceto as tarefas do próprio
+   * setup (external_id 'setup-*'), que são justamente quem verifica o projeto.
+   * Cobre o despacho em geral (não apenas auto_start, como na versão anterior).
+   * Tarefas sem projeto (projeto_id NULL) não passam pelo gate. A retenção é
+   * espera de capacidade (recordCapacityWait 'setup_not_verified'), NUNCA
+   * bloqueio/falha — ver docs/TAXONOMIA-ERROS-MOTOR.md.
+   */
+  private setupBlocksTask(row: Pick<TaskRow, 'projeto_id' | 'setup_status' | 'external_id'>): boolean {
+    return row.projeto_id != null
+      && !String(row.external_id ?? '').startsWith('setup-')
+      && row.setup_status !== 'verified'
   }
 
-  private async persistSetupBlock(connection: PoolConnection, row: Pick<TaskRow, 'id' | 'setup_status'>): Promise<void> {
-    const reason = `setup_not_verified: status=${row.setup_status ?? 'pending'}`
-    await connection.query(
-      `INSERT INTO bloqueios (tarefa_id, block_reason, block_excerpt, blocked_at, created_at)
-       SELECT ?, ?, ?, NOW(), NOW()
-        WHERE NOT EXISTS (
-          SELECT 1 FROM bloqueios WHERE tarefa_id = ? AND resolved_at IS NULL AND block_reason LIKE 'setup_not_verified:%'
-        )`, [row.id, reason, 'Tarefa auto_start retida até setup do projeto ser verificado', row.id],
-    )
-  }
+  // DECISÃO (task-p2-1056 subtarefa 6): persistSetupBlock (INSERT em bloqueios
+  // com reason 'setup_not_verified') foi REMOVIDO — violava a taxonomia de
+  // erros (bloqueio é exclusivo do caminho 'work'). Bloqueios legados abertos
+  // 'setup_not_verified:%' são resolvidos de forma idempotente pela migration
+  // projects/gerenteagentes/migrations/0099_setup_gate_legacy_block_cleanup.sql
+  // (UPDATE ... SET resolved_at=NOW(); re-execução é no-op). A liberação via
+  // releaseProjectTasksAfterSetup permanece como rede de segurança para
+  // registros legados e retomada imediata após a verificação do setup.
 
-  /** Libera os auto_start retidos e reemite o comando de análise de forma durável. */
+  // (task-p2-1056 subtarefa 6) a liberação de tarefas retidas pelo setup está
+  // documentada em releaseProjectTasksAfterSetup.
   // ==========================================================================
   // ClarificationCheckpointStore (task-p2-1040) — retomada incremental da
   // análise após clarificação, com fencing por executionId e auditoria.
@@ -598,6 +615,11 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
     return { chatMessageId: Number(rows[0].id), texto: String(rows[0].texto ?? '') }
   }
 
+  /** Libera registros LEGADOS retidos por bloqueio 'setup_not_verified' e
+   * reemite o comando de análise de forma durável. Com o gate de capacidade
+   * (task-p2-1056 subtarefa 6) nenhum bloqueio novo é criado; as tarefas em
+   * espera já estão no loop de re-enfileiramento com backoff e retomam sozinhas
+   * após o setup verificado. Mantido idempotente para limpar histórico. */
   private async releaseProjectTasksAfterSetup(connection: PoolConnection, projectId: number, projectSlug: string): Promise<void> {
     if (!Number.isInteger(projectId) || projectId <= 0) return
     const [rows] = await connection.query<Array<RowDataPacket & { id: number; external_id: string | null }>>(
@@ -666,7 +688,7 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
 
   private async recordCapacityWait(
     connection: PoolConnection, taskId: number, phase: 'analysis' | 'development',
-    reasonCode: 'global_limit' | 'project_limit' | 'provider_limit',
+    reasonCode: 'global_limit' | 'project_limit' | 'provider_limit' | 'setup_not_verified',
     limitScope: 'global' | 'project' | 'provider', limitValue: number, provider: string | null,
   ): Promise<void> {
     await connection.query(

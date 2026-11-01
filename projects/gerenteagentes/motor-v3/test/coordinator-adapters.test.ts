@@ -100,7 +100,9 @@ describe('coordinator adapters', () => {
       beginTransaction: vi.fn(async () => {}), rollback: vi.fn(async () => {}), commit: vi.fn(async () => {}), release: vi.fn(),
       query: vi.fn()
         .mockResolvedValueOnce([[{
-          id: 42, external_id: 'task-1', projeto_id: 7, paused_at: null,
+          // setup_status 'verified': isola o limite global do gate de setup
+          // (task-p2-1056 subtarefa 6 — o gate agora antecede os limites).
+          id: 42, external_id: 'task-1', projeto_id: 7, setup_status: 'verified', paused_at: null,
           analysis_started_at: null, analysis_execution_id: null, terminal_status: null,
           subtask_count: 0, blocked_count: 0,
         }], []])

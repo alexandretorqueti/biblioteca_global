@@ -694,6 +694,13 @@
       "when": 1792900001003,
       "tag": "0098_geracao_macro_f1",
       "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "5",
+      "when": 1792900001004,
+      "tag": "0099_setup_gate_legacy_block_cleanup",
+      "breakpoints": true
     }
   ]
 }
