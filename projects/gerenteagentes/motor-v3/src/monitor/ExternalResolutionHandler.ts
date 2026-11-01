@@ -2,6 +2,11 @@ import type { Pool, PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql
 import { createQueueMessage, insertOutboxMessage, type QueueMessage } from '../queue/index.js'
 import { createTaskUnblockedMessage } from './TaskBlockedEvent.js'
 import { cancelUnstartedDeployRequests } from '../deploy/DeployRequestFinalizer.js'
+import {
+  defaultGitRunner,
+  refreshStaleRequestedCommit,
+  type GitRunner,
+} from '../deploy/StaleRequestedCommitRefresh.js'
 
 /**
  * Resolução externa governada (camada C do invariante de conclusão).
@@ -69,7 +74,10 @@ interface TaskRow extends RowDataPacket {
 }
 
 export class ExternalResolutionHandler {
-  constructor(private readonly pool: Pool) {}
+  constructor(
+    private readonly pool: Pool,
+    private readonly git: GitRunner = defaultGitRunner,
+  ) {}
 
   async handle(input: ExternalResolutionInput): Promise<ExternalResolutionResult> {
     const motivo = String(input.motivo ?? '').trim()
@@ -194,6 +202,7 @@ export class ExternalResolutionHandler {
       let deployRequested = false
       let requeued = false
       let failedRequestReactivated = false
+      let requestedCommitRefresh: { from: string | null; to: string | null } | null = null
 
       if (total > 0 && finais === total) {
         const [factRows] = await connection.query<Array<RowDataPacket & { terminal_status: string | null }>>(
@@ -270,6 +279,29 @@ export class ExternalResolutionHandler {
             )
             failedRequestReactivated = true
 
+            // Incidente task-p2-1056 (2026-11-01): reativar preservando o
+            // requested_commit obsoleto fazia o dispatch recompor a cadeia
+            // antiga e o gate pre_deploy reprovar em loop pelo mesmo motivo —
+            // o Monitor commita a correção na branch de integração ANTES de
+            // desbloquear. Fast-forward para o HEAD da integração (mesma
+            // transação; só descendente, divergência mantém o gravado).
+            const refresh = await refreshStaleRequestedCommit(connection, {
+              databaseTaskId,
+              taskId,
+              repoPath: failedRequest.repo_path ?? null,
+              staleCommit: failedRequest.requested_commit ?? null,
+              git: this.git,
+            })
+            if (refresh.refreshed) {
+              requestedCommitRefresh = {
+                from: failedRequest.requested_commit,
+                to: refresh.headCommit,
+              }
+            }
+            const expectedCommit = refresh.refreshed && refresh.headCommit
+              ? refresh.headCommit
+              : failedRequest.requested_commit
+
             // Enfileirar dispatch diretamente (não depende de novo DEPLOY_REQUESTED)
             const dispatchMessage = createQueueMessage({
               type: 'DEPLOY_BATCH_DISPATCH_REQUESTED',
@@ -281,7 +313,7 @@ export class ExternalResolutionHandler {
                 resolvedBy,
                 repository: failedRequest.repo_path,
                 baseBranch: failedRequest.base_branch,
-                expectedCommit: failedRequest.requested_commit,
+                expectedCommit,
                 reactivatedFromFailed: true,
               },
             })
@@ -360,7 +392,8 @@ export class ExternalResolutionHandler {
           JSON.stringify({
             motivo: motivo.slice(0, 500), resolvedBy, blockIds: blockIds ?? null,
             subtaskId: input.subtaskId ?? null, blockersResolved, subtaskVerified,
-            completed, deployRequested, requeued, failedRequestReactivated, messageIds,
+            completed, deployRequested, requeued, failedRequestReactivated,
+            requestedCommitRefresh, messageIds,
           })],
       )
 

@@ -380,6 +380,99 @@ describe('ExternalResolutionHandler (camada C — resolução externa governada)
     expect(fake.connection.commit).toHaveBeenCalled()
   })
 
+  // === Incidente task-p2-1056: fast-forward do requested_commit obsoleto na reativação ===
+
+  it('1056: reativação faz fast-forward do requested_commit obsoleto para o HEAD da integração', async () => {
+    const fake = fakePool({
+      task: { id: 1056, external_id: 'task-p2-1056', tipo: 'desenvolvimento' },
+      counts: { total: 6, finais: 6 },
+      failedRequest: {
+        id: 387,
+        repo_path: '/home/alexandre/codigofonte/biblioteca-global',
+        base_branch: 'base-desenvolvimento',
+        requested_commit: 'abc1234',
+      },
+      hasTombstone: false,
+    })
+    const gitCalls: Array<{ args: string[]; cwd: string }> = []
+    const git = vi.fn(async (args: string[]) => {
+      gitCalls.push({ args, cwd: '' })
+      if (args[0] === 'rev-parse') return { ok: true, stdout: 'fff999aaa\n' }
+      if (args[0] === 'merge-base') return { ok: true, stdout: '' }
+      return { ok: false, stdout: '' }
+    })
+    const handler = new ExternalResolutionHandler(fake.pool as never, git as never)
+
+    const result = await handler.handle({
+      taskId: 'task-p2-1056',
+      motivo: 'Correção commitada na branch de integração pelo Monitor',
+      resolvedBy: 'monitor',
+      requestDeploy: true,
+    })
+
+    expect(result.ok).toBe(true)
+    expect(result.failedRequestReactivated).toBe(true)
+
+    // Git consultado: HEAD da branch de integração + ancestralidade
+    expect(gitCalls[0]!.args).toEqual(['rev-parse', '--verify', 'motor-v3-work/integration-task-p2-1056^{commit}'])
+    expect(gitCalls[1]!.args).toEqual(['merge-base', '--is-ancestor', 'abc1234', 'fff999aaa'])
+
+    // UPDATE do requested_commit na mesma transação (pedido já reativado para pending)
+    const refreshCall = fake.calls.find(call => /SET requested_commit=\?/.test(call.sql))
+    expect(refreshCall).toBeDefined()
+    expect(refreshCall!.params).toEqual(['fff999aaa', 1056, 'abc1234'])
+
+    // Dispatch usa o commit NOVO — sem isso o gate recompõe a cadeia obsoleta e reprova em loop
+    const dispatch = fake.outboxMessages().find(m => m.type === 'DEPLOY_BATCH_DISPATCH_REQUESTED')
+    expect(dispatch?.payload.expectedCommit).toBe('fff999aaa')
+
+    // Auditoria registra o refresh
+    const auditCall = fake.calls.find(call => /INSERT INTO tarefa_eventos/.test(call.sql))
+    const auditPayload = JSON.parse(String(auditCall?.params[3]))
+    expect(auditPayload.requestedCommitRefresh).toEqual({ from: 'abc1234', to: 'fff999aaa' })
+  })
+
+  it('1056: branch divergente (não-ancestral) mantém o requested_commit gravado', async () => {
+    const fake = fakePool({
+      task: { id: 1056, external_id: 'task-p2-1056', tipo: 'desenvolvimento' },
+      counts: { total: 6, finais: 6 },
+      failedRequest: {
+        id: 387,
+        repo_path: '/home/alexandre/codigofonte/biblioteca-global',
+        base_branch: 'base-desenvolvimento',
+        requested_commit: 'abc1234',
+      },
+      hasTombstone: false,
+    })
+    const git = vi.fn(async (args: string[]) => {
+      if (args[0] === 'rev-parse') return { ok: true, stdout: 'div555ergent\n' }
+      if (args[0] === 'merge-base') return { ok: false, stdout: '' } // não-ancestral
+      return { ok: false, stdout: '' }
+    })
+    const handler = new ExternalResolutionHandler(fake.pool as never, git as never)
+
+    const result = await handler.handle({
+      taskId: 'task-p2-1056',
+      motivo: 'Retomada com branch de integração rebaseada',
+      resolvedBy: 'monitor',
+      requestDeploy: true,
+    })
+
+    expect(result.ok).toBe(true)
+    expect(result.failedRequestReactivated).toBe(true)
+
+    // Sem UPDATE do requested_commit
+    expect(fake.calls.some(call => /SET requested_commit=\?/.test(call.sql))).toBe(false)
+
+    // Dispatch preserva o commit gravado (conflito de composição segue o fluxo deploy_member_conflict)
+    const dispatch = fake.outboxMessages().find(m => m.type === 'DEPLOY_BATCH_DISPATCH_REQUESTED')
+    expect(dispatch?.payload.expectedCommit).toBe('abc1234')
+
+    const auditCall = fake.calls.find(call => /INSERT INTO tarefa_eventos/.test(call.sql))
+    const auditPayload = JSON.parse(String(auditCall?.params[3]))
+    expect(auditPayload.requestedCommitRefresh).toBeNull()
+  })
+
   it('972: NÃO reativa request quando existe tombstone administrativo (cancelled)', async () => {
     const fake = fakePool({
       counts: { total: 2, finais: 2 },
