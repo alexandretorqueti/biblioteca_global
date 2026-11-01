@@ -53,6 +53,7 @@ import { RemoteBlueGreenDeployer } from './deploy/RemoteBlueGreenDeployer.js'
 import { BaselinePreflightRecovery, TestGateConsumer, TestGateJobReconciler, TestGateOrchestrator, TestGateService, TestRecoveryConsumer, WorkspaceEnvironmentPreparer } from './testing/index.js'
 import { TaskChatHumanNotifier, ExternalResolutionError, ExternalResolutionHandler, MonitorBlockerReconciler, MonitorMissionRecoveryReconciler, MonitorPromptResolver, MonitorResolutionConsumer, PostDeployPromptResolver, PostDeployVerifier, TaskUnblockedConsumer, createTaskBlockedMessage, loadActiveBlocker, ActiveExecutionSweeper } from './monitor/index.js'
 import { TaskAdjustmentConsumer, TASK_ADJUSTMENT_REQUESTED } from './adjustment/index.js'
+import { ProjectGenerationWorker, GenerationClaimReconciler } from './generation/index.js'
 import { ensureCompletionTrigger } from './db/ensureTriggers.js'
 import { bootstrapMotorV3Catalog } from './db/bootstrap.js'
 import { warnOnMigrationJournalIntegrity } from './migrations/MigrationJournalIntegrity.js'
@@ -105,6 +106,8 @@ let taskAdjustmentConsumer: TaskAdjustmentConsumer | null = null
 let postDeployVerifier: PostDeployVerifier | null = null
 let orphanCapacityQueueReconciler: OrphanCapacityQueueReconciler | null = null
 let activeExecutionSweeper: ActiveExecutionSweeper | null = null
+let projectGenerationWorker: ProjectGenerationWorker | null = null
+let generationClaimReconciler: GenerationClaimReconciler | null = null
 
 async function start() {
   console.log('[Motor v3] Iniciando...')
@@ -804,6 +807,20 @@ async function start() {
     monitorBlockerReconciler.start()
     await monitorMissionRecoveryReconciler.reconcile()
     monitorMissionRecoveryReconciler.start()
+    // Geração Macro de tarefas (task-p2-1056 / PROPOSTA-GERACAO-MACRO-TAREFAS.md §3.1):
+    // consumidor de geracoes_projeto pending (poll curto; a linha É a fila durável,
+    // claim atômico com lease na migration 0098) + reconciliador de órfãos.
+    // Boot: instância única → qualquer 'running' remanescente é órfão e volta
+    // para 'pending' imediatamente; o ciclo de 5 min cobre leases vencidos.
+    generationClaimReconciler = new GenerationClaimReconciler(pool)
+    const generationOrphans = await generationClaimReconciler.reconcile({ treatAllRunningAsOrphans: true })
+    for (const orphanId of generationOrphans) {
+      console.warn(`[Motor v3] Geracao macro órfã recuperada no boot: geracao=${orphanId} → pending`)
+    }
+    generationClaimReconciler.start()
+    projectGenerationWorker = new ProjectGenerationWorker(pool, consoleApi)
+    projectGenerationWorker.start()
+    console.log('[Motor v3] ProjectGenerationWorker ativo (gerações macro de projetos)')
     // Recuperação única de fatos duráveis após boot. O fluxo normal avança
     // por mensagens/eventos; o timer abaixo só reconcilia batches órfãos.
     await deployConsumer.recoverPendingWork()
@@ -1519,6 +1536,8 @@ async function shutdown() {
   developmentSessionRecovery?.stop()
   orphanCapacityQueueReconciler?.stop()
   activeExecutionSweeper?.stop()
+  projectGenerationWorker?.stop()
+  generationClaimReconciler?.stop()
 
   // Fecha servidor HTTP
   if (server) {

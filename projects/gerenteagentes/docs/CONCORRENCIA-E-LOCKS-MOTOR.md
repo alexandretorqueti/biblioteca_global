@@ -100,6 +100,40 @@ detectado (códigos `missing-provider-auth`, `provider_auth_error`, padrões
 "no api key found" etc.) e faz `continue` para o próximo modelo da cadeia,
 com evento `model_unavailable` — em vez de propagar exceção e falhar a tarefa.
 
+### 6. Geração Macro — claim/lease em `geracoes_projeto` (task-p2-1056, F1)
+`ProjectGenerationWorker` (motor-v3/src/generation/) consome `geracoes_projeto`
+`status='pending'` por **poll curto periódico** (a linha é a fila durável;
+decisão documentada no cabeçalho do worker — gerações são raras, não vale
+nova fila RabbitMQ). Concorrência tratada em três camadas:
+
+- **Claim atômico com lease** (colunas da migration 0098): `UPDATE ... SET
+  status='running', worker_id, claimed_at, lease_expires_at WHERE id=? AND
+  status='pending' AND (lease_expires_at IS NULL OR lease_expires_at < NOW())`
+  — `affectedRows=0` = perdeu o claim, não duplica processamento. Lease
+  renovado a cada ttl/3 durante a sessão longa do analista.
+- **Transições guardadas por posse**: todo UPDATE terminal do worker
+  (`awaiting_approval`, `awaiting_clarification`, `failed`, liberação) é
+  condicionado a `status='running' AND worker_id=?` — após recuperação pelo
+  reconciliador, o worker antigo não sobrescreve o novo dono.
+- **`GenerationClaimReconciler`** (boot + ciclo de 5 min, padrão
+  AnalysisClaimReconciler/TestGateJobReconciler): no boot, pela **premissa de
+  instância única**, não há worker vivo no processo — qualquer `running`
+  remanescente é órfão e volta para `pending` imediatamente; no ciclo
+  periódico, só `running` com lease vencido (worker morto; worker vivo renova)
+  ou sem claim há mais de `staleMinutes`. Idempotente (UPDATE condicionado a
+  `status='running'`); erros não propagam (barreira).
+
+Nota: o endpoint de aprovação com `decisao=revise` devolve a geracao para
+`running` com feedback e sem claim; o reconciliador a normaliza para `pending`
+(no boot, imediato; no ciclo, pela condição "sem claim"), de onde o worker
+retoma a rodada com o histórico do chat + feedback no prompt.
+
+Como nos demais guards em memória (`pumping`, `activeWorkers`,
+`finalizingExecutions`), o guard `ticking` do worker só vale com 1 réplica da
+API/motor. Se escalar, o claim/lease de banco já é a coordenação correta —
+basta remover o guard de memória ou aceitar múltiplos pollers (o lease garante
+exclusividade).
+
 ## Operações git e sua segurança
 
 | Operação | Onde roda | Concorrência |

@@ -4,7 +4,7 @@
  * Tabelas:
  * - Captação (Isa): contatos, projetos_captados, definicoes, chats, chat_mensagens
  * - Execução (motor): tarefas, subtarefas, tarefa_chats, projeto_chats,
- *   geracoes_projeto, bloqueios
+ *   geracoes_projeto, lacunas_biblioteca, bloqueios
  * - Agentes: ids dos agentes mantidos pelo OpenClaw (1:1 com projetos_captados)
  *
  * Relações:
@@ -15,6 +15,7 @@
  * - tarefa → tarefa_chats (1:N)
  * - projeto → projeto_chats (1:N)
  * - projeto → geracoes_projeto (1:N, histórico de gerações)
+ * - geracao → lacunas_biblioteca (1:N, lacunas de capacidades apontadas pelo plano)
  */
 import {
   bigint,
@@ -857,6 +858,28 @@ export const projetoChats = mysqlTable("projeto_chats", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 })
 
+/**
+ * Gerações macro de plano de tarefas de um projeto captado
+ * (docs/PROPOSTA-GERACAO-MACRO-TAREFAS.md).
+ *
+ * Status possíveis (varchar(50) — sem enum/DDL): pending, running,
+ * awaiting_clarification, awaiting_approval, approved, completed, rejected,
+ * failed.
+ *
+ * Transições (migração 0098 — Geração Macro F1):
+ * - pending → running                      (claim do ProjectGenerationWorker)
+ * - running → awaiting_clarification       (contrato §5 forma "perguntas")
+ * - awaiting_clarification → pending       (resposta no chat do projeto, role=user)
+ * - running → awaiting_approval            (contrato §5 forma "plano" gravado em tasks)
+ * - awaiting_approval → approved/completed (decisao=approve; materializa tarefas)
+ * - awaiting_approval → rejected           (decisao=reject; nada é criado)
+ * - awaiting_approval → running            (decisao=revise; feedback registrado)
+ * - running → failed                       (erro de geração; motivo em erro)
+ *
+ * Claim/lease (worker_id/claimed_at/lease_expires_at): recuperação de órfãos
+ * pelo GenerationClaimReconciler — running sem worker vivo com lease expirado
+ * volta para pending (padrão AnalysisClaimReconciler).
+ */
 export const geracoesProjeto = mysqlTable("geracoes_projeto", {
   id: bigint("id", { mode: "number", unsigned: true })
     .primaryKey()
@@ -864,19 +887,71 @@ export const geracoesProjeto = mysqlTable("geracoes_projeto", {
   projetoId: bigint("projeto_id", { mode: "number", unsigned: true })
     .notNull()
     .references(() => projetosCaptados.id, { onDelete: "cascade" }),
-  status: varchar("status", { length: 50 }).notNull().default("pending"), // pending, running, completed, failed, awaiting_clarification
+  // pending | running | awaiting_clarification | awaiting_approval | approved | completed | rejected | failed
+  // (transições documentadas no docblock acima)
+  status: varchar("status", { length: 50 }).notNull().default("pending"),
   sessionKey: varchar("session_key", { length: 200 }),
   modelo: varchar("modelo", { length: 100 }),
   briefing: text("briefing"),
   // IDs/títulos das tarefas macro geradas nesta geração (migração §4.12).
   tasks: json("tasks"),
   erro: text("erro"),
+  // Claim/lease do ProjectGenerationWorker (migração 0098).
+  workerId: varchar("worker_id", { length: 200 }),
+  claimedAt: timestamp("claimed_at"),
+  leaseExpiresAt: timestamp("lease_expires_at"),
+  // Feedback humano da revisão do plano (decisao=revise; migração 0098).
+  feedback: text("feedback"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at")
     .notNull()
     .defaultNow()
     .onUpdateNow(),
 })
+
+/**
+ * Lacunas de capacidades da Biblioteca Global apontadas pelos planos de
+ * geração macro (migração 0098; PROPOSTA-GERACAO-MACRO-TAREFAS.md §3.1/§4).
+ *
+ * Histórico acumulativo persistido na materialização do plano aprovado:
+ * recorrência entre projetos = candidata a capacidade nativa (insumo de
+ * roadmap da biblioteca).
+ *
+ * status: aberta | absorver | adiar | recusada (default 'aberta'; decisão
+ * posterior registrada em decided_at/decided_by).
+ */
+export const lacunasBiblioteca = mysqlTable(
+  "lacunas_biblioteca",
+  {
+    id: bigint("id", { mode: "number", unsigned: true })
+      .primaryKey()
+      .autoincrement(),
+    projetoId: bigint("projeto_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => projetosCaptados.id, { onDelete: "cascade" }),
+    geracaoId: bigint("geracao_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => geracoesProjeto.id, { onDelete: "cascade" }),
+    // REQ-* do plano coberto pela lacuna (opcional).
+    reqId: varchar("req_id", { length: 50 }),
+    funcionalidade: varchar("funcionalidade", { length: 300 }).notNull(),
+    // Por que a biblioteca não cobre nativamente.
+    contexto: text("contexto"),
+    // aberta | absorver | adiar | recusada
+    status: varchar("status", { length: 20 }).notNull().default("aberta"),
+    decidedAt: timestamp("decided_at"),
+    decidedBy: varchar("decided_by", { length: 200 }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at")
+      .notNull()
+      .defaultNow()
+      .onUpdateNow(),
+  },
+  (table) => ({
+    projetoIdx: index("idx_lacunas_biblioteca_projeto").on(table.projetoId),
+    statusIdx: index("idx_lacunas_biblioteca_status").on(table.status),
+  }),
+)
 
 // ============================================================================
 // PARALELISMO DO MOTOR
@@ -1128,11 +1203,25 @@ export const annotations = {
   },
   geracoesProjeto: {
     projeto_id: { label: "Projeto" },
-    status: { label: "Status", helperText: "pending | running | completed | failed" },
+    status: {
+      label: "Status",
+      helperText:
+        "pending | running | awaiting_clarification | awaiting_approval | approved | completed | rejected | failed",
+    },
     session_key: { label: "Session Key", maxLength: 200 },
     modelo: { label: "Modelo", maxLength: 100 },
     briefing: { label: "Briefing", type: "textarea", fullWidth: true },
     erro: { label: "Erro", type: "textarea", fullWidth: true },
+    feedback: { label: "Feedback da revisão", type: "textarea", fullWidth: true },
+  },
+  lacunas_biblioteca: {
+    projeto_id: { label: "Projeto" },
+    geracao_id: { label: "Geração" },
+    req_id: { label: "Requisito (REQ-*)", maxLength: 50 },
+    funcionalidade: { label: "Funcionalidade", maxLength: 300 },
+    contexto: { label: "Contexto", type: "textarea", fullWidth: true },
+    status: { label: "Status", helperText: "aberta | absorver | adiar | recusada" },
+    decided_by: { label: "Decidido por", maxLength: 200 },
   },
   bloqueios: {
     tarefa_id: { label: "Tarefa" },

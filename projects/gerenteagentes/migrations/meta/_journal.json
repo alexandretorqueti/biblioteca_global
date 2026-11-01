@@ -687,6 +687,20 @@
       "when": 1792900000003,
       "tag": "0097_external_operation_evidence_prompt",
       "breakpoints": true
+    },
+    {
+      "idx": 98,
+      "version": "5",
+      "when": 1793555000001,
+      "tag": "0098_geracao_macro_f1",
+      "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "5",
+      "when": 1793555000002,
+      "tag": "0099_setup_gate_legacy_block_cleanup",
+      "breakpoints": true
     }
   ]
 }
