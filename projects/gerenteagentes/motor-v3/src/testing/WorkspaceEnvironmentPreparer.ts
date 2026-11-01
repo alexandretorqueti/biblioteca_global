@@ -1,10 +1,13 @@
 import { execFile } from 'node:child_process'
-import { mkdir, readdir, readFile, rename, rm, stat, utimes } from 'node:fs/promises'
-import { dirname, relative, resolve } from 'node:path'
+import { mkdir, readdir, readFile, rename, rm, stat, utimes, writeFile } from 'node:fs/promises'
+import { hostname } from 'node:os'
+import { dirname, join, relative, resolve } from 'node:path'
 import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
 const INSTALL_LOCK_DIRECTORY = '.motor-v3-npm-install.lock'
+const INSTALL_LOCK_OWNER_FILE = 'owner.json'
+const INSTALL_LOCK_STALE_PREFIX = `${INSTALL_LOCK_DIRECTORY}.stale-`
 const INSTALL_LOCK_POLL_MS = Number(process.env.MOTOR_TEST_GATE_INSTALL_LOCK_POLL_MS || 250)
 const INSTALL_LOCK_TIMEOUT_MS = Number(process.env.MOTOR_TEST_GATE_INSTALL_LOCK_TIMEOUT_MS || 900_000)
 const INSTALL_LOCK_STALE_MS = Number(process.env.MOTOR_TEST_GATE_INSTALL_LOCK_STALE_MS || 120_000)
@@ -14,25 +17,150 @@ async function wait(milliseconds: number): Promise<void> {
   await new Promise(resolveWait => setTimeout(resolveWait, milliseconds))
 }
 
+/** Identidade do detentor do lock, gravada em `owner.json` dentro do diretório do lock. */
+export interface InstallLockOwner {
+  pid: number
+  hostname: string
+  acquiredAt: string
+  heartbeatAt: string
+}
+
+/** Eventos estruturados do ciclo de vida do lock de instalação. */
+export type InstallLockEvent =
+  | { event: 'lock_acquired'; lockPath: string; owner: InstallLockOwner }
+  | { event: 'lock_stale_reclaimed'; lockPath: string; reason: 'dead_pid' | 'stale_heartbeat'; ageMs: number; owner: InstallLockOwner | null }
+  | { event: 'lock_takeover_failed'; lockPath: string; reason: string; owner: InstallLockOwner | null }
+
+/**
+ * Logger estruturado injetável para eventos do lock de instalação.
+ * Mesmo padrão de logger opcional usado em `motor-v3/src/testing/`
+ * (ex.: `OperationLogger` no `TestGateConsumer`): quem constrói injeta;
+ * o padrão é compatível com console (linha JSON via `console.info`).
+ */
+export interface InstallLockLogger {
+  log(entry: InstallLockEvent): void | Promise<void>
+}
+
+export const consoleInstallLockLogger: InstallLockLogger = {
+  log(entry: InstallLockEvent): void {
+    console.info(JSON.stringify({ ts: new Date().toISOString(), scope: 'workspace-install-lock', ...entry }))
+  },
+}
+
+/** Falha de log NUNCA pode quebrar o fluxo do lock. */
+function emitLockEvent(logger: InstallLockLogger, entry: InstallLockEvent): void {
+  try {
+    void Promise.resolve(logger.log(entry)).catch(() => {})
+  } catch {
+    // logger síncrono que lançou: ignorar.
+  }
+}
+
+/** `process.kill(pid, 0)` → ESRCH significa processo morto; EPERM significa vivo (de outro usuário). */
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException)?.code === 'EPERM'
+  }
+}
+
+/**
+ * Lê o owner.json do lock. Ausente/ilegível/incompleto degrada para `null`,
+ * e a recuperação cai no critério de idade/heartbeat (comportamento anterior).
+ */
+async function readInstallLockOwner(lockPath: string): Promise<InstallLockOwner | null> {
+  try {
+    const parsed = JSON.parse(await readFile(join(lockPath, INSTALL_LOCK_OWNER_FILE), 'utf8')) as Partial<InstallLockOwner>
+    if (typeof parsed?.pid !== 'number' || !Number.isFinite(parsed.pid) || typeof parsed?.hostname !== 'string') return null
+    return {
+      pid: parsed.pid,
+      hostname: parsed.hostname,
+      acquiredAt: typeof parsed.acquiredAt === 'string' ? parsed.acquiredAt : '',
+      heartbeatAt: typeof parsed.heartbeatAt === 'string' ? parsed.heartbeatAt : '',
+    }
+  } catch {
+    return null
+  }
+}
+
+/** Grava o owner.json sem nunca quebrar o fluxo (lock sem owner ainda degrada para idade). */
+async function writeInstallLockOwner(ownerPath: string, owner: InstallLockOwner): Promise<void> {
+  try {
+    await writeFile(ownerPath, JSON.stringify(owner))
+  } catch {
+    // owner.json é sinal auxiliar; a ausência dele não invalida o lock.
+  }
+}
+
+/** Varre resíduos `.stale-*` deixados por retomadas anteriores (rm pós-rename que falhou). Idempotente. */
+async function sweepStaleLockResidues(workspacePath: string): Promise<void> {
+  try {
+    const entries = await readdir(workspacePath)
+    await Promise.all(
+      entries
+        .filter(entry => entry.startsWith(INSTALL_LOCK_STALE_PREFIX))
+        .map(entry => rm(resolve(workspacePath, entry), { recursive: true, force: true })),
+    )
+  } catch {
+    // Varredura é melhor esforço: não pode falhar a preparação.
+  }
+}
+
 /**
  * Retoma um lock órfão: se o detentor morreu (troca de container no deploy
  * blue-green, crash, SIGKILL), o diretório do lock permanece e bloquearia o
  * worktree para sempre — todo attempt seguinte morreria em timeout.
- * O detentor vivo faz heartbeat no mtime do diretório; lock sem heartbeat há
- * mais de INSTALL_LOCK_STALE_MS é considerado órfão e retomado via rename
- * atômico (apenas um concorrente vence o rename; os demais caem no catch e
- * seguem o polling normal).
+ *
+ * Critérios de órfão (nessa ordem):
+ * 1. **PID morto no mesmo host:** `owner.json` com hostname local e
+ *    `process.kill(pid, 0)` → ESRCH autoriza retomada IMEDIATA (sem esperar
+ *    o limiar de idade).
+ * 2. **Idade/heartbeat:** PID vivo no mesmo host OU owner de outro host
+ *    (containers blue/green compartilham o filesystem — PID externo não é
+ *    verificável) OU owner.json ausente/ilegível caem no critério de idade:
+ *    lock sem heartbeat há mais de INSTALL_LOCK_STALE_MS é órfão.
+ *
+ * Lock fresco/detentor vivo NUNCA é removido. A retomada é via rename atômico
+ * (apenas um concorrente vence o rename; os demais caem no catch e seguem o
+ * polling normal), seguida de rm; se o rm falhar, o resíduo `.stale-*` é
+ * varrido de forma idempotente.
  */
-async function reclaimStaleInstallLock(lockPath: string): Promise<void> {
+async function reclaimStaleInstallLock(lockPath: string, workspacePath: string, logger: InstallLockLogger): Promise<void> {
+  let ageMs = 0
+  let owner: InstallLockOwner | null = null
   try {
     const stats = await stat(lockPath)
-    if (Date.now() - stats.mtimeMs <= INSTALL_LOCK_STALE_MS) return
-    const takeoverPath = `${lockPath}.stale-${process.pid}-${Date.now()}`
+    ageMs = Date.now() - stats.mtimeMs
+  } catch {
+    // Lock recém-removido/renomeado por outro concorrente: nada a fazer.
+    return
+  }
+  owner = await readInstallLockOwner(lockPath)
+  const deadPid = owner !== null && owner.hostname === hostname() && !isProcessAlive(owner.pid)
+  if (!deadPid && ageMs <= INSTALL_LOCK_STALE_MS) return
+  const reason: 'dead_pid' | 'stale_heartbeat' = deadPid ? 'dead_pid' : 'stale_heartbeat'
+  const takeoverPath = `${lockPath}.stale-${process.pid}-${Date.now()}`
+  try {
     await rename(lockPath, takeoverPath)
+  } catch (error) {
+    // Perda de corrida para outro concorrente (ENOENT) ou lock ainda protegido:
+    // o polling continua.
+    emitLockEvent(logger, {
+      event: 'lock_takeover_failed',
+      lockPath,
+      reason: (error as NodeJS.ErrnoException)?.code ?? String(error),
+      owner,
+    })
+    return
+  }
+  emitLockEvent(logger, { event: 'lock_stale_reclaimed', lockPath, reason, ageMs, owner })
+  try {
     await rm(takeoverPath, { recursive: true, force: true })
   } catch {
-    // Lock recém-removido/renomeado por outro concorrente ou ainda fresco:
-    // nada a fazer, o polling continua.
+    // rm falhou após o rename: varre o resíduo para não acumular `.stale-*`.
+    await sweepStaleLockResidues(workspacePath)
   }
 }
 
@@ -40,11 +168,18 @@ async function reclaimStaleInstallLock(lockPath: string): Promise<void> {
  * `npm ci` não tolera duas instalações no mesmo worktree: ambas removem e
  * recriam os links dos workspaces e uma delas termina com EEXIST. O lock usa
  * mkdir (atômico no filesystem compartilhado) para coordenar inclusive os
- * dois processos blue/green do Motor. O detentor faz heartbeat periódico no
- * mtime do lock para que locks órfãos (detentor morto) possam ser retomados.
+ * dois processos blue/green do Motor. O detentor grava `owner.json` (PID/host)
+ * dentro do lock e faz heartbeat periódico no mtime do lock e no heartbeatAt
+ * do owner para que locks órfãos (detentor morto) possam ser detectados
+ * (PID morto → imediato; senão por idade) e retomados com segurança.
  */
-async function withWorkspaceInstallLock<T>(workspacePath: string, operation: () => Promise<T>): Promise<T> {
+async function withWorkspaceInstallLock<T>(
+  workspacePath: string,
+  operation: () => Promise<T>,
+  logger: InstallLockLogger = consoleInstallLockLogger,
+): Promise<T> {
   const lockPath = resolve(workspacePath, INSTALL_LOCK_DIRECTORY)
+  const ownerPath = join(lockPath, INSTALL_LOCK_OWNER_FILE)
   const deadline = Date.now() + INSTALL_LOCK_TIMEOUT_MS
   while (true) {
     try {
@@ -55,13 +190,20 @@ async function withWorkspaceInstallLock<T>(workspacePath: string, operation: () 
       if (Date.now() >= deadline) {
         throw new Error(`Timeout aguardando lock de instalação do worktree: ${lockPath}`, { cause: error })
       }
-      await reclaimStaleInstallLock(lockPath)
+      await reclaimStaleInstallLock(lockPath, workspacePath, logger)
       await wait(INSTALL_LOCK_POLL_MS)
     }
   }
+  const acquiredAt = new Date().toISOString()
+  const owner: InstallLockOwner = { pid: process.pid, hostname: hostname(), acquiredAt, heartbeatAt: acquiredAt }
+  await writeInstallLockOwner(ownerPath, owner)
+  emitLockEvent(logger, { event: 'lock_acquired', lockPath, owner })
+  // Varredura idempotente de resíduos `.stale-*` de retomadas anteriores.
+  await sweepStaleLockResidues(workspacePath)
   const heartbeat = setInterval(() => {
     const now = new Date()
     utimes(lockPath, now, now).catch(() => {})
+    void writeInstallLockOwner(ownerPath, { ...owner, heartbeatAt: now.toISOString() })
   }, INSTALL_LOCK_HEARTBEAT_MS)
   if (typeof heartbeat.unref === 'function') heartbeat.unref()
   try {
@@ -120,6 +262,7 @@ export class WorkspaceEnvironmentPreparer {
         maxBuffer: 50 * 1024 * 1024,
       })
     },
+    private readonly installLockLogger: InstallLockLogger = consoleInstallLockLogger,
   ) {}
 
   async prepare(workspacePath: string): Promise<string[]> {
@@ -135,7 +278,7 @@ export class WorkspaceEnvironmentPreparer {
         prepared.push(relative(workspacePath, directory) || '.')
       }
       return prepared
-    })
+    }, this.installLockLogger)
   }
 
   private async findLockfiles(workspacePath: string): Promise<string[]> {
