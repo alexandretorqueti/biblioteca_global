@@ -21,6 +21,7 @@ export type PromptSituation =
   | "resolucao_bloqueio"
   | "revisao_premissa_incorreta"
   | "auditoria_premissa_incorreta"
+  | "geracao_plano_macro_projeto"
 
 export interface AgentPromptCatalogEntry {
   key: string
@@ -204,6 +205,54 @@ BLOQUEIO_REMANESCENTE:
     source: "motor-v3/src/analysis/ManagedAnalysisPromptResolver.ts#resolve",
     markers: ["**TEXTOTAREFA**", "**TEXTOSUBTAREFAORIGINAL**", "**ERROREPORTADOPELOAGENTEDEV**", "**EVIDENCIASREFUTACAO**"],
     prompt: "Audite se a premissa foi refutada com evidência verificável. Tarefa: **TEXTOTAREFA**. Subtarefa: **TEXTOSUBTAREFAORIGINAL**. Alegação: **ERROREPORTADOPELOAGENTEDEV**. Evidências: **EVIDENCIASREFUTACAO**.",
+  },
+  {
+    key: "geracao.plano_macro_projeto",
+    agentType: "analista",
+    situation: "geracao_plano_macro_projeto",
+    source: "motor-v3/src/generation/ProjectGenerationWorker.ts#montarPromptGeracao",
+    markers: [
+      "**NOME**",
+      "**SLUG**",
+      "**ESPECIFICACAO**",
+      "**DESCRICAO**",
+      "**CATALOGO_CRUD**",
+      "**DOCS**",
+      "**CHAT**",
+      "**FEEDBACK**",
+    ],
+    prompt: `Você é o Analista de Planejamento do projeto "**NOME**" (slug: **SLUG**).
+Sua saída será um PLANO DE TAREFAS MACRO que será revisado e aprovado pelo dono do produto antes de qualquer execução.
+
+== ENTRADAS ==
+1. Especificação completa (fonte de verdade): **ESPECIFICACAO**
+2. Resumo da captação: **DESCRICAO**
+3. O que a plataforma já cobre automaticamente (CRUD genérico da Biblioteca — telas de cadastro padrão, auth única, RBAC da plataforma, máscaras/validadores, menus e relatórios padrão): **CATALOGO_CRUD**
+4. Documentação técnica do monorepo relevante: **DOCS**
+5. Histórico de clarificação deste projeto (se houver): **CHAT**
+6. Feedback do revisor (em rodadas de revisão): **FEEDBACK**
+
+== MÉTODO OBRIGATÓRIO ==
+1. Extraia o inventário de requisitos da especificação: REQ-F-### (funcionais), REQ-NF-### (não-funcionais), REQ-D-### (dados/entidades), REQ-I-### (integrações). Não invente requisito; não descarte requisito implícito sem registrá-lo como lacuna.
+2. Para cada requisito, decida: (a) coberto pelo CRUD/plataforma, (b) precisa de tarefa macro, (c) fora de fase (justificar).
+3. Classifique cada requisito/funcionalidade contra o CATÁLOGO DA BIBLIOTECA (entrada 3): "crud" (cobre nativamente) | "custom" (exige tela/fluxo personalizado) | "lacuna" (funcionalidade desejável que a biblioteca não tem — registrar no histórico). Sistema 100% crud → registre requerAgenteDedicado=false.
+4. Desenhe as tarefas macro por CAPACIDADE DE SISTEMA (não por tela): modelo de dados e tenancy, papéis/permissões, fluxos/estados, integrações e infraestrutura (ex.: email), interfaces específicas, requisitos não-funcionais verificáveis. Marque em cada tarefa o EXECUTOR: "biblioteca-global" (specs CRUD/config, registros, materialização) ou "agente-projeto" (telas/fluxos personalizados).
+5. Para cada tarefa: título, objetivo, escopo (o que entra/o que NÃO entra), critérios de aceite testáveis, REQs cobertos, dependências (quais tarefas precisam estar prontas antes), executor, risco/complexidade.
+6. Produza a especificação CRUD (especificacaoCrud): entidades, campos/tipos, máscaras/validações, menus e agrupamentos — no formato do MANUAL_CONFIG_PROJETOS, suficiente para gerar config.ts/schema.ts sem re-análise.
+7. Gere a matriz de cobertura REQ → (tarefa | CRUD | fora-de-fase). TODO requisito deve aparecer na matriz. Ambiguidades vão para lacunas[]; funcionalidades que a biblioteca não cobre nativamente vão para lacunasBiblioteca[] (histórico acumulativo para roadmap da biblioteca).
+8. Se faltar informação DECISÓRIA, não presuma: devolva perguntas (máx. 8, numeradas, com resumo do entendimento atual).
+
+== GRANULARIDADE ==
+Agrupe por capacidade de sistema, não por tela. Alvo indicativo: 8 a 15 tarefas macro. Não fragmente o plano em dezenas de tarefas pequenas; o revisor humano poderá editar a granularidade na aprovação.
+
+== REGRAS ==
+- Se requerAgenteDedicado=false, nenhuma tarefa pode ter executor "agente-projeto".
+- depende_de expressa ordem topológica linear: cada tarefa referencia apenas tarefas com seq anterior.
+- auto_start=true somente quando o plano justificar execução automática imediata; o default é false (sequência controlada por dependência).
+- Responda com um ÚNICO JSON no contrato de saída: forma "plano" ou forma "perguntas".
+
+**CONTRATOSAIDA**`,
+    contractKey: "geracao.plano_ou_perguntas",
   },
   {
     key: "monitor.resolucao_bloqueio",
