@@ -30,7 +30,7 @@ function setup(snapshot: TaskSnapshot | null = task(), config: TaskCoordinatorCo
 }
 
 /** Setup com gate de políticas governado (espelho da produção: C03/P03/A21). */
-function setupGoverned(snapshot: TaskSnapshot | null = task()) {
+function setupGoverned(snapshot: TaskSnapshot | null = task(), extraConfig: TaskCoordinatorConfig = {}) {
   const bus = new MessageBus()
   const entries: OperationLogEntry[] = []
   const logger: OperationLogger = { append: vi.fn(async entry => { entries.push(entry) }) }
@@ -47,7 +47,7 @@ function setupGoverned(snapshot: TaskSnapshot | null = task()) {
     persistAnalysis: vi.fn(async () => {}),
   }
   const runner = { start: vi.fn(async () => ({ kind: 'plan' as const, subtasks: [{ seq: 1, titulo: 'Subtarefa', scope: 'Escopo', acceptanceCriteria: ['OK'], deliverables: ['Entrega'], requirementsCovered: ['REQ-1'], dependsOn: [] }], coverage: { requirements: [{ id: 'REQ-1', description: 'Requisito' }], coverage: [{ requirement: 'REQ-1', coveredBy: [1] }] } })) }
-  const coordinator = new TaskCoordinator(repository, runner, bus, { commandPolicies: policies, operationLogger: logger })
+  const coordinator = new TaskCoordinator(repository, runner, bus, { commandPolicies: policies, operationLogger: logger, ...extraConfig })
   return { bus, repository, runner, coordinator, entries }
 }
 
@@ -325,6 +325,84 @@ describe('TaskCoordinator', () => {
 
     expect(repository.getTask).not.toHaveBeenCalled()
     expect(runner.start).not.toHaveBeenCalled()
+  })
+
+  // task-p2-1047, subtarefa 3: resume de tarefa terminal (caso real task-p6-1029:
+  // completed + 0 subtarefas = closed) nunca pode ser no-op silencioso —
+  // rejeição explícita com evento em tarefa_eventos + notificação no chat.
+  describe('rejeição explícita de resume em tarefa terminal', () => {
+    function rejectionSinks() {
+      const eventos: Array<{ evento: string; payload: unknown }> = []
+      const taskEvents = {
+        record: vi.fn(async (_taskId: string, evento: string, _ator?: string, payload?: unknown) => {
+          eventos.push({ evento, payload })
+        }),
+      }
+      const resumeRejectionNotifier = { notifyResumeRejected: vi.fn(async () => {}) }
+      return { eventos, taskEvents, resumeRejectionNotifier }
+    }
+
+    it('tarefa closed (completed + 0 subtarefas): evento resume_rejected_terminal + chat, sem iniciar análise', async () => {
+      const { eventos, taskEvents, resumeRejectionNotifier } = rejectionSinks()
+      const { coordinator, repository, runner, bus } = setup(
+        task({ terminal: true, status: 'completed', subtaskCount: 0 }),
+        { taskEvents, resumeRejectionNotifier },
+      )
+      const ignored = vi.fn()
+      bus.on('EVENT_TASK_IGNORED', ignored)
+
+      await coordinator.handle(command())
+
+      expect(repository.claimAnalysis).not.toHaveBeenCalled()
+      expect(runner.start).not.toHaveBeenCalled()
+      expect(ignored).toHaveBeenCalled()
+      const rejection = eventos.find(e => e.evento === 'resume_rejected_terminal')
+      expect(rejection).toBeDefined()
+      expect(rejection?.payload).toMatchObject({
+        terminalStatus: 'completed', subtaskCount: 0, derivedStatus: 'closed',
+      })
+      expect(String((rejection?.payload as Record<string, unknown>).reason)).toContain('veredito')
+      expect(resumeRejectionNotifier.notifyResumeRejected).toHaveBeenCalledWith('task-1', 'completed', 0)
+    })
+
+    it('caminho governado (política task_terminal) também gera rejeição explícita', async () => {
+      const { eventos, taskEvents, resumeRejectionNotifier } = rejectionSinks()
+      const { coordinator, runner, entries } = setupGoverned(
+        task({ terminal: true, status: 'cancelled', subtaskCount: 0 }),
+        { taskEvents, resumeRejectionNotifier },
+      )
+
+      await coordinator.handle(command())
+
+      expect(runner.start).not.toHaveBeenCalled()
+      expect(entries.some(entry => entry.reasonCode === 'task_terminal')).toBe(true)
+      expect(eventos.some(e => e.evento === 'resume_rejected_terminal')).toBe(true)
+      expect(resumeRejectionNotifier.notifyResumeRejected).toHaveBeenCalledWith('task-1', 'cancelled', 0)
+    })
+
+    it('falha do notificador não derruba o consumo (evento de auditoria permanece)', async () => {
+      const { eventos, taskEvents } = rejectionSinks()
+      const resumeRejectionNotifier = { notifyResumeRejected: vi.fn(async () => { throw new Error('chat indisponível') }) }
+      const { coordinator } = setup(
+        task({ terminal: true, status: 'failed', subtaskCount: 2 }),
+        { taskEvents, resumeRejectionNotifier },
+      )
+
+      await expect(coordinator.handle(command())).resolves.toBeUndefined()
+
+      expect(eventos.some(e => e.evento === 'resume_rejected_terminal')).toBe(true)
+    })
+
+    it('tarefa NÃO terminal não gera rejeição (fluxo normal preservado)', async () => {
+      const { eventos, taskEvents, resumeRejectionNotifier } = rejectionSinks()
+      const { coordinator, runner } = setup(task(), { taskEvents, resumeRejectionNotifier })
+
+      await coordinator.handle(command())
+
+      expect(runner.start).toHaveBeenCalled()
+      expect(eventos.some(e => e.evento === 'resume_rejected_terminal')).toBe(false)
+      expect(resumeRejectionNotifier.notifyResumeRejected).not.toHaveBeenCalled()
+    })
   })
 })
 // @vitest-environment node

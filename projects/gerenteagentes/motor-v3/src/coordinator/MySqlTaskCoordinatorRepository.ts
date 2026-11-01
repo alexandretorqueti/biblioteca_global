@@ -15,6 +15,7 @@ import type { RealtimeMutationPublisher } from '../realtime/RealtimeMutationPubl
 import { providerFromModel, providerCapacityDecision } from '../execution/ProviderCapacity.js'
 import { validateProjectSetupEvidence } from '../setup/ProjectSetupGate.js'
 import { createQueueMessage, insertOutboxMessage } from '../queue/index.js'
+import { applyVerificationRouting, insertVerificationChatMessage, type VerificationRoutingResult } from './VerificationRouting.js'
 
 interface TaskRow extends RowDataPacket {
   id: number
@@ -379,16 +380,38 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
           )
           await this.releaseProjectTasksAfterSetup(connection, Number(taskRows[0]?.projeto_id), String(taskId).replace(/^setup-/, ''))
         }
-        const chatText = JSON.stringify({ kind: 'verification', verdict: outcome.verdict, summary: outcome.summary, evidence: outcome.evidence })
+        // Veredito cross-project (task-p2-1047, caso 1029): com routing, cria a
+        // tarefa proposta no projeto de destino na MESMA transação (pausada,
+        // com vínculo de origem em tarefa_eventos nas duas tarefas, external_id
+        // determinístico). Destino inválido → degrada para alerta no chat da
+        // origem, sem falhar a análise.
+        const originExternalId = String(taskRows[0]?.external_id ?? taskId)
+        let routingResult: VerificationRoutingResult | null = null
+        if (outcome.routing) {
+          routingResult = await applyVerificationRouting(connection, {
+            originDatabaseTaskId: databaseTaskId,
+            originExternalId,
+            originProjectId: taskRows[0]?.projeto_id != null ? Number(taskRows[0].projeto_id) : null,
+            routing: outcome.routing,
+            verdict: outcome.verdict,
+            summary: outcome.summary,
+            evidence: outcome.evidence,
+          })
+        }
+        // Mensagem legível (markdown) no chat da origem em vez de JSON bruto,
+        // com INSERT idempotente por marcador (padrão blockerChatAlert.ts):
+        // redelivery da mesma análise não duplica a mensagem.
         const createdAt = new Date().toISOString()
-        const [chatInsert] = await connection.query<ResultSetHeader>(
-          `INSERT INTO tarefa_chats (tarefa_id, role, texto, created_at)
-           VALUES (?, 'analyst', ?, NOW())`,
-          [databaseTaskId, chatText],
+        const chatMessage = await insertVerificationChatMessage(
+          connection, databaseTaskId, originExternalId,
+          { verdict: outcome.verdict, summary: outcome.summary, evidence: outcome.evidence },
+          routingResult,
         )
-        await this.realtime.appendChatMessage(connection, databaseTaskId, {
-          id: Number(chatInsert.insertId), role: 'analyst', texto: chatText, createdAt,
-        })
+        if (chatMessage) {
+          await this.realtime.appendChatMessage(connection, databaseTaskId, {
+            id: chatMessage.id, role: 'assistant', texto: chatMessage.texto, createdAt,
+          })
+        }
         await connection.query(
           `INSERT INTO task_runtime_facts
              (tarefa_id, terminal_status, terminal_at, integration_confirmed_at, created_at, updated_at)

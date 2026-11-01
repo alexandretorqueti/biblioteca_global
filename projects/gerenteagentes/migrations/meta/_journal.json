@@ -701,6 +701,13 @@
       "when": 1793555000002,
       "tag": "0099_setup_gate_legacy_block_cleanup",
       "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "5",
+      "when": 1793555000003,
+      "tag": "0100_analyst_verification_routing",
+      "breakpoints": true
     }
   ]
 }

@@ -9,6 +9,8 @@ import type { AnalysisFailureSink } from './AnalysisFailureBlocker.js'
 import type { GovernedFailureHandler } from '../governance/GovernedFailureHandler.js'
 import type { ErrorInput } from '../classifier/EventClassifier.js'
 import type { ClarificationCheckpointStore, ClarificationResumeInput } from './ClarificationCheckpoints.js'
+import type { ResumeRejectionNotifier } from './ResumeTerminalGuard.js'
+import { deriveResumeRejection } from './ResumeTerminalGuard.js'
 
 export type TaskLifecycleStatus = DerivedTaskStatus
 export type AnalysisClaimResult = boolean | 'capacity_waiting'
@@ -128,6 +130,15 @@ export interface TaskCoordinatorConfig {
    * coordenador mantém integralmente o comportamento legado.
    */
   governedFailureHandler?: GovernedFailureHandler
+  /**
+   * Rejeição explícita de resume em tarefa terminal (task-p2-1047, subtarefa 3):
+   * quando `TASK_RESUME_REQUESTED` encontra tarefa terminal — em especial
+   * `completed` com 0 subtarefas (status derivado `closed`, encerrada por
+   * veredito da análise) — a rejeição deixa de ser no-op silencioso: grava
+   * evento `resume_rejected_terminal` em `tarefa_eventos` e mensagem legível
+   * no chat da tarefa (padrão da resposta already-terminal do cancel).
+   */
+  resumeRejectionNotifier?: ResumeRejectionNotifier
 }
 
 // Criar/enfileirar apenas registra a tarefa. Toda tarefa nasce pausada e a
@@ -157,6 +168,7 @@ export class TaskCoordinator {
   private readonly analysisCapacity?: { requeueForDeployRetry(message: QueueMessage, reason: string): Promise<void> }
   private readonly governedFailureHandler?: GovernedFailureHandler
   private readonly checkpoints?: ClarificationCheckpointStore
+  private readonly resumeRejectionNotifier?: ResumeRejectionNotifier
 
   constructor(
     private readonly repository: TaskCoordinatorRepository,
@@ -178,6 +190,7 @@ export class TaskCoordinator {
     this.analysisCapacity = config.analysisCapacity
     this.governedFailureHandler = config.governedFailureHandler
     this.checkpoints = config.checkpoints
+    this.resumeRejectionNotifier = config.resumeRejectionNotifier
   }
 
   async handle(message: QueueMessage): Promise<void> {
@@ -212,6 +225,9 @@ export class TaskCoordinator {
           await this.emitTaskReady(message, { reason: decision.reasonCode, subtaskCount: task.subtaskCount })
         } else {
           if (decision.reasonCode === 'task_blocked') await this.publishTaskBlocked?.(message, decision.reasonCode)
+          // Resume de tarefa terminal nunca é no-op silencioso (task-p2-1047):
+          // rejeição explícita com motivo legível em tarefa_eventos + chat.
+          if (decision.reasonCode === 'task_terminal') await this.announceTerminalResumeRejection(task, 'task_terminal')
           await this.emit('TASK_IGNORED', message, { reason: decision.reasonCode })
         }
         return
@@ -240,6 +256,9 @@ export class TaskCoordinator {
       // Despausar tarefa bloqueada cai aqui (status derivado 'blocked'):
       // reemite TASK_BLOCKED para o Monitor-Resolvedor trabalhar.
       if (ignoredReason === 'blocked') await this.publishTaskBlocked?.(message, ignoredReason)
+      // Caminho legado (sem políticas governadas): resume de tarefa terminal
+      // também exige rejeição explícita — evento + chat, nunca silêncio.
+      if (ignoredReason === 'terminal') await this.announceTerminalResumeRejection(task, 'terminal')
       await this.emit('TASK_IGNORED', message, { reason: ignoredReason })
       return
     }
@@ -531,6 +550,34 @@ export class TaskCoordinator {
   private async log(operationId: string, sequence: number, phase: 'received' | 'decision' | 'action' | 'primitive' | 'completed' | 'failed' | 'rejected', outcome: 'pending' | 'executed' | 'skipped' | 'rejected' | 'succeeded' | 'failed', message: QueueMessage, extra: Omit<Parameters<OperationLogger['append']>[0], 'operationId' | 'sequence' | 'phase' | 'outcome' | 'messageId' | 'messageType' | 'correlationId' | 'causationId' | 'taskId'> = {}): Promise<void> {
     if (!this.operationLogger) return
     await this.operationLogger.append({ operationId, sequence, phase, outcome, messageId: message.messageId, messageType: message.type, correlationId: message.correlationId, causationId: message.causationId, taskId: message.taskId, ...extra })
+  }
+
+  /**
+   * Rejeição explícita de `TASK_RESUME_REQUESTED` em tarefa terminal
+   * (task-p2-1047, subtarefa 3 — caso real task-p6-1029: completed + 0
+   * subtarefas = `closed`). Grava o fato auditável (`resume_rejected_terminal`
+   * em `tarefa_eventos`) e delega ao notificador a mensagem legível no chat da
+   * tarefa. Melhor-esforço: falha de auditoria não derruba o fluxo do comando
+   * (o `TASK_IGNORED` e o log de operação já carregam a rejeição).
+   */
+  private async announceTerminalResumeRejection(task: TaskSnapshot, reasonCode: string): Promise<void> {
+    const terminalStatus = ['completed', 'cancelled', 'failed'].includes(task.status) ? task.status : 'terminal'
+    const { derivedStatus, reason } = deriveResumeRejection(terminalStatus, task.subtaskCount)
+    await this.recordEvent(task.taskId, 'resume_rejected_terminal', {
+      reasonCode,
+      terminalStatus,
+      subtaskCount: task.subtaskCount,
+      derivedStatus,
+      reason,
+    })
+    try {
+      await this.resumeRejectionNotifier?.notifyResumeRejected(task.taskId, terminalStatus, task.subtaskCount)
+    } catch (error) {
+      console.warn(
+        `[TaskCoordinator] falha ao notificar rejeição de resume da tarefa ${task.taskId}:`,
+        error instanceof Error ? error.message : String(error),
+      )
+    }
   }
 
   private getIgnoredReason(task: TaskSnapshot): string | null {

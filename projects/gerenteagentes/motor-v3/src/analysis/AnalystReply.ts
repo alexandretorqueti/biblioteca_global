@@ -43,9 +43,21 @@ export interface PlanCoverage {
   coverage: Array<{ requirement: string; coveredBy: number[] }>
 }
 
+/**
+ * Roteamento cross-project opcional do veredito verification (contrato v13,
+ * task-p2-1047). Presente quando o analista conclui que o trabalho pertence a
+ * OUTRO projeto (caso real task-p6-1029: "o problema não é do Admin; é da
+ * Biblioteca Global — packages/ui").
+ */
+export interface VerificationRouting {
+  targetProjectSlug: string
+  recommendedTitle?: string
+  diagnosis?: string
+}
+
 export type AnalysisOutcome =
   | { kind: 'plan'; subtasks: PlannedSubtask[]; coverage: PlanCoverage }
-  | { kind: 'verification'; verdict: string; summary: string; evidence: string[] }
+  | { kind: 'verification'; verdict: string; summary: string; evidence: string[]; routing?: VerificationRouting }
   | { kind: 'questions'; summary: string; questions: string[] }
 
 /**
@@ -113,7 +125,8 @@ export function parseAnalystReply(content: string, contractSchema?: unknown, tas
     const summary = String(parsed.summary ?? parsed.resumo ?? '').trim()
     const evidence = strings(parsed.evidence ?? parsed.evidencias)
     if (!verdict || !summary) throw new Error('Resultado de verificação incompleto')
-    return { kind: 'verification', verdict, summary, evidence }
+    const routing = parseVerificationRouting(parsed.routing)
+    return { kind: 'verification', verdict, summary, evidence, ...(routing ? { routing } : {}) }
   }
 
   if (normalizeTaskType(taskType) === 'verificacao') {
@@ -169,6 +182,41 @@ export function parseAnalystReply(content: string, contractSchema?: unknown, tas
     throw new Error('Matriz de cobertura não cobre todos os requisitos')
   }
   return { kind: 'plan', subtasks, coverage: { requirements, coverage } }
+}
+
+/**
+ * Interpreta o campo OPCIONAL `routing` do veredito verification (contrato v13).
+ *
+ * Decisão registrada (task-p2-1047, subtarefa 1): `routing` presente com
+ * `target_project_slug` ausente/inválido é REJEITADO com erro claro — não
+ * degradado silenciosamente — porque o slug é o dado essencial para o Motor
+ * propor/criar a tarefa no projeto de destino; perdê-lo em silêncio repetiria
+ * o problema do caso 1029 (recomendação cross-project enterrada). A rejeição
+ * cai no fluxo de correção do ConsoleAnalystRunner (o mesmo modelo recebe o
+ * erro e reenvia a resposta). `routing` ausente mantém compatibilidade plena
+ * com respostas v12 (sem routing).
+ */
+function parseVerificationRouting(value: unknown): VerificationRouting | undefined {
+  if (value === undefined || value === null) return undefined
+  if (!isRecord(value)) throw new Error('routing do veredito verification deve ser um objeto JSON')
+  const slug = value.target_project_slug
+  if (typeof slug !== 'string' || slug.trim() === '') {
+    throw new Error('routing.target_project_slug é obrigatório (string não vazia) quando routing está presente no veredito verification')
+  }
+  const recommendedTitle = optionalString(value.recommended_title, 'routing.recommended_title')
+  const diagnosis = optionalString(value.diagnosis, 'routing.diagnosis')
+  return {
+    targetProjectSlug: slug.trim(),
+    ...(recommendedTitle ? { recommendedTitle } : {}),
+    ...(diagnosis ? { diagnosis } : {}),
+  }
+}
+
+/** Campo opcional de routing: ausente/vazio é omitido; tipo inválido é rejeitado. */
+function optionalString(value: unknown, field: string): string {
+  if (value === undefined || value === null) return ''
+  if (typeof value !== 'string') throw new Error(`${field} deve ser string quando presente no routing do veredito verification`)
+  return value.trim()
 }
 
 /** Compatibiliza respostas de contratos anteriores sem aceitar classificação inválida. */

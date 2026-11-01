@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest"
-import { render, screen, fireEvent, waitForElementToBeRemoved } from "@testing-library/react"
+import { render, screen, fireEvent, waitForElementToBeRemoved, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import "@testing-library/jest-dom/vitest"
 import { BibliotecaThemeProvider } from "@biblioteca-global/ui"
@@ -44,6 +44,28 @@ describe("TaskFlowMap", () => {
     expect(screen.getByTestId("flow-count-closed")).toHaveTextContent("1")
     expect(screen.getByTestId("flow-station-cancelled")).toHaveTextContent("Canceladas")
     expect(screen.getByTestId("flow-count-cancelled")).toHaveTextContent("2")
+  })
+
+  it("tarefa closed cai na estação Encerradas e NUNCA em Canceladas (caso 1029)", () => {
+    view([
+      { id: 801, titulo: "Validação", status: "closed", projetoId: 1 },
+      { id: 802, titulo: "Cancelada", status: "cancelled", projetoId: 1 },
+      { id: 803, titulo: "Abortada", status: "aborted", projetoId: 1 },
+    ])
+    const encerradas = screen.getByTestId("flow-station-closed")
+    const canceladas = screen.getByTestId("flow-station-cancelled")
+
+    // A tarefa closed pertence à estação Encerradas...
+    expect(within(encerradas).getByTestId("flow-task-801")).toBeInTheDocument()
+    // ...e jamais aparece entre as Canceladas (regressão do caso 1029: closed
+    // era agrupado com canceladas e o veredito ficava invisível no quadro).
+    expect(within(canceladas).queryByTestId("flow-task-801")).not.toBeInTheDocument()
+
+    // Canceladas continua restrita a cancelled/aborted.
+    expect(within(canceladas).getByTestId("flow-task-802")).toBeInTheDocument()
+    expect(within(canceladas).getByTestId("flow-task-803")).toBeInTheDocument()
+    expect(within(encerradas).queryByTestId("flow-task-802")).not.toBeInTheDocument()
+    expect(within(encerradas).queryByTestId("flow-task-803")).not.toBeInTheDocument()
   })
 
   it("exibe o selo de recuperação somente para tarefas bloqueadas", () => {
