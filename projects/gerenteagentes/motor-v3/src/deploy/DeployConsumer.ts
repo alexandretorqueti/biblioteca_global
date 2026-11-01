@@ -763,48 +763,57 @@ export class DeployConsumer {
           const errorMessage = error instanceof Error ? error.message : String(error)
           if (errorMessage.includes('empty')) {
             await execFileAsync('git', ['cherry-pick', '--skip'], { cwd: path })
-          } else if (await this.skipNoopCherryPickConflict(path)) {
+            continue
+          }
+          // Diagnóstico capturado com os conflict stages (:1:/:2:/:3:) ainda
+          // intactos: skipNoopCherryPickConflict resolve os caminhos com
+          // `checkout --ours` + `git add`, o que apaga esses stages. No git
+          // real, rodar o noop ANTES do diagnóstico fazia o auto-renumber de
+          // journal receber `conflictFiles` vazio e nunca disparar — o membro
+          // era isolado por colisão de índice de migration (incidente
+          // task-p2-1047: os testes unitários com git mockado não reproduziam
+          // a destruição de estado).
+          let conflictFiles: string[] = []
+          try {
+            const { stdout: diffOutput } = await execFileAsync('git', ['diff', '--name-only', '--diff-filter=U'], { cwd: path, encoding: 'utf8' })
+            conflictFiles = diffOutput.split('\n').map(f => f.trim()).filter(Boolean)
+          } catch { /* best-effort */ }
+          // Colisão de índice de migration (5 casos em 2026-10-23): quando o
+          // conflito é SOMENTE no _journal.json, renumera automaticamente a
+          // migration do membro para o próximo índice livre e continua o lote.
+          const journalOnlyConflict = conflictFiles.length > 0
+            && conflictFiles.every(file => /(^|\/)migrations\/meta\/_journal\.json$/.test(file))
+          if (journalOnlyConflict && entry.taskId && await this.autoResolveMigrationJournalConflicts(path, conflictFiles, batchId, entry.taskId, entry.commit)) {
+            continue
+          }
+          if (await this.skipNoopCherryPickConflict(path)) {
             // O patch pode conflitar apenas porque a base já contém o
             // resultado final por outra sequência de commits. Nesse caso,
             // preservar a base é equivalente a um cherry-pick vazio.
             // Conflito noop: ignora sem bloqueio ou análise.
             await execFileAsync('git', ['cherry-pick', '--skip'], { cwd: path })
-          } else {
-            // Conflito REAL: captura diagnóstico antes de abortar
-            let conflictFiles: string[] = []
-            try {
-              const { stdout: diffOutput } = await execFileAsync('git', ['diff', '--name-only', '--diff-filter=U'], { cwd: path, encoding: 'utf8' })
-              conflictFiles = diffOutput.split('\n').map(f => f.trim()).filter(Boolean)
-            } catch { /* best-effort */ }
-            // Colisão de índice de migration (5 casos em 2026-10-23): quando o
-            // conflito é SOMENTE no _journal.json, renumera automaticamente a
-            // migration do membro para o próximo idx livre e continua o lote.
-            const journalOnlyConflict = conflictFiles.length > 0
-              && conflictFiles.every(file => /(^|\/)migrations\/meta\/_journal\.json$/.test(file))
-            if (journalOnlyConflict && entry.taskId && await this.autoResolveMigrationJournalConflicts(path, conflictFiles, batchId, entry.taskId, entry.commit)) {
-              continue
-            }
-            // Aborta SOMENTE o cherry-pick em conflito (não o worktree inteiro)
-            await execFileAsync('git', ['cherry-pick', '--abort'], { cwd: path }).catch(() => {
-              // Fallback: se cherry-pick --abort falhar, tenta limpar o estado
-              return this.operationState.recover(path)
+            continue
+          }
+          // Conflito REAL: aborta SOMENTE o cherry-pick em conflito (não o worktree inteiro)
+          await execFileAsync('git', ['cherry-pick', '--abort'], { cwd: path }).catch(() => {
+            // Fallback: se cherry-pick --abort falhar, tenta limpar o estado
+            return this.operationState.recover(path)
+          })
+          // Se temos metadados do membro, isolar; se não, propagar erro (legacy)
+          if (entry.taskId) {
+            conflicts.push({
+              index: entry.memberIndex,
+              taskId: entry.taskId,
+              databaseTaskId: entry.databaseTaskId,
+              conflictFiles,
+              conflictExcerpt: errorMessage.slice(0, 500),
+              taskCommit: entry.commit,
             })
-            // Se temos metadados do membro, isolar; se não, propagar erro (legacy)
-            if (entry.taskId) {
-              conflicts.push({
-                index: entry.memberIndex,
-                taskId: entry.taskId,
-                databaseTaskId: entry.databaseTaskId,
-                conflictFiles,
-                conflictExcerpt: errorMessage.slice(0, 500),
-                taskCommit: entry.commit,
-              })
-              skippedMemberIndexes.add(entry.memberIndex)
-            } else {
-              // Sem metadados de membro (chamada legacy): comportamento antigo
-              if (await this.operationState.detect(path)) await this.operationState.recover(path)
-              throw error
-            }
+            skippedMemberIndexes.add(entry.memberIndex)
+          } else {
+            // Sem metadados de membro (chamada legacy): comportamento antigo
+            if (await this.operationState.detect(path)) await this.operationState.recover(path)
+            throw error
           }
         }
       }
@@ -857,12 +866,19 @@ export class DeployConsumer {
         const migrationsDir = dirname(metaDir)
         for (const rename of merged.renames) {
           const oldPrefix = /^(\d+)/.exec(rename.from)?.[1] ?? String(rename.oldIdx).padStart(4, '0')
-          const pairs: Array<[string, string]> = [
-            [`${migrationsDir}/${rename.from}.sql`, `${migrationsDir}/${rename.to}.sql`],
-            [`${metaDir}/${oldPrefix}_snapshot.json`, `${metaDir}/${String(rename.newIdx).padStart(4, '0')}_snapshot.json`],
+          const newPrefix = String(rename.newIdx).padStart(4, '0')
+          // Pares [origem, destino, opcional]. O snapshot é OPCIONAL: as
+          // migrations manuais do gerenteagentes não geram snapshot desde
+          // 0018; exigir o arquivo fazia a renumeração devolver false e o
+          // membro era isolado mesmo com colisão trivialmente resolvível
+          // (incidente task-p2-1047).
+          const pairs: Array<[string, string, boolean]> = [
+            [`${migrationsDir}/${rename.from}.sql`, `${migrationsDir}/${rename.to}.sql`, false],
+            [`${metaDir}/${oldPrefix}_snapshot.json`, `${metaDir}/${newPrefix}_snapshot.json`, true],
           ]
-          for (const [oldPath, newPath] of pairs) {
+          for (const [oldPath, newPath, optional] of pairs) {
             if (oldPath === newPath) continue
+            if (optional && !existsSync(`${path}/${oldPath}`)) continue
             if (existsSync(`${path}/${newPath}`)) {
               // Alvo ocupado: renumeração não é segura; deixa o isolamento agir.
               return false
@@ -876,6 +892,23 @@ export class DeployConsumer {
         }
         await writeFile(`${path}/${journalPath}`, `${JSON.stringify(merged.journal, null, 2)}\n`)
         await execFileAsync('git', ['add', '-A', '--', migrationsDir], { cwd: path })
+      }
+      // A resolução pode esvaziar o efeito líquido do pick (ex.: commit que só
+      // ajustava o `when` de uma migration já renumerada no lote): o
+      // `--continue` falharia com "previous cherry-pick is now empty" e o
+      // catch abortaria o membro inteiro. Detecta índice idêntico ao HEAD e
+      // pula o pick como noop (mesma semântica do skipNoopCherryPickConflict).
+      const noopAfterResolve = await execFileAsync('git', ['diff', '--cached', '--quiet', 'HEAD'], { cwd: path }).then(() => true, () => false)
+      if (noopAfterResolve) {
+        await execFileAsync('git', ['cherry-pick', '--skip'], { cwd: path })
+        console.log(JSON.stringify({
+          event: 'migration_journal_noop_skipped',
+          batchId,
+          taskId,
+          commit,
+          journals: journalFiles,
+        }))
+        return true
       }
       await execFileAsync('git', ['-c', 'core.editor=true', 'cherry-pick', '--continue'], {
         cwd: path,
