@@ -280,11 +280,16 @@ F1+F3 já eliminam o problema raiz; F2 dá ergonomia; F4 melhora a entrada; F5 v
 Criadas no projeto **Gerente Agentes** (projetos_captados id 2), `planned`, pausadas, `auto_start=false`.
 Start manual pelo Alexandre (regra: dependência só desbloqueia, não dispara).
 
+> **Histórico:** a 1ª leva (1048–1050) foi excluída em 2026-10-29 19:39 por diretriz do
+> Alexandre (modo manual supervisionado). **Recriadas em 2026-11-01** (item #8 do ciclo de
+> melhorias) com descrições enriquecidas (objetivo, escopo, fora-de-escopo, critérios de
+> aceite e apontador para esta proposta). IDs atuais abaixo.
+
 | Fase | Tarefa | external_id | depende de | Escopo |
 |---|---|---|---|---|
-| F1 | **1048** | task-p2-1048 | — | Núcleo: ProjectGenerationWorker + reconciliador + prompt + Catálogo v1 + tabela lacunas_biblioteca + status novos + endpoint aprovar + materialização + gate setup verified |
-| F2 | **1049** | task-p2-1049 | 1048 | Painel "Plano do projeto" (front) + notificações Telegram |
-| F3 | **1050** | task-p2-1050 | 1048 | Limpeza do setup (remover 3.6), agente dedicado só se requerAgenteDedicado, gate verified, gravar ESPECIFICACAO/ESPEC-CRUD |
+| F1 | **1056** | task-p2-1056 | — | Núcleo: ProjectGenerationWorker + reconciliador + prompt + Catálogo v1 + tabela lacunas_biblioteca + status novos + endpoint aprovar + materialização + gate setup verified |
+| F2 | **1057** | task-p2-1057 | 1056 | Painel "Plano do projeto" (front) + notificações Telegram |
+| F3 | **1058** | task-p2-1058 | 1056 | Limpeza do setup (remover 3.6), agente dedicado só se requerAgenteDedicado, gate verified, gravar ESPECIFICACAO/ESPEC-CRUD |
 
 **Fora do escopo criado (decisões pendentes do Alexandre):**
 - **F4 — Isa estruturada:** código vive no projeto da **Isa** (global-ia/isa-chat), não em gerenteagentes. Criar tarefa própria naquele projeto quando decidido (coluna `especificacao` + doc estruturado na captação).
