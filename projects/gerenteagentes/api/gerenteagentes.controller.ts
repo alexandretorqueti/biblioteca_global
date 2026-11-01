@@ -364,6 +364,34 @@ export class GerenteAgentesController {
     return this.service.listarGeracoesProjeto(projeto, id);
   }
 
+  /**
+   * Aprovação humana do plano da Geração Macro
+   * (docs/PROPOSTA-GERACAO-MACRO-TAREFAS.md §3.2/§4).
+   * decisao=approve materializa as tarefas (idempotente por external_id
+   * macro-<slug>-<n>); reject encerra sem criar nada; revise devolve a
+   * geração para nova rodada do worker com o feedback gravado.
+   */
+  @Post('projetos-captados/:id/geracoes/:geracaoId/aprovar')
+  @Roles('admin', 'gerente', 'operador')
+  aprovarGeracaoProjeto(
+    @CurrentProject() projeto: ProjetoResumo,
+    @CurrentUser() usuario: UsuarioAutenticado,
+    @Param('id', ParseIntPipe) id: number,
+    @Param('geracaoId', ParseIntPipe) geracaoId: number,
+    @Body() body: {
+      decisao: 'approve' | 'reject' | 'revise';
+      comentario?: string;
+      planoEditado?: unknown;
+    },
+  ) {
+    return this.service.aprovarGeracaoProjeto(projeto, id, geracaoId, {
+      decisao: body?.decisao,
+      comentario: body?.comentario,
+      planoEditado: body?.planoEditado,
+      ator: usuario?.email || usuario?.username || String(usuario?.id ?? 'usuario'),
+    });
+  }
+
   // ============================================================================
   // SUBTAREFAS
   // ============================================================================

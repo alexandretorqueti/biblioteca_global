@@ -1,4 +1,4 @@
-import { Injectable, Inject, Logger, NotFoundException, BadRequestException, Optional } from '@nestjs/common';
+import { Injectable, Inject, Logger, NotFoundException, BadRequestException, ConflictException, UnprocessableEntityException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { eq, desc, and, asc, lt, or, isNull, inArray, sql } from 'drizzle-orm';
 import { request as httpRequest, type RequestOptions } from 'node:http';
@@ -47,6 +47,7 @@ import {
   projetoMotorConfig,
   deployRequests,
   motorProviderLimits,
+  lacunasBiblioteca,
 } from '../schema';
 import {
   MOTOR_CONFIGURACOES,
@@ -58,6 +59,15 @@ import { ProvisionService } from '../../../apps/api/src/modules/provision/provis
 import { RealtimeService } from '../../../apps/api/src/modules/realtime/realtime.service';
 import { GitInspectorService } from './git-inspector.service';
 import { RealtimeMutationBoundaryService, REALTIME_TENANT_PROJECT_ID } from './realtime-mutation-boundary.service';
+import {
+  validarPlanoMacro,
+  ordenarTarefasMacro,
+  externalIdMacroTarefa,
+  truncarTexto,
+  montarDescricaoTarefaMacro,
+  montarConteudoEspecCrud,
+  type MacroPlanoValidado,
+} from './macro-plan';
 
 const DEFAULT_SESSION_PAGE_SIZE = 50;
 const MAX_SESSION_PAGE_SIZE = 500;
@@ -2431,6 +2441,432 @@ export class GerenteAgentesService {
       .orderBy(desc(geracoesProjeto.createdAt));
 
     return geracoes;
+  }
+
+  /**
+   * Aprovação humana do plano da Geração Macro
+   * (docs/PROPOSTA-GERACAO-MACRO-TAREFAS.md §3.2/§4).
+   *
+   * Transação única por decisão:
+   * - approve: valida o plano (planoEditado opcional — re-salvo em tasks),
+   *   materializa as tarefas em ordem topológica linear com idempotência por
+   *   external_id `macro-<slug>-<n>`, roteia por executor, grava ESPEC-CRUD.md,
+   *   persiste lacunasBiblioteca (status='aberta'), generation → 'approved'
+   *   com ids/títulos no json tasks, mensagem no chat do projeto e
+   *   eventos/outbox por tarefa (feed operacional);
+   * - reject: generation → 'rejected'; nenhuma tarefa é criada;
+   * - revise: generation → 'running' com feedback gravado (migration 0098);
+   *   sem worker/lease, o GenerationClaimReconciler a devolve para 'pending'
+   *   e o ProjectGenerationWorker reprocessa com o feedback.
+   */
+  async aprovarGeracaoProjeto(
+    projeto: ProjetoResumo,
+    projetoCaptadoId: number,
+    geracaoId: number,
+    input: {
+      decisao: 'approve' | 'reject' | 'revise';
+      comentario?: string | null;
+      planoEditado?: unknown;
+      ator?: string;
+    },
+  ) {
+    const decisoes: readonly string[] = ['approve', 'reject', 'revise'];
+    const decisao = input?.decisao;
+    if (!decisao || !decisoes.includes(decisao)) {
+      throw new BadRequestException("decisao deve ser 'approve', 'reject' ou 'revise'");
+    }
+    const db = await this.dbDoProjeto(projeto);
+
+    const [projetoCaptado] = await db
+      .select()
+      .from(projetosCaptados)
+      .where(eq(projetosCaptados.id, projetoCaptadoId))
+      .limit(1);
+    if (!projetoCaptado) throw new NotFoundException('Projeto não encontrado');
+
+    const [geracao] = await db
+      .select()
+      .from(geracoesProjeto)
+      .where(and(eq(geracoesProjeto.id, geracaoId), eq(geracoesProjeto.projetoId, projetoCaptadoId)))
+      .limit(1);
+    if (!geracao) throw new NotFoundException('Geração não encontrada para este projeto');
+    if (geracao.status !== 'awaiting_approval') {
+      throw new ConflictException(
+        `Geração ${geracaoId} não está aguardando aprovação (status='${geracao.status}')`,
+      );
+    }
+
+    const ator = input.ator?.trim() || 'usuario';
+    const comentario = (input.comentario ?? '').trim();
+    const agora = new Date();
+
+    if (decisao === 'revise') {
+      if (!comentario) {
+        throw new BadRequestException('decisao=revise exige comentario (feedback para a nova rodada do analista)');
+      }
+      await db.transaction(async (tx: any) => {
+        await tx
+          .update(geracoesProjeto)
+          .set({
+            status: 'running',
+            feedback: comentario,
+            // Claim liberado: sem worker/lease, o reconciliador devolve para
+            // 'pending' e o worker roda a nova rodada com o feedback.
+            workerId: null,
+            claimedAt: null,
+            leaseExpiresAt: null,
+            updatedAt: agora,
+          })
+          .where(eq(geracoesProjeto.id, geracao.id));
+        await tx.insert(projetoChats).values({
+          projetoId: projetoCaptadoId,
+          role: 'system',
+          texto: `🔁 Revisão solicitada no plano da geração #${geracaoId} por ${ator}: ${comentario}`,
+          createdAt: agora,
+        });
+      });
+      return { ok: true, geracaoId, decisao, status: 'running', feedback: comentario };
+    }
+
+    if (decisao === 'reject') {
+      await db.transaction(async (tx: any) => {
+        await tx
+          .update(geracoesProjeto)
+          .set({
+            status: 'rejected',
+            workerId: null,
+            claimedAt: null,
+            leaseExpiresAt: null,
+            ...(comentario ? { feedback: comentario } : {}),
+            updatedAt: agora,
+          })
+          .where(eq(geracoesProjeto.id, geracao.id));
+        await tx.insert(projetoChats).values({
+          projetoId: projetoCaptadoId,
+          role: 'system',
+          texto: `❌ Plano da geração #${geracaoId} rejeitado por ${ator}.${comentario ? ` Motivo: ${comentario}` : ''} Nenhuma tarefa foi criada.`,
+          createdAt: agora,
+        });
+      });
+      return { ok: true, geracaoId, decisao, status: 'rejected', tarefasCriadas: 0 };
+    }
+
+    // ---- approve: validação do plano (§5) + materialização (§4) ----
+    const planoBruto =
+      input.planoEditado !== undefined && input.planoEditado !== null ? input.planoEditado : geracao.tasks;
+    let plano: MacroPlanoValidado;
+    try {
+      plano = validarPlanoMacro(planoBruto);
+    } catch (error) {
+      const mensagem = error instanceof Error ? error.message.replace(/^plano_invalido:\s*/, '') : String(error);
+      throw new UnprocessableEntityException(`Plano macro inválido: ${mensagem}`);
+    }
+
+    const ordenadas = ordenarTarefasMacro(plano.tarefas);
+    const slug = String(projetoCaptado.slug);
+    const externalIds = ordenadas.map((_tarefa, indice) => externalIdMacroTarefa(slug, indice + 1));
+
+    // Roteamento por executor (§4): tarefas biblioteca-global pertencem ao
+    // projeto captado de mesmo slug; agente-projeto pertence ao projeto novo.
+    const precisaBiblioteca = ordenadas.some((tarefa) => tarefa.executor === 'biblioteca-global');
+    let bibliotecaProjetoId: number | null = null;
+    if (precisaBiblioteca) {
+      const [biblioteca] = await db
+        .select({ id: projetosCaptados.id, slug: projetosCaptados.slug, ativo: projetosCaptados.ativo })
+        .from(projetosCaptados)
+        .where(eq(projetosCaptados.slug, 'biblioteca-global'))
+        .limit(1);
+      if (!biblioteca) {
+        throw new UnprocessableEntityException(
+          'Projeto executor "biblioteca-global" não encontrado em projetos_captados — impossível rotear as tarefas do plano',
+        );
+      }
+      bibliotecaProjetoId = Number(biblioteca.id);
+    }
+
+    // Idempotência (§4): external_ids já existentes são reutilizados — uma
+    // aprovação duplicada/retentada não duplica tarefas (unique em tarefas.external_id).
+    const existentes = await db
+      .select({
+        id: tarefas.id,
+        externalId: tarefas.externalId,
+        projetoId: tarefas.projetoId,
+        titulo: tarefas.titulo,
+      })
+      .from(tarefas)
+      .where(inArray(tarefas.externalId, externalIds));
+    const porExternalId = new Map(
+      (existentes as any[]).map((row) => [String(row.externalId), row]),
+    );
+
+    const dirDocs = await this.resolverDirDocsProjetoCaptado(db, projetoCaptadoId, slug);
+
+    const resultado = await db.transaction(async (tx: any) => {
+      const materializadas: Array<Record<string, unknown>> = [];
+      const despachosRealtime: Array<{ tarefaId: number; eventId: string }> = [];
+      let anteriorId: number | null = null;
+      let criadas = 0;
+      let reutilizadas = 0;
+
+      for (let indice = 0; indice < ordenadas.length; indice += 1) {
+        const tarefaPlano = ordenadas[indice]!;
+        const externalId = externalIds[indice]!;
+        const projetoIdAlvo =
+          tarefaPlano.executor === 'biblioteca-global' ? bibliotecaProjetoId! : projetoCaptadoId;
+        const existente = porExternalId.get(externalId);
+        if (existente) {
+          reutilizadas += 1;
+          anteriorId = Number(existente.id);
+          materializadas.push({
+            id: anteriorId,
+            externalId,
+            titulo: existente.titulo,
+            executor: tarefaPlano.executor,
+            projetoId: Number(existente.projetoId),
+            criada: false,
+          });
+          continue;
+        }
+        const titulo = truncarTexto(tarefaPlano.titulo, 200);
+        const descricao = montarDescricaoTarefaMacro({
+          tarefa: tarefaPlano,
+          posicao: indice + 1,
+          total: ordenadas.length,
+          slug,
+          projetoNome: String(projetoCaptado.nome),
+          geracaoId: geracao.id,
+        });
+        const insertResult: any = await tx.insert(tarefas).values({
+          projetoId: projetoIdAlvo,
+          titulo,
+          descricao,
+          tipo: 'desenvolvimento',
+          externalId,
+          // Cadeia topológica linear (§4/§7 risco 4): cada tarefa depende da
+          // anterior na ordem materializada.
+          dependsOnTaskId: anteriorId,
+          autoStart: tarefaPlano.auto_start,
+          // Plano aprovado = tarefas enfileiradas: não nascem pausadas; o gate
+          // de setup (retenção de auto_start) e as dependências ordenam o despacho.
+          pausedAt: null,
+          planCoverage: {
+            geracaoId: geracao.id,
+            seq: tarefaPlano.seq,
+            executor: tarefaPlano.executor,
+            risco: tarefaPlano.risco,
+            requisitos: tarefaPlano.requisitos,
+          },
+        });
+        const tarefaId = Number(insertResult[0].insertId);
+        if (anteriorId != null) {
+          await tx.insert(tarefaDependencias).values({ tarefaId, dependeDeTarefaId: anteriorId });
+        }
+        await this.registrarEvento(tx, { id: tarefaId, externalId }, 'created', ator, 'usuario', {
+          tipo: 'desenvolvimento',
+          macro: true,
+          geracaoId: geracao.id,
+          executor: tarefaPlano.executor,
+        });
+
+        // Padrão criarTarefa: TASK_CREATED no motor_outbox na mesma transação
+        // (OutboxPublisher publica após o commit) + realtime outbox por tarefa.
+        const messageId = randomUUID();
+        await tx.insert(motorOutbox).values({
+          messageId,
+          type: 'TASK_CREATED',
+          taskId: externalId,
+          executionId: `exec-${externalId}-${messageId}`,
+          payloadJson: {
+            taskId: externalId,
+            taskDatabaseId: tarefaId,
+            managedProjectId: projetoIdAlvo,
+            status: 'planned',
+            paused: false,
+            macro: true,
+            geracaoId: geracao.id,
+          },
+          timestamp: agora,
+          correlationId: messageId,
+          causationId: null,
+          status: 'pending',
+          attempt: 0,
+        });
+        const realtimeEventId = randomUUID();
+        await tx.insert(realtimeEventOutbox).values({
+          eventId: realtimeEventId,
+          taskId: tarefaId,
+          sourceTaskId: externalId,
+          projectId: Number(projeto.id),
+          subtaskId: null,
+          type: 'task.created',
+          previousStatus: null,
+          status: 'planned',
+          payload: {
+            title: titulo,
+            descricao,
+            status: 'planned',
+            tipo: 'desenvolvimento',
+            managedProjectId: projetoIdAlvo,
+          },
+          perTaskSeq: 1,
+          deliveryStatus: 'pending',
+          attempts: 0,
+        });
+        despachosRealtime.push({ tarefaId, eventId: realtimeEventId });
+        anteriorId = tarefaId;
+        criadas += 1;
+        materializadas.push({
+          id: tarefaId,
+          externalId,
+          titulo,
+          executor: tarefaPlano.executor,
+          projetoId: projetoIdAlvo,
+          criada: true,
+        });
+      }
+
+      // Lacunas da biblioteca (§4): histórico acumulativo, idempotente por geração.
+      const [lacunaExistente] = await tx
+        .select({ id: lacunasBiblioteca.id })
+        .from(lacunasBiblioteca)
+        .where(eq(lacunasBiblioteca.geracaoId, geracao.id))
+        .limit(1);
+      let lacunasRegistradas = 0;
+      if (!lacunaExistente) {
+        for (const lacuna of plano.lacunasBiblioteca) {
+          await tx.insert(lacunasBiblioteca).values({
+            projetoId: projetoCaptadoId,
+            geracaoId: geracao.id,
+            reqId: lacuna.req ? truncarTexto(lacuna.req, 50) : null,
+            funcionalidade: truncarTexto(lacuna.funcionalidade, 300),
+            contexto: lacuna.contexto ?? null,
+            status: 'aberta',
+          });
+          lacunasRegistradas += 1;
+        }
+      }
+
+      // ESPEC-CRUD.md (§4) — artefato melhor-esforço dentro da transação:
+      // falha de fs não desfaz a materialização (pode ser regravado); o erro
+      // fica no log e na resposta.
+      let especCrud: { gravado: boolean; caminho: string | null; erro?: string } = {
+        gravado: false,
+        caminho: dirDocs ? `${dirDocs}/ESPEC-CRUD.md` : null,
+      };
+      if (dirDocs) {
+        try {
+          const { mkdir, writeFile } = await import('node:fs/promises');
+          const conteudo = montarConteudoEspecCrud({
+            projetoNome: String(projetoCaptado.nome),
+            slug,
+            geracaoId: geracao.id,
+            plano,
+            aprovadoEm: agora,
+          });
+          await mkdir(dirDocs, { recursive: true });
+          await writeFile(`${dirDocs}/ESPEC-CRUD.md`, conteudo, 'utf-8');
+          especCrud = { gravado: true, caminho: `${dirDocs}/ESPEC-CRUD.md` };
+        } catch (error) {
+          const mensagem = error instanceof Error ? error.message : String(error);
+          this.logger.error(
+            `Falha ao gravar ESPEC-CRUD.md do projeto ${slug} (geração ${geracao.id}): ${mensagem}`,
+          );
+          especCrud = { gravado: false, caminho: especCrud.caminho, erro: mensagem };
+        }
+      }
+
+      // Geração → approved com a materialização (ids/títulos) no json tasks.
+      await tx
+        .update(geracoesProjeto)
+        .set({
+          status: 'approved',
+          tasks: {
+            ...plano,
+            materializacao: {
+              aprovadoEm: agora.toISOString(),
+              aprovadoPor: ator,
+              ...(comentario ? { comentario } : {}),
+              tarefas: materializadas,
+            },
+          },
+          workerId: null,
+          claimedAt: null,
+          leaseExpiresAt: null,
+          erro: null,
+          updatedAt: agora,
+        })
+        .where(eq(geracoesProjeto.id, geracao.id));
+
+      await tx.insert(projetoChats).values({
+        projetoId: projetoCaptadoId,
+        role: 'system',
+        texto: [
+          `✅ Plano aprovado (geração #${geracao.id}) — ${materializadas.length} tarefas macro materializadas (${criadas} criadas, ${reutilizadas} já existiam).`,
+          ...materializadas.map((item) => `- ${item.externalId}: ${item.titulo} [${item.executor}]`),
+          lacunasRegistradas > 0 ? `Lacunas da biblioteca registradas: ${lacunasRegistradas}.` : '',
+        ]
+          .filter(Boolean)
+          .join('\n'),
+        createdAt: agora,
+      });
+
+      return { materializadas, despachosRealtime, criadas, reutilizadas, lacunasRegistradas, especCrud };
+    });
+
+    for (const despacho of resultado.despachosRealtime) {
+      if (this.realtimeBoundary) {
+        await this.realtimeBoundary.despachar(db, despacho.tarefaId, [despacho.eventId]);
+      }
+    }
+
+    return {
+      ok: true,
+      geracaoId: geracao.id,
+      decisao,
+      status: 'approved',
+      tarefasCriadas: resultado.criadas,
+      tarefasReutilizadas: resultado.reutilizadas,
+      tarefas: resultado.materializadas,
+      lacunasRegistradas: resultado.lacunasRegistradas,
+      especCrud: resultado.especCrud,
+    };
+  }
+
+  /**
+   * Diretório de documentação do projeto captado no monorepo
+   * (projects/<slug>/docs). Prefere projeto_motor_config.repo_path — que
+   * aponta para projects/<slug> (mesma convenção do loadProjectDocs do
+   * ProjectGenerationWorker); na ausência, resolve a raiz do monorepo pelos
+   * mesmos candidatos do loadCatalogoCapacidades.
+   */
+  private async resolverDirDocsProjetoCaptado(
+    db: any,
+    projetoCaptadoId: number,
+    slug: string,
+  ): Promise<string | null> {
+    const { resolve } = await import('node:path');
+    const [config] = await db
+      .select({ repoPath: projetoMotorConfig.repoPath })
+      .from(projetoMotorConfig)
+      .where(eq(projetoMotorConfig.projetoId, projetoCaptadoId))
+      .limit(1);
+    if (config?.repoPath && String(config.repoPath).trim()) {
+      return resolve(String(config.repoPath).trim(), 'docs');
+    }
+    const { existsSync } = await import('node:fs');
+    const candidatos = [
+      this.configService.get<string>('MOTOR_REPO_ROOT_CONTAINER'),
+      process.env.MOTOR_REPO_ROOT_CONTAINER,
+      process.env.REPO_PATH,
+      '/data/workspace/projects/codigofonte/biblioteca-global',
+      '/app',
+    ].filter((candidato): candidato is string => Boolean(candidato && String(candidato).trim()));
+    for (const candidato of candidatos) {
+      if (existsSync(resolve(candidato, 'projects', slug))) {
+        return resolve(candidato, 'projects', slug, 'docs');
+      }
+    }
+    return candidatos.length > 0 ? resolve(candidatos[0]!, 'projects', slug, 'docs') : null;
   }
 
   // ============================================================================
