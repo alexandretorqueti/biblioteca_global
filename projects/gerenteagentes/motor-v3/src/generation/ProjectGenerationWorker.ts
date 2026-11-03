@@ -58,6 +58,7 @@ export interface GenerationContextRow extends RowDataPacket {
   nome: string
   slug: string
   descricao: string | null
+  especificacao: string | null
   agente_id: string
   repo_path: string | null
 }
@@ -219,10 +220,13 @@ export class ProjectGenerationWorker {
   }
 
   /**
-   * Monta as entradas do prompt (§5): <ESPECIFICACAO>/<DESCRICAO> =
-   * projetos_captados.descricao nesta fase F1; <CATALOGO_CRUD> = catálogo da
-   * biblioteca (caminho do monorepo configurável); <DOCS> = documentação do
-   * projeto quando existir; <CHAT> = histórico de projeto_chats; <FEEDBACK> =
+   * Monta as entradas do prompt (§5): <ESPECIFICACAO> =
+   * projetos_captados.especificacao quando não-vazia (F3: gravada pelo setup,
+   * passo 1.1.x), com fallback documentado para projetos_captados.descricao
+   * enquanto a Isa não produz o doc completo (F4); <DESCRICAO> =
+   * projetos_captados.descricao; <CATALOGO_CRUD> = catálogo da biblioteca
+   * (caminho do monorepo configurável); <DOCS> = documentação do projeto
+   * quando existir; <CHAT> = histórico de projeto_chats; <FEEDBACK> =
    * coluna feedback (rodadas revise).
    */
   async montarPromptGeracao(context: GenerationContextRow): Promise<GenerationPromptInput> {
@@ -235,6 +239,10 @@ export class ProjectGenerationWorker {
       ? chatRows.map(row => `[${String(row.role)}] ${String(row.texto)}`).join('\n')
       : 'Sem histórico de clarificação.'
     const descricao = String(context.descricao ?? '').trim() || '(sem descrição capturada)'
+    // F3 (migration 0101): prefere a especificação persistida no setup; cai na
+    // descrição capturada quando ausente/vazia — fallback documentado enquanto
+    // a Isa não produz o doc completo (F4; proposta §8).
+    const especificacao = String(context.especificacao ?? '').trim() || descricao
     const [catalogoCrud, docs] = await Promise.all([
       this.catalogoLoader(),
       this.docsLoader({ repoPath: context.repo_path == null ? null : String(context.repo_path) }),
@@ -242,9 +250,7 @@ export class ProjectGenerationWorker {
     return {
       nome: String(context.nome ?? ''),
       slug: String(context.slug ?? ''),
-      // F1: a especificação completa (F4, Isa estruturada) ainda não existe;
-      // a fonte de entrada é a descrição capturada (proposta §8, F1).
-      especificacao: descricao,
+      especificacao,
       descricao,
       catalogoCrud,
       docs,
@@ -469,7 +475,7 @@ export class ProjectGenerationWorker {
   private async loadContext(geracaoId: number): Promise<GenerationContextRow | null> {
     const [rows] = await this.pool.query<GenerationContextRow[]>(
       `SELECT g.id, g.projeto_id, g.status, g.briefing, g.feedback, g.worker_id,
-              p.nome, p.slug, p.descricao,
+              p.nome, p.slug, p.descricao, p.especificacao,
               COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), p.slug, '') AS agente_id,
               mc.repo_path
          FROM geracoes_projeto g

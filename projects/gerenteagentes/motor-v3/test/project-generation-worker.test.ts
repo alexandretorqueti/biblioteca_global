@@ -37,9 +37,14 @@ interface FakeDb {
   geracoes: GeracaoRow[]
   chats: Array<{ projeto_id: number; role: string; texto: string }>
   queries: Array<{ sql: string; params: unknown[] }>
+  /** Contexto do projeto retornado pelo loadContext (join projetos_captados). */
+  projetoContexto: { descricao: string; especificacao: string | null }
 }
 
-function createFakeDb(geracoes: Array<Partial<GeracaoRow> & { id: number }>): FakeDb {
+function createFakeDb(
+  geracoes: Array<Partial<GeracaoRow> & { id: number }>,
+  projetoContexto: Partial<FakeDb['projetoContexto']> = {},
+): FakeDb {
   const db: FakeDb = {
     pool: null as unknown as Pool,
     geracoes: geracoes.map(g => ({
@@ -49,6 +54,11 @@ function createFakeDb(geracoes: Array<Partial<GeracaoRow> & { id: number }>): Fa
     })),
     chats: [],
     queries: [],
+    projetoContexto: {
+      descricao: 'Sistema de gestão de tarefas com áreas e colaboradores.',
+      especificacao: null,
+      ...projetoContexto,
+    },
   }
   const find = (id: number) => db.geracoes.find(row => row.id === Number(id))
   const header = (affectedRows: number): [ResultSetHeader, unknown[]] =>
@@ -84,7 +94,8 @@ function createFakeDb(geracoes: Array<Partial<GeracaoRow> & { id: number }>): Fa
       return rows([{
         id: row.id, projeto_id: row.projeto_id, status: row.status, briefing: row.briefing,
         feedback: row.feedback, worker_id: row.worker_id,
-        nome: 'Gestão de Tarefas Global', slug: 'gestao-tarefas', descricao: 'Sistema de gestão de tarefas com áreas e colaboradores.',
+        nome: 'Gestão de Tarefas Global', slug: 'gestao-tarefas',
+        descricao: db.projetoContexto.descricao, especificacao: db.projetoContexto.especificacao,
         agente_id: 'agente-gestao-tarefas', repo_path: null,
       }])
     }
@@ -365,6 +376,41 @@ describe('ProjectGenerationWorker — contrato §5', () => {
 
     expect(db.geracoes[0].status).toBe('failed')
     expect(db.geracoes[0].erro).toContain('requerAgenteDedicado=false')
+  })
+})
+
+describe('ProjectGenerationWorker — especificação (F3, projetos_captados.especificacao)', () => {
+  it('prefere projetos_captados.especificacao não-vazia sobre a descricao no prompt de geração', async () => {
+    const db = createFakeDb([{ id: 30 }], {
+      especificacao: '  # Especificação estruturada\nEntidades: tarefa, área.  ',
+    })
+    const console_ = new FakeConsole([PLANO_VALIDO])
+    const { worker, resolver } = createWorker(db, console_)
+
+    await worker.tick()
+
+    // loadContext seleciona a nova coluna (migration 0101).
+    const contextQuery = db.queries.find(q => q.sql.startsWith('SELECT g.id, g.projeto_id'))!
+    expect(contextQuery.sql).toContain('p.especificacao')
+    const input = resolver.inputs[0]
+    // Valor trimado da especificação; descricao permanece a capturada.
+    expect(input.especificacao).toBe('# Especificação estruturada\nEntidades: tarefa, área.')
+    expect(input.descricao).toBe('Sistema de gestão de tarefas com áreas e colaboradores.')
+    expect(db.geracoes[0].status).toBe('awaiting_approval')
+  })
+
+  it('cai em descricao (fallback documentado — F4 pendente) quando especificacao é NULL ou vazia', async () => {
+    for (const especificacao of [null, '   ']) {
+      const db = createFakeDb([{ id: 31 }], { especificacao })
+      const console_ = new FakeConsole([PLANO_VALIDO])
+      const { worker, resolver } = createWorker(db, console_)
+
+      await worker.tick()
+
+      const input = resolver.inputs[0]
+      expect(input.especificacao).toBe('Sistema de gestão de tarefas com áreas e colaboradores.')
+      expect(input.especificacao).toBe(input.descricao)
+    }
   })
 })
 
