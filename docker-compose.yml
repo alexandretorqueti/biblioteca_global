@@ -102,6 +102,9 @@ services:
       ISA_VERIFICATION_SECRET: ${ISA_VERIFICATION_SECRET:-}
       # Provisionamento: usuário vinculado como admin em todos os projetos novos
       PLATAFORMA_OWNER_USER_ID: ${PLATAFORMA_OWNER_USER_ID:-1}
+      # Alerta de DLQ do motor no Telegram (DlqReconciler) — reusado pelas notificações da F2
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_DLQ_CHAT_ID: ${TELEGRAM_DLQ_CHAT_ID:-}
     depends_on:
       mysql:
         condition: service_healthy
