@@ -8,6 +8,7 @@ import { classifyMotorError } from '../queue/ErrorTaxonomy.js'
 import { parseGenerationReply, type GenerationOutcome } from './GenerationPlanContract.js'
 import { ManagedGenerationPromptResolver, type GenerationPromptInput, type GenerationPromptResolver } from './GenerationPromptResolver.js'
 import { resolveGenerationModelChain } from './GenerationModelChain.js'
+import type { GenerationTransitionNotifier } from './GenerationTelegramNotifier.js'
 
 /**
  * ProjectGenerationWorker — consumidor de `geracoes_projeto` (Geração Macro
@@ -78,6 +79,12 @@ export interface ProjectGenerationWorkerConfig {
   catalogoLoader?: () => Promise<string>
   docsLoader?: (context: { repoPath: string | null }) => Promise<string>
   sleep?: (ms: number) => Promise<void>
+  /**
+   * Notificação Telegram das transições awaiting_clarification/awaiting_approval
+   * (F2, task-p2-1057). Best-effort: null/ausente = sem notificação; falha do
+   * notifier nunca afeta a transição de status.
+   */
+  notifier?: GenerationTransitionNotifier | null
 }
 
 interface ChatRow extends RowDataPacket {
@@ -97,6 +104,7 @@ export class ProjectGenerationWorker {
   private readonly catalogoLoader: () => Promise<string>
   private readonly docsLoader: (context: { repoPath: string | null }) => Promise<string>
   private readonly sleep: (ms: number) => Promise<void>
+  private readonly notifier: GenerationTransitionNotifier | null
   private timer: NodeJS.Timeout | null = null
   /** Guard em memória (instância única): um tick por vez, uma geração por vez. */
   private ticking = false
@@ -120,6 +128,7 @@ export class ProjectGenerationWorker {
     this.catalogoLoader = config.catalogoLoader ?? loadCatalogoCapacidades
     this.docsLoader = config.docsLoader ?? loadProjectDocs
     this.sleep = config.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)))
+    this.notifier = config.notifier ?? null
   }
 
   start(): void {
@@ -345,6 +354,12 @@ export class ProjectGenerationWorker {
         return
       }
       console.log(`[ProjectGenerationWorker] geração ${geracaoId}: perguntas registradas no chat do projeto ${context.projeto_id} → awaiting_clarification`)
+      await this.notifyTransition(() => this.notifier?.notifyAwaitingClarification({
+        nome: String(context.nome ?? ''),
+        slug: String(context.slug ?? ''),
+        resumo: outcome.resumo ?? null,
+        perguntas: outcome.perguntas.length,
+      }), geracaoId, 'awaiting_clarification')
       return
     }
 
@@ -358,6 +373,30 @@ export class ProjectGenerationWorker {
       return
     }
     console.log(`[ProjectGenerationWorker] geração ${geracaoId}: plano macro gravado (${outcome.plano.tarefas.length} tarefas, ${outcome.plano.requisitos.length} requisitos) → awaiting_approval`)
+    await this.notifyTransition(() => this.notifier?.notifyAwaitingApproval({
+      nome: String(context.nome ?? ''),
+      slug: String(context.slug ?? ''),
+      tarefas: outcome.plano.tarefas.length,
+      requisitos: outcome.plano.requisitos.length,
+    }), geracaoId, 'awaiting_approval')
+  }
+
+  /**
+   * Disparo best-effort da notificação Telegram APÓS a transição vencedora:
+   * qualquer falha (rede/Telegram/notifier defeituoso) é logada e nunca
+   * propaga — a transição de status já está persistida e não pode ser
+   * revertida por causa da notificação (critério de aceite F2).
+   */
+  private async notifyTransition(
+    notify: () => Promise<void> | undefined,
+    geracaoId: number,
+    status: string,
+  ): Promise<void> {
+    try {
+      await notify()
+    } catch (error) {
+      console.warn(`[ProjectGenerationWorker] geração ${geracaoId}: notificação Telegram (${status}) falhou — transição mantida: ${asError(error).message.slice(0, 200)}`)
+    }
   }
 
   /**

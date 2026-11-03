@@ -11,6 +11,14 @@ export {
   type GenerationClaimReconcilerConfig,
 } from './GenerationClaimReconciler.js'
 export {
+  GenerationTelegramNotifier,
+  buildGenerationApprovalMessage,
+  buildGenerationClarificationMessage,
+  type GenerationApprovalNotice,
+  type GenerationClarificationNotice,
+  type GenerationTransitionNotifier,
+} from './GenerationTelegramNotifier.js'
+export {
   ManagedGenerationPromptResolver,
   GENERATION_PROMPT_KEY,
   type GenerationPromptInput,

@@ -9,6 +9,7 @@ import {
   isLocalModel,
   resolveGenerationModelChain,
   type GenerationPromptInput,
+  type GenerationTransitionNotifier,
 } from '../src/generation/index.js'
 
 // ============================================================
@@ -480,5 +481,88 @@ describe('ManagedGenerationPromptResolver', () => {
     await expect(new ManagedGenerationPromptResolver(pool).resolve({
       nome: '', slug: '', especificacao: '', descricao: '', catalogoCrud: '', docs: '', chat: '', feedback: '',
     })).rejects.toThrow(/prompt_configuration_missing: prompt ativo não encontrado: geracao\.plano_macro_projeto/)
+  })
+})
+
+// ============================================================
+// Notificação Telegram das transições (F2, task-p2-1057 subtarefa 2)
+// ============================================================
+
+function fakeNotifier(overrides: Partial<Record<keyof GenerationTransitionNotifier, () => Promise<void>>> = {}) {
+  const calls: { kind: 'clarification' | 'approval'; input: unknown }[] = []
+  const notifier: GenerationTransitionNotifier = {
+    notifyAwaitingClarification: overrides.notifyAwaitingClarification
+      ?? (async (input) => { calls.push({ kind: 'clarification', input }) }),
+    notifyAwaitingApproval: overrides.notifyAwaitingApproval
+      ?? (async (input) => { calls.push({ kind: 'approval', input }) }),
+  }
+  return { notifier, calls }
+}
+
+describe('ProjectGenerationWorker — notificação Telegram das transições', () => {
+  it('kind=perguntas + transição vencedora → notifyAwaitingClarification com projeto, resumo e nº de perguntas', async () => {
+    const db = createFakeDb([{ id: 30 }])
+    const console_ = new FakeConsole([PERGUNTAS_VALIDAS])
+    const { notifier, calls } = fakeNotifier()
+    const { worker } = createWorker(db, console_, { notifier })
+
+    await worker.tick()
+
+    expect(db.geracoes[0].status).toBe('awaiting_clarification')
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.kind).toBe('clarification')
+    expect(calls[0]!.input).toEqual({
+      nome: 'Gestão de Tarefas Global',
+      slug: 'gestao-tarefas',
+      resumo: 'Entendi um sistema de tarefas por área.',
+      perguntas: 2,
+    })
+  })
+
+  it('kind=plano + transição vencedora → notifyAwaitingApproval com nº de tarefas/requisitos', async () => {
+    const db = createFakeDb([{ id: 31 }])
+    const console_ = new FakeConsole([PLANO_VALIDO])
+    const { notifier, calls } = fakeNotifier()
+    const { worker } = createWorker(db, console_, { notifier })
+
+    await worker.tick()
+
+    expect(db.geracoes[0].status).toBe('awaiting_approval')
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.kind).toBe('approval')
+    expect(calls[0]!.input).toEqual({
+      nome: 'Gestão de Tarefas Global',
+      slug: 'gestao-tarefas',
+      tarefas: 2,
+      requisitos: 2,
+    })
+  })
+
+  it('notifier que lança → transição de status persiste (best-effort, sem failed/release)', async () => {
+    const db = createFakeDb([{ id: 32 }])
+    const console_ = new FakeConsole([PLANO_VALIDO])
+    const { notifier } = fakeNotifier({
+      notifyAwaitingApproval: async () => { throw new Error('telegram fora do ar') },
+    })
+    const { worker } = createWorker(db, console_, { notifier })
+
+    await worker.tick()
+
+    const geracao = db.geracoes[0]
+    expect(geracao.status).toBe('awaiting_approval')
+    expect(geracao.erro).toBeNull()
+    expect(geracao.tasks).not.toBeNull()
+  })
+
+  it('geração failed → nenhuma notificação de transição (só awaiting_* disparam)', async () => {
+    const db = createFakeDb([{ id: 33 }])
+    const console_ = new FakeConsole(['resposta sem JSON', 'outra resposta sem JSON'])
+    const { notifier, calls } = fakeNotifier()
+    const { worker } = createWorker(db, console_, { notifier })
+
+    await worker.tick()
+
+    expect(db.geracoes[0].status).toBe('failed')
+    expect(calls).toHaveLength(0)
   })
 })

@@ -68,6 +68,10 @@ import {
   montarConteudoEspecCrud,
   type MacroPlanoValidado,
 } from './macro-plan';
+import {
+  GenerationTelegramNotifier,
+  type GenerationTransitionNotifier,
+} from './generation-telegram-notifier';
 
 const DEFAULT_SESSION_PAGE_SIZE = 50;
 const MAX_SESSION_PAGE_SIZE = 500;
@@ -149,6 +153,11 @@ export class GerenteAgentesService {
   private readonly motorHttpUrl: string;
   private readonly consoleUrl: string;
   private readonly consoleToken: string;
+  /**
+   * Notificação Telegram das transições da Geração Macro (F2, task-p2-1057).
+   * Best-effort: sem credencial → no-op com log; falha nunca bloqueia a transição.
+   */
+  private readonly geracaoNotifier: GenerationTransitionNotifier;
 
   private async registrarEvento(
     db: any,
@@ -185,6 +194,14 @@ export class GerenteAgentesService {
     // Console OpenClaw (fonte de agentes — st-5)
     this.consoleUrl = this.configService.get<string>('OPENCLAW_CONSOLE_URL') || 'https://openclaw-api.webconnect.com.br';
     this.consoleToken = this.configService.get<string>('OPENCLAW_CONSOLE_TOKEN') || '';
+    // Geração Macro F2: reuso de TELEGRAM_BOT_TOKEN do env da API; destino
+    // TELEGRAM_GERACAO_CHAT_ID com fallback TELEGRAM_DLQ_CHAT_ID (padrão dos
+    // alertas DLQ). Sem credencial → no-op com log explícito.
+    this.geracaoNotifier = new GenerationTelegramNotifier(
+      this.configService.get<string>('TELEGRAM_BOT_TOKEN'),
+      this.configService.get<string>('TELEGRAM_GERACAO_CHAT_ID')
+        || this.configService.get<string>('TELEGRAM_DLQ_CHAT_ID'),
+    );
   }
 
   async listarConfiguracoesMotor(): Promise<MotorConfiguracaoResposta[]> {
@@ -2375,6 +2392,23 @@ export class GerenteAgentesService {
       .update(geracoesProjeto)
       .set({ status: 'awaiting_clarification', updatedAt: new Date() })
       .where(eq(geracoesProjeto.id, geracao.id));
+
+    // Notificação Telegram da transição (Geração Macro F2, task-p2-1057):
+    // best-effort — falha de rede/Telegram nunca reverte o awaiting_clarification.
+    try {
+      await this.geracaoNotifier.notifyAwaitingClarification({
+        nome: String(projetoCaptado.nome ?? ''),
+        slug: String(projetoCaptado.slug ?? ''),
+        resumo,
+        perguntas: limpas.length,
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Notificação Telegram da clarificação (geração ${geracao.id}) falhou — transição mantida: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
 
     return { ok: true, geracaoId: geracao.id, status: 'awaiting_clarification', perguntas: limpas };
   }
