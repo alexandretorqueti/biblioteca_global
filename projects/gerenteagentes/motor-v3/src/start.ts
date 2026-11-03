@@ -53,7 +53,7 @@ import { RemoteBlueGreenDeployer } from './deploy/RemoteBlueGreenDeployer.js'
 import { BaselinePreflightRecovery, TestGateConsumer, TestGateJobReconciler, TestGateOrchestrator, TestGateService, TestRecoveryConsumer, WorkspaceEnvironmentPreparer } from './testing/index.js'
 import { TaskChatHumanNotifier, ExternalResolutionError, ExternalResolutionHandler, MonitorBlockerReconciler, MonitorMissionRecoveryReconciler, MonitorPromptResolver, MonitorResolutionConsumer, PostDeployPromptResolver, PostDeployVerifier, TaskUnblockedConsumer, createTaskBlockedMessage, loadActiveBlocker, ActiveExecutionSweeper } from './monitor/index.js'
 import { TaskAdjustmentConsumer, TASK_ADJUSTMENT_REQUESTED } from './adjustment/index.js'
-import { ProjectGenerationWorker, GenerationClaimReconciler } from './generation/index.js'
+import { ProjectGenerationWorker, GenerationClaimReconciler, GenerationTelegramNotifier } from './generation/index.js'
 import { ensureCompletionTrigger } from './db/ensureTriggers.js'
 import { bootstrapMotorV3Catalog } from './db/bootstrap.js'
 import { warnOnMigrationJournalIntegrity } from './migrations/MigrationJournalIntegrity.js'
@@ -827,7 +827,13 @@ async function start() {
       console.warn(`[Motor v3] Geracao macro órfã recuperada no boot: geracao=${orphanId} → pending`)
     }
     generationClaimReconciler.start()
-    projectGenerationWorker = new ProjectGenerationWorker(pool, consoleApi)
+    projectGenerationWorker = new ProjectGenerationWorker(pool, consoleApi, {
+      // Notificações Telegram das transições awaiting_clarification/awaiting_approval
+      // (Geração Macro F2, task-p2-1057): reuso de TELEGRAM_BOT_TOKEN; destino
+      // TELEGRAM_GERACAO_CHAT_ID com fallback TELEGRAM_DLQ_CHAT_ID (mesmo padrão
+      // do alertSender do DlqReconciler). Best-effort: sem credencial → no-op com log.
+      notifier: new GenerationTelegramNotifier(),
+    })
     projectGenerationWorker.start()
     console.log('[Motor v3] ProjectGenerationWorker ativo (gerações macro de projetos)')
     // Recuperação única de fatos duráveis após boot. O fluxo normal avança

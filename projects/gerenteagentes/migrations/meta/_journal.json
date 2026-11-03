@@ -708,6 +708,20 @@
       "when": 1793555000003,
       "tag": "0100_analyst_verification_routing",
       "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "5",
+      "when": 1793555000004,
+      "tag": "0101_projetos_captados_especificacao",
+      "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "5",
+      "when": 1793555000005,
+      "tag": "0102_setup_legacy_grandfathering",
+      "breakpoints": true
     }
   ]
 }

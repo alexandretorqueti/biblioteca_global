@@ -4,7 +4,7 @@ import { render, screen, fireEvent, waitForElementToBeRemoved, within } from "@t
 import userEvent from "@testing-library/user-event"
 import "@testing-library/jest-dom/vitest"
 import { BibliotecaThemeProvider } from "@biblioteca-global/ui"
-import TaskFlowMap, { type FlowTask, type ProjetoInfo, type FiltrosMapa } from "../TaskFlowMap"
+import TaskFlowMap, { capacityWaitMessage, type CapacityWaitProjection, type FlowTask, type ProjetoInfo, type FiltrosMapa } from "../TaskFlowMap"
 
 const tarefas: FlowTask[] = [
   { id: 766, titulo: "Registry de telas", status: "running", projetoId: 1 },
@@ -1257,5 +1257,28 @@ describe("TaskFlowMap — Paginação infinita (10 em 10 com scroll)", () => {
     // Com busca "Tarefa" casando com todos os 25 títulos, ainda exibe apenas 10 (regex específica)
     const fichas = screen.getAllByTestId(/^flow-task-\d+$/)
     expect(fichas).toHaveLength(10)
+  })
+})
+
+describe("capacityWaitMessage", () => {
+  const base = { phase: "development" as const, limitScope: "project" as const, limitValue: 0, provider: null }
+
+  it("exibe motivo legível para setup_not_verified (gate de setup)", () => {
+    const wait: CapacityWaitProjection = { ...base, reasonCode: "setup_not_verified" }
+    const message = capacityWaitMessage(wait)
+    expect(message).toContain("setup do projeto ser verificado")
+    expect(message).toContain("setup_status=verified")
+    expect(message).not.toContain("Aguardando limite")
+  })
+
+  it("mantém mensagens dos demais reason codes inalteradas", () => {
+    expect(capacityWaitMessage({ ...base, reasonCode: "global_limit", limitScope: "global", limitValue: 2 }))
+      .toBe("Aguardando limite global: 2 tarefas por vez.")
+    expect(capacityWaitMessage({ ...base, reasonCode: "project_limit", limitValue: 1 }))
+      .toBe("Aguardando limite por projeto: 1 tarefa por vez.")
+    expect(capacityWaitMessage({ ...base, reasonCode: "provider_limit", limitScope: "provider", limitValue: 3, provider: "openai" }))
+      .toBe("Aguardando limite do provider (openai): 3 tarefas por vez.")
+    expect(capacityWaitMessage({ ...base, reasonCode: "model_cooldown", limitScope: "model", limitValue: 0 }))
+      .toBe("Aguardando capacidade de modelo DEV (todos os modelos habilitados em cooldown).")
   })
 })

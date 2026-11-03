@@ -60,7 +60,7 @@ export interface RecoveryEligibility {
 
 export interface CapacityWaitProjection {
   phase: "analysis" | "development"
-  reasonCode: "global_limit" | "project_limit" | "provider_limit" | "model_cooldown"
+  reasonCode: "global_limit" | "project_limit" | "provider_limit" | "model_cooldown" | "setup_not_verified"
   limitScope: "global" | "project" | "provider" | "model"
   limitValue: number
   provider: string | null
@@ -68,6 +68,9 @@ export interface CapacityWaitProjection {
 }
 
 export function capacityWaitMessage(wait: CapacityWaitProjection): string {
+  if (wait.reasonCode === "setup_not_verified") {
+    return "Aguardando o setup do projeto ser verificado (setup_status=verified) — as tarefas serão despachadas automaticamente após a verificação."
+  }
   if (wait.reasonCode === "model_cooldown" || wait.limitScope === "model") {
     const retry = wait.retryAt ? ` Nova tentativa prevista para ${new Date(wait.retryAt).toLocaleString("pt-BR")}.` : ""
     return `Aguardando capacidade de modelo DEV (todos os modelos habilitados em cooldown).${retry}`

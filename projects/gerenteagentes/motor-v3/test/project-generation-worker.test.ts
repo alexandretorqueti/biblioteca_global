@@ -9,6 +9,7 @@ import {
   isLocalModel,
   resolveGenerationModelChain,
   type GenerationPromptInput,
+  type GenerationTransitionNotifier,
 } from '../src/generation/index.js'
 
 // ============================================================
@@ -36,9 +37,14 @@ interface FakeDb {
   geracoes: GeracaoRow[]
   chats: Array<{ projeto_id: number; role: string; texto: string }>
   queries: Array<{ sql: string; params: unknown[] }>
+  /** Contexto do projeto retornado pelo loadContext (join projetos_captados). */
+  projetoContexto: { descricao: string; especificacao: string | null }
 }
 
-function createFakeDb(geracoes: Array<Partial<GeracaoRow> & { id: number }>): FakeDb {
+function createFakeDb(
+  geracoes: Array<Partial<GeracaoRow> & { id: number }>,
+  projetoContexto: Partial<FakeDb['projetoContexto']> = {},
+): FakeDb {
   const db: FakeDb = {
     pool: null as unknown as Pool,
     geracoes: geracoes.map(g => ({
@@ -48,6 +54,11 @@ function createFakeDb(geracoes: Array<Partial<GeracaoRow> & { id: number }>): Fa
     })),
     chats: [],
     queries: [],
+    projetoContexto: {
+      descricao: 'Sistema de gestão de tarefas com áreas e colaboradores.',
+      especificacao: null,
+      ...projetoContexto,
+    },
   }
   const find = (id: number) => db.geracoes.find(row => row.id === Number(id))
   const header = (affectedRows: number): [ResultSetHeader, unknown[]] =>
@@ -83,7 +94,8 @@ function createFakeDb(geracoes: Array<Partial<GeracaoRow> & { id: number }>): Fa
       return rows([{
         id: row.id, projeto_id: row.projeto_id, status: row.status, briefing: row.briefing,
         feedback: row.feedback, worker_id: row.worker_id,
-        nome: 'Gestão de Tarefas Global', slug: 'gestao-tarefas', descricao: 'Sistema de gestão de tarefas com áreas e colaboradores.',
+        nome: 'Gestão de Tarefas Global', slug: 'gestao-tarefas',
+        descricao: db.projetoContexto.descricao, especificacao: db.projetoContexto.especificacao,
         agente_id: 'agente-gestao-tarefas', repo_path: null,
       }])
     }
@@ -367,6 +379,41 @@ describe('ProjectGenerationWorker — contrato §5', () => {
   })
 })
 
+describe('ProjectGenerationWorker — especificação (F3, projetos_captados.especificacao)', () => {
+  it('prefere projetos_captados.especificacao não-vazia sobre a descricao no prompt de geração', async () => {
+    const db = createFakeDb([{ id: 30 }], {
+      especificacao: '  # Especificação estruturada\nEntidades: tarefa, área.  ',
+    })
+    const console_ = new FakeConsole([PLANO_VALIDO])
+    const { worker, resolver } = createWorker(db, console_)
+
+    await worker.tick()
+
+    // loadContext seleciona a nova coluna (migration 0101).
+    const contextQuery = db.queries.find(q => q.sql.startsWith('SELECT g.id, g.projeto_id'))!
+    expect(contextQuery.sql).toContain('p.especificacao')
+    const input = resolver.inputs[0]
+    // Valor trimado da especificação; descricao permanece a capturada.
+    expect(input.especificacao).toBe('# Especificação estruturada\nEntidades: tarefa, área.')
+    expect(input.descricao).toBe('Sistema de gestão de tarefas com áreas e colaboradores.')
+    expect(db.geracoes[0].status).toBe('awaiting_approval')
+  })
+
+  it('cai em descricao (fallback documentado — F4 pendente) quando especificacao é NULL ou vazia', async () => {
+    for (const especificacao of [null, '   ']) {
+      const db = createFakeDb([{ id: 31 }], { especificacao })
+      const console_ = new FakeConsole([PLANO_VALIDO])
+      const { worker, resolver } = createWorker(db, console_)
+
+      await worker.tick()
+
+      const input = resolver.inputs[0]
+      expect(input.especificacao).toBe('Sistema de gestão de tarefas com áreas e colaboradores.')
+      expect(input.especificacao).toBe(input.descricao)
+    }
+  })
+})
+
 describe('ProjectGenerationWorker — modelos e erros', () => {
   it('indisponibilidade de modelo escala na cadeia (default pago, sem modelo local)', async () => {
     const db = createFakeDb([{ id: 20 }])
@@ -480,5 +527,88 @@ describe('ManagedGenerationPromptResolver', () => {
     await expect(new ManagedGenerationPromptResolver(pool).resolve({
       nome: '', slug: '', especificacao: '', descricao: '', catalogoCrud: '', docs: '', chat: '', feedback: '',
     })).rejects.toThrow(/prompt_configuration_missing: prompt ativo não encontrado: geracao\.plano_macro_projeto/)
+  })
+})
+
+// ============================================================
+// Notificação Telegram das transições (F2, task-p2-1057 subtarefa 2)
+// ============================================================
+
+function fakeNotifier(overrides: Partial<Record<keyof GenerationTransitionNotifier, () => Promise<void>>> = {}) {
+  const calls: { kind: 'clarification' | 'approval'; input: unknown }[] = []
+  const notifier: GenerationTransitionNotifier = {
+    notifyAwaitingClarification: overrides.notifyAwaitingClarification
+      ?? (async (input) => { calls.push({ kind: 'clarification', input }) }),
+    notifyAwaitingApproval: overrides.notifyAwaitingApproval
+      ?? (async (input) => { calls.push({ kind: 'approval', input }) }),
+  }
+  return { notifier, calls }
+}
+
+describe('ProjectGenerationWorker — notificação Telegram das transições', () => {
+  it('kind=perguntas + transição vencedora → notifyAwaitingClarification com projeto, resumo e nº de perguntas', async () => {
+    const db = createFakeDb([{ id: 30 }])
+    const console_ = new FakeConsole([PERGUNTAS_VALIDAS])
+    const { notifier, calls } = fakeNotifier()
+    const { worker } = createWorker(db, console_, { notifier })
+
+    await worker.tick()
+
+    expect(db.geracoes[0].status).toBe('awaiting_clarification')
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.kind).toBe('clarification')
+    expect(calls[0]!.input).toEqual({
+      nome: 'Gestão de Tarefas Global',
+      slug: 'gestao-tarefas',
+      resumo: 'Entendi um sistema de tarefas por área.',
+      perguntas: 2,
+    })
+  })
+
+  it('kind=plano + transição vencedora → notifyAwaitingApproval com nº de tarefas/requisitos', async () => {
+    const db = createFakeDb([{ id: 31 }])
+    const console_ = new FakeConsole([PLANO_VALIDO])
+    const { notifier, calls } = fakeNotifier()
+    const { worker } = createWorker(db, console_, { notifier })
+
+    await worker.tick()
+
+    expect(db.geracoes[0].status).toBe('awaiting_approval')
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.kind).toBe('approval')
+    expect(calls[0]!.input).toEqual({
+      nome: 'Gestão de Tarefas Global',
+      slug: 'gestao-tarefas',
+      tarefas: 2,
+      requisitos: 2,
+    })
+  })
+
+  it('notifier que lança → transição de status persiste (best-effort, sem failed/release)', async () => {
+    const db = createFakeDb([{ id: 32 }])
+    const console_ = new FakeConsole([PLANO_VALIDO])
+    const { notifier } = fakeNotifier({
+      notifyAwaitingApproval: async () => { throw new Error('telegram fora do ar') },
+    })
+    const { worker } = createWorker(db, console_, { notifier })
+
+    await worker.tick()
+
+    const geracao = db.geracoes[0]
+    expect(geracao.status).toBe('awaiting_approval')
+    expect(geracao.erro).toBeNull()
+    expect(geracao.tasks).not.toBeNull()
+  })
+
+  it('geração failed → nenhuma notificação de transição (só awaiting_* disparam)', async () => {
+    const db = createFakeDb([{ id: 33 }])
+    const console_ = new FakeConsole(['resposta sem JSON', 'outra resposta sem JSON'])
+    const { notifier, calls } = fakeNotifier()
+    const { worker } = createWorker(db, console_, { notifier })
+
+    await worker.tick()
+
+    expect(db.geracoes[0].status).toBe('failed')
+    expect(calls).toHaveLength(0)
   })
 })

@@ -8,6 +8,7 @@ import { classifyMotorError } from '../queue/ErrorTaxonomy.js'
 import { parseGenerationReply, type GenerationOutcome } from './GenerationPlanContract.js'
 import { ManagedGenerationPromptResolver, type GenerationPromptInput, type GenerationPromptResolver } from './GenerationPromptResolver.js'
 import { resolveGenerationModelChain } from './GenerationModelChain.js'
+import type { GenerationTransitionNotifier } from './GenerationTelegramNotifier.js'
 
 /**
  * ProjectGenerationWorker — consumidor de `geracoes_projeto` (Geração Macro
@@ -57,6 +58,7 @@ export interface GenerationContextRow extends RowDataPacket {
   nome: string
   slug: string
   descricao: string | null
+  especificacao: string | null
   agente_id: string
   repo_path: string | null
 }
@@ -78,6 +80,12 @@ export interface ProjectGenerationWorkerConfig {
   catalogoLoader?: () => Promise<string>
   docsLoader?: (context: { repoPath: string | null }) => Promise<string>
   sleep?: (ms: number) => Promise<void>
+  /**
+   * Notificação Telegram das transições awaiting_clarification/awaiting_approval
+   * (F2, task-p2-1057). Best-effort: null/ausente = sem notificação; falha do
+   * notifier nunca afeta a transição de status.
+   */
+  notifier?: GenerationTransitionNotifier | null
 }
 
 interface ChatRow extends RowDataPacket {
@@ -97,6 +105,7 @@ export class ProjectGenerationWorker {
   private readonly catalogoLoader: () => Promise<string>
   private readonly docsLoader: (context: { repoPath: string | null }) => Promise<string>
   private readonly sleep: (ms: number) => Promise<void>
+  private readonly notifier: GenerationTransitionNotifier | null
   private timer: NodeJS.Timeout | null = null
   /** Guard em memória (instância única): um tick por vez, uma geração por vez. */
   private ticking = false
@@ -120,6 +129,7 @@ export class ProjectGenerationWorker {
     this.catalogoLoader = config.catalogoLoader ?? loadCatalogoCapacidades
     this.docsLoader = config.docsLoader ?? loadProjectDocs
     this.sleep = config.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)))
+    this.notifier = config.notifier ?? null
   }
 
   start(): void {
@@ -210,10 +220,13 @@ export class ProjectGenerationWorker {
   }
 
   /**
-   * Monta as entradas do prompt (§5): <ESPECIFICACAO>/<DESCRICAO> =
-   * projetos_captados.descricao nesta fase F1; <CATALOGO_CRUD> = catálogo da
-   * biblioteca (caminho do monorepo configurável); <DOCS> = documentação do
-   * projeto quando existir; <CHAT> = histórico de projeto_chats; <FEEDBACK> =
+   * Monta as entradas do prompt (§5): <ESPECIFICACAO> =
+   * projetos_captados.especificacao quando não-vazia (F3: gravada pelo setup,
+   * passo 1.1.x), com fallback documentado para projetos_captados.descricao
+   * enquanto a Isa não produz o doc completo (F4); <DESCRICAO> =
+   * projetos_captados.descricao; <CATALOGO_CRUD> = catálogo da biblioteca
+   * (caminho do monorepo configurável); <DOCS> = documentação do projeto
+   * quando existir; <CHAT> = histórico de projeto_chats; <FEEDBACK> =
    * coluna feedback (rodadas revise).
    */
   async montarPromptGeracao(context: GenerationContextRow): Promise<GenerationPromptInput> {
@@ -226,6 +239,10 @@ export class ProjectGenerationWorker {
       ? chatRows.map(row => `[${String(row.role)}] ${String(row.texto)}`).join('\n')
       : 'Sem histórico de clarificação.'
     const descricao = String(context.descricao ?? '').trim() || '(sem descrição capturada)'
+    // F3 (migration 0101): prefere a especificação persistida no setup; cai na
+    // descrição capturada quando ausente/vazia — fallback documentado enquanto
+    // a Isa não produz o doc completo (F4; proposta §8).
+    const especificacao = String(context.especificacao ?? '').trim() || descricao
     const [catalogoCrud, docs] = await Promise.all([
       this.catalogoLoader(),
       this.docsLoader({ repoPath: context.repo_path == null ? null : String(context.repo_path) }),
@@ -233,9 +250,7 @@ export class ProjectGenerationWorker {
     return {
       nome: String(context.nome ?? ''),
       slug: String(context.slug ?? ''),
-      // F1: a especificação completa (F4, Isa estruturada) ainda não existe;
-      // a fonte de entrada é a descrição capturada (proposta §8, F1).
-      especificacao: descricao,
+      especificacao,
       descricao,
       catalogoCrud,
       docs,
@@ -345,6 +360,12 @@ export class ProjectGenerationWorker {
         return
       }
       console.log(`[ProjectGenerationWorker] geração ${geracaoId}: perguntas registradas no chat do projeto ${context.projeto_id} → awaiting_clarification`)
+      await this.notifyTransition(() => this.notifier?.notifyAwaitingClarification({
+        nome: String(context.nome ?? ''),
+        slug: String(context.slug ?? ''),
+        resumo: outcome.resumo ?? null,
+        perguntas: outcome.perguntas.length,
+      }), geracaoId, 'awaiting_clarification')
       return
     }
 
@@ -358,6 +379,30 @@ export class ProjectGenerationWorker {
       return
     }
     console.log(`[ProjectGenerationWorker] geração ${geracaoId}: plano macro gravado (${outcome.plano.tarefas.length} tarefas, ${outcome.plano.requisitos.length} requisitos) → awaiting_approval`)
+    await this.notifyTransition(() => this.notifier?.notifyAwaitingApproval({
+      nome: String(context.nome ?? ''),
+      slug: String(context.slug ?? ''),
+      tarefas: outcome.plano.tarefas.length,
+      requisitos: outcome.plano.requisitos.length,
+    }), geracaoId, 'awaiting_approval')
+  }
+
+  /**
+   * Disparo best-effort da notificação Telegram APÓS a transição vencedora:
+   * qualquer falha (rede/Telegram/notifier defeituoso) é logada e nunca
+   * propaga — a transição de status já está persistida e não pode ser
+   * revertida por causa da notificação (critério de aceite F2).
+   */
+  private async notifyTransition(
+    notify: () => Promise<void> | undefined,
+    geracaoId: number,
+    status: string,
+  ): Promise<void> {
+    try {
+      await notify()
+    } catch (error) {
+      console.warn(`[ProjectGenerationWorker] geração ${geracaoId}: notificação Telegram (${status}) falhou — transição mantida: ${asError(error).message.slice(0, 200)}`)
+    }
   }
 
   /**
@@ -430,7 +475,7 @@ export class ProjectGenerationWorker {
   private async loadContext(geracaoId: number): Promise<GenerationContextRow | null> {
     const [rows] = await this.pool.query<GenerationContextRow[]>(
       `SELECT g.id, g.projeto_id, g.status, g.briefing, g.feedback, g.worker_id,
-              p.nome, p.slug, p.descricao,
+              p.nome, p.slug, p.descricao, p.especificacao,
               COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), p.slug, '') AS agente_id,
               mc.repo_path
          FROM geracoes_projeto g

@@ -190,6 +190,15 @@ export const config: GeradorSistemaConfig = {
                 title: "Fila de Modelos",
               },
               {
+                id: "plano-projeto",
+                label: "Plano do projeto",
+                icon: "approval",
+                targetResource: "projetos_captados",
+                componentId: "gerenteagentes-plano-projeto",
+                filterField: "projetoId",
+                title: "Plano do projeto",
+              },
+              {
                 id: "tarefas",
                 label: "Tarefas",
                 icon: "task_alt",

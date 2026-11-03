@@ -116,6 +116,14 @@ export const projetosCaptados = mysqlTable("projetos_captados", {
   nome: varchar("nome", { length: 200 }).notNull(),
   slug: varchar("slug", { length: 100 }).notNull().unique(),
   descricao: text("descricao"),
+  /**
+   * Especificação do projeto (Geração Macro F3, migration 0101): gravada pelo
+   * setup (passo 1.1.x — mesma fonte de projects/<slug>/docs/ESPECIFICACAO.md).
+   * Enquanto a Isa não produz o doc completo (F4), aceita a descrição estendida.
+   * O ProjectGenerationWorker prefere este campo quando não-vazio e cai em
+   * `descricao` como fallback documentado.
+   */
+  especificacao: longtext("especificacao"),
   regras: text("regras"), // regras do projeto
   contatoId: bigint("contato_id", { mode: "number", unsigned: true })
     .references(() => contatos.id, { onDelete: "set null" }),

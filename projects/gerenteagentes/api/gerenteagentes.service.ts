@@ -68,9 +68,20 @@ import {
   montarConteudoEspecCrud,
   type MacroPlanoValidado,
 } from './macro-plan';
+import {
+  GenerationTelegramNotifier,
+  type GenerationTransitionNotifier,
+} from './generation-telegram-notifier';
 
 const DEFAULT_SESSION_PAGE_SIZE = 50;
 const MAX_SESSION_PAGE_SIZE = 500;
+
+/**
+ * Status "ativos" da geração macro para idempotência do start
+ * (docs/PROPOSTA-GERACAO-MACRO-TAREFAS.md §2): enquanto houver geração nestes
+ * estados, iniciarGeracaoProjeto não cria outra.
+ */
+const STATUS_GERACAO_ATIVA = ['pending', 'running', 'awaiting_clarification', 'awaiting_approval'] as const;
 
 type SessionMessagesQuery = {
   sessionKey?: string;
@@ -149,6 +160,11 @@ export class GerenteAgentesService {
   private readonly motorHttpUrl: string;
   private readonly consoleUrl: string;
   private readonly consoleToken: string;
+  /**
+   * Notificação Telegram das transições da Geração Macro (F2, task-p2-1057).
+   * Best-effort: sem credencial → no-op com log; falha nunca bloqueia a transição.
+   */
+  private readonly geracaoNotifier: GenerationTransitionNotifier;
 
   private async registrarEvento(
     db: any,
@@ -185,6 +201,14 @@ export class GerenteAgentesService {
     // Console OpenClaw (fonte de agentes — st-5)
     this.consoleUrl = this.configService.get<string>('OPENCLAW_CONSOLE_URL') || 'https://openclaw-api.webconnect.com.br';
     this.consoleToken = this.configService.get<string>('OPENCLAW_CONSOLE_TOKEN') || '';
+    // Geração Macro F2: reuso de TELEGRAM_BOT_TOKEN do env da API; destino
+    // TELEGRAM_GERACAO_CHAT_ID com fallback TELEGRAM_DLQ_CHAT_ID (padrão dos
+    // alertas DLQ). Sem credencial → no-op com log explícito.
+    this.geracaoNotifier = new GenerationTelegramNotifier(
+      this.configService.get<string>('TELEGRAM_BOT_TOKEN'),
+      this.configService.get<string>('TELEGRAM_GERACAO_CHAT_ID')
+        || this.configService.get<string>('TELEGRAM_DLQ_CHAT_ID'),
+    );
   }
 
   async listarConfiguracoesMotor(): Promise<MotorConfiguracaoResposta[]> {
@@ -2376,6 +2400,23 @@ export class GerenteAgentesService {
       .set({ status: 'awaiting_clarification', updatedAt: new Date() })
       .where(eq(geracoesProjeto.id, geracao.id));
 
+    // Notificação Telegram da transição (Geração Macro F2, task-p2-1057):
+    // best-effort — falha de rede/Telegram nunca reverte o awaiting_clarification.
+    try {
+      await this.geracaoNotifier.notifyAwaitingClarification({
+        nome: String(projetoCaptado.nome ?? ''),
+        slug: String(projetoCaptado.slug ?? ''),
+        resumo,
+        perguntas: limpas.length,
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Notificação Telegram da clarificação (geração ${geracao.id}) falhou — transição mantida: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+
     return { ok: true, geracaoId: geracao.id, status: 'awaiting_clarification', perguntas: limpas };
   }
 
@@ -2383,6 +2424,13 @@ export class GerenteAgentesService {
   // GERAÇÃO MACRO (START DO PROJETO)
   // ============================================================================
 
+  /**
+   * Cria a geração macro inicial do projeto (trilho B da proposta §2).
+   * Idempotente: se já existe geração ativa (pending | running |
+   * awaiting_clarification | awaiting_approval), retorna a existente sem
+   * duplicar — chamadas repetidas do botão "Executar projeto" ou do endpoint
+   * /start não criam duas gerações.
+   */
   async iniciarGeracaoProjeto(projeto: ProjetoResumo, projetoCaptadoId: number) {
     const db = await this.dbDoProjeto(projeto);
     
@@ -2395,6 +2443,27 @@ export class GerenteAgentesService {
 
     if (!projetoCaptado) {
       throw new NotFoundException('Projeto não encontrado');
+    }
+
+    // Idempotência: geração ativa existente é reutilizada.
+    const [ativa] = await db
+      .select({ id: geracoesProjeto.id, status: geracoesProjeto.status })
+      .from(geracoesProjeto)
+      .where(
+        and(
+          eq(geracoesProjeto.projetoId, projetoCaptadoId),
+          inArray(geracoesProjeto.status, STATUS_GERACAO_ATIVA),
+        ),
+      )
+      .orderBy(desc(geracoesProjeto.id))
+      .limit(1);
+    if (ativa) {
+      return {
+        geracaoId: ativa.id,
+        status: ativa.status,
+        nova: false,
+        message: 'Já existe geração ativa para o projeto — nenhuma geração foi duplicada',
+      };
     }
 
     // Criar registro de geração
@@ -2416,6 +2485,7 @@ export class GerenteAgentesService {
     return {
       geracaoId: geracao.id,
       status: 'pending',
+      nova: true,
       message: 'Geração de tarefas iniciada',
     };
   }
@@ -3296,10 +3366,14 @@ export class GerenteAgentesService {
       // commit do projeto e a criação da missão. Reconciliar o setup aqui
       // mantém o caminho idempotente sem deixar projeto órfão.
       const missao = await this.dispararMissaoSetup(db, projetoCaptado, Number(projetoCaptado.plataformaProjetoId));
+      // Trilhos A+B do mesmo clique (§3.2): a reconciliação também garante a
+      // geração inicial — iniciarGeracaoProjeto é idempotente por geração ativa.
+      const geracao = await this.iniciarGeracaoProjeto(projeto, projetoCaptadoId);
       return {
         projetoId: projetoCaptado.id,
         plataformaProjetoId: projetoCaptado.plataformaProjetoId,
         ...(missao ? { missao } : {}),
+        geracao,
         message: 'Projeto já provisionado na plataforma',
       };
     }
@@ -3327,6 +3401,10 @@ export class GerenteAgentesService {
     // Disparar a missão de setup no agente biblioteca-global (idempotente).
     const missao = await this.dispararMissaoSetup(db, projetoCaptado, provisionResult.projetoId);
 
+    // Trilhos A+B do mesmo clique (§3.2): além do setup, cria a geração macro
+    // inicial (pending) — idempotente por geração ativa.
+    const geracao = await this.iniciarGeracaoProjeto(projeto, projetoCaptadoId);
+
     return {
       projetoId: projetoCaptado.id,
       plataformaProjetoId: provisionResult.projetoId,
@@ -3334,6 +3412,7 @@ export class GerenteAgentesService {
       perfil: provisionResult.perfil,
       criado: provisionResult.criado,
       ...(missao ? { missao } : {}),
+      geracao,
       message: 'Desenvolvimento iniciado - projeto provisionado na plataforma',
     };
   }
@@ -3399,7 +3478,10 @@ export class GerenteAgentesService {
     if (existente) {
       tarefaId = existente.id;
     } else {
-      const descricao = this.montarMissaoSetup(projetoCaptado, plataformaProjetoId);
+      // O setup MATERIALIZA o plano aprovado (§3.2): busca a geração approved
+      // mais recente e revalida o json com as regras do contrato §5.
+      const planoAprovado = await this.buscarPlanoAprovadoSetup(db, projetoCaptado.id);
+      const descricao = this.montarMissaoSetup(projetoCaptado, plataformaProjetoId, planoAprovado);
       let inserida: { id: number } | undefined;
       try {
         [inserida] = await db
@@ -3433,12 +3515,99 @@ export class GerenteAgentesService {
     return { tarefaId, motorId, nova };
   }
 
+  /**
+   * Plano aprovado mais recente do projeto para materialização no setup
+   * (docs/PROPOSTA-GERACAO-MACRO-TAREFAS.md §3.2). Revalida o json persistido
+   * em geracoes_projeto.tasks com validarPlanoMacro (mesmas regras do contrato
+   * §5); plano ausente ou inválido → null (a missão executa apenas a estrutura
+   * mínima e declara que config/schema definitivos virão do plano).
+   */
+  private async buscarPlanoAprovadoSetup(
+    db: Awaited<ReturnType<GerenteAgentesService['dbDoProjeto']>>,
+    projetoCaptadoId: number,
+  ): Promise<{ geracaoId: number; plano: MacroPlanoValidado } | null> {
+    const [geracao] = await db
+      .select({ id: geracoesProjeto.id, tasks: geracoesProjeto.tasks })
+      .from(geracoesProjeto)
+      .where(
+        and(
+          eq(geracoesProjeto.projetoId, projetoCaptadoId),
+          eq(geracoesProjeto.status, 'approved'),
+        ),
+      )
+      .orderBy(desc(geracoesProjeto.id))
+      .limit(1);
+    if (!geracao?.tasks) return null;
+    try {
+      return { geracaoId: Number(geracao.id), plano: validarPlanoMacro(geracao.tasks) };
+    } catch (error) {
+      this.logger.warn(
+        `Geração approved #${geracao.id} do projeto ${projetoCaptadoId} com plano inválido — setup seguirá com estrutura mínima: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return null;
+    }
+  }
+
   /** Texto da missão de setup entregue ao agente biblioteca-global. */
   private montarMissaoSetup(
     projetoCaptado: typeof projetosCaptados.$inferSelect,
     plataformaProjetoId: number,
+    planoAprovado: { geracaoId: number; plano: MacroPlanoValidado } | null,
   ): string {
     const slug = projetoCaptado.slug;
+    const especificacao = projetoCaptado.especificacao?.trim() || projetoCaptado.descricao?.trim() || '(sem especificação disponível)';
+    const plano = planoAprovado?.plano;
+    const materializacaoPlano = plano
+      ? [
+          `PLANO MACRO APROVADO (geracoes_projeto #${planoAprovado.geracaoId}):`,
+          `- requerAgenteDedicado: ${plano.requerAgenteDedicado ? 'true' : 'false'}. Esta decisão é a única fonte para criar o agente do projeto; não reanalise telas ou a descrição.`,
+          '- especificacaoCrud (fonte declarativa para o setup):',
+          JSON.stringify(plano.especificacaoCrud, null, 2),
+          '- Use exatamente esta especificacaoCrud e o artefato projects/' + slug + '/docs/ESPEC-CRUD.md para gerar config.ts e schema.ts; não reanalise a descrição.',
+          '- REGRA DAS DUAS FONTES DE CONFIG (MEMORY.md 2026-09-24): qualquer campo, máscara ou validator alterado deve ser sincronizado em config.ts E config.json.',
+        ]
+      : [
+          'NÃO HÁ PLANO MACRO APROVADO no momento da montagem.',
+          'Execute somente a estrutura mínima, registros obrigatórios, provisionamento do banco e smoke test. Não crie agente dedicado e não finalize config/schema definitivos a partir da descrição.',
+          'Config/schema definitivos serão materializados quando houver plano aprovado; o gate de execução segura as tarefas até setup_status=verified.',
+        ];
+    const passosAgente = plano?.requerAgenteDedicado
+      ? [
+          '=== PASSO 3: AGENTE DEDICADO DO PROJETO (somente porque requerAgenteDedicado=true no plano) ===',
+          '',
+          `3.1. Crie o agente do projeto no OpenClaw com id = "${slug}" e workspace`,
+          `     /data/workspace/projects/agentes/${slug} (pasta com AGENTS.md, SOUL.md,`,
+          '     IDENTITY.md, USER.md, TOOLS.md);',
+          '',
+          '3.2. REGISTRO NO GATEWAY (OBRIGATÓRIO — sem isso o motor não encontra o agente):',
+          '     Execute o comando CLI para registrar o agente no gateway:',
+          `     openclaw agents add ${slug} --workspace /data/workspace/projects/agentes/${slug} --model <modelo> --non-interactive`,
+          '     Onde <modelo> é o modelo configurado para o agente (ex.: ollama/qwen3-coder:30b).',
+          '     Verifique o registro com: openclaw agents list',
+          '',
+          '3.3. Delegue a configuração dos arquivos de personalidade ao agente',
+          '     definicaopersonalidadeagentes (Forjador), passando a especificação do',
+          '     projeto, e AGUARDE ele terminar;',
+          '',
+          '3.4. Registre o agente na tabela projeto_640.agentes (espelho do OpenClaw):',
+          `     nome, modelo e openclaw_agent_id = "${slug}" (o motor resolve o agente por`,
+          '     COALESCE(openclaw_agent_id, nome));',
+          '',
+          '3.5. Vincule o projeto ao agente: UPDATE projeto_640.projetos_captados SET',
+          `     agente_id = <id da linha de agentes> WHERE slug = "${slug}" — é esse vínculo`,
+          '     que faz o motor executar as tarefas do projeto com o agente novo;',
+          '',
+        ]
+      : [
+          '=== PASSO 3: AGENTE DEDICADO ===',
+          '',
+          plano
+            ? 'O plano aprovado define requerAgenteDedicado=false. Não crie, registre nem vincule agente dedicado; o projeto usa a plataforma e o agente biblioteca-global.'
+            : 'Não há plano aprovado. Não crie, registre nem vincule agente dedicado nesta execução mínima; aguarde a materialização do plano.',
+          '',
+        ];
     const linhas = [
       `MISSÃO — Setup do projeto "${projetoCaptado.nome}" (slug: ${slug})`,
       '',
@@ -3450,6 +3619,13 @@ export class GerenteAgentesService {
       projetoCaptado.descricao ?? '(sem descrição)',
       '---',
       '',
+      'Especificação do projeto (fonte para projects/' + slug + '/docs/ESPECIFICACAO.md):',
+      '---',
+      especificacao,
+      '---',
+      '',
+      ...materializacaoPlano,
+      '',
       'Execute os passos abaixo, nesta ordem:',
       '',
       '=== PASSO 1: ESTRUTURA DO PROJETO ===',
@@ -3459,9 +3635,17 @@ export class GerenteAgentesService {
       '     > Status: bootstrap pendente.',
       '     > Projeto: ' + slug,
       '     ## Identidade técnica\n     _A preencher após inspeção inicial._\n     ## Arquitetura e módulos\n     _A preencher após inspeção inicial._\n     ## Fontes de verdade\n     _A preencher após inspeção inicial._\n     ## Decisões vigentes\n     _Nenhuma registrada._\n     ## Limitações e riscos conhecidos\n     _Nenhum registrado._\n     ## Registro confirmado por tarefa\n     _Nenhuma tarefa concluída._',
-      '1.2. Crie o config.ts do projeto com menus, telas e campos, seguindo',
-      '     docs/MANUAL_CONFIG_PROJETOS.md e a descrição acima.',
-      '1.3. Crie o schema.ts com as tabelas necessárias.',
+      '1.1.x. Grave o conteúdo da especificação acima em projects/' + slug + '/docs/ESPECIFICACAO.md. Use projetos_captados.especificacao; o texto acima já aplica fallback para descricao quando especificacao estiver vazia.',
+      ...(plano
+        ? [
+            '1.2. Gere config.ts a partir da especificacaoCrud do plano aprovado e do ESPEC-CRUD.md, sem reanalisar a descrição.',
+            '1.3. Gere schema.ts a partir da especificacaoCrud do plano aprovado e do ESPEC-CRUD.md, sem reanalisar a descrição.',
+            '1.3.1. REGRA DAS DUAS FONTES DE CONFIG (MEMORY.md 2026-09-24): mantenha config.ts E config.json sincronizados; qualquer mudança de campo, máscara ou validator deve ser aplicada nos dois arquivos.',
+          ]
+        : [
+            '1.2. Prepare somente a estrutura mínima; não gere config.ts/schema.ts definitivos a partir da descrição enquanto não houver plano aprovado.',
+            '1.3. Config/schema definitivos serão gerados posteriormente a partir da especificacaoCrud do plano aprovado.',
+          ]),
       `1.4. Crie o banco projeto_${plataformaProjetoId} (convenção projeto_<id do core>).`,
       '1.5. Execute as migrations.',
       '',
@@ -3507,43 +3691,7 @@ export class GerenteAgentesService {
       '     Arquivo: apps/api/src/modules/crud/project-db.factory.ts',
       '     - Verificar se o projeto está mapeado (geralmente automático via core.projetos)',
       '',
-      '=== PASSO 3: GATE DE AGENTE DEDICADO ===',
-      '',
-      'Analise o config.ts: o projeto tem telas ALÉM do CRUD (kind: "custom")?',
-      '   - SE SIM:',
-      `     3.1. Crie o agente do projeto no OpenClaw com id = "${slug}" e workspace`,
-      `          /data/workspace/projects/agentes/${slug} (pasta com AGENTS.md, SOUL.md,`,
-      '          IDENTITY.md, USER.md, TOOLS.md);',
-      '',
-      '     3.2. REGISTRO NO GATEWAY (OBRIGATÓRIO — sem isso o motor não encontra o agente):',
-      `          Execute o comando CLI para registrar o agente no gateway:`,
-      `          openclaw agents add ${slug} --workspace /data/workspace/projects/agentes/${slug} --model <modelo> --non-interactive`,
-      '          Onde <modelo> é o modelo configurado para o agente (ex.: ollama/qwen3-coder:30b).',
-      '          Verifique o registro com: openclaw agents list',
-      '',
-      '     3.3. Delegue a configuração dos arquivos de personalidade ao agente',
-      '          definicaopersonalidadeagentes (Forjador), passando a descrição do',
-      '          projeto, e AGUARDE ele terminar;',
-      '',
-      '     3.4. Registre o agente na tabela projeto_640.agentes (espelho do OpenClaw):',
-      `          nome, modelo e openclaw_agent_id = "${slug}" (o motor resolve o agente por`,
-      '          COALESCE(openclaw_agent_id, nome));',
-      '',
-      '     3.5. Vincule o projeto ao agente: UPDATE projeto_640.projetos_captados SET',
-      `          agente_id = <id da linha de agentes> WHERE slug = "${slug}" — é esse vínculo`,
-      '          que faz o motor executar as tarefas do projeto com o agente novo;',
-      '',
-      '     3.6. TELAS PERSONALIZADAS COMO TAREFAS DO PROJETO (NÃO subtarefas do setup):',
-      '          Para cada funcionalidade NÃO compatível com o CRUD da biblioteca,',
-      '          crie UMA TAREFA (não subtarefa) no motor ligada ao projeto novo:',
-      '          - tarefas.projeto_id = id de projetos_captados do projeto novo',
-      '          - tarefas.auto_start = true (execução automática em sequência)',
-      '          - O agente que executa essas tarefas é o agente do projeto novo',
-      '            (não o biblioteca-global que fez o setup)',
-      '          - Exemplo: se o projeto tem uma tela custom de dashboard, crie a',
-      '            tarefa "Implementar tela Dashboard" vinculada ao projeto',
-      '',
-      '   - SE NÃO (só CRUD): nenhum agente dedicado é criado.',
+      ...passosAgente,
       '',
       '=== PASSO 4: SMOKE TEST FUNCIONAL (OBRIGATÓRIO) ===',
       '',
@@ -3572,7 +3720,7 @@ export class GerenteAgentesService {
       '5.3. Registre no resultado:',
       '     - Lista de todos os registros criados (schema-registry, front registry,',
       '       seed, Dockerfiles, lockfile, agente no gateway)',
-      '     - Lista de tarefas criadas para telas personalizadas (se houver)',
+      '     - Confirme o agente dedicado criado e vinculado somente se o plano exigir (se aplicável)',
       '     - Qualquer bloqueio ou pendência',
       '',
       '⚠️  O gate do motor vai verificar cada item do checklist antes de aceitar',

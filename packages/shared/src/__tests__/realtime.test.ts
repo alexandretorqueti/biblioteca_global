@@ -179,4 +179,25 @@ describe("contrato realtime do Mapa de Agentes", () => {
       type: "error", code: "INVALID_SUBSCRIPTION", message: "Inscrição inválida",
     }).success).toBe(true)
   })
+
+  it("aceita map_snapshot com capacityWait reasonCode setup_not_verified (gate de setup)", () => {
+    expect(realtimeServerMessageSchema.safeParse({
+      type: "map_snapshot", projectId: 7, currentSequence: 5,
+      snapshot: {
+        projectId: 7,
+        tasks: [{
+          taskId: 42,
+          status: "planned",
+          capacityWait: {
+            phase: "development",
+            reasonCode: "setup_not_verified",
+            limitScope: "project",
+            limitValue: 0,
+            provider: null,
+          },
+        }],
+        counters: { total: 1 },
+      },
+    }).success).toBe(true)
+  })
 })
