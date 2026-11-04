@@ -12,6 +12,12 @@
  * 3. A aba ativa do detalhe (Chat/Execução/Logs/Histórico) é preservada ao
  *    trocar de tarefa; a seleção inicial e a criação de tarefa nova continuam
  *    abrindo em Resumo.
+ *
+ * Tarefa 1059 — guarda defensiva no front: tarefa em status terminal
+ * (completed/deployed/cancelled/failed/closed) NUNCA exibe ampulheta, chip ou
+ * motivo de espera de capacidade, mesmo com flags `capacity_wait_*` residuais
+ * no payload (REST, snapshot ou evento realtime); espera legítima em tarefa
+ * não-terminal continua exibida para todos os reason codes.
  */
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
@@ -386,4 +392,131 @@ describe("Preservação da aba ativa ao trocar de tarefa", () => {
     })
   })
 
+})
+
+describe("Tarefa 1059 — guarda defensiva: tarefa terminal nunca exibe espera de capacidade", () => {
+  const TERMINAL_STATUSES = ["completed", "deployed", "cancelled", "failed", "closed"]
+
+  it.each(TERMINAL_STATUSES)("não renderiza ampulheta no marcador para tarefa '%s' com capacityWait residual no payload REST", async (statusTerminal) => {
+    globalThis.__bundleMapa = bundleFalso([
+      tarefaFactory(60, "Tarefa terminal com flag residual", statusTerminal, { capacityWait: CAPACITY_WAIT }),
+    ])
+    renderScreen()
+
+    await waitFor(() => {
+      const marker = screen.getByTestId("operation-map-task-60")
+      // O identificador continua visível; só a espera some.
+      expect(marker).toHaveTextContent("#60")
+      expect(screen.queryByTestId("operation-map-task-capacity-wait-60")).not.toBeInTheDocument()
+    })
+  })
+
+  it("não renderiza o chip 'Aguardando capacidade' no detalhe de tarefa deployada com flag residual no motor-detail", async () => {
+    globalThis.__bundleMapa = bundleFalso(
+      [tarefaFactory(61, "Tarefa deployada com flag residual", "deployed", { capacityWait: CAPACITY_WAIT })],
+      { detailTask: { status: "deployed", capacityWait: CAPACITY_WAIT } },
+    )
+    renderScreen()
+
+    await waitFor(() => expect(screen.getByTestId("detail-content")).toHaveTextContent("#61"))
+    expect(screen.queryByTestId("task-detail-capacity-wait-61")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("operation-map-task-capacity-wait-61")).not.toBeInTheDocument()
+  })
+
+  it("descarta capacityWait residual trazido explicitamente no payload do evento de transição terminal", async () => {
+    globalThis.__bundleMapa = bundleFalso([
+      tarefaFactory(62, "Tarefa na fila", "planned", { capacityWait: CAPACITY_WAIT }),
+    ], { detailTask: { status: "planned", capacityWait: CAPACITY_WAIT } })
+    renderScreen()
+
+    await screen.findByTestId("operation-map-task-capacity-wait-62")
+    await waitFor(() => expect(handlerPara("map")).toBeDefined())
+    // Motor emite a transição terminal com a projeção obsoleta ainda no payload.
+    emitirStatusChanged(62, { previousStatus: "planned", status: "failed", capacityWait: CAPACITY_WAIT })
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("operation-map-task-capacity-wait-62")).not.toBeInTheDocument()
+      expect(screen.queryByTestId("task-detail-capacity-wait-62")).not.toBeInTheDocument()
+    })
+  })
+
+  it("limpa a projeção local obsoleta ao transicionar para terminal sem capacityWait no payload", async () => {
+    globalThis.__bundleMapa = bundleFalso([
+      tarefaFactory(63, "Tarefa na fila", "planned", { capacityWait: CAPACITY_WAIT }),
+    ])
+    renderScreen()
+
+    await screen.findByTestId("operation-map-task-capacity-wait-63")
+    await waitFor(() => expect(handlerPara("map")).toBeDefined())
+    emitirStatusChanged(63, { previousStatus: "planned", status: "cancelled" })
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("operation-map-task-capacity-wait-63")).not.toBeInTheDocument()
+    })
+  })
+
+  it("não exibe o chip quando o task_snapshot traz tarefa terminal com capacityWait residual", async () => {
+    const tarefas = [tarefaFactory(64, "Tarefa em espera", "paused", { capacityWait: CAPACITY_WAIT })]
+    globalThis.__bundleMapa = bundleFalso(tarefas, { detailTask: { status: "paused", capacityWait: CAPACITY_WAIT } })
+    renderScreen()
+
+    // Chip visível antes do snapshot (espera legítima em tarefa pausada).
+    expect(await screen.findByTestId("task-detail-capacity-wait-64")).toBeInTheDocument()
+
+    await waitFor(() => expect(handlerPara("task:64")).toBeDefined())
+    handlerPara("task:64")?.({
+      type: "task_snapshot",
+      snapshot: {
+        task: { status: "completed", title: "Tarefa em espera", capacityWait: CAPACITY_WAIT },
+        subtasks: [],
+        history: [],
+      },
+    })
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("task-detail-capacity-wait-64")).not.toBeInTheDocument()
+    })
+  })
+})
+
+describe("Tarefa 1059 — regressão: espera legítima em tarefa não-terminal continua exibida", () => {
+  const ESPERAS: Array<[CapacityWaitProjection["reasonCode"], CapacityWaitProjection]> = [
+    ["global_limit", { phase: "development", reasonCode: "global_limit", limitScope: "global", limitValue: 2, provider: null }],
+    ["project_limit", { phase: "analysis", reasonCode: "project_limit", limitScope: "project", limitValue: 1, provider: null }],
+    ["provider_limit", { phase: "development", reasonCode: "provider_limit", limitScope: "provider", limitValue: 3, provider: "openai" }],
+    ["model_cooldown", { phase: "development", reasonCode: "model_cooldown", limitScope: "model", limitValue: 0, provider: null, retryAt: "2026-11-04T18:00:00Z" }],
+    ["setup_not_verified", { phase: "analysis", reasonCode: "setup_not_verified", limitScope: "project", limitValue: 0, provider: null }],
+  ]
+
+  it.each(ESPERAS)("renderiza ampulheta no marcador e chip no detalhe para reasonCode '%s' em tarefa pausada", async (_reasonCode, espera) => {
+    globalThis.__bundleMapa = bundleFalso(
+      [tarefaFactory(70, "Tarefa aguardando legitimamente", "paused", { capacityWait: espera })],
+      { detailTask: { status: "paused", capacityWait: espera } },
+    )
+    renderScreen()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("operation-map-task-capacity-wait-70")).toBeInTheDocument()
+      expect(screen.getByTestId("task-detail-capacity-wait-70")).toBeInTheDocument()
+    })
+  })
+
+  it("exibe a espera quando o evento em tempo real traz capacityWait legítimo em status não-terminal", async () => {
+    globalThis.__bundleMapa = bundleFalso([tarefaFactory(71, "Tarefa pronta", "ready")])
+    renderScreen()
+
+    await waitFor(() => expect(screen.getByTestId("operation-map-task-71")).toBeInTheDocument())
+    expect(screen.queryByTestId("operation-map-task-capacity-wait-71")).not.toBeInTheDocument()
+
+    await waitFor(() => expect(handlerPara("map")).toBeDefined())
+    emitirStatusChanged(71, {
+      previousStatus: "ready",
+      status: "planned",
+      capacityWait: { phase: "development", reasonCode: "model_cooldown", limitScope: "model", limitValue: 0, provider: null, retryAt: "2026-11-04T18:00:00Z" },
+    })
+
+    await waitFor(() => {
+      expect(screen.getByTestId("operation-map-task-capacity-wait-71")).toBeInTheDocument()
+    })
+  })
 })

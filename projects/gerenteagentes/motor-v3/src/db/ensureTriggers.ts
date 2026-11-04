@@ -1,4 +1,5 @@
 import type { Pool, RowDataPacket } from 'mysql2/promise'
+import { CAPACITY_WAIT_CLEAR_ASSIGNMENTS } from '../shared/capacityWait.js'
 
 /**
  * Rede de segurança da conclusão de tarefas (camada A do desenho A+B+C).
@@ -84,6 +85,7 @@ BEGIN
           terminal_status = 'completed',
           terminal_at = COALESCE(terminal_at, NOW()),
           integration_confirmed_at = COALESCE(integration_confirmed_at, NOW()),
+          ${CAPACITY_WAIT_CLEAR_ASSIGNMENTS},
           updated_at = NOW();
 
         INSERT IGNORE INTO motor_outbox

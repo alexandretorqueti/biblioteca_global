@@ -8,6 +8,7 @@ import type { RealtimeMutationPublisher } from '../realtime/RealtimeMutationPubl
 import { RealtimeMutationBoundary } from '../realtime/RealtimeMutationBoundary.js'
 import { DerivedTaskStatusResolver, type DerivedTaskStatus } from '../status/DerivedTaskStatus.js'
 import { providerFromModel, providerCapacityDecision } from './ProviderCapacity.js'
+import { CAPACITY_WAIT_CLEAR_ASSIGNMENTS, clearCapacityWait as clearCapacityWaitFlags } from '../shared/capacityWait.js'
 
 export interface ReservedSubtask {
   message: QueueMessage<{ subtaskId: number; seq: number; title: string; scope: string }>
@@ -674,6 +675,8 @@ export class MySqlDevelopmentExecutionRepository {
         await cancelUnstartedDeployRequests(connection, context.databaseTaskId, {
           blocker: 'task_completed', resolvedBy: 'motor-v3', motivo: 'Conclusão normal da tarefa; pedidos anteriores foram substituídos pelo deploy atual.',
         })
+        // task-p2-1059: a transição terminal limpa os 8 flags capacity_wait_*
+        // na mesma escrita (incidentes 1023/1047: ampulheta em tarefa concluída).
         await connection.query(
           `INSERT INTO task_runtime_facts
              (tarefa_id, terminal_status, terminal_at, integration_confirmed_at,
@@ -681,7 +684,8 @@ export class MySqlDevelopmentExecutionRepository {
            VALUES (?, 'completed', NOW(), NOW(), ?, ?, NOW(), NOW())
            ON DUPLICATE KEY UPDATE terminal_status = 'completed', terminal_at = NOW(),
              integration_confirmed_at = NOW(), integration_commit_sha = VALUES(integration_commit_sha),
-             base_commit_sha = VALUES(base_commit_sha), updated_at = NOW()`,
+             base_commit_sha = VALUES(base_commit_sha),
+             ${CAPACITY_WAIT_CLEAR_ASSIGNMENTS}, updated_at = NOW()`,
           [context.databaseTaskId, evidence.integrationCommitSha, context.workspaceBaseCommit],
         )
         taskReachedTerminal = true
@@ -1285,10 +1289,12 @@ export class MySqlDevelopmentExecutionRepository {
             motivo: 'Conclusão da tarefa; pedidos de deploy anteriores foram dispensados.',
             createTombstone: true,
           })
+      // task-p2-1059: a transição terminal limpa os 8 flags capacity_wait_*.
       await connection.query(
         `INSERT INTO task_runtime_facts (tarefa_id,terminal_status,terminal_at,integration_confirmed_at,created_at,updated_at)
          VALUES (?,'completed',NOW(),NOW(),NOW(),NOW())
-         ON DUPLICATE KEY UPDATE terminal_status='completed',terminal_at=NOW(),integration_confirmed_at=NOW(),updated_at=NOW()`,
+         ON DUPLICATE KEY UPDATE terminal_status='completed',terminal_at=NOW(),integration_confirmed_at=NOW(),
+           ${CAPACITY_WAIT_CLEAR_ASSIGNMENTS},updated_at=NOW()`,
         [context.databaseTaskId],
       )
       taskReachedTerminal = true
@@ -1446,12 +1452,8 @@ export class MySqlDevelopmentExecutionRepository {
   }
 
   private async clearCapacityWait(connection: PoolConnection, taskId: number): Promise<void> {
-    await connection.query(
-      `UPDATE task_runtime_facts SET capacity_wait_phase=NULL, capacity_wait_reason_code=NULL,
-       capacity_wait_limit_scope=NULL, capacity_wait_limit_value=NULL, capacity_wait_provider=NULL,
-       capacity_wait_since=NULL, capacity_wait_retry_at=NULL, capacity_wait_alert_at=NULL,
-       updated_at=NOW() WHERE tarefa_id=?`, [taskId],
-    )
+    // Forma canônica centralizada em shared/capacityWait.ts (task-p2-1059).
+    await clearCapacityWaitFlags(connection, taskId)
   }
 
   /**

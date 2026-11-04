@@ -1143,13 +1143,20 @@ async function start() {
           const [capacityWaitRows] = await pool.query(
             `SELECT capacity_wait_phase AS phase, capacity_wait_reason_code AS reasonCode,
                     capacity_wait_limit_scope AS limitScope, capacity_wait_limit_value AS limitValue,
-                    capacity_wait_provider AS provider, capacity_wait_retry_at AS retryAt
+                    capacity_wait_provider AS provider, capacity_wait_retry_at AS retryAt,
+                    terminal_status AS terminalStatus
                FROM task_runtime_facts WHERE tarefa_id = ? LIMIT 1`, [tarefa.id],
           ) as any[]
-          const capacityWait = capacityWaitRows?.[0]?.phase
+          // Guarda defensiva (task-p2-1059): tarefa terminal nunca projeta
+          // espera de capacidade, mesmo com flags residuais no banco
+          // (incidentes 1023/1047: ampulheta em tarefa concluída/deployada).
+          const capacityWait = capacityWaitRows?.[0]?.phase && capacityWaitRows[0].terminalStatus == null
             ? {
-              ...capacityWaitRows[0],
+              phase: capacityWaitRows[0].phase,
+              reasonCode: capacityWaitRows[0].reasonCode,
+              limitScope: capacityWaitRows[0].limitScope,
               limitValue: Number(capacityWaitRows[0].limitValue),
+              provider: capacityWaitRows[0].provider,
               retryAt: capacityWaitRows[0].retryAt ? new Date(capacityWaitRows[0].retryAt).toISOString() : null,
             }
             : null
@@ -1202,7 +1209,9 @@ async function start() {
           `UPDATE task_runtime_facts f INNER JOIN tarefas t ON t.id = f.tarefa_id
               SET f.capacity_wait_phase = NULL, f.capacity_wait_reason_code = NULL,
                   f.capacity_wait_limit_scope = NULL, f.capacity_wait_limit_value = NULL,
-                  f.capacity_wait_provider = NULL, f.updated_at = NOW()
+                  f.capacity_wait_provider = NULL, f.capacity_wait_since = NULL,
+                  f.capacity_wait_retry_at = NULL, f.capacity_wait_alert_at = NULL,
+                  f.updated_at = NOW()
             WHERE t.external_id = ? OR CAST(t.id AS CHAR) = ?`, [taskId, taskId],
         )
         const message = await dispatchCommand('TASK_PAUSE_REQUESTED', taskId, taskId, {})
