@@ -53,6 +53,16 @@ export class ConsoleHttpApi implements AnalystConsole {
       | { id?: unknown; role: string; content: unknown; errorCode?: unknown; errorType?: unknown; errorMessage?: unknown; stopReason?: unknown }
       | undefined
     if (failed) {
+      // Run ativo vence o flag terminal: o describe pode expor `failed`
+      // obsoleto enquanto a nova execução já está em andamento.
+      if (status.hasActiveRun === true) return { isComplete: false, activity: this.activity(messages) }
+      // Procedência da falha (incidente task-p2-1060): `endedAt` do run failed
+      // posterior ao envio prova que quem falhou foi o run ATUAL — a supressão
+      // de falha obsoleta não se aplica e o motor não pode esperar até o
+      // timeout completo. Sem `endedAt`, mantém-se a heurística de atividade/
+      // tolerância abaixo.
+      const failedRunEndedAtMs = this.timestampMs(status.endedAt)
+      const failureFromCurrentRun = marker !== undefined && failedRunEndedAtMs !== undefined && failedRunEndedAtMs >= marker.sentAt
       // Corrida de status obsoleto (incidente task-p2-981/subtarefa 1336):
       // entre o envio da nova mensagem e o início do novo run, o describe pode
       // continuar expondo o `failed` terminal do run ANTERIOR. Sem atividade do
@@ -60,7 +70,7 @@ export class ConsoleHttpApi implements AnalystConsole {
       // tentativa — o mesmo tratamento já dado a `done`/`idle` obsoletos. O
       // timeout do waitForCompletion continua sendo a rede de proteção para o
       // caso de o novo run nunca começar.
-      if (marker) {
+      if (marker && !failureFromCurrentRun) {
         const hasAgentActivityAfterSend = messages.some(message =>
           message.role !== 'user' && this.isResponseAfter(message, marker),
         )
@@ -70,6 +80,15 @@ export class ConsoleHttpApi implements AnalystConsole {
         // agente, a falha terminal é real e precisa ser consumida; caso
         // contrário o marker ficaria retido indefinidamente.
         if (hasAgentActivityAfterSend || withinStaleFailedGrace) return { isComplete: false }
+      }
+      // Falha terminal do run atual que AINDA produziu resposta final utilizável
+      // (incidente task-p2-1060: stopReason=length — JSON do analista truncado
+      // no limite de saída): recupera o conteúdo e deixa o parser decidir. Se
+      // estiver inutilizável, o fluxo de correção pede o reenvio na mesma
+      // sessão, em vez de queimar todo o tempo até o timeout do waitForResult.
+      if (failureFromCurrentRun && assistant && !this.isErrorAssistant(assistant)) {
+        this.pendingResponses.delete(this.sessionKey(session))
+        return { isComplete: true, lastResponse: await this.resolveFullContent(session, assistant) }
       }
       // O Console por vezes expõe apenas status=failed. O histórico pode trazer
       // o detalhe do provedor ou apenas uma falha genérica com stopReason=error.
@@ -105,19 +124,43 @@ export class ConsoleHttpApi implements AnalystConsole {
       return terminalCompleted ? { isComplete: true } : { isComplete: false }
     }
     this.pendingResponses.delete(this.sessionKey(session))
+    return { isComplete: true, lastResponse: await this.resolveFullContent(session, assistant) }
+  }
+
+  /**
+   * O Gateway trunca o texto do histórico em 8.000 caracteres (sufixo
+   * `...(truncated)...`) e o endpoint de histórico do Console não encaminha
+   * `maxChars`. Respostas finais longas (ex.: JSON do analista) chegariam
+   * cortadas e falhariam no parser (incidente task-p2-984). O endpoint
+   * `/api/chat/message` aceita `maxChars` e devolve a mensagem integral pelo
+   * id canônico persistido no histórico.
+   */
+  private async resolveFullContent(session: AnalystSession, assistant: { id?: unknown; content: unknown }): Promise<string> {
     let lastResponse = String(assistant.content)
-    // O Gateway trunca o texto do histórico em 8.000 caracteres (sufixo
-    // `...(truncated)...`) e o endpoint de histórico do Console não encaminha
-    // `maxChars`. Respostas finais longas (ex.: JSON do analista) chegariam
-    // cortadas e falhariam no parser (incidente task-p2-984). O endpoint
-    // `/api/chat/message` aceita `maxChars` e devolve a mensagem integral pelo
-    // id canônico persistido no histórico.
     if (this.isHistoryTruncated(lastResponse)) {
       const messageId = typeof assistant.id === 'string' || typeof assistant.id === 'number' ? String(assistant.id) : undefined
       const full = messageId ? await this.fetchFullMessageContent(session, messageId) : undefined
       if (full !== undefined) lastResponse = full
     }
-    return { isComplete: true, lastResponse }
+    return lastResponse
+  }
+
+  /** Mensagens de erro do provedor não são respostas utilizáveis para recuperação. */
+  private isErrorAssistant(message: { errorCode?: unknown; errorType?: unknown; errorMessage?: unknown; stopReason?: unknown }): boolean {
+    return String(message.stopReason ?? '') === 'error'
+      || this.stringValue(message.errorMessage) !== undefined
+      || this.stringValue(message.errorCode) !== undefined
+      || this.stringValue(message.errorType) !== undefined
+  }
+
+  /** Converte `endedAt` numérico (ms) ou ISO em epoch-ms; ausência vira undefined. */
+  private timestampMs(value: unknown): number | undefined {
+    if (typeof value === 'number' && Number.isFinite(value)) return value
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = Date.parse(value)
+      if (Number.isFinite(parsed)) return parsed
+    }
+    return undefined
   }
 
   /** Detecta o sufixo de truncamento aplicado pelo Gateway no histórico. */
