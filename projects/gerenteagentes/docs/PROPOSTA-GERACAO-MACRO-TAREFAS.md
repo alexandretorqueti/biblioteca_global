@@ -123,15 +123,23 @@ Execução
 | `iniciarDesenvolvimento` | AJUSTE | Além do setup, cria a geracao inicial (chama `iniciarGeracaoProjeto`) — os dois trilhos (A e B) partem juntos do mesmo clique. |
 | Especificação | AJUSTE | `projetos_captados.especificacao` (longtext, migration) + gravação do doc em `projects/<slug>/docs/ESPECIFICACAO.md` no setup (passo 1.1.x). Enquanto a Isa não produzir o doc completo, o campo aceita a descrição estendida que ela já consegue gerar. |
 
-### 3.3 Isa (captação — `global-ia`/isa-chat)
+### 3.3 Isa (captação — `projects/gerenteagentes/api/isa-chat/`)
+
+> **Correção 2026-11-04:** esta seção citava a stack protótipo `global-ia`/isa-chat, que não
+> está mais no ar. O backend real da Isa vive em `projects/gerenteagentes/api/isa-chat/`
+> (controller/service/bridge HTTP para o BFF do openclaw-console; cérebro = agente OpenClaw
+> `isa`), com front no painel do GerenteAgentes (`screens/IsaChatScreen.tsx`) e no front
+> público `projects/isa-chat` (container `biblioteca-global-isa-chat`). A F4 é, portanto,
+> escopo do projeto gerenteagentes — ver tarefa **1060** (task-p2-1060).
 
 | Item | Tipo | Descrição |
 |---|---|---|
 | Saída estruturada | AJUSTE | Ao final da captação, a Isa gera o documento de especificação (seções mínimas: visão geral, atores/papéis, requisitos funcionais numerados, requisitos não-funcionais, entidades de dados, integrações, fora-de-escopo) e grava em `especificacao`. O parágrafo `descricao` continua existindo como resumo. |
 
 > Fronteira Biblioteca vs. Motor (regra de ouro): schema/coluna nova e endpoints são do
-> projeto gerenteagentes (motor/API do motor); a mudança na Isa é no projeto dela, com
-> contrato apenas no formato do documento. Nada disso é plataforma (core) — não toca RBAC/identity.
+> projeto gerenteagentes (motor/API do motor); a mudança na Isa também é no gerenteagentes
+> (isa-chat), com contrato apenas no formato do documento. Nada disso é plataforma (core) —
+> não toca RBAC/identity.
 
 ### 3.4 Front (telas do gerenteagentes na Biblioteca)
 
@@ -292,8 +300,12 @@ Start manual pelo Alexandre (regra: dependência só desbloqueia, não dispara).
 | F3 | **1058** | task-p2-1058 | 1056 | Limpeza do setup (remover 3.6), agente dedicado só se requerAgenteDedicado, gate verified, gravar ESPECIFICACAO/ESPEC-CRUD |
 
 **Fora do escopo criado (decisões pendentes do Alexandre):**
-- **F4 — Isa estruturada:** código vive no projeto da **Isa** (global-ia/isa-chat), não em gerenteagentes. Criar tarefa própria naquele projeto quando decidido (coluna `especificacao` + doc estruturado na captação).
+- **F4 — Isa estruturada:** ~~código vive no projeto da Isa (global-ia/isa-chat)~~ **Corrigido
+  em 2026-11-04:** a Isa vive no gerenteagentes (`api/isa-chat/`); tarefa **1060** criada
+  (task-p2-1060, planned/pausada) com autorização do Alexandre.
 - **F5 — Piloto (replanejar Gestão de Tarefas Global):** é ação **operacional** (rodar a Geração Macro no projeto id 13 após F1+F3 no ar), não tarefa de código. Decidir depois: rodar pelo fluxo novo (desejável, vira teste real) vs. tarefas avulsas.
+  **Executado em 2026-11-04:** teardown completo + geração id 1 do captado 13 disparada
+  (registro: `TEARDOWN-PILOTO-GESTAO-TAREFAS-8496.md`).
 
 ## 10. O que esta proposta NÃO muda
 
