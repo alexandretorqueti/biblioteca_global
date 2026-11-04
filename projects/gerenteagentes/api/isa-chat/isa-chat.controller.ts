@@ -190,15 +190,16 @@ export class IsaChatController {
 
   @Post("onboarding/finalize")
   @HttpCode(HttpStatus.OK)
-  async finalizeOnboarding(@Body() body: { chatId?: string; descricao?: string }) {
+  async finalizeOnboarding(@Body() body: { chatId?: string; descricao?: string; especificacao?: string }) {
     const chatId = typeof body.chatId === "string" ? body.chatId.trim() : ""
     const descricao = typeof body.descricao === "string" ? body.descricao : undefined
+    const especificacao = typeof body.especificacao === "string" ? body.especificacao : undefined
 
     if (!chatId) {
       throw new BadRequestException("chatId é obrigatório")
     }
 
-    return this.service.finalizeOnboarding(chatId, descricao)
+    return this.service.finalizeOnboarding(chatId, descricao, especificacao)
   }
 
   // ===========================================================================

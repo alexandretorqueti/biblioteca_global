@@ -268,5 +268,29 @@ describe("IsaChatController", () => {
       const result = await controller.finalizeOnboarding({ chatId: "42" })
       expect(result.ok).toBe(true)
     })
+
+    it("deve repassar especificacao ao serviço no finalize (F4)", async () => {
+      vi.mocked(mockService.finalizeOnboarding!).mockResolvedValue({ ok: true, chatId: "42" })
+
+      await controller.finalizeOnboarding({
+        chatId: "42",
+        descricao: "Resumo",
+        especificacao: "# Especificação completa",
+      })
+
+      expect(mockService.finalizeOnboarding).toHaveBeenCalledWith(
+        "42",
+        "Resumo",
+        "# Especificação completa",
+      )
+    })
+
+    it("deve manter compatibilidade com payload antigo (sem especificacao)", async () => {
+      vi.mocked(mockService.finalizeOnboarding!).mockResolvedValue({ ok: true, chatId: "42" })
+
+      await controller.finalizeOnboarding({ chatId: "42", descricao: "Resumo" })
+
+      expect(mockService.finalizeOnboarding).toHaveBeenCalledWith("42", "Resumo", undefined)
+    })
   })
 })

@@ -99,6 +99,101 @@ function descricaoDasDefinicoes(defs: Array<{ texto: string }>): string {
   return defs.map((d, i) => `${i + 1}. ${d.texto}`).join("\n")
 }
 
+// ===========================================================================
+// ESPECIFICAÇÃO ESTRUTURADA (F4 — tarefa 1060)
+// ===========================================================================
+
+/**
+ * Seções mínimas do documento de especificação (contrato §3.3 da
+ * PROPOSTA-GERACAO-MACRO-TAREFAS.md). O documento gravado em
+ * `projetos_captados.especificacao` deve conter todas.
+ */
+export const SECOES_MINIMAS_ESPECIFICACAO = [
+  "Visão geral",
+  "Atores/papéis",
+  "Requisitos funcionais",
+  "Requisitos não-funcionais",
+  "Entidades de dados",
+  "Integrações",
+  "Fora de escopo",
+] as const
+
+/** Resultado da validação das seções mínimas de uma especificação. */
+export interface ValidacaoSecoesEspecificacao {
+  valido: boolean
+  secoesFaltantes: string[]
+}
+
+/** Normaliza para comparação de seções (sem acentos, minúsculas). */
+function normalizarParaSecao(texto: string): string {
+  return texto
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+}
+
+/**
+ * Valida se o documento contém todas as seções mínimas do contrato.
+ * Retorna as seções faltantes (lista vazia quando completo).
+ */
+export function validarSecoesEspecificacao(documento: string): ValidacaoSecoesEspecificacao {
+  const normalizado = normalizarParaSecao(documento ?? "")
+  const secoesFaltantes = SECOES_MINIMAS_ESPECIFICACAO.filter(
+    (secao) => !normalizado.includes(normalizarParaSecao(secao)),
+  ).map((secao) => String(secao))
+  return { valido: secoesFaltantes.length === 0, secoesFaltantes }
+}
+
+/**
+ * Monta deterministicamente o documento de especificação a partir da conversa
+ * (definições coletadas + descrição final) quando o agente não envia um
+ * documento válido. Garante que `especificacao` nunca fique vazia em captação
+ * nova e que as seções mínimas + RF-* numerados estejam sempre presentes.
+ */
+export function montarEspecificacaoEstruturada(input: {
+  nomeProjeto: string
+  descricaoFinal: string
+  definicoes: Array<{ texto: string }>
+}): string {
+  const rfs = input.definicoes
+    .map((d) => d.texto.trim())
+    .filter((t) => t.length > 0)
+    .map((t, i) => `- RF-${i + 1}: ${t}`)
+  const linhas = [
+    `# Especificação — ${input.nomeProjeto}`,
+    "",
+    "## Visão geral",
+    "",
+    input.descricaoFinal.trim() || "(resumo não informado na captação)",
+    "",
+    "## Atores/papéis",
+    "",
+    "- (a detalhar — não coletado explicitamente na captação)",
+    "",
+    "## Requisitos funcionais",
+    "",
+    ...(rfs.length > 0 ? rfs : ["- RF-1: (a detalhar — nenhuma definição coletada)"]),
+    "",
+    "## Requisitos não-funcionais",
+    "",
+    "- (a detalhar — não coletado explicitamente na captação)",
+    "",
+    "## Entidades de dados",
+    "",
+    "- (a detalhar — não coletado explicitamente na captação)",
+    "",
+    "## Integrações",
+    "",
+    "- (a detalhar — não coletado explicitamente na captação)",
+    "",
+    "## Fora de escopo",
+    "",
+    "- (a detalhar — não coletado explicitamente na captação)",
+    "",
+  ]
+  return linhas.join("\n")
+}
+
 /** Monta o bloco de estado injetado no contexto da Isa a cada turno. */
 export function describeOnboardingState(chat: {
   id: number
@@ -778,7 +873,11 @@ export class IsaChatService {
     return { ok: true, chatId: String(chat.id) }
   }
 
-  async finalizeOnboarding(chatId: string, descricao?: string): Promise<FinalizeResult> {
+  async finalizeOnboarding(
+    chatId: string,
+    descricao?: string,
+    especificacao?: string,
+  ): Promise<FinalizeResult> {
     const db = await this.getDb()
     const chat = await this.findChat(db, chatId)
     if (!chat) return { ok: false, chatId, reason: "chat_not_found" }
@@ -788,12 +887,46 @@ export class IsaChatService {
       return { ok: false, chatId: String(chat.id), reason: "not_verified" }
     }
 
-    // Idempotência: chat já fechado — apenas atualiza a descrição se vier.
+    // Idempotência: chat já fechado — apenas atualiza descrição/especificação se vierem.
     if (chat.projetoId) {
+      const projetoUpdates: { descricao?: string; especificacao?: string } = {}
       if (descricao?.trim()) {
+        projetoUpdates.descricao = descricao.trim()
+      }
+      const especificacaoEnviada = especificacao?.trim()
+      if (especificacaoEnviada) {
+        const validacao = validarSecoesEspecificacao(especificacaoEnviada)
+        if (validacao.valido) {
+          projetoUpdates.especificacao = especificacaoEnviada
+        } else {
+          // Documento inválido (seções faltando): monta deterministicamente a
+          // partir dos dados já vinculados ao projeto.
+          const [projeto] = await db
+            .select()
+            .from(projetosCaptados)
+            .where(eq(projetosCaptados.id, chat.projetoId))
+            .limit(1)
+          const defs = await db
+            .select()
+            .from(definicoes)
+            .where(eq(definicoes.projetoId, chat.projetoId))
+            .orderBy(definicoes.seq)
+            .limit(10000)
+          projetoUpdates.especificacao = montarEspecificacaoEstruturada({
+            nomeProjeto: projeto?.nome || chat.nomeProjeto || "Projeto",
+            descricaoFinal:
+              projetoUpdates.descricao || projeto?.descricao || descricaoDasDefinicoes(defs),
+            definicoes: defs,
+          })
+          this.logger.warn(
+            `Especificação reenviada sem seções mínimas (${validacao.secoesFaltantes.join(", ")}) no chat ${chat.id} — documento montado deterministicamente`,
+          )
+        }
+      }
+      if (Object.keys(projetoUpdates).length > 0) {
         await db
           .update(projetosCaptados)
-          .set({ descricao: descricao.trim() })
+          .set(projetoUpdates)
           .where(eq(projetosCaptados.id, chat.projetoId))
       }
       await db.update(chats).set({ status: "finalizado" }).where(eq(chats.id, chat.id))
@@ -837,12 +970,40 @@ export class IsaChatService {
     // Descrição: redigida pela Isa; fallback determinístico (definições numeradas).
     const descricaoFinal = descricao?.trim() || descricaoDasDefinicoes(buffered)
 
+    // Especificação estruturada (F4): documento enviado pela Isa quando contém
+    // todas as seções mínimas; senão, montagem determinística a partir da
+    // conversa (definições coletadas + descrição final). Nunca fica vazia.
+    const especificacaoEnviada = especificacao?.trim()
+    let especificacaoFinal: string
+    if (especificacaoEnviada) {
+      const validacao = validarSecoesEspecificacao(especificacaoEnviada)
+      if (validacao.valido) {
+        especificacaoFinal = especificacaoEnviada
+      } else {
+        this.logger.warn(
+          `Especificação enviada sem seções mínimas (${validacao.secoesFaltantes.join(", ")}) no chat ${chat.id} — documento montado deterministicamente`,
+        )
+        especificacaoFinal = montarEspecificacaoEstruturada({
+          nomeProjeto,
+          descricaoFinal,
+          definicoes: buffered,
+        })
+      }
+    } else {
+      especificacaoFinal = montarEspecificacaoEstruturada({
+        nomeProjeto,
+        descricaoFinal,
+        definicoes: buffered,
+      })
+    }
+
     const [projeto] = await db
       .insert(projetosCaptados)
       .values({
         nome: nomeProjeto,
         slug,
         descricao: descricaoFinal,
+        especificacao: especificacaoFinal,
         contatoId: chat.contatoId,
         ativo: true,
       })

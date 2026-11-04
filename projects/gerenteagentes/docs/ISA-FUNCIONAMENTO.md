@@ -212,22 +212,25 @@ Sempre encerrado com `TRANSPARENCY_REMINDER`: a Isa deve deixar claro que **(1) 
 
 ## 11. Finalização da captação (`POST /api/onboarding/finalize`)
 
-Pré-requisitos na ordem exata do código (`finalizeOnboarding(chatId, descricao?)`):
+Pré-requisitos na ordem exata do código (`finalizeOnboarding(chatId, descricao?, especificacao?)`):
 
 1. Chat existe — senão `{ ok: false, reason: "chat_not_found" }`.
 2. **Identidade verificada** (`chats.contato_id`) — senão `reason: "not_verified"`.
-3. **Idempotência:** se `chats.projeto_id` já existe → **não cria nada**: atualiza `projetos_captados.descricao` apenas se `descricao` veio no corpo, marca `chats.status = "finalizado"` e retorna `{ ok: true, chatId, projetoId }`.
+3. **Idempotência:** se `chats.projeto_id` já existe → **não cria nada**: atualiza `projetos_captados.descricao` apenas se `descricao` veio no corpo, atualiza `projetos_captados.especificacao` apenas se `especificacao` veio no corpo (documento válido → gravado como enviado; inválido → remontado deterministicamente a partir das definições já vinculadas ao projeto), marca `chats.status = "finalizado"` e retorna `{ ok: true, chatId, projetoId }`.
 4. **Nome do projeto obrigatório** (`chats.nome_projeto`, preenchido via §10.3) — senão `reason: "project_name_required"`; também se o slug derivado ficar vazio (nome sem nenhum caractere `a-z0-9`).
 5. **Ao menos 1 definição no buffer do chat** — senão `reason: "no_definitions"`.
 
 Ação (chamadas sequenciais via Drizzle; **não há transação única explícita** no código):
 
 - **Slug:** `slugDoNomeProjeto` = NFD → remove acentos → minúsculas → não-`a-z0-9` colapsados em `-`, sem hífens nas bordas, ≤80 caracteres; colisões recebem sufixo `-2`, `-3`… (loop de checagem contra `projetos_captados.slug`, coluna UNIQUE).
-- **Descrição:** a `descricao` enviada (trim) ou **fallback determinístico** = definições numeradas (`1. …\n2. …`).
-- **Insere `projetos_captados`** (`nome`, `slug`, `descricao`, `contatoId`, `ativo = true`).
+- **Descrição:** a `descricao` enviada (trim) ou **fallback determinístico** = definições numeradas (`1. …\n2. …`). Continua sendo gravada como **resumo** (`projetos_captados.descricao`).
+- **Especificação estruturada (F4 — tarefa 1060):** campo opcional `especificacao` no body. Se enviado e **válido** (contém todas as seções mínimas do contrato §3.3 da PROPOSTA-GERACAO-MACRO-TAREFAS.md — validação por `validarSecoesEspecificacao`, insensível a acentos/caixa), é gravado como enviado em `projetos_captados.especificacao`. Se **ausente ou inválido** (seções faltando), o serviço monta o documento deterministicamente com `montarEspecificacaoEstruturada` (definições coletadas viram `RF-1…RF-n` numerados; `descricaoFinal` vira a Visão geral; demais seções com marcador "a detalhar") — **`especificacao` nunca fica vazia em captação nova**. Seções mínimas (`SECOES_MINIMAS_ESPECIFICACAO`): Visão geral; Atores/papéis; Requisitos funcionais; Requisitos não-funcionais; Entidades de dados; Integrações; Fora de escopo. Payloads antigos (sem `especificacao`) seguem funcionando — apenas passam a gerar o documento montado.
+- **Insere `projetos_captados`** (`nome`, `slug`, `descricao`, `especificacao`, `contatoId`, `ativo = true`).
 - **Vincula as definições do buffer** ao projeto novo (`UPDATE definicoes SET projeto_id = novo, chat_id = NULL` onde `chat_id = chat` e `projeto_id IS NULL`) — preservando `seq`.
 - **Atualiza o chat:** `projeto_id = novo` + `status = "finalizado"`; loga a conclusão.
 - Retorna `{ ok: true, chatId, projetoId, slug }`.
+
+Consumo a jusante: `ProjectGenerationWorker.loadContext` (motor-v3, F3) prefere `especificacao` não-vazia com fallback para `descricao` — captados antigos sem especificação seguem usando o resumo.
 
 Depois da finalização: novas definições entram direto no projeto (§10.1), o nome pode seguir sendo ajustado (§10.3), o histórico reflete o projeto vinculado (§9) e refinalizar é idempotente (item 3 acima).
 
