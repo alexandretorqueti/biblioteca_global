@@ -384,3 +384,107 @@ describe("RealtimeGateway — formato de inscrição WsAdapter", () => {
     })
   })
 })
+
+describe("RealtimeGateway — subscribe × handshake assíncrono (corrida de autenticação)", () => {
+  let gateway: RealtimeGateway
+  let service: RealtimeService
+
+  function wsRequest(ticket = "ticket-1"): never {
+    return { url: `/api/realtime/ws?ticket=${ticket}`, headers: {} } as never
+  }
+
+  function pendentes(): Map<unknown, unknown> {
+    return (gateway as unknown as { autenticoesPendentes: Map<unknown, unknown> }).autenticoesPendentes
+  }
+
+  function sessoes(): WeakMap<object, unknown> {
+    return (gateway as unknown as { sessoes: WeakMap<object, unknown> }).sessoes
+  }
+
+  beforeEach(() => {
+    mockJwt.verifyAsync.mockReset()
+    mockAuthRepository.resolveScope.mockReset()
+    service = new RealtimeService()
+    gateway = new RealtimeGateway(mockJwt as never, mockAuthRepository as never, service)
+  })
+
+  it("subscribe disparado durante o handshake aguarda a autenticação e responde subscribed (nunca INVALID_SUBSCRIPTION)", async () => {
+    let resolveClaims: (value: unknown) => void = () => {}
+    mockJwt.verifyAsync.mockImplementation(() => new Promise((resolve) => { resolveClaims = resolve }))
+    mockAuthRepository.resolveScope.mockResolvedValue({ projectId: 7 })
+
+    const client = mockClient()
+    const conexao = gateway.handleConnection(client as unknown as WebSocket, wsRequest())
+    const inscricao = gateway.subscribe(client as unknown as WebSocket, { type: "subscribe", channel: "task", taskId: 123, lastSequence: undefined })
+
+    // Enquanto a autenticação está pendente, o subscribe não pode responder erro.
+    expect(client.sent).toHaveLength(0)
+
+    resolveClaims({ sub: 42, projetoId: 7, kind: "ws-ticket" })
+    await conexao
+    await inscricao
+
+    expect(client.sent).toHaveLength(1)
+    expect(JSON.parse(client.sent[0]!)).toEqual({ type: "subscribed", taskId: 123, currentSequence: 0 })
+    expect(client.closed).toBe(false)
+    // Sessão registrada e entrada pendente removida após resolução (sem vazamento).
+    expect(sessoes().get(client)).toEqual({ projetoId: 7, usuarioId: 42 })
+    expect(pendentes().has(client)).toBe(false)
+  })
+
+  it("auth reprovada encerra a conexão com close(1008) e o subscribe não inscreve no RealtimeService", async () => {
+    mockJwt.verifyAsync.mockRejectedValue(new Error("token inválido"))
+    const inscrever = vi.spyOn(service, "inscrever")
+
+    const client = mockClient()
+    const conexao = gateway.handleConnection(client as unknown as WebSocket, wsRequest())
+    const inscricao = gateway.subscribe(client as unknown as WebSocket, { type: "subscribe", channel: "task", taskId: 123, lastSequence: undefined })
+    await conexao
+    await inscricao
+
+    expect(client.closeCode).toBe(1008)
+    expect(inscrever).not.toHaveBeenCalled()
+    expect(client.sent).toHaveLength(1)
+    expect(JSON.parse(client.sent[0]!)).toMatchObject({ type: "error", code: "INVALID_SUBSCRIPTION" })
+    expect(sessoes().get(client)).toBeUndefined()
+    expect(pendentes().has(client)).toBe(false)
+  })
+
+  it("timeout de segurança: auth que nunca resolve leva a INVALID_SUBSCRIPTION sem travar o handler", async () => {
+    vi.useFakeTimers()
+    try {
+      mockJwt.verifyAsync.mockImplementation(() => new Promise(() => {}))
+
+      const client = mockClient()
+      void gateway.handleConnection(client as unknown as WebSocket, wsRequest())
+      const inscricao = gateway.subscribe(client as unknown as WebSocket, { type: "subscribe", channel: "task", taskId: 123, lastSequence: undefined })
+
+      expect(client.sent).toHaveLength(0)
+      await vi.advanceTimersByTimeAsync(2_000)
+      await inscricao
+
+      expect(client.sent).toHaveLength(1)
+      expect(JSON.parse(client.sent[0]!)).toMatchObject({ type: "error", code: "INVALID_SUBSCRIPTION", message: "Inscrição inválida" })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("socket sem entrada pendente e sem sessão mantém INVALID_SUBSCRIPTION imediato", () => {
+    const client = mockClient()
+    void gateway.subscribe(client as unknown as WebSocket, { type: "subscribe", channel: "task", taskId: 123, lastSequence: undefined })
+
+    expect(client.sent).toHaveLength(1)
+    expect(JSON.parse(client.sent[0]!)).toMatchObject({ type: "error", code: "INVALID_SUBSCRIPTION" })
+  })
+
+  it("handleDisconnect remove a entrada pendente (sem vazamento)", () => {
+    mockJwt.verifyAsync.mockImplementation(() => new Promise(() => {}))
+    const client = mockClient()
+    void gateway.handleConnection(client as unknown as WebSocket, wsRequest())
+
+    expect(pendentes().has(client)).toBe(true)
+    gateway.handleDisconnect(client as unknown as WebSocket)
+    expect(pendentes().has(client)).toBe(false)
+  })
+})
