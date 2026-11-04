@@ -643,4 +643,165 @@ describe("RealtimeClient", () => {
     client.close()
     vi.useRealTimers()
   })
+
+  // --------------------------------------------------------------------------
+  // Retry limitado para INVALID_SUBSCRIPTION da corrida de autenticação (task-p1-1061)
+  // --------------------------------------------------------------------------
+
+  const errorInscricaoInvalida = {
+    type: "error",
+    code: "INVALID_SUBSCRIPTION",
+    message: "Inscrição inválida",
+  }
+
+  async function abrirConexao(): Promise<{ client: RealtimeClient; ws: FakeWebSocket }> {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ ticket: "ticket-retry" }) })
+    const client = new RealtimeClient(options)
+    void client.connect()
+    await vi.waitFor(() => expect(sockets[0]).toBeDefined())
+    const ws = sockets[0]!
+    ws.simulateOpen()
+    return { client, ws }
+  }
+
+  it("reenvia o mesmo envelope após ~400ms ao receber INVALID_SUBSCRIPTION/'Inscrição inválida' e para após *_subscribed", async () => {
+    vi.useFakeTimers()
+    const { client, ws } = await abrirConexao()
+
+    expect(ws.sent).toHaveLength(1) // subscribe inicial
+    const envelopeOriginal = ws.sent[0]!
+
+    ws.simulateMessage(errorInscricaoInvalida)
+
+    // Antes de 400ms: nada reenviado.
+    await vi.advanceTimersByTimeAsync(399)
+    expect(ws.sent).toHaveLength(1)
+
+    // Após ~400ms: MESMO envelope reenviado.
+    await vi.advanceTimersByTimeAsync(1)
+    expect(ws.sent).toHaveLength(2)
+    expect(ws.sent[1]).toBe(envelopeOriginal)
+
+    // Recebeu subscribed: retry cessa imediatamente.
+    ws.simulateMessage({ type: "subscribed", taskId: 123, currentSequence: 0 })
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(ws.sent).toHaveLength(2)
+
+    client.close()
+    vi.useRealTimers()
+  })
+
+  it("limita o retry a 3 tentativas por conexão (sem loop infinito)", async () => {
+    vi.useFakeTimers()
+    const { client, ws } = await abrirConexao()
+
+    expect(ws.sent).toHaveLength(1)
+
+    // Simula 5 erros de corrida — só 3 reenvios devem ocorrer.
+    for (let i = 0; i < 5; i++) {
+      ws.simulateMessage(errorInscricaoInvalida)
+      await vi.advanceTimersByTimeAsync(400)
+    }
+
+    expect(ws.sent).toHaveLength(4) // 1 inicial + 3 retries
+
+    // Mesmo aguardando mais, nada é reenviado.
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(ws.sent).toHaveLength(4)
+
+    client.close()
+    vi.useRealTimers()
+  })
+
+  it("contador de tentativas reseta a cada nova conexão (onopen)", async () => {
+    vi.useFakeTimers()
+    const { client, ws } = await abrirConexao()
+
+    // Esgota o orçamento da primeira conexão.
+    for (let i = 0; i < 3; i++) {
+      ws.simulateMessage(errorInscricaoInvalida)
+      await vi.advanceTimersByTimeAsync(400)
+    }
+    expect(ws.sent).toHaveLength(4)
+
+    // Queda + reconexão.
+    ws.simulateClose()
+    await vi.advanceTimersByTimeAsync(1000)
+    await vi.waitFor(() => expect(sockets[1]).toBeDefined())
+    const ws2 = sockets[1]!
+    ws2.simulateOpen()
+    expect(ws2.sent).toHaveLength(1) // subscribe inicial da nova conexão
+
+    // A nova conexão tem orçamento novo de 3 retries.
+    for (let i = 0; i < 3; i++) {
+      ws2.simulateMessage(errorInscricaoInvalida)
+      await vi.advanceTimersByTimeAsync(400)
+    }
+    expect(ws2.sent).toHaveLength(4)
+
+    client.close()
+    vi.useRealTimers()
+  })
+
+  it("não faz retry para INVALID_SUBSCRIPTION com outra mensagem ('Canal inválido')", async () => {
+    vi.useFakeTimers()
+    const { client, ws } = await abrirConexao()
+
+    ws.simulateMessage({ type: "error", code: "INVALID_SUBSCRIPTION", message: "Canal inválido" })
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(ws.sent).toHaveLength(1)
+
+    ws.simulateMessage({ type: "error", code: "INVALID_SUBSCRIPTION", message: "Tarefa inválida" })
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(ws.sent).toHaveLength(1)
+
+    ws.simulateMessage({ type: "error", code: "INVALID_SUBSCRIPTION", message: "Sessão HelpDesk inválida" })
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(ws.sent).toHaveLength(1)
+
+    client.close()
+    vi.useRealTimers()
+  })
+
+  it("não faz retry para outros códigos de erro (FORBIDDEN_SUBSCRIPTION, MAP_SNAPSHOT_UNAVAILABLE)", async () => {
+    vi.useFakeTimers()
+    const { client, ws } = await abrirConexao()
+
+    ws.simulateMessage({ type: "error", code: "FORBIDDEN_SUBSCRIPTION", message: "Inscrição inválida" })
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(ws.sent).toHaveLength(1)
+
+    ws.simulateMessage({ type: "error", code: "MAP_SNAPSHOT_UNAVAILABLE", message: "Snapshot indisponível" })
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(ws.sent).toHaveLength(1)
+
+    client.close()
+    vi.useRealTimers()
+  })
+
+  it("não faz retry após já ter recebido *_subscribed na mesma conexão", async () => {
+    vi.useFakeTimers()
+    const { client, ws } = await abrirConexao()
+
+    ws.simulateMessage({ type: "subscribed", taskId: 123, currentSequence: 0 })
+    ws.simulateMessage(errorInscricaoInvalida)
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(ws.sent).toHaveLength(1)
+
+    client.close()
+    vi.useRealTimers()
+  })
+
+  it("close() cancela retry pendente (não envia em socket morto)", async () => {
+    vi.useFakeTimers()
+    const { client, ws } = await abrirConexao()
+
+    ws.simulateMessage(errorInscricaoInvalida)
+    client.close() // antes dos 400ms
+
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(ws.sent).toHaveLength(1) // nada reenviado
+
+    vi.useRealTimers()
+  })
 })
