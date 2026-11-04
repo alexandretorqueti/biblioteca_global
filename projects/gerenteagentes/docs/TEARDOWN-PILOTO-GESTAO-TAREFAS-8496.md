@@ -84,3 +84,42 @@ com subtarefa failed+pending. Decisão (2026-10-29): desmontar e reconstruir pel
   (`mysql -uroot -p... < ~/backups/projeto_8496-teardown-*.sql`).
 - Registrar neste doc: data/hora de execução, decisões tomadas, evidências (commits, dumps,
   id da nova geração) — documentação viva.
+
+## Registro de execução — 2026-11-04 (Alexandre autorizou às 13:45 BRT)
+
+**Pré-condições confirmadas (13:52 BRT):** 1057/1058 deployed (03/11) · motor ocioso
+(0 execuções/subtarefas/análises/gates) · DLQs vazias · zero bloqueios · autorização explícita.
+
+- **Fase 0 (dump):** `~/backups/teardown-8496/projeto_8496-teardown-20261104.sql` (15,9 KB,
+  13 CREATE TABLE, trailer "Dump completed" validado) + JSON das 5 tarefas
+  (`task-1021..1025.json`) + SHAs de integração registrados abaixo.
+- **Fase 1 (cancelamento canônico):** `POST /api/motor/task/:id/cancel` —
+  **1022/1025 → cancelled** (16:59 UTC); **1021/1023/1024 já terminais (completed)** — o
+  motor não cancela tarefa terminal (invariante de conclusão; resposta `alreadyTerminal`).
+  Decisão: mantêm-se como completed históricas do projeto desativado — sem efeito operacional.
+- **Fase 2 (revert na base):** o que estava na base era apenas o scaffold `d03d77b4`
+  (merge `d4b7e4e6`) + código da 1024/recorrências (merge `2afed181`, commits `98a447fe`/`f429a85b`).
+  O código da 1023 (lembretes, `4222de19`) e da 1021 (dashboard, `b4096654`) NUNCA entrou na base
+  (deploys cancelled). Removida a pasta `projects/gestao-de-tarefas-global` inteira
+  (-3080 linhas), lockfile e lista do teste `customScreens.test.tsx`. Aproveitado para corrigir
+  defasagem pré-existente do teste (F2/1057 adicionou `gerenteagentes-plano-projeto` ao config
+  sem atualizar a lista). Validação: teste 3/3 verde + `npm run build` apps/web verde.
+  Commits: `1ff565ad` → merge **`787391ff`** pushado em `base-desenvolvimento`.
+  SHAs preservados em histórico/reflog: integração 1021 `b4096654`, 1023 `4222de19`, 1024 `791dc421`.
+- **Fase 3 (drop):** `DELETE /api/projetos/8496` via API canônica (soft delete, 200 ok, ausente
+  da lista) → `DROP DATABASE projeto_8496` → captado 13 resetado ao estado inicial
+  (`setup_status='pending'`, `plataforma_projeto_id=NULL`, evidências/attemptos zerados).
+- **Fase 4 (agente/worktrees):** 13 worktrees `.motor-v3-worktrees/custom-gestao-*` +
+  `fix-setup-gestao-baseline-subtask-count` removidos **de dentro do container** (regra
+  cross-container), todos limpos (dirty=0); 14 branches `motor-v3-work/*custom-gestao*` +
+  `fix/motor-setup-gestao-baseline-subtask-count` + `teardown/piloto-gestao-tarefas-8496` apagadas.
+  Nenhum container/stack do projeto existia. **Pendente (decisão Alexandre):** o agente OpenClaw
+  `gestao-de-tarefas-global` continua registrado (remover = alteração de config do OpenClaw,
+  proibida para o agente); workspace em `/data/workspace/projects/agentes/gestao-de-tarefas-global`.
+- **Fase 5 (piloto F5):** `POST projetos-captados/13/start` → **geração id 1 criada (pending)**
+  às 17:23 UTC. ProjectGenerationWorker fará o inventário REQ-*; clarificações no chat do
+  projeto; plano → `awaiting_approval` (aprovação de Alexandre na tela "Plano do projeto").
+
+**Nota:** durante a execução, criada também a tarefa **1059** (`task-p2-1059`, planned, pausada) —
+fix estrutural da ampulheta (capacity_wait_* em tarefa terminal), item 3 das pendências de 03/11.
+
