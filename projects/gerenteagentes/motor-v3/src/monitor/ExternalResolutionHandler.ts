@@ -7,6 +7,7 @@ import {
   refreshStaleRequestedCommit,
   type GitRunner,
 } from '../deploy/StaleRequestedCommitRefresh.js'
+import { CAPACITY_WAIT_CLEAR_ASSIGNMENTS } from '../shared/capacityWait.js'
 
 /**
  * Resolução externa governada (camada C do invariante de conclusão).
@@ -218,11 +219,14 @@ export class ExternalResolutionHandler {
             createTombstone: true,
           })
         }
+        // task-p2-1059: resolução externa é transição terminal — limpa os 8
+        // flags capacity_wait_* na mesma escrita (incidentes 1023/1047).
         await connection.query(
           `INSERT INTO task_runtime_facts (tarefa_id, terminal_status, terminal_at, integration_confirmed_at, created_at, updated_at)
            VALUES (?, 'completed', NOW(), NOW(), NOW(), NOW())
            ON DUPLICATE KEY UPDATE terminal_status = 'completed', terminal_at = COALESCE(terminal_at, NOW()),
-             integration_confirmed_at = COALESCE(integration_confirmed_at, NOW()), updated_at = NOW()`,
+             integration_confirmed_at = COALESCE(integration_confirmed_at, NOW()),
+             ${CAPACITY_WAIT_CLEAR_ASSIGNMENTS}, updated_at = NOW()`,
           [databaseTaskId],
         )
         completed = true

@@ -16,6 +16,7 @@ import { providerFromModel, providerCapacityDecision } from '../execution/Provid
 import { validateProjectSetupEvidence } from '../setup/ProjectSetupGate.js'
 import { createQueueMessage, insertOutboxMessage } from '../queue/index.js'
 import { applyVerificationRouting, insertVerificationChatMessage, type VerificationRoutingResult } from './VerificationRouting.js'
+import { CAPACITY_WAIT_CLEAR_ASSIGNMENTS } from '../shared/capacityWait.js'
 
 interface TaskRow extends RowDataPacket {
   id: number
@@ -246,8 +247,7 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
       const [result] = await connection.query<ResultSetHeader>(
         `UPDATE task_runtime_facts
          SET analysis_started_at = NOW(), analysis_execution_id = ?, provider = ?, clarification_pending_at = NULL,
-             capacity_wait_phase = NULL, capacity_wait_reason_code = NULL, capacity_wait_limit_scope = NULL,
-             capacity_wait_limit_value = NULL, capacity_wait_provider = NULL, updated_at = NOW()
+             ${CAPACITY_WAIT_CLEAR_ASSIGNMENTS}, updated_at = NOW()
          WHERE tarefa_id = ? AND analysis_started_at IS NULL
            AND analysis_execution_id IS NULL AND terminal_status IS NULL`,
         [executionId, analysisProvider, row.id],
@@ -412,12 +412,14 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
             id: chatMessage.id, role: 'assistant', texto: chatMessage.texto, createdAt,
           })
         }
+        // task-p2-1059: o veredito que encerra a tarefa é transição terminal —
+        // limpa os 8 flags capacity_wait_* na mesma escrita.
         await connection.query(
           `INSERT INTO task_runtime_facts
              (tarefa_id, terminal_status, terminal_at, integration_confirmed_at, created_at, updated_at)
            VALUES (?, 'completed', NOW(), NOW(), NOW(), NOW())
            ON DUPLICATE KEY UPDATE terminal_status='completed', terminal_at=NOW(),
-             integration_confirmed_at=NOW(), updated_at=NOW()`,
+             integration_confirmed_at=NOW(), ${CAPACITY_WAIT_CLEAR_ASSIGNMENTS}, updated_at=NOW()`,
           [databaseTaskId],
         )
         await this.realtime.append(connection, databaseTaskId, before, { after: 'closed' })
@@ -698,6 +700,10 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
   }
 
   private capacityWait(row: TaskRow): CapacityWaitProjection | null {
+    // Guarda defensiva (task-p2-1059): tarefa terminal NUNCA projeta espera de
+    // capacidade, mesmo com flags capacity_wait_* residuais no banco
+    // (incidentes 1023/1047: ampulheta visível em tarefa concluída/deployada).
+    if (row.terminal_status != null) return null
     if (!row.capacity_wait_phase || !row.capacity_wait_reason_code || !row.capacity_wait_limit_scope || row.capacity_wait_limit_value == null) return null
     return {
       phase: row.capacity_wait_phase,

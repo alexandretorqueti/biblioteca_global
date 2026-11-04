@@ -4,6 +4,7 @@ import { CommandPolicyResolver, type CommandPolicyRepository, type OperationLogg
 import type { QueueMessage } from '../queue/index.js'
 import type { TaskEventSink } from './TaskEventRecorder.js'
 import { cancelUnstartedDeployRequests } from '../deploy/DeployRequestFinalizer.js'
+import { CAPACITY_WAIT_CLEAR_ASSIGNMENTS } from '../shared/capacityWait.js'
 
 export const CANCEL_COMMAND_CODE = 'C04_TASK_CANCEL_REQUESTED'
 export const CANCEL_ACTION_CODE = 'A22_CANCEL_TASK'
@@ -133,15 +134,15 @@ export class TaskCancelConsumer {
         blocker: 'task_cancelled', resolvedBy: ator, motivo: motivo ?? 'Tarefa cancelada administrativamente',
         createTombstone: true,
       })
+      // task-p2-1059: cancelamento é transição terminal — normalizado para as
+      // 8 colunas capacity_wait_* (antes faltavam since/retry_at/alert_at).
       await connection.query(
         `INSERT INTO task_runtime_facts (tarefa_id, terminal_status, terminal_at, created_at, updated_at)
          VALUES (?, 'cancelled', NOW(), NOW(), NOW())
          ON DUPLICATE KEY UPDATE
            terminal_status = 'cancelled', terminal_at = NOW(),
            analysis_started_at = NULL, analysis_execution_id = NULL,
-           clarification_pending_at = NULL, capacity_wait_phase = NULL,
-           capacity_wait_reason_code = NULL, capacity_wait_limit_scope = NULL,
-           capacity_wait_limit_value = NULL, capacity_wait_provider = NULL,
+           clarification_pending_at = NULL, ${CAPACITY_WAIT_CLEAR_ASSIGNMENTS},
            updated_at = NOW()`,
         [task.id],
       )
