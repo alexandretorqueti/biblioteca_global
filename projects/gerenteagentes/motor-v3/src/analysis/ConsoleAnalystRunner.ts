@@ -362,8 +362,22 @@ export class ConsoleAnalystRunner implements AnalysisRunner {
 
   private async waitForResult(session: AnalystSession, task: TaskSnapshot): Promise<string> {
     const deadline = Date.now() + this.config.timeoutMs
+    let transientPollErrors = 0
     while (Date.now() < deadline) {
-      const status = await this.consoleApi.getSessionStatus(session)
+      let status: ConsoleSessionStatus
+      try {
+        status = await this.consoleApi.getSessionStatus(session)
+        transientPollErrors = 0
+      } catch (error) {
+        // Sobrecarga transitória do Console/Gateway (HTTP 502/503/504, reset de
+        // conexão) não deve consumir a tentativa do modelo: no incidente
+        // task-p2-1060 um `sessions.describe` 504 queimou a cadeia inteira de
+        // modelos. Tolere até o limite de erros consecutivos; além dele,
+        // propague para o tratamento existente de falha de modelo.
+        if (!isTransientConsoleError(asError(error)) || ++transientPollErrors > TRANSIENT_POLL_ERROR_LIMIT) throw error
+        await new Promise(resolve => setTimeout(resolve, this.config.pollIntervalMs))
+        continue
+      }
       if (status.isFailed) throw new Error(status.error ?? 'Sessão do analista falhou')
       if (status.isComplete) {
         if (!status.lastResponse) throw new Error('Analista concluiu sem resposta')
@@ -507,4 +521,14 @@ export class ConsoleAnalystRunner implements AnalysisRunner {
 
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error))
+}
+
+/** Limite de erros transitórios consecutivos tolerados no polling do Console (~2 min a cada 5s). */
+const TRANSIENT_POLL_ERROR_LIMIT = 24
+
+/** Erros de infraestrutura Console/Gateway que não refletem estado terminal da sessão. */
+function isTransientConsoleError(error: Error): boolean {
+  return /Console HTTP 50[234]/i.test(error.message)
+    || /Gateway request timed out/i.test(error.message)
+    || /fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket hang up/i.test(error.message)
 }

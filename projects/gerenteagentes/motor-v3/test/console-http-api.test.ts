@@ -323,5 +323,86 @@ describe('ConsoleHttpApi', () => {
       .resolves.toEqual({ isComplete: true, lastResponse: '{"subtarefas":[]}' })
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
+
+  it('recupera resposta final produzida pelo run failed do envio atual (incidente task-p2-1060)', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(100_000)
+    const session = { sessionId: 's-failed-length', sessionKey: 'agent:a:failed-length', agentId: 'a' }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ messages: [{ id: 'old', role: 'assistant', content: 'CONTEXTO_RECEBIDO', createdAt: 1 }] }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true }))
+      // describe: o run atual falhou DEPOIS do envio (endedAt >= sentAt), sem run ativo
+      .mockResolvedValueOnce(jsonResponse({ status: 'failed', hasActiveRun: false, endedAt: 105_000 }))
+      .mockResolvedValueOnce(jsonResponse({ messages: [
+        { id: 'old', role: 'assistant', content: 'CONTEXTO_RECEBIDO', createdAt: 1 },
+        { id: 'new-prompt', role: 'user', content: 'Analise agora', createdAt: 100_000 },
+        { id: 'new-final', role: 'assistant', stopReason: 'length', content: '{"subtarefas":[{"seq":1', createdAt: 104_000 },
+      ] }))
+    vi.stubGlobal('fetch', fetchMock)
+    const api = new ConsoleHttpApi('http://console.local', 'token-de-teste')
+
+    await api.sendMessage({ session, message: 'Analise agora' })
+    vi.setSystemTime(106_000)
+
+    // A resposta truncada é recuperada e entregue ao parser; o fluxo de
+    // correção do runner cuida de pedir o reenvio se o JSON estiver inválido.
+    await expect(api.getSessionStatus(session)).resolves.toEqual({ isComplete: true, lastResponse: '{"subtarefas":[{"seq":1' })
+  })
+
+  it('consome falha terminal do run atual sem resposta final mesmo dentro da tolerância', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(100_000)
+    vi.stubEnv('MOTOR_CONSOLE_STALE_FAILED_GRACE_MS', '60000')
+    const session = { sessionId: 's-failed-current', sessionKey: 'agent:a:failed-current', agentId: 'a' }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ messages: [] }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true }))
+      .mockResolvedValueOnce(jsonResponse({ status: 'failed', hasActiveRun: false, endedAt: 100_200, errorMessage: 'run aborted' }))
+      .mockResolvedValueOnce(jsonResponse({ messages: [
+        { id: 'new-prompt', role: 'user', content: 'Analise agora', createdAt: 100_000 },
+        { id: 'new-tool', role: 'assistant', stopReason: 'toolUse', content: 'consultando arquivos', createdAt: 100_100 },
+      ] }))
+    vi.stubGlobal('fetch', fetchMock)
+    const api = new ConsoleHttpApi('http://console.local', 'token-de-teste')
+
+    await api.sendMessage({ session, message: 'Analise agora' })
+    vi.setSystemTime(100_500)
+
+    // endedAt >= sentAt prova que a falha é do run atual: não pode ser
+    // suprimida até o timeout completo do waitForResult.
+    await expect(api.getSessionStatus(session)).resolves.toEqual({ isComplete: false, isFailed: true, error: 'run aborted' })
+  })
+
+  it('não trata como terminal o failed enquanto há run ativo', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ status: 'failed', hasActiveRun: true, endedAt: 1 }))
+      .mockResolvedValueOnce(jsonResponse({ messages: [{ id: 'p', role: 'user', content: 'Analise agora' }] }))
+    vi.stubGlobal('fetch', fetchMock)
+    const api = new ConsoleHttpApi('http://console.local', 'token-de-teste')
+
+    await expect(api.getSessionStatus({ sessionId: 's-active', sessionKey: 'agent:a:active', agentId: 'a' }))
+      .resolves.toEqual({ isComplete: false, activity: { repeatedToolCalls: 0 } })
+  })
+
+  it('não recupera mensagem de erro do run atual como resposta utilizável', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(100_000)
+    const session = { sessionId: 's-failed-error', sessionKey: 'agent:a:failed-error', agentId: 'a' }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ messages: [] }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true }))
+      .mockResolvedValueOnce(jsonResponse({ status: 'failed', hasActiveRun: false, endedAt: 105_000 }))
+      .mockResolvedValueOnce(jsonResponse({ messages: [
+        { id: 'new-prompt', role: 'user', content: 'Analise agora', createdAt: 100_000 },
+        { id: 'new-error', role: 'assistant', stopReason: 'error', content: 'falha nova', errorMessage: '500 provider_error', createdAt: 104_000 },
+      ] }))
+    vi.stubGlobal('fetch', fetchMock)
+    const api = new ConsoleHttpApi('http://console.local', 'token-de-teste')
+
+    await api.sendMessage({ session, message: 'Analise agora' })
+    vi.setSystemTime(106_000)
+
+    await expect(api.getSessionStatus(session)).resolves.toEqual({ isComplete: false, isFailed: true, error: '500 provider_error' })
+  })
 })
 // @vitest-environment node
