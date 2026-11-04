@@ -7,7 +7,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { createHash } from "node:crypto"
-import { IsaChatService, getWelcomeMessage, isValidEmail, isValidBrPhone } from "../isa-chat.service"
+import { IsaChatService, getWelcomeMessage, isValidEmail, isValidBrPhone, SECOES_MINIMAS_ESPECIFICACAO, validarSecoesEspecificacao, montarEspecificacaoEstruturada } from "../isa-chat.service"
 
 // Mock do file-extract
 vi.mock("@biblioteca-global/file-extract", () => ({
@@ -365,6 +365,155 @@ describe("IsaChatService", () => {
       if (result.ok) expect(result.projetoId).toBe("7")
       // Não deve criar outro projeto.
       expect(mockDb.insert).not.toHaveBeenCalled()
+    })
+
+    // =========================================================================
+    // F4 — especificação estruturada em projetos_captados.especificacao
+    // =========================================================================
+
+    const documentoCompleto = [
+      "# Especificação — Meu Sistema",
+      "## Visão geral",
+      "Sistema de exemplo.",
+      "## Atores/papéis",
+      "- Administrador",
+      "## Requisitos funcionais",
+      "- RF-1: login por email",
+      "## Requisitos não-funcionais",
+      "- LGPD",
+      "## Entidades de dados",
+      "- Usuario",
+      "## Integrações",
+      "- SMTP",
+      "## Fora de escopo",
+      "- App mobile",
+    ].join("\n")
+
+    describe("especificação estruturada (F4)", () => {
+      it("validarSecoesEspecificacao: documento completo passa", () => {
+        const resultado = validarSecoesEspecificacao(documentoCompleto)
+        expect(resultado.valido).toBe(true)
+        expect(resultado.secoesFaltantes).toEqual([])
+      })
+
+      it("validarSecoesEspecificacao: detecta cada seção faltante individualmente", () => {
+        for (const secao of SECOES_MINIMAS_ESPECIFICACAO) {
+          const semSecao = documentoCompleto
+            .split("\n")
+            .filter((l) => !l.toLowerCase().includes(String(secao).toLowerCase()))
+            .join("\n")
+          const resultado = validarSecoesEspecificacao(semSecao)
+          expect(resultado.valido, `esperava inválido sem "${secao}"`).toBe(false)
+          expect(resultado.secoesFaltantes).toContain(String(secao))
+        }
+      })
+
+      it("validarSecoesEspecificacao: documento vazio lista todas as seções", () => {
+        const resultado = validarSecoesEspecificacao("")
+        expect(resultado.valido).toBe(false)
+        expect(resultado.secoesFaltantes).toHaveLength(SECOES_MINIMAS_ESPECIFICACAO.length)
+      })
+
+      it("montarEspecificacaoEstruturada: RF-* numerados a partir das definições e seções mínimas presentes", () => {
+        const documento = montarEspecificacaoEstruturada({
+          nomeProjeto: "Meu Sistema",
+          descricaoFinal: "Resumo do sistema",
+          definicoes: [{ texto: "Login por email" }, { texto: "Relatório mensal" }],
+        })
+        expect(validarSecoesEspecificacao(documento).valido).toBe(true)
+        expect(documento).toContain("- RF-1: Login por email")
+        expect(documento).toContain("- RF-2: Relatório mensal")
+        expect(documento).toContain("Resumo do sistema")
+      })
+
+      it("finalize com especificacao válida grava o documento enviado e preserva descricao", async () => {
+        ;(mockDb.limit as ReturnType<typeof vi.fn>)
+          .mockResolvedValueOnce([chatVerificado]) // findChat
+          .mockResolvedValueOnce([{ texto: "Definição 1" }]) // buffer
+          .mockResolvedValueOnce([]) // checagem de slug
+
+        const result = await service.finalizeOnboarding("42", "Resumo da Isa", documentoCompleto)
+
+        expect(result.ok).toBe(true)
+        expect(mockDb.values).toHaveBeenCalledWith(
+          expect.objectContaining({
+            descricao: "Resumo da Isa",
+            especificacao: documentoCompleto,
+          }),
+        )
+      })
+
+      it("finalize sem especificacao monta documento estruturado a partir das definições", async () => {
+        ;(mockDb.limit as ReturnType<typeof vi.fn>)
+          .mockResolvedValueOnce([chatVerificado]) // findChat
+          .mockResolvedValueOnce([{ texto: "Login por email" }, { texto: "Relatório mensal" }]) // buffer
+          .mockResolvedValueOnce([]) // checagem de slug
+
+        const result = await service.finalizeOnboarding("42")
+
+        expect(result.ok).toBe(true)
+        const chamada = vi.mocked(mockDb.values).mock.calls.find(
+          (c) => typeof c[0] === "object" && c[0] !== null && "especificacao" in (c[0] as object),
+        )
+        expect(chamada).toBeDefined()
+        const gravado = chamada![0] as { descricao: string; especificacao: string }
+        // descricao preservada como resumo (fallback determinístico existente)
+        expect(gravado.descricao).toBe("1. Login por email\n2. Relatório mensal")
+        // documento estruturado com todas as seções mínimas e RF-* numerados
+        expect(validarSecoesEspecificacao(gravado.especificacao).valido).toBe(true)
+        expect(gravado.especificacao).toContain("- RF-1: Login por email")
+        expect(gravado.especificacao).toContain("- RF-2: Relatório mensal")
+      })
+
+      it("finalize com especificacao inválida (seções faltando) grava documento montado deterministicamente", async () => {
+        ;(mockDb.limit as ReturnType<typeof vi.fn>)
+          .mockResolvedValueOnce([chatVerificado]) // findChat
+          .mockResolvedValueOnce([{ texto: "Definição 1" }]) // buffer
+          .mockResolvedValueOnce([]) // checagem de slug
+
+        const resultado = await service.finalizeOnboarding("42", "Resumo", "documento incompleto")
+
+        expect(resultado.ok).toBe(true)
+        const chamada = vi.mocked(mockDb.values).mock.calls.find(
+          (c) => typeof c[0] === "object" && c[0] !== null && "especificacao" in (c[0] as object),
+        )
+        const gravado = chamada![0] as { especificacao: string }
+        expect(gravado.especificacao).not.toBe("documento incompleto")
+        expect(validarSecoesEspecificacao(gravado.especificacao).valido).toBe(true)
+        expect(gravado.especificacao).toContain("- RF-1: Definição 1")
+      })
+
+      it("caminho idempotente atualiza especificacao quando fornecida", async () => {
+        ;(mockDb.limit as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+          { ...chatVerificado, projetoId: 7 },
+        ])
+
+        const result = await service.finalizeOnboarding("42", "nova descrição", documentoCompleto)
+
+        expect(result.ok).toBe(true)
+        const setFn = (mockDb.update as ReturnType<typeof vi.fn>).mock.results[0]?.value
+          .set as ReturnType<typeof vi.fn>
+        expect(setFn).toHaveBeenCalledWith(
+          expect.objectContaining({
+            descricao: "nova descrição",
+            especificacao: documentoCompleto,
+          }),
+        )
+        expect(mockDb.insert).not.toHaveBeenCalled()
+      })
+
+      it("caminho idempotente sem especificacao não altera o campo (compatibilidade)", async () => {
+        ;(mockDb.limit as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+          { ...chatVerificado, projetoId: 7 },
+        ])
+
+        const result = await service.finalizeOnboarding("42", "nova descrição")
+
+        expect(result.ok).toBe(true)
+        const setFn = (mockDb.update as ReturnType<typeof vi.fn>).mock.results[0]?.value
+          .set as ReturnType<typeof vi.fn>
+        expect(setFn).toHaveBeenCalledWith({ descricao: "nova descrição" })
+      })
     })
   })
 })
