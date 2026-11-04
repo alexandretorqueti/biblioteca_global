@@ -57,10 +57,27 @@ const AWAITING_STATUSES = new Set(["awaiting_clarification", "paused"])
  * capacidade: se um evento não traz `capacityWait` explícito, a projeção local
  * obsoleta é descartada imediatamente (tarefa 1039 — ícone de aguarde que
  * persistia após a tarefa passar para "em execução").
+ *
+ * Guarda defensiva (tarefa 1059): tarefa em status terminal
+ * (completed/deployed/cancelled/failed/closed + legados) também NUNCA exibe
+ * espera de capacidade. Flags residuais de capacity_wait_* em
+ * task_runtime_facts não podem vazar para o mapa mesmo que algum caminho do
+ * motor escape da limpeza na transição terminal.
  */
 function nextCapacityWait(projection: CapacityWaitProjection | null | undefined, status: string): CapacityWaitProjection | null {
   if (TASK_STATUS_EXECUTING.has(status)) return null
+  if (FINAL_STATUSES.has(status)) return null
   return projection ?? null
+}
+
+/**
+ * Sanitiza o detalhe da tarefa (tarefa 1059): o motor-detail via REST e o
+ * task_snapshot via WebSocket podem trazer `capacityWait` residual para
+ * tarefa já terminal. Toda entrada de detail passa por aqui antes do setState.
+ */
+function sanitizeDetailCapacityWait(detail: Detail): Detail {
+  if (!detail?.task) return detail
+  return { ...detail, task: { ...detail.task, capacityWait: nextCapacityWait(detail.task.capacityWait, detail.task.status) } }
 }
 
 function selectInitialTask(tasks: Task[]): number | "" {
@@ -180,7 +197,7 @@ export default function OperationMapScreen() {
     }
   }, [bundle])
 
-  const loadTasks = useCallback(async () => { if (!bundle) { setTasksLoading(false); setTasksError("A conexão com a API ainda não está disponível."); setNewTaskDependencyError("Não foi possível carregar as opções de dependência: a conexão com a API ainda não está disponível."); return } setTasksLoading(true); setTasksError(null); setNewTaskDependencyError(null); try { const result = await bundle.http.request<Task[] | { items?: Task[] }>("GET", "/gerenteagentes/tarefas-com-status", { query: { pageSize: 100 }, auth: "access" }); const payload = Array.isArray(result) ? result : (result.items ?? []); const list = payload.sort((a, b) => new Date(b.updatedAt ?? b.createdAt ?? 0).getTime() - new Date(a.updatedAt ?? a.createdAt ?? 0).getTime()); setTasks(list); setSelectedId(current => { if (current !== "" && list.some(t => t.id === current)) return current; if (!initialSelectionDone.current) { initialSelectionDone.current = true; return selectInitialTask(list) } return list.find(t => !FINAL_STATUSES.has(t.status) && t.status !== "draft")?.id ?? list[0]?.id ?? "" }) } catch (e) { const message = e instanceof Error ? e.message : "Não foi possível carregar as tarefas do mapa."; setTasksError(message); setNewTaskDependencyError(`Não foi possível carregar as opções de dependência: ${message}`) } finally { setTasksLoading(false) } }, [bundle])
+  const loadTasks = useCallback(async () => { if (!bundle) { setTasksLoading(false); setTasksError("A conexão com a API ainda não está disponível."); setNewTaskDependencyError("Não foi possível carregar as opções de dependência: a conexão com a API ainda não está disponível."); return } setTasksLoading(true); setTasksError(null); setNewTaskDependencyError(null); try { const result = await bundle.http.request<Task[] | { items?: Task[] }>("GET", "/gerenteagentes/tarefas-com-status", { query: { pageSize: 100 }, auth: "access" }); const payload = Array.isArray(result) ? result : (result.items ?? []); const list = payload.map(t => ({ ...t, capacityWait: nextCapacityWait(t.capacityWait, t.status) })).sort((a, b) => new Date(b.updatedAt ?? b.createdAt ?? 0).getTime() - new Date(a.updatedAt ?? a.createdAt ?? 0).getTime()); setTasks(list); setSelectedId(current => { if (current !== "" && list.some(t => t.id === current)) return current; if (!initialSelectionDone.current) { initialSelectionDone.current = true; return selectInitialTask(list) } return list.find(t => !FINAL_STATUSES.has(t.status) && t.status !== "draft")?.id ?? list[0]?.id ?? "" }) } catch (e) { const message = e instanceof Error ? e.message : "Não foi possível carregar as tarefas do mapa."; setTasksError(message); setNewTaskDependencyError(`Não foi possível carregar as opções de dependência: ${message}`) } finally { setTasksLoading(false) } }, [bundle])
   const loadProjects = useCallback(async () => { if (!bundle) return; try { const result = await bundle.http.request<{ items: Array<{ id: number; nome: string }> }>("GET", "/gerenteagentes/projetos_captados", { query: { pageSize: 100 }, auth: "access" }); setProjects(result.items ?? []) } catch (e) { setProjects([]); setNewTaskDependencyError(`Não foi possível carregar as opções de dependência: ${e instanceof Error ? e.message : "erro desconhecido"}`) } }, [bundle])
   const [motorActive, setMotorActive] = useState(true)
   const [monitorActive, setMonitorActive] = useState(true)
@@ -234,7 +251,7 @@ export default function OperationMapScreen() {
       if (feedProjectRef.current === projectId) setFeedRecovered(false)
     }
   }, [bundle])
-  const loadDetail = useCallback(async (id: number) => { if (!bundle) return; try { const result = await bundle.http.request<Detail>("GET", `/gerenteagentes/tarefas/${id}/motor-detail`, { auth: "access" }); setDetail(result) } catch (e) { setError(e instanceof Error ? e.message : "Não foi possível carregar os detalhes.") } }, [bundle])
+  const loadDetail = useCallback(async (id: number) => { if (!bundle) return; try { const result = await bundle.http.request<Detail>("GET", `/gerenteagentes/tarefas/${id}/motor-detail`, { auth: "access" }); setDetail(sanitizeDetailCapacityWait(result)) } catch (e) { setError(e instanceof Error ? e.message : "Não foi possível carregar os detalhes.") } }, [bundle])
   const loadOperations = useCallback(async (id: number) => { if (!bundle) return; try { const result = await bundle.http.request<MotorOperation[]>("GET", `/gerenteagentes/tarefas/${id}/operacoes-motor`, { auth: "access" }); setOperations(Array.isArray(result) ? result : []) } catch { setOperations([]) } }, [bundle])
   const loadSubtasks = useCallback(async (id: number) => { if (!bundle) return; try { const result = await bundle.http.request<DbSubtask[]>("GET", `/gerenteagentes/tarefas/${id}/subtarefas`, { auth: "access" }); setDbSubtasks(Array.isArray(result) ? result : []) } catch { setDbSubtasks([]) } }, [bundle])
   const loadChat = useCallback(async (id: number) => { if (!bundle) return; const current = ++requestId.current; setChatLoading(true); setChatError(null); try { const result = await bundle.http.request<ChatMessage[] | { items?: ChatMessage[] }>("GET", `/gerenteagentes/tarefas/${id}/chat`, { auth: "access" }); if (current === requestId.current) { const incoming = Array.isArray(result) ? result : result.items ?? []; setChat(old => [...new Map([...incoming, ...old].map(m => [m.id, m])).values()].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())); if (incoming.some(m => ["assistant", "agent", "analyst"].includes(m.role))) setChatWaiting(false) } } catch (e) { if (current === requestId.current) setChatError(e instanceof Error ? e.message : "Não foi possível carregar o chat.") } finally { if (current === requestId.current) setChatLoading(false) } }, [bundle])
@@ -371,7 +388,14 @@ export default function OperationMapScreen() {
                   ...(Object.prototype.hasOwnProperty.call(payload, "tipo") || Object.prototype.hasOwnProperty.call(payload, "taskType")
                     ? { tipo: String(payload.tipo ?? payload.taskType ?? "") }
                     : {}),
-                  ...(typeof payload.status === "string" && payload.status.trim() ? { status: payload.status } : {}),
+                  ...(typeof payload.status === "string" && payload.status.trim()
+                    ? {
+                        status: payload.status,
+                        // O status pode ter ido a execução/terminal sem capacityWait
+                        // explícito no payload; revalida a projeção residual (tarefas 1039/1059).
+                        capacityWait: nextCapacityWait(payload.capacityWait !== undefined ? payload.capacityWait as CapacityWaitProjection | null : prev.task.capacityWait, payload.status),
+                      }
+                    : {}),
                   ...(Array.isArray(payload.dependsOnTaskIds) ? { dependsOnTaskIds: payload.dependsOnTaskIds.map(Number) } : {}),
                 },
               } : prev)
@@ -437,12 +461,12 @@ export default function OperationMapScreen() {
         // task_snapshot: snapshot completo do detalhe (aplica diretamente)
         if (message.type === "task_snapshot") {
           const snap = message.snapshot
-          setDetail({
+          setDetail(sanitizeDetailCapacityWait({
             exists: true,
             task: snap.task as Detail["task"],
             subtasks: snap.subtasks as MotorSubtask[],
             events: snap.history as Detail["events"],
-          })
+          }))
           if (Array.isArray(snap.chat)) {
             setChat(snap.chat as ChatMessage[])
           }
@@ -591,7 +615,7 @@ export default function OperationMapScreen() {
     return () => { disposed = true; client.close() }
   }, [bundle, feedProjectId, loadOperationalFeed])
 
-  const selected = tasks.find(t => t.id === selectedId); const mapped = useMemo<FlowTask[]>(() => tasks.map(t => ({ ...t, createdAt: t.createdAt ?? null, updatedAt: t.updatedAt ?? null, projetoNome: projects.find(p => p.id === t.projetoId)?.nome ?? null })), [tasks, projects]); const subtasks = detail?.subtasks?.length ? detail.subtasks : dbSubtasks.map(s => ({ id: s.id, seq: s.seq, title: s.titulo, status: s.status, scope: s.scope, acceptanceCriteria: s.acceptanceCriteria, resultado: s.resultado, workspaceStatus: s.workspaceStatus, correctionForSubtaskId: s.correctionForSubtaskId })); const status = detail?.task?.status ?? selected?.status ?? ""; const canStart = status === "paused" || TASK_STATUS_STARTABLE.has(status); const canPause = TASK_STATUS_PAUSABLE.has(status)
+  const selected = tasks.find(t => t.id === selectedId); const mapped = useMemo<FlowTask[]>(() => tasks.map(t => ({ ...t, createdAt: t.createdAt ?? null, updatedAt: t.updatedAt ?? null, projetoNome: projects.find(p => p.id === t.projetoId)?.nome ?? null })), [tasks, projects]); const subtasks = detail?.subtasks?.length ? detail.subtasks : dbSubtasks.map(s => ({ id: s.id, seq: s.seq, title: s.titulo, status: s.status, scope: s.scope, acceptanceCriteria: s.acceptanceCriteria, resultado: s.resultado, workspaceStatus: s.workspaceStatus, correctionForSubtaskId: s.correctionForSubtaskId })); const status = detail?.task?.status ?? selected?.status ?? ""; const capacityWaitProjection = nextCapacityWait(detail?.task?.capacityWait ?? selected?.capacityWait ?? null, status); const canStart = status === "paused" || TASK_STATUS_STARTABLE.has(status); const canPause = TASK_STATUS_PAUSABLE.has(status)
   const execute = useCallback(async (action: "start" | "pause" | "resume" | "unlock" | "sanitize-session", id = selectedId) => {
     if (!bundle || id === "") return
     if (action === "sanitize-session" && !window.confirm("Arquivar a sessão atual do agente e preparar uma continuação com contexto limpo? O histórico será preservado. Depois, desbloqueie a tarefa para retomá-la.")) return
@@ -875,7 +899,7 @@ export default function OperationMapScreen() {
                 {selected.tipo && <Chip size="small" variant="outlined" label={selected.tipo} />}
                 {status === "awaiting_clarification" && <Chip size="small" color="warning" label="Resposta necessária" />}
                 {status === "blocked" && (detail?.task?.recoveryEligibility ?? selected.recoveryEligibility) && <Tooltip title={<RecoveryEligibilityTooltipContent eligibility={(detail?.task?.recoveryEligibility ?? selected.recoveryEligibility)!} timezone={timezone} />}><Chip size="small" color="warning" label={recoveryEligibilityLabel((detail?.task?.recoveryEligibility ?? selected.recoveryEligibility)!)} /></Tooltip>}
-                {(detail?.task?.capacityWait ?? selected.capacityWait) && <Tooltip title={(capacityWaitMessage((detail?.task?.capacityWait ?? selected.capacityWait)!))} arrow><Chip size="small" color="warning" variant="outlined" icon={<HourglassBottomRounded />} label="Aguardando capacidade" data-testid={`task-detail-capacity-wait-${selected.id}`} /></Tooltip>}
+                {capacityWaitProjection && <Tooltip title={capacityWaitMessage(capacityWaitProjection)} arrow><Chip size="small" color="warning" variant="outlined" icon={<HourglassBottomRounded />} label="Aguardando capacidade" data-testid={`task-detail-capacity-wait-${selected.id}`} /></Tooltip>}
               </Stack>
             </Box>
           </Stack>
