@@ -232,6 +232,8 @@ Ação (chamadas sequenciais via Drizzle; **não há transação única explíci
 
 Consumo a jusante: `ProjectGenerationWorker.loadContext` (motor-v3, F3) prefere `especificacao` não-vazia com fallback para `descricao` — captados antigos sem especificação seguem usando o resumo.
 
+**Lado da agente (F4 — subtarefa 2, tarefa 1060):** as instruções de fechamento vivem nos arquivos `.md` do workspace da agente Isa (`/data/workspace/projects/agentes/isa`: `SOUL.md` fase "Documentação", `AGENTS.md` fases 3/5 + exemplo curl do finalize, `TOOLS.md` tabela `finalizar_conversa`) — não há prompt da Isa em `seed-prompts.ts`/`prompts_agentes`. O fluxo orientado: durante o levantamento, a Isa coleta o conteúdo das seções mínimas (atores/papéis, requisitos funcionais e não-funcionais, entidades de dados, integrações, fora de escopo) mantendo a persona (uma pergunta por vez, confirmar antes de registrar definição); no fechamento, redige um documento de especificação em Markdown com as seções mínimas (requisitos funcionais numerados `RF-*`, derivados das definições batidas no martelo) e o envia no campo `especificacao` do `POST /api/onboarding/finalize`, mantendo `descricao` como resumo corrido e humano (obrigatório).
+
 Depois da finalização: novas definições entram direto no projeto (§10.1), o nome pode seguir sendo ajustado (§10.3), o histórico reflete o projeto vinculado (§9) e refinalizar é idempotente (item 3 acima).
 
 ## 12. Condições de falha e comportamentos condicionados à configuração
@@ -259,7 +261,7 @@ Depois da finalização: novas definições entram direto no projeto (§10.1), o
 
 Conferido por busca no workspace (código vigente; checkouts legados como `wt-deploy/` e `projects/isa-chat` antigo ignorados quando divergem):
 
-- **Nenhuma definição de ferramenta da agente (`registrar_telefone`, verificação, reenvio, registro de nome/definição) existe neste repositório/módulo.** O prompt injetado (§7.5) nomeia as ferramentas, mas o catálogo vive na configuração da Isa no OpenClaw/Console — fora do escopo deste módulo.
+- **Nenhuma definição de ferramenta da agente (`registrar_telefone`, verificação, reenvio, registro de nome/definição, finalização) existe neste repositório/módulo.** O prompt injetado (§7.5) nomeia as ferramentas, mas o "catálogo" vive no workspace da agente Isa (`/data/workspace/projects/agentes/isa`): as ferramentas são chamadas HTTP documentadas em `TOOLS.md`/`AGENTS.md` e a condução da conversa é orientada por `SOUL.md`/`AGENTS.md` — fora do escopo deste módulo.
 - **Nenhum consumidor no front chama `POST /api/onboarding/*`, `/api/definition*` ou `/api/project/name`.** O site da Isa usa apenas `site-visit`, `session`, `chat/send` e `history` (via `createAgentChatClient`); as demais rotas são superfície para as ferramentas da agente/integrações.
 - **A ponte expõe `abort` e `renameSession`, mas o service nunca as chama** — não há endpoint de abort/renomeação no controller.
 - **`flushOutbox` existe no `api-client` mas nenhum chamador no front da Isa o invoca** — mensagens em outbox só saem se algum consumidor chamar explicitamente.
@@ -298,4 +300,4 @@ Conferido por busca no workspace (código vigente; checkouts legados como `wt-de
 
 ## 16. Máquina de estados em uma linha
 
-`visita → chat local (sem agente) → 1º envio (sessão OpenClaw nasce) → conversa + nome → e-mail (código SMTP) → verificação (contato) → telefone (opcional) → definições (só com contato verificado) → nome do projeto → finalizar (projeto captado + slug + vínculo das definições) → [idempotente: re-finalizar só atualiza descrição]`
+`visita → chat local (sem agente) → 1º envio (sessão OpenClaw nasce) → conversa + nome → e-mail (código SMTP) → verificação (contato) → telefone (opcional) → definições (só com contato verificado) → nome do projeto → finalizar (projeto captado + slug + vínculo das definições + descrição/resumo + especificação estruturada) → [idempotente: re-finalizar só atualiza descrição/especificação]`
