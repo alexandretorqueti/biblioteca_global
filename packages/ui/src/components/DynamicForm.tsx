@@ -10,6 +10,7 @@ import {
 } from "@mui/material"
 import Field from "./fields/Field"
 import {
+  resolverMinDateDinamico,
   validateDynamicForm,
   type FormErrors,
 } from "../utils/formValidation"
@@ -167,7 +168,7 @@ export default function DynamicForm({
               }}
             >
               <Field
-                field={field}
+                field={resolverMinDateDinamico(field, values)}
                 value={values[field.name] ?? ""}
                 error={errors[field.name]}
                 loading={loading}

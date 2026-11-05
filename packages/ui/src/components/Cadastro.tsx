@@ -352,6 +352,13 @@ export default function Cadastro<T extends EntityRecord>({
             ) {
               values[field.name] = value
             } else if (
+              // multipleChoice multiple (ex.: campo virtual de pivot "tags"):
+              // o valor é um array de ids — prefilla a edição.
+              Array.isArray(value) &&
+              value.every((item) => typeof item === "string" || typeof item === "number")
+            ) {
+              values[field.name] = value as Array<string | number>
+            } else if (
               field.type === "json" &&
               typeof value === "object" &&
               value !== null

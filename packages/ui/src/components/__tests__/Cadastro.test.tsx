@@ -734,3 +734,69 @@ describe("Cadastro — feedback de rowActions por linha (task-80 st-1)", () => {
     await screen.findByText("Tarefa 1 iniciada.")
   })
 })
+
+// ============================================================================
+// Prefill de array (multipleChoice multiple — campo virtual de pivot)
+// ============================================================================
+
+describe("Cadastro — multipleChoice multiple (array) na edição", () => {
+  const camposComTags: DynamicField[] = [
+    { name: "nome", label: "Nome", type: "text", required: true },
+    {
+      name: "tags",
+      label: "Tags",
+      type: "multipleChoice",
+      gridVisible: false,
+      multipleChoice: {
+        resource: "tags",
+        idField: "id",
+        displayField: "nome",
+        multiple: true,
+      },
+    },
+  ]
+
+  it("prefill: ids recebidos da linha são preservados ao salvar a edição", async () => {
+    const dataSource = dataSourceMock([{ id: 1, nome: "Tarefa 1", tags: [3, 4] }])
+    render(
+      <Cadastro
+        dataSource={dataSource}
+        title="Tarefas"
+        fields={camposComTags}
+        newLabel="Nova tarefa"
+      />,
+    )
+
+    const botaoEditar = await screen.findByRole("button", { name: /editar/i })
+    fireEvent.click(botaoEditar)
+    fireEvent.click(screen.getByText("Salvar alterações"))
+
+    await waitFor(() => {
+      expect(dataSource.update).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 1 }),
+        expect.objectContaining({ nome: "Tarefa 1", tags: [3, 4] }),
+      )
+    })
+  })
+
+  it("grid: coluna de array com gridVisible:false não aparece", async () => {
+    const dataSource = dataSourceMock([{ id: 1, nome: "Tarefa 1", tags: [3, 4] }])
+    render(
+      <Cadastro
+        dataSource={dataSource}
+        title="Tarefas"
+        fields={camposComTags}
+        newLabel="Nova tarefa"
+      />,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText("Tarefa 1")).toBeInTheDocument()
+    })
+    const colunas = screen
+      .getAllByRole("columnheader")
+      .map((cell) => cell.textContent ?? "")
+    expect(colunas).not.toContain("Tags")
+    expect(colunas).toContain("Nome")
+  })
+})

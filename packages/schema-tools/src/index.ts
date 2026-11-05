@@ -25,3 +25,10 @@ export {
   resolverDisplayField,
   type FkInferencia,
 } from "./inferir-fk"
+export {
+  detectarPivots,
+  camposPivotDoResource,
+  type PivotLado,
+  type PivotDetectado,
+  type CampoPivot,
+} from "./detectar-pivots"

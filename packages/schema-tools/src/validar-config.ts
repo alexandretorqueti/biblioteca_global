@@ -5,6 +5,7 @@
 import { getTableColumns } from "drizzle-orm"
 import type { MySqlTable } from "drizzle-orm/mysql-core"
 import type { GeradorSistemaConfig } from "@biblioteca-global/shared"
+import { camposPivotDoResource } from "./detectar-pivots"
 
 /**
  * Resources do core atendidos por módulos específicos (não pelo CRUD
@@ -48,10 +49,15 @@ export function validarConfigContraSchema(
       // coluna no banco (coluna.name, snake_case) — o gerador de fields
       // (gerarFields) e o contrato do formulário/API usam coluna.name, então
       // configs derivadas do schema carregam fields snake_case legítimos.
+      // Campos VIRTUAIS de pivot N:N (ex.: "tags" em tarefas via
+      // tarefa_tags) também são legítimos: o CRUD genérico os sincroniza.
       const colunasTabela = getTableColumns(tabela)
       const colunas = new Set<string>(Object.keys(colunasTabela))
       for (const coluna of Object.values(colunasTabela)) {
         colunas.add(coluna.name)
+      }
+      for (const campoPivot of camposPivotDoResource(tabelas, resource)) {
+        colunas.add(campoPivot.campo)
       }
       for (const field of tela.fields ?? []) {
         if (!colunas.has(field.name)) {

@@ -147,7 +147,41 @@ export const validateDynamicForm = (
     ) {
       errors[field.name] =
         `${field.label} deve ser menor ou igual a ${field.max}.`
+      return errors
+    }
+
+    // minDate dinâmico entre campos (minDateField): compara strings de data
+    // ISO (YYYY-MM-DD[ HH:mm:ss]) — a ordem lexicográfica coincide com a
+    // cronológica. Só valida quando ambos os campos têm valor.
+    if (
+      field.minDateField &&
+      typeof value === "string"
+    ) {
+      const minimo = values[field.minDateField]
+      if (typeof minimo === "string" && minimo !== "" && value < minimo) {
+        const campoRef = fields.find((f) => f.name === field.minDateField)
+        errors[field.name] =
+          `${field.label} deve ser maior ou igual a ${campoRef?.label ?? field.minDateField}.`
+        return errors
+      }
     }
 
     return errors
   }, {})
+
+/**
+ * Resolve o `minDate` efetivo de um campo: quando `minDateField` refere outro
+ * campo de data do formulário com valor, esse valor vira o mínimo (senão,
+ * mantém o `minDate` estático declarado). Usado pelo DynamicForm no render.
+ */
+export const resolverMinDateDinamico = (
+  field: DynamicField,
+  values: DynamicFormValues,
+): DynamicField => {
+  if (!field.minDateField) return field
+  const minimo = values[field.minDateField]
+  if (typeof minimo === "string" && minimo !== "") {
+    return { ...field, minDate: minimo }
+  }
+  return field
+}
