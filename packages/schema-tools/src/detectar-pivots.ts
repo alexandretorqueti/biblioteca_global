@@ -85,11 +85,8 @@ export function detectarPivots(
   for (const [nome, tabela] of porNomeReal) {
     const colunas = Object.entries(getTableColumns(tabela))
     if (colunas.length !== 3) continue
-    const [pk, ...restante] = colunas as [
-      [string, Column],
-      [string, Column],
-      [string, Column],
-    ]
+    const pk = colunas[0]
+    const restante = colunas.slice(1)
     if (!pk || !ehPkAutoincrement(pk[1])) continue
 
     const config = getTableConfig(tabela)
@@ -107,14 +104,16 @@ export function detectarPivots(
       lados.push({ resource: nomeDestino, fkProp: prop, fkColuna: coluna.name, tabela: tabelaDestino })
     }
     if (lados.length !== 2) continue
+    const [ladoA, ladoB] = lados
+    if (!ladoA || !ladoB) continue
     // Auto-referência excluída (ex.: tarefa_dependencias do Motor).
-    if (lados[0].resource === lados[1].resource) continue
+    if (ladoA.resource === ladoB.resource) continue
     // Ambos os lados precisam existir no projeto.
-    if (!porNomeReal.has(lados[0].resource) || !porNomeReal.has(lados[1].resource)) continue
+    if (!porNomeReal.has(ladoA.resource) || !porNomeReal.has(ladoB.resource)) continue
     pivots.push({
       pivot: nome,
       tabelaPivot: tabela,
-      lados: [lados[0], lados[1]] as [PivotLado, PivotLado],
+      lados: [ladoA, ladoB],
     })
   }
   return pivots
