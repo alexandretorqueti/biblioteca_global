@@ -44,7 +44,15 @@ export function validarConfigContraSchema(
         continue
       }
 
-      const colunas = new Set(Object.keys(getTableColumns(tabela)))
+      // Nomes aceitos: propriedade TS do schema (camelCase) E nome real da
+      // coluna no banco (coluna.name, snake_case) — o gerador de fields
+      // (gerarFields) e o contrato do formulário/API usam coluna.name, então
+      // configs derivadas do schema carregam fields snake_case legítimos.
+      const colunasTabela = getTableColumns(tabela)
+      const colunas = new Set<string>(Object.keys(colunasTabela))
+      for (const coluna of Object.values(colunasTabela)) {
+        colunas.add(coluna.name)
+      }
       for (const field of tela.fields ?? []) {
         if (!colunas.has(field.name)) {
           problemas.push(

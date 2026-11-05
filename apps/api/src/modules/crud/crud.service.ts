@@ -451,7 +451,7 @@ export class CrudService {
           : baseQuery.limit(pageSize).offset((page - 1) * pageSize)
       )
 
-      const itemsNormalizados = resource === "tarefas"
+      const itemsNormalizados = resource === "tarefas" && this.ehTarefasDoMotor(tabela)
         ? await this.anexarDependencias(db, items as Record<string, unknown>[])
         : items as Record<string, unknown>[]
       return {
@@ -485,7 +485,9 @@ export class CrudService {
       throw new NotFoundException("Registro não encontrado")
     }
     const resultado = linha as Record<string, unknown>
-    return resource === "tarefas" ? (await this.anexarDependencias(db, [resultado]))[0]! : resultado
+    return resource === "tarefas" && this.ehTarefasDoMotor(tabela)
+      ? (await this.anexarDependencias(db, [resultado]))[0]!
+      : resultado
   }
 
   /**
@@ -548,6 +550,13 @@ export class CrudService {
 
     const id = Number(linha.id)
     if (!Number.isSafeInteger(id) || id <= 0) return
+
+    // "tarefas"/"subtarefas" são homônimos entre projetos: eventos realtime e
+    // reconciliação do Motor valem apenas quando a tabela do projeto do token
+    // é a do Motor (tarefas com coluna projetoId). Tabelas de negócio homônimas
+    // de outros projetos não alimentam o fluxo do Motor.
+    const tabelaTarefas = this.registry.tabelasDoProjeto(projeto.slug)?.tarefas
+    if (!tabelaTarefas || !this.ehTarefasDoMotor(tabelaTarefas)) return
 
     if (resource === "tarefas") {
       const managedProjectId = Number(linha.projetoId ?? linha.projeto_id)
@@ -702,6 +711,19 @@ export class CrudService {
     if ([...edges.keys()].some(visit)) throw new BadRequestException("A dependência informada forma um ciclo")
   }
 
+  /**
+   * Discriminador do Motor: o resource "tarefas" é homônimo entre projetos —
+   * as tarefas do Motor (gerenteagentes) têm a coluna projetoId (projeto_id)
+   * e external_id; tabelas de negócio homônimas de outros projetos (ex.:
+   * gestao-de-tarefas-global) não têm. Os tratamentos exclusivos do Motor
+   * (validação de projeto_id/dependências, external_id, tarefa_dependencias,
+   * realtime e reconciliação) só valem para a tabela do Motor.
+   */
+  private ehTarefasDoMotor(tabela: MySqlTable): boolean {
+    const colunas = getTableColumns(tabela) as Record<string, Column>
+    return Boolean(colunas.projetoId)
+  }
+
   private async anexarDependencias(db: any, linhas: Record<string, unknown>[]): Promise<Record<string, unknown>[]> {
     if (linhas.length === 0) return linhas
     const ids = linhas.map((linha) => Number(linha.id)).filter((id) => Number.isSafeInteger(id) && id > 0)
@@ -721,7 +743,8 @@ export class CrudService {
     corpo: unknown,
   ): Promise<Record<string, unknown>> {
     const tabela = this.resolverTabela(projeto, resource)
-    const dependencia = resource === "tarefas" ? this.normalizarDependencias(corpo) : { payload: corpo as Record<string, unknown> }
+    const tarefasMotor = resource === "tarefas" && this.ehTarefasDoMotor(tabela)
+    const dependencia = tarefasMotor ? this.normalizarDependencias(corpo) : { payload: corpo as Record<string, unknown> }
     const { insert } = this.schemasDe(projeto, resource)
     const parse = insert.safeParse(this.normalizarChaves(tabela, dependencia.payload))
     if (!parse.success) {
@@ -742,7 +765,7 @@ export class CrudService {
       // projeto da plataforma cujo banco está sendo usado. Conferir apenas a
       // FK do banco permite apontar para a linha da biblioteca-global (ou para
       // qualquer outro projeto) e reproduz a falha do TaQui.
-      if (resource === "tarefas") {
+      if (tarefasMotor) {
         // parse.data mantém o corpo validado pelo zod — pode usar
         // projeto_id (snake, direto da coluna) ou projetoId (camel,
         // do formulário). Ler ambos evita a falha de criar tarefa pela
@@ -776,7 +799,7 @@ export class CrudService {
       }
       const resultado = await db.insert(tabela).values(valores)
       const insertId = resultado[0].insertId
-      if (resource === "tarefas" && dependencia.ids !== undefined && dependencia.ids.length > 0) {
+      if (tarefasMotor && dependencia.ids !== undefined && dependencia.ids.length > 0) {
         await db.insert(tarefaDependencias).values(dependencia.ids.map((dependeDeTarefaId) => ({ tarefaId: Number(insertId), dependeDeTarefaId })))
       }
 
@@ -784,7 +807,7 @@ export class CrudService {
       // O motor busca tarefas por external_id; se o CRUD não preenche, o botão
       // Start falha com "Tarefa nao encontrada". Gera task-biblioteca-{id} se não
       // foi fornecido explicitamente.
-      if (resource === "tarefas" && !valores.external_id) {
+      if (tarefasMotor && !valores.external_id) {
         const externalId = `task-biblioteca-${insertId}`
         await db.execute(
           sql`UPDATE tarefas SET external_id = ${externalId} WHERE id = ${insertId}`
@@ -812,7 +835,8 @@ export class CrudService {
     corpo: unknown,
   ): Promise<Record<string, unknown>> {
     const tabela = this.resolverTabela(projeto, resource)
-    const dependencia = resource === "tarefas" ? this.normalizarDependencias(corpo) : { payload: corpo as Record<string, unknown> }
+    const tarefasMotor = resource === "tarefas" && this.ehTarefasDoMotor(tabela)
+    const dependencia = tarefasMotor ? this.normalizarDependencias(corpo) : { payload: corpo as Record<string, unknown> }
     const { update } = this.schemasDe(projeto, resource)
     const parse = update.safeParse(this.normalizarChaves(tabela, dependencia.payload))
     if (!parse.success) {
@@ -834,7 +858,7 @@ export class CrudService {
 
     // Existe? (404 antes de atualizar)
     const atual = await this.detalhar(projeto, resource, id)
-    if (resource === "tarefas" && dependencia.ids !== undefined) {
+    if (tarefasMotor && dependencia.ids !== undefined) {
       await this.validarDependenciasTarefa(await this.dbDoProjeto(projeto), Number(atual.projetoId ?? atual.projeto_id), id, dependencia.ids)
     }
 
@@ -844,7 +868,7 @@ export class CrudService {
         .update(tabela)
         .set(campos)
         .where(eq(this.colunaId(tabela) as never, id as never))
-      if (resource === "tarefas" && dependencia.ids !== undefined) {
+      if (tarefasMotor && dependencia.ids !== undefined) {
         await db.delete(tarefaDependencias).where(eq(tarefaDependencias.tarefaId, id))
         if (dependencia.ids.length > 0) await db.insert(tarefaDependencias).values(dependencia.ids.map((dependeDeTarefaId) => ({ tarefaId: id, dependeDeTarefaId })))
       }

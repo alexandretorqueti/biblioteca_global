@@ -146,8 +146,10 @@ export const regrasRecorrencia = mysqlTable("regras_recorrencia", {
   /** NULL = sem fim. Quando presente: minDate ≥ dataInicio (validação de form). */
   dataFim: date("data_fim"),
   ativa: boolean("ativa").notNull().default(true),
-  /** Próxima geração calculada pelo motor de recorrência (fora deste escopo). */
-  proximaGeracao: datetime("proxima_geracao"),
+  /** Próxima geração calculada pelo motor de recorrência (fora deste escopo).
+   * mode "string": o contrato do CRUD genérico (zod/form JSON) trafega datas
+   * como string — o mode default ("date") exige Date e quebra no insert. */
+  proximaGeracao: datetime("proxima_geracao", { mode: "string" }),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
 })
@@ -178,7 +180,7 @@ export const tarefas = mysqlTable("tarefas", {
   prioridade: mysqlEnum("prioridade", ["baixa", "media", "alta", "urgente"])
     .notNull()
     .default("media"),
-  prazo: datetime("prazo"),
+  prazo: datetime("prazo", { mode: "string" }),
   /** Editável apenas via endpoints do fluxo custom (máquina de estados — fora deste escopo). */
   status: mysqlEnum("status", [
     "aberta",
@@ -196,7 +198,7 @@ export const tarefas = mysqlTable("tarefas", {
     mode: "number",
     unsigned: true,
   }).references(() => regrasRecorrencia.id),
-  concluidaEm: datetime("concluida_em"),
+  concluidaEm: datetime("concluida_em", { mode: "string" }),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
 })
