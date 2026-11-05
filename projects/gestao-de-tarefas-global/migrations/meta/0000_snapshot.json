@@ -1,0 +1,1182 @@
+{
+  "version": "5",
+  "dialect": "mysql",
+  "id": "8c41e480-9475-42ca-87b7-e62c0e567a2b",
+  "prevId": "00000000-0000-0000-0000-000000000000",
+  "tables": {
+    "anexos": {
+      "name": "anexos",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "tarefa_id": {
+          "name": "tarefa_id",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "organizacao_id": {
+          "name": "organizacao_id",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "nome_arquivo": {
+          "name": "nome_arquivo",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "mime_type": {
+          "name": "mime_type",
+          "type": "varchar(120)",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "tamanho_bytes": {
+          "name": "tamanho_bytes",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "chave_armazenamento": {
+          "name": "chave_armazenamento",
+          "type": "varchar(500)",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "enviado_por_id": {
+          "name": "enviado_por_id",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "criado_em": {
+          "name": "criado_em",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(now())"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "anexos_tarefa_id_tarefas_id_fk": {
+          "name": "anexos_tarefa_id_tarefas_id_fk",
+          "tableFrom": "anexos",
+          "tableTo": "tarefas",
+          "columnsFrom": [
+            "tarefa_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "anexos_organizacao_id_organizacoes_id_fk": {
+          "name": "anexos_organizacao_id_organizacoes_id_fk",
+          "tableFrom": "anexos",
+          "tableTo": "organizacoes",
+          "columnsFrom": [
+            "organizacao_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "anexos_enviado_por_id_colaboradores_id_fk": {
+          "name": "anexos_enviado_por_id_colaboradores_id_fk",
+          "tableFrom": "anexos",
+          "tableTo": "colaboradores",
+          "columnsFrom": [
+            "enviado_por_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "anexos_id": {
+          "name": "anexos_id",
+          "columns": [
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraint": {}
+    },
+    "areas": {
+      "name": "areas",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "organizacao_id": {
+          "name": "organizacao_id",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "nome": {
+          "name": "nome",
+          "type": "varchar(120)",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "descricao": {
+          "name": "descricao",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "responsavel_id": {
+          "name": "responsavel_id",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(now())"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "onUpdate": true,
+          "default": "(now())"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "areas_organizacao_id_organizacoes_id_fk": {
+          "name": "areas_organizacao_id_organizacoes_id_fk",
+          "tableFrom": "areas",
+          "tableTo": "organizacoes",
+          "columnsFrom": [
+            "organizacao_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "areas_responsavel_id_colaboradores_id_fk": {
+          "name": "areas_responsavel_id_colaboradores_id_fk",
+          "tableFrom": "areas",
+          "tableTo": "colaboradores",
+          "columnsFrom": [
+            "responsavel_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "areas_id": {
+          "name": "areas_id",
+          "columns": [
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {
+        "areas_organizacao_id_nome_unique": {
+          "name": "areas_organizacao_id_nome_unique",
+          "columns": [
+            "organizacao_id",
+            "nome"
+          ]
+        }
+      },
+      "checkConstraint": {}
+    },
+    "colaboradores": {
+      "name": "colaboradores",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "organizacao_id": {
+          "name": "organizacao_id",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "nome": {
+          "name": "nome",
+          "type": "varchar(160)",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "email": {
+          "name": "email",
+          "type": "varchar(160)",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "telefone": {
+          "name": "telefone",
+          "type": "varchar(20)",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "cpf": {
+          "name": "cpf",
+          "type": "char(14)",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "ativo": {
+          "name": "ativo",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": true
+        },
+        "usuario_id": {
+          "name": "usuario_id",
+          "type": "int unsigned",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "colaboradores_organizacao_id_organizacoes_id_fk": {
+          "name": "colaboradores_organizacao_id_organizacoes_id_fk",
+          "tableFrom": "colaboradores",
+          "tableTo": "organizacoes",
+          "columnsFrom": [
+            "organizacao_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "colaboradores_id": {
+          "name": "colaboradores_id",
+          "columns": [
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraint": {}
+    },
+    "historico_tarefas": {
+      "name": "historico_tarefas",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "tarefa_id": {
+          "name": "tarefa_id",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "tipo_evento": {
+          "name": "tipo_evento",
+          "type": "enum('criacao','delegacao','devolucao_concluida','devolucao_precisa_info','devolucao_aguardando_terceiro','reatribuicao','mudanca_status','mudanca_prazo','mudanca_prioridade','anexo','lembrete_gerado')",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "de_colaborador_id": {
+          "name": "de_colaborador_id",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "para_colaborador_id": {
+          "name": "para_colaborador_id",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "mensagem": {
+          "name": "mensagem",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "criado_em": {
+          "name": "criado_em",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(now())"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "historico_tarefas_tarefa_id_tarefas_id_fk": {
+          "name": "historico_tarefas_tarefa_id_tarefas_id_fk",
+          "tableFrom": "historico_tarefas",
+          "tableTo": "tarefas",
+          "columnsFrom": [
+            "tarefa_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "historico_tarefas_de_colaborador_id_colaboradores_id_fk": {
+          "name": "historico_tarefas_de_colaborador_id_colaboradores_id_fk",
+          "tableFrom": "historico_tarefas",
+          "tableTo": "colaboradores",
+          "columnsFrom": [
+            "de_colaborador_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "historico_tarefas_para_colaborador_id_colaboradores_id_fk": {
+          "name": "historico_tarefas_para_colaborador_id_colaboradores_id_fk",
+          "tableFrom": "historico_tarefas",
+          "tableTo": "colaboradores",
+          "columnsFrom": [
+            "para_colaborador_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "historico_tarefas_id": {
+          "name": "historico_tarefas_id",
+          "columns": [
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraint": {}
+    },
+    "mensagens_tarefa": {
+      "name": "mensagens_tarefa",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "tarefa_id": {
+          "name": "tarefa_id",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "autor_id": {
+          "name": "autor_id",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "texto": {
+          "name": "texto",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "criado_em": {
+          "name": "criado_em",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(now())"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "mensagens_tarefa_tarefa_id_tarefas_id_fk": {
+          "name": "mensagens_tarefa_tarefa_id_tarefas_id_fk",
+          "tableFrom": "mensagens_tarefa",
+          "tableTo": "tarefas",
+          "columnsFrom": [
+            "tarefa_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "mensagens_tarefa_autor_id_colaboradores_id_fk": {
+          "name": "mensagens_tarefa_autor_id_colaboradores_id_fk",
+          "tableFrom": "mensagens_tarefa",
+          "tableTo": "colaboradores",
+          "columnsFrom": [
+            "autor_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "mensagens_tarefa_id": {
+          "name": "mensagens_tarefa_id",
+          "columns": [
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraint": {}
+    },
+    "notificacoes": {
+      "name": "notificacoes",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "organizacao_id": {
+          "name": "organizacao_id",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "usuario_id": {
+          "name": "usuario_id",
+          "type": "int unsigned",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "titulo": {
+          "name": "titulo",
+          "type": "varchar(200)",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "corpo": {
+          "name": "corpo",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "tipo": {
+          "name": "tipo",
+          "type": "enum('lembrete','delegacao','devolucao','sistema')",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "tarefa_id": {
+          "name": "tarefa_id",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "lida": {
+          "name": "lida",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "criado_em": {
+          "name": "criado_em",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(now())"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "notificacoes_organizacao_id_organizacoes_id_fk": {
+          "name": "notificacoes_organizacao_id_organizacoes_id_fk",
+          "tableFrom": "notificacoes",
+          "tableTo": "organizacoes",
+          "columnsFrom": [
+            "organizacao_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "notificacoes_tarefa_id_tarefas_id_fk": {
+          "name": "notificacoes_tarefa_id_tarefas_id_fk",
+          "tableFrom": "notificacoes",
+          "tableTo": "tarefas",
+          "columnsFrom": [
+            "tarefa_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "notificacoes_id": {
+          "name": "notificacoes_id",
+          "columns": [
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraint": {}
+    },
+    "organizacoes": {
+      "name": "organizacoes",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "nome": {
+          "name": "nome",
+          "type": "varchar(160)",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "descricao": {
+          "name": "descricao",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "ativa": {
+          "name": "ativa",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(now())"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "onUpdate": true,
+          "default": "(now())"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "organizacoes_id": {
+          "name": "organizacoes_id",
+          "columns": [
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraint": {}
+    },
+    "regras_recorrencia": {
+      "name": "regras_recorrencia",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "organizacao_id": {
+          "name": "organizacao_id",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "titulo": {
+          "name": "titulo",
+          "type": "varchar(200)",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "descricao": {
+          "name": "descricao",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "area_id": {
+          "name": "area_id",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "responsavel_id": {
+          "name": "responsavel_id",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "frequencia": {
+          "name": "frequencia",
+          "type": "enum('diaria','semanal','mensal')",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "dias_semana": {
+          "name": "dias_semana",
+          "type": "json",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "hora_do_dia": {
+          "name": "hora_do_dia",
+          "type": "time",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "data_inicio": {
+          "name": "data_inicio",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "data_fim": {
+          "name": "data_fim",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "ativa": {
+          "name": "ativa",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": true
+        },
+        "proxima_geracao": {
+          "name": "proxima_geracao",
+          "type": "datetime",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(now())"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "onUpdate": true,
+          "default": "(now())"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "regras_recorrencia_organizacao_id_organizacoes_id_fk": {
+          "name": "regras_recorrencia_organizacao_id_organizacoes_id_fk",
+          "tableFrom": "regras_recorrencia",
+          "tableTo": "organizacoes",
+          "columnsFrom": [
+            "organizacao_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "regras_recorrencia_area_id_areas_id_fk": {
+          "name": "regras_recorrencia_area_id_areas_id_fk",
+          "tableFrom": "regras_recorrencia",
+          "tableTo": "areas",
+          "columnsFrom": [
+            "area_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "regras_recorrencia_responsavel_id_colaboradores_id_fk": {
+          "name": "regras_recorrencia_responsavel_id_colaboradores_id_fk",
+          "tableFrom": "regras_recorrencia",
+          "tableTo": "colaboradores",
+          "columnsFrom": [
+            "responsavel_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "regras_recorrencia_id": {
+          "name": "regras_recorrencia_id",
+          "columns": [
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraint": {}
+    },
+    "tags": {
+      "name": "tags",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "organizacao_id": {
+          "name": "organizacao_id",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "nome": {
+          "name": "nome",
+          "type": "varchar(80)",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "tags_organizacao_id_organizacoes_id_fk": {
+          "name": "tags_organizacao_id_organizacoes_id_fk",
+          "tableFrom": "tags",
+          "tableTo": "organizacoes",
+          "columnsFrom": [
+            "organizacao_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "tags_id": {
+          "name": "tags_id",
+          "columns": [
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {
+        "tags_organizacao_id_nome_unique": {
+          "name": "tags_organizacao_id_nome_unique",
+          "columns": [
+            "organizacao_id",
+            "nome"
+          ]
+        }
+      },
+      "checkConstraint": {}
+    },
+    "tarefa_tags": {
+      "name": "tarefa_tags",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "tarefa_id": {
+          "name": "tarefa_id",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "tag_id": {
+          "name": "tag_id",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "tarefa_tags_tarefa_id_tarefas_id_fk": {
+          "name": "tarefa_tags_tarefa_id_tarefas_id_fk",
+          "tableFrom": "tarefa_tags",
+          "tableTo": "tarefas",
+          "columnsFrom": [
+            "tarefa_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "tarefa_tags_tag_id_tags_id_fk": {
+          "name": "tarefa_tags_tag_id_tags_id_fk",
+          "tableFrom": "tarefa_tags",
+          "tableTo": "tags",
+          "columnsFrom": [
+            "tag_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "tarefa_tags_id": {
+          "name": "tarefa_tags_id",
+          "columns": [
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {
+        "tarefa_tags_tarefa_id_tag_id_unique": {
+          "name": "tarefa_tags_tarefa_id_tag_id_unique",
+          "columns": [
+            "tarefa_id",
+            "tag_id"
+          ]
+        }
+      },
+      "checkConstraint": {}
+    },
+    "tarefas": {
+      "name": "tarefas",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "organizacao_id": {
+          "name": "organizacao_id",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "titulo": {
+          "name": "titulo",
+          "type": "varchar(200)",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "descricao": {
+          "name": "descricao",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "area_id": {
+          "name": "area_id",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "responsavel_id": {
+          "name": "responsavel_id",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "criado_por_id": {
+          "name": "criado_por_id",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "prioridade": {
+          "name": "prioridade",
+          "type": "enum('baixa','media','alta','urgente')",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'media'"
+        },
+        "prazo": {
+          "name": "prazo",
+          "type": "datetime",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "enum('aberta','delegada','concluida','precisa_informacoes','aguardando_terceiro','cancelada')",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'aberta'"
+        },
+        "lembrete_antecedencia_minutos": {
+          "name": "lembrete_antecedencia_minutos",
+          "type": "int",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "regra_recorrencia_id": {
+          "name": "regra_recorrencia_id",
+          "type": "bigint unsigned",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "concluida_em": {
+          "name": "concluida_em",
+          "type": "datetime",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(now())"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "onUpdate": true,
+          "default": "(now())"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "tarefas_organizacao_id_organizacoes_id_fk": {
+          "name": "tarefas_organizacao_id_organizacoes_id_fk",
+          "tableFrom": "tarefas",
+          "tableTo": "organizacoes",
+          "columnsFrom": [
+            "organizacao_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "tarefas_area_id_areas_id_fk": {
+          "name": "tarefas_area_id_areas_id_fk",
+          "tableFrom": "tarefas",
+          "tableTo": "areas",
+          "columnsFrom": [
+            "area_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "tarefas_responsavel_id_colaboradores_id_fk": {
+          "name": "tarefas_responsavel_id_colaboradores_id_fk",
+          "tableFrom": "tarefas",
+          "tableTo": "colaboradores",
+          "columnsFrom": [
+            "responsavel_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "tarefas_criado_por_id_colaboradores_id_fk": {
+          "name": "tarefas_criado_por_id_colaboradores_id_fk",
+          "tableFrom": "tarefas",
+          "tableTo": "colaboradores",
+          "columnsFrom": [
+            "criado_por_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "tarefas_regra_recorrencia_id_regras_recorrencia_id_fk": {
+          "name": "tarefas_regra_recorrencia_id_regras_recorrencia_id_fk",
+          "tableFrom": "tarefas",
+          "tableTo": "regras_recorrencia",
+          "columnsFrom": [
+            "regra_recorrencia_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "tarefas_id": {
+          "name": "tarefas_id",
+          "columns": [
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraint": {}
+    }
+  },
+  "views": {},
+  "_meta": {
+    "schemas": {},
+    "tables": {},
+    "columns": {}
+  },
+  "internal": {
+    "tables": {},
+    "indexes": {}
+  }
+}

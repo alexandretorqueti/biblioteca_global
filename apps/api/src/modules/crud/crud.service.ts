@@ -30,7 +30,12 @@ import {
 } from "../../common/erros"
 import { PROJECT_DB_FACTORY, type ProjectDbFactory } from "./project-db.factory"
 import { SCHEMA_REGISTRY, type SchemaRegistry } from "./schema-registry"
-import { zodParaInsert, zodParaUpdate } from "@biblioteca-global/schema-tools"
+import {
+  camposPivotDoResource,
+  zodParaInsert,
+  zodParaUpdate,
+  type CampoPivot,
+} from "@biblioteca-global/schema-tools"
 import { projetosCaptados, tarefas, tarefaDependencias } from "../../../../../projects/gerenteagentes/schema"
 import { RealtimeService } from "../realtime/realtime.service"
 
@@ -45,6 +50,9 @@ export const RESOURCES_RESERVADOS: ReadonlySet<string> = new Set([
 
 /** Limite máximo de valores no valuesLast de um orderBy. */
 export const ORDER_BY_VALUES_LAST_MAX = 20
+
+/** Conexão do banco do projeto (retorno do ProjectDbFactory). */
+type DbDoProjeto = Awaited<ReturnType<ProjectDbFactory["obter"]>>
 
 /**
  * Virtual resource do CRUD genérico: lista os agentes reais do OpenClaw.
@@ -76,6 +84,8 @@ export class CrudService {
   private readonly motorReconciliationUrl: string
   private consoleAgentesCache: { at: number; agents: Record<string, unknown>[] } | null = null
   private static readonly CONSOLE_CACHE_TTL_MS = 60_000
+  /** Cache de campos virtuais de pivot por `${slug}:${resource}` (registry é imutável após o boot). */
+  private readonly pivotCache = new Map<string, CampoPivot[]>()
 
   constructor(
     @Inject(SCHEMA_REGISTRY) private readonly registry: SchemaRegistry,
@@ -451,11 +461,17 @@ export class CrudService {
           : baseQuery.limit(pageSize).offset((page - 1) * pageSize)
       )
 
-      const itemsNormalizados = resource === "tarefas"
+      const itemsNormalizados = resource === "tarefas" && this.ehTarefasDoMotor(tabela)
         ? await this.anexarDependencias(db, items as Record<string, unknown>[])
         : items as Record<string, unknown>[]
+      const itemsComPivots = await this.anexarPivots(
+        db,
+        projeto,
+        resource,
+        itemsNormalizados,
+      )
       return {
-        items: itemsNormalizados,
+        items: itemsComPivots,
         total: Number(total.at(0)?.quantidade ?? 0),
         page,
         pageSize,
@@ -485,7 +501,11 @@ export class CrudService {
       throw new NotFoundException("Registro não encontrado")
     }
     const resultado = linha as Record<string, unknown>
-    return resource === "tarefas" ? (await this.anexarDependencias(db, [resultado]))[0]! : resultado
+    const base =
+      resource === "tarefas" && this.ehTarefasDoMotor(tabela)
+        ? (await this.anexarDependencias(db, [resultado]))[0]!
+        : resultado
+    return (await this.anexarPivots(db, projeto, resource, [base]))[0]!
   }
 
   /**
@@ -548,6 +568,13 @@ export class CrudService {
 
     const id = Number(linha.id)
     if (!Number.isSafeInteger(id) || id <= 0) return
+
+    // "tarefas"/"subtarefas" são homônimos entre projetos: eventos realtime e
+    // reconciliação do Motor valem apenas quando a tabela do projeto do token
+    // é a do Motor (tarefas com coluna projetoId). Tabelas de negócio homônimas
+    // de outros projetos não alimentam o fluxo do Motor.
+    const tabelaTarefas = this.registry.tabelasDoProjeto(projeto.slug)?.tarefas
+    if (!tabelaTarefas || !this.ehTarefasDoMotor(tabelaTarefas)) return
 
     if (resource === "tarefas") {
       const managedProjectId = Number(linha.projetoId ?? linha.projeto_id)
@@ -702,6 +729,19 @@ export class CrudService {
     if ([...edges.keys()].some(visit)) throw new BadRequestException("A dependência informada forma um ciclo")
   }
 
+  /**
+   * Discriminador do Motor: o resource "tarefas" é homônimo entre projetos —
+   * as tarefas do Motor (gerenteagentes) têm a coluna projetoId (projeto_id)
+   * e external_id; tabelas de negócio homônimas de outros projetos (ex.:
+   * gestao-de-tarefas-global) não têm. Os tratamentos exclusivos do Motor
+   * (validação de projeto_id/dependências, external_id, tarefa_dependencias,
+   * realtime e reconciliação) só valem para a tabela do Motor.
+   */
+  private ehTarefasDoMotor(tabela: MySqlTable): boolean {
+    const colunas = getTableColumns(tabela) as Record<string, Column>
+    return Boolean(colunas.projetoId)
+  }
+
   private async anexarDependencias(db: any, linhas: Record<string, unknown>[]): Promise<Record<string, unknown>[]> {
     if (linhas.length === 0) return linhas
     const ids = linhas.map((linha) => Number(linha.id)).filter((id) => Number.isSafeInteger(id) && id > 0)
@@ -715,13 +755,171 @@ export class CrudService {
     })
   }
 
+  /**
+   * Campos virtuais de pivot N:N do resource (ex.: "tags" em tarefas via
+   * tarefa_tags). Detectados pela convenção do schema-tools (id + 2 FKs para
+   * tabelas diferentes, sem outras colunas) — ver detectar-pivots.ts.
+   */
+  private camposPivotDo(projeto: ProjetoResumo, resource: string): CampoPivot[] {
+    const chave = `${projeto.slug}:${resource}`
+    const emCache = this.pivotCache.get(chave)
+    if (emCache) return emCache
+    const tabelas = this.registry.tabelasDoProjeto(projeto.slug)
+    const campos = tabelas ? camposPivotDoResource(tabelas, resource) : []
+    this.pivotCache.set(chave, campos)
+    return campos
+  }
+
+  /**
+   * Remove do corpo os campos virtuais de pivot (arrays de ids) antes do Zod
+   * derivado da tabela (strict). Ausência/null/"" = "não mexer no pivot";
+   * array (inclusive vazio) = sincronizar.
+   */
+  private extrairPivots(
+    corpo: unknown,
+    campos: CampoPivot[],
+  ): { payload: unknown; valores: Map<string, number[]> } {
+    const valores = new Map<string, number[]>()
+    if (
+      campos.length === 0 ||
+      typeof corpo !== "object" ||
+      corpo === null ||
+      Array.isArray(corpo)
+    ) {
+      return { payload: corpo, valores }
+    }
+    const original = corpo as Record<string, unknown>
+    const payload: Record<string, unknown> = { ...original }
+    for (const campo of campos) {
+      if (!(campo.campo in payload)) continue
+      const bruto = payload[campo.campo]
+      delete payload[campo.campo]
+      if (bruto === undefined || bruto === null || bruto === "") continue
+      if (!Array.isArray(bruto)) {
+        throw new BadRequestException(
+          `Campo "${campo.campo}" deve ser um array de ids`,
+        )
+      }
+      const ids: number[] = []
+      for (const item of bruto) {
+        const id = typeof item === "number" ? item : Number(item)
+        if (!Number.isSafeInteger(id) || id <= 0) {
+          throw new BadRequestException(
+            `Campo "${campo.campo}" deve conter apenas ids positivos`,
+          )
+        }
+        if (!ids.includes(id)) ids.push(id)
+      }
+      valores.set(campo.campo, ids)
+    }
+    return { payload, valores }
+  }
+
+  /**
+   * Sincroniza os pivots do registro pai (delete + insert dos vínculos).
+   * Valida a existência dos ids do outro lado antes de gravar (FK violada
+   * viraria erro 500 opaco).
+   */
+  private async sincronizarPivots(
+    db: DbDoProjeto,
+    campos: CampoPivot[],
+    valores: Map<string, number[]>,
+    paiId: number,
+  ): Promise<void> {
+    for (const [campoNome, ids] of valores) {
+      const campo = campos.find((c) => c.campo === campoNome)
+      if (!campo) continue
+      const colunaIdOposta = this.colunaId(campo.tabelaOposta)
+      if (ids.length > 0) {
+        const existentes = await db
+          .select({ id: colunaIdOposta as never })
+          .from(campo.tabelaOposta)
+          .where(inArray(colunaIdOposta as never, ids as never))
+        if (existentes.length !== ids.length) {
+          throw new BadRequestException(
+            `Campo "${campoNome}": há id inexistente em ${campo.resourceOposto}`,
+          )
+        }
+      }
+      const colunasPivot = getTableColumns(campo.tabelaPivot) as Record<string, Column>
+      const colunaPai = colunasPivot[campo.fkPaiProp]
+      if (!colunaPai) continue
+      await db
+        .delete(campo.tabelaPivot)
+        .where(eq(colunaPai as never, paiId as never))
+      if (ids.length > 0) {
+        await db
+          .insert(campo.tabelaPivot)
+          .values(
+            ids.map((id) => ({
+              [campo.fkPaiProp]: paiId,
+              [campo.fkOpostoProp]: id,
+            })) as never,
+          )
+      }
+    }
+  }
+
+  /**
+   * Anexa às linhas os campos virtuais de pivot (arrays de ids do outro
+   * lado) — alimenta o prefill da edição e a leitura via API. Uma consulta
+   * por pivot, em lote pelos ids da página.
+   */
+  private async anexarPivots(
+    db: DbDoProjeto,
+    projeto: ProjetoResumo,
+    resource: string,
+    linhas: Record<string, unknown>[],
+  ): Promise<Record<string, unknown>[]> {
+    if (linhas.length === 0) return linhas
+    const campos = this.camposPivotDo(projeto, resource)
+    if (campos.length === 0) return linhas
+    const ids = linhas
+      .map((linha) => Number(linha.id))
+      .filter((id) => Number.isSafeInteger(id) && id > 0)
+    if (ids.length === 0) return linhas
+    const porCampo = new Map<string, Map<number, number[]>>()
+    for (const campo of campos) {
+      const colunasPivot = getTableColumns(campo.tabelaPivot) as Record<string, Column>
+      const colunaPai = colunasPivot[campo.fkPaiProp]
+      const colunaOposto = colunasPivot[campo.fkOpostoProp]
+      if (!colunaPai || !colunaOposto) continue
+      const ligacoes = await db
+        .select({
+          pai: colunaPai as never,
+          oposto: colunaOposto as never,
+        })
+        .from(campo.tabelaPivot)
+        .where(inArray(colunaPai as never, ids as never))
+      const grupos = new Map<number, number[]>()
+      for (const ligacao of ligacoes as Array<Record<string, unknown>>) {
+        const pai = Number(ligacao.pai)
+        const oposto = Number(ligacao.oposto)
+        if (!Number.isSafeInteger(pai) || !Number.isSafeInteger(oposto)) continue
+        grupos.set(pai, [...(grupos.get(pai) ?? []), oposto])
+      }
+      porCampo.set(campo.campo, grupos)
+    }
+    return linhas.map((linha) => {
+      const id = Number(linha.id)
+      const extra: Record<string, unknown> = {}
+      for (const campo of campos) {
+        extra[campo.campo] = porCampo.get(campo.campo)?.get(id) ?? []
+      }
+      return { ...linha, ...extra }
+    })
+  }
+
   async criar(
     projeto: ProjetoResumo,
     resource: string,
     corpo: unknown,
   ): Promise<Record<string, unknown>> {
     const tabela = this.resolverTabela(projeto, resource)
-    const dependencia = resource === "tarefas" ? this.normalizarDependencias(corpo) : { payload: corpo as Record<string, unknown> }
+    const tarefasMotor = resource === "tarefas" && this.ehTarefasDoMotor(tabela)
+    const camposPivot = this.camposPivotDo(projeto, resource)
+    const pivots = this.extrairPivots(corpo, camposPivot)
+    const dependencia = tarefasMotor ? this.normalizarDependencias(pivots.payload) : { payload: pivots.payload as Record<string, unknown> }
     const { insert } = this.schemasDe(projeto, resource)
     const parse = insert.safeParse(this.normalizarChaves(tabela, dependencia.payload))
     if (!parse.success) {
@@ -742,7 +940,7 @@ export class CrudService {
       // projeto da plataforma cujo banco está sendo usado. Conferir apenas a
       // FK do banco permite apontar para a linha da biblioteca-global (ou para
       // qualquer outro projeto) e reproduz a falha do TaQui.
-      if (resource === "tarefas") {
+      if (tarefasMotor) {
         // parse.data mantém o corpo validado pelo zod — pode usar
         // projeto_id (snake, direto da coluna) ou projetoId (camel,
         // do formulário). Ler ambos evita a falha de criar tarefa pela
@@ -776,7 +974,7 @@ export class CrudService {
       }
       const resultado = await db.insert(tabela).values(valores)
       const insertId = resultado[0].insertId
-      if (resource === "tarefas" && dependencia.ids !== undefined && dependencia.ids.length > 0) {
+      if (tarefasMotor && dependencia.ids !== undefined && dependencia.ids.length > 0) {
         await db.insert(tarefaDependencias).values(dependencia.ids.map((dependeDeTarefaId) => ({ tarefaId: Number(insertId), dependeDeTarefaId })))
       }
 
@@ -784,11 +982,15 @@ export class CrudService {
       // O motor busca tarefas por external_id; se o CRUD não preenche, o botão
       // Start falha com "Tarefa nao encontrada". Gera task-biblioteca-{id} se não
       // foi fornecido explicitamente.
-      if (resource === "tarefas" && !valores.external_id) {
+      if (tarefasMotor && !valores.external_id) {
         const externalId = `task-biblioteca-${insertId}`
         await db.execute(
           sql`UPDATE tarefas SET external_id = ${externalId} WHERE id = ${insertId}`
         )
+      }
+
+      if (pivots.valores.size > 0) {
+        await this.sincronizarPivots(db, camposPivot, pivots.valores, Number(insertId))
       }
 
       const linha = await this.detalhar(projeto, resource, insertId)
@@ -812,7 +1014,10 @@ export class CrudService {
     corpo: unknown,
   ): Promise<Record<string, unknown>> {
     const tabela = this.resolverTabela(projeto, resource)
-    const dependencia = resource === "tarefas" ? this.normalizarDependencias(corpo) : { payload: corpo as Record<string, unknown> }
+    const tarefasMotor = resource === "tarefas" && this.ehTarefasDoMotor(tabela)
+    const camposPivot = this.camposPivotDo(projeto, resource)
+    const pivots = this.extrairPivots(corpo, camposPivot)
+    const dependencia = tarefasMotor ? this.normalizarDependencias(pivots.payload) : { payload: pivots.payload as Record<string, unknown> }
     const { update } = this.schemasDe(projeto, resource)
     const parse = update.safeParse(this.normalizarChaves(tabela, dependencia.payload))
     if (!parse.success) {
@@ -828,25 +1033,30 @@ export class CrudService {
       tabela,
       parse.data as Record<string, unknown>,
     )
-    if (Object.keys(campos).length === 0) {
+    if (Object.keys(campos).length === 0 && pivots.valores.size === 0) {
       throw new BadRequestException("Nenhum campo para atualizar")
     }
 
     // Existe? (404 antes de atualizar)
     const atual = await this.detalhar(projeto, resource, id)
-    if (resource === "tarefas" && dependencia.ids !== undefined) {
+    if (tarefasMotor && dependencia.ids !== undefined) {
       await this.validarDependenciasTarefa(await this.dbDoProjeto(projeto), Number(atual.projetoId ?? atual.projeto_id), id, dependencia.ids)
     }
 
     const db = await this.dbDoProjeto(projeto)
     try {
-      await db
-        .update(tabela)
-        .set(campos)
-        .where(eq(this.colunaId(tabela) as never, id as never))
-      if (resource === "tarefas" && dependencia.ids !== undefined) {
+      if (Object.keys(campos).length > 0) {
+        await db
+          .update(tabela)
+          .set(campos)
+          .where(eq(this.colunaId(tabela) as never, id as never))
+      }
+      if (tarefasMotor && dependencia.ids !== undefined) {
         await db.delete(tarefaDependencias).where(eq(tarefaDependencias.tarefaId, id))
         if (dependencia.ids.length > 0) await db.insert(tarefaDependencias).values(dependencia.ids.map((dependeDeTarefaId) => ({ tarefaId: id, dependeDeTarefaId })))
+      }
+      if (pivots.valores.size > 0) {
+        await this.sincronizarPivots(db, camposPivot, pivots.valores, id)
       }
       const linha = await this.detalhar(projeto, resource, id)
       await this.publicarEventoCrud(projeto, resource, "updated", linha)

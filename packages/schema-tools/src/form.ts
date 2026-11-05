@@ -39,8 +39,22 @@ export interface FormAnnotation {
   minLength?: number
   maxLength?: number
   currency?: string
-  mask?: "cnpj"
-  validator?: "cnpj"
+  /**
+   * Máscara de entrada — mesmos valores do enum `mask` de
+   * `dynamicFieldConfigSchema` (packages/shared/src/field.ts).
+   */
+  mask?: "cnpj" | "cpf" | "telefone" | "cep" | "rg"
+  /**
+   * Validador de campo — mesmos valores do enum `validator` de
+   * `dynamicFieldConfigSchema` (packages/shared/src/field.ts).
+   */
+  validator?: "cnpj" | "cpf" | "rg" | "cep" | "telefone" | "nomeCompleto"
+  /**
+   * Marca a coluna como dado sensível (LGPD) — ex.: cpf. Metadado de
+   * schema: NÃO é propagado ao DynamicFieldConfig; o consumo (ocultar por
+   * perfil via hiddenColumns e bloqueio no backend) é feito na config/API.
+   */
+  sensitive?: boolean
   disabled?: boolean
 }
 

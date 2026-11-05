@@ -82,6 +82,14 @@ export const dynamicFieldConfigSchema = z
     maxLength: z.number().int().positive().optional(),
     minDate: z.string().optional(),
     maxDate: z.string().optional(),
+    /**
+     * minDate dinâmico entre campos: nome de outro campo de data do MESMO
+     * formulário cujo valor vira o mínimo deste campo (ex.: dataFim >=
+     * dataInicio). Prevalece sobre `minDate` quando o campo referido tem
+     * valor; validado também no submit (formValidation). Backward-compatível:
+     * configs sem o campo comportam-se como antes.
+     */
+    minDateField: z.string().min(1).optional(),
     booleanStyle: z.enum(["checkbox", "radio", "select"]).optional(),
     trueLabel: z.string().optional(),
     falseLabel: z.string().optional(),

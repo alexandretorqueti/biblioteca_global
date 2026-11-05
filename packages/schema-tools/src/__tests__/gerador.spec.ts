@@ -274,4 +274,28 @@ describe("validarConfigContraSchema", () => {
       /nao_existe/,
     )
   })
+
+  it("field com nome real da coluna (snake_case, contrato do gerador) → aceita", () => {
+    const config = telaCom("pedidos", {
+      fields: [{ name: "valor_total", label: "Valor", type: "number" }],
+      hiddenColumns: ["valor_total"],
+    })
+    expect(() => validarConfigContraSchema(config, { pedidos })).not.toThrow()
+  })
+
+  it("field com nome da propriedade TS (camelCase) → aceita", () => {
+    const config = telaCom("pedidos", {
+      fields: [{ name: "valorTotal", label: "Valor", type: "number" }],
+    })
+    expect(() => validarConfigContraSchema(config, { pedidos })).not.toThrow()
+  })
+
+  it("config derivada do schema (montarConfigInicial) passa na validação", () => {
+    const gerada = montarConfigInicial(
+      { app: { name: "X" }, groups: [] },
+      { pedidos },
+      {},
+    )
+    expect(() => validarConfigContraSchema(gerada, { pedidos })).not.toThrow()
+  })
 })
