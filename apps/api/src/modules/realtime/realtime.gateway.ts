@@ -9,6 +9,10 @@ import { RealtimeService } from "./realtime.service"
 
 interface SocketSession { projetoId: number; usuarioId: number }
 
+// Janela máxima que um "subscribe" aguarda a autenticação pendente do handshake
+// antes de responder INVALID_SUBSCRIPTION (timeout de segurança, ~2s).
+const AUTH_WAIT_TIMEOUT_MS = 2_000
+
 export type MapSnapshotProvider = (projectId: number) => Promise<AgentMapSnapshot> | AgentMapSnapshot
 export type HelpDeskSnapshotProvider = (input: { sessionId: number; userId: number; projectId: number }) => Promise<HelpDeskRealtimeSnapshot | null> | HelpDeskRealtimeSnapshot | null
 
@@ -17,6 +21,10 @@ export type HelpDeskSnapshotProvider = (input: { sessionId: number; userId: numb
 export class RealtimeGateway {
   private readonly logger = new Logger(RealtimeGateway.name)
   private readonly sessoes = new WeakMap<WebSocket, SocketSession>()
+  // Autenticações em andamento, registradas de forma síncrona no handleConnection
+  // (antes do primeiro await) para que um "subscribe" despachado durante o
+  // handshake possa aguardar a resolução em vez de falhar com INVALID_SUBSCRIPTION.
+  private readonly autenticoesPendentes = new Map<WebSocket, Promise<SocketSession | null>>()
   private mapSnapshotProvider: MapSnapshotProvider | null = null
   private helpDeskSnapshotProvider: HelpDeskSnapshotProvider | null = null
 
@@ -35,7 +43,25 @@ export class RealtimeGateway {
     this.realtime.setHelpDeskSnapshotProvider(provider)
   }
 
-  async handleConnection(client: WebSocket, request: IncomingMessage): Promise<void> {
+  handleConnection(client: WebSocket, request: IncomingMessage): Promise<void> {
+    // A promise de autenticação é criada e registrada SINCRONAMENTE (antes de
+    // qualquer await): o Nest despacha @SubscribeMessage sem esperar o
+    // handleConnection concluir, e o subscribe usa esta entrada para aguardar
+    // a autenticação em vez de rejeitar com INVALID_SUBSCRIPTION por corrida.
+    const autenticacao = this.autenticar(request)
+    this.autenticoesPendentes.set(client, autenticacao)
+    return autenticacao.then((session) => {
+      this.autenticoesPendentes.delete(client)
+      if (session) {
+        this.sessoes.set(client, session)
+        return
+      }
+      this.logger.warn("Conexão realtime rejeitada")
+      client.close(1008, "Não autorizado")
+    })
+  }
+
+  private async autenticar(request: IncomingMessage): Promise<SocketSession | null> {
     try {
       const url = new URL(request.url ?? "/", "http://localhost")
       const ticket = url.searchParams.get("ticket")
@@ -51,22 +77,49 @@ export class RealtimeGateway {
       if (!kindOk) throw new Error("tipo de token incorreto")
       const scope = await this.authRepository.resolveScope(claims.sub as number, claims.projetoId as number)
       if (!scope) throw new Error("escopo inválido")
-      this.sessoes.set(client, { projetoId: claims.projetoId as number, usuarioId: claims.sub as number })
+      return { projetoId: claims.projetoId as number, usuarioId: claims.sub as number }
     } catch {
-      this.logger.warn("Conexão realtime rejeitada")
-      client.close(1008, "Não autorizado")
+      return null
     }
   }
 
   handleDisconnect(client: WebSocket): void {
     this.realtime.remover(client)
     this.sessoes.delete(client)
+    this.autenticoesPendentes.delete(client)
+  }
+
+  private aguardarAutenticacao(client: WebSocket, timeoutMs: number = AUTH_WAIT_TIMEOUT_MS): Promise<SocketSession | null> {
+    const pendente = this.autenticoesPendentes.get(client)
+    if (!pendente) return Promise.resolve(null)
+    return new Promise<SocketSession | null>((resolve) => {
+      const timer = setTimeout(() => resolve(null), timeoutMs)
+      pendente.then(
+        (session) => {
+          clearTimeout(timer)
+          resolve(session)
+        },
+        () => {
+          clearTimeout(timer)
+          resolve(null)
+        },
+      )
+    })
   }
 
   @SubscribeMessage("subscribe")
   async subscribe(@ConnectedSocket() client: WebSocket, @MessageBody() raw: unknown): Promise<void> {
-    const session = this.sessoes.get(client)
     const parsed = realtimeClientMessageSchema.safeParse(raw)
+    let session = this.sessoes.get(client)
+    if (!session && this.autenticoesPendentes.has(client)) {
+      // Corrida handshake×subscribe: aguarda a autenticação pendente (com
+      // timeout de segurança) antes de validar a sessão.
+      const autenticada = await this.aguardarAutenticacao(client)
+      if (autenticada) {
+        session = autenticada
+        this.sessoes.set(client, autenticada)
+      }
+    }
     if (!session || !parsed.success || parsed.data.type !== "subscribe") {
       client.send(JSON.stringify({ type: "error", code: "INVALID_SUBSCRIPTION", message: "Inscrição inválida" }))
       return

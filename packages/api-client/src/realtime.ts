@@ -1,6 +1,18 @@
 import { realtimeServerMessageSchema, type RealtimeServerMessage } from "@biblioteca-global/shared"
 import type { RealtimeClientOptions } from "./types"
 
+// Defesa em profundidade contra a corrida de autenticação do handshake no
+// servidor: o subscribe pode chegar antes de o RealtimeGateway registrar a
+// sessão (handleConnection assíncrono), resultando em
+// {type:"error",code:"INVALID_SUBSCRIPTION",message:"Inscrição inválida"}.
+// O servidor reutiliza esse código para erros determinísticos ("Canal inválido",
+// "Tarefa inválida", "Sessão HelpDesk inválida"), portanto o retry só é
+// disparado para a assinatura exata da corrida (message === "Inscrição inválida").
+const SUBSCRIBE_RETRY_DELAY_MS = 400
+const SUBSCRIBE_RETRY_MAX_ATTEMPTS = 3
+const SUBSCRIBE_RACE_ERROR_CODE = "INVALID_SUBSCRIPTION"
+const SUBSCRIBE_RACE_ERROR_MESSAGE = "Inscrição inválida"
+
 export class RealtimeClient {
   private socket: WebSocket | null = null
   private stopped = false
@@ -10,6 +22,10 @@ export class RealtimeClient {
   private lastSequence: number | undefined
   private connectionGeneration = 0
   private readonly receivedEventIds = new Set<string>()
+  // Estado do retry de subscribe (por conexão; reseta a cada onopen).
+  private subscribeRetryTimer: ReturnType<typeof setTimeout> | null = null
+  private subscribeRetryAttempts = 0
+  private pendingSubscribeEnvelope: string | null = null
 
   constructor(private readonly options: RealtimeClientOptions) {
     this.factory = options.webSocketFactory ?? ((url) => new WebSocket(url))
@@ -54,8 +70,28 @@ export class RealtimeClient {
 
   private conectarSocket(socket: WebSocket): void {
     this.socket = socket
+    const cancelarSubscribeRetry = (): void => {
+      if (this.subscribeRetryTimer !== null) clearTimeout(this.subscribeRetryTimer)
+      this.subscribeRetryTimer = null
+    }
+    const agendarSubscribeRetry = (): void => {
+      // Só reenvia se a corrida ainda estiver pendente nesta conexão.
+      if (this.socket !== socket) return
+      if (this.pendingSubscribeEnvelope === null) return
+      if (this.subscribeRetryAttempts >= SUBSCRIBE_RETRY_MAX_ATTEMPTS) return
+      this.subscribeRetryAttempts += 1
+      const envelope = this.pendingSubscribeEnvelope
+      this.subscribeRetryTimer = setTimeout(() => {
+        this.subscribeRetryTimer = null
+        if (this.socket !== socket || this.stopped || this.pendingSubscribeEnvelope === null) return
+        socket.send(envelope)
+      }, SUBSCRIBE_RETRY_DELAY_MS)
+    }
     socket.onopen = () => {
       this.options.onStatusChange?.("open")
+      // Cada conexão nova recomeça o orçamento de retries do subscribe.
+      cancelarSubscribeRetry()
+      this.subscribeRetryAttempts = 0
       const channel = this.options.channel ?? "task"
       const subscribe = channel === "project-feed" || channel === "map"
         ? { type: "subscribe" as const, channel, lastSequence: this.lastSequence }
@@ -67,7 +103,8 @@ export class RealtimeClient {
       // para que o @SubscribeMessage("subscribe") do RealtimeGateway seja acionado.
       // Mensagens servidor→cliente permanecem em JSON simples (campo "type").
       const envelope = { event: "subscribe", data: subscribe }
-      socket.send(JSON.stringify(envelope))
+      this.pendingSubscribeEnvelope = JSON.stringify(envelope)
+      socket.send(this.pendingSubscribeEnvelope)
     }
     socket.onmessage = (event) => {
       try {
@@ -83,6 +120,19 @@ export class RealtimeClient {
             this.lastSequence = Math.max(this.lastSequence ?? 0, result.data.event.sequence)
           } else if (result.data.type === "map_snapshot" || result.data.type === "task_snapshot" || result.data.type === "helpdesk_snapshot") {
             this.lastSequence = Math.max(this.lastSequence ?? 0, result.data.currentSequence)
+          } else if (result.data.type === "error") {
+            if (result.data.code === SUBSCRIBE_RACE_ERROR_CODE && result.data.message === SUBSCRIBE_RACE_ERROR_MESSAGE) {
+              agendarSubscribeRetry()
+            }
+          } else if (
+            result.data.type === "subscribed" ||
+            result.data.type === "feed_subscribed" ||
+            result.data.type === "map_subscribed" ||
+            result.data.type === "helpdesk_subscribed"
+          ) {
+            // Inscrição confirmada: encerra qualquer retry pendente.
+            cancelarSubscribeRetry()
+            this.pendingSubscribeEnvelope = null
           }
           this.options.onMessage(result.data)
         }
@@ -101,6 +151,9 @@ export class RealtimeClient {
     this.stopped = true
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
     this.reconnectTimer = null
+    if (this.subscribeRetryTimer !== null) clearTimeout(this.subscribeRetryTimer)
+    this.subscribeRetryTimer = null
+    this.pendingSubscribeEnvelope = null
     this.socket?.close()
     this.socket = null
   }
