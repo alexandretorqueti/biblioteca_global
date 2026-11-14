@@ -1,5 +1,6 @@
 import { access as fsAccess, stat as fsStat } from 'node:fs/promises'
-import { resolve } from 'node:path'
+import { join, resolve } from 'node:path'
+import { mapHostRepoPathToContainer } from '../execution/GitWorktreePreparer.js'
 
 export type SetupChecklist = {
   structure: boolean
@@ -109,6 +110,33 @@ export async function validateProjectSetupArtifacts(projectDir: string, fs: FsLi
     }
   }
   return reasons.length ? { ok: false, reasons } : { ok: true }
+}
+
+/**
+ * task-p2-1072: resolve o diretório do projeto alvo do gate de artefatos de
+ * setup: `<repoRoot>/projects/<slug>`, onde repoRoot vem do repo_path do
+ * projeto_motor_config com o mapeamento cross-container host↔container
+ * (mesmo padrão de GitWorktreePreparer.resolveRepoPath / preflight do
+ * ConsoleAnalystRunner). Sem caminho hardcoded; lança erro descritivo quando
+ * o repo_path está ausente ou o repositório está inacessível no container.
+ *
+ * Fonte única compartilhada entre o caminho de verificação da análise
+ * (MySqlTaskCoordinatorRepository) e a reconciliação de conclusão por fluxo
+ * de desenvolvimento (SetupCompletionConsumer/SetupCompletionSweeper).
+ */
+export async function resolveSetupProjectDir(repoPath: string | null, projectSlug: string): Promise<string> {
+  const trimmed = String(repoPath ?? '').trim()
+  if (!trimmed) {
+    throw new Error(`repo_path do projeto ausente para slug '${projectSlug}' — impossível validar artefatos de setup`)
+  }
+  const original = resolve(trimmed)
+  const candidates = [...new Set([original, mapHostRepoPathToContainer(original)].filter((path): path is string => Boolean(path)))]
+  for (const repoRoot of candidates) {
+    try {
+      if ((await fsStat(repoRoot)).isDirectory()) return join(repoRoot, 'projects', projectSlug)
+    } catch { /* tenta o próximo candidato (host ↔ container) */ }
+  }
+  throw new Error(`repositório inacessível no container do Motor: ${original}`)
 }
 
 /**

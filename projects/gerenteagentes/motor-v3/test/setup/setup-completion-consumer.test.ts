@@ -1,0 +1,335 @@
+// @vitest-environment node
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterAll, describe, expect, it, vi } from 'vitest'
+import { createQueueMessage } from '../../src/queue/index.js'
+import {
+  SetupCompletionConsumer,
+  hasValidSmokeTest,
+  reconcileSetupCompletion,
+  setupReconciliationMarker,
+} from '../../src/setup/SetupCompletionConsumer.js'
+import { SetupCompletionSweeper } from '../../src/setup/SetupCompletionSweeper.js'
+import type { TaskEventSink } from '../../src/coordinator/TaskEventRecorder.js'
+
+/**
+ * task-p2-1072 (subtarefa 2) — regressão da reconciliação de setup_status na
+ * conclusão de tarefa setup-* por fluxo de desenvolvimento.
+ *
+ * Caso real (2026-11-14): setup-gestao-de-tarefas-global (1020) terminou
+ * completed com 4/4 subtarefas verified, mas projetos_captados.setup_status
+ * permaneceu 'queued'; a tarefa dependente (1063) falhou no preflight por
+ * docs/CONTEXTO-ANALISTA.md ausente.
+ *
+ * Cenários cobertos (fakes de pool/fs seguindo os testes existentes —
+ * padrão setup-verification-artifact-gate.test.ts):
+ * 1. conclusão dev com artefatos + smoke válidos → verified com evidência;
+ * 2. artefato ausente → failed com setup_error explícito (nunca 'queued');
+ * 3. já verified → no-op auditado (redelivery não duplica efeitos);
+ * 4. nenhuma evidência smoke_test válida → failed com razão explícita;
+ * 5. varredura (sweeper) reconcilia completed+queued com a MESMA função;
+ * 6. mensagens que não são de tarefa setup ou não são TASK_EXECUTION_COMPLETED
+ *    são ignoradas.
+ */
+
+const SLUG = 'gestao-de-tarefas-global'
+const EXTERNAL_ID = `setup-${SLUG}`
+const DB_TASK_ID = 1020
+
+const validEvidence = {
+  checklist: { structure: true, configSchemaMigrations: true, registries: true, repoPath: true },
+  smoke_test: { url: 'http://localhost:3000/api/demo/', method: 'GET', status: 200, response_body: '{}', timestamp: '2026-11-14T00:00:00.000Z' },
+}
+
+interface Recorded {
+  sql: string
+  params: unknown[]
+}
+
+interface FakePoolState {
+  projectStatus: string
+  repoPath: string | null
+  resultados: Array<string | null>
+  sweeperRows: Array<{ id: number; external_id: string }>
+  chatAffectedRows: number
+  failAllQueries?: boolean
+}
+
+function createFakePool(state: FakePoolState) {
+  const updates: Recorded[] = []
+  const chats: Recorded[] = []
+  const events: Array<{ taskId: string; evento: string; payload: Record<string, unknown> | null }> = []
+  const taskEvents: TaskEventSink = {
+    record: vi.fn(async (taskId: string, evento: string, _ator?: string, payload?: Record<string, unknown> | null) => {
+      events.push({ taskId, evento, payload: payload ?? null })
+    }),
+  }
+  const pool = {
+    query: vi.fn(async (sql: string, params: unknown[] = []) => {
+      if (state.failAllQueries) throw new Error('db offline')
+      if (sql.includes('FROM projetos_captados WHERE slug')) {
+        return [[{ id: 6, setup_status: state.projectStatus }], []]
+      }
+      if (sql.includes('LEFT JOIN projeto_motor_config') && sql.includes('FROM tarefas t')) {
+        return [[{ id: DB_TASK_ID, external_id: EXTERNAL_ID, repo_path: state.repoPath }], []]
+      }
+      if (sql.includes('FROM subtarefas s')) {
+        return [state.resultados.map(resultado => ({ resultado })), []]
+      }
+      if (sql.includes("SET setup_status='verified'")) {
+        updates.push({ sql, params })
+        state.projectStatus = 'verified'
+        return [{ affectedRows: 1 }, []]
+      }
+      if (sql.includes("SET setup_status='failed'")) {
+        updates.push({ sql, params })
+        state.projectStatus = 'failed'
+        return [{ affectedRows: 1 }, []]
+      }
+      if (sql.includes('INSERT INTO tarefa_chats')) {
+        chats.push({ sql, params })
+        return [{ affectedRows: state.chatAffectedRows, insertId: 55 }, []]
+      }
+      if (sql.includes('SUBSTRING(t.external_id') && sql.includes('task_runtime_facts')) {
+        return [state.sweeperRows, []]
+      }
+      return [[], []]
+    }),
+  }
+  return { pool: pool as never, updates, chats, events, taskEvents }
+}
+
+function completionMessage(taskId = EXTERNAL_ID) {
+  return createQueueMessage({
+    type: 'TASK_EXECUTION_COMPLETED',
+    taskId,
+    executionId: `exec-${taskId}`,
+    payload: { integrationCommitSha: 'abc123' },
+  })
+}
+
+const tempDirs: string[] = []
+afterAll(async () => {
+  await Promise.all(tempDirs.map(dir => rm(dir, { recursive: true, force: true })))
+})
+
+/** Cria um repo temporário `projects/<slug>` com ou sem o artefato obrigatório. */
+async function makeRepo(withArtifact: boolean): Promise<string> {
+  const repoRoot = await mkdtemp(join(tmpdir(), 'setup-completion-repo-'))
+  tempDirs.push(repoRoot)
+  const projectDir = join(repoRoot, 'projects', SLUG)
+  await mkdir(join(projectDir, 'docs'), { recursive: true })
+  if (withArtifact) {
+    await writeFile(join(projectDir, 'docs', 'CONTEXTO-ANALISTA.md'), '# Contexto do Analista\n')
+  }
+  return repoRoot
+}
+
+function defaultState(overrides: Partial<FakePoolState> = {}): FakePoolState {
+  return {
+    projectStatus: 'queued',
+    repoPath: null,
+    resultados: [JSON.stringify(validEvidence)],
+    sweeperRows: [],
+    chatAffectedRows: 1,
+    ...overrides,
+  }
+}
+
+describe('SetupCompletionConsumer — reconciliação na conclusão por fluxo de desenvolvimento', () => {
+  it('artefatos + smoke válidos → setup_status=verified com evidência (smoke_test + artefatos + origem development_flow)', async () => {
+    const repoRoot = await makeRepo(true)
+    const fake = createFakePool(defaultState({ repoPath: repoRoot }))
+    const consumer = new SetupCompletionConsumer(fake.pool, fake.taskEvents)
+
+    await consumer.handle(completionMessage())
+
+    const verified = fake.updates.filter(u => u.sql.includes("setup_status='verified'"))
+    expect(verified).toHaveLength(1)
+    expect(verified[0].params[1]).toBe(SLUG)
+    const evidence = JSON.parse(String(verified[0].params[0]))
+    expect(evidence.smoke_test).toEqual(validEvidence.smoke_test)
+    expect(evidence.checklist).toEqual(validEvidence.checklist)
+    expect(evidence.artifacts).toEqual(['docs/CONTEXTO-ANALISTA.md'])
+    expect(evidence.origin).toBe('development_flow')
+    expect(evidence.reconciled_by).toBe('task_execution_completed')
+    expect(fake.updates.some(u => u.sql.includes("setup_status='failed'"))).toBe(false)
+
+    // Auditoria + alerta legível idempotente no chat da tarefa de setup.
+    expect(fake.events).toContainEqual({
+      taskId: EXTERNAL_ID,
+      evento: 'setup_reconciled',
+      payload: expect.objectContaining({ outcome: 'verified', slug: SLUG, origin: 'task_execution_completed' }),
+    })
+    expect(fake.chats).toHaveLength(1)
+    expect(String(fake.chats[0].params[3])).toContain(`%${setupReconciliationMarker(SLUG, 'verified')}%`)
+    expect(String(fake.chats[0].params[1])).toContain('Setup do projeto verificado')
+  })
+
+  it('artefato ausente → setup_status=failed com setup_error explícito (nunca permanece queued)', async () => {
+    const repoRoot = await makeRepo(false)
+    const fake = createFakePool(defaultState({ repoPath: repoRoot }))
+    const consumer = new SetupCompletionConsumer(fake.pool, fake.taskEvents)
+
+    await consumer.handle(completionMessage())
+
+    expect(fake.updates.some(u => u.sql.includes("setup_status='verified'"))).toBe(false)
+    const failed = fake.updates.filter(u => u.sql.includes("setup_status='failed'"))
+    expect(failed).toHaveLength(1)
+    expect(String(failed[0].params[0])).toContain('artefato obrigatório ausente: docs/CONTEXTO-ANALISTA.md')
+    expect(failed[0].params[1]).toBe(SLUG)
+    expect(fake.events).toContainEqual({
+      taskId: EXTERNAL_ID,
+      evento: 'setup_reconciled',
+      payload: expect.objectContaining({ outcome: 'failed', slug: SLUG }),
+    })
+    expect(fake.chats).toHaveLength(1)
+    expect(String(fake.chats[0].params[1])).toContain('Setup reprovado na reconciliação de conclusão')
+    expect(String(fake.chats[0].params[1])).toContain('docs/CONTEXTO-ANALISTA.md')
+  })
+
+  it('já verified → no-op auditado (redelivery não duplica efeitos)', async () => {
+    const fake = createFakePool(defaultState({ projectStatus: 'verified' }))
+    const consumer = new SetupCompletionConsumer(fake.pool, fake.taskEvents)
+
+    await consumer.handle(completionMessage())
+    await consumer.handle(completionMessage()) // redelivery
+
+    expect(fake.updates).toHaveLength(0)
+    expect(fake.chats).toHaveLength(0)
+    expect(fake.events).toHaveLength(2)
+    for (const event of fake.events) {
+      expect(event.evento).toBe('setup_reconciliation_skipped')
+      expect(event.payload).toEqual(expect.objectContaining({ outcome: 'skipped_already_verified', slug: SLUG }))
+    }
+  })
+
+  it('nenhuma evidência smoke_test válida em subtarefas.resultado → failed com razão explícita', async () => {
+    const repoRoot = await makeRepo(true)
+    const fake = createFakePool(defaultState({
+      repoPath: repoRoot,
+      resultados: ['não é JSON', JSON.stringify({ sem: 'smoke' }), JSON.stringify({ smoke_test: { url: 'x', method: 'GET', status: 500, timestamp: '2026-11-14T00:00:00.000Z' } })],
+    }))
+
+    const result = await reconcileSetupCompletion(fake.pool, SLUG, { origin: 'task_execution_completed', taskEvents: fake.taskEvents })
+
+    expect(result.outcome).toBe('failed')
+    const failed = fake.updates.filter(u => u.sql.includes("setup_status='failed'"))
+    expect(failed).toHaveLength(1)
+    expect(String(failed[0].params[0])).toContain('nenhum resultado de subtarefa verified com evidência smoke_test JSON válida')
+    expect(result.outcome === 'failed' && result.reasons.some(r => r.includes('nenhum resultado de subtarefa verified'))).toBe(true)
+  })
+
+  it('aceita o PRIMEIRO JSON com smoke_test válido, ignorando resultados anteriores inválidos', async () => {
+    const repoRoot = await makeRepo(true)
+    const second = { ...validEvidence, smoke_test: { ...validEvidence.smoke_test, url: 'http://localhost:3000/api/segunda/' } }
+    const fake = createFakePool(defaultState({
+      repoPath: repoRoot,
+      resultados: ['texto livre do DEV', JSON.stringify({ smoke_test: { url: 'x', method: 'GET', status: 503, timestamp: '2026-11-14T00:00:00.000Z' } }), JSON.stringify(second)],
+    }))
+
+    const result = await reconcileSetupCompletion(fake.pool, SLUG, { origin: 'task_execution_completed', taskEvents: fake.taskEvents })
+
+    expect(result.outcome).toBe('verified')
+    const verified = fake.updates.filter(u => u.sql.includes("setup_status='verified'"))
+    expect(verified).toHaveLength(1)
+    expect(JSON.parse(String(verified[0].params[0])).smoke_test.url).toBe('http://localhost:3000/api/segunda/')
+  })
+
+  it('repo_path ausente → failed com erro explícito (impossível validar artefatos)', async () => {
+    const fake = createFakePool(defaultState({ repoPath: null }))
+
+    const result = await reconcileSetupCompletion(fake.pool, SLUG, { origin: 'task_execution_completed', taskEvents: fake.taskEvents })
+
+    expect(result.outcome).toBe('failed')
+    expect(result.outcome === 'failed' && result.reasons.some(r => r.includes(`repo_path do projeto ausente para slug '${SLUG}'`))).toBe(true)
+    expect(fake.updates.some(u => u.sql.includes("setup_status='failed'"))).toBe(true)
+  })
+
+  it('ignora mensagens que não são TASK_EXECUTION_COMPLETED de tarefa setup-*', async () => {
+    const fake = createFakePool(defaultState())
+    const consumer = new SetupCompletionConsumer(fake.pool, fake.taskEvents)
+
+    await consumer.handle(createQueueMessage({ type: 'DEPLOY_REQUESTED', taskId: EXTERNAL_ID, executionId: 'e1', payload: {} }))
+    await consumer.handle(createQueueMessage({ type: 'TASK_EXECUTION_COMPLETED', taskId: 'task-p2-1072', executionId: 'e2', payload: {} }))
+
+    expect(fake.pool.query).not.toHaveBeenCalled()
+    expect(fake.updates).toHaveLength(0)
+  })
+
+  it('chat já existente (marcador presente) → deduplicado sem erro; alerta best-effort não derruba a reconciliação', async () => {
+    const repoRoot = await makeRepo(true)
+    const fake = createFakePool(defaultState({ repoPath: repoRoot, chatAffectedRows: 0 }))
+
+    const result = await reconcileSetupCompletion(fake.pool, SLUG, { origin: 'task_execution_completed', taskEvents: fake.taskEvents })
+
+    expect(result.outcome).toBe('verified')
+    expect(fake.chats).toHaveLength(1) // INSERT ... WHERE NOT EXISTS executado; affectedRows=0 → deduplicado
+  })
+})
+
+describe('SetupCompletionSweeper — rede de segurança durável (boot + periódica)', () => {
+  it('reconcilia tarefa setup-* completed com projeto ainda queued (MESMA função de reconciliação)', async () => {
+    const repoRoot = await makeRepo(true)
+    const fake = createFakePool(defaultState({
+      repoPath: repoRoot,
+      sweeperRows: [{ id: DB_TASK_ID, external_id: EXTERNAL_ID }],
+    }))
+    const sweeper = new SetupCompletionSweeper(fake.pool, { taskEvents: fake.taskEvents, intervalMs: 60000 })
+
+    const results = await sweeper.reconcile('boot_sweep')
+
+    expect(results).toHaveLength(1)
+    expect(results[0].outcome).toBe('verified')
+    const verified = fake.updates.filter(u => u.sql.includes("setup_status='verified'"))
+    expect(verified).toHaveLength(1)
+    expect(JSON.parse(String(verified[0].params[0])).reconciled_by).toBe('boot_sweep')
+  })
+
+  it('passivo histórico (caso 1020): completed + queued + artefato ausente → failed explícito', async () => {
+    const repoRoot = await makeRepo(false)
+    const fake = createFakePool(defaultState({
+      repoPath: repoRoot,
+      sweeperRows: [{ id: DB_TASK_ID, external_id: EXTERNAL_ID }],
+    }))
+    const sweeper = new SetupCompletionSweeper(fake.pool, { taskEvents: fake.taskEvents, intervalMs: 60000 })
+
+    const results = await sweeper.reconcile('boot_sweep')
+
+    expect(results).toHaveLength(1)
+    expect(results[0].outcome).toBe('failed')
+    const failed = fake.updates.filter(u => u.sql.includes("setup_status='failed'"))
+    expect(failed).toHaveLength(1)
+    expect(String(failed[0].params[0])).toContain('artefato obrigatório ausente: docs/CONTEXTO-ANALISTA.md')
+  })
+
+  it('barreira de erro: falha de banco não propaga (próxima passagem tenta de novo)', async () => {
+    const fake = createFakePool(defaultState({ failAllQueries: true }))
+    const sweeper = new SetupCompletionSweeper(fake.pool, { taskEvents: fake.taskEvents, intervalMs: 60000 })
+
+    await expect(sweeper.reconcile('boot_sweep')).resolves.toEqual([])
+  })
+
+  it('start/stop controlam o timer periódico sem vazar handles', async () => {
+    const fake = createFakePool(defaultState())
+    const sweeper = new SetupCompletionSweeper(fake.pool, { intervalMs: 60000 })
+    sweeper.start()
+    sweeper.start() // segunda chamada é no-op
+    sweeper.stop()
+    sweeper.stop() // idempotente
+    expect(true).toBe(true)
+  })
+})
+
+describe('hasValidSmokeTest — predicado de evidência', () => {
+  it('aceita smoke_test 2xx completo e rejeita inválidos', () => {
+    expect(hasValidSmokeTest(validEvidence.smoke_test)).toBe(true)
+    expect(hasValidSmokeTest({ ...validEvidence.smoke_test, status: 500 })).toBe(false)
+    expect(hasValidSmokeTest({ ...validEvidence.smoke_test, status: 200.5 })).toBe(false)
+    expect(hasValidSmokeTest({ ...validEvidence.smoke_test, timestamp: 'não é data' })).toBe(false)
+    expect(hasValidSmokeTest({ ...validEvidence.smoke_test, url: '' })).toBe(false)
+    expect(hasValidSmokeTest(null)).toBe(false)
+    expect(hasValidSmokeTest('200')).toBe(false)
+  })
+})

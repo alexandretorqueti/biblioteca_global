@@ -1,6 +1,4 @@
 import type { Pool, PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
-import { stat } from 'node:fs/promises'
-import { join, resolve } from 'node:path'
 import type { AnalysisClaimResult, AnalysisExecutionLeaseRepository, TaskCoordinatorRepository, TaskLifecycleStatus, TaskSnapshot, TaskDependencySnapshot, CapacityWaitProjection } from './TaskCoordinator.js'
 import type { AnalysisOutcome } from '../analysis/AnalystReply.js'
 import {
@@ -15,8 +13,7 @@ import { DerivedTaskStatusResolver } from '../status/DerivedTaskStatus.js'
 import { RealtimeMutationBoundary } from '../realtime/RealtimeMutationBoundary.js'
 import type { RealtimeMutationPublisher } from '../realtime/RealtimeMutationPublisher.js'
 import { providerFromModel, providerCapacityDecision } from '../execution/ProviderCapacity.js'
-import { validateSetupCompletion, type SetupGateResult } from '../setup/ProjectSetupGate.js'
-import { mapHostRepoPathToContainer } from '../execution/GitWorktreePreparer.js'
+import { validateSetupCompletion, resolveSetupProjectDir as resolveSetupProjectDirShared, type SetupGateResult } from '../setup/ProjectSetupGate.js'
 import { createQueueMessage, insertOutboxMessage } from '../queue/index.js'
 import { applyVerificationRouting, insertVerificationChatMessage, type VerificationRoutingResult } from './VerificationRouting.js'
 import { CAPACITY_WAIT_CLEAR_ASSIGNMENTS } from '../shared/capacityWait.js'
@@ -689,25 +686,12 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
 
   /**
    * task-p2-1072: resolve o diretório do projeto alvo do gate de artefatos de
-   * setup: `<repoRoot>/projects/<slug>`, onde repoRoot vem do repo_path do
-   * projeto_motor_config com o mapeamento cross-container host↔container
-   * (mesmo padrão de GitWorktreePreparer.resolveRepoPath / preflight do
-   * ConsoleAnalystRunner). Sem caminho hardcoded; lança erro descritivo quando
-   * o repo_path está ausente ou o repositório está inacessível no container.
+   * setup (`<repoRoot>/projects/<slug>`, com mapeamento cross-container).
+   * Implementação única compartilhada em `setup/ProjectSetupGate.ts` — a mesma
+   * função é usada pelo SetupCompletionConsumer/SetupCompletionSweeper.
    */
   private async resolveSetupProjectDir(repoPath: string | null, projectSlug: string): Promise<string> {
-    const trimmed = String(repoPath ?? '').trim()
-    if (!trimmed) {
-      throw new Error(`repo_path do projeto ausente para slug '${projectSlug}' — impossível validar artefatos de setup`)
-    }
-    const original = resolve(trimmed)
-    const candidates = [...new Set([original, mapHostRepoPathToContainer(original)].filter((path): path is string => Boolean(path)))]
-    for (const repoRoot of candidates) {
-      try {
-        if ((await stat(repoRoot)).isDirectory()) return join(repoRoot, 'projects', projectSlug)
-      } catch { /* tenta o próximo candidato (host ↔ container) */ }
-    }
-    throw new Error(`repositório inacessível no container do Motor: ${original}`)
+    return resolveSetupProjectDirShared(repoPath, projectSlug)
   }
 
   private mapTask(row: TaskRow): TaskSnapshot {
