@@ -1,4 +1,6 @@
 import type { Pool, PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
+import { stat } from 'node:fs/promises'
+import { join, resolve } from 'node:path'
 import type { AnalysisClaimResult, AnalysisExecutionLeaseRepository, TaskCoordinatorRepository, TaskLifecycleStatus, TaskSnapshot, TaskDependencySnapshot, CapacityWaitProjection } from './TaskCoordinator.js'
 import type { AnalysisOutcome } from '../analysis/AnalystReply.js'
 import {
@@ -13,7 +15,8 @@ import { DerivedTaskStatusResolver } from '../status/DerivedTaskStatus.js'
 import { RealtimeMutationBoundary } from '../realtime/RealtimeMutationBoundary.js'
 import type { RealtimeMutationPublisher } from '../realtime/RealtimeMutationPublisher.js'
 import { providerFromModel, providerCapacityDecision } from '../execution/ProviderCapacity.js'
-import { validateProjectSetupEvidence } from '../setup/ProjectSetupGate.js'
+import { validateSetupCompletion, type SetupGateResult } from '../setup/ProjectSetupGate.js'
+import { mapHostRepoPathToContainer } from '../execution/GitWorktreePreparer.js'
 import { createQueueMessage, insertOutboxMessage } from '../queue/index.js'
 import { applyVerificationRouting, insertVerificationChatMessage, type VerificationRoutingResult } from './VerificationRouting.js'
 import { CAPACITY_WAIT_CLEAR_ASSIGNMENTS } from '../shared/capacityWait.js'
@@ -320,8 +323,9 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
     try {
       await connection.beginTransaction()
       const [taskRows] = await connection.query<TaskRow[]>(
-        `SELECT t.id, t.tipo, t.external_id, t.projeto_id FROM tarefas t
+        `SELECT t.id, t.tipo, t.external_id, t.projeto_id, pmc.repo_path FROM tarefas t
          INNER JOIN task_runtime_facts f ON f.tarefa_id = t.id
+         LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id = t.projeto_id
          WHERE (t.external_id = ? OR CAST(t.id AS CHAR) = ?)
            AND f.analysis_execution_id = ?
          LIMIT 1 FOR UPDATE`,
@@ -362,10 +366,21 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
       } else if (outcome.kind === 'verification') {
         await supersedePendingClarificationCheckpoints(connection, databaseTaskId)
         if (String(taskRows[0]?.external_id ?? taskId).startsWith('setup-')) {
+          const projectSlug = String(taskId).replace(/^setup-/, '')
           const candidate = outcome.evidence.map(value => {
             try { return JSON.parse(value) as unknown } catch { return null }
           }).find(value => value !== null)
-          const gate = validateProjectSetupEvidence(candidate)
+          // task-p2-1072: o setup só vira `verified` quando a evidência JSON E
+          // os artefatos em disco (docs/CONTEXTO-ANALISTA.md, exigido pelo
+          // preflight do ConsoleAnalystRunner) passam. Sem isso, tarefas
+          // dependentes são liberadas para falhar no preflight (caso 1020→1063).
+          let gate: SetupGateResult
+          try {
+            const projectDir = await this.resolveSetupProjectDir(taskRows[0]?.repo_path ?? null, projectSlug)
+            gate = await validateSetupCompletion({ evidence: candidate, projectDir })
+          } catch (error) {
+            gate = { ok: false, reasons: [error instanceof Error ? error.message : String(error)] }
+          }
           if (!gate.ok) {
             await connection.query(
               `UPDATE projetos_captados SET setup_status='failed', setup_error=?, updated_at=NOW()
@@ -376,9 +391,9 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
           await connection.query(
             `UPDATE projetos_captados SET setup_status='verified', setup_error=NULL,
                     setup_verified_at=NOW(), setup_evidence=?, updated_at=NOW()
-              WHERE slug = ?`, [JSON.stringify(gate.evidence), String(taskId).replace(/^setup-/, '')],
+              WHERE slug = ?`, [JSON.stringify(gate.evidence), projectSlug],
           )
-          await this.releaseProjectTasksAfterSetup(connection, Number(taskRows[0]?.projeto_id), String(taskId).replace(/^setup-/, ''))
+          await this.releaseProjectTasksAfterSetup(connection, Number(taskRows[0]?.projeto_id), projectSlug)
         }
         // Veredito cross-project (task-p2-1047, caso 1029): com routing, cria a
         // tarefa proposta no projeto de destino na MESMA transação (pausada,
@@ -670,6 +685,29 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
       })
       await insertOutboxMessage(connection, message, 'motor.commands')
     }
+  }
+
+  /**
+   * task-p2-1072: resolve o diretório do projeto alvo do gate de artefatos de
+   * setup: `<repoRoot>/projects/<slug>`, onde repoRoot vem do repo_path do
+   * projeto_motor_config com o mapeamento cross-container host↔container
+   * (mesmo padrão de GitWorktreePreparer.resolveRepoPath / preflight do
+   * ConsoleAnalystRunner). Sem caminho hardcoded; lança erro descritivo quando
+   * o repo_path está ausente ou o repositório está inacessível no container.
+   */
+  private async resolveSetupProjectDir(repoPath: string | null, projectSlug: string): Promise<string> {
+    const trimmed = String(repoPath ?? '').trim()
+    if (!trimmed) {
+      throw new Error(`repo_path do projeto ausente para slug '${projectSlug}' — impossível validar artefatos de setup`)
+    }
+    const original = resolve(trimmed)
+    const candidates = [...new Set([original, mapHostRepoPathToContainer(original)].filter((path): path is string => Boolean(path)))]
+    for (const repoRoot of candidates) {
+      try {
+        if ((await stat(repoRoot)).isDirectory()) return join(repoRoot, 'projects', projectSlug)
+      } catch { /* tenta o próximo candidato (host ↔ container) */ }
+    }
+    throw new Error(`repositório inacessível no container do Motor: ${original}`)
   }
 
   private mapTask(row: TaskRow): TaskSnapshot {
