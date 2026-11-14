@@ -1,5 +1,14 @@
-import { describe, expect, it } from 'vitest'
-import { validateProjectSetupEvidence } from '../../src/setup/ProjectSetupGate.js'
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+import { afterAll, describe, expect, it } from 'vitest'
+import {
+  REQUIRED_SETUP_ARTIFACTS,
+  validateProjectSetupArtifacts,
+  validateProjectSetupEvidence,
+  validateSetupCompletion,
+  type FsLike,
+} from '../../src/setup/ProjectSetupGate.js'
 
 const valid = {
   checklist: { structure: true, configSchemaMigrations: true, registries: true, repoPath: true },
@@ -26,5 +35,114 @@ describe('ProjectSetupGate', () => {
     const result = validateProjectSetupEvidence({ ...valid, checklist: { ...valid.checklist, agentLink: false } })
     expect(result).toMatchObject({ ok: false })
     if (!result.ok) expect(result.reasons).toContain('checklist incompleto: agentLink')
+  })
+})
+
+// task-p2-1072: gate de artefatos em disco — docs/CONTEXTO-ANALISTA.md é o
+// mesmo artefato exigido pelo preflight do ConsoleAnalystRunner.
+const tempDirs: string[] = []
+afterAll(async () => {
+  await Promise.all(tempDirs.map(dir => rm(dir, { recursive: true, force: true })))
+})
+
+async function makeTempDir(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), 'setup-gate-'))
+  tempDirs.push(dir)
+  return dir
+}
+
+function fakeFs(existing: Set<string>): FsLike {
+  return {
+    access: async (path) => {
+      if (!existing.has(resolve(path))) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+    },
+    stat: async (path) => {
+      const resolved = resolve(path)
+      const isDir = [...existing].some(file => file.startsWith(resolved + '/')) || existing.has(resolved + '/')
+      if (!isDir && !existing.has(resolved)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      return { isDirectory: () => isDir }
+    },
+  }
+}
+
+describe('validateProjectSetupArtifacts', () => {
+  it('returns ok=true when docs/CONTEXTO-ANALISTA.md exists (real tmp dir)', async () => {
+    const projectDir = await makeTempDir()
+    await mkdir(join(projectDir, 'docs'), { recursive: true })
+    await writeFile(join(projectDir, 'docs', 'CONTEXTO-ANALISTA.md'), '# Contexto\n')
+    await expect(validateProjectSetupArtifacts(projectDir)).resolves.toEqual({ ok: true })
+  })
+
+  it('returns ok=false with explicit reason when the artifact is missing (real tmp dir)', async () => {
+    const projectDir = await makeTempDir()
+    const result = await validateProjectSetupArtifacts(projectDir)
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.reasons).toContain('artefato obrigatório ausente: docs/CONTEXTO-ANALISTA.md')
+    }
+  })
+
+  it('reports missing project dir explicitly', async () => {
+    const result = await validateProjectSetupArtifacts('/caminho/inexistente/setup-gate-test')
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.reasons.some(reason => reason.includes('inexistente ou inacessível'))).toBe(true)
+      expect(result.reasons).toContain('artefato obrigatório ausente: docs/CONTEXTO-ANALISTA.md')
+    }
+  })
+
+  it('rejects empty project dir', async () => {
+    const result = await validateProjectSetupArtifacts('')
+    expect(result.ok).toBe(false)
+  })
+
+  it('works with injected fake fs', async () => {
+    const projectDir = '/repo/projects/demo'
+    const artifact = resolve(projectDir, ...REQUIRED_SETUP_ARTIFACTS[0].split('/'))
+    const withArtifact = fakeFs(new Set([resolve(projectDir) + '/', artifact]))
+    await expect(validateProjectSetupArtifacts(projectDir, withArtifact)).resolves.toEqual({ ok: true })
+    const withoutArtifact = fakeFs(new Set([resolve(projectDir) + '/']))
+    const result = await validateProjectSetupArtifacts(projectDir, withoutArtifact)
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.reasons).toContain('artefato obrigatório ausente: docs/CONTEXTO-ANALISTA.md')
+  })
+})
+
+describe('validateSetupCompletion', () => {
+  it('passes only when evidence AND artifacts pass', async () => {
+    const projectDir = await makeTempDir()
+    await mkdir(join(projectDir, 'docs'), { recursive: true })
+    await writeFile(join(projectDir, 'docs', 'CONTEXTO-ANALISTA.md'), '# Contexto\n')
+    const result = await validateSetupCompletion({ evidence: valid, projectDir })
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.evidence).toEqual(valid)
+  })
+
+  it('aggregates evidence and artifact reasons when both fail', async () => {
+    const projectDir = await makeTempDir()
+    const result = await validateSetupCompletion({
+      evidence: { ...valid, checklist: { ...valid.checklist, registries: false } },
+      projectDir,
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.reasons).toContain('checklist incompleto: registries')
+      expect(result.reasons).toContain('artefato obrigatório ausente: docs/CONTEXTO-ANALISTA.md')
+    }
+  })
+
+  it('fails on missing artifact even with perfect evidence', async () => {
+    const projectDir = await makeTempDir()
+    const result = await validateSetupCompletion({ evidence: valid, projectDir })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.reasons).toContain('artefato obrigatório ausente: docs/CONTEXTO-ANALISTA.md')
+  })
+
+  it('fails on invalid evidence even with all artifacts present', async () => {
+    const projectDir = await makeTempDir()
+    await mkdir(join(projectDir, 'docs'), { recursive: true })
+    await writeFile(join(projectDir, 'docs', 'CONTEXTO-ANALISTA.md'), '# Contexto\n')
+    const result = await validateSetupCompletion({ evidence: null, projectDir })
+    expect(result).toEqual({ ok: false, reasons: ['evidência de setup ausente'] })
   })
 })

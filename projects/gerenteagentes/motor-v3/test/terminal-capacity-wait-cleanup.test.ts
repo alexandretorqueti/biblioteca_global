@@ -91,8 +91,8 @@ function persistAnalysisFakePool() {
     query: vi.fn(async (sql: string, params: unknown[] = []) => {
       calls.push({ sql: String(sql), params })
       const text = String(sql)
-      if (/SELECT t\.id, t\.tipo, t\.external_id, t\.projeto_id FROM tarefas/.test(text)) {
-        return [[{ id: 5, tipo: 'verificacao', external_id: 'task-5', projeto_id: null }]]
+      if (/SELECT t\.id, t\.tipo, t\.external_id, t\.projeto_id.* FROM tarefas/.test(text)) {
+        return [[{ id: 5, tipo: 'verificacao', external_id: 'task-5', projeto_id: null, repo_path: null }]]
       }
       if (/^\s*(SELECT|SET|SHOW)/.test(text)) return [[]]
       return [{ affectedRows: 1, insertId: 9 }]

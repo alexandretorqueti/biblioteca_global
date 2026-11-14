@@ -48,6 +48,8 @@ import { DevelopmentExecutionConsumer, DevelopmentSessionRecoveryReconciler, Git
 import { WorkerLauncher } from './worker-launcher/WorkerLauncher.js'
 import { getDeployDiagnostics } from './deploy/DeployDiagnostics.js'
 import { DeployConsumer } from './deploy/DeployConsumer.js'
+import { SetupCompletionConsumer } from './setup/SetupCompletionConsumer.js'
+import { SetupCompletionSweeper } from './setup/SetupCompletionSweeper.js'
 import { DeployRepository } from './deploy/DeployRepository.js'
 import { RemoteBlueGreenDeployer } from './deploy/RemoteBlueGreenDeployer.js'
 import { BaselinePreflightRecovery, TestGateConsumer, TestGateJobReconciler, TestGateOrchestrator, TestGateService, TestRecoveryConsumer, WorkspaceEnvironmentPreparer } from './testing/index.js'
@@ -103,6 +105,10 @@ let cancelConsumer: TaskCancelConsumer | null = null
 // TASK_ENQUEUED tem consumo real (setup de projeto da Biblioteca) e não pode
 // ser despachado sem consumidor (task-p2-1047, subtarefa 3).
 let taskEnqueuedConsumer: TaskEnqueuedConsumer | null = null
+// task-p2-1072 (subtarefa 2): reconciliação de setup_status na conclusão de
+// tarefa setup-* por fluxo de desenvolvimento (consumidor + varredura durável).
+let setupCompletionConsumer: SetupCompletionConsumer | null = null
+let setupCompletionSweeper: SetupCompletionSweeper | null = null
 let analysisSessionRecovery: AnalysisSessionRecoveryReconciler | null = null
 let developmentSessionRecovery: DevelopmentSessionRecoveryReconciler | null = null
 let taskAdjustmentConsumer: TaskAdjustmentConsumer | null = null
@@ -697,6 +703,10 @@ async function start() {
 
     cancelConsumer = new TaskCancelConsumer(pool, operationLogger, new MySqlCommandPolicyRepository(pool), taskEvents)
     taskEnqueuedConsumer = new TaskEnqueuedConsumer(pool, operationLogger, taskEvents, mainQueue)
+    // task-p2-1072 (subtarefa 2): TASK_EXECUTION_COMPLETED de tarefa setup-*
+    // reconcilia projetos_captados.setup_status (verified/failed) com o
+    // validador combinado da subtarefa 1 — nunca deixa 'queued' silencioso.
+    setupCompletionConsumer = new SetupCompletionConsumer(pool, taskEvents)
     taskAdjustmentConsumer = new TaskAdjustmentConsumer(pool, analyst, operationLogger)
     // PostDeployVerifier (tarefa 976): verificação semântica pós-deploy.
     // Instanciado com WorkerLauncher dedicado (timeout próprio, 15 min default)
@@ -729,6 +739,7 @@ async function start() {
       await coordinator.handle(message)
       await cancelConsumer?.handle(message)
       await taskEnqueuedConsumer?.handle(message)
+      await setupCompletionConsumer?.handle(message)
       await taskAdjustmentConsumer?.handle(message)
       await developmentConsumer?.handle(message)
       await subtaskExecutionConsumer?.handle(message)
@@ -791,6 +802,22 @@ async function start() {
     })
     await orphanCapacityQueueReconciler.reconcile()
     orphanCapacityQueueReconciler.start()
+    // task-p2-1072 (subtarefa 2): rede de segurança durável do setup_status
+    // (regra MEMORY 2026-09-25: reconciliador de órfãos no boot). Varre
+    // tarefas setup-* concluídas (task_runtime_facts.terminal_status=
+    // 'completed') cujo projeto alvo ainda está queued/running/pending —
+    // conclusões sem evento consumido (caminhos reconciled/external-
+    // resolution) e passivo histórico (caso 1020) — e executa a MESMA
+    // função de reconciliação do SetupCompletionConsumer.
+    setupCompletionSweeper = new SetupCompletionSweeper(pool, {
+      taskEvents,
+      intervalMs: Number(process.env.MOTOR_SETUP_COMPLETION_SWEEP_INTERVAL_MS || 300000),
+    })
+    const setupSwept = await setupCompletionSweeper.reconcile('boot_sweep')
+    if (setupSwept.length > 0) {
+      console.log(`[Motor v3] Reconciliação de setup no boot: ${setupSwept.length} tarefa(s) setup-* concluída(s) reconciliada(s)`)
+    }
+    setupCompletionSweeper.start()
     // Sweeper de execuções expiradas de monitor/postdeploy_monitor (tarefa 1026):
     // essas fases têm TTL fixo e DELETE apenas no finally/unregister do próprio
     // processo; quedas no meio da execução deixavam linhas vencidas para sempre
@@ -1580,6 +1607,7 @@ async function shutdown() {
   analysisSessionRecovery?.stop()
   developmentSessionRecovery?.stop()
   orphanCapacityQueueReconciler?.stop()
+  setupCompletionSweeper?.stop()
   activeExecutionSweeper?.stop()
   projectGenerationWorker?.stop()
   generationClaimReconciler?.stop()
