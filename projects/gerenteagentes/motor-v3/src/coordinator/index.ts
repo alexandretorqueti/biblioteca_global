@@ -1,10 +1,14 @@
 export {
   TaskCoordinator,
+  DEPENDENCY_BLOCKING_REASONS,
+  resolveDependencyBlockingReason,
   type AnalysisRunner,
   type AnalysisExecutionLeaseRepository,
   type ClarificationResumeRunner,
+  type DependencyBlockingReason,
   type TaskCoordinatorConfig,
   type TaskCoordinatorRepository,
+  type TaskDependencySnapshot,
   type TaskLifecycleStatus,
   type TaskSnapshot,
 } from './TaskCoordinator.js'

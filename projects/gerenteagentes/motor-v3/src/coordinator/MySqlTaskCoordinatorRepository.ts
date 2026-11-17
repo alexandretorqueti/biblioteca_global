@@ -124,6 +124,8 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
       taskType: dependency.dependency_tipo ? String(dependency.dependency_tipo) : null,
       terminalStatus: dependency.dependency_terminal_status ? String(dependency.dependency_terminal_status) : null,
       deployStatus: dependency.dependency_deploy_status ? String(dependency.dependency_deploy_status) : null,
+      // INNER JOIN garante a existência da dependência N:N.
+      found: dependency.dependency_id != null,
     }))
     // Instalações anteriores à tabela N:N continuam funcionando enquanto a
     // coluna legada existir; a migration 0090 já a espelha na primeira linha.
@@ -133,6 +135,9 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
         taskType: row.dependency_tipo ? String(row.dependency_tipo) : null,
         terminalStatus: row.dependency_terminal_status ? String(row.dependency_terminal_status) : null,
         deployStatus: row.dependency_deploy_status ? String(row.dependency_deploy_status) : null,
+        // LEFT JOIN: dependency_id nulo indica que a tarefa dependente não
+        // existe (motivo dependency_not_found no payload de dependency_not_met).
+        found: row.dependency_id != null,
       })
     }
     return {

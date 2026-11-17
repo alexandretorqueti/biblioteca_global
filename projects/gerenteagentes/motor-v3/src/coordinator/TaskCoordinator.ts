@@ -30,6 +30,56 @@ export interface TaskDependencySnapshot {
   taskType: string | null
   terminalStatus: string | null
   deployStatus: string | null
+  /**
+   * `false` quando a tarefa dependente não existe no banco (LEFT JOIN sem
+   * linha). `undefined` em snapshots legados construídos fora do repositório
+   * MySQL — nunca inferir ausência sem evidência. Usado apenas para o motivo
+   * explícito do payload `dependency_not_met` (observabilidade; NÃO participa
+   * da decisão do gate).
+   */
+  found?: boolean
+}
+
+/**
+ * Motivos explícitos de bloqueio por dependência (task-p2-1071, subtarefa 1).
+ * Substituem os nulls ambíguos (status/terminal_status/deploy status) no
+ * evento `dependency_not_met` e no `motor_operation_log`. Enum fixo — o
+ * Monitor-Resolvedor classifica a partir dele.
+ */
+export const DEPENDENCY_BLOCKING_REASONS = [
+  'dependency_not_completed',
+  'dependency_deploy_failed',
+  'dependency_deploy_pending',
+  'dependency_type_unknown',
+  'dependency_not_found',
+] as const
+
+export type DependencyBlockingReason = (typeof DEPENDENCY_BLOCKING_REASONS)[number]
+
+/**
+ * Resolve o motivo explícito de uma dependência QUE BLOQUEIA a tarefa.
+ * Espelha exatamente as regras do gate `checkDependenciesSatisfied` (paridade
+ * de comportamento — apenas observabilidade):
+ *
+ * - tarefa dependente inexistente → `dependency_not_found`
+ * - ainda sem facts/terminal_status ≠ 'completed' → `dependency_not_completed`
+ *   (raiz do falso diagnóstico da tarefa 1063: status nulo não é ambíguo,
+ *   é dependência não concluída)
+ * - concluída mas tipo ausente/desconhecido → `dependency_type_unknown`
+ * - 'desenvolvimento' concluída com deploy 'failed' → `dependency_deploy_failed`
+ * - 'desenvolvimento' concluída sem deploy 'succeeded' (null/'pending') →
+ *   `dependency_deploy_pending`
+ */
+export function resolveDependencyBlockingReason(dependency: TaskDependencySnapshot): DependencyBlockingReason {
+  if (dependency.found === false) return 'dependency_not_found'
+  if (dependency.terminalStatus !== 'completed') return 'dependency_not_completed'
+  if (!dependency.taskType) return 'dependency_type_unknown'
+  if (dependency.taskType === 'desenvolvimento') {
+    return dependency.deployStatus === 'failed' ? 'dependency_deploy_failed' : 'dependency_deploy_pending'
+  }
+  // 'verificacao'/'automacao' concluídas nunca bloqueiam; qualquer outro tipo
+  // concluído bloqueia por tipo não reconhecido pelo gate.
+  return 'dependency_type_unknown'
 }
 
 export interface TaskSnapshot {
@@ -265,18 +315,28 @@ export class TaskCoordinator {
 
     const dependencyCheck = this.checkDependenciesSatisfied(task)
     if (!dependencyCheck.satisfied) {
+      // Payload enriquecido (task-p2-1071, subtarefa 1): taskType da tarefa
+      // bloqueada + motivo explícito por dependência, no evento E no
+      // motor_operation_log. A decisão do gate permanece intacta — apenas
+      // observabilidade.
       const first = dependencyCheck.blocking[0]
-      const dependencyDetails = task.dependencies && task.dependencies.length > 1 ? { dependencies: dependencyCheck.blocking } : {}
-      await this.log(operationId, sequence++, 'rejected', 'rejected', message, {
-        reasonCode: 'dependency_not_met',
-        result: { dependencyTaskId: first?.taskId ?? null, dependencyStatus: first?.terminalStatus ?? null, dependencyDeployStatus: first?.deployStatus ?? null, ...dependencyDetails },
-      })
-      await this.recordEvent(task.taskId, 'dependency_not_met', {
+      const dependencyDetails = task.dependencies && task.dependencies.length > 1
+        ? { dependencies: dependencyCheck.blocking.map(dependency => ({ ...dependency, reason: resolveDependencyBlockingReason(dependency) })) }
+        : {}
+      const dependencyPayload = {
+        taskType: task.taskType,
         dependencyTaskId: first?.taskId ?? null,
+        dependencyTaskType: first?.taskType ?? null,
         dependencyStatus: first?.terminalStatus ?? null,
         dependencyDeployStatus: first?.deployStatus ?? null,
+        dependencyReason: first ? resolveDependencyBlockingReason(first) : null,
         ...dependencyDetails,
+      }
+      await this.log(operationId, sequence++, 'rejected', 'rejected', message, {
+        reasonCode: 'dependency_not_met',
+        result: dependencyPayload,
       })
+      await this.recordEvent(task.taskId, 'dependency_not_met', dependencyPayload)
       await this.emit('TASK_IGNORED', message, { reason: 'dependency_not_met' })
       return
     }
