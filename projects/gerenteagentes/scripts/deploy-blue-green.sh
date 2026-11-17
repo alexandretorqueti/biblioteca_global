@@ -452,4 +452,32 @@ case "$active" in
 esac
 
 write_active_slot "$target"
+
+# Smoke dos consumers externos da API: os chats públicos (Isa/Alpha) resolverão
+# a API pelo alias estável "biblioteca-api" na rede compartilhada. O slot antigo
+# acabou de ser removido — se o alias não tiver migrado com o slot novo, os
+# nginx dos chats respondem 502 e isso precisa falhar VISÍVEL no deploy
+# (regra pós-25/09: health da API não basta; validar consumidores trocados).
+echo "[deploy-blue-green] smoke pós-troca: chats públicos (isa/alpha)"
+chat_smoke_ok=true
+for spec in "isa-chat:${ISA_CHAT_HOST_PORT:-8082}" "alpha-chat:${ALPHA_CHAT_HOST_PORT:-8083}"; do
+  name="${spec%%:*}"; port="${spec##*:}"
+  code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$port/health" 2>/dev/null || true)
+  if [ "$code" != "200" ]; then
+    echo "[deploy-blue-green] ERRO: $name /health respondeu HTTP ${code:-000}" >&2
+    chat_smoke_ok=false
+    continue
+  fi
+  code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$port/api/auth/me" 2>/dev/null || true)
+  if [ "$code" = "502" ] || [ "$code" = "000" ] || [ -z "$code" ]; then
+    echo "[deploy-blue-green] ERRO: $name /api/ nao resolveu a API via alias biblioteca-api (HTTP ${code:-000})" >&2
+    chat_smoke_ok=false
+  else
+    echo "[deploy-blue-green] $name OK (health 200, api HTTP $code)"
+  fi
+done
+if [ "$chat_smoke_ok" != true ]; then
+  echo "[deploy-blue-green] AVISO: traffic ja comutado, mas smoke dos chats falhou — verificar alias 'biblioteca-api' na rede compartilhada e logs de isa-chat/alpha-chat" >&2
+fi
+
 echo "[deploy-blue-green] SUCESSO — ativo=$target web=:$NEW_WEB_PORT api=:$NEW_API_PORT motor=:$NEW_MOTOR_PORT"

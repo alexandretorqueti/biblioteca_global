@@ -124,8 +124,15 @@ services:
       # Chave SSH do host para o deploy.sh recriar os containers no ServerIA
       - /home/alexandre/.ssh/id_ed25519:/root/.ssh/id_ed25519:ro
     networks:
-      - default
-      - openclaw_default
+      default: {}
+      openclaw_default: {}
+      # Rede compartilhada com os chats isós (isa-chat/alpha-chat/chat-proxy,
+      # que vivem no projeto compose "biblioteca-global"). O alias estável
+      # "biblioteca-api" sobrevive à troca blue/green: o slot ativo assume o
+      # nome e os nginx dos chats resolvem sempre pelo mesmo hostname.
+      biblioteca-shared:
+        aliases:
+          - biblioteca-api
     healthcheck:
       test:
         - CMD
@@ -204,4 +211,8 @@ volumes:
 
 networks:
   openclaw_default:
+    external: true
+  # Rede do projeto biblioteca-global, usada pelos containers de chat.
+  biblioteca-shared:
+    name: biblioteca-global_default
     external: true
