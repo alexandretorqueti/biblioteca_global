@@ -67,6 +67,40 @@ describe('TaskCoordinator', () => {
     expect(repository.releaseAnalysisClaim).not.toHaveBeenCalled()
   })
 
+  it('registra capacity_waiting sem emitir dependency_not_met e preserva o requeue', async () => {
+    const entries: OperationLogEntry[] = []
+    const eventos: Array<{ evento: string; payload?: Record<string, unknown> | null }> = []
+    const logger: OperationLogger = { append: vi.fn(async entry => { entries.push(entry) }) }
+    const taskEvents = {
+      record: vi.fn(async (_taskId: string, evento: string, _ator?: string, payload?: Record<string, unknown> | null) => {
+        eventos.push({ evento, payload })
+      }),
+    }
+    const { repository, runner } = setup()
+    vi.mocked(repository.claimAnalysis).mockResolvedValue('capacity_waiting')
+    const requeue = vi.fn(async () => {})
+    const coordinator = new TaskCoordinator(repository, runner, new MessageBus(), {
+      operationLogger: logger,
+      taskEvents,
+      analysisCapacity: { requeueForDeployRetry: requeue },
+    })
+
+    await coordinator.handle(createQueueMessage({
+      type: 'TASK_RESUME_REQUESTED', taskId: 'task-1', executionId: 'source-exec',
+      payload: { deferCount: 3 },
+    }))
+
+    expect(eventos).toContainEqual({
+      evento: 'capacity_waiting',
+      payload: { reasonCode: 'capacity_waiting', deferredReason: 'analysis_capacity_waiting', deferCount: 3 },
+    })
+    expect(eventos.some(event => event.evento === 'dependency_not_met')).toBe(false)
+    expect(entries.find(entry => entry.phase === 'rejected')?.reasonCode).toBe('capacity_waiting')
+    expect(entries.find(entry => entry.reasonCode === 'dependency_not_met')).toBeUndefined()
+    expect(requeue).toHaveBeenCalledWith(expect.objectContaining({ taskId: 'task-1' }), 'analysis_capacity_waiting')
+    expect(runner.start).not.toHaveBeenCalled()
+  })
+
   it('seleciona e inicia uma análise para tarefa planejada', async () => {
     const { coordinator, repository, runner, bus } = setup()
     const events: string[] = []
