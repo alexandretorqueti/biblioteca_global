@@ -365,7 +365,17 @@ export class TaskCoordinator {
     const analysisAttempt = message.attempt || 1
     const claimed = await this.repository.claimAnalysis(task.taskId, executionId)
     if (claimed === 'capacity_waiting') {
-      await this.log(operationId, sequence++, 'rejected', 'rejected', message, { reasonCode: 'analysis_capacity_waiting' })
+      const deferCount = this.readCapacityDeferCount(message)
+      const capacityWaitPayload = {
+        reasonCode: 'capacity_waiting',
+        deferredReason: 'analysis_capacity_waiting',
+        ...(deferCount === undefined ? {} : { deferCount }),
+      }
+      await this.log(operationId, sequence++, 'rejected', 'rejected', message, {
+        reasonCode: 'capacity_waiting',
+        result: capacityWaitPayload,
+      })
+      await this.recordEvent(task.taskId, 'capacity_waiting', capacityWaitPayload)
       await (this.analysisCapacity ?? this.deployLock)?.requeueForDeployRetry(message, 'analysis_capacity_waiting')
       return
     }
@@ -672,6 +682,15 @@ export class TaskCoordinator {
       return true
     })
     return { satisfied: blocking.length === 0, blocking }
+  }
+
+  /**
+   * O broker pode devolver a contagem do requeue no payload. Quando presente,
+   * ela acompanha o registro de capacity-wait; ausência não impede o requeue.
+   */
+  private readCapacityDeferCount(message: QueueMessage): number | undefined {
+    const value = message.payload.deferCount ?? message.payload.defer_count
+    return typeof value === 'number' && Number.isFinite(value) ? value : undefined
   }
 
   private async emit(eventName: string, source: QueueMessage, payload: Record<string, unknown>): Promise<void> {
