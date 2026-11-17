@@ -51,11 +51,17 @@ services:
       MOTOR_DEV_URL: ${MOTOR_DEV_URL:-http://host.docker.internal:6283}
       MOTOR_URL_HOST: gerente-dev.localhost
       API_PORT: 3001
+      KNOWLEDGE_STORAGE_PATH: /var/lib/biblioteca-global/knowledge
+      KNOWLEDGE_MAX_BYTES: ${KNOWLEDGE_MAX_BYTES:-10485760}
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+      OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text:latest}
     depends_on:
       mysql:
         condition: service_healthy
     ports:
       - "3005:3001"
+    volumes:
+      - biblioteca-global-knowledge-dev:/var/lib/biblioteca-global/knowledge
 
   web:
     build:
@@ -71,3 +77,4 @@ services:
 
 volumes:
   biblioteca-global-mysql-dev-data:
+  biblioteca-global-knowledge-dev:

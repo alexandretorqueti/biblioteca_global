@@ -153,6 +153,22 @@ export class EnvService {
     return this.config.get<string>("LIBRARY_REALTIME_EVENTS_TOKEN") ?? ""
   }
 
+  get knowledgeStoragePath(): string {
+    return this.config.get<string>("KNOWLEDGE_STORAGE_PATH") ?? "/var/lib/biblioteca-global/knowledge"
+  }
+
+  get knowledgeMaxBytes(): number {
+    return Number(this.config.get<string>("KNOWLEDGE_MAX_BYTES") ?? String(10 * 1024 * 1024))
+  }
+
+  get ollamaUrl(): string {
+    return (this.config.get<string>("OLLAMA_URL") ?? "http://ollama:11434").replace(/\/$/, "")
+  }
+
+  get ollamaEmbeddingModel(): string {
+    return this.config.get<string>("OLLAMA_EMBEDDING_MODEL") ?? "nomic-embed-text:latest"
+  }
+
   private required(key: string): string {
     const valor = this.config.get<string>(key)
     if (!valor) {

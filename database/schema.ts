@@ -241,3 +241,39 @@ export const helpdeskMensagens = mysqlTable(
   },
   (t) => [index("idx_helpdesk_mensagens_sessao").on(t.sessaoId)],
 )
+
+/** Documentos da base de conhecimento, sempre isolados pelo projeto autenticado. */
+export const knowledgeDocuments = mysqlTable(
+  "knowledge_documents",
+  {
+    id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+    projetoId: bigint("projeto_id", { mode: "number", unsigned: true })
+      .notNull().references(() => projetos.id, { onDelete: "cascade" }),
+    nome: varchar("nome", { length: 255 }).notNull(),
+    mimeType: varchar("mime_type", { length: 150 }).notNull(),
+    tamanhoBytes: bigint("tamanho_bytes", { mode: "number", unsigned: true }).notNull(),
+    caminhoStorage: varchar("caminho_storage", { length: 500 }).notNull().unique(),
+    status: mysqlEnum("status", ["pending", "indexing", "ready", "failed"]).notNull().default("pending"),
+    erro: varchar("erro", { length: 1000 }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (t) => [index("idx_knowledge_documents_projeto").on(t.projetoId), index("idx_knowledge_documents_status").on(t.status)],
+)
+
+/** Chunks e embeddings JSON; a busca vetorial é feita em processo, por projeto. */
+export const knowledgeChunks = mysqlTable(
+  "knowledge_chunks",
+  {
+    id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+    projetoId: bigint("projeto_id", { mode: "number", unsigned: true })
+      .notNull().references(() => projetos.id, { onDelete: "cascade" }),
+    documentoId: bigint("documento_id", { mode: "number", unsigned: true })
+      .notNull().references(() => knowledgeDocuments.id, { onDelete: "cascade" }),
+    ordem: int("ordem").notNull(),
+    texto: varchar("texto", { length: 12000 }).notNull(),
+    embedding: json("embedding").$type<number[]>().notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [index("idx_knowledge_chunks_projeto").on(t.projetoId), index("idx_knowledge_chunks_documento").on(t.documentoId)],
+)

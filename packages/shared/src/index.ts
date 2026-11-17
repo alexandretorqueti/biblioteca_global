@@ -188,6 +188,10 @@ export {
   sendChatMessageResultSchema,
 } from "./chat"
 
+// Base de conhecimento RAG por projeto
+export { knowledgeDocumentStatusSchema, knowledgeDocumentSchema, knowledgeSearchResultSchema } from "./knowledge-base"
+export type { KnowledgeDocumentStatus, KnowledgeDocument, KnowledgeSearchResult } from "./knowledge-base"
+
 // Normalizador de conteúdo de chat (JSON → texto legível)
 export { normalizeChatContent } from "./chat-normalizer"
 

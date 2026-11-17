@@ -84,6 +84,10 @@ services:
       MOTOR_MAX_WORKERS: ${MOTOR_MAX_WORKERS:-1}
       MOTOR_API_PORT: ${MOTOR_API_PORT:-3010}
       API_PORT: 3001
+      KNOWLEDGE_STORAGE_PATH: /var/lib/biblioteca-global/knowledge
+      KNOWLEDGE_MAX_BYTES: ${KNOWLEDGE_MAX_BYTES:-10485760}
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+      OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text:latest}
     depends_on:
       mysql:
         condition: service_healthy
@@ -95,6 +99,7 @@ services:
       # REPO_PATH é um caminho do host e deve ser configurado no .env local.
       - ${REPO_PATH:-/run/media/alexandre/12T/codigofonte}:${REPO_PATH:-/run/media/alexandre/12T/codigofonte}
       - /home/alexandre/agentes:/data/workspace/projects/agentes:rw,z
+      - knowledge-storage:/var/lib/biblioteca-global/knowledge
     healthcheck:
       test:
         - CMD
@@ -126,6 +131,7 @@ services:
 
 volumes:
   mysql-data:
+  knowledge-storage:
 
 networks:
   default:
