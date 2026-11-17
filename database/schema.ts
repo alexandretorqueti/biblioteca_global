@@ -18,6 +18,7 @@ import {
   mysqlTable,
   primaryKey,
   timestamp,
+  uniqueIndex,
   varchar,
 } from "drizzle-orm/mysql-core"
 import type { GeradorSistemaConfig } from "@biblioteca-global/shared"
@@ -240,4 +241,128 @@ export const helpdeskMensagens = mysqlTable(
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (t) => [index("idx_helpdesk_mensagens_sessao").on(t.sessaoId)],
+)
+
+/** Planos comerciais do produto de atendentes IA. */
+export const planosProduto = mysqlTable("planos_produto", {
+  id: bigint("id", { mode: "number", unsigned: true })
+    .primaryKey()
+    .autoincrement(),
+  slug: varchar("slug", { length: 100 }).notNull().unique(),
+  nome: varchar("nome", { length: 150 }).notNull(),
+  precoCentavos: int("preco_centavos", { unsigned: true }).notNull(),
+  moeda: varchar("moeda", { length: 3 }).notNull().default("BRL"),
+  ciclo: mysqlEnum("ciclo", ["monthly", "yearly"]).notNull(),
+  limitesCotas: json("limites_cotas").notNull(),
+  ativo: boolean("ativo").notNull().default(true),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at")
+    .notNull()
+    .defaultNow()
+    .onUpdateNow(),
+})
+
+/** Assinaturas dos tenants no PSP escolhido pelo fluxo de billing. */
+export const assinaturas = mysqlTable(
+  "assinaturas",
+  {
+    id: bigint("id", { mode: "number", unsigned: true })
+      .primaryKey()
+      .autoincrement(),
+    /** Reservado para a FK de tenants, a ser adicionada no follow-up isas-mt-01. */
+    tenantId: bigint("tenant_id", { mode: "number", unsigned: true }),
+    /** Referência provisória até a tabela tenants existir no core. */
+    tenantSlug: varchar("tenant_slug", { length: 64 }).notNull(),
+    planoProdutoId: bigint("plano_produto_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => planosProduto.id),
+    status: mysqlEnum("status", [
+      "pending",
+      "active",
+      "past_due",
+      "canceled",
+      "expired",
+    ])
+      .notNull()
+      .default("pending"),
+    ciclo: mysqlEnum("ciclo", ["monthly", "yearly"]).notNull(),
+    pspCustomerId: varchar("psp_customer_id", { length: 255 }),
+    pspSubscriptionId: varchar("psp_subscription_id", { length: 255 }).unique(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at")
+      .notNull()
+      .defaultNow()
+      .onUpdateNow(),
+  },
+  (t) => [
+    index("idx_assinaturas_tenant_id").on(t.tenantId),
+    index("idx_assinaturas_tenant_slug").on(t.tenantSlug),
+    index("idx_assinaturas_status").on(t.status),
+  ],
+)
+
+/** Inbox durável de eventos recebidos do PSP, com deduplicação e retry. */
+export const billingWebhookEvents = mysqlTable(
+  "billing_webhook_events",
+  {
+    id: bigint("id", { mode: "number", unsigned: true })
+      .primaryKey()
+      .autoincrement(),
+    dedupeKey: varchar("dedupe_key", { length: 512 }).notNull().unique(),
+    tipo: varchar("tipo", { length: 100 }).notNull(),
+    payload: json("payload").notNull(),
+    status: mysqlEnum("status", ["pending", "processing", "done", "failed", "dead"])
+      .notNull()
+      .default("pending"),
+    tentativas: int("tentativas", { unsigned: true }).notNull().default(0),
+    proximaTentativaEm: timestamp("proxima_tentativa_em"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at")
+      .notNull()
+      .defaultNow()
+      .onUpdateNow(),
+  },
+  (t) => [
+    index("idx_billing_webhook_events_status_retry").on(
+      t.status,
+      t.proximaTentativaEm,
+    ),
+  ],
+)
+
+/** Outbox durável das ações de provisionamento decorrentes de uma assinatura. */
+export const provisionamentoPendente = mysqlTable(
+  "provisionamento_pendente",
+  {
+    id: bigint("id", { mode: "number", unsigned: true })
+      .primaryKey()
+      .autoincrement(),
+    assinaturaId: bigint("assinatura_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => assinaturas.id),
+    tipo: varchar("tipo", { length: 100 }).notNull(),
+    payload: json("payload").notNull(),
+    status: mysqlEnum("status", ["pending", "processing", "done", "failed", "dead"])
+      .notNull()
+      .default("pending"),
+    tentativas: int("tentativas", { unsigned: true }).notNull().default(0),
+    ciclo: varchar("ciclo", { length: 100 }).notNull(),
+    proximaTentativaEm: timestamp("proxima_tentativa_em"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at")
+      .notNull()
+      .defaultNow()
+      .onUpdateNow(),
+  },
+  (t) => [
+    index("idx_provisionamento_pendente_status_retry").on(
+      t.status,
+      t.proximaTentativaEm,
+    ),
+    uniqueIndex("uq_provisionamento_pendente_assinatura_tipo_ciclo").on(
+      t.assinaturaId,
+      t.tipo,
+      t.ciclo,
+    ),
+  ],
 )
