@@ -4,6 +4,7 @@ import { resolve } from 'node:path'
 import type { AnalysisRunner, TaskSnapshot } from '../coordinator/TaskCoordinator.js'
 import type { ClarificationResumeInput } from '../coordinator/ClarificationCheckpoints.js'
 import { mapHostRepoPathToContainer } from '../execution/GitWorktreePreparer.js'
+import { asError, isTransientConsoleError, TRANSIENT_POLL_ERROR_LIMIT } from '../shared/consoleTransientErrors.js'
 import type { GovernedFailureHandler } from '../governance/GovernedFailureHandler.js'
 import { parseAnalystReply, type AnalysisOutcome } from './AnalystReply.js'
 import {
@@ -517,18 +518,4 @@ export class ConsoleAnalystRunner implements AnalysisRunner {
       'O titulo de cada subtarefa deve ser curto e direto: no máximo 200 caracteres (títulos maiores são truncados).',
     ].join('\n')
   }
-}
-
-function asError(error: unknown): Error {
-  return error instanceof Error ? error : new Error(String(error))
-}
-
-/** Limite de erros transitórios consecutivos tolerados no polling do Console (~2 min a cada 5s). */
-const TRANSIENT_POLL_ERROR_LIMIT = 24
-
-/** Erros de infraestrutura Console/Gateway que não refletem estado terminal da sessão. */
-function isTransientConsoleError(error: Error): boolean {
-  return /Console HTTP 50[234]/i.test(error.message)
-    || /Gateway request timed out/i.test(error.message)
-    || /fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket hang up/i.test(error.message)
 }

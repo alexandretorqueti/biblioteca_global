@@ -3,6 +3,7 @@
  */
 
 import type { PrimitiveDefinition, PrimitiveContext, PrimitiveResult } from './types.js'
+import { asError, isTransientConsoleError, TRANSIENT_POLL_ERROR_LIMIT } from '../shared/consoleTransientErrors.js'
 
 /**
  * create_session - Cria sessão no Console
@@ -187,10 +188,36 @@ export const waitForCompletion: PrimitiveDefinition = {
       const pollInterval = params?.pollIntervalMs || 5000
 
       const startTime = Date.now()
+      let transientPollErrors = 0
 
       while (Date.now() - startTime < timeout) {
-        const status = await context.consoleApi.getSessionStatus(context.sessionId)
-        
+        let status: { isComplete?: boolean; isFailed?: boolean; error?: string; lastResponse?: string }
+        try {
+          status = await context.consoleApi.getSessionStatus(context.sessionId)
+          transientPollErrors = 0
+        } catch (pollError) {
+          // Sobrecarga transitória do Console/Gateway (HTTP 502/503/504, reset
+          // de conexão) não reflete estado terminal da sessão DEV e não deve
+          // consumir a tentativa do programador — incidente isas-mt-05
+          // (bloqueio 3466, 2026-11-17): `Console HTTP 503: Gateway connection
+          // closed` no polling esgotou as 3 tentativas e bloqueou a tarefa,
+          // enquanto a sessão DEV concluía o trabalho órfã no Console. Mesmo
+          // tratamento já aplicado ao analista no incidente task-p2-1060.
+          // Tolere até o limite de erros consecutivos; além dele, propague
+          // para a falha de tentativa existente.
+          const error = asError(pollError)
+          if (!isTransientConsoleError(error) || ++transientPollErrors > TRANSIENT_POLL_ERROR_LIMIT) {
+            return { success: false, error: `Erro ao aguardar conclusão: ${error.message}` }
+          }
+          context.logger?.warn?.('Erro transitório do Console ao consultar status da sessão DEV; tolerando', {
+            sessionId: context.sessionId,
+            consecutiveTransientErrors: transientPollErrors,
+            error: error.message.slice(0, 200),
+          })
+          await new Promise(resolve => setTimeout(resolve, pollInterval))
+          continue
+        }
+
         if (status.isComplete) {
           context.logger?.info('Run completado', { sessionId: context.sessionId })
           return { success: true, data: { response: status.lastResponse } }
