@@ -78,6 +78,13 @@
       "when": 1795000001000,
       "tag": "0010_transbordo_liberado_por",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "5",
+      "when": 1795000001001,
+      "tag": "0011_curvy_ezekiel_stane",
+      "breakpoints": true
     }
   ]
 }

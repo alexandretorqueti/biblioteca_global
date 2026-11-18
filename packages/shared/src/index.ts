@@ -128,6 +128,10 @@ export type {
 // Entidades do core
 export type { Usuario, Projeto, ProjetoUsuario } from "./core"
 
+// Runtime público do chat por tenant (sem segredos, IDs internos ou prompt)
+export { tenantChatConfigSchema, DEFAULT_TENANT_CHAT_CONFIG, normalizeTenantChatConfig } from "./tenant"
+export type { TenantChatConfig } from "./tenant"
+
 // Auditoria dos logins bem-sucedidos.
 export { logLoginMetodoSchema, logLoginSchema } from "./logs-login"
 export type { LogLoginMetodo, LogLogin, LogsLoginPage } from "./logs-login"

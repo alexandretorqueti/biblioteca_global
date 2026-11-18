@@ -89,6 +89,59 @@ export const projetos = mysqlTable("projetos", {
     .onUpdateNow(),
 })
 
+export const TENANT_STATUS = ["ativo", "suspenso", "onboarding"] as const
+export const TENANT_PLANOS = ["starter", "pro", "enterprise"] as const
+
+/** Configuração e metadados privados de um cliente do chat universal. */
+export const tenants = mysqlTable("tenants", {
+  id: bigint("id", { mode: "number", unsigned: true })
+    .primaryKey()
+    .autoincrement(),
+  slug: varchar("slug", { length: 100 }).notNull().unique(),
+  nome: varchar("nome", { length: 150 }).notNull(),
+  dominio: varchar("dominio", { length: 255 }).unique(),
+  status: mysqlEnum("status", TENANT_STATUS).notNull().default("onboarding"),
+  plano: mysqlEnum("plano", TENANT_PLANOS).notNull().default("starter"),
+  /** Configuração editável; somente uma projeção validada é pública. */
+  configJson: json("config_json").notNull(),
+  /** Referência interna da persona, nunca exposta pelo contrato público. */
+  personaRef: varchar("persona_ref", { length: 255 }),
+  /** Contatos operacionais internos, não fazem parte do runtime público. */
+  contatos: json("contatos"),
+  /** Referência ao cofre de segredos, nunca o segredo em si. */
+  segredosRef: varchar("segredos_ref", { length: 255 }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at")
+    .notNull()
+    .defaultNow()
+    .onUpdateNow(),
+})
+
+/** Ferramentas do catálogo habilitadas para um tenant. */
+export const tenantTools = mysqlTable(
+  "tenant_tools",
+  {
+    id: bigint("id", { mode: "number", unsigned: true })
+      .primaryKey()
+      .autoincrement(),
+    tenantId: bigint("tenant_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    toolKey: varchar("tool_key", { length: 100 }).notNull(),
+    paramsJson: json("params_json"),
+    ativo: boolean("ativo").notNull().default(true),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at")
+      .notNull()
+      .defaultNow()
+      .onUpdateNow(),
+  },
+  (t) => [
+    index("idx_tenant_tools_tenant_id").on(t.tenantId),
+    uniqueIndex("uq_tenant_tools_tenant_tool").on(t.tenantId, t.toolKey),
+  ],
+)
+
 export const projetosUsuarios = mysqlTable(
   "projetos_usuarios",
   {
