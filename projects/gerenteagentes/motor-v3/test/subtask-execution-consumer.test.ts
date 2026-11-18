@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { SubtaskExecutionConsumer } from '../src/execution/SubtaskExecutionConsumer.js'
 import { IntegrationBaseSyncConflictError } from '../src/execution/GitWorktreePreparer.js'
 import type { QueueMessage } from '../src/queue/QueueMessage.js'
@@ -571,6 +574,63 @@ describe('SubtaskExecutionConsumer', () => {
     }))
     // O baseline roda sobre a integração já sincronizada.
     expect(testGate.request).toHaveBeenCalledWith(expect.objectContaining({ commitSha: 'novo', workspacePath: '/integration' }), message)
+  })
+})
+
+describe('SubtaskExecutionConsumer — verificação pós-conclusão external_operation', () => {
+  async function runExternal(response: string, worktreePath: string, notifier = { notify: vi.fn().mockResolvedValue(undefined) }) {
+    const externalContext = { ...context, completionKind: 'external_operation', workspacePath: worktreePath }
+    const repository = {
+      getExecutionContext: vi.fn().mockResolvedValue(externalContext),
+      getDevelopmentModelChain: vi.fn().mockResolvedValue(['modelo-a']),
+      recordModelFailure: vi.fn().mockResolvedValue(undefined),
+      recordWorkspace: vi.fn().mockResolvedValue(undefined),
+      completeNoCodeExecution: vi.fn().mockResolvedValue({ ...message, messageId: 'delivered-1', type: 'SUBTASK_NO_CODE_COMPLETED' }),
+      closeDevelopmentSession: vi.fn().mockResolvedValue(undefined),
+    }
+    const worktrees = { prepare: vi.fn().mockResolvedValue({ path: worktreePath, branch: 'branch', baseCommit: 'abc' }) }
+    const worker = { executeTask: vi.fn().mockResolvedValue({ success: true, response, attempts: 1 }) }
+    const logger = { append: vi.fn().mockResolvedValue(undefined) }
+    const consumer = new SubtaskExecutionConsumer(repository as never, worktrees as never, worker as never, {}, {}, logger, undefined, undefined, undefined, undefined, undefined, undefined, undefined, notifier as never)
+    await consumer.handle(message)
+    return { repository, logger, notifier }
+  }
+
+  it('alerta caminho ausente sem reverter a conclusão entregue', async () => {
+    const worktree = await mkdtemp(join(tmpdir(), 'motor-external-check-'))
+    try {
+      const { repository, logger, notifier } = await runExternal(
+        'O que foi feito: gerei o runbook.\nComo verificar: veja runbook.md\n::DONE::', worktree,
+      )
+      expect(repository.completeNoCodeExecution).toHaveBeenCalled()
+      expect(notifier.notify).toHaveBeenCalledWith(expect.objectContaining({
+        taskId: message.taskId, blockReason: 'external_operation_missing_artifact',
+        summary: expect.stringContaining('runbook.md'),
+      }))
+      expect(logger.append).toHaveBeenCalledWith(expect.objectContaining({
+        reasonCode: 'external_operation_missing_artifact',
+        result: expect.objectContaining({ missingPaths: ['runbook.md'] }),
+      }))
+    } finally { await rm(worktree, { recursive: true, force: true }) }
+  })
+
+  it('não alerta arquivo existente nem resposta sem caminho', async () => {
+    const worktree = await mkdtemp(join(tmpdir(), 'motor-external-check-'))
+    try {
+      await writeFile(join(worktree, 'runbook.md'), '# ok')
+      const existing = await runExternal('O que foi feito: gerei o runbook.\nComo verificar: veja runbook.md\n::DONE::', worktree)
+      const noPath = await runExternal('O que foi feito: operação concluída.\nComo verificar: consulte o painel.\n::DONE::', worktree)
+      expect(existing.notifier.notify).not.toHaveBeenCalled()
+      expect(noPath.notifier.notify).not.toHaveBeenCalled()
+    } finally { await rm(worktree, { recursive: true, force: true }) }
+  })
+
+  it('registra erro de fs e preserva a conclusão', async () => {
+    const { repository, logger } = await runExternal(
+      'O que foi feito: operação concluída.\nComo verificar: veja runbook.md\n::DONE::', null as never,
+    )
+    expect(repository.completeNoCodeExecution).toHaveBeenCalled()
+    expect(logger.append).toHaveBeenCalledWith(expect.objectContaining({ reasonCode: 'external_operation_artifact_check_failed' }))
   })
 })
 // @vitest-environment node
