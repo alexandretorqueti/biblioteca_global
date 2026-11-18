@@ -282,6 +282,7 @@ export const assinaturas = mysqlTable(
       "past_due",
       "canceled",
       "expired",
+      "reembolsavel",
     ])
       .notNull()
       .default("pending"),

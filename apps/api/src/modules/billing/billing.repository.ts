@@ -21,7 +21,12 @@ export interface BillingRepository {
   inserirWebhook(input: { dedupeKey: string; tipo: string; payload: unknown }): Promise<{ event: BillingWebhookEvent; duplicate: boolean }>
   claimWebhook(id: number): Promise<BillingWebhookEvent | undefined>
   marcarWebhookConcluido(id: number): Promise<void>
-  marcarWebhookFalho(id: number, error: string): Promise<void>
+  marcarWebhookFalho(id: number, error: string, proximaTentativaEm: Date): Promise<void>
+  marcarWebhookDead(id: number): Promise<void>
+  listarWebhooksParaRetry(agora: Date, limite: number): Promise<BillingWebhookEvent[]>
+  listarAssinaturasPendentesAntigas(antesDe: Date, limite: number): Promise<Assinatura[]>
+  marcarAssinaturaReembolsavel(pspSubscriptionId: string): Promise<void>
+  sincronizarAssinaturaPsp(input: { subscriptionId: string; status: string; payload: unknown }): Promise<void>
   processarAprovacao(input: { subscriptionId: string; payload: unknown }): Promise<void>
 }
 
@@ -105,11 +110,51 @@ export class DrizzleBillingRepository implements BillingRepository {
       .where(and(eq(billingWebhookEvents.id, id), eq(billingWebhookEvents.status, "processing"))).then(() => undefined)
   }
 
-  marcarWebhookFalho(id: number): Promise<void> {
+  marcarWebhookFalho(id: number, error: string, proximaTentativaEm: Date): Promise<void> {
     return this.db.update(billingWebhookEvents).set({
       status: "failed",
-      proximaTentativaEm: new Date(Date.now() + 60_000),
-    }).where(and(eq(billingWebhookEvents.id, id), eq(billingWebhookEvents.status, "processing"))).then(() => undefined)
+      proximaTentativaEm,
+    }).where(and(eq(billingWebhookEvents.id, id), or(eq(billingWebhookEvents.status, "processing"), eq(billingWebhookEvents.status, "failed")))).then(() => undefined)
+  }
+
+  marcarWebhookDead(id: number): Promise<void> {
+    return this.db.update(billingWebhookEvents).set({
+      status: "dead",
+      proximaTentativaEm: null,
+    }).where(and(eq(billingWebhookEvents.id, id), or(eq(billingWebhookEvents.status, "processing"), eq(billingWebhookEvents.status, "failed")))).then(() => undefined)
+  }
+
+  listarWebhooksParaRetry(agora: Date, limite: number): Promise<BillingWebhookEvent[]> {
+    return this.db.select().from(billingWebhookEvents)
+      .where(and(
+        or(eq(billingWebhookEvents.status, "pending"), eq(billingWebhookEvents.status, "failed")),
+        or(lte(billingWebhookEvents.proximaTentativaEm, agora), sql`${billingWebhookEvents.proximaTentativaEm} IS NULL`),
+      ))
+      .orderBy(asc(billingWebhookEvents.id)).limit(limite)
+  }
+
+  listarAssinaturasPendentesAntigas(antesDe: Date, limite: number): Promise<Assinatura[]> {
+    return this.db.select().from(assinaturas)
+      .where(and(eq(assinaturas.status, "pending"), lte(assinaturas.createdAt, antesDe)))
+      .orderBy(asc(assinaturas.id)).limit(limite)
+  }
+
+  async marcarAssinaturaReembolsavel(pspSubscriptionId: string): Promise<void> {
+    await this.db.update(assinaturas).set({ status: "reembolsavel" })
+      .where(and(eq(assinaturas.pspSubscriptionId, pspSubscriptionId), or(eq(assinaturas.status, "active"), eq(assinaturas.status, "pending"))))
+  }
+
+  async sincronizarAssinaturaPsp(input: { subscriptionId: string; status: string; payload: unknown }): Promise<void> {
+    const status = input.status.toLowerCase()
+    if (["approved", "authorized", "active", "authorized_payment"].includes(status)) {
+      await this.processarAprovacao({ subscriptionId: input.subscriptionId, payload: input.payload })
+      return
+    }
+    const localStatus = status.includes("cancel") ? "canceled" : status.includes("past") || status.includes("fail") ? "past_due" : undefined
+    if (localStatus) {
+      await this.db.update(assinaturas).set({ status: localStatus })
+        .where(and(eq(assinaturas.pspSubscriptionId, input.subscriptionId), eq(assinaturas.status, "pending")))
+    }
   }
 
   async processarAprovacao(input: { subscriptionId: string; payload: unknown }): Promise<void> {
