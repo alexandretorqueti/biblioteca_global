@@ -153,6 +153,32 @@ export class EnvService {
     return this.config.get<string>("LIBRARY_REALTIME_EVENTS_TOKEN") ?? ""
   }
 
+  // ── Billing / Mercado Pago ──────────────────────────────────────────
+
+  get pspProvider(): string {
+    return this.required("PSP_PROVIDER")
+  }
+
+  get pspAccessToken(): string {
+    return this.required("PSP_ACCESS_TOKEN")
+  }
+
+  get pspWebhookSecret(): string {
+    return this.required("PSP_WEBHOOK_SECRET")
+  }
+
+  get pspApiUrl(): string {
+    return this.config.get<string>("PSP_API_URL") ?? "https://api.mercadopago.com"
+  }
+
+  get pspTimeoutMs(): number {
+    const value = Number(this.config.get<string>("PSP_TIMEOUT_MS") ?? "10000")
+    if (!Number.isInteger(value) || value < 100 || value > 120000) {
+      throw new Error("PSP_TIMEOUT_MS deve ser um inteiro entre 100 e 120000 ms")
+    }
+    return value
+  }
+
   private required(key: string): string {
     const valor = this.config.get<string>(key)
     if (!valor) {
