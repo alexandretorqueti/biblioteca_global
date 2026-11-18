@@ -20,27 +20,55 @@ export class BillingService {
     return this.repository.listarPlanosAtivos()
   }
 
+  buscarPlanoAtivo(slug: string) {
+    return this.repository.buscarPlanoAtivo(slug)
+  }
+
   async criarAssinatura(
     projeto: ProjetoResumo,
     usuario: UsuarioAutenticado,
     dto: CriarAssinaturaDto,
   ) {
-    const plano = await this.repository.buscarPlanoAtivo(dto.planoSlug)
+    const email = usuario.email?.trim()
+    if (!email) throw new BadRequestException("Usuário sem e-mail para cobrança")
+    return this.criarAssinaturaParaLead({
+      tenantSlugProvisorio: projeto.slug,
+      nome: usuario.nome,
+      email,
+      planoSlug: dto.planoSlug,
+      ciclo: dto.ciclo,
+      checkoutSuccessUrl: dto.checkoutSuccessUrl,
+      checkoutFailureUrl: dto.checkoutFailureUrl,
+      checkoutPendingUrl: dto.checkoutPendingUrl,
+    })
+  }
+
+  async criarAssinaturaParaLead(input: {
+    tenantSlugProvisorio: string
+    nome: string
+    email: string
+    planoSlug: string
+    ciclo?: "monthly" | "yearly"
+    checkoutSuccessUrl: string
+    checkoutFailureUrl: string
+    checkoutPendingUrl: string
+  }) {
+    const plano = await this.repository.buscarPlanoAtivo(input.planoSlug)
     if (!plano) throw new NotFoundException("Plano ativo não encontrado")
-    if (dto.ciclo !== undefined && dto.ciclo !== plano.ciclo) {
+    if (input.ciclo !== undefined && input.ciclo !== plano.ciclo) {
       throw new BadRequestException("Ciclo incompatível com o plano")
     }
-    const email = usuario.email?.trim()
+    const email = input.email.trim()
     if (!email) throw new BadRequestException("Usuário sem e-mail para cobrança")
 
     const assinatura = await this.repository.criarAssinatura({
-      tenantSlug: projeto.slug,
+      tenantSlug: input.tenantSlugProvisorio,
       planoProdutoId: plano.id,
       ciclo: plano.ciclo,
     })
     const customer = await this.gateway.createCustomer({
-      externalReference: `tenant:${projeto.slug}`,
-      name: usuario.nome,
+      externalReference: `tenant:${input.tenantSlugProvisorio}`,
+      name: input.nome,
       email,
     })
     const checkout = await this.gateway.createSubscription({
@@ -51,9 +79,9 @@ export class BillingService {
       currency: plano.moeda,
       cycle: plano.ciclo,
       payerEmail: email,
-      checkoutSuccessUrl: dto.checkoutSuccessUrl,
-      checkoutFailureUrl: dto.checkoutFailureUrl,
-      checkoutPendingUrl: dto.checkoutPendingUrl,
+      checkoutSuccessUrl: input.checkoutSuccessUrl,
+      checkoutFailureUrl: input.checkoutFailureUrl,
+      checkoutPendingUrl: input.checkoutPendingUrl,
     })
     await this.repository.vincularPsp(assinatura.id, customer.id, checkout.subscriptionId)
     return {

@@ -7,7 +7,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { createHash } from "node:crypto"
-import { IsaChatService, getWelcomeMessage, isValidEmail, isValidBrPhone, SECOES_MINIMAS_ESPECIFICACAO, validarSecoesEspecificacao, montarEspecificacaoEstruturada } from "../isa-chat.service"
+import { IsaChatService, describeOnboardingState, describeSalesState, getWelcomeMessage, isValidEmail, isValidBrPhone, SECOES_MINIMAS_ESPECIFICACAO, validarSecoesEspecificacao, montarEspecificacaoEstruturada } from "../isa-chat.service"
 
 // Mock do file-extract
 vi.mock("@biblioteca-global/file-extract", () => ({
@@ -121,6 +121,54 @@ describe("IsaChatService", () => {
     it("deve retornar false quando bridge não está configurada", () => {
       mockBridge.isConfigured.mockReturnValue(false)
       expect(service.isBridgeConfigured()).toBe(false)
+    })
+  })
+
+  describe("contexto do funil de venda", () => {
+    it("deve orientar o início do funil e conter o contrato das quatro ferramentas", () => {
+      const estado = describeSalesState(42, null)
+
+      expect(estado).toContain("[Estado da venda]")
+      expect(estado).toContain("anotar_negocio")
+      expect(estado).toContain("anexar_documento_negocio")
+      expect(estado).toContain("escolher_plano")
+      expect(estado).toContain("criar_pedido")
+      expect(estado).toContain("Nenhum negócio foi iniciado")
+    })
+
+    it("deve expor os dados capturados e o próximo passo", () => {
+      const estado = describeSalesState(42, {
+        nome: "Mercado Central",
+        segmentoDescricao: "Mercado de bairro",
+        contato: { nome: "Ana", email: "ana@example.com", telefone: "11999998888" },
+        transbordo: { ativo: true, destinoNumero: "5511999998888", destinoNome: "Ana" },
+        status: "capturado",
+        documentos: [{ nome: "regras.pdf", mime: "application/pdf", tamanho: 1234 }],
+        planoSlug: null,
+        pedidoStatus: null,
+      })
+
+      expect(estado).toContain("Mercado Central")
+      expect(estado).toContain("regras.pdf")
+      expect(estado).toContain("(não escolhido)")
+      expect(estado).toContain("chamar escolher_plano")
+    })
+
+    it("deve manter o bloco de onboarding independente do bloco comercial", () => {
+      const onboarding = describeOnboardingState({
+        id: 42,
+        status: "verificado",
+        visitorName: "Ana",
+        pendingEmail: null,
+        contatoNome: "Ana",
+        contatoEmail: "ana@example.com",
+        contatoTelefone: "11999998888",
+      })
+      const venda = describeSalesState(42, null)
+
+      expect(onboarding).toContain("[Estado do onboarding]")
+      expect(onboarding).toContain("Telefone registrado")
+      expect(venda).toContain("[Estado da venda]")
     })
   })
 

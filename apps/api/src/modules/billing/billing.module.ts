@@ -29,6 +29,6 @@ import { BillingReconciler, createBillingAlertSender } from "./billing-reconcile
     { provide: PSP_BILLING_GATEWAY, useExisting: MercadoPagoAdapter },
     { provide: BILLING_REPOSITORY, useClass: DrizzleBillingRepository },
   ],
-  exports: [BillingService, PSP_BILLING_GATEWAY],
+  exports: [BillingService, PSP_BILLING_GATEWAY, "BILLING_ALERT_SENDER"],
 })
 export class BillingModule {}

@@ -5,6 +5,7 @@ import { TaskStatusPollerService } from './task-status-poller.service';
 import { GitInspectorService } from './git-inspector.service';
 import { AuthModule } from '../../../apps/api/src/modules/auth/auth.module';
 import { ProvisionModule } from '../../../apps/api/src/modules/provision/provision.module';
+import { VendasModule } from '../../../apps/api/src/modules/vendas/vendas.module';
 import { IsaChatController, IsaChatService, IsaChatBridgeService } from './isa-chat';
 import { RealtimeModule } from '../../../apps/api/src/modules/realtime/realtime.module';
 import { RealtimeGateway } from '../../../apps/api/src/modules/realtime/realtime.gateway';
@@ -12,7 +13,7 @@ import { OperationalFeedService } from './operational-feed';
 import { RealtimeMutationBoundaryService } from './realtime-mutation-boundary.service';
 
 @Module({
-  imports: [AuthModule, ProvisionModule, RealtimeModule],
+  imports: [AuthModule, ProvisionModule, VendasModule, RealtimeModule],
   controllers: [GerenteAgentesController, IsaChatController],
   providers: [
     GerenteAgentesService,

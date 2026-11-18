@@ -78,12 +78,15 @@ services:
       FORJADOR_AGENT_ID: ${FORJADOR_AGENT_ID:-definicaopersonalidadeagentes}
       FORJADOR_TOKEN: ${FORJADOR_TOKEN}
       FORJADOR_TIMEOUT_MS: ${FORJADOR_TIMEOUT_MS:-1740000}
+      VENDAS_ACEITE_MANUAL: ${VENDAS_ACEITE_MANUAL:-true}
       LIBRARY_REALTIME_EVENTS_TOKEN: ${LIBRARY_REALTIME_EVENTS_TOKEN:-}
       PSP_PROVIDER: ${PSP_PROVIDER:-mercadopago}
       PSP_ACCESS_TOKEN: ${PSP_ACCESS_TOKEN:-}
       PSP_WEBHOOK_SECRET: ${PSP_WEBHOOK_SECRET:-}
       PSP_API_URL: ${PSP_API_URL:-https://api.mercadopago.com}
       PSP_TIMEOUT_MS: ${PSP_TIMEOUT_MS:-10000}
+      VENDAS_DOCUMENTOS_DIR: ${VENDAS_DOCUMENTOS_DIR:-/data/vendas-documentos}
+      VENDAS_DOCUMENTOS_MAX_BYTES: ${VENDAS_DOCUMENTOS_MAX_BYTES:-10485760}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_DLQ_CHAT_ID: ${TELEGRAM_DLQ_CHAT_ID:-}
       OPENCLAW_CONSOLE_URL: ${OPENCLAW_CONSOLE_URL}
@@ -103,6 +106,7 @@ services:
       - "${API_HOST_PORT:-3003}:3001"
       - "${MOTOR_V3_HOST_PORT:-3010}:3010"
     volumes:
+      - ${VENDAS_DOCUMENTOS_HOST_DIR:-./data/vendas-documentos}:/data/vendas-documentos:rw
       # O motor executa o pipeline no workspace do repositório.
       # REPO_PATH é um caminho do host e deve ser configurado no .env local.
       - ${REPO_PATH:-/run/media/alexandre/12T/codigofonte}:${REPO_PATH:-/run/media/alexandre/12T/codigofonte}

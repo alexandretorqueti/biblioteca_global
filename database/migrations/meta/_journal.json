@@ -92,6 +92,20 @@
       "when": 1794987120607,
       "tag": "0012_forjador_persona",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "5",
+      "when": 1794998202257,
+      "tag": "0013_vendas_funil_isa",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1795000002000,
+      "tag": "0014_vendas_provisionamento",
+      "breakpoints": true
     }
   ]
 }

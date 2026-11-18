@@ -1,6 +1,6 @@
 import { Inject, Injectable } from "@nestjs/common"
 import { and, asc, eq, lte, or, sql } from "drizzle-orm"
-import { assinaturas, billingWebhookEvents, planosProduto, provisionamentoPendente } from "../../../../../database/schema"
+import { assinaturas, billingWebhookEvents, pedidosVenda, planosProduto, provisionamentoPendente } from "../../../../../database/schema"
 import { CORE_DB, type CoreDb } from "../../database/database.module"
 
 export const BILLING_REPOSITORY = Symbol("BILLING_REPOSITORY")
@@ -164,6 +164,8 @@ export class DrizzleBillingRepository implements BillingRepository {
       if (!assinatura || assinatura.status !== "pending") return
       await tx.update(assinaturas).set({ status: "active" })
         .where(and(eq(assinaturas.id, assinatura.id), eq(assinaturas.status, "pending")))
+      await tx.update(pedidosVenda).set({ status: "paid" })
+        .where(and(eq(pedidosVenda.assinaturaId, assinatura.id), eq(pedidosVenda.status, "pending")))
       await tx.insert(provisionamentoPendente).values({
         assinaturaId: assinatura.id,
         tipo: "billing.provision",
