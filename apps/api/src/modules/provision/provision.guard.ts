@@ -31,3 +31,15 @@ export class ProvisionGuard implements CanActivate {
     return true
   }
 }
+
+@Injectable()
+export class TenantIngestGuard implements CanActivate {
+  constructor(@Inject(EnvService) private readonly env: EnvService) {}
+  canActivate(context: ExecutionContext): boolean {
+    const req = context.switchToHttp().getRequest<ApiRequest>()
+    const header = req.headers.authorization
+    const value = typeof header === "string" && header.startsWith("Bearer ") ? header.slice(7) : ""
+    if (!value || !safeCompare(value, this.env.tenantIngestToken)) throw new UnauthorizedException("Token de serviço inválido")
+    return true
+  }
+}

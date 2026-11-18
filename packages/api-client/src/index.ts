@@ -45,6 +45,7 @@ export type {
   HelpDeskRealtimeSubscription,
 } from "./helpdesk-client"
 export { LogsLoginClient, createLogsLoginClient } from "./logs-login-client"
+export { PainelTenantClient, createPainelTenantClient } from "./painel-tenant"
 export { GlobalUsersClient, ProjectsClient } from "./global-users-client"
 export {
   TenantsChatClient,

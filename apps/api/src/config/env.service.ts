@@ -148,6 +148,8 @@ export class EnvService {
     return this.required("PROVISION_TOKEN")
   }
 
+  get tenantIngestToken(): string { return this.required("TENANT_INGEST_TOKEN") }
+
   /** Token de serviço da API interna de forjamento de personas. */
   get forjadorToken(): string {
     return this.required("FORJADOR_TOKEN")

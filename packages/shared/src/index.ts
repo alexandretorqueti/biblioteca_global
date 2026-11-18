@@ -129,8 +129,44 @@ export type {
 export type { Usuario, Projeto, ProjetoUsuario } from "./core"
 
 // Runtime público do chat por tenant (sem segredos, IDs internos ou prompt)
-export { tenantChatConfigSchema, DEFAULT_TENANT_CHAT_CONFIG, normalizeTenantChatConfig } from "./tenant"
+export { tenantChatConfigSchema, tenantChatConfigInputSchema, DEFAULT_TENANT_CHAT_CONFIG, normalizeTenantChatConfig } from "./tenant"
 export type { TenantChatConfig } from "./tenant"
+
+// Painel administrativo do tenant: conversas, leads, métricas, configuração e ingestão.
+export {
+  tenantConversaCanalSchema,
+  tenantConversaStatusSchema,
+  tenantConversasFiltrosSchema,
+  filtrosConversasSchema,
+  tenantConversaItemSchema,
+  tenantConversaMensagemSchema,
+  tenantConversaHistoricoSchema,
+  tenantLeadsFiltrosSchema,
+  tenantLeadItemSchema,
+  tenantMetricasSchema,
+  metricasTenantSchema,
+  tenantToolAdminSchema,
+  tenantConfigAdminViewSchema,
+  tenantConfigAdminInputSchema,
+  tenantConversaMensagemIngestaoSchema,
+  tenantConversaIngestaoSchema,
+  tenantLeadIngestaoSchema,
+} from "./painel-tenant"
+export type {
+  TenantConversasFiltros,
+  TenantConversaItem,
+  TenantConversaMensagem,
+  TenantConversaHistorico,
+  TenantLeadsFiltros,
+  TenantLeadItem,
+  TenantMetricas,
+  TenantConfigAdminView,
+  TenantConfigAdminInput,
+  TenantConversaIngestao,
+  TenantLeadIngestao,
+  TenantChatConfigAdmin,
+  TenantTransbordoAdmin,
+} from "./painel-tenant"
 
 // Auditoria dos logins bem-sucedidos.
 export { logLoginMetodoSchema, logLoginSchema } from "./logs-login"

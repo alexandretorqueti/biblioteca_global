@@ -113,6 +113,8 @@ export const tenants = mysqlTable("tenants", {
   contatos: json("contatos"),
   /** Referência ao cofre de segredos, nunca o segredo em si. */
   segredosRef: varchar("segredos_ref", { length: 255 }),
+  /** Retenção privada de conversas para LGPD; não faz parte do config público. */
+  retencaoConversasDias: int("retencao_conversas_dias", { unsigned: true }),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at")
     .notNull()
@@ -142,6 +144,85 @@ export const tenantTools = mysqlTable(
   (t) => [
     index("idx_tenant_tools_tenant_id").on(t.tenantId),
     uniqueIndex("uq_tenant_tools_tenant_tool").on(t.tenantId, t.toolKey),
+  ],
+)
+
+/** Conversas persistidas para o painel administrativo do tenant. */
+export const tenantConversas = mysqlTable(
+  "tenant_conversas",
+  {
+    id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+    tenantId: bigint("tenant_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    externalId: varchar("external_id", { length: 255 }).notNull(),
+    canal: mysqlEnum("canal", ["web", "whatsapp"]).notNull(),
+    visitanteKey: varchar("visitante_key", { length: 255 }).notNull(),
+    contatoNome: varchar("contato_nome", { length: 255 }),
+    contatoEmail: varchar("contato_email", { length: 320 }),
+    tema: varchar("tema", { length: 255 }),
+    status: mysqlEnum("status", ["ativa", "finalizada", "transbordada"]).notNull(),
+    primeiraMensagemEm: timestamp("primeira_mensagem_em").notNull(),
+    ultimaMensagemEm: timestamp("ultima_mensagem_em").notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (t) => [
+    index("idx_tenant_conversas_tenant_id").on(t.tenantId),
+    index("idx_tenant_conversas_tenant_ultima").on(t.tenantId, t.ultimaMensagemEm),
+    index("idx_tenant_conversas_tenant_created").on(t.tenantId, t.createdAt),
+    uniqueIndex("uq_tenant_conversas_tenant_external").on(t.tenantId, t.externalId),
+  ],
+)
+
+export const tenantConversaMensagens = mysqlTable(
+  "tenant_conversa_mensagens",
+  {
+    id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+    conversaId: bigint("conversa_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => tenantConversas.id, { onDelete: "cascade" }),
+    role: mysqlEnum("role", ["visitante", "agente", "sistema"]).notNull(),
+    texto: text("texto").notNull(),
+    criadaEm: timestamp("criada_em").notNull(),
+  },
+  (t) => [index("idx_tenant_conversa_mensagens_conversa_criada").on(t.conversaId, t.criadaEm)],
+)
+
+export const tenantLeads = mysqlTable(
+  "tenant_leads",
+  {
+    id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+    tenantId: bigint("tenant_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    conversaId: bigint("conversa_id", { mode: "number", unsigned: true }).references(
+      () => tenantConversas.id,
+      { onDelete: "set null" },
+    ),
+    ferramenta: varchar("ferramenta", { length: 100 }).notNull(),
+    dadosJson: json("dados_json").notNull(),
+    externalId: varchar("external_id", { length: 255 }),
+    criadoEm: timestamp("criado_em").notNull().defaultNow(),
+  },
+  (t) => [
+    index("idx_tenant_leads_tenant_id").on(t.tenantId),
+    uniqueIndex("uq_tenant_leads_tenant_external").on(t.tenantId, t.externalId),
+  ],
+)
+
+export const tenantCotaAlertas = mysqlTable(
+  "tenant_cota_alertas",
+  {
+    id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+    tenantId: bigint("tenant_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    mesCompetencia: char("mes_competencia", { length: 7 }).notNull(),
+    enviadoEm: timestamp("enviado_em").notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("uq_tenant_cota_alertas_tenant_mes").on(t.tenantId, t.mesCompetencia),
   ],
 )
 
