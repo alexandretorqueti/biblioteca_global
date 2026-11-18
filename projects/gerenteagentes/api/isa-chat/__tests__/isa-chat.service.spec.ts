@@ -217,6 +217,43 @@ describe("IsaChatService", () => {
     })
   })
 
+  describe("identidade canônica por telefone", () => {
+    it("reutiliza o chat do contato e resolve a mesma sessão", async () => {
+      ;(mockDb.limit as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce([{ id: 7, telefone: "11999998888", email: "cliente@test.com" }])
+        .mockResolvedValueOnce([{ id: 42, contatoId: 7, chatKey: "visitor-site", sessionKey: "agent:isa:visitor-site", status: "verificado" }])
+        .mockResolvedValueOnce([{ id: 7, telefone: "11999998888", email: "cliente@test.com", nome: "Cliente" }])
+
+      const result = await service.resolveOrCreateChatByPhone({ telefone: "+55 (11) 99999-8888" })
+
+      expect(result.chatId).toBe("42")
+      expect(result.existing).toBe(true)
+      expect(mockBridge.resolveSession).not.toHaveBeenCalled()
+    })
+
+    it("cria chat e sessão canônicos para telefone desconhecido", async () => {
+      const result = await service.resolveOrCreateChatByPhone({ telefone: "5511999998888" })
+
+      expect(result.chatId).toBe("1")
+      expect(mockBridge.resolveSession).toHaveBeenCalledWith({
+        agentId: "isa",
+        chatKey: "wa-11999998888",
+      })
+      expect(mockDb.values).toHaveBeenCalledWith(expect.objectContaining({
+        chatKey: "wa-11999998888",
+      }))
+    })
+
+    it("registra telefone no formato canônico sem quebrar a ferramenta atual", async () => {
+      ;(mockDb.limit as ReturnType<typeof vi.fn>).mockResolvedValueOnce([{ id: 42, contatoId: 7 }])
+
+      const result = await service.setVisitorPhone("42", "+55 (11) 99999-8888")
+
+      expect(result).toEqual({ ok: true, chatId: "42" })
+      expect(mockDb.update).toHaveBeenCalled()
+    })
+  })
+
   describe("recordVisit", () => {
     it("deve registrar visita com IP como hash", async () => {
       const result = await service.recordVisit({

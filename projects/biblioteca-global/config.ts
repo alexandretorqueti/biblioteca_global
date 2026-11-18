@@ -64,6 +64,13 @@ export const config: GeradorSistemaConfig = {
           icon: "history",
           screen: { kind: "custom", componentId: "biblioteca-global-logs-login" },
         },
+        {
+          id: "canais-whatsapp",
+          label: "Canais WhatsApp",
+          path: "canais-whatsapp",
+          icon: "whatsapp",
+          screen: { kind: "custom", componentId: "biblioteca-global-canais-whatsapp" },
+        },
       ],
     },
   ],

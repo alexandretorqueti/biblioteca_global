@@ -122,6 +122,40 @@ export const tenants = mysqlTable("tenants", {
     .onUpdateNow(),
 })
 
+export const TENANT_CANAL_WHATSAPP_ESTADOS = [
+  "pareando",
+  "ativo",
+  "expirado",
+  "removido",
+] as const
+
+/** Vínculo entre a conta WhatsApp do gateway e um tenant da Biblioteca. */
+export const tenantCanaisWhatsapp = mysqlTable(
+  "tenant_canais_whatsapp",
+  {
+    id: bigint("id", { mode: "number", unsigned: true })
+      .primaryKey()
+      .autoincrement(),
+    tenantId: bigint("tenant_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    /** Identificador canônico do account no OpenClaw: slug do tenant. */
+    accountId: varchar("account_id", { length: 100 }).notNull().unique(),
+    numero: varchar("numero", { length: 20 }),
+    agentId: varchar("agent_id", { length: 255 }),
+    estado: mysqlEnum("estado", TENANT_CANAL_WHATSAPP_ESTADOS)
+      .notNull()
+      .default("pareando"),
+    ultimoStatusEm: timestamp("ultimo_status_em"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at")
+      .notNull()
+      .defaultNow()
+      .onUpdateNow(),
+  },
+  (t) => [index("idx_tenant_canais_whatsapp_tenant_id").on(t.tenantId)],
+)
+
 /** Ferramentas do catálogo habilitadas para um tenant. */
 export const tenantTools = mysqlTable(
   "tenant_tools",

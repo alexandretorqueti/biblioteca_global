@@ -22,6 +22,7 @@ import {
 } from "../../schema"
 import { IsaChatBridgeService } from "./isa-chat.bridge"
 import { extractTextFromFile } from "@biblioteca-global/file-extract"
+import { normalizeBrPhone } from "@biblioteca-global/shared"
 import { VendasService } from "../../../../apps/api/src/modules/vendas/vendas.service"
 import type {
   CreateSessionInput,
@@ -70,7 +71,29 @@ export function isValidEmail(email: string): boolean {
 }
 
 export function isValidBrPhone(telefone: string): boolean {
-  return BR_PHONE_RE.test(telefone.trim())
+  try {
+    normalizeIsaPhone(telefone)
+    return true
+  } catch {
+    return BR_PHONE_RE.test(telefone.trim())
+  }
+}
+
+/**
+ * Canonical phone identity used by both the web chat and WhatsApp.
+ * The shared normalizer owns the BR DDD/length validation; this adapter also
+ * accepts the common country-code form 55XXXXXXXXXXX.
+ */
+function normalizeIsaPhone(telefone: string): string {
+  const digits = telefone.replace(/\D/g, "")
+  const withoutCountryCode = digits.startsWith("55") && (digits.length === 12 || digits.length === 13)
+    ? digits.slice(2)
+    : digits
+  return normalizeBrPhone(withoutCountryCode)
+}
+
+function phoneChatKey(telefone: string): string {
+  return `wa-${telefone}`
 }
 
 /** Gera código de 6 dígitos. */
@@ -497,6 +520,70 @@ export class IsaChatService {
     }
   }
 
+  /** Resolve o chat canônico da Isa pela identidade telefônica. */
+  async resolveOrCreateChatByPhone(input: {
+    telefone: string
+    agentId?: string
+  }): Promise<SessionResult> {
+    const telefone = normalizeIsaPhone(input.telefone)
+    const agentId = input.agentId?.trim() || this.configService.get<string>("ISA_AGENT_ID") || "isa"
+    const db = await this.getDb()
+
+    const contatoResult = await db.select().from(contatos).where(eq(contatos.telefone, telefone)).limit(1)
+    const contato = contatoResult[0]
+    let chat: typeof chats.$inferSelect | undefined
+
+    if (contato) {
+      const chatResult = await db.select().from(chats).where(eq(chats.contatoId, contato.id)).limit(1)
+      chat = chatResult[0]
+    }
+
+    if (!chat) {
+      const chatKey = phoneChatKey(telefone)
+      const keyedChat = await db.select().from(chats).where(eq(chats.chatKey, chatKey)).limit(1)
+      chat = keyedChat[0]
+
+      if (!chat) {
+        const [inserted] = await db
+          .insert(chats)
+          .values({ chatKey, status: "aberto", ...(contato ? { contatoId: contato.id } : {}) })
+          .$returningId()
+        if (!inserted) throw new Error("Falha ao criar chat por telefone")
+
+        await db.insert(chatMensagens).values({
+          chatId: inserted.id,
+          role: "agent",
+          texto: getWelcomeMessage(agentId),
+        })
+
+        chat = {
+          id: inserted.id,
+          chatKey,
+          contatoId: contato?.id ?? null,
+          status: "aberto",
+        } as typeof chats.$inferSelect
+      }
+    }
+
+    const hadSession = Boolean(chat.sessionKey)
+    if (!chat.sessionKey || agentIdFromSessionKey(chat.sessionKey) !== agentId) {
+      const resolved = await this.bridge.resolveSession({
+        agentId,
+        chatKey: chat.chatKey ?? phoneChatKey(telefone),
+      })
+      await db.update(chats).set({ sessionKey: resolved.sessionKey }).where(eq(chats.id, chat.id))
+      chat = { ...chat, sessionKey: resolved.sessionKey }
+    }
+
+    return {
+      ok: true,
+      chatId: String(chat.id),
+      existing: hadSession,
+      ...(chat.contatoId ? { contactId: chat.contatoId } : {}),
+      onboarding: await this.buildOnboardingState(db, chat),
+    }
+  }
+
   // ===========================================================================
   // ENVIO DE MENSAGEM
   // ===========================================================================
@@ -915,7 +1002,10 @@ export class IsaChatService {
     const chat = await this.findChat(db, chatId)
     if (!chat) throw new BadRequestException("Chat não encontrado")
 
-    if (!isValidBrPhone(telefone)) {
+    let telefoneCanonico: string
+    try {
+      telefoneCanonico = normalizeIsaPhone(telefone)
+    } catch {
       return { ok: false, reason: "invalid_phone", chatId: String(chat.id) }
     }
 
@@ -923,7 +1013,7 @@ export class IsaChatService {
       return { ok: false, reason: "contact_not_found", chatId: String(chat.id) }
     }
 
-    await db.update(contatos).set({ telefone }).where(eq(contatos.id, chat.contatoId))
+    await db.update(contatos).set({ telefone: telefoneCanonico }).where(eq(contatos.id, chat.contatoId))
     return { ok: true, chatId: String(chat.id) }
   }
 

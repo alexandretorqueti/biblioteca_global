@@ -20,6 +20,7 @@ describe("IsaChatController", () => {
 
     mockService = {
       createSession: vi.fn(),
+      resolveOrCreateChatByPhone: vi.fn(),
       sendMessage: vi.fn(),
       getHistory: vi.fn(),
       recordVisit: vi.fn(),
@@ -92,6 +93,31 @@ describe("IsaChatController", () => {
           chatKey: "x".repeat(255),
         }),
       )
+    })
+  })
+
+  describe("POST /session/phone", () => {
+    it("deve resolver a sessão canônica por telefone", async () => {
+      vi.mocked(mockService.resolveOrCreateChatByPhone!).mockResolvedValue({
+        ok: true,
+        chatId: "42",
+        existing: true,
+      })
+
+      const result = await controller.createPhoneSession({
+        telefone: "+55 (11) 99999-8888",
+        agentId: "isa",
+      })
+
+      expect(result.chatId).toBe("42")
+      expect(mockService.resolveOrCreateChatByPhone).toHaveBeenCalledWith({
+        telefone: "+55 (11) 99999-8888",
+        agentId: "isa",
+      })
+    })
+
+    it("deve rejeitar telefone ausente", async () => {
+      await expect(controller.createPhoneSession({})).rejects.toThrow(BadRequestException)
     })
   })
 
