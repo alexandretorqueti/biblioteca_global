@@ -108,11 +108,29 @@ O webhook do Mercado Pago é configurado para a URL canônica:
 https://api.biblioteca.globaltecnologia.net/api/billing/webhook
 ```
 
-**Histórico:** em 17–18/11 o hostname
-`api.biblioteca.globaltecnologia.net` **não resolvia DNS no ambiente do
-motor**, fazendo o teste E2E falhar antes de chegar na API. A resolução pode
-variar conforme o ambiente (host, container, cache de DNS). Valide **a partir
-de onde o teste será executado** antes de prosseguir:
+**Estado verificado em 2026-11-18, às 19:50–19:51 UTC:** o hostname
+`api.biblioteca.globaltecnologia.net` não possui registro DNS público. Tanto no
+container do motor quanto no host `serveria`, a resolução retornou
+`getent ...` com **exit 2** e o `curl -sI` retornou **exit 6** (could not
+resolve host). Portanto, o problema é DNS ausente no domínio — **não é uma
+limitação do ambiente do motor**. O histórico de 17–18/11 estava correto,
+mas não se trata de uma variação de cache ou ambiente.
+
+Os domínios `globaltecnologia.net` e `biblioteca.globaltecnologia.net`
+resolvem normalmente nos dois ambientes. Enquanto o registro canônico não
+existir, use a URL alternativa pública abaixo no painel do Mercado Pago:
+
+```text
+https://biblioteca-api.webconnect.com.br/api/billing/webhook
+```
+
+Ela corresponde ao segundo `server_name` já presente em
+`infra/nginx/biblioteca-global.conf.template`, resolve publicamente e, na
+mesma verificação, respondeu **HTTP 401** em `curl -sI` a partir do container
+do motor e do host `serveria`. O 401 é esperado sem a assinatura HMAC e prova
+que a rota está alcançável.
+
+Valide **a partir de onde o teste será executado** antes de prosseguir:
 
 ```bash
 # 1) Resolução de nome (deve retornar ao menos um IP)
@@ -121,14 +139,24 @@ getent hosts api.biblioteca.globaltecnologia.net
 # 2) Alcance HTTP (espera resposta 4xx/200 do Nginx/Nest, nunca "could not resolve host")
 curl -sI https://api.biblioteca.globaltecnologia.net/api/billing/webhook
 
+# Endpoint alternativo utilizável enquanto o DNS canônico não existir
+getent hosts biblioteca-api.webconnect.com.br
+curl -sI https://biblioteca-api.webconnect.com.br/api/billing/webhook
+
 # 3) Dentro do container da API, se o teste for disparado de lá:
 docker exec <container-api-da-stack-ativa> sh -c \
   'getent hosts api.biblioteca.globaltecnologia.net || nslookup api.biblioteca.globaltecnologia.net'
 ```
 
-Se a resolução falhar onde o teste roda, corrija DNS/hosts **antes** do E2E —
-o webhook do MP só entrega eventos para URLs publicamente resolvidas, e um
-teste disparado do motor contra hostname sem resolução gera falso negativo.
+Se a resolução canônica continuar falhando, configure a URL alternativa no
+painel do MP — o webhook só é entregue para URLs publicamente resolvidas.
+Como correção definitiva, crie no DNS autoritativo/Cloudflare um registro
+`CNAME` ou `A` para `api.biblioteca.globaltecnologia.net`, apontando para o
+mesmo destino atendido por `biblioteca-api.webconnect.com.br`; depois de a
+propagação ser confirmada, volte a usar a URL canônica. Se o painel não
+aceitar o hostname alternativo, exponha temporariamente a porta da API ativa
+por um túnel com URL HTTPS pública (por exemplo, um túnel gerenciado) e use a
+URL `/api/billing/webhook` fornecida pelo túnel apenas durante o sandbox.
 
 ---
 
@@ -235,11 +263,15 @@ com um comprador de teste do sandbox para o MP disparar o webhook.
 
 ### 4.1 URL e assinatura HMAC
 
-- **URL canônica configurada no painel do MP:**
+- **URL canônica pretendida no painel do MP (indisponível até criar o DNS):**
   `https://api.biblioteca.globaltecnologia.net/api/billing/webhook`
   (Nginx `server_name api.biblioteca.globaltecnologia.net` → proxy para a API;
   o prefixo `/api` vem de `setGlobalPrefix("api")`, o `/billing/webhook` de
   `@Controller("billing")` + `@Post("webhook")`).
+- **URL a configurar agora no sandbox:**
+  `https://biblioteca-api.webconnect.com.br/api/billing/webhook`. Ela já está
+  no mesmo `server_name` do Nginx, resolve publicamente e respondeu HTTP 401
+  na verificação de 2026-11-18; use-a até o registro canônico ser criado.
 - **Autenticação do webhook é a assinatura HMAC, não JWT**
   (`billing-webhook.controller.ts` — sem guards).
 - O controller exige o **corpo bruto** (`rawBody: true` em `main.ts`), lê os
@@ -261,10 +293,19 @@ com um comprador de teste do sandbox para o MP disparar o webhook.
 ### 4.2 Verificação de DNS antes do teste E2E
 
 Refazer o passo 1.4 (`getent hosts` + `curl -sI`) a partir do ambiente de onde
-o webhook será disparado/observado. Registrar a falha histórica: **em
-17–18/11 a URL canônica não resolvia DNS no ambiente do motor**; o resultado
-pode variar por ambiente, então valide a resolução a cada execução do E2E
-antes de atribuir falha ao pipeline de billing.
+o webhook será disparado/observado. A verificação de 2026-11-18 foi:
+
+| Ambiente | `api.biblioteca.globaltecnologia.net` | `biblioteca-api.webconnect.com.br` |
+| --- | --- | --- |
+| Container do motor | `getent` exit 2; `curl` exit 6 | resolve; `curl` HTTP 401 |
+| Host `serveria` | `getent` exit 2; `curl` exit 6 | resolve; `curl` HTTP 401 |
+
+Assim, configure no MP a URL alternativa enquanto o DNS canônico estiver
+ausente. O diagnóstico não deve ser atribuído ao pipeline de billing ou ao
+ambiente do motor: é um registro DNS faltante. Após criar o `CNAME`/`A` no
+Cloudflare e confirmar a propagação, valide novamente a URL canônica e troque
+o endpoint no painel. Se o painel rejeitar o hostname alternativo, use o
+túnel HTTPS público temporário descrito no §1.4.
 
 ### 4.3 Reenvio manual (simulação de entrega do MP)
 
