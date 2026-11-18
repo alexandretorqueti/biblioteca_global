@@ -71,6 +71,13 @@
       "when": 1795000000000,
       "tag": "0009_transbordo",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1795000001000,
+      "tag": "0010_transbordo_liberado_por",
+      "breakpoints": true
     }
   ]
 }

@@ -406,6 +406,7 @@ export const transbordos = mysqlTable(
     tokenLiberacaoExpiraEm: timestamp("token_liberacao_expira_em").notNull(),
     tokenLiberacaoUsadoEm: timestamp("token_liberacao_usado_em"),
     liberadoEm: timestamp("liberado_em"),
+    liberadoPor: varchar("liberado_por", { length: 150 }),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
   },

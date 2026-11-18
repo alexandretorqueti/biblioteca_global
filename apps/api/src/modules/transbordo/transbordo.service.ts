@@ -1,6 +1,6 @@
 import { BadRequestException, Inject, Injectable } from "@nestjs/common"
 import { createHash, randomBytes } from "crypto"
-import { and, eq, gt, isNull, lt } from "drizzle-orm"
+import { and, eq, gt, isNull, lt, desc } from "drizzle-orm"
 import { transbordoConfigSchema, type TransbordoConfig } from "@biblioteca-global/shared"
 import { CORE_DB, type CoreDb } from "../../database/database.module"
 import { transbordoConfig, transbordos } from "../../../../../database/schema"
@@ -49,8 +49,40 @@ export class TransbordoService {
     })
   }
 
+  async verificarPossivel(input: { tenantSlug: string; agora?: Date }): Promise<{
+    possivel: boolean
+    motivo?: "configuracao_ausente" | "inativo" | "fora_do_horario" | "destino_nao_configurado"
+    config: TransbordoConfig | null
+  }> {
+    const config = await this.obterConfig(input.tenantSlug)
+    if (!config) return { possivel: false, motivo: "configuracao_ausente", config: null }
+    if (!config.ativo) return { possivel: false, motivo: "inativo", config }
+    if (!config.destino.valor.trim() || !config.destino.nomeAtendente.trim()) {
+      return { possivel: false, motivo: "destino_nao_configurado", config }
+    }
+    const agora = input.agora ?? new Date()
+    let partes: Intl.DateTimeFormatPart[]
+    try {
+      partes = new Intl.DateTimeFormat("en-US", {
+        timeZone: config.horario.timezone, weekday: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+      }).formatToParts(agora)
+    } catch {
+      return { possivel: false, motivo: "fora_do_horario", config }
+    }
+    const weekday = partes.find((parte) => parte.type === "weekday")?.value
+    const dia = ({ Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 } as Record<string, number>)[weekday ?? ""]
+    const hora = `${partes.find((parte) => parte.type === "hour")?.value ?? "00"}:${partes.find((parte) => parte.type === "minute")?.value ?? "00"}`
+    if (dia === undefined || !config.horario.diasSemana.includes(dia) || hora < config.horario.inicio || hora >= config.horario.fim) {
+      return { possivel: false, motivo: "fora_do_horario", config }
+    }
+    return { possivel: true, config }
+  }
+
   /** Cria o registro pausando a sessão; o token bruto só é retornado uma vez. */
-  async criarRegistro(input: { tenantSlug: string; sessaoId: number }): Promise<{ id: number; tokenLiberacao: string; expiraEm: Date }> {
+  async criarRegistro(input: { tenantSlug: string; sessaoId: number }): Promise<{ id: number; tokenLiberacao: string; expiraEm: Date; jaExistente?: boolean }> {
+    const [active] = await this.db.select({ id: transbordos.id, expiraEm: transbordos.tokenLiberacaoExpiraEm })
+      .from(transbordos).where(and(eq(transbordos.sessaoId, input.sessaoId), eq(transbordos.estado, "active"))).orderBy(desc(transbordos.id)).limit(1)
+    if (active) return { id: active.id, tokenLiberacao: "", expiraEm: active.expiraEm, jaExistente: true }
     const tokenLiberacao = randomBytes(32).toString("hex")
     const expiraEm = new Date(Date.now() + TOKEN_TTL_MS)
     const result = await this.db.insert(transbordos).values({
@@ -74,19 +106,34 @@ export class TransbordoService {
 
   /** Uso único e expiração são garantidos pela condição atômica do UPDATE. */
   async liberarPorToken(tokenLiberacao: string): Promise<boolean> {
+    const result = await this.liberarPorTokenDetalhes(tokenLiberacao)
+    return result.ok
+  }
+
+  async liberarPorTokenDetalhes(tokenLiberacao: string): Promise<{ ok: boolean; sessaoId?: number }> {
     const hash = createHash("sha256").update(tokenLiberacao).digest("hex")
     const agora = new Date()
+    const [row] = await this.db.select({ id: transbordos.id, sessaoId: transbordos.sessaoId })
+      .from(transbordos).where(and(eq(transbordos.tokenLiberacaoHash, hash), isNull(transbordos.tokenLiberacaoUsadoEm), gt(transbordos.tokenLiberacaoExpiraEm, agora), eq(transbordos.estado, "active"))).limit(1)
     const result = await this.db.update(transbordos).set({
       estado: "released",
       tokenLiberacaoUsadoEm: agora,
       liberadoEm: agora,
+      liberadoPor: "magic-link",
     }).where(and(
       eq(transbordos.tokenLiberacaoHash, hash),
       isNull(transbordos.tokenLiberacaoUsadoEm),
       gt(transbordos.tokenLiberacaoExpiraEm, agora),
       eq(transbordos.estado, "active"),
     ))
-    return Number(result[0].affectedRows ?? 0) === 1
+    return { ok: Number(result[0].affectedRows ?? 0) === 1, sessaoId: row?.sessaoId }
+  }
+
+  async liberarPorOperador(input: { tenantSlug: string; sessaoId: number; ator: string }): Promise<{ ok: boolean }> {
+    const agora = new Date()
+    const result = await this.db.update(transbordos).set({ estado: "released", liberadoEm: agora, liberadoPor: input.ator })
+      .where(and(eq(transbordos.tenantSlug, input.tenantSlug), eq(transbordos.sessaoId, input.sessaoId), eq(transbordos.estado, "active")))
+    return { ok: Number(result[0].affectedRows ?? 0) === 1 }
   }
 
   async expirarPendentes(): Promise<void> {

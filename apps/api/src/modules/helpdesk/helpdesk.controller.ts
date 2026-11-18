@@ -14,6 +14,8 @@ import {
   Request,
   UseGuards,
 } from "@nestjs/common"
+import { Roles } from "../../common/decorators/roles.decorator"
+import { RolesGuard } from "../../common/guards/roles.guard"
 import { HelpDeskService } from "./helpdesk.service"
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard"
 import { ProjectScopeGuard } from "../../common/guards/project-scope.guard"
@@ -88,5 +90,15 @@ export class HelpDeskController {
       throw new BadRequestException("sessaoId e usuário autenticado são obrigatórios")
     }
     return this.service.consultarProcessamento({ sessaoId, usuarioId, projetoId })
+  }
+
+  @Post(":sessaoId/release")
+  @UseGuards(RolesGuard)
+  @Roles("admin", "operador")
+  @HttpCode(HttpStatus.OK)
+  async liberar(@Request() req: ApiRequest, @Param("sessaoId") sessaoIdParam: string) {
+    const sessaoId = Number(sessaoIdParam)
+    if (!Number.isInteger(sessaoId) || sessaoId <= 0 || !req.scope) throw new BadRequestException("sessaoId e escopo são obrigatórios")
+    return this.service.liberarTransbordo({ sessaoId, tenantSlug: req.scope.projeto.slug, ator: req.scope.usuario.nome })
   }
 }

@@ -9,9 +9,10 @@ import { CrudModule } from "../crud/crud.module"
 import { AuthModule } from "../auth/auth.module"
 import { RealtimeModule } from "../realtime/realtime.module"
 import { GerenteAgentesModule } from "../../../../../projects/gerenteagentes/api/gerenteagentes.module"
+import { TransbordoModule } from "../transbordo/transbordo.module"
 
 @Module({
-  imports: [AuthModule, CrudModule, RealtimeModule, GerenteAgentesModule],
+  imports: [AuthModule, CrudModule, RealtimeModule, GerenteAgentesModule, TransbordoModule],
   controllers: [HelpDeskController],
   providers: [HelpDeskService, HelpDeskBridgeService],
   exports: [HelpDeskService],
