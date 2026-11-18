@@ -238,7 +238,7 @@ export class DeployConsumer {
     // Falha de limpeza é apenas warning: o deploy já está concluído e não pode ser alterado.
     if (success) {
       await this.syncInterruptedIntegrations(batchId)
-      await this.cleanupWorktrees(taskIds)
+      await this.cleanupWorktrees(taskIds, operationId, message)
     }
   }
 
@@ -262,12 +262,38 @@ export class DeployConsumer {
   }
 
   /** Remove worktrees/branches das tarefas deployadas; nunca propaga erro ao fluxo do deploy. */
-  private async cleanupWorktrees(taskIds: string[]): Promise<void> {
+  private async cleanupWorktrees(taskIds: string[], operationId?: string, message?: QueueMessage): Promise<void> {
+    let cleanupSequence = 2
     for (const taskId of taskIds) {
       try {
         const repoPath = await this.repository.repoPathForTask(taskId)
         if (!repoPath) throw new Error(`repo_path indisponível para a tarefa ${taskId}`)
-        await this.worktrees.cleanup(taskId, repoPath)
+        const report = await this.worktrees.cleanup(taskId, repoPath)
+        if (report.artifactSalvage?.length && operationId && message) {
+          for (const salvage of report.artifactSalvage) {
+            const result = {
+              taskId,
+              worktreePath: salvage.worktreePath,
+              artifactRoot: salvage.artifactRoot,
+              files: salvage.files,
+              errors: salvage.errors,
+            }
+            await this.log(operationId, cleanupSequence++, salvage.errors.length > 0 ? 'failed' : 'completed', salvage.errors.length > 0 ? 'failed' : 'succeeded', message, {
+              actionCode: 'A33_RECEIVE_DEPLOY_RESULT',
+              primitiveCode: 'salvage_dirty_worktree_artifacts',
+              reasonCode: salvage.errors.length > 0 ? 'artifact_salvage_failed' : 'artifact_salvaged',
+              result,
+            }).catch(error => console.error('[Motor v3] Falha ao registrar relatório de resgate:', error instanceof Error ? error.message : String(error)))
+            console.warn(JSON.stringify({
+              event: salvage.errors.length > 0 ? 'worktree_artifact_salvage_failed' : 'worktree_artifact_salvaged',
+              alert: true,
+              taskId,
+              worktreePath: salvage.worktreePath,
+              recoveredPaths: salvage.files.map(file => file.artifactPath),
+              errors: salvage.errors,
+            }))
+          }
+        }
       } catch (error) {
         console.error(`[Motor v3] Falha na limpeza de worktrees da tarefa ${taskId}:`, error instanceof Error ? error.message : String(error))
       }
