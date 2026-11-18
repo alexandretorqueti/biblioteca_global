@@ -8,7 +8,7 @@ const event = (tentativas: number) => ({
   status: "failed" as const, tentativas, proximaTentativaEm: now, createdAt: now, updatedAt: now,
 })
 
-function setup(input: { events?: ReturnType<typeof event>[]; process?: (event: ReturnType<typeof event>) => Promise<void> } = {}) {
+function setup(input: { events?: ReturnType<typeof event>[]; process?: (webhookEvent: ReturnType<typeof event>) => Promise<void> } = {}) {
   const repository = {
     listarWebhooksParaRetry: vi.fn().mockResolvedValue(input.events ?? []),
     listarAssinaturasPendentesAntigas: vi.fn().mockResolvedValue([]),
