@@ -367,3 +367,51 @@ export const provisionamentoPendente = mysqlTable(
     ),
   ],
 )
+
+/** Configuração de transbordo humano por tenant/projeto. */
+export const transbordoConfig = mysqlTable(
+  "transbordo_config",
+  {
+    id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+    tenantSlug: varchar("tenant_slug", { length: 100 }).notNull().unique(),
+    ativo: boolean("ativo").notNull().default(false),
+    destinoTipo: mysqlEnum("destino_tipo", ["email", "telegram", "whatsapp"]).notNull(),
+    destinoValor: varchar("destino_valor", { length: 320 }).notNull(),
+    atendenteNome: varchar("atendente_nome", { length: 150 }).notNull(),
+    horario: json("horario").notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+)
+
+/** Ciclo de vida e auditoria de cada transbordo de uma sessão HelpDesk. */
+export const transbordos = mysqlTable(
+  "transbordos",
+  {
+    id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+    tenantSlug: varchar("tenant_slug", { length: 100 }).notNull(),
+    sessaoId: bigint("sessao_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => helpdeskSessoes.id, { onDelete: "cascade" }),
+    estado: mysqlEnum("estado", ["pending", "active", "released", "expired", "cancelled"])
+      .notNull()
+      .default("pending"),
+    notificacaoEstado: mysqlEnum("notificacao_estado", ["pending", "sent", "failed"])
+      .notNull()
+      .default("pending"),
+    notificacaoTentadaEm: timestamp("notificacao_tentada_em"),
+    notificacaoEnviadaEm: timestamp("notificacao_enviada_em"),
+    notificacaoErro: varchar("notificacao_erro", { length: 1000 }),
+    tokenLiberacaoHash: varchar("token_liberacao_hash", { length: 128 }).notNull().unique(),
+    tokenLiberacaoExpiraEm: timestamp("token_liberacao_expira_em").notNull(),
+    tokenLiberacaoUsadoEm: timestamp("token_liberacao_usado_em"),
+    liberadoEm: timestamp("liberado_em"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (t) => [
+    index("idx_transbordos_tenant_slug").on(t.tenantSlug),
+    index("idx_transbordos_sessao_id").on(t.sessaoId),
+    index("idx_transbordos_estado").on(t.estado),
+  ],
+)

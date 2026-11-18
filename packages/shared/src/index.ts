@@ -199,6 +199,20 @@ export {
   helpDeskSendMessageInputSchema,
   helpDeskHistorySchema,
 } from "./helpdesk"
+
+// Configuração validada do transbordo para atendimento humano.
+export {
+  transbordoDestinoTipoSchema,
+  transbordoHorarioSchema,
+  transbordoDestinoSchema,
+  transbordoConfigSchema,
+} from "./transbordo"
+export type {
+  TransbordoDestinoTipo,
+  TransbordoHorario,
+  TransbordoDestino,
+  TransbordoConfig,
+} from "./transbordo"
 export type {
   HelpDeskSession,
   HelpDeskMessage,
