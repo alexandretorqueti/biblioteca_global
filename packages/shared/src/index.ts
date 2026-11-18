@@ -195,6 +195,27 @@ export {
 // Normalizador de conteúdo de chat (JSON → texto legível)
 export { normalizeChatContent } from "./chat-normalizer"
 
+// Forjador por API — contrato forjar-persona (isas-mt-04)
+export {
+  FORJAR_PERSONA_DESCRICAO_MIN,
+  FORJAR_PERSONA_DESCRICAO_MAX,
+  FORJAR_PERSONA_ARQUIVOS_MAX,
+  FORJAR_PERSONA_ARQUIVO_MAX_BYTES,
+  FORJAR_PERSONA_ARQUIVO_NOME_MAX,
+  TENANT_SLUG_REGEX,
+  MATERIAL_HASH_REGEX,
+  forjarPersonaStatusSchema,
+  forjarArquivoSchema,
+  forjarPersonaRequestSchema,
+  forjarPersonaResponseSchema,
+} from "./forjador"
+export type {
+  ForjarPersonaStatus,
+  ForjarArquivo,
+  ForjarPersonaRequest,
+  ForjarPersonaResponse,
+} from "./forjador"
+
 // HelpDesk persistido no core
 export {
   helpDeskSessionStatusSchema,

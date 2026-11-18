@@ -11,12 +11,15 @@
 import {
   bigint,
   boolean,
+  char,
   index,
   int,
   json,
+  longtext,
   mysqlEnum,
   mysqlTable,
   primaryKey,
+  text,
   timestamp,
   uniqueIndex,
   varchar,
@@ -467,5 +470,50 @@ export const transbordos = mysqlTable(
     index("idx_transbordos_tenant_slug").on(t.tenantSlug),
     index("idx_transbordos_sessao_id").on(t.sessaoId),
     index("idx_transbordos_estado").on(t.estado),
+  ],
+)
+
+/**
+ * Personas geradas pelo Forjador por API (isas-mt-04) — versionamento no core.
+ * Vínculo PROVISÓRIO por tenant_slug/tenant_id SEM FK para tenants (a tabela de
+ * isas-mt-01 ainda não existe); espelha a convenção de `assinaturas.tenant_id`.
+ * `correlation_id` é a chave de idempotência/retomada do forjamento.
+ */
+export const personasForjadas = mysqlTable(
+  "personas_forjadas",
+  {
+    id: bigint("id", { mode: "number", unsigned: true })
+      .primaryKey()
+      .autoincrement(),
+    /** Referência provisória até a tabela tenants existir no core. */
+    tenantSlug: varchar("tenant_slug", { length: 64 }),
+    /** Reservado para a FK de tenants, a ser adicionada no follow-up isas-mt-01. */
+    tenantId: bigint("tenant_id", { mode: "number", unsigned: true }),
+    descricaoNegocio: text("descricao_negocio").notNull(),
+    /** SHA-256 (hex) do material enviado — auditoria/repetibilidade. */
+    materialHash: char("material_hash", { length: 64 }),
+    /** Chave de idempotência/retomada em caso de timeout. */
+    correlationId: varchar("correlation_id", { length: 100 }),
+    /** Textos da persona — nulos enquanto `pending`. */
+    soulMd: longtext("soul_md"),
+    identityMd: longtext("identity_md"),
+    agentsMd: longtext("agents_md"),
+    versao: int("versao", { unsigned: true }).notNull(),
+    /** Session key da sessão do Forjador (waitForSessionIdle). */
+    sessionKey: varchar("session_key", { length: 200 }),
+    status: mysqlEnum("status", ["pending", "completed", "failed", "timeout"])
+      .notNull()
+      .default("pending"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at")
+      .notNull()
+      .defaultNow()
+      .onUpdateNow(),
+  },
+  (t) => [
+    // MySQL permite múltiplos NULL em UNIQUE — personas sem slug versionam livremente.
+    uniqueIndex("uq_personas_forjadas_tenant_slug_versao").on(t.tenantSlug, t.versao),
+    index("idx_personas_forjadas_tenant_slug").on(t.tenantSlug),
+    index("idx_personas_forjadas_correlation_id").on(t.correlationId),
   ],
 )
