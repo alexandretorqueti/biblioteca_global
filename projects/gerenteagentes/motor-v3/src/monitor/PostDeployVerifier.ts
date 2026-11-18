@@ -63,6 +63,24 @@ interface CommitRow extends RowDataPacket {
   deletions: number | null
 }
 
+/**
+ * ER_NO_SUCH_TABLE (MySQL errno 1146). `motor_subtask_commits` é uma tabela
+ * fantasma — referenciada apenas por esta query desde task-p2-971/976, nunca
+ * criada por migration nem populada por código algum (mesma classe do
+ * incidente task-p2-984 com `t.criterios_aceite`, corrigido em f7589d69).
+ * Toda verificação pós-deploy falhava com "Table ... doesn't exist" em
+ * silêncio (ex.: batch deploy-1fe45c83). Enquanto não existir tabela
+ * canônica de commits por subtarefa, a ausência é tolerada e o contexto
+ * segue sem commits; qualquer outro erro continua propagando.
+ */
+function isMissingTableError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { errno?: unknown }).errno === 1146
+  )
+}
+
 interface TestRunRow extends RowDataPacket {
   id: number
   phase: string
@@ -606,15 +624,22 @@ export class PostDeployVerifier {
       )
       subtasks.set(task.database_task_id, subtaskRows)
 
-      const [commitRows] = await this.pool.query<CommitRow[]>(
-        `SELECT commit_sha, commit_message, files_changed, insertions, deletions
-           FROM motor_subtask_commits
-          WHERE subtarefa_id IN (SELECT id FROM subtarefas WHERE tarefa_id = ?)
-          ORDER BY committed_at DESC
-          LIMIT 20`,
-        [task.database_task_id],
-      )
-      commits.push(...commitRows)
+      try {
+        const [commitRows] = await this.pool.query<CommitRow[]>(
+          `SELECT commit_sha, commit_message, files_changed, insertions, deletions
+             FROM motor_subtask_commits
+            WHERE subtarefa_id IN (SELECT id FROM subtarefas WHERE tarefa_id = ?)
+            ORDER BY committed_at DESC
+            LIMIT 20`,
+          [task.database_task_id],
+        )
+        commits.push(...commitRows)
+      } catch (error) {
+        if (!isMissingTableError(error)) throw error
+        console.warn(
+          '[PostDeployVerifier] motor_subtask_commits ausente; contexto segue sem commits de subtarefa',
+        )
+      }
 
       const [testRunRows] = await this.pool.query<TestRunRow[]>(
         `SELECT id, phase, status, passed_count, failed_count, duration_ms
