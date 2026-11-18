@@ -26,6 +26,7 @@ import { VendasModule } from "./modules/vendas/vendas.module"
 import { TransbordoModule } from "./modules/transbordo/transbordo.module"
 import { TenantsModule } from "./modules/tenants/tenants.module"
 import { ForjadorModule } from "./modules/forjador/forjador.module"
+import { PainelTenantModule } from "./modules/painel-tenant/painel-tenant.module"
 
 @Module({
   imports: [
@@ -56,6 +57,7 @@ import { ForjadorModule } from "./modules/forjador/forjador.module"
     TransbordoModule,
     TenantsModule,
     ForjadorModule,
+    PainelTenantModule,
     // CrudModule por último: rotas :resource não podem sombrear as
     // específicas (auth/usuarios/projetos/gerenteagentes/encomendas-registro/painel-portaria/ocorrencias).
     CrudModule,

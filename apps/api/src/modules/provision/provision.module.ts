@@ -8,11 +8,12 @@ import { ProjetosModule } from "../projetos/projetos.module"
 import { UsuariosModule } from "../usuarios/usuarios.module"
 import { ProvisionController } from "./provision.controller"
 import { ProvisionService } from "./provision.service"
+import { TenantIngestGuard } from "./provision.guard"
 
 @Module({
   imports: [AuthModule, UsuariosModule, ProjetosModule],
   controllers: [ProvisionController],
-  providers: [ProvisionService],
-  exports: [ProvisionService],
+  providers: [ProvisionService, TenantIngestGuard],
+  exports: [ProvisionService, TenantIngestGuard],
 })
 export class ProvisionModule {}
