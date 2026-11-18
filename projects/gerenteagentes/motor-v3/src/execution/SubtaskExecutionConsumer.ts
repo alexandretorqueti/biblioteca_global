@@ -496,7 +496,11 @@ export class SubtaskExecutionConsumer {
       preExistingFailureCount: run.preExistingFailures.length, resolvedFailureCount: run.resolvedFailures.length,
       retryableByDeveloper: !inconclusive,
       ...(success ? {} : inconclusive
-        ? { error: 'Gate inconclusivo: o ambiente do pós-DEV diverge do ambiente registrado no baseline. A alteração não foi atribuída ao DEV.' }
+        // comparisonStatus 'inconclusive' só é produzido por flakyDetected no
+        // TestGateService (falha nova que não se reproduziu na reexecução de
+        // confirmação). A mensagem anterior culpava divergência de ambiente,
+        // o que desviou o diagnóstico do bloqueio 3469 (isas-mt-07).
+        ? { error: 'Gate inconclusivo: falha nova no pós-DEV não se reproduziu na reexecução de confirmação (teste instável sob carga). A alteração não foi atribuída ao DEV; nenhuma divergência de ambiente foi detectada.' }
         : { error: [
             `Sua alteração introduziu ${run.newFailures.length} regressão(ões) nova(s):`,
             run.newFailures.map((failure, index) => `${index + 1}. ${failure.suite}${failure.testCase ? ` > ${failure.testCase}` : ''}: ${failure.normalizedMessage}`).join('\n'),
