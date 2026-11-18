@@ -21,6 +21,7 @@ import { OcorrenciasModule } from "./modules/ocorrencias/ocorrencias.module"
 import { HelpDeskModule } from "./modules/helpdesk/helpdesk.module"
 import { LgpdModule } from "./modules/lgpd/lgpd.module"
 import { LogsLoginModule } from "./modules/logs-login/logs-login.module"
+import { BillingModule } from "./modules/billing/billing.module"
 
 @Module({
   imports: [
@@ -46,6 +47,7 @@ import { LogsLoginModule } from "./modules/logs-login/logs-login.module"
     HelpDeskModule,
     LgpdModule,
     LogsLoginModule,
+    BillingModule,
     // CrudModule por último: rotas :resource não podem sombrear as
     // específicas (auth/usuarios/projetos/gerenteagentes/encomendas-registro/painel-portaria/ocorrencias).
     CrudModule,
