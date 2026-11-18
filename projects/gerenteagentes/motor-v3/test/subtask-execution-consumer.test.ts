@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { execFileSync } from 'node:child_process'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -597,15 +598,19 @@ describe('SubtaskExecutionConsumer — verificação pós-conclusão external_op
     const worktrees = { prepare: vi.fn().mockResolvedValue({ path: worktreePath, branch: 'branch', baseCommit: 'abc' }) }
     const worker = { executeTask: vi.fn().mockResolvedValue({ success: true, response, attempts: 1 }) }
     const logger = { append: vi.fn().mockResolvedValue(undefined) }
-    const consumer = new SubtaskExecutionConsumer(repository as never, worktrees as never, worker as never, {}, {}, logger, undefined, undefined, undefined, undefined, undefined, undefined, undefined, notifier as never)
+    const events: Array<{ taskId: string; event: string; payload: Record<string, unknown> }> = []
+    const taskEvents = { record: vi.fn(async (taskId: string, event: string, _actor: string, payload?: Record<string, unknown> | null) => {
+      events.push({ taskId, event, payload: payload ?? {} })
+    }) }
+    const consumer = new SubtaskExecutionConsumer(repository as never, worktrees as never, worker as never, {}, {}, logger, undefined, undefined, undefined, undefined, undefined, undefined, taskEvents as never, notifier as never)
     await consumer.handle(message)
-    return { repository, logger, notifier }
+    return { repository, logger, notifier, events }
   }
 
   it('alerta caminho ausente sem reverter a conclusão entregue', async () => {
     const worktree = await mkdtemp(join(tmpdir(), 'motor-external-check-'))
     try {
-      const { repository, logger, notifier } = await runExternal(
+      const { repository, logger, notifier, events } = await runExternal(
         'O que foi feito: gerei o runbook.\nComo verificar: veja runbook.md\n::DONE::', worktree,
       )
       expect(repository.completeNoCodeExecution).toHaveBeenCalled()
@@ -617,17 +622,51 @@ describe('SubtaskExecutionConsumer — verificação pós-conclusão external_op
         reasonCode: 'external_operation_missing_artifact',
         result: expect.objectContaining({ missingPaths: ['runbook.md'] }),
       }))
+      expect(events).toContainEqual(expect.objectContaining({ event: 'subtask.external_artifact_alert' }))
     } finally { await rm(worktree, { recursive: true, force: true }) }
   })
 
   it('não alerta arquivo existente nem resposta sem caminho', async () => {
     const worktree = await mkdtemp(join(tmpdir(), 'motor-external-check-'))
     try {
+      execFileSync('git', ['init', '-q', worktree])
+      execFileSync('git', ['-C', worktree, 'config', 'user.email', 'motor@test.local'])
+      execFileSync('git', ['-C', worktree, 'config', 'user.name', 'Motor Test'])
       await writeFile(join(worktree, 'runbook.md'), '# ok')
+      execFileSync('git', ['-C', worktree, 'add', 'runbook.md'])
+      execFileSync('git', ['-C', worktree, 'commit', '-qm', 'runbook'])
       const existing = await runExternal('O que foi feito: gerei o runbook.\nComo verificar: veja runbook.md\n::DONE::', worktree)
       const noPath = await runExternal('O que foi feito: operação concluída.\nComo verificar: consulte o painel.\n::DONE::', worktree)
       expect(existing.notifier.notify).not.toHaveBeenCalled()
       expect(noPath.notifier.notify).not.toHaveBeenCalled()
+    } finally { await rm(worktree, { recursive: true, force: true }) }
+  })
+
+  it('alerta arquivo untracked no worktree como não persistente', async () => {
+    const worktree = await mkdtemp(join(tmpdir(), 'motor-external-check-'))
+    try {
+      execFileSync('git', ['init', '-q', worktree])
+      execFileSync('git', ['-C', worktree, 'config', 'user.email', 'motor@test.local'])
+      execFileSync('git', ['-C', worktree, 'config', 'user.name', 'Motor Test'])
+      await writeFile(join(worktree, 'tracked.txt'), 'base\n')
+      execFileSync('git', ['-C', worktree, 'add', 'tracked.txt'])
+      execFileSync('git', ['-C', worktree, 'commit', '-qm', 'base'])
+      await writeFile(join(worktree, 'runbook.md'), '# apenas no worktree')
+      const { repository, logger, notifier, events } = await runExternal(
+        'O que foi feito: gerei o runbook.\nComo verificar: veja runbook.md\n::DONE::', worktree,
+      )
+      expect(repository.completeNoCodeExecution).toHaveBeenCalled()
+      expect(notifier.notify).toHaveBeenCalledWith(expect.objectContaining({
+        blockReason: 'external_operation_non_persistent_artifact',
+      }))
+      expect(logger.append).toHaveBeenCalledWith(expect.objectContaining({
+        reasonCode: 'external_operation_non_persistent_artifact',
+        result: expect.objectContaining({ nonPersistentPaths: ['runbook.md'] }),
+      }))
+      expect(events).toContainEqual(expect.objectContaining({
+        event: 'subtask.external_artifact_alert',
+        payload: expect.objectContaining({ reasonCode: 'external_operation_non_persistent_artifact' }),
+      }))
     } finally { await rm(worktree, { recursive: true, force: true }) }
   })
 

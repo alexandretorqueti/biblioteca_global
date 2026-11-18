@@ -5,7 +5,7 @@ import { appendFile, mkdir, rename as fsRename, writeFile } from 'node:fs/promis
 import { dirname } from 'node:path'
 import { promisify } from 'node:util'
 import { CommandPolicyResolver, type CommandPolicyRepository, type OperationLogger, type OperationOutcome, type OperationPhase } from '../commands/index.js'
-import { GitWorktreePreparer, mapHostRepoPathToContainer } from '../execution/GitWorktreePreparer.js'
+import { GitWorktreePreparer, mapHostRepoPathToContainer, type WorktreeCleanupReport } from '../execution/GitWorktreePreparer.js'
 import type { QueueMessage } from '../queue/index.js'
 import { TestGateOrchestrator } from '../testing/index.js'
 import { DeployRepository, type DeployBatch, type DeployTaskContext, type MemberConflictResult } from './DeployRepository.js'
@@ -271,6 +271,7 @@ export class DeployConsumer {
         const report = await this.worktrees.cleanup(taskId, repoPath)
         if (report.artifactSalvage?.length && operationId && message) {
           for (const salvage of report.artifactSalvage) {
+            const subtaskId = this.inferSubtaskId(salvage.worktreePath)
             const result = {
               taskId,
               worktreePath: salvage.worktreePath,
@@ -284,6 +285,8 @@ export class DeployConsumer {
               reasonCode: salvage.errors.length > 0 ? 'artifact_salvage_failed' : 'artifact_salvaged',
               result,
             }).catch(error => console.error('[Motor v3] Falha ao registrar relatório de resgate:', error instanceof Error ? error.message : String(error)))
+            // GAP 1: anotação persistente por subtarefa apontando ao caminho real
+            await this.recordArtifactsSalvaged(taskId, salvage, subtaskId)
             console.warn(JSON.stringify({
               event: salvage.errors.length > 0 ? 'worktree_artifact_salvage_failed' : 'worktree_artifact_salvaged',
               alert: true,
@@ -1016,6 +1019,41 @@ export class DeployConsumer {
       await this.taskEvents?.record(taskId, event, 'motor', payload)
     } catch (error) {
       console.warn(`[Motor v3] Falha ao registrar ${event}:`, error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  /**
+   * GAP 1 — resultado da subtarefa apontando para caminho real do artefato.
+   *
+   * O resgate do cleanup pós-deploy só escrevia o mapeamento sourcePath →
+   * artifactPath no operation log do deploy; o resultado persistido da
+   * subtarefa continuava apontando para o caminho morto do worktree (foi
+   * exatamente o incidente isas-mt-06/1493). Como o DeployConsumer não
+   * escreve diretamente no resultado da subtarefa, registramos aqui uma
+   * anotação persistente via mesmo `TaskEventSink` usado por `recordEvent`
+   * (evento `subtask.artifacts_salvaged`, subtaskId inferido do worktree de
+   * origem). O evento é a ponte para o resultado real ficar associado ao
+   * caminho persistente (GAP 3 na documentação). O alerta console.warn do
+   * salvage permanece inalterado.
+   */
+  private inferSubtaskId(worktreePath: string): string | undefined {
+    // Path padrão: {MOTOR_WORKTREE_ROOT}/<taskId>/<subtaskId>/<tentativa>
+    const segments = worktreePath.split('/').filter(Boolean)
+    return segments.length >= 2 ? segments[segments.length - 2] : undefined
+  }
+
+  private async recordArtifactsSalvaged(taskId: string, salvage: WorktreeCleanupReport['artifactSalvage'][number], subtaskId: string | undefined): Promise<void> {
+    if (!this.taskEvents) return
+    if (subtaskId == null || salvage.files.length === 0) return
+    try {
+      await this.taskEvents.record(taskId, 'subtask.artifacts_salvaged', 'motor', {
+        worktreePath: salvage.worktreePath,
+        artifactRoot: salvage.artifactRoot,
+        salvaged: salvage.files.map(file => ({ sourcePath: file.sourcePath, artifactPath: file.artifactPath })),
+        errors: salvage.errors.length > 0 ? salvage.errors : undefined,
+      })
+    } catch (error) {
+      console.warn(`[Motor v3] Falha ao anotar artefatos resgatados da subtarefa ${subtaskId}:`, error instanceof Error ? error.message : String(error))
     }
   }
 }

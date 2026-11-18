@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto'
+import { execFile } from 'node:child_process'
 import { access } from 'node:fs/promises'
-import { isAbsolute, resolve } from 'node:path'
+import { isAbsolute, relative, resolve, sep } from 'node:path'
+import { promisify } from 'node:util'
 import type { QueueMessage } from '../queue/QueueMessage.js'
 import type { OperationLogEntry, OperationLogger } from '../commands/OperationLogger.js'
 import type { PrimitiveContext } from '../primitives/types.js'
@@ -782,6 +784,10 @@ export class SubtaskExecutionConsumer {
    * A checagem é deliberadamente best-effort: nunca altera a conclusão já
    * persistida nem transforma falha de fs em retry da execução.
    */
+  // GAP 2 (artefatos-worktree subtarefa 2): um arquivo citado que existe APENAS
+  // como untracked/modificado no worktree (nunca commitado em nenhum ref) sobrevive
+  // à checagem de existência acima e morre no cleanup. Endurecer: um caminho
+  // presente só dentro do worktree não é persistente → alerta ao monitor. Best-effort.
   private async checkExternalOperationArtifacts(
     operationId: string,
     sequence: number,
@@ -793,6 +799,7 @@ export class SubtaskExecutionConsumer {
     try {
       const citedPaths = extractExternalOperationPaths(response)
       const missing: string[] = []
+      const nonPersistent: string[] = []
       for (const citedPath of citedPaths) {
         const diskPath = isAbsolute(citedPath) ? citedPath : resolve(worktreePath, citedPath)
         try {
@@ -803,25 +810,49 @@ export class SubtaskExecutionConsumer {
           else throw error
         }
       }
-      if (missing.length === 0) {
+      // GAP 2: caminhos que existem APENAS dentro do worktree (untracked/modificado
+      // não commitado) não são persistentes — sobrevivem ao access() e somem no
+      // cleanup. Só marcamos os citados que já existem (não os ausentes), pois
+      // persistência é relevante apenas quando o arquivo está presente no worktree.
+      for (const citedPath of extractExternalOperationPaths(response)) {
+        const diskPath = isAbsolute(citedPath) ? citedPath : resolve(worktreePath, citedPath)
+        try {
+          await access(diskPath)
+        } catch {
+          continue // ausente: já tratado como missing
+        }
+        if (await this.isConfinedToWorktree(diskPath, worktreePath)) nonPersistent.push(citedPath)
+      }
+      if (missing.length === 0 && nonPersistent.length === 0) {
         await this.log(operationId, sequence, message, {
           phase: 'primitive', outcome: 'succeeded', subtaskId: execution.subtaskId,
           primitiveCode: 'check_external_operation_artifacts', reasonCode: 'external_operation_artifact_check',
-          result: { citedPaths, missingPaths: [] },
+          result: { citedPaths, missingPaths: [], nonPersistentPaths: [] },
         })
         return { logEntries: 1 }
       }
 
-      const summary = `tarefa=${message.taskId}; subtarefa=${execution.subtaskId}; caminhos ausentes=${missing.join(', ')}`
+      const reasonCode = nonPersistent.length > 0
+        ? 'external_operation_non_persistent_artifact'
+        : 'external_operation_missing_artifact'
+      const summary = `tarefa=${message.taskId}; subtarefa=${execution.subtaskId}; caminhos ausentes=${missing.join(', ')}; caminhos não persistentes=${nonPersistent.join(', ')}`
       await this.log(operationId, sequence, message, {
         phase: 'primitive', outcome: 'succeeded', subtaskId: execution.subtaskId,
-        primitiveCode: 'check_external_operation_artifacts', reasonCode: 'external_operation_missing_artifact',
-        result: { citedPaths, missingPaths: missing, worktreePath },
+        primitiveCode: 'check_external_operation_artifacts', reasonCode,
+        result: { citedPaths, missingPaths: missing, nonPersistentPaths: nonPersistent, worktreePath },
+      })
+      await this.recordEvent(message.taskId, 'subtask.external_artifact_alert', {
+        subtaskId: execution.subtaskId,
+        reasonCode,
+        citedPaths,
+        missingPaths: missing,
+        nonPersistentPaths: nonPersistent,
+        worktreePath,
       })
       try {
         await this.humanNotifier?.notify({
           taskId: message.taskId,
-          blockReason: 'external_operation_missing_artifact',
+          blockReason: reasonCode,
           summary,
         })
       } catch (error) {
@@ -836,6 +867,51 @@ export class SubtaskExecutionConsumer {
       })
       console.warn('[SubtaskExecutionConsumer] checagem de artefatos externos falhou:', error instanceof Error ? error.message : String(error))
       return { logEntries: 1 }
+    }
+  }
+
+  // GAP 2: um caminho citado é NÃO persistente quando existe apenas dentro do
+  // worktree da subtarefa — i.e. está untracked ou modificado mas NUNCA commitado
+  // no worktree (git status --porcelain -- <path) nem em nenhum ref. Um arquivo
+  // commitado em qualquer ref ou fora do worktree continua passando sem alerta.
+  private async isConfinedToWorktree(diskPath: string, worktreePath: string): Promise<boolean> {
+    try {
+      const relativePath = relative(worktreePath, diskPath)
+      if (!relativePath || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) return false
+      const execFileAsync = promisify(execFile)
+      // (1) O status do caminho dentro do worktree identifica untracked/modificado.
+      const { stdout: porcelain } = await execFileAsync('git', ['status', '--porcelain', '--', relativePath], { cwd: worktreePath, encoding: 'utf8' })
+      if (porcelain.trim() === '') {
+        // Sem alteração: pode estar commitado neste HEAD ou fora do worktree
+        // (git status -- <path> fora do worktree retorna vazio também).
+        // Distingue: se o caminho está FORA do worktree, não é responsabilidade
+        // desta salvaguarda — consideramos persistente (fora do escopo do cleanup).
+        return false
+      }
+      if (porcelain.trim().startsWith('??')) {
+        // Untracked: não commitado neste HEAD. Verificar se existe em algum ref.
+        return !(await this.existsInSomeRef(relativePath, worktreePath))
+      }
+      // Modificado/restagiado: existe no HEAD mas foi alterado localmente →
+      // a versão citada é a modificação local, não commitada → não persistente.
+      return true
+    } catch {
+      // Falha ao inspecionar: não bloquear a conclusão (best-effort) → assume
+      // persistente, evitando alertas falsos.
+      return false
+    }
+  }
+
+  // GAP 2: existe em algum ref (HEAD de algum branch ou árvore de objetos) ⇒ o
+  // arquivo está gravado de forma persistente e sobrevive ao cleanup do worktree.
+  private async existsInSomeRef(relativePath: string, worktreePath: string): Promise<boolean> {
+    try {
+      const execFileAsync = promisify(execFile)
+      // O pathspec restringe a busca ao arquivo citado, em qualquer ref.
+      const { stdout } = await execFileAsync('git', ['rev-list', '--all', '--objects', '--', relativePath], { cwd: worktreePath, encoding: 'utf8' })
+      return stdout.trim().length > 0
+    } catch {
+      return false
     }
   }
 
