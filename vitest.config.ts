@@ -21,6 +21,11 @@ export default defineConfig({
       "**/e2e/**",
       "**/worktrees/**",
       "wt-*/**",
+      // Worktrees do Motor v3 (.motor-v3-worktrees/<tarefa>/...) — o padrão
+      // **/worktrees/** acima não os cobre; sem isto, rodar a suíte a partir
+      // do checkout principal duplica cada teste por worktree existente
+      // (incidente bloqueio 3469, 2026-11-18).
+      "**/.motor-v3-worktrees/**",
       // Worktrees de tarefas podem existir dentro de projetos; são cópias de
       // outros repositórios e não fazem parte da suíte desta integração.
       "**/worktrees/**",

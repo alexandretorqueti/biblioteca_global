@@ -342,8 +342,11 @@ describe("Preservação da aba ativa ao trocar de tarefa", () => {
     await setupDuasTarefas()
 
     // Usuário abre a tarefa 1 e entra na aba Chat.
+    // Timeout alargado (5s, como no setup): a troca de tarefa depende de fetch
+    // assíncrono do motor-detail; sob carga do gate o padrão de 1s flakou
+    // (run 1104, bloqueio 3469 — falha "flaky" terminou a subtarefa 1483).
     fireEvent.click(await screen.findByTestId("operation-map-task-1"))
-    await waitFor(() => expect(screen.getByTestId("detail-content")).toHaveTextContent("#1 Primeira tarefa"))
+    await waitFor(() => expect(screen.getByTestId("detail-content")).toHaveTextContent("#1 Primeira tarefa"), { timeout: 5000 })
     fireEvent.click(screen.getByRole("tab", { name: "Chat" }))
     expect(await screen.findByText("mensagem da tarefa um")).toBeInTheDocument()
 
@@ -353,7 +356,7 @@ describe("Preservação da aba ativa ao trocar de tarefa", () => {
       expect(screen.getByTestId("detail-content")).toHaveTextContent("#2 Segunda tarefa")
       expect(screen.getByRole("tab", { name: "Chat" })).toHaveAttribute("aria-selected", "true")
       expect(screen.getByRole("tab", { name: "Resumo" })).toHaveAttribute("aria-selected", "false")
-    })
+    }, { timeout: 5000 })
     expect(await screen.findByText("mensagem da tarefa dois")).toBeInTheDocument()
   })
 
@@ -362,13 +365,13 @@ describe("Preservação da aba ativa ao trocar de tarefa", () => {
 
     fireEvent.click(await screen.findByTestId("operation-map-task-1"))
     fireEvent.click(screen.getByRole("tab", { name: "Execução" }))
-    await waitFor(() => expect(screen.getByRole("tab", { name: "Execução" })).toHaveAttribute("aria-selected", "true"))
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Execução" })).toHaveAttribute("aria-selected", "true"), { timeout: 5000 })
 
     fireEvent.click(screen.getByTestId("operation-map-task-2"))
     await waitFor(() => {
       expect(screen.getByTestId("detail-content")).toHaveTextContent("#2 Segunda tarefa")
       expect(screen.getByRole("tab", { name: "Execução" })).toHaveAttribute("aria-selected", "true")
-    })
+    }, { timeout: 5000 })
   })
 
   it("mantém as abas Logs e Histórico ao trocar de tarefa", async () => {
@@ -380,16 +383,16 @@ describe("Preservação da aba ativa ao trocar de tarefa", () => {
     await waitFor(() => {
       expect(screen.getByTestId("detail-content")).toHaveTextContent("#2 Segunda tarefa")
       expect(screen.getByRole("tab", { name: "Logs" })).toHaveAttribute("aria-selected", "true")
-    })
+    }, { timeout: 5000 })
 
     fireEvent.click(screen.getByTestId("operation-map-task-1"))
-    await waitFor(() => expect(screen.getByTestId("detail-content")).toHaveTextContent("#1 Primeira tarefa"))
+    await waitFor(() => expect(screen.getByTestId("detail-content")).toHaveTextContent("#1 Primeira tarefa"), { timeout: 5000 })
     fireEvent.click(screen.getByRole("tab", { name: "Histórico" }))
     fireEvent.click(screen.getByTestId("operation-map-task-2"))
     await waitFor(() => {
       expect(screen.getByTestId("detail-content")).toHaveTextContent("#2 Segunda tarefa")
       expect(screen.getByRole("tab", { name: "Histórico" })).toHaveAttribute("aria-selected", "true")
-    })
+    }, { timeout: 5000 })
   })
 
 })
