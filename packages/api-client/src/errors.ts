@@ -26,6 +26,9 @@ export class ApiClientError extends Error {
         erro.details,
       )
     }
-    return new ApiClientError(status, `HTTP_${status}`, "Erro inesperado")
+    // Corpo sem `code` (ex.: 403 {status:"suspenso"} do tenants.controller,
+    // que bypassa o filtro de exceções): preserva o body em `details` para o
+    // cliente poder discriminar o estado sem parsing de mensagem.
+    return new ApiClientError(status, `HTTP_${status}`, "Erro inesperado", body)
   }
 }
