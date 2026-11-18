@@ -63,18 +63,19 @@ export const DEFAULT_TENANT_CHAT_CONFIG: Omit<TenantChatConfig, "nome"> = {
   canais: { web: true, whatsapp: false },
 }
 
-const tenantChatConfigInputSchema = z
+export const tenantChatConfigInputSchema = z
   .object({
-    persona: z.object({ avatarUrl: optionalNonEmptyString, tom: optionalNonEmptyString }).strip().optional(),
-    paleta: z.object({ primaria: z.string().optional(), secundaria: z.string().optional(), fundo: z.string().optional() }).strip().optional(),
-    textos: z.object({ saudacao: z.string().optional(), placeholder: z.string().optional(), indisponivel: z.string().optional() }).strip().optional(),
-    ferramentas: z.array(z.string()).optional(),
-    idiomas: z.array(z.string()).optional(),
-    anexos: z.object({ permitido: z.boolean().optional(), tipos: z.array(z.string()).optional(), maxMb: z.number().optional() }).strip().optional(),
-    chat: z.object({ mostrarIndicadorDigitacao: z.boolean().optional() }).strip().optional(),
-    lgpd: z.object({ aviso: z.string().optional(), politicaUrl: z.string().optional() }).strip().optional(),
-    tema: z.object({ modo: z.enum(["claro", "escuro"]).optional() }).strip().optional(),
-    canais: z.object({ web: z.boolean().optional(), whatsapp: z.boolean().optional() }).strip().optional(),
+    nome: z.string().trim().min(1).optional(),
+    persona: tenantChatConfigSchema.shape.persona.partial().optional(),
+    paleta: tenantChatConfigSchema.shape.paleta.partial().optional(),
+    textos: tenantChatConfigSchema.shape.textos.partial().optional(),
+    ferramentas: tenantChatConfigSchema.shape.ferramentas.optional(),
+    idiomas: tenantChatConfigSchema.shape.idiomas.optional(),
+    anexos: tenantChatConfigSchema.shape.anexos.partial().optional(),
+    chat: tenantChatConfigSchema.shape.chat.partial().optional(),
+    lgpd: tenantChatConfigSchema.shape.lgpd.partial().optional(),
+    tema: tenantChatConfigSchema.shape.tema.partial().optional(),
+    canais: tenantChatConfigSchema.shape.canais.partial().optional(),
   })
   .strip()
 
