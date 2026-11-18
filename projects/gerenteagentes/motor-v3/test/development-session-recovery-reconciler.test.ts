@@ -160,6 +160,54 @@ describe('DevelopmentSessionRecoveryReconciler', () => {
     )
   })
 
+  it('fecha sessão DEV active órfã stale sem lease e libera a recuperação da subtarefa', async () => {
+    const orphan = {
+      ...row,
+      runtime_session_id: null,
+      execution_id: null,
+      last_activity_at: new Date(Date.now() - 60 * 60_000),
+      development_lease_alive: 0,
+    }
+    const { reconciler, pool, repository, events } = setup({ isComplete: false }, orphan, { staleMinutes: 35 })
+    pool.query.mockReset().mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM motor_agent_sessions mas')) return [[orphan]]
+      if (sql.includes('FROM subtarefas s')) {
+        return [[{ tarefa_id: 905, task_external_id: 'task-p2-905', subtarefa_id: 1219 }]]
+      }
+      return [[]]
+    })
+
+    await reconciler.reconcile()
+
+    expect(pool.query).toHaveBeenCalledWith(expect.stringContaining('SET status=?'), [
+      'failed', 'development_orphan_session', 7,
+    ])
+    expect(events.record).toHaveBeenCalledWith(
+      'task-p2-905', 'development_orphan_session_closed', 'motor',
+      expect.objectContaining({ sessionId: 7, subtaskId: 1219 }),
+    )
+    expect(repository.requeueInterruptedExecution).toHaveBeenCalledTimes(1)
+    expect(repository.requeueInterruptedExecution).toHaveBeenCalledWith(
+      'task-p2-905', 1219, 'orphan-dev-1219', 'running_without_persisted_session',
+    )
+  })
+
+  it('não fecha sessão órfã stale enquanto houver lease DEV viva', async () => {
+    const leased = {
+      ...row,
+      runtime_session_id: null,
+      execution_id: null,
+      last_activity_at: new Date(Date.now() - 60 * 60_000),
+      development_lease_alive: 1,
+    }
+    const { reconciler, pool, repository, events } = setup({ isComplete: false }, leased)
+    await reconciler.reconcile()
+
+    expect(pool.query).not.toHaveBeenCalledWith(expect.stringContaining('SET status=?'), expect.anything())
+    expect(repository.requeueInterruptedExecution).not.toHaveBeenCalled()
+    expect(events.record).not.toHaveBeenCalledWith('task-p2-905', 'development_orphan_session_closed', 'motor', expect.anything())
+  })
+
   it('reabre timeout legado antes de processar a sessão concluída', async () => {
     const legacy = { ...row, subtask_status: 'failed' }
     const { reconciler, repository, consumer, events } = setup({ isComplete: true, lastResponse: 'Recuperado ::DONE::' }, legacy)
