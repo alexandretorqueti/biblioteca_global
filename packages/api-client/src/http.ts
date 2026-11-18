@@ -19,6 +19,7 @@ export interface RequestOptions {
   auth?: AuthMode
   /** Headers adicionais (ex.: Authorization com token de serviço). */
   headers?: Record<string, string>
+  responseType?: "json" | "text"
 }
 
 /** Defesa em profundidade: nenhum body pode carregar projetoId. */
@@ -55,6 +56,7 @@ export class ApiHttpClient {
       fetch(url, init).then((r) => ({
         status: r.status,
         json: () => r.json() as Promise<unknown>,
+        text: () => r.text(),
       }))
     )
   }
@@ -122,7 +124,9 @@ export class ApiHttpClient {
       }
     }
 
-    const dados: unknown = await resposta.json().catch(() => undefined)
+    const dados: unknown = opts.responseType === "text" && resposta.text
+      ? await resposta.text().catch(() => "")
+      : await resposta.json().catch(() => undefined)
     if (resposta.status >= 200 && resposta.status < 300) {
       return dados as T
     }

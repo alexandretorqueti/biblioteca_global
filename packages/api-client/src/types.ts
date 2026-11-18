@@ -27,7 +27,7 @@ export type FetchFn = (
     body?: string
     signal?: AbortSignal
   },
-) => Promise<{ status: number; json(): Promise<unknown> }>
+) => Promise<{ status: number; json(): Promise<unknown>; text?(): Promise<string> }>
 
 export interface ApiClientOptions {
   /** ex.: "http://localhost:3001/api" */

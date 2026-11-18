@@ -12,6 +12,7 @@ import ProjectSelectScreen from "../screens/ProjectSelectScreen"
 import SystemScreen from "../screens/SystemScreen"
 import PoliticaPrivacidadeScreen from "../screens/PoliticaPrivacidadeScreen"
 import { RequireAuth, RequireProject } from "./RequireAuth"
+import PainelTenantScreen from "../screens/PainelTenantScreen"
 
 /** Raiz: autenticado + sem projeto → seleção; com projeto → sistema. */
 function RootRedirect(): ReactNode {
@@ -56,6 +57,7 @@ export function AppRoutes(): ReactNode {
           </RequireProject>
         }
       />
+      <Route path="/painel" element={<RequireProject><PainelTenantScreen /></RequireProject>} />
 
       {/* Fallback */}
       <Route path="*" element={<RootRedirect />} />
