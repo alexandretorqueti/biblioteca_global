@@ -29,6 +29,7 @@ export interface PreparedWorktree {
   integrationPath: string
   integrationBranch: string
   recoveries?: WorktreeRecovery[]
+  artifactSalvage?: WorktreeArtifactSalvage[]
   lineage?: LineageSyncReport
 }
 
@@ -83,11 +84,12 @@ export class IntegrationBaseSyncConflictError extends Error {
 }
 
 export interface WorktreeRecovery {
-  reasonCode: 'corrupt_subtask_worktree' | 'orphan_integration_directory' | 'orphan_worktree_registration' | 'reused_residual_branch' | 'discarded_residual_branch'
+  reasonCode: 'corrupt_subtask_worktree' | 'orphan_integration_directory' | 'orphan_worktree_registration' | 'reused_residual_branch' | 'discarded_residual_branch' | 'worktree_artifact_salvaged'
   path: string
   action: 'removed_and_pruned' | 'quarantined' | 'reused_branch' | 'deleted_branch'
   branch?: string
   quarantinePath?: string
+  artifactSalvage?: WorktreeArtifactSalvage
 }
 
 export interface WorktreeArtifactSalvage {
@@ -130,16 +132,21 @@ export class GitWorktreePreparer {
     // uma branch existente (`motor-v3/...`). O runtime usa namespace próprio.
     const taskBranch = `motor-v3-work/integration-${safeTaskId}`
     const integrationPath = resolve(this.root, safeTaskId, 'integration')
-    const integration = await this.prepareNamedWorktree(repoPath, input.baseBranch, taskBranch, integrationPath)
+    const integration = await this.prepareNamedWorktree(repoPath, input.baseBranch, taskBranch, integrationPath, input.taskId)
     const branch = `motor-v3-work/subtask-${safeTaskId}-${input.subtaskId}-a1`
     const path = resolve(this.root, safeTaskId, String(input.subtaskId), 'a1')
     await mkdir(dirname(path), { recursive: true })
 
     const recoveries = [...integration.recoveries]
+    const artifactSalvage = integration.artifactSalvage ? [...integration.artifactSalvage] : []
     const existingCommit = await this.existingWorktreeCommit(repoPath, path, branch)
-    if (existingCommit) return { path, branch, baseCommit: existingCommit, integrationPath, integrationBranch: taskBranch, recoveries }
+    if (existingCommit) return { path, branch, baseCommit: existingCommit, integrationPath, integrationBranch: taskBranch, recoveries, artifactSalvage }
     if (await this.exists(path) || await this.isRegisteredWorktree(repoPath, path)) {
-      await this.removeBrokenSubtaskWorktree(repoPath, path)
+      const salvage = await this.removeBrokenSubtaskWorktree(input.taskId, repoPath, path)
+      if (salvage) {
+        artifactSalvage.push(salvage)
+        recoveries.push({ reasonCode: 'worktree_artifact_salvaged', path, action: 'removed_and_pruned', branch, artifactSalvage: salvage })
+      }
       recoveries.push({ reasonCode: 'corrupt_subtask_worktree', path, action: 'removed_and_pruned', branch })
     }
 
@@ -148,7 +155,9 @@ export class GitWorktreePreparer {
     const branchExists = await this.branchExists(repoPath, branch)
     if (branchExists) {
       if (await this.branchHasWorktree(repoPath, branch) || !await this.branchResolvesToCommit(repoPath, branch)) {
-        await this.removeBranchWorktrees(repoPath, branch)
+        const salvage = await this.removeBranchWorktrees(input.taskId, repoPath, branch)
+        artifactSalvage.push(...salvage)
+        for (const report of salvage) recoveries.push({ reasonCode: 'worktree_artifact_salvaged', path: report.worktreePath, action: 'removed_and_pruned', branch, artifactSalvage: report })
         await this.deleteBranch(repoPath, branch)
         recoveries.push({ reasonCode: 'discarded_residual_branch', path, action: 'deleted_branch', branch })
         await execFileAsync('git', ['worktree', 'add', '-b', branch, path, baseCommit], { cwd: repoPath })
@@ -159,7 +168,7 @@ export class GitWorktreePreparer {
     } else {
       await execFileAsync('git', ['worktree', 'add', '-b', branch, path, baseCommit], { cwd: repoPath })
     }
-    return { path, branch, baseCommit, integrationPath, integrationBranch: taskBranch, recoveries }
+    return { path, branch, baseCommit, integrationPath, integrationBranch: taskBranch, recoveries, artifactSalvage }
   }
 
   async prepareIntegration(input: { taskId: string; repoPath: string; baseBranch: string; subtaskId?: number }): Promise<PreparedWorktree> {
@@ -184,7 +193,7 @@ export class GitWorktreePreparer {
       })
       : undefined
     const prepared = await this.prepareNamedWorktree(repoPath, input.baseBranch, branch, path, input.taskId)
-    return { path, branch, baseCommit: prepared.commit, integrationPath: path, integrationBranch: branch, recoveries: prepared.recoveries, lineage }
+    return { path, branch, baseCommit: prepared.commit, integrationPath: path, integrationBranch: branch, recoveries: prepared.recoveries, artifactSalvage: prepared.artifactSalvage, lineage }
   }
 
   /**
@@ -310,17 +319,22 @@ export class GitWorktreePreparer {
     return stdout.trim() !== ''
   }
 
-  private async prepareNamedWorktree(repoPath: string, baseRef: string, branch: string, path: string, taskId?: string): Promise<{ commit: string; recoveries: WorktreeRecovery[] }> {
+  private async prepareNamedWorktree(repoPath: string, baseRef: string, branch: string, path: string, taskId?: string): Promise<{ commit: string; recoveries: WorktreeRecovery[]; artifactSalvage: WorktreeArtifactSalvage[] }> {
     await mkdir(dirname(path), { recursive: true })
     const recoveries: WorktreeRecovery[] = []
     const existingCommit = await this.existingWorktreeCommit(repoPath, path, branch)
-    if (existingCommit) return { commit: existingCommit, recoveries }
+    const artifactSalvage: WorktreeArtifactSalvage[] = []
+    if (existingCommit) return { commit: existingCommit, recoveries, artifactSalvage }
     if (await this.exists(path)) {
       const quarantinePath = await this.quarantine(path)
       recoveries.push({ reasonCode: 'orphan_integration_directory', path, action: 'quarantined', branch, quarantinePath })
     }
     if (await this.isRegisteredWorktree(repoPath, path)) {
-      await this.removeOrphanedWorktree(repoPath, path)
+      const salvage = await this.removeOrphanedWorktree(taskId, repoPath, path)
+      if (salvage) {
+        artifactSalvage.push(salvage)
+        recoveries.push({ reasonCode: 'worktree_artifact_salvaged', path, action: 'removed_and_pruned', branch, artifactSalvage: salvage })
+      }
       recoveries.push({ reasonCode: 'orphan_worktree_registration', path, action: 'removed_and_pruned', branch })
     }
     const branchExists = await this.branchExists(repoPath, branch)
@@ -345,7 +359,11 @@ export class GitWorktreePreparer {
       // Worktree registrado mas pasta física ausente (foi deletada manualmente)
       if (/missing but already registered worktree|already registered worktree/i.test(message)) {
         console.warn(`[GitWorktreePreparer] Worktree órfão detectado: ${path} — removendo registro e recriando`)
-        await this.removeOrphanedWorktree(repoPath, path)
+        const salvage = await this.removeOrphanedWorktree(taskId, repoPath, path)
+        if (salvage) {
+          artifactSalvage.push(salvage)
+          recoveries.push({ reasonCode: 'worktree_artifact_salvaged', path, action: 'removed_and_pruned', branch, artifactSalvage: salvage })
+        }
         // Tentar novamente após limpar o registro órfão
         if (branchExists) {
           await execFileAsync('git', ['worktree', 'add', path, branch], { cwd: repoPath })
@@ -357,26 +375,29 @@ export class GitWorktreePreparer {
       }
     }
     const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: path })
-    return { commit: stdout.trim(), recoveries }
+    return { commit: stdout.trim(), recoveries, artifactSalvage }
   }
 
   /**
    * Remove um worktree órfão (registrado mas com pasta física ausente).
    * Usa `git worktree remove --force` que limpa tanto o registro quanto o caminho (se existir).
    */
-  private async removeOrphanedWorktree(repoPath: string, path: string): Promise<void> {
+  private async removeOrphanedWorktree(taskId: string | undefined, repoPath: string, path: string): Promise<WorktreeArtifactSalvage | null> {
+    const salvage = taskId && await this.salvageDirtyWorktree(taskId, resolve(this.root, taskId.replace(/[^a-zA-Z0-9._-]/g, '-')), path)
     try {
       await execFileAsync('git', ['worktree', 'remove', '--force', path], { cwd: repoPath })
     } catch {
       // Se o worktree remove falhar (caminho já não existe), tentar prune
       await execFileAsync('git', ['worktree', 'prune'], { cwd: repoPath })
     }
+    return salvage || null
   }
 
-  private async removeBrokenSubtaskWorktree(repoPath: string, path: string): Promise<void> {
-    await this.removeOrphanedWorktree(repoPath, path)
+  private async removeBrokenSubtaskWorktree(taskId: string, repoPath: string, path: string): Promise<WorktreeArtifactSalvage | null> {
+    const salvage = await this.removeOrphanedWorktree(taskId, repoPath, path)
     await rm(path, { recursive: true, force: true })
     await execFileAsync('git', ['worktree', 'prune'], { cwd: repoPath })
+    return salvage
   }
 
   private async quarantine(path: string): Promise<string> {
@@ -534,14 +555,19 @@ export class GitWorktreePreparer {
   }
 
   /** Libera uma branch de subtarefa que ainda ficou presa a um registro residual. */
-  private async removeBranchWorktrees(repoPath: string, branch: string): Promise<void> {
+  private async removeBranchWorktrees(taskId: string, repoPath: string, branch: string): Promise<WorktreeArtifactSalvage[]> {
     const { stdout } = await execFileAsync('git', ['worktree', 'list', '--porcelain'], { cwd: repoPath })
     const paths = stdout.split('\n\n').flatMap(entry => {
       const lines = entry.split('\n')
       const worktree = lines.find(line => line.startsWith('worktree '))?.slice('worktree '.length)
       return worktree && lines.includes(`branch refs/heads/${branch}`) ? [worktree] : []
     })
-    for (const path of paths) await this.removeBrokenSubtaskWorktree(repoPath, path)
+    const salvage: WorktreeArtifactSalvage[] = []
+    for (const path of paths) {
+      const report = await this.removeBrokenSubtaskWorktree(taskId, repoPath, path)
+      if (report) salvage.push(report)
+    }
+    return salvage
   }
 
   private async exists(path: string): Promise<boolean> {

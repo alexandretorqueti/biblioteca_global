@@ -844,7 +844,19 @@ export class SubtaskExecutionConsumer {
     sequence: number,
     message: QueueMessage,
     subtaskId: number,
-    recoveries: Array<{ reasonCode: string; path: string; action: string; branch?: string; quarantinePath?: string }>,
+    recoveries: Array<{
+      reasonCode: string
+      path: string
+      action: string
+      branch?: string
+      quarantinePath?: string
+      artifactSalvage?: {
+        worktreePath: string
+        artifactRoot: string
+        files: Array<{ sourcePath: string; artifactPath: string }>
+        errors: Array<{ path: string; error: string }>
+      }
+    }>,
   ): Promise<number> {
     for (const recovery of recoveries) {
       await this.log(operationId, sequence++, message, {
@@ -852,6 +864,17 @@ export class SubtaskExecutionConsumer {
         primitiveCode: 'recover_worktree', reasonCode: recovery.reasonCode,
         result: recovery,
       })
+      if (recovery.reasonCode === 'worktree_artifact_salvaged' && recovery.artifactSalvage) {
+        const { artifactSalvage } = recovery
+        console.warn({
+          event: 'worktree_artifact_salvaged',
+          alert: true,
+          taskId: message.taskId,
+          worktreePath: artifactSalvage.worktreePath,
+          recoveredPaths: artifactSalvage.files.map(file => file.artifactPath),
+          errors: artifactSalvage.errors,
+        })
+      }
     }
     return sequence
   }
