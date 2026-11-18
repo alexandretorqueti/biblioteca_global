@@ -105,6 +105,14 @@ services:
       # Alerta de DLQ do motor no Telegram (DlqReconciler) — reusado pelas notificações da F2
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_DLQ_CHAT_ID: ${TELEGRAM_DLQ_CHAT_ID:-}
+      # Billing / PSP (checkout Mercado Pago + webhooks) — mesmos defaults do
+      # infra/docker/compose.biblioteca.yaml; PSP_ACCESS_TOKEN e
+      # PSP_WEBHOOK_SECRET devem vir do .env da raiz (credenciais reais).
+      PSP_PROVIDER: ${PSP_PROVIDER:-mercadopago}
+      PSP_ACCESS_TOKEN: ${PSP_ACCESS_TOKEN:-}
+      PSP_WEBHOOK_SECRET: ${PSP_WEBHOOK_SECRET:-}
+      PSP_API_URL: ${PSP_API_URL:-https://api.mercadopago.com}
+      PSP_TIMEOUT_MS: ${PSP_TIMEOUT_MS:-10000}
     depends_on:
       mysql:
         condition: service_healthy
