@@ -1,6 +1,7 @@
 import { Module } from "@nestjs/common"
 import { AuthModule } from "../auth/auth.module"
 import { BillingController } from "./billing.controller"
+import { BillingWebhookController } from "./billing-webhook.controller"
 import { BILLING_REPOSITORY, DrizzleBillingRepository } from "./billing.repository"
 import { BillingService } from "./billing.service"
 import { MercadoPagoAdapter } from "./mercado-pago.adapter"
@@ -9,7 +10,7 @@ import { EnvService } from "../../config/env.service"
 
 @Module({
   imports: [AuthModule],
-  controllers: [BillingController],
+  controllers: [BillingController, BillingWebhookController],
   providers: [
     BillingService,
     {
