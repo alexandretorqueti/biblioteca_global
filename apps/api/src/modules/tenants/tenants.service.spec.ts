@@ -34,10 +34,10 @@ describe("TenantsService", () => {
     expect(normalizeTenantHost("alpha.example.com:443")).toBe("alpha.example.com")
   })
 
-  it("resolve por domínio e usa slug como fallback", async () => {
+  it("resolve por slug e usa domínio normalizado como fallback", async () => {
     const repo = repository({
-      findByDomain: vi.fn().mockResolvedValue(undefined),
-      findBySlug: vi.fn().mockResolvedValue(tenant()),
+      findBySlug: vi.fn().mockResolvedValue(undefined),
+      findByDomain: vi.fn().mockResolvedValue(tenant()),
     })
     const service = new TenantsService(repo)
 
@@ -47,17 +47,37 @@ describe("TenantsService", () => {
     expect(repo.findBySlug).toHaveBeenCalledWith("alpha")
   })
 
-  it("prefere o tenant encontrado pelo domínio", async () => {
-    const byHost = tenant({ id: 2, slug: "host-tenant" })
+  it("prefere o tenant encontrado pelo slug", async () => {
+    const bySlug = tenant({ id: 2, slug: "slug-tenant" })
     const repo = repository({
-      findByDomain: vi.fn().mockResolvedValue(byHost),
-      findBySlug: vi.fn(),
+      findByDomain: vi.fn().mockResolvedValue(tenant()),
+      findBySlug: vi.fn().mockResolvedValue(bySlug),
     })
     const service = new TenantsService(repo)
 
     await expect(service.resolveTenant({ host: "alpha.example.com:443", slug: "alpha" }))
-      .resolves.toEqual(byHost)
-    expect(repo.findBySlug).not.toHaveBeenCalled()
+      .resolves.toEqual(bySlug)
+    expect(repo.findByDomain).not.toHaveBeenCalled()
+  })
+
+  it("retorna 404 para slug e domínio desconhecidos", async () => {
+    const service = new TenantsService(repository())
+
+    await expect(service.getChatConfig("unknown.example.com")).rejects.toMatchObject({
+      status: 404,
+    })
+  })
+
+  it("retorna suspenso quando o domínio resolve tenant suspenso", async () => {
+    const repo = repository({
+      findByDomain: vi.fn().mockResolvedValue(tenant({ status: "suspenso" })),
+    })
+    const service = new TenantsService(repo)
+
+    await expect(service.getChatConfig("HTTPS://Alpha.Example.com:8443/chat"))
+      .resolves.toEqual({ status: "suspenso" })
+    expect(repo.findBySlug).toHaveBeenCalledWith("HTTPS://Alpha.Example.com:8443/chat")
+    expect(repo.findByDomain).toHaveBeenCalledWith("alpha.example.com")
   })
 
   it("projeta defaults e somente ferramentas ativas do tenant resolvido", async () => {

@@ -46,4 +46,13 @@ export type {
 } from "./helpdesk-client"
 export { LogsLoginClient, createLogsLoginClient } from "./logs-login-client"
 export { GlobalUsersClient, ProjectsClient } from "./global-users-client"
+export {
+  TenantsChatClient,
+  createTenantsChatClient,
+  type TenantChatConfigResult,
+  type TenantChatConfigOptions,
+  type TenantSuspensoResult,
+  type TenantNaoEncontradoResult,
+  type TenantChatConfigErroResult,
+} from "./tenants"
 export type { CreateGlobalUserInput, GlobalUser, GlobalUserDetail, GlobalUserLink, GlobalUserLinkChanges, UpdateGlobalUserInput } from "./global-users-client"

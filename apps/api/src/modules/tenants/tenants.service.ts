@@ -51,19 +51,22 @@ export class TenantsService {
   ) {}
 
   async resolveTenant(input: ResolveTenantInput): Promise<TenantRow | undefined> {
-    const host = input.host ? normalizeTenantHost(input.host) : undefined
-    if (host) {
-      const byHost = await this.repository.findByDomain(host)
-      if (byHost) return byHost
-    }
     const slug = input.slug?.trim()
-    return slug ? this.repository.findBySlug(slug) : undefined
+    if (slug) {
+      const bySlug = await this.repository.findBySlug(slug)
+      if (bySlug) return bySlug
+    }
+
+    const host = input.host ? normalizeTenantHost(input.host) : undefined
+    return host ? this.repository.findByDomain(host) : undefined
   }
 
   async getChatConfig(
     slug: string,
   ): Promise<TenantChatConfig | SuspendedTenantResponse> {
-    const tenant = await this.resolveTenant({ slug })
+    // O parâmetro da rota pode ser tanto o slug quanto o domínio cadastrado.
+    // O slug tem precedência para preservar a semântica existente.
+    const tenant = await this.resolveTenant({ slug, host: slug })
     if (!tenant) throw new NotFoundException("Tenant não encontrado")
     if (tenant.status === "suspenso") return { status: "suspenso" }
     if (tenant.status !== "ativo") {
