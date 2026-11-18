@@ -180,6 +180,10 @@ export class EnvService {
     return value
   }
 
+  get vendasAceiteManual(): boolean {
+    return this.config.get<string>("VENDAS_ACEITE_MANUAL") !== "false"
+  }
+
   /** Token exclusivo para ingestão de eventos do motor de tarefas. */
   get libraryRealtimeEventsToken(): string {
     return this.config.get<string>("LIBRARY_REALTIME_EVENTS_TOKEN") ?? ""
@@ -207,6 +211,18 @@ export class EnvService {
     const value = Number(this.config.get<string>("PSP_TIMEOUT_MS") ?? "10000")
     if (!Number.isInteger(value) || value < 100 || value > 120000) {
       throw new Error("PSP_TIMEOUT_MS deve ser um inteiro entre 100 e 120000 ms")
+    }
+    return value
+  }
+
+  get vendasDocumentosDir(): string {
+    return this.config.get<string>("VENDAS_DOCUMENTOS_DIR") ?? "/data/vendas-documentos"
+  }
+
+  get vendasDocumentosMaxBytes(): number {
+    const value = Number(this.config.get<string>("VENDAS_DOCUMENTOS_MAX_BYTES") ?? "10485760")
+    if (!Number.isInteger(value) || value <= 0) {
+      throw new Error("VENDAS_DOCUMENTOS_MAX_BYTES deve ser um inteiro positivo")
     }
     return value
   }

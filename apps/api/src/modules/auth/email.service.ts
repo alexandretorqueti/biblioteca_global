@@ -20,6 +20,14 @@ export interface SendVerificationEmailInput {
   code: string
 }
 
+export interface SendWelcomeEmailInput {
+  to: string
+  nome: string
+  tenantSlug: string
+  instrucoes: string
+  qrWhatsAppUrl?: string
+}
+
 @Injectable()
 export class EmailService {
   private readonly logger = new Logger(EmailService.name)
@@ -64,6 +72,27 @@ export class EmailService {
     } catch {
       // Sem detalhes do erro no log: pode conter a senha do SMTP.
       this.logger.error("Falha ao enviar e-mail de verificação (SMTP)")
+      return { ok: false, reason: "envio_falhou" }
+    }
+  }
+
+  async sendWelcomeEmail(input: SendWelcomeEmailInput): Promise<EnvioEmailResultado> {
+    const { smtpHost, smtpPort, smtpUser, smtpPassword, smtpFrom } = this.env
+    if (!smtpHost || !smtpUser) return { ok: false, reason: "smtp_not_configured" }
+    const qr = input.qrWhatsAppUrl
+      ? `\n\nQR do WhatsApp: ${input.qrWhatsAppUrl}`
+      : "\n\nO convite do WhatsApp será enviado separadamente quando o canal estiver disponível."
+    try {
+      const transporte = nodemailer.createTransport({ host: smtpHost, port: smtpPort, secure: smtpPort === 465, auth: { user: smtpUser, pass: smtpPassword } })
+      await transporte.sendMail({
+        from: smtpFrom,
+        to: input.to,
+        subject: "Seu atendente IA está pronto — Global Tecnologia",
+        text: `Olá, ${input.nome}!\n\nSeu atendente (${input.tenantSlug}) foi provisionado.\n\n${input.instrucoes}${qr}`,
+      })
+      return { ok: true }
+    } catch {
+      this.logger.error("Falha ao enviar e-mail de boas-vindas (SMTP)")
       return { ok: false, reason: "envio_falhou" }
     }
   }

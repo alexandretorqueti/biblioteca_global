@@ -4,7 +4,7 @@
  * Orquestra persistência (Drizzle/MySQL) e ponte (OpenClaw).
  * Não conhece HTTP nem BFF — recebe injeções.
  */
-import { Injectable, Inject, Logger, BadRequestException } from "@nestjs/common"
+import { Injectable, Inject, Logger, BadRequestException, Optional } from "@nestjs/common"
 import { ConfigService } from "@nestjs/config"
 import { createHash } from "node:crypto"
 import { eq, and, desc, isNull } from "drizzle-orm"
@@ -22,6 +22,7 @@ import {
 } from "../../schema"
 import { IsaChatBridgeService } from "./isa-chat.bridge"
 import { extractTextFromFile } from "@biblioteca-global/file-extract"
+import { VendasService } from "../../../../apps/api/src/modules/vendas/vendas.service"
 import type {
   CreateSessionInput,
   SessionResult,
@@ -224,6 +225,53 @@ export function describeOnboardingState(chat: {
   return lines.join("\n")
 }
 
+type EstadoVenda = Awaited<ReturnType<VendasService["obterEstado"]>>
+
+/** Contrato das ferramentas comerciais e o estado persistido do funil. */
+export function describeSalesState(chatId: number, estado: EstadoVenda): string {
+  const lines: string[] = [
+    "[Estado da venda]",
+    `chatId técnico (use nas ferramentas): ${chatId}`,
+    "A vendedora é a própria Isa. Conduza o funil naturalmente, sem inventar dados.",
+    "A Isa NUNCA valida nada: chame as ferramentas e trate o estado/erro retornado pelo servidor como fonte da verdade.",
+    "",
+    "Contrato das ferramentas:",
+    "- anotar_negocio → POST /api/vendas/negocio. Body: { chatId, nome, segmentoDescricao, contato: { nome, email, telefone }, transbordo: { ativo, destinoNumero?, destinoNome? } }. Regra: envie os dados coletados; transbordo ativo exige número e nome do destino. O servidor valida e faz upsert.",
+    "- anexar_documento_negocio → POST /api/vendas/negocio/documento. Body: { chatId, nome, mime, conteudoBase64 }. Regra: use o arquivo recebido, sem resumir nem alterar; o servidor valida MIME/tamanho e armazena para uso diferido.",
+    "- escolher_plano → GET /api/vendas/planos. Use o catálogo retornado pelo servidor; nunca invente preço, ciclo ou disponibilidade. A escolha será usada como planoSlug em criar_pedido.",
+    "- criar_pedido → POST /api/vendas/pedido. Body: { chatId, planoSlug, ciclo?, checkoutSuccessUrl, checkoutFailureUrl, checkoutPendingUrl }. Regra: só chame após os dados obrigatórios do negócio estarem registrados e com o plano escolhido; o servidor valida negócio, plano, ciclo e cria/reutiliza o checkout.",
+  ]
+
+  if (!estado) {
+    lines.push(
+      "",
+      "Nenhum negócio foi iniciado. Quando o cliente demonstrar interesse em ter uma Isa para o próprio negócio, ofereça o produto e inicie o fluxo chamando anotar_negocio após coletar os campos obrigatórios.",
+      "Próximo passo: apresentar a solução e capturar nome do negócio, segmento, contato e preferência de transbordo.",
+    )
+    return lines.join("\n")
+  }
+
+  const documentos = estado.documentos.length > 0
+    ? estado.documentos.map((documento) => `${documento.nome} (${documento.mime}, ${documento.tamanho} bytes)`).join(", ")
+    : "(nenhum)"
+  lines.push(
+    "",
+    "Dados já capturados do negócio:",
+    `- nome: ${estado.nome}`,
+    `- segmento/descrição: ${estado.segmentoDescricao}`,
+    `- contato: ${JSON.stringify(estado.contato)}`,
+    `- transbordo: ${JSON.stringify(estado.transbordo)}`,
+    `- documentos: ${documentos}`,
+    `- plano: ${estado.planoSlug ?? "(não escolhido)"}`,
+    `- pedido: ${estado.pedidoStatus ?? "(não criado)"}`,
+    `- status do negócio: ${estado.status}`,
+    estado.planoSlug
+      ? "Próximo passo: confirmar os dados e, com autorização do cliente, chamar criar_pedido para gerar o checkout."
+      : "Próximo passo: oferecer o catálogo e chamar escolher_plano; aceite documentos de regras em qualquer momento antes do checkout.",
+  )
+  return lines.join("\n")
+}
+
 @Injectable()
 export class IsaChatService {
   private readonly logger = new Logger(IsaChatService.name)
@@ -237,6 +285,7 @@ export class IsaChatService {
     @Inject(PROJECT_DB_FACTORY) private readonly factory: ProjectDbFactory,
     private readonly bridge: IsaChatBridgeService,
     private readonly configService: ConfigService,
+    @Optional() private readonly vendasService?: VendasService,
   ) {
     this.projectId = Number(this.configService.get<string>("ISA_PROJECT_ID")) || 640
     this.verificationSecret =
@@ -569,7 +618,7 @@ export class IsaChatService {
             contatoNome: contato.nome,
             contatoEmail: contato.email,
             contatoTelefone: contato.telefone,
-          })}\n\n${agentText}`
+          })}\n\n${await this.describeTurnSalesState(chat.id)}\n\n${agentText}`
         }
       } else {
         agentText = `${describeOnboardingState({
@@ -577,7 +626,7 @@ export class IsaChatService {
           status: chat.status,
           visitorName: chat.visitorName,
           pendingEmail: chat.pendingEmail,
-        })}\n\n${agentText}`
+        })}\n\n${await this.describeTurnSalesState(chat.id)}\n\n${agentText}`
       }
     } catch {
       // Sem dados do contato → envia sem prefixo (best-effort).
@@ -602,6 +651,11 @@ export class IsaChatService {
     await this.syncAgentMessages(db, chat.id, sessionKey)
 
     return { ok: true, messageId: sendResult.messageId }
+  }
+
+  private async describeTurnSalesState(chatId: number): Promise<string> {
+    const estado = this.vendasService ? await this.vendasService.obterEstado(String(chatId)) : null
+    return describeSalesState(chatId, estado)
   }
 
   // ===========================================================================

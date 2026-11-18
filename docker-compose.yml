@@ -66,6 +66,7 @@ services:
       FORJADOR_AGENT_ID: ${FORJADOR_AGENT_ID:-definicaopersonalidadeagentes}
       FORJADOR_TOKEN: ${FORJADOR_TOKEN}
       FORJADOR_TIMEOUT_MS: ${FORJADOR_TIMEOUT_MS:-1740000}
+      VENDAS_ACEITE_MANUAL: ${VENDAS_ACEITE_MANUAL:-true}
       OPENCLAW_CONSOLE_URL: ${OPENCLAW_CONSOLE_URL:-http://host.docker.internal:6280}
       OPENCLAW_CONSOLE_TOKEN: ${OPENCLAW_CONSOLE_TOKEN:-}
       MOTOR_DEV_URL: ${MOTOR_DEV_URL:-http://localhost:3010}
@@ -118,6 +119,8 @@ services:
       PSP_WEBHOOK_SECRET: ${PSP_WEBHOOK_SECRET:-}
       PSP_API_URL: ${PSP_API_URL:-https://api.mercadopago.com}
       PSP_TIMEOUT_MS: ${PSP_TIMEOUT_MS:-10000}
+      VENDAS_DOCUMENTOS_DIR: ${VENDAS_DOCUMENTOS_DIR:-/data/vendas-documentos}
+      VENDAS_DOCUMENTOS_MAX_BYTES: ${VENDAS_DOCUMENTOS_MAX_BYTES:-10485760}
     depends_on:
       mysql:
         condition: service_healthy
@@ -125,6 +128,7 @@ services:
       - "${API_HOST_PORT:-3003}:3001"
       - "${MOTOR_HOST_PORT:-3010}:3010"
     volumes:
+      - ${VENDAS_DOCUMENTOS_HOST_DIR:-./data/vendas-documentos}:/data/vendas-documentos:rw
       # Caminhos fixos dentro do container: o banco guarda paths do namespace
       # do OpenClaw, que precisam existir também no slot blue/green.
       - ${REPO_PATH:-/run/media/alexandre/12T/codigofonte/biblioteca-global}:/data/workspace/projects/codigofonte/biblioteca-global:rw
@@ -181,7 +185,26 @@ services:
       retries: 12
       start_period: 10s
 
+  # Bundle único dos chats (isa + alpha como tenants resolvidos por Host).
+  # Substitui isa-chat/alpha-chat no up padrão (isas-mt-02/isas-mt-03).
+  chat-universal:
+    build:
+      context: .
+      dockerfile: projects/chat-universal/Dockerfile
+    container_name: biblioteca-global-chat-universal
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${CHAT_UNIVERSAL_HOST_PORT:-8084}:80"
+    # Usa a rede Docker padrão para resolver nomes dos containers
+
+  # Aposentados do up padrão (profiles: legacy) — mantidos para rollback até o
+  # aceite humano da paridade; subir com `docker compose --profile legacy up isa-chat`.
+  # Pastas projects/isa-chat e projects/alpha-chat intactas.
   isa-chat:
+    profiles: ['legacy']
     build:
       context: .
       dockerfile: projects/isa-chat/Dockerfile
@@ -194,6 +217,7 @@ services:
       - "${ISA_CHAT_HOST_PORT:-8082}:80"
 
   alpha-chat:
+    profiles: ['legacy']
     build:
       context: .
       dockerfile: projects/alpha-chat/Dockerfile
@@ -212,8 +236,7 @@ services:
     container_name: biblioteca-global-chat-proxy
     restart: unless-stopped
     depends_on:
-      - isa-chat
-      - alpha-chat
+      - chat-universal
     ports:
       - "8080:80"
     # Usa a rede Docker padrão para resolver nomes dos containers

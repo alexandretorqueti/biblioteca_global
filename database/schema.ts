@@ -517,3 +517,85 @@ export const personasForjadas = mysqlTable(
     index("idx_personas_forjadas_correlation_id").on(t.correlationId),
   ],
 )
+
+/** Lead do funil self-service, identificado pela conversa da Isa. */
+export const negocios = mysqlTable(
+  "negocios",
+  {
+    id: bigint("id", { mode: "number", unsigned: true })
+      .primaryKey()
+      .autoincrement(),
+    chatId: varchar("chat_id", { length: 255 }).notNull().unique(),
+    nome: varchar("nome", { length: 255 }).notNull(),
+    segmentoDescricao: varchar("segmento_descricao", { length: 2000 }).notNull(),
+    contato: json("contato").notNull(),
+    transbordo: json("transbordo").notNull(),
+    status: mysqlEnum("status", [
+      "capturado",
+      "aguardando_plano",
+      "checkout",
+      "pago",
+      "provisionando",
+      "provisionado",
+      "falho",
+    ]).notNull().default("capturado"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at")
+      .notNull()
+      .defaultNow()
+      .onUpdateNow(),
+  },
+)
+
+/** Arquivos recebidos no funil; a indexação/RAG é deliberadamente posterior. */
+export const negocioDocumentos = mysqlTable(
+  "negocio_documentos",
+  {
+    id: bigint("id", { mode: "number", unsigned: true })
+      .primaryKey()
+      .autoincrement(),
+    negocioId: bigint("negocio_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => negocios.id, { onDelete: "cascade" }),
+    nome: varchar("nome", { length: 255 }).notNull(),
+    mime: varchar("mime", { length: 100 }).notNull(),
+    tamanho: int("tamanho", { unsigned: true }).notNull(),
+    caminho: varchar("caminho", { length: 1000 }).notNull(),
+    usoDiferido: boolean("uso_diferido").notNull().default(true),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [index("idx_negocio_documentos_negocio").on(t.negocioId)],
+)
+
+/** Pedido captura o estado completo do negócio para o orquestrador pós-pagamento. */
+export const pedidosVenda = mysqlTable(
+  "pedidos_venda",
+  {
+    id: bigint("id", { mode: "number", unsigned: true })
+      .primaryKey()
+      .autoincrement(),
+    negocioId: bigint("negocio_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => negocios.id),
+    planoSlug: varchar("plano_slug", { length: 100 }).notNull(),
+    checkoutUrl: varchar("checkout_url", { length: 2000 }),
+    assinaturaId: bigint("assinatura_id", { mode: "number", unsigned: true }).references(
+      () => assinaturas.id,
+      { onDelete: "set null" },
+    ),
+    payloadSnapshot: json("payload_snapshot").notNull(),
+    status: mysqlEnum("status", ["pending", "paid", "aguardando_aceite", "provisioning", "provisioned", "failed", "refunded"])
+      .notNull()
+      .default("pending"),
+    welcomeEmailSent: boolean("welcome_email_sent").notNull().default(false),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at")
+      .notNull()
+      .defaultNow()
+      .onUpdateNow(),
+  },
+  (t) => [
+    index("idx_pedidos_venda_negocio").on(t.negocioId),
+    index("idx_pedidos_venda_assinatura").on(t.assinaturaId),
+  ],
+)

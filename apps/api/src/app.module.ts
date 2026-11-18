@@ -22,6 +22,7 @@ import { HelpDeskModule } from "./modules/helpdesk/helpdesk.module"
 import { LgpdModule } from "./modules/lgpd/lgpd.module"
 import { LogsLoginModule } from "./modules/logs-login/logs-login.module"
 import { BillingModule } from "./modules/billing/billing.module"
+import { VendasModule } from "./modules/vendas/vendas.module"
 import { TransbordoModule } from "./modules/transbordo/transbordo.module"
 import { TenantsModule } from "./modules/tenants/tenants.module"
 import { ForjadorModule } from "./modules/forjador/forjador.module"
@@ -51,6 +52,7 @@ import { ForjadorModule } from "./modules/forjador/forjador.module"
     LgpdModule,
     LogsLoginModule,
     BillingModule,
+    VendasModule,
     TransbordoModule,
     TenantsModule,
     ForjadorModule,
