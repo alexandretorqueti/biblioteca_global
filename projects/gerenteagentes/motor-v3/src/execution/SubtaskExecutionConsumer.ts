@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto'
+import { access } from 'node:fs/promises'
+import { isAbsolute, resolve } from 'node:path'
 import type { QueueMessage } from '../queue/QueueMessage.js'
 import type { OperationLogEntry, OperationLogger } from '../commands/OperationLogger.js'
 import type { PrimitiveContext } from '../primitives/types.js'
@@ -16,8 +18,25 @@ import type {
 import type { ManagedDevelopmentPromptResolver } from '../analysis/ManagedDevelopmentPromptResolver.js'
 import type { GovernedFailureHandler } from '../governance/GovernedFailureHandler.js'
 import type { TaskEventSink } from '../coordinator/TaskEventRecorder.js'
+import type { MonitorHumanNotifier } from '../monitor/HumanNotifier.js'
 
 export const SUBTASK_EXECUTION_REQUESTED = 'SUBTASK_EXECUTION_REQUESTED'
+
+const EXTERNAL_OPERATION_EVIDENCE = /(?:^|\n)\s*(?:O que foi feito|What was done|Como verificar|How to verify)\s*:\s*([\s\S]*?)(?=\n\s*(?:O que foi feito|What was done|Como verificar|How to verify)\s*:|\n\s*::DONE::|$)/gi
+const PATH_TOKEN = /(?:^|[\s`"'([{])((?:\.{0,2}\/|\/)?[A-Za-z0-9_.@+-]+(?:\/[A-Za-z0-9_.@+~-]+)*\.[A-Za-z0-9][A-Za-z0-9_-]*)(?=$|[\s`"'\])},;:])/g
+
+/** Extrai somente referências com extensão das linhas de evidência exigidas. */
+export function extractExternalOperationPaths(response: string): string[] {
+  const paths = new Set<string>()
+  for (const section of response.matchAll(EXTERNAL_OPERATION_EVIDENCE)) {
+    for (const match of section[1]?.matchAll(PATH_TOKEN) ?? []) {
+      const candidate = match[1]
+      if (!candidate || candidate.startsWith('http://') || candidate.startsWith('https://')) continue
+      paths.add(candidate)
+    }
+  }
+  return [...paths]
+}
 
 export class SubtaskExecutionConsumer {
   private readonly deployLock?: { isDeployLocked(): Promise<boolean>; requeueForDeployRetry(message: QueueMessage, reason: string): Promise<void> }
@@ -36,6 +55,7 @@ export class SubtaskExecutionConsumer {
     private readonly promptResolver?: ManagedDevelopmentPromptResolver,
     private readonly governedFailureHandler?: GovernedFailureHandler,
     private readonly taskEvents?: TaskEventSink,
+    private readonly humanNotifier?: MonitorHumanNotifier,
   ) {
     this.deployLock = deployLock
   }
@@ -320,7 +340,10 @@ export class SubtaskExecutionConsumer {
       : await this.repository.finishExecution(execution, message, result)
     await this.recordEvent(message.taskId, next.type, { subtaskId, executionId: message.executionId, success: result.success })
     await this.repository.closeDevelopmentSession?.(subtaskId, context.sessionId, context.sessionKey, result.success)
-    await this.log(operationId, workerSequence + 1, message, {
+    const artifactCheck = result.success && execution.completionKind === 'external_operation'
+      ? await this.checkExternalOperationArtifacts(operationId, workerSequence + 1, message, execution, context.worktreePath, result.response ?? '')
+      : { logEntries: 0 }
+    await this.log(operationId, workerSequence + 1 + artifactCheck.logEntries, message, {
       phase: 'completed', outcome: result.success ? 'succeeded' : 'failed', subtaskId,
       result: { nextMessageId: next.messageId, nextMessageType: next.type, attempts: result.attempts },
     })
@@ -389,7 +412,10 @@ export class SubtaskExecutionConsumer {
       : await this.repository.finishExecution(execution, input.message, result)
     await this.recordEvent(input.message.taskId, next.type, { subtaskId, executionId: input.message.executionId, success: result.success, recovered: true })
     await this.repository.closeDevelopmentSession?.(subtaskId, input.sessionId, input.sessionKey, result.success)
-    await this.log(operationId, 2, input.message, {
+    const artifactCheck = result.success && execution.completionKind === 'external_operation'
+      ? await this.checkExternalOperationArtifacts(operationId, 2, input.message, execution, context.worktreePath, input.response)
+      : { logEntries: 0 }
+    await this.log(operationId, 2 + artifactCheck.logEntries, input.message, {
       phase: 'completed', outcome: result.success ? 'succeeded' : 'failed', subtaskId,
       result: { recovered: true, nextMessageId: next.messageId, nextMessageType: next.type },
     })
@@ -716,6 +742,69 @@ export class SubtaskExecutionConsumer {
       correlationId: message.correlationId, causationId: message.causationId,
       taskId: message.taskId, ...data,
     })
+  }
+
+  /**
+   * Observabilidade pós-conclusão: uma referência de arquivo na evidência de
+   * external_operation não deve ficar apontando para um artefato inexistente.
+   * A checagem é deliberadamente best-effort: nunca altera a conclusão já
+   * persistida nem transforma falha de fs em retry da execução.
+   */
+  private async checkExternalOperationArtifacts(
+    operationId: string,
+    sequence: number,
+    message: QueueMessage,
+    execution: SubtaskExecutionContext,
+    worktreePath: string,
+    response: string,
+  ): Promise<{ logEntries: number }> {
+    try {
+      const citedPaths = extractExternalOperationPaths(response)
+      const missing: string[] = []
+      for (const citedPath of citedPaths) {
+        const diskPath = isAbsolute(citedPath) ? citedPath : resolve(worktreePath, citedPath)
+        try {
+          await access(diskPath)
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code
+          if (code === 'ENOENT' || code === 'ENOTDIR') missing.push(citedPath)
+          else throw error
+        }
+      }
+      if (missing.length === 0) {
+        await this.log(operationId, sequence, message, {
+          phase: 'primitive', outcome: 'succeeded', subtaskId: execution.subtaskId,
+          primitiveCode: 'check_external_operation_artifacts', reasonCode: 'external_operation_artifact_check',
+          result: { citedPaths, missingPaths: [] },
+        })
+        return { logEntries: 1 }
+      }
+
+      const summary = `tarefa=${message.taskId}; subtarefa=${execution.subtaskId}; caminhos ausentes=${missing.join(', ')}`
+      await this.log(operationId, sequence, message, {
+        phase: 'primitive', outcome: 'succeeded', subtaskId: execution.subtaskId,
+        primitiveCode: 'check_external_operation_artifacts', reasonCode: 'external_operation_missing_artifact',
+        result: { citedPaths, missingPaths: missing, worktreePath },
+      })
+      try {
+        await this.humanNotifier?.notify({
+          taskId: message.taskId,
+          blockReason: 'external_operation_missing_artifact',
+          summary,
+        })
+      } catch (error) {
+        console.warn('[SubtaskExecutionConsumer] alerta de artefato externo falhou:', error instanceof Error ? error.message : String(error))
+      }
+      return { logEntries: 1 }
+    } catch (error) {
+      await this.log(operationId, sequence, message, {
+        phase: 'primitive', outcome: 'failed', subtaskId: execution.subtaskId,
+        primitiveCode: 'check_external_operation_artifacts', reasonCode: 'external_operation_artifact_check_failed',
+        result: { error: error instanceof Error ? error.message : String(error) },
+      })
+      console.warn('[SubtaskExecutionConsumer] checagem de artefatos externos falhou:', error instanceof Error ? error.message : String(error))
+      return { logEntries: 1 }
+    }
   }
 
   private async logWorktreeRecoveries(

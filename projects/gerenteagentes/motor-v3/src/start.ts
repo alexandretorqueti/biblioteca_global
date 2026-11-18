@@ -622,6 +622,7 @@ async function start() {
       new ManagedDevelopmentPromptResolver(pool),
       governedFailureHandler,
       taskEvents,
+      new TaskChatHumanNotifier(pool),
     )
     developmentSessionRecovery = new DevelopmentSessionRecoveryReconciler(
       pool,

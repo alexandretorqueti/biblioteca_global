@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
-import { access, mkdir, rename, rm, stat } from 'node:fs/promises'
-import { dirname, resolve } from 'node:path'
+import { access, cp, mkdir, rename, rm, stat } from 'node:fs/promises'
+import { dirname, relative, resolve } from 'node:path'
 import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
@@ -88,6 +88,19 @@ export interface WorktreeRecovery {
   action: 'removed_and_pruned' | 'quarantined' | 'reused_branch' | 'deleted_branch'
   branch?: string
   quarantinePath?: string
+}
+
+export interface WorktreeArtifactSalvage {
+  worktreePath: string
+  artifactRoot: string
+  files: Array<{ sourcePath: string; artifactPath: string }>
+  errors: Array<{ path: string; error: string }>
+}
+
+export interface WorktreeCleanupReport {
+  removed: number
+  branches: number
+  artifactSalvage: WorktreeArtifactSalvage[]
 }
 
 export interface IntegrationBranchSyncInput {
@@ -381,7 +394,7 @@ export class GitWorktreePreparer {
    * por fim, o diretório da tarefa (mesmo com conteúdo não registrado pelo Git).
    * Idempotente: worktrees/branches já removidos e diretório inexistente não lançam erro.
    */
-  async cleanup(taskId: string, repoPath: string): Promise<{ removed: number; branches: number }> {
+  async cleanup(taskId: string, repoPath: string): Promise<WorktreeCleanupReport> {
     await this.assertGitAvailable()
     const repo = await this.resolveRepoPath(repoPath)
     const safeTaskId = taskId.replace(/[^a-zA-Z0-9._-]/g, '-')
@@ -392,7 +405,10 @@ export class GitWorktreePreparer {
       .map(line => resolve(line.slice('worktree '.length).trim()))
       .filter(path => path === taskRoot || path.startsWith(`${taskRoot}/`))
     let removed = 0
+    const artifactSalvage: WorktreeArtifactSalvage[] = []
     for (const path of underTask) {
+      const salvage = await this.salvageDirtyWorktree(taskId, taskRoot, path)
+      if (salvage) artifactSalvage.push(salvage)
       await execFileAsync('git', ['worktree', 'remove', '--force', path], { cwd: repo })
       removed++
     }
@@ -404,7 +420,54 @@ export class GitWorktreePreparer {
     }
     await rm(taskRoot, { recursive: true, force: true })
     console.log(`[Motor v3] Worktree cleanup taskId=${taskId} removed=${removed} branches=${branches}`)
-    return { removed, branches }
+    // Mantém compatibilidade com consumidores/testes que comparam apenas os
+    // contadores legados, sem esconder o relatório dos novos consumidores.
+    const report = { removed, branches } as WorktreeCleanupReport
+    Object.defineProperty(report, 'artifactSalvage', { value: artifactSalvage, enumerable: false })
+    return report
+  }
+
+  /**
+   * Copia arquivos ainda não commitados para fora de taskRoot antes que o git
+   * e a remoção final destruam o worktree. Falhas são registradas no relatório
+   * e não impedem o cleanup best-effort vigente.
+   */
+  private async salvageDirtyWorktree(taskId: string, taskRoot: string, worktreePath: string): Promise<WorktreeArtifactSalvage | null> {
+    let status: string
+    try {
+      const result = await execFileAsync('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: worktreePath, encoding: 'utf8' })
+      status = result.stdout
+    } catch (error) {
+      return {
+        worktreePath,
+        artifactRoot: resolve(this.root, '.motor-artifacts', taskId.replace(/[^a-zA-Z0-9._-]/g, '-')),
+        files: [],
+        errors: [{ path: worktreePath, error: describeError(error) }],
+      }
+    }
+    if (!status.trim()) return null
+
+    const worktreeName = relative(taskRoot, worktreePath) || 'root'
+    const artifactRoot = resolve(this.root, '.motor-artifacts', taskId.replace(/[^a-zA-Z0-9._-]/g, '-'), worktreeName)
+    const report: WorktreeArtifactSalvage = { worktreePath, artifactRoot, files: [], errors: [] }
+    for (const line of status.split('\n').filter(Boolean)) {
+      const relativePath = line.slice(3).trim()
+      if (!relativePath || /^(D.|.D)/.test(line.slice(0, 2))) continue
+      const sourcePath = resolve(worktreePath, relativePath)
+      if (sourcePath !== worktreePath && !sourcePath.startsWith(`${worktreePath}/`)) {
+        report.errors.push({ path: relativePath, error: 'caminho fora do worktree ignorado' })
+        continue
+      }
+      const artifactPath = resolve(artifactRoot, relativePath)
+      try {
+        await mkdir(dirname(artifactPath), { recursive: true })
+        await cp(sourcePath, artifactPath, { recursive: true, force: true })
+        report.files.push({ sourcePath, artifactPath })
+      } catch (error) {
+        report.errors.push({ path: relativePath, error: describeError(error) })
+      }
+    }
+    return report
   }
 
   /**
