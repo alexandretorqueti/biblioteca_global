@@ -9,7 +9,7 @@ import { configureApp } from "./bootstrap"
 import { EnvService } from "./config/env.service"
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule)
+  const app = await NestFactory.create(AppModule, { rawBody: true })
   configureApp(app)
   const env = app.get(EnvService)
   await app.listen(env.apiPort)
