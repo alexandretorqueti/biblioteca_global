@@ -382,6 +382,12 @@ export class TaskUnblockedConsumer {
    * corrente). Pedidos `running`/com lote `pending`/`running` não são tocados —
    * há dispatch em andamento e o fluxo do lote segue responsável por eles.
    *
+   * Tombstones `cancelled` criados pela adjudicação administrativa da própria
+   * resolução também precisam sair. O ExternalResolutionHandler conclui a
+   * tarefa antes de o TASK_UNBLOCKED ser consumido; sem esta remoção, o novo
+   * DEPLOY_REQUESTED é descartado por `needsRequestPreparation` e a retomada
+   * fica sem deploy (incidente isas-mt-05/3470).
+   *
    * Pedidos `failed` cujo lote já terminou (ou nem existe) também são
    * removidos: quando TODOS os membros do lote conflitam, o batch falha e o
    * pedido permanece `failed` com `requested_commit` obsoleto. Sem removê-lo,
@@ -408,6 +414,8 @@ export class TaskUnblockedConsumer {
           WHERE dr.tarefa_id=?
             AND (
               (dr.status='pending' AND dr.batch_id IS NULL)
+              OR (dr.status='cancelled' AND dr.batch_id IS NULL
+                  AND dr.last_error LIKE 'Adjudicação administrativa sem deploy%')
               OR (dr.status='failed' AND (dr.batch_id IS NULL OR NOT EXISTS (
                     SELECT 1 FROM deploy_batches b
                      WHERE b.batch_id=dr.batch_id AND b.status IN ('pending','running'))))

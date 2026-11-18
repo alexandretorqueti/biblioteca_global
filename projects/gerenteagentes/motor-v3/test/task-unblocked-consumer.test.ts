@@ -157,6 +157,8 @@ describe('TaskUnblockedConsumer', () => {
     expect(stale!.via).toBe('connection')
     expect(stale!.sql).toContain("status='pending'")
     expect(stale!.sql).toContain('batch_id IS NULL')
+    expect(stale!.sql).toContain("dr.status='cancelled'")
+    expect(stale!.sql).toContain("Adjudicação administrativa sem deploy%")
     expect(stale!.params).toEqual([886])
 
     const requests = env.outbox('DEPLOY_REQUESTED')
