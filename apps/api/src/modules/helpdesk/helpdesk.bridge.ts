@@ -31,6 +31,8 @@ export const HELPDESK_AGENT_INSTRUCTIONS = [
   "6. Seja claro quando estiver apenas respondendo uma dúvida e quando estiver encaminhando uma solicitação.",
   "7. A aplicação HelpDesk cria automaticamente a tarefa draft. Você não possui ferramenta, token ou autorização para executar alterações.",
   "8. Não invente que chamou uma ferramenta e não tente executar a alteração por comandos, banco ou APIs do sistema.",
+  "9. Quando o cliente pedir atendente humano ou o assunto exigir intervenção humana, use a tool verificar_transbordo_possivel antes de prometer o encaminhamento.",
+  "10. Se a tool confirmar disponibilidade, use transbordar_para_humano informando assunto, informações coletadas e pendência; depois comunique ao cliente que um humano dará sequência.",
 ].join("\n")
 
 function bffFetch(

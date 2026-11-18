@@ -15,8 +15,10 @@ import { agentes, projetosCaptados } from "../../../../../projects/gerenteagente
 import { HelpDeskBridgeService } from "./helpdesk.bridge"
 import { RealtimeService } from "../realtime/realtime.service"
 import { GerenteAgentesService } from "../../../../../projects/gerenteagentes/api/gerenteagentes.service"
+import { TransbordoNotifier, type TransbordoResumo } from "../transbordo/transbordo.notifier"
+import { TransbordoService } from "../transbordo/transbordo.service"
 
-const { helpdeskSessoes: helpDeskSessionTable, helpdeskMensagens: helpDeskMessageTable } = coreSchema
+const { helpdeskSessoes: helpDeskSessionTable, helpdeskMensagens: helpDeskMessageTable, projetos: projectTable, usuarios: userTable } = coreSchema
 /** O catálogo de agentes/modelos do GerenteAgentes vive em projeto_640. */
 const GERENTE_AGENTES_PROJECT_ID = 640
 
@@ -31,6 +33,8 @@ export class HelpDeskService {
     private readonly bridge: HelpDeskBridgeService,
     @Optional() private readonly gerenteAgentes?: GerenteAgentesService,
     @Optional() private readonly realtime?: RealtimeService,
+    @Optional() private readonly transbordo?: TransbordoService,
+    @Optional() private readonly transbordoNotifier?: TransbordoNotifier,
   ) {
     this.realtime?.setHelpDeskSnapshotProvider(async ({ sessionId, userId, projectId }) => {
       const history = await this.obterHistorico(sessionId, userId)
@@ -129,7 +133,7 @@ export class HelpDeskService {
     text: string
     usuarioId: number
     projetoId: number
-  }): Promise<{ ok: boolean; messageId?: string; processing?: boolean; reason?: "offline" | "session_not_found"; retryable?: boolean }> {
+  }): Promise<{ ok: boolean; messageId?: string; processing?: boolean; reason?: "offline" | "session_not_found" | "chat_closed"; retryable?: boolean }> {
     const db = await this.getCoreDb()
 
     const [sessao] = await db
@@ -144,6 +148,10 @@ export class HelpDeskService {
 
     if (sessao.usuarioId !== input.usuarioId || sessao.projetoId !== input.projetoId) {
       return { ok: false, reason: "session_not_found" }
+    }
+
+    if (await this.sessaoEmTransbordo(input.sessaoId)) {
+      return { ok: false, reason: "chat_closed" }
     }
 
     // Persiste mensagem do usuário ANTES de enviar ao agente
@@ -200,6 +208,91 @@ export class HelpDeskService {
     }
 
     return { ok: false, reason: "offline", retryable: false }
+  }
+
+  /** Tool server-side: consulta tenant, destino e janela no fuso configurado. */
+  async verificarTransbordoPossivel(input: { sessaoId: number; agora?: Date }) {
+    const sessao = await this.obterSessaoPorId(input.sessaoId)
+    if (!sessao || !this.transbordo) return { possivel: false, motivo: "sessao_nao_encontrada" as const }
+    const tenant = await this.tenantDoProjeto(sessao.projetoId)
+    if (!tenant) return { possivel: false, motivo: "tenant_nao_encontrado" as const }
+    return this.transbordo.verificarPossivel({ tenantSlug: tenant, agora: input.agora })
+  }
+
+  /** Nome canônico da tool exposta ao catálogo de capacidades. */
+  verificar_transbordo_possivel(input: { sessaoId: number; agora?: Date }) {
+    return this.verificarTransbordoPossivel(input)
+  }
+
+  /** Tool server-side: grava a pausa antes de tentar qualquer notificação. */
+  async transbordarParaHumano(input: { sessaoId: number; assunto: string; pendencia: string; coletado?: string[]; historicoUrl?: string; liberacaoUrl?: string }) {
+    if (!this.transbordo || !this.transbordoNotifier) return { ok: false, reason: "indisponivel" as const }
+    const sessao = await this.obterSessaoPorId(input.sessaoId)
+    if (!sessao) return { ok: false, reason: "sessao_nao_encontrada" as const }
+    const tenant = await this.tenantDoProjeto(sessao.projetoId)
+    if (!tenant) return { ok: false, reason: "tenant_nao_encontrado" as const }
+    const disponibilidade = await this.transbordo.verificarPossivel({ tenantSlug: tenant })
+    if (!disponibilidade.possivel || !disponibilidade.config) return { ok: false, reason: disponibilidade.motivo ?? "indisponivel" }
+    const historico = await this.obterHistorico(input.sessaoId, sessao.usuarioId, sessao.projetoId)
+    const [usuario] = await this.coreDb.select({ nome: userTable.nome }).from(userTable).where(eq(userTable.id, sessao.usuarioId)).limit(1)
+    const registro = await this.transbordo.criarRegistro({ tenantSlug: tenant, sessaoId: input.sessaoId })
+    if (registro.jaExistente) return { ok: true, transbordoId: registro.id, pausado: true, jaExistente: true }
+    const baseUrl = input.historicoUrl ?? `/helpdesk/${input.sessaoId}/history`
+    const releaseUrl = input.liberacaoUrl ?? `/api/transbordo/liberar/${registro.tokenLiberacao}`
+    const resumo: TransbordoResumo = {
+      nome: usuario?.nome ?? "Cliente não identificado",
+      assunto: input.assunto.trim() || historico.mensagens.find((m) => m.role === "user")?.text || "Não informado",
+      coletado: input.coletado ?? historico.mensagens.filter((m) => m.role === "user").map((m) => m.text).slice(-10),
+      pendencia: input.pendencia.trim() || "Aguardando atendimento humano",
+      historicoUrl: baseUrl,
+      liberacaoUrl: releaseUrl,
+    }
+    const [systemMessage] = await this.coreDb.insert(helpDeskMessageTable).values({ sessaoId: input.sessaoId, role: "system", text: "Seu atendimento foi encaminhado para um atendente humano. A agente ficará pausada até a liberação." }).$returningId()
+    if (systemMessage) this.publicarMensagem(sessao.projetoId, sessao.usuarioId, input.sessaoId, systemMessage.id, "system", "Seu atendimento foi encaminhado para um atendente humano. A agente ficará pausada até a liberação.")
+    const entrega = registro.tokenLiberacao ? await this.transbordoNotifier.enviar({ tipo: disponibilidade.config.destino.tipo, destino: disponibilidade.config.destino.valor, atendenteNome: disponibilidade.config.destino.nomeAtendente, resumo }) : { ok: false as const, reason: "send_failed" as const, detail: "transbordo já ativo" }
+    await this.transbordo.registrarNotificacao({ id: registro.id, sucesso: entrega.ok, erro: entrega.ok ? undefined : entrega.reason })
+    return { ok: true, transbordoId: registro.id, pausado: true, notificacao: entrega }
+  }
+
+  /** Nome canônico da tool exposta ao catálogo de capacidades. */
+  transbordar_para_humano(input: { sessaoId: number; assunto: string; pendencia: string; coletado?: string[]; historicoUrl?: string; liberacaoUrl?: string }) {
+    return this.transbordarParaHumano(input)
+  }
+
+  async liberarTransbordo(input: { sessaoId: number; tenantSlug: string; ator: string }): Promise<{ ok: boolean }> {
+    if (!this.transbordo) return { ok: false }
+    const result = await this.transbordo.liberarPorOperador(input)
+    if (!result.ok) return result
+    await this.inserirMensagemSistemica(input.sessaoId, `Atendimento liberado por ${input.ator}. A agente pode retomar a conversa.`)
+    return result
+  }
+
+  async liberarTransbordoPorToken(token: string): Promise<{ ok: boolean }> {
+    if (!this.transbordo) return { ok: false }
+    const result = await this.transbordo.liberarPorTokenDetalhes(token)
+    if (result.ok && result.sessaoId) await this.inserirMensagemSistemica(result.sessaoId, "Atendimento humano encerrado. A agente pode retomar a conversa.")
+    return { ok: result.ok }
+  }
+
+  private async sessaoEmTransbordo(sessaoId: number): Promise<boolean> {
+    const [row] = await this.coreDb.select({ id: coreSchema.transbordos.id }).from(coreSchema.transbordos).where(and(eq(coreSchema.transbordos.sessaoId, sessaoId), eq(coreSchema.transbordos.estado, "active"))).limit(1)
+    return Boolean(row)
+  }
+
+  private async obterSessaoPorId(sessaoId: number) {
+    const [row] = await this.coreDb.select().from(helpDeskSessionTable).where(eq(helpDeskSessionTable.id, sessaoId)).limit(1)
+    return row
+  }
+
+  private async tenantDoProjeto(projetoId: number): Promise<string | undefined> {
+    const [row] = await this.coreDb.select({ slug: projectTable.slug }).from(projectTable).where(eq(projectTable.id, projetoId)).limit(1)
+    return row?.slug
+  }
+
+  private async inserirMensagemSistemica(sessaoId: number, text: string): Promise<void> {
+    const [sessao] = await this.coreDb.select({ projetoId: helpDeskSessionTable.projetoId, usuarioId: helpDeskSessionTable.usuarioId }).from(helpDeskSessionTable).where(eq(helpDeskSessionTable.id, sessaoId)).limit(1)
+    const [message] = await this.coreDb.insert(helpDeskMessageTable).values({ sessaoId, role: "system", text }).$returningId()
+    if (sessao && message) this.publicarMensagem(sessao.projetoId, sessao.usuarioId, sessaoId, message.id, "system", text)
   }
 
   async consultarProcessamento(input: { sessaoId: number; usuarioId: number; projetoId: number }): Promise<{
@@ -270,7 +363,7 @@ export class HelpDeskService {
     }
   }
 
-  private publicarMensagem(projetoId: number, usuarioId: number, sessaoId: number, id: number, role: "user" | "agent", text: string): void {
+  private publicarMensagem(projetoId: number, usuarioId: number, sessaoId: number, id: number, role: "user" | "agent" | "system", text: string): void {
     this.realtime?.publicarHelpDesk({
       projectId: projetoId,
       userId: usuarioId,

@@ -89,6 +89,59 @@ export const projetos = mysqlTable("projetos", {
     .onUpdateNow(),
 })
 
+export const TENANT_STATUS = ["ativo", "suspenso", "onboarding"] as const
+export const TENANT_PLANOS = ["starter", "pro", "enterprise"] as const
+
+/** Configuração e metadados privados de um cliente do chat universal. */
+export const tenants = mysqlTable("tenants", {
+  id: bigint("id", { mode: "number", unsigned: true })
+    .primaryKey()
+    .autoincrement(),
+  slug: varchar("slug", { length: 100 }).notNull().unique(),
+  nome: varchar("nome", { length: 150 }).notNull(),
+  dominio: varchar("dominio", { length: 255 }).unique(),
+  status: mysqlEnum("status", TENANT_STATUS).notNull().default("onboarding"),
+  plano: mysqlEnum("plano", TENANT_PLANOS).notNull().default("starter"),
+  /** Configuração editável; somente uma projeção validada é pública. */
+  configJson: json("config_json").notNull(),
+  /** Referência interna da persona, nunca exposta pelo contrato público. */
+  personaRef: varchar("persona_ref", { length: 255 }),
+  /** Contatos operacionais internos, não fazem parte do runtime público. */
+  contatos: json("contatos"),
+  /** Referência ao cofre de segredos, nunca o segredo em si. */
+  segredosRef: varchar("segredos_ref", { length: 255 }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at")
+    .notNull()
+    .defaultNow()
+    .onUpdateNow(),
+})
+
+/** Ferramentas do catálogo habilitadas para um tenant. */
+export const tenantTools = mysqlTable(
+  "tenant_tools",
+  {
+    id: bigint("id", { mode: "number", unsigned: true })
+      .primaryKey()
+      .autoincrement(),
+    tenantId: bigint("tenant_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    toolKey: varchar("tool_key", { length: 100 }).notNull(),
+    paramsJson: json("params_json"),
+    ativo: boolean("ativo").notNull().default(true),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at")
+      .notNull()
+      .defaultNow()
+      .onUpdateNow(),
+  },
+  (t) => [
+    index("idx_tenant_tools_tenant_id").on(t.tenantId),
+    uniqueIndex("uq_tenant_tools_tenant_tool").on(t.tenantId, t.toolKey),
+  ],
+)
+
 export const projetosUsuarios = mysqlTable(
   "projetos_usuarios",
   {
@@ -365,5 +418,54 @@ export const provisionamentoPendente = mysqlTable(
       t.tipo,
       t.ciclo,
     ),
+  ],
+)
+
+/** Configuração de transbordo humano por tenant/projeto. */
+export const transbordoConfig = mysqlTable(
+  "transbordo_config",
+  {
+    id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+    tenantSlug: varchar("tenant_slug", { length: 100 }).notNull().unique(),
+    ativo: boolean("ativo").notNull().default(false),
+    destinoTipo: mysqlEnum("destino_tipo", ["email", "telegram", "whatsapp"]).notNull(),
+    destinoValor: varchar("destino_valor", { length: 320 }).notNull(),
+    atendenteNome: varchar("atendente_nome", { length: 150 }).notNull(),
+    horario: json("horario").notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+)
+
+/** Ciclo de vida e auditoria de cada transbordo de uma sessão HelpDesk. */
+export const transbordos = mysqlTable(
+  "transbordos",
+  {
+    id: bigint("id", { mode: "number", unsigned: true }).primaryKey().autoincrement(),
+    tenantSlug: varchar("tenant_slug", { length: 100 }).notNull(),
+    sessaoId: bigint("sessao_id", { mode: "number", unsigned: true })
+      .notNull()
+      .references(() => helpdeskSessoes.id, { onDelete: "cascade" }),
+    estado: mysqlEnum("estado", ["pending", "active", "released", "expired", "cancelled"])
+      .notNull()
+      .default("pending"),
+    notificacaoEstado: mysqlEnum("notificacao_estado", ["pending", "sent", "failed"])
+      .notNull()
+      .default("pending"),
+    notificacaoTentadaEm: timestamp("notificacao_tentada_em"),
+    notificacaoEnviadaEm: timestamp("notificacao_enviada_em"),
+    notificacaoErro: varchar("notificacao_erro", { length: 1000 }),
+    tokenLiberacaoHash: varchar("token_liberacao_hash", { length: 128 }).notNull().unique(),
+    tokenLiberacaoExpiraEm: timestamp("token_liberacao_expira_em").notNull(),
+    tokenLiberacaoUsadoEm: timestamp("token_liberacao_usado_em"),
+    liberadoEm: timestamp("liberado_em"),
+    liberadoPor: varchar("liberado_por", { length: 150 }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
+  },
+  (t) => [
+    index("idx_transbordos_tenant_slug").on(t.tenantSlug),
+    index("idx_transbordos_sessao_id").on(t.sessaoId),
+    index("idx_transbordos_estado").on(t.estado),
   ],
 )
