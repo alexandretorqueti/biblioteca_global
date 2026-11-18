@@ -95,9 +95,13 @@ export class BillingService {
       }
       await this.repository.marcarWebhookConcluido(claimed.id)
     } catch (error) {
-      await this.repository.marcarWebhookFalho(claimed.id, error instanceof Error ? error.message : String(error))
+      await this.repository.marcarWebhookFalho(claimed.id, error instanceof Error ? error.message : String(error), new Date(Date.now() + 60_000))
       throw error
     }
+  }
+
+  subscriptionIdFromPayload(payload: unknown, tipo: string): string | undefined {
+    return this.subscriptionId(payload, tipo)
   }
 
   /** Ponto de reconciliação: o scheduler pode chamar este método após restart. */

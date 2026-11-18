@@ -179,6 +179,14 @@ export class EnvService {
     return value
   }
 
+  get telegramBotToken(): string {
+    return this.config.get<string>("TELEGRAM_BOT_TOKEN") ?? ""
+  }
+
+  get telegramDlqChatId(): string {
+    return this.config.get<string>("TELEGRAM_DLQ_CHAT_ID") ?? ""
+  }
+
   private required(key: string): string {
     const valor = this.config.get<string>(key)
     if (!valor) {

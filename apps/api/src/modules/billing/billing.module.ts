@@ -7,12 +7,15 @@ import { BillingService } from "./billing.service"
 import { MercadoPagoAdapter } from "./mercado-pago.adapter"
 import { PSP_BILLING_GATEWAY } from "./psp-billing.gateway"
 import { EnvService } from "../../config/env.service"
+import { BillingReconciler, createBillingAlertSender } from "./billing-reconciler"
 
 @Module({
   imports: [AuthModule],
   controllers: [BillingController, BillingWebhookController],
   providers: [
     BillingService,
+    BillingReconciler,
+    { provide: "BILLING_ALERT_SENDER", inject: [EnvService], useFactory: createBillingAlertSender },
     {
       provide: MercadoPagoAdapter,
       inject: [EnvService],
