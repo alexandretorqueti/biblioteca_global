@@ -148,6 +148,38 @@ export class EnvService {
     return this.required("PROVISION_TOKEN")
   }
 
+  /** Token de serviço da API interna de forjamento de personas. */
+  get forjadorToken(): string {
+    return this.required("FORJADOR_TOKEN")
+  }
+
+  /** Upstream do BFF do Console (com fallback para a ponte legada da Isa). */
+  get forjadorBffUpstream(): string {
+    return this.config.get<string>("FORJADOR_BFF_UPSTREAM")
+      || this.config.get<string>("ISA_BFF_UPSTREAM")
+      || ""
+  }
+
+  /** Token do BFF do Console (com fallback para a ponte legada da Isa). */
+  get forjadorBffToken(): string {
+    return this.config.get<string>("FORJADOR_BFF_TOKEN")
+      || this.config.get<string>("ISA_BFF_TOKEN")
+      || ""
+  }
+
+  get forjadorAgentId(): string {
+    return this.config.get<string>("FORJADOR_AGENT_ID") || "definicaopersonalidadeagentes"
+  }
+
+  /** Limite de espera do forjamento; nunca permite exceder 30 minutos. */
+  get forjadorTimeoutMs(): number {
+    const value = Number(this.config.get<string>("FORJADOR_TIMEOUT_MS") ?? "1740000")
+    if (!Number.isInteger(value) || value < 1000 || value > 1_800_000) {
+      throw new Error("FORJADOR_TIMEOUT_MS deve ser um inteiro entre 1000 e 1800000 ms")
+    }
+    return value
+  }
+
   /** Token exclusivo para ingestão de eventos do motor de tarefas. */
   get libraryRealtimeEventsToken(): string {
     return this.config.get<string>("LIBRARY_REALTIME_EVENTS_TOKEN") ?? ""
