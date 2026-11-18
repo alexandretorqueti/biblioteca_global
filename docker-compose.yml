@@ -185,7 +185,26 @@ services:
       retries: 12
       start_period: 10s
 
+  # Bundle único dos chats (isa + alpha como tenants resolvidos por Host).
+  # Substitui isa-chat/alpha-chat no up padrão (isas-mt-02/isas-mt-03).
+  chat-universal:
+    build:
+      context: .
+      dockerfile: projects/chat-universal/Dockerfile
+    container_name: biblioteca-global-chat-universal
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${CHAT_UNIVERSAL_HOST_PORT:-8084}:80"
+    # Usa a rede Docker padrão para resolver nomes dos containers
+
+  # Aposentados do up padrão (profiles: legacy) — mantidos para rollback até o
+  # aceite humano da paridade; subir com `docker compose --profile legacy up isa-chat`.
+  # Pastas projects/isa-chat e projects/alpha-chat intactas.
   isa-chat:
+    profiles: ['legacy']
     build:
       context: .
       dockerfile: projects/isa-chat/Dockerfile
@@ -198,6 +217,7 @@ services:
       - "${ISA_CHAT_HOST_PORT:-8082}:80"
 
   alpha-chat:
+    profiles: ['legacy']
     build:
       context: .
       dockerfile: projects/alpha-chat/Dockerfile
@@ -216,8 +236,7 @@ services:
     container_name: biblioteca-global-chat-proxy
     restart: unless-stopped
     depends_on:
-      - isa-chat
-      - alpha-chat
+      - chat-universal
     ports:
       - "8080:80"
     # Usa a rede Docker padrão para resolver nomes dos containers
