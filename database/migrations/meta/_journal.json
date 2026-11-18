@@ -85,6 +85,13 @@
       "when": 1795000001001,
       "tag": "0011_curvy_ezekiel_stane",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "5",
+      "when": 1794987120607,
+      "tag": "0012_forjador_persona",
+      "breakpoints": true
     }
   ]
 }
