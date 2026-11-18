@@ -5,6 +5,12 @@ import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
 
+/** Mensagem curta de erro para logs/relatórios de linhagem. */
+function describeError(error: unknown): string {
+  const value = error as { stderr?: unknown; message?: unknown } | undefined
+  return String(value?.stderr ?? value?.message ?? error ?? '').slice(0, 500)
+}
+
 /**
  * Erro lançado quando a branch de integração não existe e não pode ser recriada.
  * O motor deve tratar isso como "resetar subtarefas para pendente e tarefa para pronta".
@@ -23,6 +29,57 @@ export interface PreparedWorktree {
   integrationPath: string
   integrationBranch: string
   recoveries?: WorktreeRecovery[]
+  lineage?: LineageSyncReport
+}
+
+/**
+ * Motivo de um sync de linhagem que não aconteceu (ou que não avançou a subtarefa).
+ * Todos são seguros: nenhum apaga trabalho do programador.
+ */
+export type LineageSkipReason =
+  | 'fetch_unavailable'
+  | 'integration_unavailable'
+  | 'integration_worktree_dirty'
+  | 'subtask_has_commits'
+  | 'subtask_worktree_dirty'
+  | 'subtask_worktree_detached'
+  | 'subtask_fast_forward_failed'
+
+/** Resultado da sincronização da linhagem da tarefa com a base promovida. */
+export interface LineageSyncReport {
+  status: 'merged' | 'up_to_date' | 'skipped'
+  reason?: LineageSkipReason
+  baseRef?: string
+  integrationCommit?: string
+  subtaskCommit?: string
+  detail?: string
+}
+
+/**
+ * Erro lançado quando a base avançou e o merge na branch de integração conflita.
+ *
+ * Programar a subtarefa sobre a linhagem obsoleta é pior do que bloquear: o dev
+ * não enxerga os contratos já promovidos (pré-condições de escopo ficam
+ * impossíveis de atender), conclui sem diff e o motor queima as três tentativas
+ * até `worker_exhausted` — exatamente o loop dos bloqueios 3475/3488 da tarefa
+ * isas-mt-08. O conflito é trabalho de monitor (merge/rebase da integração),
+ * então ele vira bloqueio de preflight explícito, com a integração abortada e
+ * limpa, em vez de falha terminal do programador.
+ */
+export class IntegrationBaseSyncConflictError extends Error {
+  constructor(
+    public readonly taskId: string,
+    public readonly branch: string,
+    public readonly baseRef: string,
+    public readonly detail?: string,
+  ) {
+    super(
+      `A base ${baseRef} avançou e o merge na branch de integração ${branch} da tarefa ${taskId} conflitou. ` +
+      'A subtarefa não pode ser programada sobre linhagem obsoleta (o dev não veria os contratos já promovidos e concluiria sem diff). ' +
+      `Ação: resolver o merge/rebase da integração no worktree exclusivo (renumerando migrations Drizzle se necessário) e resolver o bloqueio. Detalhe: ${detail ?? 'merge abortado'}`,
+    )
+    this.name = 'IntegrationBaseSyncConflictError'
+  }
 }
 
 export interface WorktreeRecovery {
@@ -92,14 +149,152 @@ export class GitWorktreePreparer {
     return { path, branch, baseCommit, integrationPath, integrationBranch: taskBranch, recoveries }
   }
 
-  async prepareIntegration(input: { taskId: string; repoPath: string; baseBranch: string }): Promise<PreparedWorktree> {
+  async prepareIntegration(input: { taskId: string; repoPath: string; baseBranch: string; subtaskId?: number }): Promise<PreparedWorktree> {
     const repoPath = await this.resolveRepoPath(input.repoPath)
     await this.assertGitAvailable()
     const safeTaskId = input.taskId.replace(/[^a-zA-Z0-9._-]/g, '-')
     const branch = `motor-v3-work/integration-${safeTaskId}`
     const path = resolve(this.root, safeTaskId, 'integration')
+    // Outras tarefas promovem código na base enquanto esta ainda está em
+    // desenvolvimento. Sem sincronizar a linhagem antes do baseline, a subtarefa
+    // é programada (e testada) sobre um checkout que não contém o que já foi
+    // promovido — pré-condições de escopo ficam impossíveis de atender.
+    const lineage = input.subtaskId != null
+      ? await this.syncLineageWithBase({
+        taskId: input.taskId,
+        repoPath,
+        baseBranch: input.baseBranch,
+        subtaskId: input.subtaskId,
+        safeTaskId,
+        integrationBranch: branch,
+        integrationPath: path,
+      })
+      : undefined
     const prepared = await this.prepareNamedWorktree(repoPath, input.baseBranch, branch, path, input.taskId)
-    return { path, branch, baseCommit: prepared.commit, integrationPath: path, integrationBranch: branch, recoveries: prepared.recoveries }
+    return { path, branch, baseCommit: prepared.commit, integrationPath: path, integrationBranch: branch, recoveries: prepared.recoveries, lineage }
+  }
+
+  /**
+   * Sincroniza a linhagem da tarefa (integração + worktree da subtarefa) com a
+   * base promovida antes de programar/baseline da subtarefa.
+   *
+   * Regras de segurança:
+   * - nunca toca em linhagem com commits próprios da subtarefa ou com worktree
+   *   sujo (trabalho do programador é preservado; o sync simplesmente não ocorre);
+   * - merge sempre no worktree exclusivo da integração, jamais no checkout da base;
+   * - conflito não é engolido: vira {@link IntegrationBaseSyncConflictError} com o
+   *   merge abortado, para o motor bloquear em preflight com motivo acionável;
+   * - `fetch` indisponível (sem remote/rede) degrada para `skipped`, preservando o
+   *   comportamento anterior.
+   */
+  private async syncLineageWithBase(input: {
+    taskId: string
+    repoPath: string
+    baseBranch: string
+    subtaskId: number
+    safeTaskId: string
+    integrationBranch: string
+    integrationPath: string
+  }): Promise<LineageSyncReport> {
+    const { taskId, repoPath, baseBranch, subtaskId, safeTaskId, integrationBranch, integrationPath } = input
+    const baseRef = `origin/${baseBranch}`
+    const subtaskBranch = `motor-v3-work/subtask-${safeTaskId}-${subtaskId}-a1`
+    const subtaskPath = resolve(this.root, safeTaskId, String(subtaskId), 'a1')
+    if (!await this.branchExists(repoPath, integrationBranch)) {
+      return { status: 'skipped', reason: 'integration_unavailable', baseRef }
+    }
+    try {
+      await execFileAsync('git', ['fetch', '--quiet', 'origin', baseBranch], { cwd: repoPath })
+    } catch (error) {
+      return { status: 'skipped', reason: 'fetch_unavailable', baseRef, detail: describeError(error) }
+    }
+    if (!await this.refExists(repoPath, baseRef)) return { status: 'skipped', reason: 'fetch_unavailable', baseRef }
+    const integrationCommitBefore = await this.revParse(repoPath, integrationBranch)
+    if (await this.isAncestor(repoPath, baseRef, integrationBranch)) {
+      return { status: 'up_to_date', baseRef, integrationCommit: integrationCommitBefore }
+    }
+    if (await this.branchExists(repoPath, subtaskBranch) && await this.countCommits(repoPath, `${integrationBranch}..${subtaskBranch}`) > 0) {
+      return { status: 'skipped', reason: 'subtask_has_commits', baseRef, integrationCommit: integrationCommitBefore }
+    }
+    if (await this.exists(subtaskPath) && await this.isDirty(subtaskPath)) {
+      return { status: 'skipped', reason: 'subtask_worktree_dirty', baseRef, integrationCommit: integrationCommitBefore }
+    }
+    if (await this.exists(integrationPath) && await this.isDirty(integrationPath)) {
+      return { status: 'skipped', reason: 'integration_worktree_dirty', baseRef, integrationCommit: integrationCommitBefore }
+    }
+    let outcome: 'merged' | 'up_to_date' | 'skipped'
+    try {
+      outcome = await this.syncIntegrationBranch({ taskId, repoPath, baseBranch })
+    } catch (error) {
+      throw new IntegrationBaseSyncConflictError(taskId, integrationBranch, baseRef, describeError(error))
+    }
+    if (outcome === 'skipped') return { status: 'skipped', reason: 'integration_unavailable', baseRef, integrationCommit: integrationCommitBefore }
+    const integrationCommit = await this.revParse(repoPath, integrationBranch)
+    const advanced = await this.fastForwardSubtaskLineage(repoPath, integrationBranch, integrationCommit, subtaskBranch, subtaskPath)
+    return {
+      status: outcome === 'merged' ? 'merged' : 'up_to_date',
+      baseRef,
+      integrationCommit,
+      subtaskCommit: advanced.commit,
+      reason: advanced.reason,
+    }
+  }
+
+  /**
+   * Avança a linhagem da subtarefa para a integração já sincronizada. Só existe
+   * fast-forward: commits próprios e worktree sujo foram descartados antes pelo
+   * chamador, e HEAD fora da branch esperada não é movimentado.
+   */
+  private async fastForwardSubtaskLineage(
+    repoPath: string,
+    integrationBranch: string,
+    integrationCommit: string,
+    subtaskBranch: string,
+    subtaskPath: string,
+  ): Promise<{ commit?: string; reason?: LineageSkipReason }> {
+    if (await this.exists(subtaskPath) && await this.isRegisteredWorktree(repoPath, subtaskPath)) {
+      const { stdout: headRef } = await execFileAsync('git', ['symbolic-ref', '-q', 'HEAD'], { cwd: subtaskPath })
+        .catch(() => ({ stdout: '' }))
+      if (headRef.trim() !== `refs/heads/${subtaskBranch}`) return { reason: 'subtask_worktree_detached' }
+      try {
+        await execFileAsync('git', ['merge', '--ff-only', integrationBranch], { cwd: subtaskPath })
+      } catch {
+        return { reason: 'subtask_fast_forward_failed' }
+      }
+      return { commit: await this.revParse(repoPath, subtaskBranch) }
+    }
+    if (await this.branchExists(repoPath, subtaskBranch)) {
+      await execFileAsync('git', ['branch', '-f', subtaskBranch, integrationBranch], { cwd: repoPath })
+      return { commit: integrationCommit }
+    }
+    return {}
+  }
+
+  private async refExists(repoPath: string, ref: string): Promise<boolean> {
+    return execFileAsync('git', ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd: repoPath })
+      .then(() => true, () => false)
+  }
+
+  private async isAncestor(repoPath: string, candidate: string, branch: string): Promise<boolean> {
+    return execFileAsync('git', ['merge-base', '--is-ancestor', candidate, branch], { cwd: repoPath })
+      .then(() => true, () => false)
+  }
+
+  private async revParse(repoPath: string, ref: string): Promise<string> {
+    const { stdout } = await execFileAsync('git', ['rev-parse', ref], { cwd: repoPath })
+    return stdout.trim()
+  }
+
+  private async countCommits(repoPath: string, range: string): Promise<number> {
+    const { stdout } = await execFileAsync('git', ['rev-list', '--count', range], { cwd: repoPath })
+      .catch(() => ({ stdout: '0' }))
+    return Number(stdout.trim() || 0)
+  }
+
+  private async isDirty(worktreePath: string): Promise<boolean> {
+    const { stdout } = await execFileAsync('git', ['status', '--porcelain'], { cwd: worktreePath })
+      .catch(() => ({ stdout: '' }))
+    return stdout.trim() !== ''
   }
 
   private async prepareNamedWorktree(repoPath: string, baseRef: string, branch: string, path: string, taskId?: string): Promise<{ commit: string; recoveries: WorktreeRecovery[] }> {

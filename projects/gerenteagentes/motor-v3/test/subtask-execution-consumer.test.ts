@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { SubtaskExecutionConsumer } from '../src/execution/SubtaskExecutionConsumer.js'
+import { IntegrationBaseSyncConflictError } from '../src/execution/GitWorktreePreparer.js'
 import type { QueueMessage } from '../src/queue/QueueMessage.js'
 
 const message: QueueMessage = {
@@ -504,6 +505,72 @@ describe('SubtaskExecutionConsumer', () => {
       'gate_result', expect.objectContaining({ metadata: expect.objectContaining({ phase: 'rework', testRunId: 11 }) }),
       expect.objectContaining({ code: 'integration_gate_failed' }),
     )
+  })
+
+  it('bloqueia em preflight quando a base promovida conflita com a integração', async () => {
+    const repository = {
+      getExecutionContext: vi.fn().mockResolvedValue(context),
+      getDevelopmentModelChain: vi.fn().mockResolvedValue(['modelo-a']),
+      recordModelFailure: vi.fn().mockResolvedValue(undefined),
+      blockExecution: vi.fn().mockResolvedValue({ ...message, messageId: 'blocked-lineage', type: 'SUBTASK_EXECUTION_BLOCKED' }),
+      finishExecution: vi.fn().mockResolvedValue({ ...message, messageId: 'completed-lineage', type: 'SUBTASK_EXECUTION_COMPLETED' }),
+    }
+    const worktrees = {
+      prepareIntegration: vi.fn().mockRejectedValue(new IntegrationBaseSyncConflictError(
+        'task-p6-845', 'motor-v3-work/integration-task-p6-845', 'origin/base-desenvolvimento',
+        'CONFLICT (content): Merge conflict in database/schema.ts',
+      )),
+      prepare: vi.fn(),
+    }
+    const worker = { executeTask: vi.fn() }
+    const logger = { append: vi.fn().mockResolvedValue(undefined) }
+    const testGate = { request: vi.fn() }
+    const consumer = new SubtaskExecutionConsumer(repository as never, worktrees as never, worker as never, {}, {}, logger, testGate as never)
+
+    await consumer.handle(message)
+
+    // Não queima tentativa do programador: bloqueio acionável para o monitor.
+    expect(worker.executeTask).not.toHaveBeenCalled()
+    expect(repository.finishExecution).not.toHaveBeenCalled()
+    expect(repository.blockExecution).toHaveBeenCalledWith(context, message, expect.stringContaining('conflitou'))
+    expect(repository.blockExecution).toHaveBeenCalledWith(context, message, expect.stringContaining('database/schema.ts'))
+    expect(logger.append).toHaveBeenCalledWith(expect.objectContaining({
+      phase: 'completed', outcome: 'failed', reasonCode: 'baseline_preflight_failed',
+    }))
+  })
+
+  it('registra o sync da linhagem com a base promovida antes do baseline', async () => {
+    const repository = {
+      getExecutionContext: vi.fn().mockResolvedValue(context),
+      getDevelopmentModelChain: vi.fn().mockResolvedValue(['modelo-a']),
+      recordModelFailure: vi.fn().mockResolvedValue(undefined),
+      recordWorkspace: vi.fn().mockResolvedValue(undefined),
+      finishExecution: vi.fn().mockResolvedValue({ ...message, messageId: 'completed-lineage-ok', type: 'SUBTASK_EXECUTION_COMPLETED' }),
+    }
+    const lineage = { status: 'merged', baseRef: 'origin/base-desenvolvimento', integrationCommit: 'novo', subtaskCommit: 'novo' } as const
+    const worktrees = {
+      prepareIntegration: vi.fn().mockResolvedValue({
+        path: '/integration', branch: 'integration-task', baseCommit: 'novo',
+        integrationPath: '/integration', integrationBranch: 'integration-task', lineage,
+      }),
+      prepare: vi.fn().mockResolvedValue({
+        path: '/worktree', branch: 'motor-v3/task/901/a1', baseCommit: 'novo',
+        integrationPath: '/integration', integrationBranch: 'integration-task',
+      }),
+    }
+    const worker = { executeTask: vi.fn().mockResolvedValue({ success: true, attempts: 1, postDevRunId: 52 }) }
+    const logger = { append: vi.fn().mockResolvedValue(undefined) }
+    const testGate = { request: vi.fn().mockResolvedValue({ id: 51, phase: 'baseline', status: 'passed', failures: [] }) }
+    const consumer = new SubtaskExecutionConsumer(repository as never, worktrees as never, worker as never, {}, {}, logger, testGate as never)
+
+    await consumer.handle(message)
+
+    expect(worktrees.prepareIntegration).toHaveBeenCalledWith(expect.objectContaining({ subtaskId: 901 }))
+    expect(logger.append).toHaveBeenCalledWith(expect.objectContaining({
+      primitiveCode: 'sync_task_lineage', outcome: 'succeeded', result: lineage,
+    }))
+    // O baseline roda sobre a integração já sincronizada.
+    expect(testGate.request).toHaveBeenCalledWith(expect.objectContaining({ commitSha: 'novo', workspacePath: '/integration' }), message)
   })
 })
 // @vitest-environment node

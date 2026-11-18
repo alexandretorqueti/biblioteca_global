@@ -4,7 +4,7 @@ import type { OperationLogEntry, OperationLogger } from '../commands/OperationLo
 import type { PrimitiveContext } from '../primitives/types.js'
 import type { DevelopmentPrompt, WorkerLauncher, WorkerResult } from '../worker-launcher/WorkerLauncher.js'
 import type { MySqlDevelopmentExecutionRepository, SubtaskExecutionContext } from './DevelopmentExecutionRepository.js'
-import { GitWorktreePreparer, IntegrationBranchMissingError } from './GitWorktreePreparer.js'
+import { GitWorktreePreparer, IntegrationBaseSyncConflictError, IntegrationBranchMissingError } from './GitWorktreePreparer.js'
 import type { PreparedWorktree } from './GitWorktreePreparer.js'
 import type {
   BaselinePreflightRecovery,
@@ -124,11 +124,22 @@ export class SubtaskExecutionConsumer {
           taskId: execution.taskId,
           repoPath: execution.repoPath,
           baseBranch: execution.baseBranch,
+          // Sincroniza a linhagem com a base promovida ANTES do baseline: sem
+          // isso a subtarefa é programada sobre um checkout sem os contratos que
+          // outras tarefas já promoveram (loop worker_exhausted isas-mt-08/1497).
+          subtaskId,
         })
         await this.log(operationId, sequence++, message, {
           phase: 'primitive', outcome: 'succeeded', subtaskId, primitiveCode: 'prepare_integration_worktree',
           result: { workspacePath: integration.integrationPath, branch: integration.integrationBranch, baseCommit: integration.baseCommit },
         })
+        if (integration.lineage) {
+          await this.log(operationId, sequence++, message, {
+            phase: 'primitive', outcome: integration.lineage.status === 'skipped' ? 'skipped' : 'succeeded', subtaskId,
+            primitiveCode: 'sync_task_lineage', reasonCode: integration.lineage.reason,
+            result: { ...integration.lineage },
+          })
+        }
         sequence = await this.logWorktreeRecoveries(operationId, sequence, message, subtaskId, integration.recoveries ?? [])
         if (this.environmentPreparer) {
           const packages = await this.environmentPreparer.prepare(integration.integrationPath)
@@ -137,6 +148,14 @@ export class SubtaskExecutionConsumer {
           })
         }
       } catch (error) {
+        // Conflito ao trazer a base promovida para a integração é trabalho de
+        // monitor (merge/rebase + renumeração de migrations), não do dev: bloqueia
+        // em preflight com motivo acionável em vez de queimar tentativas de
+        // execução até worker_exhausted com "concluiu sem alterar o worktree".
+        if (error instanceof IntegrationBaseSyncConflictError) {
+          await this.finishPreflightBlock(operationId, sequence, message, execution, error.message)
+          return
+        }
         await this.finishPreparationFailure(operationId, message, execution, error)
         return
       }
