@@ -4,9 +4,106 @@
 
 import type { PrimitiveDefinition, PrimitiveContext, PrimitiveResult } from './types.js'
 import { exec } from 'child_process'
+import { existsSync } from 'node:fs'
+import { readFile, rename as fsRename, writeFile } from 'node:fs/promises'
+import { dirname, resolve } from 'node:path'
 import { promisify } from 'util'
+import { mergeJournals, parseJournal } from '../deploy/MigrationJournalMerge.js'
 
 const execAsync = promisify(exec)
+
+const DEFAULT_MIGRATION_JOURNAL = 'projects/gerenteagentes/migrations/meta/_journal.json'
+
+function journalRawParam(params: Record<string, any>, names: string[]): string | null | undefined {
+  for (const name of names) {
+    if (name in params) return params[name] as string | null | undefined
+  }
+  return undefined
+}
+
+async function readJournal(
+  worktreePath: string,
+  raw: string | null | undefined,
+  path: string,
+): Promise<string | null> {
+  if (raw !== undefined) return raw
+  try {
+    return await readFile(resolve(worktreePath, path), 'utf8')
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Renumera migrations de um membro quando o índice já está ocupado na base.
+ * A composição do journal permanece centralizada em MigrationJournalMerge;
+ * esta primitiva apenas aplica os renomeios coordenados no worktree.
+ */
+export const renumberMigration: PrimitiveDefinition = {
+  code: 'renumber_migration',
+  name: 'Renumera migration em colisão de journal',
+  domain: 'git',
+  handler: async (context: PrimitiveContext, params: Record<string, any> = {}): Promise<PrimitiveResult> => {
+    const journalPath = String(params.journalPath ?? DEFAULT_MIGRATION_JOURNAL)
+    const worktreePath = context.worktreePath
+    try {
+      const basePath = String(params.baseJournalPath ?? journalPath)
+      const theirsPath = String(params.memberJournalPath ?? journalPath)
+      const [oursRaw, baseRaw, theirsRaw] = await Promise.all([
+        readJournal(worktreePath, journalRawParam(params, ['oursJournal', 'oursRaw']), journalPath),
+        readJournal(worktreePath, journalRawParam(params, ['baseJournal', 'baseRaw']), basePath),
+        readJournal(worktreePath, journalRawParam(params, ['theirsJournal', 'theirsRaw', 'memberJournal']), theirsPath),
+      ])
+      const ours = parseJournal(oursRaw)
+      const base = parseJournal(baseRaw)
+      const theirs = parseJournal(theirsRaw)
+      if (!ours || !theirs) {
+        return { success: false, error: 'Journals ours/theirs inválidos ou ausentes' }
+      }
+
+      const baseTags = new Set((base?.entries ?? []).map(entry => entry.tag))
+      const oursTags = new Set(ours.entries.map(entry => entry.tag))
+      const occupiedIndexes = new Map(ours.entries.map(entry => [entry.idx, entry.tag]))
+      const hasCollision = theirs.entries.some(entry => {
+        if (baseTags.has(entry.tag) || oursTags.has(entry.tag)) return false
+        const occupiedTag = occupiedIndexes.get(entry.idx)
+        return occupiedTag !== undefined && occupiedTag !== entry.tag
+      })
+      if (!hasCollision) {
+        return { success: true, data: { changed: false, reason: 'no_collision', journalPath } }
+      }
+
+      const merged = mergeJournals(oursRaw, baseRaw, theirsRaw)
+      if (!merged) return { success: false, error: 'Não foi possível combinar os journals' }
+
+      const metaDir = dirname(journalPath)
+      const migrationsDir = dirname(metaDir)
+      const appliedRenames: Array<{ from: string; to: string; oldIdx: number; newIdx: number }> = []
+      for (const rename of merged.renames) {
+        const oldPrefix = String(rename.oldIdx).padStart(4, '0')
+        const newPrefix = String(rename.newIdx).padStart(4, '0')
+        const pairs: Array<[string, string, boolean]> = [
+          [`${migrationsDir}/${rename.from}.sql`, `${migrationsDir}/${rename.to}.sql`, false],
+          [`${metaDir}/${oldPrefix}_snapshot.json`, `${metaDir}/${newPrefix}_snapshot.json`, true],
+        ]
+        for (const [oldPath, newPath, optional] of pairs) {
+          const absoluteOld = resolve(worktreePath, oldPath)
+          const absoluteNew = resolve(worktreePath, newPath)
+          if (optional && !existsSync(absoluteOld)) continue
+          if (!existsSync(absoluteOld)) return { success: false, error: `Arquivo da migration ausente: ${oldPath}` }
+          if (existsSync(absoluteNew)) return { success: false, error: `Alvo da renumeração ocupado: ${newPath}` }
+          await fsRename(absoluteOld, absoluteNew)
+        }
+        appliedRenames.push(rename)
+      }
+      await writeFile(resolve(worktreePath, journalPath), `${JSON.stringify(merged.journal, null, 2)}\n`)
+      context.logger?.info('Migration renumerada', { journalPath, renames: appliedRenames })
+      return { success: true, data: { changed: true, journalPath, renames: appliedRenames } }
+    } catch (error) {
+      return { success: false, error: `Erro ao renumerar migration: ${error instanceof Error ? error.message : String(error)}` }
+    }
+  },
+}
 
 /**
  * create_worktree - Cria worktree isolado

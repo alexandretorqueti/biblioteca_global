@@ -12,7 +12,7 @@ import type { PrimitiveDefinition } from './types.js'
 import { setFlag, log } from './control.js'
 import { createSession, archiveSession, incrementGeneration, sendMessage, sendFeedback, waitForCompletion, parseReply } from './session.js'
 import { cooldownModel, escalateModel } from './model.js'
-import { createWorktree, removeWorktree, installDependencies, verifyGit, runBuild, commitChanges, mergeBranch, revertMerge, publishBranch, promoteToBase, checkPaths } from './git.js'
+import { createWorktree, removeWorktree, installDependencies, verifyGit, runBuild, commitChanges, mergeBranch, revertMerge, publishBranch, promoteToBase, checkPaths, renumberMigration } from './git.js'
 import { persistPlan, createSubtasks, checkCommits, blockTask, blockSubtask, persistBlocker, unblockSubtask, createTask } from './db.js'
 import { pauseAgentQueue, resumeAgentQueue, enqueueDeploy } from './queue.js'
 
@@ -49,6 +49,7 @@ export const ALL_PRIMITIVES: PrimitiveDefinition[] = [
   publishBranch,
   promoteToBase,
   checkPaths,
+  renumberMigration,
   
   // Banco (8)
   persistPlan,
