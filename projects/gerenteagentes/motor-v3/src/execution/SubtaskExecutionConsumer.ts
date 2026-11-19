@@ -147,6 +147,8 @@ export class SubtaskExecutionConsumer {
         integration = await this.worktrees.prepareIntegration({
           taskId: execution.taskId,
           repoPath: execution.repoPath,
+          repoPathHost: execution.repoPathHost,
+          projectLayout: execution.projectLayout,
           baseBranch: execution.baseBranch,
           // Sincroniza a linhagem com a base promovida ANTES do baseline: sem
           // isso a subtarefa é programada sobre um checkout sem os contratos que
@@ -462,7 +464,8 @@ export class SubtaskExecutionConsumer {
     if (!execution || !this.baselineRecovery) return
     this.validateContext(execution)
     const integration = await this.worktrees.prepareIntegration({
-      taskId: execution.taskId, repoPath: execution.repoPath, baseBranch: execution.baseBranch,
+      taskId: execution.taskId, repoPath: execution.repoPath, repoPathHost: execution.repoPathHost,
+      projectLayout: execution.projectLayout, baseBranch: execution.baseBranch,
     })
     const recovered = await this.baselineRecovery.completeHandoff(execution, integration, input.message)
     if (!recovered.success || !recovered.baseline) {

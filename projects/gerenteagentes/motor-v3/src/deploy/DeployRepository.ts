@@ -10,6 +10,9 @@ export interface DeployTaskContext {
   databaseTaskId: number
   projectId: number
   repoPath: string
+  projectLayout?: 'monorepo' | 'standalone'
+  repoPathHost?: string | null
+  gitRemote?: string | null
   baseBranch: string
   buildCommand: string
   testCommand: string
@@ -60,6 +63,7 @@ export interface IntegrationBranchSyncTarget {
 interface ContextRow extends RowDataPacket {
   id: number; external_id: string | null; projeto_id: number; tipo: string | null
   repo_path: string | null; branch_trabalho: string | null
+  project_layout: 'monorepo' | 'standalone' | null; repo_path_host: string | null; git_remote: string | null
   build_command: string | null; unit_test_command: string | null
   integration_confirmed_at: Date | string | null; terminal_status: string | null
   blocked: number | string
@@ -83,7 +87,7 @@ export class DeployRepository {
 
   async getEligibleTask(taskId: string): Promise<Omit<DeployTaskContext, 'integrationPath' | 'integrationBranch' | 'integrationCommit'> | null> {
     const [rows] = await this.pool.query<ContextRow[]>(`
-      SELECT t.id, t.external_id, t.projeto_id, t.tipo, pmc.repo_path, pmc.branch_trabalho,
+      SELECT t.id, t.external_id, t.projeto_id, t.tipo, pmc.project_layout, pmc.repo_path, pmc.repo_path_host, pmc.git_remote, pmc.branch_trabalho,
              pmc.build_command, pmc.unit_test_command, f.integration_confirmed_at, f.terminal_status,
              EXISTS(SELECT 1 FROM bloqueios b WHERE b.tarefa_id=t.id AND b.resolved_at IS NULL) AS blocked
         FROM tarefas t
@@ -99,7 +103,9 @@ export class DeployRepository {
     if (!row.repo_path || !row.branch_trabalho || !row.build_command || !row.unit_test_command) throw new Error('Deploy bloqueado: configuração de repositório, branch ou gate ausente')
     return {
       taskId: String(row.external_id ?? row.id), databaseTaskId: Number(row.id), projectId: Number(row.projeto_id),
-      repoPath: String(row.repo_path), baseBranch: String(row.branch_trabalho),
+      repoPath: String(row.repo_path), projectLayout: row.project_layout === 'standalone' ? 'standalone' : 'monorepo',
+      repoPathHost: row.repo_path_host ? String(row.repo_path_host) : null, gitRemote: row.git_remote ? String(row.git_remote) : null,
+      baseBranch: String(row.branch_trabalho),
       buildCommand: String(row.build_command), testCommand: String(row.unit_test_command),
     }
   }

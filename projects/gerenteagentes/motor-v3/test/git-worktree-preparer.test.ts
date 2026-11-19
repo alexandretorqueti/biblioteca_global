@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, describe, expect, it } from 'vitest'
-import { GitWorktreePreparer, mapHostRepoPathToContainer } from '../src/execution/GitWorktreePreparer.js'
+import { GitWorktreePreparer, integrationResourceKey, mapHostRepoPathToContainer, validateStandaloneRepoMappings } from '../src/execution/GitWorktreePreparer.js'
 
 const execFileAsync = promisify(execFile)
 const temporaryPaths: string[] = []
@@ -18,6 +18,31 @@ describe('GitWorktreePreparer', () => {
     expect(mapHostRepoPathToContainer('/home/alexandre/codigofonte/biblioteca-global')).toBe(
       '/data/workspace/projects/codigofonte/biblioteca-global',
     )
+  })
+
+  it('usa lock por repo para standalone e por projeto para monorepo', () => {
+    expect(integrationResourceKey({ projectLayout: 'standalone', repoPath: '/home/alexandre/codigofonte/openclaw-console' }))
+      .toBe('repo:/data/workspace/projects/codigofonte/openclaw-console')
+    expect(integrationResourceKey({ projectLayout: 'monorepo', repoPath: '/tmp/ignored', projectSlug: 'consoleopenclaw' }))
+      .toBe('project:consoleopenclaw:integration')
+  })
+
+  it('valida o par host/container e retorna repo_inacessivel quando ausente', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'motor-v3-mapping-'))
+    temporaryPaths.push(root)
+    const repository = join(root, 'repo')
+    await execFileAsync('git', ['init', '-b', 'main', repository])
+    await execFileAsync('git', ['config', 'user.email', 'test@example.invalid'], { cwd: repository })
+    await execFileAsync('git', ['config', 'user.name', 'Motor v3 test'], { cwd: repository })
+    await writeFile(join(repository, 'README.md'), 'repo\n')
+    await execFileAsync('git', ['add', 'README.md'], { cwd: repository })
+    await execFileAsync('git', ['commit', '-m', 'base'], { cwd: repository })
+    await expect(validateStandaloneRepoMappings([{
+      projectId: 12, projectSlug: 'consoleopenclaw', repoPath: repository, repoPathHost: '/home/alexandre/codigofonte/inexistente',
+    }])).resolves.toBeUndefined()
+    await expect(validateStandaloneRepoMappings([{
+      projectId: 12, projectSlug: 'consoleopenclaw', repoPath: join(root, 'missing'), repoPathHost: '/home/alexandre/codigofonte/inexistente',
+    }])).rejects.toThrow('repo_inacessivel')
   })
 
   it('cria worktrees sem alterar o checkout base', async () => {

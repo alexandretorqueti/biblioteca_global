@@ -119,13 +119,57 @@ export function mapHostRepoPathToContainer(repoPath: string): string | null {
   return resolve(containerPrefix, original.slice(hostPrefix.length))
 }
 
+export type ProjectLayout = 'monorepo' | 'standalone'
+
+/** Chave de exclusão mútua da integração, estável entre namespaces host/API. */
+export function integrationResourceKey(input: { projectLayout?: ProjectLayout | null; repoPath?: string | null; projectSlug?: string | null }): string {
+  if (input.projectLayout === 'standalone') {
+    const path = resolve(String(input.repoPath ?? '').trim())
+    const mapped = mapHostRepoPathToContainer(path)
+    return `repo:${resolve(mapped ?? path)}`
+  }
+  return `project:${String(input.projectSlug ?? '').trim()}:integration`
+}
+
+export interface StandaloneRepoMapping {
+  projectId: number | string
+  projectSlug?: string | null
+  repoPath: string | null
+  repoPathHost?: string | null
+}
+
+/** Valida o par persistido sem assumir que o caminho do host existe na API. */
+export async function validateStandaloneRepoMappings(entries: StandaloneRepoMapping[]): Promise<void> {
+  for (const entry of entries) {
+    const containerPath = String(entry.repoPath ?? '').trim()
+    const hostPath = String(entry.repoPathHost ?? '').trim()
+    const candidates = [...new Set([
+      containerPath,
+      hostPath ? mapHostRepoPathToContainer(hostPath) : null,
+      containerPath ? mapHostRepoPathToContainer(containerPath) : null,
+    ].filter((value): value is string => Boolean(value)).map(value => resolve(value)))]
+    let accessible: string | null = null
+    for (const candidate of candidates) {
+      try {
+        await access(candidate)
+        await execFileAsync('git', ['rev-parse', '--show-toplevel'], { cwd: candidate })
+        accessible = candidate
+        break
+      } catch { /* tenta o próximo namespace */ }
+    }
+    if (!accessible) {
+      throw new Error(`repo_inacessivel: projeto ${entry.projectSlug ?? entry.projectId} não acessível no container (repo_path=${containerPath || '(ausente)'}, repo_path_host=${hostPath || '(ausente)'})`)
+    }
+  }
+}
+
 /** Prepara um worktree isolado sem alterar o checkout da branch base. */
 export class GitWorktreePreparer {
   constructor(private readonly root: string) {}
 
-  async prepare(input: { taskId: string; subtaskId: number; repoPath: string; baseBranch: string }): Promise<PreparedWorktree> {
+  async prepare(input: { taskId: string; subtaskId: number; repoPath: string; repoPathHost?: string | null; projectLayout?: ProjectLayout | null; baseBranch: string }): Promise<PreparedWorktree> {
     if (!input.repoPath || !input.baseBranch) throw new Error('Projeto sem repo_path ou branch_trabalho configurados')
-    const repoPath = await this.resolveRepoPath(input.repoPath)
+    const repoPath = await this.resolveRepoPath(input.repoPath, input.repoPathHost, input.projectLayout)
     await this.assertGitAvailable()
     const safeTaskId = input.taskId.replace(/[^a-zA-Z0-9._-]/g, '-')
     // `motor-v3` já é uma branch histórica; Git não permite refs filhas de
@@ -171,8 +215,8 @@ export class GitWorktreePreparer {
     return { path, branch, baseCommit, integrationPath, integrationBranch: taskBranch, recoveries, artifactSalvage }
   }
 
-  async prepareIntegration(input: { taskId: string; repoPath: string; baseBranch: string; subtaskId?: number }): Promise<PreparedWorktree> {
-    const repoPath = await this.resolveRepoPath(input.repoPath)
+  async prepareIntegration(input: { taskId: string; repoPath: string; repoPathHost?: string | null; projectLayout?: ProjectLayout | null; baseBranch: string; subtaskId?: number }): Promise<PreparedWorktree> {
+    const repoPath = await this.resolveRepoPath(input.repoPath, input.repoPathHost, input.projectLayout)
     await this.assertGitAvailable()
     const safeTaskId = input.taskId.replace(/[^a-zA-Z0-9._-]/g, '-')
     const branch = `motor-v3-work/integration-${safeTaskId}`
@@ -613,12 +657,20 @@ export class GitWorktreePreparer {
   }
 
   /** Converte o caminho persistido pelo host para o bind visível na API. */
-  private async resolveRepoPath(repoPath: string): Promise<string> {
-    const original = resolve(repoPath)
-    if (await this.exists(original)) return original
-    const mapped = mapHostRepoPathToContainer(original)
-    if (mapped && await this.exists(mapped)) return mapped
-    throw new Error(`Repositório inacessível no container do Motor: ${original}`)
+  private async resolveRepoPath(repoPath: string, repoPathHost?: string | null, _layout?: ProjectLayout | null): Promise<string> {
+    const candidates = [repoPath, repoPathHost]
+      .filter((value): value is string => Boolean(String(value ?? '').trim()))
+      .flatMap(value => [resolve(value), mapHostRepoPathToContainer(value)])
+      .filter((value): value is string => Boolean(value))
+    for (const candidate of [...new Set(candidates)]) {
+      if (await this.exists(candidate)) {
+        try {
+          await execFileAsync('git', ['rev-parse', '--show-toplevel'], { cwd: candidate })
+          return candidate
+        } catch { /* não é um checkout Git */ }
+      }
+    }
+    throw new Error(`repo_inacessivel: Repositório inacessível no container do Motor: ${resolve(repoPath)}`)
   }
 
   private async assertGitAvailable(): Promise<void> {

@@ -1,7 +1,7 @@
 export { DevelopmentExecutionConsumer, TASK_READY_FOR_PROGRAMMING } from './DevelopmentExecutionConsumer.js'
 export { MySqlDevelopmentExecutionRepository, type ReservedSubtask, type CapacityWaiting, type ReserveNextSubtaskResult, type SubtaskExecutionContext } from './DevelopmentExecutionRepository.js'
 export { SubtaskExecutionConsumer, SUBTASK_EXECUTION_REQUESTED } from './SubtaskExecutionConsumer.js'
-export { GitWorktreePreparer, mapHostRepoPathToContainer, type PreparedWorktree } from './GitWorktreePreparer.js'
+export { GitWorktreePreparer, mapHostRepoPathToContainer, integrationResourceKey, validateStandaloneRepoMappings, type PreparedWorktree, type ProjectLayout, type StandaloneRepoMapping } from './GitWorktreePreparer.js'
 export { WorkerConsoleAdapter } from './WorkerConsoleAdapter.js'
 export { DevelopmentSessionRecoveryReconciler } from './DevelopmentSessionRecoveryReconciler.js'
 export { GitVerificationIntegrator, type VerificationResult } from './GitVerificationIntegrator.js'

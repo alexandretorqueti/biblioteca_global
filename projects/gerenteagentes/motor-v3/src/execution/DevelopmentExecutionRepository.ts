@@ -68,6 +68,9 @@ export interface SubtaskExecutionContext {
   deliverables: string[]
   projectSlug: string
   repoPath: string
+  projectLayout?: 'monorepo' | 'standalone'
+  repoPathHost?: string | null
+  gitRemote?: string | null
   baseBranch: string
   buildCommand: string
   testCommand: string
@@ -108,6 +111,9 @@ interface ExecutionRow extends RowDataPacket {
   deliverables: string | null
   project_slug: string | null
   repo_path: string | null
+  project_layout: 'monorepo' | 'standalone' | null
+  repo_path_host: string | null
+  git_remote: string | null
   branch_trabalho: string | null
   build_command: string | null
   unit_test_command: string | null
@@ -542,7 +548,7 @@ export class MySqlDevelopmentExecutionRepository {
               t.descricao AS task_description, s.id AS subtask_id, s.seq,
               s.titulo AS subtask_title, s.scope, s.acceptance_criteria, s.deliverables, s.completion_kind,
               s.generation,
-              pc.slug AS project_slug, pmc.repo_path, pmc.branch_trabalho,
+              pc.slug AS project_slug, pmc.project_layout, pmc.repo_path, pmc.repo_path_host, pmc.git_remote, pmc.branch_trabalho,
               pmc.build_command, pmc.unit_test_command,
               COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), pc.slug, '') AS agent_id,
               s.workspace_path, s.workspace_branch, s.workspace_base_commit
@@ -572,6 +578,9 @@ export class MySqlDevelopmentExecutionRepository {
       deliverables: this.parseStringArray(row.deliverables),
       projectSlug: String(row.project_slug ?? ''),
       repoPath: String(row.repo_path ?? ''),
+      projectLayout: row.project_layout === 'standalone' ? 'standalone' : 'monorepo',
+      repoPathHost: row.repo_path_host ? String(row.repo_path_host) : null,
+      gitRemote: row.git_remote ? String(row.git_remote) : null,
       baseBranch: String(row.branch_trabalho ?? ''),
       buildCommand: String(row.build_command ?? ''),
       testCommand: String(row.unit_test_command ?? ''),
