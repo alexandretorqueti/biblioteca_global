@@ -100,6 +100,12 @@ remove a stack anterior. O MySQL é compartilhado e não é recriado.
 Obtenha o token pelo fluxo de auth da plataforma (código por e-mail / login) e
 use `Authorization: Bearer <JWT …en>`.
 
+#### 1.3.1 Comprador de teste do sandbox
+
+O payer usado no checkout sandbox precisa ser um usuário de teste do Mercado
+Pago com e-mail no domínio `@testuser.com`. Não use o e-mail real do lead nem
+um comprador de produção.
+
 ### 1.4 Verificação de DNS da URL canônica (antes de tudo)
 
 O webhook do Mercado Pago é configurado para a URL canônica:
@@ -242,6 +248,12 @@ Fluxo interno (`billing.service.ts` `criarAssinaturaParaLead`), nesta ordem:
 5. `UPDATE` em `assinaturas` ligando `psp_customer_id` e
    `psp_subscription_id`.
 
+Ao criar o customer no Mercado Pago, o nome é dividido antes do envio: o
+primeiro token vai para `first_name` e todo o restante vai para `last_name`.
+Por exemplo, `Ana Maria Silva` vira `first_name: "Ana"` e
+`last_name: "Maria Silva"`. Um `first_name` contendo espaços causa o erro **107**
+do Mercado Pago (`first_name is invalid`).
+
 Resposta esperada (formato exato do service):
 
 ```json
@@ -261,7 +273,7 @@ com um comprador de teste do sandbox para o MP disparar o webhook.
 
 ## 4. Webhook do Mercado Pago
 
-### 4.1 URL e assinatura HMAC
+### 4.1 URL, formato real e assinatura HMAC
 
 - **URL canônica pretendida no painel do MP (indisponível até criar o DNS):**
   `https://api.biblioteca.globaltecnologia.net/api/billing/webhook`
@@ -274,6 +286,19 @@ com um comprador de teste do sandbox para o MP disparar o webhook.
   na verificação de 2026-11-18; use-a até o registro canônico ser criado.
 - **Autenticação do webhook é a assinatura HMAC, não JWT**
   (`billing-webhook.controller.ts` — sem guards).
+- **Formato real do evento de pagamento:** o Mercado Pago envia um payload
+  mínimo, por exemplo:
+
+  ```json
+  {"action":"payment.updated","type":"payment","data":{"id":"<id-do-pagamento>"}}
+  ```
+
+  O payload não precisa conter `status`, `external_reference` ou
+  `subscription_id`. Para `type=payment` e `action=payment.updated`, o adapter
+  normaliza o tipo para `payment.updated` e busca os dados confirmados em
+  `GET /v1/payments/<id-do-pagamento>` usando `PSP_ACCESS_TOKEN`. Só o status
+  retornado pelo PSP como `approved` ativa a assinatura; a resposta também
+  fornece `external_reference`/`metadata` para localizar a assinatura local.
 - O controller exige o **corpo bruto** (`rawBody: true` em `main.ts`), lê os
   headers **`x-signature`** e **`x-request-id`** e extrai o `dataId` de
   `payload.data.id ?? payload.id` (`webhookDataId`).
@@ -309,8 +334,8 @@ túnel HTTPS público temporário descrito no §1.4.
 
 ### 4.3 Reenvio manual (simulação de entrega do MP)
 
-Para reproduzir uma entrega com HMAC válido (uso operacional — não é o
-caminho normal, que é o MP entregando):
+Para reproduzir uma entrega com HMAC válido e o formato real mínimo (uso
+operacional — não é o caminho normal, que é o MP entregando):
 
 ```bash
 DATA_ID=<id-d…o>          # ex.: id do pagamento/assinatura
@@ -325,15 +350,13 @@ curl -s -X POST \
   -H "x-signature: ts=${TS},v1=${V1}" \
   -H "x-request-id: ${REQUEST_ID}" \
   https://api.biblioteca.globaltecnologia.net/api/billing/webhook \
-  -d "{\"type\":\"subscription.payment\",\"data\":{\"id\":${DATA_ID}},\"subscription_id\":\"<pspSubscriptionId>\",\"external_reference\":\"assinatura:<id-da-assinatura>\"}"
+  -d "{\"action\":\"payment.updated\",\"type\":\"payment\",\"data\":{\"id\":\"${DATA_ID}\"}}"
 ```
 
-O `subscriptionId` local é resolvido, nesta ordem (`billing.service.ts`
-`subscriptionId`): `metadata.subscription_id` → `payload.subscription_id` →
-`data.id` se `tipo` começa com `subscription.` → `external_reference` no
-formato `assinatura:<id>`. Eventos aprovados/disparadores de ativação:
-`payment.approved`, `payment.updated` com `status=approved`, ou qualquer
-`subscription.*`.
+Depois da busca no PSP, o `external_reference`/`metadata` retornado é usado
+para localizar a assinatura local. Eventos aprovados/disparadores de
+ativação: `payment.approved`, `payment.updated` com `status=approved`, ou
+qualquer `subscription.*`.
 
 Processamento (`processarWebhook` → `claimWebhook` → `processarAprovacao`):
 em **uma transação**, a assinatura `pending` vira `active`, `pedidos_venda`
@@ -405,8 +428,9 @@ em `provisionamento_pendente` com `tipo = 'billing.provision'` (default
 
 ### Aceite 4 — duplicata idempotente
 
-Reenvie **o mesmo webhook** (mesmo `tipo`/`dataId`, nova assinatura
-`x-signature` com `ts` atualizado — o HMAC cobre `ts`, mas o `dedupe_key` não).
+Reenvie **o mesmo webhook mínimo** (mesmo `action`, `type` e `data.id`, nova
+assinatura `x-signature` com `ts` atualizado — o HMAC cobre `ts`, mas o
+`dedupe_key` não).
 Resposta HTTP esperada:
 
 ```json
