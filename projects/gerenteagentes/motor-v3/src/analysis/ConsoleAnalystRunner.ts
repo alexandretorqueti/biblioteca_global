@@ -237,14 +237,25 @@ export class ConsoleAnalystRunner implements AnalysisRunner {
         // Snapshots vindos do banco sempre carregam o default monorepo. O
         // fallback para raiz preserva runners/testes legados que ainda não
         // projetam projectLayout.
-        const projectDir = task.projectLayout === 'standalone'
-          ? candidate
+        // Fix incidente 19/11 (regressão task-p2-1092): repo_path dos projetos
+        // monorepo existentes JÁ aponta para o diretório do projeto (ou para a
+        // raiz, no caso da plataforma), então `<repo_path>/projects/<slug>`
+        // quebra o preflight de TODOS os projetos monorepo. Tenta os dois:
+        // projects/<slug> (convenção nova) e o próprio candidate (legado).
+        const projectDirs = task.projectLayout === 'standalone'
+          ? [candidate]
           : task.projectLayout === 'monorepo'
-            ? resolve(candidate, 'projects', task.projectSlug ?? '')
-            : candidate
-        await stat(projectDir)
-        await access(resolve(projectDir, 'docs', 'CONTEXTO-ANALISTA.md'))
-        return
+            ? [...new Set([resolve(candidate, 'projects', task.projectSlug ?? ''), candidate])]
+            : [candidate]
+        for (const projectDir of projectDirs) {
+          try {
+            if (!(await stat(projectDir)).isDirectory()) continue
+            await access(resolve(projectDir, 'docs', 'CONTEXTO-ANALISTA.md'))
+            return
+          } catch (error) {
+            lastError = error
+          }
+        }
       } catch (error) {
         lastError = error
       }
