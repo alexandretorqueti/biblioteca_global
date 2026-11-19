@@ -332,6 +332,28 @@ describe("Preservação da aba ativa ao trocar de tarefa", () => {
     await waitFor(() => expect(screen.getByTestId("detail-content")).toHaveTextContent("#2 Segunda tarefa"), { timeout: 5000 })
   }
 
+  /**
+   * Seleciona uma tarefa no mapa e aguarda o detalhe refleti-la, REEMITINDO o
+   * clique a cada tentativa do waitFor. Sob a carga do suite completo no gate,
+   * um único `fireEvent.click` podia ter seu efeito perdido/adiado: o componente
+   * OperationMapScreen é pesado e, com a CPU saturada pelos workers paralelos,
+   * o re-render que troca a seleção não cometia dentro do timeout — o detalhe
+   * permanecia na tarefa anterior e a asserção de troca flakava (runs
+   * 1104/1232/1241/1242 — "mantém a aba Chat ao clicar em outra tarefa").
+   * `openTask` é idempotente para o mesmo id (early-return quando a tarefa já
+   * está selecionada), então repetir o clique converge sem efeito colateral e
+   * sem mascarar regressão real: em execução normal o primeiro clique já
+   * satisfaz a asserção na primeira iteração.
+   */
+  async function selecionarTarefa(taskId: number, esperado: string) {
+    const testId = `operation-map-task-${taskId}`
+    await screen.findByTestId(testId)
+    await waitFor(() => {
+      fireEvent.click(screen.getByTestId(testId))
+      expect(screen.getByTestId("detail-content")).toHaveTextContent(esperado)
+    }, { timeout: 8000 })
+  }
+
   it("abre a seleção inicial na aba Resumo", async () => {
     await setupDuasTarefas()
     expect(screen.getByRole("tab", { name: "Resumo" })).toHaveAttribute("aria-selected", "true")
@@ -342,57 +364,42 @@ describe("Preservação da aba ativa ao trocar de tarefa", () => {
     await setupDuasTarefas()
 
     // Usuário abre a tarefa 1 e entra na aba Chat.
-    // Timeout alargado (5s, como no setup): a troca de tarefa depende de fetch
-    // assíncrono do motor-detail; sob carga do gate o padrão de 1s flakou
-    // (run 1104, bloqueio 3469 — falha "flaky" terminou a subtarefa 1483).
-    fireEvent.click(await screen.findByTestId("operation-map-task-1"))
-    await waitFor(() => expect(screen.getByTestId("detail-content")).toHaveTextContent("#1 Primeira tarefa"), { timeout: 5000 })
+    await selecionarTarefa(1, "#1 Primeira tarefa")
     fireEvent.click(screen.getByRole("tab", { name: "Chat" }))
     expect(await screen.findByText("mensagem da tarefa um")).toBeInTheDocument()
 
     // Clique em outra tarefa: a aba Chat deve continuar ativa, agora com o chat da tarefa 2.
-    fireEvent.click(screen.getByTestId("operation-map-task-2"))
+    await selecionarTarefa(2, "#2 Segunda tarefa")
     await waitFor(() => {
-      expect(screen.getByTestId("detail-content")).toHaveTextContent("#2 Segunda tarefa")
       expect(screen.getByRole("tab", { name: "Chat" })).toHaveAttribute("aria-selected", "true")
       expect(screen.getByRole("tab", { name: "Resumo" })).toHaveAttribute("aria-selected", "false")
-    }, { timeout: 5000 })
+    }, { timeout: 8000 })
     expect(await screen.findByText("mensagem da tarefa dois")).toBeInTheDocument()
   })
 
   it("mantém a aba Execução ao clicar em outra tarefa", async () => {
     await setupDuasTarefas()
 
-    fireEvent.click(await screen.findByTestId("operation-map-task-1"))
+    await selecionarTarefa(1, "#1 Primeira tarefa")
     fireEvent.click(screen.getByRole("tab", { name: "Execução" }))
-    await waitFor(() => expect(screen.getByRole("tab", { name: "Execução" })).toHaveAttribute("aria-selected", "true"), { timeout: 5000 })
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Execução" })).toHaveAttribute("aria-selected", "true"), { timeout: 8000 })
 
-    fireEvent.click(screen.getByTestId("operation-map-task-2"))
-    await waitFor(() => {
-      expect(screen.getByTestId("detail-content")).toHaveTextContent("#2 Segunda tarefa")
-      expect(screen.getByRole("tab", { name: "Execução" })).toHaveAttribute("aria-selected", "true")
-    }, { timeout: 5000 })
+    await selecionarTarefa(2, "#2 Segunda tarefa")
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Execução" })).toHaveAttribute("aria-selected", "true"), { timeout: 8000 })
   })
 
   it("mantém as abas Logs e Histórico ao trocar de tarefa", async () => {
     await setupDuasTarefas()
 
-    fireEvent.click(await screen.findByTestId("operation-map-task-1"))
+    await selecionarTarefa(1, "#1 Primeira tarefa")
     fireEvent.click(screen.getByRole("tab", { name: "Logs" }))
-    fireEvent.click(screen.getByTestId("operation-map-task-2"))
-    await waitFor(() => {
-      expect(screen.getByTestId("detail-content")).toHaveTextContent("#2 Segunda tarefa")
-      expect(screen.getByRole("tab", { name: "Logs" })).toHaveAttribute("aria-selected", "true")
-    }, { timeout: 5000 })
+    await selecionarTarefa(2, "#2 Segunda tarefa")
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Logs" })).toHaveAttribute("aria-selected", "true"), { timeout: 8000 })
 
-    fireEvent.click(screen.getByTestId("operation-map-task-1"))
-    await waitFor(() => expect(screen.getByTestId("detail-content")).toHaveTextContent("#1 Primeira tarefa"), { timeout: 5000 })
+    await selecionarTarefa(1, "#1 Primeira tarefa")
     fireEvent.click(screen.getByRole("tab", { name: "Histórico" }))
-    fireEvent.click(screen.getByTestId("operation-map-task-2"))
-    await waitFor(() => {
-      expect(screen.getByTestId("detail-content")).toHaveTextContent("#2 Segunda tarefa")
-      expect(screen.getByRole("tab", { name: "Histórico" })).toHaveAttribute("aria-selected", "true")
-    }, { timeout: 5000 })
+    await selecionarTarefa(2, "#2 Segunda tarefa")
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Histórico" })).toHaveAttribute("aria-selected", "true"), { timeout: 8000 })
   })
 
 })
