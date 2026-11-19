@@ -225,20 +225,32 @@ export class ConsoleAnalystRunner implements AnalysisRunner {
     const fail = (reason: string): never => {
       throw new Error(`project_setup_preflight_failed: projeto sem setup concluído (${reason})`)
     }
-    if (!workspace) fail('repoPath/workspace vazio')
+    if (!workspace) fail('repo_inacessivel: repoPath/workspace vazio')
     const mappedWorkspace = this.config.workspacePathMapper?.(workspace)
     const candidates = [...new Set([workspace, mappedWorkspace].filter((path): path is string => Boolean(path)))]
     let lastError: unknown
+    let repositoryFound = false
     for (const candidate of candidates) {
       try {
         if (!(await stat(candidate)).isDirectory()) continue
-        await access(resolve(candidate, 'docs', 'CONTEXTO-ANALISTA.md'))
+        repositoryFound = true
+        // Snapshots vindos do banco sempre carregam o default monorepo. O
+        // fallback para raiz preserva runners/testes legados que ainda não
+        // projetam projectLayout.
+        const projectDir = task.projectLayout === 'standalone'
+          ? candidate
+          : task.projectLayout === 'monorepo'
+            ? resolve(candidate, 'projects', task.projectSlug ?? '')
+            : candidate
+        await stat(projectDir)
+        await access(resolve(projectDir, 'docs', 'CONTEXTO-ANALISTA.md'))
         return
       } catch (error) {
         lastError = error
       }
     }
     const code = lastError && typeof lastError === 'object' && 'code' in lastError ? String(lastError.code) : 'inacessível'
+    if (!repositoryFound) fail(`repo_inacessivel: repoPath/workspace inacessível (${code})`)
     fail(code === 'ENOENT' ? 'repoPath/workspace inexistente ou sem docs/CONTEXTO-ANALISTA.md' : `repoPath/workspace inacessível (${code})`)
   }
 

@@ -150,8 +150,8 @@ export async function reconcileSetupCompletion(
     return { outcome: 'skipped_already_verified', slug }
   }
 
-  const [taskRows] = await pool.query<Array<RowDataPacket & { id: number; external_id: string | null; repo_path: string | null }>>(
-    `SELECT t.id, t.external_id, pmc.repo_path
+  const [taskRows] = await pool.query<Array<RowDataPacket & { id: number; external_id: string | null; repo_path: string | null; project_layout: 'monorepo' | 'standalone' | null }>>(
+    `SELECT t.id, t.external_id, pmc.repo_path, pmc.project_layout
        FROM tarefas t
        LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id = t.projeto_id
       WHERE t.external_id = ?
@@ -188,7 +188,7 @@ export async function reconcileSetupCompletion(
   // cross-container). Falha de resolução de caminho vira razão explícita.
   let gate: SetupGateResult
   try {
-    const projectDir = await resolveSetupProjectDir(task.repo_path ?? null, slug)
+    const projectDir = await resolveSetupProjectDir(task.repo_path ?? null, slug, task.project_layout ?? 'monorepo')
     gate = await validateSetupCompletion({ evidence: candidate, projectDir, fs: options.fs })
   } catch (error) {
     gate = { ok: false, reasons: [error instanceof Error ? error.message : String(error)] }

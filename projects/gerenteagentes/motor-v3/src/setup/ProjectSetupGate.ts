@@ -28,6 +28,8 @@ export type SetupGateResult =
   | { ok: true; evidence: SetupEvidence }
   | { ok: false; reasons: string[] }
 
+export type ProjectLayout = 'monorepo' | 'standalone'
+
 /**
  * Validação determinística do resultado do setup. O prompt é apenas uma
  * orientação: o projeto só pode virar `verified` quando esta função aceitar
@@ -114,7 +116,8 @@ export async function validateProjectSetupArtifacts(projectDir: string, fs: FsLi
 
 /**
  * task-p2-1072: resolve o diretório do projeto alvo do gate de artefatos de
- * setup: `<repoRoot>/projects/<slug>`, onde repoRoot vem do repo_path do
+ * setup: `<repoRoot>/projects/<slug>` para monorepo ou a própria raiz do
+ * repositório para standalone, onde repoRoot vem do repo_path do
  * projeto_motor_config com o mapeamento cross-container host↔container
  * (mesmo padrão de GitWorktreePreparer.resolveRepoPath / preflight do
  * ConsoleAnalystRunner). Sem caminho hardcoded; lança erro descritivo quando
@@ -124,7 +127,11 @@ export async function validateProjectSetupArtifacts(projectDir: string, fs: FsLi
  * (MySqlTaskCoordinatorRepository) e a reconciliação de conclusão por fluxo
  * de desenvolvimento (SetupCompletionConsumer/SetupCompletionSweeper).
  */
-export async function resolveSetupProjectDir(repoPath: string | null, projectSlug: string): Promise<string> {
+export async function resolveSetupProjectDir(
+  repoPath: string | null,
+  projectSlug: string,
+  layout: ProjectLayout = 'monorepo',
+): Promise<string> {
   const trimmed = String(repoPath ?? '').trim()
   if (!trimmed) {
     throw new Error(`repo_path do projeto ausente para slug '${projectSlug}' — impossível validar artefatos de setup`)
@@ -133,7 +140,9 @@ export async function resolveSetupProjectDir(repoPath: string | null, projectSlu
   const candidates = [...new Set([original, mapHostRepoPathToContainer(original)].filter((path): path is string => Boolean(path)))]
   for (const repoRoot of candidates) {
     try {
-      if ((await fsStat(repoRoot)).isDirectory()) return join(repoRoot, 'projects', projectSlug)
+      if ((await fsStat(repoRoot)).isDirectory()) {
+        return layout === 'standalone' ? repoRoot : join(repoRoot, 'projects', projectSlug)
+      }
     } catch { /* tenta o próximo candidato (host ↔ container) */ }
   }
   throw new Error(`repositório inacessível no container do Motor: ${original}`)

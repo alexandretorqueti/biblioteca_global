@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import {
   REQUIRED_SETUP_ARTIFACTS,
+  resolveSetupProjectDir,
   validateProjectSetupArtifacts,
   validateProjectSetupEvidence,
   validateSetupCompletion,
@@ -35,6 +36,18 @@ describe('ProjectSetupGate', () => {
     const result = validateProjectSetupEvidence({ ...valid, checklist: { ...valid.checklist, agentLink: false } })
     expect(result).toMatchObject({ ok: false })
     if (!result.ok) expect(result.reasons).toContain('checklist incompleto: agentLink')
+  })
+})
+
+describe('resolveSetupProjectDir', () => {
+  it('resolve a raiz do repo para projeto standalone', async () => {
+    const repo = await makeTempDir()
+    await expect(resolveSetupProjectDir(repo, 'consoleopenclaw', 'standalone')).resolves.toBe(resolve(repo))
+  })
+
+  it('mantém o diretório projects/<slug> para projeto monorepo', async () => {
+    const repo = await makeTempDir()
+    await expect(resolveSetupProjectDir(repo, 'consoleopenclaw', 'monorepo')).resolves.toBe(join(resolve(repo), 'projects', 'consoleopenclaw'))
   })
 })
 

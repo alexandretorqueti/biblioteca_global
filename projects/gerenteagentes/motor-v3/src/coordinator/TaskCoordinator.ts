@@ -90,6 +90,7 @@ export interface TaskSnapshot {
   agentId: string
   projectSlug: string | null
   repoPath: string
+  projectLayout?: 'monorepo' | 'standalone'
   status: TaskLifecycleStatus
   paused: boolean
   terminal: boolean
@@ -436,7 +437,10 @@ export class TaskCoordinator {
       await this.log(operationId, sequence++, 'primitive', 'failed', message, { primitiveCode: 'start_analyst', result: { executionId, analysisAttempt, error: errorMessage }, reasonCode: 'analyst_failed' })
       if (errorMessage.includes('project_setup_preflight_failed')) {
         const recordSetupFailure = this.analysisFailure?.recordProjectSetupFailure
-        if (recordSetupFailure) {
+        // Um repo ausente/inacessível é um bloqueio operacional do projeto,
+        // não prova de que o setup falhou. Preservar essa razão explícita
+        // evita converter repo_inacessivel em setup_failed.
+        if (recordSetupFailure && !errorMessage.includes('repo_inacessivel')) {
           await recordSetupFailure.call(this.analysisFailure, task.taskId, { executionId, attempt: analysisAttempt, error: errorMessage }).catch(recordError => {
             console.warn(`[TaskCoordinator] falha ao persistir erro de setup do projeto ${task.taskId}:`, this.errorMessage(recordError))
           })
