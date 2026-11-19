@@ -36,6 +36,13 @@ export interface BillingSubscriptionState {
   status: string
 }
 
+export interface BillingPayment {
+  id: string
+  status: string
+  externalReference?: string
+  metadata?: Record<string, unknown>
+}
+
 export interface WebhookSignatureInput {
   signature?: string
   requestId?: string
@@ -47,5 +54,6 @@ export interface PspBillingGateway {
   createCustomer(input: BillingCustomerInput): Promise<BillingCustomer>
   createSubscription(input: BillingSubscriptionInput): Promise<BillingCheckout>
   getSubscription(subscriptionId: string): Promise<BillingSubscriptionState>
+  getPayment(paymentId: string): Promise<BillingPayment>
   validateWebhookSignature(input: WebhookSignatureInput): boolean
 }
