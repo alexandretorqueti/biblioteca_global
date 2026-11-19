@@ -37,6 +37,20 @@ describe('ProjectSetupGate', () => {
     expect(result).toMatchObject({ ok: false })
     if (!result.ok) expect(result.reasons).toContain('checklist incompleto: agentLink')
   })
+
+  it('aceita checklist standalone de inspeção, contexto e commit/push', () => {
+    const result = validateProjectSetupEvidence({
+      checklist: { repoInspected: true, analystContext: true, commitPush: true },
+      smoke_test: valid.smoke_test,
+    }, 'standalone')
+    expect(result.ok).toBe(true)
+  })
+
+  it('não aplica checklist monorepo a projeto standalone', () => {
+    const result = validateProjectSetupEvidence(valid, 'standalone')
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.reasons).toContain('checklist incompleto: repoInspected')
+  })
 })
 
 describe('resolveSetupProjectDir', () => {

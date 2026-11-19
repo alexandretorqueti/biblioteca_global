@@ -189,7 +189,12 @@ export async function reconcileSetupCompletion(
   let gate: SetupGateResult
   try {
     const projectDir = await resolveSetupProjectDir(task.repo_path ?? null, slug, task.project_layout ?? 'monorepo')
-    gate = await validateSetupCompletion({ evidence: candidate, projectDir, fs: options.fs })
+    gate = await validateSetupCompletion({
+      evidence: candidate,
+      projectDir,
+      layout: task.project_layout ?? 'monorepo',
+      fs: options.fs,
+    })
   } catch (error) {
     gate = { ok: false, reasons: [error instanceof Error ? error.message : String(error)] }
   }

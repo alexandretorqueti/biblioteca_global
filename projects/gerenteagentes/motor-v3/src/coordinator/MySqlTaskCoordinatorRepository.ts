@@ -380,7 +380,11 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
           let gate: SetupGateResult
           try {
             const projectDir = await this.resolveSetupProjectDir(taskRows[0]?.repo_path ?? null, projectSlug, taskRows[0]?.project_layout ?? 'monorepo')
-            gate = await validateSetupCompletion({ evidence: candidate, projectDir })
+            gate = await validateSetupCompletion({
+              evidence: candidate,
+              projectDir,
+              layout: taskRows[0]?.project_layout ?? 'monorepo',
+            })
           } catch (error) {
             gate = { ok: false, reasons: [error instanceof Error ? error.message : String(error)] }
           }

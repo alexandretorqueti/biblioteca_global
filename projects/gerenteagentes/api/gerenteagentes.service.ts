@@ -3537,9 +3537,9 @@ export class GerenteAgentesService {
   }
 
   /**
-   * Cria e enfileira a tarefa de setup do projeto no agente biblioteca-global.
-   * A missão roda no monorepo: pasta do projeto, config.ts, banco, schema,
-   * migration, push — e o gate de agente dedicado para telas além do CRUD.
+   * Cria e enfileira a tarefa de setup no executor do projeto. Projetos
+   * monorepo preservam o executor biblioteca-global; projetos standalone usam
+   * o próprio projeto e o agente já vinculado a ele.
    * Idempotente por externalId.
    */
   private async dispararMissaoSetup(
@@ -3573,15 +3573,33 @@ export class GerenteAgentesService {
       updatedAt: new Date(),
     }).where(eq(projetosCaptados.id, projetoCaptado.id));
 
-    // Projeto executor: o próprio biblioteca-global (monorepo).
-    const [executor] = await db
-      .select()
-      .from(projetosCaptados)
-      .where(eq(projetosCaptados.slug, 'biblioteca-global'))
-      .limit(1);
+    const [motorConfig] = await db
+      .select({
+        projectLayout: projetoMotorConfig.projectLayout,
+        repoPath: projetoMotorConfig.repoPath,
+        branchTrabalho: projetoMotorConfig.branchTrabalho,
+        gitRemote: projetoMotorConfig.gitRemote,
+      })
+      .from(projetoMotorConfig)
+      .where(eq(projetoMotorConfig.projetoId, projetoCaptado.id))
+      .limit(1)
+
+    const layout = motorConfig?.projectLayout ?? 'monorepo'
+    const executor = layout === 'standalone'
+      ? projetoCaptado
+      : (await db
+          .select()
+          .from(projetosCaptados)
+          .where(eq(projetosCaptados.slug, 'biblioteca-global'))
+          .limit(1))[0]
 
     if (!executor) {
-      return registrarFalha('Projeto executor biblioteca-global não encontrado');
+      return registrarFalha(layout === 'standalone'
+        ? 'Projeto standalone não encontrado'
+        : 'Projeto executor biblioteca-global não encontrado');
+    }
+    if (layout === 'standalone' && !projetoCaptado.agenteId) {
+      return registrarFalha('Projeto standalone não possui agente vinculado (agente_id)');
     }
 
     // Idempotência: missão já criada anteriormente.
@@ -3600,7 +3618,12 @@ export class GerenteAgentesService {
       // O setup MATERIALIZA o plano aprovado (§3.2): busca a geração approved
       // mais recente e revalida o json com as regras do contrato §5.
       const planoAprovado = await this.buscarPlanoAprovadoSetup(db, projetoCaptado.id);
-      const descricao = this.montarMissaoSetup(projetoCaptado, plataformaProjetoId, planoAprovado);
+      const descricao = this.montarMissaoSetup(projetoCaptado, plataformaProjetoId, planoAprovado, {
+        layout,
+        repoPath: motorConfig?.repoPath ?? null,
+        branchTrabalho: motorConfig?.branchTrabalho ?? null,
+        gitRemote: motorConfig?.gitRemote ?? null,
+      });
       let inserida: { id: number } | undefined;
       try {
         [inserida] = await db
@@ -3669,13 +3692,22 @@ export class GerenteAgentesService {
     }
   }
 
-  /** Texto da missão de setup entregue ao agente biblioteca-global. */
+  /** Texto da missão de setup entregue ao executor selecionado pelo layout. */
   private montarMissaoSetup(
     projetoCaptado: typeof projetosCaptados.$inferSelect,
     plataformaProjetoId: number,
     planoAprovado: { geracaoId: number; plano: MacroPlanoValidado } | null,
+    motorConfig: {
+      layout: 'monorepo' | 'standalone'
+      repoPath: string | null
+      branchTrabalho: string | null
+      gitRemote: string | null
+    } = { layout: 'monorepo', repoPath: null, branchTrabalho: null, gitRemote: null },
   ): string {
     const slug = projetoCaptado.slug;
+    if (motorConfig.layout === 'standalone') {
+      return this.montarMissaoSetupStandalone(projetoCaptado, plataformaProjetoId, motorConfig)
+    }
     const especificacao = projetoCaptado.especificacao?.trim() || projetoCaptado.descricao?.trim() || '(sem especificação disponível)';
     const plano = planoAprovado?.plano;
     const materializacaoPlano = plano
@@ -3846,6 +3878,48 @@ export class GerenteAgentesService {
       '    a tarefa como concluída. Itens faltantes = tarefa bloqueada.',
     ];
     return linhas.join('\n');
+  }
+
+  /** Brief de setup para repositório independente já existente. */
+  private montarMissaoSetupStandalone(
+    projetoCaptado: typeof projetosCaptados.$inferSelect,
+    plataformaProjetoId: number,
+    motorConfig: { repoPath: string | null; branchTrabalho: string | null; gitRemote: string | null },
+  ): string {
+    const repo = motorConfig.repoPath || '(repo_path não cadastrado — bloquear com repo_inacessivel)'
+    const branch = motorConfig.branchTrabalho || '(branch_trabalho não cadastrada)'
+    const remote = motorConfig.gitRemote || '(git_remote não cadastrado)'
+    return [
+      `MISSÃO — Setup standalone do projeto "${projetoCaptado.nome}" (slug: ${projetoCaptado.slug})`,
+      '',
+      'O projeto JÁ EXISTE neste repositório independente. Não é um projeto novo da Biblioteca Global.',
+      `plataformaProjetoId = ${plataformaProjetoId}.`,
+      `REPO DO PROJETO (repo_path): ${repo}`,
+      `BRANCH DE TRABALHO (branch_trabalho): ${branch}`,
+      `REMOTE DO PROJETO (git_remote): ${remote}`,
+      '',
+      'OBJETIVO: inspecionar o código real do repositório (package.json, src, docs e testes) e gerar',
+      'docs/CONTEXTO-ANALISTA.md NA RAIZ DO REPO, a partir do modelo de contexto do analista.',
+      '',
+      'RESTRIÇÕES OBRIGATÓRIAS:',
+      '- NUNCA scaffoldar o projeto.',
+      `- NUNCA criar projects/${projetoCaptado.slug} na biblioteca-global.`,
+      '- NUNCA criar ou alterar qualquer arquivo na biblioteca-global/monorepo.',
+      '- NUNCA executar passos de schema-registry, registry do front, banco projeto_<id>, lockfile da raiz ou Dockerfiles do monorepo.',
+      '',
+      'PASSOS:',
+      '1. Acesse e inspecione o repo_path real; se ele não existir ou não estiver acessível, bloqueie explicitamente com repo_inacessivel.',
+      '2. Inspecione package.json, src/, docs/ e testes para descrever a arquitetura real, sem inventar estrutura.',
+      '3. Crie somente docs/CONTEXTO-ANALISTA.md na raiz deste repositório, preenchido com o resultado da inspeção.',
+      `4. Faça commit no repo do projeto na branch ${branch} (ou branch de setup equivalente) e push para ${remote}.`,
+      '5. Execute smoke test HTTP real contra o ambiente do próprio projeto (ex.: container openclaw-console-app). A resposta deve ser 2xx.',
+      '',
+      'EVIDÊNCIA OBRIGATÓRIA no resultado da subtarefa, em JSON:',
+      '{"checklist":{"repoInspected":true,"analystContext":true,"commitPush":true},"smoke_test":{"url":"http://...","method":"GET","status":200,"response_body":"...","timestamp":"2026-..."}}',
+      'O gate exige repoInspected, analystContext, commitPush e smoke_test HTTP 2xx antes de setup_status=verified.',
+      '',
+      'Não publique pela API da Biblioteca Global; este setup pertence exclusivamente ao repo e ao ambiente do projeto standalone.',
+    ].join('\n')
   }
 
   // ============================================================================

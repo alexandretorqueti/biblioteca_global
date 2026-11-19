@@ -8,6 +8,9 @@ export type SetupChecklist = {
   registries: boolean
   repoPath: boolean
   agentLink?: boolean
+  repoInspected?: boolean
+  analystContext?: boolean
+  commitPush?: boolean
 }
 
 export type SmokeTestEvidence = {
@@ -35,7 +38,7 @@ export type ProjectLayout = 'monorepo' | 'standalone'
  * orientação: o projeto só pode virar `verified` quando esta função aceitar
  * todos os itens aplicáveis e uma evidência JSON de HTTP 2xx.
  */
-export function validateProjectSetupEvidence(input: unknown): SetupGateResult {
+export function validateProjectSetupEvidence(input: unknown, layout: ProjectLayout = 'monorepo'): SetupGateResult {
   if (!input || typeof input !== 'object') return { ok: false, reasons: ['evidência de setup ausente'] }
   const evidence = input as Partial<SetupEvidence>
   const checklist = evidence.checklist
@@ -43,7 +46,10 @@ export function validateProjectSetupEvidence(input: unknown): SetupGateResult {
   if (!checklist || typeof checklist !== 'object') {
     reasons.push('checklist ausente')
   } else {
-    for (const item of ['structure', 'configSchemaMigrations', 'registries', 'repoPath'] as const) {
+    const requiredItems = layout === 'standalone'
+      ? ['repoInspected', 'analystContext', 'commitPush'] as const
+      : ['structure', 'configSchemaMigrations', 'registries', 'repoPath'] as const
+    for (const item of requiredItems) {
       if (checklist[item] !== true) reasons.push(`checklist incompleto: ${item}`)
     }
     if ('agentLink' in checklist && checklist.agentLink !== true) reasons.push('checklist incompleto: agentLink')
@@ -157,9 +163,10 @@ export async function resolveSetupProjectDir(
 export async function validateSetupCompletion(input: {
   evidence: unknown
   projectDir: string
+  layout?: ProjectLayout
   fs?: FsLike
 }): Promise<SetupGateResult> {
-  const evidenceGate = validateProjectSetupEvidence(input.evidence)
+  const evidenceGate = validateProjectSetupEvidence(input.evidence, input.layout ?? 'monorepo')
   const artifactGate = await validateProjectSetupArtifacts(input.projectDir, input.fs)
   if (!evidenceGate.ok && !artifactGate.ok) {
     return { ok: false, reasons: [...evidenceGate.reasons, ...artifactGate.reasons] }
