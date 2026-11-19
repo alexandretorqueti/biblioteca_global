@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest"
 import { BadRequestException } from "@nestjs/common"
+import type { ConfigService } from "@nestjs/config"
 import { ApiExceptionFilter } from "../api-exception.filter"
-import type { EnvService } from "../../../config/env.service"
+import { EnvService } from "../../../config/env.service"
+import type { EnvService as EnvServiceType } from "../../../config/env.service"
 
 interface MockResponse {
   status: ReturnType<typeof vi.fn>
@@ -26,8 +28,20 @@ function criarResponse(): MockResponse {
   return response
 }
 
-function criarEnv(exposeRealErrors: boolean): EnvService {
-  return { exposeRealErrors } as EnvService
+function criarEnv(exposeRealErrors: boolean, isProduction = false): EnvServiceType {
+  return { exposeRealErrors, isProduction } as EnvServiceType
+}
+
+/**
+ * EnvService real com ConfigService falso alimentado por um mapa — usado para
+ * validar o comportamento de produção (NODE_ENV=production +
+ * API_EXPOSE_REAL_ERRORS=true) na cadeia completa env → filtro.
+ */
+function criarEnvReal(vars: Record<string, string>): EnvServiceType {
+  const config = {
+    get: (key: string) => vars[key],
+  } as unknown as ConfigService
+  return new EnvService(config)
 }
 
 describe("ApiExceptionFilter", () => {
@@ -62,6 +76,101 @@ describe("ApiExceptionFilter", () => {
         stack: erro.stack,
       },
     })
+  })
+
+  it("com NODE_ENV=production e API_EXPOSE_REAL_ERRORS=true não expõe stack em erro 500", () => {
+    const response = criarResponse()
+    const erro = new Error("SQL secreto")
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined)
+    const env = criarEnvReal({
+      NODE_ENV: "production",
+      API_EXPOSE_REAL_ERRORS: "true",
+    })
+    const filtro = new ApiExceptionFilter(env)
+
+    expect(env.exposeRealErrors).toBe(false)
+
+    filtro.catch(erro, criarHost(response))
+
+    expect(response.status).toHaveBeenCalledWith(500)
+    const corpo = response.json.mock.calls[0]?.[0] as Record<string, unknown>
+    expect(corpo.code).toBe("INTERNAL_ERROR")
+    expect(corpo.message).toBe("Erro interno do servidor")
+    expect(corpo.details).toBeUndefined()
+    expect(JSON.stringify(corpo)).not.toContain("SQL secreto")
+    expect(JSON.stringify(corpo)).not.toContain("stack")
+    log.mockRestore()
+  })
+
+  it("com NODE_ENV=production e API_EXPOSE_REAL_ERRORS=true HttpException não expõe stack", () => {
+    const response = criarResponse()
+    const env = criarEnvReal({
+      NODE_ENV: "production",
+      API_EXPOSE_REAL_ERRORS: "true",
+    })
+    const filtro = new ApiExceptionFilter(env)
+    const exception = new BadRequestException("Campo inválido")
+
+    filtro.catch(exception, criarHost(response))
+
+    expect(response.status).toHaveBeenCalledWith(400)
+    const corpo = response.json.mock.calls[0]?.[0] as Record<string, unknown>
+    expect(corpo.code).toBe("VALIDATION_ERROR")
+    expect(corpo.message).toBe("Campo inválido")
+    expect(JSON.stringify(corpo)).not.toContain("stack")
+    expect(corpo.details).not.toHaveProperty("stack")
+    expect(corpo.details).not.toHaveProperty("response")
+  })
+
+  it("com NODE_ENV=production, filtro não expõe detalhes mesmo se o env liberar (defesa em profundidade)", () => {
+    const response = criarResponse()
+    const erro = new Error("SQL secreto")
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined)
+    // Simula env comprometido/legado que ainda reporta exposeRealErrors=true.
+    const filtro = new ApiExceptionFilter(criarEnv(true, true))
+
+    filtro.catch(erro, criarHost(response))
+
+    expect(response.status).toHaveBeenCalledWith(500)
+    expect(response.json).toHaveBeenCalledWith({
+      code: "INTERNAL_ERROR",
+      message: "Erro interno do servidor",
+      details: undefined,
+    })
+
+    const resposta = criarResponse()
+    filtro.catch(new BadRequestException("Campo inválido"), criarHost(resposta))
+    const corpo = resposta.json.mock.calls[0]?.[0] as Record<string, unknown>
+    expect(corpo.details).toBe("Campo inválido")
+    expect(JSON.stringify(corpo)).not.toContain("stack")
+    log.mockRestore()
+  })
+
+  it("fora de produção, API_EXPOSE_REAL_ERRORS=true mantém o detalhamento de debug", () => {
+    const response = criarResponse()
+    const erro = new Error("SQL secreto")
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined)
+    const env = criarEnvReal({
+      NODE_ENV: "development",
+      API_EXPOSE_REAL_ERRORS: "true",
+    })
+    const filtro = new ApiExceptionFilter(env)
+
+    expect(env.exposeRealErrors).toBe(true)
+
+    filtro.catch(erro, criarHost(response))
+
+    expect(response.status).toHaveBeenCalledWith(500)
+    expect(response.json).toHaveBeenCalledWith({
+      code: "INTERNAL_ERROR",
+      message: "SQL secreto",
+      details: {
+        name: "Error",
+        message: "SQL secreto",
+        stack: erro.stack,
+      },
+    })
+    log.mockRestore()
   })
 
   it("preserva a resposta HTTP amigável quando o diagnóstico está desligado", () => {

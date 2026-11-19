@@ -66,10 +66,22 @@ export class EnvService {
   }
 
   /**
+   * Modo produção por padrão de segurança: `true` quando NODE_ENV=production.
+   * O ConfigService do @nestjs/config já incorpora o process.env, então a
+   * leitura via config cobre tanto o .env quanto o ambiente do processo
+   * (containers blue-green definem NODE_ENV no processo, não no .env).
+   */
+  get isProduction(): boolean {
+    return this.config.get<string>("NODE_ENV") === "production"
+  }
+
+  /**
    * APENAS DEBUG: envia mensagem e stack de exceções inesperadas ao cliente.
-   * Deve permanecer desligado em produção para não expor detalhes internos.
+   * Em produção (NODE_ENV=production) NUNCA expõe detalhes reais, mesmo com
+   * API_EXPOSE_REAL_ERRORS=true — o comportamento seguro é o padrão.
    */
   get exposeRealErrors(): boolean {
+    if (this.isProduction) return false
     return this.config.get<string>("API_EXPOSE_REAL_ERRORS") === "true"
   }
 
