@@ -1009,6 +1009,15 @@ export const executionResourceQueue = mysqlTable("execution_resource_queue", {
   status: varchar("status", { length: 20 }).notNull().default("waiting"),
 })
 
+/** Lease único para o conjunto durável de consumidores do Motor. */
+export const motorQueueLeadership = mysqlTable("motor_queue_leadership", {
+  leadershipKey: varchar("leadership_key", { length: 100 }).primaryKey(),
+  holderId: varchar("holder_id", { length: 255 }).notNull(),
+  leaseExpiresAt: timestamp("lease_expires_at").notNull(),
+  acquiredAt: timestamp("acquired_at").notNull(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+})
+
 // ============================================================================
 // BLOQUEIOS (Motor v1 - legado)
 // ============================================================================
