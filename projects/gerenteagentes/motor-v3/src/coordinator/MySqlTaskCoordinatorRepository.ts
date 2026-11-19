@@ -17,6 +17,7 @@ import { validateSetupCompletion, resolveSetupProjectDir as resolveSetupProjectD
 import { createQueueMessage, insertOutboxMessage } from '../queue/index.js'
 import { applyVerificationRouting, insertVerificationChatMessage, type VerificationRoutingResult } from './VerificationRouting.js'
 import { CAPACITY_WAIT_CLEAR_ASSIGNMENTS } from '../shared/capacityWait.js'
+import { evaluateDeployDrain } from '../deploy/DeployDrainPolicy.js'
 
 interface TaskRow extends RowDataPacket {
   id: number
@@ -44,7 +45,7 @@ interface TaskRow extends RowDataPacket {
   dependency_terminal_status: string | null
   dependency_deploy_status: string | null
   capacity_wait_phase: 'analysis' | 'development' | null
-  capacity_wait_reason_code: 'global_limit' | 'project_limit' | 'provider_limit' | 'model_cooldown' | 'setup_not_verified' | null
+  capacity_wait_reason_code: 'global_limit' | 'project_limit' | 'provider_limit' | 'model_cooldown' | 'setup_not_verified' | 'deploy_drain' | null
   capacity_wait_limit_scope: 'global' | 'project' | 'provider' | 'model' | null
   capacity_wait_limit_value: number | string | null
   capacity_wait_provider: string | null
@@ -183,13 +184,23 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
       const [limitRows] = await connection.query<Array<RowDataPacket & { chave: string; limite: number | string }>>(
         `SELECT chave, CAST(JSON_UNQUOTE(valor) AS UNSIGNED) AS limite
            FROM motor_configuracoes
-          WHERE chave IN ('motor.max_workers', 'motor.max_workers_per_project')
+          WHERE chave IN ('deploy_drain_threshold_minutes', 'motor.max_workers', 'motor.max_workers_per_project')
           ORDER BY chave
           FOR UPDATE`,
       )
       const limits = new Map(limitRows.map(limit => [limit.chave, Math.max(1, Number(limit.limite ?? 1))]))
+      const deployDrainThreshold = limitRows.find(limit => limit.chave === 'deploy_drain_threshold_minutes')?.limite
       const maxWorkers = limits.get('motor.max_workers') ?? 1
       const maxWorkersPerProject = limits.get('motor.max_workers_per_project') ?? 1
+      const deployDrain = limits.has('deploy_drain_threshold_minutes')
+        ? await evaluateDeployDrain(connection, Math.max(0, Number(deployDrainThreshold ?? 0)))
+        : null
+      if (deployDrain?.active) {
+        console.warn(JSON.stringify({ event: 'deploy_drain_rejected_claim', phase: 'analysis', taskId, ...deployDrain }))
+        await this.recordCapacityWait(connection, row.id, 'analysis', 'deploy_drain', 'global', deployDrain.thresholdMinutes, null)
+        await connection.commit()
+        return 'capacity_waiting'
+      }
       const [globalRows] = await connection.query<Array<RowDataPacket & { total: number | string }>>(
         `SELECT COUNT(*) AS total
            FROM task_runtime_facts f
@@ -750,7 +761,7 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
 
   private async recordCapacityWait(
     connection: PoolConnection, taskId: number, phase: 'analysis' | 'development',
-    reasonCode: 'global_limit' | 'project_limit' | 'provider_limit' | 'setup_not_verified',
+    reasonCode: 'global_limit' | 'project_limit' | 'provider_limit' | 'setup_not_verified' | 'deploy_drain',
     limitScope: 'global' | 'project' | 'provider', limitValue: number, provider: string | null,
   ): Promise<void> {
     await connection.query(

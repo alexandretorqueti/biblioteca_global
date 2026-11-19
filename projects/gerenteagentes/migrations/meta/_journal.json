@@ -736,6 +736,13 @@
       "when": 1795100001000,
       "tag": "0104_standalone_project_layout",
       "breakpoints": true
+    },
+    {
+      "idx": 105,
+      "version": "5",
+      "when": 1795200000000,
+      "tag": "0105_deploy_drain_threshold",
+      "breakpoints": true
     }
   ]
 }

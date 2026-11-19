@@ -17,7 +17,7 @@ export type AnalysisClaimResult = boolean | 'capacity_waiting'
 
 export interface CapacityWaitProjection {
   phase: 'analysis' | 'development'
-  reasonCode: 'global_limit' | 'project_limit' | 'provider_limit' | 'model_cooldown' | 'setup_not_verified'
+  reasonCode: 'global_limit' | 'project_limit' | 'provider_limit' | 'model_cooldown' | 'setup_not_verified' | 'deploy_drain'
   limitScope: 'global' | 'project' | 'provider' | 'model'
   limitValue: number
   provider: string | null
