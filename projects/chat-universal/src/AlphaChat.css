@@ -18,19 +18,19 @@
   box-sizing: border-box;
 }
 
-html, body {
+html.tenant-alpha, body.tenant-alpha {
   height: 100%;
   overflow: hidden;
 }
 
-#root {
+body.tenant-alpha #root {
   display: flex;
   flex-direction: column;
   height: 100vh;
   overflow: hidden;
 }
 
-body {
+body.tenant-alpha {
   font-family: 'Playfair Display', 'Georgia', serif;
   background: linear-gradient(180deg, var(--alpha-blue-soft) 0%, var(--alpha-gray-light) 100%);
   color: var(--alpha-text);
@@ -450,7 +450,7 @@ body {
 }
 
 @media (max-width: 1024px) {
-  body {
+  body.tenant-alpha {
     font-size: 16px;
   }
 

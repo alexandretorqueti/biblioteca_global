@@ -5,6 +5,7 @@ import type {
   BillingCheckout,
   BillingCustomer,
   BillingCustomerInput,
+  BillingPayment,
   BillingSubscriptionInput,
   BillingSubscriptionState,
   PspBillingGateway,
@@ -16,6 +17,8 @@ interface MercadoPagoResponse {
   init_point?: string
   sandbox_init_point?: string
   status?: string
+  external_reference?: string
+  metadata?: unknown
 }
 
 /** Adaptador Mercado Pago usando somente fetch nativo e checkout hospedado. */
@@ -34,7 +37,7 @@ export class MercadoPagoAdapter implements PspBillingGateway {
       method: "POST",
       body: JSON.stringify({
         email: input.email,
-        first_name: input.name,
+        ...this.customerName(input.name),
         external_reference: input.externalReference,
       }),
     })
@@ -96,6 +99,23 @@ export class MercadoPagoAdapter implements PspBillingGateway {
     return { id, status: data.status }
   }
 
+  async getPayment(paymentId: string): Promise<BillingPayment> {
+    const response = await this.request(`/v1/payments/${encodeURIComponent(paymentId)}`, {
+      method: "GET",
+    })
+    const data = await this.readJson(response)
+    const id = this.stringId(data.id)
+    if (!id || typeof data.status !== "string") {
+      throw new Error("Mercado Pago retornou pagamento inválido")
+    }
+    return {
+      id,
+      status: data.status,
+      ...(typeof data.external_reference === "string" ? { externalReference: data.external_reference } : {}),
+      ...(this.isRecord(data.metadata) ? { metadata: data.metadata } : {}),
+    }
+  }
+
   validateWebhookSignature(input: WebhookSignatureInput): boolean {
     const signature = input.signature
     if (!signature || !input.requestId || !input.dataId) return false
@@ -146,6 +166,18 @@ export class MercadoPagoAdapter implements PspBillingGateway {
       throw new Error("Resposta inválida do Mercado Pago")
     }
     return value as MercadoPagoResponse
+  }
+
+  private customerName(name: string): { first_name: string; last_name?: string } {
+    const parts = name.trim().split(/\s+/).filter(Boolean)
+    const firstName = parts.shift() ?? name.trim()
+    return parts.length > 0
+      ? { first_name: firstName, last_name: parts.join(" ") }
+      : { first_name: firstName }
+  }
+
+  private isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value)
   }
 
   private stringId(value: string | number | undefined): string | undefined {

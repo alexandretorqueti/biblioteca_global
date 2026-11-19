@@ -82,7 +82,9 @@ export class DrizzleBillingRepository implements BillingRepository {
     const [event] = await this.db.select().from(billingWebhookEvents)
       .where(eq(billingWebhookEvents.dedupeKey, input.dedupeKey)).limit(1)
     if (!event) throw new Error("Evento de webhook não encontrado após persistência")
-    return { event, duplicate: insertResult.affectedRows !== 1 }
+    const insertId = Number(insertResult.insertId ?? 0)
+    const affectedRows = Number(insertResult.affectedRows ?? 0)
+    return { event, duplicate: insertId === 0 || affectedRows === 0 }
   }
 
   async claimWebhook(id: number): Promise<BillingWebhookEvent | undefined> {

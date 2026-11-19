@@ -53,6 +53,12 @@ export class ApiExceptionFilter implements ExceptionFilter {
     const response = http.getResponse<HttpResponse>()
     const request = http.getRequest<ApiRequest>()
 
+    // Hardening: em produção (NODE_ENV=production) nunca expor stack trace ou
+    // detalhes internos, mesmo com API_EXPOSE_REAL_ERRORS=true. O gate primário
+    // está em EnvService.exposeRealErrors; esta checagem adicional protege a
+    // resposta por defesa em profundidade.
+    const exporDetalhes = this.env.exposeRealErrors && !this.env.isProduction
+
     if (exception instanceof HttpException) {
       const status = exception.getStatus()
       const corpo = exception.getResponse()
@@ -76,7 +82,7 @@ export class ApiExceptionFilter implements ExceptionFilter {
       const erro: ApiError = {
         code: CODIGOS_POR_STATUS[status] ?? `HTTP_${status}`,
         message: typeof mensagem === "string" ? mensagem : "Erro",
-        details: this.env.exposeRealErrors
+        details: exporDetalhes
           ? {
               response: corpo,
               stack: exception.stack,
@@ -96,10 +102,10 @@ export class ApiExceptionFilter implements ExceptionFilter {
       : { value: String(exception) }
     const erro: ApiError = {
       code: "INTERNAL_ERROR",
-      message: this.env.exposeRealErrors
+      message: exporDetalhes
         ? mensagemReal
         : "Erro interno do servidor",
-      details: this.env.exposeRealErrors ? detalhesReais : undefined,
+      details: exporDetalhes ? detalhesReais : undefined,
     }
     response.status(500).json(erro)
     this.registrarTarefa(request, 500, erro.message, erro.details)

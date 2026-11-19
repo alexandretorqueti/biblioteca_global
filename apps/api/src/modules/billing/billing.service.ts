@@ -117,9 +117,17 @@ export class BillingService {
     const claimed = await this.repository.claimWebhook(event.id)
     if (!claimed) return
     try {
-      if (this.isApproval(claimed.tipo, claimed.payload) || claimed.tipo.startsWith("subscription.")) {
-        const subscriptionId = this.subscriptionId(claimed.payload, claimed.tipo)
-        if (subscriptionId) await this.repository.processarAprovacao({ subscriptionId, payload: claimed.payload })
+      let payload = claimed.payload
+      if (claimed.tipo === "payment.updated" && !this.hasPaymentConfirmation(payload)) {
+        const dataId = this.webhookDataId(payload)
+        if (dataId) {
+          const payment = await this.gateway.getPayment(dataId)
+          payload = this.paymentPayload(payload, payment)
+        }
+      }
+      if (this.isApproval(claimed.tipo, payload) || claimed.tipo.startsWith("subscription.")) {
+        const subscriptionId = this.subscriptionId(payload, claimed.tipo)
+        if (subscriptionId) await this.repository.processarAprovacao({ subscriptionId, payload })
       }
       await this.repository.marcarWebhookConcluido(claimed.id)
     } catch (error) {
@@ -138,8 +146,36 @@ export class BillingService {
   }
 
   private webhookType(payload: Record<string, unknown>): string | undefined {
-    const value = payload.type ?? payload.action
-    return typeof value === "string" ? value : undefined
+    const type = typeof payload.type === "string" ? payload.type : undefined
+    const action = typeof payload.action === "string" ? payload.action : undefined
+    if (type === "payment" && action?.startsWith("payment.")) return action
+    if (type && action) return `${type}.${action}`
+    return type ?? action
+  }
+
+  private hasPaymentConfirmation(payload: unknown): boolean {
+    if (!this.isRecord(payload)) return false
+    const data = this.isRecord(payload.data) ? payload.data : undefined
+    const metadata = this.isRecord(payload.metadata) ? payload.metadata : data && this.isRecord(data.metadata) ? data.metadata : undefined
+    return typeof payload.status === "string" || typeof data?.status === "string" ||
+      typeof payload.subscription_id === "string" || typeof payload.subscription_id === "number" ||
+      typeof metadata?.subscription_id === "string" || typeof metadata?.subscription_id === "number"
+  }
+
+  private paymentPayload(payload: unknown, payment: {
+    status: string
+    externalReference?: string
+    metadata?: Record<string, unknown>
+  }): unknown {
+    if (!this.isRecord(payload)) return payment
+    const data = this.isRecord(payload.data) ? payload.data : {}
+    return {
+      ...payload,
+      status: payment.status,
+      external_reference: payment.externalReference,
+      metadata: payment.metadata,
+      data: { ...data, status: payment.status, external_reference: payment.externalReference, metadata: payment.metadata },
+    }
   }
 
   private subscriptionId(payload: unknown, tipo: string): string | undefined {
@@ -153,12 +189,16 @@ export class BillingService {
     }
     const reference = payload.external_reference ?? data?.external_reference
     if (typeof reference === "string" && reference.startsWith("assinatura:")) return reference.slice("assinatura:".length)
+    const metadataReference = metadata?.external_reference
+    if (typeof metadataReference === "string" && metadataReference.startsWith("assinatura:")) {
+      return metadataReference.slice("assinatura:".length)
+    }
     return undefined
   }
 
   private isApproval(tipo: string, payload: unknown): boolean {
-    if (tipo === "payment.approved") return true
-    if (tipo !== "payment.updated" || !this.isRecord(payload)) return false
+    if (tipo !== "payment.approved" && tipo !== "payment.updated") return false
+    if (!this.isRecord(payload)) return false
     const data = this.isRecord(payload.data) ? payload.data : undefined
     return payload.status === "approved" || data?.status === "approved"
   }

@@ -41,6 +41,40 @@ describe("MercadoPagoAdapter", () => {
     expect(fetchMock.mock.calls[1]?.[0]).toBe("https://api.mercadopago.test/checkout/preferences")
   })
 
+  it("divide nome composto em first_name e last_name e busca pagamento por id", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "cus-1" }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: "pay-1", status: "approved", external_reference: "assinatura:7",
+        metadata: { subscription_id: "7" },
+      }), { status: 200 }))
+    const adapter = new MercadoPagoAdapter(env)
+
+    await adapter.createCustomer({ externalReference: "tenant:t1", name: "Ana Maria Silva", email: "ana@example.com" })
+    const payment = await adapter.getPayment("pay-1")
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+      first_name: "Ana", last_name: "Maria Silva",
+    })
+    expect(payment).toEqual({
+      id: "pay-1", status: "approved", externalReference: "assinatura:7",
+      metadata: { subscription_id: "7" },
+    })
+    expect(fetchMock.mock.calls[1]?.[0]).toBe("https://api.mercadopago.test/v1/payments/pay-1")
+  })
+
+  it("não envia last_name para nome de uma palavra", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "cus-1" }), { status: 201 }))
+    const adapter = new MercadoPagoAdapter(env)
+
+    await adapter.createCustomer({ externalReference: "tenant:t1", name: "Ana", email: "ana@example.com" })
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      email: "ana@example.com", first_name: "Ana", external_reference: "tenant:t1",
+    })
+  })
+
   it.each([
     ["válida", true],
     ["ausente", false],
