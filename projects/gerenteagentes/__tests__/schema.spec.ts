@@ -14,6 +14,37 @@ import { getTableConfig } from "drizzle-orm/mysql-core"
 import { projetoMotorConfig, annotations } from "../schema"
 
 describe("projetoMotorConfig — schema Drizzle", () => {
+  it("possui project_layout com enum e default monorepo", () => {
+    const config = getTableConfig(projetoMotorConfig)
+    const col = config.columns.find((c) => c.name === "project_layout")
+
+    expect(col).toBeDefined()
+    expect((col as any).enumValues).toEqual(["monorepo", "standalone"])
+    expect((col as any).notNull).toBe(true)
+    expect((col as any).hasDefault).toBe(true)
+  })
+
+  it("possui repo_path_host e git_remote opcionais com 500 caracteres", () => {
+    const config = getTableConfig(projetoMotorConfig)
+    for (const name of ["repo_path_host", "git_remote"]) {
+      const col = config.columns.find((candidate) => candidate.name === name)
+      expect(col).toBeDefined()
+      expect(col!.dataType).toBe("string")
+      expect((col as any).length).toBe(500)
+      expect((col as any).notNull).toBe(false)
+    }
+  })
+
+  it("possui deploy_kind com enum e default blue-green-api", () => {
+    const config = getTableConfig(projetoMotorConfig)
+    const col = config.columns.find((c) => c.name === "deploy_kind")
+
+    expect(col).toBeDefined()
+    expect((col as any).enumValues).toEqual(["blue-green-api", "script", "container-rebuild", "manual"])
+    expect((col as any).notNull).toBe(true)
+    expect((col as any).hasDefault).toBe(true)
+  })
+
   it("possui a coluna repo_path (varchar(500), obrigatória)", () => {
     const config = getTableConfig(projetoMotorConfig)
     const col = config.columns.find((c) => c.name === "repo_path")
