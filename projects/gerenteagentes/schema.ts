@@ -158,12 +158,18 @@ export const projetoMotorConfig = mysqlTable("projeto_motor_config", {
     .notNull()
     .references(() => projetosCaptados.id, { onDelete: "cascade" })
     .unique(),
+  projectLayout: mysqlEnum("project_layout", ["monorepo", "standalone"])
+    .notNull().default("monorepo"),
   repoPath: varchar("repo_path", { length: 500 }).notNull(),
+  repoPathHost: varchar("repo_path_host", { length: 500 }),
   branchTrabalho: varchar("branch_trabalho", { length: 255 }).notNull(),
+  gitRemote: varchar("git_remote", { length: 500 }),
   buildCommand: varchar("build_command", { length: 500 }).notNull(),
   unitTestCommand: varchar("unit_test_command", { length: 500 }).notNull(),
   unitTestExclude: json("unit_test_exclude"),
   deployScript: varchar("deploy_script", { length: 500 }),
+  deployKind: mysqlEnum("deploy_kind", ["blue-green-api", "script", "container-rebuild", "manual"])
+    .notNull().default("blue-green-api"),
   deployHostRoot: varchar("deploy_host_root", { length: 500 }),
   defaultMaxRework: int("default_max_rework").notNull().default(3),
   defaultHardTimeoutMs: bigint("default_hard_timeout_ms", { mode: "number" }).notNull().default(3600000),
@@ -1107,12 +1113,16 @@ export const annotations = {
   },
   projeto_motor_config: {
     projeto_id: { label: "Projeto" },
+    project_layout: { label: "Layout do projeto", helperText: "monorepo | standalone" },
     repo_path: { label: "Caminho do repositório", fullWidth: true, maxLength: 500 },
+    repo_path_host: { label: "Caminho do repositório no host", fullWidth: true, maxLength: 500 },
     branch_trabalho: { label: "Branch de trabalho", maxLength: 255 },
+    git_remote: { label: "Remote Git", fullWidth: true, maxLength: 500 },
     build_command: { label: "Comando de build", fullWidth: true, maxLength: 500 },
     unit_test_command: { label: "Comando de testes", fullWidth: true, maxLength: 500 },
     unit_test_exclude: { label: "Exclusões de testes", type: "textarea", fullWidth: true },
     deploy_script: { label: "Script de deploy", fullWidth: true, maxLength: 500 },
+    deploy_kind: { label: "Tipo de deploy", helperText: "blue-green-api | script | container-rebuild | manual" },
     deploy_host_root: { label: "Raiz do host de deploy", fullWidth: true, maxLength: 500 },
     default_max_rework: { label: "Máx. de retrabalho padrão" },
     default_hard_timeout_ms: { label: "Timeout padrão (ms)" },

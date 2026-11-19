@@ -729,6 +729,13 @@
       "when": 1795100000000,
       "tag": "0103_motor_queue_leadership",
       "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "5",
+      "when": 1795100001000,
+      "tag": "0104_standalone_project_layout",
+      "breakpoints": true
     }
   ]
 }

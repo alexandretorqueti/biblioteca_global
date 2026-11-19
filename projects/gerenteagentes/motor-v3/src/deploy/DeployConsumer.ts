@@ -439,7 +439,13 @@ export class DeployConsumer {
     const operationId = randomUUID()
 
     // 1. Adquire lock de deploy (impede novas análises/tarefas durante o deploy)
-    const acquired = await this.repository.acquireDeployLock(batch.batchId, `Deploy batch ${batch.batchId}`)
+    // A chave operacional é o repositório, não o slug/projeto da Biblioteca.
+    // Isso impede que uma promoção standalone seja serializada ou confundida
+    // com o monorepo apenas por compartilhar o mesmo projeto lógico.
+    const lockReason = batch.projectLayout === 'standalone'
+      ? `repo:${batch.repoPath}`
+      : `Deploy batch ${batch.batchId}`
+    const acquired = await this.repository.acquireDeployLock(batch.batchId, lockReason)
     if (!acquired) {
       throw new Error(`Lock de deploy já adquirido por outro batch (batchId=${batch.batchId})`)
     }
@@ -467,10 +473,20 @@ export class DeployConsumer {
         })
       }
 
-      // 3. Executa o deploy
-      await this.remote.assertReady()
+      // 3. Promove a branch correta do repositório correto. Para standalone o
+      // remote cadastrado é obrigatório: nunca redirecionar para origin da
+      // Biblioteca Global por conveniência.
+      const configuredDeployKind = batch.deployKind ?? 'blue-green-api'
+      if (batch.projectLayout === 'standalone' && configuredDeployKind === 'blue-green-api') {
+        throw new Error('Projeto standalone não pode acionar o deploy blue-green global; configure deploy_kind=script, container-rebuild ou manual')
+      }
+      const deployKind = configuredDeployKind
+      if (deployKind !== 'manual') await this.remote.assertReady()
       try {
-        await this.promote(batch.repoPath, batch.baseBranch, batch.expectedCommit)
+        await this.promote(batch.repoPath, batch.baseBranch, batch.expectedCommit, {
+          projectLayout: batch.projectLayout,
+          gitRemote: batch.gitRemote,
+        })
         const mergeCommitSha = await this.promotedBaseCommit(batch.repoPath, batch.baseBranch)
         if (/^[a-f0-9]{7,64}$/i.test(mergeCommitSha)
           && typeof (this.repository as DeployRepository & { recordBatchMergeCommit?: unknown }).recordBatchMergeCommit === 'function') {
@@ -489,9 +505,18 @@ export class DeployConsumer {
         }
         throw error
       }
-      if (!this.hostRepoRoot) throw new Error('DEPLOY_REPO_HOST não configurado')
-      const remote = await this.remote.start({ batchId: batch.batchId, expectedCommit: batch.expectedCommit, baseBranch: batch.baseBranch, hostRepoRoot: this.hostRepoRoot, deployScript: this.script })
-      await this.repository.markRemoteStarted(batch.batchId, remote.pid, remote.statusPath, message)
+      if (deployKind === 'manual') {
+        await this.repository.completeBatch(batch.batchId, true, null, message, batch.deployKind)
+      } else {
+        const hostRepoRoot = batch.repoPathHost ?? this.hostRepoRoot
+        if (!hostRepoRoot) throw new Error('Caminho host do deploy não configurado')
+        const remote = deployKind === 'script'
+          ? await this.remote.startScript({ batchId: batch.batchId, hostRepoRoot, deployScript: batch.deployScript })
+          : deployKind === 'container-rebuild'
+            ? await this.remote.startContainerRebuild({ batchId: batch.batchId, hostRepoRoot })
+            : await this.remote.start({ batchId: batch.batchId, expectedCommit: batch.expectedCommit, baseBranch: batch.baseBranch, hostRepoRoot: this.hostRepoRoot ?? hostRepoRoot, deployScript: this.script })
+        await this.repository.markRemoteStarted(batch.batchId, remote.pid, remote.statusPath, message)
+      }
 
       // 4. Libera lock de deploy
       await this.repository.releaseDeployLock(batch.batchId)
@@ -551,7 +576,7 @@ export class DeployConsumer {
     return { ...interim, repoPath, integrationCommit: commit }
   }
 
-  private async promote(repoPath: string, baseBranch: string, expectedCommit: string): Promise<void> {
+  private async promote(repoPath: string, baseBranch: string, expectedCommit: string, options: { projectLayout?: 'monorepo' | 'standalone'; gitRemote?: string | null } = {}): Promise<void> {
     const { stdout } = await execFileAsync('git', ['rev-parse', '--show-toplevel'], { cwd: repoPath, encoding: 'utf8' }); const repo = stdout.trim()
     if (await execFileAsync('git', ['merge-base', '--is-ancestor', expectedCommit, baseBranch], { cwd: repo }).then(() => true, () => false)) {
       return
@@ -566,8 +591,12 @@ export class DeployConsumer {
       await execFileAsync('git', ['merge', '--no-ff', '--no-commit', expectedCommit], { cwd: path })
       await execFileAsync('git', ['diff', '--check'], { cwd: path })
       await execFileAsync('git', ['commit', '--no-edit'], { cwd: path })
-      await this.preflightGithubRemote(path)
-      await execFileAsync('git', ['push', 'origin', `HEAD:${baseBranch}`], { cwd: path })
+      const pushRemote = options.projectLayout === 'standalone'
+        ? String(options.gitRemote ?? '').trim()
+        : 'origin'
+      if (options.projectLayout === 'standalone' && !pushRemote) throw new Error('Promoção standalone sem git_remote configurado')
+      if (pushRemote === 'origin') await this.preflightGithubRemote(path)
+      await execFileAsync('git', ['push', pushRemote, `HEAD:${baseBranch}`], { cwd: path })
     } catch (error) {
       const { stdout: conflictOutput } = await execFileAsync('git', ['diff', '--name-only', '--diff-filter=U'], { cwd: path, encoding: 'utf8' }).catch(() => ({ stdout: '' }))
       const conflicts = conflictOutput.trim().split('\n').filter(Boolean)

@@ -69,7 +69,15 @@ describe('ConsoleAnalystRunner — contexto em etapas', () => {
     const api = consoleWithResponses([])
     const runner = new ConsoleAnalystRunner(api, { workspacePreflight: true })
     await expect(runner.start({ ...task('descrição'), repoPath }, 'execution-1'))
-      .rejects.toThrow('project_setup_preflight_failed')
+      .rejects.toThrow(repoPath ? 'repo_inacessivel' : 'project_setup_preflight_failed')
+    expect(api.createSession).not.toHaveBeenCalled()
+  })
+
+  it('resolve o preflight standalone na raiz do repo e classifica repo inexistente', async () => {
+    const api = consoleWithResponses([])
+    const runner = new ConsoleAnalystRunner(api, { workspacePreflight: true })
+    await expect(runner.start({ ...task('descrição'), projectLayout: 'standalone', repoPath: '/tmp/motor-v3-standalone-inexistente' }, 'execution-1'))
+      .rejects.toThrow('repo_inacessivel')
     expect(api.createSession).not.toHaveBeenCalled()
   })
 

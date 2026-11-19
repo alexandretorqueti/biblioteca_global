@@ -27,6 +27,7 @@ interface TaskRow extends RowDataPacket {
   agente_id: string | null
   project_slug: string | null
   repo_path: string | null
+  project_layout: 'monorepo' | 'standalone' | null
   paused_at: Date | string | null
   analysis_started_at: Date | string | null
   analysis_execution_id: string | null
@@ -71,7 +72,7 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
   async getTask(taskId: string): Promise<TaskSnapshot | null> {
     const [rows] = await this.pool.query<TaskRow[]>(`
       SELECT
-        t.id, t.external_id, t.titulo, t.descricao, t.tipo, pmc.repo_path, t.paused_at,
+        t.id, t.external_id, t.titulo, t.descricao, t.tipo, pmc.repo_path, pmc.project_layout, t.paused_at,
         t.auto_start, pc.setup_status,
         t.depends_on_task_id,
         COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), pc.slug, '') AS agente_id,
@@ -325,7 +326,7 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
     try {
       await connection.beginTransaction()
       const [taskRows] = await connection.query<TaskRow[]>(
-        `SELECT t.id, t.tipo, t.external_id, t.projeto_id, pmc.repo_path FROM tarefas t
+        `SELECT t.id, t.tipo, t.external_id, t.projeto_id, pmc.repo_path, pmc.project_layout FROM tarefas t
          INNER JOIN task_runtime_facts f ON f.tarefa_id = t.id
          LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id = t.projeto_id
          WHERE (t.external_id = ? OR CAST(t.id AS CHAR) = ?)
@@ -378,8 +379,12 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
           // dependentes são liberadas para falhar no preflight (caso 1020→1063).
           let gate: SetupGateResult
           try {
-            const projectDir = await this.resolveSetupProjectDir(taskRows[0]?.repo_path ?? null, projectSlug)
-            gate = await validateSetupCompletion({ evidence: candidate, projectDir })
+            const projectDir = await this.resolveSetupProjectDir(taskRows[0]?.repo_path ?? null, projectSlug, taskRows[0]?.project_layout ?? 'monorepo')
+            gate = await validateSetupCompletion({
+              evidence: candidate,
+              projectDir,
+              layout: taskRows[0]?.project_layout ?? 'monorepo',
+            })
           } catch (error) {
             gate = { ok: false, reasons: [error instanceof Error ? error.message : String(error)] }
           }
@@ -695,8 +700,8 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
    * Implementação única compartilhada em `setup/ProjectSetupGate.ts` — a mesma
    * função é usada pelo SetupCompletionConsumer/SetupCompletionSweeper.
    */
-  private async resolveSetupProjectDir(repoPath: string | null, projectSlug: string): Promise<string> {
-    return resolveSetupProjectDirShared(repoPath, projectSlug)
+  private async resolveSetupProjectDir(repoPath: string | null, projectSlug: string, layout: 'monorepo' | 'standalone' = 'monorepo'): Promise<string> {
+    return resolveSetupProjectDirShared(repoPath, projectSlug, layout)
   }
 
   private mapTask(row: TaskRow): TaskSnapshot {
@@ -717,6 +722,7 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
       agentId: String(row.agente_id ?? ''),
       projectSlug: row.project_slug ? String(row.project_slug) : null,
       repoPath: String(row.repo_path ?? ''),
+      projectLayout: row.project_layout === 'standalone' ? 'standalone' : 'monorepo',
       status,
       paused,
       terminal,

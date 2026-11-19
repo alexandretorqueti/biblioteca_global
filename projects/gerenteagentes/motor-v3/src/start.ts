@@ -44,7 +44,7 @@ import { ManagedDevelopmentPromptResolver } from './analysis/ManagedDevelopmentP
 import { DerivedTaskStatusResolver } from './status/DerivedTaskStatus.js'
 import { WorkerActivityService } from './status/WorkerActivity.js'
 import { MySqlCommandPolicyRepository, MySqlOperationLogger } from './commands/index.js'
-import { DevelopmentExecutionConsumer, DevelopmentSessionRecoveryReconciler, GitVerificationIntegrator, GitWorktreePreparer, MySqlDevelopmentExecutionRepository, OrphanCapacityQueueReconciler, SubtaskExecutionConsumer, SubtaskTerminalFailureBlocker, SubtaskVerificationConsumer, TaskExecutionReconciler, WorkerConsoleAdapter } from './execution/index.js'
+import { DevelopmentExecutionConsumer, DevelopmentSessionRecoveryReconciler, GitVerificationIntegrator, GitWorktreePreparer, MySqlDevelopmentExecutionRepository, OrphanCapacityQueueReconciler, SubtaskExecutionConsumer, SubtaskTerminalFailureBlocker, SubtaskVerificationConsumer, TaskExecutionReconciler, WorkerConsoleAdapter, validateStandaloneRepoMappings } from './execution/index.js'
 import { WorkerLauncher } from './worker-launcher/WorkerLauncher.js'
 import { getDeployDiagnostics } from './deploy/DeployDiagnostics.js'
 import { DeployConsumer } from './deploy/DeployConsumer.js'
@@ -149,6 +149,17 @@ async function start() {
   console.log('[Motor v3] Validando schema e migrations runtime...')
   await bootstrapMotorV3Catalog(pool)
   console.log('[Motor v3] Preflight de schema concluído')
+  const [standaloneProjects] = await pool.query<any[]>(
+    `SELECT pmc.projeto_id, pc.slug, pmc.repo_path, pmc.repo_path_host
+       FROM projeto_motor_config pmc
+       LEFT JOIN projetos_captados pc ON pc.id = pmc.projeto_id
+      WHERE pmc.project_layout = 'standalone'`,
+  )
+  await validateStandaloneRepoMappings(standaloneProjects.map(project => ({
+    projectId: project.projeto_id, projectSlug: project.slug,
+    repoPath: project.repo_path, repoPathHost: project.repo_path_host,
+  })))
+  if (standaloneProjects.length) console.log(`[Motor v3] Repositórios standalone validados no boot: ${standaloneProjects.length}`)
   realtimeOutboxDispatcher = new RealtimeOutboxDispatcher(pool, {
     endpoint: process.env.LIBRARY_REALTIME_EVENTS_URL ?? 'http://localhost:3001/api/internal/realtime/events',
     token: process.env.LIBRARY_REALTIME_EVENTS_TOKEN,

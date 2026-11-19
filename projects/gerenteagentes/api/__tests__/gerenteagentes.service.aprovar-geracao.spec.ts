@@ -502,3 +502,31 @@ describe('GerenteAgentesService.aprovarGeracaoProjeto — validações de estado
     await expect(chamarAprovacao(service, { decisao: 'talvez' })).rejects.toBeInstanceOf(BadRequestException);
   });
 });
+
+describe('GerenteAgentesService — missão de setup standalone', () => {
+  it('gera briefing de inspeção no repo existente sem scaffold do monorepo', () => {
+    const { service } = montarCenario()
+    const montar = (service as unknown as {
+      montarMissaoSetup: (projeto: unknown, plataformaProjetoId: number, plano: null, config: unknown) => string
+    }).montarMissaoSetup.bind(service)
+    const briefing = montar(
+      { nome: 'Console OpenClaw', slug: 'consoleopenclaw', descricao: 'Console do OpenClaw', especificacao: null },
+      12,
+      null,
+      {
+        layout: 'standalone',
+        repoPath: '/data/workspace/projects/codigofonte/openclaw-console',
+        branchTrabalho: 'main',
+        gitRemote: 'git@github.com:global/openclaw-console.git',
+      },
+    )
+    expect(briefing).toContain('JÁ EXISTE neste repositório independente')
+    expect(briefing).toContain('Inspecione package.json, src/, docs/ e testes')
+    expect(briefing).toContain('docs/CONTEXTO-ANALISTA.md NA RAIZ DO REPO')
+    expect(briefing).toContain('commit no repo do projeto')
+    expect(briefing).toContain('push para git@github.com:global/openclaw-console.git')
+    expect(briefing).toContain('NUNCA criar projects/consoleopenclaw na biblioteca-global')
+    expect(briefing).not.toContain('schema-registry da API')
+    expect(briefing).not.toContain('LOCKFILE DA RAIZ')
+  })
+})

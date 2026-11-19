@@ -10,6 +10,11 @@ export interface DeployTaskContext {
   databaseTaskId: number
   projectId: number
   repoPath: string
+  projectLayout?: 'monorepo' | 'standalone'
+  repoPathHost?: string | null
+  gitRemote?: string | null
+  deployKind?: 'blue-green-api' | 'script' | 'container-rebuild' | 'manual'
+  deployScript?: string | null
   baseBranch: string
   buildCommand: string
   testCommand: string
@@ -29,6 +34,11 @@ export interface DeployBatch {
   startedAt: Date | string | null
   workspacePath: string | null
   gateJobId: number | null
+  projectLayout?: 'monorepo' | 'standalone'
+  repoPathHost?: string | null
+  gitRemote?: string | null
+  deployKind?: 'blue-green-api' | 'script' | 'container-rebuild' | 'manual'
+  deployScript?: string | null
 }
 
 export interface DeployBatchMember {
@@ -60,6 +70,8 @@ export interface IntegrationBranchSyncTarget {
 interface ContextRow extends RowDataPacket {
   id: number; external_id: string | null; projeto_id: number; tipo: string | null
   repo_path: string | null; branch_trabalho: string | null
+  project_layout: 'monorepo' | 'standalone' | null; repo_path_host: string | null; git_remote: string | null
+  deploy_kind: DeployTaskContext['deployKind'] | null; deploy_script: string | null
   build_command: string | null; unit_test_command: string | null
   integration_confirmed_at: Date | string | null; terminal_status: string | null
   blocked: number | string
@@ -68,6 +80,8 @@ interface ContextRow extends RowDataPacket {
 interface BatchRow extends RowDataPacket {
   batch_id: string; repo_path: string; base_branch: string; expected_commit: string; status: DeployBatch['status']
   remote_pid: string | null; remote_status_path: string | null; started_at: Date | string | null; workspace_path: string | null; gate_job_id: number | null
+  project_layout?: 'monorepo' | 'standalone' | null; repo_path_host?: string | null; git_remote?: string | null
+  deploy_kind?: DeployTaskContext['deployKind'] | null; deploy_script?: string | null
 }
 
 /**
@@ -83,8 +97,9 @@ export class DeployRepository {
 
   async getEligibleTask(taskId: string): Promise<Omit<DeployTaskContext, 'integrationPath' | 'integrationBranch' | 'integrationCommit'> | null> {
     const [rows] = await this.pool.query<ContextRow[]>(`
-      SELECT t.id, t.external_id, t.projeto_id, t.tipo, pmc.repo_path, pmc.branch_trabalho,
-             pmc.build_command, pmc.unit_test_command, f.integration_confirmed_at, f.terminal_status,
+      SELECT t.id, t.external_id, t.projeto_id, t.tipo, pmc.project_layout, pmc.repo_path, pmc.repo_path_host, pmc.git_remote,
+             pmc.deploy_kind, pmc.deploy_script, pmc.branch_trabalho, pmc.build_command, pmc.unit_test_command,
+             f.integration_confirmed_at, f.terminal_status,
              EXISTS(SELECT 1 FROM bloqueios b WHERE b.tarefa_id=t.id AND b.resolved_at IS NULL) AS blocked
         FROM tarefas t
         LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id=t.projeto_id
@@ -99,7 +114,10 @@ export class DeployRepository {
     if (!row.repo_path || !row.branch_trabalho || !row.build_command || !row.unit_test_command) throw new Error('Deploy bloqueado: configuração de repositório, branch ou gate ausente')
     return {
       taskId: String(row.external_id ?? row.id), databaseTaskId: Number(row.id), projectId: Number(row.projeto_id),
-      repoPath: String(row.repo_path), baseBranch: String(row.branch_trabalho),
+      repoPath: String(row.repo_path), projectLayout: row.project_layout === 'standalone' ? 'standalone' : 'monorepo',
+      repoPathHost: row.repo_path_host ? String(row.repo_path_host) : null, gitRemote: row.git_remote ? String(row.git_remote) : null,
+      deployKind: row.deploy_kind ?? 'blue-green-api', deployScript: row.deploy_script ? String(row.deploy_script) : null,
+      baseBranch: String(row.branch_trabalho),
       buildCommand: String(row.build_command), testCommand: String(row.unit_test_command),
     }
   }
@@ -939,8 +957,8 @@ ${conflictData.conflictFiles.map(f => `- \`${f}\``).join('\n')}
       const [busy] = await connection.query<Array<RowDataPacket & { total: number | string }>>(
         `SELECT COUNT(*) AS total FROM deploy_batches WHERE repo_path=? AND status IN ('pending','running') FOR UPDATE`, [repoPath])
       if (Number(busy[0]?.total ?? 0) > 0) { await connection.rollback(); return null }
-      const [seedRows] = await connection.query<Array<RowDataPacket & { build_command: string | null; test_command: string | null }>>(
-        `SELECT pmc.build_command,pmc.unit_test_command AS test_command
+      const [seedRows] = await connection.query<Array<RowDataPacket & { build_command: string | null; test_command: string | null; project_layout: 'monorepo' | 'standalone' | null; repo_path_host: string | null; git_remote: string | null; deploy_kind: DeployTaskContext['deployKind'] | null; deploy_script: string | null }>>(
+        `SELECT pmc.build_command,pmc.unit_test_command AS test_command,pmc.project_layout,pmc.repo_path_host,pmc.git_remote,pmc.deploy_kind,pmc.deploy_script
            FROM deploy_requests dr INNER JOIN tarefas t ON t.id=dr.tarefa_id
            LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id=t.projeto_id
           WHERE dr.repo_path=? AND dr.base_branch=? AND dr.status='pending' AND dr.requested_commit=?
@@ -971,7 +989,9 @@ ${conflictData.conflictFiles.map(f => `- \`${f}\``).join('\n')}
       }
       await connection.commit()
       return {
-        batch: { batchId, repoPath, baseBranch, expectedCommit, status: 'pending', remotePid: null, remoteStatusPath: null, startedAt: null, workspacePath: null, gateJobId: null },
+        batch: { batchId, repoPath, baseBranch, expectedCommit, status: 'pending', remotePid: null, remoteStatusPath: null, startedAt: null, workspacePath: null, gateJobId: null,
+          projectLayout: seed.project_layout === 'standalone' ? 'standalone' : 'monorepo', repoPathHost: seed.repo_path_host,
+          gitRemote: seed.git_remote, deployKind: seed.deploy_kind ?? 'blue-green-api', deployScript: seed.deploy_script },
         members: requests.map(row => ({ databaseTaskId: Number(row.task_id), taskId: String(row.external_id ?? row.task_id), requestedCommit: String(row.requested_commit), projectId: Number(row.project_id), buildCommand: String(row.build_command), testCommand: String(row.test_command) })),
       }
     } catch (error) { await connection.rollback(); throw error } finally { connection.release() }
@@ -1020,13 +1040,23 @@ ${conflictData.conflictFiles.map(f => `- \`${f}\``).join('\n')}
   }
 
   async runningBatches(): Promise<DeployBatch[]> {
-    const [rows] = await this.pool.query<BatchRow[]>(`SELECT batch_id,repo_path,base_branch,expected_commit,status,remote_pid,remote_status_path,started_at,workspace_path,gate_job_id FROM deploy_batches WHERE status='running' ORDER BY started_at`)
+    const [rows] = await this.pool.query<BatchRow[]>(this.batchSelect('status=\'running\' ORDER BY db.started_at'))
     return rows.map(row => this.mapBatch(row))
   }
 
   async findPendingBatchByGateJob(gateJobId: number): Promise<DeployBatch | null> {
-    const [rows] = await this.pool.query<BatchRow[]>(`SELECT batch_id,repo_path,base_branch,expected_commit,status,remote_pid,remote_status_path,started_at,workspace_path,gate_job_id FROM deploy_batches WHERE gate_job_id=? AND status='pending' LIMIT 1`, [gateJobId])
+    const [rows] = await this.pool.query<BatchRow[]>(this.batchSelect('db.gate_job_id=? AND db.status=\'pending\' LIMIT 1'), [gateJobId])
     return rows[0] ? this.mapBatch(rows[0]) : null
+  }
+
+  private batchSelect(condition: string): string {
+    return `SELECT db.batch_id,db.repo_path,db.base_branch,db.expected_commit,db.status,db.remote_pid,db.remote_status_path,db.started_at,db.workspace_path,db.gate_job_id,
+      pmc.project_layout,pmc.repo_path_host,pmc.git_remote,pmc.deploy_kind,pmc.deploy_script
+      FROM deploy_batches db
+      LEFT JOIN deploy_requests dr ON dr.batch_id=db.batch_id
+      LEFT JOIN tarefas t ON t.id=dr.tarefa_id
+      LEFT JOIN projeto_motor_config pmc ON pmc.projeto_id=t.projeto_id
+      WHERE ${condition}`
   }
 
   /** O scheduler só persiste comandos; o consumidor continua sendo o executor. */
@@ -1171,7 +1201,7 @@ ${conflictData.conflictFiles.map(f => `- \`${f}\``).join('\n')}
     }))
   }
 
-  async completeBatch(batchId: string, success: boolean, reason: string | null, source: QueueMessage): Promise<string[]> {
+  async completeBatch(batchId: string, success: boolean, reason: string | null, source: QueueMessage, deployKind: DeployTaskContext['deployKind'] = source.payload?.deployKind as DeployTaskContext['deployKind']): Promise<string[]> {
     const connection = await this.pool.getConnection()
     try {
       await connection.beginTransaction()
@@ -1184,7 +1214,7 @@ ${conflictData.conflictFiles.map(f => `- \`${f}\``).join('\n')}
         SELECT tarefa_id,NULL,'deploy_failed',?, ?,NOW() FROM deploy_requests WHERE batch_id=?`, [`motor-v3:deploy:${batchId}`, String(reason ?? 'Falha no deploy').slice(0, 500), batchId])
       const batchEvent = createQueueMessage({ type: success ? 'DEPLOY_BATCH_SUCCEEDED' : 'DEPLOY_BATCH_FAILED', taskId: source.taskId,
         executionId: source.executionId, correlationId: source.correlationId ?? source.messageId, causationId: source.messageId,
-        payload: { batchId, reason } })
+        payload: { batchId, reason, deployKind: deployKind ?? 'blue-green-api' } })
       await this.insertOutbox(connection, batchEvent)
       for (const request of requests) {
         const taskId = String(request.external_id ?? request.task_id)
@@ -1325,6 +1355,8 @@ ${conflictData.conflictFiles.map(f => `- \`${f}\``).join('\n')}
   }
 
   private mapBatch(row: BatchRow): DeployBatch {
-    return { batchId: row.batch_id, repoPath: row.repo_path, baseBranch: row.base_branch, expectedCommit: row.expected_commit, status: row.status, remotePid: row.remote_pid, remoteStatusPath: row.remote_status_path, startedAt: row.started_at, workspacePath: row.workspace_path, gateJobId: row.gate_job_id == null ? null : Number(row.gate_job_id) }
+    return { batchId: row.batch_id, repoPath: row.repo_path, baseBranch: row.base_branch, expectedCommit: row.expected_commit, status: row.status, remotePid: row.remote_pid, remoteStatusPath: row.remote_status_path, startedAt: row.started_at, workspacePath: row.workspace_path, gateJobId: row.gate_job_id == null ? null : Number(row.gate_job_id),
+      projectLayout: row.project_layout === 'standalone' ? 'standalone' : 'monorepo', repoPathHost: row.repo_path_host ?? null,
+      gitRemote: row.git_remote ?? null, deployKind: row.deploy_kind ?? 'blue-green-api', deployScript: row.deploy_script ?? null }
   }
 }
