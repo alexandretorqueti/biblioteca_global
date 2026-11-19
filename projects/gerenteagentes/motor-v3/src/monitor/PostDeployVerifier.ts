@@ -160,6 +160,19 @@ export class PostDeployVerifier {
     const operationId = randomUUID()
     try {
       await this.logOperation(batchId, 'received', 'executed', message, { operationId })
+      // Deploy manual não tem um endpoint ou evidência HTTP produzida pelo
+      // motor. A conclusão é deliberadamente positiva e auditável, deixando
+      // explícita a responsabilidade da verificação humana.
+      if (message.payload?.deployKind === 'manual') {
+        await this.safeRecord(batchId, 'postdeploy_manual_verification_required', {
+          instruction: 'Verificar manualmente o serviço/projeto após a promoção.',
+        })
+        await this.persistVerification(batchId, 'consistent', JSON.stringify({ status: 'MANUAL', manualVerificationRequired: true }), 0)
+        await this.logOperation(batchId, 'completed', 'succeeded', message, {
+          operationId, reasonCode: 'manual_deploy_verification_required',
+        })
+        return
+      }
       await this.runVerification(batchId, message, operationId)
     } catch (error) {
       // Falha do verificador NUNCA bloqueia o pipeline — estado terminal failed.
