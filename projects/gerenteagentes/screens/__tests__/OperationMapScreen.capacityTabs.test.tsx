@@ -316,6 +316,15 @@ describe("Realtime — limpeza da espera de capacidade ao passar para execução
 })
 
 describe("Preservação da aba ativa ao trocar de tarefa", () => {
+  // Timeout dos waitFor deste bloco: a troca de tarefa depende de fetch
+  // assíncrono do motor-detail + re-render do detalhe; sob carga do gate
+  // (2 workers do Motor rodando suítes em paralelo no mesmo host) o limite
+  // anterior de 5s estourou (runs 1241–1243, 2026-11-19 — mesmo family do
+  // run 1104/bloqueio 3469, quando 1s → 5s). 15s segue bem abaixo do
+  // testTimeout global (30s) e não mascara regressão: sem carga, cada
+  // waitFor resolve em <1s.
+  const TAB_SWITCH_TIMEOUT = 15_000
+
   async function setupDuasTarefas() {
     // t2 (paused) vence a seleção inicial; t1 (planned) será clicada pelo usuário.
     const tarefas = [
@@ -329,7 +338,7 @@ describe("Preservação da aba ativa ao trocar de tarefa", () => {
       },
     })
     renderScreen()
-    await waitFor(() => expect(screen.getByTestId("detail-content")).toHaveTextContent("#2 Segunda tarefa"), { timeout: 5000 })
+    await waitFor(() => expect(screen.getByTestId("detail-content")).toHaveTextContent("#2 Segunda tarefa"), { timeout: TAB_SWITCH_TIMEOUT })
   }
 
   it("abre a seleção inicial na aba Resumo", async () => {
@@ -342,11 +351,11 @@ describe("Preservação da aba ativa ao trocar de tarefa", () => {
     await setupDuasTarefas()
 
     // Usuário abre a tarefa 1 e entra na aba Chat.
-    // Timeout alargado (5s, como no setup): a troca de tarefa depende de fetch
-    // assíncrono do motor-detail; sob carga do gate o padrão de 1s flakou
-    // (run 1104, bloqueio 3469 — falha "flaky" terminou a subtarefa 1483).
+    // Timeout alargado (TAB_SWITCH_TIMEOUT, como no setup): ver comentário na
+    // constante — sob carga do gate o padrão de 1s e depois o de 5s flakaram
+    // (run 1104/bloqueio 3469; runs 1241–1243).
     fireEvent.click(await screen.findByTestId("operation-map-task-1"))
-    await waitFor(() => expect(screen.getByTestId("detail-content")).toHaveTextContent("#1 Primeira tarefa"), { timeout: 5000 })
+    await waitFor(() => expect(screen.getByTestId("detail-content")).toHaveTextContent("#1 Primeira tarefa"), { timeout: TAB_SWITCH_TIMEOUT })
     fireEvent.click(screen.getByRole("tab", { name: "Chat" }))
     expect(await screen.findByText("mensagem da tarefa um")).toBeInTheDocument()
 
@@ -356,7 +365,7 @@ describe("Preservação da aba ativa ao trocar de tarefa", () => {
       expect(screen.getByTestId("detail-content")).toHaveTextContent("#2 Segunda tarefa")
       expect(screen.getByRole("tab", { name: "Chat" })).toHaveAttribute("aria-selected", "true")
       expect(screen.getByRole("tab", { name: "Resumo" })).toHaveAttribute("aria-selected", "false")
-    }, { timeout: 5000 })
+    }, { timeout: TAB_SWITCH_TIMEOUT })
     expect(await screen.findByText("mensagem da tarefa dois")).toBeInTheDocument()
   })
 
@@ -365,13 +374,13 @@ describe("Preservação da aba ativa ao trocar de tarefa", () => {
 
     fireEvent.click(await screen.findByTestId("operation-map-task-1"))
     fireEvent.click(screen.getByRole("tab", { name: "Execução" }))
-    await waitFor(() => expect(screen.getByRole("tab", { name: "Execução" })).toHaveAttribute("aria-selected", "true"), { timeout: 5000 })
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Execução" })).toHaveAttribute("aria-selected", "true"), { timeout: TAB_SWITCH_TIMEOUT })
 
     fireEvent.click(screen.getByTestId("operation-map-task-2"))
     await waitFor(() => {
       expect(screen.getByTestId("detail-content")).toHaveTextContent("#2 Segunda tarefa")
       expect(screen.getByRole("tab", { name: "Execução" })).toHaveAttribute("aria-selected", "true")
-    }, { timeout: 5000 })
+    }, { timeout: TAB_SWITCH_TIMEOUT })
   })
 
   it("mantém as abas Logs e Histórico ao trocar de tarefa", async () => {
@@ -383,16 +392,16 @@ describe("Preservação da aba ativa ao trocar de tarefa", () => {
     await waitFor(() => {
       expect(screen.getByTestId("detail-content")).toHaveTextContent("#2 Segunda tarefa")
       expect(screen.getByRole("tab", { name: "Logs" })).toHaveAttribute("aria-selected", "true")
-    }, { timeout: 5000 })
+    }, { timeout: TAB_SWITCH_TIMEOUT })
 
     fireEvent.click(screen.getByTestId("operation-map-task-1"))
-    await waitFor(() => expect(screen.getByTestId("detail-content")).toHaveTextContent("#1 Primeira tarefa"), { timeout: 5000 })
+    await waitFor(() => expect(screen.getByTestId("detail-content")).toHaveTextContent("#1 Primeira tarefa"), { timeout: TAB_SWITCH_TIMEOUT })
     fireEvent.click(screen.getByRole("tab", { name: "Histórico" }))
     fireEvent.click(screen.getByTestId("operation-map-task-2"))
     await waitFor(() => {
       expect(screen.getByTestId("detail-content")).toHaveTextContent("#2 Segunda tarefa")
       expect(screen.getByRole("tab", { name: "Histórico" })).toHaveAttribute("aria-selected", "true")
-    }, { timeout: 5000 })
+    }, { timeout: TAB_SWITCH_TIMEOUT })
   })
 
 })
