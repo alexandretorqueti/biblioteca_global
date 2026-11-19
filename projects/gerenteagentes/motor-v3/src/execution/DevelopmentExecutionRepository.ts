@@ -584,13 +584,90 @@ export class MySqlDevelopmentExecutionRepository {
     }
   }
 
+  /**
+   * Sessão DEV considerada viva para o conflito de execução. Além da janela de
+   * atividade, exige vínculo (runtime_session_id) ou lease 'development' vivo:
+   * sessão órfã stale sem vínculo (dead zone do incidente 2026-11-18) deixa de
+   * bloquear o consumo — o reconciliador a fecha e a reemissão prossegue.
+   */
   async hasActiveDevelopmentSession(subtaskId: number): Promise<boolean> {
     const [rows] = await this.pool.query<Array<RowDataPacket & { total: number | string }>>(
-      `SELECT COUNT(*) AS total FROM motor_agent_sessions
-        WHERE subtarefa_id=? AND status='active' AND purpose='development' AND runtime_session_id IS NOT NULL`,
+      `SELECT COUNT(*) AS total FROM motor_agent_sessions mas
+        WHERE mas.subtarefa_id=? AND mas.status='active' AND mas.purpose='development'
+          AND (mas.runtime_session_id IS NOT NULL OR EXISTS (
+            SELECT 1 FROM motor_active_executions e
+             WHERE e.subtarefa_id=mas.subtarefa_id AND e.phase='development' AND e.expires_at > NOW()
+          ))`,
       [subtaskId],
     )
     return Number(rows[0]?.total ?? 0) > 0
+  }
+
+  /**
+   * Adiamento durável de um SUBTASK_EXECUTION_REQUESTED descartado por
+   * conflito com sessão DEV (incidente 2026-11-18: o requeue de 20:35:07 foi
+   * ackado e perdido porque uma sessão órfã 'active' manteve o skip). Em vez
+   * do descarte silencioso, agenda uma cópia com messageId novo (a fila não é
+   * de deduplicação; re-enfileirar o mesmo id causaria hot-loop de claims).
+   * A contagem de adiamentos é a cópias já emitidas com o mesmo motivo, sob
+   * lock da subtarefa para serializar concorrentes; ao esgotar o limite, o
+   * chamador segue o caminho terminal (bloqueio + alerta) — nunca perda.
+   */
+  async deferExecutionMessage(
+    message: QueueMessage,
+    reason: string,
+    options: { delayMs: number; maxDefers: number },
+  ): Promise<'deferred' | 'exhausted'> {
+    const subtaskId = Number(message.payload.subtaskId)
+    const connection = await this.pool.getConnection()
+    try {
+      await connection.beginTransaction()
+      const [lockRows] = await connection.query<RowDataPacket[]>(
+        'SELECT id FROM subtarefas WHERE id=? LIMIT 1 FOR UPDATE',
+        [subtaskId],
+      )
+      if (!lockRows[0]) { await connection.rollback(); return 'exhausted' }
+      const [rows] = await connection.query<Array<RowDataPacket & { defer_count: number | string }>>(
+        `SELECT COUNT(*) AS defer_count
+           FROM motor_outbox
+          WHERE type = ? AND task_id = ?
+            AND CAST(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.subtaskId')) AS UNSIGNED) = ?
+            AND CAST(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.deferReason')) AS CHAR) = ?`,
+        [message.type, message.taskId, subtaskId, reason],
+      )
+      if (Number(rows[0]?.defer_count ?? 0) >= options.maxDefers) {
+        await connection.rollback()
+        return 'exhausted'
+      }
+      const deferred = createQueueMessage({
+        type: message.type,
+        taskId: message.taskId,
+        executionId: message.executionId,
+        causationId: message.messageId,
+        payload: { ...message.payload, deferReason: reason, deferredFromMessageId: message.messageId },
+      })
+      // A mensagem original normalmente já ocupa sua chave lógica
+      // (type, task_id, correlation_id) no outbox. Usar a correlação original
+      // aqui faria o adiamento falhar com ER_DUP_ENTRY; cada cópia precisa de
+      // uma correlação própria, mantendo a cadeia no causation_id.
+      await connection.query(
+        `INSERT INTO motor_outbox
+          (message_id, type, destination_queue, task_id, execution_id, payload_json, timestamp,
+           correlation_id, causation_id, status, attempt, defer_count)
+         VALUES (?, ?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL ? SECOND), ?, ?, 'pending', 0, 1)`,
+        [deferred.messageId, deferred.type, process.env.MOTOR_RABBITMQ_QUEUE || 'motor.commands',
+          deferred.taskId, deferred.executionId, JSON.stringify(deferred.payload),
+          Math.max(1, Math.ceil(options.delayMs / 1000)),
+          deferred.messageId, deferred.causationId ?? deferred.messageId],
+      )
+      await connection.commit()
+      return 'deferred'
+    } catch (error) {
+      await connection.rollback()
+      throw error
+    } finally {
+      connection.release()
+    }
   }
 
   /**
@@ -767,6 +844,31 @@ export class MySqlDevelopmentExecutionRepository {
       )
       const subtask = rows[0]
       if (!subtask) throw new Error(`Subtarefa ${subtaskId} não está em execução para recuperação`)
+      // Guarda de emissão única (incidente 2026-11-18): se uma reemissão desta
+      // mesma subtarefa já está agendada/emitida e ainda não foi reivindicada
+      // por um consumidor, não emite segunda SUBTASK_EXECUTION_REQUESTED.
+      const [inFlight] = await connection.query<Array<RowDataPacket & { total: number | string }>>(
+        `SELECT COUNT(*) AS total FROM motor_outbox o
+          WHERE o.type = 'SUBTASK_EXECUTION_REQUESTED' AND o.task_id = ?
+            AND CAST(JSON_UNQUOTE(JSON_EXTRACT(o.payload_json, '$.subtaskId')) AS UNSIGNED) = ?
+            AND (
+              o.status = 'pending'
+              OR EXISTS (
+                SELECT 1 FROM motor_message_processing_state p
+                 WHERE p.message_id = o.message_id COLLATE utf8mb4_unicode_ci
+                   AND p.message_type = 'SUBTASK_EXECUTION_REQUESTED'
+                   AND p.status IN ('pending', 'processing')
+              )
+            )`,
+        [taskId, subtaskId],
+      )
+      if (Number(inFlight[0]?.total ?? 0) > 0) {
+        await connection.rollback()
+        return createQueueMessage({
+          type: 'SUBTASK_EXECUTION_REQUESTED', taskId,
+          executionId: `dedup-${previousExecutionId}`, payload: { subtaskId, deduplicated: true },
+        })
+      }
       const message = createQueueMessage({
         type: 'SUBTASK_EXECUTION_REQUESTED',
         taskId,

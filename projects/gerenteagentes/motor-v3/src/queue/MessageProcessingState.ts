@@ -20,10 +20,16 @@ export interface ClaimResult {
 }
 
 export class MessageProcessingState {
+    private readonly timeoutSeconds: number;
+
     constructor(
         private readonly pool: Pool,
         private readonly processingTimeoutSeconds = 300,
-    ) {}
+    ) {
+        this.timeoutSeconds = Number.isFinite(processingTimeoutSeconds) && processingTimeoutSeconds > 0
+            ? Math.floor(processingTimeoutSeconds)
+            : 300;
+    }
 
     /**
      * Registra uma nova mensagem na fila para processamento.
@@ -71,13 +77,17 @@ export class MessageProcessingState {
         // considerado abandonado após o timeout e pode ser recuperado.
         const [result] = await this.pool.execute(
             `UPDATE motor_message_processing_state
-                SET status='processing', started_at=NOW(), completed_at=NULL
+                SET status='processing', started_at=NOW(),
+                    timeout_at=DATE_ADD(NOW(), INTERVAL ${this.timeoutSeconds} SECOND), completed_at=NULL
               WHERE message_id=?
                 AND (
                   status IN ('pending', 'failed')
-                  OR (status='processing' AND started_at < DATE_SUB(NOW(), INTERVAL ? SECOND))
+                  OR (status='processing' AND (
+                    timeout_at < NOW()
+                    OR (timeout_at IS NULL AND started_at < DATE_SUB(NOW(), INTERVAL ? SECOND))
+                  ))
                 )`,
-            [messageId, this.processingTimeoutSeconds],
+            [messageId, this.timeoutSeconds],
         ) as any;
 
         if (Number((result as any).affectedRows) > 0) {
@@ -145,8 +155,11 @@ export class MessageProcessingState {
         const timeoutAt = new Date(Date.now() - minutes * 60 * 1000);
         const [rows]: any[][] = await this.pool.query(
             `SELECT * FROM motor_message_processing_state 
-             WHERE status='processing' AND started_at < ?`,
-            [timeoutAt]
+             WHERE status='processing' AND (
+               timeout_at < NOW()
+               OR (timeout_at IS NULL AND started_at < ?)
+             )`,
+            [timeoutAt],
         );
         return rows as MessageProcessingRecord[];
     }

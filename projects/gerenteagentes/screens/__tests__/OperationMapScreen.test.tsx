@@ -91,6 +91,16 @@ function bundleFalso(tarefas: TarefaFake[], chamadas: string[]) {
         }
         if (path.endsWith("/subtarefas")) return []
         if (path.endsWith("/chat")) return []
+        if (path.endsWith("/duracoes")) return {
+          tarefaId: 7,
+          geradoEm: "2026-09-13T13:00:00Z",
+          totalSegundos: 6045,
+          atividades: [
+            { tipo: "analise_ia", rotulo: "IA analisando", segundos: 4820, intervalos: [{ inicio: "2026-09-13T12:00:00Z", fim: "2026-09-13T13:20:20Z", detalhe: "modelo X" }] },
+            { tipo: "testes", rotulo: "Testes", segundos: 600, intervalos: [{ inicio: "2026-09-13T13:20:20Z", fim: "2026-09-13T13:30:20Z", phase: "post_dev" }] },
+            { tipo: "fila", rotulo: "Fila/espera", segundos: 45, intervalos: [{ inicio: "2026-09-13T13:30:20Z", fim: "2026-09-13T13:31:05Z", subtarefa: "Subtarefa 1", estimado: true }] },
+          ],
+        }
         return {}
       },
     },
@@ -218,6 +228,31 @@ describe("OperationMapScreen — cancelar e excluir tarefa", () => {
     // Tarefa em execução: excluir fica desabilitado (evita apagar dado vivo).
     await abrirDetalhe(2)
     expect(screen.getByTestId("btn-delete")).toBeDisabled()
+  })
+})
+
+describe("OperationMapScreen — aba de durações", () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+    delete globalThis.__bundleMapa
+  })
+
+  it("carrega durações somente ao abrir a aba e exibe valores e barras", async () => {
+    const chamadas: string[] = []
+    globalThis.__bundleMapa = bundleFalso([tarefaFactory(7, "Tarefa do mapa", "completed")], chamadas)
+    renderScreen()
+    await abrirDetalhe(7)
+
+    expect(chamadas.some(c => c.includes("/duracoes"))).toBe(false)
+    fireEvent.click(screen.getByRole("tab", { name: "Durações" }))
+
+    expect(await screen.findByTestId("operation-durations")).toBeInTheDocument()
+    expect(chamadas.filter(c => c.includes("/duracoes"))).toHaveLength(1)
+    expect(screen.getByText("Total: 1h 40min")).toBeInTheDocument()
+    expect(screen.getByText("1h 20min")).toBeInTheDocument()
+    expect(screen.getByText("10min")).toBeInTheDocument()
+    expect(screen.getByText("45s")).toBeInTheDocument()
+    expect(screen.getAllByRole("progressbar")).toHaveLength(3)
   })
 })
 

@@ -93,6 +93,7 @@ export class SubtaskExecutionConsumer {
       await this.log(operationId, 2, message, {
         phase: 'rejected', outcome: 'skipped', subtaskId, reasonCode: 'development_session_recovery_owned',
       })
+      await this.deferConflictingExecution(message, execution, 'development_session_recovery_owned')
       return
     }
     // Proteção contra recriação de sessão após DONE processado.
@@ -102,6 +103,7 @@ export class SubtaskExecutionConsumer {
       await this.log(operationId, 2, message, {
         phase: 'rejected', outcome: 'skipped', subtaskId, reasonCode: 'development_session_already_completed',
       })
+      await this.deferConflictingExecution(message, execution, 'development_session_already_completed')
       return
     }
     try {
@@ -347,6 +349,36 @@ export class SubtaskExecutionConsumer {
       phase: 'completed', outcome: result.success ? 'succeeded' : 'failed', subtaskId,
       result: { nextMessageId: next.messageId, nextMessageType: next.type, attempts: result.attempts },
     })
+  }
+
+  /**
+   * Conflito de sessão é transitório: o reconciliador ainda precisa fechar a
+   * sessão ou concluir o pós-processamento. O ACK só pode ocorrer depois que
+   * uma cópia durável foi gravada no outbox; caso contrário a mensagem de
+   * recuperação é perdida na janela entre o fechamento e a expiração do lease.
+   */
+  private async deferConflictingExecution(
+    message: QueueMessage,
+    execution: SubtaskExecutionContext,
+    reason: 'development_session_recovery_owned' | 'development_session_already_completed',
+  ): Promise<void> {
+    const defer = (this.repository as typeof this.repository & {
+      deferExecutionMessage?: (
+        message: QueueMessage,
+        reason: string,
+        options: { delayMs: number; maxDefers: number },
+      ) => Promise<'deferred' | 'exhausted'>
+    }).deferExecutionMessage
+    // Mantém compatibilidade com doubles de testes/implementações antigas;
+    // a implementação MySQL vigente sempre fornece este método.
+    if (!defer) return
+    const leaseTtlMs = Number(process.env.MOTOR_DEVELOPMENT_LEASE_TTL_MS || 120_000)
+    const delayMs = Math.max(30_000, leaseTtlMs + 30_000)
+    const maxDefers = Math.max(1, Number(process.env.MOTOR_DEVELOPMENT_CONFLICT_MAX_DEFERS || 40))
+    const outcome = await defer.call(this.repository, message, reason, { delayMs, maxDefers })
+    if (outcome === 'exhausted') {
+      throw new Error(`Conflito de execução DEV persistente; adiamentos esgotados (${reason})`)
+    }
   }
 
   /** Retoma o pós-processamento de uma sessão DEV concluída durante o restart. */

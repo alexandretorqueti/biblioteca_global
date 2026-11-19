@@ -578,6 +578,36 @@ A tabela `bloqueios` (resource `bloqueios`) é mantida pelo CRUD genérico
 `blockExitCode`, `blockExcerpt`, `blockedAt`) e preenchida pelo
 encaminhamento de eventos do motor — sem endpoint dedicado neste módulo.
 
+### 5.3 Durações por atividade
+
+**GET `/api/gerenteagentes/tarefas/:id/duracoes`**
+
+Leitura tenant-scoped das durações observadas para uma tarefa. A resposta
+agrega, sem alterar dados, análise, desenvolvimento, testes, deploy, fila e
+pausas. Sobreposições são unidas e janelas pausadas são descontadas das demais
+atividades; sessões abertas podem trazer `emAndamento: true` e sessões
+estimadas podem trazer `estimado: true`.
+
+```json
+{
+  "tarefaId": 123,
+  "geradoEm": "2026-11-18T12:00:00.000Z",
+  "atividades": [
+    { "tipo": "analise_ia", "rotulo": "IA analisando", "segundos": 600,
+      "intervalos": [{ "inicio": "...", "fim": "...", "detalhe": "modelo X" }] },
+    { "tipo": "desenvolvimento_ia", "rotulo": "IA programando", "segundos": 1200, "intervalos": [] },
+    { "tipo": "testes", "rotulo": "Testes", "segundos": 600, "intervalos": [] },
+    { "tipo": "deploy", "rotulo": "Deploy", "segundos": 240, "intervalos": [] },
+    { "tipo": "fila", "rotulo": "Fila/espera", "segundos": 900, "intervalos": [] },
+    { "tipo": "pausa", "rotulo": "Pausada", "segundos": 0, "intervalos": [] }
+  ],
+  "totalSegundos": 3540
+}
+```
+
+O endpoint retorna `404` para tarefa inexistente e não executa operações de
+escrita.
+
 ---
 
 ## 6. Integração com Console OpenClaw

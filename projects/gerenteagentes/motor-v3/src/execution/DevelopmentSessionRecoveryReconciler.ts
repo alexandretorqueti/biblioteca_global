@@ -17,6 +17,8 @@ interface RecoveryRow extends RowDataPacket {
   model: string
   purpose: 'development' | 'baseline_fix'
   execution_id: string | null
+  last_activity_at: Date | string | null
+  development_lease_alive: number | boolean
   baseline_run_id: number | null
   subtask_status: string
   completion_nudge_count: number | string
@@ -82,6 +84,12 @@ export class DevelopmentSessionRecoveryReconciler {
         SELECT mas.id AS session_id, s.tarefa_id, t.external_id AS task_external_id,
                mas.subtarefa_id, mas.session_key, mas.runtime_session_id,
                mas.agent_id, mas.model, mas.purpose, ctx.last_run_id AS execution_id, s.status AS subtask_status,
+               mas.last_activity_at,
+               EXISTS (
+                 SELECT 1 FROM motor_active_executions e
+                  WHERE e.subtarefa_id = s.id AND e.phase = 'development'
+                    AND e.expires_at > NOW()
+               ) AS development_lease_alive,
                mas.completion_nudge_count, mas.completion_nudged_at, mas.no_progress_touch_count,
                (SELECT tr.id FROM test_runs tr
                  WHERE tr.tarefa_id = s.tarefa_id AND tr.subtarefa_id = s.id AND tr.phase = 'baseline'
@@ -103,6 +111,25 @@ export class DevelopmentSessionRecoveryReconciler {
       for (const row of rows) {
         if (seen.has(Number(row.subtarefa_id))) continue
         seen.add(Number(row.subtarefa_id))
+        // Uma sessão ativa sem runtime/execução vinculados não pode ser
+        // recuperada pelo Console. Sem esta guarda ela também bloqueia o
+        // NOT EXISTS de reconcileRunningWithoutSession(), deixando a
+        // subtarefa em uma zona morta indefinidamente.
+        const lastActivity = row.last_activity_at ? new Date(row.last_activity_at).getTime() : NaN
+        const isStale = Number.isFinite(lastActivity)
+          && Date.now() - lastActivity >= this.staleMinutes * 60_000
+        if ((!row.runtime_session_id || !row.execution_id) && isStale && !Boolean(row.development_lease_alive)) {
+          const taskId = String(row.task_external_id ?? row.tarefa_id)
+          await this.close(row, 'failed', 'development_orphan_session')
+          await this.record(taskId, 'development_orphan_session_closed', {
+            sessionId: row.session_id, subtaskId: row.subtarefa_id,
+            reason: 'development_orphan_session', lastActivityAt: row.last_activity_at,
+          })
+          // O fechamento torna a sessão invisível ao reconciliador de
+          // subtarefas running logo abaixo, que emite exatamente uma
+          // SUBTASK_EXECUTION_REQUESTED usando sua guarda de in-flight.
+          continue
+        }
         if (!row.runtime_session_id || !row.execution_id || this.inFlight.has(Number(row.session_id))) continue
         if (this.consoleAdapter.isLocallyOwned(String(row.runtime_session_id))) continue
         this.inFlight.add(Number(row.session_id))

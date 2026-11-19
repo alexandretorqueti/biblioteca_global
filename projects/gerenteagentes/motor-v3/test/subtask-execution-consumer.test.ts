@@ -93,6 +93,7 @@ describe('SubtaskExecutionConsumer', () => {
       getExecutionContext: vi.fn().mockResolvedValue(context),
       hasActiveDevelopmentSession: vi.fn().mockResolvedValue(false),
       hasRecentCompletedDevelopmentSession: vi.fn().mockResolvedValue(true),
+      deferExecutionMessage: vi.fn().mockResolvedValue('deferred'),
       getDevelopmentModelChain: vi.fn(),
     }
     const worktrees = { prepare: vi.fn() }
@@ -108,6 +109,11 @@ describe('SubtaskExecutionConsumer', () => {
     expect(logger.append).toHaveBeenLastCalledWith(expect.objectContaining({
       phase: 'rejected', outcome: 'skipped', reasonCode: 'development_session_already_completed',
     }))
+    expect(repository.deferExecutionMessage).toHaveBeenCalledWith(
+      message, 'development_session_already_completed', expect.objectContaining({
+        delayMs: expect.any(Number), maxDefers: expect.any(Number),
+      }),
+    )
   })
 
   it('permite nova execução quando não há sessão concluída recentemente', async () => {

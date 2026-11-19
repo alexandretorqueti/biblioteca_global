@@ -72,6 +72,14 @@ import {
   GenerationTelegramNotifier,
   type GenerationTransitionNotifier,
 } from './generation-telegram-notifier';
+import {
+  intervalSeconds,
+  iso,
+  limitarAoProximoInicio,
+  mergeIntervals,
+  subtractIntervals,
+  type IntervaloDuracao,
+} from './tarefa-duracoes';
 
 const DEFAULT_SESSION_PAGE_SIZE = 50;
 const MAX_SESSION_PAGE_SIZE = 500;
@@ -1583,6 +1591,117 @@ export class GerenteAgentesService {
     const db = await this.dbDoMotor();
     const rows = await db.select().from(tarefaEventos).where(eq(tarefaEventos.tarefaId, tarefaId)).orderBy(desc(tarefaEventos.createdAt));
     return rows;
+  }
+
+  /** Agregação somente leitura das durações observadas pelo Motor. */
+  async listarDuracoesTarefa(_projeto: ProjetoResumo, tarefaId: number) {
+    const db = await this.dbDoMotor();
+    const [tarefa] = await db.select({ id: tarefas.id, createdAt: tarefas.createdAt }).from(tarefas).where(eq(tarefas.id, tarefaId)).limit(1);
+    if (!tarefa) throw new NotFoundException('Tarefa não encontrada');
+    const agora = new Date();
+    const rows = async (query: ReturnType<typeof sql>) => {
+      const [resultado] = await db.execute(query);
+      return resultado as unknown as Array<Record<string, unknown>>;
+    };
+    const [analistas, subtarefasRows, sessoesDev, gates, deploys, eventos] = await Promise.all([
+      rows(sql`SELECT opened_at AS openedAt, closed_at AS closedAt, last_activity_at AS lastActivityAt,
+                      status, model AS modelo FROM analyst_task_sessions WHERE tarefa_id = ${tarefaId} ORDER BY opened_at`),
+      rows(sql`SELECT seq, titulo, status, iniciada_em AS iniciadaEm, finalizada_em AS finalizadaEm,
+                      duracao_segundos AS duracaoSegundos, updated_at AS updatedAt
+                 FROM subtarefas WHERE tarefa_id = ${tarefaId} ORDER BY seq`),
+      rows(sql`SELECT s.opened_at AS openedAt, s.closed_at AS closedAt, s.last_activity_at AS lastActivityAt,
+                      s.updated_at AS updatedAt, s.status, s.model AS modelo, s.subtarefa_id AS subtarefaId,
+                      st.seq, st.titulo
+                 FROM motor_agent_sessions s JOIN subtarefas st ON st.id = s.subtarefa_id
+                WHERE st.tarefa_id = ${tarefaId} AND s.purpose = 'development' ORDER BY s.opened_at`),
+      rows(sql`SELECT started_at AS startedAt, finished_at AS finishedAt, phase
+                 FROM test_gate_jobs WHERE tarefa_id = ${tarefaId} ORDER BY started_at`),
+      rows(sql`SELECT requested_at AS requestedAt, started_at AS startedAt, finished_at AS finishedAt,
+                      status FROM deploy_requests WHERE tarefa_id = ${tarefaId}`),
+      rows(sql`SELECT evento, origem, created_at AS createdAt FROM tarefa_eventos
+                WHERE tarefa_id = ${tarefaId} AND origem IN ('motor', 'usuario') ORDER BY created_at, id`),
+    ]);
+
+    const date = (value: unknown): Date | undefined => value == null ? undefined : new Date(value as string | number | Date);
+    const aberto = (inicio: Date, fim: Date | undefined, fallback: Date | undefined, status: unknown): { fim: Date; estimado?: boolean; emAndamento?: boolean } => {
+      if (fim) return { fim };
+      if (status === 'active' || status === 'open' || status === 'running' || status === 'processing') return { fim: agora, emAndamento: true };
+      return { fim: fallback ?? agora, estimado: true };
+    };
+    const analise: IntervaloDuracao[] = analistas.flatMap((row) => {
+      const inicio = date(row.openedAt); if (!inicio) return [];
+      const fim = aberto(inicio, date(row.closedAt), date(row.lastActivityAt), row.status);
+      return [{ inicio, fim: fim.fim, detalhe: row.modelo ? `modelo ${String(row.modelo)}` : undefined, estimado: fim.estimado, emAndamento: fim.emAndamento }];
+    });
+    const desenvolvimento: IntervaloDuracao[] = [];
+    for (const row of subtarefasRows) {
+      const inicio = date(row.iniciadaEm); if (!inicio) continue;
+      const finalizada = date(row.finalizadaEm);
+      const andamento = !finalizada && row.duracaoSegundos == null && row.status === 'running';
+      const fim = finalizada ?? (andamento ? agora : row.duracaoSegundos != null ? new Date(inicio.getTime() + Number(row.duracaoSegundos) * 1000) : date(row.updatedAt) ?? agora);
+      desenvolvimento.push({ inicio, fim, detalhe: `subtarefa ${row.seq}${row.titulo ? ` — ${row.titulo}` : ''}`, estimado: !finalizada && !andamento && row.duracaoSegundos == null, emAndamento: andamento });
+    }
+    for (const row of sessoesDev) {
+      const inicio = date(row.openedAt); if (!inicio) continue;
+      const fim = aberto(inicio, date(row.closedAt), date(row.lastActivityAt) ?? date(row.updatedAt), row.status);
+      desenvolvimento.push({ inicio, fim: fim.fim, detalhe: `subtarefa ${row.seq}${row.titulo ? ` — ${row.titulo}` : ''}${row.modelo ? `; modelo ${row.modelo}` : ''}`, estimado: fim.estimado, emAndamento: fim.emAndamento });
+    }
+    const testes: IntervaloDuracao[] = gates.flatMap((row) => {
+      const inicio = date(row.startedAt); if (!inicio) return [];
+      const fim = date(row.finishedAt) ?? agora;
+      return [{ inicio, fim, phase: row.phase == null ? undefined : String(row.phase), emAndamento: !row.finishedAt }];
+    });
+    const deploy: IntervaloDuracao[] = deploys.flatMap((row) => {
+      const requested = date(row.requestedAt); if (!requested) return [];
+      const started = date(row.startedAt); const finished = date(row.finishedAt);
+      const result: IntervaloDuracao[] = [];
+      if (started && started > requested) result.push({ inicio: requested, fim: started, detalhe: 'espera na fila' });
+      if (started) result.push({ inicio: started, fim: finished ?? agora, detalhe: 'execução', emAndamento: !finished });
+      else result.push({ inicio: requested, fim: agora, detalhe: 'espera na fila', emAndamento: true });
+      return result;
+    });
+    const pausas: IntervaloDuracao[] = [];
+    let pausaAberta: Date | undefined;
+    for (const row of eventos) {
+      const quando = date(row.createdAt); if (!quando) continue;
+      if (row.evento === 'paused' && !pausaAberta) pausaAberta = quando;
+      if (row.evento === 'resumed' && pausaAberta) {
+        pausas.push({ inicio: pausaAberta, fim: quando, detalhe: `origem ${row.origem}` });
+        pausaAberta = undefined;
+      }
+    }
+    if (pausaAberta) pausas.push({ inicio: pausaAberta, fim: agora, detalhe: 'pausa pendente', emAndamento: true });
+
+    const atividadeBruta = [analise, desenvolvimento, testes, deploy];
+    const proximosInicios = testes.map((item) => item.inicio);
+    const analiseLimitada = limitarAoProximoInicio(analise, proximosInicios);
+    const processar = (items: IntervaloDuracao[]) => mergeIntervals(subtractIntervals(items, pausas), agora);
+    const fila: IntervaloDuracao[] = [];
+    const primeiros = atividadeBruta.flat().map((item) => item.inicio).sort((a, b) => a.getTime() - b.getTime());
+    const primeiro = primeiros[0];
+    if (primeiro && primeiro > tarefa.createdAt) fila.push({ inicio: tarefa.createdAt, fim: primeiro, detalhe: 'aguardando primeira atividade' });
+    if (!primeiro && tarefa.createdAt < agora) fila.push({ inicio: tarefa.createdAt, fim: agora, detalhe: 'aguardando primeira atividade', emAndamento: true });
+    let ultimaRetomada: Date | undefined;
+    for (const row of eventos) {
+      const quando = date(row.createdAt); if (!quando) continue;
+      if (row.evento === 'resumed') ultimaRetomada = quando;
+      if (ultimaRetomada && primeiro && primeiro > ultimaRetomada) { fila.push({ inicio: ultimaRetomada, fim: primeiro, detalhe: 'aguardando retomada' }); ultimaRetomada = undefined; }
+    }
+    const blocos: Array<{ tipo: string; rotulo: string; intervalos: IntervaloDuracao[] }> = [
+      { tipo: 'analise_ia', rotulo: 'IA analisando', intervalos: processar(analiseLimitada) },
+      { tipo: 'desenvolvimento_ia', rotulo: 'IA programando', intervalos: processar(desenvolvimento) },
+      { tipo: 'testes', rotulo: 'Testes', intervalos: processar(testes) },
+      { tipo: 'deploy', rotulo: 'Deploy', intervalos: processar(deploy) },
+      { tipo: 'fila', rotulo: 'Fila/espera', intervalos: processar(fila) },
+      { tipo: 'pausa', rotulo: 'Pausada', intervalos: mergeIntervals(pausas, agora) },
+    ];
+    const atividades = blocos.map((bloco) => ({
+      tipo: bloco.tipo,
+      rotulo: bloco.rotulo,
+      segundos: intervalSeconds(bloco.intervalos),
+      intervalos: bloco.intervalos.map((item) => ({ inicio: iso(item.inicio), fim: iso(item.fim), ...(item.detalhe ? { detalhe: item.detalhe } : {}), ...(item.phase ? { phase: item.phase } : {}), ...(item.estimado ? { estimado: true } : {}), ...(item.emAndamento ? { emAndamento: true } : {}) })),
+    }));
+    return { tarefaId, geradoEm: agora.toISOString(), atividades, totalSegundos: atividades.reduce((total, item) => total + item.segundos, 0) };
   }
 
   /** Timeline append-only das decisões/actions/primitivas do Motor v3. */

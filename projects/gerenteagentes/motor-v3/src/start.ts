@@ -31,7 +31,7 @@ import { GovernedFailureHandler } from './governance/GovernedFailureHandler.js'
 import { createGovernanceFlagResolver } from './governance/RolloutPolicy.js'
 import { QueueConsumer } from './queue/QueueConsumer.js'
 import { RabbitMqTransport, normalizeRabbitMqPrefetch } from './queue/RabbitMqTransport.js'
-import { MotorActivityGate, OutboxPublisher, TerminalFailureRouter, createQueueMessage, DlqReconciler, TelegramDlqAlertSender } from './queue/index.js'
+import { MotorActivityGate, OutboxPublisher, MessageProcessingClaimReconciler, QueueLeadership, TerminalFailureRouter, createQueueMessage, DlqReconciler, TelegramDlqAlertSender } from './queue/index.js'
 import { SUBTASK_EXECUTION_REQUESTED } from './execution/SubtaskExecutionConsumer.js'
 import { SUBTASK_VERIFICATION_REQUESTED } from './execution/SubtaskVerificationConsumer.js'
 import type { QueueMessage } from './queue/QueueMessage.js'
@@ -99,6 +99,7 @@ let taskUnblockedConsumer: TaskUnblockedConsumer | null = null
 let testGateQueueConsumer: QueueConsumer | null = null
 let testGateOutboxPublisher: OutboxPublisher | null = null
 let testGateJobReconciler: TestGateJobReconciler | null = null
+let messageProcessingClaimReconciler: MessageProcessingClaimReconciler | null = null
 let deployConsumer: DeployConsumer | null = null
 let deployOrphanBatchReconcilerTimer: NodeJS.Timeout | null = null
 let cancelConsumer: TaskCancelConsumer | null = null
@@ -117,6 +118,7 @@ let orphanCapacityQueueReconciler: OrphanCapacityQueueReconciler | null = null
 let activeExecutionSweeper: ActiveExecutionSweeper | null = null
 let projectGenerationWorker: ProjectGenerationWorker | null = null
 let generationClaimReconciler: GenerationClaimReconciler | null = null
+let queueLeadership: QueueLeadership | null = null
 
 async function start() {
   console.log('[Motor v3] Iniciando...')
@@ -153,7 +155,9 @@ async function start() {
     activityProvider: () => workerActivityService.getActivity(),
     activityProjectId: Number(process.env.MOTOR_REALTIME_TENANT_PROJECT_ID ?? 640),
   })
-  realtimeOutboxDispatcher.start()
+  // Quando a fila durável está habilitada, o dispatcher acompanha a mesma
+  // liderança dos consumers; sem fila, preserva o comportamento standalone.
+  if (process.env.MOTOR_QUEUE_ENABLED !== 'true') realtimeOutboxDispatcher.start()
 
   // Camada A do invariante de conclusão: trigger de rede de segurança para
   // escritas externas em subtarefas. Falha não derruba o boot (camadas B/C
@@ -232,6 +236,11 @@ async function start() {
       initialConnectMaxRetryDelayMs: Number(process.env.MOTOR_RABBITMQ_BOOTSTRAP_MAX_RETRY_DELAY_MS || 10000),
     }
 
+    // Todo o conjunto abaixo é ativado somente pelo holder do lease. A API
+    // HTTP continua sendo inicializada depois deste bloco, inclusive em
+    // instâncias standby durante o overlap blue-green.
+    const startDurableServices = async () => {
+    realtimeOutboxDispatcher?.start()
     const repository = new MySqlTaskCoordinatorRepository(pool, realtime)
     const consoleApi = new ConsoleHttpApi(consoleUrl, consoleToken)
     const contractArtifactStore = new ContractArtifactStore(process.env.MOTOR_AGENT_WORKSPACES_ROOT, consoleApi)
@@ -406,7 +415,7 @@ async function start() {
     const taskEvents = new MySqlTaskEventRecorder(pool)
     const worktreePreparer = new GitWorktreePreparer(process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/codigofonte/biblioteca-global/.motor-v3-worktrees')
     const deployRepository = new DeployRepository(pool, process.env.MOTOR_WORKTREE_ROOT || '/data/workspace/projects/codigofonte/biblioteca-global/.motor-v3-worktrees')
-    const coordinator = new TaskCoordinator(repository, analyst, bus, {
+    const coordinator = new TaskCoordinator(repository, analyst, bus!, {
       commandPolicies: new MySqlCommandPolicyRepository(pool),
       operationLogger,
       taskEvents,
@@ -483,6 +492,18 @@ async function start() {
     })
     testGateOutboxPublisher = new OutboxPublisher(pool, gateTransport, gateQueue, gateQueue)
     await testGateOutboxPublisher.start()
+    // Claims de processamento sobrevivem a quedas do consumidor. A primeira
+    // passagem ocorre antes dos consumers e o timer cobre claims criados
+    // durante a operação; claims sem outbox são apenas terminalizados.
+    messageProcessingClaimReconciler = new MessageProcessingClaimReconciler(pool, {
+      intervalMs: Number(process.env.MOTOR_MESSAGE_CLAIM_RECONCILER_INTERVAL_MS || 300000),
+      processingTimeoutSeconds: Number(process.env.MOTOR_MESSAGE_PROCESSING_TIMEOUT_SECONDS || 300),
+    })
+    const claimRecovery = await messageProcessingClaimReconciler.reconcile()
+    if (claimRecovery.failed > 0) {
+      console.log(`[Motor v3] Claims de mensagens expirados no boot: falhos=${claimRecovery.failed} republicados=${claimRecovery.requeued} sem_outbox=${claimRecovery.withoutOutbox}`)
+    }
+    messageProcessingClaimReconciler.start()
     const testGateConsumer = new TestGateConsumer(pool, testGateService, operationLogger, mainQueue)
     testGateQueueConsumer = new QueueConsumer(gateTransport, message => testGateConsumer.handle(message), {
       queue: gateQueue, maxAttempts: Number(process.env.MOTOR_QUEUE_MAX_ATTEMPTS || 3),
@@ -939,6 +960,16 @@ async function start() {
     }, 300000)
     await deployConsumer.requestReconciliation()
     console.log('[Motor v3] QueueConsumer + TaskCoordinator inicializados')
+    }
+    queueLeadership = new QueueLeadership(pool, {
+      leaseTtlMs: Number(process.env.MOTOR_QUEUE_LEASE_TTL_MS || 30000),
+      pollMs: Number(process.env.MOTOR_QUEUE_LEADER_POLL_MS || 10000),
+      onAcquired: startDurableServices,
+      onLost: stopDurableServices,
+    })
+    void queueLeadership.start().catch(error => {
+      console.error('[Motor v3] falha ao iniciar liderança das filas:', error instanceof Error ? error.message : error)
+    })
   } else {
     console.log('[Motor v3] Fila durável desativada (MOTOR_QUEUE_ENABLED != true)')
   }
@@ -1571,9 +1602,7 @@ async function start() {
   })
 }
 
-async function shutdown() {
-  console.log('[Motor v3] Encerrando...')
-
+async function stopDurableServices(): Promise<void> {
   if (deployOrphanBatchReconcilerTimer) {
     clearInterval(deployOrphanBatchReconcilerTimer)
     deployOrphanBatchReconcilerTimer = null
@@ -1598,13 +1627,9 @@ async function shutdown() {
   monitorMissionRecoveryReconciler?.stop()
   dlqReconciler?.stop()
   testGateJobReconciler?.stop()
+  messageProcessingClaimReconciler?.stop()
   if (testGateOutboxPublisher) await testGateOutboxPublisher.stop()
 
-  // Para scheduler
-  if (scheduler) {
-    scheduler.stop()
-    console.log('[Motor v3] Scheduler parado')
-  }
   analysisSessionRecovery?.stop()
   developmentSessionRecovery?.stop()
   orphanCapacityQueueReconciler?.stop()
@@ -1612,6 +1637,13 @@ async function shutdown() {
   activeExecutionSweeper?.stop()
   projectGenerationWorker?.stop()
   generationClaimReconciler?.stop()
+}
+
+async function shutdown() {
+  console.log('[Motor v3] Encerrando...')
+
+  await stopDurableServices()
+  await queueLeadership?.release()
 
   // Fecha servidor HTTP
   if (server) {

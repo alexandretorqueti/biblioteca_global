@@ -22,6 +22,12 @@ export {
   type DlqTransport,
 } from './DlqReconciler.js'
 export { OutboxPublisher } from './OutboxPublisher.js'
+export { QueueLeadership, type QueueLeadershipConfig } from './QueueLeadership.js'
+export {
+  MessageProcessingClaimReconciler,
+  type MessageProcessingClaimReconcilerConfig,
+  type MessageProcessingClaimReconciliation,
+} from './MessageProcessingClaimReconciler.js'
 export { MotorActivityGate } from './MotorActivityGate.js'
 export { insertOutboxMessage } from './outboxInsert.js'
 export {

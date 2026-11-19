@@ -452,6 +452,14 @@ export class GerenteAgentesController {
     return this.service.listarOperacoesMotorTarefa(projeto, id);
   }
 
+  @Get('tarefas/:id/duracoes')
+  listarDuracoesTarefa(
+    @CurrentProject() projeto: ProjetoResumo,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    return this.service.listarDuracoesTarefa(projeto, id);
+  }
+
   // ============================================================================
   // AGENTES (sincronização com OpenClaw)
   // ============================================================================
