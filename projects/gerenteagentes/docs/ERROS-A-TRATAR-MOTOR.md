@@ -276,9 +276,12 @@ tem a mensagem `SUBTASK_EXECUTION_REQUESTED` **re-enfileirada** → consumidor
 mata o run ativo por takeover.
 
 **Correção (FIXED).** `39226f3a` (2026-11-19): **heartbeat do claim** no
-`QueueConsumer` — `timeout_at` renovando (~60s) nos claims `processing`, então o
+`QueueConsumer` — renova `timeout_at` a cada ~60s (env
+`MOTOR_MESSAGE_CLAIM_HEARTBEAT_SECONDS`) nos claims `processing`, então o
 reconciliador não re-enfileira consumidor vivo. Confirmado em produção
-(biblioteca-blue-api-1, restart 18:07Z, healthy). Protege sessões DEV longas.
+(biblioteca-blue-api-1, restart 18:07Z, healthy; `timeout_at` renovando).
+Validação: suíte motor-v3 **1190/1190**. Protege sessões DEV/baseline longas.
+Desbloqueou tanto s1541 (task 1097) quanto s1544 (task 1096) — ambas `verified`.
 
 **Evidência.** s1541 (sessão qwen morta 8s após gate verde 26/26), s1544;
 duplicatas rejeitadas com `development_session_recovery_owned` em 17:59/18:01;
@@ -419,18 +422,20 @@ publicar porta estável via proxy. Documentar no runbook de deploy.
 
 ### E1 — Fallback `gpt-5.6-sol` quebrado ⛔ EXTERNO (ação Alexandre)
 
-**Sintoma.** `model_not_found`: *"not supported when using Codex with a ChatGPT
-account"* — o fallback de todas as cadeias morre em <1s.
+**Sintoma.** HTTP **400** `model_not_found`: *"not supported when using Codex
+with a ChatGPT account"* — o fallback de todas as cadeias morre em <1s.
 
 **Causa raiz.** Configuração/conta: o modelo `gpt-5.6-sol` não está disponível
 na conta ChatGPT/Codex em uso. **Fora do controle do código do motor.**
 
-**Evidência.** Reportado pela sessão monitora b3501/s1544 (2026-11-19);
-`motor_agent_session_failures`.
+**Evidência.** Reportado pela sessão monitora b3501/s1544 (2026-11-19) no
+relatório final e no chat da task 1096 (id 1277); `motor_agent_session_failures`.
 
-**Ação (Alexandre).** Corrigir credencial/conta ou **remover `gpt-5.6-sol` das
-cadeias de fallback** até estar disponível. Enquanto isso, o motor **não deve
-contar** com esse fallback (afeta B1.3, C1, recuperação de baseline/DEV).
+**Ação (Alexandre — EXTERNO).** Requer **troca do modelo da cadeia** ou **troca
+da conta do provedor OpenAI** (a conta ChatGPT/Codex atual não serve esse
+modelo). Alternativa paliativa: **remover `gpt-5.6-sol` das cadeias de fallback**
+até regularizar. Enquanto isso, o motor **não deve contar** com esse fallback
+(afeta B1.3, C1, recuperação de baseline/DEV).
 
 ---
 
@@ -492,3 +497,9 @@ que interrompa/suspenda worker ativo com segurança (checkpoint).
   Marcação: B4 FIXED `fbd5ec82`; C1 FIXED `39226f3a`; M4 FIXED `21b4ed00`;
   M2 ENDEREÇADO (tarefa 1097 verified); E1 EXTERNO. Destaque para **B1**
   (auto-recuperação de baseline) como pedido explícito do Alexandre.
+- **2026-11-19 (complemento)** — Desfecho confirmado pelo monitor b3501/s1544:
+  s1544 (task 1096) `verified`, gates pós-DEV verdes no commit combinado
+  (`fbd5ec82` + `39226f3a`), zero bloqueios. Enriquecidos C1 (env
+  `MOTOR_MESSAGE_CLAIM_HEARTBEAT_SECONDS`, suíte motor-v3 1190/1190) e E1 (HTTP
+  400 `model_not_found`; report no chat task 1096 id 1277; ação = trocar modelo
+  da cadeia ou conta OpenAI). Ambos os incidentes-irmãos (3500 e 3501) encerrados.
