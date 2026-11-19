@@ -143,6 +143,16 @@ function updateHead(tenant: TenantConfig): void {
   }
 }
 
+export function applyTenantScope(slug: TenantSlug): () => void {
+  const isAlpha = slug === "alpha"
+  document.documentElement.classList.toggle("tenant-alpha", isAlpha)
+  document.body.classList.toggle("tenant-alpha", isAlpha)
+  return () => {
+    document.documentElement.classList.remove("tenant-alpha")
+    document.body.classList.remove("tenant-alpha")
+  }
+}
+
 export function App() {
   const queryTenant = new URLSearchParams(window.location.search).get("tenant")
   const slug = resolveTenant(window.location.hostname, queryTenant)
@@ -158,6 +168,7 @@ function TenantApp({ slug }: { slug: TenantSlug }) {
   const isAuthed = Boolean(data.onboarding?.verified)
 
   useEffect(() => { updateHead(tenant) }, [tenant])
+  useEffect(() => applyTenantScope(slug), [slug])
   const theme = useMemo(() => createTheme({ palette: { mode: "light", primary: { main: tenant.primary }, secondary: { main: tenant.secondary }, ...(slug === "isa" ? { background: { default: "#f5f7fa", paper: "#ffffff" }, text: { primary: "#243447", secondary: "#5f6f82" } } : {}) }, typography: { fontFamily: tenant.fontFamily } }), [slug, tenant])
   const http = useMemo(() => new ApiHttpClient({ baseUrl: API_BASE_URL, tokens: { getAccessToken: () => null, getRefreshToken: () => null, setAccessToken: () => {}, setRefreshToken: () => {} } }), [])
   const client = useMemo(() => {

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import { alphaTenant } from "../tenants/alpha"
 import { isaTenant } from "../tenants/isa"
 import { resolveTenant, tenants } from "../tenants"
-import { getVisitorKey } from "../App"
+import { applyTenantScope, getVisitorKey } from "../App"
 
 describe("chat-universal tenants", () => {
   it.each([
@@ -40,4 +40,20 @@ describe("chat-universal tenants", () => {
     expect(getVisitorKey("alpha.chatId")).toMatch(/^visitor-/)
     Object.defineProperty(window, "localStorage", { configurable: true, value: original })
   })
+
+  it("scopes the Alpha class to html and body and cleans it up", () => {
+    const cleanupAlpha = applyTenantScope("alpha")
+    expect(document.documentElement.classList.contains("tenant-alpha")).toBe(true)
+    expect(document.body.classList.contains("tenant-alpha")).toBe(true)
+
+    const cleanupIsa = applyTenantScope("isa")
+    expect(document.documentElement.classList.contains("tenant-alpha")).toBe(false)
+    expect(document.body.classList.contains("tenant-alpha")).toBe(false)
+
+    cleanupIsa()
+    cleanupAlpha()
+    expect(document.documentElement.classList.contains("tenant-alpha")).toBe(false)
+    expect(document.body.classList.contains("tenant-alpha")).toBe(false)
+  })
+
 })
