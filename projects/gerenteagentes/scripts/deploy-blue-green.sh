@@ -44,6 +44,24 @@ wait_http() {
   return 1
 }
 
+wait_http_200() {
+  # $1 = URL, $2 = tentativas, $3 = rótulo; restantes = args extras do curl
+  # (ex. -H "Host: ..."). Diferente do wait_http genérico: exige HTTP 200.
+  local url="$1" tries="$2" label="$3"
+  shift 3
+  local i code=""
+  for i in $(seq 1 "$tries"); do
+    code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 "$@" "$url" 2>/dev/null || true)
+    if [ "$code" = "200" ]; then
+      echo "[deploy-blue-green] $label OK (HTTP $code)"
+      return 0
+    fi
+    sleep 2
+  done
+  echo "[deploy-blue-green] ALERTA CHATS: $label não respondeu 200 (último HTTP ${code:-000})" >&2
+  return 1
+}
+
 slot_values() {
   case "$1" in
     blue)
@@ -190,6 +208,62 @@ PY
 
   docker exec "$NGINX_CONTAINER" nginx -t
   docker exec "$NGINX_CONTAINER" nginx -s reload
+}
+
+# ---------------------------------------------------------------------------
+# Bundle de chats (chat-universal + chat-proxy) — 19/11.
+# O blue-green cobre apenas api/web (slots blue/green); o front novo do
+# produto (projects/chat-universal, que substitui isa-chat/alpha-chat) vive
+# no compose padrão da raiz com container_name fixo — recriação rápida,
+# sem blue-green. A etapa é best-effort: NUNCA altera o exit code do
+# deploy, o callback ao Motor ou o rollback do blue-green; em falha gera
+# ALERTA visível no log (capturado pelos diagnósticos → chat da tarefa) +
+# Telegram best-effort.
+# ---------------------------------------------------------------------------
+notify_telegram_chats() {
+  # Notificação degradaável: pula em silêncio sem credenciais e nunca aborta.
+  local text="$1"
+  if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${TELEGRAM_DLQ_CHAT_ID:-}" ]; then
+    return 0
+  fi
+  curl -sS -o /dev/null --connect-timeout 3 --max-time 10 -X POST \
+    "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+    --data-urlencode "chat_id=${TELEGRAM_DLQ_CHAT_ID}" \
+    --data-urlencode "text=${text}" \
+    >/dev/null 2>&1 || true
+  return 0
+}
+
+deploy_chat_bundle() {
+  # --no-deps é OBRIGATÓRIO: chat-universal tem depends_on: api e, sem ele,
+  # o compose criaria uma API paralela no projeto padrão, colidindo portas
+  # com o slot ativo. Os containers têm container_name fixo e a API ativa é
+  # resolvida pelo alias estável "biblioteca-api" na rede externa
+  # biblioteca-global_default.
+  local reasons="" host
+
+  echo "[deploy-blue-green] bundle de chats: rebuild/recreate chat-universal + chat-proxy (compose da raiz)"
+  if ! docker compose -p "${CHAT_COMPOSE_PROJECT:-biblioteca-global}" -f docker-compose.yml up -d --build --no-deps chat-universal chat-proxy; then
+    reasons="recreate do bundle de chats falhou (compose da raiz indisponível ou build quebrado)"
+    echo "[deploy-blue-green] ALERTA CHATS: $reasons — blue-green mantido (API no slot $target); rollback dos chats via profile legacy" >&2
+  else
+    if ! wait_http_200 "http://127.0.0.1:${CHAT_UNIVERSAL_HOST_PORT:-8084}/health" 15 "chat-universal /health"; then
+      reasons="chat-universal /health sem HTTP 200"
+    fi
+    for host in isa.globaltecnologia.net alpha.globaltecnologia.net; do
+      if ! wait_http_200 "http://127.0.0.1:${CHAT_PROXY_HOST_PORT:-8080}/" 15 "chat-proxy (Host: $host)" -H "Host: $host"; then
+        reasons="${reasons:+$reasons; }chat-proxy sem HTTP 200 para Host $host"
+      fi
+    done
+  fi
+
+  if [ -n "$reasons" ]; then
+    echo "[deploy-blue-green] chats_status=falha ($reasons)"
+    notify_telegram_chats "[deploy-blue-green] ALERTA CHATS no deploy: $reasons. Tráfego da API já comutado para o slot $target (não revertido); verificar bundle chat-universal/chat-proxy no compose da raiz."
+  else
+    echo "[deploy-blue-green] chats_status=ok (chat-universal :${CHAT_UNIVERSAL_HOST_PORT:-8084}, chat-proxy :${CHAT_PROXY_HOST_PORT:-8080})"
+  fi
+  return 0
 }
 
 active="$(read_active_slot)"
@@ -453,15 +527,31 @@ esac
 
 write_active_slot "$target"
 
-# Smoke dos consumers externos da API: os chats públicos (Isa/Alpha) resolverão
-# a API pelo alias estável "biblioteca-api" na rede compartilhada. O slot antigo
-# acabou de ser removido — se o alias não tiver migrado com o slot novo, os
-# nginx dos chats respondem 502 e isso precisa falhar VISÍVEL no deploy
-# (regra pós-25/09: health da API não basta; validar consumidores trocados).
-echo "[deploy-blue-green] smoke pós-troca: chats públicos (isa/alpha)"
+# Bundle de chats APÓS a troca de slot: a API do slot ativo já publica o
+# alias "biblioteca-api", então o rebuild do front/chat-proxy encontra a
+# API correta. Best-effort — nunca aborta o deploy nem reverte o blue-green.
+deploy_chat_bundle || true
+
+# Smoke dos consumers externos da API: os chats públicos legados (Isa/Alpha)
+# resolverão a API pelo alias estável "biblioteca-api" na rede compartilhada.
+# O slot antigo acabou de ser removido — se o alias não tiver migrado com o
+# slot novo, os nginx dos chats respondem 502 e isso precisa falhar VISÍVEL
+# no deploy (regra pós-25/09: health da API não basta; validar consumidores
+# trocados). Desde 19/11 o bundle novo (chat-universal/chat-proxy) tem smoke
+# próprio acima; o smoke legado só se aplica aos containers legacy — a
+# profile `legacy` pode estar baixada no fluxo normal, e cobrar 200 de um
+# container inexistente geraria falso alerta.
+echo "[deploy-blue-green] smoke pós-troca: chats públicos legados (isa/alpha)"
 chat_smoke_ok=true
+legacy_container_running() {
+  docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null | grep -qx true
+}
 for spec in "isa-chat:${ISA_CHAT_HOST_PORT:-8082}" "alpha-chat:${ALPHA_CHAT_HOST_PORT:-8083}"; do
   name="${spec%%:*}"; port="${spec##*:}"
+  if ! legacy_container_running "biblioteca-global-$name"; then
+    echo "[deploy-blue-green] $name: container biblioteca-global-$name não está em execução (profile legacy baixado); smoke legado pulado"
+    continue
+  fi
   code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$port/health" 2>/dev/null || true)
   if [ "$code" != "200" ]; then
     echo "[deploy-blue-green] ERRO: $name /health respondeu HTTP ${code:-000}" >&2

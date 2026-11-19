@@ -13,15 +13,59 @@ describe("deploy de produção isolado do banco", () => {
     const composeUp = script.match(/docker compose[^\n]+ up [^\n]+/g) ?? []
 
     // api e web são criados em chamadas separadas (o Nginx do web precisa do
-    // alias DNS da API já existente); cada chamada deve ser isolada de dependências.
-    expect(composeUp).toHaveLength(2)
+    // alias DNS da API já existente); o bundle de chats (chat-universal +
+    // chat-proxy, compose da raiz) é a terceira chamada. Todas devem ser
+    // isoladas de dependências — em especial os chats, porque o compose
+    // padrão criaria uma API paralela colidindo com o slot ativo.
+    expect(composeUp).toHaveLength(3)
     for (const command of composeUp) {
       expect(command).toContain("--no-deps")
-      expect(command).toMatch(/\b(api|web)\b/)
+      expect(command).toMatch(/\b(api|web|chat-universal|chat-proxy)\b/)
       expect(command).not.toMatch(/\bmysql\b/)
     }
-    expect(composeUp[0]).toMatch(/\bapi\b/)
-    expect(composeUp[1]).toMatch(/\bweb\b/)
+    // Identificação por serviço (a definição da função de chats aparece
+    // antes do fluxo principal no texto do script).
+    const apiUp = composeUp.find((command) => /\bapi\b/.test(command))
+    const webUp = composeUp.find((command) => /\bweb\b/.test(command))
+    const chatUp = composeUp.find((command) => command.includes("chat-universal"))
+    expect(apiUp).toBeDefined()
+    expect(webUp).toBeDefined()
+    // api e web são criados em chamadas separadas, nesta ordem: o Nginx do
+    // web precisa do alias DNS da API já existente.
+    expect(script.indexOf(apiUp!)).toBeLessThan(script.indexOf(webUp!))
+
+    // Etapa de bundle de chats: rebuild com --build no projeto compose da
+    // raiz, cobrindo exatamente os dois serviços do bundle.
+    expect(chatUp).toBeDefined()
+    expect(chatUp).toContain("--build")
+    expect(chatUp).toMatch(/chat-universal chat-proxy/)
+    expect(chatUp).toMatch(/-p "\$\{CHAT_COMPOSE_PROJECT:-biblioteca-global\}"/)
+    expect(chatUp).toContain("-f docker-compose.yml")
+  })
+
+  it("executa o bundle de chats como etapa best-effort pós-swap com alerta degradável", () => {
+    const swapIndex = script.indexOf('write_active_slot "$target"')
+    const chatCallIndex = script.indexOf("deploy_chat_bundle || true")
+    expect(swapIndex).toBeGreaterThan(-1)
+    expect(chatCallIndex).toBeGreaterThan(swapIndex)
+    // A chamada é degradaível: nunca altera exit code/callback nem reverte o
+    // blue-green (daí o `|| true` na invocação).
+    expect(script).toMatch(/deploy_chat_bundle\(\) \{[\s\S]*?return 0\n\}/)
+    // Alerta visível no log do deploy + Telegram best-effort (pula em
+    // silêncio sem credenciais; nunca aborta).
+    expect(script).toContain("ALERTA CHATS:")
+    expect(script).toContain("chats_status=")
+    expect(script).toContain("TELEGRAM_BOT_TOKEN")
+    expect(script).toContain("TELEGRAM_DLQ_CHAT_ID")
+    // Smoke do bundle: /health do chat-universal e chat-proxy por Host.
+    expect(script).toContain("${CHAT_UNIVERSAL_HOST_PORT:-8084}/health")
+    expect(script).toContain("isa.globaltecnologia.net")
+    expect(script).toContain("alpha.globaltecnologia.net")
+    // O smoke legado só roda com os containers legacy em execução (a profile
+    // legacy pode estar baixada; cobrar 200 de container parado geraria
+    // falso alerta).
+    expect(script).toContain("legacy_container_running")
+    expect(script).toContain("biblioteca-global-$name")
   })
 
   it("confere saúde e preserva a identidade do MySQL", () => {

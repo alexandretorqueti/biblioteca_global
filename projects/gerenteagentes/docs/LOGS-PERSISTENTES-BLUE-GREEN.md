@@ -26,6 +26,10 @@ container:
   antigos são removidos automaticamente.
 - **Best-effort total:** qualquer falha do dump NÃO aborta o deploy.
 
+> Bundle de chats (chat-universal/chat-proxy) no deploy: ver
+> `RUNBOOK-DEPLOY-BUNDLE-CHATS.md` — etapa pós-swap com a mesma política
+> best-effort (alerta sem abortar nem reverter o blue-green).
+
 ## Configuração (envs opcionais do script de deploy)
 
 | Env | Padrão | Efeito |
