@@ -168,6 +168,40 @@ export type {
   TenantTransbordoAdmin,
 } from "./painel-tenant"
 
+// Canal WhatsApp por tenant — vínculo, pareamento e contrato do gateway
+export {
+  tenantCanalWhatsappEstadoSchema,
+  tenantCanalWhatsappSchema,
+  iniciarPareamentoWhatsappRequestSchema,
+  iniciarPareamentoWhatsappResponseSchema,
+  statusPareamentoWhatsappResponseSchema,
+  listarVinculosWhatsappResponseSchema,
+  removerVinculoWhatsappResponseSchema,
+  whatsappLoginStartResponseSchema,
+  whatsappLoginWaitResponseSchema,
+  whatsappGatewayStatusResponseSchema,
+  whatsappProvisionRequestSchema,
+  whatsappDeleteResponseSchema,
+  normalizeBrPhone,
+  isValidBrPhone,
+  phoneSlug,
+  telefoneSlug,
+} from "./canais-whatsapp"
+export type {
+  TenantCanalWhatsappEstado,
+  TenantCanalWhatsapp,
+  IniciarPareamentoWhatsappRequest,
+  IniciarPareamentoWhatsappResponse,
+  StatusPareamentoWhatsappResponse,
+  ListarVinculosWhatsappResponse,
+  RemoverVinculoWhatsappResponse,
+  WhatsappLoginStartResponse,
+  WhatsappLoginWaitResponse,
+  WhatsappGatewayStatusResponse,
+  WhatsappProvisionRequest,
+  WhatsappDeleteResponse,
+} from "./canais-whatsapp"
+
 // Auditoria dos logins bem-sucedidos.
 export { logLoginMetodoSchema, logLoginSchema } from "./logs-login"
 export type { LogLoginMetodo, LogLogin, LogsLoginPage } from "./logs-login"

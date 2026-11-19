@@ -47,6 +47,19 @@ export class IsaChatController {
     return this.service.createSession({ chatKey, email, nome, agentId })
   }
 
+  @Post("session/phone")
+  @HttpCode(HttpStatus.OK)
+  async createPhoneSession(@Body() body: { telefone?: string; agentId?: string }) {
+    const telefone = typeof body.telefone === "string" ? body.telefone.trim().slice(0, 50) : ""
+    const agentId = typeof body.agentId === "string" ? body.agentId.trim().slice(0, 100) : undefined
+
+    if (!telefone) {
+      throw new BadRequestException("telefone é obrigatório")
+    }
+
+    return this.service.resolveOrCreateChatByPhone({ telefone, agentId })
+  }
+
   // ===========================================================================
   // ENVIO DE MENSAGEM
   // ===========================================================================

@@ -66,6 +66,7 @@ describe("registry de telas custom", () => {
     expect(ids).toEqual([
       "biblioteca-global-usuarios-gerais",
       "biblioteca-global-logs-login",
+      "biblioteca-global-canais-whatsapp",
       "documentation",
       "gerenteagentes-dashboard",
       "gerenteagentes-operation-map",

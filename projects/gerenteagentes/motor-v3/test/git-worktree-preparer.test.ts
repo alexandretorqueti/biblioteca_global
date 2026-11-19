@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { access, mkdtemp, mkdir, readdir, rm, writeFile } from 'node:fs/promises'
+import { access, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
@@ -81,6 +81,38 @@ describe('GitWorktreePreparer', () => {
     expect(stdout).toContain(`branch refs/heads/${branch}`)
   })
 
+  it('salva artefatos de worktree de subtarefa não registrado antes de removê-lo', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'motor-v3-salvage-preparation-'))
+    temporaryPaths.push(root)
+    const repository = join(root, 'repo')
+    const worktrees = join(root, 'worktrees')
+    await execFileAsync('git', ['init', '-b', 'base-desenvolvimento', repository])
+    await execFileAsync('git', ['config', 'user.email', 'test@example.invalid'], { cwd: repository })
+    await execFileAsync('git', ['config', 'user.name', 'Motor v3 test'], { cwd: repository })
+    await writeFile(join(repository, 'README.md'), 'base\n')
+    await execFileAsync('git', ['add', 'README.md'], { cwd: repository })
+    await execFileAsync('git', ['commit', '-m', 'base'], { cwd: repository })
+
+    const preparer = new GitWorktreePreparer(worktrees)
+    const integration = await preparer.prepareIntegration({ taskId: 'task-salvage', repoPath: repository, baseBranch: 'base-desenvolvimento' })
+    const path = join(worktrees, 'task-salvage', '42', 'a1')
+    await execFileAsync('git', ['clone', '--no-local', repository, path])
+    await writeFile(join(path, 'SANDBOX-E2E-RUNBOOK.md'), 'conteúdo recuperável\n')
+
+    const prepared = await preparer.prepare({ taskId: 'task-salvage', subtaskId: 42, repoPath: repository, baseBranch: 'base-desenvolvimento' })
+
+    const salvage = prepared.artifactSalvage?.find(item => item.files.some(file => file.artifactPath.endsWith('SANDBOX-E2E-RUNBOOK.md')))
+    expect(salvage).toBeDefined()
+    const artifactPath = salvage!.files.find(file => file.artifactPath.endsWith('SANDBOX-E2E-RUNBOOK.md'))!.artifactPath
+    await expect(access(artifactPath)).resolves.toBeUndefined()
+    await expect(readFile(artifactPath, 'utf8')).resolves.toBe('conteúdo recuperável\n')
+    expect(prepared.recoveries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ reasonCode: 'worktree_artifact_salvaged', path, artifactSalvage: salvage }),
+    ]))
+    await expect(access(join(prepared.path, 'SANDBOX-E2E-RUNBOOK.md'))).rejects.toThrow()
+    expect(integration.path).toContain(join(worktrees, 'task-salvage', 'integration'))
+  })
+
   it('reutiliza worktree íntegro sem recuperação', async () => {
     const root = await mkdtemp(join(tmpdir(), 'motor-v3-reuse-'))
     temporaryPaths.push(root)
@@ -151,6 +183,7 @@ describe('GitWorktreePreparer', () => {
     await expect(access(integration.path)).rejects.toThrow()
     await expect(access(subtask.path)).rejects.toThrow()
     await expect(access(join(worktrees, 'task-1'))).rejects.toThrow()
+    await expect(access(join(worktrees, '.motor-artifacts'))).rejects.toThrow()
     // Branches da tarefa desaparecem; a da outra tarefa permanece.
     await expect(execFileAsync('git', ['show-ref', '--verify', '--quiet', 'refs/heads/motor-v3-work/integration-task-1'], { cwd: repository })).rejects.toThrow()
     await expect(execFileAsync('git', ['show-ref', '--verify', '--quiet', 'refs/heads/motor-v3-work/subtask-task-1-10-a1'], { cwd: repository })).rejects.toThrow()

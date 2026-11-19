@@ -57,3 +57,4 @@ export {
   type TenantChatConfigErroResult,
 } from "./tenants"
 export type { CreateGlobalUserInput, GlobalUser, GlobalUserDetail, GlobalUserLink, GlobalUserLinkChanges, UpdateGlobalUserInput } from "./global-users-client"
+export { WhatsappChannelsClient, createWhatsappChannelsClient } from "./whatsapp-client"
