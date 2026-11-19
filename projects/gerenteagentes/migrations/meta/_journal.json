@@ -743,6 +743,13 @@
       "when": 1795200000000,
       "tag": "0105_deploy_drain_threshold",
       "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "5",
+      "when": 1795200000001,
+      "tag": "0106_motor_governance_deploy_conflicts",
+      "breakpoints": true
     }
   ]
 }
