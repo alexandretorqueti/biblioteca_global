@@ -1,4 +1,4 @@
-import type { Pool } from 'mysql2/promise'
+import type { Pool, ResultSetHeader } from 'mysql2/promise'
 
 export interface MessageProcessingRecord {
     message_id: string;
@@ -122,6 +122,56 @@ export class MessageProcessingState {
             "UPDATE motor_message_processing_state SET status='failed', completed_at=NULL, error_message=? WHERE message_id=?",
             [errorMessage, messageId]
         );
+    }
+
+    /**
+     * Renova o `timeout_at` de um claim de processamento ainda ativo.
+     * Usado pelo heartbeat do QueueConsumer para que consumidores VIVOS não
+     * sejam tomados como abandonados pelo MessageProcessingClaimReconciler
+     * (incidente bloqueios 3500/3501 — 2026-11-19: o baseline preflight e a
+     * recuperação de baseline excedem os 300s do claim; a mensagem era
+     * re-enfileirada e um segundo consumidor processava a mesma subtarefa em
+     * paralelo, reenviando prompt para a mesma sessão Console de chave estável
+     * e matando o run ativo com EmbeddedAttemptSessionTakeoverError).
+     *
+     * O UPDATE é condicional em status='processing': se o claim já foi
+     * recuperado/concluído por outro caminho, o heartbeat não ressuscita a
+     * linha e retorna false.
+     */
+    async renewTimeout(messageId: string): Promise<boolean> {
+        const [result] = await this.pool.execute<ResultSetHeader>(
+            `UPDATE motor_message_processing_state
+                SET timeout_at = DATE_ADD(NOW(), INTERVAL ${this.timeoutSeconds} SECOND)
+              WHERE message_id=? AND status='processing'`,
+            [messageId]
+        );
+        return Number(result?.affectedRows ?? 0) > 0;
+    }
+
+    /**
+     * Inicia o heartbeat periódico do claim de uma mensagem em processamento.
+     * Retorna a função que interrompe o timer (deve ser chamada no finally do
+     * handler). Falhas de renovação são logadas e não interrompem o handler —
+     * o timeout do reconciliador continua sendo a rede de proteção para
+     * consumidores mortos (o heartbeat morre junto com o processo).
+     */
+    startClaimHeartbeat(messageId: string, intervalSeconds?: number): () => void {
+        const configured = Number(
+            intervalSeconds ?? process.env.MOTOR_MESSAGE_CLAIM_HEARTBEAT_SECONDS ?? 60,
+        );
+        const safeIntervalSeconds = Number.isFinite(configured) && configured > 0
+            ? Math.min(configured, Math.max(5, Math.floor(this.timeoutSeconds / 3)))
+            : Math.max(5, Math.floor(this.timeoutSeconds / 3));
+        const timer = setInterval(() => {
+            void this.renewTimeout(messageId).catch(error => {
+                console.warn(
+                    '[MessageProcessingState] falha no heartbeat do claim de processamento:',
+                    error instanceof Error ? error.message : String(error),
+                );
+            });
+        }, safeIntervalSeconds * 1000);
+        timer.unref?.();
+        return () => clearInterval(timer);
     }
 
     /**
