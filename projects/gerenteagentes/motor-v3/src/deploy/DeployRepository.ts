@@ -1040,7 +1040,7 @@ ${conflictData.conflictFiles.map(f => `- \`${f}\``).join('\n')}
   }
 
   async runningBatches(): Promise<DeployBatch[]> {
-    const [rows] = await this.pool.query<BatchRow[]>(this.batchSelect('status=\'running\' ORDER BY db.started_at'))
+    const [rows] = await this.pool.query<BatchRow[]>(this.batchSelect('db.status=\'running\' ORDER BY db.started_at'))
     return rows.map(row => this.mapBatch(row))
   }
 
