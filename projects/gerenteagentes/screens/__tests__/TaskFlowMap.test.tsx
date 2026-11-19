@@ -1271,6 +1271,17 @@ describe("capacityWaitMessage", () => {
     expect(message).not.toContain("Aguardando limite")
   })
 
+  it("exibe mensagem dedicada para deploy_drain (modo dreno anti-fome de deploy)", () => {
+    const wait: CapacityWaitProjection = { ...base, reasonCode: "deploy_drain", limitScope: "global", limitValue: 45 }
+    const message = capacityWaitMessage(wait)
+    expect(message).toContain("Deploy aguardando dreno")
+    expect(message).toContain("há mais de 45 minutos")
+    expect(message).toContain("o motor pausou o início de novas execuções até despachar o batch")
+    expect(message).not.toContain("Aguardando limite")
+    // limiar de 1 minuto no singular
+    expect(capacityWaitMessage({ ...wait, limitValue: 1 })).toContain("há mais de 1 minuto")
+  })
+
   it("mantém mensagens dos demais reason codes inalteradas", () => {
     expect(capacityWaitMessage({ ...base, reasonCode: "global_limit", limitScope: "global", limitValue: 2 }))
       .toBe("Aguardando limite global: 2 tarefas por vez.")

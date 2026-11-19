@@ -60,7 +60,7 @@ export interface RecoveryEligibility {
 
 export interface CapacityWaitProjection {
   phase: "analysis" | "development"
-  reasonCode: "global_limit" | "project_limit" | "provider_limit" | "model_cooldown" | "setup_not_verified"
+  reasonCode: "global_limit" | "project_limit" | "provider_limit" | "model_cooldown" | "setup_not_verified" | "deploy_drain"
   limitScope: "global" | "project" | "provider" | "model"
   limitValue: number
   provider: string | null
@@ -68,6 +68,9 @@ export interface CapacityWaitProjection {
 }
 
 export function capacityWaitMessage(wait: CapacityWaitProjection): string {
+  if (wait.reasonCode === "deploy_drain") {
+    return `Deploy aguardando dreno: existe pedido de deploy na fila há mais de ${wait.limitValue} minuto${wait.limitValue === 1 ? "" : "s"} — o motor pausou o início de novas execuções até despachar o batch.`
+  }
   if (wait.reasonCode === "setup_not_verified") {
     return "Aguardando o setup do projeto ser verificado (setup_status=verified) — as tarefas serão despachadas automaticamente após a verificação."
   }

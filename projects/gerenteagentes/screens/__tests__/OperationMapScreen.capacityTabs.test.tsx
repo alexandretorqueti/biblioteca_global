@@ -496,6 +496,7 @@ describe("Tarefa 1059 — regressão: espera legítima em tarefa não-terminal c
     ["provider_limit", { phase: "development", reasonCode: "provider_limit", limitScope: "provider", limitValue: 3, provider: "openai" }],
     ["model_cooldown", { phase: "development", reasonCode: "model_cooldown", limitScope: "model", limitValue: 0, provider: null, retryAt: "2026-11-04T18:00:00Z" }],
     ["setup_not_verified", { phase: "analysis", reasonCode: "setup_not_verified", limitScope: "project", limitValue: 0, provider: null }],
+    ["deploy_drain", { phase: "development", reasonCode: "deploy_drain", limitScope: "global", limitValue: 45, provider: null }],
   ]
 
   it.each(ESPERAS)("renderiza ampulheta no marcador e chip no detalhe para reasonCode '%s' em tarefa pausada", async (_reasonCode, espera) => {
