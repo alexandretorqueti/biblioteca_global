@@ -31,7 +31,7 @@ import { GovernedFailureHandler } from './governance/GovernedFailureHandler.js'
 import { createGovernanceFlagResolver } from './governance/RolloutPolicy.js'
 import { QueueConsumer } from './queue/QueueConsumer.js'
 import { RabbitMqTransport, normalizeRabbitMqPrefetch } from './queue/RabbitMqTransport.js'
-import { MotorActivityGate, OutboxPublisher, TerminalFailureRouter, createQueueMessage, DlqReconciler, TelegramDlqAlertSender } from './queue/index.js'
+import { MotorActivityGate, OutboxPublisher, MessageProcessingClaimReconciler, TerminalFailureRouter, createQueueMessage, DlqReconciler, TelegramDlqAlertSender } from './queue/index.js'
 import { SUBTASK_EXECUTION_REQUESTED } from './execution/SubtaskExecutionConsumer.js'
 import { SUBTASK_VERIFICATION_REQUESTED } from './execution/SubtaskVerificationConsumer.js'
 import type { QueueMessage } from './queue/QueueMessage.js'
@@ -99,6 +99,7 @@ let taskUnblockedConsumer: TaskUnblockedConsumer | null = null
 let testGateQueueConsumer: QueueConsumer | null = null
 let testGateOutboxPublisher: OutboxPublisher | null = null
 let testGateJobReconciler: TestGateJobReconciler | null = null
+let messageProcessingClaimReconciler: MessageProcessingClaimReconciler | null = null
 let deployConsumer: DeployConsumer | null = null
 let deployOrphanBatchReconcilerTimer: NodeJS.Timeout | null = null
 let cancelConsumer: TaskCancelConsumer | null = null
@@ -483,6 +484,18 @@ async function start() {
     })
     testGateOutboxPublisher = new OutboxPublisher(pool, gateTransport, gateQueue, gateQueue)
     await testGateOutboxPublisher.start()
+    // Claims de processamento sobrevivem a quedas do consumidor. A primeira
+    // passagem ocorre antes dos consumers e o timer cobre claims criados
+    // durante a operação; claims sem outbox são apenas terminalizados.
+    messageProcessingClaimReconciler = new MessageProcessingClaimReconciler(pool, {
+      intervalMs: Number(process.env.MOTOR_MESSAGE_CLAIM_RECONCILER_INTERVAL_MS || 300000),
+      processingTimeoutSeconds: Number(process.env.MOTOR_MESSAGE_PROCESSING_TIMEOUT_SECONDS || 300),
+    })
+    const claimRecovery = await messageProcessingClaimReconciler.reconcile()
+    if (claimRecovery.failed > 0) {
+      console.log(`[Motor v3] Claims de mensagens expirados no boot: falhos=${claimRecovery.failed} republicados=${claimRecovery.requeued} sem_outbox=${claimRecovery.withoutOutbox}`)
+    }
+    messageProcessingClaimReconciler.start()
     const testGateConsumer = new TestGateConsumer(pool, testGateService, operationLogger, mainQueue)
     testGateQueueConsumer = new QueueConsumer(gateTransport, message => testGateConsumer.handle(message), {
       queue: gateQueue, maxAttempts: Number(process.env.MOTOR_QUEUE_MAX_ATTEMPTS || 3),
@@ -1598,6 +1611,7 @@ async function shutdown() {
   monitorMissionRecoveryReconciler?.stop()
   dlqReconciler?.stop()
   testGateJobReconciler?.stop()
+  messageProcessingClaimReconciler?.stop()
   if (testGateOutboxPublisher) await testGateOutboxPublisher.stop()
 
   // Para scheduler
