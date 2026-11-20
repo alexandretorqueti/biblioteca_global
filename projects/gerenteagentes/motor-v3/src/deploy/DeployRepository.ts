@@ -1033,8 +1033,12 @@ ${conflictData.conflictFiles.map(f => `- \`${f}\``).join('\n')}
   }
 
   async markRemoteStarted(batchId: string, remotePid: string, statusPath: string, source: QueueMessage): Promise<QueueMessage> {
+    // Correlation único por início de lote (sufixo timestamp): ciclos posteriores de
+    // reconcile reagendam com correlation próprio; a dedup por logical key
+    // (type,task_id,correlation_id) do motor_outbox não engole reemissões legítimas.
+    const reconcileStamp = Date.now()
     const reconcile = createQueueMessage({ type: 'DEPLOY_RECONCILIATION_REQUESTED', taskId: source.taskId,
-      executionId: `deploy-reconcile-${batchId}`, correlationId: source.correlationId ?? source.messageId, causationId: source.messageId,
+      executionId: `deploy-reconcile-${batchId}-${reconcileStamp}`, correlationId: `deploy-reconcile-init-${batchId}-${reconcileStamp}`, causationId: source.messageId,
       payload: { batchId } })
     const connection = await this.pool.getConnection()
     try {
@@ -1089,16 +1093,55 @@ ${conflictData.conflictFiles.map(f => `- \`${f}\``).join('\n')}
       WHERE ${condition}`
   }
 
-  /** O scheduler só persiste comandos; o consumidor continua sendo o executor. */
-  async enqueueReconciliationForRunning(): Promise<number> {
+  /**
+   * Reconcile com retry (subtarefa 2 da tarefa motor-deploy-reconcile-hardening): reagenda
+   * uma DEPLOY_RECONCILIATION_REQUESTED com executionId/correlationId únicos e timestamp
+   * adiado no outbox (mesmo padrão de QueueConsumer.deferTransientFailure: DATE_ADD na
+   * coluna `timestamp`; o OutboxPublisher só publica linhas com timestamp <= NOW()).
+   */
+  async scheduleReconciliation(source: QueueMessage, batchId: string, executionId: string, correlationId: string, deferMs: number): Promise<QueueMessage> {
+    const message = createQueueMessage({ type: 'DEPLOY_RECONCILIATION_REQUESTED', taskId: source.taskId, executionId,
+      correlationId, causationId: source.messageId, payload: { batchId } })
+    const seconds = Math.max(1, Math.round(deferMs / 1000))
+    const [result] = await this.pool.query<ResultSetHeader>(
+      `INSERT INTO motor_outbox
+        (message_id,type,destination_queue,task_id,execution_id,payload_json,timestamp,
+         correlation_id,causation_id,status,attempt)
+       VALUES (?,?,?,?,?,?,DATE_ADD(NOW(), INTERVAL ${seconds} SECOND),?,?,'pending',0)
+       ON DUPLICATE KEY UPDATE message_id = message_id`,
+      [message.messageId, message.type, 'motor.commands', message.taskId, message.executionId, JSON.stringify(message.payload),
+        message.correlationId ?? message.messageId, message.causationId ?? message.messageId],
+    )
+    if (result.affectedRows !== 1) throw new Error(`Reagendamento de reconciliação do lote ${batchId} não inserido no outbox`)
+    return message
+  }
+
+  /**
+   * O scheduler só persiste comandos; o consumidor continua sendo o executor.
+   * Correlation/execution únicos por ciclo (sufixo timestamp): a dedup por logical key
+   * (type,task_id,correlation_id) do motor_outbox não pode engolir as reemissões de
+   * ciclos consecutivos para o mesmo batch. A mensagem nasce adiada no outbox,
+   * respeitando o intervalo configurável do retry.
+   */
+  async enqueueReconciliationForRunning(deferMs = Number(process.env.MOTOR_DEPLOY_RECONCILE_RETRY_SECONDS || 300) * 1000): Promise<number> {
     const batches = await this.runningBatches()
     const connection = await this.pool.getConnection()
+    const seconds = Math.max(1, Math.round(deferMs / 1000))
     try {
       await connection.beginTransaction()
       for (const batch of batches) {
-        const message = createQueueMessage({ type: 'DEPLOY_RECONCILIATION_REQUESTED', taskId: 'system', executionId: `deploy-reconcile-${batch.batchId}`,
-          payload: { batchId: batch.batchId } })
-        await this.insertOutbox(connection, message)
+        const stamp = Date.now()
+        const message = createQueueMessage({ type: 'DEPLOY_RECONCILIATION_REQUESTED', taskId: 'system', executionId: `deploy-reconcile-${batch.batchId}-${stamp}`,
+          correlationId: `deploy-reconcile-cycle-${batch.batchId}-${stamp}`, payload: { batchId: batch.batchId } })
+        await connection.query(
+          `INSERT INTO motor_outbox
+            (message_id,type,destination_queue,task_id,execution_id,payload_json,timestamp,
+             correlation_id,causation_id,status,attempt)
+           VALUES (?,?,?,?,?,?,DATE_ADD(NOW(), INTERVAL ${seconds} SECOND),?,?,'pending',0)
+           ON DUPLICATE KEY UPDATE message_id = message_id`,
+          [message.messageId, message.type, 'motor.commands', message.taskId, message.executionId, JSON.stringify(message.payload),
+            message.correlationId, message.causationId ?? message.messageId],
+        )
       }
       await connection.commit()
       return batches.length
