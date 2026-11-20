@@ -121,7 +121,18 @@ export class TestGateService {
     if (input.phase === 'pre_deploy' && input.baseCommitSha && input.baseCommitSha !== input.commitSha) {
       const dryRunTarget = await this.dryRunTargetPool(input.projectId)
       try {
-        const dryRun = new MigrationDryRunExecutor(dryRunTarget.pool, input.taskDatabaseId)
+        // O banco alvo do dry-run segue o PROJETO DA MIGRATION (slug do
+        // diretório projects/<slug>), não o projeto da tarefa do gate
+        // (incidente tarefa 1097, 2026-11-20: tarefa do projeto
+        // biblioteca-global — banco projeto_1 vazio — adicionou migration do
+        // projeto gerenteagentes, cujo banco real é projeto_640; sem o
+        // resolver o modo diferencial falhava 1146 e o fallback de cadeia
+        // completa simulava o alvo errado).
+        const dryRun = new MigrationDryRunExecutor(
+          dryRunTarget.pool,
+          input.taskDatabaseId,
+          projectSlug => this.dryRunPoolForProjectSlug(projectSlug),
+        )
         await dryRun.execute(input.workspacePath, input.baseCommitSha)
       } catch (error) {
         if (error instanceof MigrationDryRunError) {
@@ -242,6 +253,36 @@ export class TestGateService {
       'SELECT SCHEMA_NAME FROM information_schema.schemata WHERE SCHEMA_NAME = ?', [database],
     )
     if (schemas.length === 0) return { pool: this.pool, owned: false }
+    const pool = mysql.createPool({
+      host: process.env.MOTOR_MYSQL_HOST || process.env.MYSQL_HOST || 'host.docker.internal',
+      port: Number(process.env.MOTOR_MYSQL_PORT || process.env.MYSQL_PORT || 3308),
+      user: process.env.MOTOR_MYSQL_USER || process.env.MYSQL_USER || 'biblioteca',
+      password: process.env.MOTOR_MYSQL_PASSWORD || process.env.MYSQL_PASSWORD || '',
+      database,
+      charset: 'utf8mb4',
+      connectionLimit: 2,
+    })
+    return { pool, owned: true }
+  }
+
+  /**
+   * Resolve o banco alvo do dry-run pelo SLUG do projeto da migration
+   * (diretório projects/<slug>), para o projectPoolResolver do
+   * MigrationDryRunExecutor. Sem mapeamento (slug desconhecido ou
+   * plataforma_projeto_id nulo) ou banco ainda não provisionado → null: o
+   * executor mantém o pool do construtor (comportamento legado).
+   */
+  protected async dryRunPoolForProjectSlug(projectSlug: string): Promise<{ pool: Pool; owned: boolean } | null> {
+    const [rows] = await this.pool.query<RowDataPacket[]>(
+      'SELECT plataforma_projeto_id FROM projetos_captados WHERE slug = ?', [projectSlug],
+    )
+    const plataformaProjetoId = Number(rows[0]?.['plataforma_projeto_id'] ?? 0)
+    if (!Number.isInteger(plataformaProjetoId) || plataformaProjetoId <= 0) return null
+    const database = `projeto_${plataformaProjetoId}`
+    const [schemas] = await this.pool.query<RowDataPacket[]>(
+      'SELECT SCHEMA_NAME FROM information_schema.schemata WHERE SCHEMA_NAME = ?', [database],
+    )
+    if (schemas.length === 0) return null
     const pool = mysql.createPool({
       host: process.env.MOTOR_MYSQL_HOST || process.env.MYSQL_HOST || 'host.docker.internal',
       port: Number(process.env.MOTOR_MYSQL_PORT || process.env.MYSQL_PORT || 3308),

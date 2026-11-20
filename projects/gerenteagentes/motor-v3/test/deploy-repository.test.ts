@@ -358,10 +358,18 @@ describe('DeployRepository — execution_id de retry limitado no reenfileirament
 
   /** Extrai o execution_id (5º parâmetro) do INSERT capturado no outbox. */
   function capturedOutboxInsert(connection: ReturnType<typeof createMockConnection>) {
-    const call = connection.query.mock.calls[connection.query.mock.calls.length - 1]
+    // O upsert do outbox é o INSERT; o dedupe (DELETE) vem depois na mesma transação.
+    const call = connection.query.mock.calls.find(c => String(c[0]).includes('INSERT INTO motor_outbox'))
+      ?? connection.query.mock.calls[connection.query.mock.calls.length - 1]
     const sql = String(call[0])
     const params = call[1] as unknown[]
     return { sql, messageId: String(params[0]), type: String(params[1]), taskId: String(params[3]), executionId: String(params[4]), payload: JSON.parse(String(params[5])), correlationId: params[6] as string | null, causationId: params[7] as string | null }
+  }
+
+  function capturedOutboxDedupe(connection: ReturnType<typeof createMockConnection>) {
+    const call = connection.query.mock.calls.find(c => String(c[0]).includes('DELETE FROM motor_outbox'))
+    if (!call) return null
+    return { sql: String(call[0]), params: call[1] as unknown[] }
   }
 
   it('requeueForDeployRetry: 120 ciclos encadeados nunca ultrapassam 200 caracteres e não acumulam sufixos', async () => {
@@ -378,7 +386,7 @@ describe('DeployRepository — execution_id de retry limitado no reenfileirament
         vi.setSystemTime(new Date(1760000000000 + i * 1000)) // timestamp variável por retry
         connection.query.mockClear()
         await repo.requeueForDeployRetry(currentMessage, 'deploy_in_progress')
-        expect(connection.query).toHaveBeenCalledTimes(1) // exatamente um INSERT de outbox por retry
+        expect(connection.query).toHaveBeenCalledTimes(2) // INSERT de outbox + DELETE de dedupe por retry
         const inserted = capturedOutboxInsert(connection)
 
         expect(inserted.executionId.length).toBeLessThanOrEqual(EXECUTION_ID_MAX_LENGTH)
@@ -386,8 +394,9 @@ describe('DeployRepository — execution_id de retry limitado no reenfileirament
         // sem acúmulo: exatamente um marcador de retry no resultado
         expect(inserted.executionId.match(/-deploy-retry-/g)?.length).toBe(1)
         expect(inserted.executionId.match(/(?:-deploy)?-retry-/g)?.length).toBe(1)
-        // publicação atrasada preservada
+        // publicação atrasada preservada (caminho INSERT: 30s; upsert: backoff)
         expect(inserted.sql).toContain('DATE_ADD(NOW(), INTERVAL 30 SECOND)')
+        expect(inserted.sql).toContain('LEAST(POW(2, defer_count) * 30, 1800)')
         // rastreabilidade e identidade
         seenExecutionIds.add(inserted.executionId)
         seenMessageIds.add(inserted.messageId)
@@ -395,7 +404,7 @@ describe('DeployRepository — execution_id de retry limitado no reenfileirament
         expect(inserted.causationId).toBe(currentMessage.messageId)
         expect(inserted.type).toBe(currentMessage.type)
         expect(inserted.taskId).toBe(currentMessage.taskId)
-        expect(inserted.payload.retryAfter).toBe('30s')
+        expect(inserted.payload.retryAfter).toBe('exponential-backoff')
         expect(inserted.payload.deferredReason).toBe('deploy_in_progress')
         expect(inserted.payload.original).toBe('value')
 
@@ -434,7 +443,7 @@ describe('DeployRepository — execution_id de retry limitado no reenfileirament
     expect(inserted.executionId.match(/-deploy-retry-/g)?.length).toBe(1)
     expect(inserted.correlationId).toBe('corr-original')
     expect(inserted.causationId).toBe(source.messageId)
-    expect(inserted.payload).toEqual({ keep: 1, deferredReason: 'analysis_capacity_waiting', retryAfter: '30s' })
+    expect(inserted.payload).toEqual({ keep: 1, deferredReason: 'analysis_capacity_waiting', retryAfter: 'exponential-backoff' })
     expect(inserted.type).toBe('TASK_READY')
     expect(inserted.taskId).toBe('task-p2-999')
   })
@@ -466,16 +475,37 @@ describe('DeployRepository — execution_id de retry limitado no reenfileirament
     // o consumidor falhava e a mensagem ia para a DLQ, travando a tarefa.
     expect(inserted.correlationId).toBe(source.messageId)
     expect(inserted.sql).toMatch(/ON DUPLICATE KEY UPDATE/i)
-    // rearme com identidade fresca (evita o dedupe do consumidor) e novo delay
+    // rearme com identidade fresca (evita o dedupe do consumidor) e backoff exponencial
     expect(inserted.sql).toContain('message_id = requeue_row.message_id')
     expect(inserted.sql).toContain('execution_id = requeue_row.execution_id')
-    expect(inserted.sql).toContain('timestamp = requeue_row.timestamp')
+    expect(inserted.sql).toContain('timestamp = DATE_ADD(NOW(), INTERVAL LEAST(POW(2, defer_count) * 30, 1800) SECOND)')
     expect(inserted.sql).toMatch(/status = 'pending'/)
     expect(inserted.sql).toContain('published_at = NULL')
     expect(inserted.sql).toContain('defer_count = defer_count + 1')
+    // o cálculo do backoff usa o defer_count ANTIGO: timestamp é atribuído antes do incremento
+    expect(inserted.sql.indexOf('timestamp = DATE_ADD')).toBeLessThan(inserted.sql.indexOf('defer_count = defer_count + 1'))
     expect(inserted.sql).toContain('DATE_ADD(NOW(), INTERVAL 30 SECOND)')
-    // um único statement por retry (INSERT ... ON DUPLICATE KEY UPDATE)
-    expect(connection.query).toHaveBeenCalledTimes(1)
+    // INSERT (upsert) + DELETE (dedupe) por retry
+    expect(connection.query).toHaveBeenCalledTimes(2)
+  })
+
+  it('requeueForDeployRetry: dedupe remove linhas pending duplicadas do mesmo (type, task_id) preservando a rearmada (incidente tempestade 2026-11-20)', async () => {
+    const { repo, connection } = createRequeueMocks()
+    const source = createQueueMessage({
+      type: 'TASK_RESUME_REQUESTED', taskId: 'macro-task-1063', executionId: 'exec-resume-1063',
+      payload: { reason: 'task_enqueued' },
+    })
+
+    await repo.requeueForDeployRetry(source, 'analysis_capacity_waiting')
+
+    const dedupe = capturedOutboxDedupe(connection)
+    expect(dedupe).not.toBeNull()
+    expect(dedupe!.sql).toMatch(/DELETE FROM motor_outbox/)
+    expect(dedupe!.sql).toContain("status = 'pending'")
+    expect(dedupe!.sql).toContain('message_id <> ?')
+    const inserted = capturedOutboxInsert(connection)
+    // parâmetros: type, task_id, message_id da linha mantida
+    expect(dedupe!.params).toEqual([inserted.type, inserted.taskId, inserted.messageId])
   })
 
   it('requeueDispatch: retries encadeados mantêm ≤200 caracteres, sem acúmulo e com correlação preservada', async () => {

@@ -115,12 +115,22 @@ export class QueueConsumer {
       return
     }
 
-    // Executar o handler
+    // Executar o handler com heartbeat do claim: etapas longas (baseline run,
+    // recuperação de baseline, sessão DEV) excedem o timeout do claim (300s);
+    // sem renovação, o MessageProcessingClaimReconciler re-enfileira a mensagem
+    // e um segundo consumidor passa a processar a mesma subtarefa em paralelo
+    // (incidente bloqueios 3500/3501 — 2026-11-19: prompt duplicado na mesma
+    // sessão Console de chave estável matou o run ativo com
+    // EmbeddedAttemptSessionTakeoverError). O heartbeat morre com o processo,
+    // então consumidores mortos continuam sendo recuperados pelo reconciliador.
+    const stopClaimHeartbeat = this.processingState.startClaimHeartbeat(message.messageId)
     try {
       await this.handler(message)
+      stopClaimHeartbeat()
       await this.processingState.markCompleted(message.messageId)
       this.transport.ack(delivery)
     } catch (error) {
+      stopClaimHeartbeat()
       console.error(`[QueueConsumer] falha ao processar ${message.messageId}:`, error)
       await this.processingState.markFailed(message.messageId, (error as Error).message)
 

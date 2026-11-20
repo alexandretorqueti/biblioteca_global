@@ -128,5 +128,60 @@ describe('TestGateService', () => {
       expect(target.pool).toBe(pool)
     })
   })
+
+  describe('dryRunPoolForProjectSlug (incidente tarefa 1097: alvo pelo projeto da migration)', () => {
+    class ExposedGate extends TestGateService {
+      public resolveSlugPool(projectSlug: string) {
+        return this.dryRunPoolForProjectSlug(projectSlug)
+      }
+    }
+
+    function mockMotorPool(responses: unknown[][]): { pool: Pool; query: ReturnType<typeof vi.fn> } {
+      const query = vi.fn()
+      for (const response of responses) query.mockResolvedValueOnce([response, []] as [RowDataPacket[], unknown])
+      return { pool: { query } as unknown as Pool, query }
+    }
+
+    it('abre o banco do projeto da migration quando há mapeamento e schema provisionado', async () => {
+      const { pool, query } = mockMotorPool([
+        [{ plataforma_projeto_id: 640 }],
+        [{ SCHEMA_NAME: 'projeto_640' }],
+      ])
+      const gate = new ExposedGate(pool)
+      const target = await gate.resolveSlugPool('gerenteagentes')
+      try {
+        expect(target).not.toBeNull()
+        expect(target!.owned).toBe(true)
+        expect(target!.pool).not.toBe(pool)
+        const config = (target!.pool as unknown as { pool: { config: { connectionConfig: { database: string } } } }).pool.config.connectionConfig
+        expect(config.database).toBe('projeto_640')
+        expect(query.mock.calls[0]![0]).toContain('WHERE slug = ?')
+        expect(query.mock.calls[0]![1]).toEqual(['gerenteagentes'])
+      } finally {
+        if (target?.owned) await target.pool.end().catch(() => undefined)
+      }
+    })
+
+    it('retorna null quando o slug não tem plataforma_projeto_id (executor mantém o pool do construtor)', async () => {
+      const { pool } = mockMotorPool([[{ plataforma_projeto_id: null }]])
+      const gate = new ExposedGate(pool)
+      expect(await gate.resolveSlugPool('desconhecido')).toBeNull()
+    })
+
+    it('retorna null quando o banco do projeto ainda não foi provisionado', async () => {
+      const { pool } = mockMotorPool([
+        [{ plataforma_projeto_id: 9999 }],
+        [],
+      ])
+      const gate = new ExposedGate(pool)
+      expect(await gate.resolveSlugPool('projeto-novo')).toBeNull()
+    })
+
+    it('retorna null quando o slug não existe em projetos_captados', async () => {
+      const { pool } = mockMotorPool([[]])
+      const gate = new ExposedGate(pool)
+      expect(await gate.resolveSlugPool('inexistente')).toBeNull()
+    })
+  })
 })
 // @vitest-environment node

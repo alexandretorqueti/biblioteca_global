@@ -1,0 +1,15 @@
+{
+  "name": "@biblioteca-global/project-voz-na-isa",
+  "version": "0.0.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "Projeto Voz na Isa — camada de voz do atendimento (TTS/STT self-hosted). PROVISÓRIO: estrutura mínima de setup, sem plano macro aprovado.",
+  "main": "src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@biblioteca-global/schema-tools": "*",
+    "@biblioteca-global/shared": "*"
+  }
+}
