@@ -837,6 +837,48 @@ ${conflictData.conflictFiles.map(f => `- \`${f}\``).join('\n')}
   }
 
   /**
+   * Flag `deterministic_hotspot_merge`: habilita a fusão determinística de
+   * conflitos puramente aditivos em arquivos hotspot no composeBatch.
+   * Padrão do motor para flags em motor_configuracoes (RolloutPolicy):
+   * ausência, valor inválido, indisponibilidade da tabela ou erro de leitura
+   * significam DESLIGADA — o fluxo de isolamento de membros segue intacto.
+   */
+  async isDeterministicHotspotMergeEnabled(): Promise<boolean> {
+    try {
+      const [rows] = await this.pool.query<Array<RowDataPacket & { valor?: unknown }>>(
+        'SELECT valor FROM motor_configuracoes WHERE chave = ? LIMIT 1',
+        ['deterministic_hotspot_merge'],
+      )
+      return ['1', 'true', 'on', 'yes', 'sim'].includes(String(rows[0]?.valor ?? '').trim().toLowerCase())
+    } catch (error) {
+      console.warn('[DeployRepository] não foi possível ler deterministic_hotspot_merge; fusão desligada:', error instanceof Error ? error.message : String(error))
+      return false
+    }
+  }
+
+  /**
+   * Lista `deploy_additive_hotspots`: caminhos (relativos à raiz do repositório)
+   * de arquivos de registro onde cada tarefa apenas ADICIONA linhas. JSON
+   * ausente/inválido ou vazio → lista vazia (feature inerte: nenhum conflito é
+   * candidato à fusão, comportamento idêntico ao atual).
+   */
+  async additiveHotspotPaths(): Promise<string[]> {
+    try {
+      const [rows] = await this.pool.query<Array<RowDataPacket & { valor?: unknown }>>(
+        'SELECT valor FROM motor_configuracoes WHERE chave = ? LIMIT 1',
+        ['deploy_additive_hotspots'],
+      )
+      const raw = rows[0]?.valor
+      const parsed: unknown = typeof raw === 'string' ? JSON.parse(raw) : raw
+      if (!Array.isArray(parsed)) return []
+      return parsed.map(item => String(item ?? '').trim()).filter(Boolean)
+    } catch (error) {
+      console.warn('[DeployRepository] não foi possível ler deploy_additive_hotspots; nenhum hotspot configurado:', error instanceof Error ? error.message : String(error))
+      return []
+    }
+  }
+
+  /**
    * Isola os membros culpados por falha do gate pre_deploy do commit composto
    * e devolve os inocentes à fila para re-composição (incidente 2026-10-23:
    * 1 membro com migration quebrada/erro de build bloqueava o batch inteiro).
