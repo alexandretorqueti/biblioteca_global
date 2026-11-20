@@ -77,12 +77,24 @@ export class MigrationDryRunError extends Error {
 export class MigrationDryRunExecutor {
   private readonly scratchPrefix: string
   private readonly scratchTables: string[] = []
+  /** Pool em uso na iteração corrente (por projeto); padrão = pool do construtor. */
+  private activePool: Pool
 
   constructor(
     private readonly pool: Pool,
     private readonly jobId: number,
+    /**
+     * Resolve o banco alvo por projeto da migration (slug do diretório
+     * projects/<slug>). Incidente tarefa 1097 (2026-11-20): tarefa do projeto
+     * biblioteca-global (projeto_1, vazio) adicionou migration do projeto
+     * gerenteagentes (banco real projeto_640); o dry-run usava o banco do
+     * projeto da TAREFA e o fallback de cadeia completa simulava o alvo
+     * errado. Sem resolver (ou null) mantém o pool do construtor.
+     */
+    private readonly projectPoolResolver?: (project: string) => Promise<{ pool: Pool; owned: boolean } | null>,
   ) {
     this.scratchPrefix = `gate_scratch_${jobId}_`
+    this.activePool = pool
   }
 
   /**
@@ -104,27 +116,36 @@ export class MigrationDryRunExecutor {
     const addedMigrations = await this.discoverAddedMigrations(workspacePath, baseCommitSha)
     if (addedMigrations.length === 0) return
 
-    await this.validateJournalWatermarks(workspacePath, addedMigrations)
-
-    try {
+    const projects = [...new Set(addedMigrations.map(migration => migration.project))]
+    for (const project of projects) {
+      const forProject = addedMigrations.filter(migration => migration.project === project)
+      // O banco alvo segue o PROJETO DA MIGRATION, não o projeto da tarefa do
+      // gate (incidente tarefa 1097). Resolver ausente/sem mapeamento → pool
+      // legado do construtor.
+      const resolved = (await this.projectPoolResolver?.(project)) ?? null
+      this.activePool = resolved?.pool ?? this.pool
       try {
-        await this.executeDifferential(workspacePath, addedMigrations)
-      } catch (error) {
-        const missingScratch = error instanceof MigrationDryRunError
-          && error.violations.length > 0
-          && error.violations.every(violation => violation.mysqlErrno === 1146)
-        if (!missingScratch || !await this.isFreshTargetDatabase()) throw error
-        // Banco vazio: limpa resquícios do modo diferencial e simula a cadeia
-        // completa (as migrations anteriores criarão as tabelas em scratch).
+        await this.validateJournalWatermarks(workspacePath, forProject)
+
+        try {
+          await this.executeDifferential(workspacePath, forProject)
+        } catch (error) {
+          const missingScratch = error instanceof MigrationDryRunError
+            && error.violations.length > 0
+            && error.violations.every(violation => violation.mysqlErrno === 1146)
+          if (!missingScratch || !await this.isFreshTargetDatabase()) throw error
+          // Banco vazio: limpa resquícios do modo diferencial e simula a cadeia
+          // completa (as migrations anteriores criarão as tabelas em scratch).
+          await this.cleanupScratchTables()
+          this.scratchTables.length = 0
+          await this.executeFullChain(workspacePath, project, forProject)
+        }
+      } finally {
         await this.cleanupScratchTables()
         this.scratchTables.length = 0
-        const projects = [...new Set(addedMigrations.map(migration => migration.project))]
-        for (const project of projects) {
-          await this.executeFullChain(workspacePath, project, addedMigrations.filter(migration => migration.project === project))
-        }
+        this.activePool = this.pool
+        if (resolved?.owned) await resolved.pool.end().catch(() => undefined)
       }
-    } finally {
-      await this.cleanupScratchTables()
     }
   }
 
@@ -147,7 +168,7 @@ export class MigrationDryRunExecutor {
         const statementLine = this.findStatementLine(content, statement)
 
         try {
-          await this.pool.query(rewritten)
+          await this.activePool.query(rewritten)
         } catch (error: any) {
           throw new MigrationDryRunError([{
             project,
@@ -170,7 +191,7 @@ export class MigrationDryRunExecutor {
    */
   private async isFreshTargetDatabase(): Promise<boolean> {
     try {
-      const [rows] = await this.pool.query<RowDataPacket[]>(
+      const [rows] = await this.activePool.query<RowDataPacket[]>(
         'SELECT COUNT(*) AS total FROM information_schema.tables WHERE table_schema = DATABASE()',
       )
       return Number(rows[0]?.['total'] ?? -1) === 0
@@ -230,9 +251,12 @@ export class MigrationDryRunExecutor {
         const rewritten = this.rewriteTableReferences(statement, touchedTables)
         const statementLine = this.findStatementLine(content, statement)
         try {
-          await this.pool.query(rewritten)
+          await this.activePool.query(rewritten)
         } catch (error: any) {
-          if (error?.errno === 1050 || error?.errno === 1826) continue
+          // 1050/1826: estrutura já existente na própria cadeia. 1304: stored
+          // procedure residual de execução anterior (o nome do objeto não é
+          // prefixado como as tabelas scratch) — incidente tarefa 1097.
+          if (error?.errno === 1050 || error?.errno === 1826 || error?.errno === 1304) continue
           throw new MigrationDryRunError([{
             project,
             migration,
@@ -316,7 +340,7 @@ export class MigrationDryRunExecutor {
 
     let watermark: number | null = null
     try {
-      const [rows] = await this.pool.query<RowDataPacket[]>(
+      const [rows] = await this.activePool.query<RowDataPacket[]>(
         'SELECT MAX(created_at) AS watermark FROM `__drizzle_migrations`',
       )
       const raw = rows[0]?.['watermark']
@@ -381,23 +405,49 @@ export class MigrationDryRunExecutor {
     // do statement seguinte (gate reprovava SQL válido com errno 1064).
     // Extração sempre opera sobre o SQL sem comentários.
     statements = statements.map(statement => this.stripSqlComments(statement))
+    // Schemas de sistema nunca são tabelas do projeto. Incidente tarefa 1097
+    // (2026-11-20): `FROM information_schema.table_constraints` (stored
+    // procedure da migration 0003) extraía `information_schema` e o rewrite o
+    // transformava num schema scratch inexistente (errno 1142 no pre_deploy).
+    const systemSchemas = new Set(['information_schema', 'performance_schema', 'mysql', 'sys'])
+    // O lookahead `(?![\w.`])` rejeita referências qualificadas `schema.tabela`
+    // (o `\w+` não pode parar no meio do identificador nem capturar o schema)
+    // e é imune a backtracking parcial.
     const patterns = [
-      /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`?(\w+)`?/gi,
-      /ALTER\s+TABLE\s+`?(\w+)`?/gi,
-      /INSERT\s+INTO\s+`?(\w+)`?/gi,
+      /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`?(\w+)`?(?![\w.`])/gi,
+      /ALTER\s+TABLE\s+`?(\w+)`?(?![\w.`])/gi,
+      // Modificadores (IGNORE/LOW_PRIORITY/...) entre INSERT e INTO não podem
+      // impedir a captura: sem ela a tabela não era reescrita e o dry-run
+      // escrevia na tabela REAL do projeto (INSERT IGNORE INTO
+      // `prompts_mascaras` da migration 0021 — incidente tarefa 1097).
+      /INSERT\s+(?:(?:IGNORE|LOW_PRIORITY|HIGH_PRIORITY|DELAYED)\s+)*INTO\s+`?(\w+)`?(?![\w.`])/gi,
       // UPDATE precisa iniciar uma instrução/linha. Sem a âncora, o trecho
       // `ON UPDATE CURRENT_TIMESTAMP` de uma coluna era interpretado como se
       // CURRENT_TIMESTAMP fosse uma tabela e acabava reescrito para scratch.
-      /^\s*UPDATE\s+`?(\w+)`?/gim,
-      /DELETE\s+FROM\s+`?(\w+)`?/gi,
-      /\bFROM\s+`?(\w+)`?/gi,
-      /\bJOIN\s+`?(\w+)`?/gi,
+      /^\s*UPDATE\s+`?(\w+)`?(?![\w.`])/gim,
+      /DELETE\s+FROM\s+`?(\w+)`?(?![\w.`])/gi,
+      /\bFROM\s+`?(\w+)`?(?![\w.`])/gi,
+      /\bJOIN\s+`?(\w+)`?(?![\w.`])/gi,
+      // REFERENCES de FOREIGN KEY precisa ser reescrito para scratch: na cadeia
+      // completa o banco alvo está vazio e a FK apontaria para a tabela real
+      // inexistente (errno 1824 — incidente tarefa 1097, migration 0009).
+      /\bREFERENCES\s+`?(\w+)`?(?![\w.`])/gi,
+      // Primeiro argumento (nome de tabela) dos procedures auxiliares do
+      // projeto: `CALL __bg_ensure_column('tarefas', ...)`. A tabela pertence
+      // à cadeia mas não aparece em nenhum outro padrão deste arquivo; sem a
+      // extração o literal não é reescrito e o ALTER dinâmico do procedure
+      // falha com errno 1146 sobre a tabela real inexistente (incidente
+      // tarefa 1097, migration 0013). O rewrite de palavra nua já substitui
+      // o literal entre aspas — a extração é a única peça faltante.
+      /CALL\s+`?__bg_ensure_(?:column|index)`?\s*\(\s*'(\w+)'/gi,
     ]
     for (const statement of statements) {
       for (const pattern of patterns) {
         let match
         while ((match = pattern.exec(statement)) !== null) {
-          tables.add(match[1]!)
+          const tableName = match[1]!
+          if (systemSchemas.has(tableName.toLowerCase())) continue
+          tables.add(tableName)
         }
       }
     }
@@ -464,7 +514,7 @@ export class MigrationDryRunExecutor {
       this.scratchTables.push(scratchName)
       let createStatement: string | undefined
       try {
-        const [rows] = await this.pool.query<RowDataPacket[]>(
+        const [rows] = await this.activePool.query<RowDataPacket[]>(
           `SHOW CREATE TABLE \`${tableName}\``,
         )
         createStatement = rows[0]?.['Create Table'] as string | undefined
@@ -477,7 +527,7 @@ export class MigrationDryRunExecutor {
       if (!createStatement) continue
       const rewritten = this.buildScratchCreateStatement(createStatement, tableName, scratchName)
       try {
-        await this.pool.query(rewritten)
+        await this.activePool.query(rewritten)
       } catch (error) {
         // Duas migrations do mesmo dry-run podem tocar a mesma tabela: o clone
         // da segunda encontra a scratch já criada (1050) — não é falha.
@@ -549,12 +599,48 @@ export class MigrationDryRunExecutor {
   }
 
   /**
-   * Remove todas as tabelas scratch criadas.
+   * Remove todas as tabelas scratch criadas, em ordem reversa de registro e
+   * com FOREIGN_KEY_CHECKS desligado quando há conexão dedicada disponível.
+   * FKs entre tabelas scratch fazem o DROP na ordem de criação falhar
+   * (errno 3730/ordem arbitrária) e deixar resíduos no banco alvo — e
+   * `isFreshTargetDatabase()` conta tabelas, então resíduo desligaria o
+   * fallback de cadeia completa de execuções futuras.
    */
   private async cleanupScratchTables(): Promise<void> {
-    for (const scratchTable of this.scratchTables) {
+    if (this.scratchTables.length === 0) return
+    const ordered = [...this.scratchTables].reverse()
+    // SET FOREIGN_KEY_CHECKS vale por sessão: exige conexão dedicada. Mocks de
+    // teste expõem só `query` — nesse caso degrada para a ordem reversa.
+    if (typeof this.activePool.getConnection === 'function') {
+      let connection: Awaited<ReturnType<Pool['getConnection']>> | undefined
       try {
-        await this.pool.query(`DROP TABLE IF EXISTS \`${scratchTable}\``)
+        connection = await this.activePool.getConnection()
+        await connection.query('SET FOREIGN_KEY_CHECKS=0')
+        for (const scratchTable of ordered) {
+          try {
+            await connection.query(`DROP TABLE IF EXISTS \`${scratchTable}\``)
+          } catch {
+            // Cleanup best-effort: logar mas não falhar o gate
+          }
+        }
+        await connection.query('SET FOREIGN_KEY_CHECKS=1')
+      } catch {
+        // Conexão indisponível: tenta o caminho simples abaixo
+        for (const scratchTable of ordered) {
+          try {
+            await this.activePool.query(`DROP TABLE IF EXISTS \`${scratchTable}\``)
+          } catch {
+            // Cleanup best-effort
+          }
+        }
+      } finally {
+        connection?.release()
+      }
+      return
+    }
+    for (const scratchTable of ordered) {
+      try {
+        await this.activePool.query(`DROP TABLE IF EXISTS \`${scratchTable}\``)
       } catch {
         // Cleanup best-effort: logar mas não falhar o gate
       }

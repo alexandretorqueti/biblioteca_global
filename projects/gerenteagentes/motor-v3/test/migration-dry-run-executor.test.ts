@@ -286,6 +286,151 @@ describe('MigrationDryRunExecutor', () => {
     })
   })
 
+  describe('referências qualificadas a schemas de sistema', () => {
+    it('não extrai nem reescreve information_schema (regressão tarefa 1097)', async () => {
+      const ws = await createWorkspace()
+      await mkdir(join(ws, 'projects/alpha/migrations'), { recursive: true })
+      await git(ws, ['commit', '-m', 'baseline', '--allow-empty'])
+      const baseCommit = (await git(ws, ['rev-parse', 'HEAD'])).trim()
+
+      // Padrão real das procedures de migração (0003 de gerenteagentes):
+      // consulta qualificada a information_schema dentro de stored procedure.
+      const sql = [
+        'CREATE TABLE `t2` (`id` INT);',
+        '--> statement-breakpoint',
+        "SELECT 1 FROM information_schema.table_constraints WHERE table_schema = DATABASE() AND table_name = 't2';",
+      ].join('\n')
+      await writeFile(join(ws, 'projects/alpha/migrations/0001_sysref.sql'), sql)
+
+      querySpy.mockResolvedValue([[]]) // SHOW CREATE TABLE: tabela não existe
+      const executor = new MigrationDryRunExecutor(mockPool, 999)
+      await executor.execute(ws, baseCommit)
+
+      const executed = querySpy.mock.calls
+        .map(call => call[0])
+        .filter((text): text is string => typeof text === 'string')
+      // O schema de sistema permanece intacto (nunca vira scratch)
+      expect(executed.some(text => text.includes('gate_scratch_999_information_schema'))).toBe(false)
+      expect(executed.some(text => text.includes('FROM information_schema.table_constraints'))).toBe(true)
+      // A tabela do projeto continua reescrita para scratch
+      expect(executed.some(text => text.includes('CREATE TABLE `gate_scratch_999_t2`'))).toBe(true)
+    })
+
+    it('reescreve alvo de FOREIGN KEY REFERENCES para scratch (regressão tarefa 1097, migration 0009)', async () => {
+      const ws = await createWorkspace()
+      await mkdir(join(ws, 'projects/alpha/migrations'), { recursive: true })
+      await git(ws, ['commit', '-m', 'baseline', '--allow-empty'])
+      const baseCommit = (await git(ws, ['rev-parse', 'HEAD'])).trim()
+
+      const sql = 'ALTER TABLE `t1` ADD CONSTRAINT `t1_fk` FOREIGN KEY (`t9_id`) REFERENCES `t9`(`id`) ON DELETE cascade;'
+      await writeFile(join(ws, 'projects/alpha/migrations/0001_fk.sql'), sql)
+
+      querySpy.mockResolvedValue([[]]) // SHOW CREATE TABLE: tabelas não existem
+      const executor = new MigrationDryRunExecutor(mockPool, 999)
+      await executor.execute(ws, baseCommit)
+
+      const alterCall = querySpy.mock.calls
+        .map(call => call[0])
+        .filter((text): text is string => typeof text === 'string')
+        .find(text => text.startsWith('ALTER TABLE'))
+      expect(alterCall).toBeDefined()
+      expect(alterCall).toContain('ALTER TABLE `gate_scratch_999_t1`')
+      expect(alterCall).toContain('REFERENCES `gate_scratch_999_t9`')
+      expect(alterCall).not.toMatch(/REFERENCES `t9`/)
+    })
+
+    it('reescreve argumento de CALL __bg_ensure_column para scratch (regressão tarefa 1097, migration 0013)', async () => {
+      const ws = await createWorkspace()
+      await mkdir(join(ws, 'projects/alpha/migrations'), { recursive: true })
+      await git(ws, ['commit', '-m', 'baseline', '--allow-empty'])
+      const baseCommit = (await git(ws, ['rev-parse', 'HEAD'])).trim()
+
+      const sql = "CALL `__bg_ensure_column`('tarefas', 'execution_id', 'varchar(100)');"
+      await writeFile(join(ws, 'projects/alpha/migrations/0001_call.sql'), sql)
+
+      querySpy.mockResolvedValue([[]]) // SHOW CREATE TABLE: tabela não existe
+      const executor = new MigrationDryRunExecutor(mockPool, 999)
+      await executor.execute(ws, baseCommit)
+
+      const callStatement = querySpy.mock.calls
+        .map(call => call[0])
+        .filter((text): text is string => typeof text === 'string')
+        .find(text => text.startsWith('CALL'))
+      expect(callStatement).toBeDefined()
+      expect(callStatement).toContain("'gate_scratch_999_tarefas'")
+      expect(callStatement).not.toContain("'tarefas'")
+    })
+
+    it('extrai e reescreve INSERT IGNORE INTO (regressão tarefa 1097, migration 0021)', async () => {
+      const ws = await createWorkspace()
+      await mkdir(join(ws, 'projects/alpha/migrations'), { recursive: true })
+      await git(ws, ['commit', '-m', 'baseline', '--allow-empty'])
+      const baseCommit = (await git(ws, ['rev-parse', 'HEAD'])).trim()
+
+      const sql = "INSERT IGNORE INTO `prompts_mascaras` (`nome`) VALUES ('X');"
+      await writeFile(join(ws, 'projects/alpha/migrations/0001_insert_ignore.sql'), sql)
+
+      querySpy.mockResolvedValue([[]]) // SHOW CREATE TABLE: tabela não existe
+      const executor = new MigrationDryRunExecutor(mockPool, 999)
+      await executor.execute(ws, baseCommit)
+
+      const insertCall = querySpy.mock.calls
+        .map(call => call[0])
+        .filter((text): text is string => typeof text === 'string')
+        .find(text => text.startsWith('INSERT'))
+      expect(insertCall).toBeDefined()
+      expect(insertCall).toContain('INSERT IGNORE INTO `gate_scratch_999_prompts_mascaras`')
+    })
+  })
+
+  describe('projectPoolResolver (incidente tarefa 1097: banco alvo pelo projeto da migration)', () => {
+    it('executa no pool resolvido pelo projeto da migration e o encerra ao final', async () => {
+      const ws = await createWorkspace()
+      await mkdir(join(ws, 'projects/alpha/migrations'), { recursive: true })
+      await git(ws, ['commit', '-m', 'baseline', '--allow-empty'])
+      const baseCommit = (await git(ws, ['rev-parse', 'HEAD'])).trim()
+      await writeFile(join(ws, 'projects/alpha/migrations/0001_initial.sql'), 'CREATE TABLE `t2` (`id` INT);')
+
+      const altQuerySpy = vi.fn().mockResolvedValue([[]])
+      const endSpy = vi.fn().mockResolvedValue(undefined)
+      const altPool = { query: altQuerySpy, end: endSpy } as unknown as Pool
+
+      const executor = new MigrationDryRunExecutor(mockPool, 777, async project => {
+        expect(project).toBe('alpha')
+        return { pool: altPool, owned: true }
+      })
+      await executor.execute(ws, baseCommit)
+
+      // Todo o dry-run (clone/execute/cleanup) roda no pool do projeto da migration
+      expect(querySpy).not.toHaveBeenCalled()
+      const createCall = altQuerySpy.mock.calls.find(call =>
+        typeof call[0] === 'string' && call[0].includes('CREATE TABLE') && !call[0].includes('SHOW')
+      )
+      expect(createCall).toBeDefined()
+      expect(createCall![0]).toContain('gate_scratch_777_t2')
+      // Pool dedicado (owned) é encerrado ao final do projeto
+      expect(endSpy).toHaveBeenCalledTimes(1)
+    })
+
+    it('mantém o pool do construtor quando o resolver retorna null', async () => {
+      const ws = await createWorkspace()
+      await mkdir(join(ws, 'projects/alpha/migrations'), { recursive: true })
+      await git(ws, ['commit', '-m', 'baseline', '--allow-empty'])
+      const baseCommit = (await git(ws, ['rev-parse', 'HEAD'])).trim()
+      await writeFile(join(ws, 'projects/alpha/migrations/0001_initial.sql'), 'CREATE TABLE `t2` (`id` INT);')
+
+      querySpy.mockResolvedValue([[]])
+      const executor = new MigrationDryRunExecutor(mockPool, 778, async () => null)
+      await executor.execute(ws, baseCommit)
+
+      const createCall = querySpy.mock.calls.find(call =>
+        typeof call[0] === 'string' && call[0].includes('CREATE TABLE') && !call[0].includes('SHOW')
+      )
+      expect(createCall).toBeDefined()
+      expect(createCall![0]).toContain('gate_scratch_778_t2')
+    })
+  })
+
   describe('erro SQL', () => {
     it('reporta erro com arquivo, linha, índice e mensagem MySQL', async () => {
       const ws = await createWorkspace()
@@ -383,8 +528,11 @@ describe('MigrationDryRunExecutor', () => {
         typeof call[0] === 'string' && call[0].includes('DROP TABLE IF EXISTS')
       )
       expect(cleanupCalls.length).toBe(2)
-      expect(cleanupCalls[0]![0]).toContain('gate_scratch_222_t1')
-      expect(cleanupCalls[1]![0]).toContain('gate_scratch_222_t2')
+      // Ordem reversa de registro: FKs entre scratch fazem o DROP na ordem de
+      // criação falhar (3730) e deixar resíduo que desliga o fallback de
+      // cadeia completa (isFreshTargetDatabase conta tabelas).
+      expect(cleanupCalls[0]![0]).toContain('gate_scratch_222_t2')
+      expect(cleanupCalls[1]![0]).toContain('gate_scratch_222_t1')
     })
   })
 
