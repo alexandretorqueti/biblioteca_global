@@ -291,10 +291,10 @@ export class DeployRepository {
 
   /**
    * Reenfileira mensagem rejeitada por deploy lock/capacidade de análise com
-   * delay de 30s. Insere no outbox com timestamp futuro (NOW() + 30s); o
-   * OutboxPublisher só publica mensagens cujo timestamp <= NOW(), garantindo
-   * o delay. A mensagem original é acked pelo consumidor; esta nova mensagem
-   * será publicada automaticamente após o deploy terminar (ou após 30s).
+   * backoff exponencial (30s·2^n, teto 30min). Insere no outbox com timestamp
+   * futuro; o OutboxPublisher só publica mensagens cujo timestamp <= NOW(),
+   * garantindo o delay. A mensagem original é acked pelo consumidor; esta nova
+   * mensagem será publicada automaticamente quando o prazo vencer.
    *
    * Idempotência (incidente task-p2-1047): o retry reusa o correlation_id da
    * origem — o mesmo triple (type, task_id, correlation_id) da linha do
@@ -305,6 +305,24 @@ export class DeployRepository {
    * em espera de capacidade. No conflito, a linha existente é REARMADA com a
    * nova identidade (message_id/execution_id frescos evitam o dedupe do
    * consumidor) e novo delay, mantendo uma única linha por comando lógico.
+   *
+   * Tempestade de resume (incidente 2026-11-20, 517k eventos
+   * TASK_RESUME_REQUESTED desde 20/09): duas lacunas combinadas produziram um
+   * loop infinito de ~1 msg/s por tarefa presa no gate de capacidade
+   * (setup_not_verified):
+   * 1. **Delay fixo de 30s** — sem crescimento, a espera por capacidade que
+   *    nunca converge (setup do projeto `failed` sem missão de setup ativa)
+   *    reprocessa para sempre no mesmo ritmo. Corrigido com backoff
+   *    exponencial calculado no próprio upsert (`defer_count` antigo:
+   *    30s → 60s → 120s → … → teto 1800s), mesmo padrão do QueueConsumer.
+   * 2. **Duplicatas por correlation_id distinto** — a chave lógica
+   *    (type, task_id, correlation_id) não colapsa linhas históricas da mesma
+   *    tarefa criadas por emissores diferentes (bridge task_enqueued, monitor,
+   *    resolução externa). Cada linha se rearmava independentemente (uma
+   *    chegou a defer_count 43k). Corrigido com dedupe na mesma transação:
+   *    após o upsert, as demais linhas `pending` do mesmo (type, task_id) são
+   *    removidas — nunca publicadas, são ruído; a auditoria do ciclo vive em
+   *    motor_operation_log/tarefa_eventos.
    */
   async requeueForDeployRetry(source: QueueMessage, reason: string): Promise<void> {
     const retryMessage = createQueueMessage({
@@ -313,12 +331,15 @@ export class DeployRepository {
       executionId: buildRetryExecutionId(source.executionId, 'deploy-retry'),
       correlationId: source.correlationId ?? source.messageId,
       causationId: source.messageId,
-      payload: { ...source.payload, deferredReason: reason, retryAfter: '30s' },
+      payload: { ...source.payload, deferredReason: reason, retryAfter: 'exponential-backoff' },
     })
     const connection = await this.pool.getConnection()
     try {
       await connection.beginTransaction()
-      // Insere com timestamp futuro (NOW() + 30s) para delay no publish
+      // Insere com timestamp futuro para delay no publish. No caminho do
+      // upsert o delay cresce com o defer_count existente (30s·2^n, teto
+      // 1800s); a atribuição de timestamp precede `defer_count + 1` para
+      // usar o valor antigo (MySQL avalia as atribuições em ordem).
       await connection.query(
         `INSERT INTO motor_outbox (message_id, type, destination_queue, task_id, execution_id, payload_json, timestamp, correlation_id, causation_id, status, attempt)
          VALUES (?, ?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 30 SECOND), ?, ?, 'pending', 0) AS requeue_row
@@ -327,7 +348,7 @@ export class DeployRepository {
            destination_queue = requeue_row.destination_queue,
            execution_id = requeue_row.execution_id,
            payload_json = requeue_row.payload_json,
-           timestamp = requeue_row.timestamp,
+           timestamp = DATE_ADD(NOW(), INTERVAL LEAST(POW(2, defer_count) * 30, 1800) SECOND),
            causation_id = requeue_row.causation_id,
            status = 'pending',
            attempt = 0,
@@ -336,6 +357,15 @@ export class DeployRepository {
            updated_at = NOW()`,
         [retryMessage.messageId, retryMessage.type, 'motor.commands', retryMessage.taskId, retryMessage.executionId,
           JSON.stringify(retryMessage.payload), retryMessage.correlationId ?? null, retryMessage.causationId ?? null],
+      )
+      // Dedupe: mantém apenas a linha recém-rearmada para o par lógico
+      // (type, task_id). Duplicatas pending de emissores históricos (outros
+      // correlation_ids) nunca foram publicadas — removê-las é seguro e
+      // impede que cada uma sustente seu próprio ciclo de retry.
+      await connection.query(
+        `DELETE FROM motor_outbox
+          WHERE type = ? AND task_id = ? AND status = 'pending' AND message_id <> ?`,
+        [retryMessage.type, retryMessage.taskId, retryMessage.messageId],
       )
       await connection.commit()
     } catch (error) {
