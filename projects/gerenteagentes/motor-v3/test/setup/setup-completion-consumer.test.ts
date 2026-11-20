@@ -7,6 +7,7 @@ import { createQueueMessage } from '../../src/queue/index.js'
 import {
   SetupCompletionConsumer,
   hasValidSmokeTest,
+  parseJsonObjectCandidates,
   reconcileSetupCompletion,
   setupReconciliationMarker,
 } from '../../src/setup/SetupCompletionConsumer.js'
@@ -331,5 +332,104 @@ describe('hasValidSmokeTest — predicado de evidência', () => {
     expect(hasValidSmokeTest({ ...validEvidence.smoke_test, url: '' })).toBe(false)
     expect(hasValidSmokeTest(null)).toBe(false)
     expect(hasValidSmokeTest('200')).toBe(false)
+  })
+})
+
+/**
+ * Incidente b3517 (2026-11-20, setup-calculadora-de-investimentos-gabriel):
+ * a última subtarefa de setup é external_operation — o WorkerLauncher exige
+ * rótulos "O que foi feito:"/"Como verificar:" + ::DONE::, então
+ * subtarefas.resultado nunca é JSON puro nesse fluxo. A reconciliação antiga
+ * (JSON.parse do texto integral) reprovava o setup mesmo com o smoke test
+ * executado (caso real: setup-gerenteagentes, subtarefa 1553). A extração
+ * tolerante aceita o JSON embutido sem afrouxar o gate: o candidato precisa
+ * ter smoke_test válido.
+ */
+describe('reconcileSetupCompletion — evidência JSON embutida em resposta external_operation', () => {
+  it('resposta real do protocolo (rótulos + ::DONE:: + JSON no fim) → verified com a evidência extraída', async () => {
+    const repoRoot = await makeRepo(true)
+    const respostaDev = [
+      'O que foi feito: provisionado o banco projeto_640 e executado smoke test autenticado com status 200.',
+      'Como verificar: GET http://localhost:3000/api/demo/ com token de projeto → 200; banco projeto_640 existe no MySQL.',
+      '::DONE::',
+      JSON.stringify(validEvidence),
+    ].join('\n')
+    const fake = createFakePool(defaultState({ repoPath: repoRoot, resultados: [respostaDev] }))
+
+    const result = await reconcileSetupCompletion(fake.pool, SLUG, { origin: 'task_execution_completed', taskEvents: fake.taskEvents })
+
+    expect(result.outcome).toBe('verified')
+    const verified = fake.updates.filter(u => u.sql.includes("setup_status='verified'"))
+    expect(verified).toHaveLength(1)
+    const evidence = JSON.parse(String(verified[0].params[0]))
+    expect(evidence.smoke_test).toEqual(validEvidence.smoke_test)
+    expect(evidence.origin).toBe('development_flow')
+  })
+
+  it('formato do incidente 1553 (::DONE:: antes dos rótulos, JSON no fim) → verified', async () => {
+    const repoRoot = await makeRepo(true)
+    const respostaDev = `::DONE::\nO que foi feito: Provisionado banco projeto_640 e realizado smoke test funcional com evidência\nComo verificar:\n1. Query information_schema → banco existe\n2. GET autenticado → 200\n${JSON.stringify(validEvidence)}`
+    const fake = createFakePool(defaultState({ repoPath: repoRoot, resultados: [respostaDev] }))
+
+    const result = await reconcileSetupCompletion(fake.pool, SLUG, { origin: 'task_execution_completed', taskEvents: fake.taskEvents })
+
+    expect(result.outcome).toBe('verified')
+  })
+
+  it('prosa rotulada SEM bloco JSON continua reprovando (gate não foi afrouxado)', async () => {
+    const repoRoot = await makeRepo(true)
+    const respostaDev = 'O que foi feito: provisionei o banco e rodei curl 200.\nComo verificar: rode o curl de novo.\n::DONE::'
+    const fake = createFakePool(defaultState({ repoPath: repoRoot, resultados: [respostaDev] }))
+
+    const result = await reconcileSetupCompletion(fake.pool, SLUG, { origin: 'task_execution_completed', taskEvents: fake.taskEvents })
+
+    expect(result.outcome).toBe('failed')
+    expect(result.outcome === 'failed' && result.reasons.some(r => r.includes('nenhum resultado de subtarefa verified'))).toBe(true)
+  })
+
+  it('JSON embutido com smoke_test inválido é ignorado; bloco válido posterior é escolhido', async () => {
+    const repoRoot = await makeRepo(true)
+    const invalido = JSON.stringify({ smoke_test: { url: 'x', method: 'GET', status: 503, timestamp: '2026-11-14T00:00:00.000Z' } })
+    const respostaDev = `O que foi feito: tentei duas vezes.\nComo verificar: veja os blocos.\n::DONE::\n${invalido}\ne depois\n${JSON.stringify(validEvidence)}`
+    const fake = createFakePool(defaultState({ repoPath: repoRoot, resultados: [respostaDev] }))
+
+    const result = await reconcileSetupCompletion(fake.pool, SLUG, { origin: 'task_execution_completed', taskEvents: fake.taskEvents })
+
+    expect(result.outcome).toBe('verified')
+    const verified = fake.updates.filter(u => u.sql.includes("setup_status='verified'"))
+    expect(JSON.parse(String(verified[0].params[0])).smoke_test.status).toBe(200)
+  })
+})
+
+describe('parseJsonObjectCandidates — extração tolerante de JSON', () => {
+  it('texto integral JSON puro → candidato único (comportamento anterior preservado)', () => {
+    const candidates = parseJsonObjectCandidates(JSON.stringify(validEvidence))
+    expect(candidates).toHaveLength(1)
+    expect(candidates[0]).toEqual(validEvidence)
+  })
+
+  it('blocos balanceados em ordem de aparição; chaves dentro de strings não quebram o scanner', () => {
+    const texto = 'prefixo {inválido} meio\n{"a":"tem } e { na string","b":1}\nfim {"c":2}'
+    const candidates = parseJsonObjectCandidates(texto)
+    expect(candidates).toEqual([{ a: 'tem } e { na string', b: 1 }, { c: 2 }])
+  })
+
+  it('escapes dentro de strings são respeitados', () => {
+    const candidates = parseJsonObjectCandidates('x\n{"msg":"aspas \\" e chave }","ok":true}')
+    expect(candidates).toEqual([{ msg: 'aspas " e chave }', ok: true }])
+  })
+
+  it('arrays e scalars não são candidatos; vazio/null → lista vazia', () => {
+    expect(parseJsonObjectCandidates('[1,2,3]')).toEqual([])
+    expect(parseJsonObjectCandidates('42')).toEqual([])
+    expect(parseJsonObjectCandidates('')).toEqual([])
+    expect(parseJsonObjectCandidates(null)).toEqual([])
+    expect(parseJsonObjectCandidates(undefined)).toEqual([])
+  })
+
+  it('respeita teto de tentativas em texto patológico (muitas chaves desbalanceadas)', () => {
+    const texto = '{'.repeat(5000)
+    const candidates = parseJsonObjectCandidates(texto)
+    expect(candidates).toEqual([])
   })
 })
