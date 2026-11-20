@@ -550,7 +550,7 @@ export class MySqlDevelopmentExecutionRepository {
               s.generation,
               pc.slug AS project_slug, pmc.project_layout, pmc.repo_path, pmc.repo_path_host, pmc.git_remote, pmc.branch_trabalho,
               pmc.build_command, pmc.unit_test_command,
-              COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), pc.slug, '') AS agent_id,
+              COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), 'biblioteca-global', '') AS agent_id,
               s.workspace_path, s.workspace_branch, s.workspace_base_commit
          FROM tarefas t
          INNER JOIN subtarefas s ON s.tarefa_id = t.id

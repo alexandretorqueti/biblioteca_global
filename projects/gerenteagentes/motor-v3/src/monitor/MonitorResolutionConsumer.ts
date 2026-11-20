@@ -374,7 +374,7 @@ export class MonitorResolutionConsumer {
       `SELECT t.id AS database_task_id, COALESCE(NULLIF(t.external_id,''), CAST(t.id AS CHAR)) AS task_id,
               t.titulo, t.projeto_id, pc.slug AS project_slug, pmc.repo_path, pmc.branch_trabalho,
               pmc.build_command, pmc.unit_test_command,
-              COALESCE(NULLIF(a.openclaw_agent_id,''), pc.slug) AS agent_id, t.paused_at
+              COALESCE(NULLIF(a.openclaw_agent_id,''), 'biblioteca-global') AS agent_id, t.paused_at
          FROM tarefas t
          JOIN projetos_captados pc ON pc.id = t.projeto_id
          JOIN projeto_motor_config pmc ON pmc.projeto_id = t.projeto_id

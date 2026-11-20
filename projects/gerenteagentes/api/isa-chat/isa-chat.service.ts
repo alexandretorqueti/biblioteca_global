@@ -19,6 +19,7 @@ import {
   visitasSite,
   emailVerifications,
   projetosCaptados,
+  agentes,
 } from "../../schema"
 import { IsaChatBridgeService } from "./isa-chat.bridge"
 import { extractTextFromFile } from "@biblioteca-global/file-extract"
@@ -1141,6 +1142,18 @@ export class IsaChatService {
       })
     }
 
+    // Agente padrão da plataforma (fix 2026-11-20, gerações 5/6): projeto
+    // captado já nasce vinculado à biblioteca-global — design original:
+    // sistemas sem agente dedicado usam a biblioteca; o setup re-vincula
+    // (passo 3.5) apenas se o plano macro exigir agente dedicado. Null-safe:
+    // ambientes sem a linha 'biblioteca-global' seguem com NULL e os
+    // COALESCE de agente_id do motor já caem em 'biblioteca-global'.
+    const [agenteBiblioteca] = await db
+      .select({ id: agentes.id })
+      .from(agentes)
+      .where(eq(agentes.openclawAgentId, "biblioteca-global"))
+      .limit(1)
+
     const [projeto] = await db
       .insert(projetosCaptados)
       .values({
@@ -1149,6 +1162,7 @@ export class IsaChatService {
         descricao: descricaoFinal,
         especificacao: especificacaoFinal,
         contatoId: chat.contatoId,
+        agenteId: agenteBiblioteca?.id ?? null,
         ativo: true,
       })
       .$returningId()

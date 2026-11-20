@@ -134,7 +134,7 @@ export class OperationalFeedService {
   async snapshot(projectId: number, options: { limit?: number; lastSequence?: number } = {}): Promise<OperationalFeedSnapshot> {
     const db = await this.factory.obter({ id: projectId })
     const [messages] = await db.execute(`SELECT c.id, c.tarefa_id AS taskId, t.titulo AS taskTitle,
-      COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), pc.slug, '') AS agentId,
+      COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), 'biblioteca-global', '') AS agentId,
       c.role, c.texto AS text, c.created_at AS createdAt,
       e.estado AS deliveryState, e.erro AS deliveryError, e.updated_at AS updatedAt
       FROM tarefa_chats c LEFT JOIN tarefa_chat_entregas e ON e.mensagem_id = c.id
@@ -144,7 +144,7 @@ export class OperationalFeedService {
       WHERE t.projeto_id IS NOT NULL
       ORDER BY c.created_at DESC, c.id DESC LIMIT 500`)
     const [events] = await db.execute(`SELECT e.id, e.tarefa_id AS taskId, t.titulo AS taskTitle,
-      COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), pc.slug, '') AS agentId,
+      COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), 'biblioteca-global', '') AS agentId,
       JSON_UNQUOTE(JSON_EXTRACT(e.payload, '$.phase')) AS phase,
       e.evento AS event, me.name AS description, e.payload, e.created_at AS createdAt
       FROM tarefa_eventos e
@@ -155,7 +155,7 @@ export class OperationalFeedService {
       WHERE e.tarefa_id IS NOT NULL AND e.origem = 'motor'
       ORDER BY e.created_at DESC, e.id DESC LIMIT 500`)
     const [actions] = await db.execute(`SELECT o.id, CAST(o.task_id AS UNSIGNED) AS taskId, t.titulo AS taskTitle,
-      COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), pc.slug, '') AS agentId,
+      COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), 'biblioteca-global', '') AS agentId,
       o.type AS actionType, COALESCE(NULLIF(ma.description, ''), NULLIF(ma.name, '')) AS description,
       0 AS priority, o.status AS state,
       o.last_error AS lastError, o.created_at AS occurredAt

@@ -191,7 +191,7 @@ export class TaskAdjustmentConsumer {
     const [taskRows] = await this.pool.query<RowDataPacket[]>(
       `SELECT t.id, t.external_id, t.titulo, t.descricao, t.tipo,
               pc.slug AS project_slug,
-              COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), pc.slug, '') AS agent_id,
+              COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), 'biblioteca-global', '') AS agent_id,
               pmc.repo_path
          FROM tarefas t
          LEFT JOIN projetos_captados pc ON pc.id = t.projeto_id

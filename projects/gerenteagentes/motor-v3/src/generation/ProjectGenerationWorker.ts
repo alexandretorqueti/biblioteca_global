@@ -269,7 +269,15 @@ export class ProjectGenerationWorker {
     if (chain.length === 0) {
       throw new Error('model_unavailable_exhausted: nenhum modelo pago configurado para geração macro')
     }
-    const agentId = String(context.agente_id || process.env.MOTOR_GENERATION_AGENT_ID || context.slug || 'analista')
+    // Agente da sessão de geração (fix 2026-11-20, incidente geração 6
+    // calculadora-de-investimentos): projeto SEM agente vinculado usa o agente
+    // da plataforma biblioteca-global (design original: "sistemas sem agente
+    // usam a biblioteca; agente dedicado só fora do padrão CRUD"). Antes o
+    // fallback caía no slug do projeto — id inexistente no gateway →
+    // Console HTTP 500 'Unknown agent id', que por ser INVALID_REQUEST era
+    // tratado como indisponibilidade de modelo e queimava a cadeia paga toda.
+    // MOTOR_GENERATION_AGENT_ID permite override explícito.
+    const agentId = String(context.agente_id || process.env.MOTOR_GENERATION_AGENT_ID || 'biblioteca-global')
     let lastError: Error | null = null
 
     for (const model of chain) {
@@ -311,6 +319,12 @@ export class ProjectGenerationWorker {
       } catch (error) {
         const failure = asError(error)
         lastError = failure
+        // Erro de AGENTE (não de modelo) é permanente e independente do modelo:
+        // escalar pela cadeia paga só gasta crédito para receber o mesmo 500.
+        // Falha rápido com classificação explícita.
+        if (isAgentConfigError(failure)) {
+          throw new Error(`agent_not_provisioned: geração ${geracaoId} agente=${agentId} não existe no gateway OpenClaw (último erro: ${failure.message.slice(0, 200)})`)
+        }
         if (isModelUnavailableError(failure)) {
           console.warn(`[ProjectGenerationWorker] modelo indisponível na geração ${geracaoId}: model=${model} erro=${failure.message.slice(0, 200)} — escalonando na cadeia`)
           continue
@@ -420,7 +434,7 @@ export class ProjectGenerationWorker {
       console.warn(`[ProjectGenerationWorker] geração ${geracaoId}: worker parado — claim liberado de volta para pending (released=${released})`)
       return released
     }
-    const terminalByPrefix = /^(contract_violation|model_unavailable_exhausted|catalogo_biblioteca_missing|prompt_configuration_missing)/.test(message)
+    const terminalByPrefix = /^(contract_violation|model_unavailable_exhausted|agent_not_provisioned|catalogo_biblioteca_missing|prompt_configuration_missing)/.test(message)
     const kind = classifyMotorError(failure)
     if (!terminalByPrefix && kind !== 'work') {
       const released = await this.releaseClaim(geracaoId)
@@ -476,7 +490,7 @@ export class ProjectGenerationWorker {
     const [rows] = await this.pool.query<GenerationContextRow[]>(
       `SELECT g.id, g.projeto_id, g.status, g.briefing, g.feedback, g.worker_id,
               p.nome, p.slug, p.descricao, p.especificacao,
-              COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), p.slug, '') AS agente_id,
+              COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), 'biblioteca-global', '') AS agente_id,
               mc.repo_path
          FROM geracoes_projeto g
          INNER JOIN projetos_captados p ON p.id = g.projeto_id
@@ -538,6 +552,18 @@ export async function loadProjectDocs(context: { repoPath: string | null }): Pro
  */
 export function isModelUnavailableError(error: Error): boolean {
   return /(?:401|403|404|429|INVALID_REQUEST|quota|rate.limit|credit|billing|timed?.?out|indispon[ií]vel|model.+not found|model.not.allowed|not.allowed|missing-provider-auth|provider auth|no api key|concluiu sem resposta|sem resposta|empty response|no response)/i.test(error.message)
+}
+
+/**
+ * Erro de configuração de agente no Console ("Unknown agent id") — NÃO é
+ * indisponibilidade de modelo apesar de vir com código INVALID_REQUEST/500.
+ * Checar ANTES de isModelUnavailableError para falha rápida e classificação
+ * correta (regra MEMORY 2026-09-10 de escalonamento vale para modelos, não
+ * para agente inexistente). Incidente: gerações 5 (voz-na-isa) e 6
+ * (calculadora-de-investimentos) esgotaram a cadeia paga em 2026-11-20.
+ */
+export function isAgentConfigError(error: Error): boolean {
+  return /unknown agent id/i.test(error.message)
 }
 
 function asError(error: unknown): Error {
