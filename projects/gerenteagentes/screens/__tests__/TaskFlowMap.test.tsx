@@ -4,7 +4,7 @@ import { render, screen, fireEvent, waitForElementToBeRemoved, within } from "@t
 import userEvent from "@testing-library/user-event"
 import "@testing-library/jest-dom/vitest"
 import { BibliotecaThemeProvider } from "@biblioteca-global/ui"
-import TaskFlowMap, { capacityWaitMessage, type CapacityWaitProjection, type FlowTask, type ProjetoInfo, type FiltrosMapa } from "../TaskFlowMap"
+import TaskFlowMap, { capacityWaitMessage, capacityWaitSeverity, capacityWaitSetupLabel, type CapacityWaitProjection, type FlowTask, type ProjetoInfo, type FiltrosMapa } from "../TaskFlowMap"
 
 const tarefas: FlowTask[] = [
   { id: 766, titulo: "Registry de telas", status: "running", projetoId: 1 },
@@ -1291,5 +1291,88 @@ describe("capacityWaitMessage", () => {
       .toBe("Aguardando limite do provider (openai): 3 tarefas por vez.")
     expect(capacityWaitMessage({ ...base, reasonCode: "model_cooldown", limitScope: "model", limitValue: 0 }))
       .toBe("Aguardando capacidade de modelo DEV (todos os modelos habilitados em cooldown).")
+  })
+})
+
+// Tarefa motor-visibilidade-setup-not-verified (brief 2026-11-19): sub-motivos
+// do gate setup_not_verified com severidade, chip e data-testid estáveis.
+describe("capacityWait — sub-motivos de setup_not_verified", () => {
+  const base = {
+    phase: "analysis" as const, reasonCode: "setup_not_verified" as const,
+    limitScope: "project" as const, limitValue: 0, provider: null,
+  }
+
+  it("setup_failed: mensagem com erro real + ação; severidade error; rótulo do chip", () => {
+    const wait: CapacityWaitProjection = {
+      ...base, setupState: "setup_failed", setupError: "artefato ausente: docs/CONTEXTO-ANALISTA.md",
+    }
+    const message = capacityWaitMessage(wait)
+    expect(message).toContain("Setup do projeto FALHOU")
+    expect(message).toContain("artefato ausente: docs/CONTEXTO-ANALISTA.md")
+    expect(message).toContain("A fila está retida")
+    expect(message).toContain("Projetos → Iniciar desenvolvimento")
+    expect(capacityWaitSeverity(wait)).toBe("error")
+    expect(capacityWaitSetupLabel(wait)).toBe("Setup FALHOU")
+  })
+
+  it("setup_faltando: mensagem de re-disparo automático com detalhe do motor", () => {
+    const wait: CapacityWaitProjection = {
+      ...base, setupState: "setup_faltando",
+      detail: "projeto 'consoleopenclaw' sem setup concluído e sem missão de setup ativa (re-disparo automático: tentativa 1 de 3)",
+    }
+    const message = capacityWaitMessage(wait)
+    expect(message).toContain("sem missão de setup na fila")
+    expect(message).toContain("re-disparando automaticamente")
+    expect(message).toContain("tentativa 1 de 3")
+    expect(capacityWaitSeverity(wait)).toBe("warning")
+    expect(capacityWaitSetupLabel(wait)).toBe("Sem setup ativo")
+  })
+
+  it("setup_em_andamento: mantém frase de espera e orienta acompanhar em Projetos", () => {
+    const wait: CapacityWaitProjection = { ...base, setupState: "setup_em_andamento" }
+    const message = capacityWaitMessage(wait)
+    expect(message).toContain("setup do projeto ser verificado")
+    expect(message).toContain("setup_status=verified")
+    expect(message).toContain("Acompanhe em Projetos")
+    expect(capacityWaitSeverity(wait)).toBe("warning")
+    expect(capacityWaitSetupLabel(wait)).toBe("Setup em andamento")
+  })
+
+  it("projeção legada sem sub-motivo: mantém frase genérica e severidade warning", () => {
+    const wait: CapacityWaitProjection = { ...base }
+    expect(capacityWaitMessage(wait)).toContain("Aguardando o setup do projeto ser verificado")
+    expect(capacityWaitSeverity(wait)).toBe("warning")
+    expect(capacityWaitSetupLabel(wait)).toBeNull()
+  })
+
+  it("outros reason codes: severidade warning e sem rótulo de setup", () => {
+    const wait: CapacityWaitProjection = { phase: "development", reasonCode: "global_limit", limitScope: "global", limitValue: 2, provider: null }
+    expect(capacityWaitSeverity(wait)).toBe("warning")
+    expect(capacityWaitSetupLabel(wait)).toBeNull()
+  })
+
+  it("renderiza chip com severidade error e data-testid estável para setup_failed", () => {
+    view([
+      {
+        id: 900, titulo: "Retida pelo setup", status: "ready", projetoId: 1,
+        capacityWait: { ...base, setupState: "setup_failed", setupError: "smoke_test ausente" },
+      },
+    ])
+    const chip = screen.getByTestId("flow-task-capacity-wait-chip-900")
+    expect(chip).toBeInTheDocument()
+    expect(chip).toHaveTextContent("Setup FALHOU")
+    expect(chip).toHaveAttribute("aria-label", "Espera de capacidade: Setup FALHOU")
+    // Ícone da ampulheta permanece com data-testid estável.
+    expect(screen.getByTestId("flow-task-capacity-wait-900")).toBeInTheDocument()
+  })
+
+  it("renderiza chip warning para setup_faltando e sem chip para espera legada sem sub-motivo", () => {
+    view([
+      { id: 901, titulo: "Faltando", status: "ready", projetoId: 1, capacityWait: { ...base, setupState: "setup_faltando" } },
+      { id: 902, titulo: "Legada", status: "ready", projetoId: 1, capacityWait: { ...base } },
+    ])
+    expect(screen.getByTestId("flow-task-capacity-wait-chip-901")).toHaveTextContent("Sem setup ativo")
+    expect(screen.queryByTestId("flow-task-capacity-wait-chip-902")).not.toBeInTheDocument()
+    expect(screen.getByTestId("flow-task-capacity-wait-902")).toBeInTheDocument()
   })
 })

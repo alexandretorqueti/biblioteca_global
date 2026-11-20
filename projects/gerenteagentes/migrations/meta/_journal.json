@@ -757,6 +757,13 @@
       "when": 1795200000002,
       "tag": "0107_deploy_additive_hotspots",
       "breakpoints": true
+    },
+    {
+      "idx": 108,
+      "version": "5",
+      "when": 1795300000000,
+      "tag": "0108_setup_gate_visibility",
+      "breakpoints": true
     }
   ]
 }

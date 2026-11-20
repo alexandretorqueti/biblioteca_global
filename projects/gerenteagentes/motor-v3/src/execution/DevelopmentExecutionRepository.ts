@@ -1879,7 +1879,9 @@ export class MySqlDevelopmentExecutionRepository {
           , capacity_wait_phase = NULL, capacity_wait_reason_code = NULL,
           capacity_wait_limit_scope = NULL, capacity_wait_limit_value = NULL,
           capacity_wait_provider = NULL, capacity_wait_since = NULL,
-          capacity_wait_retry_at = NULL, capacity_wait_alert_at = NULL
+          capacity_wait_retry_at = NULL, capacity_wait_alert_at = NULL,
+          capacity_wait_setup_state = NULL, capacity_wait_setup_error = NULL,
+          capacity_wait_detail = NULL
           WHERE tarefa_id = ?`,
         [databaseId],
       )

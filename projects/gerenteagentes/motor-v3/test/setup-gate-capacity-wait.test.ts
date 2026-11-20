@@ -8,6 +8,7 @@
 import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it, vi } from 'vitest'
+import type { Pool } from 'mysql2/promise'
 import { MySqlTaskCoordinatorRepository } from '../src/coordinator/index.js'
 
 const projectRoot = fileURLToPath(new URL('../..', import.meta.url))
@@ -21,7 +22,7 @@ function lockedRow(overrides: Record<string, unknown> = {}) {
   }
 }
 
-function connectionMock(row: Record<string, unknown>) {
+function connectionMock(row: Record<string, unknown>, projectRow: Record<string, unknown> | null = null) {
   const calls: Array<{ sql: string; params: unknown[] }> = []
   const connection = {
     beginTransaction: vi.fn(async () => {}),
@@ -32,6 +33,7 @@ function connectionMock(row: Record<string, unknown>) {
       calls.push({ sql: String(sql), params })
       const sqlText = String(sql)
       if (sqlText.includes('FOR UPDATE') && sqlText.includes('FROM tarefas t')) return [[row], []]
+      if (sqlText.includes('FROM projetos_captados pc')) return [projectRow ? [projectRow] : [], []]
       if (sqlText.includes('FROM motor_configuracoes')) {
         return [[{ chave: 'motor.max_workers', limite: 5 }, { chave: 'motor.max_workers_per_project', limite: 5 }], []]
       }
@@ -59,9 +61,15 @@ describe('gate de setup — espera de capacidade, nunca bloqueio', () => {
     // Nenhum bloqueio (TAXONOMIA-ERROS-MOTOR.md: espera de capacidade nunca bloqueia).
     expect(calls.some(call => call.sql.includes('INSERT INTO bloqueios'))).toBe(false)
     // Espera de capacidade registrada com reason 'setup_not_verified'.
-    const wait = calls.find(call => call.sql.includes('UPDATE task_runtime_facts SET capacity_wait_phase=?'))
+    const wait = calls.find(call => call.sql.includes('UPDATE task_runtime_facts') && call.sql.includes('capacity_wait_reason_code=?'))
     expect(wait).toBeDefined()
-    expect(wait?.params).toEqual(['analysis', 'setup_not_verified', 'project', 0, null, 42])
+    expect(wait?.params).toEqual([
+      'setup_not_verified', 'setup_not_verified',
+      'analysis', 'setup_not_verified', 'project', 0, null,
+      // Sem linha de projeto no mock → sub-motivo ausente (colunas null).
+      null, null, null,
+      42,
+    ])
     // Transação commitada (fato durável) e sem rollback; sem claim de análise.
     expect(connection.commit).toHaveBeenCalledOnce()
     expect(connection.rollback).not.toHaveBeenCalled()
@@ -109,6 +117,99 @@ describe('gate de setup — espera de capacidade, nunca bloqueio', () => {
     const repository = repositoryWith(connection)
 
     await expect(repository.claimAnalysis('task-1', 'exec-1')).resolves.toBe(true)
+  })
+
+  it('sub-motivo rico: setup failed persiste setupState/setupError/detail nos flags capacity_wait_* (migration 0105)', async () => {
+    const { connection, calls } = connectionMock(
+      lockedRow({ setup_status: 'failed' }),
+      {
+        slug: 'gestao-de-tarefas-global',
+        setup_status: 'failed',
+        setup_error: 'Setup reprovado: artefato ausente',
+        geracoes_ativas: 0,
+        ultima_geracao_status: 'completed',
+        ultima_geracao_erro: null,
+        setup_redispatch_count: 0,
+        setup_redispatch_last_at: null,
+      },
+    )
+    const repository = repositoryWith(connection)
+
+    await expect(repository.claimAnalysis('task-1', 'exec-1')).resolves.toBe('capacity_waiting')
+
+    const wait = calls.find(call => call.sql.includes('UPDATE task_runtime_facts') && call.sql.includes('capacity_wait_setup_state=?'))
+    expect(wait).toBeDefined()
+    expect(wait!.sql).toContain('capacity_wait_since = IF(capacity_wait_reason_code <=> ?')
+    expect(wait?.params).toEqual([
+      'setup_not_verified', 'setup_not_verified',
+      'analysis', 'setup_not_verified', 'project', 0, null,
+      'setup_failed', 'Setup reprovado: artefato ausente', expect.stringContaining('FALHOU'),
+      42,
+    ])
+  })
+
+  it('sub-motivo setup_failed com contador de re-disparo no teto: detalhe expõe tentativa X de Y', async () => {
+    const { connection, calls } = connectionMock(
+      lockedRow({ setup_status: 'failed' }),
+      {
+        slug: 'consoleopenclaw',
+        setup_status: 'failed',
+        setup_error: null,
+        geracoes_ativas: 0,
+        ultima_geracao_status: null,
+        ultima_geracao_erro: null,
+        setup_redispatch_count: 2,
+        setup_redispatch_last_at: new Date('2026-11-20T17:00:00Z'),
+      },
+    )
+    const repository = repositoryWith(connection)
+
+    await expect(repository.claimAnalysis('task-1', 'exec-1')).resolves.toBe('capacity_waiting')
+
+    const wait = calls.find(call => call.sql.includes('capacity_wait_setup_state=?'))
+    expect(wait?.params[7]).toBe('setup_failed')
+    expect(wait?.params[9]).toContain('tentativa 3 de 3')
+  })
+
+  it('projeção capacityWait expõe setupState/setupError/detail quando presentes (GET /api/motor/task/:id)', async () => {
+    const repository = new MySqlTaskCoordinatorRepository({
+      getConnection: vi.fn(),
+      query: vi.fn(async (sql: string) => {
+        const text = String(sql)
+        if (text.includes('f.capacity_wait_setup_state') && text.includes('FROM tarefas t')) {
+          return [[{
+            id: 42, external_id: 'task-1', titulo: 't', descricao: null, tipo: 'desenvolvimento',
+            repo_path: null, project_layout: 'monorepo', paused_at: null, auto_start: 1,
+            setup_status: 'failed', analysis_started_at: null, analysis_execution_id: null,
+            projeto_id: 7, terminal_status: null, subtask_count: 0, blocked_count: 0,
+            project_slug: 'gestao-de-tarefas-global', agente_id: 'a',
+            capacity_wait_phase: 'analysis', capacity_wait_reason_code: 'setup_not_verified',
+            capacity_wait_limit_scope: 'project', capacity_wait_limit_value: 0,
+            capacity_wait_provider: null, capacity_wait_retry_at: null,
+            capacity_wait_setup_state: 'setup_failed',
+            capacity_wait_setup_error: 'artefato ausente',
+            capacity_wait_detail: "setup do projeto 'gestao-de-tarefas-global' FALHOU",
+          }], []]
+        }
+        if (text.includes('resource_wait_key')) {
+          return [[{
+            id: 42, task_type: 'desenvolvimento', paused_at: null, resource_wait_key: null,
+            analysis_started_at: null, clarification_pending_at: null, integration_confirmed_at: null,
+            terminal_status: null, awaiting_interaction: 0, has_active_blocker: 0,
+            deploy_succeeded: 0, deploy_failed: 0, administrative_deploy_cancelled: 0, active_monitor_fix: 0,
+          }], []]
+        }
+        return [[], []]
+      }),
+    } as unknown as Pool)
+
+    const snapshot = await repository.getTask('task-1')
+    expect(snapshot!.capacityWait).toMatchObject({
+      reasonCode: 'setup_not_verified',
+      setupState: 'setup_failed',
+      setupError: 'artefato ausente',
+      detail: "setup do projeto 'gestao-de-tarefas-global' FALHOU",
+    })
   })
 
   it('migration 0099 resolve bloqueios legados setup_not_verified de forma idempotente e o código não os cria mais', async () => {

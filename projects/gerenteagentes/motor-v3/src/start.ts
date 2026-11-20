@@ -252,7 +252,19 @@ async function start() {
     // instâncias standby durante o overlap blue-green.
     const startDurableServices = async () => {
     realtimeOutboxDispatcher?.start()
-    const repository = new MySqlTaskCoordinatorRepository(pool, realtime)
+    // Recuperação do gate setup_not_verified (tarefa
+    // motor-visibilidade-setup-not-verified): janela/backoff/teto configuráveis
+    // via env (defaults conservadores em SETUP_GATE_RECOVERY_DEFAULTS).
+    const positiveInt = (value: string | undefined, fallback: number): number => {
+      const parsed = Number(value)
+      return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback
+    }
+    const repository = new MySqlTaskCoordinatorRepository(pool, realtime, {
+      alertAfterMinutes: positiveInt(process.env.MOTOR_SETUP_GATE_ALERT_AFTER_MINUTES, 30),
+      alertWindowMinutes: positiveInt(process.env.MOTOR_SETUP_GATE_ALERT_WINDOW_MINUTES, 60),
+      redispatchBackoffMinutes: positiveInt(process.env.MOTOR_SETUP_GATE_REDISPATCH_BACKOFF_MINUTES, 30),
+      redispatchMaxAttempts: positiveInt(process.env.MOTOR_SETUP_GATE_REDISPATCH_MAX_ATTEMPTS, 3),
+    })
     const consoleApi = new ConsoleHttpApi(consoleUrl, consoleToken)
     const contractArtifactStore = new ContractArtifactStore(process.env.MOTOR_AGENT_WORKSPACES_ROOT, consoleApi)
     const analystSessionRows = new Map<string, number>()
@@ -1216,6 +1228,8 @@ async function start() {
             `SELECT capacity_wait_phase AS phase, capacity_wait_reason_code AS reasonCode,
                     capacity_wait_limit_scope AS limitScope, capacity_wait_limit_value AS limitValue,
                     capacity_wait_provider AS provider, capacity_wait_retry_at AS retryAt,
+                    capacity_wait_setup_state AS setupState, capacity_wait_setup_error AS setupError,
+                    capacity_wait_detail AS detail,
                     terminal_status AS terminalStatus
                FROM task_runtime_facts WHERE tarefa_id = ? LIMIT 1`, [tarefa.id],
           ) as any[]
@@ -1230,6 +1244,9 @@ async function start() {
               limitValue: Number(capacityWaitRows[0].limitValue),
               provider: capacityWaitRows[0].provider,
               retryAt: capacityWaitRows[0].retryAt ? new Date(capacityWaitRows[0].retryAt).toISOString() : null,
+              setupState: capacityWaitRows[0].setupState ?? null,
+              setupError: capacityWaitRows[0].setupError ?? null,
+              detail: capacityWaitRows[0].detail ?? null,
             }
             : null
 
@@ -1283,6 +1300,8 @@ async function start() {
                   f.capacity_wait_limit_scope = NULL, f.capacity_wait_limit_value = NULL,
                   f.capacity_wait_provider = NULL, f.capacity_wait_since = NULL,
                   f.capacity_wait_retry_at = NULL, f.capacity_wait_alert_at = NULL,
+                  f.capacity_wait_setup_state = NULL, f.capacity_wait_setup_error = NULL,
+                  f.capacity_wait_detail = NULL,
                   f.updated_at = NOW()
             WHERE t.external_id = ? OR CAST(t.id AS CHAR) = ?`, [taskId, taskId],
         )
