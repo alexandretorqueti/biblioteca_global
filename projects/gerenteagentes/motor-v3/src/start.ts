@@ -48,6 +48,7 @@ import { DevelopmentExecutionConsumer, DevelopmentSessionRecoveryReconciler, Git
 import { WorkerLauncher } from './worker-launcher/WorkerLauncher.js'
 import { getDeployDiagnostics } from './deploy/DeployDiagnostics.js'
 import { DeployConsumer } from './deploy/DeployConsumer.js'
+import { DeployOrphanBatchReconcilerCycle } from './deploy/DeployOrphanBatchReconcilerCycle.js'
 import { SetupCompletionConsumer } from './setup/SetupCompletionConsumer.js'
 import { SetupCompletionSweeper } from './setup/SetupCompletionSweeper.js'
 import { DeployRepository } from './deploy/DeployRepository.js'
@@ -102,6 +103,11 @@ let testGateJobReconciler: TestGateJobReconciler | null = null
 let messageProcessingClaimReconciler: MessageProcessingClaimReconciler | null = null
 let deployConsumer: DeployConsumer | null = null
 let deployOrphanBatchReconcilerTimer: NodeJS.Timeout | null = null
+// Ciclo endurecido do reconciliador de batches órfãos (incidente 19/11):
+// try/catch independentes por fase + contagem de falhas consecutivas +
+// alerta Telegram. Instância única de processo (sobrevive a trocas de
+// liderança para o /api/motor/stats continuar enxergando a contagem).
+let deployOrphanReconcilerCycle: DeployOrphanBatchReconcilerCycle | null = null
 let cancelConsumer: TaskCancelConsumer | null = null
 // TASK_ENQUEUED tem consumo real (setup de projeto da Biblioteca) e não pode
 // ser despachado sem consumidor (task-p2-1047, subtarefa 3).
@@ -906,6 +912,20 @@ async function start() {
       console.error('[Motor v3] PostDeployVerifier.bootScan falha inesperada:', error instanceof Error ? error.message : String(error))
     })
     let deployOrphanBatchReconcilerRunning = false
+    if (!deployOrphanReconcilerCycle) {
+      deployOrphanReconcilerCycle = new DeployOrphanBatchReconcilerCycle(
+        {
+          requestReconciliation: () => deployConsumer!.requestReconciliation(),
+          reconcileOrphanPendingBatches: () => deployConsumer!.reconcileOrphanPendingBatches(),
+          enqueuePendingDispatches: () => deployConsumer!.enqueuePendingDispatches(),
+        },
+        {
+          alertAfterFailures: Number(process.env.MOTOR_DEPLOY_RECONCILER_ALERT_AFTER_FAILURES || 3),
+          alertCooldownMinutes: Number(process.env.MOTOR_DEPLOY_RECONCILER_ALERT_COOLDOWN_MINUTES || process.env.MOTOR_DLQ_ALERT_COOLDOWN_MINUTES || 60),
+          alertSender: new TelegramDlqAlertSender(process.env.TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_DLQ_CHAT_ID),
+        },
+      )
+    }
     // Alvo da observabilidade de DLQ: filas mortas acumulam em silêncio
     // (incidente 2026-10-23: 45 mensagens em motor.commands.dlq sem alerta).
     const dlqWatchTargets: Array<{ name: string; probe: RabbitMqTransport }> = [
@@ -939,15 +959,10 @@ async function start() {
         try {
           // Reemite a reconciliação de todos os batches running em cada ciclo;
           // o callback remoto é apenas uma otimização, nunca a única fonte de
-          // conclusão do deploy.
-          await deployConsumer!.requestReconciliation()
-          const cleaned = await deployConsumer!.reconcileOrphanPendingBatches()
-          if (cleaned > 0) await deployConsumer!.enqueuePendingDispatches()
-        } catch (error) {
-          console.error(JSON.stringify({
-            event: 'deploy_orphan_pending_batches_cycle_failed',
-            error: error instanceof Error ? error.message : String(error),
-          }))
+          // conclusão do deploy. Cada fase tem try/catch próprio dentro do
+          // cycle (incidente 19/11: uma fase quebrada não pode travar as
+          // demais nem silenciar o ciclo por 1h).
+          await deployOrphanReconcilerCycle!.runCycle()
         } finally {
           deployOrphanBatchReconcilerRunning = false
         }
@@ -1043,6 +1058,9 @@ async function start() {
           primitiveDivergences,
           // Observabilidade de DLQ (varredura a cada 5 min; null = não medido).
           dlqDepths,
+          // Ciclo deployOrphanBatchReconciler (incidente 19/11): falhas
+          // consecutivas do ciclo de reconciliação de batches órfãos.
+          deployReconciler: deployOrphanReconcilerCycle?.getHealth() ?? null,
         }))
         return
       }
