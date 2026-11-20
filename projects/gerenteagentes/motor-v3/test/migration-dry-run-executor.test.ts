@@ -245,6 +245,47 @@ describe('MigrationDryRunExecutor', () => {
     })
   })
 
+  describe('split de statements com marcador inline (formato drizzle-kit)', () => {
+    it('separa statements com `;--> statement-breakpoint` na mesma linha (regressão tarefas 1097/1098)', async () => {
+      const ws = await createWorkspace()
+      await mkdir(join(ws, 'projects/alpha/migrations'), { recursive: true })
+      await git(ws, ['commit', '-m', 'baseline', '--allow-empty'])
+      const baseCommit = (await git(ws, ['rev-parse', 'HEAD'])).trim()
+
+      // Formato real emitido pelo drizzle-kit (ex.: 0000_mysterious_phil_sheldon.sql
+      // de gerenteagentes): o marcador após CREATE TABLE vem em linha exclusiva,
+      // mas os seguintes ficam colados no `;` do statement anterior.
+      const sql = [
+        'CREATE TABLE `t2` (',
+        '  `id` INT NOT NULL,',
+        '  CONSTRAINT `t2_id` PRIMARY KEY(`id`)',
+        ');',
+        '--> statement-breakpoint',
+        'ALTER TABLE `t2` ADD CONSTRAINT `t2_fk_a` FOREIGN KEY (`id`) REFERENCES `t1`(`id`) ON DELETE cascade ON UPDATE no action;--> statement-breakpoint',
+        'ALTER TABLE `t2` ADD COLUMN `x` INT;--> statement-breakpoint',
+        'ALTER TABLE `t2` ADD COLUMN `y` INT;',
+      ].join('\n')
+      await writeFile(join(ws, 'projects/alpha/migrations/0001_inline.sql'), sql)
+
+      querySpy.mockResolvedValue([[]]) // SHOW CREATE TABLE: tabelas ainda não existem
+      const executor = new MigrationDryRunExecutor(mockPool, 1097)
+      await executor.execute(ws, baseCommit)
+
+      const executed = querySpy.mock.calls
+        .map(call => call[0])
+        .filter((text): text is string => typeof text === 'string')
+        .filter(text => /^(CREATE|ALTER|INSERT|UPDATE|DELETE)\b/i.test(text.trim()))
+      // 1 CREATE + 3 ALTERs executados como statements individuais
+      expect(executed).toHaveLength(4)
+      for (const statement of executed) {
+        expect(statement).not.toContain('statement-breakpoint')
+      }
+      expect(executed[1]).toContain('ADD CONSTRAINT')
+      expect(executed[2]).toContain('ADD COLUMN `x`')
+      expect(executed[3]).toContain('ADD COLUMN `y`')
+    })
+  })
+
   describe('erro SQL', () => {
     it('reporta erro com arquivo, linha, índice e mensagem MySQL', async () => {
       const ws = await createWorkspace()

@@ -342,10 +342,19 @@ export class MigrationDryRunExecutor {
   /**
    * Divide conteúdo SQL em statements usando `--> statement-breakpoint` como separador.
    * Blocos que contêm apenas comentários ou whitespace são descartados.
+   *
+   * O separador é o próprio marcador, sem exigir que esteja em linha exclusiva:
+   * o drizzle-kit emite `;--> statement-breakpoint` na MESMA linha do `;`
+   * anterior (ex.: cadeia de ALTER TABLE ADD CONSTRAINT da migration 0000 de
+   * gerenteagentes). Ancorar em `\n` antes do marcador colava todos esses
+   * statements num bloco só e o MySQL falhava com 1064 no trecho
+   * `--> statement-breakpoint` (incidente tarefas 1097/1098, 2026-11-19/20,
+   * pre_deploy migration-dry-run). O migrator do drizzle faz split pela
+   * string exata do marcador — aqui seguimos o mesmo contrato.
    */
   private splitStatements(content: string): string[] {
     return content
-      .split(/\r?\n-->\s*statement-breakpoint\r?\n/)
+      .split(/-->\s*statement-breakpoint/)
       .map(block => block.trim())
       .filter(block => {
         if (block.length === 0) return false
