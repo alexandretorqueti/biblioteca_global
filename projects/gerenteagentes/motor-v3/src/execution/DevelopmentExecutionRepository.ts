@@ -613,6 +613,26 @@ export class MySqlDevelopmentExecutionRepository {
   }
 
   /**
+   * Lease 'development' vivo da subtarefa (motor_active_executions não expirado).
+   * Usado para distinguir duplicatas de uma execução em andamento (mesmo
+   * executionId, worker heartbeating) de conflitos com sessão órfã: a cópia
+   * duplicada NÃO deve consumir orçamento de adiamento nem falhar a subtarefa
+   * (incidente 2026-11-20 s1565/b3522: gêmeos reentregues esgotaram os 40
+   * adiamentos e terminaram a subtarefa enquanto o worker 125b estava vivo).
+   */
+  async getLiveDevelopmentLease(subtaskId: number): Promise<{ executionId: string; heartbeatAt: Date | string | null } | null> {
+    const [rows] = await this.pool.query<Array<RowDataPacket & { execution_id: string; heartbeat_at: Date | string | null }>>(
+      `SELECT execution_id, heartbeat_at FROM motor_active_executions
+        WHERE subtarefa_id=? AND phase='development' AND expires_at > NOW()
+        LIMIT 1`,
+      [subtaskId],
+    )
+    const row = rows[0]
+    if (!row) return null
+    return { executionId: String(row.execution_id), heartbeatAt: row.heartbeat_at ?? null }
+  }
+
+  /**
    * Adiamento durável de um SUBTASK_EXECUTION_REQUESTED descartado por
    * conflito com sessão DEV (incidente 2026-11-18: o requeue de 20:35:07 foi
    * ackado e perdido porque uma sessão órfã 'active' manteve o skip). Em vez

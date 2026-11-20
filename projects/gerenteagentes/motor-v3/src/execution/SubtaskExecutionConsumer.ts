@@ -89,13 +89,29 @@ export class SubtaskExecutionConsumer {
       await this.log(operationId, 2, message, { phase: 'rejected', outcome: 'skipped', subtaskId, reasonCode: 'subtask_not_running' })
       return
     }
+    // Duplicata de execução em andamento: lease 'development' vivo com o MESMO
+    // executionId (worker heartbeating). A cópia reentregue pela fila não pode
+    // adiar nem criar sessão — o worker vivo é o dono do ciclo de vida da
+    // subtarefa (incidente 2026-11-20 b3522/s1565: gêmeos reentregues queimaram
+    // o orçamento de 40 adiamentos e terminaram a subtarefa enquanto a sessão
+    // DEV 125b estava viva e com heartbeat). Se o processo reiniciou dentro da
+    // janela do TTL, o lease é resíduo e o boot-recovery assume a reconciliação
+    // (a sessão persistida pertence ao reconciliador) — descartar segue correto.
+    const liveLease = await this.repository.getLiveDevelopmentLease?.(subtaskId)
+    if (liveLease && liveLease.executionId === message.executionId) {
+      await this.log(operationId, 2, message, {
+        phase: 'rejected', outcome: 'skipped', subtaskId, reasonCode: 'duplicate_of_running_execution',
+        result: { leaseExecutionId: liveLease.executionId },
+      })
+      return
+    }
     // Após restart, a mensagem original pode ser reentregue pelo RabbitMQ.
     // A sessão persistida pertence ao reconciliador; não crie outro worker.
     if (await this.repository.hasActiveDevelopmentSession?.(subtaskId)) {
       await this.log(operationId, 2, message, {
         phase: 'rejected', outcome: 'skipped', subtaskId, reasonCode: 'development_session_recovery_owned',
       })
-      await this.deferConflictingExecution(message, execution, 'development_session_recovery_owned')
+      await this.deferConflictingExecution(operationId, message, execution, 'development_session_recovery_owned')
       return
     }
     // Proteção contra recriação de sessão após DONE processado.
@@ -105,7 +121,7 @@ export class SubtaskExecutionConsumer {
       await this.log(operationId, 2, message, {
         phase: 'rejected', outcome: 'skipped', subtaskId, reasonCode: 'development_session_already_completed',
       })
-      await this.deferConflictingExecution(message, execution, 'development_session_already_completed')
+      await this.deferConflictingExecution(operationId, message, execution, 'development_session_already_completed')
       return
     }
     try {
@@ -362,6 +378,7 @@ export class SubtaskExecutionConsumer {
    * recuperação é perdida na janela entre o fechamento e a expiração do lease.
    */
   private async deferConflictingExecution(
+    operationId: string,
     message: QueueMessage,
     execution: SubtaskExecutionContext,
     reason: 'development_session_recovery_owned' | 'development_session_already_completed',
@@ -381,6 +398,20 @@ export class SubtaskExecutionConsumer {
     const maxDefers = Math.max(1, Number(process.env.MOTOR_DEVELOPMENT_CONFLICT_MAX_DEFERS || 40))
     const outcome = await defer.call(this.repository, message, reason, { delayMs, maxDefers })
     if (outcome === 'exhausted') {
+      // Orçamento esgotado: se ainda existe execução viva (lease não expirado),
+      // o "conflito" é o próprio worker em andamento — ele conduz a conclusão
+      // ou a própria falha da subtarefa. Terminar aqui mataria uma execução
+      // saudável (incidente 2026-11-20 b3522/s1565). Sem lease vivo, mantém o
+      // caminho terminal: nunca perder silenciosamente (incidente 2026-11-18).
+      const lease = await this.repository.getLiveDevelopmentLease?.(Number(message.payload.subtaskId))
+      if (lease) {
+        await this.log(operationId, 3, message, {
+          phase: 'rejected', outcome: 'skipped', subtaskId: Number(message.payload.subtaskId),
+          reasonCode: 'conflict_exhausted_live_execution_active',
+          result: { reason, leaseExecutionId: lease.executionId },
+        })
+        return
+      }
       throw new Error(`Conflito de execução DEV persistente; adiamentos esgotados (${reason})`)
     }
   }
