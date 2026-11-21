@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -744,6 +745,42 @@ describe('MigrationDryRunExecutor', () => {
 
       const executor = new MigrationDryRunExecutor(mockPool, 777)
       await expect(executor.execute(ws, baseCommit)).rejects.toThrow(/watermark=2000/)
+    })
+
+    it('nao reprova migration JA APLICADA no banco (hash em __drizzle_migrations) mesmo com when <= watermark (incidente tarefa 1106/b3529)', async () => {
+      const { ws, baseCommit } = await createWorkspaceWithJournal(2000)
+      const appliedHash = createHash('sha256').update('CREATE TABLE `t2` (`id` INT);', 'utf8').digest('hex')
+      querySpy.mockResolvedValueOnce([[{ watermark: '2000', hash: appliedHash }]]) // SELECT created_at, hash
+      querySpy.mockResolvedValueOnce([[]]) // SHOW CREATE TABLE (estrutura no scratch)
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // execucao do CREATE reescrito
+      querySpy.mockResolvedValue([{} as ResultSetHeader]) // cleanup
+
+      const executor = new MigrationDryRunExecutor(mockPool, 778)
+      await expect(executor.execute(ws, baseCommit)).resolves.toBeUndefined()
+
+      const createCall = querySpy.mock.calls.find(call =>
+        typeof call[0] === 'string' && call[0].includes('gate_scratch_778_t2')
+      )
+      expect(createCall).toBeDefined()
+    })
+
+    it('reprova when <= watermark quando o hash da migration NAO esta aplicado no banco', async () => {
+      const { ws, baseCommit } = await createWorkspaceWithJournal(2000)
+      querySpy.mockResolvedValueOnce([[{ watermark: 2000, hash: 'deadbeefdeadbeef' }]])
+
+      const executor = new MigrationDryRunExecutor(mockPool, 779)
+      await expect(executor.execute(ws, baseCommit)).rejects.toThrow(MigrationWatermarkError)
+    })
+
+    it('tabela __drizzle_migrations sem linhas (zero rows) nao bloqueia', async () => {
+      const { ws, baseCommit } = await createWorkspaceWithJournal(1500)
+      querySpy.mockResolvedValueOnce([[]]) // SELECT created_at, hash → zero linhas
+      querySpy.mockResolvedValueOnce([[]]) // SHOW CREATE TABLE
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // CREATE reescrito
+      querySpy.mockResolvedValue([{} as ResultSetHeader]) // cleanup
+
+      const executor = new MigrationDryRunExecutor(mockPool, 780)
+      await expect(executor.execute(ws, baseCommit)).resolves.toBeUndefined()
     })
 
     it('aceita when acima do watermark e segue com o dry-run', async () => {
