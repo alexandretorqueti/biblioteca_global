@@ -29,6 +29,9 @@ cd "$REPO_ROOT"
 set -a
 . ./.env
 set +a
+# Lib do callback de deploy (retry dual-porta 3010/3011; ver notify_deploy_result abaixo).
+# shellcheck source=lib/deploy-callback.sh
+. "$REPO_ROOT/projects/gerenteagentes/scripts/lib/deploy-callback.sh"
 
 wait_http() {
   local url="$1" tries="$2" label="$3" i code
@@ -285,21 +288,11 @@ motor_port_for_slot() {
 }
 
 notify_deploy_result() {
-  local status="$1" port="$2" payload
-  [ -n "$DEPLOY_BATCH_ID" ] || return 0
-  [ -n "${MOTOR_DEPLOY_CALLBACK_TOKEN:-}" ] || {
-    echo "[deploy-blue-green] MOTOR_DEPLOY_CALLBACK_TOKEN não configurado" >&2
-    return 1
-  }
-  payload="$(printf '{\"status\":\"%s\"}' "$status")"
-  # O callback é uma notificação best-effort. Seus limites não podem impedir
-  # a gravação do marcador local nem prolongar o deploy indefinidamente.
-  curl --fail --silent --show-error --connect-timeout "${MOTOR_DEPLOY_CALLBACK_CONNECT_TIMEOUT_SECONDS:-2}" \
-    --max-time "${MOTOR_DEPLOY_CALLBACK_TIMEOUT_SECONDS:-15}" --retry 2 --retry-delay 1 \
-    -X POST -H 'Content-Type: application/json' \
-    -H "X-Motor-Deploy-Token: $MOTOR_DEPLOY_CALLBACK_TOKEN" \
-    --data "$payload" \
-    "http://127.0.0.1:${port}/api/motor/deploy/batches/${DEPLOY_BATCH_ID}/result"
+  # Delega para a lib compartilhada: retry com backoff alternando as portas do
+  # motor (preferida primeiro) — o líder pode trocar durante o script. O
+  # callback continua best-effort: tentativas e tempo total limitados, nunca
+  # impede a gravação do marcador local nem prolonga o deploy indefinidamente.
+  notify_motor_deploy_result "$1" "[deploy-blue-green]" "$2"
 }
 
 notify_deploy_on_exit() {

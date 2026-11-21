@@ -52,6 +52,7 @@ import { DeployOrphanBatchReconcilerCycle } from './deploy/DeployOrphanBatchReco
 import { SetupCompletionConsumer } from './setup/SetupCompletionConsumer.js'
 import { SetupCompletionSweeper } from './setup/SetupCompletionSweeper.js'
 import { DeployRepository } from './deploy/DeployRepository.js'
+import { dispatchDeployResultFallback } from './deploy/DeployResultCallback.js'
 import { RemoteBlueGreenDeployer } from './deploy/RemoteBlueGreenDeployer.js'
 import { BaselinePreflightRecovery, TestGateConsumer, TestGateJobReconciler, TestGateOrchestrator, TestGateService, TestRecoveryConsumer, WorkspaceEnvironmentPreparer } from './testing/index.js'
 import { TaskChatHumanNotifier, ExternalResolutionError, ExternalResolutionHandler, MonitorBlockerReconciler, MonitorMissionRecoveryReconciler, MonitorPromptResolver, MonitorResolutionConsumer, PostDeployPromptResolver, PostDeployVerifier, TaskUnblockedConsumer, createTaskBlockedMessage, loadActiveBlocker, ActiveExecutionSweeper } from './monitor/index.js'
@@ -1522,7 +1523,22 @@ async function start() {
         if (!status) throw new Error('Resultado de deploy inválido')
         const batchId = deployResultMatch[1]!
         if (!/^[A-Za-z0-9_-]+$/.test(batchId)) throw new Error('Identificador de lote inválido')
-        const message = await dispatchCommand('DEPLOY_BATCH_RESULT_RECEIVED', 'system', `deploy-result-${batchId}`, { batchId, status })
+        // Callback honesto: só responde aceito quando existe mensagem durável.
+        // Slot não-líder/boot (outboxPublisher null) persiste direto no outbox —
+        // o líder publica depois. Nunca dispatch in-memory sem consumidor.
+        let message: QueueMessage
+        if (outboxPublisher) {
+          message = await dispatchCommand('DEPLOY_BATCH_RESULT_RECEIVED', 'system', `deploy-result-${batchId}`, { batchId, status })
+        } else {
+          const fallback = await dispatchDeployResultFallback({ batchId, status, pool })
+          if (!fallback.ok) {
+            console.error('[Motor v3] Callback de deploy sem outbox e persistência direta falhou:', fallback.error)
+            res.writeHead(503, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ ok: false, error: 'Outbox indisponível' }))
+            return
+          }
+          message = fallback.message
+        }
         res.writeHead(202, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ ok: true, accepted: true, messageId: message.messageId }))
         return
