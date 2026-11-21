@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { promisify } from 'node:util'
@@ -125,10 +126,17 @@ export class MigrationDryRunExecutor {
       const resolved = (await this.projectPoolResolver?.(project)) ?? null
       this.activePool = resolved?.pool ?? this.pool
       try {
-        await this.validateJournalWatermarks(workspacePath, forProject)
+        const appliedPaths = await this.validateJournalWatermarks(workspacePath, forProject)
+        // Migrations já aplicadas no banco alvo (hash registrado em
+        // __drizzle_migrations) ficam FORA do dry-run: reexecutá-las sobre o
+        // clone da estrutura atual falharia com errno 1050 (CREATE duplicado
+        // na scratch) — incidente tarefa 1106/b3529.
+        const pendingMigrations = appliedPaths.size > 0
+          ? forProject.filter(migration => !appliedPaths.has(migration.path))
+          : forProject
 
         try {
-          await this.executeDifferential(workspacePath, forProject)
+          await this.executeDifferential(workspacePath, pendingMigrations)
         } catch (error) {
           const missingScratch = error instanceof MigrationDryRunError
             && error.violations.length > 0
@@ -138,7 +146,7 @@ export class MigrationDryRunExecutor {
           // completa (as migrations anteriores criarão as tabelas em scratch).
           await this.cleanupScratchTables()
           this.scratchTables.length = 0
-          await this.executeFullChain(workspacePath, project, forProject)
+          await this.executeFullChain(workspacePath, project, pendingMigrations)
         }
       } finally {
         await this.cleanupScratchTables()
@@ -309,14 +317,26 @@ export class MigrationDryRunExecutor {
    <= watermark a migration é PULADA em silêncio (incidente task-p2-989).
    * Entradas sem journal/sem tag correspondente são ignoradas aqui — o gate
    * MigrationJournalIntegrity já as reprova em separado.
+   *
+   * Exceção (incidente tarefa 1106 / b3529, 2026-11-21): migration JÁ APLICADA
+   * no banco alvo — hash sha256 do conteúdo registrado em `__drizzle_migrations`
+   * — não é violação. O skip do drizzle nesse caso é o comportamento idempotente
+   * correto; o incidente task-p2-989 envolvia migration NUNCA aplicada. A 0000
+   * de calculadora-de-investimentos-gabriel foi aplicada na verificação do
+   * monitor e `when == watermark` passou a reprovar o pre_deploy em falso
+   * positivo; a correção sugerida pela mensagem (aumentar o `when`) forçaria a
+   * REAPLICAÇÃO de um CREATE TABLE não-idempotente (errno 1050) no deploy.
+   * Migrations já aplicadas retornam no conjunto de caminhos para ficarem fora
+   * do dry-run (reexecutar o CREATE sobre a estrutura clonada daria 1050).
    */
   private async validateJournalWatermarks(
     workspacePath: string,
     addedMigrations: Array<{ project: string; migration: string; path: string }>,
-  ): Promise<void> {
+  ): Promise<Set<string>> {
+    const appliedPaths = new Set<string>()
     interface JournalEntry { tag: string; when: number }
     const entriesByProject = new Map<string, JournalEntry[]>()
-    const candidates: Array<{ project: string; migration: string; when: number }> = []
+    const candidates: Array<{ project: string; migration: string; path: string; when: number }> = []
     for (const added of addedMigrations) {
       let entries = entriesByProject.get(added.project)
       if (entries === undefined) {
@@ -333,34 +353,61 @@ export class MigrationDryRunExecutor {
       const tag = added.migration.replace(/\.sql$/, '')
       const entry = entries.find(candidate => candidate.tag === tag)
       if (entry && Number.isFinite(entry.when)) {
-        candidates.push({ project: added.project, migration: added.migration, when: entry.when })
+        candidates.push({ project: added.project, migration: added.migration, path: added.path, when: entry.when })
       }
     }
-    if (candidates.length === 0) return
+    if (candidates.length === 0) return appliedPaths
 
     let watermark: number | null = null
+    const appliedHashes = new Set<string>()
     try {
+      // Uma única consulta traz o watermark (MAX(created_at)) e os hashes já
+      // aplicados — o hash identifica a migration aplicada de forma exata,
+      // distinguindo o skip idempotente legítimo do incidente task-p2-989.
       const [rows] = await this.activePool.query<RowDataPacket[]>(
-        'SELECT MAX(created_at) AS watermark FROM `__drizzle_migrations`',
+        'SELECT created_at AS watermark, hash FROM `__drizzle_migrations`',
       )
-      const raw = rows[0]?.['watermark']
-      watermark = raw === null || raw === undefined ? null : Number(raw)
+      for (const row of rows) {
+        const raw = row['watermark']
+        if (raw !== null && raw !== undefined) {
+          const value = Number(raw)
+          if (Number.isFinite(value) && (watermark === null || value > watermark)) watermark = value
+        }
+        const hash = row['hash']
+        if (typeof hash === 'string' && hash.length > 0) appliedHashes.add(hash)
+      }
     } catch (error) {
       // Tabela ainda não existe (banco novo): não há watermark, nada a validar.
-      if (MigrationDryRunExecutor.isMissingTableError(error)) return
+      if (MigrationDryRunExecutor.isMissingTableError(error)) return appliedPaths
       throw error
     }
-    if (watermark === null) return
+    if (watermark === null) return appliedPaths
 
-    const violations = candidates
-      .filter(candidate => candidate.when <= watermark)
-      .map(candidate => ({
+    const violations: Array<{ project: string; migration: string; entryWhen: number; databaseWatermark: number }> = []
+    for (const candidate of candidates) {
+      if (candidate.when > (watermark as number)) continue
+      if (appliedHashes.size > 0) {
+        try {
+          const content = await readFile(resolve(workspacePath, candidate.path), 'utf8')
+          const hash = createHash('sha256').update(content, 'utf8').digest('hex')
+          // Conteúdo já registrado no banco alvo: migration aplicada, skip correto.
+          if (appliedHashes.has(hash)) {
+            appliedPaths.add(candidate.path)
+            continue
+          }
+        } catch {
+          // Arquivo ilegível: sem prova de aplicação → mantém a violação.
+        }
+      }
+      violations.push({
         project: candidate.project,
         migration: candidate.migration,
         entryWhen: candidate.when,
         databaseWatermark: watermark as number,
-      }))
+      })
+    }
     if (violations.length > 0) throw new MigrationWatermarkError(violations)
+    return appliedPaths
   }
 
   /**
