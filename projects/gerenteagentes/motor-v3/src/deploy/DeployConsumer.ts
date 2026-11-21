@@ -457,6 +457,25 @@ export class DeployConsumer {
       // phase' travou motor_deploy_lock e todos os deploys seguintes).
       await this.log(operationId, 1, 'deploy_lock_acquired', 'succeeded', message, { batchId: batch.batchId })
 
+      // 1.5. Re-checagem de drenagem SOB O LOCK (Alexandre 2026-11-20): o lock já
+      // parou o pump; se trabalho novo aguardando surgiu entre o claim e aqui
+      // (corrida da composição), adia o lote em vez de deployar com pipeline sujo.
+      // Adiamento = requests de volta a pending + retry do dispatch com backoff
+      // (requeueForDeployRetry 30s·2^n, teto 30min — sem tempestade).
+      const drainBlockers = await this.repository.pipelineDrainBlockers()
+      if (drainBlockers.length > 0) {
+        const reason = `pipeline_not_drained: ${drainBlockers.join(',')}`
+        await this.repository.deferBatchForDrain(batch.batchId, reason)
+        if (batch.workspacePath) {
+          await this.removeComposedWorktree(batch.repoPath, batch.workspacePath).catch(() => undefined)
+        }
+        await this.repository.requeueForDeployRetry(message, 'pipeline_not_drained')
+        await this.log(operationId, 2, 'deploy_wait_completed', 'skipped', message, {
+          batchId: batch.batchId, reasonCode: 'pipeline_not_drained', result: { blockers: drainBlockers },
+        })
+        return
+      }
+
       // 2. Aguarda execuções ativas terminarem (timeout: 10 min)
       const waitTimeoutMs = 600_000 // 10 minutos
       const waitResult = await this.repository.waitForActiveExecutionsToComplete(waitTimeoutMs)

@@ -186,6 +186,92 @@ export class DeployRepository {
   }
 
   /**
+   * Drenagem do pipeline (decisão Alexandre 2026-11-20): o deploy só é liberado
+   * quando, além de nenhuma execução em voo (isMotorIdle), NÃO houver trabalho
+   * aguardando:
+   * - tarefas na fila de espera de execução (motor_execution_wait_queue 'waiting')
+   *   — cobre "pendentes de análise" e "pendentes de desenvolvimento" acionáveis;
+   * - subtarefas 'pending' de tarefas vivas (não pausadas, sem estado terminal);
+   * - bloqueios em aberto (pendentes de correção);
+   * - missões de monitor ativas (sendo corrigidas pelo monitor).
+   * Tarefas pausadas/canceladas/concluídas e tarefas seguradas pelo gate de
+   * setup (capacity_waiting fora da fila de execução) NÃO bloqueiam — podem
+   * ficar paradas dias e não são trabalho acionável do motor agora.
+   * Reversível sem deploy: motor.deploy.require_pipeline_drained=false em
+   * motor_configuracoes volta ao comportamento antigo (só in-flight).
+   */
+  async pipelineDrainBlockers(): Promise<string[]> {
+    if (!await this.pipelineDrainRequired()) return []
+    const [rows] = await this.pool.query<Array<RowDataPacket & {
+      fila_execucao: number | string; dev_pendente: number | string
+      blocos_abertos: number | string; monitor_ativo: number | string
+    }>>(`
+      SELECT
+        (SELECT COUNT(*) FROM motor_execution_wait_queue WHERE status='waiting') AS fila_execucao,
+        (SELECT COUNT(*) FROM subtarefas s
+           JOIN tarefas t ON t.id = s.tarefa_id
+           LEFT JOIN task_runtime_facts f ON f.tarefa_id = t.id
+          WHERE s.status='pending' AND t.paused_at IS NULL AND f.terminal_status IS NULL) AS dev_pendente,
+        (SELECT COUNT(*) FROM bloqueios WHERE resolved_at IS NULL) AS blocos_abertos,
+        (SELECT COUNT(*) FROM motor_active_executions WHERE phase='monitor') AS monitor_ativo`)
+    const row = rows[0]
+    const blockers: string[] = []
+    if (Number(row?.fila_execucao ?? 0) > 0) blockers.push('tarefas_aguardando_execucao')
+    if (Number(row?.dev_pendente ?? 0) > 0) blockers.push('subtarefas_pendentes_desenvolvimento')
+    if (Number(row?.blocos_abertos ?? 0) > 0) blockers.push('blocos_pendentes_correcao')
+    if (Number(row?.monitor_ativo ?? 0) > 0) blockers.push('missoes_monitor_ativas')
+    return blockers
+  }
+
+  /**
+   * Liberação de deploy: execuções em voo + drenagem do pipeline. Usado no
+   * claimBatch (portão estrito, enquanto o pump ainda decide trabalho); o
+   * subconjunto de drenagem é re-verificado sob o lock no startPreparedBatch.
+   */
+  async deployClearance(): Promise<{ clear: boolean; blockers: string[] }> {
+    const blockers: string[] = []
+    if (!await this.isMotorIdle()) blockers.push('execucoes_ativas')
+    blockers.push(...await this.pipelineDrainBlockers())
+    return { clear: blockers.length === 0, blockers }
+  }
+
+  /** motor.deploy.require_pipeline_drained — default true (ausência ou erro de leitura = ativo). */
+  private async pipelineDrainRequired(): Promise<boolean> {
+    try {
+      const [rows] = await this.pool.query<Array<RowDataPacket & { valor: unknown }>>(
+        `SELECT valor FROM motor_configuracoes WHERE chave = 'motor.deploy.require_pipeline_drained' LIMIT 1`)
+      const raw = rows[0]?.valor
+      if (raw == null) return true
+      const text = String(typeof raw === 'object' ? JSON.stringify(raw) : raw).trim().toLowerCase().replace(/^"|"$/g, '')
+      return !['false', '0', 'off', 'no'].includes(text)
+    } catch { return true }
+  }
+
+  /**
+   * Adia um lote já claimado: requests voltam a 'pending' (sem batch_id), o
+   * lote fecha como 'failed' com o motivo do adiamento e o lock é liberado na
+   * mesma transação. Usado quando o pipeline volta a ficar não-drenado entre o
+   * claim e o lock (corrida com trabalho novo). O re-dispatch vem do retry com
+   * backoff (requeueForDeployRetry) e dos ciclos enqueuePendingDispatches.
+   */
+  async deferBatchForDrain(batchId: string, reason: string): Promise<void> {
+    const connection = await this.pool.getConnection()
+    try {
+      await connection.beginTransaction()
+      await connection.query(
+        `UPDATE deploy_batches SET status='failed', last_error=?, finished_at=NOW(), updated_at=NOW()
+          WHERE batch_id=? AND status IN ('pending','running')`, [reason.slice(0, 500), batchId])
+      await connection.query(
+        `UPDATE deploy_requests SET status='pending', batch_id=NULL, started_at=NULL, last_error=?, updated_at=NOW()
+          WHERE batch_id=? AND status='running'`, [reason.slice(0, 500), batchId])
+      await connection.query(
+        `UPDATE motor_deploy_lock SET locked=FALSE, locked_at=NULL, locked_by=NULL, reason=NULL
+          WHERE id=1 AND locked_by=?`, [batchId])
+      await connection.commit()
+    } catch (error) { await connection.rollback(); throw error } finally { connection.release() }
+  }
+
+  /**
    * Adquire o lock de deploy. Idempotente: se já está locked pelo mesmo batchId,
    * retorna true (re-entrant). Se está locked por outro batchId, retorna false.
    * Usa INSERT ON DUPLICATE KEY UPDATE para atomicidade.
@@ -980,7 +1066,16 @@ ${conflictData.conflictFiles.map(f => `- \`${f}\``).join('\n')}
     const baseBranch = String(source.payload.baseBranch ?? '')
     const expectedCommit = String(source.payload.expectedCommit ?? '')
     if (!repoPath || !baseBranch || !expectedCommit) throw new Error('Comando de lote de deploy incompleto')
-    if (!await this.isMotorIdle()) return null
+    // Portão estrito (Alexandre 2026-11-20): só claima com pipeline drenado —
+    // sem execuções em voo, sem tarefas aguardando análise/desenvolvimento e
+    // sem correções do monitor pendentes/ativas. Skip aqui é benigno: os
+    // pedidos seguem 'pending' e os ciclos enqueuePendingDispatches (boot,
+    // TASK_EXECUTION_COMPLETED, reconciliador) re-disparam depois.
+    const clearance = await this.deployClearance()
+    if (!clearance.clear) {
+      console.warn(`[DeployRepository] Dispatch adiado — pipeline não drenado: ${clearance.blockers.join(', ')}`)
+      return null
+    }
     const connection = await this.pool.getConnection()
     try {
       await connection.beginTransaction()

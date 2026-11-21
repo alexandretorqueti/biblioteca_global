@@ -68,6 +68,7 @@ describe('DeployConsumer.startPreparedBatch — deploy atômico', () => {
     const markRemoteStarted = vi.fn().mockResolvedValue(undefined)
     const enqueuePendingDispatches = vi.fn().mockResolvedValue(0)
     const repository = {
+      pipelineDrainBlockers: vi.fn().mockResolvedValue([]),
       acquireDeployLock,
       releaseDeployLock,
       waitForActiveExecutionsToComplete,
@@ -127,6 +128,7 @@ describe('DeployConsumer.startPreparedBatch — deploy atômico', () => {
     const { logger, entries } = captureLogger()
     const waitForActiveExecutionsToComplete = vi.fn().mockResolvedValue({ completed: false, forced: true })
     const repository = {
+      pipelineDrainBlockers: vi.fn().mockResolvedValue([]),
       acquireDeployLock: vi.fn().mockResolvedValue(true),
       releaseDeployLock: vi.fn().mockResolvedValue(undefined),
       waitForActiveExecutionsToComplete,
@@ -168,6 +170,7 @@ describe('DeployConsumer.startPreparedBatch — deploy atômico', () => {
     const { logger, entries } = captureLogger()
     const releaseDeployLock = vi.fn().mockResolvedValue(undefined)
     const repository = {
+      pipelineDrainBlockers: vi.fn().mockResolvedValue([]),
       acquireDeployLock: vi.fn().mockResolvedValue(true),
       releaseDeployLock,
       waitForActiveExecutionsToComplete: vi.fn().mockResolvedValue({ completed: true, forced: false }),
@@ -207,6 +210,7 @@ describe('DeployConsumer.startPreparedBatch — deploy atômico', () => {
   it('lança erro quando lock não pode ser adquirido (outro batch já possui)', async () => {
     const { logger } = captureLogger()
     const repository = {
+      pipelineDrainBlockers: vi.fn().mockResolvedValue([]),
       acquireDeployLock: vi.fn().mockResolvedValue(false),
       releaseDeployLock: vi.fn().mockResolvedValue(undefined),
       waitForActiveExecutionsToComplete: vi.fn(),
@@ -254,6 +258,7 @@ describe('DeployConsumer.startPreparedBatch — deploy atômico', () => {
     })
 
     const repository = {
+      pipelineDrainBlockers: vi.fn().mockResolvedValue([]),
       acquireDeployLock: vi.fn().mockResolvedValue(true),
       releaseDeployLock: vi.fn().mockResolvedValue(undefined),
       waitForActiveExecutionsToComplete,
@@ -318,6 +323,7 @@ describe('DeployConsumer.startPreparedBatch — deploy atômico', () => {
     }
     const releaseDeployLock = vi.fn().mockResolvedValue(undefined)
     const repository = {
+      pipelineDrainBlockers: vi.fn().mockResolvedValue([]),
       acquireDeployLock: vi.fn().mockResolvedValue(true),
       releaseDeployLock,
       waitForActiveExecutionsToComplete: vi.fn().mockResolvedValue({ completed: true, forced: false }),
@@ -351,6 +357,7 @@ describe('DeployConsumer.startPreparedBatch — deploy atômico', () => {
     }
     const releaseDeployLock = vi.fn().mockResolvedValue(undefined)
     const repository = {
+      pipelineDrainBlockers: vi.fn().mockResolvedValue([]),
       acquireDeployLock: vi.fn().mockResolvedValue(true),
       releaseDeployLock,
       waitForActiveExecutionsToComplete: vi.fn().mockResolvedValue({ completed: true, forced: false }),
@@ -373,5 +380,55 @@ describe('DeployConsumer.startPreparedBatch — deploy atômico', () => {
     // A falha é auditada: o log defensivo do catch registra deploy_lock_released/failed
     // sem mascarar o erro original propagado.
     expect(entries.find(e => e.phase === 'deploy_lock_released' && e.outcome === 'failed')).toBeDefined()
+  })
+})
+
+describe('DeployConsumer.startPreparedBatch — adiamento por pipeline não drenado (2026-11-20)', () => {
+  it('bloqueio de drenagem sob o lock → adia lote, re-enfileira dispatch com backoff e NÃO deploya', async () => {
+    const { logger } = captureLogger()
+    const acquireDeployLock = vi.fn().mockResolvedValue(true)
+    const releaseDeployLock = vi.fn().mockResolvedValue(undefined)
+    const waitForActiveExecutionsToComplete = vi.fn().mockResolvedValue({ completed: true, forced: false })
+    const markRemoteStarted = vi.fn().mockResolvedValue(undefined)
+    const pipelineDrainBlockers = vi.fn().mockResolvedValue(['blocos_pendentes_correcao'])
+    const deferBatchForDrain = vi.fn().mockResolvedValue(undefined)
+    const requeueForDeployRetry = vi.fn().mockResolvedValue(undefined)
+    const repository = {
+      pipelineDrainBlockers,
+      acquireDeployLock,
+      releaseDeployLock,
+      waitForActiveExecutionsToComplete,
+      markRemoteStarted,
+      deferBatchForDrain,
+      requeueForDeployRetry,
+    } as never
+
+    const remote = {
+      assertReady: vi.fn().mockResolvedValue(undefined),
+      start: vi.fn().mockResolvedValue({ pid: '12345', statusPath: '/tmp/status', logPath: '/tmp/log' }),
+    } as never
+
+    const consumer = new DeployConsumer(
+      repository,
+      {} as never,
+      remote,
+      logger,
+      undefined,
+      '/host/repo',
+      'deploy.sh',
+    )
+
+    await (consumer as any).startPreparedBatch(makeBatch(), makeMessage())
+
+    // Deploy NÃO chegou a rodar
+    expect(remote.assertReady).not.toHaveBeenCalled()
+    expect(remote.start).not.toHaveBeenCalled()
+    expect(markRemoteStarted).not.toHaveBeenCalled()
+    expect(waitForActiveExecutionsToComplete).not.toHaveBeenCalled()
+    // Lote adiado (requests→pending, batch→failed, lock liberado na transação)
+    expect(deferBatchForDrain).toHaveBeenCalledWith('batch-atomic-test', 'pipeline_not_drained: blocos_pendentes_correcao')
+    // Dispatch re-enfileirado com backoff para nova tentativa
+    expect(requeueForDeployRetry).toHaveBeenCalled()
+    expect((requeueForDeployRetry.mock.calls[0] as unknown[])[1]).toBe('pipeline_not_drained')
   })
 })
