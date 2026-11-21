@@ -75,7 +75,7 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
         t.id, t.external_id, t.titulo, t.descricao, t.tipo, pmc.repo_path, pmc.project_layout, t.paused_at,
         t.auto_start, pc.setup_status,
         t.depends_on_task_id,
-        COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), pc.slug, '') AS agente_id,
+        COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), 'biblioteca-global', '') AS agente_id,
         pc.slug AS project_slug,
         f.analysis_started_at, f.analysis_execution_id, f.terminal_status,
         f.capacity_wait_phase, f.capacity_wait_reason_code, f.capacity_wait_limit_scope,

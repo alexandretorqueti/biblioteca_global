@@ -3,6 +3,7 @@ export {
   loadCatalogoCapacidades,
   loadProjectDocs,
   isModelUnavailableError,
+  isAgentConfigError,
   type GenerationContextRow,
   type ProjectGenerationWorkerConfig,
 } from './ProjectGenerationWorker.js'

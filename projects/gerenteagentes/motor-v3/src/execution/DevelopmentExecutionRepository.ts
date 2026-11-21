@@ -550,7 +550,7 @@ export class MySqlDevelopmentExecutionRepository {
               s.generation,
               pc.slug AS project_slug, pmc.project_layout, pmc.repo_path, pmc.repo_path_host, pmc.git_remote, pmc.branch_trabalho,
               pmc.build_command, pmc.unit_test_command,
-              COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), pc.slug, '') AS agent_id,
+              COALESCE(NULLIF(a.openclaw_agent_id, ''), NULLIF(a.nome, ''), 'biblioteca-global', '') AS agent_id,
               s.workspace_path, s.workspace_branch, s.workspace_base_commit
          FROM tarefas t
          INNER JOIN subtarefas s ON s.tarefa_id = t.id
@@ -610,6 +610,26 @@ export class MySqlDevelopmentExecutionRepository {
       [subtaskId],
     )
     return Number(rows[0]?.total ?? 0) > 0
+  }
+
+  /**
+   * Lease 'development' vivo da subtarefa (motor_active_executions não expirado).
+   * Usado para distinguir duplicatas de uma execução em andamento (mesmo
+   * executionId, worker heartbeating) de conflitos com sessão órfã: a cópia
+   * duplicada NÃO deve consumir orçamento de adiamento nem falhar a subtarefa
+   * (incidente 2026-11-20 s1565/b3522: gêmeos reentregues esgotaram os 40
+   * adiamentos e terminaram a subtarefa enquanto o worker 125b estava vivo).
+   */
+  async getLiveDevelopmentLease(subtaskId: number): Promise<{ executionId: string; heartbeatAt: Date | string | null } | null> {
+    const [rows] = await this.pool.query<Array<RowDataPacket & { execution_id: string; heartbeat_at: Date | string | null }>>(
+      `SELECT execution_id, heartbeat_at FROM motor_active_executions
+        WHERE subtarefa_id=? AND phase='development' AND expires_at > NOW()
+        LIMIT 1`,
+      [subtaskId],
+    )
+    const row = rows[0]
+    if (!row) return null
+    return { executionId: String(row.execution_id), heartbeatAt: row.heartbeat_at ?? null }
   }
 
   /**

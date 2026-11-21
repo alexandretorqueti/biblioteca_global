@@ -176,11 +176,13 @@ export async function reconcileSetupCompletion(
   )
   let candidate: unknown = null
   for (const row of evidenceRows) {
-    const parsed = tryParseJsonObject(row.resultado)
-    if (parsed !== null && hasValidSmokeTest((parsed as { smoke_test?: unknown }).smoke_test)) {
-      candidate = parsed
-      break
+    for (const parsed of parseJsonObjectCandidates(row.resultado)) {
+      if (hasValidSmokeTest((parsed as { smoke_test?: unknown }).smoke_test)) {
+        candidate = parsed
+        break
+      }
     }
+    if (candidate !== null) break
   }
 
   // (3) Validador combinado da subtarefa 1: evidência JSON + artefatos em
@@ -317,13 +319,74 @@ async function recordSetupEvent(
 }
 
 /** JSON.parse defensivo: retorna objeto (não-array) ou null. */
-function tryParseJsonObject(value: string | null | undefined): unknown | null {
+/**
+ * Extrai candidatos a objeto JSON de um resultado de subtarefa (ordem de
+ * aparição, sem duplicar o texto integral quando ele próprio é JSON puro).
+ *
+ * Histórico (incidente b3517 — setup-calculadora-de-investimentos-gabriel,
+ * 2026-11-20): a última subtarefa de uma tarefa `setup-*` é
+ * `external_operation`, e o WorkerLauncher EXIGE evidência rotulada
+ * ("O que foi feito:"/"Como verificar:") + marcador ::DONE:: — logo
+ * `subtarefas.resultado` (a resposta final bruta) NUNCA é JSON puro nesse
+ * fluxo. A reconciliação antiga fazia JSON.parse do texto integral e
+ * reprovava setups cujo DEV seguiu o protocolo de conclusão corretamente
+ * (caso real: setup-gerenteagentes, subtarefa 1553 → setup_status='failed'
+ * com o smoke test de fato executado). Catch-22: prosa rotulada com JSON
+ * embutido passava no WorkerLauncher e reprovava aqui; JSON puro (sem
+ * rótulos) era recusado pelo WorkerLauncher e nem chegava aqui.
+ *
+ * Regra atual (ADITIVA — JSON puro continua aceito):
+ * 1. texto integral parseável → único candidato;
+ * 2. senão, blocos `{...}` balanceados (scanner ciente de strings/escapes)
+ *    são tentados em ordem de aparição, com teto de tentativas para não
+ *    degradar em texto grande.
+ * O chamador escolhe o primeiro candidato com `smoke_test` VÁLIDO — bloco
+ * inválido não é promovido por acidente.
+ */
+export function parseJsonObjectCandidates(value: string | null | undefined): unknown[] {
   const text = String(value ?? '').trim()
-  if (!text) return null
-  try {
-    const parsed: unknown = JSON.parse(text)
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null
-  } catch {
-    return null
+  if (!text) return []
+  const candidates: unknown[] = []
+  const pushObject = (raw: string): boolean => {
+    try {
+      const parsed: unknown = JSON.parse(raw)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        candidates.push(parsed)
+        return true
+      }
+    } catch {
+      // não é JSON válido — candidato ignorado
+    }
+    return false
   }
+  if (pushObject(text)) return candidates
+
+  const MAX_STARTS = 50
+  const MAX_CANDIDATES = 20
+  let startsTried = 0
+  for (let start = text.indexOf('{'); start !== -1 && startsTried < MAX_STARTS && candidates.length < MAX_CANDIDATES; start = text.indexOf('{', start + 1)) {
+    startsTried++
+    let depth = 0
+    let inString = false
+    let escaped = false
+    for (let i = start; i < text.length; i++) {
+      const ch = text[i]
+      if (inString) {
+        if (escaped) escaped = false
+        else if (ch === '\\') escaped = true
+        else if (ch === '"') inString = false
+        continue
+      }
+      if (ch === '"') inString = true
+      else if (ch === '{') depth++
+      else if (ch === '}') {
+        depth--
+        if (depth === 0) {
+          pushObject(text.slice(start, i + 1))
+          break
+        }
+      }
+    }
+  }
+  return candidates
 }

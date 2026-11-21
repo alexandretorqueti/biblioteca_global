@@ -139,6 +139,87 @@ describe('SubtaskExecutionConsumer', () => {
     expect(repository.finishExecution).toHaveBeenCalledWith(context, message, expect.objectContaining({ success: true }))
   })
 
+  it('descarta duplicata da própria execução em andamento (lease vivo, mesmo executionId)', async () => {
+    const repository = {
+      getExecutionContext: vi.fn().mockResolvedValue(context),
+      getLiveDevelopmentLease: vi.fn().mockResolvedValue({ executionId: 'execution-1', heartbeatAt: null }),
+      hasActiveDevelopmentSession: vi.fn().mockResolvedValue(true),
+      deferExecutionMessage: vi.fn().mockResolvedValue('deferred'),
+      getDevelopmentModelChain: vi.fn(),
+    }
+    const worktrees = { prepare: vi.fn() }
+    const worker = { executeTask: vi.fn() }
+    const logger = { append: vi.fn().mockResolvedValue(undefined) }
+    const consumer = new SubtaskExecutionConsumer(repository as never, worktrees as never, worker as never, {}, {}, logger)
+
+    await consumer.handle(message)
+
+    expect(repository.hasActiveDevelopmentSession).not.toHaveBeenCalled()
+    expect(repository.deferExecutionMessage).not.toHaveBeenCalled()
+    expect(worker.executeTask).not.toHaveBeenCalled()
+    expect(logger.append).toHaveBeenLastCalledWith(expect.objectContaining({
+      phase: 'rejected', outcome: 'skipped', reasonCode: 'duplicate_of_running_execution',
+    }))
+  })
+
+  it('adia cópia quando o lease vivo pertence a outro executionId (caminho reconciliador preservado)', async () => {
+    const repository = {
+      getExecutionContext: vi.fn().mockResolvedValue(context),
+      getLiveDevelopmentLease: vi.fn().mockResolvedValue({ executionId: 'outra-execucao', heartbeatAt: null }),
+      hasActiveDevelopmentSession: vi.fn().mockResolvedValue(true),
+      deferExecutionMessage: vi.fn().mockResolvedValue('deferred'),
+      getDevelopmentModelChain: vi.fn(),
+    }
+    const worktrees = { prepare: vi.fn() }
+    const worker = { executeTask: vi.fn() }
+    const logger = { append: vi.fn().mockResolvedValue(undefined) }
+    const consumer = new SubtaskExecutionConsumer(repository as never, worktrees as never, worker as never, {}, {}, logger)
+
+    await consumer.handle(message)
+
+    expect(repository.deferExecutionMessage).toHaveBeenCalledWith(
+      message, 'development_session_recovery_owned', expect.objectContaining({ maxDefers: expect.any(Number) }),
+    )
+    expect(worker.executeTask).not.toHaveBeenCalled()
+  })
+
+  it('não termina a subtarefa quando os adiamentos esgotam com execução viva (incidente b3522/s1565)', async () => {
+    const repository = {
+      getExecutionContext: vi.fn().mockResolvedValue(context),
+      getLiveDevelopmentLease: vi.fn().mockResolvedValue({ executionId: 'outra-execucao', heartbeatAt: null }),
+      hasActiveDevelopmentSession: vi.fn().mockResolvedValue(true),
+      deferExecutionMessage: vi.fn().mockResolvedValue('exhausted'),
+      getDevelopmentModelChain: vi.fn(),
+    }
+    const worktrees = { prepare: vi.fn() }
+    const worker = { executeTask: vi.fn() }
+    const logger = { append: vi.fn().mockResolvedValue(undefined) }
+    const consumer = new SubtaskExecutionConsumer(repository as never, worktrees as never, worker as never, {}, {}, logger)
+
+    await consumer.handle(message)
+
+    expect(logger.append).toHaveBeenLastCalledWith(expect.objectContaining({
+      phase: 'rejected', outcome: 'skipped', reasonCode: 'conflict_exhausted_live_execution_active',
+      result: expect.objectContaining({ reason: 'development_session_recovery_owned', leaseExecutionId: 'outra-execucao' }),
+    }))
+  })
+
+  it('mantém falha terminal quando os adiamentos esgotam sem execução viva', async () => {
+    const repository = {
+      getExecutionContext: vi.fn().mockResolvedValue(context),
+      getLiveDevelopmentLease: vi.fn().mockResolvedValue(null),
+      hasActiveDevelopmentSession: vi.fn().mockResolvedValue(true),
+      deferExecutionMessage: vi.fn().mockResolvedValue('exhausted'),
+      getDevelopmentModelChain: vi.fn(),
+    }
+    const worktrees = { prepare: vi.fn() }
+    const worker = { executeTask: vi.fn() }
+    const logger = { append: vi.fn().mockResolvedValue(undefined) }
+    const consumer = new SubtaskExecutionConsumer(repository as never, worktrees as never, worker as never, {}, {}, logger)
+
+    await expect(consumer.handle(message)).rejects.toThrow(/adiamentos esgotados \(development_session_recovery_owned\)/)
+  })
+
   it('separa a descrição longa do header enviado ao programador', async () => {
     const longContext = { ...context, taskDescription: 'D'.repeat(12_001) }
     const repository = {

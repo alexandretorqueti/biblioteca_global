@@ -7,6 +7,8 @@ import {
   ManagedGenerationPromptResolver,
   ProjectGenerationWorker,
   isLocalModel,
+  isAgentConfigError,
+  isModelUnavailableError,
   resolveGenerationModelChain,
   type GenerationPromptInput,
   type GenerationTransitionNotifier,
@@ -38,7 +40,7 @@ interface FakeDb {
   chats: Array<{ projeto_id: number; role: string; texto: string }>
   queries: Array<{ sql: string; params: unknown[] }>
   /** Contexto do projeto retornado pelo loadContext (join projetos_captados). */
-  projetoContexto: { descricao: string; especificacao: string | null }
+  projetoContexto: { descricao: string; especificacao: string | null; agenteId?: string }
 }
 
 function createFakeDb(
@@ -96,7 +98,7 @@ function createFakeDb(
         feedback: row.feedback, worker_id: row.worker_id,
         nome: 'Gestão de Tarefas Global', slug: 'gestao-tarefas',
         descricao: db.projetoContexto.descricao, especificacao: db.projetoContexto.especificacao,
-        agente_id: 'agente-gestao-tarefas', repo_path: null,
+        agente_id: db.projetoContexto.agenteId ?? 'agente-gestao-tarefas', repo_path: null,
       }])
     }
     if (normalized.startsWith('SELECT role, texto FROM projeto_chats')) {
@@ -304,6 +306,48 @@ describe('ProjectGenerationWorker — contrato §5', () => {
     expect(plano.lacunasBiblioteca[0].funcionalidade).toBe('Visão agrupada por área')
     // Sessão do analista disparada com o agente do projeto.
     expect(console_.createdSessions[0].agentId).toBe('agente-gestao-tarefas')
+  })
+
+  it('projeto sem agente vinculado → sessão usa biblioteca-global, nunca o slug (incidente geração 6, 2026-11-20)', async () => {
+    const db = createFakeDb([{ id: 91 }], { agenteId: '' })
+    const console_ = new FakeConsole([PLANO_VALIDO])
+    const { worker } = createWorker(db, console_)
+
+    await worker.tick()
+
+    // loadContext devolve '' (COALESCE vazio sem join de agente); o TS cai no
+    // default da plataforma — o slug do projeto NÃO é agente válido no gateway.
+    expect(console_.createdSessions[0].agentId).toBe('biblioteca-global')
+    expect(db.geracoes[0].status).toBe('awaiting_approval')
+  })
+
+  it('Unknown agent id (Console 500 INVALID_REQUEST) → agent_not_provisioned terminal, sem escalar a cadeia paga', async () => {
+    const db = createFakeDb([{ id: 92 }])
+    const console_ = new FakeConsole([])
+    console_.createSession = async () => {
+      throw new Error('Console HTTP 500: {"error":{"code":"INVALID_REQUEST","message":"Unknown agent id \\"projeto-sem-agente\\""}}')
+    }
+    const { worker } = createWorker(db, console_)
+
+    await worker.tick()
+
+    const geracao = db.geracoes[0]
+    // Terminal e rápido: falhou na PRIMEIRA tentativa do PRIMEIRO modelo —
+    // antes queimava a cadeia inteira de modelos pagos no mesmo erro de agente.
+    expect(geracao.status).toBe('failed')
+    expect(geracao.erro).toMatch(/^agent_not_provisioned:/)
+    expect(console_.createdSessions).toHaveLength(0)
+    const chainQueries = db.queries.filter(q => /INSERT INTO bloqueios/i.test(q.sql))
+    expect(chainQueries).toHaveLength(0)
+  })
+
+  it('isAgentConfigError: só Unknown agent id; indisponibilidade de modelo comum não é pega', async () => {
+    expect(isAgentConfigError(new Error('Console HTTP 500: {"code":"INVALID_REQUEST","message":"Unknown agent id \\"x\\""}'))).toBe(true)
+    expect(isAgentConfigError(new Error('model not found'))).toBe(false)
+    expect(isAgentConfigError(new Error('429 rate limited'))).toBe(false)
+    // A classificação antiga (isModelUnavailableError) pegava o erro de agente
+    // pelo INVALID_REQUEST no corpo — agora o checape do agente vem antes no worker.
+    expect(isModelUnavailableError(new Error('Console HTTP 500: {"code":"INVALID_REQUEST","message":"Unknown agent id \\"x\\""}'))).toBe(true)
   })
 
   it('kind=perguntas → mensagem role=analyst no chat do projeto + status=awaiting_clarification', async () => {

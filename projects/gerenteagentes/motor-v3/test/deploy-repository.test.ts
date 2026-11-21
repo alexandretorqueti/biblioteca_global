@@ -555,3 +555,107 @@ describe('DeployRepository — execution_id de retry limitado no reenfileirament
     expect(inserted.causationId).toBe(source.messageId)
   })
 })
+
+describe('DeployRepository — liberação de deploy com pipeline drenado (2026-11-20)', () => {
+  function createClearanceRepo(opts: {
+    active?: number
+    flagRow?: Array<{ valor: unknown }>
+    counts?: { fila_execucao?: number; dev_pendente?: number; blocos_abertos?: number; monitor_ativo?: number }
+  } = {}) {
+    const pool = createMockPool()
+    const queries: string[] = []
+    pool.query.mockImplementation(async (sql: unknown) => {
+      const text = String(sql)
+      queries.push(text)
+      if (text.includes('AS active')) return [[{ active: opts.active ?? 0 }], []]
+      if (text.includes('motor.deploy.require_pipeline_drained')) return [opts.flagRow ?? [], []]
+      if (text.includes('fila_execucao')) {
+        return [[{
+          fila_execucao: opts.counts?.fila_execucao ?? 0,
+          dev_pendente: opts.counts?.dev_pendente ?? 0,
+          blocos_abertos: opts.counts?.blocos_abertos ?? 0,
+          monitor_ativo: opts.counts?.monitor_ativo ?? 0,
+        }], []]
+      }
+      return [[], []]
+    })
+    const repo = new DeployRepository(pool as never, '/tmp/worktrees')
+    return { repo, pool, queries }
+  }
+
+  it('pipeline ocioso e drenado → clear sem bloqueios', async () => {
+    const { repo } = createClearanceRepo()
+    const clearance = await repo.deployClearance()
+    expect(clearance).toEqual({ clear: true, blockers: [] })
+  })
+
+  it('execuções em voo → execucoes_ativas', async () => {
+    const { repo } = createClearanceRepo({ active: 1 })
+    const clearance = await repo.deployClearance()
+    expect(clearance.clear).toBe(false)
+    expect(clearance.blockers).toContain('execucoes_ativas')
+  })
+
+  it('mapeia os quatro bloqueios de drenagem', async () => {
+    const { repo } = createClearanceRepo({
+      counts: { fila_execucao: 2, dev_pendente: 5, blocos_abertos: 1, monitor_ativo: 1 },
+    })
+    const clearance = await repo.deployClearance()
+    expect(clearance.clear).toBe(false)
+    expect(clearance.blockers).toEqual([
+      'tarefas_aguardando_execucao',
+      'subtarefas_pendentes_desenvolvimento',
+      'blocos_pendentes_correcao',
+      'missoes_monitor_ativas',
+    ])
+  })
+
+  it('flag motor.deploy.require_pipeline_drained=false → volta ao critério antigo (só in-flight)', async () => {
+    const { repo, queries } = createClearanceRepo({
+      flagRow: [{ valor: 0 }],
+      counts: { fila_execucao: 9, dev_pendente: 9, blocos_abertos: 9, monitor_ativo: 9 },
+    })
+    const clearance = await repo.deployClearance()
+    expect(clearance).toEqual({ clear: true, blockers: [] })
+    // A query de contagens NÃO chegou a ser executada com a flag desligada.
+    expect(queries.some(q => q.includes('fila_execucao'))).toBe(false)
+  })
+
+  it('ausência da linha de config → drenagem exigida (default seguro)', async () => {
+    const { repo } = createClearanceRepo({ flagRow: [], counts: { blocos_abertos: 1 } })
+    const clearance = await repo.deployClearance()
+    expect(clearance.clear).toBe(false)
+    expect(clearance.blockers).toEqual(['blocos_pendentes_correcao'])
+  })
+
+  it('claimBatch com pipeline não drenado → null sem abrir conexão/transação', async () => {
+    const { repo, pool } = createClearanceRepo({ active: 0, counts: { fila_execucao: 1 } })
+    const message = createQueueMessage({
+      type: 'DEPLOY_BATCH_DISPATCH_REQUESTED', taskId: 'task-1', executionId: 'exec-1',
+      payload: { repository: '/repo', baseBranch: 'base-desenvolvimento', expectedCommit: 'abc1234' },
+    })
+    const claimed = await repo.claimBatch(message)
+    expect(claimed).toBeNull()
+    expect(pool.getConnection).not.toHaveBeenCalled()
+  })
+
+  it('deferBatchForDrain: lote failed, requests de volta a pending e lock liberado na mesma transação', async () => {
+    const connection = createMockConnection()
+    const pool = createMockPool()
+    pool.getConnection.mockResolvedValue(connection)
+    const repo = new DeployRepository(pool as never, '/tmp/worktrees')
+
+    await repo.deferBatchForDrain('deploy-abc', 'pipeline_not_drained: blocos_abertos')
+
+    expect(connection.beginTransaction).toHaveBeenCalled()
+    expect(connection.commit).toHaveBeenCalled()
+    expect(connection.rollback).not.toHaveBeenCalled()
+    const sqls = connection.query.mock.calls.map(c => String(c[0]))
+    expect(sqls.some(s => s.includes("UPDATE deploy_batches SET status='failed'"))).toBe(true)
+    expect(sqls.some(s => s.includes("UPDATE deploy_requests SET status='pending'") && s.includes('batch_id=NULL'))).toBe(true)
+    expect(sqls.some(s => s.includes('UPDATE motor_deploy_lock SET locked=FALSE') && s.includes('locked_by=?'))).toBe(true)
+    // Motivo registrado nos requests devolvidos à fila
+    const requestsCall = connection.query.mock.calls.find(c => String(c[0]).includes('UPDATE deploy_requests'))
+    expect((requestsCall?.[1] as unknown[])[0]).toContain('pipeline_not_drained')
+  })
+})
