@@ -751,17 +751,53 @@ describe('MigrationDryRunExecutor', () => {
       const { ws, baseCommit } = await createWorkspaceWithJournal(2000)
       const appliedHash = createHash('sha256').update('CREATE TABLE `t2` (`id` INT);', 'utf8').digest('hex')
       querySpy.mockResolvedValueOnce([[{ watermark: '2000', hash: appliedHash }]]) // SELECT created_at, hash
-      querySpy.mockResolvedValueOnce([[]]) // SHOW CREATE TABLE (estrutura no scratch)
-      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // execucao do CREATE reescrito
-      querySpy.mockResolvedValue([{} as ResultSetHeader]) // cleanup
+      querySpy.mockResolvedValue([{} as ResultSetHeader]) // qualquer query seguinte (nao esperada)
 
       const executor = new MigrationDryRunExecutor(mockPool, 778)
       await expect(executor.execute(ws, baseCommit)).resolves.toBeUndefined()
 
-      const createCall = querySpy.mock.calls.find(call =>
-        typeof call[0] === 'string' && call[0].includes('gate_scratch_778_t2')
-      )
-      expect(createCall).toBeDefined()
+      // Migration aplicada fica FORA do dry-run: nenhum statement/clone em scratch
+      expect(querySpy).toHaveBeenCalledTimes(1)
+      expect(querySpy.mock.calls.every(call => !String(call[0]).includes('gate_scratch_778'))).toBe(true)
+    })
+
+    it('mantem no dry-run a migration nao aplicada quando outra do mesmo projeto ja foi aplicada', async () => {
+      const ws = await createWorkspace()
+      await mkdir(join(ws, 'projects/alpha/migrations/meta'), { recursive: true })
+      await writeFile(join(ws, 'projects/alpha/migrations/0001_initial.sql'), 'CREATE TABLE `t1` (`id` INT);')
+      await writeFile(join(ws, 'projects/alpha/migrations/meta/_journal.json'), JSON.stringify({
+        version: '5', dialect: 'mysql', entries: [
+          { idx: 0, version: '5', when: 1000, tag: '0001_initial', breakpoints: true },
+        ],
+      }))
+      await git(ws, ['add', '.'])
+      await git(ws, ['commit', '-m', 'baseline'])
+      const baseCommit = (await git(ws, ['rev-parse', 'HEAD'])).trim()
+
+      // Duas migrations adicionadas: 0002 já aplicada (hash no banco), 0003 nova.
+      await writeFile(join(ws, 'projects/alpha/migrations/0002_applied.sql'), 'CREATE TABLE `t2` (`id` INT);')
+      await writeFile(join(ws, 'projects/alpha/migrations/0003_new.sql'), 'CREATE TABLE `t3` (`id` INT);')
+      await writeFile(join(ws, 'projects/alpha/migrations/meta/_journal.json'), JSON.stringify({
+        version: '5', dialect: 'mysql', entries: [
+          { idx: 0, version: '5', when: 1000, tag: '0001_initial', breakpoints: true },
+          { idx: 1, version: '5', when: 2000, tag: '0002_applied', breakpoints: true },
+          { idx: 2, version: '5', when: 3000, tag: '0003_new', breakpoints: true },
+        ],
+      }))
+      const appliedHash = createHash('sha256').update('CREATE TABLE `t2` (`id` INT);', 'utf8').digest('hex')
+      querySpy.mockResolvedValueOnce([[{ watermark: '2000', hash: appliedHash }]]) // SELECT created_at, hash
+      querySpy.mockResolvedValueOnce([[]]) // SHOW CREATE TABLE t3 (nao existe)
+      querySpy.mockResolvedValueOnce([{} as ResultSetHeader]) // CREATE scratch t3
+      querySpy.mockResolvedValue([{} as ResultSetHeader]) // cleanup
+
+      const executor = new MigrationDryRunExecutor(mockPool, 781)
+      await expect(executor.execute(ws, baseCommit)).resolves.toBeUndefined()
+
+      const scratchCalls = querySpy.mock.calls
+        .map(call => String(call[0]))
+        .filter(sql => sql.includes('gate_scratch_781'))
+      expect(scratchCalls.some(sql => sql.includes('gate_scratch_781_t3'))).toBe(true)
+      expect(scratchCalls.every(sql => !sql.includes('gate_scratch_781_t2'))).toBe(true)
     })
 
     it('reprova when <= watermark quando o hash da migration NAO esta aplicado no banco', async () => {

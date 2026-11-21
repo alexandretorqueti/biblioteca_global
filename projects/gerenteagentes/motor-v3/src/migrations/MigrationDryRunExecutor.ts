@@ -126,10 +126,17 @@ export class MigrationDryRunExecutor {
       const resolved = (await this.projectPoolResolver?.(project)) ?? null
       this.activePool = resolved?.pool ?? this.pool
       try {
-        await this.validateJournalWatermarks(workspacePath, forProject)
+        const appliedPaths = await this.validateJournalWatermarks(workspacePath, forProject)
+        // Migrations já aplicadas no banco alvo (hash registrado em
+        // __drizzle_migrations) ficam FORA do dry-run: reexecutá-las sobre o
+        // clone da estrutura atual falharia com errno 1050 (CREATE duplicado
+        // na scratch) — incidente tarefa 1106/b3529.
+        const pendingMigrations = appliedPaths.size > 0
+          ? forProject.filter(migration => !appliedPaths.has(migration.path))
+          : forProject
 
         try {
-          await this.executeDifferential(workspacePath, forProject)
+          await this.executeDifferential(workspacePath, pendingMigrations)
         } catch (error) {
           const missingScratch = error instanceof MigrationDryRunError
             && error.violations.length > 0
@@ -139,7 +146,7 @@ export class MigrationDryRunExecutor {
           // completa (as migrations anteriores criarão as tabelas em scratch).
           await this.cleanupScratchTables()
           this.scratchTables.length = 0
-          await this.executeFullChain(workspacePath, project, forProject)
+          await this.executeFullChain(workspacePath, project, pendingMigrations)
         }
       } finally {
         await this.cleanupScratchTables()
@@ -319,11 +326,14 @@ export class MigrationDryRunExecutor {
    * monitor e `when == watermark` passou a reprovar o pre_deploy em falso
    * positivo; a correção sugerida pela mensagem (aumentar o `when`) forçaria a
    * REAPLICAÇÃO de um CREATE TABLE não-idempotente (errno 1050) no deploy.
+   * Migrations já aplicadas retornam no conjunto de caminhos para ficarem fora
+   * do dry-run (reexecutar o CREATE sobre a estrutura clonada daria 1050).
    */
   private async validateJournalWatermarks(
     workspacePath: string,
     addedMigrations: Array<{ project: string; migration: string; path: string }>,
-  ): Promise<void> {
+  ): Promise<Set<string>> {
+    const appliedPaths = new Set<string>()
     interface JournalEntry { tag: string; when: number }
     const entriesByProject = new Map<string, JournalEntry[]>()
     const candidates: Array<{ project: string; migration: string; path: string; when: number }> = []
@@ -346,7 +356,7 @@ export class MigrationDryRunExecutor {
         candidates.push({ project: added.project, migration: added.migration, path: added.path, when: entry.when })
       }
     }
-    if (candidates.length === 0) return
+    if (candidates.length === 0) return appliedPaths
 
     let watermark: number | null = null
     const appliedHashes = new Set<string>()
@@ -368,10 +378,10 @@ export class MigrationDryRunExecutor {
       }
     } catch (error) {
       // Tabela ainda não existe (banco novo): não há watermark, nada a validar.
-      if (MigrationDryRunExecutor.isMissingTableError(error)) return
+      if (MigrationDryRunExecutor.isMissingTableError(error)) return appliedPaths
       throw error
     }
-    if (watermark === null) return
+    if (watermark === null) return appliedPaths
 
     const violations: Array<{ project: string; migration: string; entryWhen: number; databaseWatermark: number }> = []
     for (const candidate of candidates) {
@@ -381,7 +391,10 @@ export class MigrationDryRunExecutor {
           const content = await readFile(resolve(workspacePath, candidate.path), 'utf8')
           const hash = createHash('sha256').update(content, 'utf8').digest('hex')
           // Conteúdo já registrado no banco alvo: migration aplicada, skip correto.
-          if (appliedHashes.has(hash)) continue
+          if (appliedHashes.has(hash)) {
+            appliedPaths.add(candidate.path)
+            continue
+          }
         } catch {
           // Arquivo ilegível: sem prova de aplicação → mantém a violação.
         }
@@ -394,6 +407,7 @@ export class MigrationDryRunExecutor {
       })
     }
     if (violations.length > 0) throw new MigrationWatermarkError(violations)
+    return appliedPaths
   }
 
   /**
