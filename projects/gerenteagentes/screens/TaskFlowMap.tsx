@@ -60,15 +60,55 @@ export interface RecoveryEligibility {
 
 export interface CapacityWaitProjection {
   phase: "analysis" | "development"
-  reasonCode: "global_limit" | "project_limit" | "provider_limit" | "model_cooldown" | "setup_not_verified"
+  reasonCode: "global_limit" | "project_limit" | "provider_limit" | "model_cooldown" | "setup_not_verified" | "deploy_drain"
   limitScope: "global" | "project" | "provider" | "model"
   limitValue: number
   provider: string | null
   retryAt?: string | null
+  /** Sub-motivo da espera setup_not_verified (motor-visibilidade-setup-not-verified). */
+  setupState?: "setup_faltando" | "setup_failed" | "setup_em_andamento" | null
+  /** Resumo do erro real do setup (geracoes_projeto.erro / projetos_captados.setup_error). */
+  setupError?: string | null
+  /** Detalhe legível vindo do motor (inclui estado do re-disparo automático). */
+  detail?: string | null
+}
+
+/** Rótulo curto do sub-motivo de setup (chip no Mapa de agentes). */
+export function capacityWaitSetupLabel(wait: CapacityWaitProjection): string | null {
+  if (wait.reasonCode !== "setup_not_verified" || !wait.setupState) return null
+  const labels: Record<NonNullable<CapacityWaitProjection["setupState"]>, string> = {
+    setup_failed: "Setup FALHOU",
+    setup_faltando: "Sem setup ativo",
+    setup_em_andamento: "Setup em andamento",
+  }
+  return labels[wait.setupState]
+}
+
+/**
+ * Severidade do chip/ícone da espera de capacidade: `error` apenas para
+ * setup_failed (fila retida por falha real, exige ação); demais esperas são
+ * transitórias → `warning`.
+ */
+export function capacityWaitSeverity(wait: CapacityWaitProjection): "warning" | "error" {
+  return wait.reasonCode === "setup_not_verified" && wait.setupState === "setup_failed" ? "error" : "warning"
 }
 
 export function capacityWaitMessage(wait: CapacityWaitProjection): string {
+  if (wait.reasonCode === "deploy_drain") {
+    return `Deploy aguardando dreno: existe pedido de deploy na fila há mais de ${wait.limitValue} minuto${wait.limitValue === 1 ? "" : "s"} — o motor pausou o início de novas execuções até despachar o batch.`
+  }
   if (wait.reasonCode === "setup_not_verified") {
+    if (wait.setupState === "setup_failed") {
+      const erro = wait.setupError ? ` ${wait.setupError}` : ""
+      return `⚠ Setup do projeto FALHOU:${erro} A fila está retida. Refaça o setup em Projetos → Iniciar desenvolvimento.`
+    }
+    if (wait.setupState === "setup_faltando") {
+      const detalhe = wait.detail ? ` ${wait.detail}` : ""
+      return `Projeto sem setup concluído e sem missão de setup na fila — o motor está re-disparando automaticamente.${detalhe} Acompanhe em Projetos.`
+    }
+    if (wait.setupState === "setup_em_andamento") {
+      return "Aguardando o setup do projeto ser verificado (setup_status=verified) — as tarefas serão despachadas automaticamente após a verificação. Acompanhe em Projetos."
+    }
     return "Aguardando o setup do projeto ser verificado (setup_status=verified) — as tarefas serão despachadas automaticamente após a verificação."
   }
   if (wait.reasonCode === "model_cooldown" || wait.limitScope === "model") {
@@ -602,6 +642,10 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, m
           const showRecovery = task.status === "blocked" && task.recoveryEligibility != null
           const recoveryLabel = showRecovery ? recoveryEligibilityLabel(task.recoveryEligibility!) : ""
           const waitingForCapacity = task.capacityWait != null
+          // Severidade da espera (tarefa motor-visibilidade-setup-not-verified):
+          // setup_failed = error (fila retida por falha real); demais = warning.
+          const waitSeverity = waitingForCapacity ? capacityWaitSeverity(task.capacityWait!) : "warning"
+          const waitSetupLabel = waitingForCapacity ? capacityWaitSetupLabel(task.capacityWait!) : null
 
           // Tooltip rico (1.3e): descrição + projeto + prioridade + atualização
           // Nota: campo responsável omitido — backend ainda não expõe essa informação.
@@ -662,7 +706,7 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, m
                   border: 0,
                   borderLeft: `4px solid ${prioridadeCor}`,
                   borderTop: waitingForCapacity ? "2px dashed" : undefined,
-                  borderTopColor: waitingForCapacity ? "warning.main" : undefined,
+                  borderTopColor: waitingForCapacity ? (waitSeverity === "error" ? "error.main" : "warning.main") : undefined,
                   textAlign: "left",
                   cursor: "pointer",
                   bgcolor: isSelected ? "action.selected" : "background.paper",
@@ -696,7 +740,20 @@ function Station({ station, tarefas, tarefasFiltradas, selectedTaskId, search, m
                     {avatar.letra}
                   </Avatar>
                   {aiActive && <SettingsRounded aria-label="IA trabalhando" sx={{ flexShrink: 0, fontSize: 18, color: "warning.main", animation: "gear-spin 2s linear infinite", "@keyframes gear-spin": { to: { transform: "rotate(360deg)" } } }} />}
-                  {waitingForCapacity && <Tooltip title={capacityWaitMessage(task.capacityWait!)} arrow><HourglassBottomRounded aria-label="Aguardando capacidade" data-testid={`flow-task-capacity-wait-${task.id}`} sx={{ flexShrink: 0, fontSize: 17, color: "warning.main" }} /></Tooltip>}
+                  {waitingForCapacity && <Tooltip title={capacityWaitMessage(task.capacityWait!)} arrow><HourglassBottomRounded aria-label="Aguardando capacidade" data-testid={`flow-task-capacity-wait-${task.id}`} sx={{ flexShrink: 0, fontSize: 17, color: waitSeverity === "error" ? "error.main" : "warning.main" }} /></Tooltip>}
+                  {waitSetupLabel && (
+                    <Tooltip title={capacityWaitMessage(task.capacityWait!)} arrow>
+                      <Chip
+                        component="span"
+                        size="small"
+                        label={waitSetupLabel}
+                        color={waitSeverity}
+                        data-testid={`flow-task-capacity-wait-chip-${task.id}`}
+                        aria-label={`Espera de capacidade: ${waitSetupLabel}`}
+                        sx={{ flexShrink: 0, height: 18, "& .MuiChip-label": { fontSize: 10, fontWeight: 700, px: 0.6 } }}
+                      />
+                    </Tooltip>
+                  )}
                   {station.tone === "danger" && <ErrorOutlineRounded sx={{ flexShrink: 0, fontSize: 17, color: "error.main" }} />}
                   <Typography variant="caption" fontWeight={700} noWrap sx={{ minWidth: 0, flex: 1 }}>#{task.id} {task.titulo}</Typography>
                   {showRecovery && (

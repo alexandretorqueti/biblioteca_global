@@ -200,4 +200,45 @@ describe("contrato realtime do Mapa de Agentes", () => {
       },
     }).success).toBe(true)
   })
+
+  it("aceita map_snapshot com capacityWait reasonCode deploy_drain (modo dreno anti-fome de deploy)", () => {
+    expect(realtimeServerMessageSchema.safeParse({
+      type: "map_snapshot", projectId: 7, currentSequence: 6,
+      snapshot: {
+        projectId: 7,
+        tasks: [{
+          taskId: 42,
+          status: "planned",
+          capacityWait: {
+            phase: "development",
+            reasonCode: "deploy_drain",
+            limitScope: "global",
+            limitValue: 45,
+            provider: null,
+          },
+        }],
+        counters: { total: 1 },
+      },
+    }).success).toBe(true)
+    // Código desconhecido continua rejeitado (enum aditivo, não aberto).
+    const invalido = realtimeServerMessageSchema.safeParse({
+      type: "map_snapshot", projectId: 7, currentSequence: 6,
+      snapshot: {
+        projectId: 7,
+        tasks: [{
+          taskId: 42,
+          status: "planned",
+          capacityWait: {
+            phase: "development",
+            reasonCode: "deploy_drain_x",
+            limitScope: "global",
+            limitValue: 45,
+            provider: null,
+          },
+        }],
+        counters: { total: 1 },
+      },
+    })
+    expect(invalido.success).toBe(false)
+  })
 })

@@ -14,9 +14,17 @@ import { RealtimeMutationBoundary } from '../realtime/RealtimeMutationBoundary.j
 import type { RealtimeMutationPublisher } from '../realtime/RealtimeMutationPublisher.js'
 import { providerFromModel, providerCapacityDecision } from '../execution/ProviderCapacity.js'
 import { validateSetupCompletion, resolveSetupProjectDir as resolveSetupProjectDirShared, type SetupGateResult } from '../setup/ProjectSetupGate.js'
+import {
+  collectSetupGateHoldFacts,
+  deriveSetupGateHold,
+  handleSetupGateRecovery,
+  type SetupGateHold,
+  type SetupGateRecoveryConfig,
+} from '../setup/SetupGateRecovery.js'
 import { createQueueMessage, insertOutboxMessage } from '../queue/index.js'
 import { applyVerificationRouting, insertVerificationChatMessage, type VerificationRoutingResult } from './VerificationRouting.js'
 import { CAPACITY_WAIT_CLEAR_ASSIGNMENTS } from '../shared/capacityWait.js'
+import { evaluateDeployDrain } from '../deploy/DeployDrainPolicy.js'
 
 interface TaskRow extends RowDataPacket {
   id: number
@@ -44,11 +52,14 @@ interface TaskRow extends RowDataPacket {
   dependency_terminal_status: string | null
   dependency_deploy_status: string | null
   capacity_wait_phase: 'analysis' | 'development' | null
-  capacity_wait_reason_code: 'global_limit' | 'project_limit' | 'provider_limit' | 'model_cooldown' | 'setup_not_verified' | null
+  capacity_wait_reason_code: 'global_limit' | 'project_limit' | 'provider_limit' | 'model_cooldown' | 'setup_not_verified' | 'deploy_drain' | null
   capacity_wait_limit_scope: 'global' | 'project' | 'provider' | 'model' | null
   capacity_wait_limit_value: number | string | null
   capacity_wait_provider: string | null
   capacity_wait_retry_at: Date | string | null
+  capacity_wait_setup_state: 'setup_faltando' | 'setup_failed' | 'setup_em_andamento' | null
+  capacity_wait_setup_error: string | null
+  capacity_wait_detail: string | null
 }
 
 interface DependencyRow extends RowDataPacket {
@@ -64,9 +75,11 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
   private readonly statusResolver: DerivedTaskStatusResolver
 
   private readonly realtime: RealtimeMutationBoundary
-  constructor(private readonly pool: Pool, realtime?: RealtimeMutationBoundary | RealtimeMutationPublisher) {
+  private readonly setupGateRecoveryConfig: SetupGateRecoveryConfig
+  constructor(private readonly pool: Pool, realtime?: RealtimeMutationBoundary | RealtimeMutationPublisher, setupGateRecovery?: SetupGateRecoveryConfig) {
     this.realtime = realtime instanceof RealtimeMutationBoundary ? realtime : new RealtimeMutationBoundary(pool)
     this.statusResolver = new DerivedTaskStatusResolver(pool)
+    this.setupGateRecoveryConfig = setupGateRecovery ?? {}
   }
 
   async getTask(taskId: string): Promise<TaskSnapshot | null> {
@@ -80,6 +93,7 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
         f.analysis_started_at, f.analysis_execution_id, f.terminal_status,
         f.capacity_wait_phase, f.capacity_wait_reason_code, f.capacity_wait_limit_scope,
         f.capacity_wait_limit_value, f.capacity_wait_provider, f.capacity_wait_retry_at,
+        f.capacity_wait_setup_state, f.capacity_wait_setup_error, f.capacity_wait_detail,
         (SELECT COUNT(*) FROM subtarefas s WHERE s.tarefa_id = t.id) AS subtask_count,
         (SELECT COUNT(*) FROM bloqueios b
           WHERE b.tarefa_id = t.id AND b.resolved_at IS NULL) AS blocked_count,
@@ -172,8 +186,32 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
         // (requeueForDeployRetry 'analysis_capacity_waiting') sem consumir
         // attempt; quando o setup é verificado, o próximo retry reclama a
         // tarefa normalmente, sem intervenção manual.
-        await this.recordCapacityWait(connection, row.id, 'analysis', 'setup_not_verified', 'project', 0, null)
+        //
+        // Visibilidade + auto-recuperação (tarefa
+        // motor-visibilidade-setup-not-verified): o sub-motivo da espera é
+        // derivado do estado real do setup (geracoes_projeto +
+        // projetos_captados) na mesma transação do claim e persistido nos
+        // flags capacity_wait_*; após o commit, passagem melhor-esforço de
+        // recuperação (alerta deduplicado por janela + re-disparo idempotente
+        // da missão de setup com backoff/teto — SetupGateRecovery.ts).
+        const gateFacts = row.projeto_id != null
+          ? await collectSetupGateHoldFacts(connection, Number(row.projeto_id))
+          : null
+        const gateHold = gateFacts ? deriveSetupGateHold(gateFacts, this.setupGateRecoveryConfig) : null
+        await this.recordCapacityWait(connection, row.id, 'analysis', 'setup_not_verified', 'project', 0, null, gateHold)
         await connection.commit()
+        if (gateFacts && gateHold) {
+          await handleSetupGateRecovery(this.pool, {
+            databaseTaskId: row.id,
+            taskExternalId: String(row.external_id ?? row.id),
+            facts: gateFacts,
+            hold: gateHold,
+            config: this.setupGateRecoveryConfig,
+          }).catch(error => {
+            // Melhor esforço: o loop de requeue (30s) reintenta a passagem.
+            console.warn('[Motor v3] SetupGateRecovery: passagem de recuperação falhou:', error instanceof Error ? error.message : error)
+          })
+        }
         return 'capacity_waiting'
       }
 
@@ -183,13 +221,23 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
       const [limitRows] = await connection.query<Array<RowDataPacket & { chave: string; limite: number | string }>>(
         `SELECT chave, CAST(JSON_UNQUOTE(valor) AS UNSIGNED) AS limite
            FROM motor_configuracoes
-          WHERE chave IN ('motor.max_workers', 'motor.max_workers_per_project')
+          WHERE chave IN ('deploy_drain_threshold_minutes', 'motor.max_workers', 'motor.max_workers_per_project')
           ORDER BY chave
           FOR UPDATE`,
       )
       const limits = new Map(limitRows.map(limit => [limit.chave, Math.max(1, Number(limit.limite ?? 1))]))
+      const deployDrainThreshold = limitRows.find(limit => limit.chave === 'deploy_drain_threshold_minutes')?.limite
       const maxWorkers = limits.get('motor.max_workers') ?? 1
       const maxWorkersPerProject = limits.get('motor.max_workers_per_project') ?? 1
+      const deployDrain = limits.has('deploy_drain_threshold_minutes')
+        ? await evaluateDeployDrain(connection, Math.max(0, Number(deployDrainThreshold ?? 0)))
+        : null
+      if (deployDrain?.active) {
+        console.warn(JSON.stringify({ event: 'deploy_drain_rejected_claim', phase: 'analysis', taskId, ...deployDrain }))
+        await this.recordCapacityWait(connection, row.id, 'analysis', 'deploy_drain', 'global', deployDrain.thresholdMinutes, null)
+        await connection.commit()
+        return 'capacity_waiting'
+      }
       const [globalRows] = await connection.query<Array<RowDataPacket & { total: number | string }>>(
         `SELECT COUNT(*) AS total
            FROM task_runtime_facts f
@@ -745,22 +793,41 @@ export class MySqlTaskCoordinatorRepository implements TaskCoordinatorRepository
       limitValue: Number(row.capacity_wait_limit_value),
       provider: row.capacity_wait_provider ? String(row.capacity_wait_provider) : null,
       retryAt: row.capacity_wait_retry_at ? new Date(row.capacity_wait_retry_at).toISOString() : null,
+      // Sub-motivo do gate 'setup_not_verified' (omitido quando ausente —
+      // projeções legadas permanecem byte-a-byte compatíveis).
+      ...(row.capacity_wait_setup_state ? { setupState: row.capacity_wait_setup_state } : {}),
+      ...(row.capacity_wait_setup_error != null ? { setupError: String(row.capacity_wait_setup_error) } : {}),
+      ...(row.capacity_wait_detail != null ? { detail: String(row.capacity_wait_detail) } : {}),
     }
   }
 
   private async recordCapacityWait(
     connection: PoolConnection, taskId: number, phase: 'analysis' | 'development',
-    reasonCode: 'global_limit' | 'project_limit' | 'provider_limit' | 'setup_not_verified',
+    reasonCode: 'global_limit' | 'project_limit' | 'provider_limit' | 'setup_not_verified' | 'deploy_drain',
     limitScope: 'global' | 'project' | 'provider', limitValue: number, provider: string | null,
+    setupHold?: SetupGateHold | null,
   ): Promise<void> {
     await connection.query(
       `INSERT INTO task_runtime_facts (tarefa_id, created_at, updated_at)
        VALUES (?, NOW(), NOW()) ON DUPLICATE KEY UPDATE tarefa_id = VALUES(tarefa_id)`, [taskId],
     )
+    // capacity_wait_since/capacity_wait_alert_at: o relógio e o alerta único
+    // sobrevivem a reentradas pelo MESMO motivo; troca de motivo reinicia ambos
+    // (mesmo padrão de DevelopmentExecutionRepository.recordCapacityWait).
+    // As colunas de sub-motivo (setup_state/setup_error/detail) carregam o
+    // diagnóstico rico do gate 'setup_not_verified' e são nullificadas para os
+    // demais motivos.
     await connection.query(
-      `UPDATE task_runtime_facts SET capacity_wait_phase=?, capacity_wait_reason_code=?,
-       capacity_wait_limit_scope=?, capacity_wait_limit_value=?, capacity_wait_provider=?, updated_at=NOW()
-       WHERE tarefa_id=?`, [phase, reasonCode, limitScope, limitValue, provider, taskId],
+      `UPDATE task_runtime_facts
+          SET capacity_wait_since = IF(capacity_wait_reason_code <=> ? AND capacity_wait_since IS NOT NULL, capacity_wait_since, NOW()),
+              capacity_wait_alert_at = IF(capacity_wait_reason_code <=> ?, capacity_wait_alert_at, NULL),
+              capacity_wait_phase=?, capacity_wait_reason_code=?,
+              capacity_wait_limit_scope=?, capacity_wait_limit_value=?, capacity_wait_provider=?,
+              capacity_wait_setup_state=?, capacity_wait_setup_error=?, capacity_wait_detail=?,
+              updated_at=NOW()
+        WHERE tarefa_id=?`,
+      [reasonCode, reasonCode, phase, reasonCode, limitScope, limitValue, provider,
+       setupHold?.state ?? null, setupHold?.error ?? null, setupHold?.detail ?? null, taskId],
     )
   }
 

@@ -17,12 +17,24 @@ export type AnalysisClaimResult = boolean | 'capacity_waiting'
 
 export interface CapacityWaitProjection {
   phase: 'analysis' | 'development'
-  reasonCode: 'global_limit' | 'project_limit' | 'provider_limit' | 'model_cooldown' | 'setup_not_verified'
+  reasonCode: 'global_limit' | 'project_limit' | 'provider_limit' | 'model_cooldown' | 'setup_not_verified' | 'deploy_drain'
   limitScope: 'global' | 'project' | 'provider' | 'model'
   limitValue: number
   provider: string | null
   /** Instante previsto (ISO) de nova elegibilidade — usado no cooldown de modelo DEV. */
   retryAt?: string | null
+  /**
+   * Sub-motivo da espera `setup_not_verified` (tarefa
+   * motor-visibilidade-setup-not-verified): `setup_faltando` (sem setup
+   * concluído e sem missão ativa), `setup_failed` (setup/última geração
+   * falhou — exige ação) ou `setup_em_andamento` (transitório normal).
+   * Null/ausente para os demais reason codes.
+   */
+  setupState?: 'setup_faltando' | 'setup_failed' | 'setup_em_andamento' | null
+  /** Resumo do erro real do setup (LEFT 300 de geracoes_projeto.erro/setup_error). */
+  setupError?: string | null
+  /** Detalhe legível da espera (inclui estado do re-disparo automático). */
+  detail?: string | null
 }
 
 export interface TaskDependencySnapshot {
