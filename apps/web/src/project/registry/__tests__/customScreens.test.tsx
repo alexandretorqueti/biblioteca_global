@@ -67,6 +67,7 @@ describe("registry de telas custom", () => {
       "biblioteca-global-usuarios-gerais",
       "biblioteca-global-logs-login",
       "biblioteca-global-canais-whatsapp",
+      "calculadora-de-investimentos-gabriel-calculadora",
       "documentation",
       "gerenteagentes-dashboard",
       "gerenteagentes-operation-map",

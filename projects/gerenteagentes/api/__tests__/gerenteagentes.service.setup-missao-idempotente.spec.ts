@@ -164,14 +164,19 @@ describe('montarMissaoSetup — §B evidência smoke_test inegociável', () => {
   ])('%s → missão contém schema JSON da evidência e aviso de reprova por prosa', (_caso, estado) => {
     const missao = montar(criarService(), estado);
 
+    // Contrato alinhado ao gate (validateProjectSetupEvidence, monorepo):
+    // checklist {structure,configSchemaMigrations,registries,repoPath} + smoke_test.
+    // Incidente 2026-11-22: missão pedia só {"smoke_test":...} e o gate reprovava
+    // setups corretos com 'checklist ausente' (gerenteagentes, gestao, calculadora).
     expect(missao).toContain(
-      '{"smoke_test":{"url":"http://...","method":"GET","status":200,"response_body":"...","timestamp":"2026-..."}}',
+      '{"checklist":{"structure":true,"configSchemaMigrations":true,"registries":true,"repoPath":true},"smoke_test":{"url":"http://...","method":"GET","status":200,"response_body":"...","timestamp":"2026-..."}}',
     );
+    expect(missao).toContain('JSON só com smoke_test REPROVA');
     expect(missao).toContain('REPROVA o setup e desperdiça a execução inteira');
     expect(missao).toContain('Resultado em PROSA');
-    // Auto-checagem de formato antes do ::DONE::.
+    // Auto-checagem de formato antes do ::DONE:: (checklist + smoke 2xx).
     expect(missao).toContain('4.4. ANTES de marcar ::DONE::, auto-cheque o formato do seu resultado final');
-    expect(missao).toContain("jq -e '.smoke_test.status'");
+    expect(missao).toContain("jq -e '.checklist.structure");
   });
 
   it('standalone → mesma exigência de JSON + aviso de prosa + auto-checagem', () => {
