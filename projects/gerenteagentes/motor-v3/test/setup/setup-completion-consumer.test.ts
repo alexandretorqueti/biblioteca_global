@@ -60,6 +60,7 @@ interface FakePoolState {
 function createFakePool(state: FakePoolState) {
   const updates: Recorded[] = []
   const chats: Recorded[] = []
+  const sweeperSelects: Recorded[] = []
   const events: Array<{ taskId: string; evento: string; payload: Record<string, unknown> | null }> = []
   const taskEvents: TaskEventSink = {
     record: vi.fn(async (taskId: string, evento: string, _ator?: string, payload?: Record<string, unknown> | null) => {
@@ -93,12 +94,13 @@ function createFakePool(state: FakePoolState) {
         return [{ affectedRows: state.chatAffectedRows, insertId: 55 }, []]
       }
       if (sql.includes('SUBSTRING(t.external_id') && sql.includes('task_runtime_facts')) {
+        sweeperSelects.push({ sql, params })
         return [state.sweeperRows, []]
       }
       return [[], []]
     }),
   }
-  return { pool: pool as never, updates, chats, events, taskEvents }
+  return { pool: pool as never, updates, chats, sweeperSelects, events, taskEvents }
 }
 
 function completionMessage(taskId = EXTERNAL_ID) {
@@ -310,6 +312,39 @@ describe('SetupCompletionSweeper — rede de segurança durável (boot + periód
     const sweeper = new SetupCompletionSweeper(fake.pool, { taskEvents: fake.taskEvents, intervalMs: 60000 })
 
     await expect(sweeper.reconcile('boot_sweep')).resolves.toEqual([])
+  })
+
+  it('setup failed volta à varredura com cooldown (reprovação pré-deploy não é permanente)', async () => {
+    // Incidente 2026-11-21: a reconciliação da conclusão roda antes do deploy
+    // materializar os artefatos na base; sem retentativa, o 'failed' virava
+    // permanente (casos reais: gerenteagentes, voz-na-isa, calculadora).
+    const fake = createFakePool(defaultState())
+    const sweeper = new SetupCompletionSweeper(fake.pool, { intervalMs: 60000 })
+
+    await sweeper.reconcile('boot_sweep')
+
+    expect(fake.sweeperSelects).toHaveLength(1)
+    const sql = fake.sweeperSelects[0].sql
+    expect(sql).toContain("pc.setup_status = 'failed'")
+    expect(sql).toMatch(/INTERVAL\s+15\s+MINUTE/)
+    expect(sql).toContain('pc.updated_at <')
+  })
+
+  it('setup failed com artefatos + evidência válidos → re-reconciliado para verified', async () => {
+    const repoRoot = await makeRepo(true)
+    const fake = createFakePool(defaultState({
+      projectStatus: 'failed',
+      repoPath: repoRoot,
+      sweeperRows: [{ id: DB_TASK_ID, external_id: EXTERNAL_ID }],
+    }))
+    const sweeper = new SetupCompletionSweeper(fake.pool, { taskEvents: fake.taskEvents, intervalMs: 60000 })
+
+    const results = await sweeper.reconcile('periodic_sweep')
+
+    expect(results).toHaveLength(1)
+    expect(results[0].outcome).toBe('verified')
+    const verified = fake.updates.filter(u => u.sql.includes("setup_status='verified'"))
+    expect(verified).toHaveLength(1)
   })
 
   it('start/stop controlam o timer periódico sem vazar handles', async () => {

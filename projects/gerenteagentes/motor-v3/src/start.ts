@@ -840,8 +840,10 @@ async function start() {
     // tarefas setup-* concluídas (task_runtime_facts.terminal_status=
     // 'completed') cujo projeto alvo ainda está queued/running/pending —
     // conclusões sem evento consumido (caminhos reconciled/external-
-    // resolution) e passivo histórico (caso 1020) — e executa a MESMA
-    // função de reconciliação do SetupCompletionConsumer.
+    // resolution) e passivo histórico (caso 1020) — ou 'failed' com cooldown
+    // de 15 min (reprovação pré-deploy converge sozinha quando os artefatos
+    // chegam à base; incidente 2026-11-21) — e executa a MESMA função de
+    // reconciliação do SetupCompletionConsumer.
     setupCompletionSweeper = new SetupCompletionSweeper(pool, {
       taskEvents,
       intervalMs: Number(process.env.MOTOR_SETUP_COMPLETION_SWEEP_INTERVAL_MS || 300000),

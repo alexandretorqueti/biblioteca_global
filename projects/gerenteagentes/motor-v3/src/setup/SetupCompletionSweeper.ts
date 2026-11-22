@@ -18,8 +18,23 @@ export interface SetupCompletionSweeperConfig {
  *
  * Varredura no boot + periódica que localiza tarefas `setup-*` com
  * `task_runtime_facts.terminal_status='completed'` cujo projeto alvo ainda
- * tem `setup_status IN ('queued','running','pending')` e executa a MESMA
- * função de reconciliação do consumidor (`reconcileSetupCompletion`).
+ * tem `setup_status IN ('queued','running','pending')` — ou `setup_status =
+ * 'failed'` com cooldown (ver abaixo) — e executa a MESMA função de
+ * reconciliação do consumidor (`reconcileSetupCompletion`).
+ *
+ * RETENTATIVA DE SETUP REPROVADO (incidente 2026-11-21): a reconciliação da
+ * conclusão roda ANTES do deploy materializar o projeto na base — o gate de
+ * artefatos (`docs/CONTEXTO-ANALISTA.md` em `<repo>/projects/<slug>`) reprova
+ * legitimamente nesse instante, mas sem nova chance o `failed` vira PERMANENTE
+ * mesmo depois que o deploy do setup succeede e os artefatos chegam à base
+ * (casos reais: setup-gerenteagentes 19/11 — reprovado 23:31, deploy succeeded
+ * 23:34; setup-voz-na-isa; setup-calculadora-de-investimentos-gabriel). Como
+ * o gate é determinístico e a reconciliação é idempotente, setups 'failed'
+ * voltam à varredura com cooldown de 15 min (`projetos_captados.updated_at`,
+ * que a própria reconciliação atualiza a cada passagem) até convergirem para
+ * 'verified' — ou seguirem 'failed' com a razão honesta (ex.: evidência
+ * smoke_test realmente ausente). A liberação das tarefas retidas continua a
+ * cargo do loop de capacity wait ('setup_not_verified').
  *
  * Cobre conclusões sem evento TASK_EXECUTION_COMPLETED consumível:
  * - os três caminhos de conclusão de `DevelopmentExecutionRepository`
@@ -53,7 +68,10 @@ export class SetupCompletionSweeper {
     try {
       // Tarefas setup-* concluídas cujo projeto alvo ainda não convergiu.
       // O slug do projeto alvo é o external_id sem o prefixo 'setup-'
-      // (SUBSTRING a partir do caractere 7).
+      // (SUBSTRING a partir do caractere 7). Setups 'failed' retornam à
+      // varredura com cooldown de 15 min — a reconciliação da conclusão roda
+      // antes do deploy materializar os artefatos na base, e sem retentativa
+      // o 'failed' pré-deploy viraria permanente (detalhes no doc da classe).
       const [rows] = await this.pool.query<Array<RowDataPacket & { id: number; external_id: string }>>(
         `SELECT t.id, t.external_id
            FROM tarefas t
@@ -61,7 +79,10 @@ export class SetupCompletionSweeper {
            INNER JOIN projetos_captados pc ON pc.slug = SUBSTRING(t.external_id, 7)
           WHERE t.external_id LIKE 'setup-%'
             AND f.terminal_status = 'completed'
-            AND pc.setup_status IN ('queued', 'running', 'pending')
+            AND (
+              pc.setup_status IN ('queued', 'running', 'pending')
+              OR (pc.setup_status = 'failed' AND pc.updated_at < DATE_SUB(NOW(), INTERVAL 15 MINUTE))
+            )
           ORDER BY t.id`,
       )
       const results: SetupReconciliationResult[] = []
