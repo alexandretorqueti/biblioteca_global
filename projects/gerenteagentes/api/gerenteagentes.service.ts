@@ -156,6 +156,27 @@ function makeMessagesPage<T extends {
   };
 }
 
+/**
+ * Artefato verificado na detecção de estado do setup
+ * (BRIEF-TAREFA-SETUP-IDEMPOTENTE-E-EVIDENCIA §A).
+ */
+export interface ArtefatoSetupEstado {
+  nome: string;
+  presente: boolean;
+  detalhe: string | null;
+}
+
+/** Estado real do projeto no momento da montagem da missão de setup. */
+export interface EstadoProjetoSetup {
+  raizMonorepo: string | null;
+  pastaProjeto: boolean;
+  bancoExiste: boolean | null;
+  migrationsAplicadas: boolean | null;
+  artefatos: ArtefatoSetupEstado[];
+  /** true quando qualquer parte do projeto já existe → missão em MODO VERIFICAÇÃO. */
+  projetoExiste: boolean;
+}
+
 @Injectable()
 export class GerenteAgentesService {
   private validarListaDependencias(ids: number[]): void {
@@ -3612,18 +3633,37 @@ export class GerenteAgentesService {
     let tarefaId: number;
     let nova = false;
 
+    // Estado real do projeto no momento da montagem (BRIEF-TAREFA-SETUP-
+    // IDEMPOTENTE-E-EVIDENCIA §A): projetos existentes entram em MODO
+    // VERIFICAÇÃO. Standalone já é "repo existente" por definição — não se aplica.
+    const estadoProjeto = layout === 'standalone'
+      ? null
+      : await this.detectarEstadoProjetoSetup(db, projetoCaptado.slug, plataformaProjetoId, motorConfig?.repoPath ?? null);
+    const configMissao = {
+      layout,
+      repoPath: motorConfig?.repoPath ?? null,
+      branchTrabalho: motorConfig?.branchTrabalho ?? null,
+      gitRemote: motorConfig?.gitRemote ?? null,
+    };
+
     if (existente) {
       tarefaId = existente.id;
+      // Re-setup: atualiza a missão com o estado detectado AGORA (re-disparo
+      // após failed não pode reaproveitar texto de projeto novo).
+      const planoReparo = await this.buscarPlanoAprovadoSetup(db, projetoCaptado.id);
+      const descricaoAtualizada = this.montarMissaoSetup(
+        projetoCaptado,
+        plataformaProjetoId,
+        planoReparo,
+        configMissao,
+        estadoProjeto,
+      );
+      await db.update(tarefas).set({ descricao: descricaoAtualizada }).where(eq(tarefas.id, tarefaId));
     } else {
       // O setup MATERIALIZA o plano aprovado (§3.2): busca a geração approved
       // mais recente e revalida o json com as regras do contrato §5.
       const planoAprovado = await this.buscarPlanoAprovadoSetup(db, projetoCaptado.id);
-      const descricao = this.montarMissaoSetup(projetoCaptado, plataformaProjetoId, planoAprovado, {
-        layout,
-        repoPath: motorConfig?.repoPath ?? null,
-        branchTrabalho: motorConfig?.branchTrabalho ?? null,
-        gitRemote: motorConfig?.gitRemote ?? null,
-      });
+      const descricao = this.montarMissaoSetup(projetoCaptado, plataformaProjetoId, planoAprovado, configMissao, estadoProjeto);
       let inserida: { id: number } | undefined;
       try {
         [inserida] = await db
@@ -3692,6 +3732,150 @@ export class GerenteAgentesService {
     }
   }
 
+  /**
+   * Detecta o estado real do projeto no momento da montagem da missão de setup
+   * (BRIEF-TAREFA-SETUP-IDEMPOTENTE-E-EVIDENCIA §A): pasta, docs, registros e
+   * banco. Melhor esforço: falhas de FS/DB nunca impedem a montagem — o
+   * artefato é reportado como ausente/desconhecido.
+   */
+  private async detectarEstadoProjetoSetup(
+    db: Awaited<ReturnType<GerenteAgentesService['dbDoProjeto']>>,
+    slug: string,
+    plataformaProjetoId: number,
+    repoPath: string | null,
+  ): Promise<EstadoProjetoSetup> {
+    const { existsSync, readFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+
+    // Raiz do monorepo: mesmos candidatos de resolverDirDocsProjetoCaptado.
+    const candidatos: string[] = [];
+    if (repoPath && String(repoPath).trim()) {
+      const rp = String(repoPath).trim();
+      candidatos.push(rp); // pode já ser a raiz
+      candidatos.push(resolve(rp, '..', '..')); // convenção: repo_path = <raiz>/projects/<slug>
+    }
+    candidatos.push(
+      this.configService.get<string>('MOTOR_REPO_ROOT_CONTAINER') ?? '',
+      process.env.MOTOR_REPO_ROOT_CONTAINER ?? '',
+      process.env.REPO_PATH ?? '',
+      '/data/workspace/projects/codigofonte/biblioteca-global',
+      '/app',
+    );
+    let raiz: string | null = null;
+    for (const candidato of candidatos) {
+      if (!candidato) continue;
+      try {
+        if (existsSync(resolve(candidato, 'apps')) && existsSync(resolve(candidato, 'projects'))) {
+          raiz = resolve(candidato);
+          break;
+        }
+      } catch { /* candidato inválido — segue */ }
+    }
+
+    const lerArquivo = (caminho: string): string | null => {
+      try {
+        return readFileSync(caminho, 'utf8');
+      } catch {
+        return null;
+      }
+    };
+    const existe = (caminho: string): boolean => {
+      try {
+        return existsSync(caminho);
+      } catch {
+        return false;
+      }
+    };
+
+    const dirProjeto = raiz ? resolve(raiz, 'projects', slug) : null;
+    const pastaProjeto = Boolean(dirProjeto && existe(dirProjeto));
+    const contextoAnalista = dirProjeto ? lerArquivo(resolve(dirProjeto, 'docs', 'CONTEXTO-ANALISTA.md')) : null;
+    const contextoAlemDoBootstrap = contextoAnalista !== null && !contextoAnalista.includes('bootstrap pendente');
+    const especificacaoExiste = Boolean(dirProjeto && existe(resolve(dirProjeto, 'docs', 'ESPECIFICACAO.md')));
+    const schemaTsExiste = Boolean(dirProjeto && existe(resolve(dirProjeto, 'schema.ts')));
+    const configTsExiste = Boolean(dirProjeto && existe(resolve(dirProjeto, 'config.ts')));
+    const conteudoRegistry = raiz ? lerArquivo(resolve(raiz, 'apps', 'api', 'src', 'modules', 'crud', 'schema-registry.ts')) : null;
+    const schemaRegistryRegistrado = Boolean(conteudoRegistry?.includes(`"${slug}"`));
+    const conteudoFrontRegistry = raiz ? lerArquivo(resolve(raiz, 'apps', 'web', 'src', 'project', 'registry', 'projects.ts')) : null;
+    const frontRegistryRegistrado = Boolean(conteudoFrontRegistry?.includes(`"${slug}"`));
+    const conteudoDockerfileApi = raiz ? lerArquivo(resolve(raiz, 'apps', 'api', 'Dockerfile')) : null;
+    const dockerfileApiComCopy = Boolean(conteudoDockerfileApi?.includes(`projects/${slug}/package.json`));
+
+    // Banco projeto_<id> e migrations: melhor esforço via information_schema
+    // (mesmo servidor MySQL hospeda core + projeto_*).
+    const nomeBanco = `projeto_${plataformaProjetoId}`;
+    let bancoExiste: boolean | null = null;
+    let migrationsAplicadas: boolean | null = null;
+    const extrairLinhas = (resultado: unknown): unknown[] => {
+      const candidato = Array.isArray(resultado) ? resultado[0] : resultado;
+      return Array.isArray(candidato) ? candidato : [];
+    };
+    try {
+      const resultado = await db.execute(
+        sql`SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = ${nomeBanco}`,
+      );
+      bancoExiste = extrairLinhas(resultado).length > 0;
+      if (bancoExiste) {
+        const tabelas = await db.execute(
+          sql`SELECT COUNT(*) AS total FROM information_schema.TABLES WHERE TABLE_SCHEMA = ${nomeBanco}`,
+        );
+        const [linha] = extrairLinhas(tabelas) as Array<Record<string, unknown>>;
+        migrationsAplicadas = Number(linha?.total ?? 0) > 0;
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Detecção de banco do setup ${nomeBanco} indisponível (seguindo com estado parcial): ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+
+    const artefatos: ArtefatoSetupEstado[] = [
+      { nome: `pasta projects/${slug}/`, presente: pastaProjeto, detalhe: null },
+      {
+        nome: `projects/${slug}/docs/CONTEXTO-ANALISTA.md`,
+        presente: contextoAnalista !== null,
+        detalhe: contextoAnalista !== null
+          ? contextoAlemDoBootstrap ? 'com conteúdo além do bootstrap — NÃO sobrescrever' : 'somente template bootstrap'
+          : null,
+      },
+      { nome: `projects/${slug}/docs/ESPECIFICACAO.md`, presente: especificacaoExiste, detalhe: null },
+      { nome: `projects/${slug}/schema.ts`, presente: schemaTsExiste, detalhe: null },
+      { nome: `projects/${slug}/config.ts`, presente: configTsExiste, detalhe: null },
+      { nome: 'registro 2.1 em apps/api schema-registry.ts', presente: schemaRegistryRegistrado, detalhe: null },
+      { nome: 'registro 2.2 em apps/web registry projects.ts', presente: frontRegistryRegistrado, detalhe: null },
+      { nome: 'registro 2.5 COPY em apps/api/Dockerfile', presente: dockerfileApiComCopy, detalhe: null },
+      {
+        nome: `banco ${nomeBanco}`,
+        presente: bancoExiste === true,
+        detalhe: bancoExiste === null ? 'desconhecido (information_schema indisponível)' : null,
+      },
+      {
+        nome: `migrations aplicadas em ${nomeBanco}`,
+        presente: migrationsAplicadas === true,
+        detalhe: bancoExiste === true && migrationsAplicadas === null
+          ? 'desconhecido'
+          : migrationsAplicadas === null && bancoExiste !== true
+            ? 'não verificado (banco ausente/desconhecido)'
+            : null,
+      },
+    ];
+
+    const projetoExiste =
+      pastaProjeto ||
+      bancoExiste === true ||
+      artefatos.some((artefato) => artefato.presente);
+
+    return {
+      raizMonorepo: raiz,
+      pastaProjeto,
+      bancoExiste,
+      migrationsAplicadas,
+      artefatos,
+      projetoExiste,
+    };
+  }
+
   /** Texto da missão de setup entregue ao executor selecionado pelo layout. */
   private montarMissaoSetup(
     projetoCaptado: typeof projetosCaptados.$inferSelect,
@@ -3703,11 +3887,32 @@ export class GerenteAgentesService {
       branchTrabalho: string | null
       gitRemote: string | null
     } = { layout: 'monorepo', repoPath: null, branchTrabalho: null, gitRemote: null },
+    estadoProjeto: EstadoProjetoSetup | null = null,
   ): string {
     const slug = projetoCaptado.slug;
     if (motorConfig.layout === 'standalone') {
       return this.montarMissaoSetupStandalone(projetoCaptado, plataformaProjetoId, motorConfig)
     }
+    const modoVerificacao = Boolean(estadoProjeto?.projetoExiste);
+    const blocoVerificacao: string[] = modoVerificacao && estadoProjeto
+      ? [
+          '',
+          '⚠️  PROJETO JÁ EXISTENTE — MODO VERIFICAÇÃO',
+          '',
+          'Este setup é um RE-SETUP: o projeto (ou parte dele) já existe. Regras inegociáveis:',
+          '- Verifique cada artefato desta missão; crie SOMENTE o que estiver faltando.',
+          '- NUNCA sobrescreva, regenere ou "atualize a partir do modelo" um arquivo existente —',
+          '  em especial docs/CONTEXTO-ANALISTA.md, docs/ESPECIFICACAO.md, registries e seeds.',
+          '- Migrations são incrementais (drizzle): aplique apenas as pendentes. NUNCA resete,',
+          `  drope ou recrie o banco projeto_${plataformaProjetoId} se ele já existir.`,
+          '',
+          'Estado real detectado no momento da montagem desta missão (não redescubra — confirme):',
+          ...estadoProjeto.artefatos.map((artefato) =>
+            `- ${artefato.nome}: ${artefato.presente ? 'EXISTE' + (artefato.detalhe ? ` (${artefato.detalhe})` : '') : 'AUSENTE'}`,
+          ),
+          '',
+        ]
+      : [];
     const especificacao = projetoCaptado.especificacao?.trim() || projetoCaptado.descricao?.trim() || '(sem especificação disponível)';
     const plano = planoAprovado?.plano;
     const materializacaoPlano = plano
@@ -3764,6 +3969,7 @@ export class GerenteAgentesService {
       '',
       'O projeto já foi provisionado na plataforma: core.projetos criado e usuários',
       `(cliente e dono da plataforma) vinculados como admin. plataformaProjetoId = ${plataformaProjetoId}.`,
+      ...blocoVerificacao,
       '',
       'Descrição do projeto (redigida pela Isa na captação):',
       '---',
@@ -3780,13 +3986,19 @@ export class GerenteAgentesService {
       'Execute os passos abaixo, nesta ordem:',
       '',
       '=== PASSO 1: ESTRUTURA DO PROJETO ===',
-      `1.1. Crie a pasta do projeto em projects/${slug} neste monorepo.`,
-      '1.1.1. Crie também projects/' + slug + '/docs/CONTEXTO-ANALISTA.md a partir do modelo abaixo. O arquivo é a memória transversal do Analista do projeto; não inclua segredos nem invente arquitetura. Preencha somente nome, slug e data; mantenha as demais seções como bootstrap pendente.',
+      modoVerificacao
+        ? `1.1. Verifique a pasta projects/${slug}: se já existir, NÃO a recrie nem limpe; crie somente se estiver ausente.`
+        : `1.1. Crie a pasta do projeto em projects/${slug} neste monorepo.`,
+      modoVerificacao
+        ? '1.1.1. Verifique projects/' + slug + '/docs/CONTEXTO-ANALISTA.md: se existir, NÃO modifique — o arquivo é a memória transversal do Analista e sobrescrevê-lo apaga histórico. Crie a partir do modelo abaixo SOMENTE se o arquivo não existir (preencha só nome, slug e data; demais seções como bootstrap pendente).'
+        : '1.1.1. Crie também projects/' + slug + '/docs/CONTEXTO-ANALISTA.md a partir do modelo abaixo. O arquivo é a memória transversal do Analista do projeto; não inclua segredos nem invente arquitetura. Preencha somente nome, slug e data; mantenha as demais seções como bootstrap pendente.',
       '     # Contexto do Analista — ' + projetoCaptado.nome,
       '     > Status: bootstrap pendente.',
       '     > Projeto: ' + slug,
       '     ## Identidade técnica\n     _A preencher após inspeção inicial._\n     ## Arquitetura e módulos\n     _A preencher após inspeção inicial._\n     ## Fontes de verdade\n     _A preencher após inspeção inicial._\n     ## Decisões vigentes\n     _Nenhuma registrada._\n     ## Limitações e riscos conhecidos\n     _Nenhum registrado._\n     ## Registro confirmado por tarefa\n     _Nenhuma tarefa concluída._',
-      '1.1.x. Grave o conteúdo da especificação acima em projects/' + slug + '/docs/ESPECIFICACAO.md. Use projetos_captados.especificacao; o texto acima já aplica fallback para descricao quando especificacao estiver vazia.',
+      modoVerificacao
+        ? '1.1.x. Verifique projects/' + slug + '/docs/ESPECIFICACAO.md: se existir, NÃO sobrescreva. Grave a especificação acima SOMENTE se o arquivo estiver ausente (fonte: projetos_captados.especificacao, com fallback para descricao).'
+        : '1.1.x. Grave o conteúdo da especificação acima em projects/' + slug + '/docs/ESPECIFICACAO.md. Use projetos_captados.especificacao; o texto acima já aplica fallback para descricao quando especificacao estiver vazia.',
       ...(plano
         ? [
             '1.2. Gere config.ts a partir da especificacaoCrud do plano aprovado e do ESPEC-CRUD.md, sem reanalisar a descrição.',
@@ -3797,11 +4009,23 @@ export class GerenteAgentesService {
             '1.2. Prepare somente a estrutura mínima; não gere config.ts/schema.ts definitivos a partir da descrição enquanto não houver plano aprovado.',
             '1.3. Config/schema definitivos serão gerados posteriormente a partir da especificacaoCrud do plano aprovado.',
           ]),
-      `1.4. Crie o banco projeto_${plataformaProjetoId} (convenção projeto_<id do core>).`,
-      '1.5. Execute as migrations.',
+      modoVerificacao
+        ? `1.4. Verifique se o banco projeto_${plataformaProjetoId} já existe; se existir, NÃO o recrie — use-o como está.`
+        : `1.4. Crie o banco projeto_${plataformaProjetoId} (convenção projeto_<id do core>).`,
+      modoVerificacao
+        ? '1.5. Aplique apenas as migrations PENDENTES (drizzle é incremental). Nunca resete, drope ou recrie o banco existente.'
+        : '1.5. Execute as migrations.',
       '',
       '=== PASSO 2: CHECKLIST DE REGISTROS OBRIGATÓRIOS ===',
       '',
+      ...(modoVerificacao
+        ? [
+            '⚠️ MODO VERIFICAÇÃO: em cada item 2.1–2.7, primeiro confira se o registro JÁ',
+            `   EXISTE (grep por "${slug}" no arquivo-alvo); registre somente o que faltar —`,
+            '   nunca duplique entradas.',
+            '',
+          ]
+        : []),
       'Enquanto a plataforma não tiver autodescoberta automática de projetos,',
       'CADA registro abaixo é OBRIGATÓRIO para o projeto funcionar. O gate do',
       'motor vai validar a presença de cada um antes de declarar setup concluído.',
@@ -3856,12 +4080,22 @@ export class GerenteAgentesService {
       '4.2. A resposta DEVE ser 2xx (sucesso). Se retornar 404/500/timeout,',
       '     o smoke test FALHA e o setup não pode ser concluído.',
       '',
-      '4.3. Grave a evidência no resultado da subtarefa em formato JSON:',
-      '     {"smoke_test":{"url":"http://...","method":"GET","status":200,',
-      '      "response_body":"...","timestamp":"2026-..."}}',
+      '4.3. Grave a evidência no resultado FINAL da última subtarefa EXATAMENTE neste',
+      '     formato JSON de máquina (bloco único e parseável, sem cercas de código):',
+      '     {"smoke_test":{"url":"http://...","method":"GET","status":200,"response_body":"...","timestamp":"2026-..."}}',
       '',
       '     O gate do motor VALIDA essa evidência antes de marcar como verified.',
-      '     Sem ela, a subtarefa é rejeitada e o setup não fecha.',
+      '     Sem o bloco JSON, a subtarefa é rejeitada e o setup não fecha.',
+      '',
+      '     ⚠️  Resultado em PROSA — mesmo com comandos curl, prints ou narrativa',
+      '     detalhada do teste — REPROVA o setup e desperdiça a execução inteira.',
+      '     O que vale é o JSON acima no resultado final; nada substitui o formato.',
+      '',
+      '4.4. ANTES de marcar ::DONE::, auto-cheque o formato do seu resultado final:',
+      '     RESULTADO=\'<seu resultado final com o bloco JSON>\'',
+      '     jq -e \'.smoke_test.status\' <<< "$RESULTADO"',
+      '     (equivalente sem jq: node -e \'JSON.parse(process.argv[1]).smoke_test.status || process.exit(1)\' "$RESULTADO")',
+      '     Se a auto-checagem falhar, corrija o resultado — nunca conclua com evidência inválida.',
       '',
       '=== PASSO 5: FINALIZAÇÃO ===',
       '',
@@ -3917,6 +4151,9 @@ export class GerenteAgentesService {
       'EVIDÊNCIA OBRIGATÓRIA no resultado da subtarefa, em JSON:',
       '{"checklist":{"repoInspected":true,"analystContext":true,"commitPush":true},"smoke_test":{"url":"http://...","method":"GET","status":200,"response_body":"...","timestamp":"2026-..."}}',
       'O gate exige repoInspected, analystContext, commitPush e smoke_test HTTP 2xx antes de setup_status=verified.',
+      '',
+      '⚠️ Resultado em PROSA — mesmo com comandos e prints — REPROVA o setup e desperdiça a execução: o que vale é o bloco JSON de evidência acima no resultado final.',
+      'Antes de ::DONE::, auto-cheque o formato: jq -e \'.smoke_test.status\' <<< "$RESULTADO" (ou node -e equivalente com JSON.parse).',
       '',
       'Não publique pela API da Biblioteca Global; este setup pertence exclusivamente ao repo e ao ambiente do projeto standalone.',
     ].join('\n')

@@ -6,6 +6,8 @@ import { afterAll, describe, expect, it, vi } from 'vitest'
 import { createQueueMessage } from '../../src/queue/index.js'
 import {
   SetupCompletionConsumer,
+  SMOKE_TEST_EVIDENCE_SCHEMA_TEXT,
+  buildSmokeTestEvidenceGuidance,
   hasValidSmokeTest,
   parseJsonObjectCandidates,
   reconcileSetupCompletion,
@@ -60,6 +62,7 @@ interface FakePoolState {
 function createFakePool(state: FakePoolState) {
   const updates: Recorded[] = []
   const chats: Recorded[] = []
+  const sweeperSelects: Recorded[] = []
   const events: Array<{ taskId: string; evento: string; payload: Record<string, unknown> | null }> = []
   const taskEvents: TaskEventSink = {
     record: vi.fn(async (taskId: string, evento: string, _ator?: string, payload?: Record<string, unknown> | null) => {
@@ -93,12 +96,13 @@ function createFakePool(state: FakePoolState) {
         return [{ affectedRows: state.chatAffectedRows, insertId: 55 }, []]
       }
       if (sql.includes('SUBSTRING(t.external_id') && sql.includes('task_runtime_facts')) {
+        sweeperSelects.push({ sql, params })
         return [state.sweeperRows, []]
       }
       return [[], []]
     }),
   }
-  return { pool: pool as never, updates, chats, events, taskEvents }
+  return { pool: pool as never, updates, chats, sweeperSelects, events, taskEvents }
 }
 
 function completionMessage(taskId = EXTERNAL_ID) {
@@ -312,6 +316,39 @@ describe('SetupCompletionSweeper — rede de segurança durável (boot + periód
     await expect(sweeper.reconcile('boot_sweep')).resolves.toEqual([])
   })
 
+  it('setup failed volta à varredura com cooldown (reprovação pré-deploy não é permanente)', async () => {
+    // Incidente 2026-11-21: a reconciliação da conclusão roda antes do deploy
+    // materializar os artefatos na base; sem retentativa, o 'failed' virava
+    // permanente (casos reais: gerenteagentes, voz-na-isa, calculadora).
+    const fake = createFakePool(defaultState())
+    const sweeper = new SetupCompletionSweeper(fake.pool, { intervalMs: 60000 })
+
+    await sweeper.reconcile('boot_sweep')
+
+    expect(fake.sweeperSelects).toHaveLength(1)
+    const sql = fake.sweeperSelects[0].sql
+    expect(sql).toContain("pc.setup_status = 'failed'")
+    expect(sql).toMatch(/INTERVAL\s+15\s+MINUTE/)
+    expect(sql).toContain('pc.updated_at <')
+  })
+
+  it('setup failed com artefatos + evidência válidos → re-reconciliado para verified', async () => {
+    const repoRoot = await makeRepo(true)
+    const fake = createFakePool(defaultState({
+      projectStatus: 'failed',
+      repoPath: repoRoot,
+      sweeperRows: [{ id: DB_TASK_ID, external_id: EXTERNAL_ID }],
+    }))
+    const sweeper = new SetupCompletionSweeper(fake.pool, { taskEvents: fake.taskEvents, intervalMs: 60000 })
+
+    const results = await sweeper.reconcile('periodic_sweep')
+
+    expect(results).toHaveLength(1)
+    expect(results[0].outcome).toBe('verified')
+    const verified = fake.updates.filter(u => u.sql.includes("setup_status='verified'"))
+    expect(verified).toHaveLength(1)
+  })
+
   it('start/stop controlam o timer periódico sem vazar handles', async () => {
     const fake = createFakePool(defaultState())
     const sweeper = new SetupCompletionSweeper(fake.pool, { intervalMs: 60000 })
@@ -398,6 +435,78 @@ describe('reconcileSetupCompletion — evidência JSON embutida em resposta exte
     expect(result.outcome).toBe('verified')
     const verified = fake.updates.filter(u => u.sql.includes("setup_status='verified'"))
     expect(JSON.parse(String(verified[0].params[0])).smoke_test.status).toBe(200)
+  })
+})
+
+/**
+ * Incidente 1 (19/11, projetos 13 e 2/tarefa 1101): o smoke test foi executado mas o
+ * resultado foi gravado em prosa → setup reprovado por evidência inválida e o DEV
+ * não recebeu o formato aceito. A reprovação por evidência agora inclui no
+ * setup_error e no alerta do chat o schema JSON exato + regras + auto-checagem.
+ * A lógica de aceitação/rejeição do gate permanece idêntica.
+ */
+describe('reprovação por evidência smoke_test — setup_error e alerta contêm o schema JSON esperado', () => {
+  it('reprovação "nenhum resultado verified com evidência smoke_test JSON válida" grava setup_error com o schema literal', async () => {
+    const repoRoot = await makeRepo(true)
+    const fake = createFakePool(defaultState({ repoPath: repoRoot, resultados: ['prosa do DEV com curl e ::DONE:: sem JSON'] }))
+
+    const result = await reconcileSetupCompletion(fake.pool, SLUG, { origin: 'task_execution_completed', taskEvents: fake.taskEvents })
+
+    expect(result.outcome).toBe('failed')
+    const failed = fake.updates.filter(u => u.sql.includes("setup_status='failed'"))
+    expect(failed).toHaveLength(1)
+    const setupError = String(failed[0].params[0])
+    expect(setupError).toContain('nenhum resultado de subtarefa verified com evidência smoke_test JSON válida')
+    // Schema exato aceito, literal no setup_error.
+    expect(setupError).toContain('{"smoke_test":{"url"')
+    for (const key of ['"url"', '"method"', '"status"', '"response_body"', '"timestamp"']) {
+      expect(setupError).toContain(key)
+    }
+    // Regras e aviso de reprovação por prosa.
+    expect(setupError).toContain('2xx')
+    expect(setupError).toContain('ISO')
+    expect(setupError).toContain('REPROVA o setup')
+    // Auto-checagem pronta para o DEV.
+    expect(setupError).toContain('jq -e')
+  })
+
+  it('alerta no chat da reprovação por evidência contém o schema JSON e a instrução anti-prosa', async () => {
+    const repoRoot = await makeRepo(true)
+    const fake = createFakePool(defaultState({ repoPath: repoRoot, resultados: ['apenas texto'] }))
+
+    await reconcileSetupCompletion(fake.pool, SLUG, { origin: 'task_execution_completed', taskEvents: fake.taskEvents })
+
+    expect(fake.chats).toHaveLength(1)
+    const chatText = String(fake.chats[0].params[1])
+    expect(chatText).toContain('Setup reprovado na reconciliação de conclusão')
+    expect(chatText).toContain('Evidência smoke_test — formato obrigatório')
+    expect(chatText).toContain('{"smoke_test":{"url"')
+    expect(chatText).toContain('REPROVA o setup')
+  })
+
+  it('reprovação apenas por artefato ausente (evidência válida) NÃO acresce o bloco de schema ao setup_error', async () => {
+    const repoRoot = await makeRepo(false)
+    const fake = createFakePool(defaultState({ repoPath: repoRoot }))
+
+    const result = await reconcileSetupCompletion(fake.pool, SLUG, { origin: 'task_execution_completed', taskEvents: fake.taskEvents })
+
+    expect(result.outcome).toBe('failed')
+    const failed = fake.updates.filter(u => u.sql.includes("setup_status='failed'"))
+    expect(failed).toHaveLength(1)
+    expect(String(failed[0].params[0])).toContain('artefato obrigatório ausente: docs/CONTEXTO-ANALISTA.md')
+    expect(String(failed[0].params[0])).not.toContain('smoke_test')
+    expect(String(fake.chats[0].params[1])).not.toContain('formato obrigatório')
+  })
+
+  it('guidance: schema literal é JSON parseável com as chaves exigidas e o gate continua aceitando apenas o mesmo formato', () => {
+    const guidance = buildSmokeTestEvidenceGuidance()
+    const schemaLine = guidance.split('\n')[0]
+    const schemaJson = JSON.parse(schemaLine.slice(schemaLine.indexOf('{"smoke_test"')))
+    expect(Object.keys(schemaJson)).toEqual(['smoke_test'])
+    expect(Object.keys(schemaJson.smoke_test).sort()).toEqual(['method', 'response_body', 'status', 'timestamp', 'url'])
+    // Gate inalterado: mesmo predicado de sempre.
+    expect(hasValidSmokeTest(validEvidence.smoke_test)).toBe(true)
+    expect(SMOKE_TEST_EVIDENCE_SCHEMA_TEXT.startsWith('{"smoke_test":{')).toBe(true)
   })
 })
 

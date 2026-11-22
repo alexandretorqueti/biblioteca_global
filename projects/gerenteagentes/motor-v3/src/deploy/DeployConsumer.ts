@@ -9,6 +9,7 @@ import { GitWorktreePreparer, mapHostRepoPathToContainer, type WorktreeCleanupRe
 import type { QueueMessage } from '../queue/index.js'
 import { TestGateOrchestrator } from '../testing/index.js'
 import { DeployRepository, type DeployBatch, type DeployTaskContext, type MemberConflictResult } from './DeployRepository.js'
+import { detectAdditiveConflict, mergeAdditive } from './AdditiveHotspotMerge.js'
 import { attributeGateFailure, extractFailurePaths } from './GateFailureAttribution.js'
 import { mergeJournals } from './MigrationJournalMerge.js'
 import { RemoteBlueGreenDeployer } from './RemoteBlueGreenDeployer.js'
@@ -880,6 +881,16 @@ export class DeployConsumer {
           if (journalOnlyConflict && entry.taskId && await this.autoResolveMigrationJournalConflicts(path, conflictFiles, batchId, entry.taskId, entry.commit)) {
             continue
           }
+          // Hotspots aditivos (tarefa motor-hotspot-merge-deterministico): com a
+          // flag ligada e TODOS os arquivos em conflito na lista de hotspots,
+          // funde hunks puramente aditivos de forma determinística e segue o
+          // lote. Precisa rodar ANTES do skipNoopCherryPickConflict (que destrói
+          // os conflict stages :1:/:2:/:3: — lição task-p2-1047) e DEPOIS do
+          // auto-renumber de journal. Qualquer recusa → false e o fluxo de
+          // isolamento em conflito REAL abaixo segue exatamente como hoje.
+          if (entry.taskId && await this.tryDeterministicHotspotMerge(path, conflictFiles, batchId, entry)) {
+            continue
+          }
           if (await this.skipNoopCherryPickConflict(path)) {
             // O patch pode conflitar apenas porque a base já contém o
             // resultado final por outra sequência de commits. Nesse caso,
@@ -1023,6 +1034,123 @@ export class DeployConsumer {
         batchId,
         taskId,
         commit,
+        error: error instanceof Error ? error.message : String(error),
+      }))
+      return false
+    }
+  }
+
+  /**
+   * Tenta a fusão determinística de hotspots aditivos para o pick em conflito.
+   * Dispara somente com a flag `deterministic_hotspot_merge` LIGADA e TODOS os
+   * arquivos em conflito dentro de `deploy_additive_hotspots`. Para cada
+   * arquivo lê os stages :1:/:2:/:3: e aplica detect+merge da primitiva
+   * AdditiveHotspotMerge; se todos fundirem, grava, `git add` e conclui o pick
+   * (`--continue`, com `--skip` se o pick ficou vazio — mesma semântica do
+   * auto-renumber de journal). QUALQUER recusa (flag off, arquivo fora de
+   * hotspot, não-aditivo, ambíguo, erro de git) aborta o pick e devolve false:
+   * o chamador cai no fallback EXATO do isolamento de membro atual.
+   *
+   * Retorna false sem abortar quando não havia pick em conflito a resolver
+   * (flag off / nenhum hotspot): nesse caso é o skipNoop que assume em seguida.
+   */
+  private async tryDeterministicHotspotMerge(
+    path: string,
+    conflictFiles: string[],
+    batchId: string,
+    entry: { memberIndex: number; taskId: string; databaseTaskId: number; commit: string },
+  ): Promise<boolean> {
+    if (conflictFiles.length === 0) return false
+    if (typeof this.repository.isDeterministicHotspotMergeEnabled !== 'function'
+      || typeof this.repository.additiveHotspotPaths !== 'function') return false
+    let enabled = false
+    let hotspots: string[] = []
+    try {
+      enabled = await this.repository.isDeterministicHotspotMergeEnabled()
+      if (!enabled) return false
+      hotspots = await this.repository.additiveHotspotPaths()
+    } catch (error) {
+      // Configuração ilegível não pode derrubar o lote: trata como desligado.
+      console.warn('[DeployConsumer] falha ao ler configuração de hotspots; seguindo com isolamento:', error instanceof Error ? error.message : String(error))
+      return false
+    }
+    if (hotspots.length === 0) return false
+
+    const hotspotSet = new Set(hotspots)
+    if (!conflictFiles.every(file => hotspotSet.has(file))) return false
+
+    let abortedCleanly = false
+    const abortPick = async (): Promise<void> => {
+      if (abortedCleanly) return
+      abortedCleanly = true
+      await execFileAsync('git', ['cherry-pick', '--abort'], { cwd: path }).catch(async () => { await this.operationState.recover(path) })
+    }
+
+    try {
+      const mergedFiles: string[] = []
+      for (const filePath of conflictFiles) {
+        const showStage = async (stage: number): Promise<string | null> =>
+          execFileAsync('git', ['show', `:${stage}:${filePath}`], { cwd: path, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 })
+            .then(result => result.stdout)
+            .catch(() => null)
+        const [baseRaw, oursRaw, theirsRaw] = [await showStage(1), await showStage(2), await showStage(3)]
+        // Stage :1: ausente = conflito não é três-vias comum (add/add ou
+        // modify/delete) → ambíguo para a primitiva; delega ao fallback.
+        if (baseRaw === null || oursRaw === null || theirsRaw === null) {
+          await abortPick()
+          return false
+        }
+        if (detectAdditiveConflict(baseRaw, oursRaw, theirsRaw) !== 'puramente aditivo') {
+          await abortPick()
+          return false
+        }
+        const merged = mergeAdditive(baseRaw, oursRaw, theirsRaw)
+        if (merged === null) {
+          await abortPick()
+          return false
+        }
+        await writeFile(`${path}/${filePath}`, merged)
+        await execFileAsync('git', ['add', '--', filePath], { cwd: path })
+        mergedFiles.push(filePath)
+      }
+      // O merge pode esvaziar o efeito líquido do pick (as inserções do membro
+      // já estavam no lado ours por um membro anterior do lote): tratar como
+      // noop com --skip, mesma semântica do autoResolve de journal.
+      const noopAfterMerge = await execFileAsync('git', ['diff', '--cached', '--quiet', 'HEAD'], { cwd: path }).then(() => true, () => false)
+      if (noopAfterMerge) {
+        await execFileAsync('git', ['cherry-pick', '--skip'], { cwd: path })
+      } else {
+        await execFileAsync('git', ['-c', 'core.editor=true', 'cherry-pick', '--continue'], {
+          cwd: path,
+          env: { ...process.env, GIT_EDITOR: 'true' },
+        })
+      }
+      // Auditoria (item 5 da tarefa): log estruturado + evento na tarefa com
+      // arquivos/membros. recordEvent é best-effort por contrato.
+      console.log(JSON.stringify({
+        event: 'hotspot_merged_deterministic',
+        batchId,
+        taskId: entry.taskId,
+        commit: entry.commit,
+        files: mergedFiles,
+        members: [entry.taskId],
+        noopSkipped: noopAfterMerge,
+      }))
+      await this.recordEvent(entry.taskId, 'hotspot_merged_deterministic', {
+        batchId,
+        commit: entry.commit,
+        files: mergedFiles,
+        members: [entry.taskId],
+        noopSkipped: noopAfterMerge,
+      })
+      return true
+    } catch (error) {
+      await abortPick()
+      console.error(JSON.stringify({
+        event: 'hotspot_deterministic_merge_failed',
+        batchId,
+        taskId: entry.taskId,
+        commit: entry.commit,
         error: error instanceof Error ? error.message : String(error),
       }))
       return false

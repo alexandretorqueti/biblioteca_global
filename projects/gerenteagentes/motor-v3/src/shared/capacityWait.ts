@@ -3,12 +3,15 @@ import type { PoolConnection } from 'mysql2/promise'
 /**
  * Forma canônica de limpeza dos flags de espera de capacidade (task-p2-1059).
  *
- * As 8 colunas capacity_wait_* de task_runtime_facts (phase, reason_code,
- * limit_scope, limit_value, provider, since, retry_at, alert_at) devem ser
- * nullificadas por TODO writer que grave terminal_status, na mesma
- * transação/escrita. Sem isso, flags residuais de uma espera anterior
- * sobrevivem à conclusão e o Mapa de agentes projeta ampulheta em tarefa
- * já concluída/deployada (incidentes 1023 e 1047, 2026-11-03).
+ * As 11 colunas capacity_wait_* de task_runtime_facts (phase, reason_code,
+ * limit_scope, limit_value, provider, since, retry_at, alert_at, setup_state,
+ * setup_error, detail) devem ser nullificadas por TODO writer que grave
+ * terminal_status, na mesma transação/escrita. Sem isso, flags residuais de
+ * uma espera anterior sobrevivem à conclusão e o Mapa de agentes projeta
+ * ampulheta em tarefa já concluída/deployada (incidentes 1023 e 1047,
+ * 2026-11-03). As colunas setup_state/setup_error/detail carregam o
+ * sub-motivo da espera 'setup_not_verified' (tarefa
+ * motor-visibilidade-setup-not-verified).
  *
  * Fatos verificados (não inventar writer novo):
  * - Nenhum writer grava terminal_status='failed' hoje — a falha é derivada
@@ -26,10 +29,13 @@ export const CAPACITY_WAIT_CLEAR_ASSIGNMENTS = [
   'capacity_wait_since = NULL',
   'capacity_wait_retry_at = NULL',
   'capacity_wait_alert_at = NULL',
+  'capacity_wait_setup_state = NULL',
+  'capacity_wait_setup_error = NULL',
+  'capacity_wait_detail = NULL',
 ].join(', ')
 
 /**
- * Limpeza canônica das 8 colunas capacity_wait_* via UPDATE. Usar dentro da
+ * Limpeza canônica das 11 colunas capacity_wait_* via UPDATE. Usar dentro da
  * mesma transação que grava o estado terminal (ou onde a espera termina).
  */
 export async function clearCapacityWait(connection: PoolConnection, taskId: number): Promise<void> {

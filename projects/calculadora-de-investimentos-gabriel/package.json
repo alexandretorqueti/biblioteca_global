@@ -1,0 +1,15 @@
+{
+  "name": "@biblioteca-global/project-calculadora-de-investimentos-gabriel",
+  "version": "0.0.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "Projeto Calculadora de Investimentos Gabriel — projeção de rendimento com índices do Banco Central. Plano macro #6 (posição 1/9): modelo de dados 'indices'.",
+  "main": "src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@biblioteca-global/schema-tools": "*",
+    "@biblioteca-global/shared": "*"
+  }
+}

@@ -7,7 +7,7 @@
 // o Mapa de agentes passou a exibir ampulheta em tarefa concluída/deployada.
 //
 // Cobertura:
-// (a) limpeza das 8 colunas capacity_wait_* em cada caminho terminal
+// (a) limpeza das 11 colunas capacity_wait_* em cada caminho terminal
 //     (conclusão via verified, conclusão analítica/no-code, veredito de
 //     verificação, resolução externa, cancelamento, trigger de conclusão);
 // (b) projeção (capacityWait do repositório) não emite espera para tarefa
@@ -28,11 +28,13 @@ const CAPACITY_WAIT_COLUMNS = [
   'capacity_wait_phase', 'capacity_wait_reason_code', 'capacity_wait_limit_scope',
   'capacity_wait_limit_value', 'capacity_wait_provider', 'capacity_wait_since',
   'capacity_wait_retry_at', 'capacity_wait_alert_at',
+  // Sub-motivo do gate setup_not_verified (motor-visibilidade-setup-not-verified).
+  'capacity_wait_setup_state', 'capacity_wait_setup_error', 'capacity_wait_detail',
 ] as const
 
 const REASON_CODES = ['global_limit', 'project_limit', 'provider_limit', 'model_cooldown', 'setup_not_verified'] as const
 
-/** Normaliza espaços e exige as 8 colunas capacity_wait_* nullificadas no SQL. */
+/** Normaliza espaços e exige as 11 colunas capacity_wait_* nullificadas no SQL. */
 function expectClearsAllCapacityWaitColumns(sql: string): void {
   const normalized = String(sql).replace(/\s+/g, ' ')
   for (const column of CAPACITY_WAIT_COLUMNS) {
@@ -365,7 +367,7 @@ describe('task-p2-1059 (b) — projeção nunca emite capacityWait para tarefa t
     expect(detailBlock).toContain('terminalStatus == null')
   })
 
-  it('pause (start.ts) nullifica as 8 colunas, incluindo since/retry_at/alert_at', async () => {
+  it('pause (start.ts) nullifica as 11 colunas, incluindo since/retry_at/alert_at e o sub-motivo de setup', async () => {
     const startSource = await readFile(
       fileURLToPath(new URL('../src/start.ts', import.meta.url)), 'utf8',
     )

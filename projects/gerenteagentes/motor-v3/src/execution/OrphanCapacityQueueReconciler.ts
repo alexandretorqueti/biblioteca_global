@@ -1,6 +1,7 @@
 import type { Pool, PoolConnection, RowDataPacket } from 'mysql2/promise'
 import type { TaskEventSink } from '../coordinator/TaskEventRecorder.js'
 import { createQueueMessage, insertOutboxMessage } from '../queue/index.js'
+import { evaluateDeployDrain } from '../deploy/DeployDrainPolicy.js'
 
 // ---------------------------------------------------------------------------
 // Row interfaces
@@ -96,6 +97,7 @@ export class OrphanCapacityQueueReconciler {
   private readonly intervalMs: number
   private readonly cooldownAlertMs: number
   private timer: NodeJS.Timeout | null = null
+  private previousDeployDrainActive: boolean | null = null
 
   constructor(
     private readonly pool: Pool,
@@ -130,6 +132,8 @@ export class OrphanCapacityQueueReconciler {
       const cooldownResult = await this.resumeDevModelCooldownWaits()
       summary.cooldownWaitsResumed = cooldownResult.resumed
       summary.cooldownAlertsEmitted = cooldownResult.alerts
+      await this.observeDeployDrain()
+      await this.resumeDeployDrainWaits()
     } catch (error) {
       console.error('[Motor v3] Falha no ciclo de reconciliação de órfãos e fila:', this.errorMessage(error))
     }
@@ -380,6 +384,42 @@ export class OrphanCapacityQueueReconciler {
     return { resumed, alerts }
   }
 
+  private async observeDeployDrain(): Promise<void> {
+    const decision = await evaluateDeployDrain(this.pool)
+    if (this.previousDeployDrainActive === decision.active) return
+    this.previousDeployDrainActive = decision.active
+    console.log(JSON.stringify({ event: 'deploy_drain_active', ...decision }))
+  }
+
+  private async resumeDeployDrainWaits(): Promise<number> {
+    const decision = await evaluateDeployDrain(this.pool)
+    if (decision.active) return 0
+    const [rows] = await this.pool.query<CooldownWaitRow[]>(`
+      SELECT q.tarefa_id, q.projeto_id, q.requested_at,
+             COALESCE(t.external_id, CAST(t.id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci) AS task_external_id,
+             f.capacity_wait_since AS wait_since,
+             f.capacity_wait_retry_at AS retry_at,
+             f.capacity_wait_alert_at AS alert_at
+        FROM motor_execution_wait_queue q
+        INNER JOIN tarefas t ON t.id = q.tarefa_id
+        INNER JOIN task_runtime_facts f ON f.tarefa_id = q.tarefa_id
+       WHERE q.status = 'waiting'
+         AND f.capacity_wait_reason_code = 'deploy_drain'
+         AND f.terminal_status IS NULL
+         AND t.paused_at IS NULL
+         AND NOT EXISTS (SELECT 1 FROM bloqueios b WHERE b.tarefa_id = t.id AND b.resolved_at IS NULL)
+    `)
+    let resumed = 0
+    for (const row of rows) {
+      try {
+        if (await this.requeueCapacityWait(row, 'deploy_drain', 'deploy_drain_resumed')) resumed++
+      } catch (error) {
+        console.error(`[Motor v3] Falha ao retomar dreno da tarefa ${row.tarefa_id}:`, this.errorMessage(error))
+      }
+    }
+    return resumed
+  }
+
   /** Existe ao menos um modelo DEV habilitado fora de cooldown para o projeto? */
   private async hasEligibleDevelopmentModel(projectSlug: string): Promise<boolean> {
     const [rows] = await this.pool.query<Array<RowDataPacket & { available: number | string }>>(`
@@ -402,6 +442,10 @@ export class OrphanCapacityQueueReconciler {
    * comando ainda pendente não produzem nova mensagem.
    */
   private async requeueCooldownWait(row: CooldownWaitRow): Promise<boolean> {
+    return this.requeueCapacityWait(row, 'model_cooldown', 'dev_model_cooldown_resumed')
+  }
+
+  private async requeueCapacityWait(row: CooldownWaitRow, reasonCode: 'model_cooldown' | 'deploy_drain', event: string): Promise<boolean> {
     const connection = await this.pool.getConnection()
     try {
       await connection.beginTransaction()
@@ -428,7 +472,7 @@ export class OrphanCapacityQueueReconciler {
         type: 'TASK_READY_FOR_PROGRAMMING',
         taskId,
         executionId: `exec-cooldown-${task.id}-${Date.now()}`,
-        payload: { reason: 'dev_model_cooldown_expired', recovered: true },
+        payload: { reason: reasonCode === 'model_cooldown' ? 'dev_model_cooldown_expired' : 'deploy_drain_released', recovered: true },
       })
       await insertOutboxMessage(connection, message)
       await connection.query(
@@ -438,8 +482,8 @@ export class OrphanCapacityQueueReconciler {
         [row.tarefa_id],
       )
       await connection.commit()
-      await this.record(taskId, 'dev_model_cooldown_resumed', {
-        reasonCode: 'model_cooldown',
+      await this.record(taskId, event, {
+        reasonCode,
         messageId: message.messageId,
         queueStatus: row.status,
       })

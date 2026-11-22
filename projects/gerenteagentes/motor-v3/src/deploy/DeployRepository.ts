@@ -837,6 +837,48 @@ ${conflictData.conflictFiles.map(f => `- \`${f}\``).join('\n')}
   }
 
   /**
+   * Flag `deterministic_hotspot_merge`: habilita a fusão determinística de
+   * conflitos puramente aditivos em arquivos hotspot no composeBatch.
+   * Padrão do motor para flags em motor_configuracoes (RolloutPolicy):
+   * ausência, valor inválido, indisponibilidade da tabela ou erro de leitura
+   * significam DESLIGADA — o fluxo de isolamento de membros segue intacto.
+   */
+  async isDeterministicHotspotMergeEnabled(): Promise<boolean> {
+    try {
+      const [rows] = await this.pool.query<Array<RowDataPacket & { valor?: unknown }>>(
+        'SELECT valor FROM motor_configuracoes WHERE chave = ? LIMIT 1',
+        ['deterministic_hotspot_merge'],
+      )
+      return ['1', 'true', 'on', 'yes', 'sim'].includes(String(rows[0]?.valor ?? '').trim().toLowerCase())
+    } catch (error) {
+      console.warn('[DeployRepository] não foi possível ler deterministic_hotspot_merge; fusão desligada:', error instanceof Error ? error.message : String(error))
+      return false
+    }
+  }
+
+  /**
+   * Lista `deploy_additive_hotspots`: caminhos (relativos à raiz do repositório)
+   * de arquivos de registro onde cada tarefa apenas ADICIONA linhas. JSON
+   * ausente/inválido ou vazio → lista vazia (feature inerte: nenhum conflito é
+   * candidato à fusão, comportamento idêntico ao atual).
+   */
+  async additiveHotspotPaths(): Promise<string[]> {
+    try {
+      const [rows] = await this.pool.query<Array<RowDataPacket & { valor?: unknown }>>(
+        'SELECT valor FROM motor_configuracoes WHERE chave = ? LIMIT 1',
+        ['deploy_additive_hotspots'],
+      )
+      const raw = rows[0]?.valor
+      const parsed: unknown = typeof raw === 'string' ? JSON.parse(raw) : raw
+      if (!Array.isArray(parsed)) return []
+      return parsed.map(item => String(item ?? '').trim()).filter(Boolean)
+    } catch (error) {
+      console.warn('[DeployRepository] não foi possível ler deploy_additive_hotspots; nenhum hotspot configurado:', error instanceof Error ? error.message : String(error))
+      return []
+    }
+  }
+
+  /**
    * Isola os membros culpados por falha do gate pre_deploy do commit composto
    * e devolve os inocentes à fila para re-composição (incidente 2026-10-23:
    * 1 membro com migration quebrada/erro de build bloqueava o batch inteiro).
@@ -1376,7 +1418,8 @@ ${conflictData.conflictFiles.map(f => `- \`${f}\``).join('\n')}
       const finalStatus = success ? 'succeeded' : 'failed'
       const [batch] = await connection.query<ResultSetHeader>(`UPDATE deploy_batches SET status=?,last_error=?,finished_at=NOW(),updated_at=NOW() WHERE batch_id=? AND status IN ('pending','running')`, [finalStatus, reason, batchId])
       if (batch.affectedRows === 0) { await connection.rollback(); return [] }
-      const [requests] = await connection.query<Array<RowDataPacket & { external_id: string | null; task_id: number }>>(`SELECT t.external_id,dr.tarefa_id AS task_id FROM deploy_requests dr INNER JOIN tarefas t ON t.id=dr.tarefa_id WHERE dr.batch_id=? FOR UPDATE`, [batchId])
+      const finishedAtMs = Date.now()
+      const [requests] = await connection.query<Array<RowDataPacket & { external_id: string | null; task_id: number; requested_at: Date | string | null; started_at: Date | string | null }>>(`SELECT t.external_id,dr.tarefa_id AS task_id,dr.requested_at,dr.started_at FROM deploy_requests dr INNER JOIN tarefas t ON t.id=dr.tarefa_id WHERE dr.batch_id=? FOR UPDATE`, [batchId])
       await connection.query(`UPDATE deploy_requests SET status=?,last_error=?,finished_at=NOW(),updated_at=NOW() WHERE batch_id=? AND status='running'`, [finalStatus, reason, batchId])
       if (!success) await connection.query(`INSERT INTO bloqueios (tarefa_id,subtarefa_id,block_reason,block_command,block_excerpt,blocked_at)
         SELECT tarefa_id,NULL,'deploy_failed',?, ?,NOW() FROM deploy_requests WHERE batch_id=?`, [`motor-v3:deploy:${batchId}`, String(reason ?? 'Falha no deploy').slice(0, 500), batchId])
@@ -1388,7 +1431,16 @@ ${conflictData.conflictFiles.map(f => `- \`${f}\``).join('\n')}
         const taskId = String(request.external_id ?? request.task_id)
         const event = createQueueMessage({ type: success ? 'TASK_DEPLOYED' : 'TASK_DEPLOY_BLOCKED', taskId,
           executionId: source.executionId, correlationId: source.correlationId ?? source.messageId, causationId: source.messageId,
-          payload: { batchId, reason } })
+          payload: {
+            batchId,
+            reason,
+            queueDurationMs: request.requested_at && request.started_at
+              ? Math.max(0, new Date(request.started_at).getTime() - new Date(request.requested_at).getTime())
+              : null,
+            deployDurationMs: request.started_at
+              ? Math.max(0, finishedAtMs - new Date(request.started_at).getTime())
+              : null,
+          } })
         await this.insertOutbox(connection, event)
         if (!success) {
           // Evento canônico para o Monitor-Resolvedor: todo bloqueio gera TASK_BLOCKED.

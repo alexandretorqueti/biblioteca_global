@@ -25,7 +25,7 @@ import { useApi } from "../../../apps/web/src/hooks/useApi"
 import { resolveApiBaseUrl, resolveRealtimeUrl } from "../../../apps/web/src/api/client"
 import TarefaForm, { type TarefaFormValues } from "./TarefaForm"
 import OperationMapCanvas from "./OperationMapCanvas"
-import { capacityWaitMessage, recoveryEligibilityLabel, RecoveryEligibilityTooltipContent, type CapacityWaitProjection, type FiltrosMapa, type FlowTask, type MotorActivity, type RecoveryEligibility } from "./TaskFlowMap"
+import { capacityWaitMessage, capacityWaitSeverity, recoveryEligibilityLabel, RecoveryEligibilityTooltipContent, type CapacityWaitProjection, type FiltrosMapa, type FlowTask, type MotorActivity, type RecoveryEligibility } from "./TaskFlowMap"
 import AgentStatusStrip, { type AgentStatusStripProps } from "./AgentStatusStrip"
 import { SUBTASK_STATUS_OPTIONS, TASK_STATUS_EXECUTING, TASK_STATUS_FINAIS, TASK_STATUS_PAUSABLE, TASK_STATUS_STARTABLE, taskStatusColor, taskStatusLabel } from "../src/shared/task-statuses"
 import { DEFAULT_TIMEZONE, formatarDataHora, resolveTimezone } from "../src/shared/timezone"
@@ -953,7 +953,7 @@ export default function OperationMapScreen() {
                 {selected.tipo && <Chip size="small" variant="outlined" label={selected.tipo} />}
                 {status === "awaiting_clarification" && <Chip size="small" color="warning" label="Resposta necessária" />}
                 {status === "blocked" && (detail?.task?.recoveryEligibility ?? selected.recoveryEligibility) && <Tooltip title={<RecoveryEligibilityTooltipContent eligibility={(detail?.task?.recoveryEligibility ?? selected.recoveryEligibility)!} timezone={timezone} />}><Chip size="small" color="warning" label={recoveryEligibilityLabel((detail?.task?.recoveryEligibility ?? selected.recoveryEligibility)!)} /></Tooltip>}
-                {capacityWaitProjection && <Tooltip title={capacityWaitMessage(capacityWaitProjection)} arrow><Chip size="small" color="warning" variant="outlined" icon={<HourglassBottomRounded />} label="Aguardando capacidade" data-testid={`task-detail-capacity-wait-${selected.id}`} /></Tooltip>}
+                {capacityWaitProjection && <Tooltip title={capacityWaitMessage(capacityWaitProjection)} arrow><Chip size="small" color={capacityWaitSeverity(capacityWaitProjection)} variant="outlined" icon={<HourglassBottomRounded />} label="Aguardando capacidade" data-severity={capacityWaitSeverity(capacityWaitProjection)} data-testid={`task-detail-capacity-wait-${selected.id}`} /></Tooltip>}
               </Stack>
             </Box>
           </Stack>

@@ -9,6 +9,7 @@ import { RealtimeMutationBoundary } from '../realtime/RealtimeMutationBoundary.j
 import { DerivedTaskStatusResolver, type DerivedTaskStatus } from '../status/DerivedTaskStatus.js'
 import { providerFromModel, providerCapacityDecision } from './ProviderCapacity.js'
 import { CAPACITY_WAIT_CLEAR_ASSIGNMENTS, clearCapacityWait as clearCapacityWaitFlags } from '../shared/capacityWait.js'
+import { evaluateDeployDrain } from '../deploy/DeployDrainPolicy.js'
 
 export interface ReservedSubtask {
   message: QueueMessage<{ subtaskId: number; seq: number; title: string; scope: string }>
@@ -19,7 +20,7 @@ export interface ReservedSubtask {
 /** A tarefa permanece em fila; uma liberação de capacidade publicará novo gatilho. */
 export interface CapacityWaiting {
   kind: 'capacity_waiting'
-  reason: 'global_limit' | 'project_limit' | 'provider_limit' | 'model_cooldown'
+  reason: 'global_limit' | 'project_limit' | 'provider_limit' | 'model_cooldown' | 'deploy_drain'
 }
 
 /**
@@ -289,13 +290,23 @@ export class MySqlDevelopmentExecutionRepository {
       const [limitRows] = await connection.query<MotorLimitRow[]>(
         `SELECT chave, CAST(JSON_UNQUOTE(valor) AS UNSIGNED) AS limite
            FROM motor_configuracoes
-          WHERE chave IN ('motor.max_workers', 'motor.max_workers_per_project')
+          WHERE chave IN ('deploy_drain_threshold_minutes', 'motor.max_workers', 'motor.max_workers_per_project')
           ORDER BY chave
           FOR UPDATE`,
       )
       const limits = new Map(limitRows.map(row => [row.chave, Math.max(1, Number(row.limite ?? 1))]))
+      const deployDrainThreshold = limitRows.find(row => row.chave === 'deploy_drain_threshold_minutes')?.limite
       const maxWorkers = limits.get('motor.max_workers') ?? 1
       const maxWorkersPerProject = limits.get('motor.max_workers_per_project') ?? 1
+      const deployDrain = limits.has('deploy_drain_threshold_minutes')
+        ? await evaluateDeployDrain(connection, Math.max(0, Number(deployDrainThreshold ?? 0)))
+        : null
+      if (deployDrain?.active) {
+        console.warn(JSON.stringify({ event: 'deploy_drain_rejected_claim', phase: 'development', taskId, ...deployDrain }))
+        await this.enqueueCapacityWait(connection, task, source, 'deploy_drain', deployDrain.thresholdMinutes, null)
+        await connection.commit()
+        return { kind: 'capacity_waiting', reason: 'deploy_drain' }
+      }
       const [modelRows] = await connection.query<Array<RowDataPacket & { model: string; provider: string | null }>>(
         `SELECT model, provider FROM project_model_selection
           WHERE project_slug = (SELECT slug FROM projetos_captados WHERE id = ?)
@@ -1545,7 +1556,7 @@ export class MySqlDevelopmentExecutionRepository {
     connection: PoolConnection,
     task: TaskRow,
     source: QueueMessage,
-    reasonCode: 'global_limit' | 'project_limit' | 'provider_limit' | 'model_cooldown',
+    reasonCode: 'global_limit' | 'project_limit' | 'provider_limit' | 'model_cooldown' | 'deploy_drain',
     limitValue: number,
     provider: string | null,
     retryAt: Date | string | null = null,
@@ -1577,7 +1588,7 @@ export class MySqlDevelopmentExecutionRepository {
               capacity_wait_retry_at = ?, updated_at = NOW()
         WHERE tarefa_id = ?`,
       [reasonCode, reasonCode, reasonCode,
-       reasonCode === 'global_limit' ? 'global' : reasonCode === 'project_limit' ? 'project' : reasonCode === 'model_cooldown' ? 'model' : 'provider',
+       reasonCode === 'global_limit' || reasonCode === 'deploy_drain' ? 'global' : reasonCode === 'project_limit' ? 'project' : reasonCode === 'model_cooldown' ? 'model' : 'provider',
        limitValue, provider, retryAt ? new Date(retryAt) : null, task.id],
     )
   }
@@ -1868,7 +1879,9 @@ export class MySqlDevelopmentExecutionRepository {
           , capacity_wait_phase = NULL, capacity_wait_reason_code = NULL,
           capacity_wait_limit_scope = NULL, capacity_wait_limit_value = NULL,
           capacity_wait_provider = NULL, capacity_wait_since = NULL,
-          capacity_wait_retry_at = NULL, capacity_wait_alert_at = NULL
+          capacity_wait_retry_at = NULL, capacity_wait_alert_at = NULL,
+          capacity_wait_setup_state = NULL, capacity_wait_setup_error = NULL,
+          capacity_wait_detail = NULL
           WHERE tarefa_id = ?`,
         [databaseId],
       )

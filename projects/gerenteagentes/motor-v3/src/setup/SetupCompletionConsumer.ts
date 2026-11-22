@@ -96,6 +96,39 @@ export function setupReconciliationMarker(slug: string, outcome: 'verified' | 'f
   return `[motor-v3:setup-reconciliation:${slug}:${outcome}]`
 }
 
+/**
+ * Schema JSON EXATO aceito como evidência smoke_test, em texto literal
+ * (Incidente 1 — 19/11: smoke test executado e gravado em prosa → setup
+ * inteiro reprovado por falta de evidência JSON). Este texto é gravado no
+ * `setup_error` e no alerta do chat sempre que a reprovação envolve a
+ * evidência smoke_test, para que o DEV corrija o FORMATO sem adivinhar.
+ * Mudança apenas textual: não afeta o que o gate aceita (validateProjectSetupEvidence /
+ * hasValidSmokeTest continuam com as mesmas regras).
+ */
+export const SMOKE_TEST_EVIDENCE_SCHEMA_TEXT =
+  '{"smoke_test":{"url":"http://localhost:3003/api/<rota>",' +
+  '"method":"GET","status":200,"response_body":"<corpo da resposta>","timestamp":"<ISO-8601 ex.: 2026-11-20T21:00:00.000Z>"}}'
+
+/**
+ * Bloco de orientação sobre a evidência smoke_test (schema exato + regras +
+ * auto-checagem) usado no setup_error e no alerta de reprovação. Regras:
+ * status HTTP 2xx e timestamp ISO parseável — prosa (mesmo com comandos ou
+ * prints) REPROVA o setup.
+ */
+export function buildSmokeTestEvidenceGuidance(): string {
+  return [
+    `Schema JSON EXATO aceito como evidência (bloco literal no resultado FINAL da última subtarefa): ${SMOKE_TEST_EVIDENCE_SCHEMA_TEXT}`,
+    'Regras: status HTTP 2xx (200-299) e timestamp ISO-8601 parseável; url e method não vazios.',
+    'Atenção: resultado em PROSA (mesmo contendo comandos curl ou prints) REPROVA o setup — sem o bloco JSON acima a evidência não é aceita.',
+    'Auto-checagem antes do ::DONE::: jq -e \'.smoke_test.status\' <<< "$RESULTADO" (ou node -e \'JSON.parse(process.argv[1]).smoke_test.status\' "$RESULTADO").',
+  ].join('\n')
+}
+
+/** true se alguma razão de reprovação envolve a evidência smoke_test (ausente ou inválida). */
+export function reasonsInvolveSmokeTest(reasons: string[]): boolean {
+  return reasons.some(reason => reason.includes('smoke_test'))
+}
+
 /** Predicado de smoke_test válido (mesma regra do gate de evidência). */
 export function hasValidSmokeTest(value: unknown): value is SmokeTestEvidence {
   if (!value || typeof value !== 'object') return false
@@ -221,10 +254,14 @@ export async function reconcileSetupCompletion(
       [JSON.stringify(setupEvidence), slug],
     )
   } else {
+    const setupError = `Setup reprovado na reconciliação de conclusão (development_flow): ${reasons.join('; ')}`
+    const fullSetupError = reasonsInvolveSmokeTest(reasons)
+      ? `${setupError}\n${buildSmokeTestEvidenceGuidance()}`
+      : setupError
     await pool.query(
       `UPDATE projetos_captados SET setup_status='failed', setup_error=?, updated_at=NOW()
         WHERE slug = ?`,
-      [`Setup reprovado na reconciliação de conclusão (development_flow): ${reasons.join('; ')}`, slug],
+      [fullSetupError, slug],
     )
   }
 
@@ -273,6 +310,9 @@ export function buildSetupReconciliationChatText(
       '**Efeito:** `projetos_captados.setup_status=failed` com `setup_error` explícito. As tarefas do projeto continuam retidas pelo gate de setup.',
       '**Próximo passo:** corrigir as pendências (artefatos/evidência) e reexecutar/concluir o setup; a reconciliação converge o status automaticamente.',
     )
+    if (reasonsInvolveSmokeTest(reasons)) {
+      lines.push('', '**Evidência smoke_test — formato obrigatório:**', buildSmokeTestEvidenceGuidance())
+    }
   }
   lines.push('', setupReconciliationMarker(slug, outcome))
   return lines.join('\n')
