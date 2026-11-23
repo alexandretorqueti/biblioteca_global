@@ -610,6 +610,32 @@ describe('DeployRepository — liberação de deploy com pipeline drenado (2026-
     ])
   })
 
+  it('contagens de drenagem excluem tarefas seguradas pelo próprio deploy_drain (deadlock b3535)', async () => {
+    // Incidente b3535 (2026-11-23): o pump adia tarefas com capacity_wait
+    // 'deploy_drain' para liberar o deploy; se as contagens de drenagem
+    // incluírem essas tarefas, cria-se espera circular (deploy aguarda a
+    // tarefa drenar; a tarefa aguarda o deploy sair). As duas subqueries
+    // acionáveis (fila de execução e subtarefas pendentes) devem excluir
+    // explicitamente quem está segurado pelo próprio dreno.
+    const { repo, queries } = createClearanceRepo()
+    await repo.deployClearance()
+    const countsSql = queries.find(q => q.includes('fila_execucao')) ?? ''
+    expect(countsSql).toBeTruthy()
+    // Fila de execução: join com task_runtime_facts + exclusão deploy_drain
+    const waitQueueSubquery = countsSql.slice(
+      countsSql.indexOf('motor_execution_wait_queue'),
+      countsSql.indexOf('AS fila_execucao'),
+    )
+    expect(waitQueueSubquery).toContain('task_runtime_facts')
+    expect(waitQueueSubquery).toMatch(/COALESCE\(\s*\w+\.capacity_wait_reason_code,\s*''\s*\)\s*<>\s*'deploy_drain'/)
+    // Subtarefas pendentes: mesma exclusão
+    const devPendenteSubquery = countsSql.slice(
+      countsSql.indexOf('FROM subtarefas'),
+      countsSql.indexOf('AS dev_pendente'),
+    )
+    expect(devPendenteSubquery).toMatch(/COALESCE\(\s*\w+\.capacity_wait_reason_code,\s*''\s*\)\s*<>\s*'deploy_drain'/)
+  })
+
   it('flag motor.deploy.require_pipeline_drained=false → volta ao critério antigo (só in-flight)', async () => {
     const { repo, queries } = createClearanceRepo({
       flagRow: [{ valor: 0 }],

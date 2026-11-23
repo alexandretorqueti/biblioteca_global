@@ -197,6 +197,13 @@ export class DeployRepository {
    * Tarefas pausadas/canceladas/concluídas e tarefas seguradas pelo gate de
    * setup (capacity_waiting fora da fila de execução) NÃO bloqueiam — podem
    * ficar paradas dias e não são trabalho acionável do motor agora.
+   * Tarefas seguradas pelo PRÓPRIO dreno (capacity_wait_reason_code =
+   * 'deploy_drain') também NÃO bloqueiam (incidente b3535, 2026-11-23): o
+   * pump adia essas tarefas justamente para liberar o deploy; contá-las como
+   * bloqueio criava espera circular — o deploy aguardava a tarefa drenar e a
+   * tarefa aguardava o deploy sair (deadlock request 437 × tarefa 1107).
+   * Quando o deploy é claimado, o pedido sai de 'pending', o dreno desativa e
+   * o OrphanCapacityQueueReconciler retoma a tarefa (resumeDeployDrainWaits).
    * Reversível sem deploy: motor.deploy.require_pipeline_drained=false em
    * motor_configuracoes volta ao comportamento antigo (só in-flight).
    */
@@ -207,11 +214,15 @@ export class DeployRepository {
       blocos_abertos: number | string; monitor_ativo: number | string
     }>>(`
       SELECT
-        (SELECT COUNT(*) FROM motor_execution_wait_queue WHERE status='waiting') AS fila_execucao,
+        (SELECT COUNT(*) FROM motor_execution_wait_queue q
+           LEFT JOIN task_runtime_facts fw ON fw.tarefa_id = q.tarefa_id
+          WHERE q.status='waiting'
+            AND COALESCE(fw.capacity_wait_reason_code, '') <> 'deploy_drain') AS fila_execucao,
         (SELECT COUNT(*) FROM subtarefas s
            JOIN tarefas t ON t.id = s.tarefa_id
            LEFT JOIN task_runtime_facts f ON f.tarefa_id = t.id
-          WHERE s.status='pending' AND t.paused_at IS NULL AND f.terminal_status IS NULL) AS dev_pendente,
+          WHERE s.status='pending' AND t.paused_at IS NULL AND f.terminal_status IS NULL
+            AND COALESCE(f.capacity_wait_reason_code, '') <> 'deploy_drain') AS dev_pendente,
         (SELECT COUNT(*) FROM bloqueios WHERE resolved_at IS NULL) AS blocos_abertos,
         (SELECT COUNT(*) FROM motor_active_executions WHERE phase='monitor') AS monitor_ativo`)
     const row = rows[0]
