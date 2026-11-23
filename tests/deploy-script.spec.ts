@@ -7,6 +7,10 @@ const script = readFileSync(
   resolve(process.cwd(), "projects/gerenteagentes/scripts/deploy-blue-green.sh"),
   "utf8",
 )
+const callbackLib = readFileSync(
+  resolve(process.cwd(), "projects/gerenteagentes/scripts/lib/deploy-callback.sh"),
+  "utf8",
+)
 
 describe("deploy de produção isolado do banco", () => {
   it("recria api/web sem administrar dependências no deploy e no rollback", () => {
@@ -77,18 +81,28 @@ describe("deploy de produção isolado do banco", () => {
 
   it("entrega o resultado ao Motor do slot correto sem depender de rota no Nginx", () => {
     expect(script).toContain('DEPLOY_BATCH_ID="${3:-}"')
-    expect(script).toContain("MOTOR_DEPLOY_CALLBACK_TOKEN")
-    expect(script).toContain("X-Motor-Deploy-Token")
-    expect(script).toContain("http://127.0.0.1:${port}/api/motor/deploy/batches/${DEPLOY_BATCH_ID}/result")
+    // O segredo do callback e o header vivem na lib compartilhada.
+    expect(callbackLib).toContain("MOTOR_DEPLOY_CALLBACK_TOKEN")
+    expect(callbackLib).toContain("X-Motor-Deploy-Token")
+    // O URL do callback vive na lib compartilhada, sourceada pelo script.
+    expect(script).toContain("scripts/lib/deploy-callback.sh")
+    expect(callbackLib).toContain("http://127.0.0.1:${port}/api/motor/deploy/batches/${DEPLOY_BATCH_ID}/result")
     expect(script).toContain('callback_port="$NEW_MOTOR_PORT"')
     expect(script).toContain('callback_port="$(motor_port_for_slot "$active")"')
   })
 
-  it("grava a evidência antes do callback e limita a notificação", () => {
+  it("grava a evidência antes do callback e limita a notificação com retry dual-porta", () => {
     expect(script).toContain('write_deploy_status "$status"')
     expect(script.indexOf('write_deploy_status "$status"')).toBeLessThan(script.indexOf('notify_deploy_result "$status"'))
-    expect(script).toContain('--connect-timeout "${MOTOR_DEPLOY_CALLBACK_CONNECT_TIMEOUT_SECONDS:-2}"')
-    expect(script).toContain('--max-time "${MOTOR_DEPLOY_CALLBACK_TIMEOUT_SECONDS:-15}"')
-    expect(script).toContain('--retry 2')
+    // Limites por tentativa preservados (agora na lib).
+    expect(callbackLib).toContain('--connect-timeout "${MOTOR_DEPLOY_CALLBACK_CONNECT_TIMEOUT_SECONDS:-2}"')
+    expect(callbackLib).toContain('--max-time "${MOTOR_DEPLOY_CALLBACK_TIMEOUT_SECONDS:-15}"')
+    // Retry dual-porta: 3010 e 3011 alternadas com rounds limitados e backoff.
+    expect(callbackLib).toContain('MOTOR_DEPLOY_CALLBACK_PORTS="${MOTOR_DEPLOY_CALLBACK_PORTS:-3010 3011}"')
+    expect(callbackLib).toContain("MOTOR_DEPLOY_CALLBACK_ROUNDS")
+    expect(callbackLib).toContain("MOTOR_DEPLOY_CALLBACK_RETRY_DELAY_SECONDS")
+    expect(callbackLib).toMatch(/for \(\( round = 1; round <= MOTOR_DEPLOY_CALLBACK_ROUNDS/)
+    // Best-effort: a chamada no trap nunca aborta o deploy.
+    expect(script).toMatch(/notify_deploy_result "\$status" "\$callback_port" \|\|/)
   })
 })
